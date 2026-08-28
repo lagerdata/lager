@@ -24,6 +24,7 @@ when this test was written.
 from __future__ import annotations
 
 import ast
+import importlib
 from pathlib import Path
 
 import pytest
@@ -54,6 +55,13 @@ def _literal_table(path: Path, name: str):
 SUPPORTED_USB = _literal_table(SCANNER, 'SUPPORTED_USB')
 CHANNEL_MAPS = _literal_table(SCANNER, 'CHANNEL_MAPS')
 INSTRUMENT_NET_MAP = _literal_table(NETS, 'INSTRUMENT_NET_MAP')
+
+# The alias helper is real code, not data, so exercise the function rather than
+# a re-implementation of it. cli.commands.box.nets IS importable here (only the
+# box package is not); sibling tests import it the same way.
+_nets_mod = importlib.import_module('cli.commands.box.nets')
+canonical_instrument = _nets_mod.canonical_instrument
+_INSTRUMENT_ALIASES = _nets_mod._INSTRUMENT_ALIASES
 
 
 def test_the_tables_were_actually_parsed():
@@ -98,6 +106,30 @@ def test_cli_role_map_matches_the_box(instrument):
 
 def test_the_logic_capable_scope_accepts_a_logic_net():
     """The specific regression: #261's subcommands need a logic net to exist."""
-    assert 'logic' in INSTRUMENT_NET_MAP['Rigol_MS05204']
-    assert 'logic' in SUPPORTED_USB['Rigol_MS05204']['net_type']
-    assert 'logic' in CHANNEL_MAPS['Rigol_MS05204']
+    assert 'logic' in INSTRUMENT_NET_MAP['Rigol_MSO5204']
+    assert 'logic' in SUPPORTED_USB['Rigol_MSO5204']['net_type']
+    assert 'logic' in CHANNEL_MAPS['Rigol_MSO5204']
+
+
+def test_the_legacy_scope_spelling_still_resolves():
+    """The key was spelled with a zero for the O until #373.
+
+    Every net saved before the rename persists the old string, and the lookups
+    that consume it are exact-key -- a miss silently drops the restriction the
+    key carried rather than failing. The alias is what keeps those records
+    working without a fleet-wide migration of saved_nets.json.
+    """
+    assert canonical_instrument('Rigol_MS05204') == 'Rigol_MSO5204'
+    assert 'logic' in INSTRUMENT_NET_MAP[canonical_instrument('Rigol_MS05204')]
+
+    # The typo must be gone from the tables themselves, or the rename was
+    # only half-applied and the scanner would still emit it.
+    for table in (SUPPORTED_USB, CHANNEL_MAPS, INSTRUMENT_NET_MAP):
+        assert 'Rigol_MS05204' not in table
+
+
+def test_aliases_point_at_keys_that_exist():
+    """An alias to a key that was never added is a silent no-op."""
+    for legacy, canonical in _INSTRUMENT_ALIASES.items():
+        assert canonical in SUPPORTED_USB, canonical
+        assert canonical != legacy

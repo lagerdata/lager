@@ -1,6 +1,6 @@
 # Test Conventions
 
-This document defines how to write and run tests in the Lager test suite. All new tests should follow these conventions.
+This document defines how to write and run tests in the Lager test suite. All new tests must follow these conventions.
 
 ## Directory Structure
 

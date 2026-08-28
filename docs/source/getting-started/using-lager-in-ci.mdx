@@ -1,0 +1,201 @@
+---
+title: Using Lager in CI
+description: Run hardware tests from a CI pipeline against a shared Lager Box
+---
+
+A Lager test is the same command whether you type it or a pipeline does:
+`lager python my_test.py --box <BOX>`. Only the work *around* that command
+changes in CI:
+
+- You sign in without a prompt.
+- You name the box.
+- You prove that the box is reachable and runs the code you expect.
+- You share the box with everyone else's jobs.
+
+This page walks through those pieces. It uses GitHub Actions for the examples;
+the CLI behaves the same under any runner.
+
+## Where the job runs
+
+A hosted runner can drive a Lager Box if it can reach the box over the
+network. A box is wired to hardware, so it usually sits on a private network.
+In that case, use a **self-hosted runner** that has access:
+
+```yaml
+runs-on: [self-hosted, lager-bench]
+```
+
+The box itself does the work in either case. `lager python` ships the script to
+the box and runs it there. The runner needs only the CLI and a route.
+
+## Signing in without a prompt
+
+A box behind an [access gateway](/source/reference/cli/login) needs a session.
+`lager login` takes the credentials as options so it never prompts:
+
+```yaml
+- name: Sign in
+  env:
+    LAGER_AUTH_URL: ${{ vars.LAGER_AUTH_URL }}
+    LAGER_CI_EMAIL: ${{ secrets.LAGER_CI_EMAIL }}
+    LAGER_CI_PASSWORD: ${{ secrets.LAGER_CI_PASSWORD }}
+  run: lager login "$LAGER_AUTH_URL" --email "$LAGER_CI_EMAIL" --password "$LAGER_CI_PASSWORD"
+```
+
+One login covers the whole job. The CLI stores the session in
+`~/.lager_gateway_auth` and refreshes it for the rest of the run.
+
+<Warning>
+Read the password from a secret, never a literal. A password on the command line
+is visible in the process list and lands in logs.
+
+Use a **dedicated CI account without MFA**. On an MFA-enabled account,
+`--email` and `--password` are not enough. The CLI still prompts for the code,
+and a pipeline has nobody to answer it.
+</Warning>
+
+A box with no gateway in front of it needs no sign-in at all — skip this step.
+
+## Naming the box
+
+Register the box once per job, then refer to it by name:
+
+```yaml
+- name: Register the box
+  run: |
+    lager boxes add \
+      --name "$LAGER_BOX" \
+      --ip "${{ secrets.LAGER_BOX_IP }}" \
+      --user lagerdata \
+      --yes
+```
+
+Keep the box name in a repository variable and the IP in a secret. A bench
+move is then a settings change rather than a commit.
+
+## Two checks worth failing on
+
+These are the difference between a red pipeline that means something and a green
+one that does not.
+
+### Is the box reachable?
+
+```yaml
+- name: Verify connectivity
+  run: lager hello --box "$LAGER_BOX" || lager hello --box "$LAGER_BOX"
+```
+
+The retry is deliberate. After a fresh login, the first authenticated contact
+can fail exactly once while the gateway records the box-to-auth-server link.
+The second attempt passes.
+
+### Is the box running the code under test?
+
+This one is easy to skip and expensive to skip.
+
+`lager python` runs your script **on the box**, against the box's own checkout.
+A box that runs last week's code still passes or fails the run. That result is
+not evidence about your commit.
+
+```yaml
+- name: Verify the box is running the ref under test
+  run: lager update --check --box "$LAGER_BOX" --version "$GITHUB_SHA"
+```
+
+`--check` is a dry run. It reports each difference and does not touch the box.
+Treat a difference as a hard failure rather than a warning. A bench result from
+a stale box is worse than no result, because it looks like a result.
+
+## Sharing the box between jobs
+
+Lager takes a lock automatically. Every hardware-interacting command acquires
+one as it resolves the box. It releases the lock when the command exits, and it
+releases the lock on error. A CI job needs no special invocation:
+
+```yaml
+strategy:
+  matrix:
+    suite: [power, communication, debug]
+steps:
+  - run: lager python test/api/${{ matrix.suite }} --box "$LAGER_BOX"
+```
+
+Each matrix item gets a distinct lock holder. The item that loses the race
+waits rather than fails. In CI the default is a patient queue of 30 minutes
+(`LAGER_LOCK_WAIT`). An interactive shell fails fast instead.
+
+Add a concurrency group as well. Two runs of the same workflow then avoid
+queueing against each other for the full timeout:
+
+```yaml
+concurrency:
+  group: hardware-ci-${{ vars.LAGER_BOX }}
+```
+
+[Locking](/source/reference/cli/locking) covers holder identity, TTL and
+heartbeat, and the `LAGER_LOCK_*` overrides in full.
+
+## Putting it together
+
+```yaml
+name: Hardware tests
+
+on: [push, workflow_dispatch]
+
+concurrency:
+  group: hardware-ci-${{ vars.LAGER_BOX }}
+
+jobs:
+  hardware:
+    runs-on: [self-hosted, lager-bench]
+    env:
+      LAGER_BOX: ${{ vars.LAGER_BOX }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - run: pip install lager-cli
+
+      - name: Sign in
+        env:
+          LAGER_AUTH_URL: ${{ vars.LAGER_AUTH_URL }}
+          LAGER_CI_EMAIL: ${{ secrets.LAGER_CI_EMAIL }}
+          LAGER_CI_PASSWORD: ${{ secrets.LAGER_CI_PASSWORD }}
+        run: lager login "$LAGER_AUTH_URL" --email "$LAGER_CI_EMAIL" --password "$LAGER_CI_PASSWORD"
+
+      - name: Register the box
+        run: |
+          lager boxes add --name "$LAGER_BOX" \
+            --ip "${{ secrets.LAGER_BOX_IP }}" --user lagerdata --yes
+
+      - name: Verify connectivity
+        run: lager hello --box "$LAGER_BOX" || lager hello --box "$LAGER_BOX"
+
+      - name: Verify the box is running the ref under test
+        run: lager update --check --box "$LAGER_BOX" --version "$GITHUB_SHA"
+
+      - name: Run the suite
+        run: lager python test/my_suite.py --box "$LAGER_BOX"
+```
+
+## Running arbitrary commands
+
+`lager python` is the test runner. To run a build or a tool inside the box's
+container instead, use [`lager exec`](/source/reference/cli/exec):
+
+```yaml
+- run: lager exec --command 'make -j4' --box "$LAGER_BOX"
+```
+
+`lager exec` takes the same automatic lock, so it interleaves safely with test
+jobs.
+
+## Notes
+
+- **Pin the CLI version** you install (`pip install lager-cli==X.Y.Z`) if you
+  want a pipeline that does not change underneath you.
+- **A detached run keeps the lock.** `lager python --detach` hands the lock to
+  the box, so the work survives the end of the job. The box stays locked until
+  that work finishes.
+- **`LAGER_AUTO_LOCK_DISABLE=1` turns the auto-lock off.** Do not set it on a
+  shared bench; it exists for single-user setups where the lock is pure
+  overhead.

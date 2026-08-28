@@ -29,6 +29,7 @@ from lager import (
 | `state()` | Read the current power state without changing it (`True`=enabled) |
 | `cycle(off_time=None)` | Power-cycle the port; returns whether the device came back |
 | `recover()` | Restore power after an interrupted operation left a port off |
+| `get_config()` | Return a copy of the net's raw configuration dict |
 
 ## Exception Classes
 
@@ -112,22 +113,26 @@ if not usb.state():
 
 ### `cycle(off_time=None)`
 
-Power-cycle the port: off, wait, on. Returns `True` if the device was seen to
-re-enumerate, `False` if it did not come back in time, and `None` if the hub
-reports nothing attached or the driver cannot observe re-enumeration.
+Power-cycle the port: off, wait, on. The return value tells you what the hub saw:
+
+- `True` — the device re-enumerated.
+- `False` — the device did not come back in time.
+- `None` — the hub reports nothing attached, or the driver cannot observe
+  re-enumeration.
 
 <Note>
 **`None` does not mean the port is unused.** A hub only sees a device that pulls
-up its data lines, so a **charge-only cable** — power on the other end, no data —
-is indistinguishable from an empty socket. Power is cut and restored either way;
-there is simply nothing on the bus to watch come back. Confirm a DUT on such a
-port by its own behaviour instead: its UART output, or a current measurement.
+up its data lines. A **charge-only cable** carries power on the other end but no
+data. Such a cable is therefore indistinguishable from an empty socket. Power is
+cut and restored either way; there is simply nothing on the bus to watch come
+back. Confirm a DUT on such a port by its own behavior instead: its UART output,
+or a current measurement.
 </Note>
 
 `off_time` is how long the port stays unpowered, defaulting to 1 second and
-limited to 0.5-10 seconds. **Too short an off time is the failure that matters**:
-the device's rails do not fully discharge and it warm-starts while appearing to
-have been reset. Raise it for a device with large bulk capacitance.
+limited to 0.5-10 seconds. **Too short an off time is the failure that matters.**
+The device's rails do not fully discharge, so the device warm-starts and only
+appears to reset. Raise it for a device with large bulk capacitance.
 
 ```python
 from lager import Net, NetType
@@ -137,16 +142,19 @@ if usb.cycle(off_time=2):
     print("DUT cold-booted and came back")
 ```
 
-Prefer this over a hand-rolled `disable`/`sleep`/`enable`: it holds the hub for
-the whole sequence, so nothing else can switch the port while it is dark, and it
-restores power on every failure path, so an exception partway through cannot
-leave a port stranded.
+Prefer this over a hand-rolled `disable`/`sleep`/`enable`. It gives two guarantees
+that the hand-rolled form does not:
+
+- It holds the hub for the whole sequence, so nothing else can switch the port
+  while it is dark.
+- It restores power on every failure path, so an exception partway through cannot
+  leave a port stranded.
 
 <Note>
 `cycle` returns on the **hub's** reconnect signal, a few hundred milliseconds
-after power returns — not on Linux finishing enumeration. So `/dev/ttyUSB*` may
-not exist yet when it returns, and a `/sys` read taken immediately still shows
-the pre-cycle device number. Poll for what you need rather than reading once.
+after power returns — not on Linux finishing enumeration. So `/dev/ttyUSB*` can
+be absent when it returns, and a `/sys` read taken immediately still shows the
+pre-cycle device number. Poll for what you need rather than reading once.
 </Note>
 
 <Warning>
@@ -329,6 +337,24 @@ for i in range(5):
 | YKUSH USB Hub | Per-port power switching |
 | Plugable RTS5411 dock | Per-port power switching on the four external Type-A sockets |
 
+### Backend classes
+
+`Net.get(name, type=NetType.Usb)` returns a wrapper that dispatches to the backend
+for whichever hub the net names. Use that wrapper in most scripts. The per-backend
+classes are also importable directly, for code that needs to name one:
+
+```python
+from lager.automation import AcronameUSBNet, YKUSHUSBNet, PlugableUSBNet
+```
+
+They are exported from `lager.automation` and from `lager.automation.usb_hub`.
+
+<Note>
+Prefer `Net.get`. If you construct a backend class directly, you tie the script to
+one model of hub. To move that test to a bench with a different hub, you must then
+edit code rather than the net record.
+</Note>
+
 ## Notes
 
 - USB nets must be configured on the Lager Box with hub serial number and port mapping
@@ -338,6 +364,6 @@ for i in range(5):
 - Power cycling can be useful for device reset/recovery; prefer `cycle()` over a
   hand-rolled `disable`/`sleep`/`enable` so a failure cannot leave a port off
 - A port that is powered off still appears in `lsusb` and keeps its device
-  nodes, so never use device presence to test whether a port is off
+  nodes. Never use device presence to test whether a port is off
 - The `toggle()` function is useful for quick state changes
 - Use exception handling for robust error recovery

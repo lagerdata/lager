@@ -131,7 +131,7 @@ def _invoke_remote(
 
 @click.group(name="usb", cls=NetGroup, invoke_without_command=True)
 @click.argument("NETNAME", required=False, metavar="[NET_NAME]")
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.pass_context
 def usb(ctx, netname, box):
     """Control programmable USB hub ports"""
@@ -161,7 +161,7 @@ def _run_usb_action(ctx, box, action: str, off_time: float | None = None) -> Non
 
 
 @usb.command()
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.pass_context
 def enable(ctx, box):
     """Enable USB port (power on)"""
@@ -169,7 +169,7 @@ def enable(ctx, box):
 
 
 @usb.command()
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.pass_context
 def disable(ctx, box):
     """Disable USB port (power off)"""
@@ -177,7 +177,7 @@ def disable(ctx, box):
 
 
 @usb.command()
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.pass_context
 def toggle(ctx, box):
     """Toggle USB port power on/off"""
@@ -185,7 +185,7 @@ def toggle(ctx, box):
 
 
 @usb.command()
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.pass_context
 def state(ctx, box):
     """Show whether the USB port is enabled or disabled (read-only)"""
@@ -193,7 +193,7 @@ def state(ctx, box):
 
 
 @usb.command()
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option(
     "--off-time", type=float, default=None, metavar="SECONDS",
     help="How long to hold the port unpowered (default 1.0, range 0.5-10). "
@@ -206,7 +206,7 @@ def cycle(ctx, box, off_time):
 
 
 @usb.command()
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.pass_context
 def recover(ctx, box):
     """Restore power after an interrupted command left a port unpowered"""

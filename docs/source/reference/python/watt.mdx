@@ -248,7 +248,9 @@ else:
 
 - Power is returned in watts (W)
 - Joulescope JS220 averages measurements over 0.1 seconds for higher precision
-- Nordic PPK2 averages measurements over 0.3 seconds; operates in source mode (supplies a configurable voltage 0.8–5V), so voltage readings reflect the configured value, not an independent measurement
+- Nordic PPK2 averages measurements over 0.3 seconds and operates in source mode,
+  where it supplies a configurable voltage of 0.8–5V. Voltage readings therefore
+  reflect the configured value, not an independent measurement
 - `read_current()`, `read_voltage()`, and `read_all()` are available on the Joulescope JS220 and Nordic PPK2; calling them on a Yocto-Watt will raise an error
 - For current on Yocto-Watt: calculate from power and known voltage (I = P / V)
 - Use multiple readings and averaging for stability

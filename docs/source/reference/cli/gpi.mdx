@@ -21,11 +21,12 @@ lager gpi [NETNAME] [OPTIONS]
 
 | Option | Description |
 |--------|-------------|
-| `--box BOX` | Lagerbox name or IP address |
+| `--box BOX` | Lager Box name or IP address |
 | `--wait-for LEVEL` | Block until pin reaches this level (`high`, `low`, `1`, or `0`) |
 | `--timeout SECONDS` | Timeout in seconds for `--wait-for` (default: wait forever) |
 | `--scan-rate HZ` | LabJack streaming sample rate in Hz (advanced) |
 | `--scans-per-read N` | LabJack scans per read batch (advanced) |
+| `--json` | Emit a machine-readable JSON object instead of formatted text |
 | `--poll-interval SECONDS` | Poll interval in seconds for non-streaming drivers (advanced) |
 
 ---
@@ -113,7 +114,7 @@ If the timeout expires before the target level is reached, the command exits wit
 | FT232H | 0-15 (AD0-AD7, AC0-AC7) | 3.3V | Polling |
 
 <Note>
-Aardvark and FT232H GPIO support is currently disabled and may be re-enabled in a future release. LabJack T7 and MCC USB-202 are the active GPIO backends.
+Aardvark and FT232H GPIO support is currently disabled. A future release can enable it again. LabJack T7 and MCC USB-202 are the active GPIO backends.
 </Note>
 
 ### Aardvark Pin Mapping

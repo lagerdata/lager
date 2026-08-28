@@ -29,7 +29,7 @@ class ClassifyTests(unittest.TestCase):
         )
         self.assertEqual(color, 'red')
         self.assertIn('usbtmc kernel module loaded', msg)
-        self.assertIn('lager box update', msg)
+        self.assertIn('lager update', msg)
 
     def test_busy_with_multiple_holders_calls_out_pids(self):
         """When visa returns 'busy' AND lsof shows multiple processes

@@ -5,9 +5,9 @@ description: Using the Rust crate with boxes behind an authenticating gateway
 
 Plain (ungated) boxes need none of this: no header is sent and none of
 this code runs. This page applies to deployments that place an
-authenticating reverse proxy (a *gateway*) in front of a box, which
-rejects unauthenticated traffic with 401 + an `X-Gateway-Auth-Url` header
-— the same contract the Lager CLI speaks.
+authenticating reverse proxy (a *gateway*) in front of a box. The gateway
+rejects unauthenticated traffic with 401 and an `X-Gateway-Auth-Url` header.
+This is the same contract that the Lager CLI speaks.
 
 The crate handles gated boxes transparently, in two modes.
 
@@ -75,3 +75,90 @@ with `Error::AuthRequired`, which names the auth server to log into:
 The full client/gateway contract (discovery header, auth server endpoints,
 store schema, retry semantics) is specified in the monorepo at
 [`docs/reference/gateway-auth-contract.md`](https://github.com/lagerdata/lager/blob/main/docs/reference/gateway-auth-contract.md).
+
+## Credential precedence
+
+Three sources, checked in this order. The first that yields a token wins.
+
+1. `LagerBoxBuilder::bearer_token()`
+2. The `LAGER_GATEWAY_TOKEN` environment variable (empty or whitespace-only is ignored)
+3. The CLI's token store
+
+A token from (1) or (2) is **pinned**: it is sent as-is and never refreshed or
+replaced. If the gateway rejects it, the call fails immediately rather than retrying
+with a different credential. Only a token resolved from the store participates in
+refresh.
+
+## The token store
+
+The crate reads the same file that `lager login` writes, so a developer who signed in
+needs no additional setup.
+
+| Path | Source |
+|---|---|
+| `$LAGER_GATEWAY_AUTH_FILE` | When set |
+| `~/.lager_gateway_auth` | Default |
+
+Its shape:
+
+```json
+{
+  "boxes":       { "<box-host>": "<auth-url>" },
+  "authServers": { "<auth-url>": { "accessToken": "...", "cookies": { } } }
+}
+```
+
+A missing or corrupt file is treated as empty rather than as an error. The file is
+written back best-effort with mode 0600 on Unix.
+
+## How discovery works
+
+A gated box answers unauthenticated traffic with a denial status and an
+`X-Gateway-Auth-Url` header naming its auth server.
+
+1. On first contact, the crate learns the box-to-auth-server mapping from that header
+   and records it under `boxes`.
+2. It resolves a credential, retries the request **once**, and thereafter attaches the
+   token proactively. A box already known to be gated gets its header on the very
+   first request of the next run.
+3. An expired access token is refreshed against `POST <auth_url>/api/auth/refresh`,
+   replaying the stored cookies. Rotated cookies from the response are merged back in.
+
+Expiry is read from the JWT's `exp` claim, decoded but **not** verified, with a
+60-second refresh margin. An opaque non-JWT token reads as already expired, so the
+crate attempts a refresh. When the crate has no refresh token, it sends the original
+token as-is anyway.
+
+<Note>
+  A plain 401 with **no** `X-Gateway-Auth-Url` header is not treated as a gateway
+  denial. It surfaces as an ordinary `Error::Box { status: 401, .. }`, because it came
+  from the application rather than from the gateway.
+</Note>
+
+## Where the token is attached
+
+Everywhere, not just the port-9000 API:
+
+- The box HTTP API on port 9000
+- The debug service on port 8765
+- The UART Socket.IO handshake
+- The RTT Socket.IO handshake
+
+A gated box therefore works for flashing and for streaming sessions with no extra
+configuration.
+
+## Denial mapping
+
+| Status | Result |
+|---|---|
+| 401 | `Error::AuthRequired`, naming the auth server to sign into |
+| 403 | `Error::Box`, `you are not authorized to use box <host>` — a missing access grant, not a missing token |
+| 503 | `Error::Box`, the gateway could not reach its auth server; retry shortly |
+
+The 401 message distinguishes the two cases: `box <host> requires sign-in` when no
+token was sent, and `your session was rejected by box <host>` when one was.
+
+## Ungated boxes
+
+No header is sent and no code path runs. Nothing here costs you anything on a box
+that is not behind a gateway.

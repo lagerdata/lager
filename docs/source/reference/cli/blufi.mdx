@@ -5,8 +5,8 @@ description: Provision ESP32 WiFi credentials over BLE (BluFi protocol)
 
 Provision WiFi credentials to an ESP32 device over Bluetooth Low Energy using the
 BluFi protocol. Use it to scan for BluFi-capable devices, push SSID/password
-credentials, and read back connection status and firmware version — handy for
-bringing an unprovisioned ESP32 DUT onto the network as part of a test.
+credentials, and read back connection status and firmware version. It brings an
+unprovisioned ESP32 DUT onto the network as part of a test.
 
 ## Syntax
 
@@ -14,7 +14,7 @@ bringing an unprovisioned ESP32 DUT onto the network as part of a test.
 lager blufi COMMAND [ARGS] [OPTIONS]
 ```
 
-Every subcommand accepts `--box BOX` (Lagerbox name or IP; uses the default box if
+Every subcommand accepts `--box BOX` (Lager Box name or IP; uses the default box if
 omitted). All commands except `scan` take a `DEVICE_NAME` argument identifying the
 target BluFi device.
 
@@ -130,4 +130,3 @@ lager blufi status ESP32-DEVICE --box my-lager-box
 ## See Also
 
 - [BLE](/source/reference/cli/ble) — scan and connect to generic BLE devices
-- [WiFi](/source/reference/cli/wifi) — manage the Lager Box's own WiFi settings

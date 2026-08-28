@@ -1,0 +1,80 @@
+---
+title: "Version X.Y.Z"
+description: "Month D, YYYY"
+---
+
+{/*
+  Template for a release note. Copy it to vX.Y.Z.mdx, fill it in, delete the
+  sections that have no entries, and delete this comment.
+
+  The archive under docs/source/release-notes/ is deliberately outside the
+  check_ste.py gate: a release note records what shipped on a date, and editing
+  one makes the archive disagree with itself. That exemption is not a licence to
+  write these badly. Follow docs/STYLE.md here by hand:
+
+    - 25 words maximum per sentence, 10 sentences maximum per paragraph.
+    - Active voice. Name the thing that acts.
+    - Simple tenses only. No perfect or progressive forms.
+    - Only `can`, `will` and `must`. Never `should`, `would`, `may`, `might`
+      or `could`.
+    - `Lager Box`, never `Lagerbox`. American spelling.
+    - Keep the articles and keep `that`. Short is not the goal; unambiguous is.
+
+  Order the sections as below. Upgrade Notes comes first because it is the only
+  section that describes work the reader must do.
+
+  Never name a customer, a customer's box, or an internal conversation. Write
+  the technical condition instead: "a box with a non-default login user", not
+  the name of the box it was found on.
+*/}
+
+## <u>Upgrade Notes</u>
+
+Behavior changes that affect code which already works. State the old behavior,
+the new behavior, and the action the reader must take. If nothing here needs
+action, delete the section rather than writing "none".
+
+- **One-sentence summary of the change, in bold.** Then the detail: what the
+  software did before, what it does now, and what the reader must change. Name
+  the error they will see if they do nothing.
+
+## <u>Features</u>
+
+- **The new capability, in bold.** What it does, and the one case that makes it
+  worth having. Link to the reference page rather than repeating it.
+
+## <u>Bug Fixes</u>
+
+- **The defect, stated as what the reader saw.** Then the cause, then the fix.
+  A fix that changes an exit code, a message the reader matches on, or a default
+  belongs in Upgrade Notes as well.
+
+## <u>Improvements</u>
+
+- Smaller changes that need no action and break nothing.
+
+## <u>Known Limitations</u>
+
+Things that still do not work, where a reader can waste time finding out the
+hard way. A limitation that produces a silent wrong result belongs here even
+when it is old.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==X.Y.Z
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli==X.Y.Z
+```
+
+Then update your boxes:
+
+```bash
+lager update --box <box-name>
+```

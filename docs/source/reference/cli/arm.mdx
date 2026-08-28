@@ -15,7 +15,7 @@ lager arm [OPTIONS] [NETNAME] COMMAND [ARGS]...
 
 | Option | Description |
 |--------|-------------|
-| `--box TEXT` | Lagerbox name or IP |
+| `--box TEXT` | Lager Box name or IP |
 | `--help` | Show help message and exit |
 
 ## Arguments
@@ -50,7 +50,7 @@ lager arm [NETNAME] position [OPTIONS]
 ```
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 
 **Example:**
 ```bash
@@ -64,26 +64,27 @@ lager arm ARM1 position --box my-lager-box
 Move the arm to an absolute XYZ position in millimeters.
 
 ```bash
-lager arm [NETNAME] move X Y Z [OPTIONS]
+lager arm [NETNAME] move [OPTIONS]
 ```
 
-**Arguments:**
-- `X` - Target X position (mm)
-- `Y` - Target Y position (mm)
-- `Z` - Target Z position (mm)
-
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--x FLOAT` - Target X position (mm)
+- `--y FLOAT` - Target Y position (mm)
+- `--z FLOAT` - Target Z position (mm)
+- `--box TEXT` - Lager Box name or IP
 - `--timeout FLOAT` - Move timeout in seconds (default: 5.0)
 - `--yes` - Confirm the action without prompting
+
+Each axis is a named option, not a positional argument, so you can move along one
+axis without restating the others.
 
 **Examples:**
 ```bash
 # Move to specific coordinates
-lager arm ARM1 move 100 200 50 --box my-lager-box --yes
+lager arm ARM1 move --x 100 --y 200 --z 50 --box my-lager-box --yes
 
 # Move with custom timeout
-lager arm ARM1 move 150 250 75 --timeout 10.0 --yes
+lager arm ARM1 move --x 150 --y 250 --z 75 --timeout 10.0 --yes
 ```
 
 ---
@@ -93,29 +94,29 @@ lager arm ARM1 move 150 250 75 --timeout 10.0 --yes
 Move the arm by relative offsets (delta movement) in millimeters.
 
 ```bash
-lager arm [NETNAME] move-by [DX] [DY] [DZ] [OPTIONS]
+lager arm [NETNAME] move-by [OPTIONS]
 ```
 
-**Arguments:**
-- `DX` - Delta X offset (default: 0.0)
-- `DY` - Delta Y offset (default: 0.0)
-- `DZ` - Delta Z offset (default: 0.0)
-
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--dx FLOAT` - Delta X offset (mm)
+- `--dy FLOAT` - Delta Y offset (mm)
+- `--dz FLOAT` - Delta Z offset (mm)
+- `--box TEXT` - Lager Box name or IP
 - `--timeout FLOAT` - Move timeout in seconds (default: 5.0)
 - `--yes` - Confirm the action without prompting
+
+Omitted axes are left unchanged, so a single-axis jog needs only that one option.
 
 **Examples:**
 ```bash
 # Jog the arm by +5 mm in every axis
-lager arm ARM1 move-by 5 5 5 --box my-lager-box --yes
+lager arm ARM1 move-by --dx 5 --dy 5 --dz 5 --box my-lager-box --yes
 
 # Move only in Z axis
-lager arm ARM1 move-by 0 0 10 --yes
+lager arm ARM1 move-by --dz 10 --yes
 
 # Move with custom timeout
-lager arm ARM1 move-by 10 0 0 --timeout 3.0 --yes
+lager arm ARM1 move-by --dx 10 --timeout 3.0 --yes
 ```
 
 ---
@@ -129,7 +130,7 @@ lager arm [NETNAME] go-home [OPTIONS]
 ```
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 - `--yes` - Confirm the action without prompting
 
 **Example:**
@@ -148,7 +149,7 @@ lager arm [NETNAME] enable-motor [OPTIONS]
 ```
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 
 **Example:**
 ```bash
@@ -166,7 +167,7 @@ lager arm [NETNAME] disable-motor [OPTIONS]
 ```
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 
 **Example:**
 ```bash
@@ -184,7 +185,7 @@ lager arm [NETNAME] read-and-save-position [OPTIONS]
 ```
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 
 **Example:**
 ```bash
@@ -198,21 +199,19 @@ lager arm ARM1 read-and-save-position --box my-lager-box
 Set arm acceleration parameters for movement control.
 
 ```bash
-lager arm [NETNAME] set-acceleration ACCELERATION TRAVEL [RETRACT] [OPTIONS]
+lager arm [NETNAME] set-acceleration [OPTIONS]
 ```
 
-**Arguments:**
-- `ACCELERATION` - Acceleration value (integer, >= 0)
-- `TRAVEL` - Travel acceleration value (integer, >= 0)
-- `RETRACT` - Retract acceleration value (integer, >= 0, default: 60)
-
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--acceleration INTEGER` - Acceleration value (>= 0)
+- `--travel INTEGER` - Travel acceleration value (>= 0)
+- `--retract INTEGER` - Retract acceleration value (>= 0)
+- `--box TEXT` - Lager Box name or IP
 
 **Example:**
 ```bash
 # Set acceleration parameters
-lager arm ARM1 set-acceleration 100 80 60 --box my-lager-box
+lager arm ARM1 set-acceleration --acceleration 100 --travel 80 --retract 60 --box my-lager-box
 ```
 
 ---
@@ -246,10 +245,10 @@ lager arm ARM1 position --box my-lager-box
 lager arm ARM1 go-home --box my-lager-box --yes
 
 # Move to specific coordinates
-lager arm ARM1 move 100 250 30 --box my-lager-box --yes
+lager arm ARM1 move --x 100 --y 250 --z 30 --box my-lager-box --yes
 
 # Jog the arm by +5 mm in X direction
-lager arm ARM1 move-by 5 0 0 --box my-lager-box --yes
+lager arm ARM1 move-by --dx 5 --box my-lager-box --yes
 
 # Disable motors for manual adjustment
 lager arm ARM1 disable-motor --box my-lager-box
@@ -261,7 +260,7 @@ lager arm ARM1 enable-motor --box my-lager-box
 lager arm ARM1 read-and-save-position --box my-lager-box
 
 # Configure acceleration
-lager arm ARM1 set-acceleration 100 80 60 --box my-lager-box
+lager arm ARM1 set-acceleration --acceleration 100 --travel 80 --retract 60 --box my-lager-box
 ```
 
 ---

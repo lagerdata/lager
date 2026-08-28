@@ -172,6 +172,13 @@ print("Test complete")
 
 ## API Reference
 
+<Note>
+  Prefer to write your tests in Rust? The same nets are reachable from the
+  [Rust SDK](/source/reference/rust/overview), which runs against the box from
+  `cargo test` rather than on the box. Every net type documented below has a Rust
+  counterpart except scope and logic, which are not on the box's HTTP API yet.
+</Note>
+
 ### Core Classes
 
 | Page | Description |
@@ -243,4 +250,7 @@ except Exception as e:
 
 ## Demo Script
 
-For a more comprehensive example combining robot arm control, USB hub power cycling, debug probe flashing, power supply management, and ADC measurement in a single automated workflow, see the [demo script](https://github.com/lagerdata/lager/blob/main/docs/examples/demo_script.py).
+The [demo script](https://github.com/lagerdata/lager/blob/main/docs/examples/demo_script.py)
+is a more comprehensive example. It combines robot arm control, USB hub power
+cycling, debug probe flashing, power supply management, and ADC measurement in a
+single automated workflow.

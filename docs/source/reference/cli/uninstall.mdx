@@ -3,7 +3,7 @@ title: Uninstall
 description: Remove Lager box code from a box
 ---
 
-Remove the Lager box software, Docker containers, and supporting files from a box.
+Remove the Lager Box software, Docker containers, and supporting files from a box.
 
 ## Syntax
 
@@ -22,7 +22,7 @@ lager uninstall [OPTIONS]
 | `--keep-docker-images` | flag | | Remove containers only, keep Docker images |
 | `--all` | flag | | Remove everything including udev rules, sudoers, third-party tools, and legacy deploy key |
 | `--yes` | flag | | Skip confirmation prompts |
-| `--dry-run` | flag | | Show what would be removed without making changes |
+| `--dry-run` | flag | | List what the command removes. Make no changes. |
 | `--help` | | | Show help message and exit |
 
 Either `--box` or `--ip` is required.
@@ -55,9 +55,9 @@ In addition to the above:
 
 <Note>
 Uninstall removes those three sudoers files **by name**. Lager never touches any
-other file under `/etc/sudoers.d/`, so grants you or your management platform
-added in a separate file there are left alone — both by uninstall and by the
-installs and updates that regenerate Lager's own files.
+other file under `/etc/sudoers.d/`. A grant that you or your management platform
+added in a separate file there is left alone. That holds both for uninstall and
+for the installs and updates that regenerate Lager's own files.
 </Note>
 
 ## Examples

@@ -317,7 +317,7 @@ jobs:
           # genuinely gone fails this step BY NAME after 180s, which is the
           # outcome we want: the bench changed and the workflow should say so
           # rather than quietly race whatever is left.
-          expected=(Rigol_DP821 Keithley_2281S Rigol_MS05204)
+          expected=(Rigol_DP821 Keithley_2281S Rigol_MSO5204)
           enumerated=""
           missing=""
           for _ in $(seq 1 36); do
@@ -556,13 +556,35 @@ jobs:
           # 6.11/6.12/6.13 had been saying all along. 5.2 passes too, once it
           # stopped mistaking an unreachable box for a wrong answer.
           #
-          # The two that remain are real, and both are issue #275:
+          # The two that remain are issue #275:
           #   3.13  box_http_server.py still running with
           #         LAGER_DISABLE_UART_SERVICE set
           #   6.14  the cargo crate is absent from the container after an
           #         apply that reported success -- now a SILENT failure,
           #         where the nonexistent crate used to make it a loud one
-          BOX_CONFIG_BASELINE: "2"
+          #
+          # 6.14 was asserting the wrong path. CARGO_HOME is /opt/rust/cargo
+          # (box.Dockerfile, backed by the lager-cargo volume), and
+          # /home/www-data/.cargo does not exist on the box at all, so that
+          # assertion could not pass for any crate. It now checks the real
+          # path and prints the directory listing on failure, so the next run
+          # distinguishes "cargo did not install it" from "we looked in the
+          # wrong place" instead of conflating them a third time.
+          #
+          # Raised 2 -> 3 for one run, deliberately, and NOT because the bench
+          # got worse. 3.13b is new: it asserts the host port is actually free,
+          # which is the thing LAGER_DISABLE_UART_SERVICE exists to deliver and
+          # which `pgrep` cannot see. The fix for it is in start_box.sh, and
+          # this workflow only installs the CLI (`pip install -e cli/`) -- it
+          # never deploys box-side code, and `apply` runs the box's own
+          # ~/box/start_box.sh. So 3.13b fails until the bench box is updated
+          # to code carrying that change, however green this branch is.
+          #
+          # Expected sequence: land this, update the bench box, re-run
+          # Extended. The gate emits a ::notice when a run comes in under
+          # baseline; take the number it reports rather than predicting one.
+          # Do not leave this at 3 once the box is current.
+          BOX_CONFIG_BASELINE: "3"
         run: |
           LOG="$RUNNER_TEMP/box-config.log"
           bash test/integration/infrastructure/box_config.sh "$LAGER_BOX" 2>&1 | tee "$LOG" || true

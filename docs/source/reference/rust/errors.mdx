@@ -1,0 +1,193 @@
+---
+title: Errors
+description: Every Error variant, when it fires, and how to match on it
+---
+
+Every fallible call returns `lager::Result<T>`, an alias for
+`std::result::Result<T, lager::Error>`.
+
+```rust
+pub type Result<T> = std::result::Result<T, Error>;
+```
+
+`Error` is `#[non_exhaustive]`, so a `match` on it needs a catch-all arm and new
+variants will not break your build.
+
+## Variants
+
+| Variant | Fires when |
+|---|---|
+| `Connection(String)` | The box is unreachable — DNS, TCP connect, transport failure |
+| `Timeout(String)` | A client-side deadline expired |
+| `Box { status, message }` | The box accepted the request and reported a failure |
+| `UnsupportedByBox { message }` | This box's software is too old for an endpoint that exists |
+| `NotSupportedByBox { feature, details }` | The crate has no route for this at all |
+| `Decode(String)` | The response could not be parsed |
+| `AuthRequired { box_host, auth_url, message }` | A gated box, and no usable credential |
+| `Config(String)` | A client-side configuration problem |
+| `Stream(String)` | A streaming session (UART or RTT) failed |
+
+## Variant Reference
+
+### `Connection(String)`
+
+The crate did not reach the box at all. This variant also covers a failed Socket.IO
+connect.
+
+```text
+cannot reach the Lager box: {msg}. Check network/Tailscale and that the box is
+online and updated
+```
+
+### `Timeout(String)`
+
+A **client-side** deadline expired: the HTTP request, a streaming session's connect
+confirmation, or a `wait_for` needle that never arrived.
+
+```text
+request to the Lager box timed out: {msg}
+```
+
+<Note>
+  A hardware wait that expires is **not** this variant. `wait_for_level` timing out on
+  the box comes back as `Error::Box` with HTTP 502 and
+  `GPIO 'gpio24' did not reach level 1 within 2.0s`, because the box completed the
+  request and reported the outcome. `Error::Timeout` means the transport gave up.
+</Note>
+
+### `Box { status: u16, message: String }`
+
+The box accepted the request and reported a failure. This is the variant you will see
+most, and the `message` is the box's own text.
+
+```text
+box error (HTTP {status}): {message}
+```
+
+Common shapes:
+
+| Situation | Status | Message |
+|---|---|---|
+| Net does not exist | 404 | `[Supply] Net 'x' not found. Create it with 'lager nets add'.` |
+| Net exists, wrong role | 404 | `Net 'gpio24 (role adc)' not found` |
+| Debug net, wrong role | 404 | `net 'adc1' exists but is not a debug net` |
+| Debug net missing | 404 | `debug net 'nosuch' not found on this box` |
+| Setpoint over a hardware limit | 400 | `Voltage 999.0V exceeds hardware limit 60.0V` |
+| Setpoint over a safety ceiling | 502 | `Refused voltage(5.0) on net 'supply2': exceeds max_voltage of 3.6` |
+| Erase on a protected net | 403 | `Refused erase on net 'debug1': ... allow_destructive: false.` |
+| Box lock held by someone else | 409 | `Box is locked by <holder>` |
+| Instrument absent from the bus | 502 | `Could not open instrument at <address>: No device found.` |
+
+A router net's "not found" reads `Net 'router1' not found` with no role, because
+router nets deliberately send no role hint.
+
+The box can also report failure with **HTTP 200** and `success: false` — a cross-role
+instrument conflict does this. That is still `Error::Box`.
+
+### `UnsupportedByBox { message }`
+
+The endpoint exists in the API, but *this box* is too old to serve it. The message
+names the version needed.
+
+```text
+{message}. This box image does not support this endpoint; update the box
+```
+
+Examples: `usb_devices()` and `dfu()` need box 0.33.0; safety limits and interactive
+RTT need 0.35.0; `UsbPort::state()` needs 0.29.0.
+
+### `NotSupportedByBox { feature, details }`
+
+The crate has no route for this feature on any box. Today this is only `Scope`.
+
+```text
+'{feature}' is not yet available over the box HTTP API: {details}
+```
+
+<Warning>
+  `UnsupportedByBox` and `NotSupportedByBox` are different variants with confusingly
+  similar names. **Unsupported** means *update the box*. **Not supported** means *no
+  box can do this yet*.
+</Warning>
+
+### `Decode(String)`
+
+The crate did not parse the response into the expected shape. The cause is a truncated
+body, an unexpected field type, or a missing required field.
+
+```text
+could not decode box response: {msg}
+```
+
+### `AuthRequired { box_host, auth_url, message }`
+
+A gated box, and no usable credential.
+
+```text
+{message}. Sign in with `lager login {auth_url}` (this crate reuses the CLI's
+session), or set LAGER_GATEWAY_TOKEN / use LagerBoxBuilder::bearer_token
+```
+
+See [Authentication](/source/reference/rust/auth).
+
+### `Config(String)`
+
+A client-side problem, detected before anything is sent: `LAGER_BOX_HOST` unset, an
+unparseable host, a firmware path whose type cannot be inferred, an unreadable file.
+
+```text
+configuration error: {msg}
+```
+
+### `Stream(String)`
+
+A UART or RTT session failed: the net is already in use by another session, the device
+disappeared, or the session closed unexpectedly.
+
+```text
+streaming session error: {msg}
+```
+
+## Matching
+
+```rust
+use lager::Error;
+
+match supply.set_voltage(5.0) {
+    Ok(()) => {}
+    Err(Error::UnsupportedByBox { message }) => {
+        eprintln!("box too old, skipping: {message}");
+        return Ok(());
+    }
+    Err(Error::Box { status: 403, message }) => {
+        panic!("refused by a safety limit: {message}");
+    }
+    Err(Error::AuthRequired { auth_url, .. }) => {
+        panic!("run `lager login {auth_url}` first");
+    }
+    Err(e) => return Err(e),   // Error is #[non_exhaustive]
+}
+```
+
+### Skipping a test on an old box
+
+```rust
+fn skip_if_unsupported<T>(r: lager::Result<T>) -> Option<T> {
+    match r {
+        Ok(v) => Some(v),
+        Err(lager::Error::UnsupportedByBox { message }) => {
+            eprintln!("skipping: {message}");
+            None
+        }
+        Err(e) => panic!("{e}"),
+    }
+}
+```
+
+## Notes
+
+- `Error` implements `std::error::Error` and `Display`, so `?` works into
+  `Box<dyn Error>` and `anyhow::Error` without a conversion.
+- `From<serde_json::Error>` maps into `Error::Decode`.
+- The messages are written to be read by a person in CI output. Print the error
+  rather than only its variant.

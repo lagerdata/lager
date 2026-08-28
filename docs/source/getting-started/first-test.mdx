@@ -3,10 +3,10 @@ title: Your First Test
 description: A complete walkthrough of testing a device with Lager
 ---
 
-This guide walks you through a complete test workflow -- from verifying connectivity to running an automated test, in Python or Rust. By the end, you'll have used the CLI interactively and written your first Lager test script.
+This guide walks you through a complete test workflow, in Python or in Rust. It starts at connectivity and ends at an automated test. At the end, you can use the CLI interactively and write your own Lager test scripts.
 
 <Note>
-This tutorial assumes you have completed the [Getting Started](/source/getting-started/overview) guide: the CLI is installed, your box is added, and your instruments are configured with nets.
+First complete the [Getting Started](/source/getting-started/overview) guide. This tutorial assumes that you installed the CLI, added your box, and configured your instruments with nets.
 </Note>
 
 ---
@@ -97,9 +97,9 @@ Always disable power supplies when you're done testing.
 
 ## Part 2: Your First Test Script
 
-Now let's convert the manual CLI steps into a repeatable test. The key advantage of a script is that it always cleans up after itself (disabling power) even if an error occurs.
+Now convert the manual CLI steps into a repeatable test. A script always cleans up after itself and disables power, even when an error occurs.
 
-You can write it in Python (runs on the box via `lager python`) or in Rust (an ordinary `cargo test` in your firmware repo, using the [`lager-net` crate](/source/reference/rust/overview)). Both versions below do the same thing: flash, power on, measure, assert, clean up.
+You can write it in Python, which runs on the box through `lager python`. You can also write it in Rust, as an ordinary `cargo test` in your firmware repository that uses the [`lager-net` crate](/source/reference/rust/overview). Both versions below flash, power on, measure, assert, and clean up.
 
 <CodeGroup>
 
@@ -189,7 +189,7 @@ fn sensor_reads_in_range_after_boot() -> lager::Result<()> {
 </CodeGroup>
 
 <Note>
-Cleanup matters: the Python version uses `try/finally` to guarantee the power supply is disabled even if an error occurs, and the Rust version disables power before its assertion (any earlier `?` error also ends the test with the supply's state visible in the failure). This is important for protecting your hardware.
+Cleanup protects your hardware, so both versions do it. The Python version uses `try/finally`, which disables the power supply even when an error occurs. The Rust version disables power before its assertion. An earlier `?` error also ends the test, and the failure shows the state of the supply.
 </Note>
 
 ---
@@ -202,7 +202,7 @@ Execute the Python script on your Lager Box:
 lager python my_first_test.py --box my-lager-box
 ```
 
-Or run the Rust test from your project (with `lager = { package = "lager-net", version = "0.2" }` in `[dev-dependencies]`):
+Or run the Rust test from your project (with `lager = { package = "lager-net", version = "0.4" }` in `[dev-dependencies]`):
 
 ```bash
 LAGER_BOX_HOST=<box-ip> cargo test
@@ -238,4 +238,4 @@ You've completed your first test with Lager. Here are some directions to explore
 - **[Troubleshooting](/source/getting-started/troubleshooting)** -- Solutions when things go wrong
 - **[Glossary](/source/getting-started/glossary)** -- Definitions for technical terms used in the docs
 
-For a more comprehensive automation example combining robot arm control, USB hub power cycling, debug probe flashing, and ADC measurement, see the [demo script](https://github.com/lagerdata/lager/blob/main/docs/examples/demo_script.py).
+The [demo script](https://github.com/lagerdata/lager/blob/main/docs/examples/demo_script.py) is a larger example. It combines robot arm control, USB hub power cycling, debug probe flashing, and ADC measurement.

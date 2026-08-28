@@ -64,6 +64,10 @@ Each box runs multiple services inside a single Docker container:
 | Debug Service | 8765 | Embedded debugging (GDB, J-Link) |
 | HTTP+WebSocket | 9000 | CLI hardware control (UART, supply, etc.) |
 
+These are the ports the container listens on. `start_box.sh` publishes them on the host by
+default; under `--no-publish` none of them are published and the container is reachable only
+on the `lagernet` Docker network, so `<box-ip>:<port>` will not connect on such a box.
+
 The **MCP server** (`mcp/server.py`) provides direct hardware access to AI coding agents via the Model Context Protocol. It uses the same `lager.Net` API as the CLI but executes everything on-box with no subprocess overhead. See the [main README](../README.md#mcp-server-ai-agent-integration) for agent setup instructions.
 
 Hardware is accessed through **nets** — named references to physical connections defined in the box configuration. The dispatcher pattern routes commands to the correct driver based on the net's device type.

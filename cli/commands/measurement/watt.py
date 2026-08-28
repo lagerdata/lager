@@ -113,7 +113,7 @@ def _run_watt(ctx, box, netname, mode, duration, as_json):
 
 # Shared options for the read subcommands.
 def _read_options(func):
-    func = click.option("--box", required=False, help="Lagerbox name or IP")(func)
+    func = click.option("--box", required=False, help="Lager Box name or IP")(func)
     func = click.option(
         "--duration", "-d", type=float, default=0.1, show_default=True,
         help="Averaging window in seconds (longer = lower noise / higher resolution)",
@@ -131,7 +131,7 @@ def _read_options(func):
     invoke_without_command=True,
     help="Read power/current/voltage from a watt-meter net",
 )
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.argument("netname", required=False, metavar="[NET_NAME]")
 @click.pass_context
 def watt(ctx, box, netname):

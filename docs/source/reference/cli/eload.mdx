@@ -15,8 +15,11 @@ lager eload [OPTIONS] NET_NAME COMMAND [ARGS]...
 
 | Option | Description |
 |--------|-------------|
-| `--box BOX` | Lagerbox name or IP address |
+| `--box BOX` | Lager Box name or IP address |
 | `--help` | Show help message and exit |
+
+Every subcommand below (`cc`, `cv`, `cr`, `cp`, `state`) also accepts `--json`, which
+emits a machine-readable JSON object instead of formatted text.
 
 ## Commands
 

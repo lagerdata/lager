@@ -56,7 +56,7 @@ def _get_jlink_script_content(ctx, net_name, debug_net):
                 with open(script_path, 'rb') as f:
                     return base64.b64encode(f.read()).decode('ascii')
             except Exception as e:
-                click.secho(f"Warning: Could not read J-Link script from config: {e}", fg='yellow', err=True)
+                click.secho(f"Warning: the CLI did not read the J-Link script from config: {e}", fg='yellow', err=True)
 
     if debug_net:
         embedded = debug_net.get('jlink_script')
@@ -89,7 +89,7 @@ def _get_openocd_config_content(ctx, net_name, debug_net):
                     return base64.b64encode(f.read()).decode('ascii')
             except Exception as e:
                 click.secho(
-                    f"Warning: Could not read OpenOCD config from .lager: {e}",
+                    f"Warning: the CLI did not read the OpenOCD config from .lager: {e}",
                     fg='yellow', err=True,
                 )
 
@@ -247,8 +247,8 @@ def _get_service_client(box):
     except ConnectionRefusedError:
         click.secho(f"Error: Connection refused to debug service on {box}:8765", fg='red', err=True)
         click.secho("Possible causes:", err=True)
-        click.secho("  - Debug service is not running on the box", err=True)
-        click.secho("  - Docker container 'lager' is not running", err=True)
+        click.secho("  - The debug service does not run on the box", err=True)
+        click.secho("  - The Docker container 'lager' is not up", err=True)
         click.secho(f"Check with: ssh lagerdata@{box} 'docker ps | grep lager'", err=True)
         return None
     except TimeoutError:
@@ -262,12 +262,12 @@ def _get_service_client(box):
         error_str = str(e).lower()
         if "connection refused" in error_str:
             click.secho(f"Error: Connection refused to debug service on {box}:8765", fg='red', err=True)
-            click.secho("The debug service may not be running. Check Docker status on the box.", err=True)
+            click.secho("Check the Docker status on the box. The debug service can be down.", err=True)
         elif "timeout" in error_str or "timed out" in error_str:
             click.secho(f"Error: Connection timed out to debug service on {box}:8765", fg='red', err=True)
-            click.secho("The box may be offline or unreachable.", err=True)
+            click.secho("Check that the box is online and reachable.", err=True)
         elif "name or service not known" in error_str or "nodename nor servname" in error_str:
-            click.secho(f"Error: Could not resolve hostname '{box}'", fg='red', err=True)
+            click.secho(f"Error: The hostname '{box}' did not resolve", fg='red', err=True)
             click.secho("Check that the box name or IP address is correct.", err=True)
         else:
             click.secho(f"Error: Failed to create debug service client: {e}", fg='red', err=True)
@@ -293,9 +293,32 @@ def _is_connected(client, debug_net=None):
     """
     try:
         status = client.get_debug_status(debug_net)
+        # `gdbserver_running` is the explicit name for what this has always
+        # meant. `connected` is its deprecated alias, still sent by the box and
+        # still the only field an older box sends at all.
+        if 'gdbserver_running' in status:
+            return bool(status['gdbserver_running'])
         return status.get('connected', False)
     except Exception:
         return False
+
+
+def _target_attached(client, debug_net=None):
+    """Whether the part answers, as opposed to whether a server is alive.
+
+    Tri-state, and the None matters. An older box does not send the field at
+    all; a probe can be refused or time out. Neither is evidence the target is
+    absent, so callers must test `is True` and must not treat None as failure.
+    Reading None as "not attached" would tear down working sessions.
+    """
+    try:
+        status = client.get_debug_status(debug_net, probe=True)
+    except Exception:
+        return None
+    if 'target_attached' not in status:
+        return None
+    value = status['target_attached']
+    return value if value is None else bool(value)
 
 def _resolve_debug_scripts(ctx, net_name, debug_net):
     """Return (jlink_script, openocd_config) for a debug net.
@@ -318,7 +341,7 @@ def _resolve_debug_scripts(ctx, net_name, debug_net):
         if configured:
             click.secho(
                 f"Warning: ignoring debug script {configured!r} for net "
-                f"{net_name!r}: extension not recognised. Use "
+                f"{net_name!r}: extension not recognized. Use "
                 f"`.JLinkScript` for J-Link probes or `.cfg`/`.tcl` for "
                 f"OpenOCD probes.",
                 fg='yellow', err=True,
@@ -345,10 +368,47 @@ def _auto_connect_if_needed(client, debug_net, ctx, quiet=False,
     Returns:
         True if connected (either already or newly), False on failure
     """
-    # Check if already connected. Pass the net so the box checks THIS
-    # probe's gdbserver, not the legacy un-suffixed pidfile.
-    if _is_connected(client, debug_net):
+    # A live gdbserver is not the same thing as an attached part, and this
+    # gate used to conflate them: on a box where the server outlives the
+    # target, every caller below proceeded against hardware that was not
+    # there. Ask whether the target answers, and short-circuit only on a
+    # confirmed yes.
+    #
+    # The box returns None when it could not establish an answer -- an older
+    # box that omits the field, a refused probe, a timeout. None is not False:
+    # treating it as "absent" would tear down working sessions, so the branch
+    # below handles it explicitly and falls back to server liveness. That
+    # explicit branch is what protects the behaviour; `is True` here is
+    # defensive style on top of it, not the guard itself.
+    attached = _target_attached(client, debug_net)
+    if attached is True:
         return True
+
+    if attached is None:
+        # Nothing was established about the target, so behave exactly as this
+        # did before the distinction existed: trust the server's liveness.
+        if _is_connected(client, debug_net):
+            return True
+    elif _is_connected(client, debug_net):
+        # The server is up and the target demonstrably is not. Reconnecting is
+        # the only thing that can fix that; proceeding is what the old code did
+        # and is what let a flash report success against an absent part.
+        if not quiet:
+            click.secho(
+                "The debug session is up, but the target does not answer; reconnecting...",
+                fg='yellow', err=True,
+            )
+        try:
+            client.connect(
+                debug_net, speed=None, force=True, halt=False,
+                jlink_script=jlink_script, openocd_config=openocd_config,
+            )
+            if not quiet:
+                click.secho("Reconnected!", fg='cyan', dim=True)
+            return True
+        except Exception as exc:
+            click.secho(f"Error: the CLI did not reconnect to the target: {exc}", fg='red', err=True)
+            return False
 
     # Not connected, auto-connect
     if not quiet:
@@ -364,15 +424,15 @@ def _auto_connect_if_needed(client, debug_net, ctx, quiet=False,
         return True
     except requests.exceptions.Timeout:
         click.secho("Error: Connection timed out while auto-connecting to debugger", fg='red', err=True)
-        click.secho("The debug service may be unresponsive. Try again or check the box.", err=True)
+        click.secho("The debug service can be unresponsive. Try again, or check the box.", err=True)
         return False
     except requests.exceptions.ConnectionError as e:
         click.secho("Error: Connection failed while auto-connecting to debugger", fg='red', err=True)
         error_str = str(e).lower()
         if "connection refused" in error_str:
-            click.secho("The debug service may not be running.", err=True)
+            click.secho("The debug service can be down.", err=True)
         elif "name or service not known" in error_str:
-            click.secho("Could not resolve the box hostname.", err=True)
+            click.secho("The box hostname did not resolve.", err=True)
         else:
             click.secho(f"Details: {e}", err=True)
         return False
@@ -541,7 +601,7 @@ class NetDebugGroup(NetGroupHelpMixin, click.MultiCommand):
 
 
 @click.command(name='debug', cls=NetDebugGroup, invoke_without_command=True)
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.pass_context
 def _debug(ctx, box):
     """
@@ -554,7 +614,7 @@ def _debug(ctx, box):
 
 @click.command(cls=NetSubCommand)
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option('--force/--no-force', is_flag=True, default=False,
               help='Force new connection (default: reuse existing)', show_default=True)
 @click.option('--halt/--no-halt', is_flag=True, default=False,
@@ -602,7 +662,7 @@ def gdbserver(ctx, box, force, halt, speed, quiet, json_output, rtt, rtt_reset, 
             click.secho(f"Error: GDB port must be between 1 and 65535, got {gdb_port}", fg='red', err=True)
             ctx.exit(1)
         if gdb_port < 1024:
-            click.secho(f"Warning: Port {gdb_port} is a privileged port (< 1024). May require root privileges.", fg='yellow', err=True)
+            click.secho(f"Warning: Port {gdb_port} is a privileged port (< 1024). Binding it requires root privileges.", fg='yellow', err=True)
 
     target_box = box
 
@@ -800,8 +860,8 @@ def gdbserver(ctx, box, force, halt, speed, quiet, json_output, rtt, rtt_reset, 
                     click.secho("  • No physical target device connected", fg='yellow', err=True)
                     click.secho("  • Target device is not powered", fg='yellow', err=True)
                     click.secho("\nTry:", fg='cyan', err=True)
-                    click.secho("  • Running the command again (may be a timing issue)", fg='cyan', err=True)
-                    click.secho("  • Using --rtt instead of --rtt-reset if device is already running", fg='cyan', err=True)
+                    click.secho("  • Run the command again — the failure can be a timing issue", fg='cyan', err=True)
+                    click.secho("  • Use --rtt instead of --rtt-reset when the device already runs", fg='cyan', err=True)
                     click.secho("  • Verifying target is connected and powered", fg='cyan', err=True)
 
                 client.close()
@@ -879,7 +939,7 @@ def gdbserver(ctx, box, force, halt, speed, quiet, json_output, rtt, rtt_reset, 
 
 @click.command(cls=NetSubCommand)
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option('--keep-server', is_flag=True, default=False,
               help="Keep JLinkGDBServer running for external GDB client connections")
 def disconnect(ctx, box, keep_server):
@@ -1007,7 +1067,7 @@ def _erase_failure_line(output):
 
 @click.command(cls=NetSubCommand)
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option('--hex', type=click.Path(exists=True))
 @click.option('--elf', type=click.Path(exists=True))
 @click.option('--bin', multiple=True, type=BinfileType(exists=True))
@@ -1210,7 +1270,7 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, no_erase, erase, ha
 
 @click.command(cls=NetSubCommand)
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option('--speed', type=str, default='4000', callback=validate_speed_param,
               help='SWD/JTAG speed in kHz (default: 4000)')
 @click.option('--yes', is_flag=True, default=False,
@@ -1340,7 +1400,7 @@ def erase(ctx, box, speed, yes, quiet, json_output, halt):
 
 @click.command(cls=NetSubCommand)
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option('--halt/--no-halt', is_flag=True, default=False,
               help='Halt the device after reset (keeps debugger connected)', show_default=True)
 @click.option('--force-reconnect', is_flag=True, default=False,
@@ -1412,7 +1472,7 @@ def reset(ctx, box, halt, force_reconnect):
 @click.pass_context
 @click.argument('start_addr', type=MemoryAddressType())
 @click.argument('length', type=MemoryAddressType())
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option('--json', 'json_output', is_flag=True, default=False,
               help='Output results in JSON format')
 @click.option('--halt', is_flag=True, default=False,
@@ -1483,17 +1543,25 @@ def memrd(ctx, start_addr, length, box, json_output, halt, no_halt, no_reset):
                 jlink_script=jlink_script, openocd_config=openocd_config,
             )
         except Exception as e:
-            click.secho(f"Warning: could not re-connect halted for memrd: {e}", fg='yellow', err=True)
+            click.secho(f"Warning: the CLI did not re-connect halted for memrd: {e}", fg='yellow', err=True)
 
-    # Auto-connect if not already connected
-    if not _is_connected(client, debug_net):
+    # Auto-connect if the target is not answering. A live gdbserver is not an
+    # attached part; see _auto_connect_if_needed for why this tests `is True`
+    # and treats None as "fall back to the old behaviour".
+    _memrd_attached = _target_attached(client, debug_net)
+    _memrd_needs_connect = (
+        _memrd_attached is False
+        or (_memrd_attached is None and not _is_connected(client, debug_net))
+    )
+    if _memrd_needs_connect:
         if effective_halt:
             click.secho("Auto-connecting to debugger (with halt for memory read)...", fg='cyan', dim=True)
         else:
             click.secho("Auto-connecting to debugger...", fg='cyan', dim=True)
         try:
             client.connect(
-                debug_net, speed=None, force=False, halt=effective_halt,
+                debug_net, speed=None, force=(_memrd_attached is False),
+                halt=effective_halt,
                 jlink_script=jlink_script, openocd_config=openocd_config,
             )
             if effective_halt:
@@ -1509,7 +1577,7 @@ def memrd(ctx, start_addr, length, box, json_output, halt, no_halt, no_reset):
     # Validate memory address range (32-bit systems)
     max_address = 0xFFFFFFFF
     if start_addr > max_address or (start_addr + length) > max_address + 1:
-        click.secho(f"Warning: Memory address 0x{start_addr:x} may be invalid for 32-bit system", fg='yellow', err=True)
+        click.secho(f"Warning: the read range from 0x{start_addr:x} passes the 32-bit maximum", fg='yellow', err=True)
         click.secho(f"Maximum valid address is 0x{max_address:x}", fg='yellow', err=True)
         if not click.confirm("Continue anyway?", default=False):
             client.close()
@@ -1568,7 +1636,7 @@ def memrd(ctx, start_addr, length, box, json_output, halt, no_halt, no_reset):
 
 @click.command(cls=NetSubCommand)
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 def status(ctx, box):
     """Show debug net status and information"""
     target_box = box
@@ -1585,14 +1653,26 @@ def status(ctx, box):
         ctx.exit(1)
 
     # Get info from service
-    info_data = client.get_info(debug_net)
+    info_data = client.get_info(debug_net, probe=True)
+
+    running = info_data.get('gdbserver_running', info_data.get('connected'))
+    attached = info_data.get('target_attached')
+    if attached is True:
+        attached_text = 'Yes'
+    elif attached is False:
+        attached_text = 'No'
+    else:
+        # An older box does not report it, and a probe can be inconclusive.
+        # Say so rather than printing a confident No.
+        attached_text = 'Unknown'
 
     click.echo(f"Debug Net Information:")
     click.echo(f"  Name: {info_data.get('net_name')}")
     click.echo(f"  Device Type: {info_data.get('device')}")
     click.echo(f"  Architecture: {info_data.get('arch')}")
     click.echo(f"  Probe: {info_data.get('probe')}")
-    click.echo(f"  Connected: {info_data.get('connected')}")
+    click.echo(f"  GDB server running: {running}")
+    click.echo(f"  Target attached: {attached_text}")
     click.echo()
 
     client.close()
@@ -1600,7 +1680,7 @@ def status(ctx, box):
 
 @click.command(cls=NetSubCommand)
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option('--verbose', is_flag=True, default=False,
               help='Show detailed health information')
 def health(ctx, box, verbose):

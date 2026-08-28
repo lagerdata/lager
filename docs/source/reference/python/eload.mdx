@@ -112,7 +112,9 @@ print(f"Voltage setting: {v}V")
 
 ### `resistance(value=None)`
 
-Set or read the constant resistance setting. Values below 0.02 ohms are at the minimum range limit of the instrument and may be clamped. A warning is printed if the applied value differs from the requested value.
+Set or read the constant resistance setting. Values below 0.02 ohms are at the
+minimum range limit of the instrument, and the instrument can clamp them. It prints
+a warning when the applied value differs from the requested value.
 
 ```python
 # Set CR mode resistance
@@ -275,4 +277,4 @@ psu.disable()
 - `print_state()` prints state (for debugging), measurement methods return values (for code)
 - Always call `enable()` to start sinking current
 - Always call `disable()` when finished
-- Resistance values below 0.02 ohms may be clamped by the instrument
+- The instrument can clamp resistance values below 0.02 ohms

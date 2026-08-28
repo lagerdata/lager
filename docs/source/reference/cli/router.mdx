@@ -3,10 +3,16 @@ title: Router
 description: Manage routers as Lager nets
 ---
 
-Register and control network routers as Lager nets. A router net wraps a router's
-REST API (e.g. a MikroTik hAP) so you can inspect interfaces, list wireless
-clients and DHCP leases, toggle interfaces, block internet access, and reset the
-router to a clean baseline — useful for connectivity and network-resilience tests.
+Register and control network routers as Lager nets. A router net wraps the REST
+API that the router publishes, such as the API on a MikroTik hAP. Through that
+net you can:
+
+- inspect the interfaces, and toggle them
+- list the wireless clients and the DHCP leases
+- block internet access
+- reset the router to a clean baseline
+
+A router net is useful for connectivity tests and for network-resilience tests.
 
 <Note>Introduced in **lager 0.10.0**. The default instrument type is `MikroTik_hAP`.</Note>
 
@@ -16,7 +22,7 @@ router to a clean baseline — useful for connectivity and network-resilience te
 lager router COMMAND [ARGS] [OPTIONS]
 ```
 
-Every subcommand accepts `--box BOX` (Lagerbox name or IP; uses the default box if
+Every subcommand accepts `--box BOX` (Lager Box name or IP; uses the default box if
 omitted). Most operate on a `NETNAME` — the name of a router net previously
 registered with `add-net`.
 
@@ -57,7 +63,7 @@ lager router add-net NAME --address IP [OPTIONS]
 | `--password` | (empty) | Router password |
 | `--instrument` | `MikroTik_hAP` | Router instrument type |
 | `--use-ssl` | off | Use HTTPS instead of HTTP |
-| `--box` | | Lagerbox name or IP |
+| `--box` | | Lager Box name or IP |
 
 ```bash
 lager router add-net router1 --address 192.168.88.1 --username admin --password secret --box my-lager-box
@@ -97,7 +103,7 @@ lager router wireless-clients router1 --box my-lager-box
 
 ### `dhcp-leases`
 
-List DHCP leases — devices that have received IP addresses.
+List DHCP leases — the devices that received an IP address.
 
 ```bash
 lager router dhcp-leases router1 --box my-lager-box
@@ -170,4 +176,3 @@ lager router run router1 /ip/address --box my-lager-box
 ## See Also
 
 - [Nets](/source/reference/cli/nets) — manage instrument and device nets
-- [WiFi](/source/reference/cli/wifi) — manage the Lager Box's own WiFi settings

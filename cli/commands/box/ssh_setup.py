@@ -72,7 +72,7 @@ def register_or_warn(dest: str) -> bool:
         return True
     box_user = dest.rsplit("@", 1)[0] or "<box-user>"
     click.secho(
-        f"Warning: the key works, but could not be registered in {BOX_KEYS_DIR} "
+        f"Warning: the key works, but it did not register in {BOX_KEYS_DIR} "
         f"on the box ({detail}). It will keep working until something rebuilds "
         "the box's authorized_keys, and will not survive that.\n"
         "  Both the direct write and the sudo fallback failed, so this box's "
@@ -179,7 +179,7 @@ def provision_lager_box_key(dest: str) -> bool:
     help="Set up passwordless SSH to a box (enter the box password "
          "once; lager commands work passwordless after).",
 )
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def ssh_setup(ctx: click.Context, box: Optional[str]) -> None:
     ip = resolve_and_validate_box(ctx, box)
@@ -195,7 +195,7 @@ def ssh_setup(ctx: click.Context, box: Optional[str]) -> None:
 
 @click.command(name="authorize", cls=BoxCommand, hidden=True,
                help="Deprecated alias for `lager ssh-setup`.")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def authorize(ctx: click.Context, box: Optional[str]) -> None:
     click.secho(

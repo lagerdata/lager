@@ -144,7 +144,7 @@ def _battery_command_request(ctx, box, action: str, timeout: int = 30, **params)
 @click.group(cls=NetGroup, invoke_without_command=True)
 @click.argument('NETNAME', required=False, metavar="[NET_NAME]")
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 def battery(ctx, box, netname):
     """Control battery simulator settings and output"""
     # Use provided netname, or fall back to default if not provided
@@ -172,7 +172,7 @@ battery.net_examples = [
 @battery.command()
 @click.argument('MODE_TYPE', required=False, type=click.Choice(('static', 'dynamic')))
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 def mode(ctx, box, mode_type):
     """Set (or read) battery simulation mode type"""
     resolved_box = resolve_box_locked(ctx, box, 'battery')
@@ -182,7 +182,7 @@ def mode(ctx, box, mode_type):
 
 @battery.command(name='set')
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 def set_mode(ctx, box):
     """Initialize battery simulator mode"""
     resolved_box = resolve_box_locked(ctx, box, 'battery')
@@ -193,7 +193,7 @@ def set_mode(ctx, box):
 @battery.command()
 @click.argument('VALUE', required=False)
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 def soc(ctx, box, value):
     """Set (or read) battery state of charge in percent (%)"""
     # Parse and validate SOC
@@ -216,7 +216,7 @@ def soc(ctx, box, value):
 @battery.command()
 @click.argument('VALUE', required=False)
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 def voc(ctx, box, value):
     """Set (or read) battery open circuit voltage in volts (V)"""
     # Parse and validate VOC
@@ -239,7 +239,7 @@ def voc(ctx, box, value):
 @battery.command(name='batt-full')
 @click.argument('VALUE', required=False)
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 def batt_full(ctx, box, value):
     """Set (or read) battery fully charged voltage in volts (V)"""
     # Parse and validate voltage
@@ -262,7 +262,7 @@ def batt_full(ctx, box, value):
 @battery.command(name='batt-empty')
 @click.argument('VALUE', required=False)
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 def batt_empty(ctx, box, value):
     """Set (or read) battery fully discharged voltage in volts (V)"""
     # Parse and validate voltage
@@ -285,7 +285,7 @@ def batt_empty(ctx, box, value):
 @battery.command()
 @click.argument('VALUE', required=False)
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 def capacity(ctx, box, value):
     """Set (or read) battery capacity limit in amp-hours (Ah)"""
     # Parse and validate capacity
@@ -308,7 +308,7 @@ def capacity(ctx, box, value):
 @battery.command(name='current-limit')
 @click.argument('VALUE', required=False)
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 def current_limit(ctx, box, value):
     """Set (or read) maximum charge/discharge current in amps (A)"""
     # Keithley 2281S max current is 6A
@@ -337,7 +337,7 @@ def current_limit(ctx, box, value):
 @battery.command()
 @click.argument('VALUE', required=False)
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 def ovp(ctx, box, value):
     """Set (or read) over voltage protection limit in volts (V)"""
     # Parse and validate OVP
@@ -360,7 +360,7 @@ def ovp(ctx, box, value):
 @battery.command()
 @click.argument('VALUE', required=False)
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 def ocp(ctx, box, value):
     """Set (or read) over current protection limit in amps (A)"""
     # Parse and validate OCP
@@ -383,7 +383,7 @@ def ocp(ctx, box, value):
 @battery.command()
 @click.argument('PARTNUMBER', required=False)
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 def model(ctx, box, partnumber):
     """Set (or read) battery model (18650, nimh, lead-acid, etc.)"""
     resolved_box = resolve_box_locked(ctx, box, 'battery')
@@ -393,7 +393,7 @@ def model(ctx, box, partnumber):
 
 @battery.command()
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 def models(ctx, box):
     """List battery models saved on the instrument"""
     resolved_box = resolve_box_locked(ctx, box, 'battery')
@@ -404,7 +404,7 @@ def models(ctx, box):
 @battery.command(name='model-create')
 @click.argument('SLOT', type=click.IntRange(1, 9))
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option('--csv', 'csv_path', required=True,
               type=click.Path(exists=True, dir_okay=False),
               help='CSV curve file: voc,resistance columns (header optional), '
@@ -441,8 +441,8 @@ def model_create(ctx, box, slot, csv_path, force):
         if any(entry.get('slot') == slot for entry in catalog.get('models', [])):
             raise LagerError(
                 f"Battery model slot {slot} already holds a model.",
-                cause="Saving would silently overwrite it, and the instrument "
-                      "has no way to delete a model — only overwrite it.",
+                cause="A save overwrites it silently, and the instrument cannot "
+                      "delete a model — it can only overwrite one.",
                 fixes=[
                     f"lager battery {netname} model-create {slot} --csv {csv_path} --force",
                     f"lager battery {netname} models   (find a free slot)",
@@ -458,7 +458,7 @@ def model_create(ctx, box, slot, csv_path, force):
 @battery.command(name='model-export')
 @click.argument('SLOT', type=click.IntRange(1, 9))
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option('--csv', 'csv_path', required=True, type=click.Path(dir_okay=False),
               help='Output CSV file to write')
 def model_export(ctx, box, slot, csv_path):
@@ -477,7 +477,7 @@ def model_export(ctx, box, slot, csv_path):
     if not points:
         raise LagerError(
             f"The box returned no curve points for battery model slot {slot}.",
-            cause="Its Lager software may predate the model-export command.",
+            cause="Its Lager software probably predates the model-export command.",
             fixes=[f"lager update --box {resolved_box}"],
         )
     write_model_csv(csv_path, points)
@@ -487,7 +487,7 @@ def model_export(ctx, box, slot, csv_path):
 
 @battery.command()
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 def state(ctx, box):
     """Get battery state (comprehensive status)"""
     resolved_box = resolve_box_locked(ctx, box, 'battery')
@@ -497,7 +497,7 @@ def state(ctx, box):
 
 @battery.command()
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option('--yes', is_flag=True, help='Confirm the action without prompting.')
 def enable(ctx, box, yes):
     """Enable battery simulator output"""
@@ -515,7 +515,7 @@ def enable(ctx, box, yes):
 
 @battery.command()
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option('--yes', is_flag=True, help='Confirm the action without prompting.')
 def disable(ctx, box, yes):
     """Disable battery simulator output"""
@@ -535,7 +535,7 @@ def disable(ctx, box, yes):
 
 @battery.command(name='clear')
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 def clear_both(ctx, box):
     """Clear protection trip conditions (OVP/OCP)"""
     resolved_box = resolve_box_locked(ctx, box, 'battery')
@@ -545,7 +545,7 @@ def clear_both(ctx, box):
 
 @battery.command(name='clear-ovp')
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 def clear_ovp(ctx, box):
     """Clear OVP trip condition"""
     resolved_box = resolve_box_locked(ctx, box, 'battery')
@@ -555,7 +555,7 @@ def clear_ovp(ctx, box):
 
 @battery.command(name='clear-ocp')
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 def clear_ocp(ctx, box):
     """Clear OCP trip condition"""
     resolved_box = resolve_box_locked(ctx, box, 'battery')
@@ -565,7 +565,7 @@ def clear_ocp(ctx, box):
 
 @battery.command()
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 def tui(ctx, box):
     """Launch interactive battery control TUI"""
     resolved_box = resolve_box_locked(ctx, box, 'battery')

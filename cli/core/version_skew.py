@@ -83,7 +83,7 @@ def check_and_warn(box_ip: str, box_name: str | None = None) -> None:
                 f'\n[warning] Box {display} does not report a version on its '
                 f':9000 API — it is likely running an image too old for this '
                 f'CLI.\n          Some commands may fail. To update the box:\n'
-                f'          lager box update --box {display}\n',
+                f'          lager update --box {display}\n',
                 file=sys.stderr,
             )
             return
@@ -118,7 +118,7 @@ def check_and_warn(box_ip: str, box_name: str | None = None) -> None:
         msg = (
             f'\n[warning] Box {display} is on lager {box_version}; CLI is on {cli_version}.\n'
             f'          Some commands may behave unexpectedly. To update the box:\n'
-            f'          lager box update --box {display}\n'
+            f'          lager update --box {display}\n'
         )
         print(msg, file=sys.stderr)
 

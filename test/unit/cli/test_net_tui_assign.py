@@ -611,7 +611,7 @@ class TestSavedNetFlowsOffloadBoxCalls:
             with patch.object(tui, "_save_nets_batch", return_value=True) as sb:
                 async with app.run_test(size=(100, 40)) as pilot:
                     await pilot.pause()
-                    screen = tui.AddScreen([net], False)
+                    screen = tui.AddScreen([net])
                     app.push_screen(screen)
                     await pilot.pause()
                     screen._batch_save_and_close(app, [net])
@@ -633,7 +633,7 @@ class TestSavedNetFlowsOffloadBoxCalls:
             ):
                 async with app.run_test(size=(100, 40)) as pilot:
                     await pilot.pause()
-                    screen = tui.AddScreen([net], False)
+                    screen = tui.AddScreen([net])
                     app.push_screen(screen)
                     await pilot.pause()
                     screen._batch_save_and_close(app, [net])

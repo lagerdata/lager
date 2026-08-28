@@ -1,0 +1,105 @@
+---
+title: Async Client
+description: AsyncLagerBox, and exactly where it differs from the blocking client
+---
+
+`AsyncLagerBox` is the tokio/reqwest client. It mirrors `LagerBox` method for method,
+and both run the same wire layer, so the request bodies and the parsing cannot drift
+between them.
+
+## Enabling
+
+```toml
+[dev-dependencies]
+lager = { package = "lager-net", version = "0.4", default-features = false, features = ["async"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+```
+
+`blocking` is the default feature, so turning defaults off keeps `ureq` out of the
+dependency tree if you only want the async client. Enabling both is fine — they
+coexist.
+
+## Using it
+
+```rust
+use lager::AsyncLagerBox;
+
+#[tokio::test]
+async fn rail_comes_up() -> lager::Result<()> {
+    let lager = AsyncLagerBox::from_env()?;      // not async
+    let supply = lager.supply("supply1");        // not async
+
+    supply.set_voltage(3.3).await?;
+    supply.enable().await?;
+    let state = supply.state().await?;
+    assert_eq!(state.enabled, Some(true));
+
+    supply.disable().await
+}
+```
+
+Constructors and handle accessors are ordinary functions; only the calls that do I/O
+are `async`. Handle types are prefixed: `AsyncSupply`, `AsyncGpio`, `AsyncDebugNet`
+and so on.
+
+## What the async client does not have
+
+| Feature | Blocking | Async |
+|---|---|---|
+| Every net type, every box query, safety limits | Yes | Yes |
+| Lock, heartbeat, unlock | Yes | Yes |
+| `lock_guard()` and `BoxLockGuard` | Yes | **No** |
+| `uart()` sessions | Yes | **No** |
+| `debug.rtt()` and `RttStream` | Yes | **No** |
+| `debug.rtt_interactive()` | Yes | **No** |
+
+The `uart` and `rtt` features both imply `blocking`, so enabling them pulls in the
+blocking client whether or not you asked for it. `Scope` is shared: it is a stub on
+both, with sync methods.
+
+<Note>
+  There is no RAII lock guard on the async client. Take and release the lock
+  explicitly, and make sure the release runs on the error path too.
+</Note>
+
+## Running both
+
+Nothing stops you using the async client for the parallel parts of a suite and the
+blocking client for a UART or RTT session:
+
+```rust
+let lager = AsyncLagerBox::from_env()?;         // fan out reads
+let blocking = lager::LagerBox::from_env()?;    // for the UART session
+let mut uart = blocking.uart("uart1")?;
+```
+
+## Concurrency
+
+The box serializes access per physical instrument. Many concurrent requests to one
+instrument do not interleave its I/O, because the requests queue on the box.
+Concurrency buys you real parallelism only across *different* instruments.
+
+```rust
+// Three different instruments: genuinely parallel.
+// Bind the handles first -- a handle created inline is a temporary, and the
+// future borrows it, so `try_join!` on inline constructors will not borrow-check.
+let adc = lager.adc("adc1");
+let tc = lager.thermocouple("tc1");
+let meter = lager.watt_meter("watt1");
+
+let (v, temp, power) = tokio::try_join!(
+    adc.read(),
+    tc.read(),
+    meter.power(0.5),
+)?;
+```
+
+## Notes
+
+- `reqwest` is pulled in with `default-features = false`, so there is no TLS stack.
+  Box traffic is plain HTTP on the local network or over Tailscale.
+- `tokio` is required only with the `time` feature for the async client itself. The
+  `macros` and `rt-multi-thread` features in the snippet above are for writing the
+  tests.
+- Gateway authentication works identically on both clients, including the automatic
+  token refresh.

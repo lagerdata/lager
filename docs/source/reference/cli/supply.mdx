@@ -29,7 +29,7 @@ DUT_POWER     power-supply   Keysight_E36312A  1     USB0::0x2A8D::0x1602::...
 
 | Option | Description |
 |--------|-------------|
-| `--box TEXT` | Lagerbox name or IP address |
+| `--box TEXT` | Lager Box name or IP address |
 | `--help` | Show help message and exit |
 
 ## Commands
@@ -79,7 +79,7 @@ lager supply NET_NAME voltage [VALUE] [OPTIONS]
 | `--ovp FLOAT` | Volts | Over-voltage protection threshold (must be >= voltage) |
 | `--ocp FLOAT` | Amps | Over-current protection threshold |
 | `--yes` | Flag | Apply without confirmation prompt |
-| `--box TEXT` | String | Lagerbox name or IP |
+| `--box TEXT` | String | Lager Box name or IP |
 
 When VALUE is provided, the CLI prompts for confirmation unless `--yes` is passed:
 
@@ -121,7 +121,7 @@ lager supply NET_NAME current [VALUE] [OPTIONS]
 | `--ovp FLOAT` | Volts | Over-voltage protection threshold |
 | `--ocp FLOAT` | Amps | Over-current protection threshold (must be >= current) |
 | `--yes` | Flag | Apply without confirmation prompt |
-| `--box TEXT` | String | Lagerbox name or IP |
+| `--box TEXT` | String | Lager Box name or IP |
 
 When VALUE is provided, the CLI prompts for confirmation unless `--yes` is passed:
 
@@ -155,7 +155,7 @@ lager supply NET_NAME enable [OPTIONS]
 | Option | Description |
 |--------|-------------|
 | `--yes` | Enable without confirmation prompt |
-| `--box TEXT` | Lagerbox name or IP |
+| `--box TEXT` | Lager Box name or IP |
 
 ```
 Enable Net? [y/N]:
@@ -174,7 +174,7 @@ lager supply NET_NAME disable [OPTIONS]
 | Option | Description |
 |--------|-------------|
 | `--yes` | Disable without confirmation prompt |
-| `--box TEXT` | Lagerbox name or IP |
+| `--box TEXT` | Lager Box name or IP |
 
 ```
 Disable Net? [y/N]:
@@ -209,7 +209,7 @@ Fields:
 - **Mode** - CV (constant voltage) or CC (constant current)
 - **Voltage/Current/Power** - Live measurements (4 decimal places)
 - **OCP/OVP Limit** - Protection thresholds
-- **OCP/OVP Tripped** - Whether protection has triggered (color-coded: green=NO, red=YES)
+- **OCP/OVP Tripped** - Whether protection tripped (color-coded: green=NO, red=YES)
 
 ### `clear-ovp`
 
@@ -279,7 +279,7 @@ Requires the `textual` Python package (`pip install textual`).
 | `r` | Refresh display |
 | Up/Down arrows | Navigate command history |
 
-**Concurrent access:** While the TUI is running, other `lager supply` CLI commands (e.g., `lager supply PSU voltage 3.3 --yes`) will automatically route through the TUI's WebSocket connection on port 9000, sharing the USB instrument connection. If the TUI is not running, commands use direct USB access.
+**Concurrent access:** While the TUI runs, other `lager supply` CLI commands (e.g., `lager supply PSU voltage 3.3 --yes`) will route through the TUI's WebSocket connection on port 9000. They share the one USB connection to the instrument. If the TUI is not open, commands use direct USB access.
 
 ## OVP / OCP Protection
 
@@ -307,7 +307,7 @@ lager supply PSU current 1.0 --ocp 1.2 --yes
 3. Clear the fault with `clear-ovp` or `clear-ocp`
 4. Re-enable the output with `enable`
 
-**Automatic OVP management (Rigol):** When setting a new voltage that would exceed the current OVP limit, the driver temporarily raises OVP by 10% headroom, sets the new voltage, then restores the desired OVP. This prevents false trips during voltage changes.
+**Automatic OVP management (Rigol):** If a new voltage will exceed the current OVP limit, the driver raises OVP by 10% headroom first. It then sets the new voltage and restores the desired OVP limit. This prevents false trips during voltage changes.
 
 ## Supported Hardware
 

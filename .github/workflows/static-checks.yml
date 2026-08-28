@@ -235,6 +235,65 @@ jobs:
         run: python tools/check_control_flow_handlers.py cli/commands
         shell: bash
 
+      # Imports the CLI and compares it against docs/: dangling nav entries,
+      # unpublished pages, releases with no notes, commands with no page (or a
+      # page for a hidden command), and options tables naming flags that no
+      # click param declares. `lager update` documented --all for eighteen
+      # releases after it was deleted, because nothing checked. A docs bug
+      # fails silently -- the reader just runs a command that does not work.
+      - name: Docs match the shipping CLI
+        if: always()
+        run: python tools/check_docs.py
+        shell: bash
+
+      # The two checks above ask whether the docs are CORRECT. This asks whether
+      # they are CONSISTENT: one spelling per term, American spelling, approved
+      # modals, and a sentence-length cap. The rules are docs/STYLE.md, derived
+      # from ASD-STE100.
+      #
+      # The corpus had two spellings of the product's own name -- `Lager Box`
+      # 329 times and `Lagerbox` 119 -- on the same pages. A reader cannot tell
+      # whether those are one thing, and neither can a translator or an agent.
+      # No review catches that across 118 pages and 2,600 CLI strings.
+      #
+      # GATING as of the final conversion batch. tools/ste_baseline.json is
+      # empty: every published page, every root prose file and every message
+      # the CLI prints is at zero on all seven gated rules, so any violation
+      # this reports is one the change under review introduced.
+      #
+      # The flag came off only after the checker stopped lying. Three rules
+      # could not see their own subject matter: the tense pattern admitted no
+      # adverb but `not`, so `is currently outputting` read clean; inline code
+      # was collapsed per source line, so a span wrapped across a newline had
+      # its literal words counted as prose; and LagerError/BoxError were absent
+      # from the emitter set, hiding 11 banned modals across six files. A
+      # required context that cannot see three of its rules is worse than no
+      # context, because it converts "nobody checked" into "the check passed".
+      - name: Prose follows docs/STYLE.md
+        if: always()
+        run: python tools/check_ste.py
+        shell: bash
+
+      # The docs check above compares docs to the CLI; this catches the other
+      # half -- links that point nowhere. Three cross-references shipped missing
+      # the `/source` prefix that every published URL carries, each found by
+      # hand. Anchor checking is on because a heading-slug link is the variant
+      # nobody verifies by eye.
+      #
+      # Scoped to source/ deliberately: docs/reference/*.md are working notes
+      # that are not in docs.json, are therefore never published, and carry ~40
+      # stale relative paths. Gating on them would fail for links no reader can
+      # follow.
+      # Pinned, for the same reason shellcheck and actionlint above are: an
+      # unpinned tool in a required gate can turn red with no repo change. Node
+      # comes from the runner image; only the checker is pinned.
+      - name: Docs have no broken links
+        if: always()
+        run: |
+          cd docs
+          npx --yes mint@4.2.827 broken-links --files 'source/**/*.mdx' --check-anchors
+        shell: bash
+
       # Errors only: undefined names, syntax errors, f-string and assert
       # mistakes. Not style. The full default ruleset reports ~6300 findings on
       # this tree, which would be noise, not a gate. Vendored trees are

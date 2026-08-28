@@ -4,22 +4,26 @@ description: Write your entire hardware-in-the-loop test suite in Rust and run i
 ---
 
 The Lager Rust crate gives embedded developers first-class access to Lager
-nets, so a hardware-in-the-loop (HIL) test suite can live next to your
-firmware and run with `cargo test` — no Python required.
+nets. A hardware-in-the-loop (HIL) test suite can live next to your firmware
+and run with `cargo test`. No Python is required.
 
-The crate is a pure HTTP/JSON client of the Lager Box API: power supplies,
-battery simulators, e-loads, solar simulators, GPIO, ADC, DAC,
-thermocouples, watt meters, energy analyzers, SPI, I2C, USB hub ports,
-robot arms, webcams, routers, and streaming UART — plus the box-level
-capabilities (its own BLE adapter, WiFi interface, and BluFi ESP32
-provisioning). Debug-probe nets (flash / erase / reset / memory reads /
-RTT) talk to the box's debug service.
+The crate is a pure HTTP/JSON client of the Lager Box API. It covers:
+
+- power supplies, battery simulators, e-loads and solar simulators
+- GPIO, ADC, DAC, thermocouples, watt meters and energy analyzers
+- SPI, I2C, USB hub ports, robot arms, webcams and routers
+- streaming UART
+- the box-level capabilities: its own BLE adapter, WiFi interface, and BluFi
+  ESP32 provisioning
+
+Debug-probe nets (flash / erase / reset / memory reads / RTT) talk to the
+box's debug service.
 
 <Info>
 The package publishes on crates.io as
-[**`lager-net`**](https://crates.io/crates/lager-net) (the bare `lager`
-name is taken by an unrelated crate), but the library target is named
-`lager`, so your code reads `use lager::LagerBox;`. Full API reference
+[**`lager-net`**](https://crates.io/crates/lager-net), because the bare
+`lager` name is taken by an unrelated crate. The library target is still
+named `lager`, so your code reads `use lager::LagerBox;`. Full API reference
 lives on [docs.rs/lager-net](https://docs.rs/lager-net).
 </Info>
 
@@ -30,8 +34,10 @@ Add the crate to your firmware project's dev-dependencies:
 ```toml
 # Cargo.toml
 [dev-dependencies]
-lager = { package = "lager-net", version = "0.2" }
+lager = { package = "lager-net", version = "0.4" }
 ```
+
+The crate requires Rust **1.75** or newer and builds on edition 2021.
 
 Write a test:
 
@@ -72,12 +78,13 @@ LAGER_BOX_HOST=192.168.1.42 cargo test
 | `blocking` | yes | `LagerBox` on [`ureq`](https://crates.io/crates/ureq) — tiny dependency tree, no tokio |
 | `async` | no | `AsyncLagerBox` on [`reqwest`](https://crates.io/crates/reqwest)/tokio; same methods, `.await`ed |
 | `uart` | no | `Uart` streaming sessions over the box's Socket.IO `/uart` namespace |
+| `rtt` | no | RTT log streaming over the box's Socket.IO namespace, for reading `defmt` output from a running target |
 
 Both clients execute the exact same request builders and response parsers,
 so the two transports cannot drift apart.
 
 ```toml
-lager = { package = "lager-net", version = "0.2", features = ["async"] }
+lager = { package = "lager-net", version = "0.4", features = ["async"] }
 ```
 
 ## Errors
@@ -97,7 +104,7 @@ Everything returns `lager::Result<T>` with a single `Error` enum:
 
 - A Lager Box with software new enough to serve `POST /net/command` —
   check `lager.status()?.capabilities.net_command`, or run
-  `lager box update`.
+  `lager update`.
 - Rust 1.75+.
 
 <Note>
@@ -108,9 +115,55 @@ endpoint sketch is tracked in the crate's
 [`MISSING_ENDPOINTS.md`](https://github.com/lagerdata/lager-rs/blob/main/MISSING_ENDPOINTS.md).
 </Note>
 
-## Next steps
+## Reference
 
-- **[Net types](/source/reference/rust/net-types)** — every handle the crate exposes
-- **[Testing guide](/source/reference/rust/testing)** — structuring a `cargo test` HIL suite, parallelism, CI
-- **[Debug probes & UART](/source/reference/rust/debug-and-uart)** — flashing, RTT, and streaming serial
-- **[Authentication](/source/reference/rust/auth)** — boxes behind an authenticating gateway
+### Getting started
+
+- [Client and Box](/source/reference/rust/client) — constructing `LagerBox`, discovery, box locks, safety limits
+- [Net Types](/source/reference/rust/net-types) — the index of every handle
+- [Errors](/source/reference/rust/errors) — every `Error` variant and when it fires
+
+### Firmware and debug
+
+- [Debug Probes](/source/reference/rust/debug) — flash, erase, reset, read memory
+- [RTT](/source/reference/rust/rtt) — firmware logs, and driving an RTT console
+- [USB DFU](/source/reference/rust/dfu) — flashing without a debug probe
+
+### Power and simulation
+
+- [Power Supply](/source/reference/rust/supply)
+- [Battery Simulation](/source/reference/rust/battery)
+- [Solar Simulation](/source/reference/rust/solar)
+- [Electronic Load](/source/reference/rust/eload)
+- [Watt Meter](/source/reference/rust/watt)
+- [Energy Analyzer](/source/reference/rust/energy)
+
+### Measurement
+
+- [Oscilloscope](/source/reference/rust/scope) — a documented stub today
+- [ADC](/source/reference/rust/adc)
+- [Thermocouple](/source/reference/rust/thermocouple)
+
+### I/O and communication
+
+- [GPIO](/source/reference/rust/gpio)
+- [DAC](/source/reference/rust/dac)
+- [I2C](/source/reference/rust/i2c)
+- [SPI](/source/reference/rust/spi)
+- [USB Hub Ports](/source/reference/rust/usb)
+- [UART](/source/reference/rust/uart)
+- [BLE](/source/reference/rust/ble)
+- [WiFi](/source/reference/rust/wifi)
+- [BluFi](/source/reference/rust/blufi)
+- [Router](/source/reference/rust/router)
+
+### Utilities
+
+- [Robot Arm](/source/reference/rust/arm)
+- [Webcam](/source/reference/rust/webcam)
+
+### Guides
+
+- [Testing with cargo test](/source/reference/rust/testing) — structuring a suite, parallelism, CI
+- [Authentication](/source/reference/rust/auth) — boxes behind an authenticating gateway
+- [Async Client](/source/reference/rust/async) — `AsyncLagerBox`, and where it differs

@@ -6,7 +6,7 @@ description: Manage a local Docker-based development environment for your projec
 `lager devenv` manages a reproducible, Docker-based development environment for
 a project. It records the image, mount directory, shell, saved commands, bind
 mounts, and environment variables in the `DEVENV` section of your project's
-`.lager` config file, so every engineer (and your CI) builds and tests in the
+`.lager` config file. Every engineer, and your CI, then builds and tests in the
 same container.
 
 The environment is consumed by [`lager exec`](/source/reference/cli/exec)
@@ -97,15 +97,15 @@ lager devenv terminal
 | `--info` | | Print the resolved `docker` command and config, then exit without launching |
 
 CLI flags take precedence over the matching keys stored in the `DEVENV`
-config; config-defined `ports`, `volumes`, and `environment` are applied
-first, then anything passed on the command line is appended.
+config. The CLI applies the config-defined `ports`, `volumes`, and
+`environment` first, then appends anything you pass on the command line.
 
-`terminal` also wires up SSH for you automatically: it forwards your
-`SSH_AUTH_SOCK` agent socket and mounts `~/.ssh/id_ed25519` and
-`~/.ssh/known_hosts` (read-only) when they exist, and it mounts your global
-`.lager` config into the container so nested `lager` calls are authenticated.
+`terminal` also wires up SSH for you automatically. It forwards your
+`SSH_AUTH_SOCK` agent socket, and it mounts `~/.ssh/id_ed25519` and
+`~/.ssh/known_hosts` (read-only) when they exist. It also mounts your global
+`.lager` config into the container, so nested `lager` calls are authenticated.
 
-Use `--info` to debug what would run without launching anything:
+Use `--info` to see what runs, without launching anything:
 
 ```bash
 lager devenv terminal --info
@@ -166,9 +166,13 @@ lager devenv commands          # list saved commands
 lager devenv delete build      # remove one
 ```
 
-Command names may contain only letters, numbers, dashes, and underscores. If
-you omit the command string, `add` prompts for it. By default `add` warns when
-overwriting an existing command; pass `--no-warn` to suppress that.
+Command names can contain only letters, numbers, dashes, and underscores. If
+you omit the command string, `add` prompts for it.
+
+| Subcommand | Option | Description |
+| --- | --- | --- |
+| `add` | `--warn` / `--no-warn` | Warn when overwriting an existing command (default: `--warn`) |
+| `delete` | `--devenv NAME` | Delete the command from a named devenv rather than the current one |
 
 ---
 
@@ -186,7 +190,7 @@ lager devenv mount remove /host/cache:/root/.cache
 ```
 
 Specs use Docker `-v` form: `HOST:CONTAINER[:ro]` for a bind-mount or
-`NAME:CONTAINER` for a named volume. For portability across machines, specs may
+`NAME:CONTAINER` for a named volume. For portability across machines, specs can
 use `~`, environment variables, and `${PROJECT_ROOT}` (which expands to your
 project's `.lager` directory).
 
@@ -215,8 +219,8 @@ lager devenv env unset DEBUG
 | `lager devenv terminal` | Open an interactive shell in that container |
 | [`lager exec`](/source/reference/cli/exec) | Run a one-off or saved command in that container |
 
-All three read the same `DEVENV` section, so a command saved with
-`lager devenv add` is runnable with `lager exec`, and a mount added with
+All three read the same `DEVENV` section. A command saved with
+`lager devenv add` runs under `lager exec`, and a mount added with
 `lager devenv mount add` applies to both `terminal` and `exec`.
 
 ## Notes

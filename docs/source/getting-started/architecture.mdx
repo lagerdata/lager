@@ -3,7 +3,7 @@ title: Architecture
 description: Lager platform architecture overview
 ---
 
-An overview of how the Lager platform components fit together -- from CLI commands on your laptop to instruments connected to your DUT.
+An overview of how the Lager platform components fit together. It runs from the CLI commands on your laptop to the instruments wired to your DUT.
 
 ## High-Level Overview
 
@@ -47,8 +47,8 @@ USER COMPUTER                                  LAGERBOX (x86-64, Ubuntu 22.04+)
 ```
 
 All three entry points -- developer CLI commands, developer custom scripts, and CI runners --
-share the same execution infrastructure. They all reach the Lagerbox through Tailscale VPN
-and hit Flask on port 5000, which executes the uploaded script or impl module inside the
+share the same execution infrastructure. They all reach the Lager Box through Tailscale VPN
+and call Flask on port 5000. Flask executes the uploaded script or impl module inside the
 Docker container with full access to `lager.*` hardware libraries.
 
 ---
@@ -58,8 +58,8 @@ Docker container with full access to `lager.*` hardware libraries.
 | Term | Definition |
 |------|------------|
 | **CLI** | The `lager-cli` Python package (installed via `pip install lager-cli`). A Click-based command-line tool that runs on the developer's laptop. |
-| **Tailscale VPN** | A WireGuard-based mesh VPN that creates an encrypted tunnel between the developer's machine and the Lagerbox. |
-| **Lagerbox** | Any x86-64 machine running Ubuntu 22.04 or newer, physically co-located with the test instruments. Runs a Docker container hosting the Flask/WebSocket server and hardware drivers. |
+| **Tailscale VPN** | A WireGuard-based mesh VPN that creates an encrypted tunnel between the developer's machine and the Lager Box. |
+| **Lager Box** | Any x86-64 machine running Ubuntu 22.04 or newer, physically co-located with the test instruments. Runs a Docker container hosting the Flask/WebSocket server and hardware drivers. |
 | **Net** | A logical name (e.g., `psu1`, `uart0`) that maps to a specific instrument + channel + address. Stored in `/etc/lager/saved_nets.json` on the box. |
 | **DUT** | Device Under Test -- the embedded board or product being tested. |
 | **Instrument** | A piece of test equipment (power supply, oscilloscope, LabJack, debug probe, etc.) connected to the box via USB, serial, or LAN. |
@@ -67,7 +67,7 @@ Docker container with full access to `lager.*` hardware libraries.
 
 ---
 
-## Lagerbox Internals
+## Lager Box Internals
 
 ```
 LAGERBOX HOST (x86-64, Ubuntu 22.04+)
@@ -137,21 +137,34 @@ LAGERBOX HOST (x86-64, Ubuntu 22.04+)
 | 8086+ | HTTP | Yes (if webcams present) | Webcam MJPEG streaming (one port per camera) |
 | 22 | SSH | Yes | Direct SSH access for deployment and debugging |
 
+The "Exposed" column describes a box that publishes its ports, which is the default. A box
+started with `start_box.sh --no-publish` (or `LAGER_NO_PUBLISH=1`) publishes none of them.
+Every service still listens inside the container. The `lagernet` Docker network still
+reaches it, and a reverse proxy owns the host ports. No `Yes` row answers at
+`<box-ip>:<port>`.
+
+Port 22 is the exception. SSH is the host's own daemon rather than a published container
+port, so `--no-publish` does not affect it.
+
 ---
 
 ## Optional Control Plane Integration
 
-Lager boxes publish SSH keys from a key directory, `/etc/lager/authorized_keys.d/`, so an external control plane can provision access without a human typing SSH commands. Dropping a `<name>.pub` file there gets the key into the box account's `~/.ssh/authorized_keys` within about five seconds. Because `/etc/lager` is bind-mounted into the runtime container, a control plane can write that file from inside the container — which is how it bootstraps before it has any SSH access to the box at all.
+A Lager Box publishes SSH keys from a key directory, `/etc/lager/authorized_keys.d/`. An external control plane can therefore provision access with no human typing SSH commands. Put a `<name>.pub` file there, and the key reaches the box account's `~/.ssh/authorized_keys` in about five seconds. The box bind-mounts `/etc/lager` into the runtime container, so a control plane can write that file from inside the container. That is how it bootstraps before it has any SSH access to the box.
 
-`start_box.sh` owns only the region of `authorized_keys` between its `# BEGIN LAGER MANAGED KEYS` and `# END LAGER MANAGED KEYS` markers, and rebuilds that region from the key directory on every pass. Two consequences worth knowing:
+`start_box.sh` owns only the region of `authorized_keys` between its `# BEGIN LAGER MANAGED KEYS` and `# END LAGER MANAGED KEYS` markers. It rebuilds that region from the key directory on every pass. Two consequences follow:
 
 - **Deleting a `.pub` revokes the key.** Nothing else does; editing `authorized_keys` by hand inside the marked region is undone on the next pass.
-- **Keys installed by other means are untouched.** `ssh-copy-id` and cloud-init append outside the marked region, and are preserved verbatim. Any other system that manages this file must claim its own distinct marker pair — two managers sharing one pair would each rebuild the other's region on every pass.
-- **Preserved is not the same as durable.** `start_box.sh` preserves a loose line against *its own* rebuild; it cannot preserve it against someone else's. A second key manager that rebuilds `authorized_keys` from its own source, keeping only its own marked region, drops every loose line — and `start_box.sh` then re-creates its region from the key directory alone, so a key that was never registered there does not come back. For that reason `lager ssh-setup`, `lager update`, and `lager install` write their public key into the key directory as well as appending it, under `lager-box-<user>-<host>.pub`. Any tooling that installs a key it expects to survive should do the same.
+- **Keys installed by other means stay untouched.** `ssh-copy-id` and cloud-init append outside the marked region, and `start_box.sh` preserves those lines verbatim. Any other system that manages this file must claim its own distinct marker pair. Two managers that share one pair each rebuild the other's region on every pass.
+- **Preserved is not the same as durable.** `start_box.sh` preserves a loose line against *its own* rebuild. It cannot preserve that line against someone else's.
+
+  A second key manager rebuilds `authorized_keys` from its own source. It keeps only its own marked region, so it drops every loose line. `start_box.sh` then re-creates its region from the key directory alone. A key that never reached that directory does not come back.
+
+  For this reason `lager ssh-setup`, `lager update`, and `lager install` do both. They append the public key, and they write it into the key directory as `lager-box-<user>-<host>.pub`. Any tool that installs a key it expects to survive must do the same.
 
 Lager itself does not require or run a control plane -- this is a hook, not a dependency. Leaving the key directory absent or empty simply means no keys are published from it.
 
-Commercial control planes that build on this hook — for fleets that need org/RBAC/SSO, audit logging, and scheduling on top of Lager — are listed on the [Professional Services directory](https://lagerdata.com/professional-services).
+The [Professional Services directory](https://lagerdata.com/professional-services) lists the commercial control planes that build on this hook. They add org, RBAC and SSO, audit logging, and scheduling on top of Lager.
 
 ---
 
@@ -255,13 +268,13 @@ The `lager python` command uploads a user-written Python script to the box for e
 $ lager python my_test.py --box mybox --env VOLTAGE=3.3 --timeout 300
 ```
 
-The script runs inside the Docker container with full access to `lager.*` hardware libraries, and output is streamed back in real time.
+The script runs inside the Docker container with full access to the `lager.*` hardware libraries. The box streams its output back in real time.
 
 ---
 
 ## Physical Wiring
 
-How instruments physically connect between the Lagerbox and the DUT:
+How instruments physically connect between the Lager Box and the DUT:
 
 ```
                     LAGERBOX
@@ -312,7 +325,7 @@ How instruments physically connect between the Lagerbox and the DUT:
 
 ## GitHub Actions CI Integration
 
-A CI runner is an ephemeral GitHub Actions VM that joins Tailscale and runs `lager` commands exactly like a developer would -- no special CI-specific infrastructure is needed.
+A CI runner is an ephemeral GitHub Actions VM. It joins Tailscale and runs `lager` commands exactly like a developer. Lager needs no CI-specific infrastructure.
 
 ```
 GITHUB CLOUD                         TAILSCALE NETWORK           HARDWARE BENCH
@@ -349,7 +362,7 @@ GITHUB CLOUD                         TAILSCALE NETWORK           HARDWARE BENCH
 | Secret | Purpose |
 |--------|---------|
 | `TAILSCALE_AUTHKEY` | Ephemeral auth key so the runner can join the VPN |
-| `LAGER_BOX_IP` | Tailscale IP of the Lagerbox (e.g., `100.x.y.z`) |
+| `LAGER_BOX_IP` | Tailscale IP of the Lager Box (e.g., `100.x.y.z`) |
 
 ### Workflow Example
 

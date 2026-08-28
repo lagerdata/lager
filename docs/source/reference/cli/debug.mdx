@@ -15,7 +15,7 @@ lager debug [OPTIONS] [NET_NAME] COMMAND [ARGS]...
 
 | Option | Description |
 |--------|-------------|
-| `--box TEXT` | Lagerbox name or IP address |
+| `--box TEXT` | Lager Box name or IP address |
 | `--help` | Show help message and exit |
 
 ## Commands
@@ -42,7 +42,7 @@ lager debug [NET_NAME] gdbserver [OPTIONS]
 ```
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 - `--force / --no-force` - Force new connection (default: reuse existing)
 - `--halt / --no-halt` - Halt device when connecting (default: no-halt)
 - `--speed KHZ` - SWD/JTAG speed in kHz (e.g., 100, 4000) or "adaptive"
@@ -53,7 +53,7 @@ lager debug [NET_NAME] gdbserver [OPTIONS]
 - `-i, --interactive` - Bi-directional RTT: forward stdin to the target's RTT down-channel while streaming the up-channel to stdout (requires `--rtt` or `--rtt-reset`)
 - `--rtt-channel N` - RTT channel to stream, in both directions (default: `0`)
 - `--reset` - Reset device after starting GDB server
-- `--gdb-port PORT` - Override the auto-allocated GDB server port. By default the box picks a port based on the probe's slot (2331 for the first probe, 2334 for the second, etc.); pass this only if you need a specific port, and avoid it on multi-probe boxes.
+- `--gdb-port PORT` - Override the auto-allocated GDB server port. By default the box picks a port from the probe's slot (2331 for the first probe, 2334 for the second). Pass this only when you need a specific port. Avoid it on multi-probe boxes.
 - `--rtt-search-addr HEX` - RAM start address for the RTT control block search (hex, e.g., `0x20020000`)
 - `--rtt-search-size HEX` - Size of the RAM region to search for the RTT control block (hex, e.g., `0x4000`)
 - `--rtt-chunk-size HEX` - Read chunk size for the RTT search (hex, e.g., `0x1000`)
@@ -96,7 +96,7 @@ lager debug [NET_NAME] disconnect [OPTIONS]
 ```
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 - `--keep-server` - Keep JLinkGDBServer running for external connections
 
 **Examples:**
@@ -118,7 +118,7 @@ lager debug [NET_NAME] flash [OPTIONS]
 ```
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 - `--hex FILE` - Path to Intel HEX file
 - `--elf FILE` - Path to ELF executable
 - `--bin ADDRESS FILE` - Path to binary file with load address
@@ -163,7 +163,7 @@ lager debug [NET_NAME] reset [OPTIONS]
 ```
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 - `--halt / --no-halt` - Halt after reset (default: no-halt)
 - `--force-reconnect` - Force clean reconnect before reset
 
@@ -189,7 +189,7 @@ lager debug [NET_NAME] erase [OPTIONS]
 ```
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 - `--speed KHZ` - SWD/JTAG speed in kHz (default: 4000)
 - `--yes` - Skip confirmation prompt
 - `--quiet` - Suppress warning messages
@@ -222,7 +222,7 @@ lager debug [NET_NAME] memrd START_ADDR LENGTH [OPTIONS]
 - `LENGTH` - Number of bytes to read
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 - `--json` - Output results in JSON format
 - `--halt / --no-halt` - Halt device during read (default: no-halt). `--no-halt` overrides the auto-halt for DA1469x QSPI XIP
 - `--no-reset` - **DA1469x only.** Skip the reset+halt the box performs before the read. A running DA1469x has SWD disabled, so without the reset the read fails — use this only on a blank/awake part to avoid rebooting it
@@ -259,7 +259,7 @@ lager debug [NET_NAME] status [OPTIONS]
 ```
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 
 **Examples:**
 
@@ -276,8 +276,20 @@ Debug Net Information:
   Device Type: STM32F407VG
   Architecture: ARM Cortex-M4
   Probe: J-Link
-  Connected: True
+  GDB server running: True
+  Target attached: Yes
 ```
+
+`GDB server running` is about the process on the box. `Target attached` is
+about the part: the box reads the target to answer it. The two fields differ,
+so the CLI reports them separately. A gdbserver can outlive the device it
+drove, and a command that flashes or erases cares about the second field, not
+the first.
+
+`Target attached` reads `Unknown` when the box cannot establish an answer.
+Two cases give that result: a box older than this field, or a probe that
+cannot run because a debugger already holds the session. `Unknown` does not
+mean the target is absent.
 
 ### `health`
 
@@ -288,7 +300,7 @@ lager debug [NET_NAME] health [OPTIONS]
 ```
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 - `--verbose` - Show detailed health information
 
 **Examples:**
@@ -347,7 +359,7 @@ lager debug gdbserver --box my-lager-box --rtt 2>/dev/null | defmt-print -e firm
 
 ### Decoding defmt logs
 
-Most Rust (and much C) firmware logs via [defmt](https://defmt.ferrous-systems.com/), a compressed binary format. **Raw RTT bytes from defmt firmware are not human-readable** — they must be decoded by `defmt-print` using the *exact* ELF that is flashed on the target.
+Most Rust (and much C) firmware logs via [defmt](https://defmt.ferrous-systems.com/), a compressed binary format. **Raw RTT bytes from defmt firmware are not human-readable.** `defmt-print` must decode them, and it needs the *exact* ELF that is flashed on the target.
 
 ```bash
 # Flash the build under test, then stream + decode a bounded window
@@ -359,7 +371,7 @@ timeout 15 lager debug SWD gdbserver --box my-lager-box --rtt-reset 2>/dev/null 
 Two things to watch:
 
 - **Redirect stderr.** The RTT payload is written to **stdout**; status messages (`JLinkGDBServer started!`, etc.) go to **stderr**. Pipe stdout only — append `2>/dev/null` (or `2>debug.log`) so status lines never corrupt `defmt-print`'s input.
-- **The stream never ends.** `--rtt` runs until the process is killed. In scripts or non-interactive sessions, wrap it in `timeout <seconds>` to capture a fixed window; when the `lager` process is killed the pipe closes and `defmt-print` exits on EOF.
+- **The stream never ends.** `--rtt` runs until the process is killed. In scripts or non-interactive sessions, wrap it in `timeout <seconds>` to capture a fixed window. When you kill the `lager` process, the pipe closes and `defmt-print` exits on EOF.
 
 Install `defmt-print` with `cargo install defmt-print` on the machine where you run the pipe (the same machine that holds the `.elf`).
 
@@ -381,7 +393,7 @@ lager debug SWD gdbserver --box my-lager-box --rtt --interactive 2>/dev/null \
 Your keystrokes are echoed by your terminal, not written to stdout, so they never reach the decoder. Use `--rtt-channel N` to work on a channel other than 0; the same channel is used in both directions.
 
 <Warning>
-The firmware must declare an RTT **down** buffer on the channel you are using. The `defmt-rtt` crate sets up only the up buffer — with no down buffer the target discards what it receives and gives no indication it did so, which reads as a host-side failure but is not one. Firmware using `rtt-target`'s down channel, or a `SEGGER_RTT` down buffer, works as expected.
+The firmware must declare an RTT **down** buffer on the channel you use. The `defmt-rtt` crate sets up only the up buffer. With no down buffer, the target discards what it receives and gives no indication that it did so. That reads as a host-side failure, but it is not one. Firmware using `rtt-target`'s down channel, or a `SEGGER_RTT` down buffer, works as expected.
 </Warning>
 
 `--interactive` expects a terminal. In scripts and other non-interactive contexts, keep using plain `--rtt` with `timeout`.

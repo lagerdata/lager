@@ -3,7 +3,7 @@ title: SSH
 description: SSH into a Lager Box
 ---
 
-Open an interactive SSH session to a Lagerbox, or run a single command on it
+Open an interactive SSH session to a Lager Box, or run a single command on it
 and return.
 
 ## Syntax
@@ -16,7 +16,7 @@ lager ssh [OPTIONS] [COMMAND]...
 
 | Option | Description |
 |--------|-------------|
-| `--box BOX` | Lagerbox name or IP address |
+| `--box BOX` | Lager Box name or IP address |
 
 ## Arguments
 
@@ -38,10 +38,10 @@ lager ssh
 
 ### Run a command on the box
 
-With a `COMMAND`, `lager ssh` behaves like `ssh user@host <command>`: it runs
+With a `COMMAND`, `lager ssh` behaves like `ssh user@host <command>`. It runs
 the command on the box, streams its output back, and exits with the command's
-exit code — no interactive shell. This is handy for scripting and one-off
-checks.
+exit code. There is no interactive shell. This is handy for scripting and
+one-off checks.
 
 ```bash
 # Run a single command and return

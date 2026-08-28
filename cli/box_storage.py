@@ -535,9 +535,9 @@ def _check_box_lock(ip, box_name):
                 _lock_check_unsupported_warned.add(ip)
                 display = box_name or ip
                 click.secho(
-                    f"Warning: Box '{display}' is running an old image without "
+                    f"Warning: Box '{display}' runs an old image without "
                     f"lock support on its :9000 API — lock checks are skipped. "
-                    f"Run: lager box update --box {display}",
+                    f"Run: lager update --box {display}",
                     fg='yellow', err=True,
                 )
         elif resp.status_code == 200:
@@ -740,7 +740,7 @@ def _check_gateway(resp, ip, *, timeout: Optional[float] = 30,
 
     ``timeout``/``stream``/``session`` are forwarded to the retry and must
     mirror the original call; see :func:`_resend_with_auth`. Existing callers
-    pass none of them and keep the previous behaviour.
+    pass none of them and keep the previous behavior.
     """
     from .gateway_auth import handle_gateway_denial
     resp, denied = _resolve_gateway(resp, ip, timeout=timeout,
@@ -849,7 +849,7 @@ def acquire_box_lock(
         except requests.exceptions.RequestException as exc:
             if not quiet:
                 click.secho(
-                    f"Warning: Could not reach box '{display}' to acquire lock: {exc}",
+                    f"Warning: box '{display}' did not answer the lock request: {exc}",
                     fg='yellow', err=True,
                 )
             # Unreachable - fall through with no lock held; the actual command
@@ -946,7 +946,7 @@ def release_box_lock(ip, holder, *, quiet=True):
     except requests.exceptions.RequestException as exc:
         if not quiet:
             click.secho(
-                f"Warning: Could not reach box at {ip} to release lock: {exc}",
+                f"Warning: the box at {ip} did not answer the lock release: {exc}",
                 fg='yellow', err=True,
             )
         return False

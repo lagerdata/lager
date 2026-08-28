@@ -14,7 +14,7 @@ import click
 
 @click.command()
 @click.pass_context
-@click.option('--box', required=False, help='Lagerbox name or IP')
+@click.option('--box', required=False, help='Lager Box name or IP')
 @click.argument('wheel_path')
 def install_wheel(ctx, box, wheel_path):
     """Install a local Python wheel file on a lagerbox"""

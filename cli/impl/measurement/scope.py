@@ -49,11 +49,33 @@ def load_saved_nets():
         return []
 
 
+# The role the CLI validated this net against before dispatching here, set by
+# main() from the command envelope: `lager scope` sends "scope", `lager logic`
+# sends "logic". Both families land in this one script -- its dispatch tables
+# already register every action either sends -- but the net LOOKUP was
+# hardcoded to NetType.Analog, and Net.get matches on type equality, so a logic
+# net could never resolve however it was addressed (#328).
+#
+# Defaults to "scope" so a CLI that predates the role key keeps working: that
+# is the behavior this script had for its whole life.
+#
+# cli/impl/power/enable_disable.py hardcodes NetType.Logic for `lager logic`'s
+# five basic subcommands. The two must agree; test_logic_net_type.py pins them.
+_NET_ROLE = "scope"
+
+
+def _net_type():
+    """NetType for the role this invocation is acting for."""
+    from lager import NetType
+
+    return NetType.from_role(_NET_ROLE)
+
+
 def get_net_info(netname):
     """Get net info by name from saved nets."""
     nets = load_saved_nets()
     for net in nets:
-        if net.get("name") == netname and net.get("role") == "scope":
+        if net.get("name") == netname and net.get("role") == _NET_ROLE:
             return net
     return None
 
@@ -76,9 +98,9 @@ def is_rigol(net_info):
 
 def get_rigol_net(netname):
     """Get a Rigol Net object using Net.get()."""
-    from lager import Net, NetType
+    from lager import Net
 
-    net = Net.get(netname, NetType.Analog)
+    net = Net.get(netname, _net_type())
     return net
 
 
@@ -86,8 +108,8 @@ def get_source_net(source_name):
     """Get source net if specified."""
     if not source_name:
         return None
-    from lager import Net, NetType
-    return Net.get(source_name, NetType.Analog)
+    from lager import Net
+    return Net.get(source_name, _net_type())
 
 
 # ============================================================================
@@ -1040,6 +1062,12 @@ def main():
 
     action = data.get("action", "")
     params = data.get("params", {})
+
+    # Popped, not read: the trigger_* and cursor_* branches below call their
+    # mapper functions as fn(**params), so an extra key is a TypeError.
+    global _NET_ROLE
+    _NET_ROLE = params.pop("role", _NET_ROLE)
+
     netname = params.get("netname")
 
     if not netname:

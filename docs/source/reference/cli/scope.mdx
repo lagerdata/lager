@@ -17,7 +17,7 @@ If `NETNAME` is omitted, lists all available scope nets on the box.
 
 | Option | Description |
 |--------|-------------|
-| `--box BOX` | Lagerbox name or IP address |
+| `--box BOX` | Lager Box name or IP address |
 | `--mcu MCU` | MCU identifier (passed to the backend; use when multiple MCUs share a scope) |
 | `--help` | Show help message and exit |
 
@@ -213,13 +213,13 @@ lager scope ANALOG1 timebase 0.000000001 --box my-lager-box # 1ns/div (minimum)
 
 ## Measure Subcommands (Rigol)
 
-Measure waveform characteristics on Rigol oscilloscopes. PicoScope users should use the streaming capture commands to export waveform data for analysis.
+Measure waveform characteristics on Rigol oscilloscopes. PicoScope users must use the streaming capture commands to export waveform data for analysis.
 
 **Common Options for all measure commands:**
 
 | Option | Description |
 |--------|-------------|
-| `--box BOX` | Lagerbox name or IP |
+| `--box BOX` | Lager Box name or IP |
 | `--mcu MCU` | MCU identifier |
 | `--display` | Display measurement on oscilloscope screen |
 | `--cursor` | Enable measurement cursor on screen |

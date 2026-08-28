@@ -532,7 +532,7 @@ def _flatten_shell_cmd():
       `box/` a no-op instead of an error.
     - **Removing before the move is what makes deletions propagate**, and it
       also stops `mv` from nesting `box/lager` *inside* an existing `lager/`
-      (the classic `mv a b` behaviour when `b` is a directory).
+      (the classic `mv a b` behavior when `b` is a directory).
     - **Only the names `box/` provides are touched.** A blanket wipe of `~/box`
       would take out `.git` and the root-level tracked files — root and `box/`
       both carry a `README.md` (see `_pull_shell_script`). `box/` ships no
@@ -1415,7 +1415,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         try:
             pub_key = open(f'{key_file}.pub').read().strip()
         except OSError as e:
-            click.secho(f'Could not read public key {key_file}.pub: {e}', fg='red')
+            click.secho(f'The CLI did not read the public key {key_file}.pub: {e}', fg='red')
             return False
 
         remote_cmd = (
@@ -1472,7 +1472,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         ok, detail = register_lager_box_key(ssh_host, key_path=key_file)
         if not ok:
             click.secho(
-                f'Warning: SSH key works but could not be registered in '
+                f'Warning: the SSH key works, but it did not register in '
                 f'{BOX_KEYS_DIR} on the box ({detail}); it will not survive a '
                 'rebuild of the box\'s authorized_keys. Run `lager ssh-setup '
                 f'--box {ssh_host.split("@")[-1]}` for the grant a tightly '
@@ -1535,7 +1535,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
                 # exactly as it was: it is what the exit-2 contract and any
                 # script watching this output already key on.
                 click.secho(
-                    '  (could not reach the box to confirm; it may be down '
+                    '  (the box did not answer the probe, so it can be down '
                     'rather than missing the key)', fg='yellow')
             click.echo()
 
@@ -1861,7 +1861,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         if progress:
             progress.finish(success=False)
         log_error('Error: Box directory is not a git repository')
-        click.echo('The box may have been deployed with rsync instead of git clone.')
+        click.echo('A deploy with rsync instead of git clone can cause this.')
         click.echo('Please re-deploy the box using the latest deployment script.')
         ctx.exit(1)
 
@@ -1892,7 +1892,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         if remote_migrated:
             click.echo('  Remote URL:    migrated SSH -> HTTPS')
         elif remote_migrate_failed:
-            click.echo('  Remote URL:    WARNING could not migrate to HTTPS')
+            click.echo('  Remote URL:    WARNING did not migrate to HTTPS')
         click.echo(f'  Layout:        {"box/ subdir (will flatten)" if needs_flatten else "flat"}')
         click.echo(f'  Current:       {facts.get("GIT_LOG", "").strip() or "(unknown)"}')
         _udev_path = facts.get('UDEV_SRC_PATH', '')
@@ -2032,8 +2032,8 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
             click.secho("  - Firewall blocking outbound connections", err=True)
         elif "Permission denied" in stderr or "Authentication failed" in stderr:
             log_error('Error: GitHub authentication failed')
-            click.secho("The box could not authenticate with GitHub.", err=True)
-            click.secho("The remote URL may still be using SSH (git@github.com:...).", err=True)
+            click.secho("The box did not authenticate with GitHub.", err=True)
+            click.secho("The remote URL can still use SSH (git@github.com:...).", err=True)
             click.secho("Fix by switching to HTTPS:", err=True)
             click.secho("  ssh lagerdata@[BOX_NAME] 'cd ~/box && git remote set-url origin https://github.com/lagerdata/lager.git'", err=True)
         elif "not found" in stderr.lower() or "couldn't find remote ref" in stderr.lower():
@@ -2046,13 +2046,13 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
                 # as the box is concerned -- and saying "not a tag or branch"
                 # would send the reader looking in the wrong place.
                 click.secho(
-                    f"'{target_version}' is a commit, and the box could not fetch it.",
+                    f"'{target_version}' is a commit, and the box did not fetch it.",
                     err=True,
                 )
                 click.secho(
                     "The commit must be reachable from a branch or tag on "
                     "lagerdata/lager. A commit that exists only in a pull-request "
-                    "ref, or that has been force-pushed away, cannot be deployed.",
+                    "ref, or that a force-push removed, cannot be deployed.",
                     err=True,
                 )
                 click.secho(
@@ -2066,11 +2066,11 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
                 click.secho("Branches (main, staging, ...): https://github.com/lagerdata/lager/branches", err=True)
         elif "Connection refused" in stderr:
             log_error('Error: Connection to GitHub refused')
-            click.secho("GitHub is not accepting connections.", err=True)
-            click.secho("This may be a temporary issue. Try again later.", err=True)
+            click.secho("GitHub refuses connections.", err=True)
+            click.secho("This can be a temporary issue. Try again later.", err=True)
         elif "timed out" in stderr.lower() or "Connection timed out" in stderr:
             log_error('Error: Connection to GitHub timed out')
-            click.secho("The box could not connect to GitHub within the timeout period.", err=True)
+            click.secho("The box did not connect to GitHub within the timeout period.", err=True)
             click.secho("Check the box's network connectivity.", err=True)
         else:
             log_error('Error: Failed to fetch updates from GitHub')
@@ -2161,7 +2161,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
 
 
         if not git_sync_confirmed:
-            click.secho('Could not determine update state (git rev-list failed).', fg='red', err=True)
+            click.secho('The update state is unknown: git rev-list failed.', fg='red', err=True)
             ctx.exit(2)
 
         # Only worth a look when everything else reads clean — any other
@@ -2430,7 +2430,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
             else:
                 log_status('FAILED', 'red')
                 if verbose:
-                    click.echo('  Could not install udev rules — likely a sudoers permission issue.', err=True)
+                    click.echo('  The udev rules did not install — likely a sudoers permission issue.', err=True)
                     click.echo(f'  Manual fix: ssh {ssh_host}, then:', err=True)
                     click.echo('    sudo groupadd -f lager', err=True)
                     click.echo(f'    sudo cp {_src}/99-instrument.rules /etc/udev/rules.d/', err=True)
@@ -2510,7 +2510,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
             else:
                 log_status('FAILED', 'red')
                 if verbose:
-                    click.echo('  Could not install modprobe.d blacklist — likely a sudoers permission issue.', err=True)
+                    click.echo('  The modprobe.d blacklist did not install — likely a sudoers permission issue.', err=True)
                     click.echo(f'  Manual fix: ssh {ssh_host}, then:', err=True)
                     click.echo(f'    sudo cp {_src}/blacklist-usbtmc.conf /etc/modprobe.d/', err=True)
                     click.echo('    sudo modprobe -r usbtmc  # optional: takes effect immediately', err=True)
@@ -2538,7 +2538,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
             else:
                 log_status('FAILED', 'red')
                 if verbose:
-                    click.echo('  Warning: could not fix sudoers ownership; sudo may not work correctly.', err=True)
+                    click.echo('  Warning: the sudoers ownership fix failed; sudo can stop working correctly.', err=True)
 
         enqueue_priv(
             'sudoers_owner',
@@ -2597,7 +2597,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
                 log_status('FAILED', 'yellow')
                 if verbose:
                     click.echo(
-                        '  Warning: box-config sudoers rule could not be installed. '
+                        '  Warning: the box-config sudoers rule did not install. '
                         '`lager box-config apply` will need manual sudoers setup on this box.',
                         err=True,
                     )
@@ -2640,7 +2640,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
                 log_status('FAILED (host CLI install will be skipped)', 'yellow')
                 if verbose:
                     click.echo(
-                        '  Warning: could not apt-get install python3-venv; '
+                        '  Warning: apt-get install python3-venv failed; '
                         'the host CLI cannot be installed without it.',
                         err=True,
                     )
@@ -2670,7 +2670,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
 
         if not verbose and progress:
             progress.pause()
-            click.echo('Applying box settings (may require the sudo password once)...')
+            click.echo('Applying box settings (this can ask for the sudo password once)...')
         elif verbose:
             click.echo()
 
@@ -2857,7 +2857,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
             target_version, _read_box_head_sha(run_ssh_command_with_output)
         ):
             click.secho(
-                'Warning: could not record the deployed ref in /etc/lager/ref; '
+                'Warning: the CLI did not record the deployed ref in /etc/lager/ref; '
                 '`lager hello` will not be able to say which ref this box is on.',
                 fg='yellow', err=True,
             )
@@ -3198,7 +3198,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
                 full_output = "\n".join(build_output_lines)
                 if "buildx component is missing" in full_output or "install the buildx" in full_output.lower():
                     click.secho(
-                        "Hint: the box's Docker is missing a working buildx plugin, which the "
+                        "Hint: the box's Docker has no working buildx plugin, which the "
                         "box image requires. Install it on the box (Ubuntu/Debian: "
                         "`sudo apt-get install -y docker-buildx`), then re-run `lager update`.",
                         fg='yellow', err=True,
@@ -3218,7 +3218,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
                 elif "network" in full_output.lower() and ("timeout" in full_output.lower() or "error" in full_output.lower()):
                     click.secho("Hint: Network issue during build. Check box internet connectivity.", fg='yellow', err=True)
                 elif "permission denied" in full_output.lower():
-                    click.secho("Hint: Permission issue. Check Docker daemon is running and user has access.", fg='yellow', err=True)
+                    click.secho("Hint: Permission issue. Check that the Docker daemon runs and that the user has access.", fg='yellow', err=True)
 
             # Poison the stored build-inputs hash so the next run can't read this
             # box as up to date: the sentinel never equals a recomputed sha256, so
@@ -3257,8 +3257,8 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
                     restarted = wait_for_box_ready(resolved_box, timeout_s=60)
             if restarted:
                 click.secho(
-                    'The update FAILED and was not applied. The box has been '
-                    'restarted on its previous version.',
+                    'The update FAILED and was not applied. The box restarted on '
+                    'its previous version.',
                     fg='yellow', err=True,
                 )
             else:
@@ -3348,7 +3348,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         click.echo(f'  ssh {ssh_host}', err=True)
         click.echo('  sudo mkdir -p /etc/lager && sudo chown 33:"$(id -g)" /etc/lager '
                    '&& sudo chmod 2775 /etc/lager', err=True)
-        click.echo('Then run `lager box update` again.', err=True)
+        click.echo('Then run `lager update` again.', err=True)
         ctx.exit(1)
     log_status('OK', 'green')
 
@@ -3360,8 +3360,8 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
     # visible warning on failure rather than silently leaving a stale hash.
     if new_build_hash and not store_build_hash(new_build_hash):
         click.secho(
-            'Warning: could not persist build hash to /etc/lager/build-hash; '
-            'the next `lager update` may rebuild even when nothing changed.',
+            'Warning: the CLI did not persist the build hash to /etc/lager/build-hash; '
+            'the next `lager update` can rebuild even when nothing changed.',
             fg='yellow', err=True,
         )
 
@@ -3377,7 +3377,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
     # without this nothing on the box distinguishes the two.
     if not store_deployed_ref(target_version, _read_box_head_sha(run_ssh_command_with_output)):
         click.secho(
-            'Warning: could not record the deployed ref in /etc/lager/ref; '
+            'Warning: the CLI did not record the deployed ref in /etc/lager/ref; '
             '`lager hello` will not be able to say which ref this box is on.',
             fg='yellow', err=True,
         )
@@ -3414,7 +3414,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
                 progress.finish(success=False)
             log_status('FAILED', 'red')
             log_error('Error: Failed to write version file to /etc/lager/version')
-            click.echo('The code was updated but the version file could not be written.', err=True)
+            click.echo('The code was updated, but the CLI did not write the version file.', err=True)
             click.echo()
             click.echo('Manually fix with:', err=True)
             click.echo(f'  ssh {ssh_host} "echo \\"{box_cli_version}|{cli_version}\\" | sudo tee /etc/lager/version"', err=True)
@@ -3456,10 +3456,10 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
             progress.finish(success=False)
         log_error('Error: Container startup timed out after 10 minutes')
         click.echo()
-        click.echo('The container is taking too long to start. This could be because:', err=True)
+        click.echo('The container takes too long to start. One of these is the cause:', err=True)
         click.echo('  1. The box is slow or overloaded', err=True)
-        click.echo('  2. Docker is pulling/building a large image', err=True)
-        click.echo('  3. The startup script is hanging', err=True)
+        click.echo('  2. Docker pulls or builds a large image', err=True)
+        click.echo('  3. The startup script hangs', err=True)
         click.echo()
         click.echo('Try:', err=True)
         click.echo(f'  ssh lagerdata@{resolved_box} "docker logs lager"', err=True)
@@ -3480,7 +3480,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
             progress.finish(success=False)
         log_status('FAILED', 'red')
         log_error('Error: Box services did not respond within 60s after restart')
-        click.echo(f'The lager container is running but /health on {resolved_box} (ports 9000/5000) did not return 200.', err=True)
+        click.echo(f'The lager container runs, but /health on {resolved_box} (ports 9000/5000) did not return 200.', err=True)
         click.echo('Investigate with:', err=True)
         click.echo(f'  ssh {ssh_host} "docker logs lager --tail 50"', err=True)
         click.echo(f'  ssh {ssh_host} "docker ps"', err=True)
@@ -3526,7 +3526,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         log_status('FAILED', 'red')
         log_error('Error: lager container is not running after startup')
         click.secho(
-            'The container may have crashed immediately after starting. Check logs on the box:',
+            'The container stopped immediately after it started. Check logs on the box:',
             fg='yellow', err=True
         )
         click.echo(f'  ssh {ssh_host} "docker logs lager --tail 50"', err=True)
@@ -3773,11 +3773,11 @@ def _update_options(fn):
     """Shared option decorators for `lager update`. Kept in one place so the
     command signature and the decorator list can't drift apart."""
     for opt in reversed([
-        click.option('--box', required=False, help='Lagerbox name or IP'),
+        click.option('--box', required=False, help='Lager Box name or IP'),
         click.option('--yes', is_flag=True, help='Skip confirmation prompt'),
         click.option('--version', required=False, help='Version to update to: a release tag (e.g. v0.21.3), a branch (main, staging), or a full 40-character commit SHA'),
         click.option('--verbose', '-v', is_flag=True, help='Show detailed output (default shows progress bar only)'),
-        click.option('--check', is_flag=True, help='Dry run: report what would change without modifying the box'),
+        click.option('--check', is_flag=True, help='Dry run: report what will change without modifying the box'),
         click.option('--force', is_flag=True, help='Update even if the box reports it is already up to date, and force a clean rebuild (wipes the cached image and cargo/npm volumes)'),
         click.option('--pull', is_flag=True, help='Pull the pre-built box image from GHCR for a release tag instead of building it on the box (falls back to a local build on any miss)'),
         click.option('--no-pull', is_flag=True, help='Never pull a pre-built image; always build on the box'),

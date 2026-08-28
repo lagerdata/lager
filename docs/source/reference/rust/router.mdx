@@ -1,0 +1,169 @@
+---
+title: Router
+description: Degrade the network your DUT is on, rather than removing it
+---
+
+Drive a MikroTik router as a Lager net. This is the bench's network fault-injection
+tool. It lets a test assert what firmware does when the network *degrades* — loses
+the internet, loses DNS, gets slow — rather than simply disappearing.
+
+## Handle
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let router = lager.router("router1");
+```
+
+## Methods
+
+| Method | Description |
+|--------|-------------|
+| `name()` | The net name this handle addresses |
+| `connect()` | Verify connectivity; returns identity, version, board, uptime |
+| `system_info()` | Structured system resource information |
+| `interfaces()` | All network interfaces, as raw RouterOS records |
+| `wireless_interfaces()` | Wireless interfaces, raw |
+| `wireless_clients()` | Currently associated wireless clients |
+| `dhcp_leases()` | Active DHCP leases |
+| `enable_interface()` | Enable an interface by name |
+| `disable_interface()` | Disable an interface by name |
+| `set_wireless_ssid()` | Change the broadcast SSID |
+| `block_internet()` | Drop all forwarded traffic |
+| `remove_firewall_rules()` | Remove every Lager-added firewall rule |
+| `reboot()` | Reboot the router |
+| `command()` | Generic escape hatch for any other router action |
+
+## Types
+
+### `RouterSystemInfo`
+
+```rust
+pub struct RouterSystemInfo {
+    pub name: Option<String>,          // identity
+    pub version: Option<String>,       // RouterOS version
+    pub board: Option<String>,
+    pub architecture: Option<String>,
+    pub uptime: Option<String>,        // e.g. "1w2d3h"
+    pub cpu_load: Option<i64>,         // percent
+    pub free_memory: Option<i64>,      // bytes
+    pub total_memory: Option<i64>,
+    pub free_hdd_space: Option<i64>,
+}
+```
+
+## Method Reference
+
+### `connect() -> Result<serde_json::Value>`
+
+Verify connectivity by fetching the router's identity.
+
+### `system_info() -> Result<RouterSystemInfo>`
+
+Structured resource information.
+
+### `block_internet() -> Result<()>`
+
+Drop all forwarded traffic, simulating an internet outage while leaving the local
+network — and the DUT's association to it — intact.
+
+### `remove_firewall_rules() -> Result<()>`
+
+Remove every firewall rule Lager added. This is the undo for `block_internet` and
+anything added through `command()`.
+
+<Warning>
+  Rules persist on the router until removed. A test that blocks the internet and then
+  fails without cleaning up leaves the next test running on a broken network. Put
+  `remove_firewall_rules()` in a teardown path that runs even on failure.
+</Warning>
+
+### `enable_interface(interface: &str)` and `disable_interface(interface: &str)`
+
+Enable or disable an interface by name — use these when you want the access point to
+vanish entirely, rather than to lose routing.
+
+### `set_wireless_ssid(interface: &str, ssid: &str) -> Result<serde_json::Value>`
+
+Change the broadcast SSID.
+
+### `command(action: &str, params: serde_json::Value) -> Result<serde_json::Value>`
+
+The generic escape hatch: invoke any other router action by name with raw JSON
+parameters. This is how you reach DNS blocking, port blocking, bandwidth limits,
+DHCP control, security profiles and access lists. None of these have a typed wrapper
+in this crate yet.
+
+```rust
+use serde_json::json;
+
+router.command("block_dns", json!({}))?;
+router.command("block_port", json!({ "port": 8883, "protocol": "tcp" }))?;
+router.command("add_bandwidth_limit", json!({
+    "target": "192.168.88.0/24",
+    "max_limit": "1M/1M",
+}))?;
+```
+
+## Examples
+
+### Assert firmware retries instead of rebooting when the internet goes away
+
+```rust
+use lager::LagerBox;
+use std::time::Duration;
+
+let lager = LagerBox::from_env()?;
+let router = lager.router("router1");
+let mut uart = lager.uart("uart1")?;
+
+router.connect()?;
+
+let outcome = (|| -> lager::Result<()> {
+    router.block_internet()?;
+    // The DUT stays on the AP; only routing is gone.
+    let log = uart.wait_for(b"retry", Duration::from_secs(60))?;
+    assert!(!String::from_utf8_lossy(&log).contains("rebooting"),
+            "firmware rebooted instead of retrying");
+    Ok(())
+})();
+
+router.remove_firewall_rules()?;   // always, even if the assertion failed
+outcome?;
+```
+
+### Squeeze the bandwidth and check an OTA still completes
+
+```rust
+use serde_json::json;
+
+router.command("add_bandwidth_limit", json!({
+    "target": "192.168.88.50",
+    "max_limit": "256k/256k",
+}))?;
+
+// ... trigger the OTA and wait for it ...
+
+router.command("remove_bandwidth_limits", json!({}))?;
+```
+
+## Supported Hardware
+
+| Device | Notes |
+|---|---|
+| MikroTik RouterOS devices | Driven over the RouterOS REST API |
+
+## Notes
+
+- **This net sends no role hint.** A router net can be saved with role `router` or
+  the legacy `mikrotik`. The box verifies a supplied hint exactly, so a hint will fail
+  against whichever spelling the net does not use. A consequence you will see: a
+  missing router net reports `Net 'router1' not found` without naming a role, where
+  other net types
+  report `Net 'x (role adc)' not found`.
+- Every router action gets a flat 60-second budget, because reboots and reset actions
+  are slow and a busy router lags.
+- `reboot()` returns as soon as the router accepts the command, not when it is back.
+- Blocking the internet does **not** disconnect the DUT from WiFi. That distinction is
+  the entire point of this net type.

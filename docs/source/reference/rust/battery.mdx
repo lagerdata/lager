@@ -1,0 +1,169 @@
+---
+title: Battery Simulation
+description: Drive a battery simulator by state of charge, capacity and open-circuit voltage
+---
+
+Present a programmable battery to your DUT: set capacity, open-circuit voltage and
+state of charge, then watch how firmware behaves as the pack drains.
+
+## Handle
+
+```rust
+use lager::{BatteryMode, LagerBox};
+
+let lager = LagerBox::from_env()?;
+let battery = lager.battery("battery1");
+```
+
+## Methods
+
+| Method | Description |
+|--------|-------------|
+| `name()` | The net name this handle addresses |
+| `init_battery_mode()` | Put the instrument into battery-simulator mode |
+| `set_soc()` | Set state of charge, 0-100 percent |
+| `set_voc()` | Set open-circuit voltage |
+| `set_volt_full()` | Set the voltage treated as full |
+| `set_volt_empty()` | Set the voltage treated as empty |
+| `set_capacity()` | Set pack capacity in amp-hours |
+| `set_current_limit()` | Set the output current limit |
+| `set_model()` | Load a predefined battery model by part number |
+| `set_mode()` | Choose static or dynamic simulation |
+| `set_ovp()` / `set_ocp()` | Set protection trips |
+| `clear_ovp()` / `clear_ocp()` / `clear()` | Clear trips |
+| `enable()` / `disable()` | Turn the simulated pack on or off |
+| `state()` | Full structured state in a single transaction |
+
+## Types
+
+### `BatteryMode`
+
+```rust
+pub enum BatteryMode { Static, Dynamic }
+```
+
+`Static` holds the state of charge where you set it. `Dynamic` lets it evolve with
+the load current, which is what you want when testing a real discharge curve.
+
+### `BatteryState`
+
+```rust
+pub struct BatteryState {
+    pub netname: Option<String>,
+    pub channel: Option<i64>,
+    pub error: Option<String>,
+    pub terminal_voltage: Option<f64>,  // V
+    pub current: Option<f64>,           // A
+    pub esr: Option<f64>,               // ohm
+    pub soc: Option<f64>,               // percent
+    pub voc: Option<f64>,               // V
+    pub enabled: Option<bool>,
+    pub mode: Option<String>,           // "Static" or "Dynamic"
+    pub model: Option<String>,          // e.g. "LI_ION4_2"
+    pub capacity: Option<f64>,          // Ah
+    pub current_limit: Option<f64>,     // A
+    pub ocp_limit: Option<f64>,
+    pub ovp_limit: Option<f64>,
+    pub volt_full: Option<f64>,
+    pub volt_empty: Option<f64>,
+    pub ocp_tripped: Option<bool>,
+    pub ovp_tripped: Option<bool>,
+}
+```
+
+## Method Reference
+
+### `init_battery_mode() -> Result<()>`
+
+Put the instrument into battery-simulator mode.
+
+<Warning>
+  Call this first, before any other battery method, on an instrument that also
+  serves a power-supply net. A Keithley 2281S is a supply until told otherwise, and
+  the battery setters have nothing to act on until it is switched over.
+</Warning>
+
+### `set_soc(percent: f64) -> Result<()>`
+
+Set state of charge, 0 to 100.
+
+```rust
+battery.set_soc(20.0)?;   // nearly flat
+```
+
+### `set_voc(volts: f64)`, `set_volt_full(volts: f64)`, `set_volt_empty(volts: f64)`
+
+Open-circuit voltage, and the voltages the model treats as full and empty.
+
+### `set_capacity(amp_hours: f64) -> Result<()>`
+
+Pack capacity in amp-hours.
+
+### `set_current_limit(amps: f64) -> Result<()>`
+
+Output current limit.
+
+### `set_model(partnumber: &str) -> Result<()>`
+
+Load one of the instrument's predefined battery models.
+
+### `set_mode(mode: BatteryMode) -> Result<()>`
+
+Switch between `Static` and `Dynamic`.
+
+### `enable() -> Result<()>` and `disable() -> Result<()>`
+
+Turn the simulated pack's output on or off. Disable in teardown.
+
+### `state() -> Result<BatteryState>`
+
+Everything in one transaction. As with a supply, there are no individual getters.
+
+## Examples
+
+### Check the low-battery warning fires at the right threshold
+
+```rust
+use lager::{BatteryMode, LagerBox};
+
+let lager = LagerBox::from_env()?;
+let battery = lager.battery("battery1");
+let warn = lager.gpio("low_batt_led");
+
+battery.init_battery_mode()?;
+battery.set_capacity(2.0)?;
+battery.set_volt_full(4.2)?;
+battery.set_volt_empty(3.0)?;
+battery.set_mode(BatteryMode::Static)?;
+battery.enable()?;
+
+for soc in [80.0_f64, 40.0, 20.0, 10.0, 5.0] {
+    battery.set_soc(soc)?;
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    let s = battery.state()?;
+    println!("SOC {soc:>5.1}%  terminal {:?} V  warn={:?}",
+             s.terminal_voltage, warn.input()?);
+}
+
+battery.disable()?;
+```
+
+## Supported Hardware
+
+| Instrument | Channels | Notes |
+|---|---|---|
+| Keithley 2281S | 1 | Also serves a power-supply net on the same address |
+
+## Notes
+
+- **`set_voc()` is a request, not an assignment.** The instrument derives terminal
+  voltage from the loaded model and the state of charge. On a Keithley 2281S with the
+  `LI_ION4_2` model, setting SOC to 50 moved `voc` to about 4.007 V regardless of an
+  earlier `set_voc(3.7)`. Read `state()` to learn what the pack actually presents.
+- A battery net and a power-supply net can share one physical instrument. Switching
+  to battery mode changes what that instrument is for both, and the box serializes
+  them under a single per-instrument lock.
+- `state()` returning `Ok` does not mean the instrument answered — check `error`,
+  which is populated when the gather itself failed.
+- `esr` is the model's equivalent series resistance, which is what makes terminal
+  voltage sag under load rather than tracking open-circuit voltage exactly.

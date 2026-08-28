@@ -23,6 +23,7 @@ from ...core.net_group import NetGroupHelpMixin
 from ...core.net_helpers import NET_HTTP_PORT, echo_box_request_failure
 from ...errors import LagerError
 from ...sort_utils import natural_sort_key as _natural_sort_key
+from ._device_identity import ambiguous_addresses, describe_ambiguity
 from .net_tui import launch_tui, uart_channel_paths
 
 
@@ -81,7 +82,7 @@ def _box_request(ctx: click.Context, box_ip: str, method: str, path: str,
     click.secho(f"Error: {error}", fg="red", err=True)
     if resp.status_code == 404 and "not found" not in str(error).lower():
         click.echo(
-            f"This box image may predate '{path}'; update the box "
+            f"This box image can predate '{path}'; update the box "
             f"(lager update).", err=True)
     ctx.exit(1)
 
@@ -247,7 +248,7 @@ def _sniff_script_backend(filename: str, content: bytes) -> Optional[str]:
     """Return ``'jlink'``/``'openocd'``/``None`` from filename + content.
 
     Extension is the dominant signal. Content sniff is only consulted when
-    the extension is unrecognised (e.g. stdin or extensionless paths) and
+    the extension is unrecognized (e.g. stdin or extensionless paths) and
     abstains when both/neither family of markers is present so we don't
     guess silently.
     """
@@ -300,7 +301,7 @@ def _choose_script_backend(
     signals = [(k, v) for k, v in (('probe', probe), ('file', file)) if v]
     if not signals:
         return None, (
-            "no backend signal — pass --backend, or use a recognised "
+            "no backend signal — pass --backend, or use a recognized "
             "file extension (.JLinkScript / .cfg / .tcl)"
         ), False
     values = {v for _k, v in signals}
@@ -370,8 +371,6 @@ def _serial_from_visa_address(address) -> str:
     return m.group(1).strip() if m else ""
 
 
-_MULTI_HUBS = {"LabJack_T7", "Acroname_8Port", "Acroname_4Port",
-               "Plugable_USB_Hub"}
 _SINGLE_CHANNEL_INST = {
     "Keithley_2281S": ("battery", "power-supply"),
     "EA_PSB_10060_60": ("solar", "power-supply"),
@@ -397,6 +396,32 @@ _ROLE_ALIASES = {
 def _canonical_role(role: str) -> str:
     """Map a user-typed role token to the canonical saved-role string."""
     return _ROLE_ALIASES.get(role, role)
+
+
+# Instrument names are persisted verbatim in every saved net record, so a
+# corrected spelling in the scanner tables leaves the OLD string on disk on
+# every box provisioned before the fix. The lookups below are exact-key
+# (INSTRUMENT_NET_MAP, _SINGLE_CHANNEL_INST, _MODE_EXCLUSIVE_INST), and a
+# saved net whose instrument no longer matches a table key silently loses the
+# restriction that key carried -- it does not fail loudly. Normalizing on the
+# way in keeps a fleet's existing records working without a migration.
+#
+# Keep in sync with SUPPORTED_USB / CHANNEL_MAPS in the box's usb_scanner.py:
+# renaming a key there means adding the old spelling here.
+_INSTRUMENT_ALIASES = {
+    # Spelled with a zero where the letter O belongs. The instrument is the
+    # MSO5204, as rigol_mso5000_defines.py and the docs both have it.
+    "Rigol_MS05204": "Rigol_MSO5204",
+}
+
+
+def canonical_instrument(instrument):
+    """Map a legacy instrument spelling to the canonical scanner-table key."""
+    if not instrument:
+        return instrument
+    return _INSTRUMENT_ALIASES.get(instrument, instrument)
+
+
 # Chips that can run in exactly one mode at a time, across ALL roles. The
 # canonical case is the FT232H: one physical channel, hardware-multiplexed
 # between MPSSE (spi/i2c/gpio/debug) and async-serial (uart). Once the user
@@ -434,7 +459,7 @@ INSTRUMENT_NET_MAP: dict[str, list[str]] = {
     "Yocto_Watt": ["watt-meter"],
 
     # scope
-    "Rigol_MS05204": ["scope", "logic"],
+    "Rigol_MSO5204": ["scope", "logic"],
     "Picoscope_2000": ["scope"],
 
     # adc / gpio / dac / spi
@@ -554,7 +579,7 @@ def _build_custom_pin_config(role: str, instrument: str, pin_opts: dict) -> Opti
     if instrument.lower() not in _LJ_INSTRUMENT_NAMES:
         raise LagerError(
             f"Pin options ({opts_str}) are only supported for LabJack T7 nets; "
-            f"'{instrument}' has fixed hardware pins."
+            f"'{instrument}' uses fixed hardware pins."
         )
 
     if role == "i2c":
@@ -997,7 +1022,7 @@ class _NetsGroup(NetGroupHelpMixin, click.Group):
     invoke_without_command=True,
     help="List and manage saved nets",
 )
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def nets(ctx: click.Context, box: str | None) -> None:  # noqa: D401
     """
@@ -1014,7 +1039,7 @@ def nets(ctx: click.Context, box: str | None) -> None:  # noqa: D401
 @nets.command("delete", help="Delete one saved net by name and type")
 @click.argument("name")
 @click.argument("net_type")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.option("--yes", is_flag=True, help="Skip confirmation prompt")
 @click.pass_context
 def delete_cmd(
@@ -1047,7 +1072,7 @@ def delete_cmd(
 
 
 @nets.command("delete-all", help="Dangerous – delete every saved net")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.option("--yes", is_flag=True, help="Skip confirmation prompt")
 @click.pass_context
 def delete_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
@@ -1064,7 +1089,7 @@ def delete_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
 
 
 @nets.command("tui", help="Launch the interactive Net-Manager TUI")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def tui_cmd(ctx: click.Context, box: str | None) -> None:
     launch_tui(ctx, _resolve_box(ctx, box))
@@ -1073,7 +1098,7 @@ def tui_cmd(ctx: click.Context, box: str | None) -> None:
 @nets.command("rename", help="Rename a saved net")
 @click.argument("name")
 @click.argument("new_name")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def rename_cmd(
     ctx: click.Context,
@@ -1115,7 +1140,7 @@ def rename_cmd(
 @click.argument("role")
 @click.argument("channel")
 @click.argument("address")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.option("--jlink-script", type=click.Path(exists=True),
               help="J-Link script file for debug nets (stored on box)")
 @click.option("--openocd-config", type=click.Path(exists=True),
@@ -1181,16 +1206,18 @@ def add_cmd(ctx, name, role, channel, address, box, jlink_script, openocd_config
             ctx.exit(1)
         instrument = "Unknown_UART_Device"
 
-    # ─────────── multiple hubs restriction ──────
+    # ─────────── address must be unambiguous ────
     if not is_uart_device_path:
-        if instrument in _MULTI_HUBS:
-            hub_count = sum(1 for d in devs if d.get("name") == instrument)
-            if hub_count > 1:
-                click.secho(
-                    f"Multiple {instrument} devices detected – unplug extras before adding nets.",
-                    fg="red",
-                )
-                ctx.exit(1)
+        # The user already named a specific address. Refuse only when that
+        # address cannot identify one device -- i.e. two present devices
+        # report it. A second Acroname carries its own serial and is fine;
+        # a second LabJack T7 is not, because its address has no serial in it.
+        if address in ambiguous_addresses(devs):
+            click.secho(
+                f"Error: {describe_ambiguity(instrument, address)}",
+                fg="red", err=True,
+            )
+            ctx.exit(1)
 
         # ─────────── tuple must exist ───────────────
         dev_match = next((d for d in devs if d.get("address") == address), None)
@@ -1298,15 +1325,16 @@ def add_cmd(ctx, name, role, channel, address, box, jlink_script, openocd_config
 
     # ─────────── single-channel restriction ──────────────────────────
     if instrument in _SINGLE_CHANNEL_INST:
-        if any(n["instrument"] == instrument and n["address"] == address for n in saved_nets):
+        if any(canonical_instrument(n["instrument"]) == instrument and n["address"] == address
+               for n in saved_nets):
             click.secho(
-                f"Only one net may reference {instrument} at {address}.",
+                f"Only one net can reference {instrument} at {address}.",
                 fg="red",
             )
             ctx.exit(1)
 
-    if role not in INSTRUMENT_NET_MAP.get(instrument, []) and not is_uart_device_path:
-        supported_types = INSTRUMENT_NET_MAP.get(instrument, [])
+    if role not in INSTRUMENT_NET_MAP.get(canonical_instrument(instrument), []) and not is_uart_device_path:
+        supported_types = INSTRUMENT_NET_MAP.get(canonical_instrument(instrument), [])
         click.secho(
             f"Error: Instrument '{instrument}' does not support net type '{role}'",
             fg="red",
@@ -1416,7 +1444,7 @@ def _print_assign_listing(data: dict) -> None:
 @click.option("--as-net", "as_net", is_flag=False, flag_value="",
               help="Also create a net for the instrument (optionally pass a net name; "
                    "defaults to the device name)")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def assign_cmd(ctx, device, list_, usb_serial, port_path, baud, remove_, as_net, box):
     """Assign a USB-serial cable to a known instrument (e.g. a Rigol DP711).
@@ -1470,7 +1498,7 @@ def assign_cmd(ctx, device, list_, usb_serial, port_path, baud, remove_, as_net,
             resp = _check_gateway(resp, resolved_box)
         except requests.RequestException as e:
             raise LagerError(
-                "The box could not complete the assign command.",
+                "The box did not complete the assign command.",
                 cause=str(e),
                 fixes=[
                     "Check network/Tailscale and that the box is online.",
@@ -1489,7 +1517,7 @@ def assign_cmd(ctx, device, list_, usb_serial, port_path, baud, remove_, as_net,
             )
         if not resp.ok:
             raise LagerError(
-                "The box could not complete the assign command.",
+                "The box did not complete the assign command.",
                 cause=result.get("error"),
                 fixes=[
                     "See live cables and devices: lager nets assign --list",
@@ -1578,7 +1606,7 @@ def assign_cmd(ctx, device, list_, usb_serial, port_path, baud, remove_, as_net,
 
 
 @nets.command("add-all", help="Add all possible nets that can be created on the box")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.option("--yes", is_flag=True, help="Skip confirmation prompt")
 @click.pass_context
 def create_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
@@ -1642,14 +1670,31 @@ def create_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
     # Apply filtering logic similar to TUI's _get_addable_nets
     warnings = []
 
-    # Check for multiple hubs of same type
-    chan_seen: dict[str, set[str]] = defaultdict(set)
+    # Addresses that more than one present device reports. Nets against these
+    # are refused because the address cannot say which device it means. This
+    # replaces a model-name check that skipped the whole family whenever two
+    # of a model were present -- including families whose addresses are
+    # perfectly distinct, and including LabJack, whose nets carry the bench's
+    # AC relay control.
+    #
+    # chan_seen is keyed per DEVICE, not per model. Keyed per model, device B's
+    # channel "0" collided with device A's and marked the family duplicate.
+    ambiguous: set[str] = ambiguous_addresses(inst_list)
+    chan_seen: dict[tuple[str, str], set[str]] = defaultdict(set)
     duplicate_hubs: set[str] = set()
     for net in all_possible_nets:
-        if net["instrument"] in _MULTI_HUBS:
-            if net["chan"] in chan_seen[net["instrument"]]:
-                duplicate_hubs.add(net["instrument"])
-            chan_seen[net["instrument"]].add(net["chan"])
+        # Ambiguous addresses are handled below, with a message that explains
+        # the cause. Two devices sharing an address necessarily share a
+        # device_key too, so letting them fall through here would re-report
+        # the same condition as a channel clash.
+        if net["addr"] in ambiguous:
+            continue
+        device_key = (net["instrument"], net["addr"])
+        if net["chan"] in chan_seen[device_key]:
+            # The same channel offered twice for ONE uniquely-addressed
+            # device is a real duplicate from the scanner.
+            duplicate_hubs.add(net["instrument"])
+        chan_seen[device_key].add(net["chan"])
 
     # Mode-exclusive chips (FT232H): if a chip+addr has no saved net yet AND
     # the scanner produced candidates for more than one role, ``add-all``
@@ -1657,7 +1702,7 @@ def create_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
     # ``lager nets add`` or the TUI to choose a single role explicitly.
     mode_excl_roles: dict[tuple[str, str], set[str]] = defaultdict(set)
     for net in all_possible_nets:
-        if net["instrument"] in _MODE_EXCLUSIVE_INST:
+        if canonical_instrument(net["instrument"]) in _MODE_EXCLUSIVE_INST:
             mode_excl_roles[(net["instrument"], net["addr"])].add(net["type"])
     ambiguous_mode_excl: set[tuple[str, str]] = set()
     for key, roles in mode_excl_roles.items():
@@ -1674,17 +1719,23 @@ def create_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
                 f"this chip only runs one mode at a time."
             )
 
-    # Filter out blocked instrument families
+    # Filter out nets that cannot or should not be created
     filtered_nets = []
     dup_single: set[tuple[str, str]] = set()
+    ambiguous_seen: set[tuple[str, str]] = set()
 
     for net in all_possible_nets:
         # Skip if instrument family is blocked due to duplicates
         if net["instrument"] in duplicate_hubs:
             continue
 
+        # Skip nets whose address cannot identify one physical device.
+        if net["addr"] in ambiguous:
+            ambiguous_seen.add((net["instrument"], net["addr"]))
+            continue
+
         # Skip if single-channel instrument already has a net at this address
-        if net["instrument"] in _SINGLE_CHANNEL_INST:
+        if canonical_instrument(net["instrument"]) in _SINGLE_CHANNEL_INST:
             if any(s.get("instrument") == net["instrument"] and s.get("address") == net["addr"] for s in saved_nets):
                 dup_single.add((net["instrument"], net["addr"]))
                 continue
@@ -1694,7 +1745,7 @@ def create_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
         # underlying hardware can only run one mode at a time. Also skip
         # chips flagged ambiguous in the pre-pass above (multiple candidate
         # roles, no saved net yet — user must pick interactively).
-        if net["instrument"] in _MODE_EXCLUSIVE_INST:
+        if canonical_instrument(net["instrument"]) in _MODE_EXCLUSIVE_INST:
             key = (net["instrument"], net["addr"])
             if key in ambiguous_mode_excl:
                 continue
@@ -1801,9 +1852,14 @@ def create_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
 
     # Generate warnings
     for inst in sorted(duplicate_hubs, key=_natural_sort_key):
-        warnings.append(f"Multiple {inst} devices detected – unplug extras before adding nets.")
+        warnings.append(
+            f"{inst}: the box offered the same channel twice for one device; "
+            f"skipping that instrument. Re-run `lager instruments` to check it."
+        )
     for inst, addr in sorted(dup_single, key=lambda x: _natural_sort_key(x[0])):
         warnings.append(f"{inst} at {addr} already has a net.")
+    for inst, addr in sorted(ambiguous_seen, key=lambda x: _natural_sort_key(x[0])):
+        warnings.append(describe_ambiguity(inst, addr))
 
     # Display warnings
     for warning in warnings:
@@ -1858,7 +1914,7 @@ def create_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
 
 @nets.command("add-batch", help="Add multiple nets from a JSON file")
 @click.argument("json_file", type=click.File("r"))
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def create_batch_cmd(ctx: click.Context, json_file, box: str | None) -> None:
     """
@@ -2060,7 +2116,7 @@ def _warn_if_script_defines_init_target(backend: str, raw_bytes: bytes) -> None:
         "built-in target init for this device.\n"
         "  On nRF-family parts that built-in is what brings up a blank or "
         "protected target, so a flash\n"
-        "  (which erases first) may leave the part unattachable. Your "
+        "  (which erases first) can leave the part unattachable. Your "
         "InitTarget() must do that bring-up\n"
         "  itself. A script that does not define InitTarget() leaves the "
         "built-in in place.",
@@ -2186,7 +2242,7 @@ _BACKEND_CLICK_CHOICE = click.Choice([_BACKEND_JLINK, _BACKEND_OPENOCD])
     help="Force a specific backend instead of auto-detecting. Required when "
     "the detected probe and file backends disagree.",
 )
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def set_script_cmd(
     ctx: click.Context, name: str, script_path: str,
@@ -2216,7 +2272,7 @@ def set_script_cmd(
     "--backend", "backend", type=_BACKEND_CLICK_CHOICE, default=None,
     help="Only remove the named backend's script (default: remove whichever is set).",
 )
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def remove_script_cmd(
     ctx: click.Context, name: str, backend: Optional[str], box: Optional[str],
@@ -2234,7 +2290,7 @@ def remove_script_cmd(
     "--backend", "backend", type=_BACKEND_CLICK_CHOICE, default=None,
     help="Only show the named backend's script (default: show whichever is set).",
 )
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def show_script_cmd(
     ctx: click.Context, name: str, backend: Optional[str], box: Optional[str],
@@ -2255,7 +2311,7 @@ def show_script_cmd(
 @click.option("--notes", "-n", default=None, help="Optional notes (gotchas, jumper positions, scope probe points)")
 @click.option("--tag", "-t", "tags", multiple=True, help="Tag for categorisation/matching (repeatable)")
 @click.option("--clear-tags", is_flag=True, help="Remove all existing tags before adding new ones")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def describe_cmd(
     ctx: click.Context,
@@ -2297,7 +2353,7 @@ def describe_cmd(
 
 
 @nets.command("state", help="Show live hardware state for all saved nets")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.option("--json", "as_json", is_flag=True, help="Output as raw JSON")
 @click.pass_context
 def state_cmd(ctx: click.Context, box: str | None, as_json: bool) -> None:
@@ -2357,7 +2413,7 @@ def state_cmd(ctx: click.Context, box: str | None, as_json: bool) -> None:
 
 @nets.command("show", help="Show full details of a saved net, including metadata")
 @click.argument("name")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.option("--json", "as_json", is_flag=True, help="Output as raw JSON")
 @click.pass_context
 def show_cmd(

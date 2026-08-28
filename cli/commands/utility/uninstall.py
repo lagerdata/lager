@@ -176,7 +176,7 @@ def authorized_keys_cleanup_cmd():
 @click.option("--keep-docker-images", is_flag=True, help="Keep Docker images (only remove containers)")
 @click.option("--all", "remove_all", is_flag=True, help="Remove everything including udev rules, sudoers, third_party, and deploy keys")
 @click.option("--yes", is_flag=True, help="Skip confirmation prompts")
-@click.option("--dry-run", is_flag=True, help="Show what would be removed without making changes")
+@click.option("--dry-run", is_flag=True, help="List what the command removes. Make no changes.")
 def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, yes, dry_run):
     """
     Uninstall Lager box code from a box
@@ -262,12 +262,12 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
             elif "connection refused" in stderr:
                 click.secho("Error: SSH connection refused", fg='red', err=True)
                 click.echo(err=True)
-                click.echo("The box is reachable but SSH service is not running on port 22.", err=True)
+                click.echo("The box answers, but no SSH service runs on port 22.", err=True)
                 click.echo(err=True)
                 click.echo("Possible causes:", err=True)
                 click.echo("  - SSH server is not installed or running", err=True)
-                click.echo("  - SSH is running on a non-standard port", err=True)
-                click.echo("  - Firewall is blocking port 22", err=True)
+                click.echo("  - SSH runs on a non-standard port", err=True)
+                click.echo("  - A firewall blocks port 22", err=True)
                 ctx.exit(1)
             elif "no route to host" in stderr:
                 click.secho("Error: No route to host", fg='red', err=True)
@@ -283,9 +283,9 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
                 if host_in_known_hosts(ip):
                     click.secho("Error: Host key verification failed", fg='red', err=True)
                     click.echo(err=True)
-                    click.echo("The SSH host key has changed, which could indicate:", err=True)
+                    click.echo("The SSH host key changed. This means one of:", err=True)
                     click.echo("  - The box was reinstalled or reimaged", err=True)
-                    click.echo("  - A different device is using this IP address", err=True)
+                    click.echo("  - A different device uses this IP address", err=True)
                     click.echo(err=True)
                     click.echo("If you trust this device, remove the old key with:", err=True)
                     click.echo(f"  ssh-keygen -R {ip}", err=True)
@@ -348,7 +348,7 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
                         click.secho("Uninstall cancelled.", fg='yellow')
                         ctx.exit(0)
             elif "could not resolve hostname" in stderr or "name or service not known" in stderr:
-                click.secho("Error: Could not resolve hostname", fg='red', err=True)
+                click.secho("Error: The hostname did not resolve", fg='red', err=True)
                 click.echo(err=True)
                 click.echo(f"DNS lookup failed for {ip}.", err=True)
                 click.echo("Check that the hostname or IP address is correct.", err=True)
@@ -387,12 +387,12 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
     except subprocess.TimeoutExpired:
         click.secho(f"Error: SSH connection timed out", fg='red', err=True)
         click.echo(err=True)
-        click.echo(f"Could not connect to {ssh_host} within 15 seconds.", err=True)
+        click.echo(f"The box at {ssh_host} did not answer within 15 seconds.", err=True)
         click.echo(err=True)
         click.echo("Possible causes:", err=True)
         click.echo("  - Box is offline or powered down", err=True)
         click.echo("  - Network connectivity issue", err=True)
-        click.echo("  - Firewall is dropping packets (not rejecting)", err=True)
+        click.echo("  - A firewall drops packets (it does not reject them)", err=True)
         click.echo(err=True)
         click.echo("Verify the box is online and try: ping " + ip, err=True)
         ctx.exit(1)
@@ -401,7 +401,7 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
         click.secho("Please install OpenSSH client:", err=True)
         import platform
         if platform.system() == "Darwin":
-            click.secho("  macOS: SSH should be pre-installed. Check your PATH.", err=True)
+            click.secho("  macOS: SSH is pre-installed by default. Check your PATH.", err=True)
         elif platform.system() == "Windows":
             click.secho("  Windows: Install OpenSSH via Settings > Apps > Optional Features", err=True)
         else:
@@ -475,7 +475,7 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
                     stderr_text = result.stderr.strip()
                     click.secho(f"    Error: {stderr_text}", fg='red', err=True)
                     if "Permission denied" in stderr_text:
-                        click.secho("    Hint: This may require sudo permissions", err=True)
+                        click.secho("    Hint: This step can need sudo permissions", err=True)
                     elif "No such file" in stderr_text:
                         click.secho("    Hint: File or directory does not exist", err=True)
                 elif not use_interactive_ssh and hasattr(result, 'stdout') and result.stdout:
@@ -485,7 +485,7 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
                 return False
         except subprocess.TimeoutExpired:
             click.secho(" timeout", fg='yellow')
-            click.secho("    Command timed out. The box may be slow or unresponsive.", err=True)
+            click.secho("    Command timed out. The box can be slow or unresponsive.", err=True)
             return False
         except Exception as e:
             click.secho(f" error: {e}", fg='red')
@@ -705,8 +705,8 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
     click.echo()
     # Always at least one privileged step now: /etc/lager, or the lock state
     # inside it under --keep-config.
-    click.echo("Privileged removals run in one session; you may be prompted for the")
-    click.echo("box's sudo password once if the login user has no passwordless grant.")
+    click.echo("Privileged removals run in one session. If the login user has no")
+    click.echo("passwordless grant, the box asks for its sudo password once.")
     click.echo()
 
     if not yes:
@@ -891,7 +891,7 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
     else:
         click.secho("Uninstall complete!", fg='green', bold=True)
     click.echo()
-    click.echo(f"The lager box code has been removed from {ip}.")
+    click.echo(f"The CLI removed the Lager Box software from {ip}.")
 
     if keep_config:
         click.echo()

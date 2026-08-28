@@ -34,7 +34,7 @@ def _level_label(value: int) -> str:
 
 @click.command(name="gpo", cls=NetCommand, help="Set GPIO output level (0/1, low/high, off/on, toggle)")
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--hold", is_flag=True, default=False,
               help="Hold output state (keeps process alive until Ctrl+C)")
 @click.option("--json", "as_json", is_flag=True, default=False,

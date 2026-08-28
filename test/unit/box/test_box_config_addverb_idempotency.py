@@ -87,13 +87,13 @@ class _ShimCase(unittest.TestCase):
 
 class MountAddIdempotency(_ShimCase):
     def test_identical_mount_added_twice_is_single_entry(self):
-        payload = json.dumps({"host": "/Hyphen", "container": "/Hyphen", "readonly": True})
+        payload = json.dumps({"host": "/appdata", "container": "/appdata", "readonly": True})
         _shim._cmd_mount_add(payload)
         _shim._cmd_mount_add(payload)
         self.assertTrue(self._last()["ok"], msg=self._last())
         mounts = self._saved()["mounts"]
         self.assertEqual(len(mounts), 1)
-        self.assertEqual(mounts[0]["host"], "/Hyphen")
+        self.assertEqual(mounts[0]["host"], "/appdata")
 
     def test_same_container_new_host_replaces(self):
         # Pin R5: upsert keyed by container path replaces the host side.

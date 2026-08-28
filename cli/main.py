@@ -93,7 +93,7 @@ def _check_venv_shadowing():
         return
 
     click.secho(
-        f"WARNING: Lager CLI v{__version__} is running from a system Python ({sys.prefix}), "
+        f"WARNING: Lager CLI v{__version__} runs from a system Python ({sys.prefix}), "
         f"not from your active virtual environment ({virtual_env}).",
         fg='yellow', err=True,
     )

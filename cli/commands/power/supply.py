@@ -141,7 +141,7 @@ def _run_backend(ctx, box, action: str, **params):
 @click.group(cls=NetGroup, invoke_without_command=True)
 @click.argument("NETNAME", required=False, metavar="[NET_NAME]")
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 def supply(ctx, box, netname):
     """Control power supply voltage and current"""
     # Use provided netname, or fall back to default if not provided
@@ -168,7 +168,7 @@ supply.net_examples = [
 @supply.command()
 @click.argument("VALUE", required=False, callback=parse_value_with_negatives)
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--ocp", required=False, type=click.FLOAT, help="Over-current protection limit in amps (A)")
 @click.option("--ovp", required=False, type=click.FLOAT, help="Over-voltage protection limit in volts (V)")
 @click.option("--yes", is_flag=True, default=False, help="Confirm the action without prompting")
@@ -205,7 +205,7 @@ def voltage(ctx, box, value, ocp, ovp, yes):
 @supply.command()
 @click.argument("VALUE", required=False, callback=parse_value_with_negatives)
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--ocp", required=False, type=click.FLOAT, help="Over-current protection limit in amps (A)")
 @click.option("--ovp", required=False, type=click.FLOAT, help="Over-voltage protection limit in volts (V)")
 @click.option("--yes", is_flag=True, default=False, help="Confirm the action without prompting")
@@ -241,7 +241,7 @@ def current(ctx, box, value, ocp, ovp, yes):
 
 @supply.command()
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--yes", is_flag=True, help="Confirm the action without prompting")
 def disable(ctx, box, yes):
     """Disable supply output"""
@@ -255,7 +255,7 @@ def disable(ctx, box, yes):
 
 @supply.command()
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--yes", is_flag=True, help="Confirm the action without prompting")
 def enable(ctx, box, yes):
     """Enable supply output"""
@@ -269,7 +269,7 @@ def enable(ctx, box, yes):
 
 @supply.command()
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 def state(ctx, box):
     """Read power state"""
     resolved_box = resolve_box_locked(ctx, box, 'supply')
@@ -279,7 +279,7 @@ def state(ctx, box):
 
 @supply.command(name="set")
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 def set_mode(ctx, box):
     """
         Set power supply mode
@@ -291,7 +291,7 @@ def set_mode(ctx, box):
 
 @supply.command()
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 def clear_ovp(ctx, box):
     """Clear over-voltage protection trip condition"""
     resolved_box = resolve_box_locked(ctx, box, 'supply')
@@ -301,7 +301,7 @@ def clear_ovp(ctx, box):
 
 @supply.command()
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 def clear_ocp(ctx, box):
     """Clear over-current protection trip condition"""
     resolved_box = resolve_box_locked(ctx, box, 'supply')
@@ -311,7 +311,7 @@ def clear_ocp(ctx, box):
 
 @supply.command()
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 def tui(ctx, box):
     """Launch interactive supply control TUI"""
     resolved_box = resolve_box_locked(ctx, box, 'supply')
@@ -342,14 +342,14 @@ def tui(ctx, box):
         ctx.exit(1)
     except ConnectionRefusedError:
         click.secho(f"Error: Cannot connect to box '{resolved_box}'", fg='red', err=True)
-        click.secho("The box service may not be running.", err=True)
+        click.secho("The box service can be down.", err=True)
         click.secho(f"Check connectivity with: lager hello --box {box or resolved_box}", err=True)
         ctx.exit(1)
     except OSError as e:
         error_str = str(e).lower()
         if 'resource busy' in error_str or 'device or resource busy' in error_str:
             click.secho("Error: Power supply is already in use", fg='red', err=True)
-            click.secho("Another TUI session or process may be using this supply.", err=True)
+            click.secho("Another TUI session or process can hold this supply.", err=True)
             click.secho("Close other sessions and try again.", err=True)
         elif 'no route to host' in error_str:
             click.secho(f"Error: Cannot reach box '{resolved_box}'", fg='red', err=True)

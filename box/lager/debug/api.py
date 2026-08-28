@@ -569,30 +569,23 @@ def connect_jlink(speed, device, transport, force=False, ignore_if_connected=Fal
                     except Exception as e:
                         logger.warning(f'Reset after connect failed: {e}')
 
-                # EXPLICIT VERIFICATION: Test GDB connection to confirm target is responsive
-                try:
-                    from .gdb import get_controller
-                    logger.debug('Verifying GDB connection to target...')
-                    gdbmi = get_controller(device=device, port=gdb_port)
-
-                    # Try a simple monitor command to verify connection
-                    verify_responses = gdbmi.write('monitor version', timeout_sec=3.0, raise_error_on_timeout=False)
-                    connection_verified = False
-                    for resp in verify_responses:
-                        if resp.get('type') == 'console':
-                            connection_verified = True
-                            break
-
-                    if connection_verified:
-                        status['target_verified'] = True
-                        logger.debug('Target connection verified successfully')
-                    else:
-                        logger.warning('Target connection could not be verified (no response from monitor command)')
-                        status['target_verified'] = False
-
-                except Exception as e:
-                    logger.warning(f'Target verification failed: {e}')
-                    status['target_verified'] = False
+                # Confirm the target answers, not merely that the server does.
+                #
+                # This used to issue `monitor version` and treat any console
+                # response as verification -- but that is the gdbserver
+                # replying about itself, which it does happily with no part
+                # attached. It also went nowhere: nothing read the field, and
+                # `/debug/connect` reaches `start_jlink_gdbserver` directly
+                # without passing through here.
+                #
+                # Now it is the same predicate `/debug/status` reports, so
+                # there is one definition of "attached" rather than two.
+                # Imported inside the function: target_probe imports this
+                # module for the attach-failure predicates.
+                from .target_probe import target_attached
+                status['target_verified'] = target_attached(
+                    'jlink', serial, gdb_port=gdb_port, device=device, probe=True,
+                )
 
                 return status
             else:

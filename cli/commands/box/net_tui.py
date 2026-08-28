@@ -8,6 +8,7 @@ import json
 import re
 from collections import defaultdict
 from ...sort_utils import natural_sort_key
+from ._device_identity import ambiguous_addresses, describe_ambiguity
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -106,8 +107,6 @@ def _debug_channel_suffix(value) -> str:
 # they pick a role per channel via the @A/@B/... suffix.
 _MODE_EXCLUSIVE_INST = {"FTDI_FT232H"}
 
-_MULTI_HUBS = {"LabJack_T7", "Acroname_8Port", "Acroname_4Port",
-               "Plugable_USB_Hub"}
 # Role tuples use the canonical saved-role vocabulary (what nets actually
 # carry: "power-supply", "battery"), matching the table in nets.py.
 _SINGLE_CHANNEL_INST = {
@@ -1647,10 +1646,15 @@ class LabJackPinDialog(Screen):
 class AddScreen(Screen):
     """Dialog that lets the user multi-select nets to add (unsaved only)."""
 
-    def __init__(self, nets: list[Net], multi_labjack: bool = False) -> None:
+    def __init__(self, nets: list[Net],
+                 ambiguous_addrs: set[str] | None = None) -> None:
         super().__init__()
         self.nets: list[Net] = nets
-        self.multi_labjack: bool = multi_labjack
+        # Addresses reported by more than one present device. Computed from
+        # the instrument list, because two devices sharing an address collapse
+        # into one entry in ``nets`` and cannot be told apart here. Replaces a
+        # ``multi_labjack`` flag that no caller ever passed.
+        self.ambiguous_addrs: set[str] = ambiguous_addrs or set()
         self.chosen: set[str] = set()
         self.custom_names: dict[str, str] = {}  # key -> custom_name
 
@@ -1700,10 +1704,11 @@ class AddScreen(Screen):
         Build (rows, warnings) for the *Add Nets* screen.
 
         Rules:
-        1. If >1 LabJack_T7 or >1 Acroname_8Port or 4Port is plugged in,
-           no nets from that family are shown (with a warning).
-        2. Otherwise, nets for the first hub only are listed.
-        3. Single-channel instruments may have only one net per address – duplicates are hidden and warned.
+        1. Nets whose address cannot identify one physical device (two present
+           devices report it) are hidden, with a warning. Two devices of one
+           model are fine as long as their addresses differ.
+        2. Single-channel instruments may have only one net per address –
+           duplicates are hidden and warned.
         """
         warnings: list[str] = []
 
@@ -1719,36 +1724,13 @@ class AddScreen(Screen):
                 uniq[dedup_key] = n
         nets: list[Net] = list(uniq.values())
 
-        # Detect multiple physical hubs of same type (LabJack, Acroname)
-        # Key by (instrument, address) to distinguish different physical devices
-        chan_seen: dict[tuple[str, str], set[str]] = defaultdict(set)
-        duplicate_hubs: set[tuple[str, str]] = set()
-        for n in nets:
-            if n.instrument in _MULTI_HUBS:
-                device_key = (n.instrument, n.addr)
-                if n.chan in chan_seen[device_key]:
-                    # Same channel seen twice on same device - this is expected (saved + unsaved)
-                    # Only block if we see the SAME channel on DIFFERENT devices
-                    pass
-                chan_seen[device_key].add(n.chan)
-
-        # Check if we have multiple devices of the same type (different addresses)
-        device_counts: dict[str, set[str]] = defaultdict(set)
-        for n in nets:
-            if n.instrument in _MULTI_HUBS:
-                device_counts[n.instrument].add(n.addr)
-
-        # Block instrument families that have multiple physical devices
-        blocked_families: set[str] = set()
-        for inst, addrs in device_counts.items():
-            if len(addrs) > 1:
-                blocked_families.add(inst)
-
         remaining: list[Net] = []
         dup_single: set[tuple[str, str]] = set()
+        ambiguous_seen: set[tuple[str, str]] = set()
 
         for n in nets:
-            if n.instrument in blocked_families:
+            if n.addr in self.ambiguous_addrs:
+                ambiguous_seen.add((n.instrument, n.addr))
                 continue
             if n.instrument in _SINGLE_CHANNEL_INST and is_single_channel_taken(self.nets, n.instrument, n.addr, n.type):
                 dup_single.add((n.instrument, n.addr))
@@ -1761,8 +1743,8 @@ class AddScreen(Screen):
                 continue
             remaining.append(n)
 
-        for inst in sorted(blocked_families, key=natural_sort_key):
-            warnings.append(f"Multiple {inst} devices detected - unplug extras before adding nets.")
+        for inst, addr in sorted(ambiguous_seen, key=lambda x: natural_sort_key(x[0])):
+            warnings.append(describe_ambiguity(inst, addr))
         for inst, addr in sorted(dup_single, key=lambda x: natural_sort_key(x[0])):
             warnings.append(f"{inst} at {addr} already has a net.")
 
@@ -2929,11 +2911,14 @@ class NetApp(App):
 
     def __init__(self, ctx: click.Context, dut: str,
                  inst_list: list[dict[str, str]],
-                 nets: list[Net], multi_labjack: bool = False):
+                 nets: list[Net]):
         super().__init__()
         self.ctx, self.dut, self.nets = ctx, dut, nets
         self.inst_list = inst_list
-        self.multi_labjack = multi_labjack
+        # Derived here, not passed in: NetApp is the only place that holds the
+        # raw instrument list, and two devices sharing an address collapse to
+        # a single entry once nets are built.
+        self.ambiguous_addrs = ambiguous_addresses(inst_list)
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -3148,7 +3133,7 @@ class NetApp(App):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle *Add Nets*, *Assign Device*, *Delete All Nets*, and *Exit* buttons."""
         if event.button.id == "add_btn":
-            self.push_screen(AddScreen(self.nets, self.multi_labjack))
+            self.push_screen(AddScreen(self.nets, self.ambiguous_addrs))
             return
         if event.button.id == "assign_btn":
             # The /custom-devices/list round-trip takes seconds — run it off the

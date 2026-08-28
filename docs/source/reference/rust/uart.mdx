@@ -1,0 +1,146 @@
+---
+title: UART
+description: Stream a serial port from a cargo test
+---
+
+Open a streaming session against a serial port on the box and drive your DUT's
+console from a test.
+
+## Enabling the feature
+
+UART sessions ride on Socket.IO, so they are behind a cargo feature:
+
+```toml
+[dev-dependencies]
+lager = { package = "lager-net", version = "0.4", features = ["uart"] }
+```
+
+The `uart` feature implies `blocking`. There is no async equivalent.
+
+## Handle
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let mut uart = lager.uart("uart1")?;
+```
+
+<Note>
+  `uart()` is the only handle constructor that returns a `Result`. Every other net
+  handle is inert until you call a method. `uart()` connects the session and starts
+  streaming immediately, so it can fail right here.
+</Note>
+
+## Methods
+
+| Method | Description |
+|--------|-------------|
+| `netname()` | The net this session streams |
+| `device_path()` | The device path on the box, e.g. `/dev/ttyUSB0` |
+| `baudrate()` | The baud rate the port was opened at |
+| `last_status()` | Most recent session status notification |
+| `read()` | Bytes arriving within a timeout; may be empty |
+| `try_read()` | Bytes already buffered, without waiting |
+| `wait_for()` | Accumulate until a needle appears |
+| `write()` | Write raw bytes to the device |
+| `write_str()` | Write a string to the device |
+| `stop()` | Stop cleanly, closing the port on the box |
+
+## Method Reference
+
+### `read(timeout: Duration) -> Result<Vec<u8>>`
+
+Bytes arriving within `timeout`. The call can return an empty vector.
+
+<Note>
+  `read()` waits out the **full** timeout when the device is idle. Use `try_read()` in
+  a poll loop, or every iteration costs the whole timeout.
+</Note>
+
+### `try_read() -> Result<Vec<u8>>`
+
+Bytes already received, without waiting.
+
+### `wait_for(needle: &[u8], timeout: Duration) -> Result<Vec<u8>>`
+
+Accumulate until `needle` appears.
+
+**Returns:** everything up to **and including** the needle; the remainder stays
+buffered. An empty needle returns immediately; a miss is `Error::Timeout`.
+
+### `write(data: &[u8]) -> Result<()>` and `write_str(s: &str) -> Result<()>`
+
+Write to the device.
+
+### `last_status() -> Option<&str>`
+
+The most recent session status notification, updated during reads. While a USB serial
+adapter re-enumerates — because a hub port was cycled, or the DUT was reflashed — this
+reads `"reconnecting"` and then `"reconnected"`. Checking it distinguishes "the DUT is
+quiet" from "the adapter went away".
+
+### `stop() -> Result<()>`
+
+Stop cleanly and close the port on the box. Consumes the session. Dropping it also
+stops the session, but `stop()` surfaces errors.
+
+## Examples
+
+### Wait for a boot banner, then drive the console
+
+```rust
+use lager::LagerBox;
+use std::time::Duration;
+
+let lager = LagerBox::from_env()?;
+let supply = lager.supply("supply1");
+let mut uart = lager.uart("uart1")?;
+
+supply.set_voltage(3.3)?;
+supply.enable()?;
+
+uart.wait_for(b"boot complete", Duration::from_secs(10))?;
+uart.write_str("status\r\n")?;
+let reply = uart.wait_for(b"OK", Duration::from_secs(2))?;
+println!("{}", String::from_utf8_lossy(&reply));
+
+uart.stop()?;
+supply.disable()?;
+```
+
+### Survive a reflash without losing the session
+
+```rust
+use std::time::Duration;
+
+dbg.flash_bin("target/app.bin", 0x0)?;   // the adapter may re-enumerate
+
+// The session reconnects on its own; watch the status while it does.
+let banner = uart.wait_for(b"ready", Duration::from_secs(30))?;
+println!("status during reflash: {:?}", uart.last_status());
+assert!(String::from_utf8_lossy(&banner).contains("ready"));
+```
+
+## Supported Hardware
+
+| Adapter | Notes |
+|---|---|
+| SiLabs CP210x | |
+| FTDI FT232R / FT232H / FT2232H / FT4232H | On multi-channel parts, all four channels can serve UART |
+| Prolific USB serial | |
+| ESP32 JTAG/serial | |
+
+## Notes
+
+- **The box owns the port exclusively, and only one session per net or device is
+  allowed.** A second opener gets `Error::Stream` saying the port is already in use.
+  That includes a session your own previous test leaked — call `stop()`.
+- The connect confirmation timeout is 15 seconds; failing it is `Error::Timeout`.
+- Bytes are raw. There is no line discipline, no echo handling and no encoding
+  conversion; `wait_for` works on bytes.
+- Sessions carry the gateway bearer token on the Socket.IO handshake, so a gated box
+  needs no extra setup.
+- On FTDI multi-channel parts, UART works on all four channels, unlike the MPSSE
+  protocols (debug, spi, i2c) which are limited to channels A and B. On a single-channel
+  FT232H, claiming UART makes the MPSSE roles unavailable and vice versa.

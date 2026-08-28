@@ -18,7 +18,7 @@ mechanisms:
 
 Every `lager python <runnable>` invocation automatically acquires the box
 lock at start and releases it at end. This includes failures, `Ctrl+C`,
-crashes, and signal-killed runs — the lock is released through a `finally`
+crashes, and signal-killed runs. The lock is released through a `finally`
 block, a signal handler, an `atexit` net, and (worst case) a server-side
 TTL reap.
 
@@ -37,9 +37,9 @@ Read-only commands (`lager hello`, `lager boxes list`, `lager boxes lock` /
 `unlock` itself, net-listing paths like `lager supply --box X` with no
 subcommand, status / dry-run paths, etc.) do **not** acquire the auto-lock.
 
-Unlike the v0.12–0.13.3 design (which used a shared decorator on every
-command and was reverted in v0.13.4), this implementation uses the same
-TTL + heartbeat + atexit infrastructure as `lager python`, avoiding the
+The v0.12–0.13.3 design used a shared decorator on every command, and
+v0.13.4 reverted it. This implementation instead uses the same
+TTL + heartbeat + atexit infrastructure as `lager python`. That avoids the
 three corner cases that motivated the revert. See *Backward
 compatibility* below for the full history.
 
@@ -68,9 +68,9 @@ When `lager python` tries to acquire a lock that another holder owns:
   30 min), polling every 2s, and only fails if the wait elapses. This lets
   matrix jobs queue against the same self-hosted box.
 
-If you have already `lager boxes lock`ed the box as yourself before running
-`lager python`, the CLI sees the lock as already-ours and **does not
-release it on exit** — your explicit reservation survives the test.
+If you locked the box as yourself with `lager boxes lock` before you ran
+`lager python`, the CLI sees the lock as already-ours. It **does not
+release the lock on exit**, so your explicit reservation survives the test.
 
 ### TTL & heartbeat
 
@@ -80,9 +80,9 @@ Each test lock is written with `ttl_seconds: 1800` and refreshed every
 `last_heartbeat`, the lock stays valid indefinitely.
 
 What the TTL actually bounds is the worst-case **stale-lock dwell time
-after a CLI crash**. If your laptop loses network or the CI runner is
+after a CLI crash**. If your laptop loses network, or the CI runner is
 hard-killed, the box reaps the lock once `last_heartbeat + ttl_seconds`
-falls in the past, so another caller waits at most one TTL.
+falls in the past. Another caller therefore waits at most one TTL.
 
 ### `--detach` hands the lock to the box
 
@@ -99,14 +99,14 @@ lager python long_test.py --box my-lager-box --detach
 
 The box can only ever touch the lock the CLI handed it, and only a lock the
 run freshly acquired is handed over. A `lager boxes lock` reservation that a
-detached run merely resumed is never handed over and never released -- that
+detached run merely resumed is never handed over and never released. That
 reservation is the whole point of taking one.
 
 Against a box too old to know about the handoff, the CLI keeps the previous
-behaviour: an eternal hold, with the old "release with `lager boxes unlock`"
-message. It arms the lapse TTL only once the box has confirmed it is
-heartbeating, so a newer CLI can never leave a lock expiring underneath a job
-that is still running.
+behavior. That is an eternal hold, with the old "release with
+`lager boxes unlock`" message. The CLI arms the lapse TTL only after the box
+confirms that it heartbeats. So a newer CLI can never leave a lock that expires
+underneath a job that still runs.
 
 ### Escape hatches
 
@@ -138,7 +138,7 @@ lager boxes lock --box NAME
 **Options**:
 - `--box` (required) — name of the box to lock.
 - `--user` — username to lock as (useful when running inside Docker where
-  the user would otherwise be `root`).
+  the user is otherwise `root`).
 
 **Example**:
 ```bash
@@ -223,18 +223,18 @@ jobs:
       - run: lager python test/api/${{ matrix.suite }} --box my-lager-box
 ```
 
-The three matrix items each get a unique holder (`...GITHUB_JOB=hardware-tests/<runner>:<pid>`
-differs per item), POST `/lock`, and whichever loses the race waits up to
-30 minutes for the winner to finish before retrying. No `lager boxes lock`
-call needed.
+The three matrix items each get a unique holder, because
+`...GITHUB_JOB=hardware-tests/<runner>:<pid>` differs per item. Each item then
+POSTs `/lock`. Whichever item loses the race waits up to 30 minutes for the
+winner to finish, and then retries. No `lager boxes lock` call needed.
 
 ## Backward compatibility
 
 - `lager boxes lock` and `lager boxes unlock` behave exactly as before. The
-  CLI now sends `holder_type: "user"` + `ttl_seconds: null` on the wire,
-  but legacy clients (e.g. older CLIs against the new box server) get the
-  same eternal-lock behavior automatically because the server treats a
-  payload with neither field as legacy and applies the same defaults.
+  CLI now sends `holder_type: "user"` + `ttl_seconds: null` on the wire. A
+  legacy client — an older CLI against the new box server — still gets the
+  same eternal-lock behavior. The server treats a payload with neither field
+  as legacy, and applies the same defaults.
 - `_check_box_lock` (the read-only lock check that already gates every
   command in resolve_and_validate_box) is unchanged.
 

@@ -138,7 +138,7 @@ def _classify(usb_info: dict, visa_info: dict, disp_info: dict) -> tuple[str, st
     Order matters — most specific actionable diagnosis wins."""
     if usb_info.get('usbtmc_loaded'):
         return ('red',
-                'HOST-SIDE: usbtmc kernel module loaded — `lager box update` to install the blacklist.')
+                'HOST-SIDE: usbtmc kernel module loaded — `lager update` to install the blacklist.')
 
     visa_err_class = visa_info.get('error_class')
     if visa_err_class == 'busy':
@@ -575,7 +575,7 @@ def _print_section(title: str, data: dict, fmt_lines):
 
 @click.command()
 @click.argument('net')
-@click.option('--box', required=False, help='Lagerbox name or IP')
+@click.option('--box', required=False, help='Lager Box name or IP')
 @click.option('--type', 'net_type', type=click.Choice(NET_ROLE_CHOICES), default='auto',
               help='Net role; auto-detected from saved nets if omitted')
 @click.pass_context

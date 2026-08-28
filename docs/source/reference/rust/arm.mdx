@@ -1,0 +1,132 @@
+---
+title: Robot Arm
+description: Drive a robot arm to press buttons and move fixtures
+---
+
+Move a Rotrics Dexarm to press a DUT's buttons, place a fixture, or actuate anything
+a test needs a physical hand for. All coordinates are millimetres.
+
+## Handle
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let arm = lager.arm("arm1");
+```
+
+## Methods
+
+| Method | Description |
+|--------|-------------|
+| `name()` | The net name this handle addresses |
+| `position()` | Current end-effector position |
+| `move_to()` | Absolute move |
+| `move_to_with_timeout()` | Absolute move with an explicit box-side timeout |
+| `move_by()` | Relative move |
+| `move_by_with_timeout()` | Relative move with an explicit box-side timeout |
+| `go_home()` | Move to the home position |
+| `enable_motor()` | Energize the motors |
+| `disable_motor()` | Release the motors |
+| `read_and_save_position()` | Read the position and persist it on the arm |
+| `set_acceleration()` | Set acceleration in mm/s2 |
+
+## Types
+
+### `ArmPosition`
+
+```rust
+pub struct ArmPosition {
+    pub x: f64,   // mm
+    pub y: f64,   // mm
+    pub z: f64,   // mm
+}
+```
+
+## Method Reference
+
+### `position() -> Result<ArmPosition>`
+
+The current end-effector position, in millimetres.
+
+### `move_to(x: f64, y: f64, z: f64) -> Result<ArmPosition>`
+
+Absolute move.
+
+```rust
+let at = arm.move_to(50.0, 250.0, -20.0)?;
+println!("arrived at ({:.1}, {:.1}, {:.1})", at.x, at.y, at.z);
+```
+
+**Returns:** the position after the move.
+
+### `move_by(dx: f64, dy: f64, dz: f64) -> Result<ArmPosition>`
+
+Relative move; returns the new position.
+
+### `move_to_with_timeout(...)` and `move_by_with_timeout(...)`
+
+The same moves with an explicit box-side timeout in seconds, for a move that needs
+longer than the default 15. The client widens its own HTTP budget to match.
+
+### `go_home() -> Result<()>`
+
+Move to the home position, X0 Y300 Z0.
+
+### `enable_motor() -> Result<()>` and `disable_motor() -> Result<()>`
+
+Energize or release the steppers.
+
+<Warning>
+  A released arm is back-driveable and will **sag under its own weight**. Do not leave
+  the motors disabled with the arm over a workpiece or a populated board.
+</Warning>
+
+### `read_and_save_position() -> Result<ArmPosition>`
+
+Read the current position and persist it on the arm.
+
+### `set_acceleration(acceleration: u32, travel_acceleration: u32, retract_acceleration: u32) -> Result<()>`
+
+Set acceleration values in mm/s2.
+
+## Examples
+
+### Press a button and check the DUT saw it
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let arm = lager.arm("arm1");
+let led = lager.gpio("status_led");
+
+arm.enable_motor()?;
+arm.go_home()?;
+
+// Approach above the button, press, retract.
+arm.move_to(50.0, 250.0, 0.0)?;
+arm.move_to(50.0, 250.0, -18.0)?;
+std::thread::sleep(std::time::Duration::from_millis(200));
+arm.move_to(50.0, 250.0, 0.0)?;
+
+assert!(led.input()?.is_high(), "DUT did not register the press");
+arm.go_home()?;
+```
+
+## Supported Hardware
+
+| Arm | Notes |
+|---|---|
+| Rotrics Dexarm | Workspace bounds enforced on the device |
+
+## Notes
+
+- **Coordinates are millimetres**, and the arm enforces its own workspace bounds. An
+  out-of-range target is refused, not clamped.
+- **Moves block on the box** until the arm arrives, so do not poll around a
+  move. The box-side default move timeout is 15 seconds.
+- Non-move actions get a flat 45-second client budget, because they still touch the
+  serial port and can queue behind a move on the device lock.
+- The arm is physical and has no collision detection. Clear its workspace before
+  letting a test run unattended.

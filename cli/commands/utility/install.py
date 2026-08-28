@@ -343,7 +343,7 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
     except subprocess.TimeoutExpired:
         LagerError(
             f'SSH connection to {ssh_host} timed out after 15 seconds.',
-            cause='The box did not respond — it may be offline, or packets are being dropped.',
+            cause='The box did not answer. It is offline, or the network drops the packets.',
             fixes=[
                 f'Confirm the box is online: ping {ip}',
                 'Check your network / VPN connection, then retry.',
@@ -410,7 +410,7 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
     # the auto-lock for the duration so a concurrent test fail-fasts
     # (dev) or queues (CI) instead of getting killed.
     click.secho("Running box deployment...", fg='cyan')
-    click.echo("This may take several minutes.\n")
+    click.echo("This can take several minutes.\n")
 
     deploy_args = [str(deploy_script), ip, "--user", user, "--version", version, "--skip-add-box"]
 
@@ -472,7 +472,7 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
                 fg='red', err=True,
             )
             click.secho(
-                "The build may have been progressing normally -- this budget is not "
+                "The build can still be healthy -- this budget is not "
                 "a verdict on the box.",
                 fg='yellow', err=True,
             )
@@ -504,7 +504,7 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
     from ...box_storage import update_box_version
 
     click.echo("Storing version information...")
-    click.echo("(May require sudo password if passwordless sudo is not configured)")
+    click.echo("(Requires the sudo password if passwordless sudo is not configured)")
     click.echo()
 
     # Read CLI version from deployed cli/__init__.py
@@ -576,7 +576,7 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
         click.secho(f"Version {box_cli_version} stored on box", fg='green')
 
     except Exception as e:
-        click.secho(f"Warning: Could not store version information: {e}", fg='yellow')
+        click.secho(f"Warning: the CLI did not store the version information: {e}", fg='yellow')
         box_cli_version = version  # Fallback to requested version
 
     click.echo()
@@ -643,7 +643,7 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
                 )
                 if bootstrap_result.returncode != 0:
                     click.secho(
-                        "Warning: Sudoers rule could not be installed. `lager box-config apply` "
+                        "Warning: The sudoers rule did not install. `lager box-config apply` "
                         "will require manual sudoers setup on this box. See `lager box-config "
                         "apply --help` for the snippet to paste.",
                         fg='yellow', err=True,
@@ -696,5 +696,5 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
     click.secho("Installation complete!", fg='green', bold=True)
     click.echo()
     click.secho("Next steps:", fg='cyan')
-    click.echo("  - Verify the box is working: lager hello --box [BOX_NAME]")
+    click.echo("  - Verify that the box works: lager hello --box [BOX_NAME]")
     click.echo("  - Please run 'lager update --box [BOX_NAME]' to update the box to the latest version")

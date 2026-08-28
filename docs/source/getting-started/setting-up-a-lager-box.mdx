@@ -3,9 +3,9 @@ title: Setting Up a Lager Box
 description: Turn an Ubuntu machine into a Lager Box
 ---
 
-A **Lager Box** is an ordinary Ubuntu machine running the Lager box software. This page takes a
-machine you already have -- a mini PC on your bench, a rack server, or a virtual machine -- and
-turns it into one.
+A **Lager Box** is an ordinary Ubuntu machine that runs the Lager Box software. This page
+turns a machine you already have into one. That machine can be a mini PC on your bench, a
+rack server, or a virtual machine.
 
 <Note>
 If someone has already set up a box for you, you do not need this page. Go straight to
@@ -22,8 +22,8 @@ If someone has already set up a box for you, you do not need this page. Go strai
 - **Ubuntu 22.04 or newer**, including 24.04 LTS. See the note on Ubuntu 25.10 and later below.
 - A network connection, and an IP address or hostname you can reach.
 - An SSH server, and a **login account with `sudo`** whose password you know.
-- **`git`** installed. Everything else the box needs, including Docker, is installed for you --
-  though see Step 1 for why installing Docker yourself is worth the extra minute.
+- **`git`** installed. Lager installs everything else the box needs, including Docker.
+  Step 1 explains why you must spend the extra minute and install Docker yourself.
 
 **On your computer:**
 
@@ -39,13 +39,20 @@ sudo --version     # see the sudo-rs note below
 ```
 
 <Note>
-A first install builds the Lager container on the box itself. That is roughly 14 minutes
-on ordinary box hardware; plan for the box to be busy. `lager install` bounds the step at
-30 minutes by default. On slower hardware -- an emulated guest, a low-power mini PC, a
-throttled VM -- a healthy build can exceed that, so raise the budget with
-`--timeout <seconds>` (or `LAGER_INSTALL_TIMEOUT`) rather than letting it be cut off
-mid-build.
+A first install builds the Lager container on the box itself. That takes roughly 14 minutes
+on ordinary box hardware. Plan for the box to be busy. `lager install` bounds the step at
+30 minutes by default.
+
+Slower hardware runs longer. An emulated guest, a low-power mini PC, or a throttled VM can
+exceed 30 minutes on a healthy build. Raise the budget with `--timeout <seconds>` or
+`LAGER_INSTALL_TIMEOUT`, so the build does not stop midway.
 </Note>
+
+<Warning>
+**Keep your own machine awake for the whole install.** The build runs on the box, but it is
+driven over SSH from the machine you launched `lager install` from. If that machine sleeps and
+the connection drops, the build goes with it. On macOS, run the install under `caffeinate -i`.
+</Warning>
 
 <Note>
 **Ubuntu 25.10 and later, including 26.04 LTS, install without any change.** Those releases
@@ -54,9 +61,9 @@ wildcard rules to `/etc/sudoers.d/`, so installation stopped early with
 `wildcards are not allowed in command arguments`. Since **lager 0.41.0** every rule Lager
 writes names its arguments exactly, and nothing needs switching back to classic `sudo`.
 
-On an older CLI the workaround is still to switch the box to classic `sudo`
-(`sudo update-alternatives --set sudo /usr/bin/sudo.ws`), keeping a second session with a
-working root shell open in case the switch does not take.
+On an older CLI, switch the box to classic `sudo` instead
+(`sudo update-alternatives --set sudo /usr/bin/sudo.ws`). Keep a second session open with a
+working root shell, in case the switch does not take.
 </Note>
 
 <Warning>
@@ -85,10 +92,10 @@ sudo true
 ```
 
 <Note>
-**Optional, but it makes a failure easier to read: install Docker yourself now.** The installer
-installs Docker if the machine does not have it, but it runs that step over SSH and reports
-package problems with less detail than apt gives you directly. Installing it by hand first
-means any problem surfaces with a real error message, in front of you:
+**Optional, but it makes a failure easier to read: install Docker yourself now.** The
+installer installs Docker when the machine does not have it. It runs that step over SSH, and
+it reports package problems with less detail than apt gives you directly. Install Docker by
+hand first, and any problem surfaces with a real error message, in front of you:
 
 ```bash
 sudo apt install -y docker.io docker-compose-v2 docker-buildx
@@ -101,8 +108,8 @@ works without `sudo`.
 </Note>
 
 <Note>
-The login account does not have to be named `lagerdata`. Whatever it is called, pass it as
-`--user` in Step 3, and record it with the box so later commands use the right account.
+The login account does not have to be named `lagerdata`. Pass its real name as `--user` in
+Step 3, and record that name with the box. Later commands then use the right account.
 </Note>
 
 Note the machine's IP address or hostname -- you need it in Step 3:
@@ -131,16 +138,16 @@ lager --version
 
 ## Step 3: Run the Installer
 
-`lager install` does the rest: it configures SSH keys and sudo, deploys the box code, installs
-Docker if the machine does not have it, builds and starts the Lager container, and configures
-the firewall.
+`lager install` does the rest. It configures SSH keys and sudo, and it deploys the box code.
+It installs Docker when the machine does not have it. It then builds and starts the Lager
+container, and configures the firewall.
 
 ```bash
 lager install --ip <box-ip> --user <box-user>
 ```
 
-The command checks SSH connectivity, prints a summary of what it is about to do, and asks you
-to confirm before it changes anything.
+The command checks SSH connectivity and prints a summary of its planned work. It asks you to
+confirm before it changes anything.
 
 **The first time, SSH will not be authorized yet.** Lager notices, and offers to fix it:
 
@@ -152,15 +159,15 @@ install runs unattended) [Y/n]:
 ```
 
 Accept it and enter the box account's password once. Lager installs a dedicated key at
-`~/.ssh/lager_box`, and every later step -- and every later command -- runs without a password.
-If you decline, the install stops and tells you to run `lager ssh-setup --box <name-or-ip>`,
+`~/.ssh/lager_box`. Every later step, and every later command, then runs without a password.
+If you decline, the install stops. It tells you to run `lager ssh-setup --box <name-or-ip>`,
 which does the same thing on its own.
 
 Deployment then runs, streaming its output. Leave it alone until it finishes.
 
 **If it fails partway, fix what it reports and run the same command again.** `lager install`
-is safe to re-run: it rewrites its own configuration each time and skips work that is already
-done, so a second run picks up rather than starting over.
+is safe to re-run. It rewrites its own configuration each time and skips finished work, so a
+second run continues rather than starts over.
 
 <Note>
 To install a specific release instead of the latest code, add `--version` -- for example
@@ -172,13 +179,13 @@ option.
 
 ## Step 4: Networking and the Firewall
 
-Installation configures a UFW firewall on the box that restricts the Lager service ports to
-your VPN, the Docker bridge, and localhost. SSH on port 22 is always left open, so this cannot
-lock you out of the machine.
+Installation configures a UFW firewall on the box. The firewall restricts the Lager service
+ports to your VPN, the Docker bridge, and localhost. Port 22 always stays open, so the
+firewall cannot lock you out of the machine.
 
 How you point it at your network depends on what you use:
 
-**Tailscale.** Nothing to do. If Tailscale is running on the box, the installer detects the
+**Tailscale.** Nothing to do. If Tailscale runs on the box, the installer detects the
 `tailscale0` interface and allows the Lager ports on it.
 
 **A corporate VPN.** Name the interface explicitly. Find it on the box:
@@ -243,7 +250,7 @@ Then see what hardware it can find:
 lager instruments --box bench-1
 ```
 
-An empty list is the correct answer if you have not connected any instruments yet.
+An empty list is the correct answer before you connect any instruments.
 
 ---
 
@@ -257,13 +264,37 @@ and the Lager container reaches them through the host's `/dev`. **A USB device t
 see is a device Lager cannot use.** So if the box will drive real hardware, configure USB
 passthrough in your hypervisor before you connect anything.
 
-Prefer passing through an **entire USB controller** rather than individual devices. Debug
-probes re-enumerate when they reset, and Lager power-cycles USB hub ports as a normal part of
-testing -- both of which change or drop a device identity that per-device passthrough is
-pinned to. A whole controller keeps working across those events.
+Pass through an **entire USB controller** rather than individual devices. A debug probe
+re-enumerates when it resets, and Lager power-cycles USB hub ports as a normal part of
+testing. Both events change or drop the device identity that per-device passthrough pins to.
+A whole controller keeps working across them.
 
-A VM with no hardware attached is still useful for trying Lager out, and needs no passthrough
-at all.
+A VM with no hardware attached is still useful when you try Lager out. It needs no
+passthrough at all.
+
+### Emulated guests
+
+An **emulated** x86-64 guest works, such as an x86 VM on an ARM host. Its first install runs
+far slower than the figures above, and can take several hours.
+
+The container build is the reason. The box image compiles a USB DAQ library from source as a
+single-threaded C++ build. That takes a few minutes natively, and it is very slow under
+emulation. Expect that step alone to run for hours.
+
+Pull the pre-built image instead of building it. Deploy a release tag rather than `main`, so
+that a published image exists to pull:
+
+```bash
+lager install --ip <box-ip> --user <box-user> --version <release-tag>
+lager update --box <box-name> --version <release-tag> --pull
+```
+
+Any published release tag works. `lager update --version` accepts a tag, a semver pin, a
+branch, or a commit SHA. Only a release tag has a published image to pull.
+
+When no image matches, `--pull` falls back to building on the box. Watch the output. If it
+starts to compile, the pull missed and you are back on the slow path. See
+[pre-built box images](/source/reference/cli/update#pre-built-box-images).
 
 ---
 
@@ -289,8 +320,8 @@ account's password once. To do it as a separate step instead:
 lager ssh-setup --box <box-ip>
 ```
 
-If the password is rejected, confirm you are using the box account's own password, and that
-the box allows password authentication for that account.
+If the box rejects the password, confirm that you use the box account's own password.
+Confirm also that the box allows password authentication for that account.
 
 </Accordion>
 
@@ -304,23 +335,23 @@ The error lists the interfaces that do exist. Connect the VPN, confirm the name 
 
 <Accordion title="The install seems to have stopped">
 
-A first install builds the container image on the box, which is the longest step by far and can
-run for many minutes with little output. Let it run. The command gives up on its own after 30
-minutes.
+A first install builds the container image on the box. That is the longest step by far, and
+it can run for many minutes with little output. Let it run. The command gives up on its own
+after 30 minutes.
 
 </Accordion>
 
 <Accordion title="wildcards are not allowed in command arguments">
 
-The box is running `sudo-rs`, the default `sudo` on Ubuntu 25.10 and later, and the CLI is
+The box runs `sudo-rs`, the default `sudo` on Ubuntu 25.10 and later, and the CLI is
 older than 0.41.0. Installation stops at the passwordless-sudo step with
 `visudo: invalid sudoers file` before anything is deployed.
 
-Upgrade the CLI (`pip install --upgrade lager-cli`) and run the install again -- since 0.41.0
-Lager writes no wildcard rules and installs cleanly under `sudo-rs`.
+Upgrade the CLI (`pip install --upgrade lager-cli`) and run the install again. Since 0.41.0
+Lager writes no wildcard rules, and it installs cleanly under `sudo-rs`.
 
-If you cannot upgrade, switch the box to classic `sudo` instead, keeping a second session with
-a working root shell open in case the switch does not take:
+If you cannot upgrade, switch the box to classic `sudo` instead. Keep a second session open
+with a working root shell, in case the switch does not take:
 
 ```bash
 sudo update-alternatives --set sudo /usr/bin/sudo.ws
@@ -332,8 +363,8 @@ sudo --version
 <Accordion title="Failed to install Docker">
 
 Installation prints the manual commands to run on the box. Run them **one at a time** rather
-than as a block, so you can see which one actually fails -- the installer reports this whole
-sequence as a single error:
+than as a block, so that you see which one fails. The installer reports this whole sequence
+as a single error:
 
 ```bash
 sudo apt-get update && sudo apt-get install -y docker.io docker-compose-v2
@@ -343,7 +374,7 @@ sudo systemctl restart docker
 sudo usermod -aG docker <box-user>
 ```
 
-If `restart` is the step that fails, Docker itself is not starting and installing it again will
+If `restart` is the step that fails, Docker itself does not start. A second install does
 not help. Ask it why:
 
 ```bash
@@ -358,9 +389,9 @@ Once Docker runs, log out and back in so the group membership takes effect, then
 
 <Accordion title="The machine is not x86-64">
 
-x86-64 is the only supported box architecture. Check with `uname -m` on the machine -- it must
-report `x86_64`. Other architectures are not supported, and an install may appear to succeed
-while hardware support is missing.
+x86-64 is the only supported box architecture. Check with `uname -m` on the machine. It must
+report `x86_64`. On any other architecture, an install can appear to succeed while the box has no
+hardware support.
 
 </Accordion>
 
@@ -371,7 +402,7 @@ For problems that appear after the box is up and running, see
 
 ## Next Steps
 
-Your box is running. Now connect to it and give it something to do:
+Your box is ready. Now connect to it and give it something to do:
 
 - **[Adding your First Lager Box](/source/getting-started/adding-first-lager-box)** -- Add the box on any other machine that needs to reach it
 - **[Setting Up Your Instruments](/source/getting-started/setting-up-instruments)** -- Discover the hardware connected to your box and define nets

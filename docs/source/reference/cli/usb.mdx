@@ -15,7 +15,7 @@ lager usb [OPTIONS] [NET_NAME] [COMMAND]
 
 | Option | Description |
 |--------|-------------|
-| `--box TEXT` | Lagerbox name or IP address |
+| `--box TEXT` | Lager Box name or IP address |
 | `--help` | Show help message and exit |
 
 ## Arguments
@@ -109,30 +109,31 @@ lager usb USB2 cycle --box my-lager-box
 
 <Note>
 `cycle` returns as soon as the **hub** reports the device reconnecting, which is
-a few hundred milliseconds. Linux has not finished re-enumerating at that
-instant, so a device node or `/dev/ttyUSB*` may not be back yet, and a `/sys`
-read taken immediately still shows the pre-cycle values. If the next step opens
-the device, wait for its node rather than assuming `cycle` returning means it is
-ready.
+a few hundred milliseconds. Linux does not finish re-enumerating at that instant.
+A device node or `/dev/ttyUSB*` can still be absent, and a `/sys` read taken
+immediately still shows the pre-cycle values. If the next step opens the device,
+wait for its node. A return from `cycle` does not mean that the device is ready.
 </Note>
 
 That is **not** the same as "the port is unused". A hub only sees a device that
-pulls up its data lines, so a **charge-only cable** — powering a DUT with no data
-connection — looks exactly like an empty socket. The port was still cut and
-restored. Confirm the DUT by its own behaviour: its UART, or a current
+pulls up its data lines. A **charge-only cable** powers a DUT but makes no data
+connection, so it looks exactly like an empty socket. The port was still cut and
+restored. Confirm the DUT by its own behavior: its UART, or a current
 measurement.
 
-Prefer it over a scripted `disable`/`sleep`/`enable`. It holds the hub for the
-whole sequence, so nothing else can switch the port while it is dark; it
-restores power on every failure path, so a command that dies partway through
-cannot strand a port; and it reports whether the device actually came back
-instead of leaving you to guess.
+Prefer it over a scripted `disable`/`sleep`/`enable`, for three reasons:
+
+- It holds the hub for the whole sequence, so nothing else can switch the port
+  while it is dark.
+- It restores power on every failure path, so a command that dies partway
+  through cannot strand a port.
+- It reports whether the device actually came back, so you do not have to guess.
 
 `--off-time` defaults to 1 second, comfortably above the slowest cold boot
 measured on real hardware. **Too short an off time is the failure that
-matters**: the device's rails do not fully discharge, so it warm-starts while
-looking like it was reset. Raise it for a device with large bulk capacitance;
-values below 0.5s or above 10s are refused.
+matters**: the device's rails do not fully discharge. The device then
+warm-starts, but it looks like a device that was reset. Raise the off time for a
+device with large bulk capacitance. A value below 0.5s or above 10s is refused.
 
 <Warning>
 **A powered-off port still appears in `lsusb` and still has its `/dev/ttyUSB*`.**
@@ -152,9 +153,9 @@ lager usb USB1 recover --box my-lager-box
 # [OK] USB port 'USB1': power restored on port(s) 1, 2, 3, 4
 ```
 
-On hubs where lager can identify the whole device (such as a Plugable dock) this
-re-powers every port on it, since the reason to reach for `recover` is usually
-that something is off and it is not obvious what.
+On a hub where lager can identify the whole device (such as a Plugable dock),
+`recover` re-powers every port on it. You usually reach for `recover` because
+something is off and it is not obvious what.
 
 ### Read port state (read-only)
 
@@ -215,7 +216,7 @@ lager usb USB1 recover --box my-lager-box
 | YKUSH | YKUSH3 | USB switchable hub |
 | Plugable | RTS5411 docks (e.g. UD-CAM) | 4 external Type-A sockets; standard USB hub-class switching |
 
-See [Supported Instruments](/supported-instruments/supported-instruments) for
+See [Supported Instruments](/source/supported-instruments/supported-instruments) for
 which ports on a Plugable dock switch power and which do not.
 
 ---

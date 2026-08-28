@@ -31,7 +31,7 @@ lager ble scan [OPTIONS]
 ```
 
 **Options:**
-- `--box BOX` - Lagerbox name or IP address
+- `--box BOX` - Lager Box name or IP address
 - `--timeout FLOAT` - Scan duration in seconds (default: 5.0)
 - `--name-contains STRING` - Filter devices by name (partial match)
 - `--name-exact STRING` - Filter devices by exact name match
@@ -164,4 +164,4 @@ lager ble info AA:BB:CC:DD:EE:FF
 - BLE scanning requires Bluetooth hardware on the box
 - Address format is `XX:XX:XX:XX:XX:XX` (colon-separated hex)
 - Scan timeout affects how long the box searches for devices
-- Some devices may not advertise their name until connected
+- Some devices do not advertise their name until they connect

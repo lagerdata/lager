@@ -3,7 +3,7 @@ title: MCP Server Overview
 description: How AI agents discover hardware and plan tests on a Lager Box via the Model Context Protocol
 ---
 
-Every Lager Box runs an **MCP (Model Context Protocol) server** that lets an AI
+Every Lager Box runs an **MCP (Model Context Protocol) server**. It lets an AI
 agent understand the bench, understand the device under test (DUT), and plan
 hardware-in-the-loop tests. It runs on-box and is reachable over the box's local
 IP.
@@ -40,15 +40,27 @@ Point any MCP-compatible client at the box:
 ```
 
 <Note>
-The MCP server is for **discovery and planning** only — it does not run code or
-drive hardware. To **execute** a test, the agent writes a Python file locally and
-runs it with `lager python path/to/test.py --box <box-ip>`, which syncs the
-project to the box and runs it with full project context. Pass the box's **IP
+Out of the box the MCP server is for **discovery and planning** only — it does
+not run code or drive hardware. Two opt-in environment variables extend it past
+that; see [Optional tool gates](#optional-tool-gates). To **execute** a test, the
+agent writes a Python file locally. It then runs the file with
+`lager python path/to/test.py --box <box-ip>`, which syncs the project to the box
+and runs it with full project context. Pass the box's **IP
 address** to `--box` — the same IP you connected to the MCP server on. Local box
 names are just client-side aliases, so the IP is the only identifier both sides
 can rely on. To make this concrete, `discover_bench()` echoes the address you
 actually connected on as `box_address` and hands back a ready-to-run
 `lager python … --box <that-address>` command.
+</Note>
+
+<Note>
+The URL above assumes a box that publishes its ports, which is the default. A box
+started with `start_box.sh --no-publish` (or `LAGER_NO_PUBLISH=1`) does not publish
+port 8100 on the host. The MCP server still runs and binds `0.0.0.0:8100` inside
+the container. It is reachable only on the internal `lagernet` Docker network,
+where a reverse proxy owns the host ports. On such a box, point the client at the
+container's lagernet address or at the route the proxy exposes -- `<box-ip>:8100`
+will not connect.
 </Note>
 
 ## What the agent sees
@@ -85,18 +97,55 @@ agent reads) and **tools** (callable functions).
 | `box_manage(action)` | `health` check or `reload` the bench config from disk. |
 
 <Note>
-The tool surface is intentionally read-only. There are no tools that drive
-hardware (set a voltage, toggle a GPIO, flash firmware) or mutate the box. All
-of that lives in the test script the agent writes and runs with `lager python`,
-or in dedicated [CLI commands](/source/reference/cli).
+**By default the tool surface is read-only.** The seven tools above do not drive
+hardware (set a voltage, toggle a GPIO, flash firmware) or mutate the box. All of
+that lives in the test script the agent writes and runs with `lager python`, or in
+dedicated [CLI commands](/source/reference/cli).
+
+This default holds only while both gates below are off.
 </Note>
+
+### Optional tool gates
+
+Two environment variables, both **off** unless explicitly set, register additional
+tools when the box's MCP server starts. Each widens what a connected agent can do
+to the box, so treat them as deployment decisions rather than conveniences.
+
+#### `LAGER_MCP_ALLOW_CONTROL`
+
+Adds three scoped tools. These read bench state and power-cycle a hub port — they
+do not execute arbitrary code.
+
+| Tool | Purpose |
+|------|---------|
+| `net_status(net)` | Compact read-only status for one net on the bench. |
+| `debug_probe_status(net)` | Whether a debug net's probe is present on the USB bus. |
+| `power_cycle_hub(hub)` | Power-cycle an Acroname-controlled USB hub port (disable, settle, enable). **Drives hardware.** |
+
+#### `LAGER_MCP_ALLOW_EXEC`
+
+<Warning>
+This gate exposes **arbitrary command execution and file writes** on the box to any
+agent that can reach the MCP port. An agent can run any command the box's service
+user can run, and overwrite any file it can write. The server itself logs a warning
+at startup when this is set. Enable it only on a bench you control, on a trusted
+network, and never on a shared or production box.
+</Warning>
+
+| Tool | Purpose |
+|------|---------|
+| `box_exec(command, timeout_s, cwd)` | Run an arbitrary shell command on the box and capture its result. |
+| `read_file(path, max_bytes)` | Read a file on the box (config, source, logs). |
+| `write_file(path, content)` | Atomically write a file, backing up any prior version. |
+| `list_dir(path)` | List the entries of a directory on the box. |
+
 
 ### Prompts
 
-The server also registers a few **prompts** — slash-command-style entry points
-that steer a client (e.g. Cursor) through the discover → plan → write → run
-workflow. They don't do work themselves; each returns an instruction the agent
-follows using the tools above.
+The server also registers a few **prompts**. These are slash-command-style entry
+points that steer a client (e.g. Cursor) through the discover → plan → write →
+run workflow. They do no work themselves. Each returns an instruction that the
+agent follows with the tools above.
 
 | Prompt | What it does |
 |--------|--------------|

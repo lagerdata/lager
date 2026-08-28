@@ -1,0 +1,126 @@
+---
+title: BLE
+description: Scan for and connect to Bluetooth Low Energy devices from the box
+---
+
+Use the box's own Bluetooth adapter to find your DUT advertising, connect to it, and
+enumerate its GATT services.
+
+## Handle
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let ble = lager.ble();
+```
+
+BLE is a **box-level** capability, not a net: it drives the box's own adapter. There
+is no net name and no `name()`.
+
+## Methods
+
+| Method | Description |
+|--------|-------------|
+| `scan()` | Scan for advertising devices |
+| `scan_named()` | Scan, filtered by a name substring |
+| `info()` | Connect briefly and enumerate GATT services |
+| `connect()` | Connect, enumerating services to verify |
+| `disconnect()` | Ensure a device is disconnected from the box |
+
+## Types
+
+```rust
+pub struct BleDevice {
+    pub name: String,          // falls back to the address when unnamed
+    pub address: String,       // XX:XX:XX:XX:XX:XX
+    pub rssi: Option<i64>,     // dBm
+    pub uuids: Vec<String>,
+}
+
+pub struct BleDeviceInfo {
+    pub address: String,
+    pub connected: bool,
+    pub services: Vec<BleService>,
+}
+
+pub struct BleService {
+    pub uuid: String,
+    pub description: Option<String>,
+    pub characteristics: Vec<BleCharacteristic>,
+}
+
+pub struct BleCharacteristic {
+    pub uuid: String,
+    pub description: Option<String>,
+    pub properties: Vec<String>,   // e.g. ["read", "notify"]
+}
+```
+
+## Method Reference
+
+### `scan(timeout: f64) -> Result<Vec<BleDevice>>`
+
+Scan for advertising devices for `timeout` seconds, which must be between 0.1 and 300.
+Named devices sort first.
+
+```rust
+for d in ble.scan(5.0)? {
+    println!("{} ({}) {:?} dBm", d.name, d.address, d.rssi);
+}
+```
+
+### `scan_named(timeout: f64, name_contains: &str) -> Result<Vec<BleDevice>>`
+
+The same scan, filtered by a case-insensitive name substring.
+
+### `info(address: &str) -> Result<BleDeviceInfo>`
+
+Connect briefly and enumerate the device's GATT services.
+
+### `connect(address: &str) -> Result<BleDeviceInfo>` and `disconnect(address: &str) -> Result<()>`
+
+Connect to, or ensure disconnection from, a device by address.
+
+## Examples
+
+### Assert the DUT advertises with the right service
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let ble = lager.ble();
+let supply = lager.supply("supply1");
+
+supply.set_voltage(3.3)?;
+supply.enable()?;
+std::thread::sleep(std::time::Duration::from_secs(3));
+
+let found = ble.scan_named(10.0, "my-dut")?;
+let dut = found.first().expect("DUT is not advertising");
+println!("found {} at {:?} dBm", dut.name, dut.rssi);
+
+let info = ble.info(&dut.address)?;
+assert!(info.services.iter().any(|s| s.uuid.starts_with("0000180f")),
+        "battery service missing");
+
+ble.disconnect(&dut.address)?;
+supply.disable()?;
+```
+
+## Notes
+
+- **One adapter per box.** The box serializes all BLE *and* BluFi work on it, so
+  concurrent calls queue rather than fail. A BluFi provisioning run and a BLE scan
+  cannot overlap.
+- `capabilities.ble_command` being `true` means the box **serves the route**, not that
+  it can do the work. A box whose container has no BlueZ running answers with
+  `Error::Box` and HTTP 502 carrying
+  `The name org.bluez was not provided by any .service files`. This happens even with a
+  Bluetooth controller present on the USB bus. Check the error, not just the
+  capability flag.
+- The box-side connect timeout for `info`, `connect` and `disconnect` is 10 seconds;
+  the client allows that plus 30.
+- `rssi` is a snapshot from the advertisement that happened to be received. Treat it
+  as an ordering hint, not a measurement.

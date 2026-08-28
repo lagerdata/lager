@@ -23,7 +23,7 @@ Digital-to-Analog Converter. Hardware that outputs a precise analog voltage from
 
 ## DUT
 
-Device Under Test. The embedded board or product you are testing with Lager.
+Device Under Test. The embedded board or product that you test with Lager.
 
 ## E-Load
 
@@ -51,11 +51,11 @@ Inter-Integrated Circuit (pronounced "eye-squared-see"). A two-wire serial proto
 
 ## Lager Box
 
-Any x86-64 machine running Ubuntu 22.04 or newer (for example, a compact mini PC) that sits on your bench, physically connected to your instruments and DUT. It runs the Lager container (Flask + SocketIO) which exposes HTTP and WebSocket APIs for hardware control. See [Setting Up a Lager Box](/source/getting-started/setting-up-a-lager-box).
+Any x86-64 machine that runs Ubuntu 22.04 or newer, such as a compact mini PC. It sits on your bench, wired to your instruments and DUT. It runs the Lager container (Flask and SocketIO), which exposes HTTP and WebSocket APIs for hardware control. See [Setting Up a Lager Box](/source/getting-started/setting-up-a-lager-box).
 
 ## Net
 
-A named logical connection to a physical instrument on a Lager Box — e.g. `supply1` mapping to channel 1 of a Rigol DP832 power supply, or `uart0` mapping to `/dev/ttyUSB0` at 115200 baud. Nets decouple test code from specific hardware addresses, so the same script works as instruments move or change.
+A named logical connection to a physical instrument on a Lager Box. For example, `supply1` maps to channel 1 of a Rigol DP832 power supply. `uart0` maps to `/dev/ttyUSB0` at 115200 baud. A net separates test code from a specific hardware address. The same script keeps working when an instrument moves or changes.
 
 ## OCP
 

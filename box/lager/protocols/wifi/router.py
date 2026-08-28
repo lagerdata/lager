@@ -61,9 +61,11 @@ class Wifi:
         return f'<lager.Wifi name="{self.name}" pin={self.pin}>'
 
     def enable(self):
+        """Restore the DUT's internet access via the router's parental controls."""
         location = self._location
         return asyncio.run(set_internet_access(location['hostname'], location['username'], location['password'], location['mac'], True))
 
     def disable(self):
+        """Cut the DUT's internet access, leaving it associated to the AP."""
         location = self._location
         return asyncio.run(set_internet_access(location['hostname'], location['username'], location['password'], location['mac'], False))

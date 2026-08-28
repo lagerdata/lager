@@ -2,7 +2,7 @@
 
 This document is for **maintainers** who publish releases of the `lager-cli` package to PyPI.
 
-If you are looking to contribute code, see [CONTRIBUTING.md](CONTRIBUTING.md).
+To contribute code, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Prerequisites
 
@@ -54,7 +54,7 @@ Before starting a release, verify:
 - [ ] Tests pass against target hardware boxes
 - [ ] `CHANGELOG.md` has entries for all user-facing changes
 - [ ] `SECURITY.md` supported-version table matches the release you are about to cut
-- [ ] No open security issues that should block the release
+- [ ] No open security issue blocks the release
 
 ## Release Steps
 
@@ -179,7 +179,7 @@ git push -u origin release/vX.Y.Z
 gh pr create --repo lagerdata/lager --base main --title "vX.Y.Z"
 ```
 
-After the PR is reviewed and approved, merge it using **Squash and merge** or **Rebase and merge** — the branch requires linear history, so standard merge commits are not allowed.
+After a reviewer approves the PR, merge it with **Squash and merge** or **Rebase and merge**. The branch requires linear history, so standard merge commits are not allowed.
 
 ### 6. Tag the Release
 
@@ -194,24 +194,26 @@ git push upstream vX.Y.Z
 
 Pushing the tag triggers two workflows in parallel:
 
-- **Release: Validate Tag** (`.github/workflows/release-validation.yml`) — builds the
-  sdist and wheel from the tagged commit, runs `twine check`, installs each into a
-  clean venv, asserts the installed `lager --version` equals the tag, import-walks
-  the installed package against `tools/packaging_import_baseline.txt`, and uploads
-  the result as a workflow artifact named `dist-vX.Y.Z` (kept 90 days).
-- **Release: Publish Box Image** (`.github/workflows/box-image-publish.yml`) — builds
-  `box/lager/docker/box.Dockerfile` and pushes
-  `box/lager/docker/box.Dockerfile` and pushes
-  `ghcr.io/lagerdata/lager-box:vX.Y.Z` (and `:X.Y.Z`), labelled with the tag and
+- **Release: Validate Tag** (`.github/workflows/release-validation.yml`) works from
+  the tagged commit and runs these steps:
+  - builds the sdist and the wheel;
+  - runs `twine check`;
+  - installs each one into a clean venv;
+  - asserts that the installed `lager --version` equals the tag;
+  - import-walks the installed package against `tools/packaging_import_baseline.txt`;
+  - uploads the result as a workflow artifact named `dist-vX.Y.Z`, kept 90 days.
+- **Release: Publish Box Image** (`.github/workflows/box-image-publish.yml`) builds
+  `box/lager/docker/box.Dockerfile`. It pushes
+  `ghcr.io/lagerdata/lager-box:vX.Y.Z` (and `:X.Y.Z`), labeled with the tag and the
   commit it was built from. `lager update --pull --version vX.Y.Z` fetches that
   image by digest instead of building on the box; without `--pull` (the default
-  while this soaks) nothing consumes it. For a box to pull it anonymously the
-  package must be **public** — set that once in the GitHub UI after the first
-  successful publish (Packages → lager-box → Package settings).
+  while this soaks) nothing consumes it. A box can pull the package anonymously
+  only when the package is **public**. Set that once in the GitHub UI after the
+  first successful publish (Packages → lager-box → Package settings).
 
   The `org.opencontainers.image.version` label is what the client checks before
-  deploying a pulled image. If this workflow is ever changed such that the label
-  stops matching the tag, every box silently falls back to building — slower, but
+  deploying a pulled image. If a change to this workflow stops the label matching
+  the tag, every box silently falls back to building. That is slower, but it is
   never wrong.
 
 Wait for Validate Tag to go green, then download the artifact:
@@ -225,8 +227,8 @@ Do **not** rebuild locally. The artifact is the set of bytes the validation prov
 rebuild is a different, unproven build. (If the workflow is red, the tag has a real problem
 -- fix it before anything reaches PyPI.)
 
-A red box-image publish does **not** block the PyPI upload — no box depends on that
-image yet — but fix it before cutting the next release.
+A red box-image publish does **not** block the PyPI upload, because no box depends
+on that image yet. Fix it before you cut the next release.
 
 ### 8. Upload to PyPI
 
@@ -287,4 +289,4 @@ This project follows [Semantic Versioning](https://semver.org/):
 
 **Import errors during build:** Ensure all dependencies listed in `cli/setup.py` are available in your environment.
 
-**Tag already exists:** If you need to re-tag (e.g., after a fix), delete the old tag first: `git tag -d vX.Y.Z && git push upstream :refs/tags/vX.Y.Z`. Only do this if the release has not been published to PyPI.
+**Tag already exists:** If you need to re-tag (e.g., after a fix), delete the old tag first: `git tag -d vX.Y.Z && git push upstream :refs/tags/vX.Y.Z`. Do this only when the release is not yet on PyPI.

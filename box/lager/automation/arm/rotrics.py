@@ -134,12 +134,15 @@ class Dexarm(ArmBase):
         time.sleep(0.5)
 
     def enable_motor(self) -> None:
+        """Energize the stepper motors (M17), holding position under load."""
         self._send_cmd("M17\r")
 
     def disable_motor(self) -> None:
+        """Release the stepper motors (M18) so the arm can be moved by hand."""
         self._send_cmd("M18\r")
 
     def save_position(self) -> None:
+        """Persist the arm's current position on the device (M889)."""
         self._send_cmd("M889\r")
 
     def read_and_save_position(self) -> Tuple[float, float, float]:
@@ -183,9 +186,11 @@ class Dexarm(ArmBase):
                 break
 
     def set_workorigin(self) -> None:
+        """Define the current position as the work origin, X0 Y0 Z0 (G92)."""
         self._send_cmd("G92 X0 Y0 Z0 E0\r")
 
     def set_acceleration(self, acceleration: int, travel_acceleration: int, retract_acceleration: int = 60) -> None:
+        """Set print/travel/retract acceleration in mm/s^2 (M204)."""
         cmd = (
             "M204"
             + "P" + str(acceleration)
@@ -367,54 +372,70 @@ class Dexarm(ArmBase):
 
     # Aliases with correct spelling
     def delay_ms(self, value: int) -> None:
+        """Pause the motion queue for *value* milliseconds (G4 P)."""
         self.dealy_ms(value)
 
     def delay_s(self, value: int) -> None:
+        """Pause the motion queue for *value* seconds (G4 S)."""
         self.dealy_s(value)
 
     # End-effector helpers
     def soft_gripper_pick(self) -> None:
+        """Close the soft gripper to grasp an object (M1001)."""
         self._send_cmd("M1001\r")
 
     def soft_gripper_place(self) -> None:
+        """Open the soft gripper to release an object (M1000)."""
         self._send_cmd("M1000\r")
 
     def soft_gripper_neutral(self) -> None:
+        """Return the soft gripper to its neutral position (M1002)."""
         self._send_cmd("M1002\r")
 
     def soft_gripper_stop(self) -> None:
+        """Stop the soft gripper and release air pressure (M1003)."""
         self._send_cmd("M1003\r")
 
     def air_picker_pick(self) -> None:
+        """Apply suction to pick up an object (M1000)."""
         self._send_cmd("M1000\r")
 
     def air_picker_place(self) -> None:
+        """Release suction to place an object (M1001)."""
         self._send_cmd("M1001\r")
 
     def air_picker_neutral(self) -> None:
+        """Return the air picker to its neutral state (M1002)."""
         self._send_cmd("M1002\r")
 
     def air_picker_stop(self) -> None:
+        """Stop the air picker pump (M1003)."""
         self._send_cmd("M1003\r")
 
     def laser_on(self, value: int = 0) -> None:
+        """Turn the laser module on at power *value* (M3 S)."""
         self._send_cmd("M3 S" + str(value) + '\r')
 
     def laser_off(self) -> None:
+        """Turn the laser module off (M5)."""
         self._send_cmd("M5\r")
 
     # Conveyor
     def conveyor_belt_forward(self, speed: int = 0) -> None:
+        """Run the conveyor belt forward at *speed* (M2012 D0)."""
         self._send_cmd("M2012 F" + str(speed) + 'D0\r')
 
     def conveyor_belt_backward(self, speed: int = 0) -> None:
+        """Run the conveyor belt backward at *speed* (M2012 D1)."""
         self._send_cmd("M2012 F" + str(speed) + 'D1\r')
 
     def conveyor_belt_stop(self) -> None:
+        """Stop the conveyor belt (M2013)."""
         self._send_cmd("M2013\r")
 
     # Sliding rail
     def sliding_rail_init(self) -> None:
+        """Initialize and home the sliding rail accessory (M2005)."""
         self._send_cmd("M2005\r")
 
     def close(self) -> None:

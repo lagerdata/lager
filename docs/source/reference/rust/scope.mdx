@@ -1,0 +1,83 @@
+---
+title: Oscilloscope
+description: Why scope and logic capture are not yet available from Rust
+---
+
+`Scope` is a **documented stub**. Every method except `name()` returns
+`Error::NotSupportedByBox`. The type exists so that code written against it compiles
+today and keeps compiling when the box grows the endpoints behind it.
+
+## Handle
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let scope = lager.scope("scope1");   // returns Scope by value, not a borrow
+```
+
+`Scope` is one of the few handles with no lifetime and no async twin: there is no
+client work for it to do yet.
+
+## Methods
+
+| Method | Behavior |
+|--------|-------------|
+| `name()` | Works. Returns the net name. |
+| `enable()` | `Error::NotSupportedByBox` |
+| `disable()` | `Error::NotSupportedByBox` |
+| `capture()` | `Error::NotSupportedByBox` |
+| `measure()` | `Error::NotSupportedByBox` |
+
+The error carries the reason verbatim:
+
+```text
+'scope' is not yet available over the box HTTP API: the box needs
+`POST :9000/net/command` scope/logic roles (or a dedicated capture endpoint)
+for trigger config, single capture, and measurement queries; see
+MISSING_ENDPOINTS.md
+```
+
+## Why
+
+The crate is a pure HTTP/JSON client of the box's API on port 9000. Every other net
+type has a route there. Scope and logic-analyzer work does not. `lager scope` and
+`lager logic` still run over the legacy exec path on port 5000, and over a dedicated
+oscilloscope streaming daemon on ports 8082-8085. Neither of those is an HTTP/JSON
+API that this crate can speak.
+
+Closing the gap needs `analog` and `logic` roles in the box's `/net/command`
+`ROLE_ACTIONS`. Those roles must cover trigger configuration, a single capture that
+returns the trace as JSON, and scalar measurements. Streaming capture can stay on the
+dedicated daemon. The work list lives in
+[MISSING_ENDPOINTS.md](https://github.com/lagerdata/lager-rs/blob/main/MISSING_ENDPOINTS.md).
+
+## What to do instead
+
+Use the Python API or the CLI for scope and logic work, and Rust for everything else.
+They drive the same box and the same nets.
+
+```rust
+// Detect the stub explicitly rather than letting it surprise you.
+match scope.measure("vpp") {
+    Err(lager::Error::NotSupportedByBox { .. }) => {
+        eprintln!("scope capture is not on the HTTP API yet; skipping");
+    }
+    Ok(v) => println!("vpp = {v}"),
+    Err(e) => return Err(e),
+}
+```
+
+For a scalar an assertion actually needs, an ADC net often suffices and is available
+today. Where a real waveform is required, drive `lager scope` from the test's shell
+step, or write that portion in Python.
+
+## Notes
+
+- The stub returns `Error::NotSupportedByBox`, which is a **different variant** from
+  `Error::UnsupportedByBox`. `NotSupportedByBox` means the crate has no route for this
+  at all. `UnsupportedByBox` means this particular box is too old for a route that
+  does exist. See [Errors](/source/reference/rust/errors).
+- A logic net has no Rust handle whatsoever — there is no `lager.logic(...)`.
+- Nothing here depends on box version. A box running the newest software still
+  returns the stub error.

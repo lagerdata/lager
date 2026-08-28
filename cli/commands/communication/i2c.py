@@ -208,7 +208,7 @@ def _read_data_file(filepath: str) -> List[int]:
         with open(filepath, 'rb') as f:
             return list(f.read())
     except (IOError, OSError) as e:
-        raise click.BadParameter(f"Could not read data file '{filepath}': {e}")
+        raise click.BadParameter(f"The CLI did not read the data file '{filepath}': {e}")
 
 
 def _dio_name(dio) -> str:
@@ -310,7 +310,7 @@ def _format_scan_grid(found: list, start_addr: int = 0x08,
 @click.group(name="i2c", cls=I2CGroup, invoke_without_command=True)
 @click.argument("NETNAME", required=False, metavar="[NET_NAME]")
 @click.pass_context
-@click.option('--box', required=False, help="Lagerbox name or IP")
+@click.option('--box', required=False, help="Lager Box name or IP")
 def i2c(ctx, netname, box):
     """Perform I2C data transfers"""
     if netname is None:
@@ -341,7 +341,7 @@ i2c.net_examples = [
 
 @i2c.command()
 @click.pass_context
-@click.option('--box', required=False, help="Lagerbox name or IP")
+@click.option('--box', required=False, help="Lager Box name or IP")
 @click.option('--frequency', default=None,
               help='Clock frequency (e.g., 100k, 400k)')
 @click.option('--pull-ups', type=click.Choice(["on", "off"]), default=None,
@@ -371,7 +371,7 @@ def config(ctx, box, frequency, pull_ups):
 
 @i2c.command()
 @click.pass_context
-@click.option('--box', required=False, help="Lagerbox name or IP")
+@click.option('--box', required=False, help="Lager Box name or IP")
 @click.option('--start', default="0x08",
               help='Start address in hex (default: 0x08)')
 @click.option('--end', default="0x77",
@@ -412,7 +412,7 @@ def scan(ctx, box, start, end):
 @i2c.command()
 @click.argument("NUM_BYTES", type=click.IntRange(min=0))
 @click.pass_context
-@click.option('--box', required=False, help="Lagerbox name or IP")
+@click.option('--box', required=False, help="Lager Box name or IP")
 @click.option('--address', required=True,
               help='Device address in hex (e.g., 0x48)')
 @click.option('--frequency', default=None,
@@ -451,7 +451,7 @@ def read(ctx, num_bytes, box, address, frequency, output_format):
 @i2c.command()
 @click.argument("DATA", required=False, default=None)
 @click.pass_context
-@click.option('--box', required=False, help="Lagerbox name or IP")
+@click.option('--box', required=False, help="Lager Box name or IP")
 @click.option('--address', required=True,
               help='Device address in hex (e.g., 0x48)')
 @click.option('--data-file', type=click.Path(exists=True), default=None,
@@ -501,7 +501,7 @@ def write(ctx, data, box, address, data_file, frequency, output_format):
 @i2c.command()
 @click.argument("NUM_BYTES", type=click.IntRange(min=0))
 @click.pass_context
-@click.option('--box', required=False, help="Lagerbox name or IP")
+@click.option('--box', required=False, help="Lager Box name or IP")
 @click.option('--address', required=True,
               help='Device address in hex (e.g., 0x48)')
 @click.option('--data', 'data_str', default=None,

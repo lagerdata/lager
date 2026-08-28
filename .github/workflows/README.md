@@ -240,3 +240,34 @@ Notes and footguns:
   also fails (no box service to receive the command), or the job-level
   timeout kills the run before the cleanup steps. Both are harmless —
   instruments idle at AC — and the next run re-asserts the state.
+
+## Bench wiring fixtures
+
+Wires between instruments are fixtures, and an undeclared one reads as a
+hardware fault. Everything permanently attached to an instrument output
+belongs here.
+
+| From | To | Exercised by |
+|---|---|---|
+| Rigol DP821 CH2 (`supply3`) output | MCC USB-202 CH0 (`adc15`) | `test/api/io/test_usb202.py::test_adc_supply_accuracy`, gated on `USB202_SUPPLY_NET` + `USB202_SUPPLY_ADC_NET` |
+
+This wire cost real triage time. It was built for a check whose two repository
+variables were never set, so the sub-test had never run once and nothing in the
+tree recorded that CH2 had anything on it. Meanwhile the supply suite asserts
+CH2 draws no current when unloaded -- and charge flowing into the ADC input on
+the first enable made that assertion fail intermittently, in a pattern that
+looked like a per-channel instrument fault.
+
+The ADC input is high impedance, so the steady-state draw genuinely is zero:
+a 1.5 s-settle sweep across 1/2/5/7 V read exactly 0.0000 A on both channels
+at every setpoint, 96 samples, zero spread. Only the enable transient is real,
+which is why the supply suite now waits for the output to reach regulation
+instead of sleeping a fixed interval.
+
+**Set both variables, or remove the wire.** Leaving it attached and
+unexercised is what produced the confusion:
+
+```
+USB202_SUPPLY_NET=supply3
+USB202_SUPPLY_ADC_NET=adc15
+```

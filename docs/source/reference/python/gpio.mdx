@@ -212,6 +212,8 @@ for i in range(10):
 |----------|------|-------------|
 | LabJack T7 | FIO0-FIO7, EIO0-EIO7, CIO0-CIO3 | 3.3V |
 | MCC USB-202 | DIO0-DIO7 | 5V TTL |
+| FTDI FT232H / FT2232H | ADBUS0-7, ACBUS0-7 (16 bits per channel) | 3.3V |
+| FTDI FT4232H | 8 pins per channel | 3.3V |
 
 ### Pin Naming
 
@@ -230,6 +232,23 @@ for i in range(10):
 |-----------|---------|
 | `0`-`7` | DIO0-DIO7 |
 | `"DIO0"`-`"DIO7"` | DIO0-DIO7 |
+
+### Multi-channel FTDI adapters
+
+An FTDI net takes its channel from `params.interface` on the net record, accepting
+`A`-`D` or `0`-`3`. A net with no `interface` uses channel A — the only choice on a
+single-channel FT232H.
+
+| Part | Channels | Usable for GPIO |
+|---|---|---|
+| FT232H | 1 (A) | A |
+| FT2232H | 2 (A, B) | A, B |
+| FT4232H | 4 (A-D) | A-D |
+
+GPIO runs as asynchronous bitbang and needs no MPSSE engine, so every channel the part has is usable. Note the pin width differs: the FT232H and FT2232H expose ADBUS0-7 plus ACBUS0-7 (16 bits), while each FT4232H channel is 8 pins wide.
+
+See [Nets](/source/reference/cli/nets) for how channels are assigned across net
+types on one chip.
 
 ## Notes
 

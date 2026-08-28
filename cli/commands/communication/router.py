@@ -52,7 +52,7 @@ def router():
 @click.option("--password", default="", help="Router password")
 @click.option("--instrument", default="MikroTik_hAP", show_default=True, help="Router instrument type")
 @click.option("--use-ssl", is_flag=True, default=False, help="Use HTTPS instead of HTTP")
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.pass_context
 def add_net(ctx, name, address, username, password, instrument, use_ssl, box):
     """
@@ -107,7 +107,7 @@ def add_net(ctx, name, address, username, password, instrument, use_ssl, box):
 
 @router.command("connect")
 @click.argument("netname")
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.pass_context
 def connect(ctx, netname, box):
     """
@@ -123,7 +123,7 @@ def connect(ctx, netname, box):
 
 @router.command("interfaces")
 @click.argument("netname")
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.pass_context
 def interfaces(ctx, netname, box):
     """
@@ -139,7 +139,7 @@ def interfaces(ctx, netname, box):
 
 @router.command("wireless-interfaces")
 @click.argument("netname")
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.pass_context
 def wireless_interfaces(ctx, netname, box):
     """
@@ -155,7 +155,7 @@ def wireless_interfaces(ctx, netname, box):
 
 @router.command("wireless-clients", short_help="List connected wireless clients")
 @click.argument("netname")
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.pass_context
 def wireless_clients(ctx, netname, box):
     """
@@ -171,7 +171,7 @@ def wireless_clients(ctx, netname, box):
 
 @router.command("dhcp-leases", short_help="List DHCP leases on a router net")
 @click.argument("netname")
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.pass_context
 def dhcp_leases(ctx, netname, box):
     """
@@ -187,7 +187,7 @@ def dhcp_leases(ctx, netname, box):
 
 @router.command("system-info")
 @click.argument("netname")
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.pass_context
 def system_info(ctx, netname, box):
     """
@@ -204,7 +204,7 @@ def system_info(ctx, netname, box):
 @router.command("reboot")
 @click.argument("netname")
 @click.option("--yes", is_flag=True, help="Skip confirmation prompt")
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.pass_context
 def reboot(ctx, netname, yes, box):
     """
@@ -225,7 +225,7 @@ def reboot(ctx, netname, yes, box):
 @router.command("enable-interface")
 @click.argument("netname")
 @click.argument("interface")
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.pass_context
 def enable_interface(ctx, netname, interface, box):
     """
@@ -243,7 +243,7 @@ def enable_interface(ctx, netname, interface, box):
 @router.command("disable-interface")
 @click.argument("netname")
 @click.argument("interface")
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.pass_context
 def disable_interface(ctx, netname, interface, box):
     """
@@ -260,7 +260,7 @@ def disable_interface(ctx, netname, interface, box):
 
 @router.command("block-internet", short_help="Block all internet access on a router net")
 @click.argument("netname")
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.pass_context
 def block_internet(ctx, netname, box):
     """
@@ -281,7 +281,7 @@ def block_internet(ctx, netname, box):
 @click.option("--ssid", default=None, help="Baseline SSID to restore on wireless interfaces")
 @click.option("--password", default=None, help="Baseline WPA2 password")
 @click.option("--yes", is_flag=True, help="Skip confirmation prompt")
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.pass_context
 def reset(ctx, netname, ssid, password, yes, box):
     """
@@ -313,7 +313,7 @@ def reset(ctx, netname, ssid, password, yes, box):
 @router.command("run")
 @click.argument("netname")
 @click.argument("path")
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.pass_context
 def run_cmd(ctx, netname, path, box):
     """

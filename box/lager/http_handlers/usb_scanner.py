@@ -88,7 +88,7 @@ SUPPORTED_USB: Dict[str, Dict] = {
     # battery
     "Keithley_2281S":    {"vid": "05e6", "pid": "2281", "net_type": ["battery", "power-supply"]},
     # scope
-    "Rigol_MS05204":     {"vid": "1ab1", "pid": "0515", "net_type": ["scope", "logic"]},
+    "Rigol_MSO5204":     {"vid": "1ab1", "pid": "0515", "net_type": ["scope", "logic"]},
     "Picoscope_2000":    {"vid": "0ce9", "pid": "1007", "net_type": ["scope"]},
     # adc / gpio / dac / spi / i2c
     "LabJack_T7":        {"vid": "0cd5", "pid": "0007", "net_type": ["gpio", "adc", "dac", "spi", "i2c"]},
@@ -191,7 +191,7 @@ CHANNEL_MAPS: Dict[str, Dict[str, List[str]]] = {
     "KEYSIGHT_E36312A":       {"power-supply": ["1", "2", "3"]},
     "Keithley_2281S":         {"power-supply": ["1"], "battery": ["1"]},
     "Picoscope_2000":         {"scope": ["1", "2"]},
-    "Rigol_MS05204":          {"scope": ["1", "2", "3", "4"], "logic": ["1"]},
+    "Rigol_MSO5204":          {"scope": ["1", "2", "3", "4"], "logic": ["1"]},
     "LabJack_T7": {
         "gpio": [
             "CIO0", "CIO1", "CIO2", "CIO3",

@@ -1,0 +1,92 @@
+---
+title: DAC
+description: Set and read back an analog output voltage
+---
+
+Drive an analog output voltage into your DUT from a DAC net.
+
+## Handle
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let dac = lager.dac("dac1");
+```
+
+## Methods
+
+| Method | Description |
+|--------|-------------|
+| `name()` | The net name this handle addresses |
+| `set()` | Set the output voltage in volts |
+| `read()` | Read back the current output voltage |
+
+## Method Reference
+
+### `name() -> &str`
+
+The net name this handle was created with.
+
+### `set(volts: f64) -> Result<()>`
+
+Set the output voltage.
+
+```rust
+dac.set(1.8)?;
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `volts` | `f64` | Target output voltage in volts |
+
+### `read() -> Result<f64>`
+
+Read back the voltage that the DAC currently outputs.
+
+```rust
+let v = dac.read()?;
+```
+
+**Returns:** `f64` — the output voltage in volts.
+
+<Warning>
+  Not every DAC supports readback. On an MCC USB-202 this call fails with
+  `Error::Box` and the message `USB-202 does not support DAC output readback`.
+  Where you need a verified output, measure it with an ADC net instead of trusting
+  `read()` to exist.
+</Warning>
+
+## Examples
+
+### Sweep a reference and check the DUT tracks it
+
+```rust
+let dac = lager.dac("dac1");
+let sense = lager.adc("adc1");
+
+for target in [0.0_f64, 0.5, 1.0, 1.5, 2.0] {
+    dac.set(target)?;
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let measured = sense.read()?;
+    assert!((measured - target).abs() < 0.05,
+            "set {target:.2} V, measured {measured:.4} V");
+}
+dac.set(0.0)?;
+```
+
+## Supported Hardware
+
+| Instrument | Channels | Readback |
+|---|---|---|
+| LabJack T7 | DAC0, DAC1 | Supported |
+| MCC USB-202 | DAC0, DAC1 | Not supported |
+
+## Notes
+
+- Leave the output where the next test expects it. A DAC holds its last value after
+  your test ends; setting it back to `0.0` in teardown is usually right.
+- Output accuracy is the instrument's, not the API's. A LabJack T7 asked for 1.0 V
+  reads back around 0.99995 V, which is the DAC's resolution rather than an error.

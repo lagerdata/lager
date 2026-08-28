@@ -2,6 +2,627 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [Unreleased]
+
+### Fixed
+
+- **A box install failed at the firewall step once the port allowlist held
+  ranges.** `secure_box_firewall.sh` writes its per-interface allow rules as
+  `ufw allow in on <iface> to any port <port>`, naming no protocol. ufw refuses
+  a port range spelled that way -- `Must specify 'tcp' or 'udp' with multiple
+  ports` -- so the first range aborted the script under `set -e` and
+  `lager install` exited 1 having configured nothing. The allowlist held only
+  single ports when those rules were written, which is why the omission went
+  unnoticed until the debug port ranges were added to it.
+
+  The rules name `proto tcp` now, on all four interfaces rather than only the
+  one that reports first. TCP is what `start_box.sh` publishes, and a test pins
+  both halves of that so neither can move alone.
+
+  The script disables and resets ufw before writing the new rules, so a failure
+  anywhere in between left the box with the firewall off and no rules at all,
+  reported as nothing more specific than `Deployment failed!`. It now restores a
+  deny-incoming policy with SSH allowed, prints which half is configured and
+  which is not, and keeps the failing exit code.
+
+- **A `lager python` connection error printed the literal `{box_ip}`.** The hint
+  that follows `Connection refused by box` was a plain string rather than an
+  f-string, so it told the reader to run `ssh lagerdata@{box_ip} "docker ps"`
+  with the braces intact. It interpolates now.
+
+- **A debug command no longer proceeds against a target that is not there.**
+  `/debug/status` reported a single `connected` boolean that meant "the
+  gdbserver process is alive", and `_auto_connect_if_needed` returned on it
+  without touching the target. On a box where the server outlives the part,
+  `flash`, `reset`, `erase`, `memrd` and the RTT paths all ran believing they
+  were connected. #344 fixed the erase verdict at one call site by reading the
+  programmer's output; this is the cause underneath it.
+
+  The endpoint now reports `gdbserver_running` and `target_attached`
+  separately, and `lager debug <net> status` prints both. `connected` stays,
+  pinned to its old meaning -- a live server -- so an older CLI against a newer
+  box behaves exactly as it did rather than silently changing what the field
+  means.
+
+  `target_attached` is a tri-state, and the third value carries weight. A box
+  older than this change, a probe refused because a debugger already holds the
+  session, or a probe that timed out all yield "could not establish", which is
+  not the same as "absent" -- reading it as absent would tear down sessions
+  that were working. The CLI falls back to server liveness there, and `status`
+  prints `Unknown`.
+
+  Reading the target costs a GDB round trip, and `/debug/status` is called by
+  every debug subcommand, so the wire read is opt-in per request. The free
+  check -- the server's own logfile, using the same predicate #344 established
+  -- always runs.
+
+- **`connect()`'s target verification checked the wrong thing and was never
+  read.** It issued `monitor version` and accepted any console reply as proof,
+  but that is the gdbserver answering about itself, which it does with no part
+  attached. The value was also discarded: nothing read `target_verified`, and
+  `/debug/connect` does not route through the function that sets it. It now
+  uses the same predicate `/debug/status` reports, so "attached" has one
+  definition instead of two.
+
+- **The Python API reference documented a key `status()` does not return.** It
+  showed `status.get('connected')`; the method returns `running`.
+
+- **`docs/package.json` ran `mint build`, a subcommand the Mintlify CLI no longer
+  has.** `docs/vercel.json` pointed its `buildCommand` at that script and expected
+  the output in `.mintlify`. Nothing consumed either file: docs.lagerdata.com is
+  built and served by Mintlify's own hosted platform, which deploys from `main`
+  through the Mintlify GitHub app. `vercel.json` is deleted, and the scripts are
+  now the commands that actually work -- `dev`, `validate` and `broken-links` --
+  each pinned to the same mint version `static-checks.yml` pins, so a local run
+  and CI cannot disagree. Closes #374.
+
+- **The scope's `SUPPORTED_USB` key was spelled `Rigol_MS05204`, with a zero where
+  the letter O belongs.** The instrument is the MSO5204, as
+  `rigol_mso5000_defines.py` and the docs both have it, and the misspelling was
+  user-visible in `lager instruments` and `lager nets list`. The key is renamed in
+  all three tables that carry it (`SUPPORTED_USB`, `CHANNEL_MAPS`,
+  `INSTRUMENT_NET_MAP`).
+
+  The instrument name is persisted verbatim in every saved net record, so boxes
+  provisioned before this change still hold the old string. `canonical_instrument()`
+  maps it to the new spelling at each of the exact-key lookups that consume a saved
+  value, so those records keep working with no migration of `saved_nets.json`. The
+  distinction matters: a saved net whose instrument no longer matches a table key
+  does not fail loudly, it silently loses whatever restriction that key carried.
+  Closes #373.
+
+- **`lager://reference/Router` returned zero methods, and so did `Logic`, `Arm`,
+  `Webcam` and `Wifi`.** `api_reference.py` introspects a driver class per
+  NetType so the agent-facing reference stays in lock-step with the real
+  drivers, but a NetType absent from the map is never introspected at all --
+  and nothing checked the map in that direction, so ten of `NetType`'s
+  twenty-four members had no entry.
+
+  `Router` was the expensive one: `MikroTikRouter` has 37 public methods
+  including the bench's only network fault-injection tooling
+  (`block_internet`, `block_dns`, `block_port`, bandwidth limits, DHCP
+  control), which is how a test asserts what firmware does when the network
+  degrades rather than disappears. None of it was visible to an agent.
+
+  Curated entries are added for `Router`, `Arm`, `Webcam`, `Wifi`, `Analog` and
+  `Logic`. `Analog` and `Logic` are hand-written for the same reason `Debug`
+  is: `Net.get()` returns a bare `Net` proxying to the instrument over RPC, so
+  introspecting the mapper would replace the curated list with nine
+  undocumented local helpers. The raw saved-net roles are added to the alias
+  map too -- `plan_firmware_test` looks entries up by role, so without them the
+  new entries would have been reachable only through the resource URI.
+
+  A guard test now asserts every `NetType` either has an entry or appears in an
+  explicit exclusion list with a stated reason, which is the check that was
+  missing. Verified against MCP Python SDK 2.1.1: `lager://reference/Router`
+  returns 37 methods, and `lager://guide/api-quick-reference` renders all six
+  new types. Closes #372.
+
+### Changed
+
+- **The prose gate is now a required context, and it can see three rules it
+  could not see before.** `tools/check_ste.py` reported zero across the corpus
+  while three of its own rules were partly blind, so the zero was a statement
+  about the checker as much as about the prose. Each gap was found by a
+  conversion batch running against the tool, not by reading it:
+
+  - The `tense` pattern admitted no adverb but `not` between the auxiliary and
+    the participle, so `is currently outputting` and `is actually presenting`
+    sat in pages that reported clean. Any adverb now counts. The same rule
+    treated every `-ing` word as a participle, which would have fired on `is
+    nothing` the first time anyone wrote it; the common non-participles are
+    excluded.
+  - `clean_inline()` ran per source line, so an inline code span opened on one
+    line and closed on the next never collapsed to `CODE` and its literal words
+    counted as prose. That was the whole of a 33-word `length` violation in
+    `usb.mdx` that was not one. Cleaning now happens once, on the joined
+    paragraph.
+  - `LagerError` and `BoxError` were absent from the emitter set, and their
+    `cause=` and `suggestion=` text was never read at all. They print at a user
+    exactly as `click.echo` does. They carried 11 banned modals across six
+    files.
+
+  Widening the checker surfaced 26 violations in text that had just merged as
+  clean, across `cli/errors.py`, `gateway_auth.py`, `config.py`, `_ssh.py`,
+  `nets.py`, `battery.py`, `install.py`, `python.py`, `debug/commands.py` and
+  one troubleshooting page. All 26 are rewritten. `tools/ste_baseline.json`
+  stays empty.
+
+  With the checker honest, the CI step drops `continue-on-error: true`. A
+  required context that cannot see three of its rules is worse than no context,
+  because it converts "nobody checked" into "the check passed".
+
+- **A release-note template, and a partial convention to hold it.**
+  `docs/source/release-notes/_template.mdx` carries the section order and the
+  STYLE.md rules that apply by hand, because the release-notes archive is
+  deliberately outside the gate: a note records what shipped on a date, and
+  editing one makes the archive disagree with itself. `tools/check_docs.py` now
+  treats an underscore-prefixed page as a partial and exempts it from the nav
+  and release-notes checks, which is Mintlify's own convention and the one case
+  where "not in docs.json" is the intent rather than the defect.
+
+- **The Python API reference is converted to Simplified Technical English.** All
+  60 gated violations across the 14 affected pages of
+  `docs/source/reference/python/` are fixed: 43 sentences over the 25-word
+  reference cap, 9 unapproved modals, and 8 perfect or progressive tenses. Those
+  14 entries leave `tools/ste_baseline.json`, and no budget in the file rises.
+
+  Where a sentence carried four or more coordinate facts it became a vertical
+  list, not a shorter sentence -- the three-valued return of `cycle()`, the RTT
+  reader's reconnect rules per backend, and the two guarantees `cycle()` gives
+  over a hand-rolled `disable`/`sleep`/`enable`. STE prescribes a list past two
+  items, and in reference text it states the contract more precisely than the
+  running prose did.
+
+  One defect no check could see: `debug.mdx` read `materialised`. The
+  American-spelling rule carries no budget, but that stem is absent from the
+  checker's word list, so only reading the page finds it.
+
+- **CLI failure messages now say what happened, not what could not happen.**
+  `Could not connect to the box` names an outcome that did not occur, and leaves
+  the reader to guess which of a dozen causes applied. STYLE.md rule 6 asks for
+  the event instead. Every budgeted `modals` and `tense` violation under `cli/`
+  is gone -- 108 modals (59 `could`, 41 `may`, 7 `would`, 1 `should`) and 33
+  progressive or perfect verb forms, across 130 message and `help=` strings in
+  25 files. `tools/ste_baseline.json` drops those 25 entries.
+
+  Each rewrite was read out of its own branch rather than swapped for a synonym.
+  The handler already dispatched on `Connection refused`, on a `ReadTimeout`, on
+  an `OSError`, so the sentence now carries that. `Could not connect to
+  {ssh_host} within 15 seconds` became `The box at {ssh_host} did not answer
+  within 15 seconds`, and `Could not determine update state` became `The update
+  state is unknown`.
+
+  Two sentences changed more than their wording, because reading the branch
+  showed the old one was false. `lager boxes` summarized its failures as `N
+  boxes could not be reached`, but that counter also counts a box with no stored
+  IP, a bad response, invalid JSON, an old box, and any HTTP error -- boxes that
+  answered. It now reads `N boxes did not report a version`, which is true of
+  every branch that increments it, and the Status column already names the
+  specific reason per box. `lager debug memrd` warned that a start address `may
+  be invalid for 32-bit system` on a guard that also fires when only
+  `start + length` overflows; it now describes the range.
+
+  Two bodies of text are deliberately untouched. `_CONNECT_FAILURE_SIGNATURES`
+  holds three `Could not ...` entries that are match targets for the
+  programmer's own output, kept in step with the box, where a reword changes an
+  exit code rather than a sentence. `cli/errors.py` carries the same kind of
+  text through `LagerError`, which is not in the checker's emitter set and so
+  carries no budget; it needs its own pass.
+
+  The `--check`, `--dry-run` and `--user` rows in `docs/source/reference/` move
+  with the `help=` strings they mirror, so the published option tables cannot
+  drift from `--help`.
+
+- **User-facing prose now follows ASD-STE100, enforced in CI.**
+  `docs/STYLE.md` adopts Simplified Technical English: fourteen rules covering
+  sentence and paragraph length, active voice, simple tenses only, one
+  instruction per sentence with the condition first, the approved modals
+  `can`/`will`/`must`, American spelling, one term with one meaning, noun-cluster
+  limits, and the shape of a safety warning. STE's Writing Rules are adopted in
+  full; its Dictionary is not reproduced, because the approved-word list is a
+  licensed ASD specification that a public repository cannot carry. A project
+  Technical Names table stands in its place, which is what STE itself expects.
+  `tools/check_ste.py` enforces the measurable rules against the published pages,
+  the root prose files, and every `help=` string and message the CLI prints.
+
+  The corpus carried two spellings of the product's own name -- `Lager Box` 329
+  times and `Lagerbox` 119, on the same pages -- plus a British/American split
+  on `behaviour` and `recognised`. Both are now single-valued across `cli/` and
+  `docs/`, and both rules carry no budget, so neither can come back. The
+  `Lagerbox` spelling was mostly in CLI help and message strings rather than in
+  the docs, which is why the sweep spans both trees: the docs quote CLI output
+  in sample blocks, so changing one without the other would leave the samples
+  wrong.
+
+  The ten `getting-started/` pages are converted, taking that section from 106
+  violations to zero on all eight checked rules. The remaining sections carry a per-file budget in
+  `tools/ste_baseline.json` that ratchets down as each later batch lands; the
+  CI step stays `continue-on-error` until the last one, because a required
+  context that nothing can turn red is worse than no context at all.
+
+- **Sixteen `reference/cli/` pages are converted to Simplified Technical English.**
+  `battery` through `lager-file` go from 62 violations to zero on all seven gated
+  rules: 38 sentences over the 25-word cap, 16 modals outside `can`/`will`/`must`,
+  and 8 perfect or progressive forms. Long sentences are split at the clause break
+  rather than trimmed, so the articles and `that` clauses STE keeps are still
+  there. `tools/ste_baseline.json` ratchets from 103 files to 87 and from 496
+  budgeted violations to 440, because all sixteen pages leave the budget entirely.
+
+  Two message strings in `cli/commands/development/debug/commands.py` are
+  rewritten with them. The baseline predated the reconnect path
+  `_auto_connect_if_needed` gained, so the recorded budget for that file sat one
+  modal and one tense below what the file actually carried. Rewriting the two
+  strings holds that budget where it was rather than raising it, which the
+  ratchet does not allow.
+
+- **Fourteen `lager` command reference pages are converted to Simplified
+  Technical English.** `locking`, `login`, `nets`, `python`, `router`, `scope`,
+  `ssh`, `ssh-setup`, `supply`, `uninstall`, `update`, `usb`, `watt` and
+  `webcam` go from 79 budgeted violations to zero on all seven gated rules: 54
+  sentences over the 25-word reference cap, 13 uses of a modal STE does not
+  approve, and 12 perfect or progressive verbs. `tools/ste_baseline.json` drops
+  all fourteen files, taking the corpus budget from 380 violations across 73
+  files to 301 across 59.
+
+  Several of the long sentences were vertical lists that lost their formatting.
+  The longest ran to 54 words, and one carried three semicolon-joined clauses;
+  those are now lists or separate sentences rather than shorter run-ons.
+
+  Two fixes sat on lines that `tools/check_docs.py` reads as the page's
+  assertion that a flag exists -- `--cs`/`--sck`/`--mosi`/`--miso` on `nets`,
+  and `--check` on `update`. Those lines keep every `--flag` token and only
+  their description text changed, so the flag check still sees the same set of
+  declarations. The `nets` caveat that made its line too long moved into the
+  paragraph below it, which already describes how pins behave.
+
+- **The Rust API reference is converted to Simplified Technical English.** All 31 pages
+  under `docs/source/reference/rust/` now report zero on `terms`, `spelling`, `modals`,
+  `length`, `tense`, `conjunction` and `paragraph`, down from 80 violations across 24 of
+  them (49 length, 17 tense, 14 modals). These are reference pages rather than
+  procedure, so the sentence cap is STE's 25-word descriptive limit and not the 20-word
+  procedural one.
+
+  Rust type, trait and method names are Technical Names under rule 7 and are always
+  approved, so `DebugNet`, `RttStream`, `NetType` and every method signature read as
+  they did. The `lager-net` version pins are untouched. Four sentences that were really
+  lists -- the net-type catalogue, the `NetRecord` fields, and the BluFi and debug
+  timeout budgets -- became bullet lists under rule 14 rather than tables, so every item
+  is still measured by the checker.
+
+  Four modals took no substitute, because `can`, `will` and `must` would each have
+  stated something false. A URL captured on one network *sometimes* resolves from
+  another, and a recommendation to mark hardware-only tests `#[ignore]` is not an API
+  requirement that anything enforces. Rule 6's own worked example replaces such a modal
+  with what actually happens, and that is what these do.
+
+  Two defects here were invisible to `tools/check_ste.py` rather than reported by it.
+  Its tense pattern allows only `not` between the auxiliary and the participle, so
+  `is currently outputting` in `dac.mdx` and `is actually presenting` in `battery.mdx`
+  sat in pages that reported clean; both are now simple present. Its `clean_inline()`
+  runs per source line, so an inline code span hard-wrapped across a newline is never
+  collapsed and its literal words count as prose -- which was the whole of a 33-word
+  violation in `usb.mdx`. Reflowing that span onto one line clears it with no change to
+  the prose, and the error message the crate emits stays character-for-character
+  identical. The same latent wrap in `dfu.mdx` is reflowed as well.
+
+  `passive` stays report-only per rule 4, and the CI step stays `continue-on-error`
+  until the last batch lands.
+
+- **The root prose files and the MCP and supported-instruments pages now read as
+  Simplified Technical English.** `README.md`, `CONTRIBUTING.md`,
+  `RELEASE_PROCESS.md`, `docs/README.md`, `test/README.md`,
+  `test/CONVENTIONS.md`, `test/COVERAGE.md`, the two `reference/mcp/` pages and
+  `supported-instruments.mdx` go from 82 violations to zero on every gated rule:
+  62 sentences over the 25-word cap, 11 uses of `should`/`may`/`could`/`would`
+  where `can`, `will` or `must` is meant, and 9 perfect or progressive tenses.
+  Five run-on inventories that had lost their list formatting are vertical lists
+  again. `tools/ste_baseline.json` drops from 35 files and 221 budgeted violations to
+  25 and 139. Two British spellings the checker's word list does not carry,
+  `labelled` and `analyses`, are also corrected.
+
+  No instrument name, model number or address string changed:
+  `supported-instruments.mdx` is what the CLI is checked against, so a rename
+  there would make the docs disagree with what the CLI prints. The counts in
+  `test/COVERAGE.md` are machine-checked and untouched; only its prose moved.
+
+- **Six CLI messages told the user to run `lager box update`, which does not
+  exist.** The `lager box` group carries only `config` and `dut`; the `update`
+  spelling was removed in favor of top-level `lager update`, and two comments in
+  the source say so. The messages were never updated, so a version-skew warning,
+  a lock-support warning, a `diagnose` verdict, a download-file error and an
+  `/etc/lager` permission error each handed the reader a command that errors out.
+  Three unit tests asserted on the dead spelling and pinned it in place. All six
+  messages and all three assertions now name `lager update`.
+
+- **21 `Dexarm` methods and both `Wifi` methods gained docstrings.**
+  Introspection uses a docstring's first line as a method's description, so an
+  undocumented driver method reaches an agent as a name with no explanation.
+
+### Added
+
+- **The Rust API reference now mirrors the Python one, page for page.** The Rust tab
+  was five pages against Python's twenty-seven, and a single 76-line `net-types.mdx`
+  table row was the whole counterpart to Python's twenty-four per-instrument pages.
+  A reader got one line where the Python reader got a method reference.
+
+  The tab is now 31 pages in the same six-group taxonomy the Python and CLI tabs
+  already use: a page per net type (supply, battery, solar, eload, watt, energy,
+  scope, adc, thermocouple, gpio, dac, i2c, spi, usb, uart, ble, wifi, blufi, router,
+  arm, webcam), the debug surface split into debug, rtt and dfu, and new client,
+  errors and async pages. `debug-and-uart.mdx` is retired into `debug`, `rtt` and
+  `uart` with a redirect.
+
+  Every page documents the timeout budget, box-version floor and gotchas for its net
+  type, none of which were published anywhere before. **All 149 Rust examples across
+  the 31 pages are compiled against `lager-net` 0.4.0**, and the API was exercised
+  against real hardware on a box running 0.43.0 first, so the return shapes and error
+  strings are observed rather than transcribed. Two examples were wrong and were
+  caught by that compile pass: `tokio::try_join!` over inline handle constructors does
+  not borrow-check, and `std::fs::read(..)?` cannot convert into `lager::Error`.
+
+  Behavior worth calling out, all verified on hardware and previously undocumented:
+  `flash()` on a `.bin` infers the STM32 base `0x08000000` and **returns `Ok(())`
+  while writing nothing useful** on any other family, so `flash_bin()` is mandatory
+  there; `erase()` drops the debugger connection, so a following `read_memory()` fails
+  until you reconnect; a per-net safety ceiling caps `set_voltage`/`set_current` but
+  **not** `set_ovp`/`set_ocp`; a `bleCommand`/`wifiCommand` capability flag means the
+  route is registered, not that the box has BlueZ or `nmcli`; and `state()` returning
+  `Ok` does not mean the instrument answered -- check the `error` field.
+
+  `RttStream` is documented as yielding raw HTTP chunked-transfer framing rather than
+  clean payload, with interactive RTT recommended instead. Tracked upstream as
+  lagerdata/lager-rs#5.
+
+  The Python overview now links across to the Rust SDK, which nothing in the Python
+  tab did before.
+
+- **A Python API page for `NetType.Router`.** A router net drives a MikroTik
+  access point over its REST API, and its methods include the bench's only
+  network fault-injection tooling -- `block_internet`, `block_dns`,
+  `block_port`, bandwidth limits and DHCP control -- which is how a test asserts
+  what firmware does when the network degrades rather than disappears. None of
+  it was documented, and `NetType.Router` appeared nowhere in the docs.
+
+- **`tools/check_docs.py` gates docs against the shipping CLI**, wired into
+  `static-checks.yml`. It fails on a dangling nav entry, an unpublished page, a
+  release with no notes, a command with no page (or a page for a hidden
+  command), and an options table naming a flag no click param declares.
+
+- **A guide for running Lager from CI.** Covers non-interactive sign-in,
+  registering the box, and the two checks worth failing a pipeline on: that the
+  box is reachable, and that it is running the commit under test. `lager python`
+  runs the script on the box against the box's own checkout, so a bench result
+  from a stale box is not evidence about the commit that triggered it.
+
+- **`mint broken-links` runs in the static-checks gate**, with anchor checking
+  on. Three cross-references had shipped missing the `/source` prefix that every
+  published URL carries, each found by hand. Scoped to `docs/source/` -- the
+  working notes under `docs/reference/` are not published and carry stale
+  relative paths a reader can never follow.
+
+### Fixed
+
+- **The firewall allowlist that provisioning deploys now matches the ports the
+  box publishes.** Two copies of `secure_box_firewall.sh` had drifted, and the
+  one carrying the correct debug port ranges was the copy nothing deploys --
+  absent from the box image, absent from the wheel, referenced only by a README
+  telling operators to run it. The deployed copy admitted `5000 8301 8765 5001`:
+  it omitted the GDB/SWO, OpenOCD telnet, OpenOCD TCL and RTT ranges, the MCP
+  and hardware-service ports and the box HTTP API, and admitted `5001`, which
+  nothing serves. Two previous release notes described this same allowlist being
+  brought in line; both changed only the copy that is never deployed.
+
+  There is now one copy. `test/unit/box/test_firewall_port_allowlist.py` parses
+  the publish list out of `box/start_box.sh` and the allowlist out of the script
+  and fails if they diverge, including the conditionally-published `9000` arm
+  that an array-literal read would miss. The script's `--help` renders the array
+  rather than restating it, since both its help text and its header comment had
+  gone stale against the array in their own file.
+
+  Note the scope. This corrects which ports the allowlist names. It does not
+  change how the host firewall treats a container-published port, which is
+  tracked separately.
+
+- **`docs/reference/gateway-auth-contract.md` states where MCP stands.** The
+  contract defined the box surface as `:9000` and `:8765` and never mentioned
+  `:8100`, leaving whether the gateway should front it as an open question
+  rather than a decision. It is now recorded as in-fabric only, with the
+  reasoning -- the MCP server authenticates nothing itself, deliberately
+  disables DNS-rebinding protection, and its opt-in gates extend it to hardware
+  control and arbitrary command execution.
+
+- **A second device of the same model no longer disables that whole instrument
+  family.** Four call sites -- `nets add`, `nets add-all`, the net TUI and
+  `lager instruments` -- each carried their own copy of a hardcoded model list
+  and each did something different with it. `nets add` refused with an error,
+  `add-all` skipped the family in silence, the TUI computed per-device keys and
+  then discarded them, and `lager instruments` hid the devices from its own
+  table, so the addresses needed to create their nets could not even be read.
+
+  Whether two devices can coexist is a property of the address, not the model.
+  Most instruments carry a unique serial, so two of them get two addresses and
+  both stay drivable; a hub that reports no serial is already topology-addressed
+  by the scanner for exactly this reason. The check is now "do two present
+  devices report the same address", which is right for a model nobody has
+  considered yet and stops being wrong for a model the moment the scanner learns
+  to address it.
+
+  Two Acronames now yield sixteen usb nets instead of none. A second LabJack T7
+  is still refused, because it reports no serial and is not topology-addressed,
+  so two of them enumerate as the same string and a net could not say which one
+  it meant -- but the message now says that, rather than "unplug extras".
+
+  The silent-skip path was the dangerous one: `delete-all` + `add-all` is the
+  documented recovery procedure, and on a bench whose instrument AC power is
+  switched by LabJack GPIO nets, skipping the LabJack family takes the bench's
+  power control with it and says nothing.
+
+- **`lager arm`'s reference page was un-runnable as written.** `--x/--y/--z` and
+  `--dx/--dy/--dz` were documented as positional arguments, so every motion
+  example on the page failed. Same for `set-acceleration`.
+
+- **`lager update` documented three options that do not exist.** `--all` and
+  `--skip-restart` were removed in v0.18.2 and `--check-jlink` never shipped,
+  but the page carried them for eighteen releases along with a walkthrough and
+  sample output for a multi-box mode that no longer exists.
+
+- **The MCP page understated the tool surface.** It stated the tools are
+  read-only, which holds only while both opt-in gates are off.
+  `LAGER_MCP_ALLOW_CONTROL` adds `power_cycle_hub`, which drives hardware;
+  `LAGER_MCP_ALLOW_EXEC` adds `box_exec`, `read_file`, `write_file` and
+  `list_dir`, exposing arbitrary command execution and file writes to any agent
+  that can reach the MCP port. Neither variable was named anywhere in the docs.
+
+- **The Rust pages pinned `lager-net` to a version two breaking releases old.**
+  Four sites pinned `"0.2"`; the published crate is 0.4.0, and cargo does not
+  resolve `"0.2"` to 0.4.x.
+
+- **Options that shipped but appeared on no page** are now documented: `--json`
+  on `adc`, `dac`, `gpi`, `gpo`, `thermocouple` and the `eload`/`energy`
+  subcommands; `--volume` on `exec`; `--email`/`--password` on `login`.
+
+- **Reference pages that failed a strict MDX build or linked nowhere.** An
+  unclosed callout in the supported-instruments page, and three cross-references
+  missing the `/source` path prefix.
+
+- **The `lager wifi` reference page is removed.** The command is `hidden=True`,
+  so publishing a page advertised something the CLI conceals.
+
+- **The supply suites wait for the output to reach regulation instead of
+  sleeping a fixed interval.** A Rigol DP821 channel does not step to its
+  setpoint, and its current readback lags its voltage. Measured on a channel
+  wired to an ADC input: 0.25 s after `enable()` reads 2.0 V against a 5 V
+  setpoint, and 0.5 s reads 4.5 V, still climbing -- while the current register
+  still held a charge transient after the voltage had arrived, reporting
+  `V=5.0` and `I=0.24 A` together. The unloaded-current assertion sampled
+  exactly that window and failed intermittently on a channel that measures a
+  clean 0.0000 A once settled.
+
+  The settle now waits for the ramp to finish and then for the current readback
+  to stop changing. Deliberately not for it to fall below any threshold -- that
+  would assert the very thing the caller is about to test, so a genuine steady
+  load still fails. Waiting on voltage alone is insufficient (the current lags
+  it) and waiting on current alone is worse (before the ramp starts it reads
+  0.000 and looks settled immediately), so both conditions apply, in order. An
+  unsupported query falls back to a plain sleep rather than taking a hardware
+  suite down.
+
+  `MAX_UNLOADED_CURRENT` is unchanged at 0.1 A. It was never the problem: both
+  channels satisfy it comfortably once the output has settled, and a
+  range-relative per-channel bound is unnecessary -- a 1.5 s-settle sweep across
+  1/2/5/7 V read exactly 0.0000 A on both channels at every setpoint, 96
+  samples with zero spread.
+
+  The same fixed-settle exposure in the USB-202 supply-into-ADC check is fixed
+  the same way; it would otherwise have started failing on tolerance the first
+  time that check was enabled.
+
+- **The box no longer advertises host URLs it does not publish.** `start_box.sh`
+  printed its entire `Services running:` summary unconditionally, including the
+  MCP line's `http://<box-ip>:8100/mcp`, on a box started with `--no-publish`.
+  That mode publishes none of the container's service ports: the container joins
+  `lagernet` either way, but `PORT_PUBLISH_ARGS` is empty, so a reverse proxy on
+  that network owns the host ports and nothing is listening on the host at 8100.
+  Every `<box-ip>:<port>` in that banner was therefore wrong for precisely the
+  deployment it was describing. The summary now states which mode the box is in,
+  and the MCP line points at the lagernet address rather than the box IP.
+
+  The MCP server itself was never at fault and needed no change -- it binds
+  `0.0.0.0:8100` inside the container in both modes and answers normally on
+  lagernet. This was only ever a question of reachability, and of six
+  documentation sites asserting a reachability that a proxied box does not have:
+  the module docstring in `box/lager/mcp/server.py`, the agent-facing run guide
+  in `box/lager/mcp/resources/guide.py` (which told agents to identify the box by
+  the IP they connected on, illustrated with the published form), the box service
+  table in `box/README.md`, the MCP section of the top-level `README.md`, the
+  connection example in the MCP reference, and the port table in the architecture
+  guide, whose "Exposed" column described the published case as though it were
+  the only one.
+
+- **`LAGER_DISABLE_UART_SERVICE` now actually frees port 9000.** The flag exists
+  so a box can leave 9000 to another service. `start-services.sh` honoured it and
+  declined to launch `box_http_server.py`, but `start_box.sh` published
+  `-p 9000:9000` unconditionally, and docker-proxy binds a published port whether
+  or not anything listens behind it. The port therefore stayed occupied and the
+  flag delivered none of what it exists for. `start_box.sh` now reads the same
+  value out of `BOX_CONFIG_ENV`, with the same `1|true|yes` rule
+  `start-services.sh` uses, and declines to publish the port; the startup banner
+  stops promising 9000 in that case.
+
+  The integration check could not have caught this -- it only `pgrep`s for the
+  process inside the container, which was already correct. It now also asserts
+  the host port is free.
+
+- **`lager box config apply` says what the container-side package steps did.**
+  `_bounce_container_rc` captures `start_box.sh`'s transcript and re-emits lines
+  only when the run exits 3, keeping only `[ERROR]`-prefixed ones, so a
+  successful apply printed nothing whatsoever about pip, cargo or npm. A step
+  that installed three crates and a step that found none to install were
+  indistinguishable from the CLI, which is how a suspected silent no-op survived
+  three rounds of triage.
+
+  Each step now reports what it did or why it did nothing, and apply relays those
+  lines on success, bounded and de-duplicated the way the error relay already is.
+  Worth naming the asymmetry this closes: apt and sysctl are applied host-side by
+  the CLI before the bounce and print their failures directly with a repair hint,
+  while pip, cargo and npm run inside `start_box.sh` and reached the operator only
+  as an exit code.
+
+- **The cargo integration check asserted a path that does not exist on the box.**
+  `CARGO_HOME` is `/opt/rust/cargo`, set in `box.Dockerfile` and backed by the
+  `lager-cargo` volume, so `cargo install` writes there and never to
+  `$HOME/.cargo`. `/home/www-data/.cargo` is absent entirely, so the assertion on
+  `/home/www-data/.cargo/bin/` could not pass for any crate, installed or not. It
+  now checks the real path, drops the login shell that `start_box.sh`'s own cargo
+  loop documents as dropping `/opt/rust/cargo/bin` from `PATH`, and prints the
+  directory listing on failure so a future run can tell "cargo did not install
+  it" from "we looked in the wrong place".
+
+- **`lager logic measure` / `trigger` / `cursor` can resolve a logic net again.**
+  All sixteen actions failed with `Error: Invalid Net: <net>` against a real
+  logic net. `cli/impl/measurement/scope.py` is the consolidated worker for both
+  the scope and logic families -- its dispatch tables already register every
+  action either sends -- but its two net-resolution helpers were hardcoded to
+  `NetType.Analog`, and `Net.get` matches on type equality, so a net whose role
+  is `logic` could never resolve there however it was addressed.
+
+  The role is known unambiguously at the CLI layer, which validates the net
+  against it before dispatching, so it is now passed down in the command
+  envelope and the worker resolves under the type that role maps to. A CLI that
+  predates the key keeps working: the worker defaults to `scope`, which is the
+  behavior it had previously.
+
+  A second, independent path to the same dead end is fixed with it:
+  `get_net_info` filtered saved nets on `role == "scope"`, so it returned `None`
+  for a logic net, which made `is_rigol()` and `is_picoscope()` both false and
+  the basic-op dispatchers report `not found or not a scope net`.
+
+  This is the same defect as the one `cli/impl/power/enable_disable.py` was
+  fixed for, one layer over. `lager logic` had been dispatching to two workers
+  holding two contradictory type constants; they now agree, and
+  `test/unit/box/test_logic_net_type.py` pins both.
+
+  Note the Rigol mapper needed no work: every measurement and trigger method
+  already branches on the net's type and maps a logic net to `D0`-`D15`. Only
+  the lookup was wrong.
+
+- **The thermocouple page published at `/reference/cli/tc`** while the command
+  is `lager thermocouple`. Renamed, with a redirect from the old path.
+
+- **The Release Notes navigation was a single flat list of 158 entries.**
+  Grouped into five version ranges.
+
+### Changed
+
+- **Bench wiring fixtures are documented.** A permanent wire from DP821 CH2's
+  output to a USB-202 ADC input existed for a check whose repository variables
+  were never set, so it had never run and nothing recorded that the channel had
+  anything attached. The supply suite asserts that channel is unloaded, so the
+  wire presented as an intermittent per-channel instrument fault. The bench
+  README now carries a fixture table, on the principle that an undeclared wire
+  reads as a hardware failure.
+
 ## [0.43.0] - 2026-08-25
 
 ### Added
@@ -54,7 +675,7 @@ All notable changes to the Lager platform are documented here. For detailed rele
 - **`DebugNet.connect(script=...)` documents that an OpenOCD override must be
   a complete cfg.** The launch line still carries lager's own
   `ftdi channel <N>` for a net with a probe channel, and that command is not
-  recognised unless a cfg has selected the ftdi adapter driver -- so a
+  recognized unless a cfg has selected the ftdi adapter driver -- so a
   fragment holding only, say, `adapter speed 1000` dies at startup with
   `invalid command name "ftdi"`. The docstring implied a small standalone cfg
   would do.
@@ -179,7 +800,7 @@ All notable changes to the Lager platform are documented here. For detailed rele
   present in the net's own address, which had been parsed and discarded.
 
 - **An FTDI net whose address was written as a full `ftdi://` URL had it
-  silently discarded.** The address was recognised as "not a serial number"
+  silently discarded.** The address was recognized as "not a serial number"
   and then dropped, with the hardcoded URL rebuilt over the top -- so a user
   who spelled out exactly which device and channel they wanted got interface A
   of the first FT232H instead. Such an address is now used verbatim.
@@ -511,7 +1132,7 @@ All notable changes to the Lager platform are documented here. For detailed rele
 - **A Getting Started guide covering box setup end to end.** Nine new
   pages under `docs/source/getting-started/`, including setting up a Lager
   Box, adding a first box, instruments, nets, a first test, a glossary and
-  troubleshooting -- and the sudo-rs behaviour an operator hits on Ubuntu
+  troubleshooting -- and the sudo-rs behavior an operator hits on Ubuntu
   25.10 and newer.
 
 - **`lager install` now uses the pre-built box image for a release tag, taking a
@@ -565,7 +1186,7 @@ All notable changes to the Lager platform are documented here. For detailed rele
   since the server can no longer import under 1.x. Boxes pick this up on the
   next `lager update`.
 
-  Two behaviours worth knowing about, neither visible in the tool surface:
+  Two behaviors worth knowing about, neither visible in the tool surface:
 
   - SDK 2.0 removed the ambient `mcp.get_context()`, so the per-request
     context is now injected as a tool parameter and handed down explicitly.
@@ -1016,7 +1637,7 @@ All notable changes to the Lager platform are documented here. For detailed rele
   subcommand, `lager boxes list`, and the bare net listings still resolve
   without locking, so inspecting a bench never blocks anyone.
 
-  This is the behaviour reverted in v0.13.4, brought back on the infrastructure
+  This is the behavior reverted in v0.13.4, brought back on the infrastructure
   that made it safe. The three failures that forced that revert each have an
   answer now: locks are released by an `atexit` hook on any exit path and
   reaped by TTL on SIGKILL, so a supply command cannot strand one; only
@@ -1257,7 +1878,7 @@ All notable changes to the Lager platform are documented here. For detailed rele
   renders it under. Three outcomes, not two: installed, absent, or "could not
   ask", so an unreachable box no longer reads as an uninstalled key. The old
   `key_auth_works` helper is gone rather than left in place, because a
-  function whose name says it tests one key and whose behaviour accepts any
+  function whose name says it tests one key and whose behavior accepts any
   is a trap for the next caller.
 
   `ssh-copy-id` is now invoked with `-f`. Its own "already installed?" filter
@@ -1930,7 +2551,7 @@ All notable changes to the Lager platform are documented here. For detailed rele
   installed `brainstem` unpinned in a build-cached layer, so which SDK a box
   ran depended on when that layer was last invalidated -- two boxes built
   weeks apart could differ, which made cross-box comparison unreliable when
-  diagnosing hub behaviour (the hub driver already degrades differently for
+  diagnosing hub behavior (the hub driver already degrades differently for
   SDKs without `discover.findAllModules`). The SDK is now pinned to 2.12.5,
   the version validated against real hubs, with the bump-deliberately
   rationale recorded next to the pin. `/diagnose/usbhub` additionally
@@ -2045,7 +2666,7 @@ All notable changes to the Lager platform are documented here. For detailed rele
   is not one.
 
   Plain `--rtt` is untouched and still uses the HTTP stream, so nothing that
-  reads RTT today changes behaviour.
+  reads RTT today changes behavior.
 
 - **`rtt_defmt()` can now write, so a `lager python` script can drive
   interactive firmware and assert on its decoded reply.** Raw `dbg.rtt()` has
@@ -2178,7 +2799,7 @@ All notable changes to the Lager platform are documented here. For detailed rele
   claim, so later requests get a fast "busy" until the service is respawned.
   Success responses and the existing stale-VISA-session retry are unchanged.
 
-  One behaviour change to be aware of: a request that arrives while the same
+  One behavior change to be aware of: a request that arrives while the same
   physical device is more than 8s into another operation now reports
   `device-busy` instead of queueing. Callers already gave up at their own HTTP
   timeout in that situation (`Device.DEFAULT_TIMEOUT` is 10s); what changes is
@@ -2349,7 +2970,7 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
   A CLI newer than its box simply sees no `reason` and renders as before.
 
-  This is diagnosis, not a behaviour change: the shared request budget and the
+  This is diagnosis, not a behavior change: the shared request budget and the
   hub discovery path that loses the race are unchanged. `reason: "deadline"` is
   the evidence needed to size that work.
 
@@ -2366,7 +2987,7 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
   `connect` now exhausts its speed ladder **with** the script and, only then,
   retries once without it. Dropping the script is the more surprising change of
-  behaviour, so it happens last and is reported rather than silently succeeding:
+  behavior, so it happens last and is reported rather than silently succeeding:
   the response carries `script_skipped` and the box logs that the target is not
   running the configured init. A target that is unreachable either way still
   fails, so the retry cannot turn a dead board into a pass.

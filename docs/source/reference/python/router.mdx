@@ -1,0 +1,153 @@
+---
+title: Router
+description: Drive a MikroTik router as a test net
+---
+
+A **router net** puts a real access point under test control. A test can then
+change the SSID, break the network on purpose, and put it back. It is how you
+exercise a DUT's reconnect, roaming, and offline behavior without touching
+hardware by hand.
+
+[WiFi](/source/reference/python/wifi) manages the Lager Box's own wireless
+interface. A router net is different: it is a separate device on the bench that the
+box drives over the MikroTik REST API.
+
+## Import
+
+```python
+from lager import Net, NetType
+
+router = Net.get("router1", type=NetType.Router)
+```
+
+Credentials (`username`, `password`, `use_ssl`) come from the net's saved
+configuration, so scripts never hard-code them.
+
+## Connection and system
+
+| Method | Description |
+|--------|-------------|
+| `connect()` | Verify connectivity by fetching the system identity |
+| `get_system_info()` | Get system resource information |
+| `reboot()` | Reboot the router |
+| `wait_for_ready(timeout=120)` | Poll until the router is responsive after a reboot |
+| `run(path, params=None)` | Run an arbitrary REST API GET call |
+
+## Interfaces
+
+| Method | Description |
+|--------|-------------|
+| `get_interfaces()` | List all network interfaces |
+| `set_interface_disabled(interface, disabled)` | Enable or disable a network interface |
+| `get_wireless_interfaces()` | List wireless interfaces and their configuration |
+| `configure_wireless(interface, **kwargs)` | Configure a wireless interface |
+| `set_wireless_ssid(interface, ssid)` | Change an interface's SSID |
+| `enable_interface(interface)` / `disable_interface(interface)` | Enable or disable a wireless interface |
+| `wait_for_wireless_ready(interface, timeout=30)` | Poll until an interface is enabled and running |
+
+## Security profiles
+
+| Method | Description |
+|--------|-------------|
+| `get_security_profiles()` | List all wireless security profiles |
+| `create_security_profile(name, ...)` | Create a profile (defaults to WPA2-PSK with AES-CCM) |
+| `create_open_security_profile(name='open')` | Create an open, unencrypted profile |
+| `update_security_profile_password(name, new_password)` | Update a profile's WPA2 pre-shared key |
+| `delete_security_profile(name)` | Delete a profile by name |
+
+## Clients
+
+| Method | Description |
+|--------|-------------|
+| `get_wireless_clients()` | List currently connected wireless clients |
+| `is_client_connected(mac_address=None)` | Check whether a client is currently associated |
+| `set_client_isolation(interface, enabled=True)` | Enable or disable AP client isolation |
+| `get_dhcp_leases()` | List clients that have received IP addresses |
+| `get_access_list()` | List all wireless access list entries |
+| `add_access_list_entry(mac_address, authentication=True, ...)` | Allow or deny a specific client |
+| `remove_access_list_entry(mac_address)` | Remove all entries for one MAC address |
+| `clear_access_list()` | Remove all test-tagged access list entries |
+
+## Fault injection
+
+These are the methods that make a router net worth having. They break the network
+in specific, repeatable ways, so you can assert how firmware responds.
+
+| Method | Description |
+|--------|-------------|
+| `block_internet()` | Drop all forwarded traffic |
+| `block_dns()` | Drop port 53 traffic, UDP and TCP |
+| `block_port(port, protocol='tcp')` | Block one port for all forwarded traffic |
+| `add_firewall_rule(chain='forward', action='drop', **kwargs)` | Add a firewall filter rule |
+| `remove_firewall_rules()` | Remove all test-tagged firewall rules |
+| `add_bandwidth_limit(target, max_limit, name=None)` | Limit bandwidth for an IP or subnet |
+| `remove_bandwidth_limits()` | Remove all test-tagged bandwidth queues |
+| `enable_dhcp()` / `disable_dhcp()` | Enable or disable all DHCP servers |
+| `set_dhcp_lease_time(lease_time='10m')` | Set the lease time on all DHCP servers |
+
+## Test isolation
+
+```python
+router.reset_to_defaults()
+```
+
+`reset_to_defaults(baseline_ssid=None, baseline_pass=None, wireless_interfaces=None)`
+restores the router to a known baseline. As a rule of thumb, anything this API adds
+is tagged as test state. The `remove_*` and `clear_*` methods above remove only
+those tagged entries. A cleanup therefore cannot delete a rule that was already on
+the router before the test ran.
+
+## Examples
+
+### Verify the DUT reconnects after the AP drops
+
+```python
+from lager import Net, NetType
+
+router = Net.get("router1", type=NetType.Router)
+router.connect()
+
+# Take the network away
+router.disable_interface("wlan1")
+assert not router.is_client_connected(mac_address=DUT_MAC), "DUT still associated"
+
+# Give it back, and let the DUT find its way home
+router.enable_interface("wlan1")
+router.wait_for_wireless_ready("wlan1")
+
+assert router.is_client_connected(mac_address=DUT_MAC), "DUT did not reconnect"
+```
+
+### Assert the DUT survives losing DNS but keeping the link
+
+```python
+router.block_dns()
+try:
+    # The DUT stays associated, but name resolution fails. Firmware should
+    # report an outage rather than a WiFi failure.
+    assert router.is_client_connected(mac_address=DUT_MAC)
+finally:
+    router.remove_firewall_rules()
+```
+
+### Rotate the SSID password mid-session
+
+```python
+router.update_security_profile_password("test-profile", "new-password-here")
+router.wait_for_wireless_ready("wlan1")
+```
+
+## Supported hardware
+
+| Manufacturer | Models | Notes |
+|---|---|---|
+| MikroTik | RouterOS devices with the REST API enabled | Reached over HTTP, or HTTPS when the net sets `use_ssl` |
+
+## Notes
+
+- Every method is a REST call to the router, so failures surface as connection or
+  HTTP errors rather than as instrument errors.
+- `reboot()` drops the connection by design. Always follow it with
+  `wait_for_ready()` before issuing further calls.
+- Cleanup methods only remove test-tagged state, so they are safe to call in a
+  `finally` block on a shared bench router.

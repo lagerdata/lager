@@ -1,0 +1,165 @@
+---
+title: USB DFU
+description: Flash a device over USB DFU, without a debug probe
+---
+
+Flash firmware through USB DFU using `dfu-util` on the box. This is the path for a
+DUT with no debug probe attached, or one that exposes a DFU bootloader.
+
+Requires box software 0.33.0 or newer, and `dfu-util` installed on the box.
+
+## Handle
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let dfu = lager.dfu();
+```
+
+DFU is a **box-level** capability, not a net. There is no net name and no `name()`.
+
+## Methods
+
+| Method | Description |
+|--------|-------------|
+| `list()` | Enumerate DFU-capable devices on the box's USB bus |
+| `download()` | Upload firmware and flash it |
+| `detach()` | Detach a device from DFU mode |
+
+## Types
+
+### `DfuOptions`
+
+```rust
+pub struct DfuOptions {
+    pub vid_pid: Option<String>,        // "0483:df11"
+    pub serial: Option<String>,
+    pub alt: Option<u32>,               // alternate setting
+    pub dfuse_address: Option<String>,  // "0x08000000:leave"
+    pub reset: bool,                    // reset after download
+}
+```
+
+`Default` selects whatever single DFU device is on the bus. With more than one
+attached, `dfu-util` errors on the ambiguity rather than guessing, so name one.
+
+### `DfuDevice`
+
+```rust
+pub struct DfuDevice {
+    pub mode: String,             // "DFU" or "Runtime"
+    pub vid: String,
+    pub pid: String,
+    pub devnum: Option<i64>,
+    pub cfg: Option<i64>,
+    pub intf: Option<i64>,
+    pub alt: Option<i64>,
+    pub name: Option<String>,     // e.g. "@Internal Flash /0x08000000/..."
+    pub serial: Option<String>,
+    pub path: Option<String>,     // hub port path, e.g. "1-1.4"
+}
+```
+
+`mode` is `"DFU"` for a device already in its bootloader, and `"Runtime"` for one
+running an application that advertises DFU capability.
+
+### `DfuOutput`
+
+```rust
+pub struct DfuOutput {
+    pub exit_code: Option<i64>,
+    pub stdout: String,
+    pub stderr: String,
+}
+```
+
+## Method Reference
+
+### `list() -> Result<Vec<DfuDevice>>`
+
+Enumerate DFU-capable devices, parsed from `dfu-util -l` into typed records.
+
+```rust
+for d in dfu.list()? {
+    println!("{}:{} ({}) {:?}", d.vid, d.pid, d.mode, d.name);
+}
+```
+
+### `download(firmware: &[u8], opts: &DfuOptions) -> Result<DfuOutput>`
+
+Upload firmware to the box and flash it. The bytes are base64-encoded into the
+request, so nothing needs to exist on the box's filesystem first.
+
+```rust
+use lager::DfuOptions;
+
+let image = std::fs::read("target/app.bin").expect("firmware image");
+let out = dfu.download(&image, &DfuOptions {
+    vid_pid: Some("0483:df11".into()),
+    dfuse_address: Some("0x08000000:leave".into()),
+    reset: true,
+    ..Default::default()
+})?;
+assert_eq!(out.exit_code, Some(0), "{}", out.stderr);
+```
+
+<Note>
+  An STM32 system bootloader needs `dfuse_address`. Without it, `dfu-util` has no
+  base address to write to and the download fails.
+</Note>
+
+### `detach(opts: &DfuOptions) -> Result<DfuOutput>`
+
+Detach a device from DFU mode, so it leaves the bootloader and runs the application.
+
+## Examples
+
+### Flash a DUT that has no debug probe
+
+```rust
+use lager::{DfuOptions, LagerBox};
+
+let lager = LagerBox::from_env()?;
+let dfu = lager.dfu();
+
+// The DUT must already be in its bootloader.
+let devices = dfu.list()?;
+let target = devices.iter().find(|d| d.mode == "DFU")
+    .expect("no device in DFU mode; hold BOOT0 and power-cycle");
+println!("flashing {}:{}", target.vid, target.pid);
+
+let image = std::fs::read("target/app.bin").expect("firmware image");
+let out = dfu.download(&image, &DfuOptions {
+    vid_pid: Some(format!("{}:{}", target.vid, target.pid)),
+    dfuse_address: Some("0x08000000:leave".into()),
+    reset: true,
+    ..Default::default()
+})?;
+assert_eq!(out.exit_code, Some(0), "dfu-util failed:\n{}", out.stderr);
+```
+
+### Enter DFU by power-cycling a hub port
+
+```rust
+let port = lager.usb("usb3");
+port.disable()?;
+std::thread::sleep(std::time::Duration::from_millis(500));
+port.enable()?;
+std::thread::sleep(std::time::Duration::from_secs(2));
+
+assert!(dfu.list()?.iter().any(|d| d.mode == "DFU"), "did not enter DFU");
+```
+
+## Notes
+
+- **`dfu-util` writes its progress to stderr**, not stdout. A successful download
+  still fills `DfuOutput::stderr`; check `exit_code`, not whether stderr is empty.
+- A box without `dfu-util` installed answers with `Error::Box` and HTTP 500 carrying
+  `dfu-util is not installed on this box. Install it with 'lager box-config apt add dfu-util'`.
+  This is deliberately **not** `UnsupportedByBox` — the route exists, the
+  tool does not.
+- A box older than 0.33.0 does not serve the route at all, and that **is**
+  `Error::UnsupportedByBox`.
+- The client allows 180 seconds for a download, above the box's own 120-second
+  `dfu-util` budget, to leave room for the upload and for queueing.

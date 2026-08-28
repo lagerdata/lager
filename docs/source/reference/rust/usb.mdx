@@ -1,0 +1,106 @@
+---
+title: USB Hub Ports
+description: Power-cycle a programmable USB hub port
+---
+
+Cut and restore power to one port of a programmable USB hub. A test uses this to force
+a DUT to re-enumerate, or to simulate a cable pull.
+
+## Handle
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let port = lager.usb("usb1");
+```
+
+## Methods
+
+| Method | Description |
+|--------|-------------|
+| `name()` | The net name this handle addresses |
+| `enable()` | Power the port on |
+| `disable()` | Power the port off |
+| `toggle()` | Invert the port and report the new state |
+| `state()` | Read whether the port is currently powered |
+
+## Method Reference
+
+### `enable() -> Result<()>` and `disable() -> Result<()>`
+
+Power the port on or off.
+
+```rust
+port.disable()?;
+std::thread::sleep(std::time::Duration::from_secs(1));
+port.enable()?;
+```
+
+### `toggle() -> Result<bool>`
+
+Invert the port's power state.
+
+**Returns:** `true` if the port is now **enabled**, `false` if now disabled — the
+state after the toggle, not before.
+
+### `state() -> Result<bool>`
+
+Read whether the port is powered.
+
+```rust
+assert!(port.state()?, "port should be up");
+```
+
+**Returns:** `true` when enabled.
+
+<Note>
+  `state()` needs box software 0.29.0 or newer. Older boxes reject the action, and
+  the crate turns that specific rejection into `Error::UnsupportedByBox` with the
+  message
+  `the 'state' action on /usb/command requires box software >= 0.29.0; update the box or use toggle/enable/disable`.
+</Note>
+
+## Examples
+
+### Force a DUT to re-enumerate and wait for it to come back
+
+```rust
+use lager::{LagerBox, UsbDeviceFilter};
+use std::time::{Duration, Instant};
+
+let lager = LagerBox::from_env()?;
+let port = lager.usb("usb3");
+
+port.disable()?;
+std::thread::sleep(Duration::from_millis(500));
+port.enable()?;
+
+// Poll the bus until the DUT reappears. usb_devices() is cheap and takes no
+// exclusive access, so this loop is safe.
+let filter = UsbDeviceFilter { vid: Some("0483".into()), ..Default::default() };
+let deadline = Instant::now() + Duration::from_secs(10);
+loop {
+    if !lager.usb_devices_matching(&filter)?.is_empty() {
+        break;
+    }
+    assert!(Instant::now() < deadline, "DUT did not re-enumerate");
+    std::thread::sleep(Duration::from_millis(200));
+}
+```
+
+## Supported Hardware
+
+| Instrument | Ports |
+|---|---|
+| Acroname USBHub3+ | 8 or 4, depending on model |
+| YKUSH hub | Per model |
+| Plugable USB hub | Addressed by topology rather than serial |
+
+## Notes
+
+- One net is one port. Cycling `usb1` leaves the hub's other ports alone.
+- The port's `devnum` on the bus changes across a re-enumeration. Match a device by
+  serial or vid/pid, never by `devnum`, when checking that it came back.
+- Powering a port down can remove a device that the box uses for another net. A
+  debug probe or serial adapter behind that port will disappear mid-test.

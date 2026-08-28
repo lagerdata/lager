@@ -8,13 +8,13 @@ boxes, though, sit behind an **access gateway**: an authenticating proxy
 that only lets assigned users reach the box. Against one of those, Lager
 asks you to sign in once, then authenticates every command automatically.
 
-A plain Lager box never prompts for this. You only ever see it when a box
-has been deliberately placed behind a gateway.
+A plain Lager Box never prompts for this. You only see it when someone
+deliberately places a box behind a gateway.
 
 ## Signing in
 
 The first time you run a command against a gated box, it tells you exactly
-what to do — the URL is filled in for you:
+what to do. The message fills in the URL for you:
 
 ```bash
 lager login https://your-control-plane.example.com
@@ -25,6 +25,30 @@ your account uses one). Your session is stored in `~/.lager_gateway_auth`
 (readable only by you) and refreshes on its own, so you rarely sign in more
 than once. From then on, `lager hello`, `lager python`, net commands, and
 everything else just work against that box.
+
+### Non-interactive sign-in
+
+Both credentials can be supplied as options instead of being prompted for,
+which is what you want in a CI job:
+
+| Option | Description |
+| --- | --- |
+| `--email TEXT` | Account email |
+| `--password TEXT` | Account password |
+
+```bash
+lager login https://your-control-plane.example.com --email "$LAGER_EMAIL" --password "$LAGER_PASSWORD"
+```
+
+<Warning>
+A password passed on the command line is visible to other users via the process
+list and is written to your shell history. Read it from a secret store or an
+environment variable, as above, rather than typing the literal value.
+</Warning>
+
+If the account has MFA enabled, these two options are not enough on their own.
+The CLI still prompts for the MFA code, so the sign-in is not fully unattended.
+Use an account without MFA for automation.
 
 ```bash
 lager logout                 # forget every stored session
@@ -39,10 +63,15 @@ When something looks off, `lager whoami` is the first thing to run:
 lager whoami
 ```
 
-It shows which servers you're signed in to, as whom, when each session
-expires, and which gated boxes it has seen — enough to tell at a glance
-whether a problem is "not signed in", "signed in as the wrong account", or
-"signed in but no access".
+It shows four things:
+
+- which servers you are signed in to
+- who you are signed in as
+- when each session expires
+- which gated boxes the CLI saw
+
+That separates three problems at a glance: "not signed in", "signed in as the
+wrong account", and "signed in but no access".
 
 ## Common messages and what they mean
 
@@ -63,7 +92,7 @@ pip install --upgrade lager-cli
 
 ## For administrators
 
-Whether a box requires sign-in, and who may use it, is managed from your
-control-plane dashboard, not the CLI. Assign users to a box, then turn its
+Your control-plane dashboard, not the CLI, controls whether a box requires
+sign-in and who can use it. Assign users to a box, then turn its
 access guard on; denied attempts are logged so you can see who needs
 access.
