@@ -138,7 +138,6 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ### Changed
 
-<<<<<<< HEAD
 - **The prose gate is now a required context, and it can see three rules it
   could not see before.** `tools/check_ste.py` reported zero across the corpus
   while three of its own rules were partly blind, so the zero was a statement
@@ -179,7 +178,7 @@ All notable changes to the Lager platform are documented here. For detailed rele
   treats an underscore-prefixed page as a partial and exempts it from the nav
   and release-notes checks, which is Mintlify's own convention and the one case
   where "not in docs.json" is the intent rather than the defect.
-=======
+
 - **The CI guide is rewritten around a runner installed on the Lager Box.** The
   published page assumed the runner is a separate machine that reaches the box
   across the network, so every job paid for `pip install`, `lager login` and
@@ -215,7 +214,6 @@ All notable changes to the Lager platform are documented here. For detailed rele
   consequence a reader can act on was written down nowhere: a box that publishes
   only `:9000` answers `lager nets` and `lager hello`, and fails `lager python`.
   Closes #383.
->>>>>>> a93b6866 (Rewrite the CI guide around a runner installed on the box)
 
 - **The Python API reference is converted to Simplified Technical English.** All
   60 gated violations across the 14 affected pages of
