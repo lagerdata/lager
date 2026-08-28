@@ -15,6 +15,7 @@ from typing import Callable, Any
 
 from .gpio_net import GPIOBase, UnsupportedInstrumentError
 from .labjack_t7 import LabJackGPIO
+from .labjack_ud import LabJackUDGPIO
 from .usb202 import USB202GPIO
 from .ft232h_gpio import FT232HGPIO
 from .aardvark_gpio import AardvarkGPIO
@@ -23,6 +24,7 @@ __all__ = [
     "GPIOBase",
     "UnsupportedInstrumentError",
     "LabJackGPIO",
+    "LabJackUDGPIO",
     "USB202GPIO",
     "FT232HGPIO",
     "AardvarkGPIO",

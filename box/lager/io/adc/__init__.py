@@ -19,6 +19,7 @@ Example usage:
 
 from lager.io.adc.adc_net import ADCBase, UnsupportedInstrumentError
 from lager.io.adc.labjack_t7 import LabJackADC
+from lager.io.adc.labjack_ud import LabJackUDADC
 from lager.io.adc.usb202 import USB202ADC
 from lager.io.adc.dispatcher import read, voltage, _do_adc_read, ADCDispatcher
 
@@ -26,6 +27,7 @@ __all__ = [
     "ADCBase",
     "UnsupportedInstrumentError",
     "LabJackADC",
+    "LabJackUDADC",
     "USB202ADC",
     "ADCDispatcher",
     "read",

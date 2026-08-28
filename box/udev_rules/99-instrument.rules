@@ -70,6 +70,13 @@ SUBSYSTEM=="usb", ATTRS{idVendor}=="0ce9", ATTRS{idProduct}=="1007", MODE="0660"
 # Fixes LJME_DEVICE_CURRENTLY_CLAIMED_BY_ANOTHER_PROCESS errors
 SUBSYSTEM=="usb", ATTRS{idVendor}=="0cd5", ATTRS{idProduct}=="0007", MODE="0660", GROUP="lager"
 
+# LabJack U3 (both -HV and -LV): VID=0x0cd5, PID=0x0003
+# The Exodriver claims the device over libusb, so it needs the same group
+# access the T7's LJM path does. Listed by product id to match the rule above
+# rather than widened to the whole vendor id, so adding a LabJack model stays a
+# deliberate line here. (Upstream's own 90-labjack.rules is vendor-wide.)
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0cd5", ATTRS{idProduct}=="0003", MODE="0660", GROUP="lager"
+
 # Measurement Computing USB-202 DAQ: VID=0x09db, PID=0x012b
 # Allows all users to access MCC USB-202 data acquisition devices
 SUBSYSTEM=="usb", ATTRS{idVendor}=="09db", ATTRS{idProduct}=="012b", MODE="0660", GROUP="lager"

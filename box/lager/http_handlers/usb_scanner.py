@@ -95,6 +95,13 @@ SUPPORTED_USB: Dict[str, Dict] = {
     "Picoscope_2000":    {"vid": "0ce9", "pid": "1007", "net_type": ["scope"]},
     # adc / gpio / dac / spi / i2c
     "LabJack_T7":        {"vid": "0cd5", "pid": "0007", "net_type": ["gpio", "adc", "dac", "spi", "i2c"]},
+    # U3-HV and U3-LV share this product id -- the scanner cannot tell them
+    # apart, so the entry is the family. The driver reads the variant from
+    # the device (u3.U3.isHV) when it opens, which is also what decides
+    # whether FIO0-FIO3 are usable as digital I/O.
+    # No spi/i2c: the UD drivers implement adc/dac/gpio only, and
+    # advertising a role with no driver behind it just moves the failure.
+    "LabJack_U3":        {"vid": "0cd5", "pid": "0003", "net_type": ["gpio", "adc", "dac"]},
     "Aardvark":          {"vid": "0403", "pid": "e0d0", "net_type": ["spi", "i2c", "gpio"]},
     # FT232H — single channel. The chip can run in MPSSE mode (SPI / I2C /
     # GPIO / JTAG-SWD via libftdi) OR in async-serial mode (UART via
@@ -209,6 +216,26 @@ CHANNEL_MAPS: Dict[str, Dict[str, List[str]]] = {
         "dac": ["DAC0", "DAC1"],
         "spi": ["FIO0-FIO3"],
         "i2c": ["FIO4-FIO5"],
+    },
+    # A U3's AIN and DIO numbers name the SAME physical pins: AIN4-AIN7 are
+    # FIO4-FIO7 and AIN8-AIN15 are EIO0-EIO7, in analog rather than digital
+    # mode. Both are listed because either is a valid choice; the driver sets
+    # the mode when the net is used. On a U3-HV, AIN0-AIN3 (FIO0-FIO3) are
+    # fixed high-voltage analog inputs and are NOT available as gpio -- the
+    # driver rejects that with an explicit error, since a U3-LV has the same
+    # product id and the same pins are flexible there.
+    "LabJack_U3": {
+        "gpio": [
+            "FIO0", "FIO1", "FIO2", "FIO3", "FIO4", "FIO5", "FIO6", "FIO7",
+            "EIO0", "EIO1", "EIO2", "EIO3", "EIO4", "EIO5", "EIO6", "EIO7",
+            "CIO0", "CIO1", "CIO2", "CIO3",
+        ],
+        "adc": [
+            "AIN0", "AIN1", "AIN2", "AIN3", "AIN4", "AIN5", "AIN6", "AIN7",
+            "AIN8", "AIN9", "AIN10", "AIN11", "AIN12", "AIN13", "AIN14",
+            "AIN15",
+        ],
+        "dac": ["DAC0", "DAC1"],
     },
     "MCC_USB-202": {
         "adc": ["CH0", "CH1", "CH2", "CH3", "CH4", "CH5", "CH6", "CH7"],

@@ -33,6 +33,7 @@ from lager.dispatchers import helpers
 from lager.exceptions import DACBackendError
 
 from .labjack_t7 import LabJackDAC
+from .labjack_ud import LabJackUDDAC
 from .usb202 import USB202DAC
 
 DEBUG = bool(os.environ.get("LAGER_DAC_DEBUG"))
@@ -73,6 +74,11 @@ class DACDispatcher(BaseDispatcher):
         
         if "usb-202" in inst_lower or "usb202" in inst_lower or "mcc" in inst_lower:
             return USB202DAC
+        elif re.search(r"labjack[_\-\s]*u[36]", inst_lower):
+            # LabJack UD series (U3). Must precede the T7 branch only because
+            # that branch also absorbs the empty-instrument default; the two
+            # instrument patterns themselves are mutually exclusive.
+            return LabJackUDDAC
         elif (re.search(r"labjack[_\-\s]*t7", inst_lower)
                 or "t7" in inst_lower
                 or not instrument_name):
@@ -138,6 +144,10 @@ class DACDispatcher(BaseDispatcher):
         try:
             if Driver == USB202DAC:
                 # USB-202 needs unique_id for device selection
+                driver = Driver(name=netname, pin=channel, unique_id=address)
+            elif Driver == LabJackUDDAC:
+                # A UD device is opened by serial, so it needs the address too;
+                # the T7 below can omit it only because LJM auto-discovers.
                 driver = Driver(name=netname, pin=channel, unique_id=address)
             else:
                 # LabJack T7 just needs name and pin

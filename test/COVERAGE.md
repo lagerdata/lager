@@ -41,13 +41,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1914 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 2167 |
+| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1916 (+2 xfailed) |
+| `unit (box)` | `test/unit/box/` | 2213 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 181 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 183 (+1 skipped) |
-| | **Total gated** | **4639** |
+| | **Total gated** | **4687** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never
@@ -451,9 +451,9 @@ cli/tests/                #  7 files: 6 pytest suites (GATED via `unit (cli)`),
                           #           plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 192 files)
+### Local Unit Tests (`test/unit/` -- 193 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 104 files)
+#### Box Unit Tests (`test/unit/box/` -- 105 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -514,6 +514,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_lager_package_identity.py` | Guards this suite's conftest invariant: `lager` must be the real on-disk package with its `__init__` executed, not a placeholder |
 | `test_labjack_batch_read.py` | `POST /labjack/batch_read`: locks on the same device identity `/invoke` does, and writes nothing to the instrument |
 | `test_labjack_model_routing.py` | LabJack model disambiguation across the DAC dispatcher, the LJM batch-read grouping and the device-lock identity: a non-T7 LabJack must reach none of the three T7 paths, and the T7's own routing is byte-for-byte unchanged |
+| `test_labjack_ud.py` | LabJack UD-series (U3) drivers and handle manager against a fake u3 module: pin-name mapping, device selection by serial, and the analog/digital pin mux -- which has no T7 counterpart and fails silently, since a line read in the wrong mode returns a plausible number rather than an error. Also the UD DAC's 0.04-4.95 V range and its absent readback |
 | `test_load_box_secrets.py` | `load_box_secrets()` returns `{}` on every failure, which makes an unreadable secrets file indistinguishable from a box with none configured -- pins that distinction |
 | `test_lock_state.py` | lock_state.py single source of truth for box-side lock behavior |
 | `test_logic_net_type.py` | `lager logic`'s workers must resolve nets under `NetType.from_role(LOGIC_ROLE)`; `Net.get` matches on type equality, so a mismatch is a silent no-op rather than an error |

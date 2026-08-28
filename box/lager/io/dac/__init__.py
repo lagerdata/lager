@@ -25,12 +25,14 @@ from types import ModuleType
 
 from .dac_net import DACBase, UnsupportedInstrumentError
 from .labjack_t7 import LabJackDAC
+from .labjack_ud import LabJackUDDAC
 from .usb202 import USB202DAC
 
 __all__ = [
     "DACBase",
     "UnsupportedInstrumentError",
     "LabJackDAC",
+    "LabJackUDDAC",
     "USB202DAC",
     "read",
     "write",

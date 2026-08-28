@@ -104,6 +104,27 @@ RUN apt-get update && apt-get install -y unzip && rm -rf /var/lib/apt/lists/* \
 	&& rm -f LabJack-LJM_2024-06-10.zip labjack_ljm_installer.run \
 	&& test -f /usr/local/lib/libLabJackM.so
 
+# LabJack Exodriver (liblabjackusb) -- the U3/U6/UE9 low-level driver.
+# Separate from LJM above and not a substitute for it: LJM drives the T-series
+# and does not talk to the U3 at all, while the Exodriver drives the U3 and does
+# not talk to the T7. A box with both LabJack families needs both libraries.
+# libusb-1.0-0-dev is already installed by the uldaq block above.
+#
+# Builds liblabjackusb directly rather than running the repo's install.sh:
+# that script also installs 90-labjack.rules and prods udev, which is both
+# pointless in a container (udev runs on the host -- see
+# box/udev_rules/99-instrument.rules) and a way for the build to fail.
+# The assertion is a glob because the Makefile installs a versioned
+# liblabjackusb.so.<major>.<minor>.<patch> plus symlinks, not a bare .so.
+# See: https://support.labjack.com/docs/exodriver-downloads-for-ud-series-linux-and-macos-
+RUN git clone --depth 1 https://github.com/labjack/exodriver.git /tmp/exodriver \
+	&& cd /tmp/exodriver/liblabjackusb \
+	&& make \
+	&& make install \
+	&& ldconfig \
+	&& rm -rf /tmp/exodriver \
+	&& ls /usr/local/lib/liblabjackusb.so*
+
 # BuildKit pip download/wheel cache mount: a from-scratch rebuild reuses
 # downloaded sdists and locally-built wheels (opencv, cryptography, psycopg2,
 # hidapi, ...) instead of re-downloading and recompiling every time. The cache
@@ -137,6 +158,7 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
 	'hidapi==0.14.0' \
 	'simplejson==3.18.0' \
 	'labjack-ljm==1.23.0' \
+	'LabJackPython==2.3.0' \
 	'pygdbmi==0.11.0.0' \
 	# 38.0.4 has no cp312 wheel — every cold pip layer compiled Rust from
 	# source (~2-3 min). >=42 ships manylinux wheels for python 3.12.

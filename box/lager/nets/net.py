@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 import json
 import traceback
@@ -50,7 +51,14 @@ from .mappers import (
 # -------- debug net import (backward compatibility re-export) --------
 from .debug_net import DebugNet, _NullDebug, make_debug, _debug_available
 
+# LabJack UD series (U3/U6). Matched explicitly rather than by a bare
+# "labjack" test, because the LabJack branches below are the fallback for
+# an unknown or empty instrument and that fallback is a T7 -- which speaks
+# LJM, a library the UD devices do not implement at all.
+_UD_RE = re.compile(r"labjack[_\-\s]*u[36]", re.IGNORECASE)
+
 from ..io.gpio.labjack_t7 import LabJackGPIO
+from ..io.gpio.labjack_ud import LabJackUDGPIO
 from ..io.gpio.usb202 import USB202GPIO
 from ..io.gpio.ft232h_gpio import FT232HGPIO
 
@@ -79,8 +87,10 @@ def _ftdi_address_parts(address):
 
 from ..io.gpio.aardvark_gpio import AardvarkGPIO
 from ..io.adc.labjack_t7 import LabJackADC
+from ..io.adc.labjack_ud import LabJackUDADC
 from ..io.adc.usb202 import USB202ADC
 from ..io.dac.labjack_t7 import LabJackDAC
+from ..io.dac.labjack_ud import LabJackUDDAC
 from ..io.dac.usb202 import USB202DAC
 from ..measurement.thermocouple.phidget import PhidgetThermocouple
 from ..measurement.watt.yocto_watt import YoctoWatt
@@ -553,6 +563,9 @@ class Net:
                         serial = item.get('address') or None
                         return AardvarkGPIO(name, _norm_pin(item), port=port,
                                             serial=serial, target_power=target_power)
+                    elif _UD_RE.search(instrument):
+                        unique_id = item.get('unique_id') or item.get('address')
+                        return LabJackUDGPIO(name, _norm_pin(item), unique_id=unique_id)
                     else:
                         # Default to LabJack for backward compatibility
                         return LabJackGPIO(name, _norm_pin(item))
@@ -563,6 +576,9 @@ class Net:
                     if 'usb-202' in instrument or 'usb202' in instrument or 'mcc_usb-202' in instrument:
                         unique_id = item.get('unique_id') or item.get('address')
                         return USB202ADC(name, _norm_pin(item), unique_id=unique_id)
+                    elif _UD_RE.search(instrument):
+                        unique_id = item.get('unique_id') or item.get('address')
+                        return LabJackUDADC(name, _norm_pin(item), unique_id=unique_id)
                     else:
                         # Default to LabJack for backward compatibility
                         return LabJackADC(name, _norm_pin(item))
@@ -573,6 +589,9 @@ class Net:
                     if 'usb-202' in instrument or 'usb202' in instrument or 'mcc_usb-202' in instrument:
                         unique_id = item.get('unique_id') or item.get('address')
                         return USB202DAC(name, _norm_pin(item), unique_id=unique_id)
+                    elif _UD_RE.search(instrument):
+                        unique_id = item.get('unique_id') or item.get('address')
+                        return LabJackUDDAC(name, _norm_pin(item), unique_id=unique_id)
                     else:
                         # Default to LabJack for backward compatibility
                         return LabJackDAC(name, _norm_pin(item))
@@ -742,6 +761,9 @@ class Net:
                                 serial = mapping.get('device_override') or None
                                 return AardvarkGPIO(name, norm_pin, port=port,
                                                     serial=serial, target_power=target_power)
+                            elif _UD_RE.search(instrument):
+                                unique_id = mapping.get('unique_id') or mapping.get('device_override')
+                                return LabJackUDGPIO(name, norm_pin, unique_id=unique_id)
                             else:
                                 return LabJackGPIO(name, norm_pin)
 
@@ -755,6 +777,9 @@ class Net:
                             if 'usb-202' in instrument or 'usb202' in instrument or 'mcc_usb-202' in instrument:
                                 unique_id = mapping.get('unique_id') or mapping.get('device_override')
                                 return USB202ADC(name, norm_pin, unique_id=unique_id)
+                            elif _UD_RE.search(instrument):
+                                unique_id = mapping.get('unique_id') or mapping.get('device_override')
+                                return LabJackUDADC(name, norm_pin, unique_id=unique_id)
                             else:
                                 return LabJackADC(name, norm_pin)
 
@@ -768,6 +793,9 @@ class Net:
                             if 'usb-202' in instrument or 'usb202' in instrument or 'mcc_usb-202' in instrument:
                                 unique_id = mapping.get('unique_id') or mapping.get('device_override')
                                 return USB202DAC(name, norm_pin, unique_id=unique_id)
+                            elif _UD_RE.search(instrument):
+                                unique_id = mapping.get('unique_id') or mapping.get('device_override')
+                                return LabJackUDDAC(name, norm_pin, unique_id=unique_id)
                             else:
                                 return LabJackDAC(name, norm_pin)
 

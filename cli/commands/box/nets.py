@@ -464,6 +464,10 @@ INSTRUMENT_NET_MAP: dict[str, list[str]] = {
 
     # adc / gpio / dac / spi
     "LabJack_T7": ["gpio", "adc", "dac", "spi", "i2c"],
+    # U3-HV and U3-LV share one product id, so this entry is the family;
+    # the box-side driver reads the variant from the device. adc/dac/gpio
+    # only -- the UD drivers do not implement spi/i2c.
+    "LabJack_U3": ["gpio", "adc", "dac"],
     "Aardvark": ["spi", "i2c", "gpio"],
     "FTDI_FT232H": ["spi", "i2c", "gpio", "debug", "uart"],
     # FT2232H / FT4232H carry the new multi-channel debug role plus UART.

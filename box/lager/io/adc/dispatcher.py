@@ -28,6 +28,7 @@ from lager.dispatchers import helpers
 from lager.exceptions import ADCBackendError
 
 from lager.io.adc.labjack_t7 import LabJackADC
+from lager.io.adc.labjack_ud import LabJackUDADC
 from lager.io.adc.usb202 import USB202ADC
 
 
@@ -62,6 +63,11 @@ class ADCDispatcher(BaseDispatcher):
         if re.search(r"labjack[_\-\s]*t7", inst, re.IGNORECASE):
             return LabJackADC
 
+        # LabJack UD series (U3). Checked after the T7 so the more specific
+        # pattern wins; neither matches the other.
+        if re.search(r"labjack[_\-\s]*u[36]", inst, re.IGNORECASE):
+            return LabJackUDADC
+
         # MCC USB-202
         if re.search(r"mcc[_\-\s]*usb[_\-]?202", inst, re.IGNORECASE):
             return USB202ADC
@@ -94,6 +100,12 @@ class ADCDispatcher(BaseDispatcher):
             if Driver is LabJackADC:
                 # LabJack: pass (name, pin)
                 driver = Driver(name=netname, pin=channel)
+
+            elif Driver is LabJackUDADC:
+                # UD: pass (name, pin, unique_id). Unlike the T7, which lets
+                # LJM pick whichever device it finds, a UD device is opened by
+                # serial -- so the address has to reach the driver.
+                driver = Driver(name=netname, pin=channel, unique_id=address)
 
             elif Driver is USB202ADC:
                 # USB-202: pass (name, pin, unique_id)

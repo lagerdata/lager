@@ -54,6 +54,31 @@ All notable changes to the Lager platform are documented here. For detailed rele
   agent; answering a bare success there would tell the caller a value synced
   when it did not.
 
+- **`lager adc`, `dac`, `gpi` and `gpo` now work against a LabJack U3.** The
+  box speaks to the T-series through LJM, which does not support the U3/U6 at
+  all, so this is a second driver stack rather than an extension of the
+  existing one: the Exodriver (`liblabjackusb`) plus LabJackPython's `u3`
+  module, both added to the box image. The T7 path is untouched and the two
+  can share a box -- they are distinguished by USB product id.
+
+  A U3 pin is analog *or* digital depending on a whole-device bitmask, which
+  has no T-series equivalent: `AIN5` and `FIO5` are the same physical line. The
+  mode is therefore owned by the handle manager and set under its lock before
+  every read or write, rather than by each driver -- a driver writing the mask
+  itself would flip another net's pin and produce a plausible number instead of
+  an error. On a U3-HV, `FIO0`-`FIO3` are fixed high-voltage analog inputs and
+  are rejected for GPIO with an explicit message.
+
+  Not yet supported on the U3: SPI and I2C, which on the T7 are driven through
+  firmware registers that the U3 does not have. `lager instruments` advertises
+  only the roles that have a driver behind them.
+
+  Two differences from the T7 are deliberate and visible. The DAC range is
+  0.04-4.95 V, not 0-5 V, and out-of-range values are refused rather than
+  silently clamped by the hardware. And a U3 DAC has no readback at all, so
+  reading one reports the value this process last wrote and errors if there
+  is none -- reporting 0 V would be indistinguishable from a real measurement.
+
 ### Changed
 
 - **A second role on a dual-role instrument is now a notice, not a block.**
@@ -319,6 +344,16 @@ All notable changes to the Lager platform are documented here. For detailed rele
   The logic suite gains four checks driving the new nodes. `trigger spi` with
   no arguments passed while ten of these were undefined, which is how the gap
   stayed invisible until a hardware run hit it.
+
+- **A LabJack that is not a T7 no longer lands on the T7's code paths.** Three
+  places asked "is this net a LabJack?" with a substring test and then assumed
+  LJM. Each failed quietly rather than loudly: a DAC net would be handed the T7
+  driver and, on a box with both models, write `DAC0` on the wrong instrument
+  and report success; `/nets/state` would batch-read it through LJM register
+  names; and the shared device lock collapsed both models onto one key for any
+  net saved without an address, which LabJack nets routinely are. The T7, a
+  bare `t7`, and an empty instrument keep exactly the behaviour and the lock
+  identity they had.
 
 ## [0.45.1] - 2026-09-02
 
