@@ -47,6 +47,48 @@ All notable changes to the Lager platform are documented here. For detailed rele
   than no diagnostic. Both a latched-reading stub and a stub whose every call
   raises are exercised against it.
 
+### Fixed
+
+- **`lager logic <net> enable` and `disable` called ten driver methods that
+  were not defined anywhere, so they failed on every instrument.** The issue
+  found three. Walking the call sites found seven on `Net.enable` / `Net.disable`
+  (`is_la_enabled`, `enable_la`, `enable_la_channel`, `set_la_active_channel`,
+  `disable_la_channel`, `is_la_channel_enabled`, `disable_la`) and three more
+  the logic mapper calls (`set_la_threshold`, `set_la_display_position`,
+  `set_enabled_channel_size`). The MSO5000 driver defined eighty methods and
+  none of them was logic-analyzer related.
+
+  All ten are implemented, plus three read-backs, against `:LA:STATe`,
+  `:LA:DIGital<n>:DISPlay`, `:LA:ACTive`, `:LA:POD<n>:THReshold` and `:LA:SIZE`.
+  A digital channel index is range-checked to D0-D15, and deliberately does not
+  use the `channel or self.channel` idiom the analog methods use: D0 is valid and
+  falsy, so `or` would silently redirect a request for D0 to the net's channel.
+
+  **Nothing local could have caught this, which is the more interesting half.**
+  A net's device sits behind two chained catch-all `__getattr__` methods, so
+  every attribute appears to exist on the caller's side and the call still fails
+  on the box, where the check is a bare `hasattr` on the driver. `hasattr` guards
+  written against that device therefore cannot be False. The new tests do not
+  mock the device: they read `net.py`'s Logic branches and parse the mapper to
+  recover the names actually called, then assert each one resolves on the driver.
+  A guard test asserts the walkers matched something, so they cannot pass by
+  finding nothing.
+
+- **`LogicDisplaySize.Medium` set the display to large, and `Large` set it to
+  medium.** The two enum members had their command strings crossed. The second
+  element of each pair is the abbreviated form the instrument echoes, so reads
+  were wrong in the same direction as writes.
+
+- **`lager logic` reported success after a box-side failure.** The worker
+  functions returned nothing, so an error from the box printed a traceback and
+  the command still exited 0. They now report the failure on stderr and exit
+  non-zero. Two related holes closed with it: an unknown net name fell through to
+  success without printing anything, and four `hasattr` guards that can never be
+  False read as safety checks while doing nothing.
+
+  **Not yet validated on hardware.** Every SCPI string here is written from the
+  programming guide and has not been sent to an instrument. The unit tests pin
+  what each method emits, not what the instrument does with it.
 
 ## [0.44.0] - 2026-08-28
 

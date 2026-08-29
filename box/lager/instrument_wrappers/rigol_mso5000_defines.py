@@ -477,8 +477,8 @@ class LogicGroup(VisaEnum):
 
 class LogicDisplaySize(VisaEnum):
     Small = ("SMALl", "SMAL")
-    Medium = ("LARGe", "LARG")
-    Large = ("MEDium", "MED")
+    Medium = ("MEDium", "MED")
+    Large = ("LARGe", "LARG")
 
 class LogicPod(VisaEnum):
     Pod1 = ("POD1")
