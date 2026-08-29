@@ -4,170 +4,101 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ## [Unreleased]
 
-### Fixed
+<!-- Keep this heading. A branch cut before a release and merged after it
+     files its entry here; without it the entry lands inside the released
+     section below, with no merge conflict to catch it. -->
 
-- **Per-probe runtime file paths are now built from a validated serial.** The
-  pid and log files for a debug probe are named after its USB serial, which is
-  read from a field of a net's VISA address that is permissive about what it
-  accepts. That value is now reduced to characters that cannot alter the shape
-  of a path, through one shared helper rather than the near-copies of the idea
-  that had grown up separately, and each site then checks that its own join
-  stayed in its own directory. The sysfs lookup in `diagnose` that reads the
-  same field gets the same treatment.
+## [0.44.0] - 2026-08-28
 
-  The check is repeated at each site rather than shared, which is worth knowing
-  before someone tidies it away: a static analyser recognises a path guard only
-  inside the function that builds the path, so folding those lines into a
-  helper leaves the code correct and the analysis blind. The helper's docstring
-  records that, because the tidier version is the tempting one.
+### Added
 
-  An ordinary alphanumeric serial produces the byte-identical filename it did
-  before, so a box that upgrades while a debug session is live still finds its
-  running gdbserver; a test pins that. Probe identity is unaffected -- slot
-  assignment still matches on the raw serial, because this is a path concern
-  and not an identity one.
+- **A release-note template, and a partial convention to hold it.**
+  `docs/source/release-notes/_template.mdx` carries the section order and the
+  STYLE.md rules that apply by hand, because the release-notes archive is
+  deliberately outside the gate: a note records what shipped on a date, and
+  editing one makes the archive disagree with itself. `tools/check_docs.py` now
+  treats an underscore-prefixed page as a partial and exempts it from the nav
+  and release-notes checks, which is Mintlify's own convention and the one case
+  where "not in docs.json" is the intent rather than the defect.
 
-- **Removed an unused `/pip` endpoint from the box python service.** Its only
-  caller addressed a port and path the box has never served, so both halves
-  were dead code. Boxes should be updated to a release containing this change.
+- **The Net-Manager Add screen now makes LabJack I2C/SPI default pins
+  obviously changeable.** Users read `Ch: FIO4-FIO5` on an available I2C net
+  as a fixed assignment and didn't discover the pin-picker dialog behind the
+  Add button. Three changes, all in the TUI:
+  - The Add screen carries a hint line saying the pins can be changed.
+    Warnings and the hint render as compact single-line notices in one
+    block with a `✕ Dismiss` button, so they can't crowd the net list out
+    of view.
+  - A LabJack I2C/SPI row's `[✎]` button now opens a combined editor —
+    name field plus the pin dropdowns — instead of the rename-only dialog,
+    so the net can be fully configured while selecting nets instead of
+    only after pressing Add. Nets edited this way aren't re-prompted for
+    pins during the add; rename validation is shared with the plain
+    rename dialog, which all other net types keep.
+  - The pin dialog now prefills with the net's current selection rather
+    than always the defaults, and reverting a customized net back to the
+    defaults restores the original scanner record (legacy channel string,
+    no params) byte-for-byte.
 
-- **A bench check stopped retrying past a box bounce, because the prose pass
-  reworded the message it greps for.** `test/integration/infrastructure/box_config.sh`
-  decides whether `lager box config validate` failed to reach the box by matching
-  `could not connect to the box|may be offline` in its output. The Simplified
-  Technical English pass rewrote both strings in `cli/errors.py` to "The connection
-  to the box failed" and "The box is offline", so the match could no longer
-  succeed.
+- **The Rust API reference now mirrors the Python one, page for page.** The Rust tab
+  was five pages against Python's twenty-seven, and a single 76-line `net-types.mdx`
+  table row was the whole counterpart to Python's twenty-four per-instrument pages.
+  A reader got one line where the Python reader got a method reference.
 
-  Nothing went red. That suite does not run in CI, so the change shipped through
-  22 green checks. The failure mode is worse than an error: the retry never fires,
-  and the test then records a verdict about a box that was still coming back from
-  the section-3 bounce -- the defect class the comment above that function cites
-  issue #283 for.
+  The tab is now 31 pages in the same six-group taxonomy the Python and CLI tabs
+  already use: a page per net type (supply, battery, solar, eload, watt, energy,
+  scope, adc, thermocouple, gpio, dac, i2c, spi, usb, uart, ble, wifi, blufi, router,
+  arm, webcam), the debug surface split into debug, rtt and dfu, and new client,
+  errors and async pages. `debug-and-uart.mdx` is retired into `debug`, `rtt` and
+  `uart` with a redirect.
 
-  The pattern now matches both wordings. A probe that asks whether the box was
-  reachable only becomes more reliable by accepting more spellings, and an older
-  CLI still emits the original pair. The comment says who has to update it next.
+  Every page documents the timeout budget, box-version floor and gotchas for its net
+  type, none of which were published anywhere before. **All 149 Rust examples across
+  the 31 pages are compiled against `lager-net` 0.4.0**, and the API was exercised
+  against real hardware on a box running 0.43.0 first, so the return shapes and error
+  strings are observed rather than transcribed. Two examples were wrong and were
+  caught by that compile pass: `tokio::try_join!` over inline handle constructors does
+  not borrow-check, and `std::fs::read(..)?` cannot convert into `lager::Error`.
 
-- **A box install failed at the firewall step once the port allowlist held
-  ranges.** `secure_box_firewall.sh` writes its per-interface allow rules as
-  `ufw allow in on <iface> to any port <port>`, naming no protocol. ufw refuses
-  a port range spelled that way -- `Must specify 'tcp' or 'udp' with multiple
-  ports` -- so the first range aborted the script under `set -e` and
-  `lager install` exited 1 having configured nothing. The allowlist held only
-  single ports when those rules were written, which is why the omission went
-  unnoticed until the debug port ranges were added to it.
+  Behavior worth calling out, all verified on hardware and previously undocumented:
+  `flash()` on a `.bin` infers the STM32 base `0x08000000` and **returns `Ok(())`
+  while writing nothing useful** on any other family, so `flash_bin()` is mandatory
+  there; `erase()` drops the debugger connection, so a following `read_memory()` fails
+  until you reconnect; a per-net safety ceiling caps `set_voltage`/`set_current` but
+  **not** `set_ovp`/`set_ocp`; a `bleCommand`/`wifiCommand` capability flag means the
+  route is registered, not that the box has BlueZ or `nmcli`; and `state()` returning
+  `Ok` does not mean the instrument answered -- check the `error` field.
 
-  The rules name `proto tcp` now, on all four interfaces rather than only the
-  one that reports first. TCP is what `start_box.sh` publishes, and a test pins
-  both halves of that so neither can move alone.
+  `RttStream` is documented as yielding raw HTTP chunked-transfer framing rather than
+  clean payload, with interactive RTT recommended instead. Tracked upstream as
+  lagerdata/lager-rs#5.
 
-  The script disables and resets ufw before writing the new rules, so a failure
-  anywhere in between left the box with the firewall off and no rules at all,
-  reported as nothing more specific than `Deployment failed!`. It now restores a
-  deny-incoming policy with SSH allowed, prints which half is configured and
-  which is not, and keeps the failing exit code.
+  The Python overview now links across to the Rust SDK, which nothing in the Python
+  tab did before.
 
-- **A `lager python` connection error printed the literal `{box_ip}`.** The hint
-  that follows `Connection refused by box` was a plain string rather than an
-  f-string, so it told the reader to run `ssh lagerdata@{box_ip} "docker ps"`
-  with the braces intact. It interpolates now.
+- **A Python API page for `NetType.Router`.** A router net drives a MikroTik
+  access point over its REST API, and its methods include the bench's only
+  network fault-injection tooling -- `block_internet`, `block_dns`,
+  `block_port`, bandwidth limits and DHCP control -- which is how a test asserts
+  what firmware does when the network degrades rather than disappears. None of
+  it was documented, and `NetType.Router` appeared nowhere in the docs.
 
-- **A debug command no longer proceeds against a target that is not there.**
-  `/debug/status` reported a single `connected` boolean that meant "the
-  gdbserver process is alive", and `_auto_connect_if_needed` returned on it
-  without touching the target. On a box where the server outlives the part,
-  `flash`, `reset`, `erase`, `memrd` and the RTT paths all ran believing they
-  were connected. #344 fixed the erase verdict at one call site by reading the
-  programmer's output; this is the cause underneath it.
+- **`tools/check_docs.py` gates docs against the shipping CLI**, wired into
+  `static-checks.yml`. It fails on a dangling nav entry, an unpublished page, a
+  release with no notes, a command with no page (or a page for a hidden
+  command), and an options table naming a flag no click param declares.
 
-  The endpoint now reports `gdbserver_running` and `target_attached`
-  separately, and `lager debug <net> status` prints both. `connected` stays,
-  pinned to its old meaning -- a live server -- so an older CLI against a newer
-  box behaves exactly as it did rather than silently changing what the field
-  means.
+- **A guide for running Lager from CI.** Covers non-interactive sign-in,
+  registering the box, and the two checks worth failing a pipeline on: that the
+  box is reachable, and that it is running the commit under test. `lager python`
+  runs the script on the box against the box's own checkout, so a bench result
+  from a stale box is not evidence about the commit that triggered it.
 
-  `target_attached` is a tri-state, and the third value carries weight. A box
-  older than this change, a probe refused because a debugger already holds the
-  session, or a probe that timed out all yield "could not establish", which is
-  not the same as "absent" -- reading it as absent would tear down sessions
-  that were working. The CLI falls back to server liveness there, and `status`
-  prints `Unknown`.
-
-  Reading the target costs a GDB round trip, and `/debug/status` is called by
-  every debug subcommand, so the wire read is opt-in per request. The free
-  check -- the server's own logfile, using the same predicate #344 established
-  -- always runs.
-
-- **`connect()`'s target verification checked the wrong thing and was never
-  read.** It issued `monitor version` and accepted any console reply as proof,
-  but that is the gdbserver answering about itself, which it does with no part
-  attached. The value was also discarded: nothing read `target_verified`, and
-  `/debug/connect` does not route through the function that sets it. It now
-  uses the same predicate `/debug/status` reports, so "attached" has one
-  definition instead of two.
-
-- **The Python API reference documented a key `status()` does not return.** It
-  showed `status.get('connected')`; the method returns `running`.
-
-- **`docs/package.json` ran `mint build`, a subcommand the Mintlify CLI no longer
-  has.** `docs/vercel.json` pointed its `buildCommand` at that script and expected
-  the output in `.mintlify`. Nothing consumed either file: docs.lagerdata.com is
-  built and served by Mintlify's own hosted platform, which deploys from `main`
-  through the Mintlify GitHub app. `vercel.json` is deleted, and the scripts are
-  now the commands that actually work -- `dev`, `validate` and `broken-links` --
-  each pinned to the same mint version `static-checks.yml` pins, so a local run
-  and CI cannot disagree. Closes #374.
-
-- **The scope's `SUPPORTED_USB` key was spelled `Rigol_MS05204`, with a zero where
-  the letter O belongs.** The instrument is the MSO5204, as
-  `rigol_mso5000_defines.py` and the docs both have it, and the misspelling was
-  user-visible in `lager instruments` and `lager nets list`. The key is renamed in
-  all three tables that carry it (`SUPPORTED_USB`, `CHANNEL_MAPS`,
-  `INSTRUMENT_NET_MAP`).
-
-  The instrument name is persisted verbatim in every saved net record, so boxes
-  provisioned before this change still hold the old string. `canonical_instrument()`
-  maps it to the new spelling at each of the exact-key lookups that consume a saved
-  value, so those records keep working with no migration of `saved_nets.json`. The
-  distinction matters: a saved net whose instrument no longer matches a table key
-  does not fail loudly, it silently loses whatever restriction that key carried.
-  Closes #373.
-
-- **`lager://reference/Router` returned zero methods, and so did `Logic`, `Arm`,
-  `Webcam` and `Wifi`.** `api_reference.py` introspects a driver class per
-  NetType so the agent-facing reference stays in lock-step with the real
-  drivers, but a NetType absent from the map is never introspected at all --
-  and nothing checked the map in that direction, so ten of `NetType`'s
-  twenty-four members had no entry.
-
-  `Router` was the expensive one: `MikroTikRouter` has 37 public methods
-  including the bench's only network fault-injection tooling
-  (`block_internet`, `block_dns`, `block_port`, bandwidth limits, DHCP
-  control), which is how a test asserts what firmware does when the network
-  degrades rather than disappears. None of it was visible to an agent.
-
-  Curated entries are added for `Router`, `Arm`, `Webcam`, `Wifi`, `Analog` and
-  `Logic`. `Analog` and `Logic` are hand-written for the same reason `Debug`
-  is: `Net.get()` returns a bare `Net` proxying to the instrument over RPC, so
-  introspecting the mapper would replace the curated list with nine
-  undocumented local helpers. The raw saved-net roles are added to the alias
-  map too -- `plan_firmware_test` looks entries up by role, so without them the
-  new entries would have been reachable only through the resource URI.
-
-  A guard test now asserts every `NetType` either has an entry or appears in an
-  explicit exclusion list with a stated reason, which is the check that was
-  missing. Verified against MCP Python SDK 2.1.1: `lager://reference/Router`
-  returns 37 methods, and `lager://guide/api-quick-reference` renders all six
-  new types. Closes #372.
-- **Legacy double-booked nets no longer block unrelated adds in the
-  Net-Manager TUI.** Boxes that still hold two saved nets on a
-  single-channel instrument (e.g. a `battery` and a `power-supply` net on
-  the same Keithley 2281S, saved before the one-net-per-chip rule) made
-  the Add screen reject every selection with "Only one net may be added
-  per Keithley_2281S…", even pure GPIO adds. Both the single-channel and
-  mode-exclusive conflict checks now only fire for instruments the current
-  selection actually touches.
+- **`mint broken-links` runs in the static-checks gate**, with anchor checking
+  on. Three cross-references had shipped missing the `/source` prefix that every
+  published URL carries, each found by hand. Scoped to `docs/source/` -- the
+  working notes under `docs/reference/` are not published and carry stale
+  relative paths a reader can never follow.
 
 ### Changed
 
@@ -234,15 +165,6 @@ All notable changes to the Lager platform are documented here. For detailed rele
   With the checker honest, the CI step drops `continue-on-error: true`. A
   required context that cannot see three of its rules is worse than no context,
   because it converts "nobody checked" into "the check passed".
-
-- **A release-note template, and a partial convention to hold it.**
-  `docs/source/release-notes/_template.mdx` carries the section order and the
-  STYLE.md rules that apply by hand, because the release-notes archive is
-  deliberately outside the gate: a note records what shipped on a date, and
-  editing one makes the archive disagree with itself. `tools/check_docs.py` now
-  treats an underscore-prefixed page as a partial and exempts it from the nav
-  and release-notes checks, which is Mintlify's own convention and the one case
-  where "not in docs.json" is the intent rather than the defect.
 
 - **The CI guide is rewritten around a runner installed on the Lager Box.** The
   published page assumed the runner is a separate machine that reaches the box
@@ -445,6 +367,187 @@ All notable changes to the Lager platform are documented here. For detailed rele
   there would make the docs disagree with what the CLI prints. The counts in
   `test/COVERAGE.md` are machine-checked and untouched; only its prose moved.
 
+- **21 `Dexarm` methods and both `Wifi` methods gained docstrings.**
+  Introspection uses a docstring's first line as a method's description, so an
+  undocumented driver method reaches an agent as a name with no explanation.
+
+- **The Release Notes navigation was a single flat list of 158 entries.**
+  Grouped into five version ranges.
+
+- **Bench wiring fixtures are documented.** A permanent wire from DP821 CH2's
+  output to a USB-202 ADC input existed for a check whose repository variables
+  were never set, so it had never run and nothing recorded that the channel had
+  anything attached. The supply suite asserts that channel is unloaded, so the
+  wire presented as an intermittent per-channel instrument fault. The bench
+  README now carries a fixture table, on the principle that an undeclared wire
+  reads as a hardware failure.
+
+### Fixed
+
+- **Per-probe runtime file paths are now built from a validated serial.** The
+  pid and log files for a debug probe are named after its USB serial, which is
+  read from a field of a net's VISA address that is permissive about what it
+  accepts. That value is now reduced to characters that cannot alter the shape
+  of a path, through one shared helper rather than the near-copies of the idea
+  that had grown up separately, and each site then checks that its own join
+  stayed in its own directory. The sysfs lookup in `diagnose` that reads the
+  same field gets the same treatment.
+
+  The check is repeated at each site rather than shared, which is worth knowing
+  before someone tidies it away: a static analyser recognises a path guard only
+  inside the function that builds the path, so folding those lines into a
+  helper leaves the code correct and the analysis blind. The helper's docstring
+  records that, because the tidier version is the tempting one.
+
+  An ordinary alphanumeric serial produces the byte-identical filename it did
+  before, so a box that upgrades while a debug session is live still finds its
+  running gdbserver; a test pins that. Probe identity is unaffected -- slot
+  assignment still matches on the raw serial, because this is a path concern
+  and not an identity one.
+
+- **Removed an unused `/pip` endpoint from the box python service.** Its only
+  caller addressed a port and path the box has never served, so both halves
+  were dead code. Boxes should be updated to a release containing this change.
+
+- **A bench check stopped retrying past a box bounce, because the prose pass
+  reworded the message it greps for.** `test/integration/infrastructure/box_config.sh`
+  decides whether `lager box config validate` failed to reach the box by matching
+  `could not connect to the box|may be offline` in its output. The Simplified
+  Technical English pass rewrote both strings in `cli/errors.py` to "The connection
+  to the box failed" and "The box is offline", so the match could no longer
+  succeed.
+
+  Nothing went red. That suite does not run in CI, so the change shipped through
+  22 green checks. The failure mode is worse than an error: the retry never fires,
+  and the test then records a verdict about a box that was still coming back from
+  the section-3 bounce -- the defect class the comment above that function cites
+  issue #283 for.
+
+  The pattern now matches both wordings. A probe that asks whether the box was
+  reachable only becomes more reliable by accepting more spellings, and an older
+  CLI still emits the original pair. The comment says who has to update it next.
+
+- **A box install failed at the firewall step once the port allowlist held
+  ranges.** `secure_box_firewall.sh` writes its per-interface allow rules as
+  `ufw allow in on <iface> to any port <port>`, naming no protocol. ufw refuses
+  a port range spelled that way -- `Must specify 'tcp' or 'udp' with multiple
+  ports` -- so the first range aborted the script under `set -e` and
+  `lager install` exited 1 having configured nothing. The allowlist held only
+  single ports when those rules were written, which is why the omission went
+  unnoticed until the debug port ranges were added to it.
+
+  The rules name `proto tcp` now, on all four interfaces rather than only the
+  one that reports first. TCP is what `start_box.sh` publishes, and a test pins
+  both halves of that so neither can move alone.
+
+  The script disables and resets ufw before writing the new rules, so a failure
+  anywhere in between left the box with the firewall off and no rules at all,
+  reported as nothing more specific than `Deployment failed!`. It now restores a
+  deny-incoming policy with SSH allowed, prints which half is configured and
+  which is not, and keeps the failing exit code.
+
+- **A `lager python` connection error printed the literal `{box_ip}`.** The hint
+  that follows `Connection refused by box` was a plain string rather than an
+  f-string, so it told the reader to run `ssh lagerdata@{box_ip} "docker ps"`
+  with the braces intact. It interpolates now.
+
+- **A debug command no longer proceeds against a target that is not there.**
+  `/debug/status` reported a single `connected` boolean that meant "the
+  gdbserver process is alive", and `_auto_connect_if_needed` returned on it
+  without touching the target. On a box where the server outlives the part,
+  `flash`, `reset`, `erase`, `memrd` and the RTT paths all ran believing they
+  were connected. #344 fixed the erase verdict at one call site by reading the
+  programmer's output; this is the cause underneath it.
+
+  The endpoint now reports `gdbserver_running` and `target_attached`
+  separately, and `lager debug <net> status` prints both. `connected` stays,
+  pinned to its old meaning -- a live server -- so an older CLI against a newer
+  box behaves exactly as it did rather than silently changing what the field
+  means.
+
+  `target_attached` is a tri-state, and the third value carries weight. A box
+  older than this change, a probe refused because a debugger already holds the
+  session, or a probe that timed out all yield "could not establish", which is
+  not the same as "absent" -- reading it as absent would tear down sessions
+  that were working. The CLI falls back to server liveness there, and `status`
+  prints `Unknown`.
+
+  Reading the target costs a GDB round trip, and `/debug/status` is called by
+  every debug subcommand, so the wire read is opt-in per request. The free
+  check -- the server's own logfile, using the same predicate #344 established
+  -- always runs.
+
+- **`connect()`'s target verification checked the wrong thing and was never
+  read.** It issued `monitor version` and accepted any console reply as proof,
+  but that is the gdbserver answering about itself, which it does with no part
+  attached. The value was also discarded: nothing read `target_verified`, and
+  `/debug/connect` does not route through the function that sets it. It now
+  uses the same predicate `/debug/status` reports, so "attached" has one
+  definition instead of two.
+
+- **The Python API reference documented a key `status()` does not return.** It
+  showed `status.get('connected')`; the method returns `running`.
+
+- **`docs/package.json` ran `mint build`, a subcommand the Mintlify CLI no longer
+  has.** `docs/vercel.json` pointed its `buildCommand` at that script and expected
+  the output in `.mintlify`. Nothing consumed either file: docs.lagerdata.com is
+  built and served by Mintlify's own hosted platform, which deploys from `main`
+  through the Mintlify GitHub app. `vercel.json` is deleted, and the scripts are
+  now the commands that actually work -- `dev`, `validate` and `broken-links` --
+  each pinned to the same mint version `static-checks.yml` pins, so a local run
+  and CI cannot disagree. Closes #374.
+
+- **The scope's `SUPPORTED_USB` key was spelled `Rigol_MS05204`, with a zero where
+  the letter O belongs.** The instrument is the MSO5204, as
+  `rigol_mso5000_defines.py` and the docs both have it, and the misspelling was
+  user-visible in `lager instruments` and `lager nets list`. The key is renamed in
+  all three tables that carry it (`SUPPORTED_USB`, `CHANNEL_MAPS`,
+  `INSTRUMENT_NET_MAP`).
+
+  The instrument name is persisted verbatim in every saved net record, so boxes
+  provisioned before this change still hold the old string. `canonical_instrument()`
+  maps it to the new spelling at each of the exact-key lookups that consume a saved
+  value, so those records keep working with no migration of `saved_nets.json`. The
+  distinction matters: a saved net whose instrument no longer matches a table key
+  does not fail loudly, it silently loses whatever restriction that key carried.
+  Closes #373.
+
+- **`lager://reference/Router` returned zero methods, and so did `Logic`, `Arm`,
+  `Webcam` and `Wifi`.** `api_reference.py` introspects a driver class per
+  NetType so the agent-facing reference stays in lock-step with the real
+  drivers, but a NetType absent from the map is never introspected at all --
+  and nothing checked the map in that direction, so ten of `NetType`'s
+  twenty-four members had no entry.
+
+  `Router` was the expensive one: `MikroTikRouter` has 37 public methods
+  including the bench's only network fault-injection tooling
+  (`block_internet`, `block_dns`, `block_port`, bandwidth limits, DHCP
+  control), which is how a test asserts what firmware does when the network
+  degrades rather than disappears. None of it was visible to an agent.
+
+  Curated entries are added for `Router`, `Arm`, `Webcam`, `Wifi`, `Analog` and
+  `Logic`. `Analog` and `Logic` are hand-written for the same reason `Debug`
+  is: `Net.get()` returns a bare `Net` proxying to the instrument over RPC, so
+  introspecting the mapper would replace the curated list with nine
+  undocumented local helpers. The raw saved-net roles are added to the alias
+  map too -- `plan_firmware_test` looks entries up by role, so without them the
+  new entries would have been reachable only through the resource URI.
+
+  A guard test now asserts every `NetType` either has an entry or appears in an
+  explicit exclusion list with a stated reason, which is the check that was
+  missing. Verified against MCP Python SDK 2.1.1: `lager://reference/Router`
+  returns 37 methods, and `lager://guide/api-quick-reference` renders all six
+  new types. Closes #372.
+
+- **Legacy double-booked nets no longer block unrelated adds in the
+  Net-Manager TUI.** Boxes that still hold two saved nets on a
+  single-channel instrument (e.g. a `battery` and a `power-supply` net on
+  the same Keithley 2281S, saved before the one-net-per-chip rule) made
+  the Add screen reject every selection with "Only one net may be added
+  per Keithley_2281S…", even pure GPIO adds. Both the single-channel and
+  mode-exclusive conflict checks now only fire for instruments the current
+  selection actually touches.
+
 - **Six CLI messages told the user to run `lager box update`, which does not
   exist.** The `lager box` group carries only `config` and `dut`; the `update`
   spelling was removed in favor of top-level `lager update`, and two comments in
@@ -453,93 +556,6 @@ All notable changes to the Lager platform are documented here. For detailed rele
   `/etc/lager` permission error each handed the reader a command that errors out.
   Three unit tests asserted on the dead spelling and pinned it in place. All six
   messages and all three assertions now name `lager update`.
-
-- **21 `Dexarm` methods and both `Wifi` methods gained docstrings.**
-  Introspection uses a docstring's first line as a method's description, so an
-  undocumented driver method reaches an agent as a name with no explanation.
-
-### Added
-
-- **The Net-Manager Add screen now makes LabJack I2C/SPI default pins
-  obviously changeable.** Users read `Ch: FIO4-FIO5` on an available I2C net
-  as a fixed assignment and didn't discover the pin-picker dialog behind the
-  Add button. Three changes, all in the TUI:
-  - The Add screen carries a hint line saying the pins can be changed.
-    Warnings and the hint render as compact single-line notices in one
-    block with a `✕ Dismiss` button, so they can't crowd the net list out
-    of view.
-  - A LabJack I2C/SPI row's `[✎]` button now opens a combined editor —
-    name field plus the pin dropdowns — instead of the rename-only dialog,
-    so the net can be fully configured while selecting nets instead of
-    only after pressing Add. Nets edited this way aren't re-prompted for
-    pins during the add; rename validation is shared with the plain
-    rename dialog, which all other net types keep.
-  - The pin dialog now prefills with the net's current selection rather
-    than always the defaults, and reverting a customized net back to the
-    defaults restores the original scanner record (legacy channel string,
-    no params) byte-for-byte.
-
-- **The Rust API reference now mirrors the Python one, page for page.** The Rust tab
-  was five pages against Python's twenty-seven, and a single 76-line `net-types.mdx`
-  table row was the whole counterpart to Python's twenty-four per-instrument pages.
-  A reader got one line where the Python reader got a method reference.
-
-  The tab is now 31 pages in the same six-group taxonomy the Python and CLI tabs
-  already use: a page per net type (supply, battery, solar, eload, watt, energy,
-  scope, adc, thermocouple, gpio, dac, i2c, spi, usb, uart, ble, wifi, blufi, router,
-  arm, webcam), the debug surface split into debug, rtt and dfu, and new client,
-  errors and async pages. `debug-and-uart.mdx` is retired into `debug`, `rtt` and
-  `uart` with a redirect.
-
-  Every page documents the timeout budget, box-version floor and gotchas for its net
-  type, none of which were published anywhere before. **All 149 Rust examples across
-  the 31 pages are compiled against `lager-net` 0.4.0**, and the API was exercised
-  against real hardware on a box running 0.43.0 first, so the return shapes and error
-  strings are observed rather than transcribed. Two examples were wrong and were
-  caught by that compile pass: `tokio::try_join!` over inline handle constructors does
-  not borrow-check, and `std::fs::read(..)?` cannot convert into `lager::Error`.
-
-  Behavior worth calling out, all verified on hardware and previously undocumented:
-  `flash()` on a `.bin` infers the STM32 base `0x08000000` and **returns `Ok(())`
-  while writing nothing useful** on any other family, so `flash_bin()` is mandatory
-  there; `erase()` drops the debugger connection, so a following `read_memory()` fails
-  until you reconnect; a per-net safety ceiling caps `set_voltage`/`set_current` but
-  **not** `set_ovp`/`set_ocp`; a `bleCommand`/`wifiCommand` capability flag means the
-  route is registered, not that the box has BlueZ or `nmcli`; and `state()` returning
-  `Ok` does not mean the instrument answered -- check the `error` field.
-
-  `RttStream` is documented as yielding raw HTTP chunked-transfer framing rather than
-  clean payload, with interactive RTT recommended instead. Tracked upstream as
-  lagerdata/lager-rs#5.
-
-  The Python overview now links across to the Rust SDK, which nothing in the Python
-  tab did before.
-
-- **A Python API page for `NetType.Router`.** A router net drives a MikroTik
-  access point over its REST API, and its methods include the bench's only
-  network fault-injection tooling -- `block_internet`, `block_dns`,
-  `block_port`, bandwidth limits and DHCP control -- which is how a test asserts
-  what firmware does when the network degrades rather than disappears. None of
-  it was documented, and `NetType.Router` appeared nowhere in the docs.
-
-- **`tools/check_docs.py` gates docs against the shipping CLI**, wired into
-  `static-checks.yml`. It fails on a dangling nav entry, an unpublished page, a
-  release with no notes, a command with no page (or a page for a hidden
-  command), and an options table naming a flag no click param declares.
-
-- **A guide for running Lager from CI.** Covers non-interactive sign-in,
-  registering the box, and the two checks worth failing a pipeline on: that the
-  box is reachable, and that it is running the commit under test. `lager python`
-  runs the script on the box against the box's own checkout, so a bench result
-  from a stale box is not evidence about the commit that triggered it.
-
-- **`mint broken-links` runs in the static-checks gate**, with anchor checking
-  on. Three cross-references had shipped missing the `/source` prefix that every
-  published URL carries, each found by hand. Scoped to `docs/source/` -- the
-  working notes under `docs/reference/` are not published and carry stale
-  relative paths a reader can never follow.
-
-### Fixed
 
 - **The firewall allowlist that provisioning deploys now matches the ports the
   box publishes.** Two copies of `secure_box_firewall.sh` had drifted, and the
@@ -747,20 +763,6 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 - **The thermocouple page published at `/reference/cli/tc`** while the command
   is `lager thermocouple`. Renamed, with a redirect from the old path.
-
-- **The Release Notes navigation was a single flat list of 158 entries.**
-  Grouped into five version ranges.
-
-### Changed
-
-- **Bench wiring fixtures are documented.** A permanent wire from DP821 CH2's
-  output to a USB-202 ADC input existed for a check whose repository variables
-  were never set, so it had never run and nothing recorded that the channel had
-  anything attached. The supply suite asserts that channel is unloaded, so the
-  wire presented as an intermittent per-channel instrument fault. The bench
-  README now carries a fixture table, on the principle that an undeclared wire
-  reads as a hardware failure.
-
 
 ## [0.43.0] - 2026-08-25
 
