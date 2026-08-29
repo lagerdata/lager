@@ -1,0 +1,117 @@
+---
+title: "Version 0.44.0"
+description: "August 28, 2026"
+---
+
+## <u>Upgrade Notes</u>
+
+- **Lager rewrote its user-facing messages to one written standard.** Command
+  output, error text and help strings now follow ASD-STE100. The wording
+  changed across the whole CLI. Scripts that match on message text can break.
+  A test suite in this repository broke this way: it matched
+  `could not connect to the box|may be offline`, and both strings became
+  different sentences. If your automation greps Lager output, check those
+  patterns against this release. Exit codes did not change.
+
+- **`lager debug <net> status` reports two states, and the Lager Box must be
+  updated.** The box reported one `connected` flag that meant "the gdbserver
+  process is alive". Commands ran against a target that was not attached. The
+  box now reports `gdbserver_running` and `target_attached` separately, and the
+  CLI prints both. `connected` keeps its old meaning, so an older CLI behaves
+  as before. `target_attached` has a third value, `Unknown`, for a box that
+  cannot answer. Run `lager update --box <box-name>` to get this.
+
+- **The box python service no longer serves `/pip`.** Its only caller addressed
+  a port and a path that the box never served, so both halves were dead code.
+  Update your boxes to a release that contains this change.
+
+- **`lager install` deploys a firewall allowlist.** Provisioning writes one
+  allowlist that matches the ports the Lager Box publishes. Every rule names
+  `proto tcp`. An install on a host with its own firewall rules can need review.
+
+- **`LAGER_DISABLE_UART_SERVICE` frees port 9000.** The variable disabled the
+  service but left the port bound. Anything that relied on port 9000 staying
+  occupied will now find it free.
+
+## <u>Features</u>
+
+- **The Net-Manager Add screen makes LabJack I2C/SPI pins changeable.** Readers
+  saw `Ch: FIO4-FIO5` and read it as a fixed assignment. A row's pencil button
+  now opens a combined editor for the name and the pins. The screen carries a
+  dismissable notices block that states the pins are defaults.
+
+- **A second device of one model no longer disables that instrument family.**
+  Lager decides net creation by address ambiguity, not by instrument model. Two
+  Acroname hubs now yield sixteen usb nets. Two LabJack T7 units stay refused,
+  because a T7 reports no serial number.
+
+- **The Rust API reference mirrors the Python one, page for page.** `Router`,
+  `Arm`, `Webcam`, `Wifi`, `Analog` and `Logic` gained MCP API reference pages.
+  A guide for running Lager from CI is new.
+
+## <u>Bug Fixes</u>
+
+- **`lager debug` commands ran against a target that was not there.** The
+  `connect()` check asked the gdbserver about itself, which answers with no
+  part attached. `flash`, `reset`, `erase`, `memrd` and the RTT paths all ran
+  believing they were connected.
+
+- **A box install failed at the firewall step.** `ufw` refuses a port range
+  that names no protocol, so the first range stopped the script and
+  `lager install` exited 1 with nothing configured.
+
+- **Per-probe runtime file paths are built from a checked serial number.** A
+  probe's pid and log file names come from a field of a net's address that
+  accepts almost anything. Each path is now checked where it is built.
+
+- **`lager logic measure`, `trigger` and `cursor` resolve a logic net again.**
+
+- **The supply suites wait for the output to reach regulation.** They slept a
+  fixed interval and read the supply before it settled.
+
+- **A `lager python` connection error printed the literal `{box_ip}`.** The
+  hint was a plain string, not an f-string.
+
+- **The scope's `SUPPORTED_USB` key spelled the Rigol MSO5204 with a zero.**
+  The correct spelling works now, and the old spelling still resolves.
+
+- **`lager box config apply` reports what the container-side package steps
+  did.** The box no longer advertises host URLs that it does not publish.
+
+## <u>Improvements</u>
+
+- Sixteen `reference/cli/` pages, fourteen `lager` command pages, the Python
+  API reference, the Rust API reference and the root prose files follow
+  ASD-STE100. A CI gate holds them there.
+- `tools/check_docs.py` checks the documentation against the shipping CLI, and
+  `mint broken-links` runs in the static-checks gate.
+- The Architecture page draws its diagrams. Four of its claims about the Lager
+  Box were wrong and are corrected.
+- The Release Notes navigation groups 158 entries into five version ranges.
+
+## <u>Known Limitations</u>
+
+- **Two LabJack T7 units on one Lager Box stay unsupported.** A T7 reports no
+  serial number and the scanner does not address it by topology, so two of them
+  enumerate as the same address. A net cannot say which one it means. The
+  message now states this instead of telling the reader to unplug extras.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.44.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli==0.44.0
+```
+
+Then update your boxes:
+
+```bash
+lager update --box <box-name>
+```
