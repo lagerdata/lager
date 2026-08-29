@@ -41,12 +41,12 @@ are not.
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1853 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 1947 |
+| `unit (box)` | `test/unit/box/` | 1985 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 181 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 143 (+1 skipped) |
-| | **Total gated** | **4318** |
+| | **Total gated** | **4356** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never
@@ -450,9 +450,9 @@ cli/tests/                #  7 files: 6 pytest suites (GATED via `unit (cli)`),
                           #           plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 173 files)
+### Local Unit Tests (`test/unit/` -- 174 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 91 files)
+#### Box Unit Tests (`test/unit/box/` -- 92 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -509,6 +509,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_load_box_secrets.py` | `load_box_secrets()` returns `{}` on every failure, which makes an unreadable secrets file indistinguishable from a box with none configured -- pins that distinction |
 | `test_lock_state.py` | lock_state.py single source of truth for box-side lock behavior |
 | `test_logic_net_type.py` | `lager logic`'s workers must resolve nets under `NetType.from_role(LOGIC_ROLE)`; `Net.get` matches on type equality, so a mismatch is a silent no-op rather than an error |
+| `test_rigol_mso5000_la.py` | The MSO5000 driver's logic-analyzer surface: the SCPI each method emits, D0 surviving a falsy-channel check, out-of-range channels and bad pods refused, every accepted spelling of the display size, and the uncrossed `LogicDisplaySize`. Walks net.py's Logic branches and the logic mapper to assert every name they call exists on the driver -- the check whose absence let ten undefined methods ship |
 | `test_net_ready.py` | `wait_for_net`: polling a net through the re-enumerate / hardware-service-restart window, deadline honoured without overshoot, probe selection, and a progress callback that cannot break the wait |
 | `test_monitor_state.py` | SupplyNet/KeithleyBattery single-call monitor-state helpers reducing lock contention |
 | `test_mount_prep.py` | Mount preparation SSH operations via mocked runner |

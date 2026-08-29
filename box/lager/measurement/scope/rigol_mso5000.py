@@ -191,6 +191,128 @@ class RigolMso5000:
         ch = channel or self.channel
         return float(self.query(f":CHANnel{ch}:PROBe?"))
 
+    # ============ Logic Analyzer Control ============
+    #
+    # The MSO5000's logic pod is 16 digital channels, D0-D15, split into two
+    # 8-channel pods that carry one threshold each. A logic net's channel number
+    # is the digital channel index directly -- net channel 3 is D3. `Net.disable`
+    # walks `range(0, 16)` calling `is_la_channel_enabled`, which fixes that
+    # mapping; do not renumber one without the other.
+    #
+    # Note these methods do NOT use the `channel or self.channel` idiom the
+    # analog side uses above. D0 is a valid channel and is falsy, so `or` would
+    # silently redirect a request for D0 to the net's own channel.
+
+    _LA_SIZE_TOKENS = {"SMAL": "SMALl", "MED": "MEDium", "LARG": "LARGe"}
+
+    def _la_channel(self, channel=None):
+        """Resolve and range-check a digital channel index."""
+        raw = self.channel if channel is None else channel
+        try:
+            ch = int(raw)
+        except (TypeError, ValueError):
+            raise ValueError(f"logic channel must be an integer D0-D15, got {raw!r}")
+        if not 0 <= ch <= 15:
+            raise ValueError(f"logic channel must be D0-D15, got D{ch}")
+        return ch
+
+    @classmethod
+    def _la_size_token(cls, size):
+        """Accept a LogicDisplaySize, its wire form, or a plain string.
+
+        The enum crosses the /invoke boundary as its abbreviated form, so this
+        has to take `SMAL` as readily as `SMALl`.
+        """
+        raw = size
+        if hasattr(size, "to_cmd"):
+            raw = size.to_cmd()
+        elif isinstance(size, dict):
+            raw = size.get("__enum__", {}).get("value", size)
+        text = str(raw).strip().upper()
+        for prefix, token in cls._LA_SIZE_TOKENS.items():
+            if text.startswith(prefix):
+                return token
+        raise ValueError(f"logic display size must be SMALl, MEDium or LARGe, got {size!r}")
+
+    def is_la_enabled(self):
+        """Whether the logic analyzer is switched on."""
+        resp = self.query(":LA:STATe?")
+        return resp == "1" or resp.upper() in ("ON", "TRUE")
+
+    def enable_la(self):
+        """Switch the logic analyzer on."""
+        self.write(":LA:STATe ON")
+        return {"la": True}
+
+    def disable_la(self):
+        """Switch the logic analyzer off."""
+        self.write(":LA:STATe OFF")
+        return {"la": False}
+
+    def enable_la_channel(self, channel=None):
+        """Show a digital channel."""
+        ch = self._la_channel(channel)
+        self.write(f":LA:DIGital{ch}:DISPlay ON")
+        return {"channel": ch, "enabled": True}
+
+    def disable_la_channel(self, channel=None):
+        """Hide a digital channel."""
+        ch = self._la_channel(channel)
+        self.write(f":LA:DIGital{ch}:DISPlay OFF")
+        return {"channel": ch, "enabled": False}
+
+    def is_la_channel_enabled(self, channel=None):
+        """Whether a digital channel is shown."""
+        ch = self._la_channel(channel)
+        resp = self.query(f":LA:DIGital{ch}:DISPlay?")
+        return resp == "1" or resp.upper() in ("ON", "TRUE")
+
+    def set_la_active_channel(self, channel=None):
+        """Make a digital channel the active one for front-panel operations."""
+        ch = self._la_channel(channel)
+        self.write(f":LA:ACTive D{ch}")
+        return {"active": f"D{ch}"}
+
+    def get_la_active_channel(self):
+        """The currently active digital channel, or NONE."""
+        return self.query(":LA:ACTive?")
+
+    def set_la_threshold(self, pod, voltage):
+        """Set a pod's logic threshold. Pod 1 is D0-D7, pod 2 is D8-D15."""
+        try:
+            pod_index = int(pod)
+        except (TypeError, ValueError):
+            raise ValueError(f"logic pod must be 1 or 2, got {pod!r}")
+        if pod_index not in (1, 2):
+            raise ValueError(f"logic pod must be 1 or 2, got {pod_index}")
+        level = float(voltage)
+        self.write(f":LA:POD{pod_index}:THReshold {level}")
+        return {"pod": pod_index, "threshold": level}
+
+    def get_la_threshold(self, pod):
+        """Read a pod's logic threshold."""
+        pod_index = int(pod)
+        if pod_index not in (1, 2):
+            raise ValueError(f"logic pod must be 1 or 2, got {pod_index}")
+        return self.query(f":LA:POD{pod_index}:THReshold?")
+
+    def set_la_display_position(self, channel, position):
+        """Move a digital channel's trace to a display slot."""
+        ch = self._la_channel(channel)
+        slot = int(position)
+        self.write(f":LA:DIGital{ch}:POSition {slot}")
+        return {"channel": ch, "position": slot}
+
+    def set_enabled_channel_size(self, size):
+        """Set the on-screen height of the enabled digital channels."""
+        token = self._la_size_token(size)
+        self.write(f":LA:SIZE {token}")
+        return {"size": token}
+
+    def get_enabled_channel_size(self):
+        """Read the on-screen height of the enabled digital channels."""
+        return self.query(":LA:SIZE?")
+
     # ============ Timebase Control ============
 
     def set_timebase_scale(self, scale):
