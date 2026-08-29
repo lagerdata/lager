@@ -41,6 +41,15 @@ from .probes import (
 
 logger = logging.getLogger(__name__)
 
+# The admissible character set for a probe serial. ``probes._VISA_RE`` accepts
+# any run of non-colon characters in the serial slot, so a value arriving there
+# has not been established to be a serial at all. OpenOCD could not bind to one
+# outside this set in any case, so we refuse it rather than quietly alter it
+# into a different serial that will not match either -- a rejection naming the
+# field is the better failure. Every serial in the field is alphanumeric, and
+# the pidfile/logfile helpers already name their files after this same set.
+_BINDABLE_SERIAL_RE = re.compile(r'[A-Za-z0-9._-]+')
+
 # Where OpenOCD lives in the lager container. Built-in scripts (interface/*.cfg,
 # target/*.cfg) ship with the apt package and live under
 # /usr/share/openocd/scripts. ``-s`` adds that to the search path so bare
@@ -393,6 +402,14 @@ def _build_openocd_command(
 
     # Bind the adapter to a specific USB serial *after* the interface config
     # has selected the adapter driver, otherwise this command is unknown.
+    #
+    # Checked before use: see ``_BINDABLE_SERIAL_RE``. Real probe serials all
+    # satisfy it, so no live probe changes behaviour.
+    if serial and not _BINDABLE_SERIAL_RE.fullmatch(serial):
+        raise ValueError(
+            f'Probe serial is not bindable by OpenOCD: {serial!r}. '
+            f'Expected only letters, digits, dot, underscore or hyphen.'
+        )
     if serial:
         cmd.extend(['-c', f'adapter serial {serial}'])
 

@@ -186,6 +186,36 @@ class BuildOpenOcdCommandTests(unittest.TestCase):
         self.assertLess(user_cfg_idx, serial_idx,
                         msg='user cfg must load before `adapter serial`')
 
+    # ---- admissible probe serials --------------------------------------------
+
+    def test_adapter_serial_keeps_real_probe_serials_verbatim(self):
+        # Every serial in the fleet is alphanumeric, so the reduction applied
+        # to the ``-c adapter serial`` argument has to be a no-op for them: a
+        # probe reachable before an upgrade stays reachable after it, and the
+        # pidfile/logfile names in ``probes`` do not move either.
+        for serial in ('E6BACCD5', '000051014439', '56BCCDD3', 'FTA3W13P',
+                       '2086f9d6069bea11a5be679cec257580', 'YK26481'):
+            with self.subTest(serial=serial):
+                cmd = self._build(
+                    address=f'USB0::0x0403::0x6014::{serial}::INSTR',
+                    user_config_path=None,
+                )
+                self.assertIn(f'adapter serial {serial}', cmd)
+
+    def test_serial_outside_the_admissible_set_is_refused(self):
+        # ``probes._VISA_RE`` accepts any run of non-colon characters in the
+        # serial slot, so a value arriving there is not established to be a
+        # serial. Refusing beats substituting: OpenOCD could not bind to one of
+        # these either way, so a rejection that says why is the better failure.
+        for serial in ('AA]\nshutdown\n[', 'A;B', 'x y', 'a$b', 'q"r'):
+            with self.subTest(serial=serial):
+                with self.assertRaises(ValueError) as ctx:
+                    self._build(
+                        address=f'USB0::0x0403::0x6014::{serial}::INSTR',
+                        user_config_path=None,
+                    )
+                self.assertIn('not bindable', str(ctx.exception))
+
     def test_user_cfg_suppresses_auto_transport_select(self):
         # User cfgs almost always call ``transport select`` themselves at
         # the top; a second select trips "Transport already selected".

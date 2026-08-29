@@ -208,6 +208,27 @@ def _clear_stale_pidfile(backend, serial):
         pass
 
 
+def _port_or_reject(data, key, default):
+    """Return ``data[key]`` as a TCP port, or raise ValueError.
+
+    These are overrides a client may send on /debug/connect, and they are used
+    to build the debug backend's command line -- OpenOCD ``-c`` arguments and
+    JLinkGDBServer's ``-port``/``-swoport`` family. A port is an integer; a
+    request carrying anything else is malformed rather than a port we should
+    try to honour, so this rejects instead of coercing quietly.
+    """
+    raw = data.get(key, default)
+    if raw is None:
+        return None
+    try:
+        port = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f'{key} must be an integer, got {raw!r}')
+    if not 1 <= port <= 65535:
+        raise ValueError(f'{key} must be between 1 and 65535, got {port}')
+    return port
+
+
 def _get_openocd_config_file(net=None):
     """Resolve a user OpenOCD ``.cfg`` for *net*, write to disk, return path.
 
@@ -528,15 +549,16 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             ) = _resolve_probe(net)
             openocd_telnet_port, openocd_tcl_port = _openocd_ports_for_slot(slot)
             # Only honour an explicit override; absence => use the slot allocator.
-            gdb_port = data.get('gdb_port', default_gdb_port)
-            rtt_telnet_port = data.get('rtt_telnet_port', default_rtt_port)
+            gdb_port = _port_or_reject(data, 'gdb_port', default_gdb_port)
+            rtt_telnet_port = _port_or_reject(
+                data, 'rtt_telnet_port', default_rtt_port)
             # SWO and Telnet always sit at gdb_port + 1 / + 2. This holds whether
             # gdb_port came from the slot allocator (where the helpers guarantee
             # the relationship) or from a user override (where we must shift the
             # auxiliary ports to match, otherwise JLinkGDBServer's hardcoded
             # defaults 2332/2333 would collide with the next slot).
-            swo_port = data.get('swo_port', gdb_port + 1)
-            telnet_port = data.get('telnet_port', gdb_port + 2)
+            swo_port = _port_or_reject(data, 'swo_port', gdb_port + 1)
+            telnet_port = _port_or_reject(data, 'telnet_port', gdb_port + 2)
 
             # Resolve the user-supplied script/config file for whichever backend
             # we're about to start. ``jlink_script`` is used by J-Link;

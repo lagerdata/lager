@@ -90,6 +90,32 @@ All notable changes to the Lager platform are documented here. For detailed rele
   programming guide and has not been sent to an instrument. The unit tests pin
   what each method emits, not what the instrument does with it.
 
+- **`POST /debug/connect` now validates the port overrides it accepts.**
+  `gdb_port`, `swo_port`, `telnet_port` and `rtt_telnet_port` were forwarded
+  from the request body exactly as they arrived, and they are used to build the
+  debug backend's command line. Each is now coerced with `int()` and
+  range-checked to 1-65535 at the boundary, and a request carrying anything
+  else is refused with a message naming the field. A numeric string still
+  works, so a caller that quotes the number is unaffected.
+
+- **A probe serial the debug backend cannot bind to is now refused instead of
+  used.** The VISA parser accepts any run of non-colon characters in the serial
+  slot, so a value arriving there is not necessarily a serial. Both backends
+  now require letters, digits, dot, underscore or hyphen and raise a named
+  error otherwise, rather than passing the value on to a probe that could not
+  match it. Every serial in the field already satisfies this, so no live probe
+  changes behaviour, and the pidfile and logfile helpers have named their files
+  after the same character set since 0.43.0.
+
+- **`GET /download-file` builds its `Content-Disposition` from the path it
+  resolved.** The header previously interpolated the raw query parameter. It
+  now uses the basename of the allowlist-checked path, with the three
+  characters a header value cannot carry — carriage return, line feed and
+  double quote — reduced to `_`; a filename may legally contain all three.
+  Spaces and everything else are untouched, so a download keeps the name the
+  user recognises. The `:9000` twin already delegated escaping to Flask and is
+  unchanged.
+
 ## [0.44.0] - 2026-08-28
 
 ### Added
