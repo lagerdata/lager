@@ -70,6 +70,7 @@ if _BOX_ROOT not in sys.path:
 
 from lager.debug import gdbserver as gdbserver_mod  # noqa: E402
 from lager.debug import api as api_mod  # noqa: E402
+from lager.util.paths import fs_slug  # noqa: E402
 
 
 class _FakeProc:
@@ -86,6 +87,11 @@ class _TmpdirSandbox:
 
     ``gdbserver.py`` imports the helpers by name (``from .probes import ...``), so
     we have to rebind them on the gdbserver module itself, not on probes.
+
+    The stubs apply ``fs_slug`` because the real helpers in ``probes`` do. A
+    stub that interpolated the serial raw would put a separator straight into
+    the tmpdir path, which is production behaviour the helpers deliberately do
+    not have -- the sandbox would then fail for a reason the box never hits.
     """
 
     def __enter__(self):
@@ -93,10 +99,10 @@ class _TmpdirSandbox:
         self._orig_pid = gdbserver_mod.jlink_gdbserver_pidfile
         self._orig_log = gdbserver_mod.jlink_gdbserver_logfile
         gdbserver_mod.jlink_gdbserver_pidfile = lambda s: os.path.join(
-            self.tmpdir, f'jlink_gdbserver_{s or "legacy"}.pid'
+            self.tmpdir, f'jlink_gdbserver_{fs_slug(s) if s else "legacy"}.pid'
         )
         gdbserver_mod.jlink_gdbserver_logfile = lambda s: os.path.join(
-            self.tmpdir, f'jlink_gdbserver_{s or "legacy"}.log'
+            self.tmpdir, f'jlink_gdbserver_{fs_slug(s) if s else "legacy"}.log'
         )
         return self
 
@@ -263,6 +269,33 @@ class PortReclaim(unittest.TestCase):
         with patch('subprocess.run', side_effect=fake_run), \
              patch.object(gdbserver_mod, 'time'):
             gdbserver_mod._free_gdb_port(2331)
+
+
+class SelectArgumentIsReduced(unittest.TestCase):
+    """``-select USB=<sn>`` carries the same reduced serial as the pidfile.
+
+    JLinkGDBServer is spawned with an argv list and never a shell, so this is
+    consistency rather than a fix -- but the serial arrives from the same
+    unconstrained VISA slot the OpenOCD backend reduces, and the pidfile and
+    logfile are already named after the reduced form. All three should spell a
+    probe's identity the same way.
+    """
+
+    def test_real_serials_are_unchanged(self):
+        with _TmpdirSandbox():
+            for serial in ('000051014439', 'E6BACCD5', '56BCCDD3', 'YK26481'):
+                with self.subTest(serial=serial):
+                    _r, cmd = _start(serial, 2331, 9090, 4242)
+                    self.assertEqual(cmd[cmd.index('-select') + 1],
+                                     f'USB={serial}')
+
+    def test_serial_outside_the_admissible_set_is_refused(self):
+        with _TmpdirSandbox():
+            for serial in ('AA/../B C', 'a;b', 'x\ny'):
+                with self.subTest(serial=serial):
+                    with self.assertRaises(ValueError) as ctx:
+                        _start(serial, 2331, 9090, 4242)
+                    self.assertIn('not selectable', str(ctx.exception))
 
 
 if __name__ == '__main__':

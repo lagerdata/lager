@@ -12,7 +12,6 @@ Migrated from gateway/controller/controller/application/views/run.py (legacy, re
 Endpoints:
 - POST /python - Execute a Python script
 - POST /python/kill - Kill a running Python process
-- POST /pip - Run pip commands in the container
 
 Migrated from: gateway/controller (legacy, removed)
 Now runs in: box/python container (port 5000)
@@ -20,6 +19,7 @@ Now runs in: box/python container (port 5000)
 
 import json
 import logging
+import re
 import select
 import signal
 import socket
@@ -75,6 +75,12 @@ SERVICE_VERSION = '1.0.0'
 # Download allowlist lives in lager.binaries.store, shared with the :9000
 # handlers so both servers enforce identical policy.
 ALLOWED_DOWNLOAD_ROOTS = binaries_store.ALLOWED_DOWNLOAD_ROOTS
+
+# The characters a header value cannot carry. A filename is allowed to contain
+# all three, so a name read off disk is not a usable header value on its own.
+# Everything else, spaces included, is left alone so a download keeps the name
+# the user recognises.
+_HEADER_UNSAFE_CHARS = re.compile(r'[\r\n"]')
 
 
 def is_truthy_string(s):
@@ -376,7 +382,12 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
             # Send the file (NOT gzipped - the CLI will handle that if needed)
             self.send_response(200)
             self.send_header('Content-Type', 'application/octet-stream')
-            self.send_header('Content-Disposition', f'attachment; filename="{os.path.basename(filename)}"')
+            # Name the download after the path we actually resolved rather
+            # than the raw query parameter -- ``abs_filename`` has been through
+            # the allowlist check above, so it is what we are really sending.
+            # The basename is still reduced; see ``_HEADER_UNSAFE_CHARS``.
+            download_name = _HEADER_UNSAFE_CHARS.sub('_', os.path.basename(abs_filename))
+            self.send_header('Content-Disposition', f'attachment; filename="{download_name}"')
             self.send_header('Content-Length', str(file_size))
             self.end_headers()
 
@@ -388,10 +399,10 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
                         break
                     self.wfile.write(chunk)
 
-            logger.info(f"Successfully sent file: {filename} ({file_size} bytes)")
+            logger.info(f"Successfully sent file: {abs_filename} ({file_size} bytes)")
 
         except Exception as e:
-            logger.error(f"Error sending file {filename}: {e}")
+            logger.error(f"Error sending file {abs_filename}: {e}")
             # Can't send error response here - headers already sent
             # Client will see incomplete response
 
