@@ -103,6 +103,68 @@ def _wait_for_regulation(psu, setpoint_v):
         time.sleep(_SETTLE_FALLBACK)
 
 
+_CAPTURE_READS = 10
+_CAPTURE_INTERVAL = 0.05
+
+
+def _capture_unloaded_failure(psu, label):
+    """Print evidence at the moment an unloaded-current assertion fails.
+
+    This check has now failed twice on a channel that measures a clean 0.0000 A
+    whenever anyone goes looking, and a hand-run probe over five cold enables
+    read 0.0 in all 189 samples. The event is real and rare, so the cheapest
+    way to learn its shape is to make the failing run say what it saw instead
+    of costing another bench window.
+
+    Two readings that a live measurement cannot produce, and a latched or stale
+    one can:
+
+      * `current()` issues a fresh `:MEAS:CURR?` each call. A run of
+        byte-identical values across consecutive reads is a register that is
+        not being reacquired.
+      * `measure()` issues one `:MEAS:ALL?` and returns voltage, current and
+        power from a single acquisition. If that triple disagrees with the
+        `current()` reads beside it, the two paths are seeing different
+        samples.
+
+    Best-effort by construction. A diagnostic that can fail the suite it is
+    diagnosing is worse than no diagnostic, so every read is guarded and
+    nothing here raises.
+    """
+    print(f"  --- unloaded-current capture: {label} ---")
+
+    try:
+        t0 = time.monotonic()
+        for n in range(_CAPTURE_READS):
+            try:
+                value = psu.current()
+            except Exception as exc:  # noqa: BLE001 - see docstring
+                value = f"<{exc}>"
+            print(f"      t={time.monotonic() - t0:5.2f}s  current()={value!r}")
+            time.sleep(_CAPTURE_INTERVAL)
+    except Exception as exc:  # noqa: BLE001
+        print(f"      repeated-read capture unavailable: {exc}")
+
+    for name, call in (
+        ("voltage()", lambda: psu.voltage()),
+        ("power()", lambda: psu.power()),
+        ("state()", lambda: psu.state()),
+    ):
+        try:
+            print(f"      {name} = {call()!r}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"      {name} unavailable: {exc}")
+
+    # One atomic acquisition, for comparison with the reads above.
+    try:
+        channel = psu.net.channel
+        print(f"      measure(ch={channel}) = {psu.measure(channel)!r}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"      measure() unavailable: {exc}")
+
+    print("  --- end capture ---")
+
+
 # ---------------------------------------------------------------------------
 # 1. Live Measurements
 # ---------------------------------------------------------------------------
@@ -162,6 +224,7 @@ def test_live_measurements():
             )
             if not passed:
                 ok = False
+                _capture_unloaded_failure(psu, "live measurements, first read")
         except Exception as e:
             _record("current() unloaded check", False, str(e))
             ok = False
@@ -512,6 +575,7 @@ def test_current_limit_readback():
             )
             if not passed:
                 ok = False
+                _capture_unloaded_failure(psu, f"current limit {limit_a} A")
 
     except Exception as e:
         _record("current measurement unloaded", False, str(e))

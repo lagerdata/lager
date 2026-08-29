@@ -8,6 +8,46 @@ All notable changes to the Lager platform are documented here. For detailed rele
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Changed
+
+- **The supply suite now captures evidence when its unloaded-current check
+  fails, instead of only reporting the number that failed.** That check has gone
+  red twice on a channel which measures a clean `0.0000 A` whenever anyone looks,
+  and the previous attempt at a fix -- waiting for the output to reach regulation
+  rather than sleeping a fixed interval -- did not hold. It failed again
+  afterwards at both assertion sites.
+
+  A hand-run probe did not reproduce it either: five cold enables on that
+  channel, 189 samples, every one exactly `0.0 A`, with the regulation wait
+  returning `0.0` each time. That is worth recording on its own, because it is
+  much stronger support for "the channel draws nothing in steady state" than the
+  sweep the bench README cites. **Raising the threshold for this channel would
+  therefore hide a real anomaly rather than accommodate a known load.**
+
+  So this change deliberately does not adjust the assertion, the threshold or
+  the settle. The cause is not known, one fix has already been shipped against a
+  cause that turned out to be wrong, and the event is too rare to chase by hand
+  at roughly one failure in three runs. Instead, a failure now prints:
+
+  - ten consecutive `current()` reads with timestamps. Each is a fresh
+    `:MEAS:CURR?`, so a run of byte-identical values is a register that is not
+    being reacquired.
+  - `voltage()`, `power()` and `state()`.
+  - one `measure()` call, which is a single `:MEAS:ALL?` acquisition. If that
+    triple disagrees with the `current()` reads beside it, the two paths are
+    seeing different samples.
+
+  That distinction is the open question. The failing runs report a
+  self-consistent `5.0 V / 0.24 A / 1.2 W` triple across four reads inside 22 ms,
+  and `0.0000` three seconds later, which a live measurement does not easily
+  explain and a stale one does.
+
+  The capture is best-effort throughout: every read is guarded and nothing in it
+  raises, because a diagnostic that can fail the suite it is diagnosing is worse
+  than no diagnostic. Both a latched-reading stub and a stub whose every call
+  raises are exercised against it.
+
+
 ## [0.44.0] - 2026-08-28
 
 ### Added
