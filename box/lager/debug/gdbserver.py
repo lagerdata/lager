@@ -14,17 +14,14 @@ import signal
 import time
 import logging
 
-import re
-
 from .mappings import check_process
-from .probes import jlink_gdbserver_pidfile, jlink_gdbserver_logfile
+from .probes import (
+    BINDABLE_SERIAL_RE,
+    jlink_gdbserver_pidfile,
+    jlink_gdbserver_logfile,
+)
 
 logger = logging.getLogger(__name__)
-
-# The same admissible serial character set the OpenOCD backend applies, kept
-# here so both backends spell a probe's identity the same way. See
-# debug/openocd.py for the reasoning.
-_BINDABLE_SERIAL_RE = re.compile(r'[A-Za-z0-9._-]+')
 
 # JLinkGDBServer paths (checked in order)
 JLINK_GDB_SERVER_PATHS = [
@@ -306,7 +303,7 @@ def start_jlink_gdbserver(device, speed='adaptive', transport='SWD', halt=False,
     # consistency with the OpenOCD backend rather than a fix -- but a value
     # outside the set is not a probe serial JLinkGDBServer could select, and
     # the pidfile/logfile helpers already decline to name a file after one.
-    if serial and not _BINDABLE_SERIAL_RE.fullmatch(serial):
+    if serial and not BINDABLE_SERIAL_RE.fullmatch(serial):
         raise ValueError(
             f'Probe serial is not selectable by JLinkGDBServer: {serial!r}. '
             f'Expected only letters, digits, dot, underscore or hyphen.'

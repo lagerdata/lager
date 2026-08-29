@@ -35,6 +35,14 @@ import re
 
 from lager.util.paths import fs_slug
 
+# The character set a probe serial must fall inside for either backend to bind
+# to it. ``_VISA_RE`` below accepts any run of non-colon characters in the
+# serial slot, so a value parsed out of an address has not been established to
+# be a serial at all; this is what the backends and the debug service check
+# before building a command line from one. Every serial in the field satisfies
+# it, and the pidfile/logfile helpers name their files after the same set.
+BINDABLE_SERIAL_RE = re.compile(r'[A-Za-z0-9._-]+')
+
 _VISA_RE = re.compile(
     # Serial slot may be empty for FTDI chips whose EEPROM was never
     # programmed (the scanner emits ``USB0::0x0403::0x6011::::INSTR`` in

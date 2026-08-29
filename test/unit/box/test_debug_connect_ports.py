@@ -65,9 +65,23 @@ class PortOrReject(unittest.TestCase):
         # The CLI sends JSON; a caller that quotes the number still works.
         self.assertEqual(_port_or_reject({'gdb_port': '3333'}, 'gdb_port', 2331), 3333)
 
-    def test_none_default_stays_none(self):
-        # swo/telnet are allowed to be unset so the callee derives them.
+    def test_absent_key_with_a_none_default_stays_none(self):
+        # An absent key yields the default untouched, whatever it is.
         self.assertIsNone(_port_or_reject({}, 'telnet_port', None))
+
+    def test_explicit_null_is_refused(self):
+        # Distinct from an absent key: a null sent on the wire used to flow on
+        # and fail later in `gdb_port + 1` rather than being named here.
+        with self.assertRaises(ValueError) as ctx:
+            _port_or_reject({'gdb_port': None}, 'gdb_port', 2331)
+        self.assertIn('must be an integer', str(ctx.exception))
+
+    def test_booleans_are_not_ports(self):
+        # bool subclasses int, so `true` would otherwise coerce to port 1.
+        for bad in (True, False):
+            with self.subTest(value=bad):
+                with self.assertRaises(ValueError):
+                    _port_or_reject({'gdb_port': bad}, 'gdb_port', 2331)
 
     def test_non_numeric_is_refused(self):
         for bad in ('3333\nshutdown', '2331; reboot', 'abc', '[exec ls]', {}, []):
