@@ -48,6 +48,7 @@ from lager.debug.gdbserver import (
     get_jlink_gdbserver_status,
 )
 from lager.debug.probes import (
+    BINDABLE_SERIAL_RE,
     resolve_serial_from_net,
     resolve_backend,
     parse_jlink_serial,
@@ -208,6 +209,17 @@ def _clear_stale_pidfile(backend, serial):
         pass
 
 
+class BadDebugRequest(ValueError):
+    """A request this service will not act on because it is malformed.
+
+    Separated from the generic failure path so the handler can answer 400
+    rather than 500: the caller sent something unusable, which is not the same
+    as the box being unable to do the work. ``cli/core/net_helpers.py`` keys
+    its "update the box" hint on the shape of a failure, so the status has to
+    be honest about which of the two happened.
+    """
+
+
 def _port_or_reject(data, key, default):
     """Return ``data[key]`` as a TCP port, or raise ValueError.
 
@@ -217,16 +229,39 @@ def _port_or_reject(data, key, default):
     request carrying anything else is malformed rather than a port we should
     try to honour, so this rejects instead of coercing quietly.
     """
-    raw = data.get(key, default)
-    if raw is None:
-        return None
+    # Absent means "no override" and yields the slot allocator's value, which
+    # is what this used to do. Present means it gets checked -- including an
+    # explicit null, which would otherwise flow on and fail later in arithmetic
+    # rather than here where we can name the field.
+    if key not in data:
+        return default
+    raw = data[key]
+    # bool is an int subclass, so ``true`` would otherwise arrive as port 1.
+    if isinstance(raw, bool) or not isinstance(raw, (int, str)):
+        raise BadDebugRequest(f'{key} must be an integer, got {raw!r}')
     try:
         port = int(raw)
-    except (TypeError, ValueError):
-        raise ValueError(f'{key} must be an integer, got {raw!r}')
+    except ValueError:
+        raise BadDebugRequest(f'{key} must be an integer, got {raw!r}')
     if not 1 <= port <= 65535:
-        raise ValueError(f'{key} must be between 1 and 65535, got {port}')
+        raise BadDebugRequest(f'{key} must be between 1 and 65535, got {port}')
     return port
+
+
+def _serial_or_reject(serial):
+    """Return *serial* unchanged, or raise if no backend could bind to it.
+
+    Both backends apply ``probes.BINDABLE_SERIAL_RE`` before building their
+    command line. Checking it here too means a malformed request is answered
+    at the boundary, before anything is stopped or started, instead of
+    surfacing later as a failure of the connect itself.
+    """
+    if serial and not BINDABLE_SERIAL_RE.fullmatch(serial):
+        raise BadDebugRequest(
+            f'probe serial is not one any backend can bind to: {serial!r}. '
+            f'Expected only letters, digits, dot, underscore or hyphen.'
+        )
+    return serial
 
 
 def _get_openocd_config_file(net=None):
@@ -547,6 +582,7 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                 _default_telnet_port,
                 default_rtt_port,
             ) = _resolve_probe(net)
+            serial = _serial_or_reject(serial)
             openocd_telnet_port, openocd_tcl_port = _openocd_ports_for_slot(slot)
             # Only honour an explicit override; absence => use the slot allocator.
             gdb_port = _port_or_reject(data, 'gdb_port', default_gdb_port)
@@ -748,6 +784,14 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                     'pid': result['pid']
                 }
             })
+
+        except BadDebugRequest as e:
+            # These are all checked at the top of the handler, before anything
+            # is stopped or started, so there is no tracking state to unwind
+            # the way the generic path below has to.
+            logger.warning(f'Refusing malformed connect request: {e}')
+            self.send_error_response(400, str(e))
+            return
 
         except Exception as e:
             logger.error(f"Connect failed: {e}", exc_info=True)
