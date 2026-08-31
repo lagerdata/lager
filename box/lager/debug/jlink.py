@@ -18,6 +18,13 @@ from pexpect import replwrap
 
 logger = logging.getLogger(__name__)
 
+# Mirrors ``probes.RUNTIME_DIR``, duplicated deliberately. This module is loaded
+# standalone by three tests (importlib, no parent package) so the box's debug
+# suite does not have to pull in pyvisa and the hardware drivers just to check
+# argv assembly -- so it cannot import from ``.probes`` or from ``lager.*`` at
+# all. test_jlink_script_root_matches_probes pins the two together.
+_RUNTIME_DIR = '/tmp'
+
 # DA1469x external QSPI XIP default: 1 MiB at XIP base (matches common loader erase size).
 # Off-chip "offset 0" for the slot maps to CPU XIP 0x16000000 — Commander uses absolute XIP.
 # Loader-style "bank 0" targets this window; J-Link uses SetEnableFlashbank(<base>, 1) for that bank.
@@ -323,6 +330,15 @@ def commander(args, script_file=None, serial=None):
     full_args = list(args)
     if serial and '-SelectEmuBySN' not in full_args:
         full_args = ['-SelectEmuBySN', serial] + full_args
+    # A bare path parameter with a None default, reachable from every caller.
+    # Contained here rather than trusted: this is where it is used. The check
+    # is not credited by static analysis when the path arrives as a parameter
+    # -- there is nothing local to rebuild it from -- but it is still the thing
+    # that stops a path outside the runtime dir being handed to J-Link.
+    if script_file:
+        script_file = os.path.normpath(script_file)
+        if not script_file.startswith(_RUNTIME_DIR + os.sep):
+            raise ValueError(f'refusing a script path outside {_RUNTIME_DIR!r}')
     if script_file and os.path.exists(script_file):
         full_args.extend(['-JLinkScriptFile', script_file])
     elif script_file:

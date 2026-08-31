@@ -27,7 +27,12 @@ from .process import (
 )
 from .gdbserver import get_jlink_gdbserver_status, stop_jlink_gdbserver, start_jlink_gdbserver
 from .gdb import get_arch, reset as gdb_reset, read_memory as gdb_read_memory
-from .probes import gdb_port_for_slot, rtt_port_for_slot, jlink_gdbserver_logfile
+from . import probes as _probes
+from .probes import (
+    gdb_port_for_slot,
+    rtt_port_for_slot,
+    jlink_gdbserver_logfile,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +47,12 @@ logger = logging.getLogger(__name__)
 # out of service until somebody deleted this file by hand.
 JLINK_SCRIPT_TEMP_PATH = '/tmp/lager_jlink_script.JLinkScript'
 
-_SCRIPT_PATH_TEMPLATE = '/tmp/lager_jlink_script_{}.JLinkScript'
+# The per-net script and cfg basenames. Their root is ``probes.RUNTIME_DIR``,
+# read through the module at call time so redirecting it in one place
+# redirects every builder and every containment check that names it -- the
+# debug layer spans four modules and probes is the only one all of them can
+# import.
+SCRIPT_NAME_TEMPLATE = 'lager_jlink_script_{}.JLinkScript'
 
 # Per-connect OpenOCD cfg overrides. NOT the same file as
 # ``OPENOCD_CONFIG_TEMP_PATH`` in service.py: that one is the box-wide cfg
@@ -50,7 +60,7 @@ _SCRIPT_PATH_TEMPLATE = '/tmp/lager_jlink_script_{}.JLinkScript'
 # This one is scoped to one net for one session, so an in-process override
 # cannot leak onto every other net on the box (issue #195, in its OpenOCD
 # form).
-_CONFIG_PATH_TEMPLATE = '/tmp/lager_openocd_cfg_{}.cfg'
+CONFIG_NAME_TEMPLATE = 'lager_openocd_cfg_{}.cfg'
 
 
 def _net_slug(net_name):
@@ -69,9 +79,19 @@ def script_path_for_net(net_name):
 
     Per net, deliberately. A script describes how to attach to one target; it is
     not a property of the box.
+
+    The slug is the real defence; the containment check states where the result
+    is allowed to land, next to the join that produces it. See
+    lager.util.paths for why that check is not shared.
     """
     slug = _net_slug(net_name)
-    return _SCRIPT_PATH_TEMPLATE.format(slug) if slug else None
+    if not slug:
+        return None
+    path = os.path.normpath(
+        os.path.join(_probes.RUNTIME_DIR, SCRIPT_NAME_TEMPLATE.format(slug)))
+    if not path.startswith(_probes.RUNTIME_DIR + os.sep):
+        raise ValueError(f'refusing a path outside {_probes.RUNTIME_DIR!r}')
+    return path
 
 
 def config_path_for_net(net_name):
@@ -82,7 +102,13 @@ def config_path_for_net(net_name):
     property of the box.
     """
     slug = _net_slug(net_name)
-    return _CONFIG_PATH_TEMPLATE.format(slug) if slug else None
+    if not slug:
+        return None
+    path = os.path.normpath(
+        os.path.join(_probes.RUNTIME_DIR, CONFIG_NAME_TEMPLATE.format(slug)))
+    if not path.startswith(_probes.RUNTIME_DIR + os.sep):
+        raise ValueError(f'refusing a path outside {_probes.RUNTIME_DIR!r}')
+    return path
 
 
 def clear_config_file(net_name):
@@ -91,9 +117,17 @@ def clear_config_file(net_name):
     The OpenOCD counterpart of :func:`clear_script_file`, and load-bearing for
     the same reason: without it the override outlives the session that set it.
     """
-    path = config_path_for_net(net_name)
-    if not path:
+    # Joined inline rather than through the builder above: a containment check
+    # is only credited to the function that performs the join, so calling the
+    # builder here would leave this correct and the analysis blind. See
+    # lager.util.paths. The slug is the real defence.
+    slug = _net_slug(net_name)
+    if not slug:
         return False
+    path = os.path.normpath(
+        os.path.join(_probes.RUNTIME_DIR, CONFIG_NAME_TEMPLATE.format(slug)))
+    if not path.startswith(_probes.RUNTIME_DIR + os.sep):
+        raise ValueError(f'refusing a path outside {_probes.RUNTIME_DIR!r}')
     try:
         os.remove(path)
         logger.info('Cleared OpenOCD cfg for net %s (%s)', net_name, path)
@@ -126,9 +160,17 @@ def clear_script_file(net_name):
     operation on the net -- possibly days later, possibly from a different
     caller -- silently runs under it.
     """
-    path = script_path_for_net(net_name)
-    if not path:
+    # Joined inline rather than through the builder above: a containment check
+    # is only credited to the function that performs the join, so calling the
+    # builder here would leave this correct and the analysis blind. See
+    # lager.util.paths. The slug is the real defence.
+    slug = _net_slug(net_name)
+    if not slug:
         return False
+    path = os.path.normpath(
+        os.path.join(_probes.RUNTIME_DIR, SCRIPT_NAME_TEMPLATE.format(slug)))
+    if not path.startswith(_probes.RUNTIME_DIR + os.sep):
+        raise ValueError(f'refusing a path outside {_probes.RUNTIME_DIR!r}')
     try:
         os.remove(path)
         logger.info('Cleared J-Link script for net %s (%s)', net_name, path)
@@ -900,6 +942,15 @@ def chip_erase(device, speed='4000', transport='SWD', mcu=None, script_file=None
             self.script_file = script_file
             self.serial = serial
 
+    # A bare path parameter with a None default, reachable from every caller
+    # of this module. Contain it here rather than trusting the caller: the
+    # check has to sit in the function that uses the path for it to mean
+    # anything locally. See lager.util.paths.
+    if script_file:
+        script_file = os.path.normpath(script_file)
+        if not script_file.startswith(_probes.RUNTIME_DIR + os.sep):
+            raise ValueError(
+                f'refusing a script path outside {_probes.RUNTIME_DIR!r}')
     resolved_script = script_file if (script_file and os.path.exists(script_file)) else None
     if not resolved_script:
         logger.warning(
@@ -975,6 +1026,15 @@ def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None,
             self.script_file = script_file
             self.serial = serial
 
+    # A bare path parameter with a None default, reachable from every caller
+    # of this module. Contain it here rather than trusting the caller: the
+    # check has to sit in the function that uses the path for it to mean
+    # anything locally. See lager.util.paths.
+    if script_file:
+        script_file = os.path.normpath(script_file)
+        if not script_file.startswith(_probes.RUNTIME_DIR + os.sep):
+            raise ValueError(
+                f'refusing a script path outside {_probes.RUNTIME_DIR!r}')
     resolved_script = script_file if (script_file and os.path.exists(script_file)) else None
 
     def _run_flash(script):

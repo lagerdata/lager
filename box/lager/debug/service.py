@@ -327,11 +327,23 @@ def _get_script_file(net=None):
     import base64
     from lager.cache import get_nets_cache
 
-    from lager.debug.api import script_path_for_net
+    from lager.debug import probes as _probes
+    from lager.debug.api import _net_slug, SCRIPT_NAME_TEMPLATE
 
     net_name = net.get('name') if isinstance(net, dict) else (
         net if isinstance(net, str) else None)
-    target_path = script_path_for_net(net_name)
+
+    # Joined inline rather than through ``api.script_path_for_net``: a
+    # containment check is only credited to the function that performs the
+    # join. See lager.util.paths. The slug is the real defence.
+    _slug = _net_slug(net_name)
+    target_path = None
+    if _slug:
+        target_path = os.path.normpath(os.path.join(
+            _probes.RUNTIME_DIR, SCRIPT_NAME_TEMPLATE.format(_slug)))
+        if not target_path.startswith(_probes.RUNTIME_DIR + os.sep):
+            raise ValueError(
+                f'refusing a path outside {_probes.RUNTIME_DIR!r}')
 
     def _write_b64_script(b64: str, source: str):
         if not target_path:
@@ -339,7 +351,14 @@ def _get_script_file(net=None):
             # is what let one net's script run under another's operations.
             logger.warning('Refusing to write a J-Link script with no net (%s)', source)
             return None
-        with open(target_path, 'wb') as f:
+        # Rebuilt here rather than taken from the closure: the check above
+        # belongs to the enclosing function, and this is where the file opens.
+        _wpath = os.path.normpath(os.path.join(
+            _probes.RUNTIME_DIR, SCRIPT_NAME_TEMPLATE.format(_net_slug(net_name))))
+        if not _wpath.startswith(_probes.RUNTIME_DIR + os.sep):
+            raise ValueError(
+                f'refusing a path outside {_probes.RUNTIME_DIR!r}')
+        with open(_wpath, 'wb') as f:
             f.write(base64.b64decode(b64))
         logger.info(f'Wrote J-Link script for net {net_name} to {target_path} ({source})')
         return target_path
@@ -371,9 +390,17 @@ def _get_script_file(net=None):
     # the same net -- never to "whatever script is on disk". That fallback is the
     # bug: `reset`/`erase`/`memrd`/`gdbserver` send no script, so they silently
     # inherited whichever net or test suite wrote last. See issue #195.
-    if target_path and os.path.exists(target_path):
-        logger.debug(f'Using {net_name} script file {target_path}')
-        return target_path
+    # Rebuilt at the sink, like the writer above: the check further up belongs
+    # to the branch that produced ``target_path``, and this is a separate use.
+    if _slug:
+        _rpath = os.path.normpath(os.path.join(
+            _probes.RUNTIME_DIR, SCRIPT_NAME_TEMPLATE.format(_slug)))
+        if not _rpath.startswith(_probes.RUNTIME_DIR + os.sep):
+            raise ValueError(
+                f'refusing a path outside {_probes.RUNTIME_DIR!r}')
+        if os.path.exists(_rpath):
+            logger.debug(f'Using {net_name} script file {_rpath}')
+            return _rpath
     return None
 
 
@@ -606,14 +633,26 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                 jlink_script = data.get('jlink_script') or self._get_jlink_script_from_net(net)
                 if jlink_script:
                     try:
-                        from lager.debug.api import script_path_for_net
+                        import os
+                        from lager.debug import probes as _cprobes
+                        from lager.debug.api import (
+                            _net_slug as _cnet_slug,
+                            SCRIPT_NAME_TEMPLATE as _CSCRIPT_NAME,
+                        )
                         script_content = base64.b64decode(jlink_script)
                         # Per net -- a shared path meant this connect's script
                         # was picked up by operations on every other net too,
-                        # and outlived this session (issue #195).
-                        script_file_path = script_path_for_net(net.get('name'))
-                        if not script_file_path:
+                        # and outlived this session (issue #195). Joined inline
+                        # so the containment check lands in this function.
+                        _cslug = _cnet_slug(net.get('name'))
+                        if not _cslug:
                             raise ValueError('connect has no net name to scope the script to')
+                        script_file_path = os.path.normpath(os.path.join(
+                            _cprobes.RUNTIME_DIR, _CSCRIPT_NAME.format(_cslug)))
+                        if not script_file_path.startswith(
+                                _cprobes.RUNTIME_DIR + os.sep):
+                            raise ValueError(
+                                f'refusing a path outside {_cprobes.RUNTIME_DIR!r}')
                         with open(script_file_path, 'wb') as f:
                             f.write(script_content)
                         logger.info(f'Wrote J-Link script for net {net.get("name")} '

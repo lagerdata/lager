@@ -81,10 +81,17 @@ _OPENOCD_TELNET_PORT_BASE = 4444
 _OPENOCD_TCL_PORT_BASE = 6666
 MAX_SLOTS = 4
 
-# Every per-probe pid/log file lands here. The serial that names them comes
-# off the wire (a net's VISA address), so it is slugged and the join is
-# checked -- see lager.util.paths.
-_PROBE_RUNTIME_DIR = '/tmp'
+# Every per-probe and per-net runtime file the debug layer writes lands here:
+# pid and log files named after a probe serial, and the J-Link script / OpenOCD
+# cfg named after a net. Both names come off the wire -- a serial from a VISA
+# address, a net name from user config -- so each is slugged and each join is
+# checked. See lager.util.paths for why the check is repeated at every join
+# rather than shared.
+#
+# Public because debug/api.py, debug/jlink.py, debug/gdbserver.py and
+# debug/service.py all build or receive paths under it, and probes is the
+# lowest layer of the four (the others import from it, not the reverse).
+RUNTIME_DIR = '/tmp'
 
 _LEGACY_GDBSERVER_PIDFILE = '/tmp/jlink_gdbserver.pid'
 _LEGACY_GDBSERVER_LOGFILE = '/tmp/jlink_gdbserver.log'
@@ -321,9 +328,9 @@ def jlink_gdbserver_pidfile(serial):
     if serial is None:
         return _LEGACY_GDBSERVER_PIDFILE
     path = os.path.normpath(
-        os.path.join(_PROBE_RUNTIME_DIR, f'jlink_gdbserver_{fs_slug(serial)}.pid'))
-    if not path.startswith(_PROBE_RUNTIME_DIR + os.sep):
-        raise ValueError(f'refusing a path outside {_PROBE_RUNTIME_DIR!r}')
+        os.path.join(RUNTIME_DIR, f'jlink_gdbserver_{fs_slug(serial)}.pid'))
+    if not path.startswith(RUNTIME_DIR + os.sep):
+        raise ValueError(f'refusing a path outside {RUNTIME_DIR!r}')
     return path
 
 
@@ -331,9 +338,9 @@ def jlink_gdbserver_logfile(serial):
     if serial is None:
         return _LEGACY_GDBSERVER_LOGFILE
     path = os.path.normpath(
-        os.path.join(_PROBE_RUNTIME_DIR, f'jlink_gdbserver_{fs_slug(serial)}.log'))
-    if not path.startswith(_PROBE_RUNTIME_DIR + os.sep):
-        raise ValueError(f'refusing a path outside {_PROBE_RUNTIME_DIR!r}')
+        os.path.join(RUNTIME_DIR, f'jlink_gdbserver_{fs_slug(serial)}.log'))
+    if not path.startswith(RUNTIME_DIR + os.sep):
+        raise ValueError(f'refusing a path outside {RUNTIME_DIR!r}')
     return path
 
 
@@ -341,9 +348,9 @@ def jlink_pidfile(serial):
     if serial is None:
         return _LEGACY_JLINK_PIDFILE
     path = os.path.normpath(
-        os.path.join(_PROBE_RUNTIME_DIR, f'jlink_{fs_slug(serial)}.pid'))
-    if not path.startswith(_PROBE_RUNTIME_DIR + os.sep):
-        raise ValueError(f'refusing a path outside {_PROBE_RUNTIME_DIR!r}')
+        os.path.join(RUNTIME_DIR, f'jlink_{fs_slug(serial)}.pid'))
+    if not path.startswith(RUNTIME_DIR + os.sep):
+        raise ValueError(f'refusing a path outside {RUNTIME_DIR!r}')
     return path
 
 
@@ -351,9 +358,9 @@ def jlink_logfile(serial):
     if serial is None:
         return _LEGACY_JLINK_LOGFILE
     path = os.path.normpath(
-        os.path.join(_PROBE_RUNTIME_DIR, f'jlink_{fs_slug(serial)}.log'))
-    if not path.startswith(_PROBE_RUNTIME_DIR + os.sep):
-        raise ValueError(f'refusing a path outside {_PROBE_RUNTIME_DIR!r}')
+        os.path.join(RUNTIME_DIR, f'jlink_{fs_slug(serial)}.log'))
+    if not path.startswith(RUNTIME_DIR + os.sep):
+        raise ValueError(f'refusing a path outside {RUNTIME_DIR!r}')
     return path
 
 
@@ -375,9 +382,9 @@ def openocd_pidfile(serial):
     if serial is None:
         return _LEGACY_OPENOCD_PIDFILE
     path = os.path.normpath(
-        os.path.join(_PROBE_RUNTIME_DIR, f'openocd_{fs_slug(serial)}.pid'))
-    if not path.startswith(_PROBE_RUNTIME_DIR + os.sep):
-        raise ValueError(f'refusing a path outside {_PROBE_RUNTIME_DIR!r}')
+        os.path.join(RUNTIME_DIR, f'openocd_{fs_slug(serial)}.pid'))
+    if not path.startswith(RUNTIME_DIR + os.sep):
+        raise ValueError(f'refusing a path outside {RUNTIME_DIR!r}')
     return path
 
 
@@ -385,7 +392,7 @@ def openocd_logfile(serial):
     if serial is None:
         return _LEGACY_OPENOCD_LOGFILE
     path = os.path.normpath(
-        os.path.join(_PROBE_RUNTIME_DIR, f'openocd_{fs_slug(serial)}.log'))
-    if not path.startswith(_PROBE_RUNTIME_DIR + os.sep):
-        raise ValueError(f'refusing a path outside {_PROBE_RUNTIME_DIR!r}')
+        os.path.join(RUNTIME_DIR, f'openocd_{fs_slug(serial)}.log'))
+    if not path.startswith(RUNTIME_DIR + os.sep):
+        raise ValueError(f'refusing a path outside {RUNTIME_DIR!r}')
     return path
