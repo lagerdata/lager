@@ -41,12 +41,12 @@ are not.
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1853 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 2005 |
+| `unit (box)` | `test/unit/box/` | 2030 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 181 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 143 (+1 skipped) |
-| | **Total gated** | **4376** |
+| | **Total gated** | **4401** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never
@@ -450,9 +450,9 @@ cli/tests/                #  7 files: 6 pytest suites (GATED via `unit (cli)`),
                           #           plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 176 files)
+### Local Unit Tests (`test/unit/` -- 177 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 94 files)
+#### Box Unit Tests (`test/unit/box/` -- 95 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -524,6 +524,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_prebuilt_image.py` | The pre-built-image block in `box/start_box.sh`: a mutable tag refused before any docker call, the OCI version label asserted and an unlabelled image rejected, `--platform` pinned, the pull sent through a throwaway docker config, and every miss falling back to the local build rather than failing the deploy |
 | `test_probes_paths.py` | Per-probe pid/log paths are built from a serial read from a permissive field of a client-supplied VISA address: whatever that field carries, the path stays inside `/tmp`, while an ordinary serial keeps the byte-identical filename it had before so an upgrade cannot orphan a running gdbserver; slot assignment still matches on the raw serial, and the unused `/pip` endpoint stays removed |
 | `test_probes_visa_parsing.py` | VISA address parsing for empty-serial FTDI probes |
+| `test_process_dir_containment.py` | A detached job's registry directory is named after a request-supplied id: the UUID parse each handler runs is pinned as what actually rejects a bad one, and the containment check beside each join pins where the result is allowed to land, so reordering or dropping a parse cannot silently widen it |
 | `test_python_kill.py` | `/python/kill` signals every PID in a job, once per process group, and shares one grace window across the whole set; real forked children, not mocks |
 | `test_python_timeout.py` | `--timeout` builds an enforceable deadline: `/usr/bin/timeout --kill-after`, the ceiling applied out loud, and a detached job wrapped only when a deadline was asked for and never capped -- the ceiling tracks the CLI's streaming read timeout, which nothing reads on a detached run; real SIGTERM-ignoring children prove the old argv could not stop them and the new one can; plus a guard that the box ceiling fits inside the CLI's HTTP read timeout |
 | `test_python_detach_start.py` | A detached launch answers its client before the work that made it slow -- unpacking, pip, the quiesce gate -- and registers the job on disk first, so a reattach racing the launch opens a file that exists; a job that dies before it ever had a pid reports through its own log as stderr plus an exit marker and reaches a terminal status, never stuck at 'starting' |

@@ -220,8 +220,20 @@ def resolve_lager_process_id(env_vars):
 
 
 def process_dir_for(lager_process_id):
-    """The registry directory for one job."""
-    return os.path.join(PROCESS_REGISTRY_DIR, lager_process_id)
+    """The registry directory for one job.
+
+    Callers that go on to open, list or delete what this returns repeat the
+    join and the containment check inline instead of using this helper. That
+    is deliberate and is explained in box/lager/util/paths.py: a containment
+    check is only credited to the function that performs the join, so routing
+    a request-supplied id through here would leave the code correct and the
+    analysis blind. This guard covers the remaining callers, which build an
+    id themselves rather than taking one off the wire.
+    """
+    path = os.path.normpath(os.path.join(PROCESS_REGISTRY_DIR, lager_process_id))
+    if not path.startswith(PROCESS_REGISTRY_DIR + os.sep):
+        raise ValueError(f'process id escapes the registry: {lager_process_id!r}')
+    return path
 
 
 def register_detached_job(lager_process_id):
@@ -956,8 +968,14 @@ class PythonExecutor:
             # Kill process by searching for it directly
             _kill_by_proc_id(sig, lager_process_id.encode())
 
-            # Clean up log directory
-            process_dir = process_dir_for(lager_process_id)
+            # Clean up log directory. Joined inline rather than through
+            # ``process_dir_for``: a containment check is only credited to the
+            # function that performs the join. See box/lager/util/paths.py.
+            # The UUID parse above is the real defence.
+            process_dir = os.path.normpath(
+                os.path.join(PROCESS_REGISTRY_DIR, lager_process_id))
+            if not process_dir.startswith(PROCESS_REGISTRY_DIR + os.sep):
+                raise LagerPythonInvalidProcessIdError(lager_process_id)
             if os.path.isdir(process_dir):
                 import shutil as _shutil
                 try:
