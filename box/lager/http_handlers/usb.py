@@ -593,6 +593,13 @@ def register_usb_routes(app: Flask) -> None:
         finally:
             if firmware_path:
                 try:
-                    os.remove(firmware_path)
+                    # Contained at the sink, against the directory mkstemp
+                    # actually used. See lager.util.paths for why the check
+                    # sits here rather than where the file was created.
+                    _staging = tempfile.gettempdir()
+                    _rm = os.path.normpath(firmware_path)
+                    if not _rm.startswith(_staging + os.sep):
+                        raise ValueError('refusing to remove outside staging')
+                    os.remove(_rm)
                 except OSError:
                     pass
