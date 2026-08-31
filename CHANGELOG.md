@@ -67,6 +67,48 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ### Fixed
 
+- **The Architecture page said three things about the box that are not true, and
+  a user hitting `[Errno 16] Resource busy` had nothing to read.** Drawing the
+  box-internals diagram in Mermaid last time forced explicit arrows, and the
+  arrows asserted a topology nobody had checked against the source. Checking it
+  now:
+
+  - **`NetsCache` is per-process, not per-box.** It is a singleton keyed on a
+    class attribute and a `threading.Lock`, so the guarantee is one per
+    interpreter. The box API, the hardware service, the debug and MCP services,
+    and every `lager python` subprocess each hold their own copy of
+    `saved_nets.json`. The diagram drew one, inside `:8080`. Each copy
+    invalidates on mtime, so they converge on their own -- but each pays its own
+    first read, two can briefly disagree, and a restarted service comes back
+    cold. That is now a note rather than more boxes in an already busy diagram.
+  - **Dispatchers do not run in the hardware service.** `:8080` imports no
+    dispatcher; it resolves a driver module by name, instantiates it, and calls
+    the method. Net resolution happens in the *caller's* process -- the box API's
+    handlers, or the user script -- which is also where its `NetsCache` copy
+    lives. The diagram put dispatchers behind `:8080`, and the CLI sequence
+    diagram had the box API posting to the hardware service before the net was
+    resolved, which is backwards.
+  - **A user script does not drive every instrument in-process.** Supplies,
+    scopes, battery simulators, e-loads and solar simulators are all reached
+    through the same `/invoke` proxy the box API uses, so the hardware service
+    keeps sole ownership of the VISA session. Only the direct-USB drivers
+    (LabJack, USB-202, FT232H, Aardvark, Joulescope, PPK2) are constructed in the
+    subprocess, and the execution service releases the hardware service's claims
+    on those before spawning -- while deliberately leaving the VISA sessions
+    open, because tearing them down is what produced `[Errno 16] Resource busy`
+    in the first place.
+
+  The last correction supersedes a claim from the previous pass: the calls
+  between services are `9000 -> 8080` **and** `subprocess -> 8080`, not `9000 ->
+  8080` alone.
+
+  Troubleshooting gains an entry for `[Errno 16] Resource busy`. The string
+  appeared nowhere in the published docs except release notes, so the one failure
+  the box's own source comments call out by name had no page a reader could land
+  on. It says which paths cannot produce it, which can, and points at
+  `lager diagnose`, whose VISA section already reports a held shared session
+  correctly.
+
 - **`lager logic <net> disable` asked the scope a question it never answers.**
   `Net.disable` polls all sixteen digital channels through
   `is_la_channel_enabled`, which queried `:LA:DIGital<n>:DISPlay?`. That is the

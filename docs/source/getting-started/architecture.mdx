@@ -70,9 +70,16 @@ A single Docker container named `lager` (started with `--restart always`) runs e
 The services are **peer processes, not a pipeline**. A start script launches each one and
 restarts it if it dies.
 
-Only one of them calls another. The box API on port 9000 reaches the hardware service on port
-8080 over HTTP. The debug and MCP services are independent. A script running under the execution
-service drives its drivers itself.
+Two of them call the hardware service on port 8080. The first is the box API on port 9000.
+The second is each user script that the execution service spawns. Both resolve the net name in
+their own process, then POST to `/invoke`. The debug and MCP services are independent.
+
+The hardware service is the sole owner of an instrument's VISA session. A caller that opens its
+own session races it for the USB device.
+
+A script drives an instrument directly only when it is **not** a VISA instrument. The direct
+drivers are LabJack, USB-202, FT232H, Aardvark, Joulescope and PPK2. Supplies, scopes, battery
+simulators, e-loads and solar simulators go over `/invoke` like any other caller.
 
 ```mermaid
 flowchart TB
@@ -87,25 +94,35 @@ flowchart TB
 
     subgraph hs[":8080 hardware service"]
       direction TB
-      DISP["Dispatchers<br/>BaseDispatcher subclasses"]
-      CACHE["NetsCache<br/>mtime-invalidated, O(1) by net name"]
       DRV["Drivers<br/>VISA/SCPI, pySerial, LJM, pyOCD, aardvark_py"]
-      DISP -->|"resolve net name"| CACHE
-      DISP -->|"instantiate, cache, lock per device"| DRV
+      OWN["Driver cache, per-device lock,<br/>shared VISA session pool"]
+      DRV --- OWN
     end
 
-    P9000 -->|"POST /invoke, Device proxy"| DISP
+    P9000 -->|"resolve net, then POST /invoke"| DRV
     P5000 -->|"spawns"| SUB
+    SUB -->|"VISA nets: POST /invoke"| DRV
   end
 
   INST["Instruments"]
   DUT["DUT"]
 
   DRV --> INST
-  SUB -->|"imports lager.*, drives drivers in-process"| INST
+  SUB -->|"non-VISA drivers only,<br/>constructed in-process"| INST
   P8765 -->|"SWD / JTAG via probe"| INST
   INST --> DUT
 ```
+
+<Note>
+  **Each process holds its own `NetsCache`.** It is a per-interpreter singleton, not a box-wide
+  one. The box API, the hardware service, and the debug and MCP services each hold one. So does
+  every `lager python` subprocess.
+
+  Each copy reads `saved_nets.json` and invalidates on that file's mtime. The copies therefore
+  converge on their own. Three consequences follow. Every process pays its own first read. Two
+  processes can disagree briefly, between a write and the next read. A service that dies and
+  restarts comes back with a cold cache.
+</Note>
 
 ### Port Summary
 
@@ -233,20 +250,17 @@ sequenceDiagram
     participant N as Tailscale VPN
     participant B as Box API :9000
     participant H as Hardware service :8080
-    participant D as Dispatcher
     participant I as Instrument
 
     C->>C: Resolve the box IP from config
     C->>C: Build the payload: netname, action, params
     C->>N: POST /supply/command
     N->>B: Encrypted tunnel
+    B->>B: Resolve psu1 through its own NetsCache
     B->>H: POST /invoke, via the Device proxy
-    H->>D: Call the role adapter
-    D->>D: Resolve psu1 through NetsCache
-    D->>D: Instantiate and cache the driver
-    D->>I: SCPI command
-    I-->>D: Response
-    D-->>H: Result
+    H->>H: Instantiate and cache the driver, take the per-device lock
+    H->>I: SCPI command
+    I-->>H: Response
     H-->>B: Result JSON
     B-->>N: Result JSON
     N-->>C: Voltage set to 3.300V
@@ -259,9 +273,18 @@ instrument.
 ### Custom Script Execution (`lager python`)
 
 The `lager python` command uploads a user-written Python script to the execution service on
-port 5000. This is a different path from the box API commands above. The service runs the script
-as its own subprocess. The script constructs and drives its drivers in-process. It does not call
-the hardware service.
+port 5000. This is a different path from the box API commands above. The service runs the
+script as its own subprocess, with its own interpreter and its own caches.
+
+What happens next depends on the instrument. A VISA instrument goes through the same `/invoke`
+proxy the box API uses. That covers supplies, scopes, battery simulators, e-loads and solar
+simulators. Everything else is constructed and driven inside the subprocess: LabJack, USB-202,
+FT232H, Aardvark, Joulescope and PPK2.
+
+Those direct-USB drivers claim their device exclusively. The execution service therefore asks
+the hardware service to release its own claims first. It leaves the shared VISA sessions open
+on purpose. Tearing those down is what produced `[Errno 16] Resource busy` on the next supply
+command.
 
 ```bash
 $ lager python my_test.py --box mybox --env VOLTAGE=3.3 --timeout 300
