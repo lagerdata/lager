@@ -75,14 +75,26 @@ several firmware modes (Keithley 2281S: battery-simulator vs supply; EA PSB:
 solar-array simulator vs straight supply). The role *tuple* documents which
 modes are available, but the box can only be in one mode at a time.
 
-**Rule:** at most one net per `(instrument, address)`. Once *any* role is
-saved on the chip, every other role disappears from the add list.
+**Rule: warn once, don't block.** A saved net on the chip no longer hides
+the other role — the add flows offer it (default-unselected in the TUI)
+together with `dual_role_notice()`, an informational notice explaining the
+mode switch. Selecting *two* fresh roles for one chip in a single batch is
+still rejected as a conflict, since that's almost never intentional.
+
+**Why a warning is enough:** the drivers already make alternating use safe.
+Every write path re-asserts its own entry mode before touching the
+instrument (querying the current mode and switching only when needed, with
+auto-reentry on mode errors), and reads are passive. So two saved nets on
+one chip work — driving one simply ends whatever the other mode was doing,
+which is exactly what the notice says.
 
 Enforced in:
-- `nets.py::create_all_cmd` — `if net["instrument"] in _SINGLE_CHANNEL_INST` branch
-- `net_tui.py::AddNetsScreen._row_allowed` — same instrument+address check
-- `net_tui.py::AddNetsScreen.on_button_pressed` — same-batch conflict detector
-- `net_tui.py::is_single_channel_taken` — back-compat helper, role arg ignored
+- `nets.py::create_cmd` / `create_all_cmd` — notice emitted to stderr, add proceeds
+- `net_tui.py::AddScreen._get_addable_nets` — rows kept, notice attached
+- `net_tui.py::AddScreen.on_button_pressed` — same-batch conflict detector
+  (selected rows only; saved nets don't count)
+- `net_tui.py::is_single_channel_taken` — back-compat helper, role arg
+  ignored; now feeds the notice rather than hiding rows
 
 ### Bucket 3: `_MODE_EXCLUSIVE_INST` — hardware-multiplexed mode chips
 
@@ -94,15 +106,18 @@ These chips have a single channel that's hardware-multiplexed across roles
 (FT232H: MPSSE for SPI/I²C/GPIO/JTAG-SWD via libftdi *or* async-serial via
 `ftdi_sio`, but never both at once).
 
-**Rule:** identical to Bucket 2 — at most one net per `(instrument, address)`.
+**Rule: hard block.** At most one net per `(instrument, address)`. Once any
+role is saved on the chip, every other role disappears from the add list
+(with an `already has a net.` warning); the user must delete the existing
+net to switch modes.
 
-**Why a separate set then?** Because the constraint differs in spirit. Bucket
-2 is "one physical port, software-selected role" — meaningful even on
-single-output supplies. Bucket 3 is "one physical port,
-hardware-mode-switched across protocol families" — and we expect the set to
-grow with future MPSSE-style adapters. Keeping them separate keeps the intent
-visible at the definition site and lets future code branch on the category
-if it ever needs to.
+**Why stricter than Bucket 2?** No driver-side auto-switching exists here:
+the MPSSE-vs-UART mode is fixed for the lifetime of an open (libftdi claims
+the chip away from `ftdi_sio` and vice versa), so a second role's net
+genuinely cannot work alongside the first — a warning would just defer the
+failure to run time. We also expect the set to grow with future MPSSE-style
+adapters; keeping it separate keeps the intent visible at the definition
+site.
 
 `add-all` treats Bucket 3 specially: it refuses to auto-pick a role on
 behalf of the user (since there's no defensible default), and prints a

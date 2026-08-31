@@ -109,6 +109,12 @@ _MODE_EXCLUSIVE_INST = {"FTDI_FT232H"}
 
 # Role tuples use the canonical saved-role vocabulary (what nets actually
 # carry: "power-supply", "battery"), matching the table in nets.py.
+#
+# Unlike _MODE_EXCLUSIVE_INST, a saved net on one of these chips does NOT
+# hard-block the other role: the drivers re-assert their own entry mode on
+# every write, so alternating between two saved roles works. The add flows
+# offer the second role (default-unselected) with dual_role_notice() instead
+# of hiding it.
 _SINGLE_CHANNEL_INST = {
     "Keithley_2281S": ("battery", "power-supply"),
     "EA_PSB_10060_60": ("solar", "power-supply"),
@@ -117,6 +123,22 @@ _SINGLE_CHANNEL_INST = {
     # net may reference the instrument at its serial:// address.
     "Rigol_DP711": ("power-supply",),
 }
+
+
+def dual_role_notice(inst: str, addr: str, saved_roles: str) -> str:
+    """Add-time notice for the second role of a chip in _SINGLE_CHANNEL_INST.
+
+    Shown by the TUI Add screen and the ``nets`` CLI (nets.py imports this).
+    Other tools in the ecosystem show the same message, so the wording must
+    stay identical apart from the interpolated values.
+    """
+    return (
+        f"{inst} at {addr} already has a {saved_roles} net. This instrument "
+        f"is a single output that fills one role at a time — the driver "
+        f"switches its mode automatically when you drive the other net, "
+        f"ending whatever the previous mode was doing. Add the second net "
+        f"only if you intend to use both roles."
+    )
 
 def _first_word(role: str) -> str:
     """Return the first part of a hyphenated role name."""
@@ -410,12 +432,13 @@ def is_single_channel_taken(all_nets: list["Net"], inst: str, addr: str, role: s
     instrument at this address.
 
     Single-channel devices like Keithley_2281S (``batt``/``supply``) or
-    EA_PSB (``solar``/``supply``) physically hold one channel, so once
-    any saved net binds it the other role becomes unsafe to add — the
-    underlying hardware can only run one mode at a time. The ``role``
-    parameter is kept for backwards compatibility (callers used to ask
-    "is THIS role taken?") but is ignored: any saved net on the chip
-    counts as taken.
+    EA_PSB (``solar``/``supply``) physically hold one channel. A saved net
+    no longer hides the other role's add row — the drivers re-assert their
+    own entry mode on every write, so a deliberate two-role setup works —
+    but the Add screen uses this to attach dual_role_notice() to the rows
+    it still offers. The ``role`` parameter is kept for backwards
+    compatibility (callers used to ask "is THIS role taken?") but is
+    ignored: any saved net on the chip counts as taken.
     """
     if inst not in _SINGLE_CHANNEL_INST:
         return False
@@ -1762,15 +1785,11 @@ class AddScreen(Screen):
         if any(s.saved and s.type == n.type and s.instrument == n.instrument and s.chan == n.chan and s.addr == n.addr for s in self.nets):
             return False
 
-        # Hide nets for single-channel instruments once ANY role is saved on
-        # the same chip+addr. Keithley_2281S is the canonical case: one
-        # physical channel that can run as ``batt`` OR ``supply`` but never
-        # both. The old per-role check (``s.type == n.type``) let users
-        # silently double-book the channel by picking the other role; this
-        # tighter check matches the ``add-all`` CLI semantics.
-        if n.instrument in _SINGLE_CHANNEL_INST:
-            if any(s.saved and s.instrument == n.instrument and s.addr == n.addr for s in self.nets):
-                return False
+        # Single-channel dual-role chips (_SINGLE_CHANNEL_INST) are NOT
+        # hidden here once a role is saved: the drivers switch the chip's
+        # mode automatically per write, so a deliberate second-role net is
+        # legitimate. _get_addable_nets keeps the row visible and attaches
+        # dual_role_notice() instead.
 
         # Mode-exclusive chips (FT232H): once ANY role is saved on this
         # chip+address, all other role options disappear. The user must
@@ -1791,16 +1810,21 @@ class AddScreen(Screen):
                     return False
         return True
 
-    def _get_addable_nets(self) -> tuple[list["Net"], list[str]]:
+    def _get_addable_nets(self) -> tuple[list["Net"], list[str], list[str]]:
         """
-        Build (rows, warnings) for the *Add Nets* screen.
+        Build (rows, warnings, notices) for the *Add Nets* screen.
 
         Rules:
         1. Nets whose address cannot identify one physical device (two present
            devices report it) are hidden, with a warning. Two devices of one
            model are fine as long as their addresses differ.
-        2. Single-channel instruments may have only one net per address –
-           duplicates are hidden and warned.
+        2. Mode-exclusive chips (FT232H) may have only one net per address –
+           once any role is saved, the other roles are hidden and warned.
+        3. Single-channel dual-role chips (_SINGLE_CHANNEL_INST) with a saved
+           net keep their remaining rows visible (default-unselected), with
+           dual_role_notice() as an informational notice: the drivers switch
+           the chip's mode automatically, so a deliberate second-role net
+           works — it just ends whatever the other mode was doing.
         """
         warnings: list[str] = []
 
@@ -1817,15 +1841,21 @@ class AddScreen(Screen):
         nets: list[Net] = list(uniq.values())
 
         remaining: list[Net] = []
-        dup_single: set[tuple[str, str]] = set()
+        dup_taken: set[tuple[str, str]] = set()
+        dual_role_taken: set[tuple[str, str]] = set()
         ambiguous_seen: set[tuple[str, str]] = set()
 
         for n in nets:
             if n.addr in self.ambiguous_addrs:
                 ambiguous_seen.add((n.instrument, n.addr))
                 continue
-            if n.instrument in _SINGLE_CHANNEL_INST and is_single_channel_taken(self.nets, n.instrument, n.addr, n.type):
-                dup_single.add((n.instrument, n.addr))
+            if not n.saved and n.instrument in _MODE_EXCLUSIVE_INST and any(
+                s.saved and s.instrument == n.instrument and s.addr == n.addr
+                for s in self.nets
+            ):
+                # A hidden candidate row is worth a warning; the saved net
+                # itself is filtered silently by _row_allowed below.
+                dup_taken.add((n.instrument, n.addr))
                 continue
             if n.type == "debug" and "DEVICE_TYPE" not in str(n.chan):
                 # Already resolved (a real device name); skip the prompt
@@ -1833,17 +1863,31 @@ class AddScreen(Screen):
                 continue
             if not self._row_allowed(n):
                 continue
+            if n.instrument in _SINGLE_CHANNEL_INST and is_single_channel_taken(self.nets, n.instrument, n.addr, n.type):
+                # Row stays in the list (default-unselected); the notice
+                # below explains the mode switch. Checked after _row_allowed
+                # so chips whose remaining rows are hidden anyway (e.g. a
+                # DP711 whose only channel is saved) produce no notice.
+                dual_role_taken.add((n.instrument, n.addr))
             remaining.append(n)
 
         for inst, addr in sorted(ambiguous_seen, key=lambda x: natural_sort_key(x[0])):
             warnings.append(describe_ambiguity(inst, addr))
-        for inst, addr in sorted(dup_single, key=lambda x: natural_sort_key(x[0])):
+        for inst, addr in sorted(dup_taken, key=lambda x: natural_sort_key(x[0])):
             warnings.append(f"{inst} at {addr} already has a net.")
 
-        return remaining, warnings
+        notices: list[str] = []
+        for inst, addr in sorted(dual_role_taken, key=lambda x: natural_sort_key(x[0])):
+            saved_roles = "/".join(sorted({
+                s.type for s in self.nets
+                if s.saved and s.instrument == inst and s.addr == addr
+            }))
+            notices.append(dual_role_notice(inst, addr, saved_roles))
+
+        return remaining, warnings, notices
 
     def compose(self) -> ComposeResult:
-        remaining, warnings = self._get_addable_nets()
+        remaining, warnings, notices = self._get_addable_nets()
 
         # Store the nets that are actually displayed for rename lookups
         # CRITICAL: Only store unsaved nets to prevent delete dialogs
@@ -1860,12 +1904,14 @@ class AddScreen(Screen):
 
             # Warnings and tips share one dismissable block so they can't
             # crowd the net list out of view.
-            if warnings or pin_hint:
+            if warnings or notices or pin_hint:
                 with Vertical(id="add_notices"):
                     with Horizontal(classes="notices-header"):
                         yield Button("✕ Dismiss", id="dismiss-notices")
                     for w in warnings:
                         yield Static(f"• {w}", classes="warning")
+                    for msg in notices:
+                        yield Static(f"• {msg}", classes="info")
                     if pin_hint:
                         yield Static(
                             "Tip: I2C/SPI pins shown are defaults, not fixed — "
@@ -1957,26 +2003,20 @@ class AddScreen(Screen):
         normal_nets = [n for n in selected_nets if n.type != "debug"]
 
         # Check for single-channel device conflicts: at most one net per
-        # (instrument, address), regardless of role. Keithley_2281S can be
-        # ``batt`` OR ``supply`` but not both; EA_PSB chips similarly choose
-        # between ``solar`` and ``supply``. The role tuple metadata in
-        # ``_SINGLE_CHANNEL_INST`` is kept for future "available roles"
-        # surfacing but doesn't relax the constraint.
-        #
-        # Only pairs the *selection* touches can conflict: boxes can hold
-        # legacy double-booked saved nets (from before this rule existed),
-        # and those must not block adds that don't involve the instrument.
-        saved_single: dict[tuple[str, str], int] = defaultdict(int)
-        for s in main.nets:
-            if s.saved and s.instrument in _SINGLE_CHANNEL_INST:
-                saved_single[(s.instrument, s.addr)] += 1
+        # (instrument, address) *in this batch*. Keithley_2281S can be
+        # ``batt`` OR ``supply``; selecting both role options for one fresh
+        # chip in one go is almost certainly a mistake, so it stays a
+        # conflict. Saved nets deliberately don't count: adding a second
+        # role next to an existing net is a legitimate alternating-use
+        # setup — the row came with dual_role_notice() attached, and the
+        # drivers switch the chip's mode automatically per write.
         sel_single: dict[tuple[str, str], int] = defaultdict(int)
         for n in selected_nets:
             if n.instrument in _SINGLE_CHANNEL_INST:
                 sel_single[(n.instrument, n.addr)] += 1
         conflicts = [
             (inst, addr) for (inst, addr), cnt in sel_single.items()
-            if cnt + saved_single[(inst, addr)] > 1
+            if cnt > 1
         ]
         if conflicts:
             parts = [f"{inst} at {addr}" for inst, addr in conflicts]

@@ -24,7 +24,7 @@ from ...core.net_helpers import NET_HTTP_PORT, echo_box_request_failure
 from ...errors import LagerError
 from ...sort_utils import natural_sort_key as _natural_sort_key
 from ._device_identity import ambiguous_addresses, describe_ambiguity
-from .net_tui import launch_tui, uart_channel_paths
+from .net_tui import dual_role_notice, launch_tui, uart_channel_paths
 
 
 # --------------------------------------------------------------------------- #
@@ -1323,15 +1323,21 @@ def add_cmd(ctx, name, role, channel, address, box, jlink_script, openocd_config
         )
         ctx.exit(1)
 
-    # ─────────── single-channel restriction ──────────────────────────
+    # ─────────── single-channel dual-role notice ─────────────────────
+    # A saved net on one of these chips no longer blocks the second role:
+    # the drivers re-assert their own entry mode on every write, so a
+    # deliberate two-role setup works. Warn once and proceed.
     if instrument in _SINGLE_CHANNEL_INST:
-        if any(canonical_instrument(n["instrument"]) == instrument and n["address"] == address
-               for n in saved_nets):
+        taken_roles = sorted({
+            _canonical_role(n.get("role", ""))
+            for n in saved_nets
+            if canonical_instrument(n["instrument"]) == instrument and n["address"] == address
+        })
+        if taken_roles:
             click.secho(
-                f"Only one net can reference {instrument} at {address}.",
-                fg="red",
+                dual_role_notice(instrument, address, "/".join(taken_roles)),
+                fg="yellow", err=True,
             )
-            ctx.exit(1)
 
     if role not in INSTRUMENT_NET_MAP.get(canonical_instrument(instrument), []) and not is_uart_device_path:
         supported_types = INSTRUMENT_NET_MAP.get(canonical_instrument(instrument), [])
@@ -1677,10 +1683,14 @@ def create_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
     # perfectly distinct, and including LabJack, whose nets carry the bench's
     # AC relay control.
     #
-    # chan_seen is keyed per DEVICE, not per model. Keyed per model, device B's
-    # channel "0" collided with device A's and marked the family duplicate.
+    # chan_seen is keyed per DEVICE and ROLE, not per model. Keyed per model,
+    # device B's channel "0" collided with device A's and marked the family
+    # duplicate. Keyed without the role, two roles that legitimately share
+    # one physical channel (a Keithley 2281S offers channel "1" as battery
+    # AND as power-supply; an FT232H offers channel "0" per MPSSE role)
+    # marked the device duplicate and silently skipped it.
     ambiguous: set[str] = ambiguous_addresses(inst_list)
-    chan_seen: dict[tuple[str, str], set[str]] = defaultdict(set)
+    chan_seen: dict[tuple[str, str], set[tuple[str, str]]] = defaultdict(set)
     duplicate_hubs: set[str] = set()
     for net in all_possible_nets:
         # Ambiguous addresses are handled below, with a message that explains
@@ -1690,11 +1700,11 @@ def create_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
         if net["addr"] in ambiguous:
             continue
         device_key = (net["instrument"], net["addr"])
-        if net["chan"] in chan_seen[device_key]:
-            # The same channel offered twice for ONE uniquely-addressed
-            # device is a real duplicate from the scanner.
+        if (net["type"], net["chan"]) in chan_seen[device_key]:
+            # The same channel offered twice for one role of ONE
+            # uniquely-addressed device is a real duplicate from the scanner.
             duplicate_hubs.add(net["instrument"])
-        chan_seen[device_key].add(net["chan"])
+        chan_seen[device_key].add((net["type"], net["chan"]))
 
     # Mode-exclusive chips (FT232H): if a chip+addr has no saved net yet AND
     # the scanner produced candidates for more than one role, ``add-all``
@@ -1719,9 +1729,35 @@ def create_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
                 f"this chip only runs one mode at a time."
             )
 
+    # Single-channel dual-role chips get the same treatment while FRESH:
+    # with no saved net and candidates for more than one role, ``add-all``
+    # would double-book the chip's one output, and it can't pick a role for
+    # the user. (Once one role is saved, the remaining role is added with
+    # the dual-role notice — see below.)
+    dual_role_candidates: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for net in all_possible_nets:
+        if canonical_instrument(net["instrument"]) in _SINGLE_CHANNEL_INST:
+            dual_role_candidates[(net["instrument"], net["addr"])].add(net["type"])
+    ambiguous_dual_role: set[tuple[str, str]] = set()
+    for key, roles in dual_role_candidates.items():
+        instrument, addr = key
+        if len(roles) > 1 and not any(
+            s.get("instrument") == instrument and s.get("address") == addr
+            for s in saved_nets
+        ):
+            ambiguous_dual_role.add(key)
+            roles_str = ", ".join(sorted(roles))
+            warnings.append(
+                f"{instrument} at {addr} offers multiple roles ({roles_str}); "
+                f"run `lager nets add` (or the TUI) to pick one — "
+                f"this instrument is a single output that fills one role "
+                f"at a time."
+            )
+
     # Filter out nets that cannot or should not be created
     filtered_nets = []
     dup_single: set[tuple[str, str]] = set()
+    dual_role_seen: set[tuple[str, str]] = set()
     ambiguous_seen: set[tuple[str, str]] = set()
 
     for net in all_possible_nets:
@@ -1734,11 +1770,17 @@ def create_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
             ambiguous_seen.add((net["instrument"], net["addr"]))
             continue
 
-        # Skip if single-channel instrument already has a net at this address
+        # Single-channel dual-role chips: skip fresh chips flagged ambiguous
+        # in the pre-pass above (multiple candidate roles, no saved net —
+        # user must pick one). Already holding a net: keep the remaining
+        # role's candidate (the drivers switch the chip's mode automatically
+        # per write, so a two-role setup works) and emit the dual-role
+        # notice below instead of skipping it.
         if canonical_instrument(net["instrument"]) in _SINGLE_CHANNEL_INST:
-            if any(s.get("instrument") == net["instrument"] and s.get("address") == net["addr"] for s in saved_nets):
-                dup_single.add((net["instrument"], net["addr"]))
+            if (net["instrument"], net["addr"]) in ambiguous_dual_role:
                 continue
+            if any(s.get("instrument") == net["instrument"] and s.get("address") == net["addr"] for s in saved_nets):
+                dual_role_seen.add((net["instrument"], net["addr"]))
 
         # Mode-exclusive chips (FT232H): once ANY role is saved on this
         # chip+address, every other role becomes unavailable because the
@@ -1864,6 +1906,19 @@ def create_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
     # Display warnings
     for warning in warnings:
         click.secho(f"Warning: {warning}", fg="yellow")
+
+    # Dual-role notices: one per chip that still contributes a candidate.
+    # A chip whose remaining role was filtered out anyway (e.g. a DP711
+    # whose only channel is saved) gets no notice.
+    for inst, addr in sorted(dual_role_seen, key=lambda x: _natural_sort_key(x[0])):
+        if not any(n["instrument"] == inst and n["addr"] == addr for n in filtered_nets):
+            continue
+        saved_roles = "/".join(sorted({
+            _canonical_role(s.get("role", ""))
+            for s in saved_nets
+            if s.get("instrument") == inst and s.get("address") == addr
+        }))
+        click.secho(dual_role_notice(inst, addr, saved_roles), fg="yellow", err=True)
 
     if not filtered_nets:
         click.secho("No new nets can be created. All possible nets already exist or are blocked.", fg="yellow")
