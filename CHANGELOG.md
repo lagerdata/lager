@@ -270,6 +270,31 @@ All notable changes to the Lager platform are documented here. For detailed rele
   deliberate; `test_debug_script_root.py` fails if the two drift, and also if
   someone reintroduces an import that would break the standalone load.
 
+- **Paths named after a client-supplied value are now checked to be inside
+  their own directory at the point they are built.** Three places do this: a
+  binary name on `/binaries/add` and `/binaries/remove`, a VISA address used as
+  a device-lock key, and the firmware staged for a DFU run.
+
+  `_validate_name`, the lock-key slug and the DFU suffix pattern each stay as
+  they are and remain the real defence. What was missing is local: the joins sat
+  in helpers, so the functions that open, chmod or remove those files said
+  nothing about where the result was allowed to land. Each now joins under its
+  own root and refuses a result outside it, and the DFU staging file is checked
+  against the directory `tempfile` actually used before it is removed.
+
+  No path changes for any valid input. A binary name with a space, a `+` or
+  parentheses still works, which the new tests pin -- the accepted set has to
+  stay wider than the check's own character needs, because the CLI forwards the
+  basename of whatever local file it was given.
+
+- **`serial_id` checks the sysfs path it builds from a caller-supplied tty.**
+  `identity_for_tty` is reachable from a net-save payload, and reduces its
+  argument with `basename(realpath(...))` before joining it under
+  `/sys/class/tty`. That reduction is what prevents an escape; the containment
+  check now states it where the join happens. The helpers it calls walk outward
+  into `/sys/devices` by design, so the check belongs at that entry point rather
+  than in each of them.
+
 ## [0.44.0] - 2026-08-28
 
 ### Added

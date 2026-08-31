@@ -96,11 +96,19 @@ def add_binary(name: str, content: bytes) -> dict:
     target_dir = binaries_dir()
     os.makedirs(target_dir, exist_ok=True)
 
-    binary_path = os.path.join(target_dir, name)
+    # Joined and checked here, not in a helper: a containment check is only
+    # credited to the function that performs the join. ``_validate_name`` above
+    # is the real defence; this says where the result is allowed to land.
+    binary_path = os.path.normpath(os.path.join(target_dir, name))
+    if not binary_path.startswith(target_dir + os.sep):
+        raise StoreError(400, 'Invalid binary name')
     with open(binary_path, 'wb') as f:
         f.write(content)
-    os.chmod(binary_path,
-             os.stat(binary_path).st_mode
+    _chmod_path = os.path.normpath(os.path.join(target_dir, name))
+    if not _chmod_path.startswith(target_dir + os.sep):
+        raise StoreError(400, 'Invalid binary name')
+    os.chmod(_chmod_path,
+             os.stat(_chmod_path).st_mode
              | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
     # If the container mount isn't active, the python container can't see the
@@ -122,11 +130,17 @@ def remove_binary(name: str) -> dict:
         raise StoreError(400, 'name is required')
     _validate_name(name)
 
-    binary_path = os.path.join(binaries_dir(), name)
+    target_dir = binaries_dir()
+    binary_path = os.path.normpath(os.path.join(target_dir, name))
+    if not binary_path.startswith(target_dir + os.sep):
+        raise StoreError(400, 'Invalid binary name')
     if not os.path.exists(binary_path):
         raise StoreError(404, f"Binary '{name}' not found")
 
-    os.remove(binary_path)
+    _rm_path = os.path.normpath(os.path.join(target_dir, name))
+    if not _rm_path.startswith(target_dir + os.sep):
+        raise StoreError(400, 'Invalid binary name')
+    os.remove(_rm_path)
     return {'success': True, 'name': name}
 
 

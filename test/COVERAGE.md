@@ -41,12 +41,12 @@ are not.
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1853 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 2032 |
+| `unit (box)` | `test/unit/box/` | 2040 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 181 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 143 (+1 skipped) |
-| | **Total gated** | **4403** |
+| | **Total gated** | **4411** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never
@@ -450,9 +450,9 @@ cli/tests/                #  7 files: 6 pytest suites (GATED via `unit (cli)`),
                           #           plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 178 files)
+### Local Unit Tests (`test/unit/` -- 179 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 96 files)
+#### Box Unit Tests (`test/unit/box/` -- 97 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -541,6 +541,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_script_backend_sniff.py` | `sniff_script_backend` routes a debug-script override by format so `DebugNet.connect(script=...)` works on both backends: extension beats content, every declared extension and marker is asserted individually because a base64 blob has no filename to fall back on, and an ambiguous file abstains rather than picking a side. Also pins the two J-Link forms the marker list misses (`InitTarget(void)`, `JLINK_ExecCommand`) — safe, because abstaining raises rather than guessing, but it is why `jlink_script=` exists |
 | `test_secret_file_ownership.py` | The ownership block extracted verbatim from `box/start_box.sh`: mode 0600 grants the OWNER alone, so a secrets file owned by the host login user locks the container runtime out of its own secrets |
 | `test_serial_id_cables.py` | tty enumeration and resolution via fake /sys tree lookup |
+| `test_store_path_containment.py` | A binary name, a device-lock key and a DFU staging file are each named after something off the wire: the existing reduction is pinned as what rejects, and the containment check beside each join pins where the result lands, so widening a reduction cannot silently widen the directory. Also pins that names with spaces, `+` and parentheses still work, since the CLI forwards the basename of any local file |
 | `test_ssh_runner.py` | SSH key selection and auth fallback logic |
 | `test_ssh_setup.py` | `lager ssh-setup` command and SSH key provisioning with TTY passthrough |
 | `test_stream_disconnect.py` | `peer_is_connected` and the idle tick that let the box notice a vanished client in under a second instead of waiting for the script's next write |

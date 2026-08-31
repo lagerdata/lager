@@ -111,7 +111,16 @@ class DeviceLockManager:
         elapses with another process holding the lock. Returns True (fail-open)
         if the locking mechanism itself errors.
         """
-        lock_path = self._get_lock_path(address)
+        # Joined inline rather than through ``_get_lock_path``: a containment
+        # check is only credited to the function that performs the join, and
+        # this is the function that opens the result. See lager.util.paths.
+        # The slug is the real defence.
+        _safe = re.sub(r'[^a-zA-Z0-9_-]', '_', address)
+        lock_path = os.path.normpath(
+            os.path.join(self.lock_dir, f'device_{_safe}.lock'))
+        if not lock_path.startswith(self.lock_dir + os.sep):
+            raise DeviceLockError(
+                f'refusing a lock path outside {self.lock_dir!r}')
 
         if address in self.lock_handles:
             return True  # already held by this process

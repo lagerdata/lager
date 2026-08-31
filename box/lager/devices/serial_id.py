@@ -211,7 +211,13 @@ def identity_for_tty(tty: str) -> Optional[Dict[str, Optional[str]]]:
         name = os.path.basename(os.path.realpath(tty))
     except OSError:
         return None
-    tty_dev = _SYS_TTY / name
+    # basename() above already strips every directory component; this states
+    # where the result is allowed to land, next to the join that produces it.
+    # The helpers below walk outward from here into /sys/devices by design, so
+    # the containment belongs at this entry point rather than in each of them.
+    tty_dev = Path(os.path.normpath(str(_SYS_TTY / name)))
+    if not str(tty_dev).startswith(str(_SYS_TTY) + os.sep):
+        return None
     usb_dir = _usb_device_dir_for_tty(tty_dev)
     if usb_dir is None:
         return None
