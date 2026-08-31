@@ -454,18 +454,22 @@ class TestSingleChannelConflictScope:
         assert saves == 0
         assert 'Only one net' in hint
 
-    def test_saved_net_on_chip_blocks_a_selection_that_touches_it(self):
-        """The other half of the scoping rule: a saved net on a chip the
-        selection *does* touch must still count. Only reachable with the
-        selection seeded -- see ``_confirm`` -- because the row filter
-        removes the row first."""
+    def test_saved_net_on_chip_does_not_block_the_other_role(self):
+        """A saved net on a single-channel dual-role chip deliberately does
+        NOT count against the selection any more: the second role is offered
+        with dual_role_notice() and saves. This is the guard for the
+        dual-role change -- re-adding a ``saved_*`` term to the confirm-time
+        conflict count turns it red. The saved-side *blocking* coverage
+        lives in the mode-exclusive class below, where FT232H keeps the
+        hard block; the fuller dual-role matrix is in
+        ``test_nets_dual_role_notice.py``."""
         gpio16 = _make_net(net='gpio16', type='gpio', chan='FIO4')
         saved = self._keithley('battery', 'batt1', saved=True)
         pending = self._keithley('power-supply', 'supply1', saved=False)
         saves, hint = _confirm_add(
             [gpio16, saved, pending], [pending], seed=True)
-        assert saves == 0
-        assert 'Only one net' in hint
+        assert saves == 1
+        assert 'Only one net' not in hint
 
 
 class TestModeExclusiveConflictScope:

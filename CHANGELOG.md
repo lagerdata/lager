@@ -8,6 +8,36 @@ All notable changes to the Lager platform are documented here. For detailed rele
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Changed
+
+- **A second role on a dual-role instrument is now a notice, not a block.**
+  Chips like the Keithley 2281S (battery or supply), the EA PSB pair (solar
+  or supply) and the Rigol DP711 hid every remaining add row once any net
+  was saved on them, treating a deliberate alternating-use setup — one
+  battery net, one supply net, driven at different points in a test — as
+  impossible. The drivers already make that setup safe: every write path
+  re-asserts its own entry mode before touching the instrument, so driving
+  one net simply ends whatever the other mode was doing.
+
+  The TUI Add screen now shows the remaining role's row (unselected by
+  default) with an informational notice explaining the mode switch, and
+  `lager nets add` / `add-all` emit the same notice to stderr and proceed
+  instead of refusing. Selecting both roles of a fresh chip in one batch is
+  still rejected. The FT232H keeps its hard block: its MPSSE-vs-UART mode
+  is fixed per open with no driver-side switching, so a second role there
+  genuinely cannot work.
+
+  Getting `add-all` there uncovered that it never reached these chips at
+  all: its scanner-duplicate detector keyed offered channels per device
+  only, so two roles legitimately sharing one physical channel (the 2281S
+  offers channel "1" as battery AND as power-supply; the FT232H offers
+  channel "0" per MPSSE role) read as "the box offered the same channel
+  twice" and the whole instrument was silently skipped with a warning
+  blaming the scanner. The detector now keys per device and role. With the
+  chips reachable, a fresh dual-role chip offering several roles is refused
+  with the same pick-one guidance mode-exclusive chips already got, rather
+  than double-booked.
+
 ### Fixed
 
 - **`DebugNet.flash()` / `.erase()` now take the DA1469x QSPI flash-loader
@@ -25,6 +55,7 @@ All notable changes to the Lager platform are documented here. For detailed rele
   step that failed instead of a raw OpenOCD tcl traceback, and a flash that
   dies after its erase says the board may be left blank. Non-DA1469x OpenOCD
   targets and the J-Link backend are unchanged.
+
 ## [0.45.1] - 2026-09-02
 
 ### Changed
