@@ -10,6 +10,24 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ### Changed
 
+- **The undefined-method guard now covers the whole MSO5000 mapper, not just
+  its logic surface.** The previous version walked `net.py`'s Logic branches and
+  filtered mapper calls to names containing `la`, which is why it did not see
+  `get_trigger_spi_width` -- called by the analog mapper, and found only when a
+  hardware run hit `Function not found: get_trigger_spi_width`.
+
+  Widened to every mapper class, the walk finds **115** names that no driver
+  defines, across the trigger-settings and bus-decode surfaces. Each is a
+  command that fails at runtime and cannot fail earlier, because the mapper's
+  `__getattr__` forwards any name to the box and the only real check there is a
+  bare `hasattr`.
+
+  They are recorded in `test/unit/box/mapper_undefined_baseline.txt` so the
+  widened guard can land without turning a required context red. The check is
+  two-sided: a new undefined name fails it, and so does a baselined name that
+  has since been implemented but not removed, so the list ratchets down and
+  cannot rot. Both directions are exercised by the suite.
+
 - **The supply suite now captures evidence when its unloaded-current check
   fails, instead of only reporting the number that failed.** That check has gone
   red twice on a channel which measures a clean `0.0000 A` whenever anyone looks,
@@ -48,6 +66,25 @@ All notable changes to the Lager platform are documented here. For detailed rele
   raises are exercised against it.
 
 ### Fixed
+
+- **`lager logic <net> disable` asked the scope a question it never answers.**
+  `Net.disable` polls all sixteen digital channels through
+  `is_la_channel_enabled`, which queried `:LA:DIGital<n>:DISPlay?`. That is the
+  symmetrical-looking partner of the write the enable path uses, and on an
+  MSO5204 it is not answerable: the read blocks for the full VISA timeout and
+  `:SYSTem:ERRor?` afterwards reports `0,"No error"`, so the instrument accepted
+  the header and produced no response. Sixteen channels meant sixteen timeouts
+  before the command failed.
+
+  Measured on hardware, the rest of the subtree behaves the same way --
+  `:LA:DIGital0:POSition?` also hangs -- while `:LA:STATe?`, `:LA:ACTive?`,
+  `:LA:SIZE?` and `:LA:POD<n>:THReshold?` all answer in about 20 ms. Treat
+  `:LA:DIGital<n>:` as write-only.
+
+  The state is readable, just not there: `:LA:DISPlay? D<n>` returns it in 20 ms,
+  and that is what the method asks now. The automatic "switch the analyzer off
+  once the last channel goes" behaviour is kept rather than dropped, and the
+  sixteen-query loop costs about a third of a second.
 
 - **`lager logic <net> enable` and `disable` called ten driver methods that
   were not defined anywhere, so they failed on every instrument.** The issue

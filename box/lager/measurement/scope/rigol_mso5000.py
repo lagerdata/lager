@@ -262,9 +262,24 @@ class RigolMso5000:
         return {"channel": ch, "enabled": False}
 
     def is_la_channel_enabled(self, channel=None):
-        """Whether a digital channel is shown."""
+        """Whether a digital channel is shown.
+
+        Asks `:LA:DISPlay? D<n>` rather than `:LA:DIGital<n>:DISPlay?`. The
+        second form is what the write path uses and it looks like the obvious
+        query, but on an MSO5204 it never answers: the read blocks for the full
+        VISA timeout and `:SYSTem:ERRor?` afterwards reports `0,"No error"`, so
+        the instrument accepted the header and simply produced no response. The
+        whole `:LA:DIGital<n>:` subtree behaves that way -- `:POSition?` does
+        the same -- while `:LA:STATe?`, `:LA:ACTive?`, `:LA:SIZE?` and
+        `:LA:POD<n>:THReshold?` all answer in about 20 ms. Treat that subtree as
+        write-only.
+
+        This matters more than one method: `Net.disable` polls all 16 channels
+        through here, so the unanswerable form cost 16 VISA timeouts before
+        failing, and `lager logic <net> disable` could not work at all.
+        """
         ch = self._la_channel(channel)
-        resp = self.query(f":LA:DIGital{ch}:DISPlay?")
+        resp = self.query(f":LA:DISPlay? D{ch}")
         return resp == "1" or resp.upper() in ("ON", "TRUE")
 
     def set_la_active_channel(self, channel=None):
