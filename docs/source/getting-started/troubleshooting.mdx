@@ -181,6 +181,35 @@ Do **not** run `python my_script.py` directly on your laptop.
 
 </Accordion>
 
+<Accordion title="[Errno 16] Resource busy, or DeviceError mentioning a busy resource">
+
+**Cause:** Two things opened a session against the same instrument. The hardware service on
+port 8080 owns an instrument's VISA session. A second `pyvisa` open against the same USB
+address races it and loses.
+
+Ordinary scripts do not reach this. A supply, scope, battery simulator, e-load or solar
+simulator is proxied to the hardware service, not opened locally. You reach the failure by
+importing a driver module directly. You also reach it by opening `pyvisa` yourself, in a script
+or a `docker exec`.
+
+**Fix:**
+1. Drive the instrument through its net rather than its driver module:
+   ```python
+   from lager import Net, NetType
+   psu = Net.get("supply1", type=NetType.PowerSupply)
+   psu.set_voltage(3.3)
+   ```
+2. Check what already holds the address with `lager diagnose <net> --box <box>`. A VISA section
+   that reports `REACHABLE (shared session)` means the hardware service holds it and skipped
+   its own probe. See [`lager diagnose`](/source/reference/cli/diagnose).
+3. To open the instrument yourself, take the same cross-process lock the drivers take.
+
+Direct-USB instruments are a different case: LabJack, USB-202, FT232H, Aardvark, Joulescope and
+PPK2. The execution service releases the hardware service's claims on those before it spawns
+your script.
+
+</Accordion>
+
 <Accordion title="Script runs but produces no output">
 
 **Cause:** The script fails silently, or the script does not flush its output.
