@@ -161,6 +161,22 @@ All notable changes to the Lager platform are documented here. For detailed rele
   user recognises. The `:9000` twin already delegated escaping to Flask and is
   unchanged.
 
+- **A detached job's registry directory is now checked to be inside the
+  registry at the point it is built.** `/python/attach`, `/python/continue`,
+  `/python/breakpoint` and `/python/kill` name that directory after a
+  `lager_process_id` taken from the request body. Each already parses it as a
+  UUID first and that remains the real defence, but the join itself lived in a
+  shared helper, so nothing local to those handlers said where the result was
+  allowed to land. Each now joins under `PROCESS_REGISTRY_DIR` and refuses a
+  result outside it, and `process_dir_for` carries the same check for the
+  callers that build an id rather than receiving one. No path changes for a
+  valid id.
+
+  The repetition is deliberate, for the reason `box/lager/util/paths.py`
+  records: a containment check is only credited to the function that performs
+  the join, so folding these four back into the helper would leave the code
+  correct and the analysis blind.
+
 ## [0.44.0] - 2026-08-28
 
 ### Added

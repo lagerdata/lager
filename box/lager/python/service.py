@@ -53,6 +53,7 @@ from werkzeug.sansio.multipart import (
     MultipartDecoder,
 )
 
+from . import executor as _executor
 from .executor import PythonExecutor, process_dir_for
 from ..binaries import store as binaries_store
 
@@ -902,7 +903,21 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
         except ValueError:
             raise LagerPythonInvalidProcessIdError(lager_process_id)
 
-        process_dir = process_dir_for(lager_process_id)
+        # Joined inline rather than through ``process_dir_for``: a containment
+        # check is only credited to the function that performs the join, so a
+        # shared helper leaves this correct and the analysis blind. See
+        # box/lager/util/paths.py. The UUID parse above is the real defence;
+        # this states the invariant where it actually holds.
+        #
+        # The root is read through the module rather than bound at import, so
+        # a test that redirects ``executor.PROCESS_REGISTRY_DIR`` at a tmpdir
+        # redirects these handlers too -- ``test_python_detach_start.py`` does
+        # exactly that. Measured: the check is recognised either way, so there
+        # is nothing to trade off here.
+        process_dir = os.path.normpath(
+            os.path.join(_executor.PROCESS_REGISTRY_DIR, lager_process_id))
+        if not process_dir.startswith(_executor.PROCESS_REGISTRY_DIR + os.sep):
+            raise LagerPythonInvalidProcessIdError(lager_process_id)
         log_path = os.path.join(process_dir, 'output.log')
         meta_path = os.path.join(process_dir, 'meta.json')
 
@@ -937,7 +952,11 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
         except ValueError:
             raise LagerPythonInvalidProcessIdError(lager_process_id)
 
-        process_dir = process_dir_for(lager_process_id)
+        # Inline join + containment; see _handle_python_attach.
+        process_dir = os.path.normpath(
+            os.path.join(_executor.PROCESS_REGISTRY_DIR, lager_process_id))
+        if not process_dir.startswith(_executor.PROCESS_REGISTRY_DIR + os.sep):
+            raise LagerPythonInvalidProcessIdError(lager_process_id)
         was_paused = os.path.exists(os.path.join(process_dir, 'breakpoint.json'))
         if was_paused:
             with open(os.path.join(process_dir, 'resume'), 'w') as f:
@@ -968,8 +987,12 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
         except ValueError:
             raise LagerPythonInvalidProcessIdError(lager_process_id)
 
-        state_path = os.path.join(
-            process_dir_for(lager_process_id), 'breakpoint.json')
+        # Inline join + containment; see _handle_python_attach.
+        process_dir = os.path.normpath(
+            os.path.join(_executor.PROCESS_REGISTRY_DIR, lager_process_id))
+        if not process_dir.startswith(_executor.PROCESS_REGISTRY_DIR + os.sep):
+            raise LagerPythonInvalidProcessIdError(lager_process_id)
+        state_path = os.path.join(process_dir, 'breakpoint.json')
         try:
             with open(state_path, 'r') as f:
                 self.send_json_response(200, json.load(f))
