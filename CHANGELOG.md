@@ -368,6 +368,22 @@ All notable changes to the Lager platform are documented here. For detailed rele
   the same reason; now the writes do too, in all three bench workflows. The relay
   level latches in LabJack hardware, so a retry is idempotent.
 
+- **`DebugNet.flash()` / `.erase()` now take the DA1469x QSPI flash-loader
+  path on OpenOCD, matching the CLI.** On a DA1469x target behind an OpenOCD
+  probe, `lager debug <net> flash` worked but the same operation through the
+  Python Net API (`Net.get(..., NetType.Debug).flash(bin, 0x16000000)`) died
+  with a bare `** Programming Failed **`, and `.erase()` silently never touched
+  the external QSPI NOR. The DA1469x special case — mainline OpenOCD has no
+  QSPI flash driver for the family, so the RAM-resident Apache Mynewt
+  flash_loader must be driven instead of `program`/`flash_erase_all` — existed
+  only in the HTTP service path (`service.py`), not in `debug_net.py`. Both
+  methods now dispatch through the same `da1469x_loader` helpers with the same
+  family predicate, so callers keep passing absolute XIP addresses exactly as
+  on the J-Link path. Loader failures now raise a message naming the loader
+  step that failed instead of a raw OpenOCD tcl traceback, and a flash that
+  dies after its erase says the board may be left blank. Non-DA1469x OpenOCD
+  targets and the J-Link backend are unchanged.
+
 - **The Architecture page said three things about the box that are not true, and
   a user hitting `[Errno 16] Resource busy` had nothing to read.** Drawing the
   box-internals diagram in Mermaid last time forced explicit arrows, and the
