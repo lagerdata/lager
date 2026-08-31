@@ -219,6 +219,32 @@ All notable changes to the Lager platform are documented here. For detailed rele
   the join, so folding these four back into the helper would leave the code
   correct and the analysis blind.
 
+- **A net's J-Link script and OpenOCD cfg are now checked to be inside the
+  debug runtime directory at every point one is built, opened or removed.**
+  Both are named after a net name that comes from user config. `_net_slug`
+  reduces it and remains the real defence, but the joins lived in
+  `script_path_for_net` / `config_path_for_net`, so none of the functions that
+  actually write, read or delete those files said where the result was allowed
+  to land.
+
+  The root moves to `debug/probes.py` as `RUNTIME_DIR` — the lowest layer the
+  debug modules share — and the two path templates split into that root plus a
+  basename, so the check has a constant to name. Builders, the two `clear_*`
+  functions and every site in `debug/service.py` now join under it and refuse a
+  result outside it. `debug/jlink.py` and `debug/gdbserver.py` gained the same
+  check on the script path they accept; `chip_erase` and `flash_device` did
+  too, where previously any path with a `None` default was accepted.
+
+  No path changes for any valid net name.
+
+- **`debug/jlink.py` keeps its own copy of that root, and a test now pins it.**
+  Three tests load that module standalone so the box suite need not import
+  pyvisa and the hardware drivers to check argv assembly, which means the
+  module cannot import the shared constant — not from `.probes`, and not from
+  `lager.*` either, since that executes `lager/__init__.py`. The duplication is
+  deliberate; `test_debug_script_root.py` fails if the two drift, and also if
+  someone reintroduces an import that would break the standalone load.
+
 ## [0.44.0] - 2026-08-28
 
 ### Added

@@ -14,6 +14,7 @@ import signal
 import time
 import logging
 
+from . import probes as _probes
 from .mappings import check_process
 from .probes import (
     BINDABLE_SERIAL_RE,
@@ -327,6 +328,15 @@ def start_jlink_gdbserver(device, speed='adaptive', transport='SWD', halt=False,
     ])
 
     # Add J-Link script file if provided
+    # A bare path parameter with a None default, reachable from every caller
+    # of this module. Contain it here rather than trusting the caller: the
+    # check has to sit in the function that uses the path for it to mean
+    # anything locally. See lager.util.paths.
+    if script_file:
+        script_file = os.path.normpath(script_file)
+        if not script_file.startswith(_probes.RUNTIME_DIR + os.sep):
+            raise ValueError(
+                f'refusing a script path outside {_probes.RUNTIME_DIR!r}')
     if script_file and os.path.exists(script_file):
         cmd.extend(['-JLinkScriptFile', script_file])
         logger.info(f'Using J-Link script file: {script_file}')

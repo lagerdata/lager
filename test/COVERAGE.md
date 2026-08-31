@@ -41,12 +41,12 @@ are not.
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1853 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 2030 |
+| `unit (box)` | `test/unit/box/` | 2032 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 181 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 143 (+1 skipped) |
-| | **Total gated** | **4401** |
+| | **Total gated** | **4403** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never
@@ -450,9 +450,9 @@ cli/tests/                #  7 files: 6 pytest suites (GATED via `unit (cli)`),
                           #           plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 177 files)
+### Local Unit Tests (`test/unit/` -- 178 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 95 files)
+#### Box Unit Tests (`test/unit/box/` -- 96 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -484,6 +484,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_debug_net_self_heal.py` | DebugNet self-heal retry and session endpoints |
 | `test_debug_net_user_scripts.py` | User-script/slot helpers: OpenOCD/J-Link base64 fields and serial in debug_net.py |
 | `test_debug_rtt_reconnect.py` | J-Link RTT reader reconnect-aware socket handling across J-Link restart |
+| `test_debug_script_root.py` | `debug/jlink.py` carries its own copy of the debug runtime root because it must stay standalone-importable (three tests load it by path so the suite need not import pyvisa); this pins the copy to `probes.RUNTIME_DIR` and fails if an import that would break the standalone load comes back |
 | `test_detect_and_configure_rtt.py` | RTT control-block RAM scan doesn't leave core halted in all-stop mode |
 | `test_device_lock.py` | Cross-process advisory fcntl lock preventing USB-TMC pyvisa race |
 | `test_diagnose_jlink_parse.py` | Box-side J-Link diagnose parsers, pinned with captured JLinkExe text |

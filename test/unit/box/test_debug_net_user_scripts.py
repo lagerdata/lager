@@ -140,12 +140,12 @@ class MaterialiseUserScriptTests(unittest.TestCase):
                 self._tmpdir, f'lager_user{suffix}',
             )
         # J-Link scripts are per net now (issue #195), resolved through
-        # api.script_path_for_net rather than the shared map, so that template
+        # api.script_path_for_net rather than the shared map, so its root
         # needs redirecting too or these tests write to the real /tmp.
         from lager.debug import api as _api
-        self._real_tmpl = _api._SCRIPT_PATH_TEMPLATE
-        _api._SCRIPT_PATH_TEMPLATE = os.path.join(
-            self._tmpdir, 'lager_jlink_script_{}.JLinkScript')
+        from lager.debug import probes as _probes
+        self._real_tmpl = _probes.RUNTIME_DIR
+        _probes.RUNTIME_DIR = self._tmpdir
 
     def _addCleanup_remove(self, path):
         import shutil
@@ -155,7 +155,8 @@ class MaterialiseUserScriptTests(unittest.TestCase):
         for suffix, real in self._patched.items():
             debug_net._SHARED_PATH_FOR_SUFFIX[suffix] = real
         from lager.debug import api as _api
-        _api._SCRIPT_PATH_TEMPLATE = self._real_tmpl
+        from lager.debug import probes as _probes
+        _probes.RUNTIME_DIR = self._real_tmpl
 
     def _b64(self, blob):
         return base64.b64encode(blob).decode('ascii')
@@ -432,18 +433,19 @@ class RepointScriptTests(unittest.TestCase):
                 self._tmpdir, f'lager_user{suffix}',
             )
         # J-Link scripts are per net now (issue #195), resolved through
-        # api.script_path_for_net rather than the shared map, so that template
+        # api.script_path_for_net rather than the shared map, so its root
         # needs redirecting too or these tests write to the real /tmp.
         from lager.debug import api as _api
-        self._real_tmpl = _api._SCRIPT_PATH_TEMPLATE
-        _api._SCRIPT_PATH_TEMPLATE = os.path.join(
-            self._tmpdir, 'lager_jlink_script_{}.JLinkScript')
+        from lager.debug import probes as _probes
+        self._real_tmpl = _probes.RUNTIME_DIR
+        _probes.RUNTIME_DIR = self._tmpdir
 
     def tearDown(self):
         for suffix, real in self._patched.items():
             debug_net._SHARED_PATH_FOR_SUFFIX[suffix] = real
         from lager.debug import api as _api
-        _api._SCRIPT_PATH_TEMPLATE = self._real_tmpl
+        from lager.debug import probes as _probes
+        _probes.RUNTIME_DIR = self._real_tmpl
 
     def _shared(self, net=None):
         """This net's script path. Named _shared for history; it is per net
@@ -610,24 +612,23 @@ class DebugNetConnectScriptTests(unittest.TestCase):
                 self._tmpdir, f'lager_user{suffix}',
             )
         # J-Link scripts resolve per net through api.script_path_for_net now
-        # (issue #195), so redirect that template too.
+        # (issue #195), so redirect its root too.
         from lager.debug import api as _api
-        self._real_tmpl = _api._SCRIPT_PATH_TEMPLATE
-        _api._SCRIPT_PATH_TEMPLATE = os.path.join(
-            self._tmpdir, 'lager_jlink_script_{}.JLinkScript')
-        # Per-connect OpenOCD cfgs are per net too, and land on their own
-        # template — redirect it or the suite writes into the real /tmp.
-        self._real_cfg_tmpl = _api._CONFIG_PATH_TEMPLATE
-        _api._CONFIG_PATH_TEMPLATE = os.path.join(
-            self._tmpdir, 'lager_openocd_cfg_{}.cfg')
+        from lager.debug import probes as _probes
+        self._real_tmpl = _probes.RUNTIME_DIR
+        _probes.RUNTIME_DIR = self._tmpdir
+
+        # The cfg shares that root, so redirecting it above covers this too.
+        self._real_cfg_tmpl = self._real_tmpl
         self.debug_stub.connect_jlink.reset_mock()
 
     def tearDown(self):
         for suffix, real in self._patched.items():
             self.full._SHARED_PATH_FOR_SUFFIX[suffix] = real
         from lager.debug import api as _api
-        _api._SCRIPT_PATH_TEMPLATE = self._real_tmpl
-        _api._CONFIG_PATH_TEMPLATE = self._real_cfg_tmpl
+        from lager.debug import probes as _probes
+        _probes.RUNTIME_DIR = self._real_tmpl
+
 
     def _shared(self, net=None):
         """This net's script path (per net since issue #195)."""
@@ -858,20 +859,20 @@ class DebugNetDisconnectClearsScriptTests(unittest.TestCase):
         import shutil
         self.addCleanup(lambda: shutil.rmtree(self._tmpdir, ignore_errors=True))
         from lager.debug import api as _api
-        self._real_tmpl = _api._SCRIPT_PATH_TEMPLATE
-        _api._SCRIPT_PATH_TEMPLATE = os.path.join(
-            self._tmpdir, 'lager_jlink_script_{}.JLinkScript')
-        self._real_cfg_tmpl = _api._CONFIG_PATH_TEMPLATE
-        _api._CONFIG_PATH_TEMPLATE = os.path.join(
-            self._tmpdir, 'lager_openocd_cfg_{}.cfg')
+        from lager.debug import probes as _probes
+        self._real_tmpl = _probes.RUNTIME_DIR
+        _probes.RUNTIME_DIR = self._tmpdir
+        # The cfg shares that root, so redirecting it above covers this too.
+        self._real_cfg_tmpl = self._real_tmpl
         self.debug_stub.disconnect.reset_mock()
         self.debug_stub.disconnect.side_effect = None
         self.debug_stub.disconnect.return_value = {'stopped': True}
 
     def tearDown(self):
         from lager.debug import api as _api
-        _api._SCRIPT_PATH_TEMPLATE = self._real_tmpl
-        _api._CONFIG_PATH_TEMPLATE = self._real_cfg_tmpl
+        from lager.debug import probes as _probes
+        _probes.RUNTIME_DIR = self._real_tmpl
+
 
     def _write_script_for(self, net):
         from lager.debug import api as _api
