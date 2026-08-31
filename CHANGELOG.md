@@ -10,6 +10,20 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ### Changed
 
+- **Whether the bench has a Keithley 2281S is now a repository variable.** Its
+  USB device port stopped presenting on 2026-08-31: the instrument powers up and
+  boots, and its AC relay switches audibly, but it never reaches the USB bus. That
+  is not the bench -- two hub ports across two segments were tried, the cable was
+  swapped, and the same hub cold-booted three other devices on demand during the
+  same session.
+
+  While it was listed unconditionally, every nightly failed at instrument power-on
+  and skipped every suite, including those for the Rigol DP821, which is healthy.
+  `KEITHLEY_PRESENT` now gates both its entry in the expected inventory and its two
+  suites, so one variable restores the instrument the day it comes back rather than
+  two edits in two places that can drift apart. It is currently unset, which is
+  what a bench without that instrument should say.
+
 - **The undefined-method guard now covers the whole MSO5000 mapper, not just
   its logic surface.** The previous version walked `net.py`'s Logic branches and
   filtered mapper calls to names containing `la`, which is why it did not see
@@ -66,6 +80,17 @@ All notable changes to the Lager platform are documented here. For detailed rele
   raises are exercised against it.
 
 ### Fixed
+
+- **A hardware-service self-restart could fail the whole nightly at its first
+  command.** The service exits by design when it finds an orphaned USB claim, so
+  the supervisor can respawn it with a clean USB context, and it is unavailable
+  for about four seconds while that happens. The two relay writes that open the
+  bench run were bare under `set -e`, so the night's first hardware command was a
+  coin flip against that window -- run 33318035290 lost it, lifecycle failed,
+  integration was skipped, and the night produced no instrument coverage at all.
+  The enumeration loop directly below those calls already tolerated transients for
+  the same reason; now the writes do too. The relay level latches in LabJack
+  hardware, so a retry is idempotent.
 
 - **The Architecture page said three things about the box that are not true, and
   a user hitting `[Errno 16] Resource busy` had nothing to read.** Drawing the
