@@ -111,6 +111,70 @@ def test_mapper_la_methods_exist_on_the_driver(name):
 
 
 # --------------------------------------------------------------------------
+# The same guard, widened to the whole mapper
+# --------------------------------------------------------------------------
+#
+# The walkers above cover the logic surface they were written for. That is too
+# narrow: `get_trigger_spi_width` is called by the ANALOG mapper and so was
+# invisible to them, and it failed on real hardware as
+# "Function not found: get_trigger_spi_width".
+#
+# Widening the guard to every mapper class finds 115 such names, almost all of
+# them across the trigger-settings and bus-decode surfaces. They cannot be
+# fixed here, and `unit (box)` is a required context, so they are recorded in a
+# baseline file the check compares against exactly.
+
+BASELINE = pathlib.Path(__file__).with_name("mapper_undefined_baseline.txt")
+
+
+def _baselined_undefined():
+    return {line.strip() for line in BASELINE.read_text().splitlines()
+            if line.strip() and not line.startswith("#")}
+
+
+def _mapper_undefined_calls():
+    """`Class.name` for every self-call in the mapper the driver lacks."""
+    tree = ast.parse(MAPPER_PY.read_text())
+    found = set()
+    for cls in (n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)):
+        defined = {n.name for n in cls.body if isinstance(n, ast.FunctionDef)}
+        called = set()
+        for node in ast.walk(cls):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == "self"):
+                called.add(node.func.attr)
+        found |= {f"{cls.name}.{n}" for n in called - defined
+                  if not hasattr(RigolMso5000, n)}
+    return found
+
+
+def test_the_wide_walker_found_something():
+    """Guard the guard, again: a parser matching nothing would pass forever."""
+    assert len(_mapper_undefined_calls()) > 50, "the mapper walk parsed almost nothing"
+
+
+def test_no_new_undefined_mapper_methods():
+    """Two-sided. New undefined names fail; fixed ones must leave the baseline."""
+    actual = _mapper_undefined_calls()
+    baseline = _baselined_undefined()
+
+    new = sorted(actual - baseline)
+    assert not new, (
+        f"{len(new)} mapper method(s) call a name no driver defines and are not "
+        f"in {BASELINE.name}: {new}. Each will fail at runtime as "
+        f"'Function not found'. Implement it on the driver rather than adding it "
+        f"to the baseline."
+    )
+
+    fixed = sorted(baseline - actual)
+    assert not fixed, (
+        f"{len(fixed)} baselined name(s) are now defined on the driver: {fixed}. "
+        f"Remove them from {BASELINE.name} -- the baseline only ratchets down."
+    )
+
+
+# --------------------------------------------------------------------------
 # SCPI
 # --------------------------------------------------------------------------
 
@@ -159,9 +223,18 @@ def test_out_of_range_channels_are_refused(scope, bad):
 
 
 def test_is_la_channel_enabled_reads_the_right_channel(scope):
-    scope._fake.answers[":LA:DIGital7:DISPlay?"] = "1"
+    scope._fake.answers[":LA:DISPlay? D7"] = "1"
     assert scope.is_la_channel_enabled(7) is True
     assert scope.is_la_channel_enabled(8) is False
+
+
+def test_channel_state_avoids_the_write_only_subtree(scope):
+    """`:LA:DIGital<n>:DISPlay?` is accepted and never answered on real
+    hardware, so reading channel state must not go through it. Pinned because
+    the unanswerable form is the symmetrical-looking one next to the writes."""
+    scope.is_la_channel_enabled(3)
+    assert scope._fake.queries == [":LA:DISPlay? D3"]
+    assert not any("DIGital" in q for q in scope._fake.queries)
 
 
 def test_active_channel(scope):
