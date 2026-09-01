@@ -46,8 +46,8 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 181 |
-| `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 163 (+1 skipped) |
-| | **Total gated** | **4438** |
+| `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 172 (+1 skipped) |
+| | **Total gated** | **4447** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never
@@ -451,7 +451,7 @@ cli/tests/                #  7 files: 6 pytest suites (GATED via `unit (cli)`),
                           #           plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 181 files)
+### Local Unit Tests (`test/unit/` -- 182 files)
 
 #### Box Unit Tests (`test/unit/box/` -- 98 files)
 
@@ -649,7 +649,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_blufi_unit.py` | BluFi protocol parsing (696-line pytest suite) |
 | `test_blufi_scan.py` | `BlufiClient.scan()` BLE advertisement presence checks |
 
-#### Root Unit Tests (`test/unit/test_*.py` -- 9 files)
+#### Root Unit Tests (`test/unit/test_*.py` -- 10 files)
 
 | File | What it tests |
 |------|---------------|
@@ -660,6 +660,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_install_wheel.py` | install-wheel command: wheel filename to package name parsing |
 | `test_no_global_os_path_patches.py` | Tree-wide guard: no test may patch `os.path` (process-global; on Python >= 3.14 it also rewrites every `pathlib.Path.exists()`) — patch the module's seam or use a real temp path |
 | `test_pdf_pages.py` | `tools/pdf_pages.py`: PNG and text extraction (skips without pymupdf, which is AGPL) |
+| `test_supply_settle.py` | The DP821 suite's `_wait_for_regulation`: replays the captured 0.17 A enable transient to pin that agreeing reads inside a plateau are not a settle, that a genuine steady load settles at once and is left for the caller to judge, and that a wired channel names its fixture on failure |
 | `test_uninstall_spec.py` | Pins `lager uninstall`'s removal spec to what `install` / `box-config apply` actually create; lock dissolves when the teardown removes the lock server |
 | `test_update_version_ref.py` | Version reference resolution for git checkouts (semver tags vs. named branches) |
 

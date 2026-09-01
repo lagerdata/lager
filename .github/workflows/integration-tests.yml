@@ -518,11 +518,17 @@ jobs:
         timeout-minutes: 8
         env:
           SUPPLY_NET: ${{ vars.RIGOL_CH1_NET || 'supply2' }}
+          # Only used to name the fixture in a failure message; it
+          # changes no assertion. Same variable the USB-202 suite
+          # uses, so the wire is declared once.
+          USB202_SUPPLY_NET: ${{ vars.USB202_SUPPLY_NET || '' }}
+          USB202_SUPPLY_ADC_NET: ${{ vars.USB202_SUPPLY_ADC_NET || '' }}
           CHANNEL_MAX_VOLTAGE: ${{ vars.RIGOL_CH1_MAX_VOLTAGE || '60.0' }}
           CHANNEL_MAX_CURRENT: ${{ vars.RIGOL_CH1_MAX_CURRENT || '1.0' }}
         run: |
           lager python test/api/power/test_supply_Rigol_DP821.py --box "$LAGER_BOX" \
-            --passenv SUPPLY_NET --passenv CHANNEL_MAX_VOLTAGE --passenv CHANNEL_MAX_CURRENT
+            --passenv SUPPLY_NET --passenv CHANNEL_MAX_VOLTAGE --passenv CHANNEL_MAX_CURRENT \
+            --passenv USB202_SUPPLY_NET --passenv USB202_SUPPLY_ADC_NET
         shell: bash
 
       - name: Test Rigol DP821 CH2 (8V / 10A)
@@ -531,11 +537,17 @@ jobs:
         timeout-minutes: 8
         env:
           SUPPLY_NET: ${{ vars.RIGOL_CH2_NET || 'supply3' }}
+          # Only used to name the fixture in a failure message; it
+          # changes no assertion. Same variable the USB-202 suite
+          # uses, so the wire is declared once.
+          USB202_SUPPLY_NET: ${{ vars.USB202_SUPPLY_NET || '' }}
+          USB202_SUPPLY_ADC_NET: ${{ vars.USB202_SUPPLY_ADC_NET || '' }}
           CHANNEL_MAX_VOLTAGE: ${{ vars.RIGOL_CH2_MAX_VOLTAGE || '8.0' }}
           CHANNEL_MAX_CURRENT: ${{ vars.RIGOL_CH2_MAX_CURRENT || '10.0' }}
         run: |
           lager python test/api/power/test_supply_Rigol_DP821.py --box "$LAGER_BOX" \
-            --passenv SUPPLY_NET --passenv CHANNEL_MAX_VOLTAGE --passenv CHANNEL_MAX_CURRENT
+            --passenv SUPPLY_NET --passenv CHANNEL_MAX_VOLTAGE --passenv CHANNEL_MAX_CURRENT \
+            --passenv USB202_SUPPLY_NET --passenv USB202_SUPPLY_ADC_NET
         shell: bash
 
       - name: Test LabJack T7 (ADC / DAC / GPIO)

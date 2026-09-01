@@ -33,7 +33,31 @@ MAX_UNLOADED_CURRENT = 0.1  # 100 mA max expected with no load
 CHANNEL_MAX_VOLTAGE = float(os.environ.get("CHANNEL_MAX_VOLTAGE", "60.0"))
 CHANNEL_MAX_CURRENT = float(os.environ.get("CHANNEL_MAX_CURRENT", "1.0"))
 
+# The net whose output is wired to a USB-202 ADC input, if any. Declared once
+# in repository variables and documented under "Bench wiring fixtures" in
+# .github/workflows/README.md; the same variable drives the USB-202 suite that
+# the wire exists for.
+#
+# This changes NO assertion. It exists so that if the unloaded-current check
+# ever trips again on the wired channel, the failure says which fixture is on
+# the output instead of leaving the next reader to re-derive it -- which is
+# what #258 cost the first three times.
+WIRED_SUPPLY_NET = os.environ.get("USB202_SUPPLY_NET", "").strip()
+WIRED_SUPPLY_ADC = os.environ.get("USB202_SUPPLY_ADC_NET", "").strip()
+
 _results = []
+
+
+def _unloaded_detail(measured):
+    """Failure detail for an unloaded-current assertion, naming the fixture."""
+    detail = f"measured={measured:.4f} A"
+    if WIRED_SUPPLY_NET and SUPPLY_NET == WIRED_SUPPLY_NET:
+        target = WIRED_SUPPLY_ADC or "a USB-202 ADC input"
+        detail += (
+            f"; note {SUPPLY_NET} is wired to {target} (USB202_SUPPLY_NET) -- "
+            f"expect an enable transient, not a steady load"
+        )
+    return detail
 
 
 def _record(name, passed, detail=""):
@@ -50,10 +74,26 @@ def _close_enough(actual, expected, tol=TOLERANCE):
     return abs(actual - expected) / denom < tol
 
 
-# Two consecutive current reads this close together mean the readback has
-# stopped moving. Well under MAX_UNLOADED_CURRENT so a real steady load cannot
-# be mistaken for a settled one.
+# Current reads this close together mean the readback has stopped moving. Well
+# under MAX_UNLOADED_CURRENT so a real steady load cannot be mistaken for a
+# settled one.
 _CURRENT_STABLE_DELTA = 0.005
+
+# How many consecutive reads must agree before the reading counts as settled.
+#
+# Two was not enough, and the bench said so. A charge transient into the ADC
+# fixture on CH2 held 0.17 A across two reads 60 ms apart and was gone by
+# 130 ms, so a two-sample test matched the transient against itself, declared
+# it settled, and the caller asserted against 0.17 A. The earlier delay-ladder
+# measurement in #258 saw the same shape at a different scale -- 0.010 A at
+# 100 ms, 0.160 A at 250 ms, 0.000 A at 500 ms.
+#
+# Four reads at _SETTLE_INTERVAL span 300 ms, which is longer than any plateau
+# either measurement showed. This does not weaken the caller's assertion: a
+# genuine steady load reads the same value at every sample and still settles
+# immediately, which is the point -- see the docstring below.
+_CURRENT_STABLE_READS = 4
+
 _SETTLE_TIMEOUT = 5.0
 _SETTLE_INTERVAL = 0.1
 _SETTLE_FALLBACK = 1.5
@@ -75,10 +115,18 @@ def _wait_for_regulation(psu, setpoint_v):
     alone is worse: before the ramp starts, current reads 0.000 and would look
     settled immediately. Both conditions, in that order.
 
+    "Stopped moving" needs more than one pair of matching reads. The first
+    version of this helper returned on two, and a captured failure showed why
+    that is not the same claim: the transient held 0.17 A across two reads
+    60 ms apart before collapsing to 0.0 by 130 ms, so the pair agreed with
+    each other while the output was still discharging into the fixture. A pause
+    is not a settle. _CURRENT_STABLE_READS consecutive agreeing reads span a
+    window longer than any plateau measured on this bench.
+
     Deliberately does NOT wait for the current to fall below any threshold --
     that would assert the thing the caller is about to test. It waits for the
-    reading to stop changing, so a genuine steady load still fails the caller's
-    assertion.
+    reading to stop changing, so a genuine steady load reads the same value at
+    every sample, settles at once, and still fails the caller's assertion.
 
     Any failure falls back to a plain sleep. Some supply firmware does not
     implement every query (see supply_net._safe), and a settle helper must not
@@ -92,10 +140,17 @@ def _wait_for_regulation(psu, setpoint_v):
             time.sleep(_SETTLE_INTERVAL)
 
         prev = None
+        agreed = 0
         while time.monotonic() < deadline:
             now = float(psu.current())
             if prev is not None and abs(now - prev) < _CURRENT_STABLE_DELTA:
-                return
+                agreed += 1
+                if agreed >= _CURRENT_STABLE_READS - 1:
+                    return
+            else:
+                # The reading moved. A transient that pauses and then falls
+                # must not carry credit from before the step.
+                agreed = 0
             prev = now
             time.sleep(_SETTLE_INTERVAL)
     except Exception as exc:  # noqa: BLE001 - see docstring
@@ -220,7 +275,7 @@ def test_live_measurements():
             _record(
                 f"current() < {MAX_UNLOADED_CURRENT} A when unloaded",
                 passed,
-                f"measured={mi:.4f} A",
+                _unloaded_detail(float(mi)),
             )
             if not passed:
                 ok = False
@@ -565,13 +620,20 @@ def test_current_limit_readback():
 
         for limit_a in [0.5, 1.0]:
             psu.set_current(limit_a)
-            time.sleep(0.2)
+            # Was a flat 0.2 s. Changing the current limit perturbs the same
+            # readback the assertion below reads, so it gets the same settle
+            # discipline as the enable above rather than a sleep chosen to be
+            # short. The voltage loop inside returns at once here -- the output
+            # is already in regulation -- so this costs only the current poll.
+            _wait_for_regulation(psu, min(5.0, CHANNEL_MAX_VOLTAGE))
             measured_i = psu.current()
             passed = isinstance(measured_i, (int, float)) and abs(float(measured_i)) < MAX_UNLOADED_CURRENT
             _record(
                 f"current() numeric and near-zero with limit={limit_a} A (unloaded)",
                 passed,
-                f"measured={measured_i}",
+                _unloaded_detail(float(measured_i))
+                if isinstance(measured_i, (int, float))
+                else f"measured={measured_i!r} (not numeric)",
             )
             if not passed:
                 ok = False
