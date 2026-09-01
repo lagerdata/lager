@@ -8,6 +8,8 @@ All notable changes to the Lager platform are documented here. For detailed rele
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+## [0.45.0] - 2026-09-01
+
 ### Changed
 
 - **`SECURITY.md` gains a Threat Model, and stops recommending the host
