@@ -112,6 +112,48 @@ class HardwareServiceRetryTests(unittest.TestCase):
             hw._visa_resources.clear()
         self.client = hw.app.test_client()
 
+    def test_invoke_failure_returns_no_traceback(self):
+        """A 500 from /invoke carries the exception's message, never its stack.
+
+        The message is load-bearing -- it is the diagnosis the CLI shows, and
+        `cli/core/net_helpers.py` renders it verbatim. The traceback is not: it
+        goes to the box log, and `nets/device.py` documents `details` as
+        log-only, so nothing rendered it at the user anyway.
+
+        This pins the split. The three /invoke error paths used to return
+        `details` alongside `error`; a change that puts a stack back on the wire
+        fails here.
+        """
+        class _Boom:
+            def some_method(self, *a, **kw):
+                raise RuntimeError('scope said no')
+
+        class _BoomModule:
+            def create_device(self, net_info):
+                return _Boom()
+
+        cache_key = ('boom_device', 'USB0::0xBOOM::INSTR')
+        hw.device_cache[cache_key] = _Boom()
+        hw.module_cache[cache_key] = _BoomModule()
+
+        resp = self.client.post('/invoke', json={
+            'device': 'boom_device',
+            'function': 'some_method',
+            'args': [],
+            'kwargs': {},
+            'net_info': {'address': 'USB0::0xBOOM::INSTR', 'channel': 1},
+        })
+
+        self.assertEqual(resp.status_code, 500)
+        body = resp.get_json()
+        # The diagnosis survives.
+        self.assertIn('scope said no', body['error'])
+        # The stack does not, under any key.
+        self.assertNotIn('details', body)
+        for value in body.values():
+            self.assertNotIn('Traceback (most recent call last)', str(value))
+            self.assertNotIn('hardware_service.py, line', str(value))
+
     def test_retry_path_closes_old_device_before_recreating(self):
         """Regression: when /invoke retries on a stale-session error, the popped
         cache entry must be closed BEFORE module.create_device() runs. Otherwise

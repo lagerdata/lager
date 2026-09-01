@@ -32,21 +32,22 @@ schedule-, or dispatch-triggered and need the bench.
 `nightly-bench.yml` is the only workflow with a schedule. It reaches the other two bench
 workflows through `workflow_call`, so neither of those carries a `schedule` trigger of its own.
 
-A job only *blocks* a merge once its status context is listed in branch ruleset 14535039. Seven
-contexts are: the six `unit (...)` jobs and `static-checks`. The `compat` and `coverage` contexts
-are not.
+A job only *blocks* a merge once its status context is listed in branch ruleset 14535039.
+Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `compat (...)` jobs,
+`packaging`, `mcp-extra`, `rust (oscilloscope-daemon)`, and the two `xplat (...)` jobs. The
+`coverage` and `pip-audit` contexts are not, and neither is `CodeQL`.
 
 `unit-tests.yml` runs six matrix jobs, each in its own pytest process, on Python 3.11:
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1853 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 2040 |
+| `unit (box)` | `test/unit/box/` | 2041 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 181 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 143 (+1 skipped) |
-| | **Total gated** | **4411** |
+| | **Total gated** | **4412** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never
@@ -138,7 +139,7 @@ the graph) and `anyhow` unsound `Error::downcast_mut` (`RUSTSEC-2026-0190`). Add
 
 The `pull_request` trigger is **not path-filtered**. The job detects rust changes itself,
 through a merge-base diff of `box/oscilloscope-daemon/` and the workflow file. It succeeds
-through a skip when nothing rust-side changed, so it always reports and CAN become a required
+through a skip when nothing rust-side changed, so it always reports, and it IS a required
 context. A Python-only PR pays ~20 seconds of checkout+detect.
 
 The job also runs `cargo test --workspace`. That is trivially green until the workspace gains

@@ -28,11 +28,13 @@ deleted.)
 | `box-image-publish.yml` | Release: Publish Box Image | push of `v*` tags, dispatch | `ubuntu-latest` | Builds `box.Dockerfile` and pushes `ghcr.io/lagerdata/lager-box:vX.Y.Z`. Published only -- no client pulls it yet |
 | `xplat-smoke.yml` | PR Gate: Cross-Platform Smoke | `pull_request`, push to `main`, dispatch | `macos-latest`, `windows-latest` | Installs the built wheel per OS, smokes the entry point through PATH, import-walks against the shared baseline plus a per-OS delta |
 
-Merge gating: the main-branch ruleset requires the six `unit (...)` contexts
-and `static-checks`. Those strings are **job** `name:` fields in
-`unit-tests.yml` and `static-checks.yml` — renaming those jobs (or adding a
-dimension to the unit matrix) breaks the merge gate until the ruleset is
-updated. Workflow display names and file names are not part of the gate.
+Merge gating: the main-branch ruleset requires sixteen contexts — the six
+`unit (...)` jobs, `static-checks`, the four `compat (...)` jobs, `packaging`,
+`mcp-extra`, `rust (oscilloscope-daemon)`, and the two `xplat (...)` jobs.
+Those strings are **job** `name:` fields in the workflows that define them —
+renaming a job (or adding a dimension to the unit matrix) breaks the merge gate
+until the ruleset is updated. Workflow display names and file names are not
+part of the gate.
 
 ## Bench-testing a branch
 

@@ -10,6 +10,23 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ### Changed
 
+- **`SECURITY.md` gains a Threat Model, and stops recommending the host
+  firewall as the boundary.** The policy told operators to verify UFW as the
+  control restricting access to a box. UFW governs the host, but it does not
+  filter the ports the box's containers publish -- Docker installs its
+  forwarding rules ahead of the host chain -- so a published service port is
+  reachable from anywhere that can route to the box whatever `ufw status`
+  reports. The guidance now says to treat network reachability as the boundary
+  and put the box on a VPN or isolated LAN.
+
+  The new Threat Model section records what is deliberate rather than
+  overlooked: that `POST /python` and the breakpoint console run user code
+  because that is the product, that box error strings are the diagnostic
+  surface and are not genericised, that paths built from client-supplied names
+  are contained at each join, and that a path *received* as a parameter is
+  checked on entry even though static analysis cannot credit it. It exists so
+  an accepted finding has a written reason rather than a bare dismissal.
+
 - **Whether the bench has a Keithley 2281S is now a repository variable.** Its
   USB device port stopped presenting on 2026-08-31: the instrument powers up and
   boots, and its AC relay switches audibly, but it never reaches the USB bus. That
@@ -294,6 +311,16 @@ All notable changes to the Lager platform are documented here. For detailed rele
   check now states it where the join happens. The helpers it calls walk outward
   into `/sys/devices` by design, so the check belongs at that entry point rather
   than in each of them.
+
+- **A failed `/invoke` no longer returns the box's stack trace to the caller.**
+  Three error paths on the hardware service put `traceback.format_exc()` in the
+  response body alongside the message. The message stays -- it is the diagnosis
+  the CLI shows, and `cli/core/net_helpers.py` renders it verbatim -- but the
+  trace now goes only to the box log, which is where the adjacent
+  `logger.error` was already sending it. Nothing rendered the `details` field
+  at a user: `nets/device.py` documents it as log-only and its `__str__`
+  returns just the message. These were the only three places in `box/` where a
+  trace reached a response.
 
 ## [0.44.0] - 2026-08-28
 
