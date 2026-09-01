@@ -758,7 +758,6 @@ def invoke():
                             address, f"{device_name}.{function_name} (recovery retry failed)")
                     return jsonify({
                         'error': f'Function call failed (after retry): {str(retry_e)}',
-                        'details': traceback.format_exc()
                     }), 500
 
             logger.error(f"Error calling {device_name}.{function_name}: {e}")
@@ -772,7 +771,6 @@ def invoke():
                     address, f"{device_name}.{function_name} (open failed)")
             return jsonify({
                 'error': f'Function call failed: {str(e)}',
-                'details': traceback.format_exc()
             }), 500
 
     except Exception as e:
@@ -790,7 +788,6 @@ def invoke():
                 f"(open failed, top-level)")
         return jsonify({
             'error': f'Internal server error: {str(e)}',
-            'details': traceback.format_exc()
         }), 500
 
 def _close_device(device, cache_key):
