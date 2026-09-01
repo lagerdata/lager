@@ -117,6 +117,37 @@ All notable changes to the Lager platform are documented here. For detailed rele
   three and fails `unit (box)` on any drift, and separately refuses to let any of
   them name the Keithley unconditionally.
 
+- **The bench watchdog reported green while the nightly schedule decayed, and
+  again on a night that did not run.** It asked one question -- is the newest
+  scheduled run more than 26h old? -- sampled whenever its own six-hourly cron
+  happened to fire. Nominal spacing is 24h, so that left two hours of headroom
+  checked at four arbitrary offsets a day, and GitHub's scheduled-event queue
+  spends it.
+
+  Spacing turns out to be the wrong measure. Across the ten scheduled runs to
+  2026-09-01 the intervals ranged 17.9h to 33.6h and averaged 24.47h against a
+  nominal 24h -- almost no signal -- because a night that starts late shortens
+  the next interval and the average repairs itself. Measured against the cron
+  instead, the same ten runs read 0.4h, 0.5h, 0.6h and 0.6h late, and then
+  4.6h, 4.8h, 4.6h, 7.3h, 10.2h and 10.9h. The schedule turned on 2026-08-27
+  and nobody saw it for four days.
+
+  The watchdog now checks three things that mean different things: an interval
+  large enough that a night was certainly skipped, nothing scheduled arriving
+  at all, and the mean delay against the cron -- which is the leading indicator,
+  because once a night is hours late, late and missed stop being
+  distinguishable until it either arrives or does not. The cron is read from
+  `nightly-bench.yml` rather than copied, so the two cannot drift.
+
+  The arithmetic moved to `tools/bench_schedule_check.py` with
+  `test/unit/test_bench_schedule_check.py` behind it. It was wrong for as long
+  as it was inline YAML with nothing able to test it, and one of the new tests
+  pins the specific blindness: a schedule that slips a fixed amount and then
+  holds is spaced at exactly 24h while every run is hours late.
+
+  `nightly-bench.yml`'s own comment also implied the queue delay was bounded at
+  the 78 minutes once observed. It is not, and it now says so.
+
 - **A hardware-service self-restart could fail the whole nightly at its first
   command.** The service exits by design when it finds an orphaned USB claim, so
   the supervisor can respawn it with a clean USB context, and it is unavailable

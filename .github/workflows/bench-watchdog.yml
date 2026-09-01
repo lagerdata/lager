@@ -15,7 +15,17 @@
 #                  for hours)
 #   running > 5h   stuck run (lifecycle 90m + integration 45m timeouts mean
 #                  a healthy night can never take 5h)
-#   no scheduled run CREATED in 26h   the cron itself is dead
+#   schedule gap    > 26h between consecutive scheduled runs (a night was
+#                   missed), OR nothing scheduled at all in 26h (the cron is
+#                   dead), OR a mean interval above 24.5h (the cadence is
+#                   drifting later and will start missing nights)
+#
+# That last group replaced a single "is the newest scheduled run older than
+# 26h?" test. Nominal spacing is 24h, which left two hours of headroom sampled
+# at four arbitrary offsets a day, and GitHub's scheduled-event queue spends
+# it: runs drifted to ~25h apart and sat inside the threshold, so this reported
+# green while the schedule decayed -- and green again on the night nothing
+# fired. The interval between runs does not depend on when the watchdog looks.
 #
 # Alerts land on the same single `bench-alert` issue the nightly notify jobs
 # use (tools/bench_alert.sh), so one bench incident reads as one issue no
@@ -67,54 +77,42 @@ jobs:
           QUEUED_ALERT_HOURS: "3"
           RUNNING_ALERT_HOURS: "5"
           SCHEDULE_GAP_ALERT_HOURS: "26"
+          SCHEDULE_STALE_ALERT_HOURS: "26"
+          SCHEDULE_DRIFT_WARN_HOURS: "24.5"
         run: |
           set -o pipefail
+          # Two queries, because they answer different questions.
+          #
+          # Run health needs recent runs of every event: a dispatch can be the
+          # one stuck on an offline runner.
           gh run list --repo "$GH_REPO" --workflow nightly-bench.yml \
             --limit 20 --json databaseId,status,createdAt,event > runs.json
+          # Cadence needs scheduled runs only, and filtered SERVER-side. The
+          # old check read the same 20 mixed runs, so a burst of manual
+          # dispatches could evict every scheduled run from the window and
+          # degrade the alert to "no scheduled nightly run in the last 20
+          # runs" -- which says nothing about the cron.
+          gh api \
+            "repos/$GH_REPO/actions/workflows/nightly-bench.yml/runs?event=schedule&per_page=10" \
+            --jq '[.workflow_runs[] | {databaseId: .id, status, createdAt: .created_at, event}]' \
+            > scheduled.json
 
-          python3 - <<'PY'
-          import json, os
-          from datetime import datetime, timezone
-
-          runs = json.load(open('runs.json'))
-          now = datetime.now(timezone.utc)
-
-          def age_hours(run):
-              created = datetime.fromisoformat(run['createdAt'].replace('Z', '+00:00'))
-              return (now - created).total_seconds() / 3600
-
-          queued_h = float(os.environ['QUEUED_ALERT_HOURS'])
-          running_h = float(os.environ['RUNNING_ALERT_HOURS'])
-          gap_h = float(os.environ['SCHEDULE_GAP_ALERT_HOURS'])
-
-          problems = []
-          for r in runs:
-              if r['status'] == 'queued' and age_hours(r) > queued_h:
-                  problems.append(
-                      f"run {r['databaseId']} has been QUEUED for "
-                      f"{age_hours(r):.1f}h - is the bench runner offline?")
-              if r['status'] == 'in_progress' and age_hours(r) > running_h:
-                  problems.append(
-                      f"run {r['databaseId']} has been RUNNING for "
-                      f"{age_hours(r):.1f}h - stuck past every job timeout")
-
-          scheduled = [r for r in runs if r['event'] == 'schedule']
-          if not scheduled:
-              problems.append(
-                  f"no scheduled nightly run in the last {len(runs)} runs")
-          elif min(age_hours(r) for r in scheduled) > gap_h:
-              problems.append(
-                  f"newest scheduled nightly is {min(age_hours(r) for r in scheduled):.1f}h old "
-                  f"(cron is 10:17 UTC daily) - is the schedule disabled?")
-
-          if problems:
-              with open('problems.txt', 'w') as f:
-                  f.write('\n'.join(f"- {p}" for p in problems))
-              print('PROBLEMS:')
-              print(open('problems.txt').read())
-          else:
-              print('Nightly bench runs are flowing normally.')
-          PY
+          # The arithmetic lives in tools/bench_schedule_check.py so it can be
+          # tested -- test/unit/test_bench_schedule_check.py. It was wrong here
+          # for as long as it was untestable here.
+          #
+          # Exit codes are load-bearing: 0 healthy, 1 problems found, >1 the
+          # check itself could not run. This shell runs under `-e`, so an
+          # unguarded call would abort the step on 1 and skip the alerting
+          # below -- the watchdog would go silent at exactly the moment it had
+          # something to say. Anything above 1 must still fail loudly rather
+          # than be read as "no problems".
+          rc=0
+          python3 tools/bench_schedule_check.py runs.json scheduled.json || rc=$?
+          if [ "$rc" -gt 1 ]; then
+            echo "Watchdog check could not run (exit $rc) - this is not a green bench."
+            exit "$rc"
+          fi
 
           if [ -f problems.txt ]; then
             {

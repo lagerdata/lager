@@ -46,8 +46,8 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 181 |
-| `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 143 (+1 skipped) |
-| | **Total gated** | **4418** |
+| `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 163 (+1 skipped) |
+| | **Total gated** | **4438** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never
@@ -451,7 +451,7 @@ cli/tests/                #  7 files: 6 pytest suites (GATED via `unit (cli)`),
                           #           plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 180 files)
+### Local Unit Tests (`test/unit/` -- 181 files)
 
 #### Box Unit Tests (`test/unit/box/` -- 98 files)
 
@@ -649,11 +649,12 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_blufi_unit.py` | BluFi protocol parsing (696-line pytest suite) |
 | `test_blufi_scan.py` | `BlufiClient.scan()` BLE advertisement presence checks |
 
-#### Root Unit Tests (`test/unit/test_*.py` -- 8 files)
+#### Root Unit Tests (`test/unit/test_*.py` -- 9 files)
 
 | File | What it tests |
 |------|---------------|
 | `test_bench_cleanup_timeouts.py` | Tree-wide guard: every `if: always()` step on a `self-hosted` bench job carries `timeout-minutes` and `continue-on-error`, and the bench jobs are still serialized on one non-cancelling concurrency group |
+| `test_bench_schedule_check.py` | `tools/bench_schedule_check.py`: the nightly cadence signals kept distinct -- a missed night (gap), a dead cron (stale), and a schedule drifting later (lateness vs the cron parsed from `nightly-bench.yml`), which spacing alone cannot see |
 | `test_coverage_checker.py` | `tools/check_coverage_counts.py`: platform-gated rows are not drift (and `--fix` must not rewrite them), plus the anchored summary parse `FORCE_COLOR` defeated |
 | `test_group_usage.py` | Usage-line formatting for CLI command groups (CommandFirstUsageMixin / LagerGroup) |
 | `test_install_wheel.py` | install-wheel command: wheel filename to package name parsing |

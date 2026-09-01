@@ -43,7 +43,15 @@ name: "Bench: Nightly"
 on:
   schedule:
     # Off-the-hour deliberately: GitHub's scheduled-event queue is heaviest at
-    # :00 and delays runs — a :00 cron fired 78 minutes late on 2026-07-24.
+    # :00 and delays runs -- a :00 cron fired 78 minutes late on 2026-07-24.
+    #
+    # That 78 minutes is NOT an upper bound, and this comment used to read as
+    # though it were. Measured across the ten scheduled runs to 2026-09-01, the
+    # delay ran 0.4-0.6h for four nights and then 4.6-10.9h for six, with no
+    # change on this side. Moving off the hour helps; it does not bound the
+    # delay, and nothing here can. bench-watchdog.yml measures the delay
+    # against this cron and alarms when the mean gets large enough that a late
+    # night and a missed night stop being distinguishable.
     - cron: "17 10 * * *"  # ~3 AM PDT / 2 AM PST (cron is UTC; drifts 1h across DST)
   workflow_dispatch:
 
