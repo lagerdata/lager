@@ -36,10 +36,11 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
   While it was listed unconditionally, every nightly failed at instrument power-on
   and skipped every suite, including those for the Rigol DP821, which is healthy.
-  `KEITHLEY_PRESENT` now gates both its entry in the expected inventory and its two
-  suites, so one variable restores the instrument the day it comes back rather than
-  two edits in two places that can drift apart. It is currently unset, which is
-  what a bench without that instrument should say.
+  `KEITHLEY_PRESENT` now gates its entry in the expected inventory in all three
+  bench workflows, and every suite that drives the instrument, so one variable
+  restores it the day it comes back rather than several edits in several places
+  that can drift apart. It is currently unset, which is what a bench without that
+  instrument should say.
 
 - **The undefined-method guard now covers the whole MSO5000 mapper, not just
   its logic surface.** The previous version walked `net.py`'s Logic branches and
@@ -98,6 +99,24 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ### Fixed
 
+- **Both bench fixes above reached one of the three workflows that needed them,
+  and the nightly stayed red.** The nightly runs Box Lifecycle first and the
+  instrument sweep second, as separate workflows. The Keithley gate and the relay
+  retry were applied to the sweep only, so the lifecycle job still waited for an
+  instrument that is off the bench, still failed at power-on after 180 seconds,
+  and still skipped the sweep that carried the fix. A run dispatched against the
+  very commit that added the gate failed with `Did not enumerate within 180s of
+  relay power-on: Keithley_2281S`. The weekly extended bench had the same two
+  gaps and would have failed the same way on its next Saturday.
+
+  All three workflows now run a byte-identical power-on block. That was already
+  the stated intent -- one of them carried a comment asking the next reader to
+  keep the copies in sync -- but nothing checked it, which is precisely how a fix
+  came to be written, reviewed, merged and still absent from the job that runs
+  first. `test/unit/box/test_bench_power_on_blocks_match.py` now compares the
+  three and fails `unit (box)` on any drift, and separately refuses to let any of
+  them name the Keithley unconditionally.
+
 - **A hardware-service self-restart could fail the whole nightly at its first
   command.** The service exits by design when it finds an orphaned USB claim, so
   the supervisor can respawn it with a clean USB context, and it is unavailable
@@ -106,8 +125,8 @@ All notable changes to the Lager platform are documented here. For detailed rele
   coin flip against that window -- run 33318035290 lost it, lifecycle failed,
   integration was skipped, and the night produced no instrument coverage at all.
   The enumeration loop directly below those calls already tolerated transients for
-  the same reason; now the writes do too. The relay level latches in LabJack
-  hardware, so a retry is idempotent.
+  the same reason; now the writes do too, in all three bench workflows. The relay
+  level latches in LabJack hardware, so a retry is idempotent.
 
 - **The Architecture page said three things about the box that are not true, and
   a user hitting `[Errno 16] Resource busy` had nothing to read.** Drawing the
