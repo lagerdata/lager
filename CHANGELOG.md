@@ -99,6 +99,36 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ### Fixed
 
+- **The supply suite read an unloaded channel while it was still discharging,
+  and called the transient a steady load.** The nightly's Rigol DP821 CH2 check
+  had been failing intermittently since 2026-08-14 with readings of 0.11 A,
+  0.18 A and 0.24 A against a 0.1 A limit, on a channel that measures a clean
+  0.0000 A once settled -- 96 samples across four setpoints, no spread.
+
+  The settle helper waited for the output to reach its setpoint and then for
+  the current readback to stop moving, and it treated two consecutive reads
+  agreeing to within 5 mA as stopped. The failure-time capture added last
+  release fired for the first time and showed why that is a different claim:
+  the reading held 0.17 A across two reads 60 ms apart and was 0.0 by 130 ms,
+  so the pair agreed with each other while the output was still discharging
+  into the ADC input wired to that channel. `power()` already read 0.0 and the
+  atomic `measure()` reported 0.00 at the same moment, so the two readback
+  paths disagreed by an entire transient. A pause is not a settle.
+
+  The reading must now hold across four consecutive samples, a window longer
+  than any plateau measured on this bench, and a reading that pauses and then
+  moves restarts the count. The threshold is unchanged: at 0.1 A the assertion
+  was always right, and raising it would have hidden a real anomaly rather than
+  accommodated a known load. A genuine steady draw reads the same value at
+  every sample, settles at once, and still fails the assertion -- which the
+  helper must never decide for its caller, and which is now pinned by tests
+  that replay the captured transient.
+
+  The current-limit readback check got the same treatment; it had a flat 0.2 s
+  sleep against a readback its own assertion reads. And if the check ever trips
+  again on a channel declared as wired, the failure now names the fixture
+  instead of leaving the next reader to re-derive it.
+
 - **Both bench fixes above reached one of the three workflows that needed them,
   and the nightly stayed red.** The nightly runs Box Lifecycle first and the
   instrument sweep second, as separate workflows. The Keithley gate and the relay
