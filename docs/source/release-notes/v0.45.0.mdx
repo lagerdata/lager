@@ -1,0 +1,95 @@
+---
+title: "Version 0.45.0"
+description: "September 1, 2026"
+---
+
+## <u>Upgrade Notes</u>
+
+Most of this release runs on the Lager Box, not in the CLI. Update every box you
+use, or none of the fixes below reach you. See Installation.
+
+- **`lager logic` now exits non-zero when a command fails.** Earlier versions
+  printed nothing and exited 0 when the net name was wrong, or when the box
+  rejected the call. A script that reads the exit code can now fail where it
+  passed before. That failure is real, and it was always there.
+
+- **`LogicDisplaySize.Medium` and `LogicDisplaySize.Large` now set the sizes
+  they name.** The two values were swapped. Code that passes `Large` to get a
+  medium display must swap the value back.
+
+- **The box refuses a probe serial it cannot bind to.** It used to fall through
+  to whichever probe the backend picked. A script that relied on that fallback
+  will now see an error that names the serial.
+
+- **A failed `/invoke` returns an error message without the box's stack trace.**
+  The trace goes to the box log. Code that parses a traceback out of the
+  response must read the log instead.
+
+## <u>Bug Fixes</u>
+
+- **`lager logic <net> enable` and `disable` failed on the Rigol MSO5000.** The
+  mapper called ten methods that no driver defined, so each one returned
+  `Function not found` at runtime. The driver implements them now.
+
+- **`lager logic <net> disable` waited on a query the scope never answers.** An
+  MSO5204 accepts `:LA:DIGital<n>:DISPlay?` and returns nothing, and reports no
+  error when asked. The driver uses a form the instrument answers.
+
+- **`lager logic` reported success after the box failed.** The worker returned
+  no status, so the command printed nothing and exited 0. It prints the box's
+  error and exits 1.
+
+- **`POST /debug/connect` validates the probe serial and port overrides it
+  accepts.** A malformed request returns 400 instead of a 500 from deeper in
+  the stack.
+
+- **`GET /download-file` builds its `Content-Disposition` header safely.** A
+  crafted filename can no longer inject header lines.
+
+## <u>Improvements</u>
+
+- The box checks that every path it builds from a client-supplied name stays
+  inside the directory that name belongs to. This covers binary names, probe
+  serials, detached job ids, device-lock keys, debug scripts, OpenOCD config
+  files and tty names. Each check sits beside the join it guards.
+
+- `SECURITY.md` gains a Threat Model. It records which behavior is deliberate,
+  and it states that network reachability is the security boundary. The host
+  firewall does not filter the ports the box's containers publish. Treat the
+  network as the control, and put the box on a VPN or an isolated LAN.
+
+- The Architecture page corrects three claims about box internals, and the
+  troubleshooting page documents `[Errno 16] Resource busy`.
+
+## <u>Known Limitations</u>
+
+- **The MSO5000 trigger-configuration and bus-decode surfaces are incomplete.**
+  115 mapper methods call driver functions that do not exist, across pulse,
+  UART, I2C, SPI and CAN triggers and every bus decode type. Each one fails at
+  runtime with `Function not found`. The defaults paths work; anything past
+  them can fail. Tracked in issue #418.
+
+- **`lager usb <net> cycle` cannot confirm re-enumeration on every hub.** On
+  Acroname and YKUSH hubs it reports `no device on this port to watch for` even
+  when the port holds a device that does re-enumerate. The power cycle itself
+  works. Only the Plugable driver observes the reconnect. Tracked in issue #423.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.45.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli==0.45.0
+```
+
+Then update your boxes:
+
+```bash
+lager update --box <box-name>
+```
