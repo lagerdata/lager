@@ -413,10 +413,10 @@ jobs:
           # same hub cold-booting three other devices on demand. See #417.
           #
           # ONE switch restores it: set KEITHLEY_PRESENT=true in repository
-          # variables. That puts it back in this list AND re-enables its two
-          # suites below, which are gated on the same variable. Leaving it
-          # unset hides a real absence, so set it the day the instrument
-          # returns.
+          # variables. That puts it back in this list in every bench workflow
+          # AND re-enables every suite that drives it, all gated on the same
+          # variable. Leaving it unset hides a real absence, so set it the day
+          # the instrument returns.
           expected=(Rigol_DP821 Rigol_MSO5204)
           if [ "${KEITHLEY_PRESENT:-}" = "true" ]; then
             expected+=(Keithley_2281S)
