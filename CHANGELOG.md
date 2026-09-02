@@ -49,6 +49,23 @@ All notable changes to the Lager platform are documented here. For detailed rele
   fails on this shape anywhere in `box/` or `cli/` -- including in a
   validation nobody has written yet.
 
+- **`tools/check_coverage_counts.py` reported a failing test suite when the
+  real problem was a missing pytest plugin.** The checker runs each suite with
+  `--timeout=60`, which needs `pytest-timeout`, and nothing a contributor can
+  install declares it -- `test/requirements-unit.txt` names neither pytest nor
+  the plugin, and CI installs the pin inline. On an environment built from the
+  repo's own files every suite therefore died at argument parsing, and the
+  checker printed `suite FAILED:` followed by a suite name. That suite passes
+  when run by hand. Four fresh environments hit it in one day, each costing a
+  few minutes to work out that the tests were never the problem.
+
+  pytest rejects an unrecognized argument before collecting anything, exits 4,
+  and writes the reason to stderr -- which the checker captured and discarded,
+  so the misleading headline had an empty stdout tail underneath it. The
+  checker now recognizes that case and names the plugin and the install
+  command instead, and both of its failure paths print stderr as well as
+  stdout, so a failure explained only there still reaches the reader.
+
 ## [0.45.0] - 2026-09-01
 
 ### Changed

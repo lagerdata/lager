@@ -109,6 +109,14 @@ TOTAL_ROW = re.compile(r'^\|\s*\|\s*\*\*Total gated\*\*\s*\|\s*\*\*(\d+)\*\*\s*\
 # glob is matched as written.
 HEADER = re.compile(r'^(#+ .*\(`)([^`]+)(`\s+--\s+)(\d+)( files?\))\s*$')
 
+# pytest's own words when it is handed an argument no installed plugin
+# declares. It exits 4 before collecting, and writes this to stderr.
+MISSING_TIMEOUT_PLUGIN = 'unrecognized arguments: --timeout'
+
+# The pin CI installs (static-checks.yml, unit-tests.yml). Named here so the
+# message can tell a contributor exactly what to install.
+TIMEOUT_PLUGIN_PIN = 'pytest-timeout>=2.3,<3'
+
 # Suites that are not Python `test_*.py` files.
 GLOB_OVERRIDES = {'test/integration/': '**/*.sh'}
 
@@ -270,8 +278,29 @@ def run_suite(paths: list[str]) -> dict[str, int]:
         capture_output=True, text=True, cwd=REPO_ROOT, env=env,
     )
     if proc.returncode != 0:
+        # A missing plugin is not a failing suite, and saying so cost four
+        # fresh environments a few minutes each in one day. pytest rejects an
+        # unrecognized argument before it collects anything, exits 4, and
+        # writes the reason to STDERR -- so the old message named a healthy
+        # suite and then printed an empty stdout tail underneath it.
+        #
+        # Nothing a contributor can install declares the plugin:
+        # test/requirements-unit.txt does not mention pytest at all, and CI
+        # installs the pin inline (static-checks.yml). Rather than add a second
+        # place for the pin to live and drift, the tool names what to install.
+        if MISSING_TIMEOUT_PLUGIN in proc.stderr:
+            print(f'  {TIMEOUT_PLUGIN_PIN} is not installed, so no suite could '
+                  f'run.\n'
+                  f'  The tests are fine. Install it and re-run:\n'
+                  f"      pip install '{TIMEOUT_PLUGIN_PIN}'",
+                  file=sys.stderr)
+            raise SystemExit(2)
         print(f'  suite FAILED: {" ".join(paths)}', file=sys.stderr)
         print(proc.stdout[-3000:], file=sys.stderr)
+        # stderr too: a usage error writes there and nowhere else, so
+        # discarding it is what left the message above with nothing under it.
+        if proc.stderr.strip():
+            print(proc.stderr[-3000:], file=sys.stderr)
         raise SystemExit(2)
 
     tail = [ln for ln in proc.stdout.splitlines()
@@ -279,6 +308,8 @@ def run_suite(paths: list[str]) -> dict[str, int]:
     if not tail:
         print(f'  could not parse summary for {" ".join(paths)}', file=sys.stderr)
         print(proc.stdout[-3000:], file=sys.stderr)
+        if proc.stderr.strip():
+            print(proc.stderr[-3000:], file=sys.stderr)
         raise SystemExit(2)
     line = tail[-1]
     out = {'passed': 0, 'skipped': 0, 'xfailed': 0}
