@@ -67,6 +67,21 @@ All notable changes to the Lager platform are documented here. For detailed rele
   `LAGER_ARM_PROBE` sets `auto` (default), `off`, or `force`; `force` widens the
   VID:PID gate only and keeps every other guard.
 
+  The exclusion set is durable, not a function of who happens to be connected:
+  a saved uart net's ttys are excluded whether or not a session is open on them,
+  so the port a DUT console lives on is protected while it sits idle as well as
+  while it is in use. The exclusive open is a second layer under that, not the
+  thing carrying it -- which matters because the failure being fixed here is a
+  scan that ran between sessions as readily as during one.
+
+  Bench-validated on a four-channel FTDI (`0403:6011`) whose uart net sits on
+  interface 2, alongside an unrelated CDC device absent from `SUPPORTED_USB`:
+  six stray `M105` arrived in a live session across five scans before, none
+  across ten after, with every one of the adapter's four ttys reported as owned
+  and the unrecognized CDC device refused by the identity gate. The instrument
+  list was unchanged. Separately validated against a real arm: it is still
+  detected, and `lager arm <net> position` still answers over a saved arm net.
+
 - **An attached Dexarm was not detected at all, for two further reasons.** Found
   while validating the above against real hardware. The arm answered the
   handshake and was then discarded, because `_get_serial_by_port` resolves the
