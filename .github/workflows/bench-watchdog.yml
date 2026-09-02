@@ -9,23 +9,29 @@
 # administration:read, which GITHUB_TOKEN cannot hold, so this reads run
 # history instead and needs no standing credential.
 #
-# Three checks against nightly-bench.yml's recent runs:
-#   queued  > 3h   runner offline (the nightly chain's own budget is well
-#                  under that, and nothing else shares the bench queue slot
-#                  for hours)
-#   running > 5h   stuck run (lifecycle 90m + integration 45m timeouts mean
-#                  a healthy night can never take 5h)
-#   schedule gap    > 26h between consecutive scheduled runs (a night was
-#                   missed), OR nothing scheduled at all in 26h (the cron is
-#                   dead), OR a mean interval above 24.5h (the cadence is
-#                   drifting later and will start missing nights)
+# Five checks against nightly-bench.yml's recent runs:
+#   queued    runner offline (the nightly chain's own budget is well under the
+#             threshold, and nothing else shares the bench queue slot for hours)
+#   running   stuck run (lifecycle 90m + integration 45m timeouts mean a
+#             healthy night can never reach it)
+#   stale     nothing scheduled at all for over a day -- the cron is dead. The
+#             backstop nothing else provides: with no further run there is
+#             never another gap or lateness sample.
+#   gap       an interval so large a night was certainly skipped. Set well
+#             above nominal on purpose, because a merely late night is
+#             lateness, not a miss.
+#   lateness  mean delay against the cron declared in nightly-bench.yml. This
+#             is the leading indicator; spacing self-corrects and hides the
+#             decay, lateness does not.
 #
-# That last group replaced a single "is the newest scheduled run older than
-# 26h?" test. Nominal spacing is 24h, which left two hours of headroom sampled
-# at four arbitrary offsets a day, and GitHub's scheduled-event queue spends
-# it: runs drifted to ~25h apart and sat inside the threshold, so this reported
-# green while the schedule decayed -- and green again on the night nothing
-# fired. The interval between runs does not depend on when the watchdog looks.
+# EVERY threshold lives in tools/bench_schedule_check.py, with its reasoning,
+# and is NOT set here. This block used to carry its own copy: it kept a stale
+# `SCHEDULE_DRIFT_WARN_HOURS` that the tool had stopped reading, and it
+# overrode the gap threshold with a value below the tool's, which alarmed on a
+# 26.7h night that was late rather than missed. A value declared in one file
+# and consumed in another, with nothing asserting they agree, is the same
+# defect this whole watchdog exists to catch. test_bench_watchdog_env.py now
+# fails if a threshold name reappears here that the tool does not read.
 #
 # Alerts land on the same single `bench-alert` issue the nightly notify jobs
 # use (tools/bench_alert.sh), so one bench incident reads as one issue no
@@ -74,11 +80,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          QUEUED_ALERT_HOURS: "3"
-          RUNNING_ALERT_HOURS: "5"
-          SCHEDULE_GAP_ALERT_HOURS: "26"
-          SCHEDULE_STALE_ALERT_HOURS: "26"
-          SCHEDULE_DRIFT_WARN_HOURS: "24.5"
         run: |
           set -o pipefail
           # Two queries, because they answer different questions.
