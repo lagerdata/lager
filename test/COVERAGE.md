@@ -42,12 +42,12 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1853 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 2056 |
+| `unit (box)` | `test/unit/box/` | 2070 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 181 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 179 (+1 skipped) |
-| | **Total gated** | **4463** |
+| | **Total gated** | **4477** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never
@@ -554,7 +554,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_uart_bridge_reconnect.py` | UARTBridge re-enumeration healing after an adapter changes its /dev/tty node |
 | `test_uart_session_cleanup.py` | Websocket UART read loop heals in place instead of stopping on a failed read |
 | `test_usb_devices_dfu.py` | `GET /usb/devices` sysfs enumeration and `POST /usb/dfu` list/download/detach argument building |
-| `test_usb_scanner_custom.py` | Custom-device surfacing in box HTTP scanner GET /instruments/list. Also the SuperSpeed companion dedupe: one physical dock lists as one instrument, and a missing bus root pairs nothing rather than pairing everything. |
+| `test_usb_scanner_custom.py` | Custom-device surfacing in box HTTP scanner GET /instruments/list. Also the SuperSpeed companion dedupe: one physical dock lists as one instrument, and a missing bus root pairs nothing rather than pairing everything. Also what the Dexarm handshake -- the one scan step that WRITES to hardware -- is allowed to touch: every channel of a multi-interface chip and every saved uart net's tty reach the exclusion set, a foreign or unresolvable VID:PID is never opened at all, a port held by another process is skipped, and `LAGER_ARM_PROBE` off/force widen or close the gate without ever dropping the exclusive open or the deasserted modem lines. |
 | `test_usb_scanner_uart_fallback.py` | UART enumeration without USB serial by matching sysfs path; two identical adapters keep distinct ttys and the channel catalog stays unmutated |
 | `test_webcam_detection.py` | sysfs-based webcam detection (`_by_camera`) against a fake sysfs tree |
 | `test_plugable_driver.py` | Plugable RTS5411 dock driver: USB hub-class per-port power switching over pyusb -- ganged/no-switching hubs refused without touching a port, a disable NOT judged by device presence (the kernel cannot see a disconnect while a port is unpowered, so the sysfs node persists), cycle restoring power on every failure path and reporting re-enumeration, off-time range enforced before any transfer, SuperSpeed companion pairing refused when ambiguous, network-device and inter-hub-link guards, one-session batch reads, handle disposal on every path |

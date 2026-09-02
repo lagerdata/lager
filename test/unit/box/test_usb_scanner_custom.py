@@ -18,6 +18,7 @@ import os
 import shutil
 import sys
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -206,6 +207,67 @@ class UsbScannerCustomTests(unittest.TestCase):
         self.assertTrue(self.handshake_excludes)
         self.assertIn(TTY, self.handshake_excludes[-1])
 
+    def test_every_channel_of_a_multi_interface_chip_is_excluded(self):
+        # tty_path is only the PRIMARY interface. An FT4232H owns four ttys,
+        # and excluding channel A alone left B/C/D open to the G-code write.
+        ttys = [f"/dev/ttyUSB{n}" for n in range(4)]
+        self._set_scan([{
+            "name": "FTDI_FT4232H",
+            "vid": "0403", "pid": "6011", "serial": "FT4CHAN",
+            "address": "USB0::0x0403::0x6011::FT4CHAN::INSTR",
+            "net_type": ["uart"],
+            "channels": {"uart": list(ttys)},
+            "tty_path": ttys[0],
+            "tty_paths": list(ttys),
+        }])
+
+        us.list_instruments()
+        self.assertTrue(self.handshake_excludes)
+        for tty in ttys:
+            self.assertIn(tty, self.handshake_excludes[-1])
+
+    def test_saved_uart_net_tty_joins_handshake_exclusion(self):
+        # A saved uart net pinned to a raw /dev/tty* with no usb_identity is
+        # exactly the record has_durable_identity() refuses, so list_saved()
+        # attaches no live_path to it. Its port must still be excluded — and
+        # its adapter is unknown to scan_usb, so nothing else can protect it.
+        saved_tty = "/dev/ttyUSB7"
+        net_mod = types.SimpleNamespace(
+            Net=types.SimpleNamespace(list_saved=lambda: [
+                {"name": "uart1", "role": "uart", "instrument": "FTDI_FT232R",
+                 "address": "USB0::INSTR", "pin": saved_tty},
+                # A non-uart net must NOT contribute its pin.
+                {"name": "gpi1", "role": "gpio", "instrument": "LabJack_T7",
+                 "address": "ANY", "pin": "FIO0"},
+            ])
+        )
+        uart_net_mod = types.SimpleNamespace(live_uart_path=lambda rec: None)
+        self._set_scan([])
+
+        with mock.patch.dict(sys.modules, {
+            "lager.nets.net": net_mod,
+            "lager.protocols.uart.uart_net": uart_net_mod,
+        }):
+            us.list_instruments()
+
+        self.assertTrue(self.handshake_excludes)
+        self.assertIn(saved_tty, self.handshake_excludes[-1])
+        self.assertNotIn("FIO0", self.handshake_excludes[-1])
+
+    def test_unreadable_saved_nets_do_not_take_the_scan_down(self):
+        # The scan must still answer when saved_nets is unavailable — the
+        # VID:PID gate, not this set, is what confines the probe.
+        boom = types.SimpleNamespace(
+            Net=types.SimpleNamespace(
+                list_saved=mock.Mock(side_effect=OSError("unreadable"))))
+        self._set_scan([_prolific_entry()])
+
+        with mock.patch.dict(sys.modules, {"lager.nets.net": boom}):
+            out = us.list_instruments()
+
+        self.assertEqual([d["name"] for d in out], ["Prolific_USB_Serial"])
+        self.assertIn(TTY, self.handshake_excludes[-1])
+
     def test_degraded_mode_without_custom_framework(self):
         # Partial deployment without lager.devices: import guard left None —
         # the scanner must behave exactly as before custom devices existed.
@@ -279,3 +341,236 @@ class TestSuperSpeedCompanionDedupe(unittest.TestCase):
     def test_a_name_without_a_port_path_is_ignored(self):
         self._roots((1, "xhci0"), (2, "xhci0"))
         self.assertFalse(us._is_companion_of_seen("usb2", ["1-1.4"]))
+
+
+class _FakeSerialException(IOError):
+    """Stand-in for pyserial's SerialException (an IOError subclass)."""
+
+
+def _fake_serial_ns(open_behavior=None, reply=b"ok T:25.0\n"):
+    """A stand-in for the pyserial module that records what was opened.
+
+    ``_by_handshake`` does ``from serial import Serial`` INSIDE the function,
+    so the name resolves out of ``sys.modules`` at call time — patching an
+    attribute on the scanner module would not be seen. Shape mirrors
+    test_uart_bridge_reconnect.py's ``_fake_serial_ns``, adapted for the
+    construct-unopened-then-.open() flow the probe now uses.
+    """
+    ns = types.SimpleNamespace(SerialException=_FakeSerialException)
+    ns.constructed = 0        # every Serial(...) call
+    ns.opened_ports = []      # ports .open() was actually called for
+    ns.writes = []            # (port, bytes) actually written
+
+    class _FakeSerial:
+        def __init__(self, port=None, baudrate=None, timeout=None, exclusive=None):
+            ns.constructed += 1
+            self.port = port
+            self.baudrate = baudrate
+            self.timeout = timeout
+            self.exclusive = exclusive
+            self.dtr = True
+            self.rts = True
+            self.is_open = False
+
+        def open(self):
+            # DTR must be ASSERTED before opening: a CDC-ACM device gates its
+            # transmitter on it, and the Dexarm is measurably silent without
+            # it. RTS is not needed and stays low. What keeps the probe off a
+            # board wired for auto-reset is the vid:pid gate, not the line
+            # state -- in auto mode a non-Dexarm port is never opened at all.
+            assert self.dtr is True, "DTR not asserted at open(); arm cannot reply"
+            assert self.rts is False, "RTS asserted at open()"
+            assert self.exclusive is True, "port opened without an exclusive flock"
+            ns.opened_ports.append(self.port)
+            if open_behavior is not None:
+                open_behavior(self.port)
+            self.is_open = True
+
+        def reset_input_buffer(self):
+            pass
+
+        def reset_output_buffer(self):
+            pass
+
+        def write(self, data):
+            ns.writes.append((self.port, data))
+
+        def read_until(self, expected=b"\n"):
+            return reply
+
+        def read_all(self):
+            return reply
+
+        def close(self):
+            self.is_open = False
+
+    ns.Serial = _FakeSerial
+    return ns
+
+
+DEXARM_TTY = "/dev/ttyACM0"
+FOREIGN_TTY = "/dev/ttyUSB3"
+
+
+class TestArmProbeGating(unittest.TestCase):
+    """What ``_by_handshake`` is allowed to write G-code to.
+
+    This is the only scan step that writes to hardware. The regression it
+    guards: a `lager uart` session receiving M105 from a concurrent
+    /instruments/list, because the probe opened every tty it could glob.
+    """
+
+    def setUp(self):
+        # Candidate list: one real Dexarm VCP, one unrelated USB-serial cable
+        # of the kind SUPPORTED_USB does not list (so scan_usb never sees it
+        # and it can never reach the exclusion set).
+        self.ports = [DEXARM_TTY, FOREIGN_TTY]
+        patcher = mock.patch.object(
+            us, "glob", types.SimpleNamespace(glob=lambda pat: [
+                p for p in self.ports
+                if p.startswith(pat.rstrip("*"))
+            ]))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        cables = [
+            {"vid": "0483", "pid": "5740", "serial": "DEX1",
+             "port_path": "1-1.1", "tty": DEXARM_TTY},
+            # CH340: a real cable, absent from SUPPORTED_USB.
+            {"vid": "1a86", "pid": "7523", "serial": None,
+             "port_path": "1-1.2", "tty": FOREIGN_TTY},
+        ]
+        sid = mock.patch.object(
+            us, "_serial_id", types.SimpleNamespace(list_cables=lambda: cables))
+        sid.start()
+        self.addCleanup(sid.stop)
+
+        ser = mock.patch.object(us, "_get_serial_by_port", lambda port: "DEX1")
+        ser.start()
+        self.addCleanup(ser.stop)
+
+    def _run(self, ns, exclude=None, env=None):
+        with mock.patch.dict(sys.modules, {"serial": ns}), \
+                mock.patch.dict(os.environ, env or {}, clear=False):
+            return us._by_handshake(exclude=exclude or set())
+
+    def test_dexarm_is_still_found(self):
+        # The gate must not filter out the hardware it exists to detect.
+        ns = _fake_serial_ns()
+        out = self._run(ns)
+
+        self.assertEqual([d["name"] for d in out], ["Rotrix_Dexarm"])
+        self.assertEqual(out[0]["address"],
+                         "USB0::0x0483::0x5740::DEX1::INSTR")
+        self.assertEqual(ns.writes, [(DEXARM_TTY, b"M105\n")])
+
+    def test_foreign_vidpid_is_never_opened(self):
+        ns = _fake_serial_ns()
+        self._run(ns)
+
+        self.assertNotIn(FOREIGN_TTY, ns.opened_ports)
+        self.assertNotIn(FOREIGN_TTY, [port for port, _ in ns.writes])
+
+    def test_unresolvable_tty_fails_closed(self):
+        # A tty list_cables cannot account for is not a candidate. Absence of
+        # evidence must not become permission to write.
+        with mock.patch.object(
+                us, "_serial_id", types.SimpleNamespace(list_cables=lambda: [])):
+            ns = _fake_serial_ns()
+            out = self._run(ns)
+
+        self.assertEqual(out, [])
+        self.assertEqual(ns.constructed, 0)
+
+    def test_busy_port_is_skipped_not_probed(self):
+        # A live `lager uart` session holds the port with pyserial's flock.
+        # The probe must lose that race, not write through it.
+        def refuse(port):
+            raise _FakeSerialException(11, f"Could not exclusively lock port {port}")
+
+        ns = _fake_serial_ns(open_behavior=refuse)
+        out = self._run(ns)
+
+        self.assertEqual(out, [])
+        self.assertEqual(ns.writes, [])
+
+    def test_excluded_port_is_never_constructed(self):
+        ns = _fake_serial_ns()
+        out = self._run(ns, exclude={DEXARM_TTY})
+
+        self.assertEqual(out, [])
+        self.assertEqual(ns.constructed, 0)
+
+    def test_probe_off_opens_nothing(self):
+        ns = _fake_serial_ns()
+        out = self._run(ns, env={"LAGER_ARM_PROBE": "off"})
+
+        self.assertEqual(out, [])
+        self.assertEqual(ns.constructed, 0)
+        self.assertEqual(ns.opened_ports, [])
+
+    def test_force_widens_the_gate_but_keeps_every_other_guard(self):
+        # force exists to answer "is my arm being filtered out?". It drops the
+        # VID:PID gate ONLY — the exclusion set, the exclusive open and the
+        # deasserted modem lines still apply (the latter two are asserted
+        # inside the fake's open()).
+        ns = _fake_serial_ns()
+        self._run(ns, env={"LAGER_ARM_PROBE": "force"})
+        self.assertIn(FOREIGN_TTY, ns.opened_ports)
+
+        ns2 = _fake_serial_ns()
+        self._run(ns2, exclude={FOREIGN_TTY}, env={"LAGER_ARM_PROBE": "force"})
+        self.assertNotIn(FOREIGN_TTY, ns2.opened_ports)
+
+    def test_unrecognized_mode_falls_back_to_auto(self):
+        ns = _fake_serial_ns()
+        self._run(ns, env={"LAGER_ARM_PROBE": "yes-please"})
+        self.assertEqual(ns.opened_ports, [DEXARM_TTY])
+
+    def test_serial_falls_back_to_sysfs_when_udevadm_is_blind(self):
+        # _get_serial_by_port shells out to `udevadm info`, which reads the
+        # udev runtime database. A container without /run/udev mounted has no
+        # such database: udevadm still answers, with the device's P:/M: lines
+        # and no E: properties at all, so ID_SERIAL_SHORT is simply absent.
+        # An arm that had just answered the handshake was discarded here.
+        # sysfs carries the same serial and list_cables() has already read it.
+        with mock.patch.object(us, "_get_serial_by_port", lambda port: None):
+            ns = _fake_serial_ns()
+            out = self._run(ns)
+
+        self.assertEqual([d["name"] for d in out], ["Rotrix_Dexarm"])
+        self.assertEqual(out[0]["address"],
+                         "USB0::0x0483::0x5740::DEX1::INSTR")
+
+    def test_no_serial_from_either_source_is_not_reported(self):
+        cables = [{"vid": "0483", "pid": "5740", "serial": None,
+                   "port_path": "1-1.1", "tty": DEXARM_TTY}]
+        with mock.patch.object(us, "_get_serial_by_port", lambda port: None), \
+                mock.patch.object(
+                    us, "_serial_id",
+                    types.SimpleNamespace(list_cables=lambda: cables)):
+            ns = _fake_serial_ns()
+            out = self._run(ns)
+
+        self.assertEqual(out, [])
+
+    def test_reply_slower_than_a_fixed_sleep_is_still_read(self):
+        # The arm answers in more than the 10ms the probe used to sleep before
+        # a non-blocking read_all(), so sleep-then-read raced it and concluded
+        # "no reply" against hardware that was about to answer. The probe now
+        # blocks on read_until, bounded by the port's own timeout.
+        ns = _fake_serial_ns()
+        slow = {"n": 0}
+
+        class _Slow(ns.Serial):
+            def read_all(self):          # what the old code called
+                return b""
+            def read_until(self, expected=b"\n"):
+                slow["n"] += 1
+                return b"ok T:-15.00 /0.00 @:0\n"
+
+        ns.Serial = _Slow
+        out = self._run(ns)
+
+        self.assertEqual(slow["n"], 1)
+        self.assertEqual([d["name"] for d in out], ["Rotrix_Dexarm"])

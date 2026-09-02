@@ -10,6 +10,7 @@ CLI usage; this module keeps the box HTTP server self-contained.
 """
 
 import glob
+import logging
 import os
 import re
 import signal
@@ -18,7 +19,9 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, TypeVar
+from typing import Any, Callable, Dict, List, Optional, TypeVar
+
+logger = logging.getLogger(__name__)
 
 try:
     # Custom-device framework (manual cable-to-instrument assignments). Guarded
@@ -788,11 +791,94 @@ def _by_camera(v4l_root: Path = Path("/sys/class/video4linux")) -> List[dict]:
 
 _DEX_BAUD = 115200
 
+# The Dexarm presents an STM32 Virtual COM Port. This pair is deliberately NOT
+# in SUPPORTED_USB: that table drives scan_usb, and 0483:5740 is a generic VCP
+# id other hardware also uses, so a catalog entry would mis-name those. Here it
+# decides only who is worth a handshake -- and it is the same pair the
+# synthesized address below carries, so the two cannot drift.
+_DEXARM_VID = "0483"
+_DEXARM_PID = "5740"
 
-@with_timeout(seconds=10, default=[])
-def _by_handshake(*, exclude: Optional[set] = None) -> List[dict]:
+# Wall-clock budget for the whole probe. with_timeout() enforces this only on
+# the main thread (see its comment); _by_handshake re-checks it in the loop
+# because the path that actually runs -- a threaded HTTP worker serving
+# /instruments/list -- gets no signal-based timeout at all.
+_HANDSHAKE_BUDGET_S = 10
+
+
+def _arm_probe_mode() -> str:
+    """How aggressively to hunt for a Dexarm. Read from ``LAGER_ARM_PROBE``.
+
+    The handshake writes G-code into a serial port, so who it is allowed to
+    write to is a safety question, not a tuning one:
+
+        mode     vid:pid gate  exclusion set  exclusive open  DTR/RTS low
+        auto     on            on             on              on
+        force    OFF           on             on              on
+        off      (no probe at all)
+
+    ``force`` is NOT "the old behaviour" -- it widens the candidate list back
+    to every tty and nothing else. The exclusion set, the exclusive open and
+    the deasserted modem lines stay on in every mode, so no setting of this
+    variable can put G-code into a port another process is holding.
+
+    Read per call rather than at import so an operator can change it without
+    restarting the box. Anything unrecognized means ``auto``.
+    """
+    mode = os.environ.get("LAGER_ARM_PROBE", "auto").strip().lower()
+    return mode if mode in ("auto", "force", "off") else "auto"
+
+
+def _dexarm_candidates(ports: List[str]) -> List[str]:
+    """The subset of *ports* whose USB parent identifies as a Dexarm VCP.
+
+    Fails closed: a tty whose VID:PID cannot be resolved is not a candidate.
+    An unrecognized USB-serial chip -- a CH340, an FT230X, a vendor CDC bridge,
+    anything absent from SUPPORTED_USB -- is invisible to scan_usb and so never
+    reaches the exclusion set, which is exactly how a DUT console used to get
+    written to. Identity, not absence-from-a-list, is what earns a handshake.
+
+    Reuses serial_id.list_cables(): pure sysfs, no subprocess, no port opened,
+    and one record per tty, so every channel of a multi-interface chip is
+    covered without adding a fourth sysfs tty walk (serial_id.py:22).
+    """
+    return [p for p in ports if p in _dexarm_serials_by_tty()]
+
+
+def _dexarm_serials_by_tty() -> Dict[str, Any]:
+    """``{tty: usb serial}`` for every live tty whose parent is a Dexarm VCP.
+
+    Empty on any failure, which is what makes the gate fail closed.
+    """
+    if _serial_id is None:
+        return {}
     try:
-        from serial import Serial, SerialException
+        cables = _serial_id.list_cables()
+    except Exception:
+        logger.exception("arm probe: cable enumeration failed; probing nothing")
+        return {}
+    return {
+        c["tty"]: c.get("serial")
+        for c in cables
+        if c.get("vid") == _DEXARM_VID and c.get("pid") == _DEXARM_PID and c.get("tty")
+    }
+
+
+@with_timeout(seconds=_HANDSHAKE_BUDGET_S, default=[])
+def _by_handshake(*, exclude: Optional[set] = None) -> List[dict]:
+    """Find a Dexarm by writing M105 at it and reading the reply.
+
+    This is the only scan step that WRITES to hardware, so it is gated three
+    ways: the port must look like a Dexarm, must not be owned by anything the
+    box knows about, and must not be held by another process.
+    """
+    mode = _arm_probe_mode()
+    if mode == "off":
+        logger.info("arm probe: disabled (LAGER_ARM_PROBE=off)")
+        return []
+
+    try:
+        from serial import Serial
     except ImportError:
         return []
 
@@ -800,32 +886,95 @@ def _by_handshake(*, exclude: Optional[set] = None) -> List[dict]:
     exclude = exclude or set()
     ports = sorted(glob.glob("/dev/ttyUSB*") + glob.glob("/dev/ttyACM*"))
 
-    for port in ports:
-        if port in exclude:
+    # One sysfs pass serves both the gate and the serial fallback below.
+    dexarm_serials = _dexarm_serials_by_tty()
+
+    skipped = {p: "owned" for p in ports if p in exclude}
+    candidates = [p for p in ports if p not in exclude]
+    if mode != "force":
+        for p in candidates:
+            if p not in dexarm_serials:
+                skipped[p] = "not a Dexarm vid:pid"
+        candidates = [p for p in candidates if p in dexarm_serials]
+
+    probed = []
+    deadline = time.monotonic() + _HANDSHAKE_BUDGET_S
+    for port in candidates:
+        if time.monotonic() >= deadline:
+            skipped[port] = "probe budget spent"
             continue
         try:
-            with Serial(port, _DEX_BAUD, timeout=1) as ser:
-                time.sleep(0.01)
-                ser.reset_input_buffer()
-                ser.reset_output_buffer()
-                ser.write(b"M105\n")
-                time.sleep(0.01)
-                resp = ser.read_all().decode(errors="ignore")
-                if "ok" not in resp.lower() and "dexarm" not in resp.lower():
-                    continue
-        except Exception:
+            # Construct unopened so the modem lines are set BEFORE the port is
+            # opened. exclusive= takes pyserial's non-blocking flock, the same
+            # lock UARTBridge holds -- without it pyserial skips the flock
+            # branch entirely and opens straight through a live session's lock.
+            #
+            # DTR must be ASSERTED: a CDC-ACM device gates its transmitter on
+            # it, and the Dexarm is measurably silent without it (dtr=False ->
+            # no reply at all; dtr=True -> "ok T:..."). RTS is not required and
+            # stays low. What protects a board wired for DTR/RTS auto-reset is
+            # the vid:pid gate above, which is strictly stronger than holding a
+            # line low would be: in auto mode the probe never opens a port that
+            # is not already a Dexarm. LAGER_ARM_PROBE=force drops that gate and
+            # so can reset such a board -- which is why it is opt-in.
+            ser = Serial(port=None, baudrate=_DEX_BAUD, timeout=1, exclusive=True)
+            ser.port = port
+            ser.dtr = True
+            ser.rts = False
+            ser.open()
+        except Exception as exc:
+            # A held port surfaces as SerialException carrying EAGAIN/EBUSY;
+            # everything else (vanished node, permissions) is equally a skip.
+            skipped[port] = "busy or unopenable: %s" % (exc,)
             continue
 
-        serial_number = _get_serial_by_port(port)
+        probed.append(port)
+        try:
+            time.sleep(0.01)
+            ser.reset_input_buffer()
+            ser.reset_output_buffer()
+            ser.write(b"M105\n")
+            # Block for the reply rather than sleeping a fixed 10 ms and
+            # reading whatever happened to arrive: the arm answers in more
+            # than 10 ms, so the old sleep-then-read_all() raced it and
+            # concluded "no reply" against hardware that was about to answer.
+            # Bounded by the port's own timeout=1.
+            resp = ser.read_until(b"\n").decode(errors="ignore")
+        except Exception as exc:
+            skipped[port] = "handshake failed: %s" % (exc,)
+            continue
+        finally:
+            try:
+                ser.close()
+            except Exception:
+                pass
+
+        if "ok" not in resp.lower() and "dexarm" not in resp.lower():
+            skipped[port] = "no arm reply"
+            continue
+
+        # udevadm reads the udev runtime database, which a container without
+        # /run/udev mounted does not have -- it answers with the device's P:/M:
+        # lines and no E: properties at all, so ID_SERIAL_SHORT and friends are
+        # simply absent and an arm that just answered the handshake was thrown
+        # away here. sysfs carries the same serial and is readable either way,
+        # so fall back to the value list_cables() already read.
+        serial_number = _get_serial_by_port(port) or dexarm_serials.get(port)
         if not serial_number:
+            skipped[port] = "answered but has no USB serial"
             continue
 
         results.append({
             "name": "Rotrix_Dexarm",
-            "address": f"USB0::0x0483::0x5740::{serial_number}::INSTR",
+            "address": f"USB0::0x{_DEXARM_VID}::0x{_DEXARM_PID}::{serial_number}::INSTR",
             "net_type": ["arm"],
             "channels": {"arm": [port]},
         })
+
+    logger.info(
+        "arm probe (mode=%s): wrote M105 to %s; skipped %s; found %d",
+        mode, probed or "nothing", skipped or "nothing", len(results),
+    )
     return results
 
 
@@ -955,14 +1104,85 @@ def _apply_custom_devices(instruments: List[dict], custom: List[dict]) -> List[d
 #  Top-level scan
 # ---------------------------------------------------------------------------
 
+def _instrument_ttys(records: List[dict]) -> set:
+    """Every tty the given instrument records own.
+
+    Both keys, not just one: ``tty_path`` is only the primary (lowest-numbered)
+    interface, kept single-valued for back-compat, while ``tty_paths`` is the
+    full list. Reading ``tty_path`` alone leaves channels B/C/D of an
+    FT2232H/FT4232H unprotected. This is the union _apply_custom_devices
+    already does.
+    """
+    ttys = set()
+    for rec in records:
+        ttys.update(rec.get("tty_paths") or [])
+        if rec.get("tty_path"):
+            ttys.add(rec["tty_path"])
+    return ttys
+
+
+def _saved_net_ttys() -> set:
+    """Every tty owned by a saved uart net.
+
+    Deliberately more permissive than ``has_durable_identity()``. That
+    predicate is False for a net pinned to a bare ``/dev/ttyUSB0`` with no
+    ``usb_identity`` snapshot, so ``list_saved()`` attaches no ``live_path`` to
+    it -- and those legacy records are the ones most likely to exist on a
+    deployed box, because the snapshot is only written for nets saved since
+    that code landed and only when the device was plugged in at save time. A
+    stale tty in an exclusion set costs nothing; a missing one is a G-code
+    write into a live console.
+
+    Note this layer cannot be load-bearing on its own: the cache behind
+    list_saved() turns a missing, corrupt or unreadable saved_nets.json into
+    an empty list, indistinguishable from "no nets saved". The VID:PID gate in
+    _dexarm_candidates is what actually confines the probe.
+
+    Imported lazily and guarded so usb_scanner stays loadable standalone,
+    without the lager package (test_usb_scanner_uart_fallback.py does exactly
+    that), and so a partial deployment degrades to "no saved nets".
+    """
+    ttys = set()
+    try:
+        from lager.nets.net import Net
+        from lager.protocols.uart.uart_net import live_uart_path
+        saved = Net.list_saved()
+    except Exception:
+        logger.exception("arm probe: saved nets unreadable; exclusion set is scan-only")
+        return ttys
+
+    for rec in saved or []:
+        if not isinstance(rec, dict) or rec.get("role") != "uart":
+            continue
+        # live_path is present only when list_saved could resolve it; ask
+        # directly otherwise, since it is cheap and returns None rather than
+        # raising for a record it cannot resolve.
+        live = rec.get("live_path") or live_uart_path(rec)
+        if live:
+            ttys.add(live)
+        # pin is polymorphic: a tty path, a USB serial number, or a JSON
+        # number. Only the path form is a tty, hence the isinstance guard.
+        pin = rec.get("device_path") or rec.get("pin") or ""
+        if isinstance(pin, str) and pin.startswith("/dev/"):
+            ttys.add(pin)
+            # A /dev/serial/by-id/... pin names the same port the probe globs
+            # as /dev/ttyUSBn; exclude both spellings.
+            try:
+                ttys.add(os.path.realpath(pin))
+            except Exception:
+                pass
+    return ttys
+
+
 def list_instruments() -> List[dict]:
     """Return all detected instruments, sorted by name."""
     custom = custom_instruments()
     instruments = scan_usb()
-    # Custom-assigned cables join the handshake exclusion set: writing G-code
-    # at a bench instrument (e.g. a DP711 supply) could actuate it.
-    uart_ports = {dev.get("tty_path") for dev in instruments if dev.get("tty_path")}
-    uart_ports |= {dev["tty_path"] for dev in custom if dev.get("tty_path")}
+    # Everything the box knows owns a tty joins the handshake exclusion set:
+    # writing G-code at a bench instrument (e.g. a DP711 supply) could actuate
+    # it, and writing it at a saved uart net corrupts a live DUT console.
+    uart_ports = _instrument_ttys(instruments) | _instrument_ttys(custom)
+    uart_ports |= _saved_net_ttys()
     for dex in _by_handshake(exclude=uart_ports):
         merge_or_append(dex, instruments)
     for cam in _by_camera():
