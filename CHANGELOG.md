@@ -8,6 +8,28 @@ All notable changes to the Lager platform are documented here. For detailed rele
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Changed
+
+- **`secure_box_firewall.sh` no longer claims an outcome it cannot deliver.**
+  The script ended a successful run with `[OK] External access blocked for
+  Lager services`, and `SECURITY.md` says the opposite: UFW governs traffic to
+  the host, and it does not filter the ports the box's containers publish,
+  because Docker installs its forwarding rules ahead of the host chain. Both
+  statements described the same deployment and the script's was the wrong one.
+  An operator reads that line last, so it is the impression they keep, and the
+  policy correcting it lives in a file they have no reason to open at that
+  moment.
+
+  The script now reports what it configured rather than what it achieved --
+  `[OK] Host firewall configured for Lager services` -- and closes with a note
+  stating the limit and pointing at the Security Model section of
+  `SECURITY.md`. The same overstatement is corrected in the script's own
+  Security Model header, in the progress line that announced it was "blocking"
+  Lager services from external networks, and in the deployment reference.
+
+  No rule the script writes changes. Whether a rule then governs a
+  container-published port is a separate question, tracked separately.
+
 ### Fixed
 
 - **The bench watchdog alarmed on a late night as though it were a missed

@@ -192,7 +192,12 @@ ssh lagerdata@<BOX_IP> 'sudo /tmp/secure_box_firewall.sh --corporate-vpn tun0'
   - Corporate VPN (if specified)
   - Docker bridge (docker0)
   - Localhost (lo)
-- Explicitly blocks Lager ports from external networks
+- Writes deny rules for the Lager ports on every other interface
+
+These rules govern traffic to the host. They do **not** filter the ports the box's
+containers publish -- Docker installs its forwarding rules ahead of the host chain, so a
+published service port stays reachable from anywhere that can route to the box whatever
+`ufw status` reports. See the Security Model section of `SECURITY.md`.
 
 ---
 
