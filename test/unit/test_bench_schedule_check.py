@@ -24,8 +24,8 @@ watchdog that conflates them is how the last one went quiet:
   gap    one missed night (a ~48h interval)
   stale  nothing is arriving at all -- the backstop, because if the cron is
          dead no second run ever arrives to form a gap
-  drift  the cadence slipping a little each night, which is the leading
-         indicator the old check could not see
+  lateness  the cadence slipping later against the declared cron each night,
+            which is the leading indicator the old check could not see
 
 The healthy cases matter as much as the alerting ones. A watchdog that cries
 wolf gets muted, and a muted watchdog is the state this one was already in.

@@ -8,6 +8,26 @@ All notable changes to the Lager platform are documented here. For detailed rele
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Fixed
+
+- **The bench watchdog alarmed on a late night as though it were a missed
+  one.** `bench-watchdog.yml` carried its own copy of the thresholds
+  `tools/bench_schedule_check.py` reads, and the two drifted when the tool was
+  rewritten from interval-based to lateness-based checking. Two defects fell
+  out. `SCHEDULE_GAP_ALERT_HOURS` was set to 26, overriding the tool's 36 -- the
+  gap check exists to catch a night that certainly did not run, which is why its
+  threshold sits well above the 24h nominal, and at 26h it fired on a 26.7h
+  night that had merely started late. `SCHEDULE_DRIFT_WARN_HOURS` was still set
+  and read by nothing, the check it configured having been replaced by one
+  reading `SCHEDULE_LATENESS_WARN_HOURS`; two further names the tool reads were
+  never set and ran on defaults.
+
+  Every threshold now lives in the tool alone, where each is documented with its
+  reasoning, and `test/unit/test_bench_watchdog_env.py` fails if one reappears
+  in the workflow. Nothing could catch this before: the tool's tests pass
+  thresholds explicitly and never read the workflow, and neither `zizmor` nor
+  `actionlint` checks that an `env:` name is one the consuming script reads.
+
 ## [0.45.0] - 2026-09-01
 
 ### Changed
