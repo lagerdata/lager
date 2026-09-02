@@ -28,6 +28,27 @@ All notable changes to the Lager platform are documented here. For detailed rele
   thresholds explicitly and never read the workflow, and neither `zizmor` nor
   `actionlint` checks that an `env:` name is one the consuming script reads.
 
+- **Seven range checks in the instrument mappers rejected nothing.** Each was
+  written with its bounds inverted -- `if 4 > bits > 32:` -- which Python
+  chains into `4 > bits and bits > 32`. No number satisfies both, so the
+  branch was dead and the `raise` under it unreachable, while the message
+  promised a range. An out-of-range width passed validation and reached the
+  instrument; what happens there is not established, because the write may be
+  clamped, rejected silently, or accepted into a state the caller did not ask
+  for.
+
+  Corrected to `not (LO <= x <= HI)`, the form `rigol_mso5000.py`'s
+  cursor-position checks already use, at: the UART trigger data width, the I2C
+  trigger address width and data byte width, the SPI trigger data width, the
+  UART and SPI bus data widths, and the Keithley battery state-of-charge.
+  Three of the messages said only "is not a valid value" and now name the
+  range, as their siblings already did.
+
+  `test/unit/box/test_mapper_range_checks.py` pins both halves: every site
+  rejects at each end and still accepts a valid value, and a tree-wide scan
+  fails on this shape anywhere in `box/` or `cli/` -- including in a
+  validation nobody has written yet.
+
 ## [0.45.0] - 2026-09-01
 
 ### Changed

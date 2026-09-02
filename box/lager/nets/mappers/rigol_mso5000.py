@@ -649,8 +649,8 @@ class TriggerSettingsUART_RigolMSO5000FunctionMapper(LevelCheckMixin):
         if stopbits!=None:
             self.set_trigger_uart_stopbits(stopbits)
         if bits!=None: 
-            if 5 > bits > 8:
-                raise ValueError(f"Invalid width value {bits}")            
+            if not (5 <= bits <= 8):
+                raise ValueError(f"Invalid width value {bits}. Should be between 5 and 8 inclusive")
             self.set_trigger_uart_data_width(bits)                       
 
     def set_trigger_on_start(self):
@@ -729,8 +729,8 @@ class TriggerSettingsI2C_RigolMSO5000FunctionMapper(LevelCheckMixin):
         if bits==None:
             bits = int(self.get_trigger_i2c_address_width())
         else:
-            if 7 > bits > 10:
-                raise ValueError(f"Bits {bits} not valid. Should be between 7 and 10 inclusive")            
+            if not (7 <= bits <= 10):
+                raise ValueError(f"Bits {bits} not valid. Should be between 7 and 10 inclusive")
             if bits == 9:
                 raise ValueError(f"{bits} not a valid bit count ")            
             self.set_trigger_i2c_address_width(bits)    
@@ -752,7 +752,7 @@ class TriggerSettingsI2C_RigolMSO5000FunctionMapper(LevelCheckMixin):
         if width==None:
             width=int(self.get_trigger_i2c_bytes())
         else:
-            if 1 > width > 5:
+            if not (1 <= width <= 5):
                 raise ValueError(f"{width} is not a valid value. Should be between 1 and 5 inclusive")
             self.set_trigger_i2c_bytes(width)
         if data !=None:
@@ -851,7 +851,7 @@ class TriggerSettingsSPI_RigolMSO5000FunctionMapper(LevelCheckMixin):
         if bits==None:
             bits=int(self.get_trigger_spi_width())
         else:
-            if 4 > bits > 32:
+            if not (4 <= bits <= 32):
                 raise ValueError(f"Data Width {bits} out of range. Should be between 4 and 32 inclusive")
             self.set_trigger_spi_width(bits)
 
@@ -1585,8 +1585,8 @@ class BusUART_RigolMSO5000FunctionMapper(Bus_RigolMSO5000FunctionMapper):
         self.set_bus_uart_stop_bits(1, bits)
 
     def set_data_bits(self, bits):
-        if 5 > bits > 9:
-            raise ValueError(f"{bits} is not a valid value")
+        if not (5 <= bits <= 9):
+            raise ValueError(f"{bits} is not a valid value. Should be between 5 and 9 inclusive")
         self.set_bus_uart_data_bits(1, bits)
 
     def set_packet_ending_null(self):
@@ -1730,8 +1730,8 @@ class BusSPI_RigolMSO5000FunctionMapper(Bus_RigolMSO5000FunctionMapper):
         self.set_bus_spi_data_endianness(1, BusEndianness.LSB)
 
     def set_data_width(self, bits):
-        if 4 > bits > 32:
-            raise ValueError(f"{bits} is not a valid value")
+        if not (4 <= bits <= 32):
+            raise ValueError(f"{bits} is not a valid value. Should be between 4 and 32 inclusive")
         self.set_bus_spi_data_bits(1,bits)
 
     def __getattr__(self, attr):

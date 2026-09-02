@@ -57,7 +57,7 @@ class KeithleyBatteryFunctionMapper:
 
         if soc!=None:
             if soc:
-                if 100 < soc < 0:
+                if not (0 <= soc <= 100):
                     raise ValueError("SOC must be between 0 and 100")
                 self.set_soc(soc)
 
