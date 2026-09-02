@@ -16,7 +16,14 @@
 #   - Corporate VPN (if specified)
 #   - Docker bridge (docker0)
 #   - Localhost (lo)
-# - External access explicitly blocked for Lager service ports
+# - Deny rules written for Lager service ports on every other interface
+#
+# Scope of all of the above: these rules govern traffic to the HOST. They do
+# not filter the ports the box's containers publish. Docker installs its own
+# forwarding rules ahead of the host chain, so a published service port is
+# reachable from anywhere that can route to the box, whatever `ufw status`
+# reports. See the Security Model section of SECURITY.md -- treat network
+# reachability as the boundary, not this script.
 #
 # Usage:
 #   sudo ./secure_box_firewall.sh [--corporate-vpn IFACE]
@@ -213,7 +220,7 @@ if [ -n "$CORPORATE_VPN_IFACE" ]; then
 fi
 
 # Explicitly deny Lager service ports from other interfaces
-echo -e "${YELLOW}Blocking Lager services from external networks${NC}"
+echo -e "${YELLOW}Writing deny rules for Lager services on other interfaces${NC}"
 for PORT in "${LAGER_PORTS[@]}"; do
     ufw deny "$PORT"/tcp comment "Lager service (block external)"
 done
@@ -247,5 +254,10 @@ fi
 if [ -n "$CORPORATE_VPN_IFACE" ]; then
     echo -e "  - Corporate VPN ($CORPORATE_VPN_IFACE)"
 fi
-echo -e "${GREEN}[OK] External access blocked for Lager services${NC}"
+echo -e "${GREEN}[OK] Host firewall configured for Lager services${NC}"
+echo ""
+echo -e "${YELLOW}Note: these rules govern traffic to the host. They do not filter${NC}"
+echo -e "${YELLOW}ports the box's containers publish -- Docker's forwarding rules run${NC}"
+echo -e "${YELLOW}ahead of the host chain. See the Security Model section of${NC}"
+echo -e "${YELLOW}SECURITY.md: treat network reachability as the boundary.${NC}"
 echo ""
