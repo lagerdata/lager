@@ -100,6 +100,7 @@ class TestSummaryParsing:
 
         class Result:
             returncode = 0
+            stderr = ''
             stdout = '1220 passed, 2 xfailed in 16.51s\n'
 
         def fake_run(cmd, **kwargs):
@@ -121,6 +122,7 @@ class TestSummaryParsing:
     def test_summary_lines_parse(self, monkeypatch, summary, expected):
         class Result:
             returncode = 0
+            stderr = ''
             stdout = f'{summary}\n'
 
         monkeypatch.setattr(checker.subprocess, 'run',
@@ -131,6 +133,7 @@ class TestSummaryParsing:
         # Reporting 0 passed would let --fix wipe a row to nothing.
         class Result:
             returncode = 0
+            stderr = ''
             stdout = 'no summary here\n'
 
         monkeypatch.setattr(checker.subprocess, 'run',
@@ -138,3 +141,82 @@ class TestSummaryParsing:
         with pytest.raises(SystemExit) as excinfo:
             checker.run_suite(['test/unit/cli/'])
         assert excinfo.value.code == 2
+
+
+class TestSuiteFailureIsClassified:
+    """A missing plugin is an environment problem, not a failing suite.
+
+    `--timeout=60` needs pytest-timeout, and nothing a contributor can install
+    declares it: `test/requirements-unit.txt` does not mention pytest at all,
+    and CI installs the pin inline. So on an environment built from the repo's
+    own files, every suite dies at argument parsing and the checker reported
+    `suite FAILED`, naming a suite that passes when run by hand. Four fresh
+    environments hit it in one day.
+
+    pytest rejects an unrecognized argument before collecting anything, exits
+    4, and writes the reason to stderr -- which the checker captured and threw
+    away, so the message named a healthy suite with an empty stdout tail
+    underneath it.
+    """
+
+    @staticmethod
+    def _result(returncode, stdout='', stderr=''):
+        class Result:
+            pass
+        Result.returncode = returncode
+        Result.stdout = stdout
+        Result.stderr = stderr
+        return Result()
+
+    def _run(self, monkeypatch, result):
+        monkeypatch.setattr(checker.subprocess, 'run',
+                            lambda cmd, **kwargs: result)
+        with pytest.raises(SystemExit) as excinfo:
+            checker.run_suite(['test/unit/cli/'])
+        return excinfo.value.code
+
+    def test_a_missing_timeout_plugin_names_the_plugin_not_the_suite(
+            self, monkeypatch, capsys):
+        # Verbatim from pytest 9 with pytest-timeout absent: stdout is empty
+        # and the whole explanation is on stderr.
+        result = self._result(
+            4,
+            stderr=('ERROR: usage: python -m pytest [options] [file_or_dir]\n'
+                    'python -m pytest: error: unrecognized arguments: '
+                    '--timeout=60\n'),
+        )
+        code = self._run(monkeypatch, result)
+        assert code == 2
+
+        err = capsys.readouterr().err
+        assert 'pytest-timeout' in err, (
+            'the message must name the missing plugin -- that is the whole '
+            f'complaint. Got: {err!r}'
+        )
+        assert 'pip install' in err, 'and it must say how to install it'
+        assert 'suite FAILED' not in err, (
+            'the suite is fine and passes when run by hand. Calling it failed '
+            'is what sent four people looking at the tests.'
+        )
+
+    def test_a_real_suite_failure_still_says_the_suite_failed(
+            self, monkeypatch, capsys):
+        """The classification must not swallow the case it is narrowing."""
+        result = self._result(1, stdout='1 failed, 1219 passed in 16.51s\n')
+        assert self._run(monkeypatch, result) == 2
+
+        err = capsys.readouterr().err
+        assert 'suite FAILED' in err
+        assert 'pytest-timeout' not in err
+
+    def test_a_failing_suite_shows_stderr_as_well_as_stdout(
+            self, monkeypatch, capsys):
+        """Discarding stderr is what left the old message with nothing under it."""
+        result = self._result(1, stdout='collected 0 items\n',
+                              stderr='ImportError: no module named lager\n')
+        assert self._run(monkeypatch, result) == 2
+
+        err = capsys.readouterr().err
+        assert 'ImportError' in err, (
+            'a failure explained only on stderr must still reach the reader'
+        )

@@ -46,8 +46,8 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 181 |
-| `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 176 (+1 skipped) |
-| | **Total gated** | **4460** |
+| `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 179 (+1 skipped) |
+| | **Total gated** | **4463** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never
@@ -657,7 +657,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_bench_cleanup_timeouts.py` | Tree-wide guard: every `if: always()` step on a `self-hosted` bench job carries `timeout-minutes` and `continue-on-error`, and the bench jobs are still serialized on one non-cancelling concurrency group |
 | `test_bench_schedule_check.py` | `tools/bench_schedule_check.py`: the nightly cadence signals kept distinct -- a missed night (gap), a dead cron (stale), and a schedule drifting later (lateness vs the cron parsed from `nightly-bench.yml`), which spacing alone cannot see |
 | `test_bench_watchdog_env.py` | Pins `bench-watchdog.yml`'s `env:` block against the names `tools/bench_schedule_check.py` reads: the workflow must set no threshold at all (a second copy is how the gap threshold came to override 36 with 26 and alarm on a late night), and every threshold the tool reads must carry a default |
-| `test_coverage_checker.py` | `tools/check_coverage_counts.py`: platform-gated rows are not drift (and `--fix` must not rewrite them), plus the anchored summary parse `FORCE_COLOR` defeated |
+| `test_coverage_checker.py` | `tools/check_coverage_counts.py`: platform-gated rows are not drift (and `--fix` must not rewrite them), the anchored summary parse `FORCE_COLOR` defeated, and a missing `pytest-timeout` reported as the missing plugin rather than as a failing suite |
 | `test_group_usage.py` | Usage-line formatting for CLI command groups (CommandFirstUsageMixin / LagerGroup) |
 | `test_install_wheel.py` | install-wheel command: wheel filename to package name parsing |
 | `test_no_global_os_path_patches.py` | Tree-wide guard: no test may patch `os.path` (process-global; on Python >= 3.14 it also rewrites every `pathlib.Path.exists()`) — patch the module's seam or use a real temp path |
