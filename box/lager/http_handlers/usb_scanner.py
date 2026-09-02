@@ -829,26 +829,21 @@ def _arm_probe_mode() -> str:
     return mode if mode in ("auto", "force", "off") else "auto"
 
 
-def _dexarm_candidates(ports: List[str]) -> List[str]:
-    """The subset of *ports* whose USB parent identifies as a Dexarm VCP.
+def _dexarm_serials_by_tty() -> Dict[str, Any]:
+    """``{tty: usb serial}`` for every live tty whose parent is a Dexarm VCP.
 
-    Fails closed: a tty whose VID:PID cannot be resolved is not a candidate.
-    An unrecognized USB-serial chip -- a CH340, an FT230X, a vendor CDC bridge,
-    anything absent from SUPPORTED_USB -- is invisible to scan_usb and so never
-    reaches the exclusion set, which is exactly how a DUT console used to get
-    written to. Identity, not absence-from-a-list, is what earns a handshake.
+    Membership is the handshake gate; the value is the serial the arm's VISA
+    address needs, which is why one lookup serves both. Fails closed -- empty
+    on any failure, and a tty whose VID:PID cannot be resolved is simply not a
+    candidate. An unrecognized USB-serial chip (a CH340, an FT230X, a vendor
+    CDC bridge, anything absent from SUPPORTED_USB) is invisible to scan_usb
+    and so never reaches the exclusion set, which is exactly how a DUT console
+    used to get written to. Identity, not absence-from-a-list, is what earns a
+    handshake.
 
     Reuses serial_id.list_cables(): pure sysfs, no subprocess, no port opened,
     and one record per tty, so every channel of a multi-interface chip is
     covered without adding a fourth sysfs tty walk (serial_id.py:22).
-    """
-    return [p for p in ports if p in _dexarm_serials_by_tty()]
-
-
-def _dexarm_serials_by_tty() -> Dict[str, Any]:
-    """``{tty: usb serial}`` for every live tty whose parent is a Dexarm VCP.
-
-    Empty on any failure, which is what makes the gate fail closed.
     """
     if _serial_id is None:
         return {}
@@ -1136,7 +1131,7 @@ def _saved_net_ttys() -> set:
     Note this layer cannot be load-bearing on its own: the cache behind
     list_saved() turns a missing, corrupt or unreadable saved_nets.json into
     an empty list, indistinguishable from "no nets saved". The VID:PID gate in
-    _dexarm_candidates is what actually confines the probe.
+    _dexarm_serials_by_tty is what actually confines the probe.
 
     Imported lazily and guarded so usb_scanner stays loadable standalone,
     without the lager package (test_usb_scanner_uart_fallback.py does exactly
