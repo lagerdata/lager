@@ -467,7 +467,11 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
                 'nets': nets,
             })
         elif self.path == '/instruments/list':
-            # Scan USB devices and return detected instruments
+            # Scan USB devices and return detected instruments. Arm detection
+            # writes a G-code handshake at candidate ports, so log who asked:
+            # the scan is never cached, and this is the only record of which
+            # caller caused a given write.
+            logger.info("instruments scan requested by %s", self.client_address[0])
             try:
                 from lager.http_handlers.usb_scanner import list_instruments
                 self.send_json_response(200, list_instruments())

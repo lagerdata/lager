@@ -32,6 +32,66 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ### Fixed
 
+- **The instrument scan wrote G-code into serial ports it did not own,
+  including live DUT consoles.** A `lager uart` session would periodically
+  receive the literal text `M105`, which the DUT echoed and answered with
+  `Error: Unknown command: M105`. `M105` is the handshake the box uses to find
+  a Dexarm robot arm: `_by_handshake` globbed every `/dev/ttyUSB*` and
+  `/dev/ttyACM*` and wrote to each one not in an exclusion set. It opened
+  without `exclusive=`, so pyserial skipped its flock branch entirely and
+  opened straight through the lock a live session was holding -- flock is
+  advisory and only arbitrates between processes that both take it.
+
+  The exclusion set had three holes of its own. It was an allowlist of
+  *recognized* hardware, built from `scan_usb`, which only emits entries for
+  VID:PIDs in `SUPPORTED_USB` -- so a CH340, an FT230X, a vendor CDC bridge or
+  any other unlisted USB-serial chip was invisible to it and got written to.
+  It read `tty_path`, the primary interface only, leaving channels B/C/D of an
+  FT2232H/FT4232H unprotected while channel A was excluded. And it never
+  consulted saved nets at all, so a net's own console port was not excluded
+  unless the scan happened to recognize its adapter.
+
+  The handshake is now gated on the Dexarm's `0483:5740` -- a pair the code
+  already hardcoded when synthesizing the arm's address, but never used to
+  decide whom to write to -- resolved through the existing sysfs cable
+  enumeration and failing closed, so a tty whose identity cannot be
+  established is not written to. The exclusion set gains every tty of every
+  multi-interface chip and every tty owned by a saved `uart` net, including
+  legacy nets pinned to a bare `/dev/tty*` that carry no durable USB identity.
+  Ports are opened with `exclusive=True` and skipped when held. What keeps the
+  probe away from a board wired for DTR/RTS auto-reset is that gate rather than
+  the line state: in the default mode a port that is not already a Dexarm is
+  never opened at all, which is strictly stronger than opening it with a line
+  held low. DTR is asserted, because a CDC-ACM device gates its transmitter on
+  it and the arm is silent without it; RTS is not needed and stays low.
+  `LAGER_ARM_PROBE` sets `auto` (default), `off`, or `force`; `force` widens the
+  VID:PID gate only and keeps every other guard.
+
+- **An attached Dexarm was not detected at all, for two further reasons.** Found
+  while validating the above against real hardware. The arm answered the
+  handshake and was then discarded, because `_get_serial_by_port` resolves the
+  USB serial with `udevadm info`, which reads the udev runtime database -- a
+  container without `/run/udev` mounted has none, so udevadm returns the
+  device's `P:`/`M:` lines and no `E:` properties at all, and every
+  `ID_SERIAL*` key the code looks for is simply absent. It now falls back to
+  the serial sysfs already carries, which the cable enumeration has read
+  anyway. Separately, the probe slept a fixed 10ms and then did a
+  non-blocking `read_all()`; the arm replies in more than that, so the read
+  raced hardware that was about to answer. It now blocks on `read_until`,
+  bounded by the port's existing one-second timeout.
+
+  Two supporting fixes. The probe's `@with_timeout(seconds=10)` is
+  SIGALRM-based and a documented no-op off the main thread, so under the
+  threaded HTTP server -- the path that actually serves `/instruments/list` --
+  it had no overall cap at all; the loop now enforces the same budget
+  directly. And both `/instruments/list` handlers now log the requester: the
+  scan is never cached, so every request is a full re-probe, and this is the
+  only record of which caller caused a given write.
+
+  `test/unit/box/test_usb_scanner_custom.py` pins all of it, including that a
+  real Dexarm is still detected -- the gate must not filter out the hardware
+  it exists to find.
+
 - **The bench watchdog alarmed on a late night as though it were a missed
   one.** `bench-watchdog.yml` carried its own copy of the thresholds
   `tools/bench_schedule_check.py` reads, and the two drifted when the tool was
