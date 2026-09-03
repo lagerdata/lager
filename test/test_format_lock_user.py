@@ -28,6 +28,19 @@ class TestFormatLockUser:
     def test_email_with_colons_preserved(self):
         assert format_lock_user('dashboard:uuid:user:with:colons@example.com') == 'user:with:colons@example.com'
 
+    def test_four_part_reservation_returns_name(self):
+        # <origin>:<id>:<name>:<email> — services that record a display
+        # name alongside the email. Show the name, not "name:email".
+        assert format_lock_user(
+            'dashboard:bb61a442-4840-4df0-9a69-de01e57e627b:Chris Fisher:chris@example.com'
+        ) == 'Chris Fisher'
+
+    def test_four_part_name_without_colon_is_taken_verbatim(self):
+        assert format_lock_user('portal:42:alice:alice@example.com') == 'alice'
+
+    def test_four_part_with_empty_name_falls_back_to_three_part(self):
+        assert format_lock_user('portal:42::alice@example.com') == ':alice@example.com'
+
     def test_non_email_reservation_left_visible(self):
         # Without an @ in the last segment we can't be sure it's a
         # reservation, so the raw string stays visible.
