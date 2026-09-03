@@ -105,6 +105,24 @@ All notable changes to the Lager platform are documented here. For detailed rele
   `IdentitiesOnly` on its keyed attempt because it has to isolate whether that
   particular key is the one being accepted.
 
+- **`setup_battery(soc=0)` set nothing and said nothing.** The Keithley battery
+  mapper guarded `soc` with `!= None` and then again with a bare truthiness
+  test. `0` is falsy, so a state of charge of 0 fell through both the range
+  check and `set_soc`: no exception, no log line, no return value, and the
+  simulation kept whatever charge it already had.
+
+  0 is the interesting end of the range for a discharge test, and it sits
+  inside the range the neighbouring error message advertises -- so the message
+  said 0 was acceptable while the code discarded it. Every other parameter on
+  `setup_battery` (`voltage_full`, `voltage_empty`, `current_limit`, `voc`,
+  `capacity`, `sim_mode`, `model`) is guarded by `!= None` alone, which is why
+  the extra test read as belt-and-braces rather than as a behaviour change. The
+  driver underneath always handled 0 correctly; only the mapper dropped it.
+
+  This is a behaviour change, not a cleanup: `set_soc(0)` is now called where it
+  previously was not.
+
+
 ## [0.45.1] - 2026-09-02
 
 ### Changed

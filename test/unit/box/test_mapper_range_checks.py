@@ -118,10 +118,12 @@ class FakeDevice:
 
     def __init__(self):
         self.calls = []
+        self.forwarded = []
 
     def __getattr__(self, name):
         def record(*args, **kwargs):
             self.calls.append(name)
+            self.forwarded.append((name, args, kwargs))
             return 8
         return record
 
@@ -186,3 +188,31 @@ def test_the_range_is_enforced_at_both_ends(call, cls, low, ok, high):
     with pytest.raises(ValueError):
         call(_mapper(cls), high)
     call(_mapper(cls), ok)
+
+
+def test_a_state_of_charge_of_zero_reaches_the_instrument():
+    """0 is a value, not an absence.
+
+    `setup_battery` guarded `soc` with `!= None` and then again with a bare
+    truthiness test. The second test is falsy for 0, so `setup_battery(soc=0)`
+    fell through both the range check above and `set_soc` below it -- no
+    exception, no log line, no return value, and the simulation kept whatever
+    state of charge it already had.
+
+    0 is the interesting end of the range for a discharge test, and it is
+    inside the range the neighbouring `ValueError` advertises, so the message
+    said 0 was acceptable while the code discarded it. Every other parameter
+    on this method is guarded by `!= None` alone.
+
+    The parametrized site above cannot catch this: it tests -1, 50 and 101,
+    and a value that is silently dropped raises nothing at either end.
+    """
+    mapper = _mapper(KeithleyBatteryFunctionMapper)
+
+    mapper.setup_battery(soc=0)
+
+    forwarded = [(name, args) for name, args, _ in mapper.device.forwarded]
+    assert ("set_soc", (0,)) in forwarded, (
+        f"setup_battery(soc=0) did not call set_soc(0); forwarded {forwarded}"
+    )
+
