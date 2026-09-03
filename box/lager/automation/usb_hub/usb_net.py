@@ -12,6 +12,7 @@ from contextlib import contextmanager
 
 from lager.util.device_lock import DeviceLockError, device_lock
 from lager.util.device_lock import default_manager as _default_lock_manager
+from lager.util.usb_sysfs import enumerate_usb_devices
 from lager.util.watchdog import run_with_deadline
 
 logger = logging.getLogger(__name__)
@@ -56,6 +57,28 @@ HUB_OP_TIMEOUT_S = 30.0
 USB_CYCLE_OFF_TIME_S = 1.0
 USB_CYCLE_MIN_OFF_TIME_S = 0.5
 USB_CYCLE_MAX_OFF_TIME_S = 10.0
+
+# How long a cycled device is given to come back before `cycle` reports that it
+# did not. Matches the Plugable driver's own `_RECONNECT_WAIT_S`, so the two
+# ways of answering the same question do not disagree about how long is long
+# enough. A J-Link takes ~2-3s.
+USB_REENUM_WAIT_S = 5.0
+_REENUM_POLL_S = 0.1
+
+
+def _bus_snapshot():
+    """``{sysfs_name: devnum}`` for every device on the USB bus.
+
+    Pure sysfs, a few milliseconds, no exclusive claim -- see
+    ``lager.util.usb_sysfs``, which exists so drivers may ask this question
+    from a path that must not touch a device.
+
+    An empty mapping means sysfs could not be read, not that the bus is empty:
+    every real device is returned including root hubs, and a box with no root
+    hub has no USB hub net to cycle. Callers use that to tell "nothing is
+    attached to this port" apart from "this box cannot answer".
+    """
+    return {d["sysfs_name"]: d.get("devnum") for d in enumerate_usb_devices()}
 
 
 def validate_off_time(off_time) -> float:
@@ -701,20 +724,47 @@ class USBNet(ABC):
         something failed halfway is how a bench nobody can reach physically
         gets stranded.
 
+        Re-enumeration is confirmed from the kernel's own USB topology rather
+        than from the hub, so every driver gets a real answer without
+        implementing one. The bus is sampled twice: once before the port is
+        cut, and once while it is dark. Whatever has left the bus in between
+        is what this port carries -- that is the only moment the question has
+        an unambiguous answer, and it is why this is done here rather than
+        either side of the call.
+
         Returns:
-            bool | None: True if the driver could confirm the device came back,
-            False if it could not, None if the driver cannot tell -- either
-            because it has no way to observe re-enumeration, or because the hub
-            reports nothing attached. The latter includes a charge-only cable,
-            which draws power but presents no device to the bus.
+            bool | None: True if the device came back, False if it did not
+            within ``USB_REENUM_WAIT_S``, None if there was nothing on the port
+            to watch for -- which includes a charge-only cable, drawing power
+            but presenting no device to the bus -- or if sysfs could not be
+            read at all. A caller that must tell those last two apart checks
+            ``_bus_snapshot()`` for itself; on a box it is always readable.
         """
         off_time = validate_off_time(off_time)
+        before = _bus_snapshot()
         self.disable(net_name, port)
         try:
             time.sleep(off_time)
+            dark = _bus_snapshot()
         finally:
             self.enable(net_name, port)
-        return None
+
+        if not before or not dark:
+            return None                      # sysfs unreadable: cannot answer
+        on_this_port = set(before) - set(dark)
+        if not on_this_port:
+            return None                      # nothing was attached
+
+        deadline = time.monotonic() + USB_REENUM_WAIT_S
+        while True:
+            if on_this_port <= set(_bus_snapshot()):
+                return True
+            if time.monotonic() >= deadline:
+                logger.warning(
+                    "cycle %s port %s: %s did not return within %.1fs",
+                    net_name, port, sorted(on_this_port), USB_REENUM_WAIT_S)
+                return False
+            time.sleep(_REENUM_POLL_S)
 
     def recover(self, net_name, port):
         """Restore power after a failed or interrupted operation.

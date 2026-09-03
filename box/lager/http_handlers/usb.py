@@ -43,6 +43,7 @@ from lager.automation import usb_hub
 from lager.automation.usb_hub import usb_net
 from lager.util import self_restart as _self_restart
 from lager.util.device_lock import DeviceLockError
+from lager.util.usb_sysfs import enumerate_usb_devices
 
 logger = logging.getLogger(__name__)
 
@@ -388,9 +389,14 @@ def register_usb_routes(app: Flask) -> None:
             elif action == "cycle":
                 # A cycle always ends powered, so the port state is not in
                 # question; what the caller wants to know is whether the device
-                # came back. None means the port was empty or the driver cannot
-                # observe re-enumeration -- report that honestly rather than
-                # claiming a device returned.
+                # came back.
+                #
+                # `None` carries two different facts and they need different
+                # words. During a hardware fault a false "no device here" is
+                # close to the most expensive thing a tool can say, because it
+                # points the investigation at the device rather than at the
+                # tool -- which is exactly what it cost on #417. So the empty
+                # case is only claimed when the bus can actually be read.
                 state = "enabled"
                 reconnected = result
                 if result is True:
@@ -399,10 +405,14 @@ def register_usb_routes(app: Flask) -> None:
                 elif result is False:
                     message = (f"USB port '{netname}' power-cycled, but the "
                                "device did not come back before the timeout")
-                else:
+                elif enumerate_usb_devices():
                     message = (f"USB port '{netname}' power-cycled; no device "
                                "on this port to watch for, so re-enumeration "
                                "was not confirmed")
+                else:
+                    message = (f"USB port '{netname}' power-cycled "
+                               "(re-enumeration not verified: the box's USB "
+                               "topology could not be read)")
             elif action == "recover":
                 state = "enabled"
                 ports = ", ".join(str(p) for p in result) if result else ""
