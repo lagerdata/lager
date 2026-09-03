@@ -8,6 +8,51 @@ All notable changes to the Lager platform are documented here. For detailed rele
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Added
+
+- **`lager uart --sessions` and `lager uart <net> --force`.** A held UART net
+  had no recovery path: the error named the conflict and stopped there.
+  `--sessions` lists which nets are held, whether each holder's client is still
+  connected, and whether its reader is running; `--force` releases the holder
+  before connecting. Backed by `GET /uart/sessions` and
+  `DELETE /uart/sessions/<netname>` on the box, and modelled on the box lock's
+  existing `lager boxes unlock --force`. The "already in use" error now names
+  the take-over command, including the `--box` the user typed.
+
+  Against a box too old to serve the endpoints, `--sessions` says so and
+  `--force` warns rather than failing obscurely; the routes are additive, so a
+  current box keeps working with an older CLI.
+
+### Changed
+
+- **A second role on a dual-role instrument is now a notice, not a block.**
+  Chips like the Keithley 2281S (battery or supply), the EA PSB pair (solar
+  or supply) and the Rigol DP711 hid every remaining add row once any net
+  was saved on them, treating a deliberate alternating-use setup — one
+  battery net, one supply net, driven at different points in a test — as
+  impossible. The drivers already make that setup safe: every write path
+  re-asserts its own entry mode before touching the instrument, so driving
+  one net simply ends whatever the other mode was doing.
+
+  The TUI Add screen now shows the remaining role's row (unselected by
+  default) with an informational notice explaining the mode switch, and
+  `lager nets add` / `add-all` emit the same notice to stderr and proceed
+  instead of refusing. Selecting both roles of a fresh chip in one batch is
+  still rejected. The FT232H keeps its hard block: its MPSSE-vs-UART mode
+  is fixed per open with no driver-side switching, so a second role there
+  genuinely cannot work.
+
+  Getting `add-all` there uncovered that it never reached these chips at
+  all: its scanner-duplicate detector keyed offered channels per device
+  only, so two roles legitimately sharing one physical channel (the 2281S
+  offers channel "1" as battery AND as power-supply; the FT232H offers
+  channel "0" per MPSSE role) read as "the box offered the same channel
+  twice" and the whole instrument was silently skipped with a warning
+  blaming the scanner. The detector now keys per device and role. With the
+  chips reachable, a fresh dual-role chip offering several roles is refused
+  with the same pick-one guidance mode-exclusive chips already got, rather
+  than double-booked.
+
 ### Fixed
 
 - **A UART net is no longer held indefinitely after its interactive client
@@ -61,53 +106,6 @@ All notable changes to the Lager platform are documented here. For detailed rele
   out rather than only when the session came up, so a session the box registers
   just after the client stops waiting is not orphaned from birth; that wait grew
   from 5s to 15s, since the box will sit through a re-enumeration for up to 60s.
-
-### Added
-
-- **`lager uart --sessions` and `lager uart <net> --force`.** A held UART net
-  had no recovery path: the error named the conflict and stopped there.
-  `--sessions` lists which nets are held, whether each holder's client is still
-  connected, and whether its reader is running; `--force` releases the holder
-  before connecting. Backed by `GET /uart/sessions` and
-  `DELETE /uart/sessions/<netname>` on the box, and modelled on the box lock's
-  existing `lager boxes unlock --force`. The "already in use" error now names
-  the take-over command, including the `--box` the user typed.
-
-  Against a box too old to serve the endpoints, `--sessions` says so and
-  `--force` warns rather than failing obscurely; the routes are additive, so a
-  current box keeps working with an older CLI.
-
-### Changed
-
-- **A second role on a dual-role instrument is now a notice, not a block.**
-  Chips like the Keithley 2281S (battery or supply), the EA PSB pair (solar
-  or supply) and the Rigol DP711 hid every remaining add row once any net
-  was saved on them, treating a deliberate alternating-use setup — one
-  battery net, one supply net, driven at different points in a test — as
-  impossible. The drivers already make that setup safe: every write path
-  re-asserts its own entry mode before touching the instrument, so driving
-  one net simply ends whatever the other mode was doing.
-
-  The TUI Add screen now shows the remaining role's row (unselected by
-  default) with an informational notice explaining the mode switch, and
-  `lager nets add` / `add-all` emit the same notice to stderr and proceed
-  instead of refusing. Selecting both roles of a fresh chip in one batch is
-  still rejected. The FT232H keeps its hard block: its MPSSE-vs-UART mode
-  is fixed per open with no driver-side switching, so a second role there
-  genuinely cannot work.
-
-  Getting `add-all` there uncovered that it never reached these chips at
-  all: its scanner-duplicate detector keyed offered channels per device
-  only, so two roles legitimately sharing one physical channel (the 2281S
-  offers channel "1" as battery AND as power-supply; the FT232H offers
-  channel "0" per MPSSE role) read as "the box offered the same channel
-  twice" and the whole instrument was silently skipped with a warning
-  blaming the scanner. The detector now keys per device and role. With the
-  chips reachable, a fresh dual-role chip offering several roles is refused
-  with the same pick-one guidance mode-exclusive chips already got, rather
-  than double-booked.
-
-### Fixed
 
 - **`DebugNet.flash()` / `.erase()` now take the DA1469x QSPI flash-loader
   path on OpenOCD, matching the CLI.** On a DA1469x target behind an OpenOCD
@@ -262,7 +260,6 @@ All notable changes to the Lager platform are documented here. For detailed rele
   The logic suite gains four checks driving the new nodes. `trigger spi` with
   no arguments passed while ten of these were undefined, which is how the gap
   stayed invisible until a hardware run hit it.
-
 
 ## [0.45.1] - 2026-09-02
 
