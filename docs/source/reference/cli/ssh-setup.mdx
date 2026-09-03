@@ -98,11 +98,11 @@ is exactly what a hardened box closed.</Warning>
 The key lives at `~/.ssh/lager_box`. That filename is not one of SSH's default
 identities. So `lager ssh` passes `-i ~/.ssh/lager_box` explicitly when the key
 exists (since lager 0.28.1), and an authorized box connects without a password.
-Because `-i` replaces SSH's default identity list rather than adding to it,
-`lager ssh` also names each of your own default keys that exists (`id_rsa`,
-`id_ecdsa`, `id_ed25519`, and their `-sk` forms) after `lager_box`, so a box you
-authorized with your own key still connects even when `lager_box` is not
-authorized there.
+`-i` replaces SSH's default identity list rather than adding to it. So
+`lager ssh` also names each of your own default keys that exists, after
+`lager_box`. Those keys are `id_rsa`, `id_ecdsa`, `id_ed25519`, and their `-sk`
+forms. A box you authorized with your own key therefore still connects, even
+when `lager_box` is not authorized there.
 
 ---
 
