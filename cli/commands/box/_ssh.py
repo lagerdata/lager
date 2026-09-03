@@ -108,6 +108,37 @@ def default_identities_if_present(
     return [path for path in candidates if os.path.exists(path)]
 
 
+def widened_identity_args(key_path: str = _LAGER_BOX_KEY) -> List[str]:
+    """``-i`` flags offering lager_box first, then ssh's own defaults.
+
+    ``-i`` does not append to ssh's built-in identity list -- it REPLACES it.
+    Confirmed with ``ssh -F /dev/null -G``: a bare connection offers id_rsa,
+    id_ecdsa, id_ed25519 and their -sk variants, while naming any identity
+    leaves exactly that one. A lone ``-i lager_box`` therefore silently
+    withdraws every key the operator installed themselves, and a box
+    authorized on one of those -- but not yet on lager_box -- refuses the
+    connection.
+
+    Naming lager_box first and then each default that exists restores the
+    list ssh would have used on its own, while keeping lager_box's
+    precedence. No IdentitiesOnly, so ``~/.ssh/config`` identities and agent
+    keys stay on offer. With no lager_box key this returns ``[]``, leaving
+    ssh's own behavior untouched.
+
+    This is the WIDENING form, for callers that just need to reach the box on
+    whatever works. :func:`probe_box_identity` deliberately does the opposite
+    -- IdentitiesOnly on a keyed attempt, then a keyless retry -- because it
+    has to isolate whether that particular key is the one being accepted.
+    """
+    key = lager_box_key_if_present(key_path)
+    if key is None:
+        return []
+    args = ssh_identity_args(key)
+    for path in default_identities_if_present():
+        args.extend(ssh_identity_args(path))
+    return args
+
+
 def probe_box_identity(
     dest: str,
     *,
@@ -349,15 +380,22 @@ def key_installed_on_box(
     identity is offered that works and the probe cannot reach the box. It then
     returns None for a box it is perfectly able to answer for.
 
-    So *key_path* is offered explicitly with ``-i``. That widens the set of
-    identities tried rather than narrowing it, which is why it does not
-    contradict the paragraph above — and it is what ``default_ssh_runner``
-    just below has always done.
+    So *key_path* is offered explicitly — but via
+    :func:`widened_identity_args`, not a lone ``-i``. A single ``-i`` REPLACES
+    ssh's built-in identity list rather than adding to it, so naming lager_box
+    alone withdrew every default the operator had, and this probe answered
+    None — "could not ask" — for any box that authorizes one of those keys and
+    not yet lager_box. That is precisely the box being repaired, and both
+    callers read None as "do not fail": `lager update` reports "SSH key
+    installed successfully" on it, and `lager ssh-setup`'s post-install
+    verification skips its error. So the check written to catch a silent no-op
+    was itself silently skipped. Offering lager_box first and then each
+    existing default keeps its precedence while restoring the fallbacks.
     """
     blob = lager_box_pubkey_blob(key_path)
     if blob is None or shutil.which("ssh") is None:
         return None
-    identity = ["-i", key_path] if os.path.exists(key_path) else []
+    identity = widened_identity_args(key_path)
     try:
         proc = subprocess.run(
             [

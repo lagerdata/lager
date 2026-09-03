@@ -82,6 +82,29 @@ All notable changes to the Lager platform are documented here. For detailed rele
   dropped. `TestLatenessIsReportOnly` fails if lateness reaches the problems
   list again.
 
+- **The `authorized_keys` probe withdrew the operator's own SSH identities, so
+  it could not answer for the boxes it exists to repair.**
+  `key_installed_on_box` asks a box directly whether `lager_box` is in its
+  `authorized_keys`, and offered that key with a lone `-i` so the query could
+  authenticate at all. But `-i` replaces ssh's built-in identity list rather
+  than adding to it -- the same defect fixed for `lager ssh` in v0.45.1 -- so
+  naming `lager_box` withdrew `id_rsa`, `id_ed25519` and the rest. On a box
+  authorized with one of those and not yet with `lager_box`, ssh had nothing
+  usable to offer and the probe returned `None`, meaning "could not ask".
+
+  Both callers read `None` as "do not fail". `lager update` prints `SSH key
+  installed successfully! Future connections will not require a password.` on
+  it, and `lager ssh-setup`'s post-install verification skips its error. So
+  the check written to catch a silent no-op was itself silently skipped, on
+  exactly the boxes being repaired.
+
+  The probe now offers `lager_box` first and then each of ssh's default
+  identity files that exists, through a `widened_identity_args()` helper that
+  `lager ssh` shares -- one definition, so the two cannot disagree about what
+  `-i` does. `probe_box_identity` is deliberately unchanged: it sets
+  `IdentitiesOnly` on its keyed attempt because it has to isolate whether that
+  particular key is the one being accepted.
+
 ## [0.45.1] - 2026-09-02
 
 ### Changed
