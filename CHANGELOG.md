@@ -8,6 +8,35 @@ All notable changes to the Lager platform are documented here. For detailed rele
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Changed
+
+- **The OpenOCD flash and erase decision now lives in one module.** 0.46.0 gave
+  `DebugNet.flash()` / `.erase()` the DA1469x QSPI flash-loader path the HTTP
+  debug service already had, but as a second copy of it: `service.py` and
+  `debug_net.py` each decided for themselves whether a target needs the
+  RAM-resident flash_loader rather than OpenOCD's `program` / bank erase. A
+  second copy is how the Net API came to be missing the path in the first
+  place, and the bench that found it passed every by-hand check while its
+  automated runs left boards blank. Both paths now route through
+  `lager.debug.openocd_flash`, and one predicate,
+  `lager.debug.probes.is_da1469x()`, replaces the five inline device-string
+  tests that were spread across them.
+
+  Three changes are visible from outside. A loader failure on either path now
+  names the step that failed instead of surfacing an OpenOCD tcl traceback, and
+  a flash that dies after its erase stage says the board may be left blank. An
+  absolute XIP address outside the DA1469x flash window is refused before any
+  I/O rather than part-way through. And OpenOCD's generic `program` and erase
+  now refuse a DA1469x by name — naming the missing QSPI driver and the module
+  that does work — so a caller that bypasses the dispatch gets a sentence
+  instead of a ten-second stall and a `startup.tcl` traceback.
+
+  Callers keep passing absolute XIP addresses (`0x16000000`), as on the J-Link
+  path. Non-DA1469x OpenOCD targets and the J-Link backend are unchanged. A
+  parity test drives both entry points through the real dispatch and asserts
+  they issue identical loader calls, and an AST scan of `box/lager` fails the
+  build if either grows a private copy.
+
 ## [0.46.1] - 2026-09-08
 
 ### Fixed

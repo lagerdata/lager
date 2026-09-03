@@ -111,6 +111,35 @@ def _build_probes_stub():
     m.parse_probe_serial = lambda addr: None
     m.compute_slot = lambda serial, all_serials: 0
     m.sniff_script_backend = _real_probes().sniff_script_backend
+    m.is_da1469x = _real_probes().is_da1469x
+    return m
+
+
+def _build_dispatch_stub():
+    """Stand-in ``..debug.openocd_flash``: the generic path, verbatim.
+
+    ``DebugNet.flash()`` / ``erase()`` hand every OpenOCD flash and erase
+    to this module (``test_debug_net_da1469x.py`` pins the hand-off; the
+    DA1469x decision itself is ``test_openocd_flash.py``'s). The stub keeps
+    the old shape these self-heal tests were written against: erase calls
+    ``rpc.flash_erase_all()``.
+    """
+    m = types.ModuleType(f"{PKG}.debug.openocd_flash")
+    m.FLASH_RPC_TIMEOUT_S = 300
+    m.ERASE_RPC_TIMEOUT_S = 120
+
+    def flash_target(rpc, device, firmware_path, *, address=None):
+        out = rpc.program(firmware_path, verify=True, reset_after=True, address=address)
+        if out:
+            yield out
+
+    def erase_target(rpc, device):
+        out = rpc.flash_erase_all()
+        if out:
+            yield out
+
+    m.flash_target = flash_target
+    m.erase_target = erase_target
     return m
 
 
@@ -147,6 +176,7 @@ def _load_debug_net():
     # stub debug + probes (siblings of nets) so the heavy import branch succeeds
     _install(f"{PKG}.debug", _build_debug_stub())
     _install(f"{PKG}.debug.probes", _build_probes_stub())
+    _install(f"{PKG}.debug.openocd_flash", _build_dispatch_stub())
 
     spec = importlib.util.spec_from_file_location(f"{NETS_PKG}.debug_net", DEBUG_NET_PATH)
     mod = importlib.util.module_from_spec(spec)
