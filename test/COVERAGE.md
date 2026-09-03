@@ -41,13 +41,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1878 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 2081 |
+| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1890 (+2 xfailed) |
+| `unit (box)` | `test/unit/box/` | 2091 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 181 |
-| `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 181 (+1 skipped) |
-| | **Total gated** | **4515** |
+| `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 184 (+1 skipped) |
+| | **Total gated** | **4540** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never
@@ -451,9 +451,9 @@ cli/tests/                #  7 files: 6 pytest suites (GATED via `unit (cli)`),
                           #           plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 186 files)
+### Local Unit Tests (`test/unit/` -- 188 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 100 files)
+#### Box Unit Tests (`test/unit/box/` -- 101 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -558,11 +558,12 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_usb_scanner_custom.py` | Custom-device surfacing in box HTTP scanner GET /instruments/list. Also the SuperSpeed companion dedupe: one physical dock lists as one instrument, and a missing bus root pairs nothing rather than pairing everything. Also what the Dexarm handshake -- the one scan step that WRITES to hardware -- is allowed to touch: every channel of a multi-interface chip and every saved uart net's tty reach the exclusion set, a foreign or unresolvable VID:PID is never opened at all, a port held by another process is skipped, and `LAGER_ARM_PROBE` off/force widen or close the gate without ever dropping the exclusive open or the deasserted modem lines. |
 | `test_usb_scanner_uart_fallback.py` | UART enumeration without USB serial by matching sysfs path; two identical adapters keep distinct ttys and the channel catalog stays unmutated |
 | `test_webcam_detection.py` | sysfs-based webcam detection (`_by_camera`) against a fake sysfs tree |
+| `test_webcam_stream_state.py` | `WebcamStreamState.add_stream` persisting the `source`/`started_by` origin fields, `get_stream_info` returning them, and the generated streamer script still compiling with the `/snapshot` handler in it |
 | `test_plugable_driver.py` | Plugable RTS5411 dock driver: USB hub-class per-port power switching over pyusb -- ganged/no-switching hubs refused without touching a port, a disable NOT judged by device presence (the kernel cannot see a disconnect while a port is unpowered, so the sysfs node persists), cycle restoring power on every failure path and reporting re-enumeration, off-time range enforced before any transfer, SuperSpeed companion pairing refused when ambiguous, network-device and inter-hub-link guards, one-session batch reads, handle disposal on every path |
 | `test_ykush_driver.py` | YKUSH USB hub driver: device-contention regression from an indefinitely cached handle |
 | `test_automation_exports.py` | Static parse of `automation/__init__.py`'s lazy export table: no name guarded twice, every returned driver reachable under its own name, everything in `__all__` resolvable -- the copy-paste class of defect that made one driver answer to another's name |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 69 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 70 files)
 
 | File | What it tests |
 |------|---------------|
@@ -635,6 +636,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_matchers.py` | Test-output matchers and the v1 stream framing parser; markers split across chunk boundaries must still set the exit code |
 | `test_param_types.py` | Every custom click ParamType, valid and invalid, incl. the five on live command paths |
 | `test_safe_unpickle.py` | Deserialization allowlist: refused globals must not be imported as a side effect of refusing them |
+| `test_webcam_command.py` | `lager webcam` CLI: the tokenised viewer link on access-gated boxes (`_viewer_url`, the expiry note, the `lager login` hint), `start` sending `source`/`started_by`, and `snapshot` writing the decoded JPEG to `--out` |
 
 #### Measurement Unit Tests (`test/unit/measurement/` -- 4 files)
 

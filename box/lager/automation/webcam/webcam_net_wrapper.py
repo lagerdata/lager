@@ -72,7 +72,8 @@ class WebcamNetWrapper:
                 - port: Port number for the stream
                 - already_running: Boolean indicating if stream was already active
         """
-        return self._service.start_stream(self.name, self.video_device, box_ip)
+        return self._service.start_stream(self.name, self.video_device, box_ip,
+                                          source='api')
 
     def stop(self) -> bool:
         """

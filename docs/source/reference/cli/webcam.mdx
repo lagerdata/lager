@@ -16,6 +16,7 @@ lager webcam [NETNAME] COMMAND [OPTIONS]
 | Command | Description |
 |---------|-------------|
 | `start` | Start webcam stream |
+| `snapshot` | Save one JPEG frame from a running stream |
 | `stop` | Stop webcam stream |
 | `url` | Print URLs of all active streams |
 | `start-all` | Start all webcam streams |
@@ -39,6 +40,19 @@ Start a webcam stream.
 lager webcam CAM1 start --box my-lager-box
 ```
 
+### `snapshot`
+
+Save one frame from a running stream as a JPEG. This is the right way for
+scripts and assistants to look at the bench. The frame comes back over the
+box's command endpoint, so the stream's own port never has to be reachable.
+
+```bash
+lager webcam CAM1 snapshot --box my-lager-box --out frame.jpg
+```
+
+Without `--out` the file is named `CAM1-<timestamp>.jpg` in the current
+directory. The stream must already be running.
+
 ### `stop`
 
 Stop a webcam stream.
@@ -49,7 +63,8 @@ lager webcam CAM1 stop --box my-lager-box
 
 ### `url`
 
-Print URLs of all active webcam streams.
+Print URLs of all active webcam streams, with who started each one when
+the box recorded it.
 
 ```bash
 lager webcam url --box my-lager-box
@@ -57,10 +72,24 @@ lager webcam url --box my-lager-box
 
 Output:
 ```
-Active webcam streams:
-  CAM1: http://<BOX_IP>:8081/stream
-  CAM2: http://<BOX_IP>:8082/stream
+Active webcam streams on <BOX_IP>:
+
+CAM1:
+  URL: http://<BOX_IP>:8086/
+  Port: 8086
+  Device: /dev/video0
+  Origin: started via cli by alice
 ```
+
+### Access-gated boxes
+
+When a box sits behind an access gateway, its stream ports only admit
+requests that carry your sign-in token. A browser cannot attach one from a
+plain link. So `start`, `start-all` and `url` append the token to the
+printed URL (`http://<BOX_IP>:8086/?token=...`), and say how many minutes
+it stays valid. Run `lager webcam url` for a fresh link when it expires. If
+no sign-in is stored for the box, the CLI tells you which `lager login`
+URL to use.
 
 ### `start-all`
 
@@ -116,9 +145,16 @@ lager webcam stop-all --box my-lager-box
 ## Stream Format
 
 Webcam streams are provided as:
-- **HTTP MJPEG streams** for browser viewing
-- **Per-webcam ports** (8081, 8082, etc.)
+- **HTTP MJPEG streams** for browser viewing (`/stream`)
+- **Single JPEG frames** on demand (`/snapshot`, or `lager webcam NET snapshot`)
+- **Per-webcam ports** (8086, 8087, etc.)
 - **Device path reporting** for debugging
+
+Streams can be started and stopped from the CLI, the Python API, or other
+tools that manage the same box. Each stream records which surface started
+it, and any of them can stop it. One stream serves every viewer at once, but
+a video device can only belong to one stream. Stop a stream before starting
+another on the same camera.
 
 ---
 
@@ -146,7 +182,7 @@ lager webcam url --box my-lager-box
 Capture visual evidence of test results:
 ```bash
 lager webcam BOARD_VIEW start
-# Capture screenshots from stream
+lager webcam BOARD_VIEW snapshot --out after-flash.jpg
 lager webcam BOARD_VIEW stop
 ```
 
@@ -171,7 +207,7 @@ lager webcam url
 ## Notes
 
 - Webcams must be connected via USB to the box
-- Each webcam uses a unique port (8081+)
+- Each webcam uses a unique port (8086+)
 - Streams are accessible via box IP address
 - Default net can be set with `lager defaults add --webcam-net`
 - USB webcams must be compatible with V4L2

@@ -45,14 +45,24 @@ class WebcamStreamState:
         """Save stream state to file."""
         self.state_file.write_text(json.dumps(state, indent=2))
 
-    def add_stream(self, net_name: str, video_device: str, port: int, pid: int):
-        """Add a new active stream."""
+    def add_stream(self, net_name: str, video_device: str, port: int, pid: int,
+                   source: Optional[str] = None, started_by: Optional[str] = None):
+        """Add a new active stream.
+
+        ``source`` records which surface started the stream (``cli``, ``api``,
+        a control plane's dashboard, ...) and ``started_by`` the user that
+        surface attributed it to. Both are informational — every surface can
+        stop every stream — but they let each one label streams it did not
+        start. Older state files predate the keys, so readers must ``.get``.
+        """
         state = self.load()
         state[net_name] = {
             "video_device": video_device,
             "port": port,
             "pid": pid,
             "started_at": time.time(),
+            "source": source,
+            "started_by": started_by,
             "zoom": 1.0,  # Default zoom level (1.0 = no zoom)
             "focus_mode": "auto",  # Default to autofocus
             "focus_value": 0,  # Manual focus value (when in manual mode)
@@ -199,7 +209,8 @@ class WebcamService:
     def __init__(self):
         self.state = WebcamStreamState()
 
-    def start_stream(self, net_name: str, video_device: str, box_ip: str) -> Dict:
+    def start_stream(self, net_name: str, video_device: str, box_ip: str,
+                     source: Optional[str] = None, started_by: Optional[str] = None) -> Dict:
         """
         Start a webcam stream for a given net.
 
@@ -207,6 +218,9 @@ class WebcamService:
             net_name: Name of the net (e.g., "camera1")
             video_device: Video device path (e.g., "/dev/video0")
             box_ip: IP address of the Box
+            source: Surface that started the stream ("cli", "api", ...);
+                recorded in the stream state for other surfaces to show.
+            started_by: User the starting surface attributes the stream to.
 
         Returns:
             Dict with 'url' and 'port' keys
@@ -253,7 +267,8 @@ class WebcamService:
         pid = self._start_streaming_process(video_device, port, net_name, box_ip)
 
         # Save state
-        self.state.add_stream(net_name, video_device, port, pid)
+        self.state.add_stream(net_name, video_device, port, pid,
+                              source=source, started_by=started_by)
 
         # Give server a moment to start
         time.sleep(1)
@@ -336,7 +351,8 @@ class WebcamService:
             box_ip: IP address of the Box
 
         Returns:
-            dict or None: Stream info dict with 'url', 'port', 'video_device' keys, or None if not running
+            dict or None: Stream info dict with 'url', 'port', 'video_device',
+            'source' and 'started_by' keys, or None if not running
         """
         self.cleanup_dead_streams()
 
@@ -348,7 +364,9 @@ class WebcamService:
         return {
             "url": url,
             "port": stream_data["port"],
-            "video_device": stream_data["video_device"]
+            "video_device": stream_data["video_device"],
+            "source": stream_data.get("source"),
+            "started_by": stream_data.get("started_by"),
         }
 
     def _start_streaming_process(self, video_device: str, port: int, net_name: str, box_ip: str) -> int:
@@ -1000,6 +1018,35 @@ class StreamingHandler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(error_response)))
                 self.end_headers()
                 self.wfile.write(error_response.encode("utf-8"))
+
+        elif path_only == "/snapshot" or path_only.startswith("/snapshot/"):
+            # One JPEG frame from the shared buffer. Scripts and assistants
+            # that only need to *look* at the bench grab this instead of
+            # parsing the multipart /stream; it shares the capture thread
+            # with the live viewers, so it never contends for the device.
+            start_capture()
+            deadline = time.time() + 5.0
+            with frame_condition:
+                while latest_jpeg is None and time.time() < deadline:
+                    frame_condition.wait(timeout=deadline - time.time())
+                jpeg_bytes = latest_jpeg
+            if jpeg_bytes is None:
+                body = b"No frame available"
+                self.send_response(503)
+                self.send_header("Content-type", "text/plain")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self.send_response(200)
+                self.send_header("Content-type", "image/jpeg")
+                self.send_header("Content-Length", str(len(jpeg_bytes)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                try:
+                    self.wfile.write(jpeg_bytes)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
 
         elif path_only == "/test":
             # Simple test endpoint
@@ -1820,11 +1867,13 @@ server.serve_forever()
 
 # Convenience functions for use in CLI implementation scripts
 
-def start_stream(net_name: str, video_device: str, box_ip: str) -> Dict:
+def start_stream(net_name: str, video_device: str, box_ip: str,
+                 source: Optional[str] = None, started_by: Optional[str] = None) -> Dict:
     """Start a webcam stream."""
     service = WebcamService()
     service.cleanup_dead_streams()
-    return service.start_stream(net_name, video_device, box_ip)
+    return service.start_stream(net_name, video_device, box_ip,
+                                source=source, started_by=started_by)
 
 
 def stop_stream(net_name: str) -> bool:
@@ -1846,7 +1895,9 @@ def get_stream_info(net_name: str, box_ip: str) -> Optional[Dict]:
     return {
         "url": url,
         "port": stream_data["port"],
-        "video_device": stream_data["video_device"]
+        "video_device": stream_data["video_device"],
+        "source": stream_data.get("source"),
+        "started_by": stream_data.get("started_by"),
     }
 
 

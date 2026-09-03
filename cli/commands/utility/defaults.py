@@ -72,7 +72,10 @@ def defaults(ctx):
 @click.option('--thermocouple-net', required=False, help='Set default thermocouple net name')
 @click.option('--uart-net', required=False, help='Set default UART net name')
 @click.option('--arm-net', required=False, help='Set default robotic arm net name')
-@click.option('--user', required=False, help='Set default username for box locking')
+@click.option('--user', required=False,
+              help='Set the username recorded on box locks. Use the same name as '
+                   'other tools that lock boxes, such as a control plane\'s '
+                   'display name, so locks are recognized across them.')
 def add(box, serial_port, supply_net, battery_net, solar_net, scope_net, logic_net,
         adc_net, dac_net, gpio_net, debug_net, eload_net, usb_net, webcam_net,
         watt_meter_net, thermocouple_net, uart_net, arm_net, user):

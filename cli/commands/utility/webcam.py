@@ -9,6 +9,12 @@ Webcam streaming commands for viewing live camera feeds from box devices.
 Migrated from cli/webcam/commands.py to cli/commands/utility/webcam.py.
 """
 
+import base64
+import math
+import time
+from datetime import datetime
+from urllib.parse import quote
+
 import click
 from texttable import Texttable
 from ...context import get_default_box, get_default_net
@@ -45,6 +51,71 @@ def _resolve_box(ctx, box):
     return resolve_and_validate_box(ctx, box)
 
 
+def _gated_token(box_ip):
+    """(auth_url, access_token) for an access-gated box, else (None, None).
+
+    ``access_token`` is None when the box is gated but nothing is stored
+    for its auth server — the user has not run ``lager login`` yet.
+    """
+    from ... import gateway_auth
+    url = gateway_auth.auth_server_for_box(box_ip)
+    if not url:
+        return None, None
+    return url, gateway_auth.access_token_for(url)
+
+
+def _viewer_url(box_ip, url):
+    """The stream URL as a browser can open it.
+
+    A gated box only admits requests that carry a sign-in token, and a
+    browser cannot attach one from a plain link, so the token rides in the
+    query string; the gateway swaps it for a cookie on first contact.
+    Ungated boxes get the URL untouched.
+    """
+    if not url:
+        return url
+    _auth_url, token = _gated_token(box_ip)
+    if not token:
+        return url
+    sep = '&' if '?' in url else '?'
+    return f"{url}{sep}token={quote(token, safe='')}"
+
+
+def _gated_link_note(box_ip, box_label=None):
+    """Print how long a tokenised link lasts, or how to get one."""
+    auth_url, token = _gated_token(box_ip)
+    if not auth_url:
+        return
+    box_label = box_label or box_ip
+    if not token:
+        click.secho(
+            f"Note: this box is access-gated and no sign-in is stored for it, "
+            f"so the link above will not open. Run: lager login {auth_url}",
+            fg="yellow",
+        )
+        return
+    from ... import gateway_auth
+    remaining = gateway_auth._token_expires_at(token) - time.time()
+    minutes = max(1, math.ceil(remaining / 60))
+    click.secho(
+        f"This box is access-gated: the link carries your sign-in token and "
+        f"stays valid for about {minutes} minutes. "
+        f'Run "lager webcam url --box {box_label}" for a fresh link.',
+        fg="yellow",
+    )
+
+
+def _describe_origin(result):
+    """'started via cli by alice' for a stream record, or '' if unknown."""
+    source = result.get("source")
+    if not source:
+        return ""
+    text = f"started via {source}"
+    if result.get("started_by"):
+        text += f" by {result['started_by']}"
+    return text
+
+
 def _list_webcam_nets(ctx, box):
     """Get list of webcam nets from box (GET :9000/nets/list)."""
     return list_nets_by_role(ctx, box, WEBCAM_ROLE)
@@ -75,7 +146,8 @@ def _display_webcam_nets(ctx, box):
     click.echo(table.draw())
 
 
-def _post_webcam(ctx: click.Context, box_ip: str, net_name: str, action: str) -> dict:
+def _post_webcam(ctx: click.Context, box_ip: str, net_name: str, action: str,
+                 **extra) -> dict:
     """POST one webcam action to :9000/net/command and return the response."""
     return post_net_command(
         ctx, box_ip, net_name, action,
@@ -83,17 +155,24 @@ def _post_webcam(ctx: click.Context, box_ip: str, net_name: str, action: str) ->
         # The box builds the viewer URL from this IP (the address the user
         # reaches the box at), not the container-internal hostname.
         box_ip=box_ip,
+        **extra,
     )
 
 
-def _try_post_webcam(ctx, box_ip, net_name, action):
+def _start_params():
+    """Origin fields recorded on the stream so other surfaces can label it."""
+    from ...box_storage import get_lager_user
+    return {"source": "cli", "started_by": get_lager_user()}
+
+
+def _try_post_webcam(ctx, box_ip, net_name, action, **extra):
     """Like _post_webcam but returns None on failure instead of exiting.
 
     Used by the *-all commands so one broken webcam doesn't abort the rest;
     post_net_command has already printed the error before raising.
     """
     try:
-        return _post_webcam(ctx, box_ip, net_name, action)
+        return _post_webcam(ctx, box_ip, net_name, action, **extra)
     except SystemExit:
         return None
 
@@ -118,7 +197,7 @@ def _run_webcam_command(ctx: click.Context, box_ip: str, action: str, net_name: 
         SystemExit: On command failure (single-net actions)
     """
     if action == "start":
-        result = _post_webcam(ctx, box_ip, net_name, "start")
+        result = _post_webcam(ctx, box_ip, net_name, "start", **_start_params())
         value = result.get("value") or {}
         return {
             "ok": True,
@@ -141,7 +220,7 @@ def _run_webcam_command(ctx: click.Context, box_ip: str, action: str, net_name: 
         results = []
         for net in webcam_nets:
             if action == "start-all":
-                result = _try_post_webcam(ctx, box_ip, net, "start")
+                result = _try_post_webcam(ctx, box_ip, net, "start", **_start_params())
                 if result is None:
                     results.append({"net": net, "success": False, "error": "failed"})
                 else:
@@ -171,6 +250,8 @@ def _run_webcam_command(ctx: click.Context, box_ip: str, action: str, net_name: 
                         "url": value.get("url"),
                         "port": value.get("port"),
                         "video_device": value.get("video_device"),
+                        "source": value.get("source"),
+                        "started_by": value.get("started_by"),
                     })
 
         if action == "url-all" and not results:
@@ -232,6 +313,7 @@ def webcam(ctx, box):
 
 webcam.net_examples = [
     "lager webcam cam1 start --box <BOX>",
+    "lager webcam cam1 snapshot --box <BOX> --out frame.jpg",
     "lager webcam cam1 stop --box <BOX>",
     "lager webcam url --box <BOX>           (URLs of active streams)",
     "lager webcam start-all --box <BOX>     (no NET_NAME needed)",
@@ -267,17 +349,10 @@ def webcam_start(ctx, box):
         click.secho(f"Stream started successfully", fg="green")
 
     click.echo()
-    click.secho(f"Webcam URL: {result['url']}", fg="cyan", bold=True)
+    click.secho(f"Webcam URL: {_viewer_url(box_ip, result['url'])}", fg="cyan", bold=True)
     click.echo()
     click.echo("Open this URL in your browser to view the live feed.")
-    from ...gateway_auth import auth_server_for_box
-    if auth_server_for_box(box_ip):
-        click.secho(
-            "Note: this box is access-gated and stream ports are not exposed "
-            "on the network, so the URL above is not directly reachable. Use "
-            "your control plane's webcam viewer instead.",
-            fg='yellow',
-        )
+    _gated_link_note(box_ip, box)
     click.echo(f"To stop the stream: lager webcam stop {net_name} --box {box_ip}")
 
 
@@ -302,10 +377,53 @@ def webcam_url(ctx, box):
 
     for r in result["results"]:
         click.secho(f"{r['net']}:", fg="green", bold=True)
-        click.secho(f"  URL: {r['url']}", fg="cyan")
+        click.secho(f"  URL: {_viewer_url(box_ip, r['url'])}", fg="cyan")
         click.echo(f"  Port: {r['port']}")
         click.echo(f"  Device: {r['video_device']}")
+        origin = _describe_origin(r)
+        if origin:
+            click.echo(f"  Origin: {origin}")
         click.echo()
+    _gated_link_note(box_ip, box)
+
+
+@click.command(name="snapshot")
+@click.option("--box", help="Lager Box name or IP")
+@click.option("--out", "out_path", type=click.Path(dir_okay=False, writable=True),
+              help="Where to write the JPEG (default: <NET>-<timestamp>.jpg)")
+@click.pass_context
+def webcam_snapshot(ctx, box, out_path):
+    """
+    Save one frame from a running webcam stream as a JPEG.
+
+    This is the right way for scripts and assistants to look at the bench:
+    the frame comes back over the box's command endpoint, so nothing but
+    that endpoint has to be reachable — the stream's own port is never
+    dialled. The stream must already be running (``lager webcam NET start``).
+    """
+    net_name = getattr(ctx.obj, "netname", None)
+    if not net_name:
+        raise click.UsageError(
+            "NET_NAME required.\n\n"
+            "Usage: lager webcam [NET_NAME] snapshot --box [BOX_NAME] [--out FILE]\n"
+            "Example: lager webcam webcam1 snapshot --box my-box --out frame.jpg"
+        )
+
+    box_ip = _get_box_ip_address(ctx.parent, box)
+    result = _post_webcam(ctx, box_ip, net_name, "snapshot")
+    value = result.get("value") or {}
+    encoded = value.get("jpeg_base64")
+    if not encoded:
+        click.secho("Box returned no image data", fg="red", err=True)
+        raise SystemExit(1)
+    data = base64.b64decode(encoded)
+
+    if not out_path:
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        out_path = f"{net_name}-{stamp}.jpg"
+    with open(out_path, "wb") as f:
+        f.write(data)
+    click.echo(f"Saved {out_path} ({len(data)} bytes)")
 
 
 @click.command(name="stop")
@@ -366,12 +484,13 @@ def webcam_start_all(ctx, box):
         if r["success"]:
             status = "already running" if r.get("already_running") else "started"
             click.secho(f"  {net_name}: {status}", fg="green")
-            click.secho(f"  URL: {r['url']}", fg="cyan")
+            click.secho(f"  URL: {_viewer_url(box_ip, r['url'])}", fg="cyan")
         else:
             click.secho(f"  {net_name}: {r.get('error', 'failed')}", fg="red")
 
     click.echo()
     click.echo("Open the URLs in your browser to view the live feeds.")
+    _gated_link_note(box_ip, box)
     click.echo(f"To stop all streams: lager webcam stop-all --box {box_ip}")
 
 
@@ -410,6 +529,7 @@ def webcam_stop_all(ctx, box):
 
 # Add subcommands to the group
 webcam.add_command(webcam_start)
+webcam.add_command(webcam_snapshot)
 webcam.add_command(webcam_url)
 webcam.add_command(webcam_stop)
 webcam.add_command(webcam_start_all)

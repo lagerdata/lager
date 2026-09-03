@@ -8,7 +8,31 @@ All notable changes to the Lager platform are documented here. For detailed rele
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Added
+
+- **`lager webcam NET snapshot`** saves one JPEG frame from a running
+  stream. The frame comes back over the box's command endpoint, so scripts
+  and assistants that only need to look at the bench never have to reach
+  the stream's own port or parse the multipart feed. The streamer also
+  serves `GET /snapshot` directly for anything already talking to it.
+- **Stream origin is recorded.** A webcam stream now remembers which
+  surface started it (`cli`, `api`, or another tool) and who that surface
+  attributed it to; `lager webcam url` prints it, and other tools sharing
+  the box can label streams they did not start.
+
 ### Changed
+
+- **Webcam links work on access-gated boxes.** A gateway can now front the
+  stream ports, so `lager webcam start` / `url` print a link that carries
+  your sign-in token instead of warning that the stream is unreachable.
+  The link stays valid for roughly the token's lifetime (the CLI says how
+  many minutes); `lager webcam url` mints a fresh one.
+- **Lock holders recorded as `origin:id:name:email`** by other services now
+  display as the name in `lager boxes` instead of `name:email` run together.
+- `lager defaults add --user` help now says to use the same name you use in
+  other tools that lock boxes, so a box locked from either side is
+  recognised by both.
+
 
 - **A second role on a dual-role instrument is now a notice, not a block.**
   Chips like the Keithley 2281S (battery or supply), the EA PSB pair (solar

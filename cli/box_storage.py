@@ -327,6 +327,8 @@ def format_lock_user(user):
     Recognized formats:
     - ``<origin>:<id>:<email>``                   -> just the email
       (reservations written by other services, e.g. the web dashboard)
+    - ``<origin>:<id>:<name>:<email>``            -> just the name
+      (the same services, once they started recording a display name)
     - ``ci:github:<repo>#<run>-<attempt>/<job>@<runner>:<pid>``
                                                   -> ``github <repo> run <run> job <job> on <runner>``
     - ``ci:drone:<repo>#<build>:<pid>@<host>``    -> ``drone <repo> build <build>``
@@ -399,10 +401,15 @@ def format_lock_user(user):
             return user
 
     # Reservation holders written by other services (e.g. the web dashboard)
-    # look like ``<origin>:<id>:<email>``; show just the email. The ``ci:``
-    # prefix is excluded above, and requiring an ``@`` keeps genuinely
-    # unrecognized strings visible unchanged.
+    # look like ``<origin>:<id>:<email>`` or, once those services record a
+    # display name, ``<origin>:<id>:<name>:<email>``; show the email or the
+    # name respectively. The ``ci:`` prefix is excluded above, and requiring
+    # an ``@`` in the last segment keeps genuinely unrecognized strings
+    # visible unchanged.
     if not user.startswith('ci:'):
+        parts = user.split(':')
+        if len(parts) == 4 and '@' in parts[3] and parts[2] and '@' not in parts[2]:
+            return parts[2]
         parts = user.split(':', 2)
         if len(parts) == 3 and '@' in parts[2]:
             return parts[2]

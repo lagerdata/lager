@@ -48,7 +48,7 @@ exclude correctly. Holder formats:
 
 | Environment           | Holder string                                                              |
 |-----------------------|----------------------------------------------------------------------------|
-| Dev (your machine)    | OS user (same as `lager defaults --user`)                                  |
+| Dev (your machine)    | OS user, or the name set with `lager defaults add --user`                  |
 | GitHub Actions        | `ci:github:<repo>#<run>-<attempt>/<job>@<runner>:<pid>`                    |
 | Drone                 | `ci:drone:<repo>#<build>:<pid>@<host>`                                     |
 | GitLab CI             | `ci:gitlab:<project>#<pipeline>/<job>:<pid>@<host>`                        |
@@ -139,6 +139,12 @@ lager boxes lock --box NAME
 - `--box` (required) — name of the box to lock.
 - `--user` — username to lock as (useful when running inside Docker where
   the user is otherwise `root`).
+
+The box compares holder names as plain strings, so a lock is yours on every
+surface that uses the same name. If another tool, such as a control plane
+dashboard, also locks this box, set `lager defaults add --user` to the
+display name you use there. A box you lock from either side is then
+recognized as yours by both.
 
 **Example**:
 ```bash
