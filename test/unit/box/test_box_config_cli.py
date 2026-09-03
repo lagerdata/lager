@@ -2019,6 +2019,167 @@ class ResetCommand(unittest.TestCase):
         self.assertTrue(apply_one.call_args.kwargs.get("force"))
 
 
+class NetworkModeGroup(unittest.TestCase):
+    """`lager box-config network-mode` show / set / unset."""
+
+    def setUp(self):
+        self.runner = CliRunner()
+
+    def _run(self, args, backend):
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            return self.runner.invoke(box_config_cli.box_config, args)
+
+    def test_show_reports_an_explicit_mode(self):
+        backend = FakeBoxBackend({"show": [{"version": 1, "network_mode": "host"}]})
+        r = self._run(["network-mode", "show"], backend)
+        self.assertEqual(r.exit_code, 0, msg=r.output)
+        self.assertIn("host", r.output)
+        self.assertNotIn("default", r.output)
+
+    def test_show_marks_the_default_as_a_default(self):
+        """The box-side to_dict omits the key at its default, so `show` has to
+        say what is in effect rather than printing nothing."""
+        backend = FakeBoxBackend({"show": [{"version": 1}]})
+        r = self._run(["network-mode", "show"], backend)
+        self.assertEqual(r.exit_code, 0, msg=r.output)
+        self.assertIn("lagernet", r.output)
+        self.assertIn("default", r.output)
+
+    def test_show_json_reports_whether_it_was_explicit(self):
+        backend = FakeBoxBackend({"show": [{"version": 1}]})
+        r = self._run(["network-mode", "show", "--json"], backend)
+        self.assertEqual(r.exit_code, 0, msg=r.output)
+        payload = json.loads(r.output)
+        self.assertEqual(payload["network_mode"], "lagernet")
+        self.assertFalse(payload["explicit"])
+
+    def test_show_handles_a_box_with_no_config(self):
+        backend = FakeBoxBackend({"show": [None]})
+        r = self._run(["network-mode", "show"], backend)
+        self.assertEqual(r.exit_code, 0, msg=r.output)
+        self.assertIn("no box_config.json", r.output)
+
+    def test_set_sends_the_mode_and_points_at_apply(self):
+        backend = FakeBoxBackend({
+            "network-mode-set": [{"ok": True, "mode": "host", "previous": "lagernet"}],
+        })
+        r = self._run(["network-mode", "set", "host"], backend)
+        self.assertEqual(r.exit_code, 0, msg=r.output)
+        self.assertIn("apply", r.output)
+        verb, args = backend.calls[0]
+        self.assertEqual(verb, "network-mode-set")
+        self.assertEqual(json.loads(args[0]), {"mode": "host"})
+
+    def test_set_host_warns_about_the_firewall_and_bluetoothd(self):
+        """Host mode changes who governs the ports and who owns the adapter.
+        Neither is obvious from the command."""
+        backend = FakeBoxBackend({
+            "network-mode-set": [{"ok": True, "mode": "host", "previous": "lagernet"}],
+        })
+        r = self._run(["network-mode", "set", "host"], backend)
+        self.assertIn("firewall", r.output)
+        self.assertIn("bluetoothd", r.output)
+
+    def test_set_lagernet_does_not_warn(self):
+        backend = FakeBoxBackend({
+            "network-mode-set": [{"ok": True, "mode": "lagernet", "previous": "host"}],
+        })
+        r = self._run(["network-mode", "set", "lagernet"], backend)
+        self.assertNotIn("firewall", r.output)
+
+    def test_set_rejects_an_unknown_mode_without_calling_the_box(self):
+        backend = FakeBoxBackend()
+        r = self._run(["network-mode", "set", "bridge"], backend)
+        self.assertNotEqual(r.exit_code, 0)
+        self.assertEqual(backend.calls, [])
+
+    def test_an_old_box_gets_told_to_update_not_a_raw_shim_error(self):
+        """Most of the fleet predates this verb. The dispatcher's generic
+        `unknown command` reads as a failure rather than a version gap."""
+        backend = FakeBoxBackend({
+            "network-mode-set": [
+                {"ok": False, "error": "unknown command: network-mode-set"}],
+        })
+        r = self._run(["network-mode", "set", "host"], backend)
+        self.assertNotEqual(r.exit_code, 0)
+        self.assertIn("lager update", r.output)
+        self.assertNotIn("unknown command", r.output)
+
+    def test_a_real_failure_still_surfaces_its_error(self):
+        backend = FakeBoxBackend({
+            "network-mode-set": [{"ok": False, "errors": ["disk full"]}],
+        })
+        r = self._run(["network-mode", "set", "host"], backend)
+        self.assertNotEqual(r.exit_code, 0)
+        self.assertIn("disk full", r.output)
+        self.assertNotIn("lager update", r.output)
+
+    def test_unset_reports_the_change(self):
+        backend = FakeBoxBackend({
+            "network-mode-unset": [
+                {"ok": True, "mode": "lagernet", "previous": "host"}],
+        })
+        r = self._run(["network-mode", "unset"], backend)
+        self.assertEqual(r.exit_code, 0, msg=r.output)
+        self.assertIn("lagernet", r.output)
+        self.assertIn("apply", r.output)
+
+    def test_unset_on_an_already_default_box_says_so_and_skips_apply(self):
+        backend = FakeBoxBackend({
+            "network-mode-unset": [
+                {"ok": True, "mode": "lagernet", "previous": "lagernet"}],
+        })
+        r = self._run(["network-mode", "unset"], backend)
+        self.assertEqual(r.exit_code, 0, msg=r.output)
+        self.assertIn("already", r.output)
+        self.assertNotIn("apply", r.output)
+
+
+class NetworkModeDiff(unittest.TestCase):
+    """`diff` / `apply`'s preview treat network_mode as a scalar. Every other
+    first-class field is a collection, so this is the one field going through
+    _diff_scalar rather than the list/dict/keyed-list differs."""
+
+    def test_a_mode_change_reads_as_a_single_transition(self):
+        d = box_config_cli._compute_diff(
+            {"version": 1, "network_mode": "host"}, {"version": 1})
+        self.assertFalse(box_config_cli._diff_is_empty(d))
+        self.assertEqual(d["network_mode"]["changed"],
+                         [{"from": "lagernet", "to": "host"}])
+
+    def test_unset_reads_as_the_reverse_transition(self):
+        d = box_config_cli._compute_diff(
+            {"version": 1}, {"version": 1, "network_mode": "host"})
+        self.assertEqual(d["network_mode"]["changed"],
+                         [{"from": "host", "to": "lagernet"}])
+
+    def test_absent_and_explicit_default_are_the_same_state(self):
+        """The box omits the key at its default. Without coercing both sides to
+        the default, `apply` would offer to change lagernet to lagernet."""
+        d = box_config_cli._compute_diff(
+            {"version": 1, "network_mode": "lagernet"}, {"version": 1})
+        self.assertTrue(box_config_cli._diff_is_empty(d))
+
+    def test_no_snapshot_at_all_is_not_a_change(self):
+        d = box_config_cli._compute_diff({"version": 1}, None)
+        self.assertEqual(d["network_mode"]["changed"], [])
+
+    def test_it_renders_without_a_formatter_lookup_error(self):
+        """_print_diff_human derives formatters from the collection registry;
+        a scalar absent from that map would raise KeyError mid-diff."""
+        d = box_config_cli._compute_diff(
+            {"version": 1, "network_mode": "host"}, {"version": 1})
+        import contextlib
+        import io as _io
+        buf = _io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            box_config_cli._print_diff_human(d)
+        rendered = buf.getvalue()
+        self.assertIn("Container network", rendered)
+        self.assertIn("lagernet -> host", rendered)
+
+
 class FieldRegistrySync(unittest.TestCase):
     """The box-side first-class field set (box/lager/box_config/config.py) and
     the CLI-side set (derived from _FIRST_CLASS_FIELDS_GROUPED in

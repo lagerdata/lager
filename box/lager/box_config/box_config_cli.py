@@ -443,6 +443,43 @@ def _cmd_env_set(payload: str) -> None:
     _stdout_json({"ok": True, "set": set_keys})
 
 
+def _cmd_network_mode_set(payload: str) -> None:
+    data = json.loads(payload)
+    mode = data.get("mode")
+    if not isinstance(mode, str):
+        _stdout_json({"ok": False, "errors": ["payload.mode must be a string"]})
+        return
+    if mode not in cfg.NETWORK_MODES:
+        allowed = ", ".join(cfg.NETWORK_MODES)
+        _stdout_json({"ok": False, "errors": [f"network_mode must be one of: {allowed}"]})
+        return
+    current = _load_or_init()
+    previous = current.network_mode
+    current.network_mode = mode
+    raw = current.to_dict()
+    errors = cfg.validate(raw)
+    if errors:
+        _stdout_json({"ok": False, "errors": errors})
+        return
+    cfg.save(cfg.BoxConfig.from_dict(raw))
+    _audit("network-mode-set", {"mode": mode, "previous": previous})
+    _stdout_json({"ok": True, "mode": mode, "previous": previous})
+
+
+def _cmd_network_mode_unset() -> None:
+    current = _load_or_init()
+    previous = current.network_mode
+    current.network_mode = cfg.DEFAULT_NETWORK_MODE
+    raw = current.to_dict()
+    errors = cfg.validate(raw)
+    if errors:
+        _stdout_json({"ok": False, "errors": errors})
+        return
+    cfg.save(cfg.BoxConfig.from_dict(raw))
+    _audit("network-mode-unset", {"previous": previous})
+    _stdout_json({"ok": True, "mode": cfg.DEFAULT_NETWORK_MODE, "previous": previous})
+
+
 def _cmd_env_unset(keys: list) -> None:
     current = _load_or_init()
     removed = [k for k in keys if k in current.env]
@@ -734,6 +771,8 @@ _DISPATCH = {
     "npm-remove":        lambda args: _cmd_npm_remove(_require_rest(args)),
     "udev-add":          lambda args: _cmd_udev_add(_require(args, 1)),
     "udev-remove":       lambda args: _cmd_udev_remove(_require_rest(args)),
+    "network-mode-set":  lambda args: _cmd_network_mode_set(_require(args, 1)),
+    "network-mode-unset": lambda _args: _cmd_network_mode_unset(),
     "set-raw":           lambda args: _cmd_set_raw(_require(args, 1)),
     "audit-tail":        lambda args: _cmd_audit_tail(args[1] if len(args) >= 2 else "20"),
 }

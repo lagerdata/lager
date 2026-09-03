@@ -11,6 +11,12 @@ sources and expands as docker-run arguments:
     BOX_CONFIG_MOUNTS      -v flags (mounts + volumes)
     BOX_CONFIG_ENV         --env flags
     BOX_CONFIG_HOST_PATHS  bind-mount host paths to mkdir -p before run
+    BOX_CONFIG_NETWORK     value for --network (scalar, not an array)
+
+BOX_CONFIG_NETWORK is always written, including by the empty/degraded body
+below, so start_box.sh can expand it unconditionally. A box whose config is
+missing or malformed still gets the default network rather than an empty
+--network argument, which docker would reject.
 
 Why a sourceable file instead of stdout-parsed-into-vars: the previous
 contract emitted `--env 'KEY=hello world'` on stdout, and start_box.sh
@@ -48,6 +54,10 @@ def _bash_array(name: str, items: list) -> str:
     return f"{name}=({body})\n"
 
 
+def _bash_scalar(name: str, value: str) -> str:
+    return f"{name}={shlex.quote(value)}\n"
+
+
 def _render_body(c) -> str:
     mount_args: list = []
     for m in c.mounts:
@@ -69,6 +79,7 @@ def _render_body(c) -> str:
         + _bash_array("BOX_CONFIG_MOUNTS", mount_args)
         + _bash_array("BOX_CONFIG_ENV", env_args)
         + _bash_array("BOX_CONFIG_HOST_PATHS", host_paths)
+        + _bash_scalar("BOX_CONFIG_NETWORK", c.network_mode)
     )
 
 
@@ -78,6 +89,7 @@ def _empty_body() -> str:
         + "BOX_CONFIG_MOUNTS=()\n"
         + "BOX_CONFIG_ENV=()\n"
         + "BOX_CONFIG_HOST_PATHS=()\n"
+        + _bash_scalar("BOX_CONFIG_NETWORK", cfg.DEFAULT_NETWORK_MODE)
     )
 
 
