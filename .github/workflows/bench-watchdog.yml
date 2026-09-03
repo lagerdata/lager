@@ -115,11 +115,32 @@ jobs:
             exit "$rc"
           fi
 
+          # Lateness is measured but never paged on -- see WHY LATENESS IS
+          # REPORT-ONLY in tools/bench_schedule_check.py. It goes in the run
+          # summary on every run, including green ones, so the trend stays
+          # visible to anyone who looks without filing anything.
+          if [ -f warnings.txt ]; then
+            {
+              echo "### Bench schedule warnings"
+              echo
+              cat warnings.txt
+              echo
+              echo "Reported, not alerted: the delay is GitHub's scheduled-event"
+              echo "queue and nothing in this repository can bound it."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
           if [ -f problems.txt ]; then
             {
               echo "Bench watchdog found nightly runs not flowing:"
               echo
               cat problems.txt
+              if [ -f warnings.txt ]; then
+                echo
+                echo "Also observed, though not itself the reason for this alert:"
+                echo
+                cat warnings.txt
+              fi
               echo
               echo "Detected by: ${RUN_URL}"
               echo "First checks: is the self-hosted runner service alive on the"
