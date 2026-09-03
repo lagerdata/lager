@@ -13,11 +13,7 @@ import subprocess
 import platform
 from ...box_storage import resolve_and_validate_box
 from ...context import get_default_box
-from ._ssh import (
-    default_identities_if_present,
-    lager_box_key_if_present,
-    ssh_identity_args,
-)
+from ._ssh import widened_identity_args
 
 
 def _get_ssh_install_hint() -> str:
@@ -73,13 +69,7 @@ def _identity_args() -> list:
     _ssh.probe_box_identity. That is not available here: a retry would mean
     a second interactive attempt, so everything is offered at once.
     """
-    key = lager_box_key_if_present()
-    if key is None:
-        return []
-    args = ssh_identity_args(key)
-    for path in default_identities_if_present():
-        args.extend(ssh_identity_args(path))
-    return args
+    return widened_identity_args()
 
 
 @click.command(context_settings=dict(ignore_unknown_options=True))

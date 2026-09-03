@@ -80,6 +80,55 @@ All notable changes to the Lager platform are documented here. For detailed rele
   dies after its erase says the board may be left blank. Non-DA1469x OpenOCD
   targets and the J-Link backend are unchanged.
 
+- **Lateness alone filed a new `bench-alert` issue every night.**
+  `bench_schedule_check.py` appended its lateness finding to the same
+  `problems` list as the gap and stale checks, and any non-empty `problems`
+  exits 1 and fires `bench_alert.sh`. That script searches only for an **open**
+  issue carrying the label, so the recovery job closing one on a green night
+  guaranteed the next watchdog run created another rather than reopening it.
+  With the mean delay sitting around 4.1h against a 3h threshold since a regime
+  change on 2026-08-27, the steady state was one new issue per day for a
+  condition that will still be true tomorrow -- and a `bench-alert` issue that
+  is usually open for the boring reason is one nobody reads on the night it is
+  open for a real one.
+
+  The delay is GitHub's scheduled-event queue. Nothing in this repository can
+  bound it, and `nightly-bench.yml` already says so. Lateness is therefore
+  reported rather than alerted: `check_lateness()` returns warnings instead of
+  problems, the tool writes `warnings.txt` and still exits 0, and the watchdog
+  puts the trend in the run summary on every run while folding it into the
+  alert body whenever something else fires -- which is when a reader needs it,
+  because "the night is 5h late" is what makes a missed night ambiguous.
+
+  Raising the threshold was the alternative and is worse: it silences the
+  signal on exactly the nights it was built to catch, and re-mutes itself as
+  the queue degrades further. The measurement is kept; only the paging is
+  dropped. `TestLatenessIsReportOnly` fails if lateness reaches the problems
+  list again.
+
+- **The `authorized_keys` probe withdrew the operator's own SSH identities, so
+  it could not answer for the boxes it exists to repair.**
+  `key_installed_on_box` asks a box directly whether `lager_box` is in its
+  `authorized_keys`, and offered that key with a lone `-i` so the query could
+  authenticate at all. But `-i` replaces ssh's built-in identity list rather
+  than adding to it -- the same defect fixed for `lager ssh` in v0.45.1 -- so
+  naming `lager_box` withdrew `id_rsa`, `id_ed25519` and the rest. On a box
+  authorized with one of those and not yet with `lager_box`, ssh had nothing
+  usable to offer and the probe returned `None`, meaning "could not ask".
+
+  Both callers read `None` as "do not fail". `lager update` prints `SSH key
+  installed successfully! Future connections will not require a password.` on
+  it, and `lager ssh-setup`'s post-install verification skips its error. So
+  the check written to catch a silent no-op was itself silently skipped, on
+  exactly the boxes being repaired.
+
+  The probe now offers `lager_box` first and then each of ssh's default
+  identity files that exists, through a `widened_identity_args()` helper that
+  `lager ssh` shares -- one definition, so the two cannot disagree about what
+  `-i` does. `probe_box_identity` is deliberately unchanged: it sets
+  `IdentitiesOnly` on its keyed attempt because it has to isolate whether that
+  particular key is the one being accepted.
+
 ## [0.45.1] - 2026-09-02
 
 ### Changed
