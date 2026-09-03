@@ -8,6 +8,8 @@ All notable changes to the Lager platform are documented here. For detailed rele
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+## [0.45.1] - 2026-09-02
+
 ### Changed
 
 - **`secure_box_firewall.sh` no longer claims an outcome it cannot deliver.**
