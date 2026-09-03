@@ -622,7 +622,13 @@ def _webcam(netname, role, action, params):
         if not video_device.startswith("/dev/"):
             video_device = "/dev/" + video_device
         try:
-            result = webcam_svc.start_stream(netname, video_device, box_ip)
+            result = webcam_svc.start_stream(
+                netname, video_device, box_ip,
+                # Which surface asked, and who it says asked. The CLI is the
+                # historical caller, so it stays the default when a client
+                # predates the field.
+                source=params.get("source") or "cli",
+                started_by=params.get("started_by"))
         except RuntimeError as e:
             raise DeviceError(str(e))
         msg = ("Stream already running at %s" if result.get("already_running")
@@ -648,6 +654,33 @@ def _webcam(netname, role, action, params):
             "url": info["url"],
             "port": info["port"],
             "video_device": info["video_device"],
+            "source": info.get("source"),
+            "started_by": info.get("started_by"),
+        })
+
+    if action == "snapshot":
+        # One frame, fetched over loopback from the streamer and returned
+        # inline, so the caller needs nothing but this endpoint — the
+        # streamer's own port may not be reachable from where they sit.
+        import base64
+        import requests
+
+        info = webcam_svc.get_stream_info(netname, box_ip)
+        if not info:
+            raise DeviceError(
+                "No active stream for net '%s' — start it first" % netname)
+        try:
+            resp = requests.get(
+                "http://127.0.0.1:%s/snapshot/%s" % (info["port"], netname),
+                timeout=8)
+        except requests.RequestException as e:
+            raise DeviceError("Snapshot request failed: %s" % e)
+        if resp.status_code != 200:
+            raise DeviceError(
+                "Snapshot failed: streamer answered %s" % resp.status_code)
+        return _ok("Snapshot captured", {
+            "jpeg_base64": base64.b64encode(resp.content).decode(),
+            "bytes": len(resp.content),
         })
 
     raise UnknownAction(action)
