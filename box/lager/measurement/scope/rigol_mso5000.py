@@ -18,6 +18,24 @@ _rm = None
 _instruments = {}
 
 
+def _scpi_arg(value):
+    """Render an argument as the token the instrument expects.
+
+    A value reaches a driver method in one of three shapes: a `VisaEnum` when
+    the caller is in-process, the `{'__enum__': ...}` dict `EnumEncoder` puts on
+    the wire when it came through the Device proxy, or a plain string. All three
+    have to end up as the same SCPI token.
+
+    `str()` is not that token -- on an Enum it yields `TriggerSPISlope.Positive`
+    -- so this uses `to_cmd()`, which is also what `VisaEnum.__format__` does.
+    """
+    if hasattr(value, "to_cmd"):
+        return value.to_cmd()
+    if isinstance(value, dict) and "__enum__" in value:
+        return value["__enum__"]["value"]
+    return str(value)
+
+
 def get_resource_manager():
     """Get or create the VISA resource manager."""
     global _rm
@@ -442,6 +460,121 @@ class RigolMso5000:
     def get_trigger_type(self):
         """Get the current trigger type."""
         return self.query(":TRIGger:MODE?")
+
+    # ============ SPI Trigger ============
+    #
+    # Every query below has been confirmed to ANSWER on an MSO5074
+    # (firmware 00.01.03.00.03), not merely to be accepted. That distinction is
+    # the whole reason #364 was fixed twice: a node can be accepted, report
+    # `0,"No error"` from `:SYSTem:ERRor?`, and still never answer, in which
+    # case the read times out and no respelling helps.
+    #
+    # Four plausible spellings behave exactly that way here and are NOT used:
+    # `:TRIGger:SPI:LEVel:SCL?`, `:LEVel:SDA?`, `:LEVel:CS?` and
+    # `:SOURce:SCL?` all accept, report no error, and never answer.
+    #
+    # The three level nodes were told apart by writing distinct values and
+    # reading them back, rather than inferred from their names:
+    #   CLEVel -> clock (SCL)    DLEVel -> data (SDA)    SLEVel -> chip select
+
+    def set_trigger_spi_source_scl(self, source):
+        """Set the SPI clock source (analog CHANnel<n> or digital D<n>)."""
+        self.write(f":TRIGger:SPI:SCL {_scpi_arg(source)}")
+        return {"trigger_spi_source_scl": _scpi_arg(source)}
+
+    def set_trigger_spi_source_sda(self, source):
+        """Set the SPI data (MOSI/MISO) source."""
+        self.write(f":TRIGger:SPI:SDA {_scpi_arg(source)}")
+        return {"trigger_spi_source_sda": _scpi_arg(source)}
+
+    def set_trigger_spi_source_cs(self, source):
+        """Set the SPI chip-select source."""
+        self.write(f":TRIGger:SPI:CS {_scpi_arg(source)}")
+        return {"trigger_spi_source_cs": _scpi_arg(source)}
+
+    def set_trigger_spi_scl_level(self, level):
+        """Set the SPI clock trigger level in volts."""
+        self.write(f":TRIGger:SPI:CLEVel {level}")
+        return {"trigger_spi_scl_level": level}
+
+    def get_trigger_spi_scl_level(self):
+        """Get the SPI clock trigger level in volts."""
+        return self.query(":TRIGger:SPI:CLEVel?")
+
+    def set_trigger_spi_sda_level(self, level):
+        """Set the SPI data trigger level in volts."""
+        self.write(f":TRIGger:SPI:DLEVel {level}")
+        return {"trigger_spi_sda_level": level}
+
+    def get_trigger_spi_sda_level(self):
+        """Get the SPI data trigger level in volts."""
+        return self.query(":TRIGger:SPI:DLEVel?")
+
+    def set_trigger_spi_cs_level(self, level):
+        """Set the SPI chip-select trigger level in volts."""
+        self.write(f":TRIGger:SPI:SLEVel {level}")
+        return {"trigger_spi_cs_level": level}
+
+    def get_trigger_spi_cs_level(self):
+        """Get the SPI chip-select trigger level in volts."""
+        return self.query(":TRIGger:SPI:SLEVel?")
+
+    def set_trigger_spi_slope(self, slope):
+        """Set the clock edge the data is sampled on (POSitive / NEGative)."""
+        self.write(f":TRIGger:SPI:SLOPe {_scpi_arg(slope)}")
+        return {"trigger_spi_slope": _scpi_arg(slope)}
+
+    def get_trigger_spi_slope(self):
+        """Get the clock edge the data is sampled on. Answers `POS` / `NEG`."""
+        return self.query(":TRIGger:SPI:SLOPe?")
+
+    def set_trigger_spi_condition(self, condition):
+        """Set what frames the SPI data (CS or TIMeout)."""
+        self.write(f":TRIGger:SPI:WHEN {_scpi_arg(condition)}")
+        return {"trigger_spi_condition": _scpi_arg(condition)}
+
+    def set_trigger_spi_mode(self, mode):
+        """Set the chip-select idle level (HIGH / LOW).
+
+        Only meaningful when the framing condition is CS.
+        """
+        self.write(f":TRIGger:SPI:MODE {_scpi_arg(mode)}")
+        return {"trigger_spi_mode": _scpi_arg(mode)}
+
+    def set_trigger_spi_timeout(self, timeout):
+        """Set the idle time that frames a word, in seconds."""
+        self.write(f":TRIGger:SPI:TIMeout {timeout}")
+        return {"trigger_spi_timeout": timeout}
+
+    def get_trigger_spi_timeout(self):
+        """Get the framing idle time in seconds. Answers e.g. `1.000000E-6`."""
+        return self.query(":TRIGger:SPI:TIMeout?")
+
+    def set_trigger_spi_width(self, bits):
+        """Set the SPI data width in bits (4-32 on this instrument)."""
+        self.write(f":TRIGger:SPI:WIDTh {int(bits)}")
+        return {"trigger_spi_width": int(bits)}
+
+    def get_trigger_spi_width(self):
+        """Get the SPI data width in bits.
+
+        This is the read `lager logic <net> trigger spi` makes with no
+        `--data-width`, and its absence was the whole of #410: the mapper
+        called it, nothing defined it, and the call 404'd on the box.
+        """
+        return self.query(":TRIGger:SPI:WIDTh?")
+
+    def set_trigger_spi_data(self, data):
+        """Set the data value to trigger on."""
+        self.write(f":TRIGger:SPI:DATA {data}")
+        return {"trigger_spi_data": data}
+
+    def get_trigger_status(self):
+        """Get the acquisition trigger status.
+
+        Answers one of TD, WAIT, RUN, AUTO or STOP.
+        """
+        return self.query(":TRIGger:STATus?")
 
     # ============ Measurement Control ============
 

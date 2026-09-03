@@ -182,6 +182,28 @@ echo "Test 5.7: SPI trigger defaults"
 lager logic $NET trigger spi --box $BOX && track_test "pass" || track_test "fail"
 echo ""
 
+# 5.8-5.11 reach the SPI trigger surface implemented for #410/#418 tranche 1.
+# 5.7 above passes with only the default path exercised, which is exactly how
+# a whole class of undefined driver methods stayed invisible until a hardware
+# run hit one of them. Each check below drives a DIFFERENT node, so a missing
+# one fails here rather than on someone else's bench.
+
+echo "Test 5.8: SPI trigger with explicit data width"
+lager logic $NET trigger spi --data-width 16 --box $BOX && track_test "pass" || track_test "fail"
+echo ""
+
+echo "Test 5.9: SPI trigger on a data value (reads the width back)"
+lager logic $NET trigger spi --data 255 --data-width 8 --box $BOX && track_test "pass" || track_test "fail"
+echo ""
+
+echo "Test 5.10: SPI trigger clock slope"
+lager logic $NET trigger spi --clk-slope negative --box $BOX && track_test "pass" || track_test "fail"
+echo ""
+
+echo "Test 5.11: SPI trigger framed on chip select"
+lager logic $NET trigger spi --trigger-on cs --cs-idle high --box $BOX && track_test "pass" || track_test "fail"
+echo ""
+
 # ============================================================
 # SECTION 6: CURSORS
 # ============================================================
