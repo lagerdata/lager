@@ -733,9 +733,73 @@ class TestNetCommandHandler(unittest.TestCase):
         self.assertFalse(data["value"]["already_running"])
         self.assertIn("Stream started", data["message"])
         # Video device is normalized to /dev/...; box_ip comes from the
-        # request host when not supplied.
+        # request host when not supplied. A client that predates the origin
+        # fields is recorded as the CLI with no attributed user.
         fake.start_stream.assert_called_once_with(
-            "cam1", "/dev/video0", "localhost")
+            "cam1", "/dev/video0", "localhost", source="cli", started_by=None)
+
+    def test_webcam_start_records_origin(self):
+        start_stream = MagicMock(return_value={
+            "url": "http://localhost:8090/", "port": 8090})
+        r, fake = self._run_webcam(
+            {"netname": "cam1", "action": "start",
+             "params": {"source": "api", "started_by": "alice"}},
+            start_stream=start_stream)
+        self.assertEqual(r.status_code, 200)
+        fake.start_stream.assert_called_once_with(
+            "cam1", "/dev/video0", "localhost", source="api", started_by="alice")
+
+    def test_webcam_status_includes_origin(self):
+        info = MagicMock(return_value={
+            "url": "http://localhost:8090/", "port": 8090,
+            "video_device": "/dev/video0", "source": "cli",
+            "started_by": "alice"})
+        r, _ = self._run_webcam(
+            {"netname": "cam1", "action": "status"}, get_stream_info=info)
+        data = r.get_json()
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(data["value"]["running"])
+        self.assertEqual(data["value"]["source"], "cli")
+        self.assertEqual(data["value"]["started_by"], "alice")
+
+    def test_webcam_snapshot_returns_frame_inline(self):
+        info = MagicMock(return_value={
+            "url": "http://localhost:8090/", "port": 8090,
+            "video_device": "/dev/video0"})
+        resp = MagicMock(status_code=200, content=b"\xff\xd8jpeg-bytes")
+        with patch('requests.get', return_value=resp) as get:
+            r, _ = self._run_webcam(
+                {"netname": "cam1", "action": "snapshot"}, get_stream_info=info)
+        data = r.get_json()
+        self.assertEqual(r.status_code, 200)
+        # Loopback to the streamer: the stream port need not be reachable
+        # from wherever the caller sits.
+        get.assert_called_once_with(
+            "http://127.0.0.1:8090/snapshot/cam1", timeout=8)
+        import base64
+        self.assertEqual(base64.b64decode(data["value"]["jpeg_base64"]),
+                         b"\xff\xd8jpeg-bytes")
+        self.assertEqual(data["value"]["bytes"], len(b"\xff\xd8jpeg-bytes"))
+
+    def test_webcam_snapshot_without_stream_is_device_error(self):
+        with patch('requests.get') as get:
+            r, _ = self._run_webcam(
+                {"netname": "cam1", "action": "snapshot"},
+                get_stream_info=MagicMock(return_value=None))
+        self.assertGreaterEqual(r.status_code, 400)
+        self.assertIn("start it first", r.get_json().get("error", ""))
+        get.assert_not_called()
+
+    def test_webcam_snapshot_streamer_failure_is_device_error(self):
+        info = MagicMock(return_value={
+            "url": "http://localhost:8090/", "port": 8090,
+            "video_device": "/dev/video0"})
+        resp = MagicMock(status_code=503, content=b"No frame available")
+        with patch('requests.get', return_value=resp):
+            r, _ = self._run_webcam(
+                {"netname": "cam1", "action": "snapshot"}, get_stream_info=info)
+        self.assertGreaterEqual(r.status_code, 400)
+        self.assertIn("503", r.get_json().get("error", ""))
 
     def test_webcam_start_already_running(self):
         start_stream = MagicMock(return_value={
