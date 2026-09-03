@@ -766,6 +766,20 @@ def _channel_display(rec):
     return pin
 
 
+_PURPOSE_COL_WIDTH = 44
+_PURPOSE_PLACEHOLDER = "-"
+
+
+def _truncate_purpose(purpose: str) -> str:
+    """One-line purpose for the table, ellipsised past the column width."""
+    text = " ".join(purpose.split())
+    if not text:
+        return _PURPOSE_PLACEHOLDER
+    if len(text) <= _PURPOSE_COL_WIDTH:
+        return text
+    return text[: _PURPOSE_COL_WIDTH - 1].rstrip() + "\u2026"
+
+
 def _display_table(
     records,
     state_map: dict[str, str | None] | None = None,
@@ -801,6 +815,10 @@ def _display_table(
     # ----- check which optional columns are needed -------------------------
     has_any_script = any(rec.get("jlink_script") for rec in records)
     has_any_openocd = any(rec.get("openocd_config") for rec in records)
+    # Purpose earns a column only on a bench that has one, so the common case
+    # stays as narrow as it was. Truncated rather than wrapped: this is a
+    # scanning aid, and `lager nets show <name>` prints the sentence in full.
+    has_any_purpose = any(rec.get("purpose") for rec in records)
 
     # ----- gather all rows for column width computation --------------------
     headers = ["Name", "Net Type", "Channel"]
@@ -810,6 +828,8 @@ def _display_table(
         headers.append("Script")
     if has_any_openocd:
         headers.append("OpenOCD")
+    if has_any_purpose:
+        headers.append("Purpose")
     all_rows = []
     grouped_rows: list[tuple[str, list[list[str]]]] = []
 
@@ -839,6 +859,8 @@ def _display_table(
                 row.append("yes" if rec.get("jlink_script") else "")
             if has_any_openocd:
                 row.append("yes" if rec.get("openocd_config") else "")
+            if has_any_purpose:
+                row.append(_truncate_purpose(rec.get("purpose") or ""))
             rows.append(row)
         all_rows.extend(rows)
         grouped_rows.append((group_label, rows))
@@ -852,6 +874,8 @@ def _display_table(
         min_w.append(6)
     if has_any_openocd:
         min_w.append(7)
+    if has_any_purpose:
+        min_w.append(len(_PURPOSE_PLACEHOLDER))
     col_w = [
         max(min_w[i], len(headers[i]), max(len(str(r[i])) for r in all_rows))
         for i in range(len(headers))

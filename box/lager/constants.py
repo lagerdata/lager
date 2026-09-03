@@ -11,6 +11,7 @@ __all__ = [
     'AVAILABLE_INSTRUMENTS_PATH',
     'ORG_SECRETS_PATH',
     'BOX_ID_PATH',
+    'BOX_METADATA_PATH',
     'VERSION_FILE_PATH',
     'WEBCAM_STREAMS_PATH',
     # Port numbers
@@ -40,6 +41,11 @@ VERSION_FILE_PATH = "/etc/lager/version"
 # `lager update` / `lager install`; absent on a box that predates it.
 REF_FILE_PATH = "/etc/lager/ref"
 WEBCAM_STREAMS_PATH = "/etc/lager/webcam_streams.json"
+# Box-level human-readable description, synced with the control plane.
+# Deliberately its own file rather than a key in bench.json: bench.json is
+# authored over SSH by `lager dut edit` and describes the DUT, while this is
+# machine-written on every control-plane edit and describes the box itself.
+BOX_METADATA_PATH = "/etc/lager/box_metadata.json"
 
 # Service port numbers
 HARDWARE_SERVICE_PORT = 8080  # Hardware service for instrument control

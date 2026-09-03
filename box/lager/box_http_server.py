@@ -192,6 +192,25 @@ except Exception as e:
     logger.warning("Nets handlers not available: %s", e)
     _has_nets = False
 
+# Import per-net metadata handler (purpose/notes/tags sync with the control plane)
+try:
+    from lager.http_handlers.net_metadata_handler import register_net_metadata_routes
+    _has_net_metadata = True
+except Exception as e:
+    logger.warning("Net metadata handlers not available: %s", e)
+    _has_net_metadata = False
+
+# Import box-level metadata handler (the box's own description)
+try:
+    from lager.http_handlers.box_metadata_handler import (
+        register_box_metadata_routes,
+        _read_box_metadata,
+    )
+    _has_box_metadata = True
+except Exception as e:
+    logger.warning("Box metadata handlers not available: %s", e)
+    _has_box_metadata = False
+
 # Import instruments handler
 try:
     from lager.http_handlers.instruments_handler import register_instruments_routes
@@ -308,9 +327,31 @@ def status():
                 net_type = NetType.from_role(role).name
             except (KeyError, ValueError):
                 net_type = role
-            nets.append({'name': net.get('name', ''), 'type': net_type})
+            # Metadata rides along so the control plane can reconcile it from
+            # the same probe that discovers the net, rather than issuing one
+            # extra round trip per net. Keys are always present (empty when
+            # unset) so a caller can tell "this box reports metadata and the
+            # field is empty" from "this box predates the feature", which is
+            # the distinction last-write-wins reconciliation turns on.
+            nets.append({
+                'name': net.get('name', ''),
+                'type': net_type,
+                'purpose': net.get('purpose') or '',
+                'notes': net.get('notes') or '',
+                'tags': list(net.get('tags') or []),
+                'metadata_timestamps': net.get('metadata_timestamps') or {},
+            })
     except (FileNotFoundError, _json.JSONDecodeError, TypeError):
         pass
+
+    # Box-level description, read from its own file. None on a box that has
+    # never been described and on one whose handler failed to import.
+    box_description = None
+    if _has_box_metadata:
+        try:
+            box_description = _read_box_metadata().get('description')
+        except Exception as e:  # never let metadata break the health probe
+            logger.warning("Could not read box metadata: %s", e)
 
     return jsonify({
         'healthy': True,
@@ -319,6 +360,9 @@ def status():
         # must tolerate null rather than assuming a value.
         'ref': ref,
         'nets': nets,
+        # The box's own description, synced with the control plane. Null on a
+        # box that has none; absent entirely on one predating the feature.
+        'box_description': box_description,
         # Capabilities let the control plane route per box. `netCommand` means
         # this box serves POST /net/command, so the control plane can use the warm
         # in-process path instead of the `lager python` exec fallback for Tier-1
@@ -350,6 +394,14 @@ def status():
             # says it should be there. A box predating the route omits the key
             # entirely, which reads as false.
             'safetyLimits': _has_nets,
+            # GET|PUT /nets/<name>/metadata and GET|PUT /box-metadata are
+            # served on :9000. The control plane gates its metadata pushes on
+            # these: without them it would PUT to a route that 404s on every
+            # box that predates the feature, and report a description as synced
+            # when nothing was written. A box predating the routes omits the
+            # keys entirely, which reads as false.
+            'netMetadataSync': _has_net_metadata,
+            'boxMetadataSync': _has_box_metadata,
         },
     })
 
@@ -414,6 +466,22 @@ if _has_nets:
     print("[INIT] Nets REST endpoints registered", flush=True)
 else:
     print("[INIT] Nets REST endpoints NOT available", flush=True)
+
+# Register per-net metadata REST handlers (if available)
+if _has_net_metadata:
+    register_net_metadata_routes(app)
+    logger.info("Net metadata REST endpoints registered")
+    print("[INIT] Net metadata REST endpoints registered", flush=True)
+else:
+    print("[INIT] Net metadata REST endpoints NOT available", flush=True)
+
+# Register box-metadata REST handlers (if available)
+if _has_box_metadata:
+    register_box_metadata_routes(app)
+    logger.info("Box metadata REST endpoints registered")
+    print("[INIT] Box metadata REST endpoints registered", flush=True)
+else:
+    print("[INIT] Box metadata REST endpoints NOT available", flush=True)
 
 # Register instruments REST handlers (if available)
 if _has_instruments:

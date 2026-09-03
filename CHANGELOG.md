@@ -23,6 +23,37 @@ All notable changes to the Lager platform are documented here. For detailed rele
   `--force` warns rather than failing obscurely; the routes are additive, so a
   current box keeps working with an older CLI.
 
+- **The box serves its net and box metadata over HTTP, so the control plane can
+  sync it.** New `GET|PUT /nets/<name>/metadata` (a net's `purpose` / `notes` /
+  `tags`) and `GET|PUT /box-metadata` (the box's own description, stored in
+  `/etc/lager/box_metadata.json`) on the box HTTP server, plus
+  `netMetadataSync` / `boxMetadataSync` in the `/status` capabilities block and
+  the metadata itself on each entry of the `/status` `nets` array.
+
+  The control plane has had the other half of this since May and gates its
+  pushes on those two capability flags, so with nothing advertising them it
+  skipped every push silently — no error, no log, no sign in the dashboard.
+  A description typed into the dashboard was written to its own database and
+  went no further, and `lager nets describe` on the box was invisible to it.
+  Only `tags` moved at all, and only upward, because it is the one field name
+  the two sides still had in common.
+
+  The endpoint speaks today's vocabulary: `purpose` / `notes` / `tags`, the
+  fields `lager nets describe` writes and the MCP server reads. It rejects the
+  pre-0.24.0 `description` / `dut_connection` / `test_hints` names rather than
+  storing keys nothing reads back. Metadata is merged, so a caller that knows
+  only about prose cannot drop a `jlink_script` or a `safety_limits` ceiling
+  the way a whole-record `PUT /nets/<name>` would; every record sharing a name
+  is updated, because the MCP bench loader builds one descriptor per record and
+  leaving a sibling behind would make which metadata an agent sees depend on
+  file order.
+
+  A field that `bench.json` overrides through `net_overrides` is reported back
+  in `shadowed_by_override`. The bench loader applies those *after* reading
+  `saved_nets.json`, so a write under one lands on disk and never reaches an
+  agent; answering a bare success there would tell the caller a value synced
+  when it did not.
+
 ### Changed
 
 - **A second role on a dual-role instrument is now a notice, not a block.**
@@ -106,6 +137,16 @@ All notable changes to the Lager platform are documented here. For detailed rele
   out rather than only when the session came up, so a session the box registers
   just after the client stops waiting is not orphaned from birth; that wait grew
   from 5s to 15s, since the box will sit through a re-enumeration for up to 60s.
+
+- **Editing a net's details in the Net-Manager TUI no longer discards the rest
+  of the record.** The Edit Details dialog built a fresh record from the five
+  fields it displayed plus the three it edits and sent that to
+  `PUT /nets/<name>`, which replaces a net wholesale — so writing a description
+  silently dropped `jlink_script`, `openocd_config`, `safety_limits`,
+  `usb_identity`, `params`, `device_path` and `channel_key`. A debug net lost
+  its script and a supply lost its ceiling, at the moment somebody documented
+  it. The dialog now fetches the stored record and mutates it in place, which
+  is what `lager nets describe` has always done.
 
 - **`DebugNet.flash()` / `.erase()` now take the DA1469x QSPI flash-loader
   path on OpenOCD, matching the CLI.** On a DA1469x target behind an OpenOCD
