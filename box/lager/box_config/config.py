@@ -29,6 +29,19 @@ APPLIED_HASH_PATH = "/etc/lager/box_config.applied_hash"
 APPLIED_CONFIG_PATH = "/etc/lager/box_config.applied.json"
 SCHEMA_VERSION = 1
 
+# Docker network for the box container. "lagernet" is the historical default and
+# stays the default; "host" exists because Linux AF_BLUETOOTH sockets are network-
+# namespace scoped -- the kernel registers the family only in the initial netns --
+# so hci0 is invisible inside a lagernet container and raw-HCI tooling cannot run
+# there. bleak is unaffected either way: it reaches bluetoothd on the HOST over the
+# mounted /var/run/dbus socket rather than through a BT socket of its own.
+#
+# Deliberately an allowlist, not a free-form network name: start_box.sh has to
+# decide port publishing from this value, and it can only do that for networks
+# whose semantics it knows.
+DEFAULT_NETWORK_MODE = "lagernet"
+NETWORK_MODES = ("lagernet", "host")
+
 # Container paths hard-coded by box/start_box.sh. A user-defined mount whose
 # container path collides with one of these would fail at `docker run` with
 # "Duplicate mount point" — at the worst possible moment, mid-bounce. Reject
@@ -290,7 +303,7 @@ class UdevRule:
 _FIRST_CLASS_KEYS = frozenset({
     "version", "mounts", "volumes", "env",
     "pip_packages", "apt_packages", "sysctl", "cargo_packages", "npm_packages",
-    "udev_rules",
+    "udev_rules", "network_mode",
 })
 
 
@@ -343,6 +356,7 @@ class BoxConfig:
     cargo_packages: List[str] = field(default_factory=list)
     npm_packages: List[str] = field(default_factory=list)
     udev_rules: List[UdevRule] = field(default_factory=list)
+    network_mode: str = DEFAULT_NETWORK_MODE
     extras: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -380,6 +394,7 @@ class BoxConfig:
             for u in raw.get("udev_rules", [])
             if isinstance(u, dict)
         ]
+        network_mode = raw.get("network_mode", DEFAULT_NETWORK_MODE)
         extras = {k: v for k, v in raw.items() if k not in _FIRST_CLASS_KEYS}
         return cls(
             version=int(raw["version"]),
@@ -392,6 +407,7 @@ class BoxConfig:
             cargo_packages=cargo_packages,
             npm_packages=npm_packages,
             udev_rules=udev_rules,
+            network_mode=network_mode,
             extras=extras,
         )
 
@@ -406,6 +422,15 @@ class BoxConfig:
         out["cargo_packages"] = list(self.cargo_packages)
         out["npm_packages"] = list(self.npm_packages)
         out["udev_rules"] = [u.to_dict() for u in self.udev_rules]
+        # Written only when it differs from the default, unlike the collections
+        # above. to_dict feeds compute_hash, and the applied-hash comparison is
+        # what decides whether `apply` bounces the container. Emitting
+        # "network_mode": "lagernet" unconditionally would change the hash of
+        # every config already deployed, so every box in the fleet would report
+        # drift and take one pointless container restart on its next apply --
+        # purely to record the value it already had.
+        if self.network_mode != DEFAULT_NETWORK_MODE:
+            out["network_mode"] = self.network_mode
         for k, v in self.extras.items():
             out[k] = v
         return out
@@ -513,6 +538,7 @@ def validate(raw: Any) -> List[str]:
     errors.extend(_validate_cargo_packages(raw))
     errors.extend(_validate_npm_packages(raw))
     errors.extend(_validate_udev_rules(raw))
+    errors.extend(_validate_network_mode(raw))
 
     return errors
 
@@ -752,6 +778,18 @@ def _validate_sysctl(raw: Dict[str, Any]) -> List[str]:
         if "\n" in v:
             errors.append(f"sysctl[{k!r}] must not contain newlines.")
     return errors
+
+
+def _validate_network_mode(raw: Dict[str, Any]) -> List[str]:
+    mode = raw.get("network_mode")
+    if mode is None:
+        return []
+    if not isinstance(mode, str):
+        return [f"'network_mode' must be a string, got {_typename(mode)}."]
+    if mode not in NETWORK_MODES:
+        allowed = ", ".join(repr(m) for m in NETWORK_MODES)
+        return [f"'network_mode' must be one of {allowed}, got {mode!r}."]
+    return []
 
 
 def _validate_cargo_packages(raw: Dict[str, Any]) -> List[str]:

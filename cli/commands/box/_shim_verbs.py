@@ -55,3 +55,9 @@ NPM_ADD = "npm-add"
 NPM_REMOVE = "npm-remove"
 UDEV_ADD = "udev-add"
 UDEV_REMOVE = "udev-remove"
+
+# Container network mode. Unset deletes the key rather than writing the default
+# back, so a config returns to byte-for-byte what it was before the mode was
+# ever set -- and therefore to the same hash.
+NETWORK_MODE_SET = "network-mode-set"
+NETWORK_MODE_UNSET = "network-mode-unset"
