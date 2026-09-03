@@ -378,5 +378,207 @@ class StaleSessionReclaimTests(unittest.TestCase):
         self.assertFalse(t.is_alive(), "loop did not exit on stop")
 
 
+class FakeManager:
+    """Stand-in for python-socketio's connection manager."""
+
+    def __init__(self, connected):
+        self.connected = set(connected)
+        self.queried = []
+
+    def is_connected(self, sid, namespace):
+        self.queried.append((sid, namespace))
+        return sid in self.connected
+
+
+class ManagedSocketIO(FakeSocketIO):
+    """FakeSocketIO that also exposes a `.server.manager`, as the real one does."""
+
+    def __init__(self, connected):
+        super().__init__()
+        self.manager = FakeManager(connected)
+        self.server = types.SimpleNamespace(manager=self.manager)
+
+
+class DepartedClientTests(unittest.TestCase):
+    """A session can outlive its own client, permanently.
+
+    `start_uart` and `disconnect` are dispatched on different threads, so a
+    client that opens a session and closes immediately can have its disconnect
+    handler run FIRST, find nothing registered, and return -- after which
+    `start_uart` registers a session with no client and no cleanup path left.
+    The heartbeat can never age it out (the loop is perfectly healthy and keeps
+    refreshing it), and `disconnect` has already been and gone, so the net --
+    and the exclusive flock on the tty -- stays held until the box restarts.
+
+    This is the bug behind a `lager uart` that reports "already in use by
+    another session" indefinitely. Confirmed on real hardware: unpatched, the
+    net was still held 246s after the race with no sign of clearing; patched,
+    the box log shows the release 2ms after the orphaning disconnect.
+
+    Note what this does NOT cover: a client that stops answering without
+    closing its socket leaves the connection manager reporting it connected
+    until engine.io's ping timeout (~85s on this box), so `_client_gone` is
+    False for it the whole time. Measured 92s unpatched vs 89s patched -- that
+    case is what `lager uart --force` exists for.
+    """
+
+    SID = 'sid-departed'
+
+    def setUp(self):
+        uart_handlers.active_uart_sessions.clear()
+
+    def tearDown(self):
+        uart_handlers.active_uart_sessions.clear()
+
+    def test_client_gone_reports_disconnected_sid(self):
+        sio = ManagedSocketIO(connected=['someone-else'])
+        self.assertTrue(uart_handlers._client_gone(sio, self.SID))
+
+    def test_client_gone_reports_connected_sid(self):
+        sio = ManagedSocketIO(connected=[self.SID])
+        self.assertFalse(uart_handlers._client_gone(sio, self.SID))
+        self.assertEqual(sio.manager.queried, [(self.SID, '/uart')])
+
+    def test_unintrospectable_socketio_never_reports_gone(self):
+        # No `.server`: a fake in tests, or an async_mode with no manager.
+        # An unknown answer must never tear down a live session.
+        self.assertFalse(uart_handlers._client_gone(FakeSocketIO(), self.SID))
+
+    def test_manager_error_never_reports_gone(self):
+        class Exploding:
+            def is_connected(self, sid, namespace):
+                raise RuntimeError('manager blew up')
+
+        sio = FakeSocketIO()
+        sio.server = types.SimpleNamespace(manager=Exploding())
+        self.assertFalse(uart_handlers._client_gone(sio, self.SID))
+
+    def test_read_loop_exits_and_frees_net_when_client_departs(self):
+        # The regression test proper: a healthy loop (blocking reads that
+        # never fail) whose client is gone must still release the net.
+        stop = threading.Event()
+        sio = ManagedSocketIO(connected=[])  # nobody is listening
+        driver = FakeDriver(stop, script=[])
+        uart_handlers.active_uart_sessions[self.SID] = {
+            'driver': driver,
+            'stop_event': stop,
+            'netname': 'uart1',
+            'last_activity': time.monotonic(),  # fresh: not stale, ever
+        }
+
+        t = threading.Thread(
+            target=uart_handlers._uart_read_loop,
+            args=(sio, self.SID, 'uart1', driver, stop),
+            daemon=True)
+        t.start()
+        t.join(2.0)
+
+        self.assertFalse(t.is_alive(), "loop did not exit for a departed client")
+        self.assertNotIn(self.SID, uart_handlers.active_uart_sessions,
+                         "net stayed held after the client went away")
+        self.assertEqual(driver.cleanup_calls, 1, "port was not closed")
+        # Never set: we left because nobody was there, not because we were told.
+        self.assertFalse(stop.is_set())
+
+    def test_read_loop_keeps_running_while_client_connected(self):
+        # The mirror image: a connected client must not be torn down.
+        stop = threading.Event()
+        sio = ManagedSocketIO(connected=[self.SID])
+        started = threading.Event()
+
+        class BlockingConn:
+            in_waiting = 0
+
+            def read(self, n):
+                started.set()
+                time.sleep(0.01)
+                return b''
+
+        driver = FakeDriver(stop, script=[])
+        driver.serial_conn = BlockingConn()
+        uart_handlers.active_uart_sessions[self.SID] = {
+            'driver': driver,
+            'stop_event': stop,
+            'netname': 'uart1',
+            'last_activity': time.monotonic(),
+        }
+
+        t = threading.Thread(
+            target=uart_handlers._uart_read_loop,
+            args=(sio, self.SID, 'uart1', driver, stop),
+            daemon=True)
+        t.start()
+        try:
+            self.assertTrue(started.wait(2.0), "read loop never started")
+            time.sleep(0.05)
+            self.assertTrue(t.is_alive(), "loop exited on a live client")
+            self.assertIn(self.SID, uart_handlers.active_uart_sessions)
+        finally:
+            stop.set()
+            t.join(2.0)
+
+
+class ReleaseSessionTests(unittest.TestCase):
+    """_release_session is the one teardown both reclaim paths share."""
+
+    SID = 'sid-release'
+
+    def setUp(self):
+        uart_handlers.active_uart_sessions.clear()
+
+    def tearDown(self):
+        uart_handlers.active_uart_sessions.clear()
+
+    def _register(self, stop):
+        driver = FakeDriver(stop, script=[])
+        uart_handlers.active_uart_sessions[self.SID] = {
+            'driver': driver,
+            'stop_event': stop,
+            'netname': 'uart1',
+            'last_activity': time.monotonic(),
+        }
+        return driver
+
+    def test_release_evicts_stops_and_closes(self):
+        stop = threading.Event()
+        driver = self._register(stop)
+        session = uart_handlers.active_uart_sessions[self.SID]
+
+        uart_handlers._release_session(self.SID, session, 'because the test said so')
+
+        self.assertNotIn(self.SID, uart_handlers.active_uart_sessions)
+        self.assertTrue(stop.is_set(), "a released reader must be told to exit")
+        self.assertEqual(driver.cleanup_calls, 1)
+
+    def test_release_is_idempotent(self):
+        stop = threading.Event()
+        self._register(stop)
+        session = uart_handlers.active_uart_sessions[self.SID]
+
+        uart_handlers._release_session(self.SID, session, 'first')
+        # Popping an already-popped sid must not raise.
+        uart_handlers._release_session(self.SID, session, 'second')
+
+        self.assertNotIn(self.SID, uart_handlers.active_uart_sessions)
+
+    def test_force_release_frees_a_live_session_reclaim_would_keep(self):
+        # The escape hatch's whole point: _reclaim_if_stale refuses to touch a
+        # live session, but an operator can still take the net back.
+        stop = threading.Event()
+        driver = self._register(stop)
+        session = uart_handlers.active_uart_sessions[self.SID]
+        session['thread'] = threading.Thread(target=stop.wait, daemon=True)
+        session['thread'].start()
+        try:
+            self.assertFalse(uart_handlers._reclaim_if_stale(self.SID, session))
+            self.assertIn(self.SID, uart_handlers.active_uart_sessions)
+
+            uart_handlers._release_session(self.SID, session, 'force-released')
+            self.assertNotIn(self.SID, uart_handlers.active_uart_sessions)
+            self.assertEqual(driver.cleanup_calls, 1)
+        finally:
+            stop.set()
+
+
 if __name__ == "__main__":
     unittest.main()

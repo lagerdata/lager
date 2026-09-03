@@ -9,10 +9,12 @@ UART, supply, and battery handlers.
 """
 import threading
 
-# Global dictionary to track active UART sessions
-# Format: {session_id: {'driver': driver_obj, 'thread': thread_obj, 'stop_event': event_obj}}
-active_uart_sessions = {}
-active_uart_sessions_lock = threading.Lock()
+# NOTE: there is deliberately no active_uart_sessions here. UART owns its
+# registry in http_handlers/uart.py, next to the read loop and the staleness /
+# client-liveness logic that maintain it. This module used to declare a second
+# dict of the same name that nothing ever wrote to, so anything reaching for
+# `state.active_uart_sessions` silently saw an empty registry instead of the
+# live one. Import it from .uart (or call uart.cleanup_uart_sessions()).
 
 # Global dictionary to track active supply monitoring sessions
 # Format: {session_id: {'netname': str, 'stop_event': event_obj, 'thread': thread_obj, 'instrument_lock': Lock}}
@@ -109,17 +111,14 @@ def format_cross_role_conflict_message(target_role, target_netname,
 
 def cleanup_all_sessions():
     """Clean up all active sessions. Called during graceful shutdown."""
-    # Cleanup UART sessions
-    with active_uart_sessions_lock:
-        for session_id, session in list(active_uart_sessions.items()):
-            try:
-                if 'stop_event' in session:
-                    session['stop_event'].set()
-                if 'driver' in session:
-                    session['driver']._cleanup()
-            except Exception:
-                pass
-        active_uart_sessions.clear()
+    # Cleanup UART sessions. Delegated to the module that owns the registry;
+    # function-level import keeps this module free of the flask/flask_socketio
+    # imports uart.py pulls in at module scope.
+    try:
+        from .uart import cleanup_uart_sessions
+        cleanup_uart_sessions()
+    except Exception:
+        pass
 
     # Cleanup supply sessions
     with active_supply_sessions_lock:

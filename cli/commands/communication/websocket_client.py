@@ -27,11 +27,20 @@ from typing import Optional
 import socketio
 import click
 
+# How long to wait for the box's `uart_connected` after sending start_uart.
+# Must comfortably exceed a device re-enumeration, which the box will sit
+# through for up to its own UART_RECONNECT_TIMEOUT (60s) before failing the
+# open. Giving up early is not free: the box may register the session just
+# after we stop listening, leaving it holding the net for a client that is
+# already gone.
+START_TIMEOUT = 15.0
+
 
 class UARTWebSocketClient:
     """WebSocket client for interactive UART sessions."""
 
-    def __init__(self, box_url: str, netname: str, overrides: dict, interactive: bool = True):
+    def __init__(self, box_url: str, netname: str, overrides: dict, interactive: bool = True,
+                 box_label: Optional[str] = None):
         """
         Initialize UART WebSocket client.
 
@@ -40,13 +49,23 @@ class UARTWebSocketClient:
             netname: Name of the UART net
             overrides: Parameter overrides (baudrate, parity, etc.)
             interactive: Enable interactive mode (bidirectional, requires TTY)
+            box_label: The --box the user typed, for actionable error hints
         """
         self.box_url = box_url
         self.netname = netname
         self.overrides = overrides
         self.interactive = interactive
+        # The --box the user typed, purely so an "in use" error can name the
+        # exact take-over command. None (older callers) drops the --box from
+        # the hint rather than guessing a name.
+        self.box_label = box_label
         self.connected = False
         self.uart_active = False
+        # Whether we ever sent start_uart. Teardown keys off this rather than
+        # uart_active: if the box registers the session just after our start
+        # deadline, uart_active is still False but the box IS holding the net,
+        # so it still needs a stop_uart.
+        self.start_emitted = False
         self.stop_event = threading.Event()
         self.old_tty_settings = None
         self.line_buffer = bytearray()  # Buffer for backspace support
@@ -176,6 +195,15 @@ class UARTWebSocketClient:
         """Handle error messages."""
         message = data.get('message', 'Unknown error')
         click.secho(f"\n\033[31mError: {message}\033[0m", err=True)
+        # A held net is recoverable, so say how. The box sends 'code' so the
+        # hint can carry the --box the user typed, which the box cannot know;
+        # a box too old to send it just yields the bare message above.
+        if data.get('code') == 'net_in_use':
+            netname = data.get('netname') or self.netname
+            cmd = f"lager uart {netname} --force"
+            if self.box_label:
+                cmd += f" --box {self.box_label}"
+            click.secho(f"To take over the net: {cmd}", err=True)
         self.stop_event.set()
 
     def _setup_terminal(self):
@@ -319,15 +347,25 @@ class UARTWebSocketClient:
                 'netname': self.netname,
                 'overrides': self.overrides
             }, namespace='/uart')
+            self.start_emitted = True
 
-            # Wait for UART to become active
-            timeout = 5
+            # Wait for UART to become active. Generous, because the box may be
+            # waiting on an adapter that is still re-enumerating — its own
+            # reconnect budget is 60s (UART_RECONNECT_TIMEOUT). At the old 5s
+            # we gave up on starts that were about to succeed, and the session
+            # the box then registered had no client left to read it.
+            timeout = START_TIMEOUT
             while not self.uart_active and not self.stop_event.is_set() and timeout > 0:
                 self.sio.sleep(0.1)
                 timeout -= 0.1
 
             if not self.uart_active:
-                click.secho("Error: UART session failed to start", fg='red', err=True)
+                if not self.stop_event.is_set():
+                    # stop_event set means an `error` event already said why,
+                    # and that message is the useful one.
+                    click.secho(
+                        f"Error: the box did not start the UART session within "
+                        f"{int(START_TIMEOUT)}s", fg='red', err=True)
                 return 1
 
             # Start stdin reading thread only for interactive mode
@@ -339,11 +377,6 @@ class UARTWebSocketClient:
             while not self.stop_event.is_set():
                 self.sio.sleep(0.1)
 
-            # Clean shutdown
-            if self.uart_active:
-                self.sio.emit('stop_uart', namespace='/uart')
-                self.sio.sleep(0.5)  # Give time for stop to process
-
             return 0
 
         except KeyboardInterrupt:
@@ -353,18 +386,45 @@ class UARTWebSocketClient:
             click.secho(f"\nError: {str(e)}", fg='red', err=True)
             return 1
         finally:
-            # Restore terminal
+            # Order matters. Releasing the box-side session used to live on the
+            # normal path only, so a KeyboardInterrupt skipped it entirely and
+            # left the net's release to the socket.io disconnect alone -- and
+            # the terminal was restored *first*, so the user saw what looked
+            # like a returned prompt while teardown was still pending and would
+            # reasonably Ctrl-C the "hung" process, killing the disconnect too.
+            # Both now happen here, socket first, on every exit path.
+            self._release_box_session()
             self._restore_terminal()
 
-            # Disconnect WebSocket
-            if self.connected:
-                try:
-                    self.sio.disconnect()
-                except Exception:
-                    pass
+    def _release_box_session(self):
+        """Give the box back the net, then close the socket.
+
+        Sends stop_uart whenever start_uart went out -- not just when
+        uart_connected came back -- so a session the box registered after our
+        start deadline is not left holding the net for a departed client.
+
+        Swallows KeyboardInterrupt as well as Exception: we are already on the
+        way out, and a second Ctrl-C landing mid-teardown must not skip the
+        disconnect. On a box without the read loop's client-liveness check,
+        that disconnect is the only thing that frees the net.
+        """
+        if not self.connected:
+            return
+        if self.start_emitted:
+            try:
+                self.sio.emit('stop_uart', namespace='/uart')
+                # Let it flush before we tear the transport down under it.
+                self.sio.sleep(0.2)
+            except (Exception, KeyboardInterrupt):
+                pass
+        try:
+            self.sio.disconnect()
+        except (Exception, KeyboardInterrupt):
+            pass
 
 
-def connect_uart_interactive(box_url: str, netname: str, overrides: dict) -> int:
+def connect_uart_interactive(box_url: str, netname: str, overrides: dict,
+                             box_label: Optional[str] = None) -> int:
     """
     Connect to interactive UART session via WebSocket.
 
@@ -372,15 +432,18 @@ def connect_uart_interactive(box_url: str, netname: str, overrides: dict) -> int
         box_url: Box WebSocket URL (e.g., ws://box:9000)
         netname: Name of the UART net
         overrides: Parameter overrides
+        box_label: The --box the user typed, for actionable error hints
 
     Returns:
         Exit code (0 for success, non-zero for error)
     """
-    client = UARTWebSocketClient(box_url, netname, overrides, interactive=True)
+    client = UARTWebSocketClient(box_url, netname, overrides, interactive=True,
+                                 box_label=box_label)
     return client.connect_and_run()
 
 
-def connect_uart_readonly(box_url: str, netname: str, overrides: dict) -> int:
+def connect_uart_readonly(box_url: str, netname: str, overrides: dict,
+                          box_label: Optional[str] = None) -> int:
     """
     Connect to read-only UART session via WebSocket.
 
@@ -388,9 +451,11 @@ def connect_uart_readonly(box_url: str, netname: str, overrides: dict) -> int:
         box_url: Box WebSocket URL (e.g., ws://box:9000)
         netname: Name of the UART net
         overrides: Parameter overrides
+        box_label: The --box the user typed, for actionable error hints
 
     Returns:
         Exit code (0 for success, non-zero for error)
     """
-    client = UARTWebSocketClient(box_url, netname, overrides, interactive=False)
+    client = UARTWebSocketClient(box_url, netname, overrides, interactive=False,
+                                 box_label=box_label)
     return client.connect_and_run()

@@ -41,13 +41,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1878 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 2096 |
+| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1896 (+2 xfailed) |
+| `unit (box)` | `test/unit/box/` | 2105 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 181 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 183 (+1 skipped) |
-| | **Total gated** | **4532** |
+| | **Total gated** | **4559** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never
@@ -451,7 +451,7 @@ cli/tests/                #  7 files: 6 pytest suites (GATED via `unit (cli)`),
                           #           plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 187 files)
+### Local Unit Tests (`test/unit/` -- 188 files)
 
 #### Box Unit Tests (`test/unit/box/` -- 101 files)
 
@@ -553,7 +553,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_sudoers_contract.py` | The `/etc/sudoers.d/` ownership contract: Lager writes exactly three files there, never globs and never touches the directory itself, and every writer — including the shell copy in `setup_and_deploy_box.sh` — emits the banner telling an operator those files are regenerated wholesale. Also pins the recorded escalation posture: the box login user is root-equivalent by design, and no source may claim a scoped entry confines it |
 | `test_supply_command_handler.py` | `POST /supply/command` handler, covering v0.32.0 hardware-found regressions |
 | `test_uart_bridge_reconnect.py` | UARTBridge re-enumeration healing after an adapter changes its /dev/tty node |
-| `test_uart_session_cleanup.py` | Websocket UART read loop heals in place instead of stopping on a failed read |
+| `test_uart_session_cleanup.py` | Websocket UART read loop heals in place instead of stopping on a failed read, plus the three ways a held UART net is freed — a departed client (which the loop's own heartbeat cannot detect, because the loop writes it), a wedged reader, and an operator force-release |
 | `test_usb_cycle_reenumeration.py` | `USBNet.cycle`'s re-enumeration verdict, read from the kernel's USB topology rather than from the hub: the bus sampled before the port is cut and again while it is dark, so what left in between is what the port carries. All four outcomes -- a device that returns, one that does not, a genuinely empty port, and a bus that could not be read (which must never be reported as empty) -- plus power restored on every path, a bounded wait, and a guard that the Acroname and YKUSH drivers still inherit this rather than overriding it |
 | `test_usb_devices_dfu.py` | `GET /usb/devices` sysfs enumeration and `POST /usb/dfu` list/download/detach argument building |
 | `test_usb_scanner_custom.py` | Custom-device surfacing in box HTTP scanner GET /instruments/list. Also the SuperSpeed companion dedupe: one physical dock lists as one instrument, and a missing bus root pairs nothing rather than pairing everything. Also what the Dexarm handshake -- the one scan step that WRITES to hardware -- is allowed to touch: every channel of a multi-interface chip and every saved uart net's tty reach the exclusion set, a foreign or unresolvable VID:PID is never opened at all, a port held by another process is skipped, and `LAGER_ARM_PROBE` off/force widen or close the gate without ever dropping the exclusive open or the deasserted modem lines. |
@@ -563,7 +563,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_ykush_driver.py` | YKUSH USB hub driver: device-contention regression from an indefinitely cached handle |
 | `test_automation_exports.py` | Static parse of `automation/__init__.py`'s lazy export table: no name guarded twice, every returned driver reachable under its own name, everything in `__all__` resolvable -- the copy-paste class of defect that made one driver answer to another's name |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 69 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 70 files)
 
 | File | What it tests |
 |------|---------------|
@@ -614,6 +614,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_empty_box_name.py` | An explicit `--box ""` (or whitespace-only) is refused rather than silently resolving to the DEFAULT box, in BOTH `resolve_and_validate_box` and `resolve_and_validate_box_with_name` -- they duplicate the resolution logic, so a guard in one would leave the other's callers still defaulting. Also pins the half that must not change: `None` still means "not given" and falls back to the default |
 | `test_ssh.py` | SSH ensure_lager_box_keypair and key_auth_works helpers |
 | `test_supply_tui.py` | SupplyTUI render output, command parsing, worker threads, connection failure |
+| `test_uart_session_release.py` | UART teardown releases the box-side session on every exit path (including Ctrl+C, and when the session never came up), never skips the disconnect that follows, and reports a held net with the take-over command; plus the connect banner keeping a by-id device path readable |
 | `test_uart_ws_status_events.py` | CLI handling of box-side `uart_status` events when a UART device re-enumerates |
 | `test_update_deps_preview.py` | `lager update --check`'s build-cache line never promises a cached build the rebuild gate would override — a pending layout flatten is a certain rebuild, and an unmeasurable build hash is reported as unknown rather than as a valid cache |
 | `test_update_flatten.py` | `lager update` sparse-checkout flatten: deletions propagate, root entries preserved, and the docker-build hash covers the source tree |

@@ -116,6 +116,115 @@ def _run_query_instruments(ctx: click.Context, box_ip: str) -> list[dict]:
     return []
 
 
+def _fetch_uart_sessions(ctx: click.Context, box_ip: str):
+    """List the UART sessions currently holding a net on the box.
+
+    Returns (sessions, supported). ``supported`` is False when the box predates
+    the endpoint, so callers can say "this box is too old" instead of reporting
+    an empty list as "nothing is holding your net".
+    """
+    from ...gateway_auth import auth_headers_for_box
+    from ...box_storage import _check_gateway
+    try:
+        resp = requests.get(f'http://{box_ip}:9000/uart/sessions', timeout=10,
+                            headers=auth_headers_for_box(box_ip))
+        resp = _check_gateway(resp, box_ip)
+        if resp.status_code in (404, 405):
+            return [], False
+        if resp.status_code == 200:
+            return resp.json().get('sessions', []), True
+        click.echo(f"Error: Box returned status {resp.status_code}", err=True)
+        return [], True
+    except (requests.RequestException, json.JSONDecodeError) as e:
+        click.echo(f"Error: The box at {box_ip}:9000 did not return its UART "
+                   f"sessions: {e}", err=True)
+        return [], True
+
+
+def _release_uart_session(ctx: click.Context, box_ip: str, netname: str) -> bool:
+    """Force-release whatever session is holding *netname*. True if one was.
+
+    Used by `--force`. A 404 means nothing held the net, which is a fine
+    outcome for a take-over -- the caller just proceeds to connect.
+    """
+    from ...gateway_auth import auth_headers_for_box
+    from ...box_storage import _check_gateway
+    try:
+        resp = requests.delete(f'http://{box_ip}:9000/uart/sessions/{netname}',
+                               timeout=10,
+                               headers=auth_headers_for_box(box_ip))
+        resp = _check_gateway(resp, box_ip)
+        if resp.status_code == 200:
+            return True
+        if resp.status_code == 404:
+            return False
+        if resp.status_code == 405:
+            click.secho(
+                "Warning: this box is too old to support --force; update it "
+                "with `lager update`.", fg='yellow', err=True)
+            return False
+        click.secho(f"Warning: the box refused to release net '{netname}' "
+                    f"(HTTP {resp.status_code})", fg='yellow', err=True)
+        return False
+    except (requests.RequestException, json.JSONDecodeError) as e:
+        click.secho(f"Warning: the box did not release net '{netname}': {e}",
+                    fg='yellow', err=True)
+        return False
+
+
+def display_uart_sessions(ctx, box_ip: str) -> None:
+    """Print who is holding which UART net."""
+    sessions, supported = _fetch_uart_sessions(ctx, box_ip)
+    if not supported:
+        click.echo("This box does not report UART sessions; update it with "
+                   "`lager update`.")
+        return
+    if not sessions:
+        click.echo("No UART sessions are active on this box.")
+        return
+
+    table = Texttable()
+    table.set_deco(Texttable.HEADER)
+    table.set_cols_dtype(["t", "t", "t", "t"])
+    table.set_cols_align(["l", "l", "l", "l"])
+    table.header(["Net", "Device Path", "Client", "Reader"])
+    for sess in sessions:
+        connected = sess.get('client_connected')
+        # None means the box could not introspect its connection manager.
+        client = {True: "connected", False: "gone", None: "unknown"}[connected]
+        alive = sess.get('reader_alive')
+        reader = {True: "running", False: "stopped", None: "starting"}[alive]
+        table.add_row([
+            sess.get('netname') or "",
+            sess.get('device_path') or "",
+            client,
+            reader,
+        ])
+    click.echo(table.draw())
+
+
+def _shorten_identity(identity: str, limit: int = 56) -> str:
+    """Fit a net's `pin` into one banner line without making it unreadable.
+
+    `pin` holds either a USB serial number or — for a net added by device path
+    — something like /dev/serial/by-id/usb-Prolific_USB-Serial_0001-if00.
+    This used to be a bare `identity[:10]`, which rendered that path as
+    "/dev/seria": every by-id path truncates to the same meaningless prefix,
+    and the result is indistinguishable from a corrupted net record. It cost a
+    real debugging session.
+
+    So: ellipsise the middle. The prefix says what kind of identity it is and
+    the tail carries the part that actually distinguishes one device from
+    another, which is exactly what a reader needs.
+    """
+    if not isinstance(identity, str) or len(identity) <= limit:
+        return identity
+    # Split the budget so the distinguishing tail keeps the larger share.
+    head = (limit - 3) // 3
+    tail = limit - 3 - head
+    return f"{identity[:head]}...{identity[-tail:]}"
+
+
 def _find_device_path(usb_serial: str, inst_list: list[dict]) -> str | None:
     """Find the /dev/tty* path for a given USB serial number."""
     if usb_serial and isinstance(usb_serial, str) and usb_serial.startswith("/dev/"):
@@ -191,7 +300,7 @@ def display_nets(ctx, box, netname: str | None):
     click.echo(result)
 
 
-def _connect_uart_http(ctx, box_ip, netname, overrides, interactive):
+def _connect_uart_http(ctx, box_ip, netname, overrides, interactive, box_label=None):
     """
     Connect to UART via WebSocket (both read-only and interactive modes).
 
@@ -203,6 +312,8 @@ def _connect_uart_http(ctx, box_ip, netname, overrides, interactive):
         netname: Name of the UART net to connect to
         overrides: Dictionary of serial port parameter overrides
         interactive: Whether to use interactive mode (bidirectional with keyboard input)
+        box_label: The --box the user typed, so an "in use" error can name the
+            exact take-over command
     """
     import time
 
@@ -221,7 +332,7 @@ def _connect_uart_http(ctx, box_ip, netname, overrides, interactive):
     last_error = None
     for attempt in range(max_retries):
         try:
-            exit_code = connect_func(box_url, netname, overrides)
+            exit_code = connect_func(box_url, netname, overrides, box_label=box_label)
             ctx.exit(exit_code)
             return
         except (Exit, Abort):
@@ -291,19 +402,29 @@ def _connect_uart_http(ctx, box_ip, netname, overrides, interactive):
 @click.option('--rtscts/--no-rtscts', default=None, help='Hardware flow control (RTS/CTS)')
 @click.option('--dsrdtr/--no-dsrdtr', default=None, help='Hardware flow control (DSR/DTR)')
 # Session options
+@click.option('--sessions', 'list_sessions', is_flag=True,
+              help='List the UART sessions that hold a net, then exit')
+@click.option('--force', is_flag=True,
+              help='Take over the net if another session holds it')
 @click.option('-i', '--interactive', is_flag=True, help='Enable input mode for typing to serial port', show_default=True)
 @click.option('--opost/--no-opost', default=False, help=r'Convert \n to \r\n on output', show_default=True)
 @click.option('--line-ending', type=click.Choice(['lf', 'crlf', 'cr']), default='lf', help='Line ending format (lf=\\n, crlf=\\r\\n, cr=\\r)', show_default=True)
 def uart(ctx, netname, action, box, baudrate, bytesize, parity, stopbits, xonxoff, rtscts, dsrdtr,
-         interactive, opost, line_ending):
+         list_sessions, force, interactive, opost, line_ending):
     """Connect to UART serial port.
 
     With no NET_NAME, lists the UART nets saved on the box. Passing
     'serial-port' after the net name prints the /dev path currently backing
-    the net instead of connecting.
+    the net instead of connecting. --sessions reports which nets are currently
+    held, and --force takes a held net over.
     """
     # Resolve box to box IP
     target_box, box_name = _resolve_box_with_name(ctx, box)
+
+    # Session listing needs no netname: it is a question about the box.
+    if list_sessions:
+        display_uart_sessions(ctx, target_box)
+        return
 
     # If no netname provided, try to use default
     if not netname:
@@ -398,25 +519,29 @@ def uart(ctx, netname, action, box, baudrate, bytesize, parity, stopbits, xonxof
     # Always include line_ending setting
     overrides['line_ending'] = line_ending
 
-    # Show connection info
-    net_params = net_config.get("params", {})
-    final_baudrate = overrides.get('baudrate', net_params.get("baudrate", 115200))
+    # Show connection info. The box's own `uart_connected` line that follows
+    # carries the resolved device path, baudrate and mode, so this one stays a
+    # short pre-flight "what we are about to open".
     bridge_type = net_config.get("instrument", "unknown")
-    usb_serial = net_config.get("pin", "unknown")
-    usb_serial_short = usb_serial[:10] if len(usb_serial) > 10 else usb_serial
-    port = net_config.get("channel", "0")
-    mode_str = "interactive" if interactive else "read-only"
+    identity = net_config.get("pin", "unknown")
 
     click.echo(
-        f"Connecting to {netname}: {bridge_type} (serial {usb_serial_short})",
+        f"Connecting to {netname}: {bridge_type} ({_shorten_identity(identity)})",
         err=True,
     )
+
+    # Take the net over before connecting, so start_uart does not race the
+    # holder's teardown. Silent when nothing held it -- --force is routinely
+    # used pre-emptively, and "nothing to release" is not worth a line.
+    if force and _release_uart_session(ctx, target_box, netname):
+        click.secho(f"Released the session that held '{netname}'",
+                    fg='yellow', err=True)
 
     # Connect to UART over the box's WebSocket API on :9000 (see
     # _connect_uart_http); serial-port discovery/listing also goes through
     # the :9000 HTTP endpoints, so UART no longer touches the :5000 exec path.
     _connect_uart_http(
-        ctx, target_box, netname, overrides, interactive
+        ctx, target_box, netname, overrides, interactive, box_label=box_name or box
     )
 
 
