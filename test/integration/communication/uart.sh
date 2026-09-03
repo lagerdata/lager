@@ -657,6 +657,54 @@ fi
 echo ""
 
 # ============================================================
+# SECTION 14: SESSION MANAGEMENT (--sessions / --force)
+# ============================================================
+start_section "Session Management"
+echo "========================================================================"
+echo "SECTION 14: SESSION MANAGEMENT"
+echo "========================================================================"
+echo ""
+# Surface-level, like the rest of this suite: it never opens a streaming
+# session, so nothing here can hang. The behaviour of a held net being
+# released -- and of --force taking one over -- is covered by
+# test/unit/box/test_uart_session_cleanup.py and
+# test/unit/cli/test_uart_session_release.py.
+
+echo "Test 14.1: Check for --sessions option"
+lager uart --help 2>&1 | grep -q "\-\-sessions" && track_test "pass" || track_test "fail"
+echo ""
+
+echo "Test 14.2: Check for --force option"
+lager uart --help 2>&1 | grep -q "\-\-force" && track_test "pass" || track_test "fail"
+echo ""
+
+echo "Test 14.3: --sessions reports one of its three valid answers"
+SESS_OUTPUT=$(lager uart --sessions --box $BOX 2>&1)
+echo "$SESS_OUTPUT"
+# A table of holders, "no sessions", or the too-old notice are all correct.
+# A traceback, an auth error, or silence are not.
+if echo "$SESS_OUTPUT" | grep -qiE "Device Path|No UART sessions are active|does not report UART sessions"; then
+  track_test "pass"
+else
+  track_test "fail"
+fi
+echo ""
+
+echo "Test 14.4: --sessions needs no netname"
+lager uart --sessions --box $BOX >/dev/null 2>&1 && track_test "pass" || track_test "fail"
+echo ""
+
+echo "Test 14.5: --force on a net that does not exist reports the missing net"
+FORCE_OUTPUT=$(lager uart nonexistent_net_xyz --force --box $BOX 2>&1)
+echo "$FORCE_OUTPUT" | head -3
+if echo "$FORCE_OUTPUT" | grep -qiE "not found|does not exist|no.*net"; then
+  track_test "pass"
+else
+  track_test "fail"
+fi
+echo ""
+
+# ============================================================
 # CLEANUP
 # ============================================================
 echo "========================================================================"
@@ -703,9 +751,10 @@ echo "  - Parameter combinations (all baudrates, parity, stopbits, etc.)"
 echo "  - Net persistence across operations"
 echo "  - Edge cases (long names, special paths, empty parameters)"
 echo "  - Regression tests (error recovery, state consistency)"
+echo "  - Session management (--sessions listing and --force take-over)"
 echo ""
 echo "Test Statistics:"
-echo "  - Total test sections: 13"
+echo "  - Total test sections: 14"
 echo "  - Total test cases: $GLOBAL_TOTAL"
 echo "  - Command categories tested: uart, nets (UART-specific)"
 echo "  - Net-based configuration: Create, list, rename, delete UART nets"

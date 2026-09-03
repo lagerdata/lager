@@ -21,6 +21,14 @@ logger = logging.getLogger(__name__)
 active_uart_sessions = {}
 active_uart_sessions_lock = threading.Lock()
 
+# The SocketIO instance the /uart namespace is registered on, stashed by
+# register_uart_socketio(). The HTTP session routes need it to answer "is that
+# holder's client still connected?" via _client_gone(), and Flask routes get no
+# socketio argument of their own. None until the namespace is registered (and
+# in tests that only exercise the HTTP layer), which reads as "liveness
+# unknown" rather than an error.
+_socketio = None
+
 # How long a live session waits for a re-enumerating device to come back
 # before giving up and reporting a terminal error.
 UART_RECONNECT_TIMEOUT = 60.0
@@ -35,6 +43,11 @@ UART_RECONNECT_TIMEOUT = 60.0
 # a fresh `start_uart` for the same net succeed instead of hitting a permanent
 # "already in use". Must stay comfortably above the loop's iteration period so
 # a merely-slow (not wedged) loop is never misjudged.
+#
+# This covers a *wedged reader* only. It cannot detect a departed client: the
+# heartbeat is written by the read loop itself, so a client that dies leaves a
+# perfectly healthy loop refreshing it forever. That case is handled by
+# _client_gone() below, not here. (Same split as rtt.py's.)
 STALE_SESSION_TIMEOUT = 30.0
 
 
@@ -114,12 +127,29 @@ def _uart_read_loop(socketio, session_id, netname, driver, stop_event):
     def reconnect_stop_check():
         # reconnect() polls this every <=0.25s; piggyback the heartbeat so a
         # genuine 60s re-enumeration keeps the session fresh and un-reclaimable.
+        #
+        # Deliberately does NOT consult _client_gone(): a re-enumeration is
+        # exactly when the manager's answer is least worth acting on, and
+        # aborting here would turn a healable hiccup into a dropped session.
+        # A client that left during a reconnect is caught by the check at the
+        # top of the loop as soon as reconnect() returns, so the net is held
+        # for at most one reconnect budget rather than indefinitely.
         touch()
         return stop_event.is_set()
 
     try:
         while not stop_event.is_set():
             touch()
+            # Before reading more: is anyone still there? Emitting into an
+            # empty room is a silent no-op, so without this a session whose
+            # `disconnect` already ran before it was registered would stream
+            # happily to nobody and hold the net -- and the exclusive flock on
+            # the tty -- until the box restarted. See _client_gone().
+            if _client_gone(socketio, session_id):
+                logger.info(
+                    "UART client %s is gone; releasing net %s (device %s)",
+                    session_id, netname, driver.device_path)
+                break
             try:
                 # Read data with consistent buffer size
                 waiting = driver.serial_conn.in_waiting
@@ -205,6 +235,51 @@ def _uart_read_loop(socketio, session_id, netname, driver, stop_event):
         logger.info(f"UART read thread stopped for session {session_id}")
 
 
+def _client_gone(socketio, session_id) -> bool:
+    """True when *session_id* is no longer connected to the /uart namespace.
+
+    The read loop's heartbeat proves the loop is iterating, not that anyone is
+    still listening, so the stale-session reclaim is blind to a client that
+    went away: the loop stays healthy, 'last_activity' stays fresh, and the
+    session keeps its per-net/per-device guard and the exclusive flock on the
+    tty.
+
+    The case this actually rescues is a session registered *after* its own
+    client disconnected. `start_uart` and `disconnect` are dispatched on
+    different threads (async_mode='threading'), so a client that opens a
+    session and closes immediately can have its disconnect handler run first,
+    find nothing registered, and return -- and then `start_uart` registers a
+    session with no client and no remaining cleanup path. The heartbeat can
+    never age (the loop is healthy), `disconnect` has already been and gone,
+    and the net stays held until the box restarts. Measured against a box
+    without this check: still held after 246s, with no sign of clearing.
+    With this check the same race releases the net in ~2ms.
+
+    What it does NOT shorten is a client that stops answering without closing
+    (host suspended, Wi-Fi or VPN dropped). The connection manager still
+    reports that sid as connected until engine.io's ping timeout expires --
+    ping_interval 25s + ping_timeout 60s on this box -- so the net stays held
+    for ~85s either way. Measured: 92s unpatched, 89s patched. `lager uart
+    --force` is the answer for that one, not this check. (rtt.py's copy of this
+    docstring claims it collapses the 85s window; that claim is wrong, and its
+    call site has the same shape as this one.)
+
+    Returns False when the manager cannot be introspected (a fake socketio in
+    tests, or an async_mode that exposes no manager), so an unknown answer can
+    never tear down a live session.
+
+    Counterpart to rtt.py's _client_gone; keep the two in step.
+    """
+    try:
+        manager = socketio.server.manager
+    except AttributeError:
+        return False
+    try:
+        return not manager.is_connected(session_id, '/uart')
+    except Exception:  # noqa: BLE001 — liveness is advisory, never fatal
+        return False
+
+
 def _session_is_stale(session) -> bool:
     """True if *session* has no live read loop behind it.
 
@@ -220,6 +295,9 @@ def _session_is_stale(session) -> bool:
     A session still being set up (thread not yet stored, heartbeat seeded at
     creation) reads as NOT stale, so an in-flight legitimate start is never
     reclaimed out from under itself.
+
+    Says nothing about whether a *client* is still listening — an orphaned but
+    healthy loop refreshes the heartbeat forever. See _client_gone().
     """
     thread = session.get('thread')
     if thread is not None and not thread.is_alive():
@@ -230,20 +308,16 @@ def _session_is_stale(session) -> bool:
     return False
 
 
-def _reclaim_if_stale(session_id, session) -> bool:
-    """Tear down *session* if it has no live reader; report whether it blocks.
+def _release_session(session_id, session, reason: str) -> None:
+    """Tear *session* down and free its net/device. Idempotent.
 
-    Call while holding active_uart_sessions_lock. Returns True when the session
-    was stale and has been reclaimed (its net/device is now free to reuse) so
-    the caller should NOT reject the incoming start; False when the session is
-    genuinely live and must still block a colliding start.
+    Call while holding active_uart_sessions_lock. Shared by the stale-session
+    reclaim and the operator-driven force release so the two cannot drift —
+    they differ only in how they decide, never in how they tear down.
     """
-    if not _session_is_stale(session):
-        return False
     logger.warning(
-        "Reclaiming stale UART session %s (netname=%s): no live read loop; "
-        "releasing its device so a new session can start",
-        session_id, session.get('netname'))
+        "Releasing UART session %s (netname=%s): %s",
+        session_id, session.get('netname'), reason)
     stop_event = session.get('stop_event')
     if stop_event is not None:
         # If the wedged thread ever unblocks, tell it to exit rather than
@@ -257,8 +331,23 @@ def _reclaim_if_stale(session_id, session) -> bool:
             driver._cleanup()
         except Exception as e:
             logger.error(
-                "Error cleaning up reclaimed UART session %s: %s", session_id, e)
+                "Error cleaning up released UART session %s: %s", session_id, e)
     active_uart_sessions.pop(session_id, None)
+
+
+def _reclaim_if_stale(session_id, session) -> bool:
+    """Tear down *session* if it has no live reader; report whether it blocks.
+
+    Call while holding active_uart_sessions_lock. Returns True when the session
+    was stale and has been reclaimed (its net/device is now free to reuse) so
+    the caller should NOT reject the incoming start; False when the session is
+    genuinely live and must still block a colliding start.
+    """
+    if not _session_is_stale(session):
+        return False
+    _release_session(session_id, session,
+                     "no live read loop; releasing its device so a new "
+                     "session can start")
     return True
 
 
@@ -317,6 +406,94 @@ def register_uart_routes(app: Flask) -> None:
             logger.exception("Error in uart_net_stream")
             return jsonify({'error': str(e)}), 500
 
+    @app.route('/uart/sessions', methods=['GET'])
+    def uart_sessions_list():
+        """
+        List the UART sessions currently holding a net.
+
+        Read-only: answers "who has my net, and is anyone actually there?"
+        without touching a single session. `client_connected` is null when
+        liveness cannot be determined (the /uart namespace is not registered,
+        or the async_mode exposes no connection manager).
+
+        Returns:
+        {
+            "sessions": [
+                {
+                    "netname": "UART",
+                    "device_path": "/dev/ttyACM1",
+                    "sid": "abc123",
+                    "heartbeat_age_seconds": 0.05,
+                    "client_connected": true,
+                    "reader_alive": true
+                },
+                ...
+            ]
+        }
+        """
+        try:
+            now = time.monotonic()
+            sessions = []
+            with active_uart_sessions_lock:
+                for sid, sess in active_uart_sessions.items():
+                    driver = sess.get('driver')
+                    last = sess.get('last_activity')
+                    thread = sess.get('thread')
+                    connected = None
+                    if _socketio is not None:
+                        connected = not _client_gone(_socketio, sid)
+                    sessions.append({
+                        'netname': sess.get('netname'),
+                        'device_path': getattr(driver, 'device_path', None),
+                        'sid': sid,
+                        'heartbeat_age_seconds': (
+                            round(now - last, 3) if last is not None else None),
+                        'client_connected': connected,
+                        # A session mid-setup has no thread yet; that is not
+                        # the same as a dead reader, so report it as unknown.
+                        'reader_alive': (
+                            thread.is_alive() if thread is not None else None),
+                    })
+            return jsonify({'sessions': sessions})
+        except Exception as e:
+            logger.exception("Error listing UART sessions")
+            return jsonify({'error': str(e), 'sessions': []}), 500
+
+    @app.route('/uart/sessions/<netname>', methods=['DELETE'])
+    def uart_session_release(netname):
+        """
+        Force-release the session holding *netname*.
+
+        The operator escape hatch for a net held by a session that should be
+        gone. Mirrors `POST /unlock {"force": true}` for the box lock: the
+        holder loses the net, and its read thread exits on its next iteration
+        (or when its blocking read unblocks, since closing the fd releases the
+        flock).
+
+        Returns 200 with the released sessions, or 404 when nothing holds the
+        net — a no-op is reported as such rather than as success, so a
+        misspelled netname is visible.
+        """
+        try:
+            released = []
+            with active_uart_sessions_lock:
+                # list(): _release_session pops entries as we go.
+                for sid, sess in list(active_uart_sessions.items()):
+                    if sess.get('netname') != netname:
+                        continue
+                    released.append(sid)
+                    _release_session(
+                        sid, sess, f"force-released via DELETE /uart/sessions/{netname}")
+            if not released:
+                return jsonify({
+                    'error': f"No UART session is holding net '{netname}'",
+                    'released': [],
+                }), 404
+            return jsonify({'released': released, 'netname': netname})
+        except Exception as e:
+            logger.exception("Error releasing UART session")
+            return jsonify({'error': str(e)}), 500
+
 
 def register_uart_socketio(socketio: SocketIO) -> None:
     """
@@ -325,6 +502,8 @@ def register_uart_socketio(socketio: SocketIO) -> None:
     Args:
         socketio: Flask-SocketIO instance
     """
+    global _socketio
+    _socketio = socketio
 
     @socketio.on('connect', namespace='/uart')
     def handle_uart_connect():
@@ -334,7 +513,17 @@ def register_uart_socketio(socketio: SocketIO) -> None:
 
     @socketio.on('disconnect', namespace='/uart')
     def handle_uart_disconnect():
-        """Handle WebSocket disconnection for UART."""
+        """Handle WebSocket disconnection for UART.
+
+        Cleans up whatever is registered under this sid at the moment it runs.
+        Under async_mode='threading' this can race an in-flight start_uart for
+        the same sid — disconnect finds nothing, then start_uart registers a
+        session whose client is already gone. Nothing here can fix that
+        ordering; the read loop's own _client_gone() check does, evicting the
+        orphan on its first iteration. Do not reach for an identity guard
+        (as _uart_read_loop's finally uses): sids are per-connection and not
+        reused, so there is no second session under this sid to protect.
+        """
         logger.info(f"UART WebSocket client disconnected: {request.sid}")
 
         # Clean up any active UART session
@@ -394,7 +583,16 @@ def register_uart_socketio(socketio: SocketIO) -> None:
                 # list(): _reclaim_if_stale may pop entries as we scan.
                 for sid, sess in list(active_uart_sessions.items()):
                     if sess.get('netname') == netname and not _reclaim_if_stale(sid, sess):
-                        emit('error', {'message': f"UART net '{netname}' is already in use by another session"})
+                        # 'code'/'netname' let a current CLI print the
+                        # take-over command with the --box the user actually
+                        # typed (which the box cannot know). Older CLIs ignore
+                        # the extra fields and print 'message' as before.
+                        emit('error', {
+                            'message': f"UART net '{netname}' is already in "
+                                       f"use by another session",
+                            'code': 'net_in_use',
+                            'netname': netname,
+                        })
                         return
 
             # Resolve net and create driver
@@ -413,7 +611,13 @@ def register_uart_socketio(socketio: SocketIO) -> None:
                             if (other is not None
                                     and getattr(other, 'device_path', None) == device_path
                                     and not _reclaim_if_stale(sid, sess)):
-                                emit('error', {'message': f"UART device {device_path} is already in use by another session"})
+                                emit('error', {
+                                    'message': f"UART device {device_path} is "
+                                               f"already in use by another "
+                                               f"session",
+                                    'code': 'net_in_use',
+                                    'netname': netname,
+                                })
                                 return
 
                 driver._connect()

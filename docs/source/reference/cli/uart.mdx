@@ -32,6 +32,8 @@ lager uart [NETNAME] [OPTIONS]
 | `-i` / `--interactive` | Enable input mode for typing |
 | `--opost` / `--no-opost` | Convert \\n to \\r\\n on output |
 | `--line-ending MODE` | Line ending: lf, crlf, cr (default: lf) |
+| `--sessions` | List the UART sessions that hold a net, then exit |
+| `--force` | Take over the net if another session holds it |
 
 ---
 
@@ -62,6 +64,37 @@ lager uart SERIAL1 -i --baudrate 9600 --parity none
 ```bash
 # Show device path for a UART net
 lager uart SERIAL1 serial-port
+```
+
+### A Net Held By Another Session
+
+A UART device takes one reader at a time, so a second session on the same net
+is refused:
+
+```
+Error: UART net 'SERIAL1' is already in use by another session
+To take over the net: lager uart SERIAL1 --force --box my-lager-box
+```
+
+Ask the box who holds what:
+
+```bash
+lager uart --sessions --box my-lager-box
+```
+
+```
+Net       Device Path     Client      Reader
+==============================================
+SERIAL1   /dev/ttyUSB0    connected   running
+```
+
+`Client` reports whether the holder's end of the connection is still there.
+A holder whose client reads `gone` releases the net on its own within a
+moment. One that reads `connected` belongs to somebody, so check before you
+take it:
+
+```bash
+lager uart SERIAL1 --force --box my-lager-box
 ```
 
 ---

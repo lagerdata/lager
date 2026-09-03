@@ -8,6 +8,75 @@ All notable changes to the Lager platform are documented here. For detailed rele
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Fixed
+
+- **A UART net is no longer held indefinitely after its interactive client
+  goes away.** `lager uart <net> -i` could leave the net stuck reporting
+  "already in use by another session" on every subsequent invocation, with no
+  cure short of restarting the box's container.
+
+  The box reclaims a UART session by asking whether its read loop is still
+  making progress, via a `last_activity` heartbeat. But that heartbeat is
+  written *by the read loop itself*, so it proves the loop is iterating — never
+  that anyone is still listening. A client that goes away leaves a perfectly
+  healthy loop refreshing it forever: emits into an empty Socket.IO room are a
+  silent no-op, so the session kept its per-net/per-device guard and its
+  exclusive `flock` on the tty, and the 30s staleness bound was unreachable by
+  construction. The 0.31.14 reclaim addressed a *wedged* reader and could not
+  see this case.
+
+  The specific way this became permanent: `start_uart` and `disconnect` are
+  dispatched on different threads, so a client that opens a session and closes
+  it again straight away can have its disconnect handler run first, find
+  nothing registered, and return. `start_uart` then registers a session with no
+  client and no cleanup path left. Reproduced on real hardware: still held 246s
+  later with no
+  sign of clearing, and the box log shows the disconnect landing 100ms before
+  the registration it was supposed to clean up.
+
+  The read loop now also asks the connection manager directly whether its
+  client is still on the `/uart` namespace, and exits on the first iteration
+  where it is not. Measured on the same box, the same race now releases the
+  net in ~2ms. The check is fail-open: a socketio whose manager cannot be
+  introspected reports "still there", so an unknown answer can never tear down
+  a live session, and it is deliberately not consulted during a device
+  re-enumeration, where a session is expected to sit and heal. This is the same
+  fix RTT received in 0.36.0; the two now match.
+
+  It does **not** shorten the case of a client that stops answering without
+  closing its socket (host suspended, VPN dropped). The connection manager
+  still reports that sid connected until engine.io's ping timeout, so the net
+  stays reserved for ~85s regardless — measured 92s before, 89s after. Use
+  `lager uart <net> --force` for that. (The equivalent RTT note in 0.36.0 says
+  this check collapses the 85s window. It does not; that description is being
+  corrected here rather than repeated.)
+
+  Two CLI-side contributors to the same stranding are fixed with it. `stop_uart`
+  was sent only on the normal exit path, so Ctrl+C skipped it and left the
+  release to the socket.io disconnect alone — and teardown restored the terminal
+  *before* disconnecting, so the user saw what looked like a returned prompt
+  while the disconnect was still pending and would reasonably Ctrl+C the "hung"
+  process, killing it. Teardown now runs on every exit path, socket first, and
+  survives a second Ctrl+C. It also sends `stop_uart` whenever `start_uart` went
+  out rather than only when the session came up, so a session the box registers
+  just after the client stops waiting is not orphaned from birth; that wait grew
+  from 5s to 15s, since the box will sit through a re-enumeration for up to 60s.
+
+### Added
+
+- **`lager uart --sessions` and `lager uart <net> --force`.** A held UART net
+  had no recovery path: the error named the conflict and stopped there.
+  `--sessions` lists which nets are held, whether each holder's client is still
+  connected, and whether its reader is running; `--force` releases the holder
+  before connecting. Backed by `GET /uart/sessions` and
+  `DELETE /uart/sessions/<netname>` on the box, and modelled on the box lock's
+  existing `lager boxes unlock --force`. The "already in use" error now names
+  the take-over command, including the `--box` the user typed.
+
+  Against a box too old to serve the endpoints, `--sessions` says so and
+  `--force` warns rather than failing obscurely; the routes are additive, so a
+  current box keeps working with an older CLI.
+
 ### Changed
 
 - **A second role on a dual-role instrument is now a notice, not a block.**
