@@ -149,9 +149,27 @@ def _mapper_undefined_calls():
     return found
 
 
+def _mapper_classes_walked():
+    """How many classes the wide walk actually parsed out of the mapper."""
+    tree = ast.parse(MAPPER_PY.read_text())
+    return [n.name for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]
+
+
 def test_the_wide_walker_found_something():
-    """Guard the guard, again: a parser matching nothing would pass forever."""
-    assert len(_mapper_undefined_calls()) > 50, "the mapper walk parsed almost nothing"
+    """Guard the guard, again: a parser matching nothing would pass forever.
+
+    This asserts on the number of CLASSES the walk parsed, not on the number of
+    undefined names it found. The two come apart. The undefined count is the
+    quantity #418 exists to shrink -- it starts at 115 and ratchets toward 0 --
+    so a floor under it fails once enough of the driver is implemented, and
+    fails saying "the mapper walk parsed almost nothing", which reads as a
+    broken parser rather than as progress. The class count is what would
+    actually be zero if the parser broke, which is the property meant here.
+    """
+    walked = _mapper_classes_walked()
+    assert len(walked) > 15, (
+        f"the mapper walk parsed almost nothing: {walked}"
+    )
 
 
 def test_no_new_undefined_mapper_methods():

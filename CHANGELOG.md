@@ -166,6 +166,34 @@ All notable changes to the Lager platform are documented here. For detailed rele
   immediately. And the MCP `power_cycle_hub` tool no longer pays a blind
   4-second sleep on every call: it waits only when nothing can be observed.
 
+- **`lager logic <net> trigger spi` failed on a call to a method that did not
+  exist.** The mapper's `set_trigger_data` reads the configured data width when
+  the caller does not pass one, and the name it called -- `get_trigger_spi_width`
+  -- was defined nowhere. The mapper's `__getattr__` forwarded it to the Device
+  proxy, where it resolved locally and then 404'd on the box as
+  `Function not found: get_trigger_spi_width`. It was the last remaining
+  failure in the logic suite.
+
+  The whole SPI trigger surface behind it was missing the same way, so the
+  driver gains all of it: the three sources, the three trigger levels, the
+  clock slope, the framing condition and its chip-select idle level, the
+  framing timeout, the data width and the data value, plus the acquisition
+  trigger status the settings object reports. Nineteen methods, each removed
+  from `test/unit/box/mapper_undefined_baseline.txt` in the same change --
+  that guard is two-sided and fails if an implemented name is left behind.
+
+  **Every query was confirmed against the instrument rather than against the
+  programming guide.** That distinction is load-bearing: a node can be
+  accepted, report `0,"No error"`, and still never answer, in which case the
+  read times out and no respelling helps. Four plausible spellings behave
+  exactly that way on an MSO5074 and are deliberately not used. The three
+  level nodes were told apart by writing distinct values and reading them
+  back, rather than inferred from their names.
+
+  The logic suite gains four checks driving the new nodes. `trigger spi` with
+  no arguments passed while ten of these were undefined, which is how the gap
+  stayed invisible until a hardware run hit it.
+
 
 ## [0.45.1] - 2026-09-02
 
