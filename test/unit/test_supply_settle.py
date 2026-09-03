@@ -172,17 +172,33 @@ class TestFixtureNaming:
         monkeypatch.setenv("USB202_SUPPLY_ADC_NET", "adc15")
         suite = _load_suite(monkeypatch)
 
-        detail = suite._unloaded_detail(0.17)
+        detail = suite._unloaded_detail(0.17, passed=False)
         assert "0.1700 A" in detail
         assert "supply3" in detail and "adc15" in detail
         assert "USB202_SUPPLY_NET" in detail
+
+    def test_a_passing_assertion_is_not_annotated(self, monkeypatch):
+        """`_record` prints its detail on both outcomes.
+
+        So a note built unconditionally went out on every pass -- three lines
+        per CH2 run, on every nightly, explaining a fixture that was not
+        causing anything. The note is for the failure it was written for.
+        """
+        monkeypatch.setenv("SUPPLY_NET", "supply3")
+        monkeypatch.setenv("USB202_SUPPLY_NET", "supply3")
+        monkeypatch.setenv("USB202_SUPPLY_ADC_NET", "adc15")
+        suite = _load_suite(monkeypatch)
+
+        detail = suite._unloaded_detail(0.0, passed=True)
+        assert detail == "measured=0.0000 A"
+        assert "USB202_SUPPLY_NET" not in detail
 
     def test_an_unwired_channel_says_only_what_it_measured(self, monkeypatch):
         monkeypatch.setenv("SUPPLY_NET", "supply2")
         monkeypatch.setenv("USB202_SUPPLY_NET", "supply3")
         suite = _load_suite(monkeypatch)
 
-        detail = suite._unloaded_detail(0.17)
+        detail = suite._unloaded_detail(0.17, passed=False)
         assert detail == "measured=0.1700 A"
 
     def test_no_fixture_declared_is_silent(self, monkeypatch):
@@ -190,7 +206,7 @@ class TestFixtureNaming:
         monkeypatch.delenv("USB202_SUPPLY_NET", raising=False)
         suite = _load_suite(monkeypatch)
 
-        assert suite._unloaded_detail(0.17) == "measured=0.1700 A"
+        assert suite._unloaded_detail(0.17, passed=False) == "measured=0.1700 A"
 
     def test_the_note_never_changes_the_verdict(self, monkeypatch):
         """It annotates a failure; it must not be able to excuse one."""
@@ -199,4 +215,17 @@ class TestFixtureNaming:
         suite = _load_suite(monkeypatch)
 
         assert suite.MAX_UNLOADED_CURRENT == 0.1
-        assert "0.1700 A" in suite._unloaded_detail(0.17)
+        assert "0.1700 A" in suite._unloaded_detail(0.17, passed=False)
+
+    def test_both_call_sites_pass_their_verdict(self):
+        """A note gated on a parameter nobody passes is a note that never fires.
+
+        The two call sites compute `passed` on the line above the `_record`
+        call, so the guard is only real if both hand it on.
+        """
+        text = SUITE.read_text()
+        calls = [ln for ln in text.splitlines() if "_unloaded_detail(" in ln
+                 and not ln.lstrip().startswith("def ")]
+        assert len(calls) == 2, f"expected 2 call sites, found {len(calls)}: {calls}"
+        for call in calls:
+            assert "passed" in call, f"call site does not pass its verdict: {call!r}"

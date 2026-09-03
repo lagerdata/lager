@@ -122,6 +122,20 @@ All notable changes to the Lager platform are documented here. For detailed rele
   This is a behaviour change, not a cleanup: `set_soc(0)` is now called where it
   previously was not.
 
+- **The supply suite's bench-fixture note printed on passing assertions.** The
+  unloaded-current checks in `test_supply_Rigol_DP821.py` annotate a failure
+  with the fixture wired to the channel under test, so a red night does not
+  cost the next reader a re-derivation of which channel goes where. `_record`
+  takes one detail string and prints it on both outcomes, so the note went out
+  on passes too -- three lines per CH2 run, on every nightly, explaining a
+  fixture that was not causing anything.
+
+  The note is now built only for the failing branch. Both call sites already
+  compute the verdict on the line above, so this is a condition at the call
+  rather than a change to what the note says. The note itself is kept: the wire
+  cost three rounds of triage before anyone wrote it down, and the assertion
+  that trips on it needs to name it.
+
 
 ## [0.45.1] - 2026-09-02
 

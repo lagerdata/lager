@@ -48,9 +48,19 @@ WIRED_SUPPLY_ADC = os.environ.get("USB202_SUPPLY_ADC_NET", "").strip()
 _results = []
 
 
-def _unloaded_detail(measured):
-    """Failure detail for an unloaded-current assertion, naming the fixture."""
+def _unloaded_detail(measured, passed):
+    """Detail for an unloaded-current assertion, naming the fixture on failure.
+
+    The note exists for a red night, so the next reader does not re-derive
+    which channel is wired to what -- that cost three rounds of triage on #258
+    before anyone wrote it down. `_record` prints its detail on both outcomes,
+    so passing the note unconditionally annotated three passing assertions per
+    CH2 run, on every nightly, explaining a fixture that was not causing
+    anything. It is therefore built only for the failing branch.
+    """
     detail = f"measured={measured:.4f} A"
+    if passed:
+        return detail
     if WIRED_SUPPLY_NET and SUPPLY_NET == WIRED_SUPPLY_NET:
         target = WIRED_SUPPLY_ADC or "a USB-202 ADC input"
         detail += (
@@ -275,7 +285,7 @@ def test_live_measurements():
             _record(
                 f"current() < {MAX_UNLOADED_CURRENT} A when unloaded",
                 passed,
-                _unloaded_detail(float(mi)),
+                _unloaded_detail(float(mi), passed),
             )
             if not passed:
                 ok = False
@@ -631,7 +641,7 @@ def test_current_limit_readback():
             _record(
                 f"current() numeric and near-zero with limit={limit_a} A (unloaded)",
                 passed,
-                _unloaded_detail(float(measured_i))
+                _unloaded_detail(float(measured_i), passed)
                 if isinstance(measured_i, (int, float))
                 else f"measured={measured_i!r} (not numeric)",
             )
