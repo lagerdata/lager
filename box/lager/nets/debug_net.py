@@ -530,7 +530,14 @@ try:
         OpenOcdRpc,
         OpenOcdRpcError,
     )
+    from ..debug.openocd_flash import (
+        ERASE_RPC_TIMEOUT_S,
+        FLASH_RPC_TIMEOUT_S,
+        erase_target,
+        flash_target,
+    )
     from ..debug.probes import (
+        is_da1469x,
         resolve_serial_from_net,
         resolve_backend,
         gdb_port_for_slot,
@@ -761,7 +768,12 @@ try:
         # ---- OpenOCD helpers (in-process Python API) ------------------------
 
         def _openocd_rpc(self, timeout=10.0):
-            return OpenOcdRpc(port=self.openocd_tcl_port, timeout=timeout)
+            # ``device=`` lets the RPC layer refuse a generic ``program``
+            # for a part it cannot flash, should anything bypass the
+            # ``openocd_flash`` dispatch that flash()/erase() use.
+            return OpenOcdRpc(
+                port=self.openocd_tcl_port, timeout=timeout, device=self.device,
+            )
 
         def _ensure_openocd_running(self):
             if not get_openocd_status(serial=self.serial)['running']:
@@ -770,53 +782,10 @@ try:
                 )
 
         def _is_da1469x(self):
-            """Same family predicate as ``service.py`` (``'DA1469' in
-            device.upper()``) so the HTTP and Net API paths can never
-            disagree about what counts as this family."""
-            return 'DA1469' in (self.device or '').upper()
-
-        def _run_da1469x_loader(self, run, *, timeout, doing):
-            """DA1469x + OpenOCD: drive the RAM-resident flash_loader.
-
-            Mainline OpenOCD has no QSPI flash driver for the DA1469x
-            family, so ``program ... 0x16000000 verify reset`` and
-            ``flash_erase_all`` cannot touch the external NOR — the same
-            special case the HTTP service implements in the OpenOCD
-            branches of ``/debug/flash`` and ``/debug/erase``
-            (``lager/box/lager/debug/service.py``), which is in turn the
-            OpenOCD counterpart of the J-Link DA1469x path in
-            ``lager/box/lager/debug/jlink.py``.
-
-            ``run(rpc)`` must return one of the ``da1469x_loader``
-            progress generators; the yielded lines are joined into the
-            string return value, matching how ``service.py`` accumulates
-            ``flash_output`` / ``erase_output``. Loader and RPC failures
-            are re-raised as :class:`Da1469xLoaderError` naming the last
-            progress line, so callers see "the loader failed doing X"
-            instead of a raw OpenOCD tcl traceback.
-            """
-            from ..debug.da1469x_loader import Da1469xLoaderError
-
-            self._ensure_openocd_running()
-            lines = []
-            try:
-                for line in run(self._openocd_rpc(timeout=timeout)):
-                    lines.append(line)
-            except (Da1469xLoaderError, OpenOcdRpcError) as exc:
-                progress = f" after '{lines[-1]}'" if lines else ''
-                blank = ''
-                if doing == 'flash' and any(
-                        l.startswith('Erasing') for l in lines):
-                    # The loader erases before it programs; dying between
-                    # the two leaves the board blank, and "Programming
-                    # Failed" alone doesn't say that.
-                    blank = (' The QSPI erase already ran, so the board may'
-                             ' be left blank until a flash succeeds.')
-                raise Da1469xLoaderError(
-                    f'DA1469x flash_loader {doing} failed{progress}: '
-                    f'{exc}.{blank}'
-                ) from exc
-            return '\n'.join(lines)
+            """The shared family predicate (``lager.debug.probes.is_da1469x``),
+            so this class and the HTTP service cannot disagree about what
+            counts as a DA1469x."""
+            return is_da1469x(self.device)
 
         def _self_heal(self, op, *, retries=2, backoff=0.5):
             """Run a debug op with bounded self-heal. Backend-agnostic.
@@ -1240,32 +1209,21 @@ try:
                     f"Pass flash_address=... to flash()."
                 )
             if self.backend == BACKEND_OPENOCD:
-                if self._is_da1469x():
-                    from ..debug.da1469x_loader import (
-                        DA1469X_FAMILY,
-                        flash_image,
-                        xip_to_flash_offset,
-                    )
-                    # Callers pass absolute XIP addresses (0x16000000),
-                    # exactly as on the J-Link path; the loader wants
-                    # flash-relative offsets.
-                    loader_offset = xip_to_flash_offset(flash_address)
-                    return self._run_da1469x_loader(
-                        lambda rpc: flash_image(
-                            rpc, firmware_path,
-                            family=DA1469X_FAMILY,
-                            flash_id=0,
-                            offset=loader_offset,
-                        ),
-                        timeout=300, doing='flash',
-                    )
                 self._ensure_openocd_running()
                 # OpenOCD's ``program`` reads the load address from the file
-                # for .hex/.elf and uses the trailing address for .bin.
+                # for .hex/.elf and uses the trailing address for .bin. How
+                # the target is programmed -- ``program`` itself, or the
+                # RAM-resident flash_loader for a DA1469x, which has no
+                # OpenOCD QSPI driver -- is ``openocd_flash``'s decision,
+                # shared with the HTTP service so ``lager debug <net>
+                # flash`` and this method cannot take different paths for
+                # one target. A DA1469x takes the absolute XIP address
+                # (0x16000000), exactly as on the J-Link path.
                 address = flash_address if ext == '.bin' else None
-                return self._openocd_rpc(timeout=300).program(
-                    firmware_path, verify=True, reset_after=True, address=address,
-                ) or ''
+                return '\n'.join(flash_target(
+                    self._openocd_rpc(timeout=FLASH_RPC_TIMEOUT_S),
+                    self.device, firmware_path, address=address,
+                ))
             if ext == '.hex':
                 files = ([firmware_path], [], [])
             elif ext == '.bin':
@@ -1286,27 +1244,13 @@ try:
             """Erase flash (whole chip on most targets)."""
             def _erase():
                 if self.backend == BACKEND_OPENOCD:
-                    if self._is_da1469x():
-                        from ..debug.da1469x_loader import (
-                            DA1469X_FAMILY,
-                            DEFAULT_ERASE_LENGTH,
-                            erase_range,
-                        )
-                        # ``flash_erase_all`` has no QSPI bank to act on
-                        # here and silently does nothing — see
-                        # _run_da1469x_loader.
-                        return self._run_da1469x_loader(
-                            lambda rpc: erase_range(
-                                rpc,
-                                family=DA1469X_FAMILY,
-                                flash_id=0,
-                                offset=0,
-                                length=DEFAULT_ERASE_LENGTH,
-                            ),
-                            timeout=120, doing='erase',
-                        )
                     self._ensure_openocd_running()
-                    return self._openocd_rpc(timeout=120).flash_erase_all() or ''
+                    # Same shared dispatch as the HTTP service: every flash
+                    # bank on a generic target, the flash_loader's QSPI
+                    # range erase on a DA1469x.
+                    return '\n'.join(erase_target(
+                        self._openocd_rpc(timeout=ERASE_RPC_TIMEOUT_S), self.device,
+                    ))
                 return '\n'.join(chip_erase(
                     device=self.device, speed=self.speed, transport=self.transport,
                     serial=self.serial, script_file=self._jlink_script_path,

@@ -568,9 +568,20 @@ def _load_debug_net_full():
     probes_mod.parse_probe_serial = lambda a: None
     probes_mod.compute_slot = lambda s, all_s: 0
     probes_mod.sniff_script_backend = _real_probes().sniff_script_backend
+    probes_mod.is_da1469x = _real_probes().is_da1469x
     probes_mod.BACKEND_JLINK = 'jlink'
     probes_mod.BACKEND_OPENOCD = 'openocd'
     _install('stub_box.debug.probes', probes_mod)
+
+    # ``DebugNet.flash()`` / ``erase()`` hand off to ``..debug.openocd_flash``
+    # (the shared DA1469x-vs-generic dispatch); nothing here flashes, so a
+    # shape-only stub keeps the heavy import branch succeeding.
+    dispatch_mod = types.ModuleType('stub_box.debug.openocd_flash')
+    dispatch_mod.FLASH_RPC_TIMEOUT_S = 300
+    dispatch_mod.ERASE_RPC_TIMEOUT_S = 120
+    dispatch_mod.flash_target = _mock.MagicMock(name='flash_target')
+    dispatch_mod.erase_target = _mock.MagicMock(name='erase_target')
+    _install('stub_box.debug.openocd_flash', dispatch_mod)
 
     nets_pkg = types.ModuleType('stub_box.nets')
     nets_pkg.__path__ = [NETS_DIR]

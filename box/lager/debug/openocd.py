@@ -32,6 +32,7 @@ import time
 from pathlib import Path
 
 from .probes import (
+    is_da1469x,
     BINDABLE_SERIAL_RE,
     openocd_pidfile,
     openocd_logfile,
@@ -616,18 +617,58 @@ class OpenOcdRpcError(Exception):
     """Raised when the OpenOCD TCL/RPC channel returns an error."""
 
 
+class OpenOcdNoFlashDriverError(OpenOcdRpcError):
+    """A generic flash command was asked of a target OpenOCD has no flash
+    driver for. Raised before anything is sent; see
+    :meth:`OpenOcdRpc._refuse_without_flash_driver`."""
+
+
 class OpenOcdRpc:
     """Thin wrapper around OpenOCD's TCL/RPC port (default 6666).
 
     Each command is terminated by ``0x1a``; the response ends with the
     same byte. We open a fresh socket per command to keep the failure mode
     simple (no persistent connection state to babysit).
+
+    ``device`` is optional and purely a safety net: when the caller names
+    the target, the generic flash commands (``program``, ``flash
+    erase_sector``, ``flash erase_address``) refuse a part they cannot
+    reach -- see :meth:`_refuse_without_flash_driver`. The daemon itself is
+    not consulted for it.
     """
 
-    def __init__(self, host='127.0.0.1', port=6666, timeout=10.0):
+    def __init__(self, host='127.0.0.1', port=6666, timeout=10.0, device=None):
         self.host = host
         self.port = port
         self.timeout = timeout
+        self.device = device
+
+    def _refuse_without_flash_driver(self, operation):
+        """Refuse a generic flash command for a target OpenOCD cannot flash.
+
+        ``program`` and ``flash erase_*`` need a ``flash bank`` in the
+        target cfg. The DA1469x has none in mainline OpenOCD -- it executes
+        from external QSPI, and there is no driver for that QSPI -- so
+        ``program`` stalls for ten-odd seconds and then fails with
+        startup.tcl's ``** Programming Failed **``, a traceback that reads
+        like a bad board, while the erase reports nothing and touches
+        nothing. Both of lager's flash entry points route the family
+        through ``openocd_flash`` and never send these commands for it;
+        this guard is for the caller that bypasses that, and it fires only
+        when the caller told us the device. A bare ``OpenOcdRpc(port=...)``
+        behaves exactly as before.
+        """
+        if not is_da1469x(self.device):
+            return
+        # Lazy: da1469x_loader imports this module at load time.
+        from .da1469x_loader import QSPI_XIP_BASE
+        raise OpenOcdNoFlashDriverError(
+            f"{self.device} is a DA1469x: it executes from external QSPI flash "
+            f"at {QSPI_XIP_BASE:#x}, and mainline OpenOCD has no flash driver for "
+            f"that QSPI, so OpenOCD's generic '{operation}' cannot reach it. "
+            f"Route the operation through lager.debug.openocd_flash, which "
+            f"drives the RAM-resident DA1469x flash_loader instead."
+        )
 
     def cmd(self, command, timeout=None):
         """Run *command* and return its stdout as a decoded string.
@@ -853,7 +894,10 @@ class OpenOcdRpc:
         Raises ``OpenOcdRpcError`` if the response contains an OpenOCD
         ``program_error`` failure marker (``** ... Failed **``) or any
         TCL ``Error:`` line; otherwise returns the raw command output.
+        Raises :class:`OpenOcdNoFlashDriverError` without sending anything
+        when this RPC was built for a device ``program`` cannot flash.
         """
+        self._refuse_without_flash_driver('program')
         parts = ['program', f'"{file_path}"']
         if address is not None:
             parts.append(hex(address))
@@ -885,7 +929,11 @@ class OpenOcdRpc:
             #1 : stm32h7x.bank2 (stm32h7x) at 0x08100000, size 0x00100000, ...
 
         We just need the leading ``#N`` index.
+
+        Raises :class:`OpenOcdNoFlashDriverError` without sending anything
+        when this RPC was built for a device with no flash bank to erase.
         """
+        self._refuse_without_flash_driver('flash erase_sector')
         bank_indices = []
         try:
             banks_out = self.cmd_checked(
@@ -943,6 +991,7 @@ class OpenOcdRpc:
         return '\n'.join(outputs)
 
     def flash_erase_range(self, start, length):
+        self._refuse_without_flash_driver('flash erase_address')
         end = start + length - 1
         return self.cmd_checked(
             f'flash erase_address {hex(start)} {hex(end)}',
