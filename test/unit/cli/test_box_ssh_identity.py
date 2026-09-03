@@ -208,7 +208,9 @@ class InteractiveSshIdentities(unittest.TestCase):
     on lager_box refused `lager ssh` while a bare `ssh user@box` worked.
 
     Filesystem answers come through the two _ssh seams rather than os.path
-    (see _fake_key_if_present), so the runner's own ~/.ssh never matters."""
+    (see _fake_key_if_present), so the runner's own ~/.ssh never matters. The
+    argv itself is built by _ssh.widened_identity_args, shared with the
+    authorized_keys probe so the two cannot disagree about what -i does."""
 
     HOST = "lagerdata@10.0.0.1"
     DEFAULTS = [os.path.expanduser("~/.ssh/id_rsa"), os.path.expanduser("~/.ssh/id_ed25519")]
@@ -224,9 +226,9 @@ class InteractiveSshIdentities(unittest.TestCase):
             mock.patch.object(ssh_mod.subprocess, "call", fake_call),
             mock.patch.object(ssh_mod, "resolve_and_validate_box", lambda _ctx, _box: "10.0.0.1"),
             mock.patch.object(bs, "get_box_user", lambda _name: None),
-            mock.patch.object(ssh_mod, "lager_box_key_if_present",
+            mock.patch.object(_ssh, "lager_box_key_if_present",
                               _fake_key_if_present(key_exists)),
-            mock.patch.object(ssh_mod, "default_identities_if_present",
+            mock.patch.object(_ssh, "default_identities_if_present",
                               lambda: list(defaults)),
         ]
         for p in patches:
@@ -399,7 +401,7 @@ class KeyInstalledOnBox(unittest.TestCase):
 
     PUB = "ssh-ed25519 AAAATESTBLOB lager-box-access"
 
-    def _check(self, rc, *, pub=PUB, key_path=None):
+    def _check(self, rc, *, pub=PUB, key_path=None, defaults=()):
         calls = []
 
         def fake_run(cmd, **_kw):
@@ -407,8 +409,13 @@ class KeyInstalledOnBox(unittest.TestCase):
             return _proc(rc)
 
         kwargs = {"key_path": key_path} if key_path is not None else {}
+        # The probe now offers ssh's default identities after lager_box, so
+        # the argv would otherwise depend on the runner's own ~/.ssh. Faked
+        # at the _ssh seam, as the interactive tests above do.
         with mock.patch("builtins.open", mock.mock_open(read_data=pub)), \
                 mock.patch.object(_ssh.shutil, "which", lambda _n: "/usr/bin/ssh"), \
+                mock.patch.object(_ssh, "default_identities_if_present",
+                                  lambda: list(defaults)), \
                 mock.patch.object(_ssh.subprocess, "run", fake_run):
             return _ssh.key_installed_on_box("lagerdata@10.0.0.1", **kwargs), calls
 
@@ -457,9 +464,11 @@ class KeyInstalledOnBox(unittest.TestCase):
         operator's workaround was `ssh-add ~/.ssh/lager_box`, which should
         not be a prerequisite for asking a question about the box.
 
-        `-i` WIDENS the identities tried, so this does not contradict the
-        test above: IdentitiesOnly is still not set, and any other working
-        credential is still accepted.
+        lager_box is named FIRST and ssh's own defaults after it, so this
+        does not contradict the test above: IdentitiesOnly is still not set,
+        and any other working credential is still accepted. Naming lager_box
+        alone would not have been enough -- see
+        test_the_operators_own_identities_stay_on_offer.
         """
         import tempfile
         with tempfile.NamedTemporaryFile(suffix="_key") as key:
@@ -470,8 +479,38 @@ class KeyInstalledOnBox(unittest.TestCase):
 
     def test_a_missing_private_key_is_not_offered(self):
         """`-i` at a path that does not exist makes ssh noisier, not better."""
-        _result, calls = self._check(0, key_path="/nonexistent/lager_box")
-        self.assertNotIn("-i", calls[0])
+        _result, calls = self._check(0, key_path="/nonexistent/lager_box",
+                                     defaults=["/home/op/.ssh/id_rsa"])
+        self.assertNotIn("-i", calls[0],
+                         "with no lager_box to prefer, name nothing and let "
+                         "ssh use its own list")
+
+    def test_the_operators_own_identities_stay_on_offer(self):
+        """`-i` REPLACES ssh's default identity list; it does not add to it.
+
+        Confirmed with `ssh -F /dev/null -G`: a bare connection offers
+        id_rsa, id_ecdsa, id_ed25519 and their -sk variants, while naming any
+        identity leaves exactly that one. So a lone `-i lager_box` withdrew
+        every key the operator had installed themselves, and this probe --
+        which needs only SOME working credential -- could not authenticate to
+        a box authorized on one of them. It returned None, "could not ask",
+        for exactly the box `lager ssh-setup` exists to repair.
+
+        That is worse than it sounds, because both callers read None as "do
+        not fail": `lager update` reports "SSH key installed successfully" on
+        it, and ssh-setup skips its post-install verification. The check
+        written to catch a silent no-op was itself silently skipped.
+        """
+        import tempfile
+        defaults = ["/home/op/.ssh/id_rsa", "/home/op/.ssh/id_ed25519"]
+        with tempfile.NamedTemporaryFile(suffix="_key") as key:
+            _result, calls = self._check(0, key_path=key.name, defaults=defaults)
+            offered = [calls[0][i + 1]
+                       for i, a in enumerate(calls[0]) if a == "-i"]
+            self.assertEqual(
+                offered, [key.name, *defaults],
+                "lager_box keeps precedence, with the operator's own "
+                "identities restored after it")
 
 
 def _unreachable_ssh(*_a, **_kw):
