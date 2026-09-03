@@ -56,10 +56,9 @@ class KeithleyBatteryFunctionMapper:
             self.set_current_limit(current_limit)
 
         if soc!=None:
-            if soc:
-                if not (0 <= soc <= 100):
-                    raise ValueError("SOC must be between 0 and 100")
-                self.set_soc(soc)
+            if not (0 <= soc <= 100):
+                raise ValueError("SOC must be between 0 and 100")
+            self.set_soc(soc)
 
         if voc!=None:
             self.set_voc(voc)
