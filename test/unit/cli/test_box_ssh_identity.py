@@ -23,6 +23,7 @@ import importlib
 import os
 import pathlib
 import subprocess
+import tempfile
 import unittest
 from unittest import mock
 
@@ -33,6 +34,7 @@ from cli.core import ssh_utils
 
 install_mod = importlib.import_module("cli.commands.utility.install")
 uninstall_mod = importlib.import_module("cli.commands.utility.uninstall")
+ssh_mod = importlib.import_module("cli.commands.box.ssh")
 bs = importlib.import_module("cli.box_storage")
 
 KEY = _ssh._LAGER_BOX_KEY
@@ -154,6 +156,130 @@ class IdentityArgs(unittest.TestCase):
 
     def test_path_becomes_dash_i(self):
         self.assertEqual(_ssh.ssh_identity_args("/k"), ["-i", "/k"])
+
+
+class DefaultIdentities(unittest.TestCase):
+    """default_identities_if_present puts back what `-i` took away: ssh's
+    own identity files, in ssh's own order, minus the ones that do not
+    exist (ssh warns about every named file it cannot load).
+
+    Driven with real paths in a temp dir: the helper takes its candidates as
+    a parameter, so nothing about the filesystem needs faking."""
+
+    def test_keeps_only_the_files_that_exist_in_the_given_order(self):
+        with tempfile.TemporaryDirectory() as td:
+            rsa, ecdsa, ed25519 = (os.path.join(td, n) for n in ("id_rsa", "id_ecdsa", "id_ed25519"))
+            for p in (rsa, ed25519):
+                open(p, "w", encoding="utf-8").close()
+            self.assertEqual(
+                _ssh.default_identities_if_present([rsa, ecdsa, ed25519]),
+                [rsa, ed25519],
+            )
+
+    def test_nothing_present_means_nothing_named(self):
+        with tempfile.TemporaryDirectory() as td:
+            self.assertEqual(
+                _ssh.default_identities_if_present([os.path.join(td, "id_rsa")]), [],
+            )
+
+    def test_the_default_list_is_ssh_s_own(self):
+        # ssh_config(5) IdentityFile, as `ssh -G` prints it on OpenSSH 8-10.
+        # Order matters: it is what ssh would have tried unprompted, and a
+        # box that authorizes two of these should see them in the same order.
+        self.assertEqual(
+            [os.path.basename(p) for p in _ssh.DEFAULT_IDENTITY_FILES],
+            ["id_rsa", "id_ecdsa", "id_ecdsa_sk", "id_ed25519", "id_ed25519_sk"],
+        )
+
+    def test_the_default_list_is_expanded_for_dash_i(self):
+        # ssh expands `~` in its own config but not in a -i argument.
+        for p in _ssh.DEFAULT_IDENTITY_FILES:
+            self.assertTrue(os.path.isabs(p), p)
+
+
+class InteractiveSshIdentities(unittest.TestCase):
+    """`lager ssh` hands the session to a human, so it cannot probe-and-retry
+    the way install does: a retry would be a second interactive attempt. It
+    offers everything at once instead -- lager_box first, then whichever of
+    ssh's default identities exist -- so a box authorized on either connects.
+
+    The bug this pins: with only `-i lager_box`, ssh dropped its default
+    identity list, and a box authorized on the operator's id_ed25519 but not
+    on lager_box refused `lager ssh` while a bare `ssh user@box` worked.
+
+    Filesystem answers come through the two _ssh seams rather than os.path
+    (see _fake_key_if_present), so the runner's own ~/.ssh never matters."""
+
+    HOST = "lagerdata@10.0.0.1"
+    DEFAULTS = [os.path.expanduser("~/.ssh/id_rsa"), os.path.expanduser("~/.ssh/id_ed25519")]
+
+    def _argv(self, *, key_exists, defaults, command=()):
+        calls = []
+
+        def fake_call(argv, **_kw):
+            calls.append(list(argv))
+            return 0
+
+        patches = [
+            mock.patch.object(ssh_mod.subprocess, "call", fake_call),
+            mock.patch.object(ssh_mod, "resolve_and_validate_box", lambda _ctx, _box: "10.0.0.1"),
+            mock.patch.object(bs, "get_box_user", lambda _name: None),
+            mock.patch.object(ssh_mod, "lager_box_key_if_present",
+                              _fake_key_if_present(key_exists)),
+            mock.patch.object(ssh_mod, "default_identities_if_present",
+                              lambda: list(defaults)),
+        ]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        result = CliRunner().invoke(ssh_mod.ssh, ["--box", "10.0.0.1", *command])
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(len(calls), 1, calls)
+        return calls[0]
+
+    @staticmethod
+    def _identities(argv):
+        """The -i values in argv, in the order ssh will see them."""
+        return [argv[i + 1] for i, a in enumerate(argv) if a == "-i"]
+
+    def test_lager_box_first_then_every_default_identity(self):
+        argv = self._argv(key_exists=True, defaults=self.DEFAULTS)
+        self.assertEqual(self._identities(argv), [KEY, *self.DEFAULTS])
+
+    def test_every_identity_precedes_the_destination(self):
+        # ssh stops reading options at the destination; an -i after it would
+        # be sent to the box as part of the remote command.
+        argv = self._argv(key_exists=True, defaults=self.DEFAULTS)
+        self.assertEqual(argv[0], "ssh")
+        self.assertEqual(argv[-1], self.HOST)
+        last_i = max(i for i, a in enumerate(argv) if a == "-i")
+        self.assertLess(last_i, argv.index(self.HOST))
+
+    def test_no_lager_box_means_no_dash_i_at_all(self):
+        # ssh offers its own defaults unprompted, so naming them would only
+        # add noise; without the key this command is a bare `ssh user@host`,
+        # exactly as before.
+        argv = self._argv(key_exists=False, defaults=self.DEFAULTS)
+        self.assertEqual(argv, ["ssh", self.HOST])
+
+    def test_lager_box_alone_when_no_default_identity_exists(self):
+        # A machine provisioned only by `lager ssh-setup`: the key is still
+        # offered, so a box that authorizes only it connects without a
+        # password prompt.
+        argv = self._argv(key_exists=True, defaults=[])
+        self.assertEqual(argv, ["ssh", "-i", KEY, self.HOST])
+
+    def test_the_defaults_are_restored_not_isolated(self):
+        # No IdentitiesOnly: ~/.ssh/config identities and agent keys stay on
+        # offer after the named ones, as with a bare `ssh user@host`.
+        argv = self._argv(key_exists=True, defaults=self.DEFAULTS)
+        self.assertFalse(any("IdentitiesOnly" in a for a in argv), argv)
+
+    def test_a_remote_command_still_follows_the_destination(self):
+        argv = self._argv(key_exists=True, defaults=self.DEFAULTS,
+                          command=["--", "ls", "-la", "/etc/lager"])
+        self.assertEqual(argv[-2:], [self.HOST, "ls -la /etc/lager"])
+        self.assertEqual(self._identities(argv), [KEY, *self.DEFAULTS])
 
 
 class KeyRegistration(unittest.TestCase):

@@ -80,6 +80,34 @@ def ssh_identity_args(identity: Optional[str]) -> List[str]:
     return ["-i", identity] if identity else []
 
 
+# ssh's own default identity files, in the order ssh tries them when no -i
+# is given (ssh_config(5), IdentityFile; confirmed against `ssh -G`). Naming
+# ANY identity with -i discards this whole list, so a command that wants
+# lager_box offered first and the operator's own keys still offered has to
+# name these again itself. Only files ssh would load on its own belong here:
+# id_xmss is experimental and compiled out of most builds, and id_dsa is gone
+# from current clients, so naming either would earn a "Load key" warning for
+# a file ssh would otherwise have ignored.
+DEFAULT_IDENTITY_FILES = tuple(
+    os.path.expanduser(f"~/.ssh/{name}")
+    for name in ("id_rsa", "id_ecdsa", "id_ecdsa_sk", "id_ed25519", "id_ed25519_sk")
+)
+
+
+def default_identities_if_present(
+    candidates: Sequence[str] = DEFAULT_IDENTITY_FILES,
+) -> List[str]:
+    """Those of ssh's default identity files that exist here, in ssh's order.
+
+    The seam for "which of the operator's own keys would ssh have offered
+    unprompted?", parameterized the way :func:`lager_box_key_if_present` is
+    so a test can point it at a temp dir instead of the runner's ~/.ssh.
+    Naming a file that does not exist is not harmless -- ssh warns about
+    each one -- which is why this filters rather than returning the list.
+    """
+    return [path for path in candidates if os.path.exists(path)]
+
+
 def probe_box_identity(
     dest: str,
     *,

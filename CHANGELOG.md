@@ -32,6 +32,26 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ### Fixed
 
+- **`lager ssh` refused boxes that a plain `ssh` reached.** When
+  `~/.ssh/lager_box` exists, `lager ssh` passes it with `-i` so a box that
+  authorizes only that key connects without a password. But `-i` does not add
+  to ssh's identity list; it replaces it. ssh's own defaults -- `id_rsa`,
+  `id_ecdsa`, `id_ed25519` and their `-sk` variants -- were no longer offered,
+  so a box authorized with one of them and not with `lager_box` answered
+  `Permission denied (publickey)` even though `ssh user@box` worked. A stale
+  or never-installed `lager_box` key thus locked `lager ssh` out of every box
+  the user had set up with `ssh-copy-id`, and the only cure was deleting the
+  key.
+
+  `lager ssh` now offers `lager_box` first and then each of ssh's default
+  identity files that exists on the machine, in the order ssh would have tried
+  them, so both kinds of box connect. Nothing else about the session changes:
+  `~/.ssh/config` identities and agent keys remain on offer, and with no
+  `lager_box` key present the command still passes no `-i` at all. The
+  non-interactive commands (`install`, `uninstall`, `box-config`) already
+  probed with the key and retried without it, and are unchanged.
+  `test/unit/cli/test_box_ssh_identity.py` pins the order.
+
 - **The instrument scan wrote G-code into serial ports it did not own,
   including live DUT consoles.** A `lager uart` session would periodically
   receive the literal text `M105`, which the DUT echoed and answered with
