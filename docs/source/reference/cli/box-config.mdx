@@ -61,6 +61,7 @@ lager box-config apply --box my-lager-box                # 2. apply
 | `env` | Container environment variables |
 | `pip` / `cargo` / `npm` | In-container language packages |
 | `sysctl` | Host sysctl values persisted across reboots |
+| `network-mode` | The docker network the container runs on |
 
 ---
 
@@ -200,6 +201,42 @@ lager box-config env set KEY=VALUE [KEY=VALUE ...] --box my-lager-box
 lager box-config env list [--json]
 lager box-config env unset KEY [KEY ...]
 ```
+
+### `network-mode`
+
+The docker network the box container runs on. Defaults to `lagernet`; the only
+other value is `host`.
+
+```bash
+lager box-config network-mode show [--json] --box my-lager-box
+lager box-config network-mode set host --box my-lager-box
+lager box-config network-mode unset --box my-lager-box     # back to lagernet
+lager box-config apply --box my-lager-box                  # required to take effect
+```
+
+**Why `host` exists.** Linux `AF_BLUETOOTH` sockets are scoped to a network
+namespace. The kernel registers that address family only in the initial
+namespace. The box's Bluetooth adapter (`hci0`) is therefore invisible inside a
+container on `lagernet`, and raw HCI tools cannot reach it. On `host` the
+container shares the host's network namespace, and the adapter appears.
+
+This does not affect `lager ble`. That path reaches the host's `bluetoothd` over
+the mounted D-Bus socket, and works the same in either mode.
+
+**What changes on `host`.** Two things, neither obvious from the command:
+
+- **The host firewall starts governing the box's ports.** On `lagernet` the
+  container's ports are *published*. Docker installs its forwarding rules ahead
+  of the host chain, so UFW does not filter them. See the Security Model section
+  of `SECURITY.md`. On `host` the container binds those ports directly, and UFW
+  applies to them. The allowlist in `secure_box_firewall.sh` already admits the
+  exact set the container serves. A box provisioned with that script is
+  unaffected. A box with a hand-rolled firewall can behave differently.
+- **The container shares the host's `bluetoothd`.** Any tool that needs
+  exclusive control of the adapter now contends with the host Bluetooth stack.
+
+Leave this at the default unless you need the adapter inside the container. A
+box whose lager predates the setting reports that it needs `lager update`.
 
 ### `pip` / `cargo` / `npm`
 

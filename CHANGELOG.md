@@ -53,6 +53,37 @@ All notable changes to the Lager platform are documented here. For detailed rele
   `saved_nets.json`, so a write under one lands on disk and never reaches an
   agent; answering a bare success there would tell the caller a value synced
   when it did not.
+- **The box container's docker network is now a per-box setting.** `lager
+  box-config network-mode set host` runs the container with `--network host`
+  instead of the default `lagernet`; `unset` returns it to the default. Nothing
+  changes on a box that does not set it.
+
+  This exists so the box's Bluetooth adapter is reachable from inside the
+  container. Linux `AF_BLUETOOTH` sockets are scoped to a network namespace --
+  the kernel registers that address family only in the initial one -- so `hci0`
+  is invisible on `lagernet` however the container is privileged, and raw-HCI
+  tooling cannot run there. Confirmed on a box with the shipping image: the
+  same image with the same `--privileged`, differing only in `--network`,
+  answers `hciconfig -a` with "Address family not supported by protocol" on
+  `lagernet` and reports the adapter up on `host`. `lager ble` is unaffected in
+  either mode, because bleak reaches the host's `bluetoothd` over the mounted
+  D-Bus socket rather than opening a Bluetooth socket of its own.
+
+  Two consequences of `host` are worth stating, since neither follows from the
+  command. Published ports are not published on host networking, so the host
+  firewall governs the box's ports where Docker's forwarding rules previously
+  bypassed it; the allowlist `secure_box_firewall.sh` writes already admits
+  exactly the ports the container serves. And the container shares the host's
+  `bluetoothd`, so anything wanting exclusive control of the adapter contends
+  with it.
+
+  The default is unchanged, and the setting is stored so that it does not
+  disturb boxes that never use it: a config sitting at the default writes no
+  key, so its hash is byte-for-byte what it was before this release. Without
+  that, every box in the fleet would report configuration drift and take one
+  pointless container restart on its next `apply`. A box whose lager predates
+  the verb is told to run `lager update` rather than shown the dispatcher's
+  raw `unknown command`.
 
 ### Changed
 

@@ -264,7 +264,31 @@ _FIRST_CLASS_FIELDS_GROUPED = [
     ]),
 ]
 _FIRST_CLASS_FIELDS = [field for _, fields in _FIRST_CLASS_FIELDS_GROUPED for field in fields]
-_FIRST_CLASS_KEYS = frozenset(["version"] + [f[0] for f in _FIRST_CLASS_FIELDS])
+
+# Mirrors box/lager/box_config/config.py's DEFAULT_NETWORK_MODE / NETWORK_MODES.
+# The two ship in separate trees (cli/ vs box/) and cannot import each other, so
+# test/unit/box/test_box_config_cli.py asserts they agree.
+_DEFAULT_NETWORK_MODE = "lagernet"
+NETWORK_MODES = ("lagernet", "host")
+
+# Single-valued fields, deliberately NOT in _FIRST_CLASS_FIELDS_GROUPED: every
+# entry there is a collection, which `show` formats per item and `status` counts
+# with len(). Both are wrong for a plain string -- len("host") would report the
+# box as having four of something. Keyed by the same group heading so `show`
+# still renders them in place.
+_SCALAR_FIELDS_GROUPED = {
+    "Container": [
+        ("network_mode", "Container network"),
+    ],
+}
+_SCALAR_FIELDS = [f for fields in _SCALAR_FIELDS_GROUPED.values() for f in fields]
+_SCALAR_DEFAULTS = {"network_mode": _DEFAULT_NETWORK_MODE}
+
+_FIRST_CLASS_KEYS = frozenset(
+    ["version"]
+    + [f[0] for f in _FIRST_CLASS_FIELDS]
+    + [f[0] for f in _SCALAR_FIELDS]
+)
 
 
 def _diff_list(cur: list, prev: list) -> dict:
@@ -299,6 +323,22 @@ def _diff_keyed_list(cur: list, prev: list, *, key: str) -> dict:
     }
 
 
+def _diff_scalar(cur, prev, *, default=None) -> dict:
+    """Diff one single-valued field.
+
+    Absent means "the default" on both sides, not None: the box-side to_dict
+    omits a scalar sitting at its default so adding the field does not perturb
+    every deployed config's hash. Without this coercion, a box that never set
+    the value would diff as `None -> host` on first use and `host -> None` on
+    unset, neither of which names a real state.
+    """
+    cur = default if cur is None else cur
+    prev = default if prev is None else prev
+    if cur == prev:
+        return {"added": [], "removed": [], "changed": []}
+    return {"added": [], "removed": [], "changed": [{"from": prev, "to": cur}]}
+
+
 def _compute_diff(current: dict, applied: Optional[dict]) -> dict:
     """Per-field diff of the current config against the last-applied snapshot.
 
@@ -318,6 +358,8 @@ def _compute_diff(current: dict, applied: Optional[dict]) -> dict:
         "cargo_packages": _diff_list     (current.get("cargo_packages") or [],  prev.get("cargo_packages") or []),
         "npm_packages":   _diff_list     (current.get("npm_packages") or [],    prev.get("npm_packages") or []),
         "udev_rules":     _diff_keyed_list(_udev_keyed(current),                _udev_keyed(prev),                key="_k"),
+        "network_mode":   _diff_scalar    (current.get("network_mode"),          prev.get("network_mode"),
+                                           default=_DEFAULT_NETWORK_MODE),
     }
 
 
@@ -341,6 +383,8 @@ def _print_diff_human(diff: dict) -> None:
     # grouped registry so renames don't have to land in two places.
     field_labels = {key: label for key, label, _ in _FIRST_CLASS_FIELDS}
     field_formatters = {key: fmt for key, _, fmt in _FIRST_CLASS_FIELDS}
+    field_labels.update({key: label for key, label in _SCALAR_FIELDS})
+    field_formatters.update({key: str for key, _ in _SCALAR_FIELDS})
     for field, parts in diff.items():
         added = parts.get("added") or []
         removed = parts.get("removed") or []
@@ -407,6 +451,8 @@ def _render_human(
             if items is None:
                 items = {} if key in ("env", "sysctl") else []
             blocks.append(("section", key, label, fmt, items))
+        for key, label in _SCALAR_FIELDS_GROUPED.get(group_label, []):
+            blocks.append(("scalar", key, label, payload.get(key)))
 
     # 2-space indent under group headers so section membership is visually
     # obvious. Group headers themselves sit flush-left.
@@ -418,6 +464,12 @@ def _render_human(
             upper = block[1].upper()
             click.secho(upper, bold=True)
             click.echo("─" * len(upper))
+        elif block[0] == "scalar":
+            _, key, label, value = block
+            click.secho(f"{SECTION_INDENT}{label}", bold=True)
+            if value is None:
+                value = f"{_SCALAR_DEFAULTS.get(key)} (default)"
+            click.echo(f"{SECTION_INDENT}└── {value}")
         else:
             _, key, label, fmt, items = block
             click.secho(f"{SECTION_INDENT}{label}", bold=True)
@@ -2431,6 +2483,118 @@ def env_unset_cmd(ctx: click.Context, keys: tuple, box: Optional[str]) -> None:
         click.echo("Run `lager box-config apply` to update the running container.")
     else:
         click.secho("No matching env vars were configured.", fg="yellow")
+
+
+# ---------------------------------------------------------------------------
+# network_mode: the docker network the box container runs on
+# ---------------------------------------------------------------------------
+
+def _network_mode_unsupported(payload: dict) -> bool:
+    """True when the box's shim does not know the network-mode verbs.
+
+    The dispatcher answers an unrecognised verb with a generic
+    `unknown command: <verb>`, which is indistinguishable from a real failure
+    to anyone reading the output. Boxes in the fleet span a wide version range,
+    so this is the expected answer from most of them, not an edge case.
+    """
+    err = " ".join(
+        str(e) for e in (payload.get("errors") or []) + [payload.get("error") or ""]
+    )
+    return "unknown command" in err and "network-mode" in err
+
+
+@box_config.group(
+    "network-mode",
+    help="Manage the docker network the box container runs on.",
+)
+def network_mode_group() -> None:
+    pass
+
+
+@network_mode_group.command("show", help="Show the configured container network.")
+@click.option("--box", help="Lager Box name or IP")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
+@click.pass_context
+def network_mode_show_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
+    resolved = _resolve_box(ctx, box)
+    payload = _parse_response(_run_box_config_py(ctx, resolved, verbs.SHOW), ctx)
+    if payload is None:
+        if as_json:
+            click.echo(json.dumps({"box": resolved, "exists": False}, indent=2))
+        else:
+            click.secho(f"{resolved}: no box_config.json", fg="yellow")
+            click.echo(f"Default in effect: {_DEFAULT_NETWORK_MODE}")
+        return
+    mode = payload.get("network_mode")
+    explicit = mode is not None
+    mode = mode or _DEFAULT_NETWORK_MODE
+    if as_json:
+        click.echo(json.dumps(
+            {"box": resolved, "network_mode": mode, "explicit": explicit}, indent=2))
+        return
+    suffix = "" if explicit else " (default)"
+    click.echo(f"{resolved}: {mode}{suffix}")
+
+
+@network_mode_group.command(
+    "set",
+    help="Set the container network. 'host' exposes the box's Bluetooth adapter "
+         "(hci0) inside the container; 'lagernet' is the default.",
+)
+@click.argument("mode", type=click.Choice(list(NETWORK_MODES)))
+@click.option("--box", help="Lager Box name or IP")
+@click.pass_context
+def network_mode_set_cmd(ctx: click.Context, mode: str, box: Optional[str]) -> None:
+    resolved = _resolve_box(ctx, box)
+    payload = _parse_response(
+        _run_box_config_py(ctx, resolved, verbs.NETWORK_MODE_SET,
+                           json.dumps({"mode": mode})),
+        ctx,
+    )
+    if not payload.get("ok"):
+        if _network_mode_unsupported(payload):
+            click.secho(
+                f"{resolved} runs a lager that predates the network-mode setting. "
+                "Run `lager update` on it first.", fg="red", err=True)
+            ctx.exit(1)
+        click.secho("Failed to set the network mode:", fg="red", err=True)
+        _print_errors(payload.get("errors") or [payload.get("error", "unknown error")])
+        ctx.exit(1)
+    click.secho(f"Container network set to {mode} on {resolved}", fg="green")
+    if mode == "host":
+        click.secho(
+            "Note: on host networking the container binds host ports directly, so "
+            "the host firewall governs them -- unlike published ports, which bypass "
+            "it. It also shares the host's bluetoothd.", fg="yellow")
+    click.echo("Run `lager box-config apply` to restart the container on that network.")
+
+
+@network_mode_group.command(
+    "unset",
+    help="Return the container network to the default (lagernet).",
+)
+@click.option("--box", help="Lager Box name or IP")
+@click.pass_context
+def network_mode_unset_cmd(ctx: click.Context, box: Optional[str]) -> None:
+    resolved = _resolve_box(ctx, box)
+    payload = _parse_response(
+        _run_box_config_py(ctx, resolved, verbs.NETWORK_MODE_UNSET), ctx)
+    if not payload.get("ok"):
+        if _network_mode_unsupported(payload):
+            click.secho(
+                f"{resolved} runs a lager that predates the network-mode setting. "
+                "Run `lager update` on it first.", fg="red", err=True)
+            ctx.exit(1)
+        click.secho("Failed to unset the network mode:", fg="red", err=True)
+        _print_errors(payload.get("errors") or [payload.get("error", "unknown error")])
+        ctx.exit(1)
+    previous = payload.get("previous")
+    if previous == _DEFAULT_NETWORK_MODE:
+        click.secho(f"Container network was already {_DEFAULT_NETWORK_MODE}.", fg="yellow")
+        return
+    click.secho(
+        f"Container network returned to {_DEFAULT_NETWORK_MODE} on {resolved}", fg="green")
+    click.echo("Run `lager box-config apply` to restart the container on that network.")
 
 
 # ---------------------------------------------------------------------------
