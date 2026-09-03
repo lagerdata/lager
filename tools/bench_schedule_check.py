@@ -42,10 +42,35 @@ WHAT IS CHECKED
             well above nominal, because a merely late night is lateness, not a
             miss. Bounded by GAP_LOOKBACK_HOURS so a gap from last week stops
             alarming once the cadence recovers.
+These are PROBLEMS: any one of them exits 1 and files a `bench-alert` issue.
+
+WHAT IS WARNED ABOUT
+--------------------
   lateness  Mean delay against the cron declared in nightly-bench.yml, above
             LATENESS_WARN_HOURS. This is the leading indicator: once lateness
             approaches half a day, "late" and "missed" are indistinguishable
             until the run either arrives or does not.
+
+This is a WARNING: it is printed, written to warnings.txt, and carried in the
+alert body whenever something else fires -- but it never exits 1 on its own.
+
+WHY LATENESS IS REPORT-ONLY
+---------------------------
+The delay is GitHub's scheduled-event queue. Nothing in this repository can
+bound it, and nightly-bench.yml already says so. A regime change on 2026-08-27
+took the mean from ~0.5h to ~4.1h against a 3h threshold, and it has stayed
+there.
+
+Left as a problem, that is an issue filed every night, forever, for a condition
+that will still be true tomorrow: `bench_alert.sh` searches only for an OPEN
+issue, so the recovery job closing one on a green night guarantees the next
+watchdog run files another. A `bench-alert` issue that is usually open for the
+boring reason is one nobody reads on the night it is open for a real one --
+which is the failure this file's own docstring set out to avoid.
+
+Raising the threshold was the other option and is worse: it silences the signal
+on exactly the nights it was built to catch, and re-mutes itself as the queue
+degrades further. So the measurement is kept and the paging is dropped.
 
 The cron is parsed from the workflow rather than duplicated here, so the two
 cannot drift.
@@ -174,19 +199,35 @@ def check_schedule(runs, now=None, cron=None):
                 f"did not run"
             )
 
-    if len(sched) >= MIN_RUNS_FOR_LATENESS:
-        delays = [lateness_hours(parse_created(r), hour, minute) for r in sched]
-        mean_late = sum(delays) / len(delays)
-        if mean_late > LATENESS_WARN_HOURS:
-            problems.append(
-                f"scheduled nightlies are starting {mean_late:.1f}h after the "
-                f"{hour:02d}:{minute:02d} UTC cron on average over the last "
-                f"{len(delays)} run(s), worst {max(delays):.1f}h - the schedule "
-                f"is degrading, and at this delay a late night is "
-                f"indistinguishable from a missed one"
-            )
-
     return problems
+
+
+def check_lateness(runs, now=None, cron=None):
+    """Return warnings about schedule lateness. Never a problem on its own.
+
+    Separate from :func:`check_schedule` because the response differs, not
+    because the signal is weaker. Lateness is the earliest evidence the
+    schedule is decaying, and it is worth having in front of whoever reads an
+    alert -- "the night is 5h late" is what makes a missed night ambiguous.
+    But it is a condition to know about, not an incident to page on, because
+    no change here can affect it. See WHY LATENESS IS REPORT-ONLY above.
+    """
+    hour, minute = cron if cron else cron_hour_minute()
+    sched = scheduled_runs(runs)
+    if len(sched) < MIN_RUNS_FOR_LATENESS:
+        return []
+
+    delays = [lateness_hours(parse_created(r), hour, minute) for r in sched]
+    mean_late = sum(delays) / len(delays)
+    if mean_late <= LATENESS_WARN_HOURS:
+        return []
+    return [
+        f"scheduled nightlies are starting {mean_late:.1f}h after the "
+        f"{hour:02d}:{minute:02d} UTC cron on average over the last "
+        f"{len(delays)} run(s), worst {max(delays):.1f}h - the schedule "
+        f"is degrading, and at this delay a late night is "
+        f"indistinguishable from a missed one"
+    ]
 
 
 def main():
@@ -203,6 +244,18 @@ def main():
     scheduled = json.loads(open(sys.argv[2]).read())
 
     problems = check_run_health(all_runs) + check_schedule(scheduled)
+    warnings = check_lateness(scheduled)
+
+    # Written whether or not anything is wrong: the workflow puts this in the
+    # run summary every time, and folds it into the alert body when a problem
+    # does fire. A trend nobody is paged for still has to be visible somewhere.
+    if warnings:
+        print("WARNINGS (reported, not alerted):")
+        for item in warnings:
+            print(f"- {item}")
+        with open("warnings.txt", "w") as f:
+            f.write("\n".join(f"- {item}" for item in warnings))
+
     if not problems:
         print("Nightly bench runs are flowing normally.")
         return 0

@@ -128,18 +128,24 @@ class TestStale:
 
 
 class TestLateness:
-    """The signal that carries the degradation, and the reason it is not spacing."""
+    """The signal that carries the degradation, and the reason it is not spacing.
+
+    Reported, never alerted: see WHY LATENESS IS REPORT-ONLY in the tool. The
+    tests here assert the measurement still works; TestLatenessIsReportOnly
+    below asserts it cannot page on its own.
+    """
 
     def test_a_sustained_late_cadence_is_reported(self):
         """Runs landing ~5h after the cron, on time relative to each other."""
         runs = [run(1.0 + i * 24.0 - 4.6) for i in range(6)]
-        problems = bsc.check_schedule(runs, now=NOW, cron=CRON)
-        assert any("degrading" in p for p in problems), problems
+        warnings = bsc.check_lateness(runs, now=NOW, cron=CRON)
+        assert any("degrading" in w for w in warnings), warnings
 
     def test_punctual_runs_are_silent(self):
         """Healthy nights land within about half an hour of the cron."""
         runs = punctual(count=6, late_h=0.5)
         assert bsc.check_schedule(runs, now=NOW, cron=CRON) == []
+        assert bsc.check_lateness(runs, now=NOW, cron=CRON) == []
 
     def test_spacing_alone_would_have_missed_it(self):
         """The reason this check is lateness and not interval arithmetic.
@@ -151,13 +157,42 @@ class TestLateness:
         runs = punctual(count=6, late_h=6.0)
         gaps = [g for g, _ in bsc.intervals_hours(bsc.scheduled_runs(runs))]
         assert all(abs(g - 24.0) < 0.01 for g in gaps), gaps
-        problems = bsc.check_schedule(runs, now=NOW, cron=CRON)
-        assert any("degrading" in p for p in problems), problems
+        warnings = bsc.check_lateness(runs, now=NOW, cron=CRON)
+        assert any("degrading" in w for w in warnings), warnings
 
     def test_too_few_runs_to_average_reports_nothing(self):
         runs = punctual(count=2, late_h=6.0)
-        assert not any("degrading" in p
-                       for p in bsc.check_schedule(runs, now=NOW, cron=CRON))
+        assert bsc.check_lateness(runs, now=NOW, cron=CRON) == []
+
+
+class TestLatenessIsReportOnly:
+    """Lateness must never be the sole reason an issue gets filed.
+
+    The regression this guards: lateness lived in the same `problems` list as
+    gap and stale, and `main()` exits 1 on any non-empty `problems`. Since the
+    queue delay is permanent and unfixable from this repository, that filed a
+    new `bench-alert` issue roughly every night -- `bench_alert.sh` only ever
+    searches for an OPEN issue, so the recovery job closing one guaranteed the
+    next watchdog run created another.
+    """
+
+    def test_a_badly_late_but_otherwise_healthy_schedule_is_not_a_problem(self):
+        """Every night present and evenly spaced, all of them hours late."""
+        runs = punctual(count=6, late_h=9.0)
+        assert bsc.check_schedule(runs, now=NOW, cron=CRON) == [], (
+            "lateness alone must not reach the problems list -- that is what "
+            "filed an issue every night"
+        )
+        assert bsc.check_lateness(runs, now=NOW, cron=CRON), (
+            "...but it must still be measured and reported"
+        )
+
+    def test_lateness_does_not_suppress_a_real_problem(self):
+        """A missed night still alarms while the schedule is also late."""
+        runs = [run(1.0 + 9.0), run(1.0 + 9.0 + 48.0),
+                run(1.0 + 9.0 + 72.0), run(1.0 + 9.0 + 96.0)]
+        problems = bsc.check_schedule(runs, now=NOW, cron=CRON)
+        assert any("gap" in p for p in problems), problems
 
     def test_the_cron_is_read_from_the_workflow_not_hardcoded(self):
         """A cron change must move this check with it, not silently diverge."""
