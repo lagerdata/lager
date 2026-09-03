@@ -200,6 +200,40 @@ def _fetch_instruments_http(dut: str) -> list:
     return result if isinstance(result, list) else []
 
 
+def _merge_net_metadata(records: list, name: str, role: str,
+                        purpose: str, notes: str, tags: list) -> dict:
+    """Return the saved record for ``name``/``role`` with metadata merged in.
+
+    Mutates the stored record rather than rebuilding a partial one.
+    ``PUT /nets/<name>`` replaces a net wholesale, so a dialog that sent only
+    the fields it knows about silently dropped every other one --
+    ``jlink_script``, ``openocd_config``, ``safety_limits``, ``usb_identity``,
+    ``params``, ``device_path``, ``channel_key`` -- every time somebody edited a
+    net's description. ``lager nets describe`` has always round-tripped the
+    whole record for this reason; this makes the TUI match it.
+
+    Raises RuntimeError when the net is gone, which run_box_job surfaces in the
+    UI rather than writing a fresh record that resurrects a deleted net.
+    """
+    target = next(
+        (r for r in records
+         if r.get("name") == name and r.get("role") == role),
+        None,
+    )
+    if target is None:
+        # A name can be saved twice under different roles (a supply and a
+        # battery, say). Prefer the exact role; fall back to name alone so an
+        # edit still works on a record whose role the table displays differently.
+        target = next((r for r in records if r.get("name") == name), None)
+    if target is None:
+        raise RuntimeError(f"net '{name}' is no longer saved on the box")
+
+    target["purpose"] = purpose
+    target["notes"] = notes
+    target["tags"] = list(tags)
+    return target
+
+
 def _save_net_http(dut: str, record: dict, old_name: str | None = None) -> None:
     """PUT /nets/<name> — create or replace a net (rename when old_name given)."""
     _box_http(dut, "PUT", f"/nets/{old_name or record.get('name')}",
@@ -1256,21 +1290,14 @@ class EditDetailsDialog(Screen):
         self.net.notes = notes
         self.net.tags = tags
 
-        net_data = {
-            "name": self.net.net,
-            "role": self.net.type,
-            "address": self.net.addr,
-            "instrument": self.net.instrument,
-            "pin": self.net.chan,
-            "purpose": purpose,
-            "notes": notes,
-            "tags": tags,
-        }
+        name, role = self.net.net, self.net.type
 
         _set_dialog_busy(self, True)
 
         def work() -> dict:
-            _save_net_http(app.dut, net_data)
+            records = _fetch_saved_nets_http(app.dut)
+            target = _merge_net_metadata(records, name, role, purpose, notes, tags)
+            _save_net_http(app.dut, target)
             return {"saved": app._fetch_saved_records()}
 
         def done(out: object) -> None:

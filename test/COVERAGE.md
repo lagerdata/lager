@@ -41,13 +41,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1896 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 2105 |
+| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1914 (+2 xfailed) |
+| `unit (box)` | `test/unit/box/` | 2148 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 181 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 183 (+1 skipped) |
-| | **Total gated** | **4559** |
+| | **Total gated** | **4620** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never
@@ -451,9 +451,9 @@ cli/tests/                #  7 files: 6 pytest suites (GATED via `unit (cli)`),
                           #           plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 188 files)
+### Local Unit Tests (`test/unit/` -- 191 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 101 files)
+#### Box Unit Tests (`test/unit/box/` -- 103 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -473,6 +473,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_box_config_cli.py` | `lager box-config` CLI: mount prep, readiness polling, rollback on bounce failure |
 | `test_box_dut_cli.py` | `lager dut` CLI detached-list regression fix |
 | `test_box_http_server_capabilities.py` | /status capabilities block advertises netCommand based on route registration |
+| `test_box_metadata_endpoint.py` | `/box-metadata`: reading and writing the box's own description, and degrading to empty on a truncated file |
 | `test_box_level_command_handlers.py` | Box-level `POST /ble\|wifi\|blufi/command` handlers driving the box's own radios |
 | `test_breakpoint_pause.py` | `lager.pause()` interactive breakpoint: timeout handling and resume signaling |
 | `test_cleanup_watchdog.py` | Cleanup grace as an *idle* budget: a teardown making progress keeps its deadline pushed out, a wedged one is still cut off, and blocking on an instrument counts as progress |
@@ -523,6 +524,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_net_save_uart_identity.py` | `usb_identity_for_net_record`: durable USB identity snapshot at UART net save time |
 | `test_mapper_range_checks.py` | Tree-wide guard: no `LO > x > HI` range check in `box/` or `cli/`, a shape that is always false so the `raise` under it is unreachable; plus both ends of the seven inverted bounds fixed in the Rigol MSO5000 and Keithley mappers |
 | `test_nets_display.py` | `lager nets` table no-truncation for long UART pins and VISA addresses |
+| `test_net_metadata_endpoint.py` | `/nets/<name>/metadata`: merging purpose/notes/tags without disturbing the rest of the record, and reporting bench.json overrides |
 | `test_nets_safety_limits_endpoint.py` | `/nets/safety-limits`: reading and writing a net's voltage/current ceilings |
 | `test_nets_state_endpoint.py` | `GET /nets/state`: wedged-instrument resilience, per-instrument probing, LabJack cross-role batch routing through hardware_service (no USB contention), I2C bus scan, and the request deadline handed to the USB batch as a per-hub budget |
 | `test_openocd_dispatch.py` | OpenOCD interface .cfg dispatch and user-cfg override behavior |
@@ -563,7 +565,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_ykush_driver.py` | YKUSH USB hub driver: device-contention regression from an indefinitely cached handle |
 | `test_automation_exports.py` | Static parse of `automation/__init__.py`'s lazy export table: no name guarded twice, every returned driver reachable under its own name, everything in `__all__` resolvable -- the copy-paste class of defect that made one driver answer to another's name |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 70 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 71 files)
 
 | File | What it tests |
 |------|---------------|
@@ -594,6 +596,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_net_9000_migration.py` | Tier-1 net CLI commands (adc, dac, gpi, gpo, spi, i2c, watt, energy, ...) driving the box `:9000` API |
 | `test_net_tui_assign.py` | Custom-device assignment TUI helpers; per-device uart tty preference over the shared channel map |
 | `test_net_tui_labjack_pins.py` | TUI LabJack pin dialog (prefill/revert/legacy-channel preservation) + combined name+pin editor behind the Add-row pencil, dismissable notices |
+| `test_net_tui_metadata_preserves_record.py` | TUI metadata edits merge into the stored record instead of replacing it with a partial one |
 | `test_net_tui_uart_guard.py` | UART net save validation rejecting bare interface indices and empty pins |
 | `test_nets_add_labjack_pins.py` | LabJack I2C/SPI arbitrary pin selection via --sda/--scl/--cs/--sck/--mosi/--miso |
 | `test_nets_add_roles.py` | Role-token normalization converting legacy supply/batt to power-supply/battery |

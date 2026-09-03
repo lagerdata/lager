@@ -109,6 +109,41 @@ class StatusCapabilitiesTest(unittest.TestCase):
             (box_http_server._has_ble, box_http_server._has_wifi,
              box_http_server._has_blufi) = orig
 
+    def test_metadata_sync_capabilities_reflect_registration(self):
+        # The control plane gates its metadata pushes on these two flags. A box
+        # that advertises them without the routes would be PUT to on every probe
+        # and 404 every time, and the dashboard would report a description as
+        # synced when nothing was written -- which is precisely the silent
+        # failure this feature shipped with for four months.
+        orig = (box_http_server._has_net_metadata, box_http_server._has_box_metadata)
+        try:
+            box_http_server._has_net_metadata = True
+            box_http_server._has_box_metadata = False
+            caps = self._capabilities()
+            self.assertIs(caps['netMetadataSync'], True)
+            self.assertIs(caps['boxMetadataSync'], False)
+
+            box_http_server._has_net_metadata = False
+            box_http_server._has_box_metadata = True
+            caps = self._capabilities()
+            self.assertIs(caps['netMetadataSync'], False)
+            self.assertIs(caps['boxMetadataSync'], True)
+        finally:
+            (box_http_server._has_net_metadata,
+             box_http_server._has_box_metadata) = orig
+
+    def test_box_description_is_null_when_the_handler_is_unavailable(self):
+        # Absent handler must read as "no description", never as a 500: the
+        # control plane treats a failed /status as the box being unreachable.
+        orig = box_http_server._has_box_metadata
+        try:
+            box_http_server._has_box_metadata = False
+            resp = self.client.get('/status')
+            self.assertEqual(resp.status_code, 200)
+            self.assertIsNone(resp.get_json()['box_description'])
+        finally:
+            box_http_server._has_box_metadata = orig
+
     def test_safety_limits_capability_reflects_nets_registration(self):
         # The control plane decides whether to report a configured ceiling as
         # enforced from this flag. Reporting it enforced on a box that cannot
