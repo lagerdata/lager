@@ -42,12 +42,12 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1863 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 2070 |
+| `unit (box)` | `test/unit/box/` | 2081 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 181 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 179 (+1 skipped) |
-| | **Total gated** | **4487** |
+| | **Total gated** | **4498** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never
@@ -451,9 +451,9 @@ cli/tests/                #  7 files: 6 pytest suites (GATED via `unit (cli)`),
                           #           plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 184 files)
+### Local Unit Tests (`test/unit/` -- 185 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 99 files)
+#### Box Unit Tests (`test/unit/box/` -- 100 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -483,6 +483,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_debug_defmt_rtt.py` | Defmt RTT decoding wrapper threading and piping logic, plus the down-channel `write()` that makes a decoding session bi-directional — including the late write that must not reopen the telnet port it just released |
 | `test_debug_status_target_attached.py` | `/debug/status` must report `gdbserver_running` and `target_attached` separately, keep `connected` pinned to its old server-liveness meaning for older clients, and preserve the tri-state -- None (older box, refused probe, timeout) is not False. Also pins the log-scrape/probe split: the cheap path always runs, the wire read is opt-in |
 | `test_debug_erase_verdict.py` | `/debug/erase` must not answer 200 for a J-Link session that never attached, and the verdict predicate `_attach_failed` must stay stricter than the flash-retry predicate `_connect_failed` |
+| `test_debug_net_da1469x.py` | `DebugNet.flash()` / `.erase()` dispatch DA1469x targets on OpenOCD through the RAM-resident flash_loader rather than `program` / `flash_erase_all`, with absolute XIP addresses translated to flash-relative offsets; non-DA1469x OpenOCD and the J-Link backend stay on their existing paths; loader failures name the step that failed, a flash dying after its erase warns the board may be left blank, and a down daemon still routes through `_self_heal` |
 | `test_debug_net_self_heal.py` | DebugNet self-heal retry and session endpoints |
 | `test_debug_net_user_scripts.py` | User-script/slot helpers: OpenOCD/J-Link base64 fields and serial in debug_net.py |
 | `test_debug_rtt_reconnect.py` | J-Link RTT reader reconnect-aware socket handling across J-Link restart |
