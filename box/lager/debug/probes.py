@@ -161,6 +161,25 @@ def parse_device_field(device):
     return (device, None)
 
 
+def is_da1469x(device):
+    """True when *device* names a Dialog/Renesas DA1469x-family part
+    (``DA14691`` / ``DA14695`` / ``DA14697`` / ``DA14699``, any case, with
+    or without an ``@<channel>`` suffix).
+
+    The single predicate for the family, because several sites act on it:
+    OpenOCD flash and erase go through the RAM-resident flash_loader
+    (``openocd_flash.py``) since mainline OpenOCD has no QSPI driver for the
+    part; the Net API's self-heal never auto-starts a server for it; the
+    debug service drops its connection entry after a flash. Each of those
+    used to spell the test out inline as ``'DA1469' in device.upper()``,
+    and the HTTP service and the Net API each had their own copy -- the
+    check agreed, but only one of them acted on it for flashing. One name
+    here, so a grep finds every site and both paths answer the question the
+    same way.
+    """
+    return 'DA1469' in str(device or '').upper()
+
+
 def parse_probe_address(address):
     """Return (vid, pid, serial) from a VISA address, or (None, None, None)."""
     if not address or not isinstance(address, str):
