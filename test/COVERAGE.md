@@ -451,9 +451,9 @@ cli/tests/                #  7 files: 6 pytest suites (GATED via `unit (cli)`),
                           #           plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 186 files)
+### Local Unit Tests (`test/unit/` -- 187 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 100 files)
+#### Box Unit Tests (`test/unit/box/` -- 101 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -554,6 +554,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_supply_command_handler.py` | `POST /supply/command` handler, covering v0.32.0 hardware-found regressions |
 | `test_uart_bridge_reconnect.py` | UARTBridge re-enumeration healing after an adapter changes its /dev/tty node |
 | `test_uart_session_cleanup.py` | Websocket UART read loop heals in place instead of stopping on a failed read |
+| `test_usb_cycle_reenumeration.py` | `USBNet.cycle`'s re-enumeration verdict, read from the kernel's USB topology rather than from the hub: the bus sampled before the port is cut and again while it is dark, so what left in between is what the port carries. All four outcomes -- a device that returns, one that does not, a genuinely empty port, and a bus that could not be read (which must never be reported as empty) -- plus power restored on every path, a bounded wait, and a guard that the Acroname and YKUSH drivers still inherit this rather than overriding it |
 | `test_usb_devices_dfu.py` | `GET /usb/devices` sysfs enumeration and `POST /usb/dfu` list/download/detach argument building |
 | `test_usb_scanner_custom.py` | Custom-device surfacing in box HTTP scanner GET /instruments/list. Also the SuperSpeed companion dedupe: one physical dock lists as one instrument, and a missing bus root pairs nothing rather than pairing everything. Also what the Dexarm handshake -- the one scan step that WRITES to hardware -- is allowed to touch: every channel of a multi-interface chip and every saved uart net's tty reach the exclusion set, a foreign or unresolvable VID:PID is never opened at all, a port held by another process is skipped, and `LAGER_ARM_PROBE` off/force widen or close the gate without ever dropping the exclusive open or the deasserted modem lines. |
 | `test_usb_scanner_uart_fallback.py` | UART enumeration without USB serial by matching sysfs path; two identical adapters keep distinct ttys and the channel catalog stays unmutated |
