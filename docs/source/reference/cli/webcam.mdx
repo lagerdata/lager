@@ -43,7 +43,7 @@ lager webcam CAM1 start --box my-lager-box
 ### `snapshot`
 
 Save one frame from a running stream as a JPEG. This is the right way for
-scripts and assistants to look at the bench: the frame is returned over the
+scripts and assistants to look at the bench. The frame comes back over the
 box's command endpoint, so the stream's own port never has to be reachable.
 
 ```bash
@@ -85,8 +85,8 @@ CAM1:
 
 When a box sits behind an access gateway, its stream ports only admit
 requests that carry your sign-in token. A browser cannot attach one from a
-plain link, so `start`, `start-all` and `url` append the token to the
-printed URL (`http://<BOX_IP>:8086/?token=...`) and say how many minutes
+plain link. So `start`, `start-all` and `url` append the token to the
+printed URL (`http://<BOX_IP>:8086/?token=...`), and say how many minutes
 it stays valid. Run `lager webcam url` for a fresh link when it expires. If
 no sign-in is stored for the box, the CLI tells you which `lager login`
 URL to use.
@@ -151,9 +151,9 @@ Webcam streams are provided as:
 - **Device path reporting** for debugging
 
 Streams can be started and stopped from the CLI, the Python API, or other
-tools that manage the same box; each records which surface started it, and
-any of them can stop it. One stream serves every viewer at once, but a video
-device can only belong to one stream, so stop a stream before starting
+tools that manage the same box. Each stream records which surface started
+it, and any of them can stop it. One stream serves every viewer at once, but
+a video device can only belong to one stream. Stop a stream before starting
 another on the same camera.
 
 ---
