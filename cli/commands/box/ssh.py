@@ -8,13 +8,16 @@
 """
 import click
 from click.exceptions import Exit
-import os
 import shlex
 import subprocess
 import platform
 from ...box_storage import resolve_and_validate_box
 from ...context import get_default_box
-from ._ssh import _LAGER_BOX_KEY
+from ._ssh import (
+    default_identities_if_present,
+    lager_box_key_if_present,
+    ssh_identity_args,
+)
 
 
 def _get_ssh_install_hint() -> str:
@@ -45,6 +48,40 @@ def _get_ssh_install_hint() -> str:
         return "Please install an SSH client for your operating system."
 
 
+def _identity_args() -> list:
+    """``-i`` flags for the interactive session, or ``[]``.
+
+    The lager_box key (installed by `lager ssh-setup`) is not one of ssh's
+    default identity filenames, so without ``-i`` it is never tried and a
+    box that authorizes only it drops to a password prompt. It goes first,
+    so such a box still connects without one.
+
+    But ``-i`` does not append: naming any identity discards ssh's built-in
+    default list (id_rsa, id_ed25519, ...). Offering lager_box alone
+    therefore locked `lager ssh` out of every box the operator had
+    authorized with one of their own keys -- `ssh user@box` worked,
+    `lager ssh` said "Permission denied (publickey)", and the only cure was
+    deleting ~/.ssh/lager_box. So each default identity that exists is named
+    again after lager_box, restoring the list ssh would have used on its own.
+    ~/.ssh/config identities and agent keys stay on offer either way (no
+    IdentitiesOnly), and with no lager_box key nothing is passed at all, so
+    ssh's own behavior is untouched.
+
+    The non-interactive commands (install, uninstall, box-config) take a
+    different route -- probe with the key, retry without it -- because they
+    run under BatchMode and need to know which identity worked; see
+    _ssh.probe_box_identity. That is not available here: a retry would mean
+    a second interactive attempt, so everything is offered at once.
+    """
+    key = lager_box_key_if_present()
+    if key is None:
+        return []
+    args = ssh_identity_args(key)
+    for path in default_identities_if_present():
+        args.extend(ssh_identity_args(path))
+    return args
+
+
 @click.command(context_settings=dict(ignore_unknown_options=True))
 @click.pass_context
 @click.option("--box", required=False, help="Lager Box name or IP")
@@ -73,26 +110,10 @@ def ssh(ctx, box, command):
     # Get username from box storage (defaults to 'lagerdata' if not found)
     username = get_box_user(box) or 'lagerdata'
 
-    # Build SSH command
+    # Build SSH command: lager_box first, then the operator's own default
+    # identities, so a box authorized on either connects (see _identity_args).
     ssh_host = f'{username}@{resolved_box}'
-
-    # Offer the dedicated lager_box key (installed by `lager ssh-setup`) when
-    # present. It isn't one of ssh's default identity filenames, so without
-    # -i it's never tried and an authorized box still drops to a password
-    # prompt.
-    #
-    # -i does NOT simply append: naming any identity suppresses ssh's built-in
-    # default list (id_rsa, id_ed25519, ...), though identities from
-    # ~/.ssh/config and the agent are still offered after it. That is fine
-    # here because this command is interactive — a box that rejects the key
-    # falls through to the password prompt with a human present. The
-    # non-interactive commands (install, uninstall, box-config) cannot rely on
-    # that, which is why they probe first and retry without the key; see
-    # _ssh.probe_box_identity.
-    ssh_cmd = ['ssh']
-    if os.path.exists(_LAGER_BOX_KEY):
-        ssh_cmd.extend(['-i', _LAGER_BOX_KEY])
-    ssh_cmd.append(ssh_host)
+    ssh_cmd = ['ssh', *_identity_args(), ssh_host]
 
     # When a command is supplied, append it so ssh runs it on the box and exits
     # (non-interactive). With no command, ssh opens an interactive shell as before.
