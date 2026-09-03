@@ -136,6 +136,36 @@ All notable changes to the Lager platform are documented here. For detailed rele
   cost three rounds of triage before anyone wrote it down, and the assertion
   that trips on it needs to name it.
 
+- **`lager usb <net> cycle` reported "no device on this port" on ports that had
+  one.** The message is box-side and the CLI echoes it verbatim. `USBNet.cycle`
+  ended `return None` unconditionally and only the Plugable driver overrode it,
+  so on an Acroname or YKUSH hub the box answered `None` for every cycle
+  whatever was plugged in -- not an edge case on those drivers, but the only
+  behaviour they had. Cycling four ports on a bench printed it every time while
+  the devices behind them demonstrably re-enumerated, taking new USB device
+  numbers across the window.
+
+  It reads as an authoritative statement that the hub sees nothing attached,
+  and it was taken that way during a hardware fault: it produced a written
+  conclusion that an instrument "is not even asserting its USB data-line
+  pullup", which nothing supported. During a fault a false "no device here" is
+  close to the most expensive thing a tool can say, because it points the
+  investigation at the device rather than at the tool.
+
+  `cycle` now answers from the kernel's own USB topology, so every driver gets
+  a real verdict without implementing one. The bus is sampled before the port
+  is cut and again while it is dark: whatever left the bus in between is what
+  that port carries, which is the only moment the question has an unambiguous
+  answer. A device that returns reports `device re-enumerated`; one that does
+  not reports the timeout; and "no device on this port" is now claimed only
+  when the bus was actually readable -- a box that cannot read its own topology
+  says so instead.
+
+  Two consequences. A successful `cycle` now takes as long as the device needs
+  to come back, up to 5s on top of the off-time, where it used to return
+  immediately. And the MCP `power_cycle_hub` tool no longer pays a blind
+  4-second sleep on every call: it waits only when nothing can be observed.
+
 
 ## [0.45.1] - 2026-09-02
 

@@ -28,10 +28,15 @@ import time
 # device fully de-enumerates before it is re-powered.
 _HUB_SETTLE_SECONDS = 1.0
 
-# How long to wait AFTER re-enabling before returning, so the downstream device
-# has time to re-enumerate on the USB bus. A J-Link takes ~2-3s to reappear; if
-# we returned immediately a caller that re-checks probe presence right away would
-# still see it absent and wrongly conclude the power-cycle failed.
+# Blind fallback wait AFTER re-enabling, for the one case left where nothing can
+# be observed. A J-Link takes ~2-3s to reappear; returning immediately would let
+# a caller that re-checks probe presence right away see it absent and wrongly
+# conclude the power-cycle failed.
+#
+# `dispatcher.cycle` now watches the kernel's USB topology and waits for the
+# device itself, so this is no longer paid on every cycle -- only when the bus
+# could not be read at all, which is the only remaining case where waiting it
+# out beats claiming an answer.
 _HUB_REENUM_SECONDS = 4.0
 
 
@@ -221,14 +226,17 @@ def power_cycle_hub(hub: str) -> str:
     """
     from lager.automation.usb_hub import dispatcher
 
+    from lager.util.usb_sysfs import enumerate_usb_devices
+
+    waited = 0.0
     try:
         reconnected = dispatcher.cycle(hub, _HUB_SETTLE_SECONDS)
-        if reconnected is None:
-            # The driver could not observe re-enumeration (or the port was
-            # empty). Fall back to waiting it out, so a caller that re-checks
-            # probe presence immediately sees the recovered device rather than
-            # a still-absent one.
+        if reconnected is None and not enumerate_usb_devices():
+            # `cycle` returns None for two different reasons: nothing was on
+            # the port, or the bus could not be read. There is nothing to wait
+            # for in the first, so only the second is waited out.
             time.sleep(_HUB_REENUM_SECONDS)
+            waited = _HUB_REENUM_SECONDS
     except (KeyError, FileNotFoundError, RuntimeError) as exc:
         return json.dumps({"error": f"Cannot power-cycle '{hub}': {exc}"})
     except Exception as exc:  # hub/library errors surface as data, not a crash
@@ -238,7 +246,7 @@ def power_cycle_hub(hub: str) -> str:
         "hub": hub,
         "actions": ["disable", "enable"],
         "settled_ms": int(_HUB_SETTLE_SECONDS * 1000),
-        "reenum_wait_ms": int(_HUB_REENUM_SECONDS * 1000),
+        "reenum_wait_ms": int(waited * 1000),
         "reconnected": reconnected,
         "ok": True,
     })

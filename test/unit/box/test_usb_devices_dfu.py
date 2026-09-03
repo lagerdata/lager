@@ -414,3 +414,58 @@ class SelfRestartGateTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class CycleMessageTests(unittest.TestCase):
+    """What POST /usb/command {action: cycle} tells the operator.
+
+    The CLI echoes `message` verbatim, so this mapping is the whole of what a
+    person sees. `None` from the driver carries two different facts -- "nothing
+    is attached to this port" and "this box could not read its own USB
+    topology" -- and only the first justifies the words "no device on this
+    port". Asserting the empty claim while a device was present is what sent
+    #417's investigation at the device rather than at the tool.
+    """
+
+    def setUp(self):
+        app = Flask(__name__)
+        usb_handler.register_usb_routes(app)
+        self.client = app.test_client()
+
+    def _cycle(self, result, bus=('a-device',)):
+        with patch.object(usb_handler.usb_hub, 'cycle', return_value=result), \
+             patch.object(usb_handler, 'enumerate_usb_devices',
+                          return_value=list(bus)):
+            resp = self.client.post('/usb/command',
+                                    json={'netname': 'usb1', 'action': 'cycle'})
+        self.assertEqual(resp.status_code, 200)
+        return resp.get_json()
+
+    def test_a_confirmed_return_says_so(self):
+        body = self._cycle(True)
+        self.assertIn('device re-enumerated', body['message'])
+        self.assertIs(body['reconnected'], True)
+
+    def test_a_device_that_did_not_come_back_says_so(self):
+        body = self._cycle(False)
+        self.assertIn('did not come back before the timeout', body['message'])
+        self.assertIs(body['reconnected'], False)
+
+    def test_an_empty_port_is_only_claimed_when_the_bus_was_readable(self):
+        body = self._cycle(None, bus=('a-device',))
+        self.assertIn('no device on this port', body['message'])
+        # None is not carried on the wire; an older client sees no new field.
+        self.assertNotIn('reconnected', body)
+
+    def test_an_unreadable_bus_does_not_claim_the_port_is_empty(self):
+        """The regression, in the words a person actually reads."""
+        body = self._cycle(None, bus=())
+        self.assertNotIn('no device on this port', body['message'])
+        self.assertIn('re-enumeration not verified', body['message'])
+        self.assertIn('could not be read', body['message'])
+
+    def test_the_port_is_reported_powered_whatever_the_verdict(self):
+        """A cycle always ends powered; the verdict is about the device."""
+        for result in (True, False, None):
+            with self.subTest(result=result):
+                self.assertEqual(self._cycle(result)['state'], 'enabled')
