@@ -1,0 +1,114 @@
+---
+title: "Version 0.45.1"
+description: "September 2, 2026"
+---
+
+## <u>Upgrade Notes</u>
+
+- **The robot-arm scan now writes only to a port that identifies as a Dexarm.**
+  Before, the scan opened every `/dev/ttyUSB*` and `/dev/ttyACM*` node. It wrote
+  a G-code handshake to each one. Now it reads each node's USB vendor and
+  product ID. It writes only to `0483:5740`. An arm that reports a different ID
+  will not appear in `lager instruments`. To restore the wider scan, set
+  `LAGER_ARM_PROBE=force` in the Lager Box container environment. That setting
+  drops the identity check alone. Every other guard stays active.
+
+- **Seven range checks in the instrument mappers now reject bad values.** Each
+  check carried inverted bounds, so no value satisfied it. The check rejected
+  nothing. Seven settings are affected:
+
+  - the UART trigger data width
+  - the I2C trigger address width
+  - the I2C data byte width
+  - the SPI trigger data width
+  - the UART and SPI bus data widths
+  - the Keithley battery state-of-charge
+
+  An out-of-range value now raises an error that names the valid range. Such a
+  value used to reach the instrument. What happened there is not established.
+  Check the values your scripts pass to these settings.
+
+- **`secure_box_firewall.sh` reports what it configured, not what it achieved.**
+  A successful run ended with `[OK] External access blocked for Lager services`.
+  It now ends with `[OK] Host firewall configured for Lager services`. It adds a
+  note that states the limit and points to the Security Model section of
+  `SECURITY.md`. The script writes the same rules as before. Update any
+  automation that matches the old text.
+
+## <u>Bug Fixes</u>
+
+- **`lager ssh` refused boxes that a plain `ssh` reached.** When
+  `~/.ssh/lager_box` exists, `lager ssh` passes it with `-i`. That flag replaces
+  ssh's default identity list instead of adding to it. ssh's own defaults --
+  `id_rsa`, `id_ecdsa`, `id_ed25519` and their `-sk` variants -- were no longer
+  offered. A box that authorizes one of those keys, and not `lager_box`,
+  answered `Permission denied (publickey)`. A plain `ssh user@box` still worked.
+  A stale or never-installed `lager_box` key therefore locked `lager ssh` out of
+  every box the user set up with `ssh-copy-id`. `lager ssh` now names
+  `lager_box` first, then each default identity file present, in ssh's own
+  order. Your `~/.ssh/config` identities and agent keys stay on offer. With no
+  `lager_box` key, the command passes no `-i` at all.
+
+- **A `lager uart` session received the text `M105` from a scan it did not ask
+  for.** The device under test echoed it and answered `Error: Unknown command:
+  M105`. `M105` is the G-code handshake that finds a Dexarm robot arm. The scan
+  wrote it to every serial port outside an exclusion set. That set had three
+  gaps. It listed only hardware the scan recognizes, so it missed any unlisted
+  USB-serial chip. It read one interface per adapter, so it left the other
+  channels of a multi-channel FTDI adapter open. It never consulted saved nets.
+  The scan also opened each port without an exclusive lock. It therefore opened
+  through the lock a live session held.
+
+  The scan now writes only to a port that identifies as a Dexarm. It excludes
+  every channel of every known adapter. It excludes every port a saved UART net
+  owns. It opens each port with an exclusive lock.
+
+  `GET /instruments/list` is the only trigger, and it runs a full scan on every
+  request. These writes arrived from a request that another terminal made.
+
+- **An attached Dexarm did not appear in `lager instruments`.** The arm answered
+  the handshake and the scan then discarded it. Two faults caused this. The scan
+  read the USB serial number with `udevadm info`, which needs the udev runtime
+  database. A container without `/run/udev` mounted has no such database, so
+  `udevadm` returned no serial. The scan now reads the serial number from sysfs.
+  The scan also waited 10 milliseconds and then read whatever had arrived. The
+  arm answers more slowly than that, so the read returned nothing. The scan now
+  waits for the reply, up to the port's one-second timeout.
+
+- **`GET /instruments/list` now records the client that asked.** The scan runs
+  on every request and caches nothing. This line identifies the caller behind
+  any given write.
+
+## <u>Improvements</u>
+
+- `tools/check_coverage_counts.py` names a missing pytest plugin instead of
+  reporting the test suite as failed.
+- The bench watchdog reads its thresholds from one place. A workflow copy can no
+  longer drift from the tool that consumes it.
+
+## <u>Known Limitations</u>
+
+- `LAGER_ARM_PROBE=force` drops the identity check. The scan then writes a
+  G-code handshake to every serial port it can open. Ports that saved nets own
+  stay excluded. Ports another process holds stay excluded. Use this setting to
+  diagnose a missing arm, and unset it afterward.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.45.1
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli==0.45.1
+```
+
+Then update your boxes:
+
+```bash
+lager update --box <box-name>
+```
