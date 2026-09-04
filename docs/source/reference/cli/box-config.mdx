@@ -250,10 +250,30 @@ the mounted D-Bus socket, and works the same in either mode.
 
 **`apply` checks the first two before it switches, and refuses when either
 one breaks the box.** It reads the interface your own connection arrives on.
-It then checks that the firewall admits the control-plane ports there. When
-they are not admitted, it prints the exact per-interface `ufw allow` command.
-It changes nothing when it refuses. `--skip-host-network-check` overrides it; use that only with another
-way into the box.
+It then checks that the firewall admits the control-plane ports (5000 and 9000)
+there. It changes nothing when it refuses. `--skip-host-network-check`
+overrides it; use that only with another way into the box.
+
+A port counts as taken only when something other than the lager container holds
+it. The container publishes 5000 and 9000 on an ordinary box. `apply` stops it
+before starting the replacement, so its own ports are not a conflict.
+
+When the firewall is the problem, the printed commands use `ufw insert`, not a
+plain `ufw allow`:
+
+```bash
+sudo ufw --force delete allow in on <iface> to any port 9000 proto tcp
+sudo ufw insert 1 allow in on <iface> to any port 9000 proto tcp comment 'Lager service (<iface>)'
+```
+
+An appended rule does not work here. `secure_box_firewall.sh` writes its
+per-interface allows first and a blanket `deny <port>/tcp` last, and ufw matches
+the first rule that applies. An allow added afterwards sits behind that deny and
+never takes effect. Position 1 is ahead of it whatever else the box has.
+
+The delete clears any earlier appended attempt, because ufw skips a rule it
+already holds. It reports `Could not delete non-existent rule` when there was
+none. That is expected.
 
 Leave this at the default unless you need the adapter inside the container. A
 box whose lager predates the setting says so.

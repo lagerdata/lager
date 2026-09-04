@@ -193,7 +193,7 @@ class ApplyReadinessPolling(unittest.TestCase):
                 ["apply", "--box", "test-box", "--yes"],
             )
         self.assertNotEqual(result.exit_code, 0)
-        self.assertIn("didn't come up", result.output)
+        self.assertIn("did not answer", result.output)
         verbs = [c[0] for c in backend.calls]
         self.assertNotIn("set-applied-hash", verbs)
 
@@ -2240,7 +2240,10 @@ class ApplyHostNetworkPreflight(unittest.TestCase):
             extra_args=("--skip-host-network-check",))
         self.assertEqual(result.exit_code, 0, msg=result.output)
         self.assertEqual(bounced, [1])
-        self.assertIn("--force", result.output or "")  # the warning names the override
+        # The bypass warning must name the flag that reaches this check. It
+        # named --force, which is a different flag and is not wired to it.
+        self.assertIn("--skip-host-network-check", result.output)
+        self.assertNotIn("--force", result.output)
 
     def test_plain_force_does_not_bypass_the_check(self):
         """--force means 'restart even if the hash is unchanged'. If it also
@@ -2459,17 +2462,38 @@ class BoxSideReadinessProbe(unittest.TestCase):
         self.assertFalse(
             box_config_cli._box_api_responding_over_ssh("1.2.3.4", runner=boom))
 
-    def test_prefer_ssh_skips_the_http_poll_entirely(self):
-        """Polling HTTP first would burn the full 30s deadline on exactly the
-        configuration expected to close it."""
-        with patch.object(box_config_cli, "_wait_for_box_api") as waiter, \
-             patch.object(box_config_cli, "_box_api_responding_over_ssh",
-                          return_value=True), \
+    def test_prefer_ssh_polls_the_box_side_probe(self):
+        """It must POLL, not single-shot. Giving the box-side probe one attempt
+        right after the bounce measured the container while its Python service
+        was still starting, and reported a healthy box as dead -- the same
+        unstamped-hash symptom the probe exists to prevent. It reuses
+        _wait_for_box_api's loop with the box-side probe injected."""
+        with patch.object(box_config_cli, "_wait_for_box_api", return_value=True) as waiter, \
              patch.object(box_config_cli, "_box_api_responding", return_value=False):
             up, over_http = box_config_cli._confirm_box_api_up(
                 "1.2.3.4", prefer_ssh=True)
         self.assertEqual((up, over_http), (True, False))
-        waiter.assert_not_called()
+        waiter.assert_called_once()
+        injected = waiter.call_args.kwargs.get("is_responding")
+        self.assertIsNotNone(injected, "must poll with a probe, not the default")
+        with patch.object(box_config_cli, "_box_api_responding_over_ssh",
+                          return_value=True) as ssh:
+            self.assertTrue(injected("1.2.3.4"))
+        ssh.assert_called_once()
+
+    def test_the_poll_survives_a_probe_that_is_slow_to_come_up(self):
+        """The concrete regression: a probe failing twice then succeeding must
+        end up ready. A single-shot check returns False here."""
+        calls = []
+
+        def flaky(_ip):
+            calls.append(1)
+            return len(calls) >= 3
+
+        self.assertTrue(box_config_cli._wait_for_box_api(
+            "1.2.3.4", is_responding=flaky, sleeper=lambda _s: None,
+            clock=lambda: 0.0))
+        self.assertEqual(len(calls), 3)
 
     def test_the_normal_path_still_prefers_http(self):
         with patch.object(box_config_cli, "_wait_for_box_api", return_value=True), \
@@ -2479,11 +2503,13 @@ class BoxSideReadinessProbe(unittest.TestCase):
         ssh.assert_not_called()
 
     def test_http_failure_falls_through_to_the_box(self):
-        with patch.object(box_config_cli, "_wait_for_box_api", return_value=False), \
-             patch.object(box_config_cli, "_box_api_responding_over_ssh",
-                          return_value=True):
+        """First call is the HTTP poll, second the box-side poll."""
+        with patch.object(box_config_cli, "_wait_for_box_api",
+                          side_effect=[False, True]) as waiter:
             self.assertEqual(
                 box_config_cli._confirm_box_api_up("1.2.3.4"), (True, False))
+        self.assertEqual(waiter.call_count, 2)
+        self.assertIsNotNone(waiter.call_args_list[1].kwargs.get("is_responding"))
 
 
 class NetworkModeDiff(unittest.TestCase):
