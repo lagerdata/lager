@@ -148,6 +148,14 @@ class Binfile:
 
 
 def read_adc(kind="T7", interface="AIN0"):
+    """Read one AIN from a T-series LabJack over LJM.
+
+    `kind` must name a device type explicitly. Passing "ANY" fails with
+    LJME_U3_NOT_SUPPORTED_BY_LJM (1243) on any box that also has a U3
+    attached: LJM does not support the UD series and refuses to enumerate
+    past it rather than ignoring it. The U3 is driven by the Exodriver
+    instead -- see lager.io.labjack_ud_handle.
+    """
     from labjack import ljm
     handle = None
     try:

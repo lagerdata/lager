@@ -109,6 +109,16 @@ All notable changes to the Lager platform are documented here. For detailed rele
   `PIN_CONFIGURED_FOR_DIGITAL` for a flexible channel left digital -- without
   that split the whole suite passed with the mux bug in place.
 
+  On a box carrying both families, note that LJM does not merely ignore a U3:
+  asked for device type `"ANY"` it fails outright with
+  `LJME_U3_NOT_SUPPORTED_BY_LJM` (1243) rather than skipping the device it
+  does not support, so `ljm.openS("ANY", ...)` and `ljm.listAllS("ANY", ...)`
+  stop working as soon as a U3 is plugged in. Every T7 path here names the
+  device type explicitly and is unaffected; `read_adc(kind=...)` and the
+  handle manager now say so where the default lives. The Exodriver build is
+  pinned to `v2.7.0` rather than tracking upstream's default branch, which is
+  currently ahead of its own newest tag.
+
 ### Changed
 
 - **A second role on a dual-role instrument is now a notice, not a block.**
