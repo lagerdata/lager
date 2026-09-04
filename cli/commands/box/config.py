@@ -25,7 +25,7 @@ import requests
 from ...box_storage import get_box_ip, list_boxes
 from ...context import get_default_box, get_impl_path
 from ...core.group_usage import LagerGroup
-from ...errors import ssh_error
+from ...errors import LagerError, ssh_error
 from ..development.python import run_python_internal_get_output
 from . import _shim_verbs as verbs
 from ._host_ops import apt_install, sysctl_apply, udev_apply
@@ -81,7 +81,72 @@ def _resolve_box(ctx: click.Context, box_opt: Optional[str] = None) -> str:
     return get_default_box(ctx)
 
 
-def _run_box_config_py(ctx: click.Context, box: str, *args: str) -> str:
+# The box-side shim, as source rather than a file. `cli/impl/box_config.py` is
+# uploaded over HTTP by run_python_internal; this is the same four lines, piped
+# to `python3 -` inside the container instead. The implementation it calls lives
+# at /app/lager, baked into the image -- nothing is copied to the box.
+_SHIM_SOURCE = (
+    "import sys\n"
+    "sys.path.insert(0, '/app/lager')\n"
+    "from lager.box_config.box_config_cli import _cli\n"
+    "_cli()\n"
+)
+
+# Long enough for a bounce-adjacent verb on a slow box, short enough that a
+# genuinely dead box fails before the operator gives up. The HTTP path's own
+# read timeout is 320s, but that budget covers `lager python` runs; box_config
+# verbs are sub-second once they reach the shim.
+_SSH_SHIM_TIMEOUT_SECONDS = 60
+
+
+def _run_box_config_over_ssh(
+    box_ip: str, *args: str, runner=None, timeout: int = _SSH_SHIM_TIMEOUT_SECONDS,
+) -> str:
+    """Run one box_config verb through SSH instead of the HTTP shim.
+
+    The box's login user is in the `docker` group (verified on hardware), so
+    this needs no sudo and no new sudoers grant. `docker exec -i lager python3 -`
+    reads the shim from stdin, and `/etc/lager` is bind-mounted into the
+    container, so the verb sees exactly the same config file the HTTP path does
+    -- including the same flock, since `_cli()` takes it either way.
+
+    Raises LagerError on transport failure so callers can treat it the same as
+    the HTTP path failing.
+    """
+    import shlex
+
+    run = runner or default_ssh_runner
+    quoted = " ".join(shlex.quote(a) for a in args)
+    rc, stdout, stderr = run(
+        box_ip,
+        f"docker exec -i lager python3 - {quoted}".strip(),
+        stdin=_SHIM_SOURCE,
+        timeout=timeout,
+    )
+    if rc != 0:
+        raise LagerError(
+            f"Cannot reach the box config shim over SSH on {box_ip}.",
+            cause=(stderr or stdout or "no output").strip()[:400],
+            fixes=[
+                f"Check SSH works: ssh {resolve_box_user(box_ip)}@{box_ip}",
+                "Check the container is up: docker ps --filter name=lager",
+            ],
+        )
+    return stdout
+
+
+def _run_box_config_py(
+    ctx: click.Context, box: str, *args: str, allow_ssh_fallback: bool = False,
+) -> str:
+    """Run one box_config verb on the box, over HTTP.
+
+    `allow_ssh_fallback` retries over SSH when the HTTP path cannot reach the
+    box. It is opt-in per call rather than global: host networking can close
+    :5000 to the CLI while the box is perfectly healthy, and the verbs needed to
+    diagnose or undo that must still work. Verbs that are not part of getting a
+    stranded box back keep the single transport, so a genuinely unreachable box
+    still fails fast instead of paying an SSH timeout on every call.
+    """
     try:
         output = run_python_internal_get_output(
             ctx,
@@ -104,6 +169,13 @@ def _run_box_config_py(ctx: click.Context, box: str, *args: str) -> str:
         if e.code != 0:
             raise
         return ""
+    except LagerError:
+        # What an unreachable box actually raises: DirectHTTPSession converts
+        # requests' ConnectionError/Timeout into LagerError before it reaches
+        # here, so this -- not a requests exception -- is the signature.
+        if not allow_ssh_fallback:
+            raise
+        return _run_box_config_over_ssh(box, *args)
 
 
 def _parse_response(raw: str, ctx: click.Context) -> Any:
@@ -1058,6 +1130,15 @@ def repair_cmd(ctx: click.Context, box: Optional[str], yes: bool) -> None:
     ),
 )
 @click.option(
+    "--skip-host-network-check",
+    is_flag=True,
+    help=(
+        "Apply a switch to host networking even when the pre-flight reports "
+        "it will make the box unreachable. Only for a box whose firewall this "
+        "check cannot read, and only with another way in."
+    ),
+)
+@click.option(
     "--dry-run",
     is_flag=True,
     help=(
@@ -1076,22 +1157,27 @@ def apply_cmd(
     no_auto_prep: bool,
     recursive_chown: bool,
     dry_run: bool,
+    skip_host_network_check: bool,
 ) -> None:
     targets = _resolve_boxes(ctx, box)
     failed = []
+    worst = _APPLY_OK
     for i, resolved in enumerate(targets):
         if len(targets) > 1:
             if i > 0:
                 click.echo()
             click.secho(f"=== {resolved} ===", bold=True)
-        ok = _apply_one(
+        rc = _apply_one(
             ctx, resolved,
             yes=yes, force=force, skip_restart=skip_restart,
             no_auto_prep=no_auto_prep, recursive_chown=recursive_chown,
-            dry_run=dry_run,
+            dry_run=dry_run, skip_host_network_check=skip_host_network_check,
         )
-        if not ok:
+        if rc != _APPLY_OK:
             failed.append(resolved)
+            # A hard failure outranks "up but not applied": across a fanout the
+            # worst outcome is the one worth reporting.
+            worst = _APPLY_FAILED if _APPLY_FAILED in (worst, rc) else rc
     if failed:
         if len(targets) > 1:
             click.secho(
@@ -1099,7 +1185,7 @@ def apply_cmd(
                 + ", ".join(failed),
                 fg="red", err=True,
             )
-        ctx.exit(1)
+        ctx.exit(worst)
 
 
 @box_config.command(
@@ -1194,10 +1280,17 @@ def _apply_one(
     no_auto_prep: bool,
     recursive_chown: bool,
     dry_run: bool,
-) -> bool:
-    """Apply box config to a single resolved box. Returns True on success.
+    skip_host_network_check: bool = False,
+) -> int:
+    """Apply box config to a single resolved box. Returns an exit code.
 
-    Returns False (rather than ctx.exit(1)) so the caller can iterate over
+    _APPLY_OK / _APPLY_FAILED / _APPLY_CONFIG_NOT_APPLIED. The third exists
+    because "the container is up but running the previous config" is neither
+    success nor a failed bounce, and start_box.sh has always distinguished it
+    -- the distinction just never escaped this function, so an operator could
+    not tell it from any other failure by exit code.
+
+    Returns a code (rather than ctx.exit) so the caller can iterate over
     multiple targets and continue past a failure on one box, reporting the
     aggregate at the end instead of bailing on the first error.
     """
@@ -1208,11 +1301,11 @@ def _apply_one(
             f"No box_config.json on {resolved}. Run `lager box-config init` first.",
             fg="yellow",
         )
-        return False
+        return _APPLY_FAILED
     if not payload.get("ok"):
         click.secho("Refusing to apply: config has errors:", fg="red", err=True)
         _print_errors(payload.get("errors") or [])
-        return False
+        return _APPLY_FAILED
 
     raw = _run_box_config_py(ctx, resolved, verbs.HASH)
     cur_hash = _parse_response(raw, ctx).get("hash")
@@ -1233,25 +1326,25 @@ def _apply_one(
                 "Config unchanged since last apply; apply changes nothing.",
                 fg="green",
             )
-            return True
+            return _APPLY_OK
         click.secho(
             "Dry run — no changes made. apply performs:",
             bold=True,
         )
         _print_diff_human(diff)
         click.echo("Re-run without --dry-run to apply.")
-        return True
+        return _APPLY_OK
 
     if unchanged and not force:
         click.secho("Config unchanged since last apply; skipping restart.", fg="green")
-        return True
+        return _APPLY_OK
 
     if skip_restart:
         # No mount pre-flight here: mounts only take effect at the container
         # restart this flag skips, and the eventual full apply re-checks them.
         _run_box_config_py(ctx, resolved, verbs.SET_APPLIED_HASH, cur_hash)
         click.secho("Config validated; restart skipped (--skip-restart).", fg="yellow")
-        return True
+        return _APPLY_OK
 
     # Host-side provisioning that has to happen BEFORE the container bounce:
     # apt packages may be needed by services the container talks to, and
@@ -1261,6 +1354,16 @@ def _apply_one(
     applied_snapshot = _parse_response(
         _run_box_config_py(ctx, resolved, verbs.APPLIED_SHOW), ctx
     )
+
+    # Host networking is the one setting that can sever the route this command
+    # is travelling on, so it is checked before anything mutates -- a refused
+    # apply must be a true no-op. Only when the config is actually switching to
+    # host; a box already on host has already paid this cost.
+    if current_show.get("network_mode") == "host" and (
+            (applied_snapshot or {}).get("network_mode") != "host"):
+        if not _preflight_host_networking(
+                resolved, force=skip_host_network_check):
+            return _APPLY_FAILED
 
     if not yes:
         # Show the operator what's about to change so they can confirm with
@@ -1275,13 +1378,13 @@ def _apply_one(
             default=True,
         ):
             click.secho("Aborted.", fg="yellow")
-            return False
+            return _APPLY_FAILED
     if not _ensure_apt_packages(resolved, current_show, applied_snapshot):
-        return False
+        return _APPLY_FAILED
     if not _ensure_sysctl(resolved, current_show, applied_snapshot):
-        return False
+        return _APPLY_FAILED
     if not _ensure_udev_rules(resolved, current_show, applied_snapshot):
-        return False
+        return _APPLY_FAILED
 
     # Mount pre-flight runs AFTER the confirm prompt (no host mutation before
     # the operator says yes) and AFTER apt provisioning, so a mount whose host
@@ -1290,7 +1393,7 @@ def _apply_one(
     # being pre-empted by a `sudo mkdir -p` directory at that path.
     if not no_auto_prep:
         if not _preflight_mounts(ctx, resolved, recursive=recursive_chown):
-            return False
+            return _APPLY_FAILED
 
     bounce_rc = _bounce_container_rc(ctx, resolved)
 
@@ -1311,7 +1414,7 @@ def _apply_one(
             fg="red",
             err=True,
         )
-        return False
+        return _APPLY_CONFIG_NOT_APPLIED
 
     if bounce_rc != _BOUNCE_OK:
         # Bounce of the new config failed. The container may be down (start_box.sh
@@ -1338,18 +1441,37 @@ def _apply_one(
                 fg="red",
                 err=True,
             )
-        return False
+        return _APPLY_FAILED
 
-    if not _wait_for_box_api(resolved):
+    # Host networking is expected to close :5000 to the CLI, so ask the box
+    # directly rather than polling a route this apply just removed.
+    going_to_host = (current_show.get("network_mode") == "host")
+    api_up, api_over_http = _confirm_box_api_up(resolved, prefer_ssh=going_to_host)
+    if not api_up:
         click.secho(
             f"Container restarted but the box API didn't come up within "
-            f"{_API_READY_DEADLINE_SECONDS}s; not updating applied-hash. The "
-            "bounce succeeded, but next `apply` will re-bounce unnecessarily. "
-            "Check `lager hello` and the container logs.",
+            f"{_API_READY_DEADLINE_SECONDS}s, and it does not answer on loopback "
+            "on the box either; not updating applied-hash. The bounce succeeded, "
+            "but next `apply` will re-bounce unnecessarily. Check `lager hello` "
+            "and the container logs.",
             fg="yellow",
             err=True,
         )
-        return False
+        return _APPLY_FAILED
+    if not api_over_http:
+        # Up, but this machine cannot reach it. Say so plainly and keep going:
+        # the bounce worked and the config applied, so withholding the
+        # applied-hash would only guarantee a pointless re-bounce next time.
+        click.secho(
+            f"The box API on {resolved} is up (confirmed on the box) but is not "
+            "reachable from here over HTTP. On host networking the host firewall "
+            "governs the box's ports, where published ports bypassed it. Allow "
+            "the interface you reach the box on -- `lager box-config network-mode "
+            "show` explains -- or run `lager box-config network-mode unset` to go "
+            "back.",
+            fg="yellow",
+            err=True,
+        )
 
     # Post-bounce safety net. Catches the rare race where /etc/lager/box_config.json
     # was hand-edited between apply's pre-bounce read and start_box.sh's renderer
@@ -1357,11 +1479,61 @@ def _apply_one(
     # if the on-disk file is different now, the container is up but the operator's
     # latest edits never landed.
     if not _post_apply_consistency_ok(ctx, resolved, expected=current_show, cur_hash=cur_hash):
-        return False
+        return _APPLY_FAILED
 
-    _run_box_config_py(ctx, resolved, verbs.SET_APPLIED_HASH, cur_hash)
+    _run_box_config_py(ctx, resolved, verbs.SET_APPLIED_HASH, cur_hash,
+                       allow_ssh_fallback=True)
     click.secho(f"Applied box config on {resolved}.", fg="green")
-    return True
+    return _APPLY_OK
+
+
+def _preflight_host_networking(resolved_box: str, *, force: bool = False) -> bool:
+    """Refuse an apply that would strand the box. True to proceed.
+
+    Prints remediation rather than running it. Opening a Lager port to a LAN is
+    a security posture decision that belongs to whoever owns box security, not
+    to a side effect of enabling a Bluetooth feature.
+    """
+    from ._net_preflight import check
+
+    result = check(resolved_box)
+    if result.ok:
+        # The substantive warning belongs here, not on `set`: this is the step
+        # that actually changes the box, and it is the only point where we know
+        # whether a firewall is running at all. Warning unconditionally one step
+        # earlier is what let the operator read it, discount it, and proceed.
+        if result.data.get("ufw_active"):
+            click.secho(
+                f"Note: {resolved_box} runs an active host firewall. On host "
+                "networking it governs the box's ports, where published ports "
+                f"bypassed it. Reachability on {result.iface or 'your interface'} "
+                "was checked; other Lager ports were not.",
+                fg="yellow", err=True)
+        return True
+    if force:
+        click.secho(
+            "Proceeding with --force despite host-networking pre-flight failures:",
+            fg="yellow", err=True)
+        for b in result.blockers:
+            click.secho(f"  - {b}", fg="yellow", err=True)
+        return True
+
+    click.secho(
+        f"Refusing to switch {resolved_box} to host networking:", fg="red", err=True)
+    for b in result.blockers:
+        click.secho(f"  - {b}", fg="red", err=True)
+    if result.remediation:
+        click.echo()
+        click.secho("Run these on the box, then re-run apply:", bold=True, err=True)
+        for cmd in result.remediation:
+            click.echo(f"  {cmd}", err=True)
+    click.echo()
+    click.secho(
+        "Nothing was changed. To go back, run "
+        "`lager box-config network-mode unset`. To override this check, re-run "
+        "with --force.",
+        err=True)
+    return False
 
 
 def _post_apply_consistency_ok(
@@ -1383,7 +1555,8 @@ def _post_apply_consistency_ok(
          picks up the new edits.
     """
     post_validate = _parse_response(
-        _run_box_config_py(ctx, resolved_box, verbs.VALIDATE), ctx,
+        _run_box_config_py(ctx, resolved_box, verbs.VALIDATE,
+                           allow_ssh_fallback=True), ctx,
     )
     if not post_validate.get("ok", True):
         click.secho(
@@ -1401,7 +1574,8 @@ def _post_apply_consistency_ok(
         return False
 
     post_show = _parse_response(
-        _run_box_config_py(ctx, resolved_box, verbs.SHOW), ctx,
+        _run_box_config_py(ctx, resolved_box, verbs.SHOW,
+                           allow_ssh_fallback=True), ctx,
     ) or {}
     if post_show != expected:
         click.secho(
@@ -1718,6 +1892,63 @@ def _wait_for_box_api(
         sleeper(poll_interval)
 
 
+def _box_api_responding_over_ssh(box_ip: str, *, runner=None, timeout: int = 15) -> bool:
+    """Ask the box itself whether its API is up, on loopback, over SSH.
+
+    `_box_api_responding` reaches :5000 across the network, which is exactly
+    what host networking can close: moving the container off published ports
+    removes the DNAT that had been bypassing ufw, so the firewall's deny rule
+    starts applying to the CLI's own route while the container is perfectly
+    healthy. That made `apply` report the API had never come up, skip the
+    applied-hash, and leave every later `apply` re-bouncing the container.
+
+    Asking on the box separates "the service is down" from "I cannot see it".
+    Kept to the same 200-means-ready rule as the HTTP probe, deliberately: a
+    404 still means a route regression worth surfacing, and this probe must not
+    be the more forgiving of the two.
+
+    Runs INSIDE the container rather than against the host's port. On a box
+    fronted by a gateway, the host's :5000 belongs to the gateway, which answers
+    an unauthenticated probe with a denial -- so a host-side loopback check
+    reports a perfectly healthy container as down. Measured on a real box: the
+    HTTP probe said up, a host-side loopback probe said down. Inside the
+    container the address is the service itself in either network mode, which
+    is also the question actually being asked after a bounce.
+    """
+    run = runner or default_ssh_runner
+    probe = (
+        "import sys, urllib.request\n"
+        "try:\n"
+        f"    r = urllib.request.urlopen('http://127.0.0.1:{_BOX_API_PORT}/hello', timeout=3)\n"
+        "    sys.exit(0 if r.status == 200 else 1)\n"
+        "except Exception:\n"
+        "    sys.exit(1)\n"
+    )
+    try:
+        rc, _stdout, _stderr = run(
+            box_ip, "docker exec -i lager python3 -", stdin=probe, timeout=timeout)
+    except Exception:
+        return False
+    return rc == 0
+
+
+def _confirm_box_api_up(box_ip: str, *, prefer_ssh: bool = False, runner=None):
+    """(up, reachable_over_http) after a bounce.
+
+    `prefer_ssh` skips straight to the box-side probe for an apply that is
+    switching the container to host networking. Polling HTTP first would burn
+    the full deadline every time on exactly the configuration that is expected
+    to close it.
+    """
+    if prefer_ssh:
+        if _box_api_responding_over_ssh(box_ip, runner=runner):
+            return True, _box_api_responding(box_ip)
+        return False, False
+    if _wait_for_box_api(box_ip):
+        return True, True
+    return _box_api_responding_over_ssh(box_ip, runner=runner), False
+
+
 _BOUNCE_TIMEOUT_SECONDS = 900
 
 # start_box.sh exit codes we distinguish.
@@ -1730,6 +1961,13 @@ _BOUNCE_OK = 0
 _BOUNCE_CONFIG_NOT_APPLIED = 3
 # Anything else: the bounce failed and the container may be DOWN.
 _BOUNCE_FAILED = 1
+
+# What `apply` itself exits with. These mirror the bounce codes deliberately:
+# start_box.sh already separated "up but not applied" from "bounce failed", and
+# collapsing both into 1 threw that away at the process boundary.
+_APPLY_OK = 0
+_APPLY_FAILED = 1
+_APPLY_CONFIG_NOT_APPLIED = 3
 
 
 def _bounce_container_rc(ctx: click.Context, resolved_box: str) -> int:
@@ -2517,20 +2755,36 @@ def network_mode_group() -> None:
 @click.pass_context
 def network_mode_show_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
     resolved = _resolve_box(ctx, box)
-    payload = _parse_response(_run_box_config_py(ctx, resolved, verbs.SHOW), ctx)
-    if payload is None:
+    # Deliberately the network-mode-show verb, not the generic `show`. `show`
+    # predates this feature, so it answers byte-identically on a box that
+    # understands the setting and one that does not -- both simply omit the key,
+    # since the config stores nothing at the default. Anyone using this to
+    # confirm a deploy landed would get a green on a box without it.
+    payload = _parse_response(
+        _run_box_config_py(ctx, resolved, verbs.NETWORK_MODE_SHOW,
+                           allow_ssh_fallback=True), ctx)
+    if _network_mode_unsupported(payload):
         if as_json:
-            click.echo(json.dumps({"box": resolved, "exists": False}, indent=2))
+            click.echo(json.dumps({
+                "box": resolved, "network_mode": _DEFAULT_NETWORK_MODE,
+                "explicit": False, "supported": False,
+            }, indent=2))
         else:
-            click.secho(f"{resolved}: no box_config.json", fg="yellow")
-            click.echo(f"Default in effect: {_DEFAULT_NETWORK_MODE}")
+            click.secho(
+                f"{resolved}: {_DEFAULT_NETWORK_MODE} "
+                "(this box predates the network-mode setting)", fg="yellow")
         return
-    mode = payload.get("network_mode")
-    explicit = mode is not None
-    mode = mode or _DEFAULT_NETWORK_MODE
+    if not payload.get("ok"):
+        click.secho("Failed to read the network mode:", fg="red", err=True)
+        _print_errors(payload.get("errors") or [payload.get("error", "unknown error")])
+        ctx.exit(1)
+    mode = payload.get("mode") or _DEFAULT_NETWORK_MODE
+    explicit = bool(payload.get("explicit"))
     if as_json:
-        click.echo(json.dumps(
-            {"box": resolved, "network_mode": mode, "explicit": explicit}, indent=2))
+        click.echo(json.dumps({
+            "box": resolved, "network_mode": mode, "explicit": explicit,
+            "exists": bool(payload.get("exists")), "supported": True,
+        }, indent=2))
         return
     suffix = "" if explicit else " (default)"
     click.echo(f"{resolved}: {mode}{suffix}")
@@ -2548,7 +2802,7 @@ def network_mode_set_cmd(ctx: click.Context, mode: str, box: Optional[str]) -> N
     resolved = _resolve_box(ctx, box)
     payload = _parse_response(
         _run_box_config_py(ctx, resolved, verbs.NETWORK_MODE_SET,
-                           json.dumps({"mode": mode})),
+                           json.dumps({"mode": mode}), allow_ssh_fallback=True),
         ctx,
     )
     if not payload.get("ok"):
@@ -2563,9 +2817,10 @@ def network_mode_set_cmd(ctx: click.Context, mode: str, box: Optional[str]) -> N
     click.secho(f"Container network set to {mode} on {resolved}", fg="green")
     if mode == "host":
         click.secho(
-            "Note: on host networking the container binds host ports directly, so "
-            "the host firewall governs them -- unlike published ports, which bypass "
-            "it. It also shares the host's bluetoothd.", fg="yellow")
+            "On host networking the container binds host ports directly and "
+            "shares the host's bluetoothd. `apply` checks the box stays "
+            "reachable before it switches, and refuses when it cannot.",
+            fg="yellow")
     click.echo("Run `lager box-config apply` to restart the container on that network.")
 
 
@@ -2578,7 +2833,8 @@ def network_mode_set_cmd(ctx: click.Context, mode: str, box: Optional[str]) -> N
 def network_mode_unset_cmd(ctx: click.Context, box: Optional[str]) -> None:
     resolved = _resolve_box(ctx, box)
     payload = _parse_response(
-        _run_box_config_py(ctx, resolved, verbs.NETWORK_MODE_UNSET), ctx)
+        _run_box_config_py(ctx, resolved, verbs.NETWORK_MODE_UNSET,
+                           allow_ssh_fallback=True), ctx)
     if not payload.get("ok"):
         if _network_mode_unsupported(payload):
             click.secho(
