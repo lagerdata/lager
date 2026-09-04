@@ -766,8 +766,27 @@ fi
 [[ -f "$HOME/.env" ]] && source "$HOME/.env" || true
 
 # Auto-detect PIGPIO address (may not exist, default to standard)
-# Docker-internal network default for pigpio container; auto-detected at runtime
-PIGPIO_ADDR=$(docker inspect -f '{{ .NetworkSettings.Networks.lagernet.IPAddress }}' pigpio 2>/dev/null | tr -d '\n' || echo "172.18.0.2")
+# --- BEGIN pigpio address (extracted verbatim by test/unit/box/test_pigpio_addr_fallback.py) ---
+# Docker-internal network default for the pigpio container; auto-detected at runtime.
+#
+# The detection has two ways to produce a non-address, and the fallback has to
+# cover both. `docker inspect` prints nothing when the container does not exist,
+# and the literal `<no value>` when it exists but is not attached to lagernet
+# (the Go template resolves a missing map key to nil).
+#
+# It cannot be written as `... | tr -d '\n' || echo "$PIGPIO_DEFAULT_ADDR"`: `||`
+# tests the pipeline, and the pipeline ends in `tr`, which exits 0 whether or not
+# `docker inspect` produced anything. That fallback never ran. A box without a
+# pigpio container passed `--env PIGPIO_ADDR=` (empty) to the container, and
+# `os.environ.get('PIGPIO_ADDR', '172.18.0.2')` does not substitute a default for
+# a variable that is set and empty, so neither end applied the intended default.
+# Confirmed on a box with no pigpio container.
+PIGPIO_DEFAULT_ADDR="172.18.0.2"
+PIGPIO_ADDR=$(docker inspect -f '{{ .NetworkSettings.Networks.lagernet.IPAddress }}' pigpio 2>/dev/null | tr -d '\n')
+if ! printf '%s' "$PIGPIO_ADDR" | grep -qE '^[0-9]+(\.[0-9]+){3}$'; then
+    PIGPIO_ADDR="$PIGPIO_DEFAULT_ADDR"
+fi
+# --- END pigpio address ---
 
 # Auto-detect Docker interface
 DOCKER_IFACE=$(ip -4 addr show docker0 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1)
