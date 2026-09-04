@@ -86,6 +86,24 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ### Fixed
 
+- **A box without a pigpio container now gets the default pigpio address
+  instead of an empty one.** `start_box.sh` detected the address with
+
+      PIGPIO_ADDR=$(docker inspect ... pigpio 2>/dev/null | tr -d '\n' || echo "172.18.0.2")
+
+  where `||` tests the pipeline, and the pipeline ends in `tr`, which exits 0
+  whether or not `docker inspect` produced anything. The fallback was therefore
+  unreachable, and the container was started with `--env PIGPIO_ADDR=` (empty).
+  The Python side does not recover it either: `os.environ.get('PIGPIO_ADDR',
+  '172.18.0.2')` returns the empty string for a variable that is set and empty,
+  so a default was applied at neither end. Measured on a box with no pigpio
+  container: the value reaching the container was empty.
+
+  The result is now validated as an address rather than merely non-failing,
+  which also covers the second way the detection returns a non-address -- a
+  pigpio container that exists but is not attached to `lagernet`, where the
+  template renders the literal `<no value>`.
+
 - **A UART net is no longer held indefinitely after its interactive client
   goes away.** `lager uart <net> -i` could leave the net stuck reporting
   "already in use by another session" on every subsequent invocation, with no
