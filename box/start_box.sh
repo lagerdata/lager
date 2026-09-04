@@ -685,6 +685,10 @@ NPM_PKGS_FILE="/etc/lager/npm_packages.txt"
 BOX_CONFIG_MOUNTS=()
 BOX_CONFIG_ENV=()
 BOX_CONFIG_HOST_PATHS=()
+# Scalar, not an array. Overwritten by the render below when a config declares
+# it; the default stands for a box with no /etc/lager/box_config.json, an
+# unreadable one, or a lager predating the setting.
+BOX_CONFIG_NETWORK=lagernet
 # Set by any renderer that fails below. The container still comes up (that is a
 # hard requirement of this script), but the script exits 3 at the end so the
 # caller can tell "box is up AND config applied" from "box is up but the config
@@ -784,8 +788,31 @@ if command -v tailscale &> /dev/null; then
     fi
 fi
 
+# --- BEGIN network mode (extracted verbatim by test/unit/box/test_network_mode.py) ---
+# Docker network for the container, from box_config.json via
+# render_docker_args.py. "host" exists so AF_BLUETOOTH/hci0 is reachable inside
+# the container: the kernel registers that address family only in the initial
+# network namespace, so raw HCI tooling cannot see the adapter on lagernet.
+# bleak is unaffected either way -- it reaches the host's bluetoothd over the
+# mounted /var/run/dbus socket rather than through a BT socket of its own.
+#
+# An unknown value is corrected to the default rather than passed through. The
+# renderer validates against the same allowlist, so a bad value only reaches
+# here from a hand-edited box_config.docker.sh -- and an unknown --network makes
+# `docker run` fail outright, which would take the whole box down to punish a
+# typo.
+case "$BOX_CONFIG_NETWORK" in
+    lagernet|host) ;;
+    *)
+        echo "[WARNING] Unknown network mode '$BOX_CONFIG_NETWORK'; falling back to lagernet"
+        BOX_CONFIG_NETWORK=lagernet
+        ;;
+esac
+# --- END network mode ---
+
 echo "Network configuration:"
 echo "  Docker Interface: $DOCKER_IFACE"
+echo "  Container network: $BOX_CONFIG_NETWORK"
 if [ -n "$VPN_INFO" ]; then
     echo "  VPN: $VPN_INFO"
 fi
@@ -882,7 +909,7 @@ unset _env_arg
 # proxy on the same network owns the host ports.
 # --- BEGIN port publishing (extracted verbatim by test/unit/box/test_firewall_port_allowlist.py) ---
 PORT_PUBLISH_ARGS=()
-if [ -z "$NO_PUBLISH" ]; then
+if [ -z "$NO_PUBLISH" ] && [ "$BOX_CONFIG_NETWORK" != "host" ]; then
     PORT_PUBLISH_ARGS=(
         -p 5000:5000
         -p 8301:5000
@@ -900,13 +927,15 @@ if [ -z "$NO_PUBLISH" ]; then
     else
         PORT_PUBLISH_ARGS+=(-p 9000:9000)
     fi
+elif [ "$BOX_CONFIG_NETWORK" = "host" ]; then
+    echo "Port publishing skipped (network mode 'host'): the container binds host ports directly"
 else
     echo "Port publishing disabled (--no-publish): container reachable via lagernet only"
 fi
 # --- END port publishing ---
 
 docker run -d \
-    --network lagernet \
+    --network "$BOX_CONFIG_NETWORK" \
     --privileged \
     "${LAGER_GROUP_ADD[@]}" \
     -v /tmp:/tmp \

@@ -19,6 +19,7 @@ from unittest.mock import patch
 from click.testing import CliRunner
 
 from cli.commands.box import config as box_config_cli
+from cli.commands.box._net_preflight import PreflightResult as _PreflightResult
 
 
 class FakeBoxBackend:
@@ -38,7 +39,11 @@ class FakeBoxBackend:
     def register(self, verb, payload):
         self.responses.setdefault(verb, []).append(payload)
 
-    def __call__(self, ctx, box, *args):
+    def __call__(self, ctx, box, *args, **kwargs):
+        # **kwargs mirrors _run_box_config_py's keyword-only options (e.g.
+        # allow_ssh_fallback). Without it, adding one to a call site fails here
+        # as a bare TypeError swallowed into exit 1, which reads as a logic bug
+        # anywhere but the real cause.
         verb = args[0] if args else ""
         self.calls.append((verb, args[1:]))
         if verb not in self.responses or not self.responses[verb]:
@@ -2007,7 +2012,8 @@ class ResetCommand(unittest.TestCase):
         backend = FakeBoxBackend({"reset": [{"ok": True}]})
         with _patch_resolve(), \
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
-             patch.object(box_config_cli, "_apply_one", return_value=True) as apply_one:
+             patch.object(box_config_cli, "_apply_one",
+                          return_value=box_config_cli._APPLY_OK) as apply_one:
             result = self.runner.invoke(
                 box_config_cli.box_config,
                 ["reset", "--box", "test-box", "--yes", "--apply"],
@@ -2017,6 +2023,511 @@ class ResetCommand(unittest.TestCase):
         # --apply forces a bounce into the fresh empty config.
         apply_one.assert_called_once()
         self.assertTrue(apply_one.call_args.kwargs.get("force"))
+
+
+class NetworkModeGroup(unittest.TestCase):
+    """`lager box-config network-mode` show / set / unset."""
+
+    def setUp(self):
+        self.runner = CliRunner()
+
+    def _run(self, args, backend):
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            return self.runner.invoke(box_config_cli.box_config, args)
+
+    def test_show_reports_an_explicit_mode(self):
+        backend = FakeBoxBackend({"network-mode-show": [
+            {"ok": True, "exists": True, "mode": "host", "explicit": True}]})
+        r = self._run(["network-mode", "show"], backend)
+        self.assertEqual(r.exit_code, 0, msg=r.output)
+        self.assertIn("host", r.output)
+        self.assertNotIn("default", r.output)
+
+    def test_show_marks_the_default_as_a_default(self):
+        """The box-side to_dict omits the key at its default, so `show` has to
+        say what is in effect rather than printing nothing."""
+        backend = FakeBoxBackend({"network-mode-show": [
+            {"ok": True, "exists": True, "mode": "lagernet", "explicit": False}]})
+        r = self._run(["network-mode", "show"], backend)
+        self.assertEqual(r.exit_code, 0, msg=r.output)
+        self.assertIn("lagernet", r.output)
+        self.assertIn("default", r.output)
+
+    def test_show_json_reports_whether_it_was_explicit(self):
+        backend = FakeBoxBackend({"network-mode-show": [
+            {"ok": True, "exists": True, "mode": "lagernet", "explicit": False}]})
+        r = self._run(["network-mode", "show", "--json"], backend)
+        self.assertEqual(r.exit_code, 0, msg=r.output)
+        payload = json.loads(r.output)
+        self.assertEqual(payload["network_mode"], "lagernet")
+        self.assertFalse(payload["explicit"])
+
+    def test_show_handles_a_box_with_no_config(self):
+        backend = FakeBoxBackend({"network-mode-show": [
+            {"ok": True, "exists": False, "mode": "lagernet", "explicit": False}]})
+        r = self._run(["network-mode", "show"], backend)
+        self.assertEqual(r.exit_code, 0, msg=r.output)
+        self.assertIn("lagernet", r.output)
+
+    def test_show_names_a_box_that_predates_the_setting(self):
+        """The deploy check. Routing `show` through the generic SHOW verb made
+        it answer identically with and without the feature, so anyone using it
+        to confirm a deploy landed got a false green."""
+        backend = FakeBoxBackend({"network-mode-show": [
+            {"ok": False, "error": "unknown command: network-mode-show"}]})
+        r = self._run(["network-mode", "show"], backend)
+        self.assertEqual(r.exit_code, 0, msg=r.output)
+        self.assertIn("predates", r.output)
+
+    def test_show_json_flags_an_unsupported_box(self):
+        backend = FakeBoxBackend({"network-mode-show": [
+            {"ok": False, "error": "unknown command: network-mode-show"}]})
+        r = self._run(["network-mode", "show", "--json"], backend)
+        self.assertEqual(r.exit_code, 0, msg=r.output)
+        self.assertFalse(json.loads(r.output)["supported"])
+
+    def test_set_sends_the_mode_and_points_at_apply(self):
+        backend = FakeBoxBackend({
+            "network-mode-set": [{"ok": True, "mode": "host", "previous": "lagernet"}],
+        })
+        r = self._run(["network-mode", "set", "host"], backend)
+        self.assertEqual(r.exit_code, 0, msg=r.output)
+        self.assertIn("apply", r.output)
+        verb, args = backend.calls[0]
+        self.assertEqual(verb, "network-mode-set")
+        self.assertEqual(json.loads(args[0]), {"mode": "host"})
+
+    def test_set_host_names_the_consequences_and_defers_the_check(self):
+        """`set` writes config; it does not touch the box, so it cannot know
+        whether a firewall is running. It names what changes and points at
+        apply, which does know. The conditional warning lives there."""
+        backend = FakeBoxBackend({
+            "network-mode-set": [{"ok": True, "mode": "host", "previous": "lagernet"}],
+        })
+        r = self._run(["network-mode", "set", "host"], backend)
+        self.assertIn("bluetoothd", r.output)
+        self.assertIn("refuses", r.output)
+
+    def test_set_lagernet_does_not_warn(self):
+        backend = FakeBoxBackend({
+            "network-mode-set": [{"ok": True, "mode": "lagernet", "previous": "host"}],
+        })
+        r = self._run(["network-mode", "set", "lagernet"], backend)
+        self.assertNotIn("firewall", r.output)
+
+    def test_set_rejects_an_unknown_mode_without_calling_the_box(self):
+        backend = FakeBoxBackend()
+        r = self._run(["network-mode", "set", "bridge"], backend)
+        self.assertNotEqual(r.exit_code, 0)
+        self.assertEqual(backend.calls, [])
+
+    def test_an_old_box_gets_told_to_update_not_a_raw_shim_error(self):
+        """Most of the fleet predates this verb. The dispatcher's generic
+        `unknown command` reads as a failure rather than a version gap."""
+        backend = FakeBoxBackend({
+            "network-mode-set": [
+                {"ok": False, "error": "unknown command: network-mode-set"}],
+        })
+        r = self._run(["network-mode", "set", "host"], backend)
+        self.assertNotEqual(r.exit_code, 0)
+        self.assertIn("lager update", r.output)
+        self.assertNotIn("unknown command", r.output)
+
+    def test_a_real_failure_still_surfaces_its_error(self):
+        backend = FakeBoxBackend({
+            "network-mode-set": [{"ok": False, "errors": ["disk full"]}],
+        })
+        r = self._run(["network-mode", "set", "host"], backend)
+        self.assertNotEqual(r.exit_code, 0)
+        self.assertIn("disk full", r.output)
+        self.assertNotIn("lager update", r.output)
+
+    def test_unset_reports_the_change(self):
+        backend = FakeBoxBackend({
+            "network-mode-unset": [
+                {"ok": True, "mode": "lagernet", "previous": "host"}],
+        })
+        r = self._run(["network-mode", "unset"], backend)
+        self.assertEqual(r.exit_code, 0, msg=r.output)
+        self.assertIn("lagernet", r.output)
+        self.assertIn("apply", r.output)
+
+    def test_unset_on_an_already_default_box_says_so_and_skips_apply(self):
+        backend = FakeBoxBackend({
+            "network-mode-unset": [
+                {"ok": True, "mode": "lagernet", "previous": "lagernet"}],
+        })
+        r = self._run(["network-mode", "unset"], backend)
+        self.assertEqual(r.exit_code, 0, msg=r.output)
+        self.assertIn("already", r.output)
+        self.assertNotIn("apply", r.output)
+
+
+class ApplyHostNetworkPreflight(unittest.TestCase):
+    """Switching to host networking is the one setting that can sever the route
+    `apply` is travelling on. Hardware validation stranded a box this way and
+    the documented undo could not recover it, so the check must refuse BEFORE
+    anything mutates -- a refused apply has to be a true no-op."""
+
+    def setUp(self):
+        self.runner = CliRunner()
+
+    def _backend(self, *, current_mode="host", applied_mode=None):
+        current = {"version": 1, "apt_packages": [], "sysctl": {}, "mounts": []}
+        if current_mode:
+            current["network_mode"] = current_mode
+        applied = {"version": 1, "apt_packages": [], "sysctl": {}, "mounts": []}
+        if applied_mode:
+            applied["network_mode"] = applied_mode
+        return FakeBoxBackend({
+            "validate": [{"ok": True, "errors": [], "exists": True}],
+            "hash": [{"hash": "aaa"}],
+            "applied-hash": [{"hash": "bbb"}],
+            "show": [current],
+            "applied-show": [applied],
+            "set-applied-hash": [{"ok": True}],
+        })
+
+    def _run(self, backend, *, check_result, extra_args=()):
+        bounced = []
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
+             patch.object(box_config_cli, "_bounce_container_rc",
+                          side_effect=lambda *a, **k: bounced.append(1) or 0), \
+             patch.object(box_config_cli, "_confirm_box_api_up", return_value=(True, True)), \
+             patch("cli.commands.box._net_preflight.check", return_value=check_result):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["apply", "--box", "test-box", "--yes", *extra_args],
+            )
+        return result, bounced
+
+    def _blocked(self, remediation=()):
+        r = _PreflightResult(True, data={})
+        r.blockers = ["ufw is active and does not admit 9000 on eth0"]
+        r.remediation = list(remediation)
+        return r
+
+    def _clear(self):
+        return _PreflightResult(True, data={})
+
+    def test_a_blocked_box_is_refused_without_bouncing(self):
+        result, bounced = self._run(self._backend(), check_result=self._blocked())
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertEqual(bounced, [], "refused apply must not bounce the container")
+        self.assertIn("Refusing", result.output)
+
+    def test_the_refusal_prints_the_exact_remediation(self):
+        cmd = 'sudo ufw allow in on eth0 to any port 9000 proto tcp'
+        result, _ = self._run(self._backend(), check_result=self._blocked([cmd]))
+        self.assertIn(cmd, result.output)
+
+    def test_the_refusal_names_the_undo(self):
+        result, _ = self._run(self._backend(), check_result=self._blocked())
+        self.assertIn("network-mode unset", result.output)
+
+    def test_a_clear_box_proceeds(self):
+        result, bounced = self._run(self._backend(), check_result=self._clear())
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertEqual(bounced, [1])
+
+    def test_the_dedicated_flag_overrides(self):
+        """Deliberately not --force, which means 'restart even if unchanged'.
+        A routine re-apply must not silently disable a stranding safeguard."""
+        result, bounced = self._run(
+            self._backend(), check_result=self._blocked(),
+            extra_args=("--skip-host-network-check",))
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertEqual(bounced, [1])
+        self.assertIn("--force", result.output or "")  # the warning names the override
+
+    def test_plain_force_does_not_bypass_the_check(self):
+        """--force means 'restart even if the hash is unchanged'. If it also
+        waived this check, a routine re-apply would silently strand a box."""
+        result, bounced = self._run(
+            self._backend(), check_result=self._blocked(), extra_args=("--force",))
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertEqual(bounced, [])
+
+    def test_it_does_not_run_when_the_target_is_lagernet(self):
+        called = []
+        backend = self._backend(current_mode=None)
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
+             patch.object(box_config_cli, "_bounce_container_rc", return_value=0), \
+             patch.object(box_config_cli, "_confirm_box_api_up", return_value=(True, True)), \
+             patch("cli.commands.box._net_preflight.check",
+                   side_effect=lambda *a, **k: called.append(1) or self._clear()):
+            result = self.runner.invoke(
+                box_config_cli.box_config, ["apply", "--box", "test-box", "--yes"])
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertEqual(called, [], "no host switch, no need to probe the box")
+
+    def test_it_does_not_re_run_on_a_box_already_on_host(self):
+        """Already on host means the cost was already paid; re-probing every
+        apply would add an SSH round trip to routine work."""
+        called = []
+        backend = self._backend(current_mode="host", applied_mode="host")
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
+             patch.object(box_config_cli, "_bounce_container_rc", return_value=0), \
+             patch.object(box_config_cli, "_confirm_box_api_up", return_value=(True, True)), \
+             patch("cli.commands.box._net_preflight.check",
+                   side_effect=lambda *a, **k: called.append(1) or self._clear()):
+            result = self.runner.invoke(
+                box_config_cli.box_config, ["apply", "--box", "test-box", "--yes"])
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertEqual(called, [])
+
+
+class ApplyExitCodes(unittest.TestCase):
+    """start_box.sh has always separated "up but running the previous config"
+    from "the bounce failed", but apply collapsed both into exit 1, so no
+    caller could tell them apart. Hardware validation hit the reverse of this
+    too: exit 1 for a bounce that succeeded and a config that applied."""
+
+    def setUp(self):
+        self.runner = CliRunner()
+
+    def _run(self, bounce_rc):
+        backend = FakeBoxBackend({
+            "validate": [{"ok": True, "errors": [], "exists": True}],
+            "hash": [{"hash": "aaa"}],
+            "applied-hash": [{"hash": "bbb"}],
+            "show": [{"version": 1, "apt_packages": [], "sysctl": {}, "mounts": []}],
+            "applied-show": [{"version": 1, "apt_packages": [], "sysctl": {}, "mounts": []}],
+            "set-applied-hash": [{"ok": True}],
+        })
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
+             patch.object(box_config_cli, "_bounce_container_rc", return_value=bounce_rc), \
+             patch.object(box_config_cli, "_confirm_box_api_up", return_value=(True, True)), \
+             patch.object(box_config_cli, "_attempt_rollback", return_value=False):
+            return self.runner.invoke(
+                box_config_cli.box_config, ["apply", "--box", "test-box", "--yes"])
+
+    def test_success_exits_zero(self):
+        self.assertEqual(self._run(box_config_cli._BOUNCE_OK).exit_code, 0)
+
+    def test_config_not_applied_exits_three(self):
+        r = self._run(box_config_cli._BOUNCE_CONFIG_NOT_APPLIED)
+        self.assertEqual(r.exit_code, 3, msg=r.output)
+
+    def test_a_failed_bounce_exits_one(self):
+        r = self._run(box_config_cli._BOUNCE_FAILED)
+        self.assertEqual(r.exit_code, 1, msg=r.output)
+
+
+class ApplyStampsTheHashWhenOnlyHttpIsBlocked(unittest.TestCase):
+    """The observed trap: the bounce succeeded and the config applied, but the
+    readiness probe reached :5000 over the network -- which host mode had just
+    closed -- so apply reported failure and never stamped the applied-hash.
+    Without the stamp, every later apply re-bounces the container forever."""
+
+    def setUp(self):
+        self.runner = CliRunner()
+
+    def _run(self, api_state):
+        backend = FakeBoxBackend({
+            "validate": [{"ok": True, "errors": [], "exists": True}],
+            "hash": [{"hash": "aaa"}],
+            "applied-hash": [{"hash": "bbb"}],
+            "show": [{"version": 1, "apt_packages": [], "sysctl": {}, "mounts": [],
+                      "network_mode": "host"}],
+            "applied-show": [{"version": 1, "apt_packages": [], "sysctl": {},
+                              "mounts": [], "network_mode": "host"}],
+            "set-applied-hash": [{"ok": True}],
+        })
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
+             patch.object(box_config_cli, "_bounce_container_rc", return_value=0), \
+             patch.object(box_config_cli, "_confirm_box_api_up", return_value=api_state):
+            result = self.runner.invoke(
+                box_config_cli.box_config, ["apply", "--box", "test-box", "--yes"])
+        return result, [c[0] for c in backend.calls]
+
+    def test_up_but_unreachable_still_stamps_and_succeeds(self):
+        result, verbs_called = self._run((True, False))
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("set-applied-hash", verbs_called)
+
+    def test_it_says_plainly_that_the_box_is_unreachable_from_here(self):
+        result, _ = self._run((True, False))
+        self.assertIn("reachable from here", result.output)
+
+    def test_a_genuinely_dead_box_still_fails_and_does_not_stamp(self):
+        result, verbs_called = self._run((False, False))
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertNotIn("set-applied-hash", verbs_called)
+
+
+class ShimSshFallback(unittest.TestCase):
+    """Once host mode closes :5000, every box_config verb travels a dead route
+    -- including the ones that undo it. The recovery verbs fall back to SSH so a
+    stranded box stays fixable in band, rather than needing a hand-edited
+    config file over a manual SSH session."""
+
+    def _lager_error(self):
+        from cli.errors import LagerError
+        return LagerError("Timed out connecting to the box at 1.2.3.4.")
+
+    def test_it_falls_back_when_the_verb_opts_in(self):
+        with patch.object(box_config_cli, "run_python_internal_get_output",
+                          side_effect=self._lager_error()), \
+             patch.object(box_config_cli, "_run_box_config_over_ssh",
+                          return_value='{"ok": true}') as ssh:
+            out = box_config_cli._run_box_config_py(
+                None, "1.2.3.4", "network-mode-unset", allow_ssh_fallback=True)
+        self.assertEqual(out, '{"ok": true}')
+        ssh.assert_called_once()
+
+    def test_it_does_not_fall_back_by_default(self):
+        """An SSH attempt on every verb would make a genuinely unreachable box
+        pay an SSH timeout per call instead of failing fast."""
+        from cli.errors import LagerError
+        with patch.object(box_config_cli, "run_python_internal_get_output",
+                          side_effect=self._lager_error()), \
+             patch.object(box_config_cli, "_run_box_config_over_ssh") as ssh:
+            with self.assertRaises(LagerError):
+                box_config_cli._run_box_config_py(None, "1.2.3.4", "show")
+        ssh.assert_not_called()
+
+    def test_a_reachable_box_never_touches_ssh(self):
+        with patch.object(box_config_cli, "run_python_internal_get_output",
+                          return_value='{"ok": true}'), \
+             patch.object(box_config_cli, "_run_box_config_over_ssh") as ssh:
+            box_config_cli._run_box_config_py(
+                None, "1.2.3.4", "show", allow_ssh_fallback=True)
+        ssh.assert_not_called()
+
+    def test_the_ssh_transport_sends_the_shim_on_stdin(self):
+        seen = {}
+
+        def fake_runner(box_ip, cmd, *, stdin=None, timeout=None):
+            seen.update(box_ip=box_ip, cmd=cmd, stdin=stdin)
+            return 0, '{"ok": true}', ""
+
+        out = box_config_cli._run_box_config_over_ssh(
+            "1.2.3.4", "network-mode-set", '{"mode": "host"}', runner=fake_runner)
+        self.assertEqual(out, '{"ok": true}')
+        self.assertIn("docker exec -i lager python3 -", seen["cmd"])
+        self.assertIn("box_config_cli", seen["stdin"])
+        # The JSON payload must survive as one argument.
+        self.assertIn("'{\"mode\": \"host\"}'", seen["cmd"])
+
+    def test_a_failing_ssh_transport_raises_rather_than_returning_junk(self):
+        from cli.errors import LagerError
+
+        def fake_runner(box_ip, cmd, *, stdin=None, timeout=None):
+            return 255, "", "ssh: connect to host 1.2.3.4 port 22: No route to host"
+
+        with self.assertRaises(LagerError):
+            box_config_cli._run_box_config_over_ssh(
+                "1.2.3.4", "show", runner=fake_runner)
+
+
+class BoxSideReadinessProbe(unittest.TestCase):
+    """After a bounce, `apply` has to tell "the container is down" from "I
+    cannot see it from here" -- host networking closes the second while leaving
+    the first fine. Getting that wrong skipped the applied-hash and left every
+    later apply re-bouncing the container."""
+
+    def test_it_probes_inside_the_container(self):
+        """Not the host's port. On a box fronted by a gateway the host's :5000
+        belongs to the gateway, which denies an unauthenticated probe -- so a
+        host-side check reports a healthy container as down. Measured on a real
+        box before this was changed."""
+        seen = {}
+
+        def fake_runner(box_ip, cmd, *, stdin=None, timeout=None):
+            seen.update(cmd=cmd, stdin=stdin)
+            return 0, "", ""
+
+        self.assertTrue(
+            box_config_cli._box_api_responding_over_ssh("1.2.3.4", runner=fake_runner))
+        self.assertIn("docker exec -i lager", seen["cmd"])
+        self.assertIn("127.0.0.1", seen["stdin"])
+
+    def test_a_non_zero_probe_reads_as_down(self):
+        self.assertFalse(box_config_cli._box_api_responding_over_ssh(
+            "1.2.3.4", runner=lambda *a, **k: (1, "", "")))
+
+    def test_a_transport_explosion_reads_as_down_not_a_traceback(self):
+        def boom(*a, **k):
+            raise OSError("ssh vanished")
+        self.assertFalse(
+            box_config_cli._box_api_responding_over_ssh("1.2.3.4", runner=boom))
+
+    def test_prefer_ssh_skips_the_http_poll_entirely(self):
+        """Polling HTTP first would burn the full 30s deadline on exactly the
+        configuration expected to close it."""
+        with patch.object(box_config_cli, "_wait_for_box_api") as waiter, \
+             patch.object(box_config_cli, "_box_api_responding_over_ssh",
+                          return_value=True), \
+             patch.object(box_config_cli, "_box_api_responding", return_value=False):
+            up, over_http = box_config_cli._confirm_box_api_up(
+                "1.2.3.4", prefer_ssh=True)
+        self.assertEqual((up, over_http), (True, False))
+        waiter.assert_not_called()
+
+    def test_the_normal_path_still_prefers_http(self):
+        with patch.object(box_config_cli, "_wait_for_box_api", return_value=True), \
+             patch.object(box_config_cli, "_box_api_responding_over_ssh") as ssh:
+            self.assertEqual(
+                box_config_cli._confirm_box_api_up("1.2.3.4"), (True, True))
+        ssh.assert_not_called()
+
+    def test_http_failure_falls_through_to_the_box(self):
+        with patch.object(box_config_cli, "_wait_for_box_api", return_value=False), \
+             patch.object(box_config_cli, "_box_api_responding_over_ssh",
+                          return_value=True):
+            self.assertEqual(
+                box_config_cli._confirm_box_api_up("1.2.3.4"), (True, False))
+
+
+class NetworkModeDiff(unittest.TestCase):
+    """`diff` / `apply`'s preview treat network_mode as a scalar. Every other
+    first-class field is a collection, so this is the one field going through
+    _diff_scalar rather than the list/dict/keyed-list differs."""
+
+    def test_a_mode_change_reads_as_a_single_transition(self):
+        d = box_config_cli._compute_diff(
+            {"version": 1, "network_mode": "host"}, {"version": 1})
+        self.assertFalse(box_config_cli._diff_is_empty(d))
+        self.assertEqual(d["network_mode"]["changed"],
+                         [{"from": "lagernet", "to": "host"}])
+
+    def test_unset_reads_as_the_reverse_transition(self):
+        d = box_config_cli._compute_diff(
+            {"version": 1}, {"version": 1, "network_mode": "host"})
+        self.assertEqual(d["network_mode"]["changed"],
+                         [{"from": "host", "to": "lagernet"}])
+
+    def test_absent_and_explicit_default_are_the_same_state(self):
+        """The box omits the key at its default. Without coercing both sides to
+        the default, `apply` would offer to change lagernet to lagernet."""
+        d = box_config_cli._compute_diff(
+            {"version": 1, "network_mode": "lagernet"}, {"version": 1})
+        self.assertTrue(box_config_cli._diff_is_empty(d))
+
+    def test_no_snapshot_at_all_is_not_a_change(self):
+        d = box_config_cli._compute_diff({"version": 1}, None)
+        self.assertEqual(d["network_mode"]["changed"], [])
+
+    def test_it_renders_without_a_formatter_lookup_error(self):
+        """_print_diff_human derives formatters from the collection registry;
+        a scalar absent from that map would raise KeyError mid-diff."""
+        d = box_config_cli._compute_diff(
+            {"version": 1, "network_mode": "host"}, {"version": 1})
+        import contextlib
+        import io as _io
+        buf = _io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            box_config_cli._print_diff_human(d)
+        rendered = buf.getvalue()
+        self.assertIn("Container network", rendered)
+        self.assertIn("lagernet -> host", rendered)
 
 
 class FieldRegistrySync(unittest.TestCase):
