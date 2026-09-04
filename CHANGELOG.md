@@ -8,6 +8,8 @@ All notable changes to the Lager platform are documented here. For detailed rele
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+## [0.46.0] - 2026-09-04
+
 ### Added
 
 - **`lager uart --sessions` and `lager uart <net> --force`.** A held UART net

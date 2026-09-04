@@ -1,0 +1,133 @@
+---
+title: "Version 0.46.0"
+description: "September 4, 2026"
+---
+
+## <u>Upgrade Notes</u>
+
+- **The box now serves net and box metadata over HTTP, and the control plane
+  starts syncing it.** The control plane has had its half of this since May. It
+  gates each push on two capability flags, and nothing advertised them, so it
+  skipped every push in silence. A description typed into the dashboard went to
+  its own database and no further, and `lager nets describe` on the box stayed
+  invisible to it. Update your boxes to turn the sync on. After the update, a
+  description written on either side reaches the other.
+
+- **The endpoint rejects the pre-0.24.0 field names.** A client that sends
+  `description`, `dut_connection` or `test_hints` gets an error rather than a
+  stored key that nothing reads back. Send `purpose`, `notes` and `tags`, the
+  fields `lager nets describe` writes and the MCP server reads.
+
+- **`lager usb <net> cycle` now waits for the device to come back.** It used to
+  return as soon as power returned. It now confirms re-enumeration from the USB
+  topology, so a successful cycle takes up to five seconds longer. A script that
+  assumed an instant return will run slower and will not break.
+
+- **A U3 DAC refuses an out-of-range value.** The range is 0.04 V to 4.95 V, not
+  0 V to 5 V. The hardware used to clamp such a value in silence. Code that
+  relied on that clamp must send a value inside the range.
+
+## <u>Features</u>
+
+- **`lager adc`, `dac`, `gpi` and `gpo` work against a LabJack U3.** The box
+  drives the T-series through LJM, which does not support the U3 at all, so this
+  is a second driver stack: the Exodriver plus LabJackPython's `u3` module. The
+  T7 path is untouched and the two families share a box. Validated on a U3-HV
+  with both DACs looped back to analog inputs: all 16 analog channels, all 16
+  usable digital lines, and both DACs linear to within 20 mV. SPI and I2C are
+  not supported on the U3, and `lager instruments` advertises only the roles
+  that have a driver behind them.
+
+- **`lager uart --sessions` and `lager uart <net> --force`.** A held UART net had
+  no recovery path. `--sessions` lists which nets are held and whether each
+  holder is still connected. `--force` releases the holder before it connects.
+  The "already in use" error now names the take-over command.
+
+## <u>Bug Fixes</u>
+
+- **A UART net stayed held forever, and only a container restart freed it.**
+  The box reclaimed a session by asking whether its read loop still made
+  progress. The loop writes that heartbeat itself, so it proves the loop
+  iterates, never that anyone still listens. The read loop now asks whether its
+  client is still connected and exits on the first iteration where it is not.
+
+- **`lager usb <net> cycle` reported "no device on this port" on ports that had
+  one.** Only one of the three hub drivers observed re-enumeration. On an
+  Acroname or YKUSH hub that message printed every time, whatever was plugged
+  in. During a hardware fault a false "no device here" points the
+  investigation at the device rather than at the tool. The verdict now comes
+  from the kernel's USB topology, so every driver reports a real answer. A box
+  that cannot read its own topology says that instead.
+
+- **`lager logic <net> trigger spi` failed with `Function not found:
+  get_trigger_spi_width`.** The mapper called a name that no driver defined.
+  The whole SPI trigger surface behind it was missing the same way, and all of
+  it is now implemented. Every query was confirmed against an MSO5074, because
+  this instrument accepts some queries that it never answers.
+
+- **`setup_battery(soc=0)` set nothing and reported nothing.** A state of charge
+  of 0 is falsy, and a truthiness test discarded it before the instrument saw
+  it. There was no exception and no log line. 0 is the interesting end of the
+  range for a discharge test.
+
+- **A LabJack that is not a T7 no longer lands on the T7's code paths.**
+
+- **`DebugNet.flash()` and `.erase()` take the DA1469x flash-loader path.** The
+  CLI took it and the Python Net API did not, so the same operation worked one
+  way and failed the other.
+
+- **The `authorized_keys` probe withdrew the operator's own SSH identities.** It
+  failed to answer for the boxes it exists to repair, and both callers read that
+  silence as success.
+
+- **A box without a pigpio container gets the default pigpio address.**
+
+- **Editing a net in the Net-Manager TUI no longer discards the rest of the
+  record.**
+
+## <u>Improvements</u>
+
+- A second role on a dual-role instrument is a notice rather than a block. One
+  battery net and one supply net on the same chip is a supported setup.
+- The bench watchdog reports a late night instead of filing an issue about it.
+- The supply suite prints its bench-fixture note on a failure, not on a pass.
+
+## <u>Known Limitations</u>
+
+- **`setup_battery(soc=0)` is not confirmed on hardware.** The Keithley 2281S
+  used for this work has AC power and never appears on the USB bus, so
+  `:BATTery:SIMulator:SOC 0` is unverified on a real instrument. The unit tests
+  cover the code path, and the driver already handled 0 correctly.
+
+- **The MSO5000 SPI trigger surface is not confirmed end to end.** Every SCPI
+  node was verified against an MSO5074, but the logic-analyzer suite was not run
+  against the merged code.
+
+- **SPI and I2C are not supported on the LabJack U3.** The T7 drives both
+  through firmware registers that the U3 does not have.
+
+- **LJM fails outright when a U3 is present.** Asked for device type `"ANY"` it
+  returns `LJME_U3_NOT_SUPPORTED_BY_LJM` rather than skipping the device it does
+  not support. Every T7 path in Lager names the device type explicitly and is
+  unaffected. Your own code that calls `ljm.openS("ANY", ...)` or
+  `ljm.listAllS("ANY", ...)` will stop working once you plug in a U3.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.46.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli==0.46.0
+```
+
+Then update your boxes:
+
+```bash
+lager update --box <box-name>
+```
