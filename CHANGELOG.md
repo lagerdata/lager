@@ -79,6 +79,36 @@ All notable changes to the Lager platform are documented here. For detailed rele
   reading one reports the value this process last wrote and errors if there
   is none -- reporting 0 V would be indistinguishable from a real measurement.
 
+  Validated on a U3-HV (firmware 1.24) with DAC0 looped back to AIN0, DAC1 to
+  AIN1 and FIO4 to FIO5: all 16 AIN channels, all 16 usable DIO, both DACs
+  linear to within 20 mV across the full range, and the whole CLI path from
+  `lager dac` through to `lager adc` reading the result back over the jumper.
+  Two defects that only hardware could show were fixed in the process:
+
+  - **The pin mux is written with `configIO`, not `configU3`.** They are
+    different state -- `configU3` carries the power-up defaults, `configIO`
+    the live mux -- and a mask written to `configU3` is accepted, reads back
+    through `configU3` as though it worked, and leaves the pin in its old
+    mode. Every flexible channel (`AIN4`-`AIN15`) failed with
+    `PIN_CONFIGURED_FOR_DIGITAL`, and the memo then cached the ineffective
+    write so the retry never happened.
+  - **One device is one cache entry however it is named.** Entries are keyed
+    by the serial the device reports, not the one the caller asked for. A U3
+    reports no USB serial, so the scanner writes an empty serial slot and its
+    nets resolve to "first found", while a record carrying the real serial
+    names the same device a second way. Keying on the request made those two
+    entries, and the second open then raced the claim the process already
+    held and failed outright, in both orders, until `close_all`.
+    A `None` request means "first found", which names one specific device
+    rather than any device, so a box with two U3s still opens the free one
+    instead of binding a serial-less net to whichever device another net
+    happened to open.
+
+  Both are covered by tests that fail if the fix is reverted. The `u3` test
+  double now models `configU3` and `configIO` as separate state and raises
+  `PIN_CONFIGURED_FOR_DIGITAL` for a flexible channel left digital -- without
+  that split the whole suite passed with the mux bug in place.
+
 ### Changed
 
 - **A second role on a dual-role instrument is now a notice, not a block.**
