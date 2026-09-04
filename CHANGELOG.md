@@ -83,20 +83,33 @@ All notable changes to the Lager platform are documented here. For detailed rele
   and refuses when the switch would cut the operator off.** It reads the
   interface the operator's own connection arrives on -- from the live SSH
   connection, so it holds for any VPN rather than only the one the firewall
-  script knows by name -- confirms the control-plane ports are admitted there,
-  and prints the exact per-interface `ufw allow` command when they are not. It
-  never opens a port itself: whether Lager's control plane belongs on a LAN is
-  a security decision, not a side effect of a Bluetooth feature. It also
-  refuses on a box fronted by a port-publishing gateway, where the container
-  would bind ports the gateway already holds and fail to start. A refused
-  apply changes nothing; `--skip-host-network-check` overrides it.
+  script knows by name -- and confirms the control-plane ports are admitted
+  there. It never opens a port itself: whether Lager's control plane belongs on
+  a LAN is a security decision, not a side effect of a Bluetooth feature. A
+  refused apply changes nothing; `--skip-host-network-check` overrides it.
 
-  The recovery path is in-band. `network-mode set|show|unset` and the
-  post-bounce steps of `apply` fall back to SSH when the HTTP path cannot reach
-  the box, and the post-bounce readiness check asks the box on loopback rather
-  than over a route the switch may just have closed. Without that last part the
-  applied-hash was never stamped, and every later `apply` re-bounced the
-  container indefinitely.
+  The commands it prints use `ufw insert`, not a plain `ufw allow`.
+  `secure_box_firewall.sh` writes its per-interface allows first and a blanket
+  `deny <port>/tcp` last, and ufw matches the first rule that applies, so an
+  appended allow sits behind that deny and never takes effect. Position 1 is
+  ahead of it whatever else the box carries. Each insert is preceded by a
+  delete, because ufw skips a rule it already holds and would otherwise
+  silently no-op for anyone who had already tried appending one.
+
+  It also refuses on a box fronted by a port-publishing gateway, where the
+  container would bind ports the gateway already holds and fail to start. A
+  port counts as taken only when something other than the lager container holds
+  it: the container publishes 5000 and 9000 on any ordinary box, and `apply`
+  stops it before starting the replacement, so its own ports are not a
+  conflict.
+
+  The recovery path is in-band. `network-mode set|show|unset` and every step of
+  `apply` fall back to SSH when the HTTP path cannot reach the box, so a box
+  that has already been switched can still be switched back. The post-bounce
+  readiness check asks the box from inside the container rather than over a
+  route the switch may just have closed, and polls for the same deadline the
+  network check uses. Without those the applied-hash was never stamped, and
+  every later `apply` re-bounced the container indefinitely.
 
   The default is unchanged, and the setting is stored so that it does not
   disturb boxes that never use it: a config sitting at the default writes no

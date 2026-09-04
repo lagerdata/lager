@@ -1294,7 +1294,8 @@ def _apply_one(
     multiple targets and continue past a failure on one box, reporting the
     aggregate at the end instead of bailing on the first error.
     """
-    raw = _run_box_config_py(ctx, resolved, verbs.VALIDATE)
+    raw = _run_box_config_py(ctx, resolved, verbs.VALIDATE,
+                                        allow_ssh_fallback=True)
     payload = _parse_response(raw, ctx)
     if not payload.get("exists", True):
         click.secho(
@@ -1307,9 +1308,11 @@ def _apply_one(
         _print_errors(payload.get("errors") or [])
         return _APPLY_FAILED
 
-    raw = _run_box_config_py(ctx, resolved, verbs.HASH)
+    raw = _run_box_config_py(ctx, resolved, verbs.HASH,
+                                        allow_ssh_fallback=True)
     cur_hash = _parse_response(raw, ctx).get("hash")
-    raw = _run_box_config_py(ctx, resolved, verbs.APPLIED_HASH)
+    raw = _run_box_config_py(ctx, resolved, verbs.APPLIED_HASH,
+                                        allow_ssh_fallback=True)
     applied_hash = _parse_response(raw, ctx).get("hash")
 
     unchanged = cur_hash and applied_hash and cur_hash == applied_hash
@@ -1318,8 +1321,10 @@ def _apply_one(
         # Read-only preview: no preflight (which mkdirs/chowns), no apt/sysctl,
         # no bounce, no set-applied-hash. Same `show`/`applied-show` round-trips
         # the `diff` command uses.
-        current = _parse_response(_run_box_config_py(ctx, resolved, verbs.SHOW), ctx) or {}
-        applied = _parse_response(_run_box_config_py(ctx, resolved, verbs.APPLIED_SHOW), ctx)
+        current = _parse_response(_run_box_config_py(ctx, resolved, verbs.SHOW,
+                                        allow_ssh_fallback=True), ctx) or {}
+        applied = _parse_response(_run_box_config_py(ctx, resolved, verbs.APPLIED_SHOW,
+                                        allow_ssh_fallback=True), ctx)
         diff = _compute_diff(current, applied)
         if _diff_is_empty(diff):
             click.secho(
@@ -1342,7 +1347,8 @@ def _apply_one(
     if skip_restart:
         # No mount pre-flight here: mounts only take effect at the container
         # restart this flag skips, and the eventual full apply re-checks them.
-        _run_box_config_py(ctx, resolved, verbs.SET_APPLIED_HASH, cur_hash)
+        _run_box_config_py(ctx, resolved, verbs.SET_APPLIED_HASH, cur_hash,
+                           allow_ssh_fallback=True)
         click.secho("Config validated; restart skipped (--skip-restart).", fg="yellow")
         return _APPLY_OK
 
@@ -1350,9 +1356,11 @@ def _apply_one(
     # apt packages may be needed by services the container talks to, and
     # sysctl values must be in place so first-packet routing works the
     # moment the container comes up.
-    current_show = _parse_response(_run_box_config_py(ctx, resolved, verbs.SHOW), ctx) or {}
+    current_show = _parse_response(_run_box_config_py(ctx, resolved, verbs.SHOW,
+                                        allow_ssh_fallback=True), ctx) or {}
     applied_snapshot = _parse_response(
-        _run_box_config_py(ctx, resolved, verbs.APPLIED_SHOW), ctx
+        _run_box_config_py(ctx, resolved, verbs.APPLIED_SHOW,
+                                        allow_ssh_fallback=True), ctx
     )
 
     # Host networking is the one setting that can sever the route this command
@@ -1362,7 +1370,7 @@ def _apply_one(
     if current_show.get("network_mode") == "host" and (
             (applied_snapshot or {}).get("network_mode") != "host"):
         if not _preflight_host_networking(
-                resolved, force=skip_host_network_check):
+                resolved, skip_check=skip_host_network_check):
             return _APPLY_FAILED
 
     if not yes:
@@ -1449,11 +1457,11 @@ def _apply_one(
     api_up, api_over_http = _confirm_box_api_up(resolved, prefer_ssh=going_to_host)
     if not api_up:
         click.secho(
-            f"Container restarted but the box API didn't come up within "
-            f"{_API_READY_DEADLINE_SECONDS}s, and it does not answer on loopback "
-            "on the box either; not updating applied-hash. The bounce succeeded, "
-            "but next `apply` will re-bounce unnecessarily. Check `lager hello` "
-            "and the container logs.",
+            f"Container restarted but the box API did not answer within "
+            f"{_API_READY_DEADLINE_SECONDS}s, either from here or from inside "
+            "the container on the box; not updating applied-hash. The bounce "
+            "succeeded, but next `apply` will re-bounce unnecessarily. Check "
+            "`lager hello` and the container logs.",
             fg="yellow",
             err=True,
         )
@@ -1487,7 +1495,10 @@ def _apply_one(
     return _APPLY_OK
 
 
-def _preflight_host_networking(resolved_box: str, *, force: bool = False) -> bool:
+# Named for the flag that actually reaches it. Calling this `force` is what
+# produced two user-facing messages naming `--force`, which is a different flag
+# ("restart even if unchanged") and is not wired to this check at all.
+def _preflight_host_networking(resolved_box: str, *, skip_check: bool = False) -> bool:
     """Refuse an apply that would strand the box. True to proceed.
 
     Prints remediation rather than running it. Opening a Lager port to a LAN is
@@ -1510,10 +1521,10 @@ def _preflight_host_networking(resolved_box: str, *, force: bool = False) -> boo
                 "was checked; other Lager ports were not.",
                 fg="yellow", err=True)
         return True
-    if force:
+    if skip_check:
         click.secho(
-            "Proceeding with --force despite host-networking pre-flight failures:",
-            fg="yellow", err=True)
+            "Proceeding with --skip-host-network-check despite host-networking "
+            "pre-flight failures:", fg="yellow", err=True)
         for b in result.blockers:
             click.secho(f"  - {b}", fg="yellow", err=True)
         return True
@@ -1527,11 +1538,15 @@ def _preflight_host_networking(resolved_box: str, *, force: bool = False) -> boo
         click.secho("Run these on the box, then re-run apply:", bold=True, err=True)
         for cmd in result.remediation:
             click.echo(f"  {cmd}", err=True)
+    if result.notes:
+        click.echo()
+        for note in result.notes:
+            click.secho(f"  {note}", err=True)
     click.echo()
     click.secho(
         "Nothing was changed. To go back, run "
         "`lager box-config network-mode unset`. To override this check, re-run "
-        "with --force.",
+        "with --skip-host-network-check.",
         err=True)
     return False
 
@@ -1940,13 +1955,21 @@ def _confirm_box_api_up(box_ip: str, *, prefer_ssh: bool = False, runner=None):
     the full deadline every time on exactly the configuration that is expected
     to close it.
     """
+    # Poll, do not single-shot. The HTTP path gets the full deadline via
+    # _wait_for_box_api; giving the box-side probe one attempt immediately after
+    # the bounce measured the container while its Python service was still
+    # starting, and reported a healthy box as dead. Same loop, same deadline,
+    # different probe -- _wait_for_box_api already takes one.
+    def _ssh_probe(ip):
+        return _box_api_responding_over_ssh(ip, runner=runner)
+
     if prefer_ssh:
-        if _box_api_responding_over_ssh(box_ip, runner=runner):
+        if _wait_for_box_api(box_ip, is_responding=_ssh_probe):
             return True, _box_api_responding(box_ip)
         return False, False
     if _wait_for_box_api(box_ip):
         return True, True
-    return _box_api_responding_over_ssh(box_ip, runner=runner), False
+    return _wait_for_box_api(box_ip, is_responding=_ssh_probe), False
 
 
 _BOUNCE_TIMEOUT_SECONDS = 900
