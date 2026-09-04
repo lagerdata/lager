@@ -219,11 +219,11 @@ print(output)
 STM32 `0x08000000`, nRF52 `0x00000000`, DA1469x QSPI `0x16000000`.
 
 **DA1469x on OpenOCD:** mainline OpenOCD has no flash driver for the DA1469x's
-external QSPI, so on that family `flash()` and `erase()` drive the RAM-resident
-flash_loader instead -- the same path `lager debug <net> flash` takes. Pass the
+external QSPI. On that family, `flash()` and `erase()` drive the RAM-resident
+flash_loader instead, the same path `lager debug <net> flash` takes. Pass the
 absolute XIP address (`0x16000000`), exactly as on J-Link. The loader artefacts
-must be on the box under
-`/home/www-data/customer-binaries/openocd/flash-loaders/da1469x/`; a missing
+live on the box under
+`/home/www-data/customer-binaries/openocd/flash-loaders/da1469x/`. A missing
 loader raises rather than falling back to OpenOCD's `program`, which cannot
 reach QSPI.
 
