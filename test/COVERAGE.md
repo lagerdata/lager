@@ -760,10 +760,10 @@ and runs on a box via `lager python`. None of them run in the PR gate.
   `test_gpio_aardvark_api.py`.
 - Also `test_io_comprehensive.py`, `test_pin_conflict.py`, `test_pwm_measurement.py`,
   `test_LabJack_T7.py` (11-group suite), and `test_usb202.py` (MCC USB-202 DAQ).
-- `test_LabJack_U3.py` (LabJack UD-series over the Exodriver). Unlike the others it
-  needs no box and no saved nets -- it drives the U3 directly -- so it also runs
-  standalone on any machine with the device attached. Checks written from
-  LabJackPython's source rather than observed behaviour are labelled INFERRED.
+- `test_LabJack_U3.py` (LabJack UD-series over the Exodriver). It needs no box and
+  no saved nets. It drives the U3 directly, so it also runs standalone on any
+  machine with the device attached. Checks written from LabJackPython's source
+  rather than observed behavior are labelled INFERRED.
 
 #### Sensors (9 files)
 
