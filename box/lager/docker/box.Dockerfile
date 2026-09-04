@@ -116,8 +116,15 @@ RUN apt-get update && apt-get install -y unzip && rm -rf /var/lib/apt/lists/* \
 # box/udev_rules/99-instrument.rules) and a way for the build to fail.
 # The assertion is a glob because the Makefile installs a versioned
 # liblabjackusb.so.<major>.<minor>.<patch> plus symlinks, not a bare .so.
+#
+# Pinned to a tag, like the LJM installer above pins a dated artifact. An
+# unpinned clone takes whatever the default branch holds at build time, so two
+# boxes built a week apart get different driver code with no record of it --
+# and upstream's default branch is currently ahead of its newest tag, which
+# means the version string would keep reading 2.7.0 while the code moved.
+# Bump this deliberately.
 # See: https://support.labjack.com/docs/exodriver-downloads-for-ud-series-linux-and-macos-
-RUN git clone --depth 1 https://github.com/labjack/exodriver.git /tmp/exodriver \
+RUN git clone --depth 1 --branch v2.7.0 https://github.com/labjack/exodriver.git /tmp/exodriver \
 	&& cd /tmp/exodriver/liblabjackusb \
 	&& make \
 	&& make install \

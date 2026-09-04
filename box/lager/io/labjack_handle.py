@@ -183,7 +183,14 @@ class LabJackHandleManager:
         Get a LabJack handle, opening the device if necessary.
 
         Args:
-            device_type: LabJack device type (default "T7")
+            device_type: LabJack device type. Keep this "T7" (or another
+                explicit T-series type) and do NOT widen it to "ANY". LJM
+                refuses to enumerate at all while a U3 is attached to the
+                same box -- `ljm.openS("ANY", ...)` and `ljm.listAllS("ANY",
+                ...)` both fail with LJME_U3_NOT_SUPPORTED_BY_LJM (1243),
+                because LJM does not support the UD series and will not skip
+                past it. Naming the type explicitly is what keeps a mixed
+                T7 + U3 bench working; every caller here relies on that.
             connection: Connection type ("ANY", "USB", "ETHERNET", "WIFI")
             identifier: Device identifier ("ANY" or specific serial/IP)
             max_retries: Maximum number of retry attempts for opening
@@ -353,7 +360,10 @@ def get_labjack_handle(device_type: str = "T7", connection: str = "ANY",
     Get a LabJack handle from the global manager.
 
     Args:
-        device_type: LabJack device type (default "T7")
+        device_type: LabJack device type. Keep this "T7" -- widening it to
+            "ANY" breaks every box that also has a U3 attached, because LJM
+            fails with LJME_U3_NOT_SUPPORTED_BY_LJM (1243) rather than
+            skipping the device it does not support. See get_handle.
         connection: Connection type ("ANY", "USB", "ETHERNET", "WIFI")
         identifier: Device identifier ("ANY" or specific serial/IP)
 
