@@ -48,7 +48,10 @@ CONTROL_PLANE_PORTS = (5000, 9000)
 
 # Emitted on the box; prints one JSON object. python3 is always present (the
 # container image is python-based and the host runs the deploy scripts with it).
-_PROBE = r"""
+# The container whose published ports are its own and therefore not a conflict.
+LAGER_CONTAINER = "lager"
+
+_PROBE_TEMPLATE = r"""
 import json, os, subprocess
 
 def sh(cmd, timeout=10):
@@ -87,6 +90,18 @@ if out["ufw_present"]:
 
 out["no_publish"] = os.path.exists("/etc/lager/no_publish")
 
+# Which container, if any, publishes each control port. A port the lager
+# container publishes itself is NOT a conflict: apply stops the old container
+# before starting the new one, so that port is about to be freed. Without this
+# attribution the check fires on every normal box, because docker-proxy binds
+# 5000 and 9000 there as a matter of course.
+out["publishers"] = {}
+for _p in __PORTS__:
+    rc, so, _ = sh("docker ps --filter publish=%d --format '{{.Names}}'" % _p)
+    out["publishers"][str(_p)] = (
+        [n.strip() for n in so.splitlines() if n.strip()] if rc == 0 else []
+    )
+
 # Host ports already bound. Under host networking the container binds these
 # itself, so anything already here is a collision.
 bound = set()
@@ -108,6 +123,10 @@ print(json.dumps(out))
 """
 
 
+def _probe_source(ports=CONTROL_PLANE_PORTS) -> str:
+    return _PROBE_TEMPLATE.replace("__PORTS__", repr(list(ports)))
+
+
 class PreflightResult:
     """What the box reported, plus the verdict.
 
@@ -122,6 +141,11 @@ class PreflightResult:
         self.error = error
         self.blockers: List[str] = []
         self.remediation: List[str] = []
+        # Advice that is not a pasteable command. A gateway conflict cannot be
+        # fixed by a firewall rule, but the operator still needs to be told what
+        # their options are -- a blocker with no way forward is what pushes
+        # people onto the override flag.
+        self.notes: List[str] = []
 
     @property
     def ok(self) -> bool:
@@ -132,13 +156,15 @@ class PreflightResult:
         return self.data.get("iface") or ""
 
 
-def probe(box_ip: str, *, runner=None, timeout: int = 30) -> PreflightResult:
+def probe(box_ip: str, *, runner=None, timeout: int = 30,
+          ports=CONTROL_PLANE_PORTS) -> PreflightResult:
     """Gather the box-side facts. Never raises."""
     from ._ssh import default_ssh_runner
 
     run = runner or default_ssh_runner
     try:
-        rc, stdout, stderr = run(box_ip, "python3 -", stdin=_PROBE, timeout=timeout)
+        rc, stdout, stderr = run(box_ip, "python3 -",
+                                 stdin=_probe_source(ports), timeout=timeout)
     except Exception as e:  # transport blew up in a way the runner didn't map
         return PreflightResult(False, error=str(e))
     if rc != 0:
@@ -186,11 +212,25 @@ def evaluate(result: PreflightResult, *, ports=CONTROL_PLANE_PORTS) -> Preflight
 
     d = result.data
 
-    # 1. A publishing gateway already owns the ports.
-    collisions = [p for p in ports if p in set(d.get("bound_ports") or [])]
+    # 1. Something other than the lager container already owns the ports.
+    bound = set(d.get("bound_ports") or [])
+    publishers = d.get("publishers") or {}
+    collisions = []
+    for port in ports:
+        if port not in bound:
+            continue
+        owners = publishers.get(str(port)) or []
+        if owners and all(o == LAGER_CONTAINER for o in owners):
+            # Our own published port. `apply` stops this container before
+            # starting the replacement, so the port is about to be freed --
+            # treating it as taken refuses every normal box.
+            continue
+        collisions.append(port)
+
     if d.get("no_publish") or collisions:
         detail = (
-            f"ports already bound on the host: {', '.join(str(p) for p in collisions)}"
+            "ports held by something else: "
+            + ", ".join(str(p) for p in collisions)
             if collisions else "/etc/lager/no_publish is set"
         )
         result.blockers.append(
@@ -198,6 +238,10 @@ def evaluate(result: PreflightResult, *, ports=CONTROL_PLANE_PORTS) -> Preflight
             f"({detail}). On host networking the lager container binds those "
             "ports itself and will fail to start. Host mode and a publishing "
             "gateway cannot both own the same ports."
+        )
+        result.notes.append(
+            "No firewall rule fixes this. Either leave this box on lagernet, or "
+            "move the gateway off the Lager ports first."
         )
 
     # 2. The firewall cuts the operator's own route.
@@ -223,11 +267,32 @@ def evaluate(result: PreflightResult, *, ports=CONTROL_PLANE_PORTS) -> Preflight
                     "ports bypass ufw; host networking does not, so applying this "
                     "cuts your own route to the box."
                 )
-                result.remediation = [
-                    f'sudo ufw allow in on {iface} to any port {p} proto tcp '
-                    f'comment "Lager service ({iface})"'
-                    for p in missing
-                ]
+                # `insert 1`, not a plain allow. secure_box_firewall.sh writes
+                # its per-interface allows first and a blanket `deny <port>/tcp`
+                # last, and ufw is first-match -- so an APPENDED allow lands
+                # after that deny and does nothing. Measured: identical rule
+                # content at position 14 blocked, at position 10 reachable.
+                #
+                # Position 1 is ahead of the deny whatever else the box has, so
+                # these survive being pasted in any order; several inserts at 1
+                # just stack, all still ahead of the deny. The delete clears any
+                # earlier appended attempt, because ufw dedupes and would
+                # otherwise answer `Skipping inserting existing rule`.
+                result.remediation = []
+                for p in missing:
+                    result.remediation.append(
+                        f"sudo ufw --force delete allow in on {iface} "
+                        f"to any port {p} proto tcp"
+                    )
+                    result.remediation.append(
+                        f"sudo ufw insert 1 allow in on {iface} "
+                        f"to any port {p} proto tcp "
+                        f"comment 'Lager service ({iface})'"
+                    )
+                result.notes.append(
+                    "The delete lines report 'Could not delete non-existent rule' "
+                    "when there was no earlier attempt. That is expected."
+                )
     return result
 
 
