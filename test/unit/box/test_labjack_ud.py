@@ -97,9 +97,16 @@ class _DAC16(_Feedback):
 class _FakeU3:
     """Stands in for a u3.U3 device object.
 
-    Models the two behaviours the drivers depend on and nothing else: the
-    analog/digital bitmasks that configU3 reads and writes, and the Feedback
-    command queue.
+    Models the behaviours the drivers depend on and nothing else: the
+    analog/digital bitmasks, the Feedback command queue, and -- critically --
+    the fact that configU3 and configIO are DIFFERENT state.
+
+    configU3 carries the power-up defaults and the identity fields; configIO
+    carries the live pin mux that getAIN obeys. Keeping them separate here is
+    what lets these tests see a driver that configures the wrong one: such a
+    driver reads its own write back through configU3 and looks correct, while
+    the pin never moves and getAIN raises PIN_CONFIGURED_FOR_DIGITAL on real
+    hardware.
     """
 
     def __init__(self, serial=320012345, is_hv=True):
@@ -107,23 +114,54 @@ class _FakeU3:
         self.isHV = is_hv
         self.deviceName = "U3-HV" if is_hv else "U3-LV"
         # A U3-HV boots with FIO0-3 analog; a U3-LV boots all-digital.
+        # These are the LIVE masks (configIO).
         self.fio_analog = 0x0F if is_hv else 0x00
         self.eio_analog = 0x00
+        # The stored power-up defaults (configU3) start equal but move
+        # independently, exactly as they do on the device.
+        self.fio_analog_default = self.fio_analog
+        self.eio_analog_default = self.eio_analog
         self.opened_with = None
+        self.open_count = 0
         self.closed = False
-        self.config_writes = []
+        self.config_writes = []      # configIO writes -- the live mux
+        self.configu3_writes = []    # configU3 writes -- power-up defaults
         self.feedback_calls = []
         self.ain_values = {}
         self.dio_states = {}
 
     # -- lifecycle --
     def open(self, firstFound=True, serial=None, **kw):
+        # The Exodriver claims exclusively: opening a device this process
+        # already holds fails. Modelling that is what makes the first-found
+        # adoption path reachable in tests instead of silently succeeding.
+        if self.open_count and not self.closed:
+            raise RuntimeError(
+                "Couldn't open device. Device access or claim error.")
         self.opened_with = {"firstFound": firstFound, "serial": serial}
+        self.open_count += 1
+        self.closed = False
 
     def close(self):
         self.closed = True
 
     def configU3(self, **kw):
+        """Power-up defaults plus identity. Does NOT move the live pin mux."""
+        if kw:
+            self.configu3_writes.append(dict(kw))
+            if "FIOAnalog" in kw:
+                self.fio_analog_default = kw["FIOAnalog"]
+            if "EIOAnalog" in kw:
+                self.eio_analog_default = kw["EIOAnalog"]
+        return {
+            "FIOAnalog": self.fio_analog_default,
+            "EIOAnalog": self.eio_analog_default,
+            "SerialNumber": self.serialNumber,
+            "DeviceName": self.deviceName,
+        }
+
+    def configIO(self, **kw):
+        """The live pin mux -- the masks getAIN actually obeys."""
         if kw:
             self.config_writes.append(dict(kw))
             if "FIOAnalog" in kw:
@@ -133,12 +171,23 @@ class _FakeU3:
         return {
             "FIOAnalog": self.fio_analog,
             "EIOAnalog": self.eio_analog,
-            "SerialNumber": self.serialNumber,
-            "DeviceName": self.deviceName,
         }
 
     # -- I/O --
     def getAIN(self, channel, *a, **kw):
+        # A flexible channel only answers when the LIVE mask has its bit set.
+        # AIN0-3 on an HV part are fixed analog and always answer. This is the
+        # device's PIN_CONFIGURED_FOR_DIGITAL (98), and it is what turns a mux
+        # written to the wrong command from a silent wrong reading into a
+        # failing test.
+        if channel >= 4 or not self.isHV:
+            mask = self.fio_analog if channel < 8 else self.eio_analog
+            bit = 1 << (channel if channel < 8 else channel - 8)
+            if not mask & bit:
+                raise RuntimeError(
+                    f"PIN_CONFIGURED_FOR_DIGITAL (98): AIN{channel} is "
+                    f"configured for digital; use ConfigIO to set it analog"
+                )
         return self.ain_values.get(channel, 1.234)
 
     def voltageToDACBits(self, volts, dacNumber=0, is16Bits=False):
@@ -283,6 +332,81 @@ class HandleManagerTests(_UDTestCase):
     def test_unknown_model_is_rejected(self):
         with self.assertRaises(RuntimeError):
             udh.get_ud_device("t7", None)
+
+    # -- one physical device, however it is named -----------------------
+    #
+    # A U3 reports no USB serial, so the scanner writes an empty serial slot
+    # and its nets resolve to None ("first found"), while a hand-written or
+    # migrated record may carry the real serial. Keying the cache on what the
+    # caller ASKED for made those two names two entries, and the second open
+    # then raced the claim this same process already held -- a hard
+    # NullHandleException on hardware, in both orders, until close_all.
+
+    def test_none_then_serial_is_one_device_and_one_open(self):
+        first = udh.get_ud_device("u3", None)
+        second = udh.get_ud_device("u3", str(self.device.serialNumber))
+        self.assertIs(first, second)
+        self.assertEqual(self.device.open_count, 1)
+
+    def test_serial_then_none_is_one_device_and_one_open(self):
+        first = udh.get_ud_device("u3", str(self.device.serialNumber))
+        second = udh.get_ud_device("u3", None)
+        self.assertIs(first, second)
+        self.assertEqual(self.device.open_count, 1)
+
+    def test_entry_is_keyed_by_the_reported_serial_not_the_request(self):
+        udh.get_ud_device("u3", None)
+        mgr = udh.LabJackUDHandleManager()
+        self.assertEqual(list(mgr._devices), [("u3", str(self.device.serialNumber))])
+
+    def test_release_by_the_other_name_still_decrements(self):
+        udh.get_ud_device("u3", None)
+        udh.get_ud_device("u3", str(self.device.serialNumber))
+        mgr = udh.LabJackUDHandleManager()
+        key = ("u3", str(self.device.serialNumber))
+        self.assertEqual(mgr._ref_counts[key], 2)
+        udh.release_ud_device("u3", None)
+        self.assertEqual(mgr._ref_counts[key], 1)
+        udh.release_ud_device("u3", str(self.device.serialNumber))
+        self.assertEqual(mgr._ref_counts[key], 0)
+
+    def test_first_found_adopts_the_device_this_process_already_holds(self):
+        """A firstFound open that cannot claim is our own device, not a new one.
+
+        The Exodriver claims exclusively, so with one U3 on the box a
+        serial-less net asking for "first found" after a serial-carrying net
+        opened it must adopt that claim rather than fail.
+        """
+        first = udh.get_ud_device("u3", str(self.device.serialNumber))
+
+        def _claim_conflict(**kw):
+            raise RuntimeError(
+                "Couldn't open device. Device access or claim error.")
+
+        self.device.open = _claim_conflict
+        second = udh.get_ud_device("u3", None)
+        self.assertIs(first, second)
+        self.assertEqual(self.device.open_count, 1)
+
+    def test_first_found_opens_a_free_device_rather_than_adopting(self):
+        """With a second U3 free, "first found" must not bind to the busy one.
+
+        The guard against the opposite mistake: reusing whichever entry happens
+        to be open would silently point a serial-less net at the instrument
+        some other net opened.
+        """
+        first = udh.get_ud_device("u3", str(self.device.serialNumber))
+        other = _FakeU3(serial=320099999)
+        sys.modules["u3"].U3 = lambda autoOpen=False, **kw: other
+        second = udh.get_ud_device("u3", None)
+        self.assertIsNot(second, first)
+        self.assertEqual(second.serialNumber, 320099999)
+
+    def test_force_close_by_the_other_name_closes_it(self):
+        udh.get_ud_device("u3", str(self.device.serialNumber))
+        udh.force_close_ud("u3", None)
+        self.assertTrue(self.device.closed)
+        self.assertEqual(udh.close_all_ud_devices(), 0)
 
 
 class PinMuxTests(_UDTestCase):

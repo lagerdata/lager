@@ -265,6 +265,7 @@ class LabJackUDHandleManager:
     _devices: Dict[Tuple[str, Optional[str]], Any]
     _ref_counts: Dict[Tuple[str, Optional[str]], int]
     _pin_modes: Dict[Tuple[Any, int], bool]
+    _first_found: Dict[str, str]
     _lock: threading.RLock
 
     def __new__(cls) -> 'LabJackUDHandleManager':
@@ -277,11 +278,58 @@ class LabJackUDHandleManager:
                     # (device serial, dio) -> True if analog. Avoids a USB
                     # round trip on every read; see set_channel_mode.
                     inst._pin_modes = {}
+                    # model -> real serial that a firstFound open landed on.
+                    # "First found" names one specific device, not "any", so
+                    # this is what a None request may reuse.
+                    inst._first_found = {}
                     inst._lock = threading.RLock()
                     cls._instance = inst
         return cls._instance
 
     # -- device lifecycle ------------------------------------------------
+
+    def _resolve_open_key(self, model: str, serial: Optional[str],
+                          unique_ok: bool = False
+                          ) -> Optional[Tuple[str, Optional[str]]]:
+        """Find an already-open entry that satisfies a request. Caller holds the lock.
+
+        Entries are keyed by the device's REAL serial, never by what the caller
+        asked for. A U3 reports no USB serial, so the scanner writes an empty
+        serial slot and its nets resolve to None ("first found"), while a
+        hand-written or migrated record may carry the real serial -- two ways
+        of naming one device. Keying on the request made those two separate
+        entries, so the second open raced the claim this process already held
+        and failed outright (NullHandleException / LabJackException), in both
+        orders, until close_all.
+
+        A None request means "first found", so any open device of this model
+        is a correct answer -- and reopening one we already hold is a
+        guaranteed claim conflict rather than a second device.
+        """
+        if serial is not None:
+            key = (model, serial)
+            return key if key in self._devices else None
+        # A None request means "first found", which names one specific device
+        # and not "any device". Reusing whichever entry happened to be open
+        # would, on a box with two U3s, bind a serial-less net to the
+        # instrument some other net opened. Reuse only the device a previous
+        # firstFound open actually landed on; otherwise open and let the
+        # claim-conflict fallback in get_device settle it.
+        known = self._first_found.get(model)
+        if known is not None:
+            key = (model, known)
+            if key in self._devices:
+                return key
+        if unique_ok:
+            # release/force_close only: with exactly one device of this model
+            # open there is nothing to be ambiguous about, and refusing to
+            # resolve would leak the claim. get_device does not take this
+            # shortcut -- there, picking the wrong one of two drives the wrong
+            # instrument rather than merely closing it.
+            mine = [k for k in self._devices if k[0] == model]
+            if len(mine) == 1:
+                return mine[0]
+        return None
 
     def get_device(self, model: str = "u3", serial: Optional[str] = None) -> Any:
         """Open (or reuse) the device for *model*/*serial* and return it.
@@ -297,10 +345,11 @@ class LabJackUDHandleManager:
             The LabJackPython device object.
         """
         model = (model or "u3").lower()
-        key = (model, str(serial) if serial else None)
+        want = str(serial) if serial else None
         with self._lock:
-            existing = self._devices.get(key)
-            if existing is not None:
+            key = self._resolve_open_key(model, want)
+            if key is not None:
+                existing = self._devices[key]
                 if self._is_alive(existing):
                     self._ref_counts[key] = self._ref_counts.get(key, 0) + 1
                     _debug(f"reusing {key}, refs={self._ref_counts[key]}")
@@ -311,10 +360,31 @@ class LabJackUDHandleManager:
             mod = load_ud_module(model)
             device_cls = getattr(mod, model.upper())
             device = device_cls(autoOpen=False)
-            if serial:
-                device.open(firstFound=False, serial=int(serial))
-            else:
-                device.open(firstFound=True)
+            try:
+                if want:
+                    device.open(firstFound=False, serial=int(want))
+                else:
+                    device.open(firstFound=True)
+            except Exception:
+                # A firstFound open that cannot claim anything, on a box where
+                # this process already holds exactly one device of this model,
+                # is that same device: the Exodriver claims exclusively, so
+                # reopening it is a guaranteed conflict rather than a second
+                # instrument. With two devices the open above would have landed
+                # on the free one and we would not be here. Adopting it is what
+                # keeps a serial-keyed net and a serial-less net on one U3 from
+                # locking each other out.
+                if want is None:
+                    mine = [k for k in self._devices if k[0] == model]
+                    if len(mine) == 1:
+                        adopted = self._devices[mine[0]]
+                        self._first_found[model] = mine[0][1]
+                        self._ref_counts[mine[0]] = \
+                            self._ref_counts.get(mine[0], 0) + 1
+                        _debug(f"adopted already-open {mine[0]} for a "
+                               f"first-found request")
+                        return adopted
+                raise
             # open() populates serialNumber/deviceName/isHV via configU3.
             # Read the config once here so a driver never has to.
             device.configU3()
@@ -322,6 +392,13 @@ class LabJackUDHandleManager:
                 f"opened {getattr(device, 'deviceName', model)} "
                 f"serial={getattr(device, 'serialNumber', '?')}"
             )
+            # Key on the serial the DEVICE reports, not the one requested, so
+            # a later request naming it the other way finds this same entry
+            # instead of trying to claim a device we already hold.
+            real = str(getattr(device, "serialNumber", "") or "") or None
+            key = (model, real)
+            if want is None and real is not None:
+                self._first_found[model] = real
             self._devices[key] = device
             self._ref_counts[key] = 1
             return device
@@ -365,9 +442,13 @@ class LabJackUDHandleManager:
         open costs a USB enumerate plus a calibration read, and roles reopen
         constantly. The device closes on force_close/close_all or at exit.
         """
-        key = ((model or "u3").lower(), str(serial) if serial else None)
         with self._lock:
-            if key in self._ref_counts and self._ref_counts[key] > 0:
+            # Same resolution as get_device: the caller releases by the name it
+            # asked with, which may not be the real serial the entry is under.
+            key = self._resolve_open_key((model or "u3").lower(),
+                                         str(serial) if serial else None,
+                                         unique_ok=True)
+            if key is not None and self._ref_counts.get(key, 0) > 0:
                 self._ref_counts[key] -= 1
                 _debug(f"released {key}, refs={self._ref_counts[key]}")
 
@@ -378,8 +459,11 @@ class LabJackUDHandleManager:
             if model is None:
                 self.close_all()
                 return
-            self._discard(((model or "u3").lower(),
-                           str(serial) if serial else None))
+            key = self._resolve_open_key((model or "u3").lower(),
+                                         str(serial) if serial else None,
+                                         unique_ok=True)
+            if key is not None:
+                self._discard(key)
 
     def close_all(self) -> int:
         """Close every open UD device. Returns how many were closed."""
@@ -446,14 +530,22 @@ class LabJackUDHandleManager:
             if self._pin_modes.get(cache_key) == analog:
                 return
 
-            current = int(device.configU3().get(register, 0))
+            # configIO, NOT configU3. They are different commands over
+            # different state: configU3 carries the power-up defaults (and the
+            # identity fields isHV/serialNumber/deviceName), while configIO
+            # carries the LIVE pin mux the hardware actually acts on. Writing
+            # configU3 here is accepted, and reads back through configU3 as if
+            # it worked, but leaves the pin in its old mode -- getAIN then
+            # fails with PIN_CONFIGURED_FOR_DIGITAL (98), whose own text says
+            # "Use a command like ConfigIO to set the pin to analog".
+            current = int(device.configIO().get(register, 0))
             wanted = (current | bit) if analog else (current & ~bit)
             if wanted != current:
                 _debug(
                     f"{register}: {current:#010b} -> {wanted:#010b} "
                     f"({dio_to_pin(dio)} -> {'analog' if analog else 'digital'})"
                 )
-                device.configU3(**{register: wanted})
+                device.configIO(**{register: wanted})
             self._pin_modes[cache_key] = analog
 
 

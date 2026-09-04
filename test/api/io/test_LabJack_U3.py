@@ -198,13 +198,17 @@ def main():
                         "the HV-specific checks below will not apply")
         return "confirmed HV"
 
-    @check("configU3 exposes the analog bitmasks", inferred=True)
+    @check("configIO exposes the LIVE analog bitmasks", inferred=True)
     def _():
-        cfg = device.configU3()
+        # configIO, not configU3. configU3 carries the power-up defaults;
+        # configIO carries the mux the hardware acts on. They can differ, and
+        # a mux verified through configU3 reports success while the pin never
+        # moves -- which is exactly how the original driver bug hid.
+        cfg = device.configIO()
         for key in ("FIOAnalog", "EIOAnalog"):
             if key not in cfg:
                 raise AssertionError(
-                    f"configU3() has no {key} -- the pin mux cannot work")
+                    f"configIO() has no {key} -- the pin mux cannot work")
         return (f"FIOAnalog=0b{cfg['FIOAnalog']:08b} "
                 f"EIOAnalog=0b{cfg['EIOAnalog']:08b}")
 
@@ -212,7 +216,7 @@ def main():
     def _():
         if not getattr(device, "isHV", False):
             raise _Skip("not an HV device")
-        mask = device.configU3()["FIOAnalog"]
+        mask = device.configIO()["FIOAnalog"]
         if mask & 0x0F != 0x0F:
             raise AssertionError(
                 f"expected FIO0-3 analog on a U3-HV, got 0b{mask:08b}")
@@ -241,12 +245,12 @@ def main():
     def _():
         dev = udh.get_ud_device("u3", None)
         udh.set_channel_mode(dev, 5, analog=True)
-        after_analog = dev.configU3()["FIOAnalog"]
+        after_analog = dev.configIO()["FIOAnalog"]
         if not after_analog & 0x20:
             raise AssertionError(
                 f"FIO5 analog bit not set: 0b{after_analog:08b}")
         udh.set_channel_mode(dev, 5, analog=False)
-        after_digital = dev.configU3()["FIOAnalog"]
+        after_digital = dev.configIO()["FIOAnalog"]
         if after_digital & 0x20:
             raise AssertionError(
                 f"FIO5 analog bit not cleared: 0b{after_digital:08b}")
@@ -256,7 +260,7 @@ def main():
     def _():
         dev = udh.get_ud_device("u3", None)
         udh.set_channel_mode(dev, 8, analog=True)   # EIO0
-        mask = dev.configU3()["EIOAnalog"]
+        mask = dev.configIO()["EIOAnalog"]
         udh.set_channel_mode(dev, 8, analog=False)
         if not mask & 0x01:
             raise AssertionError(
