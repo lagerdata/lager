@@ -1,20 +1,24 @@
 # Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for the DA1469x QSPI branch in ``DebugNet.flash()`` / ``erase()``.
+"""Unit tests for how ``DebugNet.flash()`` / ``erase()`` reach the OpenOCD
+flash dispatch.
 
 Mainline OpenOCD has no QSPI flash driver for the DA1469x family, so the
-generic ``rpc.program`` / ``flash_erase_all`` calls can't touch external NOR.
-The HTTP service (``service.py`` /debug/flash, /debug/erase) already routes
-this family through ``da1469x_loader``; these tests pin the Net API to the
-same dispatch — and pin everything else (other devices, the J-Link backend)
-to the unchanged paths.
+generic ``rpc.program`` / ``flash_erase_all`` calls can't touch external
+NOR. The decision between those and the RAM-resident flash_loader lives in
+``lager.debug.openocd_flash`` and is shared with the HTTP service. These
+tests pin that DebugNet hands every OpenOCD flash and erase to that
+dispatch -- with the device, so the dispatch can decide; with the shared
+timeouts; with the RPC built to know its device -- and that everything
+else (the J-Link backend, a down daemon, a deterministic loader failure
+under ``_self_heal``) behaves as before. What the dispatch then selects is
+``test_openocd_flash.py``'s to pin; that the two callers select the same
+thing is ``test_debug_flash_dispatch_parity.py``'s.
 
-Harness: same private-stub-package trick as ``test_debug_net_self_heal.py`` —
-the real ``DebugNet`` is loaded with stub ``..debug`` / ``..debug.probes`` /
-``..debug.da1469x_loader`` siblings. ``debug_net`` imports the loader lazily
-inside the methods, so per-test overrides of the stub's generators take
-effect without reloading anything.
+Harness: same private-stub-package trick as ``test_debug_net_self_heal.py``
+-- the real ``DebugNet`` is loaded with stub ``..debug`` / ``..debug.probes``
+/ ``..debug.openocd_flash`` siblings.
 """
 
 import importlib.util
@@ -22,6 +26,7 @@ import os
 import sys
 import types
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(__file__)
 NETS_DIR = os.path.normpath(os.path.join(HERE, "..", "..", "..", "box", "lager", "nets"))
@@ -49,7 +54,15 @@ class _OpenOcdRpcError(Exception):
 
 
 class _LoaderError(Exception):
-    pass
+    """Stands in for Da1469xLoaderError: NOT an OpenOcdRpcError, so
+    ``_self_heal`` must let it through instead of retrying it."""
+
+
+class _FakeRpc:
+    """Records how DebugNet builds its RPC; never opens a socket."""
+
+    def __init__(self, host="127.0.0.1", port=6666, timeout=10.0, device=None):
+        self.host, self.port, self.timeout, self.device = host, port, timeout, device
 
 
 def _install(name, mod):
@@ -59,7 +72,7 @@ def _install(name, mod):
 
 def _build_debug_stub():
     m = types.ModuleType(f"{PKG}.debug")
-    m.__path__ = []  # package, so ``..debug.da1469x_loader`` resolves as a submodule
+    m.__path__ = []  # package, so ``..debug.<sub>`` resolves as a submodule
 
     def _unused(*a, **k):
         raise AssertionError("stub called without override")
@@ -79,7 +92,7 @@ def _build_debug_stub():
     m.start_openocd_gdbserver = _unused
     m.stop_openocd = _unused
     m.get_openocd_status = lambda **k: {"running": True, "pid": 9}
-    m.OpenOcdRpc = object
+    m.OpenOcdRpc = _FakeRpc
     m.OpenOcdRpcError = _OpenOcdRpcError
     return m
 
@@ -88,6 +101,7 @@ def _build_probes_stub():
     m = types.ModuleType(f"{PKG}.debug.probes")
     m.BACKEND_JLINK = "jlink"
     m.BACKEND_OPENOCD = "openocd"
+    m.is_da1469x = lambda device: "DA1469" in str(device or "").upper()
     m.resolve_serial_from_net = lambda net: net.get("serial", "PROBE123")
     m.resolve_backend = lambda net: net.get("debug_backend", "jlink")
     m.gdb_port_for_slot = lambda slot: 2331 + 3 * slot
@@ -101,40 +115,24 @@ def _build_probes_stub():
     return m
 
 
-def _build_loader_stub():
-    """Stand-in ``..debug.da1469x_loader`` recording every dispatch.
-
-    ``xip_to_flash_offset`` reproduces the real contract (absolute XIP
-    address -> flash-relative offset, None/0 -> 0) so the tests can assert
-    the translation is applied; the real arithmetic is pinned by
-    ``test_da1469x_loader.py``.
-    """
-    m = types.ModuleType(f"{PKG}.debug.da1469x_loader")
-    m.DA1469X_FAMILY = "da1469x"
-    m.DEFAULT_ERASE_LENGTH = 1 << 20
-    m.Da1469xLoaderError = _LoaderError
+def _build_dispatch_stub():
+    """Stand-in ``..debug.openocd_flash`` recording every hand-off."""
+    m = types.ModuleType(f"{PKG}.debug.openocd_flash")
+    m.FLASH_RPC_TIMEOUT_S = 300
+    m.ERASE_RPC_TIMEOUT_S = 120
     m.calls = []
 
-    def xip_to_flash_offset(addr):
-        m.calls.append(("xip_to_flash_offset", addr))
-        if addr is None or addr == 0:
-            return 0
-        return addr - QSPI_XIP_BASE
+    def flash_target(rpc, device, firmware_path, *, address=None):
+        m.calls.append(("flash_target", rpc, device, firmware_path, address))
+        yield f"flashed {device}"
+        yield "done"
 
-    def flash_image(rpc, image_path, *, family, flash_id=0, offset=0):
-        m.calls.append(("flash_image", image_path, family, flash_id, offset))
-        yield "Preparing DA1469x flash_loader from /stub/flash_loader.elf"
-        yield f"Erasing flash_id={flash_id} offset={hex(offset)} bytes=4"
-        yield f"Programmed 4 bytes successfully"
+    def erase_target(rpc, device):
+        m.calls.append(("erase_target", rpc, device))
+        yield f"erased {device}"
 
-    def erase_range(rpc, *, family, flash_id=0, offset=0, length):
-        m.calls.append(("erase_range", family, flash_id, offset, length))
-        yield f"Erasing flash_id={flash_id} offset={hex(offset)} bytes={length}"
-        yield f"Erased {length} bytes successfully"
-
-    m.xip_to_flash_offset = xip_to_flash_offset
-    m.flash_image = flash_image
-    m.erase_range = erase_range
+    m.flash_target = flash_target
+    m.erase_target = erase_target
     return m
 
 
@@ -164,7 +162,7 @@ def _load_debug_net():
 
     _install(f"{PKG}.debug", _build_debug_stub())
     _install(f"{PKG}.debug.probes", _build_probes_stub())
-    _install(f"{PKG}.debug.da1469x_loader", _build_loader_stub())
+    _install(f"{PKG}.debug.openocd_flash", _build_dispatch_stub())
 
     spec = importlib.util.spec_from_file_location(f"{NETS_PKG}.debug_net", DEBUG_NET_PATH)
     mod = importlib.util.module_from_spec(spec)
@@ -175,7 +173,7 @@ def _load_debug_net():
 
 
 debug_net = _load_debug_net()
-loader_stub = sys.modules[f"{PKG}.debug.da1469x_loader"]
+dispatch = sys.modules[f"{PKG}.debug.openocd_flash"]
 
 
 def tearDownModule():
@@ -183,70 +181,63 @@ def tearDownModule():
         sys.modules.pop(key, None)
 
 
-class _RecordingRpc:
-    """Fails loudly if the generic (non-loader) commands are used."""
-
-    def __init__(self):
-        self.calls = []
-
-    def program(self, *a, **k):
-        self.calls.append(("program", a, k))
-        return "programmed"
-
-    def flash_erase_all(self):
-        self.calls.append(("flash_erase_all",))
-        return "erased"
-
-
 def _make_net(channel, backend="openocd"):
     assert debug_net._debug_available, "expected the real DebugNet, got _NullDebug"
     net_cfg = {"channel": channel, "instrument": "debugger", "debug_backend": backend}
-    net = debug_net.DebugNet("dbg", net_cfg)
-    if backend == "openocd":
-        net._rpc = _RecordingRpc()
-        net._openocd_rpc = lambda **k: net._rpc
-    return net
+    return debug_net.DebugNet("dbg", net_cfg)
 
 
-class Da1469xFlashDispatchTests(unittest.TestCase):
+class _Case(unittest.TestCase):
     def setUp(self):
-        loader_stub.calls.clear()
-        self._orig = (loader_stub.flash_image, loader_stub.erase_range)
+        dispatch.calls.clear()
+        self._orig = (dispatch.flash_target, dispatch.erase_target,
+                      debug_net.flash_target, debug_net.erase_target)
         debug_net.get_openocd_status = lambda **k: {"running": True, "pid": 9}
 
     def tearDown(self):
-        loader_stub.flash_image, loader_stub.erase_range = self._orig
+        dispatch.flash_target, dispatch.erase_target = self._orig[:2]
+        debug_net.flash_target, debug_net.erase_target = self._orig[2:]
 
-    def test_flash_routes_to_loader_with_translated_offset(self):
+
+class FlashHandOffTests(_Case):
+    def test_da1469x_bin_hands_device_path_and_xip_address_to_the_dispatch(self):
         net = _make_net("DA14695")
         out = net.flash("/tmp/xl.img.bin", QSPI_XIP_BASE)
 
-        dispatch = [c for c in loader_stub.calls if c[0] == "flash_image"]
-        self.assertEqual(
-            dispatch,
-            [("flash_image", "/tmp/xl.img.bin", "da1469x", 0, 0)],
-            "XIP 0x16000000 must reach the loader as flash offset 0x0",
-        )
-        self.assertIn(("xip_to_flash_offset", QSPI_XIP_BASE), loader_stub.calls)
-        self.assertEqual(net._rpc.calls, [], "must not fall through to rpc.program")
-        # Progress lines are joined into the return value (service.py parity).
-        self.assertIn("Preparing DA1469x flash_loader", out)
-        self.assertIn("Programmed 4 bytes successfully", out)
+        self.assertEqual(len(dispatch.calls), 1)
+        kind, rpc, device, path, address = dispatch.calls[0]
+        self.assertEqual((kind, device, path, address),
+                         ("flash_target", "DA14695", "/tmp/xl.img.bin", QSPI_XIP_BASE),
+                         "the dispatch decides by device; DebugNet must not pre-translate")
+        # The RPC is built with the shared flash budget and knows its device,
+        # so the RPC layer's own guard can fire if the dispatch is bypassed.
+        self.assertIsInstance(rpc, _FakeRpc)
+        self.assertEqual(rpc.timeout, dispatch.FLASH_RPC_TIMEOUT_S)
+        self.assertEqual(rpc.device, "DA14695")
+        self.assertEqual(rpc.port, net.openocd_tcl_port)
+        # Progress lines are joined into the string return value.
+        self.assertEqual(out, "flashed DA14695\ndone")
 
-    def test_flash_translates_nonzero_xip_offset(self):
-        net = _make_net("DA14695")
-        net.flash("/tmp/xl.img.bin", QSPI_XIP_BASE + 0x8000)
-        dispatch = [c for c in loader_stub.calls if c[0] == "flash_image"]
-        self.assertEqual(dispatch[0][4], 0x8000)
-
-    def test_flash_other_device_still_uses_program(self):
+    def test_other_devices_take_the_same_hand_off(self):
+        # No per-device branching in DebugNet at all: that is what let the
+        # two callers drift.
         net = _make_net("STM32F446RE")
-        out = net.flash("/tmp/app.bin", 0x08000000)
-        self.assertEqual(out, "programmed")
-        self.assertEqual(net._rpc.calls[0][0], "program")
-        self.assertEqual(loader_stub.calls, [], "loader must not run for non-DA1469x")
+        net.flash("/tmp/app.bin", 0x08000000)
+        self.assertEqual(dispatch.calls[0][2:], ("STM32F446RE", "/tmp/app.bin", 0x08000000))
 
-    def test_flash_jlink_backend_untouched(self):
+    def test_hex_and_elf_pass_no_address(self):
+        net = _make_net("DA14695")
+        net.flash("/tmp/app.hex", QSPI_XIP_BASE)
+        net.flash("/tmp/app.elf")
+        self.assertEqual([c[4] for c in dispatch.calls], [None, None])
+
+    def test_bin_without_an_address_is_refused_before_the_dispatch(self):
+        net = _make_net("DA14695")
+        with self.assertRaises(ValueError):
+            net.flash("/tmp/xl.img.bin")
+        self.assertEqual(dispatch.calls, [])
+
+    def test_jlink_backend_untouched(self):
         net = _make_net("DA14695", backend="jlink")
         seen = {}
 
@@ -257,105 +248,42 @@ class Da1469xFlashDispatchTests(unittest.TestCase):
         debug_net.flash_device = fake_flash_device
         self.assertEqual(net.flash("/tmp/xl.img.bin", QSPI_XIP_BASE), "jlink flashed")
         self.assertEqual(seen["files"], ([], [("/tmp/xl.img.bin", QSPI_XIP_BASE)], []))
-        self.assertEqual(loader_stub.calls, [], "J-Link path has its own DA1469x handling")
+        self.assertEqual(dispatch.calls, [], "J-Link path has its own DA1469x handling")
+
+    def test_daemon_down_raises_connect_first_before_the_dispatch(self):
+        debug_net.get_openocd_status = lambda **k: {"running": False, "pid": None}
+        net = _make_net("DA14695")
+        with self.assertRaises(RuntimeError) as ctx:
+            net.flash("/tmp/xl.img.bin", QSPI_XIP_BASE)
+        self.assertIn("Call connect() first", str(ctx.exception))
+        self.assertEqual(dispatch.calls, [])
 
 
-class Da1469xEraseDispatchTests(unittest.TestCase):
-    def setUp(self):
-        loader_stub.calls.clear()
-        self._orig = (loader_stub.flash_image, loader_stub.erase_range)
-        debug_net.get_openocd_status = lambda **k: {"running": True, "pid": 9}
-
-    def tearDown(self):
-        loader_stub.flash_image, loader_stub.erase_range = self._orig
-
-    def test_erase_routes_to_loader_range_erase(self):
+class EraseHandOffTests(_Case):
+    def test_erase_hands_device_to_the_dispatch(self):
         net = _make_net("DA14695")
         out = net.erase()
-        self.assertEqual(
-            loader_stub.calls,
-            [("erase_range", "da1469x", 0, 0, loader_stub.DEFAULT_ERASE_LENGTH)],
-        )
-        self.assertEqual(net._rpc.calls, [], "flash_erase_all can't reach QSPI NOR")
-        self.assertIn("Erased 1048576 bytes successfully", out)
+        self.assertEqual(len(dispatch.calls), 1)
+        kind, rpc, device = dispatch.calls[0]
+        self.assertEqual((kind, device), ("erase_target", "DA14695"))
+        self.assertEqual(rpc.timeout, dispatch.ERASE_RPC_TIMEOUT_S)
+        self.assertEqual(rpc.device, "DA14695")
+        self.assertEqual(out, "erased DA14695")
 
-    def test_erase_other_device_still_uses_flash_erase_all(self):
+    def test_other_devices_take_the_same_hand_off(self):
         net = _make_net("NRF52840_XXAA")
-        self.assertEqual(net.erase(), "erased")
-        self.assertEqual(net._rpc.calls, [("flash_erase_all",)])
-        self.assertEqual(loader_stub.calls, [])
+        net.erase()
+        self.assertEqual(dispatch.calls[0][2], "NRF52840_XXAA")
 
-
-class Da1469xLoaderFailureTests(unittest.TestCase):
-    """A failed loader run must raise a message naming the loader failure —
-    not a raw OpenOCD tcl traceback — and say when the board may be blank."""
-
-    def setUp(self):
-        loader_stub.calls.clear()
-        self._orig = (loader_stub.flash_image, loader_stub.erase_range)
-        debug_net.get_openocd_status = lambda **k: {"running": True, "pid": 9}
-
-    def tearDown(self):
-        loader_stub.flash_image, loader_stub.erase_range = self._orig
-
-    def test_program_failure_after_erase_warns_board_may_be_blank(self):
-        def failing_flash(rpc, image_path, *, family, flash_id=0, offset=0):
-            yield "Preparing DA1469x flash_loader from /stub/flash_loader.elf"
-            yield f"Erasing flash_id={flash_id} offset={hex(offset)} bytes=4"
-            raise loader_stub.Da1469xLoaderError("fl_cmd_status=3 (program error)")
-
-        loader_stub.flash_image = failing_flash
-        net = _make_net("DA14695")
-        with self.assertRaises(loader_stub.Da1469xLoaderError) as ctx:
-            net.flash("/tmp/xl.img.bin", QSPI_XIP_BASE)
-        msg = str(ctx.exception)
-        self.assertIn("DA1469x flash_loader flash failed", msg)
-        self.assertIn("fl_cmd_status=3", msg)
-        self.assertIn("Erasing flash_id=0", msg, "should name the last progress line")
-        self.assertIn("blank", msg, "erase ran but program didn't — say so")
-
-    def test_early_failure_has_no_blank_warning(self):
-        def failing_flash(rpc, image_path, *, family, flash_id=0, offset=0):
-            raise loader_stub.Da1469xLoaderError("loader artefacts not found")
-            yield  # pragma: no cover — makes this a generator
-
-        loader_stub.flash_image = failing_flash
-        net = _make_net("DA14695")
-        with self.assertRaises(loader_stub.Da1469xLoaderError) as ctx:
-            net.flash("/tmp/xl.img.bin", QSPI_XIP_BASE)
-        msg = str(ctx.exception)
-        self.assertIn("loader artefacts not found", msg)
-        self.assertNotIn("blank", msg, "nothing was erased; don't cry wolf")
-
-    def test_rpc_error_is_wrapped_with_loader_context(self):
-        def failing_flash(rpc, image_path, *, family, flash_id=0, offset=0):
-            yield "Preparing DA1469x flash_loader from /stub/flash_loader.elf"
-            raise debug_net.OpenOcdRpcError("tcl connection reset")
-
-        loader_stub.flash_image = failing_flash
-        net = _make_net("DA14695")
-        with self.assertRaises(loader_stub.Da1469xLoaderError) as ctx:
-            net.flash("/tmp/xl.img.bin", QSPI_XIP_BASE)
-        self.assertIn("tcl connection reset", str(ctx.exception))
-
-    def test_erase_failure_names_the_erase(self):
-        def failing_erase(rpc, *, family, flash_id=0, offset=0, length):
-            yield f"Erasing flash_id={flash_id} offset={hex(offset)} bytes={length}"
-            raise loader_stub.Da1469xLoaderError("fl_cmd_status=2 (erase error)")
-
-        loader_stub.erase_range = failing_erase
-        net = _make_net("DA14695")
-        with self.assertRaises(loader_stub.Da1469xLoaderError) as ctx:
-            net.erase()
-        msg = str(ctx.exception)
-        self.assertIn("DA1469x flash_loader erase failed", msg)
-        self.assertIn("fl_cmd_status=2", msg)
+    def test_jlink_backend_untouched(self):
+        net = _make_net("DA14695", backend="jlink")
+        debug_net.chip_erase = lambda **kwargs: iter(["jlink erased"])
+        self.assertEqual(net.erase(), "jlink erased")
+        self.assertEqual(dispatch.calls, [])
 
     def test_daemon_down_still_raises_connect_first(self):
-        """_ensure_openocd_running fires before the loader — its RuntimeError
+        """_ensure_openocd_running fires before the dispatch -- its RuntimeError
         keeps the existing _self_heal semantics (retry, never autostart)."""
-        from unittest import mock
-
         debug_net.get_openocd_status = lambda **k: {"running": False, "pid": None}
         net = _make_net("DA14695")
         net.connect = lambda *a, **k: self.fail("must never auto-start a DA1469x server")
@@ -363,7 +291,25 @@ class Da1469xLoaderFailureTests(unittest.TestCase):
             with self.assertRaises(RuntimeError) as ctx:
                 net.erase()
         self.assertIn("Call connect() first", str(ctx.exception))
-        self.assertEqual(loader_stub.calls, [])
+        self.assertEqual(dispatch.calls, [])
+
+    def test_loader_failure_is_not_retried_by_self_heal(self):
+        # A deterministic loader failure (bad artefacts, loader rc != OK) is
+        # not a transient daemon hiccup: retrying it thrice with backoff
+        # would just re-erase a board three times. Only RuntimeError /
+        # OpenOcdRpcError are transient.
+        def failing_erase(rpc, device):
+            dispatch.calls.append(("erase_target", rpc, device))
+            raise _LoaderError("DA1469x flash_loader erase failed: fl_cmd_status=2")
+            yield  # pragma: no cover -- makes this a generator
+
+        debug_net.erase_target = failing_erase
+        net = _make_net("DA14695")
+        with mock.patch("time.sleep") as sleep:
+            with self.assertRaises(_LoaderError):
+                net.erase()
+        self.assertEqual(len(dispatch.calls), 1, "must not retry a loader failure")
+        sleep.assert_not_called()
 
 
 if __name__ == "__main__":

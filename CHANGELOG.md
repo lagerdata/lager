@@ -107,21 +107,30 @@ All notable changes to the Lager platform are documented here. For detailed rele
   just after the client stops waiting is not orphaned from birth; that wait grew
   from 5s to 15s, since the box will sit through a re-enumeration for up to 60s.
 
-- **`DebugNet.flash()` / `.erase()` now take the DA1469x QSPI flash-loader
-  path on OpenOCD, matching the CLI.** On a DA1469x target behind an OpenOCD
-  probe, `lager debug <net> flash` worked but the same operation through the
-  Python Net API (`Net.get(..., NetType.Debug).flash(bin, 0x16000000)`) died
-  with a bare `** Programming Failed **`, and `.erase()` silently never touched
-  the external QSPI NOR. The DA1469x special case — mainline OpenOCD has no
-  QSPI flash driver for the family, so the RAM-resident Apache Mynewt
-  flash_loader must be driven instead of `program`/`flash_erase_all` — existed
-  only in the HTTP service path (`service.py`), not in `debug_net.py`. Both
-  methods now dispatch through the same `da1469x_loader` helpers with the same
-  family predicate, so callers keep passing absolute XIP addresses exactly as
-  on the J-Link path. Loader failures now raise a message naming the loader
-  step that failed instead of a raw OpenOCD tcl traceback, and a flash that
-  dies after its erase says the board may be left blank. Non-DA1469x OpenOCD
-  targets and the J-Link backend are unchanged.
+- **`DebugNet.flash()` / `.erase()` could not program a DA1469x on OpenOCD;
+  the CLI could.** On a DA1469x behind an OpenOCD probe, `lager debug <net>
+  flash` worked, but the same operation through the Python Net API
+  (`Net.get(..., NetType.Debug).flash(bin, 0x16000000)`) died with a bare
+  `** Programming Failed **`, and `.erase()` returned nothing after touching
+  nothing -- so an automated run could "erase" a board and then fail to
+  program it, leaving the DUT with no firmware while every by-hand check
+  still passed. The DA1469x executes from external QSPI, mainline OpenOCD has
+  no flash driver for that QSPI, and lager drives a RAM-resident flash_loader
+  instead; that special case existed only in the HTTP service
+  (`service.py`), not in `debug_net.py`.
+
+  The decision now lives in one place, `lager.debug.openocd_flash`, and both
+  the service and the Net API route through it, so the two paths cannot offer
+  different capabilities again. Callers keep passing absolute XIP addresses
+  (`0x16000000`), as on the J-Link path. A loader failure on either path names
+  the step that failed instead of surfacing an OpenOCD tcl traceback, and a
+  flash that dies after its erase stage says the board may be blank. Should
+  anything bypass the dispatch, OpenOCD's generic `program` and erase now
+  refuse a DA1469x outright with an error naming the part and the missing
+  QSPI driver, rather than failing after a stall that reads like a bad board.
+  A parity test drives both entry points through the shared dispatch and a
+  source scan fails the build if either grows a private copy. Non-DA1469x
+  OpenOCD targets and the J-Link backend are unchanged.
 
 - **Lateness alone filed a new `bench-alert` issue every night.**
   `bench_schedule_check.py` appended its lateness finding to the same

@@ -187,7 +187,7 @@ J-Link has no standalone halt-in-place primitive, because `reset_device` and
 names the halt-first `.JLinkScript` as the supported route.
 </Note>
 
-### `flash(firmware_path)`
+### `flash(firmware_path, flash_address=None)`
 
 Flash firmware to the device.
 
@@ -196,8 +196,8 @@ Flash firmware to the device.
 output = dbg.flash('/path/to/firmware.hex')
 print(output)
 
-# Flash a binary file (address 0x00000000 assumed)
-output = dbg.flash('/path/to/firmware.bin')
+# Flash a binary file -- a .bin carries no address, so pass the target's flash base
+output = dbg.flash('/path/to/firmware.bin', 0x08000000)
 print(output)
 
 # Flash an ELF file
@@ -210,14 +210,29 @@ print(output)
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `firmware_path` | `str` | Path to firmware file (.hex, .bin, or .elf) |
+| `flash_address` | `int` | Load address for a `.bin`. Required for `.bin`, ignored for `.hex` / `.elf`, which carry their own |
 
 **Returns:** `str` - Combined output from flash operation
 
-**Note:** For .bin files, flash address defaults to 0x00000000.
+**Note:** A `.bin` has no embedded address, so `flash()` raises without
+`flash_address` rather than defaulting to `0x0`. Pass the target's flash base:
+STM32 `0x08000000`, nRF52 `0x00000000`, DA1469x QSPI `0x16000000`.
+
+**DA1469x on OpenOCD:** mainline OpenOCD has no flash driver for the DA1469x's
+external QSPI. On that family, `flash()` and `erase()` drive the RAM-resident
+flash_loader instead, the same path `lager debug <net> flash` takes. Pass the
+absolute XIP address (`0x16000000`), exactly as on J-Link. The loader artefacts
+live on the box under
+`/home/www-data/customer-binaries/openocd/flash-loaders/da1469x/`. A missing
+loader raises rather than falling back to OpenOCD's `program`, which cannot
+reach QSPI.
 
 ### `erase()`
 
 Perform full chip erase. This erases ALL flash memory including protection settings.
+
+On a DA1469x behind an OpenOCD probe this is the flash_loader's range erase of
+the first 1 MiB of QSPI, matching the J-Link path.
 
 ```python
 # Full chip erase

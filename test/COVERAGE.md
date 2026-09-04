@@ -42,12 +42,12 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1896 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 2105 |
+| `unit (box)` | `test/unit/box/` | 2145 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 181 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 183 (+1 skipped) |
-| | **Total gated** | **4559** |
+| | **Total gated** | **4599** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never
@@ -451,9 +451,9 @@ cli/tests/                #  7 files: 6 pytest suites (GATED via `unit (cli)`),
                           #           plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 188 files)
+### Local Unit Tests (`test/unit/` -- 190 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 101 files)
+#### Box Unit Tests (`test/unit/box/` -- 103 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -483,7 +483,8 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_debug_defmt_rtt.py` | Defmt RTT decoding wrapper threading and piping logic, plus the down-channel `write()` that makes a decoding session bi-directional — including the late write that must not reopen the telnet port it just released |
 | `test_debug_status_target_attached.py` | `/debug/status` must report `gdbserver_running` and `target_attached` separately, keep `connected` pinned to its old server-liveness meaning for older clients, and preserve the tri-state -- None (older box, refused probe, timeout) is not False. Also pins the log-scrape/probe split: the cheap path always runs, the wire read is opt-in |
 | `test_debug_erase_verdict.py` | `/debug/erase` must not answer 200 for a J-Link session that never attached, and the verdict predicate `_attach_failed` must stay stricter than the flash-retry predicate `_connect_failed` |
-| `test_debug_net_da1469x.py` | `DebugNet.flash()` / `.erase()` dispatch DA1469x targets on OpenOCD through the RAM-resident flash_loader rather than `program` / `flash_erase_all`, with absolute XIP addresses translated to flash-relative offsets; non-DA1469x OpenOCD and the J-Link backend stay on their existing paths; loader failures name the step that failed, a flash dying after its erase warns the board may be left blank, and a down daemon still routes through `_self_heal` |
+| `test_debug_flash_dispatch_parity.py` | The HTTP debug service (`/debug/flash`, `/debug/erase`) and the Net API (`DebugNet.flash()`, `.erase()`) must select the same flash backend for the same OpenOCD target: both driven through the real `openocd_flash` dispatch for a DA1469x (flash_loader, identical offsets and output) and an nRF52 (`program` / bank erase), building the RPC the same way and reporting a loader failure in the same words. Plus an AST scan of `box/lager`: the generic OpenOCD flash commands and the loader generators are called from `openocd_flash.py` and nowhere else, so a private copy of the dispatch cannot come back |
+| `test_debug_net_da1469x.py` | `DebugNet.flash()` / `.erase()` hand every OpenOCD flash and erase to the shared `openocd_flash` dispatch -- with the device, the shared timeouts, and an RPC that knows its device -- for DA1469x and other targets alike; `.bin` without an address is refused first; the J-Link backend and a down daemon behave as before; a deterministic loader failure is not retried by `_self_heal` |
 | `test_debug_net_self_heal.py` | DebugNet self-heal retry and session endpoints |
 | `test_debug_net_user_scripts.py` | User-script/slot helpers: OpenOCD/J-Link base64 fields and serial in debug_net.py |
 | `test_debug_rtt_reconnect.py` | J-Link RTT reader reconnect-aware socket handling across J-Link restart |
@@ -526,6 +527,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_nets_safety_limits_endpoint.py` | `/nets/safety-limits`: reading and writing a net's voltage/current ceilings |
 | `test_nets_state_endpoint.py` | `GET /nets/state`: wedged-instrument resilience, per-instrument probing, LabJack cross-role batch routing through hardware_service (no USB contention), I2C bus scan, and the request deadline handed to the USB batch as a per-hub budget |
 | `test_openocd_dispatch.py` | OpenOCD interface .cfg dispatch and user-cfg override behavior |
+| `test_openocd_flash.py` | `openocd_flash`, the one flash/erase dispatch for OpenOCD targets: a DA1469x goes to the RAM-resident flash_loader with absolute XIP addresses translated to flash-relative offsets (out-of-window addresses refused before any I/O), everything else to `program` / bank erase; loader failures name the failed step and a flash dying after its erase warns the board may be blank. Also `OpenOcdRpc(device=...)` refusing `program` / erase for a DA1469x by name before sending anything, and the shared `is_da1469x` predicate |
 | `test_prebuilt_image.py` | The pre-built-image block in `box/start_box.sh`: a mutable tag refused before any docker call, the OCI version label asserted and an unlabelled image rejected, `--platform` pinned, the pull sent through a throwaway docker config, and every miss falling back to the local build rather than failing the deploy |
 | `test_probes_paths.py` | Per-probe pid/log paths are built from a serial read from a permissive field of a client-supplied VISA address: whatever that field carries, the path stays inside `/tmp`, while an ordinary serial keeps the byte-identical filename it had before so an upgrade cannot orphan a running gdbserver; slot assignment still matches on the raw serial, and the unused `/pip` endpoint stays removed |
 | `test_probes_visa_parsing.py` | VISA address parsing for empty-serial FTDI probes |
