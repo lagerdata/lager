@@ -172,6 +172,23 @@ def _load_or_init() -> "cfg.BoxConfig":
     return cfg.BoxConfig.from_dict(raw)
 
 
+def _load_or_bare() -> "cfg.BoxConfig":
+    """Like _load_or_init, but seeds nothing when there is no config yet.
+
+    `init_default()` is the `box-config init` shape: it includes the box-tools
+    volume, which is a sensible starting point for someone provisioning a box
+    deliberately. It is the wrong shape for a single-setting change on a box
+    that happens to have no config file -- the operator asked to change one
+    field and would get a volume they never mentioned, applied on the next
+    bounce. Observed on hardware: setting the network mode on a fresh box
+    produced `+ box-tools -> /opt/box-tools` alongside the mode change.
+    """
+    raw = _load_raw()
+    if raw is None:
+        return cfg.BoxConfig()
+    return cfg.BoxConfig.from_dict(raw)
+
+
 def _cmd_mount_add(payload: str) -> None:
     data = json.loads(payload)
     current = _load_or_init()
@@ -443,6 +460,23 @@ def _cmd_env_set(payload: str) -> None:
     _stdout_json({"ok": True, "set": set_keys})
 
 
+def _cmd_network_mode_show() -> None:
+    """Report the configured network mode without creating or touching config.
+
+    Deliberately reads the raw file rather than going through _load_or_init:
+    a read must never materialize a default config, and _load_or_init seeds
+    one (with the box-tools volume) when none exists.
+    """
+    raw = _load_raw()
+    mode = raw.get("network_mode") if isinstance(raw, dict) else None
+    _stdout_json({
+        "ok": True,
+        "exists": raw is not None,
+        "mode": mode if isinstance(mode, str) else cfg.DEFAULT_NETWORK_MODE,
+        "explicit": isinstance(mode, str),
+    })
+
+
 def _cmd_network_mode_set(payload: str) -> None:
     data = json.loads(payload)
     mode = data.get("mode")
@@ -453,7 +487,7 @@ def _cmd_network_mode_set(payload: str) -> None:
         allowed = ", ".join(cfg.NETWORK_MODES)
         _stdout_json({"ok": False, "errors": [f"network_mode must be one of: {allowed}"]})
         return
-    current = _load_or_init()
+    current = _load_or_bare()
     previous = current.network_mode
     current.network_mode = mode
     raw = current.to_dict()
@@ -467,7 +501,7 @@ def _cmd_network_mode_set(payload: str) -> None:
 
 
 def _cmd_network_mode_unset() -> None:
-    current = _load_or_init()
+    current = _load_or_bare()
     previous = current.network_mode
     current.network_mode = cfg.DEFAULT_NETWORK_MODE
     raw = current.to_dict()
@@ -771,6 +805,7 @@ _DISPATCH = {
     "npm-remove":        lambda args: _cmd_npm_remove(_require_rest(args)),
     "udev-add":          lambda args: _cmd_udev_add(_require(args, 1)),
     "udev-remove":       lambda args: _cmd_udev_remove(_require_rest(args)),
+    "network-mode-show": lambda _args: _cmd_network_mode_show(),
     "network-mode-set":  lambda args: _cmd_network_mode_set(_require(args, 1)),
     "network-mode-unset": lambda _args: _cmd_network_mode_unset(),
     "set-raw":           lambda args: _cmd_set_raw(_require(args, 1)),

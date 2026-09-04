@@ -59,5 +59,11 @@ UDEV_REMOVE = "udev-remove"
 # Container network mode. Unset deletes the key rather than writing the default
 # back, so a config returns to byte-for-byte what it was before the mode was
 # ever set -- and therefore to the same hash.
+# Read verb, listed with the mutating pair because it shares their vocabulary.
+# It is also the deploy discriminator: the generic `show` verb predates this
+# feature and answers identically on a box that has it and one that does not,
+# so asking through `show` cannot tell you whether the box understands the
+# setting at all.
+NETWORK_MODE_SHOW = "network-mode-show"
 NETWORK_MODE_SET = "network-mode-set"
 NETWORK_MODE_UNSET = "network-mode-unset"

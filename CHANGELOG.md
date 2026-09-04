@@ -72,10 +72,31 @@ All notable changes to the Lager platform are documented here. For detailed rele
   Two consequences of `host` are worth stating, since neither follows from the
   command. Published ports are not published on host networking, so the host
   firewall governs the box's ports where Docker's forwarding rules previously
-  bypassed it; the allowlist `secure_box_firewall.sh` writes already admits
-  exactly the ports the container serves. And the container shares the host's
-  `bluetoothd`, so anything wanting exclusive control of the adapter contends
-  with it.
+  bypassed it. `secure_box_firewall.sh` allows those ports **per interface** --
+  `lo`, `docker0`, `tailscale0` when present, and one named with
+  `--corporate-vpn` -- and denies them elsewhere, so a box reached over any
+  other route stops answering the moment its ports stop being published. And
+  the container shares the host's `bluetoothd`, so anything wanting exclusive
+  control of the adapter contends with it.
+
+  Because both of those can strand a box, **`apply` checks before it switches
+  and refuses when the switch would cut the operator off.** It reads the
+  interface the operator's own connection arrives on -- from the live SSH
+  connection, so it holds for any VPN rather than only the one the firewall
+  script knows by name -- confirms the control-plane ports are admitted there,
+  and prints the exact per-interface `ufw allow` command when they are not. It
+  never opens a port itself: whether Lager's control plane belongs on a LAN is
+  a security decision, not a side effect of a Bluetooth feature. It also
+  refuses on a box fronted by a port-publishing gateway, where the container
+  would bind ports the gateway already holds and fail to start. A refused
+  apply changes nothing; `--skip-host-network-check` overrides it.
+
+  The recovery path is in-band. `network-mode set|show|unset` and the
+  post-bounce steps of `apply` fall back to SSH when the HTTP path cannot reach
+  the box, and the post-bounce readiness check asks the box on loopback rather
+  than over a route the switch may just have closed. Without that last part the
+  applied-hash was never stamped, and every later `apply` re-bounced the
+  container indefinitely.
 
   The default is unchanged, and the setting is stored so that it does not
   disturb boxes that never use it: a config sitting at the default writes no
@@ -86,6 +107,14 @@ All notable changes to the Lager platform are documented here. For detailed rele
   raw `unknown command`.
 
 ### Changed
+
+- **`lager box-config apply` now exits 3 when the container is up but running
+  the previous config.** `start_box.sh` has always separated that from a failed
+  bounce, but `apply` collapsed eleven distinct outcomes into exit 1, so a
+  script could not tell "the box is fine, your config did not land" from "the
+  bounce failed and the container may be down". The three codes are now `0`
+  applied, `3` up on the previous config, `1` everything else. Anything that
+  tested only for non-zero is unaffected.
 
 - **A second role on a dual-role instrument is now a notice, not a block.**
   Chips like the Keithley 2281S (battery or supply), the EA PSB pair (solar
