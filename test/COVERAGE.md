@@ -451,9 +451,9 @@ cli/tests/                #  7 files: 6 pytest suites (GATED via `unit (cli)`),
                           #           plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 200 files)
+### Local Unit Tests (`test/unit/` -- 202 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 110 files)
+#### Box Unit Tests (`test/unit/box/` -- 111 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -573,7 +573,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_ykush_driver.py` | YKUSH USB hub driver: device-contention regression from an indefinitely cached handle |
 | `test_automation_exports.py` | Static parse of `automation/__init__.py`'s lazy export table: no name guarded twice, every returned driver reachable under its own name, everything in `__all__` resolvable -- the copy-paste class of defect that made one driver answer to another's name |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 73 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 74 files)
 
 | File | What it tests |
 |------|---------------|
@@ -607,6 +607,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_net_tui_labjack_pins.py` | TUI LabJack pin dialog (prefill/revert/legacy-channel preservation) + combined name+pin editor behind the Add-row pencil, dismissable notices |
 | `test_net_tui_metadata_preserves_record.py` | TUI metadata edits merge into the stored record instead of replacing it with a partial one |
 | `test_net_tui_uart_guard.py` | UART net save validation rejecting bare interface indices and empty pins |
+| `test_net_preflight.py` | Host-networking pre-flight: the ufw-allow parse against real `ufw status` output, refusal when the interface carrying the operator's own connection is not admitted, interface-scoped remediation rather than a blanket open, gateway port-collision refusal, and refusal when the box cannot be probed |
 | `test_nets_add_labjack_pins.py` | LabJack I2C/SPI arbitrary pin selection via --sda/--scl/--cs/--sck/--mosi/--miso |
 | `test_nets_add_roles.py` | Role-token normalization converting legacy supply/batt to power-supply/battery. Also channel-rejection messaging: a rejected channel names the valid ones, a U3 high-voltage pin is pointed at AIN0-AIN3, and add-batch applies the same check while staying permissive for hardware the scan does not find |
 | `test_nets_assign.py` | `lager nets assign` flow with custom-device backend and net creation |

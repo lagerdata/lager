@@ -298,6 +298,57 @@ class NetworkModeShimVerbs(unittest.TestCase):
         self.assertEqual(after, baseline)
 
 
+class NetworkModeShowVerb(NetworkModeShimVerbs):
+    """The read verb. It exists because the generic `show` verb predates the
+    feature and answers identically on a box that has it and one that does not,
+    so `show` could not be used to confirm a deploy landed."""
+
+    def test_reports_the_default_without_creating_a_config(self):
+        _shim._cmd_network_mode_show()
+        self.assertEqual(self._last(),
+                         {"ok": True, "exists": False,
+                          "mode": "lagernet", "explicit": False})
+        self.assertFalse(os.path.exists(self.cfg_path))
+
+    def test_reports_an_explicit_mode(self):
+        _shim._cmd_network_mode_set(json.dumps({"mode": "host"}))
+        _shim._cmd_network_mode_show()
+        self.assertEqual(self._last()["mode"], "host")
+        self.assertTrue(self._last()["explicit"])
+
+    def test_a_config_at_the_default_reads_as_not_explicit(self):
+        _shim._cmd_network_mode_set(json.dumps({"mode": "host"}))
+        _shim._cmd_network_mode_unset()
+        _shim._cmd_network_mode_show()
+        self.assertEqual(self._last()["mode"], "lagernet")
+        self.assertFalse(self._last()["explicit"])
+        self.assertTrue(self._last()["exists"])
+
+
+class SettingTheModeBundlesNothingElse(NetworkModeShimVerbs):
+    def test_a_fresh_box_gets_no_volume_it_did_not_ask_for(self):
+        """Observed on hardware: setting the mode on a box with no config also
+        introduced `+ box-tools -> /opt/box-tools`, which the next apply then
+        applied. A single-setting change must carry only that setting."""
+        _shim._cmd_network_mode_set(json.dumps({"mode": "host"}))
+        self.assertEqual(self._saved()["volumes"], [])
+
+    def test_it_preserves_an_existing_config_rather_than_replacing_it(self):
+        """`volume add` on a fresh box does seed the box-tools default, and
+        that stays correct -- someone provisioning a box deliberately wants it.
+        The mode change must carry that config forward untouched, adding
+        nothing and dropping nothing."""
+        _shim._cmd_volume_add(json.dumps({"name": "keepme", "container": "/keep"}))
+        before = [v["name"] for v in self._saved()["volumes"]]
+        _shim._cmd_network_mode_set(json.dumps({"mode": "host"}))
+        self.assertEqual([v["name"] for v in self._saved()["volumes"]], before)
+        self.assertIn("keepme", before)
+
+    def test_unset_also_bundles_nothing(self):
+        _shim._cmd_network_mode_unset()
+        self.assertEqual(self._saved()["volumes"], [])
+
+
 # ---------------------------------------------------------------------------
 # Cross-tree agreement
 # ---------------------------------------------------------------------------
