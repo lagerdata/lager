@@ -104,7 +104,15 @@ pub enum ScopeReply {
 
 impl ScopeReply {
     pub fn error(message: impl std::fmt::Display) -> Self {
-        ScopeReply::Error(message.to_string())
+        let message = message.to_string();
+        // Every driver error routed to a client passes through here, and
+        // until now none of them were written down: a session where the
+        // scope failed `run_block` at every timebase until the daemon was
+        // restarted left a 266 MB log with not one warning in it, so there
+        // was nothing to investigate afterwards. Driver errors are supposed
+        // to be rare; if they are not, that is the thing worth seeing.
+        tracing::warn!(error = %message, "oscilloscope command failed");
+        ScopeReply::Error(message)
     }
 }
 
