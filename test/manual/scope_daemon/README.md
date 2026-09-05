@@ -1,56 +1,50 @@
-# Scope daemon: manual clients
+# Scope daemon: driving it by hand
 
 Operator-driven checks against a running `oscilloscope-daemon`. No workflow runs these.
 
-The daemon serves WebSocket commands on **8085**. Ports 8082 to 8084 are WebTransport over
-QUIC, which `websocat` cannot speak. None of the four is published by `start_box.sh` or opened
-in the box firewall, so connect from the host that runs the daemon.
+The daemon listens on `127.0.0.1:8085` and on the Unix socket `/tmp/lager-scope.sock`, both
+inside the `lager` container. Neither is published: clients off the box reach the daemon
+through the box HTTP server's relay on port 9000 (`GET /scope/<net>/stream`, then the
+WebSocket it names). To talk to the daemon directly, run the client inside the container.
 
-## WebSocket commands with websocat
+## Commands
+
+Commands and replies are JSON text frames, and every command gets a reply, including one
+the daemon cannot parse. The box's own client sends one and prints the reply:
 
 ```bash
-brew install websocat
-websocat ws://localhost:8085
+lager ssh --box <box>
+docker exec lager python3 -c "
+from lager.measurement.scope import daemon_client as d
+print(d.command('GetCapabilities'))
+print(d.command('SetTimePerDiv', time_per_div=0.001))
+print(d.command('Measure', channel={'Alphabetic': 'A'}))
+"
 ```
 
-Then type one JSON object per line. A command the daemon cannot parse is logged and gets no
-answer, so a silent prompt means the JSON was wrong.
+The JSON on the wire is the command name under `command`, with its parameters beside it:
 
 ```
-{"command": "GetSampleRate"}
-{"command": "SetTriggerLevel", "trigger_level": 2.0}
-{"command": "GetTriggerLevel"}
-
-{"command": "SetVoltsPerDiv", "channel": {"Alphabetic": "A"}, "volts_per_div": 2.0}
-{"command": "GetVoltsPerDiv", "channel": {"Alphabetic": "A"}}
-
 {"command": "EnableChannel", "channel": {"Alphabetic": "A"}}
-{"command": "DisableChannel", "channel": {"Alphabetic": "A"}}
-{"command": "IsChannelEnabled", "channel": {"Alphabetic": "A"}}
-
-{"command": "EnableChannel", "channel": {"Alphabetic": "B"}}
-{"command": "DisableChannel", "channel": {"Alphabetic": "B"}}
-{"command": "IsChannelEnabled", "channel": {"Alphabetic": "B"}}
-
-{"command": "SetTimePerDiv", "time_per_div": 0.005}
-{"command": "GetTimePerDiv"}
+{"command": "SetVoltsPerDiv", "channel": {"Alphabetic": "A"}, "volts_per_div": 1.0}
+{"command": "SetTriggerLevel", "trigger_level": 1.0}
+{"command": "SetCaptureMode", "capture_mode": "normal"}
+{"command": "StartAcquisition", "trigger_position_percent": 50.0}
+{"command": "StopAcquisition"}
 ```
 
-`SetTimeOffset`, `SetVoltsOffset` and their getters answer "Unsupported command" here. Only
-the WebTransport path handles them.
+## Captures
 
-## WebTransport client: `web_oscilloscope_wt.html`
+Captures are binary LSCP frames (see `box/oscilloscope-daemon/protocol/src/lscp.rs`), sent
+only to a connection that has sent `{"command": "Subscribe"}`.
+`box/oscilloscope-daemon/tests/bench/stream_bench.py` subscribes, and reports the capture
+rate and capture-to-client latency:
 
-A browser client for the WebTransport endpoints: 8082 for commands, 8083 for data. Open it in
-Chrome, and pass `?host=`, `?commandsPort=` or `?browserPort=` to point it elsewhere.
+```bash
+docker exec lager python3 /app/stream_bench.py --duration 20
+```
 
-It pins the certificate by hash, and the hash in the file matches a developer certificate that
-is not in the repository (`.gitignore` excludes `certs/`). A new certificate needs its SHA-256
-written into the file, next to the comment that says so.
-
-The shipped WebSocket UI is `box/lager/docker/web_oscilloscope.html`, which the box serves and
-`lager scope stream web` opens. This page is the WebTransport counterpart, and it ships
-nowhere.
+Copy the script into the container first (`docker cp`); the image does not ship it.
 
 <!-- Copyright 2024-2026 Lager Data -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->

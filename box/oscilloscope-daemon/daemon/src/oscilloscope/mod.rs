@@ -1,29 +1,11 @@
 // Copyright 2024-2026 Lager Data
 // SPDX-License-Identifier: Apache-2.0
 
-use anyhow::Result;
-use protocol::{CaptureMode, ChannelId, Coupling, TriggerSlope, TriggeredCapture};
-// use std::sync::{Arc, Mutex}; // Not used in this file
+use protocol::{CaptureFrame, CaptureMode, ChannelId, Coupling, ScopeCapabilities, TriggerSlope};
 
-#[cfg(feature = "ps2000")]
 pub mod pico;
 
-#[cfg(feature = "ps2000a")]
-pub mod pico;
-
-#[cfg(feature = "mso5000")]
-pub mod rigol;
-
-#[cfg(feature = "generic")]
-pub mod generic;
-
-// Only re-export the oscilloscope that is enabled
-#[cfg(feature = "ps2000")]
 pub use pico::PicoScope2000;
-
-// Only re-export the oscilloscope that is enabled
-#[cfg(feature = "ps2000a")]
-pub use pico::PicoScope2000A;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd)]
 pub enum CursorType {
@@ -134,20 +116,19 @@ pub trait Oscilloscope: Send + Sync {
     fn start_triggered_capture(&mut self, trigger_position_percent: f64) -> anyhow::Result<()>;
     fn stop_triggered_capture(&mut self) -> anyhow::Result<()>;
     fn is_ready(&self) -> anyhow::Result<bool>;
-    fn get_triggered_data(&self) -> anyhow::Result<TriggeredCapture>;
-}
+    fn get_triggered_data(&self) -> anyhow::Result<CaptureFrame>;
 
-pub fn create_oscilloscope() -> Result<Box<dyn Oscilloscope>> {
-    #[cfg(feature = "ps2000")]
-    {
-        Ok(Box::new(PicoScope2000::new()?))
-    }
-    #[cfg(all(not(feature = "ps2000"), feature = "ps2000a"))]
-    {
-        Ok(Box::new(PicoScope2000A::new()?))
-    }
-    #[cfg(not(any(feature = "ps2000", feature = "ps2000a")))]
-    {
-        Err(anyhow::anyhow!("No oscilloscope found"))
+    /// Trigger immediately rather than waiting for the configured condition.
+    fn force_trigger(&mut self) -> anyhow::Result<()>;
+
+    /// What this specific unit supports, detected at open time. Drives which
+    /// controls the UI shows and which commands the CLI accepts.
+    fn capabilities(&self) -> anyhow::Result<ScopeCapabilities>;
+
+    /// How long to wait before re-checking readiness when the driver offers
+    /// no completion callback. Derived from the timebase so a slow capture
+    /// does not spin and a fast one is not throttled by a fixed interval.
+    fn suggested_poll_interval(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(2)
     }
 }
