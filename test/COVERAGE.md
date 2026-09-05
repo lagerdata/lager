@@ -88,8 +88,12 @@ anywhere in the tree.
 
 `box/oscilloscope-daemon` is Rust, and until this workflow **no job in this repo referenced
 cargo**. That crate is not a side project. `docker/start-services.sh` launches it on box boot
-whenever the binary is present. `daemon/src/main.rs` opens QUIC/WebTransport listeners on
-8082-8084, which is network-reachable runtime code on customer hardware.
+whenever the binary is present, and it drives the PicoScope through the vendor SDK's FFI --
+runtime code on customer hardware.
+
+It binds loopback only (`127.0.0.1:8085` plus a Unix socket) and is reached from outside
+through the box HTTP server's relay on `:9000`. When this job was added it published
+QUIC/WebTransport listeners on 8082-8084 directly; that is gone.
 
 The gap was not theoretical. Dependabot PR #172 bumped 20 crates across 22 breaking-version
 boundaries and showed a **green tick from twelve checks**. It then failed to compile in 74
@@ -111,16 +115,28 @@ places, because all twelve checks were Python. It broke two ways independently:
 `cargo check` rather than `cargo build`: it type-checks the workspace without linking, which is
 what catches API breaks without resolving every link-time symbol.
 
-It still needs the **PicoScope SDK** on the runner. `daemon/build.rs` runs bindgen against
-`/opt/picoscope/include/libps2000/ps2000.h` unconditionally, and no feature flag skips it.
-Without the headers the build script panics, and nothing downstream is checked. The first run of
-this workflow failed exactly there (`wrapper.h:2:10: fatal error: 'ps2000.h' file not found`).
-The job installs `libps2000` from PicoTech's Debian repo, the same one `build_daemon.sh`
-documents for setting up a box, and asserts the header exists before continuing.
+It still needs the **PicoScope SDK** on the runner. `daemon/build.rs` runs bindgen against the
+PicoTech headers unconditionally, and no feature flag skips it. Without them the build script
+panics, and nothing downstream is checked. The first run of this workflow failed exactly there
+(`wrapper.h:2:10: fatal error: 'ps2000.h' file not found`).
+
+The headers are deliberately **not** in this repo: PicoTech licenses them rather than selling
+them and limits redistribution, which a public repo cannot honour. `build.rs` looks for them in
+`picoscope/include/<family>/` at the repo root first (for a local unpack of the SDK) and falls
+back to `/opt/picoscope/include/<family>/`, where the PicoTech packages install them. A checkout
+with neither fails the build with a message saying where to put them, rather than silently
+producing a daemon that cannot talk to any scope.
+
+The job installs `libps2000`, `libps2000a`, `libps3000a`, `libps4000a`, `libps5000a` and
+`libps6000a` from PicoTech's Debian repo -- the same one `build_daemon.sh` documents for setting
+up a box -- and asserts every header `build.rs` opens exists before continuing. All five
+families are needed because the daemon generates a binding set per family, so one binary serves
+whichever driver a given box has. `libps6000a` is there for its headers alone: `libps3000a`'s
+`PicoDeviceStructs.h` includes `PicoConnectProbes.h`, which PicoTech ships under the 4000a and
+6000a families rather than with 3000a.
 
 That makes the job depend on an external apt host. If `labs.picotech.com` proves flaky, split the
-job so the SDK-free crates (`cli`, `protocol`, `wtransport_test`) keep gating while the daemon
-check degrades to advisory.
+job so the SDK-free `protocol` crate keeps gating while the daemon check degrades to advisory.
 
 The toolchain is pinned to 1.95.0, for the same reason `shellcheck` is pinned in
 `static-checks.yml`. The clippy and audit baselines were measured against a known version. A

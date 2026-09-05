@@ -81,6 +81,12 @@ A script drives an instrument directly only when it is **not** a VISA instrument
 drivers are LabJack, USB-202, FT232H, Aardvark, Joulescope and PPK2. Supplies, scopes, battery
 simulators, e-loads and solar simulators go over `/invoke` like any other caller.
 
+A PicoScope is the one instrument that goes over `/invoke` without holding a VISA session: it is
+a USB device with a vendor SDK, so the hardware service reaches it by sending commands to the
+oscilloscope daemon on loopback rather than by opening a VISA resource. The daemon owns the
+device the way the hardware service owns a VISA session, and for the same reason — the PicoTech
+SDK admits one process per unit.
+
 ```mermaid
 flowchart TB
   subgraph container["Docker container: lager"]
@@ -133,8 +139,7 @@ flowchart TB
 | 8765 | WebSocket | Yes (VPN only) | Debug sessions (GDB, flash, reset) |
 | 8100 | HTTP | Yes (VPN only) | MCP service for AI tool integration |
 | 8080 | Flask | Yes (VPN only) | Hardware service: instrument control via the Device proxy, called by the port 9000 API |
-| 8081 | HTTP | Yes (if PicoScope present) | Oscilloscope streaming UI |
-| 8082-8085 | TCP / WebSocket | Yes (if PicoScope present) | Oscilloscope daemon (commands, browser streaming, database streaming, CLI WebSocket) |
+| 8085 | TCP / WebSocket | No (loopback only) | Oscilloscope daemon control plane. Reached from outside through the port 9000 relay, never directly |
 | 8086+ | HTTP | Yes (if webcams present) | Webcam MJPEG streaming (one port per camera) |
 | 22 | SSH | Yes | Direct SSH access for deployment and debugging |
 

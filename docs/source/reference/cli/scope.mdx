@@ -31,17 +31,26 @@ If `NETNAME` is omitted, lists all available scope nets on the box.
 | `stop` | Stop waveform capture | Both |
 | `force` | Force trigger manually (bypass trigger condition) | Both |
 | `autoscale` | Automatically adjust vertical scale and timebase | Rigol only |
-| `coupling` | Set channel coupling mode (dc, ac, or gnd) | Rigol only |
-| `probe` | Set probe attenuation ratio | Rigol only |
-| `scale` | Set vertical scale (volts per division) | Rigol only |
-| `timebase` | Set horizontal timebase (seconds per division) | Rigol only |
-| `measure` | Measure waveform characteristics | Rigol only |
+| `coupling` | Set channel coupling mode (dc, ac, or gnd) | Both |
+| `probe` | Set probe attenuation ratio | Both |
+| `scale` | Set vertical scale (volts per division) | Both |
+| `timebase` | Set horizontal timebase (seconds per division) | Both |
+| `measure` | Measure waveform characteristics | Both (see note) |
 | `trigger` | Configure trigger settings | Both (see note) |
 | `cursor` | Control scope cursor positions | Rigol only |
 | `stream` | Stream oscilloscope data with web visualization | PicoScope only |
 
 <Note>
 Edge trigger works with both PicoScope and Rigol. Protocol triggers (I2C, SPI, UART) and pulse width trigger are Rigol only.
+</Note>
+
+<Note>
+Measurements work on both instruments, but they are computed differently. A Rigol
+answers a SCPI query about what it already displays; for a PicoScope the daemon
+captures a block and computes the value from the samples, because no PicoTech API
+has an equivalent of `:MEAS:VPP?`. The consequence is that `--display` and
+`--cursor` are Rigol only: they put the reading on the instrument's own screen,
+and a PicoScope does not have one.
 </Note>
 
 ---
@@ -64,21 +73,26 @@ The CLI validates input values before sending commands to the oscilloscope:
 | Manufacturer | Model | Features |
 |--------------|-------|----------|
 | Rigol | MSO5000 series | 4 analog + 16 digital channels, SCPI/VISA control, advanced triggers (edge, pulse, I2C, SPI, UART), measurements, cursors |
-| PicoScope | 2000 series | Real-time streaming, web-based visualization, CSV export, edge trigger |
+| PicoScope | 2000, 2000a, 3000a, 4000a, 5000a series | Real-time streaming, web-based visualization, CSV export, edge trigger, daemon-computed measurements |
+
+The channel count, voltage ranges, bandwidth, memory depth and ADC resolution of
+an attached PicoScope are detected at runtime rather than assumed from the
+series, so a 2-channel 2204A and an 8-channel 4824A both work without
+configuration. `lager scope <net> capabilities` reports what was detected.
 
 ### Feature Comparison
 
-| Feature | Rigol MSO5000 | PicoScope 2000 |
-|---------|---------------|----------------|
-| Channels | 4 analog + 16 digital | Up to 4 analog |
+| Feature | Rigol MSO5000 | PicoScope |
+|---------|---------------|-----------|
+| Channels | 4 analog + 16 digital | 2-8 analog, detected at runtime |
 | Real-time streaming | No (single capture) | Yes (continuous) |
-| Measurements | 11 built-in types | Via streaming/CSV |
+| Measurements | 11 built-in types | 14 types, computed from the capture |
 | Trigger types | Edge, pulse, I2C, SPI, UART | Edge only |
-| Cursor control | Manual XY cursors | Web UI cursors |
+| Cursor control | Manual XY cursors | In the web UI, drawn client-side |
 | Autoscale | Yes | No |
 | Web visualization | No | Yes (HTML5) |
 | Data export | Via measurements | CSV streaming |
-| Control method | SCPI over USB/LAN | WebSocket daemon |
+| Control method | SCPI over USB/LAN | Vendor SDK, via the box daemon |
 
 ---
 
@@ -213,7 +227,14 @@ lager scope ANALOG1 timebase 0.000000001 --box my-lager-box # 1ns/div (minimum)
 
 ## Measure Subcommands (Rigol)
 
-Measure waveform characteristics on Rigol oscilloscopes. PicoScope users must use the streaming capture commands to export waveform data for analysis.
+Measure waveform characteristics on either instrument. A Rigol is asked for a
+reading it already computes; for a PicoScope the box captures a block and
+computes the value from the samples, so no streaming or CSV export is needed.
+
+Because one PicoScope capture yields every quantity at once, reading several
+values costs several captures. A script that wants the whole set should use
+`measure_all` from the [Python API](/source/reference/python/scope) instead of
+calling this repeatedly.
 
 **Common Options for all measure commands:**
 
@@ -601,14 +622,29 @@ Stream oscilloscope data in real time from PicoScope devices. The streaming syst
 
 ### Daemon Architecture
 
-The PicoScope streaming daemon communicates over multiple ports:
+Everything reaches the scope through the box HTTP server on **port 9000**, the
+same port every other net uses. The daemon that owns the PicoScope binds
+loopback only and is not reachable from outside the box:
 
-| Port | Purpose |
-|------|---------|
-| 8080 | HTTP server for web visualization UI |
-| 8082 | WebSocket command channel (browser) |
-| 8083 | WebTransport streaming (browser data) |
-| 8085 | CLI command port (WebSocket) |
+| Endpoint | Purpose |
+|----------|---------|
+| `:9000` `GET /scope` | The web visualization UI |
+| `:9000` `POST /net/command` | Control: enable, scale, timebase, trigger, measure |
+| `:9000` `GET /scope/<net>/stream` | A ticket: a token, the data-socket path, and the detected capabilities |
+| `:9000` `GET /scope/<net>/ws` | WebSocket carrying capture frames, using the token above |
+| `:9000` `/scope` (Socket.IO) | Live acquisition state for the UI |
+| `127.0.0.1:8085` and `/tmp/lager-scope.sock` | The daemon itself. Loopback only; the port 9000 relay is the only way in |
+
+Capture frames cross the relay in **LSCP/1**, a packed binary format: a 64-byte
+header followed by contiguous `int16` ADC counts. The relay forwards frames
+without decoding them, so its cost does not grow with capture size.
+
+<Note>
+Earlier versions published the daemon directly on ports 8081-8085 and streamed
+to the browser over WebTransport, which needed a QUIC listener and a
+certificate mounted into the container. All of that is gone: there is one
+listener, on loopback, and one way in.
+</Note>
 
 ### `stream start`
 
@@ -677,9 +713,14 @@ lager scope NET_NAME stream web [--box BOX] [--port PORT]
 ```
 
 **Options:**
-- `--port` - HTTP server port (default: 8080)
+- `--port` - Box HTTP server port (default: 9000)
 
-The web interface provides an HTML5 oscilloscope display with real-time waveform rendering via WebTransport.
+The web interface is a dependency-free HTML5 oscilloscope display served from the
+box at `http://<box>:9000/scope`. Waveforms arrive over a WebSocket as LSCP
+binary frames and are decoded in the browser. The controls are built from the
+capabilities detected on the attached unit, so a 2-channel scope does not offer a
+channel C, and the page includes a command console that accepts the same
+vocabulary as this CLI.
 
 ### `stream capture`
 
@@ -942,9 +983,10 @@ scope [NETNAME] [--box BOX]
 - Net names refer to names assigned when setting up your testbed with `lager nets`
 - The `--mcu` option is available on all commands and is passed to the backend; use it when multiple MCUs share a scope channel
 - Streaming commands are only available for PicoScope devices
-- Measurement and cursor commands are only available for Rigol devices
+- Measurements work on both instruments; `--display` and `--cursor` are Rigol only, since they draw on the instrument's own screen
+- Cursor commands are only available for Rigol devices. For a PicoScope, use the cursors in the web UI, which measure client-side over the captured samples
 - Edge trigger is the only trigger type supported on both PicoScope and Rigol
-- Web visualization requires port 8080 to be accessible on the Lager Box
+- Web visualization requires port 9000 to be accessible on the Lager Box
 - Validation rejects values outside the allowed ranges before sending to hardware
 - Use `lager nets` to see available scope nets
 

@@ -87,12 +87,22 @@ enabling automated signal inspection and power analysis.
 | Manufacturer | Model | Channels | Control Command |
 |---|---|---|---|
 | Rigol | MSO5204 | 4 analog + 1 logic | `lager scope`, `lager logic` |
-| Pico Technology | PicoScope 2000 | 2 analog | `lager scope` |
+| Pico Technology | PicoScope 2000, 2000a, 3000a, 4000a, 5000a | 2-8 analog, detected at runtime | `lager scope` |
+
+A PicoScope's channel count, voltage ranges, bandwidth, memory depth and ADC
+resolution are read from the unit when it is opened rather than assumed from the
+model, so scopes within a supported series work without configuration. Run
+`lager scope <net> capabilities` to see what was detected.
 
 **Enables:**
 - Automated waveform capture
 - Trigger-based signal validation
 - Digital + analog correlation
+- Continuous streaming with a live web view at `http://<box>:9000/scope` (PicoScope)
+- Measurements computed on the box from the capture (PicoScope) or queried over SCPI (Rigol)
+
+Cursors, protocol triggers (I2C, SPI, UART) and the logic analyzer are Rigol
+only. A PicoScope reports the gap rather than returning a misleading value.
 
 ## Power Measurement
 

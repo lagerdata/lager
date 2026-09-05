@@ -108,9 +108,10 @@ Everything returns `lager::Result<T>` with a single `Error` enum:
 - Rust 1.75+.
 
 <Note>
-Oscilloscope / logic-analyzer workflows are not exposed on the box HTTP
-API yet, so `Scope` ships as a documented stub whose methods return
-`Error::NotSupportedByBox`. Support lands when the box API does; the
+`Scope` ships as a documented stub whose methods return
+`Error::NotSupportedByBox`. The box side is no longer the blocker -- a `scope`
+role now exists on `POST /net/command` -- but the handle has not been wired to
+it yet. Logic-analyzer workflows are still missing on the box API too. The
 endpoint sketch is tracked in the crate's
 [`MISSING_ENDPOINTS.md`](https://github.com/lagerdata/lager-rs/blob/main/MISSING_ENDPOINTS.md).
 </Note>

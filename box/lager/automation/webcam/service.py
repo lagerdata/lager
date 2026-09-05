@@ -18,7 +18,11 @@ from typing import Dict, Optional, List
 
 # State file path
 STATE_FILE = Path("/etc/lager/webcam_streams.json")
-BASE_PORT = 8086  # Changed from 8081 to avoid conflict with oscilloscope UI (8081) and daemon (8082-8085)
+# Cameras get one port each from here up. Chosen when the oscilloscope UI held
+# 8081 and its daemon 8082-8085; the scope has since moved behind port 9000 and
+# freed that range, but the base stays put so a deployed box's camera URLs keep
+# working across an update.
+BASE_PORT = 8086
 
 
 class WebcamStreamState:

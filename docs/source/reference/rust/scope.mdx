@@ -40,16 +40,22 @@ MISSING_ENDPOINTS.md
 
 ## Why
 
-The crate is a pure HTTP/JSON client of the box's API on port 9000. Every other net
-type has a route there. Scope and logic-analyzer work does not. `lager scope` and
-`lager logic` still run over the legacy exec path on port 5000, and over a dedicated
-oscilloscope streaming daemon on ports 8082-8085. Neither of those is an HTTP/JSON
-API that this crate can speak.
+The crate is a pure HTTP/JSON client of the box's API on port 9000, and it needs a
+route there for every net type it drives.
 
-Closing the gap needs `analog` and `logic` roles in the box's `/net/command`
-`ROLE_ACTIONS`. Those roles must cover trigger configuration, a single capture that
-returns the trace as JSON, and scalar measurements. Streaming capture can stay on the
-dedicated daemon. The work list lives in
+The box side of that gap has since closed for scopes: `POST :9000/net/command` now
+carries a `scope` role covering channel enable, vertical and horizontal scaling,
+probe attenuation, coupling, edge trigger configuration, capture control and
+measurements, for both PicoScope and Rigol. What remains is the crate: the `Scope`
+handle has not been wired to those actions yet, so the methods above still return
+`Error::NotSupportedByBox`.
+
+Logic-analyzer work is still missing on both sides -- there is no `logic` role on
+`/net/command`.
+
+Streaming capture stays where it is. It is a binary frame stream over a WebSocket
+relay rather than request/response JSON, so it does not belong behind these
+methods. The work list lives in
 [MISSING_ENDPOINTS.md](https://github.com/lagerdata/lager-rs/blob/main/MISSING_ENDPOINTS.md).
 
 ## What to do instead

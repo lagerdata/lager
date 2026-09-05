@@ -199,7 +199,7 @@ box/
 │   ├── docker/             # box.Dockerfile and container assets
 │   └── instrument_wrappers/
 │
-├── oscilloscope-daemon/    # Rust WebSocket/WebTransport scope streaming
+├── oscilloscope-daemon/    # Rust scope daemon: PicoScope SDK FFI, LSCP binary streaming
 ├── udev_rules/             # Device permission rules
 └── start_box.sh            # Container entry point
 ```

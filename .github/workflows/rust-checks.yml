@@ -4,10 +4,13 @@
 # Build validation for box/oscilloscope-daemon, which had none.
 #
 # That crate is not a side project: docker/start-services.sh launches it on box
-# boot whenever /usr/local/bin/oscilloscope-daemon is present, and
-# daemon/src/main.rs opens QUIC/WebTransport listeners on 8082-8084. It is
-# network-reachable runtime code on customer hardware, and until this workflow
-# no job in this repo referenced cargo at all.
+# boot whenever /usr/local/bin/oscilloscope-daemon is present, and it drives the
+# PicoScope over the vendor SDK's FFI. It is runtime code on customer hardware,
+# and until this workflow no job in this repo referenced cargo at all.
+#
+# It binds loopback only (127.0.0.1:8085 plus a Unix socket) and is reached from
+# outside through the box HTTP server's relay on :9000. Earlier versions
+# published QUIC/WebTransport listeners on 8082-8084 directly; that is gone.
 #
 # The gap was not theoretical. Dependabot PR #172 bumped 20 crates across 22
 # breaking-version boundaries, showed a GREEN tick from twelve checks, and
@@ -113,10 +116,17 @@ jobs:
         shell: bash
 
       # daemon/build.rs generates FFI bindings from the PicoScope headers with
-      # bindgen, unconditionally. Without libps2000 the build script panics and
-      # nothing downstream is checked at all, so this is a prerequisite rather
-      # than an optional extra. Same repo and packages build_daemon.sh
-      # documents for setting up a box.
+      # bindgen, unconditionally, for every family the daemon supports. Without
+      # them the build script panics and nothing downstream is checked at all,
+      # so this is a prerequisite rather than an optional extra. Same repo and
+      # packages build_daemon.sh documents for setting up a box.
+      #
+      # All five families are needed, not just libps2000: the daemon generates
+      # a binding set per family so one binary serves whichever driver a given
+      # box has. libps6000a is installed for its headers only -- libps3000a's
+      # PicoDeviceStructs.h includes PicoConnectProbes.h, which PicoTech ships
+      # under the 4000a/6000a families rather than with 3000a, and build.rs
+      # adds the sibling include directories to resolve it.
       #
       # libclang-dev is bindgen's own requirement (it parses the C headers with
       # libclang); pkg-config and build-essential match build_daemon.sh.
@@ -124,9 +134,8 @@ jobs:
       # NOTE: this makes the job depend on an external apt repo
       # (labs.picotech.com). If that host is down, this fails for a reason that
       # has nothing to do with the change under review. If that turns out to
-      # happen in practice, split this job so the SDK-free crates
-      # (cli, protocol, wtransport_test) still gate while the daemon check
-      # degrades to advisory.
+      # happen in practice, split this job so the SDK-free protocol crate still
+      # gates while the daemon check degrades to advisory.
       - name: Install PicoScope SDK and build deps
         if: steps.detect.outputs.rust_changed == 'true'
         run: |
@@ -137,10 +146,28 @@ jobs:
           echo "deb [signed-by=/usr/share/keyrings/picoscope-archive-keyring.gpg] https://labs.picotech.com/debian/ picoscope main" \
             | sudo tee /etc/apt/sources.list.d/picoscope.list
           sudo apt-get update
-          sudo apt-get install -y libps2000
-          test -f /opt/picoscope/include/libps2000/ps2000.h \
-            || { echo "ps2000.h missing after install -- daemon/build.rs will panic"; exit 1; }
-          echo "ps2000.h present"
+          sudo apt-get install -y \
+            libps2000 libps2000a libps3000a libps4000a libps5000a libps6000a
+          # Assert every header build.rs opens, so a missing one fails here
+          # with the name rather than inside a bindgen panic.
+          missing=0
+          for header in \
+              libps2000/ps2000.h \
+              libps2000a/ps2000aApi.h \
+              libps3000a/ps3000aApi.h \
+              libps4000a/ps4000aApi.h \
+              libps5000a/ps5000aApi.h \
+              libps4000a/PicoConnectProbes.h; do
+            if [ ! -f "/opt/picoscope/include/$header" ]; then
+              echo "MISSING /opt/picoscope/include/$header"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] || {
+            echo "headers missing after install -- daemon/build.rs will panic"
+            exit 1
+          }
+          echo "all PicoScope headers present"
         shell: bash
 
       # Pinned, for the same reason shellcheck is pinned in static-checks.yml:
@@ -185,12 +212,12 @@ jobs:
         run: cargo metadata --locked --format-version 1 > /dev/null
         shell: bash
 
-      # Zero tests exist in this workspace today, so this compiles the test
-      # harness and passes trivially -- which is exactly when to add the
-      # gate: the moment the first #[test] lands, it runs here with no
-      # workflow change. The strongest candidates for those first tests are
-      # the pure-logic protocol/frame-parsing paths behind the QUIC and
-      # WebTransport listeners, which need no hardware.
+      # Added when the workspace had zero tests, on the reasoning that the
+      # gate should exist before the first #[test] rather than after. It now
+      # runs ~130 of them: LSCP frame encode/decode round-trips, capability
+      # detection over recorded GetUnitInfo responses, the measurement maths,
+      # and the modern-API driver against a mock scope. All pure logic -- no
+      # hardware, which is why they can gate here.
       - name: cargo test
         if: always() && steps.detect.outputs.rust_changed == 'true'
         run: cargo test --workspace --locked
