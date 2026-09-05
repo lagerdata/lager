@@ -26,7 +26,9 @@ which exposed no scope operations at all.
 """
 from __future__ import annotations
 
+import csv
 import logging
+import time
 
 from . import daemon_client
 
@@ -433,21 +435,46 @@ class PicoScope:
         """One triggered capture, decoded into an ``lscp.CaptureFrame``."""
         return self.client.capture(timeout=timeout)
 
-    def stream_start(self, channels=None, volts_per_div=None, time_per_div=None):
+    def stream_start(self, channel=None, volts_per_div=None, time_per_div=None,
+                     trigger_level=None, trigger_slope=None, capture_mode=None,
+                     coupling=None, channels=None):
         """Configure and arm streaming, then return the capture parameters.
 
-        The counterpart to ``stream_capture``. Documented in the Python
-        reference for a while before it existed; this is the implementation.
+        The counterpart to ``stream_capture``. Every setting is optional and
+        only the ones given are applied, so arming with a different trigger
+        level does not quietly reset the coupling somebody set earlier.
+
+        ``channel`` takes a single channel, matching the documented API and
+        the ``lager scope stream start`` flags. ``channels`` takes several,
+        for a multi-channel capture; passing both enables the union.
         """
-        selected = list(channels or [self.channel])
-        for channel in selected:
-            self.enable_channel(channel)
+        selected = []
+        for value in ([channel] if channel is not None else []) + list(channels or []):
+            if value not in selected:
+                selected.append(value)
+        if not selected:
+            selected = [self.channel]
+
+        for target in selected:
+            self.enable_channel(target)
             if volts_per_div is not None:
-                self.set_channel_scale(volts_per_div, channel)
+                self.set_channel_scale(volts_per_div, target)
+            if coupling is not None:
+                self.set_channel_coupling(coupling, target)
+
         if time_per_div is not None:
             self.set_timebase_scale(time_per_div)
+        if trigger_slope is not None:
+            self.set_trigger_slope(trigger_slope)
+        if trigger_level is not None:
+            # The level is in volts on whichever channel triggers, so the
+            # source is pointed at the first selected channel first.
+            self.set_trigger_source(selected[0])
+            self.set_trigger_level(trigger_level)
 
-        self._command("SetCaptureMode", capture_mode="auto")
+        self._command("SetCaptureMode",
+                      capture_mode=_lookup(_CAPTURE_MODES, capture_mode or "auto",
+                                           "capture mode"))
         self._command("StartAcquisition", trigger_position_percent=50.0)
         return {
             "channels": [channel_label(c) for c in selected],
@@ -470,10 +497,82 @@ class PicoScope:
         self._command("Unsubscribe")
         return {"subscribed": False}
 
-    def stream_capture(self, count: int = 1, timeout: float | None = None):
-        """Yield ``count`` captures as decoded frames."""
+    def stream_frames(self, count: int = 1, timeout: float | None = None):
+        """Yield ``count`` captures as decoded ``lscp.CaptureFrame`` objects.
+
+        The zero-copy path: a frame's ``counts()`` is a view over the
+        received buffer, so nothing is converted until the caller asks. Use
+        this over ``stream_capture`` when the samples are going into numpy
+        rather than onto disk.
+        """
         for _ in range(max(1, int(count))):
             yield self.capture(timeout=timeout)
+
+    def stream_capture(self, output=None, duration: float = 1.0, samples=None,
+                       timeout: float | None = None) -> dict:
+        """Capture for ``duration`` seconds, optionally writing a CSV.
+
+        Returns a summary rather than the samples themselves, because the
+        point of a duration-bounded capture is usually the file. For the
+        samples in memory, iterate ``stream_frames`` instead.
+
+        ``samples`` caps the rows per channel, so a long duration on a fast
+        timebase cannot fill the disk unnoticed. It is a cap, not a target:
+        the capture still stops at ``duration``.
+        """
+        if duration is not None and duration <= 0:
+            raise ValueError("duration must be positive, got %r" % (duration,))
+        if samples is not None and samples <= 0:
+            raise ValueError("samples must be positive, got %r" % (samples,))
+
+        deadline = time.monotonic() + float(duration)
+        rows = []
+        captures = 0
+        per_channel = 0
+
+        while time.monotonic() < deadline:
+            if samples is not None and per_channel >= samples:
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                frame = self.capture(timeout=timeout if timeout is not None
+                                     else remaining)
+            except daemon_client.ScopeDaemonError:
+                # A capture that does not arrive before the deadline ends the
+                # run with whatever was collected, rather than failing and
+                # discarding it.
+                break
+
+            interval_ns = frame.sample_interval_ns
+            take = frame.samples_per_channel
+            if samples is not None:
+                take = min(take, samples - per_channel)
+
+            if output is not None:
+                for index, descriptor in enumerate(frame.channels):
+                    volts = frame.volts(index)
+                    for i in range(take):
+                        rows.append((captures, descriptor.channel, i,
+                                     i * interval_ns, float(volts[i])))
+
+            per_channel += take
+            captures += 1
+
+        if output is not None:
+            with open(output, "w", newline="") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(["capture", "channel", "sample_index",
+                                 "time_ns", "voltage"])
+                writer.writerows(rows)
+
+        return {
+            "captures": captures,
+            "samples_per_channel": per_channel,
+            "rows": len(rows),
+            "output": output,
+        }
 
     def stream_stop(self):
         return self.stop()
