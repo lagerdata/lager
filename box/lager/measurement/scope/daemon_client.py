@@ -58,6 +58,22 @@ def daemon_url() -> str:
     return "ws://%s:%s/" % (host, port)
 
 
+class _DaemonReceiveThread(threading.Thread):
+    """A `simple_websocket` receive thread that does not outlive its process.
+
+    `simple_websocket` starts its receive thread without ``daemon=True``, so
+    an open connection keeps the interpreter alive: a script that took one
+    capture and returned would print its results and then sit there until the
+    socket happened to close, which looks exactly like a hung script. Nothing
+    here is worth blocking process exit for -- an abandoned connection is the
+    daemon's to reap.
+    """
+
+    def __init__(self, *args, **kwargs):
+        kwargs["daemon"] = True
+        super().__init__(*args, **kwargs)
+
+
 class ScopeDaemonClient:
     """One WebSocket connection to the daemon.
 
@@ -81,7 +97,8 @@ class ScopeDaemonClient:
         if self._ws is not None:
             return self._ws
         try:
-            self._ws = simple_websocket.Client(self._url)
+            self._ws = simple_websocket.Client(
+                self._url, thread_class=_DaemonReceiveThread)
         except Exception as e:
             raise ScopeDaemonUnavailable(
                 "oscilloscope daemon unreachable at %s: %s" % (self._url, e)) from e
