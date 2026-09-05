@@ -47,13 +47,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 2956 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 3345 |
+| `unit (cli)` | `test/unit/cli/` | 2958 (+2 xfailed) |
+| `unit (box)` | `test/unit/box/` | 3424 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 380 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 166 (+1 skipped) |
-| | **Total gated** | **7041** |
+| | **Total gated** | **7122** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -93,8 +93,12 @@ anywhere in the tree.
 
 `box/oscilloscope-daemon` is Rust, and until this workflow **no job in this repo referenced
 cargo**. That crate is not a side project. `docker/start-services.sh` launches it on box boot
-whenever the binary is present. `daemon/src/main.rs` opens QUIC/WebTransport listeners on
-8082-8084, which is network-reachable runtime code on customer hardware.
+whenever the binary is present. It drives the PicoScope through the vendor SDK's FFI, so it is
+runtime code on customer hardware.
+
+It binds loopback only (`127.0.0.1:8085` plus a Unix socket) and is reached from outside
+through the box HTTP server's relay on `:9000`. When this job was added it published
+QUIC/WebTransport listeners on 8082-8084 directly; that is gone.
 
 The gap was not theoretical. Dependabot PR #172 bumped 20 crates across 22 breaking-version
 boundaries and showed a **green tick from twelve checks**. It then failed to compile in 74
@@ -116,16 +120,28 @@ places, because all twelve checks were Python. It broke two ways independently:
 `cargo check` rather than `cargo build`: it type-checks the workspace without linking, which is
 what catches API breaks without resolving every link-time symbol.
 
-It still needs the **PicoScope SDK** on the runner. `daemon/build.rs` runs bindgen against
-`/opt/picoscope/include/libps2000/ps2000.h` unconditionally, and no feature flag skips it.
-Without the headers the build script panics, and nothing downstream is checked. The first run of
-this workflow failed exactly there (`wrapper.h:2:10: fatal error: 'ps2000.h' file not found`).
-The job installs `libps2000` from PicoTech's Debian repo, the same one `build_daemon.sh`
-documents for setting up a box, and asserts the header exists before continuing.
+It still needs the **PicoScope SDK** on the runner. `daemon/build.rs` runs bindgen against the
+PicoTech headers unconditionally, and no feature flag skips it. Without them the build script
+panics, and nothing downstream is checked. The first run of this workflow failed exactly there
+(`wrapper.h:2:10: fatal error: 'ps2000.h' file not found`).
+
+The headers are deliberately **not** in this repo: PicoTech licenses them rather than selling
+them and limits redistribution, which a public repo cannot honour. `build.rs` looks for them first in
+`picoscope/include/<family>/` at the repo root, for a local unpack of the SDK. It then falls
+back to `/opt/picoscope/include/<family>/`, where the PicoTech packages install them. A checkout
+with neither fails the build with a message that says where to put them. It does not build a
+daemon that cannot talk to any scope.
+
+The job installs `libps2000`, `libps2000a`, `libps3000a`, `libps4000a`, `libps5000a` and
+`libps6000a` from PicoTech's Debian repo, which `build_daemon.sh` also uses to set up a box.
+It then asserts that every header `build.rs` opens is present. All five
+families are needed because the daemon generates a binding set per family, so one binary serves
+whichever driver a given box has. `libps6000a` is there for its headers alone: `libps3000a`'s
+`PicoDeviceStructs.h` includes `PicoConnectProbes.h`, which PicoTech ships under the 4000a and
+6000a families rather than with 3000a.
 
 That makes the job depend on an external apt host. If `labs.picotech.com` proves flaky, split the
-job so the SDK-free crates (`cli`, `protocol`) keep gating while the daemon
-check degrades to advisory.
+job so the SDK-free `protocol` crate keeps gating while the daemon check degrades to advisory.
 
 The toolchain is pinned to 1.95.0, for the same reason `shellcheck` is pinned in
 `static-checks.yml`. The clippy and audit baselines were measured against a known version. A
@@ -443,8 +459,8 @@ test/
 │   ├── tools/            # tests for the scripts in tools/
 │   └── test_*.py         # repo-wide guards, plus the DP821 settle helper
 ├── manual/               # operator-driven, not automated: 2 bash scripts, 1 Python
-│                         # import report, and scope_daemon/ (a WebTransport browser
-│                         # client and how to drive the daemon by hand)
+│                         # import report, and scope_daemon/ (how to drive the
+│                         # daemon by hand)
 ├── assets/               # Fixture data (note: assets/firmware/ holds only a README)
 └── framework/            # Test utilities
     ├── harness.sh        # Bash test framework (sourced by all 38 integration scripts)
@@ -453,9 +469,9 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 268 files)
+### Local Unit Tests (`test/unit/` -- 273 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 137 files)
+#### Box Unit Tests (`test/unit/box/` -- 142 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -600,6 +616,11 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_io_imports.py` | The `lager.io.*` import surface and re-export identity; asserts the removed root-level aliases stay removed |
 | `test_bench_endpoint.py` | `GET /bench` on the box HTTP server: the body is the bench manifest built from the loaded MCP state (`box_id`, nets with `dut_connection`, `reference_keys`, `metadata_sources`, `capability_bindings`); `ETag` is the quoted content hash and a matching `If-None-Match` in any spelling (quoted, weak, bare, listed, `*`) gets 304 with no body; a build failure is a 500 that says why; the first request on a process that never called `init_state` loads from disk once |
 | `test_status_bench_fields.py` | `/status` advertises `capabilities.benchManifest` from the route's registration (never hardcoded), the real app mounts `/bench`, and the nets block carries `dut_connection` and `test_hints` with the same present-when-unset contract as `purpose` |
+| `test_lscp_codec.py` | The LSCP/1 frame codec in `measurement/scope/lscp.py`: header and per-channel layout, and counts-to-volts scaling, checked against a fixture the Rust encoder produced, so the daemon and the Python decoder cannot drift apart on the wire |
+| `test_picoscope_net_mapper.py` | The PicoScope net mapper that `Net.get(name, NetType.Analog)` returns: calls reach the driver with the net's own channel as the default, and a feature a PicoScope lacks raises and names the gap instead of returning zero |
+| `test_picoscope_streaming_api.py` | `stream_start`, `stream_frames` and `stream_capture` on the PicoScope driver: the keyword arguments the Python reference documents, and a CSV layout identical to the one `lager scope stream capture` writes |
+| `test_scope_command_grammar.py` | The web UI's command grammar (`static/scope/commands.js`, run under node) against the real box handler, so a renamed action cannot leave the page sending commands the box rejects |
+| `test_usb_scanner_picoscope.py` | PicoScope discovery in `usb_scanner.py`: every Pico Technology product ID is recognized, and the channel count comes from the device rather than from a static table |
 
 #### CLI Unit Tests (`test/unit/cli/` -- 111 files)
 
