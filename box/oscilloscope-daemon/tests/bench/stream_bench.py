@@ -161,6 +161,12 @@ async def run(args):
             await ws.send(json.dumps(command))
             await asyncio.sleep(0.05)
 
+        # Capture frames only reach a connection that asked for them, so a
+        # control client can issue commands without having to step over
+        # interleaved binary frames. Without this the acquisition runs and
+        # this harness sits there receiving nothing.
+        await ws.send(json.dumps({"command": "Subscribe"}))
+
         await ws.send(json.dumps({"command": "StartAcquisition",
                                   "trigger_position_percent": 50.0}))
 
