@@ -828,14 +828,11 @@ impl PicoScope2000 {
     }
 
     fn set_scope_trigger_level(&mut self, trigger_level: f64) -> anyhow::Result<()> {
-        let attenuation = self
-            .settings
-            .channels
-            .iter()
-            .find(|c| c.channel_id == self.settings.trigger.trigger_source)
-            .ok_or(anyhow::anyhow!("Channel not found"))?
-            .attenuation;
-        self.settings.trigger.trigger_level = trigger_level / attenuation;
+        // Stored at the input, since that is what converts to ADC counts.
+        // `get_scope_trigger_level` converts back; both go through the
+        // helpers below so the pair cannot drift.
+        self.settings.trigger.trigger_level =
+            to_input_volts(trigger_level, self.trigger_source_attenuation());
         if self.is_capturing {
             self.stop_triggering()?;
             self.do_update_channel()?;
@@ -1063,7 +1060,27 @@ impl PicoScope2000 {
     }
 
     fn get_scope_trigger_level(&self) -> anyhow::Result<f64> {
-        Ok(self.settings.trigger.trigger_level)
+        // Undoes the division done on the way in. Without this, setting
+        // 1.0 V through a 10x probe read back as 0.1 V.
+        Ok(to_probe_volts(
+            self.settings.trigger.trigger_level,
+            self.trigger_source_attenuation(),
+        ))
+    }
+
+    /// Probe attenuation of whichever channel the trigger watches.
+    ///
+    /// Falls back to 1.0 rather than failing: a getter that errors because
+    /// the trigger points at a disabled channel is less useful than one that
+    /// reports the level unscaled.
+    fn trigger_source_attenuation(&self) -> f64 {
+        self.settings
+            .channels
+            .iter()
+            .find(|c| c.channel_id == self.settings.trigger.trigger_source)
+            .map(|c| c.attenuation)
+            .filter(|a| *a > 0.0)
+            .unwrap_or(1.0)
     }
 
     #[allow(dead_code)]
@@ -1402,12 +1419,28 @@ impl PicoScope2000 {
         channel: ChannelId,
         attenuation: f64,
     ) -> anyhow::Result<()> {
+        if attenuation <= 0.0 {
+            anyhow::bail!("probe attenuation must be positive, got {attenuation}");
+        }
+
+        // Changing the probe means the same signal now arrives at the input
+        // divided differently, so a stored level that is correct at the input
+        // stops being correct at the tip. Swapping a 1x probe for a 10x one
+        // without this turns a 1 V trigger into a 10 V one, which on a 5 V
+        // range simply never fires.
+        let previous = self.trigger_source_attenuation();
+
         self.settings
             .channels
             .iter_mut()
             .find(|c| c.channel_id == channel)
             .ok_or(anyhow::anyhow!("Channel not found"))?
             .attenuation = attenuation;
+
+        if channel == self.settings.trigger.trigger_source {
+            let at_probe = to_probe_volts(self.settings.trigger.trigger_level, previous);
+            self.settings.trigger.trigger_level = to_input_volts(at_probe, attenuation);
+        }
         Ok(())
     }
 
@@ -1745,5 +1778,78 @@ impl Drop for PicoScope2000 {
             }
             Err(e) => tracing::warn!(error = %e, "cannot close unit: driver unavailable"),
         }
+    }
+}
+
+/// A probe divides the signal before it reaches the input, so the two ends of
+/// the cable disagree about what "1 volt" means.
+///
+/// Every voltage crossing the driver boundary is at the probe tip, because
+/// that is where the user's signal is; everything converting to ADC counts is
+/// at the input. These two functions are the only places that conversion
+/// happens, so a setter and its getter cannot disagree about the direction --
+/// which they did, leaving a trigger level set through a 10x probe reading
+/// back ten times too small.
+fn to_input_volts(probe_volts: f64, attenuation: f64) -> f64 {
+    if attenuation <= 0.0 {
+        return probe_volts;
+    }
+    probe_volts / attenuation
+}
+
+fn to_probe_volts(input_volts: f64, attenuation: f64) -> f64 {
+    if attenuation <= 0.0 {
+        return input_volts;
+    }
+    input_volts * attenuation
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_level_survives_the_round_trip_through_any_probe() {
+        for attenuation in [1.0, 10.0, 100.0, 0.5] {
+            for level in [0.0, 0.25, 1.0, -0.5, 12.5] {
+                let stored = to_input_volts(level, attenuation);
+                let read_back = to_probe_volts(stored, attenuation);
+                assert!(
+                    (read_back - level).abs() < 1e-12,
+                    "{level} V through a {attenuation}x probe read back as {read_back}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_ten_x_probe_puts_a_tenth_of_the_level_at_the_input() {
+        // The hardware sees a tenth of what the user asked for, which is
+        // what has to reach voltage_to_adc_counts.
+        assert!((to_input_volts(1.0, 10.0) - 0.1).abs() < 1e-12);
+        assert!((to_probe_volts(0.1, 10.0) - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn swapping_probes_keeps_the_level_where_the_user_put_it() {
+        // What set_scope_attenuation does: read the level back out at the old
+        // probe, then store it against the new one. The tip-referred level is
+        // the one the user chose, so it is the one that has to survive.
+        let stored_at_1x = to_input_volts(1.0, 1.0);
+
+        let at_probe = to_probe_volts(stored_at_1x, 1.0);
+        let stored_at_10x = to_input_volts(at_probe, 10.0);
+
+        assert!((to_probe_volts(stored_at_10x, 10.0) - 1.0).abs() < 1e-12);
+        // And the input really does see a tenth, which is the point.
+        assert!((stored_at_10x - 0.1).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_nonsensical_attenuation_passes_the_level_through_untouched() {
+        // Dividing by zero would poison the level with an infinity that then
+        // reaches the driver as a garbage ADC count.
+        assert_eq!(to_input_volts(1.5, 0.0), 1.5);
+        assert_eq!(to_probe_volts(1.5, -1.0), 1.5);
     }
 }
