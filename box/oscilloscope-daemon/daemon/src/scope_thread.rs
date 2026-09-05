@@ -209,7 +209,10 @@ fn run(
     acquiring: Arc<AtomicBool>,
     capture_count: Arc<AtomicU64>,
 ) {
-    let mut sequence: u64 = 0;
+    let mut state = LoopState {
+        sequence: 0,
+        captured_since_arm: false,
+    };
     // When idle this blocks on the command channel and consumes nothing.
     // The old design polled every 10 ms whether or not anything was
     // acquiring, which is what produced ~1 GB/day of readiness logging.
@@ -240,7 +243,7 @@ fn run(
         };
 
         if let Some((request, reply_to)) = envelope {
-            let reply = handle(&mut scope, request, &acquiring);
+            let reply = handle(&mut scope, request, &acquiring, &mut state);
             // A client that hung up mid-request is normal, not an error.
             let _ = reply_to.send(reply);
             continue;
@@ -253,8 +256,9 @@ fn run(
         match scope.is_ready() {
             Ok(true) => match scope.get_triggered_data() {
                 Ok(mut frame) => {
-                    sequence += 1;
-                    frame.seq = sequence;
+                    state.sequence += 1;
+                    frame.seq = state.sequence;
+                    state.captured_since_arm = true;
                     capture_count.fetch_add(1, Ordering::Relaxed);
 
                     // Send failure only means nobody is subscribed. The
@@ -294,10 +298,29 @@ fn run(
     let _ = scope.stop_triggered_capture();
 }
 
+/// State the acquisition loop owns but command handling also has to see.
+struct LoopState {
+    /// Capture sequence number, shared between the acquisition loop and the
+    /// one-shot `GetTriggeredData` path. One counter, not two, because a
+    /// client uses the number to tell one capture from the next and to match
+    /// a binary frame to the reply that announced it; two counters would hand
+    /// out the same number twice.
+    sequence: u64,
+    /// Whether a capture has been produced since the last arm.
+    ///
+    /// While the loop is running it polls the driver's readiness flag and
+    /// consumes the capture immediately, so a client asking the driver
+    /// directly loses that race and sees "not ready" almost every time even
+    /// though captures are streaming. This is the readiness a client can
+    /// actually observe.
+    captured_since_arm: bool,
+}
+
 fn handle(
     scope: &mut Box<dyn Oscilloscope>,
     request: ScopeRequest,
     acquiring: &AtomicBool,
+    state: &mut LoopState,
 ) -> ScopeReply {
     /// Map `Result<T>` onto a reply, turning driver errors into a message
     /// the client actually receives rather than a log line it never sees.
@@ -379,6 +402,11 @@ fn handle(
         },
         ScopeRequest::StartAcquisition(position) => match scope.start_triggered_capture(position) {
             Ok(()) => {
+                // Arming discards whatever was captured before, so readiness
+                // starts over: otherwise a client polling after a re-arm gets
+                // "ready" from the previous acquisition and reads a stale
+                // capture as though it were the new one.
+                state.captured_since_arm = false;
                 acquiring.store(true, Ordering::Relaxed);
                 ScopeReply::Ok
             }
@@ -389,9 +417,24 @@ fn handle(
             reply!(scope.stop_triggered_capture(), ScopeReply::Ok)
         }
         ScopeRequest::ForceTrigger => reply!(scope.force_trigger(), ScopeReply::Ok),
-        ScopeRequest::IsReady => reply_value!(scope.is_ready(), ScopeReply::Bool),
+        // Answered from what the loop has seen, not from the driver, whenever
+        // the loop is the one watching the driver. Asking the hardware here
+        // while it is acquiring is a race the caller cannot win.
+        ScopeRequest::IsReady => {
+            if state.captured_since_arm {
+                ScopeReply::Bool(true)
+            } else if acquiring.load(Ordering::Relaxed) {
+                ScopeReply::Bool(false)
+            } else {
+                reply_value!(scope.is_ready(), ScopeReply::Bool)
+            }
+        }
         ScopeRequest::GetTriggeredData => match scope.get_triggered_data() {
-            Ok(frame) => ScopeReply::Capture(Arc::new(frame)),
+            Ok(mut frame) => {
+                state.sequence += 1;
+                frame.seq = state.sequence;
+                ScopeReply::Capture(Arc::new(frame))
+            }
             Err(e) => ScopeReply::error(e),
         },
         ScopeRequest::Measure { channel, which } => {
@@ -425,4 +468,262 @@ fn measure_now(scope: &mut Box<dyn Oscilloscope>, channel: ChannelId) -> Result<
         })?;
     protocol::measure_channel(&frame, index)
         .ok_or_else(|| anyhow::anyhow!("capture held no samples for channel {channel}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    /// A scope that implements only the capture surface these tests drive.
+    ///
+    /// The two real drivers both need the PicoScope SDK to build, so the
+    /// interaction between the acquisition loop and command handling had no
+    /// test at all -- which is where both bugs below lived. Everything
+    /// outside capture panics rather than returning a plausible zero, so a
+    /// test that grows into untested territory says so instead of passing on
+    /// a fabricated value.
+    struct FakeScope {
+        ready: bool,
+        captures_read: AtomicUsize,
+    }
+
+    impl FakeScope {
+        fn new() -> Self {
+            FakeScope {
+                ready: false,
+                captures_read: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    /// Generate the trait methods these tests never call.
+    macro_rules! unused {
+        ($($name:ident($($arg:ty),*) -> $ret:ty;)*) => {
+            $(fn $name(&self $(, _: $arg)*) -> anyhow::Result<$ret> {
+                unimplemented!(concat!(stringify!($name), " is not part of the capture path"))
+            })*
+        };
+    }
+    macro_rules! unused_mut {
+        ($($name:ident($($arg:ty),*);)*) => {
+            $(fn $name(&mut self $(, _: $arg)*) -> anyhow::Result<()> {
+                unimplemented!(concat!(stringify!($name), " is not part of the capture path"))
+            })*
+        };
+    }
+
+    impl Oscilloscope for FakeScope {
+        fn start_triggered_capture(&mut self, _position: f64) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn stop_triggered_capture(&mut self) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn is_ready(&self) -> anyhow::Result<bool> {
+            Ok(self.ready)
+        }
+
+        fn get_triggered_data(&self) -> anyhow::Result<CaptureFrame> {
+            self.captures_read.fetch_add(1, Ordering::Relaxed);
+            Ok(CaptureFrame {
+                // Zero, as a real driver leaves it: the sequence number is
+                // the daemon's to assign, not the hardware's.
+                seq: 0,
+                capture_mono_ns: 0,
+                sample_interval_ns: 1.0,
+                pre_trigger_samples: 1,
+                post_trigger_samples: 1,
+                samples_per_channel: 2,
+                resolution_bits: 8,
+                overflow_mask: 0,
+                flags: 0,
+                channels: Vec::new(),
+                samples: vec![0, 0],
+            })
+        }
+
+        fn get_capture_mode(&self) -> anyhow::Result<CaptureMode> {
+            Ok(CaptureMode::Normal)
+        }
+
+        fn get_trigger_position(&self) -> anyhow::Result<f64> {
+            Ok(50.0)
+        }
+
+        unused! {
+            is_channel_enabled(ChannelId) -> bool;
+            get_volts_per_div(ChannelId) -> f64;
+            get_volts_offset(ChannelId) -> f64;
+            get_coupling(ChannelId) -> Coupling;
+            get_attenuation(ChannelId) -> f64;
+            get_trigger_level() -> f64;
+            get_time_per_div() -> f64;
+            get_time_offset() -> f64;
+            get_trigger_source() -> ChannelId;
+            get_trigger_slope() -> TriggerSlope;
+            get_cursor_position(crate::oscilloscope::Cursor) -> f64;
+            measure_horizontal_cursor_delta() -> f64;
+            measure_vertical_cursor_delta() -> f64;
+            measure_duty_cycle(ChannelId) -> f64;
+            measure_frequency(ChannelId) -> f64;
+            measure_period(ChannelId) -> f64;
+            measure_rms(ChannelId) -> f64;
+            measure_peak_to_peak(ChannelId) -> f64;
+            measure_average(ChannelId) -> f64;
+            measure_min(ChannelId) -> f64;
+            get_data(ChannelId) -> Vec<f64>;
+            get_sample_rate() -> f64;
+            get_memory_depth() -> usize;
+            get_bandwidth() -> f64;
+            get_channel_count() -> usize;
+            capabilities() -> ScopeCapabilities;
+        }
+
+        unused_mut! {
+            enable_channel(ChannelId);
+            disable_channel(ChannelId);
+            set_volts_per_div(ChannelId, f64);
+            set_volts_offset(ChannelId, f64);
+            set_coupling(ChannelId, Coupling);
+            set_attenuation(ChannelId, f64);
+            set_trigger_level(f64);
+            set_time_per_div(f64);
+            set_time_offset(f64);
+            set_trigger_source(ChannelId);
+            set_trigger_slope(TriggerSlope);
+            set_capture_mode(CaptureMode);
+            set_cursor_position(crate::oscilloscope::Cursor);
+            force_trigger();
+        }
+    }
+
+    /// `handle` plus the state the loop would own, for driving requests
+    /// without standing up a thread.
+    struct Harness {
+        scope: Box<dyn Oscilloscope>,
+        acquiring: AtomicBool,
+        state: LoopState,
+    }
+
+    impl Harness {
+        fn new() -> Self {
+            Harness {
+                scope: Box::new(FakeScope::new()),
+                acquiring: AtomicBool::new(false),
+                state: LoopState {
+                    sequence: 0,
+                    captured_since_arm: false,
+                },
+            }
+        }
+
+        fn send(&mut self, request: ScopeRequest) -> ScopeReply {
+            handle(&mut self.scope, request, &self.acquiring, &mut self.state)
+        }
+
+        fn is_ready(&mut self) -> bool {
+            match self.send(ScopeRequest::IsReady) {
+                ScopeReply::Bool(ready) => ready,
+                other => panic!("expected a bool reply, got {other:?}"),
+            }
+        }
+
+        fn capture_seq(&mut self) -> u64 {
+            match self.send(ScopeRequest::GetTriggeredData) {
+                ScopeReply::Capture(frame) => frame.seq,
+                other => panic!("expected a capture reply, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn one_shot_captures_get_distinct_sequence_numbers() {
+        // The streaming path stamped a sequence number and the one-shot path
+        // did not, so every `GetTriggeredData` came back as seq 0. A client
+        // uses the number to tell one capture from the next, and to match a
+        // binary frame against the reply that announced it, so a constant
+        // zero silently makes three different captures look like one.
+        let mut harness = Harness::new();
+
+        assert_eq!(harness.capture_seq(), 1);
+        assert_eq!(harness.capture_seq(), 2);
+        assert_eq!(harness.capture_seq(), 3);
+    }
+
+    #[test]
+    fn one_shot_and_streaming_captures_share_one_counter() {
+        // Two counters would hand the same number to a streamed frame and a
+        // requested one, which is worse than no numbering: the client would
+        // accept the wrong frame as its reply.
+        let mut harness = Harness::new();
+
+        assert_eq!(harness.capture_seq(), 1);
+        // Stand in for the acquisition loop publishing a frame.
+        harness.state.sequence += 1;
+        assert_eq!(harness.capture_seq(), 3);
+    }
+
+    #[test]
+    fn readiness_while_acquiring_reports_what_the_loop_has_seen() {
+        // While acquiring, the loop polls the driver and consumes the capture
+        // immediately, so asking the driver here loses the race and reports
+        // "not ready" while captures are streaming past. Report the loop's
+        // own view instead.
+        let mut harness = Harness::new();
+        assert!(matches!(
+            harness.send(ScopeRequest::StartAcquisition(50.0)),
+            ScopeReply::Ok
+        ));
+
+        assert!(!harness.is_ready(), "nothing captured since arming yet");
+
+        harness.state.captured_since_arm = true;
+        assert!(harness.is_ready(), "the loop published a capture");
+    }
+
+    #[test]
+    fn readiness_falls_back_to_the_driver_when_idle() {
+        // With no acquisition running there is no loop to race, so the
+        // driver's own flag is the truthful answer -- it covers a capture
+        // armed outside the loop.
+        let mut harness = Harness::new();
+
+        assert!(!harness.is_ready());
+
+        harness.scope = Box::new(FakeScope {
+            ready: true,
+            captures_read: AtomicUsize::new(0),
+        });
+        assert!(harness.is_ready());
+    }
+
+    #[test]
+    fn rearming_clears_readiness() {
+        // Otherwise a client that arms, polls, and reads gets the capture
+        // from before the re-arm and treats it as the new one.
+        let mut harness = Harness::new();
+        harness.send(ScopeRequest::StartAcquisition(50.0));
+        harness.state.captured_since_arm = true;
+        assert!(harness.is_ready());
+
+        harness.send(ScopeRequest::StartAcquisition(50.0));
+        assert!(!harness.is_ready(), "a re-arm discards the previous capture");
+    }
+
+    #[test]
+    fn a_completed_single_shot_still_reports_ready() {
+        // Single-shot stops the loop after publishing, so `acquiring` is
+        // false while the capture is genuinely there to read. Answering from
+        // the driver at that point would report "not ready" on a stopped
+        // unit and the caller would wait forever for a capture it already has.
+        let mut harness = Harness::new();
+        harness.send(ScopeRequest::StartAcquisition(50.0));
+        harness.state.captured_since_arm = true;
+        harness.acquiring.store(false, Ordering::Relaxed);
+
+        assert!(harness.is_ready());
+    }
 }
