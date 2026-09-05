@@ -20,6 +20,7 @@ lager install [OPTIONS]
 | `--user TEXT` | string | `lagerdata` | SSH username. With `--box`, the stored username is the default |
 | `--version TEXT` | string | this CLI's release tag | Box version to deploy: a release tag (e.g. `v0.15.0`), a git branch, or a full 40-character commit SHA |
 | `--skip-jlink` | flag | | Skip J-Link installation |
+| `--skip-picoscope` | flag | | Skip PicoScope 7 SDK installation |
 | `--skip-firewall` | flag | | Skip UFW firewall configuration |
 | `--skip-verify` | flag | | Skip post-deployment verification |
 | `--corporate-vpn TEXT` | string | | Corporate VPN interface name for firewall rules (e.g., `tun0`) |
@@ -112,6 +113,7 @@ kill, such as a power loss, the lock has no expiry time to clear it, and
 |-----------|-------------|
 | Docker container | The `lager` service container with auto-restart. It publishes ports 5000, 8301, 8080, 8081-8090, 8100, 8765, 9000, 2331-2342, 4444-4447, 6666-6669 and 9090-9097 |
 | J-Link | SEGGER debug probe software (optional, skipped with `--skip-jlink`) |
+| PicoScope 7 SDK | PicoTech USB drivers for every current PicoScope series (`libps2000` through `libps6000a`), plus the PicoScope 7 application. Installed from PicoTech's apt repository onto the Ubuntu host at `/opt/picoscope/lib` (optional, skipped with `--skip-picoscope`). USB access is granted for the whole PicoTech vendor ID. `lager scope` currently drives 2204A/2205A through the box daemon; other models have drivers and permissions in place |
 | UFW firewall | Host firewall rules from `secure_box_firewall.sh` (skipped with `--skip-firewall`). They do not filter the ports that the container publishes |
 | Box code | Python libraries and services in `~/box` |
 | Host packages | BlueZ (`bluez`), installed only if it is missing, with `bluetooth.service` enabled. BLE and BluFi need it on the host. `lager update` installs it on boxes set up before it was added |
@@ -178,7 +180,7 @@ lager install --ip 192.168.1.100 --user pi --version staging
 lager install --ip 192.168.1.100 --corporate-vpn tun0
 
 # Skip optional components
-lager install --ip 192.168.1.100 --skip-jlink --skip-firewall
+lager install --ip 192.168.1.100 --skip-jlink --skip-picoscope --skip-firewall
 
 # Force a local build of the box image instead of using the published one
 lager install --box my-lager-box --version v0.39.1 --no-pull
