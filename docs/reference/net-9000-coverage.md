@@ -223,7 +223,7 @@ second half of `lager update`'s dual-port health poll).
 
 CLI features still on the `:5000` exec path:
 
-- `lager scope`, `lager scope stream` ([measurement/scope.py](../../cli/commands/measurement/scope.py)) - large streaming/capture workflow (plus the oscilloscope daemon on 8082-8085).
+- `lager scope stream` ([measurement/scope.py](../../cli/commands/measurement/scope.py)) - the streaming/capture workflow only. The rest of `lager scope` (enable, scale, timebase, coupling, probe, trigger edge, capture control, measurements) now goes through `POST :9000/net/command` under the `scope` role. The oscilloscope daemon behind it binds loopback `:8085` and a Unix socket, reached from outside only through the `:9000` relay.
 - `lager logic` ([measurement/logic.py](../../cli/commands/measurement/logic.py)) - logic-analyzer capture/trigger/cursor.
 - `lager box-config` apply/poll ([box/config.py](../../cli/commands/box/config.py)).
 - Debug flash helpers ([development/debug/commands.py](../../cli/commands/development/debug/commands.py)).

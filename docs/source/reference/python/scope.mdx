@@ -9,6 +9,32 @@ The oscilloscope module provides Python interfaces for waveform capture, trigger
 
 Use the scope module to control oscilloscopes for analog signal capture, triggering on specific events, and automated measurements.
 
+## Instrument support
+
+The same object and the same calls work for a Rigol MSO5000 and for a PicoScope
+(2000, 2000a, 3000a, 4000a or 5000a). The difference is underneath: the Rigol
+speaks SCPI over VISA, while a PicoScope is a USB device with a vendor SDK,
+driven through the oscilloscope daemon on the box.
+
+Three consequences are worth knowing before writing a script against a PicoScope:
+
+- **Measurements are computed, not queried.** No PicoTech API has an equivalent
+  of `:MEAS:VPP?`, so the box captures a block and computes the value from the
+  samples. One capture yields the whole set, so `scope.measurement.all()` costs
+  the same as a single `voltage_peak_to_peak()` and reading five values
+  individually costs five captures.
+- **`display` and `measurement_cursor` do nothing.** They put a reading on the
+  instrument's own screen, and a PicoScope has none. They are accepted and
+  ignored so a script written for a Rigol still runs.
+- **Some features raise instead of returning.** Cursors, protocol triggers, the
+  logic analyzer, and the measurements listed as Rigol-only below raise
+  `UnsupportedScopeFeature` naming the gap, rather than returning a
+  plausible-looking zero. Catch it if a script needs to run against both.
+
+Channels are letters on a PicoScope (A-D) and numbers on a Rigol (1-4). Every
+method accepts either and normalizes, so a script written against one instrument
+keeps working against the other.
+
 ## Import
 
 ```python
@@ -84,9 +110,55 @@ Stop waveform capture.
 scope.stop_capture()
 ```
 
+#### `force_trigger()`
+
+Trigger now rather than waiting for the configured condition. Useful when a
+signal may never cross the trigger level and the script needs a capture anyway.
+
+```python
+scope.force_trigger()
+```
+
 ### Measurements
 
-Access comprehensive measurements through the `measurement` attribute:
+Access comprehensive measurements through the `measurement` attribute.
+
+#### Availability
+
+Everything below works on a Rigol. On a PicoScope the box computes measurements
+from the captured samples, and these fourteen are the ones it computes:
+
+| Available on both | |
+|---|---|
+| `voltage_max` | `voltage_min` |
+| `voltage_peak_to_peak` | `voltage_average` |
+| `voltage_rms` | `voltage_overshoot` |
+| `frequency` | `period` |
+| `rise_time` | `fall_time` |
+| `pulse_width_positive` | `pulse_width_negative` |
+| `duty_cycle_positive` | `duty_cycle_negative` |
+
+Everything else — the flat-top and threshold voltages, preshoot, period RMS,
+time-at-extreme, slew rates, edge and pulse counts, area, variance, and all the
+delay and phase measurements — is **Rigol only** and raises
+`UnsupportedScopeFeature` on a PicoScope. Delay and phase additionally compare
+two channels, which the box has no command for on a PicoScope.
+
+`period`, `frequency`, the pulse widths, the duty cycles, the rise and fall
+times and overshoot need a resolvable waveform. On a PicoScope, asking for a
+period when the capture holds fewer than two full cycles raises rather than
+returning an imprecise guess, so put at least two cycles on screen before
+measuring timing.
+
+#### `all()`
+
+Every measurement the box computes, from a single capture. On a PicoScope this
+is the cheap way to read more than one value.
+
+```python
+values = scope.measurement.all()
+print(values['vpp'], values['frequency'])
+```
 
 #### Voltage Measurements
 
@@ -234,18 +306,42 @@ scope.stream_stop()
 
 ### `stream_capture(output, duration, samples)`
 
-Capture data to file.
+Capture for `duration` seconds, writing a CSV.
 
 **Parameters:**
-- `output` (str): Output file path
+- `output` (str): Output file path. Omit it to count samples without writing a file
 - `duration` (float): Capture duration in seconds
-- `samples` (int): Number of samples (optional)
+- `samples` (int): Cap on rows per channel (optional). A cap, not a target: the capture still stops at `duration`
+
+Returns a summary rather than the samples themselves — `captures`,
+`samples_per_channel`, `rows` and `output`. The CSV columns are `capture`,
+`channel`, `sample_index`, `time_ns` and `voltage`, the same layout
+`lager scope stream capture` writes.
 
 ```python
-scope.stream_capture(
+result = scope.stream_capture(
     output="waveform.csv",
     duration=5.0
 )
+print(result['samples_per_channel'], "samples per channel")
+```
+
+### `stream_frames(count, timeout)`
+
+Yield captures as decoded frames instead of writing a file. This is the
+zero-copy path: a frame's `counts()` is a view over the received buffer, so
+nothing is converted until asked for. Use it when the samples are going into
+numpy rather than onto disk.
+
+**Parameters:**
+- `count` (int): Number of captures to yield (default 1)
+- `timeout` (float): Seconds to wait for each capture (optional)
+
+```python
+for frame in scope.stream_frames(count=10):
+    volts = frame.volts('A')          # numpy array, converted on request
+    times = frame.time_axis()         # seconds relative to the trigger
+    print(frame.sample_rate_hz, volts.max())
 ```
 
 ## Complete Example
@@ -326,7 +422,9 @@ scope.trigger_settings.set_mode_normal()
 scope.trigger_settings.set_mode_single()
 mode = scope.trigger_settings.get_mode()
 
-# Trigger coupling
+# Trigger coupling (Rigol only -- a filter on the trigger path itself, which
+# a PicoScope does not have. For a PicoScope, set the channel's input coupling
+# with scope.set_channel_coupling('dc') instead.)
 scope.trigger_settings.set_coupling_DC()
 scope.trigger_settings.set_coupling_AC()
 scope.trigger_settings.set_coupling_low_freq_reject()
@@ -346,7 +444,15 @@ status = scope.trigger_settings.get_status()
 
 ### Cursor Control
 
-Access cursor functions through the `cursor` attribute:
+Access cursor functions through the `cursor` attribute.
+
+<Note>
+Cursors are **Rigol only**. They are markers drawn on the instrument's own
+display and read back over SCPI, and a PicoScope has no display -- every method
+here raises `UnsupportedScopeFeature` on one. Measure from the capture instead,
+or use the cursors in the web UI, which are drawn client-side over the received
+samples.
+</Note>
 
 ```python
 # Set cursor positions
@@ -380,8 +486,12 @@ scope.cursor.hide()
 
 | Manufacturer | Model Series | Features |
 |--------------|--------------|----------|
-| Rigol | MSO5000 | Multi-channel, mixed-signal, protocol decode |
-| PicoScope | Various | Streaming support |
+| Rigol | MSO5000 | Multi-channel, mixed-signal, protocol decode, cursors, on-screen measurements |
+| PicoScope | 2000, 2000a, 3000a, 4000a, 5000a | Capture control, scaling, edge trigger, 14 computed measurements, continuous streaming |
+
+An attached PicoScope's channel count, voltage ranges, bandwidth, memory depth
+and ADC resolution are detected at runtime, so models within a series work
+without configuration. Read them with `scope.capabilities()`.
 
 ## Notes
 
