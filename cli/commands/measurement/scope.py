@@ -408,7 +408,12 @@ def autoscale(ctx, box, mcu):
 
 @scope.group()
 def measure():
-    """Measure waveform characteristics (Rigol only)"""
+    """Measure waveform characteristics
+
+    Works on both a Rigol and a PicoScope. Only --display and --cursor are
+    Rigol-only: they put the reading on the instrument's own screen, which a
+    PicoScope does not have.
+    """
     pass
 
 
