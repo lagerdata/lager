@@ -298,6 +298,53 @@ class PicoScopeAnalogMapper:
         self.trigger_settings = TriggerSettings_PicoScopeFunctionMapper(self, net, device)
         self.trace_settings = TraceSettings_PicoScopeFunctionMapper(self, net, device)
         self.cursor = Cursor_PicoScopeFunctionMapper(self, net, device)
+        self._frames = None
+
+    # -- samples ---------------------------------------------------------
+    #
+    # Everything else here forwards to the hardware service over HTTP, which
+    # serializes the return value as JSON. Sample data cannot travel that way:
+    # a decoded frame is a numpy view over a received buffer, and a generator
+    # of them is not serializable at all -- forwarding `stream_frames` got
+    # "Object of type generator is not JSON serializable" rather than samples.
+    #
+    # Encoding 8000 int16s as JSON numbers per capture would also undo exactly
+    # what the binary frame format was for. So these two methods talk to the
+    # daemon directly from the caller's own process. A user script runs in the
+    # same container, the daemon accepts more than one client, and
+    # `GetTriggeredData` is request/response rather than a subscription, so
+    # pulling captures here does not disturb the control connection the
+    # hardware service holds.
+    @property
+    def _frame_client(self):
+        if self._frames is None:
+            from ...measurement.scope import daemon_client
+            self._frames = daemon_client.ScopeDaemonClient()
+        return self._frames
+
+    def capture(self, timeout=None):
+        """One triggered capture, decoded into an ``lscp.CaptureFrame``."""
+        return self._frame_client.capture(timeout=timeout)
+
+    def stream_frames(self, count: int = 1, timeout=None):
+        """Yield ``count`` captures as decoded frames.
+
+        The zero-copy path: a frame's ``counts()`` is a view over the received
+        buffer, so nothing is converted until asked for.
+        """
+        for _ in range(max(1, int(count))):
+            yield self.capture(timeout=timeout)
+
+    def close_capture_connection(self):
+        """Drop this process's sample connection, if one was opened.
+
+        Separate from ``close()``, which the hardware service owns: closing
+        the driver's control connection from a script would take the scope
+        away from every other caller.
+        """
+        if self._frames is not None:
+            self._frames.close()
+            self._frames = None
 
     # -- acquisition, named as the Rigol mapper names it -----------------
     def start_capture(self):
