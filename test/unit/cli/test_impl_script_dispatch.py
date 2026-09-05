@@ -114,8 +114,16 @@ class EveryDispatchedScriptExists(unittest.TestCase):
         self.sites = _dispatch_sites()
 
     def test_the_scan_found_call_sites(self):
-        """A scan that finds nothing would pass vacuously forever."""
-        self.assertGreater(len(self.sites), 20,
+        """A scan that finds nothing would pass vacuously forever.
+
+        The floor is deliberately well below the current count rather than
+        just under it: commands keep migrating off the impl-script exec path
+        onto the box's warm ``POST :9000/net/command`` handler (the scope's
+        measurement and channel commands did), and each migration removes
+        call sites. A floor set just under the current number would fail on
+        the next such improvement while telling nobody anything useful.
+        """
+        self.assertGreater(len(self.sites), 10,
                            'impl-script dispatch scan found almost nothing -- '
                            'the call shape probably changed and this test is '
                            'no longer looking at anything.')

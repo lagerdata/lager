@@ -642,22 +642,21 @@ if [ -d "$CUSTOMER_BIN_DIR" ]; then
     echo ""
 fi
 
-# Check for oscilloscope daemon (PicoScope streaming support)
+# Check for oscilloscope daemon (PicoScope support)
+#
+# No certificate mount: it existed for the WebTransport listeners, which are
+# gone. The cert the box generated was self-signed with a ten-year validity,
+# and the WebTransport spec caps `serverCertificateHashes` certificates at 14
+# days, so no browser would ever have completed that handshake. Control and
+# captures both travel over port 9000 now.
 OSCILLOSCOPE_MOUNT=""
 OSCILLOSCOPE_DAEMON="$THIRD_PARTY_DIR/oscilloscope-daemon"
-OSCILLOSCOPE_CERTS="$THIRD_PARTY_DIR/oscilloscope-certs"
 
 if [ -f "$OSCILLOSCOPE_DAEMON" ]; then
     OSCILLOSCOPE_MOUNT="-v $OSCILLOSCOPE_DAEMON:/usr/local/bin/oscilloscope-daemon:ro"
     echo "Oscilloscope daemon found:"
     echo "  Host: $OSCILLOSCOPE_DAEMON"
     echo "  Container: /usr/local/bin/oscilloscope-daemon"
-
-    # Mount certs if available
-    if [ -d "$OSCILLOSCOPE_CERTS" ]; then
-        OSCILLOSCOPE_MOUNT="$OSCILLOSCOPE_MOUNT -v $OSCILLOSCOPE_CERTS:/opt/oscilloscope/certs:ro"
-        echo "  Certs: $OSCILLOSCOPE_CERTS -> /opt/oscilloscope/certs"
-    fi
     echo ""
 else
     echo "Oscilloscope daemon not found (PicoScope streaming disabled)"

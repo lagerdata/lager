@@ -105,3 +105,13 @@ dashboard_test_results.json
 
 # Lager Rust crate (separate repo, developed in-tree for source visibility)
 lager-rs/
+
+# PicoTech SDK: headers, shared libraries and programmer's guides.
+#
+# Not committed. Pico licenses this material rather than selling it, grants
+# free reuse only for the examples under share/, and requires that access be
+# limited to people who have agreed to its terms -- none of which fits a
+# public repository. Unpack the SDK here (or install the PicoTech packages to
+# /opt/picoscope) and box/oscilloscope-daemon/daemon/build.rs will find the
+# headers in either place.
+picoscope/

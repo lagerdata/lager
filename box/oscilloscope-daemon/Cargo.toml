@@ -1,10 +1,8 @@
 [workspace]
 resolver = "2"
 members = [
-    "cli",
     "daemon",
     "protocol",
-    "wtransport_test",
 ]
 
 [workspace.package]

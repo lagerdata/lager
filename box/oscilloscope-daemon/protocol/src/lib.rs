@@ -5,6 +5,14 @@ use clap::Subcommand;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+pub mod capabilities;
+pub mod lscp;
+pub mod measure;
+
+pub use capabilities::{DriverFamily, ScopeCapabilities};
+pub use lscp::{CaptureFrame, ChannelFrame};
+pub use measure::{measure_channel, Measurement, MeasurementSet};
+
 #[derive(Debug, Serialize, Deserialize, Subcommand)]
 #[serde(tag = "command")]
 pub enum Command {
@@ -68,6 +76,8 @@ pub enum Command {
     StopAcquisition,
     IsReady,
     GetTriggeredData,
+    ForceTrigger,
+    GetCapabilities,
 
     GetVoltsPerDiv {
         channel: ChannelId,
@@ -104,9 +114,33 @@ pub enum Command {
     GetBandwidth,
 
     GetChannelCount,
+
+    /// Start receiving captures on this connection as LSCP binary frames.
+    ///
+    /// Off by default, and deliberately per-connection rather than global.
+    /// The daemon used to push captures to every client the moment
+    /// acquisition started, which meant a control-only client -- the CLI, the
+    /// Python driver -- received megabytes per second it never asked for, and
+    /// worse, read a capture frame where it expected its command's reply.
+    Subscribe,
+
+    /// Stop receiving captures on this connection.
+    Unsubscribe,
+
+    /// Capture a block and report waveform measurements for one channel.
+    ///
+    /// Answers the Rigol's `MEAS:VPP?` family, which no PicoTech API
+    /// provides. `measurement` names a single quantity (see
+    /// [`Measurement::parse`] for accepted spellings); omitting it returns the
+    /// whole set, which costs no more since all of it comes from one capture.
+    Measure {
+        channel: ChannelId,
+        #[serde(default)]
+        measurement: Option<String>,
+    },
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "response")]
 pub enum Response {
     ConfigureTimePerDiv,
@@ -131,9 +165,13 @@ pub enum Response {
         channel: ChannelId,
         is_enabled: bool,
     },
-    GetTriggeredData {
-        triggered_data: TriggeredCapture,
+    /// Acknowledges `GetTriggeredData`. The capture itself follows as an
+    /// LSCP binary frame carrying this sequence number, so the sample data
+    /// never passes through JSON.
+    TriggeredDataFollows {
+        seq: u64,
     },
+    ForceTrigger,
     GetVoltsPerDiv {
         channel: ChannelId,
         volts_per_div: f64,
@@ -182,6 +220,27 @@ pub enum Response {
     GetAttenuation {
         channel: ChannelId,
         attenuation: f64,
+    },
+    Capabilities {
+        capabilities: Box<ScopeCapabilities>,
+    },
+    Subscribed,
+    Unsubscribed,
+    /// Result of `Measure`. `measurements` always carries the full set;
+    /// `value`/`unit` are populated only when a single measurement was named,
+    /// so a CLI can print one number without knowing which field to read.
+    ///
+    /// A named measurement that the capture cannot support -- a period on a
+    /// DC level, say -- comes back with `value: null` rather than a zero or
+    /// an error, because "not present in this capture" is a real answer and
+    /// zero would be a wrong one.
+    Measurement {
+        channel: ChannelId,
+        measurements: Box<MeasurementSet>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        value: Option<f64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        unit: Option<String>,
     },
     Error {
         message: String,
@@ -397,26 +456,11 @@ impl clap::ValueEnum for Coupling {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct StreamingSample {
-    pub channel: ChannelId,
-    pub voltage: f64,
-    pub sample_index: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TriggeredCapture {
-    pub samples: Vec<StreamingSample>,
-    pub trigger_position: u32,
-    pub pre_trigger_samples: u32,
-    pub post_trigger_samples: u32,
-    pub sample_interval_ns: f64,
-    pub overflow: i16,
-}
-
+/// Captures no longer travel as JSON. They are LSCP binary frames on the
+/// same socket; see the [`lscp`] module. Commands and responses stay JSON
+/// text frames, which keeps the control plane readable in `websocat`.
 #[derive(Debug, Serialize, Deserialize)]
 pub enum WebSocketMessage {
     Command(Command),
     Response(Response),
-    TriggeredData(TriggeredCapture),
 }

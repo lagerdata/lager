@@ -366,8 +366,10 @@ RUN chmod +x /usr/local/bin/start-services.sh
 # Location: /home/lagerdata/third_party/oscilloscope-daemon -> /usr/local/bin/oscilloscope-daemon
 # Build instructions: cd box/oscilloscope-daemon && ./build_daemon.sh
 
-# Copy oscilloscope web visualization files
-COPY docker/web_oscilloscope.html /app/lager/web_oscilloscope.html
+# Scope UI assets, served by box_http_server at GET /scope on :9000.
+# This replaces docker/web_oscilloscope.html, which was served by a separate
+# http.server on :8081 that the box never published.
+COPY static /app/lager/lager/static
 
 # Use tini as init system to reap zombie processes
 # This prevents zombie processes from accumulating when debug tools (JLink, GDB) are started/stopped

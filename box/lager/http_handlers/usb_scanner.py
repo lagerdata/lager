@@ -92,7 +92,16 @@ SUPPORTED_USB: Dict[str, Dict] = {
     "Keithley_2281S":    {"vid": "05e6", "pid": "2281", "net_type": ["battery", "power-supply"]},
     # scope
     "Rigol_MSO5204":     {"vid": "1ab1", "pid": "0515", "net_type": ["scope", "logic"]},
+    # Pico Technology ships a different product id for nearly every PicoScope
+    # model across the 2000/3000/4000/5000 series, and reuses none of them, so
+    # a per-PID allow-list here means a scope Lager supports goes undetected
+    # until someone adds a line. Matched by vendor id instead (see
+    # _VID_ONLY_VENDORS), the same way the SEGGER J-Link and Plugable hub udev
+    # rules and the vendor-wide 0ce9 rule in 99-instrument.rules already work.
+    # The pid below is the 2204A/2205A, kept so the model name resolves for the
+    # unit we test against; anything else 0ce9 lands on the generic entry.
     "Picoscope_2000":    {"vid": "0ce9", "pid": "1007", "net_type": ["scope"]},
+    "Picoscope":         {"vid": "0ce9", "pid": None,   "net_type": ["scope"]},
     # adc / gpio / dac / spi / i2c
     "LabJack_T7":        {"vid": "0cd5", "pid": "0007", "net_type": ["gpio", "adc", "dac", "spi", "i2c"]},
     # U3-HV and U3-LV share this product id -- the scanner cannot tell them
@@ -200,7 +209,11 @@ CHANNEL_MAPS: Dict[str, Dict[str, List[str]]] = {
     "KEYSIGHT_E36313A":       {"power-supply": ["1", "2", "3"]},
     "KEYSIGHT_E36312A":       {"power-supply": ["1", "2", "3"]},
     "Keithley_2281S":         {"power-supply": ["1"], "battery": ["1"]},
+    # Channel lists are the conservative two-channel default; the real count
+    # comes from the device's own USB product string at scan time
+    # (_pico_channel_count), because it varies from 2 to 4 within every series.
     "Picoscope_2000":         {"scope": ["1", "2"]},
+    "Picoscope":              {"scope": ["1", "2"]},
     "Rigol_MSO5204":          {"scope": ["1", "2", "3", "4"], "logic": ["1"]},
     "LabJack_T7": {
         "gpio": [
@@ -327,7 +340,50 @@ _VIDPID_TO_NAME: Dict[tuple, str] = {}
 for _name, _meta in SUPPORTED_USB.items():
     if _name in ("Rigol_DL3021", "Rigol_DP811", "Rigol_DP832"):
         continue  # differentiated by serial number, handled in _scan_usb
+    if _meta["pid"] is None:
+        continue  # vendor-wide entry, see _VID_ONLY_VENDORS
     _VIDPID_TO_NAME[(_meta["vid"].lower(), _meta["pid"].lower())] = _name
+
+# ───────────  Vendors matched by id alone, with no product-id list  ───────────
+#
+# A vendor belongs here when it ships one driver across many product ids and
+# keeps adding more: a per-PID allow-list for those does not fail loudly, it
+# just makes working hardware invisible. The entry named here is the fallback
+# used when the specific product id is unknown.
+_VID_ONLY_VENDORS: Dict[str, str] = {
+    "0ce9": "Picoscope",  # Pico Technology, all PicoScope series
+}
+
+_PICO_VID = "0ce9"
+
+
+def _read_sysfs(path: Path) -> Optional[str]:
+    """Read a small sysfs attribute, returning None if it is unreadable."""
+    try:
+        return path.read_text().strip() or None
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _pico_channel_count(model: str) -> int:
+    """Number of analog channels for a PicoScope, from its model string.
+
+    Pico's model numbers encode the channel count in the second digit:
+    2204A and 3204D and 5242D are 2-channel, 2405A and 3403D and 5442D and
+    6404 are 4-channel. That holds across the 2000/3000/4000/5000/6000
+    series, which is why it is worth reading rather than keeping a table of
+    every model Pico has ever sold.
+
+    Falls back to 2 for anything that does not parse. Under-reporting hides a
+    channel until the daemon's own capability probe corrects it at connect
+    time; over-reporting would offer a channel that does not exist and fail
+    when someone drives it.
+    """
+    match = re.search(r'(\d)(\d)\d\d', model)
+    if not match:
+        return 2
+    channels = int(match.group(2))
+    return channels if channels in (2, 4) else 2
 
 # ─────────────  Instruments addressed by USB topology, not serial  ─────────────
 #
@@ -622,7 +678,9 @@ def scan_usb() -> List[dict]:
             pid = os.read(pid_fd, 64).decode("utf-8").strip().lower()
             os.close(pid_fd)
 
-            if (vid, pid) not in _VIDPID_TO_NAME and not (vid == "1ab1" and pid == "0e11"):
+            if ((vid, pid) not in _VIDPID_TO_NAME
+                    and vid not in _VID_ONLY_VENDORS
+                    and not (vid == "1ab1" and pid == "0e11")):
                 continue
 
             serial = None
@@ -651,6 +709,11 @@ def scan_usb() -> List[dict]:
                 meta_name = "Rigol_DP821"
         else:
             meta_name = _VIDPID_TO_NAME.get((vid, pid))
+            if meta_name is None:
+                # A vendor matched by id alone, with a product id we have no
+                # specific entry for. Fall back to the vendor's generic entry
+                # rather than dropping a device we can in fact drive.
+                meta_name = _VID_ONLY_VENDORS.get(vid)
             if meta_name is None:
                 continue
 
@@ -683,6 +746,19 @@ def scan_usb() -> List[dict]:
             # lists lived in module state, outliving the request (#213).
             entry["channels"] = {role: list(chs)
                                  for role, chs in CHANNEL_MAPS[meta_name].items()}
+
+        if vid == _PICO_VID:
+            # Every PicoScope series spans 2- and 4-channel models, so the
+            # catalog cannot know the count from the entry name. Read it off
+            # the device instead. This is a sysfs string read, not a device
+            # open: the scan must not disturb a capture already in progress,
+            # and the scope daemon holds the handle exclusively anyway.
+            model = _read_sysfs(dev / "product")
+            if model:
+                entry["model"] = model
+                entry["channels"] = {
+                    "scope": [str(n) for n in
+                              range(1, _pico_channel_count(model) + 1)]}
 
         if "uart" in meta.get("net_type", []):
             # Resolve actual /dev/tty* paths so consumers (TUI, dispatcher)

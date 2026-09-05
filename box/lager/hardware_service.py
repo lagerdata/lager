@@ -25,7 +25,7 @@ import importlib
 import threading
 import traceback
 import atexit
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify
 
 from lager import safety
 from lager.util import self_restart as _self_restart
@@ -1275,12 +1275,6 @@ def labjack_batch_read():
     return jsonify(results)
 
 
-@app.route('/web_oscilloscope.html', methods=['GET'])
-def serve_web_oscilloscope():
-    """Serve the web oscilloscope HTML interface"""
-    html_path = '/app/lager'
-    return send_from_directory(html_path, 'web_oscilloscope.html')
-
 def _cleanup_device_cache():
     """Cleanup function called on normal process exit."""
     global device_cache, module_cache
@@ -1311,7 +1305,6 @@ def run_service():
     logger.info(f"  POST /cache/clear_all - Clear device cache AND force-close shared pyvisa sessions")
     logger.info(f"  GET  /cache/stats - Get cache statistics")
     logger.info(f"  POST /labjack/batch_read - Batch register read for nets state")
-    logger.info(f"  GET  /web_oscilloscope.html - Web oscilloscope interface")
 
     # Run Flask app with threading
     # Using threaded=True for concurrent request handling

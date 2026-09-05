@@ -85,7 +85,11 @@ SAVED_NETS = [
     {"name": "cam1", "role": "webcam", "pin": "video0"},
     {"name": "camnodev", "role": "webcam"},
     {"name": "router1", "role": "router", "address": "192.168.88.1"},
-    {"name": "scope1", "role": "scope"},  # unsupported by /net/command
+    {"name": "scope1", "role": "scope", "instrument": "picoscope_2000"},
+    # A role /net/command has no handler for, keeping the 501 path covered.
+    # Batteries are driven by their own endpoint, not this one. Scope used to
+    # serve this purpose and no longer can, now that it has a handler.
+    {"name": "batt1", "role": "battery", "instrument": "keithley_2281s"},
 ]
 
 
@@ -861,8 +865,35 @@ class TestNetCommandHandler(unittest.TestCase):
     def test_unsupported_role_is_501(self):
         with patch('lager.http_handlers.net_command.Net') as NetMock:
             NetMock.get_local_nets.return_value = SAVED_NETS
-            r = self._post({"netname": "scope1", "action": "enable"})
+            r = self._post({"netname": "batt1", "action": "read"})
         self.assertEqual(r.status_code, 501)
+
+    def test_the_501_case_is_still_a_real_unsupported_role(self):
+        """Guard the test above against becoming vacuous.
+
+        Roles keep migrating onto this endpoint, and each migration can
+        silently turn the 501 test into an assertion about a supported role
+        (which is what happened when scope gained a handler). If this fails,
+        pick another unhandled role for batt1 rather than deleting the test.
+        """
+        self.assertNotIn('battery', net_command.ROLE_ACTIONS)
+
+    def test_scope_role_is_supported(self):
+        """Scope nets are driven over /net/command, not 501'd.
+
+        The web UI's CLI, the terminal CLI and the Python driver all reach
+        the hardware through this endpoint, so a scope net answering 501
+        breaks every one of them at once.
+        """
+        self.assertIn('scope', net_command.ROLE_ACTIONS)
+
+        with patch('lager.http_handlers.net_command.Net') as NetMock:
+            NetMock.get_local_nets.return_value = SAVED_NETS
+            r = self._post({"netname": "scope1", "action": "enable_net"})
+
+        self.assertNotEqual(r.status_code, 501)
+        self.assertNotEqual(r.status_code, 400,
+                            'enable_net should be a recognized scope action')
 
     def test_unknown_net_is_404(self):
         with patch('lager.http_handlers.net_command.Net') as NetMock:

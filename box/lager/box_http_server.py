@@ -160,6 +160,16 @@ except Exception as e:
     _has_net_command = False
     _net_command_roles = []
 
+# Import scope handler (ticket + WebSocket relay to the oscilloscope daemon).
+# Optional because the relay needs simple_websocket, and a box image without
+# it should still serve every other net rather than failing to start.
+try:
+    from lager.http_handlers.scope import register_scope_routes, register_scope_socketio
+    _has_scope = True
+except Exception as e:
+    logger.warning("Scope handler not available: %s", e)
+    _has_scope = False
+
 # Import box-level BLE handler (bleak on a dedicated event-loop thread).
 try:
     from lager.http_handlers.ble import register_ble_routes
@@ -514,6 +524,15 @@ if _has_lock:
     print("[INIT] Lock REST endpoints registered", flush=True)
 else:
     print("[INIT] Lock REST endpoints NOT available", flush=True)
+
+# Register scope REST + WebSocket relay handlers
+if _has_scope:
+    register_scope_routes(app)
+    register_scope_socketio(socketio)
+    logger.info("Scope endpoints registered (/scope/<net>/stream, /scope/<net>/ws)")
+    print("[INIT] Scope endpoints registered", flush=True)
+else:
+    print("[INIT] Scope endpoints NOT available", flush=True)
 
 # Register diagnose REST handlers (0.20.0+)
 if _has_diagnose:

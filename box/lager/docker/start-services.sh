@@ -6,6 +6,28 @@
 # - Debug service (port 8765) - embedded debugging
 # - Box HTTP+WebSocket server (port 9000) - hardware control (UART, supply, etc.)
 
+# Cap a log file, keeping one previous generation.
+#
+# These logs live on the box's SD card and nothing else trims them. The
+# oscilloscope daemon's readiness poll was measured writing ~990 MB/day, which
+# fills the card and takes the whole box down rather than just the daemon.
+LOG_MAX_BYTES=${LAGER_LOG_MAX_BYTES:-33554432}  # 32 MiB
+
+rotate_log() {
+    local log_file="$1"
+    [ -f "$log_file" ] || return 0
+
+    # stat's flags differ between GNU and BSD; the container is GNU but the
+    # fallback keeps this script usable when run on a developer machine.
+    local size
+    size=$(stat -c %s "$log_file" 2>/dev/null || stat -f %z "$log_file" 2>/dev/null || echo 0)
+
+    if [ "$size" -gt "$LOG_MAX_BYTES" ]; then
+        mv -f "$log_file" "${log_file}.1"
+        : > "$log_file"
+    fi
+}
+
 # Function to restart a service if it dies
 restart_service() {
     local service_name="$1"
@@ -13,12 +35,25 @@ restart_service() {
     local log_file="$3"
 
     while true; do
+        rotate_log "$log_file"
         echo "$(date): Starting $service_name..." >> "$log_file"
         eval "$service_cmd" >> "$log_file" 2>&1
         echo "$(date): $service_name died! Restarting in 2 seconds..." >> "$log_file"
         sleep 2
     done
 }
+
+# Trim logs periodically too, since a service that never dies never re-enters
+# the loop above and so would never rotate.
+log_janitor() {
+    while true; do
+        sleep 300
+        for log_file in /tmp/lager-*.log /tmp/oscilloscope-*.log; do
+            [ -f "$log_file" ] && rotate_log "$log_file"
+        done
+    done
+}
+log_janitor &
 
 # Ignore SIGPIPE at shell level to prevent process termination when client disconnects during HTTP streaming
 # This is inherited by all Python processes and prevents "Broken pipe" from killing the servers
@@ -58,22 +93,25 @@ esac
 echo "Starting Lager MCP server on port 8100..."
 restart_service "MCP server" "python3 -m lager.mcp" "/tmp/lager-mcp-server.log" &
 
-# Start oscilloscope streaming daemon if available (PicoScope support)
-# Ports: 8082 (commands), 8083 (browser streaming), 8084 (database streaming), 8085 (WebSocket CLI)
+# Start oscilloscope daemon if available (PicoScope support).
+#
+# One listener now, not four. The daemon previously bound 8082-8084 for
+# WebTransport plus 8085 for WebSocket, and served its UI from a bare
+# python -m http.server on 8081 -- none of which were published off-box, so
+# the only reachable path was through port 9000 anyway. The UI is now served
+# by box_http_server on 9000 and captures are relayed over the Unix socket
+# below, which is why no certificate directory is needed: the WebTransport
+# listeners it existed for are gone.
 if [ -x /usr/local/bin/oscilloscope-daemon ]; then
-    echo "Starting Oscilloscope streaming daemon on ports 8082-8085..."
-    # Set LD_LIBRARY_PATH for PicoScope SDK (mounted from host)
+    echo "Starting Oscilloscope daemon (socket + port 8085)..."
+    # PicoScope SDK is mounted from the host; the daemon dlopens from here.
+    export LAGER_SCOPE_SOCKET="${LAGER_SCOPE_SOCKET:-/tmp/lager-scope.sock}"
+    export LAGER_SCOPE_DATA_PORT="${LAGER_SCOPE_DATA_PORT:-8085}"
+    export LAGER_SCOPE_LOG="${LAGER_SCOPE_LOG:-info}"
     export LD_LIBRARY_PATH="/opt/picoscope/lib:$LD_LIBRARY_PATH"
-    # Run from /opt/oscilloscope where certs are mounted
-    mkdir -p /opt/oscilloscope
-    ln -sf /opt/oscilloscope/certs /opt/oscilloscope/certs 2>/dev/null || true
-    restart_service "oscilloscope daemon" "cd /opt/oscilloscope && /usr/local/bin/oscilloscope-daemon" "/tmp/oscilloscope-daemon.log" &
-
-    # Start simple HTTP server to serve oscilloscope UI (port 8081)
-    echo "Starting Oscilloscope UI HTTP server on port 8081..."
-    restart_service "oscilloscope UI" "cd /app/lager && python3 -m http.server 8081" "/tmp/oscilloscope-ui.log" &
+    restart_service "oscilloscope daemon" "/usr/local/bin/oscilloscope-daemon" "/tmp/oscilloscope-daemon.log" &
 else
-    echo "Oscilloscope daemon not available (PicoScope streaming disabled)"
+    echo "Oscilloscope daemon not available (PicoScope support disabled)"
 fi
 
 # Give services a moment to start
@@ -91,8 +129,8 @@ else
 fi
 echo "  - MCP Server (AI): port 8100 (log: /tmp/lager-mcp-server.log)"
 if [ -x /usr/local/bin/oscilloscope-daemon ]; then
-    echo "  - Oscilloscope Daemon: ports 8082-8085 (log: /tmp/oscilloscope-daemon.log)"
-    echo "  - Oscilloscope UI: port 8081 (log: /tmp/oscilloscope-ui.log)"
+    echo "  - Oscilloscope Daemon: ${LAGER_SCOPE_SOCKET} + port ${LAGER_SCOPE_DATA_PORT} (log: /tmp/oscilloscope-daemon.log)"
+    echo "  - Oscilloscope UI: port 9000 at /scope"
 fi
 echo ""
 echo "Container ready! Controller container is NO LONGER NEEDED."

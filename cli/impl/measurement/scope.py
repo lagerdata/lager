@@ -1149,11 +1149,17 @@ def main():
             sys.exit(1)
 
     # ========== MEASUREMENTS ==========
-    # PicoScope measurements not supported - show message
+    # PicoScope measurements ARE supported -- the daemon computes them from
+    # the captured block -- but they are served by the box's warm handler
+    # (POST :9000/net/command), which is where the CLI sends them. Reaching
+    # this branch means --display or --cursor was passed, and those put the
+    # reading on the instrument's own screen, which a PicoScope does not have.
     if action.startswith('measure_') and is_picoscope(net_info):
-        print(f"{YELLOW}Measurements are not supported for PicoScope devices.{RESET}")
-        print(f"{YELLOW}Use 'lager scope {netname} stream start' for streaming data.{RESET}")
-        sys.exit(0)
+        print(f"{YELLOW}A PicoScope has no front panel, so --display/--cursor "
+              f"have nothing to draw on.{RESET}")
+        print(f"{YELLOW}Run the measurement without those flags to get the "
+              f"value: lager scope {netname} measure ...{RESET}")
+        sys.exit(1)
 
     # Rigol measurements
     measurement_actions = {

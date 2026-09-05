@@ -220,17 +220,22 @@ def stream_start(params: dict):
     box_ip = params.get("box_ip", "localhost")
 
     # Output based on format flags
+    # The UI is served by the box HTTP server on :9000 and opens its own
+    # capture stream through the authenticated relay there. The daemon's own
+    # port is loopback-only and not reachable from a browser.
+    visualization_url = f"http://{box_ip}:9000/scope"
+
     if json_output:
         result = {
             "status": "success",
             "message": "Streaming started",
-            "visualization_url": f"http://{box_ip}:8080/web_oscilloscope.html?host={box_ip}&port={DAEMON_COMMAND_PORT}",
+            "visualization_url": visualization_url,
             "command_port": DAEMON_COMMAND_PORT
         }
         print(json.dumps(result))
     elif not quiet:
         print("Streaming started")
-        print(f"Visualization: http://{box_ip}:8080/web_oscilloscope.html?host={box_ip}&port={DAEMON_COMMAND_PORT}")
+        print(f"Visualization: {visualization_url}")
 
 
 def stream_stop(params: dict):

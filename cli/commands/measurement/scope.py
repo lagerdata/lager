@@ -21,6 +21,7 @@ from ...core.net_helpers import (
     validate_net_exists,
     display_nets,
     run_backend,
+    post_net_command,
 )
 
 SCOPE_ROLE = "scope"
@@ -104,8 +105,94 @@ def _validate_scope_net(ctx, box_ip: str, netname: str) -> dict | None:
     return validate_net_exists(ctx, box_ip, netname, SCOPE_ROLE)
 
 
+# Actions the box implements in-process (net_command.ROLE_ACTIONS["scope"]),
+# for both PicoScope and Rigol. These go over POST :9000/net/command -- the
+# same endpoint and the same handler the web UI's CLI uses -- rather than
+# uploading and exec'ing cli/impl/measurement/scope.py per call.
+#
+# Everything not listed stays on the exec path: the UART/I2C/SPI/pulse bus
+# triggers and the cursor modes are Rigol-only SCPI sequences that the
+# in-process handler does not implement, and silently routing them here would
+# turn a working Rigol command into an "unknown action" error.
+_WARM_ACTIONS = frozenset({
+    "enable_net", "disable_net",
+    "start_capture", "start_single", "stop_capture", "force_trigger",
+    "autoscale",
+    "set_scale", "get_scale",
+    "set_timebase", "get_timebase",
+    "set_coupling", "get_coupling",
+    "set_probe", "get_probe",
+    "set_offset", "get_offset",
+    "trigger_edge",
+    "capabilities",
+    "measure_vpp", "measure_vmax", "measure_vmin", "measure_vrms",
+    "measure_vavg", "measure_period", "measure_freq",
+    "measure_dc_pos", "measure_dc_neg",
+    "measure_pulse_width_pos", "measure_pulse_width_neg",
+    "measure_rise_time", "measure_fall_time",
+})
+
+
+def _run_measurement(ctx, box, action: str, mcu, display: bool, cursor: bool):
+    """Take one measurement, on either a PicoScope or a Rigol.
+
+    Measurements used to be a Rigol-only path: for a PicoScope the box printed
+    "Measurements are not supported for PicoScope devices" and exited 0. The
+    daemon now computes them from the captured block, so the warm endpoint
+    answers for both instruments.
+
+    ``--display`` and ``--cursor`` put the reading on the instrument's own
+    screen, which only a Rigol has, so those keep the exec path rather than
+    being quietly dropped.
+    """
+    box_ip = _resolve_box(ctx, box)
+    netname = _require_netname(ctx)
+
+    if _validate_scope_net(ctx, box_ip, netname) is None:
+        return  # Error already displayed with available nets
+
+    if not display and not cursor:
+        post_net_command(ctx, box_ip, netname, action, role=SCOPE_ROLE)
+        return
+
+    data = {
+        "action": action,
+        "mcu": mcu,
+        "params": {
+            "netname": netname,
+            "display": display,
+            "cursor": cursor,
+        },
+    }
+    run_python_internal(
+        ctx,
+        get_impl_path("scope.py"),
+        box_ip,
+        env=(f"LAGER_COMMAND_DATA={json.dumps(data)}",),
+        passenv=(),
+        kill=False,
+        download=(),
+        allow_overwrite=False,
+        signum="SIGTERM",
+        timeout=0,
+        detach=False,
+        port=(),
+        org=None,
+        args=(),
+    )
+
+
 def _run_backend(ctx, dut, action: str, **params):
-    """Run backend command for scope operations"""
+    """Run a scope action, preferring the box's warm in-process handler."""
+    if action in _WARM_ACTIONS:
+        netname = params.pop("netname", None) or _require_netname(ctx)
+        # The exec path took these; the warm endpoint resolves the role and
+        # net itself, so drop them rather than sending unknown parameters.
+        params.pop("mcu", None)
+        params.pop("role", None)
+        return post_net_command(
+            ctx, dut, netname, action, role=SCOPE_ROLE, **params)
+
     return run_backend(ctx, dut, "scope.py", action, role=SCOPE_ROLE, **params)
 
 
@@ -333,38 +420,7 @@ def measure():
 @click.option("--cursor", is_flag=True, help="Enable measurement cursor")
 def period(ctx, mcu, box, display, cursor):
     """Measure waveform period"""
-    box_ip = _resolve_box(ctx, box)
-    netname = _require_netname(ctx)
-
-    if _validate_scope_net(ctx, box_ip, netname) is None:
-        return  # Error already displayed with available nets
-
-    data = {
-        "action": "measure_period",
-        "mcu": mcu,
-        "params": {
-            "netname": netname,
-            "display": display,
-            "cursor": cursor
-        }
-    }
-
-    run_python_internal(
-        ctx,
-        get_impl_path("scope.py"),
-        box_ip,
-        env=(f"LAGER_COMMAND_DATA={json.dumps(data)}",),
-        passenv=(),
-        kill=False,
-        download=(),
-        allow_overwrite=False,
-        signum="SIGTERM",
-        timeout=0,
-        detach=False,
-        port=(),
-        org=None,
-        args=(),
-    )
+    _run_measurement(ctx, box, "measure_period", mcu, display, cursor)
 
 
 @measure.command()
@@ -375,38 +431,7 @@ def period(ctx, mcu, box, display, cursor):
 @click.option("--cursor", is_flag=True, help="Enable measurement cursor")
 def freq(ctx, mcu, box, display, cursor):
     """Measure waveform frequency"""
-    box_ip = _resolve_box(ctx, box)
-    netname = _require_netname(ctx)
-
-    if _validate_scope_net(ctx, box_ip, netname) is None:
-        return  # Error already displayed with available nets
-
-    data = {
-        "action": "measure_freq",
-        "mcu": mcu,
-        "params": {
-            "netname": netname,
-            "display": display,
-            "cursor": cursor
-        }
-    }
-
-    run_python_internal(
-        ctx,
-        get_impl_path("scope.py"),
-        box_ip,
-        env=(f"LAGER_COMMAND_DATA={json.dumps(data)}",),
-        passenv=(),
-        kill=False,
-        download=(),
-        allow_overwrite=False,
-        signum="SIGTERM",
-        timeout=0,
-        detach=False,
-        port=(),
-        org=None,
-        args=(),
-    )
+    _run_measurement(ctx, box, "measure_freq", mcu, display, cursor)
 
 
 @measure.command()
@@ -417,38 +442,7 @@ def freq(ctx, mcu, box, display, cursor):
 @click.option("--cursor", is_flag=True, help="Enable measurement cursor")
 def vpp(ctx, mcu, box, display, cursor):
     """Measure peak-to-peak voltage"""
-    box_ip = _resolve_box(ctx, box)
-    netname = _require_netname(ctx)
-
-    if _validate_scope_net(ctx, box_ip, netname) is None:
-        return  # Error already displayed with available nets
-
-    data = {
-        "action": "measure_vpp",
-        "mcu": mcu,
-        "params": {
-            "netname": netname,
-            "display": display,
-            "cursor": cursor
-        }
-    }
-
-    run_python_internal(
-        ctx,
-        get_impl_path("scope.py"),
-        box_ip,
-        env=(f"LAGER_COMMAND_DATA={json.dumps(data)}",),
-        passenv=(),
-        kill=False,
-        download=(),
-        allow_overwrite=False,
-        signum="SIGTERM",
-        timeout=0,
-        detach=False,
-        port=(),
-        org=None,
-        args=(),
-    )
+    _run_measurement(ctx, box, "measure_vpp", mcu, display, cursor)
 
 
 @measure.command()
@@ -459,38 +453,7 @@ def vpp(ctx, mcu, box, display, cursor):
 @click.option("--cursor", is_flag=True, help="Enable measurement cursor")
 def vmax(ctx, mcu, box, display, cursor):
     """Measure maximum voltage"""
-    box_ip = _resolve_box(ctx, box)
-    netname = _require_netname(ctx)
-
-    if _validate_scope_net(ctx, box_ip, netname) is None:
-        return  # Error already displayed with available nets
-
-    data = {
-        "action": "measure_vmax",
-        "mcu": mcu,
-        "params": {
-            "netname": netname,
-            "display": display,
-            "cursor": cursor
-        }
-    }
-
-    run_python_internal(
-        ctx,
-        get_impl_path("scope.py"),
-        box_ip,
-        env=(f"LAGER_COMMAND_DATA={json.dumps(data)}",),
-        passenv=(),
-        kill=False,
-        download=(),
-        allow_overwrite=False,
-        signum="SIGTERM",
-        timeout=0,
-        detach=False,
-        port=(),
-        org=None,
-        args=(),
-    )
+    _run_measurement(ctx, box, "measure_vmax", mcu, display, cursor)
 
 
 @measure.command()
@@ -501,38 +464,7 @@ def vmax(ctx, mcu, box, display, cursor):
 @click.option("--cursor", is_flag=True, help="Enable measurement cursor")
 def vmin(ctx, mcu, box, display, cursor):
     """Measure minimum voltage"""
-    box_ip = _resolve_box(ctx, box)
-    netname = _require_netname(ctx)
-
-    if _validate_scope_net(ctx, box_ip, netname) is None:
-        return  # Error already displayed with available nets
-
-    data = {
-        "action": "measure_vmin",
-        "mcu": mcu,
-        "params": {
-            "netname": netname,
-            "display": display,
-            "cursor": cursor
-        }
-    }
-
-    run_python_internal(
-        ctx,
-        get_impl_path("scope.py"),
-        box_ip,
-        env=(f"LAGER_COMMAND_DATA={json.dumps(data)}",),
-        passenv=(),
-        kill=False,
-        download=(),
-        allow_overwrite=False,
-        signum="SIGTERM",
-        timeout=0,
-        detach=False,
-        port=(),
-        org=None,
-        args=(),
-    )
+    _run_measurement(ctx, box, "measure_vmin", mcu, display, cursor)
 
 
 @measure.command()
@@ -543,38 +475,7 @@ def vmin(ctx, mcu, box, display, cursor):
 @click.option("--cursor", is_flag=True, help="Enable measurement cursor")
 def vrms(ctx, mcu, box, display, cursor):
     """Measure RMS voltage"""
-    box_ip = _resolve_box(ctx, box)
-    netname = _require_netname(ctx)
-
-    if _validate_scope_net(ctx, box_ip, netname) is None:
-        return  # Error already displayed with available nets
-
-    data = {
-        "action": "measure_vrms",
-        "mcu": mcu,
-        "params": {
-            "netname": netname,
-            "display": display,
-            "cursor": cursor
-        }
-    }
-
-    run_python_internal(
-        ctx,
-        get_impl_path("scope.py"),
-        box_ip,
-        env=(f"LAGER_COMMAND_DATA={json.dumps(data)}",),
-        passenv=(),
-        kill=False,
-        download=(),
-        allow_overwrite=False,
-        signum="SIGTERM",
-        timeout=0,
-        detach=False,
-        port=(),
-        org=None,
-        args=(),
-    )
+    _run_measurement(ctx, box, "measure_vrms", mcu, display, cursor)
 
 
 @measure.command()
@@ -585,38 +486,7 @@ def vrms(ctx, mcu, box, display, cursor):
 @click.option("--cursor", is_flag=True, help="Enable measurement cursor")
 def vavg(ctx, mcu, box, display, cursor):
     """Measure average voltage"""
-    box_ip = _resolve_box(ctx, box)
-    netname = _require_netname(ctx)
-
-    if _validate_scope_net(ctx, box_ip, netname) is None:
-        return  # Error already displayed with available nets
-
-    data = {
-        "action": "measure_vavg",
-        "mcu": mcu,
-        "params": {
-            "netname": netname,
-            "display": display,
-            "cursor": cursor
-        }
-    }
-
-    run_python_internal(
-        ctx,
-        get_impl_path("scope.py"),
-        box_ip,
-        env=(f"LAGER_COMMAND_DATA={json.dumps(data)}",),
-        passenv=(),
-        kill=False,
-        download=(),
-        allow_overwrite=False,
-        signum="SIGTERM",
-        timeout=0,
-        detach=False,
-        port=(),
-        org=None,
-        args=(),
-    )
+    _run_measurement(ctx, box, "measure_vavg", mcu, display, cursor)
 
 
 @measure.command("pulse-width-pos")
@@ -627,38 +497,7 @@ def vavg(ctx, mcu, box, display, cursor):
 @click.option("--cursor", is_flag=True, help="Enable measurement cursor")
 def pulse_width_pos(ctx, mcu, box, display, cursor):
     """Measure positive pulse width"""
-    box_ip = _resolve_box(ctx, box)
-    netname = _require_netname(ctx)
-
-    if _validate_scope_net(ctx, box_ip, netname) is None:
-        return  # Error already displayed with available nets
-
-    data = {
-        "action": "measure_pulse_width_pos",
-        "mcu": mcu,
-        "params": {
-            "netname": netname,
-            "display": display,
-            "cursor": cursor
-        }
-    }
-
-    run_python_internal(
-        ctx,
-        get_impl_path("scope.py"),
-        box_ip,
-        env=(f"LAGER_COMMAND_DATA={json.dumps(data)}",),
-        passenv=(),
-        kill=False,
-        download=(),
-        allow_overwrite=False,
-        signum="SIGTERM",
-        timeout=0,
-        detach=False,
-        port=(),
-        org=None,
-        args=(),
-    )
+    _run_measurement(ctx, box, "measure_pulse_width_pos", mcu, display, cursor)
 
 
 @measure.command("pulse-width-neg")
@@ -669,38 +508,7 @@ def pulse_width_pos(ctx, mcu, box, display, cursor):
 @click.option("--cursor", is_flag=True, help="Enable measurement cursor")
 def pulse_width_neg(ctx, mcu, box, display, cursor):
     """Measure negative pulse width"""
-    box_ip = _resolve_box(ctx, box)
-    netname = _require_netname(ctx)
-
-    if _validate_scope_net(ctx, box_ip, netname) is None:
-        return  # Error already displayed with available nets
-
-    data = {
-        "action": "measure_pulse_width_neg",
-        "mcu": mcu,
-        "params": {
-            "netname": netname,
-            "display": display,
-            "cursor": cursor
-        }
-    }
-
-    run_python_internal(
-        ctx,
-        get_impl_path("scope.py"),
-        box_ip,
-        env=(f"LAGER_COMMAND_DATA={json.dumps(data)}",),
-        passenv=(),
-        kill=False,
-        download=(),
-        allow_overwrite=False,
-        signum="SIGTERM",
-        timeout=0,
-        detach=False,
-        port=(),
-        org=None,
-        args=(),
-    )
+    _run_measurement(ctx, box, "measure_pulse_width_neg", mcu, display, cursor)
 
 
 @measure.command("duty-cycle-pos")
@@ -711,38 +519,7 @@ def pulse_width_neg(ctx, mcu, box, display, cursor):
 @click.option("--cursor", is_flag=True, help="Enable measurement cursor")
 def duty_cycle_pos(ctx, mcu, box, display, cursor):
     """Measure positive duty cycle"""
-    box_ip = _resolve_box(ctx, box)
-    netname = _require_netname(ctx)
-
-    if _validate_scope_net(ctx, box_ip, netname) is None:
-        return  # Error already displayed with available nets
-
-    data = {
-        "action": "measure_dc_pos",
-        "mcu": mcu,
-        "params": {
-            "netname": netname,
-            "display": display,
-            "cursor": cursor
-        }
-    }
-
-    run_python_internal(
-        ctx,
-        get_impl_path("scope.py"),
-        box_ip,
-        env=(f"LAGER_COMMAND_DATA={json.dumps(data)}",),
-        passenv=(),
-        kill=False,
-        download=(),
-        allow_overwrite=False,
-        signum="SIGTERM",
-        timeout=0,
-        detach=False,
-        port=(),
-        org=None,
-        args=(),
-    )
+    _run_measurement(ctx, box, "measure_dc_pos", mcu, display, cursor)
 
 
 @measure.command("duty-cycle-neg")
@@ -753,38 +530,7 @@ def duty_cycle_pos(ctx, mcu, box, display, cursor):
 @click.option("--cursor", is_flag=True, help="Enable measurement cursor")
 def duty_cycle_neg(ctx, mcu, box, display, cursor):
     """Measure negative duty cycle"""
-    box_ip = _resolve_box(ctx, box)
-    netname = _require_netname(ctx)
-
-    if _validate_scope_net(ctx, box_ip, netname) is None:
-        return  # Error already displayed with available nets
-
-    data = {
-        "action": "measure_dc_neg",
-        "mcu": mcu,
-        "params": {
-            "netname": netname,
-            "display": display,
-            "cursor": cursor
-        }
-    }
-
-    run_python_internal(
-        ctx,
-        get_impl_path("scope.py"),
-        box_ip,
-        env=(f"LAGER_COMMAND_DATA={json.dumps(data)}",),
-        passenv=(),
-        kill=False,
-        download=(),
-        allow_overwrite=False,
-        signum="SIGTERM",
-        timeout=0,
-        detach=False,
-        port=(),
-        org=None,
-        args=(),
-    )
+    _run_measurement(ctx, box, "measure_dc_neg", mcu, display, cursor)
 
 
 @scope.group()
@@ -1329,19 +1075,18 @@ def stream_status(ctx, box):
 @stream.command("web")
 @click.pass_context
 @click.option("--box", required=False, help="Lager Box name or IP")
-@click.option("--port", type=int, default=8080, help="HTTP server port for oscilloscope UI")
+@click.option("--port", type=int, default=9000, help="Box HTTP server port")
 def stream_web(ctx, box, port):
-    """Open web browser for oscilloscope visualization"""
+    """Open the oscilloscope UI in a web browser"""
     import webbrowser
 
     box_ip = _resolve_box(ctx, box)
 
-    # Construct the URL for the web visualization
-    # Port 8080 serves the HTML UI which connects to WebTransport on 8083
-    url = f"http://{box_ip}:{port}/web_oscilloscope.html"
+    # Port 9000 is the box HTTP server, the same port every other net uses.
+    # The UI opens its own capture stream, so there is nothing to start first.
+    url = f"http://{box_ip}:{port}/scope"
 
-    click.secho(f"Opening oscilloscope visualization at {url}", fg="green")
-    click.secho("Note: Make sure streaming is started with 'lager scope [NET_NAME] stream start'", fg="yellow")
+    click.secho(f"Opening oscilloscope UI at {url}", fg="green")
 
     try:
         webbrowser.open(url)

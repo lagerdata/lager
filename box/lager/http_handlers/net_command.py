@@ -96,6 +96,7 @@ _HS_FACTORY = {
     "spi": "spi_hs",
     "i2c": "i2c_hs",
     "arm": "arm_hs",
+    "scope": "scope_hs",
 }
 
 
@@ -174,6 +175,15 @@ def _physical_device_id(role, instrument, rec):
     if "aardvark" in inst or "totalphase" in inst:
         port = str((rec.get("params") or {}).get("port", 0))
         return "aardvark:" + (serial or addr or port)
+    if "picoscope" in inst or "pico" in inst:
+        # A PicoScope's USB handle admits one owner at a time, and the
+        # oscilloscope daemon holds it. Every scope net on the same unit must
+        # therefore take the same lock, so a `lager scope` command queues
+        # behind a browser streaming it rather than failing to open.
+        #
+        # Keyed on the serial when the net carries one, since a bench can have
+        # several PicoScopes and those must NOT serialize against each other.
+        return "picoscope:" + (serial or rec.get("unique_id") or addr or "ANY")
     if "joulescope" in inst or "js220" in inst:
         return "joulescope:" + (addr or "ANY")
     if "ppk" in inst or "nordic" in inst:
@@ -840,6 +850,166 @@ def _router(netname, role, action, params):
 
 # role string -> handler. Keep aligned with mcp/data/api_reference.py and the
 # control-plane allowlist (NET_PYTHON_ACTIONS / NET_COMMAND_ROUTES).
+def _scope(netname, role, action, params):
+    """Oscilloscope actions, for both PicoScope and Rigol nets.
+
+    Replaces the `lager python`-exec path (`cli/impl/measurement/scope.py`),
+    which for a PicoScope printed "Measurements are not supported" and
+    redirected scale/timebase/probe/coupling to a Rigol-only code path. The
+    driver behind `scope_hs` now implements all of it for both instruments, so
+    the action names below are the CLI's existing ones with real behavior
+    underneath.
+
+    Measurement values may legitimately be absent -- a period needs two full
+    cycles on screen -- so those come back as a message with no `value` rather
+    than as an error or a zero.
+    """
+    dev = _proxy(netname, role, timeout=30.0)
+
+    if action == "enable_net":
+        dev.enable_channel()
+        return _ok("Enabled %s" % netname)
+    if action == "disable_net":
+        dev.disable_channel()
+        return _ok("Disabled %s" % netname)
+    if action == "start_capture":
+        dev.run()
+        return _ok("Acquisition running")
+    if action == "start_single":
+        dev.single()
+        return _ok("Armed for a single acquisition")
+    if action == "stop_capture":
+        dev.stop()
+        return _ok("Acquisition stopped")
+    if action == "force_trigger":
+        dev.trigger_force()
+        return _ok("Triggered")
+    if action == "autoscale":
+        dev.autoscale()
+        return _ok("Autoscale complete")
+
+    if action == "set_scale":
+        volts_per_div = params.get("volts_per_div")
+        if volts_per_div is None:
+            raise KeyError("volts_per_div")
+        dev.set_channel_scale(float(volts_per_div))
+        return _ok("Vertical scale %g V/div" % float(volts_per_div))
+    if action == "get_scale":
+        return _ok_read(float(dev.get_channel_scale()), "V/div")
+
+    if action == "set_timebase":
+        seconds_per_div = params.get("seconds_per_div")
+        if seconds_per_div is None:
+            raise KeyError("seconds_per_div")
+        dev.set_timebase_scale(float(seconds_per_div))
+        return _ok("Timebase %g s/div" % float(seconds_per_div))
+    if action == "get_timebase":
+        return _ok_read(float(dev.get_timebase_scale()), "s/div")
+
+    if action == "set_coupling":
+        mode = params.get("mode")
+        if mode is None:
+            raise KeyError("mode")
+        dev.set_channel_coupling(mode)
+        return _ok("Coupling %s" % mode)
+    if action == "get_coupling":
+        return _ok("Coupling %s" % dev.get_channel_coupling())
+
+    if action == "set_probe":
+        ratio = params.get("ratio")
+        if ratio is None:
+            raise KeyError("ratio")
+        dev.set_channel_probe(float(ratio))
+        return _ok("Probe %gx" % float(ratio))
+    if action == "get_probe":
+        return _ok_read(float(dev.get_channel_probe()), "x")
+
+    if action == "set_offset":
+        offset = params.get("offset")
+        if offset is None:
+            raise KeyError("offset")
+        dev.set_channel_offset(float(offset))
+        return _ok("Offset %g V" % float(offset))
+    if action == "get_offset":
+        return _ok_read(float(dev.get_channel_offset()), "V")
+
+    if action == "trigger_edge":
+        return _scope_trigger_edge(dev, params)
+
+    if action == "capabilities":
+        capabilities = dev.capabilities()
+        return _ok("%s, %s channel(s)" % (
+            capabilities.get("model") or "scope",
+            capabilities.get("analog_channels") or "?"), capabilities)
+
+    if action in _SCOPE_MEASUREMENTS:
+        return _scope_measure(dev, action)
+
+    raise UnknownAction(action)
+
+
+# CLI action -> (driver measurement name, unit). The names on the left are the
+# ones `lager scope measure ...` already sends.
+_SCOPE_MEASUREMENTS = {
+    "measure_vpp": ("vpp", "V"),
+    "measure_vmax": ("vmax", "V"),
+    "measure_vmin": ("vmin", "V"),
+    "measure_vrms": ("vrms", "V"),
+    "measure_vavg": ("vavg", "V"),
+    "measure_period": ("period", "s"),
+    "measure_freq": ("frequency", "Hz"),
+    "measure_dc_pos": ("duty_cycle_pos", "%"),
+    "measure_dc_neg": ("duty_cycle_neg", "%"),
+    "measure_pulse_width_pos": ("pulse_width_pos", "s"),
+    "measure_pulse_width_neg": ("pulse_width_neg", "s"),
+    "measure_rise_time": ("rise_time", "s"),
+    "measure_fall_time": ("fall_time", "s"),
+}
+
+
+def _scope_measure(dev, action):
+    name, unit = _SCOPE_MEASUREMENTS[action]
+    try:
+        return _ok_read(float(dev.get_measure_item(name)), unit)
+    except DeviceError as e:
+        # The driver raises when the quantity is not present in the capture
+        # (no period on a DC level, for instance). That is an answer, not a
+        # failure, and the CLI prints it as a hint rather than an error.
+        message = str(e)
+        if "not present in this capture" not in message:
+            raise
+        return _ok(message)
+
+
+def _scope_trigger_edge(dev, params):
+    """Configure an edge trigger, applying only the parts that were given.
+
+    Every field is optional so `lager scope trigger edge --level 1.2` changes
+    the level without resetting the source and slope to defaults, which is
+    what a caller passing one flag means.
+    """
+    applied = []
+    if params.get("source") is not None:
+        dev.set_trigger_source(params["source"])
+        applied.append("source %s" % params["source"])
+    if params.get("slope") is not None:
+        dev.set_trigger_slope(params["slope"])
+        applied.append("slope %s" % params["slope"])
+    if params.get("coupling") is not None:
+        dev.set_channel_coupling(params["coupling"])
+        applied.append("coupling %s" % params["coupling"])
+    if params.get("level") is not None:
+        dev.set_trigger_level(float(params["level"]))
+        applied.append("level %g V" % float(params["level"]))
+    if params.get("mode") is not None:
+        dev.set_capture_mode(params["mode"])
+        applied.append("mode %s" % params["mode"])
+
+    if not applied:
+        raise UnknownAction("trigger_edge with no settings to apply")
+    return _ok("Edge trigger: " + ", ".join(applied))
+
+
 ROLE_ACTIONS = {
     "gpio": _gpio,
     "adc": _adc,
@@ -852,6 +1022,7 @@ ROLE_ACTIONS = {
     "i2c": _i2c,
     "energy-analyzer": _energy_analyzer,
     "arm": _arm,
+    "scope": _scope,
     "webcam": _webcam,
     "router": _router,
     "mikrotik": _router,  # saved-net role alias (NetType.from_role)

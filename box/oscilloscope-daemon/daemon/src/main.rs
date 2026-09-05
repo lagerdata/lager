@@ -1,149 +1,83 @@
 // Copyright 2024-2026 Lager Data
 // SPDX-License-Identifier: Apache-2.0
 
-use anyhow::Result;
-use crossbeam::queue::SegQueue;
-use daemon::oscilloscope::create_oscilloscope;
-use daemon::oscilloscope::Oscilloscope;
-use daemon::webtransport::streaming::handle_scope_streaming as handle_webtransport_streaming;
-use daemon::webtransport::{
-    create_wtransport_server, handle_browser_connections, handle_commands_connections,
-    handle_database_connections,
-};
-use daemon::websocket::handlers::{handle_commands, handle_outgoing_messages, handle_scope_streaming as handle_websocket_streaming};
-use futures_util::StreamExt;
-use std::sync::{Arc, Mutex};
-use tokio::net::TcpListener;
-use tokio::sync::mpsc;
-use tokio_tungstenite::accept_async;
+//! Oscilloscope daemon.
+//!
+//! Opens the attached PicoScope on a dedicated hardware thread and serves one
+//! WebSocket endpoint carrying commands as JSON text and captures as binary
+//! LSCP frames.
 
-const MAX_DATABASE_CHANNEL_SIZE: usize = 50_000;
-const WEBSOCKET_COMMAND_PORT: u16 = 8085;
+use anyhow::{Context, Result};
+use daemon::oscilloscope::{pico, Oscilloscope, PicoScope2000};
+use daemon::scope_thread;
+use daemon::server::{self, ServerConfig};
+use tracing_subscriber::EnvFilter;
 
-/// Handle WebSocket command connections (for CLI/Python clients)
-async fn handle_websocket_commands(
-    listener: TcpListener,
-    oscilloscope: Arc<Mutex<Box<dyn Oscilloscope>>>,
-) -> Result<()> {
-    println!("WebSocket commands server listening on port {}", WEBSOCKET_COMMAND_PORT);
-    loop {
-        let (stream, addr) = listener.accept().await?;
-        println!("WebSocket connection from: {}", addr);
+fn init_tracing() {
+    // Default to info. Per-poll driver detail sits at trace, which is what
+    // keeps the log from growing by ~1 GB/day as it did when the readiness
+    // check printed unconditionally.
+    let filter = EnvFilter::try_from_env("LAGER_SCOPE_LOG")
+        .unwrap_or_else(|_| EnvFilter::new("info"));
 
-        let oscilloscope = oscilloscope.clone();
-        tokio::spawn(async move {
-            match accept_async(stream).await {
-                Ok(ws_stream) => {
-                    let (sink, stream) = ws_stream.split();
-                    let (tx_outgoing, rx_outgoing) = mpsc::channel(100);
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .init();
+}
 
-                    // Clone tx for streaming task
-                    let tx_streaming = tx_outgoing.clone();
-                    let oscilloscope_streaming = oscilloscope.clone();
+/// Open whichever PicoScope is attached.
+///
+/// The legacy 2000-series driver is tried first because it is the one with a
+/// full `Oscilloscope` implementation behind it. If no legacy unit answers,
+/// the modern families are probed so the failure can name the instrument
+/// that *is* plugged in -- previously any non-2204A scope produced the
+/// legacy driver's "no unit found", which sent people looking at USB cables
+/// when the real answer was that their model needs a different driver.
+fn open_scope() -> Result<Box<dyn Oscilloscope>> {
+    let legacy_error = match PicoScope2000::new() {
+        Ok(scope) => return Ok(Box::new(scope)),
+        Err(e) => e,
+    };
 
-                    let handle_commands_task = handle_commands(stream, oscilloscope, tx_outgoing);
-                    let handle_outgoing_task = handle_outgoing_messages(sink, rx_outgoing);
-                    let handle_streaming_task = handle_websocket_streaming(oscilloscope_streaming, tx_streaming);
-
-                    tokio::select! {
-                        result = handle_commands_task => {
-                            if let Err(e) = result {
-                                eprintln!("WebSocket commands error: {}", e);
-                            }
-                        }
-                        result = handle_outgoing_task => {
-                            if let Err(e) = result {
-                                eprintln!("WebSocket outgoing error: {}", e);
-                            }
-                        }
-                        result = handle_streaming_task => {
-                            if let Err(e) = result {
-                                eprintln!("WebSocket streaming error: {}", e);
-                            }
-                        }
-                    }
-                    println!("WebSocket connection closed: {}", addr);
-                }
-                Err(e) => {
-                    eprintln!("WebSocket handshake error: {}", e);
-                }
-            }
-        });
+    // No 2000-series unit on the legacy API, so look for one of the modern
+    // families. Detection already opened and identified the unit, so the
+    // handle is adopted rather than reopened -- reopening would race against
+    // the close, and some units refuse a second open for a moment after.
+    match pico::detect(None) {
+        Ok(found) => {
+            tracing::info!(
+                model = %found.capabilities.model,
+                serial = %found.capabilities.serial,
+                family = found.family.as_str(),
+                channels = found.capabilities.analog_channels,
+                "opened PicoScope"
+            );
+            let scope =
+                pico::PicoScopeModern::adopt(found.api, found.handle, found.capabilities)?;
+            Ok(Box::new(scope))
+        }
+        // Nothing at all is attached: the legacy driver's message is the
+        // useful one, since it names the library and search path.
+        Err(_) => Err(legacy_error),
     }
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    println!("Starting oscilloscope daemon");
+    init_tracing();
 
-    // Create WebSocket listener for CLI commands
-    let ws_listener = TcpListener::bind(format!("0.0.0.0:{}", WEBSOCKET_COMMAND_PORT)).await?;
-    println!("WebSocket commands listener created on port {}", WEBSOCKET_COMMAND_PORT);
+    let config = ServerConfig::from_env();
+    tracing::info!(
+        tcp_port = ?config.tcp_port,
+        socket = ?config.unix_socket,
+        "starting oscilloscope daemon"
+    );
 
-    // Create WebTransport endpoints
-    println!("Creating WebTransport endpoints...");
-    let commands_endpoint = create_wtransport_server(8082).await?;
-    println!("Commands endpoint created successfully");
-    let browser_endpoint = create_wtransport_server(8083).await?;
-    println!("Browser endpoint created successfully");
-    let database_endpoint = create_wtransport_server(8084).await?;
-    println!("Database endpoint created successfully");
+    // Open before serving, so a missing scope is a clear startup failure
+    // rather than a listener that accepts connections and then errors on
+    // every command.
+    let scope = scope_thread::spawn(open_scope).context("opening oscilloscope")?;
 
-    println!("Endpoints:");
-    println!("  WebSocket Commands (CLI): 0.0.0.0:8085");
-    println!("  WebTransport Commands:    0.0.0.0:8082");
-    println!("  WebTransport Browser:     0.0.0.0:8083");
-    println!("  WebTransport Database:    0.0.0.0:8084");
-    println!("Starting servers...");
-
-    let oscilloscope = Arc::new(Mutex::new(create_oscilloscope()?));
-    println!("Oscilloscope created");
-
-    // Create channels for data distribution
-    let (tx_database_data, rx_database_data) = mpsc::channel(MAX_DATABASE_CHANNEL_SIZE); // Large buffer for database
-    let browser_queue = Arc::new(SegQueue::new()); // Small buffer for browser (~10 items)
-
-    // Start WebTransport oscilloscope data streaming (for database and browser clients)
-    let scope_ref = Arc::clone(&oscilloscope);
-    let browser_queue_for_streaming = Arc::clone(&browser_queue);
-    tokio::spawn(async move {
-        if let Err(e) =
-            handle_webtransport_streaming(scope_ref, tx_database_data, browser_queue_for_streaming).await
-        {
-            eprintln!("WebTransport scope streaming error: {}", e);
-        }
-    });
-
-    // Start all servers (WebSocket + WebTransport)
-    tokio::select! {
-        ws_result = handle_websocket_commands(ws_listener, oscilloscope.clone()) => {
-            if let Err(e) = ws_result {
-                eprintln!("WebSocket commands listener error: {}", e);
-            } else {
-                println!("WebSocket commands listener stopped normally");
-            }
-        }
-        commands_result = handle_commands_connections(commands_endpoint, oscilloscope.clone()) => {
-            if let Err(e) = commands_result {
-                eprintln!("WebTransport commands listener error: {}", e);
-            } else {
-                println!("WebTransport commands listener stopped normally");
-            }
-        }
-        browser_result = handle_browser_connections(browser_endpoint, browser_queue) => {
-            if let Err(e) = browser_result {
-                eprintln!("WebTransport browser listener error: {}", e);
-            } else {
-                println!("WebTransport browser listener stopped normally");
-            }
-        }
-        database_result = handle_database_connections(database_endpoint, rx_database_data) => {
-            if let Err(e) = database_result {
-                eprintln!("WebTransport database listener error: {}", e);
-            } else {
-                println!("WebTransport database listener stopped normally");
-            }
-        }
-    }
-    Ok(())
+    server::serve(config, scope).await
 }

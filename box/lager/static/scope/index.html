@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<!--
+  Copyright 2024-2026 Lager Data
+  SPDX-License-Identifier: Apache-2.0
+
+  Lager scope UI. Served by box_http_server at GET /scope on :9000, the same
+  port every other net uses. No build step and no dependencies: plain ES
+  modules and a 2D canvas, so the page works on a box with no internet access
+  and there is nothing to rebuild when it changes.
+
+  Controls are built from the scope's detected capabilities rather than
+  hardcoded, so a 2-channel 2204A shows two channels and a 4-channel unit
+  shows four, without a UI change.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lager Scope</title>
+  <link rel="stylesheet" href="/scope/static/scope.css">
+</head>
+<body>
+  <header class="bar">
+    <div class="brand">
+      <span class="logo">Lager</span>
+      <span class="sub">Scope</span>
+    </div>
+
+    <label class="field">
+      <span>Net</span>
+      <select id="net-select" aria-label="Scope net"></select>
+    </label>
+
+    <div class="ident">
+      <span id="model" class="model">&mdash;</span>
+      <span id="serial" class="serial"></span>
+    </div>
+
+    <div class="spacer"></div>
+
+    <div class="stats" role="status" aria-live="off">
+      <span id="stat-rate">0 cap/s</span>
+      <span id="stat-rate-samples">&mdash;</span>
+      <span id="stat-latency">&mdash;</span>
+    </div>
+
+    <span id="link" class="link link--down">disconnected</span>
+    <button id="connect" class="btn btn--primary" type="button">Connect</button>
+  </header>
+
+  <main class="layout">
+    <section class="plot" aria-label="Waveform">
+      <canvas id="scope-canvas"></canvas>
+      <div id="plot-empty" class="plot-empty">
+        <p>Not streaming.</p>
+        <p class="dim">Press <strong>Connect</strong>, then <strong>Start</strong>.</p>
+      </div>
+      <div id="overflow-warning" class="overflow-warning" hidden></div>
+    </section>
+
+    <aside class="controls" aria-label="Controls">
+      <div class="group">
+        <div class="group__title">Acquisition</div>
+        <div class="row">
+          <button id="btn-start" class="btn" type="button">Start</button>
+          <button id="btn-single" class="btn" type="button">Single</button>
+          <button id="btn-stop" class="btn" type="button">Stop</button>
+        </div>
+        <div class="row">
+          <button id="btn-force" class="btn btn--wide" type="button">Force trigger</button>
+        </div>
+        <label class="field field--stack">
+          <span>Time / div</span>
+          <select id="timebase"></select>
+        </label>
+      </div>
+
+      <div class="group">
+        <div class="group__title">Channels</div>
+        <!-- Populated from capabilities.analog_channels. -->
+        <div id="channels"></div>
+      </div>
+
+      <div class="group">
+        <div class="group__title">Trigger</div>
+        <label class="field field--stack">
+          <span>Source</span>
+          <select id="trigger-source"></select>
+        </label>
+        <label class="field field--stack">
+          <span>Slope</span>
+          <select id="trigger-slope">
+            <option value="rising">Rising</option>
+            <option value="falling">Falling</option>
+            <option value="either">Either</option>
+          </select>
+        </label>
+        <label class="field field--stack">
+          <span>Mode</span>
+          <select id="trigger-mode">
+            <option value="auto">Auto</option>
+            <option value="normal">Normal</option>
+            <option value="single">Single</option>
+          </select>
+        </label>
+        <label class="field field--stack">
+          <span>Level (V)</span>
+          <input id="trigger-level" type="number" step="0.01" value="0">
+        </label>
+      </div>
+
+      <div class="group">
+        <div class="group__title">Measurements</div>
+        <div id="measurements" class="measurements">
+          <p class="dim">Start a capture to see measurements.</p>
+        </div>
+      </div>
+
+      <div id="capability-notes" class="group group--notes" hidden>
+        <div class="group__title">This scope</div>
+        <ul id="capability-list"></ul>
+      </div>
+    </aside>
+  </main>
+
+  <section class="console" aria-label="Command console">
+    <div class="console__bar">
+      <span class="console__title">CLI</span>
+      <span class="dim">same commands as <code>lager scope</code> &mdash; type
+        <code>help</code></span>
+      <div class="spacer"></div>
+      <button id="btn-clear" class="btn btn--small" type="button">Clear</button>
+    </div>
+    <div id="console-output" class="console__output" role="log" aria-live="polite"></div>
+    <form id="console-form" class="console__input" autocomplete="off">
+      <span class="prompt">&gt;</span>
+      <input id="console-line" type="text" spellcheck="false"
+             aria-label="Command" placeholder="help">
+    </form>
+  </section>
+
+  <script type="module" src="/scope/static/scope.js"></script>
+</body>
+</html>
