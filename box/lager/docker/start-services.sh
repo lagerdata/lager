@@ -23,7 +23,15 @@ rotate_log() {
     size=$(stat -c %s "$log_file" 2>/dev/null || stat -f %z "$log_file" 2>/dev/null || echo 0)
 
     if [ "$size" -gt "$LOG_MAX_BYTES" ]; then
-        mv -f "$log_file" "${log_file}.1"
+        # Copy and truncate rather than rename, because the writer is still
+        # running and holds an append fd on this inode. A rename would leave
+        # it appending to the renamed file while the fresh one stayed empty,
+        # so the next rotation would rename an empty file over it and unlink
+        # the inode the writer still has open -- the disk then fills with a
+        # file that has no name, which `ls` and `du` cannot show you. The
+        # writers here all redirect with `>>`, so O_APPEND puts their next
+        # write at the new end of the truncated file.
+        cp -f "$log_file" "${log_file}.1" 2>/dev/null
         : > "$log_file"
     fi
 }
