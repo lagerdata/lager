@@ -59,8 +59,8 @@ ACTION=="bind", SUBSYSTEM=="usb", DRIVER=="usbtmc", ATTRS{idVendor}=="05e6", ATT
 SUBSYSTEM=="usb", ATTRS{idVendor}=="1ab1", ATTRS{idProduct}=="0515", MODE="0660", GROUP="lager"
 ACTION=="bind", SUBSYSTEM=="usb", DRIVER=="usbtmc", ATTRS{idVendor}=="1ab1", ATTRS{idProduct}=="0515", RUN+="/bin/sh -c 'echo %k > /sys/bus/usb/drivers/usbtmc/unbind 2>/dev/null || true'"
 
-# Picoscope 2000 Series: VID=0x0ce9, PID=0x1007
-SUBSYSTEM=="usb", ATTRS{idVendor}=="0ce9", ATTRS{idProduct}=="1007", MODE="0660", GROUP="lager"
+# Pico Technology (all PicoScope USB devices): VID=0x0ce9
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0ce9", MODE="0660", GROUP="lager"
 
 # ============================================================================
 # ADC / GPIO / DAC

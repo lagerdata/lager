@@ -11,8 +11,9 @@
 #   2. Sudo configuration (passwordless udev management)
 #   3. Box code deployment (git sparse-checkout via HTTPS)
 #   4. J-Link installation (optional, if available)
-#   5. Docker container startup
-#   6. Post-deployment verification
+#   5. PicoScope 7 SDK (optional; every PicoTech USB driver)
+#   6. Docker container startup
+#   7. Post-deployment verification
 #
 # Uses HTTPS for git operations (no authentication needed for public repo).
 #
@@ -22,6 +23,7 @@
 #   --user <username>     Box username (default: lagerdata)
 #   --version <version>   Release tag (e.g. v0.15.0) or git branch to deploy (default: main)
 #   --skip-jlink          Skip J-Link installation even if available
+#   --skip-picoscope      Skip PicoScope 7 SDK installation
 #   --skip-verify         Skip post-deployment verification
 #   --help                Show this help message
 #
@@ -31,6 +33,7 @@
 #   ./setup_and_deploy_box.sh <BOX_IP> --version v0.15.0
 #   ./setup_and_deploy_box.sh <BOX_IP> --user pi
 #   ./setup_and_deploy_box.sh <BOX_IP> --skip-jlink
+#   ./setup_and_deploy_box.sh <BOX_IP> --skip-picoscope
 
 set -e
 
@@ -45,6 +48,7 @@ NC='\033[0m' # No Color
 # Default values
 BOX_USER="lagerdata"
 SKIP_JLINK=false
+SKIP_PICOSCOPE=false
 SKIP_VERIFY=false
 BOX_IP=""
 VPN_INTERFACE=""
@@ -109,6 +113,7 @@ show_help() {
     echo "  --install-jlink       Interactively download and install J-Link (requires license acceptance)"
     echo "  --skip-jlink          Skip J-Link installation even if available"
     echo "  --jlink-version <ver> Pin J-Link to a specific SEGGER version (default: latest)"
+    echo "  --skip-picoscope      Skip PicoScope 7 SDK installation"
     echo "  --skip-verify         Skip post-deployment verification"
     echo "  --pull                Use the pre-built box image for a release tag (default)"
     echo "  --no-pull             Always build the box image on the box"
@@ -123,6 +128,7 @@ show_help() {
     echo "  $0 <BOX_IP> --vpn tun0"
     echo "  $0 <BOX_IP> --corporate-vpn tun0"
     echo "  $0 <BOX_IP> --skip-jlink"
+    echo "  $0 <BOX_IP> --skip-picoscope"
     echo "  $0 <BOX_IP> --skip-firewall"
     echo "  $0 <BOX_IP> --version v0.39.1 --no-pull"
     echo ""
@@ -161,6 +167,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --skip-jlink)
             SKIP_JLINK=true
+            shift
+            ;;
+        --skip-picoscope)
+            SKIP_PICOSCOPE=true
             shift
             ;;
         --jlink-version)
@@ -714,6 +724,15 @@ ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/cp /tmp/blacklist-usbtmc.conf /etc/modprobe
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod 644 /etc/modprobe.d/blacklist-usbtmc.conf
 ${BOX_USER} ALL=(ALL) NOPASSWD: /sbin/modprobe -r usbtmc
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/rm -f /tmp/blacklist-usbtmc.conf
+# PicoScope 7 apt repo: keyring + sources.list staged in /tmp then copied,
+# matching the udev-rule pattern. apt-get itself is granted by
+# /etc/sudoers.d/lager-box-config (NOPASSWD SETENV).
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/cp /tmp/picotech-archive-keyring.gpg /usr/share/keyrings/picotech-archive-keyring.gpg
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod 644 /usr/share/keyrings/picotech-archive-keyring.gpg
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/cp /tmp/picoscope7.list /etc/apt/sources.list.d/picoscope7.list
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod 644 /etc/apt/sources.list.d/picoscope7.list
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/rm -f /tmp/picotech-archive-keyring.gpg
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/rm -f /tmp/picoscope7.list
 # Allow ${BOX_USER} user to manage /etc/lager directory permissions.
 #
 # Enumerated rather than wildcarded, because sudo-rs rejects a * in command
@@ -1730,6 +1749,64 @@ else
                 print_info "CMSIS-DAP and FTDI probes; those are unaffected."
                 echo ""
             fi
+        fi
+    fi
+fi
+
+# =============================================================================
+# STEP 4.5: PicoScope 7 SDK (all PicoTech USB drivers)
+# =============================================================================
+# PicoTech's `picoscope` metapackage installs libps2000, libps2000a, libps3000,
+# libps3000a, libps4000, libps4000a, libps5000, libps5000a, libps6000,
+# libps6000a, and related libs into /opt/picoscope/lib, which start_box.sh
+# bind-mounts into the container. That is every current PicoScope USB driver,
+# not only 2204A/2205A. Failure here is non-fatal: the box still comes up.
+print_step "Installing PicoScope 7 SDK (Optional)"
+
+if [ "$SKIP_PICOSCOPE" = true ]; then
+    print_info "Skipping PicoScope SDK installation (--skip-picoscope flag set)"
+else
+    print_info "Checking if PicoScope 7 is already installed on box..."
+    if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "dpkg-query -W -f='\${Status}' picoscope 2>/dev/null | grep -q 'install ok installed'"; then
+        print_success "PicoScope 7 already installed on box"
+    else
+        print_info "Installing PicoScope 7 from PicoTech's apt repository..."
+        echo ""
+        echo "This installs every PicoTech USB driver (libps2000 through libps6000a)"
+        echo "plus the PicoScope 7 application. Libraries land at /opt/picoscope/lib,"
+        echo "which the box container bind-mounts. PicoTech license:"
+        echo "  https://www.picotech.com/about/legal"
+        echo ""
+        # ssh_t (tty) so operator sudo still works: lager-box-config is written
+        # after this script returns, and apt-get is not in lagerdata-udev.
+        # `sudo env VAR=... apt-get` (not `sudo VAR= apt-get`) matches the rest
+        # of this script; see #315.
+        if ssh_t "${BOX_USER}@${BOX_IP}" '
+            set -e
+            sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y --no-install-recommends gnupg wget ca-certificates
+            wget -O- https://labs.picotech.com/Release.gpg.key | gpg --dearmor > /tmp/picotech-archive-keyring.gpg
+            sudo /bin/cp /tmp/picotech-archive-keyring.gpg /usr/share/keyrings/picotech-archive-keyring.gpg
+            sudo /bin/chmod 644 /usr/share/keyrings/picotech-archive-keyring.gpg
+            sudo /bin/rm -f /tmp/picotech-archive-keyring.gpg
+            printf "%s\n" "deb [signed-by=/usr/share/keyrings/picotech-archive-keyring.gpg] https://labs.picotech.com/picoscope7/debian/ picoscope main" > /tmp/picoscope7.list
+            sudo /bin/cp /tmp/picoscope7.list /etc/apt/sources.list.d/picoscope7.list
+            sudo /bin/chmod 644 /etc/apt/sources.list.d/picoscope7.list
+            sudo /bin/rm -f /tmp/picoscope7.list
+            sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get update
+            sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y picoscope
+        '; then
+            if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "test -e /opt/picoscope/lib/libps2000.so || test -e /opt/picoscope/lib/libps2000.so.2"; then
+                print_success "PicoScope 7 SDK installed at /opt/picoscope/lib"
+            else
+                print_warning "PicoScope 7 package installed but /opt/picoscope/lib/libps2000.so was not found"
+            fi
+        else
+            print_warning "PicoScope 7 SDK installation failed"
+            echo ""
+            print_info "The box will still start. PicoScope instruments need the SDK at"
+            print_info "/opt/picoscope/lib, installed from PicoTech:"
+            print_info "  https://www.picotech.com/downloads/linux"
+            echo ""
         fi
     fi
 fi

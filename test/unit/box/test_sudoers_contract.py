@@ -529,6 +529,17 @@ class UdevSudoersIsWildcardFree(unittest.TestCase):
 class UdevSudoersGrantsWhatIsActuallyCalled(unittest.TestCase):
     """Wildcard-free is only correct if the literals cover the real calls."""
 
+    def test_picoscope_repo_files_are_granted_by_name(self):
+        rules = "\n".join(_rule_lines(_udev_heredoc_body()))
+        self.assertIn(
+            "/bin/cp /tmp/picotech-archive-keyring.gpg /usr/share/keyrings/picotech-archive-keyring.gpg",
+            rules,
+        )
+        self.assertIn(
+            "/bin/cp /tmp/picoscope7.list /etc/apt/sources.list.d/picoscope7.list",
+            rules,
+        )
+
     def test_staged_rule_files_are_granted_by_name(self):
         rules = "\n".join(_rule_lines(_udev_heredoc_body()))
         # UDEV_RULES_FILENAME is the one _host_ops stages; 99-instrument.rules

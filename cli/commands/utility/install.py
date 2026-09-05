@@ -171,6 +171,7 @@ def _read_installed_head_sha(ssh_host, identity_args):
 @click.option("--user", default=None, help="SSH username (default: lagerdata, or stored username if using --box)")
 @click.option("--version", "version", default="main", help="Version to deploy: a release tag (e.g. v0.21.3), a branch (main, staging), or a full 40-character commit SHA (default: main)")
 @click.option("--skip-jlink", is_flag=True, help="Skip J-Link installation")
+@click.option("--skip-picoscope", is_flag=True, help="Skip PicoScope 7 SDK installation")
 @click.option("--skip-firewall", is_flag=True, help="Skip UFW firewall configuration")
 @click.option("--skip-verify", is_flag=True, help="Skip post-deployment verification")
 @click.option("--corporate-vpn", default=None, help="Corporate VPN interface name (e.g., tun0)")
@@ -178,7 +179,7 @@ def _read_installed_head_sha(ssh_host, identity_args):
 @click.option("--pull", is_flag=True, help="Use the pre-built box image for a release tag instead of building it on the box (the default; falls back to a local build on any miss)")
 @click.option("--no-pull", "no_pull", is_flag=True, help="Never use a pre-built image; always build on the box")
 @click.option("--timeout", type=click.IntRange(min=0), default=None, help="Max seconds for the deploy step, which includes the container build (0=no timeout). Defaults to LAGER_INSTALL_TIMEOUT, or 1800. Raise it on slow hardware -- an emulated guest or a throttled VM can exceed the default on a healthy build.")
-def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify, corporate_vpn, yes, pull, no_pull, timeout):
+def install(ctx, box, ip, user, version, skip_jlink, skip_picoscope, skip_firewall, skip_verify, corporate_vpn, yes, pull, no_pull, timeout):
     """
     Install lager box code onto a new box
     """
@@ -390,6 +391,8 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
         click.echo(f"  Box image: build on the box ('{version}' is not a release tag)")
     if skip_jlink:
         click.echo(f"  Skip J-Link: Yes")
+    if skip_picoscope:
+        click.echo(f"  Skip PicoScope: Yes")
     if skip_firewall:
         click.echo(f"  Skip Firewall: Yes")
     if corporate_vpn:
@@ -416,6 +419,8 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
 
     if skip_jlink:
         deploy_args.append("--skip-jlink")
+    if skip_picoscope:
+        deploy_args.append("--skip-picoscope")
     if skip_firewall:
         deploy_args.append("--skip-firewall")
     if skip_verify:
