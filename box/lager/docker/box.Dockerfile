@@ -307,9 +307,6 @@ RUN chmod +x /usr/local/bin/start-services.sh
 # Location: /home/lagerdata/third_party/oscilloscope-daemon -> /usr/local/bin/oscilloscope-daemon
 # Build instructions: cd box/oscilloscope-daemon && ./build_daemon.sh
 
-# Copy oscilloscope web visualization files
-COPY docker/web_oscilloscope.html /app/lager/web_oscilloscope.html
-
 # License notices, in the image because the image is published.
 #
 #   /usr/share/licenses/lager/LICENSE, NOTICE     Lager's own
@@ -380,6 +377,8 @@ COPY protocols /app/lager/lager/protocols
 COPY blufi /app/lager/lager/blufi
 # Automation group: arm, usb_hub, webcam
 COPY automation /app/lager/lager/automation
+# Scope UI assets, served by box_http_server at GET /scope on :9000
+COPY static /app/lager/lager/static
 
 COPY run.sh /app
 
