@@ -156,8 +156,13 @@ def mapper_factory(net, device_type, net_info):
         elif net.type == NetType.Logic:
             return RigolMSO5000LogicMapper(net, Device(device_type, net_info))
     elif device_type == "picoscope_2000":
-        # Picoscope uses passthrough mapper - actual implementation via websocket daemon
-        return PassThroughMapper(net, Device(device_type, net_info))
+        # The backend is `scope_hs`, not `picoscope_2000`: there is no module
+        # by the latter name, so the PassThroughMapper this used to return
+        # failed every call with "Hardware module not found". `scope_hs` is
+        # the same factory the CLI drives, which picks the PicoScope or Rigol
+        # driver from the net's instrument string.
+        from .mappers.picoscope import PicoScopeAnalogMapper
+        return PicoScopeAnalogMapper(net, Device("scope_hs", net_info))
     elif device_type in ("rigol_dp800", "rigol_dp800_2", "rigol_dp700"):
         # DP700 (DP711/DP712) exposes the same method surface as the DP800
         # backend, so it reuses the DP800 function mapper. The device_type is
@@ -180,17 +185,6 @@ def mapper_factory(net, device_type, net_info):
     elif device_type == "keysight_e36000":
         return KeysightE36000FunctionMapper(net, Device(device_type, net_info))
     raise TypeError(f"Invalid mapper type {device_type}")
-
-
-# ------------------------------ passthrough ------------------------------
-
-class PassThroughMapper:
-    def __init__(self, net, device):
-        self.net = net
-        self.device = device
-
-    def __getattr__(self, attr):
-        return getattr(self.device, attr)
 
 
 # ------------------------------- errors ---------------------------------
