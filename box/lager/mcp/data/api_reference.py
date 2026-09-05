@@ -539,25 +539,52 @@ API_REFERENCE: dict[str, dict] = {
         "net_type_enum": "NetType.Analog",
         "get_pattern": 'scope = Net.get("scope1", type=NetType.Analog)',
         "methods": [
-            {"name": "enable", "sig": "enable()", "desc": "Enable this scope channel"},
-            {"name": "disable", "sig": "disable()", "desc": "Disable this scope channel"},
-            {"name": "measure", "sig": "measure(item: str) -> float", "desc": "Scalar measurement on the channel (e.g. 'vpp', 'frequency')"},
-            {"name": "trigger", "sig": "trigger(...)", "desc": "Configure the trigger for this channel"},
+            {"name": "start_capture", "sig": "start_capture()", "desc": "Start continuous acquisition"},
+            {"name": "stop_capture", "sig": "stop_capture()", "desc": "Stop acquisition"},
+            {"name": "start_single_capture", "sig": "start_single_capture()", "desc": "Arm for one acquisition, then stop"},
+            {"name": "force_trigger", "sig": "force_trigger()", "desc": "Trigger now instead of waiting for the condition"},
+            {"name": "measurement.voltage_peak_to_peak", "sig": "measurement.voltage_peak_to_peak() -> float", "desc": "Vpp on this net's channel"},
+            {"name": "measurement.voltage_max", "sig": "measurement.voltage_max() -> float", "desc": "Highest sample, in volts"},
+            {"name": "measurement.voltage_min", "sig": "measurement.voltage_min() -> float", "desc": "Lowest sample, in volts"},
+            {"name": "measurement.voltage_rms", "sig": "measurement.voltage_rms() -> float", "desc": "RMS voltage"},
+            {"name": "measurement.voltage_average", "sig": "measurement.voltage_average() -> float", "desc": "Mean voltage"},
+            {"name": "measurement.frequency", "sig": "measurement.frequency() -> float", "desc": "Frequency in Hz; needs a full cycle on screen"},
+            {"name": "measurement.period", "sig": "measurement.period() -> float", "desc": "Period in seconds; needs a full cycle on screen"},
+            {"name": "measurement.all", "sig": "measurement.all() -> dict", "desc": "PicoScope only: every measurement from one capture, keyed 'vpp', 'vmax', 'frequency', ..."},
+            {"name": "trace_settings.set_volts_per_div", "sig": "trace_settings.set_volts_per_div(volts: float)", "desc": "Vertical scale for this net's channel"},
+            {"name": "trace_settings.set_time_per_div", "sig": "trace_settings.set_time_per_div(seconds: float)", "desc": "Timebase, shared by every channel"},
+            {"name": "trigger_settings.set_mode_auto", "sig": "trigger_settings.set_mode_auto()", "desc": "Free-run, triggering on its own if the condition never fires"},
+            {"name": "trigger_settings.set_mode_normal", "sig": "trigger_settings.set_mode_normal()", "desc": "Capture only on a real trigger"},
+            {"name": "trigger_settings.set_mode_single", "sig": "trigger_settings.set_mode_single()", "desc": "One capture, then stop"},
+            {"name": "trigger_settings.get_status", "sig": "trigger_settings.get_status() -> str", "desc": "Trigger state, e.g. 'WAIT' or 'READY'"},
+            {"name": "trigger_settings.edge.set_level", "sig": "trigger_settings.edge.set_level(volts: float)", "desc": "Edge trigger level, in probe-tip volts"},
+            {"name": "trigger_settings.edge.set_slope_rising", "sig": "trigger_settings.edge.set_slope_rising()", "desc": "Trigger on the rising edge"},
+            {"name": "trigger_settings.edge.set_slope_falling", "sig": "trigger_settings.edge.set_slope_falling()", "desc": "Trigger on the falling edge"},
+            {"name": "capture", "sig": "capture(timeout=None) -> CaptureFrame", "desc": "PicoScope only: one triggered capture, samples included"},
+            {"name": "stream_frames", "sig": "stream_frames(count: int = 1) -> Iterator[CaptureFrame]", "desc": "PicoScope only: yield decoded captures as they arrive"},
         ],
         "gotchas": [
-            "A scope net is ONE CHANNEL. Four channels means four nets, and enabling one does not enable the others.",
+            "A scope net is ONE CHANNEL. Four channels means four nets, and enabling one does not enable the others. `measurement` and `trace_settings` act on this net's channel; the timebase and the trigger are shared by the whole instrument.",
             "Methods reach the instrument through an RPC proxy rather than a local driver class, so this list is hand-maintained -- consult `lager scope --help` on the box for the authoritative surface.",
-            "The scope is the slowest instrument on most benches. Prefer a scalar measure() over pulling a full trace when an assertion only needs a number.",
-            "Not reachable from the Rust crate: the box has no HTTP endpoint for scope capture yet.",
+            "On a PicoScope each named measurement takes its own capture, so asking for vpp and then frequency measures two different captures and the numbers need not agree. Use measurement.all() when an assertion depends on more than one of them.",
+            "Rigol and PicoScope share this surface but not all of it. A PicoScope has no on-screen display, so `cursor.*` and `autoscale()` raise UnsupportedScopeFeature naming the gap rather than returning a misleading zero; `measurement.all()`, `capture()` and `stream_frames()` exist only on a PicoScope. Catch UnsupportedScopeFeature if a script has to run on either.",
+            "PicoScope measurements are computed by the daemon from the captured block, not read off the instrument, so a quantity that needs a full cycle (period, frequency, duty cycle) raises rather than returning zero when the capture does not hold one.",
+            "Reachable from the box HTTP API on port 9000, but not yet from the Rust crate: the scope handle there is still a stub.",
         ],
         "example_snippet": (
             'from lager import Net, NetType\n'
             '\n'
             'scope = Net.get("scope1", type=NetType.Analog)\n'
-            'scope.enable()\n'
-            'vpp = scope.measure("vpp")\n'
-            'print(f"peak-to-peak: {vpp:.3f} V")\n'
-            'assert vpp > 3.0, f"signal too small: {vpp}"\n'
+            'scope.trace_settings.set_volts_per_div(1.0)\n'
+            'scope.trace_settings.set_time_per_div(0.001)\n'
+            'scope.trigger_settings.set_mode_auto()\n'
+            'scope.start_capture()\n'
+            'try:\n'
+            '    vpp = scope.measurement.voltage_peak_to_peak()\n'
+            '    print(f"peak-to-peak: {vpp:.3f} V")\n'
+            '    assert vpp > 3.0, f"signal too small: {vpp}"\n'
+            'finally:\n'
+            '    scope.stop_capture()\n'
         ),
     },
     "Logic": {

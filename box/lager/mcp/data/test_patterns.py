@@ -159,7 +159,10 @@ TEST_PATTERNS: dict[str, dict[str, Any]] = {
     },
     "oscilloscope": {
         "description": "Oscilloscope measurement and triggering",
-        "net_types": ["Scope"],
+        # A scope channel is NetType.Analog. "Scope" was not a NetType member,
+        # so an agent following this pattern reached for NetType.Scope and got
+        # an AttributeError.
+        "net_types": ["Analog"],
         "script": "peripherals/test_scope_basic.py",
         "tags": ["scope", "oscilloscope", "waveform"],
     },
