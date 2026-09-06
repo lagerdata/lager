@@ -29,6 +29,16 @@
 
 * { box-sizing: border-box; }
 
+/* The browser hides `[hidden]` elements with a `display: none` rule in its
+ * own stylesheet, and ANY author `display` here outranks it -- author styles
+ * beat user-agent styles regardless of specificity. `.plot-empty` sets
+ * `display: grid`, so `element.hidden = true` set the attribute and changed
+ * nothing on screen: the "Not streaming. Press Connect, then Start." overlay
+ * stayed up over a running, streaming scope, which reads as the UI having
+ * ignored the button. `!important` rather than source order because an id
+ * selector would outrank a plain `[hidden]` too. */
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
   background: var(--bg);
@@ -187,6 +197,10 @@ select:focus-visible, input:focus-visible {
 
 .group--notes ul { margin: 0; padding-left: 18px; color: var(--text-dim); font-size: 12px; }
 .group--notes li { margin-bottom: 3px; }
+
+/* A channel the scope reports but no net addresses: shown so the reading is
+ * still legible, dimmed so it does not look operable. */
+.channel--unwired { opacity: 0.45; }
 
 .dim { color: var(--text-dim); }
 

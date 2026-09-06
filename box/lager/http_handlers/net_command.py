@@ -872,6 +872,17 @@ def _scope(netname, role, action, params):
     if action == "disable_net":
         dev.disable_channel()
         return _ok("Disabled %s" % netname)
+    if action == "get_net_enabled":
+        # Read-back for this net's channel. The web UI needs it because it
+        # renders every channel at once and used to *assume* the initial
+        # state (first channel on, rest off) without ever applying it. When
+        # the device disagreed, the UI showed a channel as on while captures
+        # were empty and measurements failed with "channel X is not
+        # enabled" -- the display contradicting the hardware, with no way to
+        # tell which was right.
+        enabled = bool(dev.is_channel_enabled())
+        return _ok("%s is %s" % (netname, "enabled" if enabled else "disabled"),
+                   enabled)
     if action == "start_capture":
         dev.run()
         return _ok("Acquisition running")

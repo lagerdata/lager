@@ -87,6 +87,9 @@ class Console {
 class ScopeApp {
   constructor() {
     this.net = null;
+    // Every scope net on the box, kept so a channel can be mapped to the net
+    // that addresses it rather than to whichever net is selected.
+    this.scopeNets = [];
     this.socket = null;
     this.capabilities = null;
     this.latest = null;
@@ -133,6 +136,7 @@ class ScopeApp {
       for (const net of nets) {
         select.append(new Option(net.name, net.name));
       }
+      this.scopeNets = nets;
       this.net = nets[0].name;
       select.value = this.net;
       await this.loadCapabilities();
@@ -182,9 +186,19 @@ class ScopeApp {
     host.replaceChildren();
     this.channelState.clear();
     labels.forEach((label, index) => {
-      this.channelState.set(label, { enabled: index === 0, voltsPerDiv: 1 });
+      this.channelState.set(label, {
+        enabled: index === 0,
+        voltsPerDiv: 1,
+        net: this.netForChannel(index),
+      });
       host.appendChild(this.buildChannelStrip(label, index, caps));
     });
+
+    // The strips above render a guess. Replace it with what the hardware
+    // actually reports, so the UI cannot claim a channel is on while the
+    // scope has it off -- which showed up as an enabled channel producing
+    // empty captures and "channel X is not enabled" from every measurement.
+    this.syncChannelState(labels);
 
     // Trigger sources are exactly the channels that exist.
     const source = el('trigger-source');
@@ -219,10 +233,21 @@ class ScopeApp {
     const toggle = document.createElement('input');
     toggle.type = 'checkbox';
     toggle.checked = index === 0;
-    toggle.addEventListener('change', () => {
-      this.channelState.get(label).enabled = toggle.checked;
-      this.send(toggle.checked ? 'enable_net' : 'disable_net', {});
+    toggle.addEventListener('change', async () => {
+      const state = this.channelState.get(label);
+      state.enabled = toggle.checked;
+      await this.runCommand(
+        toggle.checked ? 'enable_net' : 'disable_net', {},
+        `Channel ${label} ${toggle.checked ? 'on' : 'off'}`, state.net);
+      // The panel measures the selected net's channel, so this switch decides
+      // whether there is anything to measure. It is otherwise only refreshed
+      // on Start, which left "Channel A is off" showing over a channel that
+      // had just been switched on.
+      if (state.net === this.net) this.refreshMeasurements();
     });
+    // Held so the readback below can correct the control without rebuilding
+    // the strip and losing the listener.
+    this.channelState.get(label).toggle = toggle;
     toggleLabel.append(toggle, document.createTextNode('on'));
     head.append(swatch, name, toggleLabel);
 
@@ -240,14 +265,90 @@ class ScopeApp {
       select.append(new Option(si(value, 'V', 2), String(value)));
     }
     select.value = String(options[Math.min(options.length - 1, 6)]);
+    // Keep the state in step with the control it was built from. They were
+    // seeded separately -- state at 1 V/div, the select at whatever the
+    // hardware's range list put in that slot -- so the trace was drawn to a
+    // scale the sidebar did not show.
+    this.channelState.get(label).voltsPerDiv = Number(select.value);
     select.addEventListener('change', () => {
-      this.channelState.get(label).voltsPerDiv = Number(select.value);
-      this.send('set_scale', { volts_per_div: Number(select.value) });
+      const state = this.channelState.get(label);
+      state.voltsPerDiv = Number(select.value);
+      this.runCommand('set_scale', { volts_per_div: Number(select.value) },
+        `Channel ${label} ${si(Number(select.value), 'V', 2)}/div`, state.net);
     });
+    this.channelState.get(label).select = select;
     field.append(caption, select);
 
     strip.append(head, field);
+
+    // No net means no way to address this channel: the box has capabilities
+    // reporting it, but nothing wired to it. Disable rather than let the
+    // controls fall back to the selected net, which is how channel B's
+    // switch came to operate channel A.
+    if (!this.channelState.get(label).net) {
+      const why = `No scope net is wired to channel ${label}. `
+        + 'Add one with "lager net add" to control it here.';
+      for (const control of [toggle, select]) {
+        control.disabled = true;
+        control.title = why;
+      }
+      strip.classList.add('channel--unwired');
+    }
+
     return strip;
+  }
+
+  /** The net that addresses channel `index`, by the pin it is wired to.
+   *
+   * Scope nets carry a 1-based pin that is the channel number, so channel A
+   * is the net on pin 1. Position in the list is only a fallback: nets come
+   * back in whatever order the box lists them, and a box needn't define one
+   * net per channel -- with only `scope2` defined, index 0 must not silently
+   * become channel B's net.
+   */
+  netForChannel(index) {
+    const nets = this.scopeNets || [];
+    const pinOf = (n) => Number(n.pin);
+    const byPin = nets.find((n) => pinOf(n) === index + 1);
+    if (byPin) return byPin.name;
+    // Position is a fallback only where no net declares a usable pin. If any
+    // does, an unmatched channel genuinely has no net: with just `scope2`
+    // (pin 2) defined, channel A must come back unwired rather than picking
+    // up channel B's net and driving the wrong channel.
+    const anyPinned = nets.some((n) => Number.isFinite(pinOf(n)) && pinOf(n) > 0);
+    if (!anyPinned && nets[index]) return nets[index].name;
+    return null;
+  }
+
+  /** Replace the assumed channel state with the hardware's own.
+   *
+   * Best-effort: a channel with no net cannot be asked, and a box that does
+   * not know `get_net_enabled` yet (an older image) should leave the UI as
+   * it was rather than blanking the controls.
+   */
+  async syncChannelState(labels) {
+    await Promise.all(labels.map(async (label) => {
+      const state = this.channelState.get(label);
+      if (!state || !state.net) return;
+      try {
+        const body = await this.send('get_net_enabled', {}, state.net);
+        if (typeof body.value !== 'boolean') return;
+        state.enabled = body.value;
+        if (state.toggle) state.toggle.checked = body.value;
+      } catch { /* older box, or the net is unreachable */ }
+      try {
+        const body = await this.send('get_scale', {}, state.net);
+        const scale = Number(body.value);
+        if (!Number.isFinite(scale) || scale <= 0) return;
+        state.voltsPerDiv = scale;
+        // Only adopt a scale the dropdown can actually show, so it cannot be
+        // left displaying a value the hardware is not using.
+        if (state.select
+            && [...state.select.options].some((o) => Number(o.value) === scale)) {
+          state.select.value = String(scale);
+        }
+      } catch { /* leave the built-in default showing */ }
+    }));
   }
 
   showCapabilityNotes(caps) {
@@ -391,12 +492,18 @@ class ScopeApp {
    * Send one command through the same REST endpoint the terminal CLI uses.
    * Returns the parsed body so the console can report it.
    */
-  async send(action, params) {
-    if (!this.net) throw new Error('no scope net selected');
+  async send(action, params, net) {
+    // `net` overrides the selected one. A scope channel is addressed BY net
+    // on this box -- each scope net carries a pin, and the device behind it
+    // is bound to that channel -- so a per-channel control has to talk to
+    // its own net. Sending to the selected net instead made channel B's
+    // toggle and volts/div silently drive whichever channel was selected.
+    const target = net || this.net;
+    if (!target) throw new Error('no scope net selected');
     const response = await fetch('/net/command', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ netname: this.net, action, params: params || {} }),
+      body: JSON.stringify({ netname: target, action, params: params || {} }),
     });
     let body = {};
     try {
@@ -408,9 +515,9 @@ class ScopeApp {
     return body;
   }
 
-  async runCommand(action, params, summary) {
+  async runCommand(action, params, summary, net) {
     try {
-      const body = await this.send(action, params);
+      const body = await this.send(action, params, net);
       this.console.write(body.message || `${summary || action}: ok`);
       if (action === 'capabilities' && body.value) {
         this.capabilities = body.value;
@@ -427,6 +534,22 @@ class ScopeApp {
   async refreshMeasurements() {
     const host = el('measurements');
     if (!this.net) return;
+
+    // Measurements read the selected net's channel. Saying so beats relaying
+    // "Hardware error: Function call failed: channel B is not enabled, so
+    // there is nothing to measure", which reads as a fault when it is just a
+    // switch that is off -- and does not say which switch.
+    const off = [...this.channelState.entries()]
+      .find(([, s]) => s.net === this.net && !s.enabled);
+    if (off) {
+      host.replaceChildren();
+      const p = document.createElement('p');
+      p.className = 'dim';
+      p.textContent = `Channel ${off[0]} is off. Switch it on to measure.`;
+      host.appendChild(p);
+      return;
+    }
+
     try {
       const body = await this.send('measure_vpp', {});
       // The daemon computes the whole set from one capture, but the REST
@@ -701,5 +824,12 @@ class ScopeApp {
   }
 }
 
-const app = new ScopeApp();
-app.init();
+// Exported, and started only in a browser, so the channel/net mapping can be
+// exercised under node. The constructor needs a DOM, so the tests call the
+// methods on the prototype against a hand-built `this`.
+export { ScopeApp };
+
+if (typeof document !== 'undefined') {
+  const app = new ScopeApp();
+  app.init();
+}
