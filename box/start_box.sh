@@ -652,6 +652,118 @@ fi
 OSCILLOSCOPE_MOUNT=""
 OSCILLOSCOPE_DAEMON="$THIRD_PARTY_DIR/oscilloscope-daemon"
 
+# Build the daemon from the Rust sources that came with this checkout, if the
+# binary sitting there was not built from them.
+#
+# This lives here rather than in `lager update` because start_box.sh is the
+# one path every box goes through: `lager install`, `lager update`, `box
+# config apply` and a manual restart all end up running it. Building in
+# `lager update` alone meant a freshly provisioned box had no daemon at all,
+# so plugging in a PicoScope did nothing until someone thought to run an
+# update -- and before that, until someone ran build_daemon.sh and scp'd the
+# result over by hand.
+#
+# Deliberately not conditional on a PicoScope being attached. The point is
+# that a scope works the moment it is plugged in, which cannot be true if
+# the daemon is only built on boxes that already had one.
+#
+# The hash lives next to the binary instead of in /etc/lager because this
+# directory is owned by the box user unconditionally. /etc/lager is
+# bind-mounted into the container and its files can end up owned by
+# www-data, and a hash we failed to write would mean rebuilding on every
+# single container start.
+OSCILLOSCOPE_SRC="${SCRIPT_DIR}/oscilloscope-daemon"
+OSCILLOSCOPE_HASH_FILE="$THIRD_PARTY_DIR/oscilloscope-daemon.hash"
+
+# Keep this digest identical to `_daemon_hash_shell_cmd` in
+# cli/commands/utility/update.py, which computes it over SSH to decide
+# whether `lager update` may take its "already up to date" early exit. The
+# two are pinned together by a test that runs both over one tree and
+# compares. `target/` is excluded because it is build output: hashing it
+# would mean building changes the hash, so every start would rebuild.
+oscilloscope_source_hash() {
+    [ -d "$OSCILLOSCOPE_SRC" ] || return 0
+    find "$OSCILLOSCOPE_SRC" -type f \
+        -not -path '*/target/*' -not -path '*/.git/*' -print0 \
+        | sort -z | xargs -0 -r sha256sum | sha256sum | cut -d' ' -f1
+}
+
+build_oscilloscope_daemon() {
+    # Built in a throwaway container from the `lager` image because that is
+    # where the binary runs -- it gets mounted over
+    # /usr/local/bin/oscilloscope-daemon below, so the image's glibc is the
+    # one it has to match. The host has no Rust toolchain at all.
+    #
+    # Sources mount read-only: cargo has no reason to write there
+    # (`--locked` forbids touching Cargo.lock and build.rs output goes to
+    # CARGO_TARGET_DIR), and dirtying the checkout would make `lager
+    # update`'s git divergence check disagree with reality.
+    #
+    # /opt/picoscope keeps its host path because the daemon's build.rs falls
+    # back to /opt/picoscope/include for the PicoScope headers, which
+    # PicoTech's licence keeps out of the repo.
+    #
+    # Runs as root: the image's runtime user is www-data, which cannot write
+    # to the box user's third_party directory through the mount.
+    #
+    # The cargo registry and target dir are named volumes, so a rebuild is
+    # incremental (seconds) rather than a cold compile (~2 min). They are
+    # kept apart from `lager-cargo`, which is mounted at the image's
+    # CARGO_HOME and holds box_config's crates installed as www-data -- a
+    # root build sharing it would leave files there that www-data cannot
+    # write.
+    docker run --rm -u 0 \
+        -e CARGO_HOME=/daemon-cargo -e CARGO_TARGET_DIR=/daemon-target \
+        -v lager-daemon-cargo:/daemon-cargo \
+        -v lager-daemon-target:/daemon-target \
+        -v "$OSCILLOSCOPE_SRC:/src:ro" \
+        -v /opt/picoscope:/opt/picoscope:ro \
+        -v "$THIRD_PARTY_DIR:/out" \
+        lager sh -c 'cd /src && cargo build --release --locked --package daemon && install -m 0755 /daemon-target/release/daemon /out/.oscilloscope-daemon.new'
+}
+
+if [ -d "$OSCILLOSCOPE_SRC" ] && docker image inspect lager >/dev/null 2>&1; then
+    mkdir -p "$THIRD_PARTY_DIR"
+    # `|| true` on both: this script runs under `set -e`, where a non-zero
+    # exit from a command substitution aborts it. Failing to work out
+    # whether the daemon is current must not stop the box from starting.
+    _osc_new_hash="$(oscilloscope_source_hash || true)"
+    _osc_old_hash="$(cat "$OSCILLOSCOPE_HASH_FILE" 2>/dev/null || true)"
+
+    if [ ! -f "$OSCILLOSCOPE_DAEMON" ] || [ -z "$_osc_old_hash" ] \
+       || [ "$_osc_old_hash" != "$_osc_new_hash" ]; then
+        if [ -f "$OSCILLOSCOPE_DAEMON" ]; then
+            echo "Oscilloscope daemon is out of date; rebuilding..."
+        else
+            echo "Oscilloscope daemon not built yet; building..."
+        fi
+        echo "  (first build takes a few minutes; later ones are incremental)"
+
+        if build_oscilloscope_daemon; then
+            # Rename rather than write in place. The old binary may still be
+            # mounted into the running container this script is about to
+            # replace; a rename swaps the directory entry and leaves that
+            # container on its old inode, where writing through the mount
+            # would fail with ETXTBSY. It also means a build that dies
+            # midway cannot leave a truncated binary behind, which the
+            # existence check below would happily mount.
+            if mv -f "$THIRD_PARTY_DIR/.oscilloscope-daemon.new" "$OSCILLOSCOPE_DAEMON"; then
+                printf '%s\n' "$_osc_new_hash" > "$OSCILLOSCOPE_HASH_FILE" 2>/dev/null || true
+                echo "[OK] Oscilloscope daemon built"
+            fi
+        else
+            # Never fatal. The daemon drives PicoScopes and nothing else, so
+            # a box that cannot compile it must still come up with
+            # everything else working. No hash is recorded, so the next run
+            # retries instead of assuming this one succeeded.
+            rm -f "$THIRD_PARTY_DIR/.oscilloscope-daemon.new"
+            echo "WARNING: the oscilloscope daemon failed to build."
+            echo "         Everything else starts normally; PicoScope support"
+            echo "         will use the previous daemon, if any."
+        fi
+    fi
+fi
+
 if [ -f "$OSCILLOSCOPE_DAEMON" ]; then
     OSCILLOSCOPE_MOUNT="-v $OSCILLOSCOPE_DAEMON:/usr/local/bin/oscilloscope-daemon:ro"
     echo "Oscilloscope daemon found:"

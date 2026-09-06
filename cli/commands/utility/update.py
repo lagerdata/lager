@@ -602,6 +602,95 @@ _BUILD_HASH_SOURCE_DIRS = [
 # (`box/lager/...` blob → `$HOME/box/lager/...` working-tree path).
 _BUILD_HASH_GIT_SOURCE_PREFIX = 'box/lager'
 
+# --- Oscilloscope daemon ---------------------------------------------------
+#
+# The daemon is a Rust binary, and it is deliberately NOT part of the build
+# hash above. box.Dockerfile does not COPY it: `start_box.sh` bind-mounts it
+# from the host over `/usr/local/bin/oscilloscope-daemon`, so a Rust change
+# does not invalidate the image and must not wipe it. Folding it into
+# `_BUILD_HASH_SOURCE_DIRS` would throw away the whole ~1 GB image and its
+# layer cache to reinstall a 4 MB binary the image never contained.
+#
+# It gets its own hash and its own decision instead, so a Rust change
+# rebuilds the daemon (a cargo build, warm) and a Python change does not.
+#
+# The build itself is start_box.sh's job, because that is the one path
+# `lager install`, `lager update`, `box config apply` and a manual restart
+# all share -- doing it here meant a freshly provisioned box had no daemon
+# until someone ran an update. What this file decides is only whether the
+# daemon is stale, so the "already up to date" early exit cannot skip
+# start_box.sh and strand it. The digest below is therefore computed in two
+# places; `test_update_scope_daemon.py` runs both over one tree and requires
+# them to agree, because silent drift would mean update always forces the
+# rebuild path and start_box.sh always declines to build.
+_DAEMON_SOURCE_DIR = '~/box/oscilloscope-daemon'
+# Where the box records the hash of the sources its binary was built from.
+# start_box.sh writes it; this reads it to decide whether the daemon is
+# stale. It sits beside the binary rather than in /etc/lager because the
+# box user owns that directory unconditionally.
+_DAEMON_HASH_FILE = '~/third_party/oscilloscope-daemon.hash'
+# Cargo registry and target volumes used by start_box.sh's build. Named
+# here only so `--force` can wipe them for a genuinely cold rebuild.
+_DAEMON_VOLUMES = ('lager-daemon-cargo', 'lager-daemon-target')
+
+
+def _daemon_hash_shell_cmd():
+    """Shell snippet that prints a hash of the daemon's Rust sources.
+
+    Same shape and the same guarantees as `_build_hash_shell_cmd` — sorted
+    walk so the value is stable across boxes, paths included in each
+    `sha256sum` line so renames and deletions register, empty output when the
+    tree is absent (a box whose sparse checkout predates the daemon).
+
+    `target/` is excluded because it is build output: hashing it would make
+    the value change as a *result* of building, so every run would see a
+    mismatch and rebuild forever. Nothing else under the tree is derived.
+    """
+    return (
+        'out=$('
+        '[ -d ' + _DAEMON_SOURCE_DIR + ' ] && '
+        'find ' + _DAEMON_SOURCE_DIR + ' -type f '
+        "-not -path '*/target/*' -not -path '*/.git/*' -print0 "
+        '| sort -z | xargs -0 -r sha256sum'
+        '); '
+        '[ -n "$out" ] && echo "$out" | sha256sum | cut -d" " -f1'
+    )
+
+
+def _daemon_needs_build(facts, *, force):
+    """Whether the box's daemon binary is stale relative to its Rust sources.
+
+    Returns ``(stale: bool, reason: str)``; ``reason`` is for the operator,
+    and is why-not when ``stale`` is False.
+
+    This does not build anything -- start_box.sh does, because it is the one
+    path `lager install`, `lager update`, `box config apply` and a manual
+    restart all share. What this decides is narrower: whether `lager update`
+    is allowed to take its "already up to date" early exit, which would skip
+    start_box.sh entirely and leave a stale daemon in place indefinitely.
+
+    Deliberately not conditional on a PicoScope being attached. A scope has
+    to work the moment it is plugged in, and that cannot be true if the
+    daemon is only built on boxes that already had one.
+    """
+    if not facts.get('DAEMON_SOURCE_HASH'):
+        return False, 'no daemon sources on the box'
+    if force:
+        return True, '--force'
+    if facts.get('DAEMON_BINARY') != '1':
+        return True, 'no daemon built yet'
+
+    stored = facts.get('DAEMON_HASH_STORED', '')
+    if not stored:
+        # A binary with no recorded hash was put there by hand --
+        # `build_daemon.sh` + `scp` was the only way to install one before
+        # this existed. Rebuild once so the recorded hash describes a binary
+        # something actually vouches for.
+        return True, 'daemon was installed by hand'
+    if stored != facts['DAEMON_SOURCE_HASH']:
+        return True, 'Rust sources changed'
+    return False, 'daemon up to date'
+
 
 def _build_hash_shell_cmd():
     """Shell snippet that prints a hash of the docker-build inputs.
@@ -719,6 +808,17 @@ def _read_build_hash_at_ref(ssh_runner, git_ref):
     return r.stdout.strip() if r.returncode == 0 else ''
 
 
+def _read_daemon_hash(ssh_runner):
+    """Return the sha256 of the box's *current* daemon Rust sources.
+
+    The daemon counterpart to `_read_build_hash`, for the same reason: the
+    probe's value describes the pre-pull tree, and a Rust change would
+    otherwise not be noticed until the run *after* the one that pulled it.
+    """
+    r = ssh_runner(_daemon_hash_shell_cmd())
+    return r.stdout.strip() if r.returncode == 0 else ''
+
+
 def _read_box_source_version(ssh_runner):
     """Return the `__version__` string declared in `cli/__init__.py` at the
     box's current HEAD, or empty.
@@ -793,6 +893,9 @@ if [ -d ~/box/box ]; then echo "LAGER_PROBE_HAS_BOX_SUBDIR=1"; else echo "LAGER_
 echo "LAGER_PROBE_GIT_LOG=$(git -C ~/box log -1 --format='%h - %s (%cr)' 2>/dev/null)"
 echo "LAGER_PROBE_BUILD_HASH_NEW=$(__BUILD_HASH_CMD__)"
 echo "LAGER_PROBE_BUILD_HASH_STORED=$(cat /etc/lager/build-hash 2>/dev/null)"
+echo "LAGER_PROBE_DAEMON_SOURCE_HASH=$(__DAEMON_HASH_CMD__)"
+echo "LAGER_PROBE_DAEMON_HASH_STORED=$(cat ~/third_party/oscilloscope-daemon.hash 2>/dev/null)"
+if [ -f ~/third_party/oscilloscope-daemon ]; then echo "LAGER_PROBE_DAEMON_BINARY=1"; else echo "LAGER_PROBE_DAEMON_BINARY=0"; fi
 if [ -d ~/box/udev_rules ]; then _up=~/box/udev_rules
 elif [ -d ~/box/box/udev_rules ]; then _up=~/box/box/udev_rules
 else _up=""
@@ -858,6 +961,7 @@ echo "LAGER_PROBE_ETC_VERSION=$(cat /etc/lager/version 2>/dev/null)"
     return (
         script
         .replace('__BUILD_HASH_CMD__', _build_hash_shell_cmd())
+        .replace('__DAEMON_HASH_CMD__', _daemon_hash_shell_cmd())
         .replace('__BOXCFG_SUDOERS_MARKER__', BOXCFG_SUDOERS_MARKER)
         .replace('__HOST_CLI_PROBE__\n', HOST_CLI_PROBE_SNIPPET)
     )
@@ -971,7 +1075,8 @@ def _build_hash_mismatch(new_hash, stored_hash):
 
 
 def _rebuild_gate_verdict(facts, *, git_sync_confirmed, needs_pull,
-                          needs_flatten, hash_mismatch, force):
+                          needs_flatten, hash_mismatch, force,
+                          daemon_needs_build=False):
     """Decide whether the update can stop before the container rebuild.
 
     Returns:
@@ -986,8 +1091,18 @@ def _rebuild_gate_verdict(facts, *, git_sync_confirmed, needs_pull,
     not running, ''/absent unknown (the docker probe itself failed). Only a
     definite '0' blocks the skip — unknown fails open, same philosophy as the
     BuildKit preflight.
+
+    ``daemon_needs_build`` takes the rebuild path even when the Python tree
+    is in sync, because the daemon binary is bind-mounted: replacing it under
+    a running container leaves that container executing the old inode until
+    it is recreated, so the swap has to happen while it is down. This is not
+    as expensive as it sounds -- the daemon hash is deliberately absent from
+    `must_wipe_image`, so the image survives and its `docker build` is a
+    cache hit.
     """
     if not git_sync_confirmed or needs_pull or needs_flatten or hash_mismatch or force:
+        return 'rebuild'
+    if daemon_needs_build:
         return 'rebuild'
     if facts.get('LAGER_RUNNING', '') == '0':
         return 'container-down'
@@ -2249,12 +2364,21 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
             container_status = 'will restart'
             est = '~90s (cached build)'
 
+        # Oscilloscope daemon. Computed from the probe's (pre-pull) facts,
+        # which is exact in the only case that can change the verdict: when
+        # no pull is pending, the probe's hash IS the current one. With a
+        # pull pending `will_change` is already true, so an approximate
+        # answer there cannot promise "nothing to do" wrongly — the failure
+        # mode `_deps_preview` exists to prevent.
+        _daemon_check, _daemon_check_reason = _daemon_needs_build(
+            facts, force=force)
+
         # Host CLI (~/.lager_venv; see _host_cli). Any pending rebuild
         # reinstalls it as a matter of course; otherwise compare versions
         # from the probe facts — no extra round trip.
         _rebuild_pending = (
             force or not code_in_sync or deps_rebuild_certain
-            or container_down or deploy_stale
+            or container_down or deploy_stale or _daemon_check
         )
         host_cli_status, host_cli_will_change = host_cli_check_status(
             facts, _tree_v, not _rebuild_pending
@@ -2270,13 +2394,17 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         click.echo(f'  Deps:       {deps_status}')
         click.echo(f'  Container:  {container_status}')
         click.echo(f'  Host CLI:   {host_cli_status}')
+        # Only mentioned when it has something to say: most boxes have no
+        # PicoScope, and a permanent "Scope daemon: n/a" line would be noise.
+        if _daemon_check:
+            click.echo(f'  Scope daemon: will rebuild ({_daemon_check_reason})')
         click.echo(f'  Estimated:  {est}')
         click.echo()
 
         will_change = (
             force or commits_behind != 0 or commits_ahead != 0
             or deps_rebuild_certain or container_down or deploy_stale
-            or host_cli_will_change
+            or host_cli_will_change or _daemon_check
         )
         if will_change:
             click.echo('Run without --check to apply.')
@@ -2360,6 +2488,20 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
     # cargo/npm volumes so a prior failed/partial run can't leave a stale layer
     # or half-installed toolchain behind on the retry.
     must_wipe_image = hash_mismatch or force
+
+    # Same recompute for the daemon's Rust tree: the probe measured it before
+    # the pull, so a Rust change would otherwise be invisible on the very run
+    # that pulled it. Note this deliberately does NOT feed `must_wipe_image`
+    # — see _DAEMON_SOURCE_DIR.
+    if needs_pull or needs_flatten:
+        facts['DAEMON_SOURCE_HASH'] = _read_daemon_hash(
+            run_ssh_command_with_output)
+    daemon_build_wanted, daemon_reason = _daemon_needs_build(
+        facts, force=force)
+    if verbose:
+        click.secho(
+            f'  Scope daemon: {"will rebuild" if daemon_build_wanted else "skip"}'
+            f' ({daemon_reason})', fg='cyan')
 
     # Privileged box-state operations (udev rules, modprobe blacklist,
     # sudoers-owner fix, box-config sudoers bootstrap) are COLLECTED here and
@@ -2742,6 +2884,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         needs_flatten=needs_flatten,
         hash_mismatch=hash_mismatch,
         force=force,
+        daemon_needs_build=daemon_build_wanted,
     )
     _box_v = ''   # assigned for real below whenever _gate stays 'skip'
     _tree_v = ''  # ditto; the host-CLI reconcile compares against it
@@ -3110,8 +3253,18 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
             progress.update("Removing cached image...")
         log(f'Removing cached image ({_wipe_reason})...', nl=False)
 
+        # `--force` also drops the daemon's cargo/target volumes and its
+        # recorded hash, so start_box.sh recompiles from cold rather than
+        # reusing a warm target dir. A hash change alone leaves them: they
+        # are keyed by content, and a warm target is the difference between
+        # a seconds-long rebuild and a ~2 min one.
+        _daemon_reset = (
+            f'docker volume rm {" ".join(_DAEMON_VOLUMES)} 2>/dev/null || true; '
+            f'rm -f {_DAEMON_HASH_FILE}; '
+        ) if force else ''
         run_ssh_command_with_output(
             'docker rmi lager 2>/dev/null || true; '
+            f'{_daemon_reset}'
             'docker volume rm lager-cargo lager-npm-global 2>/dev/null || true',
             timeout_secs=30
         )

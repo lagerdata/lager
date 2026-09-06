@@ -12,11 +12,19 @@ ENV PYTHONPATH=/app/lager
 # that wants them has to install them itself. Node comes from the official
 # tarball below rather than Debian's `nodejs npm` meta-packages, which pull
 # ~400 unused `node-*` packages and dominate cold-build time.
+#
+# libclang-dev is here for bindgen: `lager update` builds the oscilloscope
+# daemon in a throwaway container from this image, and the daemon's build.rs
+# generates the PicoScope FFI bindings, which loads libclang at build time.
+# Without it the build has to `apt-get install libclang-dev` first -- which
+# is how it was done by hand, and it vanished with the container's writable
+# layer the first time the container was recreated.
 RUN apt-get update && apt-get install -y ca-certificates libusb-1.0-0-dev libudev-dev \
 	libhidapi-dev git gcc python-dev-is-python3 python3-pip python3-venv xz-utils build-essential bluetooth ssh openssh-client \
 	cups-client lpr zlib1g-dev wget libjpeg-dev libpng-dev libfreetype6-dev \
 	fswebcam automake g++ libtool libleptonica-dev make pkg-config libpango1.0-dev gdb-multiarch tesseract-ocr libtesseract-dev \
 	libturbojpeg0-dev v4l-utils \
+	libclang-dev \
 	wireless-tools \
 	tini \
 	gnupg \
