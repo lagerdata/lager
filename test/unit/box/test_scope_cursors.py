@@ -38,6 +38,20 @@ from lager.measurement.scope.picoscope import (
     PicoScope, UnsupportedScopeFeature, cursor_readings, trace_voltage_at,
 )
 
+@pytest.fixture(autouse=True)
+def _forget_cursors_between_tests():
+    """Cursors are shared per scope, so they outlive the driver instance.
+
+    That is the point of them -- the CLI places a pair and a later request
+    from the page finds it -- but it also means one test's cursors are on the
+    next test's scope unless the store is emptied.
+    """
+    from lager.measurement.scope import picoscope as _picoscope
+    _picoscope._CURSORS_BY_INSTRUMENT.clear()
+    yield
+    _picoscope._CURSORS_BY_INSTRUMENT.clear()
+
+
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 SCOPE_JS = REPO_ROOT / "box" / "lager" / "static" / "scope" / "scope.js"
 
@@ -802,3 +816,55 @@ class TestReadingCursorsOnADisabledChannel:
             "a voltage-only cursor read took a capture")
 
         assert scope.measure_cursors()["readings"]["delta_v"] == pytest.approx(2.0)
+
+
+class TestCursorsBelongToTheScopeNotTheChannel:
+    """hardware_service builds a driver instance per net.
+
+    A two-channel scope is therefore two PicoScope objects sharing a lock,
+    and cursors held on the instance were held per channel. The web UI reads
+    them from whichever net it finds first, so a pair placed against the
+    second channel was stored somewhere nothing would look. The CLI and the
+    page are supposed to be moving one set of markers.
+    """
+
+    def _two_nets_on_one_scope(self):
+        return (PicoScope(netname="scope1", pin=1),
+                PicoScope(netname="scope2", pin=2))
+
+    def test_a_pair_set_on_one_net_is_visible_from_the_other(self):
+        first, second = self._two_nets_on_one_scope()
+        second.set_cursors(time=(0.0, 1e-3))
+
+        assert first.get_cursors()["time"] == [0.0, 1e-3], (
+            "cursors placed against channel B were invisible to the net the "
+            "page reads them from")
+
+    def test_clearing_from_either_net_clears_both(self):
+        first, second = self._two_nets_on_one_scope()
+        first.set_cursors(time=(0.0, 1e-3), volts=(-1.0, 1.0))
+        second.clear_cursors()
+
+        assert first.get_cursors()["time"] is None
+        assert first.get_cursors()["volts"] is None
+
+    def test_the_channel_read_against_is_carried_with_them(self):
+        """The voltages are meaningless without the trace they came from."""
+        first, second = self._two_nets_on_one_scope()
+        second.set_cursors(time=(0.0, 1e-3))
+
+        assert first.get_cursors()["channel"] == "B"
+
+    def test_a_second_scope_keeps_its_own(self):
+        """A bench with two units must not share one pair between them."""
+        one = PicoScope(netname="scopeA", pin=1, address="usb::first")
+        two = PicoScope(netname="scopeB", pin=1, address="usb::second")
+
+        one.set_cursors(time=(0.0, 1e-3))
+        assert two.get_cursors()["time"] is None
+
+    def test_a_fresh_instance_for_the_same_net_still_sees_them(self):
+        """The driver is rebuilt on reconnect; the cursors should survive."""
+        PicoScope(netname="scope1", pin=1).set_cursors(volts=(-2.0, 2.0))
+
+        assert PicoScope(netname="scope1", pin=1).get_cursors()["volts"] == [-2.0, 2.0]
