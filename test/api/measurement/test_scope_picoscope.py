@@ -24,6 +24,11 @@ What this covers that the unit tests cannot:
 - Measurements are self-consistent, which catches a scaling error that a
   single-value assertion would not
 - Captures arrive, are the length they claim, and carry a working time axis
+- Controls that report back correctly while changing nothing on the hardware.
+  The horizontal position did exactly that, and so did the sample rate: both
+  answered plausibly and neither described the capture that came out. Only a
+  frame from a real unit tells them apart, which is why these live here
+  rather than in the unit tests.
 """
 import os
 import sys
@@ -464,6 +469,188 @@ def test_csv_capture():
     return passed
 
 
+def test_sample_rate_is_the_rate_in_use():
+    """get_sample_rate() reports the timebase in effect, not the unit's ceiling.
+
+    These are far apart -- a 2204A tops out at 100 MS/s and runs at about
+    780 kS/s at 1 ms/div -- and reporting the ceiling was wrong in a way
+    nothing local could catch: it is a plausible number, and it only shows up
+    as a fault in whatever divides the depth by it to work out how long the
+    capture window is. The horizontal position does exactly that, and was off
+    by the ratio between the two. The frame carries the real interval, so it
+    is the thing to check against.
+    """
+    scope = _scope()
+    scope.set_timebase_scale(0.001)
+    scope.run()
+    time.sleep(0.3)
+    frame = scope.capture(timeout=10.0)
+    scope.stop()
+
+    reported = scope.get_sample_rate()
+    actual = frame.sample_rate_hz
+    ok = _close(reported, actual, 0.05)
+    _record("get_sample_rate() matches the frame's own interval", ok,
+            f"reported {reported:.6g} S/s, frame {actual:.6g} S/s")
+
+    # The ceiling is still reported, just under its own name.
+    ceiling = (scope.capabilities() or {}).get("max_sample_rate_hz")
+    if ceiling:
+        under = reported <= ceiling * 1.001
+        _record("the rate in use does not exceed the unit's maximum", under,
+                f"{reported:.6g} <= {ceiling:.6g}")
+        ok &= under
+
+    return ok
+
+
+def test_horizontal_position_moves_the_window():
+    """A time offset moves the capture window relative to the trigger.
+
+    The evidence is the frame's own pre/post-trigger split, not the value
+    read back: the position was previously stored and returned faithfully
+    while the hardware kept capturing the same centred window, so a readback
+    test passed against a control that moved nothing.
+
+    Positive looks forward, at signal later than the trigger, which means
+    less of the window sits before it. Travel is one window each way, since
+    a block is all the scope holds.
+    """
+    scope = _scope()
+    scope.set_timebase_scale(0.001)
+    scope.set_capture_mode("auto")
+
+    rate, depth = scope.get_sample_rate(), scope.get_memory_depth()
+    if not rate or not depth:
+        _record("a capture window could be measured", False,
+                f"rate={rate!r} depth={depth!r}")
+        return False
+    span = depth / rate
+
+    def pre_fraction(offset):
+        scope.trace_settings.set_time_offset(offset)
+        scope.run()
+        time.sleep(0.3)
+        frame = scope.capture(timeout=10.0)
+        total = frame.pre_trigger_samples + frame.post_trigger_samples
+        return (frame.pre_trigger_samples / total) if total else 0.0
+
+    passed = True
+    centred = pre_fraction(0.0)
+    ok = abs(centred - 0.5) < 0.05
+    _record("a centred window is half pre-trigger", ok, f"{centred:.3f}")
+    passed &= ok
+
+    forward = pre_fraction(span / 4.0)
+    ok = forward < centred - 0.1
+    _record("looking forward shrinks the pre-trigger share", ok,
+            f"{forward:.3f} vs centred {centred:.3f}")
+    passed &= ok
+
+    backward = pre_fraction(-span / 4.0)
+    ok = backward > centred + 0.1
+    _record("looking back grows the pre-trigger share", ok,
+            f"{backward:.3f} vs centred {centred:.3f}")
+    passed &= ok
+
+    edge = pre_fraction(span)
+    ok = edge < 0.02
+    _record("travel stops at the edge of the block", ok, f"{edge:.3f}")
+    passed &= ok
+
+    scope.trace_settings.set_time_offset(0.0)
+    readback = scope.trace_settings.get_time_offset()
+    ok = _close(readback, 0.0, EXACT_TOLERANCE)
+    _record("the offset returns to centre", ok, f"read back {readback}")
+    passed &= ok
+
+    scope.stop()
+    return passed
+
+
+def test_a_capture_is_in_probe_tip_volts():
+    """Samples are referred to the probe tip, like volts/div and the level.
+
+    The invariant is easy to state backwards: the probe ratio alone must NOT
+    change what a count is worth. A 10x probe puts a tenth of the signal at
+    the BNC and the driver picks a range a tenth as wide to match, so the
+    same volts/div draws the same trace either way. What must move the scale
+    is volts/div, because that is the screen changing.
+
+    Asserted as ratios so there is no full-scale constant to get wrong, and
+    so it holds on any PicoScope rather than this one.
+    """
+    scope = _scope()
+    original = scope.get_channel_probe("A")
+    scope.set_timebase_scale(0.001)
+
+    def volts_per_count(probe, volts_per_div):
+        scope.set_channel_probe(probe, "A")
+        scope.set_channel_scale(volts_per_div, "A")
+        scope.run()
+        time.sleep(0.3)
+        frame = scope.capture(timeout=10.0)
+        index = frame.channel_index("A")
+        return frame.channels[index].scale_v_per_count
+
+    passed = True
+    at_1x = volts_per_count(1.0, 1.0)
+    at_10x = volts_per_count(10.0, 1.0)
+    drift = abs(at_10x / at_1x - 1.0) if at_1x else 1.0
+    ok = drift < 0.01
+    _record("the same volts/div is the same trace through any probe", ok,
+            f"{at_1x:.6g} vs {at_10x:.6g} V/count, {drift * 100:.3f}% apart")
+    passed &= ok
+
+    coarse = volts_per_count(10.0, 1.0)
+    fine = volts_per_count(10.0, 0.1)
+    zoom = coarse / fine if fine else 0.0
+    ok = abs(zoom - 10.0) < 1.0
+    _record("a tenth of the volts/div is a tenth of the scale", ok,
+            f"ratio {zoom:.4f}")
+    passed &= ok
+
+    scope.stop()
+    scope.set_channel_probe(original, "A")
+    scope.set_channel_scale(1.0, "A")
+    return passed
+
+
+def test_offset_matches_what_the_hardware_can_do():
+    """An offset is applied, or refused with a reason -- never quietly dropped.
+
+    A 2000-series unit has no analog offset. The value used to be stored and
+    put in the frame anyway, where it was added back on the way to volts: the
+    trace stayed where it was and the measurements moved instead, so Vmax,
+    Vmin and Vavg all described a signal that was not on screen. Refusing is
+    the honest answer. Units that do have the hardware must still accept it,
+    so which behaviour is correct comes from the capabilities.
+    """
+    scope = _scope()
+    supported = bool((scope.capabilities() or {}).get("analog_offset"))
+
+    if supported:
+        scope.trace_settings.set_volt_offset(0.5)
+        got = scope.trace_settings.get_volt_offset()
+        ok = _close(got, 0.5, RANGE_TOLERANCE)
+        _record("an offset the hardware has is applied", ok, f"read back {got}")
+        scope.trace_settings.set_volt_offset(0.0)
+        return ok
+
+    try:
+        scope.trace_settings.set_volt_offset(0.5)
+    except Exception as e:
+        message = str(e)
+        explains = "offset" in message.lower()
+        _record("an offset the hardware lacks is refused", True, message[-70:])
+        _record("the refusal explains itself", explains, message[:70])
+        return explains
+
+    _record("an offset the hardware lacks is refused", False,
+            "0.5 V accepted on a unit reporting analog_offset=false")
+    return False
+
+
 def test_unsupported_features_report_the_gap():
     """A missing feature raises rather than returning a wrong number."""
     scope = _scope()
@@ -551,6 +738,10 @@ def main():
         ("Trigger Slope Round Trip",       test_trigger_slope_round_trip),
         ("Capture Mode Round Trip",        test_capture_mode_round_trip),
         ("Acquisition Control",            test_acquisition_control),
+        ("Sample Rate In Use",             test_sample_rate_is_the_rate_in_use),
+        ("Horizontal Position",            test_horizontal_position_moves_the_window),
+        ("Probe-Tip Volts",                test_a_capture_is_in_probe_tip_volts),
+        ("Offset Matches The Hardware",    test_offset_matches_what_the_hardware_can_do),
         ("Measurement Self-Consistency",   test_measurements_are_self_consistent),
         ("Named vs Bulk Measurements",     test_named_measurements_agree_with_measure_all),
         ("Capture Frames",                 test_capture_frames),
