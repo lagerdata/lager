@@ -35,6 +35,34 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ### Fixed
 
+- A PicoScope's trace jumped sideways every few frames however steady the
+  signal and however the trigger was set. After reading a capture the
+  acquisition loop re-armed and then polled for readiness with no delay at
+  all, and a freshly armed block cannot be complete — so the only thing that
+  poll could find was the readiness left over from the block just read. Acting
+  on it read the new block while the device was still filling it, and the
+  samples that came back were whatever the buffer held mid-collection, with
+  the trigger nowhere near where the arm had put it. Measured on a 2204A:
+  eight captures in twelve triggered at exactly the sample the arm asked for
+  and the other four were scattered up to 375 samples either side. The loop
+  now waits the same interval before its first poll that it already waited
+  when the scope reported not ready, for the same reason.
+
+- A capture published by the daemon outlived nearly every change to the scope
+  that produced it. It is kept so that a measurement describes the trace last
+  streamed out rather than re-reading a device mid-block, but it was discarded
+  only when a client armed the scope explicitly — and on this family a setter
+  re-arms from inside the driver, without taking that path. So a measurement
+  taken after a new timebase, range, coupling or trigger level described the
+  window before it. Every request that re-arms now discards it; stopping does
+  not, a stopped scope still showing its last capture.
+
+- Setting a PicoScope's time/div did not re-arm, alone among the driver's
+  setters, so a new timebase did not take effect until something else happened
+  to re-arm — and the capture it eventually produced was stamped with the
+  interval in force when it was read rather than the one it was captured at,
+  so the samples and the time axis disagreed.
+
 - Pressing Run put a PicoScope into auto, discarding the trigger mode. So
   selecting Normal and running left the scope free-running, and the trace slid
   about as though the trigger were being ignored — because it was. Run now
