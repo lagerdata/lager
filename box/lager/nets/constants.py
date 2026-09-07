@@ -57,7 +57,11 @@ class NetType(Enum):
             'watt-meter': cls.WattMeter,
             'uart': cls.UART,
             'webcam': cls.Webcam,
-            'scope': cls.Analog,  # Scope nets use Analog type for Rigol, PicoScope handled separately
+            # A scope net is the instrument; a scope-channel net is one of its
+            # channels. Both map to Analog: the type describes the signal a net
+            # carries, and the split here is about what a command may address.
+            'scope': cls.Analog,
+            'scope-channel': cls.Analog,
             'spi': cls.SPI,
             'i2c': cls.I2C,
             'energy-analyzer': cls.EnergyAnalyzer,
