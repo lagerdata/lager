@@ -31,7 +31,7 @@ If `NETNAME` is omitted, lists all available scope nets on the box.
 | `stop` | Stop waveform capture | Both |
 | `force` | Force trigger manually (bypass trigger condition) | Both |
 | `autoscale` | Automatically adjust vertical scale and timebase | Rigol only |
-| `coupling` | Set channel coupling mode (dc, ac, or gnd) | Both |
+| `coupling` | Set channel coupling mode (dc, ac; gnd is Rigol only) | Both |
 | `probe` | Set probe attenuation ratio | Both |
 | `scale` | Set vertical scale (volts per division) | Both |
 | `timebase` | Set horizontal timebase (seconds per division) | Both |
@@ -168,7 +168,11 @@ lager scope NET_NAME coupling MODE [--box BOX] [--mcu MCU]
 |------|-------------|
 | `dc` | Pass both DC and AC components |
 | `ac` | Block DC component, pass AC only |
-| `gnd` | Ground reference (0V baseline) |
+| `gnd` | Ground reference (0V baseline). Rigol only |
+
+`gnd` is refused on a PicoScope 2000-series unit, which has no ground switch --
+`ps2000_set_channel` carries a single flag for coupling. Use `ac` to block the
+DC component, or unplug the probe to see where zero sits.
 
 ### `probe`
 
@@ -222,6 +226,13 @@ lager scope ANALOG1 timebase 0.0001 --box my-lager-box     # 100us/div
 lager scope ANALOG1 timebase 0.000001 --box my-lager-box   # 1us/div
 lager scope ANALOG1 timebase 0.000000001 --box my-lager-box # 1ns/div (minimum)
 ```
+
+The range above is what the command accepts, not what a given unit can do. A
+scope samples at a fixed ladder of intervals, so the request is rounded to the
+nearest, and how fast a screen it can reach at all depends on the block depth
+as much as the sample rate: a 2204A at 100 MS/s over 8000 samples bottoms out
+at 8 us/div. Both show up in the readback, which reports the scale in use
+rather than the one asked for.
 
 ---
 
