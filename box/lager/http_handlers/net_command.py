@@ -1273,18 +1273,30 @@ ROLE_ACTIONS = {
 }
 
 
+# Roles that answer to each other's name. A scope and its channels were one
+# role until the instrument got a net of its own, and every `lager scope`
+# command still sends "scope" whichever it is addressing -- so asking for one
+# has to find the other. The saved role is still what comes back, which is
+# what the per-channel gate reads.
+_ROLE_ALIASES = {
+    "scope": ("scope", "scope-channel"),
+    "scope-channel": ("scope", "scope-channel"),
+}
+
+
 def _resolve_role(netname, requested_role):
     """Resolve a net's configured role from saved_nets.json (authoritative).
 
-    If requested_role is given it must match a saved (name, role) pair; without
-    it, the first saved entry for `netname` wins.
+    If requested_role is given it must match a saved (name, role) pair, or one
+    the pair answers to; without it, the first saved entry for `netname` wins.
     """
     saved = Net.get_local_nets()
+    accepted = _ROLE_ALIASES.get(requested_role, (requested_role,))
     for entry in saved:
         if entry.get("name") != netname:
             continue
         role = entry.get("role")
-        if requested_role is None or requested_role == role:
+        if requested_role is None or role in accepted:
             return role
     raise NetNotFound(netname if requested_role is None else "%s (role %s)" % (netname, requested_role))
 

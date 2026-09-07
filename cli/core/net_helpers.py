@@ -979,8 +979,14 @@ def validate_net_exists(
         if net is None:
             return  # Error already displayed
     """
+    # A role may be several: a scope net and a scope-channel net are both
+    # reached by `lager scope`, and which one a command needs is settled on
+    # the box, where the action is known.
+    roles = (role,) if isinstance(role, str) else tuple(role)
+    shown = " or ".join("'%s'" % r for r in roles)
+
     records, reachable = fetch_nets_checked(box)
-    nets = [r for r in records if r.get("role") == role]
+    nets = [r for r in records if r.get("role") in roles]
     matching = next((n for n in nets if n.get('name') == netname), None)
 
     if not matching:
@@ -999,12 +1005,17 @@ def validate_net_exists(
             return None
 
         available = [n.get('name') for n in nets]
-        click.secho(f"Error: Net '{netname}' with role '{role}' not found", fg='red', err=True)
+        click.secho(f"Error: Net '{netname}' with role {shown} not found", fg='red', err=True)
         if available:
-            click.secho(f"Available {role} nets: {', '.join(available)}", err=True)
+            # Named by role where there is only one, which is every caller but
+            # the scope: "Available scope or scope-channel nets" reads worse
+            # than listing them, and which of the two a net is does not change
+            # how it is typed.
+            what = f"{roles[0]} nets" if len(roles) == 1 else "nets"
+            click.secho(f"Available {what}: {', '.join(available)}", err=True)
         else:
-            click.secho(f"No {role} nets configured. Create one with:", err=True)
-            click.secho(f"  lager nets add [NAME] {role} [DEVICE] [ADDRESS]", err=True)
+            click.secho(f"No {roles[0]} nets configured. Create one with:", err=True)
+            click.secho(f"  lager nets add [NAME] {roles[0]} [DEVICE] [ADDRESS]", err=True)
         if exit_on_error:
             ctx.exit(1)
         return None

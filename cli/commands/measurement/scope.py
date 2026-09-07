@@ -25,6 +25,11 @@ from ...core.net_helpers import (
 )
 
 SCOPE_ROLE = "scope"
+# The scope itself and one of its channels. `lager scope` addresses both:
+# the timebase and the trigger belong to the instrument, coupling and
+# volts/div to a channel, and the box decides which a given action needs.
+SCOPE_CHANNEL_ROLE = "scope-channel"
+SCOPE_ROLES = (SCOPE_ROLE, SCOPE_CHANNEL_ROLE)
 
 # Validation constants for oscilloscope settings
 # These are typical ranges for bench oscilloscopes (Rigol MSO5000, PicoScope, etc.)
@@ -102,7 +107,7 @@ def _validate_scope_net(ctx, box_ip: str, netname: str) -> dict | None:
     Returns the net dict if valid, None otherwise.
     Error message with available nets is displayed if validation fails.
     """
-    return validate_net_exists(ctx, box_ip, netname, SCOPE_ROLE)
+    return validate_net_exists(ctx, box_ip, netname, SCOPE_ROLES)
 
 
 # Actions the box implements in-process (net_command.ROLE_ACTIONS["scope"]),
