@@ -25,6 +25,7 @@ nothing but executing it proves what it sends.
 from __future__ import annotations
 
 import json
+import math
 import os
 import pathlib
 import re
@@ -1076,10 +1077,43 @@ class TestTheTimebaseComesFromTheHardware:
         for impossible in (1e-6, 2e-6, 5e-6):
             assert impossible not in offered
 
-    def test_the_reachable_ones_are_kept(self):
+    def test_every_offered_step_is_one_the_unit_can_hit_exactly(self):
+        """The list was a 1-2-5 ladder clamped at the fast end, so most of what
+        it offered was unreachable and got rounded: on the 2204A on the bench,
+        50 us/div lands on 64, 5 ms/div on 4.096, and 10 us/div on 8. The
+        dropdown then corrected itself to the achieved value after every
+        change, inserting an off-ladder entry and rebuilding the list under
+        whoever was using it -- which is why the control seemed to ignore a
+        change, snap back, or apply the previous one.
+
+        A PicoScope's interval doubles per timebase step, so the reachable set
+        is the fastest screen time times powers of two and nothing between.
+        """
         offered = self._choices(self.CAPS, self.DEPTH)
-        for wanted in (1e-5, 1e-4, 1e-3, 1e-2, 1e-1):
-            assert wanted in offered, "%s s/div is reachable" % wanted
+        fastest = self.DEPTH / (self.CAPS["max_sample_rate_hz"] * 10)
+
+        for step in offered:
+            ratio = step / fastest
+            power = round(math.log2(ratio))
+            assert abs(ratio - 2 ** power) < 1e-9, (
+                "%g s/div is not %g doubled a whole number of times" % (
+                    step, fastest))
+
+    def test_the_steps_measured_on_the_bench_are_offered(self):
+        """Read off the 2204A by asking for each 1-2-5 value and recording what
+        `get_timebase` reported back."""
+        offered = self._choices(self.CAPS, self.DEPTH)
+        for measured in (8e-6, 1.6e-5, 6.4e-5, 1.28e-4, 2.56e-4, 5.12e-4,
+                         1.024e-3, 2.048e-3, 4.096e-3, 8.192e-3, 1.6384e-2):
+            assert any(abs(o - measured) < 1e-12 for o in offered), (
+                "%g s/div was measured as reachable" % measured)
+
+    def test_the_ladder_is_not_the_one_two_five_one(self):
+        """Guards the regression directly: these are round numbers the unit
+        cannot reach, and offering them is what forced the correction."""
+        offered = self._choices(self.CAPS, self.DEPTH)
+        for unreachable in (1e-5, 5e-5, 1e-4, 1e-3, 5e-3, 1e-2):
+            assert unreachable not in offered
 
     def test_an_unknown_unit_is_offered_everything(self):
         """Before the first capture there is no depth, and refusing to offer a
