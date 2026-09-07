@@ -1064,7 +1064,13 @@ def _scope_trigger_edge(dev, params):
         dev.set_trigger_slope(params["slope"])
         applied.append("slope %s" % params["slope"])
     if params.get("coupling") is not None:
-        dev.set_channel_coupling(params["coupling"])
+        # The trigger path's filter, not the channel's input coupling. These
+        # are different settings that share a word: this one is DC / AC /
+        # LF-reject / HF-reject on the comparator feeding the trigger, and it
+        # leaves the displayed trace alone. This called set_channel_coupling,
+        # so `trigger coupling ac` switched the input to AC instead -- which
+        # moves the waveform on screen and reads as a hardware fault.
+        dev.set_trigger_coupling(params["coupling"])
         applied.append("coupling %s" % params["coupling"])
     if params.get("level") is not None:
         dev.set_trigger_level(float(params["level"]))

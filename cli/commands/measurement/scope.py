@@ -553,13 +553,21 @@ COUPLING_CHOICES = click.Choice(("dc", "ac", "low_freq_rej", "high_freq_rej"))
 @click.pass_context
 @click.option("--mcu", required=False)
 @click.option("--box", required=False, help="Lager Box name or IP")
-@click.option("--mode", default="normal", type=MODE_CHOICES, help="Trigger mode", show_default=True)
-@click.option("--coupling", default="dc", type=COUPLING_CHOICES, help="Coupling mode", show_default=True)
+@click.option("--mode", type=MODE_CHOICES, help="Trigger mode")
+@click.option("--coupling", type=COUPLING_CHOICES,
+              help="Trigger-path coupling filter (Rigol only; not the "
+                   "channel's input coupling, which is `scope coupling`)")
 @click.option("--source", required=False, help="Trigger source", metavar="NET")
 @click.option("--slope", type=click.Choice(("rising", "falling", "both")), help="Trigger slope")
 @click.option("--level", type=click.FLOAT, help="Trigger level")
 def edge(ctx, mcu, box, mode, coupling, source, slope, level):
-    """Set edge trigger (works with both PicoScope and Rigol)"""
+    """Set edge trigger (works with both PicoScope and Rigol)
+
+    Only the settings named are changed. --mode and --coupling used to
+    default to normal and dc, so adjusting a level re-applied both: a trigger
+    armed for single went back to normal, and an AC-coupled trigger to DC,
+    without either being asked for.
+    """
     box_ip = _resolve_box(ctx, box)
     netname = _require_netname(ctx)
 

@@ -358,10 +358,24 @@ Configure trigger settings. Edge trigger works with both PicoScope and Rigol. Pr
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--mode` | Trigger mode: `normal`, `auto`, `single` | `normal` |
-| `--coupling` | Coupling mode: `dc`, `ac`, `low_freq_rej`, `high_freq_rej` | `dc` |
+| `--mode` | Trigger mode: `normal`, `auto`, `single` | unchanged |
+| `--coupling` | Trigger-path coupling filter: `dc`, `ac`, `low_freq_rej`, `high_freq_rej` (Rigol only) | unchanged |
 | `--source NET` | Trigger source net | Current net |
 | `--level VOLTS` | Trigger level in volts | - |
+
+<Note>
+`--coupling` here is the filter on the way to the trigger comparator, not the
+channel's input coupling. They share a word and do different things: this one
+lets a drifting or noisy edge be triggered on without altering the displayed
+trace, while `lager scope <net> coupling` changes what the channel passes and
+does move the trace. Only a Rigol has the trigger filter; on a PicoScope the
+comparator sees the channel as it is, and the flag is refused rather than
+quietly applied to the input.
+
+Every option leaves what it does not name alone. `--mode` and `--coupling`
+used to default to `normal` and `dc`, so adjusting a level re-applied both --
+a trigger armed for `single` went back to `normal` without being asked.
+</Note>
 
 ### `trigger edge`
 
@@ -386,7 +400,7 @@ lager scope ANALOG1 trigger edge --slope rising --level 1.5 --box my-lager-box
 # Falling edge in single capture mode
 lager scope ANALOG1 trigger edge --slope falling --level 0.5 --mode single --box my-lager-box
 
-# Either edge with AC coupling
+# Either edge, with the trigger path AC coupled (Rigol only)
 lager scope ANALOG1 trigger edge --slope both --coupling ac --level 0 --box my-lager-box
 ```
 

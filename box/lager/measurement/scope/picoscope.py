@@ -427,6 +427,32 @@ class PicoScope:
     def get_trigger_slope(self) -> str:
         return str(self._command("GetTriggerSlope").get("trigger_slope"))
 
+    def set_trigger_coupling(self, coupling):
+        """Not available on PicoScope.
+
+        A Rigol filters the signal on its way to the trigger comparator --
+        `:TRIGger:COUPling` takes DC, AC, LF-reject or HF-reject -- so a noisy
+        or drifting edge can be triggered on without touching what is
+        displayed. `ps2000_set_trigger` has no equivalent parameter: the
+        comparator sees the channel as it is.
+
+        Raised rather than ignored because the two nearby ways of being
+        helpful are both wrong. Silently doing nothing leaves a scope that
+        will not trigger and a setting that claims to have been applied; and
+        falling through to the channel's input coupling, which is what this
+        used to do, moves the trace on screen instead.
+        """
+        raise UnsupportedScopeFeature(
+            "PicoScope has no trigger coupling filter; for the channel's "
+            "input coupling use set_channel_coupling (`lager scope <net> "
+            "coupling ac`)")
+
+    def get_trigger_coupling(self):
+        """Not available on PicoScope. See ``set_trigger_coupling``."""
+        raise UnsupportedScopeFeature(
+            "PicoScope has no trigger coupling filter; for the channel's "
+            "input coupling use get_channel_coupling")
+
     # Rigol edge-trigger aliases: a PicoScope has only edge triggers on the
     # 2000 series, so edge and generic trigger are the same setting.
     set_trigger_edge_level = set_trigger_level

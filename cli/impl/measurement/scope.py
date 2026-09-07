@@ -649,6 +649,17 @@ def trigger_edge_pico(netname, mode, coupling, source, slope, level):
     """Configure edge trigger for PicoScope."""
     errors = []
 
+    # Said rather than dropped. ps2000_set_trigger has no filter on the path
+    # to the comparator, so there is nothing to apply -- and accepting the
+    # flag silently leaves a scope that will not trigger and a setting that
+    # appeared to take. The channel's input coupling is a different thing
+    # with the same name, so the message points at it.
+    if coupling:
+        errors.append(
+            "coupling: PicoScope has no trigger coupling filter; for the "
+            "channel's input coupling use `lager scope %s coupling %s`"
+            % (netname, coupling.lower()))
+
     # Set trigger mode
     if mode:
         response = send_command_pico({
@@ -695,25 +706,31 @@ def trigger_edge(netname, mode, coupling, source, level, slope):
     if source_net:
         source_net.enable()
 
-    if mode.lower() == "auto":
-        target_net.trigger_settings.set_mode_auto()
-    elif mode.lower() == "normal":
-        target_net.trigger_settings.set_mode_normal()
-    elif mode.lower() == "single":
-        target_net.trigger_settings.set_mode_single()
-    else:
-        raise Exception(f"{mode} is not a valid option")
+    # Both optional, like the level and slope below. They used to arrive
+    # defaulted, so every call re-applied normal mode and DC trigger
+    # coupling whether or not either was asked for -- a trigger armed for
+    # single went back to normal on the next level tweak.
+    if mode:
+        if mode.lower() == "auto":
+            target_net.trigger_settings.set_mode_auto()
+        elif mode.lower() == "normal":
+            target_net.trigger_settings.set_mode_normal()
+        elif mode.lower() == "single":
+            target_net.trigger_settings.set_mode_single()
+        else:
+            raise Exception(f"{mode} is not a valid option")
 
-    if coupling.lower() == "dc":
-        target_net.trigger_settings.set_coupling_DC()
-    elif coupling.lower() == "ac":
-        target_net.trigger_settings.set_coupling_AC()
-    elif coupling.lower() == "low_freq_rej":
-        target_net.trigger_settings.set_coupling_low_freq_reject()
-    elif coupling.lower() == "high_freq_rej":
-        target_net.trigger_settings.set_coupling_high_freq_reject()
-    else:
-        raise Exception(f"{coupling} type is not a valid option")
+    if coupling:
+        if coupling.lower() == "dc":
+            target_net.trigger_settings.set_coupling_DC()
+        elif coupling.lower() == "ac":
+            target_net.trigger_settings.set_coupling_AC()
+        elif coupling.lower() == "low_freq_rej":
+            target_net.trigger_settings.set_coupling_low_freq_reject()
+        elif coupling.lower() == "high_freq_rej":
+            target_net.trigger_settings.set_coupling_high_freq_reject()
+        else:
+            raise Exception(f"{coupling} type is not a valid option")
 
     from lager.nets.defines import TriggerType
     target_net.trigger_settings.set_type(TriggerType.Edge)
