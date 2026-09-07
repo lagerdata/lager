@@ -284,6 +284,12 @@ Start streaming acquisition.
 - `capture_mode` (str): `"auto"`, `"normal"`, `"single"`
 - `coupling` (str): `"dc"`, `"ac"`
 
+<Note>
+`"gnd"` is accepted by the API but refused by 2000-series units, which have no
+ground switch: `ps2000_set_channel` carries a single flag for coupling. Use
+`"ac"` to block the DC component, or unplug the probe to see where zero sits.
+</Note>
+
 ```python
 scope.stream_start(
     channel="A",
@@ -412,12 +418,30 @@ offset = scope.trace_settings.get_volt_offset()
 
 # Horizontal scale (s/div)
 scope.trace_settings.set_time_per_div(0.001)  # 1ms/div
-time_scale = scope.trace_settings.get_time_per_div()
+time_scale = scope.trace_settings.get_time_per_div()  # 0.001024 -- see below
 
 # Horizontal offset
 scope.trace_settings.set_time_offset(0.0)
 time_offset = scope.trace_settings.get_time_offset()
 ```
+
+<Note>
+Time/div is one tenth of the capture, as on a ten-division screen, so
+`set_time_per_div(0.001)` asks for a 10 ms window.
+
+`get_time_per_div()` returns the scale in use, which is rarely the one asked
+for. A scope samples at a fixed ladder of intervals, each twice the last, so a
+request is rounded to whichever comes closest: 1 ms/div on a 2204A is really
+1.024 ms/div. Read it back if you need the exact window -- and prefer
+`get_sample_rate()` and the frame's own time axis over arithmetic on the value
+you set.
+
+How fast a screen the unit can reach depends on the block depth as well as its
+maximum sample rate, since the two multiply out to the window. A 2204A at
+100 MS/s over 8000 samples bottoms out at 8 us/div, and asking for anything
+faster gets you that. Enabling a second channel halves the buffer, which makes
+the fastest screen faster rather than slower.
+</Note>
 
 <Note>
 `set_time_offset()` moves the capture window in time relative to the trigger,
