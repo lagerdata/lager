@@ -54,6 +54,11 @@ const MEASUREMENTS = {
   'width-neg': 'measure_pulse_width_neg',
   rise: 'measure_rise_time',
   fall: 'measure_fall_time',
+  overshoot: 'measure_overshoot',
+  // One capture, every quantity, and a set that agrees with itself. The
+  // others take a capture each, so reading several in a row samples a live
+  // signal at different moments.
+  all: 'measure_all',
 };
 
 /**
