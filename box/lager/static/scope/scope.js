@@ -40,6 +40,13 @@ const VOLTS_PER_DIV = [
 // Sentinel option value. Not a number, so it cannot collide with a scale.
 const CUSTOM_SCALE = 'custom';
 
+// Cursor actions, so a typed cursor command can pull the plot's copy back
+// into step with the box's. There is no control for these on purpose: the
+// console places them and the renderer draws whatever the box says is set.
+const CURSOR_ACTIONS = new Set([
+  'set_cursor', 'get_cursor', 'clear_cursor', 'measure_cursor',
+]);
+
 // Input coupling, as the wire spells it and as the panel shows it. GND is
 // deliberately absent: `ps2000_set_channel` carries one flag for coupling, so
 // the hardware has no ground switch, and the daemon refuses the setting
@@ -146,6 +153,25 @@ function timebaseChoices(caps, memoryDepth) {
   return within.length ? within : TIMEBASES.slice(-1);
 }
 
+/** The trace's voltage at a time relative to the trigger, interpolated.
+ *
+ * Null when the cursor falls outside the record, matching the box's
+ * `trace_voltage_at`: a cursor past the end has no signal under it, and the
+ * nearest sample is a voltage from a different moment.
+ *
+ * Interpolated rather than snapped to the nearest sample because a cursor
+ * lands where it was typed, not on the sample grid -- and the difference is
+ * largest on a fast edge, where it is most worth reading.
+ */
+function sampleTraceAt(frame, volts, seconds) {
+  const exact = frame.preTriggerSamples
+    + (seconds * 1e9) / frame.sampleIntervalNs;
+  const low = Math.floor(exact);
+  if (low < 0 || low >= volts.length) return null;
+  if (low + 1 >= volts.length) return low === exact ? volts[low] : null;
+  return volts[low] + (exact - low) * (volts[low + 1] - volts[low]);
+}
+
 const el = (id) => document.getElementById(id);
 
 /** Format a value with an SI prefix, for axis labels and readouts. */
@@ -220,6 +246,10 @@ class ScopeApp {
     this.showTriggerMarkers = true;
     // Divisions the capture window is shifted from the trigger.
     this.timePositionDiv = 0;
+    // Cursors, as the box last reported them: `{cursors, readings}` or null.
+    // Held rather than derived, since the box owns them and the console is
+    // the only thing that moves them.
+    this.cursors = null;
     // Block depth the timebase list was last built for. Null until a capture
     // reports one, which is when the unreachable fast steps can be dropped.
     this.timebaseDepth = null;
@@ -844,10 +874,15 @@ class ScopeApp {
       const body = await this.send('get_time_offset', {}, anyNet.net);
       const seconds = Number(body.value);
       const perDiv = Number(el('timebase').value);
-      if (!Number.isFinite(seconds) || !(perDiv > 0)) return;
-      // push: false -- the hardware is already there.
-      this.applyTimePosition(seconds / perDiv, { push: false });
+      if (Number.isFinite(seconds) && perDiv > 0) {
+        // push: false -- the hardware is already there.
+        this.applyTimePosition(seconds / perDiv, { push: false });
+      }
     } catch { /* older box: leave it centred */ }
+
+    // Cursors outlive the page the same way: the box holds them, so a pair
+    // placed from the terminal before this page was opened is drawn on it.
+    await this.refreshCursors(anyNet.net);
   }
 
   /** Move the capture window earlier or later than the trigger.
@@ -1052,10 +1087,49 @@ class ScopeApp {
         this.capabilities = body.value;
         this.applyCapabilities();
       }
+      // Cursors are typed, not dragged, so the console is the only thing that
+      // moves them and the plot has to follow it. The reply is the box's own
+      // answer for where they ended up rather than an echo of the request --
+      // `set_cursor` reports what it stored -- so the plot takes it directly
+      // instead of asking again.
+      if (CURSOR_ACTIONS.has(action)) this.adoptCursors(body.value);
       return body;
     } catch (e) {
       this.console.error(e.message);
       return null;
+    }
+  }
+
+  // ---------- cursors ----------
+
+  /** Take the box's cursors as the plot's, from any of the cursor replies.
+   *
+   * `set_cursor` and `get_cursor` answer with the positions; `measure_cursor`
+   * wraps them alongside the readings; `clear_cursor` answers with nothing.
+   * All four end up here, so there is one place that decides what is drawn.
+   *
+   * An unset pair becomes null rather than an object of nulls, so the
+   * renderer has a single thing to test.
+   */
+  adoptCursors(value) {
+    const cursors = value && (value.cursors || value);
+    this.cursors = (cursors && (cursors.time || cursors.volts)) ? cursors : null;
+    this.requestRedraw();
+  }
+
+  /** Read the box's cursors, for a page that has just connected.
+   *
+   * `get_cursor` rather than `measure_cursor`: the positions are all the
+   * renderer needs, and the readings come off the frame already in hand,
+   * which keeps the labels on the trace being drawn instead of on a separate
+   * capture taken a moment later.
+   */
+  async refreshCursors(net) {
+    try {
+      const body = await this.send('get_cursor', {}, net || this.net);
+      this.adoptCursors(body.value);
+    } catch {
+      this.adoptCursors(null); // Older box with no cursor actions.
     }
   }
 
@@ -1121,16 +1195,29 @@ class ScopeApp {
    */
   startMeasurementPolling() {
     this.stopMeasurementPolling();
-    this.refreshMeasurements();
-    this.measureTimer = setInterval(() => {
-      // Overlapping requests would queue captures behind each other on a slow
-      // trigger and arrive out of order.
-      if (this.measureInFlight) return;
-      this.measureInFlight = true;
-      this.refreshMeasurements().finally(() => {
-        this.measureInFlight = false;
-      });
-    }, MEASURE_INTERVAL_MS);
+    this.pollMeasurementsOnce();
+    this.measureTimer = setInterval(() => this.pollMeasurementsOnce(),
+      MEASURE_INTERVAL_MS);
+  }
+
+  /** One reading, skipped if the last one has not come back yet.
+   *
+   * The single path for every unawaited refresh -- the first one, each tick,
+   * and the one on returning to the tab -- because each needs the same two
+   * guards and getting either wrong is invisible until the panel stops.
+   *
+   * Overlapping requests would queue captures behind each other on a slow
+   * trigger and arrive out of order. And a rejection has to be absorbed:
+   * `finally` passes one through, so a refresh that threw would otherwise
+   * escape as an unhandled rejection. The panel reports its own errors in
+   * place, so there is nothing to do with one here.
+   */
+  pollMeasurementsOnce() {
+    if (this.measureInFlight) return;
+    this.measureInFlight = true;
+    this.refreshMeasurements()
+      .finally(() => { this.measureInFlight = false; })
+      .catch(() => {});
   }
 
   stopMeasurementPolling() {
@@ -1257,6 +1344,121 @@ class ScopeApp {
       }
       this.drawTriggerLevel(ctx, width, height);
     }
+
+    // Last, so the readout box sits over the trace rather than under it.
+    if (this.cursors) this.drawCursors(ctx, frame, width, height);
+  }
+
+  /** The cursors, and what they read on the frame being drawn.
+   *
+   * There is nothing to grab here and no field in the sidebar: these are
+   * placed by typing, in this page's console or in the terminal CLI, and the
+   * box holds the pair so both mean the same two markers. Drawing them is
+   * still the point -- a delta between two positions you cannot see is a
+   * calculator, not a cursor.
+   */
+  drawCursors(ctx, frame, width, height) {
+    const { time, volts, channel } = this.cursors;
+    const labels = [];
+
+    ctx.save();
+    ctx.font = '11px ui-monospace, monospace';
+
+    if (time && frame.samplesPerChannel) {
+      const xs = time.map((t) => this.timeToX(frame, t, width));
+      xs.forEach((x, i) => {
+        // Clamped, so a cursor past an edge is still visible as being that
+        // way rather than vanishing and reading as unset.
+        this.drawCursorLine(ctx, true, clamp(x, 1, width - 1), width, height,
+          `t${i + 1}`);
+      });
+      const deltaT = time[1] - time[0];
+      labels.push(`\u0394t ${si(deltaT, 's', 4)}`);
+      if (deltaT) labels.push(`1/\u0394t ${si(1 / deltaT, 'Hz', 4)}`);
+
+      // The voltage under each cursor, read off this frame on the channel the
+      // box measures against, so the number matches the trace it is drawn on.
+      const trace = this.traceAt(frame, channel);
+      if (trace) {
+        const readings = time.map((t) => sampleTraceAt(frame, trace, t));
+        if (readings.every((v) => v !== null)) {
+          labels.push(`\u0394V ${si(readings[1] - readings[0], 'V', 4)}`);
+        }
+      }
+    }
+
+    if (volts) {
+      // On the cursor channel's scale and shifted with its trace: a voltage
+      // means a different height on a channel at a different volts/div.
+      const state = this.channelState.get(channel)
+        || this.channelState.values().next().value;
+      const fullScale = ((state && state.voltsPerDiv) || 1) * 4;
+      const shift = ((state && state.positionDiv) || 0) / 4;
+      volts.forEach((v, i) => {
+        const y = height / 2 - (v / fullScale + shift) * (height / 2);
+        this.drawCursorLine(ctx, false, clamp(y, 1, height - 1), width, height,
+          `v${i + 1}`);
+      });
+      labels.push(`\u0394V ${si(volts[1] - volts[0], 'V', 4)}`);
+    }
+
+    // One box, top-right: the trigger level labels at the left and the time
+    // marker at the centre, so this is the corner left free.
+    if (labels.length) {
+      const lines = labels;
+      const boxWidth = Math.max(...lines.map((t) => ctx.measureText(t).width)) + 10;
+      const boxHeight = lines.length * 13 + 6;
+      ctx.fillStyle = '#05080dcc';
+      ctx.fillRect(width - boxWidth - 4, 4, boxWidth, boxHeight);
+      ctx.fillStyle = '#8b98a5';
+      ctx.textBaseline = 'top';
+      lines.forEach((text, i) => {
+        ctx.fillText(text, width - boxWidth + 1, 8 + i * 13);
+      });
+    }
+    ctx.restore();
+  }
+
+  /** One cursor: a dashed line across the plot with its name at the edge. */
+  drawCursorLine(ctx, vertical, at, width, height, name) {
+    const position = Math.round(at) + 0.5;
+    ctx.strokeStyle = '#8b98a5';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    if (vertical) {
+      ctx.moveTo(position, 0);
+      ctx.lineTo(position, height);
+    } else {
+      ctx.moveTo(0, position);
+      ctx.lineTo(width, position);
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Named, because two identical dashed lines do not say which is which and
+    // the readout box reports them in order.
+    ctx.fillStyle = '#8b98a5';
+    ctx.textBaseline = 'top';
+    if (vertical) {
+      ctx.fillText(name, Math.min(width - 14, position + 2), height - 14);
+    } else {
+      ctx.fillText(name, 2, Math.min(height - 14, position + 2));
+    }
+  }
+
+  /** Where a time relative to the trigger falls, in pixels across the plot. */
+  timeToX(frame, seconds, width) {
+    const total = frame.samplesPerChannel;
+    const index = frame.preTriggerSamples
+      + (seconds * 1e9) / frame.sampleIntervalNs;
+    return (index / total) * width;
+  }
+
+  /** A frame's volts for a channel label, or null if it is not in the frame. */
+  traceAt(frame, label) {
+    const index = frame.channels.findIndex((d) => d.channel === label);
+    return index < 0 ? null : frame.volts(index);
   }
 
   drawGraticule(ctx, width, height) {
@@ -1397,6 +1599,17 @@ class ScopeApp {
     });
     el('btn-force').addEventListener('click', () => this.runCommand('force_trigger', {}, 'force'));
 
+    // Coming back to a backgrounded tab. A hidden page's timers are throttled
+    // hard -- to once a second, and to once a minute after a few minutes
+    // hidden -- so the readouts on screen when it comes back can describe a
+    // capture from a minute ago. A bench scope shows the signal now, so this
+    // refreshes on return instead of waiting for the next throttled tick.
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && this.measureTimer) {
+        this.pollMeasurementsOnce();
+      }
+    });
+
     el('timebase').addEventListener('change', (event) => {
       this.applyTimebase(Number(event.target.value));
     });
@@ -1507,7 +1720,10 @@ class ScopeApp {
 // Exported, and started only in a browser, so the channel/net mapping and the
 // volts/div ladder can be exercised under node. The constructor needs a DOM,
 // so the tests call the methods on the prototype against a hand-built `this`.
-export { ScopeApp, voltsPerDivChoices, timebaseChoices };
+// sampleTraceAt is exported so it can be checked against the box's
+// `trace_voltage_at`: the reading in the terminal and the label on the plot
+// come from different implementations of the same interpolation.
+export { ScopeApp, voltsPerDivChoices, timebaseChoices, sampleTraceAt };
 
 if (typeof document !== 'undefined') {
   const app = new ScopeApp();
