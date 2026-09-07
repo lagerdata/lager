@@ -296,7 +296,13 @@ class TestControlsTargetTheirOwnNet:
           sent.push(JSON.parse(init.body).netname);
           return { ok: true, json: async () => ({}) };
         };
-        const self = { net: 'scope1' };
+        // A channel net, so an un-overridden per-channel action has one to
+        // fall back to; without it `send` would route to the scope net.
+        const self = {
+          net: 'pico1',
+          channelNets: [{ name: 'scope1', pin: 1 }],
+          netForAction: ScopeApp.prototype.netForAction,
+        };
         await ScopeApp.prototype.send.call(self, 'enable_net', {}, 'scope2');
         await ScopeApp.prototype.send.call(self, 'enable_net', {});
         process.stdout.write(JSON.stringify(sent));
@@ -309,7 +315,10 @@ class TestControlsTargetTheirOwnNet:
         out = _run_js("""
         let message = null;
         try {
-          await ScopeApp.prototype.send.call({ net: null }, 'enable_net', {});
+          await ScopeApp.prototype.send.call(
+            { net: null, channelNets: [],
+              netForAction: ScopeApp.prototype.netForAction },
+            'enable_net', {});
         } catch (e) { message = e.message; }
         process.stdout.write(JSON.stringify(message));
         """)
