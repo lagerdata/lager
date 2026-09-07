@@ -85,7 +85,7 @@ lager nets add NAME ROLE CHANNEL ADDRESS [OPTIONS]
 
 **Arguments:**
 - `NAME` - Unique name for the net (e.g., `supply1`, `debug_main`)
-- `ROLE` - Type of net: `power-supply`, `battery`, `solar`, `debug`, `adc`, `dac`, `gpio`, `scope`, `eload`, `uart`, `usb`, `camera`, `arm`, `watt-meter`, `thermocouple`, `i2c`, `spi`. The legacy tokens `supply` and `batt` are accepted as input aliases and normalized to `power-supply` / `battery` — saved nets always carry the canonical role.
+- `ROLE` - Type of net: `power-supply`, `battery`, `solar`, `debug`, `adc`, `dac`, `gpio`, `scope`, `scope-channel`, `eload`, `uart`, `usb`, `camera`, `arm`, `watt-meter`, `thermocouple`, `i2c`, `spi`. The legacy tokens `supply` and `batt` are accepted as input aliases and normalized to `power-supply` / `battery` — saved nets always carry the canonical role.
 - `CHANNEL` - Channel identifier (e.g., `1`, `AIN0`, `FIO0`, `STM32F4`, `0`)
 - `ADDRESS` - VISA address or device path (e.g., `TCPIP::192.168.1.100::INSTR`)
 
@@ -164,6 +164,11 @@ Instruments with physically independent outputs / inputs. Each channel is its ow
 | `MCC_USB-202` | `CH0`–`CH7`, `DIO0`–`DIO7`, `DAC0`–`DAC1` | One net per channel |
 | `Phidget` | `0`–`3` | One `thermocouple` net per channel |
 | `Acroname_8Port` / `4Port`, `YKUSH_Hub` | Port indices | One `usb` net per port |
+
+A `scope` net has no channel: it stands for the whole instrument, and its
+inputs are separate `scope-channel` nets. See
+[the oscilloscope reference](/reference/cli/scope) for which settings
+belong to which.
 
 **Rule:** at most one net per `(instrument, address, role, channel)` tuple. Two nets that share `(instrument, address, role)` but differ in `channel` are fine — that's exactly what multi-channel is for.
 

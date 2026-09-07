@@ -8,6 +8,50 @@ All notable changes to the Lager platform are documented here. For detailed rele
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Added
+
+- An oscilloscope is now two kinds of net. A `scope` net is the instrument and
+  a `scope-channel` net is one of its inputs, so a two-channel PicoScope offers
+  three nets rather than two. Six settings belong to a channel — enable,
+  volts/div, offset, coupling, probe, measurements — and the other fourteen,
+  including the timebase, the whole trigger and run/stop, belong to the scope.
+  Those previously had nowhere to be addressed and were sent to whichever
+  channel net the caller happened to hold; the web UI picked one arbitrarily.
+
+  Existing boxes convert themselves the first time they read their nets. Every
+  scope net saved before this is a channel — the instrument had no
+  representation to be confused with — so the conversion is total rather than a
+  guess: each keeps its name and pin as a `scope-channel` net, and a `scope`
+  net named after the model appears beside them.
+
+  A command that belongs to the instrument is still accepted on a channel net,
+  because a channel names exactly one scope, so existing scripts are unchanged.
+  The reverse is refused, and names the channel nets that would have worked.
+
+  One case cannot be read either way: a scope net saved with no pin worked as
+  channel A by accident, the driver defaulting to 1. It is now taken for the
+  instrument, and a per-channel command sent to one says so rather than
+  landing on the first channel unannounced.
+
+### Fixed
+
+- The Rigol's edge trigger level was written as `:TRIGger:EDGE:LEVel
+  <level>,<source>`, a two-argument form the instrument does not have — the
+  MSO5000 takes a single real, read in the units of whichever source
+  `:TRIGger:EDGE:SOURce` names. A malformed SCPI write does not raise; the
+  instrument sets a bit in its status register and carries on, so every
+  trigger level set on a Rigol was discarded in silence and the query asked in
+  the same invalid form. The phantom second argument, which defaulted to the
+  net's own channel, was also why the trigger level looked like a per-channel
+  setting. Untested against hardware — there is no Rigol on the bench — so the
+  tests pin the SCPI against the programming guide.
+
+- A Rigol fell past every branch of the box's device-identity check to the
+  LabJack default. Its VISA address kept the lock key unique so it worked in
+  practice, but a Rigol saved without an address collapsed onto `labjack:ANY`
+  and took the lock a LabJack was already using, queueing scope commands
+  behind GPIO traffic on unrelated hardware.
+
 ## [0.46.0] - 2026-09-04
 
 ### Added

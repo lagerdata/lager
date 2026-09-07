@@ -13,6 +13,51 @@ lager scope [NETNAME] [OPTIONS] COMMAND [ARGS]...
 
 If `NETNAME` is omitted, lists all available scope nets on the box.
 
+## The scope and its channels
+
+An oscilloscope is two kinds of net. A **`scope`** net is the instrument
+itself; a **`scope-channel`** net is one of its inputs. Plugging in a
+two-channel PicoScope offers three nets in `lager nets tui`: the two channels
+and the scope they belong to.
+
+The split follows the hardware. Six settings belong to a channel, and the rest
+belong to the instrument:
+
+| Belongs to a `scope-channel` net | Belongs to the `scope` net |
+|---|---|
+| `enable`, `disable` | `start`, `stop`, `force` |
+| `scale` (volts/div) | `timebase`, horizontal position |
+| `coupling` | `trigger` (source, slope, level, mode) |
+| `probe` | `cursor` |
+| vertical offset | `autoscale`, reported capabilities |
+| `measure` | |
+
+Both are addressed the same way, so nothing about the command changes:
+
+```bash
+lager scope vbus coupling ac      # a channel net
+lager scope picoscope1 timebase 1ms   # the scope net
+```
+
+<Note>
+A command that belongs to the instrument is also accepted on one of its
+channel nets, because a channel names exactly one scope and there is nothing
+to be ambiguous about. Scripts written before scope nets existed keep working
+unchanged.
+
+The reverse is refused. `lager scope picoscope1 coupling ac` names no channel,
+and rather than guess one the CLI names the channel nets that would have
+worked.
+</Note>
+
+<Note>
+Boxes set up before scope nets existed had only channels, saved with the role
+`scope`. Those are converted the first time the box reads its nets: each
+becomes a `scope-channel` net keeping its name and pin, and a `scope` net named
+after the model — `picoscope1` — appears alongside them. Nothing needs to be
+re-added, and the new net can be renamed.
+</Note>
+
 ## Global Options
 
 | Option | Description |
