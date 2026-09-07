@@ -331,6 +331,7 @@ fn run(
     let mut state = LoopState {
         sequence: 0,
         captured_since_arm: false,
+        last_frame: None,
     };
     // When idle this blocks on the command channel and consumes nothing.
     // The old design polled every 10 ms whether or not anything was
@@ -380,10 +381,16 @@ fn run(
                     state.captured_since_arm = true;
                     capture_count.fetch_add(1, Ordering::Relaxed);
 
+                    // Kept as well as sent, so a command that needs samples
+                    // has the ones just published rather than re-reading a
+                    // device that is already collecting the next block.
+                    let frame = Arc::new(frame);
+                    state.last_frame = Some(frame.clone());
+
                     // Send failure only means nobody is subscribed. The
                     // acquisition loop keeps running so a reconnecting
                     // client sees live data immediately.
-                    let _ = captures.send(Arc::new(frame));
+                    let _ = captures.send(frame);
 
                     let mode = scope.get_capture_mode().unwrap_or(CaptureMode::Normal);
                     if mode == CaptureMode::Single {
@@ -433,6 +440,19 @@ struct LoopState {
     /// though captures are streaming. This is the readiness a client can
     /// actually observe.
     captured_since_arm: bool,
+    /// The last capture the loop published, while it is acquiring.
+    ///
+    /// Reading the driver on demand does not work during acquisition. The
+    /// loop consumes each capture and re-arms straight away, so the device is
+    /// always mid-block when a command arrives, and a read-out at that point
+    /// hands back the block already latched -- the same samples on every
+    /// call. Measurements were frozen for exactly this reason: the panel
+    /// polled, the driver answered, and the answer never changed.
+    ///
+    /// Serving from here instead is also the right answer rather than merely
+    /// a working one: these samples are the frame the client was just sent,
+    /// so a measurement or a cursor reading describes the trace on screen.
+    last_frame: Option<Arc<CaptureFrame>>,
 }
 
 fn handle(
@@ -526,6 +546,11 @@ fn handle(
                 // "ready" from the previous acquisition and reads a stale
                 // capture as though it were the new one.
                 state.captured_since_arm = false;
+                // And the published frame goes with it. A re-arm is how a new
+                // timebase, range or window takes effect, so keeping the last
+                // one servable would answer questions about the new settings
+                // with samples taken under the old ones.
+                state.last_frame = None;
                 acquiring.store(true, Ordering::Relaxed);
                 ScopeReply::Ok
             }
@@ -548,16 +573,12 @@ fn handle(
                 reply_value!(scope.is_ready(), ScopeReply::Bool)
             }
         }
-        ScopeRequest::GetTriggeredData => match scope.get_triggered_data() {
-            Ok(mut frame) => {
-                state.sequence += 1;
-                frame.seq = state.sequence;
-                ScopeReply::Capture(Arc::new(frame))
-            }
+        ScopeRequest::GetTriggeredData => match samples_now(scope, state) {
+            Ok(frame) => ScopeReply::Capture(frame),
             Err(e) => ScopeReply::error(e),
         },
         ScopeRequest::Measure { channel, which } => {
-            match measure_now(scope, channel).and_then(|set| {
+            match measure_now(scope, state, channel).and_then(|set| {
                 set.get(which)
                     .ok_or_else(|| anyhow::anyhow!(
                         "{:?} needs at least one full cycle in the capture",
@@ -568,16 +589,43 @@ fn handle(
                 Err(e) => ScopeReply::error(e),
             }
         }
-        ScopeRequest::MeasureAll { channel } => match measure_now(scope, channel) {
+        ScopeRequest::MeasureAll { channel } => match measure_now(scope, state, channel) {
             Ok(set) => ScopeReply::Measurements(Box::new(set)),
             Err(e) => ScopeReply::error(e),
         },
     }
 }
 
-/// Measure against the most recent capture the hardware can give us.
-fn measure_now(scope: &mut Box<dyn Oscilloscope>, channel: ChannelId) -> Result<MeasurementSet> {
-    let frame = scope.get_triggered_data()?;
+/// The most recent samples, from wherever they can actually be had.
+///
+/// While the loop is acquiring, that is the frame it last published: the
+/// device is mid-block, and reading it out then returns the block already
+/// latched, which is how a polling client ends up with the same samples on
+/// every call.
+///
+/// Idle, there is no published frame to prefer and the latched block really
+/// is the last capture, so the driver is read directly. That is also what
+/// makes a one-shot work: arm, then ask.
+fn samples_now(
+    scope: &mut Box<dyn Oscilloscope>,
+    state: &mut LoopState,
+) -> Result<Arc<CaptureFrame>> {
+    if let Some(frame) = state.last_frame.clone() {
+        return Ok(frame);
+    }
+    let mut frame = scope.get_triggered_data()?;
+    state.sequence += 1;
+    frame.seq = state.sequence;
+    Ok(Arc::new(frame))
+}
+
+/// Measure against the most recent capture, so the numbers follow the signal.
+fn measure_now(
+    scope: &mut Box<dyn Oscilloscope>,
+    state: &mut LoopState,
+    channel: ChannelId,
+) -> Result<MeasurementSet> {
+    let frame = samples_now(scope, state)?;
     let index = frame
         .channels
         .iter()
@@ -592,6 +640,7 @@ fn measure_now(scope: &mut Box<dyn Oscilloscope>, channel: ChannelId) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use protocol::ChannelFrame;
     use std::sync::atomic::AtomicUsize;
 
     /// A scope that implements only the capture surface these tests drive.
@@ -603,15 +652,17 @@ mod tests {
     /// test that grows into untested territory says so instead of passing on
     /// a fabricated value.
     struct FakeScope {
-        ready: bool,
-        captures_read: AtomicUsize,
+        /// Shared with the harness, which flips readiness and counts
+        /// read-outs from outside the boxed trait object.
+        ready: Arc<AtomicBool>,
+        captures_read: Arc<AtomicUsize>,
     }
 
     impl FakeScope {
         fn new() -> Self {
             FakeScope {
-                ready: false,
-                captures_read: AtomicUsize::new(0),
+                ready: Arc::new(AtomicBool::new(false)),
+                captures_read: Arc::new(AtomicUsize::new(0)),
             }
         }
     }
@@ -642,11 +693,16 @@ mod tests {
         }
 
         fn is_ready(&self) -> anyhow::Result<bool> {
-            Ok(self.ready)
+            Ok(self.ready.load(Ordering::Relaxed))
         }
 
         fn get_triggered_data(&self) -> anyhow::Result<CaptureFrame> {
-            self.captures_read.fetch_add(1, Ordering::Relaxed);
+            // Counted and folded into the samples, so a test can tell one
+            // read-out from the next. A real driver hands back the same
+            // latched block until something re-arms, which is the bug these
+            // tests exist for -- here every read differs, so serving a stale
+            // frame is what shows up rather than what hides.
+            let nth = self.captures_read.fetch_add(1, Ordering::Relaxed) as i16;
             Ok(CaptureFrame {
                 // Zero, as a real driver leaves it: the sequence number is
                 // the daemon's to assign, not the hardware's.
@@ -659,8 +715,14 @@ mod tests {
                 resolution_bits: 8,
                 overflow_mask: 0,
                 flags: 0,
-                channels: Vec::new(),
-                samples: vec![0, 0],
+                channels: vec![ChannelFrame {
+                    channel: ChannelId::Alphabetic('A'),
+                    range_code: 0,
+                    coupling: Coupling::DC,
+                    scale_v_per_count: 1.0,
+                    offset_v: 0.0,
+                }],
+                samples: vec![nth, nth + 10],
             })
         }
 
@@ -723,24 +785,37 @@ mod tests {
     /// without standing up a thread.
     struct Harness {
         scope: Box<dyn Oscilloscope>,
+        ready: Arc<AtomicBool>,
+        captures_read: Arc<AtomicUsize>,
         acquiring: AtomicBool,
         state: LoopState,
     }
 
     impl Harness {
         fn new() -> Self {
+            let fake = FakeScope::new();
+            let ready = fake.ready.clone();
+            let captures_read = fake.captures_read.clone();
             Harness {
-                scope: Box::new(FakeScope::new()),
+                scope: Box::new(fake),
+                ready,
+                captures_read,
                 acquiring: AtomicBool::new(false),
                 state: LoopState {
                     sequence: 0,
                     captured_since_arm: false,
+                    last_frame: None,
                 },
             }
         }
 
         fn send(&mut self, request: ScopeRequest) -> ScopeReply {
             handle(&mut self.scope, request, &self.acquiring, &mut self.state)
+        }
+
+        /// How many times the driver has been asked for samples.
+        fn captures_read(&self) -> usize {
+            self.captures_read.load(Ordering::Relaxed)
         }
 
         fn is_ready(&mut self) -> bool {
@@ -803,6 +878,165 @@ mod tests {
         assert!(harness.is_ready(), "the loop published a capture");
     }
 
+    /// Stand in for the loop having just published a capture.
+    ///
+    /// `amplitude` sets the spread rather than an offset, so the published
+    /// frames differ in Vpp -- shifting both samples equally would leave
+    /// every peak-to-peak reading identical and the test could not tell a
+    /// fresh capture from a stale one.
+    fn publish(harness: &mut Harness, amplitude: i16) {
+        harness.state.sequence += 1;
+        harness.state.last_frame = Some(Arc::new(CaptureFrame {
+            seq: harness.state.sequence,
+            capture_mono_ns: 0,
+            sample_interval_ns: 1.0,
+            pre_trigger_samples: 1,
+            post_trigger_samples: 1,
+            samples_per_channel: 2,
+            resolution_bits: 8,
+            overflow_mask: 0,
+            flags: 0,
+            channels: vec![ChannelFrame {
+                channel: ChannelId::Alphabetic('A'),
+                range_code: 0,
+                coupling: Coupling::DC,
+                scale_v_per_count: 1.0,
+                offset_v: 0.0,
+            }],
+            samples: vec![-amplitude, amplitude],
+        }));
+    }
+
+    fn measure_vpp(harness: &mut Harness) -> f64 {
+        match harness.send(ScopeRequest::MeasureAll {
+            channel: ChannelId::Alphabetic('A'),
+        }) {
+            ScopeReply::Measurements(set) => set
+                .get(Measurement::Vpp)
+                .expect("the capture has samples, so Vpp resolves"),
+            other => panic!("expected measurements, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn measurements_follow_the_captures_the_loop_publishes() {
+        // The frozen-readout bug. The loop consumes each capture and re-arms
+        // straight away, so the device is mid-block whenever a command lands
+        // and reading it out then returns the block already latched. A panel
+        // polling twice a second got the same numbers forever, while the
+        // trace beside it updated fine.
+        let mut harness = Harness::new();
+        harness.send(ScopeRequest::StartAcquisition(50.0));
+
+        publish(&mut harness, 5);
+        let first = measure_vpp(&mut harness);
+
+        publish(&mut harness, 40);
+        let second = measure_vpp(&mut harness);
+
+        assert_eq!(first, 10.0, "Vpp of a -5..5 capture");
+        assert_eq!(
+            second, 80.0,
+            "the measurement did not follow the newly published capture"
+        );
+    }
+
+    #[test]
+    fn measuring_while_acquiring_does_not_read_the_device() {
+        // Not just an optimisation: a read-out mid-block is precisely what
+        // returns stale samples, so the fix is to not do it.
+        let mut harness = Harness::new();
+        harness.send(ScopeRequest::StartAcquisition(50.0));
+        publish(&mut harness, 7);
+
+        let before = harness.captures_read();
+        measure_vpp(&mut harness);
+        harness.send(ScopeRequest::GetTriggeredData);
+
+        assert_eq!(
+            harness.captures_read(),
+            before,
+            "went back to the device while the loop was acquiring"
+        );
+    }
+
+    #[test]
+    fn a_capture_request_gets_the_frame_the_client_was_just_sent() {
+        // So a cursor reading or a measurement describes the trace on screen
+        // rather than some other moment.
+        let mut harness = Harness::new();
+        harness.send(ScopeRequest::StartAcquisition(50.0));
+        publish(&mut harness, 3);
+        let published = harness.state.last_frame.clone().unwrap();
+
+        match harness.send(ScopeRequest::GetTriggeredData) {
+            ScopeReply::Capture(frame) => {
+                assert_eq!(frame.samples, published.samples);
+                assert_eq!(frame.seq, published.seq);
+            }
+            other => panic!("expected a capture, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_idle_scope_is_read_from_the_device() {
+        // With no loop running there is nothing published to prefer, and the
+        // latched block really is the last capture. This is what makes a
+        // one-shot work: arm, stop, then ask.
+        let mut harness = Harness::new();
+
+        let before = harness.captures_read();
+        match harness.send(ScopeRequest::GetTriggeredData) {
+            ScopeReply::Capture(_) => {}
+            other => panic!("expected a capture, got {other:?}"),
+        }
+        assert_eq!(
+            harness.captures_read(),
+            before + 1,
+            "an idle scope has to be read from the device"
+        );
+    }
+
+    #[test]
+    fn rearming_discards_the_published_frame() {
+        // A re-arm is how a new timebase or range takes effect, so answering
+        // from the frame captured under the old settings would describe a
+        // window the caller has already changed.
+        let mut harness = Harness::new();
+        harness.send(ScopeRequest::StartAcquisition(50.0));
+        publish(&mut harness, 5);
+        assert!(harness.state.last_frame.is_some());
+
+        harness.send(ScopeRequest::StartAcquisition(25.0));
+
+        assert!(
+            harness.state.last_frame.is_none(),
+            "a capture taken under the previous settings is still servable"
+        );
+        // And with nothing published, the next request goes to the device.
+        let before = harness.captures_read();
+        harness.send(ScopeRequest::GetTriggeredData);
+        assert_eq!(harness.captures_read(), before + 1);
+    }
+
+    #[test]
+    fn a_stopped_scope_still_reports_its_last_capture() {
+        // As a stopped bench scope does: the numbers on screen describe the
+        // frame still being displayed.
+        let mut harness = Harness::new();
+        harness.send(ScopeRequest::StartAcquisition(50.0));
+        publish(&mut harness, 9);
+        harness.send(ScopeRequest::StopAcquisition);
+
+        let before = harness.captures_read();
+        measure_vpp(&mut harness);
+        assert_eq!(
+            harness.captures_read(),
+            before,
+            "re-read the device for a capture it had already published"
+        );
+    }
+
     #[test]
     fn readiness_falls_back_to_the_driver_when_idle() {
         // With no acquisition running there is no loop to race, so the
@@ -812,10 +1046,7 @@ mod tests {
 
         assert!(!harness.is_ready());
 
-        harness.scope = Box::new(FakeScope {
-            ready: true,
-            captures_read: AtomicUsize::new(0),
-        });
+        harness.ready.store(true, Ordering::Relaxed);
         assert!(harness.is_ready());
     }
 
