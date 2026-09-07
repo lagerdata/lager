@@ -163,6 +163,29 @@ function timebaseChoices(caps, memoryDepth) {
  * lands where it was typed, not on the sample grid -- and the difference is
  * largest on a fast edge, where it is most worth reading.
  */
+// The settings that belong to one channel. Everything else a scope takes --
+// the timebase, the horizontal position, the trigger, run/stop/single/force,
+// the cursors, whatever the unit reports about itself -- belongs to the
+// instrument. Kept in step with _PER_CHANNEL_SCOPE_ACTIONS on the box, which
+// a test compares this against: a name here that is device-wide there would
+// send the command to a channel net, where it would quietly succeed.
+const PER_CHANNEL_ACTIONS = new Set([
+  'enable_net', 'disable_net', 'get_net_enabled',
+  'set_scale', 'get_scale',
+  'set_coupling', 'get_coupling',
+  'set_probe', 'get_probe',
+  'set_offset', 'get_offset',
+  'measure_all',
+]);
+
+function isPerChannelAction(action) {
+  // Cursors are the scope's, and measure_cursor reads them against the
+  // channel they were placed on rather than against a net's own.
+  if (action === 'measure_cursor') return false;
+  if (action.startsWith('measure_')) return true;
+  return PER_CHANNEL_ACTIONS.has(action);
+}
+
 function sampleTraceAt(frame, volts, seconds) {
   const exact = frame.preTriggerSamples
     + (seconds * 1e9) / frame.sampleIntervalNs;
@@ -286,7 +309,8 @@ class ScopeApp {
       const response = await fetch('/nets/list');
       const body = await response.json();
       const nets = (body.nets || body || []).filter(
-        (n) => n.role === 'scope' || n.role === 'analog');
+        (n) => n.role === 'scope' || n.role === 'scope-channel'
+          || n.role === 'analog');
 
       select.replaceChildren();
       if (nets.length === 0) {
@@ -295,17 +319,60 @@ class ScopeApp {
           'No scope nets on this box. Create one with "lager net add".');
         return;
       }
-      for (const net of nets) {
+
+      // The dropdown picks an instrument, not a channel. A scope net is the
+      // scope; its scope-channel nets are the channels, and the strips below
+      // come from those. Where a box has no scope net -- nothing has been
+      // added since the roles split -- every net is offered as before, so
+      // the page still works on one that has not been through the migration.
+      this.scopeNets = nets;
+      const instruments = nets.filter((n) => n.role === 'scope');
+      const offered = instruments.length ? instruments : nets;
+      for (const net of offered) {
         select.append(new Option(net.name, net.name));
       }
-      this.scopeNets = nets;
-      this.net = nets[0].name;
+      this.net = offered[0].name;
       select.value = this.net;
+      this.adoptChannelNets();
       await this.loadCapabilities();
     } catch (e) {
       select.replaceChildren(new Option('unavailable', ''));
       this.console.error(`Could not list nets: ${e.message}`);
     }
+  }
+
+  /** The channel nets of the scope now selected.
+   *
+   * Matched on instrument and address, which is how a bench holding two of
+   * the same model keeps their channels apart. A box that predates the role
+   * split has no scope-channel nets at all, so the scope-family nets stand in
+   * and the page behaves as it did.
+   */
+  adoptChannelNets() {
+    const all = this.scopeNets || [];
+    const me = all.find((n) => n.name === this.net);
+    const sameUnit = (n) => me
+      && (n.instrument || '') === (me.instrument || '')
+      && (n.address || '') === (me.address || '');
+
+    const channels = all.filter((n) => n.role === 'scope-channel' && sameUnit(n));
+    this.channelNets = channels.length
+      ? channels
+      : all.filter((n) => n.name !== this.net || all.length === 1);
+  }
+
+  /** The net a command should be sent to.
+   *
+   * Most of a scope is not per-channel, so the instrument takes the timebase,
+   * the trigger, acquisition and the cursors. The six settings that do belong
+   * to a channel go to that channel's net, because the scope net has no
+   * channel and the box refuses to guess one.
+   */
+  netForAction(action, explicit) {
+    if (explicit) return explicit;
+    if (!isPerChannelAction(action)) return this.net;
+    const channel = (this.channelNets || [])[0];
+    return channel ? channel.name : this.net;
   }
 
   async loadCapabilities() {
@@ -412,7 +479,9 @@ class ScopeApp {
       // whether there is anything to measure. It is otherwise only refreshed
       // on Start, which left "Channel A is off" showing over a channel that
       // had just been switched on.
-      if (state.net === this.net) this.refreshMeasurements();
+      // Any channel's switch can change what the panel reads: it shows the
+      // first one that is on, so switching A off moves it to B.
+      this.refreshMeasurements();
     });
     // Held so the readback below can correct the control without rebuilding
     // the strip and losing the listener.
@@ -792,7 +861,7 @@ class ScopeApp {
    * become channel B's net.
    */
   netForChannel(index) {
-    const nets = this.scopeNets || [];
+    const nets = this.channelNets || this.scopeNets || [];
     const pinOf = (n) => Number(n.pin);
     const byPin = nets.find((n) => pinOf(n) === index + 1);
     if (byPin) return byPin.name;
@@ -854,15 +923,18 @@ class ScopeApp {
       } catch { /* leave the built-in default showing */ }
     }));
 
-    const anyNet = labels.map((l) => this.channelState.get(l))
-      .find((s) => s && s.net);
-    if (!anyNet) return;
+    // These three belong to the scope, not to a channel, so they are read
+    // from the scope net. They used to be read from whichever channel strip
+    // happened to have a net wired first -- which gave the right answer, the
+    // settings being device-wide however you reach them, but only by
+    // accident, and it read as though the timebase were channel A's.
+    if (!this.net) return;
 
     // Before the offset, which is held in divisions and converted with
     // whatever time/div the control shows: reading the offset first would
     // convert it against a stale one.
     try {
-      const body = await this.send('get_timebase', {}, anyNet.net);
+      const body = await this.send('get_timebase', {}, this.net);
       const seconds = Number(body.value);
       if (Number.isFinite(seconds) && seconds > 0) this.showTimebase(seconds);
     } catch { /* leave the default showing */ }
@@ -871,7 +943,7 @@ class ScopeApp {
     // every re-arm uses it. Read it back so a window left looking forward in
     // an earlier session is not shown as centred.
     try {
-      const body = await this.send('get_time_offset', {}, anyNet.net);
+      const body = await this.send('get_time_offset', {}, this.net);
       const seconds = Number(body.value);
       const perDiv = Number(el('timebase').value);
       if (Number.isFinite(seconds) && perDiv > 0) {
@@ -882,7 +954,7 @@ class ScopeApp {
 
     // Cursors outlive the page the same way: the box holds them, so a pair
     // placed from the terminal before this page was opened is drawn on it.
-    await this.refreshCursors(anyNet.net);
+    await this.refreshCursors(this.net);
   }
 
   /** Move the capture window earlier or later than the trigger.
@@ -1062,7 +1134,7 @@ class ScopeApp {
     // is bound to that channel -- so a per-channel control has to talk to
     // its own net. Sending to the selected net instead made channel B's
     // toggle and volts/div silently drive whichever channel was selected.
-    const target = net || this.net;
+    const target = this.netForAction(action, net);
     if (!target) throw new Error('no scope net selected');
     const response = await fetch('/net/command', {
       method: 'POST',
@@ -1133,22 +1205,35 @@ class ScopeApp {
     }
   }
 
+  /** The channel the measurements panel reads, or null if none is on.
+   *
+   * The first enabled one that has a net. Channels with no net of their own
+   * cannot be measured through this endpoint, so they are passed over rather
+   * than reported as the answer.
+   */
+  measuredChannel() {
+    for (const [label, state] of this.channelState.entries()) {
+      if (state && state.enabled && state.net) return { label, net: state.net };
+    }
+    return null;
+  }
+
   // ---------- measurements ----------
   async refreshMeasurements() {
     const host = el('measurements');
     if (!this.net) return;
 
-    // Measurements read the selected net's channel. Saying so beats relaying
-    // "Hardware error: Function call failed: channel B is not enabled, so
-    // there is nothing to measure", which reads as a fault when it is just a
-    // switch that is off -- and does not say which switch.
-    const off = [...this.channelState.entries()]
-      .find(([, s]) => s.net === this.net && !s.enabled);
-    if (off) {
+    // Measurements are per channel, so the panel needs one -- the dropdown
+    // now selects the scope, which has no channel of its own. It reads the
+    // first that is switched on rather than a fixed channel A, so switching
+    // A off moves the panel to B instead of leaving it stuck on a dead
+    // channel, and it says which one it settled on.
+    const measured = this.measuredChannel();
+    if (!measured) {
       host.replaceChildren();
       const p = document.createElement('p');
       p.className = 'dim';
-      p.textContent = `Channel ${off[0]} is off. Switch it on to measure.`;
+      p.textContent = 'No channel is on. Switch one on to measure.';
       host.appendChild(p);
       return;
     }
@@ -1157,7 +1242,7 @@ class ScopeApp {
       // One request, one capture, the whole set. Reading them one action at a
       // time cost a capture each and mixed moments of a live signal together,
       // so the panel could show a Vpp that was not Vmax - Vmin.
-      const body = await this.send('measure_all', {});
+      const body = await this.send('measure_all', {}, measured.net);
       const values = body.value || {};
       host.replaceChildren();
       for (const [label, key, unit] of MEASUREMENTS) {
@@ -1577,6 +1662,7 @@ class ScopeApp {
     el('net-select').addEventListener('change', async (event) => {
       this.disconnect();
       this.net = event.target.value || null;
+      this.adoptChannelNets();
       await this.loadCapabilities();
     });
 
@@ -1723,7 +1809,8 @@ class ScopeApp {
 // sampleTraceAt is exported so it can be checked against the box's
 // `trace_voltage_at`: the reading in the terminal and the label on the plot
 // come from different implementations of the same interpolation.
-export { ScopeApp, voltsPerDivChoices, timebaseChoices, sampleTraceAt };
+export { ScopeApp, voltsPerDivChoices, timebaseChoices, sampleTraceAt,
+         PER_CHANNEL_ACTIONS, isPerChannelAction };
 
 if (typeof document !== 'undefined') {
   const app = new ScopeApp();
