@@ -154,6 +154,11 @@ body {
 /* An entry and the button that resets it, side by side. */
 .field-row { display: flex; gap: 4px; }
 .field-row input { min-width: 0; flex: 1; }
+
+/* Two short controls sharing a line: coupling and probe. Equal halves, so a
+   strip does not grow a column for every setting added to it. */
+.channel__pair { display: flex; gap: 6px; }
+.channel__pair > * { flex: 1; min-width: 0; }
 .field > span { color: var(--text-dim); white-space: nowrap; }
 
 select, input[type="number"], input[type="text"] {
