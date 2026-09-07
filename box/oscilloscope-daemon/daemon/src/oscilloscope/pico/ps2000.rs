@@ -64,31 +64,6 @@ pub(crate) fn monotonic_ns() -> u64 {
     ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
 }
 
-/// Convert `ps2000_get_timebase`'s interval into nanoseconds.
-///
-/// The driver reports the interval in whatever unit it picked and names that
-/// unit in `time_units`; it is not always nanoseconds. Treating the value as
-/// nanoseconds regardless -- which is what this code did previously -- makes
-/// the sample interval wrong by up to 10^6 on the fast timebases where the
-/// driver reports femtoseconds or picoseconds. Every derived quantity built
-/// on it, the whole time axis and all timing measurements, was wrong with it.
-fn time_interval_to_ns(time_interval: i32, time_units: i16) -> Result<f64> {
-    let interval = time_interval as f64;
-    Ok(match time_units {
-        0 => interval / 1_000_000.0, // femtoseconds
-        1 => interval / 1_000.0,     // picoseconds
-        2 => interval,               // nanoseconds
-        3 => interval * 1_000.0,     // microseconds
-        4 => interval * 1_000_000.0, // milliseconds
-        5 => interval * 1_000_000_000.0, // seconds
-        other => {
-            return Err(anyhow::anyhow!(
-                "ps2000_get_timebase reported unknown time_units {other}"
-            ));
-        }
-    })
-}
-
 static DEVICE_SPECS: Lazy<HashMap<&'static str, DeviceSpecs>> = Lazy::new(|| {
     let mut specs = HashMap::new();
     specs.insert(
@@ -274,7 +249,6 @@ impl PicoScope2000 {
                         handle,
                         settings.memory_depth.unwrap_or(MIN_MEMORY_DEPTH) as f64,
                         settings.time_per_div,
-                        shortest_interval_ns(capabilities.max_sample_rate_hz),
                     )?;
 
                 tracing::info!(
@@ -1170,20 +1144,15 @@ impl PicoScope2000 {
 
     /// Pick the timebase whose interval comes closest to filling the screen.
     ///
-    /// `shortest_interval_ns` is the fastest the unit can really sample, and
-    /// candidates below it are skipped. `ps2000_get_timebase` reports success
-    /// for intervals far shorter than that -- a 2204A, which samples at
-    /// 100 MS/s, offers one of 0.16 ns -- because the low timebases describe
-    /// equivalent-time sampling, which builds a trace from many repetitions
-    /// of a periodic signal and cannot be honoured in a single block. Taken
-    /// at face value they won whenever the screen asked for something fast:
-    /// 100 us/div landed on 0.16 ns/sample and captured 1.3 us, four orders
-    /// of magnitude off, and reported 6.25 GS/s while doing it.
+    /// Every timebase the driver accepts is a real one: they step by a factor
+    /// of two from the unit's fastest, and `ps2000_get_timebase` refuses the
+    /// ones that cannot hold the sample count asked of them -- which is how
+    /// enabling a second channel, halving the buffer, takes the fast end of
+    /// the range away.
     fn get_timebase_for_sample_rate(
         handle: i16,
         memory_depth: f64,
         time_per_div: f64,
-        shortest_interval_ns: f64,
     ) -> anyhow::Result<(i16, f64)> {
         let api = ps2000()?;
         let mut timebase_found = false;
@@ -1211,12 +1180,19 @@ impl PicoScope2000 {
                 )
             };
             if result != 0 {
-                let actual_interval = time_interval_to_ns(time_interval, time_units)?;
-                // A hair under, so the fastest real interval is not excluded
-                // by rounding in the driver's own report of it.
-                if actual_interval < shortest_interval_ns * 0.999 {
-                    continue;
-                }
+                // Nanoseconds, always. `time_units` is not the unit of this
+                // value -- it is the unit the driver suggests for the time
+                // AXIS, to be handed to `ps2000_get_times_and_values`, and it
+                // varies with the sample count for that reason. Converting
+                // the interval through it scaled every fast timebase into
+                // nonsense: a 2204A's fastest, a real 10 ns, came back
+                // labelled picoseconds and became 0.01 ns, so 100 us/div
+                // chose 0.16 ns a sample, captured 1.3 us instead of 1 ms and
+                // reported 6.25 GS/s from a 100 MS/s unit. The slow
+                // timebases, where the suggested axis unit happens to be
+                // nanoseconds, came through untouched -- which is why only
+                // the fast end of the dial was wrong.
+                let actual_interval = time_interval as f64;
                 timebase_found = true;
                 let error = (actual_interval - desired_timer_interval_ns).abs();
                 if error < best_error {
@@ -1493,12 +1469,10 @@ impl PicoScope2000 {
         self.settings.time_per_div = time_per_div;
         let memory_depth = memory_depth as f64;
         tracing::debug!("Memory depth: {}", memory_depth);
-        let shortest = shortest_interval_ns(self.capabilities.max_sample_rate_hz);
         if let Ok((timebase, interval)) = Self::get_timebase_for_sample_rate(
             self.handle,
             memory_depth,
             time_per_div,
-            shortest,
         ) {
             self.current_timebase = timebase;
             self.current_time_interval_ns = interval;
@@ -1914,19 +1888,6 @@ fn trigger_position_split(memory_depth: u32, percent: f64) -> (u32, u32) {
     (pre, post)
 }
 
-/// The shortest sample interval a unit of `max_sample_rate_hz` can produce.
-///
-/// Zero when the rate is unknown, which disables the check rather than
-/// rejecting every candidate: an unrecognised variant should capture at
-/// whatever the driver offers, not refuse to capture at all.
-fn shortest_interval_ns(max_sample_rate_hz: f64) -> f64 {
-    if max_sample_rate_hz > 0.0 {
-        NANOSECONDS_PER_SECOND / max_sample_rate_hz
-    } else {
-        0.0
-    }
-}
-
 /// Rejects ground coupling, which this series has no input switch for.
 ///
 /// `ps2000_set_channel` takes one flag for coupling, DC or AC, so GND had
@@ -2113,23 +2074,6 @@ mod tests {
         // send zero; refusing that would break setup rather than protect it.
         assert!(reject_unsupported_offset(0.0).is_ok());
         assert!(reject_unsupported_offset(-0.0).is_ok());
-    }
-
-    #[test]
-    fn the_shortest_interval_is_the_reciprocal_of_the_sample_rate() {
-        // A 2204A at 100 MS/s cannot sample closer together than 10 ns, so
-        // the 0.16 ns the driver offers for equivalent-time sampling is not a
-        // candidate for a single block.
-        assert_eq!(shortest_interval_ns(100_000_000.0), 10.0);
-        assert_eq!(shortest_interval_ns(1_000_000_000.0), 1.0);
-    }
-
-    #[test]
-    fn an_unknown_sample_rate_disables_the_check() {
-        // Better to capture at whatever the driver offers than to reject
-        // every candidate and refuse to capture at all.
-        assert_eq!(shortest_interval_ns(0.0), 0.0);
-        assert_eq!(shortest_interval_ns(-1.0), 0.0);
     }
 
     #[test]
