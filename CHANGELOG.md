@@ -23,6 +23,15 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 ### Fixed
 
+- **A PicoScope no longer returns a block it is still filling.** The acquisition loop polled
+  for readiness straight after re-arming and could act on the previous block's ready flag,
+  which made the trace jump sideways every few frames.
+- **A scope measurement no longer describes the capture from before a settings change.** The
+  daemon now discards its last capture whenever a request re-arms the scope, not only when a
+  client arms it explicitly.
+- **Setting a PicoScope's time/div takes effect at once.** It was the one setter that did not
+  re-arm, so a new timebase waited for some other change, and the capture's time axis
+  disagreed with its samples.
 - **Run keeps the trigger mode.** Pressing Run in the web UI, or calling `run()`, put a
   PicoScope into auto, so Normal behaved like Auto. Single-shot is the one mode Run still
   moves, to auto, because single-shot stops after one capture.
