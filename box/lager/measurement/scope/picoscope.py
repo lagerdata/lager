@@ -78,6 +78,12 @@ _MEASURE_ITEMS = {
 }
 
 
+# Cursors by instrument, not by net. See PicoScope._cursors for why this is
+# not held on the driver instance. Process-local, which is enough: every net
+# on a box reaches its scope through the one hardware_service process.
+_CURSORS_BY_INSTRUMENT: dict = {}
+
+
 class UnsupportedScopeFeature(RuntimeError):
     """The attached unit cannot do this.
 
@@ -233,12 +239,6 @@ class PicoScope:
         self.channel = pin or channel or 1
         self._client = None
         self._capabilities = None
-        # Cursor positions, held here rather than in the daemon: they are
-        # nothing the hardware knows about, and putting them on the box
-        # instead of in the browser is what lets the CLI place a cursor and
-        # the web UI draw it. Seconds relative to the trigger, and volts at
-        # the probe tip, matching every other number in this driver.
-        self._cursors = {"time": None, "volts": None}
 
     # -- plumbing --------------------------------------------------------
     @property
@@ -539,6 +539,39 @@ class PicoScope:
             "PicoScope has no trigger coupling filter; for the channel's "
             "input coupling use get_channel_coupling")
 
+    @property
+    def _cursors(self) -> dict:
+        """Cursor positions, shared by every net on this scope.
+
+        Held on the box rather than in the daemon because the hardware knows
+        nothing about them, and rather than in the browser because that is
+        what lets the CLI place a cursor and the web UI draw it. Seconds
+        relative to the trigger, and volts at the probe tip, like every other
+        number in this driver.
+
+        Keyed on the instrument, not on self, because hardware_service builds
+        a driver instance per net: a scope with two channels is two objects.
+        Holding cursors on the instance put channel A's pair and channel B's
+        on different ones, and the page, which reads them from whichever net
+        it finds first, drew one and lost the other.
+        """
+        return _CURSORS_BY_INSTRUMENT.setdefault(
+            self._instrument_key(), {"time": None, "volts": None})
+
+    @_cursors.setter
+    def _cursors(self, value: dict) -> None:
+        _CURSORS_BY_INSTRUMENT[self._instrument_key()] = dict(value)
+
+    def _instrument_key(self) -> str:
+        """Identity of the physical scope, shared across its channel nets.
+
+        A net's address, where the record carries one, so two units on a
+        bench keep their own cursors. It usually does not: a PicoScope is
+        found by the daemon rather than addressed, and there is one daemon
+        per box holding one unit, so its URL identifies the scope.
+        """
+        return "picoscope:%s" % (self.address or daemon_client.daemon_url())
+
     # Rigol edge-trigger aliases: a PicoScope has only edge triggers on the
     # 2000 series, so edge and generic trigger are the same setting.
     set_trigger_edge_level = set_trigger_level
@@ -629,16 +662,23 @@ class PicoScope:
                 raise ValueError(
                     "voltage cursors come in a pair, got %r" % (volts,))
             self._cursors["volts"] = (float(volts[0]), float(volts[1]))
-        if channel is not None:
-            self._cursors["channel"] = channel_label(channel)
+        # Recorded when placed rather than filled in by whoever reads. The
+        # cursors belong to the scope, so the net asking for them is not
+        # necessarily the one they were put against, and the trace voltages
+        # only mean something read off the channel they were measured on.
+        self._cursors["channel"] = channel_label(
+            channel if channel is not None else self.channel)
         return self.get_cursors()
 
     def get_cursors(self) -> dict:
         """Where the cursors are, without taking a capture to read them.
 
-        The channel is always reported, defaulting to this net's own, because
-        the voltage readings depend on it: whoever draws these has to put them
-        on the same trace they were measured against.
+        The channel is always reported: whoever draws these has to put them
+        on the same trace they were measured against. It is the one they were
+        placed against, which is not always the net asking -- the cursors are
+        the scope's, so a page reading them through channel A can be handed a
+        pair someone set against channel B. Only with none set does it fall
+        back to this net's own, so the field is never empty.
         """
         return {
             "time": list(self._cursors["time"]) if self._cursors["time"] else None,
@@ -647,7 +687,7 @@ class PicoScope:
         }
 
     def clear_cursors(self) -> dict:
-        self._cursors = {"time": None, "volts": None}
+        self._cursors.update({"time": None, "volts": None, "channel": None})
         return self.get_cursors()
 
     def measure_cursors(self, channel=None, timeout: float | None = None) -> dict:
