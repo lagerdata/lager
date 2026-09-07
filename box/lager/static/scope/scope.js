@@ -24,7 +24,63 @@ const TIMEBASES = [
   1e-3, 2e-3, 5e-3, 1e-2, 2e-2, 5e-2, 1e-1,
 ];
 
-const VOLTS_PER_DIV = [0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5];
+// Volts/div in the 1-2-5 sequence a scope front panel steps through. Wide
+// enough to cover any PicoScope range through any sane probe; what is
+// actually offered gets clamped to the attached unit below.
+const VOLTS_PER_DIV = [
+  0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5,
+  1, 2, 5, 10, 20, 50, 100,
+];
+
+// Sentinel option value. Not a number, so it cannot collide with a scale.
+const CUSTOM_SCALE = 'custom';
+
+// How far a trace can be moved from centre, in divisions. Four is the edge of
+// an eight-division screen: past that the trace is off it, which is a way to
+// lose a channel with no clue where it went.
+const VERTICAL_LIMIT = 4;
+
+// How far the window can be moved from the trigger, in divisions. Five puts
+// the trigger on one edge of the ten-division screen, which is the whole of
+// the travel: at -5 the capture is entirely pre-trigger, at +5 entirely post.
+// Going further needs a trigger delay the daemon does not expose.
+const HORIZONTAL_LIMIT = 5;
+
+const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
+
+/** The 1-2-5 volts/div settings this unit can reach through `attenuation`.
+ *
+ * The list was previously the hardware's own range boundaries divided by
+ * four, which offered 13 mV, 130 mV and 1.3 V/div: values nobody reaches for,
+ * and none of the round ones they do. The daemon does not need them -- it
+ * takes any volts/div and selects the smallest range containing it -- so the
+ * choices can be the conventional ones and let the hardware follow.
+ */
+function voltsPerDivChoices(caps, attenuation) {
+  const spans = ((caps && caps.voltage_ranges) || [])
+    .map((r) => r.full_scale_volts)
+    .filter((v) => Number.isFinite(v) && v > 0);
+  if (!spans.length) return VOLTS_PER_DIV.slice();
+
+  const probe = attenuation > 0 ? attenuation : 1;
+  // full_scale_volts is a range's +/- deflection, so it fills the eight
+  // divisions at full_scale/4 per division -- referred to the probe tip,
+  // since that is what volts/div means here.
+  const fills = (Math.min(...spans) / 4) * probe;
+  const max = (Math.max(...spans) / 4) * probe;
+  // Half a division below the smallest range still selects that range: the
+  // driver picks the smallest range that contains the request, and no two
+  // PicoScope ranges sit closer than a factor of two, so anything above half
+  // the smallest cannot fall through to a range the unit does not have.
+  // Worth allowing -- it is what keeps 100 mV/div reachable on a 10x probe,
+  // whose smallest range already fills the screen at 125 mV/div.
+  const min = fills / 2;
+
+  const within = VOLTS_PER_DIV.filter((v) => v > min && v <= max * 1.001);
+  // A unit whose ranges fall between two steps of the ladder would otherwise
+  // offer nothing at all.
+  return within.length ? within : [Number((fills).toPrecision(3))];
+}
 
 const el = (id) => document.getElementById(id);
 
@@ -95,6 +151,11 @@ class ScopeApp {
     this.latest = null;
     this.dirty = false;
     this.channelState = new Map();
+    // Trigger level and position drawn on the plot. On by default: a level
+    // you cannot see is one you cannot set with any confidence.
+    this.showTriggerMarkers = true;
+    // Divisions the capture window is shifted from the trigger.
+    this.timePositionDiv = 0;
 
     this.captureCount = 0;
     this.lastRateAt = performance.now();
@@ -189,6 +250,11 @@ class ScopeApp {
       this.channelState.set(label, {
         enabled: index === 0,
         voltsPerDiv: 1,
+        // 1x until the probe is read back below. Volts/div is at the probe
+        // tip, so this decides which settings the channel can reach.
+        attenuation: 1,
+        // Divisions this trace is shifted from centre, for viewing only.
+        positionDiv: 0,
         net: this.netForChannel(index),
       });
       host.appendChild(this.buildChannelStrip(label, index, caps));
@@ -251,35 +317,122 @@ class ScopeApp {
     toggleLabel.append(toggle, document.createTextNode('on'));
     head.append(swatch, name, toggleLabel);
 
-    // Volts/div, restricted to the ranges this unit reports when it reports
-    // any, so the list cannot offer a range the hardware will refuse.
+    // Volts/div on the conventional 1-2-5 steps, clamped to what this unit
+    // can reach, with Custom for anything in between.
     const field = document.createElement('label');
     field.className = 'field field--stack';
     const caption = document.createElement('span');
     caption.textContent = 'Volts / div';
     const select = document.createElement('select');
-    const options = (caps.voltage_ranges && caps.voltage_ranges.length)
-      ? caps.voltage_ranges.map((r) => r.full_scale_volts / 4)
-      : VOLTS_PER_DIV;
-    for (const value of options) {
+    const state = this.channelState.get(label);
+    state.choices = voltsPerDivChoices(caps, state.attenuation);
+    for (const value of state.choices) {
       select.append(new Option(si(value, 'V', 2), String(value)));
     }
-    select.value = String(options[Math.min(options.length - 1, 6)]);
+    select.append(new Option('Custom\u2026', CUSTOM_SCALE));
+    // Mid-list rather than the widest range: the widest makes any small
+    // signal a flat line, which reads as a dead probe.
+    select.value = String(
+      state.choices[Math.min(state.choices.length - 1,
+        Math.floor(state.choices.length / 2))]);
+    state.select = select;
+
+    // Free-entry volts/div, hidden until Custom is chosen. The daemon accepts
+    // any value and picks the smallest range that holds it, so this is a real
+    // setting rather than display-only zoom.
+    const custom = document.createElement('div');
+    custom.className = 'channel__custom';
+    custom.hidden = true;
+    const customInput = document.createElement('input');
+    customInput.type = 'number';
+    customInput.step = 'any';
+    customInput.min = '0';
+    customInput.setAttribute('aria-label', `Channel ${label} custom volts per division`);
+    custom.append(customInput);
+    state.customField = custom;
+    state.customInput = customInput;
+
+    select.addEventListener('change', () => {
+      if (select.value === CUSTOM_SCALE) {
+        // Seed with the value in use, so the field opens on something real
+        // and a stray Enter cannot jump the scale.
+        custom.hidden = false;
+        customInput.value = String(state.voltsPerDiv);
+        customInput.focus();
+        customInput.select();
+        return;
+      }
+      custom.hidden = true;
+      this.applyVoltsPerDiv(label, Number(select.value));
+    });
+    // Committed edits only, not each keystroke, which would send a command
+    // per digit and re-range the hardware on the way to the value wanted.
+    customInput.addEventListener('change', () => {
+      const value = Number(customInput.value);
+      if (!Number.isFinite(value) || value <= 0) {
+        this.console.error('Volts/div must be a positive number');
+        return;
+      }
+      this.applyVoltsPerDiv(label, value);
+    });
+
     // Keep the state in step with the control it was built from. They were
     // seeded separately -- state at 1 V/div, the select at whatever the
     // hardware's range list put in that slot -- so the trace was drawn to a
     // scale the sidebar did not show.
-    this.channelState.get(label).voltsPerDiv = Number(select.value);
-    select.addEventListener('change', () => {
-      const state = this.channelState.get(label);
-      state.voltsPerDiv = Number(select.value);
-      this.runCommand('set_scale', { volts_per_div: Number(select.value) },
-        `Channel ${label} ${si(Number(select.value), 'V', 2)}/div`, state.net);
-    });
-    this.channelState.get(label).select = select;
+    state.voltsPerDiv = Number(select.value);
     field.append(caption, select);
 
-    strip.append(head, field);
+    // Where this channel's zero sits on screen, so two traces can be pulled
+    // apart instead of drawn on top of each other.
+    //
+    // A view control: it moves the drawing and nothing else. Deliberately not
+    // wired to the hardware's volts offset, which is added into the samples
+    // themselves -- moving a trace up two divisions with it would also move
+    // Vmax, Vmin and Vavg by two divisions' worth, so a trace shifted for
+    // legibility would come back with readings that no longer describe the
+    // signal.
+    const position = document.createElement('div');
+    position.className = 'field field--stack';
+    const positionCaption = document.createElement('span');
+    positionCaption.textContent = 'Position (div)';
+    const positionRow = document.createElement('div');
+    positionRow.className = 'field-row';
+    const positionInput = document.createElement('input');
+    positionInput.type = 'number';
+    positionInput.step = '0.5';
+    positionInput.min = String(-VERTICAL_LIMIT);
+    positionInput.max = String(VERTICAL_LIMIT);
+    positionInput.value = '0';
+    positionInput.setAttribute(
+      'aria-label', `Channel ${label} vertical position in divisions`);
+    const positionReset = document.createElement('button');
+    positionReset.type = 'button';
+    positionReset.className = 'btn btn--small';
+    positionReset.textContent = '0';
+    positionReset.title = `Centre channel ${label}`;
+    positionRow.append(positionInput, positionReset);
+    position.append(positionCaption, positionRow);
+    state.positionInput = positionInput;
+    state.positionReset = positionReset;
+
+    const applyPosition = (divisions) => {
+      state.positionDiv = clamp(divisions, -VERTICAL_LIMIT, VERTICAL_LIMIT);
+      positionInput.value = String(state.positionDiv);
+      this.requestRedraw();
+    };
+    // On input rather than change: nothing is sent to the scope, so the trace
+    // can follow the spinner as it is held down.
+    positionInput.addEventListener('input', () => {
+      const value = Number(positionInput.value);
+      // Blank part-way through typing a minus sign, or cleared outright.
+      // Leaving the trace where it is beats snapping it to centre and back.
+      if (positionInput.value === '' || !Number.isFinite(value)) return;
+      applyPosition(value);
+    });
+    positionReset.addEventListener('click', () => applyPosition(0));
+
+    strip.append(head, field, custom, position);
 
     // No net means no way to address this channel: the box has capabilities
     // reporting it, but nothing wired to it. Disable rather than let the
@@ -288,7 +441,10 @@ class ScopeApp {
     if (!this.channelState.get(label).net) {
       const why = `No scope net is wired to channel ${label}. `
         + 'Add one with "lager net add" to control it here.';
-      for (const control of [toggle, select]) {
+      // The position field goes with them: it needs no net, but a channel
+      // that can never be switched on has no trace to move.
+      for (const control of [toggle, select, customInput, positionInput,
+        positionReset]) {
         control.disabled = true;
         control.title = why;
       }
@@ -296,6 +452,85 @@ class ScopeApp {
     }
 
     return strip;
+  }
+
+  /** Redraw the frame already on screen.
+   *
+   * The render loop draws only when a capture arrives, so a control that
+   * changes how the SAME samples are drawn -- volts/div, the trigger markers
+   * -- did nothing visible until the next frame. Stopped, or on a slow
+   * trigger, that is indistinguishable from a control that does not work:
+   * volts/div could be moved from 125 mV to 2.5 V, a twentyfold change, and
+   * the trace would not move a pixel.
+   */
+  requestRedraw() {
+    this.dirty = true;
+  }
+
+  /** Set a channel's volts/div: on the hardware, in the state, on the control.
+   *
+   * One path for the dropdown, the custom field and the hardware readback, so
+   * the three cannot drift. The control is made to show the value in use even
+   * when it is not one of the offered steps -- otherwise the sidebar reads
+   * 2.5 V while the trace is drawn at 1 V, and picking the 2.5 V already
+   * displayed fires no change event, so the scale appears stuck.
+   */
+  applyVoltsPerDiv(label, voltsPerDiv, { push = true } = {}) {
+    const state = this.channelState.get(label);
+    if (!state) return;
+
+    state.voltsPerDiv = voltsPerDiv;
+    this.showVoltsPerDiv(state, voltsPerDiv);
+    // The scale is applied to the drawing as well as the hardware, so the
+    // picture has to be redrawn even if the command fails or the scope is
+    // stopped.
+    this.requestRedraw();
+
+    if (push) {
+      this.runCommand('set_scale', { volts_per_div: voltsPerDiv },
+        `Channel ${label} ${si(voltsPerDiv, 'V', 2)}/div`, state.net);
+    }
+  }
+
+  /** Rebuild a channel's volts/div list for its current probe.
+   *
+   * A 10x probe multiplies every reachable setting by ten, so the offered
+   * steps are not the same list. The value in use is kept, whether or not the
+   * new list contains it, so a rebuild cannot silently change the scale.
+   */
+  rebuildScaleChoices(label) {
+    const state = this.channelState.get(label);
+    if (!state || !state.select) return;
+
+    const inUse = state.voltsPerDiv;
+    state.choices = voltsPerDivChoices(this.capabilities, state.attenuation);
+    state.select.replaceChildren();
+    for (const value of state.choices) {
+      state.select.append(new Option(si(value, 'V', 2), String(value)));
+    }
+    state.select.append(new Option('Custom\u2026', CUSTOM_SCALE));
+    this.showVoltsPerDiv(state, inUse);
+  }
+
+  /** Make a channel's dropdown display `voltsPerDiv`, offered or not. */
+  showVoltsPerDiv(state, voltsPerDiv) {
+    const select = state.select;
+    if (!select) return;
+
+    const asOption = String(voltsPerDiv);
+    if (![...select.options].some((o) => o.value === asOption)) {
+      // A value off the ladder -- from the custom field, or set by the CLI
+      // while this page was open. Insert it in order rather than appending,
+      // so the list stays monotonic and does not read as a bug.
+      const option = new Option(si(voltsPerDiv, 'V', 2), asOption);
+      const next = [...select.options].find(
+        (o) => o.value !== CUSTOM_SCALE && Number(o.value) > voltsPerDiv);
+      // Ahead of Custom when it belongs at the end, so Custom stays last.
+      const custom = [...select.options].find((o) => o.value === CUSTOM_SCALE);
+      select.add(option, next || custom || null);
+    }
+    select.value = asOption;
+    if (state.customField) state.customField.hidden = true;
   }
 
   /** The net that addresses channel `index`, by the pin it is wired to.
@@ -330,6 +565,18 @@ class ScopeApp {
     await Promise.all(labels.map(async (label) => {
       const state = this.channelState.get(label);
       if (!state || !state.net) return;
+      // Probe first: volts/div is at the probe tip, so the attenuation
+      // decides which settings the unit can reach and therefore what the
+      // dropdown should offer. The strips are built before this is known,
+      // defaulting to 1x, so the list is rebuilt once the answer is in.
+      try {
+        const body = await this.send('get_probe', {}, state.net);
+        const probe = Number(body.value);
+        if (Number.isFinite(probe) && probe > 0 && probe !== state.attenuation) {
+          state.attenuation = probe;
+          this.rebuildScaleChoices(label);
+        }
+      } catch { /* keep the 1x list */ }
       try {
         const body = await this.send('get_net_enabled', {}, state.net);
         if (typeof body.value !== 'boolean') return;
@@ -340,15 +587,50 @@ class ScopeApp {
         const body = await this.send('get_scale', {}, state.net);
         const scale = Number(body.value);
         if (!Number.isFinite(scale) || scale <= 0) return;
-        state.voltsPerDiv = scale;
-        // Only adopt a scale the dropdown can actually show, so it cannot be
-        // left displaying a value the hardware is not using.
-        if (state.select
-            && [...state.select.options].some((o) => Number(o.value) === scale)) {
-          state.select.value = String(scale);
-        }
+        // push: false -- this is what the hardware already has, so sending it
+        // back would re-range the channel for nothing. Off-ladder values are
+        // added to the dropdown rather than dropped, so it never displays a
+        // scale the trace is not drawn at.
+        this.applyVoltsPerDiv(label, scale, { push: false });
       } catch { /* leave the built-in default showing */ }
     }));
+
+    // The horizontal position outlives the page: the daemon holds it, and
+    // every re-arm uses it. Read it back so a window left looking forward in
+    // an earlier session is not shown as centred.
+    const anyNet = labels.map((l) => this.channelState.get(l))
+      .find((s) => s && s.net);
+    if (!anyNet) return;
+    try {
+      const body = await this.send('get_time_offset', {}, anyNet.net);
+      const seconds = Number(body.value);
+      const perDiv = Number(el('timebase').value);
+      if (!Number.isFinite(seconds) || !(perDiv > 0)) return;
+      // push: false -- the hardware is already there.
+      this.applyTimePosition(seconds / perDiv, { push: false });
+    } catch { /* older box: leave it centred */ }
+  }
+
+  /** Move the capture window earlier or later than the trigger.
+   *
+   * Unlike the vertical position this cannot be done in the renderer. The
+   * capture already fills the screen, so signal past either edge was never
+   * sampled -- there is nothing on hand to pan to. Seeing it means asking the
+   * scope for a window in a different place, which is the pre/post-trigger
+   * split, and that means a fresh capture. Positive divisions look forward,
+   * to signal later than the trigger; negative look back before it.
+   */
+  async applyTimePosition(divisions, { push = true } = {}) {
+    const value = clamp(divisions, -HORIZONTAL_LIMIT, HORIZONTAL_LIMIT);
+    this.timePositionDiv = value;
+    el('time-position').value = String(value);
+    this.requestRedraw();
+    if (!push) return;
+    // Divisions here, seconds on the wire: the daemon's offset is a time, and
+    // stays correct if this UI ever draws a different number of divisions.
+    const perDiv = Number(el('timebase').value) || 0;
+    await this.runCommand('set_time_offset', { offset: value * perDiv },
+      `position ${value} div`);
   }
 
   showCapabilityNotes(caps) {
@@ -604,7 +886,18 @@ class ScopeApp {
 
   tick() {
     if (this.dirty && this.latest) {
-      this.draw(this.latest);
+      // Guarded because the next frame is scheduled below: an exception
+      // escaping here would take the whole render loop with it, and every
+      // control would go dead at once with nothing on screen to say why.
+      // One malformed capture should cost one frame.
+      try {
+        this.draw(this.latest);
+      } catch (e) {
+        if (!this.drawFailed) {
+          this.drawFailed = true;
+          this.console.error(`Could not draw the capture: ${e.message}`);
+        }
+      }
       this.dirty = false;
     }
     requestAnimationFrame(() => this.tick());
@@ -632,6 +925,10 @@ class ScopeApp {
       const state = this.channelState.get(label);
       const voltsPerDiv = (state && state.voltsPerDiv) || 1;
       const fullScale = voltsPerDiv * 4; // 8 divisions, centre at zero.
+      // The channel's vertical position, converted from divisions to the
+      // units the plot works in: half the screen is four divisions, so a
+      // division is a quarter of it.
+      const shift = ((state && state.positionDiv) || 0) / 4;
 
       ctx.strokeStyle = styles
         .getPropertyValue(CHANNEL_COLORS[index % CHANNEL_COLORS.length]).trim();
@@ -657,8 +954,8 @@ class ScopeApp {
           if (v > max) max = v;
         }
 
-        const yMin = height / 2 - (min / fullScale) * (height / 2);
-        const yMax = height / 2 - (max / fullScale) * (height / 2);
+        const yMin = height / 2 - (min / fullScale + shift) * (height / 2);
+        const yMax = height / 2 - (max / fullScale + shift) * (height / 2);
         if (column === 0) ctx.moveTo(column, yMax);
         ctx.lineTo(column, yMax);
         ctx.lineTo(column, yMin);
@@ -679,8 +976,16 @@ class ScopeApp {
       warning.hidden = true;
     }
 
-    if (frame.flags & FLAG_TRIGGERED) {
-      this.drawTriggerMarker(ctx, frame, width, height);
+    if (this.showTriggerMarkers) {
+      // The time marker needs a triggered capture to mean anything -- in auto
+      // mode an untriggered one has no trigger point to mark -- but the level
+      // is a setting rather than a property of the capture, so it is drawn
+      // either way. That is the case that matters: when nothing is
+      // triggering, the level is exactly what you want to see.
+      if (frame.flags & FLAG_TRIGGERED) {
+        this.drawTriggerMarker(ctx, frame, width, height);
+      }
+      this.drawTriggerLevel(ctx, width, height);
     }
   }
 
@@ -708,6 +1013,73 @@ class ScopeApp {
     ctx.moveTo(0, Math.round(height / 2) + 0.5);
     ctx.lineTo(width, Math.round(height / 2) + 0.5);
     ctx.stroke();
+  }
+
+  /** Horizontal line at the trigger level, on the source channel's scale.
+   *
+   * The Level field was the only setting with nothing on the plot to show it:
+   * you could set 1.02 V against a trace whose peaks never reached it and get
+   * no hint why nothing was triggering.
+   *
+   * Drawn against the source channel's volts/div, and in its colour, because
+   * that is the trace it has to be read against -- with two channels at
+   * different scales, a level on one is at a different height on the other.
+   */
+  drawTriggerLevel(ctx, width, height) {
+    const source = el('trigger-source').value;
+    const state = this.channelState.get(source);
+    // Checked as text before converting: Number('') is 0, so an empty field
+    // would otherwise draw a line across the centre claiming a 0 V trigger
+    // that nobody set.
+    const entered = el('trigger-level').value;
+    const level = Number(entered);
+    if (!state || entered === '' || !Number.isFinite(level)) return;
+
+    const fullScale = (state.voltsPerDiv || 1) * 4;
+    // Shifted with the source's trace. The level is read against that trace,
+    // so a channel moved up two divisions has to take its level line with it
+    // -- left at the unshifted height it would cross the waveform somewhere
+    // the scope is not triggering.
+    const shift = (state.positionDiv || 0) / 4;
+    const exact = height / 2 - (level / fullScale + shift) * (height / 2);
+    // A level beyond the top or bottom is pinned to that edge rather than
+    // dropped. "Off screen, that way" is the useful thing to know, and a line
+    // drawn outside the canvas looks identical to no trigger at all -- which
+    // is the state someone reads as the feature being broken.
+    const y = Math.min(height - 1, Math.max(1, exact));
+    const offBy = exact < 1 ? '\u2191' : (exact > height - 1 ? '\u2193' : '');
+
+    const styles = getComputedStyle(document.documentElement);
+    const index = Math.max(0, [...this.channelState.keys()].indexOf(source));
+    const colour = styles
+      .getPropertyValue(CHANNEL_COLORS[index % CHANNEL_COLORS.length]).trim();
+
+    ctx.save();
+    ctx.strokeStyle = colour;
+    ctx.lineWidth = 1;
+    // A tighter dash when pinned, so a level that is merely at the edge of
+    // the screen is not mistaken for one that is on it.
+    ctx.setLineDash(offBy ? [2, 3] : [6, 4]);
+    ctx.beginPath();
+    ctx.moveTo(0, Math.round(y) + 0.5);
+    ctx.lineTo(width, Math.round(y) + 0.5);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Labelled at the left, where the time marker (centre) and the overflow
+    // warning (top) are not.
+    const text = `T ${source} ${si(level, 'V', 3)}${offBy}`;
+    ctx.font = '11px ui-monospace, monospace';
+    ctx.textBaseline = 'bottom';
+    const pad = 3;
+    const box = ctx.measureText(text).width + pad * 2;
+    // Behind the text, so it stays readable where the trace crosses it.
+    ctx.fillStyle = '#05080dcc';
+    const top = Math.min(height - 14, Math.max(0, Math.round(y) - 14));
+    ctx.fillRect(0, top, box, 13);
+    ctx.fillStyle = colour;
+    ctx.fillText(text, pad, top + 12);
+    ctx.restore();
   }
 
   drawTriggerMarker(ctx, frame, width, height) {
@@ -746,7 +1118,21 @@ class ScopeApp {
 
     el('timebase').addEventListener('change', (event) => {
       this.runCommand('set_timebase', { seconds_per_div: Number(event.target.value) }, 'timebase');
+      // The window is expressed in divisions, so a new time/div moves it in
+      // seconds. Re-send it, or a shift of two divisions set at 1 ms/div
+      // silently stays two divisions' worth of the old scale.
+      if (this.timePositionDiv) this.applyTimePosition(this.timePositionDiv);
     });
+
+    // Horizontal position. On change rather than input: unlike the vertical
+    // position this re-arms the scope, so it should not fire per keystroke
+    // while a value is being typed.
+    el('time-position').addEventListener('change', (event) => {
+      const value = Number(event.target.value);
+      if (event.target.value === '' || !Number.isFinite(value)) return;
+      this.applyTimePosition(value);
+    });
+    el('time-position-reset').addEventListener('click', () => this.applyTimePosition(0));
 
     const applyTrigger = () => {
       this.runCommand('trigger_edge', {
@@ -756,12 +1142,29 @@ class ScopeApp {
         mode: el('trigger-mode').value,
       }, 'trigger');
     };
-    for (const id of ['trigger-slope', 'trigger-source', 'trigger-mode']) {
+    for (const id of ['trigger-slope', 'trigger-mode']) {
       el(id).addEventListener('change', applyTrigger);
     }
+    // Source also decides which channel's scale the level line is drawn
+    // against, so the plot changes with it and not only the hardware.
+    el('trigger-source').addEventListener('change', () => {
+      applyTrigger();
+      this.requestRedraw();
+    });
     // On the number input, react to committed edits rather than each
     // keystroke, which would send a command per digit.
-    el('trigger-level').addEventListener('change', applyTrigger);
+    el('trigger-level').addEventListener('change', () => {
+      // Redraw as well as send: the level line moves with this field, and
+      // waiting for the next capture to show where the trigger went defeats
+      // the point of drawing it.
+      applyTrigger();
+      this.requestRedraw();
+    });
+
+    el('trigger-markers').addEventListener('change', (event) => {
+      this.showTriggerMarkers = event.target.checked;
+      this.requestRedraw();
+    });
 
     el('btn-clear').addEventListener('click', () => this.console.clear());
   }
@@ -824,10 +1227,10 @@ class ScopeApp {
   }
 }
 
-// Exported, and started only in a browser, so the channel/net mapping can be
-// exercised under node. The constructor needs a DOM, so the tests call the
-// methods on the prototype against a hand-built `this`.
-export { ScopeApp };
+// Exported, and started only in a browser, so the channel/net mapping and the
+// volts/div ladder can be exercised under node. The constructor needs a DOM,
+// so the tests call the methods on the prototype against a hand-built `this`.
+export { ScopeApp, voltsPerDivChoices };
 
 if (typeof document !== 'undefined') {
   const app = new ScopeApp();
