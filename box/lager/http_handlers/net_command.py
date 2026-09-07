@@ -45,7 +45,20 @@ class NetNotFound(Exception):
 
 
 class UnknownAction(Exception):
-    """Raised when an action is not valid for the net's role."""
+    """Raised when an action is not valid for the net's role.
+
+    Carries the action name; the route wraps it in a sentence.
+    """
+
+
+class WrongNetForAction(UnknownAction):
+    """Raised when the action is real but this net is the wrong one for it.
+
+    Carries a whole sentence rather than an action name, because it has more
+    to say than that something is unknown -- which net to use instead. A
+    subclass so that callers catching UnknownAction still see it, and it
+    still answers 400.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -1194,7 +1207,7 @@ def _refuse_channel_action_on_the_instrument(netname, role, action):
     else:
         suggestion = ("add a scope-channel net for the channel you mean "
                       "(`lager nets tui`)")
-    raise UnknownAction(
+    raise WrongNetForAction(
         "%s is the scope itself, and %s acts on one channel -- %s"
         % (netname, action, suggestion))
 
@@ -1330,6 +1343,9 @@ def register_net_command_routes(app: Flask) -> None:
 
             try:
                 result = handler(netname, role, action, params)
+            except WrongNetForAction as e:
+                # Already a sentence, and naming the nets that would work.
+                return jsonify({'success': False, 'error': str(e)}), 400
             except UnknownAction as e:
                 return jsonify({'success': False, 'error': "Unknown action '%s' for %s" % (e, role)}), 400
             except KeyError as e:
