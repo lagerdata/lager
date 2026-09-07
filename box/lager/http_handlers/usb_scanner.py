@@ -91,7 +91,7 @@ SUPPORTED_USB: Dict[str, Dict] = {
     # battery
     "Keithley_2281S":    {"vid": "05e6", "pid": "2281", "net_type": ["battery", "power-supply"]},
     # scope
-    "Rigol_MSO5204":     {"vid": "1ab1", "pid": "0515", "net_type": ["scope", "logic"]},
+    "Rigol_MSO5204":     {"vid": "1ab1", "pid": "0515", "net_type": ["scope", "scope-channel", "logic"]},
     # Pico Technology ships a different product id for nearly every PicoScope
     # model across the 2000/3000/4000/5000 series, and reuses none of them, so
     # a per-PID allow-list here means a scope Lager supports goes undetected
@@ -100,8 +100,8 @@ SUPPORTED_USB: Dict[str, Dict] = {
     # rules and the vendor-wide 0ce9 rule in 99-instrument.rules already work.
     # The pid below is the 2204A/2205A, kept so the model name resolves for the
     # unit we test against; anything else 0ce9 lands on the generic entry.
-    "Picoscope_2000":    {"vid": "0ce9", "pid": "1007", "net_type": ["scope"]},
-    "Picoscope":         {"vid": "0ce9", "pid": None,   "net_type": ["scope"]},
+    "Picoscope_2000":    {"vid": "0ce9", "pid": "1007", "net_type": ["scope", "scope-channel"]},
+    "Picoscope":         {"vid": "0ce9", "pid": None,   "net_type": ["scope", "scope-channel"]},
     # adc / gpio / dac / spi / i2c
     "LabJack_T7":        {"vid": "0cd5", "pid": "0007", "net_type": ["gpio", "adc", "dac", "spi", "i2c"]},
     # U3-HV and U3-LV share this product id -- the scanner cannot tell them
@@ -212,9 +212,10 @@ CHANNEL_MAPS: Dict[str, Dict[str, List[str]]] = {
     # Channel lists are the conservative two-channel default; the real count
     # comes from the device's own USB product string at scan time
     # (_pico_channel_count), because it varies from 2 to 4 within every series.
-    "Picoscope_2000":         {"scope": ["1", "2"]},
-    "Picoscope":              {"scope": ["1", "2"]},
-    "Rigol_MSO5204":          {"scope": ["1", "2", "3", "4"], "logic": ["1"]},
+    "Picoscope_2000":         {"scope": [], "scope-channel": ["1", "2"]},
+    "Picoscope":              {"scope": [], "scope-channel": ["1", "2"]},
+    "Rigol_MSO5204":          {"scope": [], "scope-channel": ["1", "2", "3", "4"],
+                           "logic": ["1"]},
     "LabJack_T7": {
         "gpio": [
             "CIO0", "CIO1", "CIO2", "CIO3",
@@ -756,9 +757,12 @@ def scan_usb() -> List[dict]:
             model = _read_sysfs(dev / "product")
             if model:
                 entry["model"] = model
+                # The scope itself is one net with no channel, which an
+                # empty list says; the channels are numbered from 1.
                 entry["channels"] = {
-                    "scope": [str(n) for n in
-                              range(1, _pico_channel_count(model) + 1)]}
+                    "scope": [],
+                    "scope-channel": [str(n) for n in
+                                      range(1, _pico_channel_count(model) + 1)]}
 
         if "uart" in meta.get("net_type", []):
             # Resolve actual /dev/tty* paths so consumers (TUI, dispatcher)

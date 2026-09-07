@@ -371,6 +371,20 @@ def _serial_from_visa_address(address) -> str:
     return m.group(1).strip() if m else ""
 
 
+# An instrument whose role is one net with no channel at all -- a scope net,
+# which stands for the whole unit rather than any of its inputs -- declares an
+# empty channel list. Expanded to a single pin-less entry: expanding to nothing
+# would hide the net, and expanding to channel 1 would save it with a pin, at
+# which point it is indistinguishable from the first channel and the box's
+# migration reads it back as one.
+CHANNEL_LESS = ""
+
+
+def expand_channels(channels):
+    """The nets a role offers, one per channel, or one with no channel."""
+    return list(channels) if channels else [CHANNEL_LESS]
+
+
 _SINGLE_CHANNEL_INST = {
     "Keithley_2281S": ("battery", "power-supply"),
     "EA_PSB_10060_60": ("solar", "power-supply"),
@@ -459,8 +473,8 @@ INSTRUMENT_NET_MAP: dict[str, list[str]] = {
     "Yocto_Watt": ["watt-meter"],
 
     # scope
-    "Rigol_MSO5204": ["scope", "logic"],
-    "Picoscope_2000": ["scope"],
+    "Rigol_MSO5204": ["scope", "scope-channel", "logic"],
+    "Picoscope_2000": ["scope", "scope-channel"],
 
     # adc / gpio / dac / spi
     "LabJack_T7": ["gpio", "adc", "dac", "spi", "i2c"],
@@ -1307,6 +1321,12 @@ def add_cmd(ctx, name, role, channel, address, box, jlink_script, openocd_config
         if is_uart_device_path:
             role_chans = None
         # Normal validation for channel availability on the device
+        # Declared channel-less: the net is the instrument, so whatever was
+        # passed for a channel is dropped rather than saved. A pin here is
+        # what the box reads to tell a scope from one of its channels.
+        if role_chans == []:
+            channel = CHANNEL_LESS
+
         if role_chans == "NA":
             click.secho(
                 f"The role '{role}' is not available for the instrument at {address}.",
@@ -1624,7 +1644,10 @@ def assign_cmd(ctx, device, list_, usb_serial, port_path, baud, remove_, as_net,
     # historically accepted ("supply") save a net those paths reject.
     roles = result.get("roles") or []
     net_role = roles[0] if roles else "power-supply"
-    channels = (result.get("channels") or {}).get(net_role) or ["1"]
+    declared = (result.get("channels") or {}).get(net_role)
+    # `or ["1"]` for a role the catalog does not describe at all, which is not
+    # the same as one it describes as having no channels.
+    channels = expand_channels(declared) if declared is not None else ["1"]
     channel = str(channels[0])
 
     if as_net is not None:
@@ -1675,7 +1698,11 @@ def create_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
 
         for role, channels in (channel_map or {}).items():
             if role == "uart":
+                # An empty list here means no tty was found, not a net without
+                # a channel, so it must stay empty and offer nothing.
                 channels = uart_channel_paths(dev, channels)
+            else:
+                channels = expand_channels(channels)
             for ch in channels:
                 # Special handling for UART devices:
                 # For UART, the 'channels' list contains USB serial numbers
