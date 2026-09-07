@@ -73,6 +73,22 @@
           <span>Time / div</span>
           <select id="timebase"></select>
         </label>
+        <!-- Moves the capture window earlier or later than the trigger, to
+             bring signal that sits off the left or right edge into view.
+             Divisions rather than seconds so it reads against the grid. One
+             screen of travel each way is the whole of it: at -5 the trigger
+             sits on the right edge and the screen is all pre-trigger, at +5
+             it sits on the left and the screen is all post-trigger. Not a
+             label, because it holds two controls. -->
+        <div class="field field--stack">
+          <span>Position (div)</span>
+          <div class="field-row">
+            <input id="time-position" type="number" step="0.5" min="-5" max="5"
+                   value="0" aria-label="Horizontal position in divisions">
+            <button id="time-position-reset" class="btn btn--small" type="button"
+                    title="Centre the trigger">0</button>
+          </div>
+        </div>
       </div>
 
       <div class="group">
@@ -106,6 +122,13 @@
         <label class="field field--stack">
           <span>Level (V)</span>
           <input id="trigger-level" type="number" step="0.01" value="0">
+        </label>
+        <!-- On by default: a trigger level you cannot see is one you cannot
+             set with any confidence. Off for a crowded screen, or to read a
+             trace the markers cross. -->
+        <label class="field field--inline">
+          <input id="trigger-markers" type="checkbox" checked>
+          <span>Show trigger markers</span>
         </label>
       </div>
 

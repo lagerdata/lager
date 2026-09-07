@@ -143,6 +143,17 @@ body {
 
 .field { display: flex; align-items: center; gap: 8px; font-size: 12px; }
 .field--stack { flex-direction: column; align-items: stretch; gap: 4px; margin-bottom: 8px; }
+/* Checkbox and its label on one line, the checkbox first. */
+.field--inline { margin-bottom: 8px; }
+.field--inline input { margin: 0; }
+
+/* Custom volts/div entry, revealed by choosing Custom in the dropdown. */
+.channel__custom { display: flex; gap: 4px; margin-top: 4px; }
+.channel__custom input { min-width: 0; flex: 1; }
+
+/* An entry and the button that resets it, side by side. */
+.field-row { display: flex; gap: 4px; }
+.field-row input { min-width: 0; flex: 1; }
 .field > span { color: var(--text-dim); white-space: nowrap; }
 
 select, input[type="number"], input[type="text"] {
