@@ -1481,6 +1481,20 @@ impl PicoScope2000 {
         }
         tracing::debug!("Current timebase: {}", self.current_timebase);
         tracing::debug!("Current time interval: {}", self.current_time_interval_ns);
+
+        // Re-arm, as every other setter on this driver does. Choosing a
+        // timebase only picked the numbers and left the block running at the
+        // old rate, so a new time/div did not take effect until something else
+        // happened to re-arm -- and the frame it eventually produced was
+        // stamped with the interval in force when it was read rather than the
+        // one it was captured at, so the samples and the time axis disagreed.
+        if self.is_capturing {
+            self.stop_triggering()?;
+            self.do_update_channel()?;
+            self.is_capturing = true;
+            self.do_memory_depth_update()?;
+            self.start_triggered_capture(self.settings.trigger.trigger_position)?;
+        }
         Ok(())
     }
 
