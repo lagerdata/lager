@@ -18,8 +18,8 @@
 //! N subscribers share one allocation and a slow subscriber drops frames
 //! instead of stalling the hardware.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -118,6 +118,22 @@ impl ScopeReply {
 
 type Envelope = (ScopeRequest, oneshot::Sender<ScopeReply>);
 
+/// How far the hardware thread has got with opening the scope.
+///
+/// Needed because the thread cannot answer anything while it is inside the
+/// driver's open call, and that call is not guaranteed to return: a scope left
+/// mid-transfer by a daemon that was killed while capturing blocks there
+/// indefinitely. Commands are answered from this instead of being queued for a
+/// thread that may never read them.
+#[derive(Clone, Debug)]
+enum OpenState {
+    /// Inside the driver's open call.
+    Opening,
+    Open,
+    /// The last attempt failed, with this reason. The thread keeps trying.
+    Failed(String),
+}
+
 /// Handle used by async code to reach the hardware thread.
 #[derive(Clone)]
 pub struct ScopeHandle {
@@ -125,6 +141,7 @@ pub struct ScopeHandle {
     captures: broadcast::Sender<Arc<CaptureFrame>>,
     acquiring: Arc<AtomicBool>,
     capture_count: Arc<AtomicU64>,
+    open_state: Arc<Mutex<OpenState>>,
 }
 
 impl ScopeHandle {
@@ -132,6 +149,25 @@ impl ScopeHandle {
     /// panicking if the hardware thread has gone away, so a driver crash
     /// surfaces to the client instead of taking the connection down.
     pub async fn request(&self, request: ScopeRequest) -> ScopeReply {
+        // Answered here when there is no scope to answer with. The hardware
+        // thread does not read its channel until the open returns, so a
+        // request sent while it is still in there would wait on a reply that
+        // may never come -- and the alternative the daemon used to take, not
+        // serving at all until the scope opened, gave every client a bare
+        // "connection refused" with nothing to say why.
+        match &*self.open_state.lock().expect("open state mutex poisoned") {
+            OpenState::Open => {}
+            OpenState::Opening => {
+                return ScopeReply::error(
+                    "still opening the oscilloscope; if this does not clear, \
+                     the scope is likely wedged and needs reconnecting",
+                );
+            }
+            OpenState::Failed(reason) => {
+                return ScopeReply::error(format!("no oscilloscope available: {reason}"));
+            }
+        }
+
         let (tx, rx) = oneshot::channel();
         if self.commands.send((request, tx)).await.is_err() {
             return ScopeReply::error("oscilloscope thread is not running");
@@ -159,36 +195,97 @@ impl ScopeHandle {
     }
 }
 
+/// How long to wait for the scope before serving without it.
+///
+/// A healthy open takes well under a second, so this is slack for a slow
+/// enumeration rather than a real budget. Waiting at all keeps the common case
+/// honest: the startup log still says whether a scope was found.
+const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long to leave between attempts to open the scope.
+///
+/// The daemon used to exit when the open failed and be restarted by the
+/// supervisor every two seconds, and that loop is what made attaching a scope
+/// to a running box work at all. Retrying here keeps that, now that a failed
+/// open no longer takes the process down.
+const OPEN_RETRY_INTERVAL: Duration = Duration::from_secs(2);
+
+/// How often to repeat the reason a scope could not be opened.
+///
+/// Every attempt would be a line every two seconds for as long as a box has no
+/// scope attached, which is the normal state of most boxes. This daemon has
+/// filled a 266 MB log once already.
+const OPEN_COMPLAINT_INTERVAL: Duration = Duration::from_secs(300);
+
 /// Start the hardware thread. The scope is opened on that thread so the
 /// driver's handle is never touched from anywhere else.
+///
+/// Returns as soon as the scope opens, or after [`OPEN_TIMEOUT`], whichever
+/// comes first -- the handle is returned either way. Serving without a scope
+/// beats not serving: an open that never returns, which is what a scope left
+/// mid-transfer does, otherwise means no listener, and a client cannot tell
+/// "connection refused" from a daemon that was never installed. Commands now
+/// answer with the reason instead, and the thread keeps trying to open, so a
+/// scope that is reconnected is picked up without anyone restarting anything.
 pub fn spawn<F>(open: F) -> Result<ScopeHandle>
 where
-    F: FnOnce() -> Result<Box<dyn Oscilloscope>> + Send + 'static,
+    F: FnMut() -> Result<Box<dyn Oscilloscope>> + Send + 'static,
 {
     let (command_tx, command_rx) = mpsc::channel::<Envelope>(COMMAND_QUEUE_DEPTH);
     let (capture_tx, _) = broadcast::channel(CAPTURE_BROADCAST_DEPTH);
     let acquiring = Arc::new(AtomicBool::new(false));
     let capture_count = Arc::new(AtomicU64::new(0));
+    let open_state = Arc::new(Mutex::new(OpenState::Opening));
 
-    // Report the open result back before the thread enters its loop, so a
-    // failure to find a scope is a startup error rather than a silent hang.
+    // Carries the first outcome, so startup can log what happened rather than
+    // leaving it to be discovered by a failing command later.
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<()>>();
 
     let thread_captures = capture_tx.clone();
     let thread_acquiring = acquiring.clone();
     let thread_count = capture_count.clone();
+    let thread_state = open_state.clone();
 
+    let mut open = open;
     std::thread::Builder::new()
         .name("scope-hw".into())
         .spawn(move || {
-            let scope = match open() {
-                Ok(scope) => {
-                    let _ = ready_tx.send(Ok(()));
-                    scope
-                }
-                Err(e) => {
-                    let _ = ready_tx.send(Err(e));
-                    return;
+            let mut attempt: u64 = 0;
+            let mut complained_at: Option<Instant> = None;
+            let scope = loop {
+                attempt += 1;
+                match open() {
+                    Ok(scope) => {
+                        *thread_state.lock().expect("open state mutex poisoned") =
+                            OpenState::Open;
+                        let _ = ready_tx.send(Ok(()));
+                        if attempt > 1 {
+                            tracing::info!(attempt, "oscilloscope opened");
+                        }
+                        break scope;
+                    }
+                    Err(e) => {
+                        // `{:#}` so the causes come with it: the useful part
+                        // is usually the innermost one, naming the library
+                        // and the search path.
+                        let reason = format!("{e:#}");
+                        let due = complained_at
+                            .is_none_or(|at| at.elapsed() >= OPEN_COMPLAINT_INTERVAL);
+                        if due {
+                            tracing::error!(
+                                attempt,
+                                error = %reason,
+                                retry_in = ?OPEN_RETRY_INTERVAL,
+                                "cannot open the oscilloscope; commands will \
+                                 answer with this until it can be opened"
+                            );
+                            complained_at = Some(Instant::now());
+                        }
+                        *thread_state.lock().expect("open state mutex poisoned") =
+                            OpenState::Failed(reason);
+                        let _ = ready_tx.send(Err(e));
+                        std::thread::sleep(OPEN_RETRY_INTERVAL);
+                    }
                 }
             };
             run(
@@ -200,13 +297,27 @@ where
             );
         })?;
 
-    ready_rx.recv()??;
+    match ready_rx.recv_timeout(OPEN_TIMEOUT) {
+        Ok(Ok(())) => tracing::info!("oscilloscope opened"),
+        Ok(Err(e)) => tracing::warn!(
+            error = %format!("{e:#}"),
+            "no oscilloscope yet; serving anyway and retrying"
+        ),
+        // Still inside the driver's open call. Nothing to report but the wait
+        // itself, and that is worth reporting: it is the shape of a wedged
+        // scope, which no amount of waiting fixes.
+        Err(_) => tracing::warn!(
+            waited = ?OPEN_TIMEOUT,
+            "the oscilloscope has not opened yet; serving anyway"
+        ),
+    }
 
     Ok(ScopeHandle {
         commands: command_tx,
         captures: capture_tx,
         acquiring,
         capture_count,
+        open_state,
     })
 }
 
@@ -733,5 +844,120 @@ mod tests {
         harness.acquiring.store(false, Ordering::Relaxed);
 
         assert!(harness.is_ready());
+    }
+
+    /// A handle in `state`, whose command channel is already closed.
+    ///
+    /// Closed deliberately: if a request ever reaches the channel these tests
+    /// get "thread is not running" rather than the state's own message, so
+    /// they cannot pass by accident when the short-circuit is removed.
+    fn handle_in(state: OpenState) -> ScopeHandle {
+        let (commands, rx) = mpsc::channel::<Envelope>(1);
+        drop(rx);
+        let (captures, _) = broadcast::channel(1);
+        ScopeHandle {
+            commands,
+            captures,
+            acquiring: Arc::new(AtomicBool::new(false)),
+            capture_count: Arc::new(AtomicU64::new(0)),
+            open_state: Arc::new(Mutex::new(state)),
+        }
+    }
+
+    fn error_from(reply: ScopeReply) -> String {
+        match reply {
+            ScopeReply::Error(message) => message,
+            other => panic!("expected an error reply, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_command_that_arrives_before_the_scope_opens_says_so() {
+        // The hardware thread is inside the driver's open call and is not
+        // reading its channel, so this cannot be answered by sending it on.
+        // It used to not arise, because the daemon did not listen until the
+        // scope was open -- which turned a wedged scope into "connection
+        // refused", indistinguishable from no daemon at all.
+        let handle = handle_in(OpenState::Opening);
+
+        let message = error_from(handle.request(ScopeRequest::IsReady).await);
+        assert!(
+            message.contains("still opening"),
+            "should say the open is in progress, got {message:?}"
+        );
+        assert!(
+            message.contains("reconnect"),
+            "and what to do if it stays that way, got {message:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_command_with_no_scope_attached_carries_the_reason() {
+        // The reason is the whole value of answering: "no PicoScope
+        // 2000-series device found" tells someone to check the cable, where a
+        // refused connection tells them nothing.
+        let handle = handle_in(OpenState::Failed(
+            "no PicoScope 2000-series device found".into(),
+        ));
+
+        let message = error_from(handle.request(ScopeRequest::GetCapabilities).await);
+        assert!(
+            message.contains("no PicoScope 2000-series device found"),
+            "the driver's reason should survive, got {message:?}"
+        );
+    }
+
+    #[test]
+    fn a_scope_that_cannot_be_opened_still_leaves_a_daemon_to_talk_to() {
+        // The point of the change: spawn hands back a usable handle instead
+        // of an error that takes the process down before it listens.
+        let handle = spawn(|| anyhow::bail!("nothing plugged in"))
+            .expect("spawn should succeed without a scope");
+
+        let message = error_from(
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(handle.request(ScopeRequest::IsReady)),
+        );
+        assert!(
+            message.contains("nothing plugged in"),
+            "got {message:?}"
+        );
+    }
+
+    #[test]
+    fn the_open_is_retried_so_a_scope_attached_later_is_picked_up() {
+        // Exiting on a failed open and being restarted by the supervisor is
+        // what used to make this work. Now that the daemon stays up, the
+        // retry has to live here instead -- without it, plugging a scope into
+        // a running box would need someone to restart the daemon by hand.
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let counter = attempts.clone();
+
+        let handle = spawn(move || {
+            // Fails once, then succeeds, so this covers both the retry and
+            // the transition out of Failed.
+            if counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                anyhow::bail!("not yet");
+            }
+            Ok(Box::new(FakeScope::new()) as Box<dyn Oscilloscope>)
+        })
+        .expect("spawn should succeed");
+
+        // Just past one interval, so this tracks the constant rather than a
+        // number copied out of it.
+        std::thread::sleep(OPEN_RETRY_INTERVAL + Duration::from_millis(750));
+
+        assert!(
+            attempts.load(Ordering::SeqCst) >= 2,
+            "the open should have been retried"
+        );
+        assert!(
+            matches!(
+                *handle.open_state.lock().unwrap(),
+                OpenState::Open
+            ),
+            "the second attempt succeeded, so the scope should be open"
+        );
     }
 }
