@@ -85,7 +85,12 @@ SAVED_NETS = [
     {"name": "cam1", "role": "webcam", "pin": "video0"},
     {"name": "camnodev", "role": "webcam"},
     {"name": "router1", "role": "router", "address": "192.168.88.1"},
-    {"name": "scope1", "role": "scope", "instrument": "picoscope_2000"},
+    # A scope and one of its channels. `scope` is the instrument, which is
+    # what carries the timebase and the trigger; `scope-channel` is a
+    # channel of it, and per-channel commands go there.
+    {"name": "pico1", "role": "scope", "instrument": "picoscope_2000"},
+    {"name": "scope1", "role": "scope-channel", "instrument": "picoscope_2000",
+     "pin": 1},
     # A role /net/command has no handler for, keeping the 501 path covered.
     # Batteries are driven by their own endpoint, not this one. Scope used to
     # serve this purpose and no longer can, now that it has a handler.
@@ -886,6 +891,7 @@ class TestNetCommandHandler(unittest.TestCase):
         breaks every one of them at once.
         """
         self.assertIn('scope', net_command.ROLE_ACTIONS)
+        self.assertIn('scope-channel', net_command.ROLE_ACTIONS)
 
         with patch('lager.http_handlers.net_command.Net') as NetMock:
             NetMock.get_local_nets.return_value = SAVED_NETS
@@ -894,6 +900,24 @@ class TestNetCommandHandler(unittest.TestCase):
         self.assertNotEqual(r.status_code, 501)
         self.assertNotEqual(r.status_code, 400,
                             'enable_net should be a recognized scope action')
+
+    def test_the_instrument_net_takes_the_device_wide_actions(self):
+        with patch('lager.http_handlers.net_command.Net') as NetMock:
+            NetMock.get_local_nets.return_value = SAVED_NETS
+            r = self._post({"netname": "pico1", "action": "start_capture"})
+
+        self.assertNotEqual(r.status_code, 400)
+        self.assertNotEqual(r.status_code, 501)
+
+    def test_a_channel_action_on_the_instrument_says_which_net_to_use(self):
+        """There is no channel to pick, and the driver's fallback is A."""
+        with patch('lager.http_handlers.net_command.Net') as NetMock:
+            NetMock.get_local_nets.return_value = SAVED_NETS
+            r = self._post({"netname": "pico1", "action": "set_coupling",
+                            "params": {"coupling": "ac"}})
+
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('scope1', r.get_json().get('error', ''))
 
     def test_unknown_net_is_404(self):
         with patch('lager.http_handlers.net_command.Net') as NetMock:

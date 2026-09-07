@@ -1140,7 +1140,7 @@ class TestTheBoxCanReportChannelState:
         original = net_command._proxy
         net_command._proxy = lambda *a, **k: _Scope()
         try:
-            result = net_command._scope("scope1", "scope", "get_net_enabled", {})
+            result = net_command._scope("scope1", "scope-channel", "get_net_enabled", {})
         finally:
             net_command._proxy = original
 
@@ -1157,7 +1157,7 @@ class TestTheBoxCanReportChannelState:
         original = net_command._proxy
         net_command._proxy = lambda *a, **k: _Scope()
         try:
-            result = net_command._scope("scope2", "scope", "get_net_enabled", {})
+            result = net_command._scope("scope2", "scope-channel", "get_net_enabled", {})
         finally:
             net_command._proxy = original
 
@@ -1184,7 +1184,7 @@ class TestTheBoxCanReportEveryMeasurementAtOnce:
         original = net_command._proxy
         net_command._proxy = lambda *a, **k: _Scope()
         try:
-            return net_command._scope("scope1", "scope", "measure_all", {})
+            return net_command._scope("scope1", "scope-channel", "measure_all", {})
         finally:
             net_command._proxy = original
 

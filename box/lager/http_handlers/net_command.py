@@ -875,7 +875,12 @@ def _scope(netname, role, action, params):
     Measurement values may legitimately be absent -- a period needs two full
     cycles on screen -- so those come back as a message with no `value` rather
     than as an error or a zero.
+
+    Takes both scope roles. A scope net is the instrument and a scope-channel
+    net is one of its channels, and the gate below is deliberately one-sided:
+    see _refuse_channel_action_on_the_instrument.
     """
+    _refuse_channel_action_on_the_instrument(netname, role, action)
     dev = _proxy(netname, role, timeout=30.0)
 
     if action == "enable_net":
@@ -1150,6 +1155,67 @@ def _scope_measure(dev, action):
         if "not present in this capture" not in message:
             raise
         return _ok(message)
+
+
+# Actions that act on one channel. Everything else a scope accepts -- the
+# timebase, the horizontal position, the trigger, run/stop/single/force, the
+# cursors, whatever the unit reports about itself -- belongs to the
+# instrument. The list is the shorter one because most of a scope is global.
+_PER_CHANNEL_SCOPE_ACTIONS = frozenset({
+    "enable_net", "disable_net", "get_net_enabled",
+    "set_scale", "get_scale",
+    "set_coupling", "get_coupling",
+    "set_probe", "get_probe",
+    "set_offset", "get_offset",
+    "measure_all",
+})
+
+
+def _refuse_channel_action_on_the_instrument(netname, role, action):
+    """Stop a per-channel command aimed at the scope rather than a channel.
+
+    Only this direction is refused, and the asymmetry is the point rather
+    than an oversight. A channel net names exactly one instrument, so a
+    timebase sent to one is unambiguous and is carried out -- which also
+    means the scripts written before scope nets existed keep working. A
+    coupling sent to the instrument names no channel, and picking one would
+    be a guess: the driver's fallback is channel A, so the command would land
+    somewhere plausible and wrong.
+    """
+    if role != "scope":
+        return
+    if action not in _PER_CHANNEL_SCOPE_ACTIONS \
+            and action not in _SCOPE_MEASUREMENTS:
+        return
+
+    channels = _scope_channel_nets(netname)
+    if channels:
+        suggestion = "use one of its channel nets: %s" % ", ".join(channels)
+    else:
+        suggestion = ("add a scope-channel net for the channel you mean "
+                      "(`lager nets tui`)")
+    raise UnknownAction(
+        "%s is the scope itself, and %s acts on one channel -- %s"
+        % (netname, action, suggestion))
+
+
+def _scope_channel_nets(netname):
+    """Names of the channel nets on the same instrument, for the message.
+
+    Matched on instrument and address, which is how a bench with two of the
+    same model keeps them apart.
+    """
+    try:
+        from lager.nets.scope_migration import unit_of
+        nets = Net.get_local_nets()
+        me = next((n for n in nets if n.get("name") == netname), None)
+        if me is None:
+            return []
+        return sorted(n.get("name") for n in nets
+                      if n.get("role") == "scope-channel"
+                      and unit_of(n) == unit_of(me))
+    except Exception:
+        return []
 
 
 def _scope_trigger_edge(dev, params):

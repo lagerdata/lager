@@ -179,7 +179,7 @@ def _invoke_scope(net_command, device, action, params):
     original = net_command._proxy
     net_command._proxy = lambda *a, **k: device
     try:
-        return net_command._scope("scope1", "scope", action, params)
+        return net_command._scope("scope1", "scope-channel", action, params)
     finally:
         net_command._proxy = original
 
