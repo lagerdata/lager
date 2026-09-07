@@ -60,8 +60,14 @@ COMMAND_LINES = [
     "measure width-neg",
     "measure rise",
     "measure fall",
+    "measure overshoot",
+    "measure all",
     "trigger level 1.2 slope rising",
     "trigger edge level 0 source A",
+    "cursor",
+    "cursor time 1e-3 2e-3",
+    "cursor volts 0.5 -0.5",
+    "cursor off",
     "capabilities",
     "autoscale",
 ]
@@ -143,10 +149,15 @@ def test_measure_actions_cover_the_daemon_measurements(parsed):
     """Every measurement the UI offers must be one the handler maps."""
     from lager.http_handlers import net_command
 
+    # `measure_all` and `measure_cursor` are spelled like the rest but are not
+    # named quantities: one returns the whole set and the other reads the
+    # cursors, so the handler implements them directly rather than through the
+    # measurement table.
+    not_a_quantity = {"measure_all", "measure_cursor"}
     ui_measurements = {
         r["action"] for r in parsed.values()
         if "action" in r and r["action"].startswith("measure_")
-    }
+    } - not_a_quantity
     handler_measurements = set(net_command._SCOPE_MEASUREMENTS)
 
     assert ui_measurements <= handler_measurements, (
@@ -180,10 +191,21 @@ class _MockScope:
     values are irrelevant to what these tests check.
     """
 
+    _CURSORS = {"time": [1e-3, 2e-3], "volts": None, "channel": "A"}
+
     def __getattr__(self, name):
         def call(*_args, **_kwargs):
             if name == "capabilities":
                 return {"model": "MOCK-2204A", "analog_channels": 2}
+            # Cursors answer with their own shapes: the handler formats the
+            # positions and readings out of them, so a bare float would fail
+            # for a reason that has nothing to do with the vocabulary.
+            if name in ("set_cursors", "get_cursors", "clear_cursors"):
+                return dict(self._CURSORS)
+            if name == "measure_cursors":
+                return {"cursors": dict(self._CURSORS),
+                        "readings": {"t1": 1e-3, "t2": 2e-3,
+                                     "delta_t": 1e-3, "frequency": 1000.0}}
             if name.startswith("get_") or name.startswith("measure"):
                 return 0.0
             return {"status": "ok"}
