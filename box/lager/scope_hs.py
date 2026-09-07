@@ -40,7 +40,8 @@ def _resolve_net(netname: str) -> dict:
     try:
         from lager.nets.net import Net
         for entry in Net.get_local_nets():
-            if entry.get("name") == netname and entry.get("role") in ("scope", "analog"):
+            if (entry.get("name") == netname
+                        and entry.get("role") in ("scope", "scope-channel", "analog")):
                 return entry
     except Exception as e:
         logger.warning("scope %s: could not read saved nets: %s", netname, e)
