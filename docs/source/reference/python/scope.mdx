@@ -19,10 +19,16 @@ driven through the oscilloscope daemon on the box.
 Three consequences are worth knowing before writing a script against a PicoScope:
 
 - **Measurements are computed, not queried.** No PicoTech API has an equivalent
-  of `:MEAS:VPP?`, so the box captures a block and computes the value from the
-  samples. One capture yields the whole set, so `scope.measurement.all()` costs
-  the same as a single `voltage_peak_to_peak()` and reading five values
-  individually costs five captures.
+  of `:MEAS:VPP?`, so the box computes the value from a captured block. One
+  capture yields the whole set, so `scope.measurement.all()` costs the same as
+  a single `voltage_peak_to_peak()` and reading five values individually costs
+  five captures.
+- **While running, they describe the capture last streamed out.** The block a
+  measurement or a cursor reading is computed from is the one most recently
+  sent to subscribers, so the numbers agree with the trace on screen. It also
+  means repeated reads change only as fast as captures arrive: two calls
+  between captures return the same value, because they are the same capture.
+  Stopped, they describe the last one, as a stopped bench scope does.
 - **`display` and `measurement_cursor` do nothing.** They put a reading on the
   instrument's own screen, and a PicoScope has none. They are accepted and
   ignored so a script written for a Rigol still runs.
@@ -492,11 +498,27 @@ status = scope.trigger_settings.get_status()
 Access cursor functions through the `cursor` attribute.
 
 <Note>
-Cursors are **Rigol only**. They are markers drawn on the instrument's own
-display and read back over SCPI, and a PicoScope has no display -- every method
-here raises `UnsupportedScopeFeature` on one. Measure from the capture instead,
-or use the cursors in the web UI, which are drawn client-side over the received
-samples.
+`scope.cursor.*` is **Rigol only**. These are markers drawn on the
+instrument's own display and positioned in screen coordinates, read back over
+SCPI; a PicoScope has no display, so every method here raises
+`UnsupportedScopeFeature` on one.
+
+Cursors over the *captured samples* are a different thing, and a PicoScope has
+them — placed with a time and a voltage rather than a pixel, which is why they
+are not bolted onto this screen-shaped API. Use
+`lager scope <net> cursor time <t1> <t2>`, the same `cursor` verb in the web
+UI's console, or `set_cursors()` / `measure_cursors()` on the driver:
+
+```python
+scope.set_cursors(time=(0.0, 1e-3))
+readings = scope.measure_cursors()["readings"]
+readings["frequency"]       # 1/dt, so a pair a cycle apart reads the frequency
+readings["trace_delta_v"]   # the trace's voltage change between them
+```
+
+The box holds the pair, so cursors placed from a script, from the terminal CLI
+or from the web UI's console are all the same two markers, and the web UI draws
+whichever is set.
 </Note>
 
 ```python

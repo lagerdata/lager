@@ -37,7 +37,7 @@ If `NETNAME` is omitted, lists all available scope nets on the box.
 | `timebase` | Set horizontal timebase (seconds per division) | Both |
 | `measure` | Measure waveform characteristics | Both (see note) |
 | `trigger` | Configure trigger settings | Both (see note) |
-| `cursor` | Control scope cursor positions | Rigol only |
+| `cursor` | Place cursors over the capture and read the deltas | Both; `set-a`/`set-b`/`move-a`/`move-b`/`hide` are Rigol only |
 | `stream` | Stream oscilloscope data with web visualization | PicoScope only |
 
 <Note>
@@ -47,10 +47,15 @@ Edge trigger works with both PicoScope and Rigol. Protocol triggers (I2C, SPI, U
 <Note>
 Measurements work on both instruments, but they are computed differently. A Rigol
 answers a SCPI query about what it already displays; for a PicoScope the daemon
-captures a block and computes the value from the samples, because no PicoTech API
-has an equivalent of `:MEAS:VPP?`. The consequence is that `--display` and
-`--cursor` are Rigol only: they put the reading on the instrument's own screen,
-and a PicoScope does not have one.
+computes the value from a captured block, because no PicoTech API has an
+equivalent of `:MEAS:VPP?`. The consequence is that `--display` and `--cursor`
+are Rigol only: they put the reading on the instrument's own screen, and a
+PicoScope does not have one.
+
+While a PicoScope is acquiring, measurements and cursor readings are computed
+from the capture most recently streamed out, so they describe the trace the web
+UI is drawing rather than a separate capture taken a moment later. Stopped, they
+describe the last capture, as the readouts on a stopped bench scope do.
 </Note>
 
 ---
@@ -88,7 +93,7 @@ configuration. `lager scope <net> capabilities` reports what was detected.
 | Real-time streaming | No (single capture) | Yes (continuous) |
 | Measurements | 11 built-in types | 14 types, computed from the capture |
 | Trigger types | Edge, pulse, I2C, SPI, UART | Edge only |
-| Cursor control | Manual XY cursors | In the web UI, drawn client-side |
+| Cursor control | XY cursors on the instrument display | Time/voltage cursors over the captured samples |
 | Autoscale | Yes | No |
 | Web visualization | No | Yes (HTML5) |
 | Data export | Via measurements | CSV streaming |
@@ -577,11 +582,89 @@ lager scope ANALOG1 trigger uart \
 
 ---
 
-## Cursor Subcommands (Rigol)
+## Cursor Subcommands
 
-Control manual XY cursors on Rigol oscilloscopes for precise time and voltage measurements. Cursors A and B can be positioned independently, and the oscilloscope calculates the delta between them.
+Two different things share this name.
+
+`cursor time`, `cursor volts` and `cursor off` place cursors over the
+**captured samples** and work on any scope. They are typed rather than
+dragged: there is no knob for them and no handle on the plot to grab. The box
+holds the pair, so a cursor placed from the terminal is the one the web UI
+draws, and the same `cursor` verb works in that UI's console.
+
+`cursor set-a`, `set-b`, `move-a`, `move-b` and `hide` position markers on a
+**Rigol's own front display** in screen coordinates, over SCPI. A PicoScope
+has no display to put them on.
+
+### `cursor`
+
+With no subcommand, reads whatever cursors are set.
+
+```bash
+lager scope NET_NAME cursor [--box BOX] [--mcu MCU]
+```
+
+### `cursor time`
+
+Place the two time cursors, in seconds relative to the trigger. Negative is
+before the trigger; half of a capture sits there.
+
+```bash
+lager scope NET_NAME cursor time T1 T2 [--box BOX] [--mcu MCU]
+```
+
+Reports the interval between them, its reciprocal as a frequency, and the
+voltage of the trace under each — so a pair placed a cycle apart reads the
+frequency off directly. The voltages are interpolated between samples, since
+a cursor lands where it was typed rather than on the sample grid.
+
+### `cursor volts`
+
+Place the two voltage cursors, in volts at the probe tip.
+
+```bash
+lager scope NET_NAME cursor volts V1 V2 [--box BOX] [--mcu MCU]
+```
+
+Reports the difference. No capture is needed for this pair, so it answers
+without waiting for a trigger.
+
+### `cursor off`
+
+Clear both pairs, and stop the web UI drawing them.
+
+```bash
+lager scope NET_NAME cursor off [--box BOX] [--mcu MCU]
+```
+
+**Examples:**
+
+```bash
+# Measure a period: put a pair one cycle apart and read 1/dt
+lager scope ANALOG1 cursor time 0 0.001 --box my-lager-box
+
+# Read the two pairs back against the live signal
+lager scope ANALOG1 cursor --box my-lager-box
+
+# Mark a voltage window
+lager scope ANALOG1 cursor volts 3.0 3.6 --box my-lager-box
+
+lager scope ANALOG1 cursor off --box my-lager-box
+```
+
+<Note>
+The pairs are independent: placing time cursors leaves voltage cursors where
+they were. Each pair is placed as a pair, because one cursor on its own reads
+nothing — the quantity wanted is the difference between two.
+
+A cursor outside the captured window reports no voltage rather than the
+nearest sample, which would be a reading from a different moment. The reply
+names the window so it is clear why.
+</Note>
 
 ### `cursor set-a` / `cursor set-b`
+
+Rigol only.
 
 Set the absolute position of cursor A or B.
 
@@ -599,7 +682,8 @@ lager scope NET_NAME cursor set-b [--x FLOAT] [--y FLOAT] [--box BOX] [--mcu MCU
 
 ### `cursor move-a` / `cursor move-b`
 
-Move a cursor by a relative offset from its current position.
+Rigol only. Move a display cursor by a relative offset from its current
+position.
 
 ```bash
 lager scope NET_NAME cursor move-a [--x FLOAT] [--y FLOAT] [--box BOX] [--mcu MCU]
@@ -615,7 +699,7 @@ lager scope NET_NAME cursor move-b [--x FLOAT] [--y FLOAT] [--box BOX] [--mcu MC
 
 ### `cursor hide`
 
-Hide the cursor display.
+Rigol only. Hide the instrument's display cursors.
 
 ```bash
 lager scope NET_NAME cursor hide [--box BOX] [--mcu MCU]

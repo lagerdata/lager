@@ -111,9 +111,15 @@ def _validate_scope_net(ctx, box_ip: str, netname: str) -> dict | None:
 # uploading and exec'ing cli/impl/measurement/scope.py per call.
 #
 # Everything not listed stays on the exec path: the UART/I2C/SPI/pulse bus
-# triggers and the cursor modes are Rigol-only SCPI sequences that the
-# in-process handler does not implement, and silently routing them here would
-# turn a working Rigol command into an "unknown action" error.
+# triggers are Rigol-only SCPI sequences that the in-process handler does not
+# implement, and silently routing them here would turn a working Rigol
+# command into an "unknown action" error.
+#
+# `lager scope ... cursor` is the exception that is not Rigol's: a Rigol's
+# cursors are markers on the instrument's own screen, driven by SCPI, and
+# `net.cursor.*` still raises for a PicoScope because it has no screen to put
+# them on. These place markers over the captured samples instead, which the
+# box computes and the web UI draws, so they are warm actions.
 _WARM_ACTIONS = frozenset({
     "enable_net", "disable_net",
     "start_capture", "start_single", "stop_capture", "force_trigger",
@@ -124,6 +130,7 @@ _WARM_ACTIONS = frozenset({
     "set_probe", "get_probe",
     "set_offset", "get_offset",
     "set_time_offset", "get_time_offset",
+    "set_cursor", "get_cursor", "clear_cursor", "measure_cursor",
     "trigger_edge",
     "capabilities",
     "measure_vpp", "measure_vmax", "measure_vmin", "measure_vrms",
@@ -722,10 +729,92 @@ def pulse(ctx, mcu, box, mode, coupling, source, level, trigger_on, upper, lower
                  upper=upper, lower=lower)
 
 
-@scope.group()
-def cursor():
-    """Control scope cursor (Rigol only)"""
-    pass
+@scope.group(invoke_without_command=True)
+@click.pass_context
+@click.option("--box", required=False, help="Lager Box name or IP")
+@click.option("--mcu", required=False)
+def cursor(ctx, box, mcu):
+    """Place cursors over the capture and read the deltas
+
+    Typed, not dragged: there is no knob for these and no handle on the plot
+    to grab. With no subcommand, reads whatever cursors are set.
+
+    ``time``, ``volts`` and ``off`` mark up the captured samples and work on
+    any scope. The box holds the pair, so one placed here is the pair the web
+    UI draws. Times are seconds relative to the trigger -- negative is before
+    it -- and volts are at the probe tip.
+
+    ``set-a``, ``set-b``, ``move-a``, ``move-b`` and ``hide`` are a different
+    thing that shares the name: markers on a Rigol's own front display,
+    driven over SCPI. A PicoScope has no display to put them on.
+
+    \b
+    lager scope scope1 cursor time 0.001 0.002   # a pair 1 ms apart
+    lager scope scope1 cursor                    # read them
+    lager scope scope1 cursor volts 0.5 -0.5
+    lager scope scope1 cursor off
+    """
+    if ctx.invoked_subcommand is not None:
+        return
+    box_ip = _resolve_box(ctx, box)
+    netname = _require_netname(ctx)
+    if _validate_scope_net(ctx, box_ip, netname) is None:
+        return  # Error already displayed with available nets
+    _run_backend(ctx, box_ip, "measure_cursor", netname=netname, mcu=mcu)
+
+
+@cursor.command("time")
+@click.argument("t1", type=float)
+@click.argument("t2", type=float)
+@click.pass_context
+@click.option("--box", required=False, help="Lager Box name or IP")
+@click.option("--mcu", required=False)
+def cursor_time(ctx, t1, t2, box, mcu):
+    """Place the two time cursors, in seconds from the trigger
+
+    Reports the interval between them, its reciprocal as a frequency, and the
+    voltage of the trace under each -- so a pair placed a cycle apart reads
+    the frequency off directly.
+    """
+    box_ip = _resolve_box(ctx, box)
+    netname = _require_netname(ctx)
+    if _validate_scope_net(ctx, box_ip, netname) is None:
+        return  # Error already displayed with available nets
+    _run_backend(ctx, box_ip, "set_cursor", netname=netname, mcu=mcu,
+                 time={"1": t1, "2": t2})
+    # Placing and reading are one command, because a cursor you cannot read
+    # is only half of what was asked for.
+    _run_backend(ctx, box_ip, "measure_cursor", netname=netname, mcu=mcu)
+
+
+@cursor.command("volts")
+@click.argument("v1", type=float)
+@click.argument("v2", type=float)
+@click.pass_context
+@click.option("--box", required=False, help="Lager Box name or IP")
+@click.option("--mcu", required=False)
+def cursor_volts(ctx, v1, v2, box, mcu):
+    """Place the two voltage cursors, in volts at the probe tip"""
+    box_ip = _resolve_box(ctx, box)
+    netname = _require_netname(ctx)
+    if _validate_scope_net(ctx, box_ip, netname) is None:
+        return  # Error already displayed with available nets
+    _run_backend(ctx, box_ip, "set_cursor", netname=netname, mcu=mcu,
+                 volts={"1": v1, "2": v2})
+    _run_backend(ctx, box_ip, "measure_cursor", netname=netname, mcu=mcu)
+
+
+@cursor.command("off")
+@click.pass_context
+@click.option("--box", required=False, help="Lager Box name or IP")
+@click.option("--mcu", required=False)
+def cursor_off(ctx, box, mcu):
+    """Clear both pairs, and stop the web UI drawing them"""
+    box_ip = _resolve_box(ctx, box)
+    netname = _require_netname(ctx)
+    if _validate_scope_net(ctx, box_ip, netname) is None:
+        return  # Error already displayed with available nets
+    _run_backend(ctx, box_ip, "clear_cursor", netname=netname, mcu=mcu)
 
 
 @cursor.command()
@@ -735,7 +824,7 @@ def cursor():
 @click.option("--x", required=False, type=click.FLOAT, help="Cursor A x coordinate")
 @click.option("--y", required=False, type=click.FLOAT, help="Cursor A y coordinate")
 def set_a(ctx, box, mcu, x, y):
-    """Set cursor A position"""
+    """Set cursor A on the instrument display (Rigol only)"""
     box_ip = _resolve_box(ctx, box)
     netname = _require_netname(ctx)
 
@@ -777,7 +866,7 @@ def set_a(ctx, box, mcu, x, y):
 @click.option("--x", required=False, type=click.FLOAT, help="Cursor B x coordinate")
 @click.option("--y", required=False, type=click.FLOAT, help="Cursor B y coordinate")
 def set_b(ctx, box, mcu, x, y):
-    """Set cursor B position"""
+    """Set cursor B on the instrument display (Rigol only)"""
     box_ip = _resolve_box(ctx, box)
     netname = _require_netname(ctx)
 
@@ -819,7 +908,7 @@ def set_b(ctx, box, mcu, x, y):
 @click.option("--x", required=False, type=click.FLOAT, help="Relative x movement (delta)")
 @click.option("--y", required=False, type=click.FLOAT, help="Relative y movement (delta)")
 def move_a(ctx, box, mcu, x, y):
-    """Move cursor A by relative offset"""
+    """Move display cursor A by a relative offset (Rigol only)"""
     box_ip = _resolve_box(ctx, box)
     netname = _require_netname(ctx)
 
@@ -861,7 +950,7 @@ def move_a(ctx, box, mcu, x, y):
 @click.option("--x", required=False, type=click.FLOAT, help="Relative x movement (delta)")
 @click.option("--y", required=False, type=click.FLOAT, help="Relative y movement (delta)")
 def move_b(ctx, box, mcu, x, y):
-    """Move cursor B by relative offset"""
+    """Move display cursor B by a relative offset (Rigol only)"""
     box_ip = _resolve_box(ctx, box)
     netname = _require_netname(ctx)
 
@@ -901,7 +990,7 @@ def move_b(ctx, box, mcu, x, y):
 @click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--mcu", required=False)
 def hide(ctx, box, mcu):
-    """Hide cursor"""
+    """Hide the instrument display cursors (Rigol only)"""
     box_ip = _resolve_box(ctx, box)
     netname = _require_netname(ctx)
 

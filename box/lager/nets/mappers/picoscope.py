@@ -265,12 +265,19 @@ class Cursor_PicoScopeFunctionMapper(_PicoScopeSubMapper):
     """Absent by construction.
 
     Rigol cursors are markers drawn on the instrument's own display and read
-    back over SCPI. A PicoScope has no display, so there is nothing to place
-    or read. The web UI draws its own cursors client-side over the captured
-    samples, which is where this belongs.
+    back over SCPI, positioned in screen coordinates. A PicoScope has no
+    display, so there is nothing to place or read here.
+
+    Cursors over the *captured samples* are a different thing that a PicoScope
+    can do, and it has them: ``lager scope <net> cursor time <t1> <t2>``, the
+    same verb in the web UI's console, and ``PicoScope.set_cursors`` /
+    ``measure_cursors`` on the driver. Those take a time and a voltage rather
+    than a pixel, which is why they are not bolted onto this screen-shaped
+    API.
     """
 
-    _NO_SCREEN = "measure from the capture, or use the cursors in the web UI"
+    _NO_SCREEN = ("a PicoScope has no display to draw on; place cursors over "
+                  "the capture with `lager scope <net> cursor` instead")
 
     set_a = _unsupported("on-screen cursors", _NO_SCREEN)
     set_b = _unsupported("on-screen cursors", _NO_SCREEN)

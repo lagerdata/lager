@@ -968,6 +968,18 @@ def _scope(netname, role, action, params):
     if action == "measure_all":
         return _scope_measure_all(dev)
 
+    # Cursors. Placed by typing, in either CLI, and held on the box so both
+    # they and the web UI's plot are looking at one set.
+    if action == "set_cursor":
+        return _scope_set_cursor(dev, params)
+    if action == "get_cursor":
+        return _ok(_describe_cursors(dev.get_cursors()), dev.get_cursors())
+    if action == "clear_cursor":
+        dev.clear_cursors()
+        return _ok("Cursors off")
+    if action == "measure_cursor":
+        return _scope_measure_cursor(dev)
+
     if action in _SCOPE_MEASUREMENTS:
         return _scope_measure(dev, action)
 
@@ -1033,6 +1045,85 @@ def _scope_measure_all(dev):
     return _ok(
         "%d measurement(s)%s" % (len(values), ": " + listed if listed else ""),
         values)
+
+
+# Cursor readings, in the order a scope stacks them, with the units to print
+# them in. Keys are what `cursor_readings` produces.
+_CURSOR_READINGS = [
+    ("t1", "s"), ("t2", "s"), ("delta_t", "s"), ("frequency", "Hz"),
+    ("trace_v1", "V"), ("trace_v2", "V"), ("trace_delta_v", "V"),
+    ("v1", "V"), ("v2", "V"), ("delta_v", "V"),
+]
+
+
+def _pair(params, key):
+    """Read a cursor pair from either spelling the CLIs use.
+
+    The browser console sends two positional arguments, so `[a, b]`; the host
+    CLI has named options, so `{"1": a, "2": b}` is easier to build there.
+    Accepting both keeps one action behind both grammars.
+    """
+    value = params.get(key)
+    if value is None:
+        return None
+    pair = ([value.get("1"), value.get("2")] if isinstance(value, dict)
+            else list(value))
+    # Named ends make it possible to send one and not the other, which would
+    # otherwise reach the driver as a None to multiply by.
+    if len(pair) != 2 or any(end is None for end in pair):
+        raise ValueError(
+            "%s cursors come in a pair, got %r" % (key, value))
+    return pair
+
+
+def _describe_cursors(cursors):
+    parts = []
+    if cursors.get("time"):
+        parts.append("time %g s, %g s" % tuple(cursors["time"]))
+    if cursors.get("volts"):
+        parts.append("volts %g V, %g V" % tuple(cursors["volts"]))
+    return ", ".join(parts) if parts else "No cursors set"
+
+
+def _scope_set_cursor(dev, params):
+    time_pair = _pair(params, "time")
+    volts_pair = _pair(params, "volts")
+    if time_pair is None and volts_pair is None:
+        raise UnknownAction("set_cursor with no cursors to place")
+
+    cursors = dev.set_cursors(time=time_pair, volts=volts_pair,
+                              channel=params.get("channel"))
+    return _ok(_describe_cursors(cursors), cursors)
+
+
+def _scope_measure_cursor(dev):
+    """Where the cursors are and what they read.
+
+    The readings go in the message as well as the payload, since that is what
+    both CLIs print, and a cursor whose position you already typed is not the
+    interesting half.
+    """
+    result = dev.measure_cursors()
+    readings = result.get("readings") or {}
+    if not readings:
+        return _ok("No cursors set", result)
+
+    listed = ", ".join(
+        "%s %g %s" % (name, readings[name], unit)
+        for name, unit in _CURSOR_READINGS if name in readings)
+
+    # A cursor outside the captured window has no signal under it. Worth
+    # saying, because the position read back is exactly the one asked for and
+    # nothing else in the answer hints at why the voltage is missing.
+    missing = [
+        name for name, source in (("t1", "trace_v1"), ("t2", "trace_v2"))
+        if name in readings and source not in readings]
+    if missing and "window_start" in readings:
+        listed += ("; %s outside the captured window (%g s to %g s)"
+                   % (" and ".join(missing), readings["window_start"],
+                      readings["window_end"]))
+
+    return _ok(listed, result)
 
 
 def _scope_measure(dev, action):
