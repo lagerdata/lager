@@ -74,10 +74,15 @@ async fn main() -> Result<()> {
         "starting oscilloscope daemon"
     );
 
-    // Open before serving, so a missing scope is a clear startup failure
-    // rather than a listener that accepts connections and then errors on
-    // every command.
-    let scope = scope_thread::spawn(open_scope).context("opening oscilloscope")?;
+    // Serve whether or not a scope is attached. Opening first looked like the
+    // careful order -- a missing scope became a clear startup failure instead
+    // of a listener that errors on every command -- but the failure that
+    // actually turned up was neither: a scope left mid-transfer by a daemon
+    // killed while capturing blocks forever inside the driver's open call, so
+    // the daemon never failed and never listened, and every client got a bare
+    // "connection refused". Commands now answer with the reason, and the
+    // hardware thread keeps trying to open in the background.
+    let scope = scope_thread::spawn(open_scope).context("starting the oscilloscope thread")?;
 
     server::serve(config, scope).await
 }
