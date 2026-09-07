@@ -899,8 +899,227 @@ class TestTheWindowCanBeMovedInTime:
         seconds it stands for; left alone the window would stay where the old
         scale put it."""
         js = SCOPE_JS.read_text()
+        # Wherever the change handler routes to, setting a timebase has to end
+        # up re-sending the position. Asserted on applyTimebase rather than on
+        # the listener, so moving the work out of the listener -- which is
+        # where the readback made it belong -- is not a failure.
+        applier = js.split("async applyTimebase(seconds")[1].split(
+            "\n  /** Make the timebase")[0]
+        assert "applyTimePosition" in applier
         handler = js.split("el('timebase').addEventListener")[1].split("});")[0]
-        assert "applyTimePosition" in handler
+        assert "applyTimebase" in handler
+
+
+class TestTheChannelStripHasCouplingAndProbe:
+    """The two per-channel settings that were console-only.
+
+    Both change what the trace means rather than how it is drawn, and the
+    probe ratio is what decides which volts/div settings the unit can reach,
+    so leaving it off the panel left the scale list depending on a value
+    nothing on screen showed.
+    """
+
+    @staticmethod
+    def _strip_source():
+        js = SCOPE_JS.read_text()
+        body = js.split("buildChannelStrip(label, index, caps) {")[1]
+        return body.split("\n  /** Redraw")[0]
+
+    def test_both_controls_are_offered_per_channel(self):
+        strip = self._strip_source()
+        assert "set_coupling" in strip
+        assert "state.probeSelect" in strip
+        assert "applyProbe" in strip
+
+    def test_ground_coupling_is_not_offered(self):
+        """The hardware has no ground switch and the daemon refuses it, so a
+        control for it could only ever produce an error."""
+        js = SCOPE_JS.read_text()
+        couplings = js.split("const COUPLINGS = ")[1].split(";")[0]
+        assert "'dc'" in couplings and "'ac'" in couplings
+        assert "gnd" not in couplings.lower()
+
+    def test_an_unwired_channel_can_change_neither(self):
+        """The same trap the other controls had: with no net of its own they
+        fall through to the selected net and drive the wrong channel."""
+        disabled = self._strip_source().split("control.disabled = true")[0]
+        tail = disabled[-400:]
+        assert "couplingSelect" in tail and "probeSelect" in tail
+
+    def test_changing_the_probe_rereads_the_scale(self):
+        """Attenuation changes which range a volts/div maps onto, so the value
+        the panel shows has to come back from the hardware rather than being
+        assumed to have survived."""
+        js = SCOPE_JS.read_text()
+        applier = js.split("async applyProbe(label, ratio")[1].split(
+            "\n  /** Make a channel's probe")[0]
+        assert "set_probe" in applier
+        assert "rebuildScaleChoices" in applier
+        assert "get_scale" in applier
+
+    def test_the_probe_dropdown_never_lies(self):
+        """A ratio set from the console -- a current clamp, say -- has to
+        appear rather than leaving the control showing something else."""
+        shown = _run_js("""
+        const app = Object.create(ScopeApp.prototype);
+        const options = [];
+        const select = {
+          options,
+          value: '1',
+          add(option, before) {
+            const at = before ? options.indexOf(before) : options.length;
+            options.splice(at < 0 ? options.length : at, 0, option);
+          },
+        };
+        const state = { probeSelect: select };
+        app.showProbe(state, 20);
+        process.stdout.write(JSON.stringify({
+          value: select.value,
+          order: options.map((o) => Number(o.value)),
+        }));
+        """)
+        assert shown["value"] == "20"
+        assert shown["order"] == sorted(shown["order"]), (
+            "an inserted ratio has to keep the list in order")
+
+
+class TestTheMeasurementPanelIsLiveAndComplete:
+    """It showed five of the fourteen quantities, read once, on Start."""
+
+    def test_every_quantity_the_daemon_computes_is_listed(self):
+        """The keys are the daemon's own field names, so a rename there shows
+        up here as a dash rather than as a missing row nobody notices."""
+        js = SCOPE_JS.read_text()
+        listed = set(re.findall(r"\['[^']+', '(\w+)', ", js))
+        from_daemon = {
+            "vmax", "vmin", "vpp", "vavg", "vrms", "overshoot",
+            "period", "frequency", "rise_time", "fall_time",
+            "pulse_width_positive", "pulse_width_negative",
+            "duty_cycle_positive", "duty_cycle_negative",
+        }
+        assert from_daemon <= listed, (
+            "missing from the panel: %s" % sorted(from_daemon - listed))
+
+    def test_the_whole_set_comes_from_one_request(self):
+        """Thirteen actions meant thirteen captures, and values from different
+        moments of a live signal: vpp need not have equalled vmax - vmin."""
+        js = SCOPE_JS.read_text()
+        refresh = js.split("async refreshMeasurements()")[1].split(
+            "\n  /** Keep the measurement")[0]
+        assert "measure_all" in refresh
+        for one_at_a_time in ["measure_vpp", "measure_vmax", "measure_vrms"]:
+            assert one_at_a_time not in refresh
+
+    def test_an_absent_quantity_is_not_shown_as_zero(self):
+        """A DC level has no period. Zero would read as a measurement."""
+        js = SCOPE_JS.read_text()
+        refresh = js.split("async refreshMeasurements()")[1].split(
+            "\n  /** Keep the measurement")[0]
+        assert "=== undefined" in refresh or "undefined ===" in refresh
+        assert "\\u2014" in refresh
+
+    def test_running_polls_and_stopping_does_not(self):
+        js = SCOPE_JS.read_text()
+        start = js.split("el('btn-start').addEventListener")[1].split("});")[0]
+        assert "startMeasurementPolling" in start
+        stop = js.split("el('btn-stop').addEventListener")[1].split("});")[0]
+        assert "stopMeasurementPolling" in stop
+
+    def test_disconnecting_stops_the_timer(self):
+        """Otherwise it outlives the socket, taking a capture every half
+        second against a scope nobody is watching."""
+        js = SCOPE_JS.read_text()
+        disconnect = js.split("  disconnect() {")[1].split("\n  }")[0]
+        assert "stopMeasurementPolling" in disconnect
+        # Before the early return, or a page that never connected leaks it.
+        assert disconnect.index("stopMeasurementPolling") < disconnect.index(
+            "if (!this.socket) return;")
+
+
+class TestTheTimebaseComesFromTheHardware:
+    """The list was a fixed 1 us to 100 ms whatever was attached.
+
+    Same fault the volts/div list had before it was derived: it offered
+    settings the unit cannot reach, and never read back, so choosing one
+    silently got you whatever the hardware rounded to.
+    """
+
+    # A 2204A: 100 MS/s, and the driver's floor of 8000 samples a block.
+    CAPS = {"max_sample_rate_hz": 1e8}
+    DEPTH = 8000
+
+    def _choices(self, caps, depth):
+        return _run_js("""
+        const { timebaseChoices } = await import(%s);
+        process.stdout.write(JSON.stringify(timebaseChoices(%s, %s)));
+        """ % (json.dumps(str(SCOPE_JS)), json.dumps(caps), json.dumps(depth)))
+
+    def test_the_unreachable_fast_steps_are_dropped(self):
+        """8000 samples at 10 ns is 80 us of signal, which is 8 us across ten
+        divisions. Anything faster cannot be captured."""
+        offered = self._choices(self.CAPS, self.DEPTH)
+        assert min(offered) >= 8e-6
+        for impossible in (1e-6, 2e-6, 5e-6):
+            assert impossible not in offered
+
+    def test_the_reachable_ones_are_kept(self):
+        offered = self._choices(self.CAPS, self.DEPTH)
+        for wanted in (1e-5, 1e-4, 1e-3, 1e-2, 1e-1):
+            assert wanted in offered, "%s s/div is reachable" % wanted
+
+    def test_an_unknown_unit_is_offered_everything(self):
+        """Before the first capture there is no depth, and refusing to offer a
+        timebase until one arrives would leave nothing to capture with."""
+        assert self._choices({}, None) == self._choices(self.CAPS, None)
+        assert 1e-6 in self._choices({}, None)
+
+    def test_a_faster_unit_offers_more(self):
+        """The derivation has to follow the hardware, not just clamp it."""
+        slow = self._choices({"max_sample_rate_hz": 1e6}, self.DEPTH)
+        fast = self._choices({"max_sample_rate_hz": 1e9}, self.DEPTH)
+        assert min(fast) < min(slow)
+
+    def test_setting_a_timebase_reads_back_what_the_unit_did(self):
+        js = SCOPE_JS.read_text()
+        applier = js.split("async applyTimebase(seconds")[1].split(
+            "\n  /** Make the timebase")[0]
+        assert "set_timebase" in applier
+        assert "get_timebase" in applier
+        assert "showTimebase" in applier
+
+    def test_the_dropdown_shows_a_rounded_value_it_never_offered(self):
+        """1 ms/div on a 2204A is really 1.024 ms/div. Showing the request
+        would be the control reading back its own input."""
+        shown = _run_js("""
+        const app = Object.create(ScopeApp.prototype);
+        const options = [
+          { value: '0.001' }, { value: '0.002' }, { value: '0.005' },
+        ];
+        const select = {
+          options,
+          value: '0.001',
+          add(option, before) {
+            const at = before ? options.indexOf(before) : options.length;
+            options.splice(at < 0 ? options.length : at, 0, option);
+          },
+        };
+        globalThis.document = { getElementById: () => select };
+        app.showTimebase(0.001024);
+        process.stdout.write(JSON.stringify({
+          value: select.value,
+          order: options.map((o) => Number(o.value)),
+        }));
+        """)
+        assert shown["value"] == "0.001024"
+        assert shown["order"] == sorted(shown["order"])
+
+    def test_the_capture_depth_trims_the_list(self):
+        """Depth comes from a frame, not the capabilities: it is what the
+        daemon chose, and it is half of what bounds the fastest screen."""
+        js = SCOPE_JS.read_text()
+        stats = js.split("updateStats(frame) {")[1].split("\n  }")[0]
+        assert "rebuildTimebaseChoices" in stats
+        assert "samplesPerChannel" in stats
 
 
 class TestTheBoxCanReportChannelState:
@@ -939,3 +1158,59 @@ class TestTheBoxCanReportChannelState:
 
         assert result["value"] is False
         assert "disabled" in result["message"]
+
+
+class TestTheBoxCanReportEveryMeasurementAtOnce:
+    """The panel's fourteen readouts needed fourteen requests without this.
+
+    Each per-quantity action takes its own capture, so a panel built from them
+    cost a capture apiece and mixed moments of a live signal together -- a set
+    that need not agree with itself.
+    """
+
+    @staticmethod
+    def _call(measurements):
+        from lager.http_handlers import net_command
+
+        class _Scope:
+            def measure_all(self):
+                return measurements
+
+        original = net_command._proxy
+        net_command._proxy = lambda *a, **k: _Scope()
+        try:
+            return net_command._scope("scope1", "scope", "measure_all", {})
+        finally:
+            net_command._proxy = original
+
+    def test_the_whole_set_comes_back(self):
+        values = {"vpp": 1.5, "vmax": 1.0, "vmin": -0.5, "frequency": 60.0}
+        result = self._call(values)
+        assert result["value"] == values
+        assert "4 measurement" in result["message"]
+
+    def test_the_message_carries_the_values_and_their_units(self):
+        """The console and the CLI both print the message, so a bare count is
+        no answer to somebody who typed `measure all`."""
+        result = self._call({"vpp": 1.5, "frequency": 60.0, "duty_cycle_positive": 50.0})
+        assert "vpp 1.5 V" in result["message"]
+        assert "frequency 60 Hz" in result["message"]
+        # The bulk keys are the daemon's long spellings, not the short forms
+        # the single-measurement actions take, so the units are a separate map.
+        assert "duty_cycle_positive 50 %" in result["message"]
+
+    def test_a_capture_with_nothing_resolvable_is_not_an_error(self):
+        """A flat DC level has no period, no duty cycle and no edges. An empty
+        set is an answer; raising would read as a broken scope."""
+        result = self._call({})
+        assert result["value"] == {}
+        assert "0 measurement" in result["message"]
+
+    def test_the_values_are_the_ones_the_panel_asks_for(self):
+        """Pins the two halves together: the UI indexes this dict by the
+        daemon's field names, so the wire keys are the contract."""
+        js = SCOPE_JS.read_text()
+        listed = set(re.findall(r"\['[^']+', '(\w+)', ", js))
+        result = self._call({"duty_cycle_positive": 50.0, "pulse_width_positive": 1e-3})
+        for key in result["value"]:
+            assert key in listed, "%s comes back but is never displayed" % key

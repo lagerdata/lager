@@ -26,7 +26,14 @@ use super::loader::ps2000;
 
 const NANOSECONDS_PER_SECOND: f64 = 1_000_000_000.0;
 const MIN_MEMORY_DEPTH: usize = 8000;
-const TOTAL_NUM_TIME_DIVISIONS: usize = 8;
+/// Horizontal divisions a capture is spread across.
+///
+/// Ten, which is what a scope screen is: eight is the vertical count, and it
+/// had been used for both. Time/div therefore meant one eighth of the capture
+/// here while every display of it -- the web UI's graticule included -- drew
+/// one tenth, so a window asked for at 1 ms/div was captured 8 ms wide and
+/// drawn as though it were 10, and each division on screen was 0.8 ms.
+const TOTAL_NUM_TIME_DIVISIONS: usize = 10;
 const MAX_NUM_TIMEBASES: i16 = PS2000_MAX_TIMEBASE as i16;
 const DEFAULT_ATTENUATION: f64 = 10.0;
 const DEFAULT_TRIGGER_POSITION: f64 = 50.0;
@@ -1565,6 +1572,7 @@ impl Oscilloscope for PicoScope2000 {
     }
 
     fn set_coupling(&mut self, channel: ChannelId, coupling: Coupling) -> anyhow::Result<()> {
+        reject_unsupported_coupling(coupling)?;
         self.set_ac_dc_coupling(channel, coupling)
     }
 
@@ -1614,8 +1622,23 @@ impl Oscilloscope for PicoScope2000 {
         self.set_scope_time_per_div(time_per_div, self.memory_depth)
     }
 
+    /// The time/div the capture is actually running at, not the one asked for.
+    ///
+    /// A scope has a fixed set of sample intervals, so an arbitrary time/div
+    /// cannot be honoured exactly: asking a 2204A for 1 ms/div lands on the
+    /// 1280 ns interval and captures 1.024 ms per division. Returning the
+    /// request hid that, and hid it worst where it matters -- anything
+    /// converting divisions to seconds, like the horizontal position, was
+    /// working from a number the hardware had already rounded away from.
     fn get_time_per_div(&self) -> anyhow::Result<f64> {
-        Ok(self.settings.time_per_div)
+        if self.current_time_interval_ns <= 0.0 || self.memory_depth == 0 {
+            // Nothing captured yet, so there is no achieved value to report
+            // and the request is the best answer available.
+            return Ok(self.settings.time_per_div);
+        }
+        let span_seconds =
+            self.memory_depth as f64 * self.current_time_interval_ns / NANOSECONDS_PER_SECOND;
+        Ok(span_seconds / TOTAL_NUM_TIME_DIVISIONS as f64)
     }
 
     fn set_time_offset(&mut self, time_offset: f64) -> anyhow::Result<()> {
@@ -1868,6 +1891,26 @@ fn trigger_position_split(memory_depth: u32, percent: f64) -> (u32, u32) {
     (pre, post)
 }
 
+/// Rejects ground coupling, which this series has no input switch for.
+///
+/// `ps2000_set_channel` takes one flag for coupling, DC or AC, so GND had
+/// nowhere to go: it fell to the same raw value as AC and the input stayed
+/// live, while `get_coupling` returned the GND it had stored. Both halves
+/// were wrong, and together they are worse than either -- the readback
+/// agrees with a setting the hardware never applied, so the trace looks like
+/// a grounded input that is drifting rather than a live one.
+fn reject_unsupported_coupling(coupling: Coupling) -> anyhow::Result<()> {
+    if coupling == Coupling::GND {
+        anyhow::bail!(
+            "this scope has no ground coupling, so GND cannot be applied; \
+             the input would stay live while the setting read back as GND. \
+             Use AC to block the DC component, or unplug the probe to see \
+             where zero sits"
+        );
+    }
+    Ok(())
+}
+
 /// Rejects any volts offset but zero, since this series has no analog offset.
 ///
 /// A free function so it can be tested: building a `PicoScope2000` needs a
@@ -2034,6 +2077,28 @@ mod tests {
         // send zero; refusing that would break setup rather than protect it.
         assert!(reject_unsupported_offset(0.0).is_ok());
         assert!(reject_unsupported_offset(-0.0).is_ok());
+    }
+
+    #[test]
+    fn ground_coupling_is_refused_rather_than_silently_ac() {
+        let message = match reject_unsupported_coupling(Coupling::GND) {
+            Ok(()) => panic!("GND was accepted on a scope with no ground switch"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            message.contains("ground coupling"),
+            "say which setting was refused, got {message:?}"
+        );
+        assert!(
+            message.contains("AC"),
+            "point at what to use instead, got {message:?}"
+        );
+    }
+
+    #[test]
+    fn the_couplings_this_scope_has_are_still_accepted() {
+        assert!(reject_unsupported_coupling(Coupling::DC).is_ok());
+        assert!(reject_unsupported_coupling(Coupling::AC).is_ok());
     }
 
     #[test]

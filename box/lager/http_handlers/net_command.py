@@ -965,6 +965,9 @@ def _scope(netname, role, action, params):
             capabilities.get("model") or "scope",
             capabilities.get("analog_channels") or "?"), capabilities)
 
+    if action == "measure_all":
+        return _scope_measure_all(dev)
+
     if action in _SCOPE_MEASUREMENTS:
         return _scope_measure(dev, action)
 
@@ -987,7 +990,49 @@ _SCOPE_MEASUREMENTS = {
     "measure_pulse_width_neg": ("pulse_width_neg", "s"),
     "measure_rise_time": ("rise_time", "s"),
     "measure_fall_time": ("fall_time", "s"),
+    # The daemon has computed this from every capture all along; it was the
+    # one quantity with no action to ask for it.
+    "measure_overshoot": ("overshoot", "%"),
 }
+
+
+# Units for the bulk response, whose keys are the daemon's own field names.
+# Not the same spellings the single-measurement actions use: those are the
+# short forms the CLI takes, and `duty_cycle_pos` there is
+# `duty_cycle_positive` on the wire.
+_BULK_MEASURE_UNITS = {
+    "vmax": "V", "vmin": "V", "vpp": "V", "vavg": "V", "vrms": "V",
+    "overshoot": "%",
+    "period": "s", "frequency": "Hz",
+    "rise_time": "s", "fall_time": "s",
+    "pulse_width_positive": "s", "pulse_width_negative": "s",
+    "duty_cycle_positive": "%", "duty_cycle_negative": "%",
+}
+
+
+def _scope_measure_all(dev):
+    """Every measurement the capture supports, from one capture.
+
+    The per-quantity actions each take their own capture, so reading a panel
+    of them costs a capture apiece and returns values from different moments
+    of a live signal -- a set that need not be self-consistent, where vpp does
+    not equal vmax - vmin because the two came from different acquisitions.
+    One capture answers all of them at once, and consistently.
+
+    Absent quantities are simply not in the dict. A DC level has no period,
+    and saying so by omission beats inventing a zero.
+
+    The values go in the message as well as the payload: the web UI's console
+    and the CLI both print the message, and a bare count is not an answer to
+    somebody who typed `measure all`.
+    """
+    values = dev.measure_all() or {}
+    listed = ", ".join(
+        "%s %g %s" % (name, value, _BULK_MEASURE_UNITS.get(name, ""))
+        for name, value in values.items())
+    return _ok(
+        "%d measurement(s)%s" % (len(values), ": " + listed if listed else ""),
+        values)
 
 
 def _scope_measure(dev, action):
