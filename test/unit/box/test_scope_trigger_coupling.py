@@ -72,9 +72,12 @@ class TestATriggerFilterDoesNotTouchTheInput:
 
     def test_the_other_trigger_fields_still_reach_their_own_setters(self):
         device = _RecordingScope()
+        # Normal rather than single: choosing single-shot arms it, so it goes
+        # to `single()` rather than to the plain mode setter. That is its own
+        # test in test_scope_trigger_mode.py.
         _invoke("trigger_edge",
                 {"source": "A", "slope": "rising", "level": 1.2,
-                 "mode": "single"}, device)
+                 "mode": "normal"}, device)
 
         setters = [name for name, _ in device.calls]
         for expected in ("set_trigger_source", "set_trigger_slope",
