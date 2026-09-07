@@ -208,6 +208,38 @@ export const COMMANDS = [
     },
   },
   {
+    // Cursors are typed only -- there is no handle on the plot to drag and no
+    // field in the sidebar. They are kept on the box, not in this page, so
+    // that a pair placed from the terminal `lager scope ... cursor` is the
+    // pair drawn here.
+    verb: 'cursor',
+    usage: 'cursor [time <t1> <t2> | volts <v1> <v2> | off]',
+    help: 'Place cursors and read the deltas; "cursor" alone reads them',
+    parse: (args) => {
+      if (args.length === 0) {
+        return new ParsedCommand('measure_cursor', {}, 'cursor');
+      }
+      const kind = args[0].toLowerCase();
+      if (kind === 'off') {
+        return new ParsedCommand('clear_cursor', {}, 'cursor off');
+      }
+      if (kind !== 'time' && kind !== 'volts') {
+        throw new CommandError(
+          `unknown cursor "${args[0]}"; try "cursor time <t1> <t2>", `
+          + '"cursor volts <v1> <v2>", or "cursor off"');
+      }
+      // Both at once, because one cursor of a pair reads nothing: the
+      // quantity wanted is the difference between them.
+      const what = kind === 'time' ? 'seconds' : 'volts';
+      const pair = [
+        requireNumber(args[1], `first cursor in ${what}`),
+        requireNumber(args[2], `second cursor in ${what}`),
+      ];
+      return new ParsedCommand('set_cursor', { [kind]: pair },
+        `cursor ${args.slice(0, 3).join(' ')}`);
+    },
+  },
+  {
     verb: 'capabilities',
     usage: 'capabilities',
     help: 'Show what the attached scope supports',

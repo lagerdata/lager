@@ -86,6 +86,86 @@ class UnsupportedScopeFeature(RuntimeError):
     """
 
 
+def trace_voltage_at(times, volts, at):
+    """The trace's voltage at time ``at``, linearly interpolated.
+
+    ``None`` when ``at`` falls outside the captured window: a cursor parked
+    off the end of the record has no signal under it, and interpolating from
+    the nearest end would answer with a voltage from a different moment.
+
+    The samples land on a grid the user did not choose, so a cursor almost
+    never sits exactly on one. Interpolating between the two it falls between
+    is what a scope does, and it matters most where it is easiest to notice --
+    on a fast edge, where the nearest sample can be most of the amplitude
+    away.
+    """
+    if times is None or volts is None:
+        return None
+    count = min(len(times), len(volts))
+    if count == 0:
+        return None
+    if at < times[0] or at > times[count - 1]:
+        return None
+
+    # Bisect rather than scan: a block is thousands of samples and the web UI
+    # asks for this on every frame it draws.
+    low, high = 0, count - 1
+    while high - low > 1:
+        middle = (low + high) // 2
+        if times[middle] <= at:
+            low = middle
+        else:
+            high = middle
+
+    span = times[high] - times[low]
+    if span <= 0:
+        return float(volts[low])
+    fraction = (at - times[low]) / span
+    return float(volts[low]) + fraction * (float(volts[high]) - float(volts[low]))
+
+
+def cursor_readings(time_pair=None, volts_pair=None, times=None, volts=None):
+    """Everything a pair of time cursors and a pair of voltage cursors say.
+
+    A free function, and the only place the arithmetic lives, so the CLI's
+    answer and the panel's are the same answer. Absent quantities are left
+    out rather than zeroed, the same way a capture with no resolvable period
+    reports no period: a cursor off the end of the record has no voltage
+    under it, and two cursors at the same instant have no frequency.
+    """
+    readings = {}
+
+    if time_pair:
+        t1, t2 = float(time_pair[0]), float(time_pair[1])
+        readings["t1"] = t1
+        readings["t2"] = t2
+        readings["delta_t"] = t2 - t1
+        if readings["delta_t"]:
+            # What the pair is usually for: put them a cycle apart and read
+            # the frequency off directly.
+            readings["frequency"] = 1.0 / readings["delta_t"]
+
+        if times is not None and volts is not None and len(times):
+            readings["window_start"] = float(times[0])
+            readings["window_end"] = float(times[len(times) - 1])
+            trace_v1 = trace_voltage_at(times, volts, t1)
+            trace_v2 = trace_voltage_at(times, volts, t2)
+            if trace_v1 is not None:
+                readings["trace_v1"] = trace_v1
+            if trace_v2 is not None:
+                readings["trace_v2"] = trace_v2
+            if trace_v1 is not None and trace_v2 is not None:
+                readings["trace_delta_v"] = trace_v2 - trace_v1
+
+    if volts_pair:
+        v1, v2 = float(volts_pair[0]), float(volts_pair[1])
+        readings["v1"] = v1
+        readings["v2"] = v2
+        readings["delta_v"] = v2 - v1
+
+    return readings
+
+
 def normalize_channel(channel) -> dict:
     """Render a channel as the daemon's ``ChannelId`` JSON.
 
@@ -153,6 +233,12 @@ class PicoScope:
         self.channel = pin or channel or 1
         self._client = None
         self._capabilities = None
+        # Cursor positions, held here rather than in the daemon: they are
+        # nothing the hardware knows about, and putting them on the box
+        # instead of in the browser is what lets the CLI place a cursor and
+        # the web UI draw it. Seconds relative to the trigger, and volts at
+        # the probe tip, matching every other number in this driver.
+        self._cursors = {"time": None, "volts": None}
 
     # -- plumbing --------------------------------------------------------
     @property
@@ -517,6 +603,93 @@ class PicoScope:
     def get_measure_item(self, item, channel=None) -> float:
         """Rigol-compatible measurement accessor."""
         return self.measure(item, channel)
+
+    # ============ Cursors ============
+    #
+    # Driven by typing, in either CLI, with nothing to drag. A Rigol's cursors
+    # are markers on the instrument's own screen, read back over SCPI; a
+    # PicoScope has no screen, so these are markers over the captured samples
+    # instead. They live on the box so that both CLIs and the web UI are
+    # looking at one set: place a cursor with `lager scope`, and the plot in
+    # the browser draws it.
+
+    def set_cursors(self, time=None, volts=None, channel=None) -> dict:
+        """Place the time pair, the voltage pair, or both.
+
+        Each pair is independent and only the ones given are touched, so
+        moving the time cursors does not clear voltage cursors set earlier.
+        """
+        if time is not None:
+            if len(time) != 2:
+                raise ValueError(
+                    "time cursors come in a pair, got %r" % (time,))
+            self._cursors["time"] = (float(time[0]), float(time[1]))
+        if volts is not None:
+            if len(volts) != 2:
+                raise ValueError(
+                    "voltage cursors come in a pair, got %r" % (volts,))
+            self._cursors["volts"] = (float(volts[0]), float(volts[1]))
+        if channel is not None:
+            self._cursors["channel"] = channel_label(channel)
+        return self.get_cursors()
+
+    def get_cursors(self) -> dict:
+        """Where the cursors are, without taking a capture to read them.
+
+        The channel is always reported, defaulting to this net's own, because
+        the voltage readings depend on it: whoever draws these has to put them
+        on the same trace they were measured against.
+        """
+        return {
+            "time": list(self._cursors["time"]) if self._cursors["time"] else None,
+            "volts": list(self._cursors["volts"]) if self._cursors["volts"] else None,
+            "channel": self._cursors.get("channel") or channel_label(self.channel),
+        }
+
+    def clear_cursors(self) -> dict:
+        self._cursors = {"time": None, "volts": None}
+        return self.get_cursors()
+
+    def measure_cursors(self, channel=None, timeout: float | None = None) -> dict:
+        """Read the cursors against a capture.
+
+        Time cursors need the samples, since the useful part is the voltage
+        of the trace under each one; voltage cursors are arithmetic and need
+        no capture. So one is taken only when there is a time pair to read,
+        which keeps `cursor volts` free.
+        """
+        cursors = self.get_cursors()
+        if not cursors["time"] and not cursors["volts"]:
+            return {"cursors": cursors, "readings": {}}
+
+        times = trace = None
+        if cursors["time"]:
+            label = channel_label(channel) if channel else cursors["channel"]
+            cursors["channel"] = label
+            frame = self._capture_for_cursors(timeout)
+            times = frame.time_axis()
+            trace = frame.volts(label)
+
+        return {
+            "cursors": cursors,
+            "readings": cursor_readings(cursors["time"], cursors["volts"],
+                                        times, trace),
+        }
+
+    def _capture_for_cursors(self, timeout=None):
+        """A capture to read cursors against, arming if nothing is coming.
+
+        Read from a running acquisition where there is one, so a cursor
+        reading matches the trace on screen and does not interrupt a stream.
+        Cold, there is nothing to wait for, so it arms and asks again rather
+        than blocking until the timeout and reporting a dead scope.
+        """
+        wait = timeout if timeout is not None else 2.0
+        try:
+            return self.capture(timeout=wait)
+        except daemon_client.ScopeDaemonError:
+            self._start_acquisition()
+            return self.capture(timeout=wait)
 
     # ============ Waveform capture ============
     def capture(self, timeout: float | None = None):

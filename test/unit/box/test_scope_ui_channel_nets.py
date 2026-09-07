@@ -193,6 +193,11 @@ class TestTheUiAdoptsTheHardwareState:
       applyVoltsPerDiv: ScopeApp.prototype.applyVoltsPerDiv,
       showVoltsPerDiv: ScopeApp.prototype.showVoltsPerDiv,
       rebuildScaleChoices: ScopeApp.prototype.rebuildScaleChoices,
+      // The real one, not a stub: cursors are read back on connect the same
+      // way the scale and the position are, and it has to survive a box that
+      // does not know the action.
+      refreshCursors: ScopeApp.prototype.refreshCursors,
+      adoptCursors: ScopeApp.prototype.adoptCursors,
       runCommand: async () => ({}),
       send: async (action, params, net) => {
         calls.push({ action, net });
