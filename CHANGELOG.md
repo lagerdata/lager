@@ -12,6 +12,15 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Added
+
+- **An oscilloscope is now a `scope` net, and each of its inputs a `scope-channel` net.**
+  Channel settings (enable, volts/div, offset, coupling, probe, measurements) go to a
+  channel net, and everything else (timebase, trigger, run and stop, cursors) to the scope
+  net. A scope setting sent to a channel net still works, and a channel setting sent to the
+  scope net is refused with the channel nets to use instead; saved scope nets convert
+  themselves to `scope-channel` nets, next to a new `scope` net, the first time a box reads them.
+
 ### Changed
 
 - **The box image's `pytest` moves from 6.2.5 to 8.4.2.** A test suite run on
@@ -35,6 +44,12 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   file path now says which file could not be written and how to mount it, rather
   than "USB device busy" with advice to run `lager diagnose`. The `--debug` hint
   now shows the form that works: `lager --debug <command>`.
+- **A Rigol MSO5000 keeps the trigger level it is sent.** The level was written as
+  `:TRIGger:EDGE:LEVel <level>,<source>`, a form the instrument rejects without an error, so
+  every level set on a Rigol was discarded. It now sends the one-argument form, in the units of
+  the trigger source.
+- **A Rigol saved without a VISA address no longer takes a LabJack's device lock.** Its lock
+  key fell through to `labjack:ANY`, so its scope commands queued behind unrelated GPIO traffic.
 - **Code derived from two MIT-licensed projects now carries their notices.**
   `cli/simple_hdlc.py` is derived from simple-hdlc, and `box/lager/blufi/` is
   ported from Espressif's EspBlufiForAndroid, whose license covers use with
