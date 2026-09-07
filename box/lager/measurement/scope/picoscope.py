@@ -667,6 +667,15 @@ class PicoScope:
             label = channel_label(channel) if channel else cursors["channel"]
             cursors["channel"] = label
             frame = self._capture_for_cursors(timeout)
+            # A disabled channel is absent from the capture rather than
+            # present and empty, and asking the frame for it reports the
+            # channel as though it did not exist on the scope. Said the way
+            # the daemon says it for measurements, since the cause is the
+            # same and so is the fix.
+            if frame.channel_index(label) is None:
+                raise UnsupportedScopeFeature(
+                    "channel %s is not enabled, so there is nothing for the "
+                    "cursors to read" % label)
             times = frame.time_axis()
             trace = frame.volts(label)
 
