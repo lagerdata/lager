@@ -12,8 +12,23 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Added
+
+- **An oscilloscope is now a `scope` net, and each of its inputs a `scope-channel` net.**
+  Channel settings (enable, volts/div, offset, coupling, probe, measurements) go to a
+  channel net, and everything else (timebase, trigger, run and stop, cursors) to the scope
+  net. A scope setting sent to a channel net still works, and a channel setting sent to the
+  scope net is refused with the channel nets to use instead; saved scope nets convert
+  themselves to `scope-channel` nets, next to a new `scope` net, the first time a box reads them.
+
 ### Fixed
 
+- **A Rigol MSO5000 keeps the trigger level it is sent.** The level was written as
+  `:TRIGger:EDGE:LEVel <level>,<source>`, a form the instrument rejects without an error, so
+  every level set on a Rigol was discarded. It now sends the one-argument form, in the units of
+  the trigger source.
+- **A Rigol saved without a VISA address no longer takes a LabJack's device lock.** Its lock
+  key fell through to `labjack:ANY`, so its scope commands queued behind unrelated GPIO traffic.
 - **`lager uninstall` and `lager install` now stop every SSH key-sync poller a
   previous run left on the box.** A poller the PID file no longer named kept
   rebuilding `~/.ssh/authorized_keys` until reboot, and could revoke registered keys
