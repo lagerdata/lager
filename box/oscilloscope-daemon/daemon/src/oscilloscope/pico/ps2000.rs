@@ -894,6 +894,21 @@ impl PicoScope2000 {
     }
 
 
+    /// Translate the stored trigger position into a pre/post-trigger split.
+    ///
+    /// Where the trigger sits inside the block is what moves the capture
+    /// window in time, so this has to run whenever the position changes as
+    /// well as whenever the depth does. It used to run only on a depth
+    /// change, which is why the horizontal position looked like it worked:
+    /// arming stored the percent and read it back, while the split -- and so
+    /// the window -- stayed wherever it was, centred.
+    fn apply_trigger_position(&mut self) {
+        let (pre, post) =
+            trigger_position_split(self.memory_depth, self.settings.trigger.trigger_position);
+        self.pre_trigger_samples = pre;
+        self.post_trigger_samples = post;
+    }
+
     fn update_memory_depth(&mut self) -> anyhow::Result<()> {
         let num_channels = self.settings.channels.iter().filter(|c| c.enabled).count().max(1);
         let memory_depth = if num_channels == 1 {
@@ -906,20 +921,7 @@ impl PicoScope2000 {
             Ok(_) => {
                 tracing::debug!("Updated memory depth: {}", memory_depth);
                 self.memory_depth = memory_depth;
-                // Clamp trigger position to valid range (0-100%)
-                let clamped_percent = self.settings.trigger.trigger_position.clamp(0.0, 100.0);
-                self.pre_trigger_samples = (self.memory_depth as f64 * clamped_percent / 100.0) as u32;
-                self.post_trigger_samples = self.memory_depth.saturating_sub(self.pre_trigger_samples);
-
-                // Ensure we have at least some samples for both pre and post trigger
-                if self.pre_trigger_samples == 0 {
-                    self.pre_trigger_samples = 1;
-                    self.post_trigger_samples = self.memory_depth.saturating_sub(1);
-                }
-                if self.post_trigger_samples == 0 {
-                    self.post_trigger_samples = 1;
-                    self.pre_trigger_samples = self.memory_depth.saturating_sub(1);
-                }                
+                self.apply_trigger_position();
                 Ok(())
             },
             Err(e) => {
@@ -1205,6 +1207,9 @@ impl PicoScope2000 {
     fn run_block(&mut self, trigger_position_percent: f64) -> anyhow::Result<()> {
         let api = ps2000()?;
         self.settings.trigger.trigger_position = trigger_position_percent;
+        // Before do_update_trigger, which derives the hardware trigger delay
+        // from the split.
+        self.apply_trigger_position();
 
         // Stop unconditionally: a previous client that disconnected without
         // stopping leaves is_capturing set with no capture actually armed,
@@ -1682,8 +1687,19 @@ impl Oscilloscope for PicoScope2000 {
             .ok_or_else(|| anyhow::anyhow!("capture held no samples for channel {channel}"))
     }
 
+    /// The rate captures are actually running at, not the unit's maximum.
+    ///
+    /// These differ by a lot: a 2204A tops out at 100 MS/s, but at 1 ms/div
+    /// it samples at about 780 kS/s. Reporting the maximum made every caller
+    /// that divides the depth by the rate to get the length of the capture
+    /// window wrong by that ratio -- including the horizontal position, which
+    /// converts a time offset into a fraction of the window. The maximum is
+    /// still available, as `max_sample_rate_hz` in the capabilities.
     fn get_sample_rate(&self) -> anyhow::Result<f64> {
-        self.get_sample_rate_from_device()
+        if self.current_time_interval_ns <= 0.0 {
+            return self.get_sample_rate_from_device();
+        }
+        Ok(1e9 / self.current_time_interval_ns)
     }
 
     fn get_memory_depth(&self) -> anyhow::Result<usize> {
@@ -1822,6 +1838,34 @@ fn to_probe_volts(input_volts: f64, attenuation: f64) -> f64 {
         return input_volts;
     }
     input_volts * attenuation
+}
+
+/// Split a block into pre- and post-trigger samples for a trigger position.
+///
+/// The percent is where the trigger sits in the block, so 50 centres it and
+/// 0 puts the whole window after it. Out-of-range values are clamped rather
+/// than refused: the callers that produce them are converting a time offset
+/// the user asked for, and clamping is what "as far as the block reaches"
+/// means.
+///
+/// A free function so it can be tested: building a `PicoScope2000` needs a
+/// device handle, and this arithmetic is where the window comes from.
+fn trigger_position_split(memory_depth: u32, percent: f64) -> (u32, u32) {
+    let clamped_percent = percent.clamp(0.0, 100.0);
+    let mut pre = (memory_depth as f64 * clamped_percent / 100.0) as u32;
+    let mut post = memory_depth.saturating_sub(pre);
+
+    // One sample either side at the extremes: a block that is entirely pre-
+    // or post-trigger leaves ps2000 nothing to align the trigger to.
+    if pre == 0 {
+        pre = 1;
+        post = memory_depth.saturating_sub(1);
+    }
+    if post == 0 {
+        post = 1;
+        pre = memory_depth.saturating_sub(1);
+    }
+    (pre, post)
 }
 
 /// Rejects any volts offset but zero, since this series has no analog offset.
@@ -1990,5 +2034,50 @@ mod tests {
         // send zero; refusing that would break setup rather than protect it.
         assert!(reject_unsupported_offset(0.0).is_ok());
         assert!(reject_unsupported_offset(-0.0).is_ok());
+    }
+
+    #[test]
+    fn a_centred_trigger_splits_the_block_in_half() {
+        assert_eq!(trigger_position_split(8000, 50.0), (4000, 4000));
+    }
+
+    #[test]
+    fn moving_the_trigger_moves_the_split() {
+        // The whole point of the position: a quarter of the block before the
+        // trigger means three quarters of the window is signal after it.
+        assert_eq!(trigger_position_split(8000, 25.0), (2000, 6000));
+        assert_eq!(trigger_position_split(8000, 75.0), (6000, 2000));
+    }
+
+    #[test]
+    fn every_position_accounts_for_the_whole_block() {
+        // A split that loses or invents samples would shorten or overrun the
+        // capture rather than move it.
+        for percent in [0.0, 1.0, 25.0, 33.3, 50.0, 66.7, 99.0, 100.0] {
+            let (pre, post) = trigger_position_split(8000, percent);
+            assert_eq!(pre + post, 8000, "at {percent}% the block is not whole");
+        }
+    }
+
+    #[test]
+    fn the_extremes_keep_a_sample_either_side() {
+        // ps2000 has nothing to align to in a block that is entirely one
+        // side of the trigger, so the ends of the travel stop one short.
+        assert_eq!(trigger_position_split(8000, 0.0), (1, 7999));
+        assert_eq!(trigger_position_split(8000, 100.0), (7999, 1));
+    }
+
+    #[test]
+    fn a_position_past_the_end_of_the_block_is_clamped() {
+        // Callers convert a time offset the user asked for, which can be
+        // further than one window; that means "as far as the block reaches".
+        assert_eq!(
+            trigger_position_split(8000, 150.0),
+            trigger_position_split(8000, 100.0)
+        );
+        assert_eq!(
+            trigger_position_split(8000, -50.0),
+            trigger_position_split(8000, 0.0)
+        );
     }
 }
