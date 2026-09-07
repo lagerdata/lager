@@ -403,7 +403,20 @@ fn run(
                             acquiring.store(false, Ordering::Relaxed);
                         }
                     }
-                    next_poll = Some(Instant::now());
+                    // Not immediately, which is what this did. A freshly
+                    // armed block cannot be complete, so the only thing a
+                    // zero-delay poll can find is a readiness flag left over
+                    // from the block just read -- and acting on that reads the
+                    // new block while the device is still filling it. The
+                    // samples that come back are then whatever the buffer
+                    // holds mid-collection, with the trigger nowhere near
+                    // where the arm put it, which is a trace that jumps
+                    // sideways every few frames however steady the signal is.
+                    //
+                    // The same interval the not-ready branch below waits, for
+                    // the same reason: polling faster than the capture can
+                    // complete cannot produce data.
+                    next_poll = Some(Instant::now() + scope.suggested_poll_interval());
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "capture read failed");
@@ -422,6 +435,64 @@ fn run(
 
     tracing::info!("oscilloscope thread shutting down");
     let _ = scope.stop_triggered_capture();
+}
+
+/// Whether answering this request leaves the published capture describing a
+/// scope that no longer exists.
+///
+/// Every setting here re-arms the hardware on this family: the drivers stop,
+/// reprogram and restart the block, because that is how a change takes effect
+/// mid-acquisition. So the samples last published were taken under the old
+/// setting and must not go on being served -- a `Measure` after a new
+/// timebase would answer from the old window, and `IsReady` would report a
+/// capture belonging to a configuration the caller has already replaced.
+///
+/// Listed rather than derived so that adding a request has to say which it
+/// is. The reads are all here too, as the `false` arm, for the same reason.
+fn invalidates_the_published_capture(request: &ScopeRequest) -> bool {
+    match request {
+        ScopeRequest::EnableChannel(_)
+        | ScopeRequest::DisableChannel(_)
+        | ScopeRequest::SetVoltsPerDiv(..)
+        | ScopeRequest::SetVoltsOffset(..)
+        | ScopeRequest::SetCoupling(..)
+        | ScopeRequest::SetAttenuation(..)
+        | ScopeRequest::SetTimePerDiv(_)
+        | ScopeRequest::SetTimeOffset(_)
+        | ScopeRequest::SetTriggerLevel(_)
+        | ScopeRequest::SetTriggerSource(_)
+        | ScopeRequest::SetTriggerSlope(_)
+        | ScopeRequest::SetCaptureMode(_)
+        | ScopeRequest::StartAcquisition(_) => true,
+
+        // Stopping keeps it. The last capture is what a stopped scope is
+        // showing, and a measurement of it is the reading on screen -- the
+        // same as reading a held trace off a bench scope.
+        ScopeRequest::StopAcquisition
+        // Forcing asks for a capture rather than changing what one would
+        // contain, and the loop replaces the frame as soon as one arrives.
+        | ScopeRequest::ForceTrigger
+        | ScopeRequest::IsChannelEnabled(_)
+        | ScopeRequest::GetVoltsPerDiv(_)
+        | ScopeRequest::GetVoltsOffset(_)
+        | ScopeRequest::GetCoupling(_)
+        | ScopeRequest::GetAttenuation(_)
+        | ScopeRequest::GetTimePerDiv
+        | ScopeRequest::GetTimeOffset
+        | ScopeRequest::GetTriggerLevel
+        | ScopeRequest::GetTriggerSource
+        | ScopeRequest::GetTriggerSlope
+        | ScopeRequest::GetCaptureMode
+        | ScopeRequest::GetSampleRate
+        | ScopeRequest::GetMemoryDepth
+        | ScopeRequest::GetBandwidth
+        | ScopeRequest::GetChannelCount
+        | ScopeRequest::GetCapabilities
+        | ScopeRequest::IsReady
+        | ScopeRequest::GetTriggeredData
+        | ScopeRequest::Measure { .. }
+        | ScopeRequest::MeasureAll { .. } => false,
+    }
 }
 
 /// State the acquisition loop owns but command handling also has to see.
@@ -481,6 +552,19 @@ fn handle(
                 Err(e) => ScopeReply::error(e),
             }
         };
+    }
+
+    // A setting that re-arms the scope makes the published capture obsolete,
+    // and on this family almost every setter re-arms -- the drivers stop,
+    // reprogram and restart the block so the change takes effect. Only
+    // StartAcquisition used to say so, and it is the one path the drivers do
+    // not take when a setter re-arms on its own, so the cache outlived nearly
+    // every change to it: a measurement taken after a new timebase described
+    // samples from the old one, still stamped with the interval in force when
+    // they were read rather than when they were captured.
+    if invalidates_the_published_capture(&request) {
+        state.captured_since_arm = false;
+        state.last_frame = None;
     }
 
     match request {
@@ -734,6 +818,13 @@ mod tests {
             Ok(50.0)
         }
 
+        /// Implemented rather than left unimplemented with the other setters:
+        /// a timebase change re-arms the scope, which puts it on the capture
+        /// path. The driver does the arming; there is nothing to record here.
+        fn set_time_per_div(&mut self, _seconds: f64) -> anyhow::Result<()> {
+            Ok(())
+        }
+
         unused! {
             is_channel_enabled(ChannelId) -> bool;
             get_volts_per_div(ChannelId) -> f64;
@@ -771,7 +862,6 @@ mod tests {
             set_coupling(ChannelId, Coupling);
             set_attenuation(ChannelId, f64);
             set_trigger_level(f64);
-            set_time_per_div(f64);
             set_time_offset(f64);
             set_trigger_source(ChannelId);
             set_trigger_slope(TriggerSlope);
@@ -1075,6 +1165,74 @@ mod tests {
         harness.acquiring.store(false, Ordering::Relaxed);
 
         assert!(harness.is_ready());
+    }
+
+    #[test]
+    fn a_setting_that_re_arms_discards_the_published_capture() {
+        // Only StartAcquisition used to say so, and a setter that re-arms
+        // inside the driver never reaches it -- so a measurement taken after
+        // a new timebase was answered from the window before it.
+        for request in [
+            ScopeRequest::SetTimePerDiv(1e-3),
+            ScopeRequest::SetTimeOffset(0.0),
+            ScopeRequest::SetVoltsPerDiv(ChannelId::Alphabetic('A'), 1.0),
+            ScopeRequest::SetVoltsOffset(ChannelId::Alphabetic('A'), 0.0),
+            ScopeRequest::SetCoupling(ChannelId::Alphabetic('A'), Coupling::DC),
+            ScopeRequest::SetAttenuation(ChannelId::Alphabetic('A'), 10.0),
+            ScopeRequest::SetTriggerLevel(1.0),
+            ScopeRequest::SetTriggerSource(ChannelId::Alphabetic('A')),
+            ScopeRequest::SetTriggerSlope(TriggerSlope::Rising),
+            ScopeRequest::SetCaptureMode(CaptureMode::Normal),
+            ScopeRequest::EnableChannel(ChannelId::Alphabetic('B')),
+            ScopeRequest::DisableChannel(ChannelId::Alphabetic('B')),
+            ScopeRequest::StartAcquisition(50.0),
+        ] {
+            assert!(
+                invalidates_the_published_capture(&request),
+                "{request:?} re-arms the scope, so the published capture is stale"
+            );
+        }
+    }
+
+    #[test]
+    fn reading_and_stopping_keep_the_published_capture() {
+        // A stopped scope is still showing its last capture, and measuring it
+        // is reading the held trace -- so a stop must not throw it away.
+        for request in [
+            ScopeRequest::StopAcquisition,
+            ScopeRequest::IsReady,
+            ScopeRequest::GetTriggeredData,
+            ScopeRequest::GetTimePerDiv,
+            ScopeRequest::GetCaptureMode,
+            ScopeRequest::GetCapabilities,
+            ScopeRequest::MeasureAll {
+                channel: ChannelId::Alphabetic('A'),
+            },
+        ] {
+            assert!(
+                !invalidates_the_published_capture(&request),
+                "{request:?} does not change what a capture would contain"
+            );
+        }
+    }
+
+    #[test]
+    fn a_new_timebase_invalidates_the_capture_taken_under_the_old_one() {
+        // The whole point, through the handler rather than the predicate: a
+        // client that changes the timebase and measures must not be answered
+        // from the window it just replaced.
+        let mut harness = Harness::new();
+        harness.send(ScopeRequest::StartAcquisition(50.0));
+        publish(&mut harness, 100);
+        harness.state.captured_since_arm = true;
+
+        harness.send(ScopeRequest::SetTimePerDiv(1e-3));
+
+        assert!(
+            harness.state.last_frame.is_none(),
+            "a capture from the previous timebase was left servable"
+        );
+        assert!(!harness.state.captured_since_arm);
     }
 
     /// A handle in `state`, whose command channel is already closed.
