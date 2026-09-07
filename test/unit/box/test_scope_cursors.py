@@ -35,7 +35,7 @@ import subprocess
 import pytest
 
 from lager.measurement.scope.picoscope import (
-    PicoScope, cursor_readings, trace_voltage_at,
+    PicoScope, UnsupportedScopeFeature, cursor_readings, trace_voltage_at,
 )
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
@@ -261,16 +261,29 @@ class TestTheBoxHoldsTheCursors:
 
 
 class _FakeFrame:
-    """A 2 ms ramp from 0 V to 2 V, triggered at the first sample."""
+    """A 2 ms ramp from 0 V to 2 V, triggered at the first sample.
+
+    Carries only the channels named, since a disabled one is absent from a
+    real capture rather than present and empty.
+    """
 
     samples_per_channel = 2001
     pre_trigger_samples = 0
     sample_interval_ns = 1000.0
 
+    def __init__(self, channels=("A",)):
+        self.channels = [c.upper() for c in channels]
+
+    def channel_index(self, label):
+        upper = str(label).upper()
+        return self.channels.index(upper) if upper in self.channels else None
+
     def time_axis(self):
         return [i * 1e-6 for i in range(self.samples_per_channel)]
 
-    def volts(self, _channel):
+    def volts(self, channel):
+        if self.channel_index(channel) is None:
+            raise RuntimeError("no such channel: %r" % channel)
         return [i * 1e-3 for i in range(self.samples_per_channel)]
 
 
@@ -748,3 +761,44 @@ class TestThePlotDrawsOnlyTheCursorsTheBoxHas:
         # One second out on a 1 ms window: pinned to the right edge of the
         # 1000 px plot rather than drawn a thousand screens away.
         assert max(ln[0] for ln in vertical) < 1000
+
+
+class TestReadingCursorsOnADisabledChannel:
+    """A disabled channel is missing from the capture, not empty in it.
+
+    Handed to the frame it reads as a channel the scope does not have, which
+    points at the wrong problem: the channel exists, it is just switched off.
+    The daemon already says this well for measurements, so cursors say it the
+    same way.
+    """
+
+    def _scope_over(self, frame):
+        scope = PicoScope(netname="scope1", pin=1)
+        scope._cursors = {"time": (0.0, 1e-3), "volts": None, "channel": "B"}
+        scope._capture_for_cursors = lambda timeout=None: frame
+        return scope
+
+    def test_it_names_the_channel_and_the_reason(self):
+        frame = _FakeFrame(channels=["A"])
+        with pytest.raises(UnsupportedScopeFeature) as caught:
+            self._scope_over(frame).measure_cursors()
+
+        message = str(caught.value)
+        assert "B" in message
+        assert "not enabled" in message
+        assert "no such channel" not in message
+
+    def test_an_enabled_channel_still_reads(self):
+        frame = _FakeFrame(channels=["A", "B"])
+        result = self._scope_over(frame).measure_cursors()
+        assert result["readings"]["delta_t"] == pytest.approx(1e-3)
+        assert "trace_v1" in result["readings"]
+
+    def test_volts_cursors_alone_need_no_channel(self):
+        """They are arithmetic, so a disabled channel must not stop them."""
+        scope = PicoScope(netname="scope1", pin=1)
+        scope._cursors = {"time": None, "volts": (-1.0, 1.0), "channel": "B"}
+        scope._capture_for_cursors = lambda timeout=None: pytest.fail(
+            "a voltage-only cursor read took a capture")
+
+        assert scope.measure_cursors()["readings"]["delta_v"] == pytest.approx(2.0)
