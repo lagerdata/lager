@@ -142,6 +142,18 @@ export const COMMANDS = [
         { offset: requireNumber(args[0], 'volts') }, `offset ${args[0]}`)),
   },
   {
+    // Seconds rather than divisions, so the verb does not depend on how many
+    // divisions this screen happens to draw. Positive looks forward, to
+    // signal later than the trigger; negative looks back before it.
+    verb: 'position',
+    usage: 'position [<seconds>]',
+    help: 'Get or set horizontal position, e.g. "position 2e-3"',
+    parse: (args) => (args.length === 0
+      ? new ParsedCommand('get_time_offset', {}, 'position')
+      : new ParsedCommand('set_time_offset',
+        { offset: requireNumber(args[0], 'seconds') }, `position ${args[0]}`)),
+  },
+  {
     verb: 'measure',
     usage: `measure <${Object.keys(MEASUREMENTS).slice(0, 6).join('|')}|...>`,
     help: 'Measure the live signal; "measure" alone lists the options',
