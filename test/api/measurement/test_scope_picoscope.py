@@ -65,6 +65,21 @@ def _close(actual, expected, tol):
     return abs(actual - expected) <= max(abs(expected) * tol, tol)
 
 
+def _close_relative(actual, expected, tol):
+    """Compare within `tol` of `expected`, with no absolute floor.
+
+    `_close` has one, which is right for voltages -- it is what lets a level
+    set to 0.0 be compared at all -- but wrong for anything spanning orders of
+    magnitude. At the 0.5 used for range mapping it makes every pair of times
+    under half a second equal, which is how a timebase off by four orders of
+    magnitude sat in a passing suite: 128 ns read back for a requested 100 us
+    differs by less than 0.5, so the assertion held.
+    """
+    if expected == 0:
+        return actual == 0
+    return abs(actual / expected - 1.0) <= tol
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -147,16 +162,38 @@ def test_vertical_scale_round_trip():
 
 
 def test_timebase_round_trip():
-    """Seconds/div survives the mapping onto an SDK timebase index."""
+    """Seconds/div survives the mapping onto an SDK timebase index.
+
+    Compared relatively, and across a sweep. Both matter: the sample intervals
+    a scope offers are roughly a power-of-two ladder, so a request lands
+    within about a factor of two of what was asked and no closer, while an
+    absolute tolerance in seconds calls any two fast timebases equal.
+
+    The sweep is what catches a bad candidate rather than a rounded one. The
+    driver is offered intervals it cannot sample at -- equivalent-time
+    sampling, which needs a repeating signal and many captures -- and they
+    only win where the screen asks for something fast, so a single mid-range
+    setting passes over the top of it.
+    """
     scope = _scope()
     passed = True
+    ceiling = (scope.capabilities() or {}).get("max_sample_rate_hz")
 
-    for requested in (0.0001, 0.001, 0.01):
+    for requested in (1e-5, 1e-4, 1e-3, 1e-2, 1e-1):
         scope.set_timebase_scale(requested)
         got = scope.get_timebase_scale()
-        ok = _close(got, requested, RANGE_TOLERANCE)
+        # Twice, not 50%: adjacent intervals differ by a factor of two, so the
+        # worst case for a request between two of them is just under 2x.
+        ok = _close_relative(got, requested, 1.0)
         _record(f"timebase {requested} s/div", ok, f"read back {got}")
         passed &= ok
+
+        if ceiling:
+            rate = scope.get_sample_rate()
+            under = rate <= ceiling * 1.001
+            _record(f"the rate at {requested} s/div is one the unit has", under,
+                    f"{rate:.6g} S/s, maximum {ceiling:.6g}")
+            passed &= under
 
     scope.set_timebase_scale(0.001)
     return passed
