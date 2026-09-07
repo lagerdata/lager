@@ -95,8 +95,8 @@ class PicoScopeDiscovery(unittest.TestCase):
 
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0]['name'], 'Picoscope_2000')
-        self.assertEqual(entries[0]['net_type'], ['scope'])
-        self.assertEqual(entries[0]['channels']['scope'], ['1', '2'])
+        self.assertEqual(entries[0]['net_type'], ['scope', 'scope-channel'])
+        self.assertEqual(entries[0]['channels']['scope-channel'], ['1', '2'])
 
     def test_a_pico_with_an_unlisted_product_id_is_still_found(self):
         """The regression this change exists to prevent.
@@ -107,15 +107,15 @@ class PicoScopeDiscovery(unittest.TestCase):
 
         self.assertEqual(len(entries), 1, 'unlisted PicoScope was dropped')
         self.assertEqual(entries[0]['name'], 'Picoscope')
-        self.assertEqual(entries[0]['net_type'], ['scope'])
+        self.assertEqual(entries[0]['net_type'], ['scope', 'scope-channel'])
 
     def test_channel_count_comes_from_the_device_not_the_table(self):
         """A 4-channel scope must offer 4 channels, a 2-channel one 2."""
         four = self._scan([('1018', 'S4', 'PicoScope 3403D')])[0]
-        self.assertEqual(four['channels']['scope'], ['1', '2', '3', '4'])
+        self.assertEqual(four['channels']['scope-channel'], ['1', '2', '3', '4'])
 
         two = self._scan([('10ff', 'S2', 'PicoScope 5242D')])[0]
-        self.assertEqual(two['channels']['scope'], ['1', '2'])
+        self.assertEqual(two['channels']['scope-channel'], ['1', '2'])
 
     def test_channel_count_falls_back_to_two_when_unreadable(self):
         """An unparseable product string must not invent channels.
@@ -126,7 +126,7 @@ class PicoScopeDiscovery(unittest.TestCase):
         """
         entries = self._scan([('1018', 'S5', 'Some New PicoScope')])
 
-        self.assertEqual(entries[0]['channels']['scope'], ['1', '2'])
+        self.assertEqual(entries[0]['channels']['scope-channel'], ['1', '2'])
 
     def test_the_model_string_is_reported(self):
         """Callers need the real model; the entry name is now generic."""
@@ -155,6 +155,49 @@ class PicoScopeDiscovery(unittest.TestCase):
 
         self.assertEqual(pico_entries, ['Picoscope_2000'])
         self.assertEqual(self.scanner._VID_ONLY_VENDORS[PICO_VID], 'Picoscope')
+
+
+class TheScopeIsOfferedAsANetOfItsOwn(unittest.TestCase):
+    """A 2-channel PicoScope should offer three nets: the two channels and
+    the scope they belong to.
+
+    Most of an oscilloscope is not per-channel -- the timebase, the trigger,
+    run/stop -- and until the scope net existed those had to be addressed to
+    whichever channel the caller happened to be holding.
+
+    The scope's entry carries an empty channel list, which is what says it is
+    one net rather than a list of them. That is more than a display detail: a
+    channel number saved onto a scope net is exactly what the box reads to
+    tell a scope from one of its channels, so an entry offering "1" here
+    would be saved with a pin and migrated straight back into a channel.
+    """
+
+    def setUp(self):
+        self.helper = PicoScopeDiscovery('run')
+        self.helper.setUp()
+        self.addCleanup(self.helper.doCleanups)
+
+    def _entry(self, product='PicoScope 2204A', pid='1007'):
+        return self.helper._scan([(pid, 'AR911/011', product)])[0]
+
+    def test_both_roles_are_offered(self):
+        self.assertEqual(self._entry()['net_type'], ['scope', 'scope-channel'])
+
+    def test_the_scope_has_no_channels_of_its_own(self):
+        self.assertEqual(self._entry()['channels']['scope'], [])
+
+    def test_the_channels_are_numbered_from_one(self):
+        self.assertEqual(self._entry()['channels']['scope-channel'], ['1', '2'])
+
+    def test_a_two_channel_model_offers_three_nets(self):
+        channels = self._entry()['channels']
+        offered = sum(len(chs) or 1 for chs in channels.values())
+        self.assertEqual(offered, 3)
+
+    def test_a_four_channel_model_offers_five(self):
+        channels = self._entry(product='PicoScope 3403D', pid='1018')['channels']
+        offered = sum(len(chs) or 1 for chs in channels.values())
+        self.assertEqual(offered, 5)
 
 
 class UdevGrantsAccessToEveryPicoScope(unittest.TestCase):
