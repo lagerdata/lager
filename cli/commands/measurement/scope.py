@@ -123,6 +123,7 @@ _WARM_ACTIONS = frozenset({
     "set_coupling", "get_coupling",
     "set_probe", "get_probe",
     "set_offset", "get_offset",
+    "set_time_offset", "get_time_offset",
     "trigger_edge",
     "capabilities",
     "measure_vpp", "measure_vmax", "measure_vmin", "measure_vrms",

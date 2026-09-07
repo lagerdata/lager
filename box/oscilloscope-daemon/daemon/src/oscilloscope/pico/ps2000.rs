@@ -1362,9 +1362,8 @@ impl PicoScope2000 {
                 Self::volts_per_div_to_range(channel.volts_per_div, channel.attenuation);
             let full_scale = Self::raw_range_to_volts(range_code);
 
-            // Counts stay raw on the wire; this factor is how a client turns
-            // them back into volts. PS2000_MAX_VALUE is full-scale deflection.
-            let scale_v_per_count = (full_scale / PS2000_MAX_VALUE as f64) as f32;
+            let scale_v_per_count =
+                volts_per_count(full_scale, channel.attenuation) as f32;
 
             channels.push(ChannelFrame {
                 channel: channel.channel_id,
@@ -1530,8 +1529,29 @@ impl Oscilloscope for PicoScope2000 {
             .volts_per_div)
     }
 
+    /// Refuses any offset but zero: this series has no analog offset.
+    ///
+    /// `analog_offset: false` in the capabilities is the whole story -- there
+    /// is no hardware here to apply an offset to. It was stored anyway and put
+    /// in the frame's `offset_v`, which is added back when counts become
+    /// volts, so the trace stayed exactly where it was and every measurement
+    /// taken from the capture moved instead: Vmax, Vmin and Vavg all reported
+    /// a signal that was not there. Better to fail with a reason than to hand
+    /// back readings that are quietly wrong.
+    ///
+    /// Zero still succeeds, so clearing an offset and the usual "set it to the
+    /// default" startup both work. Moving a trace on screen is a separate
+    /// thing -- the web UI's per-channel position does it without touching
+    /// what the capture says.
     fn set_volts_offset(&mut self, channel: ChannelId, volts_offset: f64) -> anyhow::Result<()> {
-        self.settings.channels.iter_mut().find(|c| c.channel_id == channel).ok_or(anyhow::anyhow!("Channel not found"))?.volts_offset = volts_offset;
+        reject_unsupported_offset(volts_offset)?;
+        // Still resolved, so a bad channel is reported as one.
+        self.settings
+            .channels
+            .iter_mut()
+            .find(|c| c.channel_id == channel)
+            .ok_or(anyhow::anyhow!("Channel not found"))?
+            .volts_offset = 0.0;
         Ok(())
     }
 
@@ -1804,6 +1824,49 @@ fn to_probe_volts(input_volts: f64, attenuation: f64) -> f64 {
     input_volts * attenuation
 }
 
+/// Rejects any volts offset but zero, since this series has no analog offset.
+///
+/// A free function so it can be tested: building a `PicoScope2000` needs a
+/// device handle, and the refusal is the whole point here.
+///
+/// `analog_offset: false` in the capabilities says there is no hardware to
+/// apply an offset to. The value was stored anyway and put in the frame's
+/// `offset_v`, which is added back when counts become volts, so the trace
+/// stayed put and the measurements moved instead -- Vmax, Vmin and Vavg all
+/// describing a signal that was not there. Failing with a reason beats
+/// handing back readings that are quietly wrong.
+fn reject_unsupported_offset(volts_offset: f64) -> anyhow::Result<()> {
+    // Zero still succeeds: clearing an offset, and the "set everything to its
+    // default" a client does on startup, both have to work. `-0.0 != 0.0` is
+    // false in IEEE 754, so a negative zero passes here too.
+    if volts_offset != 0.0 {
+        anyhow::bail!(
+            "this scope has no analog offset, so {volts_offset} V cannot be \
+             applied; it would move the measurements rather than the trace. \
+             Use the vertical position control to move a trace on screen"
+        );
+    }
+    Ok(())
+}
+
+/// Volts at the probe tip per ADC count, the factor a client multiplies a
+/// raw count by.
+///
+/// `full_scale_input_volts` is the selected range's full-scale deflection at
+/// the input, so the probe factor has to be applied here: a frame carries no
+/// attenuation field, and a client that had to apply it would need a setting
+/// it cannot see. It also keeps a capture in the same units as volts/div and
+/// the trigger level, which are at the tip -- these disagreed, so with the
+/// default 10x probe a trace was drawn a tenth of its height and every
+/// measurement read a tenth of its value. modern_scope already did this.
+fn volts_per_count(full_scale_input_volts: f64, attenuation: f64) -> f64 {
+    // A non-positive attenuation is meaningless and would zero or invert
+    // every sample, so it is treated as the 1x it most likely meant --
+    // matching to_input_volts, which passes such a level through untouched.
+    let factor = if attenuation > 0.0 { attenuation } else { 1.0 };
+    full_scale_input_volts * factor / PS2000_MAX_VALUE as f64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1851,5 +1914,81 @@ mod tests {
         // reaches the driver as a garbage ADC count.
         assert_eq!(to_input_volts(1.5, 0.0), 1.5);
         assert_eq!(to_probe_volts(1.5, -1.0), 1.5);
+    }
+
+    #[test]
+    fn a_full_scale_count_converts_to_the_range_at_the_probe_tip() {
+        // The ±1 V range through a 1x probe: full deflection is 1 V.
+        let scale = volts_per_count(1.0, 1.0);
+        let full = scale * PS2000_MAX_VALUE as f64;
+        assert!((full - 1.0).abs() < 1e-12, "full scale came back as {full}");
+    }
+
+    #[test]
+    fn a_ten_x_probe_makes_a_count_worth_ten_times_as_much() {
+        // The regression: a capture in volts at the input while volts/div and
+        // the trigger level were in volts at the tip, so a 10x probe drew
+        // every trace a tenth of its height.
+        let at_1x = volts_per_count(1.0, 1.0);
+        let at_10x = volts_per_count(1.0, 10.0);
+        assert!((at_10x - at_1x * 10.0).abs() < 1e-18);
+
+        // Which is to say: the ±1 V range spans 10 V at the tip.
+        let full = at_10x * PS2000_MAX_VALUE as f64;
+        assert!((full - 10.0).abs() < 1e-12, "full scale came back as {full}");
+    }
+
+    #[test]
+    fn a_count_agrees_with_the_trigger_level_conversion() {
+        // Both directions must land on the same tip-referred volt, or a
+        // trigger set to the top of the screen would not sit there.
+        let attenuation = 10.0;
+        let full_scale_input = 1.0;
+
+        // A level at the top of the ±1 V range, expressed at the tip.
+        let at_tip = to_probe_volts(full_scale_input, attenuation);
+        let counts = at_tip / volts_per_count(full_scale_input, attenuation);
+
+        assert!(
+            (counts - PS2000_MAX_VALUE as f64).abs() < 1e-9,
+            "the top of the range came to {counts} counts"
+        );
+    }
+
+    #[test]
+    fn a_nonsensical_attenuation_leaves_the_scale_at_1x() {
+        // Zero would flatten every sample to 0 V and a negative would invert
+        // the trace, both of which look like a hardware fault.
+        assert_eq!(volts_per_count(1.0, 0.0), volts_per_count(1.0, 1.0));
+        assert_eq!(volts_per_count(1.0, -10.0), volts_per_count(1.0, 1.0));
+    }
+
+    #[test]
+    fn an_offset_this_scope_cannot_apply_is_refused() {
+        // It used to be accepted and quietly folded into the frame, where it
+        // was added back on the way to volts: the trace did not move and
+        // every measurement did.
+        let refused = reject_unsupported_offset(2.0).expect_err("2 V should be refused");
+        let message = format!("{refused}");
+        assert!(
+            message.contains("no analog offset"),
+            "should say why, got {message:?}"
+        );
+        assert!(
+            message.contains("measurements"),
+            "and what it would have done instead, got {message:?}"
+        );
+        assert!(
+            message.contains("position"),
+            "and point at the control that does work, got {message:?}"
+        );
+    }
+
+    #[test]
+    fn no_offset_at_all_is_still_allowed() {
+        // Clearing an offset, and a client pushing defaults on startup, both
+        // send zero; refusing that would break setup rather than protect it.
+        assert!(reject_unsupported_offset(0.0).is_ok());
+        assert!(reject_unsupported_offset(-0.0).is_ok());
     }
 }

@@ -944,6 +944,18 @@ def _scope(netname, role, action, params):
     if action == "get_offset":
         return _ok_read(float(dev.get_channel_offset()), "V")
 
+    # Horizontal position: moves the capture window in time relative to the
+    # trigger, so signal past the left or right edge can be brought on screen.
+    # Not per channel -- one window holds every channel.
+    if action == "set_time_offset":
+        offset = params.get("offset")
+        if offset is None:
+            raise KeyError("offset")
+        dev.set_timebase_offset(float(offset))
+        return _ok("Time offset %g s" % float(offset))
+    if action == "get_time_offset":
+        return _ok_read(float(dev.get_timebase_offset()), "s")
+
     if action == "trigger_edge":
         return _scope_trigger_edge(dev, params)
 

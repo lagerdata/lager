@@ -49,6 +49,10 @@ DIVISIONS_HORIZONTAL = 10
 # rather than deriving them from the input.
 _COUPLINGS = {"dc": "DC", "ac": "AC", "gnd": "GND", "ground": "GND"}
 
+# Trigger in the middle of the block: half the capture before it, half after,
+# which is the unshifted window.
+_CENTRED_TRIGGER_PERCENT = 50.0
+
 _SLOPES = {
     "rising": "rising", "positive": "rising", "pos": "rising", "rise": "rising",
     "falling": "falling", "negative": "falling", "neg": "falling", "fall": "falling",
@@ -206,7 +210,7 @@ class PicoScope:
     def run(self):
         """Start continuous acquisition."""
         self._command("SetCaptureMode", capture_mode="auto")
-        self._command("StartAcquisition", trigger_position_percent=50.0)
+        self._start_acquisition()
         return {"status": "running"}
 
     def stop(self):
@@ -217,8 +221,21 @@ class PicoScope:
     def single(self):
         """Arm for a single acquisition."""
         self._command("SetCaptureMode", capture_mode="single")
-        self._command("StartAcquisition", trigger_position_percent=50.0)
+        self._start_acquisition()
         return {"status": "single"}
+
+    def _start_acquisition(self):
+        """Arm a capture, keeping whatever horizontal position is set.
+
+        StartAcquisition carries the pre/post-trigger split, and the daemon
+        stores whatever it is handed for every capture after it. A fixed 50%
+        here would therefore recentre a shifted window on the next Run --
+        the position would appear to work, then undo itself.
+        """
+        offset = self.get_timebase_offset()
+        percent = (_CENTRED_TRIGGER_PERCENT if not offset
+                   else self._trigger_position_percent(offset))
+        self._command("StartAcquisition", trigger_position_percent=percent)
 
     def trigger_force(self):
         """Trigger now rather than waiting for the configured condition."""
@@ -320,11 +337,56 @@ class PicoScope:
         return float(self._command("GetTimePerDiv").get("time_per_div"))
 
     def set_timebase_offset(self, offset):
-        self._command("SetTimeOffset", time_offset=float(offset))
-        return {"offset": float(offset)}
+        """Shift the capture window later (positive) or earlier (negative).
+
+        This is the horizontal position: it moves the window in time relative
+        to the trigger, to bring signal that falls off the left or right edge
+        of the screen into view.
+
+        The daemon's own SetTimeOffset only stores the number -- nothing reads
+        it back out -- so on its own it moves nothing. What actually moves the
+        window is where the trigger sits inside the block, so both are sent:
+        the offset so it can be read back, the split so it takes effect.
+        Travel is one window each way, since a block is all the scope holds.
+        """
+        seconds = float(offset)
+        percent = self._trigger_position_percent(seconds)
+        self._command("SetTimeOffset", time_offset=seconds)
+        # Re-arms: a window somewhere else has to be captured to be seen, and
+        # the daemon keeps this split for every capture that follows.
+        self._command("StartAcquisition", trigger_position_percent=percent)
+        return {"offset": seconds, "trigger_position_percent": percent}
 
     def get_timebase_offset(self) -> float:
-        return float(self._command("GetTimeOffset").get("time_offset"))
+        # Defaulted rather than trusted: every arm reads this to keep the
+        # window where it was put, so a daemon that answered without the
+        # field would otherwise take Run down with it. No offset reported is
+        # fairly read as no offset.
+        offset = self._command("GetTimeOffset").get("time_offset")
+        return float(offset) if offset is not None else 0.0
+
+    def _trigger_position_percent(self, offset_seconds) -> float:
+        """Where the trigger sits in the block, as a percentage from its start.
+
+        The window spans one block, so an offset is a fraction of it: 50% puts
+        the trigger in the middle, and looking `offset` further forward moves
+        it that fraction to the left. At 0% the block is entirely after the
+        trigger and at 100% entirely before, which is as far as it goes --
+        beyond that needs a trigger delay the daemon does not expose.
+        """
+        span = self._capture_span_seconds()
+        if not span:
+            return _CENTRED_TRIGGER_PERCENT
+        moved = _CENTRED_TRIGGER_PERCENT - (float(offset_seconds) / span) * 100.0
+        return max(0.0, min(100.0, moved))
+
+    def _capture_span_seconds(self):
+        """How much time one capture covers, or None if it cannot be worked out."""
+        rate = self.get_sample_rate()
+        depth = self.get_memory_depth()
+        if rate <= 0 or depth <= 0:
+            return None
+        return depth / rate
 
     def get_sample_rate(self) -> float:
         return float(self._command("GetSampleRate").get("sample_rate"))
@@ -475,7 +537,7 @@ class PicoScope:
         self._command("SetCaptureMode",
                       capture_mode=_lookup(_CAPTURE_MODES, capture_mode or "auto",
                                            "capture mode"))
-        self._command("StartAcquisition", trigger_position_percent=50.0)
+        self._start_acquisition()
         return {
             "channels": [channel_label(c) for c in selected],
             "sample_rate": self.get_sample_rate(),

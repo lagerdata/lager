@@ -344,6 +344,14 @@ for frame in scope.stream_frames(count=10):
     print(frame.sample_rate_hz, volts.max())
 ```
 
+<Note>
+`volts()` is referred to the probe tip, so a 10x probe reports the signal at
+the tip rather than the tenth of it that reaches the BNC. This matches
+`volts_per_div`, the trigger level, and the measurement functions, all of
+which are at the tip. Set the ratio with `set_probe()` before capturing;
+PicoScopes default to 10x.
+</Note>
+
 ## Complete Example
 
 ```python
@@ -410,6 +418,19 @@ time_scale = scope.trace_settings.get_time_per_div()
 scope.trace_settings.set_time_offset(0.0)
 time_offset = scope.trace_settings.get_time_offset()
 ```
+
+<Note>
+`set_time_offset()` moves the capture window in time relative to the trigger,
+which is how you look at signal that falls off the left or right edge of one
+capture. Positive values look forward, at signal later than the trigger;
+negative values look back before it.
+
+On a PicoScope the travel is one window each way -- the window is a block, and
+a block is all the scope holds, so the offset is clamped to the point where the
+capture is entirely before or entirely after the trigger. Setting it re-arms
+the scope, since a window somewhere else has to be captured to be seen, and it
+then applies to every capture until it is changed.
+</Note>
 
 ### Advanced Trigger Settings
 
