@@ -387,15 +387,31 @@ class RigolMso5000:
         return self.query(":TRIGger:COUPling?")
 
     def set_trigger_level(self, level, source=None):
-        """Set trigger level."""
-        src = source or f"CHANnel{self.channel}"
-        self.write(f":TRIGger:EDGe:LEVel {level},{src}")
-        return {"trigger_level": level, "source": src}
+        """Set the edge trigger level, in volts on the selected source.
+
+        There is one level, not one per channel. `:TRIGger:EDGE:LEVel` takes a
+        single real and reads it against whichever source `:TRIGger:EDGE:
+        SOURce` currently names; this passed the channel as a second argument,
+        which is not a form the instrument has. A malformed write raises no
+        error at the SCPI layer, it only sets a bit in the status register, so
+        every trigger level set on a Rigol was discarded in silence.
+
+        The source is changed only when one is named, matching the PicoScope
+        driver and leaving a level adjustment as just that.
+        """
+        if source is not None:
+            self.set_trigger_source(source)
+        self.write(f":TRIGger:EDGe:LEVel {level}")
+        return {"trigger_level": level}
 
     def get_trigger_level(self, source=None):
-        """Get trigger level."""
-        src = source or f"CHANnel{self.channel}"
-        return float(self.query(f":TRIGger:EDGe:LEVel? {src}"))
+        """The edge trigger level, in volts on the currently selected source.
+
+        ``source`` is accepted for signature parity with the PicoScope driver
+        and ignored for the same reason: the instrument holds one level and
+        will only report it for the source the trigger is already on.
+        """
+        return float(self.query(":TRIGger:EDGe:LEVel?"))
 
     def set_trigger_source(self, source):
         """Set trigger source (CHANnel1-4, EXT, etc.)."""
