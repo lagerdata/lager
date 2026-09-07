@@ -294,8 +294,22 @@ class PicoScope:
 
     # ============ Acquisition Control ============
     def run(self):
-        """Start continuous acquisition."""
-        self._command("SetCaptureMode", capture_mode="auto")
+        """Start continuous acquisition, in whichever trigger mode is set.
+
+        This forced the mode to auto first, which quietly threw away the one
+        trigger setting the caller is most likely to have chosen on purpose:
+        selecting Normal and pressing Run left the scope free-running, so the
+        trace kept moving as though the trigger had been ignored -- because it
+        had. Nothing read the mode back either, so the control went on
+        claiming Normal.
+
+        Single is the exception, being the one mode that contradicts running
+        continuously: a single-shot stops after one capture, so Run would take
+        one frame and appear to do nothing. Running promotes it to auto, the
+        mode that guarantees the sweep keeps going.
+        """
+        if self.get_capture_mode() == "single":
+            self._command("SetCaptureMode", capture_mode="auto")
         self._start_acquisition()
         return {"status": "running"}
 

@@ -130,16 +130,27 @@ function voltsPerDivChoices(caps, attenuation) {
   return within.length ? within : [Number((fills).toPrecision(3))];
 }
 
-/** The 1-2-5 time/div settings this unit can reach at `memoryDepth`.
+/** The time/div settings this unit can actually reach at `memoryDepth`.
  *
- * The list used to be a fixed 1 us to 100 ms regardless of what was attached,
- * so it offered settings the hardware cannot reach: a 2204A samples no faster
- * than 10 ns, and a block is at least 8000 samples, which puts its fastest
- * screen at 8 us/div. Choosing 1 us/div silently got you eight times that.
+ * A PicoScope's sample interval doubles with each timebase step, so what it
+ * can reach is the fastest screen time times powers of two -- 8 us, 16 us,
+ * 32 us, 64 us and so on up on a 2204A -- and nothing in between. This
+ * offered a 1-2-5 ladder filtered to the fast end instead, so all but a few
+ * of the settings on it were unreachable: asking for 5 ms/div got 4.096, and
+ * asking for 50 us got 64. The dropdown then had to correct itself to the
+ * achieved value after every change, inserting an off-ladder entry each time
+ * and rebuilding the list underneath whoever was using it, which is what made
+ * the control feel like it ignored a change, snapped back, or applied the
+ * previous one.
  *
- * Only the fast end can be worked out from the capabilities -- nothing there
- * bounds the slowest interval -- so the slow end stays as offered, and the
- * readback corrects the display if the unit lands somewhere else.
+ * Generating the reachable steps instead means a request is the setting, so
+ * there is nothing to correct and the list only moves when the block depth
+ * does.
+ *
+ * The powers of two are a PicoScope property. Nothing here bounds the slowest
+ * interval either, so the ladder runs to the slowest we offer. A scope with no
+ * daemon capabilities -- a Rigol, whose steps really are 1-2-5 -- has no rate
+ * to work from and keeps the plain ladder.
  */
 function timebaseChoices(caps, memoryDepth) {
   const rate = Number(caps && caps.max_sample_rate_hz);
@@ -147,10 +158,16 @@ function timebaseChoices(caps, memoryDepth) {
   if (!(rate > 0) || !(depth > 0)) return TIMEBASES.slice();
 
   const fastest = depth / (rate * HORIZONTAL_DIVISIONS);
-  // Just under, so a step the unit can hit exactly is not excluded by
-  // floating-point noise in the division above.
-  const within = TIMEBASES.filter((t) => t >= fastest * 0.999);
-  return within.length ? within : TIMEBASES.slice(-1);
+  if (!(fastest > 0)) return TIMEBASES.slice();
+
+  const slowest = TIMEBASES[TIMEBASES.length - 1];
+  const reachable = [];
+  // Past the slowest offered by one step, so the ladder does not stop just
+  // short of a whole second on a unit whose steps straddle it.
+  for (let t = fastest; t <= slowest * 2 && reachable.length < 40; t *= 2) {
+    reachable.push(t);
+  }
+  return reachable.length ? reachable : [fastest];
 }
 
 /** The trace's voltage at a time relative to the trigger, interpolated.
@@ -276,6 +293,9 @@ class ScopeApp {
     // Block depth the timebase list was last built for. Null until a capture
     // reports one, which is when the unreachable fast steps can be dropped.
     this.timebaseDepth = null;
+    // Counts timebase changes, so a readback that arrives after a later
+    // change can tell that it is stale and leave the control alone.
+    this.timebaseGeneration = 0;
     // Measurement polling, so the readouts follow the signal rather than
     // describing whatever was on screen when Start was pressed.
     this.measureTimer = null;
@@ -718,11 +738,20 @@ class ScopeApp {
     this.showTimebase(seconds);
 
     if (push) {
+      // Which request this is. Two changes in quick succession each set and
+      // then read back, and the replies need not arrive in order -- so the
+      // slower one used to land last and put the earlier setting back on the
+      // control, which is the "it reverted to what it was" of a dropdown that
+      // seemed to lag a step behind.
+      const generation = (this.timebaseGeneration || 0) + 1;
+      this.timebaseGeneration = generation;
+
       await this.runCommand('set_timebase', { seconds_per_div: seconds },
         `timebase ${si(seconds, 's', 2)}/div`);
       try {
         const body = await this.send('get_timebase', {});
         const achieved = Number(body.value);
+        if (this.timebaseGeneration !== generation) return;
         if (Number.isFinite(achieved) && achieved > 0) this.showTimebase(achieved);
       } catch { /* older box: leave the request showing */ }
     }
@@ -952,9 +981,51 @@ class ScopeApp {
       }
     } catch { /* older box: leave it centred */ }
 
+    await this.syncTriggerState();
+
     // Cursors outlive the page the same way: the box holds them, so a pair
     // placed from the terminal before this page was opened is drawn on it.
     await this.refreshCursors(this.net);
+  }
+
+  /** Show the trigger the instrument actually has.
+   *
+   * Nothing read the trigger back at all, so the panel showed the values in
+   * the HTML -- Auto, 0 V, channel A, rising -- however the scope was set.
+   * That is worse than merely uninformative, because the capture mode is
+   * written behind the panel's back from three places: Run sets Auto, Single
+   * sets Single, and the daemon returns a completed single-shot to Normal. A
+   * panel that never re-reads goes stale on its own, and then reports a mode
+   * the scope is not in.
+   */
+  async syncTriggerState() {
+    if (!this.net) return;
+
+    const fields = [
+      ['get_capture_mode', 'trigger-mode', (v) => String(v).toLowerCase()],
+      ['get_trigger_source', 'trigger-source', (v) => String(v).toUpperCase()],
+      ['get_trigger_slope', 'trigger-slope', (v) => String(v).toLowerCase()],
+      ['get_trigger_level', 'trigger-level', (v) => Number(v)],
+    ];
+
+    for (const [action, id, coerce] of fields) {
+      try {
+        const body = await this.send(action, {}, this.net);
+        const value = coerce(body.value);
+        const control = el(id);
+        if (!control) continue;
+        if (control.tagName === 'SELECT') {
+          // Only if the instrument named something the control offers. A
+          // scope reporting a source this build has no option for should
+          // leave the control alone rather than blank it.
+          if ([...control.options].some((o) => o.value === value)) {
+            control.value = value;
+          }
+        } else if (Number.isFinite(value)) {
+          control.value = String(value);
+        }
+      } catch { /* older box: leave the control showing what it had */ }
+    }
   }
 
   /** Move the capture window earlier or later than the trigger.
@@ -1666,9 +1737,13 @@ class ScopeApp {
       await this.loadCapabilities();
     });
 
+    // Run and Single both move the trigger mode -- Single sets it, Run
+    // promotes a single-shot out of it -- so the panel is re-read rather than
+    // left showing what it said before the click.
     el('btn-start').addEventListener('click', async () => {
       await this.runCommand('start_capture', {}, 'start');
       this.startMeasurementPolling();
+      await this.syncTriggerState();
     });
     // Single takes one capture and stops, so one reading is the whole of what
     // there is to show; polling would keep re-arming a scope the user stopped.
@@ -1676,6 +1751,7 @@ class ScopeApp {
       await this.runCommand('start_single', {}, 'single');
       this.stopMeasurementPolling();
       this.refreshMeasurements();
+      await this.syncTriggerState();
     });
     el('btn-stop').addEventListener('click', () => {
       // The last values stay on screen, as they do on a stopped bench scope:
@@ -1710,30 +1786,37 @@ class ScopeApp {
     });
     el('time-position-reset').addEventListener('click', () => this.applyTimePosition(0));
 
-    const applyTrigger = () => {
-      this.runCommand('trigger_edge', {
-        level: Number(el('trigger-level').value),
-        slope: el('trigger-slope').value,
-        source: el('trigger-source').value,
-        mode: el('trigger-mode').value,
-      }, 'trigger');
-    };
-    for (const id of ['trigger-slope', 'trigger-mode']) {
-      el(id).addEventListener('change', applyTrigger);
-    }
+    // One field per command. This sent all four on every change, so adjusting
+    // the level also re-sent the mode, the slope and the source from controls
+    // that may never have been touched -- and since nothing read the trigger
+    // back, "never touched" meant the values in the HTML rather than the ones
+    // on the instrument. Moving the level was enough to put a scope left in
+    // Normal back into Auto. `trigger_edge` applies only what it is given,
+    // which is what makes one field per command safe.
+    const sendTrigger = (settings) => this.runCommand('trigger_edge', settings,
+                                                      'trigger');
+
+    el('trigger-slope').addEventListener('change', (event) => {
+      sendTrigger({ slope: event.target.value });
+    });
+    el('trigger-mode').addEventListener('change', (event) => {
+      sendTrigger({ mode: event.target.value });
+    });
     // Source also decides which channel's scale the level line is drawn
     // against, so the plot changes with it and not only the hardware.
-    el('trigger-source').addEventListener('change', () => {
-      applyTrigger();
+    el('trigger-source').addEventListener('change', (event) => {
+      sendTrigger({ source: event.target.value });
       this.requestRedraw();
     });
     // On the number input, react to committed edits rather than each
     // keystroke, which would send a command per digit.
-    el('trigger-level').addEventListener('change', () => {
+    el('trigger-level').addEventListener('change', (event) => {
+      const level = Number(event.target.value);
+      if (event.target.value === '' || !Number.isFinite(level)) return;
       // Redraw as well as send: the level line moves with this field, and
       // waiting for the next capture to show where the trigger went defeats
       // the point of drawing it.
-      applyTrigger();
+      sendTrigger({ level });
       this.requestRedraw();
     });
 

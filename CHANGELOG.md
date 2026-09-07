@@ -31,6 +31,19 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 ### Fixed
 
+- **Run keeps the trigger mode.** Pressing Run in the web UI, or calling `run()`, put a
+  PicoScope into auto, so Normal behaved like Auto. Single-shot is the one mode Run still
+  moves, to auto, because single-shot stops after one capture.
+- **Choosing single-shot as the trigger mode arms the scope**, as the Single button does.
+  `lager scope <net> trigger edge --mode single` and the web UI's trigger menu now capture
+  once and stop.
+- **A scope's trigger settings can be read back.** The box answers `get_capture_mode`,
+  `get_trigger_source`, `get_trigger_slope` and `get_trigger_level`, the web UI's trigger
+  panel shows the instrument's settings instead of its own defaults, and each trigger control
+  sends only its own setting.
+- **The web UI offers only the time/div steps a PicoScope has.** A 2204A's steps double from
+  8 µs, so the old 1-2-5 list was rounded on every pick, and the dropdown rebuilt itself in the
+  middle of a change and appeared to ignore or undo it.
 - **A Rigol MSO5000 keeps the trigger level it is sent.** The level was written as
   `:TRIGger:EDGE:LEVel <level>,<source>`, a form the instrument rejects without an error, so
   every level set on a Rigol was discarded. It now sends the one-argument form, in the units of
