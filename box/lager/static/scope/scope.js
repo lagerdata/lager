@@ -24,6 +24,11 @@ const TIMEBASES = [
   1e-3, 2e-3, 5e-3, 1e-2, 2e-2, 5e-2, 1e-1,
 ];
 
+// Horizontal divisions on the graticule. Ten, as on a bench scope, and the
+// same ten the daemon spreads a capture across -- it used eight, so time/div
+// meant a different thing at each end of the wire.
+const HORIZONTAL_DIVISIONS = 10;
+
 // Volts/div in the 1-2-5 sequence a scope front panel steps through. Wide
 // enough to cover any PicoScope range through any sane probe; what is
 // actually offered gets clamped to the attached unit below.
@@ -34,6 +39,42 @@ const VOLTS_PER_DIV = [
 
 // Sentinel option value. Not a number, so it cannot collide with a scale.
 const CUSTOM_SCALE = 'custom';
+
+// Input coupling, as the wire spells it and as the panel shows it. GND is
+// deliberately absent: `ps2000_set_channel` carries one flag for coupling, so
+// the hardware has no ground switch, and the daemon refuses the setting
+// rather than leaving the input live under a control that reads GND.
+const COUPLINGS = [['dc', 'DC'], ['ac', 'AC']];
+
+// Every quantity the daemon computes from a capture, in the order a bench
+// scope groups them: amplitude, then timing. The panel showed five of the
+// fourteen, which made the other nine look unavailable when they were in the
+// same response all along.
+const MEASUREMENTS = [
+  ['Vpp', 'vpp', 'V'],
+  ['Vmax', 'vmax', 'V'],
+  ['Vmin', 'vmin', 'V'],
+  ['Vavg', 'vavg', 'V'],
+  ['Vrms', 'vrms', 'V'],
+  ['Overshoot', 'overshoot', '%'],
+  ['Freq', 'frequency', 'Hz'],
+  ['Period', 'period', 's'],
+  ['Rise', 'rise_time', 's'],
+  ['Fall', 'fall_time', 's'],
+  ['Width +', 'pulse_width_positive', 's'],
+  ['Width -', 'pulse_width_negative', 's'],
+  ['Duty +', 'duty_cycle_positive', '%'],
+  ['Duty -', 'duty_cycle_negative', '%'],
+];
+
+// How often the readouts refresh, in ms. Each one is a capture and a round
+// trip, so this trades against the capture rate the trace gets.
+const MEASURE_INTERVAL_MS = 500;
+
+// The probe ratios stamped on a switch. Anything else -- a current clamp at
+// 100 mV/A, say -- goes through the console's `probe`, and is added to the
+// dropdown on readback so the panel never disagrees with the hardware.
+const PROBE_RATIOS = [1, 10, 100, 1000];
 
 // How far a trace can be moved from centre, in divisions. Four is the edge of
 // an eight-division screen: past that the trace is off it, which is a way to
@@ -80,6 +121,29 @@ function voltsPerDivChoices(caps, attenuation) {
   // A unit whose ranges fall between two steps of the ladder would otherwise
   // offer nothing at all.
   return within.length ? within : [Number((fills).toPrecision(3))];
+}
+
+/** The 1-2-5 time/div settings this unit can reach at `memoryDepth`.
+ *
+ * The list used to be a fixed 1 us to 100 ms regardless of what was attached,
+ * so it offered settings the hardware cannot reach: a 2204A samples no faster
+ * than 10 ns, and a block is at least 8000 samples, which puts its fastest
+ * screen at 8 us/div. Choosing 1 us/div silently got you eight times that.
+ *
+ * Only the fast end can be worked out from the capabilities -- nothing there
+ * bounds the slowest interval -- so the slow end stays as offered, and the
+ * readback corrects the display if the unit lands somewhere else.
+ */
+function timebaseChoices(caps, memoryDepth) {
+  const rate = Number(caps && caps.max_sample_rate_hz);
+  const depth = Number(memoryDepth);
+  if (!(rate > 0) || !(depth > 0)) return TIMEBASES.slice();
+
+  const fastest = depth / (rate * HORIZONTAL_DIVISIONS);
+  // Just under, so a step the unit can hit exactly is not excluded by
+  // floating-point noise in the division above.
+  const within = TIMEBASES.filter((t) => t >= fastest * 0.999);
+  return within.length ? within : TIMEBASES.slice(-1);
 }
 
 const el = (id) => document.getElementById(id);
@@ -156,6 +220,13 @@ class ScopeApp {
     this.showTriggerMarkers = true;
     // Divisions the capture window is shifted from the trigger.
     this.timePositionDiv = 0;
+    // Block depth the timebase list was last built for. Null until a capture
+    // reports one, which is when the unreachable fast steps can be dropped.
+    this.timebaseDepth = null;
+    // Measurement polling, so the readouts follow the signal rather than
+    // describing whatever was on screen when Start was pressed.
+    this.measureTimer = null;
+    this.measureInFlight = false;
 
     this.captureCount = 0;
     this.lastRateAt = performance.now();
@@ -271,11 +342,13 @@ class ScopeApp {
     source.replaceChildren();
     labels.forEach((label) => source.append(new Option(label, label)));
 
-    // Timebase choices.
+    // Timebase choices. Not yet trimmed to what the unit can reach: that
+    // needs a block depth, which only a capture reports, so the list is
+    // rebuilt when the first one arrives.
     const timebase = el('timebase');
     timebase.replaceChildren();
-    for (const value of TIMEBASES) {
-      timebase.append(new Option(si(value, 's', 2), String(value)));
+    for (const value of timebaseChoices(caps, this.timebaseDepth)) {
+      timebase.append(new Option(`${si(value, 's', 3)}/div`, String(value)));
     }
     timebase.value = String(1e-3);
 
@@ -383,6 +456,47 @@ class ScopeApp {
     state.voltsPerDiv = Number(select.value);
     field.append(caption, select);
 
+    // Coupling and probe, the two per-channel settings that change what the
+    // trace means rather than how it is drawn. Both already worked from the
+    // console; they were the only front-panel controls with no control here,
+    // and the probe ratio in particular was doing invisible work -- it is
+    // what decides which volts/div settings the unit can reach.
+    const pair = document.createElement('div');
+    pair.className = 'channel__pair';
+
+    const couplingField = document.createElement('label');
+    couplingField.className = 'field field--stack';
+    const couplingCaption = document.createElement('span');
+    couplingCaption.textContent = 'Coupling';
+    const couplingSelect = document.createElement('select');
+    for (const [value, text] of COUPLINGS) {
+      couplingSelect.append(new Option(text, value));
+    }
+    couplingField.append(couplingCaption, couplingSelect);
+    state.couplingSelect = couplingSelect;
+    couplingSelect.addEventListener('change', () => {
+      this.runCommand('set_coupling', { mode: couplingSelect.value },
+        `Channel ${label} ${couplingSelect.value.toUpperCase()} coupled`,
+        state.net);
+    });
+
+    const probeField = document.createElement('label');
+    probeField.className = 'field field--stack';
+    const probeCaption = document.createElement('span');
+    probeCaption.textContent = 'Probe';
+    const probeSelect = document.createElement('select');
+    for (const ratio of PROBE_RATIOS) {
+      probeSelect.append(new Option(`${ratio}x`, String(ratio)));
+    }
+    probeSelect.value = String(state.attenuation);
+    probeField.append(probeCaption, probeSelect);
+    state.probeSelect = probeSelect;
+    probeSelect.addEventListener('change', () => {
+      this.applyProbe(label, Number(probeSelect.value));
+    });
+
+    pair.append(couplingField, probeField);
+
     // Where this channel's zero sits on screen, so two traces can be pulled
     // apart instead of drawn on top of each other.
     //
@@ -432,7 +546,7 @@ class ScopeApp {
     });
     positionReset.addEventListener('click', () => applyPosition(0));
 
-    strip.append(head, field, custom, position);
+    strip.append(head, field, custom, pair, position);
 
     // No net means no way to address this channel: the box has capabilities
     // reporting it, but nothing wired to it. Disable rather than let the
@@ -443,8 +557,8 @@ class ScopeApp {
         + 'Add one with "lager net add" to control it here.';
       // The position field goes with them: it needs no net, but a channel
       // that can never be switched on has no trace to move.
-      for (const control of [toggle, select, customInput, positionInput,
-        positionReset]) {
+      for (const control of [toggle, select, customInput, couplingSelect,
+        probeSelect, positionInput, positionReset]) {
         control.disabled = true;
         control.title = why;
       }
@@ -490,6 +604,112 @@ class ScopeApp {
       this.runCommand('set_scale', { volts_per_div: voltsPerDiv },
         `Channel ${label} ${si(voltsPerDiv, 'V', 2)}/div`, state.net);
     }
+  }
+
+  /** Set the timebase, then show what the hardware actually landed on.
+   *
+   * A scope has a fixed set of sample intervals, so a request is rounded to
+   * one of them: 1 ms/div on a 2204A becomes 1.024 ms/div. The dropdown used
+   * to keep displaying the request, which is the same fault the volts/div
+   * list had -- a control that reads back its own input tells you nothing
+   * about the instrument.
+   */
+  async applyTimebase(seconds, { push = true } = {}) {
+    if (!(seconds > 0)) return;
+    this.showTimebase(seconds);
+
+    if (push) {
+      await this.runCommand('set_timebase', { seconds_per_div: seconds },
+        `timebase ${si(seconds, 's', 2)}/div`);
+      try {
+        const body = await this.send('get_timebase', {});
+        const achieved = Number(body.value);
+        if (Number.isFinite(achieved) && achieved > 0) this.showTimebase(achieved);
+      } catch { /* older box: leave the request showing */ }
+    }
+
+    // The window is held in divisions, so a new time/div moves it in seconds.
+    // Re-send it against the achieved value now on the control, or a shift of
+    // two divisions set at 1 ms/div stays two divisions of the old scale.
+    if (this.timePositionDiv) await this.applyTimePosition(this.timePositionDiv);
+  }
+
+  /** Make the timebase dropdown display `seconds`, offered or not. */
+  showTimebase(seconds) {
+    const select = el('timebase');
+    if (!select) return;
+
+    const asOption = String(seconds);
+    if (![...select.options].some((o) => o.value === asOption)) {
+      // Off the ladder, because the hardware rounded to an interval that is
+      // not a round number of seconds. Inserted in order so the list stays
+      // monotonic.
+      const next = [...select.options].find((o) => Number(o.value) > seconds);
+      select.add(new Option(`${si(seconds, 's', 3)}/div`, asOption), next || null);
+    }
+    select.value = asOption;
+  }
+
+  /** Rebuild the timebase list for a block of `depth` samples.
+   *
+   * Depth comes from a capture rather than the capabilities: it is what the
+   * daemon chose, and it is half of what sets the fastest reachable screen.
+   */
+  rebuildTimebaseChoices(depth) {
+    const select = el('timebase');
+    if (!select || depth === this.timebaseDepth) return;
+    this.timebaseDepth = depth;
+
+    const inUse = Number(select.value);
+    select.replaceChildren();
+    for (const value of timebaseChoices(this.capabilities, depth)) {
+      select.append(new Option(`${si(value, 's', 3)}/div`, String(value)));
+    }
+    if (inUse > 0) this.showTimebase(inUse);
+  }
+
+  /** Set a channel's probe ratio, and follow it everywhere it reaches.
+   *
+   * Attenuation is not a display setting. Volts/div, the trigger level and
+   * the samples are all at the probe tip, so changing the ratio changes which
+   * scales the unit can reach and which input range a given scale maps onto.
+   * The dropdown is rebuilt for the new ladder and the scale is read back
+   * rather than assumed: the daemon may land on a different range, and a
+   * panel showing the old one would be the lie this control is here to end.
+   */
+  async applyProbe(label, ratio, { push = true } = {}) {
+    const state = this.channelState.get(label);
+    if (!state || !(ratio > 0)) return;
+
+    state.attenuation = ratio;
+    this.showProbe(state, ratio);
+    if (push) {
+      await this.runCommand('set_probe', { ratio },
+        `Channel ${label} ${ratio}x probe`, state.net);
+    }
+    this.rebuildScaleChoices(label);
+
+    try {
+      const body = await this.send('get_scale', {}, state.net);
+      const scale = Number(body.value);
+      if (Number.isFinite(scale) && scale > 0) {
+        this.applyVoltsPerDiv(label, scale, { push: false });
+      }
+    } catch { /* keep showing the scale we had */ }
+    this.requestRedraw();
+  }
+
+  /** Make a channel's probe dropdown display `ratio`, listed or not. */
+  showProbe(state, ratio) {
+    const select = state.probeSelect;
+    if (!select) return;
+
+    const asOption = String(ratio);
+    if (![...select.options].some((o) => o.value === asOption)) {
+      const next = [...select.options].find((o) => Number(o.value) > ratio);
+      select.add(new Option(`${ratio}x`, asOption), next || null);
+    }
+    select.value = asOption;
   }
 
   /** Rebuild a channel's volts/div list for its current probe.
@@ -572,11 +792,20 @@ class ScopeApp {
       try {
         const body = await this.send('get_probe', {}, state.net);
         const probe = Number(body.value);
-        if (Number.isFinite(probe) && probe > 0 && probe !== state.attenuation) {
+        if (Number.isFinite(probe) && probe > 0) {
           state.attenuation = probe;
+          this.showProbe(state, probe);
           this.rebuildScaleChoices(label);
         }
       } catch { /* keep the 1x list */ }
+      try {
+        const body = await this.send('get_coupling', {}, state.net);
+        const coupling = String(body.value ?? '').toLowerCase();
+        if (state.couplingSelect
+            && COUPLINGS.some(([value]) => value === coupling)) {
+          state.couplingSelect.value = coupling;
+        }
+      } catch { /* leave it showing DC, the default the daemon sets */ }
       try {
         const body = await this.send('get_net_enabled', {}, state.net);
         if (typeof body.value !== 'boolean') return;
@@ -595,12 +824,22 @@ class ScopeApp {
       } catch { /* leave the built-in default showing */ }
     }));
 
-    // The horizontal position outlives the page: the daemon holds it, and
-    // every re-arm uses it. Read it back so a window left looking forward in
-    // an earlier session is not shown as centred.
     const anyNet = labels.map((l) => this.channelState.get(l))
       .find((s) => s && s.net);
     if (!anyNet) return;
+
+    // Before the offset, which is held in divisions and converted with
+    // whatever time/div the control shows: reading the offset first would
+    // convert it against a stale one.
+    try {
+      const body = await this.send('get_timebase', {}, anyNet.net);
+      const seconds = Number(body.value);
+      if (Number.isFinite(seconds) && seconds > 0) this.showTimebase(seconds);
+    } catch { /* leave the default showing */ }
+
+    // The horizontal position outlives the page: the daemon holds it, and
+    // every re-arm uses it. Read it back so a window left looking forward in
+    // an earlier session is not shown as centred.
     try {
       const body = await this.send('get_time_offset', {}, anyNet.net);
       const seconds = Number(body.value);
@@ -706,6 +945,10 @@ class ScopeApp {
   }
 
   disconnect() {
+    // Before the early return: the timer outlives the socket otherwise, and
+    // goes on taking a capture every half second against a scope nobody is
+    // watching.
+    this.stopMeasurementPolling();
     if (!this.socket) return;
     try {
       this.socket.send(JSON.stringify({ command: 'Unsubscribe' }));
@@ -761,6 +1004,10 @@ class ScopeApp {
     const rate = 1e9 / frame.sampleIntervalNs;
     el('stat-rate-samples').textContent = si(rate, 'S/s', 3);
     el('stat-latency').textContent = `${frame.samplesPerChannel.toLocaleString()} pts`;
+    // The capture says how deep a block is, which with the unit's fastest
+    // interval is what bounds the reachable timebases. Only known once one
+    // has arrived, so the list is trimmed here rather than at connect.
+    this.rebuildTimebaseChoices(frame.samplesPerChannel);
   }
 
   setLink(text, className) {
@@ -833,30 +1080,26 @@ class ScopeApp {
     }
 
     try {
-      const body = await this.send('measure_vpp', {});
-      // The daemon computes the whole set from one capture, but the REST
-      // action returns a single value; show the ones the UI cares about with
-      // one request each only when a capture is running.
+      // One request, one capture, the whole set. Reading them one action at a
+      // time cost a capture each and mixed moments of a live signal together,
+      // so the panel could show a Vpp that was not Vmax - Vmin.
+      const body = await this.send('measure_all', {});
+      const values = body.value || {};
       host.replaceChildren();
-      const rows = [['Vpp', body.value, 'V']];
-      for (const [label, action, unit] of [
-        ['Vmax', 'measure_vmax', 'V'],
-        ['Vmin', 'measure_vmin', 'V'],
-        ['Vrms', 'measure_vrms', 'V'],
-        ['Freq', 'measure_freq', 'Hz'],
-      ]) {
-        try {
-          const r = await this.send(action, {});
-          rows.push([label, r.value, unit]);
-        } catch {
-          rows.push([label, null, unit]);
-        }
-      }
-      for (const [label, value, unit] of rows) {
+      for (const [label, key, unit] of MEASUREMENTS) {
         const dt = document.createElement('dt');
         dt.textContent = label;
         const dd = document.createElement('dd');
-        dd.textContent = si(value, unit, 4);
+        const value = values[key];
+        // Absent rather than zero: a DC level has no period and a clean
+        // square wave has no overshoot. Kept in the list, with a dash, so
+        // the panel does not reshuffle as quantities come and go.
+        if (value === undefined || value === null) {
+          dd.textContent = '\u2014';
+          dd.className = 'dim';
+        } else {
+          dd.textContent = si(value, unit, 4);
+        }
         host.append(dt, dd);
       }
     } catch (e) {
@@ -866,6 +1109,33 @@ class ScopeApp {
       p.textContent = e.message;
       host.appendChild(p);
     }
+  }
+
+  /** Keep the measurement panel following the signal while it runs.
+   *
+   * A bench scope updates its readouts continuously; this panel only read
+   * once, on Start, so every value on screen described a capture from
+   * whenever that was. Slower than the frame rate on purpose: each refresh
+   * is a capture and a round trip, and a number that changes ten times a
+   * second cannot be read anyway.
+   */
+  startMeasurementPolling() {
+    this.stopMeasurementPolling();
+    this.refreshMeasurements();
+    this.measureTimer = setInterval(() => {
+      // Overlapping requests would queue captures behind each other on a slow
+      // trigger and arrive out of order.
+      if (this.measureInFlight) return;
+      this.measureInFlight = true;
+      this.refreshMeasurements().finally(() => {
+        this.measureInFlight = false;
+      });
+    }, MEASURE_INTERVAL_MS);
+  }
+
+  stopMeasurementPolling() {
+    if (this.measureTimer) clearInterval(this.measureTimer);
+    this.measureTimer = null;
   }
 
   // ---------- drawing ----------
@@ -993,8 +1263,8 @@ class ScopeApp {
     ctx.strokeStyle = '#1c2430';
     ctx.lineWidth = 1;
     ctx.beginPath();
-    for (let i = 1; i < 10; i += 1) {
-      const x = Math.round((width * i) / 10) + 0.5;
+    for (let i = 1; i < HORIZONTAL_DIVISIONS; i += 1) {
+      const x = Math.round((width * i) / HORIZONTAL_DIVISIONS) + 0.5;
       ctx.moveTo(x, 0);
       ctx.lineTo(x, height);
     }
@@ -1110,18 +1380,25 @@ class ScopeApp {
 
     el('btn-start').addEventListener('click', async () => {
       await this.runCommand('start_capture', {}, 'start');
+      this.startMeasurementPolling();
+    });
+    // Single takes one capture and stops, so one reading is the whole of what
+    // there is to show; polling would keep re-arming a scope the user stopped.
+    el('btn-single').addEventListener('click', async () => {
+      await this.runCommand('start_single', {}, 'single');
+      this.stopMeasurementPolling();
       this.refreshMeasurements();
     });
-    el('btn-single').addEventListener('click', () => this.runCommand('start_single', {}, 'single'));
-    el('btn-stop').addEventListener('click', () => this.runCommand('stop_capture', {}, 'stop'));
+    el('btn-stop').addEventListener('click', () => {
+      // The last values stay on screen, as they do on a stopped bench scope:
+      // they describe the frame still being displayed.
+      this.stopMeasurementPolling();
+      this.runCommand('stop_capture', {}, 'stop');
+    });
     el('btn-force').addEventListener('click', () => this.runCommand('force_trigger', {}, 'force'));
 
     el('timebase').addEventListener('change', (event) => {
-      this.runCommand('set_timebase', { seconds_per_div: Number(event.target.value) }, 'timebase');
-      // The window is expressed in divisions, so a new time/div moves it in
-      // seconds. Re-send it, or a shift of two divisions set at 1 ms/div
-      // silently stays two divisions' worth of the old scale.
-      if (this.timePositionDiv) this.applyTimePosition(this.timePositionDiv);
+      this.applyTimebase(Number(event.target.value));
     });
 
     // Horizontal position. On change rather than input: unlike the vertical
@@ -1230,7 +1507,7 @@ class ScopeApp {
 // Exported, and started only in a browser, so the channel/net mapping and the
 // volts/div ladder can be exercised under node. The constructor needs a DOM,
 // so the tests call the methods on the prototype against a hand-built `this`.
-export { ScopeApp, voltsPerDivChoices };
+export { ScopeApp, voltsPerDivChoices, timebaseChoices };
 
 if (typeof document !== 'undefined') {
   const app = new ScopeApp();
