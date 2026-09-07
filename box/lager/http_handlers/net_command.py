@@ -989,6 +989,23 @@ def _scope(netname, role, action, params):
     if action == "trigger_edge":
         return _scope_trigger_edge(dev, params)
 
+    # Reading the trigger back. `trigger_edge` could set all of this and none
+    # of it could be read, which left every caller -- the web UI included --
+    # showing its own defaults and then sending them back as though they were
+    # the instrument's. The capture mode especially: run, single and a
+    # completed single-shot each change it without anyone asking.
+    if action == "get_capture_mode":
+        mode = dev.get_capture_mode()
+        return _ok("Trigger mode %s" % mode, mode)
+    if action == "get_trigger_source":
+        source = dev.get_trigger_source()
+        return _ok("Trigger source %s" % source, source)
+    if action == "get_trigger_slope":
+        slope = dev.get_trigger_slope()
+        return _ok("Trigger slope %s" % slope, slope)
+    if action == "get_trigger_level":
+        return _ok_read(float(dev.get_trigger_level()), "V")
+
     if action == "capabilities":
         capabilities = dev.capabilities()
         return _ok("%s, %s channel(s)" % (
@@ -1258,8 +1275,17 @@ def _scope_trigger_edge(dev, params):
         dev.set_trigger_level(float(params["level"]))
         applied.append("level %g V" % float(params["level"]))
     if params.get("mode") is not None:
-        dev.set_capture_mode(params["mode"])
-        applied.append("mode %s" % params["mode"])
+        mode = params["mode"]
+        if str(mode).lower() == "single":
+            # Selecting single-shot arms it, as it does on a bench scope.
+            # Setting the mode alone left the scope sitting in it unarmed, so
+            # nothing happened until a capture was started -- and starting one
+            # promotes single-shot to auto, since it cannot run continuously.
+            # Choosing single was therefore either inert or self-cancelling.
+            dev.single()
+        else:
+            dev.set_capture_mode(mode)
+        applied.append("mode %s" % mode)
 
     if not applied:
         raise UnknownAction("trigger_edge with no settings to apply")

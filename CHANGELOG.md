@@ -35,8 +35,41 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ### Fixed
 
-- The Rigol's edge trigger level was written as `:TRIGger:EDGE:LEVel
-  <level>,<source>`, a two-argument form the instrument does not have — the
+- Pressing Run put a PicoScope into auto, discarding the trigger mode. So
+  selecting Normal and running left the scope free-running, and the trace slid
+  about as though the trigger were being ignored — because it was. Run now
+  starts the sweep without choosing how it is triggered. A single-shot is the
+  one mode it still moves, to auto, because a single-shot stops after one
+  capture and running in it would take one frame and appear inert.
+
+- Choosing single-shot as the trigger mode now arms it, as it does on a bench
+  scope. Setting the mode alone left the scope sitting in single-shot unarmed,
+  so nothing happened until a capture was started — and starting one promotes
+  single-shot to auto, it being the mode that cannot run continuously. So the
+  trigger menu's Single was either inert or self-cancelling, while the Single
+  button beside it, which arms, worked. Both now do the same thing.
+
+- Nothing could read a scope's trigger back. `trigger_edge` set the mode,
+  source, slope and level and there was no getter for any of them, so the web
+  UI's trigger panel showed the values in its own HTML however the instrument
+  was set — and then sent all four on every change, so nudging the level
+  re-asserted a mode and a level taken from the page rather than the scope.
+  Between that and Run, the mode was written from three places and read from
+  none. There are now `get_capture_mode`, `get_trigger_source`,
+  `get_trigger_slope` and `get_trigger_level`; the panel reads the instrument
+  on connect and after Run and Single, both of which move the mode; and each
+  control sends only its own setting.
+
+- The web UI offered time/div settings a PicoScope cannot reach. Its interval
+  doubles per timebase step, so a 2204A's steps are 8 µs, 16 µs, 32 µs and so
+  on, while the list was a 1-2-5 ladder: 50 µs/div landed on 64, 5 ms/div on
+  4.096, 10 µs/div on 8. The dropdown corrected itself to the achieved value
+  after every change, inserting an off-ladder entry each time and rebuilding
+  the list underneath whoever was using it — which is why the control seemed
+  to ignore a change, snap back to the previous setting, or apply the one
+  before. It now offers the steps the unit actually has, so a request is the
+  setting and there is nothing to correct. A readback overtaken by a later
+  change is also ignored rather than allowed to land last.
   MSO5000 takes a single real, read in the units of whichever source
   `:TRIGger:EDGE:SOURce` names. A malformed SCPI write does not raise; the
   instrument sets a bit in its status register and carries on, so every

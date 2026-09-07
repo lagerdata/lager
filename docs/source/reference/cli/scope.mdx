@@ -427,6 +427,23 @@ used to default to `normal` and `dc`, so adjusting a level re-applied both --
 a trigger armed for `single` went back to `normal` without being asked.
 </Note>
 
+<Note>
+`--mode` says how a running sweep triggers, and `auto` is the one that will
+show you something regardless: it triggers itself if nothing crosses the level,
+so the trace keeps moving whether or not the trigger is set usefully. `normal`
+updates the screen only on a real trigger, which is what holds a repetitive
+waveform still in one place.
+
+`--mode single` also arms a single-shot, the same as `lager scope <net>
+single`, because a mode that captures once is not a state a scope can sit in
+waiting: `run` promotes it to `auto`, single-shot being the one mode that
+cannot run continuously.
+
+Starting a capture no longer forces `auto`. It used to, so selecting `normal`
+and then running left the scope free-running with the trigger ignored, and
+nothing read the mode back to show it.
+</Note>
+
 ### `trigger edge`
 
 Set edge trigger configuration. Works with both PicoScope and Rigol.
