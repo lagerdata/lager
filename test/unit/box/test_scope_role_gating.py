@@ -138,3 +138,52 @@ class TestTheTwoListsAgreeWithTheHandler:
     def test_nothing_is_in_both_lists(self):
         assert not (net_command._PER_CHANNEL_SCOPE_ACTIONS
                     & set(net_command._SCOPE_MEASUREMENTS)) - {"measure_all"}
+
+
+class TestTheRefusalReadsAsASentence:
+    """It is the only message a user sees when they address the wrong net,
+    so it has to say what to do rather than merely that something is wrong.
+
+    The route wraps UnknownAction in "Unknown action '%s' for %s", which
+    suits an action name and not a sentence: reusing it turned the guidance
+    into `Unknown action 'pico1 is the scope itself, and set_coupling acts on
+    one channel -- use one of its channel nets: scope1, scope2' for scope`.
+    """
+
+    def _error(self, netname="pico1", action="set_coupling"):
+        from unittest.mock import patch
+
+        from lager.http_handlers import net_command as nc
+
+        app = __import__("flask").Flask(__name__)
+        nc.register_net_command_routes(app)
+        with patch.object(nc, "Net") as NetMock:
+            NetMock.get_local_nets.return_value = NETS
+            client = app.test_client()
+            r = client.post("/net/command", json={
+                "netname": netname, "action": action,
+                "params": {"coupling": "ac"}})
+        return r.status_code, (r.get_json() or {}).get("error", "")
+
+    def test_it_is_still_a_400(self):
+        assert self._error()[0] == 400
+
+    def test_it_is_not_wrapped_as_an_unknown_action(self):
+        assert "Unknown action" not in self._error()[1]
+
+    def test_it_names_the_nets_that_would_work(self):
+        message = self._error()[1]
+        assert "vbus" in message and "reset" in message
+
+    def test_a_genuinely_unknown_action_still_says_so(self):
+        """The wrapping is right for what it was written for."""
+        status, message = self._error(netname="vbus", action="set_nonsense")
+        assert status == 400
+        assert "Unknown action" in message
+
+    def test_the_refusal_is_catchable_as_an_unknown_action(self):
+        """Existing handlers catch the base class."""
+        from lager.http_handlers.net_command import (
+            UnknownAction, WrongNetForAction)
+
+        assert issubclass(WrongNetForAction, UnknownAction)
