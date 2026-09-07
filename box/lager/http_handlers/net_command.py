@@ -97,6 +97,7 @@ _HS_FACTORY = {
     "i2c": "i2c_hs",
     "arm": "arm_hs",
     "scope": "scope_hs",
+    "scope-channel": "scope_hs",
 }
 
 
@@ -184,6 +185,17 @@ def _physical_device_id(role, instrument, rec):
         # Keyed on the serial when the net carries one, since a bench can have
         # several PicoScopes and those must NOT serialize against each other.
         return "picoscope:" + (serial or rec.get("unique_id") or addr or "ANY")
+    if role in ("scope", "scope-channel") or "rigol_mso" in inst or "mso5" in inst:
+        # Every scope that is not a PicoScope, which the branch above already
+        # keyed. In practice a Rigol, and it had been falling past all of
+        # these to the LabJack default at the bottom. Its VISA address made
+        # the key unique so it worked, but a Rigol saved without an address
+        # collapsed onto "labjack:ANY" and took the lock a LabJack was using,
+        # queueing scope commands behind GPIO traffic on unrelated hardware.
+        #
+        # The scope net and its channel nets land here together, which is
+        # what they need: they address one instrument.
+        return "scope:" + (serial or addr or rec.get("unique_id") or "ANY")
     if "joulescope" in inst or "js220" in inst:
         return "joulescope:" + (addr or "ANY")
     if "ppk" in inst or "nordic" in inst:
@@ -1188,6 +1200,7 @@ ROLE_ACTIONS = {
     "energy-analyzer": _energy_analyzer,
     "arm": _arm,
     "scope": _scope,
+    "scope-channel": _scope,
     "webcam": _webcam,
     "router": _router,
     "mikrotik": _router,  # saved-net role alias (NetType.from_role)

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import sys
@@ -10,8 +11,11 @@ import json
 import traceback
 from typing import Any, Dict, List
 
+logger = logging.getLogger(__name__)
+
 import requests  # used by get_state(); safe to keep
 
+from . import scope_migration
 from .device import Device
 from .mux import Mux
 from .constants import HARDWARE_PORT, NetType
@@ -269,8 +273,27 @@ class Net:
 
     @classmethod
     def get_local_nets(cls) -> List[Dict[str, Any]]:
-        """Get all saved nets using cached lookup."""
-        return get_nets_cache().get_nets()
+        """Get all saved nets using cached lookup.
+
+        Old scope nets are converted on the way past. `role: "scope"` used to
+        mean a channel and now means the instrument, so a box saved before
+        that change describes something different from what it says; doing it
+        here rather than at startup covers every reader, including the ones
+        that run before any service does.
+        """
+        nets = get_nets_cache().get_nets()
+        if not scope_migration.needs_migration(nets):
+            return nets
+
+        migrated, changed = scope_migration.migrate(nets)
+        if changed:
+            try:
+                cls.save_local_nets(migrated)
+            except Exception as e:
+                # A read must still answer on a box where the config is not
+                # writable; the conversion just runs again next time.
+                logger.warning("could not persist scope net migration: %s", e)
+        return migrated
 
     @classmethod
     def save_local_nets(cls, nets: List[Dict[str, Any]]) -> None:
