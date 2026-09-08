@@ -138,6 +138,21 @@ class TestStart:
         assert replay.exit_code == 0, replay_output
         assert self.post.call_args.args[3] == 'stop'
 
+    def test_start_all_stop_hint_replays_too(self, monkeypatch):
+        # Same contract for the all-nets pair, which prints its own hint.
+        monkeypatch.setattr('cli.gateway_auth.auth_server_for_box', lambda ip: None)
+        with mock.patch.object(webcam_mod, '_list_webcam_nets',
+                               return_value=[{'name': 'cam1'}]):
+            result, output = _invoke(['start-all', '--box', 'bench'])
+            assert result.exit_code == 0, output
+            hint = next(line for line in output.splitlines()
+                        if line.startswith('To stop all streams: '))
+            assert hint.endswith('lager webcam stop-all --box bench'), hint
+
+            replay, replay_output = _invoke(hint.split('lager webcam ', 1)[1].split())
+        assert replay.exit_code == 0, replay_output
+        assert self.post.call_args.args[3] == 'stop'
+
 
 class TestUrl:
     def test_lists_origin_and_tokenises(self, monkeypatch):
