@@ -121,6 +121,23 @@ class TestStart:
         assert 'Webcam URL: http://10.0.0.5:8086/' in output
         assert 'lager login http://plane.example' in output
 
+    def test_printed_stop_hint_is_a_command_that_parses(self, monkeypatch):
+        # The hint is the line a first-time user copies. It used to print
+        # `webcam stop cam1`, which click rejects with "unexpected extra
+        # argument" before it reaches the box: NETNAME comes first. Replay
+        # the printed line through the group rather than string-matching it,
+        # so the two can never drift.
+        monkeypatch.setattr('cli.gateway_auth.auth_server_for_box', lambda ip: None)
+        result, output = _invoke(['cam1', 'start', '--box', 'bench'])
+        assert result.exit_code == 0, output
+        hint = next(line for line in output.splitlines()
+                    if line.startswith('To stop the stream: '))
+        assert hint.endswith('lager webcam cam1 stop --box bench'), hint
+
+        replay, replay_output = _invoke(hint.split('lager webcam ', 1)[1].split())
+        assert replay.exit_code == 0, replay_output
+        assert self.post.call_args.args[3] == 'stop'
+
 
 class TestUrl:
     def test_lists_origin_and_tokenises(self, monkeypatch):
