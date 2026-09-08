@@ -31,6 +31,9 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 ### Fixed
 
+- **A PicoScope triggers at the level asked for.** The trigger thresholds sat ten percent
+  below the requested level, with a hysteresis scaled to the level, so at the default 0 V any
+  noise triggered and a signal with ringing made the trace jump sideways between captures.
 - **A PicoScope no longer returns a block it is still filling.** The acquisition loop polled
   for readiness straight after re-arming and could act on the previous block's ready flag,
   which made the trace jump sideways every few frames.
