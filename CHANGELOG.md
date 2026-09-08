@@ -35,6 +35,26 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ### Fixed
 
+- A PicoScope triggered ten percent below the level asked for, and on a signal
+  with any ringing on its edges it caught a different crossing from one capture
+  to the next — a trace that jumped sideways while the signal held still. The
+  two thresholds the trigger compares against were set to 0.90 and 1.10 of the
+  requested level, which puts the upper one below the lower, and the hysteresis
+  that decides how far the signal must come back before another crossing counts
+  was a fifth of the level. That describes the threshold rather than the input,
+  and at a level of 0 V — the default — it left all three at zero, so anything
+  passing through zero triggered. Both thresholds are now the level as asked
+  for, and the hysteresis a fixed couple of counts of the ADC.
+
+- A PicoScope could report a capture complete when the block had not yet had
+  time to fill. `ps2000_ready` does not say which block it is answering for,
+  and the flag from the one just read is not always clear by the time the next
+  is armed, so a poll landing in that window read a block the device was still
+  filling. Readiness is now refused until a block could physically have
+  filled — its depth of samples at the current interval — which is a lower
+  bound the driver can compute, and enough to tell this block's flag from the
+  last one's.
+
 - A PicoScope's trace jumped sideways every few frames however steady the
   signal and however the trigger was set. After reading a capture the
   acquisition loop re-armed and then polled for readiness with no delay at
