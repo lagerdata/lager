@@ -227,6 +227,12 @@ pub struct PicoScope2000 {
     /// for the readiness poll, since polling faster than the capture takes
     /// cannot return data.
     expected_capture_ms: u64,
+    /// When the current block was armed, if one is.
+    ///
+    /// Read against the time a block takes to fill, so that a readiness flag
+    /// still set from the block before cannot be mistaken for this one being
+    /// done. See `earliest_completion`.
+    armed_at: Option<std::time::Instant>,
     /// Filled in once at open time from the variant string.
     capabilities: ScopeCapabilities,
 }
@@ -273,6 +279,7 @@ impl PicoScope2000 {
                     is_new_channel_enabled_disabled: false,
                     memory_depth_not_update: false,
                     expected_capture_ms: 0,
+                    armed_at: None,
                     capabilities,
                 });
             }
@@ -784,6 +791,23 @@ impl PicoScope2000 {
         }
     }
 
+    /// Trigger hysteresis, in the counts a trigger level is expressed in.
+    ///
+    /// The signal has to come back this far past the threshold before another
+    /// crossing counts, which is what stops a ringing or noisy edge being
+    /// triggered on several times over -- and what stops the trace jumping to
+    /// a different edge from one capture to the next.
+    ///
+    /// Fixed, because it describes the noise on the input rather than where
+    /// the threshold happens to sit. As a fraction of the level it was zero
+    /// whenever the level was, which is the case by default.
+    ///
+    /// Full scale is `i16::MAX` in these units and the 2000 series is 8-bit,
+    /// so a count of the real ADC is 256 of them: this is two of those, about
+    /// 1.5% of the range. Enough to reject ringing, small enough to leave any
+    /// signal worth looking at still triggerable.
+    const TRIGGER_HYSTERESIS_COUNTS: u16 = (i16::MAX as u32 / 64) as u16;
+
     fn create_trigger_channel_properties(
         &self,
         mode: enPS2000ThresholdMode,
@@ -796,10 +820,20 @@ impl PicoScope2000 {
                 self.settings.trigger.trigger_source,
             )
             .unwrap_or(0);
+        // The level as asked for, in both thresholds, with the noise
+        // allowance carried by the hysteresis where it belongs.
+        //
+        // `thresholdMajor` is the upper threshold and `thresholdMinor` the
+        // lower (Programmer's Guide 6.21.1). These were 0.90 and 1.10 of the
+        // level, which puts the upper below the lower and the trigger 10%
+        // under where it was asked for. And the hysteresis was a fifth of the
+        // level, so it described the threshold rather than the input: at a
+        // level of 0 V -- the default -- all three came out zero, leaving the
+        // trigger to fire on whatever noise sat around zero.
         PS2000_TRIGGER_CHANNEL_PROPERTIES {
-            thresholdMajor: ((trigger_level_adc_count as f64) * 0.90) as i16,
-            thresholdMinor: ((trigger_level_adc_count as f64) * 1.10) as i16,
-            hysteresis: ((trigger_level_adc_count as f64) * 0.20) as u16, // Increased hysteresis for stability
+            thresholdMajor: trigger_level_adc_count,
+            thresholdMinor: trigger_level_adc_count,
+            hysteresis: Self::TRIGGER_HYSTERESIS_COUNTS,
             channel: trigger_source_raw_value,
             thresholdMode: mode,
         }
@@ -1263,6 +1297,7 @@ impl PicoScope2000 {
             // faster than this cannot produce data, so it sets the floor for
             // the readiness poll.
             self.expected_capture_ms = time_indisposed_ms.max(0) as u64;
+            self.armed_at = Some(std::time::Instant::now());
             Ok(())
         }
     }
@@ -1283,6 +1318,32 @@ impl PicoScope2000 {
             Ok(())
         }
     }
+    /// Whether enough time has passed since arming for the block to be full.
+    ///
+    /// A block cannot be complete before the time it takes to fill: its depth
+    /// of samples at the current interval. In normal mode it takes longer,
+    /// since the trigger has to arrive first, so this is a floor rather than
+    /// an estimate -- which is all that is needed to tell a readiness flag
+    /// belonging to this block from one left over from the last.
+    ///
+    /// Computed rather than taken from the driver's `time_indisposed_ms`,
+    /// which is the same figure rounded to whole milliseconds and so reads
+    /// zero on the fast timebases where the race is tightest. The larger of
+    /// the two is used, the driver knowing about overheads this does not.
+    fn earliest_completion(&self) -> std::time::Duration {
+        let fill_ns = (self.memory_depth as f64) * self.current_time_interval_ns;
+        let fill = std::time::Duration::from_nanos(fill_ns.max(0.0) as u64);
+        fill.max(std::time::Duration::from_millis(self.expected_capture_ms))
+    }
+
+    fn block_could_have_filled(&self) -> bool {
+        // No arm recorded means nothing this session started the capture, and
+        // the readiness gate below has its own answer for that.
+        self.armed_at
+            .map(|armed| armed.elapsed() >= self.earliest_completion())
+            .unwrap_or(true)
+    }
+
     fn is_scope_ready(&self) -> anyhow::Result<bool> {
         let api = ps2000()?;
         let result = unsafe { api.ps2000_ready(self.handle) };
@@ -1293,7 +1354,24 @@ impl PicoScope2000 {
 
         match result {
             0 => Ok(false),
-            n if n > 0 && self.is_capturing => Ok(true),
+            // Ready, and long enough since arming that it can be this block
+            // rather than the one before it.
+            n if n > 0 && self.is_capturing && self.block_could_have_filled() => Ok(true),
+            // Ready too soon to be true. `ps2000_ready` does not say which
+            // block it is talking about, and the flag from the block just read
+            // is not always clear by the time the next one is armed -- so
+            // reading here returns the new block while the device is still
+            // filling it, and the samples are whatever the buffer holds
+            // part-way through. The trigger is then nowhere near where the arm
+            // put it, which showed up as a trace that jumped sideways a dozen
+            // times a second on a signal that was not moving.
+            n if n > 0 && self.is_capturing => {
+                tracing::trace!(
+                    result = n,
+                    "ready before the block could have filled, so not this block"
+                );
+                Ok(false)
+            }
             n if n < 0 => Err(anyhow::anyhow!("ps2000_ready reported error {n}")),
             n => {
                 // The scope reports data ready while we believe nothing is
@@ -2200,6 +2278,60 @@ mod tests {
                  overflow its stack the next time a channel is enabled"
             );
         }
+    }
+
+    /// The trigger fires where it was asked to, and not on noise.
+    ///
+    /// `thresholdMajor` is the upper threshold and `thresholdMinor` the lower.
+    /// They were 0.90 and 1.10 of the requested level, an inverted pair with
+    /// the trigger sitting 10% below where it was asked for; and the
+    /// hysteresis was a fifth of the level, describing the threshold rather
+    /// than the input. At the default level of 0 V that made all three zero,
+    /// so any noise around zero triggered -- and on a signal with ringing on
+    /// its edges the trigger caught a different crossing from one capture to
+    /// the next, which is a trace that jumps sideways while the signal holds
+    /// still.
+    ///
+    /// Read from the source: building these needs an open device.
+    #[test]
+    fn the_trigger_thresholds_are_the_level_and_the_hysteresis_is_not() {
+        let source = include_str!("ps2000.rs");
+        let body = source
+            .split("fn create_trigger_channel_properties(")
+            .nth(1)
+            .expect("create_trigger_channel_properties exists")
+            .split("\n    fn ")
+            .next()
+            .expect("the function ends");
+        // The last one: the return type names it too, and the comment
+        // recording what the old scaling was sits between the two.
+        let built = body
+            .split("PS2000_TRIGGER_CHANNEL_PROPERTIES {")
+            .last()
+            .expect("it builds the properties");
+
+        for scaled in ["0.90", "1.10", "0.20"] {
+            assert!(
+                !built.contains(scaled),
+                "a threshold or the hysteresis is still scaled by {scaled}: the \
+                 upper threshold must be the level as asked for, and the \
+                 hysteresis must not vanish when the level is zero"
+            );
+        }
+        assert!(
+            built.contains("hysteresis: Self::TRIGGER_HYSTERESIS_COUNTS"),
+            "the hysteresis must be a fixed count, describing the noise on the \
+             input rather than where the threshold sits"
+        );
+    }
+
+    /// Non-zero, or a noisy edge triggers repeatedly; and small enough that an
+    /// ordinary signal still crosses it.
+    #[test]
+    fn the_hysteresis_is_a_couple_of_counts_of_the_real_adc() {
+        let lsb = i16::MAX as u32 / 128; // 8-bit part, full scale i16::MAX
+        assert!(PicoScope2000::TRIGGER_HYSTERESIS_COUNTS as u32 >= lsb);
+        assert!(PicoScope2000::TRIGGER_HYSTERESIS_COUNTS as u32 <= lsb * 4);
     }
 
     /// And the re-arm is where it can be reached without recursing.
