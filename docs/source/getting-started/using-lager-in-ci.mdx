@@ -580,6 +580,42 @@ jobs:
       - run: lager python tests/hil
 ```
 
+### Build with `lager exec`
+
+If the build commands are in your `.lager` file, `lager exec` runs them.
+
+`lager exec` has two behaviors:
+
+- On a developer machine, it starts a container from the DEVENV `image`.
+- In a CI job that is already in a container, it runs the command directly. The job
+  is in the image, so there is nothing to start. A job container also has no Docker.
+
+To get the second behavior, give the image to the job with `container:`:
+
+```yaml
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/example/devenv:latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: lager exec build-ci
+```
+
+GitHub Actions, GitLab CI, Drone, and Bitbucket Pipelines get the second behavior. A
+Jenkins agent, and a runner with no `container:`, get the first.
+
+The command runs in the directory of the check-out. It does not run in `mount_dir`,
+because there is no bind-mount.
+
+These options do nothing when the command runs directly: `--mount`, `--volume`,
+`--user`, and `--group`. The CLI gives a warning for each one. These `.lager` keys also
+do nothing: `network`, `ports`, `platform`, `macaddr`, `hostname`, `volumes`, `user`,
+and `group`. The `--env` option and the `environment` key operate as usual.
+
+To start a container from a CI job, set `LAGER_CI_OVERRIDE=1`. The job must have Docker.
+
 ### Set the check-out to `github.sha`
 
 On a `pull_request` event, the default check-out uses the variable reference
@@ -1450,7 +1486,7 @@ command. It removes a failure that happens on the first job of the day.
 | | 255 | The CLI could not get the exit code from the box. |
 | | 130 | A person or a signal stopped the command. |
 | `lager update --check` | 0 / 1 / 2 | Correct / an update is necessary / the condition is not known. |
-| `lager exec` | the code of the container | The CLI does not change it. |
+| `lager exec` | the code of the command | The CLI does not change it. The command is in a container, or in the job, as [section 6](#build-with-lager-exec) shows. |
 | `lager ssh -- cmd` | the code of the remote command | 255 shows an SSH failure. |
 | all commands | 1 | A general error. **This includes a lock collision.** |
 | all commands | 2 | An error in the command line. An unknown flag or a missing argument. |
@@ -1515,7 +1551,14 @@ an interactive session. The other cause is an interactive `[y/N]` question. Add
 `--yes` if the command accepts it. Add `exec < /dev/null` in a cleanup step.
 
 **`lager exec` does not stop, or it gives an error about a TTY.**
-The defaults are `--interactive` and `--tty`. Give `--no-tty` in CI.
+The defaults are `--interactive` and `--tty`. Give `--no-tty` in CI. This applies when
+`lager exec` starts a container. A job that is already in a container does not use
+these two options.
+
+**`lager exec` gives the error `Docker is not installed or not in PATH`.**
+The job is in a container, but the CLI tried to start one. Make sure that
+`LAGER_CI_OVERRIDE` is not set. Some earlier versions of the CLI always start a
+container; make the CLI current. See [section 6](#build-with-lager-exec).
 
 **Your test cannot read an environment variable from the workflow.**
 The `env:` block of a step applies to the runner. Your script operates on the
