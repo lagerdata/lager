@@ -698,6 +698,41 @@ class ScannerRegistrationTests(unittest.TestCase):
         self.assertNotEqual(usb_scanner.SUPPORTED_USB["LabJack_U3"]["pid"],
                             usb_scanner.SUPPORTED_USB["LabJack_T7"]["pid"])
 
+    def test_u3_does_not_offer_the_hv_pins_as_gpio(self):
+        """FIO0-FIO3 are the U3-HV's fixed high-voltage analog inputs.
+
+        While they were advertised, `lager nets add` accepted a gpio net on
+        them and the net then failed at first use, on hardware, with the
+        driver's PIN error. The scanner reads a USB descriptor and a U3-LV
+        reports the same product id, so the family is treated as HV.
+
+        The whole list is pinned, not just the four absences: a merge that
+        restores the old line puts them back in the middle of the list, and
+        an assertNotIn-only test would still pass on the ones it names.
+        """
+        from lager.http_handlers import usb_scanner
+        gpio = usb_scanner.CHANNEL_MAPS["LabJack_U3"]["gpio"]
+        for pin in ("FIO0", "FIO1", "FIO2", "FIO3"):
+            self.assertNotIn(pin, gpio)
+        self.assertEqual(
+            gpio,
+            ["FIO4", "FIO5", "FIO6", "FIO7",
+             "EIO0", "EIO1", "EIO2", "EIO3", "EIO4", "EIO5", "EIO6", "EIO7",
+             "CIO0", "CIO1", "CIO2", "CIO3"],
+        )
+
+    def test_u3_still_offers_the_hv_pins_as_adc(self):
+        """The same four pins, named for the mode they are stuck in.
+
+        Dropping them from gpio must not cost the user the measurement they
+        are actually for: AIN0-AIN3 are FIO0-FIO3 read as +/-10.3 V inputs.
+        """
+        from lager.http_handlers import usb_scanner
+        adc = usb_scanner.CHANNEL_MAPS["LabJack_U3"]["adc"]
+        for channel in ("AIN0", "AIN1", "AIN2", "AIN3"):
+            self.assertIn(channel, adc)
+        self.assertEqual(len(adc), 16)
+
 
 if __name__ == "__main__":
     unittest.main()

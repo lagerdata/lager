@@ -160,6 +160,7 @@ Instruments with physically independent outputs / inputs. Each channel is its ow
 | `KEYSIGHT_E36233A` | `1`, `2` | Dual-output supply |
 | `KEYSIGHT_E36313A` / `E36312A` | `1`, `2`, `3` | Triple-output supply |
 | `LabJack_T7` | `AIN0`–`AIN13`, `FIO0`–`FIO7`, `DAC0`–`DAC1`, etc. | One net per pin |
+| `LabJack_U3` | `AIN0`–`AIN15`, `DAC0`–`DAC1`; `gpio` on `FIO4`–`FIO7`, `EIO0`–`EIO7`, `CIO0`–`CIO3` | `FIO0`–`FIO3` are fixed high-voltage analog inputs — read them with an `adc` net on `AIN0`–`AIN3`, never as `gpio`. A U3 has no `i2c` or `spi` |
 | `Aardvark` | `SPI0`, `I2C0`, GPIO pins | Mixed-mode multi-channel |
 | `MCC_USB-202` | `CH0`–`CH7`, `DIO0`–`DIO7`, `DAC0`–`DAC1` | One net per channel |
 | `Phidget` | `0`–`3` | One `thermocouple` net per channel |
@@ -674,9 +675,9 @@ lager nets show battery1 --box my-lager-box
 | `solar` | Solar simulator | EA PSI/EL series |
 | `eload` | Electronic load | Rigol DL3021 |
 | `debug` | Debug probe | J-Link, CMSIS-DAP, ST-Link |
-| `adc` | Analog input | LabJack T7 |
-| `dac` | Analog output | LabJack T7 |
-| `gpio` | Digital I/O | LabJack T7, MCC USB-202 |
+| `adc` | Analog input | LabJack T7, LabJack U3 |
+| `dac` | Analog output | LabJack T7, LabJack U3 |
+| `gpio` | Digital I/O | LabJack T7, LabJack U3 (`FIO4` and up), MCC USB-202 |
 | `i2c` | I2C bus | LabJack T7, Aardvark |
 | `spi` | SPI bus | LabJack T7, Aardvark |
 | `scope` | Oscilloscope | Rigol MSO5000, PicoScope |

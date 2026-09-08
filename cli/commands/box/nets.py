@@ -422,6 +422,33 @@ def canonical_instrument(instrument):
     return _INSTRUMENT_ALIASES.get(instrument, instrument)
 
 
+# Pins whose rejection has a better answer than "pick another channel". On a
+# U3 these four are the fixed high-voltage analog inputs, so a user reaching
+# for gpio there wants an adc net on the SAME physical pins, under the name
+# they carry in analog mode. The scanner stopped advertising them as gpio
+# (box/lager/http_handlers/usb_scanner.py), and this is what turns the
+# resulting rejection into a next step rather than a dead end. Raw DIO
+# numbers are included because the U3 drivers accept either spelling.
+_U3_HV_PINS = {"FIO0", "FIO1", "FIO2", "FIO3", "0", "1", "2", "3"}
+
+
+def _channel_rejection_hint(instrument, role, channel):
+    """An extra line for channel rejections that have a specific remedy.
+
+    Returns None when the generic "here are the valid channels" line is the
+    whole story, which is the case for every instrument but the U3.
+    """
+    if (canonical_instrument(instrument) == "LabJack_U3"
+            and role == "gpio"
+            and str(channel).upper() in _U3_HV_PINS):
+        return (
+            "FIO0-FIO3 on a LabJack U3 are fixed high-voltage analog inputs "
+            "and are never digital I/O. Read them with an adc net on "
+            "AIN0-AIN3, the same physical pins."
+        )
+    return None
+
+
 # Chips that can run in exactly one mode at a time, across ALL roles. The
 # canonical case is the FT232H: one physical channel, hardware-multiplexed
 # between MPSSE (spi/i2c/gpio/debug) and async-serial (uart). Once the user
@@ -1325,6 +1352,18 @@ def add_cmd(ctx, name, role, channel, address, box, jlink_script, openocd_config
                     f"The channel '{channel}' is not valid for role '{role}' on the instrument at {address}.",
                     fg="red",
                 )
+                # Naming what IS valid, the way the role rejection below
+                # does. Both lines stay on stdout with the one above them:
+                # cli/setup.py pins only click>=8.1.2, and 8.2's CliRunner
+                # stopped folding stderr into result.output, so moving them
+                # would change what every existing CLI test can see.
+                click.secho(
+                    f"Valid {role} channels for {instrument}: "
+                    f"{', '.join(str(ch) for ch in role_chans)}"
+                )
+                hint = _channel_rejection_hint(instrument, role, channel)
+                if hint:
+                    click.secho(hint, fg="yellow")
                 ctx.exit(1)
 
     # ─────────── unique net name (regardless of type) ────────────────
@@ -2040,7 +2079,13 @@ def create_batch_cmd(ctx: click.Context, json_file, box: str | None) -> None:
     # net never need the scan.
     _instrument_cache: list | None = None
 
-    def _get_instrument_from_address(address: str, fallback_instrument: str = "Unknown") -> str:
+    def _get_scanned_device(address: str) -> dict | None:
+        """The scanned record for *address*, or None when it is not present.
+
+        Shares the one lazy scan with _get_instrument_from_address. A batch
+        run against a box that is down, or naming hardware that is unplugged,
+        gets None here and keeps its pre-0.46.1 behavior.
+        """
         nonlocal _instrument_cache
         if _instrument_cache is None:
             try:
@@ -2049,11 +2094,19 @@ def create_batch_cmd(ctx: click.Context, json_file, box: str | None) -> None:
                 _instrument_cache = []
         for inst in _instrument_cache:
             if inst.get("address") == address:
-                return inst.get("name", "Unknown")
-        return fallback_instrument
+                return inst
+        return None
+
+    def _get_instrument_from_address(address: str, fallback_instrument: str = "Unknown") -> str:
+        inst = _get_scanned_device(address)
+        return inst.get("name", "Unknown") if inst else fallback_instrument
 
     # Validate and normalize each net in the batch
     normalized_nets = []
+    # Channel rejections are collected, not raised in the loop: _save_nets_batch
+    # is all-or-nothing, so telling the user about record 3 and hiding record 7
+    # would cost them a second run to find the next one.
+    channel_errors: list[str] = []
 
     for i, net_data in enumerate(nets_data):
         if not isinstance(net_data, dict):
@@ -2080,7 +2133,46 @@ def create_batch_cmd(ctx: click.Context, json_file, box: str | None) -> None:
             "pin": net_data["channel"],
             "instrument": instrument
         }
+
+        # Reject a channel the present hardware does not offer, the way
+        # `nets add` does. Deliberately narrow:
+        #
+        #   * only when the device is actually in the scan. This command is
+        #     built to provision a box whose instruments are absent or named
+        #     by bare IP, and _get_instrument_from_address already falls back
+        #     to "Unknown" for those. Rejecting what we cannot see would break
+        #     that, fleet-wide, for hardware unrelated to the U3.
+        #   * never for uart, whose channels are per-device tty paths rather
+        #     than the static list (see uart_channel_paths).
+        #
+        # What it does catch is the case this exists for: a hand-written
+        # record naming a pin the instrument cannot drive, which used to be
+        # saved without complaint and fail at first use.
+        batch_role = normalized_net["role"]
+        if batch_role != "uart":
+            dev = _get_scanned_device(net_data["address"])
+            role_chans = (dev.get("channels") or {}).get(batch_role) if dev else None
+            if isinstance(role_chans, list) and role_chans:
+                if str(net_data["channel"]) not in [str(ch) for ch in role_chans]:
+                    detail = (
+                        f"Net {i+1} ('{net_data['name']}'): channel "
+                        f"'{net_data['channel']}' is not valid for role "
+                        f"'{batch_role}' on {instrument}. Valid: "
+                        f"{', '.join(str(ch) for ch in role_chans)}"
+                    )
+                    hint = _channel_rejection_hint(
+                        instrument, batch_role, net_data["channel"])
+                    if hint:
+                        detail = f"{detail}\n    {hint}"
+                    channel_errors.append(detail)
+
         normalized_nets.append(normalized_net)
+
+    if channel_errors:
+        for detail in channel_errors:
+            click.secho(detail, fg="red", err=True)
+        click.secho("No nets were saved.", fg="red", err=True)
+        ctx.exit(1)
 
     # Use batch save for better performance
     _save_nets_batch(ctx, resolved_box, normalized_nets)

@@ -41,13 +41,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1916 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 2222 |
+| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1926 (+2 xfailed) |
+| `unit (box)` | `test/unit/box/` | 2224 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 181 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 183 (+1 skipped) |
-| | **Total gated** | **4696** |
+| | **Total gated** | **4708** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never
@@ -514,7 +514,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_lager_package_identity.py` | Guards this suite's conftest invariant: `lager` must be the real on-disk package with its `__init__` executed, not a placeholder |
 | `test_labjack_batch_read.py` | `POST /labjack/batch_read`: locks on the same device identity `/invoke` does, and writes nothing to the instrument |
 | `test_labjack_model_routing.py` | LabJack model disambiguation across the DAC dispatcher, the LJM batch-read grouping and the device-lock identity: a non-T7 LabJack must reach none of the three T7 paths, and the T7's own routing is byte-for-byte unchanged |
-| `test_labjack_ud.py` | LabJack UD-series (U3) drivers and handle manager against a fake u3 module: pin-name mapping, device selection by serial, and the analog/digital pin mux -- which has no T7 counterpart and fails silently, since a line read in the wrong mode returns a plausible number rather than an error. Also the UD DAC's 0.04-4.95 V range and its absent readback |
+| `test_labjack_ud.py` | LabJack UD-series (U3) drivers and handle manager against a fake u3 module: pin-name mapping, device selection by serial, and the analog/digital pin mux -- which has no T7 counterpart and fails silently, since a line read in the wrong mode returns a plausible number rather than an error. Also the UD DAC's 0.04-4.95 V range and its absent readback. Also that the scanner omits FIO0-FIO3 from the U3's gpio channels -- they are the U3-HV's fixed high-voltage analog inputs, and while they were advertised a net on them was accepted and then failed at first use |
 | `test_load_box_secrets.py` | `load_box_secrets()` returns `{}` on every failure, which makes an unreadable secrets file indistinguishable from a box with none configured -- pins that distinction |
 | `test_lock_state.py` | lock_state.py single source of truth for box-side lock behavior |
 | `test_logic_net_type.py` | `lager logic`'s workers must resolve nets under `NetType.from_role(LOGIC_ROLE)`; `Net.get` matches on type equality, so a mismatch is a silent no-op rather than an error |
@@ -602,7 +602,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_net_tui_metadata_preserves_record.py` | TUI metadata edits merge into the stored record instead of replacing it with a partial one |
 | `test_net_tui_uart_guard.py` | UART net save validation rejecting bare interface indices and empty pins |
 | `test_nets_add_labjack_pins.py` | LabJack I2C/SPI arbitrary pin selection via --sda/--scl/--cs/--sck/--mosi/--miso |
-| `test_nets_add_roles.py` | Role-token normalization converting legacy supply/batt to power-supply/battery |
+| `test_nets_add_roles.py` | Role-token normalization converting legacy supply/batt to power-supply/battery. Also channel-rejection messaging: a rejected channel names the valid ones, a U3 high-voltage pin is pointed at AIN0-AIN3, and add-batch applies the same check while staying permissive for hardware the scan does not find |
 | `test_nets_assign.py` | `lager nets assign` flow with custom-device backend and net creation |
 | `test_nets_channel_display.py` | `lager nets` Channel column rule for uart nets carrying a durable `live_path` |
 | `test_nets_debug_scripts.py` | Smart `lager nets set-script` auto-detection and probe/file reconciliation |

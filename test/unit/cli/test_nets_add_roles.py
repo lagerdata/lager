@@ -56,6 +56,22 @@ JS220 = {
     "net_type": ["watt-meter", "energy-analyzer"],
     "channels": {"watt-meter": ["0"], "energy-analyzer": ["0"]},
 }
+U3_ADDR = "USB0::0x0CD5::0x0003::::INSTR"
+# Channels as the scanner advertises them from 0.46.1 on: FIO0-FIO3 are the
+# U3-HV's fixed high-voltage analog inputs and are offered for adc only.
+U3 = {
+    "name": "LabJack_U3",
+    "vid": "0cd5", "pid": "0003", "serial": None,
+    "address": U3_ADDR,
+    "net_type": ["gpio", "adc", "dac"],
+    "channels": {
+        "gpio": ["FIO4", "FIO5", "FIO6", "FIO7",
+                 "EIO0", "EIO1", "EIO2", "EIO3", "EIO4", "EIO5", "EIO6", "EIO7",
+                 "CIO0", "CIO1", "CIO2", "CIO3"],
+        "adc": [f"AIN{n}" for n in range(16)],
+        "dac": ["DAC0", "DAC1"],
+    },
+}
 
 
 from test.unit.cli.nets_http_fake import FakeBoxHTTP  # noqa: E402
@@ -65,7 +81,7 @@ from test.unit.cli.nets_http_fake import FakeBoxHTTP  # noqa: E402
 def fake_box():
     # nets.py talks to the box over :9000 HTTP (requests.request); replace
     # the box with the in-memory API fake.
-    box = FakeBoxHTTP([DP811, KEITHLEY, JS220])
+    box = FakeBoxHTTP([DP811, KEITHLEY, JS220, U3])
     with patch("requests.request", box.request), \
          patch("cli.box_storage.resolve_and_validate_box",
                lambda ctx, name: name or "testbox"), \
@@ -240,6 +256,113 @@ class TestWattMeterInstrumentsInMap:
     def test_watt_and_energy_nets_coexist_on_one_joulescope(self):
         # The JS220 backs both roles simultaneously; it must not be single-channel.
         assert "Joulescope_JS220" not in nets_mod._SINGLE_CHANNEL_INST
+
+
+# --------------------------------------------------------------------------- #
+# Channel rejection: name the alternatives                                     #
+# --------------------------------------------------------------------------- #
+
+class TestChannelRejectionNamesTheAlternatives:
+    """A rejected channel must leave the user with a next step.
+
+    REGRESSION: a gpio net on a LabJack U3's FIO0 was accepted, listed, and
+    then failed at first use on hardware -- FIO0-FIO3 are the U3-HV's fixed
+    high-voltage analog inputs. The scanner stopped advertising them, and
+    the rejection that now fires used to name only what was wrong.
+    """
+
+    def test_rejection_lists_the_valid_channels(self, fake_box):
+        result = _invoke(["add", "g0", "gpio", "FIO0", U3_ADDR, "--box", "b"])
+        assert result.exit_code == 1
+        assert "not valid for role 'gpio'" in result.output
+        assert "Valid gpio channels for LabJack_U3:" in result.output
+        assert "FIO4" in result.output and "CIO3" in result.output
+        assert not fake_box.saved_nets
+
+    def test_u3_hv_pin_gets_the_adc_hint(self, fake_box):
+        result = _invoke(["add", "g0", "gpio", "FIO0", U3_ADDR, "--box", "b"])
+        assert "AIN0-AIN3" in result.output
+        assert "high-voltage" in result.output
+
+    def test_the_hint_covers_all_four_hv_pins(self, fake_box):
+        for pin in ("FIO1", "FIO2", "FIO3"):
+            result = _invoke(["add", "g0", "gpio", pin, U3_ADDR, "--box", "b"])
+            assert result.exit_code == 1
+            assert "AIN0-AIN3" in result.output, pin
+
+    def test_other_instruments_get_no_u3_hint(self, fake_box):
+        # The "valid channels" line is general; the U3 sentence is not.
+        result = _invoke(["add", "psu", "power-supply", "9", DP811_ADDR, "--box", "b"])
+        assert result.exit_code == 1
+        assert "Valid power-supply channels for Rigol_DP811: 1" in result.output
+        assert "high-voltage" not in result.output
+
+    def test_a_usable_u3_gpio_pin_is_still_accepted(self, fake_box):
+        result = _invoke(["add", "g5", "gpio", "FIO5", U3_ADDR, "--box", "b"])
+        assert result.exit_code == 0, result.output
+        assert fake_box.saved_nets[0]["pin"] == "FIO5"
+
+    def test_the_hv_pins_are_still_usable_as_adc(self, fake_box):
+        # The point of the change: those pins keep the role they are for.
+        result = _invoke(["add", "hv0", "adc", "AIN0", U3_ADDR, "--box", "b"])
+        assert result.exit_code == 0, result.output
+        assert fake_box.saved_nets[0]["role"] == "adc"
+
+
+class TestAddBatchChannelValidation:
+    """add-batch used to save any channel it was handed."""
+
+    def test_batch_rejects_a_channel_the_instrument_cannot_drive(
+            self, fake_box, tmp_path):
+        batch = tmp_path / "nets.json"
+        batch.write_text(json.dumps([
+            {"name": "good", "role": "gpio", "channel": "FIO5",
+             "address": U3_ADDR, "instrument": "LabJack_U3"},
+            {"name": "bad", "role": "gpio", "channel": "FIO0",
+             "address": U3_ADDR, "instrument": "LabJack_U3"},
+        ]))
+        result = _invoke(["add-batch", str(batch), "--box", "b"])
+        assert result.exit_code == 1
+        assert "AIN0-AIN3" in result.output
+        # All or nothing: the valid record in the same file is not saved
+        # either, because _save_nets_batch is all-or-nothing anyway.
+        assert not fake_box.saved_nets
+
+    def test_batch_reports_every_bad_record_at_once(self, fake_box, tmp_path):
+        batch = tmp_path / "nets.json"
+        batch.write_text(json.dumps([
+            {"name": "b1", "role": "gpio", "channel": "FIO0",
+             "address": U3_ADDR, "instrument": "LabJack_U3"},
+            {"name": "b2", "role": "gpio", "channel": "FIO3",
+             "address": U3_ADDR, "instrument": "LabJack_U3"},
+        ]))
+        result = _invoke(["add-batch", str(batch), "--box", "b"])
+        assert result.exit_code == 1
+        assert "'b1'" in result.output and "'b2'" in result.output
+
+    def test_batch_still_accepts_an_instrument_that_is_not_present(
+            self, fake_box, tmp_path):
+        # add-batch provisions boxes whose hardware is absent or named by bare
+        # IP. Validation applies only to a device the scan actually found.
+        batch = tmp_path / "nets.json"
+        batch.write_text(json.dumps([
+            {"name": "future", "role": "gpio", "channel": "FIO0",
+             "address": "USB0::0x0CD5::0x0003::NOTPLUGGEDIN::INSTR",
+             "instrument": "LabJack_U3"},
+        ]))
+        result = _invoke(["add-batch", str(batch), "--box", "b"])
+        assert result.exit_code == 0, result.output
+        assert fake_box.saved_nets[0]["pin"] == "FIO0"
+
+    def test_batch_still_accepts_a_good_record(self, fake_box, tmp_path):
+        batch = tmp_path / "nets.json"
+        batch.write_text(json.dumps([
+            {"name": "g5", "role": "gpio", "channel": "FIO5",
+             "address": U3_ADDR, "instrument": "LabJack_U3"},
+        ]))
+        result = _invoke(["add-batch", str(batch), "--box", "b"])
+        assert result.exit_code == 0, result.output
+        assert fake_box.saved_nets[0]["pin"] == "FIO5"
 
 
 if __name__ == "__main__":
