@@ -8,6 +8,8 @@ All notable changes to the Lager platform are documented here. For detailed rele
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+## [0.46.1] - 2026-09-08
+
 ### Fixed
 
 - **A LabJack U3 no longer offers `FIO0`-`FIO3` as `gpio` channels.** Those four
