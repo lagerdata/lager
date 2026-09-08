@@ -353,7 +353,9 @@ def webcam_start(ctx, box):
     click.echo()
     click.echo("Open this URL in your browser to view the live feed.")
     _gated_link_note(box_ip, box)
-    click.echo(f"To stop the stream: lager webcam stop {net_name} --box {box_ip}")
+    # NETNAME comes before the subcommand, and the label the user typed
+    # is what they can retype -- box_ip may be a name they never saw.
+    click.echo(f"To stop the stream: lager webcam {net_name} stop --box {box or box_ip}")
 
 
 @click.command(name="url")
