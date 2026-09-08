@@ -37,6 +37,36 @@ All notable changes to the Lager platform are documented here. For detailed rele
   they issue identical loader calls, and an AST scan of `box/lager` fails the
   build if either grows a private copy.
 
+### Fixed
+
+- **`lager exec` runs the command in place again when the CI job is already
+  inside the devenv image.** `exec` used to choose between two runners: `docker
+  run` on a developer's machine, and running the command directly under
+  container-based CI, on the reasoning that such a job is already in the image
+  and has neither a Docker binary nor a socket to start another one with. The
+  second runner was lost when the command moved from `cli/exec/commands.py` to
+  `cli/commands/utility/exec_.py`; `is_container_ci()` survived the move as
+  exported dead code that nothing called. Every `lager exec` in a job container
+  has since failed with `Docker is not installed or not in PATH`, which is the
+  documented way to run a build under GitHub Actions, GitLab CI, Drone, and
+  Bitbucket Pipelines. Nothing caught it because neither runner had a test.
+
+  The command now runs in the job's working directory -- not `mount_dir`, which
+  only means something when there is a bind-mount to name. `--env` and the
+  `environment` key are applied to it; `--passenv` is satisfied by ordinary
+  inheritance. Options that need a container to start (`--mount`, `--volume`,
+  `--user`, `--group`) each produce a warning rather than being dropped in
+  silence, while the equivalent `.lager` keys stay quiet under `--verbose`,
+  since one config file is shared between a developer's machine and CI and
+  carrying them is normal. `LAGER_CI_OVERRIDE` still forces the Docker path.
+
+  A Jenkins agent and a bare `CI=true` runner are hosts, not job containers, and
+  keep starting a container as before. Anyone on 0.4x whose CI sets the
+  container-CI variables *and* has a working Docker will switch from a container
+  to in-place execution; that is the pre-migration behavior returning, but it is
+  a behavior change on an already-shipped version, not only a fix for people
+  still on the older CLI.
+
 ## [0.46.1] - 2026-09-08
 
 ### Fixed

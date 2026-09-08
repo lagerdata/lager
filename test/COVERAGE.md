@@ -41,13 +41,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1926 (+2 xfailed) |
+| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1943 (+2 xfailed) |
 | `unit (box)` | `test/unit/box/` | 2264 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 181 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 183 (+1 skipped) |
-| | **Total gated** | **4748** |
+| | **Total gated** | **4765** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never
@@ -451,7 +451,7 @@ cli/tests/                #  7 files: 6 pytest suites (GATED via `unit (cli)`),
                           #           plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 196 files)
+### Local Unit Tests (`test/unit/` -- 197 files)
 
 #### Box Unit Tests (`test/unit/box/` -- 108 files)
 
@@ -570,7 +570,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_ykush_driver.py` | YKUSH USB hub driver: device-contention regression from an indefinitely cached handle |
 | `test_automation_exports.py` | Static parse of `automation/__init__.py`'s lazy export table: no name guarded twice, every returned driver reachable under its own name, everything in `__all__` resolvable -- the copy-paste class of defect that made one driver answer to another's name |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 71 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 72 files)
 
 | File | What it tests |
 |------|---------------|
@@ -596,6 +596,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_diagnose_classify_jlink.py` | `lager diagnose` J-Link classification from `/diagnose/usb` + `/diagnose/jlink` payloads |
 | `test_diagnose_classify_usbhub.py` | `lager diagnose` USB hub classification from `/diagnose/usbhub`, including the wedged hub that sysfs and lsof both call healthy Also that an unsupported hub vendor gets its own permanent-state classification instead of the transient BUSY one, which told people to rerun when idle for a condition that never changes. |
 | `test_error_mapping.py` | map_system_error errno mapping [16/19/110] to actionable headlines and actions |
+| `test_exec_container_ci.py` | Which runner `lager exec` picks: a container-based CI job runs the command in place and spawns no `docker`, while a Jenkins agent, a bare `CI=true` runner and a developer's machine still assemble the `docker run` line. Pins the regression where the in-place runner was lost in the move to `cli/commands/utility/exec_.py` and `is_container_ci()` was left as dead code -- neither runner had a test. Also the absence of a chdir, `--env` / the `environment` key reaching the child, exit-code propagation, `LAGER_CI_OVERRIDE`, the `/bin/bash` fallback for an absent or empty `shell`, and the warning for container-only flags |
 | `test_gateway_auth_refresh.py` | Gateway-auth refresh margin scaling with token lifetime -- pins the refresh-storm fix |
 | `test_gdbserver_interactive_rtt.py` | `gdbserver --rtt --interactive`: the flag is rejected without `--rtt`, the streaming leg moves to the `/rtt` WebSocket, and plain `--rtt` still uses the HTTP stream |
 | `test_net_9000_migration.py` | Tier-1 net CLI commands (adc, dac, gpi, gpo, spi, i2c, watt, energy, ...) driving the box `:9000` API |
