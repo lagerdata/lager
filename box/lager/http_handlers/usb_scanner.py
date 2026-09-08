@@ -3,10 +3,13 @@
 
 """USB instrument scanner for the Lager Box HTTP server.
 
-Extracted from cli/impl/query_instruments.py so the scan logic can be
-imported by HTTP handlers that are deployed inside the box container.
-The CLI version (query_instruments.py) remains the canonical copy for
-CLI usage; this module keeps the box HTTP server self-contained.
+Originally extracted from cli/impl/query_instruments.py so the scan logic
+could be imported by HTTP handlers deployed inside the box container. That
+CLI-side copy was deleted in the :9000 migration, so this module is now the
+only copy -- see the note above ``custom_instruments`` below. There is no
+CLI-side scan fallback: ``lager nets add``, ``add-all``, ``instruments`` and
+the net TUI all read the tables here through GET :9000/instruments/list,
+which is why narrowing a channel list here closes every one of them at once.
 """
 
 import glob
@@ -97,8 +100,9 @@ SUPPORTED_USB: Dict[str, Dict] = {
     "LabJack_T7":        {"vid": "0cd5", "pid": "0007", "net_type": ["gpio", "adc", "dac", "spi", "i2c"]},
     # U3-HV and U3-LV share this product id -- the scanner cannot tell them
     # apart, so the entry is the family. The driver reads the variant from
-    # the device (u3.U3.isHV) when it opens, which is also what decides
-    # whether FIO0-FIO3 are usable as digital I/O.
+    # the device (u3.U3.isHV) when it opens; the scanner cannot, so
+    # CHANNEL_MAPS below treats every U3 as an HV and leaves FIO0-FIO3 out of
+    # the gpio channels. See the comment there for why that is not a setting.
     # No spi/i2c: the UD drivers implement adc/dac/gpio only, and
     # advertising a role with no driver behind it just moves the failure.
     "LabJack_U3":        {"vid": "0cd5", "pid": "0003", "net_type": ["gpio", "adc", "dac"]},
@@ -220,13 +224,27 @@ CHANNEL_MAPS: Dict[str, Dict[str, List[str]]] = {
     # A U3's AIN and DIO numbers name the SAME physical pins: AIN4-AIN7 are
     # FIO4-FIO7 and AIN8-AIN15 are EIO0-EIO7, in analog rather than digital
     # mode. Both are listed because either is a valid choice; the driver sets
-    # the mode when the net is used. On a U3-HV, AIN0-AIN3 (FIO0-FIO3) are
-    # fixed high-voltage analog inputs and are NOT available as gpio -- the
-    # driver rejects that with an explicit error, since a U3-LV has the same
-    # product id and the same pins are flexible there.
+    # the mode when the net is used.
+    #
+    # FIO0-FIO3 are absent from "gpio" on purpose: the whole family is treated
+    # as a U3-HV, where those four are the fixed high-voltage analog inputs and
+    # no mask bit will ever make them digital. This table is built from a USB
+    # descriptor and a U3-LV reports the same product id, so the scanner has
+    # nothing to ask -- only an open handle knows (u3.U3.isHV), and by then the
+    # net exists. Of the two ways to be wrong, advertising a pin that cannot
+    # work is the worse one: the net is created happily and then fails at first
+    # use, on hardware, in the middle of a run. Omitting it costs a U3-LV owner
+    # four digital lines; AIN0-AIN3 and the other sixteen DIO are unaffected.
+    #
+    # Not configurable on purpose. An env var or a --force flag is a knob whose
+    # only correct setting depends on the variant we cannot detect, so it moves
+    # the guess to the user without handing them anything to decide it with.
+    # The driver still reads isHV and still rejects a bad pin at use time
+    # (box/lager/io/labjack_ud_handle.py), which is what catches a net created
+    # before this change or written straight to the box.
     "LabJack_U3": {
         "gpio": [
-            "FIO0", "FIO1", "FIO2", "FIO3", "FIO4", "FIO5", "FIO6", "FIO7",
+            "FIO4", "FIO5", "FIO6", "FIO7",
             "EIO0", "EIO1", "EIO2", "EIO3", "EIO4", "EIO5", "EIO6", "EIO7",
             "CIO0", "CIO1", "CIO2", "CIO3",
         ],

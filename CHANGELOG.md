@@ -8,6 +8,50 @@ All notable changes to the Lager platform are documented here. For detailed rele
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Fixed
+
+- **A LabJack U3 no longer offers `FIO0`-`FIO3` as `gpio` channels.** Those four
+  pins are the U3-HV's fixed high-voltage analog inputs, wired through the
+  high-voltage front end rather than to the digital fabric; no configuration
+  bit makes them digital. They were advertised anyway, so `lager nets add`
+  accepted a `gpio` net on `FIO0` without complaint and the net then failed at
+  first use, on hardware, with the driver's `PIN_CONFIGURED_FOR_DIGITAL` error.
+  `lager nets add-all` was worse: it enumerates the advertised list, so every
+  box with a U3 gained four nets that could never be driven.
+
+  The scanner reads a USB descriptor, and a U3-LV — whose `FIO0`-`FIO3` really
+  are flexible — reports the same product id (`0cd5:0003`). Only an open handle
+  knows the variant (`u3.U3.isHV`), and by then the net exists. The whole family
+  is therefore treated as a U3-HV. Of the two ways to be wrong, advertising a
+  pin that cannot work is the worse one; omitting it costs a U3-LV owner four
+  digital lines, and those four pins remain readable as an `adc` net on
+  `AIN0`-`AIN3`. The sixteen usable digital lines are `FIO4`-`FIO7`,
+  `EIO0`-`EIO7` and `CIO0`-`CIO3`.
+
+  This is deliberately not a setting. An environment variable or a `--force`
+  flag would be a knob whose only correct value depends on a variant the
+  scanner cannot detect, so it moves the guess to the user without handing them
+  anything to decide it with.
+
+  The channel table is box-side, and `nets add`, `add-all`, `instruments` and
+  the net TUI all read it over `GET /instruments/list`, so one change closes
+  all four. **A 0.46.1 CLI against a 0.46.0 box still sees the old list** —
+  update the box to get the fix.
+
+- **A rejected channel now names the ones that work.** `lager nets add` reported
+  only that a channel was invalid, which for a U3 user meant a dead end. It now
+  lists the valid channels for that role and instrument, and points a `FIO0`-`FIO3`
+  attempt at `AIN0`-`AIN3`. `lager nets add-batch` gained the same channel check,
+  reporting every bad record at once rather than the first. It stays permissive
+  where it has to: a device the scan does not find is not validated, so batches
+  that provision absent or bare-IP-addressed hardware behave as before.
+
+  Two paths still accept any channel: the box's `PUT /nets/<name>` and its
+  legacy `:5000` twin store what they are given, for every instrument. Nets
+  created before this release also survive untouched — they still list, and
+  still fail at use with the driver's message, which remains the check that
+  sees the real device.
+
 ## [0.46.0] - 2026-09-04
 
 ### Added
