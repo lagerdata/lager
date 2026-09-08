@@ -1481,20 +1481,6 @@ impl PicoScope2000 {
         }
         tracing::debug!("Current timebase: {}", self.current_timebase);
         tracing::debug!("Current time interval: {}", self.current_time_interval_ns);
-
-        // Re-arm, as every other setter on this driver does. Choosing a
-        // timebase only picked the numbers and left the block running at the
-        // old rate, so a new time/div did not take effect until something else
-        // happened to re-arm -- and the frame it eventually produced was
-        // stamped with the interval in force when it was read rather than the
-        // one it was captured at, so the samples and the time axis disagreed.
-        if self.is_capturing {
-            self.stop_triggering()?;
-            self.do_update_channel()?;
-            self.is_capturing = true;
-            self.do_memory_depth_update()?;
-            self.start_triggered_capture(self.settings.trigger.trigger_position)?;
-        }
         Ok(())
     }
 
@@ -1629,8 +1615,30 @@ impl Oscilloscope for PicoScope2000 {
         self.get_scope_capture_mode()
     }
 
+    /// Choose a time/div, and re-arm so it takes effect.
+    ///
+    /// Re-arming here rather than in `set_scope_time_per_div`, which is where
+    /// every other setter on this driver does its own: that one is also called
+    /// by `update_memory_depth`, which `do_memory_depth_update` calls, which a
+    /// re-arm calls in turn -- so re-arming down there recurses until the
+    /// hardware thread overflows its stack. Enabling a channel was enough to
+    /// do it, that being what makes `do_memory_depth_update` recompute.
+    ///
+    /// Without a re-arm somewhere, though, a new time/div did not take effect
+    /// until something else happened to re-arm, and the frame it eventually
+    /// produced was stamped with the interval in force when it was read rather
+    /// than the one it was captured at -- so the samples and the time axis came
+    /// from different settings.
     fn set_time_per_div(&mut self, time_per_div: f64) -> anyhow::Result<()> {
-        self.set_scope_time_per_div(time_per_div, self.memory_depth)
+        self.set_scope_time_per_div(time_per_div, self.memory_depth)?;
+        if self.is_capturing {
+            self.stop_triggering()?;
+            self.do_update_channel()?;
+            self.is_capturing = true;
+            self.do_update_trigger()?;
+            self.start_triggered_capture(self.settings.trigger.trigger_position)?;
+        }
+        Ok(())
     }
 
     /// The time/div the capture is actually running at, not the one asked for.
@@ -2154,6 +2162,62 @@ mod tests {
         assert_eq!(
             trigger_position_split(8000, -50.0),
             trigger_position_split(8000, 0.0)
+        );
+    }
+
+    /// The recursion that overflowed the hardware thread's stack.
+    ///
+    /// `update_memory_depth` calls `set_scope_time_per_div`, and a re-arm
+    /// calls `do_memory_depth_update`, which calls `update_memory_depth`. So
+    /// anything that re-arms, put inside `set_scope_time_per_div`, closes a
+    /// loop with no base case. Enabling a channel was enough to enter it,
+    /// that being what makes `do_memory_depth_update` recompute, and the
+    /// daemon aborted with "thread 'scope-hw' has overflowed its stack" every
+    /// time a channel was switched on. The re-arm belongs in the trait's
+    /// `set_time_per_div`, which nothing downstream calls.
+    ///
+    /// Checked by reading the source, there being no scope to drive here.
+    #[test]
+    fn the_internal_timebase_setter_does_not_re_arm() {
+        let source = include_str!("ps2000.rs");
+        let body = source
+            .split("fn set_scope_time_per_div(")
+            .nth(1)
+            .expect("set_scope_time_per_div exists")
+            .split("\n    fn ")
+            .next()
+            .expect("the function ends");
+
+        for reentrant in [
+            "do_memory_depth_update",
+            "start_triggered_capture",
+            "stop_triggering",
+        ] {
+            assert!(
+                !body.contains(reentrant),
+                "set_scope_time_per_div calls {reentrant}, which reaches it \
+                 again through update_memory_depth: the hardware thread will \
+                 overflow its stack the next time a channel is enabled"
+            );
+        }
+    }
+
+    /// And the re-arm is where it can be reached without recursing.
+    #[test]
+    fn the_public_timebase_setter_does_re_arm() {
+        let source = include_str!("ps2000.rs");
+        let body = source
+            .split("fn set_time_per_div(")
+            .nth(1)
+            .expect("set_time_per_div exists")
+            .split("\n    fn ")
+            .next()
+            .expect("the function ends");
+
+        assert!(
+            body.contains("start_triggered_capture"),
+            "a new time/div takes effect only on a re-arm, so without one the \
+             timebase does not change until something else arms the scope"
         );
     }
 }
