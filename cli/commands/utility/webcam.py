@@ -493,7 +493,7 @@ def webcam_start_all(ctx, box):
     click.echo()
     click.echo("Open the URLs in your browser to view the live feeds.")
     _gated_link_note(box_ip, box)
-    click.echo(f"To stop all streams: lager webcam stop-all --box {box_ip}")
+    click.echo(f"To stop all streams: lager webcam stop-all --box {box or box_ip}")
 
 
 @click.command(name="stop-all")
