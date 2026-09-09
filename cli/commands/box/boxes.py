@@ -50,7 +50,7 @@ def _list_boxes_live(port=9000, timeout=5):
     saved_boxes = list_boxes()
 
     if not saved_boxes:
-        click.echo("No boxes found. Add boxes with: lager boxes add --name [NAME] --ip [IP_ADDRESS]")
+        click.echo("No boxes found. Add boxes with: lager boxes add --name [NAME] --ip [IP_ADDRESS] --user [USERNAME]")
         return
 
     box_word = 'box' if len(saved_boxes) == 1 else 'boxes'
@@ -487,7 +487,7 @@ def delete(ctx, name, yes):
         if available:
             click.echo(f"Available boxes: {', '.join(available)}", err=True)
         else:
-            click.echo("No boxes configured. Add one with: lager boxes add --name [NAME] --ip [IP_ADDRESS]", err=True)
+            click.echo("No boxes configured. Add one with: lager boxes add --name [NAME] --ip [IP_ADDRESS] --user [USERNAME]", err=True)
         ctx.exit(1)
 
     box_info = existing_boxes[name]

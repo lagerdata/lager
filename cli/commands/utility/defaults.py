@@ -128,7 +128,7 @@ def add(box, serial_port, supply_net, battery_net, solar_net, scope_net, logic_n
             else:
                 click.echo("\nNo boxes are currently saved.", err=True)
                 click.echo("To add a new box:", err=True)
-            click.echo(f"  lager boxes add --name {box} --ip [TAILSCALE_IP]", err=True)
+            click.echo(f"  lager boxes add --name {box} --ip [TAILSCALE_IP] --user [USERNAME]", err=True)
             click.echo("\nTo find your Tailscale IP, run: tailscale status", err=True)
             raise click.Abort()
 

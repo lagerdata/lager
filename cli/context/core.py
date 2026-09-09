@@ -87,7 +87,7 @@ def get_default_box(ctx):
             'No box specified, and you have no saved boxes yet.',
             cause='Lager needs to know which box to talk to.',
             fixes=[
-                'Add a box: lager boxes add --name [BOX_NAME] --ip [IP_ADDRESS]',
+                'Add a box: lager boxes add --name [BOX_NAME] --ip [IP_ADDRESS] --user [USERNAME]',
                 'Then use --box [BOX_NAME], or set a default: lager defaults add --box [BOX_NAME]',
             ],
         )

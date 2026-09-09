@@ -770,7 +770,7 @@ def _resolve_box(ctx: click.Context, box_opt: Optional[str] = None) -> str:
 
             click.echo("", err=True)
             click.echo("To add a new box, use:", err=True)
-            click.echo(f"  lager boxes add --name {target_box} --ip [IP_ADDRESS]", err=True)
+            click.echo(f"  lager boxes add --name {target_box} --ip [IP_ADDRESS] --user [USERNAME]", err=True)
             ctx.exit(1)
 
     # get_default_box already handles local box resolution

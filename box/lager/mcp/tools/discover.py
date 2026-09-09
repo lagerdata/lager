@@ -140,9 +140,10 @@ def discover_bench(ctx: Context, net_name: str | None = None) -> str:
                 "<box-ip>`."
             ),
             "optional": (
-                "Registering a friendly name is optional: "
-                "`lager boxes add --name <name> --ip <box-ip>` (only useful for "
-                "a stable alias or a non-default SSH user via --user)."
+                "Registering a friendly name is optional, and only useful for a "
+                "stable alias: `lager boxes add --name <name> --ip <box-ip> "
+                "--user <ssh-user>`. All three options are required — there is "
+                "no default SSH user."
             ),
             "full_docs": "See lager://guide/docs (https://docs.lagerdata.com).",
         },

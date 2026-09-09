@@ -178,7 +178,8 @@ agent follows with the tools above.
     The runnable can also be a **folder** (entrypoint `main.py`), which syncs
     and imports everything in it — handy for shipping reusable helper modules:
     `lager python path/to/test_dir --box <box-ip>`. (Optionally,
-    `lager boxes add --name <name> --ip <box-ip>` registers a friendly alias.)
+    `lager boxes add --name <name> --ip <box-ip> --user <ssh-user>` registers a
+    friendly alias; all three options are required.)
   </Step>
   <Step title="Analyse & iterate">
     Review the CLI output, adjust the script, and re-run it with `lager python`.
