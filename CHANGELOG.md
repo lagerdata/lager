@@ -8,6 +8,8 @@ All notable changes to the Lager platform are documented here. For detailed rele
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+## [0.46.2] - 2026-09-08
+
 ### Changed
 
 - **The OpenOCD flash and erase decision now lives in one module.** 0.46.0 gave
