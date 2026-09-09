@@ -1708,7 +1708,7 @@ def box_not_found_error(box_name):
         f"No box named '{box_name}'.",
         cause=cause,
         fixes=[
-            f'Add it: lager boxes add --name {box_name} --ip [IP_ADDRESS]',
+            f'Add it: lager boxes add --name {box_name} --ip [IP_ADDRESS] --user [USERNAME]',
             'Or use an existing name / an IP address with --box.',
         ],
     )

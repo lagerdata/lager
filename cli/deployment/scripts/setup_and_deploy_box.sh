@@ -2060,7 +2060,7 @@ echo -e "${BOLD}Next Steps:${NC}"
 echo ""
 echo "1. Add box to your local .lager configuration:"
 echo -e "   ${BLUE}cd your-project-directory${NC}"
-echo -e "   ${BLUE}lager boxes add --name my-box --ip ${BOX_IP}${NC}"
+echo -e "   ${BLUE}lager boxes add --name my-box --ip ${BOX_IP} --user ${BOX_USER}${NC}"
 echo ""
 echo "2. Test connectivity:"
 echo -e "   ${BLUE}lager hello --box ${BOX_IP}${NC}"
@@ -2086,7 +2086,7 @@ if [ "$SKIP_ADD_BOX" != "true" ] && [ -f ".lager" ]; then
     if [ -n "$BOX_NAME" ]; then
         # Check if lager CLI is available
         if command -v lager &> /dev/null; then
-            if lager boxes add --name "$BOX_NAME" --ip "${BOX_IP}" 2>/dev/null; then
+            if lager boxes add --name "$BOX_NAME" --ip "${BOX_IP}" --user "${BOX_USER}"; then
                 print_success "Added '${BOX_NAME}' to .lager configuration"
                 echo ""
                 echo "You can now use:"

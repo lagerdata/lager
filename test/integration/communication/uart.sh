@@ -43,7 +43,7 @@ if echo "$BOX_INPUT" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
   BOX_IP="$BOX_INPUT"
   echo "Detected IP address: $BOX_IP"
   echo "Registering as temporary box: $BOX_NAME"
-  lager boxes add --name "$BOX_NAME" --ip "$BOX_IP" --yes >/dev/null 2>&1 || true
+  lager boxes add --name "$BOX_NAME" --ip "$BOX_IP" --user "${LAGER_BOX_SSH_USER:-lagerdata}" --yes >/dev/null 2>&1 || true
   BOX="$BOX_NAME"
 else
   # Input is a box name - use it directly

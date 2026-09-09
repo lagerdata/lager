@@ -50,8 +50,8 @@ for the full walkthrough.
 ## Quick Start
 
 ```bash
-# Register a box you can reach
-lager boxes add --name my-box --ip <BOX_IP>
+# Register a box you can reach (--user is the account you SSH in as)
+lager boxes add --name my-box --ip <BOX_IP> --user <BOX_SSH_USER>
 
 # Confirm the CLI can talk to it
 lager hello --box my-box

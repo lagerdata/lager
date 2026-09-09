@@ -98,7 +98,7 @@ Each entry can be either a simple IP string (legacy format) or an object with ad
 | Field | Required | Description |
 |-------|----------|-------------|
 | `ip` | Yes | IP address of the box (typically a Tailscale IP) |
-| `user` | No | Username for SSH access |
+| `user` | No | Username for SSH access. Optional in the file (older entries may omit it), but `lager boxes add --user` is required, so newly added boxes always record one. |
 | `version` | No | Branch or version the box is running (e.g., `"main"`, `"staging"`) |
 
 **Example:**
@@ -106,10 +106,13 @@ Each entry can be either a simple IP string (legacy format) or an object with ad
 ```json
 {
   "BOXES": {
-    "my-lager-box": "100.64.0.10",
+    "my-lager-box": {
+      "ip": "100.64.0.10",
+      "user": "<ssh-user>"
+    },
     "staging-box": {
       "ip": "100.64.0.11",
-      "user": "admin",
+      "user": "<ssh-user>",
       "version": "staging"
     },
     "legacy-box": "192.168.1.50"
@@ -120,8 +123,8 @@ Each entry can be either a simple IP string (legacy format) or an object with ad
 **CLI commands:**
 
 ```bash
-lager boxes add --name my-lager-box --ip 100.64.0.10
-lager boxes add --name staging-box --ip 100.64.0.11 --user admin --version staging
+lager boxes add --name my-lager-box --ip 100.64.0.10 --user <ssh-user>
+lager boxes add --name staging-box --ip 100.64.0.11 --user <ssh-user> --version staging
 lager boxes list
 lager boxes edit --name my-lager-box --ip 100.64.0.12
 lager boxes delete --name my-lager-box

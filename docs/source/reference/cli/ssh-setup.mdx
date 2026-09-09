@@ -110,7 +110,7 @@ when `lager_box` is not authorized there.
 
 ```bash
 # First-time setup for a new box
-lager boxes add --name my-lager-box --ip 100.x.y.z
+lager boxes add --name my-lager-box --ip 100.x.y.z --user <ssh-user>
 lager ssh-setup --box my-lager-box
 
 # Re-running against an already-authorized box is safe (no-op)
