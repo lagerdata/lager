@@ -47,12 +47,12 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 2107 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 2576 |
+| `unit (box)` | `test/unit/box/` | 2583 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 181 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 186 (+1 skipped) |
-| | **Total gated** | **5244** |
+| | **Total gated** | **5251** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -485,7 +485,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_cleanup_watchdog.py` | Cleanup grace as an *idle* budget: a teardown making progress keeps its deadline pushed out, a wedged one is still cut off, and blocking on an instrument counts as progress |
 | `test_custom_devices_assign.py` | `lager.devices.assign` and the `/custom-devices/*` handlers behind `lager nets assign` |
 | `test_custom_store.py` | Custom-device JSON persistence: USB cable to catalog instrument mapping |
-| `test_da1469x_loader.py` | DA1469x ELF symbol reading, loader path resolution, flash/erase/timeout paths. Also the poll helper every loader step waits on: a dropped `mdw` reply is retried to the deadline like any non-matching value, since these reads go through the debug AP while the CPU runs and a marginal SWD link drops one now and then; a link that never answers still fails, naming the read error rather than a value it never read, and a non-RPC error is not swallowed |
+| `test_da1469x_loader.py` | DA1469x ELF symbol reading, loader path resolution, flash/erase/timeout paths. Also the poll helper every loader step waits on: a dropped `mdw` reply is retried to the deadline like any non-matching value, since these reads go through the debug AP while the CPU runs and a marginal SWD link drops one now and then; a link that never answers still fails, naming the read error rather than a value it never read, and a non-RPC error is not swallowed. Plus the bring-up retry underneath that fix: a loader that reads back successfully but never reports ready has its whole preparation re-run up to three times, naming the attempt that failed, while a failed image load, a missing loader symbol or an OpenOCD error still reaches the caller on the first attempt, and a spent budget names the attempt count |
 | `test_debug_connect_ports.py` | `/debug/connect` port overrides are coerced and range-checked at the boundary, because they are used to build the debug backend's command line: a non-integer is refused rather than forwarded. A quoted number still works |
 | `test_debug_defmt_rtt.py` | Defmt RTT decoding wrapper threading and piping logic, plus the down-channel `write()` that makes a decoding session bi-directional — including the late write that must not reopen the telnet port it just released |
 | `test_debug_status_target_attached.py` | `/debug/status` must report `gdbserver_running` and `target_attached` separately, keep `connected` pinned to its old server-liveness meaning for older clients, and preserve the tri-state -- None (older box, refused probe, timeout) is not False. Also pins the log-scrape/probe split: the cheap path always runs, the wire read is opt-in |

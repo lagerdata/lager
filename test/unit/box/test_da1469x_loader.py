@@ -17,12 +17,18 @@ Covers:
     retried to the deadline like any non-matching value, a link that never
     answers still times out naming the read error, and a non-RPC error is
     not swallowed.
+  - ``_prepare_loader`` retry: a loader that never publishes ``fl_state==1``
+    gets the whole bring-up sequence run again (reset + reload, not just
+    another poll), a loader that is ready first time gets exactly one pass,
+    a failure that is not a readiness timeout is not retried, and exhausting
+    the attempts names the count and what the last attempt saw.
 
 Module is loaded via the same stub-package trick as
 ``test_openocd_dispatch.py`` so the real ``lager`` package's hardware
 imports stay out of the test environment.
 """
 
+import contextlib
 import importlib.util
 import os
 import struct
@@ -345,6 +351,35 @@ class FlakyMdwRpc(FakeRpc):
                 f'OpenOCD mdw {hex(int(addr))} returned no values:\n'
             )
         return super().mdw(addr, count)
+
+
+class SlowToBootRpc(FakeRpc):
+    """``FakeRpc`` whose loader only publishes ``fl_state==1`` from the
+    *ready_from_pass*-th bring-up pass onwards.
+
+    Models the field failure precisely: the ``mdw`` reads all SUCCEED and
+    answer ``0`` for the full budget — the loader simply never started.
+    That is what distinguishes it from :class:`FlakyMdwRpc` (dropped
+    replies) and it is why waiting longer cannot help while starting the
+    loader again can.
+
+    Passes are counted by ``reset halt``, the first command of the
+    sequence, so a fake that flips to ready only on a genuine re-run
+    cannot be satisfied by a driver that merely re-polls.
+    """
+
+    def __init__(self, *args, ready_from_pass=2, **kwargs):
+        kwargs.setdefault('boot_state', 0)
+        super().__init__(*args, **kwargs)
+        self.ready_from_pass = ready_from_pass
+        self.passes = 0
+
+    def reset(self, halt=False):
+        super().reset(halt=halt)
+        self.passes += 1
+        self.mem[self.syms['fl_state']] = (
+            loader.FL_STATE_READY if self.passes >= self.ready_from_pass else 0
+        )
 
 
 _DEFAULT_SYM_ADDRS = {
@@ -1002,17 +1037,208 @@ class FlashImageTests(unittest.TestCase):
                               '\n'.join(out))
 
     def test_loader_boot_timeout_raises(self):
-        # boot_state=0 -> fl_state never reaches READY.
+        # boot_state=0 -> fl_state never reaches READY, on every attempt.
         fake = FakeRpc(_DEFAULT_SYM_ADDRS, boot_state=0)
-        # Shrink the boot timeout so the test is fast — patch via attr swap.
-        orig = loader._LOADER_BOOT_TIMEOUT_S
-        loader._LOADER_BOOT_TIMEOUT_S = 0.01
-        try:
+        with _fast_boot_timeout():
             with self.assertRaises(loader.Da1469xLoaderError) as ctx:
                 self._run(fake, image_size=16)
-        finally:
-            loader._LOADER_BOOT_TIMEOUT_S = orig
         self.assertIn('boot', str(ctx.exception))
+
+
+@contextlib.contextmanager
+def _fast_boot_timeout(timeout_s=0.01):
+    """Shrink ``_LOADER_BOOT_TIMEOUT_S`` for the duration of a test.
+
+    Only so a test that must burn the boot budget (three times over, now
+    that bring-up retries) finishes in milliseconds. The production value
+    is asserted unchanged by
+    ``PollWordTests.test_poll_timeout_constants_unchanged``.
+    """
+    orig = loader._LOADER_BOOT_TIMEOUT_S
+    loader._LOADER_BOOT_TIMEOUT_S = timeout_s
+    try:
+        yield
+    finally:
+        loader._LOADER_BOOT_TIMEOUT_S = orig
+
+
+class PrepareLoaderRetryTests(unittest.TestCase):
+    """``_prepare_loader`` re-runs its whole sequence when the loader never
+    starts.
+
+    The field failure, seen after dropped debug reads stopped aborting the
+    flash: ``mdw fl_state`` answers ``0`` successfully for the entire
+    10-second budget. Successful flashes on the same bench cluster inside a
+    4-second spread that also contains USB enumeration and a battery
+    settle, so there is no population of "slow but eventually ready" runs
+    to widen a timeout for — the loader either comes up promptly or not at
+    all, and a fresh reset + reload is what recovers it. Every one of 13
+    observed failures recovered on a re-run of the whole prepare sequence.
+    """
+
+    def _run(self, fake, image_size=16, **flash_kwargs):
+        with tempfile.NamedTemporaryFile(suffix='.bin', delete=False) as f:
+            f.write(b'\xab' * image_size)
+            image_path = f.name
+
+        def fake_resolver(_family):
+            return ('/fake/elf', '/fake/bin')
+
+        def fake_sym_resolver(_path):
+            return _DEFAULT_SYM_ADDRS
+
+        try:
+            return list(loader.flash_image(
+                fake, image_path,
+                _resolver=fake_resolver,
+                _symbol_resolver=fake_sym_resolver,
+                **flash_kwargs,
+            ))
+        finally:
+            os.unlink(image_path)
+
+    @staticmethod
+    def _loader_image_loads(fake):
+        """Every ``load_image`` of the loader binary — i.e. one per
+        bring-up pass. Chunk loads target the image under test and carry a
+        temp-file path, so filtering on ``/fake/bin`` isolates bring-up."""
+        return [c for c in fake.calls if c.startswith('load_image /fake/bin ')]
+
+    def test_loader_that_starts_on_the_second_pass_flashes_successfully(self):
+        # The whole point: a first bring-up that times out must not cost
+        # the caller the flash. Before this, the only thing that recovered
+        # it was a harness re-running the entire ~60s step.
+        fake = SlowToBootRpc(_DEFAULT_SYM_ADDRS, ready_from_pass=2)
+        with _fast_boot_timeout():
+            out = self._run(fake, image_size=16)
+        self.assertEqual(fake.passes, 2,
+                         msg='expected exactly one retry of the bring-up')
+        self.assertIn('Programmed 16 bytes successfully', '\n'.join(out))
+
+    def test_retry_is_visible_in_the_progress_output(self):
+        # A reader of the box-side log must be able to tell a retry apart
+        # from a duplicated line: "Preparing DA1469x flash_loader" twice
+        # with nothing between them explains nothing.
+        fake = SlowToBootRpc(_DEFAULT_SYM_ADDRS, ready_from_pass=2)
+        with _fast_boot_timeout():
+            out = self._run(fake, image_size=16)
+        retry_lines = [
+            line for line in out if 'did not come up on attempt' in line
+        ]
+        self.assertEqual(
+            len(retry_lines), 1,
+            msg=f'expected one retry line explaining the re-run, got: {out}',
+        )
+        line = retry_lines[0]
+        self.assertIn('attempt 1', line)
+        self.assertIn('attempt 2', line)
+        # And it must carry the reason, not just the fact.
+        self.assertIn('boot (fl_state==1)', line)
+        self.assertIn('timed out after', line)
+        # The retry line precedes the second "Preparing..." line, so the
+        # duplicate is explained before it appears.
+        prepares = [i for i, l in enumerate(out) if l.startswith('Preparing ')]
+        self.assertEqual(len(prepares), 2)
+        self.assertLess(out.index(line), prepares[1])
+
+    def test_ready_on_the_first_pass_runs_exactly_one_sequence(self):
+        # No behavioural change for the common case: no wasted reset, no
+        # second image load, no retry noise in the log.
+        fake = FakeRpc(_DEFAULT_SYM_ADDRS)
+        out = self._run(fake, image_size=16)
+        self.assertEqual(fake.calls.count('reset halt'), 1)
+        self.assertEqual(len(self._loader_image_loads(fake)), 1)
+        joined = '\n'.join(out)
+        self.assertNotIn('did not come up', joined)
+        self.assertEqual(
+            sum(1 for line in out if line.startswith('Preparing ')), 1,
+        )
+        self.assertIn('Programmed 16 bytes successfully', joined)
+
+    def test_retry_reruns_the_full_sequence_not_just_the_poll(self):
+        # A loader that never started is not fixed by asking it again.
+        # Assert the second attempt resets the core and re-loads the image
+        # into RAM, in that order, before it polls a second time.
+        fake = SlowToBootRpc(_DEFAULT_SYM_ADDRS, ready_from_pass=2)
+        with _fast_boot_timeout():
+            self._run(fake, image_size=16)
+        c = fake.calls
+        load_cmd = f'load_image /fake/bin {hex(loader.LOADER_RAM_BASE)} bin'
+        self.assertEqual(
+            len(self._loader_image_loads(fake)), 2,
+            msg='the retry must re-load flash_loader.elf.bin into RAM',
+        )
+        first_reset = c.index('reset halt')
+        first_load = c.index(load_cmd)
+        second_reset = c.index('reset halt', first_load + 1)
+        second_load = c.index(load_cmd, second_reset + 1)
+        # reset, load, reset, load — one image load per pass, each after
+        # its own reset, so neither pass reuses the other's RAM contents.
+        self.assertLess(first_reset, first_load)
+        self.assertLess(first_load, second_reset)
+        self.assertLess(second_reset, second_load)
+        # The POR-pin debug-enable poke opens each pass too — the retry is
+        # the sequence from the top, not a resumption partway through.
+        por = f'mww {hex(loader.REG_POR_PIN_DEBUG_ENABLE)} ' \
+              f'{hex(loader.REG_POR_PIN_DEBUG_ENABLE_VALUE)}'
+        self.assertEqual(c.count(por), 2)
+        # And the readiness poll ran on both passes.
+        self.assertGreaterEqual(
+            c.count(f'mdw {hex(_DEFAULT_SYM_ADDRS["fl_state"])} 1'), 2,
+        )
+
+    def test_never_ready_raises_naming_attempts_and_last_state(self):
+        # A genuinely dead board must still read as a dead board: the
+        # message says how many full attempts were made and what the last
+        # one actually saw at fl_state.
+        fake = FakeRpc(_DEFAULT_SYM_ADDRS, boot_state=0)
+        with _fast_boot_timeout():
+            with self.assertRaises(loader.Da1469xLoaderError) as ctx:
+                self._run(fake, image_size=16)
+        msg = str(ctx.exception)
+        self.assertIn(str(loader._LOADER_BOOT_ATTEMPTS), msg)
+        self.assertIn('attempts', msg)
+        # What the last attempt saw, verbatim from the poll that gave up.
+        self.assertIn('boot (fl_state==1)', msg)
+        self.assertIn(
+            f'last value at {hex(_DEFAULT_SYM_ADDRS["fl_state"])} = 0x0', msg,
+        )
+        # Bounded: it gave up rather than spinning.
+        self.assertEqual(fake.calls.count('reset halt'),
+                         loader._LOADER_BOOT_ATTEMPTS)
+        self.assertEqual(len(self._loader_image_loads(fake)),
+                         loader._LOADER_BOOT_ATTEMPTS)
+
+    def test_non_readiness_failure_is_not_retried(self):
+        # The boundary. A readiness timeout says "the loader did not
+        # start", which a second identical pass has been observed to fix.
+        # A failed image load says the artefact or the link is wrong —
+        # repeating it just delays a diagnosis the caller needs, so it
+        # propagates on the first attempt.
+        class BadImageLoadRpc(FakeRpc):
+            def load_image(self, path, addr, fmt='bin'):
+                super().load_image(path, addr, fmt=fmt)
+                raise openocd.OpenOcdRpcError(
+                    'OpenOCD load_image failed:\n'
+                    'Error: couldn\'t open /fake/bin'
+                )
+
+        fake = BadImageLoadRpc(_DEFAULT_SYM_ADDRS)
+        with self.assertRaises(openocd.OpenOcdRpcError):
+            self._run(fake, image_size=16)
+        self.assertEqual(
+            fake.calls.count('reset halt'), 1,
+            msg='a failed image load must not be retried as if it were a '
+                'loader that did not start',
+        )
+
+    def test_boot_attempts_is_small_and_bounded(self):
+        # The measured per-attempt failure rate was ~18%: two attempts take
+        # the step to ~3%, three to ~0.6%. More than that trades a real
+        # diagnosis for diminishing returns, and unbounded retrying would
+        # hide a dead board entirely.
+        self.assertIsInstance(loader._LOADER_BOOT_ATTEMPTS, int)
+        self.assertIn(loader._LOADER_BOOT_ATTEMPTS, (2, 3))
 
 
 class EraseRangeTests(unittest.TestCase):
