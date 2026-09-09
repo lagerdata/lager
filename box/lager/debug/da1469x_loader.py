@@ -383,17 +383,45 @@ def _poll_word(rpc: OpenOcdRpc, address: int, predicate, *,
     """Poll ``mdw(address)`` until *predicate(value)* is True or *timeout_s*
     elapses. Returns the matching value; raises :class:`Da1469xLoaderError`
     on timeout.
+
+    A read that *fails* is treated exactly like a read that returns a
+    non-matching value: retried until the deadline. Every one of these polls
+    reads target RAM through the debug AP while the CPU is running (the
+    loader is spinning on its command word), which is precisely where a
+    marginal SWD link drops a response and OpenOCD answers with no parseable
+    words — :class:`OpenOcdRpcError`. Aborting a flash on a single such read,
+    with seconds of budget and hundreds of iterations still to go, punishes
+    "read nothing" harder than "read the wrong value", which this loop is
+    built to ride out. A genuinely dead link still fails at the deadline,
+    and the message then names the read error rather than a stale or
+    fabricated last value.
     """
     deadline = time.monotonic() + timeout_s
     last = None
+    last_err = None
     while True:
-        last = rpc.mdw(int(address))
-        if predicate(last):
-            return last
+        try:
+            last = rpc.mdw(int(address))
+        except OpenOcdRpcError as exc:
+            # Transient by assumption; fall through to the deadline check.
+            # Deliberately narrow — an OpenOcdRpcError means the link or the
+            # reply misbehaved, while a bug in the RPC layer raises something
+            # else and still surfaces immediately.
+            last_err = exc
+            logger.debug('flash_loader %s: mdw %s failed, retrying: %s',
+                         label, hex(address), exc)
+        else:
+            last_err = None
+            if predicate(last):
+                return last
         if time.monotonic() >= deadline:
+            if last_err is not None:
+                reason = f'(last read of {hex(address)} failed: {last_err})'
+            else:
+                reason = f'(last value at {hex(address)} = {hex(last)})'
             raise Da1469xLoaderError(
                 f'flash_loader {label}: timed out after {timeout_s:.1f}s '
-                f'(last value at {hex(address)} = {hex(last)})'
+                f'{reason}'
             )
         time.sleep(_POLL_INTERVAL_S)
 

@@ -13,6 +13,10 @@ Covers:
   - Failure modes: rc != 1 from ping / erase / program raises with the rc.
   - Timeout paths: a fake that never advances ``fl_state`` raises
     ``Da1469xLoaderError``.
+  - ``_poll_word`` retry: a dropped ``mdw`` reply (``OpenOcdRpcError``) is
+    retried to the deadline like any non-matching value, a link that never
+    answers still times out naming the read error, and a non-RPC error is
+    not swallowed.
 
 Module is loaded via the same stub-package trick as
 ``test_openocd_dispatch.py`` so the real ``lager`` package's hardware
@@ -321,6 +325,28 @@ class FakeRpc:
         self._record(f'wait_halt {int(timeout_ms)}')
 
 
+class FlakyMdwRpc(FakeRpc):
+    """``FakeRpc`` whose ``mdw`` drops the first *fail_count* replies for
+    *fail_addr*, raising the same ``OpenOcdRpcError`` the real
+    :class:`OpenOcdRpc` raises when OpenOCD answers with no parseable words.
+    """
+
+    def __init__(self, *args, fail_addr=None, fail_count=1, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fail_addr = fail_addr
+        self.fail_count = fail_count
+        self.failures_raised = 0
+
+    def mdw(self, addr, count=1):
+        if int(addr) == self.fail_addr and self.failures_raised < self.fail_count:
+            self.failures_raised += 1
+            self._record(f'mdw {hex(int(addr))} {count} -> DROPPED')
+            raise openocd.OpenOcdRpcError(
+                f'OpenOCD mdw {hex(int(addr))} returned no values:\n'
+            )
+        return super().mdw(addr, count)
+
+
 _DEFAULT_SYM_ADDRS = {
     'fl_state': 0x20003000,
     'fl_cmd': 0x20003004,
@@ -478,6 +504,120 @@ class XipToFlashOffsetTests(unittest.TestCase):
             loader.xip_to_flash_offset(loader.QSPI_XIP_END)
         with self.assertRaises(loader.Da1469xLoaderError):
             loader.xip_to_flash_offset(loader.QSPI_XIP_END + 0x100)
+
+
+class ScriptedMdw:
+    """Minimal ``mdw``-only stub for driving ``_poll_word`` directly.
+
+    *results* is replayed one entry per call — an ``int`` is returned, an
+    ``Exception`` instance is raised — and the final entry repeats forever
+    once the script runs out, so "fails every time" / "never matches" are
+    both single-entry scripts.
+    """
+
+    def __init__(self, results):
+        self.results = list(results)
+        self.calls = 0
+
+    def mdw(self, addr, count=1):
+        self.calls += 1
+        item = self.results[min(self.calls - 1, len(self.results) - 1)]
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+def _dropped_read_error(addr=0x20004108):
+    """The exact error ``OpenOcdRpc.mdw`` raises when OpenOCD's reply holds
+    no parseable words — the field symptom on a marginal SWD link."""
+    return openocd.OpenOcdRpcError(
+        f'OpenOCD mdw {hex(addr)} returned no values:\n'
+    )
+
+
+class PollWordTests(unittest.TestCase):
+    """``_poll_word`` must treat a *failed* read like a non-matching value.
+
+    Every one of the five poll sites reads target RAM through the debug AP
+    while the CPU is running, so a marginal link occasionally drops a reply
+    and ``mdw`` raises. Aborting the flash on the first such read wasted a
+    deadline with hundreds of iterations left in it; measured at ~12% of
+    flash attempts on a bench with known-marginal SWD wiring.
+    """
+
+    ADDR = 0x20004108
+
+    def _poll(self, rpc, predicate, *, timeout_s, label='boot (fl_state==1)'):
+        return loader._poll_word(
+            rpc, self.ADDR, predicate, timeout_s=timeout_s, label=label,
+        )
+
+    def test_transient_read_error_is_retried(self):
+        # One dropped reply, then the ready value: the caller sees no error.
+        rpc = ScriptedMdw([_dropped_read_error(self.ADDR),
+                           loader.FL_STATE_READY])
+        value = self._poll(
+            rpc, lambda v: v == loader.FL_STATE_READY, timeout_s=5.0,
+        )
+        self.assertEqual(value, loader.FL_STATE_READY)
+        self.assertEqual(rpc.calls, 2, msg='the failed read must be retried')
+
+    def test_persistent_read_failure_times_out_naming_the_error(self):
+        # A genuinely dead link still fails — and reports the read error,
+        # never a fabricated "last value" that was never read.
+        rpc = ScriptedMdw([_dropped_read_error(self.ADDR)])
+        with self.assertRaises(loader.Da1469xLoaderError) as ctx:
+            self._poll(rpc, lambda v: v == loader.FL_STATE_READY,
+                       timeout_s=0.01)
+        msg = str(ctx.exception)
+        self.assertIn('timed out after', msg)
+        self.assertIn('boot (fl_state==1)', msg)
+        self.assertIn('returned no values', msg)
+        self.assertIn(f'last read of {hex(self.ADDR)} failed', msg)
+        self.assertNotIn('last value at', msg)
+
+    def test_non_matching_value_times_out_reporting_last_value(self):
+        # Unchanged behaviour for the case the loop always handled.
+        rpc = ScriptedMdw([0])
+        with self.assertRaises(loader.Da1469xLoaderError) as ctx:
+            self._poll(rpc, lambda v: v == loader.FL_STATE_READY,
+                       timeout_s=0.01)
+        msg = str(ctx.exception)
+        self.assertIn('timed out after', msg)
+        self.assertIn(f'last value at {hex(self.ADDR)} = 0x0', msg)
+        self.assertNotIn('last read of', msg)
+
+    def test_recovered_link_reports_the_value_not_the_stale_error(self):
+        # Drop once, then read a real (but non-matching) value until the
+        # deadline. The report must be the value we actually saw last — a
+        # stale error would misdiagnose a live link as a dead one.
+        rpc = ScriptedMdw([_dropped_read_error(self.ADDR), 0x66A4E0])
+        with self.assertRaises(loader.Da1469xLoaderError) as ctx:
+            self._poll(rpc, lambda v: v == loader.FL_STATE_READY,
+                       timeout_s=0.01)
+        msg = str(ctx.exception)
+        self.assertIn(f'last value at {hex(self.ADDR)} = 0x66a4e0', msg)
+        self.assertNotIn('last read of', msg)
+
+    def test_non_rpc_error_is_not_swallowed(self):
+        # Only OpenOcdRpcError is link flakiness. A programming error in
+        # the RPC layer must surface immediately, not burn the deadline.
+        rpc = ScriptedMdw([TypeError('mdw() got an unexpected keyword')])
+        with self.assertRaises(TypeError):
+            self._poll(rpc, lambda v: v == loader.FL_STATE_READY,
+                       timeout_s=5.0)
+        self.assertEqual(rpc.calls, 1)
+
+    def test_poll_timeout_constants_unchanged(self):
+        # The retry fix must not paper over anything by widening a budget:
+        # these values are the contract with the bench, and every one of
+        # them was already long enough to ride out a dropped read.
+        self.assertEqual(loader._LOADER_BOOT_TIMEOUT_S, 10.0)
+        self.assertEqual(loader._FL_PING_TIMEOUT_S, 5.0)
+        self.assertEqual(loader._FL_ERASE_TIMEOUT_S, 60.0)
+        self.assertEqual(loader._FL_CHUNK_TIMEOUT_S, 30.0)
+        self.assertEqual(loader._FL_FINAL_READY_TIMEOUT_S, 10.0)
+        self.assertEqual(loader._POLL_INTERVAL_S, 0.05)
 
 
 class FlashImageTests(unittest.TestCase):
@@ -829,6 +969,37 @@ class FlashImageTests(unittest.TestCase):
             msg='our own bp set must still happen when bp_list errors',
         )
         self.assertIn('Programmed 16 bytes successfully', '\n'.join(out))
+
+    def test_dropped_read_during_boot_poll_does_not_abort_flash(self):
+        # The field failure: ``mdw fl_state`` drops one reply right after
+        # ``resume`` + ``mww MPU_CTRL 0`` (reading RAM through the debug AP
+        # while the CPU runs). Before the retry it surfaced as
+        # "flash_loader flash failed after 'Waiting for flash_loader to be
+        # ready...': OpenOCD mdw 0x... returned no values:" and killed the
+        # whole flash. Now the flash completes.
+        fake = FlakyMdwRpc(
+            _DEFAULT_SYM_ADDRS, buf_sz=0x40,
+            fail_addr=_DEFAULT_SYM_ADDRS['fl_state'], fail_count=1,
+        )
+        out = self._run(fake, image_size=16)
+        self.assertEqual(fake.failures_raised, 1,
+                         msg='the fake must actually have dropped a read')
+        self.assertIn('Programmed 16 bytes successfully', '\n'.join(out))
+
+    def test_dropped_reads_during_program_polls_do_not_abort_flash(self):
+        # The erase and per-chunk program polls run against a running CPU
+        # too, so they are exposed to the same drop. Fail every read of
+        # ``fl_cmd`` and ``fl_cmd_rc`` once each.
+        for sym in ('fl_cmd', 'fl_cmd_rc'):
+            with self.subTest(sym=sym):
+                fake = FlakyMdwRpc(
+                    _DEFAULT_SYM_ADDRS, buf_sz=0x20,
+                    fail_addr=_DEFAULT_SYM_ADDRS[sym], fail_count=2,
+                )
+                out = self._run(fake, image_size=80)  # 3 chunks
+                self.assertEqual(fake.failures_raised, 2)
+                self.assertIn('Programmed 80 bytes successfully',
+                              '\n'.join(out))
 
     def test_loader_boot_timeout_raises(self):
         # boot_state=0 -> fl_state never reaches READY.
