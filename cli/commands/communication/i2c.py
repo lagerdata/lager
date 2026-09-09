@@ -270,7 +270,13 @@ def display_nets(ctx, box, netname: Optional[str] = None):
             # I2C parameters
             freq = params.get("frequency_hz", 100_000)
             freq_str = f"{freq/1_000_000:.1f}M" if freq >= 1_000_000 else f"{freq/1000:.0f}k"
-            pull_ups = "on" if params.get("pull_ups") else "off"
+            # A LabJack has no software-controllable pull-ups -- on a U3 there
+            # are none on the part at all, and SDA/SCL need external resistors.
+            # Showing "off" for one implied a setting that could be turned on.
+            if "labjack" in (instrument or "").lower():
+                pull_ups = "n/a"
+            else:
+                pull_ups = "on" if params.get("pull_ups") else "off"
 
             table.add_row([name, instrument, pins, freq_str, pull_ups])
 

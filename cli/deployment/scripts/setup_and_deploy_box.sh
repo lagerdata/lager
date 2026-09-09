@@ -1993,9 +1993,19 @@ if [ "$SKIP_VERIFY" = false ]; then
     # since — either way it must never scroll by silently (fresh boxes shipped
     # without instrument rules three times before this check existed).
     echo ""
+    # Verify by CONTENT, not presence. A stale copy left over from an older
+    # checkout passes `test -f` while missing whatever rule the update added,
+    # which is exactly how a box ended up reporting a clean install with an
+    # inaccessible LabJack U3.
     print_info "Verifying instrument udev rules..."
-    if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "test -f /etc/udev/rules.d/99-instrument.rules"; then
-        print_success "Instrument udev rules present (/etc/udev/rules.d/99-instrument.rules)"
+    if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" \
+        'if [ -d ~/box/udev_rules ]; then _up=~/box/udev_rules; \
+         elif [ -d ~/box/box/udev_rules ]; then _up=~/box/box/udev_rules; \
+         else exit 2; fi; \
+         diff -q "$_up/99-instrument.rules" /etc/udev/rules.d/99-instrument.rules >/dev/null 2>&1'; then
+        print_success "Instrument udev rules present and current"
+    elif ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "test -f /etc/udev/rules.d/99-instrument.rules"; then
+        print_warning "Instrument udev rules are STALE — some instruments may not be accessible"
     else
         print_warning "Instrument udev rules MISSING — instruments will not be accessible"
     fi

@@ -13,7 +13,7 @@ U3 hardware version 1.21 or greater.
 Things that differ from the T7 and are visible to a user:
 
 - **50 bytes per transfer**, not the T7's 56. That is the command's own limit.
-- **Clock is a divisor, not a frequency.** See ``_clock_factor_for``. The
+- **Clock is a delay count, not a frequency.** See ``_clock_byte_for``. The
   reachable set is coarse and has a gap just below the top.
 - **CS is active-low only.** ``AutoCS`` drives CS low for the transfer and
   releases it at the end; there is no polarity bit and no hold bit, so
@@ -53,20 +53,37 @@ MAX_BYTES_PER_TRANSACTION = 50
 # order, so the letter is only a spelling of the same two-bit field.
 _SPI_MODES = ("A", "B", "C", "D")
 
-# SPIClockFactor, U3 datasheet section 5.2.15:
+# SPIClockFactor. LabJack documents this (U3 datasheet 5.2.15) as
 #   Frequency = 1000000 / (10 + 10 * (256 - SPIClockFactor))
-# with the wire value 0 meaning a factor of 256, the maximum.
+# with the wire value 0 meaning a factor of 256, the maximum. THAT FORMULA DOES
+# NOT DESCRIBE THIS FIRMWARE. Measured on a U3-HV (HW 1.30, FW 1.24) by timing
+# transfers of 2 and 50 bytes and taking the per-byte slope, so fixed USB
+# overhead cancels:
 #
-# The factor is an integer, so the reachable set is coarse and has a GAP at the
-# top: factor 256 gives 100 kHz and factor 255 gives 50 kHz, with nothing in
-# between. A request for 80 kHz therefore lands on 50 kHz. On top of that
-# LabJack measures a real U3 ceiling near 80 kHz rather than the formula's
-# 100 kHz, because the limit is the firmware's bit-banging rate and not the
-# divisor. Both are why the achieved clock is reported as approximate.
-MIN_CLOCK_FACTOR = 1
-MAX_CLOCK_FACTOR = 256
-SPI_MAX_FREQ_HZ = 100_000          # factor 256, the formula's ceiling
-SPI_PRACTICAL_MAX_HZ = 80_000      # what LabJack measures on a real U3
+#   wire     0     1     8    32    64   128   200   255
+#   meas  71.4  65.5  50.1  27.9  17.5  10.0   6.8   5.4  kHz
+#   doc  100.0   0.4   0.4   0.4   0.5   0.8   1.8  50.0  kHz
+#
+# The published formula makes wire 1 the SLOWEST setting (~390 Hz), which would
+# put a 50-byte transfer at ~1.02 s; it measures ~6 ms. 168x is far outside any
+# measurement subtlety, and the direction is inverted, which no amount of
+# overhead explains. Observed behaviour is a plain delay count: wire 0 is
+# fastest and higher values are monotonically slower.
+#
+# The PERIOD is affine in the wire byte, so this models the period and inverts
+# it -- the same shape as the I2C SpeedAdjust model in labjack_ud_i2c.py, and
+# for the same reason. Residuals are under 3% across the 13 sampled values.
+#
+# Two honest caveats. The slope includes whatever per-byte overhead the firmware
+# adds, so these constants describe EFFECTIVE BIT RATE and not necessarily the
+# SCK pin rate; and they were fitted on one unit. A scope pass can refine both
+# numbers without changing the shape. Neither affects the ordering, which is the
+# part that was actually broken.
+_BIT_PERIOD_US_AT_ZERO = 14.0        # wire 0, measured
+_BIT_PERIOD_US_PER_COUNT = 0.6685    # per count, measured
+MAX_CLOCK_BYTE = 255
+SPI_MAX_FREQ_HZ = 71_400           # wire 0, the measured ceiling
+SPI_MIN_FREQ_HZ = 5_400            # wire 255, the measured floor
 
 
 class LabJackUDSPI(SPIBase):
@@ -148,7 +165,7 @@ class LabJackUDSPI(SPIBase):
         self._set_mode(mode)
         self._set_bit_order(bit_order)
         self._set_word_size(word_size)
-        self._clock_factor = self._clock_factor_for(frequency_hz)
+        self._clock_byte = self._clock_byte_for(frequency_hz)
         self._frequency_hz = frequency_hz
 
         self._serial = serial_from_address(unique_id)
@@ -219,16 +236,16 @@ class LabJackUDSPI(SPIBase):
     # -- clock --
 
     @classmethod
-    def _clock_factor_for(cls, frequency_hz) -> int:
-        """Map a requested clock onto SPIClockFactor's effective 1..256.
+    def _clock_byte_for(cls, frequency_hz) -> int:
+        """Map a requested clock onto the SPIClockFactor delay count, 0..255.
 
-        Rounds DOWN in frequency (floor on the factor), so the bus is never
-        faster than asked. Warns once when the coarse divisor lands well below
-        the request -- which the gap between factor 255 and 256 guarantees for
-        anything between 50 kHz and 100 kHz.
+        Rounds the count UP, which rounds the frequency DOWN, so the bus is
+        never faster than asked. Out-of-range requests clamp with a one-shot
+        warning rather than raise, matching the I2C driver -- a frequency is a
+        request for a bit rate, not a correctness contract.
         """
         if frequency_hz is None:
-            return MAX_CLOCK_FACTOR          # as fast as the part goes
+            return 0                         # as fast as the part goes
         try:
             freq = float(frequency_hz)
         except (TypeError, ValueError):
@@ -239,30 +256,25 @@ class LabJackUDSPI(SPIBase):
             raise SPIBackendError(
                 f"Invalid frequency_hz: {frequency_hz!r}. Must be positive.")
 
-        factor = math.floor(257 - (SPI_MAX_FREQ_HZ / freq))
-        clamped = max(MIN_CLOCK_FACTOR, min(MAX_CLOCK_FACTOR, factor))
-        achieved = cls._frequency_for(clamped)
-        if achieved < 0.75 * freq and not cls._speed_warning_shown:
+        count = math.ceil(
+            (1e6 / freq - _BIT_PERIOD_US_AT_ZERO) / _BIT_PERIOD_US_PER_COUNT)
+        clamped = max(0, min(MAX_CLOCK_BYTE, count))
+        if clamped != count and not cls._speed_warning_shown:
             cls._speed_warning_shown = True
             sys.stderr.write(
-                f"WARNING: A LabJack U3 SPI clock is a coarse divisor. "
-                f"{int(freq)} Hz was requested; the nearest reachable setting "
-                f"at or below it is {achieved:.0f} Hz. The reachable range is "
-                f"about {cls._frequency_for(MIN_CLOCK_FACTOR):.0f} Hz to "
-                f"{SPI_PRACTICAL_MAX_HZ} Hz.\n"
+                f"WARNING: A LabJack U3 SPI clock runs between "
+                f"{SPI_MIN_FREQ_HZ} Hz and {SPI_MAX_FREQ_HZ} Hz. "
+                f"{int(freq)} Hz was requested; using "
+                f"{cls._frequency_for(clamped):.0f} Hz.\n"
             )
             sys.stderr.flush()
         return clamped
 
     @staticmethod
-    def _frequency_for(clock_factor: int) -> float:
-        """The approximate clock a given effective factor produces."""
-        return 1e6 / (10 + 10 * (MAX_CLOCK_FACTOR - clock_factor))
-
-    @property
-    def _wire_clock_factor(self) -> int:
-        """The byte that goes in the command; 256 is encoded as 0."""
-        return 0 if self._clock_factor >= MAX_CLOCK_FACTOR else self._clock_factor
+    def _frequency_for(clock_byte: int) -> float:
+        """The approximate clock a given delay count produces."""
+        return 1e6 / (_BIT_PERIOD_US_AT_ZERO
+                      + clock_byte * _BIT_PERIOD_US_PER_COUNT)
 
     @property
     def _max_words(self) -> int:
@@ -326,7 +338,7 @@ class LabJackUDSPI(SPIBase):
                 AutoCS=auto_cs,
                 DisableDirConfig=False,
                 SPIMode=_SPI_MODES[self._mode],
-                SPIClockFactor=self._wire_clock_factor,
+                SPIClockFactor=self._clock_byte,
                 CSPinNum=cs_num,
                 CLKPinNum=self._clk_dio,
                 MISOPinNum=self._miso_dio,
@@ -391,12 +403,12 @@ class LabJackUDSPI(SPIBase):
         if word_size is not None:
             self._set_word_size(word_size)
         if frequency_hz is not None:
-            self._clock_factor = self._clock_factor_for(frequency_hz)
+            self._clock_byte = self._clock_byte_for(frequency_hz)
             self._frequency_hz = frequency_hz
         _debug(f"config: mode={self._mode} bit_order={self._bit_order} "
                f"word_size={self._word_size} cs_mode={self._cs_mode} "
-               f"factor={self._clock_factor} "
-               f"(~{self._frequency_for(self._clock_factor):.0f}Hz)")
+               f"clock_byte={self._clock_byte} "
+               f"(~{self._frequency_for(self._clock_byte):.0f}Hz)")
 
     def _check_keep_cs(self, keep_cs: bool) -> None:
         """keep_cs cannot be honoured while the firmware owns CS.

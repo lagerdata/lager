@@ -506,8 +506,10 @@ INSTRUMENT_NET_MAP: dict[str, list[str]] = {
     # adc / gpio / dac / spi
     "LabJack_T7": ["gpio", "adc", "dac", "spi", "i2c"],
     # U3-HV and U3-LV share one product id, so this entry is the family;
-    # the box-side driver reads the variant from the device. adc/dac/gpio
-    # only -- the UD drivers do not implement spi/i2c.
+    # the box-side driver reads the variant from the device. spi/i2c run over
+    # the Exodriver's low-level commands rather than LJM, and only on the
+    # digital lines -- a U3-HV's FIO0-FIO3 are fixed analog, which
+    # _channel_rejection_hint explains at the point of rejection.
     "LabJack_U3": ["gpio", "adc", "dac", "spi", "i2c"],
     "Aardvark": ["spi", "i2c", "gpio"],
     "FTDI_FT232H": ["spi", "i2c", "gpio", "debug", "uart"],
@@ -584,18 +586,34 @@ INSTRUMENT_NET_MAP: dict[str, list[str]] = {
 
 from . import labjack_pins as _lj
 
-_LJ_INSTRUMENT_NAMES = {"labjack_t7", "labjack", "t7"}
+# Instruments whose spi/i2c masters run on selectable DIO lines, so the
+# --cs/--sck/--mosi/--miso/--sda/--scl options mean something. The U3 is
+# here as well as the T7: its UD drivers take pin numbers the same way.
+_LJ_INSTRUMENT_NAMES = {"labjack_t7", "labjack", "t7",
+                        "labjack_u3", "u3"}
 
 
-def _parse_labjack_pin(value: str, signal: str) -> int:
+# A U3's digital lines stop at CIO3 = DIO19; it has no MIO block at all. The
+# T7 goes to MIO2 = DIO22. Kept in step with MAX_DIO in
+# box/lager/io/labjack_ud_handle.py, which is what actually refuses the pin --
+# without this the CLI would accept MIO0 for a U3 and let it fail later, on the
+# box, at the first transaction.
+_U3_MAX_DIO = 19
+
+
+def _parse_labjack_pin(value: str, signal: str, instrument: str = "") -> int:
     """Convert a pin name (FIO4/EIO0/CIO1/MIO2) or DIO number to a DIO int."""
+    is_u3 = canonical_instrument(instrument) == "LabJack_U3" if instrument else False
     dio = _lj.try_parse_pin(value)
-    if dio is None:
-        raise LagerError(
-            f"Invalid LabJack pin '{value}' for {signal}.",
-            fixes=["Use a pin name (FIO0-FIO7, EIO0-EIO7, CIO0-CIO3, MIO0-MIO2) "
-                   "or a DIO number 0-22."],
-        )
+    if dio is None or (is_u3 and dio > _U3_MAX_DIO):
+        if is_u3:
+            fixes = ["Use a pin name (FIO0-FIO7, EIO0-EIO7, CIO0-CIO3) or a "
+                     "DIO number 0-19. A U3 has no MIO pins."]
+        else:
+            fixes = ["Use a pin name (FIO0-FIO7, EIO0-EIO7, CIO0-CIO3, "
+                     "MIO0-MIO2) or a DIO number 0-22."]
+        raise LagerError(f"Invalid LabJack pin '{value}' for {signal}.",
+                         fixes=fixes)
     return dio
 
 
@@ -623,7 +641,7 @@ def _build_custom_pin_config(role: str, instrument: str, pin_opts: dict) -> Opti
     opts_str = ", ".join(f"--{k}" for k in given)
     if instrument.lower() not in _LJ_INSTRUMENT_NAMES:
         raise LagerError(
-            f"Pin options ({opts_str}) are only supported for LabJack T7 nets; "
+            f"Pin options ({opts_str}) are only supported for LabJack nets; "
             f"'{instrument}' uses fixed hardware pins."
         )
 
@@ -661,7 +679,7 @@ def _build_custom_pin_config(role: str, instrument: str, pin_opts: dict) -> Opti
     for signal in order:
         if signal not in given:
             continue
-        dio = _parse_labjack_pin(given[signal], signal.upper())
+        dio = _parse_labjack_pin(given[signal], signal.upper(), instrument)
         if dio in seen:
             raise LagerError(
                 f"Pin {_labjack_pin_name(dio)} is assigned to both "

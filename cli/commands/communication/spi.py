@@ -296,6 +296,65 @@ def _read_data_file(filepath: str) -> List[int]:
         raise click.BadParameter(f"The CLI did not read the data file '{filepath}': {e}")
 
 
+def _span_signals(pin_field: str, instrument: str) -> str:
+    """Label a "FIO4-FIO7" style span with the signal each pin actually carries.
+
+    The two LabJack families order their spans differently -- a U3 runs
+    CS/CLK/MISO/MOSI while a T7 runs CS/CLK/MOSI/MISO -- so a span cannot be
+    expanded positionally without knowing which part it belongs to. Returns ""
+    when the field is not a span this function understands, leaving the caller
+    to fall back to printing it raw.
+
+    Mirrors _ud_spi_pin_config in box/lager/protocols/spi/dispatcher.py, whose
+    docstring explains why the two orders must not be unified.
+    """
+    if not pin_field or "-" not in pin_field:
+        return ""
+    start, _, end = pin_field.partition("-")
+    start_dio, end_dio = _lj_try_parse(start), _lj_try_parse(end)
+    if start_dio is None or end_dio is None:
+        return ""
+
+    is_u3 = "u3" in (instrument or "").lower()
+    width = end_dio - start_dio + 1
+    if width == 4:
+        order = ("CS", "CLK", "MISO", "MOSI") if is_u3 else ("CS", "CLK", "MOSI", "MISO")
+    elif width == 3:
+        # Three lines means CS is driven by hand; the rest keep their order.
+        order = ("CLK", "MISO", "MOSI") if is_u3 else ("CLK", "MOSI", "MISO")
+    else:
+        return ""
+    return " ".join(f"{sig}:{_lj_pin_name(start_dio + i)}"
+                    for i, sig in enumerate(order))
+
+
+def _lj_try_parse(name: str):
+    """FIO4 / EIO0 / CIO1 / DIO7 / 7 -> DIO number, or None."""
+    name = (name or "").strip().upper()
+    for prefix, offset, count in (("FIO", 0, 8), ("EIO", 8, 8),
+                                  ("CIO", 16, 4), ("MIO", 20, 3)):
+        if name.startswith(prefix):
+            try:
+                idx = int(name[len(prefix):])
+            except ValueError:
+                return None
+            return offset + idx if 0 <= idx < count else None
+    if name.startswith("DIO"):
+        name = name[3:]
+    try:
+        return int(name)
+    except ValueError:
+        return None
+
+
+def _lj_pin_name(dio: int) -> str:
+    for prefix, offset, count in (("FIO", 0, 8), ("EIO", 8, 8),
+                                  ("CIO", 16, 4), ("MIO", 20, 3)):
+        if offset <= dio < offset + count:
+            return f"{prefix}{dio - offset}"
+    return f"DIO{dio}"
+
+
 def display_nets(ctx, box, netname: Optional[str] = None):
     """Display SPI nets with their configuration parameters."""
     spi_nets = _list_spi_nets(ctx, box)
@@ -318,7 +377,11 @@ def display_nets(ctx, box, netname: Optional[str] = None):
     table.set_max_width(0)  # Disable wrapping
     table.set_cols_dtype(["t", "t", "t", "t", "t", "t", "t"])
     table.set_cols_align(["l", "l", "l", "l", "l", "l", "l"])
-    table.header(["Name", "Instrument", "Pins (CS/CLK/MOSI/MISO)", "Mode", "Frequency", "Word Size", "Bit Order"])
+    # The pin cell is self-labelled rather than relying on a fixed column
+    # title: a U3's span is CS/CLK/MISO/MOSI and a T7's is CS/CLK/MOSI/MISO,
+    # and one table can hold nets of both. A positional heading would have to
+    # lie about one of them.
+    table.header(["Name", "Instrument", "Pins", "Mode", "Frequency", "Word Size", "Bit Order"])
 
     for rec in spi_nets:
         if netname is None or netname == rec.get("name"):
@@ -331,9 +394,8 @@ def display_nets(ctx, box, netname: Optional[str] = None):
             if pin_field == "SPI0":
                 # Aardvark - fixed hardware pins
                 pins = "Fixed (MOSI/MISO/SCK/SS)"
-            elif pin_field == "FIO0-FIO3":
-                # Standard LabJack SPI pin mapping
-                pins = "FIO0/FIO1/FIO2/FIO3"
+            elif _span_signals(pin_field, instrument):
+                pins = _span_signals(pin_field, instrument)
             elif params.get("cs_pin") is not None or params.get("clk_pin") is not None:
                 # Params-based configuration (custom pins)
                 def _dio_name(dio):
@@ -351,14 +413,23 @@ def display_nets(ctx, box, netname: Optional[str] = None):
                 clk = _dio_name(params.get("clk_pin", "?"))
                 mosi = _dio_name(params.get("mosi_pin", "?"))
                 miso = _dio_name(params.get("miso_pin", "?"))
-                pins = f"{cs}/{clk}/{mosi}/{miso}"
+                pins = f"CS:{cs} CLK:{clk} MISO:{miso} MOSI:{mosi}"
             else:
                 pins = pin_field if pin_field else "?/?/?/?"
 
             # SPI parameters
             mode = params.get("mode", 0)
-            freq = params.get("frequency_hz", 1_000_000)
-            freq_str = f"{freq/1_000_000:.1f}M" if freq >= 1_000_000 else f"{freq/1000:.0f}k"
+            # A net that never asked for a speed has none to show. The old
+            # literal 1 MHz here was not merely a guess, it was wrong: the
+            # dispatcher deliberately passes None for a U3 because 1 MHz is
+            # far above the part's ceiling, so the table advertised a rate the
+            # driver is specifically coded not to use.
+            freq = params.get("frequency_hz")
+            if freq is None:
+                freq_str = "default"
+            else:
+                freq_str = (f"{freq/1_000_000:.1f}M" if freq >= 1_000_000
+                            else f"{freq/1000:.0f}k")
             word_size = params.get("word_size", 8)
             bit_order = params.get("bit_order", "msb").upper()
 

@@ -416,8 +416,22 @@ def config(
     if persist_kwargs:
         _persist_params(netname, **persist_kwargs)
 
-    print(f"I2C configured: freq={effective_freq}Hz, "
-          f"pull_ups={'on' if effective_pull_ups else 'off'}")
+    # Same reasoning as the SPI dispatcher: report what the part will do. A U3
+    # has no controllable pull-ups at all, so printing on/off for one states a
+    # bus condition the driver cannot set and the user must supply externally.
+    achieved_hz = effective_freq
+    if hasattr(drv, "_speed_adjust") and hasattr(drv, "_frequency_for"):
+        achieved_hz = int(round(drv._frequency_for(drv._speed_adjust)))
+    freq_note = f"freq={achieved_hz}Hz"
+    if effective_freq is not None and achieved_hz != effective_freq:
+        freq_note += f" (requested {effective_freq}Hz)"
+
+    if hasattr(drv, "_speed_adjust"):        # the UD drivers; a U3 has none
+        pull_note = "pull_ups=n/a (external resistors required)"
+    else:
+        pull_note = f"pull_ups={'on' if effective_pull_ups else 'off'}"
+
+    print(f"I2C configured: {freq_note}, {pull_note}")
 
 
 def scan(
