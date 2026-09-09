@@ -154,6 +154,19 @@ _FL_CHUNK_TIMEOUT_S = 30.0  # one program-and-verify iteration.
 _FL_FINAL_READY_TIMEOUT_S = 10.0
 _POLL_INTERVAL_S = 0.05
 
+# How many times to run the whole loader bring-up sequence before giving up.
+# Not a timeout: the failure this covers is "the loader never started", not
+# "the loader was slow". On the bench that produced it, a bring-up that works
+# publishes ``fl_state==1`` in well under a second and a bring-up that fails
+# publishes ``0`` for the entire budget, so a longer
+# :data:`_LOADER_BOOT_TIMEOUT_S` buys nothing — only starting the loader
+# again does. Measured at roughly one failed bring-up in five, three attempts
+# put the step's failure rate near 0.5%; the cost of the extra passes is a
+# couple of seconds of reset-and-reload each, paid only when an attempt has
+# already failed. Bounded on purpose — a board that is genuinely dead must
+# still report itself dead rather than spin.
+_LOADER_BOOT_ATTEMPTS = 3
+
 
 class Da1469xLoaderError(Exception):
     """Raised when the DA1469x flash_loader path cannot complete the request.
@@ -161,6 +174,25 @@ class Da1469xLoaderError(Exception):
     Distinct from :class:`OpenOcdRpcError` so callers can tell "the loader
     bounced us back with an error code" / "the loader never came up" apart
     from raw RPC transport / OpenOCD-side failures.
+    """
+
+
+class _LoaderBootTimeout(Da1469xLoaderError):
+    """The loader was reloaded and resumed, but never published ``fl_state==1``.
+
+    Internal to this module and raised at exactly one site — the readiness
+    poll at the end of :func:`_prepare_loader_once`. It exists so
+    :func:`_prepare_loader` can retry *that* failure and nothing else:
+    the bring-up is a sequence of steps that either work or indicate a real
+    problem (a missing artefact, an ELF without the symbols, an OpenOCD or
+    link error on a write), and only the last one has been observed to fail
+    on hardware that a second identical pass then brings up. Retrying a
+    failed ``load_image`` or a missing symbol would just repeat a diagnosis
+    the caller needs to see, so those keep propagating on the first try.
+
+    Callers outside this module never see it as such: it is a
+    :class:`Da1469xLoaderError`, and once the attempts are exhausted
+    :func:`_prepare_loader` raises a plain one that names the attempt count.
     """
 
 
@@ -426,13 +458,18 @@ def _poll_word(rpc: OpenOcdRpc, address: int, predicate, *,
         time.sleep(_POLL_INTERVAL_S)
 
 
-def _prepare_loader(rpc: OpenOcdRpc, elf_path: str, bin_path: str,
-                    syms: Dict[str, int]) -> Iterator[str]:
-    """Reset, load the loader into RAM, jump to it, wait for ready.
+def _prepare_loader_once(rpc: OpenOcdRpc, elf_path: str, bin_path: str,
+                         syms: Dict[str, int]) -> Iterator[str]:
+    """Run the bring-up sequence once: reset, load into RAM, jump, wait ready.
 
     Mirrors [xl/openocd/flash_loader/flash.gdb:1-26](xl/openocd/flash_loader/flash.gdb)
     line-for-line. Yields human-readable progress lines; raises on any
     OpenOCD or loader-level error.
+
+    Every step here is idempotent by construction — the sequence opens by
+    resetting the core and overwrites the loader image in RAM — so running
+    it again on top of a failed pass is safe. :func:`_prepare_loader` is
+    the entry point that does exactly that; call it, not this.
     """
     yield f'Preparing DA1469x flash_loader from {elf_path}'
 
@@ -516,13 +553,67 @@ def _prepare_loader(rpc: OpenOcdRpc, elf_path: str, bin_path: str,
     rpc.mww(REG_MPU_CTRL, 0)
 
     # Wait for the loader to finish its own init and report ``fl_state==1``.
+    # Re-raise a timeout here as the one failure :func:`_prepare_loader`
+    # retries: we got the image in and the core running, and the loader
+    # simply never announced itself.
     yield 'Waiting for flash_loader to be ready...'
-    _poll_word(
-        rpc, syms['fl_state'], lambda v: v == FL_STATE_READY,
-        timeout_s=_LOADER_BOOT_TIMEOUT_S,
-        label='boot (fl_state==1)',
-    )
+    try:
+        _poll_word(
+            rpc, syms['fl_state'], lambda v: v == FL_STATE_READY,
+            timeout_s=_LOADER_BOOT_TIMEOUT_S,
+            label='boot (fl_state==1)',
+        )
+    except Da1469xLoaderError as exc:
+        raise _LoaderBootTimeout(str(exc)) from exc
     yield 'flash_loader ready'
+
+
+def _prepare_loader(rpc: OpenOcdRpc, elf_path: str, bin_path: str,
+                    syms: Dict[str, int]) -> Iterator[str]:
+    """Bring the loader up, re-running the whole sequence if it never starts.
+
+    :func:`_prepare_loader_once` ends by polling ``fl_state`` for
+    :data:`_LOADER_BOOT_TIMEOUT_S`, and on some boards that poll reads a
+    steady ``0`` for the full budget: the loader did not start, rather than
+    started slowly. Waiting longer cannot fix that, and a fresh pass
+    reliably does — so on a readiness timeout we reset the core, reload the
+    image and try again, up to :data:`_LOADER_BOOT_ATTEMPTS` times.
+
+    Only that timeout is retried; see :class:`_LoaderBootTimeout`.
+    Everything else — a missing artefact, an ELF without the loader
+    symbols, an :class:`OpenOcdRpcError` from a write or a breakpoint —
+    propagates on the first attempt, because none of those describe a chip
+    that a second identical pass would treat differently.
+
+    Yields the same progress lines as a single pass, plus one line per
+    retry saying which attempt failed and why, so a reader can tell a
+    re-run apart from a duplicated log line.
+    """
+    last_exc = None
+    for attempt in range(1, _LOADER_BOOT_ATTEMPTS + 1):
+        if attempt > 1:
+            yield (f'flash_loader did not come up on attempt {attempt - 1} '
+                   f'of {_LOADER_BOOT_ATTEMPTS} ({last_exc}); resetting the '
+                   f'core and reloading the loader for attempt {attempt}')
+        try:
+            yield from _prepare_loader_once(rpc, elf_path, bin_path, syms)
+        except _LoaderBootTimeout as exc:
+            logger.warning(
+                'flash_loader bring-up attempt %d of %d failed: %s',
+                attempt, _LOADER_BOOT_ATTEMPTS, exc,
+            )
+            last_exc = exc
+            continue
+        return
+
+    # Every attempt reloaded the image and every attempt was ignored. Say
+    # how many times we tried and what the last one saw, so a board that is
+    # actually dead still reads as a dead board and not as a flaky retry.
+    raise Da1469xLoaderError(
+        f'flash_loader never reported ready in {_LOADER_BOOT_ATTEMPTS} '
+        f'bring-up attempts, each one a full reset + reload of '
+        f'{LOADER_BIN_NAME}. Last attempt: {last_exc}'
+    ) from last_exc
 
 
 def _fl_ping(rpc: OpenOcdRpc, syms: Dict[str, int]) -> None:

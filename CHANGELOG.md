@@ -56,6 +56,24 @@ All notable changes to the Lager platform are documented here. For detailed rele
   retried to the deadline like any other, and no timeout was lengthened to do
   it. A link that never answers still fails, and says the read failed rather
   than reporting a last value it never read.
+- **A DA1469x flash_loader that never starts is now restarted, not reported.**
+  With dropped reads no longer ending a flash, what was left on the same HIL
+  bench was the loader itself: `mdw fl_state` answered `0` successfully for the
+  whole 10-second budget and the step died with `flash_loader boot
+  (fl_state==1): timed out after 10.0s`. That is a loader that did not start,
+  not a loader that is slow -- across 30 successful flashes the step landed in
+  a 4-second spread that also holds USB enumeration and a battery settle, so
+  there is no slow-but-eventually-ready population to widen a timeout for, and
+  all 13 observed failures cleared on a fresh pass. `_prepare_loader` now runs
+  its whole sequence again on a readiness timeout -- POR poke, `reset halt`,
+  reload of `flash_loader.elf.bin`, breakpoint dance, MPU disable, poll -- up
+  to three times, and says in its progress output which attempt failed and
+  why. Only that timeout is retried; a failed image load, a missing loader
+  symbol or an OpenOCD error still reaches the caller on the first attempt.
+  When all three attempts are spent, the error names the count and what the
+  last one saw. No timeout constant changed. This was ~18% of bring-ups on the
+  bench, recoverable until now only by a caller willing to redo the whole
+  60-second flash step.
 
 ## [0.46.2] - 2026-09-08
 
