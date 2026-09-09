@@ -39,6 +39,28 @@ ROLE = "i2c"
 # This is the same pattern the adc/dac/gpio dispatchers already match a U3 on.
 _UD_RE = re.compile(r"labjack[_\-\s]*u[36]", re.IGNORECASE)
 
+
+def is_ud_net(rec):
+    """True when this net's instrument is a LabJack the UD drivers own."""
+    return bool(_UD_RE.search(str(rec.get("instrument", ""))))
+
+
+def achieved_frequency_hz(rec, requested_hz):
+    """What the bus will actually clock at. See the SPI dispatcher's twin.
+
+    Pure arithmetic on the driver class, so the HTTP path can call it against a
+    proxied driver. Both message sites use this rather than formatting the
+    number independently.
+    """
+    if requested_hz is None or not is_ud_net(rec):
+        return requested_hz
+    try:
+        from .labjack_ud_i2c import LabJackUDI2C
+        return int(round(LabJackUDI2C._frequency_for(
+            LabJackUDI2C._speed_adjust_for(requested_hz))))
+    except Exception:
+        return requested_hz
+
 # Driver cache to avoid recreating drivers for each call
 _driver_cache: Dict[str, 'I2CBase'] = {}
 _driver_cache_lock = threading.Lock()
@@ -419,14 +441,12 @@ def config(
     # Same reasoning as the SPI dispatcher: report what the part will do. A U3
     # has no controllable pull-ups at all, so printing on/off for one states a
     # bus condition the driver cannot set and the user must supply externally.
-    achieved_hz = effective_freq
-    if hasattr(drv, "_speed_adjust") and hasattr(drv, "_frequency_for"):
-        achieved_hz = int(round(drv._frequency_for(drv._speed_adjust)))
+    achieved_hz = achieved_frequency_hz(rec, effective_freq)
     freq_note = f"freq={achieved_hz}Hz"
     if effective_freq is not None and achieved_hz != effective_freq:
         freq_note += f" (requested {effective_freq}Hz)"
 
-    if hasattr(drv, "_speed_adjust"):        # the UD drivers; a U3 has none
+    if is_ud_net(rec):                       # a U3 has no pull-ups at all
         pull_note = "pull_ups=n/a (external resistors required)"
     else:
         pull_note = f"pull_ups={'on' if effective_pull_ups else 'off'}"
