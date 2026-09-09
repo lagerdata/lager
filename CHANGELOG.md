@@ -43,6 +43,19 @@ All notable changes to the Lager platform are documented here. For detailed rele
   matching hint after `start-all`. The line a first-time user copies is now
   `lager webcam <net> stop --box <label>`, and a test replays each printed hint
   through the command group so the text and the parser cannot drift again.
+- **One dropped debug read no longer aborts a DA1469x flash.** Every step of
+  the RAM-resident flash_loader path -- loader boot, ping, erase and each
+  program chunk -- waits by polling a word of target RAM through the debug AP
+  while the CPU is running, which is exactly where a marginal SWD link drops a
+  reply and OpenOCD answers with nothing to parse. The poll loop retried a word
+  that read back *wrong* but gave up on a word that failed to read at all, so a
+  single dropped reply ended the flash with `OpenOCD mdw 0x... returned no
+  values:` while seconds of its own deadline went unused. On one HIL bench with
+  known-marginal probe wiring this was ~12% of flash attempts and the only
+  remaining source of failure in an overnight suite. A failed read is now
+  retried to the deadline like any other, and no timeout was lengthened to do
+  it. A link that never answers still fails, and says the read failed rather
+  than reporting a last value it never read.
 
 ## [0.46.2] - 2026-09-08
 
