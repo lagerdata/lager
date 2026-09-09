@@ -9,6 +9,7 @@ Uses shared helpers from lager.dispatchers.helpers for common patterns.
 from __future__ import annotations
 
 import json
+import re
 import sys
 import threading
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -31,6 +32,12 @@ __all__ = [
 
 # Role constant for SPI nets
 ROLE = "spi"
+
+# LabJack UD series (U3/U6). A regex, not the exact-string tuples the other
+# branches use, because a net record can spell the instrument "LabJack_U3",
+# "labjack_u3" or "LabJack U3" and only the first two survive a tuple test.
+# This is the same pattern the adc/dac/gpio dispatchers already match a U3 on.
+_UD_RE = re.compile(r"labjack[_\-\s]*u[36]", re.IGNORECASE)
 
 # Driver cache to avoid recreating drivers for each call
 _driver_cache: Dict[str, 'SPIBase'] = {}
@@ -72,6 +79,9 @@ def _get_pin_config(rec: Dict[str, Any]) -> Dict[str, int]:
         return {}
     if instrument in ("ft232h", "ftdi_ft232h", "ft232h_spi"):
         return {}
+
+    if _UD_RE.search(instrument):
+        return _ud_spi_pin_config(rec)
 
     params = rec.get("params", {})
     pin_field = rec.get("pin", "")
@@ -127,6 +137,69 @@ def _get_pin_config(rec: Dict[str, Any]) -> Dict[str, int]:
     return pin_config
 
 
+def _ud_spi_pin_config(rec: Dict[str, Any]) -> Dict[str, int]:
+    """
+    Extract SPI pin configuration for a LabJack UD (U3) net.
+
+    Separate from the T7 path, which hardcodes the two literals "FIO0-FIO3"
+    and "FIO1-FIO3" -- precisely the lines a U3-HV cannot drive, since
+    FIO0-FIO3 are its fixed high-voltage analog inputs.
+
+    THE SPAN ORDER IS NOT THE T7'S. A T7 span unpacks CS / CLK / MOSI / MISO.
+    LabJackPython's U3 defaults are CSPinNum=4, CLKPinNum=5, MISOPinNum=6,
+    MOSIPinNum=7 -- CS / CLK / MISO / MOSI, with MISO and MOSI the other way
+    round -- and that is the order every LabJack U3 wiring diagram shows. Using
+    the T7's order here would silently swap the data lines against the vendor's
+    own documentation, which is a fault no error message would ever report.
+    Do not "unify" the two parsers.
+
+    ``params`` wins over the span: it is the only way to name lines that are
+    not adjacent, and the only route to a mixed FIO/EIO/CIO net.
+    """
+    from lager.io.labjack_ud_handle import pin_to_dio
+
+    params = rec.get("params", {}) or {}
+    pin_field = rec.get("pin", "") or ""
+    netname = rec.get("name", "<unknown>")
+    required = ("clk_pin", "mosi_pin", "miso_pin")
+
+    if all(params.get(key) is not None for key in required):
+        try:
+            config = {key: pin_to_dio(params[key]) for key in required}
+            if params.get("cs_pin") is not None:
+                config["cs_pin"] = pin_to_dio(params["cs_pin"])
+            return config
+        except ValueError as exc:
+            raise SPIBackendError(f"Net '{netname}': {exc}") from None
+
+    if "-" in pin_field:
+        parts = pin_field.split("-")
+        if len(parts) == 2:
+            try:
+                start = pin_to_dio(parts[0])
+                end = pin_to_dio(parts[1])
+            except ValueError as exc:
+                raise SPIBackendError(f"Net '{netname}': {exc}") from None
+            if end - start == 3:
+                return {"cs_pin": start, "clk_pin": start + 1,
+                        "miso_pin": start + 2, "mosi_pin": start + 3}
+            if end - start == 2:
+                # 3-wire: the same order with CS dropped off the front.
+                return {"clk_pin": start, "miso_pin": start + 1,
+                        "mosi_pin": start + 2}
+            raise SPIBackendError(
+                f"Net '{netname}' has SPI pin span '{pin_field}', which names "
+                f"{end - start + 1} lines. A span must name 4 (CS, CLK, MISO, "
+                f"MOSI) or 3 (CLK, MISO, MOSI, with CS driven manually)."
+            )
+
+    raise SPIBackendError(
+        f"Net '{netname}' has no usable SPI pin configuration. Give a pin "
+        f"span such as 'FIO4-FIO7', or params with clk_pin, mosi_pin and "
+        f"miso_pin."
+    )
+
+
 def _get_spi_params(rec: Dict[str, Any]) -> Dict[str, Any]:
     """
     Extract SPI configuration parameters from net record.
@@ -141,6 +214,17 @@ def _get_spi_params(rec: Dict[str, Any]) -> Dict[str, Any]:
     # Auto-detect default cs_mode based on pin configuration
     if "cs_mode" in params:
         default_cs_mode = params["cs_mode"]
+    elif _UD_RE.search(rec.get("instrument", "").lower()):
+        # A U3 span names four lines (with CS) or three (without). The T7 rule
+        # below would call every U3 span "manual", because it tests against the
+        # two T7 literals and a U3 net matches neither.
+        try:
+            default_cs_mode = ("auto" if "cs_pin" in _ud_spi_pin_config(rec)
+                               else "manual")
+        except SPIBackendError:
+            # Leave the real complaint to _get_pin_config, which reports it
+            # with the full message rather than swallowing it here.
+            default_cs_mode = "auto"
     elif pin_field == "FIO1-FIO3" or (pin_field not in ("FIO0-FIO3", "") and "cs_pin" not in params):
         default_cs_mode = "manual"
     else:
@@ -173,7 +257,47 @@ def _make_driver(rec: Dict[str, Any], overrides: Dict[str, Any] = None):
     if overrides:
         spi_params.update(overrides)
 
-    # Select driver based on instrument type
+    # Select driver based on instrument type.
+    #
+    # The UD (U3) branch is deliberately FIRST. The T7 tuple below includes a
+    # bare "labjack", and while exact-string membership means "labjack_u3"
+    # cannot reach it today, a U3 that did would not fail loudly: LJM does not
+    # speak to a U3 at all, so on a box carrying both parts the net would drive
+    # the *T7* and report success. box/lager/io/dac/dispatcher.py carries the
+    # same warning for the same reason.
+    if _UD_RE.search(instrument):
+        from .labjack_ud_spi import LabJackUDSPI
+
+        pin_config = _get_pin_config(rec)
+        # Deliberately NOT spi_params["frequency_hz"]: that default is
+        # 1_000_000, which is twelve times a U3's ceiling and would warn about
+        # a clamp on every net that never asked for a speed at all. None means
+        # "as fast as the part goes", which is what a caller who said nothing
+        # wants.
+        requested_hz = (rec.get("params") or {}).get("frequency_hz")
+        if overrides and overrides.get("frequency_hz") is not None:
+            requested_hz = overrides["frequency_hz"]
+        try:
+            return LabJackUDSPI(
+                cs_pin=pin_config.get("cs_pin"),
+                clk_pin=pin_config["clk_pin"],
+                mosi_pin=pin_config["mosi_pin"],
+                miso_pin=pin_config["miso_pin"],
+                mode=spi_params.get("mode", 0),
+                bit_order=spi_params.get("bit_order", "msb"),
+                frequency_hz=requested_hz,
+                word_size=spi_params.get("word_size", 8),
+                cs_active=spi_params.get("cs_active", "low"),
+                cs_mode=spi_params.get("cs_mode", "auto"),
+                unique_id=rec.get("address", ""),
+            )
+        except SPIBackendError:
+            raise   # already specific; wrapping would bury the pin advice
+        except Exception as exc:
+            raise SPIBackendError(
+                f"Failed to create U3 SPI driver: {exc}"
+            ) from exc
+
     if instrument in ("labjack_t7", "labjack", "t7"):
         from .labjack_spi import LabJackSPI
 
@@ -227,7 +351,7 @@ def _make_driver(rec: Dict[str, Any], overrides: Dict[str, Any] = None):
     else:
         raise SPIBackendError(
             f"Unsupported SPI instrument '{instrument}' for net '{netname}'. "
-            f"Supported: labjack_t7, aardvark_spi, ft232h"
+            f"Supported: labjack_t7, labjack_u3, aardvark_spi, ft232h"
         )
 
 

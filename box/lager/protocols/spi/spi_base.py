@@ -13,6 +13,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import List, Optional
 
+from lager.exceptions import SPIBackendError
+
 
 class SPIBase(ABC):
     """
@@ -151,4 +153,94 @@ class SPIBase(ABC):
         for _ in range(bit_count):
             result = (result << 1) | (value & 1)
             value >>= 1
+        return result
+
+    @staticmethod
+    def words_to_bytes(
+        words: List[int],
+        word_size: int = 8,
+        bit_order: str = "msb",
+    ) -> List[int]:
+        """
+        Pack words into the byte stream that goes out on the wire.
+
+        Lives here rather than on a driver because it is pure arithmetic: every
+        LabJack part is MSB-first in firmware, so LSB-first is software on all
+        of them, and a second copy of the bit reversal that disagrees with this
+        one would be invisible until it reached a scope.
+
+        Words are split most-significant-byte first. For LSB-first the whole
+        word is reversed before splitting, not each byte independently.
+
+        Args:
+            words: Values to transmit, each within *word_size* bits
+            word_size: Bits per word (8, 16, or 32)
+            bit_order: "msb" or "lsb"
+
+        Returns:
+            Flat list of bytes
+
+        Raises:
+            SPIBackendError: A value does not fit in *word_size* bits
+        """
+        max_value = (1 << word_size) - 1
+        for w in words:
+            if w > max_value:
+                raise SPIBackendError(
+                    f"Data value 0x{w:X} exceeds {word_size}-bit word size "
+                    f"(max 0x{max_value:X}). Use commas to separate into "
+                    f"{word_size}-bit values, or set --word-size to match "
+                    f"your data."
+                )
+
+        if word_size == 8:
+            if bit_order == "lsb":
+                return [SPIBase.reverse_bits(w & 0xFF, 8) for w in words]
+            return [w & 0xFF for w in words]
+
+        bytes_per_word = word_size // 8
+        result: List[int] = []
+        for word in words:
+            if bit_order == "lsb":
+                word = SPIBase.reverse_bits(word, word_size)
+            for i in range(bytes_per_word - 1, -1, -1):
+                result.append((word >> (i * 8)) & 0xFF)
+        return result
+
+    @staticmethod
+    def bytes_to_words(
+        data_bytes: List[int],
+        word_size: int = 8,
+        bit_order: str = "msb",
+    ) -> List[int]:
+        """
+        Reassemble received bytes into words. The inverse of words_to_bytes.
+
+        A trailing group of bytes too short to fill a word becomes a short word
+        rather than being dropped -- a truncated read is a real thing to hand
+        back, and discarding it would hide it.
+
+        Args:
+            data_bytes: Bytes as received
+            word_size: Bits per word (8, 16, or 32)
+            bit_order: "msb" or "lsb"
+
+        Returns:
+            List of words
+        """
+        if word_size == 8:
+            if bit_order == "lsb":
+                return [SPIBase.reverse_bits(b, 8) for b in data_bytes]
+            return list(data_bytes)
+
+        bytes_per_word = word_size // 8
+        result: List[int] = []
+        for i in range(0, len(data_bytes), bytes_per_word):
+            word = 0
+            for j in range(bytes_per_word):
+                if i + j < len(data_bytes):
+                    word = (word << 8) | data_bytes[i + j]
+            if bit_order == "lsb":
+                word = SPIBase.reverse_bits(word, word_size)
+            result.append(word)
         return result

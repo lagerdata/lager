@@ -103,9 +103,10 @@ SUPPORTED_USB: Dict[str, Dict] = {
     # the device (u3.U3.isHV) when it opens; the scanner cannot, so
     # CHANNEL_MAPS below treats every U3 as an HV and leaves FIO0-FIO3 out of
     # the gpio channels. See the comment there for why that is not a setting.
-    # No spi/i2c: the UD drivers implement adc/dac/gpio only, and
-    # advertising a role with no driver behind it just moves the failure.
-    "LabJack_U3":        {"vid": "0cd5", "pid": "0003", "net_type": ["gpio", "adc", "dac"]},
+    # spi/i2c are U3 firmware commands (0xF8/0x3A and 0xF8/0x3B), not LJM
+    # registers, and are driven through LabJackPython over the Exodriver. They
+    # need U3 hardware 1.21 or greater; every U3 we have is well past that.
+    "LabJack_U3":        {"vid": "0cd5", "pid": "0003", "net_type": ["gpio", "adc", "dac", "spi", "i2c"]},
     "Aardvark":          {"vid": "0403", "pid": "e0d0", "net_type": ["spi", "i2c", "gpio"]},
     # FT232H — single channel. The chip can run in MPSSE mode (SPI / I2C /
     # GPIO / JTAG-SWD via libftdi) OR in async-serial mode (UART via
@@ -254,6 +255,20 @@ CHANNEL_MAPS: Dict[str, Dict[str, List[str]]] = {
             "AIN15",
         ],
         "dac": ["DAC0", "DAC1"],
+        # LabJackPython's own defaults, and what LabJack's U3 wiring diagrams
+        # show: SPI is CS=FIO4, CLK=FIO5, MISO=FIO6, MOSI=FIO7; I2C is
+        # SDA=FIO6, SCL=FIO7. Note the SPI span runs CS/CLK/MISO/MOSI -- MISO
+        # before MOSI, the opposite of the T7 span above. That is the vendor's
+        # ordering, not a typo here.
+        #
+        # The two spans OVERLAP, which the T7's do not. On a U3-HV every usable
+        # FIO sits inside FIO4-FIO7, so there is nowhere disjoint to put them
+        # that does not require the DB15 for EIO/CIO -- and advertising a
+        # channel that needs a breakout the scanner cannot know is attached is
+        # the same mistake as advertising FIO0-FIO3. One net of each is fine;
+        # the pin conflict tracker warns if a single script drives both.
+        "spi": ["FIO4-FIO7"],
+        "i2c": ["FIO6-FIO7"],
     },
     "MCC_USB-202": {
         "adc": ["CH0", "CH1", "CH2", "CH3", "CH4", "CH5", "CH6", "CH7"],

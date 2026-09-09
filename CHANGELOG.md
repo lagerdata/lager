@@ -78,6 +78,80 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ## [0.46.2] - 2026-09-08
 
+- **`lager spi` and `lager i2c` now work against a LabJack U3.** A U3 can now
+  host `spi` and `i2c` nets, which means it covers every role the T7 does.
+
+  As with `adc`/`dac`/`gpio`, this is a second driver stack rather than an
+  extension of the existing one. The T7 reaches both protocols through named
+  Modbus registers over LJM, and LJM does not talk to the U3 at all. A U3 has
+  one low-level extended command for each -- `0xF8/0x3A` for SPI and
+  `0xF8/0x3B` for I2C -- reached through LabJackPython over the Exodriver, both
+  already in the box image. They need U3 hardware version 1.21 or greater. The
+  T7 paths are untouched and the two families can share a box.
+
+  Differences from the T7 that are visible to a user, and deliberate:
+
+  - **The pins are `FIO4`-`FIO7`, not `FIO0`-`FIO3`.** SPI is `CS=FIO4`,
+    `CLK=FIO5`, `MISO=FIO6`, `MOSI=FIO7`; I2C is `SDA=FIO6`, `SCL=FIO7`. Those
+    are LabJackPython's own defaults and what LabJack's wiring diagrams show.
+    Note the SPI span runs CS/CLK/**MISO**/**MOSI** -- MISO before MOSI, the
+    opposite of the T7's span. The two spans overlap because every usable `FIO`
+    on a U3-HV lives in that one four-pin block; the pin conflict tracker warns
+    if a single script drives both. A net asking for `FIO0`-`FIO3` is now
+    refused when it is created, naming the pins that work, rather than being
+    accepted and failing at first use on hardware.
+  - **A transfer is at most 50 bytes**, and an I2C transaction at most 50 bytes
+    out and 52 back. These are the commands' own limits and are not the T7's 56.
+  - **Clock speed is approximate, and is never rounded up.** Neither part takes
+    a frequency: both take a delay count. SPI reaches about 5.4 kHz to 71 kHz
+    and I2C about 10 kHz to 150 kHz; a request outside the reachable range is
+    clamped with a warning naming what was used, as on the T7. `config` reports
+    the rate the hardware settled on rather than the one requested, and names
+    the request alongside it when the two differ.
+
+    The SPI figures are measured, not taken from the datasheet. LabJack
+    publishes `Frequency = 1e6 / (10 + 10 * (256 - SPIClockFactor))` with 0
+    meaning the maximum, but a U3-HV on hardware 1.30 / firmware 1.24 does not
+    behave that way: the byte is a plain delay count, 0 fastest and higher
+    values monotonically slower. The published formula makes a wire value of 1
+    the *slowest* setting, which would put a 50-byte transfer at about a
+    second; it measures around 6 ms. The driver therefore models the period as
+    affine in the wire byte, the same shape the I2C delay count already used.
+    Those two constants come from timing transfers on one unit, so they
+    describe effective bit rate rather than the SCK pin rate.
+  - **`cs_active="high"` and `keep_cs=True` are refused, not ignored.** The
+    firmware's `AutoCS` drives CS low for the transfer and releases it at the
+    end; there is no polarity bit and no hold bit. Both errors name the way to
+    get the behaviour: `cs_mode="manual"` plus a `gpio` net driving CS, which
+    holds it across as many transfers as you like.
+  - **I2C needs external pull-up resistors.** A U3 has none at all -- 4.7k to
+    VS on both `SDA` and `SCL` is the usual choice. Without them every address
+    NAKs, so a scan returns nothing and looks exactly like an empty bus.
+
+  Two details of the vendor library are load-bearing and easy to get backwards,
+  so they are called out here for anyone reading the drivers:
+
+  - **`u3.spi()` does not trim its own reply and `u3.i2c()` does.** An
+    odd-length SPI transfer is padded with a byte and the response comes back
+    at the padded length, so the driver trims it; handing the library's list
+    straight back would grow a phantom trailing byte on every odd transfer.
+    Its I2C sibling already trims, so doing the same thing there would lose a
+    byte instead.
+  - **I2C `AckArray` is numbered from the end of the transfer.** Bit 0 is the
+    *last* data byte and the address byte is the highest bit, at index `n` for
+    an `n`-byte write, so the address bit moves with the transfer length -- it
+    is bit 0 only during a scan, which writes no data at all. A partially
+    acknowledged write therefore produces a non-zero value, and a check written
+    as "no ACK means zero" would call it a success and silently drop the bytes
+    the device refused. Writes and reads now verify every acknowledgement and
+    name the first byte a device rejected.
+
+  Pin mode is handled the way the existing UD drivers handle it: the
+  analog/digital mux is whole-device state, so it is set through the handle
+  manager under its lock before every transaction and never written from inside
+  a driver. Setting the SPI command's `DisableDirConfig` is not a substitute --
+  that sets each line's direction, which is a different register.
+
 ### Changed
 
 - **The OpenOCD flash and erase decision now lives in one module.** 0.46.0 gave
