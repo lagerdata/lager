@@ -56,6 +56,25 @@ All notable changes to the Lager platform are documented here. For detailed rele
   retried to the deadline like any other, and no timeout was lengthened to do
   it. A link that never answers still fails, and says the read failed rather
   than reporting a last value it never read.
+- **Every "add a box" hint printed a command that could not run.** `lager boxes
+  add` has required `--user` since 0.29.0, but the hints the CLI prints when it
+  cannot find a box still read `lager boxes add --name X --ip Y` -- copy one and
+  click rejects it as a missing option. All five hint sites now carry `--user`,
+  as do the README, the `lager` file and ssh-setup references, and the MCP guide
+  and discovery text an assistant reads to learn the command.
+- **The box installer's offer to register the box never worked.** After a
+  successful deploy, `setup_and_deploy_box.sh` offers to add the box to the
+  `.lager` file in the current directory. That call omitted the required
+  `--user` and sent its own error to `/dev/null`, so it failed on every box
+  since 0.29.0 and reported only "Failed to add to .lager - you may need to add
+  manually". It now passes the login user the deploy already knows, and lets a
+  real error through instead of swallowing it.
+- **Integration suites carried two competing settings for the box login user.**
+  The scripts that register a temporary box when handed an IP address read one
+  variable, while the raw `ssh` calls in the same file read another with a
+  different default, so exporting a user changed one and not the other. They now
+  share a single `SSH_USER`, defaulting to `lagerdata` as it did before 0.29.0
+  removed the implicit default, declared once in the test harness.
 
 ## [0.46.2] - 2026-09-08
 
