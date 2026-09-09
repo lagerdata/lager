@@ -41,13 +41,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1957 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 2282 |
+| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1962 (+2 xfailed) |
+| `unit (box)` | `test/unit/box/` | 2377 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 181 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 186 (+1 skipped) |
-| | **Total gated** | **4800** |
+| | **Total gated** | **4900** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never
@@ -152,7 +152,7 @@ OS.
 
 | Area | Size | Why not |
 |---|---|---|
-| `test/api/` | 83 scripts | Needs real hardware. The bench workflows invoke 10 by name; the other 72 execute nowhere -- though all are now syntax-checked. |
+| `test/api/` | 84 scripts | Needs real hardware. The bench workflows invoke 10 by name; the other 73 execute nowhere -- though all are now syntax-checked. |
 | `test/integration/` | 38 bash scripts | Needs a real box and instruments. **8 execute:** `communication/jlink_script.sh` nightly via `integration-tests.yml`, plus 7 weekly via `bench-extended.yml` -- 5 infrastructure suites (`deployment`, `devenv`, `nets`, `box_config`, `generic`) and 2 power suites (`power/supply.sh`, `power/battery.sh`). The other 30 are syntax-checked and shellchecked but never executed. |
 | `test/mcp/integration/` | 1 file | Needs two live boxes. Import-checked only. |
 | `test/manual/` | 2 bash scripts | Operator-driven. Syntax-checked only. |
@@ -412,7 +412,7 @@ Five other param types (`EnvVarType`, `PortForwardType`, `MemoryAddressType`, `H
 
 ```
 test/
-├── api/                  # Python API tests (83 files, run on box via `lager python`)
+├── api/                  # Python API tests (84 files, run on box via `lager python`)
 │   ├── communication/    # 30 files: I2C, SPI, UART, BLE, BluFi, WiFi, debug
 │   ├── io/               # 17 files: ADC, DAC, GPIO, PWM, pin conflict, USB-202
 │   ├── peripherals/      #  9 files: scope, arm, webcam, rotation, actuate
@@ -451,9 +451,9 @@ cli/tests/                #  7 files: 6 pytest suites (GATED via `unit (cli)`),
                           #           plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 199 files)
+### Local Unit Tests (`test/unit/` -- 200 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 109 files)
+#### Box Unit Tests (`test/unit/box/` -- 110 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -515,7 +515,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_lager_package_identity.py` | Guards this suite's conftest invariant: `lager` must be the real on-disk package with its `__init__` executed, not a placeholder |
 | `test_labjack_batch_read.py` | `POST /labjack/batch_read`: locks on the same device identity `/invoke` does, and writes nothing to the instrument |
 | `test_labjack_model_routing.py` | LabJack model disambiguation across the DAC dispatcher, the LJM batch-read grouping and the device-lock identity: a non-T7 LabJack must reach none of the three T7 paths, and the T7's own routing is byte-for-byte unchanged |
-| `test_labjack_ud.py` | LabJack UD-series (U3) drivers and handle manager against a fake u3 module: pin-name mapping, device selection by serial, and the analog/digital pin mux -- which has no T7 counterpart and fails silently, since a line read in the wrong mode returns a plausible number rather than an error. Also the UD DAC's 0.04-4.95 V range and its absent readback. Also that the scanner omits FIO0-FIO3 from the U3's gpio channels -- they are the U3-HV's fixed high-voltage analog inputs, and while they were advertised a net on them was accepted and then failed at first use |
+| `test_labjack_ud.py` | LabJack UD-series (U3) drivers and handle manager against a fake u3 module: pin-name mapping, device selection by serial, and the analog/digital pin mux -- which has no T7 counterpart and fails silently, since a line read in the wrong mode returns a plausible number rather than an error. Also the UD DAC's 0.04-4.95 V range and its absent readback. Also that the scanner omits FIO0-FIO3 from the U3's gpio channels -- they are the U3-HV's fixed high-voltage analog inputs, and while they were advertised a net on them was accepted and then failed at first use. Also the U3 SPI and I2C drivers against a fake `u3.spi()`/`u3.i2c()` written from the LabJackPython source rather than from the drivers: the odd-packet padding SPI must trim and I2C must not, the AckArray bit order (bit 0 is the LAST data byte, so a partially acknowledged write is non-zero and a ported `acks == 0` check would call it success), the unshifted address, the 50/50/52 byte limits, and a transaction that fails when a pin is left in analog mode -- with a negative control that neuters the mux call and asserts the transaction then breaks, so a pass cannot be coincidental |
 | `test_load_box_secrets.py` | `load_box_secrets()` returns `{}` on every failure, which makes an unreadable secrets file indistinguishable from a box with none configured -- pins that distinction |
 | `test_lock_state.py` | lock_state.py single source of truth for box-side lock behavior |
 | `test_logic_net_type.py` | `lager logic`'s workers must resolve nets under `NetType.from_role(LOGIC_ROLE)`; `Net.get` matches on type equality, so a mismatch is a silent no-op rather than an error |
@@ -553,6 +553,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_secret_file_ownership.py` | The ownership block extracted verbatim from `box/start_box.sh`: mode 0600 grants the OWNER alone, so a secrets file owned by the host login user locks the container runtime out of its own secrets |
 | `test_serial_id_cables.py` | tty enumeration and resolution via fake /sys tree lookup |
 | `test_store_path_containment.py` | A binary name, a device-lock key and a DFU staging file are each named after something off the wire: the existing reduction is pinned as what rejects, and the containment check beside each join pins where the result lands, so widening a reduction cannot silently widen the directory. Also pins that names with spaces, `+` and parentheses still work, since the CLI forwards the basename of any local file |
+| `test_spi_word_conversion.py` | SPI word/byte packing shared by every backend: the LSB-first bit reversal, the multi-byte split, the oversize refusal and the short trailing word. Every expected value was captured from the T7 driver before the helpers moved to `SPIBase`, so the suite fails if the move changed any observable output -- the helpers were lifted so a second LabJack family could reuse them rather than carry a copy of the reversal that disagrees only on a scope |
 | `test_ssh_runner.py` | SSH key selection and auth fallback logic |
 | `test_ssh_setup.py` | `lager ssh-setup` command and SSH key provisioning with TTY passthrough |
 | `test_stream_disconnect.py` | `peer_is_connected` and the idle tick that let the box notice a vanished client in under a second instead of waiting for the script's next write |
@@ -726,7 +727,7 @@ Gated as part of the `unit (cli)` job.
 |------|---------------|
 | `test_agent_loop.py` | End-to-end agent workflow: discovery, suitability, `lager python` execution, verify |
 
-### Python API Tests (`test/api/` -- 83 files)
+### Python API Tests (`test/api/` -- 84 files)
 
 These are **standalone scripts, not pytest** (see `test/CONVENTIONS.md`): each defines `main()`
 and runs on a box via `lager python`. None of them run in the PR gate.

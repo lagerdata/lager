@@ -63,13 +63,17 @@ U3 = {
     "name": "LabJack_U3",
     "vid": "0cd5", "pid": "0003", "serial": None,
     "address": U3_ADDR,
-    "net_type": ["gpio", "adc", "dac"],
+    "net_type": ["gpio", "adc", "dac", "spi", "i2c"],
     "channels": {
         "gpio": ["FIO4", "FIO5", "FIO6", "FIO7",
                  "EIO0", "EIO1", "EIO2", "EIO3", "EIO4", "EIO5", "EIO6", "EIO7",
                  "CIO0", "CIO1", "CIO2", "CIO3"],
         "adc": [f"AIN{n}" for n in range(16)],
         "dac": ["DAC0", "DAC1"],
+        # SPI is CS/CLK/MISO/MOSI across FIO4-FIO7; I2C is SDA=FIO6, SCL=FIO7.
+        # They overlap because every usable FIO on a U3-HV is in that block.
+        "spi": ["FIO4-FIO7"],
+        "i2c": ["FIO6-FIO7"],
     },
 }
 
@@ -307,6 +311,34 @@ class TestChannelRejectionNamesTheAlternatives:
         result = _invoke(["add", "hv0", "adc", "AIN0", U3_ADDR, "--box", "b"])
         assert result.exit_code == 0, result.output
         assert fake_box.saved_nets[0]["role"] == "adc"
+
+    @pytest.mark.parametrize("role,span,usable", [
+        ("spi", "FIO0-FIO3", "FIO4-FIO7"),
+        ("spi", "FIO1-FIO3", "FIO4-FIO7"),
+        ("i2c", "FIO0-FIO1", "FIO6-FIO7"),
+        ("i2c", "FIO2-FIO3", "FIO6-FIO7"),
+    ])
+    def test_a_t7_span_on_a_u3_is_refused_and_names_the_u3_span(
+            self, fake_box, role, span, usable):
+        """The T7's documented spans are exactly the ones a U3-HV cannot use.
+
+        Someone reading the T7 docs reaches for FIO0-FIO3 for spi. On a U3
+        those four pins are the fixed high-voltage analog inputs, so the net
+        would be accepted and then fail at first use on hardware -- the same
+        shape as the gpio regression this class exists for.
+        """
+        result = _invoke(["add", "n0", role, span, U3_ADDR, "--box", "b"])
+        assert result.exit_code == 1, result.output
+        assert "high-voltage" in result.output
+        assert usable in result.output
+        assert not fake_box.saved_nets
+
+    def test_the_usable_spi_and_i2c_spans_are_accepted(self, fake_box):
+        for name, role, span in (("s0", "spi", "FIO4-FIO7"),
+                                 ("i0", "i2c", "FIO6-FIO7")):
+            result = _invoke(["add", name, role, span, U3_ADDR, "--box", "b"])
+            assert result.exit_code == 0, result.output
+        assert [n["role"] for n in fake_box.saved_nets] == ["spi", "i2c"]
 
 
 class TestAddBatchChannelValidation:

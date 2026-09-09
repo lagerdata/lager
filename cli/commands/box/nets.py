@@ -429,7 +429,13 @@ def canonical_instrument(instrument):
 # (box/lager/http_handlers/usb_scanner.py), and this is what turns the
 # resulting rejection into a next step rather than a dead end. Raw DIO
 # numbers are included because the U3 drivers accept either spelling.
-_U3_HV_PINS = {"FIO0", "FIO1", "FIO2", "FIO3", "0", "1", "2", "3"}
+_U3_HV_PINS = {"FIO0", "FIO1", "FIO2", "FIO3", "0", "1", "2", "3",
+               # The spans a user reaches for after reading the T7's docs.
+               "FIO0-FIO3", "FIO1-FIO3", "FIO0-FIO1", "FIO2-FIO3"}
+# Roles whose channels are digital lines, so a high-voltage pin is wrong for
+# every one of them. adc is deliberately absent: FIO0-FIO3 are exactly where
+# an adc net belongs.
+_U3_DIGITAL_ROLES = {"gpio", "spi", "i2c"}
 
 
 def _channel_rejection_hint(instrument, role, channel):
@@ -439,12 +445,20 @@ def _channel_rejection_hint(instrument, role, channel):
     whole story, which is the case for every instrument but the U3.
     """
     if (canonical_instrument(instrument) == "LabJack_U3"
-            and role == "gpio"
+            and role in _U3_DIGITAL_ROLES
             and str(channel).upper() in _U3_HV_PINS):
+        if role == "gpio":
+            return (
+                "FIO0-FIO3 on a LabJack U3 are fixed high-voltage analog "
+                "inputs and are never digital I/O. Read them with an adc net "
+                "on AIN0-AIN3, the same physical pins."
+            )
+        usable = "FIO4-FIO7" if role == "spi" else "FIO6-FIO7"
         return (
-            "FIO0-FIO3 on a LabJack U3 are fixed high-voltage analog inputs "
-            "and are never digital I/O. Read them with an adc net on "
-            "AIN0-AIN3, the same physical pins."
+            f"FIO0-FIO3 on a LabJack U3 are fixed high-voltage analog inputs "
+            f"and are never digital I/O, so they cannot carry a {role} net. "
+            f"Use {usable}. (Those pins are readable as an adc net on "
+            f"AIN0-AIN3, the same physical pins.)"
         )
     return None
 
@@ -494,7 +508,7 @@ INSTRUMENT_NET_MAP: dict[str, list[str]] = {
     # U3-HV and U3-LV share one product id, so this entry is the family;
     # the box-side driver reads the variant from the device. adc/dac/gpio
     # only -- the UD drivers do not implement spi/i2c.
-    "LabJack_U3": ["gpio", "adc", "dac"],
+    "LabJack_U3": ["gpio", "adc", "dac", "spi", "i2c"],
     "Aardvark": ["spi", "i2c", "gpio"],
     "FTDI_FT232H": ["spi", "i2c", "gpio", "debug", "uart"],
     # FT2232H / FT4232H carry the new multi-channel debug role plus UART.

@@ -31,6 +31,7 @@ from .dispatcher import (
 from .spi_base import SPIBase
 from .spi_net import SPINet
 from .labjack_spi import LabJackSPI
+from .labjack_ud_spi import LabJackUDSPI
 from .aardvark_spi import AardvarkSPI
 from .ft232h_spi import FT232HSPI
 from lager.exceptions import SPIBackendError
@@ -46,6 +47,7 @@ __all__ = [
     # Classes
     'SPIBase',
     'LabJackSPI',
+    'LabJackUDSPI',
     'AardvarkSPI',
     'FT232HSPI',
     # Exceptions

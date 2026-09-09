@@ -9,6 +9,7 @@ Uses shared helpers from lager.dispatchers.helpers for common patterns.
 from __future__ import annotations
 
 import json
+import re
 import sys
 import threading
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -32,6 +33,12 @@ __all__ = [
 # Role constant for I2C nets
 ROLE = "i2c"
 
+# LabJack UD series (U3/U6). A regex, not the exact-string tuples the other
+# branches use, because a net record can spell the instrument "LabJack_U3",
+# "labjack_u3" or "LabJack U3" and only the first two survive a tuple test.
+# This is the same pattern the adc/dac/gpio dispatchers already match a U3 on.
+_UD_RE = re.compile(r"labjack[_\-\s]*u[36]", re.IGNORECASE)
+
 # Driver cache to avoid recreating drivers for each call
 _driver_cache: Dict[str, 'I2CBase'] = {}
 _driver_cache_lock = threading.Lock()
@@ -51,6 +58,9 @@ def _get_pin_config(rec: Dict[str, Any]) -> Dict[str, int]:
         return {}
     if instrument in ("ft232h", "ftdi_ft232h", "ft232h_i2c"):
         return {}
+
+    if _UD_RE.search(instrument):
+        return _ud_pin_config(rec)
 
     params = rec.get("params", {})
     pin_field = rec.get("pin", "")
@@ -87,6 +97,47 @@ def _get_pin_config(rec: Dict[str, Any]) -> Dict[str, int]:
             )
 
     return pin_config
+
+
+def _ud_pin_config(rec: Dict[str, Any]) -> Dict[str, int]:
+    """
+    Extract I2C pin configuration for a LabJack UD (U3) net.
+
+    Separate from the T7 path above because that one reaches a pin number with
+    ``int(part.replace("FIO", ""))``, which cannot see an ``EIO`` or ``CIO``
+    spelling at all -- and on a U3-HV those are two thirds of the usable
+    digital lines. Everything here goes through ``pin_to_dio``, so any name the
+    handle manager accepts works.
+
+    ``params`` wins over the pin span: it is the only way to name lines that
+    are not adjacent.
+    """
+    from lager.io.labjack_ud_handle import pin_to_dio
+
+    params = rec.get("params", {}) or {}
+    pin_field = rec.get("pin", "") or ""
+    netname = rec.get("name", "<unknown>")
+
+    if params.get("sda_pin") is not None and params.get("scl_pin") is not None:
+        try:
+            return {"sda_pin": pin_to_dio(params["sda_pin"]),
+                    "scl_pin": pin_to_dio(params["scl_pin"])}
+        except ValueError as exc:
+            raise I2CBackendError(f"Net '{netname}': {exc}") from None
+
+    if "-" in pin_field:
+        parts = pin_field.split("-")
+        if len(parts) == 2:
+            try:
+                return {"sda_pin": pin_to_dio(parts[0]),
+                        "scl_pin": pin_to_dio(parts[1])}
+            except ValueError as exc:
+                raise I2CBackendError(f"Net '{netname}': {exc}") from None
+
+    raise I2CBackendError(
+        f"Net '{netname}' has no usable I2C pin configuration. Give a pin "
+        f"span such as 'FIO6-FIO7', or params with sda_pin and scl_pin."
+    )
 
 
 def _get_i2c_params(rec: Dict[str, Any]) -> Dict[str, Any]:
@@ -135,7 +186,32 @@ def _make_driver(rec: Dict[str, Any], overrides: Dict[str, Any] = None):
     if overrides:
         i2c_params.update(overrides)
 
-    # Select driver based on instrument type
+    # Select driver based on instrument type.
+    #
+    # The UD (U3) branch is deliberately FIRST. The T7 tuple below includes a
+    # bare "labjack", and while exact-string membership means "labjack_u3"
+    # cannot reach it today, a U3 that did would not fail loudly: LJM does not
+    # speak to a U3 at all, so on a box carrying both parts the net would drive
+    # the *T7* and report success. box/lager/io/dac/dispatcher.py carries the
+    # same warning for the same reason.
+    if _UD_RE.search(instrument):
+        from .labjack_ud_i2c import LabJackUDI2C
+
+        pin_config = _get_pin_config(rec)
+        try:
+            return LabJackUDI2C(
+                sda_pin=pin_config["sda_pin"],
+                scl_pin=pin_config["scl_pin"],
+                frequency_hz=i2c_params.get("frequency_hz", 100_000),
+                unique_id=rec.get("address", ""),
+            )
+        except I2CBackendError:
+            raise   # already specific; wrapping would bury the pin advice
+        except Exception as exc:
+            raise I2CBackendError(
+                f"Failed to create U3 I2C driver: {exc}"
+            ) from exc
+
     if instrument in ("labjack_t7", "labjack", "t7"):
         from .labjack_i2c import LabJackI2C
 
@@ -194,7 +270,7 @@ def _make_driver(rec: Dict[str, Any], overrides: Dict[str, Any] = None):
     else:
         raise I2CBackendError(
             f"Unsupported I2C instrument '{instrument}' for net '{netname}'. "
-            f"Supported: labjack_t7, aardvark_i2c, ft232h"
+            f"Supported: labjack_t7, labjack_u3, aardvark_i2c, ft232h"
         )
 
 
