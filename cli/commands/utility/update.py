@@ -956,6 +956,52 @@ def _docker_build_line_summary(line):
     return None
 
 
+# ssh's own diagnostics, none of which a docker build log produces. A build
+# that never started prints ONLY these -- and the Docker hint chain below then
+# matches none of them, so the operator gets a Docker headline, a Docker output
+# dump, and no hint at all for a problem that is on the wire. Reported from the
+# field, where an operator's VPN dropped mid-update and `lager update`
+# answered "Failed to rebuild Docker container".
+_SSH_TRANSPORT_MARKERS = (
+    'ssh: connect to host',
+    'ssh_exchange_identification:',
+    'kex_exchange_identification:',
+    'mux_client_request_session:',
+    'client_loop: send disconnect',
+    'connection closed by remote host',
+    'timeout, server ',
+)
+
+# Auth loss, not transport loss. Held apart from the markers above because the
+# remedy differs: the box answered, and it refused this key. A key that a key
+# manager rebuilt out of authorized_keys mid-run lands here.
+_SSH_AUTH_MARKERS = (
+    'permission denied (publickey',
+    'host key verification failed',
+)
+
+
+def _ssh_failure_line(output_lines):
+    """Name the SSH failure that ended a build, when that is what ended it.
+
+    Returns ``(kind, line)`` -- kind is 'transport' or 'auth' -- or
+    ``(None, None)`` when the build really did fail inside Docker.
+
+    Matching is on ssh's own message formats, never on bare words like
+    "timeout": a build that cannot reach an apt mirror prints its own timeouts,
+    and those ARE Docker build failures.
+    """
+    for line in output_lines or ():
+        low = (line or '').lower()
+        for marker in _SSH_TRANSPORT_MARKERS:
+            if marker in low:
+                return 'transport', line.strip()
+        for marker in _SSH_AUTH_MARKERS:
+            if marker in low:
+                return 'auth', line.strip()
+    return None, None
+
+
 def _build_hash_mismatch(new_hash, stored_hash):
     """True when the docker-build inputs changed relative to the last
     successful build.
@@ -1328,6 +1374,21 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         """Always print errors."""
         click.secho(message, fg='red', err=True)
 
+    def warn(message):
+        r"""Print a warning that does not collide with the progress bar.
+
+        The bar writes a \r-terminated frame to stdout with no newline; a
+        warning writes to stderr. The terminal puts both on one row, and the
+        bar's next 1s tick clears only that row -- so the wrapped remainder of
+        the warning stays on screen for the rest of the run. Clear the bar
+        first, write the warning, then let the bar come back on a fresh row.
+        """
+        if progress:
+            progress.pause()
+        click.secho(message, fg='yellow', err=True)
+        if progress:
+            progress.resume()
+
     # Default to 'main' version if not specified
     target_version = version or 'main'
 
@@ -1471,13 +1532,19 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         """
         ok, detail = register_lager_box_key(ssh_host, key_path=key_file)
         if not ok:
-            click.secho(
-                f'Warning: the SSH key works, but it did not register in '
-                f'{BOX_KEYS_DIR} on the box ({detail}); it will not survive a '
-                'rebuild of the box\'s authorized_keys. Run `lager ssh-setup '
-                f'--box {ssh_host.split("@")[-1]}` for the grant a tightly '
-                'scoped fleet needs. Do not widen the directory instead.',
-                fg='yellow', err=True,
+            # `detail` is raw shell stderr and arrives multi-line -- a sudo
+            # refusal is two lines. Printed as-is next to a \r-rendered bar it
+            # wraps and stacks. One line per fact, and the reason collapsed to
+            # one of them, is what makes this readable on a real terminal.
+            reason = ' '.join((detail or '').split()) or 'no reason given'
+            warn(
+                'Warning: the SSH key works, but it did not register on the box.\n'
+                f'  Directory: {BOX_KEYS_DIR}\n'
+                f'  Reason:    {reason}\n'
+                "  A rebuild of the box's authorized_keys removes this key.\n"
+                f'  Run `lager ssh-setup --box {ssh_host.split("@")[-1]}` for the '
+                'grant a tightly scoped fleet needs.\n'
+                '  Do not widen the directory instead.'
             )
 
     try:
@@ -3063,9 +3130,20 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
     # SystemExit / signal path. The imperative variant (not `with`) is
     # used here because re-indenting ~450 lines of branchy update logic
     # would be far riskier than registering an atexit release.
-    _release_update_lock = auto_lock_acquire_for_command(
-        resolved_box, box_name or resolved_box, 'update',
-    )
+    # `auto_lock_acquire_for_command` prints its own warning to stderr when the
+    # box does not answer the lock request -- from inside box_storage, which
+    # knows nothing about this bar. Clear the bar around the call for the same
+    # reason `warn()` does it: a stderr write onto a \r-rendered row leaves
+    # wrapped text that no later tick can erase.
+    if progress:
+        progress.pause()
+    try:
+        _release_update_lock = auto_lock_acquire_for_command(
+            resolved_box, box_name or resolved_box, 'update',
+        )
+    finally:
+        if progress:
+            progress.resume()
 
     # Declare the lock outage this command is about to cause. The `lager`
     # container being stopped on the next line is the process serving the
@@ -3184,11 +3262,47 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         return_code = process.wait(timeout=600)
 
         if return_code != 0:
+            ssh_failure_kind, ssh_failure_line = _ssh_failure_line(
+                build_output_lines)
             if progress:
                 progress.finish(success=False)
-            log_error('Error: Failed to rebuild Docker container')
+            if ssh_failure_kind:
+                # The build is not what failed, so do not say that it is. Every
+                # Docker hint below is wrong here, and the operator spends the
+                # next hour on the box's Docker daemon.
+                if ssh_failure_kind == 'auth':
+                    log_error('Error: the box refused the SSH key during the build')
+                else:
+                    log_error('Error: lost the SSH connection to the box during the build')
+                click.echo()
+                click.secho(f'  {ssh_failure_line}', fg='yellow', err=True)
+                click.echo()
+                click.secho(
+                    'The Docker build did not start. This is not a build failure.',
+                    fg='yellow', err=True,
+                )
+                if ssh_failure_kind == 'auth':
+                    click.secho(
+                        'The box answered, and it refused this key. A key manager '
+                        'that rebuilds authorized_keys removes an unregistered key '
+                        'mid-run.',
+                        fg='yellow', err=True,
+                    )
+                    click.secho(
+                        f'Run `lager ssh-setup --box {ssh_host.split("@")[-1]}` and '
+                        'run `lager update` again.',
+                        fg='yellow', err=True,
+                    )
+                else:
+                    click.secho(
+                        'Check the network path to the box, then run `lager update` '
+                        'again.',
+                        fg='yellow', err=True,
+                    )
+            else:
+                log_error('Error: Failed to rebuild Docker container')
             # Show last 20 lines of build output for debugging
-            if build_output_lines:
+            if build_output_lines and not ssh_failure_kind:
                 click.echo()
                 click.secho("Docker build output (last 20 lines):", fg='yellow', err=True)
                 for line in build_output_lines[-20:]:
@@ -3232,6 +3346,19 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
             except (subprocess.SubprocessError, OSError):
                 pass
 
+            def _box_answers_ssh():
+                """One cheap probe: does the box answer SSH right now?
+
+                The recovery below waits up to 600s on `start_box.sh`. Over a
+                transport that is already gone, that is a ten-minute wait for a
+                connect timeout the operator can already see. Probe once first.
+                """
+                try:
+                    return run_ssh_command_with_output(
+                        'true', timeout_secs=20).returncode == 0
+                except (subprocess.SubprocessError, OSError):
+                    return False
+
             # Step 8 already stopped and removed the containers, so exiting here
             # would strand the box with no services — the state that previously
             # made the next run report "already at version" on a dead box. Unless
@@ -3240,7 +3367,10 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
             # running before the pull, so restart it: the box stays usable on its
             # prior version while the operator deals with the build failure.
             restarted = False
-            if not must_wipe_image:
+            recovery_reachable = True
+            if ssh_failure_kind and not must_wipe_image:
+                recovery_reachable = _box_answers_ssh()
+            if not must_wipe_image and recovery_reachable:
                 click.echo()
                 click.secho('Restarting the box on its previous version...', fg='yellow', err=True)
                 try:
@@ -3261,6 +3391,21 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
                     'its previous version.',
                     fg='yellow', err=True,
                 )
+            elif not recovery_reachable:
+                # Say which of the two states the box is in. "Bring it back up
+                # manually" reads as an instruction the operator can follow now,
+                # and they cannot: the box is not answering.
+                click.secho(
+                    'The update FAILED. Step 8 stopped the box\'s containers, and '
+                    'the box does not answer SSH now.',
+                    fg='red', err=True,
+                )
+                click.secho(
+                    'The box stays down until it answers again. Run this command '
+                    'then:',
+                    fg='red', err=True,
+                )
+                click.echo(f'  ssh {ssh_host} "cd ~/box && ./start_box.sh"', err=True)
             else:
                 click.secho(
                     'The update FAILED and the box was left with its services '

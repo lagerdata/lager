@@ -41,7 +41,7 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1957 (+2 xfailed) |
+| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1969 (+2 xfailed) |
 | `unit (box)` | `test/unit/box/` | 2282 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
@@ -451,7 +451,7 @@ cli/tests/                #  7 files: 6 pytest suites (GATED via `unit (cli)`),
                           #           plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 199 files)
+### Local Unit Tests (`test/unit/` -- 200 files)
 
 #### Box Unit Tests (`test/unit/box/` -- 109 files)
 
@@ -571,7 +571,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_ykush_driver.py` | YKUSH USB hub driver: device-contention regression from an indefinitely cached handle |
 | `test_automation_exports.py` | Static parse of `automation/__init__.py`'s lazy export table: no name guarded twice, every returned driver reachable under its own name, everything in `__all__` resolvable -- the copy-paste class of defect that made one driver answer to another's name |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 73 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 74 files)
 
 | File | What it tests |
 |------|---------------|
@@ -631,6 +631,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_update_probe.py` | `lager update` probe script modprobe/usbtmc detection and output parsing |
 | `test_control_flow_exits.py` | `ctx.exit()` survives the broad handler of its own try block: `lager update --check` exits 2 (not 1) with no traceback, plus the `tools/check_control_flow_handlers.py` gate and its own detection cases |
 | `test_update_secret_ownership.py` | `lager update`'s secret-file ownership repair, run as real shell against a throwaway directory with a recording `sudo` stub |
+| `test_update_ssh_failure.py` | `lager update` names a lost SSH connection as one, instead of reporting it as a Docker build failure — plus the false-positive guard that keeps an apt/pip timeout inside the build a build failure |
 | `test_usb_command_errors.py` | `lager usb <net> <command>` error wiring: a 404 for a missing device must not be reported as an out-of-date box image |
 | `test_usb_cycle_command.py` | `lager usb <net> cycle|recover` wiring: off-time reaches the box, no client-side default that could drift from the box's, and the client budget outlasts the longest legal cycle |
 | `test_version_skew.py` | Version skew warning when CLI minor > box minor with per-process caching |
