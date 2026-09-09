@@ -2380,9 +2380,43 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
     def enqueue_priv(name, snippet, render):
         priv_jobs.append({'name': name, 'snippet': snippet, 'render': render})
 
-    # Step 5: udev rules. The probe already located the source dir and diffed
-    # its 99-instrument.rules against the installed copy, so we only touch the
-    # box when an install/update is actually needed.
+    # Step 5: udev rules.
+    #
+    # The probe located the source dir and diffed its 99-instrument.rules
+    # against the installed copy -- but it ran BEFORE the git pull, so both of
+    # those facts describe the PREVIOUS checkout. When an update is what brings
+    # a new rule in, the pre-pull diff says "in sync" (correctly, about the old
+    # tree), the step reports OK, and the new rule is never installed.
+    #
+    # That is not hypothetical: a box updated from main onto a branch carrying
+    # the LabJack U3 rule reported "OK (already current)" and left the U3
+    # unopenable, because /etc matched the pre-pull source byte for byte. The
+    # modprobe step below has a re-check for the narrower "source dir appeared"
+    # case; this is the same idea applied to the file's CONTENT, which is what
+    # actually changes on an upgrade.
+    #
+    # Re-derive both facts post-pull/flatten before deciding anything.
+    _udev_recheck = run_ssh_command_with_output(
+        'if [ -d ~/box/udev_rules ]; then _up=~/box/udev_rules; '
+        'elif [ -d ~/box/box/udev_rules ]; then _up=~/box/box/udev_rules; '
+        'else _up=""; fi; '
+        'echo "PATH=$_up"; '
+        'if [ -n "$_up" ] && [ -f "$_up/99-instrument.rules" ]; then '
+        '  echo "RULES=1"; '
+        '  if diff -q "$_up/99-instrument.rules" '
+        '       /etc/udev/rules.d/99-instrument.rules >/dev/null 2>&1; then '
+        '    echo "SYNC=1"; else echo "SYNC=0"; fi; '
+        'else echo "RULES=0"; echo "SYNC=0"; fi'
+    )
+    for _line in (_udev_recheck.stdout or '').splitlines():
+        _line = _line.strip()
+        if _line.startswith('PATH='):
+            facts['UDEV_SRC_PATH'] = _line[5:]
+        elif _line.startswith('RULES='):
+            facts['UDEV_SRC_RULES'] = _line[6:]
+        elif _line.startswith('SYNC='):
+            facts['UDEV_IN_SYNC'] = _line[5:]
+
     if progress:
         progress.update("Checking udev rules...")
     log('Checking udev rules...', nl=False)

@@ -473,7 +473,21 @@ def config(
     rec = helpers.find_saved_net(netname, SPIBackendError)
     effective = _get_spi_params(rec)
 
-    print(f"SPI configured: mode={effective['mode']}, freq={effective['frequency_hz']}Hz, "
+    # Report what the hardware will actually do, not what was asked for. On a
+    # U3 the clock is a coarse delay count, so a request is rounded down to a
+    # reachable value or clamped to the part's range -- echoing the request
+    # back told the user they had a bus they did not have. The driver is the
+    # authority on what it settled on; anything else (T7, Aardvark, FT232H)
+    # takes the frequency literally and reports it unchanged.
+    achieved_hz = effective['frequency_hz']
+    if hasattr(drv, "_clock_byte") and hasattr(drv, "_frequency_for"):
+        achieved_hz = int(round(drv._frequency_for(drv._clock_byte)))
+    freq_note = f"freq={achieved_hz}Hz"
+    if (effective['frequency_hz'] is not None
+            and achieved_hz != effective['frequency_hz']):
+        freq_note += f" (requested {effective['frequency_hz']}Hz)"
+
+    print(f"SPI configured: mode={effective['mode']}, {freq_note}, "
           f"word_size={effective['word_size']}, bit_order={effective['bit_order']}, "
           f"cs_active={effective['cs_active']}, cs_mode={effective['cs_mode']}")
 

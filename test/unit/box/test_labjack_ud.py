@@ -935,6 +935,61 @@ class ScannerRegistrationTests(unittest.TestCase):
         self.assertEqual(len(adc), 16)
 
 
+
+class UDNetCreationValidationTests(unittest.TestCase):
+    """A bad pin span must be refused when the net is CREATED.
+
+    Regression test for a net that saved cleanly, listed cleanly, and only
+    failed at its first transaction -- a long way from the mistake.
+    """
+
+    def _err(self, **rec):
+        from lager.http_handlers.nets_handler import _ud_pin_span_error
+        return _ud_pin_span_error(rec)
+
+    def test_a_high_voltage_spi_span_is_refused(self):
+        err = self._err(name="x", role="spi", instrument="LabJack_U3",
+                        pin="FIO0-FIO3")
+        self.assertIsNotNone(err)
+        self.assertIn("FIO0-FIO3", err)
+        self.assertIn("FIO4-FIO7", err)          # names the usable pins
+
+    def test_a_high_voltage_i2c_span_is_refused(self):
+        err = self._err(name="x", role="i2c", instrument="LabJack_U3",
+                        pin="FIO2-FIO3")
+        self.assertIsNotNone(err)
+        self.assertIn("FIO6-FIO7", err)
+
+    def test_the_params_form_is_checked_too(self):
+        err = self._err(name="x", role="spi", instrument="LabJack_U3",
+                        params={"clk_pin": "FIO1", "mosi_pin": "FIO5",
+                                "miso_pin": "FIO6", "cs_pin": "FIO4"})
+        self.assertIsNotNone(err)
+
+    def test_a_good_span_passes(self):
+        self.assertIsNone(self._err(name="x", role="spi",
+                                    instrument="LabJack_U3", pin="FIO4-FIO7"))
+        self.assertIsNone(self._err(name="x", role="i2c",
+                                    instrument="LabJack_U3", pin="FIO6-FIO7"))
+
+    def test_an_eio_span_passes(self):
+        """A real fixture wires i2c to the DB15 lines, not FIO6/FIO7."""
+        self.assertIsNone(self._err(name="x", role="i2c",
+                                    instrument="LabJack_U3", pin="EIO5-EIO4"))
+
+    def test_other_roles_and_instruments_are_left_alone(self):
+        self.assertIsNone(self._err(name="x", role="gpio",
+                                    instrument="LabJack_U3", pin="FIO0"))
+        self.assertIsNone(self._err(name="x", role="spi",
+                                    instrument="LabJack_T7", pin="FIO0-FIO3"))
+
+    def test_instrument_spelling_variants_are_all_caught(self):
+        for spelling in ("LabJack_U3", "labjack_u3", "LabJack U3", "labjack-u3"):
+            with self.subTest(spelling=spelling):
+                self.assertIsNotNone(self._err(name="x", role="spi",
+                                               instrument=spelling,
+                                               pin="FIO0-FIO3"))
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -1350,52 +1405,80 @@ class UDSPIConstructionTests(unittest.TestCase):
 
 
 class UDSPIClockTests(unittest.TestCase):
-    """frequency_hz -> SPIClockFactor, from the datasheet formula."""
+    """frequency_hz -> SPIClockFactor, from MEASURED hardware behaviour.
+
+    These assertions used to encode LabJack's published formula. Every one of
+    them passed while the driver delivered the wrong clock on real hardware --
+    a request for 500 Hz produced 18.9 kHz -- because the fake and the driver
+    agreed on a formula the firmware does not implement. They now encode the
+    measured relationship instead, and the monotonicity test below is the one
+    that would have caught it.
+    """
 
     def setUp(self):
         from lager.protocols.spi.labjack_ud_spi import LabJackUDSPI
         self.cls = LabJackUDSPI
         LabJackUDSPI._speed_warning_shown = True   # silence the clamp warning
 
-    def test_the_formula_anchors(self):
-        self.assertEqual(self.cls._clock_factor_for(100_000), 256)
-        self.assertEqual(self.cls._clock_factor_for(50_000), 255)
-        self.assertEqual(self.cls._clock_factor_for(391), 1)
+    def test_higher_byte_is_never_faster(self):
+        """The regression test for the inverted-clock bug.
 
-    def test_factor_256_is_sent_as_the_byte_zero(self):
-        """The wire encodes the maximum factor as 0."""
+        The byte is a delay count. Any model that gets the direction wrong
+        fails here, which the datasheet-formula version did on hardware while
+        passing every other test in this class.
+        """
+        freqs = [self.cls._frequency_for(b) for b in range(256)]
+        for b in range(255):
+            with self.subTest(byte=b):
+                self.assertGreaterEqual(freqs[b], freqs[b + 1])
+
+    def test_byte_zero_is_the_fastest_setting(self):
+        self.assertEqual(self.cls._frequency_for(0), max(
+            self.cls._frequency_for(b) for b in range(256)))
+
+    def test_the_measured_anchors(self):
+        from lager.protocols.spi.labjack_ud_spi import (
+            SPI_MAX_FREQ_HZ, SPI_MIN_FREQ_HZ)
+        self.assertAlmostEqual(self.cls._frequency_for(0),
+                               SPI_MAX_FREQ_HZ, delta=200)
+        self.assertAlmostEqual(self.cls._frequency_for(255),
+                               SPI_MIN_FREQ_HZ, delta=200)
+
+    def test_no_request_is_sent_as_the_byte_zero(self):
         driver = self.cls(cs_pin="FIO4")
-        self.assertEqual(driver._clock_factor, 256)
-        self.assertEqual(driver._wire_clock_factor, 0)
+        self.assertEqual(driver._clock_byte, 0)
 
     def test_none_means_as_fast_as_the_part_goes(self):
-        self.assertEqual(self.cls._clock_factor_for(None), 256)
+        self.assertEqual(self.cls._clock_byte_for(None), 0)
 
-    def test_the_gap_below_the_top_is_real(self):
-        """Nothing exists between 50 kHz and 100 kHz, so 80 kHz lands on 50.
+    def test_a_mid_range_request_lands_close(self):
+        """50 kHz is reachable, and is nowhere near the byte the old model sent.
 
-        Pinned because it looks like a bug from the outside and is not: the
-        factor is an integer and 255 and 256 are adjacent.
+        The datasheet model sent 255 for this, which is in fact the SLOWEST
+        setting the part has -- roughly 5.4 kHz, nine times too slow.
         """
-        self.assertEqual(self.cls._clock_factor_for(80_000), 255)
-        self.assertAlmostEqual(self.cls._frequency_for(255), 50_000, delta=1)
+        byte = self.cls._clock_byte_for(50_000)
+        self.assertLess(byte, 32)
+        self.assertAlmostEqual(self.cls._frequency_for(byte), 50_000, delta=2_000)
 
     def test_the_clock_is_never_faster_than_asked(self):
-        for requested in (100_000, 80_000, 40_000, 10_000, 1_000, 500):
+        """Within the reachable range. Below the floor the part cannot comply,
+        so the request clamps and warns instead."""
+        for requested in (71_000, 40_000, 20_000, 10_000, 6_000):
             with self.subTest(requested=requested):
-                factor = self.cls._clock_factor_for(requested)
-                self.assertLessEqual(self.cls._frequency_for(factor), requested)
+                byte = self.cls._clock_byte_for(requested)
+                self.assertLessEqual(self.cls._frequency_for(byte), requested)
 
     def test_out_of_range_clamps(self):
-        self.assertEqual(self.cls._clock_factor_for(10_000_000), 256)
-        self.assertEqual(self.cls._clock_factor_for(1), 1)
+        self.assertEqual(self.cls._clock_byte_for(10_000_000), 0)
+        self.assertEqual(self.cls._clock_byte_for(1), 255)
 
     def test_a_nonsense_frequency_is_refused(self):
         from lager.exceptions import SPIBackendError
         for bad in (0, -5, "fast"):
             with self.subTest(bad=bad):
                 with self.assertRaises(SPIBackendError):
-                    self.cls._clock_factor_for(bad)
+                    self.cls._clock_byte_for(bad)
 
 
 class UDSPITransferTests(_UDTestCase):
@@ -1478,10 +1561,12 @@ class UDSPITransferTests(_UDTestCase):
         self.assertEqual((call["CLKPinNum"], call["MISOPinNum"],
                           call["MOSIPinNum"]), (5, 6, 7))
 
-    def test_the_clock_factor_reaches_the_command(self):
+    def test_the_clock_byte_reaches_the_command(self):
+        from lager.protocols.spi.labjack_ud_spi import LabJackUDSPI
         self.driver.config(frequency_hz=50_000)
         self.driver.read_write([0x00, 0x01])
-        self.assertEqual(self.device.spi_calls[-1]["SPIClockFactor"], 255)
+        self.assertEqual(self.device.spi_calls[-1]["SPIClockFactor"],
+                         LabJackUDSPI._clock_byte_for(50_000))
 
     def test_the_fifty_byte_limit_is_enforced_and_is_not_the_t7s(self):
         from lager.exceptions import SPIBackendError
@@ -1675,17 +1760,18 @@ class UDSPIDispatcherTests(unittest.TestCase):
             {"clk_pin": 5, "mosi_pin": 8, "miso_pin": 16, "cs_pin": 4})
 
     def test_a_net_that_asked_for_no_speed_gets_the_maximum(self):
-        """The shared default is 1 MHz, twelve times a U3's ceiling."""
+        """The shared default is 1 MHz, far above a U3's measured ceiling."""
         from lager.protocols.spi import dispatcher
         driver = dispatcher._make_driver(self._rec(), None)
-        self.assertEqual(driver._clock_factor, 256)
-        self.assertEqual(driver._wire_clock_factor, 0)
+        self.assertEqual(driver._clock_byte, 0)
 
     def test_an_explicit_speed_is_honoured(self):
         from lager.protocols.spi import dispatcher
+        from lager.protocols.spi.labjack_ud_spi import LabJackUDSPI
         driver = dispatcher._make_driver(
             self._rec(params={"frequency_hz": 50_000}), None)
-        self.assertEqual(driver._clock_factor, 255)
+        self.assertEqual(driver._clock_byte,
+                         LabJackUDSPI._clock_byte_for(50_000))
 
     def test_a_high_voltage_span_is_refused(self):
         from lager.exceptions import SPIBackendError
