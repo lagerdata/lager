@@ -39,6 +39,31 @@ ROLE = "spi"
 # This is the same pattern the adc/dac/gpio dispatchers already match a U3 on.
 _UD_RE = re.compile(r"labjack[_\-\s]*u[36]", re.IGNORECASE)
 
+
+def achieved_frequency_hz(rec, requested_hz):
+    """What the hardware will actually clock at, given a requested rate.
+
+    A U3's SPI clock is a coarse delay count, so a request is rounded down to a
+    reachable value or clamped to the part's range. Reporting the request back
+    told the user they had a bus they did not have. Everything else takes the
+    frequency literally, so this returns it unchanged for them.
+
+    Pure arithmetic on the driver class -- no device, no open handle -- so the
+    HTTP path can call it against a proxied driver just as the in-process path
+    can call it against a real one. Both message sites use this; they used to
+    format the number independently, and only one of them got fixed.
+    """
+    if requested_hz is None:
+        return None
+    if not _UD_RE.search(str(rec.get("instrument", ""))):
+        return requested_hz
+    try:
+        from .labjack_ud_spi import LabJackUDSPI
+        return int(round(LabJackUDSPI._frequency_for(
+            LabJackUDSPI._clock_byte_for(requested_hz))))
+    except Exception:
+        return requested_hz
+
 # Driver cache to avoid recreating drivers for each call
 _driver_cache: Dict[str, 'SPIBase'] = {}
 _driver_cache_lock = threading.Lock()
@@ -479,9 +504,7 @@ def config(
     # back told the user they had a bus they did not have. The driver is the
     # authority on what it settled on; anything else (T7, Aardvark, FT232H)
     # takes the frequency literally and reports it unchanged.
-    achieved_hz = effective['frequency_hz']
-    if hasattr(drv, "_clock_byte") and hasattr(drv, "_frequency_for"):
-        achieved_hz = int(round(drv._frequency_for(drv._clock_byte)))
+    achieved_hz = achieved_frequency_hz(rec, effective['frequency_hz'])
     freq_note = f"freq={achieved_hz}Hz"
     if (effective['frequency_hz'] is not None
             and achieved_hz != effective['frequency_hz']):

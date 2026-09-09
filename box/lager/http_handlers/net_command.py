@@ -447,11 +447,26 @@ def _spi(netname, role, action, params):
             spi_disp._persist_params(netname, **cfg)
         rec = spi_disp.helpers.find_saved_net(netname, spi_disp.SPIBackendError)
         effective = spi_disp._get_spi_params(rec)
-        msg = ("SPI configured: mode=%s, freq=%sHz, word_size=%s, "
+        # Report the achieved clock, not the request. A U3's clock is a coarse
+        # delay count, so a request is rounded down or clamped; echoing it back
+        # told the user they had a bus they did not have. Shared with the
+        # in-process dispatcher so the two cannot drift.
+        # getattr, not a direct call: this module is resolved at run time with
+        # importlib, so a dispatcher without the helper -- a partially upgraded
+        # box, or a stubbed module under test -- must degrade to reporting the
+        # request rather than raising out of the whole config command.
+        _achieved_fn = getattr(spi_disp, "achieved_frequency_hz", None)
+        achieved = (_achieved_fn(rec, effective["frequency_hz"])
+                    if _achieved_fn else effective["frequency_hz"])
+        freq_note = "freq=%sHz" % achieved
+        if effective["frequency_hz"] is not None and achieved != effective["frequency_hz"]:
+            freq_note += " (requested %sHz)" % effective["frequency_hz"]
+        msg = ("SPI configured: mode=%s, %s, word_size=%s, "
                "bit_order=%s, cs_active=%s, cs_mode=%s" % (
-                   effective["mode"], effective["frequency_hz"],
+                   effective["mode"], freq_note,
                    effective["word_size"], effective["bit_order"],
                    effective["cs_active"], effective["cs_mode"]))
+        effective = dict(effective, achieved_frequency_hz=achieved)
         return _ok(msg, effective)
 
     if action not in ("transfer", "read", "write", "read_write"):
@@ -499,10 +514,23 @@ def _i2c(netname, role, action, params):
             persist["pull_ups"] = pull_ups
         if persist:
             i2c_disp._persist_params(netname, **persist)
+        i2c_rec = i2c_disp.helpers.find_saved_net(netname, i2c_disp.I2CBackendError)
+        _achieved_fn = getattr(i2c_disp, "achieved_frequency_hz", None)
+        achieved = _achieved_fn(i2c_rec, eff_freq) if _achieved_fn else eff_freq
+        freq_note = "freq=%sHz" % achieved
+        if eff_freq is not None and achieved != eff_freq:
+            freq_note += " (requested %sHz)" % eff_freq
+        # A U3 has no controllable pull-ups; reporting on/off states a bus
+        # condition the driver cannot set and the user must supply externally.
+        _is_ud = getattr(i2c_disp, "is_ud_net", None)
+        if _is_ud and _is_ud(i2c_rec):
+            pull_note = "pull_ups=n/a (external resistors required)"
+        else:
+            pull_note = "pull_ups=%s" % ("on" if eff_pull_ups else "off")
         return _ok(
-            "I2C configured: freq=%sHz, pull_ups=%s" % (
-                eff_freq, "on" if eff_pull_ups else "off"),
-            {"frequency_hz": eff_freq, "pull_ups": bool(eff_pull_ups)})
+            "I2C configured: %s, %s" % (freq_note, pull_note),
+            {"frequency_hz": eff_freq, "achieved_frequency_hz": achieved,
+             "pull_ups": bool(eff_pull_ups)})
 
     if action not in ("scan", "read", "write", "transfer"):
         raise UnknownAction(action)
