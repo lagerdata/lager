@@ -21,6 +21,15 @@
 #   exit_with_status
 
 # ============================================================
+# Box Connection Defaults
+# ============================================================
+
+# Login user for the box. Used both for raw ssh and when registering a box
+# with `lager boxes add`, which has required --user since 0.29.0. Override by
+# exporting SSH_USER before running a suite.
+SSH_USER="${SSH_USER:-lagerdata}"
+
+# ============================================================
 # Test Tracking Variables
 # ============================================================
 
@@ -385,7 +394,7 @@ register_box_from_ip() {
         BOX_IP="$input"
         echo "Detected IP address: $BOX_IP"
         echo "Registering as temporary box: $BOX_NAME"
-        lager boxes add --name "$BOX_NAME" --ip "$BOX_IP" --user "${LAGER_BOX_SSH_USER:-lagerdata}" --yes >/dev/null 2>&1 || true
+        lager boxes add --name "$BOX_NAME" --ip "$BOX_IP" --user "$SSH_USER" --yes >/dev/null 2>&1 || true
         BOX="$BOX_NAME"
     else
         # Input is a box name - use it directly
