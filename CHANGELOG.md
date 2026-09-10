@@ -20,64 +20,6 @@ All notable changes to the Lager platform are documented here. For detailed rele
   attributed it to; `lager webcam url` prints it, and other tools sharing
   the box can label streams they did not start.
 
-### Changed
-
-- **Webcam links work on access-gated boxes.** A gateway can now front the
-  stream ports, so `lager webcam start` / `url` print a link that carries
-  your sign-in token instead of warning that the stream is unreachable.
-  The link stays valid for roughly the token's lifetime (the CLI says how
-  many minutes); `lager webcam url` mints a fresh one.
-- **Lock holders recorded as `origin:id:name:email`** by other services now
-  display as the name in `lager boxes` instead of `name:email` run together.
-- `lager defaults add --user` help now says to use the same name you use in
-  other tools that lock boxes, so a box locked from either side is
-  recognised by both.
-
-### Fixed
-
-- **`lager webcam <net> start` printed a stop command that did not run.** The
-  hint at the end of a successful start read `lager webcam stop <net>`, which
-  click refuses with `Got unexpected extra argument` — the net name belongs
-  before the subcommand, as every other webcam example has it. It also printed
-  the box's IP rather than the `--box` label the user typed, as did the
-  matching hint after `start-all`. The line a first-time user copies is now
-  `lager webcam <net> stop --box <label>`, and a test replays each printed hint
-  through the command group so the text and the parser cannot drift again.
-- **One dropped debug read no longer aborts a DA1469x flash.** Every step of
-  the RAM-resident flash_loader path -- loader boot, ping, erase and each
-  program chunk -- waits by polling a word of target RAM through the debug AP
-  while the CPU is running, which is exactly where a marginal SWD link drops a
-  reply and OpenOCD answers with nothing to parse. The poll loop retried a word
-  that read back *wrong* but gave up on a word that failed to read at all, so a
-  single dropped reply ended the flash with `OpenOCD mdw 0x... returned no
-  values:` while seconds of its own deadline went unused. On one HIL bench with
-  known-marginal probe wiring this was ~12% of flash attempts and the only
-  remaining source of failure in an overnight suite. A failed read is now
-  retried to the deadline like any other, and no timeout was lengthened to do
-  it. A link that never answers still fails, and says the read failed rather
-  than reporting a last value it never read.
-- **Every "add a box" hint printed a command that could not run.** `lager boxes
-  add` has required `--user` since 0.29.0, but the hints the CLI prints when it
-  cannot find a box still read `lager boxes add --name X --ip Y` -- copy one and
-  click rejects it as a missing option. All five hint sites now carry `--user`,
-  as do the README, the `lager` file and ssh-setup references, and the MCP guide
-  and discovery text an assistant reads to learn the command.
-- **The box installer's offer to register the box never worked.** After a
-  successful deploy, `setup_and_deploy_box.sh` offers to add the box to the
-  `.lager` file in the current directory. That call omitted the required
-  `--user` and sent its own error to `/dev/null`, so it failed on every box
-  since 0.29.0 and reported only "Failed to add to .lager - you may need to add
-  manually". It now passes the login user the deploy already knows, and lets a
-  real error through instead of swallowing it.
-- **Integration suites carried two competing settings for the box login user.**
-  The scripts that register a temporary box when handed an IP address read one
-  variable, while the raw `ssh` calls in the same file read another with a
-  different default, so exporting a user changed one and not the other. They now
-  share a single `SSH_USER`, defaulting to `lagerdata` as it did before 0.29.0
-  removed the implicit default, declared once in the test harness.
-
-## [0.46.2] - 2026-09-08
-
 - **`lager spi` and `lager i2c` now work against a LabJack U3.** A U3 can now
   host `spi` and `i2c` nets, which means it covers every role the T7 does.
 
@@ -151,6 +93,64 @@ All notable changes to the Lager platform are documented here. For detailed rele
   manager under its lock before every transaction and never written from inside
   a driver. Setting the SPI command's `DisableDirConfig` is not a substitute --
   that sets each line's direction, which is a different register.
+
+### Changed
+
+- **Webcam links work on access-gated boxes.** A gateway can now front the
+  stream ports, so `lager webcam start` / `url` print a link that carries
+  your sign-in token instead of warning that the stream is unreachable.
+  The link stays valid for roughly the token's lifetime (the CLI says how
+  many minutes); `lager webcam url` mints a fresh one.
+- **Lock holders recorded as `origin:id:name:email`** by other services now
+  display as the name in `lager boxes` instead of `name:email` run together.
+- `lager defaults add --user` help now says to use the same name you use in
+  other tools that lock boxes, so a box locked from either side is
+  recognised by both.
+
+### Fixed
+
+- **`lager webcam <net> start` printed a stop command that did not run.** The
+  hint at the end of a successful start read `lager webcam stop <net>`, which
+  click refuses with `Got unexpected extra argument` — the net name belongs
+  before the subcommand, as every other webcam example has it. It also printed
+  the box's IP rather than the `--box` label the user typed, as did the
+  matching hint after `start-all`. The line a first-time user copies is now
+  `lager webcam <net> stop --box <label>`, and a test replays each printed hint
+  through the command group so the text and the parser cannot drift again.
+- **One dropped debug read no longer aborts a DA1469x flash.** Every step of
+  the RAM-resident flash_loader path -- loader boot, ping, erase and each
+  program chunk -- waits by polling a word of target RAM through the debug AP
+  while the CPU is running, which is exactly where a marginal SWD link drops a
+  reply and OpenOCD answers with nothing to parse. The poll loop retried a word
+  that read back *wrong* but gave up on a word that failed to read at all, so a
+  single dropped reply ended the flash with `OpenOCD mdw 0x... returned no
+  values:` while seconds of its own deadline went unused. On one HIL bench with
+  known-marginal probe wiring this was ~12% of flash attempts and the only
+  remaining source of failure in an overnight suite. A failed read is now
+  retried to the deadline like any other, and no timeout was lengthened to do
+  it. A link that never answers still fails, and says the read failed rather
+  than reporting a last value it never read.
+- **Every "add a box" hint printed a command that could not run.** `lager boxes
+  add` has required `--user` since 0.29.0, but the hints the CLI prints when it
+  cannot find a box still read `lager boxes add --name X --ip Y` -- copy one and
+  click rejects it as a missing option. All five hint sites now carry `--user`,
+  as do the README, the `lager` file and ssh-setup references, and the MCP guide
+  and discovery text an assistant reads to learn the command.
+- **The box installer's offer to register the box never worked.** After a
+  successful deploy, `setup_and_deploy_box.sh` offers to add the box to the
+  `.lager` file in the current directory. That call omitted the required
+  `--user` and sent its own error to `/dev/null`, so it failed on every box
+  since 0.29.0 and reported only "Failed to add to .lager - you may need to add
+  manually". It now passes the login user the deploy already knows, and lets a
+  real error through instead of swallowing it.
+- **Integration suites carried two competing settings for the box login user.**
+  The scripts that register a temporary box when handed an IP address read one
+  variable, while the raw `ssh` calls in the same file read another with a
+  different default, so exporting a user changed one and not the other. They now
+  share a single `SSH_USER`, defaulting to `lagerdata` as it did before 0.29.0
+  removed the implicit default, declared once in the test harness.
+
+## [0.46.2] - 2026-09-08
 
 ### Changed
 
