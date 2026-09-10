@@ -106,6 +106,15 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   last one saw. No timeout constant changed. This was ~18% of bring-ups on the
   bench, recoverable until now only by a caller willing to redo the whole
   60-second flash step.
+- **`lager install` reported a version that it did not write.** When the write
+  to `/etc/lager/version` failed, `lager hello` showed the previous release, and
+  install still printed success. Install now records the version, ref and build
+  hash without `sudo`, checks each write, and exits with an error that names the
+  manual fix.
+- **`lager install` stopped the box before it downloaded the box image.** It now
+  pulls a release's pre-built image while the old containers keep running. When
+  install builds the image on the box instead, it keeps the Docker build cache
+  for the next build.
 
 ## [0.47.1] - 2026-09-11
 
