@@ -32,7 +32,7 @@ rustls-pemfile = "2.2"
 crossbeam = "0.8"
 
 [build-dependencies]
-bindgen = "0.72"
+bindgen = "0.73"
 cc = "1.0"
 
 
