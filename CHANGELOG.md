@@ -125,9 +125,23 @@ All notable changes to the Lager platform are documented here. For detailed rele
   interface the operator's own connection arrives on -- from the live SSH
   connection, so it holds for any VPN rather than only the one the firewall
   script knows by name -- and confirms the control-plane ports are admitted
-  there. It never opens a port itself: whether Lager's control plane belongs on
-  a LAN is a security decision, not a side effect of a Bluetooth feature. A
-  refused apply changes nothing; `--skip-host-network-check` overrides it.
+  there. It reads the rules in the order ufw applies them, so an allow listed
+  behind a deny for the same port does not count. It never opens a port
+  itself: whether Lager's control plane belongs on a LAN is a security
+  decision, not a side effect of a Bluetooth feature. A refused apply changes
+  nothing; `--skip-host-network-check` overrides it.
+
+  **Only `apply` makes the switch.** `start_box.sh` renders the config on every
+  container start, so without this a refused `apply` left `host` in the config
+  for the next `lager update` to apply unchecked. Any other start now keeps the
+  network the last successful `apply` recorded and prints that the switch is
+  pending, while a return to `lagernet` needs no check and happens from any
+  start. `apply --skip-restart` refuses a pending switch to `host`.
+
+  The check reads ufw with `sudo -n ufw status`, which Lager does not grant. On
+  a box where sudo asks for a password, `apply` refuses, names that command, and
+  prints the one sudoers line that lets the check run, to add with
+  `sudo visudo -f` to a sudoers file of the operator's own.
 
   The commands it prints use `ufw insert`, not a plain `ufw allow`.
   `secure_box_firewall.sh` writes its per-interface allows first and a blanket

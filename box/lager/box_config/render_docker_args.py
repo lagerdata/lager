@@ -12,11 +12,15 @@ sources and expands as docker-run arguments:
     BOX_CONFIG_ENV         --env flags
     BOX_CONFIG_HOST_PATHS  bind-mount host paths to mkdir -p before run
     BOX_CONFIG_NETWORK     value for --network (scalar, not an array)
+    BOX_CONFIG_NETWORK_PENDING
+                           the configured network mode when this start
+                           withholds it, else empty (scalar)
 
 BOX_CONFIG_NETWORK is always written, including by the empty/degraded body
 below, so start_box.sh can expand it unconditionally. A box whose config is
 missing or malformed still gets the default network rather than an empty
---network argument, which docker would reject.
+--network argument, which docker would reject. It is the network this start may
+use, which is not always the one configured: see _effective_network.
 
 Why a sourceable file instead of stdout-parsed-into-vars: the previous
 contract emitted `--env 'KEY=hello world'` on stdout, and start_box.sh
@@ -48,6 +52,12 @@ _spec.loader.exec_module(cfg)
 
 _HEADER = "# Rendered by render_docker_args.py - do not edit by hand\n"
 
+# Set by `lager box-config apply` on the start_box.sh it runs, once its
+# reachability check has passed or been overridden. Mirrors
+# _NETWORK_SWITCH_CONFIRM_ENV in cli/commands/box/config.py; the two ship in
+# separate trees, and test/unit/box/test_network_mode.py asserts they agree.
+_CONFIRM_ENV = "LAGER_APPLY_NETWORK_SWITCH"
+
 
 def _bash_array(name: str, items: list) -> str:
     body = " ".join(shlex.quote(x) for x in items)
@@ -58,7 +68,39 @@ def _bash_scalar(name: str, value: str) -> str:
     return f"{name}={shlex.quote(value)}\n"
 
 
-def _render_body(c) -> str:
+def _applied_network_mode(applied_path: str) -> str:
+    """The network mode the last successful apply recorded, or the default.
+
+    Any failure to read the snapshot counts as the default. That withholds a
+    switch to host rather than letting an unreadable file make it.
+    """
+    try:
+        snap = cfg.read_applied_snapshot(applied_path)
+    except Exception:
+        return cfg.DEFAULT_NETWORK_MODE
+    return snap.network_mode if snap is not None else cfg.DEFAULT_NETWORK_MODE
+
+
+def _effective_network(desired: str, applied_path: str) -> tuple:
+    """(network this start runs on, configured mode it withholds or "").
+
+    A switch to host happens only through `lager box-config apply`, which first
+    checks that the switch will not cut the operator's route to the box. Every
+    container start renders from the same box_config.json -- `lager update`,
+    `lager install`, `box-config restart`, a hand-run start_box.sh -- so without
+    this a refused apply left `host` in the config for the next routine start to
+    apply unchecked. Those starts keep the mode the last successful apply
+    recorded. A return to lagernet is honored from any start, because it
+    restores the published ports rather than removing them.
+    """
+    if desired != "host" or os.environ.get(_CONFIRM_ENV) == "1":
+        return desired, ""
+    if _applied_network_mode(applied_path) == "host":
+        return desired, ""
+    return cfg.DEFAULT_NETWORK_MODE, desired
+
+
+def _render_body(c, applied_path: str | None = None) -> str:
     mount_args: list = []
     for m in c.mounts:
         spec = f"{m.host}:{m.container}"
@@ -74,12 +116,16 @@ def _render_body(c) -> str:
 
     host_paths = [m.host for m in c.mounts]
 
+    network, pending = _effective_network(
+        c.network_mode, applied_path or cfg.APPLIED_CONFIG_PATH)
+
     return (
         _HEADER
         + _bash_array("BOX_CONFIG_MOUNTS", mount_args)
         + _bash_array("BOX_CONFIG_ENV", env_args)
         + _bash_array("BOX_CONFIG_HOST_PATHS", host_paths)
-        + _bash_scalar("BOX_CONFIG_NETWORK", c.network_mode)
+        + _bash_scalar("BOX_CONFIG_NETWORK", network)
+        + _bash_scalar("BOX_CONFIG_NETWORK_PENDING", pending)
     )
 
 
@@ -90,6 +136,7 @@ def _empty_body() -> str:
         + "BOX_CONFIG_ENV=()\n"
         + "BOX_CONFIG_HOST_PATHS=()\n"
         + _bash_scalar("BOX_CONFIG_NETWORK", cfg.DEFAULT_NETWORK_MODE)
+        + _bash_scalar("BOX_CONFIG_NETWORK_PENDING", "")
     )
 
 
@@ -98,10 +145,12 @@ _atomic_write = cfg.write_atomic
 
 def _render(argv: list) -> int:
     if len(argv) < 3:
-        print("usage: render_docker_args.py <box_config.json> <out.sh>", file=sys.stderr)
+        print("usage: render_docker_args.py <box_config.json> <out.sh> "
+              "[<applied_snapshot.json>]", file=sys.stderr)
         return 2
 
     config_path, out_path = argv[1], argv[2]
+    applied_path = argv[3] if len(argv) > 3 else cfg.APPLIED_CONFIG_PATH
 
     try:
         with open(config_path, "r", encoding="utf-8") as f:
@@ -121,7 +170,7 @@ def _render(argv: list) -> int:
         _atomic_write(out_path, _empty_body())
         return 1
 
-    _atomic_write(out_path, _render_body(c))
+    _atomic_write(out_path, _render_body(c, applied_path))
     return 0
 
 

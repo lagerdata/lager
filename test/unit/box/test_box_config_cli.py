@@ -2284,6 +2284,95 @@ class ApplyHostNetworkPreflight(unittest.TestCase):
         self.assertEqual(called, [])
 
 
+class SwitchToHostOnlyThroughApply(unittest.TestCase):
+    """The renderer withholds a pending switch to host from any container start
+    that does not confirm it, and only `apply` confirms -- after its
+    reachability check. Without the `--skip-restart` refusal, that flag would
+    record the switch as applied with no restart, and the next start would make
+    it unchecked."""
+
+    def setUp(self):
+        self.runner = CliRunner()
+
+    def _backend(self, *, current_mode, applied_mode=None):
+        current = {"version": 1, "apt_packages": [], "sysctl": {}, "mounts": []}
+        if current_mode:
+            current["network_mode"] = current_mode
+        applied = {"version": 1, "apt_packages": [], "sysctl": {}, "mounts": []}
+        if applied_mode:
+            applied["network_mode"] = applied_mode
+        return FakeBoxBackend({
+            "validate": [{"ok": True, "errors": [], "exists": True}],
+            "hash": [{"hash": "aaa"}],
+            "applied-hash": [{"hash": "bbb"}],
+            "show": [current],
+            "applied-show": [applied],
+            "set-applied-hash": [{"ok": True}],
+        })
+
+    def _skip_restart(self, backend):
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
+             patch.object(box_config_cli, "_bounce_container_rc") as bounce:
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["apply", "--box", "test-box", "--yes", "--skip-restart"],
+            )
+        bounce.assert_not_called()
+        return result, [c[0] for c in backend.calls]
+
+    def test_skip_restart_refuses_a_pending_switch_to_host(self):
+        result, verbs = self._skip_restart(self._backend(current_mode="host"))
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertNotIn("set-applied-hash", verbs)
+        self.assertIn("--skip-restart", result.output)
+
+    def test_skip_restart_still_records_a_change_that_is_not_a_switch(self):
+        result, verbs = self._skip_restart(self._backend(current_mode=None))
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("set-applied-hash", verbs)
+
+    def test_skip_restart_on_a_box_already_on_host_is_allowed(self):
+        result, verbs = self._skip_restart(
+            self._backend(current_mode="host", applied_mode="host"))
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("set-applied-hash", verbs)
+
+    def test_apply_bounces_with_the_switch_confirmed(self):
+        backend = self._backend(current_mode="host")
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
+             patch.object(box_config_cli, "_bounce_container_rc", return_value=0) as bounce, \
+             patch.object(box_config_cli, "_confirm_box_api_up", return_value=(True, True)), \
+             patch("cli.commands.box._net_preflight.check",
+                   return_value=_PreflightResult(True, data={})):
+            result = self.runner.invoke(
+                box_config_cli.box_config, ["apply", "--box", "test-box", "--yes"])
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertTrue(bounce.call_args.kwargs.get("confirm_network_switch"))
+
+    def _ssh_command(self, **kwargs):
+        with patch.object(box_config_cli, "default_ssh_runner",
+                          return_value=(0, "", "")) as run:
+            box_config_cli._bounce_container_rc(None, "test-box", **kwargs)
+        return run.call_args.args[1]
+
+    def test_the_confirmed_bounce_sets_the_variable_the_renderer_reads(self):
+        self.assertIn("LAGER_APPLY_NETWORK_SWITCH=1 ./start_box.sh",
+                      self._ssh_command(confirm_network_switch=True))
+
+    def test_every_other_bounce_leaves_it_unset(self):
+        """`restart`, `repair` and a rollback reach start_box.sh through the
+        default. None of them has run the reachability check."""
+        self.assertNotIn("LAGER_APPLY_NETWORK_SWITCH", self._ssh_command())
+
+    def test_the_bool_wrapper_never_confirms(self):
+        with patch.object(box_config_cli, "_bounce_container_rc",
+                          return_value=box_config_cli._BOUNCE_OK) as rc:
+            box_config_cli._bounce_container(None, "test-box")
+        self.assertFalse(rc.call_args.kwargs.get("confirm_network_switch", False))
+
+
 class ApplyExitCodes(unittest.TestCase):
     """start_box.sh has always separated "up but running the previous config"
     from "the bounce failed", but apply collapsed both into exit 1, so no

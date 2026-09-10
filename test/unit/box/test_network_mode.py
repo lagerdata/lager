@@ -14,12 +14,17 @@ via the same BEGIN/END sentinel convention.
 The port-publishing interaction has a dedicated test here because it is the
 one place this change touches a block another test parses verbatim: the guard
 condition moved, and every `-p` literal had to stay put.
+
+A switch to host happens only through `lager box-config apply`. Every other
+container start renders the same config, so the renderer withholds a pending
+switch from those starts; that gate is pinned here too.
 """
 
 import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -30,6 +35,9 @@ import unittest
 _REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 _START_BOX = os.path.join(_REPO, 'box', 'start_box.sh')
 _PKG_DIR = os.path.join(_REPO, 'box', 'lager', 'box_config')
+
+# What `lager box-config apply` sets on the start_box.sh it runs.
+_CONFIRM = "LAGER_APPLY_NETWORK_SWITCH"
 
 
 def _extract(topic):
@@ -117,6 +125,11 @@ class StartBoxNetworkFlag(unittest.TestCase):
         self.assertLess(default_at, source_at)
         self.assertLess(source_at, run_at)
 
+    def test_pending_has_a_default_before_the_config_is_sourced(self):
+        text = _start_box_text()
+        self.assertLess(text.index('BOX_CONFIG_NETWORK_PENDING='),
+                        text.index('source "$BOX_CONFIG_ARGS_FILE"'))
+
     def test_an_unknown_mode_falls_back_instead_of_being_passed_through(self):
         """An unknown --network makes `docker run` fail outright, which would
         take the box down over a typo. The block corrects rather than propagates."""
@@ -125,6 +138,29 @@ class StartBoxNetworkFlag(unittest.TestCase):
                                ("bridge", "lagernet"), ("", "lagernet")):
             with self.subTest(mode=mode):
                 self.assertEqual(_run_network_block(block, mode), expected)
+
+    def test_a_withheld_switch_is_announced(self):
+        """An operator who set host and then ran an update must be told why the
+        box is still on lagernet, and what makes the switch."""
+        block = _extract("network mode")
+        script = (
+            "BOX_CONFIG_NETWORK=lagernet\n"
+            "BOX_CONFIG_NETWORK_PENDING=host\n"
+            f"{block}\n"
+            'printf "RESULT=%s" "$BOX_CONFIG_NETWORK"\n'
+        )
+        out = subprocess.run(["bash", "-c", script],
+                             capture_output=True, text=True, check=True).stdout
+        self.assertIn("configured but not applied", out)
+        self.assertIn("lager box-config apply", out)
+        self.assertTrue(out.endswith("RESULT=lagernet"), out)
+
+    def test_nothing_is_announced_when_nothing_is_withheld(self):
+        block = _extract("network mode")
+        script = "BOX_CONFIG_NETWORK=host\nBOX_CONFIG_NETWORK_PENDING=\n" + block + "\n"
+        out = subprocess.run(["bash", "-c", script],
+                             capture_output=True, text=True, check=True).stdout
+        self.assertEqual(out, "")
 
 
 class PortPublishingUnderHostMode(unittest.TestCase):
@@ -174,51 +210,126 @@ class PortPublishingUnderHostMode(unittest.TestCase):
 # The renderer contract start_box.sh depends on
 # ---------------------------------------------------------------------------
 
-class RendererEmitsTheNetwork(unittest.TestCase):
-    def _render(self, config_dict):
+class _Renderer:
+    """Runs render_docker_args.py the way start_box.sh does."""
+
+    def _render(self, config_dict, *, applied=None, applied_raw=None, confirm=None):
+        """`applied` is the last applied snapshot (None: no apply has succeeded
+        yet), `applied_raw` writes the snapshot file verbatim, and `confirm` is
+        the value of the variable `lager box-config apply` sets."""
         d = tempfile.mkdtemp(prefix="lager-netmode-")
+        self.addCleanup(shutil.rmtree, d, True)
         cfg_path = os.path.join(d, "box_config.json")
         out_path = os.path.join(d, "out.sh")
+        applied_path = os.path.join(d, "box_config.applied.json")
         if config_dict is not None:
             with open(cfg_path, "w", encoding="utf-8") as f:
                 json.dump(config_dict, f)
+        if applied is not None:
+            with open(applied_path, "w", encoding="utf-8") as f:
+                json.dump(applied, f)
+        if applied_raw is not None:
+            with open(applied_path, "w", encoding="utf-8") as f:
+                f.write(applied_raw)
+        env = {k: v for k, v in os.environ.items() if k != _CONFIRM}
+        if confirm is not None:
+            env[_CONFIRM] = confirm
         proc = subprocess.run(
             [sys.executable,
-             os.path.join(_PKG_DIR, "render_docker_args.py"), cfg_path, out_path],
-            capture_output=True, text=True)
+             os.path.join(_PKG_DIR, "render_docker_args.py"),
+             cfg_path, out_path, applied_path],
+            capture_output=True, text=True, env=env)
         body = ""
         if os.path.exists(out_path):
             with open(out_path, encoding="utf-8") as f:
                 body = f.read()
         return proc.returncode, body
 
-    def _sourced_network(self, body):
+    def _sourced(self, body, name="BOX_CONFIG_NETWORK"):
         out = subprocess.run(
-            ["bash", "-c", f'{body}\nprintf "%s" "$BOX_CONFIG_NETWORK"'],
+            ["bash", "-c", f'{body}\nprintf "%s" "${name}"'],
             capture_output=True, text=True, check=True)
         return out.stdout
 
+
+class RendererEmitsTheNetwork(_Renderer, unittest.TestCase):
     def test_default_config_renders_the_default(self):
         rc, body = self._render({"version": 1})
         self.assertEqual(rc, 0)
-        self.assertEqual(self._sourced_network(body), "lagernet")
+        self.assertEqual(self._sourced(body), "lagernet")
 
-    def test_host_config_renders_host(self):
-        rc, body = self._render({"version": 1, "network_mode": "host"})
+    def test_host_config_renders_host_on_apply(self):
+        rc, body = self._render({"version": 1, "network_mode": "host"}, confirm="1")
         self.assertEqual(rc, 0)
-        self.assertEqual(self._sourced_network(body), "host")
+        self.assertEqual(self._sourced(body), "host")
 
     def test_missing_config_still_defines_the_variable(self):
         """start_box.sh expands --network unconditionally. An undefined value
         here would become an empty --network argument, which docker rejects."""
         rc, body = self._render(None)
         self.assertEqual(rc, 0)
-        self.assertEqual(self._sourced_network(body), "lagernet")
+        self.assertEqual(self._sourced(body), "lagernet")
+        self.assertIn("BOX_CONFIG_NETWORK_PENDING=", body)
 
     def test_invalid_config_still_defines_the_variable(self):
         rc, body = self._render({"version": 1, "mounts": "not-a-list"})
         self.assertEqual(rc, 1)
-        self.assertEqual(self._sourced_network(body), "lagernet")
+        self.assertEqual(self._sourced(body), "lagernet")
+        self.assertIn("BOX_CONFIG_NETWORK_PENDING=", body)
+
+
+class ASwitchToHostTakesEffectOnlyThroughApply(_Renderer, unittest.TestCase):
+    """start_box.sh renders box_config.json on every container start: `lager
+    update`, `lager install`, `box-config restart`, a hand-run script. The
+    reachability check lives in `apply` alone, so a refused apply used to leave
+    `host` in the config for the next routine update to apply unchecked. Every
+    other start now keeps the mode the last successful apply recorded."""
+
+    HOST = {"version": 1, "network_mode": "host"}
+
+    def test_a_start_that_is_not_apply_withholds_host(self):
+        rc, body = self._render(self.HOST)
+        self.assertEqual(rc, 0)
+        self.assertEqual(self._sourced(body), "lagernet")
+        self.assertEqual(self._sourced(body, "BOX_CONFIG_NETWORK_PENDING"), "host")
+
+    def test_apply_makes_the_switch(self):
+        rc, body = self._render(self.HOST, confirm="1")
+        self.assertEqual(rc, 0)
+        self.assertEqual(self._sourced(body), "host")
+        self.assertEqual(self._sourced(body, "BOX_CONFIG_NETWORK_PENDING"), "")
+
+    def test_only_the_exact_confirmation_counts(self):
+        for value in ("", "0", "true", "yes"):
+            with self.subTest(value=value):
+                rc, body = self._render(self.HOST, confirm=value)
+                self.assertEqual(self._sourced(body), "lagernet")
+
+    def test_a_box_already_on_host_stays_on_host(self):
+        """Once an apply has succeeded the snapshot records host, so updating a
+        box that uses host mode must not take it back off."""
+        rc, body = self._render(self.HOST, applied=self.HOST)
+        self.assertEqual(rc, 0)
+        self.assertEqual(self._sourced(body), "host")
+        self.assertEqual(self._sourced(body, "BOX_CONFIG_NETWORK_PENDING"), "")
+
+    def test_returning_to_lagernet_needs_no_apply(self):
+        """The safe direction: it restores the published ports."""
+        rc, body = self._render({"version": 1}, applied=self.HOST)
+        self.assertEqual(rc, 0)
+        self.assertEqual(self._sourced(body), "lagernet")
+        self.assertEqual(self._sourced(body, "BOX_CONFIG_NETWORK_PENDING"), "")
+
+    def test_an_unreadable_snapshot_withholds_host(self):
+        """A snapshot that cannot be read must not make the switch, and must not
+        fail the render either: the render also carries mounts and env."""
+        for raw in ("{ not json", '{"network_mode": "host"}', "[]"):
+            with self.subTest(raw=raw):
+                rc, body = self._render(self.HOST, applied_raw=raw)
+                self.assertEqual(rc, 0)
+                self.assertEqual(self._sourced(body), "lagernet")
+                self.assertEqual(
+                    self._sourced(body, "BOX_CONFIG_NETWORK_PENDING"), "host")
 
 
 # ---------------------------------------------------------------------------
@@ -372,6 +483,18 @@ class AllowlistDoesNotDrift(unittest.TestCase):
         for mode in _cfg.NETWORK_MODES:
             with self.subTest(mode=mode):
                 self.assertEqual(_run_network_block(block, mode), mode)
+
+    def test_cli_and_renderer_agree_on_the_confirmation(self):
+        """`apply` sets this variable and the renderer reads it. If the two
+        names drift, apply can never make the switch and nothing reports it."""
+        from cli.commands.box import config as cli_cfg
+        spec = importlib.util.spec_from_file_location(
+            "netmode_render_docker_args",
+            os.path.join(_PKG_DIR, "render_docker_args.py"))
+        render = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(render)
+        self.assertEqual(render._CONFIRM_ENV, cli_cfg._NETWORK_SWITCH_CONFIRM_ENV)
+        self.assertEqual(render._CONFIRM_ENV, _CONFIRM)
 
 
 if __name__ == "__main__":

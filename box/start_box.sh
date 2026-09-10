@@ -689,6 +689,11 @@ BOX_CONFIG_HOST_PATHS=()
 # it; the default stands for a box with no /etc/lager/box_config.json, an
 # unreadable one, or a lager predating the setting.
 BOX_CONFIG_NETWORK=lagernet
+# The configured mode when the render withheld it, else empty. A switch to host
+# networking happens only through `lager box-config apply`, which runs this
+# script with LAGER_APPLY_NETWORK_SWITCH=1 after checking the box stays
+# reachable; every other start keeps the mode the last apply recorded.
+BOX_CONFIG_NETWORK_PENDING=
 # Set by any renderer that fails below. The container still comes up (that is a
 # hard requirement of this script), but the script exits 3 at the end so the
 # caller can tell "box is up AND config applied" from "box is up but the config
@@ -827,6 +832,13 @@ case "$BOX_CONFIG_NETWORK" in
         BOX_CONFIG_NETWORK=lagernet
         ;;
 esac
+# The render already chose the network. This only says why it differs from the
+# config, so an operator who set host and then ran an update is not left
+# guessing.
+if [ -n "$BOX_CONFIG_NETWORK_PENDING" ]; then
+    echo "[WARNING] Network mode '$BOX_CONFIG_NETWORK_PENDING' is configured but not applied;"
+    echo "          staying on '$BOX_CONFIG_NETWORK'. Run 'lager box-config apply' to switch."
+fi
 # --- END network mode ---
 
 echo "Network configuration:"
