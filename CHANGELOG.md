@@ -149,6 +149,23 @@ All notable changes to the Lager platform are documented here. For detailed rele
   different default, so exporting a user changed one and not the other. They now
   share a single `SSH_USER`, defaulting to `lagerdata` as it did before 0.29.0
   removed the implicit default, declared once in the test harness.
+- **`lager install` reported a version it did not write.** After the deploy,
+  install wrote `/etc/lager/version` and `/etc/lager/ref` through `sudo` in an
+  interactive session. It ignored the result, discarded the error output, and
+  printed "Version X stored on box" in green either way. A write that failed
+  left the previous file in place, so `lager hello` reported an older release
+  than the one installed. Install now writes both files, and
+  `/etc/lager/build-hash`, with the writer that `lager update` uses. That writer
+  needs no `sudo`. It replaces each file through a temporary file in
+  `/etc/lager`. Install checks every write and reads the version file back. If
+  a write fails, install names the file, prints the manual fix, and exits with
+  an error. The recorded version comes from the installed tree, not from the
+  CLI that ran the install.
+
+  The deployment also pulls a release tag's pre-built image before it stops the
+  running containers, so the box keeps its services up during the download. It
+  clears the Docker build cache only after that pull succeeds. A build on the
+  box now keeps its layer cache for the next build.
 
 ## [0.46.2] - 2026-09-08
 

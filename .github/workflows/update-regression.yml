@@ -362,7 +362,10 @@ jobs:
         shell: bash
 
       - name: Downgrade to previous release (version pin + rollback path)
-        run: lager update --box "$LAGER_BOX" --version "$PREV_TAG" --yes --verbose
+        # --pull: until `lager update` pulls by default, this is the only step
+        # that takes update's pre-built-image path on real hardware. A tag with
+        # no published image falls back to a build, so a miss does not fail it.
+        run: lager update --box "$LAGER_BOX" --version "$PREV_TAG" --pull --yes --verbose
         shell: bash
 
       - name: Verify box healthy on previous release
@@ -501,6 +504,33 @@ jobs:
           fi
         shell: bash
 
+      - name: Assert the release-tag install recorded what it installed
+        # `lager hello` reports the first field of /etc/lager/version. install
+        # used to write that file through sudo, ignore the result, and print
+        # success either way, so a box could report an older release than the
+        # one just installed. Read both files straight off the box: after the
+        # uninstall above there is no box entry for `lager` to resolve.
+        env:
+          BOX_IP: ${{ secrets.LAGER_BOX_IP }}
+        run: |
+          set -euo pipefail
+          version_file=$(ssh -o BatchMode=yes "lagerdata@${BOX_IP}" cat /etc/lager/version)
+          ref_file=$(ssh -o BatchMode=yes "lagerdata@${BOX_IP}" cat /etc/lager/ref)
+          echo "/etc/lager/version: ${version_file}"
+          echo "/etc/lager/ref:     ${ref_file}"
+          if [ "${version_file%%|*}" != "${LATEST_TAG#v}" ]; then
+            echo "::error title=Wrong version recorded::/etc/lager/version reads '${version_file}' after an install of ${LATEST_TAG}."
+            exit 1
+          fi
+          case "$ref_file" in
+            "${LATEST_TAG}@"*) ;;
+            *)
+              echo "::error title=Wrong ref recorded::/etc/lager/ref reads '${ref_file}' after an install of ${LATEST_TAG}."
+              exit 1
+              ;;
+          esac
+        shell: bash
+
       - name: Install box software from scratch
         # By --ip: uninstall --yes removes the local box entry as part of its
         # cleanup, so --box would no longer resolve here.
@@ -518,6 +548,34 @@ jobs:
             --user lagerdata \
             --version "${{ github.sha }}" \
             --yes
+        shell: bash
+
+      - name: Assert the from-scratch install recorded what it installed
+        # Same check as after the release-tag install. The tree installed here
+        # is this checkout, so its own __version__ is the number the box must
+        # report, and the ref must name the commit under test.
+        env:
+          BOX_IP: ${{ secrets.LAGER_BOX_IP }}
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          expected_version=$(sed -n "s/^__version__ = ['\"]\([^'\"]*\)['\"].*/\1/p" cli/__init__.py)
+          version_file=$(ssh -o BatchMode=yes "lagerdata@${BOX_IP}" cat /etc/lager/version)
+          ref_file=$(ssh -o BatchMode=yes "lagerdata@${BOX_IP}" cat /etc/lager/ref)
+          echo "expected version:   ${expected_version}"
+          echo "/etc/lager/version: ${version_file}"
+          echo "/etc/lager/ref:     ${ref_file}"
+          if [ -z "$expected_version" ] || [ "${version_file%%|*}" != "$expected_version" ]; then
+            echo "::error title=Wrong version recorded::/etc/lager/version reads '${version_file}'; this checkout declares '${expected_version}'."
+            exit 1
+          fi
+          case "$ref_file" in
+            "${EXPECTED_SHA}@"*) ;;
+            *)
+              echo "::error title=Wrong ref recorded::/etc/lager/ref reads '${ref_file}'; expected ${EXPECTED_SHA}@<sha>."
+              exit 1
+              ;;
+          esac
         shell: bash
 
       - name: Re-register lager box

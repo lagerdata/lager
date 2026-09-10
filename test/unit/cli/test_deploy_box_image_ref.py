@@ -362,3 +362,74 @@ class TestInstallCommandSurface:
         assert "--timeout" in source
         assert "LAGER_INSTALL_TIMEOUT" in source
         assert "Re-running is safe" in source
+
+
+class TestPrePullBeforeTeardown:
+    """A release-tag install pulls its image while the old containers serve.
+
+    The deployment used to remove the containers and prune the build cache
+    first, and only then resolve and pull, so the box was down for the whole
+    download and any miss became a fully cold build.
+    """
+
+    CODE = _uncommented(DEPLOY_SCRIPT.read_text())
+    PULL_CALL = 'box_image_prepull_cmd "$BOX_IMAGE_DIGEST_REF"'
+    TEARDOWN = "for c in lager pigpio controller; do"
+
+    def _prepull_cmd(self, ref):
+        body = _extract(DEPLOY_SCRIPT, "image pre-pull")
+        return subprocess.run(
+            ["bash", "-c", body + f"\nbox_image_prepull_cmd {ref!r}\n"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+
+    def test_the_prepull_command_has_the_clients_pull_shape(self):
+        from cli.commands.utility.update import _docker_pull_cmd
+
+        digest = "sha256:" + "c" * 64
+        cmd = self._prepull_cmd(f"{REGISTRY}@{digest}")
+        assert subprocess.run(["bash", "-n", "-c", cmd]).returncode == 0
+        assert f"{REGISTRY}@{digest}" in cmd
+        assert "timeout 300 docker" in cmd
+        assert cmd.index("rc=$?") < cmd.index('rm -rf "$cfg"')
+        assert cmd.rstrip().endswith("exit $rc")
+        client = _docker_pull_cmd(f"{REGISTRY}:v0.46.2", digest)
+        for shared in (
+            'cfg=$(mktemp -d)',
+            '--config "$cfg"',
+            '--platform "linux/$(dpkg --print-architecture 2>/dev/null || uname -m)"',
+            'rm -rf "$cfg"',
+        ):
+            assert shared in cmd, shared
+            assert shared in client, shared
+
+    def test_resolve_and_prepull_come_before_the_containers_stop(self):
+        teardown = self.CODE.index(self.TEARDOWN)
+        assert self.CODE.index('resolve_box_image_digest "$BOX_IMAGE_TAG_REF"') < teardown
+        assert self.CODE.index(self.PULL_CALL) < teardown
+
+    def test_the_digest_shape_is_checked_before_it_reaches_ssh(self):
+        check = self.CODE.index("grep -Eq '^sha256:[0-9a-f]{64}$'")
+        assert check < self.CODE.index(self.PULL_CALL)
+
+    def test_dangling_images_are_pruned_before_the_pull_never_after(self):
+        # A digest-pulled image has no tag until start_box.sh names it, so a
+        # prune after the pull could reach the image this deploy downloaded.
+        assert self.CODE.count("docker image prune -f") == 1
+        assert self.CODE.index("docker image prune -f") < self.CODE.index(self.PULL_CALL)
+
+    def test_the_image_is_handed_to_start_box_only_when_the_pull_succeeded(self):
+        handoff = self.CODE.index('LAGER_BOX_IMAGE_ENV="LAGER_BOX_IMAGE=')
+        flag = self.CODE.index("BOX_IMAGE_PREPULLED=1")
+        pull = self.CODE.rindex(self.PULL_CALL, 0, handoff)
+        # Both sit on the success branch of the pull's own `if`.
+        assert pull < handoff < flag
+        assert "else" not in self.CODE[pull:flag].split()
+
+    def test_the_build_cache_is_pruned_only_after_a_successful_prepull(self):
+        # Pruning it unconditionally is what made every install a cold build.
+        assert self.CODE.count("docker builder prune -af") == 1
+        prune = self.CODE.index("docker builder prune -af")
+        guard = self.CODE.rindex('if [ "$BOX_IMAGE_PREPULLED" = "1" ]; then', 0, prune)
+        assert "fi" not in self.CODE[guard:prune].split()
+        assert self.CODE.index("BOX_IMAGE_PREPULLED=1") < guard
