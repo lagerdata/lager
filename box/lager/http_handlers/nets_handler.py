@@ -15,6 +15,7 @@ from concurrent.futures import TimeoutError as FuturesTimeoutError
 
 from flask import Flask, jsonify, request
 
+from ..exceptions import I2CBackendError, SPIBackendError
 from ..nets.net import Net
 
 logger = logging.getLogger(__name__)
@@ -68,10 +69,20 @@ def _ud_pin_span_error(data):
         else:
             from ..protocols.i2c.dispatcher import _ud_pin_config
             config = _ud_pin_config(data)
-    except Exception as exc:
-        # The dispatchers already raise a specific, net-named message for an
-        # unusable span or an unparseable pin; pass it through verbatim.
+    except (SPIBackendError, I2CBackendError) as exc:
+        # These two carry a specific, net-named message the dispatchers wrote
+        # for a user to read, so pass it through verbatim.
         return str(exc)
+    except Exception:
+        # Anything else is a defect in the parser, not something the caller
+        # did wrong, and an arbitrary exception's text can carry internal
+        # paths or state to an HTTP client. Log it where an operator will see
+        # it and hand back a fixed string.
+        logger.exception("Unexpected error validating a LabJack UD %s net", role)
+        return (
+            f"Could not validate the {role} pin configuration for this net. "
+            f"See the box log for details."
+        )
 
     usable = "FIO4-FIO7" if role == "spi" else "FIO6-FIO7"
     for key, dio in sorted(config.items()):
