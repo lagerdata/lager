@@ -33,10 +33,17 @@ Either `--box` or `--ip` is required. If both are provided, the command exits wi
 
 ## The Box Image
 
-The slowest part of an install is the box's Docker image. A build on the box
-takes roughly 14 minutes, and an install always pays the full cost. The
-deployment prunes the builder cache before it starts, so there is never a warm
-layer cache to reuse.
+The slowest part of an install is the box's Docker image. A cold build on the
+box takes roughly 14 minutes.
+
+When a pre-built image is available, the deployment pulls it before it stops
+the running containers. The box keeps its services up during the download.
+The old containers stop only after the pull succeeds. The deployment then
+clears the Docker build cache, because the pulled image needs no build.
+
+When the deployment builds on the box, it keeps the build cache. A later build
+on the same box reuses the layers that did not change. `lager uninstall` clears
+that cache.
 
 Every release tag publishes a pre-built image, and `lager install` uses it by
 default: about 2 minutes instead of 14.

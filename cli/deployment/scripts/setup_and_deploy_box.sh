@@ -1840,54 +1840,11 @@ else
     echo "  Enable it by hand: ssh ${BOX_USER}@${BOX_IP} 'sudo systemctl enable docker'"
 fi
 
-print_info "Stopping and removing lager containers..."
-# Scoped to the containers this deployment owns (lager, pigpio, and the
-# legacy controller). A box may run third-party containers alongside lager
-# — a management agent, a user's own services — and removing containers we
-# did not create takes down infrastructure this script cannot restore.
-# Update restart policy first to prevent auto-restart, then force remove.
-ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "
-    for c in lager pigpio controller; do
-        docker update --restart=no \$c 2>/dev/null || true
-        docker stop \$c 2>/dev/null || true
-        docker rm -f \$c 2>/dev/null || true
-    done
-    # Wait a moment for Docker to clean up
-    sleep 2
-" 2>/dev/null || true
-print_success "Lager containers cleaned up"
-
-print_info "Cleaning up Docker build cache and dangling images..."
-echo ""
-# Dangling-only (no -a): 'prune -af' would also delete images belonging to
-# third-party containers stopped at this moment, which cannot be re-pulled
-# by this script.
-ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "
-    echo 'Removing dangling Docker images...'
-    docker image prune -f 2>/dev/null || true
-    echo 'Removing Docker build cache...'
-    docker builder prune -af 2>/dev/null || true
-    echo 'Cleanup complete'
-" 2>/dev/null || true
-echo ""
-print_success "Docker build cache and dangling images cleaned up"
-
-print_info "Checking available disk space..."
-ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "df -h / | tail -n 1 | awk '{print \"Available: \" \$4 \" (\" \$5 \" used)\"}'" 2>/dev/null || true
-echo ""
-
-# Configure VPN interface if specified
-if [ -n "$VPN_INTERFACE" ]; then
-    print_info "Configuring VPN interface: $VPN_INTERFACE"
-    ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "echo 'LAGER_WG_IFACE=${VPN_INTERFACE}' > /home/${BOX_USER}/.env"
-    print_success "VPN interface configured: $VPN_INTERFACE"
-    echo ""
-fi
-
 # Every docker command in this step is best-effort (`|| true`), so a daemon that is
-# down leaves no trace here and start_box.sh is the first thing to notice -- failing
+# down leaves no trace in them and start_box.sh is the first thing to notice -- failing
 # on `docker network create` with a bare "Cannot connect to the Docker daemon", well
-# after whatever actually stopped it. Check explicitly, while the cause is still near.
+# after whatever actually stopped it. Check explicitly, before anything below touches
+# Docker, while the cause is still near. The image pre-pull below needs the daemon too.
 print_info "Verifying the Docker daemon is running..."
 if ! ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "docker info >/dev/null 2>&1"; then
     print_error "The Docker daemon is not running on the box"
@@ -1922,11 +1879,47 @@ fi
 print_success "Docker daemon is running"
 echo ""
 
-# Resolve the pre-built image before handing off. On a hit, start_box.sh pulls
-# the digest instead of building; on any miss -- unpublished tag, unreachable
-# registry, no curl -- LAGER_BOX_IMAGE_ENV stays empty and the line below is
-# byte-identical to what it has always been.
+# Remove dangling images while the old containers still run. Dangling-only (no
+# -a): 'prune -af' would also delete images belonging to third-party containers
+# stopped at this moment, which this script cannot re-pull.
+#
+# This runs BEFORE the pre-pull below, never after it. An image pulled by digest
+# carries no tag until start_box.sh names it `lager`, so a prune that ran after
+# the pull could reach the image this deploy just downloaded.
+print_info "Removing dangling Docker images..."
+ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "docker image prune -f >/dev/null 2>&1 || true" 2>/dev/null || true
+print_success "Dangling Docker images removed"
+echo ""
+
+# --- BEGIN image pre-pull ---
+# Print the remote command that pulls the pre-built image onto the box by digest.
+#
+# start_box.sh pulls the same digest itself, but it runs after the containers
+# below are gone, so on its own the box would sit down for the whole ~1 GB
+# transfer. This pull runs first, while the box still serves. start_box.sh then
+# finds every layer already present, and it still verifies the version label
+# before it tags anything.
+#
+# The shape matches update.py's _docker_pull_cmd: a throwaway docker config so
+# the request goes out anonymously, the box's own platform, a 300s ceiling, and
+# the pull's exit status kept past the cleanup. $(dpkg ...) and $cfg stay
+# literal here and expand on the box.
+box_image_prepull_cmd() {
+    local ref="$1"
+    local platform='linux/$(dpkg --print-architecture 2>/dev/null || uname -m)'
+    local pull="docker --config \"\$cfg\" pull --platform \"${platform}\" ${ref}"
+    printf '%s' "cfg=\$(mktemp -d) || exit 1; "
+    printf '%s' "if command -v timeout >/dev/null 2>&1; then timeout 300 ${pull}; else ${pull}; fi; "
+    printf '%s\n' "rc=\$?; rm -rf \"\$cfg\"; exit \$rc"
+}
+# --- END image pre-pull ---
+
+# Resolve the pre-built image, then pull it while the old containers still
+# serve. On any miss -- unpublished tag, unreachable registry, no curl, a pull
+# that fails -- LAGER_BOX_IMAGE_ENV stays empty and start_box.sh builds, exactly
+# as it always has.
 LAGER_BOX_IMAGE_ENV=""
+BOX_IMAGE_PREPULLED=0
 if [ "$BOX_IMAGE_PULL" != "0" ] && [ -n "$BOX_IMAGE_TAG_REF" ]; then
     print_info "Resolving pre-built image ${BOX_IMAGE_TAG_REF}..."
     # The reason is captured rather than left to scroll past as bare stderr:
@@ -1935,8 +1928,24 @@ if [ "$BOX_IMAGE_PULL" != "0" ] && [ -n "$BOX_IMAGE_TAG_REF" ]; then
     # if it arrives unlabelled among a hundred other lines.
     RESOLVE_ERR=$(mktemp)
     if BOX_IMAGE_DIGEST=$(resolve_box_image_digest "$BOX_IMAGE_TAG_REF" 2>"$RESOLVE_ERR"); then
-        LAGER_BOX_IMAGE_ENV="LAGER_BOX_IMAGE=${BOX_IMAGE_REGISTRY}@${BOX_IMAGE_DIGEST} LAGER_BOX_IMAGE_VERSION=${GIT_VERSION} "
         print_success "Pre-built image resolved (${BOX_IMAGE_DIGEST:0:19}...)"
+        # The digest becomes part of a remote command line, so hold it to the
+        # one shape a registry digest has before it goes anywhere near ssh.
+        if ! printf '%s' "$BOX_IMAGE_DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+            print_warning "The registry returned a digest in an unexpected form; building on the box instead"
+        else
+            BOX_IMAGE_DIGEST_REF="${BOX_IMAGE_REGISTRY}@${BOX_IMAGE_DIGEST}"
+            print_info "Pulling the pre-built image while the current containers keep running..."
+            PULL_ERR=$(mktemp)
+            if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "$(box_image_prepull_cmd "$BOX_IMAGE_DIGEST_REF")" 2>"$PULL_ERR"; then
+                LAGER_BOX_IMAGE_ENV="LAGER_BOX_IMAGE=${BOX_IMAGE_DIGEST_REF} LAGER_BOX_IMAGE_VERSION=${GIT_VERSION} "
+                BOX_IMAGE_PREPULLED=1
+                print_success "Pre-built image pulled"
+            else
+                print_warning "Pre-built image pull failed ($(grep -v '^[[:space:]]*$' "$PULL_ERR" | tail -n 1 | tr -d '\r')); building on the box instead"
+            fi
+            rm -f "$PULL_ERR"
+        fi
     else
         print_warning "Pre-built image unavailable ($(tr -d '\n' < "$RESOLVE_ERR")); building on the box instead"
     fi
@@ -1947,6 +1956,48 @@ elif [ "$BOX_IMAGE_PULL" != "0" ]; then
     # fifteen minutes on a build the operator could have skipped.
     print_info "No pre-built image for '${GIT_VERSION}' -- only release tags are published."
     print_info "A release tag (--version v0.39.1) installs in about 2 minutes instead of 14."
+fi
+echo ""
+
+print_info "Stopping and removing lager containers..."
+# Scoped to the containers this deployment owns (lager, pigpio, and the
+# legacy controller). A box may run third-party containers alongside lager
+# — a management agent, a user's own services — and removing containers we
+# did not create takes down infrastructure this script cannot restore.
+# Update restart policy first to prevent auto-restart, then force remove.
+ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "
+    for c in lager pigpio controller; do
+        docker update --restart=no \$c 2>/dev/null || true
+        docker stop \$c 2>/dev/null || true
+        docker rm -f \$c 2>/dev/null || true
+    done
+    # Wait a moment for Docker to clean up
+    sleep 2
+" 2>/dev/null || true
+print_success "Lager containers cleaned up"
+
+# The build cache is dead weight only when the pre-built image is already on
+# the box. On the build path it is what lets a rebuild reuse unchanged layers,
+# and pruning it there unconditionally made every install a cold build.
+if [ "$BOX_IMAGE_PREPULLED" = "1" ]; then
+    print_info "Removing the Docker build cache (the pre-built image needs no build)..."
+    ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "docker builder prune -af >/dev/null 2>&1 || true" 2>/dev/null || true
+    print_success "Docker build cache removed"
+else
+    print_info "Keeping the Docker build cache for the build on the box"
+fi
+echo ""
+
+print_info "Checking available disk space..."
+ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "df -h / | tail -n 1 | awk '{print \"Available: \" \$4 \" (\" \$5 \" used)\"}'" 2>/dev/null || true
+echo ""
+
+# Configure VPN interface if specified
+if [ -n "$VPN_INTERFACE" ]; then
+    print_info "Configuring VPN interface: $VPN_INTERFACE"
+    ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "echo 'LAGER_WG_IFACE=${VPN_INTERFACE}' > /home/${BOX_USER}/.env"
+    print_success "VPN interface configured: $VPN_INTERFACE"
+    echo ""
 fi
 
 if [ -n "$LAGER_BOX_IMAGE_ENV" ]; then

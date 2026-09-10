@@ -764,6 +764,60 @@ def _read_box_head_sha(ssh_runner):
     return ''
 
 
+# --- State files under /etc/lager ------------------------------------------
+#
+# What the CLI records about a deploy: the version number (`version`), the ref
+# and commit that produced the code (`ref`), the docker-build inputs
+# (`build-hash`), and where the running image came from (`image-source`).
+_ETC_LAGER = '/etc/lager'
+_STATE_FILE_NAMES = frozenset({'version', 'ref', 'build-hash', 'image-source'})
+
+
+def _state_file_write_cmd(name, content, *, skip_if_identical=False,
+                          directory=_ETC_LAGER):
+    """Shell snippet that replaces ``<directory>/<name>`` with ``content``.
+
+    One writer for every state file, shared by `lager update` and `lager
+    install` so the two cannot record a deploy differently. install used to
+    write the version and ref files through `sudo` over an interactive session,
+    via a fixed name in /tmp, and never looked at the result: a failed write
+    left the previous file in place while the command printed success.
+
+    No sudo is needed. The deployment makes /etc/lager group-writable by the
+    login user (owner www-data, group <login user>, setgid), and replacing a
+    file needs write access to its directory only. So the content goes to a
+    mktemp file in the same directory and `mv -f` renames it over the target:
+    an atomic rename on one filesystem, which also works when the old file is
+    owned by www-data and cannot be written in place. A temporary file that
+    fails part way is removed rather than left behind.
+
+    When the directory itself is not writable -- a box whose /etc/lager
+    predates the group-writable layout -- the snippet falls back to writing the
+    existing file in place, which is what the version writer always did. It
+    exits non-zero only when neither path wrote the file.
+
+    ``skip_if_identical`` makes the write a no-op, in the same round trip, when
+    the file already holds exactly ``content``.
+
+    ``directory`` exists so tests can run the snippet against a scratch
+    directory; production callers never pass it.
+    """
+    if name not in _STATE_FILE_NAMES:
+        raise ValueError(f'not a /etc/lager state file: {name!r}')
+    target = shlex.quote(f'{directory}/{name}')
+    template = shlex.quote(f'{directory}/.{name}.XXXXXX')
+    value = shlex.quote(content)
+    replace = (
+        f'tmp=$(mktemp {template}) && '
+        f'{{ {{ printf \'%s\\n\' {value} > "$tmp" && chmod 644 "$tmp" '
+        f'&& mv -f "$tmp" {target}; }} || {{ rm -f "$tmp"; false; }}; }}'
+    )
+    write = f'{{ {replace}; }} || printf \'%s\\n\' {value} > {target}'
+    if skip_if_identical:
+        return f'[ "$(cat {target} 2>/dev/null)" = {value} ] || {{ {write}; }}'
+    return write
+
+
 # --- Box-state probe -------------------------------------------------------
 #
 # A single SSH round-trip that gathers every read-only fact the update flow
@@ -1711,13 +1765,13 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
             return True
         version_content = f'{box_cli_version_value}|{cli_version}'
 
-        # One round-trip per attempt: the `[ ... ] ||` guard makes the write
-        # a no-op when the file already matches, folding the old separate
-        # read-then-write into a single command.
-        write_cmd = (
-            f'[ "$(cat /etc/lager/version 2>/dev/null)" = "{version_content}" ] '
-            f'|| echo "{version_content}" > /etc/lager/version'
-        )
+        # One round-trip per attempt: `skip_if_identical` makes the write a
+        # no-op when the file already matches, folding the old separate
+        # read-then-write into a single command. The file is replaced rather
+        # than written in place, so a version file that a `sudo tee` left
+        # root-owned no longer blocks every later update.
+        write_cmd = _state_file_write_cmd(
+            'version', version_content, skip_if_identical=True)
         for attempt in range(3):
             result = run_ssh_command_with_output(write_cmd, timeout_secs=30)
             if result.returncode == 0:
@@ -1747,12 +1801,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         """
         if not hash_value:
             return True
-        write_cmd = (
-            'tmp=$(mktemp /etc/lager/.build-hash.XXXXXX) && '
-            f'printf "%s\\n" "{hash_value}" > "$tmp" && '
-            'chmod 644 "$tmp" && '
-            'mv -f "$tmp" /etc/lager/build-hash'
-        )
+        write_cmd = _state_file_write_cmd('build-hash', hash_value)
         for attempt in range(3):
             result = run_ssh_command_with_output(write_cmd, timeout_secs=30)
             if result.returncode == 0:
@@ -1782,12 +1831,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         """
         if not value:
             return True
-        write_cmd = (
-            'tmp=$(mktemp /etc/lager/.image-source.XXXXXX) && '
-            f'printf "%s\\n" "{value}" > "$tmp" && '
-            'chmod 644 "$tmp" && '
-            'mv -f "$tmp" /etc/lager/image-source'
-        )
+        write_cmd = _state_file_write_cmd('image-source', value)
         try:
             return run_ssh_command_with_output(
                 write_cmd, timeout_secs=30).returncode == 0
@@ -1825,12 +1869,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         if not ref_value:
             return True
         content = f'{ref_value}@{sha_value}' if sha_value else str(ref_value)
-        write_cmd = (
-            'tmp=$(mktemp /etc/lager/.ref.XXXXXX) && '
-            f'printf "%s\\n" "{content}" > "$tmp" && '
-            'chmod 644 "$tmp" && '
-            'mv -f "$tmp" /etc/lager/ref'
-        )
+        write_cmd = _state_file_write_cmd('ref', content)
         try:
             return run_ssh_command_with_output(
                 write_cmd, timeout_secs=30).returncode == 0

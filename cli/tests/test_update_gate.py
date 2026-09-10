@@ -35,7 +35,127 @@ from cli.commands.utility.update import (
     _rebuild_gate_verdict,
     _resolve_image_digest,
     resolve_version_ref,
+    _state_file_write_cmd,
 )
+
+
+class TestStateFileWriteCmd:
+    """The one writer for /etc/lager state files, shared with `lager install`.
+
+    install used to write the version and ref files through sudo over `ssh -t`
+    via fixed names in /tmp and never checked the result; update wrote the
+    version file in place. Both now go through this snippet, so these tests run
+    it for real against a scratch directory.
+    """
+
+    @staticmethod
+    def _bash(cmd):
+        return subprocess.run(['bash', '-c', cmd], capture_output=True, text=True)
+
+    @pytest.mark.parametrize('bad', ['saved_nets.json', '../passwd', 'version/../x', ''])
+    def test_only_state_files_are_accepted(self, bad):
+        with pytest.raises(ValueError):
+            _state_file_write_cmd(bad, 'x')
+
+    @pytest.mark.parametrize('name', ['version', 'ref', 'build-hash', 'image-source'])
+    def test_no_sudo_and_no_fixed_tmp_path(self, name):
+        cmd = _state_file_write_cmd(name, 'x', skip_if_identical=True)
+        assert 'sudo' not in cmd
+        assert '/tmp/' not in cmd
+        assert f'mktemp /etc/lager/.{name}.XXXXXX' in cmd
+        assert f'mv -f "$tmp" /etc/lager/{name}' in cmd
+
+    @pytest.mark.parametrize('skip', [False, True])
+    def test_snippet_is_valid_shell(self, skip):
+        cmd = _state_file_write_cmd('ref', 'main@85c1b64', skip_if_identical=skip)
+        assert subprocess.run(['bash', '-n', '-c', cmd]).returncode == 0
+
+    @pytest.mark.parametrize('content', [
+        '0.46.2|0.46.2',
+        "de/it's-a-branch@85c1b64",
+        'two  spaces and a tab\t',
+        '$(touch pwned)',
+        '`touch pwned`',
+        '"double" and \\n backslash',
+    ])
+    def test_content_is_written_verbatim_and_never_expanded(self, tmp_path, content):
+        cmd = _state_file_write_cmd('ref', content, directory=str(tmp_path))
+        result = subprocess.run(['bash', '-c', cmd], capture_output=True,
+                                text=True, cwd=tmp_path)
+        assert result.returncode == 0, result.stderr
+        assert (tmp_path / 'ref').read_text() == content + '\n'
+        assert not (tmp_path / 'pwned').exists()
+        assert list(tmp_path.glob('.ref.*')) == [], 'temporary file left behind'
+
+    def test_replaces_a_file_that_cannot_be_written_in_place(self, tmp_path):
+        # The www-data-owned build-hash case: the file refuses a write, the
+        # directory does not. A rename needs only the directory.
+        target = tmp_path / 'build-hash'
+        target.write_text('old\n')
+        target.chmod(0o444)
+        result = self._bash(_state_file_write_cmd(
+            'build-hash', 'new', directory=str(tmp_path)))
+        assert result.returncode == 0, result.stderr
+        assert target.read_text() == 'new\n'
+
+    def test_falls_back_to_in_place_when_the_directory_is_read_only(self, tmp_path):
+        # A box whose /etc/lager predates the group-writable layout, with the
+        # world-writable version file an older install left: the old in-place
+        # write worked there, so the replacement must not regress it.
+        target = tmp_path / 'version'
+        target.write_text('old\n')
+        target.chmod(0o666)
+        tmp_path.chmod(0o555)
+        try:
+            result = self._bash(_state_file_write_cmd(
+                'version', 'new', directory=str(tmp_path)))
+        finally:
+            tmp_path.chmod(0o755)
+        assert result.returncode == 0, result.stderr
+        assert target.read_text() == 'new\n'
+        assert list(tmp_path.glob('.version.*')) == []
+
+    @pytest.mark.skipif(getattr(os, 'geteuid', lambda: -1)() == 0,
+                        reason='root writes through any file mode')
+    def test_fails_when_nothing_can_be_written(self, tmp_path):
+        target = tmp_path / 'version'
+        target.write_text('old\n')
+        target.chmod(0o444)
+        tmp_path.chmod(0o555)
+        try:
+            result = self._bash(_state_file_write_cmd(
+                'version', 'new', directory=str(tmp_path)))
+        finally:
+            tmp_path.chmod(0o755)
+            target.chmod(0o644)
+        assert result.returncode != 0
+        assert target.read_text() == 'old\n'
+
+    def test_skip_if_identical_leaves_a_matching_file_alone(self, tmp_path):
+        target = tmp_path / 'version'
+        target.write_text('0.46.2|0.46.2\n')
+        inode = target.stat().st_ino
+        assert self._bash(_state_file_write_cmd(
+            'version', '0.46.2|0.46.2', skip_if_identical=True,
+            directory=str(tmp_path))).returncode == 0
+        assert target.stat().st_ino == inode, 'a matching file was replaced'
+        assert self._bash(_state_file_write_cmd(
+            'version', '0.47.0|0.47.0', skip_if_identical=True,
+            directory=str(tmp_path))).returncode == 0
+        assert target.read_text() == '0.47.0|0.47.0\n'
+
+    def test_update_writes_every_state_file_through_it(self):
+        import importlib
+        import inspect
+        import re
+        # By module path: `cli.commands.utility.update` as an attribute is the
+        # click command, which shadows the module of the same name.
+        update = importlib.import_module('cli.commands.utility.update')
+        src = inspect.getsource(update._update_logic)
+        for name in ('version', 'build-hash', 'image-source', 'ref'):
+            assert re.search(rf"_state_file_write_cmd\(\s*'{name}'", src), name
+        assert 'mktemp /etc/lager/' not in src, 'a hand-rolled state-file writer remains'
+
 
 IN_SYNC = dict(
     git_sync_confirmed=True,

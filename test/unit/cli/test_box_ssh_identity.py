@@ -798,6 +798,29 @@ class ConnectionPoolIdentity(unittest.TestCase):
                         "stderr must be a real file object")
 
 
+def _answer_install_state(remote, written):
+    """Answer install's post-deploy state calls the way a healthy box does.
+
+    install reads the installed version from the box checkout, writes the
+    /etc/lager state files, and reads the version file back -- and fails when
+    any of that does not add up, instead of printing success regardless. A
+    fake that answers every command with the same line cannot satisfy that, so
+    these calls get real answers. Returns None for any other command.
+    """
+    import re
+    import shlex
+
+    if "show HEAD:cli/__init__.py" in remote:
+        return _proc(0, "__version__ = '0.36.2'\n")
+    target = re.search(r'mv -f "\$tmp" /etc/lager/([a-z-]+)', remote)
+    if target:
+        written[target.group(1)] = shlex.split(remote.split("printf '%s\\n' ", 1)[1])[0]
+        return _proc(0)
+    if remote == "cat /etc/lager/version":
+        return _proc(0, written.get("version", "") + "\n")
+    return None
+
+
 class _CommandCase(unittest.TestCase):
     """Drives install/uninstall over a faked SSH transport.
 
@@ -820,6 +843,7 @@ class _CommandCase(unittest.TestCase):
 class InstallOffersTheKey(_CommandCase):
     def _install(self, *, key_exists=True, key_accepted=True):
         calls = []
+        written = {}
 
         def fake_run(cmd, **_kw):
             cmd = list(cmd) if isinstance(cmd, (list, tuple)) else [cmd]
@@ -832,6 +856,9 @@ class InstallOffersTheKey(_CommandCase):
             # interactive `ssh -t` bootstrap runs and is covered too.
             if install_mod.BOXCFG_SUDOERS_MARKER in cmd[-1]:
                 return _proc(1)
+            answered = _answer_install_state(cmd[-1], written)
+            if answered is not None:
+                return answered
             return _proc(0, "0.36.2\n")
 
         patches = self._lock_patches() + [
@@ -879,6 +906,8 @@ class InstallHasNoPasswordFallback(_CommandCase):
         PasswordAuthentication no does.
         """
         calls = []
+        written = {}
+        state = {"provisioned": False}
 
         def fake_run(cmd, **_kw):
             cmd = list(cmd) if isinstance(cmd, (list, tuple)) else [cmd]
@@ -886,10 +915,21 @@ class InstallHasNoPasswordFallback(_CommandCase):
             # The deploy script; only SSH is being refused here.
             if cmd and cmd[0] != "ssh":
                 return _proc(0)
+            # Once the key is set up the box accepts it, and install's
+            # post-deploy state writes need real answers to succeed.
+            if state["provisioned"]:
+                answered = _answer_install_state(cmd[-1], written)
+                if answered is not None:
+                    return answered
             return _proc(255, "", DENIED)
 
         def refuses(dest, **_kw):
             raise install_mod.LagerError(f"ssh-copy-id to {dest} failed.")
+
+        def provisions(dest, **kw):
+            outcome = (provision or refuses)(dest, **kw)
+            state["provisioned"] = True
+            return outcome
 
         patches = self._lock_patches() + [
             mock.patch.object(install_mod.subprocess, "run", fake_run),
@@ -897,8 +937,7 @@ class InstallHasNoPasswordFallback(_CommandCase):
                               _fake_key_if_present(True)),
             mock.patch.object(install_mod, "lager_box_key_if_present",
                               _fake_key_if_present(True)),
-            mock.patch.object(install_mod, "provision_lager_box_key",
-                              provision or refuses),
+            mock.patch.object(install_mod, "provision_lager_box_key", provisions),
         ]
         for p in patches:
             p.start()
