@@ -1252,10 +1252,12 @@ def add_cmd(ctx, name, role, channel, address, box, jlink_script, openocd_config
     """
     Add a net using inferred instrument from VISA address.
 
-    For LabJack T7 i2c/spi nets, custom pins may be chosen with
-    --sda/--scl (i2c) or --cs/--sck/--mosi/--miso (spi); any DIO pin
-    (FIO0-FIO7, EIO0-EIO7, CIO0-CIO3, MIO0-MIO2) is accepted. When pin
-    options are given, the CHANNEL argument is ignored (pass e.g. 'custom').
+    For LabJack i2c/spi nets, custom pins may be chosen with --sda/--scl
+    (i2c) or --cs/--sck/--mosi/--miso (spi). A T7 accepts any DIO pin
+    (FIO0-FIO7, EIO0-EIO7, CIO0-CIO3, MIO0-MIO2); a U3 has no MIO block and
+    stops at CIO3, and its FIO0-FIO3 are fixed analog inputs that cannot carry
+    a digital net at all. When pin options are given, the CHANNEL argument is
+    ignored (pass e.g. 'custom').
 
     \b
     Examples:
