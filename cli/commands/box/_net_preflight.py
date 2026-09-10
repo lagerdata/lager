@@ -36,7 +36,9 @@ and a BLE change is not the place to answer it.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
+import re
 from typing import List, Optional
 
 # The two ports the CLI itself needs to keep talking to a box: 5000 is the
@@ -52,7 +54,7 @@ CONTROL_PLANE_PORTS = (5000, 9000)
 LAGER_CONTAINER = "lager"
 
 _PROBE_TEMPLATE = r"""
-import json, os, subprocess
+import json, os, shlex, subprocess
 
 def sh(cmd, timeout=10):
     try:
@@ -76,13 +78,26 @@ if client:
         if "dev" in parts:
             out["iface"] = parts[parts.index("dev") + 1]
 
+# `command -v` searches the PATH a non-interactive SSH session gets, which can
+# leave out /usr/sbin. A ufw missed here would read as "no firewall" and pass,
+# so the standard locations are checked as well.
+out["ufw_path"] = ""
 rc, so, _ = sh("command -v ufw")
-out["ufw_present"] = (rc == 0 and bool(so.strip()))
+if rc == 0 and so.strip():
+    out["ufw_path"] = so.strip().splitlines()[0]
+else:
+    for cand in ("/usr/sbin/ufw", "/sbin/ufw"):
+        if os.access(cand, os.X_OK):
+            out["ufw_path"] = cand
+            break
+out["ufw_present"] = bool(out["ufw_path"])
+out["user"] = os.environ.get("USER") or os.environ.get("LOGNAME") or ""
 out["ufw_active"] = False
 out["ufw_readable"] = False
 out["ufw_status"] = ""
 if out["ufw_present"]:
-    rc, so, _ = sh("sudo -n ufw status 2>/dev/null")
+    # By path, so that a sudoers grant naming this path matches.
+    rc, so, _ = sh("sudo -n %s status 2>/dev/null" % shlex.quote(out["ufw_path"]))
     if rc == 0 and so.strip():
         out["ufw_readable"] = True
         out["ufw_status"] = so
@@ -131,7 +146,7 @@ class PreflightResult:
     """What the box reported, plus the verdict.
 
     `blockers` non-empty means refuse. `remediation` is what the operator can
-    run to clear the firewall blocker; it is printed, never executed.
+    run to clear a blocker; it is printed, never executed.
     """
 
     def __init__(self, probed: bool, data: Optional[dict] = None,
@@ -175,29 +190,137 @@ def probe(box_ip: str, *, runner=None, timeout: int = 30,
         return PreflightResult(False, error=f"unparseable probe output: {stdout!r}"[:300])
 
 
-def _port_allowed_on(status_text: str, port: int, iface: str) -> bool:
-    """True if `ufw status` shows an ALLOW for `port` on `iface`.
+_UFW_ACTIONS = ("ALLOW", "DENY", "REJECT", "LIMIT")
+# A ufw port spec: `5000`, `5000/tcp`, `8081:8090/tcp`, `80,443/tcp`.
+_PORT_SPEC = re.compile(r"^\d+(?:[:,]\d+)*(?:/(?:tcp|udp))?$")
+# What a ufw path may look like before it is printed into a sudoers line.
+_SAFE_PATH = re.compile(r"^/[A-Za-z0-9_./-]+$")
 
-    ufw renders an interface-scoped rule as `5000/tcp on tailscale0  ALLOW IN`.
-    Matching is deliberately narrow: a rule that is not clearly an allow for
-    this port on this interface does not count, because the cost of a false
-    'allowed' is a box the operator can no longer reach.
+
+def _parse_ufw_rule(line: str):
+    """Split one `ufw status` line into (to, action, direction, from) tokens.
+
+    None for the header, blank lines and anything else that is not a rule. The
+    rule's comment is dropped first: it is free text and can contain any word.
     """
-    needle_iface = f" on {iface}"
-    for line in status_text.splitlines():
-        if "ALLOW" not in line.upper():
-            continue
-        if needle_iface not in line:
-            continue
-        head = line.split()[0]
-        spec = head.split("/")[0]
-        if spec == str(port):
+    tokens = line.split("#", 1)[0].split()
+    for i, token in enumerate(tokens):
+        if token in _UFW_ACTIONS:
+            rest = tokens[i + 1:]
+            direction = "IN"
+            if rest and rest[0] in ("IN", "OUT", "FWD"):
+                direction, rest = rest[0], rest[1:]
+            return tokens[:i], token, direction, rest
+    return None
+
+
+def _spec_covers(spec: str, port: int) -> bool:
+    """True if a port spec covers TCP `port`. A `/udp` rule does not."""
+    ports, _, proto = spec.partition("/")
+    if proto and proto != "tcp":
+        return False
+    for part in ports.split(","):
+        lo, _, hi = part.partition(":")
+        if int(lo) <= port <= int(hi or lo):
             return True
-        if ":" in spec:  # a range, e.g. 8081:8090
-            lo, _, hi = spec.partition(":")
-            if lo.isdigit() and hi.isdigit() and int(lo) <= port <= int(hi):
-                return True
     return False
+
+
+def _to_covers(to: List[str], port: int) -> Optional[bool]:
+    """Whether a rule's To column covers TCP `port`.
+
+    None when it also names a destination address, whose reach this does not
+    try to place.
+    """
+    if to == ["Anywhere"]:
+        return True
+    specs = [t for t in to if _PORT_SPEC.match(t)]
+    if specs and not any(_spec_covers(s, port) for s in specs):
+        return False
+    if len(specs) != len(to):
+        return None
+    return bool(specs)
+
+
+def _source_admits(frm: List[str], client_ip: str) -> Optional[bool]:
+    """Whether a rule's From column covers the operator's address.
+
+    None when that cannot be told: no client address, or a form this does not
+    parse, such as a source port.
+    """
+    if frm == ["Anywhere"]:
+        return True
+    if len(frm) != 1 or not client_ip:
+        return None
+    try:
+        return (ipaddress.ip_address(client_ip)
+                in ipaddress.ip_network(frm[0], strict=False))
+    except ValueError:
+        return None
+
+
+def _port_allowed_on(status_text: str, port: int, iface: str, *,
+                     client_ip: str = "") -> bool:
+    """True if ufw admits inbound TCP `port` arriving on `iface`.
+
+    ufw applies the first rule that matches, so this reads the rules in the
+    order `ufw status` lists them and lets the first one that applies decide.
+    An allow listed after a deny for the same port never takes effect. That is
+    exactly the shape a plain `ufw allow` leaves behind secure_box_firewall.sh's
+    blanket `deny <port>/tcp`, and counting it would pass a box that the switch
+    then cuts off.
+
+    Where a rule's reach is uncertain the answer leans to "not admitted": an
+    allow limited to a source or destination this cannot place does not count,
+    while a deny limited the same way still decides. A wrong "admitted" costs a
+    box the operator can no longer reach. When no rule applies, ufw's default
+    incoming policy decides, and the firewall script sets that to deny.
+    """
+    v6 = ":" in client_ip
+    for line in status_text.splitlines():
+        rule = _parse_ufw_rule(line)
+        if rule is None:
+            continue
+        to, action, direction, frm = rule
+        if direction != "IN" or ("(v6)" in to) != v6:
+            continue
+        to = [t for t in to if t != "(v6)"]
+        frm = [t for t in frm if t != "(v6)"]
+        if "on" in to:
+            at = to.index("on")
+            if to[at + 1:] != [iface]:
+                continue
+            to = to[:at]
+        covers = _to_covers(to, port)
+        if covers is False:
+            continue
+        admits = _source_admits(frm, client_ip)
+        if action in ("ALLOW", "LIMIT"):
+            if covers and admits:
+                return True
+            continue
+        if admits is False:
+            continue
+        return False
+    return False
+
+
+def _ufw_status_grant(data: dict):
+    """(ufw path, the one sudoers line that lets this check read the firewall).
+
+    Only the line. Which file it goes in is the operator's decision: Lager
+    writes, and names, only the sudoers files it owns -- see the ownership
+    contract in _host_ops.py.
+    """
+    from ._host_ops import is_valid_unix_username
+
+    ufw = data.get("ufw_path") or ""
+    if not _SAFE_PATH.match(ufw):
+        ufw = "/usr/sbin/ufw"
+    user = data.get("user") or ""
+    if not is_valid_unix_username(user):
+        user = "<box-user>"
+    return ufw, f"{user} ALL=(root) NOPASSWD: {ufw} status"
 
 
 def evaluate(result: PreflightResult, *, ports=CONTROL_PLANE_PORTS) -> PreflightResult:
@@ -246,10 +369,25 @@ def evaluate(result: PreflightResult, *, ports=CONTROL_PLANE_PORTS) -> Preflight
 
     # 2. The firewall cuts the operator's own route.
     if d.get("ufw_present") and not d.get("ufw_readable"):
+        # Lager grants no `ufw status`, and adding one to the sudoers file it
+        # owns would cost every box an interactive sudo prompt on its next
+        # update (see update.py's box-config sudoers step). So the refusal names
+        # the one grant this check needs, for a file of the operator's own.
+        ufw, rule = _ufw_status_grant(d)
         result.blockers.append(
-            "ufw is installed but its status could not be read (needs "
-            "passwordless sudo). Cannot confirm the box stays reachable."
+            "ufw is installed but its status could not be read: "
+            f"`sudo -n {ufw} status` needs a password on this box, so this check "
+            "cannot tell whether the switch cuts your route to the box."
         )
+        result.notes.append(
+            "Lager does not grant this. To let the check read the firewall, add "
+            "the line below to a sudoers file of your own under /etc/sudoers.d/, "
+            "using `sudo visudo -f <file>` so a syntax error cannot break sudo. "
+            "The line allows that one read-only command and nothing else. Lager "
+            "changes only the sudoers files it owns, so the grant survives "
+            "lager install and lager update."
+        )
+        result.notes.append(rule)
     elif d.get("ufw_active"):
         iface = result.iface
         if not iface:
@@ -259,7 +397,9 @@ def evaluate(result: PreflightResult, *, ports=CONTROL_PLANE_PORTS) -> Preflight
             )
         else:
             status = d.get("ufw_status") or ""
-            missing = [p for p in ports if not _port_allowed_on(status, p, iface)]
+            client_ip = d.get("client_ip") or ""
+            missing = [p for p in ports
+                       if not _port_allowed_on(status, p, iface, client_ip=client_ip)]
             if missing:
                 result.blockers.append(
                     f"ufw is active and does not admit {', '.join(str(p) for p in missing)} "

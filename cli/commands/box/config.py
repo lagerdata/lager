@@ -1345,6 +1345,25 @@ def _apply_one(
         return _APPLY_OK
 
     if skip_restart:
+        # Stamping a switch to host as applied without the restart would hand
+        # it to the next container start unchecked: the renderer honors host
+        # from any start once the applied snapshot records it. Only a real
+        # apply, which checks reachability first, may make that switch.
+        switch_show = _parse_response(_run_box_config_py(ctx, resolved, verbs.SHOW,
+                                        allow_ssh_fallback=True), ctx) or {}
+        switch_applied = _parse_response(
+            _run_box_config_py(ctx, resolved, verbs.APPLIED_SHOW,
+                               allow_ssh_fallback=True), ctx)
+        if _switches_to_host(switch_show, switch_applied):
+            click.secho(
+                "Refusing --skip-restart: this config switches the container to "
+                "host networking. Recording it as applied without a restart lets "
+                "the next container start make that switch with no "
+                "reachability check. Run `lager box-config apply` without "
+                "--skip-restart.",
+                fg="red", err=True,
+            )
+            return _APPLY_FAILED
         # No mount pre-flight here: mounts only take effect at the container
         # restart this flag skips, and the eventual full apply re-checks them.
         _run_box_config_py(ctx, resolved, verbs.SET_APPLIED_HASH, cur_hash,
@@ -1367,8 +1386,7 @@ def _apply_one(
     # is travelling on, so it is checked before anything mutates -- a refused
     # apply must be a true no-op. Only when the config is actually switching to
     # host; a box already on host has already paid this cost.
-    if current_show.get("network_mode") == "host" and (
-            (applied_snapshot or {}).get("network_mode") != "host"):
+    if _switches_to_host(current_show, applied_snapshot):
         if not _preflight_host_networking(
                 resolved, skip_check=skip_host_network_check):
             return _APPLY_FAILED
@@ -1403,7 +1421,9 @@ def _apply_one(
         if not _preflight_mounts(ctx, resolved, recursive=recursive_chown):
             return _APPLY_FAILED
 
-    bounce_rc = _bounce_container_rc(ctx, resolved)
+    # The one bounce allowed to make a pending switch to host: the reachability
+    # check above has passed, or been overridden, by the time it runs.
+    bounce_rc = _bounce_container_rc(ctx, resolved, confirm_network_switch=True)
 
     if bounce_rc == _BOUNCE_CONFIG_NOT_APPLIED:
         # The container is up, but the renderers couldn't write their output, so
@@ -1493,6 +1513,15 @@ def _apply_one(
                        allow_ssh_fallback=True)
     click.secho(f"Applied box config on {resolved}.", fg="green")
     return _APPLY_OK
+
+
+def _switches_to_host(current_show: dict, applied_snapshot: Optional[dict]) -> bool:
+    """True when this config moves the container onto host networking from
+    anything else. That is the one change that can cut the route `apply` is
+    travelling on, so it alone needs the reachability check; a box already on
+    host has paid that cost."""
+    return (current_show.get("network_mode") == "host"
+            and (applied_snapshot or {}).get("network_mode") != "host")
 
 
 # Named for the flag that actually reaches it. Calling this `force` is what
@@ -1993,13 +2022,31 @@ _APPLY_FAILED = 1
 _APPLY_CONFIG_NOT_APPLIED = 3
 
 
-def _bounce_container_rc(ctx: click.Context, resolved_box: str) -> int:
-    """Run start_box.sh on the box. Returns one of the _BOUNCE_* codes."""
+# Set on the start_box.sh that `apply` runs. The box-side renderer withholds a
+# pending switch to host networking from any start that does not carry it, so
+# `restart`, `repair`, a rollback bounce, `lager update` and `lager install` all
+# keep the network the last successful apply recorded. Mirrors _CONFIRM_ENV in
+# box/lager/box_config/render_docker_args.py; the two ship in separate trees,
+# and test/unit/box/test_network_mode.py asserts they agree.
+_NETWORK_SWITCH_CONFIRM_ENV = "LAGER_APPLY_NETWORK_SWITCH"
+
+
+def _bounce_container_rc(
+    ctx: click.Context, resolved_box: str, *, confirm_network_switch: bool = False,
+) -> int:
+    """Run start_box.sh on the box. Returns one of the _BOUNCE_* codes.
+
+    `confirm_network_switch` lets this start make a pending switch to host
+    networking. Only `apply` passes it, after its reachability check.
+    """
     click.echo(f"Restarting lager container on {resolved_box} via SSH...")
+    command = "cd ~/box && ./start_box.sh"
+    if confirm_network_switch:
+        command = f"cd ~/box && {_NETWORK_SWITCH_CONFIRM_ENV}=1 ./start_box.sh"
     try:
         rc, stdout, stderr = default_ssh_runner(
             resolved_box,
-            "cd ~/box && ./start_box.sh",
+            command,
             timeout=_BOUNCE_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired:

@@ -251,8 +251,24 @@ the mounted D-Bus socket, and works the same in either mode.
 **`apply` checks the first two before it switches, and refuses when either
 one breaks the box.** It reads the interface your own connection arrives on.
 It then checks that the firewall admits the control-plane ports (5000 and 9000)
-there. It changes nothing when it refuses. `--skip-host-network-check`
-overrides it; use that only with another way into the box.
+there. It reads the rules in the order that ufw applies them. An allow rule
+below a deny rule for the same port does not count. It changes nothing when it
+refuses. `--skip-host-network-check` overrides it; use that only with another
+way into the box.
+
+**Only `apply` makes the switch to `host`.** Every container start reads the
+same config, including the starts that `lager update` and `lager install` make.
+Those starts keep the network that the last successful `apply` recorded, and
+they print a notice about the pending switch. A return to `lagernet` needs no
+check, so any start makes it. For the same reason, `apply --skip-restart`
+refuses a pending switch to `host`.
+
+**The check reads the firewall through `sudo`.** It runs
+`sudo -n /usr/sbin/ufw status`, and Lager does not grant that command. If `sudo`
+asks for a password on the box, `apply` refuses and prints the one sudoers line
+that the check needs. Add that line to a sudoers file of your own with
+`sudo visudo -f`. Lager changes only the sudoers files that it owns, so your
+grant stays in place after `lager update`.
 
 A port counts as taken only when something other than the lager container holds
 it. The container publishes 5000 and 9000 on an ordinary box. `apply` stops it
