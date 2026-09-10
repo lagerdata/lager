@@ -123,5 +123,32 @@ class RealBuildFailuresStayBuildFailures(unittest.TestCase):
         self.assertEqual(_ssh_failure_line(['', None]), (None, None))
 
 
+class InterruptedBuildIsNotANeverStartedBuild(unittest.TestCase):
+    """The message says which of the two happened, so the per-line scan that
+    decides it has to hold up on real mixed output."""
+
+    def test_pure_ssh_output_means_the_build_never_started(self):
+        started = [l for l in VPN_DROP_OUTPUT
+                   if _ssh_failure_line([l]) == (None, None) and l.strip()]
+        self.assertEqual(started, [])
+
+    def test_build_output_before_the_drop_means_it_was_interrupted(self):
+        mixed = [
+            '#12 [ 5/20] RUN pip install -r requirements.txt',
+            '#12 41.7 Collecting pyserial',
+            'client_loop: send disconnect: Broken pipe',
+        ]
+        started = [l for l in mixed
+                   if _ssh_failure_line([l]) == (None, None) and l.strip()]
+        self.assertEqual(len(started), 2)
+        # And the run as a whole is still classified as a transport loss.
+        self.assertEqual(_ssh_failure_line(mixed)[0], 'transport')
+
+    def test_blank_lines_do_not_count_as_build_output(self):
+        started = [l for l in ['', '   ', 'ssh: connect to host h port 22: x']
+                   if _ssh_failure_line([l]) == (None, None) and l.strip()]
+        self.assertEqual(started, [])
+
+
 if __name__ == '__main__':
     unittest.main()

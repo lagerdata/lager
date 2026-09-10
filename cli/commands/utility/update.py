@@ -3277,10 +3277,26 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
                 click.echo()
                 click.secho(f'  {ssh_failure_line}', fg='yellow', err=True)
                 click.echo()
-                click.secho(
-                    'The Docker build did not start. This is not a build failure.',
-                    fg='yellow', err=True,
+                # "did not start" is a claim about the build, and it is false
+                # when the transport died part-way through one. Any captured
+                # line that is not ssh's own diagnostic is build output, so it
+                # is the evidence for which of the two happened.
+                build_had_started = any(
+                    _ssh_failure_line([line]) == (None, None) and (line or '').strip()
+                    for line in build_output_lines
                 )
+                if build_had_started:
+                    click.secho(
+                        'The build was interrupted part-way. This is not a build '
+                        'failure.',
+                        fg='yellow', err=True,
+                    )
+                else:
+                    click.secho(
+                        'The Docker build did not start. This is not a build '
+                        'failure.',
+                        fg='yellow', err=True,
+                    )
                 if ssh_failure_kind == 'auth':
                     click.secho(
                         'The box answered, and it refused this key. A key manager '
@@ -3368,7 +3384,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
             # prior version while the operator deals with the build failure.
             restarted = False
             recovery_reachable = True
-            if ssh_failure_kind and not must_wipe_image:
+            if ssh_failure_kind:
                 recovery_reachable = _box_answers_ssh()
             if not must_wipe_image and recovery_reachable:
                 click.echo()
