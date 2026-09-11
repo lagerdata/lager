@@ -66,7 +66,10 @@ uart = Net.get('DUT_SERIAL', type=NetType.UART)
 ser = uart.connect()
 
 # Connect with custom baudrate
-ser = uart.connect(baudrate=9600, timeout=1.0)
+ser = uart.connect(baudrate=9600)
+
+# Set the read timeout on the returned object
+ser.timeout = 1.0
 
 # Use the pyserial connection
 ser.write(b'AT\r\n')
@@ -78,12 +81,26 @@ response = ser.readline()
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `baudrate` | `int` | Baud rate (default from config or 115200) |
-| `timeout` | `float` | Read timeout in seconds |
 | `bytesize` | `int` | Data bits (5, 6, 7, or 8) |
-| `parity` | `str` | Parity (`'N'`, `'E'`, `'O'`) |
+| `parity` | `str` | Parity: `'none'`, `'even'`, `'odd'`, `'mark'`, or `'space'` |
 | `stopbits` | `float` | Stop bits (1, 1.5, or 2) |
 
 **Returns:** `serial.Serial` - Connected pyserial object
+
+<Note>
+`connect()` ignores a `timeout` argument. The port always opens with a read
+timeout of 0.1 seconds. To change it, set `ser.timeout` on the returned object.
+A `parity` value that is not in the table above, such as `'N'` or `'E'`, gives
+no parity.
+</Note>
+
+<Note>
+`connect()` opens the port exclusively. While a `lager uart` session holds the
+net, `connect()` raises `serial.SerialException`. While your script holds the
+port, `lager uart` on the same net fails with
+`UART device /dev/ttyUSB0 is already in use (locked by another session or the lager uart CLI)`.
+Close the port with `ser.close()` to release it.
+</Note>
 
 ### `get_baudrate()`
 
@@ -176,7 +193,7 @@ ser.close()
 from lager import Net, NetType
 
 uart = Net.get('DUT_SERIAL', type=NetType.UART)
-ser = uart.connect(baudrate=115200, timeout=0.1)
+ser = uart.connect(baudrate=115200)  # read timeout is 0.1 s
 
 print("Interactive console (Ctrl+C to exit)")
 print("-" * 40)
@@ -225,7 +242,8 @@ def send_command(ser, command, timeout=2.0):
 
 # Usage
 uart = Net.get('DUT_SERIAL', type=NetType.UART)
-ser = uart.connect(timeout=1.0)
+ser = uart.connect()
+ser.timeout = 1.0
 
 # Query firmware version
 version = send_command(ser, "AT+VER")
@@ -247,7 +265,8 @@ import time
 def uart_loopback_test(net_name):
     """Test UART by sending data and verifying echo."""
     uart = Net.get(net_name, type=NetType.UART)
-    ser = uart.connect(baudrate=115200, timeout=1.0)
+    ser = uart.connect(baudrate=115200)
+    ser.timeout = 1.0
 
     test_data = b"LOOPBACK_TEST_12345"
 

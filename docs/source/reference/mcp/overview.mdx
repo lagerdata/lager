@@ -8,9 +8,10 @@ agent understand the bench, understand the device under test (DUT), and plan
 hardware-in-the-loop tests. It runs on-box and is reachable over the box's local
 IP.
 
-The MCP server is **read-only**: it describes the bench and DUT but never drives
-hardware or runs code. The agent executes tests over a separate channel — the
-`lager` CLI.
+By default, the MCP server is **read-only**: it describes the bench and DUT, and
+it does not drive hardware or run code. Two opt-in environment variables change
+that; see [Optional tool gates](#optional-tool-gates). The agent executes tests
+over a separate channel — the `lager` CLI.
 
 ```
 MCP-compatible AI agent
@@ -120,7 +121,7 @@ do not execute arbitrary code.
 |------|---------|
 | `net_status(net)` | Compact read-only status for one net on the bench. |
 | `debug_probe_status(net)` | Whether a debug net's probe is present on the USB bus. |
-| `power_cycle_hub(hub)` | Power-cycle an Acroname-controlled USB hub port (disable, settle, enable). **Drives hardware.** |
+| `power_cycle_hub(hub)` | Power-cycle one USB hub port (Acroname, YKUSH, or Plugable) with the same `cycle` as `lager usb`, holding the port off for 1 second. The result carries `reconnected`: `true`, `false`, or `null`. The tool waits 4 more seconds only when the box cannot read its USB topology. **Drives hardware.** |
 
 #### `LAGER_MCP_ALLOW_EXEC`
 
@@ -191,8 +192,9 @@ agent follows with the tools above.
 The quality of everything above depends on the metadata you author once, at
 bench setup:
 
-- **Per-net `purpose`** — set in the Net Manager TUI (`lager nets tui`). One
-  sentence describing what each wire does on the DUT.
+- **Per-net `purpose`** — set in the Net Manager TUI (`lager nets tui`), or
+  with `lager nets describe NAME --purpose "..."`. One sentence describing what
+  each wire does on the DUT.
 - **DUT context** — set with [`lager dut`](/source/reference/cli/dut):
   the box's purpose, MCU, subsystems, and references to schematics and
   datasheets.

@@ -63,7 +63,7 @@ print(f"Port: {result['port']}")
 | `box_ip` | `str` | Lager Box IP address for URL generation |
 
 **Returns:** `dict` with keys:
-- `url` - Full stream URL (e.g., `http://<BOX_IP>:8081/`)
+- `url` - Full stream URL (e.g., `http://<BOX_IP>:8086/`)
 - `port` - Port number for the stream
 - `already_running` - Boolean indicating if stream was already active
 
@@ -111,7 +111,15 @@ else:
 |-----------|------|-------------|
 | `box_ip` | `str` | Lager Box IP address |
 
-**Returns:** `dict` or `None` - Stream info dict or None if not running
+**Returns:** `dict` or `None` - Stream info dict or None if not running. The dict
+has these keys:
+- `url` - Full stream URL
+- `port` - Port number for the stream
+- `video_device` - Video device path, such as `/dev/video0`
+- `source` - The tool that started the stream: `'api'` for this Python API,
+  `'cli'` for `lager webcam`. `None` for a stream with no recorded origin.
+- `started_by` - The user that the starting tool named. `None` for a stream
+  started from this Python API.
 
 ### `get_url(box_ip)`
 
@@ -150,6 +158,12 @@ else:
 ```
 
 **Returns:** `bool` - True if the stream is active, False otherwise
+
+<Note>
+The Python API has no snapshot method. To save one frame from a running stream,
+use [`lager webcam NET snapshot`](/source/reference/cli/webcam) from your
+computer.
+</Note>
 
 ## Examples
 
@@ -330,7 +344,7 @@ webcam.stop()
 Each stream provides a web interface at its URL with:
 
 - Live MJPEG video stream
-- Zoom controls (+, -, Reset)
+- Zoom, focus, and brightness sliders, with an autofocus button
 - FPS display
 - Sidebar with links to other active streams
 
@@ -340,6 +354,7 @@ Each stream provides a web interface at its URL with:
 |----------|--------|-------------|
 | `/` | GET | HTML page with video viewer |
 | `/stream` | GET | Raw MJPEG video stream |
+| `/snapshot` | GET | One JPEG frame. Returns 503 if no frame arrives within 5 seconds |
 | `/api/zoom` | GET | Get current zoom level |
 | `/api/zoom/in` | POST | Increase zoom |
 | `/api/zoom/out` | POST | Decrease zoom |
@@ -359,12 +374,14 @@ Each stream provides a web interface at its URL with:
 ## Notes
 
 - Webcam nets must be configured on the Lager Box with video device path
-- Streams run on ports starting from 8081
+- Streams run on ports starting from 8086
 - Each stream uses a separate port, automatically allocated
 - Streams persist until explicitly stopped or the process dies
 - Dead stream processes are automatically cleaned up
 - Only one stream can use a video device at a time
 - Default resolution is 640x480 at 30 FPS
 - JPEG quality is set to 80 for bandwidth/quality balance
-- Streams are accessible via HTTP from any network the Lager Box is on
+- Streams are reachable over HTTP at the Lager Box IP address. On an access-gated
+  box, a request needs a sign-in token, and the `url` from `start()` carries none.
+  Use `lager webcam url` for a link that carries your token
 - Zoom is digital (crop and scale), not optical
