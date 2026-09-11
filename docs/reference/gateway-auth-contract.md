@@ -175,11 +175,19 @@ MUST attach the bearer token on the first request rather than waiting for a
 denial. If the box is not in the store, the first request goes out bare —
 this is what keeps plain boxes zero-overhead.
 
+A pinned token (§6.1) satisfies this rule for free: it goes on every request,
+so the first contact with a box no store has ever heard of already carries
+it, and no `boxes` entry is consulted.
+
 ### 6.3 Handling a denial
 
 On a gateway denial (§2):
 
-1. Record the box→auth-server mapping in the store, unconditionally.
+1. Record the box→auth-server mapping in the store — except when a pinned
+   token is in play. A pinned client never reads that mapping (§6.2), so the
+   entry buys nothing, and CI is exactly where writing it costs: a
+   self-hosted runner keeps its filesystem between jobs, and the entry
+   outlives the address it names. A pinned client writes no store at all.
 2. For a **401** when not using a pinned token: resolve a credential from
    the store — refreshing if stale, and never re-sending the exact token
    the gateway just rejected — then retry the request **once** within the
@@ -266,3 +274,26 @@ This contract is versioned by the integer at the top of this file.
   shipped in CLI ≥ 0.32.0 (`lager login`) and lager-net 0.2.0.
 - **v1** (2026-08-26): recorded the `:8100` (MCP) decision in §6.4 and §7.
   Additive clarification of an unstated boundary; no version bump per §9.
+- **v1** (2026-09-10): the Python CLI now implements §6.1 pinned tokens
+  (`LAGER_GATEWAY_TOKEN`), which until now only lager-rs did.
+
+  Writing that client found two places where §6.1 and the sections below it
+  disagreed, both now stated: §6.2 said the first request to an unknown box
+  goes out bare, and §6.3 said a denial records the mapping
+  *unconditionally* — neither of which can hold for a token that §6.1
+  already attaches to every request and keeps out of the store. Both are
+  clarifications of an interaction the spec left unstated, not new
+  requirements, so no version bump per §9.
+
+  §6.3 as clarified also caught a real divergence: lager-rs *records* the
+  mapping whatever the credential, so a Rust CI job holding only a pinned
+  token leaves a token store behind exactly as the Python one used to. That
+  is a known non-conformance rather than an open spec question — the fix is
+  one guard in `GatewayAuth::learn_auth_server`, written and tested in
+  lagerdata/lager-rs#7, which is open and not merged.
+
+  §9 asks that a change reach both reference implementations. Until #7
+  merges, §6.3's pinned exception is met by the Python client and pending in
+  the Rust one, and this note is the record of that gap. A third-party
+  client should implement §6.3 as written: the requirement is not in
+  question, only one implementation's conformance with it.

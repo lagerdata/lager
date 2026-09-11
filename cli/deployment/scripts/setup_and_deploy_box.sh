@@ -744,7 +744,19 @@ ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chmod 666 /etc/lager/version
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/mkdir -p /etc/lager
 ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/tee /etc/lager/saved_nets.json
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/rm -f /etc/lager/version
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/rm -f /etc/lager/version
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/mv /tmp/lager_version_tmp /etc/lager/version
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/mv /tmp/lager_version_tmp /etc/lager/version
+# install.py records the deployed ref in /etc/lager/ref the same way it writes
+# version (rm + mv from /tmp + chmod). Without these grants the ref sudo has no
+# passwordless path and the write step stalls until its timeout. Both bin dirs,
+# because secure_path resolves the bare command to whichever exists first.
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/rm -f /etc/lager/ref
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/rm -f /etc/lager/ref
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/mv /tmp/lager_ref_tmp /etc/lager/ref
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/mv /tmp/lager_ref_tmp /etc/lager/ref
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod 644 /etc/lager/ref
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chmod 644 /etc/lager/ref
 # Allow ${BOX_USER} to write /etc/lager/bench.json (lager box dut edit/add-doc).
 # /etc/lager is owned by www-data, so the login user can't create files there;
 # the CLI stages to /tmp/lager-bench.json.tmp then cp's it in under this grant.
@@ -1191,8 +1203,16 @@ fi
 # also repairs boxes provisioned by an older CLI, which left /etc/lager
 # owner-only and therefore unwritable by start_box.sh's box_config renderers.
 # Single-quoted so $(id -g) is evaluated ON THE BOX, not on the operator's host.
+#
+# The recursive chown deliberately SKIPS authorized_keys.d. That directory
+# holds the .pub files that authorize SSH, and its ownership is managed
+# separately (root-owned on a locked-down box so nothing but the key manager
+# can add a key). A plain `chown -R` here swept it into www-data ownership,
+# which on a box that runs untrusted code lets that code authorize its own SSH
+# key. `-prune` leaves whatever owner the directory already has, so this stays
+# correct on both a plain box (box-writable) and a locked-down one (root).
 print_info "Ensuring correct permissions on /etc/lager..."
-ssh_t "${BOX_USER}@${BOX_IP}" 'sudo chown -R 33:"$(id -g)" /etc/lager && sudo chmod 2775 /etc/lager'
+ssh_t "${BOX_USER}@${BOX_IP}" 'sudo find /etc/lager -path /etc/lager/authorized_keys.d -prune -o -exec chown 33:"$(id -g)" {} + && sudo chmod 2775 /etc/lager'
 print_success "Permissions set correctly (www-data UID 33, group-writable by ${BOX_USER})"
 
 # Register the lager_box key in the box's key directory.
@@ -1330,10 +1350,20 @@ print_step "Deploying Box Code"
         # Update existing sparse checkout (discard any local changes)
         # Re-configure sparse checkout to ensure box directory is included.
         # `git fetch origin --tags` is required so release tags are available.
+        #
+        # --force is load-bearing. A box cloned before a tag was re-created
+        # upstream holds that tag at a different object, and an unforced fetch
+        # exits non-zero on it ("would clobber existing tag"). This fetch is in
+        # an && chain under `set -e`, so one stale tag aborted the whole deploy
+        # -- permanently, because every later install failed the same way until
+        # someone force-fetched by hand. Forcing is correct, not a workaround:
+        # the next two commands are `git reset --hard` and `git clean -fd`, so
+        # the script already asserts this checkout is a disposable mirror of
+        # origin. A tag is no different.
         ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "
             cd ~/box && \
             git sparse-checkout set box cli && \
-            git fetch origin --tags && \
+            git fetch origin --tags --force && \
             git reset --hard HEAD && \
             git clean -fd && \
             git checkout ${GIT_VERSION} && \
