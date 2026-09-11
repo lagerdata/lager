@@ -167,24 +167,27 @@ lager boxes list
 lager boxes          # same as list
 ```
 
-The command queries each box's `/cli-version` endpoint to display real-time version and status information.
+The command queries each box API on port 9000 (`/lock` and `/status`) to display real-time version, status and lock information.
 
 **Output:**
 
-```
-CLI version: 0.3.22
+```text
+name           ip            user        version        status         locked by
+=================================================================================
+my-lager-box   <BOX_IP>      lagerdata   0.47.0         current
+staging-box    <BOX_IP>      lagerdata   0.46.2         needs update   alice
+pi-box         <BOX_IP>      pi          0.47.0 (main)  current
+offline-box    <BOX_IP>      lagerdata   -              unreachable
 
-┌──────────────┬─────────────────┬───────────┬─────────┬───────────────┐
-│ Name         │ IP              │ User      │ Version │ Status        │
-├──────────────┼─────────────────┼───────────┼─────────┼───────────────┤
-│ my-lager-box │ <BOX_IP>        │ lagerdata │ 0.3.22  │ current       │
-│ staging-box  │ <BOX_IP>        │ lagerdata │ 0.3.20  │ needs update  │
-│ pi-box       │ <BOX_IP>        │ pi        │ 0.3.23  │ newer         │
-│ offline-box  │ <BOX_IP>        │ lagerdata │ ---     │ unreachable   │
-└──────────────┴─────────────────┴───────────┴─────────┴───────────────┘
-
-Summary: 1 current, 1 needs update, 1 newer, 1 unreachable
+Your CLI: 0.47.0
+1 box need updating
+1 box did not report a version
 ```
+
+The `locked by` column appears only when a box is locked. A version from a
+branch or a commit shows the ref in brackets, for example `0.47.0 (main)`. A box
+on a release tag shows only the version. `lager hello` prints the full ref with
+the commit.
 
 **Status Colors:**
 
@@ -196,6 +199,13 @@ Summary: 1 current, 1 needs update, 1 newer, 1 unreachable
 | `unreachable` | Red | Box could not be contacted |
 | `timeout` | Red | Connection timed out |
 | `old box` | Red | Box does not support version reporting |
+| `no IP` | Red | The stored entry has no IP address |
+| `bad response`, `invalid JSON`, `HTTP <code>`, `error` | Red | The box answered, but not with a usable version |
+| `sign-in required`, `session rejected` | Red | The box is access-gated. The CLI prints the `lager login` command to run |
+
+If a box shows `root` in the `locked by` column, the command prints a warning.
+Such a lock usually comes from inside a Docker container. Use
+`lager boxes lock --user` to name the user next time.
 
 ### `delete-all`
 
@@ -252,11 +262,12 @@ lager boxes import new-boxes.json --merge --yes
 Lock a box to prevent other users from using it. See [Box Locking](/source/reference/cli/locking) for full details.
 
 ```bash
-lager boxes lock --box NAME
+lager boxes lock --box NAME [--user USER]
 ```
 
 **Options:**
 - `--box` (required) - Name of the box to lock
+- `--user` - Username to lock as. Use it inside a Docker container, where the user is otherwise `root`
 
 **Example:**
 ```bash
@@ -288,11 +299,13 @@ lager boxes unlock --box my-lager-box --force
 
 ## Configuration Storage
 
-Box configurations are stored in `.lager` file in your project directory:
+The boxes commands write box configurations to `~/.lager` in your home
+directory. If `LAGER_CONFIG_FILE_DIR` is set, they write `.lager` in that
+directory instead. The boxes are under the `BOXES` key:
 
 ```json
 {
-  "boxes": {
+  "BOXES": {
     "my-lager-box": {
       "ip": "<BOX_IP>",
       "user": "lagerdata",
@@ -306,6 +319,10 @@ Box configurations are stored in `.lager` file in your project directory:
 Entries can be:
 - **Simple**: Just an IP address string
 - **Full**: Object with ip, user, and version fields
+
+To read boxes, the CLI merges the global file with the `.lager` files that it
+finds in your project directories. The file closest to the current directory
+wins.
 
 ---
 
@@ -343,6 +360,6 @@ lager boxes delete-all --yes
 
 - Box names must be unique
 - IP addresses must be unique (no duplicate IPs)
-- `--user` is required when adding a box (there is no default SSH user)
+- `--user` is required for `lager boxes add`. `add-all` stores entries without a user, and commands then use `lagerdata`
 - Use `--merge` when importing to preserve existing boxes
-- Sync command requires Lager Boxes to be online and accessible
+- `lager boxes list` needs each box to answer on port 9000 to show its version and lock state

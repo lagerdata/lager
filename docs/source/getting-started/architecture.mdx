@@ -94,7 +94,7 @@ flowchart TB
 
     subgraph hs[":8080 hardware service"]
       direction TB
-      DRV["Drivers<br/>VISA/SCPI, pySerial, LJM, pyOCD, aardvark_py"]
+      DRV["Drivers<br/>VISA/SCPI, pySerial, LJM, aardvark_py"]
       OWN["Driver cache, per-device lock,<br/>shared VISA session pool"]
       DRV --- OWN
     end
@@ -128,15 +128,28 @@ flowchart TB
 
 | Port | Service | Exposed | Purpose |
 |------|---------|---------|---------|
-| 9000 | Flask + SocketIO | Yes (VPN only) | Main box API: UART streaming, live supply/battery WebSockets, instrument discovery, net listing, box lock |
-| 5000 | HTTP | Yes (VPN only) | Python execution service: receives uploaded scripts and runs them as subprocesses |
-| 8765 | WebSocket | Yes (VPN only) | Debug sessions (GDB, flash, reset) |
-| 8100 | HTTP | Yes (VPN only) | MCP service for AI tool integration |
-| 8080 | Flask | Yes (VPN only) | Hardware service: instrument control via the Device proxy, called by the port 9000 API |
+| 9000 | Flask + SocketIO | Yes | Main box API: UART streaming, live supply/battery WebSockets, instrument discovery, net listing, box lock. Not published when `LAGER_DISABLE_UART_SERVICE` is set |
+| 5000 | HTTP | Yes | Python execution service: receives uploaded scripts and runs them as subprocesses |
+| 8301 | HTTP | Yes | Alias of port 5000, kept for backward compatibility |
+| 8765 | WebSocket | Yes | Debug sessions (GDB, flash, reset) |
+| 8100 | HTTP | Yes | MCP service for AI tool integration |
+| 8080 | Flask | Yes | Hardware service: instrument control via the Device proxy, called by the port 9000 API |
 | 8081 | HTTP | Yes (if PicoScope present) | Oscilloscope streaming UI |
 | 8082-8085 | TCP / WebSocket | Yes (if PicoScope present) | Oscilloscope daemon (commands, browser streaming, database streaming, CLI WebSocket) |
-| 8086+ | HTTP | Yes (if webcams present) | Webcam MJPEG streaming (one port per camera) |
+| 8086-8090 | HTTP | Yes (if webcams present) | Webcam MJPEG streaming (one port per camera, from 8086) |
+| 2331-2342 | TCP | Yes | Debug probe GDB, SWO and telnet ports, three per probe |
+| 4444-4447 | TCP | Yes | OpenOCD telnet, one per probe |
+| 6666-6669 | TCP | Yes | OpenOCD TCL, one per probe |
+| 9090-9097 | TCP | Yes | RTT, two per probe |
 | 22 | SSH | Yes | Direct SSH access for deployment and debugging |
+
+<Warning>
+  **The host firewall does not filter a published port.** Docker installs its forwarding rules
+  ahead of the host chain. A published port therefore answers anyone who can route to the box,
+  whatever `ufw status` reports. Treat network reachability as the boundary. Put the box on a
+  VPN or an isolated LAN. See the Security Model section of
+  [SECURITY.md](https://github.com/lagerdata/lager/blob/main/SECURITY.md#security-model).
+</Warning>
 
 <Note>
   The **Exposed** column describes a box that publishes its ports, which is the default. A box
@@ -146,6 +159,9 @@ flowchart TB
 
   Port 22 is the exception. SSH is the host's own daemon rather than a published container port,
   so `--no-publish` does not affect it.
+
+  A box set to `lager box-config network-mode host` also publishes no ports. There, the
+  container binds the ports on the host directly, and the host firewall governs them.
 </Note>
 
 ### Why there are two HTTP ports
@@ -162,8 +178,8 @@ script to the box and to stop a running one. Nothing new is added to it.
 Some state answers on both. Lock state is one: the box exposes it on each
 server, and the CLI reads it from `:9000`.
 
-Open both to your VPN. A box that publishes only `:9000` answers `lager nets`
-and `lager hello` but fails `lager python`.
+Make both reachable over your VPN. A box that publishes only `:9000` answers
+`lager nets` and `lager hello` but fails `lager python`.
 
 ## Optional Control Plane Integration
 
@@ -225,17 +241,17 @@ working.
 | `solar` | EA PSI / EL series |
 | `analog` | Rigol MSO5000 (oscilloscope analog channel) |
 | `logic` | Rigol MSO5000 (logic analyzer channel) |
-| `adc` | LabJack T7, USB-202 |
-| `dac` | LabJack T7, USB-202 |
-| `gpio` | LabJack T7, USB-202 |
+| `adc` | LabJack T7, LabJack U3, USB-202 |
+| `dac` | LabJack T7, LabJack U3, USB-202 |
+| `gpio` | LabJack T7, LabJack U3, USB-202 |
 | `thermocouple` | Phidget thermocouple |
 | `watt` | Yocto-Watt, Joulescope JS220 |
-| `debug` | J-Link, CMSIS-DAP, ST-Link (via pyOCD) |
+| `debug` | J-Link (J-Link GDB server); ST-Link, CMSIS-DAP and FTDI debug adapters (OpenOCD) |
 | `uart` | USB-to-serial adapters |
-| `i2c` | Aardvark, LabJack T7, FT232H |
-| `spi` | LabJack T7, FT232H |
+| `i2c` | Aardvark, LabJack T7, LabJack U3, FT232H |
+| `spi` | LabJack T7, LabJack U3, FT232H |
 | `arm` | Rotrics Dexarm |
-| `usb-hub` | Acroname, YKUSH |
+| `usb-hub` | Acroname, YKUSH, Plugable |
 
 ## Execution Flows
 

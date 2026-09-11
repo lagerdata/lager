@@ -3,7 +3,7 @@ title: Logs
 description: Manage Lager Box logs
 ---
 
-View, clean, and manage log files on Lager Boxes.
+Check the size of log files on Lager Boxes, and remove old ones.
 
 ## Syntax
 
@@ -19,13 +19,18 @@ lager logs COMMAND [OPTIONS]
 | `clean` | Clean old log files from Lager Box |
 | `docker` | Check Docker container log sizes |
 
+<Note>
+These commands measure and delete log files. They do not print log content. To
+read the logs of the box services, see the Reading Service Logs section below.
+</Note>
+
 ---
 
 ## Command Reference
 
 ### `size`
 
-Check log file sizes on one or all Lager Boxes.
+Check the size of `~/box/logs` on one Lager Box, or on every saved Lager Box.
 
 ```bash
 lager logs size [--box BOX] [--verbose]
@@ -49,19 +54,14 @@ lager logs size --box my-lager-box --verbose
 
 Output:
 ```
-Log sizes on my-lager-box:
-  Total: 1.2 GB
-  [WARNING] Log size exceeds 500 MB
-
-  Details (--verbose):
-    /var/log/syslog: 450 MB
-    /var/log/docker.log: 320 MB
-    /var/log/lager/*.log: 430 MB
+my-lager-box (100.64.1.42):
+  Total logs: 620M
+  Warning: Logs are large, consider cleaning
 ```
 
 ### `clean`
 
-Remove old log files from a Lager Box.
+Delete the `*.log` files in `~/box/logs` that are older than a number of days.
 
 ```bash
 lager logs clean --box BOX [--older-than DAYS] [--yes]
@@ -86,14 +86,14 @@ lager logs clean --box my-lager-box --yes
 
 Output:
 ```
-Cleaning logs older than 1 day on my-lager-box...
-Removed 15 files
-Space freed: 856 MB
+Cleaning logs on my-lager-box... OK
+Current logs size: 48M
 ```
 
 ### `docker`
 
-Check Docker container log sizes.
+Check the size of the Docker log file of each running container. A Lager Box
+runs one container, `lager`.
 
 ```bash
 lager logs docker --box BOX [--container NAME]
@@ -109,18 +109,22 @@ lager logs docker --box BOX [--container NAME]
 lager logs docker --box my-lager-box
 
 # Check specific container
-lager logs docker --box my-lager-box --container controller
+lager logs docker --box my-lager-box --container lager
 ```
 
 Output:
 ```
-Docker log sizes on my-lager-box:
-  controller: 8.2 MB
-  python: 12.4 MB
-  hardware_rtc: 3.1 MB
+Docker logs on my-lager-box (100.64.1.42):
 
-Docker log rotation: max-size=10m, max-file=3
+Container: lager
+  Size: 8.2M Path: /var/lib/docker/containers/<id>/<id>-json.log
+
+Note: Docker logs are automatically rotated with max-size=10m, max-file=3
+Total maximum per container: ~30MB
 ```
+
+The command reads the log file with `sudo` over a non-interactive SSH session.
+If `sudo` asks for a password on the box, no size line appears under the container name.
 
 ---
 
@@ -130,7 +134,7 @@ Docker containers use automatic log rotation:
 - **Maximum size**: 10 MB per file
 - **Maximum files**: 3 (rotates oldest)
 
-This means Docker logs are self-managing and shouldn't grow unbounded.
+This means Docker logs are self-managing and do not grow without a limit.
 
 ---
 
@@ -140,23 +144,42 @@ The `size` command uses warning thresholds:
 
 | Size | Status |
 |------|--------|
-| < 500 MB | Normal |
-| 500 MB - 1 GB | Warning |
-| > 1 GB | Critical |
+| 500 MB or less | Normal |
+| More than 500 MB | `Warning: Logs are large, consider cleaning` |
+| 1 GB or more | `ERROR: Logs are very large! Clean immediately:`, followed by the `clean` command |
 
 ---
 
 ## What Gets Cleaned
 
 The `clean` command removes:
-- System logs in `/var/log/`
-- Lager application logs
-- Old rotated log files (`.log.1`, `.log.gz`, etc.)
+- Files that match `*.log` in `~/box/logs` on the box host, and that are older than `--older-than` days
 
 It does **not** remove:
-- Current log files
+- System logs in `/var/log/`
 - Docker container logs (managed separately)
+- The service logs inside the container
 - Files newer than `--older-than` threshold
+
+---
+
+## Reading Service Logs
+
+The box services write their logs inside the `lager` container:
+
+| Service | Log file |
+|---------|----------|
+| Python execution service | `/tmp/lager-python-service.log` |
+| Hardware service | `/tmp/lager-hardware-service.log` |
+| Debug service | `/tmp/lager-debug-service.log` |
+| Box HTTP server (port 9000) | `/tmp/lager-http-server.log` |
+| MCP server | `/tmp/lager-mcp-server.log` |
+
+To read the last lines of a log, run `docker exec` on the box:
+
+```bash
+lager ssh --box my-lager-box -- docker exec lager tail -n 200 /tmp/lager-hardware-service.log
+```
 
 ---
 
@@ -190,7 +213,8 @@ lager logs docker --box my-lager-box  # Check Docker logs
 
 ## Notes
 
-- Log cleaning requires SSH access to the Lager Box
+- `--box` takes the name of a saved Lager Box. An IP address is not accepted.
+- These commands connect over SSH as the user `lagerdata`, with key authentication only. They do not use the user that you stored with `lager boxes add --user`, so they fail on a box with a different login user.
 - Docker logs are automatically rotated
 - Use `--verbose` to identify large log files
 - Regular cleaning prevents disk space issues
