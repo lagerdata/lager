@@ -17,20 +17,25 @@ with a real description.
 
 ## What runs in CI
 
-Two workflows run on `pull_request`: `unit-tests.yml` and `static-checks.yml`. The rest are push-,
-schedule-, or dispatch-triggered and need the bench.
+Five workflows run on `pull_request`: `unit-tests.yml`, `static-checks.yml`, `rust-checks.yml`,
+`packaging.yml` and `xplat-smoke.yml`. The others run on a schedule, through `workflow_call`, on a
+tag push, or on manual dispatch.
 
 | Workflow | Trigger | Runner | Gates a PR |
 |---|---|---|:---:|
 | `unit-tests.yml` | `pull_request`, push to `main`, dispatch | GitHub-hosted `ubuntu-latest` | **Yes** |
-| `static-checks.yml` | `pull_request`, push to `main`, dispatch | GitHub-hosted `ubuntu-latest` | Reports (see below) |
-| `rust-checks.yml` | `pull_request`, push to `main`, dispatch -- **path-filtered** to `box/oscilloscope-daemon/**` | GitHub-hosted `ubuntu-latest` | Reports (see below) |
-| `integration-tests.yml` | push to `main`, `workflow_call`, dispatch | self-hosted `lager-bench` | No |
+| `static-checks.yml` | `pull_request`, push to `main`, dispatch | GitHub-hosted `ubuntu-latest` | **Yes** (the `static-checks` job) |
+| `rust-checks.yml` | `pull_request`, dispatch; push to `main` **path-filtered** to `box/oscilloscope-daemon/**` | GitHub-hosted `ubuntu-latest` | **Yes** |
+| `packaging.yml` | `pull_request`, push to `main`, dispatch | GitHub-hosted `ubuntu-latest` | **Yes** |
+| `xplat-smoke.yml` | `pull_request`, push to `main`, dispatch | GitHub-hosted `macos-latest`, `windows-latest` | **Yes** |
+| `integration-tests.yml` | `workflow_call`, dispatch | self-hosted `lager-bench` | No |
 | `update-regression.yml` (Bench: Box Lifecycle) | `workflow_call`, dispatch | self-hosted `lager-bench` | No |
 | `nightly-bench.yml` | nightly schedule, dispatch | orchestrator | No |
+| `bench-extended.yml` | weekly schedule, dispatch | self-hosted `lager-bench` | No |
+| `bench-watchdog.yml` | schedule every 6 hours, dispatch | GitHub-hosted `ubuntu-latest` | No |
 
-`nightly-bench.yml` is the only workflow with a schedule. It reaches the other two bench
-workflows through `workflow_call`, so neither of those carries a `schedule` trigger of its own.
+`nightly-bench.yml` reaches the other two bench workflows above it through `workflow_call`, so
+neither of those carries a `schedule` trigger of its own.
 
 A job only *blocks* a merge once its status context is listed in branch ruleset 14535039.
 Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `compat (...)` jobs,
@@ -50,9 +55,8 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | | **Total gated** | **5149** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
-name `lager`. `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never
-runs, which skips the heavy box deps. `test/unit/box/conftest.py` imports the real package
-instead. The two cannot share a process.
+name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
+A second suite in the same process inherits that state instead of building its own.
 
 `unit-tests.yml` also runs a **`compat (pyX.Y)`** job covering the other versions `cli/setup.py`
 advertises. It runs all six suites sequentially, one process per version.
@@ -77,8 +81,8 @@ anywhere in the tree.
 
 | Check | Scope | Baseline when added |
 |---|---|---|
-| `bash -n` | 56 shell scripts under `test/ tools/ box/ cli/deployment/` | clean |
-| `shellcheck -S warning`, excluding `SC2034,SC2320,SC2155,SC2164,SC2046` | the 45 under `test/ tools/` only -- `box/` and `cli/deployment/` are syntax-checked but not linted | clean. Pinned to `shellcheck-py==0.11.0.1`, not the runner image's binary. See below for what the exclusions cost. |
+| `bash -n` | every shell script under `test/ tools/ box/ cli/deployment/` | clean |
+| `shellcheck -S warning`, excluding `SC2034,SC2320,SC2155,SC2164,SC2046` | the same scripts as `bash -n` (`box/` and `cli/deployment/` were added after `test/ tools/`) | clean. Pinned to `shellcheck-py==0.11.0.1`, not the runner image's binary. See below for what the exclusions cost. |
 | `compileall` | every `.py` in `cli/ box/ test/ tools/` | clean |
 | `pytest --collect-only` | `test/mcp/integration/` | 8 tests collect |
 | `ruff --select E9,F63,F7,F82` | `cli/ box/ test/ tools/`, vendored excluded | clean (default ruleset would be ~6300) |

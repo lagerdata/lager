@@ -26,9 +26,8 @@
 # No cron of its own. Nightly, nightly-bench.yml invokes this workflow behind
 # the "Bench: Box Lifecycle" run, so the instruments are exercised against a
 # box that was just updated and reinstalled rather than against whatever it
-# happened to be running. It also still runs on every push to `main` — a
-# per-merge sweep that keeps instrument coverage on nights the lifecycle goes
-# red — and on manual dispatch.
+# happened to be running. It also runs on manual dispatch. It has no push
+# trigger; see the `on:` block below for why.
 #
 # Instrument power: the Rigol and Keithley sit on AC relays driven by the
 # bench LabJack (see .github/workflows/README.md). This job powers them on
