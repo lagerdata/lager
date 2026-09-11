@@ -21,6 +21,10 @@ from cli.errors import LagerError
 @pytest.fixture(autouse=True)
 def isolated_store(tmp_path, monkeypatch):
     monkeypatch.setenv('LAGER_GATEWAY_AUTH_FILE', str(tmp_path / 'gateway_auth.json'))
+    # A pinned token outranks the store, so one exported in the developer's
+    # own shell would silently rewrite what every test below exercises.
+    monkeypatch.delenv(gateway_auth.PINNED_TOKEN_ENV, raising=False)
+    return tmp_path / 'gateway_auth.json'
 
 
 def make_jwt(exp):
@@ -486,3 +490,151 @@ def test_hook_passes_through_success():
     response = make_response(200, {gateway_auth.DISCOVERY_HEADER: 'http://cp:3001'})
 
     assert hook(response) is response
+
+
+# ---------------------------------------------------------------------------
+# Pinned token (contract §6.1) — the credential a CI job is given
+# ---------------------------------------------------------------------------
+
+PINNED = 'opaque-machine-token'
+
+
+@pytest.fixture
+def pinned(monkeypatch):
+    monkeypatch.setenv(gateway_auth.PINNED_TOKEN_ENV, PINNED)
+
+
+def test_pinned_token_attaches_to_a_box_the_store_never_heard_of(pinned):
+    # No mapping, no session, no prior contact: the very first request
+    # already carries the token, so a CI job needs no discovery round trip.
+    assert gateway_auth.auth_headers_for_box('10.0.0.99') == {
+        'Authorization': f'Bearer {PINNED}'}
+
+
+def test_pinned_token_leaves_no_store_behind(pinned, isolated_store):
+    gateway_auth.auth_headers_for_box('10.0.0.5')
+    gateway_auth.record_box_auth_server('10.0.0.5', 'http://cp:3001')
+    assert not isolated_store.exists()
+
+    with pytest.raises(LagerError):
+        gateway_auth.handle_gateway_denial(
+            make_response(401, {gateway_auth.DISCOVERY_HEADER: 'http://cp:3001'}),
+            '10.0.0.5')
+
+    # A self-hosted runner keeps its filesystem between jobs; a mapping
+    # written here would outlive the box address it names.
+    assert not isolated_store.exists()
+    assert gateway_auth.auth_server_for_box('10.0.0.5') is None
+
+
+def test_pinned_token_beats_a_stored_session_for_the_same_server(pinned):
+    gateway_auth.save_login('http://cp:3001', make_jwt(time.time() + 900), {'refresh': 'r1'})
+    gateway_auth.record_box_auth_server('10.0.0.5', 'http://cp:3001')
+
+    assert gateway_auth.access_token_for('http://cp:3001') == PINNED
+    assert gateway_auth.auth_headers_for_box('10.0.0.5') == {
+        'Authorization': f'Bearer {PINNED}'}
+
+
+def test_pinned_token_is_not_parsed_as_a_jwt(pinned, auth_server):
+    # An opaque token has no `exp` to read. Returning it as-is is the point:
+    # the old expiry test would call it stale and try to refresh it.
+    gateway_auth.save_login(auth_server.url, make_jwt(time.time() - 10),
+                            {'refresh_token': 'old-refresh'})
+
+    assert gateway_auth.access_token_for(auth_server.url) == PINNED
+    assert auth_server.refresh_calls == []
+
+
+def test_pinned_denial_names_the_refusing_server_and_does_not_say_login(pinned):
+    response = make_response(401, {gateway_auth.DISCOVERY_HEADER: 'http://cp:3001'})
+
+    with pytest.raises(LagerError) as excinfo:
+        gateway_auth.handle_gateway_denial(response, '10.0.0.5')
+
+    err = excinfo.value
+    text = ' '.join([err.problem, err.cause or '', *err.fixes])
+    assert gateway_auth.PINNED_TOKEN_ENV in err.problem
+    assert 'http://cp:3001' in text
+    assert 'lager login' not in text
+
+
+def test_pinned_denial_403_reports_the_missing_grant_not_a_sign_in(pinned):
+    response = make_response(403, {gateway_auth.DISCOVERY_HEADER: 'http://cp:3001'})
+
+    with pytest.raises(LagerError) as excinfo:
+        gateway_auth.handle_gateway_denial(response, '10.0.0.5')
+
+    assert gateway_auth.PINNED_TOKEN_ENV in excinfo.value.problem
+    assert 'signed in' not in excinfo.value.problem
+
+
+def test_pinned_denial_503_still_blames_the_gateway(pinned):
+    # 503 describes the gateway, not the credential, so the shared message
+    # is the right one whatever the token's source.
+    response = make_response(503, {gateway_auth.DISCOVERY_HEADER: 'http://cp:3001'})
+
+    with pytest.raises(LagerError) as excinfo:
+        gateway_auth.handle_gateway_denial(response, '10.0.0.5')
+
+    assert 'auth server is unreachable' in excinfo.value.problem
+
+
+def test_pinned_denial_label_says_token_not_session(pinned):
+    resp = make_response(401, {gateway_auth.DISCOVERY_HEADER: 'http://cp:3001'})
+    prepared = requests.PreparedRequest()
+    prepared.headers = {'Authorization': f'Bearer {PINNED}'}
+    resp.request = prepared
+
+    assert gateway_auth.denial_label(resp) == 'token rejected'
+
+
+@pytest.mark.parametrize('value', ['', '   ', '\t\n'])
+def test_empty_pinned_token_is_the_same_as_unset(monkeypatch, value):
+    # `LAGER_GATEWAY_TOKEN: ${{ secrets.MISSING }}` expands to the empty
+    # string. It must fall through to the store, not send `Bearer `.
+    monkeypatch.setenv(gateway_auth.PINNED_TOKEN_ENV, value)
+    token = make_jwt(time.time() + 900)
+    gateway_auth.save_login('http://cp:3001', token, {'refresh': 'r1'})
+    gateway_auth.record_box_auth_server('10.0.0.5', 'http://cp:3001')
+
+    assert gateway_auth.pinned_token() is None
+    assert gateway_auth.access_token_for('http://cp:3001') == token
+    assert gateway_auth.auth_headers_for_box('10.0.0.5') == {
+        'Authorization': f'Bearer {token}'}
+    assert gateway_auth.auth_headers_for_box('10.0.0.99') == {}
+
+
+def test_empty_pinned_token_still_records_discovery(monkeypatch, isolated_store):
+    monkeypatch.setenv(gateway_auth.PINNED_TOKEN_ENV, '  ')
+    response = make_response(401, {gateway_auth.DISCOVERY_HEADER: 'http://cp:3001'})
+
+    with pytest.raises(LagerError) as excinfo:
+        gateway_auth.handle_gateway_denial(response, '10.0.0.5')
+
+    assert 'lager login http://cp:3001' in ' '.join(excinfo.value.fixes)
+    assert gateway_auth.auth_server_for_box('10.0.0.5') == 'http://cp:3001'
+    assert isolated_store.exists()
+
+
+def test_pinned_token_survives_surrounding_whitespace(monkeypatch):
+    # Secret stores and YAML block scalars both add a trailing newline.
+    monkeypatch.setenv(gateway_auth.PINNED_TOKEN_ENV, f'  {PINNED}\n')
+
+    assert gateway_auth.auth_headers_for_box('10.0.0.5') == {
+        'Authorization': f'Bearer {PINNED}'}
+
+
+def test_ws_recovery_with_pinned_token_fails_without_recording(monkeypatch, pinned,
+                                                               isolated_store):
+    # The handshake already carried the pinned token, so there is no second
+    # credential to retry with: report the refusal and write nothing.
+    _fake_probe(monkeypatch, make_response(
+        401, {gateway_auth.DISCOVERY_HEADER: 'http://cp:3001'}))
+
+    headers, error = gateway_auth.ws_handshake_recovery(
+        'http://10.0.0.5:9000', {'Authorization': f'Bearer {PINNED}'})
+
+    assert headers == {}
+    assert gateway_auth.PINNED_TOKEN_ENV in error.problem
+    assert not isolated_store.exists()

@@ -12,7 +12,25 @@ that follow.
 ### Arrangement A: the runner is on a different machine
 
 A different machine runs the job. The job connects to the box across the
-network. The job must install the CLI, log in, and get the address of the box.
+network. The job must install the CLI, get a credential, and get the address of
+the box.
+
+If your boxes sit behind an access gateway, give the job a token. Your auth
+server makes the token. The CLI reads it from `LAGER_GATEWAY_TOKEN` and sends it
+with each request. The job then needs no login step and no password:
+
+```yaml
+runs-on: [self-hosted, lager-bench]
+env:
+  LAGER_GATEWAY_TOKEN: ${{ secrets.LAGER_GATEWAY_TOKEN }}
+steps:
+  - run: pip install lager-cli==0.43.0
+  - run: lager boxes add --name BENCH-1 --ip "$BOX_IP" --user lagerdata --yes
+  - run: lager python tests/hil --box BENCH-1
+```
+
+Some auth servers cannot make a token for a machine. For those, the job logs in
+as a person:
 
 ```yaml
 runs-on: [self-hosted, lager-bench]
@@ -23,13 +41,18 @@ steps:
   - run: lager python tests/hil --box BENCH-1
 ```
 
+Boxes with no gateway need neither form. Remove the credential from the job.
+[Section 13](#13-how-to-give-ci-a-gateway-credential) gives the detail of both
+forms.
+
 This arrangement is correct if one runner controls more than one box. It is
 also correct if you keep your boxes off the CI network on purpose.
 
 This arrangement has three disadvantages:
 
 - Each job does the same preparation again.
-- The address of the box and the login data become repository secrets.
+- The address of the box becomes a repository secret. The login form adds an
+  email address and a password. The token form adds one token.
 - Two jobs on that runner can try to use the same bench at the same time.
 
 ### Arrangement B: the runner is on the box
@@ -335,7 +358,7 @@ serviceable.
 
 Do the command again after a failure. On a box behind a gateway, the first
 command after a new login can fail one time. Refer to
-[Section 13](#13-how-to-log-in-to-a-gateway-from-ci).
+[Section 13](#13-how-to-give-ci-a-gateway-credential).
 
 **`lager python` sends your script to the box. The box runs the script.** The
 argument is a file or a directory. The CLI uploads a directory as a module.
@@ -1462,10 +1485,44 @@ and the gate job need the results of a job that stopped during a test.
 
 ---
 
-## 13. How to log in to a gateway from CI
+## 13. How to give CI a gateway credential
 
-Boxes behind an access gateway need a session. Boxes with no gateway need no
-session. If your boxes have no gateway, do not read this section.
+Boxes behind an access gateway need a credential. Boxes with no gateway need
+none. If your boxes have no gateway, do not read this section.
+
+There are two credentials, and the CLI takes the first one it finds:
+
+1. A token in `LAGER_GATEWAY_TOKEN`. Use this when the runner is not on the box.
+2. A session from `lager login`. Use this when the runner is on the box.
+
+### A token from your auth server
+
+Ask your auth server for a machine token. Keep the token in a repository secret.
+Then give the secret to the job:
+
+```yaml
+    env:
+      LAGER_GATEWAY_TOKEN: ${{ secrets.LAGER_GATEWAY_TOKEN }}
+```
+
+This is all that the job needs. There is no login step, and no password goes
+into your repository secrets. Each box action belongs to the token, not to a
+person.
+
+The CLI sends this token with each request to a box. It does not refresh the
+token, and it writes no session file. Thus the job leaves no credential on the
+runner.
+This matters on a self-hosted runner, because the disk of the runner stays
+between two jobs.
+
+An empty value counts as no token. A secret that does not exist expands to an
+empty string. The CLI then behaves as if you set no variable.
+
+If the gateway refuses the token, the command stops immediately. The CLI does
+not try a second credential. The message names the auth server that refused the
+token. Get a new token from that server, then set the secret again.
+
+### A session from `lager login`
 
 The runner is on the box. Thus you log in one time on the machine. You do not
 log in in each job. The CLI keeps the session in the home directory of the
@@ -1478,8 +1535,8 @@ lager whoami
 ```
 
 Some conditions need a login in the job. Examples are a runner on a different
-machine, or a box that you install again at intervals. For these conditions, use
-the flags:
+machine with no token, or a box that you install again at intervals. For these
+conditions, use the flags:
 
 ```yaml
       - name: Sign in
@@ -1505,9 +1562,9 @@ Obey these rules:
   waits for an input that never comes.
 - The CLI keeps the session in `~/.lager_gateway_auth` with permission 0600.
   `LAGER_GATEWAY_AUTH_FILE` sets a different location.
-- **The Python CLI does not read a token from an environment variable.** A
-  variable such as `LAGER_GATEWAY_TOKEN` applies to the Rust SDK. It does not
-  apply to `lager`. Use `lager login`.
+- **A token in `LAGER_GATEWAY_TOKEN` wins over a session.** The CLI reads the
+  variable first and sends that token. It does not touch the session file. The
+  Rust SDK reads the same variable.
 
 ### Do the first command two times
 
@@ -1523,6 +1580,9 @@ does the command two times:
 Keep this even if you have not seen the failure. It is the cost of one more
 command. It removes a failure that happens on the first job of the day.
 
+A token in `LAGER_GATEWAY_TOKEN` does not have this condition. The CLI sends the
+token with the first command, so there is no mapping to record.
+
 ---
 
 ## 14. Reference data
@@ -1535,6 +1595,7 @@ command. It removes a failure that happens on the first job of the day.
 | `LAGER_CONFIG_FILE_DIR` | The directory of the global `.lager` file. Default `~`. |
 | `LAGER_CONFIG_FILE_NAME` | The name of the configuration file. Default `.lager`. |
 | `LAGER_GATEWAY_AUTH_FILE` | A different location for `~/.lager_gateway_auth`. |
+| `LAGER_GATEWAY_TOKEN` | A token for an access gateway. It wins over a session, and the CLI writes no file. |
 | `LAGER_USER` | The user identity. It is the lock holder on a user computer. |
 | `LAGER_LOCK_HOLDER` | A different identity for the lock holder. |
 | `LAGER_LOCK_WAIT` | Seconds to wait after a lock collision. A value that is not a number, or a negative value, gives 0. |

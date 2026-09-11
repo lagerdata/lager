@@ -55,6 +55,24 @@ lager logout                 # forget every stored session
 lager logout <auth-url>      # forget one server's session
 ```
 
+### A token instead of a sign-in
+
+A CI job has no person to be. If your auth server can make a machine token,
+give the job that token and drop the login step:
+
+```yaml
+env:
+  LAGER_GATEWAY_TOKEN: ${{ secrets.LAGER_GATEWAY_TOKEN }}
+```
+
+The CLI sends this token with every request to a box. It wins over any stored
+session, and it is never refreshed. Nothing is written to
+`~/.lager_gateway_auth`, so the job leaves no credential on the runner. An empty
+or whitespace-only value counts as unset.
+
+If the gateway refuses the token, the command fails at once and names the auth
+server that refused it. There is no second credential to fall back on.
+
 ## Checking your status
 
 When something looks off, `lager whoami` is the first thing to run:
@@ -82,6 +100,7 @@ wrong account", and "signed in but no access".
 | **Your session… was rejected** | Your session expired or was revoked. | Run `lager login <url>` again. |
 | **signed in but not authorized** | Your account is valid but has no access grant for this box. | Ask an org admin to grant you access. |
 | **could not verify your access right now** | The box couldn't reach its auth server. | Try again shortly; if it persists, contact your admin. |
+| **refused the token in LAGER_GATEWAY_TOKEN** | The gateway rejected the token the job supplied. | Get a new token from the auth server named in the message. |
 
 If you hit any of these on an **old** Lager version, upgrade first —
 sign-in support needs a current CLI:

@@ -1330,10 +1330,20 @@ print_step "Deploying Box Code"
         # Update existing sparse checkout (discard any local changes)
         # Re-configure sparse checkout to ensure box directory is included.
         # `git fetch origin --tags` is required so release tags are available.
+        #
+        # --force is load-bearing. A box cloned before a tag was re-created
+        # upstream holds that tag at a different object, and an unforced fetch
+        # exits non-zero on it ("would clobber existing tag"). This fetch is in
+        # an && chain under `set -e`, so one stale tag aborted the whole deploy
+        # -- permanently, because every later install failed the same way until
+        # someone force-fetched by hand. Forcing is correct, not a workaround:
+        # the next two commands are `git reset --hard` and `git clean -fd`, so
+        # the script already asserts this checkout is a disposable mirror of
+        # origin. A tag is no different.
         ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "
             cd ~/box && \
             git sparse-checkout set box cli && \
-            git fetch origin --tags && \
+            git fetch origin --tags --force && \
             git reset --hard HEAD && \
             git clean -fd && \
             git checkout ${GIT_VERSION} && \

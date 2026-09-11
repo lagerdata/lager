@@ -114,6 +114,17 @@ class TestStart:
         # The old "not reachable" warning is gone: the gateway fronts the port.
         assert 'not exposed' not in output
 
+    def test_pinned_token_link_does_not_claim_a_minute_lifetime(self, monkeypatch):
+        # A pinned CI token is opaque, so there is no `exp` to read: the
+        # minute count would report a token minted for a week as one minute.
+        _gate(monkeypatch, token='ci-token')
+        monkeypatch.setenv('LAGER_GATEWAY_TOKEN', 'ci-token')
+        result, output = _invoke(['cam1', 'start', '--box', 'bench'])
+        assert result.exit_code == 0, output
+        assert 'Webcam URL: http://10.0.0.5:8086/?token=ci-token' in output
+        assert 'LAGER_GATEWAY_TOKEN' in output
+        assert 'minutes' not in output
+
     def test_gated_box_without_login_points_at_login(self, monkeypatch):
         _gate(monkeypatch, token=None)
         result, output = _invoke(['cam1', 'start', '--box', 'bench'])

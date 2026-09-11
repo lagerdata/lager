@@ -95,6 +95,16 @@ def _gated_link_note(box_ip, box_label=None):
         )
         return
     from ... import gateway_auth
+    if gateway_auth.pinned_token():
+        # A pinned token is opaque: there is no `exp` to read, so the minute
+        # count below would report a token minted for a week as one minute.
+        click.secho(
+            "This box is access-gated: the link carries the token from "
+            f"{gateway_auth.PINNED_TOKEN_ENV}, and lasts as long as that "
+            "token does.",
+            fg="yellow",
+        )
+        return
     remaining = gateway_auth._token_expires_at(token) - time.time()
     minutes = max(1, math.ceil(remaining / 60))
     click.secho(

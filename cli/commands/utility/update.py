@@ -103,6 +103,40 @@ def resolve_version_ref(target_version):
     return target_version, f'origin/{target_version}', target_version
 
 
+def _fetch_shell_script(fetch_ref, git_ref):
+    """One round-trip: fetch, report fetch's own rc, then measure divergence.
+
+    ``--force`` is load-bearing, for the same reason the deploy script forces
+    its ``--tags`` fetch. A box cloned before a tag was re-created upstream
+    holds that tag at a different object, and an unforced fetch of
+    ``refs/tags/<tag>:refs/tags/<tag>`` exits non-zero on it ("would clobber
+    existing tag") — which stranded the box, because every later update failed
+    the same way until someone force-fetched by hand. Origin's tag is the one
+    that is right by definition here: the box checkout is a disposable mirror
+    that this flow resets hard a few steps later.
+
+    Forcing a branch fetch changes nothing — git already updates
+    ``refs/remotes/origin/*`` forcibly through the default refspec.
+
+    fetch's combined stdout+stderr precedes the ``LAGER_FETCH_RC=`` marker (so
+    the caller's error classification still sees it); the rev-list line follows
+    it.
+
+    ``--left-right --count HEAD...<ref>`` returns a tab-separated ``<ahead>``
+    and ``<behind>`` — commits on HEAD-not-in-target and on-target-not-in-HEAD
+    respectively. Both directions are needed so a rollback
+    (``--version <older>``) doesn't read as
+    "already up to date" the way the older one-way ``HEAD..ref`` rev-list did:
+    that variant only counted commits the box was *behind* and treated any
+    "ahead" state as in-sync, making a downgrade impossible.
+    """
+    return (
+        f'cd ~/box && git fetch origin --force {fetch_ref} 2>&1; '
+        'echo "LAGER_FETCH_RC=$?"; '
+        f'git rev-list --left-right --count HEAD...{git_ref} 2>/dev/null'
+    )
+
+
 # --- Pre-built box image (GHCR) --------------------------------------------
 #
 # `.github/workflows/box-image-publish.yml` builds box.Dockerfile on every v*
@@ -1943,21 +1977,10 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         progress.update("Fetching updates...")
     log(f'Fetching {git_ref}...', nl=False)
 
-    # `git fetch` then `git rev-list` in a single round-trip. fetch's combined
-    # stdout+stderr precedes the `LAGER_FETCH_RC=` marker (so the detailed
-    # error classification below still works); the rev-list line follows it.
-    #
-    # `--left-right --count HEAD...{git_ref}` returns `<ahead>\t<behind>` —
-    # commits on HEAD-not-in-target and on-target-not-in-HEAD respectively.
-    # We need *both* directions so a rollback (`--version <older>`) doesn't
-    # look like "already up to date" the way the older one-way `HEAD..ref`
-    # rev-list did: that variant only counted commits the box was *behind*
-    # and treated any "ahead" state as in-sync, making downgrade impossible.
-    fetch_script = (
-        f'cd ~/box && git fetch origin {fetch_ref} 2>&1; '
-        'echo "LAGER_FETCH_RC=$?"; '
-        f'git rev-list --left-right --count HEAD...{git_ref} 2>/dev/null'
-    )
+    # `git fetch` then `git rev-list` in a single round-trip; see
+    # :func:`_fetch_shell_script` for what each piece does, and why the
+    # fetch is forced.
+    fetch_script = _fetch_shell_script(fetch_ref, git_ref)
     # Retry the fetch on *transient* failures only. Boxes on flaky links (e.g.
     # WiFi with a slow/intermittent resolver) hit sporadic DNS-resolution or
     # connection timeouts on `git fetch` that clear on a retry seconds later;

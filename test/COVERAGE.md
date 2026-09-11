@@ -41,13 +41,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 2016 (+2 xfailed) |
+| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 2039 (+2 xfailed) |
 | `unit (box)` | `test/unit/box/` | 2499 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 181 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 186 (+1 skipped) |
-| | **Total gated** | **5076** |
+| | **Total gated** | **5099** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never
@@ -369,7 +369,7 @@ Five other param types (`EnvVarType`, `PortForwardType`, `MemoryAddressType`, `H
 | Module | Lines | Gated coverage | Gap |
 |---|---:|---|---|
 | `cli/commands/utility/update.py` | 2440 | 14 tests | Only version-ref resolution and the probe. Rollback, staging, service restart untested. |
-| `cli/gateway_auth.py` | 376 | 27 tests | Refresh path plus the `cli/tests/` suite. `handle_gateway_denial`, `gateway_response_hook`, `auth_headers_for_box` remain thin. |
+| `cli/gateway_auth.py` | 521 | 51 tests | Refresh path, the pinned-token path (`LAGER_GATEWAY_TOKEN`) and the `cli/tests/` suite. `gateway_response_hook` remains thin. |
 | `cli/config.py` | 435 | 63 tests | Cache, the configparser round-trip and legacy-key migration, `read_lager_json`/`write_lager_json`, `expand_devenv_path` and `get_debug_script_for_net` are covered. `get_includes_from_config` and `_find_config_files` are not. |
 | `cli/commands/utility/install.py` | 575 | indirect | Only `install_wheel` is exercised. |
 | `cli/commands/utility/uninstall.py` | 837 | 13 tests | Spec parsing plus the teardown's lock lifecycle. The privileged sudo session, the `--all` extras and `--dry-run` inspection are untested. |
@@ -451,7 +451,7 @@ cli/tests/                #  7 files: 6 pytest suites (GATED via `unit (cli)`),
                           #           plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 202 files)
+### Local Unit Tests (`test/unit/` -- 203 files)
 
 #### Box Unit Tests (`test/unit/box/` -- 111 files)
 
@@ -573,7 +573,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_ykush_driver.py` | YKUSH USB hub driver: device-contention regression from an indefinitely cached handle |
 | `test_automation_exports.py` | Static parse of `automation/__init__.py`'s lazy export table: no name guarded twice, every returned driver reachable under its own name, everything in `__all__` resolvable -- the copy-paste class of defect that made one driver answer to another's name |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 74 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 75 files)
 
 | File | What it tests |
 |------|---------------|
@@ -630,6 +630,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_uart_session_release.py` | UART teardown releases the box-side session on every exit path (including Ctrl+C, and when the session never came up), never skips the disconnect that follows, and reports a held net with the take-over command; plus the connect banner keeping a by-id device path readable |
 | `test_uart_ws_status_events.py` | CLI handling of box-side `uart_status` events when a UART device re-enumerates |
 | `test_update_deps_preview.py` | `lager update --check`'s build-cache line never promises a cached build the rebuild gate would override — a pending layout flatten is a certain rebuild, and an unmeasurable build hash is reported as unknown rather than as a valid cache |
+| `test_update_fetch.py` | `lager update`'s fetch command line: the tag refspec is forced, so a box holding a tag that points somewhere other than origin's can still be updated; the `LAGER_FETCH_RC=` marker still precedes the divergence count |
 | `test_update_flatten.py` | `lager update` sparse-checkout flatten: deletions propagate, root entries preserved, and the docker-build hash covers the source tree |
 | `test_update_probe.py` | `lager update` probe script modprobe/usbtmc detection and output parsing |
 | `test_control_flow_exits.py` | `ctx.exit()` survives the broad handler of its own try block: `lager update --check` exits 2 (not 1) with no traceback, plus the `tools/check_control_flow_handlers.py` gate and its own detection cases |
@@ -698,7 +699,7 @@ Gated as part of the `unit (cli)` job.
 | File | What it tests | Gated |
 |------|---------------|:---:|
 | `test_box_storage.py` | `box_storage.py` project-level `.lager` merging behavior | Yes |
-| `test_gateway_auth.py` | `gateway_auth.py` bearer-token auth for boxes behind an authenticating gateway | Yes |
+| `test_gateway_auth.py` | `gateway_auth.py` bearer-token auth for boxes behind an authenticating gateway, including the pinned CI token (`LAGER_GATEWAY_TOKEN`) | Yes |
 | `test_update_gate.py` | Update rebuild gate: probe parsing, build-hash mismatch, early-exit verdict | Yes |
 | `test_gateway_callsites.py` | Gateway-auth discovery across every box-talking call site: record the mapping on a discovery 401, retry once with a held token, surface genuine denials, and keep rendering the other boxes' rows | Yes |
 | `test_host_cli.py` | Host-OS CLI install helpers shared by `lager install` and `lager update`: the reconcile decision table, `--check` labels, exit codes, the probe snippet under a real shell, and the drift guard pinning the deploy scripts' mirror | Yes |

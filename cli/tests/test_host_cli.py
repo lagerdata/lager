@@ -256,6 +256,18 @@ class TestDeployScriptDrift:
         assert deploy_script.count('git sparse-checkout set box cli') == 2
         assert 'git sparse-checkout set box &&' not in deploy_script
 
+    def test_tag_fetch_is_forced(self, deploy_script):
+        # An unforced `git fetch --tags` exits non-zero on a tag that points
+        # somewhere other than origin's ("would clobber existing tag"). It sits
+        # in an && chain under `set -e`, so one such tag aborted the deploy at
+        # [5/8] -- and kept aborting it, because nothing in the install path
+        # repairs the tag. Thirteen tags did this on a live box before the flag
+        # was added; dropping it strands those boxes again.
+        assert 'git fetch origin --tags --force' in deploy_script
+        for line in deploy_script.splitlines():
+            if 'git fetch' in line and not line.lstrip().startswith('#'):
+                assert '--force' in line, line
+
     def test_install_sequence_literals(self, deploy_script):
         for literal in (
             '.lager_venv',
