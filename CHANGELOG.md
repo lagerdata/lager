@@ -65,6 +65,14 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   whatever did answer, marking the rest `cancelled`. Piped output is unchanged:
   the same final table, printed once.
 
+### Changed
+
+- **`lager install` and `lager update --pull` download only the box image
+  layers that a release changed.** The release workflow now keeps its build
+  cache in the container registry, where the next release can read it. The
+  first pull of this release is still a full download, because this release
+  fills the new cache.
+
 ### Fixed
 
 - **A gated box's first `lager boxes` reports its real version rather than `no
