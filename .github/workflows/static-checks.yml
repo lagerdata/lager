@@ -119,10 +119,6 @@ jobs:
       # syntax-checked by anything, while every script under test/ was. A typo
       # in those two breaks an install on a real box, which is a worse place to
       # find it than a PR. All 11 added scripts were clean when this landed.
-      #
-      # shellcheck below is deliberately NOT widened to match: these are 900-
-      # and 1700-line scripts that have never been linted, and their backlog
-      # would swamp the gate. Widening it is its own change.
       - name: Bash syntax (bash -n)
         if: always()
         run: |
