@@ -76,6 +76,9 @@ Error: UART net 'SERIAL1' is already in use by another session
 To take over the net: lager uart SERIAL1 --force --box my-lager-box
 ```
 
+Two nets can name the same device. In that case the error names the device path
+instead: `UART device /dev/ttyUSB0 is already in use by another session`.
+
 Ask the box who holds what:
 
 ```bash
@@ -88,14 +91,63 @@ Net       Device Path     Client      Reader
 SERIAL1   /dev/ttyUSB0    connected   running
 ```
 
-`Client` reports whether the holder's end of the connection is still there.
-A holder whose client reads `gone` releases the net on its own within a
-moment. One that reads `connected` belongs to somebody, so check before you
+| Column | Value | Meaning |
+|--------|-------|---------|
+| `Client` | `connected` | The holder's connection to the box is open |
+| `Client` | `gone` | The holder's client left |
+| `Client` | `unknown` | The box cannot tell |
+| `Reader` | `running` | The session reads the device |
+| `Reader` | `stopped` | The session no longer reads the device |
+| `Reader` | `starting` | The session has no read loop yet |
+
+How long a holder keeps the net:
+
+- A holder whose client reads `gone` releases the net within about 0.1 seconds.
+  If the adapter re-enumerates at that time, the release can take up to 60
+  seconds.
+- A holder whose computer went to sleep, or lost its network, still reads
+  `connected` for about 85 seconds.
+- A holder whose reader reads `stopped` does not block you. The next
+  `lager uart` on the net reclaims it.
+
+A holder that reads `connected` can belong to somebody, so check before you
 take it:
 
 ```bash
 lager uart SERIAL1 --force --box my-lager-box
 ```
+
+`--force` releases every session that holds the net, and then connects. If it
+releases a session, it prints `Released the session that held 'SERIAL1'`. If
+nothing held the net, it prints nothing. The session that you displaced stops
+receiving data, and it can show `Error: Read error: ...`.
+
+`--force` acts only on the net that you name. If the error names a device path,
+another net on the same device holds it. Use `--sessions` to find that net, and
+take over that net by its name.
+
+`--sessions` prints one of these messages instead of a table:
+
+- `No UART sessions are active on this box.` No session holds a net.
+- `This box does not report UART sessions; update it with lager update.` The box
+  is older than 0.46.0. Run `lager update`. On such a box, `--force` has no
+  effect and prints no warning.
+
+<Note>
+`--force` cannot clear this error:
+`UART device /dev/ttyUSB0 is already in use (locked by another session or the lager uart CLI)`.
+Another process holds the port, for example a `lager python` script that opened
+the UART net. Stop that process first.
+</Note>
+
+<Note>
+`--sessions` and `--force` take the box lock, as every `lager uart` command does.
+If another user holds the box lock, they fail with
+`Error: Box 'my-lager-box' is locked by <holder>`.
+</Note>
+
+If the box does not start the session within 15 seconds, the command prints
+`Error: the box did not start the UART session within 15s` and exits `1`.
 
 ---
 
@@ -154,6 +206,8 @@ The following USB-to-serial adapters are automatically detected and supported:
 | Prolific USB-Serial | 067b:23a3 | Common USB-Serial adapter |
 | Silicon Labs CP210x | 10c4:ea60 | Popular embedded dev boards |
 | FTDI FT232R | 0403:6001 | Single-channel USB-Serial |
+| FTDI FT232H | 0403:6014 | Single-channel, multi-protocol |
+| FTDI FT2232H | 0403:6010 | Dual-channel, multi-protocol |
 | FTDI FT4232H | 0403:6011 | Quad-channel USB-Serial |
 | ESP32 USB JTAG/Serial | 303a:1001 | Built-in ESP32-S3/C3 USB |
 
@@ -171,10 +225,14 @@ Net configured with USB serial number
 Automatically resolves to correct /dev/ttyUSBx
 ```
 
-**Direct Device Path** (fallback):
+**Direct Device Path** (fallback): if the adapter has no serial number, save a
+net on its device path. The last argument is a label of your choice. Then
+connect to the net by name. `lager uart` does not accept a device path in place
+of a net name.
+
 ```bash
-# When adapter has no serial number
-lager uart /dev/ttyUSB0 --baudrate 115200
+lager nets add CONSOLE uart /dev/ttyUSB0 console-adapter --box my-lager-box
+lager uart CONSOLE --baudrate 115200 --box my-lager-box
 ```
 
 ---
@@ -205,7 +263,11 @@ lager uart TERMINAL --line-ending crlf --opost
 The UART command uses WebSocket for communication:
 - Provides real-time bidirectional data
 - Supports both read-only and interactive modes
-- Automatically reconnects on connection loss
+- If the USB adapter re-enumerates, the box reopens it for up to 60 seconds and
+  the session continues. The CLI prints
+  `[UART device disconnected - reconnecting...]` while it waits.
+- The CLI does not reconnect to the box. If the connection to the box drops,
+  the session ends. Run the command again.
 
 ---
 
@@ -242,7 +304,7 @@ lager update --box my-lager-box --yes
 - Interactive mode requires a TTY terminal
 - USB serial numbers are truncated for display
 - Default net can be set with `lager defaults add --uart-net`
-- Connection retry logic handles temporary disconnections
+- The box reopens an adapter that re-enumerates, for up to 60 seconds
 
 ## See Also
 

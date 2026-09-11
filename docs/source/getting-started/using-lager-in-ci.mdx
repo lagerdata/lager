@@ -17,7 +17,7 @@ network. The job must install the CLI, log in, and get the address of the box.
 ```yaml
 runs-on: [self-hosted, lager-bench]
 steps:
-  - run: pip install lager-cli==0.43.0
+  - run: pip install lager-cli==0.47.0
   - run: lager login "$AUTH_URL" --email "$EMAIL" --password "$PASSWORD"
   - run: lager boxes add --name BENCH-1 --ip "$BOX_IP" --user lagerdata --yes
   - run: lager python tests/hil --box BENCH-1
@@ -183,21 +183,26 @@ the machine. You do not do it in each job.
 
 ### 3.1 The CLI
 
+`lager install` and `lager update` put the CLI on the box. The command is
+`~/.local/bin/lager`. It is a link to a separate Python environment at
+`~/.lager_venv`. The CLI has the same version as the box code. Each install,
+and each update that deploys code, writes the link again.
+
 ```bash
-pip install --user 'lager-cli==0.43.0'
 lager --version
 ```
 
 Obey these rules:
 
-- **Use Python 3.10 or a subsequent version.** The CLI needs it.
-- **Set the version of the CLI.** If you do not set the version, the version
-  changes when a person makes an unrelated change to the machine. Set the
-  version in one location. Change it only when you decide to change it.
-- **Keep the version of the CLI the same as the version of the box, or more
-  recent.** The CLI compares the two versions with each command. It gives a
-  warning if they are different. The command `lager boxes` shows each box as
-  `current`, `needs update`, or `newer`.
+- **Use Python 3.10 or a subsequent version on the box.** The CLI needs it.
+- **Use the CLI that the box installs.** Do not use `pip install --user` on the
+  box. On Ubuntu 23.04 and later versions, that command fails, because the
+  system Python is externally managed. A second CLI that you install in a
+  different location does not follow the version of the box.
+- **Change the version with `lager update`.** The update also installs the CLI
+  of the new version. The CLI compares its version with the version of the box
+  with each command. It gives a warning if they are different. The command
+  `lager boxes` shows each box as `current`, `needs update`, or `newer`.
 - **Always give a subcommand to `lager`.** If you give no subcommand, the CLI
   starts an interactive session. In CI, the job then continues until its
   time limit.
@@ -210,7 +215,7 @@ file is a JSON file.
 ```json
 {
   "BOXES": {
-    "BENCH-1": { "ip": "10.0.1.42", "user": "lagerdata", "version": "0.43.0" }
+    "BENCH-1": { "ip": "10.0.1.42", "user": "lagerdata", "version": "0.47.0" }
   },
   "DEFAULTS": { "gateway_id": "BENCH-1" }
 }
@@ -443,8 +448,11 @@ identity has this format:
 ci:github:<repo>#<run_id>-<attempt>/<job>@<runner>:<pid>
 ```
 
-The text always ends with `:<pid>`. Thus two matrix jobs cannot get the same
-identity. `lager boxes` shows the identity in a format that is easy to read.
+Each `lager` command has a different `<pid>`. To compare two holders, the CLI
+removes the `:<pid>` part. Thus a later command in the same job accepts the
+automatic lock of that job as its own. The remainder of the text keeps the run,
+the attempt, the job name, and the runner. `lager boxes` shows the identity in a
+format that is easy to read.
 
 **The behavior after a collision is different in CI.** Lager finds CI from the
 `CI=true` variable and a variable such as `GITHUB_RUN_ID`.
@@ -472,13 +480,25 @@ heartbeat each 60 seconds. The heartbeat makes the maximum life start again.
 Thus the maximum life does not limit the length of your test. It limits how
 long a lock stays after the CLI stops in an unusual condition.
 
-Add a step that releases the lock:
+An automatic lock ends when its command exits. If the CLI stops in an unusual
+condition, the lock ends at its maximum life.
+
+`lager boxes unlock` sends the user name, not the CI identity. The box releases
+a lock only for the same holder. Thus this step cannot release an automatic
+`ci:` lock. It releases only a lock that the user name of the runner account
+holds, such as a `lager boxes lock` reservation:
 
 ```yaml
-      - name: Release the bench lock
+      - name: Release a bench reservation
         if: always()
         run: lager boxes unlock --box "$LAGER_BOX" 2>/dev/null || true
 ```
+
+<Warning>
+A `lager boxes lock` reservation of the runner account also blocks the CI
+commands of that account. The CI identity is not the same as the user name. A
+CI command then waits for `LAGER_LOCK_WAIT` seconds and gives exit code 1.
+</Warning>
 
 <Warning>
 Do not use `lager boxes unlock --force` in a job. This command
@@ -515,18 +535,20 @@ are safe when a different job holds the bench.
 
 | Variable | Function |
 |---|---|
-| `LAGER_LOCK_WAIT` | Seconds to wait after a collision. CI default 1800. User default 0. |
+| `LAGER_LOCK_WAIT` | Seconds to wait after a collision. CI default 1800. User default 0. A value that is not a number gives 0, also in CI. A negative value gives 0. |
 | `LAGER_LOCK_TTL` | Maximum life of the lock. Use `none` for a lock with no limit. |
 | `LAGER_LOCK_HEARTBEAT` | Seconds between two heartbeats. Default 60. |
 | `LAGER_LOCK_HOLDER` | A different identity for the lock holder. |
-| `LAGER_AUTO_LOCK_DISABLE` | Set to `1` to stop the automatic lock. |
+| `LAGER_AUTO_LOCK_DISABLE` | Any value that is not empty stops the automatic lock. `0` also stops it. |
 
 Use `LAGER_AUTO_LOCK_DISABLE` only on a bench that one person uses. Do not use
 it to prevent a collision.
 
 <Note>
 `lager python --detach` gives the lock to the box. The box holds the
-lock until the detached job ends. This is after your workflow step ends.
+lock until the detached job ends. This is after your workflow step ends. A box
+older than 0.42.0 does not take the lock. The lock then stays after the job
+ends. Release it with `lager boxes unlock`.
 </Note>
 
 ---
@@ -587,10 +609,12 @@ If the build commands are in your `.lager` file, `lager exec` runs them.
 `lager exec` has two behaviors:
 
 - On a developer machine, it starts a container from the DEVENV `image`.
-- In a CI job that is already in a container, it runs the command directly. The job
-  is in the image, so there is nothing to start. A job container also has no Docker.
+- In a CI job that the CLI detects, it runs the command directly. The CLI expects
+  the job to run in the image already, so there is nothing to start. A job
+  container also has no Docker.
 
-To get the second behavior, give the image to the job with `container:`:
+The CLI detects the job from the CI variables only. It does not check for a
+container. Give the image to the job with `container:`:
 
 ```yaml
 jobs:
@@ -603,18 +627,34 @@ jobs:
       - run: lager exec build-ci
 ```
 
-GitHub Actions, GitLab CI, Drone, and Bitbucket Pipelines get the second behavior. A
-Jenkins agent, and a runner with no `container:`, get the first.
+Every job on GitHub Actions, GitLab CI, Drone, and Bitbucket Pipelines gets the
+second behavior. This includes a job with no `container:`. In that job, the command
+runs on the runner itself, not in the image. A Jenkins agent and other CI systems
+get the first behavior.
 
 The command runs in the directory of the check-out. It does not run in `mount_dir`,
 because there is no bind-mount.
 
 These options do nothing when the command runs directly: `--mount`, `--volume`,
-`--user`, and `--group`. The CLI gives a warning for each one. These `.lager` keys also
-do nothing: `network`, `ports`, `platform`, `macaddr`, `hostname`, `volumes`, `user`,
-and `group`. The `--env` option and the `environment` key operate as usual.
+`--user`, and `--group`. If you give any of them, the CLI prints one warning line
+that names them. These `.lager` keys also do nothing: `network`, `ports`, `platform`,
+`macaddr`, `hostname`, `volumes`, `user`, and `group`. The CLI names these keys only
+with `--verbose`. The `--env` option and the `environment` key operate as usual.
 
-To start a container from a CI job, set `LAGER_CI_OVERRIDE=1`. The job must have Docker.
+To start a container from a CI job, set `LAGER_CI_OVERRIDE` to any value that is not
+empty. The job must have Docker. Set the variable only on the `lager exec` step:
+
+```yaml
+- run: lager exec build-ci
+  env:
+    LAGER_CI_OVERRIDE: "1"
+```
+
+<Warning>
+`LAGER_CI_OVERRIDE` stops CI detection for each `lager` command that sees it. A
+lock collision then gives an error at once, and the lock holder is the user name.
+Do not set it for the whole job.
+</Warning>
 
 ### Set the check-out to `github.sha`
 
@@ -626,10 +666,23 @@ code and the firmware come from the same commit.
 
 ### Do a check that the flash operation was successful
 
-A programmer tool can report a connection failure and still give exit code 0.
-The device is then erased but not programmed. The tests fail subsequently, and
-the cause is not clear. Do not use the exit code only. Record the output and
-look for the failure text of your tool.
+`lager debug flash` and `lager debug erase` read the programmer output. They give
+exit code 1 when a line starts or ends with one of these texts:
+
+- `ERROR: Could not connect to target.`
+- `Could not connect to target.`
+- `Could not connect to the target device.`
+- `Cannot connect to target.`
+- `Failed to power up DAP`
+
+The command then prints `Flash failed:`, `Flash erase failed:`, or
+`Erase failed:` with that line. Before the operation, the connection check to the
+target can also give exit code 1. CLI versions before 0.42.0 do not do these
+checks.
+
+With other failure text, the exit code stays 0. The device can then be erased
+but not programmed. The tests fail subsequently, and the cause is not clear.
+Record the output and look for failure text that the CLI does not recognize.
 
 ```yaml
 - name: Flash
@@ -637,7 +690,7 @@ look for the failure text of your tool.
     set -o pipefail
     log=$(mktemp)
     lager debug SWD flash --hex ./firmware/firmware.hex 2>&1 | tee "$log"
-    if grep -qE 'Cannot power up debug port|Could not connect to the target device' "$log"; then
+    if grep -qE 'Cannot power up debug port' "$log"; then
       echo "::error title=flash::the programmer reported a fatal error but the command returned success. The DUT is likely erased but not reprogrammed."
       exit 1
     fi
@@ -707,8 +760,12 @@ version:
       echo "::error title=box state::could not determine box state (exit ${rc})"
       exit "$rc"
     fi
-    if [ "$rc" -eq 1 ]; then
+    if [ "$rc" -eq 1 ] && printf '%s\n' "$out" | grep -q 'Run without --check to apply.'; then
       echo "::error title=box version::the box is not running ${GITHUB_SHA}"
+      exit 1
+    fi
+    if [ "$rc" -eq 1 ]; then
+      echo "::error title=box state::the check failed (exit 1); see the output above"
       exit 1
     fi
 ```
@@ -719,18 +776,32 @@ It does not change the box. Its exit code has three values:
 | Exit code | Meaning |
 |---|---|
 | 0 | The box is correct. No change is necessary. |
-| 1 | An update is necessary. The code, the dependencies, or the container. |
-| 2 | The command cannot find the condition of the box. |
+| 1 | An update is necessary: the code, the dependencies, or the container. Exit code 1 also shows that the check failed. |
+| 2 | The CLI did not confirm an SSH key for the box, or `git rev-list` failed on the box. |
 
-The difference between 1 and 2 is important. Exit code 1 tells you that the box
-is old. Exit code 2 tells you that the check did not operate. Exit code 2 gives
-you no data about the box.
+Exit code 1 does not always tell you that the box is old. These failures also
+give exit code 1:
+
+- An SSH connection that times out, or another SSH error.
+- A box that does not answer the inspection over SSH.
+- A box directory that is not a git checkout.
+- A `git fetch` on the box that fails. A commit SHA that no branch or tag on
+  GitHub contains also gives this failure.
+- A box that a different holder locked.
+
+When an update is necessary, the output ends with
+`Run without --check to apply.` The example script uses this text. Exit code 2
+gives you no data about the box.
+
+`--check` shows the version of the box in its `Current:` line. It does not show
+the git reference. To see the reference and the commit, use `lager hello`. Its
+`Version:` line has the reference and the commit in parentheses.
 
 To change a box to a specified version:
 
 ```bash
 lager update --box BENCH-1 --version main --yes
-lager update --box BENCH-1 --version v0.43.0 --yes
+lager update --box BENCH-1 --version v0.47.0 --yes
 ```
 
 `--version` accepts a release tag or a version number, with or without an
@@ -873,10 +944,11 @@ the rule operates.
 
 | Exit code | Meaning |
 |---|---|
-| 124 | The `--timeout` time ended. The CLI sent SIGTERM. |
-| 137 | The `--timeout` time ended. The CLI sent SIGKILL. |
-| 255 | The CLI could not get the exit code from the box. |
+| 124 | The `--timeout` time ended. The box sent SIGTERM. |
+| 137 | The `--timeout` time ended. The box sent SIGKILL 5 seconds later. |
+| 255 | The CLI did not get the exit code from the box. |
 | 130 | A person or a signal stopped the command. |
+| 128+N | Signal N stopped the script on the box. |
 
 Put 124, 137 and 255 in the equipment-failure group.
 
@@ -1459,33 +1531,37 @@ command. It removes a failure that happens on the first job of the day.
 
 | Variable | Function |
 |---|---|
-| `LAGER_BOX` | The default box when there is no `--box` flag. The CLI also sends it to the script on the box. |
+| `LAGER_BOX` | The default box when there is no `--box` flag. |
 | `LAGER_CONFIG_FILE_DIR` | The directory of the global `.lager` file. Default `~`. |
 | `LAGER_CONFIG_FILE_NAME` | The name of the configuration file. Default `.lager`. |
 | `LAGER_GATEWAY_AUTH_FILE` | A different location for `~/.lager_gateway_auth`. |
 | `LAGER_USER` | The user identity. It is the lock holder on a user computer. |
 | `LAGER_LOCK_HOLDER` | A different identity for the lock holder. |
-| `LAGER_LOCK_WAIT` | Seconds to wait after a lock collision. |
+| `LAGER_LOCK_WAIT` | Seconds to wait after a lock collision. A value that is not a number, or a negative value, gives 0. |
 | `LAGER_LOCK_TTL` | Maximum life of the lock. Use `none` for no limit. |
 | `LAGER_LOCK_HEARTBEAT` | Seconds between two heartbeats. Default 60. |
-| `LAGER_AUTO_LOCK_DISABLE` | Set to `1` to stop the automatic lock. |
+| `LAGER_AUTO_LOCK_DISABLE` | Any value that is not empty stops the automatic lock, also `0`. |
 | `LAGER_DEBUG` | Show the full error data. The same as `--debug`. |
 | `LAGER_NO_UPDATE_CHECK` | Stop the background version check. |
 | `CI` | The value `true` selects the CI lock behavior. Actions sets this. |
+| `LAGER_CI_OVERRIDE` | Any value that is not empty turns off CI detection. `lager exec` then starts a container, and the lock uses the user behavior. |
 
 `lager python` sends these variables **to** your script on the box:
-`LAGER_BOX`, `LAGER_RUNNABLE`, `LAGER_PROCESS_ID` and `LAGER_OUTPUT_CHANNEL`.
+`LAGER_RUNNABLE`, `LAGER_PROCESS_ID` and `LAGER_OUTPUT_CHANNEL`. It sends
+`LAGER_BOX` only when the command has the `--box` flag. A `LAGER_BOX` in the job
+environment does not reach the script.
 
 ### Exit codes
 
 | Command | Exit code | Meaning |
 |---|---|---|
 | `lager python` | the code of the script | The CLI does not change it. |
-| | 124 | The `--timeout` time ended. SIGTERM. |
-| | 137 | The `--timeout` time ended. SIGKILL. |
-| | 255 | The CLI could not get the exit code from the box. |
+| | 124 | The `--timeout` time ended. The box sent SIGTERM. |
+| | 137 | The `--timeout` time ended. The box sent SIGKILL. |
+| | 255 | The CLI did not get the exit code from the box. |
 | | 130 | A person or a signal stopped the command. |
-| `lager update --check` | 0 / 1 / 2 | Correct / an update is necessary / the condition is not known. |
+| | 128+N | Signal N stopped the script on the box. |
+| `lager update --check` | 0 / 1 / 2 | Correct / an update is necessary, or the check failed / no confirmed SSH key, or `git rev-list` failed. |
 | `lager exec` | the code of the command | The CLI does not change it. The command is in a container, or in the job, as [section 6](#build-with-lager-exec) shows. |
 | `lager ssh -- cmd` | the code of the remote command | 255 shows an SSH failure. |
 | all commands | 1 | A general error. **This includes a lock collision.** |
@@ -1538,7 +1614,8 @@ computer, the message comes immediately.
 
 To find the holder, use `lager boxes`. A holder that starts with `ci:github:`
 shows the repository, the run, the job and the runner. Wait, or speak to the
-holder. Do not use `unlock --force` in a job.
+holder. Do not use `unlock --force` in a job. If the holder is the user name of
+the runner account, a `lager boxes lock` reservation blocks the job.
 
 **A `lager` command on the box fails immediately, but CI has no failure.**
 The lock behavior changes with the `CI=true` variable. A command from cron, from
@@ -1552,13 +1629,13 @@ an interactive session. The other cause is an interactive `[y/N]` question. Add
 
 **`lager exec` does not stop, or it gives an error about a TTY.**
 The defaults are `--interactive` and `--tty`. Give `--no-tty` in CI. This applies when
-`lager exec` starts a container. A job that is already in a container does not use
-these two options.
+`lager exec` starts a container. When the CLI detects the CI job and runs the command
+directly, it does not use these two options.
 
 **`lager exec` gives the error `Docker is not installed or not in PATH`.**
 The job is in a container, but the CLI tried to start one. Make sure that
-`LAGER_CI_OVERRIDE` is not set. Some earlier versions of the CLI always start a
-container; make the CLI current. See [section 6](#build-with-lager-exec).
+`LAGER_CI_OVERRIDE` is not set. A CLI older than 0.46.2 always starts a container.
+Update the CLI. See [section 6](#build-with-lager-exec).
 
 **Your test cannot read an environment variable from the workflow.**
 The `env:` block of a step applies to the runner. Your script operates on the
@@ -1593,8 +1670,9 @@ results with no check of the firmware identity. Refer to
 [Section 12](#12-test-results-after-a-retry).
 
 **The flash operation is successful, but each subsequent test fails.**
-The programmer reported a connection failure but gave exit code 0. The device is
-erased. Look for the failure text in the output of the flash command. Refer to
+The programmer printed failure text that the CLI does not recognize, and the
+command gave exit code 0. The device is erased. Look for the failure text in the
+output of the flash command. Refer to
 [Section 6](#6-how-to-put-the-firmware-on-the-dut).
 
 **The bench is in an unsafe condition after a cancelled job.**
@@ -1711,7 +1789,7 @@ jobs:
             exit 1
           fi
 
-      - name: Release the bench lock
+      - name: Release a bench reservation
         if: always()
         run: lager boxes unlock --box "$LAGER_BOX" 2>/dev/null || true
 ```

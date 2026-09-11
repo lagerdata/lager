@@ -97,7 +97,9 @@ result?;
 - **The stream URL points at the box as the client reached it.** A URL captured on
   one network does not always resolve from another, so do not persist it across
   environments.
-- This is a video stream, not a frame grab. There is no assert-on-image here — point
-  an MJPEG consumer (a browser, VLC, OpenCV) at the URL.
-- Always `stop()` in teardown. A running stream holds the camera open and the next
-  test cannot start one.
+- This handle gives a video stream, not a frame grab. There is no assert-on-image here —
+  point an MJPEG consumer (a browser, VLC, OpenCV) at the URL. To save one frame from
+  a running stream, use `lager webcam NET snapshot` from the CLI.
+- Always `stop()` in teardown. A running stream holds the camera open. A start on the
+  same net reports the running stream. A stream on a different net that uses the same
+  camera is refused until this one stops.
