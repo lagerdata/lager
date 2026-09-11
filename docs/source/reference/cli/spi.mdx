@@ -245,9 +245,49 @@ Clock frequencies accept numeric values with optional suffixes:
 
 | Adapter | Pins | CS Control | Notes |
 |---------|------|------------|-------|
-| LabJack T7 | Configurable FIO pins (e.g., FIO0-FIO3) | Manual GPIO | ~450 kHz max (throttle=0); CS managed via GPIO writes |
+| LabJack T7 | Configurable DIO pins (default `FIO0-FIO3`: CS, CLK, MOSI, MISO) | Firmware auto CS; GPIO writes for `--keep-cs` | 56 bytes per transfer; see the T7 clock note below |
+| LabJack U3 | Configurable DIO pins (default `FIO4-FIO7`: CS, CLK, MISO, MOSI) | Firmware auto CS, active-low only | 50 bytes per transfer; about 5.4 kHz to 71.4 kHz; see below |
 | Aardvark USB | Fixed MOSI/MISO/SCK/SS | Hardware or manual | Up to 8 MHz |
 | FT232H | Configurable | MPSSE-based | FTDI MPSSE SPI |
+
+**LabJack T7 clock:** a request of 800 kHz or more runs at about 800 kHz. The T7 firmware fails a multi-byte transfer at most rates between about 1 kHz and 800 kHz. For a multi-byte transfer, the driver therefore runs a request in that range at about 1 kHz and prints a warning once. A single-byte transfer, and a request at or below about 1 kHz, use the requested rate.
+
+---
+
+## LabJack U3
+
+A U3 runs SPI through a firmware command of the U3, not through LJM. SPI on a U3 needs U3 hardware version 1.21 or later.
+
+**Pins:** the default channel `FIO4-FIO7` assigns the pins in the order CS, CLK, MISO, MOSI. That order is different from the T7 order, which is CS, CLK, MOSI, MISO. For other pins, create the net with `lager nets add` and the options `--cs`, `--sck`, `--mosi` and `--miso`. `FIO0`-`FIO3` cannot carry SPI. The EIO and CIO lines are on the DB15 connector of the U3.
+
+**Limits:**
+- A transfer is at most 50 bytes: 50 words at an 8-bit word size, 25 words at 16 bits, or 12 words at 32 bits.
+- The clock runs from about 5.4 kHz to 71.4 kHz, and the box never runs it faster than the request. A request outside that range is clamped.
+- `config` prints the rate that the hardware uses. When that rate differs from the request, it prints the request in brackets:
+
+```
+SPI configured: mode=0, freq=49959Hz (requested 50000Hz), word_size=8, bit_order=msb, cs_active=low, cs_mode=auto
+```
+
+A net with no stored frequency runs at the maximum rate. On such a net, `config` shows the default request, `(requested 1000000Hz)`. The CLI does not show a warning for a clamped clock, so read the rate in the `config` output.
+
+**Chip select:** the U3 firmware drives CS low for each transfer and releases it at the end. It has no polarity control and no hold control. The box refuses `--cs-active high`. In `auto` CS mode, the box also refuses `--keep-cs`.
+
+For an active-high device, or to hold CS across transfers, create the SPI net without CS and drive CS from a `gpio` net. A net without CS uses `manual` CS mode.
+
+```bash
+# SPI net without CS: SCK=FIO5, MISO=FIO6, MOSI=FIO7
+lager nets add FLASH spi custom <U3_ADDRESS> --sck FIO5 --miso FIO6 --mosi FIO7 --box my-lager-box
+
+# gpio net that drives CS
+lager nets add FLASH_CS gpio FIO4 <U3_ADDRESS> --box my-lager-box
+
+# CS stays low across both transfers
+lager gpo FLASH_CS low --box my-lager-box
+lager spi FLASH write 0x03001000 --box my-lager-box
+lager spi FLASH read 32 --box my-lager-box
+lager gpo FLASH_CS high --box my-lager-box
+```
 
 ---
 
@@ -348,16 +388,23 @@ lager spi MY_SPI read 4
 
 ### CS Pin Not Working (LabJack T7)
 
-- LabJack T7 uses manual GPIO-based CS control
-- The driver automatically asserts/deasserts CS via GPIO writes
+- In `auto` CS mode, the T7 firmware asserts and releases CS for each transfer
+- With `--keep-cs`, the driver drives CS with GPIO writes instead
 - Verify the `cs_pin` in the net configuration matches your wiring
+
+### Refused Options (LabJack U3)
+
+- `--cs-active high` is refused on a U3. Use a net without CS and a `gpio` net for CS.
+- `--keep-cs` is refused in `auto` CS mode on a U3. Use the same method.
+- A transfer of more than 50 bytes is refused. Split it into smaller transfers.
 
 ---
 
 ## Notes
 
 - Default SPI net can be set with `lager defaults add --spi-net NETNAME`
-- LabJack T7 operates at ~450 kHz regardless of requested frequency due to hardware limitations
+- LabJack T7 runs at about 800 kHz for a request of 800 kHz or more. A multi-byte transfer with a request between about 1 kHz and 800 kHz runs at about 1 kHz
+- LabJack U3 runs from about 5.4 kHz to 71.4 kHz, and `config` prints the rate that the hardware uses
 - SPI is full-duplex: data is always sent and received simultaneously
 - Use `--keep-cs` for multi-part transactions that require CS to stay asserted
 - Configuration set via `config` persists across subsequent `transfer`/`read`/`write` commands

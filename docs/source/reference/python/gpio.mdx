@@ -82,7 +82,7 @@ pin.output(0)
 
 Wait for the pin to reach a target level. Blocks until the pin reads the specified level or the timeout expires.
 
-The LabJack T7 uses hardware streaming at up to 20 kHz for fast edge detection. Other hardware uses software polling.
+The LabJack T7 uses hardware streaming at up to 20 kHz for fast edge detection. Other hardware, the LabJack U3 included, uses software polling.
 
 ```python
 from lager import Net, NetType
@@ -105,7 +105,7 @@ except TimeoutError:
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `level` | `int` or `str` | required | Target level: 0/1, "low"/"high", "off"/"on" |
+| `level` | `int` | required | Target level: `0` or `1`. Do not pass a string such as `"high"`: the drivers compare the pin reading with the integer `1` |
 | `timeout` | `float` or `None` | `None` | Maximum seconds to wait. `None` = wait forever. |
 | `scan_rate` | `int` | `20000` | Sample rate in Hz (LabJack T7 only) |
 | `scans_per_read` | `int` | `2` | Batch size per read (LabJack T7 only; lower = faster reaction) |
@@ -120,6 +120,7 @@ except TimeoutError:
 | Hardware | Method | Default Rate |
 |----------|--------|-------------|
 | LabJack T7 | Hardware streaming (`ljm.eStreamStart`) | 20,000 Hz |
+| LabJack U3 | Software polling | 100 Hz (10 ms interval) |
 | USB-202 | Software polling | 100 Hz (10 ms interval) |
 
 ## Examples
@@ -211,6 +212,7 @@ for i in range(10):
 | Hardware | Pins | Logic Level |
 |----------|------|-------------|
 | LabJack T7 | FIO0-FIO7, EIO0-EIO7, CIO0-CIO3 | 3.3V |
+| LabJack U3 | FIO4-FIO7, EIO0-EIO7, CIO0-CIO3 | |
 | MCC USB-202 | DIO0-DIO7 | 5V TTL |
 | FTDI FT232H / FT2232H | ADBUS0-7, ACBUS0-7 (16 bits per channel) | 3.3V |
 | FTDI FT4232H | 8 pins per channel | 3.3V |
@@ -225,6 +227,13 @@ for i in range(10):
 | `8`-`15` | EIO0-EIO7 |
 | `16`-`19` | CIO0-CIO3 |
 | `"FIO0"`-`"FIO7"` | FIO0-FIO7 |
+
+**LabJack U3:**
+
+- `FIO0`-`FIO3` are not GPIO pins. On a U3-HV they are fixed high-voltage analog inputs, and the driver refuses them. Read them with an ADC net on `AIN0`-`AIN3`.
+- `input()` reads the pin without a change to its direction. `output()` sets the pin to output.
+- `FIO4`-`FIO7` and `EIO0`-`EIO7` are also analog inputs. A GPIO call sets the pin to digital mode.
+- The EIO and CIO lines are on the DB15 connector of the U3.
 
 **MCC USB-202:**
 
@@ -255,6 +264,6 @@ types on one chip.
 - GPIO nets work directly without `enable()`/`disable()` calls
 - `input()` returns 0 or 1
 - `output()` accepts integers (0/1) or strings ("high"/"low", "on"/"off", "true"/"false")
-- `wait_for_level()` blocks the calling thread until the target level is detected
+- `wait_for_level()` takes an integer level (`0` or `1`) and blocks the calling thread until the target level is detected
 - LabJack T7 `wait_for_level()` uses hardware streaming for sub-millisecond detection
 - Net names must match those configured on the Lager Box

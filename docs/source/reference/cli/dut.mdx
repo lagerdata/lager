@@ -17,11 +17,13 @@ and workflow.
 lager dut [COMMAND] [OPTIONS]
 ```
 
-## Global Options
+## Options
+
+The `lager dut` group takes only `--help`. Pass `--box` to each subcommand.
 
 | Option | Description |
 |--------|-------------|
-| `--box TEXT` | Lager Box name or IP address |
+| `--box TEXT` | Lager Box name or IP address (on `show`, `edit` and `add-doc`) |
 | `--help` | Show help message and exit |
 
 ## Commands
@@ -93,7 +95,9 @@ appended to the list matching `--kind` (`schematic` → `schematic_refs`,
 
 ## After editing
 
-The MCP server reads the bench config at startup. To make agents see your
-changes, take one of two actions. Have a connected agent call the `box_manage`
-tool with `action="reload"`, which re-reads `/etc/lager/bench.json` and rebuilds
-the capability graph. Or restart the box service.
+The MCP server watches `/etc/lager/bench.json`, `/etc/lager/saved_nets.json` and
+`/etc/lager/box_id`. When one of them changes on disk, the server reloads on the next
+request, so agents see your changes with no manual step.
+
+To force a reload at once, have a connected agent call the `box_manage` tool with
+`action="reload"`. You can also restart the box service.

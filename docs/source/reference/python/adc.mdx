@@ -3,7 +3,7 @@ title: ADC
 description: Read analog-to-digital converter values
 ---
 
-Read analog voltage values from ADC pins. Supports LabJack T7 and MCC USB-202 hardware.
+Read analog voltage values from ADC pins. Supports LabJack T7, LabJack U3 and MCC USB-202 hardware.
 
 ## Import
 
@@ -117,9 +117,12 @@ for name, sensor in sensors.items():
 | Hardware | Channels | Range | Resolution |
 |----------|----------|-------|------------|
 | LabJack T7 | 14 (AIN0-AIN13) | +/-10 V | 16-bit (~0.3 mV/LSB) |
+| LabJack U3 | 16 (AIN0-AIN15) | U3-HV: AIN0-AIN3 +/-10.3 V, AIN4-AIN15 0-2.44 V | |
 | MCC USB-202 | 8 (CH0-CH7) | +/-10 V | 12-bit (~4.9 mV/LSB) |
 
-Both devices support bipolar measurement (positive and negative voltages).
+The LabJack T7 and the USB-202 support bipolar measurement (positive and negative voltages). The U3 ranges are LabJack's figures for a U3-HV.
+
+On a LabJack U3, `AIN4`-`AIN7` are the same pins as `FIO4`-`FIO7`, and `AIN8`-`AIN15` are the same pins as `EIO0`-`EIO7`. `input()` sets the pin to analog mode. A GPIO call on the same pin sets it back to digital mode.
 
 ### Pin Naming
 
@@ -129,6 +132,8 @@ Both devices support bipolar measurement (positive and negative voltages).
 |-----------|---------|
 | `0`-`13` | AIN0-AIN13 |
 | `"AIN0"`-`"AIN13"` | AIN0-AIN13 |
+
+**LabJack U3:** `AIN0`-`AIN15`
 
 **MCC USB-202:**
 
@@ -141,7 +146,7 @@ Both devices support bipolar measurement (positive and negative voltages).
 
 - ADC nets work directly without `enable()`/`disable()` calls
 - Returns voltage as a float in volts
-- Both devices have a +/-10 V input range (bipolar)
+- LabJack T7 and USB-202 have a +/-10 V input range (bipolar)
 - LabJack T7 shares a connection handle with DAC, GPIO, and SPI operations
 - USB-202 opens and closes the connection on each read
 - Net names must match those configured on the Lager Box

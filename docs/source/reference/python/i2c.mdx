@@ -242,6 +242,7 @@ data = i2c.read(address=0x50, num_bytes=256,
 | Adapter | Description |
 |---------|-------------|
 | LabJack T7 | Uses GPIO pins (FIO/EIO) for SDA and SCL |
+| LabJack U3 | Uses DIO pins for SDA and SCL (default `FIO6` and `FIO7`) |
 | Aardvark I2C/SPI | Dedicated USB I2C adapter with pull-up support |
 | FTDI FT232H / FT2232H / FT4232H | MPSSE-based I2C; channel selected per net |
 
@@ -262,12 +263,25 @@ I2C runs over the FTDI part's MPSSE engine, and on an FT4232H only channels A an
 See [Nets](/source/reference/cli/nets) for how channels are assigned across net
 types on one chip.
 
+### LabJack U3
+
+- I2C on a U3 needs U3 hardware version 1.21 or later. The U3 is a bus master only.
+- The U3 has no pull-up resistors. Connect external resistors from SDA and SCL to VS; LabJack recommends 4.7 kΩ. Without them, every address sends a NAK and `scan()` returns an empty list.
+- `pull_ups` has no effect on a U3.
+- A transaction writes at most 50 bytes and reads at most 52 bytes. A larger transaction raises an error.
+- The clock runs from about 10 kHz to 150 kHz, and it is never faster than `frequency_hz`. A request outside that range is clamped, with a warning on the standard error output of the script.
+- `write()` and `write_read()` check the acknowledgement of the address and of each byte. The error names the first byte that the device refused. For a write of 31 bytes or more, the error does not name the byte.
+- `FIO0`-`FIO3` cannot carry I2C. The driver raises an error for a net that uses them.
+
+See [I2C](/source/reference/cli/i2c) for the pins and for how to create a U3 net with other pins.
+
 ## Notes
 
 - Net must be configured as `NetType.I2C`
 - Addresses are 7-bit format (`0x00`-`0x7F`), not left-shifted
-- `pull_ups` only works on the Aardvark adapter; ignored on LabJack T7
+- `pull_ups` only works on the Aardvark adapter; ignored on LabJack T7 and LabJack U3
 - `write_read()` uses a repeated start condition for atomic register reads
 - Default scan range (`0x08`-`0x77`) skips reserved addresses
 - Configuration changes persist to `saved_nets.json` for subsequent commands
-- LabJack T7 runs at approximately 450 kHz regardless of requested frequency due to hardware limitations
+- LabJack T7 maps the requested frequency to a clock throttle, from about 130 Hz to 450 kHz
+- LabJack U3 runs from about 10 kHz to 150 kHz
