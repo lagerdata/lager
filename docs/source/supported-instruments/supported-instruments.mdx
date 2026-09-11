@@ -240,7 +240,10 @@ scripts and CI pipelines.
 - Multi-channel FTDIs (FT2232H, FT4232H) expose each MPSSE channel as
   a separate debug net. The channel is an `@A`/`@B`/`@C`/`@D` suffix on
   the device field, so a single chip can drive multiple targets
-  independently. Channels C and D on the FT4232H are UART-only. See the
+  independently. Channels C and D on the FT4232H have no MPSSE engine.
+  They carry `gpio` and `uart` nets, but not `debug`, `i2c` or `spi`
+  nets. Pick the channel of a `gpio`, `i2c` or `spi` net with
+  `lager nets add --interface`. See the
   [nets reference](../reference/cli/nets) for the channel-suffix
   syntax.
 - Lager selects the target chip configuration from the device name for

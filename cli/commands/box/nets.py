@@ -692,6 +692,70 @@ def _build_custom_pin_config(role: str, instrument: str, pin_opts: dict) -> Opti
     return {"pin": " ".join(label_parts), "params": params}
 
 
+# FTDI channels each part has, and the subset with an MPSSE engine, by scanner
+# instrument name. The box refuses a bad channel when the net first opens
+# (_PRODUCT_CHANNELS / _PRODUCT_MPSSE_CHANNELS in box/lager/util/ftdi_url.py);
+# checking here moves that refusal to `nets add`, where the user can act on it.
+# test_nets_add_ftdi_interface.py loads ftdi_url.py and asserts the two agree.
+_FTDI_CHANNELS = {"FTDI_FT232H": "A", "FTDI_FT2232H": "AB", "FTDI_FT4232H": "ABCD"}
+_FTDI_MPSSE_CHANNELS = {"FTDI_FT232H": "A", "FTDI_FT2232H": "AB", "FTDI_FT4232H": "AB"}
+_FTDI_INTERFACE_ROLES = ("gpio", "i2c", "spi")
+
+
+def _normalize_ftdi_interface(value) -> str:
+    """Channel letter for a stored or typed interface; None and "" mean A.
+
+    Takes the vocabulary the box drivers take (``A``-``D``, ``@B``, ``0``-``3``),
+    so a net saved by hand with ``"interface": 1`` compares equal to one added
+    with ``--interface B``. Any other value comes back upper-cased and can only
+    ever equal itself.
+    """
+    if value is None:
+        return "A"
+    text = str(value).strip().lstrip("@").upper()
+    if not text:
+        return "A"
+    if text in ("0", "1", "2", "3"):
+        return "ABCD"[int(text)]
+    return text
+
+
+def _ftdi_interface_params(role: str, instrument: str,
+                           interface: Optional[str]) -> Optional[dict]:
+    """Validate ``--interface`` and return the params it adds, or None."""
+    if interface is None:
+        return None
+    letter = interface.upper()
+    part = canonical_instrument(instrument)
+    channels = _FTDI_CHANNELS.get(part)
+    if channels is None:
+        raise LagerError(
+            f"--interface applies only to FTDI FT232H, FT2232H and FT4232H "
+            f"nets, not to '{instrument}'."
+        )
+    if role not in _FTDI_INTERFACE_ROLES:
+        fixes = []
+        if role == "debug":
+            fixes.append(f"For a debug net, add the channel to the device name, "
+                         f"for example STM32F4x@{letter}.")
+        raise LagerError(
+            f"--interface applies only to gpio, i2c and spi nets, not to a "
+            f"{role} net.",
+            fixes=fixes,
+        )
+    allowed = channels if role == "gpio" else _FTDI_MPSSE_CHANNELS[part]
+    if letter not in allowed:
+        reason = ""
+        if letter in channels:
+            reason = (f" I2C and SPI need an MPSSE engine, and channel {letter} "
+                      f"has none. A gpio net can use channel {letter}.")
+        raise LagerError(
+            f"{instrument} has no channel {letter} for a {role} net. "
+            f"Channels for {role}: {', '.join(allowed)}.{reason}"
+        )
+    return {"interface": letter}
+
+
 def _labjack_claimed_pins(saved_nets: list, address: str) -> dict[str, tuple[str, str]]:
     """Map DIO pin name -> (net name, role) for LabJack nets saved at *address*.
 
@@ -1246,9 +1310,13 @@ def rename_cmd(
               help="LabJack MOSI pin for spi nets (e.g. FIO2, EIO3, or DIO number)")
 @click.option("--miso", default=None,
               help="LabJack MISO pin for spi nets (e.g. FIO3, EIO4, or DIO number)")
+@click.option("--interface", default=None, metavar="[A|B|C|D]",
+              type=click.Choice(["A", "B", "C", "D"], case_sensitive=False),
+              help="FTDI channel for a gpio, i2c or spi net on an FT2232H or "
+                   "FT4232H. The default is A.")
 @click.pass_context
 def add_cmd(ctx, name, role, channel, address, box, jlink_script, openocd_config,
-            sda, scl, cs, sck, mosi, miso):
+            sda, scl, cs, sck, mosi, miso, interface):
     """
     Add a net using inferred instrument from VISA address.
 
@@ -1264,6 +1332,7 @@ def add_cmd(ctx, name, role, channel, address, box, jlink_script, openocd_config
       lager nets add mybus i2c FIO4-FIO5 <addr>
       lager nets add mybus i2c custom <addr> --sda EIO0 --scl EIO1
       lager nets add flash spi custom <addr> --cs FIO6 --sck FIO7 --mosi EIO0 --miso EIO1
+      lager nets add ctrl gpio 5 <ft4232h-addr> --interface C
     """
     from ...box_storage import resolve_and_validate_box
 
@@ -1351,12 +1420,21 @@ def add_cmd(ctx, name, role, channel, address, box, jlink_script, openocd_config
                     fg="yellow", err=True,
                 )
 
+    # ─────────── FTDI channel (--interface) ───────────
+    ftdi_params = _ftdi_interface_params(role, instrument, interface)
+    new_interface = _normalize_ftdi_interface((ftdi_params or {}).get("interface"))
+
     if role == "debug":
+        # One debug net per channel, the rule add-all and the TUI already
+        # apply: a multi-channel FTDI names its channel as a device suffix
+        # (STM32F4x@B), and a probe with no suffix keeps one net per address.
+        new_suffix = _debug_channel_suffix(channel)
         for net in saved_nets:
             if (
                 net["role"] == "debug"
                 and net["instrument"] == instrument
                 and net["address"] == address
+                and _debug_channel_suffix(net.get("pin") or net.get("channel")) == new_suffix
             ):
                 click.secho(
                     f"A debug net already exists for instrument {instrument} at {address}.",
@@ -1411,11 +1489,15 @@ def add_cmd(ctx, name, role, channel, address, box, jlink_script, openocd_config
     # ─────────── unique role/instrument/channel/address ──────────────
     # Saved roles are canonicalized for the comparison so legacy nets stored
     # with the short tokens ("supply") still block duplicates.
+    # The FTDI channel is part of the identity: pin 4 on channel A and pin 4 on
+    # channel B are different pins. A net with no interface compares as A, so
+    # nothing changes for any other instrument.
     if any(
         _canonical_role(n.get("role", "")) == role
         and n["instrument"] == instrument
         and str(n["pin"]) == str(channel)
         and n["address"] == address
+        and _normalize_ftdi_interface((n.get("params") or {}).get("interface")) == new_interface
         for n in saved_nets
     ):
         click.secho(
@@ -1461,8 +1543,13 @@ def add_cmd(ctx, name, role, channel, address, box, jlink_script, openocd_config
         "instrument": instrument,
         "pin":        channel,
     }
+    net_params: dict = {}
     if custom_pins is not None:
-        net_data["params"] = custom_pins["params"]
+        net_params.update(custom_pins["params"])
+    if ftdi_params:
+        net_params.update(ftdi_params)
+    if net_params:
+        net_data["params"] = net_params
     if is_uart_device_path:
         net_data["device_path"] = channel
 

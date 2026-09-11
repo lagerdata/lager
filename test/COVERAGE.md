@@ -41,13 +41,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 2049 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 2539 |
+| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 2068 (+2 xfailed) |
+| `unit (box)` | `test/unit/box/` | 2555 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 181 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 186 (+1 skipped) |
-| | **Total gated** | **5149** |
+| | **Total gated** | **5184** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never
@@ -451,9 +451,9 @@ cli/tests/                #  7 files: 6 pytest suites (GATED via `unit (cli)`),
                           #           plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 206 files)
+### Local Unit Tests (`test/unit/` -- 208 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 113 files)
+#### Box Unit Tests (`test/unit/box/` -- 114 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -497,6 +497,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_diagnose_jlink_parse.py` | Box-side J-Link diagnose parsers, pinned with captured JLinkExe text |
 | `test_dispatcher_channel_resolution.py` | `resolve_channel`: v0.32.0 regression where int()-only parsing broke named adc/dac channels |
 | `test_download_file_headers.py` | `GET /download-file` names the attachment after the path it resolved, with the three characters a header value cannot carry reduced -- a filename may legally contain all of them. Spaces and parentheses survive, so the download keeps a name the user recognises |
+| `test_ftdi_dispatch_routing.py` | FTDI nets reach the FTDI drivers through the dispatchers, not only when the drivers are built directly: every FT232H, FT2232H and FT4232H net routes through the I2C, SPI and GPIO dispatchers, `params.interface` and the PID reach the driver, a non-MPSSE channel is refused with the reason, a raw `ftdi://` address is used verbatim, and the shared FTDI name set is pinned to the scanner's `SUPPORTED_USB` table so the dispatchers cannot drift from it again |
 | `test_ftdi_driver_addressing.py` | The FTDI GPIO/I2C/SPI drivers addressed by part and channel: existing single-channel FT232H URLs are byte-identical, an FT2232H opens at all (it was advertised but unreachable), I2C/SPI refuse the FT4232H's non-MPSSE C/D while GPIO accepts them, ACBUS pins are refused on a part with no ACBUS, and the GPIO state cache keys on interface so two channels of one chip stop clobbering each other |
 | `test_ftdi_url.py` | `lager.util.ftdi_url`: PID to pyftdi product, interface letter/index parsing, and the base-0/base-1 split between OpenOCD's `ftdi channel` and pyftdi's URL — asserted against `probes.parse_device_field` so `@B` cannot come to mean different channels on the two paths |
 | `test_firewall_port_allowlist.py` | The deployed `secure_box_firewall.sh` allowlist must match the ports `box/start_box.sh` publishes, parsed from both files rather than duplicated -- including the conditionally-appended `9000` an array-literal read would miss. The two had drifted three times behind a keep-in-sync comment |
@@ -575,7 +576,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_ykush_driver.py` | YKUSH USB hub driver: device-contention regression from an indefinitely cached handle |
 | `test_automation_exports.py` | Static parse of `automation/__init__.py`'s lazy export table: no name guarded twice, every returned driver reachable under its own name, everything in `__all__` resolvable -- the copy-paste class of defect that made one driver answer to another's name |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 76 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 77 files)
 
 | File | What it tests |
 |------|---------------|
@@ -611,6 +612,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_net_tui_metadata_preserves_record.py` | TUI metadata edits merge into the stored record instead of replacing it with a partial one |
 | `test_net_tui_uart_guard.py` | UART net save validation rejecting bare interface indices and empty pins |
 | `test_net_preflight.py` | Host-networking pre-flight: the ufw-allow parse against real `ufw status` output, refusal when the interface carrying the operator's own connection is not admitted, interface-scoped remediation rather than a blanket open, gateway port-collision refusal, and refusal when the box cannot be probed. Also that rules are read in ufw's first-match order, so an allow appended behind the blanket deny does not admit; address family and source scoping; and the refusal for an unreadable ufw, which names the exact `sudo -n <path> status` and prints a visudo-checked grant for a file Lager does not own |
+| `test_nets_add_ftdi_interface.py` | `lager nets add --interface`: the channel saved as `params.interface`, and refused for a channel the part lacks, an I2C/SPI net on a non-MPSSE channel, a non-FTDI instrument, and a debug net (pointed at the `@B` suffix). Also that the channel is part of a net's identity -- the same pin on two channels is two nets, no interface compares as A, a hand-saved `1` equals `B` -- that a second debug net on another channel suffix is accepted while a single-target probe keeps one, and that the CLI's channel tables agree with `box/lager/util/ftdi_url.py` |
 | `test_nets_add_labjack_pins.py` | LabJack I2C/SPI arbitrary pin selection via --sda/--scl/--cs/--sck/--mosi/--miso |
 | `test_nets_add_roles.py` | Role-token normalization converting legacy supply/batt to power-supply/battery. Also channel-rejection messaging: a rejected channel names the valid ones, a U3 high-voltage pin is pointed at AIN0-AIN3, and add-batch applies the same check while staying permissive for hardware the scan does not find |
 | `test_nets_assign.py` | `lager nets assign` flow with custom-device backend and net creation |
