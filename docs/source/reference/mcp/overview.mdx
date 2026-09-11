@@ -60,8 +60,13 @@ started with `start_box.sh --no-publish` (or `LAGER_NO_PUBLISH=1`) does not publ
 port 8100 on the host. The MCP server still runs and binds `0.0.0.0:8100` inside
 the container. It is reachable only on the internal `lagernet` Docker network,
 where a reverse proxy owns the host ports. On such a box, point the client at the
-container's lagernet address or at the route the proxy exposes -- `<box-ip>:8100`
-will not connect.
+container's `lagernet` address, because `<box-ip>:8100` will not connect. Do not
+route port 8100 through the proxy, because the MCP server performs no
+authentication.
+
+The mode persists across restarts in `/etc/lager/no_publish`, and
+`start_box.sh --publish` clears it. At the end of each run, `start_box.sh`
+reports which mode the box is in.
 </Note>
 
 ## What the agent sees
