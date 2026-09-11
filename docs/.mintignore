@@ -1,0 +1,6 @@
+# Paths in this directory that Mintlify must not publish. Mintlify builds every
+# .md and .mdx file under docs/, including files that docs.json never lists.
+
+# Archived CHANGELOG sections. The release-notes pages under source/ are the
+# published history; this is the repository record.
+changelog/
