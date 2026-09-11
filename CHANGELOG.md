@@ -12,6 +12,65 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Added
+
+- **The reference docs cover what shipped from v0.40.0 through v0.47.0.** Each
+  claim was checked against the v0.47.0 source rather than the release notes.
+  New or expanded sections:
+  - `lager nets state`, which shipped in 0.34.0 and appeared on no page: state
+    strings, the shared 8 s budget, reason codes and their remedy lines, and the
+    `--json` fields.
+  - The LabJack U3 across the adc, dac, gpi, gpo, spi, i2c, nets, instruments and
+    supported-instruments pages: pins and the SPI pin order, the 50-byte transfer
+    limit, approximate clock rates, the 0.04-4.95 V DAC range, external I2C
+    pull-ups, the refused chip-select options, and the LJM `"ANY"` limitation.
+  - `lager box-config`: the `apply` exit codes, every refusal of the host-network
+    pre-flight, `network-mode show` output, switching back, `pip import-legacy`,
+    and `LAGER_DISABLE_UART_SERVICE`.
+  - DA1469x flash and erase on both debug backends; `DebugNet.connect()` errors
+    and backend-specific parameters; `erase` and `flash` failure output and exit
+    codes.
+  - `lager uart --sessions` and `--force`; `lager usb cycle` verdicts per hub;
+    `lager webcam snapshot`; `lager exec` inside a CI job and
+    `LAGER_CI_OVERRIDE`; robot-arm detection and `LAGER_ARM_PROBE`.
+  - `/etc/lager/ref`, `update --check` exit codes, the install deploy timeout,
+    the pre-built image rules for install and update, the host CLI, how a
+    command recognizes its own lock, `setup_battery()`, and where the box
+    services write their logs.
+
+### Fixed
+
+- **Four pages said the host firewall limits the Lager ports to the VPN.** On the
+  default network, Docker publishes those ports ahead of the host firewall, as
+  `SECURITY.md` states. The install, update, setup and architecture pages now say
+  so and link the Security Model. `update.mdx` also documented a firewall step
+  and a script invocation that do not exist.
+- **The Logic Analyzer pages said the feature was not available.** The commands
+  run. Both pages, and the scope page, now carry one callout for the MSO5000
+  triggers and bus decoders that still fail (#418), plus exit codes and valid
+  ranges. Examples that cannot run are removed.
+- **Examples that could not run are corrected.** `lager debug flash --bin` takes
+  `FILE,ADDRESS`, not `ADDRESS FILE`. `lager python --kill` needs the process ID.
+  `lager uart` takes a net name, not `/dev/ttyUSB0`. `lager exec` needs `--`
+  before extra arguments that start with a dash. `UARTNet.connect()` ignores
+  `timeout`. `lager nets add` examples used channel `0` where the box lists
+  `I2C0`, `SPI0` or `FIO4-FIO5`.
+- **Stale claims are corrected.**
+  - pyOCD was listed as a debug backend; J-Link and OpenOCD are the only two.
+  - Webcam ports start at 8086, not 8081.
+  - `lager usb` commands are case-sensitive, and the `cycle` timing and hub hold
+    apply to Plugable docks only.
+  - A LabJack U3 supports SPI and I2C.
+  - A second role on a Keithley or EA instrument is a notice, not a block, and
+    two Acroname hubs of one model both work.
+  - The `.lager` defaults are JSON in `~/.lager`, not INI in the project.
+  - `lager hello`, `lager boxes`, `lager defaults list`, `lager instruments`,
+    `lager logs` and `lager binaries list` sample output matches the CLI.
+  - The box runs one `lager` container, not `controller`.
+  - The MCP server is read-only only while both opt-in gates are off.
+  - Top-level `lager` options are `--version`, `--debug` and `--colorize`;
+    `--box` belongs to each command.
+
 ## [0.47.0] - 2026-09-10
 
 ### Added
