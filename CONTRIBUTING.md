@@ -1,45 +1,49 @@
 # Contributing to Lager
 
 Thanks for your interest in contributing. This document covers how to get set up,
-how the repository is laid out, and what CI checks before a pull request can merge.
+what CI checks before a pull request can merge, and how the repository is laid out.
 
 ## Getting Started
 
-**Clone and install the CLI in development mode:**
+**Clone the repository and install the CLI in development mode.** Run the
+commands from the repository root:
 
 ```bash
 git clone https://github.com/lagerdata/lager.git
-cd lager/cli
-pip install -e .
+cd lager
+pip install -e cli/
 lager --version
 ```
 
-Python 3.10 or newer is required. If you plan to run the box unit suites, also
-install the test dependencies:
+Python 3.10 or newer is required. To run the unit suites, also install the test
+dependencies, with the same pytest pins that CI uses:
 
 ```bash
-pip install -r test/requirements-unit.txt
+pip install -r test/requirements-unit.txt 'pytest>=9,<10' 'pytest-timeout>=2.3,<3'
 ```
 
 ## What CI Checks
 
-Every pull request runs these workflows. Run the equivalents locally before
-pushing to avoid a round trip.
+Every pull request runs five workflows, and a pull request cannot merge until every
+required check passes. Run the local equivalents before you push, to save a round trip.
 
-| Workflow | What it does |
-|----------|--------------|
-| **PR Gate: Unit Tests** | The unit suites below, across the Python versions in `cli/setup.py` |
-| **PR Gate: Static Checks** | Lint over the untested tree, including ShellCheck on `*.sh` |
-| **PR Gate: Rust Checks** | `cargo fmt`, `clippy`, and a build of `box/oscilloscope-daemon` |
+| Workflow | What it checks |
+|----------|----------------|
+| **PR Gate: Unit Tests** | The six unit suites on Python 3.11, all six again on 3.10, 3.12, 3.13 and 3.14, and the MCP suite with the `cli[mcp]` extra installed |
+| **PR Gate: Static Checks** | ShellCheck, `bash -n`, `actionlint`, `zizmor`, `ruff` (errors only), the `test/COVERAGE.md` counts, the docs checks, the prose style check, and broken links. A coverage report and `pip-audit` also run, but do not gate. |
+| **PR Gate: Rust Checks** | `cargo check`, `clippy` correctness lints, `cargo test` and `cargo audit` for `box/oscilloscope-daemon`. `cargo fmt` is reported, not gated. |
+| **PR Gate: Packaging** | Builds the sdist and the wheel, installs each one in a clean virtual environment, and imports every module |
+| **PR Gate: Cross-Platform Smoke** | Installs the wheel on macOS and Windows, and imports every module |
 
-Integration, hardware, and nightly bench workflows run against real hardware and
-are not triggered by ordinary pull requests.
+[`.github/workflows/README.md`](.github/workflows/README.md) lists every workflow and
+the exact required checks. The bench workflows drive real hardware, and ordinary pull
+requests do not trigger them.
 
 ### Unit tests (no hardware)
 
-**Each suite needs its own pytest process** — they install conflicting import
-stubs, so a single combined run gives wrong results. See `test/COVERAGE.md` for
-the details.
+**Each suite needs its own pytest process.** The suites set up `sys.modules`
+differently before they import `lager`, so one combined run gives wrong results.
+Run the suites from the repository root:
 
 ```bash
 export PYTHONPATH="$PWD:$PWD/box"
@@ -53,10 +57,36 @@ $PYTEST test/mcp/unit/
 $PYTEST test/unit/test_*.py test/test_*.py
 ```
 
-### Shell lint
+**A change that adds or removes a test also changes `test/COVERAGE.md`.** The Static
+Checks job runs every suite, and it fails when the counts or the per-file tables do not
+match the tree. Refresh the counts, then write a table row for each new test file:
 
 ```bash
-shellcheck $(git ls-files '*.sh')
+python tools/check_coverage_counts.py --fix
+python tools/check_coverage_counts.py
+```
+
+### Docs and prose checks
+
+User-facing text follows [docs/STYLE.md](docs/STYLE.md), a house style that is based on
+ASD-STE100. The rules cover the main root Markdown files, the pages under
+`docs/source/`, and every message that the CLI prints. Run both checks before you push:
+
+```bash
+python tools/check_ste.py      # prose style
+python tools/check_docs.py     # docs match the CLI, and every release has notes
+```
+
+A new top-level command needs a page under `docs/source/reference/cli/`, or
+`check_docs.py` fails.
+
+### Shell lint
+
+CI runs ShellCheck at warning severity, with a fixed list of exclusions:
+
+```bash
+shellcheck -S warning -e SC2034,SC2320,SC2155,SC2164,SC2046 \
+  $(find test tools box cli/deployment -name '*.sh')
 ```
 
 ### Hardware tests (require a connected box)
@@ -74,28 +104,37 @@ lager python test/api/power/test_supply_comprehensive.py --box <box-name>
 1. **Fork** and branch from `main`. Use a short prefixed branch name, e.g.
    `fix/supply-trip-message` or `feat/rtt-streaming`.
 2. **Keep the change focused.** Unrelated fixes belong in their own PR.
-3. **Add or update tests.** New behavior without a test will be asked for one.
-4. **Update `CHANGELOG.md`** for any user-facing change. If no release is in
-   progress, file the entry under an `Unreleased` heading.
+3. **Add or update tests,** and refresh `test/COVERAGE.md` as described above.
+4. **Update `CHANGELOG.md`** for any user-facing change. File the entry under
+   `## [Unreleased]`. Write one bullet per change, in one to three sentences: what
+   changed for a user, and the command or API it affects.
 5. **Update the docs** in `docs/source/` if you changed a command, an API, or
    supported hardware.
 6. **Fill in the PR template**, including how you tested.
 
 Note that this is a **public repository**. Pull request titles, bodies, commit
-messages, and code comments are world-readable and permanent. A squash merge
-copies the PR body into git history. An edit to a PR body leaves the original
-text visible in its revision history. Do not include customer names, private
-deployment details, or internal discussion in anything you push.
+messages, and code comments are world-readable and permanent. The repository merges
+with **Rebase and merge**, so every commit message on your branch lands on `main` as
+you wrote it. An edit to a PR body leaves the original text visible in its revision
+history. Do not include customer names, private deployment details, or internal
+discussion in anything you push.
 
 ### Code Style
 
-- **Python** — follow PEP 8. Match the conventions of the file you edit.
-- **Bash** — must pass ShellCheck.
-- **Rust** — `cargo fmt` and no new `clippy` warnings.
+- **Python** — follow PEP 8, and match the conventions of the file you edit. CI runs
+  `ruff` for errors only, such as undefined names and syntax errors, not for style.
+- **Bash** — pass ShellCheck with the settings above.
+- **Rust** — keep `clippy` correctness lints at zero. Run `cargo fmt` on the files
+  you change; CI reports formatting but does not gate it.
 - **Commits** — write a clear imperative subject line explaining the change.
 - **No emoji** in code, docs, commit messages, or PR text. Use `PASS`/`FAIL`,
   `[x]`/`[ ]`, "Supported"/"Not supported".
-- **Copyright headers** on new files.
+- **Copyright header** on every new source file:
+
+  ```
+  # Copyright 2024-2026 Lager Data
+  # SPDX-License-Identifier: Apache-2.0
+  ```
 
 ## Reporting Issues
 
@@ -111,140 +150,45 @@ For security vulnerabilities, **do not open a public issue.** Follow
 
 ```
 lager/
-├── cli/                    # Command-line interface (includes deployment scripts)
-├── box/                    # Box hardware control software and services
-├── test/                   # Unit, API, and integration tests
-├── tools/                  # Repository tooling (coverage checks, doc helpers)
-└── docs/                   # Mintlify documentation source
+├── cli/                      # The lager CLI, published to PyPI as lager-cli
+│   ├── main.py               #   entry point; registers every command
+│   ├── commands/             #   command modules, grouped by domain
+│   ├── core/                 #   shared helpers, including the client for the box's :9000 API
+│   └── deployment/           #   box install scripts, packaged with the CLI
+├── box/                      # Software that runs on a Lager Box
+│   ├── lager/                #   the box services and the on-box Python API
+│   ├── oscilloscope-daemon/  #   Rust scope-streaming daemon
+│   ├── udev_rules/           #   device permission rules
+│   └── start_box.sh          #   builds and starts the box containers
+├── test/                     # unit/ (no hardware), api/ and integration/ (need a box), mcp/
+├── tools/                    # CI checkers: coverage counts, docs, prose style, imports
+└── docs/                     # Mintlify docs source (docs/source/) and the style guide
 ```
 
-### CLI (`cli/`)
+For how the pieces talk to each other, see the
+[architecture guide](https://docs.lagerdata.com/source/getting-started/architecture).
+For the test suites, see `test/COVERAGE.md` and `test/CONVENTIONS.md`.
 
-A Python [Click](https://click.palletsprojects.com/) application, published to
-PyPI as `lager-cli`.
-
-```
-cli/
-├── main.py                 # Entry point - registers all commands
-├── config.py               # Configuration management (~/.lager)
-├── box_storage.py          # Box/instrument storage utilities
-│
-├── core/                   # Shared utilities
-│   ├── net_helpers.py      # Net command helpers (resolve_box, run_net_py, etc.)
-│   ├── param_types.py      # Custom Click parameter types
-│   ├── utils.py            # General utilities
-│   ├── ssh_utils.py        # SSH connection utilities
-│   ├── matchers.py         # Pattern matching utilities
-│   └── net_storage.py      # Net storage operations
-│
-├── context/                # Session and authentication management
-│   ├── core.py             # LagerContext class
-│   ├── session.py          # DirectIPSession, LagerSession, DirectHTTPSession
-│   ├── error_handlers.py   # Docker, CANbus error handling
-│   └── ci_detection.py     # CI environment detection
-│
-├── commands/               # Command modules, grouped by domain
-│   ├── power/              # supply, battery, solar, eload
-│   ├── measurement/        # adc, dac, gpi, gpo, scope, logic, thermocouple, watt
-│   ├── communication/      # uart, i2c, spi, ble, blufi, wifi, usb
-│   ├── development/        # debug/, arm, python, devenv
-│   ├── box/                # hello, status/, boxes, instruments, nets, ssh, diagnose
-│   └── utility/            # defaults, update, pip, webcam
-│
-├── impl/                   # Implementation scripts executed on the box
-│   ├── power/              # supply.py, battery.py, solar.py, eload.py
-│   ├── measurement/        # adc.py, dac.py, scope.py, etc.
-│   ├── communication/      # uart.py, ble.py, wifi.py
-│   └── device/             # usb.py, arm.py, hello.py, webcam.py
-│
-├── deployment/             # Box deployment, packaged with the CLI
-│   ├── scripts/            # setup_and_deploy_box.sh, setup_ssh_key.sh, ...
-│   └── security/           # secure_box_firewall.sh (UFW configuration)
-│
-└── vendor/                 # Vendored third-party libraries (PyCRC)
-```
-
-Additional deployment references (cloud-init, process guides) live in
-`docs/reference/deployment/`.
-
-### Box (`box/`)
-
-Services and libraries that run on the bench hardware.
-
-```
-box/
-├── lager/                  # Python package - the box services
-│   ├── core.py             # Core utilities (Interface, Transport)
-│   ├── cache.py            # Thread-safe NetsCache singleton
-│   ├── constants.py        # Centralized configuration constants
-│   ├── exceptions.py       # Unified exception hierarchy
-│   ├── box_http_server.py  # Main Flask + WebSocket server
-│   ├── hardware_service.py # Device session pool behind the :9000 API
-│   │
-│   ├── nets/               # Net framework - net.py, device.py, mux.py, mappers/
-│   ├── dispatchers/        # Shared dispatcher infrastructure
-│   ├── http_handlers/      # HTTP/WebSocket handlers (app, uart, supply, state)
-│   │
-│   ├── power/              # supply/, battery/, solar/, eload/
-│   ├── io/                 # LabJack T7 - adc/, dac/, gpio/
-│   ├── measurement/        # thermocouple/, watt/, scope/
-│   ├── protocols/          # uart/, i2c/, spi/, ble/, wifi/
-│   ├── automation/         # arm/, usb_hub/, webcam/
-│   ├── debug/              # api.py, service.py - GDB/J-Link integration
-│   ├── python/             # Remote Python execution service
-│   ├── exec/               # Process spawning and output streaming
-│   ├── util/               # device_lock.py and other shared helpers
-│   ├── box_config/         # Declarative box configuration
-│   ├── mcp/                # MCP server for AI agent integration (port 8100)
-│   ├── docker/             # box.Dockerfile and container assets
-│   └── instrument_wrappers/
-│
-├── oscilloscope-daemon/    # Rust WebSocket/WebTransport scope streaming
-├── udev_rules/             # Device permission rules
-└── start_box.sh            # Container entry point
-```
-
-Building the Rust daemon requires **Rust 1.85+** (edition 2024):
+The Rust daemon uses edition 2024, so it builds with Rust 1.85 or newer. CI builds it
+with Rust 1.95.0:
 
 ```bash
 cd box/oscilloscope-daemon
 cargo build --release
 ```
 
-### Tests (`test/`)
-
-```
-test/
-├── framework/              # harness.sh, colors.sh, test_utils.py, fixtures.py
-├── assets/                 # Test data, and a placeholder for firmware
-│                           # (binaries are excluded; see assets/firmware/README.md)
-│
-├── unit/                   # Unit tests - no hardware
-│   ├── cli/                # CLI unit tests
-│   ├── box/                # Box service unit tests
-│   ├── measurement/        # Measurement unit tests
-│   └── blufi/              # BluFi unit tests
-├── mcp/unit/               # MCP server unit tests
-│
-├── api/                    # Python API tests - run on a box
-│   ├── power/  io/  usb/  communication/  sensors/  peripherals/
-│
-├── integration/            # Bash integration suites - run against a box
-│   ├── power/  io/  usb/  communication/  sensors/  infrastructure/
-│
-├── COVERAGE.md             # Suite inventory and per-suite test counts
-└── CONVENTIONS.md          # Test authoring conventions
-```
-
 ## Development Guidelines
 
 ### Adding a CLI command
 
-1. Create the command module in `cli/commands/<category>/`.
-2. Add an implementation script in `cli/impl/<category>/` if it runs on the box.
+1. Add the command module under `cli/commands/<category>/`, next to a similar command.
+2. Most net commands send their action to the box's HTTP API on port 9000. Follow
+   `post_net_command` in `cli/core/net_helpers.py`. If the box needs a new endpoint,
+   add a handler under `box/lager/http_handlers/`.
 3. Register the command in `cli/main.py`.
 4. Add unit tests in `test/unit/cli/`.
-5. Document it in `docs/source/reference/cli/`.
+5. Add a reference page under `docs/source/reference/cli/`. `tools/check_docs.py`
+   fails without one.
 
 ### Adding a box feature
 
