@@ -98,8 +98,11 @@ class UsbScannerCustomTests(unittest.TestCase):
         self.handshake_excludes = []
         self._orig_by_handshake = us._by_handshake
 
-        def fake_handshake(*, exclude=None):
+        self.handshake_known_arms = []
+
+        def fake_handshake(*, exclude=None, known_arm_serials=None):
             self.handshake_excludes.append(set(exclude or ()))
+            self.handshake_known_arms.append(set(known_arm_serials or ()))
             return []
 
         us._by_handshake = fake_handshake
@@ -124,6 +127,13 @@ class UsbScannerCustomTests(unittest.TestCase):
         self.resolved[(VID, PID, SERIAL, None)] = TTY
 
     # ---- tests -----------------------------------------------------------
+
+    def test_saved_arm_serials_reach_the_handshake(self):
+        # list_instruments hands the handshake the serials of saved arm nets,
+        # so those arms are listed without a write (see TestArmProbeGating).
+        with mock.patch.object(us, "_saved_arm_serials", return_value={"DEX1"}):
+            us.list_instruments()
+        self.assertEqual(self.handshake_known_arms, [{"DEX1"}])
 
     def test_assigned_live_cable_surfaces_catalog_instrument(self):
         self._assign_live_dp711()
@@ -449,10 +459,41 @@ class TestArmProbeGating(unittest.TestCase):
         ser.start()
         self.addCleanup(ser.stop)
 
-    def _run(self, ns, exclude=None, env=None):
+    def _run(self, ns, exclude=None, env=None, known=None):
         with mock.patch.dict(sys.modules, {"serial": ns}), \
                 mock.patch.dict(os.environ, env or {}, clear=False):
-            return us._by_handshake(exclude=exclude or set())
+            return us._by_handshake(exclude=exclude or set(),
+                                    known_arm_serials=known or set())
+
+    def test_arm_of_a_saved_net_is_listed_without_a_write(self):
+        # hardware_service holds a saved arm's port open without an exclusive
+        # lock, so a handshake could land in the middle of a command and take
+        # the arm's reply. On a real arm that failed a position read with
+        # "device reports readiness to read but returned no data".
+        ns = _fake_serial_ns()
+        out = self._run(ns, known={"DEX1"})
+
+        self.assertEqual([d["name"] for d in out], ["Rotrix_Dexarm"])
+        self.assertEqual(out[0]["address"],
+                         "USB0::0x0483::0x5740::DEX1::INSTR")
+        self.assertEqual(out[0]["channels"], {"arm": [DEXARM_TTY]})
+        self.assertEqual(ns.constructed, 0)
+        self.assertEqual(ns.writes, [])
+
+    def test_arm_with_no_saved_net_still_gets_the_handshake(self):
+        ns = _fake_serial_ns()
+        out = self._run(ns, known={"SOME-OTHER-ARM"})
+
+        self.assertEqual([d["name"] for d in out], ["Rotrix_Dexarm"])
+        self.assertEqual(ns.writes, [(DEXARM_TTY, b"M105\n")])
+
+    def test_saved_arm_on_an_owned_tty_stays_excluded(self):
+        # The exclusion set still wins over a saved arm serial.
+        ns = _fake_serial_ns()
+        out = self._run(ns, exclude={DEXARM_TTY}, known={"DEX1"})
+
+        self.assertEqual(out, [])
+        self.assertEqual(ns.constructed, 0)
 
     def test_dexarm_is_still_found(self):
         # The gate must not filter out the hardware it exists to detect.
@@ -512,8 +553,8 @@ class TestArmProbeGating(unittest.TestCase):
     def test_force_widens_the_gate_but_keeps_every_other_guard(self):
         # force exists to answer "is my arm being filtered out?". It drops the
         # VID:PID gate ONLY — the exclusion set, the exclusive open and the
-        # deasserted modem lines still apply (the latter two are asserted
-        # inside the fake's open()).
+        # modem-line settings (DTR high, RTS low) still apply (the latter two
+        # are asserted inside the fake's open()).
         ns = _fake_serial_ns()
         self._run(ns, env={"LAGER_ARM_PROBE": "force"})
         self.assertIn(FOREIGN_TTY, ns.opened_ports)

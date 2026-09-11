@@ -41,13 +41,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 2039 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 2499 |
+| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 2046 (+2 xfailed) |
+| `unit (box)` | `test/unit/box/` | 2538 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 181 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 186 (+1 skipped) |
-| | **Total gated** | **5099** |
+| | **Total gated** | **5145** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never
@@ -451,9 +451,9 @@ cli/tests/                #  7 files: 6 pytest suites (GATED via `unit (cli)`),
                           #           plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 203 files)
+### Local Unit Tests (`test/unit/` -- 206 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 111 files)
+#### Box Unit Tests (`test/unit/box/` -- 113 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -462,6 +462,8 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | File | What it tests |
 |------|---------------|
 | `test_acroname_driver.py` | Acroname USB hub driver: contention (bounded session hold, cross-process lock), latency (discovery cache, scan-free warm opens, cycle timing log), and exit cleanup (a parked handle is closed at interpreter shutdown, including through a real subprocess exit) |
+| `test_arm_driver.py` | Rotrics Dexarm driver against a scripted serial port: `set_acceleration` sends Marlin's P/T/R letters (the old P/T/T string set travel acceleration to the retract value), `move_to`/`move_relative` refuse an out-of-bounds target before any write, and also refuse firmware older than V2.1.4 (where Rotrics swapped X and Y) or firmware that reports no version, `go_home` returns on M1112's ok and times out without it, a move before homing raises `NotHomedError`, the firmware's M114 reply parses (including an `ok` that arrives before the position line), a silent arm fails a position read within three bounded attempts, and an `add-all` arm net opens the arm by the serial in its address |
+| `test_arm_hs_adapter.py` | Robot-arm hardware_service adapter: a serial error drops the cached port so the next command reopens it (hardware_service's own retry does not recognize pyserial errors), `position` retries once but motion never does, and a move wait past 25 s is refused before the port opens because it would outlive the service's 30 s call deadline |
 | `test_authorized_keys_sync.py` | `start_box.sh` authorized_keys marker-block rebuild (revocation, no duplicates, foreign keys preserved) and its single-instance lock |
 | `test_battery_model_authoring.py` | Battery model authoring (create/export of 2281S memory slots), against hardware-verified ground truth |
 | `test_bench_quiesce.py` | The quiesce registry that makes a starting job wait for the previous one's teardown, and the arithmetic tying its bounds to the reap they must cover |
@@ -565,7 +567,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_uart_session_cleanup.py` | Websocket UART read loop heals in place instead of stopping on a failed read, plus the three ways a held UART net is freed — a departed client (which the loop's own heartbeat cannot detect, because the loop writes it), a wedged reader, and an operator force-release |
 | `test_usb_cycle_reenumeration.py` | `USBNet.cycle`'s re-enumeration verdict, read from the kernel's USB topology rather than from the hub: the bus sampled before the port is cut and again while it is dark, so what left in between is what the port carries. All four outcomes -- a device that returns, one that does not, a genuinely empty port, and a bus that could not be read (which must never be reported as empty) -- plus power restored on every path, a bounded wait, and a guard that the Acroname and YKUSH drivers still inherit this rather than overriding it |
 | `test_usb_devices_dfu.py` | `GET /usb/devices` sysfs enumeration and `POST /usb/dfu` list/download/detach argument building |
-| `test_usb_scanner_custom.py` | Custom-device surfacing in box HTTP scanner GET /instruments/list. Also the SuperSpeed companion dedupe: one physical dock lists as one instrument, and a missing bus root pairs nothing rather than pairing everything. Also what the Dexarm handshake -- the one scan step that WRITES to hardware -- is allowed to touch: every channel of a multi-interface chip and every saved uart net's tty reach the exclusion set, a foreign or unresolvable VID:PID is never opened at all, a port held by another process is skipped, and `LAGER_ARM_PROBE` off/force widen or close the gate without ever dropping the exclusive open or the deasserted modem lines. |
+| `test_usb_scanner_custom.py` | Custom-device surfacing in box HTTP scanner GET /instruments/list. Also the SuperSpeed companion dedupe: one physical dock lists as one instrument, and a missing bus root pairs nothing rather than pairing everything. Also what the Dexarm handshake -- the one scan step that WRITES to hardware -- is allowed to touch: every channel of a multi-interface chip and every saved uart net's tty reach the exclusion set, a foreign or unresolvable VID:PID is never opened at all, a port held by another process is skipped, an arm that a saved arm net points at is listed with no write at all (a handshake there used to take that arm's reply in the middle of a command), and `LAGER_ARM_PROBE` off/force widen or close the gate without ever dropping the exclusive open or the modem-line settings. |
 | `test_usb_scanner_uart_fallback.py` | UART enumeration without USB serial by matching sysfs path; two identical adapters keep distinct ttys and the channel catalog stays unmutated |
 | `test_webcam_detection.py` | sysfs-based webcam detection (`_by_camera`) against a fake sysfs tree |
 | `test_webcam_stream_state.py` | `WebcamStreamState.add_stream` persisting the `source`/`started_by` origin fields, `get_stream_info` returning them, and the generated streamer script still compiling with the `/snapshot` handler in it |
@@ -573,11 +575,12 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_ykush_driver.py` | YKUSH USB hub driver: device-contention regression from an indefinitely cached handle |
 | `test_automation_exports.py` | Static parse of `automation/__init__.py`'s lazy export table: no name guarded twice, every returned driver reachable under its own name, everything in `__all__` resolvable -- the copy-paste class of defect that made one driver answer to another's name |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 75 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 76 files)
 
 | File | What it tests |
 |------|---------------|
 | `test_address_utils.py` | IPv4/IPv6/Tailscale/hostname validation rejecting schemes, ports, and paths |
+| `test_arm_command.py` | `lager arm` CLI: `read-and-save-position` sends nothing until the M889 recalibration is confirmed (or `--yes` is passed), `move`/`move-by` reject a `--timeout` past the box's 25 s cap before any request, and listing arm nets takes no box lock |
 | `test_battery_tui.py` | BatteryTUI render output, command parsing, and worker thread offloading |
 | `test_binaries_9000.py` | `lager binaries add/list/remove` and `download_file` migrated to the box HTTP server on `:9000` |
 | `test_box_command_error.py` | `box_command_error`: a 404 that means "net or instrument not found" must not also tell the user their box image is out of date |
