@@ -1,9 +1,9 @@
 ---
 title: Debug
-description: Embedded debug operations for J-Link probes
+description: Embedded debug operations for J-Link and OpenOCD probes
 ---
 
-Control embedded debug operations including device connection, firmware flashing, reset, and memory access using J-Link debug probes.
+Control embedded debug operations including device connection, firmware flashing, reset, and memory access. A J-Link probe uses the J-Link backend. Other supported probes use the OpenOCD backend.
 
 ## Import
 
@@ -21,8 +21,8 @@ The Net-based API provides methods for embedded debugging operations.
 | `disconnect()` | Disconnect from target |
 | `reset(halt)` | Reset the device |
 | `halt()` | Halt the target where it is, without a reset (OpenOCD only) |
-| `flash(firmware_path)` | Flash firmware to device |
-| `erase()` | Perform full chip erase |
+| `flash(firmware_path, flash_address=None)` | Flash firmware to device |
+| `erase()` | Erase flash (full chip on most targets, a 1 MiB QSPI range on DA1469x) |
 | `read_memory(address, length)` | Read memory from device |
 | `status()` | Get connection status |
 | `rtt(channel, search_addr, search_size, chunk_size)` | Create RTT session for bidirectional communication (raw bytes) |
@@ -77,22 +77,28 @@ dbg.connect(script='/home/lagerdata/probes/my_target.JLinkScript')
 |-----------|------|---------|-------------|
 | `speed` | `str` | `'4000'` | Interface speed in kHz (e.g., '4000') or 'adaptive' |
 | `transport` | `str` | `'SWD'` | Transport protocol ('SWD' or 'JTAG') |
-| `script` | `str` | `None` | A per-connect debug-script override, on **either** backend: a path on the box **or** a base64-encoded blob. Copied to this net's path for whichever format it turns out to be, so subsequent `flash()` / `reset()` / `read_memory()` calls pick it up immediately. The format is classified by extension then content; a script for the *other* backend, or a blob that cannot be classified, raises `ValueError` rather than running the target under an attach sequence nobody asked for. |
+| `script` | `str` | `None` | A per-connect debug-script override, on **either** backend: a path on the box **or** a base64-encoded blob. Copied to this net's path for whichever format it turns out to be, so subsequent `flash()` / `reset()` / `read_memory()` calls pick it up immediately. The extension decides the format first: `.JLinkScript` and `.JLinkScriptFile` are J-Link, and `.cfg`, `.tcl` and `.ocd` are OpenOCD. For any other name, a check of the content decides. A script for the *other* backend raises `ValueError`. A readable file or a decodable blob that cannot be classified also raises `ValueError`, rather than running the target under an attach sequence nobody asked for. |
 | `force` | `bool` | `False` | Stop any gdbserver already running for this probe and start fresh. |
 | `ignore_if_connected` | `bool` | `False` | If a gdbserver is already running for this probe, return its status without touching it. |
-| `openocd_config` | `str` | `None` | The unambiguous OpenOCD form of `script`, skipping format detection. Wins over `script` when both are given. Must be a **complete** cfg, not a fragment — see the warning below. |
-| `jlink_script` | `str` | `None` | The unambiguous J-Link form of `script`, skipping format detection. Wins over `script` when both are given. Use this for a base64 blob: a blob has no filename to classify, and the two commonest J-Link forms (`void InitTarget(void)` and `JLINK_ExecCommand`) are not among the content markers, so such a blob raises rather than routing on a guess. |
-| `halt` | `bool` | `False` | **OpenOCD only.** Run `reset halt` once the daemon is up. Note this is a *reset* followed by a halt — see [`halt()`](#halt) for stopping the core where it is. |
+| `openocd_config` | `str` | `None` | The unambiguous OpenOCD form of `script`, skipping format detection. Must be a **complete** cfg, not a fragment — see the warning below. On a J-Link net, it raises `ValueError`. |
+| `jlink_script` | `str` | `None` | The unambiguous J-Link form of `script`, skipping format detection. Use this for a base64 blob: a blob has no filename to classify, and the two commonest J-Link forms (`void InitTarget(void)` and `JLINK_ExecCommand`) are not among the content markers, so such a blob raises rather than routing on a guess. On an OpenOCD net, it raises `ValueError`. |
+| `halt` | `bool` | `False` | **OpenOCD only.** Run `reset halt` once the daemon is up. Note this is a *reset* followed by a halt — see [`halt()`](#halt) for stopping the core where it is. On a J-Link net, `connect()` ignores `halt`. |
+
+`connect()` classifies `script` before it applies `openocd_config` or `jlink_script`. If you give `script` and one of those two, the explicit parameter wins only when `script` is for the same backend. A `script` for the other backend raises `ValueError` first.
 
 **Returns:** `dict` - Status dictionary with connection information
+
+**Raises:** If a gdbserver already runs for the probe and you pass neither `force` nor `ignore_if_connected`, `connect()` raises. The error is `RuntimeError` on OpenOCD and `JLinkAlreadyRunningError` (from `lager.debug`) on J-Link.
 
 <Note>
 A script override takes effect only when the gdbserver relaunches. If a server is
 already up, pass `force=True` to restart it with the new script.
-`ignore_if_connected=True` returns early and does not relaunch, but it still
-repoints the file for later operations. Invalid input means a missing path that
-is not valid base64, or an empty string. The net ignores such input silently, and
-the script that it materialized earlier stays in effect.
+`ignore_if_connected=True` returns early and does not relaunch. On J-Link, it
+still repoints the script for later operations. On OpenOCD, an override cfg goes
+only to the daemon that this `connect()` call starts. A later relaunch, including
+a self-heal relaunch, uses the cfg that is stored on the net. Invalid input means
+a missing path that is not valid base64, or an empty string. The net ignores such
+input silently, and the script that it materialized earlier stays in effect.
 
 The override is scoped to **this net and this session**. Lager writes it to a
 per-net path rather than to the box-wide config that the net record and the HTTP
@@ -164,12 +170,17 @@ Halt the target where it is, without a reset. **OpenOCD only.**
 
 ```python
 # Program, then stop the core on the image just written
+dbg.connect()
 dbg.flash('build/firmware.elf')
 dbg.connect(force=True)
 dbg.halt()
 ```
 
+On OpenOCD, `flash()` needs a running daemon. Without one, it raises `RuntimeError` and tells you to call `connect()` first.
+
 **Returns:** `str` - Combined output from the halt operation
+
+Like `reset()`, `halt()` retries across the short window after `flash()` when the server is not reachable yet.
 
 This is **not** the same as `reset(halt=True)`. That runs OpenOCD's `reset halt`,
 which pulses nRESET and re-enters through the reset vector. `halt()` issues a bare
@@ -183,8 +194,9 @@ the image.
 
 <Note>
 J-Link has no standalone halt-in-place primitive, because `reset_device` and
-`gdb_reset` both reset first. On that backend `halt()` raises, and the error
-names the halt-first `.JLinkScript` as the supported route.
+`gdb_reset` both reset first. On that backend `halt()` raises
+`NotImplementedError`, and the error names the halt-first `.JLinkScript` as the
+supported route.
 </Note>
 
 ### `flash(firmware_path, flash_address=None)`
@@ -221,18 +233,35 @@ STM32 `0x08000000`, nRF52 `0x00000000`, DA1469x QSPI `0x16000000`.
 **DA1469x on OpenOCD:** mainline OpenOCD has no flash driver for the DA1469x's
 external QSPI. On that family, `flash()` and `erase()` drive the RAM-resident
 flash_loader instead, the same path `lager debug <net> flash` takes. Pass the
-absolute XIP address (`0x16000000`), exactly as on J-Link. The loader artefacts
-live on the box under
-`/home/www-data/customer-binaries/openocd/flash-loaders/da1469x/`. A missing
-loader raises rather than falling back to OpenOCD's `program`, which cannot
-reach QSPI.
+absolute XIP address (`0x16000000`), exactly as on J-Link. A missing loader
+raises rather than falling back to OpenOCD's `program`, which cannot reach QSPI.
+
+- An address outside `0x16000000`–`0x17FFFFFF` raises before the box touches
+  the probe. The error says `flash address 0x... is outside the DA1469x QSPI XIP
+  window`.
+- Flash a `.bin`. The loader writes the bytes of the file unchanged, so it does
+  not decode a `.hex` or `.elf` file.
+- The loader needs `flash_loader.elf` and `flash_loader.elf.bin` in
+  `/home/www-data/customer-binaries/openocd/flash-loaders/da1469x/` in the
+  container. On the box host, that directory is
+  `~/third_party/customer-binaries/openocd/flash-loaders/da1469x/`.
+  `LAGER_FLASH_LOADERS_DIR` replaces the parent directory.
+- OpenOCD has no built-in target config for this family, so the net needs an
+  `openocd_config`.
+- A dropped debug read does not stop the loader. The loader retries the read
+  until the deadline of its step.
+- A failure raises with the last progress line of the loader. If the erase stage
+  already ran, the message says that the board can be blank. Flash it again.
 
 ### `erase()`
 
-Perform full chip erase. This erases ALL flash memory including protection settings.
+Erase the flash of the target. On most targets this is a full chip erase, which
+erases ALL flash memory including protection settings.
 
-On a DA1469x behind an OpenOCD probe this is the flash_loader's range erase of
-the first 1 MiB of QSPI, matching the J-Link path.
+On a DA1469x, `erase()` erases only the first 1 MiB of the external QSPI, from
+`0x16000000`. This applies on both backends. The OpenOCD backend uses the
+flash_loader. The J-Link backend uses a range erase, and a `LAGER_ERASE_RANGE`
+line in the JLinkScript of the net sets a different range.
 
 ```python
 # Full chip erase
@@ -370,11 +399,12 @@ GDB server or daemon restarts under it.
   drops. If it does drop, from a daemon force-restart or an rtt-server bounce, the
   reader re-runs `rtt setup` and `rtt server start` and re-attaches.
 
-Reconnection is bounded on both backends, and the default is 30 s. The reader
+Reconnection is bounded on both backends, and the limit is 30 s. The reader
 re-attaches only once the server or daemon is back up, and it never *starts* one.
 A flash that deliberately leaves the server down, such as on DA1469x, therefore
 cannot make the reader spin forever. The reader also cannot disturb a DA1469x that
-you left down on purpose. Pass `reconnect=False` for the legacy one-shot behavior.
+you left down on purpose. `rtt()` and `rtt_defmt()` take no `reconnect` argument, so
+reconnection is always on.
 
 ## Examples
 
@@ -601,9 +631,10 @@ For a complete list, see [SEGGER's supported devices](https://www.segger.com/sup
 
 | Debug Probe | Features |
 |-------------|----------|
-| J-Link | JTAG/SWD debugging, flash programming |
-| CMSIS-DAP | SWD debugging (via pyOCD backend) |
-| ST-Link | SWD debugging (via pyOCD backend) |
+| J-Link | JTAG/SWD debugging, flash programming (J-Link backend) |
+| CMSIS-DAP | SWD debugging, flash programming (OpenOCD backend) |
+| ST-Link | SWD debugging, flash programming (OpenOCD backend) |
+| FTDI and other OpenOCD adapters | See the [CLI Debug Reference](/source/reference/cli/debug#supported-debug-probes) |
 
 ## Notes
 
@@ -611,5 +642,5 @@ For a complete list, see [SEGGER's supported devices](https://www.segger.com/sup
 - The CLI (`lager debug`) is recommended for most use cases
 - Python Net API is intended for advanced automation scripts running on the Lager Box
 - Always call `disconnect()` when finished to release the debug probe
-- Use `erase()` to perform a full chip erase and clear protection settings
+- Use `erase()` to perform a full chip erase and clear protection settings (on DA1469x, `erase()` erases a 1 MiB QSPI range)
 - RTT requires an active debug connection (see RTT Streaming section above)

@@ -5,6 +5,10 @@ description: Control oscilloscope settings and capture waveforms
 
 Control oscilloscope nets through the Lager CLI for waveform capture, triggering, measurements, and streaming.
 
+<Warning>
+**Known limitations on the Rigol MSO5000.** The edge and SPI triggers work. The pulse, UART and I2C triggers fail on the Rigol MSO5000. The CAN trigger and every bus decoder in the Python API also fail. A failed command prints the error and exits 1. [Issue #418](https://github.com/lagerdata/lager/issues/418) tracks this work.
+</Warning>
+
 ## Syntax
 
 ```bash
@@ -63,7 +67,7 @@ The CLI validates input values before sending commands to the oscilloscope:
 
 | Manufacturer | Model | Features |
 |--------------|-------|----------|
-| Rigol | MSO5000 series | 4 analog + 16 digital channels, SCPI/VISA control, advanced triggers (edge, pulse, I2C, SPI, UART), measurements, cursors |
+| Rigol | MSO5000 series | 4 analog + 16 digital channels, SCPI/VISA control, edge and SPI triggers, measurements, cursors |
 | PicoScope | 2000 series | Real-time streaming, web-based visualization, CSV export, edge trigger |
 
 ### Feature Comparison
@@ -73,7 +77,7 @@ The CLI validates input values before sending commands to the oscilloscope:
 | Channels | 4 analog + 16 digital | Up to 4 analog |
 | Real-time streaming | No (single capture) | Yes (continuous) |
 | Measurements | 11 built-in types | Via streaming/CSV |
-| Trigger types | Edge, pulse, I2C, SPI, UART | Edge only |
+| Trigger types | Edge and SPI (pulse, I2C and UART do not work yet) | Edge only |
 | Cursor control | Manual XY cursors | Web UI cursors |
 | Autoscale | Yes | No |
 | Web visualization | No | Yes (HTML5) |
@@ -362,6 +366,8 @@ lager scope ANALOG1 trigger edge --slope both --coupling ac --level 0 --box my-l
 
 Set pulse width trigger (Rigol only). Triggers when pulse width meets specified conditions.
 
+On the Rigol MSO5000, this trigger does not work yet. See the limitations at the top of this page.
+
 ```bash
 lager scope NET_NAME trigger pulse [OPTIONS]
 ```
@@ -378,26 +384,18 @@ lager scope NET_NAME trigger pulse [OPTIONS]
 
 | Condition | Description |
 |-----------|-------------|
-| `positive` | Positive pulse |
-| `negative` | Negative pulse |
-| `positive_greater` | Positive pulse wider than upper limit |
-| `negative_greater` | Negative pulse wider than upper limit |
-| `positive_less` | Positive pulse narrower than upper limit |
-| `negative_less` | Negative pulse narrower than upper limit |
-
-**Examples:**
-
-```bash
-# Detect short positive glitches (< 100us)
-lager scope ANALOG1 trigger pulse --trigger-on positive_less --upper 0.0001 --box my-lager-box
-
-# Detect long negative pulses (> 1ms)
-lager scope ANALOG1 trigger pulse --trigger-on negative_greater --upper 0.001 --level 1.0 --box my-lager-box
-```
+| `positive` | Positive pulse wider than `--upper` |
+| `negative` | Negative pulse wider than `--upper` |
+| `positive_greater` | Positive pulse wider than `--upper` |
+| `negative_greater` | Negative pulse wider than `--upper` |
+| `positive_less` | Positive pulse narrower than `--lower` |
+| `negative_less` | Negative pulse narrower than `--lower` |
 
 ### `trigger i2c`
 
 Set I2C protocol trigger (Rigol only). Triggers on I2C bus events.
+
+On the Rigol MSO5000, this command does not work yet. See the limitations at the top of this page. The command also refuses its default `--direction` value, `read_write`, and the `ack_miss` condition.
 
 ```bash
 lager scope NET_NAME trigger i2c [OPTIONS]
@@ -415,7 +413,7 @@ lager scope NET_NAME trigger i2c [OPTIONS]
 | `--address HEX` | I2C address (hex) | - |
 | `--addr-width` | Address width: `7`, `8`, `10` bits | `7` |
 | `--data HEX` | Data pattern to match (hex) | - |
-| `--data-width INT` | Data width in bits | `8` |
+| `--data-width INT` | Data width in bytes: `1` to `5` (the help text says bits) | `8` |
 | `--direction` | Direction: `read`, `write`, `read_write` | `read_write` |
 
 **Trigger-on Conditions:**
@@ -429,31 +427,6 @@ lager scope NET_NAME trigger i2c [OPTIONS]
 | `address` | Specific address match |
 | `data` | Specific data match |
 | `addr_data` | Address + data match |
-
-**Examples:**
-
-```bash
-# Trigger on I2C start condition
-lager scope ANALOG1 trigger i2c \
-  --source-scl SCL_NET --source-sda SDA_NET \
-  --trigger-on start --box my-lager-box
-
-# Trigger on specific I2C address (7-bit)
-lager scope ANALOG1 trigger i2c \
-  --source-scl SCL_NET --source-sda SDA_NET \
-  --trigger-on address --address 0x48 --box my-lager-box
-
-# Trigger on I2C write to address 0x76 with data 0xF4
-lager scope ANALOG1 trigger i2c \
-  --source-scl SCL_NET --source-sda SDA_NET \
-  --trigger-on addr_data --address 0x76 --data 0xF4 \
-  --direction write --box my-lager-box
-
-# Trigger on NACK (missing acknowledgment)
-lager scope ANALOG1 trigger i2c \
-  --source-scl SCL_NET --source-sda SDA_NET \
-  --trigger-on ack_miss --box my-lager-box
-```
 
 ### `trigger spi`
 
@@ -474,11 +447,13 @@ lager scope NET_NAME trigger spi [OPTIONS]
 | `--level-sck VOLTS` | SCK trigger level | - |
 | `--level-cs VOLTS` | CS trigger level | - |
 | `--trigger-on` | Condition: `timeout`, `cs` | `cs` |
-| `--data HEX` | Data pattern to match (hex) | - |
-| `--data-width INT` | Data width in bits | `8` |
-| `--clk-slope` | Clock edge: `rising`, `falling` | `rising` |
-| `--cs-idle` | CS idle state: `high`, `low` | `high` |
-| `--timeout SECONDS` | Timeout value in seconds | - |
+| `--data HEX` | Data pattern to match (hex). Not usable yet: the command fails when you give it | - |
+| `--data-width INT` | Data width in bits: `4` to `32` | `8` |
+| `--clk-slope` | Clock edge: `rising`, `falling`. Has no effect yet | `rising` |
+| `--cs-idle` | CS idle state: `high`, `low`. `high` triggers while CS is low | `high` |
+| `--timeout SECONDS` | Timeout value in seconds. `--trigger-on timeout` changes nothing without it | - |
+
+To set a data pattern or the clock edge, use `lager logic NET trigger spi` on the [Logic Analyzer](/source/reference/cli/logic) page. It takes `--data` as a decimal integer and `--clk-slope` as `positive` or `negative`.
 
 **Examples:**
 
@@ -487,16 +462,13 @@ lager scope NET_NAME trigger spi [OPTIONS]
 lager scope ANALOG1 trigger spi \
   --source-mosi-miso MOSI_NET --source-sck SCK_NET --source-cs CS_NET \
   --trigger-on cs --box my-lager-box
-
-# Trigger on SPI data pattern with falling clock edge
-lager scope ANALOG1 trigger spi \
-  --source-mosi-miso MOSI_NET --source-sck SCK_NET --source-cs CS_NET \
-  --data 0xFF --clk-slope falling --box my-lager-box
 ```
 
 ### `trigger uart`
 
 Set UART protocol trigger (Rigol only). Triggers on UART serial events.
+
+On the Rigol MSO5000, this command does not work yet. See the limitations at the top of this page. The command also refuses the `stop` condition.
 
 ```bash
 lager scope NET_NAME trigger uart [OPTIONS]
@@ -509,25 +481,9 @@ lager scope NET_NAME trigger uart [OPTIONS]
 | `--baud INT` | Baud rate | `9600` |
 | `--parity` | Parity: `none`, `even`, `odd` | `none` |
 | `--stop-bits` | Stop bits: `1`, `1.5`, `2` | `1` |
-| `--data-width INT` | Data width in bits | `8` |
+| `--data-width INT` | Data width in bits: `5` to `8` | `8` |
 | `--trigger-on` | Condition: `start`, `stop`, `data`, `error` | `start` |
 | `--data HEX` | Data pattern to match (hex) | - |
-
-**Examples:**
-
-```bash
-# Trigger on UART start bit at 115200 baud
-lager scope ANALOG1 trigger uart \
-  --source UART_TX --baud 115200 --trigger-on start --box my-lager-box
-
-# Trigger on specific UART data byte
-lager scope ANALOG1 trigger uart \
-  --source UART_TX --baud 9600 --trigger-on data --data 0x55 --box my-lager-box
-
-# Trigger on UART framing error
-lager scope ANALOG1 trigger uart \
-  --source UART_RX --baud 115200 --trigger-on error --box my-lager-box
-```
 
 ---
 
@@ -944,6 +900,7 @@ scope [NETNAME] [--box BOX]
 - Streaming commands are only available for PicoScope devices
 - Measurement and cursor commands are only available for Rigol devices
 - Edge trigger is the only trigger type supported on both PicoScope and Rigol
+- On the Rigol MSO5000, only the edge and SPI triggers work (see [issue #418](https://github.com/lagerdata/lager/issues/418))
 - Web visualization requires port 8080 to be accessible on the Lager Box
 - Validation rejects values outside the allowed ranges before sending to hardware
 - Use `lager nets` to see available scope nets

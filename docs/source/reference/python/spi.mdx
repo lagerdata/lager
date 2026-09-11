@@ -47,6 +47,8 @@ spi = Net.get('MY_SPI_NET', type=NetType.SPI)
 
 Configure SPI bus parameters. Only explicitly-provided parameters are changed; omitted parameters retain their stored values.
 
+`config()` changes the driver in the running script. It does not write the values to `saved_nets.json`. To store a configuration on the net, use `lager spi NET config` from the CLI.
+
 ```python
 spi.config(mode=0, frequency_hz=1_000_000)
 spi.config(mode=3, bit_order="lsb", word_size=16)
@@ -59,7 +61,7 @@ spi.config(cs_mode="manual")
 | `bit_order` | `str` or `None` | `"msb"` (most significant bit first) or `"lsb"` |
 | `frequency_hz` | `int` or `None` | Clock frequency in Hz |
 | `word_size` | `int` or `None` | Bits per word: `8`, `16`, or `32` |
-| `cs_active` | `str` or `None` | Chip select polarity: `"low"` or `"high"` |
+| `cs_active` | `str` or `None` | Chip select polarity: `"low"` or `"high"`. A LabJack U3 refuses `"high"` |
 | `cs_mode` | `str` or `None` | `"auto"` (hardware CS) or `"manual"` (user-managed GPIO) |
 
 #### SPI Modes
@@ -205,6 +207,8 @@ print(f"Read {len(data)} bytes: {' '.join(f'{b:02x}' for b in data)}")
 
 ### Multi-Part Transaction with keep_cs
 
+A LabJack U3 in `auto` CS mode refuses `keep_cs=True`. On a U3, use the manual CS example below.
+
 ```python
 from lager import Net, NetType
 
@@ -216,6 +220,22 @@ spi.write([0x03, 0x00, 0x10, 0x00], keep_cs=True)
 # Part 2: Read data while CS is still asserted
 data = spi.read(n_words=32, keep_cs=False)
 print(f"Read {len(data)} bytes")
+```
+
+### Manual Chip Select on a LabJack U3
+
+A U3 drives CS low for each transfer and releases it at the end. To hold CS across transfers, or to drive an active-high CS, use an SPI net without CS and a GPIO net for CS. An SPI net without CS uses `manual` CS mode.
+
+```python
+from lager import Net, NetType
+
+spi = Net.get('flash_spi', type=NetType.SPI)   # no CS pin on this net
+cs = Net.get('flash_cs', type=NetType.GPIO)
+
+cs.output(0)                                   # assert CS (active low)
+spi.write([0x03, 0x00, 0x10, 0x00])
+data = spi.read(n_words=32)
+cs.output(1)                                   # release CS
 ```
 
 ### Write to SPI Flash
@@ -265,6 +285,7 @@ print(f"Status: 0x{status[0]:04x}")
 | Adapter | Description |
 |---------|-------------|
 | LabJack T7 | Uses GPIO pins (FIO/EIO) for CLK, MOSI, MISO, and CS |
+| LabJack U3 | Uses DIO pins for CS, CLK, MISO, and MOSI (default `FIO4-FIO7`, in that order) |
 | Aardvark I2C/SPI | Dedicated USB SPI adapter with GPIO bit-bang |
 | FTDI FT232H / FT2232H / FT4232H | MPSSE-based SPI; channel selected per net |
 
@@ -285,6 +306,17 @@ SPI runs over the FTDI part's MPSSE engine, and on an FT4232H only channels A an
 See [Nets](/source/reference/cli/nets) for how channels are assigned across net
 types on one chip.
 
+### LabJack U3
+
+- SPI on a U3 needs U3 hardware version 1.21 or later.
+- A transfer is at most 50 bytes: 50 words at an 8-bit word size, 25 words at 16 bits, or 12 words at 32 bits. A larger transfer raises an error.
+- The clock runs from about 5.4 kHz to 71.4 kHz, and it is never faster than `frequency_hz`. A request outside that range is clamped, with a warning on the standard error output of the script.
+- A net with no stored `frequency_hz` runs at the maximum rate.
+- `cs_active="high"` raises an error. `keep_cs=True` raises an error in `auto` CS mode.
+- `FIO0`-`FIO3` cannot carry SPI. The driver raises an error for a net that uses them.
+
+See [SPI](/source/reference/cli/spi) for the pin order and for how to create a U3 net with other pins.
+
 ## Notes
 
 - Net must be configured as `NetType.SPI`
@@ -292,7 +324,8 @@ types on one chip.
 - `write()` performs a full-duplex transfer but discards the received data
 - `keep_cs=True` holds the chip select line asserted between calls for multi-part transactions
 - `transfer()` pads short data arrays with the fill value or truncates long arrays to `n_words`
-- LabJack T7 supports up to 56 bytes per transaction and a maximum of approximately 800 kHz
+- LabJack T7 supports up to 56 bytes per transaction and a maximum of approximately 800 kHz. A multi-byte transfer with a request between about 1 kHz and 800 kHz runs at about 1 kHz
+- LabJack U3 supports up to 50 bytes per transaction, from about 5.4 kHz to 71.4 kHz
 - Aardvark uses GPIO bit-bang mode; actual speed is limited by USB round-trip time regardless of `frequency_hz`
-- Configuration changes persist to `saved_nets.json` for subsequent commands
+- `config()` applies to the running script only. `lager spi NET config` stores the configuration in `saved_nets.json`
 - LSB-first mode (`bit_order="lsb"`) uses software bit reversal on LabJack T7

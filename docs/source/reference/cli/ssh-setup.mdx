@@ -51,11 +51,14 @@ is installed, no further password prompts appear for that box.
    [SSH username resolution](/source/reference/cli/ssh#username-resolution)).
 2. **Generates** the key pair `~/.ssh/lager_box` (and `lager_box.pub`) if it does
    not already exist.
-3. **Skips the copy if already authorized** — if key authentication already works
-   for the box, it goes straight to step 6 (the command is idempotent).
-4. **Copies** the public key to the box with `ssh-copy-id` (one password prompt).
-5. **Verifies** that passwordless key authentication now works, reporting a clear
-   error if it does not.
+3. **Skips the copy if already authorized** — it asks the box whether the
+   `lager_box` public key is already in `~/.ssh/authorized_keys`. It asks with
+   `lager_box` first, then with your default keys. If the key is present, it
+   goes straight to step 6 (the command is idempotent).
+4. **Copies** the public key to the box with `ssh-copy-id -f` (one password prompt).
+5. **Verifies** that the key is now in `~/.ssh/authorized_keys`. It reports an
+   error only when the box confirms that the key is absent. If the check cannot
+   reach the box, the command continues.
 6. **Registers** the public key on the box as
    `/etc/lager/authorized_keys.d/lager-box-<user>-<host>.pub`, over the key it
    just installed, so no extra prompt.
@@ -115,7 +118,7 @@ lager ssh-setup --box my-lager-box
 
 # Re-running against an already-authorized box is safe (no-op)
 lager ssh-setup --box my-lager-box
-# my-lager-box is already authorized — no password needed.
+# <ssh-user>@100.x.y.z is already authorized — no password needed.
 ```
 
 ---
@@ -127,6 +130,7 @@ lager ssh-setup --box my-lager-box
 | `ssh-copy-id was not found` | OpenSSH client tools are not installed | Install the OpenSSH client, or append the key manually (see below) |
 | `ssh-copy-id ... failed` | Wrong password, or the box rejected the connection | Confirm the box user and password with your admin, then retry |
 | Key copied but auth still fails | The box's `sshd_config` may disallow `publickey` auth | Test with `ssh -i ~/.ssh/lager_box <user>@<box>` and check `sshd_config` |
+| `ssh-copy-id reported success but the key is not in the box's authorized_keys.` | The copy did not reach `~/.ssh/authorized_keys`, for example because of a full disk or a read-only home directory | Check the disk and the home directory on the box, then append the key manually (see below) |
 
 If `ssh-copy-id` is unavailable, append the public key to the box manually:
 

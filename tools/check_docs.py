@@ -25,7 +25,10 @@ WHAT IS CHECKED
   nav       every docs.json page exists on disk, and every .mdx under
             docs/source is reachable from docs.json (an unlisted page is not
             published, so it is invisible rather than merely untidy)
-  notes     every CHANGELOG version has a release-notes page
+  notes     every CHANGELOG version has a release-notes page and every page
+            has a CHANGELOG entry, counting both CHANGELOG.md and its
+            docs/changelog/ archive; no version appears twice; CHANGELOG.md
+            stays under CHANGELOG_MAX_BYTES
   commands  every non-hidden top-level click command has a docs page, or an
             explicit entry in DEPRECATED_ALIASES below
   flags     no page names a --flag that no click param anywhere declares
@@ -76,6 +79,7 @@ DOCS = REPO / 'docs'
 DOCS_JSON = DOCS / 'docs.json'
 SOURCE = DOCS / 'source'
 CHANGELOG = REPO / 'CHANGELOG.md'
+CHANGELOG_ARCHIVE = DOCS / 'changelog'
 
 # Commands that intentionally have no page. A deprecated alias should not be
 # advertised: documenting it teaches the spelling we are trying to retire.
@@ -95,6 +99,13 @@ CONCEPT_PAGES = {'overview', 'lager-file', 'locking'}
 # version after this point is expected to have a page -- that is the whole point
 # of the check, so add to this set only with a reason, never to quiet a miss.
 NOTES_EXEMPT = {'0.13.1'}
+
+# GitHub stops rendering a Markdown file at about 512 KB, and README links
+# CHANGELOG.md as the release history. At 0.40-0.47's pace that ceiling is weeks
+# away, not years. When CHANGELOG.md crosses this line, move the oldest ten-minor
+# block of releases (for example 0.40-0.49) into docs/changelog/ unchanged. The
+# notes check reads the archive too, so no version drops out of it.
+CHANGELOG_MAX_BYTES = 400_000
 
 # Page stem -> command name, where they differ. Empty since the thermocouple page
 # was renamed off its old `tc` stem; kept because a page whose filename does not
@@ -251,15 +262,36 @@ def main() -> int:
         print(f'  nav       {len(pages)} nav entries, {len(on_disk)} files on disk')
 
     if run('notes'):
-        versions = set(re.findall(r'^## \[(\d+\.\d+\.\d+)\]', CHANGELOG.read_text(), re.M))
+        # A rollover that copies instead of moves leaves a version in both files;
+        # a set would hide that, so track where each version was first seen.
+        changelogs = [CHANGELOG, *sorted(CHANGELOG_ARCHIVE.glob('*.md'))]
+        first_seen: dict[str, Path] = {}
+        for changelog in changelogs:
+            for version in re.findall(r'^## \[(\d+\.\d+\.\d+)\]', changelog.read_text(), re.M):
+                if version in first_seen:
+                    failures.append(f'notes: {version} is in {first_seen[version].relative_to(REPO)} '
+                                    f'and again in {changelog.relative_to(REPO)}')
+                first_seen.setdefault(version, changelog)
+        versions = set(first_seen)
         noted = {p.stem.lstrip('v') for p in (SOURCE / 'release-notes').glob('*.mdx')
                  if not p.name.startswith('_')}
         gaps = sorted(versions - noted - NOTES_EXEMPT,
                       key=lambda v: tuple(int(x) for x in v.split('.')))
         for version in gaps:
             failures.append(f'notes: CHANGELOG has {version} with no release-notes page')
-        print(f'  notes     {len(versions)} CHANGELOG versions, {len(noted)} release-notes pages, '
-              f'{len(NOTES_EXEMPT)} exempt')
+        # The reverse direction is what catches a rollover that deletes a block
+        # from CHANGELOG.md without writing it to docs/changelog/.
+        unlogged = sorted(noted - versions,
+                          key=lambda v: tuple(int(x) for x in v.split('.')))
+        for version in unlogged:
+            failures.append(f'notes: release-notes page v{version} has no CHANGELOG entry')
+        size = CHANGELOG.stat().st_size
+        if size > CHANGELOG_MAX_BYTES:
+            failures.append(f'notes: CHANGELOG.md is {size:,} bytes, over {CHANGELOG_MAX_BYTES:,}; '
+                            'move the oldest ten-minor block of releases into docs/changelog/')
+        print(f'  notes     {len(versions)} CHANGELOG versions across {len(changelogs)} file(s), '
+              f'{len(noted)} release-notes pages, {len(NOTES_EXEMPT)} exempt; '
+              f'CHANGELOG.md is {size // 1024} KB')
 
     cli_flags: set[str] = set()
     visible: dict = {}

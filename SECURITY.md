@@ -113,8 +113,9 @@ infrastructure on a trusted network:
   **not** filter the ports the box's containers publish. Docker installs its own
   forwarding rules ahead of the host chain. A published service port is
   therefore reachable from anywhere that can route to the box, whatever
-  `ufw status` reports. Put the box on a VPN or an isolated LAN, and rely on
-  that.
+  `ufw status` reports. On a box set to `lager box-config network-mode host`,
+  the container publishes no ports, and UFW does govern the Lager ports. In
+  either mode, put the box on a VPN or an isolated LAN, and rely on that.
 - **Rotate VPN auth keys** periodically.
 
 For deployments that need authenticated access, Lager supports placing an

@@ -129,6 +129,9 @@ assert_ne!(manufacturer, 0xFF, "no device responded");
 
 ### Hold CS across two transactions
 
+A LabJack U3 in `auto` CS mode refuses `keep_cs: true`. On a U3, use an SPI net
+without CS and drive CS from a GPIO net.
+
 ```rust
 let held = SpiOptions { keep_cs: true, ..Default::default() };
 spi.write(&[0x03, 0x00, 0x00, 0x00], &held)?;   // read command + address
@@ -142,6 +145,7 @@ let data = spi.read(256, &SpiOptions::default())?; // releases CS at the end
 | FTDI FT232H | MPSSE, single channel | Mode-exclusive with UART on this part |
 | FTDI FT2232H / FT4232H | MPSSE channels A and B | SPI is MPSSE, so channels C and D cannot serve it |
 | LabJack T7 | Configured pins | |
+| LabJack U3 | Configured pins (default `FIO4-FIO7`: CS, CLK, MISO, MOSI) | 50 bytes per transfer; CS is active-low only |
 | Total Phase Aardvark | Dedicated | |
 
 ## Notes

@@ -233,7 +233,7 @@ When you run `lager devenv terminal`, the CLI reads this section. The section na
 |-------|----------|-------------|
 | `image` | Yes | Docker image name (e.g., `"lagerdata/devenv-cortexm"`) |
 | `mount_dir` | Yes | Directory inside the container where your source code is mounted (e.g., `"/app"`) |
-| `shell` | Yes | Shell executable path inside the container (e.g., `"/bin/bash"`) |
+| `shell` | No | Shell executable path inside the container (default `"/bin/bash"`). `lager devenv create` writes it |
 | `user` | No | User to run as inside the container |
 | `group` | No | Group to run as inside the container |
 | `macaddr` | No | MAC address to assign to the container |
@@ -245,11 +245,16 @@ When you run `lager devenv terminal`, the CLI reads this section. The section na
 | `platform` | No | Docker platform (e.g. `"linux/amd64"`). Applied to both commands; `--platform` overrides it on `terminal`. |
 | `ports` | No | List of port mappings (`"HOST:CONTAINER"`). Applied to both commands; combined with any `-p` flags on `terminal`. |
 | `entrypoint` | No | Container entrypoint (e.g. `"/bin/bash"`). Use when the image's default entrypoint isn't an interactive shell; `--entrypoint` overrides it on `terminal`. |
+| `cmd.<name>` | No | Custom named commands that can be executed with `lager exec <name>` |
+
+"Applied to both" in the table means both commands, when `lager exec` starts a
+container. In a CI job that the CLI detects, `lager exec` runs the command in
+place. It then uses only `shell`, `environment`, and the `cmd.<name>` commands.
+See [Running in CI](/source/reference/cli/exec#running-in-ci).
 
 Paths in `volumes` can use `~`, environment variables, and `${PROJECT_ROOT}` (the directory containing `.lager`) so a committed `.lager` stays portable across machines — e.g. `"${PROJECT_ROOT}:/workspace"`. CLI flags (`--user`, `--group`, `--network`, `--platform`, `--entrypoint`) take precedence over the config value when both are present.
 
 Any scalar key above can be set with `lager devenv set <key> <value>`, removed with `lager devenv unset <key>`, and the whole section printed with `lager devenv show`.
-| `cmd.<name>` | No | Custom named commands that can be executed with `lager exec <name>` |
 
 **Example:**
 

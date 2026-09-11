@@ -56,6 +56,20 @@ This page covers the most common problems in Lager, grouped by category. Each se
 
 </Accordion>
 
+<Accordion title="lager ssh fails with 'Permission denied (publickey)'">
+
+**Cause:** The box does not accept any SSH key that `lager ssh` offers.
+
+`lager ssh` offers `~/.ssh/lager_box` first. It then offers each default key that exists: `id_rsa`, `id_ecdsa`, `id_ed25519` and their `-sk` versions. It also offers the keys in your `~/.ssh/config` and your SSH agent.
+
+**Fix:**
+1. Run `lager ssh-setup --box <box>`. Enter the box password once when it asks.
+2. Retry `lager ssh --box <box>`.
+3. If you use a box IP address in `--box`, `lager ssh` logs in as `lagerdata`. Use the saved box name to log in as the saved user.
+4. If your CLI is older than 0.45.1, upgrade it. When `lager_box` exists, an older `lager ssh` offers only that key.
+
+</Accordion>
+
 ---
 
 ## Instrument Detection
@@ -81,6 +95,32 @@ This page covers the most common problems in Lager, grouped by category. Each se
 2. Run `lager update --box <box>` to ensure udev rules are current.
 3. Check that the instrument is powered on (some instruments need external power in addition to USB).
 4. Verify the instrument model is [supported](/source/supported-instruments/supported-instruments).
+
+</Accordion>
+
+<Accordion title="A robot arm is missing from lager instruments">
+
+**Cause:** The box probes a serial port for an arm only when the port has the USB ID `0483:5740`. The arm must also answer the probe and report a USB serial number.
+
+**Fix:**
+1. Read the result of the last probe from the box log:
+   ```bash
+   lager ssh --box <box> -- docker exec lager grep "arm probe" /tmp/lager-http-server.log
+   ```
+2. Find the port of the arm in the `skipped` list. The reason next to it tells you why the box skipped it.
+3. If the reason is `not a Dexarm vid:pid`, the arm reports a different USB ID. Set the probe to `force`:
+   ```bash
+   lager box-config env set LAGER_ARM_PROBE=force --box <box>
+   lager box-config apply --box <box>
+   ```
+4. Run `lager instruments --box <box>` again.
+5. When the arm appears, remove the setting with `lager box-config env unset LAGER_ARM_PROBE --box <box>`. Then run `lager box-config apply --box <box>`.
+
+<Warning>
+If a board on the box resets when its DTR or RTS line changes, do not use `force`. The `force` probe asserts DTR on every free serial port, which can reset that board.
+</Warning>
+
+See [Robot Arm detection](/source/reference/cli/arm#detection).
 
 </Accordion>
 
@@ -130,26 +170,62 @@ This page covers the most common problems in Lager, grouped by category. Each se
 
 ## Debug / Flash Issues
 
-<Accordion title="'No target detected' when flashing">
+<Accordion title="'Flash failed: Could not connect to target.' or 'Erase failed: ...'">
 
-**Cause:** The debug probe cannot communicate with the target MCU.
+**Cause:** The debug probe did not attach to the target MCU. The command exits 1.
+
+`flash` can also print `The target was NOT programmed.` If `flash` ran without `--no-erase`, the target can be erased. A failed erase before programming prints `Flash erase failed:` instead, and `flash` does not program the target.
 
 **Fix:**
 1. Verify the SWD/JTAG wiring between the debug probe and your DUT.
 2. Ensure the DUT is powered (the debug probe does not always supply power).
 3. Check that the MCU type in the debug net matches your actual device: `lager debug <NET> status --box <box>`.
-4. Try a lower SWD speed: `lager debug <NET> gdbserver --speed 100 --box <box>`.
+4. Try a lower SWD speed: `lager debug <NET> gdbserver --speed 100 --force --box <box>`.
 
 </Accordion>
 
 <Accordion title="'GDB server failed to start'">
 
-**Cause:** A J-Link or pyOCD process from an earlier session is stuck.
+**Cause:** A JLinkGDBServer or OpenOCD process from an earlier session is stuck.
 
 **Fix:**
 1. Disconnect any existing session: `lager debug <NET> disconnect --box <box>`.
 2. Retry: `lager debug <NET> gdbserver --box <box>`.
 3. Check the debug probe health: `lager debug <NET> health --verbose --box <box>`.
+
+</Accordion>
+
+<Accordion title="'The debug session is up, but the target does not answer; reconnecting...'">
+
+**Cause:** The GDB server for the probe runs, but the target MCU does not answer. Usually the target lost power, or the SWD wiring came loose. The CLI prints this before `flash`, `erase` or `reset`, then starts a new session.
+
+**Fix:**
+1. If the command then prints `Reconnected!`, no action is necessary.
+2. If the command prints `Error: the CLI did not reconnect to the target`, it exits 1. Check the power and wiring of the DUT.
+3. Run `lager debug <NET> status --box <box>`. Confirm that `Target attached` reads `Yes` before you retry.
+
+</Accordion>
+
+---
+
+## UART Issues
+
+<Accordion title="UART net is already in use by another session">
+
+**Cause:** Another session holds the UART net or its serial device.
+
+**Fix:**
+1. List the sessions that hold UART nets:
+   ```bash
+   lager uart --sessions --box <box>
+   ```
+2. Read the `Client` column. A `gone` client releases the net on its own. A `connected` client belongs to somebody, so check with that person first.
+3. A client whose computer went to sleep or lost its VPN still reads `connected` for about 85 seconds.
+4. To release the holder and connect, run `lager uart <net> --force --box <box>`.
+
+If the error says `(locked by another session or the lager uart CLI)`, another process holds the serial port. A running `lager python` script that opened the port is one example. `--force` does not release that lock. Stop the script, for example with `lager python --kill-all --box <box>`.
+
+The `--sessions` and `--force` options take the box lock. If another user holds the box lock, both fail with `is locked by`.
 
 </Accordion>
 
@@ -233,6 +309,10 @@ your script.
 
 If the solutions above don't resolve your issue:
 
-1. **Check box logs:** `lager logs --box <box>` shows recent log output from the box's Docker container.
+1. **Check box logs:** The services on the box write their logs inside the `lager` container. For an instrument call that failed, read the hardware service log:
+   ```bash
+   lager ssh --box <box> -- docker exec lager tail -n 200 /tmp/lager-hardware-service.log
+   ```
+   Other logs in the container are `/tmp/lager-debug-service.log`, `/tmp/lager-python-service.log` and `/tmp/lager-http-server.log`. A failed instrument call returns only a one-line error to your script. The full traceback is in the log.
 2. **Check box status:** `lager hello --box <box>` verifies the box is online and responsive.
 3. **Open an issue:** Report problems on [GitHub](https://github.com/lagerdata/lager/issues) with your box name, the command you ran, and the error output.

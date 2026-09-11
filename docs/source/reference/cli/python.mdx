@@ -23,7 +23,7 @@ lager python [OPTIONS] [RUNNABLE] [ARGS]...
 | `--signal SIGNAL` | | Choice | `SIGTERM` | Signal to use with `--kill`/`--kill-all` |
 | `--download FILE` | | Multiple | | Download files from box after script completes |
 | `--allow-overwrite` | | Flag | | Allow overwriting existing local files with `--download` |
-| `--timeout SECONDS` | | Integer | 0 (none) | Maximum runtime in seconds. The box caps this for an attached run; with `--detach` no cap applies |
+| `--timeout SECONDS` | | Integer | 0 (none) | Maximum runtime in seconds. The box caps an attached run at 300; with `--detach` no cap applies |
 | `--detach` | `-d` | Flag | | Run in detached mode (background) |
 | `--port PORT` | `-p` | Multiple | | Forward ports to the Python process |
 | `--add-file FILE` | | Multiple | | Add extra files to upload with script |
@@ -123,17 +123,28 @@ lager python --reattach 7f3c... --box my-lager-box
 # Process exited with code 1
 ```
 
-The box holds the box lock for as long as the detached job runs and releases it
-when the job ends. See [locking](/source/reference/cli/locking).
+A detached run takes the box lock. A box on 0.42.0 or later then holds that lock
+while the job runs, and releases it when the job ends. The CLI prints
+`Box 'my-lager-box' is held for the detached run and released when it ends`.
+An older box keeps the lock after the job ends. The CLI then prints
+`release with: lager boxes unlock --box my-lager-box`. See
+[locking](/source/reference/cli/locking).
 
 ## Killing Running Scripts
 
+`--kill` takes the process ID that the detached launch printed.
+
 ```bash
 # Kill with default SIGTERM
-lager python --box my-lager-box --kill
+lager python --kill <PROCESS_ID> --box my-lager-box
+# Process <PROCESS_ID> killed
 
 # Kill with specific signal
-lager python --box my-lager-box --kill --signal SIGKILL
+lager python --kill <PROCESS_ID> --signal SIGKILL --box my-lager-box
+
+# Kill every running script
+lager python --kill-all --box my-lager-box
+# All processes killed
 ```
 
 ## Port Forwarding
@@ -162,9 +173,16 @@ Limit script execution time:
 lager python analysis.py --box my-lager-box --timeout 300
 ```
 
-When a script exceeds the timeout:
-- First, SIGTERM is sent (exit code 124)
-- If the script doesn't exit, SIGKILL is sent (exit code 137)
+- `0`, the default, means no limit.
+- An attached run is capped at 300 seconds. A larger value runs for 300 seconds,
+  and the box writes the cap to its log.
+- A detached run has no cap. The box applies the value only when you give one.
+
+When a script exceeds the timeout, the box sends the signals:
+- First, SIGTERM is sent. The CLI prints `Script terminated due to timeout.` and
+  exits with code 124
+- If the script does not exit within 5 seconds, SIGKILL is sent. The CLI prints
+  `Script forcibly killed due to timeout.` and exits with code 137
 
 ## Structured Output
 
@@ -201,16 +219,18 @@ Structured output is printed to the CLI console as it arrives. Standard stdout a
 
 ## Module Includes
 
-If your script depends on local modules, configure includes in a `.lager` file in your project:
+If your script depends on local modules, configure includes in a `.lager` file in your project. The file is JSON:
 
-```yaml
-# .lager (in project root)
-includes:
-  my_lib: /path/to/my_lib
-  fixtures: /path/to/fixtures
+```json
+{
+  "includes": {
+    "my_lib": "../my_lib",
+    "fixtures": "/path/to/fixtures"
+  }
+}
 ```
 
-The CLI searches up the directory tree for a `.lager` file, then zips the script along with all include directories before uploading to the box.
+A relative path is relative to the `.lager` file. The CLI starts at the directory of the script, and searches up the directory tree for a `.lager` file. It then zips the script along with all include directories before uploading to the box.
 
 ```bash
 # Script can import from included directories
@@ -238,10 +258,24 @@ Files are available in the same directory as your script on the box.
 | Exit Code | Meaning |
 |-----------|---------|
 | 0 | Success |
-| -1 | Failed to retrieve exit code from box |
+| 255 | The CLI did not get the exit code from the box. It prints `Failed to retrieve script exit code.` |
 | 124 | Script terminated by SIGTERM (timeout) |
 | 137 | Script killed by SIGKILL (timeout, force) |
+| 128+N | Script stopped by signal N |
 | Other | Script's own exit code |
+
+## Box Lock
+
+`lager python` takes the box lock when it runs a script. Another user then cannot
+drive the same box at the same time. See [locking](/source/reference/cli/locking).
+
+- An attached run holds the lock while the script runs. The command releases it
+  when it exits.
+- If another user holds the lock, the command fails at once on your computer. In
+  CI, it waits for the lock.
+- `--kill`, `--kill-all`, `--reattach`, `--continue`, and `--console` do not take
+  the lock.
+- Set `LAGER_AUTO_LOCK_DISABLE=1` to run without the lock.
 
 ## Examples
 
@@ -259,7 +293,7 @@ lager python long_running.py --box my-lager-box --detach
 lager python data_processor.py --box my-lager-box --download results.csv
 
 # Kill running script
-lager python --box my-lager-box --kill
+lager python --kill <PROCESS_ID> --box my-lager-box
 
 # Run with port forwarding
 lager python web_server.py --box my-lager-box -p 8080
@@ -312,7 +346,6 @@ psu.disable()
 - Use `--passenv` for secrets/tokens from your current shell
 - `--download` retrieves files only after script completion (not during)
 - Port forwarding syntax: `SRC_PORT[:DST_PORT][/PROTOCOL]`
-- After script execution, the hardware cache on the box is automatically cleared to release VISA connections
 - Output is streamed in real time via a multiplexed HTTP protocol with keepalive (20-second interval)
 
 ---

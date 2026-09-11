@@ -29,15 +29,36 @@ lager dac [OPTIONS] NET [VOLTAGE]
 | Manufacturer | Model | Channels | Output Range | Resolution |
 |--------------|-------|----------|--------------|------------|
 | LabJack | T7 | 2 (DAC0-DAC1) | 0 to 5 V | 16-bit |
+| LabJack | U3 | 2 (DAC0-DAC1) | 0.04 to 4.95 V | |
 | Measurement Computing | USB-202 | 2 (DAC0-DAC1) | 0 to 5 V | 12-bit |
+
+The CLI accepts values from 0 to 10 V. The box then checks the range of the instrument and refuses a value outside it.
+
+### LabJack U3
+
+- The output range is 0.04 V to 4.95 V, not 0 V to 5 V. The box refuses a value outside that range and does not clamp it. You cannot set a U3 DAC to 0 V.
+- A U3 has no DAC readback. `lager dac NET` without a voltage returns the last value that the box set on that net.
+- If the box has no value to report, the read fails with a `has no readback` error. This happens, for example, after a `lager python` script ran. Set a value first.
 
 ### Channel Naming
 
-When creating DAC nets, the channel name depends on the hardware:
+When you create a DAC net, use a channel name that `lager instruments` lists for the instrument:
 
-**LabJack T7:** `DAC0`, `DAC1`, or numeric `0`, `1`
+**LabJack T7:** `DAC0`, `DAC1`
 
-**MCC USB-202:** `DAC0`, `DAC1`, `AOUT0`, `AOUT1`, or numeric `0`, `1`
+**LabJack U3:** `DAC0`, `DAC1`
+
+**MCC USB-202:** `DAC0`, `DAC1`
+
+## Read the Output
+
+Omit the voltage to read the output value of the net:
+
+```bash
+lager dac VOLTAGE_OUTPUT --box my-lager-box
+```
+
+The MCC USB-202 does not support readback, so a read on a USB-202 net fails.
 
 ## Default Net
 
@@ -74,7 +95,8 @@ lager dac SIGNAL_GENERATOR 0.0 --box my-lager-box
 | Issue | Cause | Fix |
 |-------|-------|-----|
 | Output stuck at 0V | Net not configured or wrong channel | Verify net configuration with `lager nets --box <box>` |
-| Voltage inaccurate | Resolution limit or load effects | Both LabJack T7 and USB-202 output 0-5V; verify your circuit doesn't draw too much current from the DAC output |
+| Voltage inaccurate | Resolution limit or load effects | LabJack T7 and USB-202 output 0-5V, and LabJack U3 outputs 0.04-4.95V; verify your circuit doesn't draw too much current from the DAC output |
+| "outside the LabJack UD DAC range" | The value is below 0.04 V or above 4.95 V on a LabJack U3 | Send a value from 0.04 V to 4.95 V |
 | "Net not found" | Typo or net not created | Check available nets with `lager nets --box <box>`. Net names are case-sensitive. |
 
 ## Notes
@@ -84,8 +106,7 @@ lager dac SIGNAL_GENERATOR 0.0 --box my-lager-box
 - Only works with nets of type `dac`
 - Ensure the target box has DAC nets properly configured
 - DAC outputs provide precise voltage control for analog circuits
-- Both supported hardware models output 0-5V
-- USB-202 channels can be specified as `0`-`1`, `DAC0`-`DAC1`, or `AOUT0`-`AOUT1`
+- LabJack T7 and USB-202 output 0-5V. LabJack U3 outputs 0.04-4.95V.
 
 ## See Also
 

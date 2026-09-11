@@ -128,6 +128,7 @@ println!("{celsius:.2} C");
 | Instrument | Pins | Notes |
 |---|---|---|
 | LabJack T7 | Any two FIO/EIO pins | Configured as an SDA/SCL pair when the net is created |
+| LabJack U3 | Two DIO pins (default `FIO6-FIO7`) | No pull-up resistors on the part; fit external resistors. 50 bytes written, 52 bytes read per transfer |
 | FTDI FT232H / FT2232H / FT4232H | MPSSE channels A and B | I2C is an MPSSE protocol, so channels C and D cannot serve it |
 | Total Phase Aardvark | Dedicated | |
 

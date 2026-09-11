@@ -6,13 +6,8 @@ description: Control logic analyzer channels and triggers
 Control logic analyzer Nets through the Lager CLI for digital signal capture, protocol decoding, and trigger configuration.
 
 <Warning>
-**Not Yet Available:** The Logic Analyzer feature for Rigol MSO5000 series is currently under development.
-The commands below are documented for preview purposes only. The underlying device methods are not yet
-implemented and the CLI command is disabled. Attempting to use these commands will result in an error.
-Check back in a future release for full functionality.
+**Known limitations on the Rigol MSO5000.** Channel control, capture, measurements, cursors, and the edge and SPI triggers work. The pulse, UART and I2C triggers fail when an option configures them. Each failure prints `Error: Function not found: <method>` and exits 1. The CAN trigger and every bus decoder also fail. [Issue #418](https://github.com/lagerdata/lager/issues/418) tracks this work.
 </Warning>
-
-<Accordion title="Preview: CLI Commands and Options">
 
 ## Syntax
 
@@ -40,6 +35,10 @@ lager logic [OPTIONS] NET_NAME COMMAND [ARGS]...
 | `trigger` | Configure trigger settings |
 | `cursor` | Control cursor position |
 
+## Exit Codes
+
+A command that fails prints the error and exits 1. This includes a net name that is not a logic net, and an error from the box. A command that succeeds exits 0.
+
 ## Command Reference
 
 ### `enable`
@@ -50,6 +49,8 @@ Enable logic analyzer channel for the specified net.
 lager logic NET_NAME enable [--box BOX] [--mcu MCU]
 ```
 
+If the logic analyzer of the scope is off, `enable` turns it on. It then shows the channel of the net and makes that channel active. The channel must be `D0` to `D15`.
+
 ### `disable`
 
 Disable logic analyzer channel.
@@ -57,6 +58,8 @@ Disable logic analyzer channel.
 ```bash
 lager logic NET_NAME disable [--box BOX] [--mcu MCU]
 ```
+
+`disable` hides the channel of the net. When no digital channel stays shown, `disable` also turns off the logic analyzer.
 
 ### `start`
 
@@ -141,7 +144,7 @@ lager logic NET_NAME trigger edge [OPTIONS]
 
 ### `trigger pulse`
 
-Set pulse trigger configuration.
+Set pulse trigger configuration. On the Rigol MSO5000, this trigger does not work yet. See the limitations at the top of this page.
 
 ```bash
 lager logic NET_NAME trigger pulse [OPTIONS]
@@ -152,13 +155,13 @@ lager logic NET_NAME trigger pulse [OPTIONS]
 - `--coupling` - Coupling mode
 - `--source NET` - Trigger source
 - `--level FLOAT` - Trigger level
-- `--trigger-on` - Trigger on: `gt`, `lt`, `gtlt`
+- `--trigger-on` - Trigger on. The CLI accepts `gt`, `lt` and `gtlt`, but the command then refuses each of these values with `is not a valid option`.
 - `--upper FLOAT` - Upper pulse width
 - `--lower FLOAT` - Lower pulse width
 
 ### `trigger i2c`
 
-Set I2C protocol trigger.
+Set I2C protocol trigger. On the Rigol MSO5000, the options that configure this trigger do not work yet. See the limitations at the top of this page.
 
 ```bash
 lager logic NET_NAME trigger i2c [OPTIONS]
@@ -172,15 +175,15 @@ lager logic NET_NAME trigger i2c [OPTIONS]
 - `--level-scl FLOAT` - SCL trigger level
 - `--level-sda FLOAT` - SDA trigger level
 - `--trigger-on` - Trigger on: `start`, `restart`, `stop`, `nack`, `address`, `data`, `addr_data`
-- `--address INT` - Address value (for address trigger)
-- `--addr-width` - Address width: `7`, `8`, `9`, `10` bits
-- `--data INT` - Data value (for data trigger)
+- `--address INT` - Address value (for address trigger), as a decimal integer. The maximum is 127 for a 7-bit address, 255 for 8-bit, and 1023 for 10-bit.
+- `--addr-width` - Address width: `7`, `8` or `10` bits. The CLI also accepts `9`, but the box refuses it.
+- `--data INT` - Data value (for data trigger), as a decimal integer
 - `--data-width` - Data width: `1`-`5` bytes
 - `--direction` - Direction: `write`, `read`, `rw`
 
 ### `trigger uart`
 
-Set UART protocol trigger.
+Set UART protocol trigger. On the Rigol MSO5000, the options that configure this trigger do not work yet. See the limitations at the top of this page.
 
 ```bash
 lager logic NET_NAME trigger uart [OPTIONS]
@@ -194,9 +197,9 @@ lager logic NET_NAME trigger uart [OPTIONS]
 - `--trigger-on` - Trigger on: `start`, `error`, `cerror`, `data`
 - `--parity` - Parity: `even`, `odd`, `none`
 - `--stop-bits` - Stop bits: `1`, `1.5`, `2`
-- `--baud INT` - Baud rate
-- `--data-width INT` - Data width in bits
-- `--data INT` - Data value to trigger on
+- `--baud INT` - Baud rate (110 to 20000000)
+- `--data-width INT` - Data width in bits: `5` to `8`. The CLI also accepts `9`, but the box refuses it.
+- `--data INT` - Data value to trigger on, as a decimal integer
 
 ### `trigger spi`
 
@@ -215,12 +218,12 @@ lager logic NET_NAME trigger spi [OPTIONS]
 - `--level-mosi-miso FLOAT` - MOSI/MISO level
 - `--level-sck FLOAT` - SCK level
 - `--level-cs FLOAT` - CS level
-- `--data INT` - Trigger data value
-- `--data-width INT` - Data width in bits
+- `--data INT` - Trigger data value, as a decimal integer. The maximum is 2^width − 1.
+- `--data-width INT` - Data width in bits: `4` to `32`
 - `--clk-slope` - Clock slope: `positive`, `negative`
 - `--trigger-on` - Trigger on: `timeout`, `cs`
-- `--cs-idle` - CS idle state: `high`, `low`
-- `--timeout FLOAT` - Timeout length
+- `--cs-idle` - CS idle state: `high`, `low`. With `--trigger-on cs`, `high` triggers while CS is low, and `low` triggers while CS is high.
+- `--timeout FLOAT` - Timeout length. `--trigger-on timeout` changes nothing unless you also give `--timeout`.
 
 ---
 
@@ -269,14 +272,8 @@ lager logic SPI_CLK measure freq
 # Set edge trigger on rising edge at 1.5V
 lager logic SPI_CLK trigger edge --slope rising --level 1.5
 
-# Set I2C trigger on address match
-lager logic I2C_SDA trigger i2c --trigger-on address --address 0x50 --direction write
-
-# Set UART trigger on data match
-lager logic UART_TX trigger uart --trigger-on data --baud 115200 --data 0x55
-
-# Set SPI trigger
-lager logic SPI_MOSI trigger spi --data 0xFF --data-width 8
+# Set SPI trigger on the 8-bit value 0xFF (255 in decimal)
+lager logic SPI_MOSI trigger spi --data 255 --data-width 8
 ```
 
 ---
@@ -286,7 +283,6 @@ lager logic SPI_MOSI trigger spi --data 0xFF --data-width 8
 | Manufacturer | Model Series | Features |
 |--------------|--------------|----------|
 | Rigol | MSO5000 | Mixed-signal, protocol decode |
-| Saleae | Logic Pro | High-speed capture |
 
 ---
 
@@ -296,5 +292,4 @@ lager logic SPI_MOSI trigger spi --data 0xFF --data-width 8
 - Protocol triggers (I2C, UART, SPI) require proper level configuration
 - Use `lager nets` to see available logic nets
 - Analog and Logic nets can be combined for mixed-signal analysis
-
-</Accordion>
+- Integer options such as `--address` and `--data` take decimal values. A hex string such as `0x50` is refused.

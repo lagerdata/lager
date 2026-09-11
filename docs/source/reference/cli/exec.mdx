@@ -3,7 +3,7 @@ title: Exec
 description: Execute commands in a local Docker development container
 ---
 
-Run shell commands inside a Docker development container on your local machine. Commands can be run inline or saved as named aliases for reuse.
+Run shell commands inside a Docker development container on your local machine. Commands can be run inline or saved as named aliases for reuse. In a CI job that already runs inside the devenv image, the command runs in place. See [Running in CI](#running-in-ci).
 
 ## Syntax
 
@@ -26,7 +26,7 @@ lager exec [OPTIONS] [COMMAND] [EXTRA_ARGS]...
 | `--tty / --no-tty` | `-t` | flag | `--tty` | Allocate a pseudo-TTY |
 | `--user TEXT` | `-u` | string | current UID | User to run as in the container |
 | `--group TEXT` | `-g` | string | current GID | Group to run as in the container |
-| `--verbose` | `-v` | flag | | Show the full Docker command being executed |
+| `--verbose` | `-v` | flag | | Show the full Docker command being executed. In CI, name the container-only `.lager` keys that are ignored |
 | `--help` | | | | Show help message and exit |
 
 ## Arguments
@@ -71,8 +71,12 @@ lager exec build
 
 ```bash
 # Runs: make clean && make build --verbose --debug
-lager exec build --verbose --debug
+lager exec build -- --verbose --debug
 ```
+
+Put `--` before extra arguments that start with a dash. Without it, `lager exec`
+takes an argument that matches one of its own options, such as `--verbose`, for
+itself.
 
 ### Pass Environment Variables
 
@@ -81,14 +85,66 @@ lager exec build --verbose --debug
 lager exec --command 'make build' --env CFLAGS="-O2" --env DEBUG=0
 
 # Inherit from current shell
-lager exec --command 'make build' --passenv PATH --passenv HOME
+lager exec --command 'make build' --passenv BUILD_ID
 ```
+
+`--passenv` copies the value from your shell into the container. Do not pass
+`PATH`: the host value replaces the `PATH` of the image, and the container then
+does not find its own tools.
+
+## Running in CI
+
+`lager exec` reads the CI environment variables before it starts a container. In
+a job on one of these CI systems, it runs the command in place, with no
+container:
+
+| CI system | Detected when |
+|-----------|---------------|
+| GitHub Actions | `CI=true` and `GITHUB_RUN_ID` is set |
+| GitLab CI | `CI=true` and `CI_SERVER_NAME` contains `gitlab` |
+| Drone | `CI=true` and `DRONE=true` |
+| Bitbucket Pipelines | `CI=true` and `BITBUCKET_BUILD_NUMBER` is set |
+
+The CLI expects such a job to run inside the devenv image already. Detection
+reads only these variables and does not check for a container. A GitHub Actions
+or GitLab CI job without a `container:` block also runs the command in place, on
+the runner itself.
+
+In place, the command runs as follows:
+
+- The shell is the DEVENV `shell` from `.lager`, or `/bin/bash`.
+- The command runs in the current directory. `mount_dir` does not apply.
+- The command gets the environment of the job, plus `environment` from `.lager`
+  and each `--env`. `--passenv` has no effect because the job environment is
+  already present.
+- The exit code of the command is the exit code of `lager exec`.
+- `--mount`, `--volume`, `--user`, and `--group` have no effect. If you pass any
+  of them, the CLI prints one warning line, for example
+  `Warning: --mount, --volume ignored: the command runs in the current container, so there is nothing to start.`
+- `--interactive` and `--tty` have no effect.
+
+A Jenkins agent, another CI system, or a computer outside CI still starts a
+container.
+
+To start a container in a job that the CLI detects, set `LAGER_CI_OVERRIDE` to
+any non-empty value. `0` also counts.
+
+```bash
+LAGER_CI_OVERRIDE=1 lager exec build
+```
+
+<Warning>
+`LAGER_CI_OVERRIDE` also stops every other `lager` command that sees it from
+detecting CI. A box lock then fails at once instead of waiting, unless
+`LAGER_LOCK_WAIT` is set. The lock holder is your user name, not the CI job.
+Set the variable only on the step that runs `lager exec`.
+</Warning>
 
 ## How It Differs from Other Commands
 
 | Command | Target | Purpose |
 |---------|--------|---------|
-| `lager exec` | Local Docker container | Run build/test commands in a reproducible environment |
+| `lager exec` | Local Docker container, or the current CI job | Run build/test commands in a reproducible environment |
 | `lager python` | Remote Lager Box | Execute Python scripts that interact with test equipment |
 | `lager ssh` | Remote Lager Box | Open an interactive SSH shell for box administration |
 
@@ -116,7 +172,7 @@ lager exec test
 # Run with verbose Docker output
 lager exec --verbose --command 'gcc main.c -o main'
 
-# Non-interactive mode for CI
+# Non-interactive mode for a CI system that starts a container (such as Jenkins)
 lager exec --no-interactive --no-tty --command 'make check'
 ```
 
@@ -124,6 +180,7 @@ lager exec --no-interactive --no-tty --command 'make check'
 
 - The container is created with `--rm` so it is removed after each command
 - Exit codes from the container are propagated to the CLI
+- Every `LAGER*` environment variable in your shell is passed into the container
 - Source code is mounted from your local filesystem into the container
 - Lager configuration (`~/.lager`) is mounted into the container when present
 - The `COMMAND` argument and `--command` option are mutually exclusive; use one or the other

@@ -51,7 +51,16 @@ lager webcam CAM1 snapshot --box my-lager-box --out frame.jpg
 ```
 
 Without `--out` the file is named `CAM1-<timestamp>.jpg` in the current
-directory. The stream must already be running.
+directory. An existing file at the `--out` path is overwritten. On success the
+command prints `Saved frame.jpg (<N> bytes)`.
+
+The stream must already be running. If it is not, the command exits `1` with
+`Error: Hardware error: No active stream for net 'CAM1' — start it first`.
+
+The first snapshot after `start` can take up to 5 seconds, because the camera
+opens on the first request. If no frame arrives in that time, the error ends in
+`streamer answered 503`. A box older than 0.47.0 answers
+`Error: Unknown action 'snapshot' for webcam`. Run `lager update` on that box.
 
 ### `stop`
 
@@ -120,8 +129,8 @@ lager webcam CAM1 start --box my-lager-box
 # Get the stream URL
 lager webcam url --box my-lager-box
 
-# Open in browser
-# http://<BOX_IP>:8081/stream
+# Open the printed URL in a browser
+# http://<BOX_IP>:8086/
 
 # Stop when done
 lager webcam CAM1 stop --box my-lager-box
@@ -208,6 +217,7 @@ lager webcam url
 
 - Webcams must be connected via USB to the box
 - Each webcam uses a unique port (8086+)
-- Streams are accessible via box IP address
+- Streams are reachable at the box IP address. On an access-gated box, a link
+  works only with the sign-in token that the CLI adds to it
 - Default net can be set with `lager defaults add --webcam-net`
 - USB webcams must be compatible with V4L2

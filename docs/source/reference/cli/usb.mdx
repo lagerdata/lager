@@ -91,15 +91,15 @@ lager usb USB1 cycle --off-time 3 --box my-lager-box
 
 ### Power cycle a device
 
-`cycle` cuts power, waits, restores it, and waits for the device to come back:
+`cycle` cuts power, waits, and restores it. Then it waits up to 5 seconds for the
+device to come back:
 
 ```bash
 lager usb USB1 cycle --box my-lager-box
 # [OK] USB port 'USB1' power-cycled; device re-enumerated
 ```
 
-If the hub reports nothing attached, it says so rather than claiming a device
-returned:
+If no device was on the port, it says so rather than claiming a device returned:
 
 ```bash
 lager usb USB2 cycle --box my-lager-box
@@ -107,27 +107,53 @@ lager usb USB2 cycle --box my-lager-box
 #      re-enumeration was not confirmed
 ```
 
+Two other results are possible:
+
+```bash
+# The device did not return within 5 seconds
+# [OK] USB port 'USB1' power-cycled, but the device did not come back before the timeout
+
+# The box could not read its own USB topology
+# [OK] USB port 'USB1' power-cycled (re-enumeration not verified: the box's USB topology could not be read)
+```
+
+<Warning>
+`cycle` exits `0` for all four results, including a device that did not come
+back. If a script needs the device, it must check the output text.
+</Warning>
+
+How `cycle` decides that the device came back depends on the hub:
+
+- **Acroname and YKUSH hubs:** the box reads the kernel USB topology before the
+  power cut and again while the port is off. A device that left the bus must
+  return to it.
+- **Plugable docks:** the box watches the connect status that the hub reports
+  for the port.
+
 <Note>
-`cycle` returns as soon as the **hub** reports the device reconnecting, which is
-a few hundred milliseconds. Linux does not finish re-enumerating at that instant.
-A device node or `/dev/ttyUSB*` can still be absent, and a `/sys` read taken
-immediately still shows the pre-cycle values. If the next step opens the device,
-wait for its node. A return from `cycle` does not mean that the device is ready.
+On a Plugable dock, `cycle` returns as soon as the **hub** reports the device
+reconnecting, which is a few hundred milliseconds. Linux does not finish
+re-enumerating at that instant. A device node or `/dev/ttyUSB*` can still be
+absent, and a `/sys` read taken immediately still shows the pre-cycle values. On
+Acroname and YKUSH hubs, `cycle` returns when the device is back in the kernel
+USB topology. On every hub, wait for the device node before the next step opens
+the device. A return from `cycle` does not mean that the device is ready.
 </Note>
 
-That is **not** the same as "the port is unused". A hub only sees a device that
-pulls up its data lines. A **charge-only cable** powers a DUT but makes no data
-connection, so it looks exactly like an empty socket. The port was still cut and
-restored. Confirm the DUT by its own behavior: its UART, or a current
-measurement.
+"No device on this port" is **not** the same as "the port is unused". A hub only
+sees a device that pulls up its data lines. A **charge-only cable** powers a DUT
+but makes no data connection, so it looks exactly like an empty socket. The port
+was still cut and restored. Confirm the DUT by its own behavior: its UART, or a
+current measurement.
 
-Prefer it over a scripted `disable`/`sleep`/`enable`, for three reasons:
+Prefer it over a scripted `disable`/`sleep`/`enable`, for these reasons:
 
-- It holds the hub for the whole sequence, so nothing else can switch the port
-  while it is dark.
 - It restores power on every failure path, so a command that dies partway
   through cannot strand a port.
 - It reports whether the device actually came back, so you do not have to guess.
+- On a Plugable dock, it holds the hub for the whole sequence, so nothing else
+  can switch the port while it is dark. On Acroname and YKUSH hubs, it opens
+  the hub twice. Another process can switch the port during the off time.
 
 `--off-time` defaults to 1 second, comfortably above the slowest cold boot
 measured on real hardware. **Too short an off time is the failure that
@@ -136,11 +162,12 @@ warm-starts, but it looks like a device that was reset. Raise the off time for a
 device with large bulk capacitance. A value below 0.5s or above 10s is refused.
 
 <Warning>
-**A powered-off port still appears in `lsusb` and still has its `/dev/ttyUSB*`.**
-Hubs raise no change notification while a port is unpowered, so the kernel never
-processes the disconnect until power returns. Do not script "is the device gone?"
-as a check that a port is off — it is wrong in both directions. Use `state`,
-which reads the hub's own power bit.
+**On a Plugable dock, a powered-off port still appears in `lsusb` and still has
+its `/dev/ttyUSB*`.** The hub raises no change notification while a port is
+unpowered, so the kernel never processes the disconnect until power returns.
+`disable` on such a port says so in its output. Do not script "is the device
+gone?" as a check that a port is off — it is wrong in both directions. Use
+`state`, which reads the hub's own power bit.
 </Warning>
 
 ### Recover a port left unpowered
@@ -224,7 +251,7 @@ which ports on a Plugable dock switch power and which do not.
 ## Notes
 
 - Net names (e.g., `USB1`, `CAM_USB`) refer to USB ports configured on your testbed
-- Commands are case-insensitive (`enable`, `ENABLE`, and `Enable` all work)
+- Commands are case-sensitive. Type them in lowercase (`enable`, not `ENABLE`)
 - Useful for power cycling USB devices during testing
 - USB hubs must be connected to the box and configured as instruments
 - Default net can be set with `lager defaults add --usb-net`

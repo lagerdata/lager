@@ -220,8 +220,11 @@ lager devenv env unset DEBUG
 | [`lager exec`](/source/reference/cli/exec) | Run a one-off or saved command in that container |
 
 All three read the same `DEVENV` section. A command saved with
-`lager devenv add` runs under `lager exec`, and a mount added with
-`lager devenv mount add` applies to both `terminal` and `exec`.
+`lager devenv add` runs under `lager exec`. A mount added with
+`lager devenv mount add` applies to `terminal`, and to `exec` when `exec`
+starts a container. In a CI job that the CLI detects, `exec` runs the command
+in place and ignores mounts. See
+[Running in CI](/source/reference/cli/exec#running-in-ci).
 
 ## Notes
 
