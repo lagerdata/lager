@@ -23,6 +23,10 @@ from cli.tests.test_gateway_auth import make_jwt
 def isolated_stores(tmp_path, monkeypatch):
     monkeypatch.setenv('LAGER_GATEWAY_AUTH_FILE', str(tmp_path / 'gateway_auth.json'))
     monkeypatch.setenv('LAGER_CONFIG_FILE_DIR', str(tmp_path))
+    # A pinned token outranks the store, so one exported in the developer's
+    # own shell would silently rewrite what these call sites exercise.
+    monkeypatch.delenv(gateway_auth.PINNED_TOKEN_ENV, raising=False)
+    return tmp_path / 'gateway_auth.json'
 
 
 def make_json_response(status, payload=None, headers=None, request_headers=None,
@@ -175,3 +179,80 @@ def test_version_skew_check_is_silent_on_gateway_denial(monkeypatch, capsys):
 
     assert capsys.readouterr().err == ''
     assert gateway_auth.auth_server_for_box(GATED_IP) == CP
+
+
+# ---------------------------------------------------------------------------
+# Pinned token — a CI job holds one credential and no store
+# ---------------------------------------------------------------------------
+
+def test_boxes_fanout_pins_the_token_on_first_contact(monkeypatch, capsys,
+                                                      isolated_stores):
+    # What a CI runner looks like: LAGER_GATEWAY_TOKEN and nothing else on
+    # disk. Every request to the gated box must carry the token from the
+    # start, the row must render, and the job must leave no store behind.
+    from cli import __version__ as cli_version
+    monkeypatch.setenv(gateway_auth.PINNED_TOKEN_ENV, 'ci-token')
+
+    seen = []
+
+    def fake_get(url, timeout=None, headers=None):
+        headers = headers or {}
+        if GATED_IP in url:
+            seen.append(headers.get('Authorization'))
+            if headers.get('Authorization') != 'Bearer ci-token':
+                return _gated_401(request_headers=headers)
+        if url.endswith('/lock'):
+            return make_json_response(200, {'locked': False}, request_headers=headers)
+        return make_json_response(200, {'version': cli_version},
+                                  request_headers=headers)
+
+    def fail_send(self, prepared, **kwargs):
+        raise AssertionError('a pinned token leaves nothing to retry with')
+    monkeypatch.setattr(requests.Session, 'send', fail_send)
+
+    out = _run_list_boxes(
+        monkeypatch, capsys, {'GATED': GATED_IP, 'PLAIN': PLAIN_IP}, fake_get)
+
+    assert seen == ['Bearer ci-token', 'Bearer ci-token']
+    assert 'sign-in required' not in out
+    assert out.count('current') >= 2
+    assert not isolated_stores.exists()
+
+
+def test_boxes_fanout_pinned_token_refused_says_so(monkeypatch, capsys,
+                                                   isolated_stores):
+    from cli import __version__ as cli_version
+    monkeypatch.setenv(gateway_auth.PINNED_TOKEN_ENV, 'revoked-token')
+
+    def fake_get(url, timeout=None, headers=None):
+        headers = headers or {}
+        if GATED_IP in url:
+            return _gated_401(request_headers=headers)
+        return make_json_response(200, {'version': cli_version},
+                                  request_headers=headers)
+
+    out = _run_list_boxes(
+        monkeypatch, capsys, {'GATED': GATED_IP, 'PLAIN': PLAIN_IP}, fake_get)
+
+    # No session was ever offered, so the row must not report one, and the
+    # follow-up must not tell a CI job to run an interactive login.
+    assert 'token rejected' in out
+    assert 'session rejected' not in out
+    assert 'lager login' not in out
+    assert not isolated_stores.exists()
+
+
+def test_uart_instruments_query_reports_a_refused_pinned_token(monkeypatch):
+    from cli.commands.communication.uart import _run_query_instruments
+    monkeypatch.setenv(gateway_auth.PINNED_TOKEN_ENV, 'revoked-token')
+
+    monkeypatch.setattr(
+        requests, 'get',
+        lambda url, timeout=None, headers=None: _gated_401(request_headers=headers))
+
+    with pytest.raises(LagerError) as excinfo:
+        _run_query_instruments(None, GATED_IP)
+
+    err = excinfo.value
+    assert gateway_auth.PINNED_TOKEN_ENV in err.problem
+    assert 'lager login' not in ' '.join(err.fixes)

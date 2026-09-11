@@ -14,6 +14,17 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 ### Added
 
+- **`LAGER_GATEWAY_TOKEN` authenticates a CI job against an access-gated
+  box.** Set the variable to a token your auth server minted and every
+  request carries it, with no `lager login` step and no password in
+  repository secrets. The token outranks any stored session, is never
+  refreshed, and nothing is written to `~/.lager_gateway_auth` — so a
+  self-hosted runner keeps no credential and no stale box-to-server mapping
+  between jobs. If the gateway refuses it, the command stops at once and
+  names the server that refused, instead of advising a login that would not
+  help. The Rust crate has read this variable since 0.2.0; the Python CLI
+  now matches it.
+
 - **The reference docs cover what shipped from v0.40.0 through v0.47.0.** Each
   claim was checked against the v0.47.0 source rather than the release notes.
   New or expanded sections:
@@ -40,6 +51,15 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 ### Fixed
 
+- **`lager install` and `lager update` no longer abort on a box whose clone
+  holds a divergent tag.** A box cloned before a tag was re-created upstream
+  keeps that tag at the old object, and an unforced `git fetch` refuses it
+  ("would clobber existing tag") with a non-zero exit. The install's fetch
+  sits in an `&&` chain under `set -e`, so the deploy died at
+  *[5/8] Deploying Box Code* — and stayed dead, because every later attempt
+  fetched the same way; the only way out was to force-fetch on the box by
+  hand. Both fetches now force. Origin is authoritative for a checkout that
+  the very next commands `git reset --hard` and `git clean -fd`.
 - **Four pages said the host firewall limits the Lager ports to the VPN.** On the
   default network, Docker publishes those ports ahead of the host firewall, as
   `SECURITY.md` states. The install, update, setup and architecture pages now say

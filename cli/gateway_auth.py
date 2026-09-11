@@ -26,6 +26,14 @@
     server URL so one machine can talk to boxes gated by different
     deployments. Access tokens are short-lived; they are refreshed
     transparently, replaying the cookies the auth server set at login.
+
+    A CI runner has no person to be, so it uses the other credential
+    source: a token its auth server minted, handed to the job in
+    ``LAGER_GATEWAY_TOKEN``. Such a *pinned* token outranks anything in the
+    store, rides on every request, and is never refreshed — see §6.1 of the
+    contract. Nothing here writes the store while one is set: a self-hosted
+    runner keeps its filesystem between jobs, and a box→auth-server entry
+    left behind there is silently wrong the day that box changes address.
 """
 import base64
 import json
@@ -39,11 +47,24 @@ import requests
 from .errors import LagerError
 
 DISCOVERY_HEADER = 'X-Gateway-Auth-Url'
+# Pinned bearer token, supplied by whoever runs the command (contract §6.1).
+PINNED_TOKEN_ENV = 'LAGER_GATEWAY_TOKEN'
 # Public troubleshooting page linked from every gateway auth error.
 ACCESS_DOCS_URL = 'https://docs.lagerdata.com/source/reference/cli/login'
 # Refresh the access token when it expires within this many seconds.
 EXPIRY_MARGIN_SECONDS = 60
 AUTH_SERVER_TIMEOUT = 10
+
+
+def pinned_token():
+    """The explicitly supplied bearer token, or None.
+
+    Whitespace-only counts as unset. ``LAGER_GATEWAY_TOKEN: ${{ secrets.X }}``
+    expands to the empty string when the secret is missing, and sending
+    ``Authorization: Bearer `` for that would answer a missing secret with a
+    401 from the gateway instead of the plain no-credential path.
+    """
+    return (os.environ.get(PINNED_TOKEN_ENV) or '').strip() or None
 
 
 def _store_path():
@@ -73,6 +94,11 @@ def _save_store(store):
 # ---------------------------------------------------------------------------
 
 def record_box_auth_server(box_ip, url):
+    # A pinned token needs no mapping: it goes on every request, so there is
+    # nothing to learn here and nothing to look up later. Writing anyway
+    # would leave a store behind on a runner that outlives the job.
+    if pinned_token():
+        return
     store = _load_store()
     boxes = store.setdefault('boxes', {})
     if boxes.get(box_ip) != url:
@@ -183,11 +209,18 @@ def _refresh_access_token(url, entry):
 def access_token_for(url):
     """Stored access token for an auth server, refreshed if near expiry.
 
+    A pinned token wins over any stored session and is returned as-is: it
+    is deliberately not a JWT in the general case, so there is no ``exp`` to
+    read and no refresh credential to spend.
+
     A failed refresh is not immediately fatal: if the stored token has not
     actually expired, return it anyway and let the gateway judge it — a
     transient auth-server error should not fail a command whose token is
     still valid.
     """
+    pinned = pinned_token()
+    if pinned:
+        return pinned
     entry = _load_store().get('authServers', {}).get(url)
     if not entry:
         return None
@@ -204,7 +237,15 @@ def access_token_for(url):
 
 
 def auth_headers_for_box(box_ip):
-    """Authorization header for a box known to be gated, else {}."""
+    """Authorization header for a box known to be gated, else {}.
+
+    A pinned token consults neither the store nor the box→auth-server map:
+    it applies to every box, which is what makes the first request to a box
+    nobody has ever contacted carry it (contract §6.2).
+    """
+    pinned = pinned_token()
+    if pinned:
+        return {'Authorization': f'Bearer {pinned}'}
     url = auth_server_for_box(box_ip)
     if not url:
         return {}
@@ -316,6 +357,31 @@ def handle_gateway_denial(response, box_ip):
     Lager boxes (and ordinary application 401/403s) are never affected.
     """
     url = response.headers[DISCOVERY_HEADER]
+
+    # A pinned token is the whole credential: no stored session to fall back
+    # on, no refresh to try, and nothing to learn from the discovery header
+    # because the token already goes to every box. So record nothing, retry
+    # nothing, and name the server that refused it — `lager login` is not the
+    # fix when the caller supplied a credential and the gateway said no.
+    # A 503 falls through: it describes the gateway, not the credential.
+    pinned = pinned_token()
+    if pinned and response.status_code == 401:
+        raise LagerError(
+            f'Box {box_ip} refused the token in {PINNED_TOKEN_ENV}.',
+            cause=f'The auth server at {url} does not accept it. '
+                  'The token expired, or someone revoked it.',
+            fixes=[f'Get a new token from {url}, then set {PINNED_TOKEN_ENV} to it.',
+                   f'Details: {ACCESS_DOCS_URL}'],
+        )
+    if pinned and response.status_code == 403:
+        raise LagerError(
+            f'The token in {PINNED_TOKEN_ENV} has no access to box {box_ip}.',
+            cause=f'The auth server at {url} accepts the token. '
+                  'Its account has no access grant for this box.',
+            fixes=['Ask an org admin to grant that account access to this box.',
+                   f'Details: {ACCESS_DOCS_URL}'],
+        )
+
     record_box_auth_server(box_ip, url)
 
     if response.status_code == 401:
@@ -371,6 +437,10 @@ def denial_label(response):
         return 'no access'
     if response.status_code == 503:
         return 'auth server down'
+    if pinned_token():
+        # No session exists on this path, so 'session rejected' would name a
+        # thing the caller never had.
+        return 'token rejected'
     if 'Authorization' in getattr(response.request, 'headers', {}):
         return 'session rejected'
     return 'sign-in required'
