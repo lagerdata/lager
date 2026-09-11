@@ -1,23 +1,21 @@
-#!/usr/bin/python
 # Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 
-# coding: utf8
-
 __version__ = '0.2'
 
+import binascii
 import logging
 import struct
 import time
 from threading import Thread
-from .vendor.PyCRC.CRCCCITT import CRCCCITT
 
 
 logger = logging.getLogger(__name__)
 
 
 def calcCRC(data):
-    crc = CRCCCITT("FFFF").calculate(bytes(data))
+    # CRC-16/CCITT-FALSE: polynomial 0x1021, initial value 0xFFFF, not reflected.
+    crc = binascii.crc_hqx(bytes(data), 0xFFFF)
     b = bytearray(struct.pack(">H", crc))
     return b
 

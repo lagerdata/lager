@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright 2024-2026 Lager Data
+# SPDX-License-Identifier: Apache-2.0
 """
 Oscilloscope Test Client
 A Python GUI application that connects to the oscilloscope daemon via WebSocket
