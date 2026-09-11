@@ -1,13 +1,16 @@
-Lager CLI
+Lager
 Copyright 2024-2026 Lager Data
 
 This product includes software developed by third parties:
 
 ================================================================================
-PyCRC
+Requests
 ================================================================================
-License: GNU Library or Lesser General Public License (LGPL)
-Copyright: Cristian Navalici
-Source: https://pypi.org/project/pycrc/
+License: Apache License 2.0
+Source: https://github.com/psf/requests
 
-Note: PyCRC is included in cli/vendor/PyCRC/
+Requests
+Copyright 2019 Kenneth Reitz
+
+Note: raise_for_status() in box/lager/util/__init__.py is adapted from
+requests.models.Response.raise_for_status.

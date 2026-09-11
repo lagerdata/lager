@@ -1,4 +1,4 @@
-# Copyright 2024-2026 Lager Data LLC
+# Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 """
 Unit tests for box/lager/debug/da1469x_loader.py
@@ -9,7 +9,7 @@ Covers:
   - ``flash_image`` / ``erase_range`` against an in-memory fake OpenOcdRpc
     that mimics the real loader's ``fl_*`` global behaviour, and verifies
     the exact OpenOCD command sequence matches the working ``flash.gdb`` /
-    ``erase.gdb`` scripts in [xl/openocd/flash_loader/].
+    ``erase.gdb`` scripts.
   - Failure modes: rc != 1 from ping / erase / program raises with the rc.
   - Timeout paths: a fake that never advances ``fl_state`` raises
     ``Da1469xLoaderError``.
@@ -463,7 +463,7 @@ class XipToFlashOffsetTests(unittest.TestCase):
     """``xip_to_flash_offset`` translates the CLI's absolute XIP addresses
     (e.g. ``0x16000000``) to the flash-relative offsets the loader's
     ``fl_cmd_flash_addr`` expects. This is the missing translation that on
-    real hardware caused ``lager debug SWD flash --bin xl.img,0x16000000``
+    real hardware caused ``lager debug SWD flash --bin firmware.img,0x16000000``
     to silently mean "flash to absolute offset 0x16000000 in QSPI" — far
     past the end of any plausible flash chip.
     """

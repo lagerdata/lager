@@ -109,10 +109,10 @@ class _DispatchCase(unittest.TestCase):
 
 class FlashDispatchTests(_DispatchCase):
     def test_da1469x_goes_to_the_loader_with_a_flash_relative_offset(self):
-        out = self.flash('DA14695', '/tmp/xl.img.bin', address=XIP)
+        out = self.flash('DA14695', '/tmp/firmware.img.bin', address=XIP)
         self.assertEqual(
             self.loader.calls,
-            [('flash_image', '/tmp/xl.img.bin', 'da1469x', 0, 0)],
+            [('flash_image', '/tmp/firmware.img.bin', 'da1469x', 0, 0)],
             'XIP 0x16000000 must reach the loader as flash offset 0x0',
         )
         self.assertEqual(self.rpc.calls, [], "must not fall through to rpc.program")
@@ -270,7 +270,7 @@ class RpcFlashGuardTests(unittest.TestCase):
     def test_program_is_refused_by_name(self):
         rpc = self._rpc('DA14695')
         with self.assertRaises(openocd.OpenOcdNoFlashDriverError) as ctx:
-            rpc.program('/tmp/xl.img.bin', address=XIP)
+            rpc.program('/tmp/firmware.img.bin', address=XIP)
         msg = str(ctx.exception)
         self.assertIn('DA14695', msg)
         self.assertIn('DA1469x', msg)
@@ -324,7 +324,7 @@ class RpcFlashGuardTests(unittest.TestCase):
             yield 'ok'
 
         with mock.patch.object(openocd_flash, 'flash_image', fake_flash_image):
-            list(openocd_flash.flash_target(rpc, rpc.device, '/tmp/xl.img.bin', address=XIP))
+            list(openocd_flash.flash_target(rpc, rpc.device, '/tmp/firmware.img.bin', address=XIP))
         self.assertEqual(seen, [rpc])
         rpc.cmd.assert_not_called()
 

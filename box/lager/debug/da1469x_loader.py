@@ -7,16 +7,14 @@ driven over OpenOCD's TCL/RPC channel.
 
 Mainline OpenOCD has no QSPI flash driver for the Dialog/Renesas DA1469x
 family, so the OpenOCD ``program`` command can't touch external NOR at the
-XIP base ``0x16000000``. The standard workaround (also what works against
-this rig from a laptop) is to load the upstream
+XIP base ``0x16000000``. The standard workaround is to load the upstream
 ``apache-mynewt-core/apps/flash_loader`` app into RAM, jump to it, and drive
 its small command struct over the debug link to do erase / program / verify.
 
-This module is the box-side, pure-Python translation of the GDB scripts in
-[xl/openocd/flash_loader/](xl/openocd/flash_loader/) (``flash.gdb``,
-``erase.gdb``, ``flash_loader.gdb``) — same sequence, same memory writes,
-same protocol — but issued via :class:`OpenOcdRpc` instead of an external
-``gdb-multiarch``. That keeps the box-side debug service self-contained
+This module is a box-side, pure-Python port of a GDB-script flow for that
+loader (``flash.gdb``, ``erase.gdb``, ``flash_loader.gdb``) — same sequence,
+same memory writes, same protocol — but issued via :class:`OpenOcdRpc`
+instead of an external ``gdb-multiarch``. That keeps the box-side debug service self-contained
 (no extra subprocess, no extra binary dependency) and lets the existing
 ``lager debug SWD flash`` / ``lager debug SWD erase`` CLI dispatch into
 the same code path used for J-Link DA14695.
@@ -44,9 +42,9 @@ which snapshots the current pointer into ``fl_write.buf`` and toggles
 the loader is still flashing chunk N. The host therefore must
 *dereference* ``fl_cmd_data`` (read the pointer's current value) before
 each ``load_image`` — the static ELF symbol address points at the
-pointer variable itself. The GDB macro at
-[xl/openocd/flash_loader/flash_loader.gdb] does this automatically by
-re-evaluating bare ``fl_cmd_data`` each iteration; the pure-RPC path
+pointer variable itself. The ``flash_loader.gdb`` macro does this
+automatically by re-evaluating bare ``fl_cmd_data`` each iteration; the
+pure-RPC path
 issues an extra ``mdw`` per chunk for the same effect.
 """
 
@@ -97,8 +95,8 @@ QSPI_XIP_RANGE = 0x02000000  # 32 MiB — datasheet maximum XIP window.
 QSPI_XIP_END = QSPI_XIP_BASE + QSPI_XIP_RANGE  # exclusive upper bound
 
 # RAM address the Mynewt RAM-resident loader links at. Vector table sits at
-# the very start: word[0] = MSP, word[1] = reset handler PC. Matches
-# [xl/openocd/flash_loader/flash.gdb:7-10](xl/openocd/flash_loader/flash.gdb).
+# the very start: word[0] = MSP, word[1] = reset handler PC. Matches the
+# vector-table setup in ``flash.gdb``.
 LOADER_RAM_BASE = 0x20000000
 
 # Pre-load DA1469x register pokes (mirrors the working flash.gdb / erase.gdb).
@@ -115,7 +113,7 @@ REG_SYS_CTRL_REG = 0x100C0050  # write 1 -> bootrom re-runs (software reset)
 
 # Symbols we resolve from the loader ELF. Names match the upstream Apache
 # Mynewt ``apps/flash_loader/src/main.c`` globals (same set the ``fl_*``
-# GDB macros at [xl/openocd/flash_loader/flash_loader.gdb] reference).
+# GDB macros in ``flash_loader.gdb`` reference).
 LOADER_SYMBOLS = (
     'fl_state',
     'fl_cmd',
@@ -430,14 +428,13 @@ def _prepare_loader(rpc: OpenOcdRpc, elf_path: str, bin_path: str,
                     syms: Dict[str, int]) -> Iterator[str]:
     """Reset, load the loader into RAM, jump to it, wait for ready.
 
-    Mirrors [xl/openocd/flash_loader/flash.gdb:1-26](xl/openocd/flash_loader/flash.gdb)
-    line-for-line. Yields human-readable progress lines; raises on any
+    Mirrors the setup section of ``flash.gdb`` line-for-line. Yields human-readable progress lines; raises on any
     OpenOCD or loader-level error.
     """
     yield f'Preparing DA1469x flash_loader from {elf_path}'
 
-    # POR-pin debug enable poke. The user added this to the OpenOCD scripts
-    # specifically (the J-Link path doesn't need it because Commander's
+    # POR-pin debug enable poke. The OpenOCD scripts perform it explicitly
+    # (the J-Link path doesn't need it because Commander's
     # device profile handles equivalent setup).
     rpc.mww(REG_POR_PIN_DEBUG_ENABLE, REG_POR_PIN_DEBUG_ENABLE_VALUE)
 
@@ -576,8 +573,7 @@ def _fl_program(rpc: OpenOcdRpc, syms: Dict[str, int],
     The driver therefore must dereference ``fl_cmd_data`` (read the
     pointer's current value with ``mdw``) before each ``load_image`` —
     the static ELF symbol address points at the pointer variable itself,
-    not the staging buffer. This mirrors the way
-    [flash_loader.gdb](xl/openocd/flash_loader/flash_loader.gdb)
+    not the staging buffer. This mirrors the way ``flash_loader.gdb``
     re-resolves bare ``fl_cmd_data`` on every iteration.
     """
     _fl_ping(rpc, syms)
@@ -725,15 +721,15 @@ def flash_image(rpc: OpenOcdRpc, image_path: str, *,
                 _resolver=_resolve_loader_paths,
                 _symbol_resolver=_resolve_loader_symbols) -> Iterator[str]:
     """Flash *image_path* to the chip's external flash via the RAM-resident
-    flash_loader. Equivalent to running [xl/openocd/flash_loader/flash.gdb]
-    against the OpenOCD GDB server, but executed in-process via TCL/RPC.
+    flash_loader. Equivalent to running ``flash.gdb`` against the OpenOCD
+    GDB server, but executed in-process via TCL/RPC.
 
     Yields human-readable progress lines for the box-side log; raises
     :class:`Da1469xLoaderError` (or :class:`OpenOcdRpcError`) on failure.
 
     Parameters mirror the GDB ``fl_load <file> <id> <offset>`` macro: by
-    default, flash_id=0, offset=0 — same as the ``fl_load xl.img 0 0`` line
-    in [xl/openocd/flash_loader/flash.gdb:27].
+    default, flash_id=0, offset=0 — same as the ``fl_load <image> 0 0`` line
+    in ``flash.gdb``.
 
     The ``_resolver`` / ``_symbol_resolver`` hooks are dependency-injection
     seams for tests; production callers don't pass them.
@@ -764,8 +760,7 @@ def erase_range(rpc: OpenOcdRpc, *,
                 _symbol_resolver=_resolve_loader_symbols) -> Iterator[str]:
     """Erase ``[offset, offset+length)`` on flash bank *flash_id* via the
     RAM-resident flash_loader. Default 1 MiB at offset 0 — matches the
-    ``fl_erase 0 0x00000000 1048576`` line in
-    [xl/openocd/flash_loader/erase.gdb:27].
+    ``fl_erase 0 0x00000000 1048576`` line in ``erase.gdb``.
 
     Yields progress lines; raises on failure.
     """

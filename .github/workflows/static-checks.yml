@@ -296,13 +296,11 @@ jobs:
 
       # Errors only: undefined names, syntax errors, f-string and assert
       # mistakes. Not style. The full default ruleset reports ~6300 findings on
-      # this tree, which would be noise, not a gate. Vendored trees are
-      # excluded -- they are third-party code we do not edit.
+      # this tree, which would be noise, not a gate.
       - name: Ruff (errors only)
         if: always()
         run: |
           ruff check --select E9,F63,F7,F82 \
-            --exclude cli/vendor \
             cli/ box/ test/ tools/
         shell: bash
 

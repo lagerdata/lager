@@ -1,4 +1,4 @@
-# Copyright 2024-2026 Lager Data LLC
+# Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests for ``box/lager/http_handlers/usb_scanner.py`` UART
 enumeration with and without a USB serial.

@@ -41,13 +41,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 2049 (+2 xfailed) |
+| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 2060 (+2 xfailed) |
 | `unit (box)` | `test/unit/box/` | 2539 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 181 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 186 (+1 skipped) |
-| | **Total gated** | **5149** |
+| | **Total gated** | **5160** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never
@@ -81,7 +81,7 @@ anywhere in the tree.
 | `shellcheck -S warning`, excluding `SC2034,SC2320,SC2155,SC2164,SC2046` | the 45 under `test/ tools/` only -- `box/` and `cli/deployment/` are syntax-checked but not linted | clean. Pinned to `shellcheck-py==0.11.0.1`, not the runner image's binary. See below for what the exclusions cost. |
 | `compileall` | every `.py` in `cli/ box/ test/ tools/` | clean |
 | `pytest --collect-only` | `test/mcp/integration/` | 8 tests collect |
-| `ruff --select E9,F63,F7,F82` | `cli/ box/ test/ tools/`, vendored excluded | clean (default ruleset would be ~6300) |
+| `ruff --select E9,F63,F7,F82` | `cli/ box/ test/ tools/` | clean (default ruleset would be ~6300) |
 | `coverage` | all six unit suites | ~38%, reporting only, no threshold |
 
 ### Rust: `rust-checks.yml`
@@ -331,7 +331,6 @@ Ranked by risk. These are `cli/` modules that no test in the PR gate exercises a
 | `cli/core/ssh_utils.py` | 203 | SSH invocation and argument building. |
 | `cli/core/net_group.py` | 200 | Net-scoped click group base class. |
 | `cli/context/core.py` | 160 | `LagerContext` construction. |
-| `cli/simple_hdlc.py` | 156 | Frame parser / state machine. |
 | `cli/update_check.py` | 138 | Background update-check thread. |
 | `cli/terminal/**` | ~800 | The whole interactive REPL. |
 
@@ -451,7 +450,7 @@ cli/tests/                #  7 files: 6 pytest suites (GATED via `unit (cli)`),
                           #           plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 206 files)
+### Local Unit Tests (`test/unit/` -- 207 files)
 
 #### Box Unit Tests (`test/unit/box/` -- 113 files)
 
@@ -575,7 +574,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_ykush_driver.py` | YKUSH USB hub driver: device-contention regression from an indefinitely cached handle |
 | `test_automation_exports.py` | Static parse of `automation/__init__.py`'s lazy export table: no name guarded twice, every returned driver reachable under its own name, everything in `__all__` resolvable -- the copy-paste class of defect that made one driver answer to another's name |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 76 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 77 files)
 
 | File | What it tests |
 |------|---------------|
@@ -628,6 +627,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_python_exit_codes.py` | `normalize_exit_code` maps a signal death (`-9`) onto the 128+N convention `SIGKILL_EXIT_CODE` is written in, so a timeout kill reports 137 rather than 247, and never returns a negative code to `sys.exit` |
 | `test_resolve_box_locked.py` | `resolve_box_locked`: acquires an ephemeral lock on resolution, stashes the release on the context, passes through under `LAGER_AUTO_LOCK_DISABLE`, and reports `already_ours` for a lock we already hold. Pins the holder via `get_lock_holder` and forbids real HTTP, so the result cannot depend on whether it runs on a laptop or a CI runner |
 | `test_empty_box_name.py` | An explicit `--box ""` (or whitespace-only) is refused rather than silently resolving to the DEFAULT box, in BOTH `resolve_and_validate_box` and `resolve_and_validate_box_with_name` -- they duplicate the resolution logic, so a guard in one would leave the other's callers still defaulting. Also pins the half that must not change: `None` still means "not given" and falls back to the default |
+| `test_simple_hdlc.py` | `cli/simple_hdlc.py`: the CRC-16/CCITT-FALSE checksum pinned to the values of the PyCRC implementation it replaced, HDLC encode/decode round trips including escaped flag and escape bytes, and a corrupted CRC reported as an error frame |
 | `test_ssh.py` | SSH ensure_lager_box_keypair and key_auth_works helpers |
 | `test_supply_tui.py` | SupplyTUI render output, command parsing, worker threads, connection failure |
 | `test_uart_session_release.py` | UART teardown releases the box-side session on every exit path (including Ctrl+C, and when the session never came up), never skips the disconnect that follows, and reports a held net with the take-over command; plus the connect banner keeping a by-id device path readable |

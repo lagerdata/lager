@@ -202,12 +202,12 @@ class _Case(unittest.TestCase):
 class FlashHandOffTests(_Case):
     def test_da1469x_bin_hands_device_path_and_xip_address_to_the_dispatch(self):
         net = _make_net("DA14695")
-        out = net.flash("/tmp/xl.img.bin", QSPI_XIP_BASE)
+        out = net.flash("/tmp/firmware.img.bin", QSPI_XIP_BASE)
 
         self.assertEqual(len(dispatch.calls), 1)
         kind, rpc, device, path, address = dispatch.calls[0]
         self.assertEqual((kind, device, path, address),
-                         ("flash_target", "DA14695", "/tmp/xl.img.bin", QSPI_XIP_BASE),
+                         ("flash_target", "DA14695", "/tmp/firmware.img.bin", QSPI_XIP_BASE),
                          "the dispatch decides by device; DebugNet must not pre-translate")
         # The RPC is built with the shared flash budget and knows its device,
         # so the RPC layer's own guard can fire if the dispatch is bypassed.
@@ -234,7 +234,7 @@ class FlashHandOffTests(_Case):
     def test_bin_without_an_address_is_refused_before_the_dispatch(self):
         net = _make_net("DA14695")
         with self.assertRaises(ValueError):
-            net.flash("/tmp/xl.img.bin")
+            net.flash("/tmp/firmware.img.bin")
         self.assertEqual(dispatch.calls, [])
 
     def test_jlink_backend_untouched(self):
@@ -246,15 +246,15 @@ class FlashHandOffTests(_Case):
             yield "jlink flashed"
 
         debug_net.flash_device = fake_flash_device
-        self.assertEqual(net.flash("/tmp/xl.img.bin", QSPI_XIP_BASE), "jlink flashed")
-        self.assertEqual(seen["files"], ([], [("/tmp/xl.img.bin", QSPI_XIP_BASE)], []))
+        self.assertEqual(net.flash("/tmp/firmware.img.bin", QSPI_XIP_BASE), "jlink flashed")
+        self.assertEqual(seen["files"], ([], [("/tmp/firmware.img.bin", QSPI_XIP_BASE)], []))
         self.assertEqual(dispatch.calls, [], "J-Link path has its own DA1469x handling")
 
     def test_daemon_down_raises_connect_first_before_the_dispatch(self):
         debug_net.get_openocd_status = lambda **k: {"running": False, "pid": None}
         net = _make_net("DA14695")
         with self.assertRaises(RuntimeError) as ctx:
-            net.flash("/tmp/xl.img.bin", QSPI_XIP_BASE)
+            net.flash("/tmp/firmware.img.bin", QSPI_XIP_BASE)
         self.assertIn("Call connect() first", str(ctx.exception))
         self.assertEqual(dispatch.calls, [])
 
