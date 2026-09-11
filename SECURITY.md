@@ -22,8 +22,12 @@ report it responsibly.
 ### How to Report
 
 1. **Do not** open a public GitHub issue for security vulnerabilities.
-2. Email **hello@lagerdata.com**.
-3. Include as much detail as you can:
+2. Report the vulnerability privately through GitHub. On the repository's
+   **Security** tab, select **Report a vulnerability**. You can also open the
+   [private reporting form](https://github.com/lagerdata/lager/security/advisories/new)
+   directly.
+3. If you cannot use GitHub, email **hello@lagerdata.com**.
+4. Include as much detail as you can:
    - Description of the vulnerability
    - Steps to reproduce
    - Potential impact
@@ -36,7 +40,8 @@ report it responsibly.
 - **Assessment** — we confirm the issue and determine severity.
 - **Updates** — we keep you informed of progress.
 - **Resolution** — we aim to resolve critical issues within 30 days.
-- **Credit** — with your permission, we credit you in the release notes.
+- **Credit** — with your permission, we credit you in the security advisory
+  and the release notes.
 
 ### Scope
 
@@ -88,7 +93,8 @@ nothing about nets.
 
 **The box is trusted-network infrastructure.** The services it exposes are
 unauthenticated by design, on the assumption stated in the Security Model below.
-For deployments that need authenticated access, put the gateway in front of it.
+For deployments that need authenticated access, put an authenticating gateway
+in front of it.
 
 ## Security Model
 
@@ -114,7 +120,3 @@ infrastructure on a trusted network:
 For deployments that need authenticated access, Lager supports placing an
 authenticating gateway in front of a box; the CLI discovers it and prompts for
 `lager login`.
-
-## Acknowledgments
-
-We thank the security researchers who responsibly disclose vulnerabilities to us.
