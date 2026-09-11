@@ -72,11 +72,13 @@ lager arm [NETNAME] move [OPTIONS]
 - `--y FLOAT` - Target Y position (mm)
 - `--z FLOAT` - Target Z position (mm)
 - `--box TEXT` - Lager Box name or IP
-- `--timeout FLOAT` - Move timeout in seconds (default: 5.0)
+- `--timeout FLOAT` - Move timeout in seconds (default: 15.0, minimum: 0.1)
 - `--yes` - Confirm the action without prompting
 
 Each axis is a named option, not a positional argument, so you can move along one
 axis without restating the others.
+
+The box refuses a target outside the workspace of the arm. See [Workspace Bounds](#workspace-bounds).
 
 **Examples:**
 ```bash
@@ -102,10 +104,12 @@ lager arm [NETNAME] move-by [OPTIONS]
 - `--dy FLOAT` - Delta Y offset (mm)
 - `--dz FLOAT` - Delta Z offset (mm)
 - `--box TEXT` - Lager Box name or IP
-- `--timeout FLOAT` - Move timeout in seconds (default: 5.0)
+- `--timeout FLOAT` - Move timeout in seconds (default: 15.0, minimum: 0.1)
 - `--yes` - Confirm the action without prompting
 
 Omitted axes are left unchanged, so a single-axis jog needs only that one option.
+
+The box adds the offsets to the current position. It refuses a result outside the workspace of the arm.
 
 **Examples:**
 ```bash
@@ -226,9 +230,54 @@ lager arm --box my-lager-box
 
 **Output:**
 ```
-Name    Net Type  Instrument     Channel  Address
-ARM1    arm       Rotrics_Dexarm 0        /dev/ttyUSB0
+Name   Net Type   Instrument      Channel        Address
+===========================================================================
+ARM1   arm        Rotrix_Dexarm   /dev/ttyACM0   USB0::0x0483::0x5740::<SERIAL>::INSTR
 ```
+
+The channel is the serial port of the arm. The address carries the USB serial number of the arm.
+
+---
+
+## Workspace Bounds
+
+The box refuses a `move` or `move-by` target outside these approximate bounds for the Rotrics Dexarm:
+
+| Axis | Minimum (mm) | Maximum (mm) |
+|------|--------------|--------------|
+| X | -300 | 300 |
+| Y | 170 | 360 |
+| Z | -140 | 100 |
+
+The error starts with `Coordinates out of bounds` and names each axis that is out of range.
+
+---
+
+## Detection
+
+The box finds an arm when it scans for instruments. `lager instruments`, `lager nets add` and `lager nets add-all` all start that scan.
+
+- The box probes only a serial port whose USB ID is `0483:5740`.
+- The box sends the G-code `M105` to that port and waits up to 1 second for a reply that contains `ok`.
+- The box never probes a port that belongs to another instrument or to a saved UART net. It also skips a port that another process holds.
+- The arm must report a USB serial number. The box drops an arm that has none.
+
+To change the probe, set `LAGER_ARM_PROBE` in the box container:
+
+| Value | Effect |
+|-------|--------|
+| `auto` | Default. Probe only ports with the USB ID `0483:5740`. |
+| `force` | Probe every serial port that no other instrument, saved UART net or process owns. |
+| `off` | Do not probe for an arm. |
+
+```bash
+lager box-config env set LAGER_ARM_PROBE=force --box my-lager-box
+lager box-config apply --box my-lager-box
+```
+
+<Warning>
+If a board on the box resets when its DTR or RTS line changes, do not use `force`. The probe opens each port and asserts DTR, which can reset that board. Use `force` only to diagnose a missing arm. Then remove the setting with `lager box-config env unset LAGER_ARM_PROBE` and run `lager box-config apply`.
+</Warning>
 
 ---
 
@@ -281,3 +330,4 @@ lager arm ARM1 set-acceleration --acceleration 100 --travel 80 --retract 60 --bo
 - Always re-enable motors after disabling them to resume normal operation
 - The `--timeout` option prevents commands from hanging if the arm fails to reach position
 - Default net can be set with `lager defaults add --arm-net`
+- If the arm does not appear in `lager instruments`, see [Detection](#detection) and the troubleshooting page
