@@ -3,7 +3,6 @@
 
 import serial
 import re
-import datetime
 import time
 from typing import List, Optional, Tuple
 from serial.tools import list_ports
@@ -397,12 +396,16 @@ class Dexarm(ArmBase):
         # Give the ARM a moment to start moving
         time.sleep(0.2)
 
-        now = datetime.datetime.utcnow()
-        delta = datetime.timedelta(seconds=timeout)
+        deadline = time.monotonic() + timeout
         while True:
-            if datetime.datetime.utcnow() - now > delta:
+            if time.monotonic() > deadline:
+                # move_to and move_relative check the bounds before a move is
+                # sent, so a timeout means the arm did not arrive: an obstruction,
+                # an unreachable target inside the bounds, or a long move.
                 raise MovementTimeoutError(
-                    "Movement timed out. Arm may be obstructed or coordinates are out of bounds.",
+                    "The arm did not reach the target within %g s. It may be "
+                    "obstructed or the target unreachable, or a long move may need "
+                    "a longer timeout." % timeout,
                     target_x=x,
                     target_y=y,
                     target_z=z,

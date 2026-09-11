@@ -249,6 +249,23 @@ class TestPosition(_DriverTest):
         self.assertEqual(fake.writes.count(b"M114\r"), 3)
 
 
+class TestMoveTimeout(_DriverTest):
+    def test_timeout_message_points_at_a_longer_timeout(self):
+        # Bounds are checked before a move is sent, so the message must not
+        # blame them; a long move that needs more time is the likelier cause.
+        from lager.automation.arm.arm_net import MovementTimeoutError
+
+        arm, _ = self.make_arm(replies_with_position())   # M114 never reaches the target
+        clock = itertools.count(step=1.0)
+        with mock.patch.object(rotrics.time, "monotonic", side_effect=lambda: next(clock)):
+            with self.assertRaises(MovementTimeoutError) as caught:
+                arm.move_to(50, 250, 30, timeout=5)
+        message = str(caught.exception)
+        self.assertIn("within 5 s", message)
+        self.assertIn("longer timeout", message)
+        self.assertNotIn("coordinates are out of bounds", message)
+
+
 class TestSerialFromNetRecord(unittest.TestCase):
     serial_from = staticmethod(rotrics.Dexarm.serial_from_net_record)
 

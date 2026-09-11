@@ -403,7 +403,7 @@ except RuntimeError as e:
 - Always use the context manager (`with` statement) to ensure proper cleanup
 - Call `go_home()` after the arm powers on. The firmware refuses motion until then.
 - `move_to()` and `move_relative()` need arm firmware V2.1.4 or later. Rotrics swapped the X and Y axes in V2.1.4, so older firmware moves in a different frame.
-- A movement timeout error indicates an obstruction, or a target inside the bounds that the arm cannot reach
+- A movement timeout error means that the arm did not arrive. The cause can be an obstruction, an unreachable target inside the bounds, or a long move. Pass a larger `timeout` for a long move.
 - Joint angles (a, b, c) are in the arm's internal coordinate system
 - Default tolerance for position verification is 0.5mm
 - The arm auto-detects via USB VID/PID (0x0483:0x5740)
