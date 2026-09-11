@@ -3,7 +3,7 @@ title: ADC
 description: Read analog-to-digital converter values
 ---
 
-Read analog-to-digital converter (ADC) values from your box. Supports LabJack T7 and MCC USB-202 hardware with per-hardware channel naming and voltage ranges.
+Read analog-to-digital converter (ADC) values from your box. Supports LabJack T7, LabJack U3 and MCC USB-202 hardware with per-hardware channel naming and voltage ranges.
 
 ## Syntax
 
@@ -66,6 +66,7 @@ CURRENT_MON     adc       MCC_USB202       CH0      USB0::0x09DB::0x012B::...
 | Manufacturer | Model | Channels | Voltage Range | Input Mode |
 |--------------|-------|----------|---------------|------------|
 | LabJack | T7 | 14 (AIN0-AIN13) | +/-10 V | Single-ended |
+| LabJack | U3 | 16 (AIN0-AIN15) | U3-HV: AIN0-AIN3 +/-10.3 V, AIN4-AIN15 0-2.44 V | Single-ended |
 | Measurement Computing | USB-202 | 8 (CH0-CH7) | +/-10 V | Single-ended |
 
 ### Hardware Comparison
@@ -80,27 +81,33 @@ CURRENT_MON     adc       MCC_USB202       CH0      USB0::0x09DB::0x012B::...
 | Connection | Shared handle (with DAC, GPIO, SPI) | Per-transaction open/close |
 | Device selection | Auto-discovered (no address needed) | Via serial number or VISA address |
 
+### LabJack U3
+
+The U3 uses a different driver stack from the T7: the LabJack Exodriver and LabJackPython. The two families can share one Lager Box.
+
+- The ranges above are LabJack's figures for a U3-HV. On a U3-HV, `AIN0`-`AIN3` are fixed high-voltage inputs.
+- `AIN4`-`AIN7` are the same physical pins as `FIO4`-`FIO7`, and `AIN8`-`AIN15` are the same pins as `EIO0`-`EIO7`. An `adc` read sets the pin to analog mode, and a `gpio` read or write on the same pin sets it back to digital mode.
+- `AIN8`-`AIN15` are on the DB15 connector of the U3.
+- Lager treats every U3 as a U3-HV, because a U3-LV reports the same USB product ID.
+
 ### Channel Naming
 
-When creating ADC nets, the channel name depends on the hardware:
+When you create an ADC net, use a channel name that `lager instruments` lists for the instrument. `lager nets add` refuses any other value, including a numeric shorthand such as `0`, and prints the valid channels.
 
-**LabJack T7:**
+**LabJack T7:** `AIN0`-`AIN13`
 ```bash
-# Both forms accepted:
-lager nets add SENSOR_1 adc AIN0 USB::470026574
-lager nets add SENSOR_1 adc 0 USB::470026574    # Numeric shorthand
+lager nets add SENSOR_1 adc AIN0 USB0::0x0CD5::0x0007::::INSTR
 ```
 
-Numeric pins `0`-`13` map to `AIN0`-`AIN13` internally.
-
-**MCC USB-202:**
+**LabJack U3:** `AIN0`-`AIN15`
 ```bash
-# Both forms accepted (case-insensitive):
-lager nets add SENSOR_1 adc CH0 USB0::0x09DB::...
-lager nets add SENSOR_1 adc 0 USB0::0x09DB::...  # Numeric shorthand
+lager nets add SENSOR_1 adc AIN0 USB0::0x0CD5::0x0003::::INSTR
 ```
 
-Numeric pins `0`-`7` and named pins `CH0`-`CH7` are both accepted. Channel names are case-insensitive.
+**MCC USB-202:** `CH0`-`CH7`
+```bash
+lager nets add SENSOR_1 adc CH0 USB0::0x09DB::0x012B::<SERIAL>::INSTR
+```
 
 ### Instrument Name Matching
 
@@ -109,6 +116,7 @@ The backend driver is selected based on the instrument name in the net configura
 | Pattern | Driver |
 |---------|--------|
 | `labjack` + `t7` (case-insensitive, flexible separators) | LabJack T7 |
+| `labjack` + `u3` (case-insensitive, flexible separators) | LabJack U3 |
 | `mcc` + `usb` + `202` (case-insensitive, flexible separators) | MCC USB-202 |
 
 ## Default Net
@@ -164,7 +172,8 @@ echo "Voltage OK: $VOLTAGE V"
 ## Notes
 
 - Results are returned in volts with 6 decimal places
-- Both hardware backends support bipolar measurement (+/-10 V range)
+- The LabJack T7 and the USB-202 support bipolar measurement (+/-10 V range)
+- On a LabJack U3, only `AIN0`-`AIN3` of a U3-HV are bipolar
 - ADC nets must be configured before use with `lager nets add <name> adc <channel> <address>`
 - Default net can be set with `lager defaults add --adc-net`
 - LabJack T7 shares a connection handle with DAC, GPIO, and SPI operations on the same device

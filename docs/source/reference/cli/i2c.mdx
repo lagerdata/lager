@@ -235,9 +235,42 @@ Clock frequencies accept numeric values with optional suffixes:
 
 | Adapter | Pins | Pull-ups | Notes |
 |---------|------|----------|-------|
-| LabJack T7 | Configurable FIO pins (e.g., FIO4/FIO5) | External only | ~450 kHz max (throttle=0) |
+| LabJack T7 | Configurable DIO pins (default `FIO4-FIO5`: SDA, SCL) | External only | 56 bytes per transfer; about 130 Hz to 450 kHz |
+| LabJack U3 | Configurable DIO pins (default `FIO6-FIO7`: SDA, SCL) | External only; the U3 has none | 50 bytes written and 52 bytes read per transfer; about 10 kHz to 150 kHz |
 | Aardvark USB | Fixed SDA/SCL | Internal (switchable) | Up to 800 kHz |
 | FT232H | Configurable | External only | MPSSE-based I2C |
+
+The LabJack T7 maps the requested frequency to a clock throttle, up to about 450 kHz. If the T7 firmware refuses the computed throttle, the driver runs at the maximum rate and prints a warning.
+
+---
+
+## LabJack U3
+
+A U3 runs I2C through a firmware command of the U3, not through LJM. I2C on a U3 needs U3 hardware version 1.21 or later. The U3 is a bus master only.
+
+**Pins:** the default channel `FIO6-FIO7` assigns SDA to `FIO6` and SCL to `FIO7`. For other pins, create the net with `lager nets add` and the options `--sda` and `--scl`. `FIO0`-`FIO3` cannot carry I2C. The EIO and CIO lines are on the DB15 connector of the U3.
+
+**Pull-ups:** the U3 has no pull-up resistors. Connect external resistors from SDA and from SCL to VS. LabJack recommends 4.7 kΩ. Without them, every address sends a NAK, and `scan` returns an empty list. `--pull-ups` has no effect on a U3, and `config` prints `pull_ups=n/a (external resistors required)`.
+
+**Limits:**
+- A transfer writes at most 50 bytes and reads at most 52 bytes.
+- The clock runs from about 10 kHz to 150 kHz, and the box never runs it faster than the request. A request outside that range is clamped.
+- `config` prints the rate that the hardware uses, with the request in brackets when the two differ:
+
+```
+I2C configured: freq=96835Hz (requested 100000Hz), pull_ups=n/a (external resistors required)
+```
+
+The CLI does not show a warning for a clamped clock, so read the rate in the `config` output.
+
+**Errors:** the U3 checks the acknowledgement of the address and of each byte that it writes. An error names the first byte that the device refused:
+
+```
+No ACK from device at 0x48. Check the address, that the device is powered, and that SDA and SCL have external pull-up resistors -- a U3 has none.
+Device at 0x48 acknowledged its address but NAKed data byte 1 of 2 (AckArray 0x00000006).
+```
+
+A write of 31 bytes or more reports only that a byte was refused, not which byte.
 
 ---
 
@@ -321,6 +354,7 @@ lager i2c MY_I2C read 6 --address 0x76
 - Verify SDA and SCL wiring
 - Check that pull-up resistors are present (4.7k typical for 100kHz)
 - For Aardvark: try `--pull-ups on` to enable internal pull-ups
+- For LabJack U3: fit external pull-up resistors. The U3 has none, and without them a scan finds no devices
 - Confirm device power supply is connected
 
 ### Bus Errors
@@ -340,7 +374,8 @@ lager i2c MY_I2C read 6 --address 0x76
 ## Notes
 
 - Default I2C net can be set with `lager defaults add --i2c-net NETNAME`
-- LabJack T7 operates at ~450 kHz regardless of requested frequency due to hardware limitations
+- LabJack T7 runs from about 130 Hz to 450 kHz. LabJack U3 runs from about 10 kHz to 150 kHz
+- `config` prints the clock rate that a LabJack U3 uses, which can differ from the request
 - Aardvark adapters support internal pull-ups that can be toggled via `config --pull-ups`
 - The `transfer` command uses I2C repeated start for atomic write-then-read operations
 

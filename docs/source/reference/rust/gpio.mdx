@@ -109,8 +109,10 @@ println!("asserted after {elapsed:.3}s");
 **Returns:** `f64` — seconds elapsed before the level was reached. A pin already at
 the requested level returns almost immediately (order of a millisecond).
 
-The wait happens **on the box**, so the timing is not distorted by network latency
-and a short pulse is not missed between polls. The client widens its own HTTP budget
+The wait happens **on the box**, so the timing is not distorted by network latency.
+On a LabJack T7 the box streams the pin, so a short pulse is not missed. Other
+instruments, a LabJack U3 included, poll the pin on the box, and a pulse shorter than
+the poll interval can be missed. The client widens its own HTTP budget
 to `timeout_s + 20s` so the device, not the transport, decides when to give up.
 
 <Note>
@@ -170,6 +172,7 @@ assert!(boot_ms < 800.0, "boot took {boot_ms:.0} ms");
 | Instrument | Pins |
 |---|---|
 | LabJack T7 | FIO0-FIO7, EIO0-EIO7, CIO0-CIO3, MIO0-MIO2 |
+| LabJack U3 | FIO4-FIO7, EIO0-EIO7, CIO0-CIO3 |
 | MCC USB-202 | DIO0-DIO7 |
 | FTDI FT232H / FT2232H / FT4232H | Async bitbang on all channels |
 

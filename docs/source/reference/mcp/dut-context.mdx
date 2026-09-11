@@ -24,7 +24,7 @@ in the Net Manager TUI:
 lager nets tui --box my-lager-box
 ```
 
-Select a net, open its details, and fill in:
+Select a net, choose **Edit Details**, and fill in:
 
 - **Purpose** — *"DUT debug CLI over UART; primary command/response channel."*
 - **Notes** (optional) — gotchas, jumper positions, scope probe points.
@@ -44,6 +44,13 @@ lager nets describe uart1 \
   --box my-lager-box
 ```
 </Note>
+
+<Warning>
+`/etc/lager/bench.json` can hold a `net_overrides` entry for a net. If that entry sets
+`purpose`, `notes` or `tags`, agents see the override value, not the value saved on
+the net. The TUI and `lager nets describe` give no warning about this. Remove the field
+from the override before you set it on the net.
+</Warning>
 
 ### 2. DUT-wide context
 

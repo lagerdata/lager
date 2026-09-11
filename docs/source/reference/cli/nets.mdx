@@ -31,6 +31,7 @@ lager nets [OPTIONS] [COMMAND]
 | `add-batch` | Create multiple nets from a JSON file |
 | `assign` | Assign a USB-serial cable to an RS-232 instrument the box can't auto-detect |
 | `show` | Show full details of a saved net, including metadata |
+| `state` | Show the live hardware state of every saved net |
 | `describe` | Set metadata on a saved net (purpose, notes, tags) for agent-assisted testing |
 | `tui` | Launch interactive Net Manager TUI |
 | `set-script` | Attach a J-Link script *or* OpenOCD `.cfg`/`.tcl` to a debug net (backend auto-detected) |
@@ -47,32 +48,35 @@ List all saved nets on a Lager Box. This is the default behavior when no subcomm
 lager nets --box my-lager-box
 ```
 
+The output groups the nets by instrument. Each group starts with the instrument name and its address. The nets of the group follow as a tree.
+
 **Output Columns:**
 
 | Column | Description |
 |--------|-------------|
 | `Name` | User-friendly net identifier |
 | `Net Type` | Role/type of net (power-supply, debug, adc, gpio, i2c, spi, etc.) |
-| `Instrument` | Physical equipment (Rigol_DP811, Keithley_2281S, etc.) |
 | `Channel` | Specific channel on the instrument |
-| `Address` | VISA or USB address of the instrument |
-| `Script` | Whether a J-Link script is attached (debug nets only) |
+| `Script` | `yes` when a J-Link script is attached |
+| `OpenOCD` | `yes` when an OpenOCD config is attached |
+| `Purpose` | The `purpose` text set with `describe`, cut to fit the column |
 
-The `Script` column only appears if any debug net has a J-Link script attached.
+The `Script`, `OpenOCD` and `Purpose` columns appear only when at least one net has a value for them. Run `lager nets show NAME` to see the full purpose text.
 
 **Example Output:**
 
 ```
-Name        Net Type    Instrument        Channel  Address
-================================================================================
-supply1     power-supply  Rigol_DP811     1        TCPIP::192.168.1.100::INSTR
-battery1    battery       Keithley_2281S  1        TCPIP::192.168.1.101::INSTR
-debug1      debug       J-Link            STM32F4  USB::001::002
-adc1        adc         LabJack_T7        AIN0     USB::470026574
-gpio1       gpio        LabJack_T7        FIO0     USB::470026574
-i2c1        i2c         LabJack_T7        0        USB::470026574
-spi1        spi         Aardvark          0        USB::2238595116
-uart1       uart        Prolific_USB      0        /dev/ttyUSB0
+    Name      Net Type      Channel
+========================================
+LabJack T7 [USB0::0x0CD5::0x0007::::INSTR]
+├── adc1      adc           AIN0
+└── gpio1     gpio          FIO0
+
+Rigol DP811 [USB0::0x1AB1::0x0E11::DP8B123456::INSTR]
+└── supply1   power-supply  1
+
+SiLabs CP210x [USB0::0x10C4::0xEA60::0001::INSTR]
+└── uart1     uart          /dev/ttyUSB0
 ```
 
 ### `add`
@@ -85,17 +89,27 @@ lager nets add NAME ROLE CHANNEL ADDRESS [OPTIONS]
 
 **Arguments:**
 - `NAME` - Unique name for the net (e.g., `supply1`, `debug_main`)
-- `ROLE` - Type of net: `power-supply`, `battery`, `solar`, `debug`, `adc`, `dac`, `gpio`, `scope`, `eload`, `uart`, `usb`, `camera`, `arm`, `watt-meter`, `thermocouple`, `i2c`, `spi`. The legacy tokens `supply` and `batt` are accepted as input aliases and normalized to `power-supply` / `battery` — saved nets always carry the canonical role.
-- `CHANNEL` - Channel identifier (e.g., `1`, `AIN0`, `FIO0`, `STM32F4`, `0`)
-- `ADDRESS` - VISA address or device path (e.g., `TCPIP::192.168.1.100::INSTR`)
+- `ROLE` - Type of net: `power-supply`, `battery`, `solar`, `debug`, `adc`, `dac`, `gpio`, `scope`, `logic`, `eload`, `uart`, `usb`, `webcam`, `arm`, `watt-meter`, `energy-analyzer`, `thermocouple`, `i2c`, `spi`. The legacy tokens `supply` and `batt` are accepted as input aliases and normalized to `power-supply` / `battery` — saved nets always carry the canonical role.
+- `CHANNEL` - Channel identifier, as `lager instruments` lists it (e.g., `1`, `AIN0`, `FIO0`, `I2C0`, `STM32F4`)
+- `ADDRESS` - VISA address or device path, as `lager instruments` lists it (e.g., `USB0::0x0CD5::0x0007::::INSTR`)
 
 **Options:**
 - `--box TEXT` - Lager Box name or IP
 - `--jlink-script FILE` - J-Link script file for debug nets (stored on box)
+- `--openocd-config FILE` - OpenOCD `.cfg`/`.tcl` file for debug nets (stored on box)
 - `--sda PIN` / `--scl PIN` - Custom LabJack pins for `i2c` nets
 - `--cs PIN` / `--sck PIN` / `--mosi PIN` / `--miso PIN` - Custom LabJack pins for `spi` nets
 
-Pin values accept LabJack DIO names (`FIO0`-`FIO7`, `EIO0`-`EIO7`, `CIO0`-`CIO3`, `MIO0`-`MIO2`) or raw DIO numbers (`0`-`22`). When pin options are given, the `CHANNEL` argument is ignored — pass `custom`. If a chosen pin overlaps another saved LabJack net, a warning is printed but the net is still created. `--cs` is optional: omit it for 3-pin SPI with manual chip select.
+Pin values accept LabJack DIO names or raw DIO numbers. The two LabJack families accept different pins:
+
+| Instrument | Pin names | DIO numbers |
+|---|---|---|
+| LabJack T7 | `FIO0`-`FIO7`, `EIO0`-`EIO7`, `CIO0`-`CIO3`, `MIO0`-`MIO2` | `0`-`22` |
+| LabJack U3 | `FIO4`-`FIO7`, `EIO0`-`EIO7`, `CIO0`-`CIO3` | `4`-`19` |
+
+A U3 has no MIO pins. Its `FIO0`-`FIO3` are fixed analog inputs, so Lager refuses them for `gpio`, `i2c` and `spi` nets. The EIO and CIO lines of a U3 are on its DB15 connector.
+
+When pin options are given, the `CHANNEL` argument is ignored — pass `custom`. If a chosen pin overlaps another saved LabJack net, a warning is printed but the net is still created. `--cs` is optional: omit it for 3-pin SPI with manual chip select.
 
 **Examples:**
 
@@ -109,29 +123,35 @@ lager nets add debug1 debug STM32F407VG USB::001::002 --box my-lager-box
 # Create a debug net with J-Link script
 lager nets add debug1 debug STM32F407VG USB::001::002 --jlink-script ./my_device.JLinkScript --box my-lager-box
 
-# Create an ADC net on LabJack
-lager nets add temp_sensor adc AIN0 USB::470026574 --box my-lager-box
+# Create an ADC net on a LabJack T7
+lager nets add temp_sensor adc AIN0 USB0::0x0CD5::0x0007::::INSTR --box my-lager-box
 
-# Create an I2C net on LabJack (default pins: SDA=FIO4, SCL=FIO5)
-lager nets add i2c_bus i2c FIO4-FIO5 USB::470026574 --box my-lager-box
+# Create an I2C net on a LabJack T7 (default pins: SDA=FIO4, SCL=FIO5)
+lager nets add i2c_bus i2c FIO4-FIO5 USB0::0x0CD5::0x0007::::INSTR --box my-lager-box
 
-# Create an I2C net on LabJack with custom pins
-lager nets add i2c_bus i2c custom USB::470026574 --sda EIO0 --scl EIO1 --box my-lager-box
+# Create an I2C net on a LabJack T7 with custom pins
+lager nets add i2c_bus i2c custom USB0::0x0CD5::0x0007::::INSTR --sda EIO0 --scl EIO1 --box my-lager-box
+
+# Create an I2C net on a LabJack U3 (default pins: SDA=FIO6, SCL=FIO7)
+lager nets add u3_i2c i2c FIO6-FIO7 USB0::0x0CD5::0x0003::::INSTR --box my-lager-box
 
 # Create an I2C net on Aardvark
-lager nets add i2c_aardvark i2c 0 USB::2238595116 --box my-lager-box
+lager nets add i2c_aardvark i2c I2C0 USB0::0x0403::0xE0D0::2238595116::INSTR --box my-lager-box
 
-# Create an SPI net on LabJack (default pins: CS=FIO0, SCK=FIO1, MOSI=FIO2, MISO=FIO3)
-lager nets add spi_bus spi FIO0-FIO3 USB::470026574 --box my-lager-box
+# Create an SPI net on a LabJack T7 (default pins: CS=FIO0, SCK=FIO1, MOSI=FIO2, MISO=FIO3)
+lager nets add spi_bus spi FIO0-FIO3 USB0::0x0CD5::0x0007::::INSTR --box my-lager-box
 
-# Create an SPI net on LabJack with custom pins
-lager nets add spi_flash spi custom USB::470026574 --cs FIO6 --sck FIO7 --mosi EIO0 --miso EIO1 --box my-lager-box
+# Create an SPI net on a LabJack T7 with custom pins
+lager nets add spi_flash spi custom USB0::0x0CD5::0x0007::::INSTR --cs FIO6 --sck FIO7 --mosi EIO0 --miso EIO1 --box my-lager-box
 
 # Custom-pin SPI without chip select (3-pin SPI, manual CS via gpio)
-lager nets add spi_flash spi custom USB::470026574 --sck FIO7 --mosi EIO0 --miso EIO1 --box my-lager-box
+lager nets add spi_flash spi custom USB0::0x0CD5::0x0007::::INSTR --sck FIO7 --mosi EIO0 --miso EIO1 --box my-lager-box
+
+# Create an SPI net on a LabJack U3 (default pins: CS=FIO4, SCK=FIO5, MISO=FIO6, MOSI=FIO7)
+lager nets add u3_spi spi FIO4-FIO7 USB0::0x0CD5::0x0003::::INSTR --box my-lager-box
 
 # Create an SPI net on Aardvark
-lager nets add spi_aardvark spi 0 USB::2238595116 --box my-lager-box
+lager nets add spi_aardvark spi SPI0 USB0::0x0403::0xE0D0::2238595116::INSTR --box my-lager-box
 
 # Create a UART net
 lager nets add serial1 uart 0 /dev/ttyUSB0 --box my-lager-box
@@ -144,7 +164,23 @@ The `--jlink-script` option is only applicable for debug nets. If used with othe
 **Validation Rules:**
 - Net names must be globally unique across all types
 - The (role, instrument, channel, address) tuple must match a connected instrument
+- The channel must be one that the box offers for that role. Run `lager instruments` to see the list.
+- The address must identify one device. See **Two devices of the same model** below.
 - Channel binding follows the per-instrument rules described in **Channel & Role Constraints** below
+
+When the channel is not valid, `add` prints the valid channels for the role and exits with code 1:
+
+```
+The channel 'FIO0' is not valid for role 'gpio' on the instrument at USB0::0x0CD5::0x0003::::INSTR.
+Valid gpio channels for LabJack_U3: FIO4, FIO5, FIO6, FIO7, EIO0, EIO1, EIO2, EIO3, EIO4, EIO5, EIO6, EIO7, CIO0, CIO1, CIO2, CIO3
+FIO0-FIO3 on a LabJack U3 are fixed high-voltage analog inputs and are never digital I/O. Read them with an adc net on AIN0-AIN3, the same physical pins.
+```
+
+The last line appears only for a U3 `gpio`, `i2c` or `spi` net on `FIO0`-`FIO3`.
+
+<Note>
+The box holds the channel list. A newer CLI against an older Lager Box validates against the older list. Run `lager update` to get the current list.
+</Note>
 
 ### Channel & Role Constraints
 
@@ -160,7 +196,8 @@ Instruments with physically independent outputs / inputs. Each channel is its ow
 | `KEYSIGHT_E36233A` | `1`, `2` | Dual-output supply |
 | `KEYSIGHT_E36313A` / `E36312A` | `1`, `2`, `3` | Triple-output supply |
 | `LabJack_T7` | `AIN0`–`AIN13`, `FIO0`–`FIO7`, `DAC0`–`DAC1`, etc. | One net per pin |
-| `LabJack_U3` | `AIN0`–`AIN15`, `DAC0`–`DAC1`; `gpio` on `FIO4`–`FIO7`, `EIO0`–`EIO7`, `CIO0`–`CIO3` | `FIO0`–`FIO3` are fixed high-voltage analog inputs — read them with an `adc` net on `AIN0`–`AIN3`, never as `gpio`. A U3 has no `i2c` or `spi` |
+| `LabJack_U3` | `AIN0`–`AIN15`, `DAC0`–`DAC1`; `gpio` on `FIO4`–`FIO7`, `EIO0`–`EIO7`, `CIO0`–`CIO3`; `spi` on `FIO4-FIO7`; `i2c` on `FIO6-FIO7` | `FIO0`–`FIO3` are fixed high-voltage analog inputs — read them with an `adc` net on `AIN0`–`AIN3`, never as `gpio`, `spi` or `i2c`. Lager treats every U3 as a U3-HV, so a U3-LV also loses these four digital lines. The `spi` and `i2c` spans overlap; one net of each is fine |
+| `Rigol_MSO5204` | `scope` on `1`–`4`; `logic` on `1` | One `scope` net per analog channel, and one `logic` net |
 | `Aardvark` | `SPI0`, `I2C0`, GPIO pins | Mixed-mode multi-channel |
 | `MCC_USB-202` | `CH0`–`CH7`, `DIO0`–`DIO7`, `DAC0`–`DAC1` | One net per channel |
 | `Phidget` | `0`–`3` | One `thermocouple` net per channel |
@@ -170,16 +207,31 @@ Instruments with physically independent outputs / inputs. Each channel is its ow
 
 #### 2. Single-channel, multi-mode instruments
 
-Instruments with one physical channel that can run in one of several **modes** but not multiple modes at once. The role tells the box which firmware mode to flip the chip into.
+Instruments with one physical channel that can run in one of several **modes** but not multiple modes at once. The role tells the box which firmware mode to flip the chip into. Lager treats two groups of these chips differently.
+
+**Single-output instruments (one net per role, with a notice):**
+
+| Instrument | Roles | What happens with a second role |
+|---|---|---|
+| `Keithley_2281S` | `battery` and `power-supply` | One output: battery-simulator firmware OR power-supply firmware |
+| `EA_PSB_10080_60` | `solar` and `power-supply` | One output: solar-array simulator OR straight supply |
+| `EA_PSB_10060_60` | `solar` and `power-supply` | Same as above |
+
+**Rule:** you can save one net for each role on the same chip. When the chip already has a net, `add` prints this notice and saves the second net:
+
+```
+Keithley_2281S at <ADDRESS> already has a battery net. This instrument is a single output that fills one role at a time — the driver switches its mode automatically when you drive the other net, ending whatever the previous mode was doing. Add the second net only if you intend to use both roles.
+```
+
+Each command on a net switches the instrument into the mode of that net. The switch stops the work of the other mode. `add-all` does not pick a role for a chip with no saved net: it skips the chip with a warning. The TUI does not let you select both roles of one chip in one batch.
+
+**Mode-exclusive chips (one net in total):**
 
 | Instrument | Allowed roles | Why exclusive |
 |---|---|---|
-| `Keithley_2281S` | `battery` or `power-supply` | One channel: battery-simulator firmware OR power-supply firmware |
-| `EA_PSB_10080_60` | `solar` or `power-supply` | One channel: solar-array simulator OR straight supply |
-| `EA_PSB_10060_60` | `solar` or `power-supply` | Same as above |
 | `FTDI_FT232H` | `spi` or `i2c` or `gpio` or `debug` or `uart` | One channel hardware-multiplexed between MPSSE (libftdi) and async-serial (`ftdi_sio`) modes |
 
-**Rule:** at most one net per `(instrument, address)`. Once any role is saved on the chip, every other role disappears from the add list. To switch modes, delete the existing net first.
+**Rule:** at most one net per `(instrument, address)`. Once any role is saved on the chip, every other role disappears from the add list of `add-all` and the TUI. To switch modes, delete the existing net first.
 
 These chips are tracked in `_SINGLE_CHANNEL_INST` (Keithley, EA) and `_MODE_EXCLUSIVE_INST` (FTDI_FT232H) in `cli/commands/box/nets.py` and `cli/commands/box/net_tui.py`.
 
@@ -225,7 +277,7 @@ Before v0.43.0 all three drivers hardcoded interface A. A board that wires comms
 - one `debug` net on `@A`
 - one `debug` net on `@B`
 - one `uart` net on a `/dev/ttyUSB<N>` belonging to whichever channels you didn't claim for MPSSE
-- one each of `spi` / `i2c` / `gpio`, each on a channel you name — see below
+- one each of `spi` / `i2c` / `gpio`, each on the channel that its `params.interface` names
 
 The user is responsible for not double-booking a channel (e.g. `debug@A` *and* a `spi` net on interface A); the box doesn't validate that today.
 
@@ -234,12 +286,25 @@ The user is responsible for not double-booking a channel (e.g. `debug@A` *and* a
 | You want to add a second net on the same chip | Allowed? |
 |---|---|
 | `power-supply` on `Rigol_DP811` CH1 + `power-supply` on Rigol_DP811 CH2 | Yes |
-| `battery` on `Keithley_2281S` + `power-supply` on the same Keithley | **No** — pick one |
-| `solar` on `EA_PSB_10080_60` + `power-supply` on the same EA | **No** — pick one |
+| `battery` on `Keithley_2281S` + `power-supply` on the same Keithley | Yes, with a notice — the nets share one output |
+| `solar` on `EA_PSB_10080_60` + `power-supply` on the same EA | Yes, with a notice — the nets share one output |
 | `spi` on `FTDI_FT232H` + `uart` on the same FT232H | **No** — pick one |
+| `spi` on `LabJack_U3` + `i2c` on the same U3 | Yes — the default spans share `FIO6` and `FIO7` |
 | `debug@A` on `FTDI_FT2232H` + `uart` on a different interface of the same FT2232H | Yes |
 | Two `debug@A` nets on the same `FTDI_FT2232H` | **No** — same channel |
 | Two `debug` nets on the same J-Link | **No** — single-target probe |
+
+#### Two devices of the same model
+
+Lager decides whether it can create a net from the device address, not from the model. An address that includes a unique serial number names one device. Two devices of that model on one Lager Box both work. For example, two 8-port Acroname hubs give sixteen `usb` nets.
+
+A LabJack T7 and a LabJack U3 report no serial number, so their addresses have an empty serial field. Two T7 units, or two U3 units, on one Lager Box report the same address. A net cannot say which device it means, so Lager refuses it:
+
+```
+Error: LabJack_T7 at USB0::0x0CD5::0x0007::::INSTR: more than one device reports this address, so a net could not say which one it means. This model exposes no unique serial number. Use only one at a time, or drive them from separate boxes.
+```
+
+`add` exits with code 1. `add-all` and the TUI skip those devices with the same message. `lager instruments` hides them and prints the message. One T7 and one U3 on the same Lager Box work, because their addresses differ.
 
 ### `add-all`
 
@@ -266,17 +331,19 @@ lager nets add-all --box my-lager-box --yes
 **Output:**
 
 ```
-Found 8 nets that can be created:
-  - supply1 (supply) on Rigol_DP811 channel 1
+Found 7 nets that can be created:
+  - supply1 (power-supply) on Rigol_DP811 channel 1
   - adc1 (adc) on LabJack_T7 channel AIN0
   - adc2 (adc) on LabJack_T7 channel AIN1
   - gpio1 (gpio) on LabJack_T7 channel FIO0
-  - i2c1 (i2c) on LabJack_T7 channel 0
-  - spi1 (spi) on LabJack_T7 channel 0
+  - i2c1 (i2c) on LabJack_T7 channel FIO4-FIO5
+  - spi1 (spi) on LabJack_T7 channel FIO0-FIO3
   - debug1 (debug) on J-Link channel STM32F4
 
-Create all 8 nets on box <BOX_IP>? [y/N]:
+Create all 7 nets on box <BOX_IP>? [y/N]:
 ```
+
+Before the list, `add-all` prints a warning for each device that it skips. It skips two devices of one model that report the same address. It also skips a single-output or mode-exclusive chip with no saved net. That chip offers more than one role, and `add-all` does not choose one for you.
 
 ### `add-batch`
 
@@ -298,24 +365,39 @@ lager nets add-batch JSON_FILE [OPTIONS]
 [
   {
     "name": "supply1",
-    "role": "supply",
+    "role": "power-supply",
     "channel": "1",
-    "address": "TCPIP::192.168.1.100::INSTR"
+    "address": "USB0::0x1AB1::0x0E11::DP8B123456::INSTR"
   },
   {
     "name": "i2c_bus",
     "role": "i2c",
-    "channel": "0",
-    "address": "USB::470026574"
+    "channel": "FIO4-FIO5",
+    "address": "USB0::0x0CD5::0x0007::::INSTR"
   },
   {
     "name": "spi_bus",
     "role": "spi",
-    "channel": "0",
-    "address": "USB::2238595116"
+    "channel": "SPI0",
+    "address": "USB0::0x0403::0xE0D0::2238595116::INSTR"
   }
 ]
 ```
+
+Each record needs `name`, `role`, `channel` and `address`. An optional `instrument` key names the instrument. When it is absent, the command looks up the instrument from the address. The command reads no other keys, so a record cannot carry `params`. To set custom LabJack pins, use `lager nets add` with `--sda`/`--scl` or `--cs`/`--sck`/`--mosi`/`--miso`.
+
+**Validation:**
+
+Before it saves anything, the command checks the channel of each record against the channels that the box offers for that role. It lists every record with a bad channel, prints `No nets were saved.`, and exits with code 1:
+
+```
+Net 2 ('i2c_bus'): channel '0' is not valid for role 'i2c' on LabJack_T7. Valid: FIO4-FIO5
+No nets were saved.
+```
+
+The command does not check two kinds of record:
+- A record whose address is not in the current instrument scan, for example an instrument that is not connected
+- A `uart` record, because its channels are per-device tty paths
 
 **Example:**
 
@@ -502,18 +584,20 @@ lager nets tui --box my-lager-box
 
 **TUI Features:**
 - Browse all connected instruments and their channels
-- Create new nets with guided prompts
-- Pick custom LabJack pins when you add an `i2c` or `spi` net. A pin dialog
-  opens with the defaults preselected (I2C: SDA=FIO4/SCL=FIO5; SPI:
-  CS=FIO0/SCK=FIO1/MOSI=FIO2/MISO=FIO3). You can choose any DIO pin per signal,
-  and you can set CS to none for 3-pin SPI. A pin already used by a saved net
-  shows a warning
-- Assign custom serial devices (RS-232 instruments) to their USB cables — the
+- Create new nets with guided prompts (**+ Add Nets**)
+- Read warnings and notices on the Add screen. They appear together in one block, and the **Dismiss** button hides the block.
+- Pick custom pins for a LabJack T7 `i2c` or `spi` net. The pencil button on the row opens one editor for the net name and the pins. The pin dialog also opens when you add the net, unless you already set the pins. The dialog shows the current pins (defaults: I2C SDA=FIO4/SCL=FIO5; SPI CS=FIO0/SCK=FIO1/MOSI=FIO2/MISO=FIO3). You can choose any DIO pin per signal, and you can set CS to none for 3-pin SPI. If you choose the defaults again, the net gets the default channel back. A pin already used by a saved net shows a warning
+- Rename a new net with the pencil button on its row
+- Assign custom serial devices (RS-232 instruments) to their USB cables with **Assign Device** — the
   interactive twin of [`assign`](#assign), including the optional
   create-the-net step (`--as-net`)
-- Delete existing nets
-- View net details and instrument information
-- Keyboard navigation
+- Select a saved net to **Rename**, **Edit Details** or **Delete** it. **Edit Details** sets Purpose, Notes and Tags. It changes only those three fields and keeps the rest of the net record.
+- Delete every saved net with **Delete All Nets**
+- Keyboard navigation (`q` or `Ctrl+C` quits)
+
+<Note>
+The pin editor is for the LabJack T7 only. A LabJack U3 `i2c` or `spi` net that you add in the TUI uses the default pins (SPI `FIO4-FIO7`, I2C `FIO6-FIO7`). For other U3 pins, use `lager nets add` with the pin options.
+</Note>
 
 ### `set-script`
 
@@ -629,12 +713,118 @@ lager nets show battery1 --box my-lager-box
 lager nets show battery1 --json --box my-lager-box
 ```
 
+### `state`
+
+Show the live hardware state of every saved net. The box reads each instrument and returns a short summary for each net. The output is the grouped table of `lager nets`, with a `State` column after `Channel`.
+
+```bash
+lager nets state [OPTIONS]
+```
+
+**Options:**
+- `--box TEXT` - Lager Box name or IP
+- `--json` - Output as raw JSON
+
+**Example:**
+
+```bash
+lager nets state --box my-lager-box
+lager nets state --json --box my-lager-box
+```
+
+**Example Output:**
+
+```
+    Name      Net Type      Channel       State
+=============================================================
+Acroname 8Port [USB0::0x24FF::0x0013::EBFB0000::INSTR]
+├── usb1      usb           0             –
+└── usb2      usb           1             –
+
+LabJack T7 [USB0::0x0CD5::0x0007::::INSTR]
+├── adc1      adc           AIN0          1.2345V
+└── gpio1     gpio          FIO0          HIGH (1)
+
+Rigol DP811 [USB0::0x1AB1::0x0E11::DP8B123456::INSTR]
+└── supply1   power-supply  1             CH1/on/3.30V/0.120A
+
+SiLabs CP210x [USB0::0x10C4::0xEA60::0001::INSTR]
+└── uart1     uart          /dev/ttyUSB0  –
+
+Nets reporting no state:
+    usb1, usb2: unreadable: <error from the hub driver>
+    -> the hub is not on the USB bus at all -- unplugged, or its upstream port is off.
+```
+
+**State values:**
+
+| Net type | State | Example |
+|---|---|---|
+| `power-supply` | Channel, output, voltage, current | `CH1/on/3.30V/0.120A` |
+| `battery` | Channel, output, terminal voltage, current, state of charge | `CH1/on/3.70V/0.100A/50%` |
+| `usb` | Port power | `enabled`, `disabled` |
+| `gpio` | Level | `HIGH (1)`, `LOW (0)` |
+| `adc`, `dac` | Voltage | `1.2345V` |
+| `thermocouple` | Temperature | `25.0°C` |
+| `eload` | Mode, input, voltage, current | `<mode>/on/5.00V/1.000A` |
+| `webcam` | Stream | `stopped`, `streaming <url>` |
+| `watt-meter` | Current, voltage, power over 0.1 s | `0.1200A/3.300V/0.3960W` |
+| `energy-analyzer` | Mean current, voltage, power over 0.5 s | `0.1200A/3.300V/0.3960W` |
+| `arm` | Position | `X0.0/Y250.0/Z0.0` |
+| `debug` | GDB server | `connected/jlink`, `connected/openocd`, `disconnected` |
+| `solar` | Irradiance | `irr:<value>` |
+| `router` | Uptime | `up/<uptime>` |
+| `i2c` | Addresses that answer a bus scan | `0x48,0x76`, `no devices` |
+
+Net types with no probe, such as `uart`, `spi`, `scope` and `logic`, show `–`.
+
+**How the box reads the nets:**
+- The box groups the nets by instrument and reads up to eight instruments at the same time.
+- All instruments share one budget of 8 seconds. When the budget ends, every net that did not answer reports `deadline`.
+- The box reads USB hubs one after another. It does not read a hub that has less than 1 second of budget left, and the nets of that hub report `hub-skipped`.
+- A read takes the same instrument locks as a running test, so the command can wait for a test.
+- The box reads an `i2c` net with a full bus scan.
+- On a LabJack T7, one batch reads all `gpio`, `adc` and `dac` nets, and a `gpio` read does not change the pin direction.
+- On a LabJack U3, a `gpio` or `adc` read sets the pin to digital or analog mode. A U3 `dac` net shows `–` until the box sets a value.
+
+**Nets reporting no state:**
+
+Below the table, the command explains each `–` that has a reason. It groups the nets by reason. A net type with no probe is normal, so the footnote does not list it.
+
+| Reason | Meaning |
+|---|---|
+| `deadline` | The shared budget ended before the instrument answered. This alone does not mean that the instrument is slow. |
+| `unreadable: <detail>` | The box tried to read the instrument and got no value. The detail names the error. |
+
+A `usb` net can also carry a code. When all nets in a group have the same code, the footnote adds one remedy line:
+
+| Code | Remedy line |
+|---|---|
+| `hub-unreachable` | The hub is on the USB bus but does not answer. Check its power and upstream cable. A restart of the box services does not help. |
+| `hub-absent` | The hub is not on the USB bus. It is unplugged, or its upstream port is off. |
+| `hub-serial-mismatch` | Hubs are on the bus, but none has the serial that the net names. Check the address of the net. |
+| `hub-skipped` | The box did not read the hub, because slower instruments used the budget first. The hub can be fine. A read of that hub alone answers. |
+| `hub-open-failed` | No remedy line. The reason names the failure. |
+
+**JSON output:**
+
+`--json` prints an array with one object for each saved net. Each object holds all stored fields of the net, plus these fields:
+
+| Field | Description |
+|---|---|
+| `live_state` | The state string, or `null` |
+| `live_state_reason` | Why the state is `null`, including `no probe for role`. Present only when the box sent a reason. |
+| `live_state_reason_code` | The code of a `usb` net. Present only when the box sent a code. |
+
+A box without this endpoint prints a note to update it. The table still prints, with `–` in every `State` cell.
+
 ### `describe`
 
 Set metadata on a saved net so AI agents (and humans) understand what the net does
 on the DUT. Introduced in **lager 0.24.0**; the fields feed agent-assisted testing
 via the [MCP server](/source/reference/mcp/overview). At least one of `--purpose`,
-`--notes`, or `--tag` (or `--clear-tags`) must be provided.
+`--notes`, or `--tag` (or `--clear-tags`) must be provided. A Lager Box on 0.46.0
+or later serves these fields over HTTP, so a connected control plane can sync them.
 
 ```bash
 lager nets describe NAME [OPTIONS]
@@ -678,12 +868,13 @@ lager nets show battery1 --box my-lager-box
 | `adc` | Analog input | LabJack T7, LabJack U3 |
 | `dac` | Analog output | LabJack T7, LabJack U3 |
 | `gpio` | Digital I/O | LabJack T7, LabJack U3 (`FIO4` and up), MCC USB-202 |
-| `i2c` | I2C bus | LabJack T7, Aardvark |
-| `spi` | SPI bus | LabJack T7, Aardvark |
+| `i2c` | I2C bus | LabJack T7, LabJack U3, Aardvark, FTDI FT232H |
+| `spi` | SPI bus | LabJack T7, LabJack U3, Aardvark, FTDI FT232H |
 | `scope` | Oscilloscope | Rigol MSO5000, PicoScope |
+| `logic` | Logic analyzer channel | Rigol MSO5204 |
 | `uart` | Serial port | Prolific USB, SiLabs CP210x |
-| `usb` | USB port control | Acroname hub, YKUSH |
-| `camera` | Video capture | Logitech BRIO |
+| `usb` | USB port control | Acroname hub, YKUSH, Plugable dock |
+| `webcam` | Video capture | Logitech BRIO |
 | `arm` | Robot arm | Rotrics Dexarm |
 | `watt-meter` | Power measurement | Yocto Watt |
 | `thermocouple` | Temperature sensor | Phidget thermocouples |
@@ -742,8 +933,11 @@ lager nets --box my-lager-box
 lager nets add vdd_main power-supply 1 TCPIP::192.168.1.100::INSTR --box my-lager-box
 
 # Create I2C and SPI bus nets
-lager nets add i2c_sensors i2c 0 USB::470026574 --box my-lager-box
-lager nets add spi_flash spi 0 USB::2238595116 --box my-lager-box
+lager nets add i2c_sensors i2c FIO4-FIO5 USB0::0x0CD5::0x0007::::INSTR --box my-lager-box
+lager nets add spi_flash spi SPI0 USB0::0x0403::0xE0D0::2238595116::INSTR --box my-lager-box
+
+# Show the live state of every net
+lager nets state --box my-lager-box
 
 # Auto-create all available nets
 lager nets add-all --box my-lager-box --yes
@@ -773,6 +967,6 @@ lager nets remove-script debug1 --box my-lager-box
 - Use `lager instruments --box <lager-box>` to see available instruments and channels
 - The TUI provides the easiest way to set up nets for the first time
 - Use `add-all` to quickly configure a new Lager Box with sensible defaults
-- I2C and SPI nets are supported on LabJack T7 and Aardvark adapters
+- I2C and SPI nets are supported on LabJack T7, LabJack U3, Aardvark and FTDI FT232H adapters
 - Debug scripts (both J-Link and OpenOCD) are base64-encoded for storage and decoded automatically during debug operations
 - A debug net carries at most one script (`jlink_script` or `openocd_config`); `set-script` enforces this by clearing the other field when present
