@@ -225,7 +225,7 @@ def _net_flash(device, address, **loader_kw):
     run.loader = _Loader(**loader_kw)
     with _net_env(run, run.loader):
         try:
-            run.output = _net(device).flash('/tmp/xl.img.bin', address).split('\n')
+            run.output = _net(device).flash('/tmp/firmware.img.bin', address).split('\n')
         except Da1469xLoaderError as exc:
             run.error = str(exc)
     return run

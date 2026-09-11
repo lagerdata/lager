@@ -1,3 +1,6 @@
+# Copyright 2024-2026 Lager Data
+# SPDX-License-Identifier: Apache-2.0
+
 """Read the USB bus from sysfs, without touching a device.
 
 This lives in ``util`` rather than next to its HTTP route because both the
