@@ -3,14 +3,33 @@
 
 import serial
 import re
-import datetime
 import time
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 from serial.tools import list_ports
 
 from .arm_net import ArmBase
 from .arm_net import MovementTimeoutError
+from .arm_net import NotHomedError
+from .arm_net import OutOfBoundsError
+from .arm_net import UnsupportedFirmwareError
 TOLERANCE = 0.5
+
+# Rotrics interchanged the X and Y axes in DexArm firmware V2.1.4. Older
+# firmware treats X as the forward axis (home reads X300 Y0), so a target in
+# the documented frame (home X0 Y300) swings the arm sideways. Coordinate moves
+# are refused below this version.
+MIN_FIRMWARE_VERSION = (2, 1, 4)
+_FIRMWARE_VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
+
+# Every wait loop below re-checks its own deadline after each read, so a short
+# serial read timeout keeps those deadlines accurate.
+SERIAL_READ_TIMEOUT_S = 1.0
+# The arm answers M114 in a few milliseconds. Three attempts at this wait keep a
+# position read well inside the hardware_service call budget.
+POSITION_REPLY_TIMEOUT_S = 3.0
+# M1112 sends its ok only once the arm is home: about 3 s from the calibration
+# pose.
+HOME_TIMEOUT_S = 20.0
 
 def get_arm_device(serial_number: Optional[str] = None) -> str:
     all_ports = []
@@ -22,6 +41,8 @@ def get_arm_device(serial_number: Optional[str] = None) -> str:
             if port.pid == 0x5740 and port.vid == 0x0483:
                 all_ports.append(port.device)
     else:
+        if serial_number is not None:
+            raise RuntimeError(f'Arm with USB serial {serial_number} not found')
         if not all_ports:
             raise RuntimeError('Arm not found!')
         elif len(all_ports) > 1:
@@ -60,6 +81,51 @@ class Dexarm(ArmBase):
             f"Z: {cls.BOUNDS_Z_MIN} to {cls.BOUNDS_Z_MAX}"
         )
 
+    @classmethod
+    def check_bounds(cls, x: float, y: float, z: float) -> None:
+        """Raise ``OutOfBoundsError`` if (x, y, z) is outside the workspace bounds.
+
+        ``move_to`` and ``move_relative`` call this before they send anything.
+        The hardware_service adapter behind ``lager arm`` moves through those
+        same methods, so the CLI and the Python API refuse the same targets.
+        """
+        problems = []
+        if not cls.BOUNDS_X_MIN <= x <= cls.BOUNDS_X_MAX:
+            problems.append(f"X={x} outside [{cls.BOUNDS_X_MIN}, {cls.BOUNDS_X_MAX}]")
+        if not cls.BOUNDS_Y_MIN <= y <= cls.BOUNDS_Y_MAX:
+            problems.append(f"Y={y} outside [{cls.BOUNDS_Y_MIN}, {cls.BOUNDS_Y_MAX}]")
+        if not cls.BOUNDS_Z_MIN <= z <= cls.BOUNDS_Z_MAX:
+            problems.append(f"Z={z} outside [{cls.BOUNDS_Z_MIN}, {cls.BOUNDS_Z_MAX}]")
+        if problems:
+            raise OutOfBoundsError(
+                "Coordinates out of bounds: %s. Bounds: %s"
+                % ("; ".join(problems), cls.get_bounds_string()))
+
+    @staticmethod
+    def serial_from_net_record(rec) -> Optional[str]:
+        """USB serial of the arm a saved net record points at, or None.
+
+        Checked in order: ``serial``, ``location.serial_number``, then the
+        serial field of a VISA-style address
+        (``USB0::0x0483::0x5740::<serial>::INSTR``) under ``address`` or a mux
+        mapping's ``device_override``. ``lager nets add-all`` records the serial
+        only in the address. Without that last step a saved net opened
+        whichever 0483:5740 device it found first, and that VID:PID is a generic
+        STM32 virtual COM port id that other boards also use.
+        """
+        if not isinstance(rec, dict):
+            return None
+        location = rec.get("location")
+        serial_number = rec.get("serial") or (
+            location.get("serial_number") if isinstance(location, dict) else None)
+        if serial_number:
+            return str(serial_number)
+        for key in ("address", "device_override"):
+            parts = str(rec.get(key) or "").split("::")
+            if len(parts) > 3 and parts[3]:
+                return parts[3]
+        return None
+
     def __init__(
         self,
         port: Optional[str] = None,
@@ -76,13 +142,13 @@ class Dexarm(ArmBase):
         if port is None:
             port = get_arm_device(serial_number)
 
-        # Use 10 second timeout to prevent indefinite blocking on serial I/O
-        # timeout=None caused hangs when ARM didn't respond to commands
-        # write_timeout=5 prevents write() from blocking indefinitely
-        self.ser = serial.Serial(port, 115200, timeout=10, write_timeout=5)
+        # A short read timeout: every wait loop checks its own deadline between
+        # reads. write_timeout=5 prevents write() from blocking indefinitely.
+        self.ser = serial.Serial(port, 115200, timeout=SERIAL_READ_TIMEOUT_S, write_timeout=5)
         self.is_open = self.ser.isOpen()
         if not self.is_open:
             raise RuntimeError("Could not open arm")
+        self.firmware_version = self._read_firmware_version()
 
     # ---- Context manager ----
     def __enter__(self) -> "Dexarm":
@@ -90,6 +156,37 @@ class Dexarm(ArmBase):
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
+
+    # ---- Firmware version ----
+    def _read_firmware_version(self) -> Optional[Tuple[int, int, int]]:
+        """Ask the arm for its firmware version (M2010). None if it does not say."""
+        try:
+            lines = self._send_cmd("M2010\r\n", timeout=2.0)
+        except RuntimeError:
+            return None
+        for line in lines:
+            if "firmware" in line.lower():
+                match = _FIRMWARE_VERSION_RE.search(line)
+                if match:
+                    return tuple(int(v) for v in match.groups())
+        return None
+
+    def _require_supported_firmware(self) -> None:
+        """Refuse a coordinate move unless the firmware uses the documented frame."""
+        version = self.firmware_version
+        if version is None:
+            raise UnsupportedFirmwareError(
+                "Could not read the Dexarm firmware version (M2010), so the arm's "
+                "coordinate frame is unknown. lager moves the arm only on firmware "
+                "V2.1.4 or later. Update the arm firmware. go-home and position "
+                "still work.")
+        if version < MIN_FIRMWARE_VERSION:
+            raise UnsupportedFirmwareError(
+                "Dexarm firmware V%d.%d.%d is older than V2.1.4, the version where "
+                "Rotrics swapped the X and Y axes. A move in lager's coordinates "
+                "would swing this arm sideways, so it is refused. Update the arm "
+                "firmware to V2.1.4 or later. go-home and position still work."
+                % version)
 
     # ---- ArmBase required methods ----
     def position(self) -> Tuple[float, float, float]:
@@ -103,7 +200,16 @@ class Dexarm(ArmBase):
         Args:
             x, y, z: Target coordinates in mm
             timeout: Timeout in seconds (default: 15.0)
+
+        Raises:
+            OutOfBoundsError: The target is outside the workspace bounds.
+                Nothing is sent to the arm.
+            UnsupportedFirmwareError: The arm firmware is older than V2.1.4, or
+                did not report its version. Nothing is sent to the arm.
+            NotHomedError: The arm has not been homed since it powered on.
         """
+        self.check_bounds(x, y, z)
+        self._require_supported_firmware()
         self.move_to_blocking(x, y, z, timeout=timeout)
 
     def move_relative(
@@ -119,19 +225,30 @@ class Dexarm(ArmBase):
         Args:
             dx, dy, dz: Delta coordinates in mm
             timeout: Timeout in seconds (default: 15.0)
+
+        Raises:
+            UnsupportedFirmwareError: The arm firmware is older than V2.1.4, or
+                did not report its version. Nothing is sent to the arm.
+            OutOfBoundsError: The resulting target is outside the workspace
+                bounds. The position is read, but no move is sent.
+            NotHomedError: The arm has not been homed since it powered on.
         """
+        self._require_supported_firmware()
         cx, cy, cz, *_ = self.get_full_position()
+        self.check_bounds(cx + dx, cy + dy, cz + dz)
         self.move_to_blocking(cx + dx, cy + dy, cz + dz, timeout=timeout)
         nx, ny, nz, *_ = self.get_full_position()
         return nx, ny, nz
 
-    def go_home(self) -> None:
-        """Send the go-home command. The M1112 command moves the arm to home position (X=0, Y=300, Z=0)."""
-        # M1112 appears to not send "ok" immediately, so we don't wait for it
-        # Instead, send the command and let the arm handle it asynchronously
-        self._send_cmd("M1112\r", wait=False)
-        # Give the arm a moment to start the homing sequence
-        time.sleep(0.5)
+    def go_home(self, timeout: float = HOME_TIMEOUT_S) -> None:
+        """Move to the home position (M1112) and return when the arm is there.
+
+        M1112 prints "busy: processing" while it runs and sends its ok only when
+        the arm arrives, so waiting for that ok is waiting for the arm. After
+        power-on, M1112 is also what initializes the arm: the firmware refuses
+        motion until then. Home is X0 Y300 Z0 on firmware V2.1.4 or later.
+        """
+        self._send_cmd("M1112\r", timeout=timeout)
 
     def enable_motor(self) -> None:
         """Energize the stepper motors (M17), holding position under load."""
@@ -142,24 +259,28 @@ class Dexarm(ArmBase):
         self._send_cmd("M18\r")
 
     def save_position(self) -> None:
-        """Persist the arm's current position on the device (M889)."""
+        """Recalibrate: store the current pose as the calibration position (M889).
+
+        M889 reads the joint encoders and saves them as the reference that
+        every later move is computed from. Send it only with the arm physically
+        in its calibration pose, as in the Rotrics recalibration procedure. In
+        any other pose it offsets every later move.
+        """
         self._send_cmd("M889\r")
 
     def read_and_save_position(self) -> Tuple[float, float, float]:
-        """Read the current position, persist it on the arm (M889), and
-        return (x, y, z).
+        """Read the current position, then recalibrate on it with M889.
 
-        The CLI's ``read-and-save-position`` command has always called this
-        method, but only ``save_position()`` existed — so the command failed
-        with AttributeError on every box.
+        Returns the (x, y, z) read before M889. This replaces the arm's stored
+        calibration; see ``save_position``.
         """
         x, y, z, *_ = self.get_full_position()
         self.save_position()
         return x, y, z
 
     # ---- Low-level helpers / existing API ----
-    def _send_cmd(self, data: str, wait: bool = True) -> None:
-        """Send command to the arm, optionally wait for 'ok'."""
+    def _send_cmd(self, data: str, wait: bool = True, timeout: float = 15.0) -> List[str]:
+        """Send a command. Unless ``wait`` is False, return its reply lines up to the ok."""
         # Clear any pending data in the input buffer before sending new command
         # This prevents leftover responses from previous commands from interfering
         time.sleep(0.05)  # Let any pending data arrive
@@ -170,32 +291,33 @@ class Dexarm(ArmBase):
         if not wait:
             # Don't wait for response, but give ARM time to start processing
             time.sleep(0.1)
-            return
+            return []
 
-        # Add timeout to prevent infinite loop if ARM doesn't respond
         start_time = time.time()
-        timeout = 15.0  # 15 second timeout for command acknowledgment
-
+        lines = []
         while True:
-            # Check if we've exceeded timeout
             if time.time() - start_time > timeout:
                 raise RuntimeError(f"Timeout waiting for 'ok' response from ARM (waited {timeout}s)")
 
-            serial_str = self.ser.readline().decode("utf-8")
-            if serial_str and ("ok" in serial_str):
-                break
+            serial_str = self.ser.readline().decode("utf-8", errors="replace")
+            if serial_str:
+                lines.append(serial_str.strip())
+                if "ok" in serial_str:
+                    return lines
 
     def set_workorigin(self) -> None:
         """Define the current position as the work origin, X0 Y0 Z0 (G92)."""
         self._send_cmd("G92 X0 Y0 Z0 E0\r")
 
     def set_acceleration(self, acceleration: int, travel_acceleration: int, retract_acceleration: int = 60) -> None:
-        """Set print/travel/retract acceleration in mm/s^2 (M204)."""
+        """Set print (P), travel (T) and retract (R) acceleration in mm/s^2 (M204)."""
+        # Marlin reads retract acceleration from R. The P/T/T string sent here
+        # before (inherited from the Rotrics pydexarm example) set travel
+        # acceleration to the retract value and never set retract.
         cmd = (
-            "M204"
-            + "P" + str(acceleration)
-            + "T" + str(travel_acceleration)
-            + "T" + str(retract_acceleration)
+            "M204 P" + str(acceleration)
+            + " T" + str(travel_acceleration)
+            + " R" + str(retract_acceleration)
             + "\r\n"
         )
         self._send_cmd(cmd)
@@ -246,26 +368,44 @@ class Dexarm(ArmBase):
     ) -> None:
         """Move to a cartesian position and wait until the arm is there.
 
+        Does not check workspace bounds or the firmware version; ``move_to``
+        and ``move_relative`` do.
+
         Args:
             x, y, z, e: Target coordinates (None means don't change that axis)
             feedrate: Movement speed
             mode: G-code mode (G0 or G1)
             wait: Whether to wait for command acknowledgment
             timeout: Timeout in seconds (default: 15.0)
+
+        Raises:
+            NotHomedError: The firmware refused the move because the arm has
+                not been homed since it powered on.
+            MovementTimeoutError: The arm did not reach the target in time.
         """
-        # Don't wait for 'ok' from movement commands - they don't send it immediately
-        # Instead, poll position to detect when movement completes
-        self.move_to_gcode(x, y, z, e, feedrate, mode, wait=False)
+        # The firmware acknowledges a move as soon as it queues it; the ok does
+        # not wait for the move to finish. Before the arm is homed after
+        # power-on, the firmware answers with a refusal line instead of moving,
+        # so read the reply rather than discarding it.
+        lines = self.move_to_gcode(x, y, z, e, feedrate, mode, wait=True)
+        if any("initialize" in line.lower() for line in lines):
+            raise NotHomedError(
+                "The arm has not been homed since it powered on, so the firmware "
+                "refused the move. Run go-home first.")
 
         # Give the ARM a moment to start moving
         time.sleep(0.2)
 
-        now = datetime.datetime.utcnow()
-        delta = datetime.timedelta(seconds=timeout)
+        deadline = time.monotonic() + timeout
         while True:
-            if datetime.datetime.utcnow() - now > delta:
+            if time.monotonic() > deadline:
+                # move_to and move_relative check the bounds before a move is
+                # sent, so a timeout means the arm did not arrive: an obstruction,
+                # an unreachable target inside the bounds, or a long move.
                 raise MovementTimeoutError(
-                    "Movement timed out. Arm may be obstructed or coordinates are out of bounds.",
+                    "The arm did not reach the target within %g s. It may be "
+                    "obstructed or the target unreachable, or a long move may need "
+                    "a longer timeout." % timeout,
                     target_x=x,
                     target_y=y,
                     target_z=z,
@@ -290,8 +430,9 @@ class Dexarm(ArmBase):
         feedrate: int = 2000,
         mode: str = "G1",
         wait: bool = True
-    ) -> None:
-        """Raw G-code move (non-ArmBase API)."""
+    ) -> List[str]:
+        """Raw G-code move (non-ArmBase API). Does not check workspace bounds
+        or the firmware version. Returns the reply lines when ``wait`` is True."""
         cmd = mode + "F" + str(feedrate)
         if x is not None:
             cmd += "X" + str(x)
@@ -302,10 +443,10 @@ class Dexarm(ArmBase):
         if e is not None:
             cmd += "E" + str(round(e))
         cmd += "\r\n"
-        self._send_cmd(cmd, wait=wait)
+        return self._send_cmd(cmd, wait=wait)
 
     def fast_move_to(self, x: Optional[float] = None, y: Optional[float] = None, z: Optional[float] = None, feedrate: int = 2000, wait: bool = True) -> None:
-        """Convenience for G0 moves."""
+        """Convenience for G0 moves. Does not check workspace bounds or the firmware version."""
         self.move_to_gcode(x=x, y=y, z=z, feedrate=feedrate, mode="G0", wait=wait)
 
     def get_full_position(self) -> Tuple[float, float, float, float, float, float, float]:
@@ -323,16 +464,15 @@ class Dexarm(ArmBase):
                 self.ser.write('M114\r'.encode())
                 x = y = z = e = a = b = c = None
 
-                # Add timeout to prevent infinite loop if ARM doesn't respond
                 start_time = time.time()
-                timeout = 15.0  # 15 second timeout for position query
+                timeout = POSITION_REPLY_TIMEOUT_S
 
                 while True:
                     # Check if we've exceeded timeout
                     if time.time() - start_time > timeout:
                         raise RuntimeError(f"Timeout waiting for position response from ARM (waited {timeout}s)")
 
-                    serial_str = self.ser.readline().decode("utf-8")
+                    serial_str = self.ser.readline().decode("utf-8", errors="replace")
                     if serial_str:
                         if "X:" in serial_str:
                             temp = re.findall(r"[-+]?\d*\.\d+|\d+", serial_str)

@@ -22,6 +22,10 @@ from ...core.net_helpers import (
 
 ARM_ROLE = "arm"
 
+# Mirrors MAX_MOVE_TIMEOUT_S in box/lager/arm_hs.py, which refuses a longer
+# wait: hardware_service restarts itself when a device call runs past 30 s.
+ARM_MAX_MOVE_TIMEOUT_S = 25.0
+
 
 def _list_arm_nets(ctx, box):
     """Get list of arm nets from box using net_helpers."""
@@ -128,6 +132,13 @@ def arm(ctx, box, netname):
     # Store arm-specific fields as attributes so get_default_box(ctx) still works
     setattr(ctx.obj, "arm_netname", netname)
 
+    # No subcommand: list arm nets. Listing only reads saved nets, so it takes
+    # no box lock.
+    if ctx.invoked_subcommand is None:
+        setattr(ctx.obj, "resolved_box", None)
+        _display_arm_nets(ctx, resolve_box(ctx, box))
+        return
+
     # Only resolve box if box is provided at group level
     # Otherwise, let subcommands resolve it
     if box:
@@ -136,11 +147,6 @@ def arm(ctx, box, netname):
     else:
         # Don't set box - let subcommands handle it
         setattr(ctx.obj, "resolved_box", None)
-
-    # If no subcommand, list nets
-    if ctx.invoked_subcommand is None:
-        resolved = resolve_box(ctx, box)
-        _display_arm_nets(ctx, resolved)
 
 
 arm.net_examples = [
@@ -163,7 +169,7 @@ def position(ctx, box):
 
 
 @arm.command(name="move", help="Move arm to absolute XYZ position (mm)")
-@click.option("--timeout", type=click.FloatRange(min=0.1), default=15.0, show_default=True, help="Move timeout (s)")
+@click.option("--timeout", type=click.FloatRange(min=0.1, max=ARM_MAX_MOVE_TIMEOUT_S), default=15.0, show_default=True, help="Move timeout (s)")
 @click.option("--x", "x", type=float, required=True, help="X coordinate (mm)")
 @click.option("--y", "y", type=float, required=True, help="Y coordinate (mm)")
 @click.option("--z", "z", type=float, required=True, help="Z coordinate (mm)")
@@ -207,7 +213,7 @@ def move(ctx, timeout, x, y, z, yes, box):
 
 
 @arm.command(name="move-by", help="Move arm by dX dY dZ (mm)")
-@click.option("--timeout", type=click.FloatRange(min=0.1), default=15.0, show_default=True, help="Move timeout (s)")
+@click.option("--timeout", type=click.FloatRange(min=0.1, max=ARM_MAX_MOVE_TIMEOUT_S), default=15.0, show_default=True, help="Move timeout (s)")
 @click.option("--dx", "dx", type=float, default=0.0, help="Delta X (mm)")
 @click.option("--dy", "dy", type=float, default=0.0, help="Delta Y (mm)")
 @click.option("--dz", "dz", type=float, default=0.0, help="Delta Z (mm)")
@@ -262,13 +268,27 @@ def disable_motor(ctx, box):
     _run(ctx, {"netname": net, "command": "disable_motor"}, resolved)
 
 
-@arm.command(name="read-and-save-position", help="Save current position as calibration reference")
+@arm.command(
+    name="read-and-save-position",
+    help="Recalibrate: save the current pose as the calibration position (M889)",
+)
+@click.option("--yes", is_flag=True, help="Confirm the recalibration without prompting")
 @click.pass_context
 @click.option("--box", required=False, help="Lager Box name or IP")
-def read_and_save_position(ctx, box):
+def read_and_save_position(ctx, yes, box):
     net = _require_netname(ctx)
     resolved = _resolve_box_for_command(ctx, box)
     if not _validate_arm_net(ctx, resolved, net):
+        return
+    # M889 overwrites the arm's stored joint calibration, so an accidental run
+    # at the wrong pose offsets every later move until the arm is recalibrated.
+    if not yes and not click.confirm(
+        "M889 replaces the arm's stored calibration with its current pose, and "
+        "every later move is computed from it. Continue only if the arm is in "
+        "its calibration pose. Recalibrate now?",
+        default=False,
+    ):
+        click.echo("Aborting")
         return
     _run(ctx, {"netname": net, "command": "read_and_save_position"}, resolved)
 

@@ -642,14 +642,10 @@ class Net:
                     return Actuate(name, _norm_pin(item), _get_location(item))
 
                 if role == NetType.Arm:
-                    serial = (
-                        item.get("serial")
-                        or ((item.get("location") or {}) if isinstance(item.get("location"), dict) else {}).get("serial_number")
-                        or None
-                    )
                     port = item.get("port") or None
                     pin_val = _norm_pin(item)
-                    return Dexarm(port=port, serial_number=serial, name=name, pin=pin_val)
+                    return Dexarm(port=port, serial_number=Dexarm.serial_from_net_record(item),
+                                  name=name, pin=pin_val)
 
                 if role == NetType.UART:
                     return UARTNet(name, item)
@@ -825,17 +821,13 @@ class Net:
                         if mux_role == NetType.Actuate:
                             return Actuate(name, int(pin), mapping.get("location"))
                         if mux_role == NetType.Arm:
-                            serial = (
-                                mapping.get("serial")
-                                or ((mapping.get("location") or {}) if isinstance(mapping.get("location"), dict) else {}).get("serial_number")
-                                or None
-                            )
                             port = mapping.get("port") or None
                             try:
                                 pin_val = int(pin)
                             except Exception:
                                 pin_val = pin
-                            return Dexarm(port=port, serial_number=serial, name=name, pin=pin_val)
+                            return Dexarm(port=port, serial_number=Dexarm.serial_from_net_record(mapping),
+                                          name=name, pin=pin_val)
 
                         if mux_role == NetType.UART:
                             return UARTNet(name, mux)

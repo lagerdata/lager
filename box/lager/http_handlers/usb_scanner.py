@@ -872,21 +872,61 @@ def _arm_probe_mode() -> str:
     The handshake writes G-code into a serial port, so who it is allowed to
     write to is a safety question, not a tuning one:
 
-        mode     vid:pid gate  exclusion set  exclusive open  DTR/RTS low
+        mode     vid:pid gate  exclusion set  exclusive open  DTR high, RTS low
         auto     on            on             on              on
         force    OFF           on             on              on
         off      (no probe at all)
 
     ``force`` is NOT "the old behaviour" -- it widens the candidate list back
     to every tty and nothing else. The exclusion set, the exclusive open and
-    the deasserted modem lines stay on in every mode, so no setting of this
-    variable can put G-code into a port another process is holding.
+    the modem-line settings stay on in every mode, so no setting of this
+    variable can put G-code into a port another process holds with an
+    exclusive lock. DTR is asserted because the Dexarm does not answer without
+    it (see _by_handshake).
 
     Read per call rather than at import so an operator can change it without
     restarting the box. Anything unrecognized means ``auto``.
     """
     mode = os.environ.get("LAGER_ARM_PROBE", "auto").strip().lower()
     return mode if mode in ("auto", "force", "off") else "auto"
+
+
+def _dexarm_record(port: str, serial_number: str) -> dict:
+    """The instrument record for a Dexarm on ``port``."""
+    return {
+        "name": "Rotrix_Dexarm",
+        "address": f"USB0::0x{_DEXARM_VID}::0x{_DEXARM_PID}::{serial_number}::INSTR",
+        "net_type": ["arm"],
+        "channels": {"arm": [port]},
+    }
+
+
+def _saved_arm_serials() -> set:
+    """USB serials of every arm a saved net already points at.
+
+    ``_by_handshake`` lists these arms from their USB identity and writes
+    nothing to them. hardware_service keeps a saved arm's port open between
+    commands, without an exclusive lock, so a handshake can land in the middle
+    of a command and take the arm's reply. The command then fails with
+    "device reports readiness to read but returned no data".
+
+    Guarded like ``_saved_net_ttys``: if saved nets are unreadable, every arm
+    gets a handshake, as before this set existed.
+    """
+    serials = set()
+    try:
+        from lager.nets.net import Net
+        from lager.automation.arm.rotrics import Dexarm
+        saved = Net.list_saved()
+    except Exception:
+        logger.exception("arm probe: saved nets unreadable; every arm gets a handshake")
+        return serials
+    for rec in saved or []:
+        if isinstance(rec, dict) and rec.get("role") == "arm":
+            serial_number = Dexarm.serial_from_net_record(rec)
+            if serial_number:
+                serials.add(serial_number)
+    return serials
 
 
 def _dexarm_serials_by_tty() -> Dict[str, Any]:
@@ -920,12 +960,17 @@ def _dexarm_serials_by_tty() -> Dict[str, Any]:
 
 
 @with_timeout(seconds=_HANDSHAKE_BUDGET_S, default=[])
-def _by_handshake(*, exclude: Optional[set] = None) -> List[dict]:
+def _by_handshake(*, exclude: Optional[set] = None,
+                  known_arm_serials: Optional[set] = None) -> List[dict]:
     """Find a Dexarm by writing M105 at it and reading the reply.
 
     This is the only scan step that WRITES to hardware, so it is gated three
     ways: the port must look like a Dexarm, must not be owned by anything the
     box knows about, and must not be held by another process.
+
+    An arm whose USB serial is in ``known_arm_serials`` (a saved arm net
+    already points at it) is listed from its sysfs identity with no write at
+    all; see ``_saved_arm_serials``.
     """
     mode = _arm_probe_mode()
     if mode == "off":
@@ -939,6 +984,7 @@ def _by_handshake(*, exclude: Optional[set] = None) -> List[dict]:
 
     results = []
     exclude = exclude or set()
+    known = {str(s) for s in (known_arm_serials or ()) if s}
     ports = sorted(glob.glob("/dev/ttyUSB*") + glob.glob("/dev/ttyACM*"))
 
     # One sysfs pass serves both the gate and the serial fallback below.
@@ -953,8 +999,17 @@ def _by_handshake(*, exclude: Optional[set] = None) -> List[dict]:
         candidates = [p for p in candidates if p in dexarm_serials]
 
     probed = []
+    listed = []
     deadline = time.monotonic() + _HANDSHAKE_BUDGET_S
     for port in candidates:
+        saved_serial = dexarm_serials.get(port)
+        if saved_serial and str(saved_serial) in known:
+            # A saved arm net already identified this arm. List it and write
+            # nothing: hardware_service may be in the middle of a command on
+            # this port.
+            results.append(_dexarm_record(port, saved_serial))
+            listed.append(port)
+            continue
         if time.monotonic() >= deadline:
             skipped[port] = "probe budget spent"
             continue
@@ -1019,16 +1074,13 @@ def _by_handshake(*, exclude: Optional[set] = None) -> List[dict]:
             skipped[port] = "answered but has no USB serial"
             continue
 
-        results.append({
-            "name": "Rotrix_Dexarm",
-            "address": f"USB0::0x{_DEXARM_VID}::0x{_DEXARM_PID}::{serial_number}::INSTR",
-            "net_type": ["arm"],
-            "channels": {"arm": [port]},
-        })
+        results.append(_dexarm_record(port, serial_number))
 
     logger.info(
-        "arm probe (mode=%s): wrote M105 to %s; skipped %s; found %d",
-        mode, probed or "nothing", skipped or "nothing", len(results),
+        "arm probe (mode=%s): listed saved arms on %s without a write; "
+        "wrote M105 to %s; skipped %s; found %d",
+        mode, listed or "nothing", probed or "nothing", skipped or "nothing",
+        len(results),
     )
     return results
 
@@ -1238,7 +1290,10 @@ def list_instruments() -> List[dict]:
     # it, and writing it at a saved uart net corrupts a live DUT console.
     uart_ports = _instrument_ttys(instruments) | _instrument_ttys(custom)
     uart_ports |= _saved_net_ttys()
-    for dex in _by_handshake(exclude=uart_ports):
+    # An arm that a saved arm net points at is listed without a handshake;
+    # see _saved_arm_serials.
+    for dex in _by_handshake(exclude=uart_ports,
+                             known_arm_serials=_saved_arm_serials()):
         merge_or_append(dex, instruments)
     for cam in _by_camera():
         merge_or_append(cam, instruments)

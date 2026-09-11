@@ -5,6 +5,11 @@ description: Control robot arm position and movement
 
 Control robot arm operations for your device - motion commands, motor control, and position utilities. All positions are in millimeters (mm).
 
+## Requirements
+
+- The arm must run DexArm firmware V2.1.4 or later. Rotrics swapped the X and Y axes in V2.1.4. On older firmware, `move` and `move-by` fail with an error that tells you to update the firmware. `position`, `go-home` and the motor commands still work. Rotrics Studio updates the firmware.
+- After the arm powers on, run `go-home` before a move. The firmware refuses motion until the arm is homed, and a move fails with an error that says so.
+
 ## Syntax
 
 ```bash
@@ -34,7 +39,7 @@ lager arm [OPTIONS] [NETNAME] COMMAND [ARGS]...
 | `go-home` | Move the arm to its home position (X0 Y300 Z0) |
 | `enable-motor` | Enable arm motors |
 | `disable-motor` | Disable arm motors |
-| `read-and-save-position` | Save current position as calibration reference |
+| `read-and-save-position` | Recalibrate the arm on its current pose (`M889`) |
 | `set-acceleration` | Set arm acceleration parameters |
 
 ---
@@ -72,13 +77,17 @@ lager arm [NETNAME] move [OPTIONS]
 - `--y FLOAT` - Target Y position (mm)
 - `--z FLOAT` - Target Z position (mm)
 - `--box TEXT` - Lager Box name or IP
-- `--timeout FLOAT` - Move timeout in seconds (default: 15.0, minimum: 0.1)
+- `--timeout FLOAT` - Move timeout in seconds (default: 15.0, minimum: 0.1, maximum: 25.0)
 - `--yes` - Confirm the action without prompting
 
 Each axis is a named option, not a positional argument, so you can move along one
 axis without restating the others.
 
 The box refuses a target outside the workspace of the arm. See [Workspace Bounds](#workspace-bounds).
+
+The maximum timeout is 25 seconds. The hardware service on the box stops a device call after 30 seconds and restarts, so the box refuses a longer move timeout.
+
+A long move can take more than the 15-second default. If a long move times out, run it again with a larger `--timeout`.
 
 **Examples:**
 ```bash
@@ -104,7 +113,7 @@ lager arm [NETNAME] move-by [OPTIONS]
 - `--dy FLOAT` - Delta Y offset (mm)
 - `--dz FLOAT` - Delta Z offset (mm)
 - `--box TEXT` - Lager Box name or IP
-- `--timeout FLOAT` - Move timeout in seconds (default: 15.0, minimum: 0.1)
+- `--timeout FLOAT` - Move timeout in seconds (default: 15.0, minimum: 0.1, maximum: 25.0)
 - `--yes` - Confirm the action without prompting
 
 Omitted axes are left unchanged, so a single-axis jog needs only that one option.
@@ -127,7 +136,7 @@ lager arm ARM1 move-by --dx 10 --timeout 3.0 --yes
 
 ### `go-home`
 
-Move the arm to its home position (X0 Y300 Z0).
+Move the arm to its home position (X0 Y300 Z0). The command returns when the arm is at home, which can take a few seconds. Run it first after the arm powers on.
 
 ```bash
 lager arm [NETNAME] go-home [OPTIONS]
@@ -182,7 +191,11 @@ lager arm ARM1 disable-motor --box my-lager-box
 
 ### `read-and-save-position`
 
-Read the current position and save it as a calibration reference.
+Recalibrate the arm. The box reads the current position, then sends `M889`. `M889` replaces the stored calibration of the arm with its current pose, and the arm calculates every later move from that calibration.
+
+<Warning>
+Use this command only when the arm is physically in its calibration pose. In any other pose, every later move is offset. Rotrics documents the calibration pose as arm axes 1 and 2 at their limits. To recalibrate, disable the motors and move the arm into that pose by hand. Then run this command, and run `go-home` after it.
+</Warning>
 
 ```bash
 lager arm [NETNAME] read-and-save-position [OPTIONS]
@@ -190,6 +203,9 @@ lager arm [NETNAME] read-and-save-position [OPTIONS]
 
 **Options:**
 - `--box TEXT` - Lager Box name or IP
+- `--yes` - Confirm the recalibration without prompting
+
+Without `--yes`, the command asks for confirmation. If you do not confirm, it sends nothing to the arm.
 
 **Example:**
 ```bash
@@ -207,10 +223,12 @@ lager arm [NETNAME] set-acceleration [OPTIONS]
 ```
 
 **Options:**
-- `--acceleration INTEGER` - Acceleration value (>= 0)
-- `--travel INTEGER` - Travel acceleration value (>= 0)
-- `--retract INTEGER` - Retract acceleration value (>= 0)
+- `--acceleration INTEGER` - Print acceleration in mm/s^2 (minimum: 1)
+- `--travel INTEGER` - Travel acceleration in mm/s^2 (minimum: 1)
+- `--retract INTEGER` - Retract acceleration in mm/s^2 (default: 60, minimum: 1)
 - `--box TEXT` - Lager Box name or IP
+
+The box sends `M204 P<acceleration> T<travel> R<retract>` to the arm.
 
 **Example:**
 ```bash
@@ -235,7 +253,7 @@ Name   Net Type   Instrument      Channel        Address
 ARM1   arm        Rotrix_Dexarm   /dev/ttyACM0   USB0::0x0483::0x5740::<SERIAL>::INSTR
 ```
 
-The channel is the serial port of the arm. The address carries the USB serial number of the arm.
+The channel is the serial port of the arm. The address carries the USB serial number of the arm. The box opens the arm that has this USB serial number.
 
 ---
 
@@ -260,6 +278,7 @@ The box finds an arm when it scans for instruments. `lager instruments`, `lager 
 - The box probes only a serial port whose USB ID is `0483:5740`.
 - The box sends the G-code `M105` to that port and waits up to 1 second for a reply that contains `ok`.
 - The box never probes a port that belongs to another instrument or to a saved UART net. It also skips a port that another process holds.
+- The box does not probe an arm that a saved arm net already uses. It lists that arm from its USB serial number, because the box keeps the port of that arm open between arm commands.
 - The arm must report a USB serial number. The box drops an arm that has none.
 
 To change the probe, set `LAGER_ARM_PROBE` in the box container:
@@ -305,7 +324,7 @@ lager arm ARM1 disable-motor --box my-lager-box
 # Re-enable motors after adjustment
 lager arm ARM1 enable-motor --box my-lager-box
 
-# Save current position as reference
+# Recalibrate, only with the arm in its calibration pose
 lager arm ARM1 read-and-save-position --box my-lager-box
 
 # Configure acceleration
@@ -318,7 +337,7 @@ lager arm ARM1 set-acceleration --acceleration 100 --travel 80 --retract 60 --bo
 
 | Manufacturer | Model | Description |
 |--------------|-------|-------------|
-| Rotrics | Dexarm | Desktop robot arm with 3-axis control |
+| Rotrics | Dexarm | Desktop robot arm with 3-axis control, firmware V2.1.4 or later |
 
 ---
 
@@ -328,6 +347,7 @@ lager arm ARM1 set-acceleration --acceleration 100 --travel 80 --retract 60 --bo
 - Home position is X0 Y300 Z0
 - Use `--yes` flag for non-interactive scripts and CI pipelines
 - Always re-enable motors after disabling them to resume normal operation
-- The `--timeout` option prevents commands from hanging if the arm fails to reach position
+- The `--timeout` option prevents commands from hanging if the arm fails to reach position. It cannot be more than 25 seconds.
+- If the USB connection to the arm drops, the current command fails. The next command opens the port again.
 - Default net can be set with `lager defaults add --arm-net`
 - If the arm does not appear in `lager instruments`, see [Detection](#detection) and the troubleshooting page

@@ -2,25 +2,35 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Comprehensive test for ARM (Robotic Arm) Net API
+Robot arm (Rotrics Dexarm) Python API test.
 
 Hardware Required:
   - Rotrix Dexarm robotic arm
-  - Net configured as type=NetType.Arm
+  - Net configured as type=NetType.Arm (default name arm1; set ARM_NET to change)
 
 Run with:
   lager python test/api/peripherals/test_arm_comprehensive.py --box MY-BOX
 
-Safety Notes:
-  - Keep clear of arm workspace during test
-  - Test returns to home position when done
+THIS MOVES THE ARM. Every target stays within about 50 mm of home
+(X0 Y300 Z0), and the test ends at home. It never calls save_position() or
+read_and_save_position(): both send M889, which overwrites the arm's stored
+calibration.
 """
 
-from lager import Net, NetType
+import os
 import sys
 import time
 
+from lager import Net, NetType
+from lager.automation.arm import OutOfBoundsError
+
+NET_NAME = os.environ.get("ARM_NET", "arm1")
+HOME = (0.0, 300.0, 0.0)
+TOLERANCE_MM = 1.0
+
 _results = []
+
+
 def _record(name, passed, detail=""):
     _results.append((name, passed, detail))
     status = "PASS" if passed else "FAIL"
@@ -29,86 +39,82 @@ def _record(name, passed, detail=""):
         msg += f" -- {detail}"
     print(msg)
 
-def _validate_position(pos, label):
-    """Validate that a position value is a tuple/list of 3 numeric elements."""
-    if not isinstance(pos, (tuple, list)):
-        _record(f"{label}_type", False, f"expected tuple/list, got {type(pos).__name__}")
-        return False
-    if len(pos) != 3:
-        _record(f"{label}_length", False, f"expected 3 elements, got {len(pos)}")
-        return False
-    for i, val in enumerate(pos):
-        if not isinstance(val, (int, float)):
-            _record(f"{label}_element_{i}", False, f"expected int/float, got {type(val).__name__}")
-            return False
-    _record(label, True, f"X={pos[0]:.1f}, Y={pos[1]:.1f}, Z={pos[2]:.1f}")
-    return True
+
+def _near(pos, target, tol=TOLERANCE_MM):
+    return all(abs(p - t) <= tol for p, t in zip(pos, target))
+
+
+def _fmt(pos):
+    return "X=%.2f Y=%.2f Z=%.2f" % tuple(pos)
+
 
 def main():
-    print("=== ARM Comprehensive Test ===\n")
+    print("=== Robot Arm API Test ===\n")
 
-    net_name = 'arm1'
     arm = None
-
     try:
-        arm = Net.get(net_name, type=NetType.Arm)
-        _record("get_net", True, f"retrieved {net_name}")
+        arm = Net.get(NET_NAME, type=NetType.Arm)
+        _record("get_net", True, NET_NAME)
+
+        # Moves need firmware V2.1.4 or later: Rotrics swapped X and Y there.
+        version = getattr(arm, "firmware_version", None)
+        _record("firmware_v2_1_4_or_later", version is not None and version >= (2, 1, 4),
+                "firmware %s" % (".".join(map(str, version)) if version else "unknown"))
 
         arm.enable_motor()
         _record("enable_motor", True)
-        time.sleep(0.5)
 
-        # Read initial position
         pos = arm.position()
-        _validate_position(pos, "initial_position")
+        _record("position_is_three_floats",
+                len(pos) == 3 and all(isinstance(v, float) for v in pos), _fmt(pos))
 
-        # Go home
+        # go_home() must return with the arm already at home, not while it is
+        # still travelling.
         arm.go_home()
-        time.sleep(3)
-        _record("go_home", True)
+        pos = arm.position()
+        _record("go_home_returns_at_home", _near(pos, HOME), _fmt(pos))
 
-        # Move to absolute position
-        arm.move_to(50, 250, 30, timeout=15)
-        time.sleep(1)
-        new_pos = arm.position()
-        _validate_position(new_pos, "position_after_move_to")
+        target = (50.0, 250.0, 30.0)
+        arm.move_to(*target, timeout=15)
+        pos = arm.position()
+        _record("move_to_arrives", _near(pos, target), _fmt(pos))
 
-        # Move relative
-        arm.move_relative(10, 0, 5, timeout=10)
-        time.sleep(1)
-        _record("move_relative", True, "dx=10, dy=0, dz=5")
-        delta_pos = arm.position()
-        _validate_position(delta_pos, "position_after_move_relative")
+        new = arm.move_relative(dz=10, timeout=10)
+        expected = (target[0], target[1], target[2] + 10)
+        _record("move_relative_returns_new_position", _near(new, expected), _fmt(new))
 
-        # Return home
-        arm.go_home()
-        time.sleep(3)
-        _record("return_home", True)
+        before = arm.position()
+        try:
+            arm.move_to(0, 0, 0)
+            _record("out_of_bounds_refused", False, "move_to(0, 0, 0) did not raise")
+        except OutOfBoundsError:
+            time.sleep(0.5)
+            after = arm.position()
+            _record("out_of_bounds_refused_without_motion", _near(after, before), _fmt(after))
 
-        # Disable
-        arm.disable_motor()
-        _record("disable_motor", True)
+        arm.move_to(*HOME, timeout=15)
+        pos = arm.position()
+        _record("return_home", _near(pos, HOME), _fmt(pos))
 
-    except Exception as e:
-        _record("unexpected_error", False, str(e))
+    except Exception as exc:  # noqa: BLE001 -- a hardware test reports, it does not crash
+        _record("unexpected_error", False, f"{type(exc).__name__}: {exc}")
 
     finally:
         if arm is not None:
             try:
                 arm.go_home()
-                time.sleep(2)
             except Exception:
                 pass
             try:
-                arm.disable_motor()
+                arm.close()
             except Exception:
                 pass
 
-    # Summary
-    passed = sum(1 for _, p, _ in _results if p)
-    failed = sum(1 for _, p, _ in _results if not p)
+    passed = sum(1 for _, ok, _ in _results if ok)
+    failed = len(_results) - passed
     print(f"\n=== Summary: {passed} passed, {failed} failed out of {len(_results)} tests ===")
     return 0 if failed == 0 else 1
+
 
 if __name__ == "__main__":
     sys.exit(main())

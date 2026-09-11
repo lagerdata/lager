@@ -12,6 +12,12 @@ from lager import Net, NetType
 
 # For exception handling
 from lager import InvalidNetError
+from lager.automation.arm import (
+    MovementTimeoutError,
+    NotHomedError,
+    OutOfBoundsError,
+    UnsupportedFirmwareError,
+)
 ```
 
 ## Methods
@@ -24,7 +30,7 @@ from lager import InvalidNetError
 | `go_home()` | Return arm to home position |
 | `enable_motor()` | Enable arm motors |
 | `disable_motor()` | Disable arm motors |
-| `save_position()` | Save current position to memory |
+| `save_position()` | Recalibrate the arm on its current pose (`M889`) |
 | `get_full_position()` | Get full position including joint angles |
 | `sliding_rail_init()` | Initialize the sliding rail |
 
@@ -49,6 +55,8 @@ arm = Net.get('arm1', type=NetType.Arm)
 | `type` | `NetType` | Must be `NetType.Arm` |
 
 **Returns:** Arm net instance with all methods listed below
+
+The net opens the arm that has the USB serial number in its address. It also reads the firmware version of the arm. `arm.firmware_version` is a tuple such as `(2, 3, 5)`, or `None` if the arm did not report a version.
 
 ### `position()`
 
@@ -82,7 +90,11 @@ arm.move_to(100, 200, 50, timeout=10.0)
 | `z` | `float` | Target Z coordinate (mm) |
 | `timeout` | `float` | Maximum wait time in seconds (default: 15.0) |
 
-**Raises:** `MovementTimeoutError` if position not reached within timeout
+**Raises:**
+- `OutOfBoundsError` if the target is outside the workspace bounds. Nothing is sent to the arm.
+- `UnsupportedFirmwareError` if the arm firmware is older than V2.1.4, or the arm did not report its version. Nothing is sent to the arm.
+- `NotHomedError` if the arm is not homed after power-on
+- `MovementTimeoutError` if position not reached within timeout
 
 ### `move_relative(dx=0, dy=0, dz=0, timeout=15.0)`
 
@@ -107,13 +119,20 @@ new_x, new_y, new_z = arm.move_relative(dx=10, dy=10, dz=-5)
 
 **Returns:** `tuple[float, float, float]` - New (x, y, z) position after move
 
-### `go_home()`
+**Raises:**
+- `UnsupportedFirmwareError` if the arm firmware is older than V2.1.4, or the arm did not report its version. Nothing is sent to the arm.
+- `OutOfBoundsError` if the current position plus the offsets is outside the workspace bounds. The arm does not move.
+- `NotHomedError` if the arm is not homed after power-on
 
-Return the arm to its home position (X=0, Y=300, Z=0).
+### `go_home(timeout=20.0)`
+
+Move the arm to its home position (X=0, Y=300, Z=0). The method returns when the arm is at home. Call it first after the arm powers on, because the firmware refuses motion until then.
 
 ```python
 arm.go_home()
 ```
+
+**Raises:** `RuntimeError` if the arm does not reach home within `timeout` seconds
 
 ### `enable_motor()`
 
@@ -133,7 +152,11 @@ arm.disable_motor()
 
 ### `save_position()`
 
-Save the current position to the arm's internal memory.
+Recalibrate the arm. `save_position()` sends `M889`, which replaces the stored calibration of the arm with its current pose. The arm calculates every later move from that calibration.
+
+<Warning>
+Call `save_position()` only when the arm is physically in its calibration pose. In any other pose, every later move is offset.
+</Warning>
 
 ```python
 arm.save_position()
@@ -150,6 +173,8 @@ print(f"Joint angles: A={a}, B={b}, C={c}")
 ```
 
 **Returns:** `tuple[float, ...]` - (x, y, z, e, a, b, c) where a, b, c are joint angles
+
+If the arm firmware does not report joint angles, `a`, `b` and `c` are `None`.
 
 ## End Effector Methods
 
@@ -205,7 +230,7 @@ arm.delay_s(2)     # 2 second delay
 
 ### `set_acceleration(acceleration, travel_acceleration, retract_acceleration=60)`
 
-Configure acceleration settings.
+Set the print, travel and retract acceleration in mm/s^2. The method sends `M204 P<acceleration> T<travel_acceleration> R<retract_acceleration>`.
 
 ```python
 arm.set_acceleration(100, 100, 60)
@@ -333,38 +358,54 @@ arm.go_home()
 ```python
 from lager import Net, NetType
 from lager import InvalidNetError
+from lager.automation.arm import (
+    MovementTimeoutError,
+    NotHomedError,
+    OutOfBoundsError,
+    UnsupportedFirmwareError,
+)
 
 try:
     arm = Net.get('arm1', type=NetType.Arm)
     arm.move_to(100, 200, 50, timeout=3.0)
 except InvalidNetError as e:
     print(f"Arm net not found: {e}")
+except UnsupportedFirmwareError as e:
+    print(f"Update the arm firmware: {e}")
+except NotHomedError as e:
+    print(f"Home the arm first: {e}")
+except OutOfBoundsError as e:
+    print(f"Target is outside the workspace: {e}")
+except MovementTimeoutError as e:
+    print(f"Arm did not reach the target: {e}")
 except RuntimeError as e:
-    print(f"Movement failed: {e}")
-except Exception as e:
-    print(f"Error: {e}")
+    print(f"Arm error: {e}")
 ```
 
 ## Supported Hardware
 
 | Manufacturer | Model | Features |
 |--------------|-------|----------|
-| Rotrics | Dexarm | 4-axis, multiple end effectors, conveyor support |
+| Rotrics | Dexarm | 4-axis, multiple end effectors, conveyor support. Firmware V2.1.4 or later. |
 
 ## Exceptions
 
 | Exception | Module | Description |
 |-----------|--------|-------------|
+| `OutOfBoundsError` | `lager.automation.arm.arm_net` | The target is outside the workspace bounds. It is also a `ValueError`. |
+| `UnsupportedFirmwareError` | `lager.automation.arm.arm_net` | The arm firmware is older than V2.1.4, or the arm did not report its version. |
+| `NotHomedError` | `lager.automation.arm.arm_net` | The arm is not homed after power-on. |
 | `MovementTimeoutError` | `lager.automation.arm.arm_net` | Arm didn't reach target position in time |
 | `RuntimeError` | builtin | Arm device not found or cannot be opened |
 
 ## Notes
 
 - Always use the context manager (`with` statement) to ensure proper cleanup
-- The arm must be homed before accurate movements
-- A movement timeout error indicates an obstruction or an out-of-bounds coordinate
+- Call `go_home()` after the arm powers on. The firmware refuses motion until then.
+- `move_to()` and `move_relative()` need arm firmware V2.1.4 or later. Rotrics swapped the X and Y axes in V2.1.4, so older firmware moves in a different frame.
+- A movement timeout error means that the arm did not arrive. The cause can be an obstruction, an unreachable target inside the bounds, or a long move. Pass a larger `timeout` for a long move.
 - Joint angles (a, b, c) are in the arm's internal coordinate system
 - Default tolerance for position verification is 0.5mm
 - The arm auto-detects via USB VID/PID (0x0483:0x5740)
 - The box finds an arm only when it scans for instruments. The scan probes only a port with that USB ID, and the arm must report a USB serial number. See [Detection](/source/reference/cli/arm#detection) for the `LAGER_ARM_PROBE` setting.
-- `Dexarm` defines approximate workspace bounds: X -300 to 300 mm, Y 170 to 360 mm, Z -140 to 100 mm. The `lager arm` CLI refuses a target outside them. The Python API does not check them before a move.
+- `Dexarm` defines approximate workspace bounds: X -300 to 300 mm, Y 170 to 360 mm, Z -140 to 100 mm. `move_to()` and `move_relative()` raise `OutOfBoundsError` for a target outside them, as the `lager arm` CLI does. `move_to_blocking()`, `move_to_gcode()` and `fast_move_to()` do not check the bounds or the firmware version.
