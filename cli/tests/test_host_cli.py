@@ -285,6 +285,21 @@ class TestDeployScriptDrift:
             not in deploy_script
         )
 
+    def test_version_and_ref_writes_are_granted(self, deploy_script):
+        # install.py records /etc/lager/version and /etc/lager/ref by
+        # rm + mv-from-/tmp + chmod, all via sudo. Each of those commands needs
+        # a matching NOPASSWD grant or the write stalls on a password prompt
+        # (the ref grant was missing, and the install hung 120s in the field).
+        # Both /bin and /usr/bin, since secure_path may resolve either first.
+        for d in ("/bin", "/usr/bin"):
+            for path, tmp, mode in (
+                ("/etc/lager/version", "/tmp/lager_version_tmp", "666"),
+                ("/etc/lager/ref", "/tmp/lager_ref_tmp", "644"),
+            ):
+                assert f"{d}/rm -f {path}" in deploy_script, f"{d}/rm {path}"
+                assert f"{d}/mv {tmp} {path}" in deploy_script, f"{d}/mv {path}"
+                assert f"{d}/chmod {mode} {path}" in deploy_script, f"{d}/chmod {path}"
+
     def test_install_sequence_literals(self, deploy_script):
         for literal in (
             '.lager_venv',

@@ -51,6 +51,17 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 ### Fixed
 
+- **`lager install` no longer hangs for two minutes at the end and no longer
+  garbles the terminal.** The step that records the deployed version and ref
+  forced an SSH pseudo-terminal and, when its `sudo` was not passwordless,
+  waited on a password nobody could type until a 120-second timeout — and the
+  killed pseudo-terminal left the local shell in raw mode, staircasing every
+  line printed afterwards. The writes now run under `BatchMode` with a short
+  timeout, so an ungranted `sudo` fails immediately and cleanly. The box's
+  sudoers grant also now covers `/etc/lager/ref` (it only covered
+  `/etc/lager/version`), so on a properly provisioned box the write simply
+  succeeds.
+
 - **`lager install` and `lager update` no longer take ownership of the SSH key
   directory** (`/etc/lager/authorized_keys.d`). The permission repair that
   makes `/etc/lager` writable for the box-config renderers used to `chown -R`

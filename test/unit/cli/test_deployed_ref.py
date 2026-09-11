@@ -237,6 +237,17 @@ class TestRefIsASiblingFileNotAThirdVersionField:
         src = (ROOT / 'cli' / 'commands' / 'utility' / 'install.py').read_text()
         assert '/etc/lager/ref' in src
 
+    def test_version_and_ref_writes_run_under_batchmode(self):
+        # Best-effort writes must never hold a PTY. Forcing one (ssh -t) made an
+        # ungranted sudo hang on a password prompt until the timeout, and the
+        # killed PTY left the local terminal in raw mode (staircased output).
+        # Both writes now run under BatchMode with a short timeout instead, so an
+        # ungranted sudo fails fast and clean. (ssh -t legitimately remains for
+        # the interactive one-time sudoers bootstrap elsewhere in the file.)
+        src = (ROOT / 'cli' / 'commands' / 'utility' / 'install.py').read_text()
+        assert '"-o", "BatchMode=yes", ssh_host, write_version_cmd' in src
+        assert '"-o", "BatchMode=yes", ssh_host, write_ref_cmd' in src
+
     def test_the_box_reports_it(self):
         src = (ROOT / 'box' / 'lager' / 'box_http_server.py').read_text()
         assert 'REF_FILE_PATH' in src

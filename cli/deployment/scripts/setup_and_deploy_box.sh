@@ -744,7 +744,19 @@ ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chmod 666 /etc/lager/version
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/mkdir -p /etc/lager
 ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/tee /etc/lager/saved_nets.json
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/rm -f /etc/lager/version
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/rm -f /etc/lager/version
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/mv /tmp/lager_version_tmp /etc/lager/version
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/mv /tmp/lager_version_tmp /etc/lager/version
+# install.py records the deployed ref in /etc/lager/ref the same way it writes
+# version (rm + mv from /tmp + chmod). Without these grants the ref sudo has no
+# passwordless path and the write step stalls until its timeout. Both bin dirs,
+# because secure_path resolves the bare command to whichever exists first.
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/rm -f /etc/lager/ref
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/rm -f /etc/lager/ref
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/mv /tmp/lager_ref_tmp /etc/lager/ref
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/mv /tmp/lager_ref_tmp /etc/lager/ref
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod 644 /etc/lager/ref
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chmod 644 /etc/lager/ref
 # Allow ${BOX_USER} to write /etc/lager/bench.json (lager box dut edit/add-doc).
 # /etc/lager is owned by www-data, so the login user can't create files there;
 # the CLI stages to /tmp/lager-bench.json.tmp then cp's it in under this grant.

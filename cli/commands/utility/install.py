@@ -545,9 +545,16 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
             'sudo chmod 666 /etc/lager/version'
         )
 
+        # No PTY (-t) and BatchMode: this write is best-effort decoration, so it
+        # must never prompt for a password or hang. Forcing a PTY meant that
+        # when the sudo below was not passwordless, sshd waited on a password
+        # nobody could type until the timeout killed it -- and the killed PTY
+        # left the LOCAL terminal in raw mode, producing staircased output for
+        # the rest of the run. BatchMode makes an ungranted sudo fail at once
+        # instead, and the short timeout bounds a stalled connection.
         subprocess.run(
-            ["ssh", "-t", *identity_args, ssh_host, write_version_cmd],
-            timeout=120,  # Increased from 30 to match update.py timeout
+            ["ssh", *identity_args, "-o", "BatchMode=yes", ssh_host, write_version_cmd],
+            timeout=15,
             stderr=subprocess.DEVNULL,  # Suppress "Shared connection closed" noise
         )
 
@@ -567,9 +574,13 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
             'sudo mv /tmp/lager_ref_tmp /etc/lager/ref && '
             'sudo chmod 644 /etc/lager/ref'
         )
+        # Same discipline as the version write above: no PTY, BatchMode, short
+        # timeout. This is the write that actually stalled 120 s in the field --
+        # the ref sudo commands had no passwordless grant -- and corrupted the
+        # terminal on the way out.
         subprocess.run(
-            ["ssh", "-t", *identity_args, ssh_host, write_ref_cmd],
-            timeout=120,
+            ["ssh", *identity_args, "-o", "BatchMode=yes", ssh_host, write_ref_cmd],
+            timeout=15,
             stderr=subprocess.DEVNULL,
         )
 
