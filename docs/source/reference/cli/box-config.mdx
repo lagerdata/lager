@@ -102,6 +102,10 @@ Create `/etc/lager/box_config.json` with defaults, seeding the default
 `box-tools` volume. Does nothing if the file already exists unless you pass
 `--force`.
 
+When `init` creates the file, it also imports the entries of a hand-written
+`/etc/lager/user_requirements.txt` into `pip_packages`. It prints the packages
+that it migrated and the entries that it skipped.
+
 ```bash
 lager box-config init --box <BOX>
 
@@ -161,8 +165,26 @@ lager box-config apply [OPTIONS] --box my-lager-box
 | `--skip-restart` | Validate and record the config without restarting |
 | `--no-auto-prep` | Skip host-path re-verification before restart |
 | `--recursive-chown` | For any configured mount whose host path is wrong-owned and populated, recursively chown it to uid 33 (www-data) |
+| `--skip-host-network-check` | Apply a switch to host networking even when the pre-flight reports that it makes the box unreachable. See the `network-mode` section |
 
 `--box` accepts a comma-separated list to apply across multiple boxes.
+
+**Exit codes**
+
+| Code | Meaning |
+|------|---------|
+| `0` | The config applied. Also returned when the config is unchanged, and for `--dry-run` and `--skip-restart` |
+| `3` | The container is up, but the config did not fully apply: a render step failed, or a pip, cargo or npm install failed |
+| `1` | Any other failure: the restart failed, `apply` refused the config, or you declined the prompt |
+
+On exit `3`, `apply` does not roll back the container and does not record the
+config as applied. The next `apply` therefore tries the same config again. The
+error output names the step that failed. For a render failure, the usual repair
+is `lager update --box <BOX>`.
+
+With a comma-separated `--box` list, `apply` exits with the worst result, and
+`1` outranks `3`. `lager box-config restart` exits `1` in the case where `apply`
+exits `3`.
 
 ### `apt`
 
@@ -202,6 +224,20 @@ lager box-config env list [--json]
 lager box-config env unset KEY [KEY ...]
 ```
 
+**`LAGER_DISABLE_UART_SERVICE`.** Set this variable to `1`, `true` or `yes` to
+stop the box API on port 9000. Host port 9000 is then free for a service of your
+own. The name is narrower than the effect. Port 9000 serves the whole box
+API, not only UART.
+
+With the variable set, every command that uses port 9000 fails. That includes
+`lager hello`, the lock and version columns of `lager boxes`, net commands, and
+`lager uart`.
+
+```bash
+lager box-config env set LAGER_DISABLE_UART_SERVICE=1 --box my-lager-box
+lager box-config apply --box my-lager-box
+```
+
 ### `network-mode`
 
 The docker network the box container runs on. Defaults to `lagernet`; the only
@@ -213,6 +249,19 @@ lager box-config network-mode set host --box my-lager-box
 lager box-config network-mode unset --box my-lager-box     # back to lagernet
 lager box-config apply --box my-lager-box                  # required to take effect
 ```
+
+`set` accepts `lagernet` or `host`. `set` and `unset` change only the stored
+config, and `apply` makes the switch. `show` prints the box address and the
+configured mode:
+
+```text
+<BOX_IP>: lagernet (default)
+```
+
+`(default)` means that the config sets no mode. With `--json`, `show` prints the
+keys `box`, `network_mode`, `explicit`, `exists` and `supported`. On a box whose
+lager predates the setting, `show` adds `(this box predates the network-mode
+setting)`, and `set` and `unset` tell you to run `lager update` first.
 
 **Why `host` exists.** Linux `AF_BLUETOOTH` sockets are scoped to a network
 namespace. The kernel registers that address family only in the initial
@@ -232,12 +281,19 @@ the mounted D-Bus socket, and works the same in either mode.
   applies to them.
 
   `secure_box_firewall.sh` allows the Lager ports **per interface**. The
-  interfaces are `lo`, `docker0`, `tailscale0` when present, and one you name
-  with `--corporate-vpn`. It denies those ports everywhere else, and it does
-  not allow them on a plain LAN interface. So a box you reach over a route that
-  script did not allow becomes unreachable the moment the ports stop being
-  published. `lager install` runs that script by default, so most boxes carry
-  these rules.
+  interfaces are `lo`, `docker0`, `tailscale0`, and one you name with
+  `--corporate-vpn`. The script adds `tailscale0` only if Tailscale was up when
+  the script ran. It denies those ports everywhere else, and it does not allow
+  them on a plain LAN interface. So a box you reach over a route that script did
+  not allow becomes unreachable the moment the ports stop being published.
+  `lager install` runs that script by default, so most boxes carry these rules.
+
+  `lager update` does not run the script again. `lager install` runs it again,
+  and the script resets ufw first. A rule that you inserted by hand is then
+  gone.
+
+  The container does not serve port 8301 on `host`. That port exists only as a
+  published alias of port 5000.
 
 - **A port-publishing gateway conflicts with host mode.** Where a gateway
   container fronts the box, it publishes 5000, 8080, 9000 and others on the
@@ -256,6 +312,21 @@ below a deny rule for the same port does not count. It changes nothing when it
 refuses. `--skip-host-network-check` overrides it; use that only with another
 way into the box.
 
+The check runs only when the config moves to `host` from a different applied
+mode. It refuses in these cases:
+
+- The check cannot run its probe over SSH.
+- `/etc/lager/no_publish` is set, or something other than the lager container
+  holds port 5000 or 9000.
+- ufw is installed, but `sudo -n` cannot read its status.
+- ufw is active, and the check cannot find the interface of your connection.
+- ufw is active, and it does not admit port 5000 or 9000 on that interface.
+
+When ufw is not installed, or is not active, the firewall part of the check
+passes. The check covers only ports 5000 and 9000. On a box with an active
+firewall, the other Lager ports can stay blocked on your interface. `apply`
+prints a note that says so.
+
 **Only `apply` makes the switch to `host`.** Every container start reads the
 same config, including the starts that `lager update` and `lager install` make.
 Those starts keep the network that the last successful `apply` recorded, and
@@ -264,11 +335,18 @@ check, so any start makes it. For the same reason, `apply --skip-restart`
 refuses a pending switch to `host`.
 
 **The check reads the firewall through `sudo`.** It runs
-`sudo -n /usr/sbin/ufw status`, and Lager does not grant that command. If `sudo`
-asks for a password on the box, `apply` refuses and prints the one sudoers line
-that the check needs. Add that line to a sudoers file of your own with
-`sudo visudo -f`. Lager changes only the sudoers files that it owns, so your
-grant stays in place after `lager update`.
+`sudo -n <ufw> status` with the ufw path that the box reports, usually
+`/usr/sbin/ufw`. Lager does not grant that command. If `sudo` asks for a
+password on the box, `apply` refuses and prints the one sudoers line that the
+check needs. The line has this form:
+
+```text
+<box-user> ALL=(root) NOPASSWD: /usr/sbin/ufw status
+```
+
+Add that line to a sudoers file of your own under `/etc/sudoers.d/` with
+`sudo visudo -f <file>`. Lager changes only the sudoers files that it owns, so
+your grant stays in place after `lager install` and `lager update`.
 
 A port counts as taken only when something other than the lager container holds
 it. The container publishes 5000 and 9000 on an ordinary box. `apply` stops it
@@ -291,11 +369,15 @@ The delete clears any earlier appended attempt, because ufw skips a rule it
 already holds. It reports `Could not delete non-existent rule` when there was
 none. That is expected.
 
-Leave this at the default unless you need the adapter inside the container. A
-box whose lager predates the setting says so.
+**After the switch.** `apply` confirms over SSH that the box API is up on the
+box. If the API is up but your computer cannot reach it over HTTP, `apply`
+prints a warning and still exits `0`. The switch is then recorded. Allow
+your interface in the firewall, or switch back.
 
-**Exit codes for `apply`:** `0` applied, `3` the container is up on the
-previous config, `1` anything else.
+**Switch back.** Run `lager box-config network-mode unset`, then
+`lager box-config apply`. A return to `lagernet` needs no check.
+
+Leave this at the default unless you need the adapter inside the container.
 
 ### `pip` / `cargo` / `npm`
 
@@ -309,6 +391,19 @@ lager box-config npm add left-pad --box my-lager-box
 ```
 
 `pip add` validates against PyPI by default; pass `--no-validate-pypi` to skip.
+
+`pip import-legacy` is a one-time migration helper. It imports the entries of a
+hand-written `/etc/lager/user_requirements.txt` into `pip_packages`. It skips
+blank lines, comments, invalid entries and packages that the config already
+lists. It does not check PyPI. Run `apply` afterwards.
+
+```bash
+lager box-config pip import-legacy --box my-lager-box
+```
+
+`init` performs the same import when it creates the config. After a container
+start with a box config, the box writes `/etc/lager/user_requirements.txt` from
+`pip_packages`, and a hand edit to that file is lost.
 
 ### `sysctl`
 

@@ -50,9 +50,13 @@ lager ssh --box lab-lager-box -- cat /etc/lager/version
 # Flags pass through; use `--` to separate them from lager's own options
 lager ssh --box lab-lager-box -- ls -la /etc/lager
 
-# Inspect the running containers
-lager ssh --box lab-lager-box -- sudo docker ps
+# Inspect the running containers (the box login user is in the docker group)
+lager ssh --box lab-lager-box -- docker ps
 ```
+
+`lager ssh` with a `COMMAND` does not allocate a terminal. A remote `sudo`
+command therefore works only when the box user has a passwordless grant for it.
+Otherwise, run it in an interactive session.
 
 <Note>Use `--` to separate lager's options from the remote command whenever the
 command contains its own dashed flags, so they aren't parsed as `lager`
@@ -66,7 +70,15 @@ code, so it composes cleanly in scripts.</Note>
 The command:
 1. Resolves the Lager Box name to IP address
 2. Looks up the SSH username (default: `lagerdata`)
-3. Opens an interactive SSH session
+3. Chooses the SSH identities to offer
+4. Opens an interactive SSH session, or runs the command
+
+If `~/.ssh/lager_box` exists, `lager ssh` passes it with `-i`. The `-i` flag
+replaces the default identity list of SSH instead of adding to it. So
+`lager ssh` also names each of your own default keys that exists, after
+`lager_box`. Those keys are `id_rsa`, `id_ecdsa`, `id_ecdsa_sk`, `id_ed25519`
+and `id_ed25519_sk`. Identities from `~/.ssh/config` and agent keys stay on
+offer. With no `lager_box` key, `lager ssh` passes no `-i` at all.
 
 ---
 
@@ -75,6 +87,9 @@ The command:
 SSH usernames are resolved in order:
 1. Username stored with box configuration (`lager boxes add --user`)
 2. Default username: `lagerdata`
+
+`lager ssh` looks up the stored username by box name. If you pass an IP address
+to `--box`, it uses `lagerdata`. Pass the box name to use its stored username.
 
 To use a different username for a Lager Box:
 ```bash
@@ -89,15 +104,16 @@ lager boxes edit --name pi-lager-box --user pi
 
 ## SSH Key Setup
 
-For passwordless access, set up SSH keys:
+For passwordless access, install the Lager SSH key on the box. The command asks
+for the box password once:
 
 ```bash
-# Generate key if needed
-ssh-keygen -t ed25519
-
-# Copy to Lager Box
-ssh-copy-id lagerdata@<box-ip>
+lager ssh-setup --box my-lager-box
 ```
+
+A key that you installed yourself with `ssh-copy-id` also works, because
+`lager ssh` offers your default keys too. See
+[SSH Setup](/source/reference/cli/ssh-setup).
 
 ---
 
@@ -109,8 +125,7 @@ lager ssh --box my-lager-box
 
 # One-off commands (no interactive shell)
 lager ssh --box my-lager-box -- cat /etc/lager/version
-lager ssh --box my-lager-box -- sudo docker ps
-lager ssh --box my-lager-box -- sudo ufw status
+lager ssh --box my-lager-box -- docker ps
 ```
 
 ---
@@ -122,8 +137,8 @@ or interactively after `lager ssh --box <box>`.
 
 ### Check Container Status
 ```bash
-lager ssh --box my-lager-box -- sudo docker ps -a
-lager ssh --box my-lager-box -- sudo docker logs controller --tail 100
+lager ssh --box my-lager-box -- docker ps -a
+lager ssh --box my-lager-box -- docker logs lager --tail 100
 ```
 
 ### View Lager Box Version
@@ -137,8 +152,12 @@ lager ssh --box my-lager-box -- df -h
 ```
 
 ### View Firewall Status
+
+`sudo` asks for a password on most boxes, so open an interactive session first:
+
 ```bash
-lager ssh --box my-lager-box -- sudo ufw status verbose
+lager ssh --box my-lager-box
+sudo ufw status verbose
 ```
 
 ---

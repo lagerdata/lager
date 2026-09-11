@@ -23,7 +23,7 @@ If someone has already set up a box for you, you do not need this page. Go strai
 - A network connection, and an IP address or hostname you can reach.
 - An SSH server, and a **login account with `sudo`** whose password you know.
 - **`git`** installed. Lager installs everything else the box needs, including Docker.
-  Step 1 explains why you must spend the extra minute and install Docker yourself.
+  Step 1 explains why you can install Docker yourself first. That step is optional.
 
 **On your computer:**
 
@@ -39,9 +39,10 @@ sudo --version     # see the sudo-rs note below
 ```
 
 <Note>
-A first install builds the Lager container on the box itself. That takes roughly 14 minutes
-on ordinary box hardware. Plan for the box to be busy. `lager install` bounds the step at
-30 minutes by default.
+An install of the default `main` builds the Lager container on the box itself. That takes
+roughly 14 minutes on ordinary box hardware. Plan for the box to be busy. `lager install`
+bounds the step at 30 minutes by default. An install of a release tag with `--version` uses
+the pre-built image instead, and takes about 2 minutes.
 
 Slower hardware runs longer. An emulated guest, a low-power mini PC, or a throttled VM can
 exceed 30 minutes on a healthy build. Raise the budget with `--timeout <seconds>` or
@@ -171,22 +172,36 @@ second run continues rather than starts over.
 
 <Note>
 To install a specific release instead of the latest code, add `--version` -- for example
-`--version v0.39.0`. See the [Install reference](/source/reference/cli/install) for every
-option.
+`--version v0.39.0`. A release tag uses the pre-built image, so the install runs much
+faster. The default `main` builds on the box. See the
+[Install reference](/source/reference/cli/install) for every option.
 </Note>
 
 ---
 
 ## Step 4: Networking and the Firewall
 
-Installation configures a UFW firewall on the box. The firewall restricts the Lager service
-ports to your VPN, the Docker bridge, and localhost. Port 22 always stays open, so the
-firewall cannot lock you out of the machine.
+Installation configures a UFW firewall on the box. The rules deny incoming traffic by
+default. They allow the Lager service ports on `lo`, `docker0`, `tailscale0` and a
+corporate VPN interface. They deny those ports on every other interface. Port 22 always
+stays open, so the firewall cannot lock you out of the machine.
+
+<Warning>
+**On a default box, the firewall does not protect the Lager ports.** The container
+publishes its ports through Docker. Docker forwards that traffic ahead of the host firewall
+rules. A published port therefore answers anyone who can route to the box. Put the box on
+a VPN or an isolated LAN. See the Security Model section of
+[SECURITY.md](https://github.com/lagerdata/lager/blob/main/SECURITY.md#security-model).
+</Warning>
+
+The rules govern the Lager ports only on a box set to `lager box-config network-mode host`.
+There, the container does not publish ports.
 
 How you point it at your network depends on what you use:
 
 **Tailscale.** Nothing to do. If Tailscale runs on the box, the installer detects the
-`tailscale0` interface and allows the Lager ports on it.
+`tailscale0` interface and allows the Lager ports on it. The installer checks for Tailscale
+only while it runs. `lager update` does not change the firewall.
 
 **A corporate VPN.** Name the interface explicitly. Find it on the box:
 
@@ -221,8 +236,9 @@ Add this box to your configuration? [Y/n]: y
 Box name: bench-1
 ```
 
-The name is yours to choose and is local to your computer. If you skipped that prompt, add it
-by hand -- `--user` is required:
+The installer does not show this prompt when you pass `--yes`. The name is yours to choose
+and is local to your computer. If you skipped that prompt, add it by hand -- `--user` is
+required:
 
 ```bash
 lager boxes add --name bench-1 --ip <box-ip> --user <box-user>
@@ -239,10 +255,14 @@ lager hello --box bench-1
 ```
 Box: bench-1
 IP: 100.64.1.42
-Version: 0.39.0
+Version: 0.47.0 (main@5d84c68612384eed2854638c1e0941a4ff8b7893 -- not a release build)
 
 bench-1 is online and responding!
 ```
+
+The value in brackets names the ref that the box runs. A default install deploys `main`, so
+the line says `not a release build`. A box installed from a release tag shows only the tag
+and the commit.
 
 Then see what hardware it can find:
 
@@ -281,16 +301,21 @@ The container build is the reason. The box image compiles a USB DAQ library from
 single-threaded C++ build. That takes a few minutes natively, and it is very slow under
 emulation. Expect that step alone to run for hours.
 
-Pull the pre-built image instead of building it. Deploy a release tag rather than `main`, so
-that a published image exists to pull:
+Pull the pre-built image instead of building it. Install a release tag rather than `main`,
+so that a published image exists. `lager install` pulls it by default:
 
 ```bash
 lager install --ip <box-ip> --user <box-user> --version <release-tag>
+```
+
+`lager update` builds on the box by default. For a later update, pass `--pull`:
+
+```bash
 lager update --box <box-name> --version <release-tag> --pull
 ```
 
 Any published release tag works. `lager update --version` accepts a tag, a semver pin, a
-branch, or a commit SHA. Only a release tag has a published image to pull.
+branch, or a full 40-character commit SHA. Only a release tag has a published image to pull.
 
 When no image matches, `--pull` falls back to building on the box. Watch the output. If it
 starts to compile, the pull missed and you are back on the slow path. See
@@ -335,9 +360,12 @@ The error lists the interfaces that do exist. Connect the VPN, confirm the name 
 
 <Accordion title="The install seems to have stopped">
 
-A first install builds the container image on the box. That is the longest step by far, and
-it can run for many minutes with little output. Let it run. The command gives up on its own
-after 30 minutes.
+An install of a branch builds the container image on the box. That is the longest step by
+far, and it can run for many minutes with little output. Let it run.
+
+The command gives up when the `--timeout` budget runs out. The default is 1800 seconds, or
+the value of `LAGER_INSTALL_TIMEOUT`. On slow hardware, raise the budget. `--timeout 0`
+removes the limit. After a timeout, a re-run of the same command is safe.
 
 </Accordion>
 
@@ -349,6 +377,11 @@ older than 0.41.0. Installation stops at the passwordless-sudo step with
 
 Upgrade the CLI (`pip install --upgrade lager-cli`) and run the install again. Since 0.41.0
 Lager writes no wildcard rules, and it installs cleanly under `sudo-rs`.
+
+On CLI 0.41.0 or newer, the installer validates the file before it installs it. A failure
+prints `[ERROR] Invalid sudoers syntax -- /etc/sudoers.d/lagerdata-udev was NOT modified`.
+The sudoers file on the box stays unchanged. On a `sudo-rs` box, the installer then prints
+the `update-alternatives` command below. Report that output as a bug.
 
 If you cannot upgrade, switch the box to classic `sudo` instead. Keep a second session open
 with a working root shell, in case the switch does not take:
@@ -362,24 +395,27 @@ sudo --version
 
 <Accordion title="Failed to install Docker">
 
-Installation prints the manual commands to run on the box. Run them **one at a time** rather
-than as a block, so that you see which one fails. The installer reports this whole sequence
-as a single error:
+Each Docker install step reports its own failure. Look for a line like
+`[lager] STEP FAILED: <command> (exit N)`. The lines just before it are the error output of
+that command. If no such line appears, the SSH session itself failed, and the error above
+comes from `ssh`.
 
-```bash
-sudo apt-get update && sudo apt-get install -y docker.io docker-compose-v2
-sudo systemctl daemon-reload
-sudo systemctl enable docker
-sudo systemctl restart docker
-sudo usermod -aG docker <box-user>
-```
-
-If `restart` is the step that fails, Docker itself does not start. A second install does
-not help. Ask it why:
+If Docker is already on the box, the failure came after apt, in the daemon or the group
+change. A second install does not help. The installer then suggests these commands on the
+box:
 
 ```bash
 systemctl status docker
 journalctl -xeu docker.service
+```
+
+Installation also prints the manual commands to run on the box:
+
+```bash
+sudo apt-get update && sudo apt-get install -y docker.io docker-compose-v2
+sudo systemctl daemon-reload
+sudo systemctl enable docker && sudo systemctl restart docker
+sudo usermod -aG docker <box-user>
 ```
 
 Once Docker runs, log out and back in so the group membership takes effect, then run

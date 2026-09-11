@@ -48,7 +48,7 @@ exclude correctly. Holder formats:
 
 | Environment           | Holder string                                                              |
 |-----------------------|----------------------------------------------------------------------------|
-| Dev (your machine)    | OS user, or the name set with `lager defaults add --user`                  |
+| Dev (your machine)    | `LAGER_USER`, else the name set with `lager defaults add --user`, else the OS user |
 | GitHub Actions        | `ci:github:<repo>#<run>-<attempt>/<job>@<runner>:<pid>`                    |
 | Drone                 | `ci:drone:<repo>#<build>:<pid>@<host>`                                     |
 | GitLab CI             | `ci:gitlab:<project>#<pipeline>/<job>:<pid>@<host>`                        |
@@ -56,8 +56,23 @@ exclude correctly. Holder formats:
 | Jenkins               | `ci:jenkins:<tag>:<pid>@<host>`                                            |
 | Generic CI fallback   | `ci:generic:<host>:<pid>`                                                  |
 
-The `:pid` (and `@runner` / `@host`) suffix guarantees that two parallel
-matrix items in the same workflow run get distinct holder strings.
+The `:<pid>` part names the process that took the lock. It does not separate
+holders when the CLI compares them, as the next section describes.
+
+### How a command recognizes its own lock
+
+Each `lager` command runs as a new process, so its holder string ends in a
+different pid. The CLI therefore compares holders by **scope**. It removes a
+`:<digits>` part that sits at the end of the holder, or just before `@`.
+
+As a result, a later command in the same CI job treats the auto-lock of that job
+as its own. It does not release that lock. Holders that differ in run,
+attempt, job or runner keep distinct scopes, so they still exclude each other.
+
+The lock check that runs before a command also accepts a lock held by your plain
+user name. The auto-lock acquire compares scopes only. The box compares exact
+strings. `lager boxes unlock` sends your plain user name, so it cannot release a
+`ci:` auto-lock without `--force`.
 
 ### Collision behavior
 
@@ -69,8 +84,12 @@ When `lager python` tries to acquire a lock that another holder owns:
   matrix jobs queue against the same self-hosted box.
 
 If you locked the box as yourself with `lager boxes lock` before you ran
-`lager python`, the CLI sees the lock as already-ours. It **does not
-release the lock on exit**, so your explicit reservation survives the test.
+`lager python` on your computer, the CLI sees the lock as already-ours. It **does
+not release the lock on exit**, so your explicit reservation survives the test.
+
+Under CI, the auto-lock holder is a `ci:` string, not your user name. A plain
+`lager boxes lock` reservation therefore collides with it. The command waits
+`LAGER_LOCK_WAIT` seconds, then exits 1.
 
 ### TTL & heartbeat
 
@@ -112,8 +131,9 @@ underneath a job that still runs.
 
 | Env var                       | Effect                                                                                                  |
 |-------------------------------|---------------------------------------------------------------------------------------------------------|
-| `LAGER_AUTO_LOCK_DISABLE=1`   | Skip auto-lock entirely. The command still checks for someone else's user lock but does not acquire.    |
-| `LAGER_LOCK_WAIT=<seconds>`   | Override collision wait time. `0` = fail-fast (dev default), large value = patient queue (CI default).   |
+| `LAGER_AUTO_LOCK_DISABLE=1`   | Skip auto-lock entirely. The command still checks for someone else's user lock but does not acquire. Any non-empty value disables auto-lock, including `0`. |
+| `LAGER_LOCK_WAIT=<seconds>`   | Override collision wait time. `0` = fail-fast (dev default), large value = patient queue (CI default). An unparseable value gives `0`, even in CI. |
+| `LAGER_CI_OVERRIDE=<any>`     | Use the lock behavior of a user computer inside CI: the holder is your plain user name, and the default wait is `0`. |
 | `LAGER_LOCK_HOLDER=<string>`  | Override the holder identity. Useful when you intentionally want two jobs to share a single reservation. |
 | `LAGER_LOCK_TTL=<seconds>`    | Override the TTL the CLI writes. `LAGER_LOCK_TTL=none` = eternal (caller must `lager boxes unlock`).    |
 | `LAGER_LOCK_HEARTBEAT=<sec>`  | Override the heartbeat refresh interval (default 60s).                                                   |
@@ -140,11 +160,16 @@ lager boxes lock --box NAME
 - `--user` — username to lock as (useful when running inside Docker where
   the user is otherwise `root`).
 
-The box compares holder names as plain strings, so a lock is yours on every
-surface that uses the same name. If another tool, such as a control plane
-dashboard, also locks this box, set `lager defaults add --user` to the
-display name you use there. A box you lock from either side is then
-recognized as yours by both.
+The box compares holder names as exact strings. The CLI compares them by scope,
+as described above. A lock is therefore yours on every surface that writes the
+same string. If another tool, such as a control plane dashboard, also locks this
+box, set `lager defaults add --user` to the name that the tool writes as the
+holder.
+
+Recognition works only when both tools write the same string. Some tools write
+the holder as `<origin>:<id>:<name>:<email>`. `lager boxes` shows that holder as
+`<name>`, but the comparison still uses the full string. Such a lock does not
+count as yours, and `lager boxes unlock` needs `--force`.
 
 **Example**:
 ```bash
@@ -157,7 +182,7 @@ Box 'my-lager-box' is locked by alice
 If the box is already locked by another user:
 
 ```
-Error: Box 'my-lager-box' is already locked by bob (since 2026-03-20T13:00:00Z)
+Box 'my-lager-box' is already locked by bob (since 2026-03-20T13:00:00Z)
 ```
 
 ### `lager boxes unlock`
@@ -200,15 +225,28 @@ This is what lets you Ctrl+C a hung detached script and immediately
 When boxes are locked, `lager boxes` shows an extra column:
 
 ```
- name           ip               version   status    locked by
-=====================================================================
- my-lager-box   100.x.x.1        0.24.0    current   alice
- staging-box    100.x.x.2        0.24.0    current   github lager run 9182 job test on runner-3
- pi-box         100.x.x.3        0.24.0    current
+name           ip          user        version   status    locked by
+================================================================================================
+my-lager-box   100.x.x.1   lagerdata   0.47.0    current   alice
+staging-box    100.x.x.2   lagerdata   0.47.0    current   github lager run 9182 job test on runner-3
+pi-box         100.x.x.3   pi          0.47.0    current
+
+Your CLI: 0.47.0
 ```
 
 CI holders are formatted human-readably (e.g. `github lager run 9182 job
 test on runner-3`) rather than printed as raw colon-delimited strings.
+
+Holders that another service writes are shortened the same way:
+
+| Holder string | Shown as |
+|---------------|----------|
+| `<origin>:<id>:<name>:<email>` | `<name>` |
+| `<origin>:<id>:<email>` | `<email>` |
+
+The same short form appears in the `lager boxes lock` and `unlock` messages,
+and in the error that a locked box gives. A holder in any other form is shown
+unchanged.
 
 ## CI workflow example
 
@@ -229,10 +267,9 @@ jobs:
       - run: lager python test/api/${{ matrix.suite }} --box my-lager-box
 ```
 
-The three matrix items each get a unique holder, because
-`...GITHUB_JOB=hardware-tests/<runner>:<pid>` differs per item. Each item then
-POSTs `/lock`. Whichever item loses the race waits up to 30 minutes for the
-winner to finish, and then retries. No `lager boxes lock` call needed.
+Each item POSTs `/lock` with its CI holder. Whichever item loses the race waits up
+to 30 minutes for the winner to finish, and then retries. No `lager boxes lock`
+call needed.
 
 ## Backward compatibility
 

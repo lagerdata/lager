@@ -56,8 +56,9 @@ lager defaults add [OPTIONS]
 **Other Options:**
 - `--serial-port PATH` - Default serial port path
 - `--user TEXT` - Username recorded on box locks. Use the same name as other
-  tools that lock boxes, such as a control plane's display name. A lock
-  taken from either side is then recognized by both.
+  tools that lock boxes. A lock counts as yours only when both tools write the
+  identical holder string. See [Box Locking](/source/reference/cli/locking).
+  The `LAGER_USER` environment variable overrides this default.
 
 **Examples:**
 ```bash
@@ -84,13 +85,17 @@ lager defaults list
 
 Output:
 ```
-Current defaults:
-  box: my-lager-box
-  supply-net: VDD_MAIN
-  battery-net: VBAT
-  debug-net: DEBUG_SWD
-  serial-port: /dev/ttyUSB0
+Default       Value
+box           my-lager-box
+serial-port   /dev/ttyUSB0
+supply-net    VDD_MAIN
+battery-net   VBAT
+debug-net     DEBUG_SWD
 ```
+
+With no defaults set, the command prints
+`No defaults are currently set. Add one with: lager defaults add`. Running
+`lager defaults` with no subcommand gives the same output as `list`.
 
 ### `delete`
 
@@ -173,15 +178,25 @@ lager supply voltage 3.3
 
 ## Configuration Storage
 
-Defaults are stored in the `.lager` configuration file:
+Defaults are stored in the global `.lager` file, `~/.lager`. If
+`LAGER_CONFIG_FILE_DIR` is set, the file is `.lager` in that directory. The file
+is JSON, and the defaults are under the `DEFAULTS` key:
 
-```ini
-[LAGER]
-default_lager_box = my-lager-box
-default_supply_net = VDD_MAIN
-default_battery_net = VBAT
-default_serial_port = /dev/ttyUSB0
+```json
+{
+  "DEFAULTS": {
+    "gateway_id": "my-lager-box",
+    "net_power_supply": "VDD_MAIN",
+    "net_battery": "VBAT",
+    "serial_device": "/dev/ttyUSB0",
+    "user": "alice"
+  }
+}
 ```
+
+`gateway_id` holds the default box. Each net default uses a `net_` key, for
+example `net_debug` or `net_uart`. A `.lager` file in INI format is refused with
+an error.
 
 ---
 
@@ -208,7 +223,7 @@ lager debug flash fw.hex --box other-lager-box
 
 ## Notes
 
-- Defaults are per-project (stored in `./.lager`)
+- Defaults are global to your user account (stored in `~/.lager`)
 - Net names must match configured nets on the Lager Box
 - Box names are validated against saved boxes
 - Use `lager defaults list` to verify current settings

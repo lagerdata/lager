@@ -37,11 +37,11 @@ lager supply supply1 voltage 3.3 --box my-lager-box
 Below is a summary of the main command groups available in the Lager CLI.
 
 ### Lager Box Management
-- **[Boxes](/source/reference/cli/boxes)**: Manage Lager Box configurations (add, delete, sync, import/export)
+- **[Boxes](/source/reference/cli/boxes)**: Manage Lager Box configurations (add, edit, delete, import/export, lock)
 - **[Hello](/source/reference/cli/hello)**: Verify connectivity to your Lager Box
 - **[Update](/source/reference/cli/update)**: Update Lager Box software
 - **[SSH](/source/reference/cli/ssh)**: Direct SSH access to Lager Box
-- **[Logs](/source/reference/cli/logs)**: View Lager Box service logs
+- **[Logs](/source/reference/cli/logs)**: Check the size of Lager Box log files, and clean old ones
 
 ### Configuration
 - **[Instruments](/source/reference/cli/instruments)**: List connected test equipment
@@ -137,15 +137,32 @@ lager supply supply1 voltage 3.3
 lager adc adc1
 ```
 
+### Box Resolution
+
+A command that needs a Lager Box picks it in this order:
+
+1. The `--box` option of that command
+2. The `LAGER_BOX` environment variable
+3. The default box from `lager defaults add --box`
+
+`--box` takes the name of a saved box or an IP address. With none of the three,
+the command fails. It lists your saved boxes, or tells you how to add one.
+
 ## Global Options
 
-All commands support these global options:
+These options go before the command group, for example `lager --version`:
 
 | Option | Description |
 |--------|-------------|
-| `--box TEXT` | Lager Box name or IP address |
-| `--help` | Show help for any command |
-| `--version` | Show CLI version |
+| `--version` | Show the CLI version |
+| `--debug` | Show debug output |
+| `--colorize` | Enable colored terminal output |
+| `--help` | Show help and the list of command groups |
+
+`--box` is not a global option. Each command that talks to a box takes its own
+`--box`, after the command. Every command also takes `--help`. On
+`lager install` and `lager update`, `--version` names the box version to deploy,
+not the CLI version.
 
 ## Tips
 

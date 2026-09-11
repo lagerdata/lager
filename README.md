@@ -41,10 +41,10 @@ You also need a **box**: a dedicated Linux machine on the bench, physically
 connected to your instruments. To set one up:
 
 ```bash
-lager install --ip <BOX_IP>
+lager install --ip <BOX_IP> --user <BOX_SSH_USER>
 ```
 
-See [Adding your first box](https://docs.lagerdata.com/source/getting-started/adding-first-lager-box)
+See [Setting Up a Lager Box](https://docs.lagerdata.com/source/getting-started/setting-up-a-lager-box)
 for the full walkthrough.
 
 ## Quick Start
@@ -104,7 +104,7 @@ for on-box tests.
 ```
 your laptop / CI runner
     |  lager CLI
-    |  HTTPS over Tailscale VPN or direct network
+    |  HTTP over Tailscale VPN or direct network
     v
 Lager box  (dedicated Linux machine on the bench)
     |  USB / VISA / SCPI / SWD / serial
