@@ -268,6 +268,23 @@ class TestDeployScriptDrift:
             if 'git fetch' in line and not line.lstrip().startswith('#'):
                 assert '--force' in line, line
 
+    def test_keydir_ownership_is_preserved(self, deploy_script):
+        # The always-run permission repair chowns /etc/lager to the container
+        # user (UID 33) so the container and box_config renderers can write
+        # there. It must NOT sweep authorized_keys.d into that ownership: that
+        # directory holds the .pub files authorizing SSH, and a box that runs
+        # untrusted code could then authorize its own key. The repair excludes
+        # it with -prune, leaving whatever owner it already has.
+        assert (
+            "find /etc/lager -path /etc/lager/authorized_keys.d -prune "
+            "-o -exec chown 33:" in deploy_script
+        )
+        # The old unguarded form must not come back on the always-run line.
+        assert (
+            '''sudo chown -R 33:"$(id -g)" /etc/lager && sudo chmod 2775'''
+            not in deploy_script
+        )
+
     def test_install_sequence_literals(self, deploy_script):
         for literal in (
             '.lager_venv',

@@ -1191,8 +1191,16 @@ fi
 # also repairs boxes provisioned by an older CLI, which left /etc/lager
 # owner-only and therefore unwritable by start_box.sh's box_config renderers.
 # Single-quoted so $(id -g) is evaluated ON THE BOX, not on the operator's host.
+#
+# The recursive chown deliberately SKIPS authorized_keys.d. That directory
+# holds the .pub files that authorize SSH, and its ownership is managed
+# separately (root-owned on a locked-down box so nothing but the key manager
+# can add a key). A plain `chown -R` here swept it into www-data ownership,
+# which on a box that runs untrusted code lets that code authorize its own SSH
+# key. `-prune` leaves whatever owner the directory already has, so this stays
+# correct on both a plain box (box-writable) and a locked-down one (root).
 print_info "Ensuring correct permissions on /etc/lager..."
-ssh_t "${BOX_USER}@${BOX_IP}" 'sudo chown -R 33:"$(id -g)" /etc/lager && sudo chmod 2775 /etc/lager'
+ssh_t "${BOX_USER}@${BOX_IP}" 'sudo find /etc/lager -path /etc/lager/authorized_keys.d -prune -o -exec chown 33:"$(id -g)" {} + && sudo chmod 2775 /etc/lager'
 print_success "Permissions set correctly (www-data UID 33, group-writable by ${BOX_USER})"
 
 # Register the lager_box key in the box's key directory.

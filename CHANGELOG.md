@@ -51,6 +51,14 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 ### Fixed
 
+- **`lager install` and `lager update` no longer take ownership of the SSH key
+  directory** (`/etc/lager/authorized_keys.d`). The permission repair that
+  makes `/etc/lager` writable for the box-config renderers used to `chown -R`
+  the whole tree, sweeping the key directory into the container's ownership —
+  which, on a box that runs untrusted code, could let that code authorize its
+  own SSH key. The repair now skips that one directory and leaves its
+  ownership as it found it.
+
 - **`lager install` and `lager update` no longer abort on a box whose clone
   holds a divergent tag.** A box cloned before a tag was re-created upstream
   keeps that tag at the old object, and an unforced `git fetch` refuses it
