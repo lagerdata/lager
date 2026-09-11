@@ -355,7 +355,7 @@ except Exception as e:
 
 | Exception | Module | Description |
 |-----------|--------|-------------|
-| `MovementTimeoutError` | `lager.arm.arm_net` | Arm didn't reach target position in time |
+| `MovementTimeoutError` | `lager.automation.arm.arm_net` | Arm didn't reach target position in time |
 | `RuntimeError` | builtin | Arm device not found or cannot be opened |
 
 ## Notes
@@ -366,3 +366,5 @@ except Exception as e:
 - Joint angles (a, b, c) are in the arm's internal coordinate system
 - Default tolerance for position verification is 0.5mm
 - The arm auto-detects via USB VID/PID (0x0483:0x5740)
+- The box finds an arm only when it scans for instruments. The scan probes only a port with that USB ID, and the arm must report a USB serial number. See [Detection](/source/reference/cli/arm#detection) for the `LAGER_ARM_PROBE` setting.
+- `Dexarm` defines approximate workspace bounds: X -300 to 300 mm, Y 170 to 360 mm, Z -140 to 100 mm. The `lager arm` CLI refuses a target outside them. The Python API does not check them before a move.
