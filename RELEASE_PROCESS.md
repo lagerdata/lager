@@ -7,62 +7,42 @@ To contribute code, see [CONTRIBUTING.md](CONTRIBUTING.md).
 ## Prerequisites
 
 - Python 3.10+
-- [`build`](https://pypa-build.readthedocs.io/) (`pip install build`)
 - [`twine`](https://twine.readthedocs.io/) (`pip install twine`)
 - A [PyPI API token](https://pypi.org/help/#apitoken) with upload access to the `lager-cli` project
-- Push access to `lagerdata/lager` on GitHub
-
-## Remote Setup
-
-Contributors work from personal forks. By convention:
-
-| Remote     | Points to                              |
-|------------|----------------------------------------|
-| `origin`   | Your fork (e.g. `youruser/lager`)      |
-| `upstream` | Canonical repo (`lagerdata/lager`)     |
-
-```bash
-# One-time setup (after forking on GitHub)
-git clone git@github.com:<youruser>/lager.git
-cd lager
-git remote add upstream git@github.com:lagerdata/lager.git
-git fetch upstream
-```
-
-## Contributing Code
-
-1. Create a feature branch from the latest upstream main:
-   ```bash
-   git fetch upstream
-   git checkout -b my-feature upstream/main
-   ```
-2. Make changes, commit, and push to your fork:
-   ```bash
-   git push -u origin my-feature
-   ```
-3. Open a PR against the upstream repo:
-   ```bash
-   gh pr create --repo lagerdata/lager
-   ```
-4. After review, the PR is merged into upstream `main`.
+- Push access to `lagerdata/lager` on GitHub, with your `origin` remote pointing at it
 
 ## Pre-release Checklist
 
-Before starting a release, verify:
+Before you start a release, confirm each item:
 
-- [ ] All PRs merged to upstream `main` and CI is green
-- [ ] Tests pass against target hardware boxes
-- [ ] `CHANGELOG.md` has entries for all user-facing changes
-- [ ] `SECURITY.md` supported-version table matches the release you are about to cut
-- [ ] No open security issue blocks the release
+- [ ] Every pull request for the release is merged to `main`, and CI on `main` is green.
+- [ ] Tests pass against the target hardware boxes.
+- [ ] `CHANGELOG.md` has an entry under `## [Unreleased]` for every user-facing change.
+- [ ] `## [Unreleased]` holds each `###` heading at most once. Two branches that each add a
+      `### Fixed` block both merge cleanly. Merge the blocks in Keep a Changelog order: Added,
+      Changed, Deprecated, Removed, Fixed, Security. Keep every bullet.
+- [ ] No open security issue blocks the release.
+
+This command counts the `###` headings under `## [Unreleased]`:
+
+```bash
+awk '/^## \[Unreleased\]/{f=1;next} /^## \[/{f=0} f' CHANGELOG.md | grep '^### ' | sort | uniq -c
+```
 
 ## Release Steps
 
-Throughout this guide, replace `X.Y.Z` with the actual version number (e.g., `0.4.2`).
+Throughout this guide, replace `X.Y.Z` with the version number, for example `0.47.1`.
 
-### 1. Update Version Number
+### 1. Create a Release Branch and Update the Version
 
-Edit the version in `cli/__init__.py`:
+Create the branch from the latest `main`:
+
+```bash
+git fetch origin
+git switch -c release/vX.Y.Z origin/main
+```
+
+Then set the version in `cli/__init__.py`:
 
 ```python
 __version__ = 'X.Y.Z'
@@ -70,125 +50,89 @@ __version__ = 'X.Y.Z'
 
 ### 2. Update CHANGELOG.md
 
-Add a new section at the top of `CHANGELOG.md` following the [Keep a Changelog](https://keepachangelog.com/) format:
+Keep the `## [Unreleased]` heading and the comment below it. Add the version heading directly
+under that comment, above the entries that ship in this release:
 
 ```markdown
+## [Unreleased]
+
+<!-- Keep this heading. ... -->
+
 ## [X.Y.Z] - YYYY-MM-DD
-
-### Added
-- New features
-
-### Changed
-- Changes to existing functionality
-
-### Fixed
-- Bug fixes
-
-### Removed
-- Removed features
 ```
 
-To see what changed since the last release, review the commit history:
+A branch that merges after the release files its entry under `[Unreleased]`. Without that
+heading, the entry lands inside the released section, and no merge conflict catches it.
 
-```bash
-git log upstream/main..HEAD --oneline --no-decorate
-```
+**Rollover.** At the first release of a new ten-minor block, such as `0.50.0`, move the previous
+block into `docs/changelog/`. For `0.50.0`, that block is `0.40.0` through `0.49.x`. Move the text
+unchanged, and link the new file from the header of `CHANGELOG.md`. GitHub stops rendering a
+Markdown file at about 512 KB, so `tools/check_docs.py` fails when `CHANGELOG.md` grows past
+400 KB. The same check reads `docs/changelog/`, so every archived version still needs its
+release-notes page.
 
-### 3. Create Release Notes File
+### 3. Write the Release Notes
 
-Create `docs/source/release-notes/vX.Y.Z.mdx`:
-
-```markdown
----
-title: "Version X.Y.Z"
-description: "Month DD, YYYY"
----
-
-## <u>Features</u>
-
-- Feature description
-
-## <u>Bug Fixes</u>
-
-- Bug fix description
-
-## <u>Improvements</u>
-
-- Improvement description
-
-## <u>Installation</u>
-
-To install this version:
-
-\`\`\`bash
-pip install lager-cli==X.Y.Z
-\`\`\`
-
-To upgrade from a previous version:
-
-\`\`\`bash
-pip install --upgrade lager-cli
-\`\`\`
-
-## Resources
-
-[View Release on PyPI](https://pypi.org/project/lager-cli/X.Y.Z/)
-```
-
-**Categorization guidelines:**
-- **Features**: New functionality, new commands, new device support
-- **Bug Fixes**: Fixes for issues, crashes, incorrect behavior
-- **Improvements**: Performance, code cleanup, minor enhancements
-
-> If this release drops support for an older minor version, also bump the table in `SECURITY.md`.
-
-**Terminology:** Use "Lager Box" (not "gateway"), "Lager Boxes" (not "gateways").
+Copy `docs/source/release-notes/_template.mdx` to `docs/source/release-notes/vX.Y.Z.mdx`. Fill in
+the sections that have entries, and delete the rest. `tools/check_ste.py` does not check release
+notes, so follow the style rules in the template's comment by hand.
 
 ### 4. Update Navigation
 
-Add the new version to the top of the Release Notes list in `docs/docs.json`:
+In `docs/docs.json`, under the **Release Notes** tab, add the new page at the top of the group for
+its version range:
 
 ```json
 {
-  "tab": "Release Notes",
-  "groups": [
-    {
-      "group": "Version History",
-      "pages": [
-        "source/release-notes/vX.Y.Z",
-        "source/release-notes/v0.4.2",
-        ...
-      ]
-    }
+  "group": "0.40 and later",
+  "pages": [
+    "source/release-notes/vX.Y.Z",
+    "source/release-notes/v0.47.0",
+    ...
   ]
 }
 ```
 
-### 5. Open a PR Against Upstream Main
+At the first release of a new ten-minor block, rename `0.40 and later` to `0.40 – 0.49`, and add a
+new `0.50 and later` group above it.
 
-The `main` branch requires all changes to go through a pull request (direct pushes are blocked). Create a release branch, push it to your fork, and open a PR:
+Then run the docs check. It fails unless the CHANGELOG heading, the release-notes page, and the
+navigation entry all exist:
 
 ```bash
-git fetch upstream
-git checkout main
-git reset --hard upstream/main
-git checkout -b release/vX.Y.Z
+python tools/check_docs.py
+```
+
+### 5. Open a Pull Request Against `main`
+
+Commit the four files, push the branch to `origin` by name, and open a pull request:
+
+```bash
 git add cli/__init__.py CHANGELOG.md docs/source/release-notes/vX.Y.Z.mdx docs/docs.json
 git commit -m "vX.Y.Z"
 git push -u origin release/vX.Y.Z
-gh pr create --repo lagerdata/lager --base main --title "vX.Y.Z"
+gh pr create --repo lagerdata/lager --base main --head release/vX.Y.Z --title "vX.Y.Z"
 ```
 
-After a reviewer approves the PR, merge it with **Squash and merge** or **Rebase and merge**. The branch requires linear history, so standard merge commits are not allowed.
+Name the branch in `git push`. A branch that you create from `origin/main` tracks `main` until its
+first push.
+
+The `main` branch accepts changes only through a pull request. After a code owner approves, merge
+with **Rebase and merge**. The branch ruleset allows no other merge method.
 
 ### 6. Tag the Release
 
-Create an annotated tag on main:
+After the merge, create an annotated tag on the release commit and push it. Tag `origin/main`
+directly, so the state of your local checkout does not matter:
 
 ```bash
-git tag -a vX.Y.Z -m "vX.Y.Z"
-git push upstream vX.Y.Z
+git fetch origin
+git tag -a vX.Y.Z origin/main -m "vX.Y.Z"
+git push origin vX.Y.Z
 ```
+
+Before you tag, confirm that `origin/main` is the release commit. If another pull request merged
+after yours, tag the release commit by its SHA instead.
 
 ### 7. Wait for Tag Validation, Then Download the Artifact
 
@@ -240,36 +184,33 @@ twine upload dist/*
 
 When prompted, use `__token__` as the username and your PyPI API token as the password.
 
-### 9. Create GitHub Release
+### 9. Create the GitHub Release
 
-Create a file with the release notes (copy the relevant section from `CHANGELOG.md`):
+The GitHub Release body is the release's section of `CHANGELOG.md`, without its heading:
 
 ```bash
+awk '/^## \[X.Y.Z\]/{f=1;next} /^## \[/{f=0} f' CHANGELOG.md > release-notes.md
 gh release create vX.Y.Z --repo lagerdata/lager --title "vX.Y.Z" --notes-file release-notes.md
 ```
-
-Alternatively, go to [Releases](https://github.com/lagerdata/lager/releases) and create a new release manually:
-
-- **Tag**: Select the `vX.Y.Z` tag
-- **Title**: `vX.Y.Z`
-- **Description**: Copy the relevant section from `CHANGELOG.md`
 
 > **Pinning:** Boxes pin to a release via its **tag** — `lager update --version vX.Y.Z`. The CLI also accepts the bare form `X.Y.Z` and resolves it to the `vX.Y.Z` tag. Do **not** create a per-version branch; tags are the single source of truth for pinned versions.
 
 ## Post-release
 
-1. Verify the release is live:
-   ```bash
-   pip install lager-cli==X.Y.Z
-   lager --version
-   ```
-2. Sync your fork with upstream:
-   ```bash
-   git fetch upstream
-   git checkout main
-   git reset --hard upstream/main
-   git push origin main
-   ```
+Confirm that the release is live:
+
+```bash
+pip install lager-cli==X.Y.Z
+lager --version
+```
+
+## Releasing a Commit That Is Not the Head of `main`
+
+To exclude work that is already on `main`, create the release branch from the last commit to
+ship instead of from `origin/main`. `release-validation.yml` compares the built version with the
+tag, so the tagged commit must carry the new version. Put the version bump, the CHANGELOG
+heading, and the release notes on that branch, and tag the branch's commit. After you publish,
+open a second pull request that brings the same three changes to `main`.
 
 ## Versioning Policy
 
@@ -279,14 +220,25 @@ This project follows [Semantic Versioning](https://semver.org/):
 - **MINOR** (`Y`): New features, new device/instrument support
 - **PATCH** (`Z`): Bug fixes, documentation, minor improvements
 
-> **Note:** Releases are identified by **tags** (`vX.Y.Z`). Older releases also had a matching `X.Y.Z` *branch* used for box pinning; these are deprecated — `lager update`/`lager install` now resolve a `X.Y.Z` pin to the `vX.Y.Z` tag, so version branches are no longer created. Any remaining `X.Y.Z` branches can be recreated from the tag if ever needed (`git push origin vX.Y.Z^{}:refs/heads/X.Y.Z`).
+> **Note:** Each release is a **tag** (`vX.Y.Z`). Older releases also had a matching `X.Y.Z` branch for box pinning. Those branches are retired: `lager update` and `lager install` resolve an `X.Y.Z` pin to the `vX.Y.Z` tag.
 
 ## Troubleshooting
 
-**`python -m build` fails:** Make sure `build` is installed (`pip install build`) and you are in the `cli/` directory. (Local builds are only needed for debugging; releases use the CI artifact from step 7.)
+**`python -m build` fails:** Install `build` (`pip install build`), and run the build from the
+`cli/` directory. Releases use the CI artifact from step 7, so you need a local build only to
+debug a problem.
 
-**`twine upload` fails:** Verify your PyPI API token is valid and the version does not already exist on PyPI. Check that the package name is `lager-cli`.
+**`twine check` fails on an artifact that CI passed:** Your local `packaging` library is too old
+to read the wheel's metadata. Run `twine` from a fresh virtual environment with current versions
+of `twine` and `packaging`.
 
-**Import errors during build:** Ensure all dependencies listed in `cli/setup.py` are available in your environment.
+**`twine upload` fails:** Check that your PyPI API token is valid, and that the version is not
+already on PyPI.
 
-**Tag already exists:** If you need to re-tag (e.g., after a fix), delete the old tag first: `git tag -d vX.Y.Z && git push upstream :refs/tags/vX.Y.Z`. Do this only when the release is not yet on PyPI.
+**Validate Tag is red:** The tagged commit has a real problem. Do not upload it. While the version
+is not yet on PyPI, delete the tag, fix the problem on `main`, and tag again:
+
+```bash
+git tag -d vX.Y.Z
+git push origin :refs/tags/vX.Y.Z
+```
