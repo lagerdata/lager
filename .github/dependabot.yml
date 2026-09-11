@@ -110,3 +110,25 @@ updates:
     groups:
       test-deps:
         patterns: ['*']
+
+  # box/lager/docker/box.Dockerfile's base image, pinned by digest.
+  #
+  # The pin is what lets a published box image share layers with the release
+  # before it. box-image-publish.yml reuses a cached layer only while
+  # everything above it is unchanged, and a box pull then downloads only the
+  # layers that moved. A floating tag moves whenever Docker Hub rebuilds it,
+  # and then every layer above it rebuilds with a new digest -- a full ~1 GB
+  # download for every box, from a release that may have changed nothing.
+  #
+  # So the base moves here instead, as a reviewable PR. Merging one still
+  # costs every box that full download on the next release, which is why this
+  # runs monthly rather than weekly: security fixes in the base still arrive,
+  # a few at a time rather than one download per rebuild upstream.
+  - package-ecosystem: docker
+    directory: /box/lager/docker
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 2
+    groups:
+      box-base-image:
+        patterns: ['*']

@@ -1,5 +1,9 @@
 # syntax=docker/dockerfile:1.4
-FROM python:3.12-slim-bookworm
+# The base image is pinned by digest, not only by tag. Docker Hub rebuilds this
+# tag regularly, and a moved base gives every layer above it a new digest -- a
+# full ~1 GB download for every box, from a release that may have changed
+# nothing. Dependabot moves the pin as a reviewable PR (.github/dependabot.yml).
+FROM python:3.12-slim-bookworm@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
@@ -283,6 +287,28 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     pip3 install 'brainstem==2.12.5'
 
+# Everything from here to the first source COPY uses nothing from the box
+# source tree, so it stays ABOVE that COPY. Any layer below it is rebuilt
+# whenever box code changes -- every release -- and a rebuilt layer gets a new
+# digest, which every box then downloads again on its next pull. Only box
+# source and the import smoke check below it belong under that line;
+# test/unit/box/test_box_image_publish.py enforces it.
+RUN usermod -aG dialout,plugdev,bluetooth,lpadmin,video www-data \
+    && mkdir -p /var/www /etc/lager \
+    && chown -R www-data:www-data /var/www /etc/lager
+
+# Startup script that starts every box service
+COPY docker/start-services.sh /usr/local/bin/start-services.sh
+RUN chmod +x /usr/local/bin/start-services.sh
+
+# Oscilloscope streaming daemon (PicoScope support)
+# The daemon binary is mounted from the host at runtime via start_box.sh
+# Location: /home/lagerdata/third_party/oscilloscope-daemon -> /usr/local/bin/oscilloscope-daemon
+# Build instructions: cd box/oscilloscope-daemon && ./build_daemon.sh
+
+# Copy oscilloscope web visualization files
+COPY docker/web_oscilloscope.html /app/lager/web_oscilloscope.html
+
 # Copy Python lager package modules (grouped structure)
 # All root-level .py modules (box_http_server, hardware_service, *_hs
 # adapters, ble shim, …). A glob avoids per-file omission bugs when new
@@ -343,31 +369,6 @@ missing = [nt for nt, dotted in api_reference._DRIVER_CLASSES.items() \
            if 'source_module' not in api_reference.API_REFERENCE.get(nt, {})]; \
 sys.exit(f'api_reference introspection failed for: {missing}') if missing else \
 print(f'api_reference: introspected {len(api_reference._DRIVER_CLASSES)} drivers OK')"
-
-RUN usermod -aG dialout www-data
-RUN usermod -aG plugdev www-data
-RUN usermod -aG bluetooth www-data
-RUN usermod -aG lpadmin www-data
-RUN usermod -aG video www-data
-
-RUN mkdir -p /var/www
-RUN chown -R www-data:www-data /var/www
-
-# Create /etc/lager directory for saved nets
-RUN mkdir -p /etc/lager
-RUN chown -R www-data:www-data /etc/lager
-
-# Copy startup script that starts debug service
-COPY docker/start-services.sh /usr/local/bin/start-services.sh
-RUN chmod +x /usr/local/bin/start-services.sh
-
-# Oscilloscope streaming daemon (PicoScope support)
-# The daemon binary is mounted from the host at runtime via start_box.sh
-# Location: /home/lagerdata/third_party/oscilloscope-daemon -> /usr/local/bin/oscilloscope-daemon
-# Build instructions: cd box/oscilloscope-daemon && ./build_daemon.sh
-
-# Copy oscilloscope web visualization files
-COPY docker/web_oscilloscope.html /app/lager/web_oscilloscope.html
 
 # Use tini as init system to reap zombie processes
 # This prevents zombie processes from accumulating when debug tools (JLink, GDB) are started/stopped
