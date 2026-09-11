@@ -87,6 +87,8 @@ The box refuses a target outside the workspace of the arm. See [Workspace Bounds
 
 The maximum timeout is 25 seconds. The hardware service on the box stops a device call after 30 seconds and restarts, so the box refuses a longer move timeout.
 
+A long move can take more than the 15-second default. If a long move times out, run it again with a larger `--timeout`.
+
 **Examples:**
 ```bash
 # Move to specific coordinates

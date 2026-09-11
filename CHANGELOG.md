@@ -113,6 +113,9 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 - **A move before the arm is homed fails at once.** After power-on the firmware
   ignores motion until `go-home` runs, and the move timed out after 15 seconds
   with a message about an obstruction. Now it raises `NotHomedError`.
+- **A move that times out no longer blames the workspace bounds.** The bounds
+  are checked before a move is sent. The error now says that the arm did not
+  arrive, and that a long move can need a larger timeout.
 - **`lager arm position` shows the arm error when the arm stops answering.** It
   failed with "hardware service did not respond" after 10 seconds. The box now
   stops a position read after three attempts of 3 seconds each.
