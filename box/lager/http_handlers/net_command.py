@@ -32,6 +32,7 @@ import re
 
 from flask import Flask, request, jsonify
 
+from lager.arm_hs import validate_move_timeout
 from lager.nets.net import Net
 from lager.nets.device import ConnectionFailed, DeviceError, Device
 from lager.dispatchers import helpers
@@ -597,11 +598,16 @@ def _arm(netname, role, action, params):
     # G-code. Moves block on the box until the arm reaches the target, so the
     # internal proxy timeout is widened past the caller's move timeout.
     if action == "position":
-        pos = _proxy(netname, role).position()
+        # Past Device's 10 s default: the driver tries M114 three times at 3 s
+        # each, and its own error is more useful than a transport timeout.
+        pos = _proxy(netname, role, timeout=20.0).position()
         return _ok("X: %s Y: %s Z: %s" % tuple(pos), [float(v) for v in pos])
 
     if action in ("move", "move_by"):
-        timeout = float(params.get("timeout") or 15.0)
+        # Refused here, before any device call: a wait past the cap would
+        # outlive hardware_service's 30 s call deadline, which restarts the
+        # service and every instrument on it (see arm_hs.MAX_MOVE_TIMEOUT_S).
+        timeout = validate_move_timeout(params.get("timeout") or 15.0)
         dev = _proxy(netname, role, timeout=timeout + 15.0)
         if action == "move":
             for key in ("x", "y", "z"):
@@ -619,7 +625,7 @@ def _arm(netname, role, action, params):
     dev = _proxy(netname, role, timeout=30.0)
     if action == "go_home":
         dev.go_home()
-        return _ok("Arm moving to home position (X0 Y300 Z0)")
+        return _ok("Arm at home position (X0 Y300 Z0)")
     if action == "enable_motor":
         dev.enable_motor()
         return _ok("Arm motors enabled")

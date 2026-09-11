@@ -627,6 +627,8 @@ class TestNetCommandHandler(unittest.TestCase):
         device_name, net_info = self._DeviceMock.call_args.args
         self.assertEqual(device_name, "arm_hs")
         self.assertEqual(net_info["device_id"], "dexarm:ARM123")
+        # Wide enough for the driver's own bounded M114 attempts to report first.
+        self.assertEqual(self._DeviceMock.call_args.kwargs["timeout"], 20.0)
 
     def test_arm_move_passes_coords_and_timeout(self):
         dev = MagicMock()
@@ -651,6 +653,34 @@ class TestNetCommandHandler(unittest.TestCase):
                             "params": {"dy": -10}}, dev)
         self.assertEqual(r.status_code, 200)
         dev.move_by.assert_called_once_with(0.0, -10.0, 0.0, timeout=15.0)
+
+    def test_arm_move_timeout_over_cap_is_400_before_any_device_call(self):
+        # A wait past arm_hs.MAX_MOVE_TIMEOUT_S outlives hardware_service's
+        # 30 s call deadline, which restarts the service. Refused up front.
+        dev = MagicMock()
+        r, dev = self._run({"netname": "arm1", "action": "move",
+                            "params": {"x": 0, "y": 300, "z": 0,
+                                       "timeout": 30}}, dev)
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("at most 25", r.get_json()["error"])
+        self._DeviceMock.assert_not_called()
+        dev.move.assert_not_called()
+
+    def test_arm_move_by_negative_timeout_is_400(self):
+        r, _ = self._run({"netname": "arm1", "action": "move_by",
+                          "params": {"dz": 5, "timeout": -1}})
+        self.assertEqual(r.status_code, 400)
+        self._DeviceMock.assert_not_called()
+
+    def test_arm_move_timeout_at_cap_is_accepted(self):
+        dev = MagicMock()
+        dev.move.return_value = [0.0, 300.0, 0.0]
+        r, dev = self._run({"netname": "arm1", "action": "move",
+                            "params": {"x": 0, "y": 300, "z": 0,
+                                       "timeout": 25}}, dev)
+        self.assertEqual(r.status_code, 200)
+        dev.move.assert_called_once_with(0.0, 300.0, 0.0, timeout=25.0)
+        self.assertEqual(self._DeviceMock.call_args.kwargs["timeout"], 40.0)
 
     def test_arm_home_and_motors(self):
         for action, method in (("go_home", "go_home"),

@@ -79,6 +79,43 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   fetched the same way; the only way out was to force-fetch on the box by
   hand. Both fetches now force. Origin is authoritative for a checkout that
   the very next commands `git reset --hard` and `git clean -fd`.
+
+- **`lager arm set-acceleration` set travel acceleration to the retract value.**
+  It sent `M204 P T T`, and the arm firmware reads retract acceleration from `R`,
+  so retract acceleration was never set. The command and
+  `Dexarm.set_acceleration()` now send `M204 P T R`.
+- **`lager arm read-and-save-position` asks for confirmation.** The command sends
+  `M889`, which replaces the stored calibration of the arm with its current pose.
+  Pass `--yes` to skip the prompt.
+- **An arm net opens the arm that it names.** `lager nets add-all` records the USB
+  serial number of the arm only in the net address, and the box ignored it and
+  opened the first `0483:5740` serial device. Other STM32 boards use that USB ID.
+- **`lager arm` works again after the USB connection to the arm drops.** Before,
+  every command failed until the box hardware service restarted. Now the next
+  command opens the port again, and `position` retries once.
+- **An instrument scan no longer breaks a running `lager arm` command.** The scan
+  sent `M105` to an arm that a saved arm net uses, and the arm reply could go to
+  the scan. The scan now lists that arm from its USB serial number without a
+  probe.
+- **`lager arm move` and `move-by` refuse a timeout longer than 25 seconds.** A
+  longer move outlived the 30-second limit on a box hardware call, and the box
+  hardware service restarted.
+- **`Dexarm.move_to()` and `move_relative()` check the workspace bounds.** They
+  raise `OutOfBoundsError` and send nothing, as `lager arm` does (#518).
+- **`lager arm --box` lists arm nets without locking the box.**
+- **`lager arm go-home` and `Dexarm.go_home()` wait for the arm to reach home.**
+  They returned after half a second, while the arm could still be moving. Now
+  they return when the arm firmware reports that the move is done.
+- **`lager arm move` and `move-by` refuse an arm on firmware older than V2.1.4.**
+  Rotrics swapped the X and Y axes in V2.1.4, so on older firmware a move turned
+  the arm to the side. The error tells you to update the firmware. `position` and
+  `go-home` still work.
+- **A move before the arm is homed fails at once.** After power-on the firmware
+  ignores motion until `go-home` runs, and the move timed out after 15 seconds
+  with a message about an obstruction. Now it raises `NotHomedError`.
+- **`lager arm position` shows the arm error when the arm stops answering.** It
+  failed with "hardware service did not respond" after 10 seconds. The box now
+  stops a position read after three attempts of 3 seconds each.
 - **Four pages said the host firewall limits the Lager ports to the VPN.** On the
   default network, Docker publishes those ports ahead of the host firewall, as
   `SECURITY.md` states. The install, update, setup and architecture pages now say
