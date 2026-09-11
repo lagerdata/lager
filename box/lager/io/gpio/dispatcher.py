@@ -65,7 +65,7 @@ class GPIODispatcher(BaseDispatcher):
         if re.search(r"(usb[_\-]?202|mcc.*usb.*202)", inst, re.IGNORECASE):
             return USB202GPIO
 
-        if re.search(r"(ft232h|ftdi)", inst, re.IGNORECASE):
+        if re.search(r"(ft232h|ft2232h|ft4232h|ftdi)", inst, re.IGNORECASE):
             return FT232HGPIO
 
         if re.search(r"(aardvark|totalphase)", inst, re.IGNORECASE):
@@ -118,17 +118,19 @@ class GPIODispatcher(BaseDispatcher):
                 driver = Driver(netname, pin, unique_id=address)
 
             elif Driver is FT232HGPIO:
-                # FT232H GPIO: (name, pin, serial)
-                # Extract serial from VISA-format address if available
-                address = rec.get("address") or ""
-                serial = None
-                if "::" in address:
-                    parts = address.split("::")
-                    if len(parts) >= 4:
-                        serial = parts[3]
-                elif address and not address.startswith("ftdi://"):
-                    serial = address
-                driver = Driver(netname, pin, serial=serial)
+                # FTDI GPIO: the PID in the address selects the part and
+                # params.interface the channel -- the values Net.get already
+                # passes to a Python script. Passing the serial alone opened
+                # every part as an FT232H on channel A, so `lager gpi`/`gpo`
+                # could not reach an FT2232H, an FT4232H, or channels B-D.
+                from lager.nets.net import _ftdi_address_parts
+
+                serial, pid, url = _ftdi_address_parts(rec.get("address"))
+                driver = Driver(
+                    netname, pin, serial=serial, pid=pid,
+                    interface=(rec.get("params") or {}).get("interface"),
+                    url=url,
+                )
 
             elif Driver is AardvarkGPIO:
                 # Aardvark GPIO: (name, pin, port, serial, target_power)
