@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from lager.dispatchers import helpers
 from lager.exceptions import I2CBackendError
+from lager.util.ftdi_url import is_ftdi_instrument
 
 if TYPE_CHECKING:
     from lager.protocols.i2c.i2c_base import I2CBase
@@ -78,7 +79,7 @@ def _get_pin_config(rec: Dict[str, Any]) -> Dict[str, int]:
     instrument = rec.get("instrument", "").lower()
     if instrument in ("aardvark_i2c", "aardvark", "totalphase_aardvark"):
         return {}
-    if instrument in ("ft232h", "ftdi_ft232h", "ft232h_i2c"):
+    if is_ftdi_instrument(instrument) or instrument == "ft232h_i2c":
         return {}
 
     if _UD_RE.search(instrument):
@@ -271,7 +272,9 @@ def _make_driver(rec: Dict[str, Any], overrides: Dict[str, Any] = None):
             raise I2CBackendError(
                 f"Failed to create Aardvark I2C driver: {exc}"
             ) from exc
-    elif instrument in ("ft232h", "ftdi_ft232h", "ft232h_i2c"):
+    elif is_ftdi_instrument(instrument) or instrument == "ft232h_i2c":
+        # Every FTDI part, not only the FT232H: the driver takes the part from
+        # the PID in the address and the channel from params.interface.
         from .ft232h_i2c import FT232HI2C
 
         from lager.nets.net import _ftdi_address_parts
