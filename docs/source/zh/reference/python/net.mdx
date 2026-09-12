@@ -1,0 +1,384 @@
+---
+title: Net
+description: 管理硬件连接的核心 Net 类
+---
+
+`Net` 类是与硬件仪器交互的主要抽象。它为控制各类硬件提供统一的接口，
+包括电源、示波器、GPIO、ADC、DAC 等。
+
+## 导入
+
+```python
+from lager import Net, NetType
+
+# For exception handling
+from lager import InvalidNetError, SetupFunctionRequiredError
+```
+
+## 类方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `Net.get()` | 为指定的 Net 名称和类型创建一个 Net 实例 |
+| `Net.list_saved()` | 列出 Lager Box 上配置的全部 Net |
+| `Net.list_all_from_env()` | 从环境变量列出 Net（旧方式） |
+| `Net.get_local_nets()` | 获取全部本地 Net 配置 |
+| `Net.save_local_nets()` | 保存多个 Net 配置 |
+| `Net.save_local_net()` | 保存单个 Net 配置 |
+| `Net.delete_local_net()` | 删除一个 Net 配置 |
+| `Net.delete_all_local_nets()` | 删除全部 Net 配置 |
+| `Net.rename_local_net()` | 重命名一个 Net 配置 |
+| `Net.filter_nets()` | 按名称和/或角色过滤 Net |
+
+## 实例方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `enable()` | 启用该 Net 并连接硬件 |
+| `disable()` | 停用该 Net 并断开硬件连接 |
+
+## 方法参考
+
+### `Net.get(name, type, *, setup_function=None, teardown_function=None)`
+
+为指定的 Net 名称和类型创建一个 Net 实例。
+
+```python
+# Get a power supply net
+psu = Net.get('VDD', type=NetType.PowerSupply)
+
+# Get a GPIO net
+led = Net.get('LED', type=NetType.GPIO)
+
+# Get an analog oscilloscope net
+scope = Net.get('PROBE', type=NetType.Analog)
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `name` | `str` | 要创建的 Net 名称 |
+| `type` | `NetType` | Net 类型（例如 `NetType.PowerSupply`、`NetType.GPIO`） |
+| `setup_function` | `callable` | 可选函数，在该 Net 被启用时调用 |
+| `teardown_function` | `callable` | 可选函数，在该 Net 被停用时调用 |
+
+**返回：** 与指定类型对应的 Net 实例
+
+### `Net.list_saved()`
+
+列出 Lager Box 上配置的全部 Net。
+
+```python
+nets = Net.list_saved()
+for net in nets:
+    print(f"{net['name']}: {net['role']}")
+```
+
+**返回：** `list[dict]` - Net 配置列表，包含以下键：
+- `name`（str）- Net 名称
+- `role`（str）- Net 类型/角色
+- `channel`（int）- 硬件通道号
+- `instrument`（str）- 关联的仪器类型
+
+### `Net.list_all_from_env()`
+
+从 LAGER_MUXES 环境变量列出 Net（旧行为）。
+
+```python
+nets = Net.list_all_from_env()
+for net in nets:
+    print(f"{net['name']}: {net['role']} on channel {net['channel']}")
+```
+
+**返回：** `list[dict]` - Net 信息列表
+
+### `Net.save_local_net(data)`
+
+把一个 Net 配置保存到 Lager Box。
+
+```python
+Net.save_local_net({
+    'name': 'VDD',
+    'role': 'power-supply',
+    'channel': 1,
+    'instrument': 'rigol_dp800',
+    'address': '192.168.1.100'
+})
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `data` | `dict` | Net 配置字典 |
+
+### `Net.delete_local_net(name, role=None)`
+
+从 Lager Box 删除一个 Net 配置。
+
+```python
+# Delete by name only
+Net.delete_local_net('VDD')
+
+# Delete by name and role
+Net.delete_local_net('VDD', role='power-supply')
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `name` | `str` | 要删除的 Net 名称 |
+| `role` | `str` | 可选，要匹配的角色 |
+
+**返回：** `bool` - 删除成功时为 True
+
+### `Net.rename_local_net(old_name, new_name)`
+
+重命名一个 Net 配置。
+
+```python
+Net.rename_local_net('OLD_NAME', 'NEW_NAME')
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `old_name` | `str` | 当前的 Net 名称 |
+| `new_name` | `str` | 新的 Net 名称 |
+
+**返回：** `bool` - 重命名成功时为 True
+
+### `Net.get_local_nets()`
+
+获取全部本地 Net 配置。
+
+```python
+nets = Net.get_local_nets()
+for net in nets:
+    print(f"{net['name']}: {net['role']}")
+```
+
+**返回：** `list[dict]` - Net 配置字典的列表
+
+### `Net.save_local_nets(nets)`
+
+一次保存多个 Net 配置。
+
+```python
+Net.save_local_nets([
+    {'name': 'VDD', 'role': 'power-supply', 'channel': 1, 'instrument': 'rigol_dp800', 'address': '192.168.1.100'},
+    {'name': 'GND', 'role': 'power-supply', 'channel': 2, 'instrument': 'rigol_dp800', 'address': '192.168.1.100'}
+])
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `nets` | `list[dict]` | Net 配置字典的列表 |
+
+### `Net.delete_all_local_nets()`
+
+从 Lager Box 删除全部 Net 配置。
+
+```python
+Net.delete_all_local_nets()
+```
+
+**返回：** `bool` - 删除成功时为 True
+
+### `Net.filter_nets(all_nets, name, role=None)`
+
+按名称过滤一组 Net，也可以同时按角色过滤。
+
+```python
+all_nets = Net.get_local_nets()
+
+# Find all nets named 'VDD'
+vdd_nets = Net.filter_nets(all_nets, 'VDD')
+
+# Find 'VDD' with specific role
+psu_nets = Net.filter_nets(all_nets, 'VDD', role='power-supply')
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `all_nets` | `list[dict]` | 要搜索的 Net 列表 |
+| `name` | `str` | 要匹配的 Net 名称 |
+| `role` | `str` | 可选，要匹配的角色 |
+
+**返回：** `list[dict]` - 匹配的 Net
+
+### `enable()`
+
+启用该 Net 并连接硬件。
+
+```python
+scope = Net.get('PROBE', type=NetType.Analog)
+scope.enable()  # Connect to oscilloscope
+```
+
+**不同 Net 类型的行为：**
+- **Analog**：连接多路复用器并启用示波器通道
+- **Logic**：启用逻辑分析仪通道
+- **Battery**：打开电池仿真输出
+- **PowerSupply**：打开电源输出
+- **ELoad**：打开电子负载
+
+### `disable(teardown=True)`
+
+停用该 Net 并断开硬件连接。
+
+```python
+scope.disable()  # Disconnect and run teardown
+scope.disable(teardown=False)  # Disconnect without teardown
+```
+
+**参数：**
+
+| 参数 | 类型 | 默认值 | 说明 |
+|-----------|------|---------|-------------|
+| `teardown` | `bool` | `True` | 是否调用 teardown 函数 |
+
+## NetType 枚举
+
+可用的 Net 类型：
+
+| NetType | 角色字符串 | 说明 |
+|---------|-------------|-------------|
+| `NetType.Analog` | `analog`、`scope` | 示波器模拟输入 |
+| `NetType.Logic` | `logic` | 逻辑分析仪输入 |
+| `NetType.Waveform` | `waveform` | 波形发生器 |
+| `NetType.Battery` | `battery` | 电池模拟器 |
+| `NetType.PowerSupply` | `power-supply` | 电源 |
+| `NetType.ELoad` | `eload` | 电子负载 |
+| `NetType.GPIO` | `gpio` | 数字 I/O |
+| `NetType.ADC` | `adc` | 模数转换器 |
+| `NetType.DAC` | `dac` | 数模转换器 |
+| `NetType.Thermocouple` | `thermocouple` | 温度传感器 |
+| `NetType.WattMeter` | `watt-meter` | 功率计 |
+| `NetType.EnergyAnalyzer` | `energy-analyzer` | 能量分析仪 |
+| `NetType.UART` | `uart` | 串行通信 |
+| `NetType.SPI` | `spi` | SPI 总线 |
+| `NetType.I2C` | `i2c` | I2C 总线 |
+| `NetType.Webcam` | `webcam` | 摄像头串流 |
+| `NetType.Router` | `router`、`mikrotik` | MikroTik 路由器 |
+| `NetType.Debug` | `debug` | 调试探针 |
+| `NetType.Arm` | `arm` | 机械臂 |
+| `NetType.Usb` | `usb` | USB 设备 |
+| `NetType.Rotation` | `rotation` | 旋转编码器 |
+| `NetType.Wifi` | `wifi` | WiFi 模块 |
+| `NetType.Actuate` | `actuate` | 执行器控制 |
+| `NetType.PowerSupply2Q` | `power-supply-2q` | 双象限电源（太阳能仿真） |
+
+## 属性
+
+### `name`
+
+获取 Net 名称。
+
+```python
+print(net.name)  # 'VDD'
+```
+
+### `type`
+
+获取 Net 类型。
+
+```python
+print(net.type)  # NetType.PowerSupply
+```
+
+## 示例
+
+### 列出并使用 Net
+
+```python
+from lager import Net, NetType
+
+# List all available nets
+nets = Net.list_saved()
+print("Available nets:")
+for net in nets:
+    print(f"  {net['name']}: {net['role']}")
+
+# Get and use a specific net
+psu = Net.get('VDD', type=NetType.PowerSupply)
+psu.set_voltage(3.3)
+psu.enable()
+```
+
+### 简单的 Net（GPIO、ADC、DAC）
+
+```python
+from lager import Net, NetType
+
+# GPIO - no enable/disable needed
+button = Net.get('BUTTON', type=NetType.GPIO)
+state = button.input()
+
+led = Net.get('LED', type=NetType.GPIO)
+led.output(1)
+
+# ADC - no enable/disable needed
+sensor = Net.get('SENSOR', type=NetType.ADC)
+voltage = sensor.input()
+
+# DAC - no enable/disable needed
+vref = Net.get('VREF', type=NetType.DAC)
+vref.output(2.5)
+```
+
+### 复杂的 Net（电源、示波器）
+
+```python
+from lager import Net, NetType
+
+# Power supply - requires enable/disable
+psu = Net.get('VDD', type=NetType.PowerSupply)
+psu.set_voltage(3.3)
+psu.set_current(0.5)
+psu.enable()
+# ... use the power supply ...
+psu.disable()
+
+# Oscilloscope - requires enable/disable
+scope = Net.get('PROBE', type=NetType.Analog)
+scope.enable()
+freq = scope.measurement.frequency()
+scope.disable()
+```
+
+### 管理 Net 配置
+
+```python
+from lager import Net
+
+# Save a new net
+Net.save_local_net({
+    'name': 'NEW_PSU',
+    'role': 'power-supply',
+    'channel': 2,
+    'instrument': 'rigol_dp800',
+    'address': '192.168.1.100'
+})
+
+# Rename a net
+Net.rename_local_net('NEW_PSU', 'MAIN_POWER')
+
+# Delete a net
+Net.delete_local_net('MAIN_POWER')
+```
+
+## 说明
+
+- 简单的 Net（GPIO、ADC、DAC、Thermocouple）可直接使用，不需要 `enable()`/`disable()` 调用
+- 复杂的 Net（Analog、Logic、PowerSupply、Battery、ELoad）在使用前需要先 `enable()`
+- 用完复杂的 Net 之后，请务必调用 `disable()` 以正确释放硬件
+- Net 名称必须与 Lager Box 上配置的名称一致
+- 用 `Net.list_saved()` 查看全部可用的 Net

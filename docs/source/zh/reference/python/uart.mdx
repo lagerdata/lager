@@ -1,0 +1,369 @@
+---
+title: UART Net
+description: 通过 Lager Net 进行高层 UART 串行通信
+---
+
+通过 Lager 的 Net 抽象访问 UART 串口，简化设备路径解析和连接管理。
+
+## 导入
+
+```python
+from lager import Net, NetType
+```
+
+## 方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `get_path()` | 获取设备路径（例如 `/dev/ttyUSB0`） |
+| `connect()` | 连接并返回一个 pyserial Serial 对象 |
+| `get_baudrate()` | 获取已配置的波特率 |
+| `get_config()` | 获取该 Net 的原始配置 |
+
+## 方法参考
+
+### `Net.get(name, type=NetType.UART)`
+
+按名称获取一个 UART Net。
+
+```python
+from lager import Net, NetType
+
+uart = Net.get('DUT_SERIAL', type=NetType.UART)
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `name` | `str` | UART Net 的名称 |
+| `type` | `NetType` | 必须为 `NetType.UART` |
+
+**返回：** `UARTNet` 实例
+
+### `get_path()`
+
+获取该 UART Net 的设备路径。
+
+```python
+uart = Net.get('DUT_SERIAL', type=NetType.UART)
+device_path = uart.get_path()
+print(f"Device: {device_path}")  # e.g., "/dev/ttyUSB0"
+```
+
+**返回：** `str` - 形如 `/dev/ttyUSB0` 的设备路径
+
+**抛出：** UART 设备未连接时抛出 `FileNotFoundError`
+
+### `connect(**overrides)`
+
+用 pyserial 连接该 UART 串口。
+
+```python
+uart = Net.get('DUT_SERIAL', type=NetType.UART)
+
+# Connect with default settings
+ser = uart.connect()
+
+# Connect with custom baudrate
+ser = uart.connect(baudrate=9600)
+
+# Set the read timeout on the returned object
+ser.timeout = 1.0
+
+# Use the pyserial connection
+ser.write(b'AT\r\n')
+response = ser.readline()
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `baudrate` | `int` | 波特率（默认取自配置，或 115200） |
+| `bytesize` | `int` | 数据位（5、6、7 或 8） |
+| `parity` | `str` | 校验位：`'none'`、`'even'`、`'odd'`、`'mark'` 或 `'space'` |
+| `stopbits` | `float` | 停止位（1、1.5 或 2） |
+
+**返回：** `serial.Serial` - 已连接的 pyserial 对象
+
+<Note>
+`connect()` 忽略 `timeout` 参数。端口总是以 0.1 秒的读取超时打开。
+若要更改它，请在返回的对象上设置 `ser.timeout`。
+不在上表中的 `parity` 值（例如 `'N'` 或 `'E'`）表示无校验。
+</Note>
+
+<Note>
+`connect()` 以独占方式打开端口。当某个 `lager uart` 会话持有该 Net 时，
+`connect()` 会抛出 `serial.SerialException`。当您的脚本持有该端口时，
+对同一个 Net 执行 `lager uart` 会失败并报出
+`UART device /dev/ttyUSB0 is already in use (locked by another session or the lager uart CLI)`。
+请用 `ser.close()` 关闭端口以释放它。
+</Note>
+
+### `get_baudrate()`
+
+获取该 Net 已配置的波特率。
+
+```python
+uart = Net.get('DUT_SERIAL', type=NetType.UART)
+baudrate = uart.get_baudrate()
+print(f"Baudrate: {baudrate}")
+```
+
+**返回：** `int` - 已配置的波特率（默认 115200）
+
+### `get_config()`
+
+获取该 Net 的原始配置字典。
+
+```python
+uart = Net.get('DUT_SERIAL', type=NetType.UART)
+config = uart.get_config()
+print(config)
+```
+
+**返回：** `dict` - 配置字典
+
+## 属性
+
+| 属性 | 类型 | 说明 |
+|----------|------|-------------|
+| `name` | `str` | Net 名称 |
+| `usb_serial` | `str` | 用于设备识别的 USB 序列号 |
+| `channel` | `str` | 通道/端口号 |
+| `params` | `dict` | 串口参数（波特率等） |
+
+## 示例
+
+### 基本的 UART 通信
+
+```python
+from lager import Net, NetType
+
+# Get the UART net
+uart = Net.get('DUT_SERIAL', type=NetType.UART)
+
+# Connect with default settings
+ser = uart.connect()
+
+# Send command
+ser.write(b'AT\r\n')
+
+# Read response
+response = ser.readline()
+print(f"Response: {response.decode('utf-8').strip()}")
+
+# Clean up
+ser.close()
+```
+
+### 直接使用设备路径
+
+```python
+from lager import Net, NetType
+import serial
+
+# Get the UART net
+uart = Net.get('DUT_SERIAL', type=NetType.UART)
+
+# Get device path for manual pyserial usage
+device_path = uart.get_path()
+print(f"Using device: {device_path}")
+
+# Create your own serial connection
+ser = serial.Serial(
+    port=device_path,
+    baudrate=115200,
+    timeout=5,
+    bytesize=serial.EIGHTBITS,
+    parity=serial.PARITY_NONE,
+    stopbits=serial.STOPBITS_ONE
+)
+
+# Use the connection
+ser.write(b'Hello\r\n')
+ser.close()
+```
+
+### 交互式控制台
+
+```python
+from lager import Net, NetType
+
+uart = Net.get('DUT_SERIAL', type=NetType.UART)
+ser = uart.connect(baudrate=115200)  # read timeout is 0.1 s
+
+print("Interactive console (Ctrl+C to exit)")
+print("-" * 40)
+
+try:
+    while True:
+        # Read any available data
+        if ser.in_waiting:
+            data = ser.read(ser.in_waiting)
+            print(data.decode('utf-8', errors='ignore'), end='')
+
+        # Get user input (non-blocking would need additional handling)
+        # This is a simple example
+except KeyboardInterrupt:
+    print("\nExiting...")
+finally:
+    ser.close()
+```
+
+### 命令/响应模式
+
+```python
+from lager import Net, NetType
+import time
+
+def send_command(ser, command, timeout=2.0):
+    """Send command and wait for response."""
+    ser.reset_input_buffer()
+    ser.write(f"{command}\r\n".encode('utf-8'))
+
+    response = ""
+    start = time.time()
+
+    while time.time() - start < timeout:
+        if ser.in_waiting:
+            data = ser.read(ser.in_waiting)
+            response += data.decode('utf-8', errors='ignore')
+
+            # Check for response terminator
+            if '\n' in response:
+                break
+
+        time.sleep(0.01)
+
+    return response.strip()
+
+# Usage
+uart = Net.get('DUT_SERIAL', type=NetType.UART)
+ser = uart.connect()
+ser.timeout = 1.0
+
+# Query firmware version
+version = send_command(ser, "AT+VER")
+print(f"Firmware: {version}")
+
+# Query status
+status = send_command(ser, "AT+STATUS")
+print(f"Status: {status}")
+
+ser.close()
+```
+
+### 用 UART 做产线测试
+
+```python
+from lager import Net, NetType
+import time
+
+def uart_loopback_test(net_name):
+    """Test UART by sending data and verifying echo."""
+    uart = Net.get(net_name, type=NetType.UART)
+    ser = uart.connect(baudrate=115200)
+    ser.timeout = 1.0
+
+    test_data = b"LOOPBACK_TEST_12345"
+
+    try:
+        # Clear buffers
+        ser.reset_input_buffer()
+        ser.reset_output_buffer()
+
+        # Send test data
+        ser.write(test_data)
+        time.sleep(0.1)
+
+        # Read response
+        response = ser.read(len(test_data))
+
+        # Verify
+        if response == test_data:
+            print(f"PASS: Loopback test successful")
+            return True
+        else:
+            print(f"FAIL: Expected {test_data}, got {response}")
+            return False
+
+    finally:
+        ser.close()
+
+# Run test
+uart_loopback_test('DUT_SERIAL')
+```
+
+### 多 Net 的 UART 测试
+
+```python
+from lager import Net, NetType
+
+# Test multiple UART nets
+UART_NETS = ['UART1', 'UART2', 'DEBUG_SERIAL']
+
+results = {}
+for net_name in UART_NETS:
+    try:
+        uart = Net.get(net_name, type=NetType.UART)
+        path = uart.get_path()
+        baudrate = uart.get_baudrate()
+
+        ser = uart.connect()
+        ser.write(b'AT\r\n')
+        response = ser.readline()
+        ser.close()
+
+        results[net_name] = {
+            'path': path,
+            'baudrate': baudrate,
+            'status': 'OK' if response else 'NO_RESPONSE'
+        }
+    except Exception as e:
+        results[net_name] = {'status': 'ERROR', 'error': str(e)}
+
+# Print results
+for name, result in results.items():
+    print(f"{name}: {result}")
+```
+
+## UART Net 与 Serial 模块的对比
+
+Lager Python SDK 提供两种进行串行通信的方式：
+
+| 特性 | UART Net（`NetType.UART`） | Serial（`pyserial`） |
+|---------|---------------------------|---------------------|
+| **设备发现** | 通过 USB 序列号自动发现 | 手动指定设备路径 |
+| **配置** | 保存在 Lager 配置中 | 在代码中手动设置 |
+| **集成** | 完整接入 Lager Net 体系 | 独立使用 |
+| **适用场景** | 产线测试、多设备 | 快速原型验证 |
+
+以下情况请使用 **UART Net**：
+- 设备路径在重启之间可能变化
+- 您需要按 USB 序列号识别设备
+- 您在使用 Lager 的 Net 配置体系
+- 运行自动化的产线测试
+
+以下情况请使用**原生 pyserial**：
+- 您知道确切的设备路径
+- 您需要最大的灵活性
+- 您在做快速调试
+
+## 硬件集成
+
+| 硬件 | 说明 |
+|----------|-------------|
+| USB 转串口适配器 | FTDI、CP2102、CH340 等 |
+| UART 桥接器 | 多端口 USB-UART 转换器 |
+| 板载 UART | Lager Box 硬件上的原生 UART |
+
+## 说明
+
+- UART Net 用 USB 序列号解析设备路径，从而保证识别的一致性
+- `connect()` 方法返回一个标准的 pyserial `Serial` 对象
+- 配置中未指定时，默认波特率为 115200
+- 设备路径在首次解析后会被缓存
+- 如果其他工具需要原始设备路径，请使用 `get_path()`
+- Net 配置中的串口参数可以在 `connect()` 中覆盖
