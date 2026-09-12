@@ -1,0 +1,182 @@
+---
+title: Exec
+description: 在本地 Docker 开发容器中执行命令
+---
+
+在您本机的 Docker 开发容器内运行 shell 命令。命令可以直接内联运行，
+也可以保存为命名别名以便复用。在已经运行于 devenv 镜像中的 CI 作业里，
+命令会就地运行。请参阅[在 CI 中运行](#在-ci-中运行)。
+
+## 语法
+
+```bash
+lager exec [OPTIONS] [COMMAND] [EXTRA_ARGS]...
+```
+
+## 选项
+
+| 选项 | 简写 | 类型 | 默认值 | 说明 |
+|--------|-------|------|---------|-------------|
+| `--command TEXT` | | 字符串 | | 要执行的原始 shell 命令（例如 `'make build'`） |
+| `--save-as TEXT` | | 字符串 | | 把该命令保存为这个别名，供以后使用 |
+| `--warn / --no-warn` | | 标志 | `--warn` | 覆盖已保存的命令时给出警告 |
+| `--env FOO=BAR` | | 可多次 | | 在容器中设置环境变量 |
+| `--passenv NAME` | | 可多次 | | 从当前 shell 继承环境变量 |
+| `--mount NAME` | `-m` | 字符串 | | 要挂载的 Docker 卷 |
+| `--volume HOST:CONTAINER[:ro]` | | 可多次 | | 把宿主机路径绑定挂载到容器中。可重复；追加 `:ro` 表示只读 |
+| `--interactive / --no-interactive` | `-i` | 标志 | `--interactive` | 保持 STDIN 打开 |
+| `--tty / --no-tty` | `-t` | 标志 | `--tty` | 分配一个伪终端 |
+| `--user TEXT` | `-u` | 字符串 | 当前 UID | 在容器中以该用户运行 |
+| `--group TEXT` | `-g` | 字符串 | 当前 GID | 在容器中以该组运行 |
+| `--verbose` | `-v` | 标志 | | 显示实际执行的完整 Docker 命令。在 CI 中，指出哪些仅对容器有效的 `.lager` 键被忽略了 |
+| `--help` | | | | 显示帮助信息并退出 |
+
+## 参数
+
+| 参数 | 说明 |
+|----------|-------------|
+| `COMMAND` | 之前保存过的命令名称 |
+| `EXTRA_ARGS` | 运行时追加到该命令后面的额外参数 |
+
+## 前置条件
+
+必须先创建开发环境：
+
+```bash
+lager devenv create
+```
+
+这会配置 `lager exec` 所使用的 Docker 镜像、挂载目录和 shell。
+
+## 命令参考
+
+### 运行内联命令
+
+```bash
+lager exec --command 'make build'
+lager exec --command 'pytest tests/ -v'
+```
+
+### 保存命令以便复用
+
+```bash
+lager exec --command 'make clean && make build' --save-as build
+```
+
+### 运行已保存的命令
+
+```bash
+lager exec build
+```
+
+### 追加额外参数
+
+```bash
+# Runs: make clean && make build --verbose --debug
+lager exec build -- --verbose --debug
+```
+
+对以短横线开头的额外参数，请在它们之前写上 `--`。否则，如果某个参数与
+`lager exec` 自己的选项同名（例如 `--verbose`），它会被 `lager exec` 自己吃掉。
+
+### 传递环境变量
+
+```bash
+# Set explicitly
+lager exec --command 'make build' --env CFLAGS="-O2" --env DEBUG=0
+
+# Inherit from current shell
+lager exec --command 'make build' --passenv BUILD_ID
+```
+
+`--passenv` 把您 shell 中的值复制到容器里。请不要传 `PATH`：
+宿主机的值会替换镜像的 `PATH`，容器随后就找不到自己的工具了。
+
+## 在 CI 中运行
+
+`lager exec` 在启动容器之前会先读取 CI 环境变量。
+在下列 CI 系统的作业中，它会就地运行命令，不启动容器：
+
+| CI 系统 | 识别条件 |
+|-----------|---------------|
+| GitHub Actions | `CI=true` 且设置了 `GITHUB_RUN_ID` |
+| GitLab CI | `CI=true` 且 `CI_SERVER_NAME` 含有 `gitlab` |
+| Drone | `CI=true` 且 `DRONE=true` |
+| Bitbucket Pipelines | `CI=true` 且设置了 `BITBUCKET_BUILD_NUMBER` |
+
+CLI 认为这样的作业已经运行在 devenv 镜像中。识别只读取这些变量，
+不检查是否处于容器内。没有 `container:` 块的 GitHub Actions 或 GitLab CI 作业
+同样会就地运行命令，也就是直接运行在运行器上。
+
+就地运行时，命令的行为如下：
+
+- shell 取自 `.lager` 中 DEVENV 的 `shell`，否则为 `/bin/bash`。
+- 命令在当前目录运行，`mount_dir` 不生效。
+- 命令获得作业的环境变量，外加 `.lager` 中的 `environment` 和每个 `--env`。
+  `--passenv` 不起作用，因为作业环境本来就已存在。
+- 命令的退出码就是 `lager exec` 的退出码。
+- `--mount`、`--volume`、`--user` 和 `--group` 不起作用。如果您传入其中任何一个，
+  CLI 会打印一行警告，例如
+  `Warning: --mount, --volume ignored: the command runs in the current container, so there is nothing to start.`
+- `--interactive` 和 `--tty` 不起作用。
+
+Jenkins 代理、其他 CI 系统，或者不在 CI 中的计算机，仍然会启动容器。
+
+若要在被 CLI 识别为 CI 的作业中启动容器，请把 `LAGER_CI_OVERRIDE`
+设为任意非空值。`0` 也算非空。
+
+```bash
+LAGER_CI_OVERRIDE=1 lager exec build
+```
+
+<Warning>
+`LAGER_CI_OVERRIDE` 也会让看到它的其他每条 `lager` 命令停止识别 CI。
+此时 Box 锁会立即失败而不是等待，除非设置了 `LAGER_LOCK_WAIT`。
+并且锁的持有者会是您的用户名，而不是该 CI 作业。
+请只在运行 `lager exec` 的那一步设置这个变量。
+</Warning>
+
+## 与其他命令的区别
+
+| 命令 | 作用目标 | 用途 |
+|---------|--------|---------|
+| `lager exec` | 本地 Docker 容器，或当前 CI 作业 | 在可复现的环境中运行构建/测试命令 |
+| `lager python` | 远程 Lager Box | 执行与测试设备交互的 Python 脚本 |
+| `lager ssh` | 远程 Lager Box | 打开交互式 SSH shell 以管理 Box |
+
+## 已保存命令的管理
+
+已保存的命令存放在您 `.lager` 配置的 devenv 段中。请用 `lager devenv` 管理它们：
+
+```bash
+lager devenv commands         # List saved commands
+lager devenv add <name> "<cmd>"   # Add a command
+lager devenv delete <name>    # Remove a command
+lager devenv terminal         # Open an interactive shell in the container
+```
+
+## 示例
+
+```bash
+# One-off build
+lager exec --command 'make -j4'
+
+# Save and reuse a test command
+lager exec --command 'pytest tests/ --tb=short' --save-as test
+lager exec test
+
+# Run with verbose Docker output
+lager exec --verbose --command 'gcc main.c -o main'
+
+# Non-interactive mode for a CI system that starts a container (such as Jenkins)
+lager exec --no-interactive --no-tty --command 'make check'
+```
+
+## 说明
+
+- 容器以 `--rm` 创建，因此每条命令执行完后都会被移除
+- 容器中的退出码会传递给 CLI
+- 您 shell 中每一个 `LAGER*` 环境变量都会被传入容器
+- 源代码从您的本地文件系统挂载到容器中
+- 存在 `~/.lager` 时，Lager 配置也会挂载到容器中
+- `COMMAND` 参数和 `--command` 选项互斥，只能用其中一个

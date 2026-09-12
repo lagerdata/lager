@@ -1,0 +1,224 @@
+---
+title: Devenv
+description: 为您的项目管理基于 Docker 的本地开发环境
+---
+
+`lager devenv` 为一个项目管理可复现的、基于 Docker 的开发环境。
+它把镜像、挂载目录、shell、已保存的命令、绑定挂载和环境变量，
+记录在项目 `.lager` 配置文件的 `DEVENV` 段中。
+这样，每位工程师以及您的 CI，都在同一个容器中构建和测试。
+
+这个环境由 [`lager exec`](/source/zh/reference/cli/exec)（在容器中运行命令）
+和 `lager devenv terminal`（在容器中打开交互式 shell）使用。
+
+## 语法
+
+```bash
+lager devenv COMMAND [ARGS]...
+```
+
+## 子命令
+
+| 命令 | 说明 |
+|---------|-------------|
+| `create` | 创建 `DEVENV` 配置（镜像、挂载目录、shell） |
+| `terminal` | 在容器中打开交互式 shell |
+| `show` | 打印解析后的 `DEVENV` 配置 |
+| `set` | 设置一个标量配置键（或向 `ports` 追加） |
+| `unset` | 完全删除一个配置键 |
+| `add` | 保存一个命名命令 |
+| `delete` | 删除一个已保存的命令 |
+| `commands` | 列出已保存的命令 |
+| `mount add/remove/list` | 管理持久的绑定挂载 / 卷 |
+| `env set/unset/list` | 管理持久的环境变量 |
+
+## 前置条件
+
+必须安装 Docker，并且它在您的 `PATH` 中。请从
+[docker.com](https://docs.docker.com/get-docker/) 安装。
+在 Linux 上，请把您的用户加入 `docker` 组，这样就不需要 `sudo`：
+
+```bash
+sudo usermod -aG docker $USER   # then log out/in, or run: newgrp docker
+```
+
+---
+
+## create
+
+在项目的 `.lager` 配置中创建 `DEVENV` 段。每个项目在使用 `lager exec`
+或 `lager devenv terminal` 之前运行一次即可。
+
+```bash
+lager devenv create
+```
+
+| 选项 | 默认值 | 说明 |
+|--------|---------|-------------|
+| `--image TEXT` | `lagerdata/devenv-cortexm` | 要使用的 Docker 镜像 |
+| `--mount-dir TEXT` | `/app` | 源代码在容器中的挂载位置 |
+| `--shell TEXT` | `/bin/bash` | 镜像中的 shell 可执行文件 |
+
+镜像名称会按标准 Docker 命名规则校验（`name`、`name:tag`、`registry/name`、
+`registry/name:tag`）。对 `lagerdata/*` 镜像，shell 默认为 `/bin/bash`；
+对其他镜像，系统会提示您输入。如果 `DEVENV` 段已经存在，覆盖之前会先询问您。
+
+---
+
+## terminal
+
+在开发容器内打开交互式 shell。您的项目目录会被绑定挂载到配置的 `mount_dir`，
+退出时容器会被移除（除非使用了 `--detach`）。
+
+```bash
+lager devenv terminal
+```
+
+| 选项 | 简写 | 说明 |
+|--------|-------|-------------|
+| `--mount TEXT` | `-m` | 在 `mount_dir` 挂载一个命名 Docker 卷，而不是源代码目录 |
+| `--user TEXT` | `-u` | 以该用户运行（覆盖 `user` 配置键） |
+| `--group TEXT` | `-g` | 以该组运行（覆盖 `group` 配置键） |
+| `--name TEXT` | `-n` | 设置容器名称 |
+| `--detach / --no-detach` | `-d` | 以分离方式运行容器 |
+| `--port TEXT` | `-p` | 发布一个端口（`HOST:CONTAINER`）。可重复 |
+| `--entrypoint TEXT` | | 覆盖容器的 entrypoint |
+| `--network TEXT` | | Docker 网络模式 |
+| `--platform TEXT` | | 目标平台（例如 `linux/amd64`） |
+| `--attach TEXT` | `-a` | 按名称连接到一个已在运行的容器并打开 shell |
+| `--shell TEXT` | `-s` | 连接时使用的 shell（默认取配置中的 shell，否则 `/bin/bash`） |
+| `--volume TEXT` | `-v` | 绑定挂载宿主机路径（`HOST:CONTAINER[:ro]`）。可重复 |
+| `--env FOO=BAR` | `-e` | 设置一个环境变量。可重复 |
+| `--passenv NAME` | | 从当前 shell 透传一个变量。可重复 |
+| `--info` | | 打印解析后的 `docker` 命令和配置，然后退出而不启动容器 |
+
+命令行标志优先于 `DEVENV` 配置中对应的键。CLI 先应用配置中定义的
+`ports`、`volumes` 和 `environment`，然后再追加您在命令行上传入的内容。
+
+`terminal` 还会自动为您配置好 SSH。它转发您的 `SSH_AUTH_SOCK` agent 套接字，
+并在 `~/.ssh/id_ed25519` 和 `~/.ssh/known_hosts` 存在时以只读方式挂载它们。
+它也会把您的全局 `.lager` 配置挂载到容器中，这样嵌套调用的 `lager` 命令也是已认证的。
+
+用 `--info` 可以查看将要执行什么，而不真正启动任何东西：
+
+```bash
+lager devenv terminal --info
+```
+
+### 连接到正在运行的容器
+
+```bash
+# Open a second shell in a container started with --detach --name build
+lager devenv terminal --attach build --shell /bin/bash
+```
+
+---
+
+## show
+
+打印解析后的 `DEVENV` 配置 —— 标量键、列表键（ports、volumes、environment），
+以及已保存的命令。
+
+```bash
+lager devenv show
+```
+
+---
+
+## set / unset
+
+设置或删除单个配置键，无需重新运行 `create`。
+
+```bash
+lager devenv set image lagerdata/devenv-cortexm:latest
+lager devenv set mount_dir /workspace
+lager devenv set port 8080:8080      # appends to the ports list
+lager devenv unset platform
+```
+
+标量键（`set` 时会被替换）：`image`、`mount_dir`、`shell`、`user`、
+`group`、`entrypoint`、`hostname`、`macaddr`、`network`、`platform`、
+`repo_root_relative_path`。
+
+`ports` 键是一个列表，会被**追加**（也接受单数别名 `port`）。
+请分别用 `lager devenv mount` 和 `lager devenv env` 编辑 `volumes` 和
+`environment` —— `set` 会拒绝它们，并指引您使用正确的命令。
+
+---
+
+## 已保存的命令：add / delete / commands
+
+把 shell 命令保存为一个名称，之后就可以用
+[`lager exec <name>`](/source/zh/reference/cli/exec) 运行。
+命令以 `cmd.<name>` 键的形式保存在 `DEVENV` 段中。
+
+```bash
+lager devenv add build "make -j4"
+lager devenv add test "pytest tests/ --tb=short"
+lager devenv commands          # list saved commands
+lager devenv delete build      # remove one
+```
+
+命令名称只能包含字母、数字、短横线和下划线。如果省略命令字符串，
+`add` 会提示您输入。
+
+| 子命令 | 选项 | 说明 |
+| --- | --- | --- |
+| `add` | `--warn` / `--no-warn` | 覆盖已有命令时给出警告（默认 `--warn`） |
+| `delete` | `--devenv NAME` | 从指定名称的 devenv 中删除该命令，而不是当前的 devenv |
+
+---
+
+## 持久的绑定挂载：mount
+
+把宿主机的绑定挂载 / 命名卷保存在配置中，这样每次运行
+`lager devenv terminal` 和 `lager exec` 时都会应用它们。
+
+```bash
+lager devenv mount add /host/cache:/root/.cache       # host bind-mount
+lager devenv mount add toolchain:/opt/toolchain       # named volume
+lager devenv mount add /etc/ssl/certs:/etc/ssl/certs:ro
+lager devenv mount list
+lager devenv mount remove /host/cache:/root/.cache
+```
+
+写法采用 Docker `-v` 的形式：绑定挂载为 `HOST:CONTAINER[:ro]`，
+命名卷为 `NAME:CONTAINER`。为了在不同计算机之间可移植，写法中可以使用
+`~`、环境变量，以及 `${PROJECT_ROOT}`（它展开为您项目的 `.lager` 所在目录）。
+
+---
+
+## 持久的环境变量：env
+
+把环境变量保存在配置中，这样每次运行时都会设置它们。
+
+```bash
+lager devenv env set CFLAGS=-O2
+lager devenv env set DEBUG=0
+lager devenv env list
+lager devenv env unset DEBUG
+```
+
+`env set` 会替换同一变量已有的值。
+
+---
+
+## 与 `lager exec` 的关系
+
+| 命令 | 用途 |
+|---------|---------|
+| `lager devenv ...` | 配置本地容器（镜像、挂载、环境变量、已保存的命令） |
+| `lager devenv terminal` | 在该容器中打开交互式 shell |
+| [`lager exec`](/source/zh/reference/cli/exec) | 在该容器中运行一次性命令或已保存的命令 |
+
+这三者读取同一个 `DEVENV` 段。用 `lager devenv add` 保存的命令在 `lager exec`
+下运行。用 `lager devenv mount add` 添加的挂载，对 `terminal` 生效；
+当 `exec` 启动容器时也对 `exec` 生效。在被 CLI 识别为 CI 的作业中，
+`exec` 会就地运行命令并忽略挂载。请参阅
+[在 CI 中运行](/source/zh/reference/cli/exec#在-ci-中运行)。
+
+## 说明
+
+- 配置保存在最近的 `.lager` 配置文件的 `DEVENV` 段中，该文件通过从当前目录逐级向上查找得到。
+- `terminal` 默认以 `--rm` 启动容器，因此退出时容器会被移除，除非您传入 `--detach`。
+- 容器中的退出码会传递给 CLI。

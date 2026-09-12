@@ -1,0 +1,164 @@
+---
+title: SSH
+description: 通过 SSH 登录 Lager Box
+---
+
+打开到 Lager Box 的交互式 SSH 会话，或者在它上面执行单条命令后返回。
+
+## 语法
+
+```bash
+lager ssh [OPTIONS] [COMMAND]...
+```
+
+## 选项
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--box BOX` | Lager Box 名称或 IP 地址 |
+
+## 参数
+
+| 参数 | 说明 |
+|----------|-------------|
+| `COMMAND` | 可选，要在 Box 上运行的命令。省略时打开交互式 shell。 |
+
+---
+
+## 用法
+
+```bash
+# SSH to specific Lager Box (interactive shell)
+lager ssh --box my-lager-box
+
+# SSH to default Lager Box
+lager ssh
+```
+
+### 在 Box 上执行命令
+
+带 `COMMAND` 时，`lager ssh` 的行为与 `ssh user@host <command>` 相同。
+它在 Box 上运行该命令，把输出实时回传，并以该命令的退出码退出。
+此时没有交互式 shell。这在编写脚本和做一次性检查时很方便。
+
+```bash
+# Run a single command and return
+lager ssh --box lab-lager-box -- cat /etc/lager/version
+
+# Flags pass through; use `--` to separate them from lager's own options
+lager ssh --box lab-lager-box -- ls -la /etc/lager
+
+# Inspect the running containers (the box login user is in the docker group)
+lager ssh --box lab-lager-box -- docker ps
+```
+
+带 `COMMAND` 的 `lager ssh` 不分配终端。因此，只有当 Box 用户对该命令有免密码授权时，
+远程的 `sudo` 命令才能工作。否则请在交互式会话中运行它。
+
+<Note>只要远程命令本身带有以短横线开头的标志，就请用 `--` 把 lager 的选项
+与远程命令分开，以免它们被当作 `lager` 的选项解析。远程命令的退出码会作为
+`lager ssh` 的退出码传出，因此它在脚本中可以正常组合使用。</Note>
+
+---
+
+## 工作原理
+
+该命令：
+1. 把 Lager Box 名称解析为 IP 地址
+2. 查找 SSH 用户名（默认 `lagerdata`）
+3. 选择要提供的 SSH 身份
+4. 打开交互式 SSH 会话，或运行该命令
+
+如果 `~/.ssh/lager_box` 存在，`lager ssh` 会用 `-i` 传入它。`-i` 标志会替换
+SSH 的默认身份列表，而不是追加到其中。因此 `lager ssh` 还会在 `lager_box`
+之后逐一指明您存在的默认密钥，这些密钥是 `id_rsa`、`id_ecdsa`、`id_ecdsa_sk`、
+`id_ed25519` 和 `id_ed25519_sk`。来自 `~/.ssh/config` 的身份和 agent 中的密钥
+仍然可用。如果没有 `lager_box` 密钥，`lager ssh` 完全不传 `-i`。
+
+---
+
+## 用户名解析
+
+SSH 用户名按以下顺序解析：
+1. 随 Box 配置保存的用户名（`lager boxes add --user`）
+2. 默认用户名：`lagerdata`
+
+`lager ssh` 按 Box 名称查找已保存的用户名。如果您给 `--box` 传的是 IP 地址，
+它会使用 `lagerdata`。请传入 Box 名称，以使用它保存的用户名。
+
+若要为某台 Lager Box 使用不同的用户名：
+```bash
+# Configure username when adding box
+lager boxes add --name pi-lager-box --ip <BOX_IP> --user pi
+
+# Or edit existing box
+lager boxes edit --name pi-lager-box --user pi
+```
+
+---
+
+## SSH 密钥配置
+
+若要实现免密码访问，请把 Lager 的 SSH 密钥安装到 Box 上。
+该命令会要求输入一次 Box 密码：
+
+```bash
+lager ssh-setup --box my-lager-box
+```
+
+您自己用 `ssh-copy-id` 安装的密钥同样有效，因为 `lager ssh` 也会提供您的默认密钥。
+请参阅 [SSH Setup](/source/zh/reference/cli/ssh-setup)。
+
+---
+
+## 示例
+
+```bash
+# Quick interactive SSH access
+lager ssh --box my-lager-box
+
+# One-off commands (no interactive shell)
+lager ssh --box my-lager-box -- cat /etc/lager/version
+lager ssh --box my-lager-box -- docker ps
+```
+
+---
+
+## 通过 SSH 完成的常见任务
+
+以下每一项都可以用 `lager ssh --box <box> -- <command>` 作为单行命令执行，
+也可以在 `lager ssh --box <box>` 之后交互式执行。
+
+### 查看容器状态
+```bash
+lager ssh --box my-lager-box -- docker ps -a
+lager ssh --box my-lager-box -- docker logs lager --tail 100
+```
+
+### 查看 Lager Box 版本
+```bash
+lager ssh --box my-lager-box -- cat /etc/lager/version
+```
+
+### 查看磁盘空间
+```bash
+lager ssh --box my-lager-box -- df -h
+```
+
+### 查看防火墙状态
+
+在大多数 Box 上 `sudo` 会要求输入密码，因此请先打开交互式会话：
+
+```bash
+lager ssh --box my-lager-box
+sudo ufw status verbose
+```
+
+---
+
+## 说明
+
+- 不带 `COMMAND` 时，打开完全交互式的 shell 会话（用 `exit` 或 Ctrl+D 退出）
+- 带 `COMMAND` 时，在 Box 上运行它，并以该命令的退出码退出
+- 该会话作为子进程运行，因此 Lager 的清理钩子仍会触发
+- 未指定 `--box` 时使用默认 Lager Box

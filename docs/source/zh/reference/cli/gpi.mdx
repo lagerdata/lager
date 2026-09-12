@@ -1,0 +1,195 @@
+---
+title: GPI
+description: 读取 GPIO 输入状态
+---
+
+读取 GPIO 引脚的数字输入状态，并可选择阻塞等待某个目标电平。
+
+## 语法
+
+```bash
+lager gpi [NETNAME] [OPTIONS]
+```
+
+## 参数
+
+| 参数 | 说明 |
+|----------|-------------|
+| `NETNAME` | GPIO Net 名称（设置了默认值时可省略）。省略时会列出全部可用的 GPIO Net。 |
+
+## 选项
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--box BOX` | Lager Box 名称或 IP 地址 |
+| `--wait-for LEVEL` | 阻塞直到引脚到达该电平（`high`、`low`、`1` 或 `0`） |
+| `--timeout SECONDS` | `--wait-for` 的超时时间，单位秒（默认一直等待） |
+| `--scan-rate HZ` | LabJack 流式采样率，单位 Hz（高级选项） |
+| `--scans-per-read N` | LabJack 每次读取的扫描批量（高级选项） |
+| `--json` | 输出程序可读的 JSON 对象，而不是格式化文本 |
+| `--poll-interval SECONDS` | 非流式驱动的轮询间隔，单位秒（高级选项） |
+
+---
+
+## 用法
+
+### 基本读取
+
+```bash
+# Read input state
+lager gpi BUTTON1 --box my-lager-box
+
+# Using default net
+lager gpi
+
+# List available GPIO nets (omit net name)
+lager gpi --box my-lager-box
+```
+
+### 等待某个电平
+
+阻塞直到引脚到达目标电平。适合等待硬件事件，例如按键按下、中断线或设备就绪信号。
+
+```bash
+# Wait for pin to go high
+lager gpi BUTTON1 --wait-for high --box my-lager-box
+
+# Wait for pin to go low with 10-second timeout
+lager gpi INT_PIN --wait-for low --timeout 10
+
+# Wait for rising edge (pin goes to 1)
+lager gpi READY --wait-for 1 --timeout 30
+```
+
+### 高级流式选项
+
+在 LabJack T7 硬件上，`--wait-for` 使用高速流式采样来检测电平变化。
+您可以调整这些流式参数：
+
+```bash
+# Custom scan rate (default varies by driver)
+lager gpi TRIGGER --wait-for high --scan-rate 10000 --timeout 5
+
+# Custom scans per read batch
+lager gpi TRIGGER --wait-for high --scan-rate 5000 --scans-per-read 500
+
+# For non-streaming drivers, adjust poll interval
+lager gpi BUTTON --wait-for low --poll-interval 0.05 --timeout 10
+```
+
+---
+
+## 输出
+
+### 基本读取
+
+返回数字状态：
+- `0` - 低电平（0V）
+- `1` - 高电平（3.3V 或 5V，取决于硬件）
+
+```bash
+$ lager gpi BUTTON1
+1
+```
+
+### 等待某个电平
+
+到达目标电平时，返回所经过的时间（秒）：
+
+```bash
+$ lager gpi INT_PIN --wait-for low --timeout 10
+Pin reached LOW after 2.34s
+```
+
+如果在到达目标电平之前超时，该命令会以错误退出。
+
+---
+
+## 受支持的硬件
+
+| 设备 | 引脚 | 电压 | 等待方式 |
+|--------|------|---------|-----------------|
+| LabJack T7 | FIO0-FIO7、EIO0-EIO7、CIO0-CIO3、MIO0-MIO2 | 3.3V 逻辑 | 流式采样（高速） |
+| LabJack U3 | FIO4-FIO7、EIO0-EIO7、CIO0-CIO3 | | 轮询 |
+| MCC USB-202 | DIO0-DIO7（0-7） | 3.3V/5V TTL | 轮询 |
+| Aardvark | 0-5（SCL、SDA、MISO、SCK、MOSI、SS） | 3.3V | 轮询 |
+| FT232H | 0-15（AD0-AD7、AC0-AC7） | 3.3V | 轮询 |
+
+<Note>
+Aardvark 和 FT232H 的 GPIO 支持目前已停用。将来的版本可能重新启用它。
+当前可用的 GPIO 后端是 LabJack T7、LabJack U3 和 MCC USB-202。
+</Note>
+
+### LabJack U3 引脚
+
+- `FIO0`-`FIO3` 不作为 `gpio` 通道提供。在 U3-HV 上它们是固定的高压模拟输入。请用 `AIN0`-`AIN3` 上的 `adc` Net 读取它们。
+- Lager 把每一台 U3 都当作 U3-HV 对待，因此 U3-LV 同样失去这四条数字线。
+- U3 读取引脚时不改变它的方向。写操作会把引脚设为输出。
+- `FIO4`-`FIO7` 和 `EIO0`-`EIO7` 同样是模拟输入。执行 `gpio` 读取会把引脚设为数字模式，而执行 `adc` 读取会把它设回模拟模式。
+- 在 0.46.1 之前保存在 `FIO0`-`FIO3` 上的 `gpio` Net 仍会被列出，但使用时会失败。请删除那个 Net。
+
+### Aardvark 引脚映射
+
+| 引脚 | 名称 | 排针针脚 |
+|-----|------|------------|
+| 0 | SCL | 1 |
+| 1 | SDA | 3 |
+| 2 | MISO | 5 |
+| 3 | SCK | 7 |
+| 4 | MOSI | 8 |
+| 5 | SS | 9 |
+
+### FT232H 引脚映射
+
+FT232H 在两个端口上提供 16 个 GPIO 引脚：
+
+| 引脚 | 名称 | 说明 |
+|------|-------|-------------|
+| 0-7 | AD0-AD7 | 端口 A 数据引脚 |
+| 8-15 | AC0-AC7 | 端口 A 控制引脚 |
+
+---
+
+## 示例
+
+```bash
+# Check if button is pressed
+STATE=$(lager gpi BUTTON1 --box my-lager-box)
+if [ "$STATE" -eq "1" ]; then
+    echo "Button pressed"
+fi
+
+# Read multiple inputs
+lager gpi BUTTON1 --box my-lager-box
+lager gpi SENSOR_INT --box my-lager-box
+lager gpi FAULT_PIN --box my-lager-box
+
+# Wait for device ready signal
+lager gpi READY_PIN --wait-for high --timeout 30 --box my-lager-box
+
+# Wait for interrupt (active-low)
+lager gpi INT_N --wait-for low --timeout 5 --box my-lager-box
+
+# Scripted: wait for button press, then proceed
+echo "Press the button..."
+lager gpi BUTTON --wait-for high --timeout 60 --box my-lager-box && echo "Button pressed!"
+```
+
+---
+
+## 相关命令
+
+- [`lager gpo`](/source/zh/reference/cli/gpo) - 设置 GPIO 输出电平
+
+---
+
+## 说明
+
+- GPI 只用于读取输入引脚
+- 设置输出引脚请用 `lager gpo`
+- 默认 Net 可以用 `lager defaults add --gpio-net` 设置
+- 引脚必须在 Net 配置中被设为输入
+- USB-202 的通道可以写作 `0`-`7`，也可以写作 `DIO0`-`DIO7`
+- `--wait-for` 会阻塞进程，直到检测到目标电平或超时
+- `--scan-rate` 和 `--scans-per-read` 只对 LabJack T7 的流式采样有效，其他驱动会忽略它们
+- `--poll-interval` 适用于非流式驱动（LabJack U3、USB-202、Aardvark、FT232H），LabJack T7 会忽略它

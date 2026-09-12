@@ -523,6 +523,8 @@
                   "source/zh/reference/cli/login",
                   "source/zh/reference/cli/install-wheel",
                   "source/zh/reference/cli/uninstall",
+                  "source/zh/reference/cli/ssh",
+                  "source/zh/reference/cli/ssh-setup",
                   "source/zh/reference/cli/logs"
                 ]
               },
@@ -552,6 +554,7 @@
               {
                 "group": "I/O 与通信",
                 "pages": [
+                  "source/zh/reference/cli/gpi",
                   "source/zh/reference/cli/gpo",
                   "source/zh/reference/cli/dac",
                   "source/zh/reference/cli/ble",
@@ -562,6 +565,8 @@
               {
                 "group": "开发",
                 "pages": [
+                  "source/zh/reference/cli/exec",
+                  "source/zh/reference/cli/devenv",
                   "source/zh/reference/cli/binaries"
                 ]
               }
