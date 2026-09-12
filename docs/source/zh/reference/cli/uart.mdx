@@ -1,0 +1,305 @@
+---
+title: UART
+description: 连接 UART 串口
+---
+
+连接 Lager Box 上的 UART 串口，与设备进行串行通信。
+
+## 语法
+
+```bash
+lager uart [NETNAME] [OPTIONS]
+```
+
+## 参数
+
+| 参数 | 说明 |
+|----------|-------------|
+| `NETNAME` | UART Net 名称（设置了默认值时可省略） |
+
+## 选项
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--box BOX` | Lager Box 名称或 IP 地址 |
+| `--baudrate RATE` | 波特率（例如 9600、115200） |
+| `--bytesize SIZE` | 数据位（5、6、7、8） |
+| `--parity MODE` | 校验位：none、even、odd、mark、space |
+| `--stopbits BITS` | 停止位（1、1.5、2） |
+| `--xonxoff` / `--no-xonxoff` | 软件流控 |
+| `--rtscts` / `--no-rtscts` | 硬件流控（RTS/CTS） |
+| `--dsrdtr` / `--no-dsrdtr` | 硬件流控（DSR/DTR） |
+| `-i` / `--interactive` | 启用输入模式以便键入 |
+| `--opost` / `--no-opost` | 输出时把 \\n 转换为 \\r\\n |
+| `--line-ending MODE` | 行结束符：lf、crlf、cr（默认 lf） |
+| `--sessions` | 列出持有该 Net 的 UART 会话，然后退出 |
+| `--force` | 如果另一个会话持有该 Net，则接管它 |
+
+---
+
+## 用法
+
+### 只读模式（默认）
+
+```bash
+# Monitor serial output
+lager uart SERIAL1 --box my-lager-box
+
+# With specific baudrate
+lager uart SERIAL1 --baudrate 115200
+```
+
+### 交互模式
+
+```bash
+# Type commands and see responses
+lager uart SERIAL1 --interactive
+
+# With specific settings
+lager uart SERIAL1 -i --baudrate 9600 --parity none
+```
+
+### 获取串口信息
+
+```bash
+# Show device path for a UART net
+lager uart SERIAL1 serial-port
+```
+
+### Net 已被另一个会话持有
+
+一个 UART 设备同一时刻只接受一个读取方，因此对同一个 Net 的第二个会话会被拒绝：
+
+```
+Error: UART net 'SERIAL1' is already in use by another session
+To take over the net: lager uart SERIAL1 --force --box my-lager-box
+```
+
+两个 Net 可能指向同一台设备。这种情况下，错误信息会改为指出设备路径：
+`UART device /dev/ttyUSB0 is already in use by another session`。
+
+向 Box 查询谁持有什么：
+
+```bash
+lager uart --sessions --box my-lager-box
+```
+
+```
+Net       Device Path     Client      Reader
+==============================================
+SERIAL1   /dev/ttyUSB0    connected   running
+```
+
+| 列 | 取值 | 含义 |
+|--------|-------|---------|
+| `Client` | `connected` | 持有者与 Box 的连接是打开的 |
+| `Client` | `gone` | 持有者的客户端已离开 |
+| `Client` | `unknown` | Box 无法判断 |
+| `Reader` | `running` | 该会话正在读取设备 |
+| `Reader` | `stopped` | 该会话不再读取设备 |
+| `Reader` | `starting` | 该会话还没有读取循环 |
+
+持有者会占用该 Net 多久：
+
+- 客户端显示为 `gone` 的持有者，会在大约 0.1 秒内释放该 Net。
+  如果适配器此时正在重新枚举，释放最长可能需要 60 秒。
+- 计算机进入休眠或失去网络的持有者，在大约 85 秒内仍然显示为 `connected`。
+- reader 显示为 `stopped` 的持有者不会阻塞您。对该 Net 的下一条
+  `lager uart` 会重新取得它。
+
+显示为 `connected` 的持有者可能属于某个人，因此在接管之前请先确认：
+
+```bash
+lager uart SERIAL1 --force --box my-lager-box
+```
+
+`--force` 会释放持有该 Net 的每一个会话，然后再连接。如果它确实释放了某个会话，
+会打印 `Released the session that held 'SERIAL1'`；如果没有任何会话持有该 Net，
+则什么也不打印。被您顶替的那个会话会停止接收数据，并可能显示
+`Error: Read error: ...`。
+
+`--force` 只作用于您指名的那个 Net。如果错误信息指出的是设备路径，
+说明同一设备上的另一个 Net 持有它。请用 `--sessions` 找到那个 Net，
+然后按名称接管那个 Net。
+
+`--sessions` 在以下情况会打印一条消息而不是表格：
+
+- `No UART sessions are active on this box.` 没有会话持有任何 Net。
+- `This box does not report UART sessions; update it with lager update.`
+  该 Box 版本低于 0.46.0，请运行 `lager update`。在这样的 Box 上，
+  `--force` 不起作用，并且不会给出警告。
+
+<Note>
+`--force` 无法清除这个错误：
+`UART device /dev/ttyUSB0 is already in use (locked by another session or the lager uart CLI)`。
+此时是另一个进程持有该端口，例如一个打开了 UART Net 的 `lager python` 脚本。
+请先停止那个进程。
+</Note>
+
+<Note>
+与每一条 `lager uart` 命令一样，`--sessions` 和 `--force` 都会获取 Box 锁。
+如果另一位用户持有 Box 锁，它们会失败并报出
+`Error: Box 'my-lager-box' is locked by <holder>`。
+</Note>
+
+如果 Box 没有在 15 秒内启动该会话，命令会打印
+`Error: the box did not start the UART session within 15s` 并以 `1` 退出。
+
+---
+
+## 串口配置
+
+### 波特率
+
+常见波特率：
+- 9600（许多设备的默认值）
+- 19200
+- 38400
+- 57600
+- 115200（嵌入式开发中常用）
+- 230400
+- 460800
+- 921600
+
+### 数据格式
+
+| 设置 | 可选值 | 默认值 |
+|---------|---------|---------|
+| 数据位 | 5、6、7、8 | 8 |
+| 校验位 | none、even、odd、mark、space | none |
+| 停止位 | 1、1.5、2 | 1 |
+
+### 流控
+
+| 类型 | 选项 | 说明 |
+|------|---------|-------------|
+| 软件 | `--xonxoff` | XON/XOFF 字符 |
+| 硬件 | `--rtscts` | RTS/CTS 引脚 |
+| 硬件 | `--dsrdtr` | DSR/DTR 引脚 |
+
+各种流控类型不能组合使用。
+
+---
+
+## 行结束符
+
+| 模式 | 序列 | 适用场景 |
+|------|----------|----------|
+| `lf` | \\n | Unix/Linux |
+| `crlf` | \\r\\n | Windows |
+| `cr` | \\r | 老系统 |
+
+用 `--opost` 在输出时自动转换行结束符。
+
+---
+
+## 受支持的 USB 串口适配器
+
+以下 USB 转串口适配器会被自动检测并支持：
+
+| 适配器 | VID:PID | 说明 |
+|---------|---------|-------------|
+| Prolific USB-Serial | 067b:23a3 | 常见的 USB 转串口适配器 |
+| Silicon Labs CP210x | 10c4:ea60 | 常见的嵌入式开发板 |
+| FTDI FT232R | 0403:6001 | 单通道 USB 转串口 |
+| FTDI FT232H | 0403:6014 | 单通道、多协议 |
+| FTDI FT2232H | 0403:6010 | 双通道、多协议 |
+| FTDI FT4232H | 0403:6011 | 四通道 USB 转串口 |
+| ESP32 USB JTAG/Serial | 303a:1001 | ESP32-S3/C3 内置 USB |
+
+这些适配器会被 `lager instruments` 自动识别，并可以配置为 UART Net。
+
+---
+
+## 设备路径支持
+
+UART Net 可以用两种方式指向设备：
+
+**USB 序列号**（推荐）：
+```
+Net configured with USB serial number
+Automatically resolves to correct /dev/ttyUSBx
+```
+
+**直接设备路径**（备选）：如果适配器没有序列号，请按它的设备路径保存一个 Net。
+最后一个参数是您自选的标签。之后按名称连接该 Net。
+`lager uart` 不接受用设备路径代替 Net 名称。
+
+```bash
+lager nets add CONSOLE uart /dev/ttyUSB0 console-adapter --box my-lager-box
+lager uart CONSOLE --baudrate 115200 --box my-lager-box
+```
+
+---
+
+## 示例
+
+```bash
+# Basic serial monitor
+lager uart DEBUG_UART --box my-lager-box
+
+# Interactive shell with common embedded settings
+lager uart CONSOLE -i --baudrate 115200
+
+# Legacy device with specific format
+lager uart LEGACY --baudrate 9600 --bytesize 7 --parity even --stopbits 2
+
+# With software flow control
+lager uart MODEM --xonxoff
+
+# Windows-style line endings
+lager uart TERMINAL --line-ending crlf --opost
+```
+
+---
+
+## WebSocket 连接
+
+uart 命令使用 WebSocket 进行通信：
+- 提供实时的双向数据
+- 同时支持只读模式和交互模式
+- 如果 USB 适配器重新枚举，Box 会在最长 60 秒内重新打开它，会话继续保持。
+  等待期间 CLI 会打印 `[UART device disconnected - reconnecting...]`。
+- CLI 不会重新连接到 Box。如果与 Box 的连接断开，会话就结束了，请重新运行该命令。
+
+---
+
+## 故障排除
+
+### 找不到设备
+
+```bash
+# List available instruments to find UART devices
+lager instruments --box my-lager-box
+
+# Check if USB serial adapter is connected
+ssh lagerdata@my-lager-box 'ls -la /dev/ttyUSB*'
+```
+
+### 权限被拒绝
+
+```bash
+# Ensure udev rules are installed
+lager update --box my-lager-box --yes
+```
+
+### 没有输出
+
+- 检查波特率是否与设备一致
+- 确认 TX/RX 接线
+- 尝试用交互模式测试输入
+- 检查流控设置
+
+---
+
+## 说明
+
+- 交互模式需要 TTY 终端
+- USB 序列号在显示时会被截断
+- 默认 Net 可以用 `lager defaults add --uart-net` 设置
+- 适配器重新枚举时，Box 会在最长 60 秒内重新打开它
+
+## 参见
+
+- [Python UART API](/source/zh/reference/python/uart) -- 从 Python 脚本访问 UART Net
+- [Python Serial API](/source/zh/reference/python/serial) -- 面向高级串口场景的原生 pyserial 支持
