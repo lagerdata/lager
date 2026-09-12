@@ -1,0 +1,1707 @@
+---
+title: 在 CI 中使用 Lager
+description: 把运行器安装在 Lager Box 上，从 GitHub Actions 运行硬件测试
+---
+
+## 1. 运行器的位置
+
+Lager 命令必须能通过网络连接到一台 Box。有两种方式可以提供这个连接。
+您的选择决定了后面所有的步骤。
+
+### 方式 A：运行器在另一台计算机上
+
+由另一台计算机运行作业。作业通过网络连接到 Box。作业必须安装 CLI、获取凭据，
+并获取 Box 的地址。
+
+如果您的 Box 位于访问网关之后，请给作业一个令牌。令牌由您的认证服务器签发。
+CLI 从 `LAGER_GATEWAY_TOKEN` 读取它，并随每个请求发送。这样作业就不需要登录步骤，
+也不需要密码：
+
+```yaml
+runs-on: [self-hosted, lager-bench]
+env:
+  LAGER_GATEWAY_TOKEN: ${{ secrets.LAGER_GATEWAY_TOKEN }}
+steps:
+  - run: pip install lager-cli==0.43.0
+  - run: lager boxes add --name BENCH-1 --ip "$BOX_IP" --user lagerdata --yes
+  - run: lager python tests/hil --box BENCH-1
+```
+
+有些认证服务器无法为机器签发令牌。对于这些服务器，作业以个人身份登录：
+
+```yaml
+runs-on: [self-hosted, lager-bench]
+steps:
+  - run: pip install lager-cli==0.47.0
+  - run: lager login "$AUTH_URL" --email "$EMAIL" --password "$PASSWORD"
+  - run: lager boxes add --name BENCH-1 --ip "$BOX_IP" --user lagerdata --yes
+  - run: lager python tests/hil --box BENCH-1
+```
+
+没有网关的 Box 两种形式都不需要。请把凭据从作业中删除。
+[第 13 节](#13-如何为-ci-提供网关凭据) 给出这两种形式的细节。
+
+如果一个运行器控制多台 Box，这种方式是正确的。如果您有意把 Box 放在 CI 网络之外，
+这种方式同样正确。
+
+这种方式有三个缺点：
+
+- 每个作业都要重复做同样的准备工作。
+- Box 的地址成为一个仓库密钥。登录形式还要增加一个邮箱地址和一个密码。
+  令牌形式增加一个令牌。
+- 该运行器上的两个作业可能同时试图使用同一个实验台。
+
+### 方式 B：运行器在 Box 上
+
+把 GitHub Actions 运行器安装在 Lager Box 上。给运行器一个标签，标签就是 Box 的名称。
+
+```yaml
+runs-on: BENCH-1
+env:
+  LAGER_BOX: BENCH-1
+steps:
+  - uses: actions/checkout@v4
+  - run: lager python tests/hil
+```
+
+作业需要的配置仅此而已。这种方式有四个优点：
+
+- **运行器的标签就是实验台。** `runs-on: BENCH-1` 和 `--box BENCH-1` 是同一段文字。
+  没有需要维护的对应表。作业不会被派发到一台与它所需实验台没有连接的运行器上。
+- **运行器使作业串行化。** 自托管运行器一次只接受一个作业。两个使用 `BENCH-1`
+  的不同分支会进入队列。您不需要为此添加 `concurrency:` 块。
+- **您不需要密钥。** CLI 就在 Box 上。`~/.lager` 文件中已经有该 Box。
+  网关会话保存在运行器账户的主目录中。采用这种方式的测试系统可以在没有任何 Lager
+  密钥的情况下运行。它需要的仓库变量只有运行器的标签。
+- **运行器与 Box 之间没有网络连接。** 命令通过本地接口传递。
+
+这种方式有三个缺点：
+
+- 检出和构件下载由 Box 完成。因此在整个作业期间，Box 都处于忙碌状态。
+  请在另一台计算机上构建固件，参阅 [第 6 节](#6-如何把固件烧录到-dut)。
+- 工作流放入 Box `PATH` 中的所有软件都可以控制您的实验台。请像保护生产计算机一样保护该 Box。
+- 一台 Box 一次只做一个作业。若要同时运行更多测试作业，您需要更多实验台。
+
+本文接下来的内容都采用方式 B。
+
+---
+
+## 2. 如何在 Box 上安装 Actions 运行器
+
+<Note>
+接下来的步骤就是标准的 GitHub 运行器安装过程，只是受 Lager Box 的规则约束。
+请在您的第一台 Box 上检查服务账户和 `PATH`，然后在所有 Box 上使用这些步骤。
+</Note>
+
+Lager Box 有以下要求：
+
+- 一颗 x86-64 处理器。
+- Ubuntu 22.04 或更高版本。
+- 一个其他计算机可以找到的 IP 地址。
+- 一个具有 sudo 权限的登录账户。
+
+接下来的所有步骤都请**以 Box 的登录账户**执行。这就是您传给 `lager install --user`
+的那个账户。请不要以 root 账户安装运行器。
+
+### 2.1 注册运行器
+
+获取一个注册令牌。在您的仓库中，前往
+`Settings > Actions > Runners > New self-hosted runner`。然后在 Box 上执行以下步骤：
+
+```bash
+mkdir -p ~/actions-runner && cd ~/actions-runner
+curl -o actions-runner-linux-x64.tar.gz -L \
+  https://github.com/actions/runner/releases/download/v2.322.0/actions-runner-linux-x64-2.322.0.tar.gz
+tar xzf actions-runner-linux-x64.tar.gz
+
+./config.sh \
+  --url https://github.com/my-org/my-firmware \
+  --token <REGISTRATION_TOKEN> \
+  --name BENCH-1 \
+  --labels BENCH-1 \
+  --work _work \
+  --unattended \
+  --replace
+```
+
+只给运行器一个标签。标签必须是 Box 的名称。这样 `runs-on: BENCH-1` 就会选中该运行器，
+`runs-on: [self-hosted, BENCH-1]` 也会选中它。
+
+<Warning>
+不要给两台 Box 相同的标签。如果两台 Box 标签相同，作业可能被派发到错误的实验台，
+而那个实验台可能没有作业所需要的 Net。那样您就必须在 YAML 中维护一张把每个运行器
+与它的 Box 对应起来的表。
+</Warning>
+
+### 2.2 作为服务安装
+
+```bash
+sudo ./svc.sh install "$USER"
+sudo ./svc.sh start
+sudo ./svc.sh status
+```
+
+`svc.sh install "$USER"` 会生成一个 systemd 单元。该服务以您传给它的账户运行，
+不以 root 运行。
+
+请在命令中传入 `$USER`。运行器账户和 Lager Box 账户必须是同一个账户。
+如果不是同一个，作业就无法读取 Box 账户的 `~/.lager` 文件。
+
+### 2.3 检查作业环境
+
+运行器从 systemd 单元获得它的环境，而不是从您的登录 shell 获得。
+Lager 安装程序在 `~/.local/bin` 中放了一个指向 `lager` 的符号链接。
+登录 shell 能找到那个目录，但服务可能找不到。
+
+请在工作流中做这项检查，不要在 SSH 会话中做。
+
+```yaml
+- name: Runner sanity
+  run: |
+    echo "runner:  $RUNNER_NAME"
+    echo "user:    $(id -un)"
+    echo "arch:    $(uname -m)"
+    command -v lager || { echo "::error::lager not on PATH for the runner account"; exit 1; }
+    lager --version
+```
+
+如果运行器找不到 `lager`，请执行以下步骤：
+
+1. 创建文件 `~/actions-runner/.env`。
+2. 在文件中写入这一行：
+   `PATH=/home/<user>/.local/bin:/usr/local/bin:/usr/bin:/bin`
+3. 重新启动该服务。运行器在启动时读取这个文件。
+
+### 2.4 每个实验台都要做一次
+
+每台 Box 都有自己的运行器、自己的名称和自己的标签。Box 之间不共享这些内容。
+
+---
+
+## 3. 如何准备运行器账户
+
+运行器账户就是 Box 账户。因此这项准备工作在计算机上做一次即可，不需要在每个作业中做。
+
+### 3.1 CLI
+
+`lager install` 和 `lager update` 会把 CLI 装到 Box 上。命令位于
+`~/.local/bin/lager`，它是一个指向独立 Python 环境 `~/.lager_venv` 的链接。
+CLI 的版本与 Box 代码相同。每次安装，以及每次部署代码的更新，都会重新写入该链接。
+
+```bash
+lager --version
+```
+
+请遵守以下规则：
+
+- **在 Box 上使用 Python 3.10 或更高版本。** CLI 需要它。
+- **使用 Box 安装的那个 CLI。** 不要在 Box 上使用 `pip install --user`。
+  在 Ubuntu 23.04 及更高版本上，该命令会失败，因为系统 Python 由外部管理。
+  您装在其他位置的第二个 CLI 不会跟随 Box 的版本。
+- **用 `lager update` 更改版本。** 更新时也会安装新版本的 CLI。
+  CLI 在每条命令时都会把自己的版本与 Box 的版本作比较，不一致时会给出警告。
+  `lager boxes` 命令把每台 Box 显示为 `current`、`needs update` 或 `newer`。
+- **始终给 `lager` 一个子命令。** 如果不给子命令，CLI 会启动一个交互式会话。
+  在 CI 中，作业会一直运行到超时。
+
+### 3.2 Box 列表
+
+CLI 在 `~/.lager` 的 `BOXES` 段中查找 `--box` 的值。这个文件是 JSON 文件。
+
+```json
+{
+  "BOXES": {
+    "BENCH-1": { "ip": "10.0.1.42", "user": "lagerdata", "version": "0.47.0" }
+  },
+  "DEFAULTS": { "gateway_id": "BENCH-1" }
+}
+```
+
+要把这个文件放到一台新 Box 上，请从已有该文件的计算机导出它：
+
+```bash
+# 在您的计算机上
+lager boxes export -o boxes.json
+
+# 在 Box 上，以运行器账户执行
+lager boxes import boxes.json --merge --yes
+```
+
+您也可以直接添加一台 Box：
+
+```bash
+lager boxes add --name BENCH-1 --ip 10.0.1.42 --user lagerdata --yes
+```
+
+`--user` 是 Box 的 SSH 账户。`lager update`、`lager logs`、`lager box-config`
+和 `lager ssh` 命令都会用到它。它没有默认值。
+
+### 3.3 CLI 如何选择 Box
+
+CLI 按以下顺序查找，排在前面的优先级更高。
+
+1. `--box` 标志。
+2. `LAGER_BOX` 环境变量。
+3. `~/.lager` 中的 `DEFAULTS.gateway_id`。
+4. 如果都没有找到，CLI 会报错。
+
+请在作业的 `env:` 块中一次性设置 `LAGER_BOX`，然后在各个步骤中不再使用 `--box`。
+这样每个实验台上的工作流都相同。要更改 Box 的名称，您只需改一行。
+
+```yaml
+jobs:
+  hil:
+    runs-on: BENCH-1
+    env:
+      LAGER_BOX: BENCH-1
+```
+
+您也可以把名称放进仓库变量，然后使用两次：
+
+```yaml
+    runs-on: ${{ vars.HIL_BENCH }}
+    env:
+      LAGER_BOX: ${{ vars.HIL_BENCH }}
+```
+
+如果您要把测试套件迁移到另一个实验台，请这样做。那时您只需更改一个变量，
+不必更改每一个工作流。
+
+### 3.4 配置文件的两个问题
+
+- **`~/.lager` 必须是文件，不能是目录。** 如果其他软件把 `~/.lager` 变成目录，
+  该计算机上的每条 CLI 命令都会失败。您自己计算机上的命令仍然正常，
+  因此这个故障只能在 Box 上发现。
+- **不要让虚拟环境遮蔽 CLI。** 如果 `PATH` 中的 `lager` 不是当前激活环境中的
+  `lager`，CLI 会给出警告。请不要忽略这个警告，两个文件的版本可能不同。
+
+`LAGER_CONFIG_FILE_DIR` 为 `~/.lager` 指定不同的目录。
+`LAGER_CONFIG_FILE_NAME` 为该文件指定不同的名称。
+
+---
+
+## 4. 您的第一个工作流
+
+```yaml
+name: HIL
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hil:
+    name: Hardware tests
+    runs-on: BENCH-1
+    timeout-minutes: 30
+    env:
+      LAGER_BOX: BENCH-1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bench reachable
+        run: |
+          for attempt in 1 2 3; do
+            if lager hello; then exit 0; fi
+            echo "::warning::lager hello failed (attempt ${attempt}/3); retrying"
+            sleep 5
+          done
+          echo "::error::bench unreachable after 3 attempts"
+          exit 1
+
+      - name: Run the suite
+        run: lager python tests/hil
+```
+
+这个工作流中有三处需要更多说明。
+
+**`lager hello` 只能说明 Box 有连接，** 它不能说明 Box 可用。
+即使 Box 返回 HTTP 错误，该命令也会给出退出码 0。只有连接失败或超时才会给出不同的退出码。
+因此请不要把退出码 0 当作 Box 完全可用的证明。
+
+失败之后请重试一次。在网关之后的 Box 上，新登录后的第一条命令可能失败一次。
+请参阅 [第 13 节](#13-如何为-ci-提供网关凭据)。
+
+**`lager python` 把您的脚本发送到 Box，由 Box 运行该脚本。** 参数可以是文件或目录。
+CLI 会把目录作为模块上传。
+
+脚本在 Box 的 Python 容器中运行，不在运行器上运行。请参阅
+[第 7 节](#7-如何确保-box-运行的是被测代码) 和 [第 15 节](#15-故障排除)。
+
+**`timeout-minutes` 是作业占用实验台的最长时间。** 异常终止的作业会一直占用实验台
+和它的锁，直到 GitHub 停止该作业。请设置一个您能接受的时间，不要使用默认的 360 分钟。
+
+### 如何给测试传参数
+
+CLI 读取 `--` 之前的全部内容，您的脚本读取 `--` 之后的全部内容。
+
+```yaml
+- run: lager python tests/hil/charge -- --target-soc 80 --timeout-min 45
+```
+
+### 如何发送其他文件
+
+`lager python` 上传脚本及其所在目录，不上传其他文件。若要发送固件镜像、调试脚本
+或限值表，请使用 `--add-file`。文件会放在脚本旁边，请用它的基本名引用。
+
+```yaml
+- run: |
+    lager python tests/hil/flash \
+      --add-file ./artifacts/firmware.hex \
+      --add-file tools/debug/target.script \
+      -- --image firmware.hex
+```
+
+### 如何取回文件
+
+```yaml
+- run: lager python tests/hil --download results.json --allow-overwrite
+```
+
+CLI 在脚本结束之后下载文件，不会在测试过程中下载。
+
+---
+
+## 5. 如何在多个作业之间共享一个实验台
+
+实验台是一件物理设备。有三种彼此独立的机制可以隔离作业，每种机制的用途不同。
+在使用其中任何一种之前，请先了解这三种。
+
+### 机制 1：运行器
+
+自托管运行器一次只接受一个作业。请为每台 Box 使用一个运行器，
+这样该运行器就会把该实验台的所有作业串行化。这对跨分支、跨工作流和跨仓库都有效。
+您不需要任何配置就能得到这个机制。在大多数情况下，它已经足够。
+
+这个机制只是把作业排队，它不会取消旧作业。向一个分支推送五次会产生五个作业，
+实验台会把五个都做完。
+
+### 机制 2：工作流并发控制
+
+当新作业必须取代旧作业时，请使用 `concurrency:`。
+
+```yaml
+concurrency:
+  group: hil-BENCH-1-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+```
+
+有两个细节很重要。
+
+**请把 `concurrency:` 放在占用实验台的那个作业上**，不要放在工作流级别。
+工作流级别的分组不会传递到被它调用的工作流中，因此使用硬件的那个作业不在分组内。
+
+**请用 pull request 号作为键，用 `run_id` 作为备选。** 像
+`github.head_ref || github.ref_name` 这样的键，在两种不同情况下会产生相同的文字。
+`workflow_dispatch` 可能运行在一个同时存在 pull request 的分支上，
+那时它产生的文字与该 pull request 相同，于是手动作业和 pull request 作业会互相取消。
+
+`run_id` 对每次运行都不同，因此每次非 pull request 的运行都有自己的分组。
+
+<Warning>
+只有在您同时清理实验台时，才可以使用 `cancel-in-progress: true`。
+如果 GitHub 在测试过程中取消了作业，实验台可能停留在不安全的状态：
+电源可能保持开启，电池模拟器可能停在危险电压，调试缓冲区可能保持隔离。
+请使用 [第 8 节](#8-如何在作业结束后让实验台恢复安全) 中的清理步骤。
+</Warning>
+
+对于夜间作业和合并后作业，请使用 `cancel-in-progress: false`，
+让正在进行测量的作业运行到结束。
+
+### 机制 3：Lager 锁
+
+Lager 会自动锁定 Box。没有 `--lock` 标志，没有 `--lock-wait` 标志，
+也没有 `--no-lock` 标志。这个功能由环境变量控制。
+
+**锁持有者的身份在 CI 中不同。** 在 GitHub Actions 中，身份的格式是：
+
+```
+ci:github:<repo>#<run_id>-<attempt>/<job>@<runner>:<pid>
+```
+
+每条 `lager` 命令的 `<pid>` 都不同。比较两个持有者时，CLI 会去掉 `:<pid>` 部分。
+因此同一作业中之后的命令会把该作业的自动锁当作自己的锁。其余部分保留了运行、
+尝试次数、作业名称和运行器。`lager boxes` 以易读的格式显示这个身份。
+
+**冲突之后的行为在 CI 中不同。** Lager 通过 `CI=true` 变量以及 `GITHUB_RUN_ID`
+之类的变量来识别 CI。
+
+| 环境 | 冲突之后的行为 |
+|---|---|
+| CI | 命令等待。它每 2 秒检查一次锁。最长时间为 `LAGER_LOCK_WAIT`，默认值 1800 秒。 |
+| 用户计算机 | 命令报错并立即停止。 |
+
+GitHub Actions 会为每个 `run:` 步骤设置 `CI` 和 `GITHUB_RUN_ID`，因此作业会自动等待。
+
+<Warning>
+同一台 Box 上不在 Actions 步骤中运行的 `lager` 命令不算 CI。这包括 cron、systemd
+和 SSH 会话。这类命令在冲突之后会立即停止。因此 Box 上的维护脚本会在每次 CI
+运行时失败。
+</Warning>
+
+**锁冲突给出退出码 1。** 所有其他错误也给出退出码 1。
+要判断是否为锁冲突，请在错误输出中查找 `is locked by` 这段文字。
+
+锁有最长存活时间，默认值 1800 秒。CLI 每 60 秒发送一次心跳，心跳会让存活时间重新开始计算。
+因此存活时间不会限制您测试的时长，它限制的是 CLI 异常终止之后锁还能留存多久。
+
+自动锁在它的命令退出时结束。如果 CLI 异常终止，锁会在存活时间到期时结束。
+
+`lager boxes unlock` 发送的是用户名，而不是 CI 身份。Box 只为同一个持有者释放锁，
+因此这一步无法释放自动的 `ci:` 锁。它只能释放由运行器账户用户名持有的锁，
+例如一次 `lager boxes lock` 预约：
+
+```yaml
+      - name: Release a bench reservation
+        if: always()
+        run: lager boxes unlock --box "$LAGER_BOX" 2>/dev/null || true
+```
+
+<Warning>
+运行器账户的 `lager boxes lock` 预约同样会阻塞该账户的 CI 命令。
+CI 身份与用户名不同。此时 CI 命令会等待 `LAGER_LOCK_WAIT` 秒，然后给出退出码 1。
+</Warning>
+
+<Warning>
+不要在作业中使用 `lager boxes unlock --force`。这条命令会释放别人持有的锁。
+如果您的作业结束后锁仍然存在，那是别人或别的作业持有它。释放那个锁就等于
+从那个人手里抢走实验台。请让锁自行到期。
+</Warning>
+
+### 会使用锁的命令
+
+以下命令会自动获取锁：
+
+- `lager python`
+- 仪器命令 `adc`、`dac`、`gpi`、`gpo`、`thermocouple`、`watt`、
+  `energy`、`scope`、`logic`
+- 通信命令 `spi`、`i2c`、`uart`、`usb`、`wifi`、`ble`、
+  `blufi`、`router`
+- 电源命令 `supply`、`battery`、`eload`、`solar`
+- 设备命令 `debug`、`arm`、`webcam`
+- 管理命令 `install`、`uninstall`、`update`、`install-wheel`
+
+以下命令不使用锁：
+
+- `lager hello`、`lager boxes`、`lager instruments`
+- `lager nets` 及其全部子命令
+- `lager defaults`、`lager logs`、`lager binaries`、`lager dut`
+- `lager ssh`、`lager exec`、`lager devenv`
+- `lager login`、`lager logout`、`lager whoami`
+
+正因为有这个区别，当另一个作业占用实验台时，运行 `lager hello` 的作业和
+`lager nets state` 步骤都是安全的。
+
+### 与锁有关的环境变量
+
+| 变量 | 作用 |
+|---|---|
+| `LAGER_LOCK_WAIT` | 冲突之后等待的秒数。CI 默认 1800，用户默认 0。非数字的值按 0 处理，在 CI 中也是如此。负值按 0 处理。 |
+| `LAGER_LOCK_TTL` | 锁的最长存活时间。用 `none` 表示不限时。 |
+| `LAGER_LOCK_HEARTBEAT` | 两次心跳之间的秒数，默认 60。 |
+| `LAGER_LOCK_HOLDER` | 为锁持有者指定不同的身份。 |
+| `LAGER_AUTO_LOCK_DISABLE` | 任何非空值都会关闭自动锁，`0` 也会关闭。 |
+
+`LAGER_AUTO_LOCK_DISABLE` 只应在单人使用的实验台上使用。不要用它来避免冲突。
+
+<Note>
+`lager python --detach` 把锁交给 Box。Box 会持有该锁，直到分离的作业结束，
+而那通常在您的工作流步骤结束之后。低于 0.42.0 的 Box 不会获取该锁，
+此时锁会在作业结束后继续留存。请用 `lager boxes unlock` 释放它。
+</Note>
+
+---
+
+## 6. 如何把固件烧录到 DUT
+
+### 在另一台计算机上构建固件
+
+不要在实验台运行器上构建固件。构建会在整个过程中占用实验台，却不使用硬件。
+实验台是您最稀缺的资源。
+
+请把工作分开。在 GitHub 托管的运行器或通用自托管运行器上构建，把镜像作为构件上传，
+然后由实验台作业下载它。
+
+```yaml
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      artifact: ${{ steps.meta.outputs.name }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./build.sh
+      - id: meta
+        run: echo "name=firmware-${{ github.sha }}" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ github.sha }}
+          path: build/firmware.hex
+          if-no-files-found: error
+
+  hil:
+    needs: build
+    runs-on: BENCH-1
+    env:
+      LAGER_BOX: BENCH-1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact }}
+          path: ./firmware
+
+      - run: lager debug SWD flash --hex ./firmware/firmware.hex
+      - run: lager debug SWD reset
+      - run: lager python tests/hil
+```
+
+### 用 `lager exec` 构建
+
+如果构建命令写在您的 `.lager` 文件中，`lager exec` 会运行它们。
+
+`lager exec` 有两种行为：
+
+- 在开发者计算机上，它从 DEVENV 的 `image` 启动一个容器。
+- 在 CLI 能识别的 CI 作业中，它直接运行命令。CLI 认为作业已经在该镜像中运行，
+  所以没有容器需要启动。作业容器中通常也没有 Docker。
+
+CLI 只根据 CI 变量来识别作业，它不检查是否处于容器中。请用 `container:` 把镜像交给作业：
+
+```yaml
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/example/devenv:latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: lager exec build-ci
+```
+
+GitHub Actions、GitLab CI、Drone 和 Bitbucket Pipelines 上的每个作业都得到第二种行为，
+包括没有 `container:` 的作业。在那种作业中，命令运行在运行器本身，而不是在镜像中。
+Jenkins 代理和其他 CI 系统得到第一种行为。
+
+命令在检出目录中运行，不在 `mount_dir` 中运行，因为没有绑定挂载。
+
+命令直接运行时，以下选项不起作用：`--mount`、`--volume`、`--user` 和 `--group`。
+如果您传入其中任何一个，CLI 会打印一行警告，指出它们。以下 `.lager` 键同样不起作用：
+`network`、`ports`、`platform`、`macaddr`、`hostname`、`volumes`、`user` 和 `group`。
+CLI 只在 `--verbose` 时才列出这些键。`--env` 选项和 `environment` 键照常工作。
+
+若要从 CI 作业启动容器，请把 `LAGER_CI_OVERRIDE` 设为任意非空值。作业必须有 Docker。
+请只在 `lager exec` 这一步设置该变量：
+
+```yaml
+- run: lager exec build-ci
+  env:
+    LAGER_CI_OVERRIDE: "1"
+```
+
+<Warning>
+`LAGER_CI_OVERRIDE` 会让看到它的每条 `lager` 命令都停止 CI 识别。
+此时锁冲突会立即报错，并且锁持有者是用户名。请不要为整个作业设置它。
+</Warning>
+
+### 把检出固定到 `github.sha`
+
+在 `pull_request` 事件中，默认检出使用引用 `refs/pull/<n>/merge`。
+如果实验台作业开始时恰好发生了一次推送，作业就会用新的测试代码配旧的固件，
+并把这个结果报告给第一个提交。为避免这种情况，请传入 `ref: ${{ github.sha }}`，
+这样测试代码和固件就来自同一个提交。
+
+### 检查烧录是否成功
+
+`lager debug flash` 和 `lager debug erase` 会读取编程器的输出。当某一行以下列文字
+开头或结尾时，它们给出退出码 1：
+
+- `ERROR: Could not connect to target.`
+- `Could not connect to target.`
+- `Could not connect to the target device.`
+- `Cannot connect to target.`
+- `Failed to power up DAP`
+
+随后命令会打印 `Flash failed:`、`Flash erase failed:` 或 `Erase failed:`，并附上那一行。
+在操作之前，对目标的连接检查也可能给出退出码 1。0.42.0 之前的 CLI 版本不做这些检查。
+
+对于其他失败文字，退出码仍然是 0。设备可能已被擦除但没有被编程，
+随后测试失败，而原因并不明显。请记录输出，并查找 CLI 不认识的失败文字。
+
+```yaml
+- name: Flash
+  run: |
+    set -o pipefail
+    log=$(mktemp)
+    lager debug SWD flash --hex ./firmware/firmware.hex 2>&1 | tee "$log"
+    if grep -qE 'Cannot power up debug port' "$log"; then
+      echo "::error title=flash::the programmer reported a fatal error but the command returned success. The DUT is likely erased but not reprogrammed."
+      exit 1
+    fi
+    lager debug SWD reset
+```
+
+请把文字模式改成您的编程工具的失败文字。规则比示例更重要：
+烧录步骤必须检查它自己的结果。
+
+### 如何从测试中烧录
+
+有些测试套件在第一个测试中就对设备编程。它们使用 Box 上的 Python API，
+而不使用单独的 CLI 步骤。这同样正确，有时甚至更好：
+对设备编程的那个测试，同时也验证了编程操作本身是正确的。
+
+<Note>
+Python 的 `DebugNet` 方法以文本形式给出编程器的输出。当编程器报告失败时，
+它们不会抛出错误。因此测试必须检查它自己的结果。
+</Note>
+
+### 调试子命令
+
+```
+lager debug [NET] gdbserver     # 连接；--rtt 串流 RTT
+lager debug [NET] flash         # --hex / --elf / --bin ADDR
+lager debug [NET] erase
+lager debug [NET] reset
+lager debug [NET] memrd
+lager debug [NET] status
+lager debug [NET] health
+lager debug [NET] disconnect
+```
+
+没有单独的 `connect` 命令。`flash`、`reset` 和 `erase` 会建立连接。
+也没有 `lager debug <net> rtt` 命令。若要使用 RTT，请用 `gdbserver --rtt`。
+
+---
+
+## 7. 如何确保 Box 运行的是被测代码
+
+这是 CI 结果不正确最常见的原因，它源于 `lager python` 的工作方式。
+
+**`lager python` 把您的脚本发送到 Box，由 Box 运行该脚本。** 运行器提供脚本，
+Box 提供 Python 环境、仪器驱动程序、Net 定义和 Lager Box 软件。
+因此，检出您的分支并不会测试 Box 上的软件。Box 仍然使用它上次安装的版本。
+
+如果您的仓库中只有测试脚本，这不是问题，因为脚本来自检出。
+
+如果您的 CI 还要测试运行在 Box 上的软件，请检查 Box 的版本：
+
+```yaml
+- name: Verify the box is running the ref under test
+  run: |
+    rc=0
+    out=$(lager update --check --box "$LAGER_BOX" --version "$GITHUB_SHA" 2>&1) || rc=$?
+    echo "$out"
+    if [ "$rc" -gt 1 ]; then
+      echo "::error title=box state::could not determine box state (exit ${rc})"
+      exit "$rc"
+    fi
+    if [ "$rc" -eq 1 ] && printf '%s\n' "$out" | grep -q 'Run without --check to apply.'; then
+      echo "::error title=box version::the box is not running ${GITHUB_SHA}"
+      exit 1
+    fi
+    if [ "$rc" -eq 1 ]; then
+      echo "::error title=box state::the check failed (exit 1); see the output above"
+      exit 1
+    fi
+```
+
+`lager update --check` 是一次预演。它报告将要做的更改，但不会更改 Box。
+它的退出码有三个取值：
+
+| 退出码 | 含义 |
+|---|---|
+| 0 | Box 是正确的，不需要更改。 |
+| 1 | 需要更新：代码、依赖或容器。退出码 1 也可能表示检查本身失败。 |
+| 2 | CLI 没有确认该 Box 的 SSH 密钥，或者 Box 上的 `git rev-list` 失败。 |
+
+退出码 1 并不总是表示 Box 版本旧。以下失败同样给出退出码 1：
+
+- SSH 连接超时，或其他 SSH 错误。
+- Box 没有响应通过 SSH 进行的检查。
+- Box 目录不是一个 git 检出。
+- Box 上的 `git fetch` 失败。GitHub 上没有任何分支或标签包含的提交 SHA 也会导致这个失败。
+- Box 被其他持有者锁定。
+
+当确实需要更新时，输出以 `Run without --check to apply.` 结尾。
+示例脚本就依据这段文字判断。退出码 2 不提供关于 Box 的任何信息。
+
+`--check` 在它的 `Current:` 行显示 Box 的版本，但不显示 git 引用。
+若要查看引用和提交，请用 `lager hello`，它的 `Version:` 行在括号中给出引用和提交。
+
+把 Box 切换到指定版本：
+
+```bash
+lager update --box BENCH-1 --version main --yes
+lager update --box BENCH-1 --version v0.47.0 --yes
+```
+
+`--version` 接受发布标签或版本号，开头可以带 `v`，也可以不带。它也接受分支名称
+或完整的 40 位提交 SHA。默认值是 `main`。其他标志有 `--force`、`--pull`、
+`--no-pull`、`--verbose` 和 `--yes`。
+
+`lager update` 每条命令只更改一台 Box。如果要更新多台，请在 shell 中使用循环。
+
+### 如何安装 Box 的 Python 依赖
+
+您的测试脚本运行在 Box 的容器中，因此请把它们的依赖装在 Box 上，不要装在运行器上。
+请使用 Box 配置，它在容器重启和 Box 更新之后依然保留。
+
+```bash
+lager box-config pip add pyserial rich --box BENCH-1
+lager box-config pip list --box BENCH-1
+```
+
+导出配置并导入到其他实验台，可以让各个实验台保持一致：
+
+```bash
+lager box-config export --box BENCH-1 -o bench-config.json
+lager box-config import bench-config.json --box BENCH-2
+```
+
+请把这个文件放进您的仓库。它是关于实验台必备内容的唯一记录。
+
+---
+
+## 8. 如何在作业结束后让实验台恢复安全
+
+在测试过程中终止的 HIL 作业留下的不只是文件，它还会把**硬件**留在测试当时的状态：
+电源可能仍以错误的电压输出，负载可能仍在取流，加热器可能仍然开着，
+使能信号可能仍为高电平。
+
+下一个作业会接手这个状态，下一个走到实验台前的人也会接手它。
+
+请在每个硬件作业的首尾各放一个步骤。
+
+### 准备，放在所有其他步骤之前
+
+```yaml
+- name: Bench bring-up
+  run: ./tools/bench.sh bring-up
+```
+
+请把它做成一个独立的步骤，不要并进烧录步骤。冷启动的实验台电源是关闭的，
+使能信号是低电平。有些仪器在会话设置之前会一直保持输出通路断开，此时被测设备（DUT）没有供电。
+
+没有供电的被测设备会在**烧录**步骤给出这样的信息："cannot connect to the target"。
+这条信息看起来像调试器故障。有了独立的步骤，失败的那一步才会给出正确的原因。
+
+### 清理，在取消或失败之后
+
+```yaml
+- name: Bench cleanup
+  if: cancelled() || failure()
+  run: |
+    exec < /dev/null          # any interactive prompt sees EOF instead of hanging
+    rc=0
+    ./tools/bench.sh bring-up --recover || rc=$?
+    lager debug SWD reset || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      echo "::error title=cleanup::exited ${rc}; ${LAGER_BOX} may be unsafe for the next job"
+      exit 1
+    fi
+```
+
+清理步骤请遵守以下规则：
+
+- **使用 `if: cancelled() || failure()`，不要使用 `if: always()`。**
+  成功的作业必须用它自己的流程收尾。一个在成功之后也运行的清理步骤，
+  会掩盖那个流程中的缺陷。
+- **关闭标准输入。** 如果某个子命令提出 `[y/N]` 询问，作业会一直运行到超时。
+- **失败之后继续执行。** 一台不可用的仪器不应阻止其余的清理工作。
+- **把设备设为安全状态，不要释放锁。** 获取锁的那个作业会释放它。
+  如果锁在那之后仍然存在，说明它由别人持有。
+- **不要使用特权。** 运行器账户只有很少的 sudo 权限，或者完全没有。
+  所有清理命令都必须在无密码的情况下运行。
+
+### 确保取消信号能传到您的测试
+
+如果由一个 shell 脚本启动您的测试，来自运行器的 `SIGTERM` 会发给 shell，
+而 shell 不会把它转发给测试。测试会一直运行到 GitHub 停止作业。
+于是在您要求停止之后，测试仍在操作硬件。
+
+请用 `exec` 让测试取代 shell：
+
+```yaml
+- run: exec ./tools/run-suite.sh --box "$LAGER_BOX"
+```
+
+这样信号就会发给正确的进程。
+
+---
+
+## 9. 如何区分实验台故障和固件故障
+
+HIL 测试套件必须能发现缺陷，也必须在它根本没有测到任何东西时如实报告。
+以下失败不是固件缺陷：
+
+- 调试探针没有连上 USB 总线。
+- 调试会话没有启动。
+- Box 不可用。
+
+对这些情况重试是正确的。
+
+而设备标识不正确，或设备无法启动，**确实是**固件缺陷。如果您重试那种测试，
+就掩盖了这个实验台本来要发现的缺陷。
+
+请把这个区别体现在退出码中。
+
+### 规则
+
+请在您的测试中采用这条规则：
+
+| 退出码 | 含义 | 是否重试？ |
+|---|---|---|
+| **0** | 测试成功。 | 不适用 |
+| **1** | 设备故障。标识不正确、镜像不正确、无法启动，或测量值超出限值。 | **否** |
+| **2** | 设备故障之外的装置故障。探针、Net、连接或实验台准备工作阻止了测试。 | **是** |
+
+这条规则不是 Lager 定的，而是由您的测试脚本定的，由您的 CI 使用。
+`lager python` 原样返回您脚本的退出码，这正是这条规则能够成立的原因。
+
+`lager python` 还可能给出这些退出码：
+
+| 退出码 | 含义 |
+|---|---|
+| 124 | `--timeout` 时间到，Box 发送了 SIGTERM。 |
+| 137 | `--timeout` 时间到，Box 在 5 秒后发送了 SIGKILL。 |
+| 255 | CLI 没有从 Box 取到退出码。 |
+| 130 | 有人或某个信号停止了该命令。 |
+| 128+N | 信号 N 停止了 Box 上的脚本。 |
+
+请把 124、137 和 255 归入装置故障一类。
+
+### 重试脚本
+
+请把下面的脚本放在 `tools/retry-hil.sh`。它只在装置故障之后重试。
+它在两次尝试之间对探针和被测设备断电再上电，也会把卡住不结束的测试转换成可以重试的失败。
+
+```bash
+#!/bin/bash
+#
+# Do a HIL test again. Set the bench to a known condition between attempts.
+#
+#   retry-hil.sh -- lager python tests/hil/flash --add-file firmware.hex
+#
+# Exit codes: 0 success / 1 device failure / 2 equipment failure.
+# The script does the test again only after an equipment failure.
+# The exit code of the script is the exit code of the last attempt.
+#
+# Environment variables:
+#   LAGER_BOX             the box (necessary)
+#   HIL_RETRY_ATTEMPTS    number of attempts, default 3
+#   HIL_ATTEMPT_TIMEOUT   seconds for each attempt, default 300 (0 = no limit)
+#   HIL_PROBE_NET         USB net of the debug probe, default USB_DEBUG
+#   HIL_PROBE_SETTLE      seconds to wait after you set the probe on, default 8
+#   HIL_POWER_CYCLE_DUT   also remove the power from the DUT, 1/0, default 1
+#   HIL_DUT_VBUS_NET      USB net of the DUT, default USB_CHARGE
+#   HIL_DUT_POWER_NET     supply or battery net of the DUT, default BATT
+#   HIL_DUT_SETTLE        seconds to wait after the DUT starts, default 3
+
+set -u
+
+[ "${1:-}" = "--" ] && shift
+if [ "$#" -eq 0 ]; then
+  echo "retry-hil.sh: no command given" >&2
+  exit 2
+fi
+
+BOX="${LAGER_BOX:?retry-hil.sh: LAGER_BOX must be set}"
+ATTEMPTS="${HIL_RETRY_ATTEMPTS:-3}"
+ATTEMPT_TIMEOUT="${HIL_ATTEMPT_TIMEOUT:-300}"
+PROBE_NET="${HIL_PROBE_NET:-USB_DEBUG}"
+PROBE_SETTLE="${HIL_PROBE_SETTLE:-8}"
+POWER_CYCLE_DUT="${HIL_POWER_CYCLE_DUT:-1}"
+DUT_VBUS_NET="${HIL_DUT_VBUS_NET:-USB_CHARGE}"
+DUT_POWER_NET="${HIL_DUT_POWER_NET:-BATT}"
+DUT_SETTLE="${HIL_DUT_SETTLE:-3}"
+
+# Put each attempt in `timeout`. Then a test that does not stop gives exit code
+# 124. The script can do that test again. If you do not do this, the test
+# continues until the time limit of the job.
+if [ "$ATTEMPT_TIMEOUT" -gt 0 ] 2>/dev/null && command -v timeout >/dev/null 2>&1; then
+  run_attempt() { timeout "$ATTEMPT_TIMEOUT" "$@"; }
+else
+  run_attempt() { "$@"; }
+fi
+
+# Use `disable` and then `enable`. Do not use `toggle`. The probe must be on at
+# the end. This is correct for all conditions that the failed attempt made.
+power_cycle_probe() {
+  echo "  - power-cycling ${PROBE_NET}" >&2
+  lager usb "$PROBE_NET" disable --box "$BOX" || true
+  sleep 2
+  lager usb "$PROBE_NET" enable --box "$BOX" || true
+  sleep "$PROBE_SETTLE"
+}
+
+# A new connection of the probe cannot start a device that is asleep. Only a
+# removal of the board power can start it. Set VBUS on last. Then the board
+# starts with VBUS present. Each command can fail: a net that this bench does
+# not have does nothing.
+power_cycle_dut() {
+  [ "$POWER_CYCLE_DUT" = "1" ] || return 0
+  echo "  - power-cycling the DUT" >&2
+  lager usb "$DUT_VBUS_NET" disable --box "$BOX" >/dev/null 2>&1 || true
+  lager supply  "$DUT_POWER_NET" disable --yes --box "$BOX" >/dev/null 2>&1 \
+    || lager battery "$DUT_POWER_NET" disable --yes --box "$BOX" >/dev/null 2>&1 || true
+  sleep 2
+  lager supply  "$DUT_POWER_NET" enable --yes --box "$BOX" >/dev/null 2>&1 \
+    || lager battery "$DUT_POWER_NET" enable --yes --box "$BOX" >/dev/null 2>&1 || true
+  lager usb "$DUT_VBUS_NET" enable --box "$BOX" >/dev/null 2>&1 || true
+  sleep "$DUT_SETTLE"
+}
+
+# A box connection failure gives exit code 1. A device failure gives the same
+# exit code. But a connection failure is an equipment failure. Find it in the
+# message. Keep the pattern small. Then the script cannot hide a device failure.
+CONN_FAIL_RE='Timed out connecting to the box|did not respond in time|Failed to connect|Connection refused|Could not connect'
+
+# A lock collision also gives exit code 1. It is also not a device failure.
+LOCK_RE='is locked by'
+
+out="$(mktemp "${TMPDIR:-/tmp}/retry-hil.XXXXXX")"
+trap 'rm -f "$out"' EXIT
+
+rc=2
+for attempt in $(seq 1 "$ATTEMPTS"); do
+  echo "=== attempt ${attempt}/${ATTEMPTS}: $* ===" >&2
+  run_attempt "$@" 2>&1 | tee "$out"
+  rc=${PIPESTATUS[0]}
+
+  [ "$rc" -eq 0 ] && exit 0
+
+  if [ "$rc" -eq 1 ]; then
+    if grep -qiE "$CONN_FAIL_RE|$LOCK_RE" "$out"; then
+      echo "::warning::exit 1 but the output shows a box connection or lock failure; treating as infrastructure" >&2
+    else
+      echo "::error::device failure (exit 1); not retrying" >&2
+      exit 1
+    fi
+  fi
+
+  if [ "$attempt" -lt "$ATTEMPTS" ]; then
+    echo "::warning::exit ${rc} (infrastructure) on attempt ${attempt}/${ATTEMPTS}; recovering and retrying" >&2
+    power_cycle_probe
+    power_cycle_dut
+  fi
+done
+
+echo "::error::still failing (exit ${rc}) after ${ATTEMPTS} attempts" >&2
+exit "$rc"
+```
+
+请在每一个硬件步骤中使用这个脚本：
+
+```yaml
+- name: Flash and verify
+  run: |
+    bash tools/retry-hil.sh -- \
+      lager python tests/hil/flash --add-file ./firmware/firmware.hex
+```
+
+脚本中有两处很重要。`timeout` 命令把卡住不结束的测试转换成脚本可以重试的失败。
+文字模式把退出码 1 转换成装置故障。这是必要的，因为 Box 不可用时给出的
+恰好是设备故障的退出码。
+
+---
+
+## 10. Net 的名称
+
+### Net 由 Box 保存，不由您的仓库保存
+
+Lager Box 保存 Net 定义，它们在重启之后依然存在。您的仓库无法创建它们，
+只能声明它需要哪些 Net，并在实验台缺少这些 Net 时给出清晰的失败信息。
+
+这种划分是正确的，但它使实验台配置难以查看。有两种方法可以改善。
+
+**用仓库中的文件创建 Net。** `lager nets add-batch` 读取一个 JSON 格式的 Net 定义文件：
+
+```bash
+lager nets add-batch bench/nets.json --box BENCH-1
+```
+
+请把 `bench/nets.json` 保留在仓库中，这样您就可以重新搭建实验台。
+如果不这样做，实验台就只能由某个人手动配置一次。
+
+**在作业中列出 Net。** `lager nets state --json` 给出程序可读的数据，并且不使用锁。
+因此准备步骤可以确认实验台具备必需的 Net，并指出缺少哪个 Net。
+没有这一步，测试会在后面因为一个 Python 错误而失败。
+
+### 给每个 Net 起一个能说明用途的名称
+
+Net 有这些字段：`name`、`role`、`instrument`、`channel` 和 `address`。
+**role** 是 Net 的类型，例如 `usb`、`gpio`、`uart`、`debug`、`power-supply`、
+`battery` 和 `adc`。Box 为每个 role 保留一个默认 Net。没有表示用途的字段。
+
+因此，当实验台上有两个 role 相同的 Net 时，**只有名称能说明各自的用途**。
+两个 USB 端口的 role 都是 `usb`，只有名称能说明哪个给设备充电，哪个给调试探针供电。
+
+请遵守以下规则：
+
+1. **对于有多个 Net 的 role，请把 role 放在前面，用途放在后面。** 例如
+   `USB_CHARGE`、`USB_DEBUG`、`UART_CONSOLE`、`ADC_VBUS` 和 `GPIO_NRST`。
+   名称必须与 role 一致，这样才能发现接错的连接。
+2. **电源类的 Net 请用仪器命名，而不是用途。** 电池模拟器的 Net 用 `BATT`，
+   可编程电源的 Net 用 `SUPPLY`。这样 role 和名称会有意地给出相同的信息。
+3. **对于只有一个 Net 的 role，请直接使用简单名称。** 唯一的调试探针用 `SWD`，
+   唯一的控制台用 `UART`。
+
+以下 role 通常需要这些规则：
+
+- `usb`。集线器只能把端口设为开或关，因此只有名称能说明端口的用途。
+- `gpio`。每个引脚的 role 都是 `gpio`。
+- `uart`。
+- 测量类 role：`adc`、`dac`、`scope`、`logic`、`thermocouple` 和 `watt-meter`。
+
+好处很大。遵守这些规则之后，一个测试可以在每个实验台上找到充电端口，
+不需要为每个实验台单独配置。因此增加第二个实验台会很容易。
+
+### 不要从 CI 中修改共享的 Net
+
+`lager nets set-script` 会**为所有用户**更改该 Net 的配置。设置了调试脚本的 CI 作业
+会把实验台留在那个状态，而下一个人可能需要不同的脚本。
+
+请随作业发送脚本，只在该作业中使用它：
+
+```yaml
+- run: |
+    lager python tests/hil/flash \
+      --add-file tools/debug/halt-first.script \
+      -- --script halt-first.script
+```
+
+其他所有更改也请这样处理。**CI 作业必须让实验台的 Net 配置保持它原来的状态。**
+
+### Net 命令
+
+```bash
+lager nets --box BENCH-1                    # 列出（没有 `list` 子命令）
+lager nets show USB_CHARGE --box BENCH-1 --json
+lager nets state --box BENCH-1 --json       # 程序可读的清单
+lager nets add NAME ROLE CHANNEL ADDRESS --box BENCH-1
+lager nets add-batch nets.json --box BENCH-1
+lager nets add-all --box BENCH-1 --yes      # 根据已连接仪器自动生成
+lager nets delete NAME ROLE --box BENCH-1 --yes
+lager nets describe NAME -p "what it is for" --box BENCH-1
+```
+
+<Note>
+命令是带 `s` 的 `lager nets`。子命令是 `delete`，不是 `remove`。
+这些命令都不使用锁。
+</Note>
+
+---
+
+## 11. 如何使用多个实验台
+
+只有一个实验台时不需要本节。多个实验台则需要一种方法，用代码回答三个问题：
+
+- 有哪些实验台。
+- 每个实验台能做什么。
+- 每个实验台能跑哪些测试。
+
+### 声明实验台的能力，而不是它的身份
+
+请把实验台归入**角色**。角色规定了该角色的实验台必须具备哪些 Net，
+也规定了那些不对应单个 Net 的能力。
+
+`bench/roles.toml`：
+
+```toml
+# Each role declares the nets that a bench of that role must have. The
+# `capabilities` field gives the bench functions that are not one net. Two
+# benches can give the same function with different equipment. A test that
+# needs the function does not need to know the equipment.
+
+[standard]
+nets = ["UART", "SWD", "USB_CHARGE", "USB_DEBUG", "BATT"]
+
+[power]
+nets = ["UART", "SWD", "USB_CHARGE", "USB_DEBUG", "BATT"]
+capabilities = ["current_measurement"]
+
+[supply-fed]
+# A bench supply gives the battery rail. A charger does not. Thus there is no
+# charge port. A test that charges the DUT must get the same condition with a
+# different method.
+nets = ["UART", "SWD", "USB_DEBUG", "SUPPLY"]
+```
+
+测试声明它的要求。它接受的 Net 选项给出必需的 Net。模块级的语句，例如
+`REQUIRED_CAPABILITIES = ["current_measurement"]`，给出其余的要求。
+于是测试运行器只把该测试派发到具备这些条件的角色上。
+
+每个测试在每个实验台上的结果：
+
+| 情况 | 结果 |
+|---|---|
+| 该角色不具备所需能力。 | **N/A** —— 由其他角色执行该测试。 |
+| 该角色不具备所需的 Net。 | **N/A** |
+| 该实验台的隔离列表包含该测试。 | **QUARANTINED** |
+| 该角色声明了这个 Net，但实验台上没有。 | **FAIL** —— 角色声明有误。 |
+| 所有要求都满足。 | **RUN** |
+
+最后两种情况的区别很重要。只有 PASS 和 FAIL 时，两种不同的结果看起来是一样的：
+一种是"这个测试在这里不适用"，另一种是"这个实验台不可用"。
+
+### 每个实验台一个文件
+
+`bench/boxes/BENCH-1.yml`：
+
+```yaml
+role: standard
+enabled: true
+quarantine:
+  - reason: "BENCH-1's supply collapses under load; the DUT browns out mid-test"
+    nets: [SUPPLY]
+  - reason: "actuator strikes too softly to register on this bench"
+    tests: [gesture_stress, double_tap]
+```
+
+`enabled: false` 把一个实验台移出测试系统。这是一行可以由人审阅的更改，
+而不是对工作流文件的更改。隔离列表可以阻止不可用实验台产生错误结果，
+而不需要任何人在所有实验台上禁用该测试。
+
+### 生成矩阵
+
+```yaml
+jobs:
+  matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.gen.outputs.matrix }}
+      empty: ${{ steps.gen.outputs.empty }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}   # pin: the fleet is the one this commit declares
+      - id: gen
+        run: |
+          set -euo pipefail
+          rows=()
+          for f in bench/boxes/*.yml; do
+            name=$(basename "$f" .yml)
+            enabled=$(yq -r '.enabled' "$f")
+            [ "$enabled" = "true" ] || continue
+            role=$(yq -r '.role' "$f")
+            rows+=("$(jq -nc --arg n "$name" --arg r "$role" '{name:$n, role:$r}')")
+          done
+          if [ "${#rows[@]}" -eq 0 ]; then
+            echo "empty=true" >> "$GITHUB_OUTPUT"
+            echo "matrix={\"include\":[]}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "empty=false" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "${rows[@]}" | jq -sc '{include: .}' \
+            | sed 's/^/matrix=/' >> "$GITHUB_OUTPUT"
+
+  validate:
+    runs-on: ubuntu-latest
+    needs: matrix
+    steps:
+      - run: |
+          if [ "${{ needs.matrix.outputs.empty }}" = "true" ]; then
+            echo "::error title=no benches::no enabled entries in bench/boxes/."
+            exit 1
+          fi
+
+  hil:
+    needs: [build, matrix]
+    if: needs.matrix.outputs.empty != 'true'
+    name: ${{ matrix.name }} (${{ matrix.role }})
+    runs-on: ${{ matrix.name }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.matrix.outputs.matrix) }}
+    env:
+      LAGER_BOX: ${{ matrix.name }}
+    concurrency:
+      group: hil-${{ matrix.name }}-${{ github.event.pull_request.number || github.run_id }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      # ... download firmware, flash, run suite, clean up
+```
+
+有四个细节很重要：
+
+- **请使用 `fail-fast: false`。** 一个不可用的实验台不应取消其他实验台。
+  您需要每个实验台的结果。
+- **请加上 `validate` 作业。** 空矩阵会产生零个作业，于是工作流显示成功。
+  用一个单独的、会失败的作业把这种情况区分出来，
+  这样"没有实验台执行测试"就不会和"所有测试都通过"混为一谈。
+- **请给作业起一个正确的名称。** GitHub 用 `/` 分隔作业名称的各个部分，
+  有些界面只显示最后一部分。于是 `BENCH-1 / standard` 会变成 `standard`，
+  实验台的名称就丢失了。请用括号把两个名称放进同一部分。
+- **请为每个实验台使用一个并发分组。** 这样不同的实验台可以同时运行，
+  而同一实验台上的新作业会取代旧作业。
+
+### 用一个汇总作业来判断全部实验台的结果
+
+每个实验台只报告它执行过的测试。一个在**每个**实验台上都是 `N/A` 的测试
+会给出绿色结果，却没有任何测试覆盖。新增一个没有任何角色接受的测试时会这样，
+没有任何角色具备所需的 Net 时也会这样。
+
+请在 GitHub 托管的运行器上增加一个汇总作业，收集所有实验台的结果。
+
+```yaml
+  gate:
+    name: HIL Gate
+    runs-on: ubuntu-latest
+    needs: [matrix, validate, hil]
+    if: always()
+    steps:
+      - name: No bench failed
+        run: |
+          r='${{ needs.hil.result }}'
+          if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
+            echo "::error::one or more bench jobs failed or were cancelled"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: hil-results-*
+          path: ./results
+
+      - name: Every test passed somewhere
+        run: python3 tools/hil_coverage.py --results ./results --tests tests/hil
+```
+
+请把这个汇总作业设为分支保护所需的状态检查，不要使用各个实验台的作业。
+启用或停用实验台时，实验台作业的集合会变化。一个并非总是存在的必需检查，
+比没有检查更糟。
+
+工作流注解只有一行，无法显示表格。因此请从汇总作业把所有实验台的结果写入
+`$GITHUB_STEP_SUMMARY`，每个测试一行，每个实验台一列，并关闭各个实验台自己的摘要。
+这样就只有一个地方需要查看。
+
+### 报告没有执行的测试
+
+您的测试系统可能会限制它自己的覆盖范围，例如隔离列表、被停用的实验台、
+之前结果的缓存，以及测试数量上限。请为每一种情况写出说明。
+如果不写，报告看起来就和完整覆盖的报告一样。HIL 系统绝不能这样。
+
+---
+
+## 12. 重试之后的测试结果
+
+GitHub 的 "Re-run failed jobs" 功能会清空工作目录。如果您的测试套件不重跑之前
+已经成功的测试，那么关于那些测试的数据必须保留下来。
+
+**`actions/cache` 做不到这件事。** 第 N 次尝试的缓存把当前的 `run_id` 作为键的一部分，
+**同一次**运行的第 N+1 次尝试找不到它。缓存键不会变化，因此 `restore-keys` 也找不到。
+
+**上一次尝试的构件可以做到。** 请在每次尝试之后上传结果，并使用 `overwrite: true`。
+当 `github.run_attempt` 大于 1 时下载它们。
+
+```yaml
+      - name: Restore results from the previous attempt
+        if: github.run_attempt > 1
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: hil-results-${{ matrix.name }}
+          path: .test_state
+
+      # ... run the suite ...
+
+      - name: Stage results
+        if: always()
+        id: stage
+        run: |
+          stage="${RUNNER_TEMP}/hil-state"
+          rm -rf "$stage" && mkdir -p "$stage"
+          for f in results.json meta.json; do
+            [ -f ".test_state/$f" ] && cp ".test_state/$f" "$stage/$f"
+          done
+          echo "dir=$stage" >> "$GITHUB_OUTPUT"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hil-results-${{ matrix.name }}
+          path: ${{ steps.stage.outputs.dir }}
+          overwrite: true
+          retention-days: 7
+```
+
+有两种情况会给出错误的结果。
+
+**请使用 `$RUNNER_TEMP`，不要使用 `/tmp`。** 在自托管运行器上，`/tmp` 的内容
+会在两个作业之间保留。因此上一次运行留下的旧 `results.json` 可能被打包进构件，
+即使本次运行没有产生任何结果也一样。下一次尝试于是不再执行那些测试，
+因为旧结果显示它们已经通过。
+
+GitHub 在每个作业开始和结束时都会清空 `$RUNNER_TEMP`。
+
+**请把固件的标识与结果一起保存。** 使用版本字符串或内容哈希。
+当这个标识与本次尝试的固件不一致时，请清除全部结果。如果不这样做，
+使用不同镜像的尝试会报告上一个镜像的结果。
+
+失败之后也请上传结果，使用 `if: always()`。下一次尝试和汇总作业都需要
+一个在测试中途终止的作业所产生的结果。
+
+---
+
+## 13. 如何为 CI 提供网关凭据
+
+位于访问网关之后的 Box 需要凭据。没有网关的 Box 不需要。
+如果您的 Box 没有网关，请跳过本节。
+
+有两种凭据，CLI 采用它最先找到的那一种：
+
+1. `LAGER_GATEWAY_TOKEN` 中的令牌。运行器不在 Box 上时请用这种。
+2. `lager login` 建立的会话。运行器在 Box 上时请用这种。
+
+### 来自您认证服务器的令牌
+
+向您的认证服务器申请一个机器令牌。把令牌保存在仓库密钥中，然后把密钥交给作业：
+
+```yaml
+    env:
+      LAGER_GATEWAY_TOKEN: ${{ secrets.LAGER_GATEWAY_TOKEN }}
+```
+
+作业需要的仅此而已。没有登录步骤，也没有密码进入您的仓库密钥。
+每一次对 Box 的操作都归属于该令牌，而不是某个人。
+
+CLI 随每个发往 Box 的请求发送这个令牌。它不刷新令牌，也不写入任何会话文件。
+因此作业不会在运行器上留下凭据。
+这一点在自托管运行器上很重要，因为运行器的磁盘会在两个作业之间保留。
+
+空值等同于没有令牌。不存在的密钥会展开成空字符串，此时 CLI 的行为与您没有设置该变量时相同。
+
+如果网关拒绝该令牌，命令会立即停止。CLI 不会尝试第二种凭据。
+错误信息会指出拒绝该令牌的认证服务器。请从那个服务器获取新令牌，然后重新设置密钥。
+
+### 来自 `lager login` 的会话
+
+运行器在 Box 上，因此您只需在这台计算机上登录一次，不必在每个作业中登录。
+CLI 把会话保存在运行器账户的主目录中，并会自动续期。
+
+```bash
+# 只需一次，以运行器账户执行
+lager login https://gateway.example.com
+lager whoami
+```
+
+有些情况需要在作业中登录，例如运行器在另一台计算机上且没有令牌，
+或者 Box 会被定期重装。这些情况请使用以下标志：
+
+```yaml
+      - name: Sign in
+        env:
+          AUTH_URL: ${{ vars.LAGER_AUTH_URL }}
+          CI_EMAIL: ${{ secrets.LAGER_CI_EMAIL }}
+          CI_PASSWORD: ${{ secrets.LAGER_CI_PASSWORD }}
+        run: lager login "$AUTH_URL" --email "$CI_EMAIL" --password "$CI_PASSWORD"
+```
+
+这三个名称由您自己决定，CLI 不读取它们。
+
+<Warning>
+请从密钥中读取密码，不要把密码写在工作流里。命令行上的密码会出现在 Box 的进程列表中。
+</Warning>
+
+请遵守以下规则：
+
+- **请使用没有多因素认证的 CI 账户。** `--email` 和 `--password` 标志无法回答
+  多因素认证的询问，命令会一直等待一个永远不会到来的输入。
+- CLI 把会话保存在 `~/.lager_gateway_auth`，权限为 0600。
+  `LAGER_GATEWAY_AUTH_FILE` 可以指定其他位置。
+- **`LAGER_GATEWAY_TOKEN` 中的令牌优先于会话。** CLI 先读取该变量并发送那个令牌，
+  它不会碰会话文件。Rust SDK 读取同一个变量。
+
+### 第一条命令请执行两次
+
+在有网关的 Box 上，新登录之后的**第一条**命令可能失败一次。
+系统在那一刻才记录 Box 与认证服务器之间的对应关系。下一条命令就会成功。
+因此连接测试要把命令执行两次：
+
+```yaml
+      - run: lager hello || lager hello
+```
+
+即使您没有遇到过这个失败，也请保留这一行。它的代价只是多执行一条命令，
+却能消除每天第一个作业上出现的一次失败。
+
+使用 `LAGER_GATEWAY_TOKEN` 令牌时没有这个问题。CLI 随第一条命令就发送令牌，
+因此没有需要记录的对应关系。
+
+---
+
+## 14. 参考数据
+
+### CLI 读取的环境变量
+
+| 变量 | 作用 |
+|---|---|
+| `LAGER_BOX` | 没有 `--box` 标志时使用的默认 Box。 |
+| `LAGER_CONFIG_FILE_DIR` | 全局 `.lager` 文件所在的目录，默认 `~`。 |
+| `LAGER_CONFIG_FILE_NAME` | 配置文件的名称，默认 `.lager`。 |
+| `LAGER_GATEWAY_AUTH_FILE` | `~/.lager_gateway_auth` 的其他位置。 |
+| `LAGER_GATEWAY_TOKEN` | 访问网关的令牌。它优先于会话，并且 CLI 不写入任何文件。 |
+| `LAGER_USER` | 用户身份。在用户计算机上，它就是锁持有者。 |
+| `LAGER_LOCK_HOLDER` | 为锁持有者指定不同的身份。 |
+| `LAGER_LOCK_WAIT` | 锁冲突之后等待的秒数。非数字的值或负值按 0 处理。 |
+| `LAGER_LOCK_TTL` | 锁的最长存活时间。用 `none` 表示不限时。 |
+| `LAGER_LOCK_HEARTBEAT` | 两次心跳之间的秒数，默认 60。 |
+| `LAGER_AUTO_LOCK_DISABLE` | 任何非空值都会关闭自动锁，`0` 也会关闭。 |
+| `LAGER_DEBUG` | 显示完整的错误数据，等同于 `--debug`。 |
+| `LAGER_NO_UPDATE_CHECK` | 关闭后台版本检查。 |
+| `CI` | 值为 `true` 时启用 CI 的锁行为。Actions 会设置它。 |
+| `LAGER_CI_OVERRIDE` | 任何非空值都会关闭 CI 识别。此时 `lager exec` 会启动容器，锁采用用户行为。 |
+
+`lager python` 会把这些变量发送**给** Box 上的脚本：
+`LAGER_RUNNABLE`、`LAGER_PROCESS_ID` 和 `LAGER_OUTPUT_CHANNEL`。
+只有当命令带有 `--box` 标志时，它才发送 `LAGER_BOX`。
+作业环境中的 `LAGER_BOX` 不会传到脚本。
+
+### 退出码
+
+| 命令 | 退出码 | 含义 |
+|---|---|---|
+| `lager python` | 脚本的退出码 | CLI 不做修改。 |
+| | 124 | `--timeout` 时间到，Box 发送了 SIGTERM。 |
+| | 137 | `--timeout` 时间到，Box 发送了 SIGKILL。 |
+| | 255 | CLI 没有从 Box 取到退出码。 |
+| | 130 | 有人或某个信号停止了该命令。 |
+| | 128+N | 信号 N 停止了 Box 上的脚本。 |
+| `lager update --check` | 0 / 1 / 2 | 正确 / 需要更新或检查失败 / 没有确认的 SSH 密钥或 `git rev-list` 失败。 |
+| `lager exec` | 命令的退出码 | CLI 不做修改。命令在容器中运行，或在作业中运行，见 [第 6 节](#用-lager-exec-构建)。 |
+| `lager ssh -- cmd` | 远程命令的退出码 | 255 表示 SSH 失败。 |
+| 所有命令 | 1 | 一般错误。**这包括锁冲突。** |
+| 所有命令 | 2 | 命令行错误，例如未知标志或缺少参数。 |
+
+### `.lager` 文件
+
+全局文件 `~/.lager` 是 JSON 文件，不是 INI 文件。
+
+| 段 | 内容 |
+|---|---|
+| `BOXES` | 每台 Box 的名称，附带 `{ip, user, version}`。 |
+| `NETS` | 每台 Box 的 Net 定义。 |
+| `DEFAULTS` | `gateway_id`（默认 Box）、`user`，以及每个 role 的默认 Net。 |
+
+CLI 也会读取项目中的 `.lager` 文件。它先在工作目录中查找，然后逐级向上查找。
+
+| 段 | 内容 |
+|---|---|
+| `DEVENV` | 容器镜像、挂载点、shell、卷和命令。 |
+| `DEBUG` | 调试 Net 的名称，以及本地调试脚本的路径。 |
+| `includes` | 随 `lager python` 一起上传的其他目录。 |
+
+### 不存在的命令
+
+以下命令并不存在。如果您在旧示例中看到它们，说明那个示例已经过时。
+
+| 不是命令 | 请改用 |
+|---|---|
+| `lager test` | `lager python <script-or-dir>` |
+| `lager net add` | `lager nets add` |
+| `lager nets remove` | `lager nets delete` |
+| `lager connect`、`lager debug NET connect` | `flash`、`reset` 和 `erase` 会建立连接。 |
+| `lager debug NET rtt` | `lager debug NET gdbserver --rtt` |
+| `lager gdbserver` | `lager debug [NET] gdbserver` |
+| `lager box update` | `lager update` |
+| 任何锁标志：`--lock`、`--lock-wait`、`--no-lock` | 锁是自动的。请使用 `LAGER_LOCK_*` 变量。 |
+| `lager update --all` | 请在 shell 中使用循环。 |
+
+---
+
+## 15. 故障排除
+
+**信息：`Error: Box 'BENCH-1' is locked by ...`**
+另一个作业占用着该实验台。在 CI 中，命令会先等待 `LAGER_LOCK_WAIT` 秒才给出这条信息，
+默认是 30 分钟。在用户计算机上，这条信息会立即出现。
+
+要查找持有者，请用 `lager boxes`。以 `ci:github:` 开头的持有者会显示仓库、运行、
+作业和运行器。请等待，或与持有者沟通。不要在作业中使用 `unlock --force`。
+如果持有者是运行器账户的用户名，说明一次 `lager boxes lock` 预约正在阻塞该作业。
+
+**Box 上的 `lager` 命令立即失败，但 CI 没有失败。**
+锁的行为随 `CI=true` 变量而变化。来自 cron、systemd 或 SSH 会话的命令不算 CI，
+它会立即失败。这是正确的行为。如果那条命令必须等待，请为它设置 `LAGER_LOCK_WAIT`。
+
+**作业不结束，也没有输出。**
+通常的原因是某条 `lager` 命令没有带子命令，那条命令会启动交互式会话。
+另一个原因是交互式的 `[y/N]` 询问。如果命令接受 `--yes`，请加上它；
+在清理步骤中请加上 `exec < /dev/null`。
+
+**`lager exec` 不结束，或者报出关于 TTY 的错误。**
+默认值是 `--interactive` 和 `--tty`。在 CI 中请传入 `--no-tty`。
+这适用于 `lager exec` 启动容器的情况。当 CLI 识别出 CI 作业并直接运行命令时，
+它不使用这两个选项。
+
+**`lager exec` 报出 `Docker is not installed or not in PATH`。**
+作业在容器中，但 CLI 试图再启动一个容器。请确认没有设置 `LAGER_CI_OVERRIDE`。
+低于 0.46.2 的 CLI 总是会启动容器，请升级 CLI。请参阅 [第 6 节](#用-lager-exec-构建)。
+
+**您的测试读不到工作流中的环境变量。**
+步骤的 `env:` 块作用于运行器，而您的脚本运行在 Box 上。
+只有 `--env FOO=bar` 和 `--passenv FOO` 才能把变量发送到 Box。
+
+```yaml
+- run: lager python tests/hil --env LOG_LEVEL=debug --passenv GITHUB_SHA
+```
+
+**后台测试因 `SIGTTIN` 而停止。**
+当标准输入是 TTY 时，`lager python` 会启动一个交互功能，该功能等待回车键。
+读取终端的后台进程组会收到 `SIGTTIN` 信号。请把标准输入重定向自 `/dev/null`。
+
+**信息：`[warning] Box BENCH-1 is on lager X; CLI is on Y.`**
+两者版本不同。请用 `lager update --box BENCH-1` 更新该 Box，
+也可以把运行器的 CLI 设为 Box 的版本。不报告版本的 Box，其镜像对这个 CLI 来说太旧了。
+
+**测试通过了，但您改动的 Box 软件根本没有被测到。**
+`lager python` 在 Box 的环境中运行您的脚本。Box 软件来自 Box 上的安装，
+不来自您的检出。请参阅 [第 7 节](#7-如何确保-box-运行的是被测代码)。
+
+**某次尝试报告测试通过，但它其实没有执行那些测试。**
+原因是自托管运行器上 `/tmp` 中的旧结果，另一个原因是结果没有校验固件标识。
+请参阅 [第 12 节](#12-重试之后的测试结果)。
+
+**烧录成功，但后续每个测试都失败。**
+编程器打印了 CLI 不认识的失败文字，命令却给出了退出码 0。设备已被擦除。
+请在烧录命令的输出中查找失败文字。请参阅 [第 6 节](#6-如何把固件烧录到-dut)。
+
+**作业被取消之后，实验台处于不安全状态。**
+工作流设置了 `cancel-in-progress: true` 却没有清理步骤。
+请参阅 [第 8 节](#8-如何在作业结束后让实验台恢复安全)。
+
+**工作流成功了，但没有任何硬件执行过测试。**
+空的 `strategy.matrix` 产生零个作业，于是工作流显示成功。
+请加上 [第 11 节](#11-如何使用多个实验台) 中的 `validate` 作业。
+
+---
+
+## 附录：单个实验台的完整工作流
+
+```yaml
+name: HIL
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 15 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hil-${{ vars.HIL_BENCH }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      artifact: firmware-${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ github.sha }}
+          path: build/firmware.hex
+          if-no-files-found: error
+
+  reachable:
+    runs-on: ${{ vars.HIL_BENCH }}
+    timeout-minutes: 5
+    env:
+      LAGER_BOX: ${{ vars.HIL_BENCH }}
+    steps:
+      - name: Bench reachable
+        run: |
+          for attempt in 1 2 3; do
+            if lager hello; then exit 0; fi
+            echo "::warning::lager hello failed (attempt ${attempt}/3); retrying"
+            sleep 5
+          done
+          echo "::error::bench unreachable after 3 attempts"
+          exit 1
+
+  hil:
+    needs: [build, reachable]
+    runs-on: ${{ vars.HIL_BENCH }}
+    timeout-minutes: 60
+    env:
+      LAGER_BOX: ${{ vars.HIL_BENCH }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact }}
+          path: ./firmware
+
+      - name: Bench bring-up
+        run: ./tools/bench.sh bring-up
+
+      - name: Flash
+        run: |
+          set -o pipefail
+          log=$(mktemp)
+          lager debug SWD flash --hex ./firmware/firmware.hex 2>&1 | tee "$log"
+          if grep -qE 'Cannot power up debug port|Could not connect to the target device' "$log"; then
+            echo "::error title=flash::programmer reported a fatal error but the command returned success"
+            exit 1
+          fi
+          lager debug SWD reset
+
+      - name: Boot and identity
+        run: bash tools/retry-hil.sh -- lager python tests/hil/boot
+
+      - name: Console commands
+        run: bash tools/retry-hil.sh -- lager python tests/hil/console
+
+      - name: Charge behaviour
+        if: github.event_name == 'schedule'
+        run: |
+          bash tools/retry-hil.sh -- \
+            lager python tests/hil/charge -- --target-soc 80 --timeout-min 45
+
+      - name: Bench cleanup
+        if: cancelled() || failure()
+        run: |
+          exec < /dev/null
+          rc=0
+          ./tools/bench.sh bring-up --recover || rc=$?
+          lager debug SWD reset || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "::error title=cleanup::exited ${rc}; ${LAGER_BOX} may be unsafe for the next job"
+            exit 1
+          fi
+
+      - name: Release a bench reservation
+        if: always()
+        run: lager boxes unlock --box "$LAGER_BOX" 2>/dev/null || true
+```
+
+这个工作流展示了完整的方法：
+
+1. 在另一台计算机上构建固件。
+2. 使用实验台之前先做连接测试。
+3. 把检出固定到具体提交。
+4. 检查烧录操作是否成功。
+5. 把每个硬件步骤放进重试脚本。
+6. 在结束时让实验台恢复安全。
