@@ -1,0 +1,160 @@
+---
+title: Instruments
+description: 列出 Lager Box 上已连接的仪器
+---
+
+发现并列出连接到某台 Lager Box 的全部测试仪器。
+
+## 语法
+
+```bash
+lager instruments [OPTIONS]
+```
+
+## 选项
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--box BOX` | Lager Box 名称或 IP 地址 |
+
+---
+
+## 用法
+
+```bash
+# 列出默认 Lager Box 上的仪器
+lager instruments
+
+# 列出指定 Lager Box 上的仪器
+lager instruments --box my-lager-box
+```
+
+---
+
+## 输出
+
+该命令显示一个已连接仪器的表格。`Channels` 列为该仪器提供的每种 Net 类型各占一行，
+并列出该类型的通道。请把表中的名称、某个通道和地址一起用于 `lager nets add`。
+
+```
+Name                     Channels                                                       VISA Address
+========================================================================================================================
+Rigol_DP831              power-supply: 1, 2, 3                                          USB0::0x1AB1::0x0E31::DP8C123456789::INSTR
+LabJack_U3               adc: AIN0, AIN1, AIN2, AIN3, AIN4, AIN5, AIN6, AIN7, AIN8,     USB0::0x0CD5::0x0003::::INSTR
+                         AIN9, AIN10, AIN11, AIN12, AIN13, AIN14, AIN15
+                         dac: DAC0, DAC1
+                         gpio: FIO4, FIO5, FIO6, FIO7, EIO0, EIO1, EIO2, EIO3, EIO4,
+                         EIO5, EIO6, EIO7, CIO0, CIO1, CIO2, CIO3
+                         i2c: FIO6-FIO7
+                         spi: FIO4-FIO7
+```
+
+通道列表保存在 Box 上。请在 Box 上运行 `lager update` 以获取最新的列表。
+
+---
+
+## 仪器类型
+
+以下仪器类型会被自动检测：
+
+### 电源
+- Rigol DP800 系列（DP811、DP821、DP832）
+- Keysight E36200/E36300 系列
+- Keithley 2200/2280 系列
+- EA PSB 系列
+
+### 示波器
+- Rigol MSO5000 系列
+- PicoScope
+
+### 电池/太阳能模拟器
+- Keithley 2281S
+- EA PSI/EL 系列
+
+### 电子负载
+- Rigol DL3000 系列
+
+### 数据采集
+- LabJack T7（ADC、DAC、GPIO、SPI、I2C）
+- LabJack U3（ADC、DAC、GPIO、SPI、I2C）
+- MCC USB-202（ADC、DAC、GPIO）
+- Phidget 热电偶
+- Yocto 功率计
+
+### USB 集线器
+- Acroname（4 端口、8 端口）
+- YKUSH
+
+### 调试探针
+- Segger J-Link
+- CMSIS-DAP
+- ST-Link
+
+### 串口适配器
+- FTDI USB 转串口
+
+---
+
+## 两台设备报告同一个地址
+
+地址通常包含设备的 USB 序列号，因此同型号的两台设备地址不同。
+两者都会出现在表格中，并且各自都可以创建 Net。
+
+LabJack T7 和 LabJack U3 不报告序列号。因此，同一台 Lager Box 上的两台 T7
+或两台 U3 会报告相同的地址，Net 无法说明它指的是哪一台。
+该命令会隐藏这些行，并在表格下方打印这条信息：
+
+```
+LabJack_T7 at USB0::0x0CD5::0x0007::::INSTR: more than one device reports this address, so a net could not say which one it means. This model exposes no unique serial number. Use only one at a time, or drive them from separate boxes.
+```
+
+`lager nets add` 会拒绝在该地址上创建 Net。`add-all` 和 TUI 中的同一规则，
+请参阅 [Nets](/source/reference/cli/nets)。
+
+---
+
+## 地址格式
+
+不同仪器使用不同的地址格式：
+
+| 类型 | 格式 | 示例 |
+|------|--------|---------|
+| USB 仪器 | `USB0::0x<VID>::0x<PID>::<serial>::INSTR` | `USB0::0x1AB1::0x0E31::DP8C123456789::INSTR` |
+| LabJack T7 或 U3 | 序列号字段为空的 USB 资源 | `USB0::0x0CD5::0x0003::::INSTR` |
+| Nordic PPK2 | `ppk2:<serial>` | `ppk2:ABCDEF123456` |
+| 已分配的 RS-232 仪器 | `serial://<vid>:<pid>/serial/<serial>` | `serial://067b:23a3/serial/00000006` |
+
+---
+
+## 示例
+
+```bash
+# 查看已连接哪些仪器
+lager instruments --box my-lager-box
+
+# 与 nets 命令配合进行配置
+lager instruments --box my-lager-box
+lager nets --box my-lager-box  # Then configure nets for discovered instruments
+```
+
+---
+
+## 故障排除
+
+| 问题 | 原因 | 解决方法 |
+|-------|-------|-----|
+| 没有列出任何仪器 | USB 线缆未连接，或 Docker 没有运行 | 检查 USB 物理连接。运行 `lager hello --box <box>` 确认服务正在运行。 |
+| 缺少某台特定仪器 | 仪器需要供电、需要重新插拔 USB，或 udev 规则需要更新 | 拔下并重新插上 USB 线缆。确认仪器已通电。运行 `lager update --box <box>` 获取最新驱动。 |
+| 出现 "more than one device reports this address" | 连接了两台没有序列号的设备，例如两台 LabJack T7 | 在这台 Lager Box 上只使用其中一台，把另一台接到另一台 Lager Box 上。 |
+
+## 说明
+
+- 仪器必须通过 USB 连接到 Lager Box
+- 有些仪器需要特定的驱动（udev 规则）
+- 运行 `lager update` 可安装最新的 udev 规则
+- 用 `lager nets` 配置这些仪器的使用方式
+
+## 参见
+
+- [Nets](/source/reference/cli/nets) -- 为您的仪器配置逻辑名称
+- [设置您的仪器](/source/zh/getting-started/setting-up-instruments) -- 仪器配置的入门指南

@@ -1,0 +1,172 @@
+---
+title: CLI 概述
+description: Lager 命令行界面（CLI）简介，用于硬件控制和自动化。
+---
+
+Lager 命令行界面（CLI）提供了一种强大且可编写脚本的方式，让您直接从终端与 Lager Box 及其所连硬件交互。它非常适合手动控制、shell 脚本编写，以及集成到 CI/CD 流水线中。
+
+## 核心概念
+
+CLI 采用标准的 `GROUP COMMAND` 结构。大多数命令作用于某一台 Lager Box，用 `--box` 选项指定。
+
+```bash
+# 命令的一般结构
+lager [GLOBAL_OPTIONS] <GROUP> <COMMAND> [ARGS]...
+
+# 示例：从指定的 Lager Box 读取一个 ADC 值
+lager adc SENSOR_1 --box my-lager-box
+
+# 示例：设置电源电压
+lager supply VDD_MAIN voltage 3.3 --box my-lager-box
+```
+
+### Net
+
+大多数硬件命令作用于 **Net** —— 代表物理测试点或信号的命名抽象。Net 把易读的名称映射到仪器通道。
+
+```bash
+# 列出可用的 Net
+lager nets --box my-lager-box
+
+# 在命令中使用一个 Net
+lager supply supply1 voltage 3.3 --box my-lager-box
+```
+
+## 主要命令组
+
+下面汇总 Lager CLI 中的主要命令组。
+
+### Lager Box 管理
+- **[Boxes](/source/reference/cli/boxes)**：管理 Lager Box 配置（添加、编辑、删除、导入/导出、锁定）
+- **[Hello](/source/zh/reference/cli/hello)**：验证与 Lager Box 的连通性
+- **[Update](/source/reference/cli/update)**：更新 Lager Box 软件
+- **[SSH](/source/reference/cli/ssh)**：直接 SSH 访问 Lager Box
+- **[Logs](/source/zh/reference/cli/logs)**：查看 Lager Box 日志文件的大小，并清理旧日志
+
+### 配置
+- **[Instruments](/source/zh/reference/cli/instruments)**：列出已连接的测试设备
+- **[Nets](/source/reference/cli/nets)**：创建和管理 Net（测试点抽象）
+- **[Defaults](/source/zh/reference/cli/defaults)**：设置默认的 Lager Box 和 Net 配置
+
+### 电源与仿真
+- **[Supply](/source/reference/cli/supply)**：控制可编程电源
+- **[Battery](/source/reference/cli/battery)**：模拟电池特性（SOC、电压、容量）
+- **[Solar](/source/zh/reference/cli/solar)**：控制太阳能板模拟器
+- **[E-Load](/source/zh/reference/cli/eload)**：控制电子负载（CC/CV/CR/CP 模式）
+- **[Watt](/source/reference/cli/watt)**：从功率计读取功耗
+- **[Energy](/source/zh/reference/cli/energy)**：积分能量/电荷并计算功率统计量（Joulescope JS220）
+
+### 测量
+- **[Scope](/source/reference/cli/scope)**：控制示波器进行波形采集
+- **[Logic](/source/reference/cli/logic)**：控制逻辑分析仪并进行协议解码
+- **[ADC](/source/zh/reference/cli/adc)**：读取模拟电压值
+- **[Thermocouple](/source/zh/reference/cli/thermocouple)**：读取温度传感器
+
+### I/O 与通信
+- **[GPI](/source/reference/cli/gpi)**：读取数字输入
+- **[GPO](/source/zh/reference/cli/gpo)**：写入数字输出
+- **[DAC](/source/zh/reference/cli/dac)**：模拟输出电压控制
+- **[UART](/source/reference/cli/uart)**：串行通信
+- **[USB](/source/reference/cli/usb)**：USB 端口电源控制
+- **[BLE](/source/zh/reference/cli/ble)**：低功耗蓝牙扫描
+
+### 开发
+- **[Debug](/source/reference/cli/debug)**：烧录固件、GDB 服务器、内存访问、RTT 日志
+- **[Python](/source/reference/cli/python)**：在 Lager Box 上执行 Python 脚本
+- **[Exec](/source/reference/cli/exec)**：在本地 Docker 开发容器中运行构建/测试命令
+- **[Devenv](/source/reference/cli/devenv)**：配置本地 Docker 开发环境
+- **[Binaries](/source/zh/reference/cli/binaries)**：在 Lager Box 上运行自定义二进制程序
+
+### 实用工具
+- **[Webcam](/source/reference/cli/webcam)**：视频采集与串流
+- **[Arm](/source/reference/cli/arm)**：控制机械臂定位
+
+## 示例：测试脚本工作流程
+
+下面这个 shell 脚本示例演示了一个典型的硬件测试流程。
+
+```bash
+#!/bin/bash
+
+# Define variables
+LAGER_BOX="my-test-rig"
+FIRMWARE_PATH="build/my_app.hex"
+VOLTAGE_NET="supply1"
+SENSOR_NET="adc1"
+
+# 1. Flash the latest firmware
+echo "--> Flashing firmware..."
+lager debug flash --hex "$FIRMWARE_PATH" --box "$LAGER_BOX"
+
+# 2. Power on the device
+echo "--> Enabling power..."
+lager supply "$VOLTAGE_NET" voltage 3.3 --box "$LAGER_BOX" --yes
+lager supply "$VOLTAGE_NET" enable --box "$LAGER_BOX"
+sleep 2
+
+# 3. Take a sensor reading
+echo "--> Reading sensor..."
+READING=$(lager adc "$SENSOR_NET" --box "$LAGER_BOX")
+echo "Sensor reading: $READING V"
+
+# 4. Check if value is within expected range
+if (( $(echo "$READING > 1.0" | bc -l) )) && (( $(echo "$READING < 2.0" | bc -l) )); then
+    echo "PASS: Value within expected range"
+else
+    echo "FAIL: Value out of range!"
+    exit 1
+fi
+
+# 5. Power down
+echo "--> Disabling power..."
+lager supply "$VOLTAGE_NET" disable --box "$LAGER_BOX" --yes
+
+echo "--> Test complete."
+```
+
+## 设置默认 Lager Box
+
+为了避免在每条命令上都写 `--box`，请设置一台默认 Lager Box：
+
+```bash
+# 设置默认 Lager Box
+lager defaults add --box my-lager-box
+
+# 之后的命令会使用该默认值
+lager supply supply1 voltage 3.3
+lager adc adc1
+```
+
+### Box 的解析顺序
+
+需要 Lager Box 的命令按以下顺序选择它：
+
+1. 该命令的 `--box` 选项
+2. `LAGER_BOX` 环境变量
+3. `lager defaults add --box` 设置的默认 Box
+
+`--box` 接受已保存 Box 的名称或一个 IP 地址。三者都没有时，命令会失败，
+并列出您已保存的 Box，或者告诉您如何添加一台。
+
+## 全局选项
+
+这些选项写在命令组之前，例如 `lager --version`：
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--version` | 显示 CLI 版本 |
+| `--debug` | 显示调试输出 |
+| `--colorize` | 启用彩色终端输出 |
+| `--help` | 显示帮助和命令组列表 |
+
+`--box` 不是全局选项。每条需要与 Box 通信的命令都有自己的 `--box`，写在命令之后。
+每条命令也都接受 `--help`。在 `lager install` 和 `lager update` 上，`--version`
+指定要部署的 Box 版本，而不是 CLI 版本。
+
+## 提示
+
+- 用 `lager <command> --help` 查看任意命令的全部选项
+- 大多数命令支持 `--yes` 以跳过确认提示
+- 用 `lager defaults add` 设置默认值可以减少输入
+- 在支持的地方使用 `tui` 子命令进行交互式控制
+- 读取数值的命令（例如 `adc`、`soc`）可以在脚本中使用

@@ -1,0 +1,99 @@
+---
+title: DUT Context
+description: 编写 MCP 服务器交给 AI 智能体的被测设备上下文
+---
+
+`lager dut` 管理存放在 Lager Box 上 `/etc/lager/bench.json` 中的 **DUT 上下文**。
+这份上下文通过 [MCP 服务器](/source/reference/mcp/overview) 告诉 AI 智能体这台 Box
+测试的是什么：用途、MCU、主要外设、子系统划分，以及原理图和数据手册的引用。
+
+相关概念和工作流程，请参阅 [编写 DUT 上下文](/source/reference/mcp/dut-context)。
+
+## 语法
+
+```bash
+lager dut [COMMAND] [OPTIONS]
+```
+
+## 选项
+
+`lager dut` 命令组本身只接受 `--help`。请把 `--box` 传给各个子命令。
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--box TEXT` | Lager Box 名称或 IP 地址（用于 `show`、`edit` 和 `add-doc`） |
+| `--help` | 显示帮助信息并退出 |
+
+## 命令
+
+| 命令 | 说明 |
+|---------|-------------|
+| `show` | 以 JSON 打印当前的 DUT 上下文 |
+| `edit` | 在 `$EDITOR` 中打开 DUT 上下文进行实时编辑 |
+| `add-doc` | 为该 DUT 附加原理图 / 数据手册 / 固件引用 |
+
+## 命令参考
+
+### Show
+
+以 JSON 打印当前的 DUT 上下文。
+
+```bash
+lager dut show --box my-lager-box
+```
+
+### Edit
+
+把 DUT 上下文经由 `$EDITOR` 往返编辑一次（`$EDITOR` 不存在时依次退回 `nano`、`vi`）。
+保存时，新的 JSON 会先被校验，然后写回 `/etc/lager/bench.json`。
+
+```bash
+lager dut edit --box my-lager-box
+```
+
+可编辑的内容包含以下字段：
+
+| 字段 | 含义 |
+|-------|------|
+| `name` | DUT 槽位名称（例如 `main`）。 |
+| `active` | 该槽位是否为当前活动的 DUT。 |
+| `purpose` | 一句话描述这台 Box 测试的是什么。 |
+| `summary` | 一段 Markdown：该 DUT 是什么，有哪些已知的特殊之处。 |
+| `mcu` | 该 DUT 的微控制器（例如 `STM32H7`）。 |
+| `key_peripherals` | 主要外设的列表。 |
+| `schematic_refs` / `datasheet_refs` / `firmware_refs` / `extra_docs` | 文档引用的列表。 |
+| `subsystems` | 功能模块，每个模块包含 `name`、`summary`、`nets` 和 `doc_refs`。 |
+
+### Add Doc
+
+不必手工编辑 JSON，即可为当前活动的 DUT 附加一条文档引用。
+Box 只记录一个指针，它**不**保存文件本身。智能体会用它自己的工具去获取和分析该文档。
+
+```bash
+lager dut add-doc --kind schematic \
+  --title "Main board" --repo-path docs/sch.pdf --pages 3-5 --box my-lager-box
+```
+
+**选项：**
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--kind` | `schematic`、`layout`、`datasheet`、`firmware`、`manual`、`errata` 或 `other`（默认 `schematic`）。 |
+| `--title TEXT` | 该文档的可读名称（必填）。 |
+| `--url TEXT` | 外部 URL。 |
+| `--repo-path TEXT` | 相对于您测试项目的路径（执行 `lager python` 时同步到 Box）。 |
+| `--pages TEXT` | 可选的页码/图纸提示，例如 `"3-5"` 或 `"POWER sheet"`。 |
+| `--notes TEXT` | 可选的自由格式备注。 |
+
+`--url` 和 `--repo-path` 中至少要提供一个。该引用会追加到与 `--kind` 匹配的列表中
+（`schematic` → `schematic_refs`，`datasheet` → `datasheet_refs`，
+`firmware` → `firmware_refs`；其余都进入 `extra_docs`）。
+
+## 编辑之后
+
+MCP 服务器会监视 `/etc/lager/bench.json`、`/etc/lager/saved_nets.json` 和
+`/etc/lager/box_id`。其中任何一个在磁盘上发生变化时，服务器会在下一个请求时重新加载，
+因此智能体无需任何手动操作就能看到您的改动。
+
+若要立即强制重新加载，可以让已连接的智能体以 `action="reload"` 调用 `box_manage` 工具。
+您也可以重启 Box 服务。

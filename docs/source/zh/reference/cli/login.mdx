@@ -1,0 +1,107 @@
+---
+title: 登录
+description: 对访问受控的 Box 使用 lager login
+---
+
+大多数 Lager Box 不需要登录 —— 您直接运行命令即可。
+但有些 Box 位于**访问网关**之后：这是一个做认证的代理，只允许被指派的用户访问该 Box。
+对这类 Box，Lager 会请您登录一次，之后每条命令都自动完成认证。
+
+普通的 Lager Box 从不提示登录。只有当有人特意把某台 Box 放在网关之后时，您才会看到它。
+
+## 登录
+
+第一次对受控 Box 运行命令时，它会明确告诉您该怎么做。提示信息中会自动填好 URL：
+
+```bash
+lager login https://your-control-plane.example.com
+```
+
+系统会询问您的账户邮箱和密码（如果您的账户启用了 MFA，还会询问 MFA 验证码）。
+会话保存在 `~/.lager_gateway_auth`（只有您本人可读），并会自动续期，
+因此您很少需要登录第二次。此后，`lager hello`、`lager python`、各种 Net 命令，
+以及其他所有命令，对那台 Box 都可以直接工作。
+
+### 非交互式登录
+
+两项凭据都可以作为选项传入，而不必等待提示，这正是 CI 作业所需要的：
+
+| 选项 | 说明 |
+| --- | --- |
+| `--email TEXT` | 账户邮箱 |
+| `--password TEXT` | 账户密码 |
+
+```bash
+lager login https://your-control-plane.example.com --email "$LAGER_EMAIL" --password "$LAGER_PASSWORD"
+```
+
+<Warning>
+在命令行上传入的密码会通过进程列表被其他用户看到，并且会写入您的 shell 历史。
+请像上面那样从密钥存储或环境变量中读取它，而不要直接输入明文。
+</Warning>
+
+如果该账户启用了 MFA，仅有这两个选项还不够。CLI 仍会提示输入 MFA 验证码，
+因此登录不是完全无人值守的。自动化请使用未启用 MFA 的账户。
+
+```bash
+lager logout                 # forget every stored session
+lager logout <auth-url>      # forget one server's session
+```
+
+### 用令牌代替登录
+
+CI 作业没有"人"的身份。如果您的认证服务器可以签发机器令牌，
+请把该令牌交给作业，并去掉登录步骤：
+
+```yaml
+env:
+  LAGER_GATEWAY_TOKEN: ${{ secrets.LAGER_GATEWAY_TOKEN }}
+```
+
+CLI 会随每个发往 Box 的请求发送这个令牌。它优先于任何已保存的会话，并且从不续期。
+它不会向 `~/.lager_gateway_auth` 写入任何内容，因此作业不会在运行器上留下凭据。
+空值或只含空白字符的值视为未设置。
+
+如果网关拒绝该令牌，命令会立即失败，并指出拒绝它的认证服务器。
+此时没有可退回的第二种凭据。
+
+## 检查您的状态
+
+当情况看起来不对时，`lager whoami` 是第一个要运行的命令：
+
+```bash
+lager whoami
+```
+
+它显示四项内容：
+
+- 您已登录哪些服务器
+- 您以什么身份登录
+- 每个会话何时过期
+- CLI 看到了哪些受控 Box
+
+这样一眼就能区分三种问题："未登录"、"登录的账户不对"，以及"已登录但没有权限"。
+
+## 常见提示及其含义
+
+| 提示 | 含义 | 处理方法 |
+| --- | --- | --- |
+| **This box requires sign-in** | 该 Box 受访问控制，而您没有已保存的会话。 | 运行它打印出的 `lager login <url>`，然后重试。 |
+| **requires sign-in… now linked to this box** | 登录后的首次接触 —— 该 Box 刚刚被关联到您的会话。 | 重新运行该命令，它会自动完成认证。 |
+| **Your session… was rejected** | 您的会话已过期或被吊销。 | 再次运行 `lager login <url>`。 |
+| **signed in but not authorized** | 您的账户有效，但没有针对这台 Box 的访问授权。 | 请组织管理员为您授予访问权限。 |
+| **could not verify your access right now** | 该 Box 无法访问它的认证服务器。 | 稍后重试；如果持续出现，请联系您的管理员。 |
+| **refused the token in LAGER_GATEWAY_TOKEN** | 网关拒绝了作业提供的令牌。 | 请从提示中指明的认证服务器获取新令牌。 |
+
+如果您在**较旧的** Lager 版本上遇到这些提示，请先升级 ——
+登录支持需要较新的 CLI：
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## 面向管理员
+
+决定某台 Box 是否需要登录、以及谁可以使用它的，是您的控制平面面板，而不是 CLI。
+请先把用户指派到该 Box，然后打开它的访问守卫；被拒绝的尝试会被记录，
+这样您就能看到谁需要访问权限。
