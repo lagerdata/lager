@@ -1,0 +1,107 @@
+---
+title: 添加您的第一台 Lager Box
+description: 安装 Lager CLI 并连接到您的第一台 Lager Box
+---
+
+**Lager CLI**（`lager`）让您可以从命令行和文本编辑器直接控制硬件。使用这个工具，您可以：
+
+- **控制电源**：以编程方式为被测设备（DUT）设置电压和电流。
+- **烧录固件镜像**：用新的固件版本更新您的设备。
+- **实时监视硬件**：串流电压、电流和其他传感器数据。
+- **操作 I/O 引脚**：直接控制 GPIO，用于测试和自动化。
+- 以及更多功能！
+
+---
+
+## 前置条件
+
+- 一台 Lager Box。如果您还没有配置，请参阅 [设置 Lager Box](/source/zh/getting-started/setting-up-a-lager-box)
+- Python 3.10 或更高版本
+- `pip3` 包管理器
+
+---
+
+## 第 1 步：安装 CLI 软件包
+
+要安装 **Lager CLI**，请先确认您满足以上前置条件，然后运行以下命令。
+```bash
+pip3 install -U lager-cli
+```
+
+您可以查看版本号，以确认安装成功：
+```bash
+lager --version
+```
+
+**预期输出：** 只有版本号，例如：
+```
+0.47.0
+```
+
+---
+
+## 第 2 步：添加您的 Lager Box
+
+要与 Lager Box 交互，您需要它的本地 IP 地址，或者它在 VPN 上的 IP 地址。拿到地址之后，您就可以把它添加到 Lager Box 列表中，并为它命名。
+
+<Note>
+**查找 Lager Box 的 IP 地址：**
+- **Tailscale VPN**：运行 `tailscale status`，查看网络上的所有设备。找到您的 Lager Box 名称和它的 `100.x.y.z` 地址。
+- **本地网络**：查看路由器的 DHCP 客户端表，或者询问您的网络管理员。
+- **Lager CLI**：运行 `lager boxes`，查看您的 Box 及其 IP 地址。
+</Note>
+
+```bash
+lager boxes add --name my-lager-box --ip 100.64.1.42 --user <box-user>
+```
+
+下面的命令列出您添加的每一台 Lager Box。
+
+```bash
+lager boxes
+```
+
+这个列表保存在您自己的计算机上。您可以给每台 Lager Box 取任意名称。
+请先和您的团队约定一个命名规范。
+
+---
+
+## 第 3 步：验证连通性
+
+添加 Lager Box 之后，请测试您能否与它通信：
+
+```bash
+lager hello --box my-lager-box
+```
+
+**预期输出：**
+```
+Box: my-lager-box
+IP: 100.64.1.42
+Version: 0.47.0 (v0.47.0@1fbc4c39fce62f1041d439d1b164bbf7b6f6ad3a)
+
+my-lager-box is online and responding!
+```
+
+如果最后一行显示您的 Lager Box 在线，您就可以开始使用它了。
+括号中的值是该 Box 运行的 ref。该行的其他形式，请参阅
+[`lager hello`](/source/reference/cli/hello)。
+
+<Accordion title="故障排除：lager hello 失败">
+
+| 错误 | 原因 | 解决方法 |
+|-------|-------|-----|
+| `No route to host` | 网络上无法访问该 Lager Box | 请确认您的 VPN（Tailscale）已连接。运行 `tailscale status` 进行验证。 |
+| `Connection refused` | Lager Box 服务没有运行，或者该 Box 从未配置过 | 该 Box 可能需要重启或软件更新。请联系您的管理员，或参阅 [设置 Lager Box](/source/zh/getting-started/setting-up-a-lager-box)。 |
+| `Connection timed out` | 网络路径存在，但 Box 没有响应 | 用 `lager boxes` 确认 IP 地址正确。检查 Box 是否已通电。 |
+| `command not found: lager` | CLI 没有安装，或者不在您的 PATH 中 | 请重新运行 `pip3 install -U lager-cli`。如果使用虚拟环境，请确认它已激活。 |
+
+</Accordion>
+
+---
+
+## 后续步骤
+
+现在您可以与 Lager Box 通信了。接下来请配置连接到它的仪器：
+
+- **[设置您的仪器](/source/zh/getting-started/setting-up-instruments)** -- 发现并配置连接到 Box 的硬件

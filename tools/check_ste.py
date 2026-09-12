@@ -121,7 +121,12 @@ ROOT_PROSE = [
 # Historical record. A release note describes what shipped on a date; rewriting
 # it makes the archive disagree with itself about what was said at the time.
 # Future notes are written against docs/source/release-notes/_template.mdx.
-EXEMPT_DIRS = {'release-notes'}
+# 'zh' and any sibling language directory hold translations. STYLE.md is a
+# style for English sentences -- American spelling, approved modals, a word
+# count per sentence. None of those rules has a meaning in Mandarin, and the
+# checker would report every line of a correct page. The English source under
+# source/ is what this gate holds to STE; a translation is held to its source.
+EXEMPT_DIRS = {'release-notes', 'zh'}
 
 # One term, one meaning (STYLE.md rule 5). Canonical spelling -> the patterns
 # that are wrong for it. Zero tolerance: these have no defensible exception in

@@ -1,0 +1,14 @@
+{
+  "zh": {
+    "getting-started/adding-first-lager-box.mdx": "7f00106c029240ac7d891ce6ae7500e7efa073fe23a31ded1649c77b9fd9d91c",
+    "getting-started/architecture.mdx": "28cf11c68b22107de0238dca74b7963117ab9c3babe5143607b5f43566e6884a",
+    "getting-started/first-test.mdx": "f102fe77583f46623935e62fc04c15b797fc862aca7b4e25c57fa21f3099f0dc",
+    "getting-started/glossary.mdx": "3d04c858693abe22593fa4e0e88b0410167b9078492869f4f4a7627799bd1e7d",
+    "getting-started/interacting-with-nets.mdx": "d8908ed9afc48a82743418a24bd3fcfd5961e9e95e2889e8c3f7d2b4d0a9036b",
+    "getting-started/overview.mdx": "430ea26be72457ad6f21b72288d1b035a41c9df0e17b1b6c684bfbb108142c96",
+    "getting-started/setting-up-a-lager-box.mdx": "1a4ddec7138e5020e9603ffccc5af470fec92c39ebdb20c384bfcfafb1f0fce2",
+    "getting-started/setting-up-instruments.mdx": "fb26958c196ad385b97c7df8e71fef032d093cfc9cfaca2e80b986222d4b7888",
+    "getting-started/troubleshooting.mdx": "860a6db04291527478761404bc8867ab393ba6eb09cfa479b9e6fc40e0ea7259",
+    "getting-started/using-lager-in-ci.mdx": "0d8012d426796d67440ff9aea50bb9a30d172a003cf78241c296b4678add86a3"
+  }
+}

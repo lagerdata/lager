@@ -12,467 +12,503 @@
   },
   "favicon": "/lager-favicon.svg",
   "navigation": {
-    "tabs": [
+    "languages": [
       {
-        "tab": "Overview",
-        "groups": [
+        "language": "en",
+        "default": true,
+        "tabs": [
           {
-            "group": "Getting Started",
-            "pages": [
-              "source/getting-started/overview",
-              "source/getting-started/setting-up-a-lager-box",
-              "source/getting-started/adding-first-lager-box",
-              "source/getting-started/setting-up-instruments",
-              "source/getting-started/interacting-with-nets",
-              "source/getting-started/first-test",
-              "source/getting-started/using-lager-in-ci"
+            "tab": "Overview",
+            "groups": [
+              {
+                "group": "Getting Started",
+                "pages": [
+                  "source/getting-started/overview",
+                  "source/getting-started/setting-up-a-lager-box",
+                  "source/getting-started/adding-first-lager-box",
+                  "source/getting-started/setting-up-instruments",
+                  "source/getting-started/interacting-with-nets",
+                  "source/getting-started/first-test",
+                  "source/getting-started/using-lager-in-ci"
+                ]
+              },
+              {
+                "group": "Resources",
+                "pages": [
+                  "source/getting-started/troubleshooting",
+                  "source/getting-started/glossary",
+                  "source/getting-started/architecture"
+                ]
+              }
             ]
           },
           {
-            "group": "Resources",
-            "pages": [
-              "source/getting-started/troubleshooting",
-              "source/getting-started/glossary",
-              "source/getting-started/architecture"
+            "tab": "CLI Reference",
+            "groups": [
+              {
+                "group": "Lager Box Management",
+                "pages": [
+                  "source/reference/cli/overview",
+                  "source/reference/cli/terminal",
+                  "source/reference/cli/hello",
+                  "source/reference/cli/boxes",
+                  "source/reference/cli/locking",
+                  "source/reference/cli/login",
+                  "source/reference/cli/install",
+                  "source/reference/cli/install-wheel",
+                  "source/reference/cli/uninstall",
+                  "source/reference/cli/update",
+                  "source/reference/cli/ssh",
+                  "source/reference/cli/ssh-setup",
+                  "source/reference/cli/logs"
+                ]
+              },
+              {
+                "group": "Configuration",
+                "pages": [
+                  "source/reference/cli/box-config",
+                  "source/reference/cli/lager-file",
+                  "source/reference/cli/instruments",
+                  "source/reference/cli/diagnose",
+                  "source/reference/cli/nets",
+                  "source/reference/cli/dut",
+                  "source/reference/cli/defaults"
+                ]
+              },
+              {
+                "group": "Power & Simulation",
+                "pages": [
+                  "source/reference/cli/supply",
+                  "source/reference/cli/battery",
+                  "source/reference/cli/solar",
+                  "source/reference/cli/eload",
+                  "source/reference/cli/watt",
+                  "source/reference/cli/energy"
+                ]
+              },
+              {
+                "group": "Measurement",
+                "pages": [
+                  "source/reference/cli/scope",
+                  "source/reference/cli/logic",
+                  "source/reference/cli/adc",
+                  "source/reference/cli/thermocouple"
+                ]
+              },
+              {
+                "group": "I/O & Communication",
+                "pages": [
+                  "source/reference/cli/gpi",
+                  "source/reference/cli/gpo",
+                  "source/reference/cli/dac",
+                  "source/reference/cli/uart",
+                  "source/reference/cli/i2c",
+                  "source/reference/cli/spi",
+                  "source/reference/cli/usb",
+                  "source/reference/cli/ble",
+                  "source/reference/cli/blufi",
+                  "source/reference/cli/router"
+                ]
+              },
+              {
+                "group": "Development",
+                "pages": [
+                  "source/reference/cli/debug",
+                  "source/reference/cli/python",
+                  "source/reference/cli/exec",
+                  "source/reference/cli/devenv",
+                  "source/reference/cli/binaries"
+                ]
+              },
+              {
+                "group": "Utilities",
+                "pages": [
+                  "source/reference/cli/webcam",
+                  "source/reference/cli/arm"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "Python API",
+            "groups": [
+              {
+                "group": "Getting Started",
+                "pages": [
+                  "source/reference/python/overview",
+                  "source/reference/python/binaries",
+                  "source/reference/python/net"
+                ]
+              },
+              {
+                "group": "Development",
+                "pages": [
+                  "source/reference/python/debug",
+                  "source/reference/python/breakpoints"
+                ]
+              },
+              {
+                "group": "Power & Simulation",
+                "pages": [
+                  "source/reference/python/supply",
+                  "source/reference/python/battery",
+                  "source/reference/python/solar",
+                  "source/reference/python/eload",
+                  "source/reference/python/watt",
+                  "source/reference/python/energy"
+                ]
+              },
+              {
+                "group": "Measurement",
+                "pages": [
+                  "source/reference/python/scope",
+                  "source/reference/python/logic",
+                  "source/reference/python/adc",
+                  "source/reference/python/tc"
+                ]
+              },
+              {
+                "group": "I/O & Communication",
+                "pages": [
+                  "source/reference/python/gpio",
+                  "source/reference/python/dac",
+                  "source/reference/python/i2c",
+                  "source/reference/python/spi",
+                  "source/reference/python/usb",
+                  "source/reference/python/uart",
+                  "source/reference/python/serial",
+                  "source/reference/python/ble",
+                  "source/reference/python/wifi",
+                  "source/reference/python/router"
+                ]
+              },
+              {
+                "group": "Utilities",
+                "pages": [
+                  "source/reference/python/arm",
+                  "source/reference/python/webcam"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "Rust API",
+            "groups": [
+              {
+                "group": "Getting Started",
+                "pages": [
+                  "source/reference/rust/overview",
+                  "source/reference/rust/client",
+                  "source/reference/rust/net-types",
+                  "source/reference/rust/errors"
+                ]
+              },
+              {
+                "group": "Development",
+                "pages": [
+                  "source/reference/rust/debug",
+                  "source/reference/rust/rtt",
+                  "source/reference/rust/dfu"
+                ]
+              },
+              {
+                "group": "Power & Simulation",
+                "pages": [
+                  "source/reference/rust/supply",
+                  "source/reference/rust/battery",
+                  "source/reference/rust/solar",
+                  "source/reference/rust/eload",
+                  "source/reference/rust/watt",
+                  "source/reference/rust/energy"
+                ]
+              },
+              {
+                "group": "Measurement",
+                "pages": [
+                  "source/reference/rust/scope",
+                  "source/reference/rust/adc",
+                  "source/reference/rust/thermocouple"
+                ]
+              },
+              {
+                "group": "I/O & Communication",
+                "pages": [
+                  "source/reference/rust/gpio",
+                  "source/reference/rust/dac",
+                  "source/reference/rust/i2c",
+                  "source/reference/rust/spi",
+                  "source/reference/rust/usb",
+                  "source/reference/rust/uart",
+                  "source/reference/rust/ble",
+                  "source/reference/rust/wifi",
+                  "source/reference/rust/blufi",
+                  "source/reference/rust/router"
+                ]
+              },
+              {
+                "group": "Utilities",
+                "pages": [
+                  "source/reference/rust/arm",
+                  "source/reference/rust/webcam"
+                ]
+              },
+              {
+                "group": "Guides",
+                "pages": [
+                  "source/reference/rust/testing",
+                  "source/reference/rust/auth",
+                  "source/reference/rust/async"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "AI Agents (MCP)",
+            "groups": [
+              {
+                "group": "Model Context Protocol",
+                "pages": [
+                  "source/reference/mcp/overview",
+                  "source/reference/mcp/dut-context"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "Supported Instruments",
+            "groups": [
+              {
+                "group": "Supported Instruments",
+                "pages": [
+                  "source/supported-instruments/supported-instruments"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "Release Notes",
+            "groups": [
+              {
+                "group": "0.40 and later",
+                "pages": [
+                  "source/release-notes/v0.47.1",
+                  "source/release-notes/v0.47.0",
+                  "source/release-notes/v0.46.2",
+                  "source/release-notes/v0.46.1",
+                  "source/release-notes/v0.46.0",
+                  "source/release-notes/v0.45.1",
+                  "source/release-notes/v0.45.0",
+                  "source/release-notes/v0.44.0",
+                  "source/release-notes/v0.43.0",
+                  "source/release-notes/v0.42.0",
+                  "source/release-notes/v0.41.0",
+                  "source/release-notes/v0.40.0"
+                ]
+              },
+              {
+                "group": "0.30 – 0.39",
+                "pages": [
+                  "source/release-notes/v0.39.1",
+                  "source/release-notes/v0.39.0",
+                  "source/release-notes/v0.38.0",
+                  "source/release-notes/v0.37.2",
+                  "source/release-notes/v0.37.1",
+                  "source/release-notes/v0.37.0",
+                  "source/release-notes/v0.36.2",
+                  "source/release-notes/v0.36.1",
+                  "source/release-notes/v0.36.0",
+                  "source/release-notes/v0.35.0",
+                  "source/release-notes/v0.34.4",
+                  "source/release-notes/v0.34.3",
+                  "source/release-notes/v0.34.2",
+                  "source/release-notes/v0.34.1",
+                  "source/release-notes/v0.34.0",
+                  "source/release-notes/v0.33.1",
+                  "source/release-notes/v0.33.0",
+                  "source/release-notes/v0.32.6",
+                  "source/release-notes/v0.32.5",
+                  "source/release-notes/v0.32.4",
+                  "source/release-notes/v0.32.3",
+                  "source/release-notes/v0.32.2",
+                  "source/release-notes/v0.32.1",
+                  "source/release-notes/v0.32.0",
+                  "source/release-notes/v0.31.16",
+                  "source/release-notes/v0.31.15",
+                  "source/release-notes/v0.31.14",
+                  "source/release-notes/v0.31.13",
+                  "source/release-notes/v0.31.12",
+                  "source/release-notes/v0.31.11",
+                  "source/release-notes/v0.31.10",
+                  "source/release-notes/v0.31.9",
+                  "source/release-notes/v0.31.8",
+                  "source/release-notes/v0.31.7",
+                  "source/release-notes/v0.31.6",
+                  "source/release-notes/v0.31.5",
+                  "source/release-notes/v0.31.4",
+                  "source/release-notes/v0.31.3",
+                  "source/release-notes/v0.31.2",
+                  "source/release-notes/v0.31.1",
+                  "source/release-notes/v0.31.0",
+                  "source/release-notes/v0.30.0"
+                ]
+              },
+              {
+                "group": "0.20 – 0.29",
+                "pages": [
+                  "source/release-notes/v0.29.0",
+                  "source/release-notes/v0.28.5",
+                  "source/release-notes/v0.28.4",
+                  "source/release-notes/v0.28.3",
+                  "source/release-notes/v0.28.2",
+                  "source/release-notes/v0.28.1",
+                  "source/release-notes/v0.28.0",
+                  "source/release-notes/v0.27.1",
+                  "source/release-notes/v0.27.0",
+                  "source/release-notes/v0.26.0",
+                  "source/release-notes/v0.25.0",
+                  "source/release-notes/v0.24.0",
+                  "source/release-notes/v0.23.0",
+                  "source/release-notes/v0.22.2",
+                  "source/release-notes/v0.22.1",
+                  "source/release-notes/v0.22.0",
+                  "source/release-notes/v0.21.3",
+                  "source/release-notes/v0.21.2",
+                  "source/release-notes/v0.21.1",
+                  "source/release-notes/v0.21.0",
+                  "source/release-notes/v0.20.1",
+                  "source/release-notes/v0.20.0"
+                ]
+              },
+              {
+                "group": "0.10 – 0.19",
+                "pages": [
+                  "source/release-notes/v0.19.2",
+                  "source/release-notes/v0.19.1",
+                  "source/release-notes/v0.19.0",
+                  "source/release-notes/v0.18.5",
+                  "source/release-notes/v0.18.4",
+                  "source/release-notes/v0.18.3",
+                  "source/release-notes/v0.18.2",
+                  "source/release-notes/v0.18.1",
+                  "source/release-notes/v0.18.0",
+                  "source/release-notes/v0.17.0",
+                  "source/release-notes/v0.16.10",
+                  "source/release-notes/v0.16.9",
+                  "source/release-notes/v0.16.8",
+                  "source/release-notes/v0.16.7",
+                  "source/release-notes/v0.16.6",
+                  "source/release-notes/v0.16.5",
+                  "source/release-notes/v0.16.4",
+                  "source/release-notes/v0.16.3",
+                  "source/release-notes/v0.16.2",
+                  "source/release-notes/v0.16.1",
+                  "source/release-notes/v0.16.0",
+                  "source/release-notes/v0.15.2",
+                  "source/release-notes/v0.15.1",
+                  "source/release-notes/v0.15.0",
+                  "source/release-notes/v0.14.4",
+                  "source/release-notes/v0.14.3",
+                  "source/release-notes/v0.14.2",
+                  "source/release-notes/v0.14.1",
+                  "source/release-notes/v0.14.0",
+                  "source/release-notes/v0.13.4",
+                  "source/release-notes/v0.13.3",
+                  "source/release-notes/v0.13.2",
+                  "source/release-notes/v0.13.0",
+                  "source/release-notes/v0.12.0",
+                  "source/release-notes/v0.11.0",
+                  "source/release-notes/v0.10.0"
+                ]
+              },
+              {
+                "group": "0.2 – 0.9",
+                "pages": [
+                  "source/release-notes/v0.9.0",
+                  "source/release-notes/v0.8.0",
+                  "source/release-notes/v0.7.0",
+                  "source/release-notes/v0.6.0",
+                  "source/release-notes/v0.5.0",
+                  "source/release-notes/v0.4.2",
+                  "source/release-notes/v0.4.1",
+                  "source/release-notes/v0.4.0",
+                  "source/release-notes/v0.3.27",
+                  "source/release-notes/v0.3.26",
+                  "source/release-notes/v0.3.25",
+                  "source/release-notes/v0.3.24",
+                  "source/release-notes/v0.3.23",
+                  "source/release-notes/v0.3.22",
+                  "source/release-notes/v0.3.21",
+                  "source/release-notes/v0.3.20",
+                  "source/release-notes/v0.3.19",
+                  "source/release-notes/v0.3.18",
+                  "source/release-notes/v0.3.17",
+                  "source/release-notes/v0.3.16",
+                  "source/release-notes/v0.3.15",
+                  "source/release-notes/v0.3.14",
+                  "source/release-notes/v0.3.13",
+                  "source/release-notes/v0.3.12",
+                  "source/release-notes/v0.3.11",
+                  "source/release-notes/v0.3.10",
+                  "source/release-notes/v0.3.9",
+                  "source/release-notes/v0.3.8",
+                  "source/release-notes/v0.3.7",
+                  "source/release-notes/v0.3.6",
+                  "source/release-notes/v0.3.5",
+                  "source/release-notes/v0.3.4",
+                  "source/release-notes/v0.3.3",
+                  "source/release-notes/v0.3.2",
+                  "source/release-notes/v0.3.1",
+                  "source/release-notes/v0.2.36",
+                  "source/release-notes/v0.2.35",
+                  "source/release-notes/v0.2.33",
+                  "source/release-notes/v0.2.32",
+                  "source/release-notes/v0.2.31",
+                  "source/release-notes/v0.2.30",
+                  "source/release-notes/v0.2.29",
+                  "source/release-notes/v0.2.28",
+                  "source/release-notes/v0.2.27",
+                  "source/release-notes/v0.2.26",
+                  "source/release-notes/v0.2.25",
+                  "source/release-notes/v0.2.24",
+                  "source/release-notes/v0.2.23",
+                  "source/release-notes/v0.2.22",
+                  "source/release-notes/v0.2.21",
+                  "source/release-notes/v0.2.20",
+                  "source/release-notes/v0.2.19",
+                  "source/release-notes/v0.2.18",
+                  "source/release-notes/v0.2.17"
+                ]
+              }
             ]
           }
         ]
       },
       {
-        "tab": "CLI Reference",
-        "groups": [
+        "language": "zh",
+        "tabs": [
           {
-            "group": "Lager Box Management",
-            "pages": [
-              "source/reference/cli/overview",
-              "source/reference/cli/terminal",
-              "source/reference/cli/hello",
-              "source/reference/cli/boxes",
-              "source/reference/cli/locking",
-              "source/reference/cli/login",
-              "source/reference/cli/install",
-              "source/reference/cli/install-wheel",
-              "source/reference/cli/uninstall",
-              "source/reference/cli/update",
-              "source/reference/cli/ssh",
-              "source/reference/cli/ssh-setup",
-              "source/reference/cli/logs"
-            ]
-          },
-          {
-            "group": "Configuration",
-            "pages": [
-              "source/reference/cli/box-config",
-              "source/reference/cli/lager-file",
-              "source/reference/cli/instruments",
-              "source/reference/cli/diagnose",
-              "source/reference/cli/nets",
-              "source/reference/cli/dut",
-              "source/reference/cli/defaults"
-            ]
-          },
-          {
-            "group": "Power & Simulation",
-            "pages": [
-              "source/reference/cli/supply",
-              "source/reference/cli/battery",
-              "source/reference/cli/solar",
-              "source/reference/cli/eload",
-              "source/reference/cli/watt",
-              "source/reference/cli/energy"
-            ]
-          },
-          {
-            "group": "Measurement",
-            "pages": [
-              "source/reference/cli/scope",
-              "source/reference/cli/logic",
-              "source/reference/cli/adc",
-              "source/reference/cli/thermocouple"
-            ]
-          },
-          {
-            "group": "I/O & Communication",
-            "pages": [
-              "source/reference/cli/gpi",
-              "source/reference/cli/gpo",
-              "source/reference/cli/dac",
-              "source/reference/cli/uart",
-              "source/reference/cli/i2c",
-              "source/reference/cli/spi",
-              "source/reference/cli/usb",
-              "source/reference/cli/ble",
-              "source/reference/cli/blufi",
-              "source/reference/cli/router"
-            ]
-          },
-          {
-            "group": "Development",
-            "pages": [
-              "source/reference/cli/debug",
-              "source/reference/cli/python",
-              "source/reference/cli/exec",
-              "source/reference/cli/devenv",
-              "source/reference/cli/binaries"
-            ]
-          },
-          {
-            "group": "Utilities",
-            "pages": [
-              "source/reference/cli/webcam",
-              "source/reference/cli/arm"
-            ]
-          }
-        ]
-      },
-      {
-        "tab": "Python API",
-        "groups": [
-          {
-            "group": "Getting Started",
-            "pages": [
-              "source/reference/python/overview",
-              "source/reference/python/binaries",
-              "source/reference/python/net"
-            ]
-          },
-          {
-            "group": "Development",
-            "pages": [
-              "source/reference/python/debug",
-              "source/reference/python/breakpoints"
-            ]
-          },
-          {
-            "group": "Power & Simulation",
-            "pages": [
-              "source/reference/python/supply",
-              "source/reference/python/battery",
-              "source/reference/python/solar",
-              "source/reference/python/eload",
-              "source/reference/python/watt",
-              "source/reference/python/energy"
-            ]
-          },
-          {
-            "group": "Measurement",
-            "pages": [
-              "source/reference/python/scope",
-              "source/reference/python/logic",
-              "source/reference/python/adc",
-              "source/reference/python/tc"
-            ]
-          },
-          {
-            "group": "I/O & Communication",
-            "pages": [
-              "source/reference/python/gpio",
-              "source/reference/python/dac",
-              "source/reference/python/i2c",
-              "source/reference/python/spi",
-              "source/reference/python/usb",
-              "source/reference/python/uart",
-              "source/reference/python/serial",
-              "source/reference/python/ble",
-              "source/reference/python/wifi",
-              "source/reference/python/router"
-            ]
-          },
-          {
-            "group": "Utilities",
-            "pages": [
-              "source/reference/python/arm",
-              "source/reference/python/webcam"
-            ]
-          }
-        ]
-      },
-      {
-        "tab": "Rust API",
-        "groups": [
-          {
-            "group": "Getting Started",
-            "pages": [
-              "source/reference/rust/overview",
-              "source/reference/rust/client",
-              "source/reference/rust/net-types",
-              "source/reference/rust/errors"
-            ]
-          },
-          {
-            "group": "Development",
-            "pages": [
-              "source/reference/rust/debug",
-              "source/reference/rust/rtt",
-              "source/reference/rust/dfu"
-            ]
-          },
-          {
-            "group": "Power & Simulation",
-            "pages": [
-              "source/reference/rust/supply",
-              "source/reference/rust/battery",
-              "source/reference/rust/solar",
-              "source/reference/rust/eload",
-              "source/reference/rust/watt",
-              "source/reference/rust/energy"
-            ]
-          },
-          {
-            "group": "Measurement",
-            "pages": [
-              "source/reference/rust/scope",
-              "source/reference/rust/adc",
-              "source/reference/rust/thermocouple"
-            ]
-          },
-          {
-            "group": "I/O & Communication",
-            "pages": [
-              "source/reference/rust/gpio",
-              "source/reference/rust/dac",
-              "source/reference/rust/i2c",
-              "source/reference/rust/spi",
-              "source/reference/rust/usb",
-              "source/reference/rust/uart",
-              "source/reference/rust/ble",
-              "source/reference/rust/wifi",
-              "source/reference/rust/blufi",
-              "source/reference/rust/router"
-            ]
-          },
-          {
-            "group": "Utilities",
-            "pages": [
-              "source/reference/rust/arm",
-              "source/reference/rust/webcam"
-            ]
-          },
-          {
-            "group": "Guides",
-            "pages": [
-              "source/reference/rust/testing",
-              "source/reference/rust/auth",
-              "source/reference/rust/async"
-            ]
-          }
-        ]
-      },
-      {
-        "tab": "AI Agents (MCP)",
-        "groups": [
-          {
-            "group": "Model Context Protocol",
-            "pages": [
-              "source/reference/mcp/overview",
-              "source/reference/mcp/dut-context"
-            ]
-          }
-        ]
-      },
-      {
-        "tab": "Supported Instruments",
-        "groups": [
-          {
-            "group": "Supported Instruments",
-            "pages": [
-              "source/supported-instruments/supported-instruments"
-            ]
-          }
-        ]
-      },
-      {
-        "tab": "Release Notes",
-        "groups": [
-          {
-            "group": "0.40 and later",
-            "pages": [
-              "source/release-notes/v0.47.1",
-              "source/release-notes/v0.47.0",
-              "source/release-notes/v0.46.2",
-              "source/release-notes/v0.46.1",
-              "source/release-notes/v0.46.0",
-              "source/release-notes/v0.45.1",
-              "source/release-notes/v0.45.0",
-              "source/release-notes/v0.44.0",
-              "source/release-notes/v0.43.0",
-              "source/release-notes/v0.42.0",
-              "source/release-notes/v0.41.0",
-              "source/release-notes/v0.40.0"
-            ]
-          },
-          {
-            "group": "0.30 – 0.39",
-            "pages": [
-              "source/release-notes/v0.39.1",
-              "source/release-notes/v0.39.0",
-              "source/release-notes/v0.38.0",
-              "source/release-notes/v0.37.2",
-              "source/release-notes/v0.37.1",
-              "source/release-notes/v0.37.0",
-              "source/release-notes/v0.36.2",
-              "source/release-notes/v0.36.1",
-              "source/release-notes/v0.36.0",
-              "source/release-notes/v0.35.0",
-              "source/release-notes/v0.34.4",
-              "source/release-notes/v0.34.3",
-              "source/release-notes/v0.34.2",
-              "source/release-notes/v0.34.1",
-              "source/release-notes/v0.34.0",
-              "source/release-notes/v0.33.1",
-              "source/release-notes/v0.33.0",
-              "source/release-notes/v0.32.6",
-              "source/release-notes/v0.32.5",
-              "source/release-notes/v0.32.4",
-              "source/release-notes/v0.32.3",
-              "source/release-notes/v0.32.2",
-              "source/release-notes/v0.32.1",
-              "source/release-notes/v0.32.0",
-              "source/release-notes/v0.31.16",
-              "source/release-notes/v0.31.15",
-              "source/release-notes/v0.31.14",
-              "source/release-notes/v0.31.13",
-              "source/release-notes/v0.31.12",
-              "source/release-notes/v0.31.11",
-              "source/release-notes/v0.31.10",
-              "source/release-notes/v0.31.9",
-              "source/release-notes/v0.31.8",
-              "source/release-notes/v0.31.7",
-              "source/release-notes/v0.31.6",
-              "source/release-notes/v0.31.5",
-              "source/release-notes/v0.31.4",
-              "source/release-notes/v0.31.3",
-              "source/release-notes/v0.31.2",
-              "source/release-notes/v0.31.1",
-              "source/release-notes/v0.31.0",
-              "source/release-notes/v0.30.0"
-            ]
-          },
-          {
-            "group": "0.20 – 0.29",
-            "pages": [
-              "source/release-notes/v0.29.0",
-              "source/release-notes/v0.28.5",
-              "source/release-notes/v0.28.4",
-              "source/release-notes/v0.28.3",
-              "source/release-notes/v0.28.2",
-              "source/release-notes/v0.28.1",
-              "source/release-notes/v0.28.0",
-              "source/release-notes/v0.27.1",
-              "source/release-notes/v0.27.0",
-              "source/release-notes/v0.26.0",
-              "source/release-notes/v0.25.0",
-              "source/release-notes/v0.24.0",
-              "source/release-notes/v0.23.0",
-              "source/release-notes/v0.22.2",
-              "source/release-notes/v0.22.1",
-              "source/release-notes/v0.22.0",
-              "source/release-notes/v0.21.3",
-              "source/release-notes/v0.21.2",
-              "source/release-notes/v0.21.1",
-              "source/release-notes/v0.21.0",
-              "source/release-notes/v0.20.1",
-              "source/release-notes/v0.20.0"
-            ]
-          },
-          {
-            "group": "0.10 – 0.19",
-            "pages": [
-              "source/release-notes/v0.19.2",
-              "source/release-notes/v0.19.1",
-              "source/release-notes/v0.19.0",
-              "source/release-notes/v0.18.5",
-              "source/release-notes/v0.18.4",
-              "source/release-notes/v0.18.3",
-              "source/release-notes/v0.18.2",
-              "source/release-notes/v0.18.1",
-              "source/release-notes/v0.18.0",
-              "source/release-notes/v0.17.0",
-              "source/release-notes/v0.16.10",
-              "source/release-notes/v0.16.9",
-              "source/release-notes/v0.16.8",
-              "source/release-notes/v0.16.7",
-              "source/release-notes/v0.16.6",
-              "source/release-notes/v0.16.5",
-              "source/release-notes/v0.16.4",
-              "source/release-notes/v0.16.3",
-              "source/release-notes/v0.16.2",
-              "source/release-notes/v0.16.1",
-              "source/release-notes/v0.16.0",
-              "source/release-notes/v0.15.2",
-              "source/release-notes/v0.15.1",
-              "source/release-notes/v0.15.0",
-              "source/release-notes/v0.14.4",
-              "source/release-notes/v0.14.3",
-              "source/release-notes/v0.14.2",
-              "source/release-notes/v0.14.1",
-              "source/release-notes/v0.14.0",
-              "source/release-notes/v0.13.4",
-              "source/release-notes/v0.13.3",
-              "source/release-notes/v0.13.2",
-              "source/release-notes/v0.13.0",
-              "source/release-notes/v0.12.0",
-              "source/release-notes/v0.11.0",
-              "source/release-notes/v0.10.0"
-            ]
-          },
-          {
-            "group": "0.2 – 0.9",
-            "pages": [
-              "source/release-notes/v0.9.0",
-              "source/release-notes/v0.8.0",
-              "source/release-notes/v0.7.0",
-              "source/release-notes/v0.6.0",
-              "source/release-notes/v0.5.0",
-              "source/release-notes/v0.4.2",
-              "source/release-notes/v0.4.1",
-              "source/release-notes/v0.4.0",
-              "source/release-notes/v0.3.27",
-              "source/release-notes/v0.3.26",
-              "source/release-notes/v0.3.25",
-              "source/release-notes/v0.3.24",
-              "source/release-notes/v0.3.23",
-              "source/release-notes/v0.3.22",
-              "source/release-notes/v0.3.21",
-              "source/release-notes/v0.3.20",
-              "source/release-notes/v0.3.19",
-              "source/release-notes/v0.3.18",
-              "source/release-notes/v0.3.17",
-              "source/release-notes/v0.3.16",
-              "source/release-notes/v0.3.15",
-              "source/release-notes/v0.3.14",
-              "source/release-notes/v0.3.13",
-              "source/release-notes/v0.3.12",
-              "source/release-notes/v0.3.11",
-              "source/release-notes/v0.3.10",
-              "source/release-notes/v0.3.9",
-              "source/release-notes/v0.3.8",
-              "source/release-notes/v0.3.7",
-              "source/release-notes/v0.3.6",
-              "source/release-notes/v0.3.5",
-              "source/release-notes/v0.3.4",
-              "source/release-notes/v0.3.3",
-              "source/release-notes/v0.3.2",
-              "source/release-notes/v0.3.1",
-              "source/release-notes/v0.2.36",
-              "source/release-notes/v0.2.35",
-              "source/release-notes/v0.2.33",
-              "source/release-notes/v0.2.32",
-              "source/release-notes/v0.2.31",
-              "source/release-notes/v0.2.30",
-              "source/release-notes/v0.2.29",
-              "source/release-notes/v0.2.28",
-              "source/release-notes/v0.2.27",
-              "source/release-notes/v0.2.26",
-              "source/release-notes/v0.2.25",
-              "source/release-notes/v0.2.24",
-              "source/release-notes/v0.2.23",
-              "source/release-notes/v0.2.22",
-              "source/release-notes/v0.2.21",
-              "source/release-notes/v0.2.20",
-              "source/release-notes/v0.2.19",
-              "source/release-notes/v0.2.18",
-              "source/release-notes/v0.2.17"
+            "tab": "概述",
+            "groups": [
+              {
+                "group": "入门",
+                "pages": [
+                  "source/zh/getting-started/overview",
+                  "source/zh/getting-started/setting-up-a-lager-box",
+                  "source/zh/getting-started/adding-first-lager-box",
+                  "source/zh/getting-started/setting-up-instruments",
+                  "source/zh/getting-started/interacting-with-nets",
+                  "source/zh/getting-started/first-test",
+                  "source/zh/getting-started/using-lager-in-ci"
+                ]
+              },
+              {
+                "group": "资源",
+                "pages": [
+                  "source/zh/getting-started/troubleshooting",
+                  "source/zh/getting-started/glossary",
+                  "source/zh/getting-started/architecture"
+                ]
+              }
             ]
           }
         ]

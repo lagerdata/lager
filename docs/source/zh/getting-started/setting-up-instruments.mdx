@@ -1,0 +1,151 @@
+---
+title: 设置您的仪器
+description: 配置和管理连接到 Lager Box 的仪器
+---
+
+在使用 Lager 客户端操作仪器之前，您必须先识别并整理已连接的设备。CLI 和 Python 库都需要这一步。
+
+---
+
+## 查看已连接的仪器
+
+要查看当前连接到某台 Lager Box 的全部仪器，请运行：
+
+```bash
+lager instruments --box my-lager-box
+```
+
+这条命令检测并列出通过 USB 或网络连接到该 Lager Box 的所有物理仪器。
+
+**示例输出：**
+
+```
+Name                     Channels                                                       VISA Address
+========================================================================================================================
+Rigol_DP831              power-supply: 1, 2, 3                                          USB0::0x1AB1::0x0E31::DP8C123456789::INSTR
+LabJack_T7               adc: AIN0, AIN1, AIN2, AIN3, AIN4, AIN5, AIN6, AIN7, AIN8,     USB0::0x0CD5::0x0007::::INSTR
+                         AIN9, AIN10, AIN11, AIN12, AIN13
+                         dac: DAC0, DAC1
+                         gpio: CIO0, CIO1, CIO2, CIO3, EIO0, EIO1, EIO2, EIO3, EIO4,
+                         EIO5, EIO6, EIO7, MIO0, MIO1, MIO2, FIO0, FIO1, FIO2, FIO3,
+                         FIO4, FIO5, FIO6, FIO7
+                         i2c: FIO4-FIO5
+                         spi: FIO0-FIO3
+Aardvark                 gpio: SCL, SDA, MISO, SCK, MOSI, SS                            USB0::0x0403::0xE0D0::2420032::INSTR
+                         i2c: I2C0
+                         spi: SPI0
+```
+
+`Channels` 列中的每一行给出一个 Net 类型，以及该类型的通道。
+
+要查看已配置的 Net（到仪器的逻辑映射），请使用：
+
+```bash
+lager nets --box my-lager-box
+```
+
+这条命令按仪器分组显示您创建的 Net。每个分组显示该仪器的地址。
+
+### 示例输出：
+
+```
+    Name      Net Type    Channel
+======================================
+Aardvark [USB0::0x0403::0xE0D0::2420032::INSTR]
+├── I2C_0     i2c         I2C0
+└── SPI_0     spi         SPI0
+
+LabJack T7 [USB0::0x0CD5::0x0007::::INSTR]
+├── ADC_0     adc         AIN0
+├── GPIO_0    gpio        FIO3
+└── GPIO_1    gpio        FIO2
+
+SiLabs CP210x [USB0::0x10C4::0xEA60::0001::INSTR]
+└── UART      uart        /dev/ttyUSB0
+```
+
+## 创建 Net
+
+插入仪器时，Lager 不会自动创建 Net。请用下面的命令之一创建：
+
+- `lager nets add` 在您指定的通道上创建一个 Net。
+- `lager nets add-all` 为每台已连接仪器的每个空闲通道创建一个 Net。
+- `lager nets add-batch` 创建 JSON 文件中的 Net。
+- `lager nets tui` 打开 Net 管理器，您可以在其中选择要添加的 Net。
+
+有些仪器带有多个同类型通道，例如 4 通道示波器。您可以为每个通道分配并配置一个 Net。
+
+LabJack T7 和 LabJack U3 不报告序列号。同一台 Lager Box 上有两台同型号设备时，无法创建 Net。这条规则和其他通道规则，请参阅 [Net 参考](/source/reference/cli/nets)。
+
+---
+
+## 用 TUI 修改或分配 Net
+
+交互式 TUI（文本用户界面）可以在多通道仪器上分配新的 Net，例如 LabJack 或 PicoScope。它也可以重命名已有的 Net。
+
+要启动 Net TUI，请运行：
+
+```bash
+lager nets tui --box my-lager-box
+```
+
+### 在 TUI 中，您可以：
+
+- **添加**新的 Net
+- 选择 LabJack T7 的 `i2c` 或 `spi` Net 所用的引脚
+- **重命名**已有的 Net
+- **编辑**Net 的**详细信息**：用途、备注和标签
+- **删除**未使用的 Net
+
+完整列表请参阅 [`nets tui` 参考](/source/reference/cli/nets#tui)。
+
+---
+
+## RS-232 仪器（手动分配）
+
+有些仪器没有 USB 控制端口。它们通过 USB 转串口适配器连接，例如使用 RS-232 端口的
+Rigol DP711 电源。Lager Box 只能看到适配器线缆本身。它无法判断线缆后面是哪台仪器，
+所以不会自动出现任何设备。
+
+> **Rigol DP711 — 必须使用交叉线。** DP711 的 RS-232 端口按 DTE 方式接线，
+> 与 Rigol 随附的 RS232 转 USB 适配器相同。把两者直接相连**不会**工作 —
+> TX 对着 TX，没有任何数据能通过。您必须在 DP711 和 USB 转串口适配器之间
+> 加入一根**零调制解调器（交叉）线缆或转接头**，以交换 TX/RX 线。
+> 没有它，该线缆会出现在 `lager nets assign --list` 中，但电源永远不会响应命令。
+
+请告诉 Box 这根线缆连接的是什么设备，每根线缆只需做一次：
+
+```bash
+# 查看 Box 上未分配的 USB 串口线缆
+lager nets assign --list --box my-lager-box
+
+# 把线缆分配给仪器 —— 并一步创建一个电源 Net
+lager nets assign Rigol_DP711 --serial 00000006 --as-net main_supply --box my-lager-box
+```
+
+Net TUI（`lager nets tui`）在 **Assign Device** 按钮下提供同样的流程。
+选择线缆，选择仪器，然后为 Net 命名。
+
+分配完成之后，该仪器会像任何自动检测到的设备一样出现在 `lager instruments` 和 TUI 中。
+您可以按通常的方式为它添加 Net。Box 会保存这个分配，重启和重新插拔之后依然有效。
+
+端口固定分配、波特率覆盖和删除方法，请参阅
+[`nets assign` 参考](/source/reference/cli/nets#assign)。
+
+---
+
+## 调试 Net
+
+对于调试仪器（例如 Segger J-Link、ST-Link），创建 Net 时您必须指定目标 MCU。
+
+用 TUI 做这件事很方便，它会提示您输入 MCU 类型。
+
+> **重要提示：** MCU 类型必须与您的调试探针支持的有效目标设备相符。如果 MCU 类型无法识别，调试器将不能正常工作。
+
+---
+
+## 后续步骤
+
+配置好仪器之后，就可以开始控制它们了：
+
+- **[使用 Net](/source/zh/getting-started/interacting-with-nets)** -- 通过 CLI 或 Python 向仪器发送命令
