@@ -135,6 +135,7 @@ def relink(lang: str) -> int:
     page. Idempotent, and correct at any point in a partial translation.
     """
     changed = 0
+    anchors: list[str] = []
     for path in translated_pages(lang):
         text = original = path.read_text()
 
@@ -158,9 +159,24 @@ def relink(lang: str) -> int:
             return f'](/source/{english.relative_to(SOURCE)}'
 
         text = re.sub(r'\]\((\.{1,2}/[A-Za-z0-9\-_./]+)', relative, text)
+
+        # An anchor does not survive the path rewrite. A link to
+        # `/source/reference/cli/arm#detection` becomes a link to the
+        # translation, but `#detection` is the slug of the *English* heading and
+        # the translated page has `#检测` instead. The tool cannot translate the
+        # fragment -- only the person who wrote the heading knows what it became
+        # -- so it reports the link and leaves it for a human. The broken-links
+        # gate catches these too, but only after the target is translated; the
+        # report says which ones to look at now.
+        for m in re.finditer(rf'\]\(/source/{lang}/([A-Za-z0-9\-_/]+)#([^)]+)\)', text):
+            target, frag = m.group(1), m.group(2)
+            if re.fullmatch(r'[a-z0-9\-]+', frag):
+                anchors.append(f'{path.relative_to(DOCS)} -> {target}#{frag}')
         if text != original:
             path.write_text(text)
             changed += 1
+    for a in anchors:
+        print(f'  check anchor (looks like an English slug): {a}')
     return changed
 
 

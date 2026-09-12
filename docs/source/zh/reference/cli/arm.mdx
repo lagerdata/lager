@@ -1,0 +1,365 @@
+---
+title: 机械臂
+description: 控制机械臂的位置和运动
+---
+
+为您的设备控制机械臂的操作 —— 运动命令、电机控制和位置相关工具。
+所有位置的单位都是毫米（mm）。
+
+## 要求
+
+- 机械臂必须运行 DexArm 固件 V2.1.4 或更高版本。Rotrics 在 V2.1.4 中交换了 X 轴和 Y 轴。在更旧的固件上，`move` 和 `move-by` 会失败，并给出提示让您更新固件。`position`、`go-home` 和电机相关命令仍然可用。固件可以用 Rotrics Studio 更新。
+- 机械臂上电之后，请先运行 `go-home` 再进行移动。固件在归位之前拒绝运动，此时移动会失败并给出相应提示。
+
+## 语法
+
+```bash
+lager arm [OPTIONS] [NETNAME] COMMAND [ARGS]...
+```
+
+## 全局选项
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--box TEXT` | Lager Box 名称或 IP |
+| `--help` | 显示帮助信息并退出 |
+
+## 参数
+
+| 参数 | 说明 |
+|----------|-------------|
+| `NETNAME` | 机械臂 Net 名称（设置了默认值时可省略） |
+
+## 命令
+
+| 命令 | 说明 |
+|---------|-------------|
+| `position` | 获取机械臂当前位置 |
+| `move` | 移动到绝对 XYZ 位置 |
+| `move-by` | 按相对的 dX dY dZ 偏移移动 |
+| `go-home` | 把机械臂移到归位位置（X0 Y300 Z0） |
+| `enable-motor` | 使能机械臂电机 |
+| `disable-motor` | 断开机械臂电机 |
+| `read-and-save-position` | 按当前姿态重新标定机械臂（`M889`） |
+| `set-acceleration` | 设置机械臂的加速度参数 |
+
+---
+
+## 命令参考
+
+### `position`
+
+获取机械臂当前位置，单位毫米。
+
+```bash
+lager arm [NETNAME] position [OPTIONS]
+```
+
+**选项：**
+- `--box TEXT` - Lager Box 名称或 IP
+
+**示例：**
+```bash
+lager arm ARM1 position --box my-lager-box
+```
+
+---
+
+### `move`
+
+把机械臂移动到绝对 XYZ 位置，单位毫米。
+
+```bash
+lager arm [NETNAME] move [OPTIONS]
+```
+
+**选项：**
+- `--x FLOAT` - 目标 X 位置（mm）
+- `--y FLOAT` - 目标 Y 位置（mm）
+- `--z FLOAT` - 目标 Z 位置（mm）
+- `--box TEXT` - Lager Box 名称或 IP
+- `--timeout FLOAT` - 移动超时秒数（默认 15.0，最小 0.1，最大 25.0）
+- `--yes` - 不提示直接确认该操作
+
+每个轴都是一个具名选项，而不是位置参数，因此您可以只沿一个轴移动，
+而不必把其他轴也写出来。
+
+Box 会拒绝超出机械臂工作空间的目标。请参阅[工作空间范围](#工作空间范围)。
+
+超时上限为 25 秒。Box 上的硬件服务在设备调用 30 秒后会中止并重启，
+因此 Box 拒绝更长的移动超时。
+
+较长的移动可能超过 15 秒的默认值。如果长距离移动超时，请用更大的 `--timeout` 重新运行。
+
+**示例：**
+```bash
+# Move to specific coordinates
+lager arm ARM1 move --x 100 --y 200 --z 50 --box my-lager-box --yes
+
+# Move with custom timeout
+lager arm ARM1 move --x 150 --y 250 --z 75 --timeout 10.0 --yes
+```
+
+---
+
+### `move-by`
+
+按相对偏移（增量移动）移动机械臂，单位毫米。
+
+```bash
+lager arm [NETNAME] move-by [OPTIONS]
+```
+
+**选项：**
+- `--dx FLOAT` - X 方向增量（mm）
+- `--dy FLOAT` - Y 方向增量（mm）
+- `--dz FLOAT` - Z 方向增量（mm）
+- `--box TEXT` - Lager Box 名称或 IP
+- `--timeout FLOAT` - 移动超时秒数（默认 15.0，最小 0.1，最大 25.0）
+- `--yes` - 不提示直接确认该操作
+
+省略的轴保持不变，因此单轴点动只需要写那一个选项。
+
+Box 把偏移量加到当前位置上，并拒绝超出机械臂工作空间的结果。
+
+**示例：**
+```bash
+# Jog the arm by +5 mm in every axis
+lager arm ARM1 move-by --dx 5 --dy 5 --dz 5 --box my-lager-box --yes
+
+# Move only in Z axis
+lager arm ARM1 move-by --dz 10 --yes
+
+# Move with custom timeout
+lager arm ARM1 move-by --dx 10 --timeout 3.0 --yes
+```
+
+---
+
+### `go-home`
+
+把机械臂移到归位位置（X0 Y300 Z0）。命令在机械臂到达归位位置时返回，
+这可能需要几秒钟。机械臂上电后请先运行它。
+
+```bash
+lager arm [NETNAME] go-home [OPTIONS]
+```
+
+**选项：**
+- `--box TEXT` - Lager Box 名称或 IP
+- `--yes` - 不提示直接确认该操作
+
+**示例：**
+```bash
+lager arm ARM1 go-home --box my-lager-box --yes
+```
+
+---
+
+### `enable-motor`
+
+使能机械臂的电机驱动器。
+
+```bash
+lager arm [NETNAME] enable-motor [OPTIONS]
+```
+
+**选项：**
+- `--box TEXT` - Lager Box 名称或 IP
+
+**示例：**
+```bash
+lager arm ARM1 enable-motor --box my-lager-box
+```
+
+---
+
+### `disable-motor`
+
+断开机械臂的电机驱动器。手动搬动机械臂之前请先执行它。
+
+```bash
+lager arm [NETNAME] disable-motor [OPTIONS]
+```
+
+**选项：**
+- `--box TEXT` - Lager Box 名称或 IP
+
+**示例：**
+```bash
+lager arm ARM1 disable-motor --box my-lager-box
+```
+
+---
+
+### `read-and-save-position`
+
+重新标定机械臂。Box 先读取当前位置，然后发送 `M889`。
+`M889` 用当前姿态替换机械臂中保存的标定，此后机械臂的每一次移动都基于该标定计算。
+
+<Warning>
+只有当机械臂在物理上处于标定姿态时才可以使用这条命令。在其他任何姿态下使用它，
+之后的每一次移动都会有偏移。Rotrics 把标定姿态定义为机械臂的 1 轴和 2 轴都处于限位。
+若要重新标定，请先断开电机，用手把机械臂摆到那个姿态，然后运行这条命令，
+之后再运行 `go-home`。
+</Warning>
+
+```bash
+lager arm [NETNAME] read-and-save-position [OPTIONS]
+```
+
+**选项：**
+- `--box TEXT` - Lager Box 名称或 IP
+- `--yes` - 不提示直接确认这次重新标定
+
+不带 `--yes` 时，命令会请求确认。如果您不确认，它不会向机械臂发送任何内容。
+
+**示例：**
+```bash
+lager arm ARM1 read-and-save-position --box my-lager-box
+```
+
+---
+
+### `set-acceleration`
+
+设置机械臂用于运动控制的加速度参数。
+
+```bash
+lager arm [NETNAME] set-acceleration [OPTIONS]
+```
+
+**选项：**
+- `--acceleration INTEGER` - 打印加速度，单位 mm/s^2（最小 1）
+- `--travel INTEGER` - 空行程加速度，单位 mm/s^2（最小 1）
+- `--retract INTEGER` - 回抽加速度，单位 mm/s^2（默认 60，最小 1）
+- `--box TEXT` - Lager Box 名称或 IP
+
+Box 会向机械臂发送 `M204 P<acceleration> T<travel> R<retract>`。
+
+**示例：**
+```bash
+# Set acceleration parameters
+lager arm ARM1 set-acceleration --acceleration 100 --travel 80 --retract 60 --box my-lager-box
+```
+
+---
+
+## 列出机械臂 Net
+
+只带 `--box` 而不带子命令调用时，列出该 Box 上的全部机械臂 Net：
+
+```bash
+lager arm --box my-lager-box
+```
+
+**输出：**
+```
+Name   Net Type   Instrument      Channel        Address
+===========================================================================
+ARM1   arm        Rotrix_Dexarm   /dev/ttyACM0   USB0::0x0483::0x5740::<SERIAL>::INSTR
+```
+
+channel 是机械臂的串口。address 中带有机械臂的 USB 序列号。
+Box 会打开具有该 USB 序列号的那台机械臂。
+
+---
+
+## 工作空间范围
+
+对于 Rotrics Dexarm，Box 会拒绝超出以下近似范围的 `move` 或 `move-by` 目标：
+
+| 轴 | 最小值（mm） | 最大值（mm） |
+|------|--------------|--------------|
+| X | -300 | 300 |
+| Y | 170 | 360 |
+| Z | -140 | 100 |
+
+错误信息以 `Coordinates out of bounds` 开头，并逐一指出超出范围的轴。
+
+---
+
+## 检测
+
+Box 在扫描仪器时会查找机械臂。`lager instruments`、`lager nets add` 和
+`lager nets add-all` 都会启动这次扫描。
+
+- Box 只探测 USB ID 为 `0483:5740` 的串口。
+- Box 向该端口发送 G 代码 `M105`，并最多等待 1 秒钟，等一个含有 `ok` 的回复。
+- Box 绝不探测属于其他仪器或已保存 UART Net 的端口。它也会跳过被其他进程占用的端口。
+- Box 不会探测已被某个已保存机械臂 Net 使用的机械臂。它会根据 USB 序列号把那台机械臂列出来，因为 Box 在两次机械臂命令之间会保持该机械臂的端口打开。
+- 机械臂必须报告 USB 序列号。没有序列号的机械臂会被 Box 丢弃。
+
+若要更改探测行为，请在 Box 容器中设置 `LAGER_ARM_PROBE`：
+
+| 取值 | 作用 |
+|-------|--------|
+| `auto` | 默认。只探测 USB ID 为 `0483:5740` 的端口。 |
+| `force` | 探测每一个不属于其他仪器、已保存 UART Net 或其他进程的串口。 |
+| `off` | 不探测机械臂。 |
+
+```bash
+lager box-config env set LAGER_ARM_PROBE=force --box my-lager-box
+lager box-config apply --box my-lager-box
+```
+
+<Warning>
+如果 Box 上某块板子会在 DTR 或 RTS 线变化时复位，请不要使用 `force`。
+探测会打开每个端口并拉起 DTR，这可能复位那块板子。只有在诊断机械臂缺失时才使用
+`force`，之后请用 `lager box-config env unset LAGER_ARM_PROBE` 删除该设置，
+并运行 `lager box-config apply`。
+</Warning>
+
+---
+
+## 示例
+
+```bash
+# List arm nets
+lager arm --box my-lager-box
+
+# Get current position
+lager arm ARM1 position --box my-lager-box
+
+# Move to home position
+lager arm ARM1 go-home --box my-lager-box --yes
+
+# Move to specific coordinates
+lager arm ARM1 move --x 100 --y 250 --z 30 --box my-lager-box --yes
+
+# Jog the arm by +5 mm in X direction
+lager arm ARM1 move-by --dx 5 --box my-lager-box --yes
+
+# Disable motors for manual adjustment
+lager arm ARM1 disable-motor --box my-lager-box
+
+# Re-enable motors after adjustment
+lager arm ARM1 enable-motor --box my-lager-box
+
+# Recalibrate, only with the arm in its calibration pose
+lager arm ARM1 read-and-save-position --box my-lager-box
+
+# Configure acceleration
+lager arm ARM1 set-acceleration --acceleration 100 --travel 80 --retract 60 --box my-lager-box
+```
+
+---
+
+## 受支持的硬件
+
+| 厂商 | 型号 | 说明 |
+|--------------|-------|-------------|
+| Rotrics | Dexarm | 桌面型机械臂，三轴控制，固件 V2.1.4 或更高版本 |
+
+---
+
+## 说明
+
+- 所有位置的单位都是毫米（mm）
+- 归位位置是 X0 Y300 Z0
+- 在非交互式脚本和 CI 流水线中请使用 `--yes` 标志
+- 断开电机之后，请务必重新使能，以恢复正常工作
+- `--timeout` 选项可以防止机械臂到不了位置时命令一直挂着。它不能超过 25 秒。
+- 如果到机械臂的 USB 连接断开，当前命令会失败。下一条命令会重新打开该端口。
+- 默认 Net 可以用 `lager defaults add --arm-net` 设置
+- 如果机械臂没有出现在 `lager instruments` 中，请参阅[检测](#检测)和故障排除页面
