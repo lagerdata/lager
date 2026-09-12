@@ -1,0 +1,167 @@
+---
+title: BLE
+description: 扫描并连接低功耗蓝牙设备
+---
+
+通过 Lager CLI 扫描低功耗蓝牙（BLE）设备并与之交互。
+
+## 语法
+
+```bash
+lager ble COMMAND [OPTIONS]
+```
+
+## 命令
+
+| 命令 | 说明 |
+|---------|-------------|
+| `scan` | 扫描 BLE 设备 |
+| `info` | 获取 BLE 设备信息 |
+| `connect` | 连接一台 BLE 设备 |
+| `disconnect` | 断开与一台 BLE 设备的连接 |
+
+## 命令参考
+
+### `scan`
+
+扫描附近的 BLE 设备。
+
+```bash
+lager ble scan [OPTIONS]
+```
+
+**选项：**
+- `--box BOX` - Lager Box 名称或 IP 地址
+- `--timeout FLOAT` - 扫描时长，单位秒（默认 5.0）
+- `--name-contains STRING` - 按名称过滤设备（部分匹配）
+- `--name-exact STRING` - 按名称精确匹配过滤设备
+- `--verbose` - 在输出中包含 UUID
+
+**示例：**
+```bash
+# 扫描 5 秒（默认）
+lager ble scan --box my-lager-box
+
+# 扫描 10 秒
+lager ble scan --timeout 10
+
+# 按名称过滤
+lager ble scan --name-contains "Sensor"
+
+# 带 UUID 的详细输出
+lager ble scan --verbose
+```
+
+### `info`
+
+获取某台 BLE 设备的详细信息。
+
+```bash
+lager ble info ADDRESS [--box BOX]
+```
+
+**参数：**
+- `ADDRESS` - BLE 设备地址（例如 `AA:BB:CC:DD:EE:FF`）
+
+返回的设备信息包括：
+- 设备名称
+- 服务和特征
+- 厂商数据
+
+### `connect`
+
+连接一台 BLE 设备。
+
+```bash
+lager ble connect ADDRESS [--box BOX]
+```
+
+**参数：**
+- `ADDRESS` - 要连接的 BLE 设备地址
+
+### `disconnect`
+
+断开与一台 BLE 设备的连接。
+
+```bash
+lager ble disconnect ADDRESS [--box BOX]
+```
+
+**参数：**
+- `ADDRESS` - 要断开的 BLE 设备地址
+
+---
+
+## 示例
+
+```bash
+# 扫描 BLE 设备
+lager ble scan --box my-lager-box
+
+# 带过滤的扫描
+lager ble scan --name-contains "Nordic" --timeout 15
+
+# 获取设备信息
+lager ble info AA:BB:CC:DD:EE:FF
+
+# 连接设备
+lager ble connect AA:BB:CC:DD:EE:FF
+
+# 断开连接
+lager ble disconnect AA:BB:CC:DD:EE:FF
+```
+
+---
+
+## 输出格式
+
+### 扫描结果
+
+scan 命令返回一个表格，包含：
+- 设备地址（MAC 地址格式）
+- 设备名称（如果设备广播了名称）
+- RSSI（信号强度，单位 dBm）
+- 厂商数据（如果有）
+
+### 设备信息
+
+info 命令显示：
+- 完整的设备名称
+- 广播的全部服务（UUID）
+- 每个服务的特征
+- 读/写/通知属性
+
+---
+
+## 使用场景
+
+### 设备发现
+
+用 BLE 扫描发现待测设备：
+```bash
+# 查找所有设备
+lager ble scan --timeout 10
+
+# 查找特定类型的设备
+lager ble scan --name-contains "Heart Rate"
+```
+
+### 自动化测试
+
+把 BLE 操作集成到测试脚本中：
+```bash
+# 确认设备可被发现
+lager ble scan --name-exact "MyProduct" --timeout 5
+
+# 连接并确认服务
+lager ble info AA:BB:CC:DD:EE:FF
+```
+
+---
+
+## 说明
+
+- BLE 扫描需要 Box 上有蓝牙硬件
+- 地址格式为 `XX:XX:XX:XX:XX:XX`（用冒号分隔的十六进制）
+- 扫描超时时间决定 Box 搜索设备的时长
+- 有些设备在连接之前不广播自己的名称

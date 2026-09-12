@@ -19,16 +19,20 @@ the directory, so it never appears in `--progress`.
 | Tab | Pages | Words | Owner |
 |---|---|---|---|
 | Overview (Getting Started) | 10 | 22,411 | done |
-| Python API | 27 | 31,109 | |
-| AI Agents (MCP) | 2 | 2,555 | |
-| Supported Instruments | 1 | 2,484 | |
-| CLI Reference | 47 | 64,910 | |
-| Rust API | 31 | 19,753 | |
+| CLI Reference | 47 | 64,910 | translator A |
+| AI Agents (MCP) | 2 | 2,555 | translator A |
+| Supported Instruments | 1 | 2,484 | translator A |
+| Python API | 27 | 31,109 | translator B |
+| Rust API | 31 | 19,753 | translator B |
 
-Put a name in the owner column before anyone starts. Two people who each assume
-the other has a tab produce the same corpus as two people who both translate it,
-and neither is visible until a reviewer reads the diff. Translate a whole tab
-rather than scattered pages. A tab is the unit a reader navigates, and a half-translated tab
+Put a name in the owner column before anyone starts, and change it here when it
+changes. Two people who each assume the other has a tab produce the same corpus
+as two people who both translate it, and neither is visible until a reviewer
+reads the diff. This table is the only place that assumption is written down.
+
+Translate a whole tab rather than scattered pages. A half-translated tab sends a
+reader between languages on every click, and `--progress` reports by directory,
+so a finished tab reads as finished. A tab is the unit a reader navigates, and a half-translated tab
 sends them between languages on every click. `--progress` reports by directory,
 so a tab that is finished reads as finished.
 

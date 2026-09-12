@@ -1,0 +1,184 @@
+---
+title: 太阳能仿真
+description: 控制太阳能板模拟器的设置和输出
+---
+
+通过 Lager CLI 控制太阳能板模拟器 Net。太阳能仿真可以模拟各种辐照度、温度和电池板特性，
+从而测试由太阳能供电的设备。
+
+## 语法
+
+```bash
+lager solar [OPTIONS] NET_NAME COMMAND [ARGS]...
+```
+
+## 全局选项
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--box BOX` | Lager Box 名称或 IP 地址 |
+| `--help` | 显示帮助信息并退出 |
+
+## 命令
+
+| 命令 | 说明 |
+|---------|-------------|
+| `set` | 初始化并启动太阳能仿真模式 |
+| `stop` | 停止太阳能仿真模式 |
+| `irradiance` | 设置或读取辐照度（W/m²） |
+| `mpp-current` | 读取最大功率点电流（A） |
+| `mpp-voltage` | 读取最大功率点电压（V） |
+| `resistance` | 设置或读取电池板动态内阻（Ω） |
+| `temperature` | 读取电池温度（°C） |
+| `voc` | 读取开路电压（V） |
+
+## 命令参考
+
+### `set`
+
+初始化并启动太阳能仿真模式。
+
+```bash
+lager solar NET_NAME set [--box BOX]
+```
+
+这条命令把电源配置为太阳能板仿真模式，启用 I-V 曲线模拟。
+
+### `stop`
+
+停止太阳能仿真模式，恢复正常工作。
+
+```bash
+lager solar NET_NAME stop [--box BOX]
+```
+
+### `irradiance`
+
+设置或读取辐照度，单位为瓦每平方米（W/m²）。
+
+```bash
+lager solar NET_NAME irradiance [VALUE] [--box BOX]
+```
+
+**参数：**
+- `VALUE` - 辐照度值，单位 W/m²（0.0 - 1500.0）。省略时读取当前值。
+
+**示例：**
+```bash
+# 把辐照度设为 1000 W/m²（标准测试条件）
+lager solar SOLAR1 irradiance 1000
+
+# 读取当前辐照度
+lager solar SOLAR1 irradiance
+```
+
+### `mpp-current`
+
+读取最大功率点（MPP）电流，单位安培。
+
+```bash
+lager solar NET_NAME mpp-current [--box BOX]
+```
+
+返回模拟太阳能板输出最大功率时的电流。
+
+### `mpp-voltage`
+
+读取最大功率点（MPP）电压，单位伏特。
+
+```bash
+lager solar NET_NAME mpp-voltage [--box BOX]
+```
+
+返回模拟太阳能板输出最大功率时的电压。
+
+### `resistance`
+
+设置或读取电池板的动态内阻，单位欧姆。
+
+```bash
+lager solar NET_NAME resistance [VALUE] [--box BOX]
+```
+
+**参数：**
+- `VALUE` - 内阻值，单位 Ω（0.1 - 100.0）。省略时读取当前值。
+
+### `temperature`
+
+读取模拟的电池温度，单位摄氏度。
+
+```bash
+lager solar NET_NAME temperature [--box BOX]
+```
+
+### `voc`
+
+读取开路电压（Voc），单位伏特。
+
+```bash
+lager solar NET_NAME voc [--box BOX]
+```
+
+返回模拟太阳能板在不接负载时的电压。
+
+---
+
+## 示例
+
+```bash
+# 启动太阳能仿真模式
+lager solar SOLAR_PANEL set --box my-lager-box
+
+# 把辐照度设为标准测试条件（1000 W/m²）
+lager solar SOLAR_PANEL irradiance 1000
+
+# 读取 MPP 电压和电流
+lager solar SOLAR_PANEL mpp-voltage
+lager solar SOLAR_PANEL mpp-current
+
+# 读取开路电压
+lager solar SOLAR_PANEL voc
+
+# 设置电池板内阻
+lager solar SOLAR_PANEL resistance 5.0
+
+# 停止太阳能仿真
+lager solar SOLAR_PANEL stop
+```
+
+---
+
+## 受支持的硬件
+
+| 厂商 | 型号系列 | 特性 |
+|--------------|--------------|----------|
+| EA | PSI/EL 系列 | 双象限运行、I-V 曲线仿真 |
+| EA | PSB 10060-60 | 双向电源 |
+| EA | PSB 10080-60 | 双向电源 |
+
+---
+
+## 太阳能板仿真的概念
+
+### I-V 曲线
+
+太阳能板模拟器生成一条 I-V（电流-电压）特性曲线，模仿真实太阳能板的行为：
+- **短路电流（Isc）**：端子短路时的最大电流
+- **开路电压（Voc）**：不接负载时的电压
+- **最大功率点（MPP）**：输出功率最大的最佳工作点
+
+### 标准测试条件（STC）
+
+太阳能板测试的行业标准：
+- 辐照度：1000 W/m²
+- 电池温度：25°C
+- 大气质量：AM1.5
+
+---
+
+## 说明
+
+- 太阳能仿真需要兼容的双向电源
+- EA PSI/EL 系列支持双象限运行，仿真更接近真实
+- 用 `lager nets` 查看您 Box 上可用的太阳能 Net
+- 辐照度超过 1500 W/m² 会超出有效范围

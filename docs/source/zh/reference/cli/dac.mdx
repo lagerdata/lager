@@ -1,0 +1,117 @@
+---
+title: DAC
+description: 控制 Box 上的 DAC 输出
+---
+
+控制您设备上的 DAC（数模转换器）输出。dac 命令在一个 DAC Net 上设置精确的模拟电压，
+可用于产生基准电压、偏置信号或测试激励。
+
+## 语法
+
+```bash
+lager dac [OPTIONS] NET [VOLTAGE]
+```
+
+## 全局选项
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--box TEXT` | Lager Box 名称或 IP 地址 |
+| `--json` | 输出程序可读的 JSON 对象，而不是格式化文本 |
+| `--help` | 显示帮助信息并退出 |
+
+## 参数
+
+- `NET` - 要控制的 DAC Net 名称
+- `VOLTAGE` - 要输出的电压值，单位伏特
+
+## 受支持的硬件
+
+| 厂商 | 型号 | 通道 | 输出范围 | 分辨率 |
+|--------------|-------|----------|--------------|------------|
+| LabJack | T7 | 2（DAC0-DAC1） | 0 至 5 V | 16 位 |
+| LabJack | U3 | 2（DAC0-DAC1） | 0.04 至 4.95 V | |
+| Measurement Computing | USB-202 | 2（DAC0-DAC1） | 0 至 5 V | 12 位 |
+
+CLI 接受 0 到 10 V 的数值。随后 Box 会检查仪器的实际范围，并拒绝超出范围的值。
+
+### LabJack U3
+
+- 输出范围是 0.04 V 至 4.95 V，而不是 0 V 至 5 V。Box 会拒绝超出该范围的值，
+  而不会把它钳位。您无法把 U3 的 DAC 设为 0 V。
+- U3 没有 DAC 回读功能。不带电压执行 `lager dac NET` 时，返回的是 Box 上次在该 Net 上设置的值。
+- 如果 Box 没有可报告的值，读取会失败并报出 `has no readback` 错误。
+  例如在运行过一个 `lager python` 脚本之后就会这样。请先设置一个值。
+
+### 通道命名
+
+创建 DAC Net 时，请使用 `lager instruments` 为该仪器列出的通道名称：
+
+**LabJack T7：** `DAC0`、`DAC1`
+
+**LabJack U3：** `DAC0`、`DAC1`
+
+**MCC USB-202：** `DAC0`、`DAC1`
+
+## 读取输出
+
+省略电压值即可读取该 Net 的输出值：
+
+```bash
+lager dac VOLTAGE_OUTPUT --box my-lager-box
+```
+
+MCC USB-202 不支持回读，因此对 USB-202 Net 的读取会失败。
+
+## 默认 Net
+
+设置一个默认 DAC Net，可以省去每次输入名称：
+
+```bash
+lager defaults add --dac-net VOLTAGE_OUTPUT
+```
+
+之后：
+
+```bash
+lager dac 3.3
+```
+
+## 示例
+
+```bash
+# 把 DAC 输出设为 3.3V
+lager dac VOLTAGE_OUTPUT 3.3 --box my-lager-box
+
+# 把 DAC 输出设为 5.0V
+lager dac POWER_RAIL 5.0 --box my-lager-box
+
+# 把 DAC 输出设为 1.8V
+lager dac REFERENCE_VOLTAGE 1.8 --box my-lager-box
+
+# 把 DAC 输出设为 0V
+lager dac SIGNAL_GENERATOR 0.0 --box my-lager-box
+```
+
+## 故障排除
+
+| 问题 | 原因 | 解决方法 |
+|-------|-------|-----|
+| 输出始终为 0V | Net 未配置或通道不对 | 用 `lager nets --box <box>` 确认 Net 配置 |
+| 电压不准确 | 分辨率限制或负载影响 | LabJack T7 和 USB-202 输出 0-5V，LabJack U3 输出 0.04-4.95V；请确认您的电路没有从 DAC 输出汲取过大电流 |
+| "outside the LabJack UD DAC range" | 在 LabJack U3 上，该值低于 0.04 V 或高于 4.95 V | 请发送 0.04 V 至 4.95 V 之间的值 |
+| "Net not found" | 拼写错误或该 Net 未创建 | 用 `lager nets --box <box>` 查看可用的 Net。Net 名称区分大小写。 |
+
+## 说明
+
+- Net 名称（例如 `VOLTAGE_OUTPUT`、`POWER_RAIL`）就是您搭建测试台时分配的名称
+- 电压值以伏特为单位
+- 只能用于类型为 `dac` 的 Net
+- 请确认目标 Box 上已正确配置 DAC Net
+- DAC 输出为模拟电路提供精确的电压控制
+- LabJack T7 和 USB-202 输出 0-5V，LabJack U3 输出 0.04-4.95V。
+
+## 参见
+
+- [ADC](/source/zh/reference/cli/adc) -- 模数转换器输入（DAC 的对应功能）
+- [Python DAC API](/source/zh/reference/python/dac) -- 在 Python 脚本中设置 DAC 输出

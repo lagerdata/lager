@@ -1,0 +1,189 @@
+---
+title: 能量分析仪
+description: 用能量分析仪 Net 测量能量、电荷和功率统计量
+---
+
+用连接到 Lager Box 的能量分析仪 Net，随时间积分能量和电荷，
+或计算电流/电压/功率的统计量。
+
+## 语法
+
+```bash
+lager energy NET_NAME read [OPTIONS]
+lager energy NET_NAME stats [OPTIONS]
+```
+
+## 命令
+
+| 命令 | 说明 |
+|---------|-------------|
+| `lager energy NET_NAME read` | 在一段时间内积分能量和电荷 |
+| `lager energy NET_NAME stats` | 计算电流、电压和功率的均值/最小值/最大值/标准差 |
+
+---
+
+## `lager energy NET_NAME read`
+
+在可配置的时长内对电流和功率积分。返回以焦耳和瓦时表示的能量，
+以及以库仑和安时表示的电荷。
+
+### 选项
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--box BOX` | Lager Box 名称或 IP 地址 |
+| `--duration FLOAT` | 积分时长，单位秒（默认 10.0） |
+| `--json` | 输出程序可读的 JSON 对象，而不是格式化文本 |
+| `--help` | 显示帮助信息并退出 |
+
+### 参数
+
+| 参数 | 说明 |
+|----------|-------------|
+| `NET_NAME` | 能量分析仪 Net 的名称（设置了默认值时可省略） |
+
+### 输出
+
+```
+Energy 'POWER_METER' (10.0s):
+  Energy:  12.500 mWh  (45.000 mJ)
+  Charge:  3.472 mAh   (12.500 mC)
+```
+
+### 示例
+
+```bash
+# Integrate over the default 10 seconds
+lager energy POWER_METER read --box my-lager-box
+
+# Integrate over 60 seconds
+lager energy POWER_METER read --box my-lager-box --duration 60
+
+# Use the default net
+lager energy read
+```
+
+---
+
+## `lager energy NET_NAME stats`
+
+在可配置的时长内计算电流、电压和功率的均值、最小值、最大值和标准差。
+
+### 选项
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--box BOX` | Lager Box 名称或 IP 地址 |
+| `--duration FLOAT` | 测量时长，单位秒（默认 1.0） |
+| `--json` | 输出程序可读的 JSON 对象，而不是格式化文本 |
+| `--help` | 显示帮助信息并退出 |
+
+### 参数
+
+| 参数 | 说明 |
+|----------|-------------|
+| `NET_NAME` | 能量分析仪 Net 的名称（设置了默认值时可省略） |
+
+### 输出
+
+```
+Stats 'POWER_METER' (1.0s):
+  Current (A):  mean=0.015200  min=0.014900  max=0.015600  std=0.000120
+  Voltage (V):  mean=3.301000  min=3.300500  max=3.301500  std=0.000200
+  Power   (W):  mean=0.050175  min=0.049185  max=0.051516  std=0.000400
+```
+
+### 示例
+
+```bash
+# Stats over the default 1 second
+lager energy POWER_METER stats --box my-lager-box
+
+# Stats over 5 seconds for better averaging
+lager energy POWER_METER stats --box my-lager-box --duration 5
+
+# Use the default net
+lager energy stats
+```
+
+---
+
+## 默认 Net
+
+为避免每次都输入 Net 名称：
+
+```bash
+lager defaults add --energy-net POWER_METER
+```
+
+之后：
+
+```bash
+lager energy read
+lager energy stats
+```
+
+## 受支持的硬件
+
+| 厂商 | 型号 | Net 类型 | USB VID:PID |
+|--------------|-------|----------|-------------|
+| Joulescope | JS220 | `energy-analyzer` | `16d0:10ba` |
+| Nordic Semiconductor | PPK2 | `energy-analyzer` | `1915:c00a` |
+
+若只需要瞬时功率读数，请参阅[功率计](/source/reference/cli/watt)。
+
+## 脚本示例
+
+### 能量预算验证
+
+```bash
+#!/bin/bash
+# Verify a device's energy consumption during a 10-second test
+RESULT=$(lager energy POWER_METER read --box my-lager-box --duration 10)
+echo "$RESULT"
+
+# Extract mWh value for pass/fail
+MWH=$(echo "$RESULT" | grep -oP '[\d.]+(?= mWh)')
+if (( $(echo "$MWH > 50" | bc -l) )); then
+    echo "FAIL: Energy consumption too high: ${MWH} mWh"
+    exit 1
+fi
+echo "PASS: Energy within budget"
+```
+
+### 休眠电流验证
+
+```bash
+#!/bin/bash
+# Check sleep current is below 100 uA
+RESULT=$(lager energy POWER_METER stats --box my-lager-box --duration 5)
+echo "$RESULT"
+
+# Extract mean current in amps, convert to uA
+CURRENT_A=$(echo "$RESULT" | grep "Current" | grep -oP 'mean=\K[\d.]+')
+CURRENT_UA=$(echo "$CURRENT_A * 1000000" | bc -l)
+
+if (( $(echo "$CURRENT_UA > 100" | bc -l) )); then
+    echo "FAIL: Sleep current ${CURRENT_UA} uA exceeds 100 uA limit"
+    exit 1
+fi
+echo "PASS: Sleep current ${CURRENT_UA} uA"
+```
+
+## 故障排除
+
+| 错误 | 原因 | 解决方法 |
+|-------|-------|-----|
+| 超时（120 秒） | 设备断开，或测量时间过长 | 检查 USB 连接；减小 `--duration` |
+| Connection refused | Box 服务没有运行 | 检查 Box：`lager hello --box <box>` |
+| Device not found | 未检测到能量分析仪 | 确认设备已连接：`lager instruments --box <box>` |
+| Net not found | 该 Net 没有配置为 `energy-analyzer` | 检查 Net 类型：`lager nets --box <box>` |
+
+## 说明
+
+- 默认命令超时为 120 秒，以容纳较长的积分时间
+- Joulescope JS220 连续采样；时长越长，精度越高
+- Nordic PPK2 工作在源模式（提供 0.8–5V 的可配置电压并测量电流）；电压读数反映的是配置值
+- 用 `lager instruments --box <box>` 确认设备已被检测到
+- Net 名称就是您配置测试台时分配的名称
+- 用 `lager nets` 查看可用的能量分析仪 Net

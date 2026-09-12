@@ -1,0 +1,100 @@
+---
+title: Uninstall
+description: 从 Box 上移除 Lager Box 代码
+---
+
+从一台 Box 上移除 Lager Box 软件、Docker 容器和相关文件。
+
+## 语法
+
+```bash
+lager uninstall [OPTIONS]
+```
+
+## 选项
+
+| 选项 | 类型 | 默认值 | 说明 |
+|--------|------|---------|-------------|
+| `--box TEXT` | 字符串 | | Box 名称（使用 `.lager` 配置中保存的 IP 和用户名） |
+| `--ip TEXT` | 字符串 | | 目标 Box 的 IP 地址 |
+| `--user TEXT` | 字符串 | `lagerdata` | SSH 用户名 |
+| `--keep-config` | 标志 | | 保留 `/etc/lager` 目录（已保存的 Net、Box ID 等） |
+| `--keep-docker-images` | 标志 | | 只移除容器，保留 Docker 镜像 |
+| `--all` | 标志 | | 移除所有内容，包括 udev 规则、sudoers、第三方工具和旧版部署密钥 |
+| `--yes` | 标志 | | 跳过确认提示 |
+| `--dry-run` | 标志 | | 列出该命令会移除哪些内容，不做任何更改。 |
+| `--help` | | | 显示帮助信息并退出 |
+
+`--box` 和 `--ip` 必须提供其中之一。
+
+## 会移除哪些内容
+
+### 默认移除
+
+| 组件 | 说明 |
+|-----------|-------------|
+| Docker 容器 | 停止并移除 `lager` 容器 |
+| Docker 镜像 | 移除镜像和构建缓存（除非使用 `--keep-docker-images`） |
+| `~/box` 目录 | Box 代码和服务 |
+| `/etc/lager` 目录 | 已保存的 Net、Box ID、版本（除非使用 `--keep-config`） |
+
+### 使用 `--all` 时
+
+除上述内容之外，还会移除：
+
+| 组件 | 说明 |
+|-----------|-------------|
+| udev 规则 | `/etc/udev/rules.d/99-instrument.rules`、`/etc/udev/rules.d/99-lager-user.rules`，以及旧版的 `/etc/udev/rules.d/lager-*.rules`，随后重新加载规则 |
+| modprobe 配置 | `/etc/modprobe.d/blacklist-usbtmc.conf` |
+| sudoers 配置 | `/etc/sudoers.d/lagerdata-udev`、`/etc/sudoers.d/lager-box-config`、`/etc/sudoers.d/lager-bench-json` |
+| 防火墙脚本 | `/usr/local/lib/lager/secure_box_firewall.sh`，并把 UFW 重置为拒绝入站/允许 SSH |
+| sysctl 配置 | `/etc/sysctl.d/99-lager-box-config.conf` |
+| `lager` 组 | 如果存在则移除 |
+| `~/third_party` | J-Link、自定义二进制程序 |
+| 旧版部署密钥 | `~/.ssh/lager_deploy_key*` 和 SSH 配置条目（来自开源之前的部署） |
+
+<Note>
+卸载**按文件名**移除上述三个 sudoers 文件。Lager 从不改动 `/etc/sudoers.d/`
+下的其他任何文件。您或您的管理平台在该目录下用单独文件添加的授权不受影响。
+卸载如此，重新生成 Lager 自有文件的安装和更新同样如此。
+</Note>
+
+## 示例
+
+```bash
+# 基本卸载
+lager uninstall --ip 192.168.1.100
+
+# 卸载但保留已保存的 Net
+lager uninstall --ip 192.168.1.100 --keep-config
+
+# 卸载但保留 Docker 镜像，以便更快重新安装
+lager uninstall --ip 192.168.1.100 --keep-docker-images
+
+# 完全清理
+lager uninstall --ip 192.168.1.100 --all
+
+# 对已保存的 Box 执行非交互式卸载
+lager uninstall --box my-lager-box --yes
+```
+
+## 卸载流程
+
+1. **解析目标** - 根据 `--box` 名称查出 Box IP，或直接使用 `--ip`
+2. **验证 SSH** - 依次尝试 `~/.ssh/lager_box`、您自己的默认身份，两者都无法认证时退回到密码
+3. **显示摘要** - 根据所用标志列出将要移除的内容
+4. **确认** - 需要明确确认（除非使用 `--yes`）
+5. **逐步移除：**
+   - 停止并移除 Docker 容器
+   - 清理 Docker 镜像和构建缓存
+   - 移除 `~/box` 目录
+   - 移除 `/etc/lager` 目录
+   - 移除其他组件（使用 `--all` 时）
+6. **报告** - 确认完成；如果没有使用 `--all`，则建议使用它
+
+## 说明
+
+- 即使前一步失败，每个移除步骤也会继续执行，因此可能出现部分卸载
+- 如果您打算重新安装并希望保留 Net 配置，请使用 `--keep-config`
+- 使用 `--keep-docker-images` 可以加快重新安装，因为不必重新构建镜像
+- 卸载之后，请用 `lager install` 重新部署

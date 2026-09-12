@@ -1,0 +1,218 @@
+---
+title: Defaults
+description: 管理 CLI 命令的默认设置
+---
+
+为 Lager Box、Net 和其他 CLI 选项设置默认值，以简化命令。
+
+## 语法
+
+```bash
+lager defaults COMMAND [OPTIONS]
+```
+
+## 命令
+
+| 命令 | 说明 |
+|---------|-------------|
+| `add` | 设置默认值 |
+| `list` | 列出当前的默认设置 |
+| `delete` | 删除特定的默认设置 |
+| `delete-all` | 删除全部默认设置 |
+
+---
+
+## 命令参考
+
+### `add`
+
+为各类选项设置默认值。
+
+```bash
+lager defaults add [OPTIONS]
+```
+
+**Lager Box 选项：**
+- `--box BOX` - 设置默认 Lager Box
+
+**Net 选项：**
+- `--supply-net NAME` - 默认电源 Net
+- `--battery-net NAME` - 默认电池 Net
+- `--solar-net NAME` - 默认太阳能 Net
+- `--scope-net NAME` - 默认示波器 Net
+- `--logic-net NAME` - 默认逻辑分析仪 Net
+- `--adc-net NAME` - 默认 ADC Net
+- `--dac-net NAME` - 默认 DAC Net
+- `--gpio-net NAME` - 默认 GPIO Net
+- `--debug-net NAME` - 默认调试 Net
+- `--eload-net NAME` - 默认电子负载 Net
+- `--usb-net NAME` - 默认 USB 集线器 Net
+- `--webcam-net NAME` - 默认摄像头 Net
+- `--watt-meter-net NAME` - 默认功率计 Net
+- `--thermocouple-net NAME` - 默认热电偶 Net
+- `--uart-net NAME` - 默认 UART Net
+- `--arm-net NAME` - 默认机械臂 Net
+
+**其他选项：**
+- `--serial-port PATH` - 默认串口路径
+- `--user TEXT` - 记录在 Box 锁上的用户名。请与其他会锁定 Box 的工具使用相同的名称。
+  只有两个工具写入完全相同的持有者字符串时，锁才算是您的。
+  请参阅 [Box 锁定](/source/reference/cli/locking)。
+  `LAGER_USER` 环境变量会覆盖这个默认值。
+
+**示例：**
+```bash
+# Set default Lager Box
+lager defaults add --box my-lager-box
+
+# Set default power supply net
+lager defaults add --supply-net VDD_MAIN
+
+# Set multiple defaults at once
+lager defaults add --box my-lager-box --supply-net POWER --debug-net DEBUG_SWD
+
+# Set the default username used for box locking
+lager defaults add --user alice
+```
+
+### `list`
+
+显示当前全部的默认设置。
+
+```bash
+lager defaults list
+```
+
+未设置任何默认值时，该命令打印
+`No defaults are currently set. Add one with: lager defaults add`。
+不带子命令运行 `lager defaults`，输出与 `list` 相同。
+
+### `delete`
+
+删除特定的默认设置。`delete` 命令为每类默认值提供了子命令。
+
+```bash
+lager defaults delete SUBCOMMAND [OPTIONS]
+```
+
+**可用的子命令：**
+- `box` - 删除默认 Lager Box
+- `serial-port` - 删除默认串口
+- `supply-net` - 删除默认电源 Net
+- `battery-net` - 删除默认电池 Net
+- `solar-net` - 删除默认太阳能 Net
+- `scope-net` - 删除默认示波器 Net
+- `logic-net` - 删除默认逻辑分析仪 Net
+- `adc-net` - 删除默认 ADC Net
+- `dac-net` - 删除默认 DAC Net
+- `gpio-net` - 删除默认 GPIO Net
+- `debug-net` - 删除默认调试 Net
+- `eload-net` - 删除默认电子负载 Net
+- `usb-net` - 删除默认 USB 集线器 Net
+- `webcam-net` - 删除默认摄像头 Net
+- `watt-meter-net` - 删除默认功率计 Net
+- `thermocouple-net` - 删除默认热电偶 Net
+- `uart-net` - 删除默认 UART Net
+- `arm-net` - 删除默认机械臂 Net
+- `user` - 删除默认用户
+
+**选项（适用于全部子命令）：**
+- `--yes` - 跳过确认提示
+
+**示例：**
+```bash
+# Delete default Lager Box
+lager defaults delete box
+
+# Delete default supply net without confirmation
+lager defaults delete supply-net --yes
+
+# Delete default serial port
+lager defaults delete serial-port
+```
+
+### `delete-all`
+
+删除全部默认设置。
+
+```bash
+lager defaults delete-all
+```
+
+---
+
+## 默认值如何工作
+
+当您运行命令而没有指定某个选项时，CLI 会去查找对应的默认值：
+
+```bash
+# Without defaults - must specify everything
+lager supply VDD_MAIN voltage 3.3 --box my-lager-box
+
+# With defaults set
+lager defaults add --box my-lager-box --supply-net VDD_MAIN
+
+# Now you can simply run
+lager supply voltage 3.3
+```
+
+---
+
+## 默认值的解析顺序
+
+1. 命令行选项（优先级最高）
+2. `lager defaults` 中的默认设置
+3. 该项必填且没有默认值时报错
+
+---
+
+## 配置的存放位置
+
+默认值保存在全局 `.lager` 文件，即 `~/.lager` 中。如果设置了
+`LAGER_CONFIG_FILE_DIR`，则文件为该目录下的 `.lager`。
+该文件是 JSON 格式，默认值位于 `DEFAULTS` 键之下：
+
+```json
+{
+  "DEFAULTS": {
+    "gateway_id": "my-lager-box",
+    "net_power_supply": "VDD_MAIN",
+    "net_battery": "VBAT",
+    "serial_device": "/dev/ttyUSB0",
+    "user": "alice"
+  }
+}
+```
+
+`gateway_id` 保存默认 Box。每个 Net 默认值使用一个 `net_` 开头的键，
+例如 `net_debug` 或 `net_uart`。INI 格式的 `.lager` 文件会被拒绝并报错。
+
+---
+
+## 工作流程示例
+
+```bash
+# Initial setup - set your common defaults
+lager defaults add --box my-bench
+lager defaults add --supply-net POWER
+lager defaults add --debug-net SWD
+lager defaults add --uart-net SERIAL
+
+# Now commands are simpler
+lager supply voltage 3.3          # Uses POWER net on my-bench
+lager debug flash fw.hex          # Uses SWD net on my-bench
+lager uart --interactive          # Uses SERIAL net on my-bench
+
+# Override defaults when needed
+lager supply OTHER_SUPPLY voltage 5.0
+lager debug flash fw.hex --box other-lager-box
+```
+
+---
+
+## 说明
+
+- 默认值对您的用户账户是全局的（保存在 `~/.lager` 中）
+- Net 名称必须与 Lager Box 上配置的 Net 一致
+- Box 名称会与已保存的 Box 进行校验
+- 用 `lager defaults list` 确认当前的设置

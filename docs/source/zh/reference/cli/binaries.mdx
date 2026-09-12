@@ -1,0 +1,212 @@
+---
+title: Binaries
+description: 管理 Lager Box 上的自定义二进制程序
+---
+
+在 Lager Box 上上传、列出和移除自定义二进制程序，供 Python 脚本使用。
+
+## 语法
+
+```bash
+lager binaries COMMAND [OPTIONS]
+```
+
+## 命令
+
+| 命令 | 说明 |
+|---------|-------------|
+| `add` | 向 Lager Box 上传一个二进制程序 |
+| `list` | 列出 Lager Box 上的自定义二进制程序 |
+| `remove` | 从 Lager Box 移除一个二进制程序 |
+
+---
+
+## 命令参考
+
+### `add`
+
+向 Lager Box 上传一个二进制文件。
+
+```bash
+lager binaries add BINARY_PATH [OPTIONS]
+```
+
+**参数：**
+- `BINARY_PATH` - 二进制文件的本地路径
+
+**选项：**
+- `--box BOX` - Lager Box 名称或 IP 地址
+- `--name NAME` - 该程序在 Lager Box 上的名称（默认使用文件名）
+- `--yes` - 跳过确认提示
+
+**示例：**
+```bash
+# 用默认名称上传
+lager binaries add ./my_tool --box my-lager-box
+
+# 用自定义名称上传
+lager binaries add ./rt_newtmgr_v1.2 --name rt_newtmgr --box my-lager-box
+
+# 跳过确认
+lager binaries add ./firmware_flasher --box my-lager-box --yes
+```
+
+### `list`
+
+列出 Lager Box 上的全部自定义二进制程序。
+
+```bash
+lager binaries list --box BOX
+```
+
+输出：
+```
+Custom binaries on my-lager-box (<BOX_IP>):
+  Host directory: /home/lagerdata/third_party/customer-binaries
+  Container path: /home/www-data/customer-binaries
+
+  - rt_newtmgr (1.2 MB) (executable)
+  - firmware_flasher (856.0 KB) (executable)
+  - custom_tool (234.0 KB) (not executable)
+```
+
+如果该 Box 上没有二进制程序，列表显示 `(no binaries installed)`。
+如果该目录还没有挂载到容器中，输出末尾会出现
+`Note: Directory is not yet mounted in container.` 和 `Run: lager update --box my-lager-box`。
+
+### `remove`
+
+从 Lager Box 移除一个二进制程序。
+
+```bash
+lager binaries remove BINARY_NAME [OPTIONS]
+```
+
+**参数：**
+- `BINARY_NAME` - 要移除的程序名称
+
+**选项：**
+- `--box BOX` - Lager Box 名称或 IP 地址
+- `--yes` - 跳过确认提示
+
+**示例：**
+```bash
+# 带确认地移除
+lager binaries remove old_tool --box my-lager-box
+
+# 不确认直接移除
+lager binaries remove old_tool --box my-lager-box --yes
+```
+
+---
+
+## 存放位置
+
+二进制程序保存在：
+
+| 位置 | 路径 |
+|----------|------|
+| 宿主机（Lager Box） | `/home/lagerdata/third_party/customer-binaries/` |
+| 容器 | `/home/www-data/customer-binaries/` |
+
+---
+
+## 在 Python 脚本中使用二进制程序
+
+上传之后，运行在 Lager Box 上的 Python 脚本就可以调用这些程序：
+
+```python
+import subprocess
+
+# Call the binary with arguments
+result = subprocess.run(
+    ['/home/www-data/customer-binaries/rt_newtmgr', 'arg1', 'arg2'],
+    capture_output=True,
+    text=True,
+    timeout=30
+)
+
+if result.returncode == 0:
+    print(f"Success: {result.stdout}")
+else:
+    print(f"Error: {result.stderr}")
+```
+
+---
+
+## 加入 PATH（可选）
+
+若要不写完整路径就调用这些程序，请修改 Lager Box 的 Dockerfile：
+
+```dockerfile
+# In box/lager/docker/box.Dockerfile
+ENV PATH="/home/www-data/customer-binaries:${PATH}"
+```
+
+然后重新构建容器：
+```bash
+lager update --box my-lager-box --yes
+```
+
+之后就可以直接调用：
+```python
+subprocess.run(['rt_newtmgr', 'arg1', 'arg2'], ...)
+```
+
+---
+
+## 示例
+
+```bash
+# 完整流程
+# 1. 上传二进制程序
+lager binaries add ./my_custom_tool --box my-lager-box --yes
+
+# 2. 确认它已就位
+lager binaries list --box my-lager-box
+
+# 3. 在 Python 脚本中使用
+lager python ./test_script.py --box my-lager-box
+
+# 4. 用完后清理
+lager binaries remove my_custom_tool --box my-lager-box --yes
+```
+
+---
+
+## 使用场景
+
+### 设备通信工具
+
+上传厂商专用工具，用于与设备交互：
+```bash
+lager binaries add ./vendor_cli --box my-lager-box
+```
+
+### 固件工具
+
+上传自定义的固件处理工具：
+```bash
+lager binaries add ./sign_firmware --box my-lager-box
+lager binaries add ./encrypt_image --box my-lager-box
+```
+
+### 测试工具
+
+上传测试专用的实用程序：
+```bash
+lager binaries add ./stress_test --box my-lager-box
+lager binaries add ./validate_output --box my-lager-box
+```
+
+---
+
+## 说明
+
+- 二进制程序必须兼容 Linux x86_64
+- 文件会被自动设为可执行
+- 新上传的程序通过卷挂载立即在容器中可见。如果某台 Box 上该挂载尚未生效，
+  `add` 会打印 `Note: A first-time setup needs a container restart.`，
+  请在那台 Box 上运行一次 `lager update`
+- 文件大小以易读的格式显示
+- 在脚本中请用 `--yes` 跳过确认

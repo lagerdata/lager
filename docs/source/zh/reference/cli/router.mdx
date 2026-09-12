@@ -1,0 +1,174 @@
+---
+title: Router
+description: 把路由器作为 Lager Net 管理
+---
+
+把网络路由器注册为 Lager Net 并加以控制。路由器 Net 封装了路由器对外提供的 REST API，
+例如 MikroTik hAP 上的 API。通过这个 Net，您可以：
+
+- 查看接口并切换它们的状态
+- 列出无线客户端和 DHCP 租约
+- 阻断互联网访问
+- 把路由器重置到干净的基线状态
+
+路由器 Net 适用于连通性测试和网络韧性测试。
+
+<Note>自 **lager 0.10.0** 起提供。默认仪器类型为 `MikroTik_hAP`。</Note>
+
+## 语法
+
+```bash
+lager router COMMAND [ARGS] [OPTIONS]
+```
+
+每个子命令都接受 `--box BOX`（Lager Box 名称或 IP，省略时使用默认 Box）。
+大多数子命令作用于一个 `NETNAME` —— 之前用 `add-net` 注册的路由器 Net 名称。
+
+## 命令
+
+| 命令 | 说明 |
+|---------|-------------|
+| `add-net` | 在 Box 上把一台路由器注册为 Net |
+| `connect` | 验证与某个路由器 Net 的连通性 |
+| `interfaces` | 列出网络接口 |
+| `wireless-interfaces` | 列出无线接口及其配置 |
+| `wireless-clients` | 列出已连接的无线客户端 |
+| `dhcp-leases` | 列出 DHCP 租约（已获得 IP 地址的设备） |
+| `system-info` | 获取系统资源信息 |
+| `reboot` | 重启路由器 |
+| `enable-interface` | 启用一个无线接口 |
+| `disable-interface` | 停用一个无线接口 |
+| `block-internet` | 阻断全部互联网访问（丢弃转发流量） |
+| `reset` | 把路由器 Net 重置到干净的基线状态 |
+| `run` | 执行任意的路由器 REST API GET 调用 |
+
+---
+
+## 命令参考
+
+### `add-net`
+
+在 Box 上把一台路由器注册为 Net。
+
+```bash
+lager router add-net NAME --address IP [OPTIONS]
+```
+
+| 选项 | 默认值 | 说明 |
+|--------|---------|-------------|
+| `--address` | （必填） | 路由器的 IP 地址 |
+| `--username` | `admin` | 路由器用户名 |
+| `--password` | （空） | 路由器密码 |
+| `--instrument` | `MikroTik_hAP` | 路由器仪器类型 |
+| `--use-ssl` | 关闭 | 使用 HTTPS 而不是 HTTP |
+| `--box` | | Lager Box 名称或 IP |
+
+```bash
+lager router add-net router1 --address 192.168.88.1 --username admin --password secret --box my-lager-box
+```
+
+### `connect`
+
+验证与某个路由器 Net 的连通性。
+
+```bash
+lager router connect router1 --box my-lager-box
+```
+
+### `interfaces`
+
+列出某个路由器 Net 上的网络接口。
+
+```bash
+lager router interfaces router1 --box my-lager-box
+```
+
+### `wireless-interfaces`
+
+列出无线接口及其配置。
+
+```bash
+lager router wireless-interfaces router1 --box my-lager-box
+```
+
+### `wireless-clients`
+
+列出当前已连接的无线客户端。
+
+```bash
+lager router wireless-clients router1 --box my-lager-box
+```
+
+### `dhcp-leases`
+
+列出 DHCP 租约 —— 即已获得 IP 地址的设备。
+
+```bash
+lager router dhcp-leases router1 --box my-lager-box
+```
+
+### `system-info`
+
+从某个路由器 Net 获取系统资源信息。
+
+```bash
+lager router system-info router1 --box my-lager-box
+```
+
+### `reboot`
+
+重启某个路由器 Net。除非传入 `--yes`，否则会要求确认。
+
+```bash
+lager router reboot router1 --box my-lager-box
+lager router reboot router1 --yes --box my-lager-box
+```
+
+### `enable-interface` / `disable-interface`
+
+按名称启用或停用一个无线接口。
+
+```bash
+lager router enable-interface router1 wlan1 --box my-lager-box
+lager router disable-interface router1 wlan1 --box my-lager-box
+```
+
+### `block-internet`
+
+阻断某个路由器 Net 上的全部互联网访问（丢弃转发流量）。请用 `reset` 恢复访问。
+
+```bash
+lager router block-internet router1 --box my-lager-box
+```
+
+### `reset`
+
+把路由器 Net 重置到干净的基线状态：移除所有带测试标记的防火墙规则、带宽限制和访问列表条目；
+重新启用 DHCP 和全部无线接口。如果提供了 `--ssid` 和 `--password`，还会应用一个全新的
+WPA2 基线网络。除非传入 `--yes`，否则会要求确认。
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--ssid` | 要在无线接口上恢复的基线 SSID |
+| `--password` | 基线 WPA2 密码 |
+| `--yes` | 跳过确认提示 |
+
+```bash
+lager router reset router1 --box my-lager-box
+lager router reset router1 --ssid HomeNet --password secret123 --box my-lager-box
+```
+
+### `run`
+
+执行任意的路由器 REST API GET 调用。`PATH` 是相对于 `/rest` 的 API 路径，
+例如 `/ip/address`。
+
+```bash
+lager router run router1 /ip/address --box my-lager-box
+```
+
+---
+
+## 参见
+
+- [Nets](/source/reference/cli/nets) —— 管理仪器 Net 和设备 Net
