@@ -1,0 +1,337 @@
+---
+title: Python
+description: 在 Box 上运行 Python 脚本
+---
+
+在指定 Box 的容器内运行 Python 脚本，用于测试自动化、硬件控制和数据处理。
+
+## 语法
+
+```bash
+lager python [OPTIONS] [RUNNABLE] [ARGS]...
+```
+
+## 全局选项
+
+| 选项 | 简写 | 类型 | 默认值 | 说明 |
+|--------|-------|------|---------|-------------|
+| `--box TEXT` | | 字符串 | | Lager Box 名称或 IP 地址 |
+| `--env FOO=BAR` | | 可多次 | | 为脚本设置环境变量 |
+| `--passenv VAR` | | 可多次 | | 从当前 shell 传递环境变量 |
+| `--kill TEXT` | | 字符串 | | 按进程 ID 终止某个正在运行的进程 |
+| `--kill-all` | | 标志 | | 终止全部正在运行的脚本 |
+| `--signal SIGNAL` | | 枚举 | `SIGTERM` | 与 `--kill`/`--kill-all` 配合使用的信号 |
+| `--download FILE` | | 可多次 | | 脚本结束后从 Box 下载文件 |
+| `--allow-overwrite` | | 标志 | | 允许 `--download` 覆盖已有的本地文件 |
+| `--timeout SECONDS` | | 整数 | 0（无限制） | 最长运行秒数。Box 把前台运行限制在 300 秒；使用 `--detach` 时不受限制 |
+| `--detach` | `-d` | 标志 | | 以分离模式（后台）运行 |
+| `--port PORT` | `-p` | 可多次 | | 把端口转发给该 Python 进程 |
+| `--add-file FILE` | | 可多次 | | 随脚本一起上传额外文件 |
+| `--reattach TEXT` | | 字符串 | | 按进程 ID 重新接入一个分离的进程 |
+| `--continue TEXT` | | 字符串 | | 按进程 ID 恢复一个在断点处暂停的脚本 |
+| `--console TEXT` | | 字符串 | | 按进程 ID 连接到已暂停脚本的交互式控制台 |
+| `--help` | | 标志 | | 显示帮助信息并退出 |
+
+**参数：**
+- `RUNNABLE` - 要执行的 Python 脚本文件或目录（除非使用了 `--kill`、`--kill-all`、`--reattach`、`--continue` 或 `--console` 之类的进程管理标志，否则必填）
+- `ARGS` - 传给该脚本的额外参数
+
+**`--kill`/`--kill-all` 可选的信号：** SIGINT、SIGQUIT、SIGABRT、SIGKILL、SIGUSR1、SIGUSR2、SIGTERM、SIGSTOP
+
+## 基本用法
+
+```bash
+# Run a Python script on the box
+lager python script.py --box my-lager-box
+
+# Run with arguments
+lager python test.py --box my-lager-box -- --verbose --target DUT1
+
+# Run a directory as a module
+lager python my_test_suite/ --box my-lager-box
+```
+
+## 环境变量
+
+### 设置变量
+
+```bash
+# Set explicit environment variables
+lager python test.py --box my-lager-box --env API_KEY=abc123 --env DEBUG=true
+
+# Pass variables from your current shell
+export SECRET_TOKEN=xyz
+lager python test.py --box my-lager-box --passenv SECRET_TOKEN
+```
+
+### 自动注入的变量
+
+以下环境变量在您的脚本内部自动可用：
+
+| 变量 | 说明 |
+|----------|-------------|
+| `LAGER_OUTPUT_CHANNEL` | 结构化输出的文件路径（见下文"结构化输出"） |
+| `LAGER_PROCESS_ID` | 本次执行的唯一 UUID |
+| `LAGER_RUNNABLE` | 正在执行的脚本路径 |
+| `LAGER_BOX` | Box 名称（提供了 `--box` 时） |
+
+## 文件下载
+
+在脚本结束后，下载它生成的文件：
+
+```bash
+# Download a single file
+lager python data_processor.py --box my-lager-box --download results.csv
+
+# Download multiple files
+lager python test.py --box my-lager-box --download report.json --download log.txt
+
+# Allow overwriting existing local files
+lager python test.py --box my-lager-box --download results.csv --allow-overwrite
+```
+
+文件下载到当前工作目录，使用远端路径的基本名。如果同名的本地文件已经存在，
+除非设置了 `--allow-overwrite`，否则命令会失败。下载过程中会自动解压 gzip 压缩的文件。
+
+## 分离模式
+
+在后台运行脚本，不等待输出：
+
+```bash
+# Start a long-running script in the background
+lager python long_running.py --box my-lager-box --detach
+```
+
+在分离模式下：
+- 只要 Box 接受了这个作业，命令就返回。它在脚本开始之前就返回，
+  也在脚本所需的准备工作（解包模块目录、安装它的 `requirements.txt`）之前返回
+- 不会把 stdout/stderr 回传
+- 脚本继续在 Box 上运行
+- 用 `--reattach` 查看它的输出，之后用 `--kill` 停止它
+
+启动在准备工作运行之前就返回。因此作业可能在提示符回来之后才启动失败 ——
+例如某个 `requirements.txt` 装不上。这类失败要通过作业本身看到，而不是在提示符处。
+`--reattach` 会显示该失败并以非零码退出：
+
+```bash
+lager python ./my_module --box my-lager-box --detach
+# Process detached (Process ID: 7f3c...)
+
+lager python --reattach 7f3c... --box my-lager-box
+# ERROR: Could not find a version that satisfies the requirement ...
+# Process exited with code 1
+```
+
+分离运行会获取 Box 锁。0.42.0 及以上版本的 Box 会在作业运行期间持有该锁，
+并在作业结束时释放它。CLI 会打印
+`Box 'my-lager-box' is held for the detached run and released when it ends`。
+较旧的 Box 在作业结束后仍保留该锁，此时 CLI 会打印
+`release with: lager boxes unlock --box my-lager-box`。请参阅
+[锁定](/source/reference/cli/locking)。
+
+## 终止正在运行的脚本
+
+`--kill` 接受分离启动时打印出的进程 ID。
+
+```bash
+# Kill with default SIGTERM
+lager python --kill <PROCESS_ID> --box my-lager-box
+# Process <PROCESS_ID> killed
+
+# Kill with specific signal
+lager python --kill <PROCESS_ID> --signal SIGKILL --box my-lager-box
+
+# Kill every running script
+lager python --kill-all --box my-lager-box
+# All processes killed
+```
+
+## 端口转发
+
+把 Box 上的网络端口转发到您的本机：
+
+```bash
+# Forward port 8080
+lager python web_server.py --box my-lager-box -p 8080
+
+# Forward with different local/remote ports
+lager python server.py --box my-lager-box -p 8080:80
+
+# Forward with protocol
+lager python server.py --box my-lager-box -p 8080:80/tcp
+```
+
+端口格式：`SRC_PORT[:DST_PORT][/PROTOCOL]`
+
+## 超时
+
+限制脚本的执行时间：
+
+```bash
+# Kill after 5 minutes
+lager python analysis.py --box my-lager-box --timeout 300
+```
+
+- 默认值 `0` 表示不限制。
+- 前台运行被限制在 300 秒。更大的值只会运行 300 秒，Box 会把这个上限写入它的日志。
+- 分离运行没有上限。只有当您给出数值时，Box 才会应用它。
+
+当脚本超过超时时间时，Box 会依次发送信号：
+- 先发送 SIGTERM。CLI 打印 `Script terminated due to timeout.` 并以 124 退出
+- 如果脚本在 5 秒内没有退出，再发送 SIGKILL。CLI 打印
+  `Script forcibly killed due to timeout.` 并以 137 退出
+
+## 结构化输出
+
+运行在 Box 上的脚本可以用 `lager.core.output()` 函数把结构化数据回传给 CLI。
+它使用独立于 stdout/stderr 的专用输出通道（文件描述符 3）。
+
+### Box 侧 API
+
+```python
+from lager.core import output, OutputEncoders
+
+# Output a Python dict (default: pickle encoding)
+output({'status': 'pass', 'measurement': 3.14})
+
+# Output as JSON
+output({'voltage': 3.3, 'current': 0.5}, encoder=OutputEncoders.JSON)
+
+# Output as YAML
+output({'device': 'PSU-1', 'readings': [1.0, 2.0]}, encoder=OutputEncoders.YAML)
+
+# Output raw binary data
+output(image_bytes, encoder=OutputEncoders.Raw)
+```
+
+**可用的编码器：**
+
+| 编码器 | ID | 适用场景 |
+|---------|----|----------|
+| `OutputEncoders.Raw` | 1 | 二进制数据（图像、文件） |
+| `OutputEncoders.Pickle` | 2 | Python 对象（默认） |
+| `OutputEncoders.JSON` | 3 | 可 JSON 序列化的数据 |
+| `OutputEncoders.YAML` | 4 | 可 YAML 序列化的数据 |
+
+结构化输出在到达时就会打印到 CLI 控制台。标准的 stdout 和 stderr 则实时单独串流。
+
+## 模块 includes
+
+如果您的脚本依赖本地模块，请在项目的 `.lager` 文件中配置 includes。该文件是 JSON：
+
+```json
+{
+  "includes": {
+    "my_lib": "../my_lib",
+    "fixtures": "/path/to/fixtures"
+  }
+}
+```
+
+相对路径是相对于该 `.lager` 文件的。CLI 从脚本所在目录开始，沿目录树向上查找
+`.lager` 文件，然后在上传到 Box 之前，把脚本连同全部 include 目录一起打包。
+
+```bash
+# Script can import from included directories
+lager python test.py --box my-lager-box
+```
+
+在 `test.py` 中：
+```python
+from my_lib import helpers
+from fixtures import test_data
+```
+
+## 额外文件
+
+随脚本一起上传其他文件：
+
+```bash
+lager python flash_and_test.py --box my-lager-box --add-file firmware.hex --add-file config.json
+```
+
+这些文件会与您的脚本位于 Box 上的同一目录中。
+
+## 退出码
+
+| 退出码 | 含义 |
+|-----------|---------|
+| 0 | 成功 |
+| 255 | CLI 没有从 Box 取到退出码。它会打印 `Failed to retrieve script exit code.` |
+| 124 | 脚本被 SIGTERM 终止（超时） |
+| 137 | 脚本被 SIGKILL 终止（超时，强制） |
+| 128+N | 脚本被信号 N 停止 |
+| 其他 | 脚本自身的退出码 |
+
+## Box 锁
+
+`lager python` 在运行脚本时会获取 Box 锁，这样其他用户就不能同时驱动同一台 Box。
+请参阅[锁定](/source/reference/cli/locking)。
+
+- 前台运行在脚本运行期间持有该锁，命令退出时释放它。
+- 如果另一位用户持有该锁，命令在您的计算机上会立即失败；在 CI 中，它会等待该锁。
+- `--kill`、`--kill-all`、`--reattach`、`--continue` 和 `--console` 不获取该锁。
+- 设置 `LAGER_AUTO_LOCK_DISABLE=1` 可以在不加锁的情况下运行。
+
+## 示例
+
+```bash
+# Basic script execution
+lager python script.py --box my-lager-box
+
+# Run with environment variables
+lager python test.py --box my-lager-box --env API_KEY=abc123 --env DEBUG=true
+
+# Run in detached mode
+lager python long_running.py --box my-lager-box --detach
+
+# Download files after completion
+lager python data_processor.py --box my-lager-box --download results.csv
+
+# Kill running script
+lager python --kill <PROCESS_ID> --box my-lager-box
+
+# Run with port forwarding
+lager python web_server.py --box my-lager-box -p 8080
+
+# Run with timeout
+lager python analysis.py --box my-lager-box --timeout 300
+
+# Upload extra files with script
+lager python flash_test.py --box my-lager-box --add-file firmware.hex
+
+# Pass arguments to the script
+lager python test.py --box my-lager-box -- --device DUT1 --verbose
+```
+
+### 硬件测试脚本示例
+
+```python
+# test_power.py - run with: lager python test_power.py --box my-lager-box
+from lager import Net, NetType
+from lager.core import output, OutputEncoders
+import time
+
+# Get the power supply net
+psu = Net.get("PSU_CH1", type=NetType.PowerSupply)
+
+# Set voltage and enable
+psu.voltage(value=3.3, ovp=3.6)
+psu.enable()
+time.sleep(1)
+
+# Read state
+state = psu.get_full_state()
+print(f"Voltage: {state['voltage']}V, Current: {state['current']}A")
+
+# Send structured results
+output({
+    'test': 'power_on',
+    'voltage': state['voltage'],
+    'current': state['current'],
+    'status': 'pass' if state['voltage'] > 3.0 else 'fail'
+}, encoder=OutputEncoders.JSON)
+
+# Cleanup
+psu.disable()
+```

@@ -543,6 +543,7 @@
                 "pages": [
                   "source/zh/reference/cli/solar",
                   "source/zh/reference/cli/eload",
+                  "source/zh/reference/cli/watt",
                   "source/zh/reference/cli/energy"
                 ]
               },
@@ -559,6 +560,7 @@
                   "source/zh/reference/cli/gpi",
                   "source/zh/reference/cli/gpo",
                   "source/zh/reference/cli/dac",
+                  "source/zh/reference/cli/uart",
                   "source/zh/reference/cli/usb",
                   "source/zh/reference/cli/ble",
                   "source/zh/reference/cli/blufi",
@@ -568,6 +570,7 @@
               {
                 "group": "开发",
                 "pages": [
+                  "source/zh/reference/cli/python",
                   "source/zh/reference/cli/exec",
                   "source/zh/reference/cli/devenv",
                   "source/zh/reference/cli/binaries"
