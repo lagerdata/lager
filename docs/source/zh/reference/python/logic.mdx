@@ -1,0 +1,450 @@
+---
+title: 逻辑分析仪（预览）
+description: 数字信号采集与协议解码
+---
+
+用混合信号示波器的逻辑分析仪功能采集并分析数字信号。
+
+<Warning>
+**Rigol MSO5000 上的已知限制。** 通道控制、采集、测量，以及边沿触发和 SPI 触发均可工作。
+脉冲、UART、I2C 和 CAN 触发会失败。所有总线解码器在创建时都会失败。
+失败的方法会抛出包含 `Function not found` 的错误。
+[Issue #418](https://github.com/lagerdata/lager/issues/418) 跟踪这项工作。
+</Warning>
+
+## 导入
+
+```python
+from lager import Net, NetType
+```
+
+## 方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `enable()` | 打开该逻辑通道的显示 |
+| `disable()` | 关闭该逻辑通道的显示 |
+| `start_capture()` | 开始连续采集 |
+| `stop_capture()` | 停止采集 |
+| `start_single_capture()` | 开始单次采集 |
+| `force_trigger()` | 强制产生一次触发 |
+| `set_signal_threshold()` | 设置逻辑电平阈值电压 |
+| `display_position()` | 设置通道显示位置 |
+| `size_large()` / `size_medium()` / `size_small()` | 设置显示大小 |
+
+## 方法参考
+
+### `Net.get(name, type=NetType.Logic)`
+
+按名称获取一个逻辑分析仪 Net。
+
+```python
+from lager import Net, NetType
+
+logic = Net.get('SPI_CLK', type=NetType.Logic)
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `name` | `str` | 逻辑 Net 的名称 |
+| `type` | `NetType` | 必须为 `NetType.Logic` |
+
+**返回：** 逻辑分析仪 Net 实例
+
+### `enable()`
+
+打开该逻辑通道的显示。
+
+```python
+logic.enable()
+```
+
+### `disable()`
+
+关闭该逻辑通道的显示。
+
+```python
+logic.disable()
+```
+
+### `start_capture()`
+
+开始连续波形采集。
+
+```python
+logic.start_capture()
+```
+
+### `stop_capture()`
+
+停止波形采集。
+
+```python
+logic.stop_capture()
+```
+
+### `start_single_capture()`
+
+开始单次采集（采集一次触发事件）。
+
+```python
+logic.start_single_capture()
+```
+
+### `force_trigger()`
+
+立即强制产生一次触发。
+
+```python
+logic.force_trigger()
+```
+
+### `set_signal_threshold(voltage)`
+
+设置逻辑电平阈值电压。
+
+```python
+logic.set_signal_threshold(1.65)  # 1.65V for 3.3V CMOS
+logic.set_signal_threshold(2.5)   # 2.5V for 5V TTL
+```
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `voltage` | `float` | 阈值电压，单位伏特 |
+
+**注意：** 通道 0-7 共用一个阈值，通道 8-15 共用另一个。
+
+### `display_position(position)`
+
+设置通道的显示位置。
+
+```python
+logic.display_position(100)  # Set vertical position
+```
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `position` | `int` | 垂直位置数值 |
+
+### `size_large()` / `size_medium()` / `size_small()`
+
+设置已启用通道的显示大小。
+
+```python
+logic.size_large()   # Maximum visibility
+logic.size_medium()  # Balanced
+logic.size_small()   # Compact view
+```
+
+## 触发设置
+
+逻辑分析仪 Net 通过 `trigger_settings` 支持高级触发：
+
+### 边沿触发
+
+```python
+logic = Net.get('SPI_CLK', type=NetType.Logic)
+
+# Set edge trigger on this channel
+logic.trigger_settings.edge.set_source(logic)
+logic.trigger_settings.edge.set_slope_rising()
+logic.trigger_settings.set_mode_normal()
+```
+
+**边沿触发的方法：**
+
+| 方法 | 说明 |
+|--------|-------------|
+| `edge.set_source(net)` | 设置触发源 Net |
+| `edge.set_slope_rising()` | 在上升沿触发 |
+| `edge.set_slope_falling()` | 在下降沿触发 |
+| `edge.set_slope_both()` | 在任一边沿触发 |
+| `edge.get_slope()` | 获取当前的边沿设置 |
+
+### 脉冲触发
+
+```python
+logic = Net.get('PULSE_SIG', type=NetType.Logic)
+
+# Trigger on pulse width > 1ms
+logic.trigger_settings.pulse.set_source(logic)
+logic.trigger_settings.pulse.set_trigger_on_pulse_greater_than_width(0.001)
+
+# Trigger on pulse width < 100us
+logic.trigger_settings.pulse.set_trigger_on_pulse_less_than_width(0.0001)
+```
+
+### 协议触发
+
+#### UART 触发
+
+```python
+logic = Net.get('UART_TX', type=NetType.Logic)
+
+logic.trigger_settings.uart.set_source(logic)
+logic.trigger_settings.uart.set_uart_params(baud=115200, bits=8, parity=None, stopbits=1)
+
+# Trigger on start bit
+logic.trigger_settings.uart.set_trigger_on_start()
+
+# Trigger on specific data
+logic.trigger_settings.uart.set_trigger_on_data(data=0x55)
+
+# Trigger on frame error
+logic.trigger_settings.uart.set_trigger_on_frame_error()
+```
+
+#### I2C 触发
+
+```python
+scl = Net.get('I2C_SCL', type=NetType.Logic)
+sda = Net.get('I2C_SDA', type=NetType.Logic)
+
+scl.trigger_settings.i2c.set_source(net_scl=scl, net_sda=sda)
+
+# Trigger on start condition
+scl.trigger_settings.i2c.set_trigger_on_start()
+
+# Trigger on specific address
+scl.trigger_settings.i2c.set_trigger_on_address(bits=7, address=0x48)
+
+# Trigger on NACK
+scl.trigger_settings.i2c.set_trigger_on_nack()
+```
+
+#### SPI 触发
+
+```python
+clk = Net.get('SPI_CLK', type=NetType.Logic)
+mosi = Net.get('SPI_MOSI', type=NetType.Logic)
+cs = Net.get('SPI_CS', type=NetType.Logic)
+
+clk.trigger_settings.spi.set_source(net_sck=clk, net_mosi_miso=mosi, net_cs=cs)
+clk.trigger_settings.spi.set_clk_edge_positive()
+
+# Trigger on specific data
+clk.trigger_settings.spi.set_trigger_data(bits=8, data=0xAA)
+
+# Trigger on CS
+clk.trigger_settings.spi.set_trigger_on_cs_low()
+```
+
+#### CAN 触发
+
+```python
+can = Net.get('CAN_RX', type=NetType.Logic)
+
+can.trigger_settings.can.set_source(can)
+can.trigger_settings.can.set_baud(500000)
+
+# Trigger on start of frame
+can.trigger_settings.can.set_trigger_on_sof()
+
+# Trigger on error frame
+can.trigger_settings.can.set_trigger_on_error_frame()
+```
+
+### 有效取值范围
+
+超出这些范围的值会抛出 `ValueError`，错误信息中会指明有效范围。
+
+| 方法 | 参数 | 有效值 |
+|--------|-----------|--------------|
+| `uart.set_uart_params()` | `bits` | 5 至 8 |
+| `uart.set_trigger_on_data()` | `data` | 0 至 2^bits − 1 |
+| `i2c.set_trigger_on_address()` | `bits` | 7、8 或 10 |
+| `i2c.set_trigger_on_address()` | `address` | 最大 127（7 位）、255（8 位）或 1023（10 位） |
+| `i2c.set_trigger_on_data()` | `width` | 1 至 5 字节 |
+| `i2c.set_trigger_on_data()` | `data` | 0 至 2^(8 × width) − 1 |
+| `spi.set_trigger_data()` | `bits` | 4 至 32 |
+| `spi.set_trigger_data()` | `data` | 0 至 2^bits − 1 |
+| `BusUART.set_data_bits()` | `bits` | 5 至 9 |
+| `BusUART.set_stop_bits()` | `bits` | 1、1.5 或 2 |
+| `BusSPI.set_data_width()` | `bits` | 4 至 32 |
+
+## 测量
+
+逻辑分析仪 Net 支持数字时序测量：
+
+```python
+logic = Net.get('CLK', type=NetType.Logic)
+
+# Frequency and period
+freq = logic.measurement.frequency()
+period = logic.measurement.period()
+
+# Pulse measurements
+pos_width = logic.measurement.pulse_width_positive()
+neg_width = logic.measurement.pulse_width_negative()
+pos_duty = logic.measurement.duty_cycle_positive()
+neg_duty = logic.measurement.duty_cycle_negative()
+
+# Rise/fall times
+rise = logic.measurement.rise_time()
+fall = logic.measurement.fall_time()
+
+# Edge counts
+pos_edges = logic.measurement.positive_edge_count()
+neg_edges = logic.measurement.negative_edge_count()
+```
+
+## 总线解码
+
+进行协议分析时，可以用多个逻辑通道创建总线解码器：
+
+### UART 总线
+
+```python
+from lager.nets.mappers.rigol_mso5000 import BusUART_RigolMSO5000FunctionMapper
+
+tx = Net.get('UART_TX', type=NetType.Logic)
+rx = Net.get('UART_RX', type=NetType.Logic)
+
+bus = BusUART_RigolMSO5000FunctionMapper(tx=tx, rx=rx)
+bus.set_baud(115200)
+bus.set_data_bits(8)
+bus.set_parity_none()
+bus.set_stop_bits(1)
+
+bus.enable()
+bus.show_table()
+```
+
+### I2C 总线
+
+```python
+from lager.nets.mappers.rigol_mso5000 import BusI2C_RigolMSO5000FunctionMapper
+
+scl = Net.get('I2C_SCL', type=NetType.Logic)
+sda = Net.get('I2C_SDA', type=NetType.Logic)
+
+bus = BusI2C_RigolMSO5000FunctionMapper(scl=scl, sda=sda)
+bus.set_signal_threshold(sda=1.5, scl=1.5)
+
+bus.enable()
+bus.show_table()
+```
+
+### SPI 总线
+
+```python
+from lager.nets.mappers.rigol_mso5000 import BusSPI_RigolMSO5000FunctionMapper
+
+clk = Net.get('SPI_CLK', type=NetType.Logic)
+mosi = Net.get('SPI_MOSI', type=NetType.Logic)
+miso = Net.get('SPI_MISO', type=NetType.Logic)
+cs = Net.get('SPI_CS', type=NetType.Logic)
+
+bus = BusSPI_RigolMSO5000FunctionMapper(clk=clk, mosi=mosi, miso=miso, cs=cs)
+bus.set_sck_phase_rising_edge()
+bus.set_data_width(8)
+bus.set_endianness_msb()
+
+bus.enable()
+bus.show_table()
+```
+
+### CAN 总线
+
+```python
+from lager.nets.mappers.rigol_mso5000 import BusCAN_RigolMSO5000FunctionMapper
+
+can_net = Net.get('CAN_RX', type=NetType.Logic)
+
+bus = BusCAN_RigolMSO5000FunctionMapper(can=can_net)
+bus.set_baud(500000)
+bus.set_signal_type_rx()
+bus.set_signal_threshold(2.0)
+
+bus.enable()
+bus.show_table()
+```
+
+## 示例
+
+### 基本的数字信号采集
+
+```python
+from lager import Net, NetType
+import time
+
+# Get logic channel
+clk = Net.get('SYS_CLK', type=NetType.Logic)
+
+# Configure
+clk.enable()
+clk.set_signal_threshold(1.65)  # 3.3V logic
+clk.size_medium()
+
+# Set trigger
+clk.trigger_settings.edge.set_source(clk)
+clk.trigger_settings.edge.set_slope_rising()
+clk.trigger_settings.set_mode_normal()
+
+# Capture
+clk.start_capture()
+time.sleep(1)
+
+# Measure
+freq = clk.measurement.frequency()
+print(f"Clock frequency: {freq / 1e6:.3f} MHz")
+
+clk.stop_capture()
+clk.disable()
+```
+
+### 协议时序验证
+
+```python
+from lager import Net, NetType
+
+# Test UART timing
+uart_tx = Net.get('UART_TX', type=NetType.Logic)
+uart_tx.enable()
+uart_tx.set_signal_threshold(1.65)
+
+uart_tx.start_capture()
+
+# Measure bit timing
+period = uart_tx.measurement.period()
+if period:
+    measured_baud = 1.0 / period
+    expected_baud = 115200
+    error_pct = abs(measured_baud - expected_baud) / expected_baud * 100
+
+    print(f"Measured baud: {measured_baud:.0f}")
+    print(f"Expected baud: {expected_baud}")
+    print(f"Error: {error_pct:.2f}%")
+
+    if error_pct < 3:
+        print("PASS: Baud rate within tolerance")
+    else:
+        print("FAIL: Baud rate out of tolerance")
+
+uart_tx.stop_capture()
+uart_tx.disable()
+```
+
+## 数字通道
+
+| 通道 | 范围 |
+|---------|-------|
+| D0-D7 | Pod 1（共用阈值） |
+| D8-D15 | Pod 2（共用阈值） |
+
+## 受支持的硬件
+
+| 厂商 | 型号 | 特性 |
+|--------------|-------|----------|
+| Rigol | MSO5000 系列 | 16 个数字通道，协议解码 |
+
+## 说明
+
+- 逻辑通道编号为 D0-D15
+- 通道 D0-D7 共用一个阈值电压，D8-D15 共用另一个
+- 协议解码需要启用总线分析模式
+- 数字通道请用 `NetType.Logic`，模拟通道请用 `NetType.Analog`
+- 总线解码器可以同时以 Logic Net 和 Analog Net 作为信号源
+- 触发可以使用模拟通道和数字通道的任意组合

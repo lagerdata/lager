@@ -1,0 +1,384 @@
+---
+title: 摄像头
+description: 用于目视检查的摄像头串流与视频采集
+---
+
+从连接到 Lager Box 的摄像头串流视频，用于目视检查、自动化视觉测试和远程监视。
+
+## 导入
+
+```python
+from lager import Net, NetType
+```
+
+## 方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `start(box_ip)` | 启动一路摄像头串流 |
+| `stop()` | 停止该摄像头串流 |
+| `get_info(box_ip)` | 获取该串流的信息 |
+| `get_url(box_ip)` | 只获取该串流的 URL |
+| `is_active()` | 检查串流当前是否正在运行 |
+
+## 方法参考
+
+### `Net.get(name, type=NetType.Webcam)`
+
+按名称获取一个摄像头 Net。
+
+```python
+from lager import Net, NetType
+
+webcam = Net.get('camera1', type=NetType.Webcam)
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `name` | `str` | 摄像头 Net 的名称 |
+| `type` | `NetType` | 必须为 `NetType.Webcam` |
+
+**返回：** 摄像头 Net 实例
+
+### `start(box_ip)`
+
+启动一路摄像头视频串流。
+
+```python
+from lager import Net, NetType
+
+webcam = Net.get('camera1', type=NetType.Webcam)
+result = webcam.start(box_ip='<BOX_IP>')
+
+print(f"Stream URL: {result['url']}")
+print(f"Port: {result['port']}")
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `box_ip` | `str` | 用于生成 URL 的 Lager Box IP 地址 |
+
+**返回：** 一个 `dict`，包含以下键：
+- `url` - 完整的串流 URL（例如 `http://<BOX_IP>:8086/`）
+- `port` - 该串流的端口号
+- `already_running` - 布尔值，表示该串流是否本就在运行
+
+**抛出：** 设备已被占用或未找到时抛出 `RuntimeError`
+
+### `stop()`
+
+停止该摄像头串流。
+
+```python
+from lager import Net, NetType
+
+webcam = Net.get('camera1', type=NetType.Webcam)
+stopped = webcam.stop()
+
+if stopped:
+    print("Stream stopped")
+else:
+    print("Stream was not running")
+```
+
+**返回：** `bool` - 成功停止为 True，原本未运行为 False
+
+### `get_info(box_ip)`
+
+获取该串流的信息。
+
+```python
+from lager import Net, NetType
+
+webcam = Net.get('camera1', type=NetType.Webcam)
+info = webcam.get_info(box_ip='<BOX_IP>')
+
+if info:
+    print(f"URL: {info['url']}")
+    print(f"Port: {info['port']}")
+    print(f"Device: {info['video_device']}")
+else:
+    print("Stream not active")
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `box_ip` | `str` | Lager Box 的 IP 地址 |
+
+**返回：** `dict` 或 `None` - 串流信息字典；未运行时为 None。该字典包含以下键：
+- `url` - 完整的串流 URL
+- `port` - 该串流的端口号
+- `video_device` - 视频设备路径，例如 `/dev/video0`
+- `source` - 启动该串流的工具：本 Python API 为 `'api'`，`lager webcam` 为 `'cli'`。
+  没有记录来源的串流为 `None`。
+- `started_by` - 启动工具所给出的用户。从本 Python API 启动的串流为 `None`。
+
+### `get_url(box_ip)`
+
+只获取该串流的 URL。
+
+```python
+from lager import Net, NetType
+
+webcam = Net.get('camera1', type=NetType.Webcam)
+url = webcam.get_url(box_ip='<BOX_IP>')
+
+if url:
+    print(f"Stream at: {url}")
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `box_ip` | `str` | Lager Box 的 IP 地址 |
+
+**返回：** `str` 或 `None` - 串流 URL；未运行时为 None
+
+### `is_active()`
+
+检查该串流当前是否正在运行。
+
+```python
+from lager import Net, NetType
+
+webcam = Net.get('camera1', type=NetType.Webcam)
+if webcam.is_active():
+    print("Stream is running")
+else:
+    print("Stream is stopped")
+```
+
+**返回：** `bool` - 串流正在运行为 True，否则为 False
+
+<Note>
+该 Python API 没有截图方法。若要从正在运行的串流保存一帧，
+请在您的计算机上使用 [`lager webcam NET snapshot`](/source/reference/cli/webcam)。
+</Note>
+
+## 示例
+
+### 启动多台摄像头
+
+```python
+from lager import Net, NetType
+
+# Lager Box IP
+BOX_IP = '<BOX_IP>'
+
+# Start multiple camera streams
+cameras = ['overview', 'microscope', 'solder_station']
+
+for name in cameras:
+    try:
+        webcam = Net.get(name, type=NetType.Webcam)
+        result = webcam.start(BOX_IP)
+        print(f"{name}: {result['url']}")
+    except RuntimeError as e:
+        print(f"{name}: Failed - {e}")
+```
+
+### 串流管理
+
+```python
+from lager import Net, NetType
+
+BOX_IP = '<BOX_IP>'
+
+def start_camera(name):
+    """Start a camera stream."""
+    try:
+        webcam = Net.get(name, type=NetType.Webcam)
+        result = webcam.start(BOX_IP)
+        if result['already_running']:
+            print(f"Stream '{name}' was already running at {result['url']}")
+        else:
+            print(f"Started '{name}' at {result['url']}")
+    except RuntimeError as e:
+        print(f"Failed to start '{name}': {e}")
+
+def stop_camera(name):
+    """Stop a camera stream."""
+    webcam = Net.get(name, type=NetType.Webcam)
+    if webcam.stop():
+        print(f"Stopped '{name}'")
+    else:
+        print(f"Stream '{name}' was not running")
+
+def check_camera(name):
+    """Check camera status."""
+    webcam = Net.get(name, type=NetType.Webcam)
+    if webcam.is_active():
+        info = webcam.get_info(BOX_IP)
+        print(f"{name}: Running at {info['url']}")
+    else:
+        print(f"{name}: Stopped")
+
+# Usage
+start_camera('main')
+check_camera('main')
+stop_camera('main')
+```
+
+### 目视检查测试
+
+```python
+from lager import Net, NetType
+import time
+
+BOX_IP = '<BOX_IP>'
+
+def visual_inspection_test(camera_name, inspection_callback):
+    """
+    Start camera stream and wait for operator inspection.
+
+    Args:
+        camera_name: Webcam net name
+        inspection_callback: Function to handle the stream URL
+
+    Returns:
+        bool: True if inspection passed
+    """
+    # Start stream
+    webcam = Net.get(camera_name, type=NetType.Webcam)
+    result = webcam.start(BOX_IP)
+    stream_url = result['url']
+
+    print(f"Visual inspection stream: {stream_url}")
+
+    # Notify external system (could open browser, send to UI, etc.)
+    inspection_callback(stream_url)
+
+    # Wait for inspection (in real usage, this would wait for operator input)
+    print("Waiting for visual inspection...")
+    time.sleep(10)  # Placeholder
+
+    # Stop stream
+    webcam.stop()
+
+    # Return result (would come from operator in real usage)
+    return True
+
+# Usage
+def handle_url(url):
+    print(f"Open in browser: {url}")
+
+result = visual_inspection_test('inspection_cam', handle_url)
+print(f"Inspection result: {'PASS' if result else 'FAIL'}")
+```
+
+### 摄像头发现与测试
+
+```python
+from lager import Net, NetType
+import os
+
+BOX_IP = '<BOX_IP>'
+
+def discover_cameras():
+    """Find all available video devices."""
+    cameras = []
+    for i in range(10):  # Check video0 through video9
+        device = f'/dev/video{i}'
+        if os.path.exists(device):
+            cameras.append(device)
+    return cameras
+
+def test_camera(net_name):
+    """Test if a camera net works."""
+    try:
+        webcam = Net.get(net_name, type=NetType.Webcam)
+        result = webcam.start(BOX_IP)
+        print(f"{net_name}: OK - {result['url']}")
+        webcam.stop()
+        return True
+    except RuntimeError as e:
+        print(f"{net_name}: FAIL - {e}")
+        return False
+
+# Discover and test all cameras
+print("Discovering cameras...")
+devices = discover_cameras()
+print(f"Found {len(devices)} video devices")
+
+# Test configured nets (assumes you have webcam nets configured)
+test_camera('camera1')
+test_camera('camera2')
+```
+
+### 检测串流是否已在运行
+
+```python
+from lager import Net, NetType
+
+BOX_IP = '<BOX_IP>'
+
+webcam = Net.get('camera1', type=NetType.Webcam)
+
+# Start stream first time
+result1 = webcam.start(BOX_IP)
+print(f"First start: already_running = {result1['already_running']}")
+
+# Try to start again - should detect it's already running
+result2 = webcam.start(BOX_IP)
+print(f"Second start: already_running = {result2['already_running']}")
+
+# Check if active
+print(f"Is active: {webcam.is_active()}")
+
+# Cleanup
+webcam.stop()
+```
+
+## Web 界面
+
+每一路串流在它的 URL 上提供一个 Web 界面，包含：
+
+- 实时 MJPEG 视频流
+- 变焦、对焦和亮度滑块，以及一个自动对焦按钮
+- FPS 显示
+- 侧边栏，含指向其他活动串流的链接
+
+### API 端点
+
+| 端点 | 方法 | 说明 |
+|----------|--------|-------------|
+| `/` | GET | 带视频查看器的 HTML 页面 |
+| `/stream` | GET | 原始 MJPEG 视频流 |
+| `/snapshot` | GET | 一帧 JPEG。5 秒内没有帧到达时返回 503 |
+| `/api/zoom` | GET | 获取当前变焦倍数 |
+| `/api/zoom/in` | POST | 放大 |
+| `/api/zoom/out` | POST | 缩小 |
+| `/api/zoom/reset` | POST | 把变焦重置为 1.0x |
+| `/api/fps` | GET | 获取当前 FPS |
+| `/api/streams` | GET | 列出全部活动串流 |
+| `/test` | GET | 健康检查端点 |
+
+## 硬件要求
+
+| 要求 | 说明 |
+|-------------|-------------|
+| USB 摄像头 | 兼容 UVC 的摄像头 |
+| 视频设备 | `/dev/video*` 设备文件 |
+| OpenCV | 视频采集所需 |
+
+## 说明
+
+- 摄像头 Net 必须在 Lager Box 上配置，并指定视频设备路径
+- 串流使用从 8086 开始的端口
+- 每一路串流使用一个独立端口，由系统自动分配
+- 串流会一直保持，直到被显式停止或其进程结束
+- 已死亡的串流进程会被自动清理
+- 同一时刻只能有一路串流使用某个视频设备
+- 默认分辨率为 640x480，30 FPS
+- JPEG 质量设为 80，以平衡带宽和画质
+- 串流通过 HTTP 在 Lager Box 的 IP 地址上提供。在访问受控的 Box 上，
+  请求需要携带登录令牌，而 `start()` 返回的 `url` 不带令牌。
+  请用 `lager webcam url` 获取带有您令牌的链接
+- 变焦是数字变焦（裁剪并缩放），不是光学变焦

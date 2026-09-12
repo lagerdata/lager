@@ -1,0 +1,500 @@
+---
+title: 低功耗蓝牙
+description: BLE 设备扫描、连接与 GATT 操作
+---
+
+与低功耗蓝牙（BLE）设备通信，进行扫描、连接、读写特征，以及订阅通知。
+
+## 导入
+
+```python
+from lager.ble import Client, Central, noop_handler, notify_handler, waiter
+```
+
+## 类
+
+| 类 | 说明 |
+|-------|-------------|
+| `Central` | BLE 中心设备角色，用于扫描和发起连接 |
+| `Client` | BLE 客户端，用于对已连接设备进行 GATT 操作 |
+
+## 函数
+
+| 函数 | 说明 |
+|----------|-------------|
+| `noop_handler()` | 空操作的通知处理函数 |
+| `notify_handler()` | 基于事件的通知处理函数 |
+| `waiter()` | 异步等待辅助函数 |
+
+## Central 类
+
+`Central` 类提供 BLE 扫描和连接发起功能。
+
+### `Central(loop=None)`
+
+创建一个 BLE 中心设备实例。
+
+```python
+from lager.ble import Central
+
+central = Central()
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `loop` | `asyncio.EventLoop` | 事件循环（可选，默认使用默认循环） |
+
+### `scan(scan_time=5.0, name=None, address=None)`
+
+扫描附近的 BLE 设备。
+
+```python
+central = Central()
+
+# Scan for all devices
+devices = central.scan(scan_time=5.0)
+for device in devices:
+    print(f"{device.name}: {device.address}")
+
+# Scan for specific device name
+devices = central.scan(name="MyDevice")
+
+# Scan for specific MAC address
+devices = central.scan(address="AA:BB:CC:DD:EE:FF")
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `scan_time` | `float` | 扫描时长，单位秒（默认 5.0） |
+| `name` | `str` | 按设备名称过滤（可选） |
+| `address` | `str` | 按 MAC 地址过滤（可选） |
+
+**返回：** `list` - 发现的 BLE 设备列表
+
+### `connect(address)`
+
+按地址连接一台 BLE 设备。
+
+```python
+central = Central()
+client = central.connect("AA:BB:CC:DD:EE:FF")
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `address` | `str` | 该设备的 MAC 地址 |
+
+**返回：** `Client` - 已连接的 BLE 客户端
+
+### `pair(address)`
+
+与一台 BLE 设备配对。
+
+```python
+central = Central()
+client = central.pair("AA:BB:CC:DD:EE:FF")
+```
+
+## Client 类
+
+`Client` 类对已连接的 BLE 设备提供 GATT 操作。
+
+### 创建 Client
+
+```python
+from lager.ble import Client, Central
+from bleak import BleakClient
+import asyncio
+
+# Method 1: Using Central
+central = Central()
+client = central.connect("AA:BB:CC:DD:EE:FF")
+
+# Method 2: Direct creation with context manager
+loop = asyncio.get_event_loop()
+with Client(BleakClient("AA:BB:CC:DD:EE:FF"), loop=loop) as client:
+    # Use client
+    pass
+```
+
+### `connect()`
+
+建立与该 BLE 设备的连接。
+
+```python
+client.connect()
+```
+
+### `disconnect()`
+
+断开与该 BLE 设备的连接。
+
+```python
+client.disconnect()
+```
+
+### `pair()`
+
+与已连接的设备配对。
+
+```python
+client.pair()
+```
+
+### `get_services()`
+
+发现并获取全部 GATT 服务。
+
+```python
+services = client.get_services()
+for service in services:
+    print(f"Service: {service.uuid}")
+    for char in service.characteristics:
+        print(f"  Characteristic: {char.uuid}")
+```
+
+**返回：** `BleakGATTServiceCollection` - 已发现服务的集合
+
+### `has_characteristic(uuid)`
+
+检查设备上是否存在某个特征。
+
+```python
+if client.has_characteristic("00002a19-0000-1000-8000-00805f9b34fb"):
+    print("Battery level characteristic found")
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `uuid` | `str` | 特征 UUID |
+
+**返回：** `bool` - 该特征存在时为 True
+
+### `read_gatt_char(char_specifier)`
+
+读取一个特征的值。
+
+```python
+# Read by UUID
+data = client.read_gatt_char("00002a19-0000-1000-8000-00805f9b34fb")
+print(f"Battery level: {data[0]}%")
+
+# Read by handle
+data = client.read_gatt_char(0x0012)
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `char_specifier` | `str` 或 `int` | UUID 字符串或句柄编号 |
+
+**返回：** `bytearray` - 该特征的值
+
+### `write_gatt_char(char_specifier, data)`
+
+向一个特征写入值。
+
+```python
+# Write bytes
+client.write_gatt_char("characteristic-uuid", b'\x01\x02\x03')
+
+# Write string
+client.write_gatt_char("characteristic-uuid", "hello".encode('utf-8'))
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `char_specifier` | `str` 或 `int` | UUID 字符串或句柄编号 |
+| `data` | `bytes` | 要写入的数据 |
+
+### `start_notify(char_specifier, callback=noop_handler, max_messages=None, timeout=None)`
+
+订阅某个特征的通知。
+
+```python
+from lager.ble import noop_handler
+
+# Simple notification subscription
+def my_callback(handle, data):
+    print(f"Received: {data.hex()}")
+
+timed_out, messages = client.start_notify(
+    "characteristic-uuid",
+    callback=my_callback,
+    max_messages=10,
+    timeout=30.0
+)
+
+if timed_out:
+    print("Timed out waiting for notifications")
+else:
+    print(f"Received {len(messages)} messages")
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `char_specifier` | `str` 或 `int` | 特征 UUID 或句柄 |
+| `callback` | `callable` | 每收到一条通知就调用的函数 |
+| `max_messages` | `int` | 收到这么多条消息之后停止 |
+| `timeout` | `float` | 超时时间，单位秒 |
+
+**返回：** `tuple[bool, list]` - (timed_out, messages)，其中 timed_out 在超时时为 True
+
+### `stop_notify(char_specifier)`
+
+取消订阅某个特征的通知。
+
+```python
+client.stop_notify("characteristic-uuid")
+```
+
+### `sleep(timeout)`
+
+休眠一段时间（异步安全）。
+
+```python
+client.sleep(1.0)  # Sleep for 1 second
+```
+
+## 辅助函数
+
+### `noop_handler(handle, data)`
+
+一个空操作的通知处理函数。
+
+```python
+from lager.ble import noop_handler
+
+# Use when you only care about collecting messages
+timed_out, messages = client.start_notify(
+    "uuid",
+    callback=noop_handler,
+    max_messages=5
+)
+```
+
+### `notify_handler(evt, messages, callback, max_messages, handle, data)`
+
+内部通知处理函数，负责收集消息并发出完成信号。
+
+### `waiter(event, timeout)`
+
+用于通知事件的异步等待辅助函数。
+
+## 示例
+
+### 扫描设备
+
+```python
+from lager.ble import Central
+
+central = Central()
+
+# Discover all nearby BLE devices
+print("Scanning for BLE devices...")
+devices = central.scan(scan_time=10.0)
+
+for device in devices:
+    name = device.name or "Unknown"
+    print(f"  {name}: {device.address}")
+```
+
+### 连接并读取特征
+
+```python
+from lager.ble import Client, Central
+from bleak import BleakClient
+import asyncio
+
+# Standard BLE UUIDs
+BATTERY_SERVICE = "0000180f-0000-1000-8000-00805f9b34fb"
+BATTERY_LEVEL = "00002a19-0000-1000-8000-00805f9b34fb"
+
+loop = asyncio.get_event_loop()
+
+with Client(BleakClient("AA:BB:CC:DD:EE:FF"), loop=loop) as client:
+    # Check if battery service exists
+    if client.has_characteristic(BATTERY_LEVEL):
+        data = client.read_gatt_char(BATTERY_LEVEL)
+        print(f"Battery level: {data[0]}%")
+```
+
+### 订阅通知
+
+```python
+from lager.ble import Client, Central
+from bleak import BleakClient
+import asyncio
+
+NOTIFY_UUID = "your-characteristic-uuid"
+
+def handle_notification(handle, data):
+    print(f"Notification from {handle}: {data.hex()}")
+
+loop = asyncio.get_event_loop()
+
+with Client(BleakClient("AA:BB:CC:DD:EE:FF"), loop=loop) as client:
+    # Subscribe and wait for 10 messages or 30 seconds
+    timed_out, messages = client.start_notify(
+        NOTIFY_UUID,
+        callback=handle_notification,
+        max_messages=10,
+        timeout=30.0
+    )
+
+    if timed_out:
+        print(f"Timeout - received {len(messages)} messages")
+    else:
+        print(f"Received all {len(messages)} messages")
+
+    # Process collected messages
+    for msg in messages:
+        print(f"  {msg.hex()}")
+
+    client.stop_notify(NOTIFY_UUID)
+```
+
+### 写入命令并读取响应
+
+```python
+from lager.ble import Client
+from bleak import BleakClient
+import asyncio
+
+WRITE_UUID = "write-characteristic-uuid"
+READ_UUID = "read-characteristic-uuid"
+
+loop = asyncio.get_event_loop()
+
+with Client(BleakClient("AA:BB:CC:DD:EE:FF"), loop=loop) as client:
+    # Send command
+    command = b'\x01\x02\x03'
+    client.write_gatt_char(WRITE_UUID, command)
+
+    # Wait for processing
+    client.sleep(0.1)
+
+    # Read response
+    response = client.read_gatt_char(READ_UUID)
+    print(f"Response: {response.hex()}")
+```
+
+### 检查设备固件版本
+
+```python
+from lager.ble import Client, Central
+from bleak import BleakClient
+import asyncio
+
+# Standard Device Information Service UUIDs
+DEVICE_INFO_SERVICE = "0000180a-0000-1000-8000-00805f9b34fb"
+FIRMWARE_REVISION = "00002a26-0000-1000-8000-00805f9b34fb"
+MANUFACTURER_NAME = "00002a29-0000-1000-8000-00805f9b34fb"
+
+def check_device_info(address):
+    loop = asyncio.get_event_loop()
+
+    with Client(BleakClient(address), loop=loop) as client:
+        # Read manufacturer
+        if client.has_characteristic(MANUFACTURER_NAME):
+            data = client.read_gatt_char(MANUFACTURER_NAME)
+            print(f"Manufacturer: {data.decode('utf-8')}")
+
+        # Read firmware version
+        if client.has_characteristic(FIRMWARE_REVISION):
+            data = client.read_gatt_char(FIRMWARE_REVISION)
+            print(f"Firmware: {data.decode('utf-8')}")
+
+# First scan to find device
+central = Central()
+devices = central.scan(name="MyDevice")
+if devices:
+    check_device_info(devices[0].address)
+```
+
+### BLE 产线测试
+
+```python
+from lager.ble import Client, Central
+from bleak import BleakClient
+import asyncio
+
+DEVICE_NAME = "DUT_BLE"
+TEST_CHAR = "test-characteristic-uuid"
+
+def ble_production_test():
+    central = Central()
+    loop = asyncio.get_event_loop()
+
+    # Step 1: Scan for DUT
+    print("Scanning for DUT...")
+    devices = central.scan(name=DEVICE_NAME, scan_time=10.0)
+
+    if not devices:
+        print("FAIL: DUT not found")
+        return False
+
+    address = devices[0].address
+    print(f"Found DUT at {address}")
+
+    # Step 2: Connect and test
+    try:
+        with Client(BleakClient(address), loop=loop) as client:
+            # Test read
+            data = client.read_gatt_char(TEST_CHAR)
+            if len(data) == 0:
+                print("FAIL: Empty response")
+                return False
+
+            # Test write
+            client.write_gatt_char(TEST_CHAR, b'\x55')
+            client.sleep(0.1)
+
+            # Verify write
+            data = client.read_gatt_char(TEST_CHAR)
+            if data[0] != 0x55:
+                print("FAIL: Write verification failed")
+                return False
+
+            print("PASS: BLE test complete")
+            return True
+
+    except Exception as e:
+        print(f"FAIL: {e}")
+        return False
+
+# Run test
+ble_production_test()
+```
+
+## 硬件要求
+
+| 要求 | 说明 |
+|-------------|-------------|
+| BLE 硬件 | Lager Box 上具备蓝牙 4.0+ 适配器 |
+| 权限 | BLE 操作可能需要 root/sudo 权限 |
+
+## 依赖
+
+BLE 模块底层使用 [Bleak](https://bleak.readthedocs.io/) 作为 BLE 库，它提供跨平台的 BLE 支持。
+
+## 说明
+
+- BLE 操作是对 Bleak 异步操作的同步封装
+- Client 类支持上下文管理器（`with` 语句），可自动清理
+- 通知回调函数接收 `(handle, data)` 参数
+- 请把 `max_messages` 和 `timeout` 配合使用，以控制通知的收集
+- MAC 地址的常见格式为 `AA:BB:CC:DD:EE:FF`

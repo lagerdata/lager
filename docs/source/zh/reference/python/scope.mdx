@@ -1,0 +1,394 @@
+---
+title: 示波器
+description: 用于示波器控制的 Python SDK
+---
+
+示波器模块提供用于波形采集、触发和测量的 Python 接口。
+
+## 概述
+
+用 scope 模块控制示波器，采集模拟信号、在特定事件上触发，并进行自动测量。
+
+## 导入
+
+```python
+from lager import Net, NetType
+```
+
+## 用法
+
+```python
+from lager import Net, NetType
+
+# Get scope net
+scope = Net.get('ANALOG1', type=NetType.Analog)
+
+# Enable the channel
+scope.enable()
+
+# Start capture
+scope.start_capture()
+
+# Take measurements
+freq = scope.measurement.frequency()
+period = scope.measurement.period()
+
+# Stop and disable
+scope.stop_capture()
+scope.disable()
+```
+
+## 方法
+
+### 通道控制
+
+#### `enable()`
+
+启用该示波器通道。
+
+```python
+scope.enable()
+```
+
+#### `disable()`
+
+停用该示波器通道。
+
+```python
+scope.disable()
+```
+
+### 采集控制
+
+#### `start_capture()`
+
+开始连续波形采集。
+
+```python
+scope.start_capture()
+```
+
+#### `start_single_capture()`
+
+开始单次采集（采集一次触发事件）。
+
+```python
+scope.start_single_capture()
+```
+
+#### `stop_capture()`
+
+停止波形采集。
+
+```python
+scope.stop_capture()
+```
+
+### 测量
+
+通过 `measurement` 属性访问完整的测量功能：
+
+#### 电压测量
+
+```python
+# Basic voltage
+vmax = scope.measurement.voltage_max()      # Maximum voltage
+vmin = scope.measurement.voltage_min()      # Minimum voltage
+vpp = scope.measurement.voltage_peak_to_peak()  # Peak-to-peak
+vavg = scope.measurement.voltage_average()  # Average voltage
+vrms = scope.measurement.voltage_rms()      # RMS voltage
+
+# Waveform characteristics
+vtop = scope.measurement.voltage_flat_top()    # Flat top voltage
+vbase = scope.measurement.voltage_flat_base()  # Flat base voltage
+vamp = scope.measurement.voltage_flat_amplitude()  # Amplitude
+
+# Thresholds
+vupper = scope.measurement.voltage_threshold_upper()
+vlower = scope.measurement.voltage_threshold_lower()
+vmid = scope.measurement.voltage_threshold_mid()
+
+# Signal quality
+overshoot = scope.measurement.voltage_overshoot()
+preshoot = scope.measurement.voltage_preshoot()
+```
+
+#### 时序测量
+
+```python
+# Frequency and period
+freq = scope.measurement.frequency()
+period = scope.measurement.period()
+
+# Rise and fall times
+rise = scope.measurement.rise_time()
+fall = scope.measurement.fall_time()
+
+# Pulse widths
+pos_width = scope.measurement.pulse_width_positive()
+neg_width = scope.measurement.pulse_width_negative()
+
+# Duty cycles
+pos_duty = scope.measurement.duty_cycle_positive()
+neg_duty = scope.measurement.duty_cycle_negative()
+
+# Time at voltage extremes
+t_vmax = scope.measurement.time_at_voltage_max()
+t_vmin = scope.measurement.time_at_voltage_min()
+
+# Slew rates
+pos_slew = scope.measurement.positive_slew_rate()
+neg_slew = scope.measurement.negative_slew_rate()
+```
+
+#### 计数测量
+
+```python
+# Edge counts
+pos_edges = scope.measurement.positive_edge_count()
+neg_edges = scope.measurement.negative_edge_count()
+
+# Pulse counts
+pos_pulses = scope.measurement.positive_pulse_count()
+neg_pulses = scope.measurement.negative_pulse_count()
+```
+
+#### 面积测量
+
+```python
+area = scope.measurement.waveform_area()
+period_area = scope.measurement.waveform_period_area()
+```
+
+#### 统计测量
+
+```python
+variance = scope.measurement.variance()
+pvrms = scope.measurement.voltage_rms_period()  # Period RMS voltage
+```
+
+#### 延迟与相位测量
+
+```python
+# Delay measurements (between channels)
+rr_delay = scope.measurement.delay_rising_rising_edge()
+rf_delay = scope.measurement.delay_rising_falling_edge()
+fr_delay = scope.measurement.delay_falling_rising_edge()
+ff_delay = scope.measurement.delay_falling_falling_edge()
+
+# Phase measurements
+rr_phase = scope.measurement.phase_rising_rising_edge()
+rf_phase = scope.measurement.phase_rising_falling_edge()
+fr_phase = scope.measurement.phase_falling_rising_edge()
+ff_phase = scope.measurement.phase_falling_falling_edge()
+```
+
+#### 测量选项
+
+大多数测量都接受可选参数：
+
+```python
+# Keep measurement displayed on scope
+freq = scope.measurement.frequency(display=True)
+
+# Enable cursor measurement mode
+vpp = scope.measurement.voltage_peak_to_peak(measurement_cursor=True)
+```
+
+## 串流（PicoScope）
+
+PicoScope 设备支持串流功能：
+
+### `stream_start(channel, volts_per_div, time_per_div, trigger_level, trigger_slope, capture_mode, coupling)`
+
+启动串流采集。
+
+**参数：**
+- `channel`（str）：要启用的通道 —— `"A"`、`"B"`、`"1"`、`"2"`
+- `volts_per_div`（float）：垂直刻度
+- `time_per_div`（float）：水平刻度，单位秒
+- `trigger_level`（float）：触发电平，单位伏特
+- `trigger_slope`（str）：`"rising"`、`"falling"`、`"either"`
+- `capture_mode`（str）：`"auto"`、`"normal"`、`"single"`
+- `coupling`（str）：`"dc"`、`"ac"`
+
+```python
+scope.stream_start(
+    channel="A",
+    volts_per_div=1.0,
+    time_per_div=0.001,
+    trigger_level=0.5,
+    trigger_slope="rising",
+    capture_mode="auto",
+    coupling="dc"
+)
+```
+
+### `stream_stop()`
+
+停止串流采集。
+
+```python
+scope.stream_stop()
+```
+
+### `stream_capture(output, duration, samples)`
+
+把数据采集到文件。
+
+**参数：**
+- `output`（str）：输出文件路径
+- `duration`（float）：采集时长，单位秒
+- `samples`（int）：采样点数（可选）
+
+```python
+scope.stream_capture(
+    output="waveform.csv",
+    duration=5.0
+)
+```
+
+## 完整示例
+
+```python
+from lager import Net, NetType
+import time
+
+def measure_pwm_signal():
+    """Measure PWM signal characteristics."""
+
+    # Get scope net
+    pwm_net = Net.get('PWM_OUTPUT', type=NetType.Analog)
+
+    try:
+        # Enable channel
+        pwm_net.enable()
+
+        # Configure trigger
+        pwm_net.trigger_settings.set_mode_normal()
+        pwm_net.trigger_settings.set_coupling_DC()
+        pwm_net.trigger_settings.edge.set_source(pwm_net)
+        pwm_net.trigger_settings.edge.set_slope_rising()
+        pwm_net.trigger_settings.edge.set_level(1.65)  # 50% of 3.3V
+
+        # Start capture
+        pwm_net.start_capture()
+        time.sleep(0.5)  # Wait for stable capture
+
+        # Take measurements
+        frequency = pwm_net.measurement.frequency()
+        period = pwm_net.measurement.period()
+
+        print(f"PWM Frequency: {frequency:.2f} Hz")
+        print(f"PWM Period: {period*1000:.3f} ms")
+
+        # Calculate duty cycle from pulse width if available
+        # ...
+
+    finally:
+        pwm_net.stop_capture()
+        pwm_net.disable()
+
+if __name__ == "__main__":
+    measure_pwm_signal()
+```
+
+### 波形显示设置
+
+通过 `trace_settings` 配置垂直和水平刻度：
+
+```python
+# Vertical scale (V/div)
+scope.trace_settings.set_volts_per_div(1.0)
+volts = scope.trace_settings.get_volts_per_div()
+
+# Vertical offset
+scope.trace_settings.set_volt_offset(0.5)
+offset = scope.trace_settings.get_volt_offset()
+
+# Horizontal scale (s/div)
+scope.trace_settings.set_time_per_div(0.001)  # 1ms/div
+time_scale = scope.trace_settings.get_time_per_div()
+
+# Horizontal offset
+scope.trace_settings.set_time_offset(0.0)
+time_offset = scope.trace_settings.get_time_offset()
+```
+
+### 高级触发设置
+
+通过 `trigger_settings` 访问高级触发配置：
+
+```python
+# Trigger mode
+scope.trigger_settings.set_mode_auto()
+scope.trigger_settings.set_mode_normal()
+scope.trigger_settings.set_mode_single()
+mode = scope.trigger_settings.get_mode()
+
+# Trigger coupling
+scope.trigger_settings.set_coupling_DC()
+scope.trigger_settings.set_coupling_AC()
+scope.trigger_settings.set_coupling_low_freq_reject()
+scope.trigger_settings.set_coupling_high_freq_reject()
+coupling = scope.trigger_settings.get_coupling()
+
+# Edge trigger settings
+scope.trigger_settings.edge.set_source(scope)
+scope.trigger_settings.edge.set_slope_rising()
+scope.trigger_settings.edge.set_slope_falling()
+scope.trigger_settings.edge.set_slope_both()
+scope.trigger_settings.edge.set_level(1.65)
+
+# Get status
+status = scope.trigger_settings.get_status()
+```
+
+### 光标控制
+
+通过 `cursor` 属性访问光标功能：
+
+```python
+# Set cursor positions
+scope.cursor.set_a(x=100, y=50)
+scope.cursor.set_b(x=200, y=50)
+
+# Get cursor positions
+ax, ay = scope.cursor.get_a()
+bx, by = scope.cursor.get_b()
+
+# Move cursors relatively
+scope.cursor.move_a(x_del=10, y_del=5)
+scope.cursor.move_b(x_del=-10, y_del=0)
+
+# Read cursor measurements
+x_delta = scope.cursor.x_delta()  # Time difference
+y_delta = scope.cursor.y_delta()  # Voltage difference
+inv_x = scope.cursor.frequency()  # Frequency
+
+# Get individual values
+ax_val = scope.cursor.a_x()
+ay_val = scope.cursor.a_y()
+bx_val = scope.cursor.b_x()
+by_val = scope.cursor.b_y()
+
+# Hide cursor
+scope.cursor.hide()
+```
+
+## 受支持的硬件
+
+| 厂商 | 型号系列 | 特性 |
+|--------------|--------------|----------|
+| Rigol | MSO5000 | 多通道、混合信号、协议解码 |
+| PicoScope | 多种型号 | 支持串流 |
+
+## 说明
+
+- 示波器通道（1-4）请用 `NetType.Analog`
+- MSO 示波器的数字通道（D0-D15）请用 `NetType.Logic`
+- 串流功能仅在 PicoScope 设备上可用
+- 为获得可靠的测量结果，请在开始采集之前先配置触发
+- 测量方法成功时返回 `float`，测量无效时返回 `None`（例如无信号、无触发、通道不对）。
+  在 Rigol 硬件上，仪器对无效测量返回 9.9E+37，它会被自动转换为 `None`
+- 关于协议触发（UART、I2C、SPI、CAN），请参阅[逻辑分析仪](/source/zh/reference/python/logic)文档

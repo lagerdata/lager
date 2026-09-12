@@ -518,7 +518,8 @@
                 "group": "入门",
                 "pages": [
                   "source/zh/reference/python/overview",
-                  "source/zh/reference/python/binaries"
+                  "source/zh/reference/python/binaries",
+                  "source/zh/reference/python/net"
                 ]
               },
               {
@@ -540,6 +541,8 @@
               {
                 "group": "测量",
                 "pages": [
+                  "source/zh/reference/python/scope",
+                  "source/zh/reference/python/logic",
                   "source/zh/reference/python/adc",
                   "source/zh/reference/python/tc"
                 ]
@@ -549,9 +552,17 @@
                 "pages": [
                   "source/zh/reference/python/gpio",
                   "source/zh/reference/python/dac",
+                  "source/zh/reference/python/uart",
                   "source/zh/reference/python/serial",
+                  "source/zh/reference/python/ble",
                   "source/zh/reference/python/wifi",
                   "source/zh/reference/python/router"
+                ]
+              },
+              {
+                "group": "实用工具",
+                "pages": [
+                  "source/zh/reference/python/webcam"
                 ]
               }
             ]
