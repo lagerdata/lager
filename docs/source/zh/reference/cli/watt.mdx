@@ -1,0 +1,242 @@
+---
+title: 功率计
+description: 从功率计读取功率、电流和电压
+---
+
+通过 Lager CLI 从功率计 Net 读取功率、电流和电压。
+支持 Yocto-Watt、Joulescope JS220 和 Nordic PPK2 硬件。
+
+## 语法
+
+```bash
+lager watt [NET_NAME] [COMMAND] [OPTIONS]
+```
+
+不带 `COMMAND` 时，`lager watt NET_NAME` 读取功率（瓦特）。
+`current`、`voltage` 和 `all` 子命令读取其他量（仅 Joulescope JS220 和 Nordic PPK2）。
+
+## 命令
+
+| 命令 | 说明 |
+|---------|-------------|
+| _（无）_ / `power` | 读取功率，单位瓦特 |
+| `current` | 读取电流，单位安培 |
+| `voltage` | 读取电压，单位伏特 |
+| `all` | 一并读取电流、电压和功率 |
+
+## 选项
+
+以下选项在每个读取子命令（`power`/`current`/`voltage`/`all`）上都可用。
+对于默认的功率读取，`--box` 也可以直接写在 `lager watt NET_NAME` 之后。
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--box BOX` | Lager Box 名称或 IP 地址 |
+| `-d, --duration FLOAT` | 平均时间窗口，单位秒（默认 `0.1`）。窗口越长，参与平均的采样越多，读数噪声越低、有效分辨率越高。 |
+| `--json` | 输出程序可读的 JSON 对象，而不是格式化文本 |
+| `--help` | 显示帮助信息并退出 |
+
+## 参数
+
+| 参数 | 说明 |
+|----------|-------------|
+| `NET_NAME` | 要读取的功率计 Net 名称（设置了默认值时可省略）。它必须写在子命令**之前**。 |
+
+## 用法
+
+```bash
+lager watt NET_NAME [--box BOX]                  # power
+lager watt NET_NAME current [--box BOX]          # current
+lager watt NET_NAME voltage [--box BOX]          # voltage
+lager watt NET_NAME all [--box BOX]              # current + voltage + power
+```
+
+如果省略 `NET_NAME` 且没有设置默认值，`lager watt` 会列出 Box 上全部可用的功率计 Net。
+
+## 输出
+
+Lager 用 SI 前缀格式化读数，这样很小的量级也依然可读。
+52.34 µW 的负载显示为 `52.340 µW`，而不是 `0.000 W`：
+
+```
+Power 'POWER_METER': 52.340 µW
+Current 'POWER_METER': 12.000 mA
+Voltage 'POWER_METER': 3.300 V
+```
+
+`all` 打印全部三个量：
+
+```
+Measurements 'POWER_METER' (0.1s):
+  Current: 12.000 mA
+  Voltage: 3.300 V
+  Power:   39.600 mW
+```
+
+使用 `--json` 时，输出是单个 JSON 对象（单位为 SI 基本单位 —— 安培、伏特、瓦特）：
+
+```bash
+lager watt POWER_METER all --json --box my-lager-box
+{"netname": "POWER_METER", "current": 0.012, "voltage": 3.3, "power": 0.0396, "duration_s": 0.1}
+```
+
+默认读取超时为 30 秒（`--duration` 窗口较长时会相应放大）。
+如果在该时间内没有读数到达，命令会以错误退出。错误信息会指出两种可能的原因：
+设备断开，或 USB 故障。
+
+### 提高分辨率
+
+有两个手段可以改善功率/电流读数：
+
+- **显示** —— 输出会自动按 SI 缩放，因此亚毫瓦和亚毫安级的读数会以 µ/n 单位显示，
+  而不是被四舍五入为零。对于连纳单位都无法表示的极小值，读数会以科学计数法显示
+  （例如 `3.000e-13 W`）。非零读数永远不会因为舍入而丢失。
+- **平均窗口** —— 传入 `--duration` 可以在更长的采集时间上取平均。
+  窗口越长，均值的噪声越小，得到的数值更稳定、有效分辨率更高：
+
+```bash
+lager watt POWER_METER current --duration 1.0 --box my-lager-box
+```
+
+### 长平均窗口
+
+`--duration` 同样适用于长窗口 —— 例如一分钟内的平均电流：
+
+```bash
+lager watt POWER_METER current --duration 60 --box my-lager-box
+```
+
+在 Joulescope JS220 上，超过约 10 秒的窗口会使用仪器的**片上电荷累加器**
+（平均电流 = Δ电荷 ÷ Δt）。JS220 不会为这样的窗口缓存原始采样。
+这种方式是**无间隙**的：它捕捉每一次瞬态，而不只是被采样到的那一部分。
+它还使用恒定内存，因此可以扩展到任意长度的窗口 —— 一分钟、十分钟，甚至更长。
+较短的窗口仍然使用直接采样。
+
+## 受支持的硬件
+
+| 厂商 | 型号 | 识别方式 | 特性 |
+|--------------|-------|---------------|----------|
+| Yoctopuce | Yocto-Watt | USB VID:PID `24e0:002a` | 实时功率测量 |
+| Joulescope | JS220 | USB VID:PID `16d0:10ba` | 高精度的功率、电压和电流测量 |
+| Nordic Semiconductor | PPK2 | USB VID:PID `1915:c00a` | 通过源模式测量电流、电压和功率 |
+
+### 硬件功能对比
+
+| 功能 | Yocto-Watt | Joulescope JS220 | Nordic PPK2 |
+|---------|-----------|------------------|-------------|
+| 功率读取（`power`） | 支持 | 支持 | 支持 |
+| 电压读取（`voltage`） | 不支持 | 支持 | 支持（所配置的源电压） |
+| 电流读取（`current`） | 不支持 | 支持 | 支持 |
+| 合并读取（`all`） | 不支持 | 支持 | 支持 |
+| 可配置平均（`--duration`） | 不支持（瞬时值） | 支持 | 支持 |
+| 设备选择 | 按通道 | 按序列号 | 按序列号 |
+
+`current`、`voltage` 和 `all` 子命令需要 Joulescope JS220 或 Nordic PPK2。
+在 Yocto-Watt（只支持功率）上，它们会以一条明确的 "not supported" 信息退出 ——
+请改用 `lager watt NET_NAME` 读取功率。同样的读数也可以通过
+[Python API](/source/zh/reference/python/watt) 获取。
+
+### 仪器名称匹配
+
+后端驱动根据 Net 配置中的仪器名称来选择：
+
+| 匹配模式 | 驱动 |
+|---------|--------|
+| 含有 `joulescope` 或 `js220`（不区分大小写） | Joulescope JS220 |
+| 含有 `ppk2`、`ppk` 或 `nordic`（不区分大小写） | Nordic PPK2 |
+| 其他所有功率计仪器 | Yocto-Watt |
+
+## 默认 Net
+
+为避免每次都输入 Net 名称：
+
+```bash
+lager defaults add --watt-meter-net POWER_METER
+```
+
+之后：
+
+```bash
+lager watt
+```
+
+## 示例
+
+```bash
+# Read power from watt meter
+lager watt POWER_METER --box my-lager-box
+
+# Read current / voltage (Joulescope JS220 or Nordic PPK2)
+lager watt POWER_METER current --box my-lager-box
+lager watt POWER_METER voltage --box my-lager-box
+
+# Read current, voltage, and power together
+lager watt POWER_METER all --box my-lager-box
+
+# Average over 1 second for a lower-noise reading
+lager watt POWER_METER current --duration 1.0 --box my-lager-box
+
+# Machine-readable output for scripts
+lager watt POWER_METER all --json --box my-lager-box
+
+# Read using default net
+lager watt
+
+# List available watt meter nets
+lager watt --box my-lager-box
+```
+
+## 脚本示例
+
+### 功率阈值检查（JSON）
+
+```bash
+#!/bin/bash
+# Verify power consumption is within limits using JSON output
+POWER=$(lager watt POWER all --json --box my-lager-box | python3 -c 'import sys,json; print(json.load(sys.stdin)["power"])')
+
+if (( $(echo "$POWER > 10" | bc -l) )); then
+    echo "FAIL: Power consumption too high: ${POWER}W"
+    exit 1
+fi
+echo "PASS: Power within limits (${POWER}W)"
+```
+
+### 电流曲线采集（JSON）
+
+```bash
+#!/bin/bash
+# Sample current over time
+BOX="my-lager-box"
+NET="POWER"
+
+echo "timestamp,current_a"
+for i in $(seq 1 10); do
+    CURRENT=$(lager watt $NET current --json --box $BOX | python3 -c 'import sys,json; print(json.load(sys.stdin)["current"])')
+    echo "$(date +%s),$CURRENT"
+    sleep 1
+done
+```
+
+## 故障排除
+
+| 错误 | 原因 | 解决方法 |
+|-------|-------|-----|
+| `does not support reading current/voltage` | 该 Net 背后是 Yocto-Watt（只支持功率） | 请用 `lager watt NET_NAME` 读取功率，或把该 Net 移到 Joulescope/PPK2 上 |
+| 超时 | 设备断开或 USB 故障 | 检查 USB 连接；重新插拔设备 |
+| Connection refused | Box 服务没有运行 | 检查 Box：`lager hello --box <box>` |
+| Device not found | 未检测到功率计 | 确认设备已连接：`lager instruments --box <box>` |
+
+## 说明
+
+- 读数按 SI 缩放（W/mW/µW/nW，A/mA/µA/nA，V/mV），保留 3 位有效小数。
+  连纳单位都无法表示的极小值会退回科学计数法，而不是显示 `0.000`。
+  `--json` 输出 SI 基本单位（W、A、V）。
+- `--duration` 设置平均窗口；Joulescope JS220 和 Nordic PPK2 会遵循它，
+  而 Yocto-Watt 返回瞬时值并忽略它。在 JS220 上，超过约 10 秒的窗口
+  由片上电荷累加器无间隙测量（恒定内存，任意长度）。
+- Nordic PPK2 工作在源模式（提供 0.8–5V 的可配置电压并测量电流）；
+  它的 `voltage` 读数就是所配置的源电压。
+- `current`、`voltage` 和 `all` 子命令必须写在 Net 名称之后：`lager watt NET_NAME current`。
+- Net 名称就是您搭建测试台时分配的名称。
+- 用 `lager nets` 查看可用的功率计 Net，用 `lager instruments --box <box>` 确认设备已被检测到。
