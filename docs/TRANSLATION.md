@@ -179,6 +179,17 @@ translated heading must use the translated anchor:
 This is checked. A wrong anchor fails the build — it is not silently skipped for
 CJK. Verified by breaking one on purpose.
 
+**Full-width brackets survive into the slug; ASCII ones do not.** The English
+heading `Debug nets (J-Link)` gives `#debug-nets-j-link`: the `()` become
+separators and vanish. The Chinese heading `调试 Net（J-Link）` gives
+`#调试-net（j-link）` — the `（）` are kept verbatim. Guessing by analogy with the
+English page produces a dead link, which is how this was found.
+
+So do not hand-write an anchor to a heading that contains `（）`. Either link to a
+heading without them, or read the slug off the rendered page. Better still,
+prefer a heading with no brackets at all when something else will link to it —
+`## 调试 Net` beats `## 调试 Net（J-Link）` for a heading that is a link target.
+
 Leave glossary term headings in English (`## ADC`, `## SWD`). They are the
 lookup key, and the reader arrives holding the English word.
 

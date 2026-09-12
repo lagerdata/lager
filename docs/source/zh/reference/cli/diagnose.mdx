@@ -1,0 +1,232 @@
+---
+title: Diagnose
+description: 对异常的仪器 Net 做一次性诊断
+---
+
+`lager diagnose <net> --box <box> [--type <role>]` 对异常的仪器 Net 做一次性诊断。
+它把手动调试的整套流程（`lsof`、`dmesg`、裸 `pyvisa` 探测、硬件服务内省）
+压缩成一条 CLI 调用。这条调用返回一个可据以行动的分类：
+主机侧问题、仪器卡死，或者一切正常。
+
+<Note>在 **lager 0.20.0** 中为 USB-TMC（pyvisa）仪器引入。在 **0.28.3** 中扩展到
+诊断 `debug` Net（SEGGER J-Link，以及基础的 OpenOCD/ST-Link 路径）——
+请参阅下方的 [调试 Net（J-Link）](#调试-net（j-link）)。</Note>
+
+## 语法
+
+```bash
+lager diagnose NET [OPTIONS]
+```
+
+## 选项
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--box BOX` | Lager Box 名称或 IP 地址（省略时使用默认 Box） |
+| `--type ROLE` | Net 角色。默认为 `auto`，即从 Box 已保存的 Net 中查出该 Net 的角色。传入明确的角色（`battery`、`power-supply`、`scope`、`debug`、`usb`、`adc` 等）可以覆盖它，也可以用来诊断尚未保存的 Net。`debug` Net 会走 [J-Link 路径](#调试-net（j-link）)。 |
+
+`NET` 是要诊断的 Net 名称（例如 `battery1`、`supply1`）。
+
+---
+
+## 用法
+
+```bash
+# Diagnose a net, auto-detecting its role from saved nets
+lager diagnose battery1 --box my-lager-box
+
+# Override the role explicitly
+lager diagnose battery1 --box my-lager-box --type battery
+```
+
+该命令并行查询三个 Box 侧端点，为每一个打印一节内容，
+最后给出一行分类结论和下一步建议。
+
+---
+
+## 输出各节
+
+### USB（主机侧）
+
+来自 Box 端口 9000 上的 `GET /diagnose/usb`。报告：
+
+- `enumerated` —— 该设备是否出现在主机的 USB 总线上？
+- `sysfs` —— 内核 sysfs 路径（例如 `/sys/bus/usb/devices/1-4`）。
+- `device` —— `lsof`/`fuser` 使用的 `/dev/bus/usb/BBB/DDD` 路径。
+- `usbtmc` —— `usbtmc` 内核模块是否已加载（如果已加载，它会与 libusb 争抢接口 0）。
+- `lsof` —— 持有该 USB 设备文件的进程列表，形式为 `command(pid)`。
+- `dmesg tail` —— 最后几条 USB / usbtmc 内核消息。
+
+### VISA（仪器侧）
+
+来自 Box 端口 9000 上的 `GET /diagnose/visa`。它打开一个*全新的* `pyvisa`
+会话，并以较短的超时查询 `*IDN?`。如果硬件服务已经为这个地址持有一个共享会话，
+它会跳过打开动作并说明这一点。发生冲突时，要么会卡住，要么会返回乱码。报告：
+
+- `idn` —— 仪器响应时给出的 IDN 字符串。
+- `elapsed` —— 实际耗时，单位毫秒。
+- `error` / `error_class` —— 分类为 `busy`、`nodev`、`timeout` 或 `other`。
+- `skipped` —— 当硬件服务持有该地址时被置位。
+
+### Dispatcher（hw_service 进程内）
+
+来自硬件服务端口 8080 上的 `GET /diagnose/dispatcher`。报告该地址在进程内的状态：
+
+- `cached_session` —— 共享的 `pyvisa` 会话池中是否有它。
+- `cached_drivers` —— 针对该地址缓存的驱动实例。
+- `shared_pool` —— 会话池的总大小。
+
+---
+
+## 分类
+
+判定树按以下顺序进行（首个匹配者胜出）：
+
+| 分类 | 触发条件 |
+|----------------|---------|
+| `HOST-SIDE: usbtmc kernel module loaded` | `usbtmc` 内核模块已绑定（运行 `lager update` 安装黑名单） |
+| `HOST-SIDE: USB device claimed by multiple processes` | VISA 报 `busy`，且 `lsof` 中有两个及以上持有者 |
+| `HOST-SIDE: USB device busy` | VISA 报 `busy`，且只有一个持有者 |
+| `TRANSIENT: device disappeared from USB` | VISA 报 `nodev`（重新枚举中） |
+| `INSTRUMENT WEDGED` | VISA 报 `timeout` —— 能枚举、能打开，但不响应 `*IDN?` |
+| `NOT ENUMERATED` | 该设备没有出现在 USB 上（请检查供电/线缆） |
+| `REACHABLE` | `*IDN?` 有返回（显示 IDN 字符串） |
+| `REACHABLE (shared session)` | 因为 hw_service 持有活动会话，所以跳过了打开动作 |
+| `TRANSIENT: enumerated as USB-TMC but fresh open failed` | 枚举为 USB-TMC 类，但全新的 pyvisa 打开失败 |
+| `NOT USB-TMC` | 使用厂商 SDK 的仪器（LabJack/LJM、Picoscope、Acroname 等），不走 pyvisa |
+| `UNCLEAR` | 兜底 —— 请查看各节的输出 |
+
+---
+
+## 会话示例
+
+```
+$ lager diagnose battery1 --box my-lager-box
+lager diagnose — my-lager-box → battery1
+  NetType: battery    address: USB0::0x05E6::0x2281::4518305::INSTR
+
+== USB (host-side) ==
+   enumerated:   True
+   usbtmc kmod:  not loaded (good)
+   lsof:         no holders
+
+== VISA (instrument-side) ==
+   idn:          KEITHLEY INSTRUMENTS,MODEL 2281S-20-6,4518305,01.08b
+   elapsed:      429 ms
+
+== Dispatcher (hw_service in-process) ==
+   cached_session:  False
+   shared_pool:     0 entry/entries
+
+Classification: REACHABLE — IDN: KEITHLEY INSTRUMENTS,MODEL 2281S-20-6,4518305,01.08b. USB, the VISA session and *IDN? are all good. This does not exercise the instrument's function (e.g. whether a supply will actually enable its output).
+```
+
+卡死的仪器会被清楚地指出来，这样您就不会再徒劳地尝试纯软件的恢复手段：
+
+```
+Classification: INSTRUMENT WEDGED: device enumerates and accepts session open,
+but won't respond to *IDN?. The instrument firmware is stuck — a mains-side
+power-cycle of the instrument itself is required.
+```
+
+使用厂商 SDK 的仪器（LabJack、Picoscope、Acroname）不经过 pyvisa，
+因此 `lager diagnose` 会把您指向针对该角色的命令，而不是返回一个会误导人的 `UNCLEAR`。
+
+---
+
+## 调试 Net（J-Link）
+
+`debug` Net 不是 USB-TMC，因此上面的 pyvisa `*IDN?` 探测无法触及它。
+当该 Net 的角色是 `debug` 时（自动识别，或用 `--type debug` 强制指定），
+`lager diagnose` 会改走一条了解 J-Link 的路径。它获取同样的主机侧 **USB** 一节，
+外加一个专用的 `/diagnose/jlink` 端点，然后由外向内逐层检查调试栈：
+软件 → USB → 探针可见性 → gdbserver → 目标连接。
+这个顺序意味着最具体、最可操作的故障会胜出。
+
+```bash
+lager diagnose swd1 --box lab-lager-box            # auto-detects the debug role
+lager diagnose swd1 --box lab-lager-box --type debug
+```
+
+### J-Link / 调试探针一节
+
+除 **USB（主机侧）** 一节之外，`debug` Net 还会打印一节
+**J-Link / 调试探针**，报告：
+
+- `backend` —— 探针后端（`jlink`，或某个 OpenOCD/ST-Link 后端）。
+- `jlink software` —— Box 上是否安装了 SEGGER J-Link 工具。
+- `probe enum` —— 该探针是否出现在主机的 USB 总线上？
+- `probe visible` —— `JLinkExe` 是否真的枚举到了该探针（带仿真器型号/序列号列表）？
+- `holders` —— 持有该探针的进程，形式为 `command(pid)`（通常是残留的 gdbserver）。
+- `gdbserver` —— J-Link gdbserver 是否存活、它的 PID，以及它的日志文件是否正常。
+- `connect` —— 目标连接探测的结果：`connect_ok`、错误类别、`VTref`（目标参考电压），以及识别到的 `core`。当失败无法归类时，会显示 `JLinkExe` 的原始输出。
+
+SEGGER 探针会得到上面完整的检查栈。非 J-Link 的 OpenOCD/ST-Link 探针
+只报告较简略的 `openocd-basic` 一节（后端、探针枚举和 gdbserver 状态）——
+深入的目标诊断目前只支持 J-Link。
+
+### 调试相关的分类
+
+| 分类 | 触发条件 |
+|----------------|---------|
+| `HEALTHY: J-Link connected to <device>` | 目标连接成功（给出 core，J-Link 报告时还给出 VTref） |
+| `HEALTHY: J-Link gdbserver running` | gdbserver 已启动并在监听，日志正常（存在活动的调试会话） |
+| `J-LINK SOFTWARE MISSING on box` | 未安装 SEGGER J-Link 工具（`lager update` 会安装它们） |
+| `PROBE NOT ON USB` | 探针没有被枚举 —— 请检查线缆、探针供电、上游集线器端口 |
+| `PROBE CLAIMED` | 探针在 USB 上，但 `JLinkExe` 看不到它，因为另一个进程持有它（通常是残留的 gdbserver —— 请运行 `lager debug <net> disconnect`） |
+| `PROBE WEDGED` | 探针在 USB 上，但 `JLinkExe` 枚举结果为空 —— 请给探针断电再上电 |
+| `GDBSERVER WEDGED` | 服务进程在运行，但它的日志显示目标连接失败 |
+| `TARGET UNPOWERED` | 探针正常，但 VTref 过低 —— 目标板的调试排针上没有电（或 VTref 没有接线） |
+| `TARGET LOCKED` | 调试访问被读保护/IDCODE/AP 保护阻断 —— 需要整片擦除/解锁（例如 `nrfjprog --recover`） |
+| `DEVICE NAME` | `JLinkExe` 拒绝了所配置的器件 —— 请修正该 Net 的 device/MCU 字段 |
+| `NO TARGET COMMS` | 探针和目标供电都正常，但 SWD/JTAG 连接失败 —— 请检查 SWDIO/SWCLK 接线、nRST 上拉、SWD 与 JTAG 的选择，并尝试更低的速率 |
+| `INCONCLUSIVE` / `UNCLEAR` | 跳过了连接探测，或返回了无法识别的类别 —— 请查看该节输出并重新运行 |
+
+### 调试会话示例
+
+```
+$ lager diagnose swd1 --box lab-lager-box --type debug
+lager diagnose — lab-lager-box → swd1
+  NetType: debug    address: 50105878
+
+== USB (host-side) ==
+   enumerated:   True
+   usbtmc kmod:  not loaded (good)
+   lsof:         no holders
+
+== J-Link / debug probe ==
+   backend:        jlink
+   jlink software: installed
+   probe enum:     True
+   probe visible:  True  (emus: J-Link/50105878)
+   holders:        none
+   gdbserver:      running=False pid=None log_ok=None
+   connect:        ok=True class=ok VTref=3.300V core=Cortex-M4
+
+Classification: HEALTHY: J-Link connected to NRF52840_XXAA (Cortex-M4, VTref=3.300V).
+```
+
+被锁定的目标会被清楚地指出来，这样您就能直接采用正确的恢复手段：
+
+```
+Classification: TARGET LOCKED: debug access is blocked by readout/IDCODE/AP
+protection. A mass-erase/unlock is required (e.g. `nrfjprog --recover` for nRF,
+or the vendor unlock flow).
+```
+
+---
+
+## 向后兼容
+
+对 0.20 之前的 Box，每个端点都返回 404。此时 CLI 会说明该节不可用，
+因为那台 Box 可能运行着 lager < 0.20 的镜像。其余各节仍会运行 ——
+`lager diagnose` 对较旧的 Box 依然有用，只是信息少一些。
+
+---
+
+## 参见
+
+- [Instruments](/source/zh/reference/cli/instruments) —— 列出已连接的仪器及其 VISA 地址
+- [Nets](/source/reference/cli/nets) —— 列出已保存的 Net 及其角色
+- [Debug](/source/reference/cli/debug) —— 调试 Net 的连接、烧录和 gdbserver 控制
+- [Hello](/source/zh/reference/cli/hello) —— 基本的 Box 连通性和版本检查

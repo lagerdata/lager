@@ -1,0 +1,245 @@
+---
+title: USB
+description: 控制 USB 集线器端口的供电
+---
+
+通过 Lager CLI 控制可编程 USB 集线器的端口，用于电源管理和设备连接。
+
+## 语法
+
+```bash
+lager usb [OPTIONS] [NET_NAME] [COMMAND]
+```
+
+## 全局选项
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--box TEXT` | Lager Box 名称或 IP 地址 |
+| `--help` | 显示帮助信息并退出 |
+
+## 参数
+
+| 参数 | 说明 |
+|----------|-------------|
+| `NET_NAME` | USB Net 名称（可省略 —— 省略时列出全部 Net） |
+| `COMMAND` | 电源命令：`enable`、`disable`、`toggle`、`state`、`cycle` 或 `recover` |
+
+## 命令
+
+| 命令 | 说明 |
+|---------|-------------|
+| `enable` | 打开（接通）该 USB 端口的电源 |
+| `disable` | 关闭（切断）该 USB 端口的电源 |
+| `toggle` | 翻转当前的供电状态 |
+| `state` | 显示该端口处于打开还是关闭状态（只读） |
+| `cycle` | 对该端口断电再上电：关闭、等待、打开 |
+| `recover` | 在命令被中断导致端口停留在断电状态之后恢复供电 |
+
+### `cycle` 选项
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--off-time SECONDS` | 端口保持断电的时长。默认 `1.0`，范围 `0.5`-`10`。 |
+
+---
+
+## 用法
+
+### 列出 USB Net
+
+不带 Net 名称调用时，列出 Box 上的全部 USB Net：
+
+```bash
+lager usb --box my-lager-box
+```
+
+**输出：**
+```
+Name    Net Type  Instrument    Channel  Address
+USB1    usb       Acroname_Hub  0        USB::123456
+USB2    usb       Acroname_Hub  1        USB::123456
+CAM_USB usb       YKUSH         0        USB::789012
+```
+
+### 控制 USB 端口的供电
+
+```bash
+lager usb NET_NAME COMMAND [--box BOX]
+```
+
+**示例：**
+```bash
+# Enable USB port
+lager usb USB1 enable --box my-lager-box
+
+# Disable USB port
+lager usb USB1 disable --box my-lager-box
+
+# Toggle USB port state
+lager usb USB1 toggle --box my-lager-box
+
+# Read the current state without changing it
+lager usb USB1 state --box my-lager-box
+
+# Power-cycle the port to cold-boot the device
+lager usb USB1 cycle --box my-lager-box
+
+# Hold the port off longer for a device with large capacitors
+lager usb USB1 cycle --off-time 3 --box my-lager-box
+```
+
+### 对设备断电再上电
+
+`cycle` 切断电源、等待，然后恢复供电。之后它最多等待 5 秒，等设备重新出现：
+
+```bash
+lager usb USB1 cycle --box my-lager-box
+# [OK] USB port 'USB1' power-cycled; device re-enumerated
+```
+
+如果该端口上本来就没有设备，它会如实说明，而不会声称设备已经回来：
+
+```bash
+lager usb USB2 cycle --box my-lager-box
+# [OK] USB port 'USB2' power-cycled; no device on this port to watch for, so
+#      re-enumeration was not confirmed
+```
+
+还可能出现另外两种结果：
+
+```bash
+# The device did not return within 5 seconds
+# [OK] USB port 'USB1' power-cycled, but the device did not come back before the timeout
+
+# The box could not read its own USB topology
+# [OK] USB port 'USB1' power-cycled (re-enumeration not verified: the box's USB topology could not be read)
+```
+
+<Warning>
+以上四种结果 `cycle` 都以 `0` 退出，包括设备没有回来的那一种。
+如果脚本依赖该设备，它必须检查输出文本。
+</Warning>
+
+`cycle` 如何判断设备已经回来，取决于集线器：
+
+- **Acroname 和 YKUSH 集线器：** Box 在切断电源之前读取一次内核 USB 拓扑，
+  在端口断电期间再读一次。离开总线的设备必须重新回到总线上。
+- **Plugable 扩展坞：** Box 监视集线器为该端口报告的连接状态。
+
+<Note>
+在 Plugable 扩展坞上，只要**集线器**报告设备重新连接，`cycle` 就会返回，
+这只需要几百毫秒。Linux 在那一刻并没有完成重新枚举：设备节点或
+`/dev/ttyUSB*` 可能仍然不存在，立即读取 `/sys` 也仍会得到断电前的值。
+在 Acroname 和 YKUSH 集线器上，`cycle` 在设备重新回到内核 USB 拓扑时才返回。
+在任何集线器上，请在下一步打开设备之前先等待设备节点出现。
+`cycle` 返回并不表示设备已经就绪。
+</Note>
+
+"该端口上没有设备"**不等于**"该端口未被使用"。集线器只能看到会拉高数据线的设备。
+**只供电的线缆**可以给被测设备供电，却不建立数据连接，因此它看起来和空插座完全一样。
+该端口仍然被切断并恢复了供电。请通过被测设备自身的行为来确认：它的 UART，或者一次电流测量。
+
+请优先使用它，而不是用脚本拼出 `disable`/`sleep`/`enable`，原因如下：
+
+- 它在每条失败路径上都会恢复供电，因此中途失败的命令不会把端口留在断电状态。
+- 它会报告设备是否真的回来了，您不必猜测。
+- 在 Plugable 扩展坞上，它在整个过程中持有该集线器，因此在端口断电期间没有别的东西能切换它。
+  在 Acroname 和 YKUSH 集线器上，它会打开集线器两次，断电期间其他进程仍可能切换该端口。
+
+`--off-time` 默认为 1 秒，明显高于在真实硬件上测到的最慢冷启动时间。
+**断电时间过短才是真正要紧的失败方式**：设备的电源轨没有完全放电，
+于是设备是热启动的，但看起来却像是被复位过。对于体电容较大的设备，请调高断电时间。
+低于 0.5 秒或高于 10 秒的值会被拒绝。
+
+<Warning>
+**在 Plugable 扩展坞上，已断电的端口仍然出现在 `lsusb` 中，它的 `/dev/ttyUSB*` 也仍然存在。**
+端口断电期间集线器不会发出变化通知，因此在电源恢复之前，内核根本不会处理这次断开。
+对这类端口执行 `disable` 时，输出中会说明这一点。请不要用"设备是不是消失了"
+来判断端口是否已断电 —— 这个判断在两个方向上都是错的。请使用 `state`，
+它读取的是集线器自己的电源位。
+</Warning>
+
+### 恢复被留在断电状态的端口
+
+如果某条命令在把端口断电之后、恢复供电之前被中断，`recover` 可以恢复供电：
+
+```bash
+lager usb USB1 recover --box my-lager-box
+# [OK] USB port 'USB1': power restored on port(s) 1, 2, 3, 4
+```
+
+在 lager 能识别整台设备的集线器上（例如 Plugable 扩展坞），
+`recover` 会重新为它的每个端口供电。您通常在"有东西没电了但不清楚是哪个"时用到 `recover`。
+
+### 读取端口状态（只读）
+
+`state` 报告某个端口当前是打开还是关闭，**并不改变它**。
+该值是从集线器硬件实时读取的，因此它总是反映真实的端口状态 —— 不做任何缓存或存储：
+
+```bash
+lager usb USB1 state --box my-lager-box
+# [OK] USB port 'USB1' is enabled
+```
+
+它是 `toggle` 的只读对应命令：用 `state` 查看端口，用 `toggle` 翻转它
+（`toggle` 也会报告翻转后的状态）。
+
+<Note>
+`toggle` 会报告翻转后的状态，这样您就能知道它翻到了哪一边：
+
+```
+[OK] USB port 'USB1' toggled → disabled
+```
+
+`enable` 和 `disable` 则明确确认所做的操作（`USB port 'USB1' enabled`）。
+</Note>
+
+---
+
+## 示例
+
+```bash
+# List all USB nets
+lager usb --box my-lager-box
+
+# Power on a USB port for a camera
+lager usb CAM_USB enable --box my-lager-box
+
+# Power off USB port to reset a device
+lager usb USB1 disable --box my-lager-box
+
+# Toggle power state (useful for power cycling)
+lager usb USB1 toggle --box my-lager-box
+
+# Power cycle a device
+lager usb USB1 cycle --box my-lager-box
+
+# Re-power a port after an interrupted command
+lager usb USB1 recover --box my-lager-box
+```
+
+---
+
+## 受支持的硬件
+
+| 厂商 | 型号 | 说明 |
+|--------------|-------|-------------|
+| Acroname | USBHub3+ | 可编程 USB 3.0 集线器 |
+| Acroname | USBHub2x4 | 4 端口可编程集线器 |
+| YKUSH | YKUSH3 | 可切换的 USB 集线器 |
+| Plugable | RTS5411 扩展坞（例如 UD-CAM） | 4 个外部 Type-A 插座；标准 USB hub-class 切换 |
+
+Plugable 扩展坞上哪些端口可以切换供电、哪些不可以，请参阅
+[受支持的仪器](/source/supported-instruments/supported-instruments)。
+
+---
+
+## 说明
+
+- Net 名称（例如 `USB1`、`CAM_USB`）指的是您测试台上配置的 USB 端口
+- 命令区分大小写，请用小写输入（`enable`，不是 `ENABLE`）
+- 适合在测试过程中对 USB 设备断电再上电
+- USB 集线器必须连接到 Box 并配置为仪器
+- 默认 Net 可以用 `lager defaults add --usb-net` 设置
+- 用 `lager nets add <name> usb <channel> <address>` 创建 USB Net

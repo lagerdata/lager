@@ -520,6 +520,7 @@
                   "source/zh/reference/cli/overview",
                   "source/zh/reference/cli/terminal",
                   "source/zh/reference/cli/hello",
+                  "source/zh/reference/cli/boxes",
                   "source/zh/reference/cli/login",
                   "source/zh/reference/cli/install-wheel",
                   "source/zh/reference/cli/uninstall",
@@ -532,6 +533,7 @@
                 "group": "配置",
                 "pages": [
                   "source/zh/reference/cli/instruments",
+                  "source/zh/reference/cli/diagnose",
                   "source/zh/reference/cli/dut",
                   "source/zh/reference/cli/defaults"
                 ]
@@ -557,6 +559,7 @@
                   "source/zh/reference/cli/gpi",
                   "source/zh/reference/cli/gpo",
                   "source/zh/reference/cli/dac",
+                  "source/zh/reference/cli/usb",
                   "source/zh/reference/cli/ble",
                   "source/zh/reference/cli/blufi",
                   "source/zh/reference/cli/router"
