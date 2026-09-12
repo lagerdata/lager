@@ -544,6 +544,7 @@
                 "group": "电源与仿真",
                 "pages": [
                   "source/zh/reference/cli/supply",
+                  "source/zh/reference/cli/battery",
                   "source/zh/reference/cli/solar",
                   "source/zh/reference/cli/eload",
                   "source/zh/reference/cli/watt",
@@ -577,6 +578,12 @@
                   "source/zh/reference/cli/exec",
                   "source/zh/reference/cli/devenv",
                   "source/zh/reference/cli/binaries"
+                ]
+              },
+              {
+                "group": "实用工具",
+                "pages": [
+                  "source/zh/reference/cli/arm"
                 ]
               }
             ]

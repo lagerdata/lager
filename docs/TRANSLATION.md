@@ -81,6 +81,13 @@ Write links to sibling pages however you like, then run `--relink` before you
 push. It points each link at the translation when one exists and at the English
 page when one does not, and it is idempotent.
 
+**It rewrites the path, never the fragment.** A link to
+`/source/reference/cli/arm#detection` becomes a link to the translation, but
+`#detection` is the slug of the *English* heading — the translated page has
+`#检测`. Only the person who wrote the heading knows what it became, so
+`--relink` reports any link it left carrying an all-ASCII fragment and leaves the
+fix to you. Do that pass whenever a page you link into gets translated.
+
 It handles both link forms, which fail differently. An absolute
 `/source/reference/python/net` is rewritten to carry the language prefix or not.
 A relative `./net` already resolves inside the translation directory, so it is

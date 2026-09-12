@@ -11,6 +11,8 @@
     "getting-started/troubleshooting.mdx": "860a6db04291527478761404bc8867ab393ba6eb09cfa479b9e6fc40e0ea7259",
     "getting-started/using-lager-in-ci.mdx": "0d8012d426796d67440ff9aea50bb9a30d172a003cf78241c296b4678add86a3",
     "reference/cli/adc.mdx": "d1f006e608745111d284b4639062d229701eac099e10bb1c3dfde09d8d79c4c9",
+    "reference/cli/arm.mdx": "f64f5c7b61cf144f00aad3a523a38c58ed71e2e863d7dfd061b1d6a05ad5fb89",
+    "reference/cli/battery.mdx": "aef748f00332e042e8e99c86f7969af36a674628195b097de1ddd6f1b9d11cf3",
     "reference/cli/binaries.mdx": "02dbdfa6e908785d45dd6a45f18763d38bd9eef140bc028fc71a808d72c019af",
     "reference/cli/ble.mdx": "9402c27411de3b24cb1efb7d389356cc7a7f26ac476b364014557a46d1e9ded4",
     "reference/cli/blufi.mdx": "4bfbf8d8834041b11e2c08d45e3bb94eda8884505cd4c11ecc9238b2d33f02f1",
