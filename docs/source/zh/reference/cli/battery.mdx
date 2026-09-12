@@ -1,0 +1,478 @@
+---
+title: 电池仿真
+description: 控制电池模拟器的设置和输出
+---
+
+通过 Lager CLI 控制和监视电池模拟器 Net（Keithley 2281S），用于电池仿真和测试。
+
+## 语法
+
+```bash
+lager battery [OPTIONS] [NETNAME] COMMAND [ARGS]...
+```
+
+## 全局选项
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--box TEXT` | Lager Box 名称或 IP 地址 |
+| `--help` | 显示帮助信息并退出 |
+
+## 命令
+
+| 命令 | 说明 |
+|---------|-------------|
+| `mode` | 设置或读取电池仿真模式（static/dynamic） |
+| `set` | 初始化电池模拟器模式 |
+| `soc` | 设置或读取荷电状态（%） |
+| `voc` | 设置或读取开路电压（V） |
+| `batt-full` | 设置或读取满电电压（V） |
+| `batt-empty` | 设置或读取放空电压（V） |
+| `capacity` | 设置或读取电池容量（Ah） |
+| `current-limit` | 设置或读取最大充放电电流（A） |
+| `ovp` | 设置或读取过压保护（V） |
+| `ocp` | 设置或读取过流保护（A） |
+| `model` | 设置或读取电池模型 |
+| `models` | 列出仪器上保存的电池模型 |
+| `model-create` | 用 CSV 文件在某个存储槽中创建自定义电池模型 |
+| `model-export` | 把已保存电池模型的曲线导出为 CSV 文件 |
+| `state` | 获取完整的电池状态 |
+| `enable` | 打开电池模拟器输出 |
+| `disable` | 关闭电池模拟器输出 |
+| `clear` | 清除全部保护触发状态 |
+| `clear-ovp` | 清除 OVP 触发状态 |
+| `clear-ocp` | 清除 OCP 触发状态 |
+| `tui` | 启动交互式终端界面 |
+
+## 列出电池 Net
+
+只带 `--box` 而不带子命令调用时，列出该 Lager Box 上的全部电池 Net：
+
+```bash
+lager battery --box my-lager-box
+```
+
+## 命令参考
+
+### `mode`
+
+设置或读取电池仿真的模式类型。
+
+```bash
+lager battery NETNAME mode [static|dynamic] [OPTIONS]
+```
+
+**参数：**
+- `NETNAME` - 电池 Net 的名称
+- `[static|dynamic]` - 模式类型（省略时读取当前模式）
+
+**选项：**
+- `--box TEXT` - Lager Box 名称或 IP
+
+**示例：**
+```bash
+# Read current mode
+lager battery batt1 mode --box my-lager-box
+
+# Set static mode
+lager battery batt1 mode static --box my-lager-box
+```
+
+### `set`
+
+初始化电池模拟器模式，让仪器为电池仿真做好准备。
+
+```bash
+lager battery NETNAME set [OPTIONS]
+```
+
+**选项：**
+- `--box TEXT` - Lager Box 名称或 IP
+
+### `soc`
+
+设置或读取电池的荷电状态，单位百分比。
+
+```bash
+lager battery NETNAME soc [VALUE] [OPTIONS]
+```
+
+**参数：**
+- `NETNAME` - 电池 Net 的名称
+- `VALUE` - 荷电状态百分比（0-100），省略时读取
+
+**选项：**
+- `--box TEXT` - Lager Box 名称或 IP
+
+**示例：**
+```bash
+# Read current SOC
+lager battery batt1 soc --box my-lager-box
+
+# Set SOC to 80%
+lager battery batt1 soc 80 --box my-lager-box
+```
+
+### `voc`
+
+设置或读取电池的开路电压，单位伏特。
+
+```bash
+lager battery NETNAME voc [VALUE] [OPTIONS]
+```
+
+**参数：**
+- `NETNAME` - 电池 Net 的名称
+- `VALUE` - 开路电压（伏特），省略时读取
+
+**选项：**
+- `--box TEXT` - Lager Box 名称或 IP
+
+### `batt-full`
+
+设置或读取电池的满电电压，单位伏特。
+
+```bash
+lager battery NETNAME batt-full [VALUE] [OPTIONS]
+```
+
+**参数：**
+- `NETNAME` - 电池 Net 的名称
+- `VALUE` - SOC 为 100% 时的电压（伏特），省略时读取
+
+**选项：**
+- `--box TEXT` - Lager Box 名称或 IP
+
+### `batt-empty`
+
+设置或读取电池的放空电压，单位伏特。
+
+```bash
+lager battery NETNAME batt-empty [VALUE] [OPTIONS]
+```
+
+**参数：**
+- `NETNAME` - 电池 Net 的名称
+- `VALUE` - SOC 为 0% 时的电压（伏特），省略时读取
+
+**选项：**
+- `--box TEXT` - Lager Box 名称或 IP
+
+### `capacity`
+
+设置或读取电池容量上限，单位安时。
+
+```bash
+lager battery NETNAME capacity [VALUE] [OPTIONS]
+```
+
+**参数：**
+- `NETNAME` - 电池 Net 的名称
+- `VALUE` - 电池容量（Ah），省略时读取
+
+**选项：**
+- `--box TEXT` - Lager Box 名称或 IP
+
+### `current-limit`
+
+设置或读取最大充放电电流，单位安培。
+
+```bash
+lager battery NETNAME current-limit [VALUE] [OPTIONS]
+```
+
+**参数：**
+- `NETNAME` - 电池 Net 的名称
+- `VALUE` - 最大电流限值（安培），省略时读取。必须在 0.001 至 6.0 A 之间（Keithley 2281S 的限制）；超出该范围的值会被拒绝。
+
+**选项：**
+- `--box TEXT` - Lager Box 名称或 IP
+
+### `ovp`
+
+设置或读取过压保护限值，单位伏特。
+
+```bash
+lager battery NETNAME ovp [VALUE] [OPTIONS]
+```
+
+**参数：**
+- `NETNAME` - 电池 Net 的名称
+- `VALUE` - OVP 限值（伏特），省略时读取
+
+**选项：**
+- `--box TEXT` - Lager Box 名称或 IP
+
+### `ocp`
+
+设置或读取过流保护限值，单位安培。
+
+```bash
+lager battery NETNAME ocp [VALUE] [OPTIONS]
+```
+
+**参数：**
+- `NETNAME` - 电池 Net 的名称
+- `VALUE` - OCP 限值（安培），省略时读取
+
+**选项：**
+- `--box TEXT` - Lager Box 名称或 IP
+
+### `model`
+
+设置或读取电池模型预设。
+
+```bash
+lager battery NETNAME model [PARTNUMBER] [OPTIONS]
+```
+
+**参数：**
+- `NETNAME` - 电池 Net 的名称
+- `PARTNUMBER` - 电池模型（例如 18650、nimh、lead-acid），省略时读取
+
+**选项：**
+- `--box TEXT` - Lager Box 名称或 IP
+
+**受支持的模型：**
+- `18650` - 标准锂离子电芯
+- `nimh` - 镍氢电池
+- `lead-acid` - 铅酸电池
+- 来自您自己电池库的自定义型号
+
+### `models`
+
+列出仪器上可用的电池模型：已保存模型的存储槽，加上固件内置的模型。只读。
+
+```bash
+lager battery NETNAME models [OPTIONS]
+```
+
+**参数：**
+- `NETNAME` - 电池 Net 的名称
+
+**选项：**
+- `--box TEXT` - Lager Box 名称或 IP
+
+打印出的槽位和名称都是 `model` 命令的有效输入。
+
+### `model-create`
+
+用 CSV 文件在某个存储槽（1-9）中创建自定义电池模型。
+
+```bash
+lager battery NETNAME model-create SLOT --csv FILE [--force] [OPTIONS]
+```
+
+**参数：**
+- `NETNAME` - 电池 Net 的名称
+- `SLOT` - 目标存储槽（1-9）
+
+**选项：**
+- `--csv FILE` - CSV 曲线文件（必填）
+- `--force` - 如果该槽位已有模型，则覆盖它
+- `--box TEXT` - Lager Box 名称或 IP
+
+**CSV 格式：**
+两列，`voc,resistance`（表头行可选），按从空电到满电的顺序排列：
+开路电压，单位伏特（非递减）；内阻，单位欧姆（非递增）。
+数据行必须恰好是 11 行或 101 行 —— 11 行的文件会由仪器插值为 101 个点。
+
+```
+voc,resistance
+3.0,0.25
+3.3,0.24
+...
+```
+
+该文件会先在您的计算机上校验，然后才向仪器发送任何内容。
+如果该槽位已有模型，除非传入 `--force`，否则命令会拒绝执行。
+
+<Warning>
+`model-create` 会覆盖该槽位原有的模型。仪器没有办法从槽位中删除模型。
+一个槽位一旦存有模型，您就只能用另一个模型覆盖它。
+</Warning>
+
+创建成功之后，`model SLOT` 可以加载该模型，`models` 会把它列出来。
+
+### `model-export`
+
+把某个存储槽（1-9）中已保存电池模型的曲线导出为 CSV 文件。
+
+```bash
+lager battery NETNAME model-export SLOT --csv FILE [OPTIONS]
+```
+
+**参数：**
+- `NETNAME` - 电池 Net 的名称
+- `SLOT` - 要导出的存储槽（1-9）
+
+**选项：**
+- `--csv FILE` - 要写入的输出 CSV 文件（必填）
+- `--box TEXT` - Lager Box 名称或 IP
+
+它按 `model-create` 接受的格式写出该槽位的 101 个 `voc,resistance` 点。
+因此您可以导出一个已保存的模型、编辑它，再把它写回某个槽位
+（`model-export` → 编辑 → `model-create`）。该命令是只读的：
+导出不会调用或改变当前活动的模型。导出空槽位会报错 ——
+请用 `models` 查看哪些槽位存有模型。
+
+### `state`
+
+获取完整的电池状态，包括全部当前设置和测量值。
+
+```bash
+lager battery NETNAME state [OPTIONS]
+```
+
+**选项：**
+- `--box TEXT` - Lager Box 名称或 IP
+
+**输出示例：**
+```
+Battery State:
+  Mode: static
+  SOC: 80%
+  VOC: 3.7V
+  Voltage Range: 3.0V - 4.2V
+  Capacity: 2.5Ah
+  Current Limit: 1.5A
+  OVP: 4.5V
+  OCP: 2.0A
+  Output: Enabled
+```
+
+### `enable`
+
+打开电池模拟器输出。
+
+```bash
+lager battery NETNAME enable [OPTIONS]
+```
+
+**选项：**
+- `--box TEXT` - Lager Box 名称或 IP
+- `--yes` - 跳过确认提示
+
+### `disable`
+
+关闭电池模拟器输出。
+
+```bash
+lager battery NETNAME disable [OPTIONS]
+```
+
+**选项：**
+- `--box TEXT` - Lager Box 名称或 IP
+- `--yes` - 跳过确认提示
+
+### `clear`
+
+清除全部保护触发状态（OVP 和 OCP）。
+
+```bash
+lager battery NETNAME clear [OPTIONS]
+```
+
+**选项：**
+- `--box TEXT` - Lager Box 名称或 IP
+
+### `clear-ovp`
+
+清除过压保护的触发状态。
+
+```bash
+lager battery NETNAME clear-ovp [OPTIONS]
+```
+
+**选项：**
+- `--box TEXT` - Lager Box 名称或 IP
+
+### `clear-ocp`
+
+清除过流保护的触发状态。
+
+```bash
+lager battery NETNAME clear-ocp [OPTIONS]
+```
+
+**选项：**
+- `--box TEXT` - Lager Box 名称或 IP
+
+### `tui`
+
+启动交互式终端界面，进行实时监视和控制。
+
+```bash
+lager battery NETNAME tui [OPTIONS]
+```
+
+**选项：**
+- `--box TEXT` - Lager Box 名称或 IP
+
+**TUI 功能：**
+- 实时显示电压/电流
+- SOC 调节滑块
+- 打开/关闭控制
+- 保护状态指示
+- 键盘导航
+
+## 示例
+
+```bash
+# List all battery nets
+lager battery --box my-lager-box
+
+# Configure a Li-ion cell simulation
+lager battery batt1 batt-full 4.2 --box my-lager-box
+lager battery batt1 batt-empty 3.0 --box my-lager-box
+lager battery batt1 capacity 2.5 --box my-lager-box
+lager battery batt1 current-limit 1.5 --box my-lager-box
+
+# Set protection limits
+lager battery batt1 ovp 4.5 --box my-lager-box
+lager battery batt1 ocp 2.0 --box my-lager-box
+
+# Set initial state and enable
+lager battery batt1 soc 80 --box my-lager-box
+lager battery batt1 enable --yes --box my-lager-box
+
+# Check battery status
+lager battery batt1 state --box my-lager-box
+
+# Read current SOC
+lager battery batt1 soc --box my-lager-box
+
+# Clear protection faults
+lager battery batt1 clear --box my-lager-box
+
+# Use a preset model
+lager battery batt1 model 18650 --box my-lager-box
+
+# Launch interactive UI
+lager battery batt1 tui --box my-lager-box
+
+# Disable when done
+lager battery batt1 disable --yes --box my-lager-box
+```
+
+## 受支持的硬件
+
+| 仪器 | 说明 |
+|------------|-------------|
+| Keithley 2281S | 支持动态建模的电池模拟器 |
+
+## 说明
+
+- 所有取值类命令（soc、voc、ovp 等）在不带参数调用时读取当前值
+- 用 `--yes` 标志可以跳过 enable/disable 的确认提示
+- 保护限值有助于防止测试过程中损坏设备
+- SOC 可以设为 0-100%，以实现逼真的电池仿真
+- `state` 命令提供全部设置的完整视图
+- 模式可以是 `static`（固定参数）或 `dynamic`（基于 SOC 建模）
+- TUI 允许在监视的同时并发使用 CLI
+
+## 参见
+
+- [电源](/source/zh/reference/cli/supply) -- 标准电源控制
+- [电子负载](/source/zh/reference/cli/eload) -- 可编程电子负载
+- [Python Battery API](/source/reference/python/battery) -- 在 Python 脚本中自动进行电池仿真
