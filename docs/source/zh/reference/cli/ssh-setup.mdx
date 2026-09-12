@@ -1,0 +1,133 @@
+---
+title: SSH Setup
+description: 配置从本机到 Lager Box 的免密码 SSH
+---
+
+把本机的 Lager SSH 密钥安装到某台 Lager Box 上，使 `lager` 命令和 `lager ssh`
+不再需要密码。每台 Box 运行一次，在提示时输入 Box 密码，之后的命令就会用密钥认证。
+
+它把 `ssh-keygen` / `ssh-copy-id` 的一整套操作封装成一条命令。
+您无需记住密钥路径，也无需记住 `ssh-copy-id` 的写法，就能修复
+`Permission denied (publickey,password)` 错误。
+
+<Note>在 **lager 0.27.1** 中以 `lager authorize` 引入；后来重命名为
+`lager ssh-setup`，因为在 `lager login`（网关登录）出现之后，
+旧名称读起来像是在做身份认证。旧写法仍然可用，但会给出弃用警告。</Note>
+
+## 语法
+
+```bash
+lager ssh-setup [OPTIONS]
+```
+
+## 选项
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--box BOX` | Lager Box 名称或 IP 地址（省略时使用默认 Box） |
+
+---
+
+## 用法
+
+```bash
+# Authorize a specific Lager Box
+lager ssh-setup --box my-lager-box
+
+# Authorize the default Lager Box
+lager ssh-setup
+```
+
+系统会（由 `ssh-copy-id`）提示您输入**一次** Box 密码。
+密钥安装完成后，该 Box 不会再出现密码提示。
+
+---
+
+## 工作原理
+
+1. **解析** Box 名称为 IP，并查找它的 SSH 用户（参阅
+   [SSH 用户名解析](/source/zh/reference/cli/ssh#用户名解析)）。
+2. 如果 `~/.ssh/lager_box`（及 `lager_box.pub`）尚不存在，则**生成**该密钥对。
+3. **已授权则跳过复制** —— 它会询问 Box，`lager_box` 公钥是否已经在
+   `~/.ssh/authorized_keys` 中。它先用 `lager_box` 询问，再用您的默认密钥询问。
+   如果该密钥已存在，就直接跳到第 6 步（该命令是幂等的）。
+4. 用 `ssh-copy-id -f` 把公钥**复制**到 Box（一次密码提示）。
+5. **验证**该密钥现在确实在 `~/.ssh/authorized_keys` 中。只有当 Box 明确确认
+   密钥不存在时，它才报错。如果这项检查无法访问该 Box，命令会继续执行。
+6. 用刚刚安装的密钥，把公钥在 Box 上**注册**为
+   `/etc/lager/authorized_keys.d/lager-box-<user>-<host>.pub`，因此不会额外提示。
+
+第 6 步才是让密钥持久留存、而不只是"当前存在"的关键。`ssh-copy-id` 是把内容追加到
+`~/.ssh/authorized_keys` 中所有标记块之外的位置。`start_box.sh` 会保护这样的行不被
+它自己的重建删除，但它无法保护那一行不被另一个从自己来源重建该文件的密钥管理者删除。
+那样的管理者会丢弃自己标记之外的每一行，随后 `start_box.sh` 只会根据密钥目录重建
+它自己的块。注册在密钥目录中的密钥会回来，而只是被追加进去的密钥不会。
+
+写入会先以非特权方式尝试，再用 `sudo -n` 尝试。在仅由 Lager 管理的 Box 上，
+密钥目录对 Box 用户可写，完全不涉及 sudo。在被另一个密钥管理者加固过的 Box 上，
+该目录是有意设为 root 所有的。可写的密钥目录会让 Box 上的任何用户授权任何密钥。
+只要 Box 用户有足够宽的 NOPASSWD 授权，`sudo -n` 这一退路就能覆盖那种情况。
+
+如果两次尝试都失败，该命令会给出警告，但仍报告成功（密钥可以工作，
+只是失去了持久性），并打印需要添加的授权。**Lager 不会安装这项授权。**
+把 sudo 收得很紧的机群，正是把该目录设为 root 所有的那个系统，
+因此由那个机群来决定谁可以往那里写才是恰当的。请通过该机群自己的配置流程添加授权：
+
+```
+<box-user> ALL=(ALL) NOPASSWD: /usr/bin/tee /etc/lager/authorized_keys.d/lager-box-*.pub
+```
+
+sudoers 中的通配符不匹配 `/`，因此该授权无法越出该目录。这项授权不限制写入哪个密钥，
+因为内容本来就由 Box 用户决定。在该用户本已等同于 root 的 Box 上，这不改变任何事情。
+在该用户并不等同于 root 的 Box 上，请在添加授权之前先阅读那个密钥。
+
+<Warning>请不要改为放宽密钥目录的权限。可写的
+`/etc/lager/authorized_keys.d` 会让 Box 上的任何用户授权任何密钥，
+而这正是加固过的 Box 所要封堵的。</Warning>
+
+该密钥位于 `~/.ssh/lager_box`。这个文件名不属于 SSH 的默认身份之一。
+因此当该密钥存在时，`lager ssh` 会显式传入 `-i ~/.ssh/lager_box`（自 lager 0.28.1 起），
+已授权的 Box 便可免密码连接。`-i` 会替换 SSH 的默认身份列表，而不是追加到其中，
+因此 `lager ssh` 还会在 `lager_box` 之后逐一指明您存在的默认密钥，
+这些密钥是 `id_rsa`、`id_ecdsa`、`id_ed25519` 及它们的 `-sk` 形式。
+因此，即使 `lager_box` 没有在某台 Box 上被授权，
+您用自己的密钥授权过的 Box 仍然可以连接。
+
+---
+
+## 示例
+
+```bash
+# First-time setup for a new box
+lager boxes add --name my-lager-box --ip 100.x.y.z --user <ssh-user>
+lager ssh-setup --box my-lager-box
+
+# Re-running against an already-authorized box is safe (no-op)
+lager ssh-setup --box my-lager-box
+# <ssh-user>@100.x.y.z is already authorized — no password needed.
+```
+
+---
+
+## 故障排除
+
+| 问题 | 原因 | 解决方法 |
+|-------|-------|-----|
+| `ssh-copy-id was not found` | 未安装 OpenSSH 客户端工具 | 请安装 OpenSSH 客户端，或手动追加密钥（见下文） |
+| `ssh-copy-id ... failed` | 密码不对，或 Box 拒绝了连接 | 请向管理员确认 Box 用户和密码，然后重试 |
+| 密钥已复制但认证仍然失败 | Box 的 `sshd_config` 可能禁用了 `publickey` 认证 | 用 `ssh -i ~/.ssh/lager_box <user>@<box>` 测试，并检查 `sshd_config` |
+| `ssh-copy-id reported success but the key is not in the box's authorized_keys.` | 复制没有真正写入 `~/.ssh/authorized_keys`，例如磁盘已满或主目录只读 | 检查 Box 上的磁盘和主目录，然后手动追加密钥（见下文） |
+
+如果无法使用 `ssh-copy-id`，请手动把公钥追加到 Box 上：
+
+```bash
+cat ~/.ssh/lager_box.pub | ssh <user>@<box> 'mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys'
+```
+
+---
+
+## 参见
+
+- [SSH](/source/zh/reference/cli/ssh) —— 在 Lager Box 上打开交互式 shell
+- [Boxes](/source/reference/cli/boxes) —— 注册 Box 名称、IP 和 SSH 用户
+- [设置 Lager Box](/source/zh/getting-started/setting-up-a-lager-box) —— 把一台 Ubuntu 计算机配置为 Lager Box
