@@ -1,0 +1,420 @@
+---
+title: 电源
+description: 控制 Box 上的电源
+---
+
+通过 Lager CLI 控制和监视电源 Net。支持多个厂商的台式电源，
+可设置电压/电流和保护阈值，通过 TUI 实时监视，并支持并发访问。
+
+## 语法
+
+```bash
+lager supply [OPTIONS] NET_NAME COMMAND [ARGS]...
+```
+
+不带子命令调用时，列出 Box 上全部可用的电源 Net：
+
+```bash
+lager supply --box my-lager-box
+```
+
+```
+Name          Net Type       Instrument     Channel  Address
+================================================================
+PSU_CH1       power-supply   Rigol_DP832    CH1      USB0::0x1AB1::0x0E11::DP8...
+PSU_CH2       power-supply   Rigol_DP832    CH2      USB0::0x1AB1::0x0E11::DP8...
+DUT_POWER     power-supply   Keysight_E36312A  1     USB0::0x2A8D::0x1602::...
+```
+
+## 全局选项
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--box TEXT` | Lager Box 名称或 IP 地址 |
+| `--help` | 显示帮助信息并退出 |
+
+## 命令
+
+| 命令 | 说明 |
+|---------|-------------|
+| `voltage` | 设置或读取输出电压，可同时设置保护阈值 |
+| `current` | 设置或读取输出电流，可同时设置保护阈值 |
+| `enable` | 打开电源输出（需要确认） |
+| `disable` | 关闭电源输出（需要确认） |
+| `state` | 显示当前的电源状态，包括测量值和保护状态 |
+| `clear-ovp` | 清除过压保护故障 |
+| `clear-ocp` | 清除过流保护故障 |
+| `set` | 设置电源模式 |
+| `tui` | 启动交互式终端界面，进行实时监视和控制 |
+
+## CLI 校验范围
+
+在把命令发送到硬件之前，CLI 会先施加保守的上限：
+
+| 参数 | 最大值 | 说明 |
+|-----------|---------|-------|
+| 电压 | 100.0 V | 大多数台式电源为 30-60 V |
+| 电流 | 30.0 A | 典型的台式电源上限 |
+| OVP | 110.0 V | 可以略高于最大输出 |
+| OCP | 33.0 A | 可以略高于最大输出 |
+
+所有数值都必须为正。OVP 必须大于或等于电压设定值。
+
+## 命令参考
+
+### `voltage`
+
+设置或读取输出电压，可同时设置保护阈值。
+
+```bash
+lager supply NET_NAME voltage [VALUE] [OPTIONS]
+```
+
+**参数：**
+- `VALUE` - 电压，单位伏特。省略时读取当前的电压设定值。
+
+**选项：**
+
+| 选项 | 类型 | 说明 |
+|--------|------|-------------|
+| `--ovp FLOAT` | 伏特 | 过压保护阈值（必须 >= 电压） |
+| `--ocp FLOAT` | 安培 | 过流保护阈值 |
+| `--yes` | 标志 | 不提示确认直接应用 |
+| `--box TEXT` | 字符串 | Lager Box 名称或 IP |
+
+提供 VALUE 时，除非传入 `--yes`，否则 CLI 会提示确认：
+
+```
+Set voltage to 3.3 V? [y/N]:
+```
+
+**示例：**
+
+```bash
+# Read current voltage
+lager supply PSU voltage
+
+# Set voltage to 3.3V (will prompt for confirmation)
+lager supply PSU voltage 3.3
+
+# Set voltage with automatic confirmation
+lager supply PSU voltage 3.3 --yes
+
+# Set voltage with OVP and OCP thresholds
+lager supply PSU voltage 3.3 --ovp 3.6 --ocp 0.5 --yes
+```
+
+### `current`
+
+设置或读取输出电流，可同时设置保护阈值。
+
+```bash
+lager supply NET_NAME current [VALUE] [OPTIONS]
+```
+
+**参数：**
+- `VALUE` - 电流，单位安培。省略时读取当前的限流设定值。
+
+**选项：**
+
+| 选项 | 类型 | 说明 |
+|--------|------|-------------|
+| `--ovp FLOAT` | 伏特 | 过压保护阈值 |
+| `--ocp FLOAT` | 安培 | 过流保护阈值（必须 >= 电流） |
+| `--yes` | 标志 | 不提示确认直接应用 |
+| `--box TEXT` | 字符串 | Lager Box 名称或 IP |
+
+提供 VALUE 时，除非传入 `--yes`，否则 CLI 会提示确认：
+
+```
+Set current to 1.0 A? [y/N]:
+```
+
+**示例：**
+
+```bash
+# Read current limit
+lager supply PSU current
+
+# Set current limit to 1A
+lager supply PSU current 1.0 --yes
+
+# Set current with protection thresholds
+lager supply PSU current 1.0 --ocp 1.2 --ovp 5.0 --yes
+```
+
+### `enable`
+
+打开到设备的电源输出。需要确认，以防意外上电。
+
+```bash
+lager supply NET_NAME enable [OPTIONS]
+```
+
+**选项：**
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--yes` | 不提示确认直接打开 |
+| `--box TEXT` | Lager Box 名称或 IP |
+
+```
+Enable Net? [y/N]:
+```
+
+### `disable`
+
+关闭电源输出。需要确认，以防意外断电。
+
+```bash
+lager supply NET_NAME disable [OPTIONS]
+```
+
+**选项：**
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--yes` | 不提示确认直接关闭 |
+| `--box TEXT` | Lager Box 名称或 IP |
+
+```
+Disable Net? [y/N]:
+```
+
+### `state`
+
+显示完整的电源状态，包括测量值、设定值和保护状态。
+
+```bash
+lager supply NET_NAME state [--box TEXT]
+```
+
+**输出示例（Rigol DP800）：**
+
+```
+Channel: CH1
+Enabled: ON
+Mode: CV
+Voltage: 3.3000
+Current: 0.1520
+Power: 0.5016
+OCP Limit: 1.0000
+    OCP Tripped: NO
+OVP Limit: 3.6000
+    OVP Tripped: NO
+```
+
+字段含义：
+- **Channel** - 多通道电源上当前的通道
+- **Enabled** - 输出为 ON 或 OFF
+- **Mode** - CV（恒压）或 CC（恒流）
+- **Voltage/Current/Power** - 实时测量值（保留 4 位小数）
+- **OCP/OVP Limit** - 保护阈值
+- **OCP/OVP Tripped** - 保护是否已触发（用颜色区分：绿色=NO，红色=YES）
+
+### `clear-ovp`
+
+清除过压保护故障。在 OVP 触发之后使用它复位保护，以便重新打开输出。
+
+```bash
+lager supply NET_NAME clear-ovp [--box TEXT]
+```
+
+### `clear-ocp`
+
+清除过流保护故障。在 OCP 触发之后使用它复位保护，以便重新打开输出。
+
+```bash
+lager supply NET_NAME clear-ocp [--box TEXT]
+```
+
+### `set`
+
+设置电源模式。可用的模式取决于硬件。
+
+```bash
+lager supply NET_NAME set [--box TEXT]
+```
+
+### `tui`
+
+启动交互式终端界面，实时监视和控制电源。TUI 提供实时更新的测量值、
+内联的命令输入和键盘快捷键。
+
+```bash
+lager supply NET_NAME tui [--box TEXT]
+```
+
+需要 `textual` Python 包（`pip install textual`）。
+
+**TUI 显示内容：**
+- 实时的电压、电流和功率测量值（每秒更新）
+- 输出状态（ON/OFF），带颜色标识
+- 模式指示（CV/CC），带颜色标识
+- 保护阈值和触发状态
+- 硬件的最大额定值
+- 可滚动的命令日志
+
+**TUI 命令**（在提示符处输入）：
+
+| 命令 | 说明 |
+|---------|-------------|
+| `voltage [VALUE]` | 设置或读取电压 |
+| `current [VALUE]` | 设置或读取限流值 |
+| `ocp [VALUE]` | 设置或读取 OCP 阈值 |
+| `ovp [VALUE]` | 设置或读取 OVP 阈值 |
+| `enable` | 打开输出 |
+| `disable` | 关闭输出 |
+| `state` | 显示当前状态 |
+| `clear-ocp` | 清除 OCP 触发 |
+| `clear-ovp` | 清除 OVP 触发 |
+| `help` | 显示可用命令 |
+| `clear` | 清空命令日志 |
+| `q` / `quit` / `exit` | 退出 TUI |
+
+**键盘快捷键：**
+
+| 按键 | 操作 |
+|-----|--------|
+| `q` | 退出 |
+| `Ctrl+C` | 退出 |
+| `r` | 刷新显示 |
+| 上/下方向键 | 浏览命令历史 |
+
+**并发访问：** TUI 运行期间，其他 `lager supply` CLI 命令
+（例如 `lager supply PSU voltage 3.3 --yes`）会通过 TUI 在端口 9000 上的
+WebSocket 连接转发，它们共用与仪器之间的同一条 USB 连接。
+如果 TUI 没有打开，命令则直接使用 USB 访问。
+
+## OVP / OCP 保护
+
+过压保护（OVP）和过流保护（OCP）阈值可以保护您的被测设备不被损坏。
+
+**设置阈值：**
+
+```bash
+# Set OVP and OCP when setting voltage
+lager supply PSU voltage 3.3 --ovp 3.6 --ocp 0.5 --yes
+
+# Set OCP when setting current
+lager supply PSU current 1.0 --ocp 1.2 --yes
+```
+
+**校验规则：**
+- 所有数值都必须为正
+- OVP 必须 >= 电压设定值
+- OCP 必须 >= 电流设定值
+- 在发送到硬件之前，数值会先按 CLI 的上限校验
+
+**保护触发时：**
+1. 电源输出会被自动关闭
+2. `state` 会以红色显示触发状态
+3. 用 `clear-ovp` 或 `clear-ocp` 清除故障
+4. 用 `enable` 重新打开输出
+
+**自动 OVP 管理（Rigol）：** 如果新电压会超过当前的 OVP 限值，
+驱动程序会先把 OVP 提高 10% 的余量，然后设置新电压，再恢复您期望的 OVP 限值。
+这样可以避免在改变电压时误触发。
+
+## 受支持的硬件
+
+| 厂商 | 型号系列 | 通道 | 规格 | 说明 |
+|--------------|-------------|----------|-------|-------|
+| Rigol | DP832 / DP832A | 3 | 通道 1-2：30V/3A，通道 3：5V/3A | 最常见 |
+| Rigol | DP821 | 2 | 通道 1：60V/1A，通道 2：8V/10A | |
+| Rigol | DP811 / DP811A | 1 | 20V/10A 或 40V/5A（分档） | |
+| Keithley | 2281S | 1 | 20V/6A/120W | 支持电池模拟模式 |
+| Keysight | E36200 系列 | 2 | E36233A：每通道 30V/20A | 双路输出 |
+| Keysight | E36300 系列 | 3 | E36311A/12A/13A | 三路输出 |
+| EA | PSI/EL 系列 | 1 | PSB 10080-60、PSB 10060-60 | 双象限 |
+
+多通道电源使用 Net 记录中配置的通道号。每个通道通常配置为一个单独的 Net。
+
+## 默认 Net
+
+设置一个默认电源 Net，可以省去每次输入名称：
+
+```bash
+lager defaults add --supply-net PSU
+```
+
+之后命令就可以省略 Net 名称：
+
+```bash
+lager supply voltage 3.3 --yes
+lager supply state
+```
+
+## 示例
+
+```bash
+# List all power supply nets
+lager supply --box my-lager-box
+
+# Set voltage with protection
+lager supply PSU voltage 3.3 --ovp 3.6 --ocp 0.5 --yes
+
+# Set current limit
+lager supply PSU current 1.0 --ocp 1.2 --yes
+
+# Enable output (skip confirmation)
+lager supply PSU enable --yes
+
+# Check state
+lager supply PSU state
+
+# Disable output
+lager supply PSU disable --yes
+
+# Clear protection faults
+lager supply PSU clear-ovp
+lager supply PSU clear-ocp
+
+# Launch interactive TUI
+lager supply PSU tui
+```
+
+### 脚本示例
+
+```bash
+#!/bin/bash
+# Power cycle a device under test
+BOX="my-lager-box"
+NET="DUT_POWER"
+
+lager supply $NET voltage 3.3 --ovp 3.6 --ocp 0.5 --yes --box $BOX
+lager supply $NET enable --yes --box $BOX
+sleep 2
+
+# Run tests while powered
+lager python test_script.py --box $BOX
+
+# Power down
+lager supply $NET disable --yes --box $BOX
+```
+
+## 故障排除
+
+| 错误 | 原因 | 解决方法 |
+|-------|-------|-----|
+| "Resource busy" | TUI 正在占用该电源的 USB 连接 | 关闭 TUI（按 `q`），然后重试 |
+| "No route to host" | 无法访问该 Box | 检查 VPN/Tailscale：`lager hello --box <box>` |
+| Connection refused | Box 服务没有运行 | 确认 Box 在线：`lager hello --box <box>` |
+| OVP/OCP 校验错误 | 保护阈值低于设定值 | 请设置 OVP >= 电压，OCP >= 电流 |
+| "exceeds maximum limit" | 数值超过 CLI 的安全上限 | 请核对设备规格；CLI 的上限是 100V / 30A |
+
+## 说明
+
+- 所有 `voltage` 和 `current` 的设置操作都需要确认（用 `--yes` 跳过）
+- `enable` 和 `disable` 同样需要确认
+- Net 名称就是您用 `lager nets` 搭建测试台时分配的名称
+- TUI 通过 WebSocket（端口 9000）连接以获得实时更新
+- 保护阈值有助于防止被测设备损坏
+- 多通道电源：每个通道配置为一个单独的 Net
+
+## 参见
+
+- [电池仿真](/source/reference/cli/battery) -- 控制电池模拟器（Keithley 2281S）
+- [电子负载](/source/zh/reference/cli/eload) -- 可编程电子负载
+- [功率计](/source/zh/reference/cli/watt) -- 用 Yocto-Watt 和 Joulescope 进行功率测量
+- [Python Supply API](/source/zh/reference/python/supply) -- 在 Python 脚本中自动控制电源

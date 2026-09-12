@@ -1,0 +1,222 @@
+---
+title: Install
+description: 把 Lager Box 代码安装到一台 Box 上
+---
+
+把 Lager Box 软件、Docker 容器和配套工具部署到新的或已有的 Box 上。
+
+## 语法
+
+```bash
+lager install [OPTIONS]
+```
+
+## 选项
+
+| 选项 | 类型 | 默认值 | 说明 |
+|--------|------|---------|-------------|
+| `--box TEXT` | 字符串 | | Box 名称（使用 `.lager` 配置中保存的 IP 和用户名） |
+| `--ip TEXT` | 字符串 | | 目标 Box 的 IP 地址或 DNS 主机名 |
+| `--user TEXT` | 字符串 | `lagerdata` | SSH 用户名。使用 `--box` 时，默认值是已保存的用户名 |
+| `--version TEXT` | 字符串 | `main` | 要部署的 Box 版本：发布标签（例如 `v0.15.0`）、git 分支，或完整的 40 位提交 SHA |
+| `--skip-jlink` | 标志 | | 跳过 J-Link 安装 |
+| `--skip-firewall` | 标志 | | 跳过 UFW 防火墙配置 |
+| `--skip-verify` | 标志 | | 跳过部署后的验证 |
+| `--corporate-vpn TEXT` | 字符串 | | 用于防火墙规则的企业 VPN 接口名称（例如 `tun0`） |
+| `--yes` | 标志 | | 跳过确认提示 |
+| `--pull` | 标志 | 开启 | 当目标是发布标签时使用预构建的 Box 镜像（默认行为） |
+| `--no-pull` | 标志 | | 始终在 Box 上构建 Box 镜像 |
+| `--timeout INTEGER` | 整数 | `1800` | 部署步骤（含容器构建）的最长秒数。`0` 表示取消该预算。不带该标志时，由 `LAGER_INSTALL_TIMEOUT` 决定其值；标志优先于环境变量 |
+| `--help` | | | 显示帮助信息并退出 |
+
+`--box` 和 `--ip` 必须提供其中之一。如果两个都提供，命令会报错退出。
+
+## Box 镜像
+
+安装过程中最慢的部分是 Box 的 Docker 镜像。在 Box 上构建大约需要 14 分钟，
+而且安装总是要付出完整的代价：部署在开始之前会清理构建器缓存，
+因此永远没有可以复用的热层缓存。
+
+每个发布标签都会发布一个预构建镜像，`lager install` 默认使用它：
+大约 2 分钟，而不是 14 分钟。
+
+这只适用于 `--version` 指定**发布标签**的情况。默认的 `--version main`
+没有已发布的镜像，其他分支也没有，因此它们总是在 Box 上构建。
+固定一个发布标签，就是两分钟安装和十四分钟安装之间的区别。
+
+完整的 40 位提交 SHA 同样会在 Box 上构建，并且 Box 必须能从远端拉取该提交。
+较短的十六进制值会被当作分支名。
+
+镜像在使用之前会先被验证：
+
+1. 运行 `lager install` 的计算机把标签解析为不可变的镜像摘要。
+   这一步需要 `curl` 并且能访问 `ghcr.io`。
+2. Box 按它自己的架构拉取该摘要对应的镜像。
+3. Box 检查镜像的版本标签，该标签必须与您请求的版本完全一致。
+
+任何一步不匹配，都会像以前一样退回到在 Box 上构建。不匹配的情形包括：
+标签没有已发布的镜像、没有 `curl`、注册表不可达，或标签缺失/不一致。
+能用的慢速安装胜过不能用的快速安装。
+
+拉取之后，`/etc/lager/image-source` 会记录 `ghcr:<digest>`。
+在 Box 上构建则会删除该文件。
+
+传入 `--no-pull` 可以跳过预构建镜像，始终进行构建。
+若要在整个 shell 中关闭安装时的拉取，请设置 `LAGER_BOX_IMAGE_PULL=0`。
+只有值 `0` 会关闭它，并且 `--pull` 优先于该变量。
+`lager update` 对同一个变量的解读不同：只有 `1`、`true` 或 `yes` 才会打开它的拉取。
+同时传入 `--pull` 和 `--no-pull` 属于用法错误。
+
+## 部署超时
+
+`--timeout` 限制部署步骤，其中包括容器构建。默认值为 1800 秒。
+不带该标志时，由 `LAGER_INSTALL_TIMEOUT` 决定其值。
+`LAGER_INSTALL_TIMEOUT` 无法解析或为负值时，取默认值。
+`--timeout 0` 取消该限制，负的 `--timeout` 会被拒绝。
+
+预算用尽时，install 会打印 `Deployment timed out after ...`。
+它还会说明该构建仍可能是正常的，并打印出把预算加倍的重试命令，
+然后以 `1` 退出。重新运行是安全的。
+
+安装锁的有效期取 3600 秒与超时时间两倍之中的较大者。
+在提供该锁的容器停止期间，锁无法续期。
+
+## 会安装哪些内容
+
+| 组件 | 说明 |
+|-----------|-------------|
+| Docker 容器 | 带自动重启的 `lager` 服务容器。它发布端口 5000、8301、8080、8081-8090、8100、8765、9000、2331-2342、4444-4447、6666-6669 和 9090-9097 |
+| J-Link | SEGGER 调试探针软件（可选，用 `--skip-jlink` 跳过） |
+| UFW 防火墙 | 来自 `secure_box_firewall.sh` 的主机防火墙规则（用 `--skip-firewall` 跳过）。它们不会过滤容器发布的端口 |
+| Box 代码 | `~/box` 中的 Python 库和服务 |
+| 主机 CLI | Box 宿主机上 `~/.lager_venv` 中的 `lager` CLI，链接为 `~/.local/bin/lager`，从 Box 检出安装。需要宿主机 python3 3.10 或更高版本，否则安装会跳过它并给出警告。这一步失败不是致命错误 |
+
+<Warning>
+**主机防火墙不保护已发布的端口。** Docker 把它的转发规则装在主机链之前。
+因此，无论 `ufw status` 报告什么，一个已发布的端口都会响应任何能路由到该 Box 的人。
+请把 Box 放在 VPN 上或隔离的局域网中。请参阅
+[SECURITY.md](https://github.com/lagerdata/lager/blob/main/SECURITY.md#security-model)
+的 Security Model 部分。
+</Warning>
+
+防火墙脚本把入站流量的默认策略设为拒绝，并允许来自任意位置的 SSH。
+它在 `lo`、`docker0`、`tailscale0`（如果 Tailscale 已启动）和 `--corporate-vpn`
+指定的接口上放行 Lager 端口，并在其他所有接口上拒绝它们。
+只有在设置了 `lager box-config network-mode host` 的 Box 上（容器不发布端口），
+这些规则才管辖 Lager 端口。
+
+该脚本每次运行都会先重置 ufw。因此，之后不带 `--skip-firewall` 的
+`lager install` 会删除您手动添加的防火墙规则。`lager update` 不运行该脚本。
+
+## 安装流程
+
+1. **解析目标** - 根据 `--box` 名称查出 Box IP，或直接使用 `--ip`
+2. **验证 SSH** - 测试基于密钥的认证，并确定该命令后续使用哪个身份
+3. **显示摘要** - 显示将要安装的内容并请求确认
+4. **部署** - 运行部署脚本。使用预构建镜像时约 2 分钟；
+   在普通 Box 硬件上从零构建大约 14 分钟（见上文）。
+   这一步受 `--timeout` 限制，默认 30 分钟 ——
+   在较慢的硬件上请调高它，那里正常的构建也可能合理地超过默认值
+5. **保存版本** - 把部署的版本和 CLI 版本写入 `/etc/lager/version`，
+   把部署的 ref 和提交写入 `/etc/lager/ref`
+6. **配置免密码 sudo** - 写入 `lager box-config apply` 所需的 sudoers 授权。
+   这一步会要求输入一次 Box 的 sudo 密码。这里失败只是警告，不算安装失败
+7. **添加到配置** - 询问是否把该 Box 添加到 `~/.lager`。
+   使用 `--yes` 时以及使用 `--box` 时（该 Box 已经保存过）会跳过这一步
+
+## 示例
+
+```bash
+# Install to a new box by IP
+lager install --ip 192.168.1.100
+
+# Install to a stored box
+lager install --box my-lager-box
+
+# Install a specific release tag
+lager install --ip 192.168.1.100 --version v0.15.0
+
+# Install a specific branch with a custom user
+lager install --ip 192.168.1.100 --user pi --version staging
+
+# Install with corporate VPN firewall support
+lager install --ip 192.168.1.100 --corporate-vpn tun0
+
+# Skip optional components
+lager install --ip 192.168.1.100 --skip-jlink --skip-firewall
+
+# Force a local build of the box image instead of using the published one
+lager install --box my-lager-box --version v0.39.1 --no-pull
+
+# Non-interactive installation
+lager install --ip 192.168.1.100 --yes
+```
+
+## 免密码 sudo
+
+安装过程会为 Box 的登录用户配置免密码 `sudo`。CLI 通过非交互式 SSH 驱动 Box，
+那里的 `sudo` 没有终端可以用来提示输入。这些授权必须在配置流程运行之前就位。
+
+Lager 在 `/etc/sudoers.d/` 下写入以下文件，并且只写这些文件：
+
+| 文件 | 写入者 | 授权内容 |
+|------|-----------|--------|
+| `lagerdata-udev` | `lager install` | 部署 udev 规则、modprobe 黑名单、Docker 组和服务控制、安装/运行防火墙辅助脚本、写入 `/etc/lager` 中的文件 |
+| `lager-box-config` | `lager install`、`lager update` | `apt-get`、`sysctl`，以及 `lager box-config apply` 所需的按路径限定的写入 |
+| `lager-bench-json` | 由运维人员在早于 `lagerdata-udev` 授权的 Box 上写入 | 写入 `/etc/lager/bench.json` |
+
+<Warning>
+**Box 的登录用户在设计上等同于 root。** 配置 Box 需要 root 权限。
+部署 udev 规则在构造上就是以 root 运行命令，而 `apt-get` 会通过它自己的配置
+以 root 执行任意命令。Lager 把上面的授权写成具体的命令，以缩小影响面并保持文件可读，
+但它们**不是权限边界**。任何能以 Box 用户身份登录的人，都可以在该 Box 上取得 root。
+
+在决定谁持有它的 SSH 密钥时，请把 Box 登录账户视为等同于 root，
+并建议在专用计算机上使用专用用户。
+</Warning>
+
+这三个文件在每次运行时都会被**完整重新生成** —— 正是这一点让 Box 始终保持当前的授权形态。
+写在其中*内部*的额外授权，会在下次写入时丢失，因此每个文件开头都有一段说明这一点的注释。
+
+Lager 从不读取、编辑或删除 `/etc/sudoers.d/` 中的任何其他文件。
+如果您或某个 Box 管理平台需要额外授权，请把它们放在该目录下的单独文件中。
+例如 `/etc/sudoers.d/zz-local` 排在 Lager 的文件之后，因此它的规则会生效。
+Lager 不会碰那个文件，`lager uninstall` 期间也不会。
+
+## SSH 认证
+
+安装要求使用基于密钥的 SSH 认证。它会显式提供 `~/.ssh/lager_box` ——
+即 `lager ssh-setup` 和 `lager install` 生成的密钥 —— 因为 ssh 不会自己尝试这个文件名。
+如果 Box 不接受它，安装会退回到您自己的默认身份，
+因此用 `ssh-copy-id` 授权过的 Box 照常可用。
+
+如果两者都无法认证，安装会主动提出为您配置密钥：
+
+```
+No SSH key on this machine is authorized on the box.
+
+Set up the lager_box key now? (one box-password prompt, then the rest of the
+install runs unattended) [Y/n]:
+```
+
+接受之后会提示输入**一次** Box 密码，安装该密钥，之后安装的每一步都无人值守运行。
+`--yes` 会直接接受而不询问。拒绝则会停止安装，并指引您使用
+`lager ssh-setup --box <name-or-ip>`，它作为单独的一步完成同样的工作。
+
+对于部署本身，安装不提供密码回退。配置了 `PasswordAuthentication no` 的 Box
+永远收不到密码，因此过去那条"密码失败"的提示描述的是根本没有发生过的事。
+
+对于新主机，SSH 主机密钥会被自动接受。如果主机密钥相对上次连接发生了变化，
+命令会要求您先手动核实这个变化。
+
+安装不会写入 `~/.ssh/config`。早期版本会添加一个按 IP 划分、指明密钥的 `Host` 块。
+另一个会重新生成该文件的工具删除了那个块，而且那个块还对该 Box 关闭了主机密钥验证。
+现在改为按命令传入身份。
+
+## 说明
+
+- 逐步操作的指南，请参阅 [设置 Lager Box](/source/zh/getting-started/setting-up-a-lager-box)
+- 需要本地安装 SSH 客户端工具（`ssh`、`ssh-keygen`）
+- 部署脚本随 `lager-cli` 包一起分发
+- 安装完成后，请用 `lager hello --box <name>` 验证连通性
+- 对已安装的 Box 部署代码更新，请使用 `lager update`

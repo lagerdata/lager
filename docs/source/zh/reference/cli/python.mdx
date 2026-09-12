@@ -127,7 +127,7 @@ lager python --reattach 7f3c... --box my-lager-box
 `Box 'my-lager-box' is held for the detached run and released when it ends`。
 较旧的 Box 在作业结束后仍保留该锁，此时 CLI 会打印
 `release with: lager boxes unlock --box my-lager-box`。请参阅
-[锁定](/source/reference/cli/locking)。
+[锁定](/source/zh/reference/cli/locking)。
 
 ## 终止正在运行的脚本
 
@@ -266,7 +266,7 @@ lager python flash_and_test.py --box my-lager-box --add-file firmware.hex --add-
 ## Box 锁
 
 `lager python` 在运行脚本时会获取 Box 锁，这样其他用户就不能同时驱动同一台 Box。
-请参阅[锁定](/source/reference/cli/locking)。
+请参阅[锁定](/source/zh/reference/cli/locking)。
 
 - 前台运行在脚本运行期间持有该锁，命令退出时释放它。
 - 如果另一位用户持有该锁，命令在您的计算机上会立即失败；在 CI 中，它会等待该锁。
