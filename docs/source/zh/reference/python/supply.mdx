@@ -1,0 +1,392 @@
+---
+title: 电源
+description: 控制可编程电源 Net
+---
+
+控制可编程电源，为您的被测设备设置电压、电流和保护阈值。
+
+## 导入
+
+```python
+from lager import Net, NetType
+```
+
+## 方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `set_voltage()` | 设置输出电压 |
+| `set_current()` | 设置输出限流值 |
+| `voltage()` | 读取实测电压 |
+| `current()` | 读取实测电流 |
+| `power()` | 读取实测功率 |
+| `enable()` | 打开电源输出 |
+| `disable()` | 关闭电源输出 |
+| `set_ovp()` | 设置过压保护阈值 |
+| `set_ocp()` | 设置过流保护阈值 |
+| `get_ovp_limit()` | 获取过压保护限值 |
+| `get_ocp_limit()` | 获取过流保护限值 |
+| `is_ovp()` | 检查 OVP 故障是否已触发 |
+| `is_ocp()` | 检查 OCP 故障是否已触发 |
+| `clear_ovp()` | 清除过压保护故障 |
+| `clear_ocp()` | 清除过流保护故障 |
+| `state()` | 打印完整的电源状态 |
+| `get_full_state()` | 打印扩展状态，含设定值和限值 |
+| `set_mode()` | 在具有多种模式的仪器上，把仪器切换到直流电源模式 |
+| `get_monitor_state(channel=None)` | 一次调用获取完整的监视状态；返回一个 dict |
+
+## 方法参考
+
+### `Net.get(name, type=NetType.PowerSupply)`
+
+按名称获取一个电源 Net。
+
+```python
+from lager import Net, NetType
+
+psu = Net.get('VDD', type=NetType.PowerSupply)
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `name` | `str` | 电源 Net 的名称 |
+| `type` | `NetType` | 必须为 `NetType.PowerSupply` |
+
+**返回：** 电源 Net 实例
+
+### `set_voltage(value)`
+
+设置输出电压。
+
+```python
+psu.set_voltage(3.3)  # Set to 3.3V
+```
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `value` | `float` | 目标电压，单位伏特 |
+
+### `set_current(value)`
+
+设置输出限流值。
+
+```python
+psu.set_current(0.5)  # Set limit to 0.5A
+```
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `value` | `float` | 限流值，单位安培 |
+
+### `voltage()`
+
+读取实测的输出电压。
+
+```python
+v = psu.voltage()
+print(f"Voltage: {v}V")
+```
+
+**返回：** `float` - 实测电压，单位伏特
+
+### `current()`
+
+读取实测的输出电流。
+
+```python
+i = psu.current()
+print(f"Current: {i}A")
+```
+
+**返回：** `float` - 实测电流，单位安培
+
+### `power()`
+
+读取实测的输出功率。
+
+```python
+p = psu.power()
+print(f"Power: {p}W")
+```
+
+**返回：** `float` - 实测功率，单位瓦特
+
+### `enable()`
+
+打开电源输出。
+
+```python
+psu.enable()
+```
+
+### `disable()`
+
+关闭电源输出。
+
+```python
+psu.disable()
+```
+
+### `set_ovp(limit)`
+
+设置过压保护阈值。OVP 必须大于或等于已配置的电压。
+当实测电压超过该阈值时，输出会被自动关闭。
+
+```python
+psu.set_ovp(3.6)  # Trip at 3.6V
+```
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `limit` | `float` | OVP 阈值，单位伏特 |
+
+### `set_ocp(limit)`
+
+设置过流保护阈值。当实测电流超过该阈值时，输出会被自动关闭。
+
+```python
+psu.set_ocp(1.0)  # Trip at 1.0A
+```
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `limit` | `float` | OCP 阈值，单位安培 |
+
+### `get_ovp_limit()`
+
+获取已配置的 OVP 限值。
+
+```python
+ovp = psu.get_ovp_limit()
+print(f"OVP limit: {ovp}V")
+```
+
+**返回：** `float` - OVP 阈值，单位伏特
+
+### `get_ocp_limit()`
+
+获取已配置的 OCP 限值。
+
+```python
+ocp = psu.get_ocp_limit()
+print(f"OCP limit: {ocp}A")
+```
+
+**返回：** `float` - OCP 阈值，单位安培
+
+### `is_ovp()`
+
+检查过压故障是否已触发。
+
+```python
+if psu.is_ovp():
+    print("OVP fault detected!")
+```
+
+**返回：** `bool` - OVP 故障已触发时为 True
+
+### `is_ocp()`
+
+检查过流故障是否已触发。
+
+```python
+if psu.is_ocp():
+    print("OCP fault detected!")
+```
+
+**返回：** `bool` - OCP 故障已触发时为 True
+
+### `clear_ovp()`
+
+清除过压保护故障。
+
+```python
+psu.clear_ovp()
+```
+
+### `clear_ocp()`
+
+清除过流保护故障。
+
+```python
+psu.clear_ocp()
+```
+
+### `state()`
+
+打印完整的电源状态，包括通道、是否已打开、模式（CV/CC）、
+实测电压/电流/功率，以及保护状态。
+
+```python
+psu.state()
+```
+
+**输出示例：**
+
+```
+Channel: CH1
+Enabled: ON
+Mode: CV
+Voltage: 3.3000
+Current: 0.1520
+Power: 0.5016
+OCP Limit: 1.0000
+    OCP Tripped: NO
+OVP Limit: 3.6000
+    OVP Tripped: NO
+```
+
+### `get_full_state()`
+
+打印扩展状态，包括全部测量值、已配置的设定值、保护限值和硬件最大额定值。
+
+```python
+psu.get_full_state()
+```
+
+**输出示例：**
+
+```
+Channel: CH1
+Enabled: ON
+Mode: CV
+Voltage: 3.3000
+Current: 0.1520
+Power: 0.5016
+Voltage_Set: 3.3000
+Current_Set: 1.0000
+OCP Limit: 1.0000
+    OCP Tripped: NO
+OVP Limit: 3.6000
+    OVP Tripped: NO
+Voltage_Max: 30.0000
+Current_Max: 3.0000
+```
+
+相比 `state()` 多出的字段：
+- **Voltage_Set / Current_Set** - 已配置的设定值
+- **Voltage_Max / Current_Max** - 硬件通道的额定值
+
+## 示例
+
+### 基本的电源控制
+
+```python
+from lager import Net, NetType
+
+# Get power supply net
+psu = Net.get('VDD', type=NetType.PowerSupply)
+
+# Configure output
+psu.set_voltage(3.3)
+psu.set_current(0.5)
+
+# Enable output
+psu.enable()
+
+# Read measurements
+print(f"Voltage: {psu.voltage():.2f}V")
+print(f"Current: {psu.current():.3f}A")
+print(f"Power: {psu.power():.3f}W")
+
+# Disable when done
+psu.disable()
+```
+
+### 带保护阈值
+
+```python
+from lager import Net, NetType
+import time
+
+psu = Net.get('VDD', type=NetType.PowerSupply)
+
+# Configure voltage/current
+psu.set_voltage(5.0)
+psu.set_current(0.5)
+
+# Set protection thresholds
+psu.set_ovp(5.5)  # Trip at 5.5V
+psu.set_ocp(0.6)  # Trip at 0.6A
+
+# Enable output
+psu.enable()
+print("Power enabled")
+
+# Monitor for faults
+time.sleep(1)
+if psu.is_ocp():
+    print("OCP fault! Clearing...")
+    psu.clear_ocp()
+
+if psu.is_ovp():
+    print("OVP fault! Clearing...")
+    psu.clear_ovp()
+
+# Clean up
+psu.disable()
+```
+
+### 监视功耗
+
+```python
+from lager import Net, NetType
+import time
+
+psu = Net.get('VDD', type=NetType.PowerSupply)
+psu.set_voltage(3.3)
+psu.set_current(1.0)
+psu.enable()
+
+# Log power consumption
+for sample in range(10):
+    v = psu.voltage()
+    i = psu.current()
+    p = psu.power()
+    print(f"V={v:.2f}V, I={i:.3f}A, P={p:.3f}W")
+    time.sleep(1)
+
+psu.disable()
+```
+
+### 查看完整状态
+
+```python
+from lager import Net, NetType
+
+psu = Net.get('VDD', type=NetType.PowerSupply)
+psu.set_voltage(3.3)
+psu.set_ovp(3.6)
+psu.set_ocp(0.5)
+psu.enable()
+
+# Print comprehensive state
+psu.get_full_state()
+
+psu.disable()
+```
+
+## 受支持的硬件
+
+| 厂商 | 型号系列 | 通道 | 特性 |
+|--------------|-------------|----------|----------|
+| Rigol | DP832 / DP832A | 3 | 通道 1-2：30V/3A，通道 3：5V/3A |
+| Rigol | DP821 | 2 | 通道 1：60V/1A，通道 2：8V/10A |
+| Rigol | DP811 / DP811A | 1 | 20V/10A 或 40V/5A |
+| Keithley | 2281S | 1 | 20V/6A/120W，支持电池模拟模式 |
+| Keysight | E36200 系列 | 2 | E36233A：每通道 30V/20A |
+| Keysight | E36300 系列 | 3 | E36311A/12A/13A |
+| EA | PSI/EL 系列 | 1 | 双象限运行 |
+
+## 说明
+
+- 该 Net 必须配置为 `NetType.PowerSupply`
+- 设置好电压/电流之后，请调用 `enable()` 打开输出
+- 结束时请务必调用 `disable()`
+- 保护故障会自动关闭输出；处理完故障之后，请用 `clear_ovp()` 或 `clear_ocp()` 清除
+- OVP 必须大于或等于电压设定值；设置更低的 OVP 会抛出错误
+- 电压和电流的上限取决于硬件能力
+- 多通道电源：每个通道配置为一个单独的 Net
+- `state()` 和 `get_full_state()` 输出到 stdout；在代码中取值请用 `voltage()`、`current()`、`power()`

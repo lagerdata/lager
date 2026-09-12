@@ -1,0 +1,259 @@
+---
+title: 功率计
+description: 读取功耗
+---
+
+从功率计 Net 测量功耗。支持 Yocto-Watt、Joulescope JS220 和 Nordic PPK2 硬件。
+
+## 导入
+
+```python
+from lager import Net, NetType
+```
+
+## 方法
+
+| 方法 | 硬件 | 说明 |
+|--------|----------|-------------|
+| `read()` | 全部 | 读取功率，单位瓦特 |
+| `read_current()` | Joulescope JS220、Nordic PPK2 | 读取电流，单位安培 |
+| `read_voltage()` | Joulescope JS220、Nordic PPK2 | 读取电压，单位伏特 |
+| `read_all()` | Joulescope JS220、Nordic PPK2 | 一次操作读取电流、电压和功率 |
+
+## 方法参考
+
+### `Net.get(name, type=NetType.WattMeter)`
+
+按名称获取一个功率计 Net。
+
+```python
+from lager import Net, NetType
+
+power = Net.get('POWER_METER', type=NetType.WattMeter)
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `name` | `str` | 功率计 Net 的名称 |
+| `type` | `NetType` | 必须为 `NetType.WattMeter` |
+
+**返回：** 功率计 Net 实例
+
+### `read()`
+
+读取当前功耗。全部功率计硬件均可使用。
+
+```python
+watts = power.read()
+print(f"Power: {watts}W")
+```
+
+**返回：** `float` - 功率，单位瓦特
+
+### `read_current()`
+
+读取电流，单位安培。**仅 Joulescope JS220 和 Nordic PPK2。**
+
+```python
+amps = power.read_current()
+print(f"Current: {amps}A")
+```
+
+**返回：** `float` - 电流，单位安培
+
+### `read_voltage()`
+
+读取电压，单位伏特。**仅 Joulescope JS220 和 Nordic PPK2。**
+
+```python
+volts = power.read_voltage()
+print(f"Voltage: {volts}V")
+```
+
+**返回：** `float` - 电压，单位伏特
+
+### `read_all()`
+
+在一次原子测量中读取电流、电压和功率。**仅 Joulescope JS220 和 Nordic PPK2。**
+这比分别调用 `read_current()`、`read_voltage()` 和 `read()` 更高效，
+因为所有数值都来自同一个采样窗口。
+
+```python
+measurements = power.read_all()
+print(f"Current: {measurements['current']}A")
+print(f"Voltage: {measurements['voltage']}V")
+print(f"Power: {measurements['power']}W")
+```
+
+**返回：** 一个 `dict`，包含以下键：
+
+| 键 | 类型 | 说明 |
+|-----|------|-------------|
+| `"current"` | `float` | 电流，单位安培 |
+| `"voltage"` | `float` | 电压，单位伏特 |
+| `"power"` | `float` | 功率，单位瓦特 |
+
+## 示例
+
+### 基本的功率读取
+
+```python
+from lager import Net, NetType
+
+power = Net.get('DEVICE_POWER', type=NetType.WattMeter)
+
+watts = power.read()
+print(f"Power consumption: {watts:.3f}W")
+```
+
+### Joulescope 完整测量
+
+```python
+from lager import Net, NetType
+
+power = Net.get('DEVICE_POWER', type=NetType.WattMeter)
+
+# Read all measurements at once (Joulescope JS220 and Nordic PPK2)
+data = power.read_all()
+print(f"Voltage: {data['voltage']:.3f}V")
+print(f"Current: {data['current']:.6f}A")
+print(f"Power: {data['power']:.3f}W")
+```
+
+### 功率曲线分析
+
+```python
+from lager import Net, NetType
+import time
+
+power = Net.get('DEVICE_POWER', type=NetType.WattMeter)
+
+measurements = []
+
+# Take 60 seconds of measurements
+for i in range(60):
+    watts = power.read()
+    measurements.append(watts)
+    print(f"[{i:3d}s] {watts:.3f}W")
+    time.sleep(1)
+
+# Statistics
+avg = sum(measurements) / len(measurements)
+max_p = max(measurements)
+min_p = min(measurements)
+
+print(f"\nAverage: {avg:.3f}W")
+print(f"Maximum: {max_p:.3f}W")
+print(f"Minimum: {min_p:.3f}W")
+```
+
+### 电池续航估算
+
+```python
+from lager import Net, NetType
+import time
+
+power = Net.get('POWER', type=NetType.WattMeter)
+
+# Average over multiple readings
+readings = []
+for _ in range(10):
+    readings.append(power.read())
+    time.sleep(0.1)
+
+avg_power = sum(readings) / len(readings)
+
+# Estimate battery life (1000mAh @ 3.7V = 3.7Wh)
+battery_wh = 3.7
+hours = battery_wh / avg_power if avg_power > 0 else float('inf')
+
+print(f"Average power: {avg_power:.3f}W")
+print(f"Est. battery life: {hours:.1f} hours")
+```
+
+### 功率限值验证
+
+```python
+from lager import Net, NetType
+import time
+
+def verify_power_limits(min_watts, max_watts):
+    power = Net.get('DEVICE_POWER', type=NetType.WattMeter)
+
+    # Average multiple readings
+    readings = []
+    for _ in range(10):
+        readings.append(power.read())
+        time.sleep(0.1)
+
+    avg = sum(readings) / len(readings)
+
+    if min_watts <= avg <= max_watts:
+        print(f"PASS: {avg:.3f}W in range [{min_watts}, {max_watts}]")
+        return True
+    else:
+        print(f"FAIL: {avg:.3f}W outside range [{min_watts}, {max_watts}]")
+        return False
+
+# Test
+verify_power_limits(0.1, 5.0)
+```
+
+### 休眠电流验证（Joulescope）
+
+```python
+from lager import Net, NetType
+import time
+
+power = Net.get('DEVICE_POWER', type=NetType.WattMeter)
+
+# Put device in sleep mode (external trigger)
+# set_device_sleep_mode()
+time.sleep(2)  # Wait for stabilization
+
+# Use read_all() for atomic measurement (Joulescope JS220)
+data = power.read_all()
+sleep_current_ua = data['current'] * 1e6
+
+print(f"Sleep voltage: {data['voltage']:.3f}V")
+print(f"Sleep current: {sleep_current_ua:.1f}uA")
+print(f"Sleep power: {data['power']:.6f}W")
+
+if sleep_current_ua < 100:
+    print("PASS: Sleep current below 100uA")
+else:
+    print("FAIL: Sleep current exceeds limit")
+```
+
+## 受支持的硬件
+
+| 厂商 | 型号 | 测量项 | 特性 |
+|--------------|-------|-------------|----------|
+| Yoctopuce | Yocto-Watt | 仅功率 | 瞬时读数 |
+| Joulescope | JS220 | 功率、电压、电流 | 0.1 秒平均，原子多项测量 |
+| Nordic Semiconductor | PPK2 | 功率、电压、电流 | 0.3 秒平均，源模式恒压 |
+
+### 硬件功能对比
+
+| 功能 | Yocto-Watt | Joulescope JS220 | Nordic PPK2 |
+|---------|-----------|------------------|-------------|
+| `read()`（功率） | 支持 | 支持 | 支持 |
+| `read_current()` | 不支持 | 支持 | 支持 |
+| `read_voltage()` | 不支持 | 支持 | 支持 |
+| `read_all()` | 不支持 | 支持 | 支持 |
+| 测量方式 | 瞬时 | 0.1 秒平均 | 0.3 秒平均 |
+| 设备选择 | 按通道 | 按序列号 | 按序列号 |
+
+## 说明
+
+- 功率以瓦特（W）返回
+- Joulescope JS220 在 0.1 秒内对测量取平均，以获得更高精度
+- Nordic PPK2 在 0.3 秒内取平均，并工作在源模式，提供 0.8–5V 的可配置电压。
+  因此电压读数反映的是配置值，而不是独立测量的结果
+- `read_current()`、`read_voltage()` 和 `read_all()` 仅在 Joulescope JS220 和
+  Nordic PPK2 上可用；在 Yocto-Watt 上调用它们会抛出错误
+- 在 Yocto-Watt 上获取电流：由功率和已知电压计算（I = P / V）
+- 多次读取并取平均可以提高稳定性
+- 设备状态改变之后，请留出稳定时间

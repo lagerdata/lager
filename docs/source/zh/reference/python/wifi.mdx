@@ -1,0 +1,255 @@
+---
+title: WiFi
+description: WiFi 网络管理
+---
+
+管理 Lager Box 上的 WiFi 网络连接。WiFi 操作是 Box 层面的功能 ——
+它管理的是 Box 自己的无线接口，而不是电路板上的测试 Net。
+
+## 导入
+
+```python
+from lager.protocols.wifi import scan_wifi, connect_to_wifi, get_wifi_status, disconnect_wifi
+```
+
+## 函数参考
+
+| 函数 | 说明 |
+|----------|-------------|
+| `scan_wifi(interface)` | 扫描可用的 WiFi 网络 |
+| `connect_to_wifi(ssid, password, interface)` | 连接到一个 WiFi 网络 |
+| `get_wifi_status()` | 获取当前的 WiFi 连接状态 |
+| `disconnect_wifi(interface)` | 断开 WiFi 网络连接 |
+
+### `scan_wifi(interface='wlan0')`
+
+扫描可用的 WiFi 网络。
+
+```python
+from lager.protocols.wifi import scan_wifi
+
+result = scan_wifi()
+networks = result.get('access_points', [])
+
+for network in networks:
+    print(f"{network['ssid']}: {network['strength']}%")
+```
+
+**参数：**
+
+| 参数 | 类型 | 默认值 | 说明 |
+|-----------|------|---------|-------------|
+| `interface` | `str` | `'wlan0'` | 用于扫描的网络接口 |
+
+**返回：** 一个 `dict`，其中 `access_points` 键包含网络字典的列表，每项含有：
+- `ssid` - 网络名称
+- `strength` - 信号强度百分比（0-100）
+- `security` - 安全类型（'Open' 或 'Secured'）
+
+### `connect_to_wifi(ssid, password, interface='wlan0')`
+
+连接到一个 WiFi 网络。
+
+```python
+from lager.protocols.wifi import connect_to_wifi
+
+result = connect_to_wifi('MyNetwork', 'secret123')
+
+if result['success']:
+    print(f"Connected: {result['message']}")
+else:
+    print(f"Failed: {result['error']}")
+```
+
+**参数：**
+
+| 参数 | 类型 | 默认值 | 说明 |
+|-----------|------|---------|-------------|
+| `ssid` | `str` | | 网络名称 |
+| `password` | `str` | | 网络密码（开放网络传空字符串） |
+| `interface` | `str` | `'wlan0'` | 要使用的网络接口 |
+
+**返回：** 一个 `dict`，包含以下键：
+- `success` - 布尔值，表示连接是否成功
+- `message` - 成功信息（`success` 为 True 时）
+- `error` - 错误信息（`success` 为 False 时）
+
+### `get_wifi_status()`
+
+获取全部接口当前的 WiFi 连接状态。
+
+```python
+from lager.protocols.wifi import get_wifi_status
+
+interfaces = get_wifi_status()
+
+for name, info in interfaces.items():
+    print(f"{name}: {info['state']} - {info['ssid']}")
+```
+
+**返回：** 一个以接口名称为键的 `dict`，每个值包含：
+- `interface` - 接口名称
+- `ssid` - 已连接的网络名称，或 'Not Connected'
+- `state` - 'Connected' 或 'Disconnected'
+
+### `disconnect_wifi(interface='wlan0')`
+
+断开当前的 WiFi 网络连接。
+
+```python
+from lager.protocols.wifi import disconnect_wifi
+
+result = disconnect_wifi()
+
+if result['success']:
+    print(f"Disconnected: {result['message']}")
+else:
+    print(f"Failed: {result['error']}")
+```
+
+**参数：**
+
+| 参数 | 类型 | 默认值 | 说明 |
+|-----------|------|---------|-------------|
+| `interface` | `str` | `'wlan0'` | 要断开的网络接口 |
+
+**返回：** 一个 `dict`，包含以下键：
+- `success` - 布尔值，表示断开是否成功
+- `message` - 成功信息（`success` 为 True 时）
+- `error` - 错误信息（`success` 为 False 时）
+
+## 路由器互联网访问控制
+
+`Wifi` Net 类型通过华硕路由器的家长控制功能来控制互联网访问。
+这与 Box 层面的 WiFi 管理是两回事：它按 MAC 地址阻断或恢复某台设备的互联网访问。
+
+```python
+from lager import Net, NetType
+
+# Requires a wifi net configured with router credentials
+wifi = Net.get('wifi1', type=NetType.Wifi)
+
+wifi.disable()   # Block internet access (parental control)
+wifi.enable()    # Restore internet access
+```
+
+## 示例
+
+### 扫描并连接
+
+```python
+from lager.protocols.wifi import scan_wifi, connect_to_wifi, get_wifi_status
+import time
+
+# Scan for networks
+result = scan_wifi()
+networks = result.get('access_points', [])
+
+# Find target network
+for network in networks:
+    if network['ssid'] == 'TestNetwork':
+        print(f"Found: {network['strength']}% signal")
+        break
+
+# Connect
+result = connect_to_wifi('TestNetwork', 'password123')
+
+if result['success']:
+    print(f"Connection successful: {result['message']}")
+else:
+    print(f"Connection failed: {result['error']}")
+
+# Wait for connection to stabilize
+time.sleep(5)
+
+# Verify status
+interfaces = get_wifi_status()
+for name, info in interfaces.items():
+    if info['state'] == 'Connected':
+        print(f"Connected to {info['ssid']} on {name}")
+```
+
+### 网络可见性测试
+
+```python
+from lager.protocols.wifi import scan_wifi
+
+def verify_network_visible(expected_ssid):
+    result = scan_wifi()
+    networks = result.get('access_points', [])
+    ssids = [n['ssid'] for n in networks]
+
+    if expected_ssid in ssids:
+        print(f"PASS: {expected_ssid} is visible")
+        return True
+    else:
+        print(f"FAIL: {expected_ssid} not found")
+        return False
+```
+
+### 信号强度测试
+
+```python
+from lager.protocols.wifi import scan_wifi
+
+def check_signal_strength(ssid, min_strength=50):
+    """Check if signal strength meets minimum threshold (0-100%)"""
+    result = scan_wifi()
+    networks = result.get('access_points', [])
+
+    for network in networks:
+        if network['ssid'] == ssid:
+            strength = network['strength']
+            if strength >= min_strength:
+                print(f"PASS: {ssid} signal {strength}%")
+                return True
+            else:
+                print(f"FAIL: {ssid} signal {strength}% below {min_strength}%")
+                return False
+
+    print(f"FAIL: {ssid} not found")
+    return False
+```
+
+### 连接测试
+
+```python
+from lager.protocols.wifi import connect_to_wifi, get_wifi_status
+import time
+
+def test_wifi_connection(ssid, password):
+    result = connect_to_wifi(ssid, password)
+
+    if not result['success']:
+        print(f"FAIL: Connection error - {result['error']}")
+        return False
+
+    time.sleep(5)
+
+    interfaces = get_wifi_status()
+    for name, info in interfaces.items():
+        if info['state'] == 'Connected' and info['ssid'] == ssid:
+            print(f"PASS: Connected to {ssid}")
+            return True
+
+    print(f"FAIL: Not connected to {ssid}")
+    return False
+```
+
+## 硬件要求
+
+| 要求 | 说明 |
+|-------------|-------------|
+| WiFi 硬件 | USB 适配器或板载 |
+| 权限 | 需要 root/sudo 权限 |
+| 支持的安全类型 | WPA2、WPA3、开放 |
+
+## 说明
+
+- Lager Box 必须具备 WiFi 硬件
+- 大多数操作需要 root/sudo 权限
+- 支持 WPA2/WPA3 网络
+- 开放网络需要传入空密码字符串（`''`）
+- 接口默认为 'wlan0'
+- `get_wifi_status()` 不接受参数，返回全部接口
+- 路由器管理（enable/disable）需要支持家长控制的华硕路由器和已配置的 wifi Net

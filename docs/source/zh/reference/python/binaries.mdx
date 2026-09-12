@@ -1,0 +1,266 @@
+---
+title: 自定义二进制程序
+description: 在 Lager Box 上执行自定义二进制程序
+---
+
+执行您通过 CLI 上传到 Lager Box 的自定义二进制程序。
+可用于客户专用工具、设备交互工具，或第三方命令行应用程序。
+
+## 导入
+
+```python
+from lager.binaries import run_custom_binary, get_binary_path, list_binaries, BinaryNotFoundError
+```
+
+## 函数
+
+| 函数 | 说明 |
+|----------|-------------|
+| `run_custom_binary()` | 带参数执行一个自定义二进制程序 |
+| `get_binary_path()` | 获取某个程序的完整文件系统路径 |
+| `list_binaries()` | 列出全部可用的自定义二进制程序 |
+
+## 异常类
+
+| 异常 | 说明 |
+|-----------|-------------|
+| `BinaryNotFoundError` | 程序不存在或不可执行 |
+
+## 函数参考
+
+### `run_custom_binary(binary_name, *args, **kwargs)`
+
+执行一个通过 `lager binaries add` 上传的自定义二进制程序。
+
+```python
+from lager.binaries import run_custom_binary
+
+# Simple usage
+result = run_custom_binary('rt_newtmgr', 'image', 'list')
+print(result.stdout)
+
+# With timeout
+result = run_custom_binary('slow_tool', '--verbose', timeout=60)
+
+# Check return code
+if result.returncode != 0:
+    print(f"Error: {result.stderr}")
+```
+
+**参数：**
+
+| 参数 | 类型 | 默认值 | 说明 |
+|-----------|------|---------|-------------|
+| `binary_name` | `str` | - | 要运行的程序名称（例如 'rt_newtmgr'） |
+| `*args` | `str` | - | 传给该程序的参数 |
+| `timeout` | `int` | `30` | 最长等待时间，单位秒（None 表示不限时） |
+| `capture_output` | `bool` | `True` | 捕获 stdout/stderr |
+| `text` | `bool` | `True` | 以字符串而不是字节返回 stdout/stderr |
+| `check` | `bool` | `False` | 返回码非零时抛出 `CalledProcessError` |
+| `cwd` | `str` | `None` | 该进程的工作目录 |
+| `env` | `dict` | `None` | 环境变量（为 None 时继承父进程） |
+| `input` | `str` 或 `bytes` | `None` | 发送到 stdin 的输入 |
+
+**返回：** `subprocess.CompletedProcess`，具有以下属性：
+- `returncode` - 进程的退出码
+- `stdout` - 捕获到的标准输出（`capture_output=True` 时）
+- `stderr` - 捕获到的标准错误（`capture_output=True` 时）
+
+**抛出：**
+- `BinaryNotFoundError` - 程序不存在或不可执行
+- `subprocess.TimeoutExpired` - 进程超时
+- `subprocess.CalledProcessError` - `check=True` 且返回码非零
+
+### `get_binary_path(binary_name)`
+
+获取某个自定义二进制程序的完整文件系统路径。
+
+```python
+from lager.binaries import get_binary_path
+
+path = get_binary_path('rt_newtmgr')
+print(f"Binary located at: {path}")
+# Output: /home/www-data/customer-binaries/rt_newtmgr
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `binary_name` | `str` | 程序名称（不含路径） |
+
+**返回：** `str` - 该程序的完整路径
+
+**抛出：** `BinaryNotFoundError` - 程序不存在或不可执行
+
+### `list_binaries()`
+
+列出 Lager Box 上全部可用的自定义二进制程序。
+
+```python
+from lager.binaries import list_binaries
+
+binaries = list_binaries()
+print("Available binaries:")
+for name in binaries:
+    print(f"  - {name}")
+```
+
+**返回：** `list[str]` - 已排序的程序名称列表
+
+## 示例
+
+### 运行设备交互工具
+
+```python
+from lager.binaries import run_custom_binary, BinaryNotFoundError
+
+try:
+    # Run rt_newtmgr to list images on device
+    result = run_custom_binary('rt_newtmgr', 'image', 'list', '-c', '/dev/ttyUSB0')
+
+    if result.returncode == 0:
+        print("Images on device:")
+        print(result.stdout)
+    else:
+        print(f"Error: {result.stderr}")
+
+except BinaryNotFoundError as e:
+    print(f"Binary not found: {e}")
+```
+
+### 使用自定义环境变量运行
+
+```python
+from lager.binaries import run_custom_binary
+
+# Pass environment variables to the binary
+result = run_custom_binary(
+    'my_tool',
+    '--config', 'test.json',
+    env={'DEBUG': '1', 'LOG_LEVEL': 'verbose'},
+    timeout=60
+)
+
+print(result.stdout)
+```
+
+### 查看可用的程序
+
+```python
+from lager.binaries import list_binaries, run_custom_binary
+
+# List what's available
+binaries = list_binaries()
+
+if not binaries:
+    print("No custom binaries installed.")
+    print("Use 'lager binaries add <file> --box <lager-box>' to upload binaries.")
+else:
+    print(f"Found {len(binaries)} custom binaries:")
+    for name in binaries:
+        print(f"  - {name}")
+```
+
+### 错误处理
+
+```python
+from lager.binaries import run_custom_binary, BinaryNotFoundError
+import subprocess
+
+try:
+    result = run_custom_binary('my_tool', '--version', check=True, timeout=10)
+    print(f"Version: {result.stdout.strip()}")
+
+except BinaryNotFoundError as e:
+    print(f"Binary not available: {e}")
+
+except subprocess.TimeoutExpired:
+    print("Command timed out")
+
+except subprocess.CalledProcessError as e:
+    print(f"Command failed with exit code {e.returncode}")
+    print(f"stderr: {e.stderr}")
+```
+
+### 与测试脚本集成
+
+```python
+from lager.binaries import run_custom_binary
+from lager import Net, NetType
+import time
+
+def flash_device_firmware():
+    """Flash firmware using custom programming tool."""
+
+    # Power on the device
+    psu = Net.get('VDD', type=NetType.PowerSupply)
+    psu.set_voltage(3.3)
+    psu.enable()
+    time.sleep(1)
+
+    # Run custom flashing tool
+    result = run_custom_binary(
+        'device_flasher',
+        '--port', '/dev/ttyUSB0',
+        '--firmware', '/tmp/firmware.bin',
+        '--verify',
+        timeout=120
+    )
+
+    if result.returncode == 0:
+        print("Firmware flashed successfully!")
+        return True
+    else:
+        print(f"Flash failed: {result.stderr}")
+        return False
+
+def run_device_tests():
+    """Run device-specific test tool."""
+
+    result = run_custom_binary(
+        'device_test_runner',
+        '--all',
+        '--json-output',
+        timeout=300
+    )
+
+    if result.returncode == 0:
+        import json
+        results = json.loads(result.stdout)
+        return results
+    else:
+        raise RuntimeError(f"Tests failed: {result.stderr}")
+```
+
+## 上传二进制程序
+
+自定义二进制程序通过 CLI 上传到 Lager Box：
+
+```bash
+# Upload a binary to the Lager Box
+lager binaries add ./my_tool --box my-lager-box
+
+# List binaries on the Lager Box
+lager binaries list --box my-lager-box
+
+# Remove a binary
+lager binaries remove my_tool --box my-lager-box
+```
+
+## 程序存放位置
+
+在 Lager Box 上，自定义二进制程序保存在：
+- **宿主机路径：** `/home/lagerdata/third_party/customer-binaries/`
+- **容器路径：** `/home/www-data/customer-binaries/`
+
+该目录会挂载到容器中，因此上传之后无需重新构建，程序立即可用。
+
+## 说明
+
+- 程序必须兼容 Linux x86_64（与 Lager Box 架构一致）
+- 程序名称不能包含路径分隔符（`/`、`\`）或 `..`
+- 程序必须可执行（上传时会自动设置）
+- 默认超时为 30 秒；用 `timeout=None` 表示不限时
+- 交互式或流式输出请使用 `capture_output=False`
+- 除非指定 `env`，否则环境变量继承自父进程
