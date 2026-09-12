@@ -1,0 +1,363 @@
+---
+title: Boxes
+description: 管理 Lager Box 配置
+---
+
+为本地开发管理 Lager Box 的名称、IP 地址和配置。
+
+## 语法
+
+```bash
+lager boxes COMMAND [OPTIONS]
+```
+
+## 命令
+
+| 命令 | 说明 |
+|---------|-------------|
+| `add` | 添加一个新的 Box 配置 |
+| `add-all` | 从 Tailscale 网络添加全部 Box |
+| `delete` | 删除一个 Box 配置 |
+| `edit` | 编辑已有的 Box 配置 |
+| `list` | 列出全部已配置的 Box |
+| `delete-all` | 删除全部 Box 配置 |
+| `export` | 把 Box 配置导出为 JSON |
+| `import` | 从 JSON 导入 Box 配置 |
+| `lock` | 锁定一台 Box，阻止他人使用 |
+| `unlock` | 解锁一台 Box |
+
+---
+
+## 命令参考
+
+### `add`
+
+添加一个新的 Lager Box 配置。
+
+```bash
+lager boxes add --name NAME --ip IP --user USER [OPTIONS]
+```
+
+**选项：**
+- `--name`（必填）- 要分配给该 Box 的名称
+- `--ip`（必填）- 该 Box 的 IP 地址
+- `--user`（必填）- 该 Box 的 SSH 用户名（您登录时使用的账户）
+- `--version` - Lager Box 的版本/分支（例如 staging、main）
+- `--yes` - 不提示直接确认
+
+<Note>`--user` 是**必填**的。它以前默认为 `lagerdata`，但由于大多数 Box
+使用不同的登录账户，该默认值已被移除，以确保 SSH、更新和 `lager ssh`
+始终记录到正确的用户。</Note>
+
+**示例：**
+```bash
+# Add a basic box
+lager boxes add --name my-lager-box --ip <BOX_IP> --user lager
+
+# Add with a Raspberry Pi default account
+lager boxes add --name pi-lager-box --ip <BOX_IP> --user pi
+
+# Add with version tracking
+lager boxes add --name staging-lager-box --ip <BOX_IP> --user lager --version staging
+```
+
+### `add-all`
+
+自动添加在您 Tailscale 网络上找到的全部 Lager Box。
+
+```bash
+lager boxes add-all [--yes]
+```
+
+**选项：**
+- `--yes` - 不提示直接确认
+
+这条命令扫描您的 Tailscale 网络，查找名称长度为 5-8 个字符的设备，
+这是 Lager Box 常用的命名习惯。它把每一台都添加为 Box，名称转为大写。
+
+**工作原理：**
+1. 运行 `tailscale status` 发现设备
+2. 筛选名称长度为 5-8 个字符的设备
+3. 把名称转为大写
+4. 跳过 IP 相同、已经存在的 Box
+5. 把新的 Box 添加到您的配置中
+
+**示例：**
+```bash
+# Scan and add all boxes
+lager boxes add-all
+
+# Output:
+Scanning Tailscale network for lager boxes...
+
+Found 3 lager box(es):
+
+  LABGW1 → <BOX_IP>
+  TESTGW → <BOX_IP>
+  DEVBOX → <BOX_IP>
+
+Add all 3 box(es)? [Y/n]: y
+
+  LABGW1: added
+  TESTGW: added
+  DEVBOX: already exists (skipped)
+
+Summary:
+  Added:   2
+  Skipped: 1
+
+[OK] Successfully added 2 box(es)
+```
+
+```bash
+# Add without confirmation prompt
+lager boxes add-all --yes
+```
+
+### `delete`
+
+删除一个 Box 配置。
+
+```bash
+lager boxes delete --name NAME [--yes]
+```
+
+**示例：**
+```bash
+# Delete with confirmation prompt
+lager boxes delete --name old-lager-box
+
+# Delete without confirmation
+lager boxes delete --name old-lager-box --yes
+```
+
+### `edit`
+
+编辑已有的 Box 配置。
+
+```bash
+lager boxes edit --name NAME [OPTIONS]
+```
+
+**选项：**
+- `--name`（必填）- 要编辑的 Box 名称
+- `--ip` - 新的 IP 地址
+- `--user` - 新的 SSH 用户名
+- `--version` - 新的 Lager Box 版本/分支
+- `--new-name` - 重命名该 Box
+- `--yes` - 不提示直接确认
+
+**示例：**
+```bash
+# Change IP address
+lager boxes edit --name my-lager-box --ip <BOX_IP>
+
+# Rename a box
+lager boxes edit --name old-name --new-name new-name
+
+# Update SSH user and version
+lager boxes edit --name pi-lager-box --user pi --version staging
+```
+
+### `list`
+
+列出全部已配置的 Box，并显示实时的版本状态。不带子命令运行 `lager boxes`
+时也是这个行为。
+
+```bash
+lager boxes list
+lager boxes          # same as list
+```
+
+该命令查询每台 Box 在端口 9000 上的 API（`/lock` 和 `/status`），
+以显示实时的版本、状态和锁信息。
+
+**输出：**
+
+```text
+name           ip            user        version        status         locked by
+=================================================================================
+my-lager-box   <BOX_IP>      lagerdata   0.47.0         current
+staging-box    <BOX_IP>      lagerdata   0.46.2         needs update   alice
+pi-box         <BOX_IP>      pi          0.47.0 (main)  current
+offline-box    <BOX_IP>      lagerdata   -              unreachable
+
+Your CLI: 0.47.0
+1 box need updating
+1 box did not report a version
+```
+
+只有当某台 Box 被锁定时，`locked by` 列才会出现。来自分支或提交的版本会在括号中
+显示 ref，例如 `0.47.0 (main)`。使用发布标签的 Box 只显示版本号。
+`lager hello` 会打印含提交的完整 ref。
+
+**状态颜色：**
+
+| 状态 | 颜色 | 含义 |
+|--------|-------|---------|
+| `current` | 绿色 | Box 版本与 CLI 版本一致 |
+| `needs update` | 黄色 | Box 版本比 CLI 旧 |
+| `newer` | 青色 | Box 版本比 CLI 新 |
+| `unreachable` | 红色 | 无法联系到该 Box |
+| `timeout` | 红色 | 连接超时 |
+
+如果某台 Box 在 `locked by` 列中显示 `root`，该命令会打印一条警告。
+这种锁通常来自 Docker 容器内部。下次请用 `lager boxes lock --user` 指明用户。
+
+### `delete-all`
+
+删除全部 Box 配置。
+
+```bash
+lager boxes delete-all [--yes]
+```
+
+### `export`
+
+把 Box 配置导出为 JSON 文件。
+
+```bash
+lager boxes export [--output FILE]
+```
+
+**选项：**
+- `--output` / `-o` - 输出文件路径（不指定时打印到 stdout）
+
+**示例：**
+```bash
+# Export to file
+lager boxes export --output boxes.json
+
+# Export to stdout
+lager boxes export
+```
+
+### `import`
+
+从 JSON 文件导入 Box 配置。
+
+```bash
+lager boxes import FILE [--merge] [--yes]
+```
+
+**选项：**
+- `FILE` - 要导入的 JSON 文件路径
+- `--merge` - 与已有的 Box 合并（默认为替换）
+- `--yes` - 不提示直接确认
+
+**示例：**
+```bash
+# Replace all boxes with imported config
+lager boxes import boxes.json --yes
+
+# Merge imported boxes with existing
+lager boxes import new-boxes.json --merge --yes
+```
+
+### `lock`
+
+锁定一台 Box，阻止其他用户使用它。完整说明请参阅
+[Box 锁定](/source/reference/cli/locking)。
+
+```bash
+lager boxes lock --box NAME [--user USER]
+```
+
+**选项：**
+- `--box`（必填）- 要锁定的 Box 名称
+- `--user` - 以该用户名加锁。在 Docker 容器内部请使用它，否则用户会是 `root`
+
+**示例：**
+```bash
+lager boxes lock --box my-lager-box
+```
+
+### `unlock`
+
+解锁一台 Box，让其他用户可以使用它。完整说明请参阅
+[Box 锁定](/source/reference/cli/locking)。
+
+```bash
+lager boxes unlock --box NAME [--force]
+```
+
+**选项：**
+- `--box`（必填）- 要解锁的 Box 名称
+- `--force` - 即使是别人加的锁也强制解锁
+
+**示例：**
+```bash
+# Unlock your own lock
+lager boxes unlock --box my-lager-box
+
+# Force unlock another user's lock
+lager boxes unlock --box my-lager-box --force
+```
+
+---
+
+## 配置的存放位置
+
+boxes 系列命令把 Box 配置写入您主目录中的 `~/.lager`。
+如果设置了 `LAGER_CONFIG_FILE_DIR`，则改为写入该目录下的 `.lager`。
+Box 配置位于 `BOXES` 键之下：
+
+```json
+{
+  "BOXES": {
+    "my-lager-box": {
+      "ip": "<BOX_IP>",
+      "user": "lagerdata",
+      "version": "main"
+    },
+    "pi-box": "<BOX_IP>"
+  }
+}
+```
+
+条目可以是：
+- **简单形式**：只有一个 IP 地址字符串
+- **完整形式**：含 ip、user 和 version 字段的对象
+
+读取 Box 时，CLI 会把全局文件与它在您项目目录中找到的 `.lager` 文件合并。
+离当前目录最近的文件优先。
+
+---
+
+## 校验
+
+boxes 系列命令会执行以下校验：
+
+- **重复检测**：阻止添加名称或 IP 相同的 Box
+- **IP 校验**：校验 IP 地址格式
+- **确认**：编辑操作会显示修改前后的状态
+
+---
+
+## 示例
+
+```bash
+# Set up a new bench
+lager boxes add --name my-lager-box --ip <BOX_IP> --user lager
+lager boxes add --name staging-box --ip <BOX_IP> --user lager
+lager boxes add --name pi-box --ip <BOX_IP> --user lager
+
+# Export configuration for team sharing
+lager boxes export -o bench-config.json
+
+# Import on another machine
+lager boxes import bench-config.json --yes
+
+# Clean up
+lager boxes delete-all --yes
+```
+
+---
+
+## 说明
+
+- Box 名称必须唯一
+- IP 地址必须唯一（不允许重复 IP）
+- `lager boxes add` 必须提供 `--user`。`add-all` 保存的条目不带用户，之后的命令会使用 `lagerdata`
+- 导入时请用 `--merge` 保留已有的 Box
+- `lager boxes list` 需要每台 Box 在端口 9000 上响应，才能显示它的版本和锁状态
