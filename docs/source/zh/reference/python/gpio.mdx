@@ -1,0 +1,271 @@
+---
+title: GPIO
+description: 控制数字输入/输出引脚
+---
+
+控制数字输入/输出引脚，用于数字信号传递和控制。
+
+## 导入
+
+```python
+from lager import Net, NetType
+```
+
+## 方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `input()` | 读取数字引脚状态 |
+| `output(level)` | 设置数字引脚状态 |
+| `wait_for_level(level, ...)` | 等待引脚到达目标电平 |
+
+## 方法参考
+
+### `Net.get(name, type=NetType.GPIO)`
+
+按名称获取一个 GPIO Net。
+
+```python
+from lager import Net, NetType
+
+pin = Net.get('LED', type=NetType.GPIO)
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `name` | `str` | GPIO Net 的名称 |
+| `type` | `NetType` | 必须为 `NetType.GPIO` |
+
+**返回：** GPIO Net 实例
+
+### `input()`
+
+读取该引脚的数字状态。
+
+```python
+from lager import Net, NetType
+
+pin = Net.get('BUTTON', type=NetType.GPIO)
+state = pin.input()
+
+if state:
+    print("Pin is HIGH")
+else:
+    print("Pin is LOW")
+```
+
+**返回：** `int` - 低电平为 0，高电平为 1
+
+### `output(level)`
+
+设置该引脚的数字状态。
+
+```python
+from lager import Net, NetType
+
+pin = Net.get('LED', type=NetType.GPIO)
+
+# Set HIGH
+pin.output(1)
+
+# Set LOW
+pin.output(0)
+```
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `level` | `int` 或 `str` | 0/1、"low"/"high"、"off"/"on"、"true"/"false" |
+
+### `wait_for_level(level, timeout=None, ...)`
+
+等待引脚到达目标电平。该调用会阻塞，直到引脚读到指定电平或超时。
+
+LabJack T7 使用最高 20 kHz 的硬件流式采样进行快速边沿检测。
+其他硬件（包括 LabJack U3）使用软件轮询。
+
+```python
+from lager import Net, NetType
+
+pin = Net.get('INTERRUPT', type=NetType.GPIO)
+
+# Wait for pin to go HIGH (block forever)
+elapsed = pin.wait_for_level(1)
+print(f"Pin went HIGH after {elapsed:.3f}s")
+
+# Wait with timeout
+try:
+    elapsed = pin.wait_for_level(0, timeout=5.0)
+    print(f"Pin went LOW after {elapsed:.3f}s")
+except TimeoutError:
+    print("Timed out waiting for pin")
+```
+
+**参数：**
+
+| 参数 | 类型 | 默认值 | 说明 |
+|-----------|------|---------|-------------|
+| `level` | `int` | 必填 | 目标电平：`0` 或 `1`。请不要传入 `"high"` 之类的字符串：驱动程序把引脚读数与整数 `1` 作比较 |
+| `timeout` | `float` 或 `None` | `None` | 最长等待秒数。`None` 表示一直等待。 |
+| `scan_rate` | `int` | `20000` | 采样率，单位 Hz（仅 LabJack T7） |
+| `scans_per_read` | `int` | `2` | 每次读取的批量大小（仅 LabJack T7；越小响应越快） |
+| `poll_interval` | `float` | `0.01` | 两次轮询之间的秒数（仅非 LabJack 硬件） |
+
+**返回：** `float` - 检测到该电平所经过的时间，单位秒
+
+**抛出：** 在到达目标电平之前超时，则抛出 `TimeoutError`
+
+**不同硬件的行为：**
+
+| 硬件 | 方式 | 默认速率 |
+|----------|--------|-------------|
+| LabJack T7 | 硬件流式采样（`ljm.eStreamStart`） | 20,000 Hz |
+| LabJack U3 | 软件轮询 | 100 Hz（10 ms 间隔） |
+| USB-202 | 软件轮询 | 100 Hz（10 ms 间隔） |
+
+## 示例
+
+### 读取按键状态
+
+```python
+from lager import Net, NetType
+
+button = Net.get('BUTTON', type=NetType.GPIO)
+
+state = button.input()
+if state:
+    print("Button pressed")
+else:
+    print("Button released")
+```
+
+### 控制 LED
+
+```python
+from lager import Net, NetType
+
+led = Net.get('LED', type=NetType.GPIO)
+
+# Turn on
+led.output(1)
+
+# Turn off
+led.output(0)
+```
+
+### 等待中断
+
+```python
+from lager import Net, NetType
+
+irq_pin = Net.get('INTERRUPT', type=NetType.GPIO)
+
+# Wait for interrupt (rising edge)
+try:
+    elapsed = irq_pin.wait_for_level(1, timeout=10.0)
+    print(f"Interrupt detected after {elapsed:.3f}s")
+except TimeoutError:
+    print("No interrupt within 10 seconds")
+```
+
+### 用按键控制 LED
+
+```python
+from lager import Net, NetType
+import time
+
+button = Net.get('BUTTON', type=NetType.GPIO)
+led = Net.get('LED', type=NetType.GPIO)
+
+print("Press Ctrl+C to exit")
+
+while True:
+    try:
+        if button.input():
+            led.output(1)
+        else:
+            led.output(0)
+        time.sleep(0.1)
+    except KeyboardInterrupt:
+        led.output(0)
+        break
+```
+
+### 翻转输出
+
+```python
+from lager import Net, NetType
+import time
+
+output_pin = Net.get('SIGNAL', type=NetType.GPIO)
+
+# Generate 10 pulses
+for i in range(10):
+    output_pin.output(1)
+    time.sleep(0.5)
+    output_pin.output(0)
+    time.sleep(0.5)
+```
+
+## 受支持的硬件
+
+| 硬件 | 引脚 | 逻辑电平 |
+|----------|------|-------------|
+| LabJack T7 | FIO0-FIO7、EIO0-EIO7、CIO0-CIO3 | 3.3V |
+| LabJack U3 | FIO4-FIO7、EIO0-EIO7、CIO0-CIO3 | |
+| MCC USB-202 | DIO0-DIO7 | 5V TTL |
+| FTDI FT232H / FT2232H | ADBUS0-7、ACBUS0-7（每通道 16 位） | 3.3V |
+| FTDI FT4232H | 每通道 8 个引脚 | 3.3V |
+
+### 引脚命名
+
+**LabJack T7：**
+
+| 引脚输入 | 通道 |
+|-----------|---------|
+| `0`-`7` | FIO0-FIO7 |
+| `8`-`15` | EIO0-EIO7 |
+| `16`-`19` | CIO0-CIO3 |
+| `"FIO0"`-`"FIO7"` | FIO0-FIO7 |
+
+**LabJack U3：**
+
+- `FIO0`-`FIO3` 不是 GPIO 引脚。在 U3-HV 上它们是固定的高压模拟输入，驱动程序会拒绝使用它们。请用 `AIN0`-`AIN3` 上的 ADC Net 读取它们。
+- `input()` 读取引脚时不改变它的方向。`output()` 会把引脚设为输出。
+- `FIO4`-`FIO7` 和 `EIO0`-`EIO7` 同样是模拟输入。调用 GPIO 会把引脚设为数字模式。
+- EIO 和 CIO 线位于 U3 的 DB15 连接器上。
+
+**MCC USB-202：**
+
+| 引脚输入 | 通道 |
+|-----------|---------|
+| `0`-`7` | DIO0-DIO7 |
+| `"DIO0"`-`"DIO7"` | DIO0-DIO7 |
+
+### 多通道 FTDI 适配器
+
+FTDI Net 从该 Net 记录的 `params.interface` 取得通道，可以是 `A`-`D` 或 `0`-`3`。
+没有 `interface` 的 Net 使用通道 A —— 在单通道的 FT232H 上这也是唯一的选择。
+
+| 型号 | 通道 | 可用于 GPIO |
+|---|---|---|
+| FT232H | 1（A） | A |
+| FT2232H | 2（A、B） | A、B |
+| FT4232H | 4（A-D） | A-D |
+
+GPIO 以异步 bitbang 方式运行，不需要 MPSSE 引擎，因此该芯片的每个通道都可以使用。
+请注意引脚宽度不同：FT232H 和 FT2232H 提供 ADBUS0-7 加 ACBUS0-7（16 位），
+而 FT4232H 的每个通道为 8 个引脚。
+
+同一颗芯片上各 Net 类型之间如何分配通道，请参阅
+[Nets](/source/reference/cli/nets)。
+
+## 说明
+
+- GPIO Net 可直接使用，不需要 `enable()`/`disable()` 调用
+- `input()` 返回 0 或 1
+- `output()` 接受整数（0/1）或字符串（"high"/"low"、"on"/"off"、"true"/"false"）
+- `wait_for_level()` 接受整数电平（`0` 或 `1`），并阻塞调用线程直到检测到目标电平
+- LabJack T7 的 `wait_for_level()` 使用硬件流式采样，可实现亚毫秒级检测
+- Net 名称必须与 Lager Box 上配置的名称一致

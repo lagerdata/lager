@@ -1,0 +1,217 @@
+---
+title: 断点
+description: 暂停正在运行的 lager python 脚本以检查实验台，然后继续运行
+---
+
+在 `lager python` 脚本运行到一半时暂停它，检查实验台，然后从脚本停下的地方继续。
+您可以用临时的 `lager` 命令检查，也可以用实时的 Python 提示符检查。
+当一个长时间的测试走到已知的问题点时，这很有用；
+当您必须检查一台处于未知状态的设备、又不想中止并重新运行时，它同样有用。
+
+自 **lager 0.21.0** 起提供。
+
+## 导入
+
+```python
+from lager import pause
+```
+
+## `pause(label=None, *, timeout=None, interactive=False)`
+
+在调用处阻塞脚本，直到它被恢复（或超时）。
+
+| 参数 | 默认值 | 说明 |
+|----------|---------|-------------|
+| `label` | `None` | 显示在暂停横幅和控制台中的简短备注，例如设置该断点的原因。 |
+| `timeout` | `None` | 自动恢复之前等待的秒数。`None` 表示使用 `LAGER_BREAKPOINT_TIMEOUT` 环境变量，未设置时为 **300 秒**。`0` 表示无限等待（直到您手动恢复）。 |
+| `interactive` | `False` | 为 `True` 时，同时开放一个连接到被暂停脚本的 Python 控制台（见 [交互式控制台](#交互式控制台)）。 |
+
+```python
+from lager import pause
+
+pause("check the DUT before the final step")
+```
+
+执行到这一行时，脚本会打印一个横幅并停下：
+
+```
+=== lager breakpoint "check the DUT before the final step" at test.py:14  (id 7f3a…e9)
+    resume: press Enter here, or `lager python --continue 7f3a…e9 --box mybox`
+    inspect: `lager python --console 7f3a…e9 --box mybox`
+    auto-resume in 300s
+```
+
+当 `pause()` 无法暂停时，它是一个安全的空操作 —— 例如脚本不是在 `lager python`
+下运行（没有断点上下文），或者[断点被禁用](#禁用断点)时。它永远不会抛出异常。
+
+## 恢复运行
+
+被暂停的脚本可以用三种方式恢复：
+
+1. **按回车键**，在运行该脚本的终端中（前台的 `lager python` 会话）。
+2. **`lager python --continue <id> --box <box>`** —— 可以在任意终端、任意位置执行。
+   请使用横幅中的 `id`。脚本已分离，或者您已经在另一个终端里时，这很方便。
+3. **自动恢复** —— 超时（默认 300 秒）之后脚本自行继续，并记录它这样做了。
+   这样，无人值守或被遗忘的断点就不会把整个运行挂住。
+
+### 控制自动恢复的超时时间
+
+默认是 **300 秒**。您可以按断点、按运行来覆盖它，也可以完全禁用：
+
+```python
+pause("inspect", timeout=1800)   # wait up to 30 minutes
+pause("inspect", timeout=0)      # wait forever — never auto-resume
+```
+
+```bash
+# whole run, via the existing --env flag (applies to pause() calls with no explicit timeout=)
+lager python test.py --box mybox --env LAGER_BREAKPOINT_TIMEOUT=1800
+```
+
+解析顺序是 **`timeout=` 参数 → `LAGER_BREAKPOINT_TIMEOUT` 环境变量 → 300 秒默认值**，
+因此脚本中显式写出的 `timeout=` 优先于环境变量。
+
+<Note>
+`lager python --timeout` 是另一项设置。它是脚本的总运行时间上限，Box 把它限制在 300 秒以内。
+无论脚本是否处于暂停状态，它到时都会终止整个运行。
+使用较长的断点暂停时，请让它保持默认值（`0`，不限时）。
+</Note>
+
+## 交互式控制台
+
+使用 `pause(interactive=True)` 时，断点还会打开一个**运行在被暂停脚本进程内部**的
+Python 控制台，并预置暂停时处于作用域中的变量：
+
+```python
+readings = read_adcs()
+pause("inspect bench", interactive=True)
+```
+
+从另一个终端连接到它：
+
+```bash
+lager python --console <id> --box mybox
+```
+
+```
+Connected to interactive console (Ctrl+D to disconnect)
+>>> readings
+{'adc1': -10.6032, 'adc2': -10.6031, 'adc3': -10.6032}
+>>> readings['adc1'] * 1000
+-10603.2
+>>> read_adcs()
+{'adc1': -10.6032, 'adc2': -10.6032, 'adc3': -10.6032}
+```
+
+您可以读取任何变量、求值表达式，并调用脚本定义的函数。
+`Ctrl+D` 断开连接（脚本仍然保持暂停）。
+
+<Note>
+该控制台用于**检查**。它操作的是脚本命名空间的一个快照。
+您在控制台中所做的更改**不会**在脚本恢复时带回脚本中。
+</Note>
+
+## 暂停期间检查硬件
+
+由于被暂停的脚本不持有 Box 级别的锁，您可以在它等待期间，
+从另一个终端对实验台运行普通的 `lager` 命令：
+
+```bash
+lager supply supply2 state --box mybox     # power supply
+lager battery battery1 state --box mybox   # battery
+lager adc adc4 --box mybox                 # an ADC the script isn't using
+```
+
+有两条硬件规则需要记住，它们都源于 USB 仪器同一时刻只允许一个占用者：
+
+- **脚本自己已打开的设备，由被暂停的进程占用。** 从第二个终端读取它会返回
+  "device busy / claimed by another process" 错误。请改用 **`--console`** 读取 ——
+  它运行在同一进程中，共享已打开的句柄。
+- **每个进程、每台物理仪器只能有一个 Net。** 同一台仪器上的两个 Net
+  不能在一个脚本中同时打开。例如同一台 Rigol DP821 的两个通道
+  `supply2`/`supply3`，以及双角色的 Keithley 2281S 的 `supply1`/`battery1`。
+  请从不同的终端读取，或者一次读一个。
+
+## 内置的 `breakpoint()`
+
+在 `lager python` 脚本中调用 Python 内置的 `breakpoint()`，
+会触发与 `lager.pause()` 相同的交互式暂停：
+
+```python
+breakpoint()              # same as pause()
+breakpoint("check DUT")   # same as pause("check DUT")
+```
+
+## 禁用断点
+
+把 `LAGER_BREAKPOINTS` 设为表示关闭的值。此后每个 `pause()` 和 `breakpoint()`
+调用都会变成空操作，这样一个仍然包含断点的脚本就能干净地非交互运行：
+
+```bash
+lager python test.py --box mybox --env LAGER_BREAKPOINTS=off
+```
+
+接受 `off`、`0`、`false` 或 `no`（不区分大小写）。
+
+## 完整示例
+
+`test.py`：
+
+```python
+import time
+from lager import Net, NetType, pause
+
+adc_nets = ["adc1", "adc2", "adc3"]
+
+
+def read_adcs():
+    return {n: round(float(Net.get(n, type=NetType.ADC).input()), 4) for n in adc_nets}
+
+
+print("Running test...")
+for step in range(1, 4):
+    print(f"  step {step}/3 ...")
+    time.sleep(1)
+
+readings = read_adcs()
+print(f"sensor readings: {readings}")
+
+pause("inspect bench before final step", interactive=True)
+
+print("Resuming - running final step.")
+print("Done.")
+```
+
+运行它（终端 1）：
+
+```bash
+lager python test.py --box mybox
+```
+
+```
+Running test...
+  step 1/3 ...
+  step 2/3 ...
+  step 3/3 ...
+sensor readings: {'adc1': -10.6032, 'adc2': -10.6031, 'adc3': -10.6032}
+=== lager breakpoint "inspect bench before final step" at test.py:18  (id 7f3a…e9)
+    resume: press Enter here, or `lager python --continue 7f3a…e9 --box mybox`
+    inspect: `lager python --console 7f3a…e9 --box mybox`
+    auto-resume in 300s
+```
+
+在它暂停期间，检查实验台（终端 2）：
+
+```bash
+lager supply supply2 state --box mybox        # a shared instrument — reads fine
+lager python --console 7f3a…e9 --box mybox    # then: readings / read_adcs()
+```
+
+在终端 1 中按**回车**（或运行 `lager python --continue 7f3a…e9 --box mybox`），
+脚本随即完成：
+
+```
+=== resumed
+Resuming - running final step.
+Done.
+```
