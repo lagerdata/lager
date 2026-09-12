@@ -1,0 +1,76 @@
+---
+title: Lager 简介
+description: 了解 Lager 如何提高嵌入式开发和硬件测试的效率。
+---
+
+**Lager** 是一个用于嵌入式软件开发的开源平台。它为您的嵌入式硬件提供统一的可编程接口。固件工程师用它来建立可重复的开发和验证流程。同一套流程可以在您的桌面上运行，也可以在 CI 中运行，还可以由 AI 智能体来控制。
+
+Lager 用可复用的自动化取代一次性脚本和手动的实验台操作。您的团队可以用更少的精力构建更可靠的嵌入式软件。
+
+---
+
+## Lager 的工作原理
+
+一套 Lager 系统由三个组件构成。它们共同把您的硬件通过单一的可编程接口开放出来：
+
+```
+您的笔记本 / CI / AI 智能体  →  Lager Box  →  台式仪器 + 被测设备（DUT）
+```
+
+### 1. Lager Box
+
+**Lager Box** 是任意一台运行 Ubuntu 22.04 或更新版本的 x86-64 计算机，例如一台小型迷你主机。它放置在您的硬件旁边。您把它连接到测试仪器和被测设备（被测设备）。若要把一台计算机配置为 Lager Box，请参阅 [设置 Lager Box](/source/getting-started/setting-up-a-lager-box)。
+
+在您连接好仪器和被测设备之后，Lager Box 通过一个统一的可编程接口开放这些设备。您可以从桌面、从 CI 或者从 AI 智能体来驱动该接口。
+
+### 2. Lager CLI 与客户端库
+
+要与 Lager Box 交互，您需要 **Lager CLI**：一个安装在您计算机上的命令行工具。它为操作仪器和被测设备提供统一的接口。
+
+除了交互式使用 CLI 之外，还有三种同等的方式可以针对 Lager Box 编写自动化程序。请选择适合您团队的方式：
+
+- **[Python 库](/source/reference/python/overview)** - 把测试套件编写为 Python 脚本，用 `lager python` 运行
+- **[Rust crate](/source/reference/rust/overview)** - 把 HIL 测试套件编写为普通的 Rust 集成测试。用 `cargo test` 运行，与您的固件放在一起
+- **[MCP 服务器](/source/reference/mcp/overview)** - 让 AI 智能体发现您的实验台并直接运行测试场景
+
+常见的工作流程：
+- 烧录和调试嵌入式设备
+- 控制电源、电池模拟器和电子负载
+- 用交互式测试运行器监视串口/UART 输出
+- 采集示波器波形和逻辑分析仪数据
+- 通过 I2C 和 SPI 总线与设备通信
+- 自动运行完整的回归测试套件
+
+CLI 还包含 **Lager Terminal**：一个带有 Tab 补全和命令历史的交互式 REPL。运行 `lager terminal`，或者不带参数运行 `lager`，即可启动它。
+
+### 3. 台式仪器与设备
+
+Lager Box 支持多种专业测试仪器，您可以连接：
+- 电源、电池模拟器和电子负载
+- 调试探针（J-Link、CMSIS-DAP、ST-Link）
+- 示波器和逻辑分析仪
+- ADC/DAC/GPIO 模块（LabJack T7、LabJack U3、MCC USB-202）
+- I2C/SPI 适配器（Total Phase Aardvark、LabJack T7、LabJack U3）
+- 功率计（Yocto-Watt、Joulescope JS220）
+- 以及更多设备（请参阅下方的完整列表）
+
+---
+
+## Lager Net
+
+在使用 Lager Box 之前，您必须为它配置一组 **Net**。
+每个 Net 命名一台仪器、一个仪器通道、一个串口，或者一个其他由您控制的接口。
+
+例如，您的被测设备从电源的通道 1 取电。您创建一个名为 `DUT_POWER` 的电源 Net，并把它映射到该通道。
+之后，这个 Net 可以打开和关闭被测设备，也可以使用该电源支持的所有其他功能。
+
+---
+
+## 后续步骤
+
+准备好开始了吗？
+
+- **[设置 Lager Box](/source/getting-started/setting-up-a-lager-box)** -- 把一台 Ubuntu 计算机配置为 Lager Box
+- **[添加您的第一台 Lager Box](/source/getting-started/adding-first-lager-box)** -- 安装 CLI 并验证连通性
+
+已经配置完成，准备开始自动化了吗？请直接前往 [Python API](/source/reference/python/overview) 或 [Rust API](/source/reference/rust/overview)。

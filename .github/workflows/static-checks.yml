@@ -274,6 +274,25 @@ jobs:
         run: python tools/check_ste.py
         shell: bash
 
+      # The three checks above all read English. This one is the only thing
+      # standing behind the translated pages, and it exists because a
+      # translation fails in a way no other gate can see: the English page gets
+      # a new flag or a corrected default, the Chinese page keeps the old one,
+      # and the Chinese page still builds, still links, still renders. A reader
+      # follows a confident instruction that stopped being true.
+      #
+      # Mintlify sells an automation that re-translates on push. It is gated to
+      # the Pro plan, so this repository translates in-repo and replaces the
+      # resync with a hash: docs/translations.json holds the SHA-256 of each
+      # English page as it read when its translation was made, and a mismatch
+      # fails here. It cannot tell a reworded warning from a fixed typo, so it
+      # reports both -- a checker that guesses which edits matter is a checker
+      # that eventually guesses wrong in silence.
+      - name: Translations match their English pages
+        if: always()
+        run: python tools/check_translations.py
+        shell: bash
+
       # The docs check above compares docs to the CLI; this catches the other
       # half -- links that point nowhere. Three cross-references shipped missing
       # the `/source` prefix that every published URL carries, each found by

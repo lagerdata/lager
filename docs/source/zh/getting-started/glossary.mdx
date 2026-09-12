@@ -1,0 +1,107 @@
+---
+title: 术语表
+description: Lager 文档中所用技术术语的定义
+---
+
+本页收录 Lager 文档中使用的术语、缩写和首字母缩略语。
+
+术语标题保留英文原文。协议和标准的缩写（SWD、VISA、I2C、SPI、UART、JTAG、SCPI、GPIO）
+在中文技术写作中本来就直接使用英文缩写，这里给出它们的中文全称，正文中仍用缩写。
+器件和物理量的名称（ADC、DAC、SOC、OVP、OCP）有通行的中文说法，本页给出。
+产品术语（Lager Box、Net）保留英文，因为您在 CLI 中输入的就是这些词。
+
+## ADC
+
+模数转换器（Analog-to-Digital Converter）。把模拟电压转换为数字值的硬件。用于读取传感器输出、测量电压等。
+
+## BLE
+
+低功耗蓝牙（Bluetooth Low Energy）。一种用于短距离、低功耗设备的无线通信协议。
+
+## CLI
+
+命令行界面（Command-Line Interface）。您通过 `pip install lager-cli` 安装、并在终端中运行的 `lager` 工具。
+
+## DAC
+
+数模转换器（Digital-to-Analog Converter）。根据数字值输出精确模拟电压的硬件。用于产生基准电压或测试信号。
+
+## DUT
+
+被测设备（Device Under Test）。您用 Lager 测试的嵌入式电路板或产品。
+
+## E-Load
+
+电子负载（Electronic Load）。一种从电源汲取可编程电流的仪器，用于在测试中模拟真实负载。
+
+## GDB
+
+GNU 调试器（GNU Debugger）。嵌入式开发中广泛使用的调试器。Lager 在 Box 上启动一个 GDB 服务器，您可以远程连接到它。
+
+## GPIO
+
+通用输入/输出（General-Purpose Input/Output）。可配置为输入（读取高/低电平）或输出（驱动高/低电平）的数字引脚。
+
+## GPI
+
+通用输入（General-Purpose Input）。配置为读取数字状态（高电平或低电平）的 GPIO 引脚。
+
+## GPO
+
+通用输出（General-Purpose Output）。配置为驱动数字状态（高电平或低电平）的 GPIO 引脚。
+
+## I2C
+
+集成电路间总线（Inter-Integrated Circuit，读作 "eye-squared-see"）。一种两线制串行协议（SDA + SCL），常用于与传感器、EEPROM 和其他外围设备通信。
+
+## Lager Box
+
+任意一台运行 Ubuntu 22.04 或更新版本的 x86-64 计算机，例如一台小型迷你主机。它放在您的实验台上，连接您的仪器和被测设备。它运行 Lager 容器（Flask 和 SocketIO），对外提供用于硬件控制的 HTTP 和 WebSocket API。请参阅 [设置 Lager Box](/source/zh/getting-started/setting-up-a-lager-box)。
+
+## Net
+
+指向 Lager Box 上某台物理仪器的命名逻辑连接。本文档不把 Net 译为“网”或“网络”：这两个词在同一批页面中已经表示计算机网络（网络连接、VPN、局域网），而 Net 指的是一台仪器的一个通道。例如，`supply1` 映射到 Rigol DP832 电源的通道 1；`uart0` 映射到波特率为 115200 的 `/dev/ttyUSB0`。Net 把测试代码与具体的硬件地址分开。仪器移动或更换之后，同一个脚本仍然可以工作。
+
+## OCP
+
+过流保护（Over-Current Protection）。电源上的一个安全阈值。如果输出电流超过该限值，电源会自动关闭输出。用 `lager supply <NET> clear-ocp` 清除。
+
+## OVP
+
+过压保护（Over-Voltage Protection）。电源上的一个安全阈值。如果输出电压超过该限值，电源会自动关闭输出。用 `lager supply <NET> clear-ovp` 清除。
+
+## REPL
+
+读取-求值-输出循环（Read-Eval-Print Loop）。一个交互式提示符，您在其中输入命令并立即看到结果。Lager Terminal（`lager terminal`）就是一个 REPL。
+
+## SCPI
+
+可编程仪器标准命令（Standard Commands for Programmable Instruments，读作 "skippy"）。一种基于文本的协议，用于控制示波器和电源等台式仪器。
+
+## SOC
+
+荷电状态（State of Charge）。表示电池电量的百分比（0-100%）。与电池模拟器仪器一起使用。
+
+## SPI
+
+串行外设接口（Serial Peripheral Interface）。一种四线制串行协议（SCLK、MOSI、MISO、CS），用于与闪存和 ADC 等外围设备高速通信。
+
+## SWD
+
+串行线调试（Serial Wire Debug）。一种两针调试接口（SWDIO + SWCLK），由 ARM Cortex-M 微控制器使用。J-Link 等调试探针用它烧录固件和调试代码。
+
+## Tailscale
+
+一种基于 WireGuard 的网状 VPN，在您的计算机和 Lager Box 之间建立加密隧道。您通过它远程访问 Box。
+
+## TUI
+
+文本用户界面（Text User Interface）。一种基于终端的交互式界面（与图形界面相对）。Lager 在 Net 配置（`lager nets tui`）和电源实时监视（`lager supply <NET> tui`）中使用 TUI。
+
+## UART
+
+通用异步收发器（Universal Asynchronous Receiver/Transmitter）。一种串行通信协议，常用于调试控制台输出和设备通信。
+
+## VISA
+
+虚拟仪器软件架构（Virtual Instrument Software Architecture）。一种通过 USB、LAN 或 GPIB 与测试仪器通信的标准。许多台式仪器（Rigol、Keysight、Keithley）都使用 VISA。

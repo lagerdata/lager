@@ -1,0 +1,317 @@
+---
+title: 故障排除
+description: Lager 常见问题的解决方法
+---
+
+本页按类别列出 Lager 中最常见的问题。每一节给出错误或现象、可能的原因，以及解决方法。
+
+引号中的错误信息保留英文原文，因为您在终端里看到的就是这些文字。
+
+---
+
+## 连接问题
+
+<Accordion title="lager hello 失败并报出 'No route to host'">
+
+**原因：** 您的计算机在网络上无法访问该 Lager Box。
+
+**解决方法：**
+1. 确认您的 VPN 已连接：运行 `tailscale status`，确认列表中出现了您的 Lager Box。
+2. 检查 IP 地址是否正确：运行 `lager boxes` 查看已保存的 Box IP 地址。
+3. 如果使用 Tailscale，请尝试 `ping <box-ip>` 来验证网络连通性。
+4. 确认 Lager Box 已通电并连接到网络。
+
+</Accordion>
+
+<Accordion title="lager hello 失败并报出 'Connection refused'">
+
+**原因：** 到 Box 的网络路径可用，但 Box 上的 Lager 服务已停止。
+
+**解决方法：**
+1. 如果 Box 上的 Docker 容器已停止，请让您的管理员重启它。
+2. 运行 `lager hello --box <box>` 检查该 Box 的服务状态。
+3. 如果您有 SSH 访问权限，请连接到该 Box 并检查 Docker：`docker ps | grep lager`。
+4. 如果从来没有人把这台计算机配置成 Lager Box，请参阅 [设置 Lager Box](/source/zh/getting-started/setting-up-a-lager-box)。
+
+</Accordion>
+
+<Accordion title="lager hello 失败并报出 'Connection timed out'">
+
+**原因：** 网络请求离开了您的计算机，但没有到达 Box。通常是防火墙或 IP 地址不正确造成的。
+
+**解决方法：**
+1. 用 `lager boxes` 再次核对 IP 地址。
+2. 移动过或重新配置过的 Box 可能有了新的 IP 地址。请查看您的 Tailscale 管理面板或路由器的 DHCP 表。
+3. 尝试 ping 该 Box：`ping <box-ip>`。
+
+</Accordion>
+
+<Accordion title="Box 之前正常，现在无法访问">
+
+**原因：** Box 断电、失去网络连接，或者更换了 IP 地址。
+
+**解决方法：**
+1. 确认该 Box 已通电。
+2. 检查您的 VPN 连接：`tailscale status`。
+3. 如果 Box 的 IP 变了，请更新它：`lager boxes edit --name my-lager-box --ip <new-ip>`。
+4. 运行 `lager hello --box <name>` 检查 Box 状态。
+
+</Accordion>
+
+<Accordion title="lager ssh 失败并报出 'Permission denied (publickey)'">
+
+**原因：** 该 Box 不接受 `lager ssh` 提供的任何 SSH 密钥。
+
+`lager ssh` 首先提供 `~/.ssh/lager_box`。然后它提供存在的每一个默认密钥：`id_rsa`、`id_ecdsa`、`id_ed25519` 以及它们的 `-sk` 版本。它也提供您 `~/.ssh/config` 中的密钥和您 SSH agent 中的密钥。
+
+**解决方法：**
+1. 运行 `lager ssh-setup --box <box>`。在它询问时输入一次 Box 密码。
+2. 重试 `lager ssh --box <box>`。
+3. 如果您在 `--box` 中使用 Box 的 IP 地址，`lager ssh` 会以 `lagerdata` 身份登录。请使用已保存的 Box 名称，以已保存的用户身份登录。
+4. 如果您的 CLI 低于 0.45.1，请升级它。当 `lager_box` 存在时，较旧的 `lager ssh` 只会提供该密钥。
+
+</Accordion>
+
+---
+
+## 仪器检测
+
+<Accordion title="lager instruments 返回空列表">
+
+**原因：** 在 Box 的 USB 端口上没有检测到任何仪器。
+
+**解决方法：**
+1. 确认仪器确实通过 USB 连接到了 Lager Box（而不是连接到您的笔记本）。
+2. 检查 USB 线缆是否插紧 —— 请换一根线缆或换一个端口试试。
+3. 确认 Docker 容器在 USB 直通模式下运行。请运行 `lager hello --box <box>`。
+4. 运行 `lager update --box <box>` 安装最新的 udev 规则和驱动程序。
+
+</Accordion>
+
+<Accordion title="列表中缺少某一台特定仪器">
+
+**原因：** Box 不认识该仪器，或者该仪器接在不同的 USB 端口上。驱动程序也可能需要更新。
+
+**解决方法：**
+1. 拔下并重新插上该仪器的 USB 线缆。
+2. 运行 `lager update --box <box>`，确保 udev 规则是最新的。
+3. 检查该仪器是否已通电（有些仪器除 USB 之外还需要外部供电）。
+4. 确认该仪器型号在[受支持的仪器](/source/supported-instruments/supported-instruments)列表中。
+
+</Accordion>
+
+<Accordion title="lager instruments 中缺少机械臂">
+
+**原因：** 只有当串口的 USB ID 为 `0483:5740` 时，Box 才会在该端口上探测机械臂。机械臂还必须响应探测并报告一个 USB 序列号。
+
+**解决方法：**
+1. 从 Box 日志中读取上一次探测的结果：
+   ```bash
+   lager ssh --box <box> -- docker exec lager grep "arm probe" /tmp/lager-http-server.log
+   ```
+2. 在 `skipped` 列表中找到该机械臂的端口。它旁边的原因说明了 Box 为什么跳过它。
+3. 如果原因是 `not a Dexarm vid:pid`，说明该机械臂报告了不同的 USB ID。请把探测设为 `force`：
+   ```bash
+   lager box-config env set LAGER_ARM_PROBE=force --box <box>
+   lager box-config apply --box <box>
+   ```
+4. 再次运行 `lager instruments --box <box>`。
+5. 机械臂出现之后，请用 `lager box-config env unset LAGER_ARM_PROBE --box <box>` 删除该设置，然后运行 `lager box-config apply --box <box>`。
+
+<Warning>
+如果 Box 上某块板子会在 DTR 或 RTS 线变化时复位，请不要使用 `force`。`force` 探测会在每个空闲串口上拉起 DTR，这可能复位那块板子。
+</Warning>
+
+请参阅 [机械臂检测](/source/reference/cli/arm#detection)。
+
+</Accordion>
+
+<Accordion title="使用仪器时出现 'Resource busy' 错误">
+
+**原因：** 另一个进程（例如一个 TUI 会话或另一条 CLI 命令）正在占用该仪器的 USB 连接。
+
+**解决方法：**
+1. 关闭所有正在运行的 TUI 会话（按 `q` 退出）。
+2. 稍等片刻再重试。之前的命令可能仍在运行。
+3. 如果问题继续存在，说明仪器句柄卡住了。请运行 `lager update --box <box>` 重启该服务。
+
+</Accordion>
+
+---
+
+## 电源问题
+
+<Accordion title="OVP 或 OCP 已触发（输出意外关闭）">
+
+**原因：** 输出电压或电流超过了您设置的保护阈值。电源关闭了输出，以保护您的设备。
+
+**解决方法：**
+1. 查看当前状态：`lager supply <NET> state --box <box>`。
+2. 清除故障：`lager supply <NET> clear-ovp` 或 `lager supply <NET> clear-ocp`。
+3. 如果保护阈值设得过紧，请调整它们；否则请查明输出为什么超过了限值。
+4. 重新打开输出：`lager supply <NET> enable --box <box>`。
+
+</Accordion>
+
+<Accordion title="电源已打开，但电压读数为 0V">
+
+**原因：** 电源输出没有打开，或者负载把电压拉低了。
+
+**解决方法：**
+1. 确认输出已打开：`lager supply <NET> state --box <box>` —— 检查 "Enabled" 是否显示为 ON。
+2. 确认您既设置了电压，也打开了输出（只设置电压不会打开输出）：
+   ```bash
+   lager supply <NET> voltage 3.3 --yes --box <box>
+   lager supply <NET> enable --yes --box <box>
+   ```
+3. 检查 OVP/OCP 是否已触发（见上文）。
+
+</Accordion>
+
+---
+
+## 调试 / 烧录问题
+
+<Accordion title="'Flash failed: Could not connect to target.' 或 'Erase failed: ...'">
+
+**原因：** 调试探针没有连接上目标 MCU。命令以 1 退出。
+
+`flash` 还可能打印 `The target was NOT programmed.`。如果 `flash` 运行时没有加 `--no-erase`，目标可能已被擦除。如果在编程之前擦除失败，则会打印 `Flash erase failed:`，并且 `flash` 不会对目标编程。
+
+**解决方法：**
+1. 检查调试探针与您的被测设备（DUT）之间的 SWD/JTAG 接线。
+2. 确认被测设备已通电（调试探针并不总是供电）。
+3. 检查调试 Net 中的 MCU 类型是否与您的实际设备相符：`lager debug <NET> status --box <box>`。
+4. 尝试更低的 SWD 速度：`lager debug <NET> gdbserver --speed 100 --force --box <box>`。
+
+</Accordion>
+
+<Accordion title="'GDB server failed to start'">
+
+**原因：** 上一个会话留下的 JLinkGDBServer 或 OpenOCD 进程卡住了。
+
+**解决方法：**
+1. 断开任何已有会话：`lager debug <NET> disconnect --box <box>`。
+2. 重试：`lager debug <NET> gdbserver --box <box>`。
+3. 检查调试探针的健康状况：`lager debug <NET> health --verbose --box <box>`。
+
+</Accordion>
+
+<Accordion title="'The debug session is up, but the target does not answer; reconnecting...'">
+
+**原因：** 探针的 GDB 服务器在运行，但目标 MCU 没有响应。通常是目标掉电，或者 SWD 接线松动。CLI 会在 `flash`、`erase` 或 `reset` 之前打印这条信息，然后开始一个新会话。
+
+**解决方法：**
+1. 如果命令随后打印 `Reconnected!`，则无需处理。
+2. 如果命令打印 `Error: the CLI did not reconnect to the target`，它会以 1 退出。请检查被测设备的供电和接线。
+3. 运行 `lager debug <NET> status --box <box>`。重试之前，请确认 `Target attached` 显示为 `Yes`。
+
+</Accordion>
+
+---
+
+## UART 问题
+
+<Accordion title="UART Net 已被另一个会话占用">
+
+**原因：** 另一个会话持有该 UART Net 或它的串口设备。
+
+**解决方法：**
+1. 列出持有 UART Net 的会话：
+   ```bash
+   lager uart --sessions --box <box>
+   ```
+2. 查看 `Client` 列。状态为 `gone` 的客户端会自行释放该 Net。状态为 `connected` 的客户端属于某个人，请先与那个人确认。
+3. 如果某个客户端的计算机进入了休眠或断开了 VPN，它在大约 85 秒内仍然显示为 `connected`。
+4. 若要释放持有者并接入，请运行 `lager uart <net> --force --box <box>`。
+
+如果错误信息中出现 `(locked by another session or the lager uart CLI)`，说明另一个进程持有该串口。一个打开了该端口并仍在运行的 `lager python` 脚本就是一例。`--force` 不会释放那种锁。请停止该脚本，例如运行 `lager python --kill-all --box <box>`。
+
+`--sessions` 和 `--force` 选项会获取 Box 锁。如果另一位用户持有 Box 锁，这两个选项都会失败并报出 `is locked by`。
+
+</Accordion>
+
+---
+
+## Python 脚本问题
+
+<Accordion title="ImportError: No module named 'lager'">
+
+**原因：** 您直接用 `python` 运行了脚本，而不是用 `lager python`。
+
+**解决方法：** `lager` Python 库只在 Lager Box 环境中可用。请始终这样运行脚本：
+```bash
+lager python my_script.py --box my-lager-box
+```
+
+请**不要**在您的笔记本上直接运行 `python my_script.py`。
+
+</Accordion>
+
+<Accordion title="InvalidNetError: Net 'XYZ' not found">
+
+**原因：** 脚本中的 Net 名称与 Box 上配置的任何 Net 都不匹配。
+
+**解决方法：**
+1. 列出可用的 Net：`lager nets --box <box>`。
+2. 检查 Net 名称是否拼写有误。Net 名称区分大小写。
+3. 如果该 Net 不存在，请用 `lager nets tui --box <box>` 创建它。
+
+</Accordion>
+
+<Accordion title="[Errno 16] Resource busy，或提到资源忙的 DeviceError">
+
+**原因：** 有两方对同一台仪器打开了会话。端口 8080 上的硬件服务持有该仪器的 VISA 会话。
+针对同一个 USB 地址的第二次 `pyvisa` 打开会与它竞争并失败。
+
+普通脚本不会遇到这种情况。电源、示波器、电池模拟器、电子负载和太阳能模拟器都是代理到硬件服务的，
+不会在本地打开。只有直接导入驱动模块才会触发这个失败。您自己在脚本中或通过 `docker exec`
+打开 `pyvisa` 时，也会触发它。
+
+**解决方法：**
+1. 请通过 Net 来驱动仪器，而不是通过它的驱动模块：
+   ```python
+   from lager import Net, NetType
+   psu = Net.get("supply1", type=NetType.PowerSupply)
+   psu.set_voltage(3.3)
+   ```
+2. 用 `lager diagnose <net> --box <box>` 查看当前是谁持有该地址。如果 VISA 部分报告
+   `REACHABLE (shared session)`，说明硬件服务持有它，并跳过了自己的探测。请参阅
+   [`lager diagnose`](/source/reference/cli/diagnose)。
+3. 如果您要自己打开该仪器，请获取驱动程序所使用的同一个跨进程锁。
+
+直连 USB 的仪器是另一种情况：LabJack、USB-202、FT232H、Aardvark、Joulescope 和 PPK2。
+执行服务在启动您的脚本之前，会先释放硬件服务对这些设备的占用。
+
+</Accordion>
+
+<Accordion title="脚本运行了，但没有任何输出">
+
+**原因：** 脚本静默失败，或者脚本没有刷新它的输出。
+
+**解决方法：**
+1. 添加 `print()` 语句，确认脚本确实在执行。
+2. 用 try/except 包裹您的代码以捕获错误：
+   ```python
+   try:
+       # your code here
+   except Exception as e:
+       print(f"Error: {e}")
+   ```
+3. 检查 stderr 输出 —— 来自 Box 的错误在终端中以红色显示。
+
+</Accordion>
+
+---
+
+## 获取更多帮助
+
+如果以上方法都没有解决您的问题：
+
+1. **查看 Box 日志：** Box 上的服务把日志写在 `lager` 容器内部。对于失败的仪器调用，请读取硬件服务日志：
+   ```bash
+   lager ssh --box <box> -- docker exec lager tail -n 200 /tmp/lager-hardware-service.log
+   ```
+   容器中的其他日志是 `/tmp/lager-debug-service.log`、`/tmp/lager-python-service.log` 和 `/tmp/lager-http-server.log`。失败的仪器调用只会向您的脚本返回一行错误，完整的调用栈在日志中。
+2. **检查 Box 状态：** `lager hello --box <box>` 可以确认 Box 在线并能够响应。
+3. **提交问题：** 请在 [GitHub](https://github.com/lagerdata/lager/issues) 上报告问题，并附上您的 Box 名称、运行的命令和错误输出。

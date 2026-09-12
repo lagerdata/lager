@@ -1,0 +1,154 @@
+---
+title: 使用 Net
+description: 通过 Lager 客户端，用 CLI 或 Lager Python 控制您的仪器
+---
+
+Net 是仪器的命名接口。配置好 Net 之后，Lager 客户端就可以控制这些仪器。您可以使用 CLI，也可以使用 Python SDK。
+
+下面的示例演示如何操作常见的仪器类型，包括电源、电池模拟器、调试器和通信总线。
+
+---
+
+## 设置默认值
+
+首先，为 `--box` 和常用的 Net 设置默认值。设置默认值之后，您不必在每条命令中重复输入：
+
+```bash
+# 设置默认 Box，这样每条命令都不需要再写 --box
+lager defaults add --box my-lager-box
+
+# 为常见仪器类型设置默认 Net
+lager defaults add --supply-net POWER
+lager defaults add --debug-net DEBUG_NET
+lager defaults add --i2c-net I2C_0
+```
+
+设置默认值之后，命令可以写得更简洁（例如用 `lager supply voltage 3.3` 代替 `lager supply POWER voltage 3.3 --box my-lager-box`）。全部选项请参阅 [defaults 参考](/source/reference/cli/defaults)。
+
+---
+
+## CLI 示例
+
+### 电源 Net
+
+电源 Net 用 `lager supply` 命令控制。
+
+设置电压和保护阈值（注意：这条命令**不会**打开输出）：
+
+```bash
+lager supply POWER voltage 5 --ovp 5.1 --ocp 0.5 --box my-lager-box
+```
+
+<Note>
+**OVP**（过压保护）和 **OCP**（过流保护）是安全阈值。如果输出电压或电流超过这些限值，电源会自动关闭输出，以保护您的设备。您可以用 `lager supply POWER clear-ovp` 或 `clear-ocp` 清除已触发的故障。
+</Note>
+
+打开输出：
+
+```bash
+lager supply POWER enable --box my-lager-box
+```
+
+关闭输出：
+
+```bash
+lager supply POWER disable --box my-lager-box
+```
+
+---
+
+### 电池 Net
+
+有些可编程电源支持电池模拟。这类设备用 `lager battery` 命令控制。
+
+设置模拟电池的荷电状态（SOC）：
+
+```bash
+lager battery BATT soc 50 --box my-lager-box
+```
+
+<Note>
+**SOC**（荷电状态）是电池的电量百分比，范围从 0 到 100。SOC 为 50 表示模拟一块半满的电池。用它来测试您的设备在各个电量下的行为。
+</Note>
+
+设置最大充电电流和放电电流：
+
+```bash
+lager battery BATT current-limit 1.0 --box my-lager-box
+```
+
+---
+
+### 调试 Net
+
+调试器 Net（例如 J-Link）可以用来烧录固件、擦除存储器和检查设备。
+
+把一个 hex 文件烧录到您的设备：
+
+```bash
+lager debug DEBUG_NET flash --hex firmware.hex --box my-lager-box
+```
+
+其中 `DEBUG_NET` 是您的调试 Net 名称。如果已经配置了默认调试 Net，您也可以使用它。
+
+---
+
+### I2C Net 和 SPI Net
+
+通过 I2C 或 SPI 总线与外围设备通信：
+
+```bash
+# 扫描 I2C 总线上连接的设备
+lager i2c I2C_0 scan --box my-lager-box
+
+# 从地址 0x76 的设备的寄存器 0x00 读取 2 个字节
+lager i2c I2C_0 transfer 2 --address 0x76 --data 0x00 --box my-lager-box
+
+# 读取 SPI 设备 ID（发送 0x9F 命令，读取 3 个响应字节）
+lager spi SPI_0 transfer --data 0x9f 4 --box my-lager-box
+```
+
+---
+
+## 用 Python 进行编程控制
+
+Lager Python SDK 用代码完成同样的操作。当您需要更复杂的自动化，或者要与测试框架集成时，请使用它。
+
+以下示例演示如何用 Net API 编写 Python 脚本：
+
+1.  **创建一个 Python 脚本。** 把以下代码保存到名为 `flash.py` 的文件中：
+
+    ```python
+    from lager import Net, NetType
+
+    # 按名称获取一个调试 Net
+    dbg = Net.get('DEBUG_NET', type=NetType.Debug)
+
+    # 复位并烧录固件
+    dbg.reset(halt=True)
+    dbg.flash('path/to/firmware.hex')
+
+    print("Firmware flashing complete.")
+    ```
+
+2.  **用 Lager 执行该脚本。** 使用 `lager python` 命令。它在 Lager Box 环境中运行脚本，脚本在那里可以访问连接的硬件。
+
+    ```bash
+    lager python flash.py --box my-lager-box
+    ```
+
+> 详细的 Python API 文档，请参阅 [Python 参考](/source/reference/python/overview) 部分。
+
+若需要一个更完整的示例（包含电源控制、固件烧录、ADC 测量和安全清理），请参阅 [示例脚本](https://github.com/lagerdata/lager/blob/main/docs/examples/demo_script.py)。
+
+---
+
+## 后续步骤
+
+您已经完成了入门指南。接下来可以前往：
+
+- **[您的第一个测试](/source/zh/getting-started/first-test)** -- 完整演练一个端到端的测试流程
+- **[CLI 参考](/source/reference/cli/overview)** -- 所有 CLI 命令的完整文档
+- **[Python API](/source/reference/python/overview)** -- 用 Python SDK 实现测试自动化
+- **[defaults 参考](/source/reference/cli/defaults)** -- 设置默认的 Box 和 Net，减少输入
+- **[故障排除](/source/zh/getting-started/troubleshooting)** -- 常见问题的解决方法

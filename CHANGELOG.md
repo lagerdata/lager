@@ -12,6 +12,34 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Added
+
+- **The docs site carries a language selector.** `docs/docs.json` now groups the
+  navigation under `navigation.languages`, with English as the default and a
+  Simplified Chinese (`zh`) tree beside it. Mintlify renders the selector in the
+  navbar and serves each language as its own set of pages; a language shows only
+  the pages translated for it, so an untranslated page is absent rather than a
+  404. Translated pages live under `docs/source/zh/`, mirroring the English
+  filenames. All ten Getting Started pages are translated. `tools/check_ste.py`
+  exempts that directory: STYLE.md is a style for English sentences, and none of
+  its rules has a meaning in Mandarin.
+
+- **`tools/check_translations.py` holds each translation to the English page it
+  was made from.** `docs/translations.json` records the SHA-256 of that page as
+  it read at translation time, and a mismatch fails the build. A stale
+  translation is invisible to every other gate: the English page gains a flag,
+  the translated page keeps the old one, and it still builds, still links, still
+  renders. `--progress` reports coverage; `--record` stamps a page after you
+  update it.
+
+- **`docs/TRANSLATION.md` is the terminology contract between languages.** It
+  fixes what stays in English (commands, flags, net names, error strings, and
+  the product nouns `Lager Box` and `Net`), which acronyms keep their English
+  form in running text (SWD, VISA, SCPI), and which terms take their ordinary
+  Chinese name (被测设备 for DUT, 模数转换器 for ADC). `Net` is deliberately not
+  translated: 网 reads as "network" to a Chinese reader, and these pages already
+  use 网络 and 网关 heavily for real networking.
+
 ## [0.47.1] - 2026-09-11
 
 ### Added

@@ -1,0 +1,413 @@
+---
+title: 设置 Lager Box
+description: 把一台 Ubuntu 计算机配置为 Lager Box
+---
+
+**Lager Box** 是一台运行 Lager Box 软件的普通 Ubuntu 计算机。本页说明如何把您已有的计算机
+配置为 Lager Box。这台计算机可以是实验台上的迷你主机、机架服务器，也可以是虚拟机。
+
+<Note>
+如果已经有人为您配置好了 Box，您不需要本页。请直接前往
+[添加您的第一台 Lager Box](/source/zh/getting-started/adding-first-lager-box)。
+</Note>
+
+---
+
+## 您需要准备什么
+
+**在将要成为 Box 的计算机上：**
+
+- 一颗 **x86-64** 处理器。这是 Box 唯一支持的架构。
+- **Ubuntu 22.04 或更新版本**，包括 24.04 LTS。关于 Ubuntu 25.10 及更高版本，请参阅下方的说明。
+- 一个网络连接，以及一个您可以访问的 IP 地址或主机名。
+- 一个 SSH 服务器，以及一个**具有 `sudo` 权限的登录账户**，并且您知道它的密码。
+- 已安装 **`git`**。Box 需要的其他软件（包括 Docker）由 Lager 安装。
+  第 1 步说明为什么您可以先自己安装 Docker。这一步是可选的。
+
+**在您自己的计算机上：**
+
+- **Python 3.10 或更高版本**，以及 `pip3`。
+- 一个 SSH 客户端（`ssh` 和 `ssh-keygen`）。
+
+开始之前，请在那台计算机上运行以下命令，一次检查这三项：
+
+```bash
+uname -m           # 必须是 x86_64
+lsb_release -ds    # Ubuntu 22.04 或更新版本
+sudo --version     # 请参阅下方关于 sudo-rs 的说明
+```
+
+<Note>
+安装默认的 `main` 会在 Box 上自行构建 Lager 容器。在普通的 Box 硬件上，这大约需要 14 分钟。
+请预留出 Box 忙碌的时间。`lager install` 默认把这一步限制在 30 分钟以内。用 `--version`
+安装一个发布标签则使用预构建镜像，大约需要 2 分钟。
+
+硬件越慢，耗时越长。模拟的客户机、低功耗迷你主机或被限速的虚拟机，即使构建正常也可能超过
+30 分钟。请用 `--timeout <秒数>` 或 `LAGER_INSTALL_TIMEOUT` 提高上限，以免构建中途停止。
+</Note>
+
+<Warning>
+**在整个安装过程中，请让您自己的计算机保持唤醒。** 构建在 Box 上运行，但它是从您启动
+`lager install` 的那台计算机通过 SSH 驱动的。如果那台计算机休眠导致连接断开，构建也会随之中断。
+在 macOS 上，请用 `caffeinate -i` 运行安装。
+</Warning>
+
+<Note>
+**Ubuntu 25.10 及更高版本（包括 26.04 LTS）无需任何改动即可安装。** 这些版本默认使用
+`sudo-rs`，它不接受命令参数中的通配符。Lager 过去会向 `/etc/sudoers.d/` 写入带通配符的规则，
+因此安装会提前停止并报出 `wildcards are not allowed in command arguments`。从
+**lager 0.41.0** 起，Lager 写入的每条规则都精确指明其参数，不需要再切回经典 `sudo`。
+
+如果使用更旧的 CLI，请把 Box 切换到经典 `sudo`
+（`sudo update-alternatives --set sudo /usr/bin/sudo.ws`）。请另外保持一个具有可用 root shell
+的会话处于打开状态，以防切换没有生效。
+</Note>
+
+<Warning>
+**Box 的登录账户在设计上等同于 root。** 配置 Box 需要 root 权限，因此安装过程会为该账户授予
+Lager 所需命令的免密码 `sudo`。任何能以该账户登录的人都可以在 Box 上取得 root 权限。
+建议在专用计算机上使用专用用户，并相应地保护它的 SSH 密钥。
+[安装参考](/source/reference/cli/install) 详细说明了所写入的每一项授权。
+</Warning>
+
+---
+
+## 第 1 步：准备计算机
+
+通过 SSH 登录该计算机并安装 `git`：
+
+```bash
+sudo apt update && sudo apt install -y git
+```
+
+确认该账户可以使用 `sudo`。安装过程中，系统会要求您输入一次它的密码：
+
+```bash
+sudo true
+```
+
+<Note>
+**这一步可选，但它能让失败信息更容易读懂：现在自己安装 Docker。** 当计算机上没有 Docker 时，
+安装程序会安装它。这一步通过 SSH 运行，它报告软件包问题的详细程度不如您直接使用 apt。
+先手动安装 Docker，任何问题都会以真正的错误信息直接显示在您面前：
+
+```bash
+sudo apt install -y docker.io docker-compose-v2 docker-buildx
+sudo systemctl enable --now docker
+sudo usermod -aG docker $USER
+```
+
+之后请注销并重新登录，使组成员身份生效，然后检查 `docker ps` 在不加 `sudo` 的情况下可以工作。
+</Note>
+
+<Note>
+登录账户不必命名为 `lagerdata`。请在第 3 步中把它的真实名称作为 `--user` 传入，并把该名称与
+Box 一起记录下来。之后的命令就会使用正确的账户。
+</Note>
+
+请记下这台计算机的 IP 地址或主机名，第 3 步中需要用到：
+
+```bash
+ip -br addr
+```
+
+---
+
+## 第 2 步：安装 Lager CLI
+
+在您自己的计算机上运行，而不是在 Box 上：
+
+```bash
+pip3 install -U lager-cli
+```
+
+检查它是否可用：
+
+```bash
+lager --version
+```
+
+---
+
+## 第 3 步：运行安装程序
+
+其余的工作由 `lager install` 完成。它配置 SSH 密钥和 sudo，并部署 Box 代码。当计算机上没有
+Docker 时，它会安装 Docker。然后它构建并启动 Lager 容器，并配置防火墙。
+
+```bash
+lager install --ip <box-ip> --user <box-user>
+```
+
+这条命令会检查 SSH 连通性，并打印它计划执行的工作摘要。在更改任何内容之前，它会要求您确认。
+
+**第一次运行时，SSH 还没有被授权。** Lager 会发现这一点，并主动提出修复：
+
+```
+No SSH key on this machine is authorized on the box.
+
+Set up the lager_box key now? (one box-password prompt, then the rest of the
+install runs unattended) [Y/n]:
+```
+
+请接受它，并输入一次 Box 账户的密码。Lager 会在 `~/.ssh/lager_box` 安装一个专用密钥。
+之后的每一步、之后的每条命令，都不再需要密码。如果您拒绝，安装会停止，并提示您运行
+`lager ssh-setup --box <name-or-ip>`，该命令可以单独完成同样的工作。
+
+随后部署开始运行，并实时输出。请让它自行运行，直到结束。
+
+**如果中途失败，请修复它报告的问题，然后重新运行同一条命令。** `lager install` 可以安全地重复运行。
+它每次都会重写自己的配置，并跳过已完成的工作，因此第二次运行是继续，而不是从头开始。
+
+<Note>
+若要安装特定的发布版本而不是最新代码，请加上 `--version`，例如 `--version v0.39.0`。
+发布标签使用预构建镜像，因此安装快得多。默认的 `main` 会在 Box 上构建。
+全部选项请参阅 [安装参考](/source/reference/cli/install)。
+</Note>
+
+---
+
+## 第 4 步：网络与防火墙
+
+安装过程会在 Box 上配置 UFW 防火墙。这些规则默认拒绝入站流量。它们在 `lo`、`docker0`、
+`tailscale0` 和一个企业 VPN 接口上放行 Lager 的服务端口，并在其他所有接口上拒绝这些端口。
+端口 22 始终保持开放，因此防火墙不会把您锁在这台计算机之外。
+
+<Warning>
+**在默认配置的 Box 上，防火墙并不保护 Lager 的端口。** 容器通过 Docker 发布它的端口。
+Docker 转发这些流量的位置在主机防火墙规则之前。因此，一个已发布的端口会响应任何能路由到该 Box 的人。
+请把 Box 放在 VPN 上或隔离的局域网中。请参阅
+[SECURITY.md](https://github.com/lagerdata/lager/blob/main/SECURITY.md#security-model) 的
+Security Model 部分。
+</Warning>
+
+只有在设置了 `lager box-config network-mode host` 的 Box 上，这些规则才管辖 Lager 的端口。
+在那种模式下，容器不发布端口。
+
+如何把它接入您的网络，取决于您使用什么：
+
+**Tailscale。** 无需任何操作。如果 Box 上运行着 Tailscale，安装程序会检测到 `tailscale0`
+接口，并在它上面放行 Lager 的端口。安装程序只在运行时检查 Tailscale。`lager update`
+不会更改防火墙。
+
+**企业 VPN。** 请显式指明接口名称。在 Box 上查找它：
+
+```bash
+ip -br link
+```
+
+然后把它传给安装程序 —— Cisco Secure Client 用 `cscotun0`，OpenConnect 用 `tun0`，依此类推：
+
+```bash
+lager install --ip <box-ip> --user <box-user> --corporate-vpn cscotun0
+```
+
+<Warning>
+**在您运行安装程序的那一刻**，该接口必须存在于 Box 上。如果 VPN 没有连接，防火墙步骤会失败并报出
+`Corporate VPN interface <name> not found`，同时列出它确实找到的接口。请连接 VPN，然后重新运行安装。
+</Warning>
+
+**两者都不用。** 请加上 `--skip-firewall`，完全不改动 UFW，并用您已有的方式保护这台计算机。
+
+---
+
+## 第 5 步：为 Box 命名并验证
+
+部署完成后，安装程序会提出把该 Box 添加到您的本地配置中：
+
+```
+Add this box to your configuration? [Y/n]: y
+Box name: bench-1
+```
+
+当您传入 `--yes` 时，安装程序不会显示这个提示。名称由您自己选择，并且只保存在您的计算机上。
+如果您跳过了那个提示，请手动添加 —— `--user` 是必填的：
+
+```bash
+lager boxes add --name bench-1 --ip <box-ip> --user <box-user>
+```
+
+检查 Box 是否响应：
+
+```bash
+lager hello --box bench-1
+```
+
+**预期输出：**
+
+```
+Box: bench-1
+IP: 100.64.1.42
+Version: 0.47.0 (main@5d84c68612384eed2854638c1e0941a4ff8b7893 -- not a release build)
+
+bench-1 is online and responding!
+```
+
+括号中的值是该 Box 运行的 ref。默认安装部署 `main`，因此该行显示 `not a release build`。
+从发布标签安装的 Box 只显示标签和提交。
+
+然后看看它能找到哪些硬件：
+
+```bash
+lager instruments --box bench-1
+```
+
+在您连接任何仪器之前，空列表就是正确的结果。
+
+---
+
+## 在虚拟机中运行 Lager Box
+
+只要客户机是 x86-64 并运行 Ubuntu 22.04 或更新版本，虚拟机也可以作为 Lager Box。
+上面的全部内容同样适用。
+
+唯一不同的是硬件访问。仪器和调试探针都是 USB 设备，Lager 容器通过主机的 `/dev` 访问它们。
+**客户机看不到的 USB 设备，就是 Lager 无法使用的设备。** 因此，如果这台 Box 要驱动真实硬件，
+请在连接任何设备之前，先在您的虚拟化平台中配置 USB 直通。
+
+请直通**整个 USB 控制器**，而不是单个设备。调试探针复位时会重新枚举，而 Lager 在测试中
+会把 USB 集线器端口断电再上电，这是正常操作。这两种情况都会改变或中断按设备直通所绑定的设备标识。
+直通整个控制器在这两种情况下都能继续工作。
+
+当您只是试用 Lager 时，一台没有连接硬件的虚拟机同样有用。它完全不需要直通。
+
+### 模拟的客户机
+
+**模拟的** x86-64 客户机也可以工作，例如在 ARM 主机上运行的 x86 虚拟机。它的首次安装比上面给出的
+时间慢得多，可能需要几个小时。
+
+原因在于容器构建。Box 镜像会从源码编译一个 USB 数据采集库，这是一个单线程的 C++ 构建。
+它在原生环境下需要几分钟，而在模拟环境下非常慢。请预计仅这一步就会运行数小时。
+
+请拉取预构建镜像，而不是自行构建。请安装一个发布标签而不是 `main`，这样才存在已发布的镜像。
+`lager install` 默认会拉取它：
+
+```bash
+lager install --ip <box-ip> --user <box-user> --version <release-tag>
+```
+
+`lager update` 默认在 Box 上构建。之后更新时，请传入 `--pull`：
+
+```bash
+lager update --box <box-name> --version <release-tag> --pull
+```
+
+任何已发布的发布标签都可以。`lager update --version` 接受标签、semver 固定版本、分支，
+或完整的 40 位提交 SHA。只有发布标签才有可拉取的已发布镜像。
+
+当没有匹配的镜像时，`--pull` 会退回到在 Box 上构建。请注意观察输出。如果它开始编译，
+说明拉取没有命中，您又回到了慢速路径。请参阅
+[预构建 Box 镜像](/source/reference/cli/update#pre-built-box-images)。
+
+---
+
+## 故障排除
+
+<Accordion title="git is not installed on box">
+
+安装会在部署任何内容之前停止。请在 Box 上安装 `git`，然后重新运行该命令：
+
+```bash
+sudo apt update && sudo apt install -y git
+```
+
+</Accordion>
+
+<Accordion title="No SSH key on this machine is authorized on the box">
+
+首次安装时这是预期行为 —— 请对随后的提示回答 **yes**，并输入一次 Box 账户的密码。
+若要作为单独的一步来做：
+
+```bash
+lager ssh-setup --box <box-ip>
+```
+
+如果 Box 拒绝该密码，请确认您使用的是 Box 账户自己的密码，并确认该 Box 允许该账户使用密码认证。
+
+</Accordion>
+
+<Accordion title="Corporate VPN interface not found">
+
+运行防火墙步骤时，`--corporate-vpn` 指定的接口在 Box 上不存在。错误信息会列出确实存在的接口。
+请连接 VPN，在 Box 上用 `ip -br link` 确认名称，然后重新运行安装。
+
+</Accordion>
+
+<Accordion title="The install seems to have stopped">
+
+安装一个分支会在 Box 上构建容器镜像。这是耗时最长的一步，它可能运行很多分钟而几乎没有输出。
+请让它继续运行。
+
+当 `--timeout` 预算用尽时，命令会放弃。默认值是 1800 秒，或 `LAGER_INSTALL_TIMEOUT` 的值。
+在慢速硬件上，请提高这个预算。`--timeout 0` 取消限制。超时之后，重新运行同一条命令是安全的。
+
+</Accordion>
+
+<Accordion title="wildcards are not allowed in command arguments">
+
+该 Box 运行 `sudo-rs`，即 Ubuntu 25.10 及更高版本的默认 `sudo`，而 CLI 版本低于 0.41.0。
+安装会在免密码 sudo 这一步停止并报出 `visudo: invalid sudoers file`，此时还没有部署任何内容。
+
+请升级 CLI（`pip install --upgrade lager-cli`），然后重新运行安装。从 0.41.0 起，
+Lager 不写入任何通配符规则，在 `sudo-rs` 下可以顺利安装。
+
+在 CLI 0.41.0 或更高版本上，安装程序会在安装该文件之前先验证它。失败时会打印
+`[ERROR] Invalid sudoers syntax -- /etc/sudoers.d/lagerdata-udev was NOT modified`。
+Box 上的 sudoers 文件保持不变。在 `sudo-rs` 的 Box 上，安装程序随后会打印下面的
+`update-alternatives` 命令。请把该输出作为缺陷报告出来。
+
+如果您无法升级，请改为把 Box 切换到经典 `sudo`。请另外保持一个具有可用 root shell 的会话
+处于打开状态，以防切换没有生效：
+
+```bash
+sudo update-alternatives --set sudo /usr/bin/sudo.ws
+sudo --version
+```
+
+</Accordion>
+
+<Accordion title="Failed to install Docker">
+
+每个 Docker 安装步骤都会报告自己的失败。请查找类似
+`[lager] STEP FAILED: <command> (exit N)` 的行。它前面的几行就是该命令的错误输出。
+如果没有出现这样的行，说明 SSH 会话本身失败了，上面的错误来自 `ssh`。
+
+如果 Box 上已经有 Docker，那么失败发生在 apt 之后，出在守护进程或组变更上。
+重新安装一次没有帮助。此时安装程序会建议在 Box 上运行这些命令：
+
+```bash
+systemctl status docker
+journalctl -xeu docker.service
+```
+
+安装过程也会打印需要在 Box 上运行的手动命令：
+
+```bash
+sudo apt-get update && sudo apt-get install -y docker.io docker-compose-v2
+sudo systemctl daemon-reload
+sudo systemctl enable docker && sudo systemctl restart docker
+sudo usermod -aG docker <box-user>
+```
+
+Docker 正常运行之后，请注销并重新登录，使组成员身份生效，然后重新运行 `lager install`。
+它会检测到可用的 Docker 并跳过这一步。
+
+</Accordion>
+
+<Accordion title="The machine is not x86-64">
+
+x86-64 是 Box 唯一支持的架构。请在该计算机上用 `uname -m` 检查，它必须报告 `x86_64`。
+在其他任何架构上，安装可能看起来成功，但该 Box 没有硬件支持。
+
+</Accordion>
+
+关于 Box 启动并运行之后出现的问题，请参阅
+[故障排除](/source/zh/getting-started/troubleshooting)。
+
+---
+
+## 后续步骤
+
+您的 Box 已经就绪。现在连接到它，并给它安排工作：
+
+- **[添加您的第一台 Lager Box](/source/zh/getting-started/adding-first-lager-box)** -- 在任何其他需要访问它的计算机上添加这台 Box
+- **[设置您的仪器](/source/zh/getting-started/setting-up-instruments)** -- 发现连接到 Box 的硬件并定义 Net
