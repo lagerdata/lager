@@ -510,6 +510,37 @@
                 ]
               }
             ]
+          },
+          {
+            "tab": "Python API",
+            "groups": [
+              {
+                "group": "入门",
+                "pages": [
+                  "source/zh/reference/python/overview"
+                ]
+              },
+              {
+                "group": "电源与仿真",
+                "pages": [
+                  "source/zh/reference/python/solar"
+                ]
+              },
+              {
+                "group": "测量",
+                "pages": [
+                  "source/zh/reference/python/adc",
+                  "source/zh/reference/python/tc"
+                ]
+              },
+              {
+                "group": "I/O 与通信",
+                "pages": [
+                  "source/zh/reference/python/dac",
+                  "source/zh/reference/python/serial"
+                ]
+              }
+            ]
           }
         ]
       }

@@ -1,0 +1,180 @@
+---
+title: DAC
+description: 控制数模转换器输出
+---
+
+用 DAC 引脚设置模拟电压输出。支持 LabJack T7、LabJack U3 和 MCC USB-202 硬件。
+
+## 导入
+
+```python
+from lager import Net, NetType
+```
+
+## 方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `output(voltage)` | 设置模拟输出电压 |
+| `get_voltage()` | 读取已配置的输出电压 |
+| `input()` | `get_voltage()` 的别名 |
+
+## 方法参考
+
+### `Net.get(name, type=NetType.DAC)`
+
+按名称获取一个 DAC Net。
+
+```python
+from lager import Net, NetType
+
+dac = Net.get('VREF', type=NetType.DAC)
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `name` | `str` | DAC Net 的名称 |
+| `type` | `NetType` | 必须为 `NetType.DAC` |
+
+**返回：** DAC Net 实例
+
+### `output(voltage)`
+
+设置模拟输出电压。
+
+```python
+dac.output(2.5)  # Set to 2.5V
+```
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `voltage` | `float` | 输出电压，单位伏特。LabJack T7 和 USB-202：0-5 V。LabJack U3：0.04-4.95 V |
+
+**抛出：** 电压超出仪器范围时抛出 `ValueError`。LabJack U3 会拒绝 0.04-4.95 V 之外的值，因此您无法把它设为 0 V。
+
+### `get_voltage()`
+
+读取当前已配置的输出电压。
+
+```python
+v = dac.get_voltage()
+print(f"DAC set to: {v}V")
+```
+
+**返回：** `float` - 已配置的电压，单位伏特
+
+LabJack U3 没有 DAC 回读功能。在 U3 上，`get_voltage()` 返回该 Net 对象上次设置的值。
+如果它没有设置过值，该调用会抛出带 `has no readback` 文字的错误。
+MCC USB-202 没有回读功能，因此该调用会抛出 `NotImplementedError`。
+
+### `input()`
+
+`get_voltage()` 的别名，返回当前已配置的输出电压。
+
+```python
+v = dac.input()
+print(f"DAC output: {v}V")
+```
+
+**返回：** `float` - 已配置的电压，单位伏特
+
+## 示例
+
+### 设置基准电压
+
+```python
+from lager import Net, NetType
+
+vref = Net.get('VREF', type=NetType.DAC)
+vref.output(1.8)  # Set to 1.8V
+```
+
+### 产生斜坡信号
+
+```python
+from lager import Net, NetType
+import time
+
+signal = Net.get('SIGNAL_OUT', type=NetType.DAC)
+
+# Ramp from 0 to 5V in 0.5V steps
+for v in range(0, 51, 5):
+    voltage = v / 10.0
+    signal.output(voltage)
+    print(f"Output: {voltage}V")
+    time.sleep(0.1)
+```
+
+### 电压扫描测试
+
+```python
+from lager import Net, NetType
+import time
+
+control = Net.get('CONTROL', type=NetType.DAC)
+sensor = Net.get('RESPONSE', type=NetType.ADC)
+
+# Sweep control voltage and measure response
+for mv in range(0, 3301, 100):
+    voltage = mv / 1000.0
+    control.output(voltage)
+    time.sleep(0.1)  # Settling time
+
+    response = sensor.input()
+    print(f"Control: {voltage:.2f}V, Response: {response:.3f}V")
+```
+
+### 设置并验证
+
+```python
+from lager import Net, NetType
+
+dac = Net.get('ANALOG_OUT', type=NetType.DAC)
+
+# Set output
+dac.output(3.3)
+
+# Read back to verify
+readback = dac.get_voltage()
+print(f"Set: 3.3V, Readback: {readback}V")
+```
+
+## 受支持的硬件
+
+| 硬件 | 通道 | 范围 |
+|----------|----------|-------|
+| LabJack T7 | DAC0-DAC1 | 0-5 V |
+| LabJack U3 | DAC0-DAC1 | 0.04-4.95 V |
+| MCC USB-202 | AOUT0-AOUT1 | 0-5 V |
+
+上面的示例输出了 0 V 和 5 V。在 LabJack U3 上，请把每个值保持在 0.04 V 至 4.95 V 之间。
+
+### 引脚命名
+
+**LabJack T7：**
+
+| 引脚输入 | 通道 |
+|-----------|---------|
+| `0`-`1` | DAC0-DAC1 |
+| `"DAC0"`-`"DAC1"` | DAC0-DAC1 |
+
+**MCC USB-202：**
+
+| 引脚输入 | 通道 |
+|-----------|---------|
+| `0`-`1` | AOUT0-AOUT1 |
+| `"DAC0"`-`"DAC1"` | AOUT0-AOUT1 |
+| `"AOUT0"`-`"AOUT1"` | AOUT0-AOUT1 |
+
+## 说明
+
+- DAC Net 可直接使用，不需要 `enable()`/`disable()` 调用
+- LabJack T7 输出范围：0-5 V
+- LabJack U3 输出范围：0.04-4.95 V
+- USB-202 输出范围：0-5 V
+- `input()` 是 `get_voltage()` 的别名，返回已配置的输出值
+- LabJack U3 和 USB-202 都不提供硬件回读
+- 输出值会一直保持，直到被更改或断电
+- Net 名称必须与 Lager Box 上配置的名称一致
