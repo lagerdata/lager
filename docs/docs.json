@@ -521,7 +521,9 @@
                   "source/zh/reference/cli/terminal",
                   "source/zh/reference/cli/hello",
                   "source/zh/reference/cli/boxes",
+                  "source/zh/reference/cli/locking",
                   "source/zh/reference/cli/login",
+                  "source/zh/reference/cli/install",
                   "source/zh/reference/cli/install-wheel",
                   "source/zh/reference/cli/uninstall",
                   "source/zh/reference/cli/ssh",
@@ -541,6 +543,7 @@
               {
                 "group": "电源与仿真",
                 "pages": [
+                  "source/zh/reference/cli/supply",
                   "source/zh/reference/cli/solar",
                   "source/zh/reference/cli/eload",
                   "source/zh/reference/cli/watt",

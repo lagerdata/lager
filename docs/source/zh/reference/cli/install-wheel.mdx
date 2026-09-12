@@ -47,7 +47,7 @@ lager install-wheel dist/mypackage-0.1.0-py3-none-any.whl
 1. **在本地校验**该文件：它必须存在、以 `.whl` 结尾、可读，并且不超过 Box 的上传大小限制。
 2. **获取 Box 锁**，在整个安装过程中持有。因为安装会在 Box 容器内运行 `pip install`，
    该锁可以防止并发的 `lager python` 测试在 Python/导入状态上与它竞争。请参阅
-   [Box 锁定](/source/reference/cli/locking)。
+   [Box 锁定](/source/zh/reference/cli/locking)。
 3. **卸载**该软件包此前安装的任何版本（尽力而为）。
 4. 用 `pip install --force-reinstall` **安装**上传的 wheel。
 
@@ -65,13 +65,13 @@ Successfully installed mypackage
 - 文件必须带 `.whl` 扩展名，并符合 wheel 文件名格式（`name-version-...whl`）；
   软件包名称取自开头的那一段。
 - 若要安装或更新 Box 代码本身（而不是某个 Python 包），请使用
-  [`lager install`](/source/reference/cli/install) 和
+  [`lager install`](/source/zh/reference/cli/install) 和
   [`lager update`](/source/reference/cli/update)。
 
 ---
 
 ## 参见
 
-- [Install](/source/reference/cli/install) —— 把 Lager Box 代码安装到一台 Box 上
+- [Install](/source/zh/reference/cli/install) —— 把 Lager Box 代码安装到一台 Box 上
 - [Update](/source/reference/cli/update) —— 更新 Lager Box 代码
 - [Box Config](/source/reference/cli/box-config) —— 管理 Python 包（`box config pip`）和其他声明式 Box 配置

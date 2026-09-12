@@ -1,0 +1,272 @@
+---
+title: Box 锁定
+description: Lager Box 的共享访问控制
+---
+
+当多位用户 —— 或多个 CI 作业 —— 共用一台 Lager Box 时，锁可以防止两个调用方互相干扰。
+Lager 提供两种锁机制：
+
+1. **自动的测试 / 管理锁** —— `lager python` 以及会改变 Box 的管理命令
+   （`lager install`、`lager uninstall`、`lager update`、`lager install-wheel`）
+   在命令的整个生命周期内预留该 Box。
+2. **用户锁** —— `lager boxes lock` 显式预留一台 Box，直到您解锁为止。
+
+## 自动测试锁
+
+每次调用 `lager python <runnable>` 都会在开始时自动获取 Box 锁，并在结束时释放它。
+失败、`Ctrl+C`、崩溃和被信号终止的运行都包括在内。锁的释放通过 `finally` 块、
+信号处理器、`atexit` 回调，以及（最坏情况下）服务端的 TTL 回收来保证。
+
+### 哪些命令会自动加锁
+
+| 类别 | 命令 | 加锁窗口 | 原因 |
+|----------|----------|-------------|-----|
+| 测试运行器 | `lager python` | 整个测试运行（获取 → 心跳 → 释放） | 标准的测试运行器。 |
+| 测量 | `gpi`、`gpo`、`adc`、`dac`、`thermocouple`、`watt`、`energy`、`scope`、`logic` | 单次命令调用 | 硬件 I/O —— 交错访问会破坏读数或引脚状态。 |
+| 通信 | `spi`、`i2c`、`uart`、`wifi`、`ble`、`blufi`、`usb`、`router` | 单次命令调用 | 总线/协议事务不能在不同用户之间交错。 |
+| 电源 | `supply`、`battery`、`eload`、`solar` | 单次命令调用（仅子命令，不含列表操作） | 并发修改电压/电流是危险的。 |
+| 开发 | `debug`（flash/connect/erase/reset 等）、`arm`、`webcam` | 单次命令调用 | 烧录或调试会话不能相互冲突。 |
+| 管理 | `install`、`uninstall`、`update`、`install-wheel` | 仅破坏性的部分 | 测试进行中重启或改动容器会终止测试。 |
+
+只读命令（`lager hello`、`lager boxes list`、`lager boxes lock` / `unlock` 本身、
+诸如不带子命令的 `lager supply --box X` 之类的列表路径、状态 / 预演路径等）
+**不会**获取自动锁。
+
+v0.12–0.13.3 的设计在每条命令上使用一个共享装饰器，v0.13.4 撤销了它。
+当前的实现改为使用与 `lager python` 相同的 TTL + 心跳 + atexit 基础设施，
+从而避开了当初促使撤销的那三个边角情况。完整的历史请参阅下方的*向后兼容*。
+
+锁的身份是**能够识别 CI 的**，这样 CI 中的并发测试运行才能正确互斥。持有者格式：
+
+| 环境           | 持有者字符串                                                              |
+|-----------------------|----------------------------------------------------------------------------|
+| 开发（您的计算机）    | `LAGER_USER`，否则是 `lager defaults add --user` 设置的名称，否则是操作系统用户 |
+| GitHub Actions        | `ci:github:<repo>#<run>-<attempt>/<job>@<runner>:<pid>`                    |
+| Drone                 | `ci:drone:<repo>#<build>:<pid>@<host>`                                     |
+| GitLab CI             | `ci:gitlab:<project>#<pipeline>/<job>:<pid>@<host>`                        |
+| Bitbucket Pipelines   | `ci:bitbucket:<repo>#<build>:<pid>@<host>`                                 |
+| Jenkins               | `ci:jenkins:<tag>:<pid>@<host>`                                            |
+| 通用 CI 兜底   | `ci:generic:<host>:<pid>`                                                  |
+
+`:<pid>` 部分指明获取该锁的进程。如下一节所述，CLI 在比较持有者时并不用它来区分。
+
+### 命令如何识别自己的锁
+
+每条 `lager` 命令都是一个新进程，因此它的持有者字符串结尾的 pid 不同。
+于是 CLI 按**作用域**比较持有者：它去掉位于持有者末尾、或紧邻 `@` 之前的
+`:<digits>` 部分。
+
+因此，同一个 CI 作业中之后的命令会把该作业的自动锁当作自己的锁，并且不会释放它。
+run、attempt、job 或 runner 不同的持有者，作用域也不同，因此它们之间仍然互斥。
+
+命令执行前的锁检查也接受由您的普通用户名持有的锁。自动锁的获取只比较作用域，
+而 Box 比较的是完整字符串。`lager boxes unlock` 发送的是您的普通用户名，
+因此在不加 `--force` 的情况下，它无法释放 `ci:` 自动锁。
+
+### 冲突时的行为
+
+当 `lager python` 试图获取一个已被其他持有者占用的锁时：
+
+- **在开发机上**：打印错误并立即以 1 退出（不等待）。
+- **在 CI 中**：最多等待 `LAGER_LOCK_WAIT` 秒（默认 `1800`，即 30 分钟），
+  每 2 秒轮询一次，只有等待超时才会失败。这样矩阵作业就可以在同一台自托管 Box 上排队。
+
+如果您在自己的计算机上运行 `lager python` 之前，已经用 `lager boxes lock`
+以自己的身份锁定了该 Box，CLI 会认为这个锁本来就是自己的。它在退出时**不会释放该锁**，
+因此您显式做出的预留在测试之后依然有效。
+
+在 CI 下，自动锁的持有者是一个 `ci:` 字符串，而不是您的用户名。
+因此普通的 `lager boxes lock` 预留会与它冲突。此时命令会等待 `LAGER_LOCK_WAIT` 秒，
+然后以 1 退出。
+
+### TTL 与心跳
+
+每个测试锁写入时带有 `ttl_seconds: 1800`，并由 CLI 内部的后台心跳线程每 60 秒刷新一次。
+TTL **不是**测试运行时长的上限 —— 只要心跳持续刷新 `last_heartbeat`，
+该锁就一直有效。
+
+TTL 实际限制的是 **CLI 崩溃之后陈旧锁的最长残留时间**。
+如果您的笔记本失去网络，或者 CI 运行器被强制终止，
+一旦 `last_heartbeat + ttl_seconds` 成为过去时刻，Box 就会回收该锁。
+因此其他调用方最多等待一个 TTL。
+
+### `--detach` 把锁交给 Box
+
+`lager python script.py --detach` 之后没有 CLI 继续持有它的锁 ——
+客户端得到响应后就离开了，这正是分离模式的意义。因此改由 Box 接管这个锁的生命周期：
+分离作业运行期间由它发送心跳，作业无论以何种方式结束，它都会释放该锁。
+不需要任何手动解锁。
+
+```bash
+lager python long_test.py --box my-lager-box --detach
+# Box 'my-lager-box' is held for the detached run and released when it ends;
+# to free it sooner: lager boxes unlock --box my-lager-box
+```
+
+Box 只能触碰 CLI 交给它的那个锁，而且只有本次运行新获取的锁才会被交出去。
+分离运行只是沿用了某个 `lager boxes lock` 预留时，那个预留永远不会被交出，
+也永远不会被释放 —— 保留它正是当初做这个预留的全部意义。
+
+对于版本太旧、不了解这种交接机制的 Box，CLI 保持原有行为，
+也就是无限期持有，并给出旧的"用 `lager boxes unlock` 释放"提示。
+只有在 Box 确认它会发送心跳之后，CLI 才会启用失效 TTL。
+因此较新的 CLI 绝不会留下一个在作业仍在运行时就过期的锁。
+
+### 应急开关
+
+| 环境变量                       | 作用                                                                                                  |
+|-------------------------------|---------------------------------------------------------------------------------------------------------|
+| `LAGER_AUTO_LOCK_DISABLE=1`   | 完全跳过自动加锁。命令仍会检查是否存在他人的用户锁，但不会获取锁。任何非空值都会关闭自动锁，包括 `0`。 |
+| `LAGER_LOCK_WAIT=<seconds>`   | 覆盖冲突时的等待时间。`0` = 快速失败（开发机默认），较大的值 = 耐心排队（CI 默认）。无法解析的值按 `0` 处理，在 CI 中也是如此。 |
+| `LAGER_CI_OVERRIDE=<any>`     | 在 CI 中使用用户计算机的锁行为：持有者是您的普通用户名，默认等待时间为 `0`。 |
+| `LAGER_LOCK_HOLDER=<string>`  | 覆盖持有者身份。当您有意让两个作业共用同一个预留时会用到。 |
+| `LAGER_LOCK_TTL=<seconds>`    | 覆盖 CLI 写入的 TTL。`LAGER_LOCK_TTL=none` = 永不过期（调用方必须执行 `lager boxes unlock`）。 |
+| `LAGER_LOCK_HEARTBEAT=<sec>`  | 覆盖心跳刷新间隔（默认 60 秒）。 |
+
+## 用户锁
+
+**用户锁**是您对一台 Box 做出的显式、持久的预留。
+与自动测试锁不同，用户锁**永不过期** —— 用完之后您必须手动解锁。
+
+适用场景：
+- 为较长的调试会话预留一台 Box。
+- 在维护期间阻止他人使用某台 Box。
+- 在您并没有主动运行命令时占住一台 Box。
+
+### `lager boxes lock`
+
+```bash
+lager boxes lock --box NAME
+```
+
+**选项**：
+- `--box`（必填）—— 要锁定的 Box 名称。
+- `--user` —— 以该用户名加锁（在 Docker 内部运行时很有用，否则用户会是 `root`）。
+
+Box 按完整字符串精确比较持有者名称，而 CLI 如上文所述按作用域比较。
+因此，只要写入相同字符串，该锁在每个界面上都算是您的。
+如果另一个工具（例如控制平面面板）也会锁定这台 Box，
+请用 `lager defaults add --user` 设置成那个工具写入的持有者名称。
+
+只有当两个工具写入完全相同的字符串时，识别才会成立。有些工具把持有者写成
+`<origin>:<id>:<name>:<email>`。`lager boxes` 会把这样的持有者显示为 `<name>`，
+但比较用的仍然是完整字符串。这样的锁不算是您的，
+`lager boxes unlock` 需要加 `--force`。
+
+**示例**：
+```bash
+lager boxes lock --box my-lager-box
+
+# Output:
+Box 'my-lager-box' is locked by alice
+```
+
+如果该 Box 已被其他用户锁定：
+
+```
+Box 'my-lager-box' is already locked by bob (since 2026-03-20T13:00:00Z)
+```
+
+### `lager boxes unlock`
+
+```bash
+lager boxes unlock --box NAME [--force]
+```
+
+**选项**：
+- `--box`（必填）—— 要解锁的 Box 名称。
+- `--force` —— 即使该 Box 是被其他用户锁定的，也强制解锁
+  （用它清除同事留下的陈旧 `lager boxes lock`）。
+
+**示例**：
+```bash
+# Unlock your own lock
+lager boxes unlock --box my-lager-box
+
+# Force unlock a box locked by someone else
+lager boxes unlock --box my-lager-box --force
+```
+
+## 管理操作跳过锁
+
+`lager python` 的以下子命令属于对*已在运行的进程*的管理操作，
+它们有意跳过锁检查和自动获取：
+
+- `lager python --kill <ID>`
+- `lager python --kill-all`
+- `lager python --reattach <ID>`
+- `lager python --continue <ID>`
+- `lager python --console <ID>`
+
+正因为如此，您才可以对一个卡住的分离脚本按 Ctrl+C，
+然后立即 `--kill` 它，而不必先去处理一个无关的用户锁。
+
+## `lager boxes` 显示锁的持有者
+
+当有 Box 被锁定时，`lager boxes` 会多显示一列：
+
+```
+name           ip          user        version   status    locked by
+================================================================================================
+my-lager-box   100.x.x.1   lagerdata   0.47.0    current   alice
+staging-box    100.x.x.2   lagerdata   0.47.0    current   github lager run 9182 job test on runner-3
+pi-box         100.x.x.3   pi          0.47.0    current
+
+Your CLI: 0.47.0
+```
+
+CI 持有者会以易读的形式显示（例如 `github lager run 9182 job test on runner-3`），
+而不是原样打印以冒号分隔的字符串。
+
+由其他服务写入的持有者也会以同样的方式缩短：
+
+| 持有者字符串 | 显示为 |
+|---------------|----------|
+| `<origin>:<id>:<name>:<email>` | `<name>` |
+| `<origin>:<id>:<email>` | `<email>` |
+
+同样的简短形式也出现在 `lager boxes lock` 和 `unlock` 的提示中，
+以及被锁定的 Box 给出的错误里。其他形式的持有者会原样显示。
+
+## CI 工作流程示例
+
+始终开启的自动锁加上 CI 自动等待，意味着 CI 矩阵作业不需要任何特殊写法：
+
+```yaml
+# .github/workflows/integration-tests.yml
+jobs:
+  hardware-tests:
+    strategy:
+      matrix:
+        suite: [power, communication, debug]
+    runs-on: [self-hosted, lager-bench]
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install lager-cli
+      - run: lager python test/api/${{ matrix.suite }} --box my-lager-box
+```
+
+每一项都会用它的 CI 持有者向 `/lock` 发起 POST。竞争失败的那一项最多等待 30 分钟，
+等赢家完成后再重试。不需要调用 `lager boxes lock`。
+
+## 向后兼容
+
+- `lager boxes lock` 和 `lager boxes unlock` 的行为与以前完全一致。
+  CLI 现在会在协议上发送 `holder_type: "user"` + `ttl_seconds: null`。
+  旧客户端 —— 即用较旧的 CLI 访问新的 Box 服务端 —— 仍然得到同样的永不过期行为。
+  服务端把两个字段都没有的负载视为旧版，并应用相同的默认值。
+- `_check_box_lock`（在 resolve_and_validate_box 中已经对每条命令把关的只读锁检查）保持不变。
+
+### 与 v0.13.0 – v0.13.3 的区别（已在 v0.13.4 中移除）
+
+v0.13.0 引入了一个临时的"命令进行中"锁，它通过共享装饰器在**每一条** CLI 命令上触发，
+并由 `--force-command` 标志控制。v0.13.4 移除了它，因为在那种设计下有三个边角情况无法修复：
+
+| v0.13.4 的边角情况                                          | 当前设计如何避开它                                                                                                                                                                                                   |
+|--------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| *"supply 命令从不释放锁"*                  | 每个自动锁都使用 `auto_lock_acquire_for_command`，它注册一个 `atexit` 处理器和一个心跳线程。锁会在正常退出、异常、SIGINT 时释放，最坏情况下在 SIGKILL 之后由服务端的 TTL 回收。v0.13 的缺陷在于装饰器在释放逻辑运行之前吞掉了异常 —— 有了 atexit 这道保险，这种情况不可能再发生。 |
+| *"长时间运行的命令阻塞了同一台 Box 上的其他所有命令"* | 只读 / 列表路径（不带子命令的 `lager supply --box X`、不带 netname 的 `lager gpi --box X`、`lager boxes`、`lager hello`）使用普通的 `resolve_box()`，它只被动检查锁。只有真正与硬件*交互*的子命令才会获取锁。对于并发的硬件使用，开发机会在 1 秒内快速失败，CI 则进入队列（默认 30 分钟，可用 `LAGER_LOCK_WAIT` 配置）。 |
+| *"分离的进程留下了陈旧的锁"*                      | 所有临时锁都带有 `ttl_seconds=1800`，并每 60 秒发送一次心跳。如果 CLI 退出，Box 会在一个 TTL 之内回收该锁。`--detach`（仅 `lager python` 有）之后没有 CLI 继续发送心跳，因此 Box 会在它启动的作业运行期间一直持有该锁，并在作业结束时释放 —— 包括启动失败的作业，这类作业过去会让 Box 被锁住却什么也没运行。 |
+
+`--force-command` 已经**取消**。冲突策略现在是结构化的（开发机快速失败，CI 排队），
+而当您确实需要强行覆盖时，已有的 `lager boxes lock --force` 就是应急开关。
