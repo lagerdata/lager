@@ -1,0 +1,154 @@
+---
+title: ADC
+description: 读取模数转换器的数值
+---
+
+从 ADC 引脚读取模拟电压值。支持 LabJack T7、LabJack U3 和 MCC USB-202 硬件。
+
+## 导入
+
+```python
+from lager import Net, NetType
+```
+
+## 方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `input()` | 读取模拟电压 |
+
+## 方法参考
+
+### `Net.get(name, type=NetType.ADC)`
+
+按名称获取一个 ADC Net。
+
+```python
+from lager import Net, NetType
+
+adc = Net.get('SENSOR', type=NetType.ADC)
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `name` | `str` | ADC Net 的名称 |
+| `type` | `NetType` | 必须为 `NetType.ADC` |
+
+**返回：** ADC Net 实例
+
+### `input()`
+
+读取模拟电压。
+
+```python
+voltage = adc.input()
+print(f"Voltage: {voltage}V")
+```
+
+**返回：** `float` - 以伏特表示的电压
+
+## 示例
+
+### 单次读取
+
+```python
+from lager import Net, NetType
+
+sensor = Net.get('TEMP_SENSOR', type=NetType.ADC)
+voltage = sensor.input()
+print(f"Sensor voltage: {voltage:.3f}V")
+```
+
+### 持续监视
+
+```python
+from lager import Net, NetType
+import time
+
+battery = Net.get('BATTERY_SENSE', type=NetType.ADC)
+
+for i in range(10):
+    voltage = battery.input()
+    print(f"Battery: {voltage:.2f}V")
+    time.sleep(1)
+```
+
+### 数据记录
+
+```python
+from lager import Net, NetType
+import time
+import csv
+
+sensor = Net.get('CURRENT_SENSE', type=NetType.ADC)
+
+with open('readings.csv', 'w', newline='') as f:
+    writer = csv.writer(f)
+    writer.writerow(['time', 'voltage'])
+
+    start = time.time()
+    for i in range(100):
+        elapsed = time.time() - start
+        voltage = sensor.input()
+        writer.writerow([elapsed, voltage])
+        time.sleep(0.1)
+```
+
+### 多个传感器
+
+```python
+from lager import Net, NetType
+
+sensors = {
+    'TEMP': Net.get('TEMP_SENSOR', type=NetType.ADC),
+    'CURRENT': Net.get('CURRENT_SENSE', type=NetType.ADC),
+    'BATTERY': Net.get('BATTERY_SENSE', type=NetType.ADC),
+}
+
+for name, sensor in sensors.items():
+    voltage = sensor.input()
+    print(f"{name}: {voltage:.3f}V")
+```
+
+## 受支持的硬件
+
+| 硬件 | 通道 | 量程 | 分辨率 |
+|----------|----------|-------|------------|
+| LabJack T7 | 14（AIN0-AIN13） | +/-10 V | 16 位（约 0.3 mV/LSB） |
+| LabJack U3 | 16（AIN0-AIN15） | U3-HV：AIN0-AIN3 +/-10.3 V，AIN4-AIN15 0-2.44 V | |
+| MCC USB-202 | 8（CH0-CH7） | +/-10 V | 12 位（约 4.9 mV/LSB） |
+
+LabJack T7 和 USB-202 支持双极性测量（正电压和负电压）。U3 的量程是 LabJack 给出的 U3-HV 数据。
+
+在 LabJack U3 上，`AIN4`-`AIN7` 与 `FIO4`-`FIO7` 是同一组引脚，`AIN8`-`AIN15` 与
+`EIO0`-`EIO7` 是同一组引脚。`input()` 会把引脚设为模拟模式，而对同一引脚调用 GPIO
+会把它设回数字模式。
+
+### 引脚命名
+
+**LabJack T7：**
+
+| 引脚输入 | 通道 |
+|-----------|---------|
+| `0`-`13` | AIN0-AIN13 |
+| `"AIN0"`-`"AIN13"` | AIN0-AIN13 |
+
+**LabJack U3：** `AIN0`-`AIN15`
+
+**MCC USB-202：**
+
+| 引脚输入 | 通道 |
+|-----------|---------|
+| `0`-`7` | CH0-CH7 |
+| `"CH0"`-`"CH7"` | CH0-CH7（不区分大小写） |
+
+## 说明
+
+- ADC Net 可直接使用，不需要 `enable()`/`disable()` 调用
+- 返回以伏特为单位的浮点电压值
+- LabJack T7 和 USB-202 的输入量程为 +/-10 V（双极性）
+- LabJack T7 与 DAC、GPIO 和 SPI 操作共用一个连接句柄
+- USB-202 在每次读取时打开并关闭连接
+- Net 名称必须与 Lager Box 上配置的名称一致

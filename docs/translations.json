@@ -9,6 +9,12 @@
     "getting-started/setting-up-a-lager-box.mdx": "1a4ddec7138e5020e9603ffccc5af470fec92c39ebdb20c384bfcfafb1f0fce2",
     "getting-started/setting-up-instruments.mdx": "fb26958c196ad385b97c7df8e71fef032d093cfc9cfaca2e80b986222d4b7888",
     "getting-started/troubleshooting.mdx": "860a6db04291527478761404bc8867ab393ba6eb09cfa479b9e6fc40e0ea7259",
-    "getting-started/using-lager-in-ci.mdx": "0d8012d426796d67440ff9aea50bb9a30d172a003cf78241c296b4678add86a3"
+    "getting-started/using-lager-in-ci.mdx": "0d8012d426796d67440ff9aea50bb9a30d172a003cf78241c296b4678add86a3",
+    "reference/python/adc.mdx": "3577c99611e2892ef35d22add1ba54c91ad3f804f2314ff5c93b07a72cc449fb",
+    "reference/python/dac.mdx": "3426829ef19d7afc353ac2674875ba8f0bea2db4124c3159f41fb715d9f6bf89",
+    "reference/python/overview.mdx": "bd3b68d23f3588c84f6608be4c433ad26e81553827ab2da1fcfe67ff4ce48c8c",
+    "reference/python/serial.mdx": "0eb4559ccfaa708d402f452ccc696598cba79f1597d6a0c33824a267a4264d8b",
+    "reference/python/solar.mdx": "de1e0ca610a0674e16eb7a0accb599ab45f4c41f106a262c7bced34915753ea5",
+    "reference/python/tc.mdx": "9f6fafcbcac95d0cd42fd3faa82f0550f2de67fe6a0ecbdcda92ff9fcd1c07f7"
   }
 }

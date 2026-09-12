@@ -41,6 +41,7 @@ Usage:
 import argparse
 import hashlib
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -117,6 +118,52 @@ def record(manifest: dict, english: Path, lang: str) -> None:
     manifest.setdefault(lang, {})[key] = sha256(english)
 
 
+def relink(lang: str) -> int:
+    """Point every cross-reference in a translated page at the right language.
+
+    A translated page links to its siblings. While a tab is half done, some of
+    those siblings exist in this language and some do not, and the correct
+    target changes as pages land. Doing it by hand produces two failures that
+    look nothing alike: a link to a page that does not exist yet (the
+    broken-links gate catches it, loudly) and a link left pointing at English
+    after the translation landed (nothing catches it -- the reader silently
+    falls out of their language and has no way to know they were supposed to
+    stay in it).
+
+    The rule has no judgement in it, so it belongs in a tool: if the
+    translation exists, link to the translation; otherwise link to the English
+    page. Idempotent, and correct at any point in a partial translation.
+    """
+    changed = 0
+    for path in translated_pages(lang):
+        text = original = path.read_text()
+
+        def absolute(match):
+            page = match.group(1)
+            return (f'(/source/{lang}/{page}' if (SOURCE / lang / f'{page}.mdx').exists()
+                    else f'(/source/{page}')
+
+        text = re.sub(rf'\(/source/(?:{lang}/)?([A-Za-z0-9\-_/]+)', absolute, text)
+
+        # Relative links (./sibling, ../group/page) resolve against the page's
+        # own directory, so inside a translation they already point at the
+        # translation -- correct once that sibling exists, a broken link until
+        # then. Leave them relative when the sibling is translated; rewrite to
+        # the absolute English path when it is not.
+        def relative(match):
+            rel = (path.parent / match.group(1)).resolve()
+            if rel.with_suffix('.mdx').exists():
+                return match.group(0)
+            english = SOURCE / rel.relative_to(SOURCE / lang)
+            return f'](/source/{english.relative_to(SOURCE)}'
+
+        text = re.sub(r'\]\((\.{1,2}/[A-Za-z0-9\-_./]+)', relative, text)
+        if text != original:
+            path.write_text(text)
+            changed += 1
+    return changed
+
+
 def check(manifest: dict) -> list[str]:
     failures = []
     for lang in LANGUAGES:
@@ -186,6 +233,9 @@ def main() -> int:
                         help='stamp every translation currently on disk')
     parser.add_argument('--progress', action='store_true',
                         help='print translation coverage per section')
+    parser.add_argument('--relink', action='store_true',
+                        help='point cross-references at the translation where one exists, '
+                             'and at the English page where one does not')
     args = parser.parse_args()
 
     manifest = load_manifest()
@@ -210,13 +260,27 @@ def main() -> int:
         return 0
 
     if args.record_all:
+        # Rebuild from what is on disk rather than merging into what was there.
+        # A merge leaves an entry behind when a translation is deleted, and the
+        # only way to clear it is to hand-edit the JSON -- which is the job this
+        # tool exists to remove. Report the drops; a pruned entry means a
+        # translation went away, and that is worth seeing rather than inferring.
         for lang in LANGUAGES:
+            kept = {}
             for path in translated_pages(lang):
                 english = to_english(path, lang)
                 if english.exists():
-                    record(manifest, english, lang)
+                    kept[str(english.relative_to(SOURCE))] = sha256(english)
+            for gone in sorted(set(manifest.get(lang, {})) - set(kept)):
+                print(f'  pruned {lang}: {gone} (no translation on disk)')
+            manifest[lang] = kept
         save_manifest(manifest)
         print(f'recorded {sum(len(v) for v in manifest.values())} translation(s)')
+        return 0
+
+    if args.relink:
+        for lang in LANGUAGES:
+            print(f'{lang}: rewrote links in {relink(lang)} page(s)')
         return 0
 
     if args.progress:

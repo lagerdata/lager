@@ -1,0 +1,256 @@
+---
+title: Python SDK 概述
+description: Lager Python SDK 简介，用于测试自动化和硬件控制
+---
+
+Lager Python SDK 提供了一套强大的面向对象接口，用于控制硬件并在您的被测设备（DUT）上实现测试自动化。
+它可以通过程序控制电源、传感器、调试探针等设备。
+
+## 导入
+
+```python
+from lager import Net, NetType  # Convenience import for Net and NetType
+```
+
+## 核心类
+
+| 类 | 说明 | 导入方式 |
+|-------|-------------|--------|
+| [`binaries`](/source/reference/python/binaries) | 执行自定义二进制程序 | `from lager.binaries import run_custom_binary` |
+| [`Net`](/source/reference/python/net) | 管理硬件连接的核心类 | `from lager import Net, NetType` |
+| [`Central`](/source/reference/python/ble) | BLE 扫描与连接 | `from lager.ble import Central, Client` |
+
+## Net 类型
+
+该 SDK 为不同硬件支持多种 Net 类型：
+
+| NetType | 说明 | 硬件 |
+|---------|-------------|----------|
+| `NetType.PowerSupply` | 可编程电源 | Rigol DP800、Keithley、Keysight |
+| `NetType.PowerSupply2Q` | 双象限电源（太阳能仿真） | EA PSI/EL 系列 |
+| `NetType.Battery` | 电池模拟器 | Keithley 2281S |
+| `NetType.ELoad` | 电子负载 | Rigol DL3000 |
+| `NetType.Analog` | 示波器模拟输入 | Rigol MSO5000 |
+| `NetType.Logic` | 逻辑分析仪输入 | Rigol MSO5000 |
+| `NetType.Waveform` | 波形发生器 | Rigol MSO5000 |
+| `NetType.GPIO` | 数字 I/O | LabJack T7、LabJack U3、MCC USB-202 |
+| `NetType.ADC` | 模数转换器 | LabJack T7、LabJack U3、MCC USB-202 |
+| `NetType.DAC` | 数模转换器 | LabJack T7、LabJack U3、MCC USB-202 |
+| `NetType.Thermocouple` | 温度传感器 | Phidget |
+| `NetType.Rotation` | 旋转编码器 | Phidget |
+| `NetType.WattMeter` | 功率计 | Yocto-Watt、Joulescope JS220 |
+| `NetType.UART` | 串行通信 | USB 串口 |
+| `NetType.Debug` | 调试探针 | J-Link、OpenOCD 支持的探针 |
+| `NetType.Arm` | 机械臂 | Rotrics Dexarm |
+| `NetType.Usb` | USB 端口控制 | Acroname、YKUSH、Plugable |
+| `NetType.Wifi` | WiFi 模块 | Lager Box WiFi |
+| `NetType.Actuate` | 执行器控制 | Dexarm 执行器 |
+| `NetType.SPI` | SPI 总线通信 | Aardvark、FT232H、LabJack T7、LabJack U3 |
+| `NetType.I2C` | I2C 总线通信 | Aardvark、FT232H、LabJack T7、LabJack U3 |
+| `NetType.EnergyAnalyzer` | 能量积分测量 | Joulescope JS220 |
+| `NetType.Webcam` | 视频串流 | USB 摄像头 |
+
+## 快速上手
+
+### 列出可用的 Net
+
+```python
+from lager import Net
+
+nets = Net.list_saved()
+for net in nets:
+    print(f"{net['name']}: {net['role']}")
+```
+
+### 控制电源
+
+```python
+from lager import Net, NetType
+
+# Get the power supply net
+psu = Net.get('VDD', type=NetType.PowerSupply)
+
+# Configure and enable
+psu.set_voltage(3.3)
+psu.set_current(0.5)
+psu.enable()
+
+# Read measurements
+print(f"Voltage: {psu.voltage()}V")
+print(f"Current: {psu.current()}A")
+
+# Disable when done
+psu.disable()
+```
+
+### 读取 ADC
+
+```python
+from lager import Net, NetType
+
+adc = Net.get('SENSOR', type=NetType.ADC)
+voltage = adc.input()
+print(f"Voltage: {voltage}V")
+```
+
+### 控制 GPIO
+
+```python
+from lager import Net, NetType
+
+# Read input
+button = Net.get('BUTTON', type=NetType.GPIO)
+state = button.input()
+
+# Set output
+led = Net.get('LED', type=NetType.GPIO)
+led.output(1)  # HIGH
+led.output(0)  # LOW
+```
+
+### 控制调试探针
+
+```python
+from lager import Net, NetType
+
+# Get the debug net
+debug = Net.get('jlink1', type=NetType.Debug)
+
+# Connect and flash firmware
+debug.connect()
+debug.flash('firmware.hex')
+debug.reset()
+```
+
+### 控制 USB 集线器
+
+```python
+from lager import Net, NetType
+
+# Get the USB net
+usb = Net.get('SENSOR_USB', type=NetType.Usb)
+
+# Power control
+usb.enable()      # Power on
+usb.disable()     # Power off
+usb.toggle()      # Toggle state
+```
+
+## 完整示例
+
+```python
+from lager import Net, NetType
+import time
+
+# 1. Flash firmware
+debug = Net.get('jlink1', type=NetType.Debug)
+debug.connect()
+debug.flash('firmware.hex')
+debug.reset()
+print("Firmware flashed")
+
+# 2. Power on USB peripheral
+usb = Net.get('SENSOR_USB', type=NetType.Usb)
+usb.enable()
+print("USB sensor powered on")
+
+# 3. Enable main power
+main_power = Net.get("VDD_MAIN", type=NetType.PowerSupply)
+main_power.set_voltage(3.3)
+main_power.enable()
+print("Main power enabled")
+
+# 4. Read sensor
+sensor = Net.get("TEMP_SENSE", type=NetType.ADC)
+temperature = sensor.input()
+print(f"Temperature: {temperature}V")
+
+# 5. Clean up
+main_power.disable()
+usb.disable()
+print("Test complete")
+```
+
+## API 参考
+
+<Note>
+  更想用 Rust 编写测试？同样的 Net 也可以通过
+  [Rust SDK](/source/reference/rust/overview) 访问，它以 `cargo test` 的方式
+  对 Box 发起调用，而不是在 Box 上运行。下面记录的每种 Net 类型都有对应的 Rust
+  版本，只有 scope 和 logic 例外，它们还没有进入 Box 的 HTTP API。
+</Note>
+
+### 核心类
+
+| 页面 | 说明 |
+|------|-------------|
+| [自定义二进制程序](/source/reference/python/binaries) | 在 Lager Box 上执行自定义二进制程序 |
+| [Net](/source/reference/python/net) | 硬件 Net 管理和核心操作 |
+| [Debug](/source/reference/python/debug) | 设备烧录、复位和调试控制（含 RTT） |
+| [USB](/source/reference/python/usb) | USB 设备电源控制 |
+
+### 电源与仿真
+
+| 页面 | 说明 |
+|------|-------------|
+| [电源](/source/reference/python/supply) | 可编程电源控制 |
+| [电池](/source/reference/python/battery) | 电池仿真与测试 |
+| [太阳能](./solar) | 太阳能板仿真 |
+| [电子负载](/source/reference/python/eload) | 电子负载控制 |
+| [功率计](/source/reference/python/watt) | 功率测量 |
+
+### 测量
+
+| 页面 | 说明 |
+|------|-------------|
+| [示波器](/source/reference/python/scope) | 示波器波形采集与测量 |
+| [逻辑分析仪](/source/reference/python/logic) | 数字信号采集与协议解码 |
+| [ADC](./adc) | 模数转换 |
+| [热电偶](./tc) | 温度测量 |
+
+### I/O 与通信
+
+| 页面 | 说明 |
+|------|-------------|
+| [GPIO](/source/reference/python/gpio) | 数字输入/输出控制 |
+| [DAC](./dac) | 数模转换 |
+| [I2C](/source/reference/python/i2c) | I2C 总线通信 |
+| [SPI](/source/reference/python/spi) | SPI 总线通信 |
+| [UART](/source/reference/python/uart) | UART Net 串行通信 |
+| [Serial](./serial) | 原生 pyserial 支持 |
+| [BLE](/source/reference/python/ble) | 低功耗蓝牙通信 |
+| [WiFi](/source/reference/python/wifi) | WiFi 配置 |
+
+### 实用工具
+
+| 页面 | 说明 |
+|------|-------------|
+| [机械臂](/source/reference/python/arm) | 机械臂控制 |
+| [摄像头](/source/reference/python/webcam) | 摄像头串流与视频采集 |
+
+## 错误处理
+
+```python
+from lager import Net, NetType, InvalidNetError
+
+try:
+    net = Net.get('INVALID_NET', NetType.Analog)
+except InvalidNetError as e:
+    print(f"Net not found: {e}")
+except Exception as e:
+    print(f"Error: {e}")
+```
+
+## 说明
+
+- 用完与电源有关的 Net 之后，请务必调用 `disable()`
+- 简单的 Net（GPIO、ADC、DAC）不需要调用 `enable()`/`disable()`
+- 复杂的 Net（PowerSupply、Battery、Analog）在使用前需要先 `enable()`
+- Net 名称必须与 Lager 系统中配置的名称一致
+- 请用 try/except 块实现健壮的错误处理
+
+## 演示脚本
+
+[演示脚本](https://github.com/lagerdata/lager/blob/main/docs/examples/demo_script.py)
+是一个更完整的例子。它在一个自动化流程中组合了机械臂控制、USB 集线器电源循环、
+调试探针烧录、电源管理和 ADC 测量。

@@ -1,0 +1,263 @@
+---
+title: 太阳能仿真
+description: 控制太阳能板仿真 Net
+---
+
+<Note>
+**即将推出：** 面向 EA PSI/EL 系列双象限电源的太阳能模拟器 Python API 仍在开发中。
+基于 Net 的 API（`Net.get('solar1', type=NetType.PowerSupply2Q)`）及相关方法在此
+先行列出以供预览，但完整的测试和验证要等硬件到位之后才能进行。
+生产可用的功能请关注后续版本。
+</Note>
+
+模拟太阳能板的特性，用于测试由太阳能供电的设备。
+
+## 导入
+
+```python
+from lager import Net, NetType
+```
+
+## 方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `enable()` | 连接并启动太阳能仿真模式 |
+| `disable()` | 断开连接并停止太阳能仿真 |
+| `irradiance(value)` | 设置或读取辐照度（W/m²） |
+| `mpp_current()` | 读取最大功率点电流 |
+| `mpp_voltage()` | 读取最大功率点电压 |
+| `voc()` | 读取开路电压 |
+| `temperature()` | 读取模拟的电池温度 |
+| `resistance(value)` | 设置或读取电池板内阻 |
+
+<Note>
+太阳能相关方法从仪器返回的是字符串。如需参与计算，请先转换为浮点数。
+</Note>
+
+## 方法参考
+
+### `Net.get(name, type=NetType.PowerSupply2Q)`
+
+按名称获取一个太阳能仿真 Net。
+
+```python
+from lager import Net, NetType
+
+solar = Net.get('SOLAR', type=NetType.PowerSupply2Q)
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `name` | `str` | 太阳能 Net 的名称 |
+| `type` | `NetType` | 必须为 `NetType.PowerSupply2Q` |
+
+**返回：** 太阳能仿真 Net 实例
+
+### `enable()`
+
+连接仪器并启动太阳能仿真模式。
+
+```python
+from lager import Net, NetType
+
+solar = Net.get('SOLAR', type=NetType.PowerSupply2Q)
+solar.enable()
+```
+
+### `disable()`
+
+断开与仪器的连接并停止太阳能仿真。
+
+```python
+solar.disable()
+```
+
+### `irradiance(value=None)`
+
+设置或读取辐照度。
+
+```python
+# Set irradiance
+solar.irradiance(1000)  # Standard test condition (1000 W/m²)
+
+# Read current irradiance
+irr = solar.irradiance()
+print(f"Irradiance: {irr}")  # Returns string
+```
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `value` | `float` 或 `None` | 辐照度，单位 W/m²（0-1500）。为 None 时读取当前值。 |
+
+**返回：** `str` - 当前的辐照度值
+
+### `voc()`
+
+读取开路电压。
+
+```python
+voc_str = solar.voc()
+print(f"Voc: {voc_str}")
+voc = float(voc_str)  # Convert to float for calculations
+```
+
+**返回：** `str` - 电压值
+
+### `mpp_voltage()`
+
+读取最大功率点电压。
+
+```python
+v_mpp = solar.mpp_voltage()
+print(f"MPP voltage: {v_mpp}")
+```
+
+**返回：** `str` - 电压值
+
+### `mpp_current()`
+
+读取最大功率点电流。
+
+```python
+i_mpp = solar.mpp_current()
+print(f"MPP current: {i_mpp}")
+```
+
+**返回：** `str` - 电流值
+
+### `resistance(value=None)`
+
+设置或读取电池板的动态内阻。
+
+```python
+# Set resistance
+solar.resistance(5.0)
+
+# Read resistance
+r = solar.resistance()
+print(f"Resistance: {r}")
+```
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `value` | `float` 或 `None` | 内阻，单位欧姆。为 None 时读取当前值。 |
+
+**返回：** `str` - 内阻值
+
+### `temperature()`
+
+读取模拟的电池温度。
+
+```python
+temp = solar.temperature()
+print(f"Cell temp: {temp}")
+```
+
+**返回：** `str` - 温度值
+
+## 示例
+
+### 基本的太阳能仿真
+
+```python
+from lager import Net, NetType
+import time
+
+solar = Net.get('SOLAR_INPUT', type=NetType.PowerSupply2Q)
+
+# Start simulation
+solar.enable()
+
+# Set standard test conditions (1000 W/m²)
+solar.irradiance(1000)
+time.sleep(1)
+
+# Read panel characteristics (returns strings)
+voc = solar.voc()
+v_mpp = solar.mpp_voltage()
+i_mpp = solar.mpp_current()
+
+print(f"Voc: {voc}")
+print(f"MPP: {v_mpp}V @ {i_mpp}A")
+
+# Calculate max power (convert to float first)
+v = float(v_mpp)
+i = float(i_mpp)
+print(f"Max Power: {v * i:.2f}W")
+
+# Clean up
+solar.disable()
+```
+
+### 测试多个辐照度等级
+
+```python
+from lager import Net, NetType
+import time
+
+solar = Net.get('SOLAR', type=NetType.PowerSupply2Q)
+solar.enable()
+
+conditions = [200, 500, 800, 1000, 1200]
+
+for irr in conditions:
+    solar.irradiance(irr)
+    time.sleep(1)
+
+    # Read and convert values
+    voc = float(solar.voc())
+    v_mpp = float(solar.mpp_voltage())
+    i_mpp = float(solar.mpp_current())
+
+    print(f"Irradiance: {irr} W/m²")
+    print(f"  Voc: {voc:.2f}V")
+    print(f"  MPP: {v_mpp:.2f}V @ {i_mpp:.3f}A")
+    print(f"  Power: {v_mpp * i_mpp:.2f}W")
+    print()
+
+solar.disable()
+```
+
+### MPPT 跟踪测试
+
+```python
+from lager import Net, NetType
+import time
+
+solar = Net.get('SOLAR', type=NetType.PowerSupply2Q)
+dut_current = Net.get('DUT_CURRENT', type=NetType.ADC)
+
+solar.enable()
+solar.irradiance(1000)
+
+# Monitor MPPT tracking
+for i in range(30):
+    i_mpp = float(solar.mpp_current())
+    actual = dut_current.input()
+
+    efficiency = (actual / i_mpp) * 100 if i_mpp > 0 else 0
+    print(f"Target: {i_mpp:.3f}A, Actual: {actual:.3f}A, Eff: {efficiency:.1f}%")
+    time.sleep(1)
+
+solar.disable()
+```
+
+## 受支持的硬件
+
+| 厂商 | 型号 | 特性 |
+|--------------|-------|----------|
+| EA | PSI/EL 系列 | 双象限、PV 仿真 |
+| EA | PSB 10060-60 | 双向 |
+| EA | PSB 10080-60 | 双向 |
+
+## 说明
+
+- 太阳能仿真需要双向（双象限）电源
+- 标准测试条件（STC）：1000 W/m²、25°C、AM1.5
+- I-V 曲线会根据辐照度自动生成
+- 使用太阳能专有方法之前请先调用 `enable()`
+- 结束时请务必调用 `disable()`
+- **返回值是字符串** —— 参与计算前请转换为浮点数

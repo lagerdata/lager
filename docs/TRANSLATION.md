@@ -10,6 +10,28 @@ rules are American spelling, approved modals and a word count per sentence, and
 none of those has a meaning in Mandarin. `tools/check_ste.py` exempts
 `docs/source/zh/` for that reason.
 
+## Who owns what
+
+Release notes are never translated. A note says what shipped on a day, and the
+archive's whole value is that it still says it. `check_translations.py` excludes
+the directory, so it never appears in `--progress`.
+
+| Tab | Pages | Words | Owner |
+|---|---|---|---|
+| Overview (Getting Started) | 10 | 22,411 | done |
+| Python API | 27 | 31,109 | |
+| AI Agents (MCP) | 2 | 2,555 | |
+| Supported Instruments | 1 | 2,484 | |
+| CLI Reference | 47 | 64,910 | |
+| Rust API | 31 | 19,753 | |
+
+Put a name in the owner column before anyone starts. Two people who each assume
+the other has a tab produce the same corpus as two people who both translate it,
+and neither is visible until a reviewer reads the diff. Translate a whole tab
+rather than scattered pages. A tab is the unit a reader navigates, and a half-translated tab
+sends them between languages on every click. `--progress` reports by directory,
+so a tab that is finished reads as finished.
+
 ## Layout
 
 A translation mirrors the English filename under a language directory:
@@ -38,6 +60,7 @@ fails when the two disagree.
 python tools/check_translations.py                 # the gate
 python tools/check_translations.py --progress      # coverage per section
 python tools/check_translations.py --record PATH   # stamp after translating
+python tools/check_translations.py --relink        # fix cross-references
 ```
 
 After you translate a page, or update a translation to match an English edit,
@@ -47,6 +70,26 @@ stamp it. The gate is in `static-checks.yml`, so an unstamped change fails CI.
 manifest says "these two agree". A stamp on an untranslated edit converts
 "nobody checked" into "the check passed", which is the one outcome worse than no
 gate at all.
+
+## Cross-references while a tab is half done
+
+Write links to sibling pages however you like, then run `--relink` before you
+push. It points each link at the translation when one exists and at the English
+page when one does not, and it is idempotent.
+
+It handles both link forms, which fail differently. An absolute
+`/source/reference/python/net` is rewritten to carry the language prefix or not.
+A relative `./net` already resolves inside the translation directory, so it is
+silently correct once that sibling is translated and broken until then; the tool
+leaves it relative when the sibling exists and rewrites it to the absolute
+English path when it does not.
+
+Do this rather than fixing links by hand, because the two failure modes look
+nothing alike. A link to a page that is not translated yet fails the
+broken-links gate, loudly. A link left pointing at English after that page was
+translated fails nothing at all — the reader silently drops out of their
+language, with no way to tell they were meant to stay in it. `--relink` fixes
+both, and it is the only one of the two a checker can catch.
 
 ## What stays in English
 

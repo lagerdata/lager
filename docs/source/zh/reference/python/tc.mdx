@@ -1,0 +1,144 @@
+---
+title: 热电偶
+description: 从热电偶传感器读取温度
+---
+
+从热电偶传感器读取温度测量值。
+
+## 导入
+
+```python
+from lager import Net, NetType
+```
+
+## 方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `read()` | 读取温度，单位 °C |
+
+## 方法参考
+
+### `Net.get(name, type=NetType.Thermocouple)`
+
+按名称获取一个热电偶 Net。
+
+```python
+from lager import Net, NetType
+
+tc = Net.get('TEMP_SENSOR', type=NetType.Thermocouple)
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `name` | `str` | 热电偶 Net 的名称 |
+| `type` | `NetType` | 必须为 `NetType.Thermocouple` |
+
+**返回：** 热电偶 Net 实例
+
+### `read()`
+
+从热电偶读取温度。
+
+```python
+temp = tc.read()
+print(f"Temperature: {temp}°C")
+```
+
+**返回：** `float` - 以摄氏度表示的温度
+
+## 示例
+
+### 单次读取
+
+```python
+from lager import Net, NetType
+
+probe = Net.get('OVEN_PROBE', type=NetType.Thermocouple)
+temp = probe.read()
+print(f"Temperature: {temp:.1f}°C")
+```
+
+### 持续监视
+
+```python
+from lager import Net, NetType
+import time
+
+tc = Net.get('FURNACE_TC', type=NetType.Thermocouple)
+
+print("Monitoring temperature. Press Ctrl+C to exit.")
+
+while True:
+    try:
+        temp = tc.read()
+        print(f"Temperature: {temp:.2f}°C")
+        time.sleep(1)
+    except KeyboardInterrupt:
+        print("Monitoring stopped.")
+        break
+```
+
+### 温度记录
+
+```python
+from lager import Net, NetType
+import time
+import csv
+
+tc = Net.get('DUT_TEMP', type=NetType.Thermocouple)
+
+with open('temp_log.csv', 'w', newline='') as f:
+    writer = csv.writer(f)
+    writer.writerow(['time', 'temperature'])
+
+    start = time.time()
+    for i in range(100):
+        elapsed = time.time() - start
+        temp = tc.read()
+        writer.writerow([elapsed, temp])
+        time.sleep(1)
+
+print("Logging complete")
+```
+
+### 过热保护
+
+```python
+from lager import Net, NetType
+import time
+
+tc = Net.get('BOARD_TEMP', type=NetType.Thermocouple)
+psu = Net.get('VDD', type=NetType.PowerSupply)
+
+MAX_TEMP = 85.0  # °C
+
+psu.set_voltage(3.3)
+psu.enable()
+
+while True:
+    temp = tc.read()
+    print(f"Board temp: {temp:.1f}°C")
+
+    if temp > MAX_TEMP:
+        print("OVER TEMPERATURE! Shutting down.")
+        psu.disable()
+        break
+
+    time.sleep(1)
+```
+
+## 硬件集成
+
+| 硬件 | 特性 |
+|----------|----------|
+| Phidget | K 型热电偶接口 |
+
+## 说明
+
+- 热电偶 Net 可直接使用，不需要 `enable()`/`disable()` 调用
+- 温度以摄氏度返回
+- 读取速率取决于热电偶硬件
+- Net 名称必须与 Lager Box 上配置的名称一致
