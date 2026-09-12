@@ -1,0 +1,170 @@
+---
+title: GPO
+description: 设置 GPIO 输出电平
+---
+
+设置 GPIO 引脚的数字输出电平，并可选择保持模式，让输出一直有效直到被中断。
+
+## 语法
+
+```bash
+lager gpo [NETNAME] LEVEL [OPTIONS]
+```
+
+## 参数
+
+| 参数 | 说明 |
+|----------|-------------|
+| `NETNAME` | GPIO Net 名称（设置了默认值时可省略）。省略时会列出全部可用的 GPIO Net。 |
+| `LEVEL` | 输出电平（见下文） |
+
+## 电平取值
+
+接受以下取值（不区分大小写）：
+
+| 取值 | 结果 |
+|-------|--------|
+| `high`、`on`、`1` | 把引脚置为高电平 |
+| `low`、`off`、`0` | 把引脚置为低电平 |
+| `toggle` | 翻转当前状态 |
+
+## 选项
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--box BOX` | Lager Box 名称或 IP 地址 |
+| `--hold` | 保持输出状态（进程持续运行，直到按下 Ctrl+C） |
+| `--json` | 输出程序可读的 JSON 对象，而不是格式化文本 |
+
+---
+
+## 用法
+
+```bash
+# Set pin high
+lager gpo LED1 high --box my-lager-box
+
+# Set pin low
+lager gpo LED1 low
+
+# Toggle pin state
+lager gpo LED1 toggle
+
+# Using numeric values
+lager gpo LED1 1
+lager gpo LED1 0
+
+# List available GPIO nets (omit net name and level)
+lager gpo --box my-lager-box
+```
+
+### 保持模式
+
+`--hold` 标志在设置好输出电平之后让进程继续运行。引脚会保持该状态，
+直到您按下 Ctrl+C。当您要为手动测试保持某个信号，
+或者引脚状态会在两次 CLI 调用之间复位时，请使用它。
+
+```bash
+# Hold reset line low until manually released
+lager gpo RESET_N low --hold --box my-lager-box
+# Press Ctrl+C to release
+
+# Hold enable pin high during manual testing
+lager gpo EN high --hold
+# Press Ctrl+C when done
+```
+
+---
+
+## 受支持的硬件
+
+| 设备 | 引脚 | 电压 |
+|--------|------|---------|
+| LabJack T7 | FIO0-FIO7、EIO0-EIO7、CIO0-CIO3、MIO0-MIO2 | 3.3V 逻辑 |
+| LabJack U3 | FIO4-FIO7、EIO0-EIO7、CIO0-CIO3 | |
+| MCC USB-202 | DIO0-DIO7（0-7） | 3.3V/5V TTL |
+| Aardvark | 0-5（SCL、SDA、MISO、SCK、MOSI、SS） | 3.3V |
+| FT232H | 0-15（AD0-AD7、AC0-AC7） | 3.3V |
+
+<Note>
+Aardvark 和 FT232H 的 GPIO 支持目前已停用。将来的版本可能重新启用它。
+当前可用的 GPIO 后端是 LabJack T7、LabJack U3 和 MCC USB-202。
+</Note>
+
+### LabJack U3 引脚
+
+- `FIO0`-`FIO3` 不作为 `gpio` 通道提供。在 U3-HV 上它们是固定的高压模拟输入。
+- Lager 把每一台 U3 都当作 U3-HV 对待，因此 U3-LV 同样失去这四条数字线。
+- 写操作会把引脚设为数字模式并设为输出。
+- 在 0.46.1 之前保存在 `FIO0`-`FIO3` 上的 `gpio` Net 仍会被列出，但使用时会失败。请删除那个 Net。
+
+### Aardvark 引脚映射
+
+Aardvark I2C/SPI 适配器在它的 10 针排针上提供 6 个 GPIO 引脚。
+引脚可以用编号指定，也可以用信号名指定：
+
+| 引脚 | 名称 | 排针针脚 |
+|-----|------|------------|
+| 0 | SCL | 1 |
+| 1 | SDA | 3 |
+| 2 | MISO | 5 |
+| 3 | SCK | 7 |
+| 4 | MOSI | 8 |
+| 5 | SS | 9 |
+
+### FT232H 引脚映射
+
+FT232H 在两个端口上提供 16 个 GPIO 引脚：
+
+| 引脚 | 名称 | 说明 |
+|------|-------|-------------|
+| 0-7 | AD0-AD7 | 端口 A 数据引脚 |
+| 8-15 | AC0-AC7 | 端口 A 控制引脚 |
+
+---
+
+## 示例
+
+```bash
+# Control an LED
+lager gpo LED1 on --box my-lager-box
+sleep 1
+lager gpo LED1 off --box my-lager-box
+
+# Toggle reset line
+lager gpo RESET_N low
+sleep 0.1
+lager gpo RESET_N high
+
+# Blink pattern
+for i in {1..5}; do
+    lager gpo LED1 toggle
+    sleep 0.5
+done
+
+# Hold a signal during manual testing
+lager gpo BOOT0 high --hold --box my-lager-box
+# Ctrl+C to release, then flash firmware
+
+# Assert chip select for manual SPI debugging
+lager gpo CS_N low --hold --box my-lager-box
+```
+
+---
+
+## 相关命令
+
+- [`lager gpi`](/source/reference/cli/gpi) - 读取 GPIO 输入状态
+
+---
+
+## 说明
+
+- GPO 只用于设置输出引脚
+- 读取输入引脚请用 `lager gpi`
+- 默认 Net 可以用 `lager defaults add --gpio-net` 设置
+- 引脚必须在 Net 配置中被设为输出
+- toggle 会先读取当前状态再取反
+- USB-202 的通道可以写作 `0`-`7`，也可以写作 `DIO0`-`DIO7`
+- `--hold` 会让进程持续运行；按 Ctrl+C 释放引脚并退出
+- 不加 `--hold` 时，命令设置好输出电平后立即退出；引脚会保持该状态，直到下一条命令

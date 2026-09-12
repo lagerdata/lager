@@ -1,0 +1,209 @@
+---
+title: Logs
+description: 管理 Lager Box 日志
+---
+
+查看 Lager Box 上日志文件的大小，并删除旧日志。
+
+## 语法
+
+```bash
+lager logs COMMAND [OPTIONS]
+```
+
+## 命令
+
+| 命令 | 说明 |
+|---------|-------------|
+| `size` | 查看一台或多台 Lager Box 上日志文件的大小 |
+| `clean` | 清理 Lager Box 上的旧日志文件 |
+| `docker` | 查看 Docker 容器日志的大小 |
+
+<Note>
+这些命令用于统计和删除日志文件，它们不打印日志内容。
+若要读取 Box 各服务的日志，请参阅下方的"读取服务日志"一节。
+</Note>
+
+---
+
+## 命令参考
+
+### `size`
+
+查看某一台 Lager Box、或全部已保存 Lager Box 上 `~/box/logs` 的大小。
+
+```bash
+lager logs size [--box BOX] [--verbose]
+```
+
+**选项：**
+- `--box BOX` - 指定某台 Lager Box（不指定时检查全部）
+- `--verbose` / `-v` - 显示各个日志文件
+
+**示例：**
+```bash
+# Check all Lager Boxes
+lager logs size
+
+# Check specific Lager Box
+lager logs size --box my-lager-box
+
+# Show individual files
+lager logs size --box my-lager-box --verbose
+```
+
+输出：
+```
+my-lager-box (100.64.1.42):
+  Total logs: 620M
+  Warning: Logs are large, consider cleaning
+```
+
+### `clean`
+
+删除 `~/box/logs` 中超过指定天数的 `*.log` 文件。
+
+```bash
+lager logs clean --box BOX [--older-than DAYS] [--yes]
+```
+
+**选项：**
+- `--box BOX`（必填）- 要清理的 Lager Box
+- `--older-than DAYS` - 删除超过 N 天的日志（默认 1）
+- `--yes` - 跳过确认提示
+
+**示例：**
+```bash
+# Clean logs older than 1 day (default)
+lager logs clean --box my-lager-box
+
+# Clean logs older than 7 days
+lager logs clean --box my-lager-box --older-than 7
+
+# Clean without confirmation
+lager logs clean --box my-lager-box --yes
+```
+
+输出：
+```
+Cleaning logs on my-lager-box... OK
+Current logs size: 48M
+```
+
+### `docker`
+
+查看每个正在运行的容器的 Docker 日志文件大小。一台 Lager Box 运行一个容器，名为 `lager`。
+
+```bash
+lager logs docker --box BOX [--container NAME]
+```
+
+**选项：**
+- `--box BOX`（必填）- 要检查的 Lager Box
+- `--container NAME` - 指定容器（默认为全部）
+
+**示例：**
+```bash
+# Check all containers
+lager logs docker --box my-lager-box
+
+# Check specific container
+lager logs docker --box my-lager-box --container lager
+```
+
+输出：
+```
+Docker logs on my-lager-box (100.64.1.42):
+
+Container: lager
+  Size: 8.2M Path: /var/lib/docker/containers/<id>/<id>-json.log
+
+Note: Docker logs are automatically rotated with max-size=10m, max-file=3
+Total maximum per container: ~30MB
+```
+
+该命令通过非交互式 SSH 会话，用 `sudo` 读取日志文件。
+如果 Box 上的 `sudo` 要求输入密码，容器名称下方就不会出现大小那一行。
+
+---
+
+## 大小阈值
+
+`size` 命令使用以下告警阈值：
+
+| 大小 | 状态 |
+|------|--------|
+| 500 MB 及以下 | 正常 |
+| 超过 500 MB | `Warning: Logs are large, consider cleaning` |
+| 1 GB 及以上 | `ERROR: Logs are very large! Clean immediately:`，随后给出 `clean` 命令 |
+
+---
+
+## 会清理哪些内容
+
+`clean` 命令删除：
+- Box 宿主机上 `~/box/logs` 中匹配 `*.log`、并且超过 `--older-than` 天数的文件
+
+它**不会**删除：
+- `/var/log/` 中的系统日志
+- Docker 容器日志（单独管理）
+- 容器内部的服务日志
+- 新于 `--older-than` 阈值的文件
+
+---
+
+## 读取服务日志
+
+Box 上的各个服务把日志写在 `lager` 容器内部：
+
+| 服务 | 日志文件 |
+|---------|----------|
+| Python 执行服务 | `/tmp/lager-python-service.log` |
+| 硬件服务 | `/tmp/lager-hardware-service.log` |
+| 调试服务 | `/tmp/lager-debug-service.log` |
+| Box HTTP 服务器（端口 9000） | `/tmp/lager-http-server.log` |
+| MCP 服务器 | `/tmp/lager-mcp-server.log` |
+
+若要读取某个日志的最后几行，请在 Box 上运行 `docker exec`：
+
+```bash
+lager ssh --box my-lager-box -- docker exec lager tail -n 200 /tmp/lager-hardware-service.log
+```
+
+---
+
+## 自动化
+
+安排定期清理日志：
+
+```bash
+# In crontab or CI/CD
+lager logs clean --box my-lager-box --older-than 7 --yes
+```
+
+---
+
+## 示例
+
+```bash
+# Daily maintenance workflow
+for box in gw1 gw2 gw3; do
+    echo "Checking $box..."
+    lager logs size --box $box
+    lager logs clean --box $box --older-than 3 --yes
+done
+
+# Monitor log growth
+lager logs size  # Check all Lager Boxes
+lager logs docker --box my-lager-box  # Check Docker logs
+```
+
+---
+
+## 说明
+
+- `--box` 接受已保存 Lager Box 的名称，不接受 IP 地址。
+- 这些命令以用户 `lagerdata` 通过 SSH 连接，并且只使用密钥认证。它们不使用您用 `lager boxes add --user` 保存的用户，因此在登录用户不同的 Box 上会失败。
+- Docker 日志会自动轮转
+- 用 `--verbose` 找出体积大的日志文件
+- 定期清理可以避免磁盘空间问题

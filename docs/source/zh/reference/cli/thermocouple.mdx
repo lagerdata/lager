@@ -1,0 +1,105 @@
+---
+title: Thermocouple
+description: 读取热电偶温度测量值
+---
+
+通过 Lager CLI 从热电偶 Net 读取温度值，用于温度测量和监视。
+
+## 语法
+
+```bash
+lager thermocouple [NETNAME] [OPTIONS]
+```
+
+## 参数
+
+| 参数 | 说明 |
+|----------|-------------|
+| `NETNAME` | 热电偶 Net 名称（设置了默认值时可省略） |
+
+## 选项
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--box TEXT` | Lager Box 名称或 IP 地址 |
+| `--json` | 输出程序可读的 JSON 对象，而不是格式化文本 |
+| `--help` | 显示帮助信息并退出 |
+
+---
+
+## 用法
+
+```bash
+# 从热电偶 Net 读取温度
+lager thermocouple TEMP_SENSOR --box my-lager-box
+
+# 列出可用的热电偶 Net（不指定 Net 时）
+lager thermocouple --box my-lager-box
+
+# 使用默认 Net
+lager thermocouple
+```
+
+---
+
+## 输出
+
+返回以摄氏度表示的温度：
+
+```bash
+$ lager thermocouple TEMP_SENSOR --box my-lager-box
+23.5
+```
+
+---
+
+## 受支持的硬件
+
+| 设备 | 类型 | 量程 |
+|--------|------|-------|
+| Phidget TMP1101 | 4 通道热电偶 | -200°C 至 +1300°C |
+
+---
+
+## 示例
+
+```bash
+# 从传感器读取温度
+lager thermocouple TEMP_SENSOR --box my-lager-box
+
+# 监视多个热电偶
+lager thermocouple TC1 --box my-lager-box
+lager thermocouple TC2 --box my-lager-box
+lager thermocouple TC3 --box my-lager-box
+
+# 在 shell 脚本中使用
+TEMP=$(lager thermocouple OVEN_TC --box my-lager-box)
+if (( $(echo "$TEMP > 100" | bc -l) )); then
+    echo "Temperature exceeded 100°C!"
+fi
+```
+
+---
+
+## 创建热电偶 Net
+
+```bash
+# 创建一个热电偶 Net
+lager nets add TEMP_SENSOR thermocouple 0 PHIDGET_SERIAL --box my-lager-box
+```
+
+其中：
+- `TEMP_SENSOR` - Net 名称
+- `thermocouple` - Net 类型
+- `0` - 通道号（4 通道 Phidget 为 0-3）
+- `PHIDGET_SERIAL` - Phidget 设备的序列号
+
+---
+
+## 说明
+
+- Net 名称就是您搭建测试台时分配的名称
+- 结果以摄氏度（°C）返回
+- 只能用于类型为 `thermocouple` 的 Net
+- 如果不指定 Net 且没有设置默认值，会列出可用的热电偶 Net
+- 默认 Net 可以用 `lager defaults add --thermocouple-net` 设置

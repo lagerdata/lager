@@ -1,0 +1,130 @@
+---
+title: BluFi
+description: 通过 BLE 为 ESP32 配网（BluFi 协议）
+---
+
+使用 BluFi 协议，通过低功耗蓝牙为 ESP32 设备配置 WiFi 凭据。
+您可以用它扫描支持 BluFi 的设备、下发 SSID/密码凭据，并读回连接状态和固件版本。
+它可以在测试过程中把一台未配网的 ESP32 被测设备接入网络。
+
+## 语法
+
+```bash
+lager blufi COMMAND [ARGS] [OPTIONS]
+```
+
+每个子命令都接受 `--box BOX`（Lager Box 名称或 IP，省略时使用默认 Box）。
+除 `scan` 之外的所有命令都需要一个 `DEVICE_NAME` 参数，用于指定目标 BluFi 设备。
+
+## 命令
+
+| 命令 | 说明 |
+|---------|-------------|
+| `scan` | 扫描支持 BluFi 的 BLE 设备 |
+| `connect` | 连接一台 BluFi 设备并获取版本和状态 |
+| `provision` | 向 BluFi 设备下发 WiFi 凭据 |
+| `wifi-scan` | 通过 BluFi 设备扫描 WiFi 网络 |
+| `status` | 从 BluFi 设备获取 WiFi 连接状态 |
+| `version` | 从 BluFi 设备获取固件版本 |
+
+---
+
+## 命令参考
+
+### `scan`
+
+扫描支持 BluFi 的 BLE 设备。
+
+| 选项 | 默认值 | 说明 |
+|--------|---------|-------------|
+| `--timeout` | `10.0` | Box 扫描的总时长（秒） |
+| `--name-contains` | | 只保留名称包含该字符串的设备 |
+
+```bash
+lager blufi scan --box my-lager-box
+lager blufi scan --name-contains ESP --box my-lager-box
+```
+
+### `connect`
+
+连接一台 BluFi 设备并获取它的版本和状态。
+
+```bash
+lager blufi connect ESP32-DEVICE --box my-lager-box
+```
+
+| 选项 | 默认值 | 说明 |
+|--------|---------|-------------|
+| `--timeout` | `20.0` | BLE 连接超时时间（秒） |
+
+### `provision`
+
+向 BluFi 设备下发 WiFi 凭据。
+
+```bash
+lager blufi provision ESP32-DEVICE --ssid HomeNet --password secret123 --box my-lager-box
+```
+
+| 选项 | 默认值 | 说明 |
+|--------|---------|-------------|
+| `--ssid` | （必填） | 要配置的 WiFi 网络 SSID |
+| `--password` | （必填） | WiFi 网络密码 |
+| `--timeout` | `20.0` | BLE 连接超时时间（秒） |
+
+### `wifi-scan`
+
+通过 BluFi 设备扫描 WiFi 网络。
+
+```bash
+lager blufi wifi-scan ESP32-DEVICE --box my-lager-box
+```
+
+| 选项 | 默认值 | 说明 |
+|--------|---------|-------------|
+| `--timeout` | `20.0` | BLE 连接超时时间（秒） |
+| `--scan-timeout` | `15.0` | 设备上的 WiFi 扫描时长（秒） |
+
+### `status`
+
+从 BluFi 设备获取 WiFi 连接状态。
+
+```bash
+lager blufi status ESP32-DEVICE --box my-lager-box
+```
+
+| 选项 | 默认值 | 说明 |
+|--------|---------|-------------|
+| `--timeout` | `20.0` | BLE 连接超时时间（秒） |
+
+### `version`
+
+从 BluFi 设备获取固件版本。
+
+```bash
+lager blufi version ESP32-DEVICE --box my-lager-box
+```
+
+| 选项 | 默认值 | 说明 |
+|--------|---------|-------------|
+| `--timeout` | `20.0` | BLE 连接超时时间（秒） |
+
+---
+
+## 典型流程
+
+```bash
+# 1. 找到设备
+lager blufi scan --name-contains ESP --box my-lager-box
+
+# 2. 下发凭据
+lager blufi provision ESP32-DEVICE --ssid HomeNet --password secret123 --box my-lager-box
+
+# 3. 确认它已接入网络
+lager blufi status ESP32-DEVICE --box my-lager-box
+```
+
+---
+
+## 参见
+
+- [BLE](/source/zh/reference/cli/ble) —— 扫描并连接通用 BLE 设备

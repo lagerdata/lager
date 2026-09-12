@@ -512,6 +512,62 @@
             ]
           },
           {
+            "tab": "CLI 参考",
+            "groups": [
+              {
+                "group": "Lager Box 管理",
+                "pages": [
+                  "source/zh/reference/cli/overview",
+                  "source/zh/reference/cli/terminal",
+                  "source/zh/reference/cli/hello",
+                  "source/zh/reference/cli/login",
+                  "source/zh/reference/cli/install-wheel",
+                  "source/zh/reference/cli/uninstall",
+                  "source/zh/reference/cli/logs"
+                ]
+              },
+              {
+                "group": "配置",
+                "pages": [
+                  "source/zh/reference/cli/instruments",
+                  "source/zh/reference/cli/dut",
+                  "source/zh/reference/cli/defaults"
+                ]
+              },
+              {
+                "group": "电源与仿真",
+                "pages": [
+                  "source/zh/reference/cli/solar",
+                  "source/zh/reference/cli/eload",
+                  "source/zh/reference/cli/energy"
+                ]
+              },
+              {
+                "group": "测量",
+                "pages": [
+                  "source/zh/reference/cli/adc",
+                  "source/zh/reference/cli/thermocouple"
+                ]
+              },
+              {
+                "group": "I/O 与通信",
+                "pages": [
+                  "source/zh/reference/cli/gpo",
+                  "source/zh/reference/cli/dac",
+                  "source/zh/reference/cli/ble",
+                  "source/zh/reference/cli/blufi",
+                  "source/zh/reference/cli/router"
+                ]
+              },
+              {
+                "group": "开发",
+                "pages": [
+                  "source/zh/reference/cli/binaries"
+                ]
+              }
+            ]
+          },
+          {
             "tab": "Python API",
             "groups": [
               {

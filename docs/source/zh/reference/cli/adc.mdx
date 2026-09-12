@@ -1,0 +1,189 @@
+---
+title: ADC
+description: 读取模数转换器的数值
+---
+
+从您的 Box 读取模数转换器（ADC）的数值。支持 LabJack T7、LabJack U3 和 MCC USB-202 硬件，
+各硬件有各自的通道命名和电压量程。
+
+## 语法
+
+```bash
+lager adc [NET] [OPTIONS]
+```
+
+## 参数
+
+| 参数 | 说明 |
+|----------|-------------|
+| `NET` | 要读取的 ADC Net 名称（设置了默认值时可省略） |
+
+## 选项
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--box TEXT` | Lager Box 名称或 IP 地址 |
+| `--json` | 输出程序可读的 JSON 对象，而不是格式化文本 |
+| `--help` | 显示帮助信息并退出 |
+
+## 用法
+
+### 读取 ADC 值
+
+从一个 ADC Net 读取电压：
+
+```bash
+lager adc SENSOR_1 --box my-lager-box
+```
+
+**输出：**
+
+```
+ADC 'SENSOR_1': 2.450000 V
+```
+
+结果以伏特返回，保留 6 位小数。
+
+### 列出 ADC Net
+
+不带 Net 名称调用（且未设置默认值）时，会列出全部可用的 ADC Net：
+
+```bash
+lager adc --box my-lager-box
+```
+
+**输出：**
+
+```
+Name            Net Type  Instrument       Channel  Address
+================================================================
+VOLTAGE_SENSOR  adc       LabJack_T7       AIN0     USB::470026574
+TEMP_SENSOR     adc       LabJack_T7       AIN1     USB::470026574
+CURRENT_MON     adc       MCC_USB202       CH0      USB0::0x09DB::0x012B::...
+```
+
+## 受支持的硬件
+
+| 厂商 | 型号 | 通道 | 电压量程 | 输入方式 |
+|--------------|-------|----------|---------------|------------|
+| LabJack | T7 | 14（AIN0-AIN13） | +/-10 V | 单端 |
+| LabJack | U3 | 16（AIN0-AIN15） | U3-HV：AIN0-AIN3 +/-10.3 V，AIN4-AIN15 0-2.44 V | 单端 |
+| Measurement Computing | USB-202 | 8（CH0-CH7） | +/-10 V | 单端 |
+
+### 硬件对比
+
+| 特性 | LabJack T7 | MCC USB-202 |
+|---------|-----------|-------------|
+| 通道数 | 14 | 8 |
+| 通道名称 | AIN0-AIN13 | CH0-CH7 |
+| 引脚输入格式 | `0`-`13` 或 `AIN0`-`AIN13` | `0`-`7` 或 `CH0`-`CH7` |
+| 电压量程 | +/-10 V（双极性） | +/-10 V（双极性） |
+| 分辨率 | 16 位（约 0.3 mV/LSB） | 12 位（约 4.9 mV/LSB） |
+| 连接方式 | 共用句柄（与 DAC、GPIO、SPI 共用） | 每次事务打开并关闭 |
+| 设备选择 | 自动发现（不需要地址） | 通过序列号或 VISA 地址 |
+
+### LabJack U3
+
+U3 使用与 T7 不同的驱动栈：LabJack Exodriver 和 LabJackPython。
+这两个系列可以共用一台 Lager Box。
+
+- 上面的量程是 LabJack 给出的 U3-HV 数据。在 U3-HV 上，`AIN0`-`AIN3` 是固定的高压输入。
+- `AIN4`-`AIN7` 与 `FIO4`-`FIO7` 是同一组物理引脚，`AIN8`-`AIN15` 与 `EIO0`-`EIO7` 是同一组引脚。执行 `adc` 读取会把引脚设为模拟模式，而对同一引脚执行 `gpio` 读写会把它设回数字模式。
+- `AIN8`-`AIN15` 位于 U3 的 DB15 连接器上。
+- Lager 把每一台 U3 都当作 U3-HV 对待，因为 U3-LV 报告相同的 USB 产品 ID。
+
+### 通道命名
+
+创建 ADC Net 时，请使用 `lager instruments` 为该仪器列出的通道名称。
+`lager nets add` 会拒绝其他任何取值（包括 `0` 这样的数字简写），并打印有效的通道。
+
+**LabJack T7：** `AIN0`-`AIN13`
+```bash
+lager nets add SENSOR_1 adc AIN0 USB0::0x0CD5::0x0007::::INSTR
+```
+
+**LabJack U3：** `AIN0`-`AIN15`
+```bash
+lager nets add SENSOR_1 adc AIN0 USB0::0x0CD5::0x0003::::INSTR
+```
+
+**MCC USB-202：** `CH0`-`CH7`
+```bash
+lager nets add SENSOR_1 adc CH0 USB0::0x09DB::0x012B::<SERIAL>::INSTR
+```
+
+### 仪器名称匹配
+
+后端驱动根据 Net 配置中的仪器名称来选择：
+
+| 匹配模式 | 驱动 |
+|---------|--------|
+| `labjack` + `t7`（不区分大小写，分隔符灵活） | LabJack T7 |
+| `labjack` + `u3`（不区分大小写，分隔符灵活） | LabJack U3 |
+| `mcc` + `usb` + `202`（不区分大小写，分隔符灵活） | MCC USB-202 |
+
+## 默认 Net
+
+设置一个默认 ADC Net，可以省去每次输入名称：
+
+```bash
+lager defaults add --adc-net SENSOR_1
+```
+
+之后：
+
+```bash
+lager adc
+```
+
+## 示例
+
+```bash
+# Read ADC value from voltage sensor
+lager adc VOLTAGE_SENSOR --box my-lager-box
+
+# Read ADC value from temperature sensor
+lager adc TEMP_SENSOR --box my-lager-box
+
+# Read ADC value from current monitor
+lager adc CURRENT_MONITOR --box my-lager-box
+
+# List all ADC nets on the box
+lager adc --box my-lager-box
+
+# Use default net (if configured)
+lager adc
+```
+
+## 脚本示例
+
+```bash
+#!/bin/bash
+# Read sensor and check threshold
+RESULT=$(lager adc VOLTAGE_SENSOR --box my-lager-box)
+echo "$RESULT"
+
+# Extract numeric value
+VOLTAGE=$(echo "$RESULT" | grep -oP '[\d.]+(?= V)')
+if (( $(echo "$VOLTAGE > 3.0" | bc -l) )); then
+    echo "Voltage too high: $VOLTAGE V"
+    exit 1
+fi
+echo "Voltage OK: $VOLTAGE V"
+```
+
+## 说明
+
+- 结果以伏特返回，保留 6 位小数
+- LabJack T7 和 USB-202 支持双极性测量（+/-10 V 量程）
+- 在 LabJack U3 上，只有 U3-HV 的 `AIN0`-`AIN3` 是双极性的
+- 使用之前必须先用 `lager nets add <name> adc <channel> <address>` 配置 ADC Net
+- 默认 Net 可以用 `lager defaults add --adc-net` 设置
+- LabJack T7 与同一设备上的 DAC、GPIO 和 SPI 操作共用一个连接句柄
+- USB-202 在每次读取时打开并关闭连接
+- 用 `lager instruments --box <box>` 确认 ADC 设备已被检测到
+
+## 参见
+
+- [DAC](/source/zh/reference/cli/dac) -- 数模转换器输出（ADC 的对应功能）
+- [Python ADC API](/source/zh/reference/python/adc) -- 在 Python 脚本中读取 ADC 值
