@@ -1,0 +1,227 @@
+---
+title: 能量分析仪
+description: 用能量分析仪 Net 积分能量和电荷，并计算功率统计量
+---
+
+用能量分析仪 Net 随时间积分能量和电荷，或计算电流/电压/功率的统计量。
+需要 `energy-analyzer` Net 类型。
+
+## 导入
+
+```python
+from lager import Net, NetType
+```
+
+## 方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `read_energy(duration)` | 在 `duration` 秒内积分能量和电荷 |
+| `read_stats(duration)` | 计算电流、电压和功率的均值/最小值/最大值/标准差 |
+| `close()` | 释放仪器资源；在不需要清理的后端上为空操作 |
+
+## 方法参考
+
+### `Net.get(name, type=NetType.EnergyAnalyzer)`
+
+按名称获取一个能量分析仪 Net。
+
+```python
+from lager import Net, NetType
+
+power = Net.get('POWER_METER', type=NetType.EnergyAnalyzer)
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `name` | `str` | 能量分析仪 Net 的名称 |
+| `type` | `NetType` | 必须为 `NetType.EnergyAnalyzer` |
+
+**返回：** 能量分析仪 Net 实例
+
+### `read_energy(duration)`
+
+在 `duration` 秒内对电流和功率积分。
+
+```python
+result = power.read_energy(10.0)
+print(f"Energy: {result['energy_wh'] * 1000:.3f} mWh")
+print(f"Charge: {result['charge_ah'] * 1000:.3f} mAh")
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `duration` | `float` | 积分时间窗口，单位秒 |
+
+**返回：** 一个 `dict`，包含以下键：
+
+| 键 | 类型 | 说明 |
+|-----|------|-------------|
+| `"energy_j"` | `float` | 能量，单位焦耳 |
+| `"energy_wh"` | `float` | 能量，单位瓦时 |
+| `"charge_c"` | `float` | 电荷，单位库仑 |
+| `"charge_ah"` | `float` | 电荷，单位安时 |
+| `"duration_s"` | `float` | 所请求的时长 |
+
+### `read_stats(duration)`
+
+在 `duration` 秒内计算电流、电压和功率的均值、最小值、最大值和标准差。
+
+```python
+stats = power.read_stats(1.0)
+print(f"Current: {stats['current']['mean'] * 1e6:.1f} uA (mean)")
+print(f"Voltage: {stats['voltage']['mean']:.3f} V (mean)")
+print(f"Power:   {stats['power']['mean'] * 1000:.3f} mW (mean)")
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `duration` | `float` | 测量时间窗口，单位秒 |
+
+**返回：** 一个 `dict`，包含以下键：
+
+| 键 | 类型 | 说明 |
+|-----|------|-------------|
+| `"current"` | `dict` | 电流统计量，单位安培 |
+| `"voltage"` | `dict` | 电压统计量，单位伏特 |
+| `"power"` | `dict` | 功率统计量，单位瓦特 |
+| `"duration_s"` | `float` | 所请求的时长 |
+
+每个统计量子字典包含：
+
+| 键 | 类型 | 说明 |
+|-----|------|-------------|
+| `"mean"` | `float` | 均值 |
+| `"min"` | `float` | 最小值 |
+| `"max"` | `float` | 最大值 |
+| `"std"` | `float` | 标准差 |
+
+## 示例
+
+### 能量预算检查
+
+```python
+from lager import Net, NetType
+
+power = Net.get('DEVICE_POWER', type=NetType.EnergyAnalyzer)
+
+result = power.read_energy(10.0)
+
+energy_mwh = result['energy_wh'] * 1000
+charge_mah = result['charge_ah'] * 1000
+
+print(f"Energy: {energy_mwh:.3f} mWh")
+print(f"Charge: {charge_mah:.3f} mAh")
+
+if energy_mwh > 50:
+    print("FAIL: Energy consumption exceeds budget")
+else:
+    print("PASS: Energy within budget")
+```
+
+### 休眠电流验证
+
+```python
+from lager import Net, NetType
+
+power = Net.get('DEVICE_POWER', type=NetType.EnergyAnalyzer)
+
+# Measure over 5 seconds for accuracy
+stats = power.read_stats(5.0)
+
+sleep_ua = stats['current']['mean'] * 1e6
+supply_v = stats['voltage']['mean']
+
+print(f"Sleep current: {sleep_ua:.1f} uA")
+print(f"Supply voltage: {supply_v:.3f} V")
+
+if sleep_ua < 100:
+    print("PASS: Sleep current below 100 uA")
+else:
+    print(f"FAIL: Sleep current {sleep_ua:.1f} uA exceeds 100 uA limit")
+```
+
+### 电池续航估算
+
+```python
+from lager import Net, NetType
+
+power = Net.get('DEVICE_POWER', type=NetType.EnergyAnalyzer)
+
+# Measure average current draw over a representative workload
+stats = power.read_stats(30.0)
+
+avg_current_ma = stats['current']['mean'] * 1000
+avg_voltage_v = stats['voltage']['mean']
+
+# Estimate from a 1000 mAh battery
+battery_mah = 1000
+hours = battery_mah / avg_current_ma if avg_current_ma > 0 else float('inf')
+
+print(f"Average current: {avg_current_ma:.3f} mA")
+print(f"Average voltage: {avg_voltage_v:.3f} V")
+print(f"Estimated battery life: {hours:.1f} hours")
+```
+
+### 启动能量采集
+
+```python
+from lager import Net, NetType
+
+power = Net.get('DEVICE_POWER', type=NetType.EnergyAnalyzer)
+
+# Capture energy consumed during device startup (2 seconds)
+result = power.read_energy(2.0)
+
+print(f"Startup energy: {result['energy_j'] * 1000:.2f} mJ")
+print(f"Startup charge: {result['charge_c'] * 1000:.2f} mC")
+```
+
+### 电流尖峰分析
+
+```python
+from lager import Net, NetType
+
+power = Net.get('DEVICE_POWER', type=NetType.EnergyAnalyzer)
+
+# Short window to capture peak current
+stats = power.read_stats(1.0)
+
+peak_ma = stats['current']['max'] * 1000
+avg_ma = stats['current']['mean'] * 1000
+std_ma = stats['current']['std'] * 1000
+
+print(f"Peak current:    {peak_ma:.3f} mA")
+print(f"Average current: {avg_ma:.3f} mA")
+print(f"Std deviation:   {std_ma:.3f} mA")
+
+# Flag if peak is more than 10x average (unexpected spike)
+if peak_ma > avg_ma * 10:
+    print("WARNING: Unexpected current spike detected")
+```
+
+## 受支持的硬件
+
+| 厂商 | 型号 | Net 类型 | USB VID:PID |
+|--------------|-------|----------|-------------|
+| Joulescope | JS220 | `energy-analyzer` | `16d0:10ba` |
+| Nordic Semiconductor | PPK2 | `energy-analyzer` | `1915:c00a` |
+
+若需要瞬时功率读数（Yocto-Watt 上同样可用），请参阅
+[功率计](/source/zh/reference/python/watt)。
+
+## 说明
+
+- Joulescope JS220 以高频率采样；时间窗口越长，统计量越准确
+- Nordic PPK2 工作在源模式（提供 0.8–5V 的可配置电压并测量电流）；
+  电压读数反映的是配置值
+- `read_energy()` 和 `read_stats()` 会阻塞整个 `duration` 之后才返回
+- 同一台物理 JS220 设备在 `WattMeter` 和 `EnergyAnalyzer` 两种 Net 角色之间共享 ——
+  对同一设备同时打开这两种 Net 类型是安全的
+- 运行脚本之前，请用 `lager instruments --box <box>` 确认 JS220 已被检测到

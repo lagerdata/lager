@@ -517,13 +517,24 @@
               {
                 "group": "入门",
                 "pages": [
-                  "source/zh/reference/python/overview"
+                  "source/zh/reference/python/overview",
+                  "source/zh/reference/python/binaries"
+                ]
+              },
+              {
+                "group": "开发",
+                "pages": [
+                  "source/zh/reference/python/breakpoints"
                 ]
               },
               {
                 "group": "电源与仿真",
                 "pages": [
-                  "source/zh/reference/python/solar"
+                  "source/zh/reference/python/supply",
+                  "source/zh/reference/python/solar",
+                  "source/zh/reference/python/eload",
+                  "source/zh/reference/python/watt",
+                  "source/zh/reference/python/energy"
                 ]
               },
               {
@@ -536,8 +547,11 @@
               {
                 "group": "I/O 与通信",
                 "pages": [
+                  "source/zh/reference/python/gpio",
                   "source/zh/reference/python/dac",
-                  "source/zh/reference/python/serial"
+                  "source/zh/reference/python/serial",
+                  "source/zh/reference/python/wifi",
+                  "source/zh/reference/python/router"
                 ]
               }
             ]

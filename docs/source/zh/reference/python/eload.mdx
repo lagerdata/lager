@@ -1,0 +1,280 @@
+---
+title: 电子负载
+description: 控制电子负载 Net
+---
+
+控制电子负载，以各种模式吸收电流，用于测试供电系统。
+
+## 导入
+
+```python
+from lager import Net, NetType
+```
+
+## 方法
+
+基于 Net 的 API 提供的方法既可以读取也可以设置数值。
+不带值参数调用时，方法读取并返回当前值；带值调用时，方法进行设置。
+
+| 方法 | 说明 |
+|--------|-------------|
+| `mode(mode_type)` | 设置或读取工作模式（CC/CV/CR/CW） |
+| `current(value)` | 设置或读取恒流值（A） |
+| `voltage(value)` | 设置或读取恒压值（V） |
+| `resistance(value)` | 设置或读取恒阻值（欧姆） |
+| `power(value)` | 设置或读取恒功率值（W） |
+| `enable()` | 打开电子负载输入 |
+| `disable()` | 关闭电子负载输入 |
+| `print_state()` | 打印完整状态 |
+| `measured_voltage()` | 读取实测电压（返回浮点数） |
+| `measured_current()` | 读取实测电流（返回浮点数） |
+| `measured_power()` | 读取实测功率（返回浮点数） |
+
+## 方法参考
+
+### `Net.get(name, type=NetType.ELoad)`
+
+按名称获取一个电子负载 Net。
+
+```python
+from lager import Net, NetType
+
+eload = Net.get('LOAD', type=NetType.ELoad)
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `name` | `str` | 电子负载 Net 的名称 |
+| `type` | `NetType` | 必须为 `NetType.ELoad` |
+
+**返回：** 电子负载 Net 实例
+
+### `mode(mode_type=None)`
+
+设置或读取工作模式。
+
+```python
+# Set mode
+eload.mode('CC')  # Constant Current
+eload.mode('CV')  # Constant Voltage
+eload.mode('CR')  # Constant Resistance
+eload.mode('CW')  # Constant Power (also 'CP')
+
+# Read current mode
+current_mode = eload.mode()
+print(f"Mode: {current_mode}")
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `mode_type` | `str` 或 `None` | 'CC'、'CV'、'CR' 或 'CW'/'CP'。为 None 时读取当前模式。 |
+
+**返回：** `mode_type` 为 None 时返回当前模式字符串
+
+### `current(value=None)`
+
+设置或读取恒流设定值。
+
+```python
+# Set CC mode current
+eload.mode('CC')
+eload.current(0.5)  # Set to 500mA
+
+# Read current setting
+i = eload.current()
+print(f"Current setting: {i}A")
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `value` | `float` 或 `None` | 电流，单位安培。为 None 时读取当前设定值。 |
+
+**返回：** `value` 为 None 时返回以安培为单位的设定值
+
+### `voltage(value=None)`
+
+设置或读取恒压设定值。
+
+```python
+# Set CV mode voltage
+eload.mode('CV')
+eload.voltage(5.0)  # Set to 5V
+
+# Read voltage setting
+v = eload.voltage()
+print(f"Voltage setting: {v}V")
+```
+
+### `resistance(value=None)`
+
+设置或读取恒阻设定值。低于 0.02 欧姆的值处于仪器量程的下限，
+仪器可能对其进行钳位。当实际生效的值与请求的值不同时，它会打印一条警告。
+
+```python
+# Set CR mode resistance
+eload.mode('CR')
+eload.resistance(100.0)  # Set to 100 ohms
+
+# Read resistance setting
+r = eload.resistance()
+print(f"Resistance setting: {r} ohms")
+```
+
+### `power(value=None)`
+
+设置或读取恒功率设定值。
+
+```python
+# Set CW mode power
+eload.mode('CW')
+eload.power(5.0)  # Set to 5W
+
+# Read power setting
+p = eload.power()
+print(f"Power setting: {p}W")
+```
+
+### `enable()` / `disable()`
+
+打开或关闭电子负载输入。
+
+```python
+eload.enable()   # Start sinking current
+eload.disable()  # Stop sinking current
+```
+
+### `print_state()`
+
+打印电子负载的完整状态。
+
+```python
+eload.print_state()
+# Prints: mode, current/voltage/resistance/power settings, measured values, input state
+```
+
+### `measured_voltage()` / `measured_current()` / `measured_power()`
+
+读取实际测量值（返回浮点数，供代码使用）。
+
+```python
+v = eload.measured_voltage()  # Returns measured voltage
+i = eload.measured_current()  # Returns measured current
+p = eload.measured_power()    # Returns measured power
+
+print(f"V={v:.2f}V, I={i:.3f}A, P={p:.3f}W")
+```
+
+**返回：** `float` - 测量值
+
+## 负载模式
+
+| 模式 | 代码 | 说明 |
+|------|------|-------------|
+| 恒流 | `CC` | 无论电压如何都吸收固定电流 |
+| 恒压 | `CV` | 在负载两端维持固定电压 |
+| 恒阻 | `CR` | 表现为一个固定电阻 |
+| 恒功率 | `CW` 或 `CP` | 耗散固定的功率 |
+
+## 示例
+
+### 恒流测试
+
+```python
+from lager import Net, NetType
+
+eload = Net.get('LOAD', type=NetType.ELoad)
+
+# Configure constant current mode at 500mA
+eload.mode('CC')
+eload.current(0.5)
+
+eload.enable()
+
+# Read measurements
+print(f"Voltage: {eload.measured_voltage():.2f}V")
+print(f"Current: {eload.measured_current():.3f}A")
+print(f"Power: {eload.measured_power():.3f}W")
+
+eload.disable()
+```
+
+### 电池放电测试
+
+```python
+from lager import Net, NetType
+import time
+
+eload = Net.get('LOAD', type=NetType.ELoad)
+
+# Configure constant resistance load
+eload.mode('CR')
+eload.resistance(10.0)
+
+eload.enable()
+
+# Monitor discharge
+for i in range(30):
+    v = eload.measured_voltage()
+    i_curr = eload.measured_current()
+    print(f"V={v:.2f}V, I={i_curr:.3f}A")
+
+    if v < 3.0:
+        print("Discharge cutoff reached")
+        break
+
+    time.sleep(1)
+
+eload.disable()
+```
+
+### 电源效率测试
+
+```python
+from lager import Net, NetType
+
+# Input power supply
+psu = Net.get('INPUT', type=NetType.PowerSupply)
+psu.voltage(12.0)
+psu.current(2.0)
+psu.enable()
+
+# Output load
+eload = Net.get('OUTPUT', type=NetType.ELoad)
+eload.mode('CC')
+eload.current(0.5)
+eload.enable()
+
+# Measure efficiency
+p_in = 12.0 * psu.measured_current()  # Input power
+p_out = eload.measured_power()         # Output power
+efficiency = (p_out / p_in) * 100 if p_in > 0 else 0
+
+print(f"Input: {p_in:.2f}W")
+print(f"Output: {p_out:.2f}W")
+print(f"Efficiency: {efficiency:.1f}%")
+
+eload.disable()
+psu.disable()
+```
+
+## 受支持的硬件
+
+| 厂商 | 型号 | 特性 |
+|--------------|-------|----------|
+| Rigol | DL3021（DL3000 系列） | CC/CV/CR/CP 模式 |
+
+## 说明
+
+- 请先用 `mode()` 设置工作模式，再设置对应的数值
+- `current()`、`voltage()`、`resistance()`、`power()` 等方法既能读取也能设置
+- `measured_voltage()`、`measured_current()`、`measured_power()` 返回实际测量值
+- `print_state()` 打印状态（便于调试），测量方法返回数值（供代码使用）
+- 请务必调用 `enable()` 才会开始吸收电流
+- 结束时请务必调用 `disable()`
+- 低于 0.02 欧姆的电阻值可能被仪器钳位

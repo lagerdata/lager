@@ -1,0 +1,150 @@
+---
+title: Router
+description: 把 MikroTik 路由器作为测试 Net 驱动
+---
+
+**路由器 Net** 把一台真实的接入点纳入测试控制之下。测试可以借此更改 SSID、
+有意破坏网络，然后再把它恢复。这样您就能在不手动接触硬件的情况下，
+验证被测设备的重连、漫游和离线行为。
+
+[WiFi](/source/zh/reference/python/wifi) 管理的是 Lager Box 自己的无线接口。
+路由器 Net 不同：它是实验台上的一台独立设备，由 Box 通过 MikroTik REST API 驱动。
+
+## 导入
+
+```python
+from lager import Net, NetType
+
+router = Net.get("router1", type=NetType.Router)
+```
+
+凭据（`username`、`password`、`use_ssl`）取自该 Net 保存的配置，
+因此脚本中永远不必硬编码它们。
+
+## 连接与系统
+
+| 方法 | 说明 |
+|--------|-------------|
+| `connect()` | 通过获取系统标识来验证连通性 |
+| `get_system_info()` | 获取系统资源信息 |
+| `reboot()` | 重启路由器 |
+| `wait_for_ready(timeout=120)` | 轮询，直到路由器在重启后可以响应 |
+| `run(path, params=None)` | 执行任意的 REST API GET 调用 |
+
+## 接口
+
+| 方法 | 说明 |
+|--------|-------------|
+| `get_interfaces()` | 列出全部网络接口 |
+| `set_interface_disabled(interface, disabled)` | 启用或停用一个网络接口 |
+| `get_wireless_interfaces()` | 列出无线接口及其配置 |
+| `configure_wireless(interface, **kwargs)` | 配置一个无线接口 |
+| `set_wireless_ssid(interface, ssid)` | 更改某个接口的 SSID |
+| `enable_interface(interface)` / `disable_interface(interface)` | 启用或停用一个无线接口 |
+| `wait_for_wireless_ready(interface, timeout=30)` | 轮询，直到接口已启用并正在运行 |
+
+## 安全配置文件
+
+| 方法 | 说明 |
+|--------|-------------|
+| `get_security_profiles()` | 列出全部无线安全配置文件 |
+| `create_security_profile(name, ...)` | 创建配置文件（默认为 WPA2-PSK 加 AES-CCM） |
+| `create_open_security_profile(name='open')` | 创建一个开放、不加密的配置文件 |
+| `update_security_profile_password(name, new_password)` | 更新配置文件的 WPA2 预共享密钥 |
+| `delete_security_profile(name)` | 按名称删除配置文件 |
+
+## 客户端
+
+| 方法 | 说明 |
+|--------|-------------|
+| `get_wireless_clients()` | 列出当前已连接的无线客户端 |
+| `is_client_connected(mac_address=None)` | 检查某个客户端当前是否已关联 |
+| `set_client_isolation(interface, enabled=True)` | 启用或停用 AP 客户端隔离 |
+| `get_dhcp_leases()` | 列出已获得 IP 地址的客户端 |
+| `get_access_list()` | 列出全部无线访问列表条目 |
+| `add_access_list_entry(mac_address, authentication=True, ...)` | 允许或拒绝某个特定客户端 |
+| `remove_access_list_entry(mac_address)` | 移除某个 MAC 地址的全部条目 |
+| `clear_access_list()` | 移除全部带测试标记的访问列表条目 |
+
+## 故障注入
+
+这些方法才是路由器 Net 真正有价值的地方。它们以特定且可重复的方式破坏网络，
+使您能够断言固件如何响应。
+
+| 方法 | 说明 |
+|--------|-------------|
+| `block_internet()` | 丢弃全部转发流量 |
+| `block_dns()` | 丢弃端口 53 的流量，UDP 和 TCP 都包括 |
+| `block_port(port, protocol='tcp')` | 对全部转发流量阻断一个端口 |
+| `add_firewall_rule(chain='forward', action='drop', **kwargs)` | 添加一条防火墙过滤规则 |
+| `remove_firewall_rules()` | 移除全部带测试标记的防火墙规则 |
+| `add_bandwidth_limit(target, max_limit, name=None)` | 为某个 IP 或子网限制带宽 |
+| `remove_bandwidth_limits()` | 移除全部带测试标记的带宽队列 |
+| `enable_dhcp()` / `disable_dhcp()` | 启用或停用全部 DHCP 服务器 |
+| `set_dhcp_lease_time(lease_time='10m')` | 设置全部 DHCP 服务器的租约时长 |
+
+## 测试隔离
+
+```python
+router.reset_to_defaults()
+```
+
+`reset_to_defaults(baseline_ssid=None, baseline_pass=None, wireless_interfaces=None)`
+把路由器恢复到已知的基线状态。一般规则是：这套 API 添加的任何内容都会被标记为测试状态。
+上面的 `remove_*` 和 `clear_*` 方法只移除这些带标记的条目，
+因此清理操作不可能删除测试运行之前就已存在于路由器上的规则。
+
+## 示例
+
+### 验证接入点断开后被测设备会重连
+
+```python
+from lager import Net, NetType
+
+router = Net.get("router1", type=NetType.Router)
+router.connect()
+
+# Take the network away
+router.disable_interface("wlan1")
+assert not router.is_client_connected(mac_address=DUT_MAC), "DUT still associated"
+
+# Give it back, and let the DUT find its way home
+router.enable_interface("wlan1")
+router.wait_for_wireless_ready("wlan1")
+
+assert router.is_client_connected(mac_address=DUT_MAC), "DUT did not reconnect"
+```
+
+### 断言被测设备在丢失 DNS 但链路仍在时能够正常工作
+
+```python
+router.block_dns()
+try:
+    # The DUT stays associated, but name resolution fails. Firmware should
+    # report an outage rather than a WiFi failure.
+    assert router.is_client_connected(mac_address=DUT_MAC)
+finally:
+    router.remove_firewall_rules()
+```
+
+### 在会话进行中轮换 SSID 密码
+
+```python
+router.update_security_profile_password("test-profile", "new-password-here")
+router.wait_for_wireless_ready("wlan1")
+```
+
+## 受支持的硬件
+
+| 厂商 | 型号 | 说明 |
+|---|---|---|
+| MikroTik | 已启用 REST API 的 RouterOS 设备 | 通过 HTTP 访问；该 Net 设置了 `use_ssl` 时通过 HTTPS |
+
+## 说明
+
+- 每个方法都是对路由器的一次 REST 调用，因此失败会表现为连接错误或 HTTP 错误，
+  而不是仪器错误。
+- `reboot()` 在设计上会断开连接。请在它之后始终先调用 `wait_for_ready()`，
+  再发出后续调用。
+- 清理方法只移除带测试标记的状态，因此在共用的实验台路由器上，
+  可以安全地放在 `finally` 块中调用。
