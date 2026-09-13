@@ -1,0 +1,391 @@
+---
+title: I2C
+description: 进行 I2C 数据传输
+---
+
+与连接到 Lager Box 的设备进行 I2C（集成电路间总线）数据传输。
+I2C 是一种同步串行协议，使用两根线：SDA（数据）和 SCL（时钟）。
+
+## 语法
+
+```bash
+lager i2c [NETNAME] [OPTIONS] [SUBCOMMAND]
+```
+
+## 参数
+
+| 参数 | 说明 |
+|----------|-------------|
+| `NETNAME` | I2C Net 名称（通过 `lager defaults add --i2c-net` 设置了默认值时可省略） |
+
+## 选项
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--box BOX` | Lager Box 名称或 IP 地址 |
+
+不带子命令调用时，列出 Box 上的 I2C Net（或显示指定 Net 的配置）。
+
+---
+
+## 子命令
+
+### `config`
+
+配置 I2C 总线参数。这些设置会在后续命令中保持有效。
+
+```bash
+lager i2c NETNAME config [OPTIONS]
+```
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--box BOX` | Lager Box 名称或 IP 地址 |
+| `--frequency FREQ` | 时钟频率（例如 `100k`、`400k`、`1M`） |
+| `--pull-ups on\|off` | 启用/关闭内部上拉（仅 Aardvark） |
+
+**示例：**
+
+```bash
+# Set I2C clock to 400kHz with internal pull-ups
+lager i2c MY_I2C config --frequency 400k --pull-ups on
+
+# Set clock to 100kHz (standard mode)
+lager i2c MY_I2C config --frequency 100k
+```
+
+---
+
+### `scan`
+
+扫描 I2C 总线上连接的设备。它逐个探测地址，并报告回应 ACK 的那些地址。
+
+```bash
+lager i2c NETNAME scan [OPTIONS]
+```
+
+| 选项 | 说明 | 默认值 |
+|--------|-------------|---------|
+| `--box BOX` | Lager Box 名称或 IP 地址 | |
+| `--start ADDR` | 起始地址，十六进制 | `0x08` |
+| `--end ADDR` | 结束地址，十六进制 | `0x77` |
+
+默认范围 `0x08`-`0x77` 排除了 I2C 的保留地址。
+
+**示例：**
+
+```bash
+# Scan default address range
+lager i2c MY_I2C scan --box my-lager-box
+
+# Scan specific range
+lager i2c MY_I2C scan --start 0x20 --end 0x27
+```
+
+---
+
+### `read`
+
+从 I2C 设备读取字节。
+
+```bash
+lager i2c NETNAME read NUM_BYTES [OPTIONS]
+```
+
+| 参数 | 说明 |
+|----------|-------------|
+| `NUM_BYTES` | 要读取的字节数（0 或更多） |
+
+| 选项 | 说明 | 默认值 |
+|--------|-------------|---------|
+| `--box BOX` | Lager Box 名称或 IP 地址 | |
+| `--address ADDR` | 设备地址，十六进制（例如 `0x48`） | **必填** |
+| `--frequency FREQ` | 覆盖时钟频率（例如 `100k`、`400k`） | |
+| `--format FORMAT` | 输出格式：`hex`、`bytes`、`json` | `hex` |
+
+**示例：**
+
+```bash
+# Read 4 bytes from device at address 0x48
+lager i2c MY_I2C read 4 --address 0x48
+
+# Read 2 bytes with JSON output
+lager i2c MY_I2C read 2 --address 0x48 --format json
+
+# Read with frequency override
+lager i2c MY_I2C read 4 --address 0x48 --frequency 100k
+```
+
+---
+
+### `write`
+
+向 I2C 设备写入字节。
+
+```bash
+lager i2c NETNAME write DATA [OPTIONS]
+```
+
+| 参数 | 说明 |
+|----------|-------------|
+| `DATA` | 要写入的十六进制数据（例如 `0x0A03`、`0a 03`、`0a,03`） |
+
+| 选项 | 说明 | 默认值 |
+|--------|-------------|---------|
+| `--box BOX` | Lager Box 名称或 IP 地址 | |
+| `--address ADDR` | 设备地址，十六进制（例如 `0x48`） | **必填** |
+| `--data-file PATH` | 含有要写入二进制数据的文件 | |
+| `--frequency FREQ` | 覆盖时钟频率 | |
+| `--format FORMAT` | 输出格式：`hex`、`bytes`、`json` | `hex` |
+
+数据可以作为 `DATA` 参数提供，也可以通过 `--data-file` 提供，但不能同时使用两者。
+
+**示例：**
+
+```bash
+# Write register address 0x0A followed by value 0x03
+lager i2c MY_I2C write 0x0A03 --address 0x48
+
+# Write using space-separated hex bytes
+lager i2c MY_I2C write "0a 03" --address 0x48
+
+# Write from a binary file
+lager i2c MY_I2C write --data-file config.bin --address 0x48
+```
+
+---
+
+### `transfer`
+
+在一次 I2C 事务中先写后读，中间使用重复起始条件。
+这是读取寄存器的标准做法：先写入寄存器地址，然后在不释放总线的情况下读取寄存器值。
+
+```bash
+lager i2c NETNAME transfer NUM_BYTES [OPTIONS]
+```
+
+| 参数 | 说明 |
+|----------|-------------|
+| `NUM_BYTES` | 要读取的字节数（0 或更多） |
+
+| 选项 | 说明 | 默认值 |
+|--------|-------------|---------|
+| `--box BOX` | Lager Box 名称或 IP 地址 | |
+| `--address ADDR` | 设备地址，十六进制（例如 `0x48`） | **必填** |
+| `--data DATA` | 读取之前要写入的十六进制数据（例如寄存器地址） | |
+| `--data-file PATH` | 含有读取前要写入数据的文件 | |
+| `--frequency FREQ` | 覆盖时钟频率 | |
+| `--format FORMAT` | 输出格式：`hex`、`bytes`、`json` | `hex` |
+
+**示例：**
+
+```bash
+# Read 2 bytes from register 0x0A on device 0x48
+lager i2c MY_I2C transfer 2 --address 0x48 --data 0x0A
+
+# Read temperature from a sensor (register 0x00, 2 bytes)
+lager i2c MY_I2C transfer 2 --address 0x76 --data 0x00
+
+# Read with JSON output
+lager i2c MY_I2C transfer 4 --address 0x48 --data 0x0A --format json
+```
+
+---
+
+## 十六进制数据格式
+
+数据参数接受多种十六进制写法：
+
+| 格式 | 示例 | 解析为 |
+|--------|---------|-----------|
+| 带前缀连写 | `0x0a03` | `[0x0a, 0x03]` |
+| 不带前缀连写 | `0a03` | `[0x0a, 0x03]` |
+| 空格分隔 | `0a 03` | `[0x0a, 0x03]` |
+| 逗号分隔 | `0a,03` | `[0x0a, 0x03]` |
+| 单字节 | `0x0a` | `[0x0a]` |
+
+所有数值都必须在字节范围内（`0x00`-`0xFF`）。
+
+---
+
+## 地址格式
+
+I2C 地址是 7 位值（`0x00`-`0x7F`）。您可以用十六进制或十进制指定地址：
+
+| 格式 | 示例 | 数值 |
+|--------|---------|-------|
+| 十六进制带前缀 | `0x48` | 72 |
+| 十六进制不带前缀 | `48` | 72 |
+| 十进制 | `72` | 72 |
+
+---
+
+## 频率格式
+
+时钟频率接受数值，并可带可选后缀：
+
+| 格式 | 示例 | 数值 |
+|--------|---------|-------|
+| 纯 Hz | `100000` | 100 kHz |
+| kHz 后缀 | `100k` | 100 kHz |
+| MHz 后缀 | `1M` | 1 MHz |
+| Hz 后缀 | `400000hz` | 400 kHz |
+
+---
+
+## 受支持的硬件
+
+| 适配器 | 引脚 | 上拉 | 说明 |
+|---------|------|----------|-------|
+| LabJack T7 | 可配置的 DIO 引脚（默认 `FIO4-FIO5`：SDA、SCL） | 仅外部 | 每次传输 56 字节；约 130 Hz 至 450 kHz |
+| LabJack U3 | 可配置的 DIO 引脚（默认 `FIO6-FIO7`：SDA、SCL） | 仅外部；U3 本身没有 | 每次传输写 50 字节、读 52 字节；约 10 kHz 至 150 kHz |
+| Aardvark USB | 固定的 SDA/SCL | 内部（可切换） | 最高 800 kHz |
+| FT232H | 可配置 | 仅外部 | 基于 MPSSE 的 I2C |
+
+LabJack T7 把请求的频率映射到一个时钟分频档位，最高约 450 kHz。
+如果 T7 固件拒绝计算出的档位，驱动程序会以最高速率运行并打印警告。
+
+---
+
+## LabJack U3
+
+U3 通过它自己的固件命令而不是 LJM 来运行 I2C。在 U3 上使用 I2C 需要
+U3 硬件版本 1.21 或更高。U3 只能作为总线主机。
+
+**引脚：** 默认通道 `FIO6-FIO7` 把 SDA 分配给 `FIO6`，SCL 分配给 `FIO7`。
+若要使用其他引脚，请用 `lager nets add` 配合 `--sda` 和 `--scl` 选项创建 Net。
+`FIO0`-`FIO3` 不能承载 I2C。EIO 和 CIO 线位于 U3 的 DB15 连接器上。
+
+**上拉：** U3 没有上拉电阻。请从 SDA 和 SCL 各接一个外部电阻到 VS。
+LabJack 建议 4.7 kΩ。没有上拉时，每个地址都会返回 NAK，`scan` 返回空列表。
+`--pull-ups` 对 U3 不起作用，`config` 会打印
+`pull_ups=n/a (external resistors required)`。
+
+**限制：**
+- 一次传输最多写 50 字节、读 52 字节。
+- 时钟约在 10 kHz 至 150 kHz 之间运行，并且 Box 绝不会超过您请求的速率。
+  超出该范围的请求会被钳位。
+- `config` 打印硬件实际使用的速率，两者不同时会在括号中给出请求值：
+
+```
+I2C configured: freq=96835Hz (requested 100000Hz), pull_ups=n/a (external resistors required)
+```
+
+CLI 不会为被钳位的时钟给出警告，因此请阅读 `config` 输出中的速率。
+
+**错误：** U3 会检查地址的应答，以及它写入的每个字节的应答。
+错误信息会指出设备拒绝的第一个字节：
+
+```
+No ACK from device at 0x48. Check the address, that the device is powered, and that SDA and SCL have external pull-up resistors -- a U3 has none.
+Device at 0x48 acknowledged its address but NAKed data byte 1 of 2 (AckArray 0x00000006).
+```
+
+写入 31 字节或更多时，只会报告有字节被拒绝，不会指出是哪一个字节。
+
+---
+
+## Net 配置
+
+I2C Net 配置在 Box 的 `saved_nets.json` 中。Net 记录示例：
+
+```json
+{
+  "name": "my_i2c",
+  "role": "i2c",
+  "instrument": "labjack_t7",
+  "pin": "FIO4-FIO5",
+  "params": {
+    "sda_pin": 4,
+    "scl_pin": 5,
+    "frequency_hz": 100000,
+    "pull_ups": false
+  }
+}
+```
+
+Aardvark 适配器：
+
+```json
+{
+  "name": "my_i2c",
+  "role": "i2c",
+  "instrument": "aardvark",
+  "pin": "I2C0",
+  "params": {
+    "frequency_hz": 400000,
+    "pull_ups": true
+  }
+}
+```
+
+---
+
+## 输出格式
+
+| 格式 | 说明 |
+|--------|-------------|
+| `hex` | 以空格分隔的十六进制字节（例如 `0a 03 ff`） |
+| `bytes` | 原始字节值 |
+| `json` | 含数据数组和元信息的 JSON 对象 |
+
+---
+
+## 示例
+
+```bash
+# List all I2C nets on a box
+lager i2c --box my-lager-box
+
+# Show configuration for a specific net
+lager i2c MY_I2C --box my-lager-box
+
+# Configure bus speed and pull-ups
+lager i2c MY_I2C config --frequency 400k --pull-ups on
+
+# Scan for devices
+lager i2c MY_I2C scan
+
+# Read WHO_AM_I register from an accelerometer
+lager i2c MY_I2C transfer 1 --address 0x68 --data 0x75
+
+# Write configuration to a sensor
+lager i2c MY_I2C write 0x2003 --address 0x76
+
+# Read 6 bytes of sensor data
+lager i2c MY_I2C read 6 --address 0x76
+```
+
+---
+
+## 故障排除
+
+### 扫描不到任何设备
+
+- 检查 SDA 和 SCL 的接线
+- 确认已接上拉电阻（100kHz 时典型值为 4.7k）
+- Aardvark：可以尝试 `--pull-ups on` 启用内部上拉
+- LabJack U3：请加装外部上拉电阻。U3 本身没有，没有它们扫描不到任何设备
+- 确认设备的供电已连接
+
+### 总线错误
+
+- LabJack T7：连接之后的第一次事务可能返回总线错误。这是正常的，驱动程序会自动处理
+- 可以尝试用 `--frequency 100k` 降低频率
+- 检查是否存在总线争用（多个主机）
+
+### NACK 错误
+
+- 核对设备地址（有些数据手册给出的是左移后的 8 位地址）
+- 确认设备已通电且不处于复位状态
+- 检查是否与总线上的其他设备存在地址冲突
+
+---
+
+## 说明
+
+- 默认 I2C Net 可以用 `lager defaults add --i2c-net NETNAME` 设置
+- LabJack T7 约在 130 Hz 至 450 kHz 之间运行，LabJack U3 约在 10 kHz 至 150 kHz 之间运行
+- `config` 会打印 LabJack U3 实际使用的时钟速率，它可能与请求值不同
+- Aardvark 适配器支持内部上拉，可以通过 `config --pull-ups` 切换
+- `transfer` 命令使用 I2C 重复起始条件，实现原子的先写后读操作
