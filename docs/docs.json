@@ -554,6 +554,7 @@
               {
                 "group": "测量",
                 "pages": [
+                  "source/zh/reference/cli/logic",
                   "source/zh/reference/cli/adc",
                   "source/zh/reference/cli/thermocouple"
                 ]
@@ -565,6 +566,7 @@
                   "source/zh/reference/cli/gpo",
                   "source/zh/reference/cli/dac",
                   "source/zh/reference/cli/uart",
+                  "source/zh/reference/cli/i2c",
                   "source/zh/reference/cli/usb",
                   "source/zh/reference/cli/ble",
                   "source/zh/reference/cli/blufi",
@@ -583,6 +585,7 @@
               {
                 "group": "实用工具",
                 "pages": [
+                  "source/zh/reference/cli/webcam",
                   "source/zh/reference/cli/arm"
                 ]
               }
