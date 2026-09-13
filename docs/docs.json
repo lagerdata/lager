@@ -526,6 +526,7 @@
                   "source/zh/reference/cli/install",
                   "source/zh/reference/cli/install-wheel",
                   "source/zh/reference/cli/uninstall",
+                  "source/zh/reference/cli/update",
                   "source/zh/reference/cli/ssh",
                   "source/zh/reference/cli/ssh-setup",
                   "source/zh/reference/cli/logs"
@@ -567,6 +568,7 @@
                   "source/zh/reference/cli/dac",
                   "source/zh/reference/cli/uart",
                   "source/zh/reference/cli/i2c",
+                  "source/zh/reference/cli/spi",
                   "source/zh/reference/cli/usb",
                   "source/zh/reference/cli/ble",
                   "source/zh/reference/cli/blufi",
