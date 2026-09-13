@@ -535,6 +535,8 @@
               {
                 "group": "配置",
                 "pages": [
+                  "source/zh/reference/cli/box-config",
+                  "source/zh/reference/cli/lager-file",
                   "source/zh/reference/cli/instruments",
                   "source/zh/reference/cli/diagnose",
                   "source/zh/reference/cli/dut",

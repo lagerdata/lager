@@ -1,0 +1,493 @@
+---
+title: .lager 配置文件
+description: .lager JSON 配置文件的完整参考
+---
+
+`.lager` 文件是一个 JSON 配置文件，保存 Lager CLI 的设置。这个文件有**两个不同的版本**，
+用途也不同：**全局**文件由所有项目共用，**项目级**文件只属于某一个项目目录。
+
+## 两个文件，两种用途
+
+| | 全局 `.lager` | 项目级 `.lager` |
+|---|---|---|
+| **位置** | `~/.lager` | 项目中的任意目录（从当前目录向上查找） |
+| **由谁创建** | `lager boxes add`、`lager defaults add`、`lager nets add` | `lager devenv create`，或手动创建 |
+| **用途** | 全机范围的 Box 注册表、Net 定义、命令默认值 | 项目专用的 Docker 开发环境、调试脚本、文件 includes |
+| **段** | `DEFAULTS`、`BOXES`、`NETS` | `DEVENV`、`DEBUG`、`includes` |
+| **共享方式** | 所有项目共用一个文件 | 每个项目一个（提交到版本控制） |
+
+CLI 总是知道该用哪个文件。`lager boxes` 和 `lager defaults` 之类的命令读写全局文件。
+`lager devenv` 和 `lager exec` 之类的命令从当前目录向上查找项目级文件。
+这两个文件不会冲突 —— 它们包含的段完全不同。
+
+当 `lager devenv terminal` 或 `lager exec` 启动 Docker 容器时，
+它会把全局的 `~/.lager` 文件挂载到容器内的 `/lager/.lager`，
+并设置 `LAGER_CONFIG_FILE_DIR=/lager`。因此容器内也能使用 Box 和 Net 的定义。
+
+---
+
+## 全局文件（`~/.lager`）
+
+全局文件位于您的主目录，由所有项目共用。它保存您的 Box 注册表、
+硬件 Net 配置和命令默认值。
+
+### DEFAULTS
+
+保存默认值，让您可以在 CLI 命令中省略常用选项。
+当您运行命令而没有指定 `--box` 或 Net 名称时，CLI 会查找这一段。
+
+由 `lager defaults` 管理。
+
+**字段：**
+
+| 配置键 | CLI 选项 | 说明 |
+|------------|-----------|-------------|
+| `gateway_id` | `--box` | 默认 Box 名称 |
+| `serial_device` | `--serial-port` | 默认串口路径 |
+| `net_power_supply` | `--supply-net` | 默认电源 Net |
+| `net_battery` | `--battery-net` | 默认电池 Net |
+| `net_solar` | `--solar-net` | 默认太阳能 Net |
+| `net_scope` | `--scope-net` | 默认示波器 Net |
+| `net_logic` | `--logic-net` | 默认逻辑分析仪 Net |
+| `net_adc` | `--adc-net` | 默认 ADC Net |
+| `net_dac` | `--dac-net` | 默认 DAC Net |
+| `net_gpio` | `--gpio-net` | 默认 GPIO Net |
+| `net_debug` | `--debug-net` | 默认调试 Net |
+| `net_eload` | `--eload-net` | 默认电子负载 Net |
+| `net_usb` | `--usb-net` | 默认 USB 集线器 Net |
+| `net_webcam` | `--webcam-net` | 默认摄像头 Net |
+| `net_watt_meter` | `--watt-meter-net` | 默认功率计 Net |
+| `net_thermocouple` | `--thermocouple-net` | 默认热电偶 Net |
+| `net_uart` | `--uart-net` | 默认 UART Net |
+| `net_arm` | `--arm-net` | 默认机械臂 Net |
+
+**示例：**
+
+```json
+{
+  "DEFAULTS": {
+    "gateway_id": "my-lager-box",
+    "serial_device": "/dev/ttyUSB0",
+    "net_power_supply": "VDD_MAIN",
+    "net_debug": "SWD",
+    "net_uart": "SERIAL_DBG"
+  }
+}
+```
+
+**CLI 命令：**
+
+```bash
+lager defaults add --box my-lager-box --supply-net VDD_MAIN
+lager defaults list
+lager defaults delete box
+lager defaults delete-all
+```
+
+**解析顺序：** 当命令需要 Box 或 Net 名称时，它按以下顺序查找：
+1. 命令行选项（`--box`、Net 参数）—— 优先级最高
+2. `LAGER_BOX` 环境变量（仅用于 Box）
+3. 全局 `~/.lager` 中的 `DEFAULTS` 段
+4. 该项必填且没找到时报错
+
+---
+
+### BOXES
+
+把易读的 Box 名称映射到它们的 IP 地址。这是其他所有命令用来把 Box 名称解析为 IP 的注册表。
+
+由 `lager boxes` 管理。
+
+每个条目可以是一个简单的 IP 字符串（旧格式），也可以是带附加信息的对象。
+
+**字段（对象格式）：**
+
+| 字段 | 必填 | 说明 |
+|-------|----------|-------------|
+| `ip` | 是 | 该 Box 的 IP 地址（通常是 Tailscale IP） |
+| `user` | 否 | SSH 访问所用的用户名。在文件中是可选的（较旧的条目可能没有），但 `lager boxes add --user` 是必填的，因此新添加的 Box 总是会记录它。 |
+| `version` | 否 | 该 Box 运行的分支或版本（例如 `"main"`、`"staging"`） |
+
+**示例：**
+
+```json
+{
+  "BOXES": {
+    "my-lager-box": {
+      "ip": "100.64.0.10",
+      "user": "<ssh-user>"
+    },
+    "staging-box": {
+      "ip": "100.64.0.11",
+      "user": "<ssh-user>",
+      "version": "staging"
+    },
+    "legacy-box": "192.168.1.50"
+  }
+}
+```
+
+**CLI 命令：**
+
+```bash
+lager boxes add --name my-lager-box --ip 100.64.0.10 --user <ssh-user>
+lager boxes add --name staging-box --ip 100.64.0.11 --user <ssh-user> --version staging
+lager boxes list
+lager boxes edit --name my-lager-box --ip 100.64.0.12
+lager boxes delete --name my-lager-box
+lager boxes delete-all
+lager boxes export                    # Print boxes as JSON
+lager boxes import --file boxes.json  # Import boxes from JSON
+```
+
+---
+
+### NETS
+
+按 Box 名称组织保存硬件 Net 配置。每个 Net 把一个易读的名称映射到一个物理硬件连接
+（仪器上的某个通道）。Net 保存在全局文件中，但真正的 Net 数据在 Box 上。
+这一段是由 `lager nets` 管理的本地缓存。
+
+**结构：** 一个以 Box 名称为键的字典，每个值是一个 Net 对象数组。
+
+**Net 对象的字段：**
+
+| 字段 | 必填 | 说明 |
+|-------|----------|-------------|
+| `name` | 是 | 该 Net 的唯一名称（例如 `"VDD_MAIN"`、`"SWD"`） |
+| `role` | 是 | Net 类型：`supply`、`battery`、`solar`、`eload`、`adc`、`dac`、`gpio`、`debug`、`scope`、`logic`、`uart`、`i2c`、`spi`、`usb`、`watt`、`thermocouple`、`webcam`、`arm` |
+| `instrument` | 是 | 仪器型号名称（例如 `"Rigol_DP831"`、`"LabJack_T7"`） |
+| `address` | 是 | 仪器地址（USB 或网络路径） |
+| `pin` | 是 | 仪器上的通道或引脚号 |
+| `jlink_script` | 否 | Base64 编码的 J-Link 脚本（仅调试 Net） |
+| `device_path` | 否 | 直接的设备路径（带 USB 序列号的 UART Net，例如 `"/dev/ttyUSB0"`） |
+| `channel` | 否 | 端口号（UART Net） |
+
+**示例：**
+
+```json
+{
+  "NETS": {
+    "my-lager-box": [
+      {
+        "name": "VDD_MAIN",
+        "role": "supply",
+        "instrument": "Rigol_DP831",
+        "address": "USB0::0x1AB1::0x0E11::DP8XXXXXXX::INSTR",
+        "pin": "1"
+      },
+      {
+        "name": "SWD",
+        "role": "debug",
+        "instrument": "JLink",
+        "address": "USB0::JLink",
+        "pin": "0",
+        "jlink_script": "base64encodedcontent..."
+      },
+      {
+        "name": "I2C_BUS",
+        "role": "i2c",
+        "instrument": "Aardvark",
+        "address": "USB0::Aardvark",
+        "pin": "0"
+      }
+    ]
+  }
+}
+```
+
+**CLI 命令：**
+
+```bash
+lager nets                                           # List all nets
+lager nets add VDD_MAIN supply 1 <address>           # Add a net
+lager nets add-all                                   # Auto-create all possible nets
+lager nets add-batch nets.json                       # Batch add from JSON file
+lager nets delete VDD_MAIN supply                    # Delete a net
+lager nets delete-all                                # Delete all nets
+lager nets rename VDD_MAIN VDD_3V3                   # Rename a net
+lager nets set-script SWD ./my_device.JLinkScript    # Attach J-Link script
+lager nets remove-script SWD                         # Remove J-Link script
+lager nets show-script SWD                           # Display J-Link script
+lager nets tui                                       # Interactive TUI manager
+```
+
+---
+
+## 项目级文件（`./.lager`）
+
+项目级文件位于您的项目目录（或它的任意上级目录）中。CLI 从当前工作目录向上查找它。
+这个文件通常会提交到版本控制，让项目中的所有开发者共用同一套开发环境配置。
+
+它与全局的 `~/.lager` 完全分开 —— 包含的段不同，读取它的命令也不同。
+
+### 本地文件是如何找到的
+
+当您运行 `lager devenv terminal`、`lager exec` 或 `lager debug` 时，
+CLI 从当前目录开始，沿目录树向上查找，直到找到一个不是全局 `~/.lager` 的
+`.lager` 文件。CLI 使用它找到的第一个。
+
+```
+/home/user/projects/my-firmware/.lager    <-- found first (used)
+/home/user/projects/.lager                <-- also exists but not used
+/home/user/.lager                         <-- global file (separate)
+```
+
+### DEVENV
+
+为您的项目配置基于 Docker 的开发环境。由 `lager devenv` 管理。
+
+当您运行 `lager devenv terminal` 时，CLI 读取这一段。它指明要启动哪个 Docker 镜像、
+把源代码挂载到哪里，以及如何配置容器。当您运行 `lager exec <name>` 时，
+它从这一段读取已保存的命令。
+
+**字段：**
+
+| 字段 | 必填 | 说明 |
+|-------|----------|-------------|
+| `image` | 是 | Docker 镜像名称（例如 `"lagerdata/devenv-cortexm"`） |
+| `mount_dir` | 是 | 源代码在容器中的挂载目录（例如 `"/app"`） |
+| `shell` | 否 | 容器内 shell 可执行文件的路径（默认 `"/bin/bash"`）。由 `lager devenv create` 写入 |
+| `user` | 否 | 在容器内以该用户运行 |
+| `group` | 否 | 在容器内以该组运行 |
+| `macaddr` | 否 | 分配给容器的 MAC 地址 |
+| `hostname` | 否 | 分配给容器的主机名 |
+| `repo_root_relative_path` | 否 | 从 `.lager` 文件到仓库根目录的相对路径。当 `.lager` 位于子目录中时使用 —— CLI 会挂载仓库根目录，并把工作目录设为正确的子目录。 |
+| `volumes` | 否 | 要绑定挂载到容器中的其他宿主机路径列表，每项采用 Docker `-v` 形式（`"HOST:CONTAINER"`，可选 `:ro`）。对 `lager devenv terminal` 和 `lager exec` 都生效。由 `lager devenv mount add/remove/list` 管理。 |
+| `environment` | 否 | 要在容器内设置的环境变量列表（`"FOO=bar"`）。对两个命令都生效。由 `lager devenv env set/unset/list` 管理。 |
+| `network` | 否 | Docker 网络模式（例如 `"host"`）。对两个命令都生效；在 `terminal` 上 `--network` 会覆盖它。 |
+| `platform` | 否 | Docker 平台（例如 `"linux/amd64"`）。对两个命令都生效；在 `terminal` 上 `--platform` 会覆盖它。 |
+| `ports` | 否 | 端口映射列表（`"HOST:CONTAINER"`）。对两个命令都生效；在 `terminal` 上会与 `-p` 标志合并。 |
+| `entrypoint` | 否 | 容器的 entrypoint（例如 `"/bin/bash"`）。当镜像默认的 entrypoint 不是交互式 shell 时使用；在 `terminal` 上 `--entrypoint` 会覆盖它。 |
+| `cmd.<name>` | 否 | 自定义的命名命令，可以用 `lager exec <name>` 执行 |
+
+表中的"对两个命令都生效"指的是 `lager exec` 会启动容器的那种情况。
+在被 CLI 识别为 CI 的作业中，`lager exec` 就地运行命令，
+此时它只使用 `shell`、`environment` 和 `cmd.<name>` 这些命令。请参阅
+[在 CI 中运行](/source/zh/reference/cli/exec#在-ci-中运行)。
+
+`volumes` 中的路径可以使用 `~`、环境变量和 `${PROJECT_ROOT}`（即包含 `.lager`
+的目录），这样提交到仓库的 `.lager` 在不同计算机之间仍然可移植 ——
+例如 `"${PROJECT_ROOT}:/workspace"`。当命令行标志（`--user`、`--group`、
+`--network`、`--platform`、`--entrypoint`）与配置值同时存在时，标志优先。
+
+上面任何标量键都可以用 `lager devenv set <key> <value>` 设置、
+用 `lager devenv unset <key>` 删除，整段可以用 `lager devenv show` 打印。
+
+**示例：**
+
+```json
+{
+  "DEVENV": {
+    "image": "lagerdata/devenv-cortexm:latest",
+    "mount_dir": "/app",
+    "shell": "/bin/bash",
+    "user": "1000",
+    "group": "1000",
+    "hostname": "devbox",
+    "repo_root_relative_path": "..",
+    "volumes": [
+      "/home/me/shared-libs:/opt/libs:ro",
+      "/home/me/build-cache:/root/.cache"
+    ],
+    "environment": [
+      "TOOLCHAIN=arm-none-eabi",
+      "VERBOSE=1"
+    ],
+    "cmd.build": "make -j$(nproc)",
+    "cmd.flash": "openocd -f board.cfg -c 'program build/fw.elf verify reset exit'",
+    "cmd.test": "ctest --output-on-failure"
+  }
+}
+```
+
+**CLI 命令：**
+
+```bash
+lager devenv create                       # Interactive setup (creates DEVENV section)
+lager devenv terminal                     # Start interactive Docker shell
+lager devenv terminal -v /data:/data      # ...with an extra host bind-mount (repeatable)
+lager devenv terminal -e API_KEY=xyz      # ...with an extra env var (repeatable)
+lager devenv terminal --info              # print the resolved `docker run` command + config, don't launch
+lager devenv add build "make -j4"         # Add a named command
+lager devenv delete build                 # Remove a named command
+lager devenv commands                     # List all named commands
+
+# Persist mounts/env in .lager so `lager devenv terminal` needs no flags:
+lager devenv mount add cursor-data:/root/.cursor   # Add a volume to `volumes`
+lager devenv mount remove cursor-data:/root/.cursor
+lager devenv mount list
+lager devenv env set HISTFILE=/root/.local/state/bash/history  # Add/replace in `environment`
+lager devenv env unset HISTFILE
+lager devenv env list
+
+lager devenv set network host          # Set any scalar key (image, network, platform, ...)
+lager devenv set platform linux/amd64
+lager devenv set port 8080:8080        # Append to the `ports` list
+lager devenv unset network             # Remove a key
+lager devenv show                      # Print the resolved DEVENV config
+lager exec build                          # Run a named command in Docker
+lager exec --command 'make clean'         # Run an ad-hoc command in Docker
+lager exec --command 'make' --save-as mk  # Run and save for later
+```
+
+---
+
+### DEBUG
+
+把调试 Net 名称映射到本地 J-Link 脚本文件的路径。路径可以是相对的
+（相对于 `.lager` 文件所在位置解析），也可以是绝对的。
+
+它与全局文件 `NETS` 段中 Net 对象上的 `jlink_script` 字段是两回事。
+`DEBUG` 段提供项目级的脚本覆盖 —— `lager debug` 命令会先查这一段，
+再使用保存在 Box 上的脚本。这样您就可以把 J-Link 脚本放在项目仓库中并自动使用它们。
+
+**示例：**
+
+```json
+{
+  "DEBUG": {
+    "SWD": "./scripts/my_device.JLinkScript",
+    "JTAG": "/absolute/path/to/other.JLinkScript"
+  }
+}
+```
+
+---
+
+### includes
+
+把目标名称映射到源目录，这些目录会随用 `lager python` 运行的 Python 脚本一起上传。
+这样您的测试脚本就可以从项目之外的目录导入内容。
+
+路径相对于 `.lager` 文件所在位置解析。
+
+**示例：**
+
+```json
+{
+  "includes": {
+    "dtest": "../dtest",
+    "shared_lib": "/absolute/path/to/shared"
+  }
+}
+```
+
+当您运行 `lager python test_script.py` 时，CLI 会检查本地 `.lager` 中的
+`includes` 段，然后把其中引用的目录上传到 Box，使它们可以被导入。
+
+---
+
+## 环境变量
+
+以下环境变量可以覆盖默认的文件位置和行为：
+
+| 变量 | 说明 |
+|----------|-------------|
+| `LAGER_CONFIG_FILE_DIR` | 覆盖全局 `.lager` 文件所在的目录（默认 `~`） |
+| `LAGER_CONFIG_FILE_NAME` | 覆盖文件名（默认 `.lager`） |
+| `LAGER_BOX` | 覆盖所有命令的默认 Box（优先于 `DEFAULTS.gateway_id`） |
+
+```bash
+# Use a custom config directory
+export LAGER_CONFIG_FILE_DIR=/opt/lager
+
+# Override default box for this session
+export LAGER_BOX=staging-box
+```
+
+---
+
+## 旧格式的迁移
+
+较旧的 `.lager` 文件可能使用小写的段名。CLI 在写入时会自动升级它们：
+
+| 旧键 | 当前键 |
+|------------|-------------|
+| `duts` | `BOXES` |
+| `DUTS` | `BOXES` |
+| `LAGER` | `DEFAULTS` |
+| `nets` | `NETS` |
+| `devenv` | `DEVENV` |
+| `debug` | `DEBUG` |
+
+不需要任何手动迁移。CLI 两种格式都能读取，并以当前的大写格式写回。
+
+---
+
+## 完整示例
+
+### 全局 `~/.lager`
+
+```json
+{
+  "DEFAULTS": {
+    "gateway_id": "my-lager-box",
+    "net_power_supply": "VDD_MAIN",
+    "net_debug": "SWD",
+    "net_uart": "SERIAL_DBG",
+    "net_adc": "ADC_SENSE"
+  },
+  "BOXES": {
+    "my-lager-box": {
+      "ip": "100.64.0.10",
+      "version": "main"
+    },
+    "staging-box": "100.64.0.11",
+    "legacy-box": "192.168.1.50"
+  },
+  "NETS": {
+    "my-lager-box": [
+      {
+        "name": "VDD_MAIN",
+        "role": "supply",
+        "instrument": "Rigol_DP831",
+        "address": "USB0::0x1AB1::0x0E11::DP8XXXXXXX::INSTR",
+        "pin": "1"
+      },
+      {
+        "name": "SWD",
+        "role": "debug",
+        "instrument": "JLink",
+        "address": "USB0::JLink",
+        "pin": "0"
+      },
+      {
+        "name": "SERIAL_DBG",
+        "role": "uart",
+        "instrument": "Unknown_UART_Device",
+        "address": "USB0::uart",
+        "pin": "/dev/ttyUSB0",
+        "device_path": "/dev/ttyUSB0"
+      },
+      {
+        "name": "ADC_SENSE",
+        "role": "adc",
+        "instrument": "LabJack_T7",
+        "address": "USB0::LabJack",
+        "pin": "AIN0"
+      }
+    ]
+  }
+}
+```
+
+### 项目级 `./my-firmware/.lager`
+
+```json
+{
+  "DEVENV": {
+    "image": "lagerdata/devenv-cortexm",
+    "mount_dir": "/app",
+    "shell": "/bin/bash",
+    "cmd.build": "make -j$(nproc)",
+    "cmd.flash": "make flash"
+  },
+  "DEBUG": {
+    "SWD": "./scripts/my_device.JLinkScript"
+  },
+  "includes": {
+    "test_framework": "../shared/test_framework"
+  }
+}
+```
