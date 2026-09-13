@@ -1,0 +1,714 @@
+---
+title: Debug
+description: 调试固件并管理调试会话
+---
+
+控制嵌入式开发中的调试器操作，包括烧录、GDB 服务器管理、内存访问和 RTT 日志。
+
+## 语法
+
+```bash
+lager debug [OPTIONS] [NET_NAME] COMMAND [ARGS]...
+```
+
+## 全局选项
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--box TEXT` | Lager Box 名称或 IP 地址 |
+| `--help` | 显示帮助信息并退出 |
+
+## 命令
+
+| 命令 | 说明 |
+|---------|-------------|
+| `gdbserver` | 启动用于调试的 GDB 服务器（JLinkGDBServer 或 OpenOCD） |
+| `disconnect` | 停止 GDB 服务器 |
+| `flash` | 把固件烧录到目标 |
+| `reset` | 复位目标设备 |
+| `erase` | 擦除闪存（在 DA1469x 上为 1 MiB 范围） |
+| `memrd` | 从目标读取内存 |
+| `status` | 显示调试 Net 的状态 |
+| `health` | 检查调试服务的健康状况 |
+
+## 命令参考
+
+### `gdbserver`
+
+启动用于远程调试的 GDB 服务器。这是建立调试连接的主要命令。
+
+Box 根据探针选择后端。J-Link 探针使用 JLinkGDBServer，
+其他受支持的探针使用 OpenOCD。请参阅[受支持的调试探针](#受支持的调试探针)。
+
+```bash
+lager debug [NET_NAME] gdbserver [OPTIONS]
+```
+
+**选项：**
+- `--box TEXT` - Lager Box 名称或 IP
+- `--force / --no-force` - 强制建立新连接（默认复用已有连接）
+- `--halt / --no-halt` - 连接时让设备停住（默认 no-halt）
+- `--speed KHZ` - SWD/JTAG 速度，单位 kHz（例如 100、4000），或 "adaptive"
+- `--quiet` - 抑制提示性信息
+- `--json` - 以 JSON 格式输出结果
+- `--rtt` - 启动 GDB 服务器之后自动串流 RTT 日志
+- `--rtt-reset` - 复位设备之后串流 RTT（可以捕获启动过程）
+- `-i, --interactive` - 双向 RTT：把 stdin 转发到目标的 RTT 下行通道，同时把上行通道串流到 stdout（需要 `--rtt` 或 `--rtt-reset`）
+- `--rtt-channel N` - 要串流的 RTT 通道，两个方向都用它（默认 `0`）
+- `--reset` - 启动 GDB 服务器之后复位设备
+- `--gdb-port PORT` - 覆盖自动分配的 GDB 服务器端口。默认情况下，Box 按探针槽位选择端口（第一个探针为 2331，第二个为 2334）。只有在需要特定端口时才传它。在多探针的 Box 上请避免使用。
+- `--rtt-search-addr HEX` - 搜索 RTT 控制块的 RAM 起始地址（十六进制，例如 `0x20020000`）
+- `--rtt-search-size HEX` - 搜索 RTT 控制块的 RAM 区域大小（十六进制，例如 `0x4000`）
+- `--rtt-chunk-size HEX` - RTT 搜索的读取块大小（十六进制，例如 `0x1000`）
+
+**示例：**
+
+```bash
+# Start GDB server on default debug net
+lager debug gdbserver --box my-lager-box
+
+# Start GDB server on specific net with halt
+lager debug debug1 gdbserver --box my-lager-box --halt
+
+# Start GDB server and stream RTT logs
+lager debug gdbserver --box my-lager-box --rtt
+
+# Capture boot sequence via RTT
+lager debug gdbserver --box my-lager-box --rtt-reset
+
+# Send commands to the target while reading its RTT output
+lager debug gdbserver --box my-lager-box --rtt --interactive
+
+# Use custom speed and port
+lager debug gdbserver --box my-lager-box --speed 4000 --gdb-port 3333
+```
+
+**用 GDB 连接：**
+
+```bash
+# After starting gdbserver, connect with:
+arm-none-eabi-gdb firmware.elf -ex 'target remote <BOX_IP>:2331'
+```
+
+### `disconnect`
+
+停止 GDB 服务器（JLinkGDBServer 或 OpenOCD）并释放调试资源。
+
+```bash
+lager debug [NET_NAME] disconnect [OPTIONS]
+```
+
+**选项：**
+- `--box TEXT` - Lager Box 名称或 IP
+- `--keep-server` - 让 GDB 服务器继续运行，供外部连接使用
+
+**示例：**
+
+```bash
+# Stop GDB server completely
+lager debug disconnect --box my-lager-box
+
+# Disconnect but keep server running
+lager debug disconnect --box my-lager-box --keep-server
+```
+
+### `flash`
+
+把固件烧录到目标。支持 Intel HEX、ELF 和二进制文件格式。
+
+```bash
+lager debug [NET_NAME] flash [OPTIONS]
+```
+
+**选项：**
+- `--box TEXT` - Lager Box 名称或 IP
+- `--hex FILE` - Intel HEX 文件的路径
+- `--elf FILE` - ELF 可执行文件的路径
+- `--bin FILE,ADDRESS` - 二进制文件及其加载地址，作为一个参数（例如 `build/app.bin,0x08000000`）
+- `--verbose` - 显示详细的 J-Link 输出
+- `--force-reconnect` - 烧录前强制干净重连
+- `--no-erase` - 跳过擦除步骤（默认情况下 `flash` 会先擦除再编程，以获得干净状态）
+- `--halt / --no-halt` - 烧录之后让设备停住（默认 no-halt）
+
+<Note>`flash` **默认**会先擦除再编程，因此不需要任何标志就能得到干净状态
+（这正是 RTT 初始化所需要的）。只有当您有意保留现有闪存内容时才传 `--no-erase`。
+旧的 `--erase` 标志现在是空操作，仅为向后兼容而保留。</Note>
+
+<Note>CLI 会把 `--bin` 的加载地址 `0` 当作 `0x08000000` 发送。
+如果您目标的闪存起始于 `0x0`，请改用 `--hex` 或 `--elf`。</Note>
+
+**失败输出：**
+
+- 如果编程前的擦除失败，`flash` 会打印 `Flash erase failed:` 和错误，然后以 1 退出。它不会对目标编程。
+- 如果编程失败，`flash` 会打印 `Flash failed:` 和出错的那一行，然后打印
+  `The target was NOT programmed. If this ran without --no-erase it is now erased.`，并以 1 退出。
+- CLI 从探针输出中的连接失败行判断出失败。下面的 `erase` 一节列出了那些行。
+
+**示例：**
+
+```bash
+# Flash Intel HEX file
+lager debug flash --hex build/firmware.hex --box my-lager-box
+
+# Flash ELF file
+lager debug flash --elf build/firmware.elf --box my-lager-box
+
+# Flash binary with base address
+lager debug flash --bin build/firmware.bin,0x08000000 --box my-lager-box
+
+# Flash while preserving existing flash contents (skip the default erase)
+lager debug flash --hex build/firmware.hex --no-erase --box my-lager-box
+
+# Flash and halt for debugging
+lager debug flash --elf build/firmware.elf --halt --box my-lager-box
+
+# Verbose output for troubleshooting
+lager debug flash --hex build/firmware.hex --verbose --box my-lager-box
+```
+
+### `reset`
+
+复位目标设备。
+
+```bash
+lager debug [NET_NAME] reset [OPTIONS]
+```
+
+**选项：**
+- `--box TEXT` - Lager Box 名称或 IP
+- `--halt / --no-halt` - 复位后让设备停住（默认 no-halt）
+- `--force-reconnect` - 复位前强制干净重连
+
+**示例：**
+
+```bash
+# Reset and run
+lager debug reset --box my-lager-box
+
+# Reset and halt (for debugging)
+lager debug reset --halt --box my-lager-box
+
+# Force clean state before reset
+lager debug reset --force-reconnect --box my-lager-box
+```
+
+### `erase`
+
+擦除目标上的全部闪存。**这是一个破坏性操作。**
+
+在 DA1469x 上，`erase` 只擦除外部 QSPI 闪存的一段范围。请参阅
+[DA1469x 目标](#da1469x-目标)。
+
+```bash
+lager debug [NET_NAME] erase [OPTIONS]
+```
+
+**选项：**
+- `--box TEXT` - Lager Box 名称或 IP
+- `--speed KHZ` - SWD/JTAG 速度，单位 kHz（默认 4000）
+- `--yes` - 跳过确认提示
+- `--quiet` - 抑制警告信息。它同时也会跳过确认提示。
+- `--json` - 以 JSON 格式输出结果。它同时也会跳过确认提示。
+- `--halt / --no-halt` - 擦除后让设备停住（默认 no-halt）
+
+**失败输出：**
+
+如果擦除失败，`erase` 会打印 `Erase failed:` 和错误，然后以 1 退出。
+
+0.42.0 及以上版本的 Box 会自己识别 J-Link 连接失败并返回错误。
+Box 给出的信息同样以 `Erase failed:` 开头，因此 CLI 会显示两次这个前缀。
+
+较旧的 Box 会返回探针输出而不报错。此时 CLI 会逐行检查那段输出。
+当某一行是、以下列信息开头，或以它们结尾时，该行判定为擦除失败：
+
+- `ERROR: Could not connect to target.`
+- `Could not connect to target.`
+- `Could not connect to the target device.`
+- `Cannot connect to target.`
+- `Failed to power up DAP`
+
+对于这样的行，CLI 会打印 `Erase failed:` 和该行，然后打印
+`The target was NOT erased. Check that it is connected and powered.`
+如果输出中没有这些行，`erase` 以 0 退出。
+
+**示例：**
+
+```bash
+# Erase with confirmation prompt
+lager debug erase --box my-lager-box
+
+# Erase without confirmation
+lager debug erase --box my-lager-box --yes
+
+# Erase and halt afterward
+lager debug erase --box my-lager-box --yes --halt
+```
+
+### `memrd`
+
+从目标设备读取内存。
+
+```bash
+lager debug [NET_NAME] memrd START_ADDR LENGTH [OPTIONS]
+```
+
+**参数：**
+- `START_ADDR` - 起始内存地址（例如 0x20000000）
+- `LENGTH` - 要读取的字节数
+
+**选项：**
+- `--box TEXT` - Lager Box 名称或 IP
+- `--json` - 以 JSON 格式输出结果
+- `--halt / --no-halt` - 读取期间让设备停住（默认 no-halt）。`--no-halt` 会覆盖 DA1469x QSPI XIP 的自动停住
+- `--no-reset` - **仅 DA1469x。** 跳过 Box 在读取之前执行的复位+停住。运行中的 DA1469x 会禁用 SWD，因此不做复位读取就会失败 —— 只有在芯片空白/已唤醒、且您不想重启它时才使用它
+
+**示例：**
+
+```bash
+# Read 16 bytes of SRAM
+lager debug memrd 0x20000000 16 --box my-lager-box
+
+# Read with device halted (more reliable)
+lager debug memrd 0x20000000 64 --halt --box my-lager-box
+
+# Output as JSON
+lager debug memrd 0x08000000 32 --json --box my-lager-box
+
+# DA1469x: read a blank/awake part without rebooting it
+lager debug memrd 0x20000000 16 --no-reset --box my-lager-box
+```
+
+**输出：**
+
+```
+0x20000000:	0x00	0x01	0x02	0x03	0x04	0x05	0x06	0x07
+0x20000008:	0x08	0x09	0x0a	0x0b	0x0c	0x0d	0x0e	0x0f
+```
+
+### `status`
+
+显示调试 Net 的状态和配置信息。
+
+```bash
+lager debug [NET_NAME] status [OPTIONS]
+```
+
+**选项：**
+- `--box TEXT` - Lager Box 名称或 IP
+
+**示例：**
+
+```bash
+lager debug status --box my-lager-box
+lager debug debug1 status --box my-lager-box
+```
+
+**输出：**
+
+```
+Debug Net Information:
+  Name: debug1
+  Device Type: STM32F407VG
+  Architecture: ARM Cortex-M4
+  Probe: J-Link
+  GDB server running: True
+  Target attached: Yes
+```
+
+`GDB server running` 说的是 Box 上的那个进程。`Target attached` 说的是芯片本身：
+Box 会去读取目标来回答它。这两个字段不同，因此 CLI 分开报告。
+gdbserver 可能比它驱动的设备活得更久，而烧录或擦除类命令关心的是第二个字段，
+而不是第一个。
+
+为了回答 `Target attached`，`status` 会通过正在运行的 GDB 服务器读取
+Cortex-M 的 CPUID 寄存器。这次读取不会让内核停住。探针较慢时，
+`status` 可能耗时多达 20 秒。
+
+`Target attached` 在两种情况下显示 `No`：
+
+- 该探针没有运行 GDB 服务器。
+- GDB 服务器的日志记录了一次连接失败。
+
+当 Box 无法得出结论时，`Target attached` 显示 `Unknown`。以下情况会得到这个结果：
+
+- Box 版本早于这个字段。
+- 探针无法运行，因为已有调试器占用了该会话。
+- 读取寄存器超时。
+- OpenOCD 返回了空回复。
+
+`Unknown` 并不表示目标不存在。
+
+### `health`
+
+检查调试服务的健康状况和资源使用情况。
+
+```bash
+lager debug [NET_NAME] health [OPTIONS]
+```
+
+**选项：**
+- `--box TEXT` - Lager Box 名称或 IP
+- `--verbose` - 显示详细的健康信息
+
+**示例：**
+
+```bash
+# Basic health check
+lager debug health --box my-lager-box
+
+# Detailed health information
+lager debug health --box my-lager-box --verbose
+```
+
+**输出（verbose）：**
+
+```
+Debug Service Health:
+  Status: healthy
+  Version: 1.2.0
+  Uptime: 2.5 days (216000s)
+  J-Link Running: True
+  J-Link PID: 12345
+  GDB Controllers Cached: 1
+  Active Connections: 1
+```
+
+## 列出调试 Net
+
+只带 `--box` 而不带子命令调用时，列出该 Lager Box 上的全部调试 Net：
+
+```bash
+lager debug --box my-lager-box
+```
+
+**输出：**
+
+```
+Name    Net Type  Instrument  Channel      Address
+debug1  debug     J-Link      STM32F407VG  USB::001::002
+debug2  debug     CMSIS-DAP   nRF52840     USB::001::003
+```
+
+## RTT（实时传输）日志
+
+RTT 通过调试探针提供低延迟的日志。请在 `gdbserver` 上使用 `--rtt` 或 `--rtt-reset` 标志：
+
+```bash
+# Stream RTT after connecting
+lager debug gdbserver --box my-lager-box --rtt
+
+# Reset device and capture boot messages
+lager debug gdbserver --box my-lager-box --rtt-reset
+
+# Pipe to defmt-print for formatted output
+lager debug gdbserver --box my-lager-box --rtt 2>/dev/null | defmt-print -e firmware.elf
+```
+
+### 解码 defmt 日志
+
+大多数 Rust 固件（以及不少 C 固件）通过
+[defmt](https://defmt.ferrous-systems.com/) 打日志，这是一种压缩的二进制格式。
+**来自 defmt 固件的原始 RTT 字节不是人类可读的。** 必须由 `defmt-print` 解码，
+而且它需要目标上烧录的*那个确切的* ELF 文件。
+
+```bash
+# Flash the build under test, then stream + decode a bounded window
+lager debug SWD flash --elf build/app.elf --box my-lager-box
+timeout 15 lager debug SWD gdbserver --box my-lager-box --rtt-reset 2>/dev/null \
+  | defmt-print -e build/app.elf
+```
+
+有两点需要注意：
+
+- **请重定向 stderr。** RTT 负载写入 **stdout**，状态信息
+  （`JLinkGDBServer started!` 等）写入 **stderr**。请只用管道传 stdout ——
+  追加 `2>/dev/null`（或 `2>debug.log`），这样状态行就绝不会污染
+  `defmt-print` 的输入。
+- **这个流不会结束。** `--rtt` 会一直运行，直到进程被终止。在脚本或非交互式会话中，
+  请用 `timeout <seconds>` 把它包起来，以捕获一个固定的时间窗口。
+  当您终止 `lager` 进程时，管道关闭，`defmt-print` 会在 EOF 时退出。
+
+请在运行该管道的计算机上（也就是保存着 `.elf` 的那台）用
+`cargo install defmt-print` 安装 `defmt-print`。
+
+### 交互式（双向）RTT
+
+加上 `--interactive` 可以在读取目标数据的同时*向*目标发送数据。
+您在 stdin 上输入的任何内容都会被转发到目标的 RTT 下行通道，
+通过 RTT 提供命令控制台的固件就是这样驱动的：
+
+```bash
+lager debug SWD gdbserver --box my-lager-box --rtt --interactive
+```
+
+stdout 仍然是原始的上行通道字节流，因此它与 `defmt-print` 的组合方式
+和普通的 `--rtt` 完全一样：
+
+```bash
+lager debug SWD gdbserver --box my-lager-box --rtt --interactive 2>/dev/null \
+  | defmt-print -e build/app.elf
+```
+
+您的按键由您的终端回显，而不是写入 stdout，因此它们永远不会进入解码器。
+用 `--rtt-channel N` 可以使用 0 以外的通道；两个方向使用同一个通道。
+
+<Warning>
+固件必须在您所用的通道上声明一个 RTT **下行**缓冲区。`defmt-rtt` crate
+只建立上行缓冲区。没有下行缓冲区时，目标会丢弃它收到的数据，并且不给任何提示。
+这看起来像是主机侧的故障，但其实不是。使用 `rtt-target` 下行通道，
+或使用 `SEGGER_RTT` 下行缓冲区的固件，可以正常工作。
+</Warning>
+
+`--interactive` 需要终端。在脚本和其他非交互式场景中，
+请继续使用普通的 `--rtt` 加 `timeout`。
+
+同一个探针和通道上同一时刻只能连接一个交互式会话，
+因为底层的 RTT 连接只接受一个客户端。第二次尝试会被拒绝，
+而不是悄悄地把数据流从第一个会话那里抢走。
+
+## 典型工作流程
+
+### 开发循环
+
+```bash
+# Flash and debug
+lager debug flash --elf build/app.elf --box my-lager-box
+lager debug gdbserver --box my-lager-box --halt
+
+# In another terminal, connect GDB
+arm-none-eabi-gdb build/app.elf -ex 'target remote <BOX_IP>:2331'
+```
+
+### RTT 调试
+
+```bash
+# Flash for a clean RTT state (erase happens by default)
+lager debug flash --elf build/app.elf --box my-lager-box
+
+# Start GDB server and stream RTT with boot capture
+lager debug gdbserver --box my-lager-box --rtt-reset
+```
+
+### 内存检查
+
+```bash
+# Halt device and read memory
+lager debug gdbserver --box my-lager-box --halt
+lager debug memrd 0x20000000 256 --box my-lager-box
+```
+
+### 清理
+
+```bash
+# Stop debug session
+lager debug disconnect --box my-lager-box
+
+# Full chip erase before new project
+lager debug erase --box my-lager-box --yes
+```
+
+## JLinkScript 支持
+
+JLinkScript 文件让您可以为特定硬件配置定制 J-Link 调试探针的行为。
+它们可以处理自定义复位序列、时钟初始化、引脚配置，
+以及标准 J-Link 连接流程未覆盖的其他设备专有操作。
+
+### 配置 JLinkScript
+
+有三种方式可以把 J-Link 脚本附加到调试 Net 上：
+
+**1. 创建 Net 时：**
+
+```bash
+lager nets add debug1 debug STM32F407VG USB::001::002 \
+  --jlink-script ./my_device.JLinkScript --box my-lager-box
+```
+
+**2. 在已有的 Net 上：**
+
+```bash
+lager nets set-script debug1 ./my_device.JLinkScript --box my-lager-box
+```
+
+**3. 在 `.lager` 配置中按项目设置：**
+
+```json
+{
+  "DEBUG": {
+    "debug1": "./scripts/my_device.JLinkScript"
+  }
+}
+```
+
+### 脚本优先级
+
+当 Net 级脚本（通过 `set-script` 保存在 Box 上）和项目级脚本
+（位于 `.lager` 配置中）同时存在时，项目级脚本优先。
+这样您就可以为特定项目覆盖 Box 上保存的脚本。
+
+### 管理脚本
+
+```bash
+# View attached script
+lager nets show-script debug1 --box my-lager-box
+
+# Save script to local file
+lager nets show-script debug1 --box my-lager-box > script.JLinkScript
+
+# Remove script from net
+lager nets remove-script debug1 --box my-lager-box
+```
+
+一旦附加，该脚本会在所有调试操作（连接、烧录、擦除、复位）中自动使用，
+不需要任何额外标志。
+
+## DA1469x 目标
+
+设备名称中含有 `DA1469` 时会启用 DA1469x 专用处理。在这个系列上，
+`flash` 和 `erase` 作用于外部 QSPI 闪存。CPU 把该闪存映射到 `0x16000000`
+以便就地执行（XIP）。
+
+- **地址。** 请传入绝对的 XIP 地址，例如 `--bin build/app.bin,0x16000000`。不要传闪存偏移量。
+- **擦除。** 在两种后端上，`erase` 都从 `0x16000000` 擦除 1 MiB。在这个系列上它从不做全片擦除。
+- **J-Link 上的擦除范围。** 请在该 Net 的 JLinkScript 中加入类似
+  `LAGER_ERASE_RANGE: 0x16000000 0x160FFFFF` 的一行。J-Link 后端随后会擦除这个闭区间。
+
+在 OpenOCD 探针上，主线 OpenOCD 没有这种 QSPI 闪存的驱动。
+Box 改为运行一个驻留在 RAM 中的闪存加载器：
+
+- 超出 `0x16000000`–`0x17FFFFFF` 的地址，在 Box 碰探针之前就会被拒绝。
+- 请使用 `--bin`。加载器原样写入文件中的字节，因此它不解码 `.hex` 或 `.elf` 文件。
+- 请把 `flash_loader.elf` 和 `flash_loader.elf.bin` 放在 Box 宿主机的
+  `~/third_party/customer-binaries/openocd/flash-loaders/da1469x/` 中。
+  容器把该目录看作 `/home/www-data/customer-binaries/openocd/flash-loaders/da1469x/`。
+- 若要使用其他父目录，请用 `lager box-config env set` 把 `LAGER_FLASH_LOADERS_DIR`
+  设为一个容器内路径，然后运行 `lager box-config apply`。
+- OpenOCD 没有这个系列的内置目标配置。请用 `lager nets set-script` 或
+  `lager nets add --openocd-config` 为该 Net 附加一份配置。
+- 一次丢失的调试读取不会中止加载器。加载器会重试读取，直到该步骤的截止时间。
+  截止时间为：启动 10 秒，擦除 60 秒，每个编程块 30 秒。
+
+加载器失败时会指出它打印的最后一行进度信息：
+
+```
+DA1469x flash_loader flash failed after '<last progress line>': <cause>. The QSPI erase already ran, so the board may be left blank until a flash succeeds.
+```
+
+如果信息中说 QSPI 擦除已经执行过，那么板子可能是空白的。
+请在复位它之前重新烧录一次。
+
+```bash
+# Flash a DA1469x image at the start of QSPI
+lager debug SWD flash --bin build/app.bin,0x16000000 --box my-lager-box
+```
+
+## 受支持的调试探针
+
+Box 根据探针的 USB 厂商 ID 选择后端。
+
+| 探针 | 后端 | 说明 |
+|-------|---------|-------|
+| J-Link | JLinkGDBServer | 功能完整，支持 RTT、JLinkScript |
+| J-Link Plus | JLinkGDBServer | 功能完整，支持 RTT、JLinkScript |
+| Flasher ARM | JLinkGDBServer | 产线编程 |
+| CMSIS-DAP（Arm DAPLink） | OpenOCD | 开源，设备支持面广 |
+| ST-Link | OpenOCD | STM32 设备 |
+| Raspberry Pi Debug Probe（Picoprobe） | OpenOCD | CMSIS-DAP 固件 |
+| FTDI 适配器（FT2232H、FT232H、FT4232H） | OpenOCD | 使用一个 MPSSE 通道 |
+| Atmel EDBG | OpenOCD | Microchip 评估板 |
+| Olimex ARM-USB-OCD-H | OpenOCD | FTDI 适配器 |
+
+## 受支持的设备系列
+
+Lager 支持 70 多个 ARM Cortex-M 设备系列，并能自动识别架构。
+创建调试 Net 时，设备型号作为通道给出（例如 `STM32F407VG`、`nRF52840`）。
+
+### Cortex-M0/M0+（ARMv6-M）
+
+| 系列 | 厂商 |
+|--------|-------------|
+| RP2040 | Raspberry Pi |
+| nRF51 | Nordic Semiconductor |
+| STM32C0 | STMicroelectronics |
+| STM32F0 | STMicroelectronics |
+| STM32G0 | STMicroelectronics |
+| STM32L0 | STMicroelectronics |
+| LPC8xx、LPC11xx | NXP |
+| ATSAMD、ATSAML、ATSAMC | Microchip/Atmel |
+| EFM32 Zero Gecko | Silicon Labs |
+
+### Cortex-M3（ARMv7-M）
+
+| 系列 | 厂商 |
+|--------|-------------|
+| STM32F1 | STMicroelectronics |
+| STM32F2 | STMicroelectronics |
+| STM32L1 | STMicroelectronics |
+| LPC13xx、LPC17xx、LPC18xx | NXP |
+| LM3、LM4F（Stellaris/Tiva-C） | Texas Instruments |
+| EFM32 Giant/Leopard/Wonder Gecko | Silicon Labs |
+
+### Cortex-M4/M7（ARMv7E-M）
+
+| 系列 | 厂商 |
+|--------|-------------|
+| nRF52 | Nordic Semiconductor |
+| STM32F3 | STMicroelectronics |
+| STM32F4 | STMicroelectronics |
+| STM32F7 | STMicroelectronics |
+| STM32G4 | STMicroelectronics |
+| STM32H7 | STMicroelectronics |
+| STM32L4 | STMicroelectronics |
+| STM32WB | STMicroelectronics |
+| STM32WL | STMicroelectronics |
+| MKxxxx（Kinetis K） | NXP |
+| LPC4xxx、LPC54xxx | NXP |
+| MIMXRT（i.MX RT） | NXP |
+| TM4C | Texas Instruments |
+| MSP432 | Texas Instruments |
+| CC26xx、CC13xx | Texas Instruments |
+| ATSAM4、ATSAME、ATSAMS、ATSAMV | Microchip/Atmel |
+| EFM32、EFR32 | Silicon Labs |
+| CY、PSoC | Infineon |
+| DA145x、DA146x、DA148x | Dialog Semiconductor |
+
+### Cortex-M23（ARMv8-M Base）
+
+| 系列 | 厂商 |
+|--------|-------------|
+| LPC55S0x | NXP |
+
+### Cortex-M33/M55（ARMv8-M Main）
+
+| 系列 | 厂商 |
+|--------|-------------|
+| nRF53 | Nordic Semiconductor |
+| nRF91 | Nordic Semiconductor |
+| STM32L5 | STMicroelectronics |
+| STM32U5 | STMicroelectronics |
+| STM32H5 | STMicroelectronics |
+| STM32WBA | STMicroelectronics |
+| LPC55S | NXP |
+| R7FA（Renesas RA） | Renesas |
+
+<Note>
+不在上表中的设备默认按 Cortex-M4（ARMv7E-M）架构处理。如果您的设备没有被正确识别，
+请在创建调试 Net 时给出完整的设备型号（例如 `STM32F407VG`，而不是只写 `STM32F4`）。
+</Note>
+
+## 说明
+
+- 调试 Net 用 `lager nets add <name> debug <device_type> <address>` 创建
+- 对 `flash` 和 `reset` 之类的命令，系统会在需要时自动连接
+- 在 `flash`、`erase` 和 `reset` 运行之前，CLI 会检查目标是否响应。如果 GDB 服务器已启动但目标没有响应，CLI 会打印 `The debug session is up, but the target does not answer; reconnecting...` 并开始一个新会话。如果重连失败，命令以 1 退出。
+- `flash` 默认先擦除再编程，从而为 RTT 初始化提供干净状态（用 `--no-erase` 退出这一行为）
+- RTT 串流要求设备固件中具备 RTT 支持
+- 用 `--halt` 暂停 CPU 时，内存读取更可靠
+- 用 `lager debug health --verbose` 诊断连接问题
+- JLinkScript 文件以 base64 编码保存，并在 Box 上自动解码
+
+## 参见
+
+- [Python Debug API](/source/reference/python/debug) -- 在 Python 脚本中自动完成烧录和调试
+- [Python 命令](/source/zh/reference/cli/python) -- 在 Box 上运行测试脚本
+- [术语表](/source/zh/getting-started/glossary) -- GDB、SWD 及其他术语的定义

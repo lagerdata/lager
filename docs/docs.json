@@ -580,6 +580,7 @@
               {
                 "group": "开发",
                 "pages": [
+                  "source/zh/reference/cli/debug",
                   "source/zh/reference/cli/python",
                   "source/zh/reference/cli/exec",
                   "source/zh/reference/cli/devenv",
