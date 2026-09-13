@@ -557,6 +557,7 @@
               {
                 "group": "测量",
                 "pages": [
+                  "source/zh/reference/cli/scope",
                   "source/zh/reference/cli/logic",
                   "source/zh/reference/cli/adc",
                   "source/zh/reference/cli/thermocouple"
