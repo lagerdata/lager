@@ -1,0 +1,444 @@
+---
+title: Box Config
+description: 以声明方式配置 Lager Box 的容器 —— USB 设备权限、软件包、挂载、环境变量等
+---
+
+`lager box-config` 为 Lager Box 的容器管理一份声明式配置。您描述这台 Box 必须具备什么：
+USB 设备权限（udev 规则）、apt 软件包、绑定挂载、环境变量、pip/cargo/npm 包，
+以及 sysctl 值。然后由 `apply` 让这份描述生效。该配置在容器重启和 Box 更新之后依然保留。
+
+## 语法
+
+```bash
+lager box-config COMMAND [OPTIONS]
+```
+
+## 全局选项
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--box TEXT` | Lager Box 名称或 IP 地址 |
+| `--help` | 显示帮助信息并退出 |
+
+## 工作原理
+
+编辑配置和让配置生效是两个独立的步骤：
+
+1. **修改配置** —— `udev add`、`apt add`、`mount add`、`env set` 等。
+   这些只会编辑保存的配置，Box 上还不会有任何变化。
+2. **应用配置** —— `lager box-config apply` 校验配置，并重启（"弹一下"）容器，
+   让改动生效。宿主机侧的部分（apt 包、udev 规则、sysctl）在 apply 期间安装到 Box 宿主机上；
+   其余部分则挂载进新启动的容器。
+
+```bash
+lager box-config udev add 1209:0001 --box my-lager-box   # 1. edit
+lager box-config apply --box my-lager-box                # 2. apply
+```
+
+## 命令
+
+**生命周期**
+
+| 命令 | 说明 |
+|---------|-------------|
+| `show` | 打印当前配置 |
+| `status` | 一行摘要，显示配置状态 |
+| `diff` | 显示相对上次应用配置的待生效改动 |
+| `validate` | 校验当前配置 |
+| `apply` | 校验，然后重启容器让新配置生效 |
+| `init` | 用默认值创建配置 |
+| `reset` | 把配置清空 |
+| `restart` | 重启容器但不改动配置 |
+| `repair` | 从上次应用的快照恢复配置并重启 |
+| `edit` | 在 `$EDITOR` 中打开配置 |
+| `import` / `export` | 从本地 JSON 文件替换配置 / 把配置写入本地 JSON 文件 |
+| `copy` | 把一台 Box 的配置复制到另一台 Box |
+| `audit` | 显示 Box 上记录的最近配置变更 |
+
+**资源配置**
+
+| 组 | 说明 |
+|-------|-------------|
+| `udev` | 宿主机 udev 规则，按 vid:pid 授予 USB 设备访问权限 |
+| `apt` | 宿主机侧的 apt 软件包 |
+| `mount` | 宿主机到容器的绑定挂载 |
+| `volume` | 附加到容器的具名 docker 卷 |
+| `env` | 容器环境变量 |
+| `pip` / `cargo` / `npm` | 容器内的语言软件包 |
+| `sysctl` | 宿主机 sysctl 值，重启后依然保留 |
+| `network-mode` | 容器所运行的 docker 网络 |
+
+---
+
+## 命令参考
+
+### `udev`
+
+按 USB 厂商/产品 ID，在容器内部授予某个 USB 设备的读写权限。
+当刚插上的设备属主是 `root`、而容器内的工具打不开它时，请使用它。
+例如 `dfu-util` 会失败并报出 *"No DFU capable USB device available"*。
+
+```bash
+lager box-config udev add VID:PID [VID:PID ...] [--mode 0666] [--usbtmc]
+lager box-config udev list [--json]
+lager box-config udev remove VID:PID [VID:PID ...]
+```
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--mode TEXT` | 设备节点权限模式，八进制（默认 `0666`） |
+| `--usbtmc` | 同时生成解绑 `usbtmc` 驱动的规则，通过 PyVISA/libusb 访问的 SCPI/USB-TMC 仪器需要它 |
+
+VID 和 PID 各为 4 位十六进制。接受 `0x` 前缀和大写并会归一化
+（因此 `0x1AB1:0E11` 变成 `1ab1:0e11`）。重复添加同一个 vid:pid 会就地更新它。
+
+```bash
+# Let dfu-util open a generic test device, then apply
+lager box-config udev add 1209:0001 --box my-lager-box
+lager box-config apply --box my-lager-box
+
+# A SCPI power supply that also needs the usbtmc driver unbound
+lager box-config udev add 1ab1:0e11 --usbtmc --box my-lager-box
+lager box-config apply --box my-lager-box
+```
+
+执行 `apply` 时，这些规则会被安装到 Box 宿主机的
+`/etc/udev/rules.d/99-lager-user.rules`，并重新加载 udev，
+因此已经插着的设备也会获得新权限。
+
+### `init`
+
+用默认值创建 `/etc/lager/box_config.json`，并预置默认的 `box-tools` 卷。
+如果该文件已存在，除非传入 `--force`，否则不做任何事。
+
+`init` 创建该文件时，还会把手写的 `/etc/lager/user_requirements.txt` 中的条目
+导入到 `pip_packages`。它会打印迁移了哪些包，以及跳过了哪些条目。
+
+```bash
+lager box-config init --box <BOX>
+
+# Replace an existing config with the defaults
+lager box-config init --box <BOX> --force
+```
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--box TEXT` | Lager Box 名称或 IP |
+| `--force` | 如果配置已存在则覆盖它 |
+
+<Warning>
+`--force` 会丢弃当前配置。如果这台 Box 上有您在意的定制内容，
+请先用 `lager box-config export ./box.json` 做一份备份。
+</Warning>
+
+### `reset`
+
+把配置清成真正的空状态。与 `init`（会重新预置默认的 `box-tools` 卷）不同，
+`reset` 清除一切 —— 完全从零开始。
+
+```bash
+lager box-config reset [--yes] [--apply]
+```
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--yes` | 跳过确认提示 |
+| `--apply` | 同时重启容器，一步得到一个全新的空容器 |
+
+```bash
+# Wipe the config and bring up a fresh container
+lager box-config reset --apply --yes --box my-lager-box
+```
+
+### `restart`
+
+重启容器但不改动配置 —— 得到一个配置相同的新容器。
+适合在多次运行之间做测试隔离。与 `apply` 不同，它无条件重启
+（配置没有变化时也不会跳过）。
+
+```bash
+lager box-config restart [--yes] --box my-lager-box
+```
+
+### `apply`
+
+校验配置并重启容器，让改动生效。
+
+```bash
+lager box-config apply [OPTIONS] --box my-lager-box
+```
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--yes` | 跳过确认提示 |
+| `--force` | 即使配置没有变化也重启 |
+| `--dry-run` | 预览 `apply` 会做什么，但不做任何改动 |
+| `--skip-restart` | 校验并记录配置，但不重启 |
+| `--no-auto-prep` | 重启前跳过对宿主机路径的再次校验 |
+| `--recursive-chown` | 对配置中属主不正确且非空的挂载宿主机路径，递归 chown 为 uid 33（www-data） |
+| `--skip-host-network-check` | 即使预检报告切换到 host 网络会让 Box 不可达，也照样应用。请参阅 `network-mode` 一节 |
+
+`--box` 接受以逗号分隔的列表，可对多台 Box 应用。
+
+**退出码**
+
+| 码 | 含义 |
+|------|---------|
+| `0` | 配置已应用。配置无变化时，以及 `--dry-run` 和 `--skip-restart` 时，也返回它 |
+| `3` | 容器已启动，但配置没有完全生效：某个渲染步骤失败，或者 pip、cargo、npm 安装失败 |
+| `1` | 其他任何失败：重启失败、`apply` 拒绝了该配置，或者您拒绝了提示 |
+
+退出码为 `3` 时，`apply` 不会回滚容器，也不会把该配置记录为已应用。
+因此下一次 `apply` 会再次尝试同一份配置。错误输出会指出失败的步骤。
+对于渲染失败，通常的修复方法是 `lager update --box <BOX>`。
+
+使用以逗号分隔的 `--box` 列表时，`apply` 以最差的结果退出，并且 `1` 比 `3` 更优先。
+在 `apply` 退出 `3` 的情形下，`lager box-config restart` 会退出 `1`。
+
+### `apt`
+
+宿主机侧的 apt 软件包（在 `apply` 期间安装到 Box 宿主机上）。
+
+```bash
+lager box-config apt add usbutils dfu-util --box my-lager-box
+lager box-config apt list [--json]
+lager box-config apt remove dfu-util
+```
+
+### `mount`
+
+把宿主机路径绑定挂载到容器中。
+
+```bash
+lager box-config mount add HOST_PATH CONTAINER_PATH [--readonly] --box my-lager-box
+lager box-config mount list [--json]
+lager box-config mount remove HOST_PATH CONTAINER_PATH [--yes]
+```
+
+`mount add` 的选项：
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--readonly` | 以只读方式挂载 |
+| `--no-auto-prep` | 跳过对宿主机路径的自动 mkdir/chown（当该目录由外部配置时使用） |
+| `--recursive-chown` | 如果宿主机路径已存在、属主不正确且含有文件，则递归 chown 为 uid 33（www-data） |
+
+### `env`
+
+容器环境变量。
+
+```bash
+lager box-config env set KEY=VALUE [KEY=VALUE ...] --box my-lager-box
+lager box-config env list [--json]
+lager box-config env unset KEY [KEY ...]
+```
+
+**`LAGER_DISABLE_UART_SERVICE`。** 把这个变量设为 `1`、`true` 或 `yes`，
+可以停止端口 9000 上的 Box API。宿主机的端口 9000 随后就空出来给您自己的服务。
+这个名字比它的实际影响要窄：端口 9000 提供的是整个 Box API，而不只是 UART。
+
+设置该变量之后，每一条使用端口 9000 的命令都会失败，包括 `lager hello`、
+`lager boxes` 的锁列和版本列、各种 Net 命令，以及 `lager uart`。
+
+```bash
+lager box-config env set LAGER_DISABLE_UART_SERVICE=1 --box my-lager-box
+lager box-config apply --box my-lager-box
+```
+
+### `network-mode`
+
+Box 容器所运行的 docker 网络。默认为 `lagernet`，另一个可选值只有 `host`。
+
+```bash
+lager box-config network-mode show [--json] --box my-lager-box
+lager box-config network-mode set host --box my-lager-box
+lager box-config network-mode unset --box my-lager-box     # back to lagernet
+lager box-config apply --box my-lager-box                  # required to take effect
+```
+
+`set` 接受 `lagernet` 或 `host`。`set` 和 `unset` 只改动保存的配置，
+真正的切换由 `apply` 完成。`show` 打印 Box 地址和已配置的模式：
+
+```text
+<BOX_IP>: lagernet (default)
+```
+
+`(default)` 表示配置中没有设置模式。使用 `--json` 时，`show` 会打印
+`box`、`network_mode`、`explicit`、`exists` 和 `supported` 这些键。
+在 lager 版本早于该设置的 Box 上，`show` 会附加
+`(this box predates the network-mode setting)`，而 `set` 和 `unset`
+会提示您先运行 `lager update`。
+
+**为什么存在 `host`。** Linux 的 `AF_BLUETOOTH` 套接字以网络命名空间为界。
+内核只在初始命名空间中注册这个地址族。因此，在 `lagernet` 上的容器内部看不到
+Box 的蓝牙适配器（`hci0`），原始 HCI 工具也访问不到它。
+在 `host` 模式下，容器共享宿主机的网络命名空间，适配器就出现了。
+
+这不影响 `lager ble`。那条路径通过挂载的 D-Bus 套接字访问宿主机的 `bluetoothd`，
+在两种模式下表现相同。
+
+**切换到 `host` 会改变什么。** 有三件事，从命令本身都看不出来：
+
+- **宿主机防火墙开始管辖 Box 的端口。** 在 `lagernet` 上，容器的端口是*发布*的。
+  Docker 把它的转发规则装在主机链之前，因此 UFW 不会过滤它们。
+  请参阅 `SECURITY.md` 的 Security Model 部分。在 `host` 模式下，
+  容器直接绑定这些端口，UFW 就会对它们生效。
+
+  `secure_box_firewall.sh` **按接口**放行 Lager 端口。这些接口是 `lo`、`docker0`、
+  `tailscale0`，以及您用 `--corporate-vpn` 指定的那一个。只有脚本运行时
+  Tailscale 已启动，它才会加上 `tailscale0`。它在其他所有地方拒绝这些端口，
+  也不会在普通局域网接口上放行它们。因此，如果您访问 Box 的路由不在脚本放行之列，
+  那么端口一旦不再发布，这台 Box 就会立刻变得不可达。
+  `lager install` 默认会运行该脚本，所以大多数 Box 都带有这些规则。
+
+  `lager update` 不会再次运行该脚本。`lager install` 会再次运行它，
+  而该脚本会先重置 ufw，您手动插入的规则届时就没有了。
+
+  在 `host` 模式下，容器不提供端口 8301。那个端口只作为端口 5000 的发布别名存在。
+
+- **发布端口的网关与 host 模式冲突。** 当有网关容器挡在 Box 前面时，
+  它会在宿主机上发布 5000、8080、9000 等端口，并设置 `/etc/lager/no_publish`。
+  在 host 网络下，lager 容器会直接绑定同样的端口并启动失败。两者不能同时占有这些端口。
+
+- **容器共享宿主机的 `bluetoothd`。** 任何需要独占控制适配器的工具，
+  现在都要与宿主机的蓝牙协议栈争用。
+
+**`apply` 在切换之前会检查前两点，其中任何一点会让 Box 出问题时它就拒绝切换。**
+它读取您自己的连接是从哪个接口进来的，然后检查防火墙在那个接口上是否放行了
+控制面端口（5000 和 9000）。它按 ufw 实际应用规则的顺序来读取规则：
+排在同端口 deny 规则之后的 allow 规则不算数。拒绝时它不会改变任何内容。
+`--skip-host-network-check` 可以覆盖它，但只有在您还有另一条进入 Box 的途径时才用。
+
+只有当配置从其他已应用模式切换到 `host` 时，这项检查才会运行。它在以下情况拒绝：
+
+- 检查无法通过 SSH 运行它的探测。
+- 设置了 `/etc/lager/no_publish`，或者端口 5000 或 9000 被 lager 容器以外的东西占用。
+- 已安装 ufw，但 `sudo -n` 读不到它的状态。
+- ufw 处于活动状态，而检查找不到您连接所用的接口。
+- ufw 处于活动状态，且它没有在该接口上放行端口 5000 或 9000。
+
+未安装 ufw、或 ufw 未启用时，检查中与防火墙有关的部分直接通过。
+这项检查只覆盖端口 5000 和 9000。在防火墙处于活动状态的 Box 上，
+其他 Lager 端口在您的接口上仍可能被阻断，`apply` 会打印一条说明。
+
+**只有 `apply` 才会真正切换到 `host`。** 每次容器启动都会读取同一份配置，
+包括 `lager update` 和 `lager install` 引发的启动。那些启动会沿用上一次成功
+`apply` 记录的网络，并打印一条关于待生效切换的提示。
+切回 `lagernet` 不需要检查，因此任何一次启动都能完成它。
+出于同样的原因，`apply --skip-restart` 会拒绝一次待生效的 `host` 切换。
+
+**该检查通过 `sudo` 读取防火墙。** 它用 Box 报告的 ufw 路径运行
+`sudo -n <ufw> status`，通常是 `/usr/sbin/ufw`。Lager 不会授予这条命令的权限。
+如果 Box 上的 `sudo` 要求输入密码，`apply` 会拒绝，并打印该检查所需的那一行 sudoers。
+该行形如：
+
+```text
+<box-user> ALL=(root) NOPASSWD: /usr/sbin/ufw status
+```
+
+请用 `sudo visudo -f <file>` 把这一行加到您自己在 `/etc/sudoers.d/` 下的 sudoers 文件中。
+Lager 只改动它自己拥有的 sudoers 文件，因此在 `lager install` 和 `lager update`
+之后，您的授权依然有效。
+
+只有当端口被 lager 容器以外的东西占用时，才算作被占用。普通 Box 上，
+容器会发布 5000 和 9000。`apply` 在启动替换容器之前会先停止它，
+因此它自己的端口不构成冲突。
+
+当问题出在防火墙上时，打印出的命令使用 `ufw insert`，而不是普通的 `ufw allow`：
+
+```bash
+sudo ufw --force delete allow in on <iface> to any port 9000 proto tcp
+sudo ufw insert 1 allow in on <iface> to any port 9000 proto tcp comment 'Lager service (<iface>)'
+```
+
+在这里追加规则是不行的。`secure_box_firewall.sh` 先写按接口的放行规则，
+最后写一条一揽子的 `deny <port>/tcp`，而 ufw 匹配第一条适用的规则。
+之后添加的 allow 排在那条 deny 后面，永远不会生效。
+无论这台 Box 上还有什么，位置 1 都排在它前面。
+
+那条 delete 用于清除之前可能追加过的尝试，因为 ufw 会跳过它已有的规则。
+原本没有这条规则时，它会报告 `Could not delete non-existent rule`，这是预期行为。
+
+**切换之后。** `apply` 会通过 SSH 确认 Box API 已在 Box 上启动。
+如果 API 已启动但您的计算机无法通过 HTTP 访问它，`apply` 会打印一条警告，
+但仍以 `0` 退出，此时切换已被记录。请在防火墙中放行您的接口，或者切回原模式。
+
+**切回。** 运行 `lager box-config network-mode unset`，然后运行
+`lager box-config apply`。切回 `lagernet` 不需要检查。
+
+除非您需要在容器内使用蓝牙适配器，否则请保持默认值。
+
+### `pip` / `cargo` / `npm`
+
+容器内的语言软件包，在容器启动时安装。
+
+```bash
+lager box-config pip add requests rich --box my-lager-box
+lager box-config cargo add ripgrep --box my-lager-box
+lager box-config npm add left-pad --box my-lager-box
+# each group also supports: list [--json], remove
+```
+
+`pip add` 默认会对照 PyPI 校验；传入 `--no-validate-pypi` 可以跳过。
+
+`pip import-legacy` 是一次性的迁移辅助命令。它把手写的
+`/etc/lager/user_requirements.txt` 中的条目导入到 `pip_packages`，
+并跳过空行、注释、无效条目，以及配置中已经列出的包。它不检查 PyPI。
+之后请运行 `apply`。
+
+```bash
+lager box-config pip import-legacy --box my-lager-box
+```
+
+`init` 在创建配置时会执行同样的导入。用 Box 配置启动容器之后，
+Box 会根据 `pip_packages` 重写 `/etc/lager/user_requirements.txt`，
+对该文件的手工修改会丢失。
+
+### `sysctl`
+
+宿主机 sysctl 值，重启后依然保留。
+
+```bash
+lager box-config sysctl set net.ipv4.ip_forward=1 --box my-lager-box
+lager box-config sysctl list [--json]
+lager box-config sysctl unset net.ipv4.ip_forward
+```
+
+### `volume`
+
+附加到容器的具名 docker 卷（数据在重启之间保留）。
+
+```bash
+lager box-config volume add my-vol /opt/my-vol --box my-lager-box
+lager box-config volume list [--json]
+lager box-config volume remove my-vol [--yes]
+```
+
+### 查看与编辑
+
+```bash
+lager box-config show --box my-lager-box        # full config
+lager box-config status --box my-lager-box      # one-line summary (clean / drift)
+lager box-config diff --box my-lager-box        # pending changes vs. last applied
+lager box-config validate --box my-lager-box    # check for errors
+lager box-config audit --box my-lager-box       # recent changes (supports --verb, --since, --tail)
+lager box-config edit --box my-lager-box        # open in $EDITOR, then apply
+```
+
+### 备份、恢复与修复
+
+```bash
+lager box-config export ./box.json --box my-lager-box     # save current config to a file
+lager box-config import ./box.json --box my-lager-box      # replace config from a file
+lager box-config copy --from BOX_A --to BOX_B              # clone config between boxes
+lager box-config repair --box my-lager-box                 # restore the last applied config and restart
+```
+
+---
+
+## 说明
+
+- 大多数编辑类命令只改动保存的配置 —— 请运行 `apply` 让改动生效。
+- udev 规则、apt 包和 sysctl 值应用在 Box **宿主机**上；挂载、环境变量和 pip/cargo/npm 应用在**容器**内。
+- 该配置在容器重启和 Box 更新之后依然保留。用户 udev 文件（`99-lager-user.rules`）在 `lager update` 之后也会被保留。
+- `--box` 接受名称（来自 `lager boxes`）或 IP 地址。
