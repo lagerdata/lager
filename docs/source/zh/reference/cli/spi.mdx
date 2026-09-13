@@ -1,0 +1,433 @@
+---
+title: SPI
+description: 进行 SPI 数据传输
+---
+
+与连接到 Lager Box 的设备进行 SPI（串行外设接口）数据传输。
+SPI 是一种同步串行协议，使用四根线：SCLK（时钟）、MOSI（主出从入）、
+MISO（主入从出）和 CS（片选）。
+
+## 语法
+
+```bash
+lager spi [NETNAME] [OPTIONS] [SUBCOMMAND]
+```
+
+## 参数
+
+| 参数 | 说明 |
+|----------|-------------|
+| `NETNAME` | SPI Net 名称（通过 `lager defaults add --spi-net` 设置了默认值时可省略） |
+
+## 选项
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--box BOX` | Lager Box 名称或 IP 地址 |
+
+不带子命令调用时，列出 Box 上的 SPI Net（或显示指定 Net 的配置）。
+
+---
+
+## 子命令
+
+### `config`
+
+配置 SPI 总线参数。这些设置会在后续命令中保持有效。
+
+```bash
+lager spi NETNAME config [OPTIONS]
+```
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--box BOX` | Lager Box 名称或 IP 地址 |
+| `--mode 0\|1\|2\|3` | SPI 模式（时钟极性和相位） |
+| `--frequency FREQ` | 时钟频率（例如 `1M`、`500k`、`5M`） |
+| `--bit-order msb\|lsb` | 位序：高位在前或低位在前 |
+| `--word-size 8\|16\|32` | 字长，单位位 |
+| `--cs-active low\|high` | 片选的有效极性 |
+| `--cs-mode auto\|manual` | CS 置位方式：`auto`（硬件）或 `manual`（由用户用 GPIO 管理） |
+
+**SPI 模式：**
+
+| 模式 | CPOL | CPHA | 说明 |
+|------|------|------|-------------|
+| 0 | 0 | 0 | 时钟空闲为低，上升沿采样数据 |
+| 1 | 0 | 1 | 时钟空闲为低，下降沿采样数据 |
+| 2 | 1 | 0 | 时钟空闲为高，下降沿采样数据 |
+| 3 | 1 | 1 | 时钟空闲为高，上升沿采样数据 |
+
+**示例：**
+
+```bash
+# Configure SPI mode 0 at 5MHz
+lager spi MY_SPI config --mode 0 --frequency 5M
+
+# Set 16-bit word size with LSB-first
+lager spi MY_SPI config --word-size 16 --bit-order lsb
+
+# Use manual CS mode (for Aardvark with separate GPIO for CS)
+lager spi MY_SPI config --cs-mode manual
+```
+
+---
+
+### `transfer`
+
+进行一次全双工 SPI 传输：在发送数据的同时接收响应。
+如果提供的数据短于 `NUM_WORDS`，剩余的字会用填充值补齐；如果更长，数据会被截断。
+
+```bash
+lager spi NETNAME transfer NUM_WORDS [OPTIONS]
+```
+
+| 参数 | 说明 |
+|----------|-------------|
+| `NUM_WORDS` | 要传输的字数 |
+
+| 选项 | 说明 | 默认值 |
+|--------|-------------|---------|
+| `--box BOX` | Lager Box 名称或 IP 地址 | |
+| `--data DATA` | 要发送的十六进制数据（例如 `0x9f01`） | |
+| `--data-file PATH` | 含有要发送数据的文件 | |
+| `--fill VALUE` | 补齐用的填充值 | `0xFF` |
+| `--mode 0\|1\|2\|3` | 覆盖 SPI 模式 | |
+| `--frequency FREQ` | 覆盖时钟频率 | |
+| `--bit-order msb\|lsb` | 覆盖位序 | |
+| `--word-size 8\|16\|32` | 覆盖字长 | |
+| `--cs-active low\|high` | 覆盖 CS 极性 | |
+| `--keep-cs` | 传输结束后保持 CS 有效 | `false` |
+| `--format FORMAT` | 输出格式：`hex`、`bytes`、`json` | `hex` |
+
+**示例：**
+
+```bash
+# Read device ID: send 0x9F command, read 3 response bytes (4 words total)
+lager spi MY_SPI transfer --data 0x9f 4
+
+# Send data at 5MHz
+lager spi MY_SPI transfer --data "01 02 03 04" --frequency 5M 4
+
+# Output as JSON
+lager spi MY_SPI transfer --data 0x9f 4 --format json
+
+# Keep CS asserted for multi-part transfer
+lager spi MY_SPI transfer --data 0x03 --keep-cs 1
+```
+
+---
+
+### `read`
+
+从 SPI 从设备读取数据。它在时钟同步读入响应的同时发送填充字节。
+
+```bash
+lager spi NETNAME read NUM_WORDS [OPTIONS]
+```
+
+| 参数 | 说明 |
+|----------|-------------|
+| `NUM_WORDS` | 要读取的字数 |
+
+| 选项 | 说明 | 默认值 |
+|--------|-------------|---------|
+| `--box BOX` | Lager Box 名称或 IP 地址 | |
+| `--fill VALUE` | 读取时发送的填充字节 | `0xFF` |
+| `--mode 0\|1\|2\|3` | 覆盖 SPI 模式 | |
+| `--frequency FREQ` | 覆盖时钟频率 | |
+| `--bit-order msb\|lsb` | 覆盖位序 | |
+| `--word-size 8\|16\|32` | 覆盖字长 | |
+| `--cs-active low\|high` | 覆盖 CS 极性 | |
+| `--keep-cs` | 传输结束后保持 CS 有效 | `false` |
+| `--format FORMAT` | 输出格式：`hex`、`bytes`、`json` | `hex` |
+
+**示例：**
+
+```bash
+# Read 5 bytes from SPI slave
+lager spi MY_SPI read 5
+
+# Read with 0x00 fill instead of default 0xFF
+lager spi MY_SPI read 5 --fill 0x00
+
+# Read 4 words at 16-bit word size
+lager spi MY_SPI read 4 --word-size 16
+```
+
+---
+
+### `write`
+
+向 SPI 从设备写入数据。它执行一次全双工传输，并显示收到的响应。
+
+```bash
+lager spi NETNAME write DATA [OPTIONS]
+```
+
+| 参数 | 说明 |
+|----------|-------------|
+| `DATA` | 要写入的十六进制数据（例如 `0x9f01020304`） |
+
+| 选项 | 说明 | 默认值 |
+|--------|-------------|---------|
+| `--box BOX` | Lager Box 名称或 IP 地址 | |
+| `--mode 0\|1\|2\|3` | 覆盖 SPI 模式 | |
+| `--frequency FREQ` | 覆盖时钟频率 | |
+| `--bit-order msb\|lsb` | 覆盖位序 | |
+| `--word-size 8\|16\|32` | 覆盖字长 | |
+| `--cs-active low\|high` | 覆盖 CS 极性 | |
+| `--keep-cs` | 传输结束后保持 CS 有效 | `false` |
+| `--format FORMAT` | 输出格式：`hex`、`bytes`、`json` | `hex` |
+
+**示例：**
+
+```bash
+# Send JEDEC ID command and read response
+lager spi MY_SPI write 0x9f01020304
+
+# Write with mode override
+lager spi MY_SPI write 0x0102 --mode 3
+
+# Write and keep CS low for continued transfer
+lager spi MY_SPI write 0x03000000 --keep-cs
+```
+
+---
+
+## 十六进制数据格式
+
+数据参数接受多种十六进制写法。解析方式取决于字长：
+
+**8 位字长（默认）：**
+
+| 格式 | 示例 | 解析为 |
+|--------|---------|-----------|
+| 带前缀连写 | `0x9f01` | `[0x9f, 0x01]` |
+| 不带前缀连写 | `9f01` | `[0x9f, 0x01]` |
+| 空格分隔 | `9f 01 02` | `[0x9f, 0x01, 0x02]` |
+| 逗号分隔 | `9f,01,02` | `[0x9f, 0x01, 0x02]` |
+
+**16 位或 32 位字长：**
+
+| 格式 | 示例 | 解析为 |
+|--------|---------|-----------|
+| 连写 | `0x1234` | `[0x1234]` |
+| 空格分隔 | `0x1234 0x5678` | `[0x1234, 0x5678]` |
+
+数值会按配置的字长范围进行校验。
+
+---
+
+## 填充值格式
+
+`--fill` 选项接受十六进制或十进制值：
+
+| 格式 | 示例 | 数值 |
+|--------|---------|-------|
+| 十六进制带前缀 | `0xff` | 255 |
+| 十六进制不带前缀 | `ff` | 255 |
+| 十进制 | `255` | 255 |
+
+---
+
+## 频率格式
+
+时钟频率接受数值，并可带可选后缀：
+
+| 格式 | 示例 | 数值 |
+|--------|---------|-------|
+| 纯 Hz | `1000000` | 1 MHz |
+| kHz 后缀 | `500k` | 500 kHz |
+| MHz 后缀 | `5M` | 5 MHz |
+| Hz 后缀 | `1000000hz` | 1 MHz |
+
+---
+
+## 受支持的硬件
+
+| 适配器 | 引脚 | CS 控制 | 说明 |
+|---------|------|------------|-------|
+| LabJack T7 | 可配置的 DIO 引脚（默认 `FIO0-FIO3`：CS、CLK、MOSI、MISO） | 固件自动 CS；`--keep-cs` 时用 GPIO 写 | 每次传输 56 字节；T7 时钟说明见下文 |
+| LabJack U3 | 可配置的 DIO 引脚（默认 `FIO4-FIO7`：CS、CLK、MISO、MOSI） | 固件自动 CS，仅低电平有效 | 每次传输 50 字节；约 5.4 kHz 至 71.4 kHz；见下文 |
+| Aardvark USB | 固定的 MOSI/MISO/SCK/SS | 硬件或手动 | 最高 8 MHz |
+| FT232H | 可配置 | 基于 MPSSE | FTDI MPSSE SPI |
+
+**LabJack T7 时钟：** 请求 800 kHz 及以上时，实际约以 800 kHz 运行。
+在约 1 kHz 到 800 kHz 之间的大多数速率上，T7 固件会让多字节传输失败。
+因此对于多字节传输，驱动程序会把该范围内的请求改为约 1 kHz 运行，并打印一次警告。
+单字节传输，以及约 1 kHz 及以下的请求，使用您请求的速率。
+
+---
+
+## LabJack U3
+
+U3 通过它自己的固件命令而不是 LJM 来运行 SPI。在 U3 上使用 SPI 需要
+U3 硬件版本 1.21 或更高。
+
+**引脚：** 默认通道 `FIO4-FIO7` 按 CS、CLK、MISO、MOSI 的顺序分配引脚。
+这个顺序与 T7 不同，T7 是 CS、CLK、MOSI、MISO。若要使用其他引脚，
+请用 `lager nets add` 配合 `--cs`、`--sck`、`--mosi` 和 `--miso` 选项创建 Net。
+`FIO0`-`FIO3` 不能承载 SPI。EIO 和 CIO 线位于 U3 的 DB15 连接器上。
+
+**限制：**
+- 一次传输最多 50 字节：8 位字长为 50 个字，16 位为 25 个字，32 位为 12 个字。
+- 时钟约在 5.4 kHz 至 71.4 kHz 之间运行，并且 Box 绝不会超过您请求的速率。
+  超出该范围的请求会被钳位。
+- `config` 打印硬件实际使用的速率。当该速率与请求不同时，它会在括号中给出请求值：
+
+```
+SPI configured: mode=0, freq=49959Hz (requested 50000Hz), word_size=8, bit_order=msb, cs_active=low, cs_mode=auto
+```
+
+没有保存频率的 Net 会以最高速率运行。在这样的 Net 上，`config` 显示默认请求值
+`(requested 1000000Hz)`。CLI 不会为被钳位的时钟给出警告，
+因此请阅读 `config` 输出中的速率。
+
+**片选：** U3 固件在每次传输时把 CS 拉低，并在结束时释放它。
+它没有极性控制，也没有保持控制。Box 会拒绝 `--cs-active high`。
+在 `auto` CS 模式下，Box 也会拒绝 `--keep-cs`。
+
+对于高电平有效的设备，或者需要跨多次传输保持 CS 时，
+请创建不含 CS 的 SPI Net，并用一个 `gpio` Net 驱动 CS。
+不含 CS 的 Net 使用 `manual` CS 模式。
+
+```bash
+# SPI net without CS: SCK=FIO5, MISO=FIO6, MOSI=FIO7
+lager nets add FLASH spi custom <U3_ADDRESS> --sck FIO5 --miso FIO6 --mosi FIO7 --box my-lager-box
+
+# gpio net that drives CS
+lager nets add FLASH_CS gpio FIO4 <U3_ADDRESS> --box my-lager-box
+
+# CS stays low across both transfers
+lager gpo FLASH_CS low --box my-lager-box
+lager spi FLASH write 0x03001000 --box my-lager-box
+lager spi FLASH read 32 --box my-lager-box
+lager gpo FLASH_CS high --box my-lager-box
+```
+
+---
+
+## Net 配置
+
+SPI Net 配置在 Box 的 `saved_nets.json` 中。Net 记录示例：
+
+```json
+{
+  "name": "my_spi",
+  "role": "spi",
+  "instrument": "labjack_t7",
+  "pin": "FIO0-FIO3",
+  "params": {
+    "cs_pin": 0,
+    "clk_pin": 1,
+    "mosi_pin": 2,
+    "miso_pin": 3,
+    "mode": 0,
+    "frequency_hz": 1000000,
+    "word_size": 8,
+    "bit_order": "msb"
+  }
+}
+```
+
+Aardvark 适配器：
+
+```json
+{
+  "name": "my_spi",
+  "role": "spi",
+  "instrument": "aardvark",
+  "pin": "SPI0",
+  "params": {
+    "mode": 0,
+    "frequency_hz": 1000000,
+    "word_size": 8,
+    "bit_order": "msb"
+  }
+}
+```
+
+---
+
+## 输出格式
+
+| 格式 | 说明 |
+|--------|-------------|
+| `hex` | 以空格分隔的十六进制值（例如 `9f 01 02`） |
+| `bytes` | 原始字节值 |
+| `json` | 含数据数组和元信息的 JSON 对象 |
+
+---
+
+## 示例
+
+```bash
+# List all SPI nets on a box
+lager spi --box my-lager-box
+
+# Show configuration for a specific net
+lager spi MY_SPI --box my-lager-box
+
+# Configure SPI mode and speed
+lager spi MY_SPI config --mode 0 --frequency 5M
+
+# Read flash JEDEC ID (send 0x9F command, read 3 bytes)
+lager spi MY_SPI transfer --data 0x9f 4
+
+# Read 256 bytes from flash
+lager spi MY_SPI read 256
+
+# Write a command byte
+lager spi MY_SPI write 0x06
+
+# Multi-step transfer with CS held low
+lager spi MY_SPI write 0x03 --keep-cs
+lager spi MY_SPI read 4
+```
+
+---
+
+## 故障排除
+
+### 设备没有响应
+
+- 检查 MOSI、MISO、SCLK 和 CS 的接线
+- 确认 SPI 模式与设备数据手册一致
+- 确认 CS 极性（大多数设备为 `--cs-active low`）
+- 可以尝试用 `--frequency 100k` 降低频率
+
+### 数据错乱
+
+- 确认 SPI 模式（CPOL/CPHA）与设备一致
+- 检查位序（高位在前还是低位在前）
+- 确认字长与设备协议一致
+
+### CS 引脚不起作用（LabJack T7）
+
+- 在 `auto` CS 模式下，T7 固件会为每次传输置位并释放 CS
+- 使用 `--keep-cs` 时，驱动程序改为用 GPIO 写来驱动 CS
+- 确认 Net 配置中的 `cs_pin` 与您的接线一致
+
+### 被拒绝的选项（LabJack U3）
+
+- U3 上会拒绝 `--cs-active high`。请使用不含 CS 的 Net，再用一个 `gpio` Net 控制 CS。
+- 在 U3 的 `auto` CS 模式下会拒绝 `--keep-cs`。请使用同样的方法。
+- 超过 50 字节的传输会被拒绝。请把它拆成更小的传输。
+
+---
+
+## 说明
+
+- 默认 SPI Net 可以用 `lager defaults add --spi-net NETNAME` 设置
+- 请求 800 kHz 及以上时，LabJack T7 约以 800 kHz 运行。请求在约 1 kHz 到 800 kHz 之间的多字节传输，约以 1 kHz 运行
+- LabJack U3 约在 5.4 kHz 至 71.4 kHz 之间运行，`config` 会打印硬件实际使用的速率
+- SPI 是全双工的：数据总是同时发送和接收
+- 需要跨多次传输保持 CS 有效时，请使用 `--keep-cs`
+- 通过 `config` 设置的配置会在后续的 `transfer`/`read`/`write` 命令中保持有效
+
+## 参见
+
+- [I2C](/source/zh/reference/cli/i2c) -- I2C 总线通信（另一种常见的串行协议）
+- [Python SPI API](/source/reference/python/spi) -- 在 Python 脚本中自动进行 SPI 操作
+- [术语表](/source/zh/getting-started/glossary) -- SPI、I2C 及其他术语的定义

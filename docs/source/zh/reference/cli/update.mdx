@@ -1,0 +1,322 @@
+---
+title: Update
+description: 从 GitHub 仓库更新 Lager Box 代码
+---
+
+更新 Lager Box 上的软件，过程带有完整的进度跟踪和自动配置。
+
+## 语法
+
+```bash
+lager update [OPTIONS]
+```
+
+## 选项
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--box BOX` | Lager Box 名称或 IP 地址 |
+| `--version VERSION` | 要更新到的发布标签、semver 固定版本、分支，或完整的 40 位提交 SHA（默认 main）。请参阅[版本固定](#版本固定)。 |
+| `--yes` | 跳过确认提示 |
+| `--check` | 预演：报告将会改变什么，但不改动 Box |
+| `--force` | 即使 Box 报告已是最新也照样更新，并强制干净重建（清除缓存镜像以及 cargo/npm 卷） |
+| `--pull` | 对发布标签从 GHCR 拉取预构建的 Box 镜像，而不是在 Box 上构建（任何不匹配都会退回到本地构建） |
+| `--no-pull` | 从不拉取预构建镜像；始终在 Box 上构建 |
+| `--verbose` / `-v` | 显示详细输出（默认显示进度条） |
+
+<Note>
+`lager update` 每次调用只作用于一台 Box。若要更新多台，请在您的 shell 中循环 ——
+`--all` 标志及其多 Box 循环已在 v0.18.2 中移除。
+</Note>
+
+## 预构建的 Box 镜像
+
+发布标签会向 GitHub Container Registry 发布一个 Box 容器镜像。
+启用拉取时，客户端会做三件事：
+
+1. 把标签解析为不可变的摘要。
+2. 按 Box 自己的架构拉取该摘要对应的镜像。
+3. 验证该镜像报告的版本正是您所请求的版本。
+
+任何一步不匹配都会退回到本地构建，这也是原有的行为。
+不匹配的情形可能是：目标是分支而不是发布标签、标签未发布镜像、
+注册表不可达，或镜像不一致。
+
+<Note>
+对 `lager update` 来说，拉取**默认是关闭的**。它改变了整个机群中最关键的命令
+获取所运行代码的方式，因此先在 Lager 自己的 Box 上磨合。
+传入 `--pull` 可以让某一次运行启用它。若要在整个 shell 中启用，
+请把 `LAGER_BOX_IMAGE_PULL` 设为 `1`、`true` 或 `yes`（大小写不限）。
+其他任何值都保持拉取关闭。
+
+这与 [`lager install`](/source/zh/reference/cli/install) 不同，后者对发布标签
+默认就使用预构建镜像。`--no-pull` 在两者上的作用相同。
+它是让机群绕开有问题的已发布镜像的开关，并且不需要发布新的 CLI 版本。
+</Note>
+
+关于更新时拉取的更多规则：
+
+- `--force` 从不拉取，它总是在 Box 上构建镜像。
+- 同时传入 `--pull` 和 `--no-pull` 属于用法错误。
+- 拉取在更新停止容器之前进行，因此下载期间 Box 仍在提供服务。
+  不匹配时，Box 保持在原来的版本。
+- 更新会把镜像来源记录到 `/etc/lager/image-source`：
+  拉取的镜像记为 `ghcr:<digest>`，本地构建记为 `local:<build-hash>`。
+
+## 版本固定
+
+自 **lager 0.22.0** 起，传给 `--version` 的 semver 值会解析为发布**标签**
+`vX.Y.Z`。开头的 `v` 可写可不写（例如 `0.26.0` 或 `v0.26.0`），
+常见的预发布后缀（`-rc1`、`-beta2`、`-alpha`、`-preview`）同样接受。
+发布标签是固定版本的唯一权威来源。
+
+```bash
+# All three pin the same release tag (v0.26.0)
+lager update --box my-lager-box --version v0.26.0 --yes
+lager update --box my-lager-box --version 0.26.0 --yes
+lager update --box my-lager-box --version v0.27.0-rc1 --yes
+```
+
+自 **lager 0.41.0** 起，完整的 40 位提交 SHA 会解析为那个确切的提交：
+
+```bash
+lager update --box my-lager-box --version 5d84c68612384eed2854638c1e0941a4ff8b7893 --yes
+```
+
+只接受完整的 40 个字符 —— 较短的十六进制前缀无法与分支名区分开。
+当您需要一个不会移动的目标时请用它。`--version main` 每次运行都会重新对
+`origin/main` 解析，因此几分钟后它可能指向另一个提交。提交没有预构建镜像，
+因为只有发布标签才会发布镜像，所以 SHA 会像分支一样在 Box 上构建。
+该提交还必须能从远端的某个分支或标签到达。
+
+其他任何值（`main`、`staging` 或某个功能分支名）都像以前一样解析为
+`origin/<name>`。
+
+<Warning>
+按版本划分的**版本分支**（裸的 `X.Y.Z` 分支）已被弃用，改用标签。
+像 `0.26.0` 这样的值现在解析为标签 `v0.26.0`，而不是同名分支。
+请参阅仓库中的 `RELEASE_PROCESS.md`。
+</Warning>
+
+## 用法
+
+### 基本更新
+
+```bash
+# Update to latest main branch
+lager update --box my-lager-box --yes
+
+# Update to staging branch
+lager update --box my-lager-box --version staging --yes
+
+# Update with verbose output
+lager update --box my-lager-box --yes --verbose
+
+# Force fresh Docker build (use for major code changes)
+lager update --box my-lager-box --force --yes
+```
+
+### 更新多台 Box
+
+没有内置的多 Box 更新。请在您的 shell 中循环；如果想先看看哪些 Box 确实落后，
+可以先用 `--check`：
+
+```bash
+# Report what would change on each box, without modifying anything
+for box in my-lager-box staging-box pi-box; do
+  echo "== $box"
+  lager update --box "$box" --check
+done
+
+# Then update them
+for box in my-lager-box staging-box pi-box; do
+  lager update --box "$box" --yes
+done
+```
+
+<Note>
+v0.18.2 之前存在一个 `--all` 标志，它和它驱动的多 Box 循环一起被移除了。
+普通的 shell 循环在某台失败时会继续处理下一台，因此一台不可达的 Box 不会中断整轮更新。
+</Note>
+
+### 检查模式
+
+`--check` 不会改动 Box 上的任何内容。它打印一份预览：
+
+```text
+Update preview
+  Box:        my-lager-box (100.64.1.42)
+  Current:    0.46.2
+  Target:     main
+  Code:       ...
+  Deps:       ...
+  Container:  ...
+  Host CLI:   will upgrade (0.46.2 -> 0.47.0)
+  Estimated:  ...
+```
+
+`Current:` 来自 `/etc/lager/version`。预览不显示已部署的 ref，
+查看 ref 请用 `lager hello`。
+
+| 退出码 | 含义 |
+|-----------|---------|
+| `0` | Box 已同步，无需操作 |
+| `1` | 更新会改变某些内容，或者检查失败 |
+| `2` | 没有为该 Box 确认可用的 SSH 密钥，或者 git 无法把 Box 与目标作比较 |
+
+退出码 `1` 并不总是表示 Box 落后。检查本身失败时同样退出 `1`，
+例如 SSH 超时、探测 Box 状态失败，以及 Box 目录不是 git 检出。
+`git fetch` 失败也会给出 `1`，其中包括 Box 无法拉取的提交 SHA。
+被其他持有者锁定的 Box 同样给出 `1`。把 `1` 当作"需要更新"之前，请先读输出。
+
+---
+
+## 更新过程
+
+update 命令执行以下步骤（在进度条中显示）：
+
+1. **SSH 检查** - 确认对 Lager Box 的基于密钥的 SSH 访问
+2. **检查并拉取** - 读取 Box 状态，然后拉取目标版本
+3. **应用更新** - 在 Box 上检出目标版本
+4. **主机配置** - 检查 udev 规则、modprobe 黑名单、sudoers 文件和主机 CLI
+5. **拉取镜像** - 使用 `--pull` 并且目标是发布标签时，拉取预构建镜像
+6. **停止容器并构建** - 停止正在运行的容器；如果本次更新没有拉取镜像，则在 Box 上构建镜像
+7. **目录** - 建立容器要挂载的目录，例如自定义二进制程序目录
+8. **更新版本** - 把版本记录到 `/etc/lager/version`，把已部署的 ref 记录到 `/etc/lager/ref`
+9. **启动容器** - 启动新容器
+10. **状态验证** - 等待各服务，然后确认它们可以响应
+11. **J-Link** - 如果 Box 上没有 J-Link 则安装它（这一步失败不是致命错误）
+12. **主机 CLI** - 由于代码已变化，在 Box 宿主机的 `~/.lager_venv` 中重新安装 `lager` CLI
+
+主机 CLI 失败不是致命错误。更新会打印一条警告，并在最终摘要中追加
+`Host CLI on the box host was NOT updated: ...`。Box 宿主机需要 python3 3.10
+或更高版本，否则更新会跳过这一步并给出警告。即使 Box 已是最新，
+只要它的副本缺失、损坏或过旧，也仍会安装主机 CLI。
+
+`lager update` 不会改动主机防火墙。
+
+---
+
+## 版本跟踪
+
+Lager Box 把它当前的版本记录在 `/etc/lager/version` 中。
+`lager boxes` 列表会查询每台已配置的 Box，并在 `version` 列显示它的当前版本：
+
+```bash
+# List all boxes with their current versions
+lager boxes
+```
+
+Box 还会把已部署的 ref 记录在 `/etc/lager/ref` 中，格式为
+`<ref>@<short-sha>`（例如 `main@85c1b64`）。如果更新无法读取该提交，
+文件中只保存裸的 `<ref>`。`lager update` 在每次成功运行时都会写这个文件，
+包括 Box 本来就是最新的那种运行。`lager install` 也会写它。
+
+仅凭版本号无法区分分支部署和发布部署，因此有两条命令会显示 ref：
+
+- `lager hello` 显示完整的 ref。不是发布标签的 ref 会附加
+  `-- not a release build`。
+- 对不是发布标签的 ref，`lager boxes` 显示 `<version> (<ref-name>)`。
+
+最后一次由低于 0.43.0 的 CLI 部署的 Box 没有 ref 文件。
+
+---
+
+## SSH 密钥认证
+
+update 命令在改动任何内容之前，会先检查是否有可用的 SSH 密钥：
+
+- **有可用密钥时**：更新过程不会出现密码提示。
+- **没有可用密钥时**：更新会主动提出配置 `lager_box` 密钥。该配置会要求输入一次 Box 密码。
+- **密钥配置失败时**：更新会询问是否改用密码认证继续。
+- **使用 `--yes` 时**：更新会同时接受这两个提示。
+- **使用 `--check` 时**：更新不会配置密钥。没有可用密钥时它以 `2` 退出。
+
+若要单独配置密钥：
+
+```bash
+lager ssh-setup --box my-lager-box
+```
+
+---
+
+## 防火墙
+
+`lager update` 不会安装、更改或运行主机防火墙。防火墙由 `lager install` 配置。
+若要重新运行防火墙脚本，请在 Box 上执行：
+
+```bash
+ssh -t <user>@<box-ip> 'sudo /usr/local/lib/lager/secure_box_firewall.sh'
+```
+
+该脚本在写入规则之前会先重置 ufw，因此它会删除您手动添加的规则。
+在默认的 `lagernet` 网络上，这些规则不会过滤容器发布的端口。请参阅
+[`lager install`](/source/zh/reference/cli/install) 以及
+[SECURITY.md](https://github.com/lagerdata/lager/blob/main/SECURITY.md#security-model)
+的 Security Model 部分。
+
+---
+
+## 示例
+
+```bash
+# Standard update workflow
+lager update --box my-lager-box --version main --yes
+
+# Update several boxes
+for box in my-lager-box staging-box; do lager update --box "$box" --yes; done
+
+# Update several boxes to the staging branch
+for box in my-lager-box staging-box; do lager update --box "$box" --version staging --yes; done
+
+# Force fresh build on a specific box
+lager update --box my-lager-box --force --yes
+
+# Verbose update for troubleshooting
+lager update --box my-lager-box --verbose
+```
+
+---
+
+## 故障排除
+
+### 更新在 git pull 处失败
+
+```bash
+# Check the remote URL (should be HTTPS, not SSH)
+ssh lagerdata@<box-ip> 'cd ~/box && git remote get-url origin'
+
+# If it shows git@github.com:..., switch to HTTPS:
+ssh lagerdata@<box-ip> 'cd ~/box && git remote set-url origin https://github.com/lagerdata/lager.git'
+```
+
+### 容器构建失败
+
+```bash
+# SSH in and check Docker status
+ssh lagerdata@<box-ip>
+docker ps -a
+docker logs lager
+```
+
+### 防火墙问题
+
+```bash
+# Check firewall status (sudo can prompt, so allocate a terminal)
+ssh -t lagerdata@<box-ip> 'sudo ufw status verbose'
+
+# Re-run firewall setup on the box
+ssh -t lagerdata@<box-ip> 'sudo /usr/local/lib/lager/secure_box_firewall.sh'
+```
+
+---
+
+## 说明
+
+- 使用 `--verbose` 时会关闭进度条
+- 容器构建使用 BuildKit 层缓存。`--force` 会先删除缓存镜像以及 cargo/npm 卷
+- 不指定时版本默认为 `main`
+- 更新会在容器重启之后自动验证其健康状态
+- `--check` 报告将会改变什么而不改动 Box，因此它是判断某台 Box 是否落后的安全方式
+- `--force` 即使在 Box 报告已是最新时也会更新，并清除缓存镜像和 cargo/npm 卷
+  （在代码有较大变化之后很有用）
