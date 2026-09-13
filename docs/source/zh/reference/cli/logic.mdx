@@ -1,0 +1,305 @@
+---
+title: 逻辑分析仪（预览）
+description: 控制逻辑分析仪的通道和触发
+---
+
+通过 Lager CLI 控制逻辑分析仪 Net，用于数字信号采集、协议解码和触发配置。
+
+<Warning>
+**Rigol MSO5000 上的已知限制。** 通道控制、采集、测量、光标，以及边沿触发和
+SPI 触发均可工作。脉冲、UART 和 I2C 触发在用选项配置它们时会失败。
+每次失败都会打印 `Error: Function not found: <method>` 并以 1 退出。
+CAN 触发和所有总线解码器同样会失败。
+[Issue #418](https://github.com/lagerdata/lager/issues/418) 跟踪这项工作。
+</Warning>
+
+## 语法
+
+```bash
+lager logic [OPTIONS] NET_NAME COMMAND [ARGS]...
+```
+
+## 全局选项
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--box BOX` | Lager Box 名称或 IP 地址 |
+| `--help` | 显示帮助信息并退出 |
+
+## 命令
+
+| 命令 | 说明 |
+|---------|-------------|
+| `enable` | 启用逻辑分析仪通道 |
+| `disable` | 停用逻辑分析仪通道 |
+| `start` | 开始波形采集 |
+| `start-single` | 开始单次波形采集 |
+| `stop` | 停止波形采集 |
+| `measure` | 测量信号特性 |
+| `trigger` | 配置触发设置 |
+| `cursor` | 控制光标位置 |
+
+## 退出码
+
+失败的命令会打印错误并以 1 退出。这包括 Net 名称不是逻辑 Net，
+以及来自 Box 的错误。成功的命令以 0 退出。
+
+## 命令参考
+
+### `enable`
+
+为指定的 Net 启用逻辑分析仪通道。
+
+```bash
+lager logic NET_NAME enable [--box BOX] [--mcu MCU]
+```
+
+如果示波器的逻辑分析仪处于关闭状态，`enable` 会打开它。
+然后它显示该 Net 的通道，并把该通道设为活动通道。通道必须是 `D0` 到 `D15`。
+
+### `disable`
+
+停用逻辑分析仪通道。
+
+```bash
+lager logic NET_NAME disable [--box BOX] [--mcu MCU]
+```
+
+`disable` 会隐藏该 Net 的通道。当没有任何数字通道保持显示时，
+`disable` 还会关闭逻辑分析仪。
+
+### `start`
+
+开始连续波形采集。
+
+```bash
+lager logic NET_NAME start [--box BOX] [--mcu MCU]
+```
+
+### `start-single`
+
+开始单次波形采集（一次性）。
+
+```bash
+lager logic NET_NAME start-single [--box BOX] [--mcu MCU]
+```
+
+### `stop`
+
+停止波形采集。
+
+```bash
+lager logic NET_NAME stop [--box BOX] [--mcu MCU]
+```
+
+---
+
+## measure 子命令
+
+### `measure period`
+
+测量信号周期。
+
+```bash
+lager logic NET_NAME measure period [--display BOOL] [--cursor BOOL]
+```
+
+### `measure freq`
+
+测量信号频率。
+
+```bash
+lager logic NET_NAME measure freq [--display BOOL] [--cursor BOOL]
+```
+
+### `measure dc-pos` / `measure dc-neg`
+
+测量正占空比或负占空比。
+
+```bash
+lager logic NET_NAME measure dc-pos [--display BOOL] [--cursor BOOL]
+lager logic NET_NAME measure dc-neg [--display BOOL] [--cursor BOOL]
+```
+
+### `measure pw-pos` / `measure pw-neg`
+
+测量正脉宽或负脉宽。
+
+```bash
+lager logic NET_NAME measure pw-pos [--display BOOL] [--cursor BOOL]
+lager logic NET_NAME measure pw-neg [--display BOOL] [--cursor BOOL]
+```
+
+---
+
+## trigger 子命令
+
+### `trigger edge`
+
+设置边沿触发配置。
+
+```bash
+lager logic NET_NAME trigger edge [OPTIONS]
+```
+
+**选项：**
+- `--mode` - 触发模式：`normal`、`auto`、`single`（默认 normal）
+- `--coupling` - 耦合方式：`dc`、`ac`、`low_freq_rej`、`high_freq_rej`（默认 dc）
+- `--source NET` - 触发源 Net
+- `--slope` - 触发边沿：`rising`、`falling`、`both`
+- `--level FLOAT` - 触发电平，单位伏特
+
+### `trigger pulse`
+
+设置脉冲触发配置。在 Rigol MSO5000 上，这个触发还不能工作。
+请参阅本页顶部的限制说明。
+
+```bash
+lager logic NET_NAME trigger pulse [OPTIONS]
+```
+
+**选项：**
+- `--mode` - 触发模式
+- `--coupling` - 耦合方式
+- `--source NET` - 触发源
+- `--level FLOAT` - 触发电平
+- `--trigger-on` - 触发条件。CLI 接受 `gt`、`lt` 和 `gtlt`，但命令随后会对这些值都报出 `is not a valid option` 而拒绝执行。
+- `--upper FLOAT` - 脉宽上限
+- `--lower FLOAT` - 脉宽下限
+
+### `trigger i2c`
+
+设置 I2C 协议触发。在 Rigol MSO5000 上，配置这个触发的选项还不能工作。
+请参阅本页顶部的限制说明。
+
+```bash
+lager logic NET_NAME trigger i2c [OPTIONS]
+```
+
+**选项：**
+- `--mode` - 触发模式
+- `--coupling` - 耦合方式
+- `--source-scl NET` - SCL 触发源
+- `--source-sda NET` - SDA 触发源
+- `--level-scl FLOAT` - SCL 触发电平
+- `--level-sda FLOAT` - SDA 触发电平
+- `--trigger-on` - 触发条件：`start`、`restart`、`stop`、`nack`、`address`、`data`、`addr_data`
+- `--address INT` - 地址值（用于地址触发），以十进制整数表示。7 位地址最大 127，8 位最大 255，10 位最大 1023。
+- `--addr-width` - 地址宽度：`7`、`8` 或 `10` 位。CLI 也接受 `9`，但 Box 会拒绝它。
+- `--data INT` - 数据值（用于数据触发），以十进制整数表示
+- `--data-width` - 数据宽度：`1`-`5` 字节
+- `--direction` - 方向：`write`、`read`、`rw`
+
+### `trigger uart`
+
+设置 UART 协议触发。在 Rigol MSO5000 上，配置这个触发的选项还不能工作。
+请参阅本页顶部的限制说明。
+
+```bash
+lager logic NET_NAME trigger uart [OPTIONS]
+```
+
+**选项：**
+- `--mode` - 触发模式
+- `--coupling` - 耦合方式
+- `--source NET` - 触发源
+- `--level FLOAT` - 触发电平
+- `--trigger-on` - 触发条件：`start`、`error`、`cerror`、`data`
+- `--parity` - 校验位：`even`、`odd`、`none`
+- `--stop-bits` - 停止位：`1`、`1.5`、`2`
+- `--baud INT` - 波特率（110 至 20000000）
+- `--data-width INT` - 数据宽度，单位位：`5` 至 `8`。CLI 也接受 `9`，但 Box 会拒绝它。
+- `--data INT` - 触发所用的数据值，以十进制整数表示
+
+### `trigger spi`
+
+设置 SPI 协议触发。
+
+```bash
+lager logic NET_NAME trigger spi [OPTIONS]
+```
+
+**选项：**
+- `--mode` - 触发模式
+- `--coupling` - 耦合方式
+- `--source-mosi-miso NET` - MOSI/MISO 信号源
+- `--source-sck NET` - SCK 信号源
+- `--source-cs NET` - CS 信号源
+- `--level-mosi-miso FLOAT` - MOSI/MISO 电平
+- `--level-sck FLOAT` - SCK 电平
+- `--level-cs FLOAT` - CS 电平
+- `--data INT` - 触发数据值，以十进制整数表示。最大为 2^width − 1。
+- `--data-width INT` - 数据宽度，单位位：`4` 至 `32`
+- `--clk-slope` - 时钟边沿：`positive`、`negative`
+- `--trigger-on` - 触发条件：`timeout`、`cs`
+- `--cs-idle` - CS 空闲状态：`high`、`low`。配合 `--trigger-on cs` 时，`high` 表示在 CS 为低时触发，`low` 表示在 CS 为高时触发。
+- `--timeout FLOAT` - 超时长度。除非同时给出 `--timeout`，否则 `--trigger-on timeout` 不会改变任何设置。
+
+---
+
+## cursor 子命令
+
+### `cursor set-a` / `cursor set-b`
+
+设置光标 A 或 B 的位置。
+
+```bash
+lager logic NET_NAME cursor set-a [--x FLOAT] [--y FLOAT]
+lager logic NET_NAME cursor set-b [--x FLOAT] [--y FLOAT]
+```
+
+### `cursor move-a` / `cursor move-b`
+
+移动光标位置。
+
+```bash
+lager logic NET_NAME cursor move-a [--del-x FLOAT] [--del-y FLOAT]
+lager logic NET_NAME cursor move-b [--del-x FLOAT] [--del-y FLOAT]
+```
+
+### `cursor hide`
+
+隐藏光标。
+
+```bash
+lager logic NET_NAME cursor hide
+```
+
+---
+
+## 示例
+
+```bash
+# Enable logic channel
+lager logic SPI_CLK enable --box my-lager-box
+
+# Start capture
+lager logic SPI_CLK start
+
+# Measure frequency
+lager logic SPI_CLK measure freq
+
+# Set edge trigger on rising edge at 1.5V
+lager logic SPI_CLK trigger edge --slope rising --level 1.5
+
+# Set SPI trigger on the 8-bit value 0xFF (255 in decimal)
+lager logic SPI_MOSI trigger spi --data 255 --data-width 8
+```
+
+---
+
+## 受支持的硬件
+
+| 厂商 | 型号系列 | 特性 |
+|--------------|--------------|----------|
+| Rigol | MSO5000 | 混合信号、协议解码 |
+
+---
+
+## 说明
+
+- 逻辑 Net 采集的是数字信号（高/低电平状态）
+- 协议触发（I2C、UART、SPI）需要正确配置电平
+- 用 `lager nets` 查看可用的逻辑 Net
+- Analog Net 和 Logic Net 可以组合用于混合信号分析
+- `--address` 和 `--data` 之类的整数选项取十进制值。`0x50` 这样的十六进制字符串会被拒绝。

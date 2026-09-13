@@ -1,0 +1,218 @@
+---
+title: 摄像头
+description: 管理 Box 上的摄像头串流
+---
+
+控制摄像头串流，用于对设备进行目视监视。
+
+## 语法
+
+```bash
+lager webcam [NETNAME] COMMAND [OPTIONS]
+```
+
+## 命令
+
+| 命令 | 说明 |
+|---------|-------------|
+| `start` | 启动摄像头串流 |
+| `snapshot` | 从正在运行的串流保存一帧 JPEG |
+| `stop` | 停止摄像头串流 |
+| `url` | 打印全部活动串流的 URL |
+| `start-all` | 启动全部摄像头串流 |
+| `stop-all` | 停止全部摄像头串流 |
+
+## 选项
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--box BOX` | Lager Box 名称或 IP 地址 |
+
+---
+
+## 命令参考
+
+### `start`
+
+启动一路摄像头串流。
+
+```bash
+lager webcam CAM1 start --box my-lager-box
+```
+
+### `snapshot`
+
+把正在运行的串流中的一帧保存为 JPEG。对脚本和智能体来说，
+这是查看实验台的正确方式。帧数据通过 Box 的命令端点回传，
+因此串流自身的端口完全不需要可达。
+
+```bash
+lager webcam CAM1 snapshot --box my-lager-box --out frame.jpg
+```
+
+不带 `--out` 时，文件名为当前目录下的 `CAM1-<timestamp>.jpg`。
+`--out` 路径上已存在的文件会被覆盖。成功时命令打印
+`Saved frame.jpg (<N> bytes)`。
+
+该串流必须已经在运行。如果没有，命令会以 `1` 退出并报出
+`Error: Hardware error: No active stream for net 'CAM1' — start it first`。
+
+`start` 之后的第一次 snapshot 可能需要多达 5 秒，因为摄像头是在第一次请求时才打开的。
+如果在这段时间内没有帧到达，错误信息会以 `streamer answered 503` 结尾。
+低于 0.47.0 的 Box 会返回 `Error: Unknown action 'snapshot' for webcam`，
+请在那台 Box 上运行 `lager update`。
+
+### `stop`
+
+停止一路摄像头串流。
+
+```bash
+lager webcam CAM1 stop --box my-lager-box
+```
+
+### `url`
+
+打印全部活动摄像头串流的 URL；如果 Box 记录了启动者，也一并显示。
+
+```bash
+lager webcam url --box my-lager-box
+```
+
+输出：
+```
+Active webcam streams on <BOX_IP>:
+
+CAM1:
+  URL: http://<BOX_IP>:8086/
+  Port: 8086
+  Device: /dev/video0
+  Origin: started via cli by alice
+```
+
+### 访问受控的 Box
+
+当 Box 位于访问网关之后时，它的串流端口只接受带有您登录令牌的请求。
+浏览器无法从普通链接中附上令牌。因此 `start`、`start-all` 和 `url`
+会把令牌追加到打印出的 URL 上（`http://<BOX_IP>:8086/?token=...`），
+并说明它还有多少分钟有效。令牌过期后，请运行 `lager webcam url` 获取新链接。
+如果该 Box 没有保存登录信息，CLI 会告诉您应该使用哪个 `lager login` URL。
+
+### `start-all`
+
+启动全部已配置的摄像头串流。
+
+```bash
+lager webcam start-all --box my-lager-box
+```
+
+### `stop-all`
+
+停止全部摄像头串流。
+
+```bash
+lager webcam stop-all --box my-lager-box
+```
+
+---
+
+## 用法
+
+### 基本流程
+
+```bash
+# Start a webcam
+lager webcam CAM1 start --box my-lager-box
+
+# Get the stream URL
+lager webcam url --box my-lager-box
+
+# Open the printed URL in a browser
+# http://<BOX_IP>:8086/
+
+# Stop when done
+lager webcam CAM1 stop --box my-lager-box
+```
+
+### 多台摄像头
+
+```bash
+# Start all cameras
+lager webcam start-all --box my-lager-box
+
+# View all URLs
+lager webcam url --box my-lager-box
+
+# Stop all cameras
+lager webcam stop-all --box my-lager-box
+```
+
+---
+
+## 串流格式
+
+摄像头串流以下列形式提供：
+- 供浏览器观看的 **HTTP MJPEG 串流**（`/stream`）
+- 按需获取的**单帧 JPEG**（`/snapshot`，或 `lager webcam NET snapshot`）
+- **每台摄像头一个端口**（8086、8087 等）
+- 用于调试的**设备路径信息**
+
+串流可以从 CLI、Python API，或其他管理同一台 Box 的工具启动和停止。
+每一路串流都会记录是哪个界面启动的，其中任何一个都可以停止它。
+一路串流同时服务所有观看者，但一个视频设备只能属于一路串流。
+在同一台摄像头上启动新串流之前，请先停止旧的串流。
+
+---
+
+## 使用场景
+
+### 目视检查
+
+在测试过程中监视设备的物理状态：
+```bash
+lager webcam BENCH_CAM start
+# Run tests while monitoring
+lager webcam BENCH_CAM stop
+```
+
+### 远程调试
+
+查看 LED 状态、显示输出或物理连接：
+```bash
+lager webcam url --box my-lager-box
+# Open stream in browser
+```
+
+### 留档
+
+采集测试结果的图像证据：
+```bash
+lager webcam BOARD_VIEW start
+lager webcam BOARD_VIEW snapshot --out after-flash.jpg
+lager webcam BOARD_VIEW stop
+```
+
+---
+
+## 示例
+
+```bash
+# Set default webcam
+lager defaults add --webcam-net MAIN_CAM
+
+# Quick start/stop
+lager webcam start
+lager webcam stop
+
+# Check status
+lager webcam url
+```
+
+---
+
+## 说明
+
+- 摄像头必须通过 USB 连接到 Box
+- 每台摄像头使用一个独立端口（从 8086 起）
+- 串流在 Box 的 IP 地址上可访问。在访问受控的 Box 上，链接只有带上 CLI 追加的登录令牌才有效
+- 默认 Net 可以用 `lager defaults add --webcam-net` 设置
+- USB 摄像头必须兼容 V4L2
