@@ -280,19 +280,70 @@ class LiveTableTestCase(unittest.TestCase):
             table = boxes_mod._LiveTable(boxes, countdown_to=time.monotonic() + 5)
         self.assertFalse(table._live)
 
-    def test_identical_frames_are_not_repainted(self):
-        # Without this the collect loop rewrites the same block many times a
-        # second for the whole wait.
+    def test_a_settled_table_stops_repainting(self):
+        # Once nothing is outstanding the wheel stops, so the frame is stable
+        # and the loop must not keep rewriting the same block.
         boxes = [('A', '10.0.0.1', 'charles')]
         table = self._table(boxes)
+        table.record(boxes_mod._Row('A', '10.0.0.1', 'charles', '0.1.0', 'current'))
 
         written = []
         with mock.patch('sys.stdout.write', side_effect=written.append), \
                 mock.patch('sys.stdout.flush'):
             table.paint()
             first = len(written)
-            table.paint()          # nothing changed, and the second is unchanged
+            table.paint()          # nothing changed, so nothing is written
             self.assertEqual(len(written), first)
+
+    def test_the_wheel_visits_every_glyph_in_order(self):
+        # Rewinding `_started` is how the clock is driven here: no sleeping,
+        # and no patching of time.monotonic, which the footer and the collect
+        # loop also read.
+        boxes = [('A', '10.0.0.1', 'charles')]
+        table = self._table(boxes)
+
+        seen = []
+        for step in range(len(table._SPINNER)):
+            table._started = time.monotonic() - step * table._SPINNER_PERIOD
+            seen.append(table._spinner())
+
+        self.assertEqual(''.join(seen), table._SPINNER)
+
+    def test_an_outstanding_box_keeps_repainting_as_the_wheel_turns(self):
+        # A pending row has no status to report, so the advancing wheel is
+        # the only sign the command is alive. Were the frame treated as
+        # unchanged, it would freeze for the whole wait.
+        boxes = [('A', '10.0.0.1', 'charles')]
+        table = self._table(boxes, cols=200)
+
+        first = self._painted_lines(table)
+        table._started -= table._SPINNER_PERIOD      # advance the wheel one step
+        second = self._painted_lines(table)
+
+        self.assertTrue(second, 'the wheel advanced but nothing was repainted')
+        pending_line = next(l for l in second if 'pending' in l)
+        self.assertNotEqual(next(l for l in first if 'pending' in l), pending_line)
+
+    def test_locked_by_is_present_from_the_first_frame(self):
+        # The column has to be there before any box answers: introducing it
+        # later would shift every row underneath it mid-wait.
+        boxes = [('A', '10.0.0.1', 'charles')]
+        table = self._table(boxes, cols=200)
+
+        header = self._painted_lines(table)[0]
+        self.assertIn('locked by', header)
+
+    def test_a_resolved_row_shows_its_lock_holder_and_drops_the_wheel(self):
+        boxes = [('A', '10.0.0.1', 'charles')]
+        table = self._table(boxes, cols=200)
+        table.record(boxes_mod._Row('A', '10.0.0.1', 'charles', '0.1.0',
+                                    'current', 'alice'))
+
+        body = self._painted_lines(table)[2]
+        self.assertIn('alice', body)
+        self.assertNotIn('pending', body)
+        for glyph in table._SPINNER:
+            self.assertNotIn(glyph, body)
 
     def test_erase_rewinds_exactly_what_it_painted(self):
         boxes = [('A', '10.0.0.1', 'charles'), ('B', '10.0.0.2', 'charles')]

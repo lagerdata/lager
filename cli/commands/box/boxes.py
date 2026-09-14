@@ -54,9 +54,10 @@ _DEFAULT_STATUS_TIMEOUT = 5
 # socket timeouts do not: `requests` has no timeout for name resolution, so a
 # box named by hostname behind a sick resolver outlasts both budgets above.
 _STRAGGLER_GRACE = 3.0
-# Collect-loop poll interval. Short enough that the countdown ticks evenly
-# and Ctrl+C lands promptly; long enough to cost nothing while idle.
-_POLL_INTERVAL = 0.2
+# Collect-loop poll interval. Matches the spinner period, so the wheel is
+# reached often enough to turn smoothly; also what bounds how long Ctrl+C
+# waits. Idle cost is one timed queue wait per tick.
+_POLL_INTERVAL = 0.1
 
 _PENDING = 'pending'
 _CANCELLED = 'cancelled'
@@ -213,19 +214,30 @@ def _probe_box(name, ip, user, port, status_timeout, cli_version, auth_headers):
         return _Row(name, ip, user, '-', 'error', locked_by)
 
 
-def _fit_row(prefix, cell, color, cols):
+def _fit_row(prefix, cells, cols):
     """A table line truncated to `cols` terminal columns, colour applied after.
+
+    `cells` are `(text, colour)` pairs rendered after `prefix`; a colour of
+    None leaves that run unstyled.
 
     Colour last, because escape sequences are zero-width on screen but do
     count toward len(): slicing an already-styled string cuts at the wrong
     place and can clip the reset, bleeding colour into the rest of the
-    terminal. Truncating at all matters because a wrapped line occupies two
-    terminal rows while the repaint below moves the cursor up by the number
-    of lines it wrote -- the mismatch is what shreds an in-place display.
+    terminal. That is also why `room` counts only visible characters -- the
+    styled text already in `parts` must not be measured. Truncating at all
+    matters because a wrapped line occupies two terminal rows while the
+    repaint below moves the cursor up by the number of lines it wrote -- the
+    mismatch is what shreds an in-place display.
     """
-    if len(prefix) >= cols:
-        return prefix[:cols]
-    return prefix + click.style(cell[:cols - len(prefix)], fg=color)
+    parts = [prefix[:cols]]
+    room = cols - len(parts[0])
+    for text, color in cells:
+        if room <= 0:
+            break
+        chunk = text[:room]
+        parts.append(click.style(chunk, fg=color) if color else chunk)
+        room -= len(chunk)
+    return ''.join(parts)
 
 
 class _LiveTable:
@@ -238,6 +250,10 @@ class _LiveTable:
 
     _CLEAR = '\033[2K\r'
     _UP = '\033[1A'
+    # Same braille wheel the old single-line spinner used, so the command
+    # still looks like itself while it waits.
+    _SPINNER = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+    _SPINNER_PERIOD = 0.1
 
     def __init__(self, boxes, countdown_to):
         self._boxes = boxes
@@ -245,13 +261,20 @@ class _LiveTable:
         self._rows = {}
         self._painted = 0
         self._last_frame = None
+        self._started = time.monotonic()
 
         self._w_name = max([len('name')] + [len(b[0]) for b in boxes])
         self._w_ip = max([len('ip')] + [len(b[1]) for b in boxes])
         self._w_user = max([len('user')] + [len(b[2]) for b in boxes])
         # Grow only, so a row arriving late never narrows the block.
         self._w_version = len('version')
-        self._w_status = max(len('status'), len(_PENDING))
+        # Wide enough for the spinner glyph plus a space in front of the text.
+        self._w_status = max(len('status'), len(_PENDING) + 2)
+        # `locked by` is shown from the start, even though nothing can be
+        # known about a lock until a box answers -- a column that appeared
+        # only once the first locked box replied would shift every row
+        # underneath it mid-wait.
+        self._w_locked = len('locked by')
 
         self._live = sys.stdout.isatty()
         # Repainting walks the cursor back up over the block we drew. If the
@@ -267,6 +290,16 @@ class _LiveTable:
         self._rows[row.name] = row
         self._w_version = max(self._w_version, len(row.version))
         self._w_status = max(self._w_status, len(row.status))
+        self._w_locked = max(self._w_locked, len(row.locked_by))
+
+    def _spinner(self):
+        """The current wheel glyph.
+
+        Derived from elapsed time rather than a paint counter, so the wheel
+        turns at a steady rate no matter how often `paint` is reached.
+        """
+        step = int((time.monotonic() - self._started) / self._SPINNER_PERIOD)
+        return self._SPINNER[step % len(self._SPINNER)]
 
     def pending(self):
         return [b for b in self._boxes if b[0] not in self._rows]
@@ -289,9 +322,14 @@ class _LiveTable:
         if not self._live:
             return
         footer = self._footer()
+        waiting = bool(self.pending())
+        # The wheel only turns while something is outstanding, so a settled
+        # table stops repainting entirely.
+        spin = self._spinner() if waiting else ''
         # Skip frames that would render identically: without this the loop
-        # rewrites the same block five times a second.
-        frame = (len(self._rows), self._w_version, self._w_status, footer)
+        # rewrites the same block ten times a second for no reason.
+        frame = (len(self._rows), self._w_version, self._w_status,
+                 self._w_locked, footer, spin)
         if frame == self._last_frame:
             return
         self._last_frame = frame
@@ -300,19 +338,31 @@ class _LiveTable:
         header = (
             f"{'name':<{self._w_name}}   {'ip':<{self._w_ip}}   "
             f"{'user':<{self._w_user}}   {'version':<{self._w_version}}   "
-            f"{'status':<{self._w_status}}"
+            f"{'status':<{self._w_status}}   {'locked by':<{self._w_locked}}"
         )
         lines = [header[:cols], ('=' * len(header))[:cols]]
         for name, ip, user in self._boxes:
             row = self._rows.get(name)
-            version = row.version if row else '-'
-            status = row.status if row else _PENDING
+            if row is None:
+                # Nothing is known yet, so both unresolved cells carry the
+                # wheel rather than a claim about the box.
+                version, status, locked = '-', f'{spin} {_PENDING}', spin
+                # Asked for `_PENDING`, not `status`: the wheel prefix makes
+                # the cell text no longer a status `_status_color` knows.
+                status_color = locked_color = _status_color(_PENDING)
+            else:
+                version, status, locked = row.version, row.status, row.locked_by
+                status_color = _status_color(row.status)
+                locked_color = 'magenta' if locked else None
             prefix = (
                 f"{name:<{self._w_name}}   {ip:<{self._w_ip}}   "
                 f"{user:<{self._w_user}}   {version:<{self._w_version}}   "
             )
-            lines.append(_fit_row(prefix, status.ljust(self._w_status),
-                                  _status_color(status), cols))
+            lines.append(_fit_row(prefix, [
+                (status.ljust(self._w_status), status_color),
+                ('   ', None),
+                (locked.ljust(self._w_locked), locked_color),
+            ], cols))
         if footer:
             lines.append(click.style(footer[:cols], fg='bright_black'))
 
