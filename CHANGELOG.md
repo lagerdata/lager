@@ -14,6 +14,24 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 ### Added
 
+- **`lager nets add --interface` picks the FTDI channel for a `gpio`, `i2c` or
+  `spi` net.** It refuses a channel that the part does not have for that net
+  type, for example I2C on channel C of an FT4232H.
+
+### Fixed
+
+- **FT2232H and FT4232H `gpio`, `i2c` and `spi` nets open the part and channel
+  that they name.** The I2C and SPI box dispatchers refused both parts, and
+  `lager gpi` and `lager gpo` opened every FTDI part as an FT232H on channel A.
+- **`lager nets add` accepts a second `debug` net on another channel of an
+  FT2232H or FT4232H**, such as `STM32F4x@A` and `NRF52840_XXAA@B`. It refused
+  any second debug net on the address, although `add-all` and the TUI allowed
+  one per channel.
+
+## [0.47.1] - 2026-09-11
+
+### Added
+
 - **`LAGER_GATEWAY_TOKEN` authenticates a CI job against an access-gated
   box.** Set the variable to a token your auth server minted and every
   request carries it, with no `lager login` step and no password in

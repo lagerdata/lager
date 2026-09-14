@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from lager.dispatchers import helpers
 from lager.exceptions import SPIBackendError
+from lager.util.ftdi_url import is_ftdi_instrument
 
 if TYPE_CHECKING:
     from lager.protocols.spi.spi_base import SPIBase
@@ -102,7 +103,7 @@ def _get_pin_config(rec: Dict[str, Any]) -> Dict[str, int]:
     instrument = rec.get("instrument", "").lower()
     if instrument in ("aardvark_spi", "aardvark", "totalphase_aardvark"):
         return {}
-    if instrument in ("ft232h", "ftdi_ft232h", "ft232h_spi"):
+    if is_ftdi_instrument(instrument) or instrument == "ft232h_spi":
         return {}
 
     if _UD_RE.search(instrument):
@@ -352,7 +353,9 @@ def _make_driver(rec: Dict[str, Any], overrides: Dict[str, Any] = None):
             return AardvarkSPI(port=port, serial=serial, target_power=target_power, **spi_params)
         except Exception as exc:
             raise SPIBackendError(f"Failed to create Aardvark SPI driver: {exc}") from exc
-    elif instrument in ("ft232h", "ftdi_ft232h", "ft232h_spi"):
+    elif is_ftdi_instrument(instrument) or instrument == "ft232h_spi":
+        # Every FTDI part, not only the FT232H: the driver takes the part from
+        # the PID in the address and the channel from params.interface.
         from .ft232h_spi import FT232HSPI
 
         # cs_mode is not supported by FT232H (uses hardware CS); remove before passing

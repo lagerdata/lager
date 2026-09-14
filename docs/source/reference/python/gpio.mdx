@@ -245,8 +245,8 @@ for i in range(10):
 ### Multi-channel FTDI adapters
 
 An FTDI net takes its channel from `params.interface` on the net record, accepting
-`A`-`D` or `0`-`3`. A net with no `interface` uses channel A — the only choice on a
-single-channel FT232H.
+`A`-`D` or `0`-`3`. Set it with `lager nets add --interface`. A net with no
+`interface` uses channel A, the only choice on a single-channel FT232H.
 
 | Part | Channels | Usable for GPIO |
 |---|---|---|
