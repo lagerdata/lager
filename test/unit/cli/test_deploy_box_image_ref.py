@@ -20,10 +20,16 @@ protocol (after update.py's ``_resolve_image_digest``), so it is tested against
 a fake curl for shape and, in the hardware pass, against the real registry for
 agreement -- both returned byte-identical digests for v0.39.1 and v0.38.0.
 
-Nothing here executes the deploy script itself; it is far too large to run.
+The deploy script as a whole is far too large to run here, but its image and
+container handoff is not. TestImageHandoffRuns extracts that block between its
+sentinels and runs it with ssh stubbed, recording every remote command in
+order, and TestPrePullCommandRuns runs the generated pull command against a
+fake docker.
 """
 
+import os
 import pathlib
+import shutil
 import subprocess
 
 import pytest
@@ -372,10 +378,6 @@ class TestPrePullBeforeTeardown:
     download and any miss became a fully cold build.
     """
 
-    CODE = _uncommented(DEPLOY_SCRIPT.read_text())
-    PULL_CALL = 'box_image_prepull_cmd "$BOX_IMAGE_DIGEST_REF"'
-    TEARDOWN = "for c in lager pigpio controller; do"
-
     def _prepull_cmd(self, ref):
         body = _extract(DEPLOY_SCRIPT, "image pre-pull")
         return subprocess.run(
@@ -403,33 +405,176 @@ class TestPrePullBeforeTeardown:
             assert shared in cmd, shared
             assert shared in client, shared
 
-    def test_resolve_and_prepull_come_before_the_containers_stop(self):
-        teardown = self.CODE.index(self.TEARDOWN)
-        assert self.CODE.index('resolve_box_image_digest "$BOX_IMAGE_TAG_REF"') < teardown
-        assert self.CODE.index(self.PULL_CALL) < teardown
 
-    def test_the_digest_shape_is_checked_before_it_reaches_ssh(self):
-        check = self.CODE.index("grep -Eq '^sha256:[0-9a-f]{64}$'")
-        assert check < self.CODE.index(self.PULL_CALL)
+_HANDOFF_STUBS = r'''
+set -e
+LOG="$1"
+SSH_OPTS=""; BOX_USER=benchuser; BOX_IP=192.0.2.10; VPN_INTERFACE=""
+BOX_IMAGE_REGISTRY=ghcr.io/lagerdata/lager-box
+print_info()    { echo "INFO: $*"; }
+print_success() { echo "OK: $*"; }
+print_warning() { echo "WARN: $*"; }
+print_error()   { echo "ERR: $*"; }
+resolve_box_image_digest() {
+    if [ "${RESOLVE_RC:-0}" = 0 ]; then printf '%s\n' "$DIGEST"; return 0; fi
+    echo "registry unreachable" >&2
+    return 1
+}
+ssh() {
+    eval "remote=\"\${$#}\""
+    printf '%s' "$remote" | tr '\n' ' ' >> "$LOG"
+    printf '\n' >> "$LOG"
+    case "$remote" in
+        *"docker info"*) return "${DOCKER_INFO_RC:-0}" ;;
+        *"pull --platform"*)
+            if [ "${PULL_RC:-0}" != 0 ]; then echo "manifest unknown" >&2; fi
+            return "${PULL_RC:-0}" ;;
+    esac
+    return 0
+}
+'''
 
-    def test_dangling_images_are_pruned_before_the_pull_never_after(self):
-        # A digest-pulled image has no tag until start_box.sh names it, so a
-        # prune after the pull could reach the image this deploy downloaded.
-        assert self.CODE.count("docker image prune -f") == 1
-        assert self.CODE.index("docker image prune -f") < self.CODE.index(self.PULL_CALL)
+_HANDOFF_REPORT = '\necho "HANDOFF=[${LAGER_BOX_IMAGE_ENV}] PREPULLED=${BOX_IMAGE_PREPULLED}"\n'
 
-    def test_the_image_is_handed_to_start_box_only_when_the_pull_succeeded(self):
-        handoff = self.CODE.index('LAGER_BOX_IMAGE_ENV="LAGER_BOX_IMAGE=')
-        flag = self.CODE.index("BOX_IMAGE_PREPULLED=1")
-        pull = self.CODE.rindex(self.PULL_CALL, 0, handoff)
-        # Both sit on the success branch of the pull's own `if`.
-        assert pull < handoff < flag
-        assert "else" not in self.CODE[pull:flag].split()
+_DIGEST = "sha256:" + "a" * 64
+_TAG = {"BOX_IMAGE_PULL": "1", "BOX_IMAGE_TAG_REF": f"{REGISTRY}:v0.46.2",
+        "GIT_VERSION": "v0.46.2", "DIGEST": _DIGEST}
 
-    def test_the_build_cache_is_pruned_only_after_a_successful_prepull(self):
-        # Pruning it unconditionally is what made every install a cold build.
-        assert self.CODE.count("docker builder prune -af") == 1
-        prune = self.CODE.index("docker builder prune -af")
-        guard = self.CODE.rindex('if [ "$BOX_IMAGE_PREPULLED" = "1" ]; then', 0, prune)
-        assert "fi" not in self.CODE[guard:prune].split()
-        assert self.CODE.index("BOX_IMAGE_PREPULLED=1") < guard
+
+def _step(remote):
+    """Name the deploy step a remote command belongs to."""
+    remote = remote.strip()
+    for marker, name in (
+        ("docker info", "daemon-check"),
+        ("systemctl show docker", "daemon-diagnosis"),
+        ("docker image prune -f", "image-prune"),
+        ("pull --platform", "pre-pull"),
+        ("for c in lager pigpio controller", "teardown"),
+        ("docker builder prune -af", "build-cache-prune"),
+        ("df -h /", "disk-check"),
+        ("LAGER_WG_IFACE", "vpn"),
+        ("./start_box.sh", "start"),
+    ):
+        if marker in remote:
+            return name
+    return f"unexpected: {remote[:60]}"
+
+
+class TestImageHandoffRuns:
+    """The deploy's image-and-container handoff, run for real with ssh stubbed.
+
+    The block is extracted between its sentinels and executed under `set -e`,
+    as the script runs it, with every remote command recorded in order. What
+    it proves, per branch: the image is pulled while the old containers still
+    serve, the containers stop only afterwards, the build cache is cleared only
+    when the pull succeeded, and start_box.sh receives the image only then.
+    """
+
+    def _run(self, tmp_path, **env):
+        block = _extract(DEPLOY_SCRIPT, "image and container handoff")
+        log = tmp_path / "remote.log"
+        log.write_text("")
+        run_env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), **env}
+        proc = subprocess.run(
+            ["bash", "-c", _HANDOFF_STUBS + block + _HANDOFF_REPORT, "handoff", str(log)],
+            env=run_env, capture_output=True, text=True, cwd=str(tmp_path),
+        )
+        remotes = [line for line in log.read_text().splitlines() if line.strip()]
+        return proc, [_step(r) for r in remotes], remotes
+
+    def test_a_pulled_image_is_on_the_box_before_the_containers_stop(self, tmp_path):
+        proc, steps, remotes = self._run(tmp_path, **_TAG, RESOLVE_RC="0", PULL_RC="0")
+        assert proc.returncode == 0, proc.stderr
+        assert steps == ["daemon-check", "image-prune", "pre-pull", "teardown",
+                         "build-cache-prune", "disk-check", "start"]
+        assert f"LAGER_BOX_IMAGE={REGISTRY}@{_DIGEST}" in remotes[-1]
+        assert "LAGER_BOX_IMAGE_VERSION=v0.46.2" in remotes[-1]
+        assert "PREPULLED=1" in proc.stdout
+
+    def test_a_failed_pull_builds_and_keeps_the_cache(self, tmp_path):
+        proc, steps, remotes = self._run(tmp_path, **_TAG, RESOLVE_RC="0", PULL_RC="1")
+        assert proc.returncode == 0, proc.stderr
+        assert steps == ["daemon-check", "image-prune", "pre-pull", "teardown",
+                         "disk-check", "start"]
+        assert "LAGER_BOX_IMAGE" not in remotes[-1]
+        assert "manifest unknown" in proc.stdout
+        assert "PREPULLED=0" in proc.stdout
+
+    @pytest.mark.parametrize("env, says", [
+        ({**_TAG, "RESOLVE_RC": "1"}, "registry unreachable"),
+        ({**_TAG, "RESOLVE_RC": "0", "DIGEST": "sha256:abc;touch INJECTED"}, "unexpected form"),
+        ({**_TAG, "BOX_IMAGE_PULL": "0"}, "Building and starting containers"),
+        ({"BOX_IMAGE_PULL": "1", "BOX_IMAGE_TAG_REF": "", "GIT_VERSION": "main"},
+         "only release tags are published"),
+    ], ids=["registry-unreachable", "malformed-digest", "no-pull", "branch-target"])
+    def test_no_image_means_a_build_with_the_cache_kept(self, tmp_path, env, says):
+        proc, steps, remotes = self._run(tmp_path, **env)
+        assert proc.returncode == 0, proc.stderr
+        assert steps == ["daemon-check", "image-prune", "teardown", "disk-check", "start"]
+        assert "LAGER_BOX_IMAGE" not in remotes[-1]
+        assert says in proc.stdout
+        assert not (tmp_path / "INJECTED").exists()
+
+    def test_a_stopped_daemon_ends_the_deploy_before_anything_is_touched(self, tmp_path):
+        proc, steps, _ = self._run(tmp_path, **_TAG, DOCKER_INFO_RC="1")
+        assert proc.returncode == 1
+        assert steps == ["daemon-check", "daemon-diagnosis"]
+
+
+class TestPrePullCommandRuns:
+    """The generated pre-pull command, executed against a fake docker."""
+
+    FAKE_DOCKER = """#!/bin/bash
+echo "$*" >> "$DOCKER_LOG"
+prev=""; for a in "$@"; do [ "$prev" = "--config" ] && cfg="$a"; prev="$a"; done
+echo "$cfg" > "$CFG_RECORD"
+[ -d "$cfg" ] && echo "config-dir-present" >> "$DOCKER_LOG"
+exit "${FAKE_PULL_RC:-0}"
+"""
+    FAKE_DPKG = '#!/bin/bash\n[ "$1" = "--print-architecture" ] && echo amd64\n'
+    FAKE_TIMEOUT = '#!/bin/bash\necho "timeout $1" >> "$DOCKER_LOG"\nshift\nexec "$@"\n'
+
+    def _bin(self, tmp_path, with_timeout):
+        # A PATH holding only what the command needs, so whether `timeout`
+        # exists is decided here rather than by the machine running the test.
+        bindir = tmp_path / "bin"
+        bindir.mkdir()
+        for tool in ("mktemp", "rm", "uname"):
+            found = shutil.which(tool)
+            assert found, f"{tool} is not on PATH"
+            os.symlink(found, bindir / tool)
+        scripts = {"docker": self.FAKE_DOCKER, "dpkg": self.FAKE_DPKG}
+        if with_timeout:
+            scripts["timeout"] = self.FAKE_TIMEOUT
+        for name, body in scripts.items():
+            path = bindir / name
+            path.write_text(body)
+            path.chmod(0o755)
+        return bindir
+
+    @pytest.mark.parametrize("with_timeout", [True, False], ids=["timeout", "no-timeout"])
+    @pytest.mark.parametrize("pull_rc", [0, 7])
+    def test_pulls_by_digest_passes_the_exit_status_and_cleans_up(self, tmp_path, with_timeout, pull_rc):
+        ref = f"{REGISTRY}@{_DIGEST}"
+        body = _extract(DEPLOY_SCRIPT, "image pre-pull")
+        cmd = subprocess.run(
+            ["bash", "-c", body + f"\nbox_image_prepull_cmd {ref!r}\n"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        log, record = tmp_path / "docker.log", tmp_path / "cfg"
+        proc = subprocess.run(
+            ["/bin/bash", "-c", cmd],
+            env={"PATH": str(self._bin(tmp_path, with_timeout)),
+                 "DOCKER_LOG": str(log), "CFG_RECORD": str(record),
+                 "FAKE_PULL_RC": str(pull_rc), "TMPDIR": str(tmp_path)},
+            capture_output=True, text=True,
+        )
+        assert proc.returncode == pull_rc
+        lines = log.read_text().splitlines()
+        if with_timeout:
+            assert lines[0] == "timeout 300"
+            lines = lines[1:]
+        cfg = record.read_text().strip()
+        assert lines[0] == f"--config {cfg} pull --platform linux/amd64 {ref}"
+        assert lines[1] == "config-dir-present"
+        assert cfg and not os.path.exists(cfg)
