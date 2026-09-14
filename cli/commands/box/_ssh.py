@@ -262,6 +262,40 @@ def register_key_command(pub_key: str, filename: str) -> str:
     )
 
 
+# Written by `lager install` when a control plane manages the box, and read by
+# the box runtime to find it. Its presence is what tells this CLI that the key
+# directory belongs to that control plane rather than to whoever is at the
+# keyboard.
+CONTROL_PLANE_CONFIG = "/etc/lager/control_plane.json"
+
+
+def box_has_control_plane(
+    dest: str,
+    *,
+    key_path: str = _LAGER_BOX_KEY,
+    timeout: int = 15,
+) -> bool:
+    """Whether a control plane manages this box.
+
+    Call only once the key authenticates — it runs over that key, so it costs
+    no extra prompt, and a box we cannot reach answers False rather than
+    guessing.
+
+    Presence of the config, not its contents: a box whose control plane is
+    configured but temporarily disabled is still a box whose key directory
+    that control plane owns, and the difference does not change the advice.
+    """
+    cmd = f"test -s {shlex.quote(CONTROL_PLANE_CONFIG)}"
+    try:
+        proc = subprocess.run(
+            ["ssh", "-i", key_path, "-o", "BatchMode=yes", dest, cmd],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0
+
+
 def register_lager_box_key(
     dest: str,
     *,

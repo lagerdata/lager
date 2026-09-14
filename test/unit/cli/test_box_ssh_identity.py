@@ -1055,3 +1055,79 @@ class UninstallDeregisters(_CommandCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ControlPlaneManagedBox(unittest.TestCase):
+    """What `lager ssh-setup` says when a control plane owns the key directory.
+
+    Registration failing there is not a misconfiguration to route around. A box
+    account able to file its own key can mint access that no control plane
+    approved, that no revocation reaches, and that outlives whoever made it --
+    which is precisely what the tight sudo scoping closed. So the advice for
+    that box has to be "register with the control plane", never "widen sudo".
+    """
+
+    def _warn(self, *, managed):
+        from cli.commands.box import ssh_setup
+
+        messages = []
+        with mock.patch.object(ssh_setup, "register_lager_box_key",
+                               lambda _d: (False, "permission denied")), \
+                mock.patch.object(ssh_setup, "box_has_control_plane",
+                                  lambda _d: managed), \
+                mock.patch.object(ssh_setup.click, "secho",
+                                  lambda msg, **_kw: messages.append(msg)):
+            result = ssh_setup.register_or_warn("lagerdata@10.0.0.1")
+        return result, "\n".join(messages)
+
+    def test_control_plane_box_is_told_to_register_there(self):
+        ok, msg = self._warn(managed=True)
+        self.assertFalse(ok)
+        self.assertIn("control plane", msg)
+        self.assertIn("Register your public key", msg)
+        # And is shown where its public half is, so the instruction is usable.
+        self.assertIn(".pub", msg)
+
+    def test_control_plane_box_is_never_told_to_widen_sudo(self):
+        _, msg = self._warn(managed=True)
+        self.assertNotIn("NOPASSWD", msg)
+        self.assertNotIn("sudoers", msg.lower())
+
+    def test_unmanaged_box_keeps_the_grant_advice(self):
+        # A plain box managed by some other provisioning is a different case:
+        # there is no control plane to register with, and the scoped grant is
+        # the right way to add registration through that provisioning.
+        _, msg = self._warn(managed=False)
+        self.assertIn("NOPASSWD", msg)
+        self.assertIn("lager-box-*.pub", msg)
+
+    def test_detection_is_a_file_test_over_the_authenticating_key(self):
+        calls = []
+
+        def fake_run(cmd, **_kw):
+            calls.append(list(cmd))
+            return _proc(0)
+
+        with mock.patch.object(_ssh.subprocess, "run", fake_run):
+            self.assertIs(_ssh.box_has_control_plane("lagerdata@10.0.0.1"), True)
+
+        argv = calls[0]
+        self.assertIn("BatchMode=yes", argv, "must never prompt")
+        self.assertIn(_ssh.CONTROL_PLANE_CONFIG, argv[-1])
+
+    def test_unreachable_box_is_not_assumed_managed(self):
+        # Guessing "managed" for a box we could not reach would replace working
+        # advice with the wrong advice on a transient network failure.
+        def boom(*_a, **_kw):
+            raise OSError("no route to host")
+
+        with mock.patch.object(_ssh.subprocess, "run", boom):
+            self.assertIs(_ssh.box_has_control_plane("lagerdata@10.0.0.1"), False)
+
+    def test_no_reference_to_any_particular_control_plane(self):
+        # Lager is the open standard; it names the role, never a product.
+        import inspect
+        from cli.commands.box import ssh_setup
+
+        for module in (_ssh, ssh_setup):
+            self.assertNotIn("stout", inspect.getsource(module).lower())

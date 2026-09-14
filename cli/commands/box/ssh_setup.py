@@ -25,6 +25,7 @@ from ._ssh import (
     _KEY_FALLBACK_DESTS,
     _LAGER_BOX_KEY,
     BOX_KEYS_DIR,
+    box_has_control_plane,
     ensure_lager_box_keypair,
     key_installed_on_box,
     register_lager_box_key,
@@ -70,6 +71,28 @@ def register_or_warn(dest: str) -> bool:
     ok, detail = register_lager_box_key(dest)
     if ok:
         return True
+
+    # A control plane owns this box's key directory. Telling the operator to
+    # widen sudo here would be advising them to reopen the exact hole that
+    # system closed: a box account able to file its own key can mint access no
+    # control plane approved, that no revocation reaches, and that outlives the
+    # operator. The key they installed is already loose and already at risk of
+    # being swept; the honest instruction is to get it managed properly.
+    if box_has_control_plane(dest):
+        click.secho(
+            f"Warning: the key works, but it did not register in {BOX_KEYS_DIR} "
+            f"on the box ({detail}), because a control plane manages this box's "
+            "SSH keys.\n"
+            "  A key installed here is not one it knows about: it will keep "
+            "working until that control plane next rebuilds the box's "
+            "authorized_keys, and will not survive it. Register your public key "
+            "with the control plane instead, and it will be installed on every "
+            "box you are granted — and removed again when you are not.\n"
+            f"    your public key: {_LAGER_BOX_KEY}.pub",
+            fg="yellow", err=True,
+        )
+        return False
+
     box_user = dest.rsplit("@", 1)[0] or "<box-user>"
     click.secho(
         f"Warning: the key works, but it did not register in {BOX_KEYS_DIR} "
