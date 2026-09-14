@@ -459,14 +459,23 @@ _normalize_secret_files
 #     could add keys but never remove them),
 #   * a key can never be appended twice, so concurrent passes cannot duplicate
 #     lines the way the old grep-then-append race did.
-# Every line OUTSIDE the block is preserved byte-for-byte. That is what keeps
-# keys installed by `lager ssh-setup` / ssh-copy-id / cloud-init — which never
-# create a .pub here — from being revoked by this loop.
+# Lines OUTSIDE the block are preserved, which is what keeps keys installed by
+# `lager ssh-setup` / ssh-copy-id / cloud-init — which never create a .pub
+# here — from being revoked by this loop. The one exception is adoption: a
+# loose copy of a key we are about to publish is dropped, so the block is the
+# single source for it (see the rebuild comment below).
 #
 # Any other system that manages this file must claim its OWN distinct sentinel
-# pair. Two managers sharing one pair would each rebuild the other's region from
-# its own source and fight on every pass; distinct pairs is what lets them
-# coexist, since each preserves everything outside its own block.
+# pair. Two managers sharing one pair would each rebuild the other's region
+# from its own source and fight on every pass.
+#
+# Distinct pairs are necessary but NOT sufficient: adoption has to stop at
+# another manager's block too. A peer publishing from this same key directory
+# has every one of our staged keys in its region, so adopting across the whole
+# file emptied that region on every pass — and the peer, following the same
+# rule, emptied ours right back. Whichever ran more often looked like the only
+# working publisher. So: never delete inside a region another manager has
+# marked, and let it revoke its own entries from its own source.
 _AK_BEGIN="# BEGIN LAGER MANAGED KEYS (managed by start_box.sh — do not edit by hand)"
 _AK_END="# END LAGER MANAGED KEYS"
 
@@ -509,11 +518,15 @@ _sync_authorized_keys() {
     ) | awk '!seen[$0]++' > "$staged"
 
     # Rebuild in two parts:
-    #  1. every line outside our block, minus any line that is itself a
+    #  1. every line outside our block, minus any LOOSE line that is itself a
     #     currently-staged key. Dropping those adopts copies that a previous
     #     append-only sync left loose in the file, and collapses the duplicate
     #     lines that the old race produced — without touching keys we do not
     #     manage (they are not in the key directory, so they are not dropped).
+    #     Lines inside another manager's marked region are printed untouched,
+    #     staged or not: that region is its source of truth, not ours. An
+    #     unterminated foreign BEGIN therefore preserves the rest of the file,
+    #     which is the safe direction for a truncated or hand-edited file.
     #  2. our block, regenerated from the key directory.
     # The staged keys are loaded in BEGIN rather than with the usual two-file
     # `NR == FNR` idiom: when the key directory is empty the staged file is
@@ -525,6 +538,9 @@ _sync_authorized_keys() {
             $0 == b { inblock = 1; next }
             $0 == e { inblock = 0; next }
             inblock { next }
+            /^# BEGIN .* MANAGED KEYS/ { foreign = 1; print; next }
+            /^# END .* MANAGED KEYS/ { foreign = 0; print; next }
+            foreign { print; next }
             ($0 in staged) { next }
             { print }
         ' "$auth_keys" > "$tmp"; then
