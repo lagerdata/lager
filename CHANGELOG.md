@@ -24,7 +24,9 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   navbar and serves each language as its own set of pages; a language shows only
   the pages translated for it, so an untranslated page is absent rather than a
   404. Translated pages live under `docs/source/zh/`, mirroring the English
-  filenames. All ten Getting Started pages are translated. `tools/check_ste.py`
+  filenames. Translated so far: all ten Getting Started pages, all 47 CLI
+  reference pages, both MCP pages, Supported Instruments, and 21 of the 27
+  Python API pages. `tools/check_ste.py`
   exempts that directory: STYLE.md is a style for English sentences, and none of
   its rules has a meaning in Mandarin.
 
