@@ -56,6 +56,11 @@ jobs:
 
     env:
       LAGER_BOX: ${{ vars.LAGER_BOX || 'MASTER' }}
+      # The box is fronted by an authenticating gateway. A runner is not a
+      # person, so CI presents a token its auth server minted for the bench
+      # rather than a human's password. It rides on every request, is never
+      # refreshed, and is never written to this runner's disk.
+      LAGER_GATEWAY_TOKEN: ${{ secrets.LAGER_GATEWAY_TOKEN }}
 
     steps:
       - name: Record what triggered this run
@@ -94,17 +99,6 @@ jobs:
         run: pip install -e cli/
         shell: bash
 
-      - name: Sign in to the box access gateway
-        # The box is fronted by an authenticating gateway. The CLI stores the
-        # session in ~/.lager_gateway_auth and silently refreshes it for the
-        # rest of the run, so one login covers the whole job.
-        env:
-          LAGER_AUTH_URL: ${{ vars.LAGER_AUTH_URL }}
-          LAGER_CI_EMAIL: ${{ secrets.LAGER_CI_EMAIL }}
-          LAGER_CI_PASSWORD: ${{ secrets.LAGER_CI_PASSWORD }}
-        run: lager login "$LAGER_AUTH_URL" --email "$LAGER_CI_EMAIL" --password "$LAGER_CI_PASSWORD"
-        shell: bash
-
       - name: Register lager box
         run: |
           lager boxes add \
@@ -136,9 +130,9 @@ jobs:
         shell: bash
 
       - name: Verify box connectivity
-        # First authenticated contact after a fresh login can fail while the
-        # gateway records the box<->auth-server link, and the gateway itself can
-        # be briefly unreachable. Retrying once with no backoff is not enough:
+        # The gateway asks its control plane whether this runner's token may
+        # drive the box, and that call — or the gateway itself — can be briefly
+        # unreachable. Retrying once with no backoff is not enough:
         # both attempts land inside the same blip (observed 2026-07-24, two
         # "auth server is unreachable" failures 1.4s apart). This step gates the
         # whole night's bench coverage, so poll instead — same window as the
