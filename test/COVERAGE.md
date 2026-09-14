@@ -46,13 +46,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 2098 (+2 xfailed) |
+| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 2101 (+2 xfailed) |
 | `unit (box)` | `test/unit/box/` | 2555 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 181 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 186 (+1 skipped) |
-| | **Total gated** | **5214** |
+| | **Total gated** | **5217** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -650,7 +650,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_watt_subcommands.py` | `lager watt` NetGroup reading power/current/voltage/all over the box API |
 | `test_ws_diagnose.py` | WebSocket failure message generation pointing to instrument vs. box based on health |
 | `test_box_lock_command.py` | `lager boxes lock`/`unlock` command layer: the no-expiry reservation body (`holder_type`/`ttl_seconds`), exit codes on 409/403, `--force`, and the Docker-root warning |
-| `test_boxes_live_listing.py` | Concurrent `lager boxes` listing: the fan-out is parallel (asserted with a `threading.Barrier`, not a stopwatch), an unanswering box is abandoned at the deadline rather than hanging the command, gateway denials stay counted apart from unreachable boxes for every `denial_label` verdict, only the bare version is cached and only from the calling thread, plus the repaint arithmetic (line truncation, over-tall fleets falling back to a single print, a settled table repainting no further) and the waiting indicators (`locked by` present from the first frame, the wheel visiting every glyph, an outstanding box still repainting as it turns, a resolved row dropping it) and the `gateway_auth` thread safety it depends on -- single-flight refresh so a fan-out cannot spend Stout's rotating refresh cookie N times, and atomic store writes |
+| `test_boxes_live_listing.py` | Concurrent `lager boxes` listing: the fan-out is parallel (asserted with a `threading.Barrier`, not a stopwatch), an unanswering box is abandoned at the deadline rather than hanging the command, gateway denials stay counted apart from unreachable boxes for every `denial_label` verdict, each probe's gateway retry inherits that probe's timeout so it cannot outlive the deadline, only the bare version is cached and only from the calling thread, plus the repaint arithmetic (line truncation, over-tall fleets falling back to a single print, a settled table repainting no further) and the waiting indicators (`locked by` present from the first frame, the wheel visiting every glyph, an outstanding box still repainting as it turns, a resolved row dropping it) and the `gateway_auth` thread safety it depends on -- single-flight refresh so a fan-out cannot spend Stout's rotating refresh cookie N times, and atomic store writes |
 | `test_config_roundtrip.py` | `cli/config.py` JSON<->ConfigParser round-trip, legacy-key migration, `read`/`write_lager_json`, `expand_devenv_path`, `get_debug_script_for_net` |
 | `test_impl_host_importable.py` | Every `cli/impl/*` module must import with `box/` off `sys.path` and `lager` blocked -- they ship in the wheel but the box tree does not, so a module-level `import lager` breaks them on any pip install |
 | `test_import_surface.py` | Import guards: `cli/status.py` needs pymongo's `bson.decode`, and `termios`/`tty` must stay optional (simulated via a `meta_path` finder) |
@@ -709,7 +709,7 @@ Gated as part of the `unit (cli)` job.
 | File | What it tests | Gated |
 |------|---------------|:---:|
 | `test_box_storage.py` | `box_storage.py` project-level `.lager` merging behavior | Yes |
-| `test_gateway_auth.py` | `gateway_auth.py` bearer-token auth for boxes behind an authenticating gateway, including the pinned CI token (`LAGER_GATEWAY_TOKEN`) | Yes |
+| `test_gateway_auth.py` | `gateway_auth.py` bearer-token auth for boxes behind an authenticating gateway, including the pinned CI token (`LAGER_GATEWAY_TOKEN`), and that `check_gateway_status` holds its first-contact retry to the caller's own timeout rather than a fixed 30s -- otherwise a caller with a deadline reports a box that was still answering | Yes |
 | `test_update_gate.py` | Update rebuild gate: probe parsing, build-hash mismatch, early-exit verdict | Yes |
 | `test_gateway_callsites.py` | Gateway-auth discovery across every box-talking call site: record the mapping on a discovery 401, retry once with a held token, surface genuine denials, and keep rendering the other boxes' rows | Yes |
 | `test_host_cli.py` | Host-OS CLI install helpers shared by `lager install` and `lager update`: the reconcile decision table, `--check` labels, exit codes, the probe snippet under a real shell, and the drift guard pinning the deploy scripts' mirror | Yes |

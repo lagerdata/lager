@@ -56,8 +56,23 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   translated: 网 reads as "network" to a Chinese reader, and these pages already
   use 网络 and 网关 heavily for real networking.
 
+- **`lager boxes` shows each box as it answers, instead of after the slowest
+  one.** All boxes are queried at once, so a box that is powered off or
+  mid-update costs only its own timeout rather than delaying every row behind
+  it. On a terminal the table appears immediately and fills in as replies
+  arrive, with a spinner on each unanswered `status` and `locked by` cell and a
+  countdown for the boxes still outstanding. `Ctrl+C` stops the wait and keeps
+  whatever did answer, marking the rest `cancelled`. Piped output is unchanged:
+  the same final table, printed once.
+
 ### Fixed
 
+- **A gated box's first `lager boxes` reports its real version rather than `no
+  response`.** First contact with a box behind an auth gateway is retried
+  transparently, and that retry ran on a fixed 30 second budget regardless of
+  the caller's own. The retry now inherits the budget of the request it
+  replays, so it can no longer outlive the caller's deadline and leave an
+  answering box labelled as silent.
 - **FT2232H and FT4232H `gpio`, `i2c` and `spi` nets open the part and channel
   that they name.** The I2C and SPI box dispatchers refused both parts, and
   `lager gpi` and `lager gpo` opened every FTDI part as an FT232H on channel A.

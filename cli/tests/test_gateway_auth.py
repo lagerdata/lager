@@ -341,6 +341,49 @@ def test_check_gateway_status_first_contact_retries_transparently(monkeypatch):
     assert gateway_auth.auth_server_for_box('10.0.0.5') == 'http://cp:3001'
 
 
+def test_check_gateway_status_holds_the_retry_to_the_callers_budget(monkeypatch):
+    # The retry is a second round trip, so a caller working to a deadline
+    # needs it bounded by the same budget as the first. Left on the old fixed
+    # 30s it outlived the caller's timeout, and a fan-out like `lager boxes`
+    # reported a box as silent while its retry was still in flight.
+    from cli import box_storage
+    gateway_auth.save_login('http://cp:3001', make_jwt(time.time() + 900), {'refresh': 'r1'})
+    resp = _first_contact_401()
+
+    seen = {}
+    def fake_send(self, prepared, **kwargs):
+        seen.update(kwargs)
+        return make_response(200)
+    monkeypatch.setattr(requests.Session, 'send', fake_send)
+
+    _, verdict = box_storage.check_gateway_status(
+        resp, '10.0.0.5', timeout=3, stream=False)
+
+    assert verdict is None
+    assert seen['timeout'] == 3
+    # Must mirror the original call: a buffered caller replayed as a stream
+    # holds the connection open past its own budget.
+    assert seen['stream'] is False
+
+
+def test_check_gateway_status_retry_budget_defaults_unchanged(monkeypatch):
+    # Callers that pass neither argument must behave exactly as before.
+    from cli import box_storage
+    gateway_auth.save_login('http://cp:3001', make_jwt(time.time() + 900), {'refresh': 'r1'})
+    resp = _first_contact_401()
+
+    seen = {}
+    def fake_send(self, prepared, **kwargs):
+        seen.update(kwargs)
+        return make_response(200)
+    monkeypatch.setattr(requests.Session, 'send', fake_send)
+
+    box_storage.check_gateway_status(resp, '10.0.0.5')
+
+    assert seen['timeout'] == 30
+    assert seen['stream'] is True
+
+
 def test_check_gateway_status_sign_in_required_without_token(monkeypatch):
     from cli import box_storage
     resp = _first_contact_401()
