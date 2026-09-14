@@ -38,7 +38,7 @@ pause("check the DUT before the final step")
     auto-resume in 300s
 ```
 
-当 `pause()` 无法暂停时，它是一个安全的空操作 —— 例如脚本不是在 `lager python`
+当 `pause()` 无法暂停时，它是一个安全的空操作 —— 即脚本不是在 `lager python`
 下运行（没有断点上下文），或者[断点被禁用](#禁用断点)时。它永远不会抛出异常。
 
 ## 恢复运行

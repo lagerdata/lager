@@ -29,7 +29,7 @@ from lager.automation.arm import (
 | `move_relative()` | 相对当前位置移动 |
 | `go_home()` | 把机械臂移回归位位置 |
 | `enable_motor()` | 使能机械臂电机 |
-| `disable_motor()` | 断开机械臂电机 |
+| `disable_motor()` | 禁用机械臂电机 |
 | `save_position()` | 以机械臂当前姿态重新标定（`M889`） |
 | `get_full_position()` | 获取包含关节角度的完整位置 |
 | `sliding_rail_init()` | 初始化滑轨 |
@@ -144,7 +144,7 @@ arm.enable_motor()
 
 ### `disable_motor()`
 
-断开机械臂电机（机械臂会变成松弛状态）。
+禁用机械臂电机（机械臂会变成松弛状态）。
 
 ```python
 arm.disable_motor()

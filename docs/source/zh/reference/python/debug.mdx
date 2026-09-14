@@ -87,7 +87,7 @@ dbg.connect(script='/home/lagerdata/probes/my_target.JLinkScript')
 
 **返回：** `dict` - 带有连接信息的状态字典
 
-**抛出：** 如果该探针已有 gdbserver 在运行，而您既没有传 `force` 也没有传 `ignore_if_connected`，`connect()` 会抛错。在 OpenOCD 上是 `RuntimeError`，在 J-Link 上是 `JlinkAlreadyRunningError`（来自 `lager.debug`）。
+**抛出：** 如果该探针已有 gdbserver 在运行，而您既没有传 `force` 也没有传 `ignore_if_connected`，`connect()` 会抛错。在 OpenOCD 上是 `RuntimeError`，在 J-Link 上是 `JLinkAlreadyRunningError`（来自 `lager.debug`）。
 
 <Note>
 脚本覆盖只有在 gdbserver 重新启动时才生效。如果服务器已经起来，请传 `force=True` 用新脚本重启它。`ignore_if_connected=True` 会提前返回，不会重启。在 J-Link 上，它仍然会为后续操作重新指向该脚本。在 OpenOCD 上，覆盖用的 cfg 只会交给本次 `connect()` 调用启动的那个守护进程。之后的任何一次重启，包括自愈式重启，都会使用保存在 Net 上的 cfg。无效输入指的是一个既不存在、又不是合法 base64 的路径，或者空字符串。Net 会静默忽略这类输入，之前落地的脚本继续生效。
@@ -275,7 +275,7 @@ with dbg.session() as s:
 
 **返回：** 一个产出该调试 Net 的上下文管理器。
 
-**它为什么与 RTT 相配：** 进程内的 RTT 读取器具备重新挂接能力（见下文）。会话内的 `flash()` 或 `reset()` 可能让 GDB 服务器弹一下，而这样的弹动不会杀掉您在同一个块里打开的日志流。
+**它为什么与 RTT 相配：** 进程内的 RTT 读取器具备重新挂接能力（见下文）。会话内的 `flash()` 或 `reset()` 可能让 GDB 服务器短暂重启，而这样的短暂重启不会杀掉您在同一个块里打开的日志流。
 
 ### `rtt(channel=0, search_addr=None, search_size=None, chunk_size=None)`
 
@@ -318,9 +318,9 @@ with dbg.rtt(search_addr=0x20000000, search_size=0x10000) as rtt:
 
 **具备重新挂接能力（两种后端都有）：** 当 GDB 服务器或守护进程在 RTT 读取器底下重启时，读取器会自行重新挂接。
 
-- **J-Link。** 一次 `flash()` 会短暂释放探针的 USB，并在*相同*端口上重启 GDB 服务器，这会让 RTT 套接字断开。一次 `reset()` 通过它抢占 Commander 也会造成同样的效果。读取器会重新挂接到同一个 RTT telnet 端口，而不是就此沉默。因此长时间运行的 `read_some()` 或 `rtt_defmt()` 循环能够跨过一次烧录继续产出。
+- **J-Link。** 一次 `flash()` 会短暂释放探针的 USB，并在*相同*端口上重启 GDB 服务器，这会让 RTT 套接字断开。`reset()` 通过 J-Link Commander 占用探针，也会造成同样的效果。读取器会重新挂接到同一个 RTT telnet 端口，而不是就此沉默。因此长时间运行的 `read_some()` 或 `rtt_defmt()` 循环能够跨过一次烧录继续产出。
 
-- **OpenOCD。** 普通的烧录过程中守护进程一直在，因此套接字很少断开。万一断开了（守护进程被强制重启，或者 rtt-server 弹了一下），读取器会重新执行 `rtt setup` 和 `rtt server start` 并重新挂接。
+- **OpenOCD。** 普通的烧录过程中守护进程一直在，因此套接字很少断开。万一断开了（守护进程被强制重启，或者 rtt-server 短暂重启），读取器会重新执行 `rtt setup` 和 `rtt server start` 并重新挂接。
 
 两种后端上的重新挂接都是有界的，上限为 30 秒。读取器只在服务器或守护进程重新起来之后才挂接，并且它绝不会去*启动*服务器。因此，像 DA1469x 那样有意让服务器保持停止的烧录，不会让读取器无限空转。读取器也不会扰动您有意让它停着的 DA1469x。`rtt()` 和 `rtt_defmt()` 都不接受 `reconnect` 参数，因此重新挂接始终是开启的。
 

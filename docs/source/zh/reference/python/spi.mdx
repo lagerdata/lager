@@ -286,7 +286,7 @@ print(f"Status: 0x{status[0]:04x}")
 |---------|-------------|
 | LabJack T7 | 用 GPIO 引脚（FIO/EIO）作 CLK、MOSI、MISO 和 CS |
 | LabJack U3 | 用 DIO 引脚作 CS、CLK、MISO 和 MOSI（默认按此顺序使用 `FIO4-FIO7`） |
-| Aardvark I2C/SPI | 专用的 USB SPI 适配器，采用 GPIO 位操作 |
+| Aardvark I2C/SPI | 专用的 USB SPI 适配器，采用 GPIO bit-bang（用 GPIO 软件模拟时序） |
 | FTDI FT232H / FT2232H / FT4232H | 基于 MPSSE 的 SPI；通道按 Net 逐个选择 |
 
 ### 多通道 FTDI 适配器
@@ -323,6 +323,6 @@ SPI 运行在 FTDI 芯片的 MPSSE 引擎上，而在 FT4232H 上只有通道 A 
 - `transfer()` 会用填充值补齐过短的数据数组，或把过长的数组截断到 `n_words`
 - LabJack T7 每次事务最多支持 56 字节，最高速率约 800 kHz。多字节传输在请求速率约 1 kHz 至 800 kHz 之间时，实际以约 1 kHz 运行
 - LabJack U3 每次事务最多支持 50 字节，速率约为 5.4 kHz 至 71.4 kHz
-- Aardvark 采用 GPIO 位操作模式；无论 `frequency_hz` 设为多少，实际速度都受 USB 往返时间限制
+- Aardvark 采用 GPIO bit-bang 模式；无论 `frequency_hz` 设为多少，实际速度都受 USB 往返时间限制
 - `config()` 只对正在运行的脚本生效。`lager spi NET config` 才会把配置保存到 `saved_nets.json`
 - 低位在前模式（`bit_order="lsb"`）在 LabJack T7 上通过软件位反转实现
