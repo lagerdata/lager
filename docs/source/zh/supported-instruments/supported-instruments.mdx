@@ -1,0 +1,433 @@
+---
+title: Lager 受支持的仪器
+description: Lager 平台当前支持的全部仪器。
+---
+
+## 概述
+
+本文列出 Lager 平台当前支持的仪器。所有受支持的设备都可以通过 `lager` CLI
+在本地或远程控制，并直接集成到自动化硬件测试流程和 CI/CD 系统中。
+
+Lager 把传统的台式设备变成嵌入式工程团队可编程的基础设施。
+
+如果您使用的设备不在此列，我们也提供定制集成支持。
+
+---
+
+# 1. 电源控制
+
+Lager 提供对台式电源设备的自动控制，用于确定性的硬件测试、故障注入，
+以及由 CI 驱动的验证。
+
+## 电源
+
+| 厂商 | 型号 | 通道 | 控制命令 |
+|---|---|---|---|
+| Rigol | DP711 \* | 1 | `lager supply` |
+| Rigol | DP811 | 1 | `lager supply` |
+| Rigol | DP821 | 2 | `lager supply` |
+| Rigol | DP831 | 3 | `lager supply` |
+| Rigol | DP832 | 3 | `lager supply` |
+| Keysight | E36233A | 2 | `lager supply` |
+| Keysight | E36312A | 3 | `lager supply` |
+| Keysight | E36313A | 3 | `lager supply` |
+| EA Elektro-Automatik | PSB 10060/60 | 1 路电源 + 1 路太阳能 | `lager supply`、`lager solar` |
+| EA Elektro-Automatik | PSB 10080/60 | 1 路电源 + 1 路太阳能 | `lager supply`、`lager solar` |
+
+\* 仅支持 RS-232 —— 它通过 USB 转串口适配器连接，并且需要用
+[`lager nets assign`](/source/zh/reference/cli/nets#assign) 做一次性的手动分配。
+DP711 还需要在电源和 RS232 转 USB 适配器之间加一根**零调制解调器（交叉）线缆**。
+两端都按 DTE 接线，因此直通连接无法通信。请参阅
+[RS-232 仪器](/source/zh/getting-started/setting-up-instruments#rs-232-仪器（手动分配）)。
+
+**可以实现：**
+- 自动的电压/电流控制
+- 电源时序控制
+- 掉电和电压毛刺测试
+- 集成到 CI 的硬件验证
+
+## 电池模拟器
+
+| 厂商 | 型号 | 控制命令 |
+|---|---|---|
+| Keithley | 2281S | `lager battery`、`lager supply` |
+
+**可以实现：**
+- 可编程的电池仿真
+- 充放电曲线仿真
+- 低电压测试
+
+## 电子负载
+
+| 厂商 | 型号 | 控制命令 |
+|---|---|---|
+| Rigol | DL3021 | `lager eload` |
+
+**可以实现：**
+- 负载阶跃测试
+- 电流吸收验证
+- 自动化的电源完整性测试
+
+---
+
+# 2. 测量与分析
+
+Lager 把测量设备整合进可编程的测试流程，实现自动化的信号检查和功耗分析。
+
+## 示波器与逻辑分析仪
+
+| 厂商 | 型号 | 通道 | 控制命令 |
+|---|---|---|---|
+| Rigol | MSO5204 | 4 路模拟 + 1 路逻辑 | `lager scope`、`lager logic` |
+| Pico Technology | PicoScope 2000 | 2 路模拟 | `lager scope` |
+
+**可以实现：**
+- 自动化的波形采集
+- 基于触发的信号验证
+- 数字与模拟信号的关联分析
+
+## 功率测量
+
+| 厂商 | 型号 | 控制命令 |
+|---|---|---|
+| Yoctopuce | Yocto-Watt | `lager watt` |
+| Joulescope | JS220 | `lager watt`、`lager energy` |
+| Nordic Semiconductor | PPK2 | `lager watt`、`lager energy` |
+
+**可以实现：**
+- 电流消耗曲线分析
+- 能量和电荷积分
+- 功率统计量（均值/最小值/最大值/标准差）
+- 功耗回归测试
+
+## 温度监视
+
+| 厂商 | 型号 | 通道 | 控制命令 |
+|---|---|---|---|
+| Phidgets | 热电偶 | 4 | `lager thermocouple` |
+
+**可以实现：**
+- 硬件测试期间的温度监视
+- 环境验证
+- 长时间的老化测试
+
+---
+
+# 3. 嵌入式接口
+
+Lager 支持可编程的硬件接口控制，用于自动化的通信测试与验证。
+
+## 多协议适配器
+
+### LabJack T7
+
+**控制命令：** `lager i2c`、`lager spi`、`lager adc`、
+`lager dac`、`lager gpi`、`lager gpo`
+
+**接口：**
+- I2C（1 条总线）
+- SPI（1 条总线）
+- 14 个 ADC 通道
+- 2 个 DAC 通道
+- 23 个 GPIO 引脚
+
+### LabJack U3
+
+**控制命令：** `lager i2c`、`lager spi`、`lager adc`、
+`lager dac`、`lager gpi`、`lager gpo`
+
+**接口：**
+- I2C（1 条总线，需要外部上拉电阻）
+- SPI（1 条总线）
+- 16 个 ADC 通道
+- 2 个 DAC 通道（0.04 V 至 4.95 V）
+- 16 个 GPIO 引脚
+
+**与 LabJack T7 的差异：**
+- U3 使用 LabJack Exodriver 和 LabJackPython，而不是 LJM。一台 T7 和一台 U3 可以共用一台 Lager Box。
+- `FIO0`-`FIO3` 不是 GPIO 引脚。Lager 把每一台 U3 都当作 U3-HV 对待，在 U3-HV 上这四个引脚是固定的高压模拟输入。
+- `AIN4`-`AIN15` 与 `FIO4`-`FIO7` 和 `EIO0`-`EIO7` 共用引脚。一次读取会设定该引脚的模拟或数字模式。
+- DAC 没有回读功能。读取返回的是 Box 上次设置的值。
+- SPI 和 I2C 需要 U3 硬件版本 1.21 或更高。一次传输最多 50 字节，时钟速率是近似值。
+- U3 没有 MIO 引脚。它的 EIO 和 CIO 线位于 DB15 连接器上。
+- 同一台 Lager Box 上的两台 U3 无法创建 Net，因为 U3 不报告序列号。
+
+<Warning>
+如果连接了 U3，用设备类型 `"ANY"` 调用 LJM 会失败并报出 `LJME_U3_NOT_SUPPORTED_BY_LJM`。
+Lager 在它自己的 T7 调用中会指明设备类型。在您自己的代码中，
+请给 `ljm.openS` 和 `ljm.listAllS` 传 `"T7"`，而不是 `"ANY"`。
+</Warning>
+
+### Total Phase Aardvark
+
+**控制命令：** `lager i2c`、`lager spi`、`lager gpi`、
+`lager gpo`
+
+**接口：**
+- I2C（1 条总线）
+- SPI（1 条总线）
+
+### FTDI FT232H
+
+**控制命令：** `lager i2c`、`lager spi`、`lager gpi`、
+`lager gpo`
+
+**接口：**
+- I2C（1 条总线）
+- SPI（1 条总线）
+- 12 个 GPIO 引脚
+
+### Measurement Computing USB-202
+
+**控制命令：** `lager adc`、`lager dac`、`lager gpi`、
+`lager gpo`
+
+**接口：**
+- 8 个 ADC 通道
+- 2 个 DAC 通道
+- 8 个 GPIO 引脚
+
+**可以实现：**
+- 自动化的外围通信测试
+- 传感器验证
+- 协议层面的故障注入
+- 硬件在环仿真
+
+---
+
+# 4. 调试与烧录
+
+Lager 支持业界标准的 ARM 调试探针，全部通过同一条 `lager debug` 命令驱动，
+因此探针的选择对您的脚本和 CI 流水线是透明的。
+
+| 厂商 | 型号 | 控制命令 |
+|---|---|---|
+| SEGGER | J-Link | `lager debug` |
+| SEGGER | J-Link Plus | `lager debug` |
+| SEGGER | J-Link Base Compact | `lager debug` |
+| SEGGER | J-Link Flasher Pro | `lager debug` |
+| SEGGER | Flasher ARM | `lager debug` |
+| STMicroelectronics | ST-Link/V2、V2-1、V3（含 V3 Mini 和 V3 2VCP） | `lager debug` |
+| Raspberry Pi | Debug Probe（RP2040 / Picoprobe，CMSIS-DAP） | `lager debug` |
+| FTDI | FT232H（例如 C232HM 线缆、Adafruit FT232H 转接板） | `lager debug` |
+| FTDI | FT2232H（例如 Olimex ARM-USB-OCD-H） | `lager debug` |
+| FTDI | FT4232H（需要自定义 `openocd_config`） | `lager debug` |
+| 任意厂商 | 兼容 CMSIS-DAP 的设备（Atmel EDBG、NXP DAPLink 等） | `lager debug` |
+
+**能力：**
+- 烧录固件
+- 擦除设备
+- 复位目标
+- 启动 GDB 服务器
+- 内存读写
+
+**说明：**
+- 对上表中的芯片，基于 OpenOCD 的探针会根据 USB VID/PID 自动选择接口配置。
+  FT4232H 受支持，但没有安全的默认值，因为四路 MPSSE 的板子接线变体太多。
+  您必须传入一个指向适合您板子的接口 cfg 的 `openocd_config`。
+  同样的方式也适用于接线非标准的 FT232H/FT2232H，
+  以及表中没有的任何探针（例如 Black Magic Probe、Glasgow Interface Explorer）。
+- 多通道 FTDI（FT2232H、FT4232H）把每个 MPSSE 通道作为独立的调试 Net 提供。
+  通道以 `@A`/`@B`/`@C`/`@D` 后缀写在设备字段上，
+  因此单颗芯片可以独立驱动多个目标。FT4232H 上的 C 和 D 通道只能用于 UART。
+  通道后缀的写法请参阅 [nets 参考](/source/zh/reference/cli/nets)。
+- 对 STM32、nRF5x、RP2040/RP2350、ATSAM、LPC、i.MX RT 和 ESP32 系列，
+  Lager 会根据设备名称选择目标芯片配置。其他芯片则由自定义的 OpenOCD 目标配置驱动。
+
+---
+
+# 5. 连接与控制
+
+## USB 电源切换
+
+| 厂商 | 型号 | 端口 | 控制命令 |
+|---|---|---|---|
+| Acroname | 8 端口 USB 集线器 | 8 | `lager usb` |
+| Acroname | 4 端口 USB 集线器 | 4 | `lager usb` |
+| Yepkit | YKUSH | 3 | `lager usb` |
+| Plugable | UD-CAM 及其他 RTS5411 扩展坞[^plugable] | 4 | `lager usb` |
+
+[^plugable]: 与 Acroname 和 Yepkit 集线器不同，Plugable 不提供 SDK。
+    控制方式采用标准 USB hub class 的按端口电源切换（PPPS），
+    因此支持程度取决于具体的集线器是否真正实现了它。
+    通过 VID:PID `2230:5411` 匹配 —— Plugable 在它整条 RTS5411 扩展坞产品线上
+    复用这个 ID；已在 UD-CAM 上验证。**只有四个外部 Type-A 插座会切换 VBUS** ——
+    见下文。需要针对厂商 `2230` 的 udev 规则（随 `99-instrument.rules` 提供）；
+    没有它，libusb 打不开该集线器，所有操作都会因权限错误而失败。
+
+### Plugable 扩展坞上哪些端口真正会切换供电
+
+Plugable 扩展坞会枚举为**两个级联的 4 端口集线器，描述符完全相同**。
+两者都声称支持按端口电源切换（`wHubCharacteristics=0x00a9`、
+`PortPwrCtrlMask=0xff`），因此仅凭描述符无法区分它们。只有拓扑才能区分：
+
+| 层级 | 上面有什么 | 是否切换 VBUS |
+|---|---|---|
+| 下游（用户层） | 扩展坞的四个外部 Type-A 插座 | 会 —— 已验证 |
+| 上游（内部层） | DP-AltMode 广告牌设备、音频编解码器、扩展坞自己的以太网，以及到用户层的链路 | 不会 |
+
+Lager 只暴露用户层。因此 lager 的四个端口就是那四个外部 Type-A 插座。
+在已验证的型号上，三个在后面，一个在前面。扩展坞自己的网络适配器
+永远不会被误关掉。
+
+**lager 的端口编号对应哪个物理插座是不确定的。** 没有任何机制把 USB
+集线器的端口顺序与机壳上接口的顺序绑定，而且不同型号之间顺序可能不同。
+请一次性地通过实验确定它：把一个能被枚举的设备依次插到每个插座上
+（任何 U 盘或调试探针都可以），然后读回它落在哪个端口：
+
+```bash
+lager ssh --box <BOX> -- ls -l /sys/bus/usb/devices/<hub-path>
+```
+
+**只供电的线缆做不到这一点。** 它不向集线器呈现任何设备，
+因此与空插座无法区分（见上面的警告）。
+
+<Warning>
+**把线缆换到另一个插座会悄悄改变该 Net 所指的对象。** `usb` Net 指的是集线器的
+*端口*，而不是插在上面的设备。有人重新插拔之后，同一条命令切换的就是别的东西了。
+不会有任何错误，因为从集线器的角度看一切正常。
+
+这与 Box 上其他每一台仪器的行为正好相反。调试探针、USB 转 UART 桥接器和电源
+都使用带**序列号**的地址，它们的 Net 会跟随设备，无论插在哪里。
+而集线器端口的 Net 是按**拓扑**寻址的，因此它留在插座上。两者都是正确的，
+但在完全相同的物理改动下，它们的行为恰好相反。
+
+因此：实验台每次改动之后，在运行任何脚本化操作之前，请重新确定这张对应关系。
+对于必须能在重新插拔后依然正确的自动化，请在集线器下按 VID:PID 定位设备，
+然后驱动它实际所在的那个端口，而不是硬编码的 Net 名称。
+</Warning>
+
+这次验证的做法是：向用户端口上的某台设备写入一个易失设置，切断并恢复供电，
+然后读回上电默认值。那是一次真正的冷启动，而不是逻辑上的断开。
+上游层的行为来自重新上电的时序，而不是某个寄存器 ——
+那里的设备会在一毫秒内重新拉起 CONNECT，因此它从未真正掉电。
+请把这看作强有力的证据，而不是证明。
+
+<Warning>
+**已断电的端口仍然到处都能看到。** 端口断电期间，集线器不会置位变化位，
+因此 Linux 从不轮询它，也从不处理这次断开。只要该端口保持断电，
+该设备在 `lsusb`、它的 `/sys` 节点，以及它拥有的任何 `/dev/ttyUSB*` 中的条目
+都会一直存在。内核只有在电源*恢复*时才记录 `USB disconnect`。
+断电的端口会一直保持断电，没有任何东西会自动为它重新供电。
+
+因此**绝不要用"设备是否消失"来判断端口是否已断电**，这在两个方向上都是错的。
+请使用 `lager usb <net> state`（它读取集线器自己的电源位），
+或者 `lager usb <net> cycle`（它会在电源恢复后等待端口重新枚举）。
+</Warning>
+
+<Note>
+**SuperSpeed 扩展坞未经测试。** 通过 USB 3 连接的扩展坞会枚举为两个虚拟集线器，
+只有在两半都清除供电时 VBUS 才会掉电。Lager 实现了这种配对，
+但当时没有可用的 SuperSpeed 扩展坞来验证它。对于无法明确配对的拓扑，
+Lager 会拒绝操作，而不是只切换一半。已验证的配置是 USB 2.0 连接。
+</Note>
+
+**恢复被留在断电状态的端口。** `lager usb <net> recover` 会为该扩展坞的
+每个端口重新加电。如果它无法访问该集线器，那么解绑再重新绑定内核的 hub 驱动
+也可以为所有端口重新加电，并重新枚举其子设备。这必须在 **Box 宿主机上**运行，
+而不是在容器中运行，因为容器以只读方式挂载 `/sys` —— 请把路径替换为您集线器的路径：
+
+```bash
+echo 1-1.4.4:1.0 | sudo tee /sys/bus/usb/drivers/hub/unbind
+echo 1-1.4.4:1.0 | sudo tee /sys/bus/usb/drivers/hub/bind
+```
+
+**可以实现：**
+- 自动化的 USB 设备断电再上电
+- 远程对被测设备做电源复位
+- 由 CI 控制的外设管理
+
+## 串口 / UART 适配器
+
+| 厂商 | 型号 | 控制命令 |
+|---|---|---|
+| Prolific | PL2303 | `lager uart` |
+| Silicon Labs | CP210x | `lager uart` |
+| FTDI | FT232R | `lager uart` |
+| Espressif | ESP32 JTAG Serial | `lager uart` |
+
+**可以实现：**
+- 自动化的日志采集
+- 与引导加载程序交互
+- 基于串口的测试自动化
+
+## 无线
+
+| 协议 | 控制命令 | 能力 |
+|---|---|---|
+| 低功耗蓝牙（BLE） | `lager ble` | 扫描、连接、断开、服务发现 |
+
+**可以实现：**
+- 无线设备测试
+- 远程连通性验证
+- 自动化的配网测试
+
+## 网络路由器
+
+| 厂商 | 型号 | 控制命令 |
+|---|---|---|
+| MikroTik | hAP（RouterOS v7 或更高，REST API） | `lager router` |
+
+**可以实现：**
+- 接口和 Wi-Fi 故障注入
+- 网络韧性测试
+- 查看无线客户端和 DHCP 租约
+
+---
+
+# 6. 视觉与自动化
+
+## 摄像头
+
+| 厂商 | 型号 | 控制命令 |
+|---|---|---|
+| Logitech | BRIO HD | `lager webcam` |
+| Logitech | BRIO | `lager webcam` |
+| Logitech | BRIO 4K Stream Edition | `lager webcam` |
+| Logitech | 4K Pro（Logi 4K Pro） | `lager webcam` |
+| Logitech | C930e | `lager webcam` |
+| Logitech | C925e | `lager webcam` |
+| Logitech | C922 Pro Stream | `lager webcam` |
+| Logitech | C920 | `lager webcam` |
+| Logitech | C615 | `lager webcam` |
+| Logitech | C270 | `lager webcam` |
+| Logitech | StreamCam | `lager webcam` |
+
+**可以实现：**
+- 对被测设备做目视检查
+- 自动化的视觉验证
+
+## 机器人自动化
+
+| 厂商 | 型号 | 控制命令 |
+|---|---|---|
+| Rotrics | Dexarm | `lager arm` |
+
+**能力：**
+- 位置读写
+- 归位
+- 电机使能/断开
+- 加速度配置
+
+**可以实现：**
+- 自动化地与硬件发生物理交互
+- 自动按键
+- 机械测试流程
+
+---
+
+# 自定义仪器支持
+
+Lager 的模块化架构允许通过后端扩展快速集成新仪器。
+
+如果您使用的设备不在本文之列，请与我们联系，讨论集成支持事宜。
+
+---
+
+# 联系方式
+
+Lager Data
+
+[GitHub](https://github.com/lagerdata/lager)
+
+[GitHub Issues](https://github.com/lagerdata/lager/issues)

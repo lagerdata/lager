@@ -1,0 +1,186 @@
+---
+title: 编写 DUT 上下文
+description: 让 AI 智能体从系统层面理解您的被测设备及其原理图
+---
+
+AI 智能体可以读取网表，但仅凭网表并不能告诉它*这台 Box 是做什么的*，
+或者*每根线代表什么*。知道 `uart1` 是一个 UART，和知道它是被测设备的调试 CLI，
+完全是两回事。**DUT 上下文**就是您一次性写下的那段叙述，
+让智能体在*系统*层面而不是零散导线的层面来理解您的实验台。
+
+DUT 上下文保存在 `/etc/lager/bench.json` 中，并通过 MCP 资源
+`lager://dut/overview.md` 和 `lager://dut/context`，
+以及 `discover_dut()` 和 `cite_schematic()` 工具提供给智能体。
+
+## 需要编写的两样东西
+
+### 1. 每个 Net 的用途
+
+每个 Net 都带有一句话的 **purpose**，以及可选的 **notes**。
+请在 Net 管理器 TUI 中设置它们：
+
+```bash
+lager nets tui --box my-lager-box
+```
+
+选中一个 Net，选择 **Edit Details**，然后填写：
+
+- **Purpose** —— *"DUT debug CLI over UART; primary command/response channel."*
+- **Notes**（可选）—— 注意事项、跳线位置、示波器探测点。
+- **Tags**（可选）—— 供规划工具匹配的简短关键字，例如
+  `flash`、`boot-critical`。
+
+<Note>
+`purpose` 和 `notes` 是给智能体阅读的文字。`tags` 是规划工具用来打分的关键字，
+而与测试目标匹配的标签是最强的相关性信号。您也可以不用 TUI 来设置它们：
+
+```bash
+lager nets describe uart1 \
+  --purpose "DUT debug CLI over UART" \
+  --notes "PA9/PA10; 115200 8N1" \
+  --tag cli --tag boot-critical \
+  --box my-lager-box
+```
+</Note>
+
+<Warning>
+`/etc/lager/bench.json` 中可以为某个 Net 保存一条 `net_overrides` 条目。
+如果该条目设置了 `purpose`、`notes` 或 `tags`，智能体看到的是覆盖值，
+而不是保存在该 Net 上的值。TUI 和 `lager nets describe` 都不会对此给出警告。
+请先从覆盖条目中删除该字段，再到 Net 上设置它。
+</Warning>
+
+### 2. 整个 DUT 的上下文
+
+DUT 上下文描述整块板子：它的用途、MCU、主要外设、子系统，以及文档引用。
+请用 [`lager dut`](/source/zh/reference/cli/dut) 命令组来编写它。
+
+```bash
+# View current context
+lager dut show --box my-lager-box
+
+# Edit the whole DUT block in $EDITOR
+lager dut edit --box my-lager-box
+```
+
+写完整之后的 DUT 上下文在 `bench.json` 中是这样的：
+
+```json
+{
+  "dut_context": {
+    "name": "main",
+    "purpose": "Power-regression rig for FeatureA boards",
+    "mcu": "STM32H7",
+    "key_peripherals": ["QSPI flash", "PMIC"],
+    "summary": "STM32H7-based DUT used to validate the power tree under fault injection.",
+    "schematic_refs": [
+      {"title": "Main schematic", "kind": "schematic", "repo_path": "docs/sch.pdf"}
+    ],
+    "datasheet_refs": [
+      {"title": "STM32H7 RM", "kind": "datasheet", "url": "https://...", "pages": "150-200"}
+    ],
+    "subsystems": [
+      {
+        "name": "Flash subsystem",
+        "summary": "QSPI flash",
+        "nets": ["flash_cs", "flash_clk"],
+        "doc_refs": [
+          {"title": "Flash sheet", "kind": "schematic", "repo_path": "docs/sch.pdf", "pages": "3"}
+        ]
+      },
+      {"name": "Power tree", "summary": "PMIC + LDOs", "nets": ["psu1"]}
+    ]
+  }
+}
+```
+
+**子系统**把相关的 Net 归为一组（电源树、闪存子系统、调试等），
+让智能体按功能模块来思考。智能体可以只查询一个 Net，
+就知道它属于哪个子系统，以及哪张原理图图纸涵盖了它。
+
+## 附加原理图和数据手册
+
+Lager Box **不是**文档存储库。它记录的是指向您文档的*指针*；
+智能体用它自己的（具备视觉能力的）工具去获取和分析这些文档。
+这样既让 Box 保持轻量，也让智能体能用最合适的工具去阅读 PDF 或电路板图片。
+
+无需手工编辑 JSON 就能附加一个指针：
+
+```bash
+lager dut add-doc --kind schematic \
+  --title "Main board" --repo-path docs/sch.pdf --pages 3-5 --box my-lager-box
+
+lager dut add-doc --kind datasheet \
+  --title "STM32H7 reference manual" --url "https://..." --pages 150-200 --box my-lager-box
+```
+
+一条文档引用（`DocRef`）包含：
+
+| 字段 | 含义 |
+|-------|---------|
+| `title` | 可读的名称。 |
+| `kind` | `schematic`、`layout`、`datasheet`、`firmware`、`manual`、`errata` 或 `other`。 |
+| `url` | 外部 URL（智能体能够获取的任意 URL）。 |
+| `repo_path` | 相对于您测试项目的路径（执行 `lager python` 时同步到 Box）。 |
+| `pages` | 可选的页码/图纸提示，例如 `"3-5"` 或 `"POWER sheet"`。 |
+| `notes` | 可选的自由格式备注。 |
+
+`--url` 和 `--repo-path` 中至少要提供一个。
+
+### URL 还是 repo-path：该用哪个
+
+| 情形 | 推荐 | 原因 |
+|-----------|-------------|-----|
+| 自动化 / CI / 无人值守的智能体 | `--repo-path` | 文件随您的项目一起同步；不需要网络、不需要认证，完全确定。 |
+| 可公开获取的文档 | `--url` | 任何带有网页抓取工具的智能体都能取到它。 |
+| 私有文档（Google Doc、Confluence、SSO） | `--repo-path` **或**一个 Drive 连接器 | Box 从不做认证；需要登录的 URL 返回的是登录页面，而不是内容。 |
+
+<Tip>
+对于 Google 文档，请优先使用**导出** URL，而不是编辑器 URL —— `/edit` URL
+返回的是 JS 应用，而不是内容：
+
+```
+https://docs.google.com/document/d/<DOC_ID>/export?format=pdf
+```
+
+对于需要认证的文档，您有三种选择：
+
+- 把它共享为"知道链接的任何人"都可访问。
+- 为您的智能体配置一个持有凭据的 Google Drive 连接器或 MCP 服务器。
+- 把它导出到您的仓库中，然后使用 `--repo-path`。
+</Tip>
+
+## 智能体如何使用它
+
+写好之后，这份上下文会驱动整个智能体循环：
+
+1. 智能体读取 `lager://dut/overview.md`，得知：*"这是一台电源回归测试台，
+   STM32H7，包含闪存和电源树子系统，原理图在 `docs/sch.pdf`。"*
+2. `plan_firmware_test("flash driver", "exercise QSPI")` 返回的计划已经限定在
+   闪存子系统上，并附有指向原理图第 3 页的指引。
+3. `cite_schematic("flash_cs")` 只返回该 Net 的引用：
+
+   ```json
+   {
+     "net": "flash_cs",
+     "net_purpose": "SPI flash chip-select",
+     "subsystem": "Flash subsystem",
+     "subsystem_doc_refs": [
+       {"title": "Flash sheet", "repo_path": "docs/sch.pdf", "pages": "3"}
+     ]
+   }
+   ```
+
+   智能体用它自己的文件工具直接打开 `docs/sch.pdf` 的第 3 页 ——
+   不必扫描整个 PDF。
+
+## 让改动生效
+
+MCP 服务器监视 `/etc/lager/bench.json`、`/etc/lager/saved_nets.json` 和
+`/etc/lager/box_id`，并在其中任何一个在磁盘上发生变化时**自动重新加载**。
+因此，在 `lager dut edit`、`lager dut add-doc` 或 `lager nets describe` 之后，
+智能体在下一次 `discover_dut()`、`discover_bench()` 或
+`lager://dut/overview.md` 请求时就会看到新的上下文 —— 不需要任何手动步骤。
+
+您也可以立即强制重新加载，以确认某项改动已经生效。已连接的智能体可以
+以 `action="reload"` 调用 `box_manage` 工具，您也可以重启 Box 服务。

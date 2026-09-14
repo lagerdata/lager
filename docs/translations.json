@@ -57,6 +57,8 @@
     "reference/cli/usb.mdx": "347609562edbc2395b2bbcc98413a45c4c371bc46367f3ea17f9805a38563e66",
     "reference/cli/watt.mdx": "5a40d0119683f005c54db481c17f2d930f7b65d864724e45c91d035bcfc6c03d",
     "reference/cli/webcam.mdx": "93d3b3d6a131a78684e9b0aefce96c5bbf318e17f8a33922f36322aa075c46ac",
+    "reference/mcp/dut-context.mdx": "94cf9b58220f25f52d0d5eb455854dbf9c8f777ad2311bdd1ddd014e66357107",
+    "reference/mcp/overview.mdx": "86a2b185e191fb17317c2f8916dda4b5ef9eb864ea8f1ca647cf21e5d6b1dbab",
     "reference/python/adc.mdx": "3577c99611e2892ef35d22add1ba54c91ad3f804f2314ff5c93b07a72cc449fb",
     "reference/python/binaries.mdx": "a3aca79c8051b884e71d31d4e7f45529c9b5118417413c9707648ec594311ee5",
     "reference/python/ble.mdx": "1939b5da3cf921b4932f329870a4e17eda9691c9f9e2b77e4c3dbcd03b87e987",
@@ -77,6 +79,7 @@
     "reference/python/uart.mdx": "dd26403184abfb6c318e2958efc74944fbfb280f04900596076aa430d5d1af26",
     "reference/python/watt.mdx": "53751ad1c8058e03f6a6ff321cab48840ed8889025970366fa7c1ee2d0506d0e",
     "reference/python/webcam.mdx": "3c21b53ead91fd916968e383f115a0803773cc53e1ba04f5bb7826a1224d0451",
-    "reference/python/wifi.mdx": "5993c870bc0acdd863f59d1cead90a9735cd01518280ca68fa792d4fbe525211"
+    "reference/python/wifi.mdx": "5993c870bc0acdd863f59d1cead90a9735cd01518280ca68fa792d4fbe525211",
+    "supported-instruments/supported-instruments.mdx": "7d5eb71d92e077a73f5c1cc123f9ded17add96247527f2eeb623daf0ea9beb97"
   }
 }
