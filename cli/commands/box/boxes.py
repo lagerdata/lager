@@ -8,6 +8,12 @@
 """
 import click
 import json
+import queue
+import shutil
+import sys
+import threading
+import time
+from typing import NamedTuple
 from texttable import Texttable
 from ...address_utils import validate_ip_or_hostname, VALID_FORMATS_CHEATSHEET
 from ...box_storage import add_box, delete_box, delete_all_boxes, list_boxes, load_boxes, save_boxes, get_lager_file_path, format_lock_user
@@ -38,13 +44,312 @@ def _annotate_version(box_version, box_ref):
     return f'{box_version} ({ref_name})'
 
 
-def _list_boxes_live(port=9000, timeout=5):
-    """Query all boxes for their versions and display status table."""
+# Per-box HTTP budgets. A box that is powered off, mid-update (its container
+# is down), or behind a dropped route burns the whole of both before it says
+# anything, which is what used to make the whole listing feel hung.
+_LOCK_TIMEOUT = 3
+_DEFAULT_STATUS_TIMEOUT = 5
+# Grace beyond the point where every box should have answered, before we stop
+# waiting on the stragglers and print. This covers the part of a stall the
+# socket timeouts do not: `requests` has no timeout for name resolution, so a
+# box named by hostname behind a sick resolver outlasts both budgets above.
+_STRAGGLER_GRACE = 3.0
+# Collect-loop poll interval. Short enough that the countdown ticks evenly
+# and Ctrl+C lands promptly; long enough to cost nothing while idle.
+_POLL_INTERVAL = 0.2
+
+_PENDING = 'pending'
+_CANCELLED = 'cancelled'
+_ABANDONED = 'no response'
+
+# Statuses meaning the box identified itself. Produced here, not by the
+# gateway, so matching on the text is safe.
+_OK_STATUSES = frozenset({'current', 'needs update', 'newer'})
+# The denial labels a `lager login` actually fixes. Other Stout verdicts
+# ('no access', 'auth server down', 'token rejected') need an access grant or
+# an admin, so offering a sign-in for them would be wrong.
+_SIGNIN_STATUSES = frozenset({'sign-in required', 'session rejected'})
+
+
+class _Row(NamedTuple):
+    """One rendered line of the boxes table."""
+    name: str
+    ip: str
+    user: str
+    version: str          # display form; may carry a "(branch)" annotation
+    status: str
+    locked_by: str = ''
+    busy: str = ''
+    # Bare version as the box reported it, kept apart from `version` because
+    # only this form may reach the on-disk cache -- the display form can
+    # carry an annotation.
+    version_raw: str = ''
+    # Set by the gateway check rather than inferred from `status`, so a new
+    # label in `gateway_auth.denial_label` cannot silently get counted as an
+    # unreachable box.
+    auth_denied: bool = False
+
+
+def _status_color(status):
+    if status == 'current':
+        return 'green'
+    if status == 'needs update':
+        return 'yellow'
+    if status == 'newer':
+        return 'cyan'
+    if status == _PENDING:
+        return 'bright_black'
+    return 'red'
+
+
+def _resolve_auth_headers(boxes):
+    """Stout bearer headers per box IP, resolved before any fan-out.
+
+    Deliberately serial, on the calling thread. `auth_headers_for_box` can
+    spend the refresh cookie, and Stout rotates that cookie on every
+    successful refresh -- so N threads each finding the same near-expiry
+    token would refresh N times, and the losers would rotate the session out
+    from under the winner. The user would be logged out by `lager boxes`.
+
+    Resolving here means any refresh happens once, before a second thread
+    exists to race it. A worker does re-read the store between its two calls,
+    to pick up a mapping its own first request just discovered, but by then
+    the token is fresh and that read costs no round trip.
+    """
+    from ...gateway_auth import auth_headers_for_box
+    headers = {}
+    for _, ip, _ in boxes:
+        if ip != 'unknown' and ip not in headers:
+            headers[ip] = auth_headers_for_box(ip)
+    return headers
+
+
+def _probe_box(name, ip, user, port, status_timeout, cli_version, auth_headers):
+    """Probe one box's lock and version state. Runs on a worker thread.
+
+    Never raises. The collect loop needs a row for every box it started, and
+    an exception escaping here would strand that box on 'pending' until the
+    deadline instead of naming what went wrong.
+    """
     import requests
-    import sys
-    import threading
-    import time
-    from ...box_storage import update_box_version
+    from ...box_storage import check_gateway_status
+
+    if ip == 'unknown':
+        return _Row(name, ip, user, '-', 'no IP')
+
+    locked_by = ''
+    try:
+        lock_resp = requests.get(
+            f'http://{ip}:{port}/lock',
+            timeout=_LOCK_TIMEOUT,
+            headers={'Cache-Control': 'no-cache', **auth_headers},
+        )
+        # Non-raising gateway check: one gated box must not abort the whole
+        # table. On first contact this records the box->auth-server mapping
+        # and retries with the stored token, so the /status call below
+        # authenticates normally (no second round trip).
+        lock_resp, _ = check_gateway_status(lock_resp, ip)
+        if lock_resp.status_code == 200:
+            lock_data = lock_resp.json()
+            if lock_data.get('locked'):
+                locked_by = format_lock_user(lock_data.get('user', '?'))
+    except Exception:
+        # Lock state is decoration; a box that fails here may still report a
+        # version below, and that is the more useful answer.
+        pass
+
+    # The /lock call may have just learned that this box is gated -- the
+    # box->auth-server mapping only exists once a 401 has disclosed it. Asking
+    # again here is what lets /status authenticate up front instead of
+    # spending a discovery round trip of its own. Cheap and safe on a worker
+    # thread: the pre-warm already did any refresh this needs, so this is a
+    # store read, and `access_token_for` is single-flight if it is not.
+    from ...gateway_auth import auth_headers_for_box
+    status_headers = auth_headers_for_box(ip)
+
+    try:
+        # /status on :9000 reports the box version (from /etc/lager/version).
+        # It predates the newer capability fields, so even older box images
+        # answer it -- unlike a brand-new endpoint would.
+        response = requests.get(
+            f'http://{ip}:{port}/status',
+            timeout=status_timeout,
+            headers={'Cache-Control': 'no-cache', 'Pragma': 'no-cache', **status_headers},
+        )
+        response, gate_verdict = check_gateway_status(response, ip)
+        if gate_verdict:
+            return _Row(name, ip, user, '-', gate_verdict, locked_by, auth_denied=True)
+
+        if response.status_code == 404:
+            return _Row(name, ip, user, '-', 'old box', locked_by)
+        if response.status_code != 200:
+            return _Row(name, ip, user, '-', f'HTTP {response.status_code}', locked_by)
+
+        try:
+            data = response.json()
+        except ValueError:
+            return _Row(name, ip, user, '-', 'invalid JSON', locked_by)
+
+        box_version = data.get('version') or data.get('box_version')
+        if box_version == 'unknown':
+            box_version = None
+        if not box_version:
+            return _Row(name, ip, user, '-', 'bad response', locked_by)
+
+        # A box deployed from a branch reports the same version number as one
+        # on the release tag, so the version column alone cannot tell them
+        # apart (#266). Name the ref here; `lager hello` has the resolved SHA
+        # too, which is too wide for a fleet listing.
+        shown = _annotate_version(box_version, data.get('ref'))
+        order = compare_versions(box_version, cli_version)
+        status = 'current' if order == 0 else ('needs update' if order < 0 else 'newer')
+        return _Row(name, ip, user, shown, status, locked_by, version_raw=box_version)
+
+    except requests.exceptions.Timeout:
+        return _Row(name, ip, user, '-', 'timeout', locked_by)
+    except requests.exceptions.ConnectionError:
+        return _Row(name, ip, user, '-', 'unreachable', locked_by)
+    except Exception:
+        return _Row(name, ip, user, '-', 'error', locked_by)
+
+
+def _fit_row(prefix, cell, color, cols):
+    """A table line truncated to `cols` terminal columns, colour applied after.
+
+    Colour last, because escape sequences are zero-width on screen but do
+    count toward len(): slicing an already-styled string cuts at the wrong
+    place and can clip the reset, bleeding colour into the rest of the
+    terminal. Truncating at all matters because a wrapped line occupies two
+    terminal rows while the repaint below moves the cursor up by the number
+    of lines it wrote -- the mismatch is what shreds an in-place display.
+    """
+    if len(prefix) >= cols:
+        return prefix[:cols]
+    return prefix + click.style(cell[:cols - len(prefix)], fg=color)
+
+
+class _LiveTable:
+    """The in-progress listing, repainted in place while boxes answer.
+
+    Only the main thread touches this. Workers hand finished rows to a queue
+    and the collect loop performs every write to stdout, so there is no lock
+    here and no second thread that can interleave half a frame.
+    """
+
+    _CLEAR = '\033[2K\r'
+    _UP = '\033[1A'
+
+    def __init__(self, boxes, countdown_to):
+        self._boxes = boxes
+        self._countdown_to = countdown_to
+        self._rows = {}
+        self._painted = 0
+        self._last_frame = None
+
+        self._w_name = max([len('name')] + [len(b[0]) for b in boxes])
+        self._w_ip = max([len('ip')] + [len(b[1]) for b in boxes])
+        self._w_user = max([len('user')] + [len(b[2]) for b in boxes])
+        # Grow only, so a row arriving late never narrows the block.
+        self._w_version = len('version')
+        self._w_status = max(len('status'), len(_PENDING))
+
+        self._live = sys.stdout.isatty()
+        # Repainting walks the cursor back up over the block we drew. If the
+        # block is taller than the terminal, its top has already scrolled off
+        # and those moves land on the wrong rows. Print once at the end
+        # instead of corrupting the scrollback.
+        if self._live:
+            rows_needed = len(boxes) + 3   # header, rule, footer
+            if rows_needed > shutil.get_terminal_size(fallback=(80, 24)).lines:
+                self._live = False
+
+    def record(self, row):
+        self._rows[row.name] = row
+        self._w_version = max(self._w_version, len(row.version))
+        self._w_status = max(self._w_status, len(row.status))
+
+    def pending(self):
+        return [b for b in self._boxes if b[0] not in self._rows]
+
+    def rows(self):
+        """Every row in display order. Call only once nothing is pending."""
+        return [self._rows[name] for name, _, _ in self._boxes]
+
+    def _footer(self):
+        waiting = len(self.pending())
+        if not waiting:
+            return ''
+        noun = 'box' if waiting == 1 else 'boxes'
+        left = int(self._countdown_to - time.monotonic())
+        if left > 0:
+            return f'Waiting on {waiting} {noun} - {left}s left, Ctrl+C to stop waiting'
+        return f'Waiting on {waiting} {noun} - past timeout, Ctrl+C to stop waiting'
+
+    def paint(self):
+        if not self._live:
+            return
+        footer = self._footer()
+        # Skip frames that would render identically: without this the loop
+        # rewrites the same block five times a second.
+        frame = (len(self._rows), self._w_version, self._w_status, footer)
+        if frame == self._last_frame:
+            return
+        self._last_frame = frame
+
+        cols = max(20, shutil.get_terminal_size(fallback=(80, 24)).columns - 1)
+        header = (
+            f"{'name':<{self._w_name}}   {'ip':<{self._w_ip}}   "
+            f"{'user':<{self._w_user}}   {'version':<{self._w_version}}   "
+            f"{'status':<{self._w_status}}"
+        )
+        lines = [header[:cols], ('=' * len(header))[:cols]]
+        for name, ip, user in self._boxes:
+            row = self._rows.get(name)
+            version = row.version if row else '-'
+            status = row.status if row else _PENDING
+            prefix = (
+                f"{name:<{self._w_name}}   {ip:<{self._w_ip}}   "
+                f"{user:<{self._w_user}}   {version:<{self._w_version}}   "
+            )
+            lines.append(_fit_row(prefix, status.ljust(self._w_status),
+                                  _status_color(status), cols))
+        if footer:
+            lines.append(click.style(footer[:cols], fg='bright_black'))
+
+        # One write for the whole frame: rewinding and redrawing as separate
+        # writes lets a slow terminal show the cleared block.
+        rewind = (self._UP + self._CLEAR) * self._painted
+        sys.stdout.write(rewind + ''.join(f'{line}\n' for line in lines))
+        sys.stdout.flush()
+        self._painted = len(lines)
+
+    def erase(self):
+        """Take the live block back down, so the final table replaces it."""
+        if not self._live or not self._painted:
+            return
+        sys.stdout.write((self._UP + self._CLEAR) * self._painted)
+        sys.stdout.flush()
+        self._painted = 0
+
+
+def _list_boxes_live(port=9000, timeout=_DEFAULT_STATUS_TIMEOUT):
+    """Query all boxes for their versions and display status table.
+
+    Boxes are probed concurrently and the table is drawn immediately, so an
+    unreachable box costs its own timeout rather than delaying every row
+    behind it. On a TTY the rows update in place as answers arrive, under a
+    countdown; anywhere else (a pipe, CI) the same final table is printed
+    once, unchanged.
+
+    Threads are plain daemon threads rather than a `ThreadPoolExecutor` on
+    purpose. A pool's context manager exits via `shutdown(wait=True)` and
+    `concurrent.futures` additionally joins its workers at interpreter exit,
+    so Ctrl+C would not take effect until every in-flight socket had already
+    timed out -- measured at the full 8s on a four-box stall, which is
+    exactly the wait this command exists to let you escape. Daemon threads
+    are abandonable, which is what makes both Ctrl+C and the straggler
+    deadline below actually prompt.
+    """
     from ... import __version__ as cli_version
 
     saved_boxes = list_boxes()
@@ -53,186 +358,122 @@ def _list_boxes_live(port=9000, timeout=5):
         click.echo("No boxes found. Add boxes with: lager boxes add --name [NAME] --ip [IP_ADDRESS] --user [USERNAME]")
         return
 
-    box_word = 'box' if len(saved_boxes) == 1 else 'boxes'
-    spinner_chars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
-    spinner_stop = threading.Event()
-
-    def spin():
-        i = 0
-        while not spinner_stop.is_set():
-            sys.stdout.write(f'\r{spinner_chars[i % len(spinner_chars)]} Loading {len(saved_boxes)} {box_word}...')
-            sys.stdout.flush()
-            i += 1
-            time.sleep(0.1)
-
-    spinner_thread = threading.Thread(target=spin, daemon=True)
-    spinner_thread.start()
-
-    results = []
-    failed_count = 0
-    auth_failed_count = 0
-    needs_update_count = 0
-    newer_count = 0
-
+    boxes = []
     for name, box_info in sorted(saved_boxes.items(), key=lambda x: natural_sort_key(x[0])):
         if isinstance(box_info, dict):
-            ip = box_info.get('ip', 'unknown')
-            user = box_info.get('user') or 'lagerdata'
+            boxes.append((name, box_info.get('ip', 'unknown'),
+                          box_info.get('user') or 'lagerdata'))
         else:
-            ip = box_info
-            user = 'lagerdata'
+            boxes.append((name, box_info, 'lagerdata'))
 
-        if ip == 'unknown':
-            results.append((name, ip, user, '-', 'no IP', '', ''))
-            failed_count += 1
-            continue
+    auth_headers = _resolve_auth_headers(boxes)
 
-        locked_by = ''
-        busy_info = ''
-        try:
-            from ...gateway_auth import auth_headers_for_box
-            from ...box_storage import check_gateway_status
-            lock_resp = requests.get(f'http://{ip}:{port}/lock', timeout=3,
-                                     headers={'Cache-Control': 'no-cache', **auth_headers_for_box(ip)})
-            # Non-raising gateway check: one gated box must not abort the
-            # whole table. On first contact this records the box→auth-server
-            # mapping and retries with the stored token, so the /status call
-            # below authenticates normally (no second round trip).
-            lock_resp, _ = check_gateway_status(lock_resp, ip)
-            if lock_resp.status_code == 200:
-                lock_data = lock_resp.json()
-                if lock_data.get('locked'):
-                    locked_by = format_lock_user(lock_data.get('user', '?'))
-        except Exception:
-            pass
+    answers = queue.Queue()
 
-        try:
-            # /status on :9000 reports the box version (from /etc/lager/version).
-            # It predates the newer capability fields, so even older box images
-            # answer it — unlike a brand-new endpoint would.
-            from ...gateway_auth import auth_headers_for_box
-            from ...box_storage import check_gateway_status
-            url = f'http://{ip}:{port}/status'
-            headers = {'Cache-Control': 'no-cache', 'Pragma': 'no-cache',
-                       **auth_headers_for_box(ip)}
-            response = requests.get(url, timeout=timeout, headers=headers)
-            response, gate_verdict = check_gateway_status(response, ip)
+    def probe(name, ip, user):
+        answers.put(_probe_box(name, ip, user, port, timeout, cli_version,
+                               auth_headers.get(ip, {})))
 
-            if gate_verdict:
-                results.append((name, ip, user, '-', gate_verdict, locked_by, busy_info))
-                auth_failed_count += 1
+    # One thread per box, uncapped. A cap would mean a second wave of boxes
+    # that only starts once the first wave's timeouts expire, which both
+    # doubles the worst case and makes the countdown below a lie. These
+    # threads spend their whole life blocked on one socket, and a `.lager`
+    # holds a hand-managed fleet -- tens, not thousands.
+    for name, ip, user in boxes:
+        threading.Thread(target=probe, args=(name, ip, user), daemon=True).start()
 
-            elif response.status_code == 200:
-                try:
-                    data = response.json()
-                    box_version = data.get('version') or data.get('box_version')
-                    if box_version == 'unknown':
-                        box_version = None
-                    box_ref = data.get('ref')
+    # The countdown targets when a healthy box must have answered; we keep
+    # waiting a little past it for stalls the socket timeouts do not bound.
+    countdown_to = time.monotonic() + _LOCK_TIMEOUT + timeout
+    give_up_at = countdown_to + _STRAGGLER_GRACE
 
-                    if box_version:
-                        # Cache and compare the bare version -- the annotated
-                        # form below is for display only.
-                        update_box_version(name, box_version)
+    table = _LiveTable(boxes, countdown_to)
+    table.paint()
 
-                        version_cmp = compare_versions(box_version, cli_version)
+    interrupted = False
+    try:
+        while table.pending() and time.monotonic() < give_up_at:
+            try:
+                # Returns at once when an answer is ready, so a burst of
+                # replies renders without waiting out the poll interval.
+                table.record(answers.get(timeout=_POLL_INTERVAL))
+            except queue.Empty:
+                pass
+            table.paint()
+    except KeyboardInterrupt:
+        interrupted = True
+    finally:
+        table.erase()
 
-                        # A box deployed from a branch reports the same version
-                        # number as one on the release tag, so the version
-                        # column alone cannot tell them apart (#266). Name the
-                        # ref here; `lager hello` has the resolved SHA too,
-                        # which is too wide for a fleet listing.
-                        shown_version = _annotate_version(box_version, box_ref)
+    stranded = _CANCELLED if interrupted else _ABANDONED
+    for name, ip, user in table.pending():
+        table.record(_Row(name, ip, user, '-', stranded))
 
-                        if version_cmp == 0:
-                            results.append((name, ip, user, shown_version, 'current', locked_by, busy_info))
-                        elif version_cmp < 0:
-                            results.append((name, ip, user, shown_version, 'needs update', locked_by, busy_info))
-                            needs_update_count += 1
-                        else:
-                            results.append((name, ip, user, shown_version, 'newer', locked_by, busy_info))
-                            newer_count += 1
-                    else:
-                        results.append((name, ip, user, '-', 'bad response', locked_by, busy_info))
-                        failed_count += 1
-                except ValueError:
-                    results.append((name, ip, user, '-', 'invalid JSON', locked_by, busy_info))
-                    failed_count += 1
+    results = table.rows()
 
-            elif response.status_code == 404:
-                results.append((name, ip, user, '-', 'old box', locked_by, busy_info))
-                failed_count += 1
-            else:
-                results.append((name, ip, user, '-', f'HTTP {response.status_code}', locked_by, busy_info))
-                failed_count += 1
+    # Cache reported versions from here rather than from the workers:
+    # `update_box_version` read-modify-writes ~/.lager, so concurrent calls
+    # would drop each other's edits.
+    from ...box_storage import update_box_version
+    for row in results:
+        if row.version_raw:
+            update_box_version(row.name, row.version_raw)
 
-        except requests.exceptions.Timeout:
-            results.append((name, ip, user, '-', 'timeout', locked_by, busy_info))
-            failed_count += 1
-        except requests.exceptions.ConnectionError:
-            results.append((name, ip, user, '-', 'unreachable', locked_by, busy_info))
-            failed_count += 1
-        except Exception:
-            results.append((name, ip, user, '-', 'error', locked_by, busy_info))
-            failed_count += 1
+    if interrupted:
+        click.secho('Stopped waiting. Boxes that did not answer are marked '
+                    f'"{_CANCELLED}".', fg='yellow', err=True)
 
-    spinner_stop.set()
-    spinner_thread.join(timeout=1)
-    sys.stdout.write('\r' + ' ' * 40 + '\r')
-    sys.stdout.flush()
+    needs_update_count = sum(1 for r in results if r.status == 'needs update')
+    newer_count = sum(1 for r in results if r.status == 'newer')
+    auth_failed_count = sum(1 for r in results if r.auth_denied)
+    failed_count = sum(1 for r in results
+                       if r.status not in _OK_STATUSES and not r.auth_denied)
 
-    any_locked = any(r[5] for r in results)
-    any_busy = any(r[6] for r in results)
+    any_locked = any(r.locked_by for r in results)
+    any_busy = any(r.busy for r in results)
 
-    name_width = max(len('name'), max(len(r[0]) for r in results))
-    ip_width = max(len('ip'), max(len(r[1]) for r in results))
-    user_width = max(len('user'), max(len(r[2]) for r in results))
-    version_width = max(len('version'), max(len(r[3]) for r in results))
-    status_width = max(len('status'), max(len(r[4]) for r in results))
+    name_width = max(len('name'), max(len(r.name) for r in results))
+    ip_width = max(len('ip'), max(len(r.ip) for r in results))
+    user_width = max(len('user'), max(len(r.user) for r in results))
+    version_width = max(len('version'), max(len(r.version) for r in results))
+    status_width = max(len('status'), max(len(r.status) for r in results))
 
     header = f"{'name':<{name_width}}   {'ip':<{ip_width}}   {'user':<{user_width}}   {'version':<{version_width}}   {'status':<{status_width}}"
     total_width = name_width + ip_width + user_width + version_width + status_width + 12
 
     if any_locked:
-        locked_width = max(len('locked by'), max(len(r[5]) for r in results))
+        locked_width = max(len('locked by'), max(len(r.locked_by) for r in results))
         header += f"   {'locked by':<{locked_width}}"
         total_width += locked_width + 3
 
     if any_busy:
-        busy_width = max(len('busy'), max(len(r[6]) for r in results))
+        busy_width = max(len('busy'), max(len(r.busy) for r in results))
         header += f"   {'busy':<{busy_width}}"
         total_width += busy_width + 3
 
     click.echo(header)
     click.echo("=" * total_width)
 
-    for name, ip, user, version, status, locked_by, busy_info in results:
-        row = f"{name:<{name_width}}   {ip:<{ip_width}}   {user:<{user_width}}   {version:<{version_width}}   "
-        click.echo(row, nl=False)
-
-        if status == 'current':
-            click.secho(status, fg='green', nl=False)
-        elif status == 'needs update':
-            click.secho(status, fg='yellow', nl=False)
-        elif status == 'newer':
-            click.secho(status, fg='cyan', nl=False)
-        else:
-            click.secho(status, fg='red', nl=False)
+    for row in results:
+        cells = (f"{row.name:<{name_width}}   {row.ip:<{ip_width}}   "
+                 f"{row.user:<{user_width}}   {row.version:<{version_width}}   ")
+        click.echo(cells, nl=False)
+        click.secho(row.status, fg=_status_color(row.status), nl=False)
 
         # Pad status to fixed width
-        click.echo(' ' * (status_width - len(status)), nl=False)
+        click.echo(' ' * (status_width - len(row.status)), nl=False)
 
         if any_locked:
-            if locked_by:
+            if row.locked_by:
                 click.echo(f"   ", nl=False)
-                click.secho(f"{locked_by:<{locked_width}}", fg='magenta', nl=False)
+                click.secho(f"{row.locked_by:<{locked_width}}", fg='magenta', nl=False)
             else:
                 click.echo(f"   {'':<{locked_width}}", nl=False)
 
         if any_busy:
-            if busy_info:
+            if row.busy:
                 click.echo(f"   ", nl=False)
-                click.secho(busy_info, fg='yellow')
+                click.secho(row.busy, fg='yellow')
             else:
                 click.echo(f"   {'':<{busy_width}}")
         elif any_locked:
@@ -258,13 +499,13 @@ def _list_boxes_live(port=9000, timeout=5):
         # The denial recorded each box's auth server, so we can say exactly
         # where to sign in. Usually one server covers the whole fleet.
         signin_urls = sorted({
-            url for r in results if r[4] in ('sign-in required', 'session rejected')
-            for url in [auth_server_for_box(r[1])] if url
+            url for r in results if r.status in _SIGNIN_STATUSES
+            for url in [auth_server_for_box(r.ip)] if url
         })
         for url in signin_urls:
             click.secho(f'  Sign in with: lager login {url}', fg='red')
 
-    root_locked = [r[0] for r in results if r[5] == 'root']
+    root_locked = [r.name for r in results if r.locked_by == 'root']
     if root_locked:
         box_word = 'box is' if len(root_locked) == 1 else 'boxes are'
         click.secho(f'\nWarning: {len(root_locked)} {box_word} locked as root (likely locked from inside a Docker container).', fg='yellow')

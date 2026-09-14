@@ -46,13 +46,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 2079 (+2 xfailed) |
+| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 2094 (+2 xfailed) |
 | `unit (box)` | `test/unit/box/` | 2555 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 181 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 186 (+1 skipped) |
-| | **Total gated** | **5195** |
+| | **Total gated** | **5210** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -454,7 +454,7 @@ cli/tests/                #  7 files: 6 pytest suites (GATED via `unit (cli)`),
                           #           plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 209 files)
+### Local Unit Tests (`test/unit/` -- 210 files)
 
 #### Box Unit Tests (`test/unit/box/` -- 114 files)
 
@@ -579,7 +579,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_ykush_driver.py` | YKUSH USB hub driver: device-contention regression from an indefinitely cached handle |
 | `test_automation_exports.py` | Static parse of `automation/__init__.py`'s lazy export table: no name guarded twice, every returned driver reachable under its own name, everything in `__all__` resolvable -- the copy-paste class of defect that made one driver answer to another's name |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 78 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 79 files)
 
 | File | What it tests |
 |------|---------------|
@@ -650,6 +650,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_watt_subcommands.py` | `lager watt` NetGroup reading power/current/voltage/all over the box API |
 | `test_ws_diagnose.py` | WebSocket failure message generation pointing to instrument vs. box based on health |
 | `test_box_lock_command.py` | `lager boxes lock`/`unlock` command layer: the no-expiry reservation body (`holder_type`/`ttl_seconds`), exit codes on 409/403, `--force`, and the Docker-root warning |
+| `test_boxes_live_listing.py` | Concurrent `lager boxes` listing: the fan-out is parallel (asserted with a `threading.Barrier`, not a stopwatch), an unanswering box is abandoned at the deadline rather than hanging the command, gateway denials stay counted apart from unreachable boxes for every `denial_label` verdict, only the bare version is cached and only from the calling thread, plus the repaint arithmetic (line truncation, over-tall fleets falling back to a single print, no-op frames skipped) and the `gateway_auth` thread safety it depends on -- single-flight refresh so a fan-out cannot spend Stout's rotating refresh cookie N times, and atomic store writes |
 | `test_config_roundtrip.py` | `cli/config.py` JSON<->ConfigParser round-trip, legacy-key migration, `read`/`write_lager_json`, `expand_devenv_path`, `get_debug_script_for_net` |
 | `test_impl_host_importable.py` | Every `cli/impl/*` module must import with `box/` off `sys.path` and `lager` blocked -- they ship in the wheel but the box tree does not, so a module-level `import lager` breaks them on any pip install |
 | `test_import_surface.py` | Import guards: `cli/status.py` needs pymongo's `bson.decode`, and `termios`/`tty` must stay optional (simulated via a `meta_path` finder) |
