@@ -16,20 +16,23 @@ Release notes are never translated. A note says what shipped on a day, and the
 archive's whole value is that it still says it. `check_translations.py` excludes
 the directory, so it never appears in `--progress`.
 
-| Tab | Pages | Words | Owner | State |
+| Tab | Pages | English words | Owner | State |
 |---|---|---|---|---|
-| Overview (Getting Started) | 10 | 22,411 | Chris | done |
-| CLI Reference | 47 | 64,910 | Chris | done |
-| AI Agents (MCP) | 2 | 2,555 | Chris | done |
-| Supported Instruments | 1 | 2,484 | Chris | done |
-| Python API | 27 | 31,109 | Chris | done |
-| Rust API | 31 | 19,753 | Chris | done |
+| Overview (Getting Started) | 10 | 22,411 | -- | done |
+| CLI Reference | 47 | 65,031 | -- | done |
+| AI Agents (MCP) | 2 | 2,555 | -- | done |
+| Supported Instruments | 1 | 2,514 | -- | done |
+| Python API | 27 | 31,157 | -- | done |
+| Rust API | 31 | 19,753 | -- | done |
 
-Every page is translated. The table stays because the next English page added
-needs an owner before anyone starts on it, and because a corpus with no owner
-column is how two people translate the same tab.
+Every page is translated, so nothing is owned right now and the column is
+empty. It stays because the next English page added needs an owner before
+anyone starts on it: a corpus with no owner column is how two people translate
+the same tab. The column is for coordination while work is in flight, not for
+recording who did what afterwards -- put whatever identifier your team uses in
+it when you pick a tab up, and clear it when the tab is done.
 
-Put a name in the owner column before anyone starts, and change it here when it
+Claim a tab in the owner column before you start, and change it here when it
 changes. Two people who each assume the other has a tab produce the same corpus
 as two people who both translate it, and neither is visible until a reviewer
 reads the diff. This table is the only place that assumption is written down.
