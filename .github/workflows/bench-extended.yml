@@ -100,6 +100,11 @@ jobs:
     timeout-minutes: 75
     env:
       LAGER_BOX: ${{ inputs.box_name || vars.LAGER_BOX || 'MASTER' }}
+      # The box is fronted by an authenticating gateway. A runner is not a
+      # person, so CI presents a token its auth server minted for the bench
+      # rather than a human's password. It rides on every request, is never
+      # refreshed, and is never written to this runner's disk.
+      LAGER_GATEWAY_TOKEN: ${{ secrets.LAGER_GATEWAY_TOKEN }}
     steps:
       - name: Record what triggered this run
         # A run cancelled while queued shows only as `cancelled` in the run
@@ -135,14 +140,6 @@ jobs:
 
       - name: Install lager CLI (editable, from this repo)
         run: pip install -e cli/
-        shell: bash
-
-      - name: Sign in to the box access gateway
-        env:
-          LAGER_AUTH_URL: ${{ vars.LAGER_AUTH_URL }}
-          LAGER_CI_EMAIL: ${{ secrets.LAGER_CI_EMAIL }}
-          LAGER_CI_PASSWORD: ${{ secrets.LAGER_CI_PASSWORD }}
-        run: lager login "$LAGER_AUTH_URL" --email "$LAGER_CI_EMAIL" --password "$LAGER_CI_PASSWORD"
         shell: bash
 
       - name: Register lager box
@@ -199,8 +196,9 @@ jobs:
         shell: bash
 
       - name: Verify box connectivity
-        # First authenticated contact after a fresh login can fail exactly
-        # once while the gateway records the box<->auth-server link.
+        # A pinned token rides on the first request, so the old "first
+        # contact after a fresh login" race is gone. The retry stays because
+        # the gateway's authorization call can be briefly unreachable.
         run: lager hello --box "$LAGER_BOX" || lager hello --box "$LAGER_BOX"
         shell: bash
 
