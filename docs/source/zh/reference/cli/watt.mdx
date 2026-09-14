@@ -3,8 +3,7 @@ title: 功率计
 description: 从功率计读取功率、电流和电压
 ---
 
-通过 Lager CLI 从功率计 Net 读取功率、电流和电压。
-支持 Yocto-Watt、Joulescope JS220 和 Nordic PPK2 硬件。
+通过 Lager CLI 从功率计 Net 读取功率、电流和电压。支持 Yocto-Watt、Joulescope JS220 和 Nordic PPK2 硬件。
 
 ## 语法
 
@@ -26,8 +25,7 @@ lager watt [NET_NAME] [COMMAND] [OPTIONS]
 
 ## 选项
 
-以下选项在每个读取子命令（`power`/`current`/`voltage`/`all`）上都可用。
-对于默认的功率读取，`--box` 也可以直接写在 `lager watt NET_NAME` 之后。
+以下选项在每个读取子命令（`power`/`current`/`voltage`/`all`）上都可用。对于默认的功率读取，`--box` 也可以直接写在 `lager watt NET_NAME` 之后。
 
 | 选项 | 说明 |
 |--------|-------------|
@@ -80,19 +78,14 @@ lager watt POWER_METER all --json --box my-lager-box
 {"netname": "POWER_METER", "current": 0.012, "voltage": 3.3, "power": 0.0396, "duration_s": 0.1}
 ```
 
-默认读取超时为 30 秒（`--duration` 窗口较长时会相应放大）。
-如果在该时间内没有读数到达，命令会以错误退出。错误信息会指出两种可能的原因：
-设备断开，或 USB 故障。
+默认读取超时为 30 秒（`--duration` 窗口较长时会相应放大）。如果在该时间内没有读数到达，命令会以错误退出。错误信息会指出两种可能的原因：设备断开，或 USB 故障。
 
 ### 提高分辨率
 
 有两个手段可以改善功率/电流读数：
 
-- **显示** —— 输出会自动按 SI 缩放，因此亚毫瓦和亚毫安级的读数会以 µ/n 单位显示，
-  而不是被四舍五入为零。对于连纳单位都无法表示的极小值，读数会以科学计数法显示
-  （例如 `3.000e-13 W`）。非零读数永远不会因为舍入而丢失。
-- **平均窗口** —— 传入 `--duration` 可以在更长的采集时间上取平均。
-  窗口越长，均值的噪声越小，得到的数值更稳定、有效分辨率更高：
+- **显示** —— 输出会自动按 SI 缩放，因此亚毫瓦和亚毫安级的读数会以 µ/n 单位显示，而不是被四舍五入为零。对于连纳单位都无法表示的极小值，读数会以科学计数法显示（例如 `3.000e-13 W`）。非零读数永远不会因为舍入而丢失。
+- **平均窗口** —— 传入 `--duration` 可以在更长的采集时间上取平均。窗口越长，均值的噪声越小，得到的数值更稳定、有效分辨率更高：
 
 ```bash
 lager watt POWER_METER current --duration 1.0 --box my-lager-box
@@ -107,10 +100,7 @@ lager watt POWER_METER current --duration 60 --box my-lager-box
 ```
 
 在 Joulescope JS220 上，超过约 10 秒的窗口会使用仪器的**片上电荷累加器**
-（平均电流 = Δ电荷 ÷ Δt）。JS220 不会为这样的窗口缓存原始采样。
-这种方式是**无间隙**的：它捕捉每一次瞬态，而不只是被采样到的那一部分。
-它还使用恒定内存，因此可以扩展到任意长度的窗口 —— 一分钟、十分钟，甚至更长。
-较短的窗口仍然使用直接采样。
+（平均电流 = Δ电荷 ÷ Δt）。JS220 不会为这样的窗口缓存原始采样。这种方式是**无间隙**的：它捕捉每一次瞬态，而不只是被采样到的那一部分。它还使用恒定内存，因此可以扩展到任意长度的窗口 —— 一分钟、十分钟，甚至更长。较短的窗口仍然使用直接采样。
 
 ## 受支持的硬件
 
@@ -131,8 +121,7 @@ lager watt POWER_METER current --duration 60 --box my-lager-box
 | 可配置平均（`--duration`） | 不支持（瞬时值） | 支持 | 支持 |
 | 设备选择 | 按通道 | 按序列号 | 按序列号 |
 
-`current`、`voltage` 和 `all` 子命令需要 Joulescope JS220 或 Nordic PPK2。
-在 Yocto-Watt（只支持功率）上，它们会以一条明确的 "not supported" 信息退出 ——
+`current`、`voltage` 和 `all` 子命令需要 Joulescope JS220 或 Nordic PPK2。在 Yocto-Watt（只支持功率）上，它们会以一条明确的 "not supported" 信息退出 ——
 请改用 `lager watt NET_NAME` 读取功率。同样的读数也可以通过
 [Python API](/source/zh/reference/python/watt) 获取。
 
@@ -229,14 +218,10 @@ done
 
 ## 说明
 
-- 读数按 SI 缩放（W/mW/µW/nW，A/mA/µA/nA，V/mV），保留 3 位有效小数。
-  连纳单位都无法表示的极小值会退回科学计数法，而不是显示 `0.000`。
+- 读数按 SI 缩放（W/mW/µW/nW，A/mA/µA/nA，V/mV），保留 3 位有效小数。连纳单位都无法表示的极小值会退回科学计数法，而不是显示 `0.000`。
   `--json` 输出 SI 基本单位（W、A、V）。
-- `--duration` 设置平均窗口；Joulescope JS220 和 Nordic PPK2 会遵循它，
-  而 Yocto-Watt 返回瞬时值并忽略它。在 JS220 上，超过约 10 秒的窗口
-  由片上电荷累加器无间隙测量（恒定内存，任意长度）。
-- Nordic PPK2 工作在源模式（提供 0.8–5V 的可配置电压并测量电流）；
-  它的 `voltage` 读数就是所配置的源电压。
+- `--duration` 设置平均窗口；Joulescope JS220 和 Nordic PPK2 会遵循它，而 Yocto-Watt 返回瞬时值并忽略它。在 JS220 上，超过约 10 秒的窗口由片上电荷累加器无间隙测量（恒定内存，任意长度）。
+- Nordic PPK2 工作在源模式（提供 0.8–5V 的可配置电压并测量电流）；它的 `voltage` 读数就是所配置的源电压。
 - `current`、`voltage` 和 `all` 子命令必须写在 Net 名称之后：`lager watt NET_NAME current`。
 - Net 名称就是您搭建测试台时分配的名称。
 - 用 `lager nets` 查看可用的功率计 Net，用 `lager instruments --box <box>` 确认设备已被检测到。

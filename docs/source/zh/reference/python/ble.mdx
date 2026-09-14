@@ -498,3 +498,5 @@ BLE 模块底层使用 [Bleak](https://bleak.readthedocs.io/) 作为 BLE 库，�
 - 通知回调函数接收 `(handle, data)` 参数
 - 请把 `max_messages` 和 `timeout` 配合使用，以控制通知的收集
 - MAC 地址的常见格式为 `AA:BB:CC:DD:EE:FF`
+- 有些 BLE 操作必须先完成配对才能工作
+- 扫描得到的设备对象上可以读取信号强度（RSSI）

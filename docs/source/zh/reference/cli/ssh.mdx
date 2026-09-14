@@ -37,9 +37,7 @@ lager ssh
 
 ### 在 Box 上执行命令
 
-带 `COMMAND` 时，`lager ssh` 的行为与 `ssh user@host <command>` 相同。
-它在 Box 上运行该命令，把输出实时回传，并以该命令的退出码退出。
-此时没有交互式 shell。这在编写脚本和做一次性检查时很方便。
+带 `COMMAND` 时，`lager ssh` 的行为与 `ssh user@host <command>` 相同。它在 Box 上运行该命令，把输出实时回传，并以该命令的退出码退出。此时没有交互式 shell。这在编写脚本和做一次性检查时很方便。
 
 ```bash
 # Run a single command and return
@@ -52,11 +50,9 @@ lager ssh --box lab-lager-box -- ls -la /etc/lager
 lager ssh --box lab-lager-box -- docker ps
 ```
 
-带 `COMMAND` 的 `lager ssh` 不分配终端。因此，只有当 Box 用户对该命令有免密码授权时，
-远程的 `sudo` 命令才能工作。否则请在交互式会话中运行它。
+带 `COMMAND` 的 `lager ssh` 不分配终端。因此，只有当 Box 用户对该命令有免密码授权时，远程的 `sudo` 命令才能工作。否则请在交互式会话中运行它。
 
-<Note>只要远程命令本身带有以短横线开头的标志，就请用 `--` 把 lager 的选项
-与远程命令分开，以免它们被当作 `lager` 的选项解析。远程命令的退出码会作为
+<Note>只要远程命令本身带有以短横线开头的标志，就请用 `--` 把 lager 的选项与远程命令分开，以免它们被当作 `lager` 的选项解析。远程命令的退出码会作为
 `lager ssh` 的退出码传出，因此它在脚本中可以正常组合使用。</Note>
 
 ---
@@ -72,8 +68,7 @@ lager ssh --box lab-lager-box -- docker ps
 如果 `~/.ssh/lager_box` 存在，`lager ssh` 会用 `-i` 传入它。`-i` 标志会替换
 SSH 的默认身份列表，而不是追加到其中。因此 `lager ssh` 还会在 `lager_box`
 之后逐一指明您存在的默认密钥，这些密钥是 `id_rsa`、`id_ecdsa`、`id_ecdsa_sk`、
-`id_ed25519` 和 `id_ed25519_sk`。来自 `~/.ssh/config` 的身份和 agent 中的密钥
-仍然可用。如果没有 `lager_box` 密钥，`lager ssh` 完全不传 `-i`。
+`id_ed25519` 和 `id_ed25519_sk`。来自 `~/.ssh/config` 的身份和 agent 中的密钥仍然可用。如果没有 `lager_box` 密钥，`lager ssh` 完全不传 `-i`。
 
 ---
 
@@ -83,8 +78,7 @@ SSH 用户名按以下顺序解析：
 1. 随 Box 配置保存的用户名（`lager boxes add --user`）
 2. 默认用户名：`lagerdata`
 
-`lager ssh` 按 Box 名称查找已保存的用户名。如果您给 `--box` 传的是 IP 地址，
-它会使用 `lagerdata`。请传入 Box 名称，以使用它保存的用户名。
+`lager ssh` 按 Box 名称查找已保存的用户名。如果您给 `--box` 传的是 IP 地址，它会使用 `lagerdata`。请传入 Box 名称，以使用它保存的用户名。
 
 若要为某台 Lager Box 使用不同的用户名：
 ```bash
@@ -99,15 +93,13 @@ lager boxes edit --name pi-lager-box --user pi
 
 ## SSH 密钥配置
 
-若要实现免密码访问，请把 Lager 的 SSH 密钥安装到 Box 上。
-该命令会要求输入一次 Box 密码：
+若要实现免密码访问，请把 Lager 的 SSH 密钥安装到 Box 上。该命令会要求输入一次 Box 密码：
 
 ```bash
 lager ssh-setup --box my-lager-box
 ```
 
-您自己用 `ssh-copy-id` 安装的密钥同样有效，因为 `lager ssh` 也会提供您的默认密钥。
-请参阅 [SSH Setup](/source/zh/reference/cli/ssh-setup)。
+您自己用 `ssh-copy-id` 安装的密钥同样有效，因为 `lager ssh` 也会提供您的默认密钥。请参阅 [SSH Setup](/source/zh/reference/cli/ssh-setup)。
 
 ---
 
@@ -126,8 +118,7 @@ lager ssh --box my-lager-box -- docker ps
 
 ## 通过 SSH 完成的常见任务
 
-以下每一项都可以用 `lager ssh --box <box> -- <command>` 作为单行命令执行，
-也可以在 `lager ssh --box <box>` 之后交互式执行。
+以下每一项都可以用 `lager ssh --box <box> -- <command>` 作为单行命令执行，也可以在 `lager ssh --box <box>` 之后交互式执行。
 
 ### 查看容器状态
 ```bash

@@ -6,9 +6,7 @@ description: 数字信号采集与协议解码
 用混合信号示波器的逻辑分析仪功能采集并分析数字信号。
 
 <Warning>
-**Rigol MSO5000 上的已知限制。** 通道控制、采集、测量，以及边沿触发和 SPI 触发均可工作。
-脉冲、UART、I2C 和 CAN 触发会失败。所有总线解码器在创建时都会失败。
-失败的方法会抛出包含 `Function not found` 的错误。
+**Rigol MSO5000 上的已知限制。** 通道控制、采集、测量，以及边沿触发和 SPI 触发均可工作。脉冲、UART、I2C 和 CAN 触发会失败。所有总线解码器在创建时都会失败。失败的方法会抛出包含 `Function not found` 的错误。
 [Issue #418](https://github.com/lagerdata/lager/issues/418) 跟踪这项工作。
 </Warning>
 

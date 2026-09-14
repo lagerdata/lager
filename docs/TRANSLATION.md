@@ -16,25 +16,28 @@ Release notes are never translated. A note says what shipped on a day, and the
 archive's whole value is that it still says it. `check_translations.py` excludes
 the directory, so it never appears in `--progress`.
 
-| Tab | Pages | Words | Owner |
-|---|---|---|---|
-| Overview (Getting Started) | 10 | 22,411 | done |
-| CLI Reference | 47 | 64,910 | translator A |
-| AI Agents (MCP) | 2 | 2,555 | translator A |
-| Supported Instruments | 1 | 2,484 | translator A |
-| Python API | 27 | 31,109 | translator B |
-| Rust API | 31 | 19,753 | translator B |
+| Tab | Pages | Words | Owner | State |
+|---|---|---|---|---|
+| Overview (Getting Started) | 10 | 22,411 | Chris | done |
+| CLI Reference | 47 | 64,910 | Chris | done |
+| AI Agents (MCP) | 2 | 2,555 | Chris | done |
+| Supported Instruments | 1 | 2,484 | Chris | done |
+| Python API | 27 | 31,109 | Danny | 21 done, 6 left |
+| Rust API | 31 | 19,753 | Danny | not started |
+
+The six Python pages still open are `arm`, `battery`, `debug`, `i2c`, `spi` and
+`usb`. The other 21 were translated while the split briefly ran the other way;
+they are on the branch and need no rework.
 
 Put a name in the owner column before anyone starts, and change it here when it
 changes. Two people who each assume the other has a tab produce the same corpus
 as two people who both translate it, and neither is visible until a reviewer
 reads the diff. This table is the only place that assumption is written down.
 
-Translate a whole tab rather than scattered pages. A half-translated tab sends a
-reader between languages on every click, and `--progress` reports by directory,
-so a finished tab reads as finished. A tab is the unit a reader navigates, and a half-translated tab
-sends them between languages on every click. `--progress` reports by directory,
-so a tab that is finished reads as finished.
+Translate a whole tab rather than scattered pages. A tab is the unit a reader
+navigates, and a half-translated tab sends them between languages on every
+click. `--progress` reports by directory, so a tab that is finished reads as
+finished.
 
 ## Layout
 
@@ -61,11 +64,14 @@ when its translation was made. `tools/check_translations.py` recomputes it and
 fails when the two disagree.
 
 ```bash
-python tools/check_translations.py                 # the gate
+python tools/check_translations.py                 # every gate at once
 python tools/check_translations.py --progress      # coverage per section
 python tools/check_translations.py --record PATH   # stamp after translating
 python tools/check_translations.py --relink        # fix cross-references
 ```
+
+Staleness is one of three things that run with no argument; the other two are
+below.
 
 After you translate a page, or update a translation to match an English edit,
 stamp it. The gate is in `static-checks.yml`, so an unstamped change fails CI.
@@ -74,6 +80,30 @@ stamp it. The gate is in `static-checks.yml`, so an unstamped change fails CI.
 manifest says "these two agree". A stamp on an untranslated edit converts
 "nobody checked" into "the check passed", which is the one outcome worse than no
 gate at all.
+
+## The completeness gate
+
+The hash catches a translation that went *stale*. It cannot see one that
+arrived *incomplete* -- the English page never changed, so the hash still
+matches while a paragraph, a table row or a whole `## See Also` section is
+simply absent. Seven pages had lost content this way and every gate passed.
+
+`--completeness` compares structure instead of prose, because prose does not
+compare: Chinese says the same thing in markedly fewer characters, so a length
+check fires on every page and is worth nothing. A bullet is a bullet in both
+languages, though, and so is a table row, a fenced block and a `##` heading:
+
+```bash
+python tools/check_translations.py --completeness
+```
+
+A translation with **fewer** of any of those has dropped content. More is not
+reported -- a translator who adds a clarifying line is making a call that is
+theirs to make.
+
+It also reports a page that leaves a code fence open, naming the file that has
+it. That is how the stray ``` at the end of the English `cli/watt.mdx` was
+found: as a fence count off by one on a translation that was complete.
 
 ## Cross-references while a tab is half done
 
@@ -175,6 +205,36 @@ prose rather than a role name or a command:
 | firmware | 固件 | |
 | to flash | 烧录 | |
 
+## Write a Chinese paragraph on one line
+
+**Do not wrap Chinese prose at 80 columns.** A line break inside a Markdown
+paragraph renders as a space. English does not care -- its words are separated
+by spaces anyway -- so wrapping is free there and every one of these files does
+it. Chinese has no space between characters, so each wrapped line shows up as a
+gap in the middle of a sentence:
+
+```markdown
+Lager 命令必须能通过网络连接到一台 Box。有两种方式可以提供这个连接。
+您的选择决定了后面所有的步骤。
+```
+
+renders as `...提供这个连接。 您的选择...`, with a space that belongs to nothing.
+Write the paragraph as one long line instead, however long it gets. The same
+applies to a wrapped bullet or a wrapped numbered step, which are paragraphs
+too.
+
+This is the easiest mistake in the corpus to make, because it is a habit rather
+than a decision -- 882 of them accumulated across 72 pages before anyone
+noticed. So it is checked rather than trusted:
+
+```bash
+python tools/check_translations.py --reflow    # join them all; idempotent
+```
+
+The gate reports any that are left. A break between a Chinese character and a
+Latin word is *not* one of these: there the rendered space is the one the
+spacing rule below asks for, so it is correct and the tool leaves it alone.
+
 ## Headings and anchors
 
 Translate headings. Mintlify slugifies Chinese headings and
@@ -205,7 +265,10 @@ lookup key, and the reader arrives holding the English word.
 ## Before you push
 
 ```bash
-python tools/check_translations.py
+python tools/check_translations.py --relink     # fix cross-references first
+python tools/check_translations.py --reflow     # then unwrap Chinese paragraphs
+python tools/check_translations.py --record-all # stamp what you translated
+python tools/check_translations.py              # staleness + completeness + wrapping
 python tools/check_docs.py
 python tools/check_ste.py
 cd docs && npx --yes mint@4.2.827 broken-links --files 'source/**/*.mdx' --check-anchors

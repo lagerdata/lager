@@ -261,11 +261,9 @@ lager python my_script.py --box my-lager-box
 
 <Accordion title="[Errno 16] Resource busy，或提到资源忙的 DeviceError">
 
-**原因：** 有两方对同一台仪器打开了会话。端口 8080 上的硬件服务持有该仪器的 VISA 会话。
-针对同一个 USB 地址的第二次 `pyvisa` 打开会与它竞争并失败。
+**原因：** 有两方对同一台仪器打开了会话。端口 8080 上的硬件服务持有该仪器的 VISA 会话。针对同一个 USB 地址的第二次 `pyvisa` 打开会与它竞争并失败。
 
-普通脚本不会遇到这种情况。电源、示波器、电池模拟器、电子负载和太阳能模拟器都是代理到硬件服务的，
-不会在本地打开。只有直接导入驱动模块才会触发这个失败。您自己在脚本中或通过 `docker exec`
+普通脚本不会遇到这种情况。电源、示波器、电池模拟器、电子负载和太阳能模拟器都是代理到硬件服务的，不会在本地打开。只有直接导入驱动模块才会触发这个失败。您自己在脚本中或通过 `docker exec`
 打开 `pyvisa` 时，也会触发它。
 
 **解决方法：**
@@ -280,8 +278,7 @@ lager python my_script.py --box my-lager-box
    [`lager diagnose`](/source/zh/reference/cli/diagnose)。
 3. 如果您要自己打开该仪器，请获取驱动程序所使用的同一个跨进程锁。
 
-直连 USB 的仪器是另一种情况：LabJack、USB-202、FT232H、Aardvark、Joulescope 和 PPK2。
-执行服务在启动您的脚本之前，会先释放硬件服务对这些设备的占用。
+直连 USB 的仪器是另一种情况：LabJack、USB-202、FT232H、Aardvark、Joulescope 和 PPK2。执行服务在启动您的脚本之前，会先释放硬件服务对这些设备的占用。
 
 </Accordion>
 

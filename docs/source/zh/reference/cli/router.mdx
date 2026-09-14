@@ -3,8 +3,7 @@ title: Router
 description: 把路由器作为 Lager Net 管理
 ---
 
-把网络路由器注册为 Lager Net 并加以控制。路由器 Net 封装了路由器对外提供的 REST API，
-例如 MikroTik hAP 上的 API。通过这个 Net，您可以：
+把网络路由器注册为 Lager Net 并加以控制。路由器 Net 封装了路由器对外提供的 REST API，例如 MikroTik hAP 上的 API。通过这个 Net，您可以：
 
 - 查看接口并切换它们的状态
 - 列出无线客户端和 DHCP 租约
@@ -21,8 +20,7 @@ description: 把路由器作为 Lager Net 管理
 lager router COMMAND [ARGS] [OPTIONS]
 ```
 
-每个子命令都接受 `--box BOX`（Lager Box 名称或 IP，省略时使用默认 Box）。
-大多数子命令作用于一个 `NETNAME` —— 之前用 `add-net` 注册的路由器 Net 名称。
+每个子命令都接受 `--box BOX`（Lager Box 名称或 IP，省略时使用默认 Box）。大多数子命令作用于一个 `NETNAME` —— 之前用 `add-net` 注册的路由器 Net 名称。
 
 ## 命令
 
@@ -143,8 +141,7 @@ lager router block-internet router1 --box my-lager-box
 
 ### `reset`
 
-把路由器 Net 重置到干净的基线状态：移除所有带测试标记的防火墙规则、带宽限制和访问列表条目；
-重新启用 DHCP 和全部无线接口。如果提供了 `--ssid` 和 `--password`，还会应用一个全新的
+把路由器 Net 重置到干净的基线状态：移除所有带测试标记的防火墙规则、带宽限制和访问列表条目；重新启用 DHCP 和全部无线接口。如果提供了 `--ssid` 和 `--password`，还会应用一个全新的
 WPA2 基线网络。除非传入 `--yes`，否则会要求确认。
 
 | 选项 | 说明 |
@@ -160,8 +157,7 @@ lager router reset router1 --ssid HomeNet --password secret123 --box my-lager-bo
 
 ### `run`
 
-执行任意的路由器 REST API GET 调用。`PATH` 是相对于 `/rest` 的 API 路径，
-例如 `/ip/address`。
+执行任意的路由器 REST API GET 调用。`PATH` 是相对于 `/rest` 的 API 路径，例如 `/ip/address`。
 
 ```bash
 lager router run router1 /ip/address --box my-lager-box

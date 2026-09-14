@@ -65,8 +65,7 @@ print(f"DAC set to: {v}V")
 
 **返回：** `float` - 已配置的电压，单位伏特
 
-LabJack U3 没有 DAC 回读功能。在 U3 上，`get_voltage()` 返回该 Net 对象上次设置的值。
-如果它没有设置过值，该调用会抛出带 `has no readback` 文字的错误。
+LabJack U3 没有 DAC 回读功能。在 U3 上，`get_voltage()` 返回该 Net 对象上次设置的值。如果它没有设置过值，该调用会抛出带 `has no readback` 文字的错误。
 MCC USB-202 没有回读功能，因此该调用会抛出 `NotImplementedError`。
 
 ### `input()`

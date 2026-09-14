@@ -273,9 +273,7 @@ lager battery NETNAME model-create SLOT --csv FILE [--force] [OPTIONS]
 - `--box TEXT` - Lager Box 名称或 IP
 
 **CSV 格式：**
-两列，`voc,resistance`（表头行可选），按从空电到满电的顺序排列：
-开路电压，单位伏特（非递减）；内阻，单位欧姆（非递增）。
-数据行必须恰好是 11 行或 101 行 —— 11 行的文件会由仪器插值为 101 个点。
+两列，`voc,resistance`（表头行可选），按从空电到满电的顺序排列：开路电压，单位伏特（非递减）；内阻，单位欧姆（非递增）。数据行必须恰好是 11 行或 101 行 —— 11 行的文件会由仪器插值为 101 个点。
 
 ```
 voc,resistance
@@ -284,12 +282,10 @@ voc,resistance
 ...
 ```
 
-该文件会先在您的计算机上校验，然后才向仪器发送任何内容。
-如果该槽位已有模型，除非传入 `--force`，否则命令会拒绝执行。
+该文件会先在您的计算机上校验，然后才向仪器发送任何内容。如果该槽位已有模型，除非传入 `--force`，否则命令会拒绝执行。
 
 <Warning>
-`model-create` 会覆盖该槽位原有的模型。仪器没有办法从槽位中删除模型。
-一个槽位一旦存有模型，您就只能用另一个模型覆盖它。
+`model-create` 会覆盖该槽位原有的模型。仪器没有办法从槽位中删除模型。一个槽位一旦存有模型，您就只能用另一个模型覆盖它。
 </Warning>
 
 创建成功之后，`model SLOT` 可以加载该模型，`models` 会把它列出来。
@@ -310,10 +306,7 @@ lager battery NETNAME model-export SLOT --csv FILE [OPTIONS]
 - `--csv FILE` - 要写入的输出 CSV 文件（必填）
 - `--box TEXT` - Lager Box 名称或 IP
 
-它按 `model-create` 接受的格式写出该槽位的 101 个 `voc,resistance` 点。
-因此您可以导出一个已保存的模型、编辑它，再把它写回某个槽位
-（`model-export` → 编辑 → `model-create`）。该命令是只读的：
-导出不会调用或改变当前活动的模型。导出空槽位会报错 ——
+它按 `model-create` 接受的格式写出该槽位的 101 个 `voc,resistance` 点。因此您可以导出一个已保存的模型、编辑它，再把它写回某个槽位（`model-export` → 编辑 → `model-create`）。该命令是只读的：导出不会调用或改变当前活动的模型。导出空槽位会报错 ——
 请用 `models` 查看哪些槽位存有模型。
 
 ### `state`

@@ -599,29 +599,6 @@
             ]
           },
           {
-            "tab": "AI 智能体（MCP）",
-            "groups": [
-              {
-                "group": "Model Context Protocol",
-                "pages": [
-                  "source/zh/reference/mcp/overview",
-                  "source/zh/reference/mcp/dut-context"
-                ]
-              }
-            ]
-          },
-          {
-            "tab": "受支持的仪器",
-            "groups": [
-              {
-                "group": "受支持的仪器",
-                "pages": [
-                  "source/zh/supported-instruments/supported-instruments"
-                ]
-              }
-            ]
-          },
-          {
             "tab": "Python API",
             "groups": [
               {
@@ -673,6 +650,29 @@
                 "group": "实用工具",
                 "pages": [
                   "source/zh/reference/python/webcam"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "AI 智能体（MCP）",
+            "groups": [
+              {
+                "group": "Model Context Protocol",
+                "pages": [
+                  "source/zh/reference/mcp/overview",
+                  "source/zh/reference/mcp/dut-context"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "受支持的仪器",
+            "groups": [
+              {
+                "group": "受支持的仪器",
+                "pages": [
+                  "source/zh/supported-instruments/supported-instruments"
                 ]
               }
             ]

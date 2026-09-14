@@ -115,8 +115,7 @@ else:
 - `url` - 完整的串流 URL
 - `port` - 该串流的端口号
 - `video_device` - 视频设备路径，例如 `/dev/video0`
-- `source` - 启动该串流的工具：本 Python API 为 `'api'`，`lager webcam` 为 `'cli'`。
-  没有记录来源的串流为 `None`。
+- `source` - 启动该串流的工具：本 Python API 为 `'api'`，`lager webcam` 为 `'cli'`。没有记录来源的串流为 `None`。
 - `started_by` - 启动工具所给出的用户。从本 Python API 启动的串流为 `None`。
 
 ### `get_url(box_ip)`
@@ -158,8 +157,7 @@ else:
 **返回：** `bool` - 串流正在运行为 True，否则为 False
 
 <Note>
-该 Python API 没有截图方法。若要从正在运行的串流保存一帧，
-请在您的计算机上使用 [`lager webcam NET snapshot`](/source/zh/reference/cli/webcam)。
+该 Python API 没有截图方法。若要从正在运行的串流保存一帧，请在您的计算机上使用 [`lager webcam NET snapshot`](/source/zh/reference/cli/webcam)。
 </Note>
 
 ## 示例
@@ -378,7 +376,5 @@ webcam.stop()
 - 同一时刻只能有一路串流使用某个视频设备
 - 默认分辨率为 640x480，30 FPS
 - JPEG 质量设为 80，以平衡带宽和画质
-- 串流通过 HTTP 在 Lager Box 的 IP 地址上提供。在访问受控的 Box 上，
-  请求需要携带登录令牌，而 `start()` 返回的 `url` 不带令牌。
-  请用 `lager webcam url` 获取带有您令牌的链接
+- 串流通过 HTTP 在 Lager Box 的 IP 地址上提供。在访问受控的 Box 上，请求需要携带登录令牌，而 `start()` 返回的 `url` 不带令牌。请用 `lager webcam url` 获取带有您令牌的链接
 - 变焦是数字变焦（裁剪并缩放），不是光学变焦

@@ -55,9 +55,7 @@ lager defaults add [OPTIONS]
 
 **其他选项：**
 - `--serial-port PATH` - 默认串口路径
-- `--user TEXT` - 记录在 Box 锁上的用户名。请与其他会锁定 Box 的工具使用相同的名称。
-  只有两个工具写入完全相同的持有者字符串时，锁才算是您的。
-  请参阅 [Box 锁定](/source/zh/reference/cli/locking)。
+- `--user TEXT` - 记录在 Box 锁上的用户名。请与其他会锁定 Box 的工具使用相同的名称。只有两个工具写入完全相同的持有者字符串时，锁才算是您的。请参阅 [Box 锁定](/source/zh/reference/cli/locking)。
   `LAGER_USER` 环境变量会覆盖这个默认值。
 
 **示例：**
@@ -83,9 +81,18 @@ lager defaults add --user alice
 lager defaults list
 ```
 
+输出：
+```
+Default       Value
+box           my-lager-box
+serial-port   /dev/ttyUSB0
+supply-net    VDD_MAIN
+battery-net   VBAT
+debug-net     DEBUG_SWD
+```
+
 未设置任何默认值时，该命令打印
-`No defaults are currently set. Add one with: lager defaults add`。
-不带子命令运行 `lager defaults`，输出与 `list` 相同。
+`No defaults are currently set. Add one with: lager defaults add`。不带子命令运行 `lager defaults`，输出与 `list` 相同。
 
 ### `delete`
 
@@ -169,8 +176,7 @@ lager supply voltage 3.3
 ## 配置的存放位置
 
 默认值保存在全局 `.lager` 文件，即 `~/.lager` 中。如果设置了
-`LAGER_CONFIG_FILE_DIR`，则文件为该目录下的 `.lager`。
-该文件是 JSON 格式，默认值位于 `DEFAULTS` 键之下：
+`LAGER_CONFIG_FILE_DIR`，则文件为该目录下的 `.lager`。该文件是 JSON 格式，默认值位于 `DEFAULTS` 键之下：
 
 ```json
 {
@@ -184,8 +190,7 @@ lager supply voltage 3.3
 }
 ```
 
-`gateway_id` 保存默认 Box。每个 Net 默认值使用一个 `net_` 开头的键，
-例如 `net_debug` 或 `net_uart`。INI 格式的 `.lager` 文件会被拒绝并报错。
+`gateway_id` 保存默认 Box。每个 Net 默认值使用一个 `net_` 开头的键，例如 `net_debug` 或 `net_uart`。INI 格式的 `.lager` 文件会被拒绝并报错。
 
 ---
 

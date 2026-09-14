@@ -3,8 +3,7 @@ title: Nets
 description: 在您的 Lager Box 上创建和管理 Net（测试点）
 ---
 
-Net 是 Lager 中用来表示被测设备上物理测试点、信号或总线的核心抽象。
-每个 Net 把一个易读的名称映射到某个仪器通道。
+Net 是 Lager 中用来表示被测设备上物理测试点、信号或总线的核心抽象。每个 Net 把一个易读的名称映射到某个仪器通道。
 
 ## 语法
 
@@ -62,8 +61,7 @@ lager nets --box my-lager-box
 | `OpenOCD` | 附加了 OpenOCD 配置时为 `yes` |
 | `Purpose` | 用 `describe` 设置的 `purpose` 文本，截断以适应列宽 |
 
-只有当至少有一个 Net 具有相应值时，`Script`、`OpenOCD` 和 `Purpose` 列才会出现。
-运行 `lager nets show NAME` 可以看到完整的 purpose 文本。
+只有当至少有一个 Net 具有相应值时，`Script`、`OpenOCD` 和 `Purpose` 列才会出现。运行 `lager nets show NAME` 可以看到完整的 purpose 文本。
 
 **输出示例：**
 
@@ -109,12 +107,10 @@ lager nets add NAME ROLE CHANNEL ADDRESS [OPTIONS]
 | LabJack T7 | `FIO0`-`FIO7`、`EIO0`-`EIO7`、`CIO0`-`CIO3`、`MIO0`-`MIO2` | `0`-`22` |
 | LabJack U3 | `FIO4`-`FIO7`、`EIO0`-`EIO7`、`CIO0`-`CIO3` | `4`-`19` |
 
-U3 没有 MIO 引脚。它的 `FIO0`-`FIO3` 是固定的模拟输入，
-因此 Lager 拒绝把它们用于 `gpio`、`i2c` 和 `spi` Net。
+U3 没有 MIO 引脚。它的 `FIO0`-`FIO3` 是固定的模拟输入，因此 Lager 拒绝把它们用于 `gpio`、`i2c` 和 `spi` Net。
 U3 的 EIO 和 CIO 线位于它的 DB15 连接器上。
 
-给出引脚选项时，`CHANNEL` 参数会被忽略 —— 请传 `custom`。
-如果所选引脚与另一个已保存的 LabJack Net 重叠，会打印警告，但 Net 仍会创建。
+给出引脚选项时，`CHANNEL` 参数会被忽略 —— 请传 `custom`。如果所选引脚与另一个已保存的 LabJack Net 重叠，会打印警告，但 Net 仍会创建。
 `--cs` 是可选的：做 3 线 SPI、手动控制片选时可以省略它。
 
 **示例：**
@@ -185,14 +181,12 @@ FIO0-FIO3 on a LabJack U3 are fixed high-voltage analog inputs and are never dig
 最后一行只在 U3 上为 `FIO0`-`FIO3` 创建 `gpio`、`i2c` 或 `spi` Net 时出现。
 
 <Note>
-通道列表保存在 Box 上。较新的 CLI 对较旧的 Lager Box 会按较旧的列表校验。
-请运行 `lager update` 获取最新列表。
+通道列表保存在 Box 上。较新的 CLI 对较旧的 Lager Box 会按较旧的列表校验。请运行 `lager update` 获取最新列表。
 </Note>
 
 ### 通道与角色约束
 
-不同的仪器系列把 Net 绑定到通道的方式不同。Lager 把每一台受支持的仪器归入三个类别之一，
-并在 `add`、`add-all` 和 TUI 中一致地执行这些规则。
+不同的仪器系列把 Net 绑定到通道的方式不同。Lager 把每一台受支持的仪器归入三个类别之一，并在 `add`、`add-all` 和 TUI 中一致地执行这些规则。
 
 #### 1. 多通道仪器
 
@@ -211,13 +205,11 @@ FIO0-FIO3 on a LabJack U3 are fixed high-voltage analog inputs and are never dig
 | `Phidget` | `0`–`3` | 每个通道一个 `thermocouple` Net |
 | `Acroname_8Port` / `4Port`、`YKUSH_Hub` | 端口序号 | 每个端口一个 `usb` Net |
 
-**规则：** 每个 `(仪器, 地址, 角色, 通道)` 四元组最多一个 Net。
-共享 `(仪器, 地址, 角色)` 但通道不同的两个 Net 没有问题 —— 多通道正是为此而生。
+**规则：** 每个 `(仪器, 地址, 角色, 通道)` 四元组最多一个 Net。共享 `(仪器, 地址, 角色)` 但通道不同的两个 Net 没有问题 —— 多通道正是为此而生。
 
 #### 2. 单通道多模式仪器
 
-只有一路物理通道、可以运行在若干**模式**之一、但不能同时运行多个模式的仪器。
-角色告诉 Box 要把芯片切换到哪种固件模式。Lager 对这类芯片分两组区别对待。
+只有一路物理通道、可以运行在若干**模式**之一、但不能同时运行多个模式的仪器。角色告诉 Box 要把芯片切换到哪种固件模式。Lager 对这类芯片分两组区别对待。
 
 **单路输出仪器（每个角色一个 Net，并给出提示）：**
 
@@ -234,8 +226,7 @@ FIO0-FIO3 on a LabJack U3 are fixed high-voltage analog inputs and are never dig
 Keithley_2281S at <ADDRESS> already has a battery net. This instrument is a single output that fills one role at a time — the driver switches its mode automatically when you drive the other net, ending whatever the previous mode was doing. Add the second net only if you intend to use both roles.
 ```
 
-对某个 Net 的每条命令都会把仪器切换到该 Net 的模式，这次切换会中止另一个模式正在做的事。
-对于没有任何已保存 Net 的芯片，`add-all` 不会替您挑选角色：它会跳过该芯片并给出警告。
+对某个 Net 的每条命令都会把仪器切换到该 Net 的模式，这次切换会中止另一个模式正在做的事。对于没有任何已保存 Net 的芯片，`add-all` 不会替您挑选角色：它会跳过该芯片并给出警告。
 TUI 也不允许您在一批操作中同时选中一颗芯片的两个角色。
 
 **模式互斥的芯片（总共只能有一个 Net）：**
@@ -244,11 +235,9 @@ TUI 也不允许您在一批操作中同时选中一颗芯片的两个角色。
 |---|---|---|
 | `FTDI_FT232H` | `spi` 或 `i2c` 或 `gpio` 或 `debug` 或 `uart` | 一路通道在 MPSSE（libftdi）和异步串口（`ftdi_sio`）模式之间由硬件复用 |
 
-**规则：** 每个 `(仪器, 地址)` 最多一个 Net。一旦该芯片上保存了任意角色，
-其他所有角色都会从 `add-all` 和 TUI 的可添加列表中消失。要切换模式，请先删除已有的 Net。
+**规则：** 每个 `(仪器, 地址)` 最多一个 Net。一旦该芯片上保存了任意角色，其他所有角色都会从 `add-all` 和 TUI 的可添加列表中消失。要切换模式，请先删除已有的 Net。
 
-这些芯片在 `cli/commands/box/nets.py` 和 `cli/commands/box/net_tui.py` 中
-由 `_SINGLE_CHANNEL_INST`（Keithley、EA）和 `_MODE_EXCLUSIVE_INST`（FTDI_FT232H）跟踪。
+这些芯片在 `cli/commands/box/nets.py` 和 `cli/commands/box/net_tui.py` 中由 `_SINGLE_CHANNEL_INST`（Keithley、EA）和 `_MODE_EXCLUSIVE_INST`（FTDI_FT232H）跟踪。
 
 #### 3. 单角色调试探针
 
@@ -266,8 +255,7 @@ TUI 也不允许您在一批操作中同时选中一颗芯片的两个角色。
 
 #### 4. 多通道 FTDI 调试适配器
 
-`FT2232H`（2 个通道：A、B）和 `FT4232H`（4 个通道：A、B、C、D）在物理上提供多个 USB 接口。
-通道 A 和 B 带有 MPSSE 引擎；在 FT4232H 上，C 和 D 没有。这一点是按*Net 类型*而不是按芯片起作用的。
+`FT2232H`（2 个通道：A、B）和 `FT4232H`（4 个通道：A、B、C、D）在物理上提供多个 USB 接口。通道 A 和 B 带有 MPSSE 引擎；在 FT4232H 上，C 和 D 没有。这一点是按*Net 类型*而不是按芯片起作用的。
 `debug`、`spi` 和 `i2c` 都是 MPSSE 协议，因此只能用 A 和 B。
 `gpio` 以异步 bitbang 方式运行，不需要 MPSSE，四个通道都能用。用户为每个 Net 指定接口。
 
@@ -281,23 +269,17 @@ lager nets add debug_a debug STM32F4x@A USB0::0x0403::0x6010::ABCDEF::INSTR
 lager nets add debug_b debug NRF52840_XXAA@B USB0::0x0403::0x6010::ABCDEF::INSTR
 ```
 
-等价写法：`@A`/`@0`、`@B`/`@1`、`@C`/`@2`、`@D`/`@3`。
-没有 `@` 后缀的设备默认使用 OpenOCD 接口配置所选的接口（通常是通道 A）。
+等价写法：`@A`/`@0`、`@B`/`@1`、`@C`/`@2`、`@D`/`@3`。没有 `@` 后缀的设备默认使用 OpenOCD 接口配置所选的接口（通常是通道 A）。
 
-**GPIO、I2C 和 SPI Net** 把通道写在 Net 记录的 `params.interface` 中，
-接受与 `@` 后缀相同的写法：`A`-`D` 或 `0`-`3`。
-没有 `interface` 的 Net 使用通道 A —— 在单通道的 FT232H 上这也是唯一的选择。
+**GPIO、I2C 和 SPI Net** 把通道写在 Net 记录的 `params.interface` 中，接受与 `@` 后缀相同的写法：`A`-`D` 或 `0`-`3`。没有 `interface` 的 Net 使用通道 A —— 在单通道的 FT232H 上这也是唯一的选择。
 
 Lager 是按 Net 而不是按仪器来校验哪些通道合法的。如果您为 `i2c` 或 `spi` Net
 指定 C 或 D，Net 构造会失败并指出该通道。这个失败不是从 pyftdi 内部某处冒出来的。
 `gpio` Net 可以使用该芯片具备的任意通道。
 
-在 v0.43.0 之前，这三个驱动都把接口硬编码为 A。因此，
-把通信接到一个通道、把控制线接到另一个通道的板子根本无法驱动。
+在 v0.43.0 之前，这三个驱动都把接口硬编码为 A。因此，把通信接到一个通道、把控制线接到另一个通道的板子根本无法驱动。
 
-**UART Net** 按 tty 路径区分通道。USB 扫描器会枚举绑定到该芯片 USB 序列号的
-每一个 `/dev/ttyUSB<N>`。每一个都会作为独立的可添加项出现，
-因此在 FT4232H 上您最多会看到四个 UART 选项。
+**UART Net** 按 tty 路径区分通道。USB 扫描器会枚举绑定到该芯片 USB 序列号的每一个 `/dev/ttyUSB<N>`。每一个都会作为独立的可添加项出现，因此在 FT4232H 上您最多会看到四个 UART 选项。
 
 **规则：** 调试 Net 按 `(仪器, 地址, 通道后缀)` 唯一。因此单颗 FT2232H 可以承载：
 - `@A` 上的一个 `debug` Net
@@ -305,8 +287,7 @@ Lager 是按 Net 而不是按仪器来校验哪些通道合法的。如果您为
 - 一个 `uart` Net，位于您没有用于 MPSSE 的那些通道所对应的某个 `/dev/ttyUSB<N>` 上
 - `spi` / `i2c` / `gpio` 各一个，分别位于它们 `params.interface` 所指定的通道上
 
-不把同一通道重复占用（例如同时有 `debug@A` *和* 接口 A 上的 `spi` Net）
-是用户的责任；Box 目前不校验这一点。
+不把同一通道重复占用（例如同时有 `debug@A` *和* 接口 A 上的 `spi` Net）是用户的责任；Box 目前不校验这一点。
 
 #### 快速判断表
 
@@ -323,12 +304,9 @@ Lager 是按 Net 而不是按仪器来校验哪些通道合法的。如果您为
 
 #### 同型号的两台设备
 
-Lager 是根据设备地址、而不是根据型号来判断能否创建 Net 的。
-包含唯一序列号的地址唯一标识一台设备。同一台 Lager Box 上有两台该型号的设备时，
-两台都能工作。例如，两台 8 端口 Acroname 集线器可以提供十六个 `usb` Net。
+Lager 是根据设备地址、而不是根据型号来判断能否创建 Net 的。包含唯一序列号的地址唯一标识一台设备。同一台 Lager Box 上有两台该型号的设备时，两台都能工作。例如，两台 8 端口 Acroname 集线器可以提供十六个 `usb` Net。
 
-LabJack T7 和 LabJack U3 不报告序列号，因此它们的地址中序列号字段为空。
-同一台 Lager Box 上的两台 T7 或两台 U3 会报告相同的地址。
+LabJack T7 和 LabJack U3 不报告序列号，因此它们的地址中序列号字段为空。同一台 Lager Box 上的两台 T7 或两台 U3 会报告相同的地址。
 Net 无法说明它指的是哪一台，因此 Lager 拒绝创建：
 
 ```
@@ -376,9 +354,7 @@ Found 7 nets that can be created:
 Create all 7 nets on box <BOX_IP>? [y/N]:
 ```
 
-在列表之前，`add-all` 会为它跳过的每一台设备打印一条警告。
-它会跳过报告相同地址的同型号两台设备，也会跳过没有任何已保存 Net 的
-单输出或模式互斥芯片 —— 那种芯片提供多个角色，而 `add-all` 不会替您选择。
+在列表之前，`add-all` 会为它跳过的每一台设备打印一条警告。它会跳过报告相同地址的同型号两台设备，也会跳过没有任何已保存 Net 的单输出或模式互斥芯片 —— 那种芯片提供多个角色，而 `add-all` 不会替您选择。
 
 ### `add-batch`
 
@@ -419,15 +395,12 @@ lager nets add-batch JSON_FILE [OPTIONS]
 ]
 ```
 
-每条记录都需要 `name`、`role`、`channel` 和 `address`。可选的 `instrument` 键用于指明仪器；
-不写时，命令会根据地址查出仪器。该命令不读取其他键，因此记录中不能携带 `params`。
-若要设置自定义的 LabJack 引脚，请用 `lager nets add` 配合 `--sda`/`--scl`
+每条记录都需要 `name`、`role`、`channel` 和 `address`。可选的 `instrument` 键用于指明仪器；不写时，命令会根据地址查出仪器。该命令不读取其他键，因此记录中不能携带 `params`。若要设置自定义的 LabJack 引脚，请用 `lager nets add` 配合 `--sda`/`--scl`
 或 `--cs`/`--sck`/`--mosi`/`--miso`。
 
 **校验：**
 
-在保存任何内容之前，命令会把每条记录的通道与 Box 为该角色提供的通道作比较。
-它会列出所有通道不正确的记录，打印 `No nets were saved.`，并以代码 1 退出：
+在保存任何内容之前，命令会把每条记录的通道与 Box 为该角色提供的通道作比较。它会列出所有通道不正确的记录，打印 `No nets were saved.`，并以代码 1 退出：
 
 ```
 Net 2 ('i2c_bus'): channel '0' is not valid for role 'i2c' on LabJack_T7. Valid: FIO4-FIO5
@@ -448,15 +421,11 @@ lager nets add-batch nets.json --box my-lager-box
 
 把 USB 串口线缆分配给 Box 无法自动识别的已知仪器。
 
-有些仪器没有 USB 控制端口。您通过通用的 USB 转串口适配器，
-用 RS-232 访问这类仪器 —— 例如接在 Prolific 线缆之后的 **Rigol DP711** 电源。
+有些仪器没有 USB 控制端口。您通过通用的 USB 转串口适配器，用 RS-232 访问这类仪器 —— 例如接在 Prolific 线缆之后的 **Rigol DP711** 电源。
 Box 只看得到适配器（一个 `uart` 设备），看不到它后面的仪器。
-`assign` 在 Box 上记录下"这根线缆就是 DP711 的串行线"。
-此后扫描器就会报告仪器本身：它会出现在 `lager instruments` 和 TUI 中，
-您可以像对待任何自动识别的设备那样，用 `lager nets add` 为它创建 Net。
+`assign` 在 Box 上记录下"这根线缆就是 DP711 的串行线"。此后扫描器就会报告仪器本身：它会出现在 `lager instruments` 和 TUI 中，您可以像对待任何自动识别的设备那样，用 `lager nets add` 为它创建 Net。
 
-**每根线缆只需分配一次**；分配保存在 Box 上，重启和重新插拔之后依然有效。
-创建 Net 仍然是可以正常重复执行的步骤。
+**每根线缆只需分配一次**；分配保存在 Box 上，重启和重新插拔之后依然有效。创建 Net 仍然是可以正常重复执行的步骤。
 
 ```bash
 lager nets assign --list [OPTIONS]                       # discover
@@ -501,14 +470,11 @@ lager nets add <name> power-supply 1 'serial://067b:23a3/serial/00000006'
 
 - 分配时线缆**必须已插上** —— 它的 USB 身份（厂商/产品 ID）是从在线设备上读取的。
 - 已分配仪器的 Net 使用持久的 `serial://<vid>:<pid>/serial/<s>`
-  （或 `.../port/<p>`）地址，而不是 `/dev/ttyUSB*` 路径，
-  因此它们在 tty 重新编号、重启和换端口之后依然有效。
+  （或 `.../port/<p>`）地址，而不是 `/dev/ttyUSB*` 路径，因此它们在 tty 重新编号、重启和换端口之后依然有效。
 - 线缆被分配之后，它**不再作为通用 UART 设备提供** —— 这条串行线属于那台仪器。
 
 <Note>
-有些廉价的 USB 转串口仿制品共用同一个序列号（或者根本没有）。
-如果 `assign` 报告匹配到多根线缆，请改用 `--port` 把分配固定到 Box 的某个物理端口。
-代价是：把线缆换到别的端口之后，分配就失效了。
+有些廉价的 USB 转串口仿制品共用同一个序列号（或者根本没有）。如果 `assign` 报告匹配到多根线缆，请改用 `--port` 把分配固定到 Box 的某个物理端口。代价是：把线缆换到别的端口之后，分配就失效了。
 </Note>
 
 **移除分配：**
@@ -517,13 +483,9 @@ lager nets add <name> power-supply 1 'serial://067b:23a3/serial/00000006'
 lager nets assign --remove --serial 00000006 --box my-lager-box
 ```
 
-该线缆会重新作为通用 UART 设备提供。**Net 与它的分配同生共死**：
-任何绑定到该分配 `serial://` 地址的已保存 Net 都会被自动删除，并在输出中报告。
-把线缆重新分配给另一台仪器时，以及把它的标识从 `--serial` 改为 `--port` 时，
-同样会发生这种级联删除。只有仅修改波特率的重新分配才会保留已有的 Net。
+该线缆会重新作为通用 UART 设备提供。**Net 与它的分配同生共死**：任何绑定到该分配 `serial://` 地址的已保存 Net 都会被自动删除，并在输出中报告。把线缆重新分配给另一台仪器时，以及把它的标识从 `--serial` 改为 `--port` 时，同样会发生这种级联删除。只有仅修改波特率的重新分配才会保留已有的 Net。
 
-**当前可分配的设备：** Rigol DP711（单通道 RS-232 电源）。
-运行 `lager nets assign --list` 查看您的 Box 支持的目录。
+**当前可分配的设备：** Rigol DP711（单通道 RS-232 电源）。运行 `lager nets assign --list` 查看您的 Box 支持的目录。
 
 ### `delete`
 
@@ -628,20 +590,17 @@ lager nets tui --box my-lager-box
 
 <Note>
 引脚编辑器只适用于 LabJack T7。您在 TUI 中添加的 LabJack U3 `i2c` 或 `spi` Net
-使用默认引脚（SPI `FIO4-FIO7`，I2C `FIO6-FIO7`）。若要使用 U3 的其他引脚，
-请用 `lager nets add` 配合引脚选项。
+使用默认引脚（SPI `FIO4-FIO7`，I2C `FIO6-FIO7`）。若要使用 U3 的其他引脚，请用 `lager nets add` 配合引脚选项。
 </Note>
 
 ### `set-script`
 
-为已有的调试 Net 附加一个调试脚本 —— JLinkScript 或 OpenOCD 的 `.cfg`/`.tcl`。
-该文件保存在 Box 上，并在连接、烧录、擦除和复位操作中自动使用。
+为已有的调试 Net 附加一个调试脚本 —— JLinkScript 或 OpenOCD 的 `.cfg`/`.tcl`。该文件保存在 Box 上，并在连接、烧录、擦除和复位操作中自动使用。
 
 后端（J-Link 还是 OpenOCD）会根据两个信号自动识别：
 
 1. **探针的 USB VID**，取自该 Net 的 `address` 字段（J-Link → `jlink`；ST-Link、FTDI、CMSIS-DAP 等 → `openocd`）。
-2. **文件本身** —— 先看扩展名（`.JLinkScript` → jlink；`.cfg`/`.tcl`/`.ocd` → openocd），
-   对没有扩展名的文件或 stdin，则以内容嗅探作为判定依据。
+2. **文件本身** —— 先看扩展名（`.JLinkScript` → jlink；`.cfg`/`.tcl`/`.ocd` → openocd），对没有扩展名的文件或 stdin，则以内容嗅探作为判定依据。
 
 如果这两个信号互相矛盾，`set-script` 会以明确的错误拒绝执行，并请您用 `--backend` 指定其一。
 
@@ -703,9 +662,7 @@ lager nets remove-script debug1 --backend jlink --box my-lager-box
 
 ### `show-script`
 
-显示调试 Net 上附加的调试脚本内容。脚本内容写入 stdout，因此 `> out.cfg` 可以正常工作。
-形如 `# OpenOCD config, 1247 bytes` 的一行摘要写入 stderr，
-它告诉您看到的是哪个后端的脚本，并且不会污染重定向的结果。
+显示调试 Net 上附加的调试脚本内容。脚本内容写入 stdout，因此 `> out.cfg` 可以正常工作。形如 `# OpenOCD config, 1247 bytes` 的一行摘要写入 stderr，它告诉您看到的是哪个后端的脚本，并且不会污染重定向的结果。
 
 ```bash
 lager nets show-script NAME [OPTIONS]
@@ -730,8 +687,7 @@ lager nets show-script debug1 --box my-lager-box > script.txt
 
 ### `show`
 
-显示某个已保存 Net 的全部字段，包括用 `describe` 设置的用户元数据
-（`purpose`、`notes`、`tags`）。
+显示某个已保存 Net 的全部字段，包括用 `describe` 设置的用户元数据（`purpose`、`notes`、`tags`）。
 
 ```bash
 lager nets show NAME [OPTIONS]
@@ -753,8 +709,7 @@ lager nets show battery1 --json --box my-lager-box
 
 ### `state`
 
-显示每个已保存 Net 的实时硬件状态。Box 读取每台仪器，并为每个 Net 返回一段简短摘要。
-输出是 `lager nets` 的分组表格，在 `Channel` 之后多出一个 `State` 列。
+显示每个已保存 Net 的实时硬件状态。Box 读取每台仪器，并为每个 Net 返回一段简短摘要。输出是 `lager nets` 的分组表格，在 `Channel` 之后多出一个 `State` 列。
 
 ```bash
 lager nets state [OPTIONS]
@@ -828,8 +783,7 @@ Nets reporting no state:
 
 **没有报告状态的 Net：**
 
-在表格下方，命令会解释每一个有原因的 `–`，并按原因把 Net 分组。
-没有探测方式的 Net 类型属于正常情况，因此脚注不会列出它们。
+在表格下方，命令会解释每一个有原因的 `–`，并按原因把 Net 分组。没有探测方式的 Net 类型属于正常情况，因此脚注不会列出它们。
 
 | 原因 | 含义 |
 |---|---|
@@ -848,8 +802,7 @@ Nets reporting no state:
 
 **JSON 输出：**
 
-`--json` 打印一个数组，每个已保存的 Net 对应一个对象。
-每个对象包含该 Net 的全部已存字段，外加以下字段：
+`--json` 打印一个数组，每个已保存的 Net 对应一个对象。每个对象包含该 Net 的全部已存字段，外加以下字段：
 
 | 字段 | 说明 |
 |---|---|
@@ -862,12 +815,10 @@ Nets reporting no state:
 
 ### `describe`
 
-为已保存的 Net 设置元数据，让 AI 智能体（以及人）理解该 Net 在被测设备上的作用。
-自 **lager 0.24.0** 引入；这些字段通过
+为已保存的 Net 设置元数据，让 AI 智能体（以及人）理解该 Net 在被测设备上的作用。自 **lager 0.24.0** 引入；这些字段通过
 [MCP 服务器](/source/zh/reference/mcp/overview)用于智能体辅助测试。
 `--purpose`、`--notes` 或 `--tag`（或 `--clear-tags`）中至少要提供一个。
-0.46.0 及以上版本的 Lager Box 会通过 HTTP 提供这些字段，
-因此已接入的控制平面可以同步它们。
+0.46.0 及以上版本的 Lager Box 会通过 HTTP 提供这些字段，因此已接入的控制平面可以同步它们。
 
 ```bash
 lager nets describe NAME [OPTIONS]
@@ -924,8 +875,7 @@ lager nets show battery1 --box my-lager-box
 
 ## 调试脚本工作流程
 
-J-Link 和 OpenOCD 调试探针都可以携带一份自定义脚本，
-用于处理复位序列、时钟初始化、板级信号引脚分配，或其他设备专有行为。
+J-Link 和 OpenOCD 调试探针都可以携带一份自定义脚本，用于处理复位序列、时钟初始化、板级信号引脚分配，或其他设备专有行为。
 Lager 为每个调试 Net 保存一个脚本 —— 要么是 JLinkScript，要么是 OpenOCD 的
 `.cfg`/`.tcl`，绝不会两个都有。它在连接、烧录、擦除和复位操作中自动应用该脚本。
 
@@ -967,8 +917,7 @@ lager nets add debug2 debug d2763 USB::003::004 \
 }
 ```
 
-当 Net 级脚本（通过 `set-script`）和项目级脚本（通过 `.lager` 配置）同时存在时，
-项目级脚本优先。
+当 Net 级脚本（通过 `set-script`）和项目级脚本（通过 `.lager` 配置）同时存在时，项目级脚本优先。
 
 ## 示例
 

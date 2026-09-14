@@ -3,13 +3,9 @@ title: MCP 服务器概述
 description: AI 智能体如何通过 Model Context Protocol 在 Lager Box 上发现硬件并规划测试
 ---
 
-每一台 Lager Box 都运行一个 **MCP（Model Context Protocol）服务器**。
-它让 AI 智能体理解实验台、理解被测设备（DUT），并规划硬件在环测试。
-它运行在 Box 上，通过 Box 的本地 IP 访问。
+每一台 Lager Box 都运行一个 **MCP（Model Context Protocol）服务器**。它让 AI 智能体理解实验台、理解被测设备（DUT），并规划硬件在环测试。它运行在 Box 上，通过 Box 的本地 IP 访问。
 
-默认情况下，MCP 服务器是**只读**的：它描述实验台和被测设备，
-但不驱动硬件、也不运行代码。有两个需要显式开启的环境变量可以改变这一点，
-请参阅[可选的工具开关](#可选的工具开关)。智能体通过另一条通道执行测试 —— 也就是 `lager` CLI。
+默认情况下，MCP 服务器是**只读**的：它描述实验台和被测设备，但不驱动硬件、也不运行代码。有两个需要显式开启的环境变量可以改变这一点，请参阅[可选的工具开关](#可选的工具开关)。智能体通过另一条通道执行测试 —— 也就是 `lager` CLI。
 
 ```
 MCP-compatible AI agent
@@ -39,14 +35,8 @@ AI agent  ──  lager python path/to/test.py --box <box-ip>  ──▶  Hardwa
 ```
 
 <Note>
-开箱即用时，MCP 服务器只用于**发现和规划** —— 它不运行代码，也不驱动硬件。
-有两个需要显式开启的环境变量可以扩展它，请参阅[可选的工具开关](#可选的工具开关)。
-若要**执行**测试，智能体先在本地写一个 Python 文件，然后用
-`lager python path/to/test.py --box <box-ip>` 运行它，
-该命令会把项目同步到 Box 并带着完整的项目上下文运行。
-请把 Box 的 **IP 地址**传给 `--box` —— 就是您连接 MCP 服务器时用的那个 IP。
-本地的 Box 名称只是客户端侧的别名，因此 IP 是双方都能依赖的唯一标识。
-为了让这一点更具体，`discover_bench()` 会把您实际连接所用的地址作为
+开箱即用时，MCP 服务器只用于**发现和规划** —— 它不运行代码，也不驱动硬件。有两个需要显式开启的环境变量可以扩展它，请参阅[可选的工具开关](#可选的工具开关)。若要**执行**测试，智能体先在本地写一个 Python 文件，然后用
+`lager python path/to/test.py --box <box-ip>` 运行它，该命令会把项目同步到 Box 并带着完整的项目上下文运行。请把 Box 的 **IP 地址**传给 `--box` —— 就是您连接 MCP 服务器时用的那个 IP。本地的 Box 名称只是客户端侧的别名，因此 IP 是双方都能依赖的唯一标识。为了让这一点更具体，`discover_bench()` 会把您实际连接所用的地址作为
 `box_address` 回显出来，并给出一条可以直接运行的
 `lager python … --box <that-address>` 命令。
 </Note>
@@ -54,13 +44,9 @@ AI agent  ──  lager python path/to/test.py --box <box-ip>  ──▶  Hardwa
 <Note>
 上面的 URL 假设该 Box 会发布它的端口，这是默认行为。用 `start_box.sh --no-publish`
 （或 `LAGER_NO_PUBLISH=1`）启动的 Box 不会在宿主机上发布端口 8100。
-MCP 服务器仍然运行，并在容器内绑定 `0.0.0.0:8100`，
-但只能在内部的 `lagernet` Docker 网络上访问 —— 宿主机端口由反向代理拥有。
-在这样的 Box 上，请把客户端指向容器的 `lagernet` 地址，因为 `<box-ip>:8100` 连不上。
-请不要把端口 8100 经由该代理对外暴露，因为 MCP 服务器不做任何认证。
+MCP 服务器仍然运行，并在容器内绑定 `0.0.0.0:8100`，但只能在内部的 `lagernet` Docker 网络上访问 —— 宿主机端口由反向代理拥有。在这样的 Box 上，请把客户端指向容器的 `lagernet` 地址，因为 `<box-ip>:8100` 连不上。请不要把端口 8100 经由该代理对外暴露，因为 MCP 服务器不做任何认证。
 
-该模式通过 `/etc/lager/no_publish` 在重启之间保留，`start_box.sh --publish` 会清除它。
-每次运行结束时，`start_box.sh` 都会报告该 Box 处于哪种模式。
+该模式通过 `/etc/lager/no_publish` 在重启之间保留，`start_box.sh --publish` 会清除它。每次运行结束时，`start_box.sh` 都会报告该 Box 处于哪种模式。
 </Note>
 
 ## 智能体能看到什么
@@ -96,10 +82,7 @@ MCP 服务器仍然运行，并在容器内绑定 `0.0.0.0:8100`，
 | `box_manage(action)` | `health` 健康检查，或从磁盘 `reload` 实验台配置。 |
 
 <Note>
-**默认情况下，工具接口是只读的。** 上面这七个工具不驱动硬件
-（设置电压、翻转 GPIO、烧录固件），也不改动 Box。
-这些都发生在智能体编写、并用 `lager python` 运行的测试脚本里，
-或者发生在专门的 [CLI 命令](/source/reference/cli)中。
+**默认情况下，工具接口是只读的。** 上面这七个工具不驱动硬件（设置电压、翻转 GPIO、烧录固件），也不改动 Box。这些都发生在智能体编写、并用 `lager python` 运行的测试脚本里，或者发生在专门的 [CLI 命令](/source/reference/cli)中。
 
 只有当下面两个开关都关闭时，这个默认状态才成立。
 </Note>
@@ -107,8 +90,7 @@ MCP 服务器仍然运行，并在容器内绑定 `0.0.0.0:8100`，
 ### 可选的工具开关
 
 有两个环境变量，两者默认都**关闭**，除非显式设置。设置之后，
-Box 的 MCP 服务器在启动时会注册额外的工具。每一个都会扩大已接入智能体
-对该 Box 的操作范围，因此请把它们当作部署决策，而不是便利设置。
+Box 的 MCP 服务器在启动时会注册额外的工具。每一个都会扩大已接入智能体对该 Box 的操作范围，因此请把它们当作部署决策，而不是便利设置。
 
 #### `LAGER_MCP_ALLOW_CONTROL`
 
@@ -124,11 +106,7 @@ Box 的 MCP 服务器在启动时会注册额外的工具。每一个都会扩�
 #### `LAGER_MCP_ALLOW_EXEC`
 
 <Warning>
-这个开关会把 Box 上的**任意命令执行和文件写入**能力，暴露给任何能访问 MCP 端口的智能体。
-智能体可以运行 Box 服务用户能运行的任何命令，并覆盖它能写入的任何文件。
-设置它之后，服务器自己会在启动时打印一条警告。
-请只在您自己掌控的实验台、受信任的网络上启用它，
-绝不要在共用或生产环境的 Box 上启用。
+这个开关会把 Box 上的**任意命令执行和文件写入**能力，暴露给任何能访问 MCP 端口的智能体。智能体可以运行 Box 服务用户能运行的任何命令，并覆盖它能写入的任何文件。设置它之后，服务器自己会在启动时打印一条警告。请只在您自己掌控的实验台、受信任的网络上启用它，绝不要在共用或生产环境的 Box 上启用。
 </Warning>
 
 | 工具 | 用途 |
@@ -141,9 +119,7 @@ Box 的 MCP 服务器在启动时会注册额外的工具。每一个都会扩�
 
 ### 提示（Prompts）
 
-服务器还注册了若干**提示**。它们是斜杠命令风格的入口，
-引导客户端（例如 Cursor）走完"发现 → 规划 → 编写 → 运行"的流程。
-它们本身不做任何工作，每一个都返回一段指令，由智能体用上面的工具去执行。
+服务器还注册了若干**提示**。它们是斜杠命令风格的入口，引导客户端（例如 Cursor）走完"发现 → 规划 → 编写 → 运行"的流程。它们本身不做任何工作，每一个都返回一段指令，由智能体用上面的工具去执行。
 
 | 提示 | 作用 |
 |--------|--------------|
@@ -155,28 +131,20 @@ Box 的 MCP 服务器在启动时会注册额外的工具。每一个都会扩�
 
 <Steps>
   <Step title="定位">
-    读取 `lager://dut/overview.md`（或调用 `discover_dut()`），
-    了解这台 Box 测试什么、MCU 和外设、各个子系统，以及应该获取哪些文档。
+    读取 `lager://dut/overview.md`（或调用 `discover_dut()`），了解这台 Box 测试什么、MCU 和外设、各个子系统，以及应该获取哪些文档。
   </Step>
   <Step title="发现">
-    调用 `discover_bench()` 枚举各个 Net、仪器和能力。
-    调用 `discover_bench(net_name)` 获取某个 Net 的详情，
-    包括它所属的子系统以及它所在的原理图图纸。
+    调用 `discover_bench()` 枚举各个 Net、仪器和能力。调用 `discover_bench(net_name)` 获取某个 Net 的详情，包括它所属的子系统以及它所在的原理图图纸。
   </Step>
   <Step title="规划">
-    调用 `plan_firmware_test(...)` 获取分阶段的计划，
-    每一步都附有 API 参考和文档指引。
+    调用 `plan_firmware_test(...)` 获取分阶段的计划，每一步都附有 API 参考和文档指引。
   </Step>
   <Step title="编写并运行">
-    用 `from lager import Net, NetType` 编写一个 Python 测试文件。
-    请用您连接 MCP 服务器时所用的 IP 地址来标识这台 Box ——
-    本地 Box 名称只是任意的客户端侧别名。`--box` 接受原始 IP，
-    因此不需要任何注册：运行 `lager python path/to/test.py --box <box-ip>`。
-    runnable 也可以是一个**文件夹**（入口为 `main.py`），
-    它会同步并导入其中的全部内容 —— 这在分发可复用的辅助模块时很方便：
+    用 `from lager import Net, NetType` 编写一个 Python 测试文件。请用您连接 MCP 服务器时所用的 IP 地址来标识这台 Box ——
+    本地 Box 名称只是任意的客户端侧别名。`--box` 接受原始 IP，因此不需要任何注册：运行 `lager python path/to/test.py --box <box-ip>`。
+    runnable 也可以是一个**文件夹**（入口为 `main.py`），它会同步并导入其中的全部内容 —— 这在分发可复用的辅助模块时很方便：
     `lager python path/to/test_dir --box <box-ip>`。（可选地，
-    `lager boxes add --name <name> --ip <box-ip> --user <ssh-user>` 可以注册一个
-    易读的别名；这三个选项都是必填的。）
+    `lager boxes add --name <name> --ip <box-ip> --user <ssh-user>` 可以注册一个易读的别名；这三个选项都是必填的。）
   </Step>
   <Step title="分析并迭代">
     查看 CLI 输出，调整脚本，然后用 `lager python` 重新运行。
@@ -187,10 +155,7 @@ Box 的 MCP 服务器在启动时会注册额外的工具。每一个都会扩�
 
 上面这一切的质量，都取决于您在搭建实验台时一次性录入的元数据：
 
-- **每个 Net 的 `purpose`** —— 在 Net 管理器 TUI（`lager nets tui`）中设置，
-  或用 `lager nets describe NAME --purpose "..."` 设置。用一句话描述
-  每根线在被测设备上做什么。
-- **DUT 上下文** —— 用 [`lager dut`](/source/zh/reference/cli/dut) 设置：
-  这台 Box 的用途、MCU、子系统，以及原理图和数据手册的引用。
+- **每个 Net 的 `purpose`** —— 在 Net 管理器 TUI（`lager nets tui`）中设置，或用 `lager nets describe NAME --purpose "..."` 设置。用一句话描述每根线在被测设备上做什么。
+- **DUT 上下文** —— 用 [`lager dut`](/source/zh/reference/cli/dut) 设置：这台 Box 的用途、MCU、子系统，以及原理图和数据手册的引用。
 
 完整指南请参阅[编写 DUT 上下文](/source/zh/reference/mcp/dut-context)。

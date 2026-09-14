@@ -90,8 +90,7 @@ lager python test.py --box my-lager-box --download report.json --download log.tx
 lager python test.py --box my-lager-box --download results.csv --allow-overwrite
 ```
 
-文件下载到当前工作目录，使用远端路径的基本名。如果同名的本地文件已经存在，
-除非设置了 `--allow-overwrite`，否则命令会失败。下载过程中会自动解压 gzip 压缩的文件。
+文件下载到当前工作目录，使用远端路径的基本名。如果同名的本地文件已经存在，除非设置了 `--allow-overwrite`，否则命令会失败。下载过程中会自动解压 gzip 压缩的文件。
 
 ## 分离模式
 
@@ -103,8 +102,7 @@ lager python long_running.py --box my-lager-box --detach
 ```
 
 在分离模式下：
-- 只要 Box 接受了这个作业，命令就返回。它在脚本开始之前就返回，
-  也在脚本所需的准备工作（解包模块目录、安装它的 `requirements.txt`）之前返回
+- 只要 Box 接受了这个作业，命令就返回。它在脚本开始之前就返回，也在脚本所需的准备工作（解包模块目录、安装它的 `requirements.txt`）之前返回
 - 不会把 stdout/stderr 回传
 - 脚本继续在 Box 上运行
 - 用 `--reattach` 查看它的输出，之后用 `--kill` 停止它
@@ -122,10 +120,8 @@ lager python --reattach 7f3c... --box my-lager-box
 # Process exited with code 1
 ```
 
-分离运行会获取 Box 锁。0.42.0 及以上版本的 Box 会在作业运行期间持有该锁，
-并在作业结束时释放它。CLI 会打印
-`Box 'my-lager-box' is held for the detached run and released when it ends`。
-较旧的 Box 在作业结束后仍保留该锁，此时 CLI 会打印
+分离运行会获取 Box 锁。0.42.0 及以上版本的 Box 会在作业运行期间持有该锁，并在作业结束时释放它。CLI 会打印
+`Box 'my-lager-box' is held for the detached run and released when it ends`。较旧的 Box 在作业结束后仍保留该锁，此时 CLI 会打印
 `release with: lager boxes unlock --box my-lager-box`。请参阅
 [锁定](/source/zh/reference/cli/locking)。
 
@@ -183,8 +179,7 @@ lager python analysis.py --box my-lager-box --timeout 300
 
 ## 结构化输出
 
-运行在 Box 上的脚本可以用 `lager.core.output()` 函数把结构化数据回传给 CLI。
-它使用独立于 stdout/stderr 的专用输出通道（文件描述符 3）。
+运行在 Box 上的脚本可以用 `lager.core.output()` 函数把结构化数据回传给 CLI。它使用独立于 stdout/stderr 的专用输出通道（文件描述符 3）。
 
 ### Box 侧 API
 
@@ -265,8 +260,7 @@ lager python flash_and_test.py --box my-lager-box --add-file firmware.hex --add-
 
 ## Box 锁
 
-`lager python` 在运行脚本时会获取 Box 锁，这样其他用户就不能同时驱动同一台 Box。
-请参阅[锁定](/source/zh/reference/cli/locking)。
+`lager python` 在运行脚本时会获取 Box 锁，这样其他用户就不能同时驱动同一台 Box。请参阅[锁定](/source/zh/reference/cli/locking)。
 
 - 前台运行在脚本运行期间持有该锁，命令退出时释放它。
 - 如果另一位用户持有该锁，命令在您的计算机上会立即失败；在 CI 中，它会等待该锁。
@@ -335,3 +329,35 @@ output({
 # Cleanup
 psu.disable()
 ```
+
+## 说明
+
+- 脚本专用的配置值请用 `--env`
+- 来自当前 shell 的密钥或令牌请用 `--passenv`
+- `--download` 只在脚本结束后取回文件，而不是在运行过程中
+- 端口转发的语法是 `SRC_PORT[:DST_PORT][/PROTOCOL]`
+- 输出通过带保活（间隔 20 秒）的多路复用 HTTP 协议实时流式传输
+
+---
+
+## 安装 Python 包
+
+脚本在 Box 上的 Lager Python 容器内运行。要安装脚本依赖的包，请用声明式的 `lager box-config pip` 命令。这些命令把包记录到 Box 配置中，并重建容器。此后这些包会在多次 `lager python` 运行和 Box 更新之间保持存在。
+
+```bash
+# Add one or more packages
+lager box-config pip add pandas requests --box my-box
+
+# List configured packages
+lager box-config pip list --box my-box
+
+# Remove a package
+lager box-config pip remove numpy --box my-box
+
+# Apply the changes (rebuild the container)
+lager box-config apply --box my-box
+```
+
+完整的声明式配置流程（pip/cargo/npm 包、apt、udev、挂载、env 等），请参阅 [Box Config 参考](/source/zh/reference/cli/box-config)。
+
+<Note>独立的 `lager pip` 命令已被移除，并入了 `lager box-config pip`。</Note>

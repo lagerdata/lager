@@ -82,8 +82,7 @@ pin.output(0)
 
 等待引脚到达目标电平。该调用会阻塞，直到引脚读到指定电平或超时。
 
-LabJack T7 使用最高 20 kHz 的硬件流式采样进行快速边沿检测。
-其他硬件（包括 LabJack U3）使用软件轮询。
+LabJack T7 使用最高 20 kHz 的硬件流式采样进行快速边沿检测。其他硬件（包括 LabJack U3）使用软件轮询。
 
 ```python
 from lager import Net, NetType
@@ -245,8 +244,7 @@ for i in range(10):
 
 ### 多通道 FTDI 适配器
 
-FTDI Net 从该 Net 记录的 `params.interface` 取得通道，可以是 `A`-`D` 或 `0`-`3`。
-没有 `interface` 的 Net 使用通道 A —— 在单通道的 FT232H 上这也是唯一的选择。
+FTDI Net 从该 Net 记录的 `params.interface` 取得通道，可以是 `A`-`D` 或 `0`-`3`。没有 `interface` 的 Net 使用通道 A —— 在单通道的 FT232H 上这也是唯一的选择。
 
 | 型号 | 通道 | 可用于 GPIO |
 |---|---|---|
@@ -254,9 +252,7 @@ FTDI Net 从该 Net 记录的 `params.interface` 取得通道，可以是 `A`-`D
 | FT2232H | 2（A、B） | A、B |
 | FT4232H | 4（A-D） | A-D |
 
-GPIO 以异步 bitbang 方式运行，不需要 MPSSE 引擎，因此该芯片的每个通道都可以使用。
-请注意引脚宽度不同：FT232H 和 FT2232H 提供 ADBUS0-7 加 ACBUS0-7（16 位），
-而 FT4232H 的每个通道为 8 个引脚。
+GPIO 以异步 bitbang 方式运行，不需要 MPSSE 引擎，因此该芯片的每个通道都可以使用。请注意引脚宽度不同：FT232H 和 FT2232H 提供 ADBUS0-7 加 ACBUS0-7（16 位），而 FT4232H 的每个通道为 8 个引脚。
 
 同一颗芯片上各 Net 类型之间如何分配通道，请参阅
 [Nets](/source/zh/reference/cli/nets)。

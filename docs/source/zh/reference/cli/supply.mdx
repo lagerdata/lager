@@ -3,8 +3,7 @@ title: 电源
 description: 控制 Box 上的电源
 ---
 
-通过 Lager CLI 控制和监视电源 Net。支持多个厂商的台式电源，
-可设置电压/电流和保护阈值，通过 TUI 实时监视，并支持并发访问。
+通过 Lager CLI 控制和监视电源 Net。支持多个厂商的台式电源，可设置电压/电流和保护阈值，通过 TUI 实时监视，并支持并发访问。
 
 ## 语法
 
@@ -238,8 +237,7 @@ lager supply NET_NAME set [--box TEXT]
 
 ### `tui`
 
-启动交互式终端界面，实时监视和控制电源。TUI 提供实时更新的测量值、
-内联的命令输入和键盘快捷键。
+启动交互式终端界面，实时监视和控制电源。TUI 提供实时更新的测量值、内联的命令输入和键盘快捷键。
 
 ```bash
 lager supply NET_NAME tui [--box TEXT]
@@ -281,10 +279,8 @@ lager supply NET_NAME tui [--box TEXT]
 | `r` | 刷新显示 |
 | 上/下方向键 | 浏览命令历史 |
 
-**并发访问：** TUI 运行期间，其他 `lager supply` CLI 命令
-（例如 `lager supply PSU voltage 3.3 --yes`）会通过 TUI 在端口 9000 上的
-WebSocket 连接转发，它们共用与仪器之间的同一条 USB 连接。
-如果 TUI 没有打开，命令则直接使用 USB 访问。
+**并发访问：** TUI 运行期间，其他 `lager supply` CLI 命令（例如 `lager supply PSU voltage 3.3 --yes`）会通过 TUI 在端口 9000 上的
+WebSocket 连接转发，它们共用与仪器之间的同一条 USB 连接。如果 TUI 没有打开，命令则直接使用 USB 访问。
 
 ## OVP / OCP 保护
 
@@ -312,9 +308,7 @@ lager supply PSU current 1.0 --ocp 1.2 --yes
 3. 用 `clear-ovp` 或 `clear-ocp` 清除故障
 4. 用 `enable` 重新打开输出
 
-**自动 OVP 管理（Rigol）：** 如果新电压会超过当前的 OVP 限值，
-驱动程序会先把 OVP 提高 10% 的余量，然后设置新电压，再恢复您期望的 OVP 限值。
-这样可以避免在改变电压时误触发。
+**自动 OVP 管理（Rigol）：** 如果新电压会超过当前的 OVP 限值，驱动程序会先把 OVP 提高 10% 的余量，然后设置新电压，再恢复您期望的 OVP 限值。这样可以避免在改变电压时误触发。
 
 ## 受支持的硬件
 

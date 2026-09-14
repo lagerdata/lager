@@ -72,8 +72,7 @@ lager boxes add-all [--yes]
 **选项：**
 - `--yes` - 不提示直接确认
 
-这条命令扫描您的 Tailscale 网络，查找名称长度为 5-8 个字符的设备，
-这是 Lager Box 常用的命名习惯。它把每一台都添加为 Box，名称转为大写。
+这条命令扫描您的 Tailscale 网络，查找名称长度为 5-8 个字符的设备，这是 Lager Box 常用的命名习惯。它把每一台都添加为 Box，名称转为大写。
 
 **工作原理：**
 1. 运行 `tailscale status` 发现设备
@@ -169,8 +168,7 @@ lager boxes list
 lager boxes          # same as list
 ```
 
-该命令查询每台 Box 在端口 9000 上的 API（`/lock` 和 `/status`），
-以显示实时的版本、状态和锁信息。
+该命令查询每台 Box 在端口 9000 上的 API（`/lock` 和 `/status`），以显示实时的版本、状态和锁信息。
 
 **输出：**
 
@@ -187,8 +185,7 @@ Your CLI: 0.47.0
 1 box did not report a version
 ```
 
-只有当某台 Box 被锁定时，`locked by` 列才会出现。来自分支或提交的版本会在括号中
-显示 ref，例如 `0.47.0 (main)`。使用发布标签的 Box 只显示版本号。
+只有当某台 Box 被锁定时，`locked by` 列才会出现。来自分支或提交的版本会在括号中显示 ref，例如 `0.47.0 (main)`。使用发布标签的 Box 只显示版本号。
 `lager hello` 会打印含提交的完整 ref。
 
 **状态颜色：**
@@ -200,9 +197,12 @@ Your CLI: 0.47.0
 | `newer` | 青色 | Box 版本比 CLI 新 |
 | `unreachable` | 红色 | 无法联系到该 Box |
 | `timeout` | 红色 | 连接超时 |
+| `old box` | 红色 | 该 Box 不支持版本上报 |
+| `no IP` | 红色 | 保存的条目中没有 IP 地址 |
+| `bad response`、`invalid JSON`、`HTTP <code>`、`error` | 红色 | Box 有应答，但给出的不是可用的版本号 |
+| `sign-in required`、`session rejected` | 红色 | 该 Box 受访问网关保护。CLI 会打印需要执行的 `lager login` 命令 |
 
-如果某台 Box 在 `locked by` 列中显示 `root`，该命令会打印一条警告。
-这种锁通常来自 Docker 容器内部。下次请用 `lager boxes lock --user` 指明用户。
+如果某台 Box 在 `locked by` 列中显示 `root`，该命令会打印一条警告。这种锁通常来自 Docker 容器内部。下次请用 `lager boxes lock --user` 指明用户。
 
 ### `delete-all`
 
@@ -298,8 +298,7 @@ lager boxes unlock --box my-lager-box --force
 
 ## 配置的存放位置
 
-boxes 系列命令把 Box 配置写入您主目录中的 `~/.lager`。
-如果设置了 `LAGER_CONFIG_FILE_DIR`，则改为写入该目录下的 `.lager`。
+boxes 系列命令把 Box 配置写入您主目录中的 `~/.lager`。如果设置了 `LAGER_CONFIG_FILE_DIR`，则改为写入该目录下的 `.lager`。
 Box 配置位于 `BOXES` 键之下：
 
 ```json
@@ -319,8 +318,7 @@ Box 配置位于 `BOXES` 键之下：
 - **简单形式**：只有一个 IP 地址字符串
 - **完整形式**：含 ip、user 和 version 字段的对象
 
-读取 Box 时，CLI 会把全局文件与它在您项目目录中找到的 `.lager` 文件合并。
-离当前目录最近的文件优先。
+读取 Box 时，CLI 会把全局文件与它在您项目目录中找到的 `.lager` 文件合并。离当前目录最近的文件优先。
 
 ---
 

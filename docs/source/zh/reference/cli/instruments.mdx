@@ -33,8 +33,7 @@ lager instruments --box my-lager-box
 
 ## 输出
 
-该命令显示一个已连接仪器的表格。`Channels` 列为该仪器提供的每种 Net 类型各占一行，
-并列出该类型的通道。请把表中的名称、某个通道和地址一起用于 `lager nets add`。
+该命令显示一个已连接仪器的表格。`Channels` 列为该仪器提供的每种 Net 类型各占一行，并列出该类型的通道。请把表中的名称、某个通道和地址一起用于 `lager nets add`。
 
 ```
 Name                     Channels                                                       VISA Address
@@ -97,19 +96,16 @@ LabJack_U3               adc: AIN0, AIN1, AIN2, AIN3, AIN4, AIN5, AIN6, AIN7, AI
 
 ## 两台设备报告同一个地址
 
-地址通常包含设备的 USB 序列号，因此同型号的两台设备地址不同。
-两者都会出现在表格中，并且各自都可以创建 Net。
+地址通常包含设备的 USB 序列号，因此同型号的两台设备地址不同。两者都会出现在表格中，并且各自都可以创建 Net。
 
 LabJack T7 和 LabJack U3 不报告序列号。因此，同一台 Lager Box 上的两台 T7
-或两台 U3 会报告相同的地址，Net 无法说明它指的是哪一台。
-该命令会隐藏这些行，并在表格下方打印这条信息：
+或两台 U3 会报告相同的地址，Net 无法说明它指的是哪一台。该命令会隐藏这些行，并在表格下方打印这条信息：
 
 ```
 LabJack_T7 at USB0::0x0CD5::0x0007::::INSTR: more than one device reports this address, so a net could not say which one it means. This model exposes no unique serial number. Use only one at a time, or drive them from separate boxes.
 ```
 
-`lager nets add` 会拒绝在该地址上创建 Net。`add-all` 和 TUI 中的同一规则，
-请参阅 [Nets](/source/zh/reference/cli/nets)。
+`lager nets add` 会拒绝在该地址上创建 Net。`add-all` 和 TUI 中的同一规则，请参阅 [Nets](/source/zh/reference/cli/nets)。
 
 ---
 
