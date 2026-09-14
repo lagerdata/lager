@@ -170,15 +170,17 @@ lager boxes          # same as list
 
 该命令查询每台 Box 在端口 9000 上的 API（`/lock` 和 `/status`），以显示实时的版本、状态和锁信息。
 
-所有 Box 会同时查询。已关机或正在更新的 Box 只消耗它自己的超时时间，不会再让其他 Box 一起等待。在终端中，表格会立即打印出来，每一行先显示 `pending`。各行会随着对应 Box 的应答逐一填入。下方的倒计时显示尚未应答的 Box 还剩多少时间：
+所有 Box 会同时查询。已关机或正在更新的 Box 只消耗它自己的超时时间，不会再让其他 Box 一起等待。在终端中，表格会立即打印出来，每一行先显示 `pending`。尚未应答的 `status` 和 `locked by` 单元格旁边会有一个旋转指示符。各行会随着对应 Box 的应答逐一填入。下方的倒计时显示尚未应答的 Box 还剩多少时间：
 
 ```text
-name        ip             user      version   status
-=====================================================
+name        ip             user      version   status      locked by
+====================================================================
 box-one     <BOX_IP>       charles   0.47.0    current
-box-two     <BOX_IP>       charles   -         pending
+box-two     <BOX_IP>       charles   -         ⠹ pending   ⠹
 Waiting on 1 box - 5s left, Ctrl+C to stop waiting
 ```
+
+实时表格始终显示 `locked by` 列，因为在 Box 应答之前无法知道锁的状态。稍后才出现的列会让下方的每一行发生位移。
 
 按 `Ctrl+C` 可以停止等待，同时保留已经应答的 Box：其余的会标记为 `cancelled`，表格随即打印。始终不应答的 Box 会在倒计时归零后不久被放弃，并标记为
 `no response`，因此该命令一定会结束。
@@ -200,7 +202,7 @@ Your CLI: 0.47.0
 1 box did not report a version
 ```
 
-只有当某台 Box 被锁定时，`locked by` 列才会出现。来自分支或提交的版本会在括号中显示 ref，例如 `0.47.0 (main)`。使用发布标签的 Box 只显示版本号。
+在这张最终表格中，只有当某台 Box 被锁定时，`locked by` 列才会出现。来自分支或提交的版本会在括号中显示 ref，例如 `0.47.0 (main)`。使用发布标签的 Box 只显示版本号。
 `lager hello` 会打印含提交的完整 ref。
 
 **状态颜色：**
@@ -217,7 +219,7 @@ Your CLI: 0.47.0
 | `bad response`、`invalid JSON`、`HTTP <code>`、`error` | 红色 | Box 有应答，但给出的不是可用的版本号 |
 | `sign-in required`、`session rejected` | 红色 | 该 Box 受访问网关保护。CLI 会打印需要执行的 `lager login` 命令 |
 | `no access`、`auth server down`、`token rejected` | 红色 | 该 Box 受访问网关保护，且网关拒绝了请求。需要访问授权或管理员处理，而不是重新登录 |
-| `pending` | 灰色 | 仅在终端中显示，表示该 Box 尚未应答 |
+| `pending` | 灰色 | 仅在终端中显示，带旋转指示符，表示该 Box 尚未应答 |
 | `no response` | 红色 | 该 Box 始终没有应答，在倒计时结束后被放弃 |
 | `cancelled` | 红色 | `Ctrl+C` 停止等待时，该 Box 还没有应答 |
 
