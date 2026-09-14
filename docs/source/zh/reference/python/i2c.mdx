@@ -1,0 +1,284 @@
+---
+title: I2C
+description: 与总线上的 I2C 设备通信
+---
+
+读写并扫描连接到 Lager Box 的 I2C（集成电路总线）设备。
+
+## 导入
+
+```python
+from lager import Net, NetType
+```
+
+## 方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `config()` | 配置 I2C 总线参数 |
+| `scan()` | 扫描总线上已连接的设备 |
+| `read()` | 从设备读取字节 |
+| `write()` | 向设备写入字节 |
+| `write_read()` | 在一次事务中先写后读（重复起始条件） |
+| `get_config()` | 获取该 Net 的原始配置 |
+
+## 方法参考
+
+### `Net.get(name, type=NetType.I2C)`
+
+按名称获取一个 I2C Net。
+
+```python
+from lager import Net, NetType
+
+i2c = Net.get('MY_I2C_NET', type=NetType.I2C)
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `name` | `str` | I2C Net 的名称 |
+| `type` | `NetType` | 必须为 `NetType.I2C` |
+
+**返回：** I2C Net 实例
+
+### `config(frequency_hz, pull_ups)`
+
+配置 I2C 总线参数。只有显式给出的参数会被修改；省略的参数保留已保存的值。
+
+```python
+i2c.config(frequency_hz=400_000)
+i2c.config(frequency_hz=100_000, pull_ups=True)
+```
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `frequency_hz` | `int` 或 `None` | 时钟频率，单位 Hz（例如 100000、400000）。`None` 表示保留已保存的值 |
+| `pull_ups` | `bool` 或 `None` | 启用/禁用内部上拉（仅 Aardvark）。`None` 表示保留已保存的值 |
+
+### `scan(start_addr, end_addr)`
+
+扫描 I2C 总线上已连接的设备。
+
+```python
+devices = i2c.scan()
+print(f"Found: {[hex(a) for a in devices]}")
+```
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `start_addr` | `int` | 探测的第一个 7 位地址（默认 `0x08`） |
+| `end_addr` | `int` | 探测的最后一个 7 位地址（默认 `0x77`） |
+
+**返回：** `list[int]` - 以 ACK 应答的 7 位地址列表
+
+### `read(address, num_bytes, output_format, overrides)`
+
+从 I2C 设备读取字节。
+
+```python
+data = i2c.read(address=0x48, num_bytes=2)
+temp = (data[0] << 8) | data[1]
+```
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `address` | `int` | 7 位设备地址（`0x00`-`0x7F`） |
+| `num_bytes` | `int` | 要读取的字节数 |
+| `output_format` | `str` | `"list"`（默认）、`"hex"`、`"bytes"` 或 `"json"` |
+| `overrides` | `dict` 或 `None` | 本次调用的配置覆盖（例如 `{"frequency_hz": 400000}`） |
+
+**返回：** `list[int]` - 收到的字节，以整数表示（当 `output_format="list"` 时）
+
+### `write(address, data, overrides)`
+
+向 I2C 设备写入字节。
+
+```python
+i2c.write(address=0x48, data=[0x0A, 0x03])
+```
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `address` | `int` | 7 位设备地址（`0x00`-`0x7F`） |
+| `data` | `list[int]` | 要写入的字节 |
+| `overrides` | `dict` 或 `None` | 本次调用的配置覆盖（例如 `{"frequency_hz": 400000}`） |
+
+### `write_read(address, data, num_bytes, output_format, overrides)`
+
+用重复起始条件，在一次 I2C 事务中先写后读。这是读取设备寄存器的标准做法。
+
+```python
+# Read 2-byte temperature register at address 0x00
+temp_bytes = i2c.write_read(address=0x48, data=[0x00], num_bytes=2)
+temperature = (temp_bytes[0] << 8) | temp_bytes[1]
+```
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `address` | `int` | 7 位设备地址（`0x00`-`0x7F`） |
+| `data` | `list[int]` | 读取之前要写入的字节（通常是一个寄存器地址） |
+| `num_bytes` | `int` | 写入之后要读取的字节数 |
+| `output_format` | `str` | `"list"`（默认）、`"hex"`、`"bytes"` 或 `"json"` |
+| `overrides` | `dict` 或 `None` | 本次调用的配置覆盖（例如 `{"frequency_hz": 400000}`） |
+
+**返回：** `list[int]` - 收到的字节，以整数表示（当 `output_format="list"` 时）
+
+### `get_config()`
+
+获取该 Net 的原始配置字典。
+
+```python
+cfg = i2c.get_config()
+print(cfg['name'])
+print(cfg['params'])
+```
+
+**返回：** `dict` - 完整的 Net 配置，包含名称、角色、仪器和参数
+
+## 输出格式
+
+`read()` 和 `write_read()` 的 `output_format` 参数决定数据以何种形式返回：
+
+| 格式 | 返回类型 | 示例 |
+|--------|-------------|---------|
+| `"list"` | `list[int]` | `[72, 118, 153]` |
+| `"hex"` | `str` | `"48 76 99"` |
+| `"bytes"` | `str` | `"72 118 153"` |
+| `"json"` | `dict` | `{"data": [72, 118, 153]}` |
+
+## 示例
+
+### 基本的设备读取
+
+```python
+from lager import Net, NetType
+
+i2c = Net.get('my_i2c', type=NetType.I2C)
+
+# Scan for devices
+devices = i2c.scan()
+print(f"Found devices at: {[hex(a) for a in devices]}")
+
+# Read 2 bytes from device at 0x48
+data = i2c.read(address=0x48, num_bytes=2)
+print(f"Data: {data}")
+```
+
+### 寄存器读写
+
+```python
+from lager import Net, NetType
+
+i2c = Net.get('my_i2c', type=NetType.I2C)
+
+# Write configuration register
+i2c.write(address=0x48, data=[0x01, 0x60, 0xA0])
+
+# Read temperature register (write register addr, then read 2 bytes)
+temp_bytes = i2c.write_read(address=0x48, data=[0x00], num_bytes=2)
+raw = (temp_bytes[0] << 8) | temp_bytes[1]
+celsius = raw / 256.0
+print(f"Temperature: {celsius:.1f} C")
+```
+
+### 总线配置
+
+```python
+from lager import Net, NetType
+
+i2c = Net.get('my_i2c', type=NetType.I2C)
+
+# Configure for 400 kHz Fast Mode with pull-ups
+i2c.config(frequency_hz=400_000, pull_ups=True)
+
+# Scan a specific address range
+devices = i2c.scan(start_addr=0x20, end_addr=0x7F)
+for addr in devices:
+    print(f"  0x{addr:02x}")
+```
+
+### 多设备配置
+
+```python
+from lager import Net, NetType
+
+i2c = Net.get('sensor_bus', type=NetType.I2C)
+i2c.config(frequency_hz=100_000)
+
+# Read from multiple sensors on the same bus
+TEMP_SENSOR = 0x48
+PRESSURE_SENSOR = 0x76
+
+# Temperature (TMP102)
+temp_raw = i2c.write_read(address=TEMP_SENSOR, data=[0x00], num_bytes=2)
+temp_c = ((temp_raw[0] << 4) | (temp_raw[1] >> 4)) * 0.0625
+print(f"Temperature: {temp_c:.1f} C")
+
+# Pressure (BMP280) - read chip ID register
+chip_id = i2c.write_read(address=PRESSURE_SENSOR, data=[0xD0], num_bytes=1)
+print(f"BMP280 chip ID: 0x{chip_id[0]:02x}")
+```
+
+### 逐次调用的配置覆盖
+
+```python
+from lager import Net, NetType
+
+i2c = Net.get('my_i2c', type=NetType.I2C)
+i2c.config(frequency_hz=100_000)
+
+# Most devices use standard mode
+data = i2c.read(address=0x48, num_bytes=2)
+
+# One device needs fast mode for this transaction
+data = i2c.read(address=0x50, num_bytes=256,
+                overrides={"frequency_hz": 400_000})
+```
+
+## 受支持的硬件
+
+| 适配器 | 说明 |
+|---------|-------------|
+| LabJack T7 | 用 GPIO 引脚（FIO/EIO）作 SDA 和 SCL |
+| LabJack U3 | 用 DIO 引脚作 SDA 和 SCL（默认 `FIO6` 和 `FIO7`） |
+| Aardvark I2C/SPI | 专用的 USB I2C 适配器，支持上拉 |
+| FTDI FT232H / FT2232H / FT4232H | 基于 MPSSE 的 I2C；通道按 Net 逐个选择 |
+
+### 多通道 FTDI 适配器
+
+FTDI Net 从 Net 记录的 `params.interface` 取得通道，接受 `A`-`D` 或 `0`-`3`。没有 `interface` 的 Net 使用通道 A —— 在单通道的 FT232H 上这也是唯一的选择。
+
+| 型号 | 通道 | 可用于 I2C |
+|---|---|---|
+| FT232H | 1（A） | A |
+| FT2232H | 2（A、B） | A、B |
+| FT4232H | 4（A-D） | A、B |
+
+I2C 运行在 FTDI 芯片的 MPSSE 引擎上，而在 FT4232H 上只有通道 A 和 B 带有 MPSSE 引擎。请求 C 或 D 会在 Net 构建时失败并指出该通道，而不是在 pyftdi 内部某处失败。
+
+一块芯片上各类 Net 如何分配通道，请参阅 [Nets](/source/zh/reference/cli/nets)。
+
+### LabJack U3
+
+- 在 U3 上使用 I2C 需要 U3 硬件版本 1.21 或更高。U3 只能作为总线主机。
+- U3 没有上拉电阻。请从 SDA 和 SCL 各接一个外部电阻到 VS；LabJack 建议 4.7 kΩ。没有上拉时，每个地址都会返回 NAK，`scan()` 返回空列表。
+- `pull_ups` 对 U3 不起作用。
+- 一次事务最多写 50 字节、读 52 字节。超出的事务会抛出错误。
+- 时钟约在 10 kHz 至 150 kHz 之间运行，并且绝不会超过 `frequency_hz`。超出该范围的请求会被钳位，并在脚本的标准错误输出上给出警告。
+- `write()` 和 `write_read()` 会检查地址的应答，以及每个字节的应答。错误信息会指出设备拒绝的第一个字节。写入 31 字节或更多时，错误信息不会指出是哪一个字节。
+- `FIO0`-`FIO3` 不能承载 I2C。使用这些引脚的 Net 会让驱动抛出错误。
+
+引脚分配，以及如何用其他引脚创建 U3 Net，请参阅 [I2C](/source/zh/reference/cli/i2c)。
+
+## 说明
+
+- Net 必须配置为 `NetType.I2C`
+- 地址采用 7 位格式（`0x00`-`0x7F`），不是左移后的形式
+- `pull_ups` 只在 Aardvark 适配器上有效；LabJack T7 和 LabJack U3 会忽略它
+- `write_read()` 用重复起始条件实现原子的寄存器读取
+- 默认扫描范围（`0x08`-`0x77`）跳过保留地址
+- 配置修改会持久化到 `saved_nets.json`，供后续命令使用
+- LabJack T7 把请求的频率映射到一个时钟节流值，范围约为 130 Hz 至 450 kHz
+- LabJack U3 约在 10 kHz 至 150 kHz 之间运行

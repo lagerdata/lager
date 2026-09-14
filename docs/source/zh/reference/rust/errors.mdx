@@ -1,0 +1,174 @@
+---
+title: 错误
+description: 每一个 Error 变体、它的触发时机，以及如何对它做匹配
+---
+
+每一个可能失败的调用都返回 `lager::Result<T>`，它是 `std::result::Result<T, lager::Error>` 的别名。
+
+```rust
+pub type Result<T> = std::result::Result<T, Error>;
+```
+
+`Error` 带有 `#[non_exhaustive]`，因此对它做 `match` 需要一个兜底分支，而新增变体不会破坏您的构建。
+
+## 变体
+
+| 变体 | 触发时机 |
+|---|---|
+| `Connection(String)` | 联系不上 Box —— DNS、TCP 连接或传输层失败 |
+| `Timeout(String)` | 客户端侧的截止时间到了 |
+| `Box { status, message }` | Box 接受了请求，并报告了一次失败 |
+| `UnsupportedByBox { message }` | 端点存在，但这台 Box 的软件太旧 |
+| `NotSupportedByBox { feature, details }` | 该 crate 根本没有对应的路由 |
+| `Decode(String)` | 响应无法解析 |
+| `AuthRequired { box_host, auth_url, message }` | Box 受网关保护，而且没有可用的凭据 |
+| `Config(String)` | 客户端侧的配置问题 |
+| `Stream(String)` | 流式会话（UART 或 RTT）失败 |
+
+## 变体参考
+
+### `Connection(String)`
+
+该 crate 根本没有连上 Box。这个变体也涵盖 Socket.IO 连接失败。
+
+```text
+cannot reach the Lager box: {msg}. Check network/Tailscale and that the box is
+online and updated
+```
+
+### `Timeout(String)`
+
+**客户端侧**的截止时间到了：HTTP 请求、流式会话的连接确认，或者一直没等到的 `wait_for` 目标。
+
+```text
+request to the Lager box timed out: {msg}
+```
+
+<Note>
+  硬件等待超时**不是**这个变体。`wait_for_level` 在 Box 上超时，返回的是 `Error::Box`、HTTP 502 和 `GPIO 'gpio24' did not reach level 1 within 2.0s`，因为 Box 完成了请求并报告了结果。`Error::Timeout` 表示传输层放弃了。
+</Note>
+
+### `Box { status: u16, message: String }`
+
+Box 接受了请求，并报告了一次失败。这是您最常见到的变体，其中的 `message` 是 Box 自己的文本。
+
+```text
+box error (HTTP {status}): {message}
+```
+
+常见形态：
+
+| 情形 | 状态码 | 信息 |
+|---|---|---|
+| Net 不存在 | 404 | `[Supply] Net 'x' not found. Create it with 'lager nets add'.` |
+| Net 存在，但角色不对 | 404 | `Net 'gpio24 (role adc)' not found` |
+| 调试 Net，角色不对 | 404 | `net 'adc1' exists but is not a debug net` |
+| 调试 Net 不存在 | 404 | `debug net 'nosuch' not found on this box` |
+| 设定值超过硬件限制 | 400 | `Voltage 999.0V exceeds hardware limit 60.0V` |
+| 设定值超过安全上限 | 502 | `Refused voltage(5.0) on net 'supply2': exceeds max_voltage of 3.6` |
+| 在受保护的 Net 上擦除 | 403 | `Refused erase on net 'debug1': ... allow_destructive: false.` |
+| Box 锁被别人持有 | 409 | `Box is locked by <holder>` |
+| 仪器不在总线上 | 502 | `Could not open instrument at <address>: No device found.` |
+
+路由器 Net 的"未找到"信息是 `Net 'router1' not found`，不带角色，因为路由器 Net 有意不发送角色提示。
+
+Box 也可能用 **HTTP 200** 加 `success: false` 来报告失败 —— 跨角色的仪器冲突就是这样。那仍然是 `Error::Box`。
+
+### `UnsupportedByBox { message }`
+
+该端点在 API 中是存在的，但*这台* Box 太旧，提供不了它。信息中会指明所需的版本。
+
+```text
+{message}. This box image does not support this endpoint; update the box
+```
+
+例如：`usb_devices()` 和 `dfu()` 需要 Box 0.33.0；安全限值和交互式 RTT 需要 0.35.0；`UsbPort::state()` 需要 0.29.0。
+
+### `NotSupportedByBox { feature, details }`
+
+该 crate 在任何 Box 上都没有这个功能的路由。目前只有 `Scope` 属于这种情况。
+
+```text
+'{feature}' is not yet available over the box HTTP API: {details}
+```
+
+<Warning>
+  `UnsupportedByBox` 和 `NotSupportedByBox` 是两个不同的变体，名字却容易混淆。**Unsupported** 的意思是*请更新 Box*。**Not supported** 的意思是*目前没有任何 Box 能做这件事*。
+</Warning>
+
+### `Decode(String)`
+
+该 crate 没能把响应解析成预期的结构。原因可能是响应体被截断、字段类型出乎意料，或者缺少必填字段。
+
+```text
+could not decode box response: {msg}
+```
+
+### `AuthRequired { box_host, auth_url, message }`
+
+Box 受网关保护，而且没有可用的凭据。
+
+```text
+{message}. Sign in with `lager login {auth_url}` (this crate reuses the CLI's
+session), or set LAGER_GATEWAY_TOKEN / use LagerBoxBuilder::bearer_token
+```
+
+请参阅 [认证](/source/zh/reference/rust/auth)。
+
+### `Config(String)`
+
+客户端侧的问题，在发送任何内容之前就被发现：`LAGER_BOX_HOST` 未设置、主机地址无法解析、无法推断类型的固件路径，或者读不了的文件。
+
+```text
+configuration error: {msg}
+```
+
+### `Stream(String)`
+
+UART 或 RTT 会话失败：该 Net 已被另一个会话占用、设备消失，或者会话意外关闭。
+
+```text
+streaming session error: {msg}
+```
+
+## 匹配
+
+```rust
+use lager::Error;
+
+match supply.set_voltage(5.0) {
+    Ok(()) => {}
+    Err(Error::UnsupportedByBox { message }) => {
+        eprintln!("box too old, skipping: {message}");
+        return Ok(());
+    }
+    Err(Error::Box { status: 403, message }) => {
+        panic!("refused by a safety limit: {message}");
+    }
+    Err(Error::AuthRequired { auth_url, .. }) => {
+        panic!("run `lager login {auth_url}` first");
+    }
+    Err(e) => return Err(e),   // Error is #[non_exhaustive]
+}
+```
+
+### 在旧 Box 上跳过测试
+
+```rust
+fn skip_if_unsupported<T>(r: lager::Result<T>) -> Option<T> {
+    match r {
+        Ok(v) => Some(v),
+        Err(lager::Error::UnsupportedByBox { message }) => {
+            eprintln!("skipping: {message}");
+            None
+        }
+        Err(e) => panic!("{e}"),
+    }
+}
+```
+
+## 说明
+
+- `Error` 实现了 `std::error::Error` 和 `Display`，因此 `?` 可以直接转换到 `Box<dyn Error>` 和 `anyhow::Error`，不需要额外转换。
+- `From<serde_json::Error>` 映射到 `Error::Decode`。
+- 这些信息是写给在 CI 输出里阅读的人看的。请把错误本身打印出来，而不是只打印它的变体名。

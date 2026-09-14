@@ -1,0 +1,118 @@
+---
+title: BluFi
+description: 通过 BLE 为 ESP32 配置 WiFi 凭据
+---
+
+用乐鑫的 BluFi 协议，通过蓝牙把 ESP32 配置到一个 WiFi 网络上。这正是手机 App 在设备开箱配网时执行的流程，而测试可以驱动它。
+
+## 句柄
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let blufi = lager.blufi();
+```
+
+BluFi 是 **Box 级**能力，不是一个 Net，而且它与 BLE 共用 Box 上唯一的蓝牙适配器。
+
+## 方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `scan()` | 扫描支持 BluFi 的 BLE 设备 |
+| `connect()` | 按广播的 BLE 名称连接 |
+| `provision()` | 把目标配置到某个 WiFi 网络上 |
+| `wifi_scan()` | 让目标扫描它自己能看到的网络 |
+| `status()` | 目标当前的 WiFi 状态 |
+| `version()` | 目标的 BluFi 固件版本 |
+
+## 类型
+
+```rust
+pub struct BlufiStatus {
+    pub device_name: Option<String>,
+    pub op_mode: Option<i64>,          // 0 NULL, 1 STA, 2 SoftAP, 3 STA+SoftAP
+    pub op_mode_name: Option<String>,
+    pub sta_conn: Option<i64>,         // 0 connected, 1 failed, 2 connecting, 3 no IP
+    pub sta_conn_name: Option<String>,
+    pub soft_ap_conn: Option<i64>,
+}
+
+pub struct BlufiProvisionResult {
+    pub device_name: Option<String>,
+    pub ssid: String,
+    pub sta_conn: Option<i64>,         // 0 means connected
+    pub sta_conn_name: Option<String>,
+}
+
+pub struct BlufiNetwork {
+    pub ssid: String,
+    pub rssi: Option<i64>,   // dBm, as seen by the target
+}
+```
+
+## 方法参考
+
+### `scan(timeout: f64) -> Result<Vec<BleDevice>>`
+
+扫描附近正在广播、支持 BluFi 的设备。
+
+### `connect(device_name: &str) -> Result<BlufiDeviceInfo>`
+
+按广播的 BLE **名称**连接，而不是按地址。返回固件版本和 WiFi 状态。
+
+### `provision(device_name: &str, ssid: &str, password: &str) -> Result<BlufiProvisionResult>`
+
+把目标配置到某个网络上。目标没能进入已连接状态时，以 `Error::Box` 失败。
+
+```rust
+let r = blufi.provision("ESP-DUT", "bench-wifi", "hunter2")?;
+assert_eq!(r.sta_conn, Some(0), "not connected: {:?}", r.sta_conn_name);
+```
+
+### `wifi_scan(device_name: &str) -> Result<Vec<BlufiNetwork>>`
+
+让目标扫描**它自己**能看到的网络。这是目标的射频在报告，而不是 Box 的 —— 在测试天线布置时，这正是关键所在。
+
+### `status(device_name: &str) -> Result<BlufiStatus>` 和 `version(device_name: &str) -> Result<Option<String>>`
+
+目标当前的 WiFi 状态，以及它的 BluFi 固件版本。
+
+## 示例
+
+### 给一台全新设备配网，并确认它已加入
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let blufi = lager.blufi();
+
+let devices = blufi.scan(10.0)?;
+let dut = devices.iter().find(|d| d.name.starts_with("ESP-"))
+    .expect("no BluFi device advertising");
+
+let info = blufi.connect(&dut.name)?;
+println!("BluFi firmware {:?}", info.version);
+
+let visible = blufi.wifi_scan(&dut.name)?;
+assert!(visible.iter().any(|n| n.ssid == "bench-wifi"),
+        "target cannot see the bench AP; check antenna placement");
+
+let result = blufi.provision(&dut.name, "bench-wifi", "hunter2")?;
+assert_eq!(result.sta_conn, Some(0), "provisioning failed: {:?}", result.sta_conn_name);
+
+let after = blufi.status(&dut.name)?;
+println!("op mode {:?}, station {:?}", after.op_mode_name, after.sta_conn_name);
+```
+
+## 说明
+
+- **`sta_conn == 0` 表示已连接。** 在这里 0 是成功而不是失败，取值依次为 0 已连接、1 失败、2 连接中、3 已连接但没有 IP。处于 3 的目标已经关联上了，但没有拿到 DHCP 租约，这和密码错误是不同的问题。
+- 除 `scan` 之外的每个动作都要先通过 BLE 连接并协商 BluFi 安全，因此预算都很宽。Box 侧的连接超时是 20 秒，客户端在此之上还会再加一份余量：
+  - 多数动作加 40 秒。
+  - `provision` 加 60 秒，因为端到端的配网经常要花 30 秒以上。
+  - `wifi_scan` 加 30 秒，因为目标要自己跑一次扫描。
+- BluFi 与 BLE 共用 Box 上唯一的蓝牙适配器，Box 会把两者串行化。
+- 设备按广播的**名称**寻址，这与使用地址的 BLE 不同。

@@ -1,0 +1,153 @@
+---
+title: 电源
+description: 驱动可编程电源，并读取它的完整状态
+---
+
+设置电压和电流、启用保护跳闸，并在一次仪器事务中读取电源的完整状态。
+
+## 句柄
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let supply = lager.supply("supply1");
+```
+
+## 方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `name()` | 该句柄所指向的 Net 名称 |
+| `set_voltage()` | 设置输出电压设定值 |
+| `set_current()` | 设置输出电流限值 |
+| `enable()` | 打开输出 |
+| `disable()` | 关闭输出 |
+| `set_ovp()` | 设置并启用过压保护 |
+| `set_ocp()` | 设置并启用过流保护 |
+| `clear_ovp()` | 清除一次过压跳闸 |
+| `clear_ocp()` | 清除一次过流跳闸 |
+| `state()` | 在一次事务中取得完整的结构化状态 |
+
+## 类型
+
+### `SupplyState`
+
+每个字段都是 `Option`，因为即使某一项读取失败，Box 也会返回一条结构完整的记录，而且并不是每台电源都会报告每一个量。
+
+```rust
+pub struct SupplyState {
+    pub netname: Option<String>,
+    pub channel: Option<i64>,
+    pub error: Option<String>,        // set when the whole gather failed
+    pub voltage: Option<f64>,         // measured, V
+    pub current: Option<f64>,         // measured, A
+    pub power: Option<f64>,           // measured, W
+    pub enabled: Option<bool>,
+    pub mode: Option<String>,         // "CV" or "CC"
+    pub voltage_set: Option<f64>,     // setpoint, V
+    pub current_set: Option<f64>,     // setpoint, A
+    pub voltage_max: Option<f64>,     // instrument hardware limit, V
+    pub current_max: Option<f64>,     // instrument hardware limit, A
+    pub ocp_limit: Option<f64>,
+    pub ocp_tripped: Option<bool>,
+    pub ovp_limit: Option<f64>,
+    pub ovp_tripped: Option<bool>,
+}
+```
+
+## 方法参考
+
+### `set_voltage(volts: f64) -> Result<()>`
+
+设置输出电压设定值。
+
+```rust
+supply.set_voltage(3.3)?;
+```
+
+超过仪器硬件限制的值，Box 会在它到达仪器之前就拒绝，形式是 `Error::Box`，信息中会指出该限制。信息内容是 `Voltage 999.0V exceeds hardware limit 60.0V`。
+
+### `set_current(amps: f64) -> Result<()>`
+
+设置电流限值。正是达到这个限值，才会让电源从 CV 模式进入 CC 模式。
+
+### `enable() -> Result<()>` 和 `disable() -> Result<()>`
+
+打开或关闭输出。
+
+<Warning>
+  请在清理阶段调用 `disable()`。保持在启用状态的电源，在您的测试进程退出之后仍然是启用的，于是下一个测试一开始被测设备就已经通电了。
+</Warning>
+
+### `set_ovp(volts: f64) -> Result<()>` 和 `set_ocp(amps: f64) -> Result<()>`
+
+设置**并启用**保护跳闸。它们不只是写入阈值。
+
+### `clear_ovp() -> Result<()>` 和 `clear_ocp() -> Result<()>`
+
+清除已经触发的跳闸。在您清除之前，输出会一直保持关闭。
+
+### `state() -> Result<SupplyState>`
+
+在一次仪器事务中读取全部内容。
+
+```rust
+let s = supply.state()?;
+println!("{:?} V at {:?} A, mode {:?}", s.voltage, s.current, s.mode);
+```
+
+这里没有单独的 getter。`state()` 就是读取路径，而一次把所有内容取齐，意味着这些字段描述的是同一个时刻，而不是若干个时刻。
+
+## 示例
+
+### 上电、校验、清理
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let supply = lager.supply("supply1");
+
+supply.set_voltage(3.3)?;
+supply.set_current(0.5)?;
+supply.enable()?;
+std::thread::sleep(std::time::Duration::from_millis(200));
+
+let s = supply.state()?;
+assert_eq!(s.enabled, Some(true));
+let v = s.voltage.expect("output is on, so a measurement exists");
+assert!((v - 3.3).abs() < 0.05, "rail at {v:.4} V");
+
+supply.disable()?;
+```
+
+### 断言被测设备没有超出它的电流预算
+
+```rust
+supply.set_voltage(3.3)?;
+supply.set_ocp(0.25)?;   // trip rather than let it draw more
+supply.enable()?;
+
+std::thread::sleep(std::time::Duration::from_secs(5));
+
+let s = supply.state()?;
+assert_eq!(s.ocp_tripped, Some(false), "DUT tripped the 250 mA budget");
+supply.disable()?;
+```
+
+## 受支持的硬件
+
+| 仪器 | 通道数 | 硬件限制 |
+|---|---|---|
+| Rigol DP821 | 2 | 通道 1 为 60 V / 1 A，通道 2 为 8 V / 10 A |
+| Rigol DP800 系列 | 2-3 | 随型号而定 |
+| Keithley 2281S | 1 | 20 V / 6 A；同时也服务于一个电池 Net |
+| Keysight E36000 系列 | 1-3 | 随型号而定 |
+
+## 说明
+
+- **输出关闭时，测量值可能是 `None`。** Keithley 2281S 在输出禁用时把 `voltage`、`current` 和 `power` 报告为 `None`，启用之后才给出真实数值。Rigol DP821 则在两种状态下都报告 0。这正是这些字段是 `Option` 的原因 —— 请把 `None` 当作"没有测量"，而不是 0。
+- `state()` 返回 `Ok` 并不代表仪器作出了应答。当 Box 联系不上硬件服务时，您会得到一个结构完整的 `SupplyState`，其中每一项测量都是 `None`，而 `error` 被设为说明原因的字符串。在相信某个字段之前，请先检查 `error`。
+- **安全限值约束的是设定值，而不是跳闸点。** 在该 Net 上配置了 `max_voltage` 上限之后，超过它的 `set_voltage()` 会被拒绝，但超过它的 `set_ovp()` 会被接受并应用。请参阅 [客户端与 Box](/source/zh/reference/rust/client)。
+- 电源 Net 和电池 Net 可以指向同一台物理仪器。Box 会把它们放在同一把按仪器区分的锁下串行化，因此它们不会交错执行，但它们共享该仪器的模式。

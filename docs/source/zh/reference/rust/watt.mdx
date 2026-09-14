@@ -1,0 +1,100 @@
+---
+title: 功率计
+description: 测量一段窗口内的平均功率、电流和电压
+---
+
+在调用方给定的窗口内对功率、电流和电压做积分。每一个读数都是一段时间内的平均值，而不是某一瞬间的采样。
+
+## 句柄
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let meter = lager.watt_meter("watt1");
+```
+
+## 方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `name()` | 该句柄所指向的 Net 名称 |
+| `power()` | 一段窗口内的平均功率，单位瓦特 |
+| `current()` | 一段窗口内的平均电流，单位安培 |
+| `voltage()` | 一段窗口内的平均电压，单位伏特 |
+| `all()` | 在一次事务中同时取得电流、电压和功率 |
+
+## 类型
+
+### `WattReading`
+
+```rust
+pub struct WattReading {
+    pub current: Option<f64>,     // amps, mean
+    pub voltage: Option<f64>,     // volts, mean
+    pub power: Option<f64>,       // watts, mean
+    pub duration_s: Option<f64>,  // the window actually used
+}
+```
+
+## 方法参考
+
+### `power(duration: f64) -> Result<f64>`
+
+`duration` 秒内的平均功率。
+
+```rust
+let watts = meter.power(0.5)?;
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|---|---|---|
+| `duration` | `f64` | 积分窗口，单位秒 |
+
+**返回：** `f64` —— 平均功率，单位瓦特。
+
+### `current(duration: f64) -> Result<f64>` 和 `voltage(duration: f64) -> Result<f64>`
+
+同样窗口内的平均电流（安培）和平均电压（伏特）。两者都需要仪器确实会报告对应的量 —— Joulescope 或 PPK2 可以，只测功率的仪表则不行。
+
+### `all(duration: f64) -> Result<WattReading>`
+
+在一次仪器事务中取齐电流、电压和功率。请优先使用它而不是分三次调用：这样只有一个窗口而不是三个，因此这些数字描述的是同一个时刻。
+
+```rust
+let r = meter.all(1.0)?;
+println!("{:?} A, {:?} V, {:?} W", r.current, r.voltage, r.power);
+```
+
+## 示例
+
+### 把休眠电流和预算作比较
+
+```rust
+let meter = lager.watt_meter("watt1");
+let dut = lager.gpio("sleep_req");
+
+dut.output_high()?;
+std::thread::sleep(std::time::Duration::from_secs(2)); // let it settle
+
+let sleeping = meter.all(5.0)?;
+let amps = sleeping.current.expect("meter reports current");
+assert!(amps < 50e-6, "sleep current {:.1} uA over budget", amps * 1e6);
+```
+
+## 受支持的硬件
+
+| 仪器 | 电流 | 电压 | 功率 |
+|---|---|---|---|
+| Joulescope JS220 | 支持 | 支持 | 支持 |
+| Nordic PPK2 | 支持 | 支持 | 支持 |
+| Yoctopuce 功率计 | 随型号而定 | 随型号而定 | 支持 |
+
+## 说明
+
+- **这里没有默认窗口。** 与默认取 `0.1` 的 CLI 不同，Rust API 要求显式给出 `duration`。
+- 客户端会把它的 HTTP 预算放宽到 `max(30, duration + 20)` 秒，因此较长的窗口不会撞上通常的 10 秒超时。
+- 窗口是实实在在的等待。`power(5.0)` 会把您的测试阻塞五秒。
+- `WattReading` 上的字段是 `Option`，因为有些仪表报告不了这三项的全部；`None` 的意思是"这台仪器不测量那一项"，而不是失败。

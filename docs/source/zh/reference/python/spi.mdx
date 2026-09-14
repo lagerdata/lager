@@ -1,0 +1,328 @@
+---
+title: SPI
+description: 通过串行外设接口与 SPI 设备通信
+---
+
+与连接到 Lager Box 的设备进行全双工 SPI（串行外设接口）通信。
+
+## 导入
+
+```python
+from lager import Net, NetType
+```
+
+## 方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `config()` | 配置 SPI 总线参数 |
+| `read()` | 从设备读取字（发送填充字节） |
+| `read_write()` | 同时进行全双工读写 |
+| `transfer()` | 带自动补齐/截断的传输 |
+| `write()` | 向设备写入字（丢弃返回数据） |
+| `get_config()` | 获取该 Net 的原始配置 |
+
+## 方法参考
+
+### `Net.get(name, type=NetType.SPI)`
+
+按名称获取一个 SPI Net。
+
+```python
+from lager import Net, NetType
+
+spi = Net.get('MY_SPI_NET', type=NetType.SPI)
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `name` | `str` | SPI Net 的名称 |
+| `type` | `NetType` | 必须为 `NetType.SPI` |
+
+**返回：** SPI Net 实例
+
+### `config(mode, bit_order, frequency_hz, word_size, cs_active, cs_mode)`
+
+配置 SPI 总线参数。只有显式给出的参数会被修改；省略的参数保留已保存的值。
+
+`config()` 改变的是正在运行的脚本中的驱动。它不会把这些值写入 `saved_nets.json`。要把配置保存到 Net 上，请在 CLI 中使用 `lager spi NET config`。
+
+```python
+spi.config(mode=0, frequency_hz=1_000_000)
+spi.config(mode=3, bit_order="lsb", word_size=16)
+spi.config(cs_mode="manual")
+```
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `mode` | `int` 或 `None` | SPI 模式 0-3（见下方的 SPI 模式表） |
+| `bit_order` | `str` 或 `None` | `"msb"`（最高有效位在前）或 `"lsb"` |
+| `frequency_hz` | `int` 或 `None` | 时钟频率，单位 Hz |
+| `word_size` | `int` 或 `None` | 每个字的位数：`8`、`16` 或 `32` |
+| `cs_active` | `str` 或 `None` | 片选极性：`"low"` 或 `"high"`。LabJack U3 拒绝 `"high"` |
+| `cs_mode` | `str` 或 `None` | `"auto"`（硬件片选）或 `"manual"`（由用户自行管理 GPIO） |
+
+#### SPI 模式
+
+| 模式 | CPOL | CPHA | 时钟空闲电平 | 采样边沿 |
+|------|------|------|------------|-------------|
+| 0 | 0 | 0 | 低 | 上升沿 |
+| 1 | 0 | 1 | 低 | 下降沿 |
+| 2 | 1 | 0 | 高 | 下降沿 |
+| 3 | 1 | 1 | 高 | 上升沿 |
+
+### `read(n_words, fill, keep_cs, output_format)`
+
+从 SPI 设备读取数据。接收数据的同时发送填充字节（全双工）。
+
+```python
+data = spi.read(n_words=4)
+data = spi.read(n_words=4, fill=0x00)
+```
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `n_words` | `int` | 要读取的字数 |
+| `fill` | `int` | 读取期间发送的填充值（默认 `0xFF`） |
+| `keep_cs` | `bool` | 传输结束后继续保持片选有效（默认 `False`） |
+| `output_format` | `str` | `"list"`（默认）、`"hex"`、`"bytes"` 或 `"json"` |
+
+**返回：** `list[int]` - 收到的字，以整数表示（当 `output_format="list"` 时）
+
+### `read_write(data, keep_cs, output_format)`
+
+同时进行全双工的 SPI 读写。在发送数据的同时接收返回数据。
+
+```python
+# Send JEDEC Read ID command and read 3 response bytes
+response = spi.read_write([0x9F, 0x00, 0x00, 0x00])
+manufacturer_id = response[1]
+device_id = (response[2] << 8) | response[3]
+```
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `data` | `list[int]` | 要发送的字 |
+| `keep_cs` | `bool` | 传输结束后继续保持片选有效（默认 `False`） |
+| `output_format` | `str` | `"list"`（默认）、`"hex"`、`"bytes"` 或 `"json"` |
+
+**返回：** `list[int]` - 收到的字（长度与发送的数据相同）
+
+### `transfer(n_words, data, fill, keep_cs, output_format)`
+
+进行带自动补齐或截断的 SPI 传输。数据短于 `n_words` 时，用填充值补齐；长于 `n_words` 时截断。
+
+```python
+# Send 1-byte command, read 3 response bytes (4 total)
+response = spi.transfer(n_words=4, data=[0x9F])
+# data [0x9F] is padded to [0x9F, 0xFF, 0xFF, 0xFF]
+```
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `n_words` | `int` | 本次传输的总字数 |
+| `data` | `list[int]` 或 `None` | 要发送的字（会补齐或截断到 `n_words`） |
+| `fill` | `int` | 补齐用的填充值（默认 `0xFF`） |
+| `keep_cs` | `bool` | 传输结束后继续保持片选有效（默认 `False`） |
+| `output_format` | `str` | `"list"`（默认）、`"hex"`、`"bytes"` 或 `"json"` |
+
+**返回：** `list[int]` - 收到的字
+
+### `write(data, keep_cs)`
+
+向 SPI 设备写入数据，并丢弃返回数据。这是只写操作的便捷方法。
+
+```python
+# Send Write Enable command
+spi.write([0x06])
+
+# Send Page Program with address and data
+spi.write([0x02, 0x00, 0x00, 0x00, 0xDE, 0xAD, 0xBE, 0xEF])
+```
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `data` | `list[int]` | 要发送的字 |
+| `keep_cs` | `bool` | 传输结束后继续保持片选有效（默认 `False`） |
+
+### `get_config()`
+
+获取该 Net 的原始配置字典。
+
+```python
+cfg = spi.get_config()
+print(cfg['name'])
+print(cfg['params'])
+```
+
+**返回：** `dict` - 完整的 Net 配置，包含名称、角色、仪器和参数
+
+## 输出格式
+
+`output_format` 参数决定数据以何种形式返回。十六进制格式会随字长变化：
+
+| 格式 | 返回类型 | 8 位示例 | 16 位示例 |
+|--------|-------------|---------------|----------------|
+| `"list"` | `list[int]` | `[222, 173]` | `[57005]` |
+| `"hex"` | `str` | `"de ad"` | `"dead"` |
+| `"bytes"` | `str` | `"222 173"` | `"57005"` |
+| `"json"` | `dict` | `{"data": [222, 173]}` | `{"data": [57005]}` |
+
+## 示例
+
+### 读取 SPI Flash 的 JEDEC ID
+
+```python
+from lager import Net, NetType
+
+spi = Net.get('flash_spi', type=NetType.SPI)
+spi.config(mode=0, frequency_hz=1_000_000)
+
+# JEDEC Read ID: send 0x9F, read 3 response bytes
+response = spi.read_write([0x9F, 0x00, 0x00, 0x00])
+print(f"Manufacturer: 0x{response[1]:02x}")
+print(f"Device ID: 0x{(response[2] << 8) | response[3]:04x}")
+```
+
+### 读取 Flash 存储器
+
+```python
+from lager import Net, NetType
+
+spi = Net.get('flash_spi', type=NetType.SPI)
+spi.config(mode=0, frequency_hz=1_000_000)
+
+# Read 32 bytes starting at address 0x001000
+# Command: 0x03 (Read), followed by 3-byte address
+response = spi.transfer(
+    n_words=4 + 32,
+    data=[0x03, 0x00, 0x10, 0x00],
+)
+# First 4 bytes are command echo; data starts at index 4
+data = response[4:]
+print(f"Read {len(data)} bytes: {' '.join(f'{b:02x}' for b in data)}")
+```
+
+### 用 keep_cs 进行多段事务
+
+处于 `auto` 片选模式的 LabJack U3 拒绝 `keep_cs=True`。在 U3 上，请使用下面的手动片选示例。
+
+```python
+from lager import Net, NetType
+
+spi = Net.get('flash_spi', type=NetType.SPI)
+
+# Part 1: Send address with CS held low
+spi.write([0x03, 0x00, 0x10, 0x00], keep_cs=True)
+
+# Part 2: Read data while CS is still asserted
+data = spi.read(n_words=32, keep_cs=False)
+print(f"Read {len(data)} bytes")
+```
+
+### 在 LabJack U3 上手动控制片选
+
+U3 会在每次传输时把片选拉低，并在结束时释放。要在多次传输之间保持片选，或者驱动高电平有效的片选，请使用一个不带片选的 SPI Net，再用一个 GPIO Net 来控制片选。不带片选的 SPI Net 使用 `manual` 片选模式。
+
+```python
+from lager import Net, NetType
+
+spi = Net.get('flash_spi', type=NetType.SPI)   # no CS pin on this net
+cs = Net.get('flash_cs', type=NetType.GPIO)
+
+cs.output(0)                                   # assert CS (active low)
+spi.write([0x03, 0x00, 0x10, 0x00])
+data = spi.read(n_words=32)
+cs.output(1)                                   # release CS
+```
+
+### 写入 SPI Flash
+
+```python
+from lager import Net, NetType
+
+spi = Net.get('flash_spi', type=NetType.SPI)
+spi.config(mode=0, frequency_hz=1_000_000)
+
+# Step 1: Write Enable
+spi.write([0x06])
+
+# Step 2: Page Program at address 0x001000
+payload = [0xDE, 0xAD, 0xBE, 0xEF]
+spi.write([0x02, 0x00, 0x10, 0x00] + payload)
+
+# Step 3: Wait for write to complete (poll status register)
+import time
+while True:
+    status = spi.read_write([0x05, 0x00])
+    if not (status[1] & 0x01):  # WIP bit cleared
+        break
+    time.sleep(0.01)
+
+print("Write complete")
+```
+
+### 16 位字模式
+
+```python
+from lager import Net, NetType
+
+spi = Net.get('dac_spi', type=NetType.SPI)
+spi.config(mode=1, word_size=16, frequency_hz=500_000)
+
+# Send 16-bit DAC command (channel A, gain 1x, active, value 0x0800)
+spi.write([0x3800])
+
+# Read back 16-bit status register
+status = spi.read_write([0x0000])
+print(f"Status: 0x{status[0]:04x}")
+```
+
+## 受支持的硬件
+
+| 适配器 | 说明 |
+|---------|-------------|
+| LabJack T7 | 用 GPIO 引脚（FIO/EIO）作 CLK、MOSI、MISO 和 CS |
+| LabJack U3 | 用 DIO 引脚作 CS、CLK、MISO 和 MOSI（默认按此顺序使用 `FIO4-FIO7`） |
+| Aardvark I2C/SPI | 专用的 USB SPI 适配器，采用 GPIO 位操作 |
+| FTDI FT232H / FT2232H / FT4232H | 基于 MPSSE 的 SPI；通道按 Net 逐个选择 |
+
+### 多通道 FTDI 适配器
+
+FTDI Net 从 Net 记录的 `params.interface` 取得通道，接受 `A`-`D` 或 `0`-`3`。没有 `interface` 的 Net 使用通道 A —— 在单通道的 FT232H 上这也是唯一的选择。
+
+| 型号 | 通道 | 可用于 SPI |
+|---|---|---|
+| FT232H | 1（A） | A |
+| FT2232H | 2（A、B） | A、B |
+| FT4232H | 4（A-D） | A、B |
+
+SPI 运行在 FTDI 芯片的 MPSSE 引擎上，而在 FT4232H 上只有通道 A 和 B 带有 MPSSE 引擎。请求 C 或 D 会在 Net 构建时失败并指出该通道，而不是在 pyftdi 内部某处失败。
+
+一块芯片上各类 Net 如何分配通道，请参阅 [Nets](/source/zh/reference/cli/nets)。
+
+### LabJack U3
+
+- 在 U3 上使用 SPI 需要 U3 硬件版本 1.21 或更高。
+- 一次传输最多 50 字节：8 位字长时为 50 个字，16 位时为 25 个字，32 位时为 12 个字。超出的传输会抛出错误。
+- 时钟约在 5.4 kHz 至 71.4 kHz 之间运行，并且绝不会超过 `frequency_hz`。超出该范围的请求会被钳位，并在脚本的标准错误输出上给出警告。
+- 没有保存 `frequency_hz` 的 Net 以最高速率运行。
+- `cs_active="high"` 会抛出错误。在 `auto` 片选模式下，`keep_cs=True` 会抛出错误。
+- `FIO0`-`FIO3` 不能承载 SPI。使用这些引脚的 Net 会让驱动抛出错误。
+
+引脚顺序，以及如何用其他引脚创建 U3 Net，请参阅 [SPI](/source/zh/reference/cli/spi)。
+
+## 说明
+
+- Net 必须配置为 `NetType.SPI`
+- 所有 SPI 操作都是全双工的；数据在发送的同时被接收
+- `write()` 执行的也是全双工传输，只是丢弃了收到的数据
+- `keep_cs=True` 会在多次调用之间保持片选线有效，用于多段事务
+- `transfer()` 会用填充值补齐过短的数据数组，或把过长的数组截断到 `n_words`
+- LabJack T7 每次事务最多支持 56 字节，最高速率约 800 kHz。多字节传输在请求速率约 1 kHz 至 800 kHz 之间时，实际以约 1 kHz 运行
+- LabJack U3 每次事务最多支持 50 字节，速率约为 5.4 kHz 至 71.4 kHz
+- Aardvark 采用 GPIO 位操作模式；无论 `frequency_hz` 设为多少，实际速度都受 USB 往返时间限制
+- `config()` 只对正在运行的脚本生效。`lager spi NET config` 才会把配置保存到 `saved_nets.json`
+- 低位在前模式（`bit_order="lsb"`）在 LabJack T7 上通过软件位反转实现

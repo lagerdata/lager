@@ -1,0 +1,88 @@
+---
+title: DAC
+description: 设置并回读模拟输出电压
+---
+
+从一个 DAC Net 向您的被测设备驱动模拟输出电压。
+
+## 句柄
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let dac = lager.dac("dac1");
+```
+
+## 方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `name()` | 该句柄所指向的 Net 名称 |
+| `set()` | 设置输出电压，单位伏特 |
+| `read()` | 回读当前的输出电压 |
+
+## 方法参考
+
+### `name() -> &str`
+
+创建该句柄时使用的 Net 名称。
+
+### `set(volts: f64) -> Result<()>`
+
+设置输出电压。
+
+```rust
+dac.set(1.8)?;
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|---|---|---|
+| `volts` | `f64` | 目标输出电压，单位伏特 |
+
+### `read() -> Result<f64>`
+
+回读 DAC 当前输出的电压。
+
+```rust
+let v = dac.read()?;
+```
+
+**返回：** `f64` —— 输出电压，单位伏特。
+
+<Warning>
+  并不是每台 DAC 都支持回读。在 MCC USB-202 上，这个调用会以 `Error::Box` 失败，信息是 `USB-202 does not support DAC output readback`。LabJack U3 同样没有回读功能。Box 返回的是它上一次设置的值，而当 Box 没有值可返回时，该调用就会失败。需要一个经过验证的输出时，请用一个 ADC Net 去测量它，而不是指望 `read()` 存在。
+</Warning>
+
+## 示例
+
+### 扫描一个基准电压，检查被测设备是否跟随
+
+```rust
+let dac = lager.dac("dac1");
+let sense = lager.adc("adc1");
+
+for target in [0.0_f64, 0.5, 1.0, 1.5, 2.0] {
+    dac.set(target)?;
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let measured = sense.read()?;
+    assert!((measured - target).abs() < 0.05,
+            "set {target:.2} V, measured {measured:.4} V");
+}
+dac.set(0.0)?;
+```
+
+## 受支持的硬件
+
+| 仪器 | 通道 | 回读 |
+|---|---|---|
+| LabJack T7 | DAC0、DAC1 | 支持 |
+| LabJack U3 | DAC0、DAC1 | Box 上一次设置的值；输出范围为 0.04 V 至 4.95 V |
+| MCC USB-202 | DAC0、DAC1 | 不支持 |
+
+## 说明
+
+- 请把输出留在下一个测试所预期的位置。DAC 在您的测试结束之后仍会保持它最后的值；在清理阶段把它设回 `0.0` 通常是对的。LabJack U3 会拒绝 `0.0`，因为它的范围是 0.04 V 至 4.95 V。在 U3 上请用 `0.04`。
+- 输出精度取决于仪器，而不是 API。向 LabJack T7 请求 1.0 V，回读得到的大约是 0.99995 V，这是该 DAC 的分辨率，而不是错误。

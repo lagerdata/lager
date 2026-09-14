@@ -1,0 +1,152 @@
+---
+title: 路由器
+description: 让被测设备所在的网络变差，而不是直接消失
+---
+
+把一台 MikroTik 路由器当作 Lager Net 来驱动。这是实验台上的网络故障注入工具。它让测试能够断言：当网络*变差*时 —— 断了外网、丢了 DNS、变慢了 —— 固件会怎么做，而不只是网络干脆消失时会怎么做。
+
+## 句柄
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let router = lager.router("router1");
+```
+
+## 方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `name()` | 该句柄所指向的 Net 名称 |
+| `connect()` | 验证连通性；返回标识、版本、板型和运行时长 |
+| `system_info()` | 结构化的系统资源信息 |
+| `interfaces()` | 全部网络接口，以 RouterOS 原始记录形式给出 |
+| `wireless_interfaces()` | 无线接口，原始记录 |
+| `wireless_clients()` | 当前已关联的无线客户端 |
+| `dhcp_leases()` | 活动的 DHCP 租约 |
+| `enable_interface()` | 按名称启用某个接口 |
+| `disable_interface()` | 按名称禁用某个接口 |
+| `set_wireless_ssid()` | 修改广播的 SSID |
+| `block_internet()` | 丢弃所有转发流量 |
+| `remove_firewall_rules()` | 移除 Lager 添加的每一条防火墙规则 |
+| `reboot()` | 重启路由器 |
+| `command()` | 通用出口，可执行其他任意路由器动作 |
+
+## 类型
+
+### `RouterSystemInfo`
+
+```rust
+pub struct RouterSystemInfo {
+    pub name: Option<String>,          // identity
+    pub version: Option<String>,       // RouterOS version
+    pub board: Option<String>,
+    pub architecture: Option<String>,
+    pub uptime: Option<String>,        // e.g. "1w2d3h"
+    pub cpu_load: Option<i64>,         // percent
+    pub free_memory: Option<i64>,      // bytes
+    pub total_memory: Option<i64>,
+    pub free_hdd_space: Option<i64>,
+}
+```
+
+## 方法参考
+
+### `connect() -> Result<serde_json::Value>`
+
+通过获取路由器的标识来验证连通性。
+
+### `system_info() -> Result<RouterSystemInfo>`
+
+结构化的资源信息。
+
+### `block_internet() -> Result<()>`
+
+丢弃所有转发流量，模拟一次外网中断，同时保持本地网络 —— 以及被测设备与它的关联 —— 完好无损。
+
+### `remove_firewall_rules() -> Result<()>`
+
+移除 Lager 添加的每一条防火墙规则。这是 `block_internet` 以及通过 `command()` 添加的任何规则的撤销操作。
+
+<Warning>
+  这些规则在被移除之前会一直留在路由器上。一个先阻断外网、然后失败又没有清理的测试，会让下一个测试运行在一个坏掉的网络上。请把 `remove_firewall_rules()` 放在即使失败也会执行的清理路径里。
+</Warning>
+
+### `enable_interface(interface: &str)` 和 `disable_interface(interface: &str)`
+
+按名称启用或禁用某个接口 —— 当您希望接入点彻底消失而不只是失去路由时，请用它们。
+
+### `set_wireless_ssid(interface: &str, ssid: &str) -> Result<serde_json::Value>`
+
+修改广播的 SSID。
+
+### `command(action: &str, params: serde_json::Value) -> Result<serde_json::Value>`
+
+通用出口：按名称调用其他任意路由器动作，并传入原始 JSON 参数。DNS 阻断、端口阻断、带宽限制、DHCP 控制、安全配置和访问列表都是这样使用的。这些目前在本 crate 中都还没有带类型的封装。
+
+```rust
+use serde_json::json;
+
+router.command("block_dns", json!({}))?;
+router.command("block_port", json!({ "port": 8883, "protocol": "tcp" }))?;
+router.command("add_bandwidth_limit", json!({
+    "target": "192.168.88.0/24",
+    "max_limit": "1M/1M",
+}))?;
+```
+
+## 示例
+
+### 断言外网消失时固件是重试而不是重启
+
+```rust
+use lager::LagerBox;
+use std::time::Duration;
+
+let lager = LagerBox::from_env()?;
+let router = lager.router("router1");
+let mut uart = lager.uart("uart1")?;
+
+router.connect()?;
+
+let outcome = (|| -> lager::Result<()> {
+    router.block_internet()?;
+    // The DUT stays on the AP; only routing is gone.
+    let log = uart.wait_for(b"retry", Duration::from_secs(60))?;
+    assert!(!String::from_utf8_lossy(&log).contains("rebooting"),
+            "firmware rebooted instead of retrying");
+    Ok(())
+})();
+
+router.remove_firewall_rules()?;   // always, even if the assertion failed
+outcome?;
+```
+
+### 把带宽压下去，检查 OTA 是否仍能完成
+
+```rust
+use serde_json::json;
+
+router.command("add_bandwidth_limit", json!({
+    "target": "192.168.88.50",
+    "max_limit": "256k/256k",
+}))?;
+
+// ... trigger the OTA and wait for it ...
+
+router.command("remove_bandwidth_limits", json!({}))?;
+```
+
+## 受支持的硬件
+
+| 设备 | 备注 |
+|---|---|
+| MikroTik RouterOS 设备 | 通过 RouterOS REST API 驱动 |
+
+## 说明
+
+- **这个 Net 不发送角色提示。** 一个路由器 Net 可能以 `router` 角色保存，也可能以旧的 `mikrotik` 角色保存。Box 会严格校验给出的提示，因此提示在该 Net 未使用的那种写法上一定会失败。您会看到的一个后果是：不存在的路由器 Net 报告的是 `Net 'router1' not found`，不提角色，而其他 Net 类型报告的是 `Net 'x (role adc)' not found`。
+- 每个路由器动作都有固定的 60 秒预算，因为重启和复位类动作很慢，而繁忙的路由器会变迟钝。
+- `reboot()` 在路由器接受该命令时就返回，而不是等它重新起来。
+- 阻断外网**不会**把被测设备从 WiFi 上断开。这个区别正是这个 Net 类型存在的全部意义。

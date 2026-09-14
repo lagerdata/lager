@@ -1,0 +1,411 @@
+---
+title: 机械臂
+description: 控制机械臂，实现自动定位与操作
+---
+
+控制机械臂，完成自动取放、定位和测试夹具操作。
+
+## 导入
+
+```python
+from lager import Net, NetType
+
+# For exception handling
+from lager import InvalidNetError
+from lager.automation.arm import (
+    MovementTimeoutError,
+    NotHomedError,
+    OutOfBoundsError,
+    UnsupportedFirmwareError,
+)
+```
+
+## 方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `position()` | 获取机械臂当前位置（x、y、z） |
+| `move_to()` | 移动到绝对坐标 |
+| `move_relative()` | 相对当前位置移动 |
+| `go_home()` | 把机械臂移回归位位置 |
+| `enable_motor()` | 使能机械臂电机 |
+| `disable_motor()` | 断开机械臂电机 |
+| `save_position()` | 以机械臂当前姿态重新标定（`M889`） |
+| `get_full_position()` | 获取包含关节角度的完整位置 |
+| `sliding_rail_init()` | 初始化滑轨 |
+
+## 方法参考
+
+### 获取一个机械臂 Net
+
+按名称和类型获取一个机械臂 Net 实例。
+
+```python
+from lager import Net, NetType
+
+# Get the arm net
+arm = Net.get('arm1', type=NetType.Arm)
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `name` | `str` | Net 名称（在 Lager 系统中配置） |
+| `type` | `NetType` | 必须为 `NetType.Arm` |
+
+**返回：** 机械臂 Net 实例，带有下面列出的全部方法
+
+该 Net 打开地址中带有相应 USB 序列号的那台机械臂。它还会读取机械臂的固件版本。`arm.firmware_version` 是形如 `(2, 3, 5)` 的元组；机械臂未报告版本时为 `None`。
+
+### `position()`
+
+获取机械臂当前位置。
+
+```python
+x, y, z = arm.position()
+print(f"Position: X={x}, Y={y}, Z={z}")
+```
+
+**返回：** `tuple[float, float, float]` - (x, y, z) 坐标，单位毫米
+
+### `move_to(x, y, z, timeout=15.0)`
+
+把机械臂移到绝对坐标，并阻塞等待。
+
+```python
+# Move to specific position
+arm.move_to(100, 200, 50)
+
+# Move with longer timeout
+arm.move_to(100, 200, 50, timeout=10.0)
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `x` | `float` | 目标 X 坐标（mm） |
+| `y` | `float` | 目标 Y 坐标（mm） |
+| `z` | `float` | 目标 Z 坐标（mm） |
+| `timeout` | `float` | 最长等待时间，单位秒（默认 15.0） |
+
+**抛出：**
+- 目标超出工作空间范围时抛出 `OutOfBoundsError`。此时不会向机械臂发送任何内容。
+- 机械臂固件低于 V2.1.4，或机械臂未报告版本时，抛出 `UnsupportedFirmwareError`。此时不会向机械臂发送任何内容。
+- 机械臂上电后尚未归位时抛出 `NotHomedError`
+- 在超时时间内未到达目标位置时抛出 `MovementTimeoutError`
+
+### `move_relative(dx=0, dy=0, dz=0, timeout=15.0)`
+
+相对当前位置移动。
+
+```python
+# Move 10mm in X direction
+new_x, new_y, new_z = arm.move_relative(dx=10)
+
+# Move diagonally
+new_x, new_y, new_z = arm.move_relative(dx=10, dy=10, dz=-5)
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `dx` | `float` | X 方向的相对移动量（mm） |
+| `dy` | `float` | Y 方向的相对移动量（mm） |
+| `dz` | `float` | Z 方向的相对移动量（mm） |
+| `timeout` | `float` | 最长等待时间（默认 15.0） |
+
+**返回：** `tuple[float, float, float]` - 移动之后新的 (x, y, z) 位置
+
+**抛出：**
+- 机械臂固件低于 V2.1.4，或机械臂未报告版本时，抛出 `UnsupportedFirmwareError`。此时不会向机械臂发送任何内容。
+- 当前位置加上偏移量超出工作空间范围时抛出 `OutOfBoundsError`。机械臂不会移动。
+- 机械臂上电后尚未归位时抛出 `NotHomedError`
+
+### `go_home(timeout=20.0)`
+
+把机械臂移到归位位置（X=0、Y=300、Z=0）。机械臂到达归位位置时该方法才返回。机械臂上电后请先调用它，因为固件在归位之前拒绝运动。
+
+```python
+arm.go_home()
+```
+
+**抛出：** 机械臂在 `timeout` 秒内没有到达归位位置时抛出 `RuntimeError`
+
+### `enable_motor()`
+
+使能机械臂电机。
+
+```python
+arm.enable_motor()
+```
+
+### `disable_motor()`
+
+断开机械臂电机（机械臂会变成松弛状态）。
+
+```python
+arm.disable_motor()
+```
+
+### `save_position()`
+
+重新标定机械臂。`save_position()` 发送 `M889`，它用机械臂的当前姿态替换已保存的标定。机械臂之后的每一次移动都基于这份标定计算。
+
+<Warning>
+只有当机械臂在物理上处于标定姿态时，才可以调用 `save_position()`。在其他任何姿态下调用它，之后的每一次移动都会有偏移。
+</Warning>
+
+```python
+arm.save_position()
+```
+
+### `get_full_position()`
+
+获取包含关节角度的完整位置。
+
+```python
+x, y, z, e, a, b, c = arm.get_full_position()
+print(f"Cartesian: ({x}, {y}, {z})")
+print(f"Joint angles: A={a}, B={b}, C={c}")
+```
+
+**返回：** `tuple[float, ...]` - (x, y, z, e, a, b, c)，其中 a、b、c 是关节角度
+
+如果机械臂固件不报告关节角度，`a`、`b` 和 `c` 为 `None`。
+
+## 末端执行器方法
+
+### 软性夹爪
+
+```python
+arm.soft_gripper_pick()     # Activate gripper to pick
+arm.soft_gripper_place()    # Release gripper to place
+arm.soft_gripper_neutral()  # Return to neutral state
+arm.soft_gripper_stop()     # Stop gripper action
+```
+
+### 气动吸盘
+
+```python
+arm.air_picker_pick()       # Activate vacuum to pick
+arm.air_picker_place()      # Release vacuum to place
+arm.air_picker_neutral()    # Return to neutral state
+arm.air_picker_stop()       # Stop vacuum action
+```
+
+### 激光模块
+
+```python
+arm.laser_on(value=0)      # Turn laser on with power level
+arm.laser_off()            # Turn laser off
+```
+
+## 传送带方法
+
+```python
+arm.conveyor_belt_forward(speed=0)    # Move belt forward (speed 0-100)
+arm.conveyor_belt_backward(speed=0)   # Move belt backward (speed 0-100)
+arm.conveyor_belt_stop()              # Stop belt
+```
+
+## 滑轨方法
+
+```python
+arm.sliding_rail_init()  # Initialize the sliding rail
+```
+
+## 实用方法
+
+### `delay_ms(value)` / `delay_s(value)`
+
+向机械臂的命令队列中加入延时。
+
+```python
+arm.delay_ms(500)  # 500ms delay
+arm.delay_s(2)     # 2 second delay
+```
+
+### `set_acceleration(acceleration, travel_acceleration, retract_acceleration=60)`
+
+设置打印、空程和回抽加速度，单位 mm/s^2。该方法发送 `M204 P<acceleration> T<travel_acceleration> R<retract_acceleration>`。
+
+```python
+arm.set_acceleration(100, 100, 60)
+```
+
+### `set_module_type(module_type)`
+
+设置所安装的模块类型。
+
+```python
+# 0=PEN, 1=LASER, 2=PNEUMATIC, 3=3D
+arm.set_module_type(0)  # Set to PEN module
+```
+
+### `get_module_type()`
+
+获取当前检测到的模块类型。
+
+```python
+module = arm.get_module_type()
+print(f"Module: {module}")  # 'PEN', 'LASER', 'PUMP', or '3D'
+```
+
+## 示例
+
+### 基本移动
+
+```python
+from lager import Net, NetType
+
+# Get the arm net
+arm = Net.get('arm1', type=NetType.Arm)
+
+# Go to home position
+arm.go_home()
+
+# Get current position
+x, y, z = arm.position()
+print(f"Home position: ({x}, {y}, {z})")
+
+# Move to test position
+arm.move_to(100, 250, 0)
+
+# Move up
+arm.move_relative(dz=50)
+
+# Return home
+arm.go_home()
+```
+
+### 取放操作
+
+```python
+from lager import Net, NetType
+
+# Get the arm net
+arm = Net.get('arm1', type=NetType.Arm)
+
+arm.go_home()
+
+# Move to pick position
+arm.move_to(100, 200, 50)     # Above target
+arm.move_relative(dz=-30)     # Lower to pick height
+
+# Pick up object
+arm.soft_gripper_pick()
+arm.delay_ms(500)
+
+# Lift
+arm.move_relative(dz=30)
+
+# Move to place position
+arm.move_to(150, 200, 50)
+arm.move_relative(dz=-30)
+
+# Place object
+arm.soft_gripper_place()
+arm.delay_ms(500)
+
+# Return home
+arm.move_relative(dz=30)
+arm.go_home()
+```
+
+### 自动化测试定位
+
+```python
+from lager import Net, NetType
+
+# Test positions for probe points
+PROBE_POSITIONS = [
+    (100, 200, -10),  # Test point 1
+    (120, 200, -10),  # Test point 2
+    (140, 200, -10),  # Test point 3
+]
+
+# Get arm and probe nets
+arm = Net.get('arm1', type=NetType.Arm)
+adc = Net.get('PROBE', type=NetType.ADC)
+
+arm.go_home()
+
+results = []
+for i, (x, y, z) in enumerate(PROBE_POSITIONS):
+    # Move above position
+    arm.move_to(x, y, z + 20)
+
+    # Lower probe
+    arm.move_to(x, y, z)
+    arm.delay_ms(200)  # Settle time
+
+    # Take measurement
+    voltage = adc.input()
+    results.append((i, voltage))
+    print(f"Point {i}: {voltage}V")
+
+    # Lift
+    arm.move_relative(dz=20)
+
+arm.go_home()
+```
+
+### 错误处理
+
+```python
+from lager import Net, NetType
+from lager import InvalidNetError
+from lager.automation.arm import (
+    MovementTimeoutError,
+    NotHomedError,
+    OutOfBoundsError,
+    UnsupportedFirmwareError,
+)
+
+try:
+    arm = Net.get('arm1', type=NetType.Arm)
+    arm.move_to(100, 200, 50, timeout=3.0)
+except InvalidNetError as e:
+    print(f"Arm net not found: {e}")
+except UnsupportedFirmwareError as e:
+    print(f"Update the arm firmware: {e}")
+except NotHomedError as e:
+    print(f"Home the arm first: {e}")
+except OutOfBoundsError as e:
+    print(f"Target is outside the workspace: {e}")
+except MovementTimeoutError as e:
+    print(f"Arm did not reach the target: {e}")
+except RuntimeError as e:
+    print(f"Arm error: {e}")
+```
+
+## 受支持的硬件
+
+| 厂商 | 型号 | 功能 |
+|--------------|-------|----------|
+| Rotrics | Dexarm | 四轴，多种末端执行器，支持传送带。固件 V2.1.4 或更高版本。 |
+
+## 异常
+
+| 异常 | 模块 | 说明 |
+|-----------|--------|-------------|
+| `OutOfBoundsError` | `lager.automation.arm.arm_net` | 目标超出工作空间范围。它同时也是 `ValueError`。 |
+| `UnsupportedFirmwareError` | `lager.automation.arm.arm_net` | 机械臂固件低于 V2.1.4，或机械臂未报告版本。 |
+| `NotHomedError` | `lager.automation.arm.arm_net` | 机械臂上电后尚未归位。 |
+| `MovementTimeoutError` | `lager.automation.arm.arm_net` | 机械臂未能及时到达目标位置 |
+| `RuntimeError` | 内置 | 找不到机械臂设备，或无法打开它 |
+
+## 说明
+
+- 请始终使用上下文管理器（`with` 语句），以确保正确清理
+- 机械臂上电后请调用 `go_home()`。固件在归位之前拒绝运动。
+- `move_to()` 和 `move_relative()` 需要机械臂固件 V2.1.4 或更高版本。Rotrics 在 V2.1.4 中交换了 X 轴和 Y 轴，因此更旧的固件在另一个坐标系中移动。
+- 移动超时错误表示机械臂没有到达。原因可能是有阻挡、范围内存在无法到达的目标，或者移动距离较长。移动距离较长时请传入更大的 `timeout`。
+- 关节角度（a、b、c）使用机械臂的内部坐标系
+- 位置校验的默认容差是 0.5mm
+- 机械臂通过 USB VID/PID（0x0483:0x5740）自动检测
+- Box 只在扫描仪器时才会发现机械臂。扫描只探测具有该 USB ID 的端口，并且机械臂必须报告 USB 序列号。关于 `LAGER_ARM_PROBE` 设置，请参阅 [检测](/source/zh/reference/cli/arm#检测)。
+- `Dexarm` 定义了大致的工作空间范围：X 为 -300 至 300 mm，Y 为 170 至 360 mm，Z 为 -140 至 100 mm。对于超出这些范围的目标，`move_to()` 和 `move_relative()` 会抛出 `OutOfBoundsError`，与 `lager arm` CLI 的行为一致。`move_to_blocking()`、`move_to_gcode()` 和 `fast_move_to()` 不检查范围，也不检查固件版本。

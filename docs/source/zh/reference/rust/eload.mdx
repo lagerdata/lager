@@ -1,0 +1,117 @@
+---
+title: 电子负载
+description: 从您的被测设备汲取受控的电流、电压、电阻或功率
+---
+
+向被测设备的输出端呈现一个可编程负载：汲取固定电流、维持固定电压，或者模拟一个电阻或恒定功率的消耗。
+
+## 句柄
+
+```rust
+use lager::{EloadMode, LagerBox};
+
+let lager = LagerBox::from_env()?;
+let load = lager.eload("eload1");
+```
+
+## 方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `name()` | 该句柄所指向的 Net 名称 |
+| `state()` | 在一次事务中取得模式、输入使能状态和测量值 |
+| `set()` | 原子地切换模式并应用它的设定值 |
+| `setpoint()` | 读取某个模式已保存的设定值 |
+
+## 类型
+
+### `EloadMode`
+
+```rust
+pub enum EloadMode { Cc, Cv, Cr, Cp }
+```
+
+| 变体 | 含义 | 设定值单位 |
+|---|---|---|
+| `Cc` | 恒流 | 安培 |
+| `Cv` | 恒压 | 伏特 |
+| `Cr` | 恒阻 | 欧姆 |
+| `Cp` | 恒功率 | 瓦特 |
+
+### `EloadState`
+
+```rust
+pub struct EloadState {
+    pub mode: Option<String>,              // "cc" / "cv" / "cr" / "cp"
+    pub input_enabled: Option<bool>,
+    pub measured_voltage: Option<f64>,     // V
+    pub measured_current: Option<f64>,     // A
+    pub measured_power: Option<f64>,       // W
+}
+```
+
+## 方法参考
+
+### `set(mode: EloadMode, value: f64) -> Result<()>`
+
+切换到 `mode`，并把 `value` 作为它的设定值应用，二者是**原子的**。Box 在仪器锁之下把两者作为一次复合操作执行。因此负载绝不会有哪怕一瞬间处于新模式却带着旧模式的设定值。
+
+```rust
+load.set(EloadMode::Cc, 0.5)?;   // draw 500 mA
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|---|---|---|
+| `mode` | `EloadMode` | 要切换到的调节模式 |
+| `value` | `f64` | 设定值，采用该模式的单位 |
+
+### `setpoint(mode: EloadMode) -> Result<f64>`
+
+读取某个模式已保存的设定值。每个模式各自保存自己的设定值，因此在设置了 `Cc` 之后去读 `Cv`，得到的是恒压设定值，而不是您刚设的那个电流。
+
+### `state() -> Result<EloadState>`
+
+当前模式、输入是否使能，以及各项测量值。
+
+## 示例
+
+### 逐级加载，观察电源轨是否稳得住
+
+```rust
+use lager::{EloadMode, LagerBox};
+
+let lager = LagerBox::from_env()?;
+let supply = lager.supply("supply1");
+let load = lager.eload("eload1");
+
+supply.set_voltage(5.0)?;
+supply.set_current(2.0)?;
+supply.enable()?;
+
+for amps in [0.1_f64, 0.5, 1.0, 1.5] {
+    load.set(EloadMode::Cc, amps)?;
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    let s = load.state()?;
+    let v = s.measured_voltage.unwrap_or(0.0);
+    assert!(v > 4.75, "rail sagged to {v:.3} V at {amps} A");
+    println!("{amps:>4.1} A -> {v:.3} V");
+}
+
+load.set(EloadMode::Cc, 0.0)?;
+supply.disable()?;
+```
+
+## 受支持的硬件
+
+| 仪器 | 模式 |
+|---|---|
+| Rigol DL3000 系列 | CC、CV、CR、CP |
+
+## 说明
+
+- 请优先使用 `set()`，而不是分别修改模式和设定值 —— 它同时接受两者，正是为了这个原因。
+- 请在清理阶段把负载恢复到零。保持汲取电流的负载，在您的测试退出之后仍然会继续汲取。
+- `measured_voltage` 是负载端子处的电压，其中包含它与被测设备之间连线上的压降。要在被测设备处测量电源轨，请使用一个接在那里的 ADC Net。

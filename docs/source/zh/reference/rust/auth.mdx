@@ -1,0 +1,132 @@
+---
+title: 认证
+description: 在受认证网关保护的 Box 上使用 Rust crate
+---
+
+普通的（不受网关保护的）Box 完全用不上这些：不会发送任何请求头，这里的代码也不会运行。本页面适用于在 Box 前面放置了认证反向代理（即*网关*）的部署方式。网关会用 401 和一个 `X-Gateway-Auth-Url` 请求头拒绝未认证的流量。这与 Lager CLI 遵循的是同一套约定。
+
+该 crate 以两种模式透明地处理受网关保护的 Box。
+
+## 复用 CLI 会话（零配置）
+
+如果您在这台机器上运行过 `lager login <auth_url>`，该 crate 会自动接管那个会话：
+
+- 读取 CLI 的令牌存储（`~/.lager_gateway_auth`，可用 `LAGER_GATEWAY_AUTH_FILE` 覆盖）。
+- 给每一个请求加上 `Authorization: Bearer` —— 调试服务的流量和 UART 的 Socket.IO 握手也包括在内。
+- 透明地刷新过期的访问令牌。
+- 首次接触时，从网关的发现请求头中获知是哪台认证服务器守在这台 Box 前面，并在同一次调用之内重试那个被拒绝的请求。
+
+不需要改代码 —— `LagerBox::from_env()` 直接就能用：
+
+```sh
+lager login https://auth.example.com
+LAGER_BOX_HOST=192.168.1.42 cargo test
+```
+
+## 固定令牌（CI）
+
+在没有 CLI 登录的机器上（比如 CI 运行器），请直接提供一个令牌：
+
+```rust
+let lager = lager::LagerBox::builder("192.168.1.42")
+    .bearer_token(std::env::var("MY_CI_TOKEN").unwrap())
+    .build()?;
+```
+
+或者设置 `LAGER_GATEWAY_TOKEN` 环境变量 —— 同样不需要改代码：
+
+```yaml
+env:
+  LAGER_BOX_HOST: ${{ vars.LAGER_BOX_HOST }}
+  LAGER_GATEWAY_TOKEN: ${{ secrets.LAGER_GATEWAY_TOKEN }}
+```
+
+固定令牌会被原样加到每一个请求上，绝不会被刷新，也绝不会被写入令牌存储。如果网关拒绝了它，该调用会立即失败。
+
+## 错误
+
+当网关要求认证而又不存在可用凭据时，调用会以 `Error::AuthRequired` 失败，其中会指出应当登录哪台认证服务器：
+
+| 网关响应 | crate 的行为 |
+| --- | --- |
+| 401（没有凭据，或凭据已过期） | 解析或刷新一个令牌并重试一次；否则给出 `Error::AuthRequired`，并附上 `lager login <url>` 这个解决办法 |
+| 403（没有这台 Box 的访问授权） | `Error::Box { status: 403, .. }` —— 请向管理员申请访问权限 |
+| 503（网关联系不上它的认证服务器） | `Error::Box { status: 503, .. }` —— 请稍后重试 |
+
+## 环境变量
+
+| 变量 | 含义 |
+| --- | --- |
+| `LAGER_GATEWAY_TOKEN` | 每个请求都使用的固定 bearer 令牌（CI 用）。 |
+| `LAGER_GATEWAY_AUTH_FILE` | 覆盖 CLI 令牌存储的路径（默认 `~/.lager_gateway_auth`）。 |
+
+完整的客户端/网关约定（发现请求头、认证服务器端点、存储结构、重试语义）规定在主仓库的 [`docs/reference/gateway-auth-contract.md`](https://github.com/lagerdata/lager/blob/main/docs/reference/gateway-auth-contract.md) 中。
+
+## 凭据的优先级
+
+共三个来源，按这个顺序检查。第一个能给出令牌的来源胜出。
+
+1. `LagerBoxBuilder::bearer_token()`
+2. `LAGER_GATEWAY_TOKEN` 环境变量（为空或只含空白字符时被忽略）
+3. CLI 的令牌存储
+
+来自 (1) 或 (2) 的令牌是**固定的**：它被原样发送，绝不刷新也绝不替换。如果网关拒绝了它，该调用会立即失败，而不会换一个凭据重试。只有从存储中解析出来的令牌才参与刷新。
+
+## 令牌存储
+
+该 crate 读取的正是 `lager login` 写入的那个文件，因此已经登录过的开发者不需要任何额外设置。
+
+| 路径 | 来源 |
+|---|---|
+| `$LAGER_GATEWAY_AUTH_FILE` | 已设置时 |
+| `~/.lager_gateway_auth` | 默认 |
+
+它的结构：
+
+```json
+{
+  "boxes":       { "<box-host>": "<auth-url>" },
+  "authServers": { "<auth-url>": { "accessToken": "...", "cookies": { } } }
+}
+```
+
+文件缺失或损坏时会被当作空文件处理，而不是当作错误。写回时采取尽力而为的方式，在 Unix 上使用 0600 权限。
+
+## 发现机制如何工作
+
+受网关保护的 Box 会用一个拒绝状态码，外加一个指明其认证服务器的 `X-Gateway-Auth-Url` 请求头，来回应未认证的流量。
+
+1. 首次接触时，该 crate 从那个请求头中获知 Box 到认证服务器的映射，并把它记录在 `boxes` 之下。
+2. 它解析出一个凭据，把该请求重试**一次**，此后便主动带上令牌。一台已知受网关保护的 Box，在下一次运行的第一个请求上就会带上请求头。
+3. 过期的访问令牌会向 `POST <auth_url>/api/auth/refresh` 刷新，并重放已保存的 cookie。响应中轮换过的 cookie 会被合并回来。
+
+过期时间取自 JWT 的 `exp` 声明，只解码而**不**做校验，并留有 60 秒的刷新余量。不透明的非 JWT 令牌会被读成已经过期，因此该 crate 会尝试刷新。当该 crate 没有刷新令牌时，它仍会把原来的令牌原样发出。
+
+<Note>
+  **没有** `X-Gateway-Auth-Url` 请求头的普通 401 不会被当作网关拒绝。它会以普通的 `Error::Box { status: 401, .. }` 呈现，因为它来自应用本身而不是网关。
+</Note>
+
+## 令牌会被加到哪里
+
+到处都会，而不只是 9000 端口的 API：
+
+- 9000 端口上的 Box HTTP API
+- 8765 端口上的调试服务
+- UART 的 Socket.IO 握手
+- RTT 的 Socket.IO 握手
+
+因此，受网关保护的 Box 无需额外配置，烧录和流式会话都能正常工作。
+
+## 拒绝的映射关系
+
+| 状态码 | 结果 |
+|---|---|
+| 401 | `Error::AuthRequired`，并指出应当登录哪台认证服务器 |
+| 403 | `Error::Box`，`you are not authorized to use box <host>` —— 这是缺少访问授权，而不是缺少令牌 |
+| 503 | `Error::Box`，网关联系不上它的认证服务器；请稍后重试 |
+
+401 的信息会区分这两种情况：没有发送令牌时是 `box <host> requires sign-in`，发送了令牌时则是 `your session was rejected by box <host>`。
+
+## 不受网关保护的 Box
+
+不会发送任何请求头，也不会走这里的任何代码路径。对于不在网关后面的 Box，这里的一切都不会给您带来任何开销。
