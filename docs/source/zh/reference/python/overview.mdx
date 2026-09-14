@@ -3,8 +3,7 @@ title: Python SDK 概述
 description: Lager Python SDK 简介，用于测试自动化和硬件控制
 ---
 
-Lager Python SDK 提供了一套强大的面向对象接口，用于控制硬件并在您的被测设备（DUT）上实现测试自动化。
-它可以通过程序控制电源、传感器、调试探针等设备。
+Lager Python SDK 提供了一套强大的面向对象接口，用于控制硬件并在您的被测设备（DUT）上实现测试自动化。它可以通过程序控制电源、传感器、调试探针等设备。
 
 ## 导入
 
@@ -175,8 +174,7 @@ print("Test complete")
 
 <Note>
   更想用 Rust 编写测试？同样的 Net 也可以通过
-  [Rust SDK](/source/reference/rust/overview) 访问，它以 `cargo test` 的方式
-  对 Box 发起调用，而不是在 Box 上运行。下面记录的每种 Net 类型都有对应的 Rust
+  [Rust SDK](/source/reference/rust/overview) 访问，它以 `cargo test` 的方式对 Box 发起调用，而不是在 Box 上运行。下面记录的每种 Net 类型都有对应的 Rust
   版本，只有 scope 和 logic 例外，它们还没有进入 Box 的 HTTP API。
 </Note>
 
@@ -252,5 +250,4 @@ except Exception as e:
 ## 演示脚本
 
 [演示脚本](https://github.com/lagerdata/lager/blob/main/docs/examples/demo_script.py)
-是一个更完整的例子。它在一个自动化流程中组合了机械臂控制、USB 集线器电源循环、
-调试探针烧录、电源管理和 ADC 测量。
+是一个更完整的例子。它在一个自动化流程中组合了机械臂控制、USB 集线器电源循环、调试探针烧录、电源管理和 ADC 测量。

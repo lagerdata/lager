@@ -6,10 +6,8 @@ description: 控制示波器设置并采集波形
 通过 Lager CLI 控制示波器 Net，用于波形采集、触发、测量和串流。
 
 <Warning>
-**Rigol MSO5000 上的已知限制。** 边沿触发和 SPI 触发可以工作。
-脉冲、UART 和 I2C 触发在 Rigol MSO5000 上会失败。
-CAN 触发以及 Python API 中的所有总线解码器同样会失败。
-失败的命令会打印错误并以 1 退出。
+**Rigol MSO5000 上的已知限制。** 边沿触发和 SPI 触发可以工作。脉冲、UART 和 I2C 触发在 Rigol MSO5000 上会失败。
+CAN 触发以及 Python API 中的所有总线解码器同样会失败。失败的命令会打印错误并以 1 退出。
 [Issue #418](https://github.com/lagerdata/lager/issues/418) 跟踪这项工作。
 </Warning>
 
@@ -49,8 +47,7 @@ lager scope [NETNAME] [OPTIONS] COMMAND [ARGS]...
 | `stream` | 串流示波器数据并提供 Web 可视化 | 仅 PicoScope |
 
 <Note>
-边沿触发在 PicoScope 和 Rigol 上都可用。协议触发（I2C、SPI、UART）
-和脉宽触发仅限 Rigol。
+边沿触发在 PicoScope 和 Rigol 上都可用。协议触发（I2C、SPI、UART）和脉宽触发仅限 Rigol。
 </Note>
 
 ---
@@ -329,8 +326,7 @@ lager scope NET_NAME measure vrms [--box BOX] [--display] [--cursor]
 
 ## trigger 子命令
 
-配置触发设置。边沿触发在 PicoScope 和 Rigol 上都可用。
-协议触发（I2C、SPI、UART）和脉冲触发仅限 Rigol。
+配置触发设置。边沿触发在 PicoScope 和 Rigol 上都可用。协议触发（I2C、SPI、UART）和脉冲触发仅限 Rigol。
 
 **通用触发选项：**
 
@@ -401,8 +397,7 @@ lager scope NET_NAME trigger pulse [OPTIONS]
 
 设置 I2C 协议触发（仅 Rigol）。在 I2C 总线事件上触发。
 
-在 Rigol MSO5000 上，这条命令还不能工作。请参阅本页顶部的限制说明。
-该命令还会拒绝它自己的默认 `--direction` 值 `read_write`，以及 `ack_miss` 条件。
+在 Rigol MSO5000 上，这条命令还不能工作。请参阅本页顶部的限制说明。该命令还会拒绝它自己的默认 `--direction` 值 `read_write`，以及 `ack_miss` 条件。
 
 ```bash
 lager scope NET_NAME trigger i2c [OPTIONS]
@@ -477,8 +472,7 @@ lager scope ANALOG1 trigger spi \
 
 设置 UART 协议触发（仅 Rigol）。在 UART 串行事件上触发。
 
-在 Rigol MSO5000 上，这条命令还不能工作。请参阅本页顶部的限制说明。
-该命令还会拒绝 `stop` 条件。
+在 Rigol MSO5000 上，这条命令还不能工作。请参阅本页顶部的限制说明。该命令还会拒绝 `stop` 条件。
 
 ```bash
 lager scope NET_NAME trigger uart [OPTIONS]
@@ -499,8 +493,7 @@ lager scope NET_NAME trigger uart [OPTIONS]
 
 ## cursor 子命令（Rigol）
 
-在 Rigol 示波器上控制手动 XY 光标，以进行精确的时间和电压测量。
-光标 A 和 B 可以独立定位，示波器会计算它们之间的差值。
+在 Rigol 示波器上控制手动 XY 光标，以进行精确的时间和电压测量。光标 A 和 B 可以独立定位，示波器会计算它们之间的差值。
 
 ### `cursor set-a` / `cursor set-b`
 
@@ -564,8 +557,7 @@ lager scope ANALOG1 cursor hide --box my-lager-box
 
 ## stream 子命令（PicoScope）
 
-从 PicoScope 设备实时串流示波器数据。串流系统在 Lager Box 上使用一个专用守护进程，
-并提供基于 Web 的可视化界面。
+从 PicoScope 设备实时串流示波器数据。串流系统在 Lager Box 上使用一个专用守护进程，并提供基于 Web 的可视化界面。
 
 ### 守护进程架构
 

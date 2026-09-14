@@ -3,12 +3,9 @@ title: Router
 description: 把 MikroTik 路由器作为测试 Net 驱动
 ---
 
-**路由器 Net** 把一台真实的接入点纳入测试控制之下。测试可以借此更改 SSID、
-有意破坏网络，然后再把它恢复。这样您就能在不手动接触硬件的情况下，
-验证被测设备的重连、漫游和离线行为。
+**路由器 Net** 把一台真实的接入点纳入测试控制之下。测试可以借此更改 SSID、有意破坏网络，然后再把它恢复。这样您就能在不手动接触硬件的情况下，验证被测设备的重连、漫游和离线行为。
 
-[WiFi](/source/zh/reference/python/wifi) 管理的是 Lager Box 自己的无线接口。
-路由器 Net 不同：它是实验台上的一台独立设备，由 Box 通过 MikroTik REST API 驱动。
+[WiFi](/source/zh/reference/python/wifi) 管理的是 Lager Box 自己的无线接口。路由器 Net 不同：它是实验台上的一台独立设备，由 Box 通过 MikroTik REST API 驱动。
 
 ## 导入
 
@@ -18,8 +15,7 @@ from lager import Net, NetType
 router = Net.get("router1", type=NetType.Router)
 ```
 
-凭据（`username`、`password`、`use_ssl`）取自该 Net 保存的配置，
-因此脚本中永远不必硬编码它们。
+凭据（`username`、`password`、`use_ssl`）取自该 Net 保存的配置，因此脚本中永远不必硬编码它们。
 
 ## 连接与系统
 
@@ -68,8 +64,7 @@ router = Net.get("router1", type=NetType.Router)
 
 ## 故障注入
 
-这些方法才是路由器 Net 真正有价值的地方。它们以特定且可重复的方式破坏网络，
-使您能够断言固件如何响应。
+这些方法才是路由器 Net 真正有价值的地方。它们以特定且可重复的方式破坏网络，使您能够断言固件如何响应。
 
 | 方法 | 说明 |
 |--------|-------------|
@@ -90,9 +85,7 @@ router.reset_to_defaults()
 ```
 
 `reset_to_defaults(baseline_ssid=None, baseline_pass=None, wireless_interfaces=None)`
-把路由器恢复到已知的基线状态。一般规则是：这套 API 添加的任何内容都会被标记为测试状态。
-上面的 `remove_*` 和 `clear_*` 方法只移除这些带标记的条目，
-因此清理操作不可能删除测试运行之前就已存在于路由器上的规则。
+把路由器恢复到已知的基线状态。一般规则是：这套 API 添加的任何内容都会被标记为测试状态。上面的 `remove_*` 和 `clear_*` 方法只移除这些带标记的条目，因此清理操作不可能删除测试运行之前就已存在于路由器上的规则。
 
 ## 示例
 
@@ -142,9 +135,6 @@ router.wait_for_wireless_ready("wlan1")
 
 ## 说明
 
-- 每个方法都是对路由器的一次 REST 调用，因此失败会表现为连接错误或 HTTP 错误，
-  而不是仪器错误。
-- `reboot()` 在设计上会断开连接。请在它之后始终先调用 `wait_for_ready()`，
-  再发出后续调用。
-- 清理方法只移除带测试标记的状态，因此在共用的实验台路由器上，
-  可以安全地放在 `finally` 块中调用。
+- 每个方法都是对路由器的一次 REST 调用，因此失败会表现为连接错误或 HTTP 错误，而不是仪器错误。
+- `reboot()` 在设计上会断开连接。请在它之后始终先调用 `wait_for_ready()`，再发出后续调用。
+- 清理方法只移除带测试标记的状态，因此在共用的实验台路由器上，可以安全地放在 `finally` 块中调用。

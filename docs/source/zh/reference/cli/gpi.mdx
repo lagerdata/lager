@@ -63,8 +63,7 @@ lager gpi READY --wait-for 1 --timeout 30
 
 ### 高级流式选项
 
-在 LabJack T7 硬件上，`--wait-for` 使用高速流式采样来检测电平变化。
-您可以调整这些流式参数：
+在 LabJack T7 硬件上，`--wait-for` 使用高速流式采样来检测电平变化。您可以调整这些流式参数：
 
 ```bash
 # Custom scan rate (default varies by driver)
@@ -116,8 +115,7 @@ Pin reached LOW after 2.34s
 | FT232H | 0-15（AD0-AD7、AC0-AC7） | 3.3V | 轮询 |
 
 <Note>
-Aardvark 和 FT232H 的 GPIO 支持目前已停用。将来的版本可能重新启用它。
-当前可用的 GPIO 后端是 LabJack T7、LabJack U3 和 MCC USB-202。
+Aardvark 和 FT232H 的 GPIO 支持目前已停用。将来的版本可能重新启用它。当前可用的 GPIO 后端是 LabJack T7、LabJack U3 和 MCC USB-202。
 </Note>
 
 ### LabJack U3 引脚

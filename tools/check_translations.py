@@ -18,6 +18,12 @@ blunt: it cannot tell a reworded warning from a fixed typo, so it reports both
 and a human decides. Blunt and honest beats clever and quiet -- an exemption
 list is how a checker learns to pass while the docs rot.
 
+A hash catches a translation that went stale. It cannot see one that arrived
+incomplete -- the English page it was made from never changed, so the hash still
+matches while a paragraph, a table row or a whole subcommand is simply absent.
+`--completeness` covers that by comparing structure rather than prose; see the
+comment above the counters for why structure is the only thing that compares.
+
 Two rules beyond staleness, both there to stop a page escaping the gate:
 
   * A translated page with no manifest entry is UNTRACKED. It renders, it
@@ -32,10 +38,13 @@ mapping is derived, never configured, so a translation cannot be filed under a
 name its source does not have.
 
 Usage:
-    python tools/check_translations.py                 # the gate
+    python tools/check_translations.py                 # the gate: all three checks
+    python tools/check_translations.py --completeness  # structure only
     python tools/check_translations.py --progress      # coverage, per section
     python tools/check_translations.py --record PATH   # stamp one page
     python tools/check_translations.py --record-all    # stamp every page on disk
+    python tools/check_translations.py --relink        # fix cross-references
+    python tools/check_translations.py --reflow        # unwrap Chinese paragraphs
 """
 
 import argparse
@@ -193,6 +202,197 @@ def relink(lang: str) -> int:
     return changed
 
 
+# Structure a translation has to keep, whatever language it is written in.
+#
+# The hash gate catches a translation that went *stale*. Nothing caught one
+# that arrived *incomplete*, and the two look identical from outside: a page
+# that renders, publishes and reads perfectly well. Incomplete is the worse of
+# the two, because a stale page is wrong in a way the reader can eventually
+# notice, while a page that is missing a paragraph has no gap on it. Seven
+# pages lost content this way and every gate passed.
+#
+# Prose cannot be compared across languages. Chinese says the same thing in
+# markedly fewer characters, so any length or word comparison fires on every
+# page and is worth nothing. Scaffolding can be compared: a bullet is a bullet
+# in both languages, a table row carries one row of facts in both, a fenced
+# block holds the same command, and `## heading` opens the same section. Count
+# those and leave the words alone. If English has 22 bullets and the
+# translation has 19, three bullets of content are gone.
+FENCE = re.compile(r'^\s{0,3}(`{3,}|~{3,})')
+HEADING = re.compile(r'^#{2,6}\s+\S')
+BULLET = re.compile(r'^\s*[-*+]\s+\S')
+NUMBERED = re.compile(r'^\s*\d{1,9}[.)]\s+\S')
+TABLE_ROW = re.compile(r'^\s*\|')
+
+# Counted separately rather than as one "list items" total, because a total
+# hides a swap: drop a numbered step, add a bullet, and the sum still matches.
+STRUCTURE = ('bullets', 'numbered items', 'headings', 'code fences', 'table rows')
+
+# The characters a line break renders a stray space between: CJK punctuation,
+# the ideographs themselves, and the full-width forms.
+CJK = re.compile(r'[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]')
+
+# A line that opens a block of its own never joins to the line above it.
+BLOCK_START = re.compile(r'^\s*(\||#{1,6}\s|[-*+]\s|\d{1,9}[.)]\s|<|>|`{3,}|~{3,})')
+
+
+def body(lines: list[str]) -> int:
+    """Index of the first line of content. Frontmatter is metadata, not prose."""
+    if not lines or lines[0].strip() != '---':
+        return 0
+    for i in range(1, len(lines)):
+        if lines[i].strip() == '---':
+            return i + 1
+    return 0
+
+
+def fenced(lines: list[str]) -> tuple[list[bool], int, bool]:
+    """Mark every line inside a fenced code block.
+
+    Returns the mask, how many blocks were opened, and whether one was left
+    open at the end of the file. Everything else here depends on this: a
+    bullet in a shell sample is not a list item and a pipe in an ASCII table
+    is not a table row, and counting them is exactly how a structural check
+    learns to fire on pages that are perfectly fine.
+    """
+    inside = [False] * len(lines)
+    fence = None
+    opened = 0
+    for i, line in enumerate(lines):
+        match = FENCE.match(line)
+        if fence is None:
+            if match:
+                fence, inside[i] = match.group(1), True
+                opened += 1
+            continue
+        inside[i] = True
+        if match and match.group(1)[0] == fence[0] and len(match.group(1)) >= len(fence):
+            fence = None
+    return inside, opened, fence is not None
+
+
+def structure(path: Path) -> tuple[dict[str, int], bool]:
+    """Count the scaffolding of one page."""
+    lines = path.read_text().split('\n')
+    inside, fences, unbalanced = fenced(lines)
+    counts = dict.fromkeys(STRUCTURE, 0)
+    counts['code fences'] = fences
+    for i in range(body(lines), len(lines)):
+        if inside[i]:
+            continue
+        line = lines[i]
+        if HEADING.match(line):
+            counts['headings'] += 1
+        elif TABLE_ROW.match(line):
+            counts['table rows'] += 1
+        elif BULLET.match(line):
+            counts['bullets'] += 1
+        elif NUMBERED.match(line):
+            counts['numbered items'] += 1
+    return counts, unbalanced
+
+
+def completeness() -> list[str]:
+    """Report every translation that carries less structure than its English page.
+
+    One-sided on purpose. Fewer bullets than English means content was
+    dropped; more means the translator added a clarifying line, which is
+    theirs to judge and not a defect a checker can rule on.
+    """
+    failures = []
+    for lang in LANGUAGES:
+        for path in translated_pages(lang):
+            english = to_english(path, lang)
+            if not english.exists():
+                continue            # ORPHANED -- check() reports it already
+            rel = path.relative_to(DOCS)
+            want, want_open = structure(english)
+            got, got_open = structure(path)
+            # An unclosed fence makes every count after it meaningless, so say
+            # which file has it rather than reporting the difference it causes
+            # somewhere else. This is how the stray ``` at the end of the
+            # English watt.mdx was found -- as a fence count off by one on a
+            # translation that was complete.
+            for page, is_open in ((f'source/{english.relative_to(SOURCE)}', want_open),
+                                  (str(rel), got_open)):
+                if is_open:
+                    failures.append(f'{lang}: {page} leaves a code fence open at the end '
+                                    f'of the file, so its structure cannot be compared')
+            if want_open or got_open:
+                continue
+            short = [f'{name}: en {want[name]} vs {lang} {got[name]}'
+                     for name in STRUCTURE if got[name] < want[name]]
+            if short:
+                failures.append(f'{lang}: {rel} has less content than the English page -- '
+                                + '; '.join(short) + ' -- restore what was dropped')
+    return failures
+
+
+def soft_breaks(path: Path) -> list[int]:
+    """Line numbers where a paragraph wraps between two CJK characters.
+
+    A newline inside a Markdown paragraph renders as a space. English does not
+    care -- its words are space-separated anyway -- so wrapping at 80 columns
+    is free there and everyone does it by habit. Chinese has no space between
+    characters, so every wrapped line shows up as a gap in the middle of a
+    sentence. A Chinese paragraph is therefore written as one long line, and
+    this is the easiest mistake in the whole corpus to make by reflex.
+
+    Only a break with CJK on *both* sides is one of these. A break between a
+    Chinese character and a Latin word renders exactly the space the style
+    guide asks for in that position, so it is correct and stays.
+    """
+    lines = path.read_text().split('\n')
+    inside, _, _ = fenced(lines)
+    found = []
+    for i in range(body(lines), len(lines) - 1):
+        line, nxt = lines[i], lines[i + 1]
+        if inside[i] or inside[i + 1] or not line.strip() or not nxt.strip():
+            continue
+        if line.endswith('  '):
+            continue                # two trailing spaces is a deliberate break
+        if TABLE_ROW.match(line) or HEADING.match(line) or BLOCK_START.match(nxt):
+            continue
+        if CJK.match(line.rstrip()[-1]) and CJK.match(nxt.lstrip()[0]):
+            found.append(i + 1)
+    return found
+
+
+def reflow(lang: str) -> int:
+    """Join every CJK soft break, so each Chinese paragraph is one line."""
+    changed = 0
+    for path in translated_pages(lang):
+        breaks = set(soft_breaks(path))
+        if not breaks:
+            continue
+        lines = path.read_text().split('\n')
+        out: list[str] = []
+        for number, line in enumerate(lines, 1):
+            if out and number - 1 in breaks:
+                out[-1] += line.lstrip()
+            else:
+                out.append(line)
+        path.write_text('\n'.join(out))
+        changed += 1
+    return changed
+
+
+def wrapped() -> list[str]:
+    """Report pages that wrap a Chinese paragraph mid-sentence."""
+    failures = []
+    for lang in LANGUAGES:
+        for path in translated_pages(lang):
+            breaks = soft_breaks(path)
+            if breaks:
+                where = ', '.join(str(b) for b in breaks[:6])
+                more = f' and {len(breaks) - 6} more' if len(breaks) > 6 else ''
+                failures.append(
+                    f'{lang}: {path.relative_to(DOCS)} wraps a Chinese paragraph at line '
+                    f'{where}{more}, and each wrap renders as a stray space -- run '
+                    f'`python tools/check_translations.py --reflow`')
+    return failures
+
+
 def check(manifest: dict) -> list[str]:
     failures = []
     for lang in LANGUAGES:
@@ -253,6 +453,16 @@ def progress() -> None:
               f'{"#" * round(20 * have / len(pages)):<20} {left:>7,} English words left')
 
 
+def report(failures: list[str], clean: str) -> int:
+    if not failures:
+        print(f'\n{clean}')
+        return 0
+    print(f'\nFAIL: {len(failures)} problem(s).\n', file=sys.stderr)
+    for failure in failures:
+        print(f'  {failure}', file=sys.stderr)
+    return 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -265,6 +475,11 @@ def main() -> int:
     parser.add_argument('--relink', action='store_true',
                         help='point cross-references at the translation where one exists, '
                              'and at the English page where one does not')
+    parser.add_argument('--completeness', action='store_true',
+                        help='compare the structure of each translation with its English '
+                             'page, without the hash check')
+    parser.add_argument('--reflow', action='store_true',
+                        help='join every line break that falls inside a Chinese paragraph')
     args = parser.parse_args()
 
     manifest = load_manifest()
@@ -312,24 +527,27 @@ def main() -> int:
             print(f'{lang}: rewrote links in {relink(lang)} page(s)')
         return 0
 
+    if args.reflow:
+        for lang in LANGUAGES:
+            print(f'{lang}: unwrapped paragraphs in {reflow(lang)} page(s)')
+        return 0
+
+    if args.completeness:
+        return report(completeness() + wrapped(),
+                      'every translation carries the same structure as its English page.')
+
     if args.progress:
         progress()
         return 0
 
-    failures = check(manifest)
     counts = {lang: len(manifest.get(lang, {})) for lang in LANGUAGES}
     total = len(english_pages())
     for lang, n in counts.items():
         print(f'  {lang:<8}  {n}/{total} pages translated and tracked')
 
-    if not failures:
-        print('\nevery translation matches the English page it was made from.')
-        return 0
-
-    print(f'\nFAIL: {len(failures)} problem(s).\n', file=sys.stderr)
-    for failure in failures:
-        print(f'  {failure}', file=sys.stderr)
-    return 1
+    return report(check(manifest) + completeness() + wrapped(),
+                  'every translation matches the English page it was made from, '
+                  'and carries the same structure.')
 
 
 if __name__ == '__main__':

@@ -101,8 +101,7 @@ SERIAL1   /dev/ttyUSB0    connected   running
 
 持有者会占用该 Net 多久：
 
-- 客户端显示为 `gone` 的持有者，会在大约 0.1 秒内释放该 Net。
-  如果适配器此时正在重新枚举，释放最长可能需要 60 秒。
+- 客户端显示为 `gone` 的持有者，会在大约 0.1 秒内释放该 Net。如果适配器此时正在重新枚举，释放最长可能需要 60 秒。
 - 计算机进入休眠或失去网络的持有者，在大约 85 秒内仍然显示为 `connected`。
 - reader 显示为 `stopped` 的持有者不会阻塞您。对该 Net 的下一条
   `lager uart` 会重新取得它。
@@ -113,14 +112,10 @@ SERIAL1   /dev/ttyUSB0    connected   running
 lager uart SERIAL1 --force --box my-lager-box
 ```
 
-`--force` 会释放持有该 Net 的每一个会话，然后再连接。如果它确实释放了某个会话，
-会打印 `Released the session that held 'SERIAL1'`；如果没有任何会话持有该 Net，
-则什么也不打印。被您顶替的那个会话会停止接收数据，并可能显示
+`--force` 会释放持有该 Net 的每一个会话，然后再连接。如果它确实释放了某个会话，会打印 `Released the session that held 'SERIAL1'`；如果没有任何会话持有该 Net，则什么也不打印。被您顶替的那个会话会停止接收数据，并可能显示
 `Error: Read error: ...`。
 
-`--force` 只作用于您指名的那个 Net。如果错误信息指出的是设备路径，
-说明同一设备上的另一个 Net 持有它。请用 `--sessions` 找到那个 Net，
-然后按名称接管那个 Net。
+`--force` 只作用于您指名的那个 Net。如果错误信息指出的是设备路径，说明同一设备上的另一个 Net 持有它。请用 `--sessions` 找到那个 Net，然后按名称接管那个 Net。
 
 `--sessions` 在以下情况会打印一条消息而不是表格：
 
@@ -131,14 +126,11 @@ lager uart SERIAL1 --force --box my-lager-box
 
 <Note>
 `--force` 无法清除这个错误：
-`UART device /dev/ttyUSB0 is already in use (locked by another session or the lager uart CLI)`。
-此时是另一个进程持有该端口，例如一个打开了 UART Net 的 `lager python` 脚本。
-请先停止那个进程。
+`UART device /dev/ttyUSB0 is already in use (locked by another session or the lager uart CLI)`。此时是另一个进程持有该端口，例如一个打开了 UART Net 的 `lager python` 脚本。请先停止那个进程。
 </Note>
 
 <Note>
-与每一条 `lager uart` 命令一样，`--sessions` 和 `--force` 都会获取 Box 锁。
-如果另一位用户持有 Box 锁，它们会失败并报出
+与每一条 `lager uart` 命令一样，`--sessions` 和 `--force` 都会获取 Box 锁。如果另一位用户持有 Box 锁，它们会失败并报出
 `Error: Box 'my-lager-box' is locked by <holder>`。
 </Note>
 
@@ -221,8 +213,7 @@ Net configured with USB serial number
 Automatically resolves to correct /dev/ttyUSBx
 ```
 
-**直接设备路径**（备选）：如果适配器没有序列号，请按它的设备路径保存一个 Net。
-最后一个参数是您自选的标签。之后按名称连接该 Net。
+**直接设备路径**（备选）：如果适配器没有序列号，请按它的设备路径保存一个 Net。最后一个参数是您自选的标签。之后按名称连接该 Net。
 `lager uart` 不接受用设备路径代替 Net 名称。
 
 ```bash
@@ -258,8 +249,7 @@ lager uart TERMINAL --line-ending crlf --opost
 uart 命令使用 WebSocket 进行通信：
 - 提供实时的双向数据
 - 同时支持只读模式和交互模式
-- 如果 USB 适配器重新枚举，Box 会在最长 60 秒内重新打开它，会话继续保持。
-  等待期间 CLI 会打印 `[UART device disconnected - reconnecting...]`。
+- 如果 USB 适配器重新枚举，Box 会在最长 60 秒内重新打开它，会话继续保持。等待期间 CLI 会打印 `[UART device disconnected - reconnecting...]`。
 - CLI 不会重新连接到 Box。如果与 Box 的连接断开，会话就结束了，请重新运行该命令。
 
 ---

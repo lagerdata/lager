@@ -3,9 +3,7 @@ title: BluFi
 description: 通过 BLE 为 ESP32 配网（BluFi 协议）
 ---
 
-使用 BluFi 协议，通过低功耗蓝牙为 ESP32 设备配置 WiFi 凭据。
-您可以用它扫描支持 BluFi 的设备、下发 SSID/密码凭据，并读回连接状态和固件版本。
-它可以在测试过程中把一台未配网的 ESP32 被测设备接入网络。
+使用 BluFi 协议，通过低功耗蓝牙为 ESP32 设备配置 WiFi 凭据。您可以用它扫描支持 BluFi 的设备、下发 SSID/密码凭据，并读回连接状态和固件版本。它可以在测试过程中把一台未配网的 ESP32 被测设备接入网络。
 
 ## 语法
 
@@ -13,8 +11,7 @@ description: 通过 BLE 为 ESP32 配网（BluFi 协议）
 lager blufi COMMAND [ARGS] [OPTIONS]
 ```
 
-每个子命令都接受 `--box BOX`（Lager Box 名称或 IP，省略时使用默认 Box）。
-除 `scan` 之外的所有命令都需要一个 `DEVICE_NAME` 参数，用于指定目标 BluFi 设备。
+每个子命令都接受 `--box BOX`（Lager Box 名称或 IP，省略时使用默认 Box）。除 `scan` 之外的所有命令都需要一个 `DEVICE_NAME` 参数，用于指定目标 BluFi 设备。
 
 ## 命令
 

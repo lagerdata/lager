@@ -75,8 +75,7 @@ lager spi MY_SPI config --cs-mode manual
 
 ### `transfer`
 
-进行一次全双工 SPI 传输：在发送数据的同时接收响应。
-如果提供的数据短于 `NUM_WORDS`，剩余的字会用填充值补齐；如果更长，数据会被截断。
+进行一次全双工 SPI 传输：在发送数据的同时接收响应。如果提供的数据短于 `NUM_WORDS`，剩余的字会用填充值补齐；如果更长，数据会被截断。
 
 ```bash
 lager spi NETNAME transfer NUM_WORDS [OPTIONS]
@@ -253,10 +252,7 @@ lager spi MY_SPI write 0x03000000 --keep-cs
 | Aardvark USB | 固定的 MOSI/MISO/SCK/SS | 硬件或手动 | 最高 8 MHz |
 | FT232H | 可配置 | 基于 MPSSE | FTDI MPSSE SPI |
 
-**LabJack T7 时钟：** 请求 800 kHz 及以上时，实际约以 800 kHz 运行。
-在约 1 kHz 到 800 kHz 之间的大多数速率上，T7 固件会让多字节传输失败。
-因此对于多字节传输，驱动程序会把该范围内的请求改为约 1 kHz 运行，并打印一次警告。
-单字节传输，以及约 1 kHz 及以下的请求，使用您请求的速率。
+**LabJack T7 时钟：** 请求 800 kHz 及以上时，实际约以 800 kHz 运行。在约 1 kHz 到 800 kHz 之间的大多数速率上，T7 固件会让多字节传输失败。因此对于多字节传输，驱动程序会把该范围内的请求改为约 1 kHz 运行，并打印一次警告。单字节传输，以及约 1 kHz 及以下的请求，使用您请求的速率。
 
 ---
 
@@ -265,15 +261,12 @@ lager spi MY_SPI write 0x03000000 --keep-cs
 U3 通过它自己的固件命令而不是 LJM 来运行 SPI。在 U3 上使用 SPI 需要
 U3 硬件版本 1.21 或更高。
 
-**引脚：** 默认通道 `FIO4-FIO7` 按 CS、CLK、MISO、MOSI 的顺序分配引脚。
-这个顺序与 T7 不同，T7 是 CS、CLK、MOSI、MISO。若要使用其他引脚，
-请用 `lager nets add` 配合 `--cs`、`--sck`、`--mosi` 和 `--miso` 选项创建 Net。
+**引脚：** 默认通道 `FIO4-FIO7` 按 CS、CLK、MISO、MOSI 的顺序分配引脚。这个顺序与 T7 不同，T7 是 CS、CLK、MOSI、MISO。若要使用其他引脚，请用 `lager nets add` 配合 `--cs`、`--sck`、`--mosi` 和 `--miso` 选项创建 Net。
 `FIO0`-`FIO3` 不能承载 SPI。EIO 和 CIO 线位于 U3 的 DB15 连接器上。
 
 **限制：**
 - 一次传输最多 50 字节：8 位字长为 50 个字，16 位为 25 个字，32 位为 12 个字。
-- 时钟约在 5.4 kHz 至 71.4 kHz 之间运行，并且 Box 绝不会超过您请求的速率。
-  超出该范围的请求会被钳位。
+- 时钟约在 5.4 kHz 至 71.4 kHz 之间运行，并且 Box 绝不会超过您请求的速率。超出该范围的请求会被钳位。
 - `config` 打印硬件实际使用的速率。当该速率与请求不同时，它会在括号中给出请求值：
 
 ```
@@ -281,16 +274,11 @@ SPI configured: mode=0, freq=49959Hz (requested 50000Hz), word_size=8, bit_order
 ```
 
 没有保存频率的 Net 会以最高速率运行。在这样的 Net 上，`config` 显示默认请求值
-`(requested 1000000Hz)`。CLI 不会为被钳位的时钟给出警告，
-因此请阅读 `config` 输出中的速率。
+`(requested 1000000Hz)`。CLI 不会为被钳位的时钟给出警告，因此请阅读 `config` 输出中的速率。
 
-**片选：** U3 固件在每次传输时把 CS 拉低，并在结束时释放它。
-它没有极性控制，也没有保持控制。Box 会拒绝 `--cs-active high`。
-在 `auto` CS 模式下，Box 也会拒绝 `--keep-cs`。
+**片选：** U3 固件在每次传输时把 CS 拉低，并在结束时释放它。它没有极性控制，也没有保持控制。Box 会拒绝 `--cs-active high`。在 `auto` CS 模式下，Box 也会拒绝 `--keep-cs`。
 
-对于高电平有效的设备，或者需要跨多次传输保持 CS 时，
-请创建不含 CS 的 SPI Net，并用一个 `gpio` Net 驱动 CS。
-不含 CS 的 Net 使用 `manual` CS 模式。
+对于高电平有效的设备，或者需要跨多次传输保持 CS 时，请创建不含 CS 的 SPI Net，并用一个 `gpio` Net 驱动 CS。不含 CS 的 Net 使用 `manual` CS 模式。
 
 ```bash
 # SPI net without CS: SCK=FIO5, MISO=FIO6, MOSI=FIO7

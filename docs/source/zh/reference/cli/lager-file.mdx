@@ -3,8 +3,7 @@ title: .lager 配置文件
 description: .lager JSON 配置文件的完整参考
 ---
 
-`.lager` 文件是一个 JSON 配置文件，保存 Lager CLI 的设置。这个文件有**两个不同的版本**，
-用途也不同：**全局**文件由所有项目共用，**项目级**文件只属于某一个项目目录。
+`.lager` 文件是一个 JSON 配置文件，保存 Lager CLI 的设置。这个文件有**两个不同的版本**，用途也不同：**全局**文件由所有项目共用，**项目级**文件只属于某一个项目目录。
 
 ## 两个文件，两种用途
 
@@ -17,24 +16,19 @@ description: .lager JSON 配置文件的完整参考
 | **共享方式** | 所有项目共用一个文件 | 每个项目一个（提交到版本控制） |
 
 CLI 总是知道该用哪个文件。`lager boxes` 和 `lager defaults` 之类的命令读写全局文件。
-`lager devenv` 和 `lager exec` 之类的命令从当前目录向上查找项目级文件。
-这两个文件不会冲突 —— 它们包含的段完全不同。
+`lager devenv` 和 `lager exec` 之类的命令从当前目录向上查找项目级文件。这两个文件不会冲突 —— 它们包含的段完全不同。
 
-当 `lager devenv terminal` 或 `lager exec` 启动 Docker 容器时，
-它会把全局的 `~/.lager` 文件挂载到容器内的 `/lager/.lager`，
-并设置 `LAGER_CONFIG_FILE_DIR=/lager`。因此容器内也能使用 Box 和 Net 的定义。
+当 `lager devenv terminal` 或 `lager exec` 启动 Docker 容器时，它会把全局的 `~/.lager` 文件挂载到容器内的 `/lager/.lager`，并设置 `LAGER_CONFIG_FILE_DIR=/lager`。因此容器内也能使用 Box 和 Net 的定义。
 
 ---
 
 ## 全局文件（`~/.lager`）
 
-全局文件位于您的主目录，由所有项目共用。它保存您的 Box 注册表、
-硬件 Net 配置和命令默认值。
+全局文件位于您的主目录，由所有项目共用。它保存您的 Box 注册表、硬件 Net 配置和命令默认值。
 
 ### DEFAULTS
 
-保存默认值，让您可以在 CLI 命令中省略常用选项。
-当您运行命令而没有指定 `--box` 或 Net 名称时，CLI 会查找这一段。
+保存默认值，让您可以在 CLI 命令中省略常用选项。当您运行命令而没有指定 `--box` 或 Net 名称时，CLI 会查找这一段。
 
 由 `lager defaults` 管理。
 
@@ -144,9 +138,7 @@ lager boxes import --file boxes.json  # Import boxes from JSON
 
 ### NETS
 
-按 Box 名称组织保存硬件 Net 配置。每个 Net 把一个易读的名称映射到一个物理硬件连接
-（仪器上的某个通道）。Net 保存在全局文件中，但真正的 Net 数据在 Box 上。
-这一段是由 `lager nets` 管理的本地缓存。
+按 Box 名称组织保存硬件 Net 配置。每个 Net 把一个易读的名称映射到一个物理硬件连接（仪器上的某个通道）。Net 保存在全局文件中，但真正的 Net 数据在 Box 上。这一段是由 `lager nets` 管理的本地缓存。
 
 **结构：** 一个以 Box 名称为键的字典，每个值是一个 Net 对象数组。
 
@@ -216,8 +208,7 @@ lager nets tui                                       # Interactive TUI manager
 
 ## 项目级文件（`./.lager`）
 
-项目级文件位于您的项目目录（或它的任意上级目录）中。CLI 从当前工作目录向上查找它。
-这个文件通常会提交到版本控制，让项目中的所有开发者共用同一套开发环境配置。
+项目级文件位于您的项目目录（或它的任意上级目录）中。CLI 从当前工作目录向上查找它。这个文件通常会提交到版本控制，让项目中的所有开发者共用同一套开发环境配置。
 
 它与全局的 `~/.lager` 完全分开 —— 包含的段不同，读取它的命令也不同。
 
@@ -237,9 +228,7 @@ CLI 从当前目录开始，沿目录树向上查找，直到找到一个不是�
 
 为您的项目配置基于 Docker 的开发环境。由 `lager devenv` 管理。
 
-当您运行 `lager devenv terminal` 时，CLI 读取这一段。它指明要启动哪个 Docker 镜像、
-把源代码挂载到哪里，以及如何配置容器。当您运行 `lager exec <name>` 时，
-它从这一段读取已保存的命令。
+当您运行 `lager devenv terminal` 时，CLI 读取这一段。它指明要启动哪个 Docker 镜像、把源代码挂载到哪里，以及如何配置容器。当您运行 `lager exec <name>` 时，它从这一段读取已保存的命令。
 
 **字段：**
 
@@ -261,9 +250,7 @@ CLI 从当前目录开始，沿目录树向上查找，直到找到一个不是�
 | `entrypoint` | 否 | 容器的 entrypoint（例如 `"/bin/bash"`）。当镜像默认的 entrypoint 不是交互式 shell 时使用；在 `terminal` 上 `--entrypoint` 会覆盖它。 |
 | `cmd.<name>` | 否 | 自定义的命名命令，可以用 `lager exec <name>` 执行 |
 
-表中的"对两个命令都生效"指的是 `lager exec` 会启动容器的那种情况。
-在被 CLI 识别为 CI 的作业中，`lager exec` 就地运行命令，
-此时它只使用 `shell`、`environment` 和 `cmd.<name>` 这些命令。请参阅
+表中的"对两个命令都生效"指的是 `lager exec` 会启动容器的那种情况。在被 CLI 识别为 CI 的作业中，`lager exec` 就地运行命令，此时它只使用 `shell`、`environment` 和 `cmd.<name>` 这些命令。请参阅
 [在 CI 中运行](/source/zh/reference/cli/exec#在-ci-中运行)。
 
 `volumes` 中的路径可以使用 `~`、环境变量和 `${PROJECT_ROOT}`（即包含 `.lager`
@@ -271,8 +258,7 @@ CLI 从当前目录开始，沿目录树向上查找，直到找到一个不是�
 例如 `"${PROJECT_ROOT}:/workspace"`。当命令行标志（`--user`、`--group`、
 `--network`、`--platform`、`--entrypoint`）与配置值同时存在时，标志优先。
 
-上面任何标量键都可以用 `lager devenv set <key> <value>` 设置、
-用 `lager devenv unset <key>` 删除，整段可以用 `lager devenv show` 打印。
+上面任何标量键都可以用 `lager devenv set <key> <value>` 设置、用 `lager devenv unset <key>` 删除，整段可以用 `lager devenv show` 打印。
 
 **示例：**
 
@@ -335,12 +321,10 @@ lager exec --command 'make' --save-as mk  # Run and save for later
 
 ### DEBUG
 
-把调试 Net 名称映射到本地 J-Link 脚本文件的路径。路径可以是相对的
-（相对于 `.lager` 文件所在位置解析），也可以是绝对的。
+把调试 Net 名称映射到本地 J-Link 脚本文件的路径。路径可以是相对的（相对于 `.lager` 文件所在位置解析），也可以是绝对的。
 
 它与全局文件 `NETS` 段中 Net 对象上的 `jlink_script` 字段是两回事。
-`DEBUG` 段提供项目级的脚本覆盖 —— `lager debug` 命令会先查这一段，
-再使用保存在 Box 上的脚本。这样您就可以把 J-Link 脚本放在项目仓库中并自动使用它们。
+`DEBUG` 段提供项目级的脚本覆盖 —— `lager debug` 命令会先查这一段，再使用保存在 Box 上的脚本。这样您就可以把 J-Link 脚本放在项目仓库中并自动使用它们。
 
 **示例：**
 
@@ -357,8 +341,7 @@ lager exec --command 'make' --save-as mk  # Run and save for later
 
 ### includes
 
-把目标名称映射到源目录，这些目录会随用 `lager python` 运行的 Python 脚本一起上传。
-这样您的测试脚本就可以从项目之外的目录导入内容。
+把目标名称映射到源目录，这些目录会随用 `lager python` 运行的 Python 脚本一起上传。这样您的测试脚本就可以从项目之外的目录导入内容。
 
 路径相对于 `.lager` 文件所在位置解析。
 

@@ -3,8 +3,7 @@ title: ADC
 description: 读取模数转换器的数值
 ---
 
-从您的 Box 读取模数转换器（ADC）的数值。支持 LabJack T7、LabJack U3 和 MCC USB-202 硬件，
-各硬件有各自的通道命名和电压量程。
+从您的 Box 读取模数转换器（ADC）的数值。支持 LabJack T7、LabJack U3 和 MCC USB-202 硬件，各硬件有各自的通道命名和电压量程。
 
 ## 语法
 
@@ -84,8 +83,7 @@ CURRENT_MON     adc       MCC_USB202       CH0      USB0::0x09DB::0x012B::...
 
 ### LabJack U3
 
-U3 使用与 T7 不同的驱动栈：LabJack Exodriver 和 LabJackPython。
-这两个系列可以共用一台 Lager Box。
+U3 使用与 T7 不同的驱动栈：LabJack Exodriver 和 LabJackPython。这两个系列可以共用一台 Lager Box。
 
 - 上面的量程是 LabJack 给出的 U3-HV 数据。在 U3-HV 上，`AIN0`-`AIN3` 是固定的高压输入。
 - `AIN4`-`AIN7` 与 `FIO4`-`FIO7` 是同一组物理引脚，`AIN8`-`AIN15` 与 `EIO0`-`EIO7` 是同一组引脚。执行 `adc` 读取会把引脚设为模拟模式，而对同一引脚执行 `gpio` 读写会把它设回数字模式。

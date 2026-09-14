@@ -77,8 +77,7 @@ print(f"Voltage: {volts}V")
 ### `read_all()`
 
 在一次原子测量中读取电流、电压和功率。**仅 Joulescope JS220 和 Nordic PPK2。**
-这比分别调用 `read_current()`、`read_voltage()` 和 `read()` 更高效，
-因为所有数值都来自同一个采样窗口。
+这比分别调用 `read_current()`、`read_voltage()` 和 `read()` 更高效，因为所有数值都来自同一个采样窗口。
 
 ```python
 measurements = power.read_all()
@@ -250,8 +249,7 @@ else:
 
 - 功率以瓦特（W）返回
 - Joulescope JS220 在 0.1 秒内对测量取平均，以获得更高精度
-- Nordic PPK2 在 0.3 秒内取平均，并工作在源模式，提供 0.8–5V 的可配置电压。
-  因此电压读数反映的是配置值，而不是独立测量的结果
+- Nordic PPK2 在 0.3 秒内取平均，并工作在源模式，提供 0.8–5V 的可配置电压。因此电压读数反映的是配置值，而不是独立测量的结果
 - `read_current()`、`read_voltage()` 和 `read_all()` 仅在 Joulescope JS220 和
   Nordic PPK2 上可用；在 Yocto-Watt 上调用它们会抛出错误
 - 在 Yocto-Watt 上获取电流：由功率和已知电压计算（I = P / V）

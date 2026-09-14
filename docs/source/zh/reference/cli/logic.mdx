@@ -7,8 +7,7 @@ description: 控制逻辑分析仪的通道和触发
 
 <Warning>
 **Rigol MSO5000 上的已知限制。** 通道控制、采集、测量、光标，以及边沿触发和
-SPI 触发均可工作。脉冲、UART 和 I2C 触发在用选项配置它们时会失败。
-每次失败都会打印 `Error: Function not found: <method>` 并以 1 退出。
+SPI 触发均可工作。脉冲、UART 和 I2C 触发在用选项配置它们时会失败。每次失败都会打印 `Error: Function not found: <method>` 并以 1 退出。
 CAN 触发和所有总线解码器同样会失败。
 [Issue #418](https://github.com/lagerdata/lager/issues/418) 跟踪这项工作。
 </Warning>
@@ -41,8 +40,7 @@ lager logic [OPTIONS] NET_NAME COMMAND [ARGS]...
 
 ## 退出码
 
-失败的命令会打印错误并以 1 退出。这包括 Net 名称不是逻辑 Net，
-以及来自 Box 的错误。成功的命令以 0 退出。
+失败的命令会打印错误并以 1 退出。这包括 Net 名称不是逻辑 Net，以及来自 Box 的错误。成功的命令以 0 退出。
 
 ## 命令参考
 
@@ -54,8 +52,7 @@ lager logic [OPTIONS] NET_NAME COMMAND [ARGS]...
 lager logic NET_NAME enable [--box BOX] [--mcu MCU]
 ```
 
-如果示波器的逻辑分析仪处于关闭状态，`enable` 会打开它。
-然后它显示该 Net 的通道，并把该通道设为活动通道。通道必须是 `D0` 到 `D15`。
+如果示波器的逻辑分析仪处于关闭状态，`enable` 会打开它。然后它显示该 Net 的通道，并把该通道设为活动通道。通道必须是 `D0` 到 `D15`。
 
 ### `disable`
 
@@ -151,8 +148,7 @@ lager logic NET_NAME trigger edge [OPTIONS]
 
 ### `trigger pulse`
 
-设置脉冲触发配置。在 Rigol MSO5000 上，这个触发还不能工作。
-请参阅本页顶部的限制说明。
+设置脉冲触发配置。在 Rigol MSO5000 上，这个触发还不能工作。请参阅本页顶部的限制说明。
 
 ```bash
 lager logic NET_NAME trigger pulse [OPTIONS]
@@ -169,8 +165,7 @@ lager logic NET_NAME trigger pulse [OPTIONS]
 
 ### `trigger i2c`
 
-设置 I2C 协议触发。在 Rigol MSO5000 上，配置这个触发的选项还不能工作。
-请参阅本页顶部的限制说明。
+设置 I2C 协议触发。在 Rigol MSO5000 上，配置这个触发的选项还不能工作。请参阅本页顶部的限制说明。
 
 ```bash
 lager logic NET_NAME trigger i2c [OPTIONS]
@@ -192,8 +187,7 @@ lager logic NET_NAME trigger i2c [OPTIONS]
 
 ### `trigger uart`
 
-设置 UART 协议触发。在 Rigol MSO5000 上，配置这个触发的选项还不能工作。
-请参阅本页顶部的限制说明。
+设置 UART 协议触发。在 Rigol MSO5000 上，配置这个触发的选项还不能工作。请参阅本页顶部的限制说明。
 
 ```bash
 lager logic NET_NAME trigger uart [OPTIONS]

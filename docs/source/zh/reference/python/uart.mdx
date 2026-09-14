@@ -88,17 +88,13 @@ response = ser.readline()
 **返回：** `serial.Serial` - 已连接的 pyserial 对象
 
 <Note>
-`connect()` 忽略 `timeout` 参数。端口总是以 0.1 秒的读取超时打开。
-若要更改它，请在返回的对象上设置 `ser.timeout`。
-不在上表中的 `parity` 值（例如 `'N'` 或 `'E'`）表示无校验。
+`connect()` 忽略 `timeout` 参数。端口总是以 0.1 秒的读取超时打开。若要更改它，请在返回的对象上设置 `ser.timeout`。不在上表中的 `parity` 值（例如 `'N'` 或 `'E'`）表示无校验。
 </Note>
 
 <Note>
 `connect()` 以独占方式打开端口。当某个 `lager uart` 会话持有该 Net 时，
-`connect()` 会抛出 `serial.SerialException`。当您的脚本持有该端口时，
-对同一个 Net 执行 `lager uart` 会失败并报出
-`UART device /dev/ttyUSB0 is already in use (locked by another session or the lager uart CLI)`。
-请用 `ser.close()` 关闭端口以释放它。
+`connect()` 会抛出 `serial.SerialException`。当您的脚本持有该端口时，对同一个 Net 执行 `lager uart` 会失败并报出
+`UART device /dev/ttyUSB0 is already in use (locked by another session or the lager uart CLI)`。请用 `ser.close()` 关闭端口以释放它。
 </Note>
 
 ### `get_baudrate()`

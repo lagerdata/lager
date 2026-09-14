@@ -3,9 +3,7 @@ title: Exec
 description: 在本地 Docker 开发容器中执行命令
 ---
 
-在您本机的 Docker 开发容器内运行 shell 命令。命令可以直接内联运行，
-也可以保存为命名别名以便复用。在已经运行于 devenv 镜像中的 CI 作业里，
-命令会就地运行。请参阅[在 CI 中运行](#在-ci-中运行)。
+在您本机的 Docker 开发容器内运行 shell 命令。命令可以直接内联运行，也可以保存为命名别名以便复用。在已经运行于 devenv 镜像中的 CI 作业里，命令会就地运行。请参阅[在 CI 中运行](#在-ci-中运行)。
 
 ## 语法
 
@@ -89,13 +87,11 @@ lager exec --command 'make build' --env CFLAGS="-O2" --env DEBUG=0
 lager exec --command 'make build' --passenv BUILD_ID
 ```
 
-`--passenv` 把您 shell 中的值复制到容器里。请不要传 `PATH`：
-宿主机的值会替换镜像的 `PATH`，容器随后就找不到自己的工具了。
+`--passenv` 把您 shell 中的值复制到容器里。请不要传 `PATH`：宿主机的值会替换镜像的 `PATH`，容器随后就找不到自己的工具了。
 
 ## 在 CI 中运行
 
-`lager exec` 在启动容器之前会先读取 CI 环境变量。
-在下列 CI 系统的作业中，它会就地运行命令，不启动容器：
+`lager exec` 在启动容器之前会先读取 CI 环境变量。在下列 CI 系统的作业中，它会就地运行命令，不启动容器：
 
 | CI 系统 | 识别条件 |
 |-----------|---------------|
@@ -104,9 +100,7 @@ lager exec --command 'make build' --passenv BUILD_ID
 | Drone | `CI=true` 且 `DRONE=true` |
 | Bitbucket Pipelines | `CI=true` 且设置了 `BITBUCKET_BUILD_NUMBER` |
 
-CLI 认为这样的作业已经运行在 devenv 镜像中。识别只读取这些变量，
-不检查是否处于容器内。没有 `container:` 块的 GitHub Actions 或 GitLab CI 作业
-同样会就地运行命令，也就是直接运行在运行器上。
+CLI 认为这样的作业已经运行在 devenv 镜像中。识别只读取这些变量，不检查是否处于容器内。没有 `container:` 块的 GitHub Actions 或 GitLab CI 作业同样会就地运行命令，也就是直接运行在运行器上。
 
 就地运行时，命令的行为如下：
 
@@ -130,10 +124,7 @@ LAGER_CI_OVERRIDE=1 lager exec build
 ```
 
 <Warning>
-`LAGER_CI_OVERRIDE` 也会让看到它的其他每条 `lager` 命令停止识别 CI。
-此时 Box 锁会立即失败而不是等待，除非设置了 `LAGER_LOCK_WAIT`。
-并且锁的持有者会是您的用户名，而不是该 CI 作业。
-请只在运行 `lager exec` 的那一步设置这个变量。
+`LAGER_CI_OVERRIDE` 也会让看到它的其他每条 `lager` 命令停止识别 CI。此时 Box 锁会立即失败而不是等待，除非设置了 `LAGER_LOCK_WAIT`。并且锁的持有者会是您的用户名，而不是该 CI 作业。请只在运行 `lager exec` 的那一步设置这个变量。
 </Warning>
 
 ## 与其他命令的区别

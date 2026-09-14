@@ -389,6 +389,5 @@ scope.cursor.hide()
 - MSO 示波器的数字通道（D0-D15）请用 `NetType.Logic`
 - 串流功能仅在 PicoScope 设备上可用
 - 为获得可靠的测量结果，请在开始采集之前先配置触发
-- 测量方法成功时返回 `float`，测量无效时返回 `None`（例如无信号、无触发、通道不对）。
-  在 Rigol 硬件上，仪器对无效测量返回 9.9E+37，它会被自动转换为 `None`
+- 测量方法成功时返回 `float`，测量无效时返回 `None`（例如无信号、无触发、通道不对）。在 Rigol 硬件上，仪器对无效测量返回 9.9E+37，它会被自动转换为 `None`
 - 关于协议触发（UART、I2C、SPI、CAN），请参阅[逻辑分析仪](/source/zh/reference/python/logic)文档

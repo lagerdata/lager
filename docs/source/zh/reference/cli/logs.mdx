@@ -20,8 +20,7 @@ lager logs COMMAND [OPTIONS]
 | `docker` | 查看 Docker 容器日志的大小 |
 
 <Note>
-这些命令用于统计和删除日志文件，它们不打印日志内容。
-若要读取 Box 各服务的日志，请参阅下方的"读取服务日志"一节。
+这些命令用于统计和删除日志文件，它们不打印日志内容。若要读取 Box 各服务的日志，请参阅下方的"读取服务日志"一节。
 </Note>
 
 ---
@@ -122,8 +121,17 @@ Note: Docker logs are automatically rotated with max-size=10m, max-file=3
 Total maximum per container: ~30MB
 ```
 
-该命令通过非交互式 SSH 会话，用 `sudo` 读取日志文件。
-如果 Box 上的 `sudo` 要求输入密码，容器名称下方就不会出现大小那一行。
+该命令通过非交互式 SSH 会话，用 `sudo` 读取日志文件。如果 Box 上的 `sudo` 要求输入密码，容器名称下方就不会出现大小那一行。
+
+---
+
+## 日志轮转
+
+Docker 容器使用自动日志轮转：
+- **单文件最大尺寸**：每个文件 10 MB
+- **最大文件数**：3 个（轮转掉最旧的）
+
+也就是说，Docker 日志是自管理的，不会无限增长。
 
 ---
 

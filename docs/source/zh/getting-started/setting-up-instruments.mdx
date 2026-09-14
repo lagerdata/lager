@@ -104,8 +104,7 @@ lager nets tui --box my-lager-box
 ## RS-232 仪器（手动分配）
 
 有些仪器没有 USB 控制端口。它们通过 USB 转串口适配器连接，例如使用 RS-232 端口的
-Rigol DP711 电源。Lager Box 只能看到适配器线缆本身。它无法判断线缆后面是哪台仪器，
-所以不会自动出现任何设备。
+Rigol DP711 电源。Lager Box 只能看到适配器线缆本身。它无法判断线缆后面是哪台仪器，所以不会自动出现任何设备。
 
 > **Rigol DP711 — 必须使用交叉线。** DP711 的 RS-232 端口按 DTE 方式接线，
 > 与 Rigol 随附的 RS232 转 USB 适配器相同。把两者直接相连**不会**工作 —
@@ -123,11 +122,9 @@ lager nets assign --list --box my-lager-box
 lager nets assign Rigol_DP711 --serial 00000006 --as-net main_supply --box my-lager-box
 ```
 
-Net TUI（`lager nets tui`）在 **Assign Device** 按钮下提供同样的流程。
-选择线缆，选择仪器，然后为 Net 命名。
+Net TUI（`lager nets tui`）在 **Assign Device** 按钮下提供同样的流程。选择线缆，选择仪器，然后为 Net 命名。
 
-分配完成之后，该仪器会像任何自动检测到的设备一样出现在 `lager instruments` 和 TUI 中。
-您可以按通常的方式为它添加 Net。Box 会保存这个分配，重启和重新插拔之后依然有效。
+分配完成之后，该仪器会像任何自动检测到的设备一样出现在 `lager instruments` 和 TUI 中。您可以按通常的方式为它添加 Net。Box 会保存这个分配，重启和重新插拔之后依然有效。
 
 端口固定分配、波特率覆盖和删除方法，请参阅
 [`nets assign` 参考](/source/zh/reference/cli/nets#assign)。

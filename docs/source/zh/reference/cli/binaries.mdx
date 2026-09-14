@@ -70,8 +70,7 @@ Custom binaries on my-lager-box (<BOX_IP>):
   - custom_tool (234.0 KB) (not executable)
 ```
 
-如果该 Box 上没有二进制程序，列表显示 `(no binaries installed)`。
-如果该目录还没有挂载到容器中，输出末尾会出现
+如果该 Box 上没有二进制程序，列表显示 `(no binaries installed)`。如果该目录还没有挂载到容器中，输出末尾会出现
 `Note: Directory is not yet mounted in container.` 和 `Run: lager update --box my-lager-box`。
 
 ### `remove`
@@ -206,7 +205,6 @@ lager binaries add ./validate_output --box my-lager-box
 - 二进制程序必须兼容 Linux x86_64
 - 文件会被自动设为可执行
 - 新上传的程序通过卷挂载立即在容器中可见。如果某台 Box 上该挂载尚未生效，
-  `add` 会打印 `Note: A first-time setup needs a container restart.`，
-  请在那台 Box 上运行一次 `lager update`
+  `add` 会打印 `Note: A first-time setup needs a container restart.`，请在那台 Box 上运行一次 `lager update`
 - 文件大小以易读的格式显示
 - 在脚本中请用 `--yes` 跳过确认

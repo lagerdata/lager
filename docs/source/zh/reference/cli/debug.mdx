@@ -37,8 +37,7 @@ lager debug [OPTIONS] [NET_NAME] COMMAND [ARGS]...
 
 启动用于远程调试的 GDB 服务器。这是建立调试连接的主要命令。
 
-Box 根据探针选择后端。J-Link 探针使用 JLinkGDBServer，
-其他受支持的探针使用 OpenOCD。请参阅[受支持的调试探针](#受支持的调试探针)。
+Box 根据探针选择后端。J-Link 探针使用 JLinkGDBServer，其他受支持的探针使用 OpenOCD。请参阅[受支持的调试探针](#受支持的调试探针)。
 
 ```bash
 lager debug [NET_NAME] gdbserver [OPTIONS]
@@ -130,12 +129,9 @@ lager debug [NET_NAME] flash [OPTIONS]
 - `--no-erase` - 跳过擦除步骤（默认情况下 `flash` 会先擦除再编程，以获得干净状态）
 - `--halt / --no-halt` - 烧录之后让设备停住（默认 no-halt）
 
-<Note>`flash` **默认**会先擦除再编程，因此不需要任何标志就能得到干净状态
-（这正是 RTT 初始化所需要的）。只有当您有意保留现有闪存内容时才传 `--no-erase`。
-旧的 `--erase` 标志现在是空操作，仅为向后兼容而保留。</Note>
+<Note>`flash` **默认**会先擦除再编程，因此不需要任何标志就能得到干净状态（这正是 RTT 初始化所需要的）。只有当您有意保留现有闪存内容时才传 `--no-erase`。旧的 `--erase` 标志现在是空操作，仅为向后兼容而保留。</Note>
 
-<Note>CLI 会把 `--bin` 的加载地址 `0` 当作 `0x08000000` 发送。
-如果您目标的闪存起始于 `0x0`，请改用 `--hex` 或 `--elf`。</Note>
+<Note>CLI 会把 `--bin` 的加载地址 `0` 当作 `0x08000000` 发送。如果您目标的闪存起始于 `0x0`，请改用 `--hex` 或 `--elf`。</Note>
 
 **失败输出：**
 
@@ -218,8 +214,7 @@ lager debug [NET_NAME] erase [OPTIONS]
 0.42.0 及以上版本的 Box 会自己识别 J-Link 连接失败并返回错误。
 Box 给出的信息同样以 `Erase failed:` 开头，因此 CLI 会显示两次这个前缀。
 
-较旧的 Box 会返回探针输出而不报错。此时 CLI 会逐行检查那段输出。
-当某一行是、以下列信息开头，或以它们结尾时，该行判定为擦除失败：
+较旧的 Box 会返回探针输出而不报错。此时 CLI 会逐行检查那段输出。当某一行是、以下列信息开头，或以它们结尾时，该行判定为擦除失败：
 
 - `ERROR: Could not connect to target.`
 - `Could not connect to target.`
@@ -317,8 +312,7 @@ Debug Net Information:
 
 `GDB server running` 说的是 Box 上的那个进程。`Target attached` 说的是芯片本身：
 Box 会去读取目标来回答它。这两个字段不同，因此 CLI 分开报告。
-gdbserver 可能比它驱动的设备活得更久，而烧录或擦除类命令关心的是第二个字段，
-而不是第一个。
+gdbserver 可能比它驱动的设备活得更久，而烧录或擦除类命令关心的是第二个字段，而不是第一个。
 
 为了回答 `Target attached`，`status` 会通过正在运行的 GDB 服务器读取
 Cortex-M 的 CPUID 寄存器。这次读取不会让内核停住。探针较慢时，
@@ -408,8 +402,7 @@ lager debug gdbserver --box my-lager-box --rtt 2>/dev/null | defmt-print -e firm
 
 大多数 Rust 固件（以及不少 C 固件）通过
 [defmt](https://defmt.ferrous-systems.com/) 打日志，这是一种压缩的二进制格式。
-**来自 defmt 固件的原始 RTT 字节不是人类可读的。** 必须由 `defmt-print` 解码，
-而且它需要目标上烧录的*那个确切的* ELF 文件。
+**来自 defmt 固件的原始 RTT 字节不是人类可读的。** 必须由 `defmt-print` 解码，而且它需要目标上烧录的*那个确切的* ELF 文件。
 
 ```bash
 # Flash the build under test, then stream + decode a bounded window
@@ -420,51 +413,39 @@ timeout 15 lager debug SWD gdbserver --box my-lager-box --rtt-reset 2>/dev/null 
 
 有两点需要注意：
 
-- **请重定向 stderr。** RTT 负载写入 **stdout**，状态信息
-  （`JLinkGDBServer started!` 等）写入 **stderr**。请只用管道传 stdout ——
+- **请重定向 stderr。** RTT 负载写入 **stdout**，状态信息（`JLinkGDBServer started!` 等）写入 **stderr**。请只用管道传 stdout ——
   追加 `2>/dev/null`（或 `2>debug.log`），这样状态行就绝不会污染
   `defmt-print` 的输入。
-- **这个流不会结束。** `--rtt` 会一直运行，直到进程被终止。在脚本或非交互式会话中，
-  请用 `timeout <seconds>` 把它包起来，以捕获一个固定的时间窗口。
-  当您终止 `lager` 进程时，管道关闭，`defmt-print` 会在 EOF 时退出。
+- **这个流不会结束。** `--rtt` 会一直运行，直到进程被终止。在脚本或非交互式会话中，请用 `timeout <seconds>` 把它包起来，以捕获一个固定的时间窗口。当您终止 `lager` 进程时，管道关闭，`defmt-print` 会在 EOF 时退出。
 
 请在运行该管道的计算机上（也就是保存着 `.elf` 的那台）用
 `cargo install defmt-print` 安装 `defmt-print`。
 
 ### 交互式（双向）RTT
 
-加上 `--interactive` 可以在读取目标数据的同时*向*目标发送数据。
-您在 stdin 上输入的任何内容都会被转发到目标的 RTT 下行通道，
-通过 RTT 提供命令控制台的固件就是这样驱动的：
+加上 `--interactive` 可以在读取目标数据的同时*向*目标发送数据。您在 stdin 上输入的任何内容都会被转发到目标的 RTT 下行通道，通过 RTT 提供命令控制台的固件就是这样驱动的：
 
 ```bash
 lager debug SWD gdbserver --box my-lager-box --rtt --interactive
 ```
 
-stdout 仍然是原始的上行通道字节流，因此它与 `defmt-print` 的组合方式
-和普通的 `--rtt` 完全一样：
+stdout 仍然是原始的上行通道字节流，因此它与 `defmt-print` 的组合方式和普通的 `--rtt` 完全一样：
 
 ```bash
 lager debug SWD gdbserver --box my-lager-box --rtt --interactive 2>/dev/null \
   | defmt-print -e build/app.elf
 ```
 
-您的按键由您的终端回显，而不是写入 stdout，因此它们永远不会进入解码器。
-用 `--rtt-channel N` 可以使用 0 以外的通道；两个方向使用同一个通道。
+您的按键由您的终端回显，而不是写入 stdout，因此它们永远不会进入解码器。用 `--rtt-channel N` 可以使用 0 以外的通道；两个方向使用同一个通道。
 
 <Warning>
 固件必须在您所用的通道上声明一个 RTT **下行**缓冲区。`defmt-rtt` crate
-只建立上行缓冲区。没有下行缓冲区时，目标会丢弃它收到的数据，并且不给任何提示。
-这看起来像是主机侧的故障，但其实不是。使用 `rtt-target` 下行通道，
-或使用 `SEGGER_RTT` 下行缓冲区的固件，可以正常工作。
+只建立上行缓冲区。没有下行缓冲区时，目标会丢弃它收到的数据，并且不给任何提示。这看起来像是主机侧的故障，但其实不是。使用 `rtt-target` 下行通道，或使用 `SEGGER_RTT` 下行缓冲区的固件，可以正常工作。
 </Warning>
 
-`--interactive` 需要终端。在脚本和其他非交互式场景中，
-请继续使用普通的 `--rtt` 加 `timeout`。
+`--interactive` 需要终端。在脚本和其他非交互式场景中，请继续使用普通的 `--rtt` 加 `timeout`。
 
-同一个探针和通道上同一时刻只能连接一个交互式会话，
-因为底层的 RTT 连接只接受一个客户端。第二次尝试会被拒绝，
-而不是悄悄地把数据流从第一个会话那里抢走。
+同一个探针和通道上同一时刻只能连接一个交互式会话，因为底层的 RTT 连接只接受一个客户端。第二次尝试会被拒绝，而不是悄悄地把数据流从第一个会话那里抢走。
 
 ## 典型工作流程
 
@@ -509,9 +490,7 @@ lager debug erase --box my-lager-box --yes
 
 ## JLinkScript 支持
 
-JLinkScript 文件让您可以为特定硬件配置定制 J-Link 调试探针的行为。
-它们可以处理自定义复位序列、时钟初始化、引脚配置，
-以及标准 J-Link 连接流程未覆盖的其他设备专有操作。
+JLinkScript 文件让您可以为特定硬件配置定制 J-Link 调试探针的行为。它们可以处理自定义复位序列、时钟初始化、引脚配置，以及标准 J-Link 连接流程未覆盖的其他设备专有操作。
 
 ### 配置 JLinkScript
 
@@ -542,9 +521,7 @@ lager nets set-script debug1 ./my_device.JLinkScript --box my-lager-box
 
 ### 脚本优先级
 
-当 Net 级脚本（通过 `set-script` 保存在 Box 上）和项目级脚本
-（位于 `.lager` 配置中）同时存在时，项目级脚本优先。
-这样您就可以为特定项目覆盖 Box 上保存的脚本。
+当 Net 级脚本（通过 `set-script` 保存在 Box 上）和项目级脚本（位于 `.lager` 配置中）同时存在时，项目级脚本优先。这样您就可以为特定项目覆盖 Box 上保存的脚本。
 
 ### 管理脚本
 
@@ -559,8 +536,7 @@ lager nets show-script debug1 --box my-lager-box > script.JLinkScript
 lager nets remove-script debug1 --box my-lager-box
 ```
 
-一旦附加，该脚本会在所有调试操作（连接、烧录、擦除、复位）中自动使用，
-不需要任何额外标志。
+一旦附加，该脚本会在所有调试操作（连接、烧录、擦除、复位）中自动使用，不需要任何额外标志。
 
 ## DA1469x 目标
 
@@ -579,14 +555,12 @@ Box 改为运行一个驻留在 RAM 中的闪存加载器：
 - 超出 `0x16000000`–`0x17FFFFFF` 的地址，在 Box 碰探针之前就会被拒绝。
 - 请使用 `--bin`。加载器原样写入文件中的字节，因此它不解码 `.hex` 或 `.elf` 文件。
 - 请把 `flash_loader.elf` 和 `flash_loader.elf.bin` 放在 Box 宿主机的
-  `~/third_party/customer-binaries/openocd/flash-loaders/da1469x/` 中。
-  容器把该目录看作 `/home/www-data/customer-binaries/openocd/flash-loaders/da1469x/`。
+  `~/third_party/customer-binaries/openocd/flash-loaders/da1469x/` 中。容器把该目录看作 `/home/www-data/customer-binaries/openocd/flash-loaders/da1469x/`。
 - 若要使用其他父目录，请用 `lager box-config env set` 把 `LAGER_FLASH_LOADERS_DIR`
   设为一个容器内路径，然后运行 `lager box-config apply`。
 - OpenOCD 没有这个系列的内置目标配置。请用 `lager nets set-script` 或
   `lager nets add --openocd-config` 为该 Net 附加一份配置。
-- 一次丢失的调试读取不会中止加载器。加载器会重试读取，直到该步骤的截止时间。
-  截止时间为：启动 10 秒，擦除 60 秒，每个编程块 30 秒。
+- 一次丢失的调试读取不会中止加载器。加载器会重试读取，直到该步骤的截止时间。截止时间为：启动 10 秒，擦除 60 秒，每个编程块 30 秒。
 
 加载器失败时会指出它打印的最后一行进度信息：
 
@@ -594,8 +568,7 @@ Box 改为运行一个驻留在 RAM 中的闪存加载器：
 DA1469x flash_loader flash failed after '<last progress line>': <cause>. The QSPI erase already ran, so the board may be left blank until a flash succeeds.
 ```
 
-如果信息中说 QSPI 擦除已经执行过，那么板子可能是空白的。
-请在复位它之前重新烧录一次。
+如果信息中说 QSPI 擦除已经执行过，那么板子可能是空白的。请在复位它之前重新烧录一次。
 
 ```bash
 # Flash a DA1469x image at the start of QSPI
@@ -620,8 +593,7 @@ Box 根据探针的 USB 厂商 ID 选择后端。
 
 ## 受支持的设备系列
 
-Lager 支持 70 多个 ARM Cortex-M 设备系列，并能自动识别架构。
-创建调试 Net 时，设备型号作为通道给出（例如 `STM32F407VG`、`nRF52840`）。
+Lager 支持 70 多个 ARM Cortex-M 设备系列，并能自动识别架构。创建调试 Net 时，设备型号作为通道给出（例如 `STM32F407VG`、`nRF52840`）。
 
 ### Cortex-M0/M0+（ARMv6-M）
 
@@ -692,8 +664,7 @@ Lager 支持 70 多个 ARM Cortex-M 设备系列，并能自动识别架构。
 | R7FA（Renesas RA） | Renesas |
 
 <Note>
-不在上表中的设备默认按 Cortex-M4（ARMv7E-M）架构处理。如果您的设备没有被正确识别，
-请在创建调试 Net 时给出完整的设备型号（例如 `STM32F407VG`，而不是只写 `STM32F4`）。
+不在上表中的设备默认按 Cortex-M4（ARMv7E-M）架构处理。如果您的设备没有被正确识别，请在创建调试 Net 时给出完整的设备型号（例如 `STM32F407VG`，而不是只写 `STM32F4`）。
 </Note>
 
 ## 说明

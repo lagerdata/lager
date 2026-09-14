@@ -60,9 +60,7 @@ lager gpo --box my-lager-box
 
 ### 保持模式
 
-`--hold` 标志在设置好输出电平之后让进程继续运行。引脚会保持该状态，
-直到您按下 Ctrl+C。当您要为手动测试保持某个信号，
-或者引脚状态会在两次 CLI 调用之间复位时，请使用它。
+`--hold` 标志在设置好输出电平之后让进程继续运行。引脚会保持该状态，直到您按下 Ctrl+C。当您要为手动测试保持某个信号，或者引脚状态会在两次 CLI 调用之间复位时，请使用它。
 
 ```bash
 # Hold reset line low until manually released
@@ -87,8 +85,7 @@ lager gpo EN high --hold
 | FT232H | 0-15（AD0-AD7、AC0-AC7） | 3.3V |
 
 <Note>
-Aardvark 和 FT232H 的 GPIO 支持目前已停用。将来的版本可能重新启用它。
-当前可用的 GPIO 后端是 LabJack T7、LabJack U3 和 MCC USB-202。
+Aardvark 和 FT232H 的 GPIO 支持目前已停用。将来的版本可能重新启用它。当前可用的 GPIO 后端是 LabJack T7、LabJack U3 和 MCC USB-202。
 </Note>
 
 ### LabJack U3 引脚
@@ -100,8 +97,7 @@ Aardvark 和 FT232H 的 GPIO 支持目前已停用。将来的版本可能重新
 
 ### Aardvark 引脚映射
 
-Aardvark I2C/SPI 适配器在它的 10 针排针上提供 6 个 GPIO 引脚。
-引脚可以用编号指定，也可以用信号名指定：
+Aardvark I2C/SPI 适配器在它的 10 针排针上提供 6 个 GPIO 引脚。引脚可以用编号指定，也可以用信号名指定：
 
 | 引脚 | 名称 | 排针针脚 |
 |-----|------|------------|
