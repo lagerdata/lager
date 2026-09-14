@@ -98,7 +98,7 @@ class BoxesListingTestCase(unittest.TestCase):
     def _patch_storage(self, boxes):
         mock.patch.object(boxes_mod, 'list_boxes', return_value=boxes).start()
 
-    def _run(self, boxes, fake_get, timeout=0.1):
+    def _run(self, boxes, fake_get):
         self._patch_storage(boxes)
         mock.patch.object(requests, 'get', new=fake_get).start()
         with mock.patch('sys.stdout.isatty', return_value=False):
@@ -127,7 +127,7 @@ class BoxesListingTestCase(unittest.TestCase):
             barrier.wait(timeout=10)
             return make_response(200, {'version': CLI_VERSION})
 
-        out = self._run(names, fake_get, timeout=10)
+        out = self._run(names, fake_get)
         self.assertEqual(out.count('current'), len(names), msg=out)
         self.assertNotIn('error', out)
 
@@ -151,6 +151,36 @@ class BoxesListingTestCase(unittest.TestCase):
         self.assertIn('current', out)                  # the healthy box reported
         self.assertIn('no response', out)              # the dead one is named
         self.assertIn('1 box did not report a version', out)
+
+    def test_the_gateway_retry_is_held_to_each_probes_budget(self):
+        # A gated box's first contact is retried inside check_gateway_status,
+        # and that retry used to get a fixed 30s regardless of what the
+        # caller allowed. The collect loop abandons a box at its deadline, so
+        # a retry outliving it made us label an answering box 'no response'.
+        budgets = []
+
+        def fake_get(url, timeout=None, headers=None):
+            body = {'locked': False} if url.endswith('/lock') \
+                else {'version': CLI_VERSION}
+            resp = make_response(200, body)
+            resp.request.url = url          # so the spy can tell them apart
+            return resp
+
+        def spy(resp, ip, *, timeout=None, stream=None):
+            endpoint = resp.request.url.rsplit('/', 1)[-1]
+            budgets.append((endpoint, timeout, stream))
+            return resp, None
+
+        mock.patch.object(import_module('cli.box_storage'),
+                          'check_gateway_status', new=spy).start()
+
+        self._run({'GATED': '10.0.0.1'}, fake_get)
+
+        # stream=False mirrors the buffered probe calls, as the retry demands.
+        self.assertEqual(budgets, [
+            ('lock', boxes_mod._LOCK_TIMEOUT, False),
+            ('status', boxes_mod._DEFAULT_STATUS_TIMEOUT, False),
+        ])
 
     def test_boxes_with_no_ip_need_no_network(self):
         def fake_get(url, timeout=None, headers=None):

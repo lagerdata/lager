@@ -149,7 +149,14 @@ def _probe_box(name, ip, user, port, status_timeout, cli_version, auth_headers):
         # table. On first contact this records the box->auth-server mapping
         # and retries with the stored token, so the /status call below
         # authenticates normally (no second round trip).
-        lock_resp, _ = check_gateway_status(lock_resp, ip)
+        # The budget is passed through so that retry is held to the same
+        # allowance as the call it replays, rather than the far longer
+        # default. The collect loop abandons this box at its deadline, and a
+        # retry outliving that deadline would have us label a box that was
+        # still answering. stream mirrors this buffered call, as the retry
+        # requires.
+        lock_resp, _ = check_gateway_status(
+            lock_resp, ip, timeout=_LOCK_TIMEOUT, stream=False)
         if lock_resp.status_code == 200:
             lock_data = lock_resp.json()
             if lock_data.get('locked'):
@@ -177,7 +184,8 @@ def _probe_box(name, ip, user, port, status_timeout, cli_version, auth_headers):
             timeout=status_timeout,
             headers={'Cache-Control': 'no-cache', 'Pragma': 'no-cache', **status_headers},
         )
-        response, gate_verdict = check_gateway_status(response, ip)
+        response, gate_verdict = check_gateway_status(
+            response, ip, timeout=status_timeout, stream=False)
         if gate_verdict:
             return _Row(name, ip, user, '-', gate_verdict, locked_by, auth_denied=True)
 

@@ -757,7 +757,8 @@ def _check_gateway(resp, ip, *, timeout: Optional[float] = 30,
     return resp
 
 
-def check_gateway_status(resp, ip):
+def check_gateway_status(resp, ip, *, timeout: Optional[float] = 30,
+                         stream: bool = True):
     """Non-raising variant of :func:`_check_gateway` for fan-out and
     fail-open callers (`lager boxes`, health polls) that must not abort on a
     single box's denial.
@@ -767,9 +768,21 @@ def check_gateway_status(resp, ip):
     ``resp`` (plain box, or the retry authenticated transparently), else a
     short user-facing verdict — 'sign-in required', 'session rejected',
     'no access', or 'auth server down'.
+
+    ``timeout``/``stream`` are forwarded to the retry and must mirror the
+    original call; see :func:`_resend_with_auth`. The defaults reproduce the
+    values this function used before they were exposed, so a caller that
+    passes neither is unaffected.
+
+    A caller working to a deadline must pass the budget it gave the original
+    request. The retry is a second round trip on first contact — the
+    box->auth-server mapping is only learned from that first 401, so a token
+    cannot be attached up front — and on the old fixed 30s it could outlast
+    a caller's own timeout. The caller then reported a box as silent while
+    its retry was still in flight and about to succeed.
     """
     from .gateway_auth import denial_label
-    resp, denied = _resolve_gateway(resp, ip)
+    resp, denied = _resolve_gateway(resp, ip, timeout=timeout, stream=stream)
     if not denied:
         return resp, None
     return resp, denial_label(resp)
