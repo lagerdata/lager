@@ -1,0 +1,184 @@
+---
+title: 用 cargo test 做测试
+description: 组织一套 Rust 硬件在环测试、并行度，以及 CI
+---
+
+这个 crate 的设计目标，就是让您的 HIL 测试套件成为普通的 Rust 集成测试。也就是放在 `tests/` 目录下、由 `cargo test` 运行、并与您的固件同处一个仓库的那些文件。
+
+## 结构
+
+用 `LAGER_BOX_HOST` 环境变量把测试指向一台 Box，并用 `LagerBox::from_env()` 构造客户端：
+
+```rust
+// tests/power.rs
+use lager::LagerBox;
+
+#[test]
+fn dut_draws_less_than_100ma_idle() -> lager::Result<()> {
+    let lager = LagerBox::from_env()?;
+    let supply = lager.supply("DUT_POWER");
+
+    supply.set_voltage(3.3)?;
+    supply.enable()?;
+    let current = supply.state()?.current.expect("supply reports current");
+    assert!(current < 0.1, "idle draw {current} A");
+    supply.disable()
+}
+```
+
+```sh
+LAGER_BOX_HOST=192.168.1.42 cargo test
+```
+
+请按 Net 或按被测设备的功能给测试分组 —— 一个关注点一个文件（`boot.rs`、`power.rs`、`sensors.rs`），能让 `cargo test <name>` 的过滤保持好用。
+
+## 并行测试与仪器安全
+
+`cargo test` 默认在多个线程上运行测试。这在仪器层面是安全的。Box 会按物理仪器串行化访问：每一条 Net 命令都在 Box 那个单一属主的硬件服务中、在一把按设备区分的锁之下运行。正因为有这把按设备区分的锁，并行的测试绝不可能在同一台仪器上交错执行 I/O。例如被 GPIO/ADC/SPI Net 共用的一台 LabJack，或者被电源和电池角色共用的一台 Keithley。
+
+共享同一个 *Net* 的测试之间仍然会观察到彼此造成的状态变化（一个测试的 `disable()` 对另一个读取同一台电源的测试是可见的）。要么把 Net 在测试之间划分开，要么串行运行：
+
+```sh
+cargo test -- --test-threads=1
+```
+
+## 超时
+
+超时预算与 Lager CLI 保持一致。快速命令使用 10 秒。有些操作会按调用方指定的时长阻塞在 Box 上：功率和能量的积分窗口，以及 `wait_for_level`。这些操作会自动放宽或取消客户端超时，因此一次正常的长时间测量绝不会被中途中止。
+
+## 封闭测试与硬件测试
+
+请给那些始终需要真实硬件的测试加上 `#[ignore]`。这样，在一台没有 Box 的笔记本上，或者在一次 PR 检查中，直接运行 `cargo test` 仍然是绿的：
+
+```rust
+#[test]
+#[ignore = "requires a Lager box"]
+fn flash_and_boot() -> lager::Result<()> {
+    // ...
+}
+```
+
+然后在有 Box 可用的地方显式地把它们开启：
+
+```sh
+LAGER_BOX_HOST=192.168.1.42 cargo test -- --ignored
+```
+
+这也是该 crate 自己采用的约定。它自身的测试套件是封闭的，`cargo test` 跑在一个模拟 Box 上。它的硬件冒烟测试则用 `cargo test --test hardware -- --ignored` 运行。
+
+## CI
+
+一个最简的 GitHub Actions 作业，前提是运行器能访问到该 Box（例如实验室网络上的自托管运行器，或者接入了 Tailscale 的运行器）：
+
+```yaml
+jobs:
+  hil:
+    runs-on: [self-hosted, lab]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run HIL suite
+        env:
+          LAGER_BOX_HOST: ${{ vars.LAGER_BOX_HOST }}
+          # Only needed for boxes behind an authenticating gateway:
+          LAGER_GATEWAY_TOKEN: ${{ secrets.LAGER_GATEWAY_TOKEN }}
+        run: cargo test -- --ignored
+```
+
+对于前面有网关的 Box，令牌如何附加和刷新请参阅 **[认证](/source/zh/reference/rust/auth)**。
+
+## 一套能在任意 Box 上运行的测试框架
+
+该 crate 自己的硬件测试套件采用了一种值得借鉴的模式。每个测试都加了 `#[ignore]`，因此 `cargo test` 保持封闭。每个测试从一个环境变量中读取它要用的 Net 名称，而当该变量未设置时，就打印一条说明并跳过。于是同一套测试可以在任何实验台上，针对该实验台所配置的 Net 运行。
+
+```rust
+#![cfg(feature = "blocking")]
+
+use lager::{LagerBox, Level};
+
+fn lager() -> LagerBox {
+    LagerBox::from_env().expect("set LAGER_BOX_HOST to a reachable box")
+}
+
+/// The net name in `var`, or None with a printed skip note.
+fn net_from_env(var: &str) -> Option<String> {
+    match std::env::var(var) {
+        Ok(name) if !name.is_empty() => Some(name),
+        _ => {
+            eprintln!("skipping: set {var} to a configured net name to run this test");
+            None
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires a live box + LAGER_TEST_GPIO_NET"]
+fn gpio_toggles() {
+    let Some(name) = net_from_env("LAGER_TEST_GPIO_NET") else { return };
+    let lager = lager();
+    let pin = lager.gpio(&name);
+
+    pin.output(Level::High).unwrap();
+    assert_eq!(pin.input().unwrap(), Level::High);
+    pin.output(Level::Low).unwrap();
+}
+```
+
+显式开启后运行它：
+
+```bash
+LAGER_BOX_HOST=192.168.1.42 \
+LAGER_TEST_GPIO_NET=gpio1 \
+LAGER_TEST_SUPPLY_NET=supply1 \
+  cargo test --test hardware -- --ignored --nocapture
+```
+
+这些环境变量只是一种约定，而不是 crate 的功能 —— 您可以按自己实验台的习惯起名。重要的是：一个跑不了的测试应当说明原因并通过，而不是在一台恰好缺少那台仪器的实验台上失败。
+
+## 在较旧的 Box 上跳过
+
+对某个端点而言太旧的 Box 会以 `Error::UnsupportedByBox` 作答，在整个设备群正在升级的过程中，这比直接 panic 是更好的信号。
+
+```rust
+match lager.usb_devices() {
+    Ok(devices) => assert!(!devices.is_empty()),
+    Err(lager::Error::UnsupportedByBox { message }) => {
+        eprintln!("skipping: {message}");
+    }
+    Err(e) => panic!("{e}"),
+}
+```
+
+## 确实会执行的清理
+
+中途 panic 的测试会跳过 panic 之后的一切，而在实验台上，这意味着留下一台仍在输出的电源，或者一条仍然生效的防火墙规则。请把恢复操作放在一条即使失败也会执行的路径上。
+
+```rust
+fn with_power<T>(lager: &lager::LagerBox, body: impl FnOnce() -> T) -> lager::Result<T> {
+    let supply = lager.supply("supply1");
+    supply.set_voltage(3.3)?;
+    supply.enable()?;
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+
+    supply.disable()?;             // runs even if `body` panicked
+    Ok(result.unwrap_or_else(|e| std::panic::resume_unwind(e)))
+}
+```
+
+当一套测试绝不能与另一个作业交错运行时，请在整个期间预留整台 Box：
+
+```rust
+let _guard = lager.lock_guard("ci-job-4711")?;
+```
+
+`BoxLockGuard` 在 drop 时释放，panic 展开过程中也不例外。
+
+## 在真实硬件上验证
+
+有些行为只有在实验台上才会显现，在围绕它们写断言之前值得先知道：
+
+- 输出禁用时，电源的测量值可能是 `None`，这取决于具体仪器。输出关闭时，请对 `enabled` 和设定值做断言。
+- `state()` 返回 `Ok` 并不代表仪器作出了应答 —— 请检查 `error` 字段。
+- `i2c.scan()` 扫描到了，并不保证随后的读取会得到应答。
+- `erase()` 会断开调试器连接；读取内存之前请先重新连接。

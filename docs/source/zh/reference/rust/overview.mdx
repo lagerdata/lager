@@ -1,0 +1,153 @@
+---
+title: Rust SDK 概述
+description: 用 Rust 编写整套硬件在环测试，并用 cargo test 运行
+---
+
+Lager Rust crate 让嵌入式开发者以一等公民的方式访问 Lager Net。一整套硬件在环（HIL）测试可以和您的固件放在一起，用 `cargo test` 运行，完全不需要 Python。
+
+这个 crate 是 Lager Box API 的纯 HTTP/JSON 客户端。它覆盖：
+
+- 电源、电池仿真器、电子负载和太阳能仿真器
+- GPIO、ADC、DAC、热电偶、功率计和能量分析仪
+- SPI、I2C、USB 集线器端口、机械臂、摄像头和路由器
+- 流式 UART
+- Box 级别的能力：Box 自带的 BLE 适配器、WiFi 接口，以及 BluFi ESP32 配网
+
+调试探针 Net（烧录 / 擦除 / 复位 / 内存读取 / RTT）与 Box 的调试服务通信。
+
+<Info>
+该包在 crates.io 上以 [**`lager-net`**](https://crates.io/crates/lager-net) 名义发布，因为 `lager` 这个名字已被一个无关的 crate 占用。库目标的名称仍然是 `lager`，所以您的代码写的是 `use lager::LagerBox;`。完整的 API 参考在 [docs.rs/lager-net](https://docs.rs/lager-net)。
+</Info>
+
+## 快速上手
+
+把这个 crate 加到您固件工程的 dev-dependencies 中：
+
+```toml
+# Cargo.toml
+[dev-dependencies]
+lager = { package = "lager-net", version = "0.4" }
+```
+
+该 crate 需要 Rust **1.75** 或更高版本，基于 2021 edition 构建。
+
+写一个测试：
+
+```rust
+// tests/boot.rs
+use lager::{LagerBox, Level};
+
+#[test]
+fn dut_boots_at_3v3() -> lager::Result<()> {
+    let lager = LagerBox::from_env()?; // reads LAGER_BOX_HOST
+    let supply = lager.supply("supply1");
+    let boot_ok = lager.gpio("boot_ok");
+
+    supply.set_voltage(3.3)?;
+    supply.enable()?;
+
+    // Hardware-timed wait on the box; returns elapsed seconds.
+    let t = boot_ok.wait_for_level(Level::High, 5.0)?;
+    println!("booted in {t:.3}s");
+
+    supply.disable()
+}
+```
+
+运行它：
+
+```sh
+LAGER_BOX_HOST=192.168.1.42 cargo test
+```
+
+`LagerBox::connect("hostname-or-ip")` 同样可用，也接受 `host:port` 或完整 URL。
+
+## Feature
+
+| Feature | 默认启用 | 您会得到什么 |
+| --- | --- | --- |
+| `blocking` | 是 | 基于 [`ureq`](https://crates.io/crates/ureq) 的 `LagerBox` —— 依赖树极小，不需要 tokio |
+| `async` | 否 | 基于 [`reqwest`](https://crates.io/crates/reqwest)/tokio 的 `AsyncLagerBox`；方法相同，加 `.await` |
+| `uart` | 否 | 通过 Box 的 Socket.IO `/uart` 命名空间进行 `Uart` 流式会话 |
+| `rtt` | 否 | 通过 Box 的 Socket.IO 命名空间进行 RTT 日志流式传输，用于读取运行中目标的 `defmt` 输出 |
+
+两种客户端执行的是完全相同的请求构造器和响应解析器，因此这两条传输路径不会各自跑偏。
+
+```toml
+lager = { package = "lager-net", version = "0.4", features = ["async"] }
+```
+
+## 错误
+
+所有调用都返回 `lager::Result<T>`，配套单一的 `Error` 枚举：
+
+| 变体 | 含义 |
+| --- | --- |
+| `Connection` | 联系不上 Box（网络/Tailscale 问题，或 Box 离线） |
+| `Timeout` | Box 卡住，超过了（已经放宽的）时间预算 |
+| `Box { status, message }` | Box 拒绝了请求，或者硬件出错 |
+| `UnsupportedByBox` | HTTP 501：Box 镜像早于该端点；请更新 Box |
+| `AuthRequired` | Box 的网关需要 bearer 令牌，而当前没有可用的令牌 |
+| `NotSupportedByBox` | 该 Net 类型是有文档记录的占位实现（见下面的说明） |
+
+## 要求
+
+- 一台软件足够新、能提供 `POST /net/command` 的 Lager Box —— 请检查 `lager.status()?.capabilities.net_command`，或者运行 `lager update`。
+- Rust 1.75 或更高版本。
+
+<Note>
+示波器 / 逻辑分析仪的工作流尚未在 Box HTTP API 上开放，因此 `Scope` 以有文档记录的占位实现发布，它的方法返回 `Error::NotSupportedByBox`。Box API 支持之后这里就会跟上；端点草案记录在该 crate 的 [`MISSING_ENDPOINTS.md`](https://github.com/lagerdata/lager-rs/blob/main/MISSING_ENDPOINTS.md) 中。
+</Note>
+
+## 参考
+
+### 入门
+
+- [客户端与 Box](/source/zh/reference/rust/client) —— 构造 `LagerBox`、发现、Box 锁、安全限值
+- [Net 类型](/source/zh/reference/rust/net-types) —— 全部句柄的索引
+- [错误](/source/zh/reference/rust/errors) —— 每一个 `Error` 变体及其触发时机
+
+### 固件与调试
+
+- [调试探针](/source/zh/reference/rust/debug) —— 烧录、擦除、复位、读取内存
+- [RTT](/source/zh/reference/rust/rtt) —— 固件日志，以及驱动 RTT 控制台
+- [USB DFU](/source/zh/reference/rust/dfu) —— 不用调试探针进行烧录
+
+### 电源与仿真
+
+- [电源](/source/zh/reference/rust/supply)
+- [电池仿真](/source/zh/reference/rust/battery)
+- [太阳能仿真](/source/zh/reference/rust/solar)
+- [电子负载](/source/zh/reference/rust/eload)
+- [功率计](/source/zh/reference/rust/watt)
+- [能量分析仪](/source/zh/reference/rust/energy)
+
+### 测量
+
+- [示波器](/source/zh/reference/rust/scope) —— 目前是有文档记录的占位实现
+- [ADC](/source/zh/reference/rust/adc)
+- [热电偶](/source/zh/reference/rust/thermocouple)
+
+### I/O 与通信
+
+- [GPIO](/source/zh/reference/rust/gpio)
+- [DAC](/source/zh/reference/rust/dac)
+- [I2C](/source/zh/reference/rust/i2c)
+- [SPI](/source/zh/reference/rust/spi)
+- [USB 集线器端口](/source/zh/reference/rust/usb)
+- [UART](/source/zh/reference/rust/uart)
+- [BLE](/source/zh/reference/rust/ble)
+- [WiFi](/source/zh/reference/rust/wifi)
+- [BluFi](/source/zh/reference/rust/blufi)
+- [路由器](/source/zh/reference/rust/router)
+
+### 实用工具
+
+- [机械臂](/source/zh/reference/rust/arm)
+- [摄像头](/source/zh/reference/rust/webcam)
+
+### 指南
+
+- [用 cargo test 做测试](/source/zh/reference/rust/testing) —— 组织测试套件、并行度、CI
+- [认证](/source/zh/reference/rust/auth) —— 位于认证网关之后的 Box
+- [异步客户端](/source/zh/reference/rust/async) —— `AsyncLagerBox`，以及它与阻塞客户端的差异

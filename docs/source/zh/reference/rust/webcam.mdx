@@ -1,0 +1,96 @@
+---
+title: 摄像头
+description: 从 Box 上的摄像头启动 MJPEG 串流
+---
+
+启动和停止连接在 Box 上的 USB 摄像头的 MJPEG 视频串流。之后，人或者视觉工具就可以在测试运行时观察被测设备。
+
+## 句柄
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let cam = lager.webcam("cam1");
+```
+
+## 方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `name()` | 该句柄所指向的 Net 名称 |
+| `start()` | 启动串流并返回它的 URL |
+| `stop()` | 停止串流 |
+| `status()` | 是否有串流在运行，以及在哪里 |
+| `url()` | 串流的 URL；没有串流在运行时为 `None` |
+
+## 类型
+
+```rust
+pub struct WebcamStream {
+    pub url: String,
+    pub port: Option<i64>,
+    pub already_running: bool,   // true when an existing stream was reused
+}
+
+pub struct WebcamStatus {
+    pub running: bool,
+    pub url: Option<String>,
+    pub port: Option<i64>,
+    pub video_device: Option<String>,   // e.g. "/dev/video0"
+}
+```
+
+## 方法参考
+
+### `start() -> Result<WebcamStream>`
+
+启动 MJPEG 串流。**幂等**：在已有串流运行时调用它，它会带着 `already_running: true` 报告那个已有的串流，而不是再启动第二个。
+
+```rust
+let s = cam.start()?;
+println!("watch at {} (reused: {})", s.url, s.already_running);
+```
+
+这个调用有 30 秒的预算，因为启动串流子进程需要几秒钟。
+
+### `stop() -> Result<bool>`
+
+停止串流。
+
+**返回：** 本来就没有活动串流时返回 `false`。
+
+### `status() -> Result<WebcamStatus>` 和 `url() -> Result<Option<String>>`
+
+是否有活动串流以及它在哪里，或者只要那个 URL。
+
+## 示例
+
+### 在长时间测试运行期间记录实验台画面
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let cam = lager.webcam("cam1");
+
+let stream = cam.start()?;
+println!("::notice::watch the DUT at {}", stream.url);
+
+let result = run_the_long_test(&lager);
+
+cam.stop()?;
+result?;
+```
+
+## 受支持的硬件
+
+| 摄像头 | 备注 |
+|---|---|
+| Logitech BRIO、C920、C922、C925e、C930e、C270、C615、StreamCam | Box 能枚举到的任何 UVC 摄像头 |
+
+## 说明
+
+- **串流 URL 指向的是客户端访问到的那个 Box 地址。** 在一个网络上取得的 URL 未必能在另一个网络上解析，因此不要把它跨环境保存下来。
+- 这个句柄给出的是视频串流，而不是抓取单帧。这里没有"对图像做断言"的功能 —— 请让一个 MJPEG 消费端（浏览器、VLC、OpenCV）去访问那个 URL。要从运行中的串流保存一帧，请用 CLI 的 `lager webcam NET snapshot`。
+- 请务必在清理阶段调用 `stop()`。运行中的串流会一直占用摄像头。在同一个 Net 上再次启动会报告那个正在运行的串流；而使用同一台摄像头的另一个 Net 上的串流，在这一个停止之前会被拒绝。

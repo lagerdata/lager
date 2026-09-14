@@ -1,0 +1,103 @@
+---
+title: USB 集线器端口
+description: 对可编程 USB 集线器端口做断电重启
+---
+
+切断并恢复可编程 USB 集线器某个端口的供电。测试用它来迫使被测设备重新枚举，或者模拟一次拔线。
+
+## 句柄
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let port = lager.usb("usb1");
+```
+
+## 方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `name()` | 该句柄所指向的 Net 名称 |
+| `enable()` | 给该端口上电 |
+| `disable()` | 给该端口断电 |
+| `toggle()` | 翻转该端口并报告新状态 |
+| `state()` | 读取该端口当前是否已通电 |
+
+## 方法参考
+
+### `enable() -> Result<()>` 和 `disable() -> Result<()>`
+
+给该端口上电或断电。
+
+```rust
+port.disable()?;
+std::thread::sleep(std::time::Duration::from_secs(1));
+port.enable()?;
+```
+
+### `toggle() -> Result<bool>`
+
+翻转该端口的供电状态。
+
+**返回：** 端口现在**已启用**时为 `true`，现在已禁用时为 `false` —— 是翻转之后的状态，而不是之前的。
+
+### `state() -> Result<bool>`
+
+读取该端口是否已通电。
+
+```rust
+assert!(port.state()?, "port should be up");
+```
+
+**返回：** 已启用时为 `true`。
+
+<Note>
+  `state()` 需要 Box 软件 0.29.0 或更高版本。更旧的 Box 会拒绝这个动作，而该 crate 会把这个特定的拒绝转换成 `Error::UnsupportedByBox`，信息是 `the 'state' action on /usb/command requires box software >= 0.29.0; update the box or use toggle/enable/disable`。
+</Note>
+
+## 示例
+
+### 迫使被测设备重新枚举，并等它回来
+
+```rust
+use lager::{LagerBox, UsbDeviceFilter};
+use std::time::{Duration, Instant};
+
+let lager = LagerBox::from_env()?;
+let port = lager.usb("usb3");
+
+port.disable()?;
+std::thread::sleep(Duration::from_millis(500));
+port.enable()?;
+
+// Poll the bus until the DUT reappears. usb_devices() is cheap and takes no
+// exclusive access, so this loop is safe.
+let filter = UsbDeviceFilter { vid: Some("0483".into()), ..Default::default() };
+let deadline = Instant::now() + Duration::from_secs(10);
+loop {
+    if !lager.usb_devices_matching(&filter)?.is_empty() {
+        break;
+    }
+    assert!(Instant::now() < deadline, "DUT did not re-enumerate");
+    std::thread::sleep(Duration::from_millis(200));
+}
+```
+
+<Warning>
+  在 Plugable 扩展坞上，已断电端口上的设备在供电恢复之前仍然列在总线上。于是上面那个循环可能立刻匹配到旧条目，而被测设备其实还没有重新枚举。在 Plugable 扩展坞上，请用 CLI 的 `lager usb NET cycle`，它会等待集线器报告重新连接。
+</Warning>
+
+## 受支持的硬件
+
+| 仪器 | 端口数 |
+|---|---|
+| Acroname USBHub3+ | 8 个或 4 个，随型号而定 |
+| YKUSH 集线器 | 随型号而定 |
+| Plugable USB 集线器 | 按拓扑寻址，而不是按序列号 |
+
+## 说明
+
+- 一个 Net 对应一个端口。对 `usb1` 做断电重启不会影响该集线器的其他端口。
+- 端口上的设备在总线上的 `devnum` 会随重新枚举而改变。检查设备是否回来时，请按序列号或 vid/pid 匹配，绝不要按 `devnum`。
+- 给某个端口断电，可能会移除 Box 用于另一个 Net 的设备。挂在那个端口后面的调试探针或串口适配器会在测试中途消失。

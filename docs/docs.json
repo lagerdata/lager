@@ -612,6 +612,7 @@
               {
                 "group": "开发",
                 "pages": [
+                  "source/zh/reference/python/debug",
                   "source/zh/reference/python/breakpoints"
                 ]
               },
@@ -619,6 +620,7 @@
                 "group": "电源与仿真",
                 "pages": [
                   "source/zh/reference/python/supply",
+                  "source/zh/reference/python/battery",
                   "source/zh/reference/python/solar",
                   "source/zh/reference/python/eload",
                   "source/zh/reference/python/watt",
@@ -639,6 +641,9 @@
                 "pages": [
                   "source/zh/reference/python/gpio",
                   "source/zh/reference/python/dac",
+                  "source/zh/reference/python/i2c",
+                  "source/zh/reference/python/spi",
+                  "source/zh/reference/python/usb",
                   "source/zh/reference/python/uart",
                   "source/zh/reference/python/serial",
                   "source/zh/reference/python/ble",
@@ -649,7 +654,79 @@
               {
                 "group": "实用工具",
                 "pages": [
+                  "source/zh/reference/python/arm",
                   "source/zh/reference/python/webcam"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "Rust API",
+            "groups": [
+              {
+                "group": "入门",
+                "pages": [
+                  "source/zh/reference/rust/overview",
+                  "source/zh/reference/rust/client",
+                  "source/zh/reference/rust/net-types",
+                  "source/zh/reference/rust/errors"
+                ]
+              },
+              {
+                "group": "开发",
+                "pages": [
+                  "source/zh/reference/rust/debug",
+                  "source/zh/reference/rust/rtt",
+                  "source/zh/reference/rust/dfu"
+                ]
+              },
+              {
+                "group": "电源与仿真",
+                "pages": [
+                  "source/zh/reference/rust/supply",
+                  "source/zh/reference/rust/battery",
+                  "source/zh/reference/rust/solar",
+                  "source/zh/reference/rust/eload",
+                  "source/zh/reference/rust/watt",
+                  "source/zh/reference/rust/energy"
+                ]
+              },
+              {
+                "group": "测量",
+                "pages": [
+                  "source/zh/reference/rust/scope",
+                  "source/zh/reference/rust/adc",
+                  "source/zh/reference/rust/thermocouple"
+                ]
+              },
+              {
+                "group": "I/O 与通信",
+                "pages": [
+                  "source/zh/reference/rust/gpio",
+                  "source/zh/reference/rust/dac",
+                  "source/zh/reference/rust/i2c",
+                  "source/zh/reference/rust/spi",
+                  "source/zh/reference/rust/usb",
+                  "source/zh/reference/rust/uart",
+                  "source/zh/reference/rust/ble",
+                  "source/zh/reference/rust/wifi",
+                  "source/zh/reference/rust/blufi",
+                  "source/zh/reference/rust/router"
+                ]
+              },
+              {
+                "group": "实用工具",
+                "pages": [
+                  "source/zh/reference/rust/arm",
+                  "source/zh/reference/rust/webcam"
+                ]
+              },
+              {
+                "group": "指南",
+                "pages": [
+                  "source/zh/reference/rust/testing",
+                  "source/zh/reference/rust/auth",
+                  "source/zh/reference/rust/async"
                 ]
               }
             ]

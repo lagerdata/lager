@@ -1,0 +1,95 @@
+---
+title: 太阳能仿真
+description: 呈现一个辐照度可编程的光伏源
+---
+
+让一台 EA PSB 电源工作在光伏模式，从而使被测设备看到的是真实太阳能板的电流-电压曲线，而不是一台特性很"硬"的电源。
+
+## 句柄
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let panel = lager.solar("solar1");
+```
+
+## 方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `name()` | 该句柄所指向的 Net 名称 |
+| `set()` | 初始化仪器并开始光伏仿真 |
+| `stop()` | 停止光伏仿真，并释放仪器的远程锁 |
+| `irradiance()` | 读取已配置的辐照度 |
+| `set_irradiance()` | 设置辐照度，单位 W/m2 |
+| `mpp_current()` | 最大功率点电流 |
+| `mpp_voltage()` | 最大功率点电压 |
+| `resistance()` | 读取动态电池板电阻 |
+| `set_resistance()` | 设置动态电池板电阻 |
+| `temperature()` | 电池片温度 |
+| `voc()` | 开路电压 |
+
+## 方法参考
+
+### `set() -> Result<()>`
+
+初始化仪器并进入光伏模式。请在其他任何操作之前调用它。
+
+### `stop() -> Result<()>`
+
+离开光伏模式并释放仪器的远程锁，把前面板交还回去。
+
+### `set_irradiance(watts_per_m2: f64) -> Result<f64>`
+
+设置辐照度，单位 W/m2，范围为 0 到 1500。
+
+```rust
+panel.set_irradiance(800.0)?;
+```
+
+**返回：** `f64` —— 仪器实际应用的值。仪器可能会把请求值钳位。
+
+### `set_resistance(ohms: f64) -> Result<f64>`
+
+设置动态电池板电阻，也就是决定曲线拐点形状的那个比值。
+
+**返回：** 实际应用的值。
+
+### `irradiance()`、`mpp_current()`、`mpp_voltage()`、`resistance()`、`temperature()`、`voc()`
+
+读取操作，返回的 `f64` 分别以 W/m2、安培、伏特、欧姆、摄氏度和伏特为单位。
+
+## 示例
+
+### 扫过一天中的辐照度，检查充电器是否跟得上
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let panel = lager.solar("solar1");
+
+panel.set()?;
+for irradiance in [200.0_f64, 500.0, 800.0, 1000.0, 400.0] {
+    let applied = panel.set_irradiance(irradiance)?;
+    std::thread::sleep(std::time::Duration::from_secs(2));
+
+    let (v, i) = (panel.mpp_voltage()?, panel.mpp_current()?);
+    println!("{applied:>6.0} W/m2 -> MPP {v:.2} V, {i:.3} A, {:.2} W", v * i);
+}
+panel.stop()?;
+```
+
+## 受支持的硬件
+
+| 仪器 | 备注 |
+|---|---|
+| EA PSB 10080-60 | 光伏模式 |
+| EA PSB 10060-60 | 光伏模式 |
+
+## 说明
+
+- **每一次太阳能操作在开始工作之前，都会在仪器上重新确立光伏模式**，读取操作也不例外。这让连 `voc()` 都很慢。因此这个 Net 类型的超时预算是整个 crate 中最宽的：`set()` 和 `stop()` 为 120 秒，其余全部为 90 秒。
+- 太阳能 Net 驱动的物理仪器，正是电源 Net 也可以指向的那一台。Box 会把两者放在同一把按地址区分的锁下串行化，因此它们的 SCPI 流量不会交错，但硬件是同一台。
+- `stop()` 会释放仪器的远程锁。跳过它，会让下一个走到实验台前的人面对一个被锁住的前面板。

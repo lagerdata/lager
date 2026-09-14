@@ -1,0 +1,556 @@
+---
+title: 调试
+description: 面向 J-Link 与 OpenOCD 探针的嵌入式调试操作
+---
+
+控制嵌入式调试操作，包括连接设备、烧录固件、复位和访问内存。J-Link 探针使用 J-Link 后端，其他受支持的探针使用 OpenOCD 后端。
+
+## 导入
+
+```python
+from lager import Net, NetType
+```
+
+## 方法
+
+基于 Net 的 API 提供了用于嵌入式调试操作的方法。
+
+| 方法 | 说明 |
+|--------|-------------|
+| `connect(speed, transport, *, force, ignore_if_connected, script, openocd_config, jlink_script, halt)` | 连接目标设备（可按本次连接覆盖调试脚本） |
+| `disconnect()` | 断开与目标的连接 |
+| `reset(halt)` | 复位设备 |
+| `halt()` | 让目标停在原地，不做复位（仅 OpenOCD） |
+| `flash(firmware_path, flash_address=None)` | 把固件烧录到设备 |
+| `erase()` | 擦除 Flash（多数目标为整片擦除，DA1469x 为 1 MiB 的 QSPI 范围） |
+| `read_memory(address, length)` | 从设备读取内存 |
+| `status()` | 获取连接状态 |
+| `rtt(channel, search_addr, search_size, chunk_size)` | 创建用于双向通信的 RTT 会话（原始字节） |
+| `rtt_defmt(elf, channel)`                            | 经 `defmt-print` 解码的 RTT 会话（产出日志行）    |
+| `session(...)` | 带作用域的会话：进入时连接，退出时保证拆除 |
+
+## 方法参考
+
+### `Net.get(name, type=NetType.Debug)`
+
+按名称获取一个调试 Net。
+
+```python
+from lager import Net, NetType
+
+dbg = Net.get('DUT', type=NetType.Debug)
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `name` | `str` | 调试 Net 的名称 |
+| `type` | `NetType` | 必须为 `NetType.Debug` |
+
+**返回：** 调试 Net 实例
+
+**注意：** 调试 Net 必须在 `channel` 字段中配置目标设备名称（例如 'NRF52840_XXAA'、'R7FA0E107'）。
+
+### `connect(speed=None, transport=None, *, force=False, ignore_if_connected=False, script=None, openocd_config=None, jlink_script=None, halt=False)`
+
+连接目标设备（为该探针启动 gdbserver）。后端（J-Link 或 OpenOCD）会根据探针自动选择。
+
+```python
+# Connect with default settings (4000 kHz, SWD)
+dbg.connect()
+
+# Connect with custom speed
+dbg.connect(speed='adaptive')
+
+# Connect with JTAG
+dbg.connect(transport='JTAG')
+
+# Connect with a per-connect J-Link script override (box path or base64 blob)
+dbg.connect(script='/home/lagerdata/probes/my_target.JLinkScript')
+```
+
+**参数：**
+
+| 参数 | 类型 | 默认值 | 说明 |
+|-----------|------|---------|-------------|
+| `speed` | `str` | `'4000'` | 接口速率，单位 kHz（例如 '4000'），或 'adaptive' |
+| `transport` | `str` | `'SWD'` | 传输协议（'SWD' 或 'JTAG'） |
+| `script` | `str` | `None` | 按本次连接覆盖调试脚本，**两种后端都适用**：可以是 Box 上的路径，**也可以**是 base64 编码的数据块。无论最终判定为哪种格式，它都会被复制到本 Net 的路径下，因此后续的 `flash()` / `reset()` / `read_memory()` 调用会立即用上它。格式首先由扩展名决定：`.JLinkScript` 和 `.JLinkScriptFile` 是 J-Link，`.cfg`、`.tcl` 和 `.ocd` 是 OpenOCD。其他名称则通过检查内容来判定。属于*另一个*后端的脚本会抛出 `ValueError`。可读但无法归类的文件，或可解码但无法归类的数据块，同样抛出 `ValueError`，而不是让目标在谁也没要求过的挂接序列下运行。 |
+| `force` | `bool` | `False` | 停掉该探针上已在运行的任何 gdbserver，重新启动。 |
+| `ignore_if_connected` | `bool` | `False` | 如果该探针已有 gdbserver 在运行，返回它的状态而不做任何改动。 |
+| `openocd_config` | `str` | `None` | `script` 的 OpenOCD 明确形式，跳过格式判定。必须是**完整的** cfg，而不是片段 —— 请看下面的警告。在 J-Link Net 上它会抛出 `ValueError`。 |
+| `jlink_script` | `str` | `None` | `script` 的 J-Link 明确形式，跳过格式判定。base64 数据块请用这个参数：数据块没有文件名可供归类，而两种最常见的 J-Link 写法（`void InitTarget(void)` 和 `JLINK_ExecCommand`）都不在内容标记之列，因此这样的数据块会抛错，而不是靠猜测来分派。在 OpenOCD Net 上它会抛出 `ValueError`。 |
+| `halt` | `bool` | `False` | **仅 OpenOCD。** 守护进程起来之后执行一次 `reset halt`。请注意这是先*复位*再暂停 —— 要让内核停在原地，请看 [`halt()`](#halt)。在 J-Link Net 上，`connect()` 忽略 `halt`。 |
+
+`connect()` 先对 `script` 归类，然后才应用 `openocd_config` 或 `jlink_script`。如果您同时给出 `script` 和其中之一，只有当 `script` 属于同一个后端时，显式参数才会胜出。属于另一个后端的 `script` 会先抛出 `ValueError`。
+
+**返回：** `dict` - 带有连接信息的状态字典
+
+**抛出：** 如果该探针已有 gdbserver 在运行，而您既没有传 `force` 也没有传 `ignore_if_connected`，`connect()` 会抛错。在 OpenOCD 上是 `RuntimeError`，在 J-Link 上是 `JlinkAlreadyRunningError`（来自 `lager.debug`）。
+
+<Note>
+脚本覆盖只有在 gdbserver 重新启动时才生效。如果服务器已经起来，请传 `force=True` 用新脚本重启它。`ignore_if_connected=True` 会提前返回，不会重启。在 J-Link 上，它仍然会为后续操作重新指向该脚本。在 OpenOCD 上，覆盖用的 cfg 只会交给本次 `connect()` 调用启动的那个守护进程。之后的任何一次重启，包括自愈式重启，都会使用保存在 Net 上的 cfg。无效输入指的是一个既不存在、又不是合法 base64 的路径，或者空字符串。Net 会静默忽略这类输入，之前落地的脚本继续生效。
+
+覆盖的作用域是**本 Net 和本次会话**。Lager 把它写到按 Net 区分的路径下，而不是写到 Net 记录与 HTTP 调试服务共享的那份全局 Box 配置。`disconnect()` 会清除该覆盖。因此，用不同脚本连接的两个调试 Net 不会再互相干扰。
+</Note>
+
+<Warning>
+`openocd_config` 覆盖必须是**完整的** cfg，而不是片段。Lager 在接口配置和目标配置之后才应用它。只要 Net 带有探针通道，启动命令行就仍然带着 lager 自己的 `-c 'ftdi channel N'`。除非先有一份 cfg 选定了 ftdi 适配器驱动，否则 OpenOCD 不认识这条命令。一份只包含比如 `adapter speed 1000` 的 cfg 会在启动时以 `invalid command name "ftdi"` 失败退出。
+</Warning>
+
+### `disconnect()`
+
+断开与目标设备的连接。
+
+```python
+dbg.disconnect()
+```
+
+**返回：** `dict` - 状态字典
+
+### `reset(halt=False)`
+
+复位设备。
+
+```python
+# Reset and continue execution
+output = dbg.reset(halt=False)
+print(output)
+
+# Reset and halt for debugging
+output = dbg.reset(halt=True)
+print(output)
+```
+
+**参数：**
+
+| 参数 | 类型 | 默认值 | 说明 |
+|-----------|------|---------|-------------|
+| `halt` | `bool` | `False` | 复位之后暂停 CPU |
+
+**返回：** `str` - 复位操作的合并输出
+
+**自愈（两种后端都有）：** 刚执行完 `flash()` 之后有一小段时间，调试服务器还联系不上。在 J-Link 上，原因是重启后的 GDB 服务器的 PID 还观察不到；在 OpenOCD 上，原因是守护进程或 RPC 的短暂故障。在这个窗口里直接调用会抛错。`reset()` 在 J-Link 和 OpenOCD 两种后端上都会以有界退避重试，并且只在服务器确实已经停掉时才重启它。它绝不会拆掉已经起来的服务器，因此已挂接的 RTT 会话不受影响。调用方不再需要自己写重试包装。
+
+**DA1469x 例外：** 在 DA1469x 上，`flash()` 会有意让服务器保持停止状态。烧录以一次软件复位收尾，而不是重启服务器，并且文档给出的流程是显式地、带暂停语义地重新连接。因此自愈在 DA1469x 上仍然会重试，但绝不会自动启动服务器。确实已经停掉的服务器仍然会照旧抛出原来的错误。自愈绝不会把服务器拉起到未暂停状态，因为未暂停的服务器可能返回无效的 QSPI-XIP 读数。
+
+### `halt()`
+
+让目标停在原地，不做复位。**仅 OpenOCD。**
+
+```python
+# Program, then stop the core on the image just written
+dbg.connect()
+dbg.flash('build/firmware.elf')
+dbg.connect(force=True)
+dbg.halt()
+```
+
+在 OpenOCD 上，`flash()` 需要有守护进程在运行。没有守护进程时它会抛出 `RuntimeError`，并提示您先调用 `connect()`。
+
+**返回：** `str` - 暂停操作的合并输出
+
+和 `reset()` 一样，`halt()` 在 `flash()` 之后服务器还联系不上的那一小段窗口里会重试。
+
+这和 `reset(halt=True)` **不是**一回事。后者执行的是 OpenOCD 的 `reset halt`，它会拉一下 nRESET，并从复位向量重新进入。`halt()` 发出的是一条纯粹的 `halt`，因此内核停在原地，nRESET 完全不会被触碰。
+
+这个区别在从 QSPI 就地执行（XIP）的器件上很要紧。给这类器件烧录之后，`reset(halt=True)` 会重新运行引导程序，而不是停在您刚写入的镜像上。未暂停就重新挂接则有读到无效 XIP 数据的风险。烧录之后要在不扰动镜像的前提下挂接，就地暂停才是正确做法。
+
+<Note>
+J-Link 没有独立的"就地暂停"原语，因为 `reset_device` 和 `gdb_reset` 都会先复位。在该后端上 `halt()` 会抛出 `NotImplementedError`，错误信息会指出"先暂停"的 `.JLinkScript` 才是受支持的途径。
+</Note>
+
+### `flash(firmware_path, flash_address=None)`
+
+把固件烧录到设备。
+
+```python
+# Flash a hex file
+output = dbg.flash('/path/to/firmware.hex')
+print(output)
+
+# Flash a binary file -- a .bin carries no address, so pass the target's flash base
+output = dbg.flash('/path/to/firmware.bin', 0x08000000)
+print(output)
+
+# Flash an ELF file
+output = dbg.flash('/path/to/firmware.elf')
+print(output)
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `firmware_path` | `str` | 固件文件路径（.hex、.bin 或 .elf） |
+| `flash_address` | `int` | `.bin` 的加载地址。`.bin` 必须提供；`.hex` / `.elf` 自带地址，会忽略该参数 |
+
+**返回：** `str` - 烧录操作的合并输出
+
+**注意：** `.bin` 内部不带地址，因此缺少 `flash_address` 时 `flash()` 会抛错，而不是默认用 `0x0`。请传入目标的 Flash 基地址：STM32 为 `0x08000000`，nRF52 为 `0x00000000`，DA1469x QSPI 为 `0x16000000`。
+
+**OpenOCD 上的 DA1469x：** 主线 OpenOCD 没有针对 DA1469x 外部 QSPI 的 Flash 驱动。在该系列上，`flash()` 和 `erase()` 改为驱动常驻 RAM 的 flash_loader，与 `lager debug <net> flash` 走的是同一条路径。请传入绝对的 XIP 地址（`0x16000000`），与在 J-Link 上完全一样。缺少加载器时会抛错，而不是回退到 OpenOCD 的 `program`，因为后者够不到 QSPI。
+
+- 超出 `0x16000000`–`0x17FFFFFF` 的地址会在 Box 触碰探针之前就抛错。错误信息是 `flash address 0x... is outside the DA1469x QSPI XIP window`。
+- 请烧录 `.bin`。加载器原样写入文件的字节，因此它不解析 `.hex` 或 `.elf` 文件。
+- 加载器需要容器中 `/home/www-data/customer-binaries/openocd/flash-loaders/da1469x/` 下的 `flash_loader.elf` 和 `flash_loader.elf.bin`。在 Box 宿主机上，该目录是 `~/third_party/customer-binaries/openocd/flash-loaders/da1469x/`。`LAGER_FLASH_LOADERS_DIR` 可以替换上一级目录。
+- OpenOCD 没有针对该系列的内置目标配置，因此该 Net 需要一份 `openocd_config`。
+- 调试读取丢失一次不会让加载器停下。加载器会一直重试，直到本步骤的截止时间。
+- 失败时抛出的错误会带上加载器最后一行进度信息。如果擦除阶段已经执行过，信息中会说明板子可能已经是空白的。请重新烧录一次。
+
+### `erase()`
+
+擦除目标的 Flash。在多数目标上这是整片擦除，会擦掉全部 Flash 存储，包括保护设置。
+
+在 DA1469x 上，`erase()` 只擦除外部 QSPI 从 `0x16000000` 开始的前 1 MiB。两种后端都是如此。OpenOCD 后端使用 flash_loader；J-Link 后端使用范围擦除，在该 Net 的 JLinkScript 中写一行 `LAGER_ERASE_RANGE` 可以设定不同的范围。
+
+```python
+# Full chip erase
+output = dbg.erase()
+print(output)
+```
+
+**返回：** `str` - 擦除操作的合并输出
+
+### `read_memory(address, length)`
+
+从目标设备读取内存。
+
+```python
+# Read 256 bytes starting at address 0x20000000
+data = dbg.read_memory(0x20000000, 256)
+print(f"Read {len(data)} bytes")
+print(data.hex())
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `address` | `int` | 起始内存地址 |
+| `length` | `int` | 要读取的字节数 |
+
+**返回：** `bytes` - 内存数据
+
+**自愈：** 和 `reset()` 一样，`read_memory()` 在两种后端上都会以有界退避跨过 `flash()` 之后那段短暂的稳定窗口重试。它只在没有服务器在运行时才重新连接，绝不会扰动正在使用的会话。`erase()` 的行为也一样。同样适用 DA1469x 例外。由于不会自动启动服务器，DA1469x 上烧录之后的读取会明确抛错，而不是返回未暂停状态下的无效 XIP 数据。
+
+### `status()`
+
+获取当前连接状态。
+
+```python
+status = dbg.status()
+print(f"GDB server running: {status.get('running', False)}")
+```
+
+**返回：** `dict` - `running`（bool）、`pid` 和 `backend`。
+
+它报告的是该探针上是否有 gdbserver 进程在运行。这并不是在陈述目标的状态：服务器可能比它所挂接的器件活得更久。CLI 的 `lager debug <net> status` 会分别报告这两种状态。
+
+### `session(speed=None, transport=None, connect=True, ignore_if_connected=True, disconnect_on_exit=True)`
+
+带作用域的调试会话。它在进入时连接，并保证退出时拆除。这样，"烧录 → 挂接 RTT → 复位"这一安全顺序只需编码一次，而不必在每个脚本里重新摸索。`with` 的目标就是该 Net 本身，因此在块内可以使用完整的接口（`flash`、`rtt_defmt`、`reset`、`read_memory` 等）。
+
+```python
+with dbg.session() as s:
+    s.flash('build/app.hex')                 # built-in stop->flash->restart handoff
+    with s.rtt_defmt(elf='build/app.elf') as logs:
+        s.reset(halt=False)                  # reader re-attaches across the reset blip
+        for line in logs:
+            if 'boot ok' in line:
+                break
+# GDB server is torn down here (disconnect_on_exit=True)
+```
+
+**参数：**
+
+| 参数 | 类型 | 默认值 | 说明 |
+|-----------|------|---------|-------------|
+| `speed` | `str` 或 `None` | `None` | 转发给 `connect()` |
+| `transport` | `str` 或 `None` | `None` | 转发给 `connect()` |
+| `connect` | `bool` | `True` | 进入时连接。设为 `False` 可挂接到您自己管理的服务器 |
+| `ignore_if_connected` | `bool` | `True` | 复用正在运行的服务器而不是抛错（不会破坏既有行为：绝不重启正在使用的服务器） |
+| `disconnect_on_exit` | `bool` | `True` | 退出时停止 GDB 服务器。设为 `False` 可让它继续运行，供后续命令使用 |
+
+**返回：** 一个产出该调试 Net 的上下文管理器。
+
+**它为什么与 RTT 相配：** 进程内的 RTT 读取器具备重新挂接能力（见下文）。会话内的 `flash()` 或 `reset()` 可能让 GDB 服务器弹一下，而这样的弹动不会杀掉您在同一个块里打开的日志流。
+
+### `rtt(channel=0, search_addr=None, search_size=None, chunk_size=None)`
+
+创建一个 RTT（实时传输）会话，用于与目标设备双向通信。
+
+```python
+# Open RTT session on default channel (0)
+with dbg.rtt() as rtt:
+    # Read debug output
+    data = rtt.read_some(timeout=1.0)
+    if data:
+        print(data.decode('utf-8'))
+
+    # Send commands to device
+    rtt.write(b'test_command\n')
+
+# Use different RTT channel
+with dbg.rtt(channel=1) as rtt:
+    data = rtt.read_some(timeout=2.0)
+
+# Specify RAM search region for RTT control block
+with dbg.rtt(search_addr=0x20000000, search_size=0x10000) as rtt:
+    data = rtt.read_some(timeout=1.0)
+```
+
+**参数：**
+
+| 参数 | 类型 | 默认值 | 说明 |
+|-----------|------|---------|-------------|
+| `channel` | `int` | `0` | RTT 通道号（通常为 0-15） |
+| `search_addr` | `int` 或 `None` | `None` | 搜索 RTT 控制块的 RAM 起始地址 |
+| `search_size` | `int` 或 `None` | `None` | 要搜索的 RAM 区域大小，单位字节 |
+| `chunk_size` | `int` 或 `None` | `None` | 每次读取的分块大小，单位字节 |
+
+**返回：** RTT 上下文管理器，带有以下方法：
+- `read_some(timeout)` - 带超时读取可用数据（返回 bytes 或 None）
+- `write(data)` - 向目标写入数据（接受 bytes 或 str）
+
+**注意：** 使用 RTT 之前调试连接必须已经建立。请先调用 `connect()`。
+
+**具备重新挂接能力（两种后端都有）：** 当 GDB 服务器或守护进程在 RTT 读取器底下重启时，读取器会自行重新挂接。
+
+- **J-Link。** 一次 `flash()` 会短暂释放探针的 USB，并在*相同*端口上重启 GDB 服务器，这会让 RTT 套接字断开。一次 `reset()` 通过它抢占 Commander 也会造成同样的效果。读取器会重新挂接到同一个 RTT telnet 端口，而不是就此沉默。因此长时间运行的 `read_some()` 或 `rtt_defmt()` 循环能够跨过一次烧录继续产出。
+
+- **OpenOCD。** 普通的烧录过程中守护进程一直在，因此套接字很少断开。万一断开了（守护进程被强制重启，或者 rtt-server 弹了一下），读取器会重新执行 `rtt setup` 和 `rtt server start` 并重新挂接。
+
+两种后端上的重新挂接都是有界的，上限为 30 秒。读取器只在服务器或守护进程重新起来之后才挂接，并且它绝不会去*启动*服务器。因此，像 DA1469x 那样有意让服务器保持停止的烧录，不会让读取器无限空转。读取器也不会扰动您有意让它停着的 DA1469x。`rtt()` 和 `rtt_defmt()` 都不接受 `reconnect` 参数，因此重新挂接始终是开启的。
+
+## 示例
+
+### 烧录固件并复位
+
+```python
+from lager import Net, NetType
+
+# Get debug net
+dbg = Net.get('DUT', type=NetType.Debug)
+
+# Connect to target
+status = dbg.connect()
+print(f"Connected: {status}")
+
+# Flash firmware
+output = dbg.flash('/etc/lager/firmware/app.hex')
+print(output)
+
+# Reset and run
+output = dbg.reset(halt=False)
+print(output)
+
+# Disconnect
+dbg.disconnect()
+```
+
+### 烧录前整片擦除
+
+```python
+from lager import Net, NetType
+
+# Get debug net
+dbg = Net.get('DUT', type=NetType.Debug)
+
+# Connect to target
+status = dbg.connect()
+print(f"Connected: {status}")
+
+# Erase entire chip first (ensures clean state)
+print("Erasing chip...")
+output = dbg.erase()
+print(output)
+
+# Flash new firmware
+output = dbg.flash('/etc/lager/firmware/app.hex')
+print(output)
+
+# Disconnect
+dbg.disconnect()
+```
+
+### 读取内存
+
+```python
+from lager import Net, NetType
+
+dbg = Net.get('DUT', type=NetType.Debug)
+
+# Connect to target
+dbg.connect()
+
+# Read 256 bytes from RAM
+data = dbg.read_memory(0x20000000, 256)
+print(f"Read {len(data)} bytes")
+print(data.hex())
+
+# Disconnect
+dbg.disconnect()
+```
+
+## CLI 命令（推荐）
+
+在多数使用场景下，CLI 提供的接口更简单：
+
+```bash
+# Start GDB server (connect to target)
+lager debug <net> gdbserver --box <box-name>
+
+# Flash firmware
+lager debug <net> flash --hex firmware.hex --box <box-name>
+
+# Reset device
+lager debug <net> reset --box <box-name>
+
+# Erase flash
+lager debug <net> erase --box <box-name>
+
+# Read memory
+lager debug <net> memrd 0x20000000 256 --box <box-name>
+
+# Disconnect
+lager debug <net> disconnect --box <box-name>
+
+# Check status
+lager debug <net> status --box <box-name>
+```
+
+完整的 CLI 文档请参阅 [CLI 调试参考](/source/zh/reference/cli/debug)。
+
+## RTT 流式传输
+
+SEGGER 实时传输（RTT）可以在调试期间与嵌入式设备进行高速双向通信（比 UART 快，且不影响时序）。
+
+```python
+from lager import Net, NetType
+
+# Connect debug probe first
+debug = Net.get('debug1', type=NetType.Debug)
+debug.connect()
+
+# Open RTT session for reading debug output
+with debug.rtt() as rtt:
+    # Read debug output from MCU
+    data = rtt.read_some(timeout=1.0)
+    if data:
+        print(data.decode('utf-8'))
+
+    # Can also write commands to MCU
+    rtt.write(b'start_test\n')
+```
+
+**RTT 方法：**
+
+| 方法 | 说明 |
+|--------|-------------|
+| `read_some(timeout)` | 带超时读取可用数据（返回 bytes 或 None） |
+| `write(data)` | 向 RTT 写入数据（接受 bytes 或 str） |
+
+<Warning>
+`rtt().read_some()` 返回的是**未经解码的原始**字节。用 [defmt](https://defmt.ferrous-systems.com/)（嵌入式 Rust 事实上的标准）打日志的固件发出的是一种压缩的二进制格式 —— 对它调用 `.decode('utf-8')` 只会得到乱码。对于使用 defmt 的固件，请用下面的 `rtt_defmt()` 或 CLI 管道，两者都会经 `defmt-print` 解码。
+</Warning>
+
+### 用 `rtt_defmt()` 解码 defmt 日志
+
+`rtt_defmt(elf, channel=0)` 打开一个 RTT 会话，并把它接入 `defmt-print`（Lager Box 上已预装），产出的是**解码后的日志行**而不是原始字节。`elf` 必须正是烧录在目标上的那个固件 —— defmt 需要它的符号元数据才能解码。
+
+```python
+from lager import Net, NetType
+import time
+
+dbg = Net.get('debug1', type=NetType.Debug)
+dbg.connect(ignore_if_connected=True)  # reuse a running gdbserver if one is up
+dbg.flash('build/app.elf')   # skip if already flashed; same ELF you decode against
+dbg.reset()                  # restart to capture boot logs
+
+# Capture a bounded ~10s window of decoded logs
+with dbg.rtt_defmt(elf='build/app.elf', channel=0) as logs:
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        line = logs.read_line(timeout=1.0)   # decoded str, or None
+        if line:
+            print(line)
+            assert 'panic' not in line.lower(), f"firmware panicked: {line}"
+```
+
+`rtt_defmt()` 返回一个上下文管理器，它提供：
+
+| 方法 | 说明 |
+|--------|-------------|
+| `read_line(timeout=None)` | 下一行解码后的日志，类型为 `str`；超时或流结束时为 `None` |
+| 迭代（`for line in logs:`） | 不断产出解码后的行，直到流结束 |
+| `write(data)` | 向目标的 RTT 下行通道发送 bytes 或 `str` |
+
+和 CLI 管道一样，RTT 流本身永远不会结束。请用时间预算或行数上限来限制您的读取循环，然后退出 `with` 块。
+
+#### 一边解码日志，一边驱动固件
+
+`write()` 让解码会话变成双向的，于是脚本可以发出一条命令，再对解码后的响应做断言。解码是单向的 —— `defmt-print` 只看得到上行通道 —— 因此写入会绕过它，直接送到目标。这是同时做到这两件事的唯一办法。RTT telnet 端口只接受一个客户端，所以您无法在 `rtt_defmt()` 之外再开一个原始的 `rtt()`。
+
+```python
+with dbg.rtt_defmt(elf='build/app.elf') as logs:
+    logs.write(b'self_test\n')            # command the firmware
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        line = logs.read_line(timeout=1.0)
+        if line and 'self_test: pass' in line:
+            break
+    else:
+        raise AssertionError('firmware never reported a passing self-test')
+```
+
+<Warning>
+这要求固件在您打开的那个通道上声明了 RTT **下行**缓冲区。仅有 `defmt-rtt` 只会建立上行缓冲区。没有下行缓冲区时，目标会静默丢弃您写入的任何内容。这看起来像是主机侧出了问题，但并不是。
+</Warning>
+
+**参数：**
+
+| 参数 | 类型 | 默认值 | 说明 |
+| --------- | ---- | ------- | ----------- |
+| `elf` | `str` | 必填 | 烧录在被测设备上的固件 ELF 的路径（相对路径相对于该脚本在 Box 上的工作目录解析） |
+| `channel` | `int` | `0` | RTT 通道号 |
+| `defmt_print_bin` | `str` 或 `None` | `None` | 覆盖 `defmt-print` 可执行文件（路径，或 PATH 上的名称） |
+| `read_timeout` | `float` | `0.5` | 内部 RTT 读取循环的轮询间隔（秒） |
+
+**CLI 替代方案：** 要交互式地跟看日志，请直接用管道接 CLI：`lager debug <net> gdbserver --box <box> --rtt 2>/dev/null | defmt-print -e build/app.elf`。请参阅 [CLI 调试参考](/source/zh/reference/cli/debug#解码-defmt-日志)。需要在测试脚本里对日志内容做断言时用 `rtt_defmt()`；只想看日志时用管道。
+
+## 受支持的设备
+
+J-Link 支持种类广泛的 ARM Cortex-M 及其他微控制器。常见的设备名称：
+
+| 厂商 | 设备名称 | 说明 |
+|--------------|-------------|-------------|
+| Nordic | `NRF52840_XXAA` | nRF52840 |
+| Nordic | `NRF52833_XXAA` | nRF52833 |
+| Nordic | `NRF5340_XXAA_APP` | nRF5340 应用核 |
+| Renesas | `R7FA0E107` | RA0E1 系列 |
+| Renesas | `R7FA2L1` | RA2L1 系列 |
+| STMicro | `STM32F103C8` | STM32F1 系列 |
+| STMicro | `STM32F407VG` | STM32F4 系列 |
+| STMicro | `STM32L476RG` | STM32L4 系列 |
+
+完整列表请参阅 [SEGGER 的受支持设备页面](https://www.segger.com/supported-devices/jlink/)。
+
+## 受支持的硬件
+
+| 调试探针 | 功能 |
+|-------------|----------|
+| J-Link | JTAG/SWD 调试、Flash 编程（J-Link 后端） |
+| CMSIS-DAP | SWD 调试、Flash 编程（OpenOCD 后端） |
+| ST-Link | SWD 调试、Flash 编程（OpenOCD 后端） |
+| FTDI 及其他 OpenOCD 适配器 | 请参阅 [CLI 调试参考](/source/zh/reference/cli/debug#受支持的调试探针) |
+
+## 说明
+
+- 调试 Net 必须在 `channel` 字段中配置目标设备名称
+- 多数使用场景推荐用 CLI（`lager debug`）
+- Python Net API 面向运行在 Lager Box 上的高级自动化脚本
+- 结束时请务必调用 `disconnect()` 以释放调试探针
+- 用 `erase()` 进行整片擦除并清除保护设置（在 DA1469x 上，`erase()` 擦除的是 1 MiB 的 QSPI 范围）
+- RTT 需要已建立的调试连接（见上面的 RTT 流式传输一节）

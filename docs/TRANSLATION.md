@@ -22,12 +22,12 @@ the directory, so it never appears in `--progress`.
 | CLI Reference | 47 | 64,910 | Chris | done |
 | AI Agents (MCP) | 2 | 2,555 | Chris | done |
 | Supported Instruments | 1 | 2,484 | Chris | done |
-| Python API | 27 | 31,109 | Danny | 21 done, 6 left |
-| Rust API | 31 | 19,753 | Danny | not started |
+| Python API | 27 | 31,109 | Chris | done |
+| Rust API | 31 | 19,753 | Chris | done |
 
-The six Python pages still open are `arm`, `battery`, `debug`, `i2c`, `spi` and
-`usb`. The other 21 were translated while the split briefly ran the other way;
-they are on the branch and need no rework.
+Every page is translated. The table stays because the next English page added
+needs an owner before anyone starts on it, and because a corpus with no owner
+column is how two people translate the same tab.
 
 Put a name in the owner column before anyone starts, and change it here when it
 changes. Two people who each assume the other has a tab produce the same corpus

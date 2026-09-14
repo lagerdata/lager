@@ -1,0 +1,125 @@
+---
+title: 机械臂
+description: 驱动机械臂按按键、移动夹具
+---
+
+移动一台 Rotrics Dexarm 去按被测设备的按键、放置夹具，或者操作任何需要一只实体手的东西。所有坐标的单位都是毫米。
+
+## 句柄
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let arm = lager.arm("arm1");
+```
+
+## 方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `name()` | 该句柄所指向的 Net 名称 |
+| `position()` | 末端执行器的当前位置 |
+| `move_to()` | 绝对移动 |
+| `move_to_with_timeout()` | 带显式 Box 侧超时的绝对移动 |
+| `move_by()` | 相对移动 |
+| `move_by_with_timeout()` | 带显式 Box 侧超时的相对移动 |
+| `go_home()` | 移到归位位置 |
+| `enable_motor()` | 给电机通电 |
+| `disable_motor()` | 释放电机 |
+| `read_and_save_position()` | 读取位置并把它保存到机械臂上 |
+| `set_acceleration()` | 设置加速度，单位 mm/s2 |
+
+## 类型
+
+### `ArmPosition`
+
+```rust
+pub struct ArmPosition {
+    pub x: f64,   // mm
+    pub y: f64,   // mm
+    pub z: f64,   // mm
+}
+```
+
+## 方法参考
+
+### `position() -> Result<ArmPosition>`
+
+末端执行器的当前位置，单位毫米。
+
+### `move_to(x: f64, y: f64, z: f64) -> Result<ArmPosition>`
+
+绝对移动。
+
+```rust
+let at = arm.move_to(50.0, 250.0, -20.0)?;
+println!("arrived at ({:.1}, {:.1}, {:.1})", at.x, at.y, at.z);
+```
+
+**返回：** 移动之后的位置。
+
+### `move_by(dx: f64, dy: f64, dz: f64) -> Result<ArmPosition>`
+
+相对移动；返回新位置。
+
+### `move_to_with_timeout(...)` 和 `move_by_with_timeout(...)`
+
+同样的移动，但带一个以秒为单位的显式 Box 侧超时，供需要超过默认 15 秒的移动使用。客户端会把自己的 HTTP 预算相应放宽。
+
+### `go_home() -> Result<()>`
+
+移到归位位置，X0 Y300 Z0。
+
+### `enable_motor() -> Result<()>` 和 `disable_motor() -> Result<()>`
+
+给步进电机通电或者释放它们。
+
+<Warning>
+  被释放的机械臂是可以反向拖动的，并且会**在自身重量下下垂**。当机械臂位于工件或已贴装的电路板上方时，不要让电机停留在断开状态。
+</Warning>
+
+### `read_and_save_position() -> Result<ArmPosition>`
+
+读取当前位置并把它保存到机械臂上。
+
+### `set_acceleration(acceleration: u32, travel_acceleration: u32, retract_acceleration: u32) -> Result<()>`
+
+设置加速度数值，单位 mm/s2。
+
+## 示例
+
+### 按一次按键，检查被测设备是否感知到了
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let arm = lager.arm("arm1");
+let led = lager.gpio("status_led");
+
+arm.enable_motor()?;
+arm.go_home()?;
+
+// Approach above the button, press, retract.
+arm.move_to(50.0, 250.0, 0.0)?;
+arm.move_to(50.0, 250.0, -18.0)?;
+std::thread::sleep(std::time::Duration::from_millis(200));
+arm.move_to(50.0, 250.0, 0.0)?;
+
+assert!(led.input()?.is_high(), "DUT did not register the press");
+arm.go_home()?;
+```
+
+## 受支持的硬件
+
+| 机械臂 | 备注 |
+|---|---|
+| Rotrics Dexarm | 工作空间范围由设备自身强制执行 |
+
+## 说明
+
+- **坐标的单位是毫米**，而且机械臂会自行强制执行它的工作空间范围。超出范围的目标会被拒绝，而不是被钳位。
+- **移动会阻塞在 Box 上**，直到机械臂到达，因此不要围着一次移动做轮询。Box 侧默认的移动超时是 15 秒。
+- 非移动类动作有固定的 45 秒客户端预算，因为它们同样要访问串口，并且可能在设备锁上排在某次移动后面。
+- 机械臂是实体的，而且没有碰撞检测。在让测试无人值守运行之前，请清空它的工作空间。

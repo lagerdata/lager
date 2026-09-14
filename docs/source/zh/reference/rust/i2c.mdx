@@ -1,0 +1,137 @@
+---
+title: I2C
+description: 扫描 I2C 总线，并与总线上的设备传输字节
+---
+
+从 Box 驱动一条 I2C 总线：发现设备、读写寄存器，以及用重复起始条件执行先写后读的事务。
+
+## 句柄
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let bus = lager.i2c("i2c1");
+```
+
+## 方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `name()` | 该句柄所指向的 Net 名称 |
+| `configure()` | 应用总线覆盖设置，并返回实际生效的配置 |
+| `scan()` | 在默认地址范围内扫描会应答的设备 |
+| `scan_range()` | 扫描一个显式给出的闭区间地址范围 |
+| `read()` | 从设备读取字节 |
+| `write()` | 向设备写入字节 |
+| `write_read()` | 在一次事务中先写后读，使用重复起始条件 |
+
+## 类型
+
+### `I2cEffectiveConfig`
+
+```rust
+pub struct I2cEffectiveConfig {
+    pub frequency_hz: Option<i64>,
+    pub pull_ups: Option<bool>,
+}
+```
+
+## 方法参考
+
+### `configure(frequency_hz: Option<u32>, pull_ups: Option<bool>) -> Result<I2cEffectiveConfig>`
+
+应用总线设置，并回读实际生效的内容。传 `None` 的参数保留该 Net 已保存的值；您传入的任何值都会实时应用**并持久化到 Box 上**。
+
+```rust
+let cfg = bus.configure(Some(400_000), Some(true))?;
+println!("{:?} Hz, pull-ups {:?}", cfg.frequency_hz, cfg.pull_ups);
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|---|---|---|
+| `frequency_hz` | `Option<u32>` | 总线时钟，单位 Hz，例如 `100_000` 或 `400_000` |
+| `pull_ups` | `Option<bool>` | 启用控制器的内部上拉 |
+
+### `scan() -> Result<Vec<u16>>`
+
+扫描默认地址范围。
+
+```rust
+for addr in bus.scan()? {
+    println!("device at 0x{addr:02x}");
+}
+```
+
+**返回：** 由作出应答的 **7 位**地址组成的 `Vec<u16>`，按升序排列。
+
+### `scan_range(start_addr: u16, end_addr: u16) -> Result<Vec<u16>>`
+
+扫描一个显式给出的闭区间范围。
+
+```rust
+let found = bus.scan_range(0x40, 0x50)?;
+```
+
+### `read(address: u16, num_bytes: u32) -> Result<Vec<u8>>`
+
+从 `address` 处的设备读取 `num_bytes` 个字节。
+
+```rust
+let bytes = bus.read(0x48, 2)?;
+```
+
+### `write(address: u16, data: &[u8]) -> Result<()>`
+
+向 `address` 处的设备写入 `data`。
+
+```rust
+bus.write(0x48, &[0x01, 0x60])?;
+```
+
+### `write_read(address: u16, data: &[u8], num_bytes: u32) -> Result<Vec<u8>>`
+
+在一次事务中先写后读，使用重复起始条件，而不是先停止再重新开始。多数器件上的寄存器读取都需要这样做。
+
+```rust
+// Point at register 0x00, then read two bytes from it.
+let temp = bus.write_read(0x48, &[0x00], 2)?;
+```
+
+## 示例
+
+### 先看看总线上有什么，再读取一个传感器寄存器
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let bus = lager.i2c("i2c1");
+
+bus.configure(Some(100_000), Some(true))?;
+
+let addrs = bus.scan()?;
+assert!(addrs.contains(&0x48), "temperature sensor missing; bus has {addrs:02x?}");
+
+let raw = bus.write_read(0x48, &[0x00], 2)?;
+let celsius = i16::from_be_bytes([raw[0], raw[1]]) as f64 / 256.0;
+println!("{celsius:.2} C");
+```
+
+## 受支持的硬件
+
+| 仪器 | 引脚 | 备注 |
+|---|---|---|
+| LabJack T7 | 任意两个 FIO/EIO 引脚 | 创建 Net 时配置成一对 SDA/SCL |
+| LabJack U3 | 两个 DIO 引脚（默认 `FIO6-FIO7`） | 该器件上没有上拉电阻，请外接电阻。每次传输写 50 字节、读 52 字节 |
+| FTDI FT232H / FT2232H / FT4232H | MPSSE 通道 A 和 B | I2C 是 MPSSE 协议，因此通道 C 和 D 无法承载它 |
+| Total Phase Aardvark | 专用 | |
+
+## 说明
+
+- 地址是 **7 位**的。请传 `0x48`，而不是按读/写移位后的 8 位形式。
+- **扫描到了并不等于承诺。** 扫描报告的是哪些地址对地址字节作出了应答；随后的 `read()` 仍然可能以 `No ACK from device at 0x48` 失败。在控制器内部上拉被禁用的总线上这很常见，那时信号线可以悬空到足以看起来像一次应答。请把 `scan()` 当作发现手段，而不是验证手段。
+- 总线事务在 Box 上、在该物理设备的锁之下运行，因此一次先写后读不会被同一设备上的另一个请求打断。
+- `configure()` 会持久化。您在一个测试里设置的频率，在下一个测试里仍然有效。

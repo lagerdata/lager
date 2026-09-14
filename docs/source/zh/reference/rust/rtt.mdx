@@ -1,0 +1,168 @@
+---
+title: RTT
+description: 流式接收固件日志输出，并从测试中驱动 RTT 控制台
+---
+
+读取您的固件通过 SEGGER RTT 打印的内容。启用 `rtt` feature 之后，您还可以往它的下行通道写入，于是一个 cargo test 就能驱动一个交互式控制台。
+
+有两条路径，它们的行为并不相同。
+
+| 路径 | Feature | 方向 | 传输方式 |
+|---|---|---|---|
+| `debug.rtt()` | 无 | 只读 | HTTP 流 |
+| `debug.rtt_interactive()` | `rtt` | 可读可写 | Socket.IO，Box 0.35.0 及以上 |
+
+<Note>
+  请优先使用交互式会话。单向流产出的是原始的 HTTP 分块传输帧，而不是干净的负载 —— 见下面的警告。
+</Note>
+
+## 交互式会话
+
+### 启用该 feature
+
+```toml
+[dev-dependencies]
+lager = { package = "lager-net", version = "0.4", features = ["rtt"] }
+```
+
+`rtt` feature 隐含启用 `blocking`。它没有异步版本。
+
+### 打开一个会话
+
+```rust
+use lager::{LagerBox, RttOptions};
+use std::time::Duration;
+
+let lager = LagerBox::from_env()?;
+let dbg = lager.debug("debug1");
+
+dbg.connect()?;                    // required first, see below
+let mut rtt = dbg.rtt_interactive()?;
+```
+
+<Warning>
+  **gdbserver 必须已经在运行。** 没有先连接就调用 `rtt_interactive()` 会以 `Error::Stream` 失败，信息是 `No debugger connection found for net 'debug1'. Start one first`。
+</Warning>
+
+### `RttOptions`
+
+```rust
+pub struct RttOptions {
+    pub channel: u32,               // default 0
+    pub search_addr: Option<u64>,   // RAM start for the control-block search
+    pub search_size: Option<u64>,   // size of the RAM region to search
+    pub chunk_size: Option<u64>,    // box-side read chunk, J-Link only
+}
+```
+
+`channel` 同时决定**两个**方向上的通道。`chunk_size` 只对交互式会话有效；单向的 HTTP 流会忽略它。
+
+## 方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `netname()` | 该会话所流式接收的调试 Net |
+| `channel()` | RTT 通道，双向通用 |
+| `backend()` | 调试后端，`"jlink"` 或 `"openocd"` |
+| `read()` | 在超时时间内到达的字节；可能为空 |
+| `try_read()` | 已经缓冲的字节，不等待 |
+| `wait_for()` | 一直累积，直到出现指定的标记 |
+| `write()` | 向目标的下行通道写入原始字节 |
+| `write_str()` | 向下行通道写入一个字符串 |
+| `stop()` | 干净地停止，释放 Box 的 RTT telnet 端口 |
+
+## 方法参考
+
+### `read(timeout: Duration) -> Result<Vec<u8>>`
+
+在 `timeout` 时间内到达的上行通道字节，有多少给多少。
+
+```rust
+let chunk = rtt.read(Duration::from_secs(3))?;
+print!("{}", String::from_utf8_lossy(&chunk));
+```
+
+<Note>
+  目标空闲时，`read()` 会把**整个**超时时间等满。在轮询循环里请改用 `try_read()`，否则每一轮迭代都要花掉整个超时时长。
+</Note>
+
+### `try_read() -> Result<Vec<u8>>`
+
+已经收到的字节，不等待。没有缓冲内容时返回空 vector。
+
+### `wait_for(needle: &[u8], timeout: Duration) -> Result<Vec<u8>>`
+
+不断累积输出，直到出现 `needle`。
+
+**返回：** 直到该标记为止、**并且包含**该标记的全部内容。标记之后的字节会继续留在缓冲区里，供下一次读取。空标记会立即返回；没找到则是 `Error::Timeout`。
+
+```rust
+let banner = rtt.wait_for(b"boot complete", Duration::from_secs(10))?;
+```
+
+### `write(data: &[u8]) -> Result<()>` 和 `write_str(s: &str) -> Result<()>`
+
+写入目标的 RTT **下行**通道。
+
+<Warning>
+  写入要求固件在该通道上声明了下行缓冲区。仅有 `defmt-rtt` 只提供上行缓冲区，而在没有下行缓冲区时，目标会**静默丢弃**您写入的内容 —— 该调用仍然返回 `Ok(())`。这是目标侧的事实，而不是传输失败，所以该 crate 没有错误可以报告。
+</Warning>
+
+### `stop() -> Result<()>`
+
+干净地停止。它会消耗掉该会话。把会话 drop 掉同样会停止它，但 `stop()` 会把错误暴露出来，而不是吞掉。
+
+## 单向流
+
+`debug.rtt()` 和 `debug.rtt_with(&RttOptions)` 返回一个 `RttStream`，它实现了 `std::io::Read`。它不需要任何 cargo feature，也不需要 Socket.IO。
+
+<Warning>
+  **`RttStream` 产出的是原始的 HTTP 分块传输帧，而不是干净的负载。** 一次读取返回的字节形如 `384\r\nblink 46823 period=500ms\n...`，其中 `384` 是十六进制的分块长度。把它包进 `BufReader` 再按行迭代，得到的会是 `"64"`、`"384"` 和空字符串，与真正的固件输出交替出现。一个十六进制的分块长度和一行由您的固件打印出来的内容，在形式上无法区分。
+
+  这个问题记录在 [lager-rs#5](https://github.com/lagerdata/lager-rs/issues/5)。在它修复之前，需要可解析输出的场合请用 `rtt_interactive()`。交互式路径是干净的。
+</Warning>
+
+## 示例
+
+### 驱动固件控制台并对回复做断言
+
+```rust
+use lager::LagerBox;
+use std::time::Duration;
+
+let lager = LagerBox::from_env()?;
+let dbg = lager.debug("debug1");
+
+dbg.connect()?;
+let mut rtt = dbg.rtt_interactive()?;
+
+rtt.wait_for(b"ready", Duration::from_secs(10))?;
+rtt.write_str("version\n")?;
+let reply = rtt.wait_for(b"\n", Duration::from_secs(2))?;
+assert!(String::from_utf8_lossy(&reply).contains("v1."));
+
+rtt.stop()?;
+dbg.disconnect(false)?;
+```
+
+### 在目标空闲时收集启动输出而不被阻塞
+
+```rust
+use std::time::{Duration, Instant};
+
+let mut log = Vec::new();
+let deadline = Instant::now() + Duration::from_secs(5);
+while Instant::now() < deadline {
+    log.extend_from_slice(&rtt.try_read()?);
+    std::thread::sleep(Duration::from_millis(50));
+}
+println!("{}", String::from_utf8_lossy(&log));
+```
+
+## 说明
+
+- **Box 的 RTT telnet 端口只接受一个客户端。** 在同一个探针和同一个通道上开第二个会话，会被以 `Error::Stream` 和 `RTT port 9090 is already in use by another session` 拒绝。同一个探针上的两个不同通道属于不同端口，可以同时运行。
+- 字节是**原始的**。`defmt` 输出是压缩的二进制，必须经 `defmt-print -e <elf>` 管道处理；`wait_for` 只在纯文本控制台上才帮得上忙。
+- 连接确认的超时是 30 秒，比 UART 的 15 秒更宽。多出来的时间用于在 RAM 中搜索 RTT 控制块，以及在 gdbserver 稳定下来的过程中重试 telnet 挂接。
+- 会话会在 Socket.IO 握手时带上网关 bearer 令牌，因此受网关保护的 Box 无需额外配置即可使用。
+- 需要 Box 软件 0.35.0 或更高版本。更旧的 Box 会给出 `Error::UnsupportedByBox`。

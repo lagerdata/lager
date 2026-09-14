@@ -1,0 +1,73 @@
+---
+title: 热电偶
+description: 从热电偶 Net 读取温度
+---
+
+从热电偶 Net 读取以摄氏度为单位的温度。
+
+## 句柄
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let tc = lager.thermocouple("tc1");
+```
+
+## 方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `name()` | 该句柄所指向的 Net 名称 |
+| `read()` | 读取温度，单位摄氏度 |
+
+## 方法参考
+
+### `name() -> &str`
+
+创建该句柄时使用的 Net 名称。
+
+### `read() -> Result<f64>`
+
+读取结点温度，单位摄氏度。
+
+```rust
+let celsius = tc.read()?;
+println!("{celsius:.1} C");
+```
+
+**返回：** `f64` —— 摄氏度。没有华氏或开尔文的变体；需要的话请在您的测试里换算。
+
+## 示例
+
+### 断言器件在负载下仍处于它的热包线之内
+
+```rust
+use lager::{EloadMode, LagerBox};
+use std::time::{Duration, Instant};
+
+let lager = LagerBox::from_env()?;
+let load = lager.eload("eload1");
+let tc = lager.thermocouple("tc1");
+
+let ambient = tc.read()?;
+load.set(EloadMode::Cc, 1.5)?;
+
+let deadline = Instant::now() + Duration::from_secs(60);
+let mut peak = ambient;
+while Instant::now() < deadline {
+    peak = peak.max(tc.read()?);
+    std::thread::sleep(Duration::from_secs(1));
+}
+
+assert!(peak - ambient < 40.0, "rose {:.1} C above ambient", peak - ambient);
+```
+
+## 受支持的硬件
+
+Box 以 `thermocouple` 角色 Net 开放的任何热电偶前端。放大器和结点类型在创建 Net 时就固定下来，而不是逐次调用时选择。
+
+## 说明
+
+- 热电偶的稳定过程很慢。在一次热阶跃之后立刻读到的值反映的是传感器的历史，而不是器件的温度 —— 请在一段时间内采样。
+- 冷端补偿在仪器上完成。返回的值是补偿之后的温度。

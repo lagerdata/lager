@@ -1,0 +1,158 @@
+---
+title: 电池仿真
+description: 按荷电状态、容量和开路电压驱动电池仿真器
+---
+
+向您的被测设备呈现一块可编程的电池：设置容量、开路电压和荷电状态，然后观察电量下降过程中固件的行为。
+
+## 句柄
+
+```rust
+use lager::{BatteryMode, LagerBox};
+
+let lager = LagerBox::from_env()?;
+let battery = lager.battery("battery1");
+```
+
+## 方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `name()` | 该句柄所指向的 Net 名称 |
+| `init_battery_mode()` | 把仪器切换到电池仿真器模式 |
+| `set_soc()` | 设置荷电状态，0-100 百分比 |
+| `set_voc()` | 设置开路电压 |
+| `set_volt_full()` | 设置视为满电的电压 |
+| `set_volt_empty()` | 设置视为亏电的电压 |
+| `set_capacity()` | 设置电池组容量，单位安时 |
+| `set_current_limit()` | 设置输出电流限值 |
+| `set_model()` | 按型号加载一个预定义的电池模型 |
+| `set_mode()` | 选择静态或动态仿真 |
+| `set_ovp()` / `set_ocp()` | 设置保护跳闸 |
+| `clear_ovp()` / `clear_ocp()` / `clear()` | 清除跳闸 |
+| `enable()` / `disable()` | 打开或关闭仿真的电池组 |
+| `state()` | 在一次事务中取得完整的结构化状态 |
+
+## 类型
+
+### `BatteryMode`
+
+```rust
+pub enum BatteryMode { Static, Dynamic }
+```
+
+`Static` 把荷电状态固定在您设定的位置。`Dynamic` 让它随负载电流演变，这正是测试真实放电曲线时所需要的。
+
+### `BatteryState`
+
+```rust
+pub struct BatteryState {
+    pub netname: Option<String>,
+    pub channel: Option<i64>,
+    pub error: Option<String>,
+    pub terminal_voltage: Option<f64>,  // V
+    pub current: Option<f64>,           // A
+    pub esr: Option<f64>,               // ohm
+    pub soc: Option<f64>,               // percent
+    pub voc: Option<f64>,               // V
+    pub enabled: Option<bool>,
+    pub mode: Option<String>,           // "Static" or "Dynamic"
+    pub model: Option<String>,          // e.g. "LI_ION4_2"
+    pub capacity: Option<f64>,          // Ah
+    pub current_limit: Option<f64>,     // A
+    pub ocp_limit: Option<f64>,
+    pub ovp_limit: Option<f64>,
+    pub volt_full: Option<f64>,
+    pub volt_empty: Option<f64>,
+    pub ocp_tripped: Option<bool>,
+    pub ovp_tripped: Option<bool>,
+}
+```
+
+## 方法参考
+
+### `init_battery_mode() -> Result<()>`
+
+把仪器切换到电池仿真器模式。
+
+<Warning>
+  在同时服务于某个电源 Net 的仪器上，请先调用它，再调用其他任何电池方法。Keithley 2281S 在被明确切换之前一直是一台电源，在切换过去之前，那些电池 setter 没有作用对象。
+</Warning>
+
+### `set_soc(percent: f64) -> Result<()>`
+
+设置荷电状态，0 到 100。
+
+```rust
+battery.set_soc(20.0)?;   // nearly flat
+```
+
+### `set_voc(volts: f64)`、`set_volt_full(volts: f64)`、`set_volt_empty(volts: f64)`
+
+开路电压，以及模型视为满电和亏电的那两个电压。
+
+### `set_capacity(amp_hours: f64) -> Result<()>`
+
+电池组容量，单位安时。
+
+### `set_current_limit(amps: f64) -> Result<()>`
+
+输出电流限值。
+
+### `set_model(partnumber: &str) -> Result<()>`
+
+加载仪器预定义的电池模型之一。
+
+### `set_mode(mode: BatteryMode) -> Result<()>`
+
+在 `Static` 和 `Dynamic` 之间切换。
+
+### `enable() -> Result<()>` 和 `disable() -> Result<()>`
+
+打开或关闭仿真电池组的输出。请在清理阶段调用 disable。
+
+### `state() -> Result<BatteryState>`
+
+在一次事务中取得全部内容。和电源一样，这里没有单独的 getter。
+
+## 示例
+
+### 检查低电量告警是否在正确的阈值上触发
+
+```rust
+use lager::{BatteryMode, LagerBox};
+
+let lager = LagerBox::from_env()?;
+let battery = lager.battery("battery1");
+let warn = lager.gpio("low_batt_led");
+
+battery.init_battery_mode()?;
+battery.set_capacity(2.0)?;
+battery.set_volt_full(4.2)?;
+battery.set_volt_empty(3.0)?;
+battery.set_mode(BatteryMode::Static)?;
+battery.enable()?;
+
+for soc in [80.0_f64, 40.0, 20.0, 10.0, 5.0] {
+    battery.set_soc(soc)?;
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    let s = battery.state()?;
+    println!("SOC {soc:>5.1}%  terminal {:?} V  warn={:?}",
+             s.terminal_voltage, warn.input()?);
+}
+
+battery.disable()?;
+```
+
+## 受支持的硬件
+
+| 仪器 | 通道数 | 备注 |
+|---|---|---|
+| Keithley 2281S | 1 | 在同一个地址上同时服务于一个电源 Net |
+
+## 说明
+
+- **`set_voc()` 是一个请求，不是一次赋值。** 仪器根据已加载的模型和荷电状态推导端电压。在使用 `LI_ION4_2` 模型的 Keithley 2281S 上，把 SOC 设为 50 会让 `voc` 变成约 4.007 V，无论此前是否调用过 `set_voc(3.7)`。请读取 `state()` 来了解电池组实际呈现的是什么。
+- 一个电池 Net 和一个电源 Net 可以共用同一台物理仪器。切换到电池模式会改变这台仪器对两者的含义，而 Box 会把它们放在同一把按仪器区分的锁下串行化。
+- `state()` 返回 `Ok` 并不代表仪器作出了应答 —— 请检查 `error`，它在取数本身失败时会被填充。
+- `esr` 是模型的等效串联电阻，正是它使端电压在负载下产生压降，而不是精确跟随开路电压。

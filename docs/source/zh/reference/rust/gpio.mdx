@@ -1,0 +1,175 @@
+---
+title: GPIO
+description: 读取、驱动数字引脚，并在其上等待
+---
+
+向您的被测设备驱动数字信号，并把信号读回来。其中包括一个由硬件计时的等待，它阻塞在 Box 上，而不是通过网络轮询。
+
+## 句柄
+
+```rust
+use lager::{LagerBox, Level};
+
+let lager = LagerBox::from_env()?;
+let pin = lager.gpio("gpio1");
+```
+
+## 方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `name()` | 该句柄所指向的 Net 名称 |
+| `input()` | 读取当前输入电平 |
+| `output()` | 把输出驱动到指定电平 |
+| `output_high()` | 把输出驱动为高 |
+| `output_low()` | 把输出驱动为低 |
+| `toggle()` | 翻转输出并返回新电平 |
+| `wait_for_level()` | 阻塞直到输入达到某个电平；返回经过的秒数 |
+| `wait_for_level_with()` | 同上，但可完全控制，包括无限等待 |
+
+## 类型
+
+### `Level`
+
+```rust
+pub enum Level { High, Low }
+```
+
+`Level::as_str()` 给出 `"high"` 或 `"low"`；`Level::is_high()` 给出一个 `bool`。
+
+### `WaitForLevelOptions`
+
+```rust
+pub struct WaitForLevelOptions {
+    pub timeout: Option<f64>,        // None waits forever
+    pub scan_rate: Option<u32>,      // LabJack streaming sample rate, Hz
+    pub scans_per_read: Option<u32>, // LabJack scans per read batch
+    pub poll_interval: Option<f64>,  // poll interval for non-streaming drivers
+}
+```
+
+每个字段都默认为 `None`，表示"使用 Box 的默认值"。未设置的字段会被整个从请求中省略，而不是作为 null 发送。
+
+## 方法参考
+
+### `input() -> Result<Level>`
+
+读取该引脚当前的电平。
+
+```rust
+if pin.input()?.is_high() {
+    println!("asserted");
+}
+```
+
+**返回：** `Level::High` 或 `Level::Low`。
+
+### `output(level: Level) -> Result<()>`
+
+把输出驱动到 `level`。
+
+```rust
+pin.output(Level::High)?;
+```
+
+### `output_high() -> Result<()>` 和 `output_low() -> Result<()>`
+
+`output()` 的便捷封装。
+
+### `toggle() -> Result<Level>`
+
+翻转输出。
+
+**返回：** 翻转**之后**引脚所处的电平，而不是之前的。
+
+```rust
+pin.output_high()?;
+let now = pin.toggle()?;
+assert_eq!(now, Level::Low);
+```
+
+### `wait_for_level(level: Level, timeout_s: f64) -> Result<f64>`
+
+阻塞直到输入达到 `level`，或者 `timeout_s` 到时。
+
+```rust
+let elapsed = boot_ok.wait_for_level(Level::High, 5.0)?;
+println!("asserted after {elapsed:.3}s");
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|---|---|---|
+| `level` | `Level` | 要等待的电平 |
+| `timeout_s` | `f64` | Box 放弃之前等待的秒数 |
+
+**返回：** `f64` —— 达到该电平之前经过的秒数。已经处于目标电平的引脚几乎立即返回（毫秒量级）。
+
+等待发生在 **Box 上**，因此时序不会被网络延迟扭曲。在 LabJack T7 上，Box 会对该引脚做流式采样，因此不会漏掉短脉冲。其他仪器（包括 LabJack U3）在 Box 上轮询该引脚，短于轮询间隔的脉冲可能被漏掉。客户端会把自己的 HTTP 预算放宽到 `timeout_s + 20s`，好让决定何时放弃的是设备而不是传输层。
+
+<Note>
+  等待超时返回的是 `Error::Box`，而不是 `Error::Timeout` —— Box 完成了请求，并报告了始终没有达到该电平。信息内容是 `GPIO 'gpio24' did not reach level 1 within 2.0s`。`Error::Timeout` 表示 HTTP 请求本身过期了，那是另一个问题。
+</Note>
+
+### `wait_for_level_with(level: Level, opts: &WaitForLevelOptions) -> Result<f64>`
+
+完全控制这次等待，包括一直等下去。
+
+```rust
+use lager::WaitForLevelOptions;
+
+// No timeout at all: the client drops its HTTP deadline too.
+let elapsed = pin.wait_for_level_with(
+    Level::High,
+    &WaitForLevelOptions { timeout: None, ..Default::default() },
+)?;
+```
+
+## 示例
+
+### 模拟一次按键，检查被测设备是否有反应
+
+```rust
+use lager::{LagerBox, Level};
+
+let lager = LagerBox::from_env()?;
+let button = lager.gpio("button1");
+let led = lager.gpio("led1");
+
+button.output(Level::High)?;
+std::thread::sleep(std::time::Duration::from_millis(100));
+assert_eq!(led.input()?, Level::High, "LED did not follow the button");
+button.output(Level::Low)?;
+```
+
+### 测量启动时间
+
+```rust
+let supply = lager.supply("supply1");
+let boot_ok = lager.gpio("boot_ok");
+
+supply.disable()?;
+std::thread::sleep(std::time::Duration::from_millis(500));
+supply.enable()?;
+
+let boot_ms = boot_ok.wait_for_level(Level::High, 10.0)? * 1000.0;
+assert!(boot_ms < 800.0, "boot took {boot_ms:.0} ms");
+```
+
+## 受支持的硬件
+
+| 仪器 | 引脚 |
+|---|---|
+| LabJack T7 | FIO0-FIO7、EIO0-EIO7、CIO0-CIO3、MIO0-MIO2 |
+| LabJack U3 | FIO4-FIO7、EIO0-EIO7、CIO0-CIO3 |
+| MCC USB-202 | DIO0-DIO7 |
+| FTDI FT232H / FT2232H / FT4232H | 所有通道上的异步 bitbang |
+
+## 说明
+
+- 一个 Net 对应一个引脚。驱动 `gpio1` 与 `gpio2` 毫无关系。
+- 一个引脚是输入还是输出，取决于您最后一次对它做了什么。在一个您正在驱动的引脚上调用 `input()`，读回的是您自己的输出。
+- GPIO Net 是 **Box 侧**的引脚：它们向被测设备驱动信号，或者从被测设备读取信号。它们不是被测设备的引脚。
+- 在 FTDI 芯片上，gpio 走的是异步 bitbang，四个通道都能用。相比之下，MPSSE 协议（debug、spi、i2c）只限于通道 A 和 B。
+- 实验台上的引脚有时控制的是仪器供电，而不是被测设备的信号。驱动一个引脚之前，请先看清它的 Net 名称。

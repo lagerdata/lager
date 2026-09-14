@@ -1,0 +1,342 @@
+---
+title: USB Control
+description: 控制 USB 设备的供电状态
+---
+
+用支持逐端口供电控制的 USB 集线器，控制测试台上 USB 设备和端口的供电状态。
+
+## 导入
+
+```python
+from lager import Net, NetType
+
+# For exception handling
+from lager import (
+    USBBackendError,
+    LibraryMissingError,
+    DeviceNotFoundError,
+    PortStateError
+)
+```
+
+## 方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `enable()` | 启用（接通）USB 端口供电 |
+| `disable()` | 禁用（切断）USB 端口供电 |
+| `toggle()` | 翻转 USB 端口的供电状态；返回翻转后的状态（`True` 表示已启用） |
+| `state()` | 读取当前供电状态而不改变它（`True` 表示已启用） |
+| `cycle(off_time=None)` | 对该端口做一次断电重启；返回设备是否回来了 |
+| `recover()` | 操作被中断而使端口停留在断电状态后，恢复其供电 |
+| `get_config()` | 返回该 Net 原始配置字典的一份副本 |
+
+## 异常类
+
+| 异常 | 说明 |
+|-----------|-------------|
+| `USBBackendError` | USB 集线器错误的基类 |
+| `LibraryMissingError` | 未安装所需的厂商 SDK |
+| `DeviceNotFoundError` | 找不到 USB 集线器 |
+| `PortStateError` | 改变端口状态时出错 |
+
+## 方法参考
+
+### `Net.get(name, type=NetType.Usb)`
+
+按名称获取一个 USB Net。
+
+```python
+from lager import Net, NetType
+
+usb = Net.get('DUT_USB', type=NetType.Usb)
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `name` | `str` | USB Net 的名称 |
+| `type` | `NetType` | 必须为 `NetType.Usb` |
+
+**返回：** USB Net 实例
+
+### `enable()`
+
+启用（接通）该 USB 端口的供电。
+
+```python
+from lager import Net, NetType
+
+usb = Net.get('CAMERA_USB', type=NetType.Usb)
+usb.enable()
+print("USB port powered on")
+```
+
+### `disable()`
+
+禁用（切断）该 USB 端口的供电。
+
+```python
+from lager import Net, NetType
+
+usb = Net.get('CAMERA_USB', type=NetType.Usb)
+usb.disable()
+print("USB port powered off")
+```
+
+### `toggle()`
+
+翻转该 USB 端口的供电状态。返回翻转后的状态（现在已启用时为 `True`，现在已禁用时为 `False`）。
+
+```python
+from lager import Net, NetType
+
+usb = Net.get('SENSOR_USB', type=NetType.Usb)
+now_on = usb.toggle()  # On -> Off or Off -> On
+```
+
+### `state()`
+
+读取该 USB 端口当前的供电状态，**而不改变它**。端口当前已启用（已接通供电）时返回 `True`，已禁用时返回 `False`。该值是实时从集线器读取的，因此它始终反映端口的真实状态。
+
+```python
+from lager import Net, NetType
+
+usb = Net.get('SENSOR_USB', type=NetType.Usb)
+if not usb.state():
+    usb.enable()   # only power on if it isn't already
+```
+
+### `cycle(off_time=None)`
+
+对该端口做一次断电重启：断电、等待、上电。供电恢复之后，`cycle` 最多等待设备 5 秒。返回值告诉您 Box 看到了什么：
+
+- `True` —— 设备重新枚举成功。
+- `False` —— 设备在 5 秒内没有回来。
+- `None` —— 该端口上没有设备。在 Acroname 或 YKUSH 集线器上，`None` 也可能表示 Box 没有读取到它的 USB 拓扑。
+
+在 Acroname 或 YKUSH 集线器上，Box 会比较切断电源之前和端口断电期间的内核 USB 拓扑。在 Plugable 扩展坞上，它读取集线器为该端口报告的连接状态。
+
+<Note>
+**`None` 不等于该端口未被使用。** 集线器只能看到会拉高数据线的设备。**只供电的线缆**在另一端有电，却没有数据，因此这样的线缆和空插座完全无法区分。无论哪种情况，电源都被切断并恢复了；只是总线上没有任何东西可供观察它回来。请改用被测设备自身的行为来确认它在该端口上：它的 UART 输出，或者一次电流测量。
+</Note>
+
+`off_time` 是端口保持断电的时长，默认 1 秒，限制在 0.5 至 10 秒之间。超出该范围的值会在端口被切换之前抛出 `PortStateError`。**断电时间过短才是真正要紧的失败方式。** 设备的电源轨没有完全放电，于是设备是热启动的，只是看起来像被复位了。对于体电容较大的设备，请调高这个值。
+
+```python
+from lager import Net, NetType
+
+usb = Net.get('DUT_USB', type=NetType.Usb)
+if usb.cycle(off_time=2):
+    print("DUT cold-booted and came back")
+```
+
+请优先使用它，而不是自己手写 `disable`/`sleep`/`enable`。它提供了手写形式所没有的这些保证：
+
+- 在每一条失败路径上它都会恢复供电，因此中途抛出的异常不会把端口撂在断电状态。
+- 它会报告设备是否回来了。
+- 在 Plugable 扩展坞上，它在整个过程中持有该集线器，因此在端口断电期间没有别的东西能切换它。在 Acroname 或 YKUSH 集线器上，断电期间其他进程仍可能切换该端口。
+
+<Note>
+在 Plugable 扩展坞上，只要**集线器**报告重新连接，`cycle` 就会返回，这在供电恢复之后只需要几百毫秒 —— 而不是等 Linux 完成枚举。因此它返回时 `/dev/ttyUSB*` 可能还不存在，立即读取 `/sys` 也仍会得到断电前的设备编号。在 Acroname 或 YKUSH 集线器上，`cycle` 在设备重新回到内核 USB 拓扑时才返回。在任何集线器上，请对您需要的东西做轮询，而不是只读一次。
+</Note>
+
+<Warning>
+**在 Plugable 扩展坞上，已断电的端口仍然出现在 `lsusb` 中，它的 `/dev/ttyUSB*` 也仍然存在。** 端口断电期间集线器不会发出变化通知，因此内核要等到供电恢复才会处理这次断开。绝不要用"设备不存在"来判断端口是否已断电 —— 请用 `state()`，它读取的是集线器自己的供电位。
+</Warning>
+
+### `recover()`
+
+在操作被中断而使端口停留在断电状态之后，恢复其供电。在 lager 能识别整台物理设备的集线器上，这会给它上面的每一个端口重新供电。
+
+```python
+from lager import Net, NetType
+
+Net.get('DUT_USB', type=NetType.Usb).recover()
+```
+
+## 示例
+
+### 基本的供电控制
+
+```python
+from lager import Net, NetType
+
+# Get USB net
+usb = Net.get('CAMERA', type=NetType.Usb)
+
+# Power on USB device
+usb.enable()
+print("Camera powered on")
+
+# Power off USB device
+usb.disable()
+print("Camera powered off")
+```
+
+### 对设备断电重启
+
+```python
+from lager import Net, NetType
+import time
+
+def power_cycle(net_name, delay=2):
+    """Power cycle a USB device."""
+    usb = Net.get(net_name, type=NetType.Usb)
+    print(f"Power cycling {net_name}...")
+    came_back = usb.cycle(off_time=delay)
+    if came_back is False:
+        print(f"{net_name} did not re-enumerate")
+    else:
+        print(f"{net_name} restarted")
+
+power_cycle('DUT_USB')
+```
+
+### 错误处理
+
+```python
+from lager import Net, NetType
+from lager import (
+    USBBackendError,
+    LibraryMissingError,
+    DeviceNotFoundError,
+    PortStateError
+)
+
+try:
+    usb = Net.get('SENSOR_USB', type=NetType.Usb)
+    usb.enable()
+    print("Sensor powered on")
+
+except LibraryMissingError:
+    print("USB hub SDK not installed")
+
+except DeviceNotFoundError:
+    print("USB hub not found - check connection")
+
+except PortStateError as e:
+    print(f"Port error: {e}")
+
+except USBBackendError as e:
+    print(f"USB error: {e}")
+```
+
+### 自动化测试的准备工作
+
+```python
+from lager import Net, NetType
+import time
+
+def setup_test():
+    """Power on all USB peripherals for testing."""
+    usb_devices = ['PROGRAMMER', 'SENSOR', 'DEBUGGER']
+
+    for name in usb_devices:
+        try:
+            usb = Net.get(name, type=NetType.Usb)
+            usb.enable()
+            print(f"{name} powered on")
+        except Exception as e:
+            print(f"Warning: {name} - {e}")
+
+    time.sleep(1)  # Wait for USB enumeration
+
+    # Enable main power
+    psu = Net.get('VDD', type=NetType.PowerSupply)
+    psu.set_voltage(3.3)
+    psu.enable()
+
+    return True
+
+def teardown_test():
+    """Power off all USB peripherals."""
+    # Disable main power first
+    psu = Net.get('VDD', type=NetType.PowerSupply)
+    psu.disable()
+
+    # Power off USB peripherals
+    for name in ['PROGRAMMER', 'SENSOR', 'DEBUGGER']:
+        try:
+            usb = Net.get(name, type=NetType.Usb)
+            usb.disable()
+        except Exception:
+            pass
+```
+
+### 复位 USB 设备
+
+```python
+from lager import Net, NetType
+import time
+
+def reset_usb_device(net_name, reset_time=2):
+    """
+    Reset a USB device by power cycling.
+
+    Args:
+        net_name: USB net name
+        reset_time: Time to keep power off (seconds)
+    """
+    usb = Net.get(net_name, type=NetType.Usb)
+    print(f"Resetting {net_name} (power off for {reset_time}s)...")
+
+    # cycle() waits for the port to re-enumerate itself, so there is no
+    # settle_time to guess at -- and no risk of the guess being too short.
+    came_back = usb.cycle(off_time=reset_time)
+
+    if came_back is False:
+        raise RuntimeError(f"{net_name} did not come back after a power cycle")
+    print(f"  {net_name} reset complete")
+
+# Usage
+reset_usb_device('DUT_USB', reset_time=2)
+```
+
+### 用 toggle 快速改变状态
+
+```python
+from lager import Net, NetType
+import time
+
+# Get USB net
+usb = Net.get('LED_USB', type=NetType.Usb)
+
+# Quick on/off cycle using toggle
+for i in range(5):
+    usb.toggle()
+    time.sleep(0.5)
+```
+
+## 受支持的硬件
+
+| 硬件 | 功能 |
+|----------|----------|
+| Acroname BrainStem USB 集线器 | 逐端口供电控制、电流监测 |
+| YKUSH USB 集线器 | 逐端口供电切换 |
+| Plugable RTS5411 扩展坞 | 在 4 个外部 Type-A 插座上逐端口切换供电 |
+
+### 后端类
+
+`Net.get(name, type=NetType.Usb)` 返回一个包装对象，它会把调用分派给该 Net 所指集线器对应的后端。多数脚本请使用这个包装对象。各后端的类也可以直接导入，供确实需要指名某一个的代码使用：
+
+```python
+from lager.automation import AcronameUSBNet, YKUSHUSBNet, PlugableUSBNet
+```
+
+它们从 `lager.automation` 和 `lager.automation.usb_hub` 导出。
+
+<Note>
+请优先使用 `Net.get`。直接构造后端类会把脚本绑死在某一型号的集线器上。之后要把这个测试搬到装有另一种集线器的实验台上，您就必须改代码，而不是改 Net 记录。
+</Note>
+
+## 说明
+
+- USB Net 必须在 Lager Box 上配置好集线器序列号和端口映射
+- 供电状态的改变会立即生效
+- 上电之后请留出 USB 枚举的时间（约 1-3 秒）。`cycle()` 会替您完成这段等待，并告诉您设备是否回来了
+- 断电重启可用于设备复位或恢复；请优先使用 `cycle()` 而不是自己手写 `disable`/`sleep`/`enable`，这样失败时不会把端口撂在断电状态
+- 在 Plugable 扩展坞上，已断电的端口仍然出现在 `lsusb` 中，它的设备节点也仍然存在。绝不要用设备是否存在来判断端口是否已断电
+- `toggle()` 函数适合用来快速改变状态
+- 请使用异常处理来实现稳健的错误恢复

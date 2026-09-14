@@ -1,0 +1,152 @@
+---
+title: SPI
+description: 配置 SPI 总线并执行全双工传输
+---
+
+从 Box 向 SPI 外设时钟进出数据，可以完全控制模式、位序、字长和片选。
+
+## 句柄
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let spi = lager.spi("spi1");
+```
+
+## 方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `name()` | 该句柄所指向的 Net 名称 |
+| `configure()` | 应用总线覆盖设置，并返回实际生效的配置 |
+| `read()` | 时钟进若干个字，同时时钟出填充字 |
+| `write()` | 时钟出若干个字；同时时钟进的字会一并返回 |
+| `read_write()` | 恰好按给定的字进行全双工传输 |
+| `transfer()` | 按字数传输，对数据做补齐或截断 |
+
+## 类型
+
+### `SpiConfig`
+
+```rust
+pub struct SpiConfig {
+    pub mode: Option<u8>,            // 0-3 (CPOL/CPHA)
+    pub bit_order: Option<BitOrder>,
+    pub frequency_hz: Option<u32>,
+    pub word_size: Option<u8>,       // 8, 16 or 32
+    pub cs_active: Option<CsActive>,
+    pub cs_mode: Option<CsMode>,
+}
+```
+
+值为 `None` 的字段保留该 Net 已保存的值。设置了的内容会实时应用**并持久化到 Box 上**。
+
+```rust
+pub enum BitOrder { Msb, Lsb }
+pub enum CsActive { Low, High }   // Low is typical
+pub enum CsMode   { Auto, Manual }
+```
+
+### `SpiOptions`
+
+```rust
+pub struct SpiOptions {
+    pub fill: u32,      // word clocked out while reading; default 0xFF
+    pub keep_cs: bool,  // keep CS asserted after the transaction; default false
+}
+```
+
+### `SpiTransfer`
+
+```rust
+pub struct SpiTransfer {
+    pub words: Vec<u32>,  // one entry per word, whatever the word size
+    pub word_size: u32,   // bits the transaction actually ran at
+}
+```
+
+## 方法参考
+
+### `configure(config: &SpiConfig) -> Result<SpiEffectiveConfig>`
+
+应用设置并回读实际生效的内容。
+
+```rust
+use lager::{BitOrder, SpiConfig};
+
+let cfg = spi.configure(&SpiConfig {
+    mode: Some(0),
+    frequency_hz: Some(1_000_000),
+    word_size: Some(8),
+    bit_order: Some(BitOrder::Msb),
+    ..Default::default()
+})?;
+```
+
+### `read(n_words: u32, opts: &SpiOptions) -> Result<SpiTransfer>`
+
+时钟进 `n_words` 个字，每个字对应时钟出一个 `opts.fill`。
+
+### `write(data: &[u32], opts: &SpiOptions) -> Result<SpiTransfer>`
+
+恰好时钟出 `data`。SPI 是全双工的，因此同一次事务中时钟进的字会在结果里返回 —— 一次写入同时也是一次读取。
+
+### `read_write(data: &[u32], opts: &SpiOptions) -> Result<SpiTransfer>`
+
+恰好按 `data` 进行全双工传输。
+
+### `transfer(data: &[u32], n_words: u32, opts: &SpiOptions) -> Result<SpiTransfer>`
+
+恰好传输 `n_words` 个字，用填充字补齐 `data` 或者把它截断。
+
+## 示例
+
+### 读取 Flash 芯片的 JEDEC ID
+
+```rust
+use lager::{LagerBox, SpiConfig, SpiOptions};
+
+let lager = LagerBox::from_env()?;
+let spi = lager.spi("spi1");
+
+spi.configure(&SpiConfig {
+    mode: Some(0),
+    frequency_hz: Some(1_000_000),
+    word_size: Some(8),
+    ..Default::default()
+})?;
+
+// 0x9F then three bytes of ID, in one CS assertion.
+let t = spi.transfer(&[0x9F], 4, &SpiOptions::default())?;
+let (manufacturer, memtype, capacity) = (t.words[1], t.words[2], t.words[3]);
+println!("JEDEC {manufacturer:02x} {memtype:02x} {capacity:02x}");
+assert_ne!(manufacturer, 0xFF, "no device responded");
+```
+
+### 在两次事务之间保持片选
+
+处于 `auto` 片选模式的 LabJack U3 拒绝 `keep_cs: true`。在 U3 上，请使用一个不带片选的 SPI Net，并用一个 GPIO Net 来驱动片选。
+
+```rust
+let held = SpiOptions { keep_cs: true, ..Default::default() };
+spi.write(&[0x03, 0x00, 0x00, 0x00], &held)?;   // read command + address
+let data = spi.read(256, &SpiOptions::default())?; // releases CS at the end
+```
+
+## 受支持的硬件
+
+| 仪器 | 通道 | 备注 |
+|---|---|---|
+| FTDI FT232H | MPSSE，单通道 | 在该芯片上与 UART 互斥 |
+| FTDI FT2232H / FT4232H | MPSSE 通道 A 和 B | SPI 属于 MPSSE，因此通道 C 和 D 无法承载它 |
+| LabJack T7 | 已配置的引脚 | |
+| LabJack U3 | 已配置的引脚（默认 `FIO4-FIO7`：CS、CLK、MISO、MOSI） | 每次传输 50 字节；片选只能是低电平有效 |
+| Total Phase Aardvark | 专用 | |
+
+## 说明
+
+- `opts.fill` 只会在 `read()` 和 `transfer()` 时发送。`write()` 和 `read_write()` 恰好时钟出给定的数据，因此填充字对它们没有意义。
+- 每一次传输都会返回 `word_size`，因为配置为 16 位字的总线返回的是每字一项，而不是每字节一项。
+- 事务在 Box 上、在该设备的锁之下运行，因此一次多字传输不会被同一设备上的另一个请求打断。
+- `configure()` 会跨测试持久化。请把您所依赖的设置显式设好，而不是想当然。

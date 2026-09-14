@@ -1,0 +1,188 @@
+---
+title: 客户端与 Box
+description: 构造 LagerBox、发现 Net、锁定 Box，以及安全限值
+---
+
+`LagerBox` 是入口点。构造它的开销很小，并且在您调用方法之前不会产生任何网络流量，因此在测试辅助函数里建一个几乎不花什么代价。
+
+## 构造
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;               // reads LAGER_BOX_HOST
+let lager = LagerBox::connect("192.168.1.42")?;  // or an explicit host
+```
+
+`connect()` 接受主机名、IP、`host:port` 或完整 URL。协议默认是 `http`，端口默认是 9000。
+
+### 构建器
+
+```rust
+use lager::LagerBox;
+use std::time::Duration;
+
+let lager = LagerBox::builder("192.168.1.42")
+    .timeout(Duration::from_secs(30))
+    .debug_service_url("http://127.0.0.1:8765")
+    .bearer_token("...")
+    .build()?;
+```
+
+| 方法 | 说明 |
+|--------|-------------|
+| `timeout()` | 快速命令的默认 HTTP 时间预算；未修改时为 10 秒 |
+| `debug_service_url()` | 覆盖调试服务的基址；默认指向 Box 的 8765 端口 |
+| `bearer_token()` | 固定一个网关令牌，而不是去解析获取 |
+| `build()` | 构造该客户端 |
+
+`timeout()` 只设置**快速**命令的预算。长时间运行的操作无论如何都会自行计算更宽的预算 —— 一次 60 秒的 `wait_for_level` 不会被 10 秒的默认值截断。
+
+### 环境变量
+
+| 变量 | 含义 |
+|---|---|
+| `LAGER_BOX_HOST` | `from_env()` 连接的那台 Box |
+| `LAGER_DEBUG_SERVICE_URL` | 覆盖调试服务的基址 URL，例如在做隧道转发时 |
+| `LAGER_GATEWAY_TOKEN` | 为受网关保护的 Box 固定一个 bearer 令牌 |
+| `LAGER_GATEWAY_AUTH_FILE` | 覆盖 CLI 令牌存储的路径；默认是 `~/.lager_gateway_auth` |
+
+## 发现
+
+| 方法 | 说明 |
+|--------|-------------|
+| `base_url()` | 规范化后的基址 URL，例如 `http://192.168.1.42:9000` |
+| `health()` | Box 健康状况 |
+| `status()` | 版本、已配置的 Net，以及端点能力 |
+| `nets()` | 全部已保存的 Net 记录 |
+| `usb_devices()` | Box 总线上的每一个 USB 设备 |
+| `usb_devices_matching()` | 同上，但按 vid、pid 或序列号在 Box 侧过滤 |
+
+```rust
+let status = lager.status()?;
+println!("box {} with {} nets", status.version, status.nets.len());
+
+for net in lager.nets()? {
+    println!("{} ({}) {:?}", net.name, net.role, net.instrument);
+}
+```
+
+### `BoxCapabilities`
+
+`status().capabilities` 说明该 Box 提供哪些端点。
+
+| 字段 | 传输字段名 | 含义 |
+|---|---|---|
+| `net_command` | `netCommand` | 该 Box 提供 `POST /net/command` |
+| `net_command_roles` | `netCommandRoles` | 它提供哪些角色；在早于角色公告的镜像上为空 |
+| `ble_command` | `bleCommand` | 已注册 BLE 路由 |
+| `wifi_command` | `wifiCommand` | 已注册 WiFi 路由 |
+| `blufi_command` | `blufiCommand` | 已注册 BluFi 路由 |
+| `custom_devices` | `customDevices` | 本 crate 未使用 |
+| `binaries` | `binaries` | 本 crate 未使用 |
+| `safety_limits` | `safetyLimits` | `PUT /nets/<name>/safety-limits`，Box 0.35.0 及以上 |
+
+<Warning>
+  **能力标志反映的是路由是否注册，而不是 Box 能否真正完成这项工作。** 在容器里没有 BlueZ 的 Box 上，`ble_command: true` 仍然会让每一次 BLE 调用以 `Error::Box` 和 HTTP 502 失败。没装 `nmcli` 时，`wifi_command: true` 的失败方式也一样。请用这些标志判断端点是否存在，而不是判断它会不会成功。
+</Warning>
+
+### `usb_devices()`
+
+从 sysfs 枚举 Box 的 USB 总线。它只需要几毫秒，不需要独占任何资源，因此在等待被测设备重新枚举时可以安全地轮询它。
+
+```rust
+use lager::UsbDeviceFilter;
+
+let stm = lager.usb_devices_matching(&UsbDeviceFilter {
+    vid: Some("0483".into()),
+    ..Default::default()
+})?;
+```
+
+需要 Box 0.33.0 或更高版本。
+
+<Note>
+  每次设备重新枚举，`devnum` 都会变。在检查设备是否在断电重启后回来时，请匹配 `serial`，或者匹配 vid/pid。
+</Note>
+
+## 锁定 Box
+
+共享的实验台需要预留机制，否则两个 CI 作业会同时驱动同一批仪器。
+
+| 方法 | 说明 |
+|--------|-------------|
+| `lock_status()` | 谁持有该 Box，如果有人持有的话 |
+| `lock()` | 以用户身份取得一把永久锁 |
+| `lock_with()` | 取得一把带显式持有者类型和 TTL 的锁 |
+| `lock_heartbeat()` | 刷新一把带 TTL 的锁 |
+| `unlock()` | 释放您自己的锁 |
+| `unlock_force()` | 释放别人的锁 |
+| `lock_guard()` | RAII 式占用，在 drop 时释放 |
+
+```rust
+{
+    let _guard = lager.lock_guard("ci-job-4711")?;
+    // the box is yours for this scope
+    run_the_suite(&lager)?;
+}   // released here, even on an early return or a panic unwind
+```
+
+竞争会明确报错。锁定一台别人持有的 Box 会得到 `Error::Box`、HTTP 409 和 `Box is locked by <holder>`；以非持有者身份解锁则是 HTTP 403 加同样的信息。解锁一台本来就空闲的 Box 会成功。
+
+<Note>
+  `lock_guard()` 只存在于阻塞客户端上。异步客户端有其他所有的锁方法，但没有 RAII 守卫。
+</Note>
+
+## 安全限值
+
+按 Net 设定的上限，由 Box 的硬件服务而不是您的测试来强制执行 —— 因此即使测试行为异常，这些上限依然生效。需要 Box 0.35.0 或更高版本。
+
+```rust
+use lager::SafetyLimits;
+
+lager.set_safety_limits("supply1", &SafetyLimits {
+    max_voltage: Some(3.6),
+    max_current: Some(0.5),
+    allow_destructive: Some(false),
+})?;
+```
+
+| 字段 | 含义 |
+|---|---|
+| `max_voltage` | 伏特。必须为正数。 |
+| `max_current` | 安培。必须为正数。 |
+| `allow_destructive` | `Some(false)` 会让 Box 在该 Net 上拒绝擦除和烧录 |
+
+| 方法 | 说明 |
+|--------|-------------|
+| `set_safety_limits()` | 写入限值记录；返回 Box 实际应用的内容 |
+| `safety_limits()` | 读取当前限值；`Ok(None)` 表示没有限制 |
+| `clear_safety_limits()` | 移除全部限值 |
+
+被拒绝的设定值以 `Error::Box` 的形式返回：
+
+```text
+Refused voltage(5.0) on net 'supply2': exceeds max_voltage of 3.6 configured for this net.
+```
+
+被拒绝的擦除则是 HTTP 403：
+
+```text
+Refused erase on net 'debug1': this net is configured with allow_destructive: false.
+```
+
+<Warning>
+  **一次 PUT 会替换整条记录。** 您留作 `None` 的字段会被移除，而不是保留。在一个已经有 `max_current` 上限的 Net 上只设置 `max_voltage`，会把电流上限丢掉。请先读取当前限值，再在读到的内容上做修改。
+</Warning>
+
+<Warning>
+  **上限约束的是设定值，而不是保护动作的触发点。** 在 3.6 V 上限下，`set_voltage(5.0)` 会被拒绝 —— 但 `set_ovp(12.0)` 会被接受并应用。这类 Net 上被拒绝的 `set_ocp` 来自仪器自身的硬件限制，而不是来自这个上限。请不要指望用安全限值来约束 OVP 或 OCP 的设定。
+</Warning>
+
+这里有意没有 `max_power`。一次 setter 调用只确立电压或电流之一，绝不会同时确立两者，因此 Box 无法诚实地判定功率上限。所以它干脆拒绝这个键。
+
+## 说明
+
+- 句柄借用该客户端，因此只要还有从它派生出来的句柄在用，就要让 `LagerBox` 保持存活。
+- Box 会按物理仪器串行化访问，因此并行的测试无法在同一台仪器上交错进行 I/O。共享同一个 *Net* 的测试之间仍然会看到彼此造成的状态变化。
+- `nets()` 会自动回退到较早的 `{"nets": [...]}` 响应格式，因此它在早于纯数组格式的 Box 上同样可用。
