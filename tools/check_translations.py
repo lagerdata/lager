@@ -170,7 +170,20 @@ def relink(lang: str) -> int:
         # report says which ones to look at now.
         for m in re.finditer(rf'\]\(/source/{lang}/([A-Za-z0-9\-_/]+)#([^)]+)\)', text):
             target, frag = m.group(1), m.group(2)
-            if re.fullmatch(r'[a-z0-9\-]+', frag):
+            if not re.fullmatch(r'[a-z0-9\-]+', frag):
+                continue
+            # An all-ASCII fragment is not wrong by itself. A command name stays
+            # English in a translated heading -- `### tui`, `### assign` -- and
+            # its slug is ASCII and correct. Only report a fragment that no
+            # heading in the target actually produces. A report that fires on
+            # correct links is a report people learn to skip.
+            target_file = SOURCE / lang / f'{target}.mdx'
+            if not target_file.exists():
+                continue
+            slugs = {re.sub(r'[^a-z0-9]+', '-', h.lower()).strip('-')
+                     for h in re.findall(r'^#{2,6}\s+(.+?)\s*$',
+                                         target_file.read_text(), re.M)}
+            if frag not in slugs:
                 anchors.append(f'{path.relative_to(DOCS)} -> {target}#{frag}')
         if text != original:
             path.write_text(text)

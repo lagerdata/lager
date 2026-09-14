@@ -85,8 +85,10 @@ page when one does not, and it is idempotent.
 `/source/reference/cli/arm#detection` becomes a link to the translation, but
 `#detection` is the slug of the *English* heading — the translated page has
 `#检测`. Only the person who wrote the heading knows what it became, so
-`--relink` reports any link it left carrying an all-ASCII fragment and leaves the
-fix to you. Do that pass whenever a page you link into gets translated.
+`--relink` reports a link whose all-ASCII fragment matches no heading in the
+target translation, and leaves the fix to you. It checks rather than guesses,
+because an ASCII fragment is often correct: a command name stays English in a
+translated heading (`### tui`, `### assign`), so its slug is ASCII too. Do that pass whenever a page you link into gets translated.
 
 It handles both link forms, which fail differently. An absolute
 `/source/reference/python/net` is rewritten to carry the language prefix or not.

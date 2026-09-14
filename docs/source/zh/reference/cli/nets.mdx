@@ -1,0 +1,1019 @@
+---
+title: Nets
+description: 在您的 Lager Box 上创建和管理 Net（测试点）
+---
+
+Net 是 Lager 中用来表示被测设备上物理测试点、信号或总线的核心抽象。
+每个 Net 把一个易读的名称映射到某个仪器通道。
+
+## 语法
+
+```bash
+lager nets [OPTIONS] [COMMAND]
+```
+
+## 全局选项
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--box TEXT` | Lager Box 名称或 IP 地址 |
+| `--help` | 显示帮助信息并退出 |
+
+## 命令
+
+| 命令 | 说明 |
+|---------|-------------|
+| （无） | 列出全部已保存的 Net（默认行为） |
+| `delete` | 按名称和类型删除某个 Net |
+| `delete-all` | 删除全部已保存的 Net（危险操作） |
+| `rename` | 重命名已有的 Net |
+| `add` | 添加一个新的 Net |
+| `add-all` | 根据已连接的仪器自动创建全部可用的 Net |
+| `add-batch` | 从 JSON 文件创建多个 Net |
+| `assign` | 把 USB 串口线缆分配给 Box 无法自动识别的 RS-232 仪器 |
+| `show` | 显示某个已保存 Net 的完整信息，包括元数据 |
+| `state` | 显示每个已保存 Net 的实时硬件状态 |
+| `describe` | 为已保存的 Net 设置元数据（用途、备注、标签），用于智能体辅助测试 |
+| `tui` | 启动交互式的 Net 管理器 TUI |
+| `set-script` | 为调试 Net 附加 J-Link 脚本*或* OpenOCD `.cfg`/`.tcl`（后端自动识别） |
+| `remove-script` | 移除调试 Net 上附加的调试脚本（J-Link 或 OpenOCD） |
+| `show-script` | 显示调试 Net 上附加的调试脚本 |
+
+## 命令参考
+
+### 列出 Net（默认）
+
+列出 Lager Box 上全部已保存的 Net。不提供子命令时就是这个默认行为。
+
+```bash
+lager nets --box my-lager-box
+```
+
+输出按仪器分组。每个分组以仪器名称和它的地址开头，该分组的 Net 以树状形式跟在后面。
+
+**输出列：**
+
+| 列 | 说明 |
+|--------|-------------|
+| `Name` | 易读的 Net 标识 |
+| `Net Type` | Net 的角色/类型（power-supply、debug、adc、gpio、i2c、spi 等） |
+| `Channel` | 仪器上的具体通道 |
+| `Script` | 附加了 J-Link 脚本时为 `yes` |
+| `OpenOCD` | 附加了 OpenOCD 配置时为 `yes` |
+| `Purpose` | 用 `describe` 设置的 `purpose` 文本，截断以适应列宽 |
+
+只有当至少有一个 Net 具有相应值时，`Script`、`OpenOCD` 和 `Purpose` 列才会出现。
+运行 `lager nets show NAME` 可以看到完整的 purpose 文本。
+
+**输出示例：**
+
+```
+    Name      Net Type      Channel
+========================================
+LabJack T7 [USB0::0x0CD5::0x0007::::INSTR]
+├── adc1      adc           AIN0
+└── gpio1     gpio          FIO0
+
+Rigol DP811 [USB0::0x1AB1::0x0E11::DP8B123456::INSTR]
+└── supply1   power-supply  1
+
+SiLabs CP210x [USB0::0x10C4::0xEA60::0001::INSTR]
+└── uart1     uart          /dev/ttyUSB0
+```
+
+### `add`
+
+通过指定名称、类型、通道和仪器地址创建一个新的 Net。
+
+```bash
+lager nets add NAME ROLE CHANNEL ADDRESS [OPTIONS]
+```
+
+**参数：**
+- `NAME` - 该 Net 的唯一名称（例如 `supply1`、`debug_main`）
+- `ROLE` - Net 类型：`power-supply`、`battery`、`solar`、`debug`、`adc`、`dac`、`gpio`、`scope`、`logic`、`eload`、`uart`、`usb`、`webcam`、`arm`、`watt-meter`、`energy-analyzer`、`thermocouple`、`i2c`、`spi`。旧的写法 `supply` 和 `batt` 作为输入别名被接受，并归一化为 `power-supply` / `battery` —— 保存的 Net 总是带有规范角色。
+- `CHANNEL` - 通道标识，与 `lager instruments` 列出的一致（例如 `1`、`AIN0`、`FIO0`、`I2C0`、`STM32F4`）
+- `ADDRESS` - VISA 地址或设备路径，与 `lager instruments` 列出的一致（例如 `USB0::0x0CD5::0x0007::::INSTR`）
+
+**选项：**
+- `--box TEXT` - Lager Box 名称或 IP
+- `--jlink-script FILE` - 调试 Net 的 J-Link 脚本文件（保存在 Box 上）
+- `--openocd-config FILE` - 调试 Net 的 OpenOCD `.cfg`/`.tcl` 文件（保存在 Box 上）
+- `--sda PIN` / `--scl PIN` - `i2c` Net 的自定义 LabJack 引脚
+- `--cs PIN` / `--sck PIN` / `--mosi PIN` / `--miso PIN` - `spi` Net 的自定义 LabJack 引脚
+
+引脚值接受 LabJack 的 DIO 名称或原始 DIO 编号。两个 LabJack 系列接受的引脚不同：
+
+| 仪器 | 引脚名称 | DIO 编号 |
+|---|---|---|
+| LabJack T7 | `FIO0`-`FIO7`、`EIO0`-`EIO7`、`CIO0`-`CIO3`、`MIO0`-`MIO2` | `0`-`22` |
+| LabJack U3 | `FIO4`-`FIO7`、`EIO0`-`EIO7`、`CIO0`-`CIO3` | `4`-`19` |
+
+U3 没有 MIO 引脚。它的 `FIO0`-`FIO3` 是固定的模拟输入，
+因此 Lager 拒绝把它们用于 `gpio`、`i2c` 和 `spi` Net。
+U3 的 EIO 和 CIO 线位于它的 DB15 连接器上。
+
+给出引脚选项时，`CHANNEL` 参数会被忽略 —— 请传 `custom`。
+如果所选引脚与另一个已保存的 LabJack Net 重叠，会打印警告，但 Net 仍会创建。
+`--cs` 是可选的：做 3 线 SPI、手动控制片选时可以省略它。
+
+**示例：**
+
+```bash
+# Create a power supply net
+lager nets add supply1 power-supply 1 TCPIP::192.168.1.100::INSTR --box my-lager-box
+
+# Create a debug net for STM32
+lager nets add debug1 debug STM32F407VG USB::001::002 --box my-lager-box
+
+# Create a debug net with J-Link script
+lager nets add debug1 debug STM32F407VG USB::001::002 --jlink-script ./my_device.JLinkScript --box my-lager-box
+
+# Create an ADC net on a LabJack T7
+lager nets add temp_sensor adc AIN0 USB0::0x0CD5::0x0007::::INSTR --box my-lager-box
+
+# Create an I2C net on a LabJack T7 (default pins: SDA=FIO4, SCL=FIO5)
+lager nets add i2c_bus i2c FIO4-FIO5 USB0::0x0CD5::0x0007::::INSTR --box my-lager-box
+
+# Create an I2C net on a LabJack T7 with custom pins
+lager nets add i2c_bus i2c custom USB0::0x0CD5::0x0007::::INSTR --sda EIO0 --scl EIO1 --box my-lager-box
+
+# Create an I2C net on a LabJack U3 (default pins: SDA=FIO6, SCL=FIO7)
+lager nets add u3_i2c i2c FIO6-FIO7 USB0::0x0CD5::0x0003::::INSTR --box my-lager-box
+
+# Create an I2C net on Aardvark
+lager nets add i2c_aardvark i2c I2C0 USB0::0x0403::0xE0D0::2238595116::INSTR --box my-lager-box
+
+# Create an SPI net on a LabJack T7 (default pins: CS=FIO0, SCK=FIO1, MOSI=FIO2, MISO=FIO3)
+lager nets add spi_bus spi FIO0-FIO3 USB0::0x0CD5::0x0007::::INSTR --box my-lager-box
+
+# Create an SPI net on a LabJack T7 with custom pins
+lager nets add spi_flash spi custom USB0::0x0CD5::0x0007::::INSTR --cs FIO6 --sck FIO7 --mosi EIO0 --miso EIO1 --box my-lager-box
+
+# Custom-pin SPI without chip select (3-pin SPI, manual CS via gpio)
+lager nets add spi_flash spi custom USB0::0x0CD5::0x0007::::INSTR --sck FIO7 --mosi EIO0 --miso EIO1 --box my-lager-box
+
+# Create an SPI net on a LabJack U3 (default pins: CS=FIO4, SCK=FIO5, MISO=FIO6, MOSI=FIO7)
+lager nets add u3_spi spi FIO4-FIO7 USB0::0x0CD5::0x0003::::INSTR --box my-lager-box
+
+# Create an SPI net on Aardvark
+lager nets add spi_aardvark spi SPI0 USB0::0x0403::0xE0D0::2238595116::INSTR --box my-lager-box
+
+# Create a UART net
+lager nets add serial1 uart 0 /dev/ttyUSB0 --box my-lager-box
+```
+
+<Note>
+`--jlink-script` 选项只适用于调试 Net。用在其他 Net 类型上时会打印警告，并忽略该选项。
+</Note>
+
+**校验规则：**
+- Net 名称必须在所有类型中全局唯一
+- （角色、仪器、通道、地址）这个四元组必须与某台已连接的仪器匹配
+- 通道必须是 Box 为该角色提供的通道之一。运行 `lager instruments` 查看列表。
+- 地址必须唯一标识一台设备。请参阅下方的**同型号的两台设备**。
+- 通道绑定遵循下方**通道与角色约束**中描述的按仪器规则
+
+当通道无效时，`add` 会打印该角色的有效通道，并以代码 1 退出：
+
+```
+The channel 'FIO0' is not valid for role 'gpio' on the instrument at USB0::0x0CD5::0x0003::::INSTR.
+Valid gpio channels for LabJack_U3: FIO4, FIO5, FIO6, FIO7, EIO0, EIO1, EIO2, EIO3, EIO4, EIO5, EIO6, EIO7, CIO0, CIO1, CIO2, CIO3
+FIO0-FIO3 on a LabJack U3 are fixed high-voltage analog inputs and are never digital I/O. Read them with an adc net on AIN0-AIN3, the same physical pins.
+```
+
+最后一行只在 U3 上为 `FIO0`-`FIO3` 创建 `gpio`、`i2c` 或 `spi` Net 时出现。
+
+<Note>
+通道列表保存在 Box 上。较新的 CLI 对较旧的 Lager Box 会按较旧的列表校验。
+请运行 `lager update` 获取最新列表。
+</Note>
+
+### 通道与角色约束
+
+不同的仪器系列把 Net 绑定到通道的方式不同。Lager 把每一台受支持的仪器归入三个类别之一，
+并在 `add`、`add-all` 和 TUI 中一致地执行这些规则。
+
+#### 1. 多通道仪器
+
+具有物理上独立的输出/输入的仪器。每个通道都是自己的一路电路，可以承载自己的 Net。
+
+| 仪器 | 通道 | 说明 |
+|---|---|---|
+| `Rigol_DP811` / `DP821` / `DP831` / `DP832` | `1`、`2`、`3` | 每路输出一个 `power-supply` Net |
+| `KEYSIGHT_E36233A` | `1`、`2` | 双路输出电源 |
+| `KEYSIGHT_E36313A` / `E36312A` | `1`、`2`、`3` | 三路输出电源 |
+| `LabJack_T7` | `AIN0`–`AIN13`、`FIO0`–`FIO7`、`DAC0`–`DAC1` 等 | 每个引脚一个 Net |
+| `LabJack_U3` | `AIN0`–`AIN15`、`DAC0`–`DAC1`；`gpio` 在 `FIO4`–`FIO7`、`EIO0`–`EIO7`、`CIO0`–`CIO3`；`spi` 在 `FIO4-FIO7`；`i2c` 在 `FIO6-FIO7` | `FIO0`–`FIO3` 是固定的高压模拟输入 —— 请用 `AIN0`–`AIN3` 上的 `adc` Net 读取它们，绝不要用作 `gpio`、`spi` 或 `i2c`。Lager 把每一台 U3 都当作 U3-HV，因此 U3-LV 同样失去这四条数字线。`spi` 和 `i2c` 的引脚区间有重叠；各建一个 Net 是可以的 |
+| `Rigol_MSO5204` | `scope` 在 `1`–`4`；`logic` 在 `1` | 每个模拟通道一个 `scope` Net，另有一个 `logic` Net |
+| `Aardvark` | `SPI0`、`I2C0`、GPIO 引脚 | 混合模式的多通道 |
+| `MCC_USB-202` | `CH0`–`CH7`、`DIO0`–`DIO7`、`DAC0`–`DAC1` | 每个通道一个 Net |
+| `Phidget` | `0`–`3` | 每个通道一个 `thermocouple` Net |
+| `Acroname_8Port` / `4Port`、`YKUSH_Hub` | 端口序号 | 每个端口一个 `usb` Net |
+
+**规则：** 每个 `(仪器, 地址, 角色, 通道)` 四元组最多一个 Net。
+共享 `(仪器, 地址, 角色)` 但通道不同的两个 Net 没有问题 —— 多通道正是为此而生。
+
+#### 2. 单通道多模式仪器
+
+只有一路物理通道、可以运行在若干**模式**之一、但不能同时运行多个模式的仪器。
+角色告诉 Box 要把芯片切换到哪种固件模式。Lager 对这类芯片分两组区别对待。
+
+**单路输出仪器（每个角色一个 Net，并给出提示）：**
+
+| 仪器 | 角色 | 添加第二个角色时会发生什么 |
+|---|---|---|
+| `Keithley_2281S` | `battery` 和 `power-supply` | 只有一路输出：电池模拟器固件，或电源固件 |
+| `EA_PSB_10080_60` | `solar` 和 `power-supply` | 只有一路输出：太阳能阵列模拟器，或普通电源 |
+| `EA_PSB_10060_60` | `solar` 和 `power-supply` | 同上 |
+
+**规则：** 同一颗芯片上每个角色可以保存一个 Net。当该芯片已经有一个 Net 时，
+`add` 会打印这条提示，并保存第二个 Net：
+
+```
+Keithley_2281S at <ADDRESS> already has a battery net. This instrument is a single output that fills one role at a time — the driver switches its mode automatically when you drive the other net, ending whatever the previous mode was doing. Add the second net only if you intend to use both roles.
+```
+
+对某个 Net 的每条命令都会把仪器切换到该 Net 的模式，这次切换会中止另一个模式正在做的事。
+对于没有任何已保存 Net 的芯片，`add-all` 不会替您挑选角色：它会跳过该芯片并给出警告。
+TUI 也不允许您在一批操作中同时选中一颗芯片的两个角色。
+
+**模式互斥的芯片（总共只能有一个 Net）：**
+
+| 仪器 | 允许的角色 | 为什么互斥 |
+|---|---|---|
+| `FTDI_FT232H` | `spi` 或 `i2c` 或 `gpio` 或 `debug` 或 `uart` | 一路通道在 MPSSE（libftdi）和异步串口（`ftdi_sio`）模式之间由硬件复用 |
+
+**规则：** 每个 `(仪器, 地址)` 最多一个 Net。一旦该芯片上保存了任意角色，
+其他所有角色都会从 `add-all` 和 TUI 的可添加列表中消失。要切换模式，请先删除已有的 Net。
+
+这些芯片在 `cli/commands/box/nets.py` 和 `cli/commands/box/net_tui.py` 中
+由 `_SINGLE_CHANNEL_INST`（Keithley、EA）和 `_MODE_EXCLUSIVE_INST`（FTDI_FT232H）跟踪。
+
+#### 3. 单角色调试探针
+
+独立的调试器设备 —— 一个探针驱动一个目标 MCU。
+
+| 仪器 | 后端 | 角色 |
+|---|---|---|
+| `J-Link` / `J-Link_Plus` / `Flasher_ARM` / `J-Link_Flasher_Pro` | J-Link（SEGGER） | `debug` |
+| `STLink_v2` / `v2_1` / `v3` / `v3_Mini` / `v3_2VCP` | OpenOCD | `debug` |
+| `RP2040_Picoprobe` | OpenOCD（CMSIS-DAP） | `debug` |
+| `Atmel_EDBG` | OpenOCD（CMSIS-DAP） | `debug` |
+| `DAPLink` | OpenOCD（CMSIS-DAP） | `debug` |
+
+**规则：** 每个 `(仪器, 地址)` 最多一个 `debug` Net。
+
+#### 4. 多通道 FTDI 调试适配器
+
+`FT2232H`（2 个通道：A、B）和 `FT4232H`（4 个通道：A、B、C、D）在物理上提供多个 USB 接口。
+通道 A 和 B 带有 MPSSE 引擎；在 FT4232H 上，C 和 D 没有。这一点是按*Net 类型*而不是按芯片起作用的。
+`debug`、`spi` 和 `i2c` 都是 MPSSE 协议，因此只能用 A 和 B。
+`gpio` 以异步 bitbang 方式运行，不需要 MPSSE，四个通道都能用。用户为每个 Net 指定接口。
+
+**调试 Net** 把通道编码在设备字段中：
+
+```bash
+# Channel A (interface 0) — by far the most common
+lager nets add debug_a debug STM32F4x@A USB0::0x0403::0x6010::ABCDEF::INSTR
+
+# Channel B (interface 1) — second target on the same FT2232H
+lager nets add debug_b debug NRF52840_XXAA@B USB0::0x0403::0x6010::ABCDEF::INSTR
+```
+
+等价写法：`@A`/`@0`、`@B`/`@1`、`@C`/`@2`、`@D`/`@3`。
+没有 `@` 后缀的设备默认使用 OpenOCD 接口配置所选的接口（通常是通道 A）。
+
+**GPIO、I2C 和 SPI Net** 把通道写在 Net 记录的 `params.interface` 中，
+接受与 `@` 后缀相同的写法：`A`-`D` 或 `0`-`3`。
+没有 `interface` 的 Net 使用通道 A —— 在单通道的 FT232H 上这也是唯一的选择。
+
+Lager 是按 Net 而不是按仪器来校验哪些通道合法的。如果您为 `i2c` 或 `spi` Net
+指定 C 或 D，Net 构造会失败并指出该通道。这个失败不是从 pyftdi 内部某处冒出来的。
+`gpio` Net 可以使用该芯片具备的任意通道。
+
+在 v0.43.0 之前，这三个驱动都把接口硬编码为 A。因此，
+把通信接到一个通道、把控制线接到另一个通道的板子根本无法驱动。
+
+**UART Net** 按 tty 路径区分通道。USB 扫描器会枚举绑定到该芯片 USB 序列号的
+每一个 `/dev/ttyUSB<N>`。每一个都会作为独立的可添加项出现，
+因此在 FT4232H 上您最多会看到四个 UART 选项。
+
+**规则：** 调试 Net 按 `(仪器, 地址, 通道后缀)` 唯一。因此单颗 FT2232H 可以承载：
+- `@A` 上的一个 `debug` Net
+- `@B` 上的一个 `debug` Net
+- 一个 `uart` Net，位于您没有用于 MPSSE 的那些通道所对应的某个 `/dev/ttyUSB<N>` 上
+- `spi` / `i2c` / `gpio` 各一个，分别位于它们 `params.interface` 所指定的通道上
+
+不把同一通道重复占用（例如同时有 `debug@A` *和* 接口 A 上的 `spi` Net）
+是用户的责任；Box 目前不校验这一点。
+
+#### 快速判断表
+
+| 您想在同一颗芯片上添加第二个 Net | 允许吗？ |
+|---|---|
+| `Rigol_DP811` 通道 1 上的 `power-supply` + 同一台 Rigol_DP811 通道 2 上的 `power-supply` | 允许 |
+| `Keithley_2281S` 上的 `battery` + 同一台 Keithley 上的 `power-supply` | 允许，但有提示 —— 这两个 Net 共用一路输出 |
+| `EA_PSB_10080_60` 上的 `solar` + 同一台 EA 上的 `power-supply` | 允许，但有提示 —— 这两个 Net 共用一路输出 |
+| `FTDI_FT232H` 上的 `spi` + 同一颗 FT232H 上的 `uart` | **不允许** —— 只能选一个 |
+| `LabJack_U3` 上的 `spi` + 同一台 U3 上的 `i2c` | 允许 —— 默认引脚区间共用 `FIO6` 和 `FIO7` |
+| `FTDI_FT2232H` 上的 `debug@A` + 同一颗 FT2232H 另一个接口上的 `uart` | 允许 |
+| 同一颗 `FTDI_FT2232H` 上的两个 `debug@A` Net | **不允许** —— 通道相同 |
+| 同一个 J-Link 上的两个 `debug` Net | **不允许** —— 单目标探针 |
+
+#### 同型号的两台设备
+
+Lager 是根据设备地址、而不是根据型号来判断能否创建 Net 的。
+包含唯一序列号的地址唯一标识一台设备。同一台 Lager Box 上有两台该型号的设备时，
+两台都能工作。例如，两台 8 端口 Acroname 集线器可以提供十六个 `usb` Net。
+
+LabJack T7 和 LabJack U3 不报告序列号，因此它们的地址中序列号字段为空。
+同一台 Lager Box 上的两台 T7 或两台 U3 会报告相同的地址。
+Net 无法说明它指的是哪一台，因此 Lager 拒绝创建：
+
+```
+Error: LabJack_T7 at USB0::0x0CD5::0x0007::::INSTR: more than one device reports this address, so a net could not say which one it means. This model exposes no unique serial number. Use only one at a time, or drive them from separate boxes.
+```
+
+`add` 会以代码 1 退出。`add-all` 和 TUI 会用同样的信息跳过这些设备。
+`lager instruments` 会隐藏它们并打印该信息。同一台 Lager Box 上一台 T7 加一台 U3
+可以正常工作，因为它们的地址不同。
+
+### `add-all`
+
+为所有已连接仪器的所有可用通道自动创建 Net。这在快速配置一台新的 Lager Box 时很有用。
+
+```bash
+lager nets add-all [OPTIONS]
+```
+
+**选项：**
+- `--box TEXT` - Lager Box 名称或 IP
+- `--yes` - 跳过确认提示
+
+**示例：**
+
+```bash
+# Preview what nets would be created
+lager nets add-all --box my-lager-box
+
+# Create all nets without prompting
+lager nets add-all --box my-lager-box --yes
+```
+
+**输出：**
+
+```
+Found 7 nets that can be created:
+  - supply1 (power-supply) on Rigol_DP811 channel 1
+  - adc1 (adc) on LabJack_T7 channel AIN0
+  - adc2 (adc) on LabJack_T7 channel AIN1
+  - gpio1 (gpio) on LabJack_T7 channel FIO0
+  - i2c1 (i2c) on LabJack_T7 channel FIO4-FIO5
+  - spi1 (spi) on LabJack_T7 channel FIO0-FIO3
+  - debug1 (debug) on J-Link channel STM32F4
+
+Create all 7 nets on box <BOX_IP>? [y/N]:
+```
+
+在列表之前，`add-all` 会为它跳过的每一台设备打印一条警告。
+它会跳过报告相同地址的同型号两台设备，也会跳过没有任何已保存 Net 的
+单输出或模式互斥芯片 —— 那种芯片提供多个角色，而 `add-all` 不会替您选择。
+
+### `add-batch`
+
+从 JSON 文件创建多个 Net，便于高效批量配置。
+
+```bash
+lager nets add-batch JSON_FILE [OPTIONS]
+```
+
+**参数：**
+- `JSON_FILE` - 含有 Net 定义的 JSON 文件路径
+
+**选项：**
+- `--box TEXT` - Lager Box 名称或 IP
+
+**JSON 格式：**
+
+```json
+[
+  {
+    "name": "supply1",
+    "role": "power-supply",
+    "channel": "1",
+    "address": "USB0::0x1AB1::0x0E11::DP8B123456::INSTR"
+  },
+  {
+    "name": "i2c_bus",
+    "role": "i2c",
+    "channel": "FIO4-FIO5",
+    "address": "USB0::0x0CD5::0x0007::::INSTR"
+  },
+  {
+    "name": "spi_bus",
+    "role": "spi",
+    "channel": "SPI0",
+    "address": "USB0::0x0403::0xE0D0::2238595116::INSTR"
+  }
+]
+```
+
+每条记录都需要 `name`、`role`、`channel` 和 `address`。可选的 `instrument` 键用于指明仪器；
+不写时，命令会根据地址查出仪器。该命令不读取其他键，因此记录中不能携带 `params`。
+若要设置自定义的 LabJack 引脚，请用 `lager nets add` 配合 `--sda`/`--scl`
+或 `--cs`/`--sck`/`--mosi`/`--miso`。
+
+**校验：**
+
+在保存任何内容之前，命令会把每条记录的通道与 Box 为该角色提供的通道作比较。
+它会列出所有通道不正确的记录，打印 `No nets were saved.`，并以代码 1 退出：
+
+```
+Net 2 ('i2c_bus'): channel '0' is not valid for role 'i2c' on LabJack_T7. Valid: FIO4-FIO5
+No nets were saved.
+```
+
+命令不会校验两类记录：
+- 地址不在当前仪器扫描结果中的记录，例如未连接的仪器
+- `uart` 记录，因为它的通道是各设备的 tty 路径
+
+**示例：**
+
+```bash
+lager nets add-batch nets.json --box my-lager-box
+```
+
+### `assign`
+
+把 USB 串口线缆分配给 Box 无法自动识别的已知仪器。
+
+有些仪器没有 USB 控制端口。您通过通用的 USB 转串口适配器，
+用 RS-232 访问这类仪器 —— 例如接在 Prolific 线缆之后的 **Rigol DP711** 电源。
+Box 只看得到适配器（一个 `uart` 设备），看不到它后面的仪器。
+`assign` 在 Box 上记录下"这根线缆就是 DP711 的串行线"。
+此后扫描器就会报告仪器本身：它会出现在 `lager instruments` 和 TUI 中，
+您可以像对待任何自动识别的设备那样，用 `lager nets add` 为它创建 Net。
+
+**每根线缆只需分配一次**；分配保存在 Box 上，重启和重新插拔之后依然有效。
+创建 Net 仍然是可以正常重复执行的步骤。
+
+```bash
+lager nets assign --list [OPTIONS]                       # discover
+lager nets assign DEVICE --serial|--port [OPTIONS]       # assign
+lager nets assign --remove --serial|--port [OPTIONS]     # unassign
+```
+
+**选项：**
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--list` | 列出可分配的设备、当前的分配，以及未分配的 USB 串口线缆 |
+| `--serial TEXT` | 线缆的 USB 序列号（持久；分配会跟随线缆换到任何端口） |
+| `--port TEXT` | USB 端口路径（sysfs 名称，例如 `1-1.2`）；把分配固定到 Box 的某个物理端口 —— 适用于没有可用序列号的线缆 |
+| `--baud INTEGER` | 覆盖波特率；必须与仪器前面板上的设置一致（DP711 出厂默认 9600） |
+| `--remove` | 移除与 `--serial`/`--port` 匹配的分配 |
+| `--as-net [NAME]` | 同时立即为该仪器创建一个 Net（名称默认取设备名） |
+| `--box TEXT` | Lager Box 名称或 IP |
+
+**端到端示例（Rigol DP711）：**
+
+```bash
+# 1. Plug the instrument's USB-serial cable into the box, then find it:
+lager nets assign --list --box my-lager-box
+#   Unassigned USB-serial cables:
+#     serial 00000006  port 1-1.2  [067b:23a3]  /dev/ttyUSB0
+
+# 2. Assign the cable — and create a supply net in the same step:
+lager nets assign Rigol_DP711 --serial 00000006 --as-net main_supply --box my-lager-box
+
+# 3. Drive it like any other supply net:
+lager supply main_supply voltage 3.3 --box my-lager-box
+```
+
+不带 `--as-net` 时，命令会打印出新仪器对应的完整 `lager nets add` 调用：
+
+```bash
+lager nets add <name> power-supply 1 'serial://067b:23a3/serial/00000006'
+```
+
+**工作原理：**
+
+- 分配时线缆**必须已插上** —— 它的 USB 身份（厂商/产品 ID）是从在线设备上读取的。
+- 已分配仪器的 Net 使用持久的 `serial://<vid>:<pid>/serial/<s>`
+  （或 `.../port/<p>`）地址，而不是 `/dev/ttyUSB*` 路径，
+  因此它们在 tty 重新编号、重启和换端口之后依然有效。
+- 线缆被分配之后，它**不再作为通用 UART 设备提供** —— 这条串行线属于那台仪器。
+
+<Note>
+有些廉价的 USB 转串口仿制品共用同一个序列号（或者根本没有）。
+如果 `assign` 报告匹配到多根线缆，请改用 `--port` 把分配固定到 Box 的某个物理端口。
+代价是：把线缆换到别的端口之后，分配就失效了。
+</Note>
+
+**移除分配：**
+
+```bash
+lager nets assign --remove --serial 00000006 --box my-lager-box
+```
+
+该线缆会重新作为通用 UART 设备提供。**Net 与它的分配同生共死**：
+任何绑定到该分配 `serial://` 地址的已保存 Net 都会被自动删除，并在输出中报告。
+把线缆重新分配给另一台仪器时，以及把它的标识从 `--serial` 改为 `--port` 时，
+同样会发生这种级联删除。只有仅修改波特率的重新分配才会保留已有的 Net。
+
+**当前可分配的设备：** Rigol DP711（单通道 RS-232 电源）。
+运行 `lager nets assign --list` 查看您的 Box 支持的目录。
+
+### `delete`
+
+按名称和类型删除某个 Net。
+
+```bash
+lager nets delete NAME NET_TYPE [OPTIONS]
+```
+
+**参数：**
+- `NAME` - 要删除的 Net 名称
+- `NET_TYPE` - 该 Net 的类型（supply、debug、adc、i2c、spi 等）
+
+**选项：**
+- `--box TEXT` - Lager Box 名称或 IP
+- `--yes` - 跳过确认提示
+
+**示例：**
+
+```bash
+# Delete a supply net (with confirmation)
+lager nets delete supply1 supply --box my-lager-box
+
+# Delete without confirmation
+lager nets delete temp_sensor adc --box my-lager-box --yes
+
+# Delete an I2C net
+lager nets delete i2c_bus i2c --box my-lager-box --yes
+```
+
+### `delete-all`
+
+删除 Lager Box 上全部已保存的 Net。**这是一个危险操作。**
+
+```bash
+lager nets delete-all [OPTIONS]
+```
+
+**选项：**
+- `--box TEXT` - Lager Box 名称或 IP
+- `--yes` - 跳过确认提示
+
+**示例：**
+
+```bash
+# Delete all nets (requires confirmation)
+lager nets delete-all --box my-lager-box
+
+# Delete all nets without prompting
+lager nets delete-all --box my-lager-box --yes
+```
+
+### `rename`
+
+重命名已有的 Net。
+
+```bash
+lager nets rename NAME NEW_NAME [OPTIONS]
+```
+
+**参数：**
+- `NAME` - 该 Net 当前的名称
+- `NEW_NAME` - 新名称（必须唯一）
+
+**选项：**
+- `--box TEXT` - Lager Box 名称或 IP
+
+**示例：**
+
+```bash
+lager nets rename supply1 main_power --box my-lager-box
+```
+
+### `tui`
+
+启动基于终端的交互式界面来管理 Net。TUI 提供查看、创建和删除 Net 的可视化界面。
+
+```bash
+lager nets tui [OPTIONS]
+```
+
+**选项：**
+- `--box TEXT` - Lager Box 名称或 IP
+
+**示例：**
+
+```bash
+lager nets tui --box my-lager-box
+```
+
+**TUI 功能：**
+- 浏览全部已连接的仪器及其通道
+- 在引导式提示下创建新 Net（**+ Add Nets**）
+- 阅读 Add 界面上的警告和提示。它们集中显示在同一个区块中，**Dismiss** 按钮可以隐藏该区块。
+- 为 LabJack T7 的 `i2c` 或 `spi` Net 选择自定义引脚。该行上的铅笔按钮会打开一个同时编辑 Net 名称和引脚的编辑器。添加该 Net 时也会打开引脚对话框，除非您已经设置过引脚。对话框会显示当前引脚（默认值：I2C SDA=FIO4/SCL=FIO5；SPI CS=FIO0/SCK=FIO1/MOSI=FIO2/MISO=FIO3）。您可以为每个信号选择任意 DIO 引脚，也可以把 CS 设为 none 以使用 3 线 SPI。如果您又选回默认值，该 Net 会恢复默认通道。已被某个已保存 Net 占用的引脚会显示警告
+- 用行上的铅笔按钮重命名新建的 Net
+- 用 **Assign Device** 把自定义串行设备（RS-232 仪器）分配给它们的 USB 线缆 ——
+  这是 [`assign`](#assign) 的交互式版本，包含可选的创建 Net 步骤（`--as-net`）
+- 选中一个已保存的 Net，对它执行 **Rename**、**Edit Details** 或 **Delete**。**Edit Details** 设置 Purpose、Notes 和 Tags，它只改动这三个字段，Net 记录的其余部分保持不变。
+- 用 **Delete All Nets** 删除全部已保存的 Net
+- 键盘导航（按 `q` 或 `Ctrl+C` 退出）
+
+<Note>
+引脚编辑器只适用于 LabJack T7。您在 TUI 中添加的 LabJack U3 `i2c` 或 `spi` Net
+使用默认引脚（SPI `FIO4-FIO7`，I2C `FIO6-FIO7`）。若要使用 U3 的其他引脚，
+请用 `lager nets add` 配合引脚选项。
+</Note>
+
+### `set-script`
+
+为已有的调试 Net 附加一个调试脚本 —— JLinkScript 或 OpenOCD 的 `.cfg`/`.tcl`。
+该文件保存在 Box 上，并在连接、烧录、擦除和复位操作中自动使用。
+
+后端（J-Link 还是 OpenOCD）会根据两个信号自动识别：
+
+1. **探针的 USB VID**，取自该 Net 的 `address` 字段（J-Link → `jlink`；ST-Link、FTDI、CMSIS-DAP 等 → `openocd`）。
+2. **文件本身** —— 先看扩展名（`.JLinkScript` → jlink；`.cfg`/`.tcl`/`.ocd` → openocd），
+   对没有扩展名的文件或 stdin，则以内容嗅探作为判定依据。
+
+如果这两个信号互相矛盾，`set-script` 会以明确的错误拒绝执行，并请您用 `--backend` 指定其一。
+
+一个调试 Net 同一时刻只携带**一个**脚本。如果另一个字段已经设置，
+`set-script` 会清除它，并在 stderr 上打印一条黄色提示，这样就不会有内容悄悄消失。
+
+```bash
+lager nets set-script NAME SCRIPT_PATH [OPTIONS]
+```
+
+**参数：**
+- `NAME` - 调试 Net 的名称
+- `SCRIPT_PATH` - 脚本文件的路径，或用 `-` 从 stdin 读取
+
+**选项：**
+- `--backend [jlink|openocd]` - 强制使用指定后端而不自动识别（当探针与文件矛盾时必填）
+- `--box TEXT` - Lager Box 名称或 IP
+
+**示例：**
+
+```bash
+# Attach a J-Link script to a J-Link net (auto-detected)
+lager nets set-script debug1 ./custom_connect.JLinkScript --box my-lager-box
+
+# Attach an OpenOCD config to an FTDI/ST-Link/CMSIS-DAP net (auto-detected)
+lager nets set-script debug1 ./probe.cfg --box my-lager-box
+
+# Read the script from stdin
+cat probe.cfg | lager nets set-script debug1 - --box my-lager-box
+
+# Force a specific backend when the file or probe is ambiguous
+lager nets set-script debug1 ./generic_script --backend openocd --box my-lager-box
+```
+
+### `remove-script`
+
+移除调试 Net 上附加的调试脚本（J-Link 或 OpenOCD）。
+
+```bash
+lager nets remove-script NAME [OPTIONS]
+```
+
+**参数：**
+- `NAME` - 调试 Net 的名称
+
+**选项：**
+- `--backend [jlink|openocd]` - 只移除指定后端的脚本（默认移除已设置的那一个）
+- `--box TEXT` - Lager Box 名称或 IP
+
+**示例：**
+
+```bash
+# Remove whichever script is attached
+lager nets remove-script debug1 --box my-lager-box
+
+# Only remove the J-Link script (leave any OpenOCD config in place)
+lager nets remove-script debug1 --backend jlink --box my-lager-box
+```
+
+### `show-script`
+
+显示调试 Net 上附加的调试脚本内容。脚本内容写入 stdout，因此 `> out.cfg` 可以正常工作。
+形如 `# OpenOCD config, 1247 bytes` 的一行摘要写入 stderr，
+它告诉您看到的是哪个后端的脚本，并且不会污染重定向的结果。
+
+```bash
+lager nets show-script NAME [OPTIONS]
+```
+
+**参数：**
+- `NAME` - 调试 Net 的名称
+
+**选项：**
+- `--backend [jlink|openocd]` - 只显示指定后端的脚本（默认显示已设置的那一个）
+- `--box TEXT` - Lager Box 名称或 IP
+
+**示例：**
+
+```bash
+# Display the attached script (J-Link or OpenOCD)
+lager nets show-script debug1 --box my-lager-box
+
+# Save to a local file (the stderr banner doesn't end up in the file)
+lager nets show-script debug1 --box my-lager-box > script.txt
+```
+
+### `show`
+
+显示某个已保存 Net 的全部字段，包括用 `describe` 设置的用户元数据
+（`purpose`、`notes`、`tags`）。
+
+```bash
+lager nets show NAME [OPTIONS]
+```
+
+**参数：**
+- `NAME` - Net 名称
+
+**选项：**
+- `--json` - 以原始 JSON 输出
+- `--box TEXT` - Lager Box 名称或 IP
+
+**示例：**
+
+```bash
+lager nets show battery1 --box my-lager-box
+lager nets show battery1 --json --box my-lager-box
+```
+
+### `state`
+
+显示每个已保存 Net 的实时硬件状态。Box 读取每台仪器，并为每个 Net 返回一段简短摘要。
+输出是 `lager nets` 的分组表格，在 `Channel` 之后多出一个 `State` 列。
+
+```bash
+lager nets state [OPTIONS]
+```
+
+**选项：**
+- `--box TEXT` - Lager Box 名称或 IP
+- `--json` - 以原始 JSON 输出
+
+**示例：**
+
+```bash
+lager nets state --box my-lager-box
+lager nets state --json --box my-lager-box
+```
+
+**输出示例：**
+
+```
+    Name      Net Type      Channel       State
+=============================================================
+Acroname 8Port [USB0::0x24FF::0x0013::EBFB0000::INSTR]
+├── usb1      usb           0             –
+└── usb2      usb           1             –
+
+LabJack T7 [USB0::0x0CD5::0x0007::::INSTR]
+├── adc1      adc           AIN0          1.2345V
+└── gpio1     gpio          FIO0          HIGH (1)
+
+Rigol DP811 [USB0::0x1AB1::0x0E11::DP8B123456::INSTR]
+└── supply1   power-supply  1             CH1/on/3.30V/0.120A
+
+SiLabs CP210x [USB0::0x10C4::0xEA60::0001::INSTR]
+└── uart1     uart          /dev/ttyUSB0  –
+
+Nets reporting no state:
+    usb1, usb2: unreadable: <error from the hub driver>
+    -> the hub is not on the USB bus at all -- unplugged, or its upstream port is off.
+```
+
+**状态值：**
+
+| Net 类型 | 状态 | 示例 |
+|---|---|---|
+| `power-supply` | 通道、输出、电压、电流 | `CH1/on/3.30V/0.120A` |
+| `battery` | 通道、输出、端电压、电流、荷电状态 | `CH1/on/3.70V/0.100A/50%` |
+| `usb` | 端口供电 | `enabled`、`disabled` |
+| `gpio` | 电平 | `HIGH (1)`、`LOW (0)` |
+| `adc`、`dac` | 电压 | `1.2345V` |
+| `thermocouple` | 温度 | `25.0°C` |
+| `eload` | 模式、输入、电压、电流 | `<mode>/on/5.00V/1.000A` |
+| `webcam` | 串流 | `stopped`、`streaming <url>` |
+| `watt-meter` | 0.1 秒内的电流、电压、功率 | `0.1200A/3.300V/0.3960W` |
+| `energy-analyzer` | 0.5 秒内的平均电流、电压、功率 | `0.1200A/3.300V/0.3960W` |
+| `arm` | 位置 | `X0.0/Y250.0/Z0.0` |
+| `debug` | GDB 服务器 | `connected/jlink`、`connected/openocd`、`disconnected` |
+| `solar` | 辐照度 | `irr:<value>` |
+| `router` | 运行时长 | `up/<uptime>` |
+| `i2c` | 总线扫描中有响应的地址 | `0x48,0x76`、`no devices` |
+
+没有探测方式的 Net 类型（例如 `uart`、`spi`、`scope` 和 `logic`）显示 `–`。
+
+**Box 如何读取这些 Net：**
+- Box 按仪器把 Net 分组，最多同时读取八台仪器。
+- 所有仪器共用 8 秒的总预算。预算用尽时，每个没有响应的 Net 都报告 `deadline`。
+- Box 逐个读取 USB 集线器。剩余预算不足 1 秒时它不再读取某个集线器，该集线器的 Net 报告 `hub-skipped`。
+- 一次读取会获取与运行中的测试相同的仪器锁，因此该命令可能需要等待某个测试。
+- Box 读取 `i2c` Net 时会做一次完整的总线扫描。
+- 在 LabJack T7 上，一批操作读取全部 `gpio`、`adc` 和 `dac` Net，并且 `gpio` 读取不会改变引脚方向。
+- 在 LabJack U3 上，`gpio` 或 `adc` 读取会把引脚设为数字或模拟模式。U3 的 `dac` Net 在 Box 设置过值之前显示 `–`。
+
+**没有报告状态的 Net：**
+
+在表格下方，命令会解释每一个有原因的 `–`，并按原因把 Net 分组。
+没有探测方式的 Net 类型属于正常情况，因此脚注不会列出它们。
+
+| 原因 | 含义 |
+|---|---|
+| `deadline` | 共用预算在该仪器响应之前用尽了。仅凭这一点并不说明该仪器慢。 |
+| `unreadable: <detail>` | Box 尝试读取该仪器但没有取到值。detail 中给出错误。 |
+
+`usb` Net 还可能带有一个代码。当同一组中所有 Net 的代码相同时，脚注会多加一行补救建议：
+
+| 代码 | 补救建议 |
+|---|---|
+| `hub-unreachable` | 集线器在 USB 总线上但不响应。请检查它的供电和上游线缆。重启 Box 服务没有帮助。 |
+| `hub-absent` | 集线器不在 USB 总线上。它被拔掉了，或者它的上游端口已断电。 |
+| `hub-serial-mismatch` | 总线上有集线器，但没有一个的序列号与该 Net 指定的相符。请检查该 Net 的地址。 |
+| `hub-skipped` | Box 没有读取该集线器，因为较慢的仪器先用掉了预算。该集线器可能是正常的，单独读取它就会有响应。 |
+| `hub-open-failed` | 没有补救建议。原因中已给出该失败。 |
+
+**JSON 输出：**
+
+`--json` 打印一个数组，每个已保存的 Net 对应一个对象。
+每个对象包含该 Net 的全部已存字段，外加以下字段：
+
+| 字段 | 说明 |
+|---|---|
+| `live_state` | 状态字符串，或 `null` |
+| `live_state_reason` | 状态为 `null` 的原因，包括 `no probe for role`。只有当 Box 发来原因时才存在。 |
+| `live_state_reason_code` | `usb` Net 的代码。只有当 Box 发来代码时才存在。 |
+
+没有这个端点的 Box 会打印一条提示，让您更新它。表格仍然会打印，只是每个 `State`
+单元格都是 `–`。
+
+### `describe`
+
+为已保存的 Net 设置元数据，让 AI 智能体（以及人）理解该 Net 在被测设备上的作用。
+自 **lager 0.24.0** 引入；这些字段通过
+[MCP 服务器](/source/reference/mcp/overview)用于智能体辅助测试。
+`--purpose`、`--notes` 或 `--tag`（或 `--clear-tags`）中至少要提供一个。
+0.46.0 及以上版本的 Lager Box 会通过 HTTP 提供这些字段，
+因此已接入的控制平面可以同步它们。
+
+```bash
+lager nets describe NAME [OPTIONS]
+```
+
+**参数：**
+- `NAME` - Net 名称
+
+**选项：**
+- `-p`, `--purpose TEXT` - 一句话：该 Net 在被测设备上做什么
+- `-n`, `--notes TEXT` - 可选备注（注意事项、跳线位置、示波器探测点）
+- `-t`, `--tag TEXT` - 用于分类/匹配的标签（可重复）
+- `--clear-tags` - 在添加新标签之前移除全部已有标签
+- `--box TEXT` - Lager Box 名称或 IP
+
+**示例：**
+
+```bash
+# Describe a net's purpose and add tags
+lager nets describe battery1 \
+  --purpose "Main battery rail powering the MCU" \
+  --tag power --tag critical \
+  --box my-lager-box
+
+# Replace the existing tags
+lager nets describe battery1 --clear-tags --tag power --box my-lager-box
+
+# View what was set
+lager nets show battery1 --box my-lager-box
+```
+
+## Net 类型参考
+
+| Net 类型 | 说明 | 典型仪器 |
+|----------|-------------|---------------------|
+| `power-supply`（别名 `supply`） | 电源输出 | Rigol DP800、Rigol DP711（通过 [`assign`](#assign)）、Keithley 2200/2280、Keysight E36200 |
+| `battery`（别名 `batt`） | 电池模拟器 | Keithley 2281S |
+| `solar` | 太阳能模拟器 | EA PSI/EL 系列 |
+| `eload` | 电子负载 | Rigol DL3021 |
+| `debug` | 调试探针 | J-Link、CMSIS-DAP、ST-Link |
+| `adc` | 模拟输入 | LabJack T7、LabJack U3 |
+| `dac` | 模拟输出 | LabJack T7、LabJack U3 |
+| `gpio` | 数字 I/O | LabJack T7、LabJack U3（`FIO4` 及以上）、MCC USB-202 |
+| `i2c` | I2C 总线 | LabJack T7、LabJack U3、Aardvark、FTDI FT232H |
+| `spi` | SPI 总线 | LabJack T7、LabJack U3、Aardvark、FTDI FT232H |
+| `scope` | 示波器 | Rigol MSO5000、PicoScope |
+| `logic` | 逻辑分析仪通道 | Rigol MSO5204 |
+| `uart` | 串口 | Prolific USB、SiLabs CP210x |
+| `usb` | USB 端口控制 | Acroname 集线器、YKUSH、Plugable 扩展坞 |
+| `webcam` | 视频采集 | Logitech BRIO |
+| `arm` | 机械臂 | Rotrics Dexarm |
+| `watt-meter` | 功率测量 | Yocto Watt |
+| `thermocouple` | 温度传感器 | Phidget 热电偶 |
+
+## 调试脚本工作流程
+
+J-Link 和 OpenOCD 调试探针都可以携带一份自定义脚本，
+用于处理复位序列、时钟初始化、板级信号引脚分配，或其他设备专有行为。
+Lager 为每个调试 Net 保存一个脚本 —— 要么是 JLinkScript，要么是 OpenOCD 的
+`.cfg`/`.tcl`，绝不会两个都有。它在连接、烧录、擦除和复位操作中自动应用该脚本。
+
+```bash
+# Attach a J-Link script to a J-Link probe (auto-detected from .JLinkScript extension)
+lager nets set-script debug1 ./my_device.JLinkScript --box my-lager-box
+
+# Attach an OpenOCD config to an FTDI / ST-Link / CMSIS-DAP probe (auto-detected)
+lager nets set-script debug1 ./probe.cfg --box my-lager-box
+
+# Verify what's attached (stderr says which backend, stdout has the content)
+lager nets show-script debug1 --box my-lager-box
+
+# Scripts are used automatically for all debug operations:
+lager debug debug1 flash --hex firmware.hex --box my-lager-box
+lager debug debug1 gdbserver --box my-lager-box
+
+# Remove the script when no longer needed
+lager nets remove-script debug1 --box my-lager-box
+```
+
+您也可以在创建 Net 时就附加脚本：
+
+```bash
+lager nets add debug1 debug STM32F407VG USB::001::002 \
+  --jlink-script ./my_device.JLinkScript --box my-lager-box
+
+lager nets add debug2 debug d2763 USB::003::004 \
+  --openocd-config ./probe.cfg --box my-lager-box
+```
+
+您还可以在本地 `.lager` 配置文件中按项目配置 J-Link 脚本：
+
+```json
+{
+  "DEBUG": {
+    "debug1": "./scripts/my_device.JLinkScript"
+  }
+}
+```
+
+当 Net 级脚本（通过 `set-script`）和项目级脚本（通过 `.lager` 配置）同时存在时，
+项目级脚本优先。
+
+## 示例
+
+```bash
+# List all nets
+lager nets --box my-lager-box
+
+# Create a new power supply net
+lager nets add vdd_main power-supply 1 TCPIP::192.168.1.100::INSTR --box my-lager-box
+
+# Create I2C and SPI bus nets
+lager nets add i2c_sensors i2c FIO4-FIO5 USB0::0x0CD5::0x0007::::INSTR --box my-lager-box
+lager nets add spi_flash spi SPI0 USB0::0x0403::0xE0D0::2238595116::INSTR --box my-lager-box
+
+# Show the live state of every net
+lager nets state --box my-lager-box
+
+# Auto-create all available nets
+lager nets add-all --box my-lager-box --yes
+
+# Delete a specific net
+lager nets delete old_supply supply --box my-lager-box --yes
+
+# Rename a net
+lager nets rename supply1 main_power --box my-lager-box
+
+# Launch interactive manager
+lager nets tui --box my-lager-box
+
+# Bulk create from JSON file
+lager nets add-batch testbed-nets.json --box my-lager-box
+
+# Manage debug-probe scripts (J-Link or OpenOCD, auto-detected)
+lager nets set-script debug1 ./custom_init.JLinkScript --box my-lager-box
+lager nets set-script debug2 ./probe.cfg --box my-lager-box
+lager nets show-script debug1 --box my-lager-box
+lager nets remove-script debug1 --box my-lager-box
+```
+
+## 说明
+
+- Net 名称在所有类型中全局唯一
+- 用 `lager instruments --box <lager-box>` 查看可用的仪器和通道
+- 第一次配置 Net 时，TUI 是最省事的方式
+- 用 `add-all` 可以快速为一台新的 Lager Box 配置合理的默认值
+- LabJack T7、LabJack U3、Aardvark 和 FTDI FT232H 适配器都支持 I2C 和 SPI Net
+- 调试脚本（J-Link 和 OpenOCD 两者）以 base64 编码保存，并在调试操作期间自动解码
+- 一个调试 Net 最多携带一个脚本（`jlink_script` 或 `openocd_config`）；`set-script` 通过在另一个字段已存在时清除它来保证这一点
