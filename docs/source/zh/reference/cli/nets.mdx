@@ -99,6 +99,7 @@ lager nets add NAME ROLE CHANNEL ADDRESS [OPTIONS]
 - `--openocd-config FILE` - 调试 Net 的 OpenOCD `.cfg`/`.tcl` 文件（保存在 Box 上）
 - `--sda PIN` / `--scl PIN` - `i2c` Net 的自定义 LabJack 引脚
 - `--cs PIN` / `--sck PIN` / `--mosi PIN` / `--miso PIN` - `spi` Net 的自定义 LabJack 引脚
+- `--interface A|B|C|D` - FT2232H 或 FT4232H 上 `gpio`、`i2c` 或 `spi` Net 的 FTDI 通道。默认是 `A`。请参阅下面的**多通道 FTDI 调试适配器**。
 
 引脚值接受 LabJack 的 DIO 名称或原始 DIO 编号。两个 LabJack 系列接受的引脚不同：
 
@@ -271,17 +272,22 @@ lager nets add debug_b debug NRF52840_XXAA@B USB0::0x0403::0x6010::ABCDEF::INSTR
 
 等价写法：`@A`/`@0`、`@B`/`@1`、`@C`/`@2`、`@D`/`@3`。没有 `@` 后缀的设备默认使用 OpenOCD 接口配置所选的接口（通常是通道 A）。
 
-**GPIO、I2C 和 SPI Net** 把通道写在 Net 记录的 `params.interface` 中，接受与 `@` 后缀相同的写法：`A`-`D` 或 `0`-`3`。没有 `interface` 的 Net 使用通道 A —— 在单通道的 FT232H 上这也是唯一的选择。
+**GPIO、I2C 和 SPI Net** 在添加 Net 时通过 `--interface` 指定通道：
 
-Lager 是按 Net 而不是按仪器来校验哪些通道合法的。如果您为 `i2c` 或 `spi` Net
-指定 C 或 D，Net 构造会失败并指出该通道。这个失败不是从 pyftdi 内部某处冒出来的。
-`gpio` Net 可以使用该芯片具备的任意通道。
+```bash
+# I2C on channel B of an FT4232H
+lager nets add sensors i2c I2C0 USB0::0x0403::0x6011::ABCDEF::INSTR --interface B
+# A reset line on channel C, which has no MPSSE engine
+lager nets add reset_line gpio 5 USB0::0x0403::0x6011::ABCDEF::INSTR --interface C
+```
 
-在 v0.43.0 之前，这三个驱动都把接口硬编码为 A。因此，把通信接到一个通道、把控制线接到另一个通道的板子根本无法驱动。
+`lager nets add` 会把该通道作为 `params.interface` 存进 Net 记录。没有 interface 的 Net 使用通道 A，那也是 FT232H 唯一的通道。Net 管理器 TUI 不会询问通道，因此它添加的这类 Net 都在通道 A 上。
+
+`lager nets add` 会拒绝该芯片在这种 Net 类型上不具备的通道，并指出哪些通道可用。`i2c` 或 `spi` Net 不能使用通道 C 或 D，因为这两个通道没有 MPSSE 引擎。`gpio` Net 可以使用该芯片具备的任意通道。对于您手工编辑的 Net 记录，Box 侧的驱动适用同样的规则，并且同样接受 `A`-`D` 或 `0`-`3`。
 
 **UART Net** 按 tty 路径区分通道。USB 扫描器会枚举绑定到该芯片 USB 序列号的每一个 `/dev/ttyUSB<N>`。每一个都会作为独立的可添加项出现，因此在 FT4232H 上您最多会看到四个 UART 选项。
 
-**规则：** 调试 Net 按 `(仪器, 地址, 通道后缀)` 唯一。因此单颗 FT2232H 可以承载：
+**规则：** 通道是 Net 身份的一部分。调试 Net 按 `(仪器, 地址, 通道后缀)` 唯一，`gpio`、`i2c` 和 `spi` Net 按 `(角色, 仪器, 引脚, 地址, interface)` 唯一。因此单颗 FT2232H 可以承载：
 - `@A` 上的一个 `debug` Net
 - `@B` 上的一个 `debug` Net
 - 一个 `uart` Net，位于您没有用于 MPSSE 的那些通道所对应的某个 `/dev/ttyUSB<N>` 上
@@ -862,8 +868,8 @@ lager nets show battery1 --box my-lager-box
 | `adc` | 模拟输入 | LabJack T7、LabJack U3 |
 | `dac` | 模拟输出 | LabJack T7、LabJack U3 |
 | `gpio` | 数字 I/O | LabJack T7、LabJack U3（`FIO4` 及以上）、MCC USB-202 |
-| `i2c` | I2C 总线 | LabJack T7、LabJack U3、Aardvark、FTDI FT232H |
-| `spi` | SPI 总线 | LabJack T7、LabJack U3、Aardvark、FTDI FT232H |
+| `i2c` | I2C 总线 | LabJack T7、LabJack U3、Aardvark、FTDI FT232H / FT2232H / FT4232H |
+| `spi` | SPI 总线 | LabJack T7、LabJack U3、Aardvark、FTDI FT232H / FT2232H / FT4232H |
 | `scope` | 示波器 | Rigol MSO5000、PicoScope |
 | `logic` | 逻辑分析仪通道 | Rigol MSO5204 |
 | `uart` | 串口 | Prolific USB、SiLabs CP210x |

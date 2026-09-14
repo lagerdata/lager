@@ -220,7 +220,7 @@ Lager 支持业界标准的 ARM 调试探针，全部通过同一条 `lager debu
 **说明：**
 - 对上表中的芯片，基于 OpenOCD 的探针会根据 USB VID/PID 自动选择接口配置。
   FT4232H 受支持，但没有安全的默认值，因为四路 MPSSE 的板子接线变体太多。您必须传入一个指向适合您板子的接口 cfg 的 `openocd_config`。同样的方式也适用于接线非标准的 FT232H/FT2232H，以及表中没有的任何探针（例如 Black Magic Probe、Glasgow Interface Explorer）。
-- 多通道 FTDI（FT2232H、FT4232H）把每个 MPSSE 通道作为独立的调试 Net 提供。通道以 `@A`/`@B`/`@C`/`@D` 后缀写在设备字段上，因此单颗芯片可以独立驱动多个目标。FT4232H 上的 C 和 D 通道只能用于 UART。通道后缀的写法请参阅 [nets 参考](/source/zh/reference/cli/nets)。
+- 多通道 FTDI（FT2232H、FT4232H）把每个 MPSSE 通道作为独立的调试 Net 提供。通道以 `@A`/`@B`/`@C`/`@D` 后缀写在设备字段上，因此单颗芯片可以独立驱动多个目标。FT4232H 上的 C 和 D 通道没有 MPSSE 引擎。它们可以承载 `gpio` 和 `uart` Net，但不能承载 `debug`、`i2c` 或 `spi` Net。`gpio`、`i2c` 和 `spi` Net 的通道请用 `lager nets add --interface` 指定。通道后缀的写法请参阅 [nets 参考](/source/zh/reference/cli/nets)。
 - 对 STM32、nRF5x、RP2040/RP2350、ATSAM、LPC、i.MX RT 和 ESP32 系列，
   Lager 会根据设备名称选择目标芯片配置。其他芯片则由自定义的 OpenOCD 目标配置驱动。
 
