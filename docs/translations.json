@@ -39,7 +39,7 @@
     "reference/cli/logic.mdx": "4a9a0f1dc92e88795123f6c45311bbc517b5e956b565542ed7a5060af3c08f46",
     "reference/cli/login.mdx": "fe2294463b4bfe199d71d51bc4d8ab4540d020054847ca1aac9e353cb694a78d",
     "reference/cli/logs.mdx": "5d60d49c01a0d150f6ff15841a2e80c3f8cba1044e66e0c799007cf82a41988a",
-    "reference/cli/nets.mdx": "36b35016347f914c51d3ab7dd22ce44983c1c825294f4d707155c3c157e8ec7a",
+    "reference/cli/nets.mdx": "0dda35024274cd559c5a983306fb6b5ed8ed91a2ff71301d99042b1a420ea1ce",
     "reference/cli/overview.mdx": "de08fe2fb34fc1da85e3239b098acfcfea7f4ac3960808c035d0f518da0c623b",
     "reference/cli/python.mdx": "06e82ea38c1847f474ad1bea44e73f45254ab49ee1ba2616a5bcda2893b611ae",
     "reference/cli/router.mdx": "a755022b1164c8ed5406aa156be80ba132384a82d6a29b581673a21d95aebb98",
@@ -69,8 +69,8 @@
     "reference/python/debug.mdx": "1bb1c2468470edc11dfc38812a613323dd465805b4a1b1eacc36493da304b62b",
     "reference/python/eload.mdx": "4c0bd06eee075fff0c152be2aa90fb06568301ae8cda5cdbcc8000c5ba8be018",
     "reference/python/energy.mdx": "4a270f9d7d3eddad12850cb6836cf3d565ba958e33a72749fde9fdd68bfd008d",
-    "reference/python/gpio.mdx": "293128fbb625c5af1e29f80a15b5b40d4ea007a4c2800f612a46f7d55c5cc328",
-    "reference/python/i2c.mdx": "fd62aa601c3581430a343978f57b257c4bac7a708508158807e74b387cffc034",
+    "reference/python/gpio.mdx": "a2baecec753a08cbec03ebdbdb587a27ad3eacadb4a8256a003d5525ce94c005",
+    "reference/python/i2c.mdx": "103be76823a61d4e95491c6083c0cfebcb533d374e163366a2ee89d664f9cbc4",
     "reference/python/logic.mdx": "61c872e8ff01a4ff82d90b89368d37fa6fb25e8c7ae317c3e17629d5d6623fac",
     "reference/python/net.mdx": "0842362d719923c81b0ebe6f045b0bf7ba3966e702d0b3f5dfd32c1c59a5e89c",
     "reference/python/overview.mdx": "bd3b68d23f3588c84f6608be4c433ad26e81553827ab2da1fcfe67ff4ce48c8c",
@@ -78,7 +78,7 @@
     "reference/python/scope.mdx": "abc136ec1c35dd997d5b7acca8bb82bdf0ac4169ee2b1fd2c7ccfec5dcdae171",
     "reference/python/serial.mdx": "0eb4559ccfaa708d402f452ccc696598cba79f1597d6a0c33824a267a4264d8b",
     "reference/python/solar.mdx": "de1e0ca610a0674e16eb7a0accb599ab45f4c41f106a262c7bced34915753ea5",
-    "reference/python/spi.mdx": "aa6208ae2a1eeacf19bfb96c1895db4accda5547a1549ac8293ec336af8ef75a",
+    "reference/python/spi.mdx": "6d2cc368a00ed6e78a10cf4c75c6372fc9adde6ec43a91e5a8b51c7bc00a7d92",
     "reference/python/supply.mdx": "49b71ebde57fb69daedd9404d0fc172d22b9052faa9e84952fb2cd390b7de8a9",
     "reference/python/tc.mdx": "9f6fafcbcac95d0cd42fd3faa82f0550f2de67fe6a0ecbdcda92ff9fcd1c07f7",
     "reference/python/uart.mdx": "dd26403184abfb6c318e2958efc74944fbfb280f04900596076aa430d5d1af26",
@@ -117,6 +117,6 @@
     "reference/rust/watt.mdx": "e16f8048a2fcfa6d65d6b58eb45d31b86c2aa5e0c2692f15ac28e4083b6b2afe",
     "reference/rust/webcam.mdx": "8ef2484aca45078416171dbbf1955ab0c840d0fb3837b52e59248ffcd100d1c8",
     "reference/rust/wifi.mdx": "6f514c7840ad84150c90e0674c7a785cdc161b32e851701856da2f1cdc67701b",
-    "supported-instruments/supported-instruments.mdx": "7d5eb71d92e077a73f5c1cc123f9ded17add96247527f2eeb623daf0ea9beb97"
+    "supported-instruments/supported-instruments.mdx": "2129e3f99565c5209f073309c326254b0aa1d2783245c117190d656dc70fc093"
   }
 }

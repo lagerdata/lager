@@ -244,7 +244,7 @@ for i in range(10):
 
 ### 多通道 FTDI 适配器
 
-FTDI Net 从该 Net 记录的 `params.interface` 取得通道，可以是 `A`-`D` 或 `0`-`3`。没有 `interface` 的 Net 使用通道 A —— 在单通道的 FT232H 上这也是唯一的选择。
+FTDI Net 从该 Net 记录的 `params.interface` 取得通道，可以是 `A`-`D` 或 `0`-`3`。请用 `lager nets add --interface` 设置它。没有 `interface` 的 Net 使用通道 A，在单通道的 FT232H 上这也是唯一的选择。
 
 | 型号 | 通道 | 可用于 GPIO |
 |---|---|---|

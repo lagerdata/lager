@@ -24,19 +24,29 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   navbar and serves each language as its own set of pages; a language shows only
   the pages translated for it, so an untranslated page is absent rather than a
   404. Translated pages live under `docs/source/zh/`, mirroring the English
-  filenames. Translated so far: all ten Getting Started pages, all 47 CLI
-  reference pages, both MCP pages, Supported Instruments, and 21 of the 27
-  Python API pages. `tools/check_ste.py`
-  exempts that directory: STYLE.md is a style for English sentences, and none of
-  its rules has a meaning in Mandarin.
+  filenames. All 118 publishable pages are translated: the ten Getting Started
+  pages, all 47 CLI reference pages, both MCP pages, Supported Instruments, and
+  the full Python API and Rust API references. Release notes are excluded on
+  purpose, because a dated record's value is that it still says what it said.
+  `tools/check_ste.py` exempts the directory: STYLE.md is a style for English
+  sentences, and none of its rules has a meaning in Mandarin.
 
 - **`tools/check_translations.py` holds each translation to the English page it
-  was made from.** `docs/translations.json` records the SHA-256 of that page as
-  it read at translation time, and a mismatch fails the build. A stale
-  translation is invisible to every other gate: the English page gains a flag,
-  the translated page keeps the old one, and it still builds, still links, still
-  renders. `--progress` reports coverage; `--record` stamps a page after you
-  update it.
+  was made from, and to that page's shape.** `docs/translations.json` records the
+  SHA-256 of the English page as it read at translation time, and a mismatch
+  fails the build -- a stale translation is invisible to every other gate, since
+  the English page gains a flag while the translated page keeps the old one and
+  it still builds, still links, still renders. `--completeness` covers the other
+  half: a translation that arrived *incomplete* leaves the hash matching, so it
+  compares structure instead -- list items, headings, fenced blocks and table
+  rows, which mean the same thing in both languages where prose length does not.
+  Seven pages had silently dropped content, including a whole `## See Also`
+  section. It also reports a file that leaves a code fence open, which is how a
+  stray fence at the end of the English `cli/watt.mdx` turned up. `--reflow`
+  joins line breaks inside Chinese paragraphs, which render as a stray space
+  because Chinese has no space between characters; 882 had accumulated by habit.
+  `--progress` reports coverage, `--relink` points cross-references at the right
+  language, and `--record` stamps a page after you update it.
 
 - **`docs/TRANSLATION.md` is the terminology contract between languages.** It
   fixes what stays in English (commands, flags, net names, error strings, and

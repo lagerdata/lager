@@ -291,7 +291,7 @@ print(f"Status: 0x{status[0]:04x}")
 
 ### 多通道 FTDI 适配器
 
-FTDI Net 从 Net 记录的 `params.interface` 取得通道，接受 `A`-`D` 或 `0`-`3`。没有 `interface` 的 Net 使用通道 A —— 在单通道的 FT232H 上这也是唯一的选择。
+FTDI Net 从 Net 记录的 `params.interface` 取得通道，接受 `A`-`D` 或 `0`-`3`。请用 `lager nets add --interface` 设置它。没有 `interface` 的 Net 使用通道 A，在单通道的 FT232H 上这也是唯一的选择。
 
 | 型号 | 通道 | 可用于 SPI |
 |---|---|---|
@@ -299,7 +299,7 @@ FTDI Net 从 Net 记录的 `params.interface` 取得通道，接受 `A`-`D` 或 
 | FT2232H | 2（A、B） | A、B |
 | FT4232H | 4（A-D） | A、B |
 
-SPI 运行在 FTDI 芯片的 MPSSE 引擎上，而在 FT4232H 上只有通道 A 和 B 带有 MPSSE 引擎。请求 C 或 D 会在 Net 构建时失败并指出该通道，而不是在 pyftdi 内部某处失败。
+SPI 运行在 FTDI 芯片的 MPSSE 引擎上，而在 FT4232H 上只有通道 A 和 B 带有 MPSSE 引擎。对于 SPI Net，`lager nets add` 会拒绝 C 和 D。手工改成 C 或 D 的 Net 记录会在该 Net 打开时失败，错误信息会指出该通道。
 
 一块芯片上各类 Net 如何分配通道，请参阅 [Nets](/source/zh/reference/cli/nets)。
 
