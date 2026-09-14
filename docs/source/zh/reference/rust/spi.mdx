@@ -3,7 +3,7 @@ title: SPI
 description: 配置 SPI 总线并执行全双工传输
 ---
 
-从 Box 向 SPI 外设时钟进出数据，可以完全控制模式、位序、字长和片选。
+在 Box 与 SPI 外设之间移入、移出数据，可以完全控制模式、位序、字长和片选。
 
 ## 句柄
 
@@ -20,8 +20,8 @@ let spi = lager.spi("spi1");
 |--------|-------------|
 | `name()` | 该句柄所指向的 Net 名称 |
 | `configure()` | 应用总线覆盖设置，并返回实际生效的配置 |
-| `read()` | 时钟进若干个字，同时时钟出填充字 |
-| `write()` | 时钟出若干个字；同时时钟进的字会一并返回 |
+| `read()` | 移入若干个字，同时移出填充字 |
+| `write()` | 移出若干个字；同时移入的字会一并返回 |
 | `read_write()` | 恰好按给定的字进行全双工传输 |
 | `transfer()` | 按字数传输，对数据做补齐或截断 |
 
@@ -86,11 +86,11 @@ let cfg = spi.configure(&SpiConfig {
 
 ### `read(n_words: u32, opts: &SpiOptions) -> Result<SpiTransfer>`
 
-时钟进 `n_words` 个字，每个字对应时钟出一个 `opts.fill`。
+移入 `n_words` 个字，每个字对应移出一个 `opts.fill`。
 
 ### `write(data: &[u32], opts: &SpiOptions) -> Result<SpiTransfer>`
 
-恰好时钟出 `data`。SPI 是全双工的，因此同一次事务中时钟进的字会在结果里返回 —— 一次写入同时也是一次读取。
+恰好移出 `data`。SPI 是全双工的，因此同一次事务中移入的字会在结果里返回 —— 一次写入同时也是一次读取。
 
 ### `read_write(data: &[u32], opts: &SpiOptions) -> Result<SpiTransfer>`
 
@@ -146,7 +146,7 @@ let data = spi.read(256, &SpiOptions::default())?; // releases CS at the end
 
 ## 说明
 
-- `opts.fill` 只会在 `read()` 和 `transfer()` 时发送。`write()` 和 `read_write()` 恰好时钟出给定的数据，因此填充字对它们没有意义。
+- `opts.fill` 只会在 `read()` 和 `transfer()` 时发送。`write()` 和 `read_write()` 恰好移出给定的数据，因此填充字对它们没有意义。
 - 每一次传输都会返回 `word_size`，因为配置为 16 位字的总线返回的是每字一项，而不是每字节一项。
 - 事务在 Box 上、在该设备的锁之下运行，因此一次多字传输不会被同一设备上的另一个请求打断。
 - `configure()` 会跨测试持久化。请把您所依赖的设置显式设好，而不是想当然。

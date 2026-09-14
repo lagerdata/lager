@@ -3,7 +3,7 @@ title: 认证
 description: 在受认证网关保护的 Box 上使用 Rust crate
 ---
 
-普通的（不受网关保护的）Box 完全用不上这些：不会发送任何请求头，这里的代码也不会运行。本页面适用于在 Box 前面放置了认证反向代理（即*网关*）的部署方式。网关会用 401 和一个 `X-Gateway-Auth-Url` 请求头拒绝未认证的流量。这与 Lager CLI 遵循的是同一套约定。
+普通的（不受网关保护的）Box 完全用不上这些：不会发送任何请求头，这里的代码也不会运行。本页面适用于在 Box 前面放置了认证反向代理（即*网关*）的部署方式。网关会用 401 和一个 `X-Gateway-Auth-Url` 响应头拒绝未认证的流量。这与 Lager CLI 遵循的是同一套约定。
 
 该 crate 以两种模式透明地处理受网关保护的 Box。
 
@@ -14,7 +14,7 @@ description: 在受认证网关保护的 Box 上使用 Rust crate
 - 读取 CLI 的令牌存储（`~/.lager_gateway_auth`，可用 `LAGER_GATEWAY_AUTH_FILE` 覆盖）。
 - 给每一个请求加上 `Authorization: Bearer` —— 调试服务的流量和 UART 的 Socket.IO 握手也包括在内。
 - 透明地刷新过期的访问令牌。
-- 首次接触时，从网关的发现请求头中获知是哪台认证服务器守在这台 Box 前面，并在同一次调用之内重试那个被拒绝的请求。
+- 首次接触时，从网关的发现响应头中获知是哪台认证服务器守在这台 Box 前面，并在同一次调用之内重试那个被拒绝的请求。
 
 不需要改代码 —— `LagerBox::from_env()` 直接就能用：
 
@@ -60,7 +60,7 @@ env:
 | `LAGER_GATEWAY_TOKEN` | 每个请求都使用的固定 bearer 令牌（CI 用）。 |
 | `LAGER_GATEWAY_AUTH_FILE` | 覆盖 CLI 令牌存储的路径（默认 `~/.lager_gateway_auth`）。 |
 
-完整的客户端/网关约定（发现请求头、认证服务器端点、存储结构、重试语义）规定在主仓库的 [`docs/reference/gateway-auth-contract.md`](https://github.com/lagerdata/lager/blob/main/docs/reference/gateway-auth-contract.md) 中。
+完整的客户端/网关约定（发现响应头、认证服务器端点、存储结构、重试语义）规定在主仓库的 [`docs/reference/gateway-auth-contract.md`](https://github.com/lagerdata/lager/blob/main/docs/reference/gateway-auth-contract.md) 中。
 
 ## 凭据的优先级
 
@@ -94,16 +94,16 @@ env:
 
 ## 发现机制如何工作
 
-受网关保护的 Box 会用一个拒绝状态码，外加一个指明其认证服务器的 `X-Gateway-Auth-Url` 请求头，来回应未认证的流量。
+受网关保护的 Box 会用一个拒绝状态码，外加一个指明其认证服务器的 `X-Gateway-Auth-Url` 响应头，来回应未认证的流量。
 
-1. 首次接触时，该 crate 从那个请求头中获知 Box 到认证服务器的映射，并把它记录在 `boxes` 之下。
+1. 首次接触时，该 crate 从那个响应头中获知 Box 到认证服务器的映射，并把它记录在 `boxes` 之下。
 2. 它解析出一个凭据，把该请求重试**一次**，此后便主动带上令牌。一台已知受网关保护的 Box，在下一次运行的第一个请求上就会带上请求头。
 3. 过期的访问令牌会向 `POST <auth_url>/api/auth/refresh` 刷新，并重放已保存的 cookie。响应中轮换过的 cookie 会被合并回来。
 
 过期时间取自 JWT 的 `exp` 声明，只解码而**不**做校验，并留有 60 秒的刷新余量。不透明的非 JWT 令牌会被读成已经过期，因此该 crate 会尝试刷新。当该 crate 没有刷新令牌时，它仍会把原来的令牌原样发出。
 
 <Note>
-  **没有** `X-Gateway-Auth-Url` 请求头的普通 401 不会被当作网关拒绝。它会以普通的 `Error::Box { status: 401, .. }` 呈现，因为它来自应用本身而不是网关。
+  **没有** `X-Gateway-Auth-Url` 响应头的普通 401 不会被当作网关拒绝。它会以普通的 `Error::Box { status: 401, .. }` 呈现，因为它来自应用本身而不是网关。
 </Note>
 
 ## 令牌会被加到哪里

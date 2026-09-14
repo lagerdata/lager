@@ -140,7 +140,7 @@ https://docs.google.com/document/d/<DOC_ID>/export?format=pdf
 
 写好之后，这份上下文会驱动整个智能体循环：
 
-1. 智能体读取 `lager://dut/overview.md`，得知：*"这是一台电源回归测试台，
+1. 智能体读取 `lager://dut/overview.md`，得知：*"这是一台电源回归实验台，
    STM32H7，包含闪存和电源树子系统，原理图在 `docs/sch.pdf`。"*
 2. `plan_firmware_test("flash driver", "exercise QSPI")` 返回的计划已经限定在闪存子系统上，并附有指向原理图第 3 页的指引。
 3. `cite_schematic("flash_cs")` 只返回该 Net 的引用：
