@@ -29,9 +29,8 @@
 # was measured against these versions, and a floating builder turning this
 # red with no repo change is the exact failure mode the pins exist to stop.
 
-# Display name only -- the `packaging` JOB name below is intended to become
-# a required context in the main branch ruleset once it has soaked; never
-# rename it.
+# Display name only -- the `packaging` JOB name below is a required context
+# in the main branch ruleset; never rename it.
 name: "PR Gate: Packaging"
 
 on:

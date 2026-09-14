@@ -3,7 +3,7 @@
 #
 # Runtime dependencies required to IMPORT the code under test so the
 # non-hardware unit suites can run headless on a GitHub-hosted runner:
-#   test/unit/cli/  test/unit/measurement/  test/unit/blufi/  test/mcp/unit/
+#   test/unit/cli/  test/unit/box/  test/unit/measurement/  test/unit/blufi/  test/mcp/unit/
 #   test/unit/test_*.py  test/test_*.py
 #
 # Hardware SDKs (joulescope, ppk2_api, yoctopuce, labjack-ljm, brainstem,
