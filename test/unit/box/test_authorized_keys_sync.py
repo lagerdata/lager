@@ -224,6 +224,64 @@ def test_another_managers_block_is_left_alone(box):
     assert KEY_A in box.keys()
 
 
+def test_another_managers_block_keeps_keys_we_also_publish(box):
+    """The case the test above cannot reach, and the one that actually bit.
+
+    A peer publishing from this same key directory has every one of our staged
+    keys inside its region. Adoption across the whole file therefore emptied
+    that region on every pass — and the peer, following the same rule, emptied
+    ours right back, so the two rewrote the file against each other forever.
+    Adoption has to stop at another manager's marked block.
+    """
+    foreign = "\n".join([
+        "# BEGIN OTHER MANAGED KEYS",
+        KEY_A,
+        "# END OTHER MANAGED KEYS",
+    ])
+    box.seed(foreign + "\n")
+    box.stage("a", KEY_A)
+    box.sync(passes=3)
+
+    assert foreign in box.auth_keys.read_text(), \
+        "a key we publish was deleted out of another manager's block"
+
+
+def test_another_managers_block_survives_a_loose_duplicate_being_adopted(box):
+    """Adoption still applies everywhere else in the file.
+
+    Stopping at a peer's block must not turn into "stop adopting": a loose
+    copy outside every block is still dropped, or revoking the key would leave
+    it behind.
+    """
+    foreign = "\n".join([
+        "# BEGIN OTHER MANAGED KEYS",
+        KEY_A,
+        "# END OTHER MANAGED KEYS",
+    ])
+    box.seed(KEY_A + "\n" + foreign + "\n")
+    box.stage("a", KEY_A)
+    box.sync()
+
+    text = box.auth_keys.read_text()
+    assert foreign in text, "the peer's block was modified"
+    # One inside the peer's block, one inside ours — the loose copy is gone.
+    assert box.keys().count(KEY_A) == 2
+
+
+def test_unterminated_foreign_block_preserves_the_rest_of_the_file(box):
+    """A truncated or hand-edited file must not lose keys.
+
+    With no END to close it, everything after the marker is treated as the
+    peer's and preserved — keeping keys is the safe direction here.
+    """
+    box.seed("\n".join(["# BEGIN OTHER MANAGED KEYS", KEY_A, KEY_USER]) + "\n")
+    box.stage("a", KEY_A)
+    box.sync()
+
+    assert KEY_USER in box.keys()
+    assert KEY_A in box.keys()
+
+
 def test_authorized_keys_is_not_world_readable(box):
     box.stage("a", KEY_A)
     box.sync()
