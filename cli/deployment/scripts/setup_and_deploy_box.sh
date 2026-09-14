@@ -1870,6 +1870,7 @@ else
     echo "  Enable it by hand: ssh ${BOX_USER}@${BOX_IP} 'sudo systemctl enable docker'"
 fi
 
+# --- BEGIN image and container handoff ---
 # Every docker command in this step is best-effort (`|| true`), so a daemon that is
 # down leaves no trace in them and start_box.sh is the first thing to notice -- failing
 # on `docker network create` with a bare "Cannot connect to the Docker daemon", well
@@ -2037,6 +2038,7 @@ else
 fi
 echo ""
 ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "cd ~/box && chmod +x start_box.sh && ${LAGER_BOX_IMAGE_ENV}./start_box.sh"
+# --- END image and container handoff ---
 
 echo ""
 print_success "Docker containers started successfully"
