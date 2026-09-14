@@ -170,6 +170,21 @@ lager boxes          # same as list
 
 该命令查询每台 Box 在端口 9000 上的 API（`/lock` 和 `/status`），以显示实时的版本、状态和锁信息。
 
+所有 Box 会同时查询。已关机或正在更新的 Box 只消耗它自己的超时时间，不会再让其他 Box 一起等待。在终端中，表格会立即打印出来，每一行先显示 `pending`。各行会随着对应 Box 的应答逐一填入。下方的倒计时显示尚未应答的 Box 还剩多少时间：
+
+```text
+name        ip             user      version   status
+=====================================================
+box-one     <BOX_IP>       charles   0.47.0    current
+box-two     <BOX_IP>       charles   -         pending
+Waiting on 1 box - 5s left, Ctrl+C to stop waiting
+```
+
+按 `Ctrl+C` 可以停止等待，同时保留已经应答的 Box：其余的会标记为 `cancelled`，表格随即打印。始终不应答的 Box 会在倒计时归零后不久被放弃，并标记为
+`no response`，因此该命令一定会结束。
+
+当输出被重定向到文件或 CI 日志时，该命令不会使用任何实时显示。它只打印一次最终表格，与上面所示完全相同。
+
 **输出：**
 
 ```text
@@ -201,6 +216,10 @@ Your CLI: 0.47.0
 | `no IP` | 红色 | 保存的条目中没有 IP 地址 |
 | `bad response`、`invalid JSON`、`HTTP <code>`、`error` | 红色 | Box 有应答，但给出的不是可用的版本号 |
 | `sign-in required`、`session rejected` | 红色 | 该 Box 受访问网关保护。CLI 会打印需要执行的 `lager login` 命令 |
+| `no access`、`auth server down`、`token rejected` | 红色 | 该 Box 受访问网关保护，且网关拒绝了请求。需要访问授权或管理员处理，而不是重新登录 |
+| `pending` | 灰色 | 仅在终端中显示，表示该 Box 尚未应答 |
+| `no response` | 红色 | 该 Box 始终没有应答，在倒计时结束后被放弃 |
+| `cancelled` | 红色 | `Ctrl+C` 停止等待时，该 Box 还没有应答 |
 
 如果某台 Box 在 `locked by` 列中显示 `root`，该命令会打印一条警告。这种锁通常来自 Docker 容器内部。下次请用 `lager boxes lock --user` 指明用户。
 

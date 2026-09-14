@@ -169,6 +169,28 @@ lager boxes          # same as list
 
 The command queries each box API on port 9000 (`/lock` and `/status`) to display real-time version, status and lock information.
 
+All boxes are queried at the same time. A box that is powered down or
+mid-update now costs only its own timeout. It no longer delays the others.
+On a terminal the table is printed straight away, with every row reading
+`pending`. Each row fills in as its box answers. A countdown shows how long
+the outstanding boxes have left:
+
+```text
+name        ip             user      version   status
+=====================================================
+box-one     <BOX_IP>       charles   0.47.0    current
+box-two     <BOX_IP>       charles   -         pending
+Waiting on 1 box - 5s left, Ctrl+C to stop waiting
+```
+
+Press `Ctrl+C` to stop waiting without losing the boxes that did answer: the
+rest are marked `cancelled` and the table prints immediately. A box that never
+answers is given up on shortly after the countdown reaches zero and marked
+`no response`, so the command always terminates.
+
+Piped into a file or a CI log, the command uses none of the live display. It
+prints the final table once, exactly as shown above.
+
 **Output:**
 
 ```text
@@ -202,6 +224,10 @@ the commit.
 | `no IP` | Red | The stored entry has no IP address |
 | `bad response`, `invalid JSON`, `HTTP <code>`, `error` | Red | The box answered, but not with a usable version |
 | `sign-in required`, `session rejected` | Red | The box is access-gated. The CLI prints the `lager login` command to run |
+| `no access`, `auth server down`, `token rejected` | Red | The box is access-gated and the gateway refused. An access grant or an admin is needed, not a sign-in |
+| `pending` | Grey | Shown on a terminal only, while that box has yet to answer |
+| `no response` | Red | The box never answered, and was given up on after the countdown |
+| `cancelled` | Red | The box had not answered when `Ctrl+C` stopped the wait |
 
 If a box shows `root` in the `locked by` column, the command prints a warning.
 Such a lock usually comes from inside a Docker container. Use
