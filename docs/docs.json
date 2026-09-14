@@ -539,6 +539,7 @@
                   "source/zh/reference/cli/lager-file",
                   "source/zh/reference/cli/instruments",
                   "source/zh/reference/cli/diagnose",
+                  "source/zh/reference/cli/nets",
                   "source/zh/reference/cli/dut",
                   "source/zh/reference/cli/defaults"
                 ]
