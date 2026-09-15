@@ -85,10 +85,13 @@ lager dut add-doc --kind schematic \
 | `--title TEXT` | Human label for the document (required). |
 | `--url TEXT` | External URL. |
 | `--repo-path TEXT` | Path relative to your test project (synced to the box on `lager python`). |
+| `--external-id TEXT` | ID of the document in an external document store. |
+| `--external-url TEXT` | URL of the document in an external document store. |
 | `--pages TEXT` | Optional page/sheet hint, e.g. `"3-5"` or `"POWER sheet"`. |
 | `--notes TEXT` | Optional free-form note. |
 
-You must supply at least one of `--url` or `--repo-path`. The reference is
+You must supply at least one of `--url`, `--repo-path`, `--external-id` or
+`--external-url`. The reference is
 appended to the list matching `--kind` (`schematic` → `schematic_refs`,
 `datasheet` → `datasheet_refs`, `firmware` → `firmware_refs`; everything else →
 `extra_docs`).

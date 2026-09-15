@@ -199,22 +199,46 @@ def _net_from_raw(raw: dict[str, Any]) -> NetDescriptor:
 # Build DUTContext / SubSystem / DocRef from bench.json
 # ---------------------------------------------------------------------------
 
+#: Keys _doc_ref_from_raw maps onto DocRef fields itself, aliases included.
+#: Every other key in a raw reference is carried over as an extra field.
+_DOC_REF_RAW_KEYS = frozenset({
+    "title", "name", "kind", "url", "repo_path", "path",
+    "external_id", "external_url", "pages", "notes",
+})
+
+
 def _doc_ref_from_raw(raw: dict[str, Any]) -> DocRef | None:
-    """Build a DocRef from a raw dict. Returns None when malformed."""
+    """Build a DocRef from a raw dict. Returns None when malformed.
+
+    A reference with no locator (no ``url``, ``repo_path``, ``external_id``
+    or ``external_url``) is malformed: it names a document without saying
+    where it is. Keys this loader does not map are passed through as extra
+    fields, so a field added by a newer writer is not dropped on the way to
+    the agent.
+    """
     if not isinstance(raw, dict):
         return None
     title = raw.get("title") or raw.get("name") or ""
     if not title:
         return None
     kind = raw.get("kind") or "other"
+    extras = {
+        key: value for key, value in raw.items()
+        if isinstance(key, str)
+        and key not in _DOC_REF_RAW_KEYS
+        and not key.startswith(("_", "model_"))
+    }
     try:
         return DocRef(
             title=str(title),
             kind=kind,
             url=raw.get("url"),
             repo_path=raw.get("repo_path") or raw.get("path"),
+            external_id=raw.get("external_id"),
+            external_url=raw.get("external_url"),
             pages=raw.get("pages"),
             notes=raw.get("notes"),
+            **extras,
         )
     except (TypeError, ValueError) as e:
         logger.warning("doc_ref: skipping malformed entry %r (%s)", raw, e)

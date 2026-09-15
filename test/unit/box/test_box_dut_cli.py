@@ -140,7 +140,7 @@ class AddDocCmd(unittest.TestCase):
             written["dut_context"]["firmware_refs"][0]["title"], "FW",
         )
 
-    def test_add_doc_requires_url_or_repo_path(self):
+    def test_add_doc_requires_a_locator(self):
         fake, ctx = _patch(read_body="")
         with ctx:
             result = self.runner.invoke(
@@ -149,6 +149,36 @@ class AddDocCmd(unittest.TestCase):
             )
         self.assertEqual(result.exit_code, 1)
         self.assertIsNone(fake.written, "should not write when args invalid")
+        for flag in ("--url", "--repo-path", "--external-id", "--external-url"):
+            self.assertIn(flag, result.output)
+
+    def test_add_doc_accepts_external_id_alone(self):
+        fake, ctx = _patch(read_body="")
+        with ctx:
+            result = self.runner.invoke(
+                box_dut_cli.box_dut,
+                ["add-doc", "--box", "b", "--kind", "schematic",
+                 "--title", "Main", "--external-id", "doc-123"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        ref = json.loads(fake.written)["dut_slots"][0]["schematic_refs"][0]
+        self.assertEqual(ref["external_id"], "doc-123")
+        self.assertNotIn("url", ref)
+        self.assertNotIn("repo_path", ref)
+
+    def test_add_doc_accepts_external_url_alone(self):
+        fake, ctx = _patch(read_body="")
+        with ctx:
+            result = self.runner.invoke(
+                box_dut_cli.box_dut,
+                ["add-doc", "--box", "b", "--kind", "datasheet",
+                 "--title", "RM", "--external-url", "https://docs.example.com/d/abc"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        ref = json.loads(fake.written)["dut_slots"][0]["datasheet_refs"][0]
+        self.assertEqual(ref["external_url"], "https://docs.example.com/d/abc")
+        self.assertNotIn("url", ref)
+        self.assertNotIn("external_id", ref)
 
     def test_add_doc_write_failure_exits_nonzero(self):
         """A failed bench.json write must exit(1), not traceback."""

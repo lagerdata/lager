@@ -80,10 +80,12 @@ lager dut add-doc --kind schematic \
 | `--title TEXT` | 该文档的可读名称（必填）。 |
 | `--url TEXT` | 外部 URL。 |
 | `--repo-path TEXT` | 相对于您测试项目的路径（执行 `lager python` 时同步到 Box）。 |
+| `--external-id TEXT` | 该文档在外部文档存储库中的 ID。 |
+| `--external-url TEXT` | 该文档在外部文档存储库中的 URL。 |
 | `--pages TEXT` | 可选的页码/图纸提示，例如 `"3-5"` 或 `"POWER sheet"`。 |
 | `--notes TEXT` | 可选的自由格式备注。 |
 
-`--url` 和 `--repo-path` 中至少要提供一个。该引用会追加到与 `--kind` 匹配的列表中（`schematic` → `schematic_refs`，`datasheet` → `datasheet_refs`，
+`--url`、`--repo-path`、`--external-id` 和 `--external-url` 中至少要提供一个。该引用会追加到与 `--kind` 匹配的列表中（`schematic` → `schematic_refs`，`datasheet` → `datasheet_refs`，
 `firmware` → `firmware_refs`；其余都进入 `extra_docs`）。
 
 ## 编辑之后
