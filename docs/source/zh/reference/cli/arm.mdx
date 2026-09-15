@@ -38,7 +38,7 @@ lager arm [OPTIONS] [NETNAME] COMMAND [ARGS]...
 | `move-by` | 按相对的 dX dY dZ 偏移移动 |
 | `go-home` | 把机械臂移到归位位置（X0 Y300 Z0） |
 | `enable-motor` | 使能机械臂电机 |
-| `disable-motor` | 断开机械臂电机 |
+| `disable-motor` | 禁用机械臂电机 |
 | `read-and-save-position` | 按当前姿态重新标定机械臂（`M889`） |
 | `set-acceleration` | 设置机械臂的加速度参数 |
 
@@ -172,7 +172,7 @@ lager arm ARM1 enable-motor --box my-lager-box
 
 ### `disable-motor`
 
-断开机械臂的电机驱动器。手动搬动机械臂之前请先执行它。
+禁用机械臂的电机驱动器。手动搬动机械臂之前请先执行它。
 
 ```bash
 lager arm [NETNAME] disable-motor [OPTIONS]
@@ -194,7 +194,7 @@ lager arm ARM1 disable-motor --box my-lager-box
 `M889` 用当前姿态替换机械臂中保存的标定，此后机械臂的每一次移动都基于该标定计算。
 
 <Warning>
-只有当机械臂在物理上处于标定姿态时才可以使用这条命令。在其他任何姿态下使用它，之后的每一次移动都会有偏移。Rotrics 把标定姿态定义为机械臂的 1 轴和 2 轴都处于限位。若要重新标定，请先断开电机，用手把机械臂摆到那个姿态，然后运行这条命令，之后再运行 `go-home`。
+只有当机械臂在物理上处于标定姿态时才可以使用这条命令。在其他任何姿态下使用它，之后的每一次移动都会有偏移。Rotrics 把标定姿态定义为机械臂的 1 轴和 2 轴都处于限位。若要重新标定，请先禁用电机，用手把机械臂摆到那个姿态，然后运行这条命令，之后再运行 `go-home`。
 </Warning>
 
 ```bash
@@ -349,7 +349,7 @@ lager arm ARM1 set-acceleration --acceleration 100 --travel 80 --retract 60 --bo
 - 所有位置的单位都是毫米（mm）
 - 归位位置是 X0 Y300 Z0
 - 在非交互式脚本和 CI 流水线中请使用 `--yes` 标志
-- 断开电机之后，请务必重新使能，以恢复正常工作
+- 禁用电机之后，请务必重新使能，以恢复正常工作
 - `--timeout` 选项可以防止机械臂到不了位置时命令一直挂着。它不能超过 25 秒。
 - 如果到机械臂的 USB 连接断开，当前命令会失败。下一条命令会重新打开该端口。
 - 默认 Net 可以用 `lager defaults add --arm-net` 设置

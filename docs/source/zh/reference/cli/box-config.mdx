@@ -24,7 +24,7 @@ lager box-config COMMAND [OPTIONS]
 编辑配置和让配置生效是两个独立的步骤：
 
 1. **修改配置** —— `udev add`、`apt add`、`mount add`、`env set` 等。这些只会编辑保存的配置，Box 上还不会有任何变化。
-2. **应用配置** —— `lager box-config apply` 校验配置，并重启（"弹一下"）容器，让改动生效。宿主机侧的部分（apt 包、udev 规则、sysctl）在 apply 期间安装到 Box 宿主机上；其余部分则挂载进新启动的容器。
+2. **应用配置** —— `lager box-config apply` 校验配置，并重启容器，让改动生效。宿主机侧的部分（apt 包、udev 规则、sysctl）在 apply 期间安装到 Box 宿主机上；其余部分则挂载进新启动的容器。
 
 ```bash
 lager box-config udev add 1209:0001 --box my-lager-box   # 1. edit

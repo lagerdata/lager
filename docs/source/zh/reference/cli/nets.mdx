@@ -291,7 +291,7 @@ lager nets add reset_line gpio 5 USB0::0x0403::0x6011::ABCDEF::INSTR --interface
 - `@A` 上的一个 `debug` Net
 - `@B` 上的一个 `debug` Net
 - 一个 `uart` Net，位于您没有用于 MPSSE 的那些通道所对应的某个 `/dev/ttyUSB<N>` 上
-- `spi` / `i2c` / `gpio` 各一个，分别位于它们 `params.interface` 所指定的通道上
+- `--interface` 所指定的每个通道上的 `gpio`、`i2c` 和 `spi` Net。同一个引脚号可以在每个通道上各承载一个 Net
 
 不把同一通道重复占用（例如同时有 `debug@A` *和* 接口 A 上的 `spi` Net）是用户的责任；Box 目前不校验这一点。
 
@@ -969,6 +969,6 @@ lager nets remove-script debug1 --box my-lager-box
 - 用 `lager instruments --box <lager-box>` 查看可用的仪器和通道
 - 第一次配置 Net 时，TUI 是最省事的方式
 - 用 `add-all` 可以快速为一台新的 Lager Box 配置合理的默认值
-- LabJack T7、LabJack U3、Aardvark 和 FTDI FT232H 适配器都支持 I2C 和 SPI Net
+- LabJack T7、LabJack U3、Aardvark，以及 FTDI FT232H、FT2232H 和 FT4232H 适配器都支持 I2C 和 SPI Net
 - 调试脚本（J-Link 和 OpenOCD 两者）以 base64 编码保存，并在调试操作期间自动解码
 - 一个调试 Net 最多携带一个脚本（`jlink_script` 或 `openocd_config`）；`set-script` 通过在另一个字段已存在时清除它来保证这一点

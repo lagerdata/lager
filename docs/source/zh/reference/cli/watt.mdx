@@ -223,5 +223,5 @@ done
 - `--duration` 设置平均窗口；Joulescope JS220 和 Nordic PPK2 会遵循它，而 Yocto-Watt 返回瞬时值并忽略它。在 JS220 上，超过约 10 秒的窗口由片上电荷累加器无间隙测量（恒定内存，任意长度）。
 - Nordic PPK2 工作在源模式（提供 0.8–5V 的可配置电压并测量电流）；它的 `voltage` 读数就是所配置的源电压。
 - `current`、`voltage` 和 `all` 子命令必须写在 Net 名称之后：`lager watt NET_NAME current`。
-- Net 名称就是您搭建测试台时分配的名称。
+- Net 名称就是您搭建实验台时分配的名称。
 - 用 `lager nets` 查看可用的功率计 Net，用 `lager instruments --box <box>` 确认设备已被检测到。

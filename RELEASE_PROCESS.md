@@ -149,9 +149,9 @@ Pushing the tag triggers two workflows in parallel:
 - **Release: Publish Box Image** (`.github/workflows/box-image-publish.yml`) builds
   `box/lager/docker/box.Dockerfile`. It pushes
   `ghcr.io/lagerdata/lager-box:vX.Y.Z` (and `:X.Y.Z`), labeled with the tag and the
-  commit it was built from. `lager update --pull --version vX.Y.Z` fetches that
-  image by digest instead of building on the box; without `--pull` (the default
-  while this soaks) nothing consumes it. A box can pull the package anonymously
+  commit it was built from. `lager install` pulls that image by digest for a
+  release tag. `lager update` pulls it only when you pass `--pull`. Both build
+  on the box when no image exists. A box can pull the package anonymously
   only when the package is **public**. Set that once in the GitHub UI after the
   first successful publish (Packages → lager-box → Package settings).
 
@@ -159,6 +159,22 @@ Pushing the tag triggers two workflows in parallel:
   deploying a pulled image. If a change to this workflow stops the label matching
   the tag, every box silently falls back to building. That is slower, but it is
   never wrong.
+
+  The workflow keeps its layer cache in the same package, under the `buildcache`
+  tag. A release reuses each layer whose inputs did not change, so a box
+  downloads only the layers that changed. A cached layer also keeps the package
+  versions that it was built with. The Rust toolchain, `nrfutil`, unpinned `pip`
+  packages and Debian security fixes stay at those versions. Refresh them about
+  once a month with a cache-only build from `main`, which pushes no version tag:
+
+  ```bash
+  gh workflow run box-image-publish.yml --repo lagerdata/lager --ref main \
+    -f cache_only=true -f no_cache=true
+  ```
+
+  The next release after a refresh is a full download for every box. Do not
+  dispatch the workflow with the `tag` input to test a change. That republishes
+  the tag and changes the digest that boxes already pulled.
 
 Wait for Validate Tag to go green, then download the artifact:
 
@@ -171,8 +187,9 @@ Do **not** rebuild locally. The artifact is the set of bytes the validation prov
 rebuild is a different, unproven build. (If the workflow is red, the tag has a real problem
 -- fix it before anything reaches PyPI.)
 
-A red box-image publish does **not** block the PyPI upload, because no box depends
-on that image yet. Fix it before you cut the next release.
+A red box-image publish does **not** block the PyPI upload. `lager install` and
+`lager update` build on the box when no image exists, so a release without an
+image is slower but still works. Fix the publish before you cut the next release.
 
 ### 8. Upload to PyPI
 

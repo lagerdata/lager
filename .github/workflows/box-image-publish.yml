@@ -2,12 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Builds the box agent image (box/lager/docker/box.Dockerfile) and pushes it
-# to GHCR so `lager update --pull` can `docker pull` a release instead of
-# spending ten minutes building it on the box.
+# to GHCR so a box can `docker pull` a release instead of spending ten minutes
+# or more building it.
 #
-# The consumer is `_acquire_box_image` in cli/commands/utility/update.py. It
-# is opt-in (`--pull` / LAGER_BOX_IMAGE_PULL=1) while the path soaks, and it
-# falls back to a local build on every miss.
+# Two consumers, and both fall back to a local build on every miss:
+#   - `lager install` pulls a release tag by default: setup_and_deploy_box.sh
+#     resolves the digest, and box/start_box.sh pulls and verifies it.
+#   - `lager update` pulls only with `--pull` / LAGER_BOX_IMAGE_PULL=1 while
+#     that path soaks (`_acquire_box_image` in cli/commands/utility/update.py).
 #
 # The version label below is load-bearing, not decoration: the client refuses
 # to deploy an image whose org.opencontainers.image.version is missing or
@@ -21,7 +23,36 @@
 #
 # Image refs:
 #   ghcr.io/lagerdata/lager-box:vX.Y.Z
-#   ghcr.io/lagerdata/lager-box:X.Y.Z   (semver without the leading v)
+#   ghcr.io/lagerdata/lager-box:X.Y.Z       (semver without the leading v)
+#   ghcr.io/lagerdata/lager-box:buildcache  (the layer cache below; no client
+#                                            resolves it)
+#
+# Layer cache. A pull downloads only the layers a box does not already hold,
+# so what every release costs every box is decided HERE: by whether unchanged
+# Dockerfile steps reproduce their previous layers. They do only on a cache
+# hit. A rebuilt apt/pip/rustup layer gets a new digest even when nothing it
+# installs changed.
+#
+# The cache used to be `type=gha`. GitHub scopes Actions caches to the ref that
+# wrote them, and a run for one tag cannot restore a cache written for another
+# tag. Every release therefore imported a cache it could not use, rebuilt all
+# ~50 layers cold, and published ~900 MB of new layers for a ~1 MB change to
+# box source: v0.45.1 through v0.46.2 each shared only the four base-image
+# layers with the release before it. A registry cache has no ref scope. It lives
+# in this package under `:buildcache`, so the next tag reads what the last wrote.
+#
+# Consequences worth knowing before touching this:
+#   - Cached layers keep whatever the build that produced them installed.
+#     rustup `stable`, the unversioned nrfutil, unpinned pip packages and apt
+#     security fixes stay frozen until an earlier Dockerfile line changes.
+#     Refresh them deliberately with a `cache_only` + `no_cache` dispatch from
+#     main (RELEASE_PROCESS.md); the next release is then a full download.
+#   - box.Dockerfile pins its base image by digest for the same reason, and
+#     dependabot moves the pin. A floating base tag moves every layer above it.
+#   - Keep the default layer compression. Changing it changes every layer
+#     digest, so every box downloads the whole image once.
+#   - `cache_only` builds any ref and exports the cache without pushing a
+#     version tag: the way to prove a change still reuses the heavy layers.
 #
 # Visibility: the package must be public before a box could pull it
 # anonymously. Set that once in the GitHub UI (Packages → lager-box →
@@ -44,7 +75,8 @@
 # arch-aware first, plus QEMU emulation time on every release.
 #
 # Retention is manual for now: delete old versions from the GHCR UI / API
-# when storage becomes a problem. Automating that is a follow-up.
+# when storage becomes a problem. Each cache export also leaves the previous
+# `:buildcache` manifest untagged. Automating that is a follow-up.
 
 name: "Release: Publish Box Image"
 
@@ -54,14 +86,30 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing release tag to rebuild/push (e.g. v0.36.0)'
-        required: true
+        description: 'Existing release tag to build (e.g. v0.36.0). Required unless cache_only is set.'
+        required: false
         type: string
+      cache_only:
+        description: 'Build and export the layer cache only; push no version tag'
+        required: false
+        type: boolean
+        default: false
+      no_cache:
+        description: 'Ignore the layer cache and rebuild every layer'
+        required: false
+        type: boolean
+        default: false
 
 # packages:write is required to push to GHCR; contents:read for checkout.
 permissions:
   contents: read
   packages: write
+
+# One writer at a time for `:buildcache`. A tag push and a dispatch that ran
+# together would each overwrite the other's cache export.
+concurrency:
+  group: box-image-publish
+  cancel-in-progress: false
 
 jobs:
   publish-box-image:
@@ -74,7 +122,7 @@ jobs:
     steps:
       - name: Resolve tag
         id: tag
-        # Both expansions come in through env rather than being interpolated
+        # Every expansion comes in through env rather than being interpolated
         # into the script text: `inputs.tag` is dispatch-time attacker-
         # controllable, and a `${{ }}` in a run block is substituted before
         # the shell ever sees it, so a crafted value would execute rather
@@ -83,25 +131,43 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           INPUT_TAG: ${{ inputs.tag }}
+          CACHE_ONLY: ${{ inputs.cache_only }}
         run: |
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             tag="$INPUT_TAG"
           else
             tag="${GITHUB_REF_NAME}"
+            CACHE_ONLY=false
           fi
-          case "$tag" in
-            v*) ;;
-            *) echo "tag must look like vX.Y.Z (got: $tag)" >&2; exit 1 ;;
-          esac
-          ver="${tag#v}"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          push=true
+          if [ "$CACHE_ONLY" = "true" ]; then
+            push=false
+          fi
+          if [ -z "$tag" ] && [ "$push" = "false" ]; then
+            # Nothing is pushed, so a cache-only run may build any commit:
+            # take the one the run was dispatched on. The name below only
+            # labels the local build result.
+            ref="$GITHUB_SHA"
+            tag="cache-only-${GITHUB_SHA:0:12}"
+          else
+            case "$tag" in
+              v*) ;;
+              *) echo "tag must look like vX.Y.Z (got: $tag)" >&2; exit 1 ;;
+            esac
+            ref="$tag"
+          fi
+          {
+            echo "ref=$ref"
+            echo "tag=$tag"
+            echo "version=${tag#v}"
+            echo "push=$push"
+          } >> "$GITHUB_OUTPUT"
         shell: bash
 
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ steps.tag.outputs.tag }}
+          ref: ${{ steps.tag.outputs.ref }}
           # build-push needs no git credentials after checkout.
           persist-credentials: false
 
@@ -129,7 +195,8 @@ jobs:
         with:
           context: box/lager
           file: box/lager/docker/box.Dockerfile
-          push: true
+          # "false" only on a cache_only dispatch.
+          push: ${{ steps.tag.outputs.push }}
           # Current Dockerfile downloads LabJack x64 installers; amd64 only.
           platforms: linux/amd64
           tags: |
@@ -146,10 +213,15 @@ jobs:
             org.opencontainers.image.version=${{ steps.tag.outputs.tag }}
             org.opencontainers.image.revision=${{ steps.commit.outputs.sha }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-          # GitHub Actions cache for layer reuse across rebuilds of the same
-          # Dockerfile; does not affect what boxes pull.
-          cache-from: type=gha,scope=lager-box
-          cache-to: type=gha,mode=max,scope=lager-box
+          # See "Layer cache" in the header. Labels live in the image config,
+          # not in a layer, so a new revision label does not miss the cache.
+          # mode=max exports every layer the build produced. image-manifest and
+          # oci-mediatypes store the cache as a plain OCI image manifest, which
+          # GHCR accepts. A missing `:buildcache` on the first run is a cache
+          # miss, not an error.
+          cache-from: type=registry,ref=${{ env.IMAGE_NAME }}:buildcache
+          cache-to: type=registry,ref=${{ env.IMAGE_NAME }}:buildcache,mode=max,image-manifest=true,oci-mediatypes=true
+          no-cache: ${{ inputs.no_cache == true }}
           # Provenance/SBOM off for now — keeps the manifest a plain image
           # index that older box dockers can pull without attestation
           # quirks. Revisit when boxes are uniformly on Docker >= 24.

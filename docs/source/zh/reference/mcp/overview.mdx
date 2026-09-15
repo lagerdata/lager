@@ -82,7 +82,7 @@ MCP 服务器仍然运行，并在容器内绑定 `0.0.0.0:8100`，但只能在�
 | `box_manage(action)` | `health` 健康检查，或从磁盘 `reload` 实验台配置。 |
 
 <Note>
-**默认情况下，工具接口是只读的。** 上面这七个工具不驱动硬件（设置电压、翻转 GPIO、烧录固件），也不改动 Box。这些都发生在智能体编写、并用 `lager python` 运行的测试脚本里，或者发生在专门的 [CLI 命令](/source/reference/cli)中。
+**默认情况下，工具接口是只读的。** 上面这七个工具不驱动硬件（设置电压、翻转 GPIO、烧录固件），也不改动 Box。这些都发生在智能体编写、并用 `lager python` 运行的测试脚本里，或者发生在专门的 [CLI 命令](/source/zh/reference/cli/overview)中。
 
 只有当下面两个开关都关闭时，这个默认状态才成立。
 </Note>
@@ -141,8 +141,7 @@ Box 的 MCP 服务器在启动时会注册额外的工具。每一个都会扩�
   </Step>
   <Step title="编写并运行">
     用 `from lager import Net, NetType` 编写一个 Python 测试文件。请用您连接 MCP 服务器时所用的 IP 地址来标识这台 Box ——
-    本地 Box 名称只是任意的客户端侧别名。`--box` 接受原始 IP，因此不需要任何注册：运行 `lager python path/to/test.py --box <box-ip>`。
-    runnable 也可以是一个**文件夹**（入口为 `main.py`），它会同步并导入其中的全部内容 —— 这在分发可复用的辅助模块时很方便：
+    本地 Box 名称只是任意的客户端侧别名。`--box` 接受原始 IP，因此不需要任何注册：运行 `lager python path/to/test.py --box <box-ip>`。要运行的对象也可以是一个**文件夹**（入口为 `main.py`），它会同步并导入其中的全部内容 —— 这在分发可复用的辅助模块时很方便：
     `lager python path/to/test_dir --box <box-ip>`。（可选地，
     `lager boxes add --name <name> --ip <box-ip> --user <ssh-user>` 可以注册一个易读的别名；这三个选项都是必填的。）
   </Step>

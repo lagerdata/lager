@@ -38,6 +38,7 @@
 import base64
 import json
 import os
+import threading
 import time
 from pathlib import Path
 from urllib.parse import urlparse
@@ -54,6 +55,22 @@ ACCESS_DOCS_URL = 'https://docs.lagerdata.com/source/reference/cli/login'
 # Refresh the access token when it expires within this many seconds.
 EXPIRY_MARGIN_SECONDS = 60
 AUTH_SERVER_TIMEOUT = 10
+
+# Serializes every read-modify-write of the store and every refresh, so a
+# command that contacts boxes concurrently (`lager boxes`) cannot interleave
+# them. Two things would otherwise break:
+#
+#   - Lost writes. Each mutator loads the whole store, edits it, and writes it
+#     back; two threads doing that concurrently silently drop one edit.
+#   - A burned session. The auth server rotates the refresh token on every
+#     successful refresh, so N threads refreshing the same near-expiry token
+#     spend the cookie N times. One wins, the rest rotate it out from under
+#     the winner, and the user is logged out by the very command they ran.
+#
+# Reentrant because the refresh path saves the rotated session while holding
+# it. Process-local only: it does not coordinate with a second `lager`
+# process, which `_save_store`'s atomic replace covers instead.
+_store_lock = threading.RLock()
 
 
 def pinned_token():
@@ -83,10 +100,28 @@ def _load_store():
 
 
 def _save_store(store):
+    """Write the store atomically, so no reader ever sees a partial file.
+
+    Writing in place would truncate first, leaving a window where a
+    concurrent reader (another thread, or a second `lager` process) parses an
+    empty or half-written file as "no session" and re-prompts for a login the
+    user already has. The temp file is created mode 0600 before it holds a
+    token, never 0644-then-chmod.
+    """
     path = _store_path()
-    with open(path, 'w') as f:
-        json.dump(store, f, indent=2)
-    os.chmod(path, 0o600)
+    tmp = path.with_name(f'{path.name}.{os.getpid()}.tmp')
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, 'w') as f:
+            json.dump(store, f, indent=2)
+        # Only publish a fully written file.
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -99,11 +134,12 @@ def record_box_auth_server(box_ip, url):
     # would leave a store behind on a runner that outlives the job.
     if pinned_token():
         return
-    store = _load_store()
-    boxes = store.setdefault('boxes', {})
-    if boxes.get(box_ip) != url:
-        boxes[box_ip] = url
-        _save_store(store)
+    with _store_lock:
+        store = _load_store()
+        boxes = store.setdefault('boxes', {})
+        if boxes.get(box_ip) != url:
+            boxes[box_ip] = url
+            _save_store(store)
 
 
 def auth_server_for_box(box_ip):
@@ -149,22 +185,24 @@ def _refresh_margin(access_token):
 def save_login(url, access_token, cookies):
     """Store a session: the bearer token plus whatever cookies the auth
     server set at login (typically an httpOnly refresh token)."""
-    store = _load_store()
-    store.setdefault('authServers', {})[url] = {
-        'accessToken': access_token,
-        'cookies': dict(cookies or {}),
-    }
-    _save_store(store)
+    with _store_lock:
+        store = _load_store()
+        store.setdefault('authServers', {})[url] = {
+            'accessToken': access_token,
+            'cookies': dict(cookies or {}),
+        }
+        _save_store(store)
 
 
 def clear_login(url=None):
     """Forget stored tokens for one auth server, or all of them."""
-    store = _load_store()
-    if url is None:
-        store.pop('authServers', None)
-    else:
-        store.get('authServers', {}).pop(url, None)
-    _save_store(store)
+    with _store_lock:
+        store = _load_store()
+        if url is None:
+            store.pop('authServers', None)
+        else:
+            store.get('authServers', {}).pop(url, None)
+        _save_store(store)
 
 
 def _refresh_access_token(url, entry):
@@ -217,23 +255,43 @@ def access_token_for(url):
     actually expired, return it anyway and let the gateway judge it — a
     transient auth-server error should not fail a command whose token is
     still valid.
+
+    Refreshing is single-flight: the still-valid case reads the store without
+    taking `_store_lock`, and only a caller that intends to spend the refresh
+    cookie serializes. Whoever waited re-reads the store first, so N threads
+    needing a refresh produce one round trip and one rotation, not N.
     """
     pinned = pinned_token()
     if pinned:
         return pinned
+
+    def _usable(entry, *, margin):
+        """The entry's token if it is good for `margin` more seconds."""
+        token = entry.get('accessToken') if entry else None
+        if not token:
+            return None
+        horizon = time.time() + (_refresh_margin(token) if margin else 0)
+        return token if _token_expires_at(token) > horizon else None
+
     entry = _load_store().get('authServers', {}).get(url)
     if not entry:
         return None
-    access_token = entry.get('accessToken')
-    now = time.time()
-    if access_token and _token_expires_at(access_token) > now + _refresh_margin(access_token):
-        return access_token
-    refreshed = _refresh_access_token(url, entry)
-    if refreshed:
-        return refreshed
-    if access_token and _token_expires_at(access_token) > now:
-        return access_token
-    return None
+    fresh = _usable(entry, margin=True)
+    if fresh:
+        return fresh
+
+    with _store_lock:
+        # Re-read: another thread may have refreshed while we waited, in
+        # which case its token is already in the store and spending our
+        # (now superseded) cookie would rotate the session out from under it.
+        entry = _load_store().get('authServers', {}).get(url) or {}
+        fresh = _usable(entry, margin=True)
+        if fresh:
+            return fresh
+        refreshed = _refresh_access_token(url, entry)
+        if refreshed:
+            return refreshed
+        return _usable(entry, margin=False)
 
 
 def auth_headers_for_box(box_ip):
