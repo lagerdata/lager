@@ -299,12 +299,15 @@ lager boxes lock --box my-lager-box
 [Box 锁定](/source/zh/reference/cli/locking)。
 
 ```bash
-lager boxes unlock --box NAME [--force]
+lager boxes unlock --box NAME [--user USER] [--force]
 ```
 
 **选项：**
 - `--box`（必填）- 要解锁的 Box 名称
+- `--user` - 解锁时使用的持有者，用于以您的用户名之外的名称记录的锁
 - `--force` - 即使是别人加的锁也强制解锁
+
+不加 `--force` 时，解锁命令会释放 CLI 认为属于您的锁，例如您自己的 CI 作业的自动锁。
 
 **示例：**
 ```bash

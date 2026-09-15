@@ -40,6 +40,29 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 - **`lager uart --force` warns when the box is too old to release a session, and the
   in-use hint names the net that holds the device.** `lager uart --sessions` no
   longer takes the box lock, so it works while another user holds the box.
+- **`lager boxes unlock` releases a lock that the CLI already counts as yours,
+  without `--force`.** This includes the auto-lock that an earlier step of the
+  same CI job left, and a lock that another tool took under your email. The box
+  releases a lock only for the exact holder string it stored, and unlock sent
+  your plain user name. Unlock now reads the lock first and sends the stored
+  holder. The new `--user` option names the holder of a lock recorded under a
+  different name. A `ci:generic:<host>` lock, a scope that every job on that
+  host shares, still needs its exact holder or `--force`.
+- **A CI job uses a lock that `lager boxes lock` reserved under the runner's
+  user name, instead of waiting on it.** The pre-command check counted that
+  lock as the job's own, but the acquire compared CI scopes only, so the job
+  waited for `LAGER_LOCK_WAIT` (1800 seconds in CI) and then exited 1. Every
+  lock comparison now uses one rule. That rule also counts a holder that
+  another tool writes as `<origin>:<id>:<name>:<email>` as yours when your
+  user name is that email.
+- **A resumed lock stays renewed while the command runs.** A command that
+  resumed a lock left by an earlier process of the same job sent its own holder
+  on each heartbeat. The box refused every renewal, so the lock could expire
+  mid-command and another job could take the box. The heartbeat now sends the
+  holder that the box stored.
+- **A `LAGER_LOCK_WAIT` that is not a whole number warns and keeps the default
+  wait.** It gave `0` even in CI, so a job that should queue for the box failed
+  on first contact.
 
 ## [0.48.0] - 2026-09-15
 

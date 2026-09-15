@@ -46,13 +46,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 2160 (+2 xfailed) |
+| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 2206 (+2 xfailed) |
 | `unit (box)` | `test/unit/box/` | 2621 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 195 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 186 (+1 skipped) |
-| | **Total gated** | **5356** |
+| | **Total gated** | **5402** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -454,7 +454,7 @@ cli/tests/                #  7 files: 6 pytest suites (GATED via `unit (cli)`),
                           #           plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 214 files)
+### Local Unit Tests (`test/unit/` -- 215 files)
 
 #### Box Unit Tests (`test/unit/box/` -- 118 files)
 
@@ -583,7 +583,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_ykush_driver.py` | YKUSH USB hub driver: device-contention regression from an indefinitely cached handle |
 | `test_automation_exports.py` | Static parse of `automation/__init__.py`'s lazy export table: no name guarded twice, every returned driver reachable under its own name, everything in `__all__` resolvable -- the copy-paste class of defect that made one driver answer to another's name |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 79 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 80 files)
 
 | File | What it tests |
 |------|---------------|
@@ -592,7 +592,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_battery_tui.py` | BatteryTUI render output, command parsing, and worker thread offloading |
 | `test_binaries_9000.py` | `lager binaries add/list/remove` and `download_file` migrated to the box HTTP server on `:9000` |
 | `test_box_command_error.py` | `box_command_error`: a 404 that means "net or instrument not found" must not also tell the user their box image is out of date |
-| `test_box_lock_helpers.py` | Lock holder resolution, acquire/release/heartbeat, `LockSession.dissolve`, format_lock_user CI support, `lock_scope`/`_lock_held_by_self` identity matching across all four lock-path comparisons (check, pre-acquire probe, `previous_user`, and the conflict branch that decides whether to wait), and the `_check_box_lock` refusal path |
+| `test_box_lock_helpers.py` | Lock holder resolution, acquire/release/heartbeat, `LockSession.dissolve`, format_lock_user CI support, `lock_scope`/`_lock_held_by_self` identity matching across all four lock-path comparisons (check, pre-acquire probe, `previous_user`, and the conflict branch that decides whether to wait), the `_check_box_lock` refusal path, the holder that a resumed lock's heartbeat sends, and a `LAGER_LOCK_WAIT` that is not a number keeping the CI wait with one warning |
 | `test_box_request_failure_messages.py` | `echo_box_request_failure`: distinguishing a slow box-side op from a dead box |
 | `test_box_ssh_identity.py` | Admin commands offer the `lager_box` key with keyless fallback (probe, pool, install/uninstall); key registration under `/etc/lager/authorized_keys.d`, de-registration on `uninstall --all`, and install's password-fallback removal. Also that `-i` does not cost the operator ssh's own defaults: `lager ssh` names `lager_box` first and then each default identity file present, in ssh's order, and passes no `-i` at all when no `lager_box` key exists |
 | `test_configure_docker_dns.py` | `configure_docker_dns`: daemon.json `dns` entries must be bare IPs or Docker refuses to start |
@@ -653,7 +653,8 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_version_skew.py` | Version skew warning when CLI minor > box minor with per-process caching |
 | `test_watt_subcommands.py` | `lager watt` NetGroup reading power/current/voltage/all over the box API |
 | `test_ws_diagnose.py` | WebSocket failure message generation pointing to instrument vs. box based on health |
-| `test_box_lock_command.py` | `lager boxes lock`/`unlock` command layer: the no-expiry reservation body (`holder_type`/`ttl_seconds`), exit codes on 409/403, `--force`, and the Docker-root warning |
+| `test_box_lock_command.py` | `lager boxes lock`/`unlock` command layer: the no-expiry reservation body (`holder_type`/`ttl_seconds`), exit codes on 409/403, `--force`, the Docker-root warning, and unlock sending the stored holder for a lock the CLI counts as ours (not for a `ci:generic` sibling; the plain user when the lock read fails; `--user`) |
+| `test_lock_holder_matching.py` | `holder_is_ours` is the one lock-holder comparison: its truth table (scope, plain user, the email of a four-part holder from another tool, `ci:generic` refused for unlock), `holder_email`, `heartbeat_holder`, the acquire decisions using the same rule, and AST scans that fail on a raw holder comparison, a stray `lock_scope` call, or a heartbeat that does not send `heartbeat_holder(...)` |
 | `test_boxes_live_listing.py` | Concurrent `lager boxes` listing: the fan-out is parallel (asserted with a `threading.Barrier`, not a stopwatch), an unanswering box is abandoned at the deadline rather than hanging the command, gateway denials stay counted apart from unreachable boxes for every `denial_label` verdict, each probe's gateway retry inherits that probe's timeout so it cannot outlive the deadline, only the bare version is cached and only from the calling thread, plus the repaint arithmetic (line truncation, over-tall fleets falling back to a single print, a settled table repainting no further) and the waiting indicators (`locked by` present from the first frame, the wheel visiting every glyph, an outstanding box still repainting as it turns, a resolved row dropping it) and the `gateway_auth` thread safety it depends on -- single-flight refresh so a fan-out cannot spend Stout's rotating refresh cookie N times, and atomic store writes |
 | `test_config_roundtrip.py` | `cli/config.py` JSON<->ConfigParser round-trip, legacy-key migration, `read`/`write_lager_json`, `expand_devenv_path`, `get_debug_script_for_net` |
 | `test_impl_host_importable.py` | Every `cli/impl/*` module must import with `box/` off `sys.path` and `lager` blocked -- they ship in the wheel but the box tree does not, so a module-level `import lager` breaks them on any pip install |

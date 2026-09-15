@@ -410,7 +410,7 @@ GitHub Actions 会为每个 `run:` 步骤设置 `CI` 和 `GITHUB_RUN_ID`，因�
 
 自动锁在它的命令退出时结束。如果 CLI 异常终止，锁会在存活时间到期时结束。
 
-`lager boxes unlock` 发送的是用户名，而不是 CI 身份。Box 只为同一个持有者释放锁，因此这一步无法释放自动的 `ci:` 锁。它只能释放由运行器账户用户名持有的锁，例如一次 `lager boxes lock` 预约：
+Box 只为完全相同的持有者字符串释放锁。因此 `lager boxes unlock` 会先读取锁。该锁可能是同一作业的自动锁，也可能是运行器账户的一次 `lager boxes lock` 预约。对于这些锁，解锁命令会发送 Box 所存储的持有者字符串。因此这一步可以释放这两种锁：
 
 ```yaml
       - name: Release a bench reservation
@@ -418,10 +418,9 @@ GitHub Actions 会为每个 `run:` 步骤设置 `CI` 和 `GITHUB_RUN_ID`，因�
         run: lager boxes unlock --box "$LAGER_BOX" 2>/dev/null || true
 ```
 
-<Warning>
-运行器账户的 `lager boxes lock` 预约同样会阻塞该账户的 CI 命令。
-CI 身份与用户名不同。此时 CI 命令会等待 `LAGER_LOCK_WAIT` 秒，然后给出退出码 1。
-</Warning>
+运行器账户的 `lager boxes lock` 预约不会阻塞该账户的 CI 命令。CI 命令会使用该预约，并且不会释放它。
+
+通用 CI 提供方会让一台主机上的所有作业使用同一个作用域。对于这些作业，解锁命令只释放持有者字符串完全相同的锁。
 
 <Warning>
 不要在作业中使用 `lager boxes unlock --force`。这条命令会释放别人持有的锁。如果您的作业结束后锁仍然存在，那是别人或别的作业持有它。释放那个锁就等于从那个人手里抢走实验台。请让锁自行到期。
@@ -455,7 +454,7 @@ CI 身份与用户名不同。此时 CI 命令会等待 `LAGER_LOCK_WAIT` 秒，
 
 | 变量 | 作用 |
 |---|---|
-| `LAGER_LOCK_WAIT` | 冲突之后等待的秒数。CI 默认 1800，用户默认 0。非数字的值按 0 处理，在 CI 中也是如此。负值按 0 处理。 |
+| `LAGER_LOCK_WAIT` | 冲突之后等待的秒数。CI 默认 1800，用户默认 0。不是整数的值会给出一条警告，并采用默认值。负值按 0 处理。 |
 | `LAGER_LOCK_TTL` | 锁的最长存活时间。用 `none` 表示不限时。 |
 | `LAGER_LOCK_HEARTBEAT` | 两次心跳之间的秒数，默认 60。 |
 | `LAGER_LOCK_HOLDER` | 为锁持有者指定不同的身份。 |
@@ -1323,7 +1322,7 @@ lager whoami
 | `LAGER_GATEWAY_TOKEN` | 访问网关的令牌。它优先于会话，并且 CLI 不写入任何文件。 |
 | `LAGER_USER` | 用户身份。在用户计算机上，它就是锁持有者。 |
 | `LAGER_LOCK_HOLDER` | 为锁持有者指定不同的身份。 |
-| `LAGER_LOCK_WAIT` | 锁冲突之后等待的秒数。非数字的值或负值按 0 处理。 |
+| `LAGER_LOCK_WAIT` | 锁冲突之后等待的秒数。负值按 0 处理。不是整数的值会给出一条警告，并采用默认值。 |
 | `LAGER_LOCK_TTL` | 锁的最长存活时间。用 `none` 表示不限时。 |
 | `LAGER_LOCK_HEARTBEAT` | 两次心跳之间的秒数，默认 60。 |
 | `LAGER_AUTO_LOCK_DISABLE` | 任何非空值都会关闭自动锁，`0` 也会关闭。 |
@@ -1392,7 +1391,7 @@ CLI 也会读取项目中的 `.lager` 文件。它先在工作目录中查找，
 **信息：`Error: Box 'BENCH-1' is locked by ...`**
 另一个作业占用着该实验台。在 CI 中，命令会先等待 `LAGER_LOCK_WAIT` 秒才给出这条信息，默认是 30 分钟。在用户计算机上，这条信息会立即出现。
 
-要查找持有者，请用 `lager boxes`。以 `ci:github:` 开头的持有者会显示仓库、运行、作业和运行器。请等待，或与持有者沟通。不要在作业中使用 `unlock --force`。如果持有者是运行器账户的用户名，说明一次 `lager boxes lock` 预约正在阻塞该作业。
+要查找持有者，请用 `lager boxes`。以 `ci:github:` 开头的持有者会显示仓库、运行、作业和运行器。请等待，或与持有者沟通。不要在作业中使用 `unlock --force`。
 
 **Box 上的 `lager` 命令立即失败，但 CI 没有失败。**
 锁的行为随 `CI=true` 变量而变化。来自 cron、systemd 或 SSH 会话的命令不算 CI，它会立即失败。这是正确的行为。如果那条命令必须等待，请为它设置 `LAGER_LOCK_WAIT`。

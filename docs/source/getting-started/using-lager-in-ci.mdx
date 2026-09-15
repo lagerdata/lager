@@ -506,10 +506,11 @@ long a lock stays after the CLI stops in an unusual condition.
 An automatic lock ends when its command exits. If the CLI stops in an unusual
 condition, the lock ends at its maximum life.
 
-`lager boxes unlock` sends the user name, not the CI identity. The box releases
-a lock only for the same holder. Thus this step cannot release an automatic
-`ci:` lock. It releases only a lock that the user name of the runner account
-holds, such as a `lager boxes lock` reservation:
+The box releases a lock only for the same holder string. Thus
+`lager boxes unlock` reads the lock first. The lock can be an automatic lock of
+the same job, or a `lager boxes lock` reservation of the runner account. For
+these locks, unlock sends the holder string that the box stored. Thus this step
+releases both:
 
 ```yaml
       - name: Release a bench reservation
@@ -517,11 +518,12 @@ holds, such as a `lager boxes lock` reservation:
         run: lager boxes unlock --box "$LAGER_BOX" 2>/dev/null || true
 ```
 
-<Warning>
-A `lager boxes lock` reservation of the runner account also blocks the CI
-commands of that account. The CI identity is not the same as the user name. A
-CI command then waits for `LAGER_LOCK_WAIT` seconds and gives exit code 1.
-</Warning>
+A `lager boxes lock` reservation of the runner account does not block the CI
+commands of that account. A CI command uses the reservation and does not
+release it.
+
+A generic CI provider gives all jobs on one host the same scope. For those
+jobs, unlock releases only a lock with the exact holder string.
 
 <Warning>
 Do not use `lager boxes unlock --force` in a job. This command
@@ -558,7 +560,7 @@ are safe when a different job holds the bench.
 
 | Variable | Function |
 |---|---|
-| `LAGER_LOCK_WAIT` | Seconds to wait after a collision. CI default 1800. User default 0. A value that is not a number gives 0, also in CI. A negative value gives 0. |
+| `LAGER_LOCK_WAIT` | Seconds to wait after a collision. CI default 1800. User default 0. A value that is not a whole number gives a warning and the default. A negative value gives 0. |
 | `LAGER_LOCK_TTL` | Maximum life of the lock. Use `none` for a lock with no limit. |
 | `LAGER_LOCK_HEARTBEAT` | Seconds between two heartbeats. Default 60. |
 | `LAGER_LOCK_HOLDER` | A different identity for the lock holder. |
@@ -1598,7 +1600,7 @@ token with the first command, so there is no mapping to record.
 | `LAGER_GATEWAY_TOKEN` | A token for an access gateway. It wins over a session, and the CLI writes no file. |
 | `LAGER_USER` | The user identity. It is the lock holder on a user computer. |
 | `LAGER_LOCK_HOLDER` | A different identity for the lock holder. |
-| `LAGER_LOCK_WAIT` | Seconds to wait after a lock collision. A value that is not a number, or a negative value, gives 0. |
+| `LAGER_LOCK_WAIT` | Seconds to wait after a lock collision. A negative value gives 0. A value that is not a whole number gives a warning and the default. |
 | `LAGER_LOCK_TTL` | Maximum life of the lock. Use `none` for no limit. |
 | `LAGER_LOCK_HEARTBEAT` | Seconds between two heartbeats. Default 60. |
 | `LAGER_AUTO_LOCK_DISABLE` | Any value that is not empty stops the automatic lock, also `0`. |
@@ -1675,8 +1677,7 @@ computer, the message comes immediately.
 
 To find the holder, use `lager boxes`. A holder that starts with `ci:github:`
 shows the repository, the run, the job and the runner. Wait, or speak to the
-holder. Do not use `unlock --force` in a job. If the holder is the user name of
-the runner account, a `lager boxes lock` reservation blocks the job.
+holder. Do not use `unlock --force` in a job.
 
 **A `lager` command on the box fails immediately, but CI has no failure.**
 The lock behavior changes with the `CI=true` variable. A command from cron, from

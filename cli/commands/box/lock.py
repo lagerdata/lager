@@ -9,7 +9,13 @@
 import click
 import requests
 
-from ...box_storage import resolve_and_validate_box_with_name, get_lager_user, format_lock_user
+from ...box_storage import (
+    format_lock_user,
+    get_lager_user,
+    get_lock_holder,
+    holder_is_ours,
+    resolve_and_validate_box_with_name,
+)
 
 
 @click.command()
@@ -69,16 +75,60 @@ def lock(ctx, box, lock_user):
         ctx.exit(1)
 
 
+def _stored_holder_if_ours(ip, holder, user):
+    """Return the holder string the box stored when that lock is ours, else None.
+
+    The box releases a lock only for the exact holder string it stored. A CI
+    job's auto-lock ends in the pid of the process that took it, and a lock
+    written by another tool carries a longer identity, so sending the plain
+    user refused a lock that every other lager command already treats as
+    ours. Sending the stored string works against every box version, and if
+    the lock changes between this read and the unlock, the box refuses it.
+
+    Stricter than the pre-command check: a ``ci:generic`` scope is shared by
+    every CI job on a host, and unlock must not release a sibling job's live
+    lock (``coarse_scope_ok=False``).
+    """
+    from ...gateway_auth import auth_headers_for_box
+    from ...box_storage import _check_gateway
+    try:
+        resp = requests.get(
+            f'http://{ip}:9000/lock',
+            headers=auth_headers_for_box(ip),
+            timeout=5,
+        )
+        resp = _check_gateway(resp, ip)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+    except (requests.exceptions.RequestException, ValueError):
+        return None
+    if not isinstance(data, dict) or not data.get('locked'):
+        return None
+    stored = data.get('user')
+    if stored and holder_is_ours(stored, holder, user, coarse_scope_ok=False):
+        return stored
+    return None
+
+
 @click.command()
 @click.option('--box', required=True, help='Name of the box to unlock')
+@click.option('--user', 'unlock_user', default=None,
+              help='Holder to unlock as, for a lock recorded under a name '
+                   'other than your user name')
 @click.option('--force', is_flag=True, help='Force unlock even if locked by another user')
 @click.pass_context
-def unlock(ctx, box, force):
+def unlock(ctx, box, unlock_user, force):
     """Unlock a box so others can use it"""
     ip, box_name = resolve_and_validate_box_with_name(ctx, box, _skip_lock_check=True)
     display_name = box_name or box
 
-    user = get_lager_user()
+    user = unlock_user or get_lager_user()
+    if not force:
+        # Release a lock this CLI already treats as ours under the exact
+        # holder string the box stored; see _stored_holder_if_ours.
+        holder = unlock_user or get_lock_holder()
+        user = _stored_holder_if_ours(ip, holder, user) or user
 
     try:
         from ...gateway_auth import auth_headers_for_box

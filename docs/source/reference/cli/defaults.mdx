@@ -55,9 +55,9 @@ lager defaults add [OPTIONS]
 
 **Other Options:**
 - `--serial-port PATH` - Default serial port path
-- `--user TEXT` - Username recorded on box locks. Use the same name as other
-  tools that lock boxes. A lock counts as yours only when both tools write the
-  identical holder string. See [Box Locking](/source/reference/cli/locking).
+- `--user TEXT` - Username recorded on box locks. Another tool can record a
+  lock under your email. To make that lock yours, set this to that email. See
+  [Box Locking](/source/reference/cli/locking).
   The `LAGER_USER` environment variable overrides this default.
 
 **Examples:**
