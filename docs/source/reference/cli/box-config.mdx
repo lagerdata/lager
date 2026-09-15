@@ -238,6 +238,21 @@ lager box-config env set LAGER_DISABLE_UART_SERVICE=1 --box my-lager-box
 lager box-config apply --box my-lager-box
 ```
 
+**`LAGER_MCP_NO_PUBLISH`.** Set this variable to `1`, `true` or `yes` to stop
+publishing port 8100 on the host. The MCP server still runs inside the container,
+and every other port stays published. The MCP server performs no authentication,
+so use this variable to take it off the network. Clients on the `lagernet` Docker
+network still reach it.
+
+The variable has no effect in network mode `host`, where the container binds host
+port 8100 directly. `lager box-config apply` reports the port it stopped
+publishing. Box software that predates the variable accepts it and ignores it.
+
+```bash
+lager box-config env set LAGER_MCP_NO_PUBLISH=1 --box my-lager-box
+lager box-config apply --box my-lager-box
+```
+
 ### `network-mode`
 
 The docker network the box container runs on. Defaults to `lagernet`; the only

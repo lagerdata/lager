@@ -132,7 +132,7 @@ flowchart TB
 | 5000 | HTTP | Yes | Python execution service: receives uploaded scripts and runs them as subprocesses |
 | 8301 | HTTP | Yes | Alias of port 5000, kept for backward compatibility |
 | 8765 | WebSocket | Yes | Debug sessions (GDB, flash, reset) |
-| 8100 | HTTP | Yes | MCP service for AI tool integration |
+| 8100 | HTTP | Yes | MCP service for AI tool integration. Not published when `LAGER_MCP_NO_PUBLISH` is set |
 | 8080 | Flask | Yes | Hardware service: instrument control via the Device proxy, called by the port 9000 API |
 | 8081 | HTTP | Yes (if PicoScope present) | Oscilloscope streaming UI |
 | 8082-8085 | TCP / WebSocket | Yes (if PicoScope present) | Oscilloscope daemon (commands, browser streaming, database streaming, CLI WebSocket) |

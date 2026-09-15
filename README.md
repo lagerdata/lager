@@ -173,7 +173,8 @@ drive hardware or run commands on the box.
 
 The MCP server performs no authentication. Keep port 8100 on a trusted network.
 Do not forward it through a gateway or a public proxy. A box started with
-`--no-publish` does not publish port 8100 on the host. The
+`--no-publish` does not publish port 8100 on the host. To keep only port 8100 off
+the host, set `LAGER_MCP_NO_PUBLISH=1` with `lager box-config env set`. The
 [MCP reference](https://docs.lagerdata.com/source/reference/mcp/overview) tells
 you how to reach the server on such a box.
 

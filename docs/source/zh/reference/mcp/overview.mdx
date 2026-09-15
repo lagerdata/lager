@@ -47,6 +47,8 @@ AI agent  ──  lager python path/to/test.py --box <box-ip>  ──▶  Hardwa
 MCP 服务器仍然运行，并在容器内绑定 `0.0.0.0:8100`，但只能在内部的 `lagernet` Docker 网络上访问 —— 宿主机端口由反向代理拥有。在这样的 Box 上，请把客户端指向容器的 `lagernet` 地址，因为 `<box-ip>:8100` 连不上。请不要把端口 8100 经由该代理对外暴露，因为 MCP 服务器不做任何认证。
 
 该模式通过 `/etc/lager/no_publish` 在重启之间保留，`start_box.sh --publish` 会清除它。每次运行结束时，`start_box.sh` 都会报告该 Box 处于哪种模式。
+
+若只想让端口 8100 不在宿主机上发布，请用 `lager box-config env set` 设置 `LAGER_MCP_NO_PUBLISH=1` 并应用。其他端口照常发布。请参阅 [`lager box-config`](/source/zh/reference/cli/box-config)。
 </Note>
 
 ## 智能体能看到什么

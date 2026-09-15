@@ -686,6 +686,9 @@ def _validate_env(raw: Dict[str, Any]) -> List[str]:
     #   LAGER_DISABLE_UART_SERVICE truthy ("1"/"true"/"yes") skips the
     #                              port-9000 box_http_server so customers can
     #                              run their own service on that port
+    #   LAGER_MCP_NO_PUBLISH       truthy ("1"/"true"/"yes") keeps port 8100
+    #                              off the host; start_box.sh still runs the
+    #                              MCP server inside the container
     errors: List[str] = []
     env = raw.get("env")
     if env is None:

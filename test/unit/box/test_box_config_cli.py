@@ -375,6 +375,25 @@ class BounceExitCodeClassification(unittest.TestCase):
         self.assertEqual(len(lines), 1)
         self.assertIn("9000", lines[0])
 
+    def test_package_relay_reports_the_unpublished_mcp_port(self):
+        # Same reason as port 9000: LAGER_MCP_NO_PUBLISH is applied box-side.
+        stdout = (
+            "Not publishing port 8100 (LAGER_MCP_NO_PUBLISH set; "
+            "the MCP server runs inside the container only)\n"
+        )
+        lines = box_config_cli._render_package_lines(stdout, "")
+        self.assertEqual(len(lines), 1)
+        self.assertIn("8100", lines[0])
+
+    def test_package_relay_reports_that_host_mode_ignores_the_mcp_opt_out(self):
+        stdout = (
+            "[WARNING] LAGER_MCP_NO_PUBLISH has no effect in network mode 'host': "
+            "the MCP server listens on host port 8100 directly\n"
+        )
+        lines = box_config_cli._render_package_lines(stdout, "")
+        self.assertEqual(len(lines), 1)
+        self.assertIn("no effect", lines[0])
+
 
 class ApplyRollback(unittest.TestCase):
     """Rollback uses direct SSH file ops (not the shim) because the
