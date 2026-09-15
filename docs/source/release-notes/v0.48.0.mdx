@@ -1,0 +1,134 @@
+---
+title: "Version 0.48.0"
+description: "September 15, 2026"
+---
+
+## <u>Upgrade Notes</u>
+
+- **`lager install` exits `1` when it cannot record what it installed.** After the deploy,
+  install writes `/etc/lager/version`, `/etc/lager/ref` and the build hash on the box. Before
+  this version, install ignored a failed write and printed success, so `lager hello` showed the
+  previous release. Install now checks each write and reads the version file back. On a failure,
+  it names the file, prints the manual fix, and exits `1`. In that case, the box runs the new
+  software. A script that reads any non-zero exit as a failed deploy must check the message.
+  Install now writes these files with mode `0644`, owned by the login user. Before, the version
+  file was root-owned with mode `0666`.
+
+- **The `lager-cli` wheel no longer contains the `cli.vendor` package.** That package held a
+  vendored copy of the PyCRC library. Code that imports `cli.vendor.PyCRC` now fails with
+  `ModuleNotFoundError`. For the same CRC-16/CCITT-FALSE value, call
+  `binascii.crc_hqx(data, 0xFFFF)` from the Python standard library.
+
+## <u>Features</u>
+
+- **`lager nets add --interface` puts an FTDI `gpio`, `i2c` or `spi` net on any channel of its
+  part.** An FT2232H has channels `A` and `B`, and an FT4232H has channels `A` to `D`. The
+  command refuses a channel that the part does not have for that net type. I2C and SPI need
+  MPSSE, so an FT4232H carries them on channels `A` and `B` only. A net without `--interface`
+  uses channel `A`. The same pin on two channels makes two different nets. The box must run this
+  version, so run `lager update` first. See the [nets reference](/source/reference/cli/nets).
+
+- **`lager boxes` shows each box as it answers.** The command queries all boxes in parallel, so
+  a box that is powered off or in an update costs only its own timeout. On a terminal, the table
+  appears at once and fills in as replies arrive. Each unanswered row shows a spinner, and a
+  countdown shows the time that remains. Press `Ctrl+C` to stop the wait and keep the replies
+  that arrived. The other boxes show `cancelled`. Piped output does not change.
+
+- **The documentation is available in Simplified Chinese.** A language selector in the
+  navigation bar switches the site between English and Simplified Chinese. All 118 guide and
+  reference pages have a translation. Release notes stay in English only.
+
+## <u>Bug Fixes</u>
+
+- **FT2232H and FT4232H `gpio`, `i2c` and `spi` nets did not open the part that they name.**
+  The I2C and SPI dispatchers on the box refused both parts. `lager gpi` and `lager gpo` opened
+  every FTDI part as an FT232H on channel `A`. The box now opens the part and the channel that
+  the net names.
+
+- **`lager nets add` refused a second `debug` net on another channel of an FT2232H or
+  FT4232H.** For example, it refused `NRF52840_XXAA@B` next to `STM32F4x@A` on one part.
+  `lager nets add-all` and the Net Manager TUI already allowed one `debug` net per channel. Now
+  `lager nets add` allows it too.
+
+- **The first `lager boxes` against an access-gated box reported `no response`.** The first
+  request to a gated box gets a sign-in challenge, and Lager then sends the request again with a
+  token. That retry used a fixed 30-second budget, longer than the deadline of `lager boxes`. So
+  the command gave up on a box that still answered. The retry now uses the time budget of the
+  request that it replays.
+
+- **A DA1469x flash or erase failed when the flash loader did not start.** The loader sometimes
+  never reported ready, and the step stopped at its 10-second timeout. A fresh bring-up of the
+  loader usually clears the fault. The box now runs the whole loader bring-up up to three times
+  after a readiness timeout. The progress output names each failed attempt. Any other loader
+  error still fails on the first attempt. No timeout changes. The box must run this version.
+
+- **`lager install` reported a version that it did not write.** When the write to
+  `/etc/lager/version` failed, `lager hello` showed the previous release, and install still
+  printed success. Install now writes the version, ref and build hash without `sudo`, and checks
+  each write. See the Upgrade Notes for the new exit code.
+
+- **`lager install` stopped the box before it downloaded the box image.** The box was down for
+  the whole download, and a missed pull meant a build with an empty cache. Install now pulls the
+  pre-built image of a release while the old containers still run. When install builds the image
+  on the box instead, it keeps the Docker build cache for the next build.
+
+- **The box SSH key sync deleted keys that another key manager publishes.** Two managers that
+  publish from one key directory each keep a marked block in `authorized_keys`. The box sync
+  emptied the other block on every pass, and a peer that follows the same rule emptied the Lager
+  block in return. The sync now leaves every block that another manager marks unchanged. It
+  still drops a loose copy of a key that it publishes. The box must run this version.
+
+- **`lager ssh-setup` suggested a sudoers grant on a box that a control plane manages.** It gave
+  that advice when the key did not register in the key directory of the box. That grant lets a
+  box account add its own key, which no control plane approves or revokes. Now `ssh-setup` warns
+  that the key lasts only until the control plane rebuilds `authorized_keys`. Register your
+  public key with the control plane instead.
+
+## <u>Improvements</u>
+
+- **From the next release on, a box image pull downloads only the layers that the release
+  changes.** The release workflow now keeps its build cache in the container registry. This
+  release fills that cache, so its first pull is still a full download. `lager install` pulls a
+  release image by default, and `lager update` pulls one with `--pull`.
+
+- **The `lager-cli` package contains no third-party code.** The CLI computes its HDLC frame
+  checksum with `binascii.crc_hqx` from the Python standard library. The wheel and the sdist now
+  include the full text of the Apache License 2.0.
+
+## <u>Known Limitations</u>
+
+- **The Net Manager TUI has no channel picker.** It adds an FT2232H or FT4232H net on channel
+  `A`. Use `lager nets add --interface` for another channel.
+
+- **`lager nets add-batch` drops the `params` of a net, including `interface`** (#516). Add
+  these nets one at a time with `lager nets add`.
+
+- **The channels of one FTDI part share one device lock.** Commands on two channels of one part
+  run one at a time.
+
+- **A slow auth server can delay gated boxes in `lager boxes`** (#539). When the auth server
+  does not answer, a gated box can show `no response`.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.48.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli==0.48.0
+```
+
+Then update your boxes:
+
+```bash
+lager update --box <box-name>
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.48.0/)
