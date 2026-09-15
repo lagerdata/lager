@@ -25,6 +25,13 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   server still runs inside the container, and the variable has no effect in
   network mode `host`.
 
+### Fixed
+
+- **`lager dac`, `lager adc`, `lager gpi` and `lager gpo` name the supported
+  instruments when they refuse a net's instrument.** A bare `LabJack`, which names
+  no model, and a `LabJack_T4` or `LabJack_T8`, which no driver supports, now get
+  an error that lists the models the net can use.
+
 ## [0.48.0] - 2026-09-15
 
 ### Added

@@ -47,12 +47,12 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 2154 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 2601 |
+| `unit (box)` | `test/unit/box/` | 2605 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 195 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 186 (+1 skipped) |
-| | **Total gated** | **5330** |
+| | **Total gated** | **5334** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -522,7 +522,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_jlink_uncached_verify.py` | DA1469x opt-in uncached QSPI post-program verify to detect false XIP failures |
 | `test_lager_package_identity.py` | Guards this suite's conftest invariant: `lager` must be the real on-disk package with its `__init__` executed, not a placeholder |
 | `test_labjack_batch_read.py` | `POST /labjack/batch_read`: locks on the same device identity `/invoke` does, and writes nothing to the instrument |
-| `test_labjack_model_routing.py` | LabJack model disambiguation across the DAC dispatcher, the LJM batch-read grouping and the device-lock identity: a non-T7 LabJack must reach none of the three T7 paths, and the T7's own routing is byte-for-byte unchanged |
+| `test_labjack_model_routing.py` | LabJack model disambiguation across the DAC dispatcher, the LJM batch-read grouping and the device-lock identity: a non-T7 LabJack must reach none of the three T7 paths, and the T7's own routing is byte-for-byte unchanged. Also that the ADC, DAC and GPIO dispatchers refuse a bare `LabJack`, a T4 or a T8 with an error that lists the supported models, and that every listed model routes to a driver |
 | `test_labjack_ud.py` | LabJack UD-series (U3) drivers and handle manager against a fake u3 module: pin-name mapping, device selection by serial, and the analog/digital pin mux -- which has no T7 counterpart and fails silently, since a line read in the wrong mode returns a plausible number rather than an error. Also the UD DAC's 0.04-4.95 V range and its absent readback. Also that the scanner omits FIO0-FIO3 from the U3's gpio channels -- they are the U3-HV's fixed high-voltage analog inputs, and while they were advertised a net on them was accepted and then failed at first use. Also the U3 SPI and I2C drivers against a fake `u3.spi()`/`u3.i2c()` written from the LabJackPython source rather than from the drivers: the odd-packet padding SPI must trim and I2C must not, the AckArray bit order (bit 0 is the LAST data byte, so a partially acknowledged write is non-zero and a ported `acks == 0` check would call it success), the unshifted address, the 50/50/52 byte limits, and a transaction that fails when a pin is left in analog mode -- with a negative control that neuters the mux call and asserts the transaction then breaks, so a pass cannot be coincidental |
 | `test_load_box_secrets.py` | `load_box_secrets()` returns `{}` on every failure, which makes an unreadable secrets file indistinguishable from a box with none configured -- pins that distinction |
 | `test_lock_state.py` | lock_state.py single source of truth for box-side lock behavior |

@@ -249,3 +249,31 @@ def resolve_net_proxy(
         "instrument": instrument,
     }
     return device_name, net_info, channel
+
+
+#: The instrument names the box scanner registers for each role below, in the
+#: form a saved net stores them. A refused net is told to use one of these, so
+#: every name listed must route to a driver (test_labjack_model_routing pins it).
+SUPPORTED_INSTRUMENTS: Dict[str, Tuple[str, ...]] = {
+    "adc": ("LabJack_T7", "LabJack_U3", "MCC_USB-202"),
+    "dac": ("LabJack_T7", "LabJack_U3", "MCC_USB-202"),
+    "gpio": ("LabJack_T7", "LabJack_U3", "MCC_USB-202",
+             "FTDI_FT232H", "FTDI_FT2232H", "FTDI_FT4232H", "Aardvark"),
+}
+
+
+def unsupported_instrument_message(role: str, instrument_name: Optional[str]) -> str:
+    """The error a dispatcher raises when no driver matches a net's instrument.
+
+    It names what the net could be set to instead. A bare ``LabJack`` gets its
+    own wording: it is a family, not a model, and the T7 and U3 need different
+    drivers, so no guess is safe.
+    """
+    supported = ", ".join(SUPPORTED_INSTRUMENTS[role])
+    label = role.upper()
+    name = (instrument_name or "").strip()
+    if re.fullmatch(r"labjack", name, re.IGNORECASE):
+        return (f"The {label} net's instrument is '{name}', which names no LabJack "
+                f"model. Set it to one of: {supported}.")
+    return (f"Unsupported instrument for {label} nets: '{instrument_name}'. "
+            f"Supported: {supported}.")
