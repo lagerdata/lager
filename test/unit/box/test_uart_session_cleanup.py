@@ -251,6 +251,85 @@ class UartReadLoopTests(unittest.TestCase):
         # The exiting thread still closed its own port
         self.assertGreaterEqual(driver.cleanup_calls, 1)
 
+    # Every teardown path sets the stop event and then closes the port under
+    # the read. The read failing after that is expected, not a read error.
+
+    def _fail_after_stop(self, driver, exc):
+        stop_event = self.stop_event
+
+        class _ClosedUnderRead(FakeConn):
+            def read(self, _size):
+                stop_event.set()  # teardown got there first
+                raise exc
+
+        driver.serial_conn = _ClosedUnderRead([], stop_event)
+
+    def test_a_port_closed_under_the_read_after_stop_is_not_a_read_error(self):
+        driver = FakeDriver(self.stop_event)
+        self._fail_after_stop(
+            driver, TypeError("'NoneType' object cannot be interpreted as an integer"))
+        self._register(driver)
+        with self.assertNoLogs(level='ERROR'):
+            self._run(driver)
+        self.assertEqual(self.sio.of('error'), [])
+        self.assertNotIn(self.SID, uart_handlers.active_uart_sessions)
+        self.assertGreaterEqual(driver.cleanup_calls, 1)
+
+    def test_in_waiting_failing_after_stop_is_not_a_read_error(self):
+        driver = FakeDriver(self.stop_event)
+        stop_event = self.stop_event
+
+        class _InWaitingOnClosedPort(FakeConn):
+            @property
+            def in_waiting(self):
+                stop_event.set()
+                raise TypeError("port closed")
+
+            @in_waiting.setter
+            def in_waiting(self, _value):
+                pass
+
+        driver.serial_conn = _InWaitingOnClosedPort([], stop_event)
+        self._register(driver)
+        with self.assertNoLogs(level='ERROR'):
+            self._run(driver)
+        self.assertEqual(self.sio.of('error'), [])
+
+    def test_a_device_gone_error_after_stop_does_not_reconnect(self):
+        driver = FakeDriver(self.stop_event, reconnect_result=True)
+        self._fail_after_stop(driver, GoneError('[Errno 19] No such device'))
+        self._register(driver)
+        self._run(driver)
+        self.assertEqual(driver.reconnect_calls, [])
+        self.assertEqual(self.sio.of('uart_status'), [])
+        self.assertEqual(self.sio.of('error'), [])
+
+    def test_a_type_error_without_stop_is_still_a_read_error(self):
+        # Only teardown excuses the failure; a real bug must still surface.
+        driver = FakeDriver(self.stop_event, script=[TypeError('real bug')])
+        self._register(driver)
+        self._run(driver)
+        errors = self.sio.of('error')
+        self.assertEqual(len(errors), 1)
+        self.assertIn('Read error', errors[0]['message'])
+
+
+class NetInUseErrorTests(unittest.TestCase):
+    def test_a_net_collision_names_the_requested_net_as_the_holder(self):
+        err = uart_handlers._net_in_use_error('uart1')
+        self.assertEqual(err['code'], 'net_in_use')
+        self.assertEqual(err['netname'], 'uart1')
+        self.assertEqual(err['held_by'], 'uart1')
+        self.assertIn("UART net 'uart1' is already in use", err['message'])
+
+    def test_a_device_collision_names_the_net_that_holds_the_device(self):
+        err = uart_handlers._net_in_use_error(
+            'uart2', holder_netname='uart1', device_path='/dev/ttyUSB0')
+        self.assertEqual(err['netname'], 'uart2')
+        self.assertEqual(err['held_by'], 'uart1')
+        self.assertIn('/dev/ttyUSB0', err['message'])
+        self.assertIn("'uart1'", err['message'])
+
 
 class StaleSessionReclaimTests(unittest.TestCase):
     """Auto-reclaim of a phantom UART session (registered, guarding its net,
@@ -578,6 +657,61 @@ class ReleaseSessionTests(unittest.TestCase):
             self.assertEqual(driver.cleanup_calls, 1)
         finally:
             stop.set()
+
+    # The read loop now exits quietly once the stop event is set, so a client
+    # displaced by --force no longer gets an accidental "Read error". It gets
+    # this notice instead, sent before the teardown.
+
+    class _RecordingSocketIO:
+        def __init__(self, stop):
+            self.stop = stop
+            self.emitted = []
+
+        def emit(self, event, payload, namespace=None, room=None):
+            self.emitted.append((event, payload, namespace, room, self.stop.is_set()))
+
+    def _with_socketio(self, stop):
+        fake = self._RecordingSocketIO(stop)
+        previous = uart_handlers._socketio
+        uart_handlers._socketio = fake
+        self.addCleanup(setattr, uart_handlers, '_socketio', previous)
+        return fake
+
+    def test_a_release_with_a_notice_tells_the_client_before_stopping(self):
+        stop = threading.Event()
+        self._register(stop)
+        session = uart_handlers.active_uart_sessions[self.SID]
+        sio = self._with_socketio(stop)
+
+        uart_handlers._release_session(
+            self.SID, session, 'force-released',
+            notify="UART net 'uart1' was taken over by another client")
+
+        self.assertEqual(sio.emitted, [(
+            'error',
+            {'message': "UART net 'uart1' was taken over by another client"},
+            '/uart', self.SID, False,
+        )])
+        self.assertTrue(stop.is_set())
+
+    def test_a_release_without_a_notice_sends_nothing(self):
+        stop = threading.Event()
+        self._register(stop)
+        session = uart_handlers.active_uart_sessions[self.SID]
+        sio = self._with_socketio(stop)
+
+        uart_handlers._release_session(self.SID, session, 'stale')
+
+        self.assertEqual(sio.emitted, [])
+
+    def test_the_force_release_route_sends_the_notice(self):
+        # The route is a closure inside register_uart_socketio's Flask app, so
+        # pin the call site in the source rather than drive the route.
+        source = open(
+            os.path.join(BOX_DIR, "lager", "http_handlers", "uart.py"),
+            encoding="utf-8",
+        ).read()
+        self.assertIn("was taken over by another client", source)
 
 
 if __name__ == "__main__":

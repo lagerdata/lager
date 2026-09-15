@@ -56,6 +56,13 @@ def _resolve_port(rec: dict[str, Any]) -> str:
     return str(port)
 
 
+#: Read timeout for drivers built here. The websocket session's read loop and
+#: the monitor streams notice a stop only when a read returns, so a stored or
+#: client-sent ``timeout`` must not stretch that. UARTNet.connect() builds its
+#: own bridge, so a script's ``timeout=`` still takes effect there.
+_SESSION_READ_TIMEOUT = 0.1
+
+
 def _make_driver(rec: dict[str, Any], overrides: dict[str, Any]):
     """
     Construct a UART bridge driver with the net configuration and overrides.
@@ -67,8 +74,9 @@ def _make_driver(rec: dict[str, Any], overrides: dict[str, Any]):
     port = _resolve_port(rec)
     params = rec.get("params", {})
 
-    # Merge params with overrides (overrides take precedence)
-    final_params = {**params, **overrides}
+    # Merge params with overrides (overrides take precedence); the read
+    # timeout is pinned, see _SESSION_READ_TIMEOUT.
+    final_params = {**params, **overrides, "timeout": _SESSION_READ_TIMEOUT}
 
     try:
         return UARTBridge(bridge_serial, port, device_path=device_path,
