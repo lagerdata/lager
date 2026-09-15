@@ -19,6 +19,11 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   a `repo_path` under `~/.lager_dut_docs/` when the project does not have it. A
   reference with no location is now skipped, with a warning, when the box's MCP
   server loads `bench.json`.
+- **`LAGER_MCP_NO_PUBLISH` keeps the MCP port off the host.** Set it with
+  `lager box-config env set LAGER_MCP_NO_PUBLISH=1` and apply the config, and the
+  box stops publishing port 8100 while every other port stays published. The MCP
+  server still runs inside the container, and the variable has no effect in
+  network mode `host`.
 
 ## [0.48.0] - 2026-09-15
 

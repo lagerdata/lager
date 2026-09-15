@@ -116,6 +116,10 @@ infrastructure on a trusted network:
   `ufw status` reports. On a box set to `lager box-config network-mode host`,
   the container publishes no ports, and UFW does govern the Lager ports. In
   either mode, put the box on a VPN or an isolated LAN, and rely on that.
+- **Keep the MCP server off a network you do not trust.** It performs no
+  authentication. Because the host firewall cannot filter a published port,
+  set `LAGER_MCP_NO_PUBLISH=1` with `lager box-config env set` to stop
+  publishing port 8100 while the box keeps its other ports.
 - **Rotate VPN auth keys** periodically.
 
 For deployments that need authenticated access, Lager supports placing an

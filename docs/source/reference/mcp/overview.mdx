@@ -67,6 +67,10 @@ authentication.
 The mode persists across restarts in `/etc/lager/no_publish`, and
 `start_box.sh --publish` clears it. At the end of each run, `start_box.sh`
 reports which mode the box is in.
+
+To keep only port 8100 off the host, set `LAGER_MCP_NO_PUBLISH=1` with
+`lager box-config env set` and apply it. Every other port stays published. See
+[`lager box-config`](/source/reference/cli/box-config).
 </Note>
 
 ## What the agent sees

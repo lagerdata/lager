@@ -2094,6 +2094,8 @@ _PACKAGE_SUMMARY_PREFIXES = (
     "No npm packages to install",
     "No pip packages to install",
     "Not publishing port 9000",
+    "Not publishing port 8100",
+    "[WARNING] LAGER_MCP_NO_PUBLISH has no effect",
 )
 _MAX_PACKAGE_LINES = 12
 

@@ -118,7 +118,7 @@ flowchart TB
 | 5000 | HTTP | 是 | Python 执行服务：接收上传的脚本并以子进程运行 |
 | 8301 | HTTP | 是 | 端口 5000 的别名，为向后兼容而保留 |
 | 8765 | WebSocket | 是 | 调试会话（GDB、烧录、复位） |
-| 8100 | HTTP | 是 | 用于 AI 工具集成的 MCP 服务 |
+| 8100 | HTTP | 是 | 用于 AI 工具集成的 MCP 服务。设置了 `LAGER_MCP_NO_PUBLISH` 时不发布 |
 | 8080 | Flask | 是 | 硬件服务：通过 Device 代理控制仪器，由端口 9000 的 API 调用 |
 | 8081 | HTTP | 是（存在 PicoScope 时） | 示波器串流 UI |
 | 8082-8085 | TCP / WebSocket | 是（存在 PicoScope 时） | 示波器守护进程（命令、浏览器串流、数据库串流、CLI WebSocket） |

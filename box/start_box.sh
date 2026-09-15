@@ -933,14 +933,22 @@ else
     echo "              sudo groupadd lager && sudo udevadm trigger"
 fi
 
-# LAGER_DISABLE_UART_SERVICE reaches the container through BOX_CONFIG_ENV
-# (sourced above), and start-services.sh already declines to launch
+# LAGER_DISABLE_UART_SERVICE and LAGER_MCP_NO_PUBLISH reach the container
+# through BOX_CONFIG_ENV (sourced above). Both are read here with the same
+# truthiness rule as start-services.sh.
+#
+# LAGER_DISABLE_UART_SERVICE: start-services.sh already declines to launch
 # box_http_server.py when it is truthy. That alone does not free port 9000:
 # docker-proxy binds a published port whether or not anything listens behind
 # it, so the host port stayed occupied and the flag did not deliver the one
-# thing it exists for. Read the same value here, with the same truthiness rule
-# as start-services.sh, and decline to publish the port too.
+# thing it exists for. Decline to publish the port too.
+#
+# LAGER_MCP_NO_PUBLISH: the MCP server keeps running inside the container, but
+# port 8100 is not published on the host. The server performs no
+# authentication, and --no-publish would take every other port with it.
+# --- BEGIN service publish opt-outs (run by test/unit/box/test_mcp_publish_opt_out.py) ---
 UART_SERVICE_DISABLED=0
+MCP_PUBLISH_DISABLED=0
 for _env_arg in "${BOX_CONFIG_ENV[@]}"; do
     case "$_env_arg" in
         LAGER_DISABLE_UART_SERVICE=*)
@@ -948,9 +956,15 @@ for _env_arg in "${BOX_CONFIG_ENV[@]}"; do
                 1|true|yes) UART_SERVICE_DISABLED=1 ;;
             esac
             ;;
+        LAGER_MCP_NO_PUBLISH=*)
+            case "$(echo "${_env_arg#LAGER_MCP_NO_PUBLISH=}" | tr '[:upper:]' '[:lower:]')" in
+                1|true|yes) MCP_PUBLISH_DISABLED=1 ;;
+            esac
+            ;;
     esac
 done
 unset _env_arg
+# --- END service publish opt-outs ---
 
 # Host port publishing. Empty under --no-publish: lagernet-only, a reverse
 # proxy on the same network owns the host ports.
@@ -962,13 +976,17 @@ if [ -z "$NO_PUBLISH" ] && [ "$BOX_CONFIG_NETWORK" != "host" ]; then
         -p 8301:5000
         -p 8080:8080
         -p 8081-8090:8081-8090
-        -p 8100:8100
         -p 8765:8765
         -p 2331-2342:2331-2342
         -p 4444-4447:4444-4447
         -p 6666-6669:6666-6669
         -p 9090-9097:9090-9097
     )
+    if [ "$MCP_PUBLISH_DISABLED" = "1" ]; then
+        echo "Not publishing port 8100 (LAGER_MCP_NO_PUBLISH set; the MCP server runs inside the container only)"
+    else
+        PORT_PUBLISH_ARGS+=(-p 8100:8100)
+    fi
     if [ "$UART_SERVICE_DISABLED" = "1" ]; then
         echo "Not publishing port 9000 (LAGER_DISABLE_UART_SERVICE set; port left free on the host)"
     else
@@ -976,6 +994,9 @@ if [ -z "$NO_PUBLISH" ] && [ "$BOX_CONFIG_NETWORK" != "host" ]; then
     fi
 elif [ "$BOX_CONFIG_NETWORK" = "host" ]; then
     echo "Port publishing skipped (network mode 'host'): the container binds host ports directly"
+    if [ "$MCP_PUBLISH_DISABLED" = "1" ]; then
+        echo "[WARNING] LAGER_MCP_NO_PUBLISH has no effect in network mode 'host': the MCP server listens on host port 8100 directly"
+    fi
 else
     echo "Port publishing disabled (--no-publish): container reachable via lagernet only"
 fi
@@ -1194,6 +1215,8 @@ fi
 echo "  - Python Execution Service: port 5000 (and 8301 for backwards compatibility)"
 if [ -n "$NO_PUBLISH" ]; then
     echo "  - MCP Server (AI): port 8100 (MCP clients: lagernet address, not <box-ip>)"
+elif [ "$MCP_PUBLISH_DISABLED" = "1" ] && [ "$BOX_CONFIG_NETWORK" != "host" ]; then
+    echo "  - MCP Server (AI): port 8100, NOT published on the host (LAGER_MCP_NO_PUBLISH set; MCP clients: lagernet address)"
 else
     echo "  - MCP Server (AI): port 8100 (MCP clients: http://<box-ip>:8100/mcp)"
 fi
