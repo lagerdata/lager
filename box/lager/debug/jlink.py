@@ -25,6 +25,14 @@ logger = logging.getLogger(__name__)
 # all. test_jlink_script_root_matches_probes pins the two together.
 _RUNTIME_DIR = '/tmp'
 
+
+# Mirrors ``probes.is_da1469x``, duplicated for the same reason as the runtime
+# root above. test_da1469x_predicate pins the two together.
+def _is_da1469x(device):
+    """True when *device* names a DA1469x-family part (see probes.is_da1469x)."""
+    return 'DA1469' in str(device or '').upper()
+
+
 # DA1469x external QSPI XIP default: 1 MiB at XIP base (matches common loader erase size).
 # Off-chip "offset 0" for the slot maps to CPU XIP 0x16000000 — Commander uses absolute XIP.
 # Loader-style "bank 0" targets this window; J-Link uses SetEnableFlashbank(<base>, 1) for that bank.
@@ -397,7 +405,7 @@ class JLink:
 
     def _is_da1469(self):
         """True if this J-Link target is a Dialog DA1469x device."""
-        return 'DA1469' in self._device().upper()
+        return _is_da1469x(self._device())
 
     def erase(self, start_addr, length, *, close=True):
         """

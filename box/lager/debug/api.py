@@ -1069,7 +1069,7 @@ def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None,
 
     time.sleep(1.0)  # Give JLinkExe time to fully disconnect
 
-    is_da1469 = 'DA1469' in (device or '').upper()
+    is_da1469 = _probes.is_da1469x(device)
 
     if is_da1469:
         # DA1469x: issue a software reset via J-Link Commander so the bootrom
