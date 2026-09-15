@@ -75,8 +75,7 @@ Error: UART net 'SERIAL1' is already in use by another session
 To take over the net: lager uart SERIAL1 --force --box my-lager-box
 ```
 
-两个 Net 可能指向同一台设备。这种情况下，错误信息会改为指出设备路径：
-`UART device /dev/ttyUSB0 is already in use by another session`。
+两个 Net 可能指向同一台设备。这种情况下，错误信息会指出设备路径以及持有它的 Net：`UART device /dev/ttyUSB0 is already in use by net 'SERIAL2'`。接管命令中给出的也是那个 Net。
 
 向 Box 查询谁持有什么：
 
@@ -112,17 +111,17 @@ SERIAL1   /dev/ttyUSB0    connected   running
 lager uart SERIAL1 --force --box my-lager-box
 ```
 
-`--force` 会释放持有该 Net 的每一个会话，然后再连接。如果它确实释放了某个会话，会打印 `Released the session that held 'SERIAL1'`；如果没有任何会话持有该 Net，则什么也不打印。被您顶替的那个会话会停止接收数据，并可能显示
-`Error: Read error: ...`。
+`--force` 会释放持有该 Net 的每一个会话，然后再连接。如果它确实释放了某个会话，会打印 `Released the session that held 'SERIAL1'`；如果没有任何会话持有该 Net，则什么也不打印。被您顶替的那个会话会停止接收数据，并打印
+`Error: UART net 'SERIAL1' was taken over by another client`。
 
-`--force` 只作用于您指名的那个 Net。如果错误信息指出的是设备路径，说明同一设备上的另一个 Net 持有它。请用 `--sessions` 找到那个 Net，然后按名称接管那个 Net。
+`--force` 只作用于您指名的那个 Net。如果错误信息指出的是设备路径，说明同一设备上的另一个 Net 持有它。请接管错误信息中指出的那个 Net。较旧的 Box 不会指出它，此时请用 `--sessions` 找到那个 Net。
 
 `--sessions` 在以下情况会打印一条消息而不是表格：
 
 - `No UART sessions are active on this box.` 没有会话持有任何 Net。
 - `This box does not report UART sessions; update it with lager update.`
   该 Box 版本低于 0.46.0，请运行 `lager update`。在这样的 Box 上，
-  `--force` 不起作用，并且不会给出警告。
+  `--force` 会打印一条警告，说明该 Box 版本太旧，不支持它。
 
 <Note>
 `--force` 无法清除这个错误：
@@ -130,8 +129,8 @@ lager uart SERIAL1 --force --box my-lager-box
 </Note>
 
 <Note>
-与每一条 `lager uart` 命令一样，`--sessions` 和 `--force` 都会获取 Box 锁。如果另一位用户持有 Box 锁，它们会失败并报出
-`Error: Box 'my-lager-box' is locked by <holder>`。
+与每一条会建立连接的 `lager uart` 命令一样，`--force` 会获取 Box 锁。如果另一位用户持有 Box 锁，它会失败并报出
+`Error: Box 'my-lager-box' is locked by <holder>`。`--sessions` 不获取 Box 锁，因此在另一位用户持有 Box 锁时也可以使用。
 </Note>
 
 如果 Box 没有在 15 秒内启动该会话，命令会打印

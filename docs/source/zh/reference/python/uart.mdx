@@ -82,13 +82,14 @@ response = ser.readline()
 |-----------|------|-------------|
 | `baudrate` | `int` | 波特率（默认取自配置，或 115200） |
 | `bytesize` | `int` | 数据位（5、6、7 或 8） |
-| `parity` | `str` | 校验位：`'none'`、`'even'`、`'odd'`、`'mark'` 或 `'space'` |
+| `parity` | `str` | 校验位：`'none'`、`'even'`、`'odd'`、`'mark'` 或 `'space'`，或 pyserial 的 `'N'`、`'E'`、`'O'`、`'M'` 或 `'S'` |
 | `stopbits` | `float` | 停止位（1、1.5 或 2） |
+| `timeout` | `float` | 读取超时，单位为秒（默认 0.1）。`None` 表示一直等到有数据到达。 |
 
 **返回：** `serial.Serial` - 已连接的 pyserial 对象
 
 <Note>
-`connect()` 忽略 `timeout` 参数。端口总是以 0.1 秒的读取超时打开。若要更改它，请在返回的对象上设置 `ser.timeout`。不在上表中的 `parity` 值（例如 `'N'` 或 `'E'`）表示无校验。
+对于不在上表中的 `parity` 值，`connect()` 会抛出 `ValueError`。
 </Note>
 
 <Note>

@@ -141,11 +141,26 @@ def _fetch_uart_sessions(ctx: click.Context, box_ip: str):
         return [], True
 
 
+def _names_released_sessions(resp) -> bool:
+    """True when *resp* is the box's own answer to a force release.
+
+    A box with the release route answers 404 with a JSON body carrying
+    ``released`` when nothing held the net. A box without the route also
+    answers 404, but not with that body.
+    """
+    try:
+        body = resp.json()
+    except ValueError:
+        return False
+    return isinstance(body, dict) and 'released' in body
+
+
 def _release_uart_session(ctx: click.Context, box_ip: str, netname: str) -> bool:
     """Force-release whatever session is holding *netname*. True if one was.
 
-    Used by `--force`. A 404 means nothing held the net, which is a fine
-    outcome for a take-over -- the caller just proceeds to connect.
+    Used by `--force`. The box's own 404 means nothing held the net, which is a
+    fine outcome for a take-over -- the caller just proceeds to connect. A 404
+    or 405 from a box without the route means --force can do nothing there.
     """
     from ...gateway_auth import auth_headers_for_box
     from ...box_storage import _check_gateway
@@ -156,9 +171,9 @@ def _release_uart_session(ctx: click.Context, box_ip: str, netname: str) -> bool
         resp = _check_gateway(resp, box_ip)
         if resp.status_code == 200:
             return True
-        if resp.status_code == 404:
+        if resp.status_code == 404 and _names_released_sessions(resp):
             return False
-        if resp.status_code == 405:
+        if resp.status_code in (404, 405):
             click.secho(
                 "Warning: this box is too old to support --force; update it "
                 "with `lager update`.", fg='yellow', err=True)
@@ -418,13 +433,19 @@ def uart(ctx, netname, action, box, baudrate, bytesize, parity, stopbits, xonxof
     the net instead of connecting. --sessions reports which nets are currently
     held, and --force takes a held net over.
     """
-    # Resolve box to box IP
-    target_box, box_name = _resolve_box_with_name(ctx, box)
-
-    # Session listing needs no netname: it is a question about the box.
+    # Session listing needs no netname and no lock: it only reads which
+    # sessions hold a net. Under the box lock, a second user could not even see
+    # who held the net they were refused. _skip_lock_check because the plain
+    # resolver still refuses a box that another holder has locked.
     if list_sessions:
+        from ...box_storage import resolve_and_validate_box_with_name
+        target_box, _ = resolve_and_validate_box_with_name(
+            ctx, box, _skip_lock_check=True)
         display_uart_sessions(ctx, target_box)
         return
+
+    # Resolve box to box IP
+    target_box, box_name = _resolve_box_with_name(ctx, box)
 
     # If no netname provided, try to use default
     if not netname:

@@ -82,16 +82,15 @@ response = ser.readline()
 |-----------|------|-------------|
 | `baudrate` | `int` | Baud rate (default from config or 115200) |
 | `bytesize` | `int` | Data bits (5, 6, 7, or 8) |
-| `parity` | `str` | Parity: `'none'`, `'even'`, `'odd'`, `'mark'`, or `'space'` |
+| `parity` | `str` | Parity: `'none'`, `'even'`, `'odd'`, `'mark'`, or `'space'`, or pyserial's `'N'`, `'E'`, `'O'`, `'M'`, or `'S'` |
 | `stopbits` | `float` | Stop bits (1, 1.5, or 2) |
+| `timeout` | `float` | Read timeout in seconds (default 0.1). `None` waits until data arrives. |
 
 **Returns:** `serial.Serial` - Connected pyserial object
 
 <Note>
-`connect()` ignores a `timeout` argument. The port always opens with a read
-timeout of 0.1 seconds. To change it, set `ser.timeout` on the returned object.
-A `parity` value that is not in the table above, such as `'N'` or `'E'`, gives
-no parity.
+`connect()` raises `ValueError` for a `parity` value that is not in the table
+above.
 </Note>
 
 <Note>

@@ -205,3 +205,96 @@ def test_banner_identity_leaves_short_values_alone(value):
 def test_banner_identity_tolerates_a_missing_pin():
     # net_config.get("pin") can be absent; must not raise on a non-str.
     assert uart_cmd._shorten_identity(None) is None
+
+
+# ---------- --force against a box that cannot release ----------
+
+class _Resp:
+    def __init__(self, status_code, body=None):
+        self.status_code = status_code
+        self._body = body
+
+    def json(self):
+        if self._body is None:
+            raise ValueError("no JSON body")
+        return self._body
+
+
+def _release_with(monkeypatch, resp):
+    import cli.box_storage as box_storage
+    import cli.gateway_auth as gateway_auth
+    monkeypatch.setattr(uart_cmd.requests, 'delete', lambda *a, **k: resp)
+    monkeypatch.setattr(gateway_auth, 'auth_headers_for_box', lambda ip: {})
+    monkeypatch.setattr(box_storage, '_check_gateway', lambda r, ip, **k: r)
+    return uart_cmd._release_uart_session(None, '1.2.3.4', 'UART')
+
+
+def test_force_reports_a_released_session(monkeypatch, capsys):
+    resp = _Resp(200, {'released': ['sid'], 'netname': 'UART'})
+    assert _release_with(monkeypatch, resp) is True
+    assert capsys.readouterr().err == ''
+
+
+def test_force_on_a_current_box_with_nothing_held_is_silent(monkeypatch, capsys):
+    resp = _Resp(404, {'error': "No UART session is holding net 'UART'", 'released': []})
+    assert _release_with(monkeypatch, resp) is False
+    assert capsys.readouterr().err == ''
+
+
+def test_force_on_a_box_without_the_release_route_warns(monkeypatch, capsys):
+    # A box older than the route answers 404 with no such body. Saying nothing
+    # left the user facing the same in-use error with no hint why.
+    assert _release_with(monkeypatch, _Resp(404)) is False
+    assert 'too old to support --force' in capsys.readouterr().err
+
+
+def test_force_on_a_box_that_rejects_the_method_warns(monkeypatch, capsys):
+    assert _release_with(monkeypatch, _Resp(405)) is False
+    assert 'too old to support --force' in capsys.readouterr().err
+
+
+def test_in_use_hint_names_the_net_that_holds_the_device():
+    # Two nets on one device: releasing the requested net frees nothing, so
+    # the take-over command must name the holder the box reports.
+    client = _make_client(box_label='test-box')
+    fake = _fake_stderr()
+    with patch('sys.stderr', new=fake):
+        client._on_error({
+            'message': "UART device /dev/ttyUSB0 is already in use by net 'SERIAL1'",
+            'code': 'net_in_use',
+            'netname': 'SERIAL2',
+            'held_by': 'SERIAL1',
+        })
+    out = fake.buffer.getvalue().decode()
+    assert 'lager uart SERIAL1 --force --box test-box' in out
+
+
+# ---------- --sessions is read-only, so it takes no box lock ----------
+
+def test_sessions_does_not_take_the_box_lock(monkeypatch):
+    # Under the box lock, a second user could not even list who held the net
+    # they had just been refused.
+    import cli.box_storage as box_storage
+    from click.testing import CliRunner
+
+    calls = {}
+
+    def resolve_without_lock(ctx, box, **kwargs):
+        calls['kwargs'] = kwargs
+        return '1.2.3.4', 'b'
+
+    def locking_resolver(*_args, **_kwargs):
+        raise AssertionError('--sessions must not take the box lock')
+
+    monkeypatch.setattr(box_storage, 'resolve_and_validate_box_with_name',
+                        resolve_without_lock)
+    monkeypatch.setattr(uart_cmd, '_resolve_box_with_name', locking_resolver)
+    monkeypatch.setattr(uart_cmd, 'resolve_box_locked', locking_resolver)
+    monkeypatch.setattr(uart_cmd, 'display_uart_sessions',
+                        lambda ctx, ip: calls.setdefault('listed', ip))
+
+    result = CliRunner().invoke(uart_cmd.uart, ['--sessions', '--box', 'b'])
+
+    assert result.exit_code == 0, result.output
+    assert calls['kwargs'] == {'_skip_lock_check': True}
+    assert calls['listed'] == '1.2.3.4'

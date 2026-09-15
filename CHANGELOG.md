@@ -31,6 +31,15 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   instruments when they refuse a net's instrument.** A bare `LabJack`, which names
   no model, and a `LabJack_T4` or `LabJack_T8`, which no driver supports, now get
   an error that lists the models the net can use.
+- **Ending a `lager uart` session no longer logs a read error on the box.** A read
+  that fails because teardown closed the port is not reported, and a session that
+  `lager uart --force` displaces is told that another client took the net.
+- **`UARTNet.connect()` honors `timeout` and accepts pyserial's `N`, `E`, `O`, `M`
+  and `S` parity.** An unknown parity now raises `ValueError` instead of opening the
+  port with no parity.
+- **`lager uart --force` warns when the box is too old to release a session, and the
+  in-use hint names the net that holds the device.** `lager uart --sessions` no
+  longer takes the box lock, so it works while another user holds the box.
 
 ## [0.48.0] - 2026-09-15
 

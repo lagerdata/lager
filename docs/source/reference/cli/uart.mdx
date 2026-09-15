@@ -77,7 +77,8 @@ To take over the net: lager uart SERIAL1 --force --box my-lager-box
 ```
 
 Two nets can name the same device. In that case the error names the device path
-instead: `UART device /dev/ttyUSB0 is already in use by another session`.
+and the net that holds it: `UART device /dev/ttyUSB0 is already in use by net 'SERIAL2'`.
+The take-over command names that net too.
 
 Ask the box who holds what:
 
@@ -120,18 +121,18 @@ lager uart SERIAL1 --force --box my-lager-box
 `--force` releases every session that holds the net, and then connects. If it
 releases a session, it prints `Released the session that held 'SERIAL1'`. If
 nothing held the net, it prints nothing. The session that you displaced stops
-receiving data, and it can show `Error: Read error: ...`.
+receiving data and prints `Error: UART net 'SERIAL1' was taken over by another client`.
 
 `--force` acts only on the net that you name. If the error names a device path,
-another net on the same device holds it. Use `--sessions` to find that net, and
-take over that net by its name.
+another net on the same device holds it. Take over the net that the error names.
+An older box does not name that net, so use `--sessions` to find it.
 
 `--sessions` prints one of these messages instead of a table:
 
 - `No UART sessions are active on this box.` No session holds a net.
 - `This box does not report UART sessions; update it with lager update.` The box
-  is older than 0.46.0. Run `lager update`. On such a box, `--force` has no
-  effect and prints no warning.
+  is older than 0.46.0. Run `lager update`. On such a box, `--force` prints a
+  warning that the box is too old to support it.
 
 <Note>
 `--force` cannot clear this error:
@@ -141,9 +142,10 @@ the UART net. Stop that process first.
 </Note>
 
 <Note>
-`--sessions` and `--force` take the box lock, as every `lager uart` command does.
-If another user holds the box lock, they fail with
-`Error: Box 'my-lager-box' is locked by <holder>`.
+`--force` takes the box lock, as every `lager uart` command that connects does.
+If another user holds the box lock, it fails with
+`Error: Box 'my-lager-box' is locked by <holder>`. `--sessions` does not take the
+box lock, so it works while another user holds it.
 </Note>
 
 If the box does not start the session within 15 seconds, the command prints

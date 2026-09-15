@@ -199,7 +199,10 @@ class UARTWebSocketClient:
         # hint can carry the --box the user typed, which the box cannot know;
         # a box too old to send it just yields the bare message above.
         if data.get('code') == 'net_in_use':
-            netname = data.get('netname') or self.netname
+            # 'held_by' names the net holding the device. When two nets share
+            # one device it differs from the requested net, and releasing the
+            # requested net would free nothing, so the hint names the holder.
+            netname = data.get('held_by') or data.get('netname') or self.netname
             cmd = f"lager uart {netname} --force"
             if self.box_label:
                 cmd += f" --box {self.box_label}"
