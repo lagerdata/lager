@@ -12,58 +12,33 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+## [0.48.0] - 2026-09-15
+
 ### Added
 
 - **`lager nets add --interface` picks the FTDI channel for a `gpio`, `i2c` or
   `spi` net.** It refuses a channel that the part does not have for that net
   type, for example I2C on channel C of an FT4232H.
 
-- **The docs site carries a language selector.** `docs/docs.json` now groups the
-  navigation under `navigation.languages`, with English as the default and a
-  Simplified Chinese (`zh`) tree beside it. Mintlify renders the selector in the
-  navbar and serves each language as its own set of pages; a language shows only
-  the pages translated for it, so an untranslated page is absent rather than a
-  404. Translated pages live under `docs/source/zh/`, mirroring the English
-  filenames. All 118 publishable pages are translated: the ten Getting Started
-  pages, all 47 CLI reference pages, both MCP pages, Supported Instruments, and
-  the full Python API and Rust API references. Release notes are excluded on
-  purpose, because a dated record's value is that it still says what it said.
-  `tools/check_ste.py` exempts the directory: STYLE.md is a style for English
-  sentences, and none of its rules has a meaning in Mandarin.
+- **The docs site has a Simplified Chinese language selector.** All 118
+  publishable pages have a translation under `docs/source/zh/`, and release
+  notes stay in English only. A language lists only the pages translated for
+  it, so an untranslated page is absent rather than a 404.
 
-- **`tools/check_translations.py` holds each translation to the English page it
-  was made from, and to that page's shape.** `docs/translations.json` records the
-  SHA-256 of the English page as it read at translation time, and a mismatch
-  fails the build -- a stale translation is invisible to every other gate, since
-  the English page gains a flag while the translated page keeps the old one and
-  it still builds, still links, still renders. `--completeness` covers the other
-  half: a translation that arrived *incomplete* leaves the hash matching, so it
-  compares structure instead -- list items, headings, fenced blocks and table
-  rows, which mean the same thing in both languages where prose length does not.
-  Seven pages had silently dropped content, including a whole `## See Also`
-  section. It also reports a file that leaves a code fence open, which is how a
-  stray fence at the end of the English `cli/watt.mdx` turned up. `--reflow`
-  joins line breaks inside Chinese paragraphs, which render as a stray space
-  because Chinese has no space between characters; 882 had accumulated by habit.
-  `--progress` reports coverage, `--relink` points cross-references at the right
-  language, and `--record` stamps a page after you update it.
+- **`tools/check_translations.py` fails the docs build on a stale, incomplete
+  or hard-wrapped translation.** `docs/translations.json` records the SHA-256
+  of each English source page, and `--completeness` compares headings, list
+  items, fenced blocks and table rows. `--reflow`, `--relink` and `--record`
+  join wrapped lines, retarget links and stamp an updated page.
 
-- **`docs/TRANSLATION.md` is the terminology contract between languages.** It
-  fixes what stays in English (commands, flags, net names, error strings, and
-  the product nouns `Lager Box` and `Net`), which acronyms keep their English
-  form in running text (SWD, VISA, SCPI), and which terms take their ordinary
-  Chinese name (被测设备 for DUT, 模数转换器 for ADC). `Net` is deliberately not
-  translated: 网 reads as "network" to a Chinese reader, and these pages already
-  use 网络 and 网关 heavily for real networking.
+- **`docs/TRANSLATION.md` sets the terminology between languages.** Commands,
+  flags, net names, error strings and the nouns `Lager Box` and `Net` stay in
+  English.
 
 - **`lager boxes` shows each box as it answers, instead of after the slowest
-  one.** All boxes are queried at once, so a box that is powered off or
-  mid-update costs only its own timeout rather than delaying every row behind
-  it. On a terminal the table appears immediately and fills in as replies
-  arrive, with a spinner on each unanswered `status` and `locked by` cell and a
-  countdown for the boxes still outstanding. `Ctrl+C` stops the wait and keeps
-  whatever did answer, marking the rest `cancelled`. Piped output is unchanged:
-  the same final table, printed once.
+  one.** All boxes are queried at once, and on a terminal the table fills in
+  as replies arrive. `Ctrl+C` stops the wait, keeps whatever answered and
+  marks the rest `cancelled`; piped output is unchanged.
 
 ### Changed
 
@@ -72,6 +47,10 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   cache in the container registry, where the next release can read it. The
   first pull of this release is still a full download, because this release
   fills the new cache.
+- **The `lager-cli` wheel contains no third-party code.** The CLI's HDLC
+  framing computes its CRC with `binascii.crc_hqx`, so the vendored PyCRC copy
+  and the `cli.vendor` package are gone. The wheel and sdist now ship the full
+  Apache License 2.0 text.
 
 ### Fixed
 
@@ -88,24 +67,10 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   FT2232H or FT4232H**, such as `STM32F4x@A` and `NRF52840_XXAA@B`. It refused
   any second debug net on the address, although `add-all` and the TUI allowed
   one per channel.
-- **A DA1469x flash_loader that never starts is now restarted, not reported.**
-  With dropped reads no longer ending a flash, what was left on the same HIL
-  bench was the loader itself: `mdw fl_state` answered `0` successfully for the
-  whole 10-second budget and the step died with `flash_loader boot
-  (fl_state==1): timed out after 10.0s`. That is a loader that did not start,
-  not a loader that is slow -- across 30 successful flashes the step landed in
-  a 4-second spread that also holds USB enumeration and a battery settle, so
-  there is no slow-but-eventually-ready population to widen a timeout for, and
-  all 13 observed failures cleared on a fresh pass. `_prepare_loader` now runs
-  its whole sequence again on a readiness timeout -- POR poke, `reset halt`,
-  reload of `flash_loader.elf.bin`, breakpoint dance, MPU disable, poll -- up
-  to three times, and says in its progress output which attempt failed and
-  why. Only that timeout is retried; a failed image load, a missing loader
-  symbol or an OpenOCD error still reaches the caller on the first attempt.
-  When all three attempts are spent, the error names the count and what the
-  last one saw. No timeout constant changed. This was ~18% of bring-ups on the
-  bench, recoverable until now only by a caller willing to redo the whole
-  60-second flash step.
+- **A DA1469x flash or erase no longer fails when the flash_loader does not
+  start.** The box reruns the whole loader bring-up up to three times on a
+  readiness timeout, and the progress output names each failed attempt. Any
+  other loader error still fails on the first attempt, and no timeout changed.
 - **`lager install` reported a version that it did not write.** When the write
   to `/etc/lager/version` failed, `lager hello` showed the previous release, and
   install still printed success. Install now records the version, ref and build
@@ -115,6 +80,14 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   pulls a release's pre-built image while the old containers keep running. When
   install builds the image on the box instead, it keeps the Docker build cache
   for the next build.
+- **The box's SSH key sync no longer deletes keys inside another key manager's
+  marked block in `authorized_keys`.** Two managers that publish from the same
+  key directory emptied each other's block on every pass. A loose copy of a
+  published key outside any marked block is still dropped.
+- **`lager ssh-setup` no longer suggests a sudoers grant on a box that a
+  control plane manages.** When key registration fails there, it warns that
+  the key lasts only until the control plane rebuilds `authorized_keys`, and
+  tells you to register the public key with the control plane.
 
 ## [0.47.1] - 2026-09-11
 
