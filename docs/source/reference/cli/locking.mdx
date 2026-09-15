@@ -69,10 +69,29 @@ As a result, a later command in the same CI job treats the auto-lock of that job
 as its own. It does not release that lock. Holders that differ in run,
 attempt, job or runner keep distinct scopes, so they still exclude each other.
 
-The lock check that runs before a command also accepts a lock held by your plain
-user name. The auto-lock acquire compares scopes only. The box compares exact
-strings. `lager boxes unlock` sends your plain user name, so it cannot release a
-`ci:` auto-lock without `--force`.
+One rule decides whether a lock is yours. The lock check before a command, the
+auto-lock acquire and `lager boxes unlock` all use it. A lock is yours when its
+holder agrees with one of these:
+
+- Your holder string, or its scope.
+- Your plain user name. A `lager boxes lock` reservation by the runner account
+  of a CI job is an example.
+- Your user name, when the holder has the form `<origin>:<id>:<name>:<email>`
+  and `<email>` is that user name. The comparison ignores case. Another tool,
+  such as a control plane dashboard, can write a holder in this form.
+
+The box compares exact strings. Thus `lager boxes unlock` reads the lock first.
+If the lock is yours, unlock sends the holder string that the box stored.
+
+`lager boxes unlock` does not use the scope of a `ci:generic:<host>` holder. All
+CI jobs on that host share that scope. With the scope, unlock can release the
+live lock of a different job. Such a lock needs its exact holder, or `--force`.
+
+<Note>
+The Jenkins, Drone and Bitbucket scopes identify a build on a host, not a stage
+of the build. Parallel stages of one build on the same host thus share a lock.
+Unlock in one stage can release the lock of a different stage.
+</Note>
 
 ### Collision behavior
 
@@ -87,9 +106,9 @@ If you locked the box as yourself with `lager boxes lock` before you ran
 `lager python` on your computer, the CLI sees the lock as already-ours. It **does
 not release the lock on exit**, so your explicit reservation survives the test.
 
-Under CI, the auto-lock holder is a `ci:` string, not your user name. A plain
-`lager boxes lock` reservation therefore collides with it. The command waits
-`LAGER_LOCK_WAIT` seconds, then exits 1.
+The same applies under CI. The auto-lock holder is a `ci:` string, but a
+`lager boxes lock` reservation by the user name of the runner account is also
+yours. The command uses that reservation and does not release it.
 
 ### TTL & heartbeat
 
@@ -132,7 +151,7 @@ underneath a job that still runs.
 | Env var                       | Effect                                                                                                  |
 |-------------------------------|---------------------------------------------------------------------------------------------------------|
 | `LAGER_AUTO_LOCK_DISABLE=1`   | Skip auto-lock entirely. The command still checks for someone else's user lock but does not acquire. Any non-empty value disables auto-lock, including `0`. |
-| `LAGER_LOCK_WAIT=<seconds>`   | Override collision wait time. `0` = fail-fast (dev default), large value = patient queue (CI default). An unparseable value gives `0`, even in CI. |
+| `LAGER_LOCK_WAIT=<seconds>`   | Override collision wait time. `0` = fail-fast (dev default), large value = patient queue (CI default). A value that is not a whole number prints a warning, and the default for the environment applies. |
 | `LAGER_CI_OVERRIDE=<any>`     | Use the lock behavior of a user computer inside CI: the holder is your plain user name, and the default wait is `0`. |
 | `LAGER_LOCK_HOLDER=<string>`  | Override the holder identity. Useful when you intentionally want two jobs to share a single reservation. |
 | `LAGER_LOCK_TTL=<seconds>`    | Override the TTL the CLI writes. `LAGER_LOCK_TTL=none` = eternal (caller must `lager boxes unlock`).    |
@@ -160,16 +179,12 @@ lager boxes lock --box NAME
 - `--user` — username to lock as (useful when running inside Docker where
   the user is otherwise `root`).
 
-The box compares holder names as exact strings. The CLI compares them by scope,
-as described above. A lock is therefore yours on every surface that writes the
-same string. If another tool, such as a control plane dashboard, also locks this
-box, set `lager defaults add --user` to the name that the tool writes as the
-holder.
-
-Recognition works only when both tools write the same string. Some tools write
-the holder as `<origin>:<id>:<name>:<email>`. `lager boxes` shows that holder as
-`<name>`, but the comparison still uses the full string. Such a lock does not
-count as yours, and `lager boxes unlock` needs `--force`.
+The box compares holder names as exact strings. The CLI uses the rule in
+[How a command recognizes its own lock](#how-a-command-recognizes-its-own-lock).
+Another tool, such as a control plane dashboard, can lock this box and write the
+holder as `<origin>:<id>:<name>:<email>`. `lager boxes` shows that holder as
+`<name>`. To make such a lock yours, set your user name to that email with
+`lager defaults add --user` or `LAGER_USER`.
 
 **Example**:
 ```bash
@@ -188,13 +203,18 @@ Box 'my-lager-box' is already locked by bob (since 2026-03-20T13:00:00Z)
 ### `lager boxes unlock`
 
 ```bash
-lager boxes unlock --box NAME [--force]
+lager boxes unlock --box NAME [--user USER] [--force]
 ```
 
 **Options**:
 - `--box` (required) — name of the box to unlock.
+- `--user` — the holder to unlock as, for a lock recorded under a name other
+  than your user name.
 - `--force` — force unlock even if the box was locked by another user
   (use this to clear a stale `lager boxes lock` left by a teammate).
+
+Without `--force`, unlock reads the lock first. If the lock is yours by the rule
+above, unlock sends the holder string that the box stored.
 
 **Examples**:
 ```bash

@@ -175,7 +175,30 @@ class TestDefaultLockWaitSeconds:
 
     def test_env_garbage_falls_back_to_dev(self, monkeypatch):
         monkeypatch.setenv('LAGER_LOCK_WAIT', 'not-an-int')
+        monkeypatch.setattr(
+            'cli.context.ci_detection.get_ci_environment',
+            lambda: CIEnvironment.HOST,
+        )
         assert box_storage.default_lock_wait_seconds() == 0
+
+    def test_env_garbage_in_ci_keeps_the_ci_wait_and_warns(self, monkeypatch, capsys):
+        # It used to give 0 in CI too, turning a job that should queue for
+        # the box into one that failed on first contact.
+        monkeypatch.setattr(box_storage, '_lock_wait_warned', False)
+        monkeypatch.setenv('LAGER_LOCK_WAIT', 'thirty')
+        monkeypatch.setattr(
+            'cli.context.ci_detection.get_ci_environment',
+            lambda: CIEnvironment.GITHUB,
+        )
+        assert box_storage.default_lock_wait_seconds() == 1800
+        assert 'LAGER_LOCK_WAIT' in capsys.readouterr().err
+
+    def test_env_garbage_warns_once_per_process(self, monkeypatch, capsys):
+        monkeypatch.setattr(box_storage, '_lock_wait_warned', False)
+        monkeypatch.setenv('LAGER_LOCK_WAIT', 'thirty')
+        box_storage.default_lock_wait_seconds()
+        box_storage.default_lock_wait_seconds()
+        assert capsys.readouterr().err.count('LAGER_LOCK_WAIT') == 1
 
 
 # ---------------------------------------------------------------------------
@@ -562,21 +585,28 @@ class TestAutoLockAroundCommand:
     def test_already_ours_with_ttl_heartbeats_but_never_releases(self, monkeypatch):
         # Resuming a leftover ephemeral lock (crashed run): keep it alive
         # with a heartbeat so it can't TTL-expire mid-command, but still
-        # never release it.
+        # never release it. The heartbeat sends the holder the box stored,
+        # which ends in the pid of the process that took the lock: the box
+        # renews only for that exact string.
         released = []
+        renewed_as = []
         hb = mock.Mock(start=mock.Mock(), stop=mock.Mock())
         monkeypatch.setattr(
             box_storage, 'acquire_box_lock',
-            lambda *a, **k: ('already_ours', {'ttl_seconds': 1800}),
+            lambda *a, **k: ('already_ours',
+                             {'ttl_seconds': 1800, 'user': 'test-holder:111'}),
         )
         monkeypatch.setattr(
             box_storage, 'release_box_lock',
             lambda *a, **k: released.append(a) or True,
         )
         monkeypatch.setattr(
-            box_storage, 'get_lock_holder', lambda: 'test-holder',
+            box_storage, 'get_lock_holder', lambda: 'test-holder:222',
         )
-        monkeypatch.setattr(box_storage, 'HeartbeatThread', lambda *a, **k: hb)
+        monkeypatch.setattr(
+            box_storage, 'HeartbeatThread',
+            lambda ip, holder, *a, **k: renewed_as.append(holder) or hb,
+        )
 
         with box_storage.auto_lock_around_command(
             '10.0.0.1', 'lab-box', 'install',
@@ -586,6 +616,7 @@ class TestAutoLockAroundCommand:
         hb.start.assert_called_once()
         hb.stop.assert_called_once()
         assert released == []
+        assert renewed_as == ['test-holder:111']
 
     def test_already_ours_eternal_lock_gets_no_heartbeat(self, monkeypatch):
         # A pre-existing user lock (ttl null) needs no keep-alive.
@@ -869,19 +900,24 @@ class TestAutoLockAcquireForCommand:
 
     def test_already_ours_with_ttl_heartbeats_but_never_releases(self, monkeypatch):
         released = []
+        renewed_as = []
         hb = mock.Mock(start=mock.Mock(), stop=mock.Mock())
         monkeypatch.setattr(
             box_storage, 'acquire_box_lock',
-            lambda *a, **k: ('already_ours', {'ttl_seconds': 1800}),
+            lambda *a, **k: ('already_ours',
+                             {'ttl_seconds': 1800, 'user': 'test-holder:111'}),
         )
         monkeypatch.setattr(
             box_storage, 'release_box_lock',
             lambda *a, **k: released.append(a) or True,
         )
         monkeypatch.setattr(
-            box_storage, 'get_lock_holder', lambda: 'test-holder',
+            box_storage, 'get_lock_holder', lambda: 'test-holder:222',
         )
-        monkeypatch.setattr(box_storage, 'HeartbeatThread', lambda *a, **k: hb)
+        monkeypatch.setattr(
+            box_storage, 'HeartbeatThread',
+            lambda ip, holder, *a, **k: renewed_as.append(holder) or hb,
+        )
 
         release = box_storage.auto_lock_acquire_for_command(
             '10.0.0.1', 'lab-box', 'update',
@@ -891,6 +927,7 @@ class TestAutoLockAcquireForCommand:
         release()
         hb.stop.assert_called_once()
         assert released == [], "must not release a resumed lock"
+        assert renewed_as == ['test-holder:111'], "must renew as the stored holder"
 
     def test_already_ours_eternal_lock_gets_no_heartbeat(self, monkeypatch):
         def no_heartbeat(*a, **k):

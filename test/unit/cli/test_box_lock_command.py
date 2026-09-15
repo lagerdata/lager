@@ -19,9 +19,12 @@ lives only here:
     proceeds onto a box someone else holds.
   * the root warning, and `--user` overriding it.
   * `--force` reaching the wire on unlock.
+  * unlock sending the holder string the box stored, for a lock the CLI
+    already treats as ours, since the box releases only for that exact string.
 
-``resolve_and_validate_box_with_name`` and ``requests.post`` are patched on the
-lock module, so nothing resolves a real box or opens a socket.
+``resolve_and_validate_box_with_name``, ``requests.get`` and ``requests.post``
+are patched on the lock module, so nothing resolves a real box or opens a
+socket.
 """
 
 import unittest
@@ -33,6 +36,8 @@ from click.testing import CliRunner
 # import_module for the same reason as test_login_commands.py: the package
 # __init__ re-exports these as click Commands, shadowing the module name.
 lock_mod = import_module('cli.commands.box.lock')
+
+CI_HOLDER = 'ci:github:org/repo#123-1/hardware-tests@runner-1:{}'
 
 
 class FakeResponse:
@@ -57,9 +62,18 @@ class LockCommandTestCase(unittest.TestCase):
         mock.patch('cli.box_storage._check_gateway', side_effect=lambda r, ip: r).start()
         mock.patch('cli.gateway_auth.auth_headers_for_box',
                    return_value={'Authorization': 'Bearer tok'}).start()
+        # unlock reads the lock before it releases it. Default to an unlocked
+        # box so no test reaches the network by accident.
+        self.get = mock.patch.object(
+            lock_mod.requests, 'get',
+            return_value=FakeResponse(200, {'locked': False})).start()
+        mock.patch.object(lock_mod, 'get_lock_holder', return_value='ada').start()
 
     def post(self, response):
         return mock.patch.object(lock_mod.requests, 'post', return_value=response)
+
+    def locked_by(self, holder):
+        self.get.return_value = FakeResponse(200, {'locked': True, 'user': holder})
 
 
 class LockTests(LockCommandTestCase):
@@ -211,15 +225,76 @@ class UnlockTests(LockCommandTestCase):
         self.assertEqual(result.exit_code, 1)
         self.assertIn('did not answer', result.output)
 
-    def test_unlock_has_no_user_override(self):
-        """Asymmetry with `lock`, pinned deliberately.
+    # ---- releasing a lock the CLI already treats as ours ------------------
 
-        `lock --user` exists for the Docker-root case; `unlock` has no such
-        option and always uses the detected user, relying on --force instead.
+    def test_a_ci_jobs_own_auto_lock_is_released_under_its_stored_holder(self):
+        """The case that needed --force: same run and job, a later process.
+
+        `lager hello` treats this lock as the job's own, but the box releases a
+        lock only for the exact holder string it stored.
         """
-        result = self.runner.invoke(lock_mod.unlock,
-                                    ['--box', 'bench-1', '--user', 'ada'])
-        self.assertNotEqual(result.exit_code, 0)
+        self.locked_by(CI_HOLDER.format(111))
+        with self.post(FakeResponse(200)) as post:
+            with mock.patch.object(lock_mod, 'get_lager_user', return_value='runner'), \
+                    mock.patch.object(lock_mod, 'get_lock_holder',
+                                      return_value=CI_HOLDER.format(222)):
+                result = self.runner.invoke(lock_mod.unlock, ['--box', 'bench-1'])
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(post.call_args.kwargs['json']['user'], CI_HOLDER.format(111))
+        self.assertIs(post.call_args.kwargs['json']['force'], False)
+
+    def test_a_lock_another_tool_took_under_my_email_is_released(self):
+        stored = 'tool:5f0c:Ada Lovelace:ada@example.com'
+        self.locked_by(stored)
+        with self.post(FakeResponse(200)) as post:
+            with mock.patch.object(lock_mod, 'get_lager_user',
+                                   return_value='ada@example.com'):
+                self.runner.invoke(lock_mod.unlock, ['--box', 'bench-1'])
+        self.assertEqual(post.call_args.kwargs['json']['user'], stored)
+
+    def test_a_foreign_lock_is_sent_the_plain_user_and_refused_by_the_box(self):
+        self.locked_by('bob')
+        with self.post(FakeResponse(403, {'lock': {'user': 'bob'}})) as post:
+            with mock.patch.object(lock_mod, 'get_lager_user', return_value='ada'):
+                result = self.runner.invoke(lock_mod.unlock, ['--box', 'bench-1'])
+        self.assertEqual(post.call_args.kwargs['json']['user'], 'ada')
+        self.assertEqual(result.exit_code, 1)
+
+    def test_a_generic_ci_scope_does_not_release_a_sibling_jobs_lock(self):
+        # Every CI job on one host shares ci:generic:<host>; only an exact
+        # holder may release that lock without --force.
+        self.locked_by('ci:generic:runner-host:111')
+        with self.post(FakeResponse(403, {'lock': {'user': 'x'}})) as post:
+            with mock.patch.object(lock_mod, 'get_lager_user', return_value='runner'), \
+                    mock.patch.object(lock_mod, 'get_lock_holder',
+                                      return_value='ci:generic:runner-host:222'):
+                self.runner.invoke(lock_mod.unlock, ['--box', 'bench-1'])
+        self.assertEqual(post.call_args.kwargs['json']['user'], 'runner')
+
+    def test_a_lock_read_that_fails_falls_back_to_the_plain_user(self):
+        self.get.side_effect = lock_mod.requests.exceptions.ConnectionError('refused')
+        with self.post(FakeResponse(200)) as post:
+            with mock.patch.object(lock_mod, 'get_lager_user', return_value='ada'):
+                result = self.runner.invoke(lock_mod.unlock, ['--box', 'bench-1'])
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(post.call_args.kwargs['json']['user'], 'ada')
+
+    def test_force_does_not_read_the_lock(self):
+        with self.post(FakeResponse(200)):
+            with mock.patch.object(lock_mod, 'get_lager_user', return_value='ada'):
+                self.runner.invoke(lock_mod.unlock, ['--box', 'bench-1', '--force'])
+        self.get.assert_not_called()
+
+    def test_unlock_accepts_a_user(self):
+        """`--user` names the holder, for a lock recorded under another name."""
+        self.locked_by('bench-reservation')
+        with self.post(FakeResponse(200)) as post:
+            with mock.patch.object(lock_mod, 'get_lager_user', return_value='ada') as g:
+                result = self.runner.invoke(
+                    lock_mod.unlock, ['--box', 'bench-1', '--user', 'bench-reservation'])
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(post.call_args.kwargs['json']['user'], 'bench-reservation')
+        g.assert_not_called()
 
 
 class BothCommandsTests(LockCommandTestCase):
@@ -240,6 +315,7 @@ class BothCommandsTests(LockCommandTestCase):
                     with mock.patch.object(lock_mod, 'get_lager_user', return_value='ada'):
                         self.runner.invoke(cmd, ['--box', 'bench-1'])
                 self.assertEqual(post.call_args.kwargs['timeout'], 5)
+        self.assertEqual(self.get.call_args.kwargs['timeout'], 5)
 
 
 if __name__ == '__main__':

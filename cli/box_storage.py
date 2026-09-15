@@ -500,6 +500,71 @@ def lock_scope(identity):
     return _LOCK_PID_RE.sub('', identity)
 
 
+def holder_email(stored):
+    """The email in a holder written by another tool, or None.
+
+    Such a holder reads ``<origin>:<id>:<name>:<email>``, the shape
+    ``format_lock_user`` parses to display the name; this reads the same shape
+    the same way. ``ci:`` holders are never read as one: a GitLab holder such
+    as ``ci:gitlab:group/p#9/job:42@runner.example.com`` also splits on colons
+    into parts whose last one contains an ``@``.
+    """
+    if not stored or stored.startswith('ci:'):
+        return None
+    parts = stored.split(':')
+    if (len(parts) == 4 and parts[0] and parts[1] and parts[2]
+            and '@' not in parts[2] and '@' in parts[3]):
+        return parts[3]
+    return None
+
+
+def holder_is_ours(stored, holder, user, *, coarse_scope_ok=True):
+    """Is the lock stored under ``stored`` one that ``holder``/``user`` may use?
+
+    The one rule every holder comparison on the CLI goes through: the
+    pre-command check, the three decisions in ``acquire_box_lock``, and
+    ``lager boxes unlock``. It is true when ``stored`` is:
+
+    - exactly ``holder``;
+    - the same scope as ``holder``, meaning the same CI run, attempt, job and
+      runner from a different process (see ``lock_scope``);
+    - exactly ``user``, the plain name that ``lager boxes lock`` and
+      ``test/framework/harness.sh`` record; or
+    - a holder another tool wrote whose email is ``user``, ignoring case.
+
+    ``coarse_scope_ok=False`` refuses a scope match on ``ci:generic``, which
+    every CI job on one host shares. Unlock passes it so it never releases a
+    sibling job's live lock; an exact match still counts.
+    """
+    if not stored:
+        return False
+    if holder and stored == holder:
+        return True
+    if holder and lock_scope(stored) == lock_scope(holder):
+        if coarse_scope_ok or not stored.startswith('ci:generic:'):
+            return True
+    if user and stored == user:
+        return True
+    email = holder_email(stored)
+    return bool(email and user and '@' in user
+                and email.casefold() == user.casefold())
+
+
+def heartbeat_holder(state, lock_data, holder):
+    """The holder string a heartbeat for this lock must send.
+
+    The box renews a lock only for the exact holder string it stored. A lock
+    this process resumed (``already_ours``) was stored under another
+    process's holder, so renewing it under ``holder`` was refused with 403,
+    quietly, and the lock expired while the command was still running.
+    """
+    if state == 'already_ours':
+        stored = (lock_data or {}).get('user')
+        if stored:
+            return stored
+    return holder
+
+
 def _lock_held_by_self(locked_by):
     """Is ``locked_by`` a lock this process is entitled to use?
 
@@ -511,9 +576,7 @@ def _lock_held_by_self(locked_by):
     bug is invisible on a dev machine because ``get_lock_holder()`` falls back
     to ``get_lager_user()`` there, making both arms the same string.
     """
-    if lock_scope(locked_by) == lock_scope(get_lock_holder()):
-        return True
-    return locked_by == get_lager_user()
+    return holder_is_ours(locked_by, get_lock_holder(), get_lager_user())
 
 
 # Boxes we've already warned about missing :9000 lock support (old images);
@@ -599,18 +662,34 @@ _DEFAULT_LOCK_TTL_SECONDS = 1800
 _DEFAULT_HEARTBEAT_INTERVAL = 60
 
 
+# An unparseable LAGER_LOCK_WAIT is reported once per process, not per acquire.
+_lock_wait_warned = False
+
+
 def default_lock_wait_seconds():
     """Default ``wait_seconds`` for :func:`acquire_box_lock`.
 
     ``LAGER_LOCK_WAIT`` env var wins. Otherwise CI gets a long wait so matrix
     jobs queue, and dev gets fail-fast so a typo doesn't silently block.
+
+    A value that is not a whole number warns once and falls back to that
+    environment default. It used to give 0 even in CI, which quietly turned a
+    job that should queue for the box into one that failed on first contact.
     """
+    global _lock_wait_warned
     env = os.getenv('LAGER_LOCK_WAIT')
     if env is not None:
         try:
             return max(0, int(env))
         except ValueError:
-            return _DEFAULT_LOCK_WAIT_DEV
+            if not _lock_wait_warned:
+                _lock_wait_warned = True
+                import click
+                click.secho(
+                    f"Warning: LAGER_LOCK_WAIT={env!r} is not a whole number "
+                    f"of seconds. The default wait applies.",
+                    fg='yellow', err=True,
+                )
     try:
         from .context.ci_detection import get_ci_environment, CIEnvironment
         if get_ci_environment() != CIEnvironment.HOST:
@@ -827,6 +906,10 @@ def acquire_box_lock(
     import click
     import requests
 
+    # Every "is this lock ours?" below goes through holder_is_ours, the rule
+    # the pre-command check uses too, so the two can no longer disagree.
+    user = get_lager_user()
+
     # Check the lock state BEFORE posting an acquire. If the box is already
     # locked by us (a pre-existing `lager boxes lock`), we must not touch it
     # at all: a re-acquire POST would let the server rewrite the lock's
@@ -842,10 +925,11 @@ def acquire_box_lock(
                 pre_data = pre.json()
             except ValueError:
                 pre_data = {}
-            # Scope, not raw equality: the stored holder ends in the pid of
-            # whichever process took the lock, and this is a later one.
+            # Not raw equality: the stored holder can end in the pid of an
+            # earlier process of this job, be the plain user of a `lager boxes
+            # lock` reservation, or be a holder another tool wrote.
             if pre_data.get('locked') and \
-                    lock_scope(pre_data.get('user', '')) == lock_scope(holder):
+                    holder_is_ours(pre_data.get('user', ''), holder, user):
                 return ('already_ours', pre_data)
     except requests.exceptions.RequestException:
         # Unreachable for the GET; let the POST loop below produce the
@@ -888,7 +972,7 @@ def acquire_box_lock(
                 # pre-existing lock of ours, so reaching a 200 here means
                 # we genuinely created the lock.
                 state = 'acquired'
-            elif lock_scope(previous_holder) == lock_scope(holder):
+            elif holder_is_ours(previous_holder, holder, user):
                 state = 'already_ours'
             else:
                 state = 'acquired'
@@ -902,11 +986,12 @@ def acquire_box_lock(
             lock_info = data.get('lock', {}) or {}
             other = lock_info.get('user', 'unknown')
 
-            # A 409 naming our own scope means the pre-acquire GET raced, or
-            # the box did not report the lock on that GET. Waiting here blocks
-            # for LAGER_LOCK_WAIT -- 1800s under CI -- on a lock this job
-            # already holds, which is how a refusal became a half-hour stall.
-            if lock_scope(other) == lock_scope(holder):
+            # A 409 naming a lock that is ours means the pre-acquire GET raced,
+            # or the box did not report the lock on that GET. Waiting here
+            # blocks for LAGER_LOCK_WAIT -- 1800s under CI -- on a lock this
+            # job may already use, which is how a refusal became a half-hour
+            # stall.
+            if holder_is_ours(other, holder, user):
                 return ('already_ours', lock_info or data)
 
             now = time.monotonic()
@@ -1451,7 +1536,9 @@ def auto_lock_around_command(
         if (should_release and resolved_ttl is not None) or resumed_ttl is not None:
             heartbeat = HeartbeatThread(
                 ip,
-                resolved_holder,
+                # A resumed lock renews under the holder the box stored, since
+                # the box renews a lock only for that exact string.
+                heartbeat_holder(state, lock_data, resolved_holder),
                 heartbeat_interval or default_heartbeat_interval(),
                 warn_label=f'{command_name} lock heartbeat',
                 # The TTL the warning is measured against is whichever one
@@ -1645,7 +1732,7 @@ def auto_lock_acquire_for_command(
         if resolved_ttl is not None:
             heartbeat = HeartbeatThread(
                 ip,
-                resolved_holder,
+                heartbeat_holder(state, lock_data, resolved_holder),
                 heartbeat_interval or default_heartbeat_interval(),
                 warn_label=f'{command_name} lock heartbeat',
                 # Same as the `with` variant: the warning is measured against
@@ -1664,7 +1751,9 @@ def auto_lock_acquire_for_command(
         # ttl null and skip this branch.
         heartbeat = HeartbeatThread(
             ip,
-            resolved_holder,
+            # The stored holder, not ours: it ends in the pid of the process
+            # that took the lock, and the box renews only for that string.
+            heartbeat_holder(state, lock_data, resolved_holder),
             heartbeat_interval or default_heartbeat_interval(),
             warn_label=f'{command_name} lock heartbeat',
             # The resumed lock's own TTL, not ours — we are keeping someone

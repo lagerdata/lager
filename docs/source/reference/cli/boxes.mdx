@@ -310,12 +310,15 @@ lager boxes lock --box my-lager-box
 Unlock a box to allow other users to use it. See [Box Locking](/source/reference/cli/locking) for full details.
 
 ```bash
-lager boxes unlock --box NAME [--force]
+lager boxes unlock --box NAME [--user USER] [--force]
 ```
 
 **Options:**
 - `--box` (required) - Name of the box to unlock
+- `--user` - Holder to unlock as, for a lock recorded under a name other than your user name
 - `--force` - Force unlock even if locked by another user
+
+Without `--force`, unlock releases a lock that the CLI counts as yours, such as the automatic lock of your own CI job.
 
 **Examples:**
 ```bash
