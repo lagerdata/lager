@@ -72,7 +72,8 @@ class ADCDispatcher(BaseDispatcher):
         if re.search(r"mcc[_\-\s]*usb[_\-]?202", inst, re.IGNORECASE):
             return USB202ADC
 
-        raise self._make_error(f"Unsupported instrument for ADC nets: '{instrument_name}'.")
+        from lager.dispatchers.helpers import unsupported_instrument_message
+        raise self._make_error(unsupported_instrument_message(self.ROLE, instrument_name))
 
     def _make_error(self, message: str) -> Exception:
         """Create an ADCBackendError with the given message."""

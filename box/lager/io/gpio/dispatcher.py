@@ -76,7 +76,8 @@ class GPIODispatcher(BaseDispatcher):
             _debug("No instrument specified, defaulting to LabJack T7")
             return LabJackGPIO
 
-        raise self._make_error(f"Unsupported instrument for GPIO nets: '{instrument_name}'.")
+        from lager.dispatchers.helpers import unsupported_instrument_message
+        raise self._make_error(unsupported_instrument_message(self.ROLE, instrument_name))
 
     def _make_error(self, message: str) -> Exception:
         """Create a GPIOBackendError with the given message."""

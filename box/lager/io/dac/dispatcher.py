@@ -94,7 +94,9 @@ class DACDispatcher(BaseDispatcher):
             # all three agree.
             return LabJackDAC
         else:
-            raise self._make_error(f"Unsupported DAC instrument: {instrument_name}")
+            from lager.dispatchers.helpers import unsupported_instrument_message
+            raise self._make_error(
+                unsupported_instrument_message(self.ROLE, instrument_name))
     
     def _make_error(self, message: str) -> DACBackendError:
         """
