@@ -313,8 +313,8 @@ _DOC_LIST_KEYS = {
     help=(
         "Attach a schematic / datasheet / firmware reference to the active "
         "DUT. The box does NOT host the file; this just records a pointer "
-        "(URL or repo-relative path) that the agent will fetch with its "
-        "own file tools."
+        "(URL, repo-relative path, or document-store ID or URL) that the "
+        "agent will fetch with its own tools."
     ),
 )
 @click.option("--box", help="Lager Box name or IP")
@@ -322,6 +322,8 @@ _DOC_LIST_KEYS = {
 @click.option("--title", required=True, help="Human label for the document.")
 @click.option("--url", help="External URL (https://...).")
 @click.option("--repo-path", help="Path relative to the user's test project (e.g. docs/schematic.pdf).")
+@click.option("--external-id", help="ID of the document in an external document store.")
+@click.option("--external-url", help="URL of the document in an external document store.")
 @click.option("--pages", help='Optional page/sheet hint (e.g. "3-5" or "POWER sheet").')
 @click.option("--notes", help="Optional free-form note about this document.")
 @click.pass_context
@@ -332,13 +334,16 @@ def add_doc_cmd(
     title: str,
     url: Optional[str],
     repo_path: Optional[str],
+    external_id: Optional[str],
+    external_url: Optional[str],
     pages: Optional[str],
     notes: Optional[str],
 ) -> None:
-    if not url and not repo_path:
+    if not (url or repo_path or external_id or external_url):
         click.secho(
-            "Must supply at least one of --url or --repo-path so the "
-            "agent has somewhere to fetch the document from.",
+            "You must supply at least one of --url, --repo-path, "
+            "--external-id or --external-url, so the agent has somewhere "
+            "to fetch the document from.",
             fg="red", err=True,
         )
         ctx.exit(1)
@@ -352,6 +357,10 @@ def add_doc_cmd(
         doc_ref["url"] = url
     if repo_path:
         doc_ref["repo_path"] = repo_path
+    if external_id:
+        doc_ref["external_id"] = external_id
+    if external_url:
+        doc_ref["external_url"] = external_url
     if pages:
         doc_ref["pages"] = pages
     if notes:

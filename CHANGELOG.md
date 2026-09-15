@@ -12,6 +12,14 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Added
+
+- **`lager dut add-doc` can point at a document in an external document store.**
+  `--external-id` and `--external-url` record where it lives, and agents look for
+  a `repo_path` under `~/.lager_dut_docs/` when the project does not have it. A
+  reference with no location is now skipped, with a warning, when the box's MCP
+  server loads `bench.json`.
+
 ## [0.48.0] - 2026-09-15
 
 ### Added

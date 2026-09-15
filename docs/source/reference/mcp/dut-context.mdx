@@ -126,10 +126,14 @@ A document reference (`DocRef`) has:
 | `kind` | `schematic`, `layout`, `datasheet`, `firmware`, `manual`, `errata`, or `other`. |
 | `url` | External URL (any URL the agent can fetch). |
 | `repo_path` | Path relative to your test project (synced to the box on `lager python`). |
+| `external_id` | ID of the document in an external document store. |
+| `external_url` | URL of the document in an external document store. The agent opens it with its own credentials. |
 | `pages` | Optional page/sheet hint, e.g. `"3-5"` or `"POWER sheet"`. |
 | `notes` | Optional free-form note. |
 
-You must supply at least one of `--url` or `--repo-path`.
+You must supply at least one of `--url`, `--repo-path`, `--external-id` or
+`--external-url`. When the MCP server loads `bench.json`, it skips a reference
+that has none of them and logs a warning.
 
 ### URL vs. repo-path: which to use
 
@@ -138,6 +142,7 @@ You must supply at least one of `--url` or `--repo-path`.
 | Automated / CI / headless agent | `--repo-path` | The file is synced with your project; no network, no auth, fully deterministic. |
 | Publicly fetchable doc | `--url` | Any agent with a web-fetch tool can pull it. |
 | Private doc (Google Doc, Confluence, SSO) | `--repo-path` **or** a Drive connector | The box never authenticates; a login-walled URL returns an auth page, not content. |
+| Doc in a document store that your agent can reach | `--external-id` or `--external-url` | The agent opens it through its own connector, with its own credentials. The box never authenticates. |
 
 <Tip>
 For Google Docs, prefer an **export** URL over the editor URL — the `/edit` URL
@@ -154,6 +159,17 @@ For a document that needs authentication, you have three options:
   credentials.
 - Export it into your repo and use `--repo-path`.
 </Tip>
+
+### Documents that are not in your project
+
+The agent looks for a `repo_path` in your project root first. If the file is not
+there, it looks under `~/.lager_dut_docs/` at the same relative path. For example,
+the agent looks for `docs/sch.pdf` at `~/.lager_dut_docs/docs/sch.pdf`.
+
+Keep that directory outside your project. `lager python` uploads the project
+directory, follows symbolic links, and refuses an upload larger than 20 MB after
+compression. A folder of PDFs in the project, or linked into it, can make every
+run fail.
 
 ## How the agent uses it
 

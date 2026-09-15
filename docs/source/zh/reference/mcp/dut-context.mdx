@@ -108,10 +108,12 @@ lager dut add-doc --kind datasheet \
 | `kind` | `schematic`、`layout`、`datasheet`、`firmware`、`manual`、`errata` 或 `other`。 |
 | `url` | 外部 URL（智能体能够获取的任意 URL）。 |
 | `repo_path` | 相对于您测试项目的路径（执行 `lager python` 时同步到 Box）。 |
+| `external_id` | 该文档在外部文档存储库中的 ID。 |
+| `external_url` | 该文档在外部文档存储库中的 URL。智能体用它自己的凭据打开它。 |
 | `pages` | 可选的页码/图纸提示，例如 `"3-5"` 或 `"POWER sheet"`。 |
 | `notes` | 可选的自由格式备注。 |
 
-`--url` 和 `--repo-path` 中至少要提供一个。
+`--url`、`--repo-path`、`--external-id` 和 `--external-url` 中至少要提供一个。MCP 服务器加载 `bench.json` 时，会跳过一个都没有提供的引用，并记录一条警告。
 
 ### URL 还是 repo-path：该用哪个
 
@@ -120,6 +122,7 @@ lager dut add-doc --kind datasheet \
 | 自动化 / CI / 无人值守的智能体 | `--repo-path` | 文件随您的项目一起同步；不需要网络、不需要认证，完全确定。 |
 | 可公开获取的文档 | `--url` | 任何带有网页抓取工具的智能体都能取到它。 |
 | 私有文档（Google Doc、Confluence、SSO） | `--repo-path` **或**一个 Drive 连接器 | Box 从不做认证；需要登录的 URL 返回的是登录页面，而不是内容。 |
+| 智能体能够访问的文档存储库中的文档 | `--external-id` 或 `--external-url` | 智能体通过它自己的连接器、用它自己的凭据打开文档。Box 从不做认证。 |
 
 <Tip>
 对于 Google 文档，请优先使用**导出** URL，而不是编辑器 URL —— `/edit` URL
@@ -135,6 +138,12 @@ https://docs.google.com/document/d/<DOC_ID>/export?format=pdf
 - 为您的智能体配置一个持有凭据的 Google Drive 连接器或 MCP 服务器。
 - 把它导出到您的仓库中，然后使用 `--repo-path`。
 </Tip>
+
+### 不在您项目中的文档
+
+智能体会先在您的项目根目录中查找 `repo_path`。如果那里没有该文件，它会在 `~/.lager_dut_docs/` 下按相同的相对路径查找。例如，智能体会在 `~/.lager_dut_docs/docs/sch.pdf` 查找 `docs/sch.pdf`。
+
+请把该目录放在您的项目之外。`lager python` 会上传项目目录并跟随符号链接，压缩后大于 20 MB 的上传会被拒绝。放在项目中或链接到项目中的 PDF 文件夹，可能会让每次运行都失败。
 
 ## 智能体如何使用它
 

@@ -38,7 +38,10 @@ def discover_dut(ctx: Context) -> str:
     Returns the DUT purpose, MCU, key peripherals, subsystem list, and
     pointers to the schematic / datasheet / firmware references. The actual
     documents are NOT included in the response — use your own file tools
-    to open ``repo_path`` entries or fetch ``url`` entries.
+    to open ``repo_path`` entries (from your project root, else from
+    ``~/.lager_dut_docs/``), fetch ``url`` entries, and reach
+    ``external_url`` / ``external_id`` entries through a document-store
+    connector.
 
     For the full structured shape, read the ``lager://dut/context``
     resource. For a markdown briefing, read ``lager://dut/overview.md``.
@@ -146,9 +149,12 @@ def cite_schematic(net_name: str) -> str:
         "datasheet_refs": datasheet_refs,
         "subsystem_doc_refs": subsystem_refs,
         "guidance": (
-            "Open `repo_path` entries with your own file tools, or fetch "
-            "`url` entries directly. Prefer per-sheet PNG exports for "
-            "vision analysis; use the `pages` field to focus on the "
-            "relevant sheet."
+            "Open `repo_path` entries with your own file tools: look under "
+            "your project root first, then under `~/.lager_dut_docs/` at the "
+            "same relative path. Fetch `url` entries directly. Reach "
+            "`external_url` and `external_id` entries through a "
+            "document-store connector that holds the credentials; the box "
+            "never authenticates. Prefer per-sheet PNG exports for vision "
+            "analysis; use the `pages` field to focus on the relevant sheet."
         ),
     }, indent=2)
