@@ -574,7 +574,7 @@ def run_python_internal(ctx, runnable, box, env, passenv, kill, download, allow_
         if 'connection refused' in error_str:
             click.secho(f'Error: Connection refused by box ({box_ip})', fg='red', err=True)
             click.secho('The box service can be down.', err=True)
-            click.secho(f'Check that the Docker container runs: ssh lagerdata@{box_ip} "docker ps"', err=True)
+            click.secho(f'Check that the Docker container runs: lager ssh --box {box_ip} -- docker ps', err=True)
         elif 'no route to host' in error_str or 'network is unreachable' in error_str:
             click.secho(f'Error: No route to host ({box_ip})', fg='red', err=True)
             click.secho('Check your network connection and that Tailscale/VPN is connected.', err=True)

@@ -43,6 +43,15 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   instead of an HTTP status line, and `gdbserver` and `disconnect` name OpenOCD
   on an OpenOCD net. `lager boxes` says "1 box needs updating", `nets state`
   names 0.34.0 for an old box, and the host-networking warning links the docs.
+- **Every command refuses `--box ""`.** `lager update`, `ssh`, `binaries`,
+  `nets`, `box-config`, `arm`, `spi`, `i2c` and `logs` read an empty `--box` as
+  no `--box` and used the default box, so `--box "$BOX"` with `BOX` unset ran
+  against another box. They now print "Box name cannot be empty", and so do
+  `install` and `uninstall`, which named the wrong problem.
+- **`lager ssh`, `lager update` and `lager logs` log in as the box's saved
+  user.** `ssh` and `update` looked the user up by box name only, so an IP or
+  the default box got `lagerdata`, and `logs` always used `lagerdata`. `lager
+  logs docker` now says when reading a log size needs passwordless `sudo`.
 
 ## [0.48.1] - 2026-09-16
 

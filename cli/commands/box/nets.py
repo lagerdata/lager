@@ -816,7 +816,7 @@ def _resolve_box(ctx: click.Context, box_opt: Optional[str] = None) -> str:
     3. get_default_box(ctx) (automatically resolves local box names)
     """
     import ipaddress
-    from ...box_storage import get_box_ip, list_boxes
+    from ...box_storage import explicit_box_option, get_box_ip, list_boxes
 
     def _warn_version_skew(ip, name):
         # `lager nets` is :9000-only; warn (once per process) before a
@@ -827,13 +827,9 @@ def _resolve_box(ctx: click.Context, box_opt: Optional[str] = None) -> str:
         except Exception:
             pass
 
-    target_box = None
-    if box_opt:
-        target_box = box_opt
-    elif ctx.parent is not None and "box" in ctx.parent.params and ctx.parent.params["box"]:
-        target_box = ctx.parent.params["box"]
+    target_box = explicit_box_option(ctx, box_opt)
 
-    if target_box:
+    if target_box is not None:
         # Check if this is a local box name first
         local_ip = get_box_ip(target_box)
         if local_ip:

@@ -22,7 +22,7 @@ from typing import Any, Optional
 import click
 import requests
 
-from ...box_storage import get_box_ip, list_boxes
+from ...box_storage import explicit_box_option, get_box_ip, list_boxes
 from ...context import get_default_box, get_impl_path
 from ...core.group_usage import LagerGroup
 from ...errors import LagerError, ssh_error
@@ -55,13 +55,9 @@ def _resolve_boxes(ctx: click.Context, box_opt: Optional[str]) -> list:
 
 
 def _resolve_box(ctx: click.Context, box_opt: Optional[str] = None) -> str:
-    target_box = None
-    if box_opt:
-        target_box = box_opt
-    elif ctx.parent is not None and "box" in ctx.parent.params and ctx.parent.params["box"]:
-        target_box = ctx.parent.params["box"]
+    target_box = explicit_box_option(ctx, box_opt)
 
-    if target_box:
+    if target_box is not None:
         local_ip = get_box_ip(target_box)
         if local_ip:
             return local_ip
@@ -1771,7 +1767,7 @@ def _attempt_rollback(
         # bool deep in the apply pipeline, so report and let the caller's
         # rollback-failed path run rather than dying here.
         click.secho(
-            ssh_error(stderr, resolved_box).format_message(),
+            ssh_error(stderr, resolved_box, user=resolve_box_user(resolved_box)).format_message(),
             err=True,
         )
         return False

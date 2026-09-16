@@ -88,8 +88,9 @@ SSH usernames are resolved in order:
 1. Username stored with box configuration (`lager boxes add --user`)
 2. Default username: `lagerdata`
 
-`lager ssh` looks up the stored username by box name. If you pass an IP address
-to `--box`, it uses `lagerdata`. Pass the box name to use its stored username.
+`lager ssh` looks up the stored username by box name. For an IP address in
+`--box`, or for the default box, it uses the username of the saved box with that
+IP address.
 
 To use a different username for a Lager Box:
 ```bash

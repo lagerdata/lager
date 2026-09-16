@@ -14,6 +14,7 @@ from ...address_utils import validate_ip_or_hostname, VALID_FORMATS_CHEATSHEET
 from ...box_storage import (
     auto_lock_around_command,
     delete_box,
+    empty_box_name_error,
     get_box_ip,
     get_box_name_by_ip,
     get_box_user,
@@ -182,6 +183,8 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
     Uninstall Lager box code from a box
     """
     # 1. Resolve box name to IP and username if --box is provided
+    if box is not None and not box.strip():
+        raise empty_box_name_error()
     if box and ip:
         click.secho("Error: Cannot specify both --box and --ip", fg='red', err=True)
         ctx.exit(1)

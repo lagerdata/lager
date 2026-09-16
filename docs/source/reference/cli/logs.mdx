@@ -123,8 +123,9 @@ Note: Docker logs are automatically rotated with max-size=10m, max-file=3
 Total maximum per container: ~30MB
 ```
 
-The command reads the log file with `sudo` over a non-interactive SSH session.
-If `sudo` asks for a password on the box, no size line appears under the container name.
+The command reads the log file with `sudo -n` over a non-interactive SSH session.
+If `sudo` asks for a password on the box, the size line says `unknown`. The
+command then tells you to allow `sudo -n ls` for the login user of the box.
 
 ---
 
@@ -214,7 +215,7 @@ lager logs docker --box my-lager-box  # Check Docker logs
 ## Notes
 
 - `--box` takes the name of a saved Lager Box. An IP address is not accepted.
-- These commands connect over SSH as the user `lagerdata`, with key authentication only. They do not use the user that you stored with `lager boxes add --user`, so they fail on a box with a different login user.
+- These commands connect over SSH as the user that you stored with `lager boxes add --user`, or as `lagerdata` if you stored none. They use key authentication only: the `lager_box` key first, then your own SSH keys.
 - Docker logs are automatically rotated
 - Use `--verbose` to identify large log files
 - Regular cleaning prevents disk space issues

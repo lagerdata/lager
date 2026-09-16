@@ -548,7 +548,7 @@ def transfer(ctx, num_words, box, mode, bit_order, frequency, cs_active, keep_cs
       lager spi MY_SPI transfer --data 0x9f 4 --format json
     """
     # Use box from subcommand option, fall back to group-level option
-    box_param = box or getattr(ctx.obj, 'spi_box_param', None)
+    box_param = box if box is not None else getattr(ctx.obj, 'spi_box_param', None)
     box_ip, _ = _resolve_box_with_name(ctx, box_param)
 
     netname = getattr(ctx.obj, 'netname', None)
@@ -623,7 +623,7 @@ def read(ctx, num_words, box, mode, bit_order, frequency, cs_active, keep_cs,
     Example:
       lager spi MY_SPI read 5 --fill 0xFF
     """
-    box_param = box or getattr(ctx.obj, 'spi_box_param', None)
+    box_param = box if box is not None else getattr(ctx.obj, 'spi_box_param', None)
     box_ip, _ = _resolve_box_with_name(ctx, box_param)
 
     netname = getattr(ctx.obj, 'netname', None)
@@ -685,7 +685,7 @@ def config(ctx, box, mode, bit_order, frequency, cs_active, word_size, cs_mode):
       # Use manual CS mode for Aardvark (manage CS via separate GPIO net)
       lager spi MY_SPI config --cs-mode manual
     """
-    box_param = box or getattr(ctx.obj, 'spi_box_param', None)
+    box_param = box if box is not None else getattr(ctx.obj, 'spi_box_param', None)
     box_ip, _ = _resolve_box_with_name(ctx, box_param)
 
     netname = getattr(ctx.obj, 'netname', None)
@@ -737,7 +737,7 @@ def write(ctx, data, box, mode, bit_order, frequency, cs_active, keep_cs,
     Example:
       lager spi MY_SPI write 0x9f01020304
     """
-    box_param = box or getattr(ctx.obj, 'spi_box_param', None)
+    box_param = box if box is not None else getattr(ctx.obj, 'spi_box_param', None)
     box_ip, _ = _resolve_box_with_name(ctx, box_param)
 
     netname = getattr(ctx.obj, 'netname', None)
