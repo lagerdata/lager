@@ -35,8 +35,10 @@
 # HOSTED runners on purpose: the bench being down is exactly the condition
 # under which they must still be able to run. Direct dispatches of the child
 # workflows bypass notification — a dispatch has a human watching by
-# definition. bench-watchdog.yml covers the remaining blind spot, the night
-# that never starts (runner offline, cron dead).
+# definition — and so does a dispatch of THIS workflow on any ref but main,
+# since the issue describes main's bench. bench-watchdog.yml covers the
+# remaining blind spot, the night that never starts (runner offline, cron
+# dead).
 
 name: "Bench: Nightly"
 
@@ -76,11 +78,13 @@ jobs:
     # integration is SKIPPED, not failed, and a skipped instrument sweep is
     # exactly the half-covered night that must page someone. `!cancelled()`
     # keeps a manually cancelled run from alerting — cancellation has a human
-    # attached. Permissions are per-job so the called bench workflows keep
-    # their default token.
+    # attached. The ref test keeps a dispatch on a feature branch from filing
+    # an alert about main: the issue describes main's bench, and a branch run
+    # has a human watching it. Permissions are per-job so the called bench
+    # workflows keep their default token.
     name: notify (failure)
     needs: [lifecycle, integration]
-    if: ${{ !cancelled() && (needs.lifecycle.result != 'success' || needs.integration.result != 'success') }}
+    if: ${{ !cancelled() && (needs.lifecycle.result != 'success' || needs.integration.result != 'success') && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -114,18 +118,23 @@ jobs:
           confirm the box is running the code under test first, then
           instrument power relays and USB enumeration, then whether the box's
           auth service is reachable, then the change under test. This issue is
-          closed automatically by the next fully green nightly run.
+          closed automatically by the next fully green nightly run of main.
           EOF
           bash tools/bench_alert.sh alert "Nightly bench is failing" "$RUNNER_TEMP/alert-body.md"
         shell: bash
 
   notify-recovery:
-    # Bare `needs:` fires this only when BOTH children succeeded. Closing on
+    # `success()` fires this only when BOTH children succeeded. Closing on
     # green is what keeps the alert issue meaningful — an issue that stays
     # open after the bench recovers trains people to ignore it, which is the
     # same failure mode as a permanently-red check.
+    #
+    # Only a run of main may close it. A green dispatch on a feature branch
+    # says nothing about main, and one closed the open alert on 2026-09-15
+    # while scheduled nightlies had not run for five days (#552).
     name: notify (recovery)
     needs: [lifecycle, integration]
+    if: ${{ success() && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

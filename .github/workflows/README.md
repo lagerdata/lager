@@ -84,15 +84,21 @@ label rather than just passing a different title.
 
 | Label | Filed by | Closed by |
 |---|---|---|
-| `bench-alert` | `nightly-bench.yml` `notify (failure)`, `bench-watchdog.yml` | `nightly-bench.yml` `notify (recovery)`, on a fully green night |
+| `bench-alert` | `nightly-bench.yml` `notify (failure)`, `bench-watchdog.yml` | `nightly-bench.yml` `notify (recovery)`, on a fully green night of main |
 | `bench-alert-extended` | `bench-extended.yml` `notify (failure)` | nothing — close it by hand |
 
 - `nightly-bench.yml`'s `notify (failure)` job fires when either child is not
   `success` — including integration SKIPPED behind a failed lifecycle — and
-  its `notify (recovery)` job closes the issue on a fully green night.
+  its `notify (recovery)` job closes the issue on a fully green night. Both
+  run only for the scheduled run or a dispatch on `main`: a dispatch on a
+  feature branch says nothing about main, so it neither files nor closes the
+  alert.
 - `bench-watchdog.yml` covers the night that never runs: a run queued > 3h
-  (runner offline), running > 5h (stuck), or no scheduled run created in 26h
-  (cron dead). It only ever adds to the issue; recovery is the nightly's call.
+  (runner offline), running > 5h (stuck), no scheduled run created in 26h
+  (cron dead), or a missed night (the newest interval between scheduled runs
+  is over 36h). It only ever adds to the issue; recovery is the nightly's
+  call. A missed night stops alarming once the next scheduled night runs, so
+  a green night's close is not undone by the next watchdog run.
 - `bench-extended.yml` is weekly and deliberately has **no recovery job**: a
   green weekly must never close an alert while the nightly is still failing.
   The separate label is what makes that safe. While both shared `bench-alert`,
@@ -103,7 +109,8 @@ label rather than just passing a different title.
 
 Both notify paths run on HOSTED runners — the bench being down is exactly the
 condition they must survive. Manual `workflow_dispatch` of the child bench
-workflows does not notify; a dispatch has a human watching by definition.
+workflows does not notify; a dispatch has a human watching by definition. The
+same holds for a dispatch of `nightly-bench.yml` on any ref other than `main`.
 
 Both labels must exist in the repo. If alerting itself breaks (missing label,
 token without `issues: write`), the notify job goes red inside the run — loud,
