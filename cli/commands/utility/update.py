@@ -41,6 +41,10 @@ from ..box._ssh import (
     key_installed_on_box,
     working_identity_args,
 )
+# One implementation of the registration warning, shared with ssh-setup.
+# ssh_setup imports only from .box._ssh and the error/storage modules, so this
+# direction introduces no cycle.
+from ..box.ssh_setup import register_or_warn
 from ._host_cli import (
     HOST_CLI_PROBE_SNIPPET,
     HOST_VENV_APT_CMD,
@@ -1808,7 +1812,11 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
                         click.secho(
                             'Password authentication is not available on this '
                             'box either.', fg='yellow')
-                        ctx.exit(1)
+                        # Not a bare 1: under --check this leaves the box's
+                        # state undetermined, which is what 2 means. A CI gate
+                        # must be able to tell "no way in" from "an update is
+                        # needed" without matching on output text.
+                        ctx.exit(_undetermined_exit_code(check))
                     if yes or click.confirm('SSH key setup failed. Continue with password authentication?'):
                         use_interactive_ssh = True
                         if not verbose:
