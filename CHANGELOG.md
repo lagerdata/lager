@@ -12,6 +12,12 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Changed
+
+- **The `lager-cli` sdist no longer contains test files.** The CLI tests moved
+  from `cli/tests/` to `test/unit/cli/`, so the copy of `cli/` on a box no
+  longer carries them either.
+
 ### Fixed
 
 - **`lager ssh-setup` and `lager update` no longer report a registered key as
