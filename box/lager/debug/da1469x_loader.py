@@ -110,6 +110,23 @@ REG_MTB_MASTER = 0xE0043004
 REG_MTB_FLOW = 0xE0043008
 REG_MPU_CTRL = 0xE000ED94
 REG_SYS_CTRL_REG = 0x100C0050  # write 1 -> bootrom re-runs (software reset)
+REG_DHCSR = 0xE000EDF0  # Debug Halting Control and Status Register
+DHCSR_S_LOCKUP = 1 << 19  # core is in LOCKUP: a fault escalated past HardFault
+
+#: ``EPSR.T`` inside ``xPSR``. On Cortex-M the Thumb bit is NOT carried in
+#: the PC — writing an odd PC through the debug AP does not set it, because
+#: OpenOCD masks bit 0 and leaves ``xPSR`` alone. GDB's ``set $pc = <odd>``
+#: applied the Thumb convention for us; the OpenOCD port has to do it by hand.
+#: With ``T`` clear the core faults INVSTATE on the first instruction it
+#: fetches, escalates to HardFault, and ends in LOCKUP having run nothing.
+#: Whether ``T`` arrives set is not predictable, so it is always written.
+XPSR_THUMB_BIT = 1 << 24
+
+#: Names OpenOCD may use for the combined program status register. A
+#: Cortex-M33 target answers to ``xPSR``; the lowercase spelling is
+#: rejected outright ("register xpsr not found in current target"), so the
+#: casing is not cosmetic.
+PSR_REG_NAMES = ('xPSR', 'XPSR', 'xpsr', 'psr')
 
 # Symbols we resolve from the loader ELF. Names match the upstream Apache
 # Mynewt ``apps/flash_loader/src/main.c`` globals (same set the ``fl_*``
@@ -456,6 +473,77 @@ def _poll_word(rpc: OpenOcdRpc, address: int, predicate, *,
         time.sleep(_POLL_INTERVAL_S)
 
 
+def _force_thumb_state(rpc: OpenOcdRpc) -> Iterator[str]:
+    """Set ``EPSR.T`` so the core executes the loader as Thumb code.
+
+    The loader's reset vector is an odd address (``0x20000201``) — the
+    standard Thumb function-pointer convention. ``rpc.reg_write('pc', ...)``
+    cannot convey it: OpenOCD masks bit 0 of a PC write and never touches
+    ``xPSR``, so on a core whose ``T`` bit is already clear the loader is
+    entered in ARM state and dies on its first instruction. Observed on a
+    DA1469x whose flash had been erased: ``xPSR`` read ``0xf8000000``
+    (``T`` clear) after ``reset halt``, the loader took an INVSTATE
+    UsageFault at ``0x20000200``, escalated to HardFault, and locked up —
+    reported by the layer above as "the loader never reported ready".
+
+    The incoming ``T`` state is not deterministic: the same board, still
+    blank, later halted with ``T`` already set. Which state you get depends
+    on what the core was doing before the reset, so the bit is set here
+    unconditionally rather than inherited — that is the whole point. It also
+    explains why this hid for so long: ``T`` is usually set already.
+
+    Yields a progress line only when it actually has to set the bit, so a
+    healthy bring-up's log is unchanged.
+    """
+    last_exc = None
+    for name in PSR_REG_NAMES:
+        try:
+            value = rpc.reg_read(name)
+        except OpenOcdRpcError as exc:
+            last_exc = exc
+            continue
+        if value & XPSR_THUMB_BIT:
+            return
+        rpc.reg_write(name, value | XPSR_THUMB_BIT)
+        yield (f'Core was in ARM state ({name}={hex(value)}, Thumb bit clear); '
+               f'set {name}.T before entering the loader')
+        return
+    raise Da1469xLoaderError(
+        'cannot read the core status register to set the Thumb bit; tried '
+        f'{", ".join(PSR_REG_NAMES)} (last error: {last_exc}). Without it the '
+        'loader is entered in ARM state and faults on its first instruction.'
+    )
+
+
+def _raise_if_locked_up(rpc: OpenOcdRpc, when: str) -> None:
+    """Fail loudly if the core is in LOCKUP rather than genuinely halted.
+
+    OpenOCD reports a locked-up core as *halted*, so ``wait_halt`` returns
+    success and the caller believes its breakpoint was hit. It was not: the
+    core faulted, escalated past HardFault and stopped fetching. Left
+    undetected this surfaces 10 seconds later as a readiness timeout, and
+    :data:`_LOADER_BOOT_ATTEMPTS` then replays the whole bring-up against a
+    core that cannot recover without a reset. Naming LOCKUP here turns a
+    confusing timeout into the actual diagnosis, and — because this is not
+    a :class:`_LoaderBootTimeout` — stops the futile retries.
+    """
+    try:
+        dhcsr = rpc.mdw(REG_DHCSR)
+    except OpenOcdRpcError as exc:
+        # A single dropped read is not evidence of lockup; let the caller
+        # carry on and fail on its own terms if the loader really is dead.
+        logger.info('DHCSR read failed while checking for lockup (%s)', exc)
+        return
+    if dhcsr & DHCSR_S_LOCKUP:
+        raise Da1469xLoaderError(
+            f'core is in LOCKUP {when} (DHCSR={hex(dhcsr)}): a fault escalated '
+            f'past HardFault and the core has stopped executing. The loader '
+            f'image is in RAM but nothing ran. Read CFSR (0xE000ED28) and the '
+            f'stacked frame at MSP to see which fault; INVSTATE there means '
+            f'the core entered the loader in ARM state.'
+        )
+
+
 def _prepare_loader_once(rpc: OpenOcdRpc, elf_path: str, bin_path: str,
                          syms: Dict[str, int]) -> Iterator[str]:
     """Run the bring-up sequence once: reset, load into RAM, jump, wait ready.
@@ -493,7 +581,10 @@ def _prepare_loader_once(rpc: OpenOcdRpc, elf_path: str, bin_path: str,
     pc = rpc.mdw(LOADER_RAM_BASE + 4)
     yield f'Loader vector table: MSP={hex(msp)} PC={hex(pc)}'
     rpc.reg_write('msp', msp)
-    rpc.reg_write('pc', pc)
+    # Mask the Thumb bit out of the PC (OpenOCD ignores it there anyway) and
+    # apply it where the architecture actually keeps it, in ``xPSR``.
+    rpc.reg_write('pc', pc & ~1)
+    yield from _force_thumb_state(rpc)
 
     # Disable QSPIC / MTB before we run — same writes the GDB scripts make.
     # MPU is intentionally disabled later, while the loader is running.
@@ -528,7 +619,10 @@ def _prepare_loader_once(rpc: OpenOcdRpc, elf_path: str, bin_path: str,
     # ``b mynewt_main; c; d 1`` — break at the loader's entry, run until we
     # hit it, then drop the breakpoint so the next ``resume`` goes straight
     # into the command-poll loop.
-    mynewt_main = syms['mynewt_main']
+    # ``mynewt_main`` is a Thumb function pointer, so its symbol value is
+    # odd (0x20002545). GDB's ``b mynewt_main`` masks bit 0; an FPB
+    # comparator requires a halfword-aligned address, so we must too.
+    mynewt_main = syms['mynewt_main'] & ~1
     rpc.bp(mynewt_main, length=4, hw=True)
     try:
         rpc.resume()
@@ -541,6 +635,10 @@ def _prepare_loader_once(rpc: OpenOcdRpc, elf_path: str, bin_path: str,
         except OpenOcdRpcError as exc:
             logger.warning('rbp at %s after wait_halt failed: %s',
                            hex(mynewt_main), exc)
+
+    # ``wait_halt`` says "halted" for a locked-up core too, so a success
+    # here is not yet evidence the breakpoint was reached.
+    _raise_if_locked_up(rpc, 'after entering the loader')
 
     # Resume into the loader's main, then disable the MPU on the fly. The
     # MPU write happens through the debug AP while the CPU runs — Cortex-M
