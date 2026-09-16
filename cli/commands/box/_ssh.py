@@ -323,6 +323,33 @@ def box_has_control_plane(
     return proc.returncode == 0
 
 
+def working_identity_args(key_path: str = _LAGER_BOX_KEY) -> List[str]:
+    """``-i`` flags naming every identity that might reach the box.
+
+    Like :func:`widened_identity_args`, except it names the defaults even when
+    there is no lager_box key — which is exactly the case it exists for.
+
+    Passing no ``-i`` is NOT the same as offering ssh's defaults. An
+    ``IdentityFile`` in ssh_config replaces ssh's built-in list precisely as
+    ``-i`` does, so a ``Host *`` block naming two keys leaves a box authorized
+    on a third unreachable. Measured on a real fleet: ``ssh -G`` for a managed
+    box resolved to two of the operator's other keys, while the key in its
+    authorized_keys was id_ed25519 — so a connection that passed no identity
+    was refused for a box the probe had just reached, because the probe named
+    the defaults and the connection let the config narrow them away.
+
+    Returns [] only when nothing exists to name, which leaves ssh's behavior
+    untouched because there is no better answer available.
+    """
+    args: List[str] = []
+    key = lager_box_key_if_present(key_path)
+    if key is not None:
+        args.extend(ssh_identity_args(key))
+    for path in default_identities_if_present():
+        args.extend(ssh_identity_args(path))
+    return args
+
+
 def remove_lager_box_key(
     dest: str,
     *,
