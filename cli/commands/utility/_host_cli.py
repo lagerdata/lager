@@ -44,8 +44,8 @@ privileged-operation paths.
 
 Pure logic: no SSH, no click. `lager update` uses these helpers directly;
 `setup_and_deploy_box.sh` mirrors the install sequence in shell (it must stay
-standalone-runnable). A drift-guard test in cli/tests/test_host_cli.py pins
-the load-bearing literals in both scripts to this module.
+standalone-runnable). A drift-guard test in test/unit/cli/test_host_cli.py
+pins the load-bearing literals in both scripts to this module.
 """
 
 # Keep in sync with `python_requires` in cli/setup.py.

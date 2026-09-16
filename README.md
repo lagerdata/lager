@@ -203,7 +203,7 @@ Unit tests need no hardware:
 
 ```bash
 export PYTHONPATH="$PWD:$PWD/box"
-pytest -v --import-mode=importlib -c /dev/null --timeout=60 test/unit/cli/ cli/tests/
+pytest -v --import-mode=importlib -c /dev/null --timeout=60 test/unit/cli/
 ```
 
 ## Security

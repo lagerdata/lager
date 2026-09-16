@@ -6,8 +6,8 @@ Unit tests for ``cli/commands/utility/login.py`` -- the `lager login`,
 `lager logout` and `lager whoami` command layer.
 
 This is the auth entry point. ``cli/gateway_auth.py`` (the transport and token
-store beneath it) is well covered by ``cli/tests/test_gateway_auth.py``; the
-click layer on top had nothing. It is thin but not trivial: it owns the
+store beneath it) is well covered by ``test/unit/cli/test_gateway_auth.py``;
+the click layer on top had nothing. It is thin but not trivial: it owns the
 display-name fallback, the MFA prompt callback, the rstrip that decides which
 stored session `logout` erases, and the four states `whoami` renders.
 

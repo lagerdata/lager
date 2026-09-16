@@ -85,7 +85,7 @@ ON_LINUX = sys.platform.startswith('linux')
 
 # Must stay in step with the matrix in .github/workflows/unit-tests.yml.
 SUITES = {
-    'unit (cli)': ['test/unit/cli/', 'cli/tests/'],
+    'unit (cli)': ['test/unit/cli/'],
     'unit (box)': ['test/unit/box/'],
     'unit (measurement)': ['test/unit/measurement/'],
     'unit (blufi)': ['test/unit/blufi/'],
@@ -132,7 +132,6 @@ INVENTORY_TABLES = (
     'test/unit/blufi/',
     'test/unit/test_*.py',
     'test/test_*.py',
-    'cli/tests/',
     'test/mcp/unit/',
     'test/mcp/integration/',
 )

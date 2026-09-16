@@ -24,7 +24,7 @@ import sys
 import os
 
 # Add box directory to path so we can import lager modules
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'box'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..', 'box'))
 
 
 def test_adc_imports():

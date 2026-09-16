@@ -49,7 +49,7 @@ Run the suites from the repository root:
 export PYTHONPATH="$PWD:$PWD/box"
 PYTEST="pytest -v --import-mode=importlib -c /dev/null --timeout=60"
 
-$PYTEST test/unit/cli/ cli/tests/
+$PYTEST test/unit/cli/
 $PYTEST test/unit/box/
 $PYTEST test/unit/measurement/
 $PYTEST test/unit/blufi/

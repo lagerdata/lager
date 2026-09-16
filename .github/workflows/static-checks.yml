@@ -4,7 +4,7 @@
 # Cheap, hardware-free checks over the parts of the tree the unit-test gate
 # cannot reach.
 #
-# unit-tests.yml runs pytest over test/unit/, test/mcp/unit/ and cli/tests/.
+# unit-tests.yml runs pytest over test/unit/ and test/mcp/unit/.
 # That leaves large areas with no automated validation at all:
 #
 #   test/integration/  38 bash scripts, run against a real box
@@ -357,7 +357,7 @@ jobs:
           COV="--cov=cli --cov=box/lager --cov-append --cov-report="
           BASE="-q --import-mode=importlib -c /dev/null --timeout=60"
           rm -f .coverage
-          pytest test/unit/cli/ cli/tests/          $BASE $COV
+          pytest test/unit/cli/                     $BASE $COV
           pytest test/unit/box/                     $BASE $COV
           pytest test/unit/measurement/             $BASE $COV
           pytest test/unit/blufi/                   $BASE $COV

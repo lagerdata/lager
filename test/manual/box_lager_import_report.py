@@ -9,7 +9,7 @@ This script tests that all documented public APIs are accessible from both
 old (backward-compatible) and new (canonical) import paths.
 
 Usage:
-    python cli/tests/test_box_lager_imports.py
+    python test/manual/box_lager_import_report.py
 
 Returns:
     Exit code 0 if all imports pass (or only expected dependency failures), 1 if actual failures
