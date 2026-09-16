@@ -531,7 +531,11 @@ class ResolveLoaderPathsTests(unittest.TestCase):
                     os.environ[loader.ENV_LOADER_DIR_OVERRIDE] = old
             msg = str(ctx.exception)
             self.assertIn('flash_loader.elf', msg)
-            self.assertIn('lager box ssh', msg)
+            # The real command is a top-level `ssh` taking --box; `lager box
+            # ssh` never existed, so the message sent operators to a usage
+            # error at the moment they were already stuck.
+            self.assertIn('lager ssh --box', msg)
+            self.assertNotIn('lager box ssh', msg)
 
 
 class XipToFlashOffsetTests(unittest.TestCase):
