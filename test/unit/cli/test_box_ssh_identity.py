@@ -556,6 +556,45 @@ class OneRegistrationWarningNotTwo(unittest.TestCase):
         self.assertIn('register_or_warn(ssh_host, key_path=key_file)', src)
 
 
+class NeitherCommandKeepsAKeyOnAManagedBox(unittest.TestCase):
+    """ssh-setup refused this first; `lager update` went on planting.
+
+    The window is a box that is managed but not yet hardened: after hardening
+    there is no password to install a key with and the auth-method check
+    refuses earlier, but between Stout's installer writing control_plane.json
+    and the lockdown running, `lager update` would install a key, keep it, and
+    register it. That is the command an operator actually runs on a new box.
+
+    A source check rather than a driven one: reaching setup_ssh_key means
+    running the whole update past its nineteen steps, and the behaviour it
+    guards -- install, discover, remove -- is driven end to end in
+    test_ssh_setup.py's ControlPlaneManagedBox against the same two helpers.
+    What can silently regress here is the wiring, and that is what this
+    pins."""
+
+    def _update_src(self):
+        import importlib
+        return inspect.getsource(
+            importlib.import_module('cli.commands.utility.update'))
+
+    def test_update_asks_before_keeping_the_key(self):
+        self.assertIn('if box_has_control_plane(ssh_host):', self._update_src())
+
+    def test_update_takes_it_back_out(self):
+        src = self._update_src()
+        self.assertIn('remove_lager_box_key(ssh_host, key_path=key_file)', src)
+
+    def test_update_does_not_register_a_key_it_is_removing(self):
+        """Registering would file the key in the box's key directory, which is
+        the one place a purge does not reach."""
+        src = self._update_src()
+        gate = src.index('if box_has_control_plane(ssh_host):')
+        success = src.index("SSH key installed successfully!")
+        self.assertLess(gate, success,
+                        'the control-plane check must run before the success '
+                        'path that registers the key')
+
+
 class CallersHonourTheThreeOutcomeContract(unittest.TestCase):
     """None means "couldn't tell" and must not be read as "not installed".
 
@@ -616,6 +655,8 @@ class CallersHonourTheThreeOutcomeContract(unittest.TestCase):
                                    return_value=managed), \
                  mock.patch.object(update_mod, 'box_accepts_a_password',
                                    return_value=None), \
+                 mock.patch.object(update_mod, 'remove_lager_box_key',
+                                   return_value=True), \
                  mock.patch.object(update_mod.subprocess, 'run',
                                    side_effect=_unreachable_ssh), \
                  mock.patch.object(

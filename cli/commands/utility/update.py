@@ -36,6 +36,7 @@ from ..box._host_ops import (
 from ..box._ssh import (
     box_accepts_a_password,
     box_has_control_plane,
+    remove_lager_box_key,
     ensure_lager_box_keypair,
     key_installed_on_box,
     working_identity_args,
@@ -1656,6 +1657,38 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         except OSError:
             _key_works = False
         if _key_works:
+            # Only now can the box be asked whether a control plane owns its
+            # keys — the question needs a connection, and until this moment
+            # there wasn't one. A managed box gets the key taken straight back
+            # out: it was installed to ask, not to keep, and leaving it is how
+            # a box grows a standing credential its control plane never
+            # granted and cannot revoke.
+            #
+            # ssh-setup has refused this since the same key worked there;
+            # `lager update` is the command an operator actually runs, and it
+            # was still planting them. The window is a box that is managed but
+            # not yet hardened — after hardening the password check above
+            # refuses first, because there is no password to install with.
+            if box_has_control_plane(ssh_host):
+                removed = remove_lager_box_key(ssh_host, key_path=key_file)
+                click.echo()
+                click.secho(
+                    'This box\'s SSH keys are managed by a control plane, so '
+                    'the key just installed is one it does not know about.',
+                    fg='yellow')
+                if removed:
+                    click.secho('  It has been removed again, leaving the box '
+                                'as it was found.', fg='yellow')
+                else:
+                    click.secho('  It could NOT be removed again — it is still '
+                                'in the box\'s authorized_keys, outside that '
+                                'control plane\'s management.', fg='yellow')
+                click.secho(
+                    '  Ask an admin to grant you access there instead; your '
+                    'key is installed on every box you are granted, and '
+                    'removed again when you are not.', fg='yellow')
+                return False
+
             click.echo()
             click.secho('SSH key installed successfully!', fg='green')
             click.echo('Future connections will not require a password.')
