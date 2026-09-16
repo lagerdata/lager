@@ -401,21 +401,47 @@ lager nets add-batch JSON_FILE [OPTIONS]
 ]
 ```
 
-每条记录都需要 `name`、`role`、`channel` 和 `address`。可选的 `instrument` 键用于指明仪器；不写时，命令会根据地址查出仪器。该命令不读取其他键，因此记录中不能携带 `params`。若要设置自定义的 LabJack 引脚，请用 `lager nets add` 配合 `--sda`/`--scl`
-或 `--cs`/`--sck`/`--mosi`/`--miso`。
+每条记录都需要 `name`、`role`、`channel` 和 `address`。可选的 `instrument` 键用于指明仪器；不写时，命令会根据地址查出仪器。
+
+可选的 `params` 对象用于设置 `lager nets add` 各选项所设置的内容：
+
+- LabJack `i2c` Net 的 `sda_pin` 和 `scl_pin`，或 LabJack `spi` Net 的 `cs_pin`、`clk_pin`、`mosi_pin` 和 `miso_pin`。每个值是引脚名称或 DIO 编号。请在记录中写明 `instrument`，因为可用引脚取决于型号。
+- FTDI FT2232H 或 FT4232H Net 的 `interface`（`A`-`D`）。
+
+命令会像 `lager nets add` 校验其选项那样校验这些值。记录或 `params` 中的任何其他键都会被拒绝。若要为调试 Net 设置脚本，请先添加该 Net，再使用 [`set-script`](#set-script)。
+
+```json
+{
+  "name": "sensor_bus",
+  "role": "i2c",
+  "channel": "custom",
+  "address": "USB0::0x0CD5::0x0007::::INSTR",
+  "instrument": "LabJack_T7",
+  "params": {"sda_pin": "EIO0", "scl_pin": "EIO1"}
+}
+```
 
 **校验：**
 
-在保存任何内容之前，命令会把每条记录的通道与 Box 为该角色提供的通道作比较。它会列出所有通道不正确的记录，打印 `No nets were saved.`，并以代码 1 退出：
+在保存任何内容之前，命令会检查每条记录是否存在以下问题：
+
+- 命令不读取的键，或无效的 `params` 值
+- 仪器不支持的角色
+- 有不止一台在线设备报告的地址
+- Box 没有为该角色提供的通道
+
+它会列出所有未通过检查的记录，打印 `No nets were saved.`，并以代码 1 退出：
 
 ```
 Net 2 ('i2c_bus'): channel '0' is not valid for role 'i2c' on LabJack_T7. Valid: FIO4-FIO5
 No nets were saved.
 ```
 
-命令不会校验两类记录：
+命令不会校验以下两类记录的通道：
 - 地址不在当前仪器扫描结果中的记录，例如未连接的仪器
 - `uart` 记录，因为它的通道是各设备的 tty 路径
+
+没有 `instrument` 且地址不在扫描结果中的记录，也会跳过角色检查。
 
 **示例：**
 
@@ -586,7 +612,7 @@ lager nets tui --box my-lager-box
 - 浏览全部已连接的仪器及其通道
 - 在引导式提示下创建新 Net（**+ Add Nets**）
 - 阅读 Add 界面上的警告和提示。它们集中显示在同一个区块中，**Dismiss** 按钮可以隐藏该区块。
-- 为 LabJack T7 的 `i2c` 或 `spi` Net 选择自定义引脚。该行上的铅笔按钮会打开一个同时编辑 Net 名称和引脚的编辑器。添加该 Net 时也会打开引脚对话框，除非您已经设置过引脚。对话框会显示当前引脚（默认值：I2C SDA=FIO4/SCL=FIO5；SPI CS=FIO0/SCK=FIO1/MOSI=FIO2/MISO=FIO3）。您可以为每个信号选择任意 DIO 引脚，也可以把 CS 设为 none 以使用 3 线 SPI。如果您又选回默认值，该 Net 会恢复默认通道。已被某个已保存 Net 占用的引脚会显示警告
+- 为 LabJack T7 或 U3 的 `i2c` 或 `spi` Net 选择自定义引脚。该行上的铅笔按钮会打开一个同时编辑 Net 名称和引脚的编辑器。添加该 Net 时也会打开引脚对话框，除非您已经设置过引脚。对话框会显示当前引脚，并且只提供该型号可用的引脚。您可以把 CS 设为 none 以使用 3 线 SPI。如果您又选回默认值，该 Net 会恢复默认通道。已被某个已保存 Net 占用的引脚会显示警告
 - 用行上的铅笔按钮重命名新建的 Net
 - 用 **Assign Device** 把自定义串行设备（RS-232 仪器）分配给它们的 USB 线缆 ——
   这是 [`assign`](#assign) 的交互式版本，包含可选的创建 Net 步骤（`--as-net`）
@@ -594,10 +620,10 @@ lager nets tui --box my-lager-box
 - 用 **Delete All Nets** 删除全部已保存的 Net
 - 键盘导航（按 `q` 或 `Ctrl+C` 退出）
 
-<Note>
-引脚编辑器只适用于 LabJack T7。您在 TUI 中添加的 LabJack U3 `i2c` 或 `spi` Net
-使用默认引脚（SPI `FIO4-FIO7`，I2C `FIO6-FIO7`）。若要使用 U3 的其他引脚，请用 `lager nets add` 配合引脚选项。
-</Note>
+| 型号 | 默认 I2C 引脚 | 默认 SPI 引脚 | 对话框提供的引脚 |
+|---|---|---|---|
+| LabJack T7 | SDA=FIO4、SCL=FIO5 | CS=FIO0、SCK=FIO1、MOSI=FIO2、MISO=FIO3 | 全部 DIO 引脚 |
+| LabJack U3 | SDA=FIO6、SCL=FIO7 | CS=FIO4、SCK=FIO5、MOSI=FIO7、MISO=FIO6 | `FIO4`-`FIO7`、`EIO0`-`EIO7`、`CIO0`-`CIO3` |
 
 ### `set-script`
 

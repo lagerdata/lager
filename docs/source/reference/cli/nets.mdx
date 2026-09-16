@@ -393,20 +393,47 @@ lager nets add-batch JSON_FILE [OPTIONS]
 ]
 ```
 
-Each record needs `name`, `role`, `channel` and `address`. An optional `instrument` key names the instrument. When it is absent, the command looks up the instrument from the address. The command reads no other keys, so a record cannot carry `params`. To set custom LabJack pins, use `lager nets add` with `--sda`/`--scl` or `--cs`/`--sck`/`--mosi`/`--miso`.
+Each record needs `name`, `role`, `channel` and `address`. An optional `instrument` key names the instrument. When it is absent, the command looks up the instrument from the address.
+
+An optional `params` object sets what the `lager nets add` options set:
+
+- `sda_pin` and `scl_pin` for a LabJack `i2c` net, or `cs_pin`, `clk_pin`, `mosi_pin` and `miso_pin` for a LabJack `spi` net. Each value is a pin name or a DIO number. Name the `instrument` in the record, because the pins depend on the model.
+- `interface` (`A`-`D`) for an FTDI FT2232H or FT4232H net.
+
+The command checks these values as `lager nets add` checks its options. It refuses any other key in a record or in `params`. To give a debug net a script, add the net first, then use [`set-script`](#set-script).
+
+```json
+{
+  "name": "sensor_bus",
+  "role": "i2c",
+  "channel": "custom",
+  "address": "USB0::0x0CD5::0x0007::::INSTR",
+  "instrument": "LabJack_T7",
+  "params": {"sda_pin": "EIO0", "scl_pin": "EIO1"}
+}
+```
 
 **Validation:**
 
-Before it saves anything, the command checks the channel of each record against the channels that the box offers for that role. It lists every record with a bad channel, prints `No nets were saved.`, and exits with code 1:
+Before it saves anything, the command checks each record for these problems:
+
+- A key that the command does not read, or a bad `params` value
+- A role that the instrument does not support
+- An address that more than one present device reports
+- A channel that the box does not offer for the role
+
+It lists every record that fails, prints `No nets were saved.`, and exits with code 1:
 
 ```
 Net 2 ('i2c_bus'): channel '0' is not valid for role 'i2c' on LabJack_T7. Valid: FIO4-FIO5
 No nets were saved.
 ```
 
-The command does not check two kinds of record:
+The command does not check the channel of two kinds of record:
 - A record whose address is not in the current instrument scan, for example an instrument that is not connected
 - A `uart` record, because its channels are per-device tty paths
+
+A record with no `instrument` whose address is not in the scan also skips the role check.
 
 **Example:**
 
@@ -595,7 +622,7 @@ lager nets tui --box my-lager-box
 - Browse all connected instruments and their channels
 - Create new nets with guided prompts (**+ Add Nets**)
 - Read warnings and notices on the Add screen. They appear together in one block, and the **Dismiss** button hides the block.
-- Pick custom pins for a LabJack T7 `i2c` or `spi` net. The pencil button on the row opens one editor for the net name and the pins. The pin dialog also opens when you add the net, unless you already set the pins. The dialog shows the current pins (defaults: I2C SDA=FIO4/SCL=FIO5; SPI CS=FIO0/SCK=FIO1/MOSI=FIO2/MISO=FIO3). You can choose any DIO pin per signal, and you can set CS to none for 3-pin SPI. If you choose the defaults again, the net gets the default channel back. A pin already used by a saved net shows a warning
+- Pick custom pins for a LabJack T7 or U3 `i2c` or `spi` net. The pencil button on the row opens one editor for the net name and the pins. The pin dialog also opens when you add the net, unless you already set the pins. The dialog shows the current pins, and offers only the pins that the model can use. You can set CS to none for 3-pin SPI. If you choose the defaults again, the net gets the default channel back. A pin already used by a saved net shows a warning
 - Rename a new net with the pencil button on its row
 - Assign custom serial devices (RS-232 instruments) to their USB cables with **Assign Device** — the
   interactive twin of [`assign`](#assign), including the optional
@@ -604,9 +631,10 @@ lager nets tui --box my-lager-box
 - Delete every saved net with **Delete All Nets**
 - Keyboard navigation (`q` or `Ctrl+C` quits)
 
-<Note>
-The pin editor is for the LabJack T7 only. A LabJack U3 `i2c` or `spi` net that you add in the TUI uses the default pins (SPI `FIO4-FIO7`, I2C `FIO6-FIO7`). For other U3 pins, use `lager nets add` with the pin options.
-</Note>
+| Model | Default I2C pins | Default SPI pins | Pins the dialog offers |
+|---|---|---|---|
+| LabJack T7 | SDA=FIO4, SCL=FIO5 | CS=FIO0, SCK=FIO1, MOSI=FIO2, MISO=FIO3 | Every DIO pin |
+| LabJack U3 | SDA=FIO6, SCL=FIO7 | CS=FIO4, SCK=FIO5, MOSI=FIO7, MISO=FIO6 | `FIO4`-`FIO7`, `EIO0`-`EIO7`, `CIO0`-`CIO3` |
 
 ### `set-script`
 
