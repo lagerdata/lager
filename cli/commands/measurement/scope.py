@@ -12,6 +12,7 @@ import click
 from ...context import get_impl_path, get_default_net
 from ..development.python import run_python_internal
 from ...core.net_group import NetGroup
+from ...core.param_types import HexParamType
 from ...core.net_helpers import (
     require_netname,
     resolve_box,
@@ -856,9 +857,9 @@ def edge(ctx, mcu, box, mode, coupling, source, slope, level):
 @click.option("--baud", type=click.INT, default=9600, help="Baud rate", show_default=True)
 @click.option("--parity", type=click.Choice(("none", "even", "odd")), default="none", help="Parity", show_default=True)
 @click.option("--stop-bits", type=click.Choice(("1", "1.5", "2")), default="1", help="Stop bits", show_default=True)
-@click.option("--data-width", type=click.INT, default=8, help="Data width (bits)", show_default=True)
-@click.option("--trigger-on", type=click.Choice(("start", "stop", "data", "error")), default="start", help="Trigger condition", show_default=True)
-@click.option("--data", type=click.STRING, required=False, help="Data pattern to match (hex)")
+@click.option("--data-width", type=click.IntRange(5, 8), default=8, help="Data width (bits)", show_default=True)
+@click.option("--trigger-on", type=click.Choice(("start", "data", "error", "cerror")), default="start", help="Trigger condition: error is a framing error, cerror a parity error", show_default=True)
+@click.option("--data", type=HexParamType(), required=False, help="Data value to match (hex)")
 def uart(ctx, mcu, box, mode, coupling, source, level, baud, parity, stop_bits, data_width, trigger_on, data):
     """Set UART trigger (Rigol only)"""
     box_ip = _resolve_box(ctx, box)
@@ -883,10 +884,10 @@ def uart(ctx, mcu, box, mode, coupling, source, level, baud, parity, stop_bits, 
 @click.option("--level-scl", type=click.FLOAT, help="SCL trigger level")
 @click.option("--level-sda", type=click.FLOAT, help="SDA trigger level")
 @click.option("--trigger-on", type=click.Choice(("start", "restart", "stop", "ack_miss", "address", "data", "addr_data")), default="start", help="Trigger condition", show_default=True)
-@click.option("--address", type=click.STRING, required=False, help="I2C address (hex)")
+@click.option("--address", type=HexParamType(), required=False, help="I2C address (hex)")
 @click.option("--addr-width", type=click.Choice(("7", "8", "10")), default="7", help="Address width (bits)", show_default=True)
-@click.option("--data", type=click.STRING, required=False, help="Data pattern to match (hex)")
-@click.option("--data-width", type=click.INT, default=8, help="Data width (bits)", show_default=True)
+@click.option("--data", type=HexParamType(), required=False, help="Data value to match (hex)")
+@click.option("--data-width", type=click.IntRange(1, 5), default=1, help="Data width (bytes)", show_default=True)
 @click.option("--direction", type=click.Choice(("read", "write", "read_write")), default="read_write", help="Transfer direction", show_default=True)
 def i2c(ctx, mcu, box, mode, coupling, source_scl, source_sda, level_scl, level_sda,
         trigger_on, address, addr_width, data, data_width, direction):
@@ -917,8 +918,8 @@ def i2c(ctx, mcu, box, mode, coupling, source_scl, source_sda, level_scl, level_
 @click.option("--level-sck", type=click.FLOAT, help="SCK trigger level")
 @click.option("--level-cs", type=click.FLOAT, help="CS trigger level")
 @click.option("--trigger-on", type=click.Choice(("timeout", "cs")), default="cs", help="Trigger condition", show_default=True)
-@click.option("--data", type=click.STRING, required=False, help="Data pattern to match (hex)")
-@click.option("--data-width", type=click.INT, default=8, help="Data width (bits)", show_default=True)
+@click.option("--data", type=HexParamType(), required=False, help="Data value to match (hex)")
+@click.option("--data-width", type=click.IntRange(4, 32), default=8, help="Data width (bits)", show_default=True)
 @click.option("--clk-slope", type=click.Choice(("rising", "falling")), default="rising", help="Clock edge", show_default=True)
 @click.option("--cs-idle", type=click.Choice(("high", "low")), default="high", help="CS idle state", show_default=True)
 @click.option("--timeout", type=click.FLOAT, required=False, help="Timeout value (seconds)")

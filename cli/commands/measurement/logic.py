@@ -351,7 +351,7 @@ def pulse(ctx, mcu, box, mode, coupling, source, level, trigger_on, upper, lower
 @click.option('--level-sda', type=click.FLOAT, help='Trigger sda level')
 @click.option('--trigger-on', type=click.Choice(('start', 'restart', 'stop', 'nack', 'address', 'data', 'addr_data')), help='Trigger on')
 @click.option('--address', type=click.INT, help='Address value to trigger on in ADDRESS mode')
-@click.option('--addr-width', type=click.Choice(('7', '8', '9', '10')), help='Address width in bits')
+@click.option('--addr-width', type=click.Choice(('7', '8', '10')), help='Address width in bits')
 @click.option('--data', type=click.INT, help='Data value to trigger on in DATA mode')
 @click.option('--data-width', type=click.Choice(('1', '2', '3', '4', '5')), help='Data width in bytes')
 @click.option('--direction', type=click.Choice(('write', 'read', 'rw')), help='Direction to trigger on')
@@ -395,10 +395,10 @@ def uart(ctx, box, mcu, mode, coupling, source, level, trigger_on, parity, stop_
             click.secho(f"Error: Baud rate must be between 110 and 20000000, got {baud}", fg="red", err=True)
             ctx.exit(1)
 
-    # Validate data width if provided (typically 5-9 bits for UART)
+    # Validate data width if provided (the MSO5000 takes 5-8 bits)
     if data_width is not None:
-        if data_width < 5 or data_width > 9:
-            click.secho(f"Error: Data width must be between 5 and 9 bits, got {data_width}", fg="red", err=True)
+        if data_width < 5 or data_width > 8:
+            click.secho(f"Error: Data width must be between 5 and 8 bits, got {data_width}", fg="red", err=True)
             ctx.exit(1)
 
     if stop_bits is not None:

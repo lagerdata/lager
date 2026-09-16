@@ -391,11 +391,13 @@ lager scope NET_NAME trigger pulse [OPTIONS]
 | `positive_less` | Positive pulse narrower than `--lower` |
 | `negative_less` | Negative pulse narrower than `--lower` |
 
+The condition does not select a polarity yet: each `positive` value and its `negative` counterpart set the same width condition. Without the width it needs, the command changes no width condition and prints a note.
+
 ### `trigger i2c`
 
 Set I2C protocol trigger (Rigol only). Triggers on I2C bus events.
 
-On the Rigol MSO5000, this command does not work yet. See the limitations at the top of this page. The command also refuses its default `--direction` value, `read_write`, and the `ack_miss` condition.
+On the Rigol MSO5000, this command does not work yet. See the limitations at the top of this page.
 
 ```bash
 lager scope NET_NAME trigger i2c [OPTIONS]
@@ -413,8 +415,8 @@ lager scope NET_NAME trigger i2c [OPTIONS]
 | `--address HEX` | I2C address (hex) | - |
 | `--addr-width` | Address width: `7`, `8`, `10` bits | `7` |
 | `--data HEX` | Data pattern to match (hex) | - |
-| `--data-width INT` | Data width in bytes: `1` to `5` (the help text says bits) | `8` |
-| `--direction` | Direction: `read`, `write`, `read_write` | `read_write` |
+| `--data-width INT` | Data width in bytes: `1` to `5` | `1` |
+| `--direction` | Direction: `read`, `write`, `read_write` (either) | `read_write` |
 
 **Trigger-on Conditions:**
 
@@ -447,13 +449,11 @@ lager scope NET_NAME trigger spi [OPTIONS]
 | `--level-sck VOLTS` | SCK trigger level | - |
 | `--level-cs VOLTS` | CS trigger level | - |
 | `--trigger-on` | Condition: `timeout`, `cs` | `cs` |
-| `--data HEX` | Data pattern to match (hex). Not usable yet: the command fails when you give it | - |
+| `--data HEX` | Data value to match (hex), at most 2^width − 1 | - |
 | `--data-width INT` | Data width in bits: `4` to `32` | `8` |
-| `--clk-slope` | Clock edge: `rising`, `falling`. Has no effect yet | `rising` |
+| `--clk-slope` | Clock edge: `rising`, `falling` | `rising` |
 | `--cs-idle` | CS idle state: `high`, `low`. `high` triggers while CS is low | `high` |
 | `--timeout SECONDS` | Timeout value in seconds. `--trigger-on timeout` changes nothing without it | - |
-
-To set a data pattern or the clock edge, use `lager logic NET trigger spi` on the [Logic Analyzer](/source/reference/cli/logic) page. It takes `--data` as a decimal integer and `--clk-slope` as `positive` or `negative`.
 
 **Examples:**
 
@@ -468,7 +468,7 @@ lager scope ANALOG1 trigger spi \
 
 Set UART protocol trigger (Rigol only). Triggers on UART serial events.
 
-On the Rigol MSO5000, this command does not work yet. See the limitations at the top of this page. The command also refuses the `stop` condition.
+On the Rigol MSO5000, this command does not work yet. See the limitations at the top of this page.
 
 ```bash
 lager scope NET_NAME trigger uart [OPTIONS]
@@ -482,7 +482,7 @@ lager scope NET_NAME trigger uart [OPTIONS]
 | `--parity` | Parity: `none`, `even`, `odd` | `none` |
 | `--stop-bits` | Stop bits: `1`, `1.5`, `2` | `1` |
 | `--data-width INT` | Data width in bits: `5` to `8` | `8` |
-| `--trigger-on` | Condition: `start`, `stop`, `data`, `error` | `start` |
+| `--trigger-on` | Condition: `start`, `data`, `error` (a framing error), `cerror` (a parity error) | `start` |
 | `--data HEX` | Data pattern to match (hex) | - |
 
 ---
@@ -777,7 +777,7 @@ lager scope ANALOG1 measure vmax --box my-lager-box
 lager scope ANALOG1 trigger edge --slope rising --level 1.5 --box my-lager-box
 
 # Pulse width trigger (glitch detection)
-lager scope ANALOG1 trigger pulse --trigger-on positive_less --upper 0.0001 --box my-lager-box
+lager scope ANALOG1 trigger pulse --trigger-on positive_less --lower 0.0001 --box my-lager-box
 
 # UART trigger at 115200 baud
 lager scope ANALOG1 trigger uart \

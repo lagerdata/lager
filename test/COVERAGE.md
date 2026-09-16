@@ -47,12 +47,12 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 2272 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 2641 |
+| `unit (box)` | `test/unit/box/` | 2868 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 195 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 195 (+1 skipped) |
-| | **Total gated** | **5497** |
+| | **Total gated** | **5724** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -454,9 +454,9 @@ cli/tests/                #  7 files: 6 pytest suites (GATED via `unit (cli)`),
                           #           plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 216 files)
+### Local Unit Tests (`test/unit/` -- 217 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 118 files)
+#### Box Unit Tests (`test/unit/box/` -- 119 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -570,6 +570,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_stream_teardown.py` | `lager python` child reaped when the client disconnects mid-run, instead of orphaning at 100% CPU holding a device flock |
 | `test_sudoers_contract.py` | The `/etc/sudoers.d/` ownership contract: Lager writes exactly three files there, never globs and never touches the directory itself, and every writer — including the shell copy in `setup_and_deploy_box.sh` — emits the banner telling an operator those files are regenerated wholesale. Also pins the recorded escalation posture: the box login user is root-equivalent by design, and no source may claim a scoped entry confines it |
 | `test_supply_command_handler.py` | `POST /supply/command` handler, covering v0.32.0 hardware-found regressions |
+| `test_trigger_option_contract.py` | `lager scope` and `lager logic` trigger options against the shared handler and the real MSO5000 mappers: every offered value and every default reaches a method the mapper defines, the scope/logic spellings that differ (`read_write`, `ack_miss`, `rising`, `gt`) map to the same condition, hex `--data`/`--address` arrive as integers, and `lager dac` refuses a voltage above 5 V |
 | `test_uart_bridge_params.py` | UARTBridge serial parameters: a `timeout` reaches the opened port (default 0.1 s), parity names and pyserial letters map to pyserial's constants, and any other parity raises before a port opens. The drivers the dispatcher builds for sessions keep the 0.1 s read timeout |
 | `test_uart_bridge_reconnect.py` | UARTBridge re-enumeration healing after an adapter changes its /dev/tty node |
 | `test_uart_session_cleanup.py` | Websocket UART read loop heals in place instead of stopping on a failed read, plus the three ways a held UART net is freed — a departed client (which the loop's own heartbeat cannot detect, because the loop writes it), a wedged reader, and an operator force-release. Also that a read failing after teardown closed the port is not a read error, and that the in-use error names the net holding the device |

@@ -155,7 +155,7 @@ lager logic NET_NAME trigger pulse [OPTIONS]
 - `--coupling` - Coupling mode
 - `--source NET` - Trigger source
 - `--level FLOAT` - Trigger level
-- `--trigger-on` - Trigger on. The CLI accepts `gt`, `lt` and `gtlt`, but the command then refuses each of these values with `is not a valid option`.
+- `--trigger-on` - Trigger on: `gt` (a pulse wider than `--upper`), `lt` (a pulse narrower than `--lower`), or `gtlt` (a pulse between `--lower` and `--upper`). The condition does not select a polarity. Without the width it needs, the command changes no width condition and prints a note.
 - `--upper FLOAT` - Upper pulse width
 - `--lower FLOAT` - Lower pulse width
 
@@ -176,7 +176,7 @@ lager logic NET_NAME trigger i2c [OPTIONS]
 - `--level-sda FLOAT` - SDA trigger level
 - `--trigger-on` - Trigger on: `start`, `restart`, `stop`, `nack`, `address`, `data`, `addr_data`
 - `--address INT` - Address value (for address trigger), as a decimal integer. The maximum is 127 for a 7-bit address, 255 for 8-bit, and 1023 for 10-bit.
-- `--addr-width` - Address width: `7`, `8` or `10` bits. The CLI also accepts `9`, but the box refuses it.
+- `--addr-width` - Address width: `7`, `8` or `10` bits
 - `--data INT` - Data value (for data trigger), as a decimal integer
 - `--data-width` - Data width: `1`-`5` bytes
 - `--direction` - Direction: `write`, `read`, `rw`
@@ -194,11 +194,11 @@ lager logic NET_NAME trigger uart [OPTIONS]
 - `--coupling` - Coupling mode
 - `--source NET` - Trigger source
 - `--level FLOAT` - Trigger level
-- `--trigger-on` - Trigger on: `start`, `error`, `cerror`, `data`
+- `--trigger-on` - Trigger on: `start`, `error` (a framing error), `cerror` (a parity error), `data`
 - `--parity` - Parity: `even`, `odd`, `none`
 - `--stop-bits` - Stop bits: `1`, `1.5`, `2`
 - `--baud INT` - Baud rate (110 to 20000000)
-- `--data-width INT` - Data width in bits: `5` to `8`. The CLI also accepts `9`, but the box refuses it.
+- `--data-width INT` - Data width in bits: `5` to `8`
 - `--data INT` - Data value to trigger on, as a decimal integer
 
 ### `trigger spi`
