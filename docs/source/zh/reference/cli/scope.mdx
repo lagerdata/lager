@@ -393,11 +393,13 @@ lager scope NET_NAME trigger pulse [OPTIONS]
 | `positive_less` | 正脉冲窄于 `--lower` |
 | `negative_less` | 负脉冲窄于 `--lower` |
 
+该条件目前还不选择极性：每个 `positive` 值与对应的 `negative` 值设置的是同一个宽度条件。缺少所需的宽度时，命令不会更改任何宽度条件，并打印一条提示。
+
 ### `trigger i2c`
 
 设置 I2C 协议触发（仅 Rigol）。在 I2C 总线事件上触发。
 
-在 Rigol MSO5000 上，这条命令还不能工作。请参阅本页顶部的限制说明。该命令还会拒绝它自己的默认 `--direction` 值 `read_write`，以及 `ack_miss` 条件。
+在 Rigol MSO5000 上，这条命令还不能工作。请参阅本页顶部的限制说明。
 
 ```bash
 lager scope NET_NAME trigger i2c [OPTIONS]
@@ -415,8 +417,8 @@ lager scope NET_NAME trigger i2c [OPTIONS]
 | `--address HEX` | I2C 地址（十六进制） | - |
 | `--addr-width` | 地址宽度：`7`、`8`、`10` 位 | `7` |
 | `--data HEX` | 要匹配的数据模式（十六进制） | - |
-| `--data-width INT` | 数据宽度，单位字节：`1` 至 `5`（帮助文本中写的是位） | `8` |
-| `--direction` | 方向：`read`、`write`、`read_write` | `read_write` |
+| `--data-width INT` | 数据宽度，单位字节：`1` 至 `5` | `1` |
+| `--direction` | 方向：`read`、`write`、`read_write`（两者皆可） | `read_write` |
 
 **trigger-on 条件：**
 
@@ -449,15 +451,11 @@ lager scope NET_NAME trigger spi [OPTIONS]
 | `--level-sck VOLTS` | SCK 触发电平 | - |
 | `--level-cs VOLTS` | CS 触发电平 | - |
 | `--trigger-on` | 条件：`timeout`、`cs` | `cs` |
-| `--data HEX` | 要匹配的数据模式（十六进制）。目前不可用：传入它会导致命令失败 | - |
+| `--data HEX` | 要匹配的数据值（十六进制），最大为 2^width − 1 | - |
 | `--data-width INT` | 数据宽度，单位位：`4` 至 `32` | `8` |
-| `--clk-slope` | 时钟边沿：`rising`、`falling`。目前不起作用 | `rising` |
+| `--clk-slope` | 时钟边沿：`rising`、`falling` | `rising` |
 | `--cs-idle` | CS 空闲状态：`high`、`low`。`high` 表示在 CS 为低时触发 | `high` |
 | `--timeout SECONDS` | 超时值，单位秒。不给它时 `--trigger-on timeout` 不会改变任何设置 | - |
-
-若要设置数据模式或时钟边沿，请使用[逻辑分析仪](/source/zh/reference/cli/logic)
-页面上的 `lager logic NET trigger spi`。它的 `--data` 取十进制整数，
-`--clk-slope` 取 `positive` 或 `negative`。
 
 **示例：**
 
@@ -472,7 +470,7 @@ lager scope ANALOG1 trigger spi \
 
 设置 UART 协议触发（仅 Rigol）。在 UART 串行事件上触发。
 
-在 Rigol MSO5000 上，这条命令还不能工作。请参阅本页顶部的限制说明。该命令还会拒绝 `stop` 条件。
+在 Rigol MSO5000 上，这条命令还不能工作。请参阅本页顶部的限制说明。
 
 ```bash
 lager scope NET_NAME trigger uart [OPTIONS]
@@ -486,7 +484,7 @@ lager scope NET_NAME trigger uart [OPTIONS]
 | `--parity` | 校验位：`none`、`even`、`odd` | `none` |
 | `--stop-bits` | 停止位：`1`、`1.5`、`2` | `1` |
 | `--data-width INT` | 数据宽度，单位位：`5` 至 `8` | `8` |
-| `--trigger-on` | 条件：`start`、`stop`、`data`、`error` | `start` |
+| `--trigger-on` | 条件：`start`、`data`、`error`（帧错误）、`cerror`（奇偶校验错误） | `start` |
 | `--data HEX` | 要匹配的数据模式（十六进制） | - |
 
 ---
@@ -781,7 +779,7 @@ lager scope ANALOG1 measure vmax --box my-lager-box
 lager scope ANALOG1 trigger edge --slope rising --level 1.5 --box my-lager-box
 
 # Pulse width trigger (glitch detection)
-lager scope ANALOG1 trigger pulse --trigger-on positive_less --upper 0.0001 --box my-lager-box
+lager scope ANALOG1 trigger pulse --trigger-on positive_less --lower 0.0001 --box my-lager-box
 
 # UART trigger at 115200 baud
 lager scope ANALOG1 trigger uart \

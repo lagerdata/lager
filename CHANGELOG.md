@@ -20,6 +20,17 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   as proof the key was outside the control plane's management. They now ask the
   box whether the key is already in its key directory, and say nothing when it
   is.
+- **`lager scope NET trigger i2c`, `uart` and `spi` accept their defaults and
+  every value they offer.** The I2C trigger no longer refuses its default
+  `--direction read_write` or `ack_miss`, its `--data-width` is 1 to 5 bytes
+  (default 1), and `--data` and `--address` are read as hex. `--clk-slope`
+  now sets the clock edge, the UART `error` and `cerror` conditions reach the
+  scope, and `stop`, which the MSO5000 does not have, is no longer offered.
+- **`lager logic NET trigger pulse` accepts `gt`, `lt` and `gtlt`.** The
+  command refused every value it offered. `trigger i2c --addr-width` no longer
+  offers `9`, and `trigger uart --data-width` refuses `9`, as the MSO5000 does.
+- **`lager dac` refuses a voltage above 5 V.** It accepted up to 10 V, which no
+  supported DAC can output, so the error came from the box instead.
 
 ## [0.48.1] - 2026-09-16
 

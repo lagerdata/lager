@@ -72,8 +72,10 @@ def dac(ctx, box, netname, voltage, as_json):
             click.secho("Voltage must be a number (e.g., 3.3, 5.0)", err=True)
             ctx.exit(1)
 
-        # Validate voltage range (LabJack DAC range is 0-5V or 0-10V depending on config)
-        DAC_MIN_VOLTAGE, DAC_MAX_VOLTAGE = 0.0, 10.0
+        # No supported DAC goes past 5 V: the LabJack T7 and the MCC USB-202
+        # take 0-5 V and the LabJack U3 0.04-4.95 V. The box refuses a value
+        # inside this range that the net's own instrument cannot output.
+        DAC_MIN_VOLTAGE, DAC_MAX_VOLTAGE = 0.0, 5.0
         if voltage_float < DAC_MIN_VOLTAGE or voltage_float > DAC_MAX_VOLTAGE:
             click.secho(f"Error: Voltage must be between {DAC_MIN_VOLTAGE} and {DAC_MAX_VOLTAGE} V, got {voltage_float} V", fg='red', err=True)
             ctx.exit(1)

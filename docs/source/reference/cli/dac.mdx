@@ -32,7 +32,7 @@ lager dac [OPTIONS] NET [VOLTAGE]
 | LabJack | U3 | 2 (DAC0-DAC1) | 0.04 to 4.95 V | |
 | Measurement Computing | USB-202 | 2 (DAC0-DAC1) | 0 to 5 V | 12-bit |
 
-The CLI accepts values from 0 to 10 V. The box then checks the range of the instrument and refuses a value outside it.
+The CLI accepts values from 0 to 5 V, the widest of these ranges. The box then checks the range of the net's instrument and refuses a value outside it.
 
 ### LabJack U3
 

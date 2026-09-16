@@ -782,15 +782,21 @@ def trigger_uart(netname, mode, coupling, source, level, trigger_on, parity, sto
             trig_parity = TriggerUARTParity.NoParity
         else:
             raise Exception(f"{parity} is not a valid option")
+    # `lager scope` sends the stop bits as the choice string, `lager logic` as
+    # a float. The mapper gets one type either way.
+    if stop_bits is not None:
+        stop_bits = float(stop_bits)
     target_net.trigger_settings.uart.set_uart_params(parity=trig_parity, stopbits=stop_bits, baud=baud, bits=data_width)
 
     if trigger_on:
+        # `error` is a framing error and `cerror` a parity (check) error. The
+        # mapper names them that way; there is no plain set_trigger_on_error.
         if trigger_on.lower() == "start":
             target_net.trigger_settings.uart.set_trigger_on_start()
         elif trigger_on.lower() == "error":
-            target_net.trigger_settings.uart.set_trigger_on_error()
+            target_net.trigger_settings.uart.set_trigger_on_frame_error()
         elif trigger_on.lower() == "cerror":
-            target_net.trigger_settings.uart.set_trigger_on_cerror()
+            target_net.trigger_settings.uart.set_trigger_on_check_error()
         elif trigger_on.lower() == "data":
             target_net.trigger_settings.uart.set_trigger_on_data(data=data)
         else:
@@ -837,19 +843,27 @@ def trigger_pulse(netname, mode, coupling, source, level, trigger_on, upper, low
         target_net.trigger_settings.pulse.set_level(level)
 
     if trigger_on:
+        # `lager scope` names the conditions positive_* / negative_*, and
+        # `lager logic` names them gt / lt / gtlt. Both reach the same three
+        # mapper conditions. Polarity is not applied yet: the mapper has no
+        # polarity setter, so positive and negative select the same condition.
         trigger_lower = trigger_on.lower()
-        if trigger_lower in ("positive", "positive_greater"):
+        if trigger_lower in ("positive", "negative", "positive_greater", "negative_greater", "gt"):
             if upper:
                 target_net.trigger_settings.pulse.set_trigger_on_pulse_greater_than_width(upper)
-        elif trigger_lower in ("negative", "negative_greater"):
-            if upper:
-                target_net.trigger_settings.pulse.set_trigger_on_pulse_greater_than_width(upper)
-        elif trigger_lower == "positive_less":
+            else:
+                print(f"{YELLOW}No --upper given; the pulse width condition was not changed.{RESET}")
+        elif trigger_lower in ("positive_less", "negative_less", "lt"):
             if lower:
                 target_net.trigger_settings.pulse.set_trigger_on_pulse_less_than_width(lower)
-        elif trigger_lower == "negative_less":
-            if lower:
-                target_net.trigger_settings.pulse.set_trigger_on_pulse_less_than_width(lower)
+            else:
+                print(f"{YELLOW}No --lower given; the pulse width condition was not changed.{RESET}")
+        elif trigger_lower == "gtlt":
+            if upper and lower:
+                target_net.trigger_settings.pulse.set_trigger_on_pulse_less_than_greater_than(
+                    max_pulse_width=upper, min_pulse_width=lower)
+            else:
+                print(f"{YELLOW}gtlt needs both --lower and --upper; the pulse width condition was not changed.{RESET}")
         else:
             raise Exception(f"{trigger_on} is not a valid option")
 
@@ -900,15 +914,21 @@ def trigger_i2c(netname, mode, coupling, source_scl, level_scl, source_sda, leve
     if level_sda is not None:
         target_net.trigger_settings.i2c.set_sda_trigger_level(level_sda)
 
+    # `lager scope` spells two values differently from `lager logic`:
+    # `read_write` for `rw`, and `ack_miss` for `nack`. Both spellings work.
     if direction:
-        if direction == 'write':
-            direction = TriggerI2CDirection.Write
-        elif direction == 'read':
-            direction = TriggerI2CDirection.Read
-        elif direction == 'rw':
-            direction = TriggerI2CDirection.RW
-        else:
+        directions = {
+            'write': TriggerI2CDirection.Write,
+            'read': TriggerI2CDirection.Read,
+            'rw': TriggerI2CDirection.RW,
+            'read_write': TriggerI2CDirection.RW,
+        }
+        if direction.lower() not in directions:
             raise Exception(f"{direction} is not a valid option")
+        direction = directions[direction.lower()]
+
+    if addr_width is not None:
+        addr_width = int(addr_width)
 
     if trigger_on:
         if trigger_on.lower() == "start":
@@ -917,7 +937,7 @@ def trigger_i2c(netname, mode, coupling, source_scl, level_scl, source_sda, leve
             target_net.trigger_settings.i2c.set_trigger_on_restart()
         elif trigger_on.lower() == "stop":
             target_net.trigger_settings.i2c.set_trigger_on_stop()
-        elif trigger_on.lower() == "nack":
+        elif trigger_on.lower() in ("nack", "ack_miss"):
             target_net.trigger_settings.i2c.set_trigger_on_nack()
         elif trigger_on.lower() == "address":
             target_net.trigger_settings.i2c.set_trigger_on_address(bits=addr_width, direction=direction, address=address)
@@ -983,11 +1003,14 @@ def trigger_spi(netname, mode, coupling, source_mosi_miso, source_sck, source_cs
 
     target_net.trigger_settings.spi.set_trigger_data(bits=data_width, data=data)
 
+    # `lager scope` offers rising/falling and `lager logic` positive/negative.
     if clk_slope:
-        if clk_slope.lower() == "positive":
+        if clk_slope.lower() in ("positive", "rising"):
             target_net.trigger_settings.spi.set_clk_edge_positive()
-        elif clk_slope.lower() == "negative":
+        elif clk_slope.lower() in ("negative", "falling"):
             target_net.trigger_settings.spi.set_clk_edge_negative()
+        else:
+            raise Exception(f"{clk_slope} is not a valid option")
 
     if trigger_on:
         if trigger_on.lower() == "timeout":

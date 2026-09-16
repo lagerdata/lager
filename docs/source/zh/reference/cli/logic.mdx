@@ -159,7 +159,7 @@ lager logic NET_NAME trigger pulse [OPTIONS]
 - `--coupling` - 耦合方式
 - `--source NET` - 触发源
 - `--level FLOAT` - 触发电平
-- `--trigger-on` - 触发条件。CLI 接受 `gt`、`lt` 和 `gtlt`，但命令随后会对这些值都报出 `is not a valid option` 而拒绝执行。
+- `--trigger-on` - 触发条件：`gt`（宽于 `--upper` 的脉冲）、`lt`（窄于 `--lower` 的脉冲）或 `gtlt`（宽度介于 `--lower` 和 `--upper` 之间的脉冲）。该条件不选择极性。缺少所需的宽度时，命令不会更改任何宽度条件，并打印一条提示。
 - `--upper FLOAT` - 脉宽上限
 - `--lower FLOAT` - 脉宽下限
 
@@ -180,7 +180,7 @@ lager logic NET_NAME trigger i2c [OPTIONS]
 - `--level-sda FLOAT` - SDA 触发电平
 - `--trigger-on` - 触发条件：`start`、`restart`、`stop`、`nack`、`address`、`data`、`addr_data`
 - `--address INT` - 地址值（用于地址触发），以十进制整数表示。7 位地址最大 127，8 位最大 255，10 位最大 1023。
-- `--addr-width` - 地址宽度：`7`、`8` 或 `10` 位。CLI 也接受 `9`，但 Box 会拒绝它。
+- `--addr-width` - 地址宽度：`7`、`8` 或 `10` 位
 - `--data INT` - 数据值（用于数据触发），以十进制整数表示
 - `--data-width` - 数据宽度：`1`-`5` 字节
 - `--direction` - 方向：`write`、`read`、`rw`
@@ -198,11 +198,11 @@ lager logic NET_NAME trigger uart [OPTIONS]
 - `--coupling` - 耦合方式
 - `--source NET` - 触发源
 - `--level FLOAT` - 触发电平
-- `--trigger-on` - 触发条件：`start`、`error`、`cerror`、`data`
+- `--trigger-on` - 触发条件：`start`、`error`（帧错误）、`cerror`（奇偶校验错误）、`data`
 - `--parity` - 校验位：`even`、`odd`、`none`
 - `--stop-bits` - 停止位：`1`、`1.5`、`2`
 - `--baud INT` - 波特率（110 至 20000000）
-- `--data-width INT` - 数据宽度，单位位：`5` 至 `8`。CLI 也接受 `9`，但 Box 会拒绝它。
+- `--data-width INT` - 数据宽度，单位位：`5` 至 `8`
 - `--data INT` - 触发所用的数据值，以十进制整数表示
 
 ### `trigger spi`
