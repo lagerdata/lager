@@ -1681,11 +1681,11 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
                     'the key just installed is one it does not know about.',
                     fg='yellow')
                 if removed:
-                    click.secho('  It has been removed again, leaving the box '
-                                'as it was found.', fg='yellow')
+                    click.secho('  The key is gone again; the box is as '
+                                'it was found.', fg='yellow')
                 else:
-                    click.secho('  It could NOT be removed again — it is still '
-                                'in the box\'s authorized_keys, outside that '
+                    click.secho('  The removal FAILED — the key is still in '
+                                'the box\'s authorized_keys, outside that '
                                 'control plane\'s management.', fg='yellow')
                 click.secho(
                     '  Ask an admin to grant you access there instead; your '
