@@ -51,8 +51,8 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 195 |
-| `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 186 (+1 skipped) |
-| | **Total gated** | **5488** |
+| `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 195 (+1 skipped) |
+| | **Total gated** | **5497** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -454,7 +454,7 @@ cli/tests/                #  7 files: 6 pytest suites (GATED via `unit (cli)`),
                           #           plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 215 files)
+### Local Unit Tests (`test/unit/` -- 216 files)
 
 #### Box Unit Tests (`test/unit/box/` -- 118 files)
 
@@ -684,16 +684,17 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_blufi_unit.py` | BluFi protocol parsing (696-line pytest suite) |
 | `test_blufi_scan.py` | `BlufiClient.scan()` BLE advertisement presence checks |
 
-#### Root Unit Tests (`test/unit/test_*.py` -- 11 files)
+#### Root Unit Tests (`test/unit/test_*.py` -- 12 files)
 
 | File | What it tests |
 |------|---------------|
 | `test_bench_cleanup_timeouts.py` | Tree-wide guard: every `if: always()` step on a `self-hosted` bench job carries `timeout-minutes` and `continue-on-error`, and the bench jobs are still serialized on one non-cancelling concurrency group |
-| `test_bench_schedule_check.py` | `tools/bench_schedule_check.py`: the nightly cadence signals kept distinct -- a missed night (gap), a dead cron (stale), and a schedule drifting later (lateness vs the cron parsed from `nightly-bench.yml`), which spacing alone cannot see |
+| `test_bench_schedule_check.py` | `tools/bench_schedule_check.py`: the nightly cadence signals kept distinct -- a missed night (gap), a dead cron (stale), and a schedule drifting later (lateness vs the cron parsed from `nightly-bench.yml`), which spacing alone cannot see. Also that only the newest interval raises a gap, so a missed night stops alarming once the next scheduled night runs |
 | `test_bench_watchdog_env.py` | Pins `bench-watchdog.yml`'s `env:` block against the names `tools/bench_schedule_check.py` reads: the workflow must set no threshold at all (a second copy is how the gap threshold came to override 36 with 26 and alarm on a late night), and every threshold the tool reads must carry a default |
 | `test_coverage_checker.py` | `tools/check_coverage_counts.py`: platform-gated rows are not drift (and `--fix` must not rewrite them), the anchored summary parse `FORCE_COLOR` defeated, and a missing `pytest-timeout` reported as the missing plugin rather than as a failing suite |
 | `test_group_usage.py` | Usage-line formatting for CLI command groups (CommandFirstUsageMixin / LagerGroup) |
 | `test_install_wheel.py` | install-wheel command: wheel filename to package name parsing |
+| `test_nightly_notify_scope.py` | `nightly-bench.yml`: every job that can write the `bench-alert` issue runs only for the scheduled run or a run of main, with that term ANDed onto its existing condition |
 | `test_no_global_os_path_patches.py` | Tree-wide guard: no test may patch `os.path` (process-global; on Python >= 3.14 it also rewrites every `pathlib.Path.exists()`) — patch the module's seam or use a real temp path |
 | `test_pdf_pages.py` | `tools/pdf_pages.py`: PNG and text extraction (skips without pymupdf, which is AGPL) |
 | `test_supply_settle.py` | The DP821 suite's `_wait_for_regulation`: replays the captured 0.17 A enable transient to pin that agreeing reads inside a plateau are not a settle, that a genuine steady load settles at once and is left for the caller to judge, and that a wired channel names its fixture on failure |

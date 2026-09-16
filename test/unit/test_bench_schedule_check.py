@@ -113,6 +113,65 @@ class TestMissedNight:
         )
 
 
+class TestRecoveredGap:
+    """A missed night alarms until the next scheduled night runs, and not after.
+
+    The regression this guards (#568): the gap check reported the largest
+    interval anywhere in its 96h lookback. `bench_alert.sh` only ever searches
+    for an OPEN issue, so a green nightly closing the alert was followed by the
+    next watchdog run filing a new one, every six hours, until the gap aged out.
+    """
+
+    #: The ten scheduled nightlies the watchdog read on 2026-09-16, newest first.
+    #: A 120.6h gap ends at 09-15 15:01; 09-16 is a normal night after it.
+    SEPTEMBER = [
+        "2026-09-16T14:58:48Z", "2026-09-15T15:01:05Z", "2026-09-10T14:25:26Z",
+        "2026-09-09T14:35:06Z", "2026-09-08T14:31:19Z", "2026-09-07T15:50:20Z",
+        "2026-09-06T13:40:31Z", "2026-09-05T13:27:13Z", "2026-09-04T14:20:46Z",
+        "2026-09-03T14:33:33Z",
+    ]
+
+    @classmethod
+    def september(cls, upto):
+        """The scheduled runs that existed at `upto`, as the REST API lists them."""
+        return [
+            {"databaseId": i, "status": "completed", "event": "schedule", "created_at": t}
+            for i, t in enumerate(cls.SEPTEMBER)
+            if datetime.fromisoformat(t.replace("Z", "+00:00")) <= upto
+        ]
+
+    def test_the_gap_alarms_while_it_is_the_newest_interval(self):
+        """The watchdog run at 09-15 17:15 was right to file an issue."""
+        now = datetime(2026, 9, 15, 17, 15, tzinfo=timezone.utc)
+        problems = bsc.check_schedule(self.september(now), now=now, cron=CRON)
+        assert any("120.6h gap" in p for p in problems), problems
+
+    def test_the_gap_is_silent_once_the_next_night_has_run(self):
+        """The watchdog run at 09-16 17:16 filed #565 for the same gap."""
+        now = datetime(2026, 9, 16, 17, 16, tzinfo=timezone.utc)
+        runs = self.september(now)
+        assert max(g for g, _ in bsc.intervals_hours(bsc.scheduled_runs(runs))) > 120, (
+            "the fixture must still hold the old gap, or this test proves nothing"
+        )
+        assert bsc.check_schedule(runs, now=now, cron=CRON) == []
+
+    def test_a_gap_followed_by_a_normal_night_is_silent(self):
+        runs = [run(1.0), run(1.0 + 24.0), run(1.0 + 24.0 + 72.0), run(1.0 + 24.0 + 96.0)]
+        assert bsc.check_schedule(runs, now=NOW, cron=CRON) == []
+
+    def test_a_second_missed_night_alarms_again(self):
+        """Silence after recovery must not hide the next miss."""
+        runs = [run(1.0), run(1.0 + 48.0), run(1.0 + 72.0), run(1.0 + 144.0)]
+        problems = bsc.check_schedule(runs, now=NOW, cron=CRON)
+        assert any("48.0h gap" in p for p in problems), problems
+
+    def test_a_gap_that_ended_long_ago_is_left_to_staleness(self):
+        """No run for days: report it once, as stale, not also as an old gap."""
+        runs = [run(100.0), run(100.0 + 48.0), run(100.0 + 72.0)]
+        problems = bsc.check_schedule(runs, now=NOW, cron=CRON)
+        assert len(problems) == 1 and "old" in problems[0], problems
+
+
 class TestStale:
     def test_nothing_arriving_at_all_is_caught_by_staleness(self):
         """A dead cron produces no new run, so gaps alone stay silent forever."""
