@@ -1211,10 +1211,44 @@ class TestInstallLockTtl:
         # steps around the deploy need.
         assert box_storage.install_lock_ttl_seconds(60) == box_storage.INSTALL_LOCK_TTL_SECONDS
 
-    def test_no_timeout_means_no_ttl(self):
-        # `--timeout 0` is an unbounded deploy; no finite TTL can outlast it,
-        # so the lock lives on renewals and the explicit release instead.
-        assert box_storage.install_lock_ttl_seconds(0) is None
+    def test_no_timeout_asks_for_a_lock_that_never_expires(self):
+        # `--timeout 0` is an unbounded deploy: no finite TTL can outlast it.
+        # It has to say so with the sentinel rather than with None, because
+        # None is how a caller says "no opinion" and the auto-lock boundary
+        # answers that with the 1800s default -- so an unbounded install held
+        # a lock that could expire half an hour into a build still running.
+        assert box_storage.install_lock_ttl_seconds(0) is box_storage.NO_LOCK_EXPIRY
+
+    def test_the_boundary_tells_the_three_inputs_apart(self):
+        # Unset, no-expiry, and an explicit number. The first two used to be
+        # the same value, which is the whole defect.
+        assert box_storage._resolve_ttl_seconds(box_storage.NO_LOCK_EXPIRY) is None
+        assert box_storage._resolve_ttl_seconds(None) == box_storage.default_lock_ttl_seconds()
+        assert box_storage._resolve_ttl_seconds(900) == 900
+
+    def test_an_unbounded_install_reaches_the_box_with_a_null_ttl(self, monkeypatch):
+        # End to end through the boundary, because the boundary is where the
+        # two meanings collided -- asserting on the helper alone would pass
+        # even if nothing downstream honored it. The box stores a null
+        # ttl_seconds as "this lock does not expire".
+        captured = {}
+
+        def fake_acquire(ip, box_label, holder, **kwargs):
+            captured.update(kwargs)
+            return ('acquired', {})
+
+        monkeypatch.delenv('LAGER_AUTO_LOCK_DISABLE', raising=False)
+        monkeypatch.setattr(box_storage, 'acquire_box_lock', fake_acquire)
+        monkeypatch.setattr(box_storage, 'release_box_lock', lambda *a, **k: True)
+        monkeypatch.setattr(box_storage, 'get_lock_holder', lambda: 'test-holder')
+
+        with box_storage.auto_lock_around_command(
+            '10.0.0.1', 'box', 'install',
+            ttl_seconds=box_storage.install_lock_ttl_seconds(0),
+        ):
+            pass
+
+        assert captured['ttl_seconds'] is None
 
     def test_it_defaults_to_the_configured_timeout(self, monkeypatch):
         monkeypatch.setenv('LAGER_INSTALL_TIMEOUT', '5400')

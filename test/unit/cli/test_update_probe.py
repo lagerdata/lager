@@ -15,8 +15,14 @@ spin up SSH here. Instead we verify two things:
      dict so the deploy path reads them as expected.
 """
 
+import ast
+import importlib
+import inspect
 import os
+import pathlib
+import subprocess
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
@@ -24,6 +30,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirna
 from cli.commands.utility.update import (
     _probe_shell_script,
     _parse_probe_output,
+    _apply_modprobe_recheck,
+    _modprobe_recheck_shell_cmd,
     _build_hash_shell_cmd,
     _BUILD_HASH_INPUTS,
     _PROBE_PREFIX,
@@ -93,6 +101,115 @@ class ParseProbeOutputHandlesModprobeKeys(unittest.TestCase):
         self.assertNotIn('MODPROBE_SRC_PATH', facts)
         self.assertNotIn('USBTMC_LOADED', facts)
         self.assertEqual(facts.get('MODPROBE_SRC_PATH', ''), '')
+
+
+class ModprobeRecheckRunsAfterTheCheckout(unittest.TestCase):
+    """The re-check that lets a new blacklist deploy in its own release.
+
+    The box-state probe runs BEFORE the pull, so its modprobe.d facts describe
+    the previous checkout. Two cases hide in that, and only the first used to
+    be re-checked: the source dir first appearing, and the blacklist file's
+    CONTENT changing in the very release being installed. In the second case
+    the pre-pull diff says "in sync" -- truthfully, about the old tree -- the
+    step reports `OK (already current)`, and the new file lands one release
+    late.
+
+    These run the emitted shell against a fake box tree, which the inline
+    version this replaces could not be made to do.
+    """
+
+    def _run(self, home):
+        proc = subprocess.run(
+            ['bash', '-c', _modprobe_recheck_shell_cmd()],
+            env={'HOME': str(home), 'PATH': os.environ.get('PATH', '/usr/bin:/bin')},
+            capture_output=True, text=True,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        out = {}
+        for line in proc.stdout.splitlines():
+            key, _, value = line.partition('=')
+            out[key.strip()] = value.strip()
+        return out
+
+    def test_it_finds_the_flattened_source_dir_and_its_blacklist(self):
+        with tempfile.TemporaryDirectory() as home:
+            src = pathlib.Path(home) / 'box' / 'modprobe_d'
+            src.mkdir(parents=True)
+            (src / 'blacklist-usbtmc.conf').write_text('blacklist usbtmc\n')
+            out = self._run(home)
+        self.assertTrue(out['PATH'].endswith('/box/modprobe_d'), out['PATH'])
+        self.assertEqual(out['CONFS'], '1')
+
+    def test_it_falls_back_to_the_pre_flatten_path(self):
+        with tempfile.TemporaryDirectory() as home:
+            src = pathlib.Path(home) / 'box' / 'box' / 'modprobe_d'
+            src.mkdir(parents=True)
+            (src / 'blacklist-usbtmc.conf').write_text('blacklist usbtmc\n')
+            out = self._run(home)
+        self.assertTrue(out['PATH'].endswith('/box/box/modprobe_d'), out['PATH'])
+        self.assertEqual(out['CONFS'], '1')
+
+    def test_no_source_dir_still_reports_every_key(self):
+        # The caller reads all four. Emitting only some would leave the stale
+        # pre-pull values in place, which is this same bug in another shape.
+        with tempfile.TemporaryDirectory() as home:
+            out = self._run(home)
+        self.assertEqual(out['PATH'], '')
+        self.assertEqual(out['CONFS'], '0')
+        self.assertEqual(out['SYNC'], '0')
+        self.assertIn(out['LOADED'], ('0', '1'))
+
+
+class ModprobeRecheckOverwritesStaleFacts(unittest.TestCase):
+    def test_a_content_change_overrides_the_pre_pull_in_sync_verdict(self):
+        """The exact case that shipped a rule one release late.
+
+        The pre-pull probe reported IN_SYNC=1, correctly, about the old tree.
+        After the checkout the file differs, and that verdict has to lose.
+        """
+        facts = {
+            'MODPROBE_SRC_PATH': '/home/lagerdata/box/modprobe_d',
+            'MODPROBE_SRC_CONFS': '1',
+            'MODPROBE_IN_SYNC': '1',
+            'USBTMC_LOADED': '0',
+        }
+        _apply_modprobe_recheck(
+            'PATH=/home/lagerdata/box/modprobe_d\nCONFS=1\nSYNC=0\nLOADED=1\n',
+            facts,
+        )
+        self.assertEqual(facts['MODPROBE_IN_SYNC'], '0')
+        self.assertEqual(facts['USBTMC_LOADED'], '1')
+
+    def test_the_recheck_never_depends_on_the_probed_path(self):
+        """It runs every time, not only when the source dir was missing.
+
+        The re-check this replaces sat inside `if not mp_src_path:`, which is
+        precisely why a content change went unnoticed: the path was found
+        before the pull, so the re-check never ran. Re-introducing any such
+        guard brings the bug straight back, so pin it structurally.
+        """
+        module = importlib.import_module('cli.commands.utility.update')
+        tree = ast.parse(inspect.getsource(module))
+
+        def _calls_recheck(node):
+            return any(
+                isinstance(inner, ast.Call)
+                and isinstance(inner.func, ast.Name)
+                and inner.func.id == '_modprobe_recheck_shell_cmd'
+                for inner in ast.walk(node)
+            )
+
+        self.assertTrue(_calls_recheck(tree), 'the re-check is not called at all')
+
+        guarded = [
+            node.lineno for node in ast.walk(tree)
+            if isinstance(node, ast.If)
+            and 'mp_src_path' in {
+                n.id for n in ast.walk(node.test) if isinstance(n, ast.Name)
+            }
+            and _calls_recheck(node)
+        ]
+        self.assertEqual(guarded, [], f'the re-check is guarded at line(s) {guarded}')
 
 
 if __name__ == '__main__':

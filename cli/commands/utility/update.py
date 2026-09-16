@@ -973,6 +973,51 @@ echo "LAGER_PROBE_ETC_VERSION=$(cat /etc/lager/version 2>/dev/null)"
     )
 
 
+def _modprobe_recheck_shell_cmd():
+    """Re-derive the modprobe.d facts after the checkout, in one round trip.
+
+    The box-state probe runs before the pull, so every modprobe.d fact it
+    gathered describes the PREVIOUS checkout. Emits `PATH=`, `CONFS=`, `SYNC=`
+    and `LOADED=` lines -- the same shape the udev re-check uses.
+
+    At module level so it can be run against a fake box tree in a test. The
+    re-check this replaces was inline, conditional, and had no coverage.
+    """
+    return (
+        'if [ -d ~/box/modprobe_d ]; then _mp=~/box/modprobe_d; '
+        'elif [ -d ~/box/box/modprobe_d ]; then _mp=~/box/box/modprobe_d; '
+        'else _mp=""; fi; '
+        'echo "PATH=$_mp"; '
+        'if [ -n "$_mp" ] && [ -f "$_mp/blacklist-usbtmc.conf" ]; then '
+        '  echo "CONFS=1"; '
+        '  if diff -q "$_mp/blacklist-usbtmc.conf" '
+        '       /etc/modprobe.d/blacklist-usbtmc.conf >/dev/null 2>&1; then '
+        '    echo "SYNC=1"; else echo "SYNC=0"; fi; '
+        'else echo "CONFS=0"; echo "SYNC=0"; fi; '
+        'if lsmod 2>/dev/null | grep -q "^usbtmc"; then echo "LOADED=1"; '
+        'else echo "LOADED=0"; fi'
+    )
+
+
+def _apply_modprobe_recheck(stdout, facts):
+    """Fold `_modprobe_recheck_shell_cmd` output over the probed facts.
+
+    Overwrites rather than fills in: every key here was gathered before the
+    pull, and the point of re-running is that those values can now be stale.
+    """
+    for line in (stdout or '').splitlines():
+        line = line.strip()
+        if line.startswith('PATH='):
+            facts['MODPROBE_SRC_PATH'] = line[5:]
+        elif line.startswith('CONFS='):
+            facts['MODPROBE_SRC_CONFS'] = line[6:]
+        elif line.startswith('SYNC='):
+            facts['MODPROBE_IN_SYNC'] = line[5:]
+        elif line.startswith('LOADED='):
+            facts['USBTMC_LOADED'] = line[7:]
+    return facts
+
+
 def _parse_probe_output(stdout):
     """Parse `LAGER_PROBE_<KEY>=<value>` lines into a dict.
 
@@ -1405,6 +1450,22 @@ class ProgressBar:
             self._start_periodic_thread()
 
 
+def _undetermined_exit_code(check):
+    """Exit code for a failure that leaves the box's state unknown.
+
+    `--check` documents three outcomes: 0 in sync, 1 an update is needed, 2
+    the state could not be determined. But every failure below it exited 1
+    too -- an SSH timeout, an unanswered probe, a box that is not a checkout,
+    a failed fetch, a box another holder locked. A CI gate could therefore not
+    tell a stale box from an unreachable one without matching on output text,
+    which is exactly what the CI guide had to tell people to do.
+
+    Outside `--check`, 1 remains the right code for a failed command and
+    scripts test for it, so this widening applies only to the dry run.
+    """
+    return 2 if check else 1
+
+
 def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
                   pull=False, no_pull=False):
     """Core update logic behind `lager update`.
@@ -1455,8 +1516,21 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
 
     box_name = box
 
-    # Resolve box name to IP address
-    resolved_box = resolve_and_validate_box(ctx, box)
+    # Resolve box name to IP address.
+    #
+    # The resolver exits for a name it cannot resolve, and `_check_box_lock`
+    # inside it raises SystemExit(1) when another holder has the box. Under
+    # `--check` both mean "the state could not be determined", so both become
+    # 2 here. This is the one such failure raised from shared code every other
+    # command also calls, so it is converted at this call site rather than in
+    # the resolver, where it would change what `lager uart`, `lager python`
+    # and the rest exit with.
+    try:
+        resolved_box = resolve_and_validate_box(ctx, box)
+    except SystemExit as exc:
+        if check and exc.code == 1:
+            ctx.exit(2)
+        raise
 
     # Get username (defaults to 'lagerdata' if not specified)
     username = get_box_user(box) or 'lagerdata'
@@ -1678,7 +1752,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         if not use_explicit_key and not use_interactive_ssh:
             # This shouldn't happen, but just in case
             log_error('Error: No SSH authentication method available')
-            ctx.exit(1)
+            ctx.exit(_undetermined_exit_code(check))
 
     except (Exit, Abort):
         # click's control-flow exceptions subclass RuntimeError, so the broad
@@ -1695,7 +1769,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         if progress:
             progress.finish(success=False)
         log_error(f'Error: Connection to {ssh_host} timed out')
-        ctx.exit(1)
+        ctx.exit(_undetermined_exit_code(check))
     except Exception as e:
         import traceback as _tb
         tb_str = _tb.format_exc()
@@ -1710,7 +1784,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         if verbose:
             click.echo(tb_str, err=True)
         log_error(f'Error: {str(e)}')
-        ctx.exit(1)
+        ctx.exit(_undetermined_exit_code(check))
 
     # Multiplex all subsequent SSH commands over a single TCP connection.
     # ControlMaster=auto starts the master on the first call (which is
@@ -1952,7 +2026,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         log_error('Error: Could not inspect box state over SSH')
         if probe_result.stderr and probe_result.stderr.strip():
             click.echo(probe_result.stderr.strip(), err=True)
-        ctx.exit(1)
+        ctx.exit(_undetermined_exit_code(check))
     facts = _parse_probe_output(probe_result.stdout)
 
     # 2a: the box directory must be a git checkout.
@@ -1962,7 +2036,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         log_error('Error: Box directory is not a git repository')
         click.echo('A deploy with rsync instead of git clone can cause this.')
         click.echo('Please re-deploy the box using the latest deployment script.')
-        ctx.exit(1)
+        ctx.exit(_undetermined_exit_code(check))
 
     # 2b: migrate a legacy git@github.com: remote to HTTPS (open-source
     # migration). This is the one probed fact that needs a follow-up write,
@@ -2164,7 +2238,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
             log_error('Error: Failed to fetch updates from GitHub')
             if stderr:
                 click.secho(f"Git error: {stderr}", err=True)
-        ctx.exit(1)
+        ctx.exit(_undetermined_exit_code(check))
 
     # Parse "<ahead>\t<behind>" from the rev-list line. Only trust an
     # "already up to date" fast-path when rev-list produced two integers;
@@ -2569,33 +2643,22 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         progress.update("Checking modprobe.d blacklists...")
     log('Checking modprobe.d blacklists...', nl=False)
 
+    # Every modprobe.d fact the probe gathered describes the PREVIOUS checkout,
+    # because the probe ran before the pull. Two cases hide in that, and only
+    # the narrower one used to be handled: the source dir first appearing
+    # (re-detected), and the blacklist file's CONTENT changing in the very
+    # release being installed (missed). In the second case the pre-pull diff
+    # says "in sync" -- truthfully, about the old tree -- this step reports
+    # `OK (already current)`, and the new blacklist never reaches
+    # /etc/modprobe.d. It lands on the next update instead, one release late.
+    #
+    # That is the defect the udev step above was fixed for. This is the same
+    # fix: re-derive every fact post-pull/flatten, unconditionally, and in one
+    # round trip rather than the four the old re-detect path used.
+    _mp_recheck = run_ssh_command_with_output(_modprobe_recheck_shell_cmd())
+    _apply_modprobe_recheck(_mp_recheck.stdout, facts)
     mp_src_path = facts.get('MODPROBE_SRC_PATH', '')
-    # The probe runs BEFORE the git pull. When modprobe_d first lands on a
-    # box (i.e. this very update), the pre-pull probe correctly reports it
-    # missing — but now it exists post-pull/flatten. Re-detect by checking
-    # the canonical post-flatten path and the pre-flatten fallback.
-    if not mp_src_path:
-        recheck = run_ssh_command_with_output(
-            'if [ -d ~/box/modprobe_d ]; then echo ~/box/modprobe_d; '
-            'elif [ -d ~/box/box/modprobe_d ]; then echo ~/box/box/modprobe_d; fi'
-        )
-        mp_src_path = (recheck.stdout or '').strip()
-        # Re-check whether the file is in sync against the rediscovered path.
-        if mp_src_path:
-            conf_file = f'{mp_src_path}/blacklist-usbtmc.conf'
-            confs_check = run_ssh_command_with_output(
-                f'test -f {conf_file} && echo 1 || echo 0'
-            )
-            facts['MODPROBE_SRC_CONFS'] = (confs_check.stdout or '').strip()
-            sync_check = run_ssh_command_with_output(
-                f'diff -q {conf_file} /etc/modprobe.d/blacklist-usbtmc.conf '
-                '>/dev/null 2>&1 && echo 1 || echo 0'
-            )
-            facts['MODPROBE_IN_SYNC'] = (sync_check.stdout or '').strip()
-            usbtmc_check = run_ssh_command_with_output(
-                'lsmod 2>/dev/null | grep -q "^usbtmc" && echo 1 || echo 0'
-            )
-            facts['USBTMC_LOADED'] = (usbtmc_check.stdout or '').strip()
+
     if not mp_src_path:
         log_status('SKIPPED (source dir missing)', 'yellow')
         if verbose:

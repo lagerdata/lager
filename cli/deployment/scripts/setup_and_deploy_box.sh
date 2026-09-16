@@ -74,10 +74,24 @@ BOX_IMAGE_REGISTRY="ghcr.io/lagerdata/lager-box"
 # install, whose cache is always cold. Every miss falls back to the local
 # build, so the worst case is what this script has always done.
 #
-# LAGER_BOX_IMAGE_PULL=0 disables it for a whole shell, --no-pull for one run.
-# `lager update` reads the same variable as an opt-IN, so =1 turns both on and
-# =0 turns both off; it never means opposite things in the two commands.
-BOX_IMAGE_PULL="${LAGER_BOX_IMAGE_PULL:-1}"
+# The DEFAULT differs between the two commands on purpose. The VOCABULARY must
+# not. `lager update` reads this variable as an opt-IN: 1, true or yes in any
+# letter case turns its pull on, and every other value leaves it off. This
+# script starts from on, so it applies that same rule in reverse -- a value
+# outside that set turns the pre-built image off. Before this, =false left the
+# install pull ON while turning the update pull OFF: one spelling, opposite
+# meanings in the two commands. Unset still leaves each command's own default.
+# --no-pull and --pull below override whatever this resolves to.
+# --- BEGIN image pull vocabulary (extracted verbatim by test/unit/cli/test_deploy_box_image_ref.py) ---
+if [ -n "${LAGER_BOX_IMAGE_PULL:-}" ]; then
+    case "$(printf '%s' "$LAGER_BOX_IMAGE_PULL" | tr '[:upper:]' '[:lower:]')" in
+        1|true|yes) BOX_IMAGE_PULL=1 ;;
+        *)          BOX_IMAGE_PULL=0 ;;
+    esac
+else
+    BOX_IMAGE_PULL=1
+fi
+# --- END image pull vocabulary ---
 
 # Set at version-resolution time below, and only for a release tag.
 BOX_IMAGE_TAG_REF=""
@@ -2030,6 +2044,15 @@ else
 fi
 echo ""
 ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "cd ~/box && chmod +x start_box.sh && ${LAGER_BOX_IMAGE_ENV}./start_box.sh"
+
+# Reclaim the image this deploy replaced. start_box.sh has just moved the
+# `lager` tag onto the new image, which leaves the previous one dangling and
+# referenced by no container -- roughly 3 GB per release. The prune before the
+# pre-pull above cannot reach it: back then the old image still carried the
+# tag. Dangling-only (no -a), for the same reason as that one.
+print_info "Removing the image this deploy replaced..."
+ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "docker image prune -f >/dev/null 2>&1 || true" 2>/dev/null || true
+print_success "Replaced image removed"
 # --- END image and container handoff ---
 
 echo ""

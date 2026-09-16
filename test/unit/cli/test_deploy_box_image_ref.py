@@ -294,8 +294,10 @@ class TestHandoffToStartBox:
     def test_pull_is_on_by_default_and_no_pull_turns_it_off(self):
         text = DEPLOY_SCRIPT.read_text()
         # An install always has a cold layer cache, so the reason update's pull
-        # is opt-in cannot apply here.
-        assert 'BOX_IMAGE_PULL="${LAGER_BOX_IMAGE_PULL:-1}"' in text
+        # is opt-in cannot apply here. What the variable resolves to is pinned
+        # by TestBoxImagePullVocabulary, which runs the block rather than
+        # matching its text: a string assertion pins spelling, and the bug it
+        # missed was two commands giving one spelling opposite meanings.
         assert "--no-pull)" in text
         assert "--pull)" in text
 
@@ -486,17 +488,17 @@ class TestImageHandoffRuns:
         proc, steps, remotes = self._run(tmp_path, **_TAG, RESOLVE_RC="0", PULL_RC="0")
         assert proc.returncode == 0, proc.stderr
         assert steps == ["daemon-check", "image-prune", "pre-pull", "teardown",
-                         "build-cache-prune", "disk-check", "start"]
-        assert f"LAGER_BOX_IMAGE={REGISTRY}@{_DIGEST}" in remotes[-1]
-        assert "LAGER_BOX_IMAGE_VERSION=v0.46.2" in remotes[-1]
+                         "build-cache-prune", "disk-check", "start", "image-prune"]
+        assert f"LAGER_BOX_IMAGE={REGISTRY}@{_DIGEST}" in remotes[-2]
+        assert "LAGER_BOX_IMAGE_VERSION=v0.46.2" in remotes[-2]
         assert "PREPULLED=1" in proc.stdout
 
     def test_a_failed_pull_builds_and_keeps_the_cache(self, tmp_path):
         proc, steps, remotes = self._run(tmp_path, **_TAG, RESOLVE_RC="0", PULL_RC="1")
         assert proc.returncode == 0, proc.stderr
         assert steps == ["daemon-check", "image-prune", "pre-pull", "teardown",
-                         "disk-check", "start"]
-        assert "LAGER_BOX_IMAGE" not in remotes[-1]
+                         "disk-check", "start", "image-prune"]
+        assert "LAGER_BOX_IMAGE" not in remotes[-2]
         assert "manifest unknown" in proc.stdout
         assert "PREPULLED=0" in proc.stdout
 
@@ -510,8 +512,9 @@ class TestImageHandoffRuns:
     def test_no_image_means_a_build_with_the_cache_kept(self, tmp_path, env, says):
         proc, steps, remotes = self._run(tmp_path, **env)
         assert proc.returncode == 0, proc.stderr
-        assert steps == ["daemon-check", "image-prune", "teardown", "disk-check", "start"]
-        assert "LAGER_BOX_IMAGE" not in remotes[-1]
+        assert steps == ["daemon-check", "image-prune", "teardown", "disk-check",
+                         "start", "image-prune"]
+        assert "LAGER_BOX_IMAGE" not in remotes[-2]
         assert says in proc.stdout
         assert not (tmp_path / "INJECTED").exists()
 
@@ -519,6 +522,68 @@ class TestImageHandoffRuns:
         proc, steps, _ = self._run(tmp_path, **_TAG, DOCKER_INFO_RC="1")
         assert proc.returncode == 1
         assert steps == ["daemon-check", "daemon-diagnosis"]
+
+    def test_the_replaced_image_is_reclaimed_after_the_container_runs(self, tmp_path):
+        # The prune that runs before the pre-pull cannot reach the image this
+        # deploy replaces. start_box.sh moves the `lager` tag onto the new
+        # image at the very end, and only at that moment does the old one go
+        # dangling -- so without a second prune it sits on the box, about 3 GB,
+        # until the next install. The first prune must NOT move to cover this:
+        # it has to stay ahead of the pre-pull, or it reaches the image this
+        # deploy just downloaded, which carries no tag until start_box.sh runs.
+        proc, steps, _ = self._run(tmp_path, **_TAG, RESOLVE_RC="0", PULL_RC="0")
+        assert proc.returncode == 0, proc.stderr
+        assert steps.count("image-prune") == 2
+        assert steps[-1] == "image-prune"
+        assert steps.index("image-prune") < steps.index("pre-pull")
+
+
+class TestBoxImagePullVocabulary:
+    """`LAGER_BOX_IMAGE_PULL` means the same thing here as in `lager update`.
+
+    update reads it as an opt-IN: 1, true or yes in any letter case turn its
+    pull on, and every other value leaves it off. This script starts from on
+    and applies that same rule in reverse. Before the two agreed, `=false`
+    left the install pull ON while turning the update pull OFF -- one spelling
+    with opposite meanings, which is invisible to anyone who exports it once
+    for a whole shell and then runs both commands.
+
+    These run the block rather than matching its text. The previous test
+    asserted the literal assignment line, which pins spelling and cannot see a
+    disagreement about meaning.
+    """
+
+    @staticmethod
+    def _resolve(env_value):
+        block = _extract(DEPLOY_SCRIPT, "image pull vocabulary")
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+        if env_value is not None:
+            env["LAGER_BOX_IMAGE_PULL"] = env_value
+        proc = subprocess.run(
+            ["bash", "-c", block + '\necho "PULL=$BOX_IMAGE_PULL"'],
+            env=env, capture_output=True, text=True,
+        )
+        assert proc.returncode == 0, proc.stderr
+        return proc.stdout.strip().rsplit("PULL=", 1)[-1].strip()
+
+    def test_unset_leaves_the_install_default_on(self):
+        # The one difference from update that is deliberate: install pulls by
+        # default, update does not.
+        assert self._resolve(None) == "1"
+
+    @pytest.mark.parametrize("value", ["1", "true", "yes", "TRUE", "Yes"])
+    def test_the_words_update_accepts_turn_it_on_here_too(self, value):
+        assert self._resolve(value) == "1"
+
+    @pytest.mark.parametrize("value", ["0", "false", "no", "off", "FALSE", "No"])
+    def test_a_value_update_reads_as_off_turns_it_off_here_too(self, value):
+        # `false` is the spelling that mattered: it used to leave this pull on.
+        assert self._resolve(value) == "0"
+
+    def test_an_unrecognized_value_turns_it_off_exactly_as_update_does(self):
+        # update's rule is "anything that is not 1/true/yes leaves it off", so
+        # a typo costs a slower install, never a disagreement between the two.
+        assert self._resolve("ture") == "0"
 
 
 class TestPrePullCommandRuns:

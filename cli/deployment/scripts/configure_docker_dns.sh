@@ -89,6 +89,16 @@ restore_previous() {
     restart_docker || true
 }
 
+# Nothing to do when the staged config already matches what Docker runs. A
+# restart takes down every container on the box, including ones this script
+# does not manage and cannot bring back, so an unchanged daemon.json must not
+# cost one. The rollback path below is deliberately untouched: it still runs
+# whenever an install actually happens.
+if [ "$HAD_CONFIG" -eq 1 ] && cmp -s "$STAGED" "$DAEMON_JSON"; then
+    echo "Docker DNS configuration is already correct. Docker keeps running."
+    exit 0
+fi
+
 sudo install -m 0644 "$STAGED" "$DAEMON_JSON"
 
 if ! restart_docker || ! daemon_is_up; then

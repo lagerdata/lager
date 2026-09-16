@@ -46,13 +46,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 2210 (+2 xfailed) |
+| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 2237 (+2 xfailed) |
 | `unit (box)` | `test/unit/box/` | 2622 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 195 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 186 (+1 skipped) |
-| | **Total gated** | **5407** |
+| | **Total gated** | **5434** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -592,12 +592,12 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_battery_tui.py` | BatteryTUI render output, command parsing, and worker thread offloading |
 | `test_binaries_9000.py` | `lager binaries add/list/remove` and `download_file` migrated to the box HTTP server on `:9000` |
 | `test_box_command_error.py` | `box_command_error`: a 404 that means "net or instrument not found" must not also tell the user their box image is out of date |
-| `test_box_lock_helpers.py` | Lock holder resolution, acquire/release/heartbeat, `LockSession.dissolve`, format_lock_user CI support, `lock_scope`/`_lock_held_by_self` identity matching across all four lock-path comparisons (check, pre-acquire probe, `previous_user`, and the conflict branch that decides whether to wait), the `_check_box_lock` refusal path, the holder that a resumed lock's heartbeat sends, and a `LAGER_LOCK_WAIT` that is not a number keeping the CI wait with one warning |
+| `test_box_lock_helpers.py` | Lock holder resolution, acquire/release/heartbeat, `LockSession.dissolve`, format_lock_user CI support, `lock_scope`/`_lock_held_by_self` identity matching across all four lock-path comparisons (check, pre-acquire probe, `previous_user`, and the conflict branch that decides whether to wait), the `_check_box_lock` refusal path, the holder that a resumed lock's heartbeat sends, and a `LAGER_LOCK_WAIT` that is not a number keeping the CI wait with one warning. Also the no-expiry sentinel: `--timeout 0` asks for a lock that never expires, and the auto-lock boundary tells that apart from a caller that states no TTL at all, which used to collapse into the 1800 s default |
 | `test_box_request_failure_messages.py` | `echo_box_request_failure`: distinguishing a slow box-side op from a dead box |
 | `test_box_ssh_identity.py` | Admin commands offer the `lager_box` key with keyless fallback (probe, pool, install/uninstall); key registration under `/etc/lager/authorized_keys.d`, de-registration on `uninstall --all`, and install's password-fallback removal. Also that `-i` does not cost the operator ssh's own defaults: `lager ssh` names `lager_box` first and then each default identity file present, in ssh's order, and passes no `-i` at all when no `lager_box` key exists |
 | `test_configure_docker_dns.py` | `configure_docker_dns`: daemon.json `dns` entries must be bare IPs or Docker refuses to start |
-| `test_configure_docker_dns_rollback.py` | Rollback behavior of `configure_docker_dns.sh` when the DNS optimization fails |
-| `test_deploy_box_image_ref.py` | `setup_and_deploy_box.sh` and `_box_image_ref_for_version` agree on which versions have a published image, computed in one conditional so the two cannot drift; plus the anonymous GHCR digest resolution and the `LAGER_BOX_IMAGE` handoff to `start_box.sh`. The deploy's image and container handoff runs for real with ssh stubbed: the image is pulled before the containers stop, the build cache is cleared and the image handed to `start_box.sh` only after a successful pull, a miss builds with the cache kept, and a stopped daemon ends the deploy first. The generated pull command runs against a fake docker |
+| `test_configure_docker_dns_rollback.py` | Rollback behavior of `configure_docker_dns.sh` when the DNS optimization fails, and that a run whose staged daemon.json already matches the current one installs nothing and restarts nothing. Two runs, so the second one recognizes what the first settled on |
+| `test_deploy_box_image_ref.py` | `setup_and_deploy_box.sh` and `_box_image_ref_for_version` agree on which versions have a published image, computed in one conditional so the two cannot drift; plus the anonymous GHCR digest resolution and the `LAGER_BOX_IMAGE` handoff to `start_box.sh`. The deploy's image and container handoff runs for real with ssh stubbed: the image is pulled before the containers stop, the build cache is cleared and the image handed to `start_box.sh` only after a successful pull, a miss builds with the cache kept, and a stopped daemon ends the deploy first. The generated pull command runs against a fake docker. Also the second prune that reclaims the replaced image once `start_box.sh` tags the new one, pinned by count and order, and `LAGER_BOX_IMAGE_PULL` resolving to the same on and off words `lager update` reads |
 | `test_deployed_ref.py` | `/etc/lager/ref` records which ref produced the box's code (`<ref>@<sha>`), so a branch deploy is distinguishable from the release tag it shares a version number with; the release-tag predicate is pinned against `resolve_version_ref` so the two cannot drift, and a box reporting no ref renders exactly as before; `lager install` records version, ref and build-hash through update's writer, reads the version back, and exits non-zero when a write fails |
 | `test_debug_auto_connect_gate.py` | `_auto_connect_if_needed` gates on the target answering, not on a live gdbserver: a confirmed attachment skips the connect, an absent target forces a reconnect rather than proceeding, and an inconclusive answer falls back to server liveness so a working session is never torn down. Covers `_is_connected` and `_target_attached`, which had no direct tests |
 | `test_debug_flash_erase_reconnect.py` | `lager debug flash`'s default erase step: no reconnect between `/debug/erase` and `/debug/flash`, a failing `/debug/connect` cannot abort the flash, and the verdict of both `flash` and `erase` follows the programmer's own output rather than reporting "Flashed!" / "Erase complete!" unconditionally |
@@ -645,7 +645,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_update_deps_preview.py` | `lager update --check`'s build-cache line never promises a cached build the rebuild gate would override — a pending layout flatten is a certain rebuild, and an unmeasurable build hash is reported as unknown rather than as a valid cache |
 | `test_update_fetch.py` | `lager update`'s fetch command line: the tag refspec is forced, so a box holding a tag that points somewhere other than origin's can still be updated; the `LAGER_FETCH_RC=` marker still precedes the divergence count |
 | `test_update_flatten.py` | `lager update` sparse-checkout flatten: deletions propagate, root entries preserved, and the docker-build hash covers the source tree |
-| `test_update_probe.py` | `lager update` probe script modprobe/usbtmc detection and output parsing |
+| `test_update_probe.py` | `lager update` probe script modprobe/usbtmc detection and output parsing, and the re-derivation that runs after the checkout. The probe reads the tree as it was before the pull, so a blacklist file changed by a release reads as current until that state is read again |
 | `test_control_flow_exits.py` | `ctx.exit()` survives the broad handler of its own try block: `lager update --check` exits 2 (not 1) with no traceback, plus the `tools/check_control_flow_handlers.py` gate and its own detection cases |
 | `test_update_secret_ownership.py` | `lager update`'s secret-file ownership repair, run as real shell against a throwaway directory with a recording `sudo` stub |
 | `test_usb_command_errors.py` | `lager usb <net> <command>` error wiring: a 404 for a missing device must not be reported as an out-of-date box image |
@@ -715,7 +715,7 @@ Gated as part of the `unit (cli)` job.
 |------|---------------|:---:|
 | `test_box_storage.py` | `box_storage.py` project-level `.lager` merging behavior | Yes |
 | `test_gateway_auth.py` | `gateway_auth.py` bearer-token auth for boxes behind an authenticating gateway, including the pinned CI token (`LAGER_GATEWAY_TOKEN`), and that `check_gateway_status` holds its first-contact retry to the caller's own timeout rather than a fixed 30s -- otherwise a caller with a deadline reports a box that was still answering | Yes |
-| `test_update_gate.py` | Update rebuild gate: probe parsing, build-hash mismatch, early-exit verdict; the shared `/etc/lager` state-file writer, run against a scratch directory | Yes |
+| `test_update_gate.py` | Update rebuild gate: probe parsing, build-hash mismatch, early-exit verdict; the shared `/etc/lager` state-file writer, run against a scratch directory, including that the ref write skips identical content and that the version is recorded only after the container starts; and the `--check` exit-code contract, guarded structurally so no failure ahead of the dry run exits 1 and becomes indistinguishable from "this box needs an update" | Yes |
 | `test_gateway_callsites.py` | Gateway-auth discovery across every box-talking call site: record the mapping on a discovery 401, retry once with a held token, surface genuine denials, and keep rendering the other boxes' rows | Yes |
 | `test_host_cli.py` | Host-OS CLI install helpers shared by `lager install` and `lager update`: the reconcile decision table, `--check` labels, exit codes, the probe snippet under a real shell, and the drift guard pinning the deploy scripts' mirror | Yes |
 | `test_io_imports.py` | The `lager.io.*` import surface and re-export identity; asserts the removed root-level aliases stay removed | Yes |
