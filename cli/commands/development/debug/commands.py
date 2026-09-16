@@ -650,7 +650,7 @@ def _debug(ctx, box):
               help='Read chunk size for RTT search (hex, e.g., 0x1000)')
 def gdbserver(ctx, box, force, halt, speed, quiet, json_output, rtt, rtt_reset, interactive,
               rtt_channel, reset, gdb_port, rtt_search_addr, rtt_search_size, rtt_chunk_size):
-    """Start JLinkGDBServer for debugging"""
+    """Start the GDB server for the probe (JLinkGDBServer or OpenOCD)"""
     # --interactive only makes sense with an RTT stream to attach to.
     if interactive and not (rtt or rtt_reset):
         click.secho("Error: --interactive requires --rtt or --rtt-reset", fg='red', err=True)
@@ -762,11 +762,7 @@ def gdbserver(ctx, box, force, halt, speed, quiet, json_output, rtt, rtt_reset, 
     # box-side response carries ``backend`` at the top level (one of
     # ``jlink`` / ``openocd``); fall back to ``J-Link`` so legacy boxes
     # that don't yet emit ``backend`` keep their existing wording.
-    backend = result.get('backend') if isinstance(result, dict) else None
-    backend_label = {
-        'openocd': 'OpenOCD',
-        'jlink': 'JLinkGDBServer',
-    }.get(backend, 'JLinkGDBServer')
+    backend_label = _backend_server_label(result)
 
     if not quiet:
         if json_output:
@@ -941,9 +937,9 @@ def gdbserver(ctx, box, force, halt, speed, quiet, json_output, rtt, rtt_reset, 
 @click.pass_context
 @click.option("--box", required=False, help="Lager Box name or IP")
 @click.option('--keep-server', is_flag=True, default=False,
-              help="Keep JLinkGDBServer running for external GDB client connections")
+              help="Keep the GDB server running for external GDB client connections")
 def disconnect(ctx, box, keep_server):
-    """Stop JLinkGDBServer"""
+    """Stop the GDB server for the probe (JLinkGDBServer or OpenOCD)"""
     target_box = box
 
     net_name = getattr(ctx.obj, 'net_name', None)
@@ -957,16 +953,17 @@ def disconnect(ctx, box, keep_server):
         click.secho("Error: Failed to create debug service client", fg='red', err=True)
         ctx.exit(1)
 
-    # Stop JLinkGDBServer
+    # Stop the GDB server (JLinkGDBServer or OpenOCD, per the net's backend)
     disc_result = client.disconnect(debug_net, keep_jlink_running=keep_server)
+    server_label = _backend_server_label(disc_result)
 
     if keep_server:
         # Effective port comes from the box (per-probe slot for multi-J-Link).
         running_port = (disc_result or {}).get('gdb_port', 2331)
-        click.secho(f"JLinkGDBServer still running on {target_box}:{running_port}", fg='green')
+        click.secho(f"{server_label} still running on {target_box}:{running_port}", fg='green')
         click.secho(f"You can connect with: arm-none-eabi-gdb firmware.elf -ex 'target extended-remote {target_box}:{running_port}'", fg='cyan')
     else:
-        click.secho("JLinkGDBServer stopped", fg='green')
+        click.secho(f"{server_label} stopped", fg='green')
 
     client.close()
 
@@ -1017,6 +1014,40 @@ _CONNECT_FAILURE_SIGNATURES = (
     'Cannot connect to target.',
     'Failed to power up DAP',
 )
+
+
+# The GDB server a debug net's backend runs, keyed by the `backend` field the
+# box returns. A box too old to send that field predates OpenOCD support, so
+# it ran JLinkGDBServer.
+_BACKEND_SERVER_LABELS = {'openocd': 'OpenOCD', 'jlink': 'JLinkGDBServer'}
+
+
+def _backend_server_label(result):
+    backend = result.get('backend') if isinstance(result, dict) else None
+    return _BACKEND_SERVER_LABELS.get(backend, 'JLinkGDBServer')
+
+
+def _http_error_detail(exc, prefix=None):
+    """The box's `error` text for a failed request, else the exception text.
+
+    `service_client._request` raises `requests.HTTPError`, whose own text is
+    the status line; the box's message is in the JSON body. With `prefix`, a
+    copy of it that the box already put at the front is dropped, so the CLI's
+    own prefix is not printed twice.
+    """
+    detail = str(exc)
+    # `is not None`: a Response is falsy for any 4xx/5xx status.
+    response = getattr(exc, 'response', None)
+    if response is not None:
+        try:
+            body = response.json()
+        except Exception:
+            body = None
+        if isinstance(body, dict) and body.get('error'):
+            detail = str(body['error'])
+    if prefix and detail.startswith(prefix):
+        detail = detail[len(prefix):].lstrip()
+    return detail
 
 
 def _joined_output(output):
@@ -1155,7 +1186,8 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, no_erase, erase, ha
         except click.exceptions.Exit:
             raise
         except Exception as e:
-            click.secho(f"Flash erase failed: {e}", fg='red', err=True)
+            click.secho(f"Flash erase failed: {_http_error_detail(e, 'Erase failed:')}",
+                        fg='red', err=True)
             client.close()
             ctx.exit(1)
 
@@ -1238,11 +1270,7 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, no_erase, erase, ha
                 err=True,
             )
     except requests.exceptions.HTTPError as e:
-        # Extract error message from response if available
-        try:
-            error_detail = e.response.json().get('error', str(e))
-        except Exception:
-            error_detail = str(e)
+        error_detail = _http_error_detail(e, 'Flash failed:')
 
         click.secho(f"Flash failed: {error_detail}", fg='red', err=True)
         client.close()
@@ -1330,17 +1358,13 @@ def erase(ctx, box, speed, yes, quiet, json_output, halt):
     try:
         result = client.erase(debug_net, speed=speed, transport='SWD')
     except requests.exceptions.HTTPError as e:
-        # Extract error message from response if available
-        try:
-            error_detail = e.response.json().get('error', str(e))
-        except Exception:
-            error_detail = str(e)
+        error_detail = _http_error_detail(e, 'Erase failed:')
 
         click.secho(f"Erase failed: {error_detail}", fg='red', err=True)
         client.close()
         ctx.exit(1)
     except Exception as e:
-        click.secho(f"Erase failed: {e}", fg='red', err=True)
+        click.secho(f"Erase failed: {_http_error_detail(e, 'Erase failed:')}", fg='red', err=True)
         client.close()
         ctx.exit(1)
 

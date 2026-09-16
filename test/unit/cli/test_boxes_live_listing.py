@@ -152,6 +152,19 @@ class BoxesListingTestCase(unittest.TestCase):
         self.assertIn('no response', out)              # the dead one is named
         self.assertIn('1 box did not report a version', out)
 
+    def test_the_update_summary_agrees_with_its_count(self):
+        """"1 box need updating" read wrong (#517)."""
+        def old_box(url, timeout=None, headers=None):
+            if url.endswith('/lock'):
+                return make_response(200, {'locked': False})
+            return make_response(200, {'version': '0.1.0'})
+
+        out = self._run({'OLD': '10.0.0.1'}, old_box)
+        self.assertIn('1 box needs updating', out)
+
+        out = self._run({'OLD-1': '10.0.0.1', 'OLD-2': '10.0.0.2'}, old_box)
+        self.assertIn('2 boxes need updating', out)
+
     def test_the_gateway_retry_is_held_to_each_probes_budget(self):
         # A gated box's first contact is retried inside check_gateway_status,
         # and that retry used to get a fixed 30s regardless of what the

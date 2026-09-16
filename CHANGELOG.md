@@ -31,6 +31,18 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   offers `9`, and `trigger uart --data-width` refuses `9`, as the MSO5000 does.
 - **`lager dac` refuses a voltage above 5 V.** It accepted up to 10 V, which no
   supported DAC can output, so the error came from the box instead.
+- **`lager debug NET flash --bin FILE,0` programs at address 0.** Both debug
+  service clients replaced an address of 0 with `0x08000000`, so a target
+  whose flash starts at 0 was programmed at the wrong address.
+- **`lager usb NET cycle` exits 1 when the device does not come back.** It
+  printed `[OK]` and exited 0 for every result. The box's `/usb/command`
+  response also names the result in a new `outcome` field.
+- **Several messages in `lager debug`, `lager boxes`, `lager nets state` and
+  `lager box-config apply` are corrected.** `lager debug erase` prints
+  `Erase failed:` once, a failed pre-erase in `flash` prints the box's error
+  instead of an HTTP status line, and `gdbserver` and `disconnect` name OpenOCD
+  on an OpenOCD net. `lager boxes` says "1 box needs updating", `nets state`
+  names 0.34.0 for an old box, and the host-networking warning links the docs.
 
 ## [0.48.1] - 2026-09-16
 

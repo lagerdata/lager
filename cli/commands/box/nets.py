@@ -2676,7 +2676,7 @@ def state_cmd(ctx: click.Context, box: str | None, as_json: bool) -> None:
     if state_list is None:
         click.secho(
             "Note: this box does not support 'lager nets state' "
-            "(requires box version ≥ 0.33). Update with: lager update",
+            "(requires box version 0.34.0 or later). Update with: lager update",
             fg="yellow", err=True,
         )
     elif isinstance(state_list, list):

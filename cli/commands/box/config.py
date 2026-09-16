@@ -342,6 +342,11 @@ _FIRST_CLASS_FIELDS = [field for _, fields in _FIRST_CLASS_FIELDS_GROUPED for fi
 # test/unit/box/test_box_config_cli.py asserts they agree.
 _DEFAULT_NETWORK_MODE = "lagernet"
 NETWORK_MODES = ("lagernet", "host")
+# Where the firewall consequences of host networking are explained.
+# `network-mode show` prints only the mode, so warnings point here instead.
+_NETWORK_MODE_DOCS_URL = (
+    "https://docs.lagerdata.com/source/reference/cli/box-config#network-mode"
+)
 
 # Single-valued fields, deliberately NOT in _FIRST_CLASS_FIELDS_GROUPED: every
 # entry there is a collection, which `show` formats per item and `status` counts
@@ -1494,9 +1499,9 @@ def _apply_one(
             f"The box API on {resolved} is up (confirmed on the box) but is not "
             "reachable from here over HTTP. On host networking the host firewall "
             "governs the box's ports, where published ports bypassed it. Allow "
-            "the interface you reach the box on -- `lager box-config network-mode "
-            "show` explains -- or run `lager box-config network-mode unset` to go "
-            "back.",
+            "the interface you reach the box on (see "
+            f"{_NETWORK_MODE_DOCS_URL}) or run `lager box-config network-mode "
+            "unset` to go back.",
             fg="yellow",
             err=True,
         )

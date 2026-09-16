@@ -225,7 +225,8 @@ class DebugServiceClient:
         elif file_type == 'bin':
             data['binfile'] = {
                 'content': content,
-                'address': address or 0x08000000,
+                # `or` would turn an explicit address 0 into the default.
+                'address': 0x08000000 if address is None else address,
             }
         else:
             raise ValueError(f"Unknown file type: {file_type}")

@@ -34,6 +34,7 @@ handed back from `_get_service_client` -- so no hardware or network is touched.
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import sys
 from unittest.mock import patch
@@ -591,3 +592,53 @@ class TestEraseVerdictFollowsTheProgrammer:
         assert "Flash erase failed" in result.output
         assert "flash" not in client.calls
         assert client.closed
+
+
+# --------------------------------------------------------------------------- #
+# The box's message is what the user sees, once (#517)                        #
+# --------------------------------------------------------------------------- #
+
+def http_500_with_error(error, path="/debug/erase"):
+    """An HTTPError whose response carries the box's JSON `error` body."""
+    response = requests.Response()
+    response.status_code = 500
+    response.reason = "Internal Server Error"
+    response.url = f"http://{BOX_IP}:8765{path}"
+    response._content = json.dumps({"error": error}).encode()
+    return requests.exceptions.HTTPError(
+        "500 Server Error: Internal Server Error", response=response)
+
+
+class TestTheBoxErrorIsPrintedOnce:
+    """`lager debug erase` read the box's `error` field; the flash pre-erase
+    printed the raw HTTPError instead. And the box's erase message already
+    starts with "Erase failed:", so `erase` printed that prefix twice.
+    """
+
+    BOX_ERROR = "Erase failed: Could not connect to target."
+
+    def test_a_failed_pre_erase_prints_the_box_error(self, hexfile):
+        client = FakeClient(erase_error=http_500_with_error(self.BOX_ERROR))
+        result = run_flash(client, ["--hex", hexfile, "--box", "mybox"])
+        assert result.exit_code == 1, result.output
+        assert "Flash erase failed: Could not connect to target." in result.output
+        assert "500 Server Error" not in result.output
+        assert "flash" not in client.calls
+
+    def test_a_failed_erase_says_erase_failed_once(self):
+        client = FakeClient(erase_error=http_500_with_error(self.BOX_ERROR))
+        result = run_erase(client, ["--box", "mybox", "--yes"])
+        assert result.exit_code == 1, result.output
+        assert result.output.count("Erase failed:") == 1, result.output
+        assert "Erase failed: Could not connect to target." in result.output
+
+    def test_a_box_error_without_the_prefix_is_kept_whole(self):
+        client = FakeClient(erase_error=http_500_with_error("No debugger connection found"))
+        result = run_erase(client, ["--box", "mybox", "--yes"])
+        assert "Erase failed: No debugger connection found" in result.output
+
+    def test_an_error_with_no_json_body_falls_back_to_the_exception(self):
+        client = FakeClient(erase_error=http_500("Failed to power up DAP"))
+        result = run_erase(client, ["--box", "mybox", "--yes"])
+        assert result.exit_code == 1, result.output
+        assert "Erase failed: 500 Server Error: Failed to power up DAP" in result.output
