@@ -20,6 +20,7 @@ from cli.commands.box._ssh import (
     ensure_lager_box_keypair,
     key_installed_on_box,
     remove_lager_box_key,
+    working_identity_args,
 )
 from cli.errors import LagerError
 
@@ -147,6 +148,41 @@ class TestRemoveLagerBoxKey(unittest.TestCase):
                 self.assertFalse(
                     remove_lager_box_key('user@192.0.2.1', key_path=key_path)
                 )
+
+
+class TestWorkingIdentityArgs(unittest.TestCase):
+    """Passing no -i is not the same as offering ssh's defaults.
+
+    An IdentityFile in ssh_config replaces ssh's built-in list exactly as -i
+    does. Found on hardware: `ssh -G` for a managed box resolved to id_rsa and
+    stout_ed25519 while its authorized_keys held id_ed25519, so a connection
+    passing no identity was refused for a box the probe had just reached --
+    the probe named the defaults, the connection let the config drop them."""
+
+    def test_names_the_defaults_even_with_no_lager_box(self):
+        """widened_identity_args returns [] here; this one must not, because
+        [] is what lets the config narrow the list."""
+        with patch('cli.commands.box._ssh.lager_box_key_if_present',
+                   return_value=None), \
+             patch('cli.commands.box._ssh.default_identities_if_present',
+                   return_value=['/k/id_ed25519', '/k/id_rsa']):
+            args = working_identity_args()
+        self.assertEqual(args, ['-i', '/k/id_ed25519', '-i', '/k/id_rsa'])
+
+    def test_lager_box_keeps_its_precedence(self):
+        with patch('cli.commands.box._ssh.lager_box_key_if_present',
+                   return_value='/k/lager_box'), \
+             patch('cli.commands.box._ssh.default_identities_if_present',
+                   return_value=['/k/id_ed25519']):
+            args = working_identity_args()
+        self.assertEqual(args, ['-i', '/k/lager_box', '-i', '/k/id_ed25519'])
+
+    def test_nothing_to_name_leaves_ssh_alone(self):
+        with patch('cli.commands.box._ssh.lager_box_key_if_present',
+                   return_value=None), \
+             patch('cli.commands.box._ssh.default_identities_if_present',
+                   return_value=[]):
+            self.assertEqual(working_identity_args(), [])
 
 
 if __name__ == '__main__':

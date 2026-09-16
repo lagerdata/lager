@@ -39,6 +39,7 @@ from ..box._ssh import (
     ensure_lager_box_keypair,
     key_installed_on_box,
     register_lager_box_key,
+    working_identity_args,
 )
 from ._host_cli import (
     HOST_CLI_PROBE_SNIPPET,
@@ -1870,6 +1871,11 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         ssh_cmd = ['ssh']
         if use_explicit_key:
             ssh_cmd.extend(['-i', key_file])
+        elif control_plane_key:
+            # Name the identities explicitly. Passing none lets an ssh_config
+            # IdentityFile narrow the list to keys this box does not hold —
+            # the probe reached it only because it named the defaults itself.
+            ssh_cmd.extend(working_identity_args())
         if not use_interactive_ssh:
             ssh_cmd.extend(['-o', 'BatchMode=yes'])
         ssh_cmd.extend(_ssh_mux_opts)
@@ -1892,6 +1898,11 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         ssh_cmd = ['ssh', '-t']  # Always use -t for interactive commands
         if use_explicit_key:
             ssh_cmd.extend(['-i', key_file])
+        elif control_plane_key:
+            # Name the identities explicitly. Passing none lets an ssh_config
+            # IdentityFile narrow the list to keys this box does not hold —
+            # the probe reached it only because it named the defaults itself.
+            ssh_cmd.extend(working_identity_args())
         # Only use BatchMode if we don't need sudo prompts
         if not use_interactive_ssh and not allow_sudo_prompt:
             ssh_cmd.extend(['-o', 'BatchMode=yes'])
@@ -3359,6 +3370,11 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         ssh_cmd = ['ssh']
         if use_explicit_key:
             ssh_cmd.extend(['-i', key_file])
+        elif control_plane_key:
+            # Name the identities explicitly. Passing none lets an ssh_config
+            # IdentityFile narrow the list to keys this box does not hold —
+            # the probe reached it only because it named the defaults itself.
+            ssh_cmd.extend(working_identity_args())
         if not use_interactive_ssh:
             ssh_cmd.extend(['-o', 'BatchMode=yes'])
         ssh_cmd.extend(_ssh_mux_opts)
