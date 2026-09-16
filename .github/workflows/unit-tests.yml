@@ -58,8 +58,11 @@ jobs:
             path: test/unit/blufi/
           - name: mcp
             path: test/mcp/unit/
+          # test/unit/tools/ rides in the existing `unit (root)` context: a
+          # new context would need a separate branch-ruleset update before it
+          # could block anything.
           - name: root
-            path: test/unit/test_*.py test/test_*.py
+            path: test/unit/test_*.py test/unit/tools/
 
     steps:
       - name: Checkout repository
@@ -154,7 +157,7 @@ jobs:
           run measurement "test/unit/measurement/"
           run blufi       "test/unit/blufi/"
           run mcp         "test/mcp/unit/"
-          run root        "test/unit/test_*.py test/test_*.py"
+          run root        "test/unit/test_*.py test/unit/tools/"
           exit $fail
         shell: bash
 

@@ -3,7 +3,7 @@
 
 # test_install_wheel.py
 # Unit tests for the install-wheel command (no box required).
-# Run with: pytest test/unit/test_install_wheel.py -v
+# Run with: pytest test/unit/cli/test_install_wheel.py -v
 
 import os
 import tempfile

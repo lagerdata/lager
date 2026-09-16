@@ -25,15 +25,18 @@ test/
 │   └── infrastructure/         # deployment.sh, generic.sh, python.sh, nets.sh
 │
 ├── unit/                       # Local unit tests (pytest, no hardware) -- ALL GATED ON PRs
-│   ├── box/                    # 55 files: box-side unit tests
-│   ├── cli/                    # 33 files: CLI command unit tests
-│   ├── measurement/            #  4 files: Joulescope / PPK2 / watt
-│   ├── blufi/                  #  2 files: BluFi protocol
-│   └── test_*.py               #  5 files: root-level unit tests
+│   ├── box/                    # box-side unit tests
+│   ├── cli/                    # CLI command unit tests
+│   ├── measurement/            # Joulescope / PPK2 / watt
+│   ├── blufi/                  # BluFi protocol
+│   ├── tools/                  # tests for the scripts in tools/
+│   └── test_*.py               # repo-wide guards, plus the DP821 settle helper
 │
 ├── mcp/                        # MCP server tests (pytest)
 │   ├── unit/                   # 11 files, 166 tests: mocked, no hardware -- GATED
 │   └── integration/            #  1 file: real hardware required
+│
+├── manual/                     # Operator-run scripts and reports, not automated
 │
 ├── framework/                  # Shared test infrastructure
 │   ├── colors.sh               # Color definitions (GREEN, RED, YELLOW, etc.)
@@ -80,7 +83,7 @@ $PYTEST test/unit/box/
 $PYTEST test/unit/measurement/
 $PYTEST test/unit/blufi/
 $PYTEST test/mcp/unit/
-$PYTEST test/unit/test_*.py test/test_*.py
+$PYTEST test/unit/test_*.py test/unit/tools/
 ```
 
 ### MCP integration tests (real hardware)

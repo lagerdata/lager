@@ -7,8 +7,8 @@ Unit tests for ``cli/commands/box/lock.py`` -- the `lager boxes lock` /
 
 The helpers underneath (``box_storage.format_lock_user`` and friends) are well
 covered by ``test/unit/cli/test_box_lock_helpers.py`` and
-``test/test_format_lock_user.py``; the command wrapper itself had nothing. What
-lives only here:
+``test/unit/cli/test_format_lock_user.py``; the command wrapper itself had
+nothing. What lives only here:
 
   * the request BODY -- `holder_type: "user"` and `ttl_seconds: None` are what
     keep an explicit reservation immune to the heartbeat-driven auto-reap that

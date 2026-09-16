@@ -37,7 +37,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 TOOL = REPO_ROOT / "tools" / "bench_schedule_check.py"
 
 _spec = importlib.util.spec_from_file_location("bench_schedule_check", TOOL)

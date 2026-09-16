@@ -24,12 +24,19 @@ test/
 │   ├── peripherals/      # arm.sh
 │   └── infrastructure/   # deployment.sh, generic.sh, python.sh, nets.sh
 │
-├── unit/                 # CLI unit tests (pytest, no hardware)
-│   └── cli/              # CLI command tests
+├── unit/                 # Unit tests (pytest, no hardware)
+│   ├── box/              # Box-side code
+│   ├── cli/              # CLI code
+│   ├── measurement/      # Joulescope, PPK2, watt meter
+│   ├── blufi/            # BluFi protocol
+│   ├── tools/            # Scripts in tools/
+│   └── test_*.py         # Repo-wide guards
 │
 ├── mcp/                  # MCP server tests (pytest, unit + integration)
 │   ├── unit/             # Mocked subprocess tests (~254 tests)
 │   └── integration/      # Real hardware tests (~64 tests)
+│
+├── manual/               # Operator-run scripts and reports, not automated
 │
 ├── framework/            # Shared test infrastructure
 │   ├── colors.sh         # Color definitions for bash tests
@@ -251,12 +258,13 @@ Always use `--import-mode=importlib -c /dev/null` to prevent `test/mcp` from sha
 
 ## Adding a New Test
 
-1. Determine the type: Python API (`api/`), bash integration (`integration/`), MCP (`mcp/`), or CLI unit (`unit/`)
+1. Determine the type: Python API (`api/`), bash integration (`integration/`), MCP (`mcp/`), or unit (`unit/`)
 2. Place it in the correct domain subdirectory
 3. Follow the template for that type
 4. For Python API tests: use `from lager import Net, NetType` (not internal paths)
 5. For bash tests: source the framework, don't redefine harness functions
 6. Include a docstring/comment with the exact run command
+7. Keep every test under `test/`. Every box gets a copy of `cli/` and `box/`, and the `lager-cli` package includes `cli/`
 
 <!-- Copyright 2024-2026 Lager Data -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
