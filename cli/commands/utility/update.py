@@ -34,11 +34,10 @@ from ..box._host_ops import (
     is_valid_unix_username,
 )
 from ..box._ssh import (
-    BOX_KEYS_DIR,
+    box_accepts_a_password,
     box_has_control_plane,
     ensure_lager_box_keypair,
     key_installed_on_box,
-    register_lager_box_key,
     working_identity_args,
 )
 from ._host_cli import (
@@ -1603,6 +1602,20 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
 
         # Copy key to box using ssh directly — ssh-copy-id is a POSIX shell
         # script not available on Windows, even when Git for Windows is installed.
+        # A hardened box takes no password, so there is nothing to prompt
+        # for and nothing ssh could install. Saying so beats offering a
+        # prompt that never comes and then reporting a wrong password.
+        if box_accepts_a_password(ssh_host) is False:
+            click.echo()
+            click.secho(
+                'This box accepts only key authentication, so a key cannot '
+                'be installed from here.', fg='yellow')
+            click.secho(
+                '  If a control plane manages it, ask an admin to grant you '
+                'access there — your key is installed on every box you are '
+                'granted.', fg='yellow')
+            return False
+
         click.echo()
         click.echo('Copying SSH key to box (enter password when prompted):')
         try:
@@ -1661,17 +1674,13 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         /etc/lager/authorized_keys.d survives another key manager rebuilding
         that file. Best-effort — the key is already working when this runs —
         but warned about, because the failure is invisible until the rebuild.
+
+        Delegated rather than reimplemented: one copy of this warning went
+        on recommending a sudoers grant to control-plane-managed boxes long
+        after the other stopped, which is the drift the shared function
+        exists to prevent.
         """
-        ok, detail = register_lager_box_key(ssh_host, key_path=key_file)
-        if not ok:
-            click.secho(
-                f'Warning: the SSH key works, but it did not register in '
-                f'{BOX_KEYS_DIR} on the box ({detail}); it will not survive a '
-                'rebuild of the box\'s authorized_keys. Run `lager ssh-setup '
-                f'--box {ssh_host.split("@")[-1]}` for the grant a tightly '
-                'scoped fleet needs. Do not widen the directory instead.',
-                fg='yellow', err=True,
-            )
+        register_or_warn(ssh_host, key_path=key_file)
 
     try:
         # First try with the lager_box key if it exists. Same unattended
@@ -1759,6 +1768,14 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
                 else:
                     # Key setup failed, ask if they want to continue with password
                     click.echo()
+                    # Not offered when the box takes no password: it is the
+                    # same dead end the key setup just hit, and accepting it
+                    # only moves the failure further down the run.
+                    if box_accepts_a_password(ssh_host) is False:
+                        click.secho(
+                            'Password authentication is not available on this '
+                            'box either.', fg='yellow')
+                        ctx.exit(1)
                     if yes or click.confirm('SSH key setup failed. Continue with password authentication?'):
                         use_interactive_ssh = True
                         if not verbose:

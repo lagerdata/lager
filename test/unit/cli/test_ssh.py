@@ -19,6 +19,8 @@ from cli.commands.box._ssh import (
     box_has_control_plane,
     ensure_lager_box_keypair,
     key_installed_on_box,
+    box_accepts_a_password,
+    box_auth_methods,
     remove_lager_box_key,
     working_identity_args,
 )
@@ -183,6 +185,68 @@ class TestWorkingIdentityArgs(unittest.TestCase):
              patch('cli.commands.box._ssh.default_identities_if_present',
                    return_value=[]):
             self.assertEqual(working_identity_args(), [])
+
+
+class TestBoxAuthMethods(unittest.TestCase):
+    """PreferredAuthentications=none offers nothing, so sshd refuses at once
+    and names what it would have taken. It is the only way to ask what a box
+    accepts without first satisfying it."""
+
+    def _stderr(self, text):
+        class P:
+            returncode = 255
+            stderr = text
+        with patch('shutil.which', return_value='/usr/bin/ssh'), \
+             patch('subprocess.run', return_value=P()):
+            return box_auth_methods('user@192.0.2.1')
+
+    def test_parses_the_offered_methods(self):
+        methods = self._stderr(
+            'user@host: Permission denied (publickey,password,'
+            'keyboard-interactive).\n')
+        self.assertEqual(methods,
+                         frozenset({'publickey', 'password',
+                                    'keyboard-interactive'}))
+
+    def test_a_hardened_box_offers_only_publickey(self):
+        self.assertEqual(self._stderr('Permission denied (publickey).\n'),
+                         frozenset({'publickey'}))
+
+    def test_unrecognised_output_is_not_an_answer(self):
+        """None, not an empty set: "could not ask" and "offers nothing" lead
+        to different things being said to the operator."""
+        self.assertIsNone(self._stderr('ssh: connect to host ... timed out\n'))
+
+    def test_unreachable_box_is_not_an_answer_either(self):
+        with patch('shutil.which', return_value='/usr/bin/ssh'), \
+             patch('subprocess.run', side_effect=OSError('down')):
+            self.assertIsNone(box_auth_methods('user@192.0.2.1'))
+
+
+class TestBoxAcceptsAPassword(unittest.TestCase):
+
+    def test_password_method_means_yes(self):
+        with patch('cli.commands.box._ssh.box_auth_methods',
+                   return_value=frozenset({'publickey', 'password'})):
+            self.assertIs(box_accepts_a_password('user@192.0.2.1'), True)
+
+    def test_keyboard_interactive_counts_too(self):
+        """A box can take a password through kbd-interactive alone; treating
+        that as "no password" would refuse a bootstrap that would work."""
+        with patch('cli.commands.box._ssh.box_auth_methods',
+                   return_value=frozenset({'publickey',
+                                           'keyboard-interactive'})):
+            self.assertIs(box_accepts_a_password('user@192.0.2.1'), True)
+
+    def test_publickey_only_means_no(self):
+        with patch('cli.commands.box._ssh.box_auth_methods',
+                   return_value=frozenset({'publickey'})):
+            self.assertIs(box_accepts_a_password('user@192.0.2.1'), False)
+
+    def test_unknown_stays_unknown(self):
+        with patch('cli.commands.box._ssh.box_auth_methods',
+                   return_value=None):
+            self.assertIsNone(box_accepts_a_password('user@192.0.2.1'))
 
 
 if __name__ == '__main__':

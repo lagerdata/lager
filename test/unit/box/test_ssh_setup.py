@@ -98,17 +98,20 @@ class EnsureKeypair(unittest.TestCase):
 
 def _invoke(*, copy_results=None, generated=False, auth_sequence=(),
             which="/usr/bin/ssh-copy-id", register=(True, ""),
-            managed=False, removed=True):
+            managed=False, removed=True, accepts_password=None):
     """Run `lager ssh-setup` with the helpers mocked.
 
     auth_sequence drives successive key_installed_on_box() return values
     (probe, then post-copy verify): True installed, False absent, None
     "could not ask". copy_results feeds mod.subprocess.run for the
     ssh-copy-id call. `managed` is what the box answers about a control
-    plane; `removed` whether taking the key back out succeeded.
+    plane; `removed` whether taking the key back out succeeded;
+    `accepts_password` whether its sshd offers a password at all, with None
+    meaning "could not ask" — the answer that preserves the behaviour these
+    cases were written against.
 
-    register_lager_box_key, box_has_control_plane and remove_lager_box_key
-    MUST all be mocked here even where a test does not assert on them: they
+    register_lager_box_key, box_has_control_plane, remove_lager_box_key and
+    box_accepts_a_password MUST all be mocked here even where a test does not assert on them: they
     live in _ssh and run their own subprocess.run, which patching
     mod.subprocess does not reach — so leaving any of them live makes these
     tests open a real SSH connection to 1.2.3.4 and sit there until the
@@ -137,6 +140,7 @@ def _invoke(*, copy_results=None, generated=False, auth_sequence=(),
          patch.object(mod, "key_installed_on_box", fake_installed), \
          patch.object(mod, "register_lager_box_key", fake_register), \
          patch.object(mod, "box_has_control_plane", lambda dest, **k: managed), \
+         patch.object(mod, "box_accepts_a_password", lambda dest, **k: accepts_password), \
          patch.object(mod, "remove_lager_box_key", fake_remove), \
          patch.object(mod.shutil, "which", lambda name: which):
         sub.run = copy_run
@@ -249,6 +253,37 @@ class KeyRegistration(unittest.TestCase):
         result, copy_run = _invoke(copy_results=[_proc(1)], auth_sequence=[False])
         self.assertNotEqual(result.exit_code, 0)
         self.assertEqual(copy_run.registered, [])
+
+
+class ABoxThatTakesNoPassword(unittest.TestCase):
+    """Every hardened box sets PasswordAuthentication no.
+
+    ssh-copy-id cannot install anything there, so the command used to promise
+    a password prompt that never came and then report the failure as a wrong
+    password — for a password the box would have refused however it was typed.
+    On a locked-down fleet that is the ordinary case, not the edge one."""
+
+    def test_does_not_promise_a_prompt_it_cannot_deliver(self):
+        result, copy_run = _invoke(auth_sequence=[None], accepts_password=False)
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertNotIn("enter the box password", _text(result))
+        # And never runs ssh-copy-id, which could only fail.
+        self.assertEqual(copy_run.calls, [])
+
+    def test_says_what_is_actually_wrong(self):
+        result, _ = _invoke(auth_sequence=[None], accepts_password=False)
+        self.assertIn("accepts only key authentication", _text(result))
+        self.assertIn("ask an admin to grant you access", _text(result).lower())
+
+    def test_a_box_that_takes_a_password_is_unchanged(self):
+        # True and None both keep the old path: only a definite "no password"
+        # is grounds for refusing to try.
+        for answer in (True, None):
+            with self.subTest(accepts_password=answer):
+                _result, copy_run = _invoke(
+                    copy_results=[_proc(0)], auth_sequence=[None, True],
+                    accepts_password=answer)
+                self.assertEqual(len(copy_run.calls), 1)
 
 
 class ControlPlaneManagedBox(unittest.TestCase):

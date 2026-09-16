@@ -65,6 +65,8 @@ class CheckExitCodeSurvives(unittest.TestCase):
                                return_value='lagerdata'), \
              mock.patch.object(update_mod, 'box_has_control_plane',
                                return_value=managed), \
+             mock.patch.object(update_mod, 'box_accepts_a_password',
+                               return_value=None), \
              mock.patch.object(update_mod, 'key_installed_on_box',
                                return_value=False):
             return runner.invoke(
@@ -117,6 +119,8 @@ class AManagedBoxNeedsNoLagerKey(unittest.TestCase):
                                return_value='lagerdata'), \
              mock.patch.object(update_mod, 'box_has_control_plane',
                                return_value=True), \
+             mock.patch.object(update_mod, 'box_accepts_a_password',
+                               return_value=None), \
              mock.patch.object(update_mod, 'key_installed_on_box',
                                return_value=False), \
              mock.patch.object(update_mod, 'subprocess') as sub:
