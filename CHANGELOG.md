@@ -63,6 +63,23 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 - **A `LAGER_LOCK_WAIT` that is not a whole number warns and keeps the default
   wait.** It gave `0` even in CI, so a job that should queue for the box failed
   on first contact.
+- **A `lager update` that changes nothing leaves `/etc/lager/ref` alone.** The
+  file was rewritten with identical content on every run, which moved its
+  timestamp. That timestamp is the only record of when the deployed ref last
+  changed.
+- **A failed version write no longer leaves the box without a container.**
+  `lager update` wrote `/etc/lager/version` before it started the new
+  container, and exited when that write failed, so an unwritable file took the
+  box out of service. It now starts the container first and records the version
+  after.
+- **The box's build hash no longer depends on the login user's home
+  directory.** The same code hashed differently under two accounts, so the
+  first `lager update` after a login-user change rebuilt an image that had not
+  changed.
+- **`lager install` no longer grants passwordless sudo for writing
+  `/etc/lager/version` and `/etc/lager/ref`.** Both files are written without
+  sudo, so those grants had no caller. A box keeps its existing rules until it
+  is provisioned again.
 
 ## [0.48.0] - 2026-09-15
 

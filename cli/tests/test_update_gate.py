@@ -156,6 +156,62 @@ class TestStateFileWriteCmd:
             assert re.search(rf"_state_file_write_cmd\(\s*'{name}'", src), name
         assert 'mktemp /etc/lager/' not in src, 'a hand-rolled state-file writer remains'
 
+    def test_the_ref_write_skips_identical_content(self):
+        """A run that changes nothing must leave /etc/lager/ref alone.
+
+        The version write has always passed `skip_if_identical`; the ref write
+        did not, so every no-op update replaced the file with the same bytes.
+        That moves its mtime, which is the only evidence of when the ref last
+        actually changed -- and an already-up-to-date run is exactly when
+        someone is asking what the box is running.
+        """
+        import importlib
+        import inspect
+        import re
+        update = importlib.import_module('cli.commands.utility.update')
+        src = inspect.getsource(update._update_logic)
+        call = re.search(r"_state_file_write_cmd\(\s*'ref',[^)]*\)", src)
+        assert call, 'the ref write moved; this test no longer checks anything'
+        assert 'skip_if_identical=True' in call.group(0), (
+            'the ref write rewrites identical content, moving the file mtime'
+        )
+
+
+class TestTheVersionIsRecordedAfterTheContainerStarts:
+    """A failed version write must not leave the box with no container.
+
+    The write used to run between the teardown and Step 11, and exited 1 on
+    failure -- so an immutable file, a full disk or a read-only /etc left the
+    box with its old container gone and nothing started in its place. `lager
+    install` already records state after the box is up; update now matches it.
+    """
+
+    @staticmethod
+    def _source():
+        import importlib
+        import inspect
+        update = importlib.import_module('cli.commands.utility.update')
+        return inspect.getsource(update._update_logic)
+
+    def test_the_write_follows_the_container_start(self):
+        src = self._source()
+        start = src.index('# Step 11: Start container')
+        write = src.index('if not write_box_version_file(box_cli_version):')
+        assert write > start, (
+            'the version write runs before the container starts, so a failed '
+            'write exits with the box down'
+        )
+
+    def test_the_manual_fix_no_longer_tells_the_operator_to_use_sudo(self):
+        """The hint outlived the change that made the write sudo-free.
+
+        Checked across the whole function rather than the part after Step 11:
+        slicing there passed on the old code too, because the hint sat above
+        that line. /etc/lager is group-writable and setgid, so the manual fix
+        is a plain redirect.
+        """
+        assert 'sudo tee /etc/lager/version' not in self._source()
+
 
 IN_SYNC = dict(
     git_sync_confirmed=True,
@@ -505,6 +561,35 @@ class TestBuildHashAtRefMatchesWorkingTree:
     def test_missing_ref_yields_empty_not_a_bogus_digest(self, tmp_path):
         home, env = self._fake_box(tmp_path, 'FROM python:3.12-slim\n')
         assert self._sh(_build_hash_at_ref_shell_cmd('no-such-ref'), env, home) == ''
+
+    def test_the_digest_does_not_depend_on_the_home_directory(self, tmp_path):
+        """Two boxes with identical trees must agree, whatever the login user.
+
+        `sha256sum` prints the path beside each digest, and both hashers fed it
+        absolute paths under $HOME. So the same commit hashed differently under
+        /home/alice/box and /home/bob/box, and the next `lager update` after a
+        login-user change saw a build-hash mismatch and rebuilt an image that
+        had not changed. Hashing paths relative to ~/box removes the only
+        varying part while keeping renames visible.
+        """
+        home_a, env_a = self._fake_box(tmp_path / 'a', 'FROM python:3.12-slim\n')
+        home_b, env_b = self._fake_box(tmp_path / 'b', 'FROM python:3.12-slim\n')
+        assert home_a != home_b
+
+        working_a = self._sh(_build_hash_shell_cmd(), env_a, home_a / 'box')
+        working_b = self._sh(_build_hash_shell_cmd(), env_b, home_b / 'box')
+        assert working_a, 'working-tree hasher produced nothing'
+        assert working_a == working_b, (
+            'the build hash depends on the home directory, so changing the '
+            'login user forces a rebuild of an unchanged image'
+        )
+
+        # The at-ref hasher composes the same digests, so it has to move with
+        # it -- otherwise every --check would report a spurious rebuild.
+        at_ref_a = self._sh(_build_hash_at_ref_shell_cmd('HEAD'), env_a, home_a)
+        at_ref_b = self._sh(_build_hash_at_ref_shell_cmd('HEAD'), env_b, home_b)
+        assert at_ref_a == working_a
+        assert at_ref_b == working_b
 
 
 class TestDockerBuildLineSummary:
