@@ -650,18 +650,23 @@ Box 提供 Python 环境、仪器驱动程序、Net 定义和 Lager Box 软件�
 | 退出码 | 含义 |
 |---|---|
 | 0 | Box 是正确的，不需要更改。 |
-| 1 | 需要更新：代码、依赖或容器。退出码 1 也可能表示检查本身失败。 |
-| 2 | CLI 没有确认该 Box 的 SSH 密钥，或者 Box 上的 `git rev-list` 失败。 |
+| 1 | 需要更新：代码、依赖或容器。 |
+| 2 | CLI 未能确定 Box 的状态。 |
 
-退出码 1 并不总是表示 Box 版本旧。以下失败同样给出退出码 1：
+退出码 1 只有一个含义：Box 需要更新。下列失败都会让 Box 的状态无法确定，因此它们都给出退出码 2：
 
 - SSH 连接超时，或其他 SSH 错误。
 - Box 没有响应通过 SSH 进行的检查。
 - Box 目录不是一个 git 检出。
 - Box 上的 `git fetch` 失败。GitHub 上没有任何分支或标签包含的提交 SHA 也会导致这个失败。
 - Box 被其他持有者锁定。
+- CLI 没有确认该 Box 的 SSH 密钥，或者 Box 上的 `git rev-list` 失败。
 
 当确实需要更新时，输出以 `Run without --check to apply.` 结尾。示例脚本就依据这段文字判断。退出码 2 不提供关于 Box 的任何信息。
+
+<Note>
+0.49.0 之前的 CLI 版本对上述失败也给出退出码 1。示例脚本正是因此才匹配 `Run without --check to apply.` 这段文字。它在新旧两种退出码下都是正确的。
+</Note>
 
 `--check` 在它的 `Current:` 行显示 Box 的版本，但不显示 git 引用。若要查看引用和提交，请用 `lager hello`，它的 `Version:` 行在括号中给出引用和提交。
 
@@ -1344,7 +1349,7 @@ lager whoami
 | | 255 | CLI 没有从 Box 取到退出码。 |
 | | 130 | 有人或某个信号停止了该命令。 |
 | | 128+N | 信号 N 停止了 Box 上的脚本。 |
-| `lager update --check` | 0 / 1 / 2 | 正确 / 需要更新或检查失败 / 没有确认的 SSH 密钥或 `git rev-list` 失败。 |
+| `lager update --check` | 0 / 1 / 2 | 正确 / 需要更新 / CLI 未能确定 Box 的状态。 |
 | `lager exec` | 命令的退出码 | CLI 不做修改。命令在容器中运行，或在作业中运行，见 [第 6 节](#用-lager-exec-构建)。 |
 | `lager ssh -- cmd` | 远程命令的退出码 | 255 表示 SSH 失败。 |
 | 所有命令 | 1 | 一般错误。**这包括锁冲突。** |

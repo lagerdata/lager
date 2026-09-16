@@ -73,9 +73,11 @@ After a pull, `/etc/lager/image-source` records `ghcr:<digest>`. A build on the
 box removes that file.
 
 Pass `--no-pull` to skip the pre-built image and always build. To turn the
-install pull off for a whole shell, set `LAGER_BOX_IMAGE_PULL=0`. Only the value
-`0` turns it off, and `--pull` overrides the variable. `lager update` reads the
-same variable differently: only `1`, `true` or `yes` turns its pull on.
+install pull off for a whole shell, set `LAGER_BOX_IMAGE_PULL` to `0`, `false`,
+`no` or `off`. The variable turns the pull on only for `1`, `true` or `yes`, in
+any letter case, and every other value turns it off. `--pull` overrides the
+variable. `lager update` reads the same words in the same way. Only the default
+differs: install uses a pre-built image for a release tag, and update does not.
 `--pull` together with `--no-pull` is a usage error.
 
 ## Deploy Timeout
@@ -91,6 +93,10 @@ twice the budget. It then exits `1`. A re-run is safe.
 
 The install lock stays valid for the larger of 3600 seconds and twice the
 timeout. The lock cannot be renewed while the container that serves it is down.
+With `--timeout 0` the lock never expires, because no fixed time outlasts an
+unbounded deploy. An install that ends normally releases the lock. After a hard
+kill, such as a power loss, the lock has no expiry time to clear it, and
+`lager boxes unlock` releases it.
 
 ## What Gets Installed
 

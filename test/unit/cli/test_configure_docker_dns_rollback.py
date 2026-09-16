@@ -50,6 +50,10 @@ def box(tmp_path):
     _write_stub(
         bin_dir,
         "systemctl",
+        # Record every call when the test asks, so a test can assert that a run
+        # restarted nothing. Without this the stub is silent and "Docker was
+        # left alone" is indistinguishable from "Docker was restarted".
+        '[ -n "${SYSTEMCTL_LOG:-}" ] && echo "$*" >> "$SYSTEMCTL_LOG"\n'
         'if [ "$1" = "restart" ]; then exit "${RESTART_RC:-0}"; fi\n'
         'if [ "$1" = "is-active" ]; then exit "${RESTART_RC:-0}"; fi\n'
         "exit 0",
@@ -75,6 +79,7 @@ def _run(box, restart_rc, daemon_json_exists=True):
         STAGED=str(tmp_path / "lager_daemon.json"),
         BACKUP=str(tmp_path / "lager_daemon.json.bak"),
         RESTART_RC=str(restart_rc),
+        SYSTEMCTL_LOG=str(tmp_path / "systemctl.log"),
     )
 
     result = subprocess.run(
@@ -142,3 +147,36 @@ def test_failed_restart_restores_defaults_when_there_was_no_config(box):
 
     assert result.returncode == 1
     assert json.loads(daemon_json.read_text()) == {}
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="requires bash")
+def test_an_unchanged_config_does_not_restart_docker(box):
+    """A second install with nothing to change leaves Docker alone.
+
+    Restarting takes down every container on the box for the duration, and that
+    includes containers this script does not manage and cannot bring back. The
+    step used to install and restart unconditionally, so a box that was already
+    configured lost its containers on every install to write back a daemon.json
+    byte for byte identical to the one already there.
+
+    Two runs, because what the first one settles on is exactly what the second
+    one must recognize -- a hand-written "expected" config would only prove the
+    comparison matches a string this test made up.
+    """
+    tmp_path, _ = box
+    log = tmp_path / "systemctl.log"
+
+    first, daemon_json = _run(box, restart_rc=0)
+    assert first.returncode == 0, first.stderr
+    assert "restart docker" in log.read_text()
+    settled = daemon_json.read_text()
+
+    log.write_text("")
+    # daemon_json_exists=False keeps the file the first run just settled on.
+    second, daemon_json = _run(box, restart_rc=0, daemon_json_exists=False)
+
+    assert second.returncode == 0, second.stderr
+    # Nothing was restarted, and the config is untouched.
+    assert log.read_text().strip() == ""
+    assert daemon_json.read_text() == settled
+    assert "already correct" in second.stdout

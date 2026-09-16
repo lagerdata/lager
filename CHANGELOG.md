@@ -80,6 +80,39 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   `/etc/lager/version` and `/etc/lager/ref`.** Both files are written without
   sudo, so those grants had no caller. A box keeps its existing rules until it
   is provisioned again.
+- **`lager install` no longer restarts Docker when the DNS configuration is
+  unchanged.** The install step wrote `daemon.json` and restarted Docker on
+  every run, and a restart takes down every container on the box, including
+  containers lager does not manage and cannot bring back. It now compares the
+  staged file with the current one and skips both the write and the restart
+  when they match.
+- **A box image that an install replaces is reclaimed by that same install.**
+  The deploy removes dangling images before it pulls or builds, but the image
+  being replaced goes dangling only after the new one is tagged, so about 3 GB
+  stayed on disk until the next install. The deploy now prunes a second time
+  once the new container runs.
+- **`LAGER_BOX_IMAGE_PULL` means the same thing to `lager install` and
+  `lager update`.** `false`, `no` and `off` left the install pull on while
+  turning the update pull off. Both commands now read `1`, `true` and `yes` as
+  on and every other value as off, in any letter case. Only the default still
+  differs: install uses a pre-built image for a release tag, and update does
+  not.
+- **A modprobe.d blacklist that a release changes is deployed by the update
+  that ships it.** `lager update` compared the installed file against the
+  source tree as it was before the checkout, reported `OK (already current)`,
+  and installed the new file one release late. It now re-reads that state
+  after the checkout, as the udev step does.
+- **`lager install --timeout 0` holds a lock that does not expire.** An
+  unbounded deploy asked for no expiry and received the default 1800 seconds,
+  so the lock could lapse while the build still ran and another job could take
+  the box. Such a lock has no expiry time to clear it after a hard kill, and
+  `lager boxes unlock` releases it.
+- **`lager update --check` exits 2 when it cannot determine the state of the
+  box.** An SSH timeout, an unanswered probe, a box directory that is not a
+  checkout, a failed fetch, and a box another holder locked all exited 1,
+  which is also the code for "this box needs an update", so a CI gate could
+  not tell the two apart without matching on the output text. A run without
+  `--check` still exits 1 on failure.
 
 ## [0.48.0] - 2026-09-15
 

@@ -801,11 +801,11 @@ It does not change the box. Its exit code has three values:
 | Exit code | Meaning |
 |---|---|
 | 0 | The box is correct. No change is necessary. |
-| 1 | An update is necessary: the code, the dependencies, or the container. Exit code 1 also shows that the check failed. |
-| 2 | The CLI did not confirm an SSH key for the box, or `git rev-list` failed on the box. |
+| 1 | An update is necessary: the code, the dependencies, or the container. |
+| 2 | The CLI did not determine the state of the box. |
 
-Exit code 1 does not always tell you that the box is old. These failures also
-give exit code 1:
+Exit code 1 has one meaning: the box needs an update. Each failure below leaves
+the state of the box unknown, so each one gives exit code 2:
 
 - An SSH connection that times out, or another SSH error.
 - A box that does not answer the inspection over SSH.
@@ -813,10 +813,18 @@ give exit code 1:
 - A `git fetch` on the box that fails. A commit SHA that no branch or tag on
   GitHub contains also gives this failure.
 - A box that a different holder locked.
+- A box with no SSH key that the CLI confirms, or a `git rev-list` that fails
+  on the box.
 
 When an update is necessary, the output ends with
 `Run without --check to apply.` The example script uses this text. Exit code 2
 gives you no data about the box.
+
+<Note>
+CLI versions before 0.49.0 give exit code 1 for these failures too. The example
+script matches on `Run without --check to apply.` for that reason. It is
+correct against the old codes and the new ones.
+</Note>
 
 `--check` shows the version of the box in its `Current:` line. It does not show
 the git reference. To see the reference and the commit, use `lager hello`. Its
@@ -1624,7 +1632,7 @@ environment does not reach the script.
 | | 255 | The CLI did not get the exit code from the box. |
 | | 130 | A person or a signal stopped the command. |
 | | 128+N | Signal N stopped the script on the box. |
-| `lager update --check` | 0 / 1 / 2 | Correct / an update is necessary, or the check failed / no confirmed SSH key, or `git rev-list` failed. |
+| `lager update --check` | 0 / 1 / 2 | Correct / an update is necessary / the CLI did not determine the state of the box. |
 | `lager exec` | the code of the command | The CLI does not change it. The command is in a container, or in the job, as [section 6](#build-with-lager-exec) shows. |
 | `lager ssh -- cmd` | the code of the remote command | 255 shows an SSH failure. |
 | all commands | 1 | A general error. **This includes a lock collision.** |

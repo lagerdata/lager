@@ -1395,6 +1395,40 @@ def default_install_timeout_seconds():
 INSTALL_LOCK_TTL_SECONDS = 3600
 
 
+class _NoLockExpiry:
+    """Sentinel: this caller wants a lock that never expires.
+
+    ``ttl_seconds=None`` cannot say this. At the auto-lock boundary ``None``
+    already means "I have no opinion, use the default", so an unbounded
+    ``lager install`` asking for no expiry was handed the 1800 s default
+    instead and could have its own lock reaped while the deploy still ran.
+    One value cannot carry both meanings, so "no expiry" gets its own.
+    """
+
+    def __repr__(self):  # pragma: no cover - debugging aid only
+        return 'NO_LOCK_EXPIRY'
+
+
+#: Pass as ``ttl_seconds`` for a lock with no expiry. Resolves to the ``None``
+#: the box stores as a null TTL (see ``acquire_box_lock``), never to a default.
+NO_LOCK_EXPIRY = _NoLockExpiry()
+
+
+def _resolve_ttl_seconds(ttl_seconds):
+    """Turn an auto-lock ``ttl_seconds`` argument into what the box is sent.
+
+    Three inputs, three meanings, and the first two used to collide:
+      * ``None``            -> unset; take this command's configured default.
+      * ``NO_LOCK_EXPIRY``  -> a lock with no expiry; send a null TTL.
+      * a number            -> that TTL.
+    """
+    if ttl_seconds is NO_LOCK_EXPIRY:
+        return None
+    if ttl_seconds is None:
+        return default_lock_ttl_seconds()
+    return ttl_seconds
+
+
 def install_lock_ttl_seconds(deploy_timeout=None):
     """TTL for `lager install`'s auto-lock, derived from the deploy timeout.
 
@@ -1405,14 +1439,17 @@ def install_lock_ttl_seconds(deploy_timeout=None):
     budget, a fixed TTL would let a legitimately-running install have its own
     lock reaped mid-deploy.
 
-    ``deploy_timeout`` of 0 (no timeout) yields ``None`` — an unbounded deploy
-    cannot be outlasted by any finite TTL, so the lock lives on renewals and
-    the explicit release instead.
+    ``deploy_timeout`` of 0 (no timeout) yields ``NO_LOCK_EXPIRY``: no finite
+    TTL can outlast an unbounded deploy, so the lock gets none and ends at the
+    explicit release. It gets no heartbeat either — a lock that cannot expire
+    has nothing to renew. The cost is that a hard kill (SIGKILL, power loss)
+    during an unbounded install leaves the box locked with no deadline to
+    clear it, and `lager boxes unlock` is the way out.
     """
     if deploy_timeout is None:
         deploy_timeout = default_install_timeout_seconds()
     if not deploy_timeout:
-        return None
+        return NO_LOCK_EXPIRY
     return max(INSTALL_LOCK_TTL_SECONDS, deploy_timeout * 2)
 
 
@@ -1480,9 +1517,7 @@ def auto_lock_around_command(
             return
 
         resolved_holder = holder or get_lock_holder()
-        resolved_ttl = (
-            default_lock_ttl_seconds() if ttl_seconds is None else ttl_seconds
-        )
+        resolved_ttl = _resolve_ttl_seconds(ttl_seconds)
         resolved_wait = (
             default_lock_wait_seconds() if wait_seconds is None else wait_seconds
         )
@@ -1647,9 +1682,7 @@ def auto_lock_acquire_for_command(
         return _noop_release
 
     resolved_holder = holder or get_lock_holder()
-    resolved_ttl = (
-        default_lock_ttl_seconds() if ttl_seconds is None else ttl_seconds
-    )
+    resolved_ttl = _resolve_ttl_seconds(ttl_seconds)
     resolved_wait = (
         default_lock_wait_seconds() if wait_seconds is None else wait_seconds
     )

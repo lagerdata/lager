@@ -5,6 +5,9 @@
 Tests for the update flow's rebuild gate: probe parsing, the build-hash
 mismatch predicate, and the early-exit verdict (including container liveness).
 """
+import ast
+import importlib
+import inspect
 import os
 import shutil
 import stat
@@ -33,6 +36,7 @@ from cli.commands.utility.update import (
     _pull_miss_is_actionable,
     _pull_shell_script,
     _rebuild_gate_verdict,
+    _undetermined_exit_code,
     _resolve_image_digest,
     resolve_version_ref,
     _state_file_write_cmd,
@@ -758,6 +762,98 @@ class TestBoxImagePullEnabled:
     def test_env_junk_does_not_enable(self):
         for val in ('0', 'no', '', 'maybe'):
             assert not _box_image_pull_enabled(False, env={'LAGER_BOX_IMAGE_PULL': val})
+
+    def test_the_words_install_reads_as_off_are_off_here_too(self):
+        # `lager install` starts from on and turns its pull off for exactly
+        # the values that fail to turn this one on. `false` is the spelling
+        # that used to mean opposite things in the two commands: it left the
+        # install pull ON while turning the update pull OFF.
+        for val in ('false', 'FALSE', 'off', 'No'):
+            assert not _box_image_pull_enabled(False, env={'LAGER_BOX_IMAGE_PULL': val})
+
+
+class TestUndeterminedExitCode:
+    """`--check` has to separate "the box needs an update" from "I could not tell".
+
+    The dry run documents 0 in sync, 1 an update is needed, 2 state unknown.
+    But every failure ahead of it exited 1 as well -- an SSH timeout, an
+    unanswered probe, a box that is not a checkout, a failed fetch, a box
+    another holder locked -- so a CI gate could not tell a stale box from an
+    unreachable one without matching on the output text.
+    """
+
+    def test_the_dry_run_reports_two(self):
+        assert _undetermined_exit_code(True) == 2
+
+    def test_a_normal_run_still_reports_one(self):
+        # Outside `--check`, 1 is the code for a failed command and scripts
+        # test for it. Widening it there would break them.
+        assert _undetermined_exit_code(False) == 1
+
+    @staticmethod
+    def _update_logic_ast():
+        module = importlib.import_module('cli.commands.utility.update')
+        src = inspect.getsource(module)
+        tree = ast.parse(src)
+        logic = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == '_update_logic'
+        )
+        return src, logic
+
+    def test_no_failure_ahead_of_the_dry_run_exits_one(self):
+        """The invariant, pinned structurally rather than case by case.
+
+        The dry run reports and exits inside its own block, so any bare
+        `ctx.exit(1)` ahead of that block is a failure `--check` cannot tell
+        apart from "an update is needed". Listing the known sites would go
+        stale the moment someone adds a new early return; this cannot.
+        """
+        src, logic = self._update_logic_ast()
+        marker = next(
+            i for i, line in enumerate(src.splitlines(), 1)
+            if 'Run without --check to apply.' in line
+        )
+        early = sorted(
+            node.lineno for node in ast.walk(logic)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == 'exit'
+            and node.lineno < marker
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == 1
+        )
+        assert early == [], (
+            f'bare ctx.exit(1) ahead of the dry run at line(s) {early}; '
+            'use _undetermined_exit_code(check)'
+        )
+
+    def test_the_resolver_exit_is_converted_for_the_dry_run(self):
+        """A box another holder locked is the one case raised from shared code.
+
+        `_check_box_lock` raises SystemExit(1) inside `resolve_and_validate_box`,
+        which every command calls, so it is converted at this call site rather
+        than in the resolver -- changing it there would change what `lager
+        uart`, `lager python` and the rest exit with.
+        """
+        _src, logic = self._update_logic_ast()
+        wrapped = [
+            node for node in ast.walk(logic)
+            if isinstance(node, ast.Try)
+            and any(
+                isinstance(inner, ast.Call)
+                and isinstance(inner.func, ast.Name)
+                and inner.func.id == 'resolve_and_validate_box'
+                for inner in ast.walk(node)
+            )
+            and any(
+                handler.type is not None
+                and 'SystemExit' in ast.dump(handler.type)
+                for handler in node.handlers
+            )
+        ]
+        assert len(wrapped) == 1, 'the resolver call is not wrapped for --check'
 
 
 class TestDockerCommandBuilders:
