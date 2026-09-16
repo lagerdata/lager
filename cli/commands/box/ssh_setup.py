@@ -29,6 +29,7 @@ from ._ssh import (
     ensure_lager_box_keypair,
     key_installed_on_box,
     register_lager_box_key,
+    remove_lager_box_key,
     resolve_box_user,
 )
 from ...box_storage import resolve_and_validate_box
@@ -59,6 +60,41 @@ def registration_sudoers_line(box_user: str) -> str:
     )
 
 
+def control_plane_error(dest: str, *, removed: bool) -> LagerError:
+    """Why this command will not authorize itself on a managed box.
+
+    Reached only when nothing on this machine can reach the box at all. A key
+    installed here would be a credential the control plane never granted,
+    cannot see in its own records, and cannot revoke when the operator leaves
+    — one more standing key on every box, and no more access than the grant
+    the operator is missing.
+
+    So the fix is a grant, not a key. The control plane installs the
+    operator's own key on every box they are granted and takes it off again
+    when they are not; asking them to file a second key of their own would
+    hand them the credential to look after instead.
+    """
+    cause = (
+        "A control plane manages this box's SSH keys, and nothing on this "
+        "machine reaches it — so there is no access here to set up."
+    )
+    if removed:
+        cause += (
+            " A key was installed to ask the question and has been removed "
+            "again, leaving the box as it was found."
+        )
+    return LagerError(
+        f"Not authorizing this machine on {dest} directly.",
+        cause=cause,
+        fixes=[
+            "Ask an admin to grant you access to this box in the control "
+            "plane. Your own key is installed on every box you are granted, "
+            "and removed again when you are not.",
+            "Then re-run this command; it will find the box already reachable.",
+        ],
+    )
+
+
 def register_or_warn(dest: str) -> bool:
     """Register the key in the box's key directory, warning if it fails.
 
@@ -79,16 +115,18 @@ def register_or_warn(dest: str) -> bool:
     # operator. The key they installed is already loose and already at risk of
     # being swept; the honest instruction is to get it managed properly.
     if box_has_control_plane(dest):
+        # No instruction, because there is nothing for the operator to do. The
+        # access that lasts on this box is the grant the control plane holds,
+        # and it installs their key for them. Telling them to publish a second
+        # key of their own would hand them a credential to look after in
+        # exchange for access they already have.
         click.secho(
-            f"Warning: the key works, but it did not register in {BOX_KEYS_DIR} "
-            f"on the box ({detail}), because a control plane manages this box's "
-            "SSH keys.\n"
-            "  A key installed here is not one it knows about: it will keep "
-            "working until that control plane next rebuilds the box's "
-            "authorized_keys, and will not survive it. Register your public key "
-            "with the control plane instead, and it will be installed on every "
-            "box you are granted — and removed again when you are not.\n"
-            f"    your public key: {_LAGER_BOX_KEY}.pub",
+            f"Note: this key is outside the control plane that manages {dest}'s "
+            f"SSH keys, so it did not register in {BOX_KEYS_DIR} ({detail}).\n"
+            "  It keeps working until that control plane next locks the box "
+            "down, which removes it. Your granted access does not depend on "
+            "it — the control plane installs your key on every box you are "
+            "granted, and removes it again when you are not.",
             fg="yellow", err=True,
         )
         return False
@@ -133,12 +171,30 @@ def provision_lager_box_key(dest: str) -> bool:
     # None means the box could not be asked at all; fall through to
     # ssh-copy-id, which is the right move for a box we cannot reach
     # unattended anyway.
-    if key_installed_on_box(dest) is True:
+    installed = key_installed_on_box(dest)
+    if installed is True:
         _KEY_FALLBACK_DESTS.discard(dest)
         # Still register: this is the path that repairs a box whose key was
         # installed before registration existed, and it costs one keyed
         # round-trip and no prompt.
         register_or_warn(dest)
+        return True
+
+    # False means the box answered — an identity authenticated to ask the
+    # question — so passwordless SSH to this box already works. On a managed
+    # box that is the finished state, not a gap: the control plane installs
+    # the operator's own key on every box they are granted. A lager_box key
+    # beside it would add a credential to account for and no access at all.
+    #
+    # Asked here rather than after ssh-copy-id, which is where this check used
+    # to live: by then the key was already on the box and the check could only
+    # pick which warning to print about it.
+    if installed is False and box_has_control_plane(dest):
+        click.echo(
+            "A control plane manages this box's SSH keys, and one of yours "
+            "already reaches it — no separate Lager key is needed."
+        )
+        _KEY_FALLBACK_DESTS.discard(dest)
         return True
 
     if shutil.which("ssh-copy-id") is None:
@@ -190,6 +246,24 @@ def provision_lager_box_key(dest: str) -> bool:
                 "'mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys'",
             ],
         )
+
+    # `installed` was None above: nothing could reach the box, so the question
+    # had to wait for a connection that works. Now there is one. A managed box
+    # gets the key taken straight back out — it was installed to ask, not to
+    # keep, and the alternative is leaving behind exactly the unaccountable
+    # credential this refuses to create.
+    if box_has_control_plane(dest):
+        removed = remove_lager_box_key(dest)
+        if not removed:
+            click.secho(
+                "Warning: could not remove the key again — it is still in "
+                f"{dest}'s authorized_keys, outside the control plane's "
+                "management. Remove it by hand, or let the control plane's "
+                "next lockdown sweep it.\n"
+                f"    the key to look for: {_LAGER_BOX_KEY}.pub",
+                fg="yellow", err=True,
+            )
+        raise control_plane_error(dest, removed=removed)
 
     _KEY_FALLBACK_DESTS.discard(dest)
     register_or_warn(dest)

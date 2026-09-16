@@ -52,12 +52,19 @@ class CheckExitCodeSurvives(unittest.TestCase):
     turned that into a traceback plus rc 1.
     """
 
-    def _run(self, extra=()):
+    def _run(self, extra=(), managed=False):
         runner = CliRunner()
+        # box_has_control_plane MUST be mocked: it runs its own subprocess.run
+        # against the destination, so leaving it live makes every test here
+        # open a real SSH connection to 192.0.2.10 and wait out the connect
+        # timeout. Default False keeps these cases on the path they were
+        # written for -- an unreachable box is not a managed one.
         with mock.patch.object(update_mod, 'resolve_and_validate_box',
                                return_value='192.0.2.10'), \
              mock.patch.object(update_mod, 'get_box_user',
                                return_value='lagerdata'), \
+             mock.patch.object(update_mod, 'box_has_control_plane',
+                               return_value=managed), \
              mock.patch.object(update_mod, 'key_installed_on_box',
                                return_value=False):
             return runner.invoke(
@@ -88,6 +95,48 @@ class CheckExitCodeSurvives(unittest.TestCase):
 
     def test_verbose_does_not_change_the_code(self):
         self.assertEqual(self._run(extra=['--verbose']).exit_code, 2)
+
+
+class AManagedBoxNeedsNoLagerKey(unittest.TestCase):
+    """A box whose SSH keys a control plane manages, reached on one of the
+    operator's own identities.
+
+    key_installed_on_box returns False -- lager_box is absent -- but False
+    also means the box ANSWERED, so something authenticated. `lager update`
+    used to read that as "SSH key not configured" and offer to install its
+    own key, because it asked whether lager_box specifically worked rather
+    than whether anything did. Every accepted offer appended another
+    lager-box-access line outside every manager's block, on a box that
+    already had working access."""
+
+    def _run(self):
+        runner = CliRunner()
+        with mock.patch.object(update_mod, 'resolve_and_validate_box',
+                               return_value='192.0.2.10'), \
+             mock.patch.object(update_mod, 'get_box_user',
+                               return_value='lagerdata'), \
+             mock.patch.object(update_mod, 'box_has_control_plane',
+                               return_value=True), \
+             mock.patch.object(update_mod, 'key_installed_on_box',
+                               return_value=False), \
+             mock.patch.object(update_mod, 'subprocess') as sub:
+            # Downstream steps would SSH for real; a mock keeps them from
+            # reaching the network. What they return does not matter here --
+            # the assertions are all about the auth decision above them.
+            sub.run.return_value = mock.Mock(returncode=1, stdout='', stderr='')
+            return runner.invoke(
+                update, ['--box', 'testbox', '--check'],
+                catch_exceptions=False)
+
+    def test_does_not_report_the_key_as_unconfigured(self):
+        self.assertNotIn('SSH key not configured for this box',
+                         self._run().output)
+
+    def test_does_not_offer_to_install_a_key(self):
+        self.assertNotIn('Set up SSH key for this box?', self._run().output)
+
+    def test_says_which_key_it_is_using(self):
+        self.assertIn('using your control-plane key', self._run().output)
 
 
 class NoBroadHandlerSwallowsControlFlow(unittest.TestCase):

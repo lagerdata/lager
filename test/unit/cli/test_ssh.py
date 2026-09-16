@@ -15,7 +15,12 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
 
-from cli.commands.box._ssh import ensure_lager_box_keypair, key_installed_on_box
+from cli.commands.box._ssh import (
+    box_has_control_plane,
+    ensure_lager_box_keypair,
+    key_installed_on_box,
+    remove_lager_box_key,
+)
 from cli.errors import LagerError
 
 
@@ -59,6 +64,89 @@ class TestKeyInstalledOnBox(unittest.TestCase):
             with patch('subprocess.run', side_effect=OSError('test error')):
                 result = key_installed_on_box('user@192.0.2.1')
         self.assertIsNone(result)
+
+
+class TestBoxHasControlPlane(unittest.TestCase):
+    """The answer decides whether a key gets installed at all, so it has to be
+    gettable BEFORE lager_box is on the box -- over whatever identity the
+    operator already has. A lone `-i lager_box` would withdraw exactly those
+    (ssh replaces its identity list rather than appending) and answer "not
+    managed" for every box the key had been purged from."""
+
+    def test_offers_more_than_the_lager_box_key(self):
+        seen = {}
+
+        def fake_run(argv, **kwargs):
+            seen['argv'] = argv
+            class P:
+                returncode = 0
+            return P()
+
+        with patch('shutil.which', return_value='/usr/bin/ssh'), \
+             patch('cli.commands.box._ssh.widened_identity_args',
+                   return_value=['-i', '/k/lager_box', '-i', '/k/id_ed25519']), \
+             patch('subprocess.run', fake_run):
+            self.assertTrue(box_has_control_plane('user@192.0.2.1'))
+        self.assertIn('/k/id_ed25519', seen['argv'])
+
+    def test_unreachable_box_is_not_reported_as_managed(self):
+        """A network failure must not turn a managed box into an unmanaged one
+        -- but it must not invent management either. False here sends the
+        caller down the password path, where the question is asked again over
+        a connection that works."""
+        with patch('shutil.which', return_value='/usr/bin/ssh'):
+            with patch('subprocess.run', side_effect=OSError('unreachable')):
+                self.assertFalse(box_has_control_plane('user@192.0.2.1'))
+
+    def test_missing_ssh_answers_false(self):
+        with patch('shutil.which', return_value=None):
+            self.assertFalse(box_has_control_plane('user@192.0.2.1'))
+
+
+class TestRemoveLagerBoxKey(unittest.TestCase):
+
+    def test_no_public_key_means_nothing_to_remove(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertFalse(
+                remove_lager_box_key('user@192.0.2.1',
+                                     key_path=os.path.join(d, 'lager_box'))
+            )
+
+    def test_matches_on_the_blob_not_the_comment(self):
+        """The line ssh-copy-id wrote and the line a key manager re-rendered
+        differ in comment and agree in blob."""
+        seen = {}
+
+        def fake_run(argv, **kwargs):
+            seen['cmd'] = argv[-1]
+            class P:
+                returncode = 0
+            return P()
+
+        with tempfile.TemporaryDirectory() as d:
+            key_path = os.path.join(d, 'lager_box')
+            with open(f'{key_path}.pub', 'w') as fh:
+                fh.write('ssh-ed25519 AAAABLOB lager-box-access\n')
+            with patch('shutil.which', return_value='/usr/bin/ssh'), \
+                 patch('subprocess.run', fake_run):
+                self.assertTrue(
+                    remove_lager_box_key('user@192.0.2.1', key_path=key_path)
+                )
+        self.assertIn("grep -vF 'AAAABLOB'", seen['cmd'])
+        self.assertNotIn('lager-box-access', seen['cmd'])
+
+    def test_unreachable_box_reports_failure(self):
+        """Never report a removal that did not happen: the caller warns the
+        operator the key is still there, and a silent False would hide it."""
+        with tempfile.TemporaryDirectory() as d:
+            key_path = os.path.join(d, 'lager_box')
+            with open(f'{key_path}.pub', 'w') as fh:
+                fh.write('ssh-ed25519 AAAABLOB lager-box-access\n')
+            with patch('shutil.which', return_value='/usr/bin/ssh'), \
+                 patch('subprocess.run', side_effect=OSError('unreachable')):
+                self.assertFalse(
+                    remove_lager_box_key('user@192.0.2.1', key_path=key_path)
+                )
 
 
 if __name__ == '__main__':

@@ -262,10 +262,15 @@ def register_key_command(pub_key: str, filename: str) -> str:
     )
 
 
-# Written by `lager install` when a control plane manages the box, and read by
-# the box runtime to find it. Its presence is what tells this CLI that the key
-# directory belongs to that control plane rather than to whoever is at the
-# keyboard.
+# Written by a control plane's own installer when it takes over a box, and read
+# by the box runtime to find it. Nothing in Lager creates it, which is exactly
+# what makes its presence meaningful here: it says the key directory belongs to
+# that control plane rather than to whoever is at the keyboard.
+#
+# So it appears only once that installer has run. A box being brought up
+# Lager-first answers "not managed" until then — correctly, because at that
+# moment it is not, and the key installed then is the operator's own on a box
+# nobody else claims yet.
 CONTROL_PLANE_CONFIG = "/etc/lager/control_plane.json"
 
 
@@ -277,18 +282,86 @@ def box_has_control_plane(
 ) -> bool:
     """Whether a control plane manages this box.
 
-    Call only once the key authenticates — it runs over that key, so it costs
-    no extra prompt, and a box we cannot reach answers False rather than
-    guessing.
+    Asked over whatever identity reaches the box, not over lager_box alone.
+    The question has to be answerable BEFORE that key is installed — that is
+    the point at which the answer decides whether to install it at all — and
+    an operator in that position is reaching the box on one of their own keys.
+    A lone ``-i`` would withdraw exactly those (see
+    :func:`widened_identity_args`) and report "not managed" for every box whose
+    key had been purged, which is the case that matters most.
+
+    A box we cannot reach answers False rather than guessing: a transient
+    network failure must not silently turn a managed box into an unmanaged one.
+    Callers that act on True are the ones changing behavior, so an unreachable
+    box falls through to the path that asks the operator for a password, where
+    the question gets asked again over a connection that works.
 
     Presence of the config, not its contents: a box whose control plane is
     configured but temporarily disabled is still a box whose key directory
     that control plane owns, and the difference does not change the advice.
     """
+    if shutil.which("ssh") is None:
+        return False
     cmd = f"test -s {shlex.quote(CONTROL_PLANE_CONFIG)}"
     try:
         proc = subprocess.run(
-            ["ssh", "-i", key_path, "-o", "BatchMode=yes", dest, cmd],
+            [
+                "ssh",
+                *widened_identity_args(key_path),
+                "-o", "BatchMode=yes",
+                "-o", "StrictHostKeyChecking=accept-new",
+                "-o", f"ConnectTimeout={timeout}",
+                dest,
+                cmd,
+            ],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    # `test` exits 1 for a missing or empty file — an answer, and it means no
+    # control plane. 255 is ssh never getting there, which is not an answer.
+    return proc.returncode == 0
+
+
+def remove_lager_box_key(
+    dest: str,
+    *,
+    key_path: str = _LAGER_BOX_KEY,
+    timeout: int = 30,
+) -> bool:
+    """Take this machine's lager_box key back out of ``dest``'s authorized_keys.
+
+    Used to undo an install that should not have happened: a key planted on a
+    control-plane-managed box is a standing credential that control plane never
+    granted and cannot revoke, and leaving it there is the thing this whole
+    path exists to stop.
+
+    Matched on the blob, like :func:`key_installed_on_box`, because the comment
+    differs between the line ssh-copy-id wrote and anything that re-rendered
+    it. Rewritten through a temp file and copied back with ``cat``, so the
+    file keeps its mode and owner and a failed write cannot leave
+    authorized_keys truncated.
+    """
+    blob = lager_box_pubkey_blob(key_path)
+    if blob is None or shutil.which("ssh") is None:
+        return False
+    cmd = (
+        "set -e; f=~/.ssh/authorized_keys; [ -f \"$f\" ] || exit 0; "
+        "t=$(mktemp); "
+        f"grep -vF '{blob}' \"$f\" > \"$t\" || true; "
+        "cat \"$t\" > \"$f\"; rm -f \"$t\""
+    )
+    try:
+        proc = subprocess.run(
+            [
+                "ssh",
+                *widened_identity_args(key_path),
+                "-o", "BatchMode=yes",
+                "-o", "StrictHostKeyChecking=accept-new",
+                "-o", "ConnectTimeout=15",
+                dest,
+                cmd,
+            ],
             capture_output=True, text=True, timeout=timeout,
         )
     except (OSError, subprocess.SubprocessError):

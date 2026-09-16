@@ -35,6 +35,7 @@ from ..box._host_ops import (
 )
 from ..box._ssh import (
     BOX_KEYS_DIR,
+    box_has_control_plane,
     ensure_lager_box_keypair,
     key_installed_on_box,
     register_lager_box_key,
@@ -1569,6 +1570,13 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
     key_file = os.path.expanduser('~/.ssh/lager_box')
     use_interactive_ssh = False
     use_explicit_key = False
+    # Reachable on one of the operator's own identities, on a box whose keys a
+    # control plane manages. Neither of the two flags above fits: there is no
+    # lager_box key to name with -i, and no password to prompt for. Without a
+    # third state this box fell into "SSH key not configured" and was offered
+    # a key install it did not need -- which is how a managed box grew a loose
+    # lager-box-access line on every update.
+    control_plane_key = False
 
     def setup_ssh_key():
         """Create lager_box key if needed and copy to box. Returns True if successful."""
@@ -1704,9 +1712,23 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
             log_status('OK', 'green')
             # Repairs a box whose key predates registration.
             register_key_or_warn()
+        elif key_probe is False and box_has_control_plane(ssh_host):
+            # False means the box answered, so an identity authenticated to
+            # ask -- ssh's own defaults, since lager_box is what failed. Pass
+            # no -i and they are offered again on every later connection.
+            # Deliberately not attempted for None: that box answered nothing,
+            # so there is no identity to keep using and no way to know it is
+            # managed. It keeps the setup path below, unchanged.
+            control_plane_key = True
+            log_status('OK', 'green')
+            click.secho(
+                "  (using your control-plane key; this box's SSH keys are "
+                'managed, so Lager installs none of its own)',
+                fg='green',
+            )
 
         # If lager_box key didn't work for this box, we need to set it up
-        if not use_explicit_key:
+        if not use_explicit_key and not control_plane_key:
             if progress:
                 progress.finish(success=False)
             click.echo()  # New line after progress bar
@@ -1749,7 +1771,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
                 ctx.exit(0)
 
         # At this point we should have either key-based or password-based auth ready
-        if not use_explicit_key and not use_interactive_ssh:
+        if not use_explicit_key and not use_interactive_ssh and not control_plane_key:
             # This shouldn't happen, but just in case
             log_error('Error: No SSH authentication method available')
             ctx.exit(_undetermined_exit_code(check))
