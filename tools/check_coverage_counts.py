@@ -10,9 +10,10 @@ enforced it and it drifted repeatedly: two merges in a single afternoon added
 the gate by 290. A number nobody verifies is worse than no number, because it
 still reads as authoritative.
 
-Each suite is RUN, not merely collected. Those differ: test/unit/test_pdf_pages.py
-does a module-level `pytest.importorskip("fitz")`, so without pymupdf installed
-it contributes 0 to `--collect-only` but 1 skipped to a real run. Collection
+Each suite is RUN, not merely collected. Those differ:
+test/unit/tools/test_pdf_pages.py does a module-level
+`pytest.importorskip("fitz")`, so without pymupdf installed it contributes 0
+to `--collect-only` but 1 skipped to a real run. Collection
 counts would therefore disagree with the table by one, forever, for a reason
 that has nothing to do with coverage.
 
@@ -90,7 +91,7 @@ SUITES = {
     'unit (measurement)': ['test/unit/measurement/'],
     'unit (blufi)': ['test/unit/blufi/'],
     'unit (mcp)': ['test/mcp/unit/'],
-    'unit (root)': ['test/unit/test_*.py', 'test/test_*.py'],
+    'unit (root)': ['test/unit/test_*.py', 'test/unit/tools/'],
 }
 
 ROW = re.compile(r'^\|\s*`?(unit \([a-z]+\))`?\s*\|(.*?)\|\s*([^|]+?)\s*\|\s*$')
@@ -130,8 +131,8 @@ INVENTORY_TABLES = (
     'test/unit/cli/',
     'test/unit/measurement/',
     'test/unit/blufi/',
+    'test/unit/tools/',
     'test/unit/test_*.py',
-    'test/test_*.py',
     'test/mcp/unit/',
     'test/mcp/integration/',
 )

@@ -13,10 +13,13 @@ from pathlib import Path
 
 import pytest
 
-fitz = pytest.importorskip("fitz")
-
-_REPO_ROOT = Path(__file__).resolve().parents[2]
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 _SCRIPT = _REPO_ROOT / "tools" / "pdf_pages.py"
+# Checked before the skip below: CI has no pymupdf, so a wrong path would
+# otherwise never fail anywhere it runs.
+assert _SCRIPT.is_file(), _SCRIPT
+
+fitz = pytest.importorskip("fitz")
 
 
 def _load_module():

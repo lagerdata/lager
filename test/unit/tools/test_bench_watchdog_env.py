@@ -39,7 +39,7 @@ import pathlib
 
 import yaml
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "bench-watchdog.yml"
 TOOL = REPO_ROOT / "tools" / "bench_schedule_check.py"
 

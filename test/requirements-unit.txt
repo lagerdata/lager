@@ -4,7 +4,7 @@
 # Runtime dependencies required to IMPORT the code under test so the
 # non-hardware unit suites can run headless on a GitHub-hosted runner:
 #   test/unit/cli/  test/unit/box/  test/unit/measurement/  test/unit/blufi/  test/mcp/unit/
-#   test/unit/test_*.py  test/test_*.py
+#   test/unit/test_*.py  test/unit/tools/
 #
 # Hardware SDKs (joulescope, ppk2_api, yoctopuce, labjack-ljm, brainstem,
 # uldaq, phidget22, pyftdi, ...) are intentionally NOT listed: the test
@@ -47,4 +47,4 @@ mcp>=2,<3
 pexpect>=4.8,<5
 # NB: pymupdf (PyMuPDF) is intentionally NOT listed — it is AGPL-3.0, which
 # conflicts with this project's Apache-2.0 license. Without it,
-# test/unit/test_pdf_pages.py skips (it importorskips fitz); that's acceptable.
+# test/unit/tools/test_pdf_pages.py skips (it importorskips fitz); that's acceptable.

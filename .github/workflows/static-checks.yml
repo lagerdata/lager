@@ -357,12 +357,12 @@ jobs:
           COV="--cov=cli --cov=box/lager --cov-append --cov-report="
           BASE="-q --import-mode=importlib -c /dev/null --timeout=60"
           rm -f .coverage
-          pytest test/unit/cli/                     $BASE $COV
-          pytest test/unit/box/                     $BASE $COV
-          pytest test/unit/measurement/             $BASE $COV
-          pytest test/unit/blufi/                   $BASE $COV
-          pytest test/mcp/unit/                     $BASE $COV
-          pytest test/unit/test_*.py test/test_*.py $BASE $COV
+          pytest test/unit/cli/                       $BASE $COV
+          pytest test/unit/box/                       $BASE $COV
+          pytest test/unit/measurement/               $BASE $COV
+          pytest test/unit/blufi/                     $BASE $COV
+          pytest test/mcp/unit/                       $BASE $COV
+          pytest test/unit/test_*.py test/unit/tools/ $BASE $COV
         shell: bash
 
       # Omit the test files themselves and the vendored trees: measuring how

@@ -54,7 +54,7 @@ $PYTEST test/unit/box/
 $PYTEST test/unit/measurement/
 $PYTEST test/unit/blufi/
 $PYTEST test/mcp/unit/
-$PYTEST test/unit/test_*.py test/test_*.py
+$PYTEST test/unit/test_*.py test/unit/tools/
 ```
 
 **A change that adds or removes a test also changes `test/COVERAGE.md`.** The Static
@@ -160,7 +160,7 @@ lager/
 │   ├── oscilloscope-daemon/  #   Rust scope-streaming daemon
 │   ├── udev_rules/           #   device permission rules
 │   └── start_box.sh          #   builds and starts the box containers
-├── test/                     # unit/ (no hardware), api/ and integration/ (need a box), mcp/
+├── test/                     # all tests: unit/ (no hardware), api/ and integration/ (need a box), mcp/, manual/
 ├── tools/                    # CI checkers: coverage counts, docs, prose style, imports
 └── docs/                     # Mintlify docs source (docs/source/) and the style guide
 ```
