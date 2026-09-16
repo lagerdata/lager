@@ -104,6 +104,20 @@ def test_cli_role_map_matches_the_box(instrument):
     )
 
 
+def test_every_detected_instrument_can_be_added():
+    """`lager instruments` lists a detected instrument's channels and the docs
+    tell users to copy them into `lager nets add`, so a scanner entry with no
+    CLI entry is a net the user is told to create and then refused (#513).
+    The intersection check above cannot see this: it skips an instrument that
+    is missing from one side."""
+    missing = sorted(set(SUPPORTED_USB) - set(INSTRUMENT_NET_MAP))
+    assert not missing, (
+        f'the box scanner detects {missing}, but INSTRUMENT_NET_MAP in '
+        f'cli/commands/box/nets.py has no entry, so `lager nets add` refuses '
+        f'every net on them'
+    )
+
+
 def test_the_logic_capable_scope_accepts_a_logic_net():
     """The specific regression: #261's subcommands need a logic net to exist."""
     assert 'logic' in INSTRUMENT_NET_MAP['Rigol_MSO5204']

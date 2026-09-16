@@ -1,10 +1,14 @@
 # Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared LabJack T7 DIO pin helpers for i2c/spi net creation.
+"""Shared LabJack DIO pin helpers for i2c/spi net creation.
 
 The LabJack T7 can run its built-in I2C/SPI masters on any DIO pin:
 FIO0-7 = DIO 0-7, EIO0-7 = 8-15, CIO0-3 = 16-19, MIO0-2 = 20-22.
+
+A LabJack U3 has no MIO block, and its FIO0-3 are fixed analog inputs on the
+U3-HV, which the box's UD drivers refuse for every U3. Its usable pins are
+DIO 4-19, and its default pins are the vendor's, not the T7's.
 
 Used by both ``lager nets add`` (cli/commands/box/nets.py) and the
 Net-Manager TUI pin-picker dialog (cli/commands/box/net_tui.py). Lives in
@@ -48,6 +52,36 @@ SPI_DEFAULT_PINS = {"CS": "FIO0", "SCK": "FIO1", "MOSI": "FIO2", "MISO": "FIO3"}
 #: Legacy channel strings the box scanner emits for default-pin nets.
 DEFAULT_CHAN = {"i2c": "FIO4-FIO5", "spi": "FIO0-FIO3"}
 
+# The U3's tables. Its defaults are LabJackPython's and the box scanner's
+# (usb_scanner.py CHANNEL_MAPS): SPI CS=FIO4 CLK=FIO5 MISO=FIO6 MOSI=FIO7,
+# I2C SDA=FIO6 SCL=FIO7.
+U3 = "LabJack_U3"
+U3_MIN_DIO = 4
+U3_MAX_DIO = 19
+U3_I2C_DEFAULT_PINS = {"SDA": "FIO6", "SCL": "FIO7"}
+U3_SPI_DEFAULT_PINS = {"CS": "FIO4", "SCK": "FIO5", "MOSI": "FIO7", "MISO": "FIO6"}
+U3_DEFAULT_CHAN = {"i2c": "FIO6-FIO7", "spi": "FIO4-FIO7"}
+
+
+def _dio_range(instrument: str) -> tuple[int, int]:
+    return (U3_MIN_DIO, U3_MAX_DIO) if instrument == U3 else (0, MAX_DIO)
+
+
+def pin_names(instrument: str = "LabJack_T7") -> list[str]:
+    """The pins *instrument* can put an i2c/spi signal on, in DIO order."""
+    low, high = _dio_range(instrument)
+    return [name for name in ALL_PIN_NAMES if low <= try_parse_pin(name) <= high]
+
+
+def default_pins(role: str, instrument: str = "LabJack_T7") -> dict[str, str]:
+    if instrument == U3:
+        return dict(U3_I2C_DEFAULT_PINS if role == "i2c" else U3_SPI_DEFAULT_PINS)
+    return dict(I2C_DEFAULT_PINS if role == "i2c" else SPI_DEFAULT_PINS)
+
+
+def default_chan(role: str, instrument: str = "LabJack_T7") -> str:
+    return (U3_DEFAULT_CHAN if instrument == U3 else DEFAULT_CHAN)[role]
+
 
 def pin_name(dio: int) -> str:
     """Convert a DIO number to its canonical LabJack pin name."""
@@ -78,7 +112,7 @@ def try_parse_pin(value) -> Optional[int]:
 _LABELED_TOKEN_RE = re.compile(
     r"(?:SDA|SCL|CS|SCK|MOSI|MISO):([A-Z]+\d+)", re.IGNORECASE
 )
-_I2C_RANGE_RE = re.compile(r"FIO(\d+)-FIO(\d+)", re.IGNORECASE)
+_FIO_RANGE_RE = re.compile(r"FIO(\d+)-FIO(\d+)", re.IGNORECASE)
 
 
 def claimed_pins_from_chan(role: str, chan: str) -> list[str]:
@@ -94,12 +128,12 @@ def claimed_pins_from_chan(role: str, chan: str) -> list[str]:
         return [pin_name(dio)] if dio is not None else []
 
     if role == "spi":
-        if chan == "FIO0-FIO3":
-            return ["FIO0", "FIO1", "FIO2", "FIO3"]
-        if chan == "FIO1-FIO3":
-            return ["FIO1", "FIO2", "FIO3"]
+        # A default span: FIO0-FIO3 (T7), FIO1-FIO3 (3-pin), FIO4-FIO7 (U3).
+        m = _FIO_RANGE_RE.fullmatch(chan)
+        if m:
+            return [pin_name(d) for d in range(int(m.group(1)), int(m.group(2)) + 1)]
     elif role == "i2c":
-        m = _I2C_RANGE_RE.fullmatch(chan)
+        m = _FIO_RANGE_RE.fullmatch(chan)
         if m:
             return [pin_name(int(m.group(1))), pin_name(int(m.group(2)))]
     else:
@@ -114,12 +148,13 @@ def claimed_pins_from_chan(role: str, chan: str) -> list[str]:
     return pins
 
 
-def current_pin_selection(role: str, params: Optional[dict]) -> dict[str, str]:
+def current_pin_selection(role: str, params: Optional[dict],
+                          instrument: str = "LabJack_T7") -> dict[str, str]:
     """Decode a net's ``params`` dict back into a pin-picker selection
-    (signal name -> pin name). ``params`` of None means default pins. A
-    spi params dict without ``cs_pin`` round-trips to :data:`NO_CS`."""
+    (signal name -> pin name). ``params`` of None means *instrument*'s default
+    pins. A spi params dict without ``cs_pin`` round-trips to :data:`NO_CS`."""
     signals = I2C_SIGNALS if role == "i2c" else SPI_SIGNALS
-    defaults = I2C_DEFAULT_PINS if role == "i2c" else SPI_DEFAULT_PINS
+    defaults = default_pins(role, instrument)
     if not params:
         return dict(defaults)
     selection = {}
@@ -132,7 +167,8 @@ def current_pin_selection(role: str, params: Optional[dict]) -> dict[str, str]:
     return selection
 
 
-def resolve_pin_selection(role: str, chosen: dict[str, str]):
+def resolve_pin_selection(role: str, chosen: dict[str, str],
+                          instrument: str = "LabJack_T7"):
     """Turn a pin-picker selection into the net record fields.
 
     Args:
@@ -144,7 +180,8 @@ def resolve_pin_selection(role: str, chosen: dict[str, str]):
         ``(label, params, error)``:
 
         * error is an error string when the selection is invalid (duplicate
-          pins); label/params are None in that case.
+          pins, or a pin *instrument* cannot use); label/params are None in
+          that case.
         * label/params are both None when the selection equals the
           historical defaults — callers keep the legacy channel string so
           the saved record is byte-identical to a default add.
@@ -152,7 +189,8 @@ def resolve_pin_selection(role: str, chosen: dict[str, str]):
           dict the box dispatchers consume.
     """
     signals = I2C_SIGNALS if role == "i2c" else SPI_SIGNALS
-    defaults = I2C_DEFAULT_PINS if role == "i2c" else SPI_DEFAULT_PINS
+    defaults = default_pins(role, instrument)
+    low, high = _dio_range(instrument)
 
     seen: dict[int, str] = {}
     for signal in signals:
@@ -162,6 +200,11 @@ def resolve_pin_selection(role: str, chosen: dict[str, str]):
         dio = try_parse_pin(value)
         if dio is None:
             return None, None, f"Invalid pin '{value}' for {signal}."
+        if not low <= dio <= high:
+            return None, None, (
+                f"{pin_name(dio)} cannot carry {signal} on a "
+                f"{instrument.replace('_', ' ')}."
+            )
         if dio in seen:
             return None, None, (
                 f"{seen[dio]} and {signal} both use {pin_name(dio)}; "

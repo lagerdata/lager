@@ -700,5 +700,106 @@ class TestLabJackPinDialog:
         asyncio.run(main())
 
 
+
+# --------------------------------------------------------------------------- #
+# LabJack U3 (#515): its own pins and defaults                                  #
+# --------------------------------------------------------------------------- #
+
+U3_ADDR = "USB0::0x0CD5::0x0003::::INSTR"
+
+
+def _make_u3_net(**overrides):
+    base = dict(instrument='LabJack_U3', chan='FIO6-FIO7', type='i2c',
+                net='u3bus', addr=U3_ADDR)
+    base.update(overrides)
+    return tui.Net(**base)
+
+
+class TestU3PinHelpers:
+    def test_u3_pins_skip_the_analog_fio_and_the_mio_block(self):
+        names = lj.pin_names('LabJack_U3')
+        assert names[0] == 'FIO4' and names[-1] == 'CIO3'
+        assert not {'FIO0', 'FIO1', 'FIO2', 'FIO3', 'MIO0'} & set(names)
+        assert lj.pin_names() == lj.ALL_PIN_NAMES
+
+    def test_u3_defaults_are_the_vendor_pins(self):
+        assert lj.current_pin_selection('i2c', None, 'LabJack_U3') == {
+            'SDA': 'FIO6', 'SCL': 'FIO7'}
+        assert lj.current_pin_selection('spi', None, 'LabJack_U3') == {
+            'CS': 'FIO4', 'SCK': 'FIO5', 'MOSI': 'FIO7', 'MISO': 'FIO6'}
+
+    def test_u3_defaults_resolve_to_the_legacy_record(self):
+        for role in ('i2c', 'spi'):
+            assert lj.resolve_pin_selection(
+                role, lj.default_pins(role, 'LabJack_U3'), 'LabJack_U3') == (None, None, None)
+
+    def test_a_u3_analog_pin_is_refused(self):
+        label, params, error = lj.resolve_pin_selection(
+            'i2c', {'SDA': 'FIO2', 'SCL': 'FIO7'}, 'LabJack_U3')
+        assert (label, params) == (None, None)
+        assert 'FIO2' in error and 'U3' in error
+
+    def test_the_u3_default_spi_span_claims_its_pins(self):
+        assert lj.claimed_pins_from_chan('spi', 'FIO4-FIO7') == [
+            'FIO4', 'FIO5', 'FIO6', 'FIO7']
+
+
+class TestU3PinDialog:
+    def test_a_u3_i2c_net_gets_the_pin_editor(self):
+        assert tui._is_pin_configurable(_make_u3_net())
+        assert not tui._is_pin_configurable(_make_u3_net(type='gpio', chan='FIO4'))
+
+    def test_the_dialog_offers_only_u3_pins_and_prefills_its_defaults(self):
+        net = _make_u3_net()
+
+        async def main():
+            app = _DialogApp(net, {})
+            async with app.run_test(size=(100, 50)) as pilot:
+                await pilot.pause()
+                dialog = app.screen
+                select = dialog.query_one("#pin_sda", Select)
+                assert select.value == "FIO6"
+                offered = {value for _label, value in select._options}
+                assert "FIO0" not in offered and "MIO0" not in offered
+                assert "EIO0" in offered
+                content = _static_text(dialog.query(Static)[1])
+                assert "LabJack U3" in content
+        asyncio.run(main())
+
+    def test_defaults_keep_the_u3_legacy_record(self):
+        net = _make_u3_net()
+        app = _run_dialog(net, {}, lambda dlg: "pin-confirm")
+        assert app.result is True
+        assert (net.chan, net.params) == ('FIO6-FIO7', None)
+
+    def test_custom_u3_pins_are_saved(self):
+        net = _make_u3_net()
+
+        def interact(dlg):
+            dlg.query_one("#pin_sda", Select).value = "EIO0"
+            dlg.query_one("#pin_scl", Select).value = "EIO1"
+            return "pin-confirm"
+
+        _run_dialog(net, {}, interact)
+        assert net.chan == 'SDA:EIO0 SCL:EIO1'
+        assert net.params == {'sda_pin': 8, 'scl_pin': 9}
+
+    def test_reverting_a_u3_net_restores_the_u3_default(self):
+        net = _make_u3_net(chan='SDA:EIO0 SCL:EIO1', params={'sda_pin': 8, 'scl_pin': 9})
+
+        def interact(dlg):
+            dlg.query_one("#pin_sda", Select).value = "FIO6"
+            dlg.query_one("#pin_scl", Select).value = "FIO7"
+            return "pin-confirm"
+
+        _run_dialog(net, {}, interact)
+        assert (net.chan, net.params) == ('FIO6-FIO7', None)
+
+    def test_saved_u3_nets_count_as_claimed(self):
+        saved = _make_u3_net(net='u3spi', type='spi', chan='FIO4-FIO7', saved=True)
+        claimed = tui._labjack_claimed_pin_map([saved], _make_u3_net())
+        assert claimed == {'FIO4': 'u3spi', 'FIO5': 'u3spi', 'FIO6': 'u3spi', 'FIO7': 'u3spi'}
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

@@ -52,6 +52,16 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   user.** `ssh` and `update` looked the user up by box name only, so an IP or
   the default box got `lagerdata`, and `logs` always used `lagerdata`. `lager
   logs docker` now says when reading a log size needs passwordless `sudo`.
+- **`lager nets add` accepts the Rigol DP832, Keysight E36312A, MCC USB-202,
+  J-Link Base Compact and Phidget.** `lager instruments` listed their channels,
+  but `nets add` refused every net on them.
+- **`lager nets add-batch` saves a record's `params` and refuses keys it does
+  not read.** Custom LabJack pins and an FTDI channel were dropped without a
+  word. The command now checks them, the role and the address as `nets add`
+  does, and saves nothing if any record fails.
+- **`lager nets tui` edits the pins of a LabJack U3 net, and `nets add` refuses
+  a U3's FIO0-FIO3 as custom pins.** The pin editor offered only T7 pins and
+  defaults, and the box refused FIO0-FIO3 only at the first transfer.
 
 ## [0.48.1] - 2026-09-16
 
