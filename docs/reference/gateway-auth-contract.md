@@ -11,7 +11,7 @@ identity while every Lager client works against them unchanged.
 
 Conforming implementations of the client side:
 
-- `cli/gateway_auth.py` (Python CLI; test suite `cli/tests/test_gateway_auth.py`)
+- `cli/gateway_auth.py` (Python CLI; test suite `test/unit/cli/test_gateway_auth.py`)
 - `lager-rs/src/auth.rs` (Rust crate; test suite `lager-rs/tests/gateway_auth.rs`)
 
 If an implementation and this document disagree, this document wins; fix the

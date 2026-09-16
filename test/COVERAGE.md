@@ -46,8 +46,8 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 2379 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 2876 |
+| `unit (cli)` | `test/unit/cli/` | 2373 (+2 xfailed) |
+| `unit (box)` | `test/unit/box/` | 2882 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 195 |
@@ -159,8 +159,7 @@ OS.
 | `test/api/` | 84 scripts | Needs real hardware. The bench workflows invoke 10 by name; the other 73 execute nowhere -- though all are now syntax-checked. |
 | `test/integration/` | 38 bash scripts | Needs a real box and instruments. **8 execute:** `communication/jlink_script.sh` nightly via `integration-tests.yml`, plus 7 weekly via `bench-extended.yml` -- 5 infrastructure suites (`deployment`, `devenv`, `nets`, `box_config`, `generic`) and 2 power suites (`power/supply.sh`, `power/battery.sh`). The other 30 are syntax-checked and shellchecked but never executed. |
 | `test/mcp/integration/` | 1 file | Needs two live boxes. Import-checked only. |
-| `test/manual/` | 2 bash scripts | Operator-driven. Syntax-checked only. |
-| `cli/tests/test_box_lager_imports.py` | 1 file | Excluded via `cli/tests/conftest.py`: it is a printed report with no `assert` statements, so under pytest its 16 functions pass unconditionally. Still useful run directly. |
+| `test/manual/` | 2 bash scripts, 1 Python report | Operator-driven. The bash scripts are syntax-checked only. `box_lager_import_report.py` prints an import report and has no `assert` statements, so its name keeps pytest from collecting it. Run it directly. |
 
 Known gaps in the gate itself, in rough priority order:
 
@@ -372,7 +371,7 @@ Five other param types (`EnvVarType`, `PortForwardType`, `MemoryAddressType`, `H
 | Module | Lines | Gated coverage | Gap |
 |---|---:|---|---|
 | `cli/commands/utility/update.py` | 2440 | 14 tests | Only version-ref resolution and the probe. Rollback, staging, service restart untested. |
-| `cli/gateway_auth.py` | 521 | 51 tests | Refresh path, the pinned-token path (`LAGER_GATEWAY_TOKEN`) and the `cli/tests/` suite. `gateway_response_hook` remains thin. |
+| `cli/gateway_auth.py` | 521 | 51 tests | Refresh path, the pinned-token path (`LAGER_GATEWAY_TOKEN`) and `test/unit/cli/test_gateway_auth.py`. `gateway_response_hook` remains thin. |
 | `cli/config.py` | 435 | 63 tests | Cache, the configparser round-trip and legacy-key migration, `read_lager_json`/`write_lager_json`, `expand_devenv_path` and `get_debug_script_for_net` are covered. `get_includes_from_config` and `_find_config_files` are not. |
 | `cli/commands/utility/install.py` | 575 | indirect | Only `install_wheel` is exercised. |
 | `cli/commands/utility/uninstall.py` | 837 | 13 tests | Spec parsing plus the teardown's lock lifecycle. The privileged sudo session, the `--all` extras and `--dry-run` inspection are untested. |
@@ -441,7 +440,7 @@ test/
 │   ├── measurement/      #  4 files: Joulescope / PPK2 / watt unit tests
 │   ├── blufi/            #  2 files: BluFi protocol unit tests
 │   └── test_*.py         #  5 files: root-level unit tests
-├── manual/               #  2 bash scripts: operator-driven, not automated
+├── manual/               #  2 bash scripts + 1 Python import report: operator-driven, not automated
 ├── assets/               # Fixture data (note: assets/firmware/ holds only a README)
 └── framework/            # Test utilities
     ├── harness.sh        # Bash test framework (sourced by all 38 integration scripts)
@@ -450,13 +449,11 @@ test/
     └── test_utils.py     # Python test helpers
 
 test/test_*.py            #  2 files: run by the `unit (root)` job
-cli/tests/                #  7 files: 6 pytest suites (GATED via `unit (cli)`),
-                          #           plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 223 files)
+### Local Unit Tests (`test/unit/` -- 229 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 120 files)
+#### Box Unit Tests (`test/unit/box/` -- 121 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -584,8 +581,9 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_plugable_driver.py` | Plugable RTS5411 dock driver: USB hub-class per-port power switching over pyusb -- ganged/no-switching hubs refused without touching a port, a disable NOT judged by device presence (the kernel cannot see a disconnect while a port is unpowered, so the sysfs node persists), cycle restoring power on every failure path and reporting re-enumeration, off-time range enforced before any transfer, SuperSpeed companion pairing refused when ambiguous, network-device and inter-hub-link guards, one-session batch reads, handle disposal on every path |
 | `test_ykush_driver.py` | YKUSH USB hub driver: device-contention regression from an indefinitely cached handle |
 | `test_automation_exports.py` | Static parse of `automation/__init__.py`'s lazy export table: no name guarded twice, every returned driver reachable under its own name, everything in `__all__` resolvable -- the copy-paste class of defect that made one driver answer to another's name |
+| `test_io_imports.py` | The `lager.io.*` import surface and re-export identity; asserts the removed root-level aliases stay removed |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 85 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 90 files)
 
 | File | What it tests |
 |------|---------------|
@@ -674,6 +672,11 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_param_types.py` | Every custom click ParamType, valid and invalid, incl. the five on live command paths |
 | `test_safe_unpickle.py` | Deserialization allowlist: refused globals must not be imported as a side effect of refusing them |
 | `test_webcam_command.py` | `lager webcam` CLI: the tokenised viewer link on access-gated boxes (`_viewer_url`, the expiry note, the `lager login` hint), `start` sending `source`/`started_by`, and `snapshot` writing the decoded JPEG to `--out`. Also the stop hints `start` and `start-all` print, each replayed through the group so the line a user copies stays a command that parses and names the box the way they typed it |
+| `test_box_storage.py` | `box_storage.py` project-level `.lager` merging behavior |
+| `test_gateway_auth.py` | `gateway_auth.py` bearer-token auth for boxes behind an authenticating gateway, including the pinned CI token (`LAGER_GATEWAY_TOKEN`), and that `check_gateway_status` holds its first-contact retry to the caller's own timeout rather than a fixed 30s -- otherwise a caller with a deadline reports a box that was still answering |
+| `test_update_gate.py` | Update rebuild gate: probe parsing, build-hash mismatch, early-exit verdict; the shared `/etc/lager` state-file writer, run against a scratch directory, including that the ref write skips identical content and that the version is recorded only after the container starts; and the `--check` exit-code contract, guarded structurally so no failure ahead of the dry run exits 1 and becomes indistinguishable from "this box needs an update" |
+| `test_gateway_callsites.py` | Gateway-auth discovery across every box-talking call site: record the mapping on a discovery 401, retry once with a held token, surface genuine denials, and keep rendering the other boxes' rows |
+| `test_host_cli.py` | Host-OS CLI install helpers shared by `lager install` and `lager update`: the reconcile decision table, `--check` labels, exit codes, the probe snippet under a real shell, and the drift guard pinning the deploy scripts' mirror |
 
 #### Measurement Unit Tests (`test/unit/measurement/` -- 4 files)
 
@@ -714,20 +717,6 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 |------|---------------|
 | `test_errors.py` | `cli/errors.py` taxonomy, plus main/box_storage/config error paths |
 | `test_format_lock_user.py` | `box_storage.format_lock_user` rendering of lock holder identities |
-
-#### In-Package CLI Tests (`cli/tests/` -- 7 files)
-
-Gated as part of the `unit (cli)` job.
-
-| File | What it tests | Gated |
-|------|---------------|:---:|
-| `test_box_storage.py` | `box_storage.py` project-level `.lager` merging behavior | Yes |
-| `test_gateway_auth.py` | `gateway_auth.py` bearer-token auth for boxes behind an authenticating gateway, including the pinned CI token (`LAGER_GATEWAY_TOKEN`), and that `check_gateway_status` holds its first-contact retry to the caller's own timeout rather than a fixed 30s -- otherwise a caller with a deadline reports a box that was still answering | Yes |
-| `test_update_gate.py` | Update rebuild gate: probe parsing, build-hash mismatch, early-exit verdict; the shared `/etc/lager` state-file writer, run against a scratch directory, including that the ref write skips identical content and that the version is recorded only after the container starts; and the `--check` exit-code contract, guarded structurally so no failure ahead of the dry run exits 1 and becomes indistinguishable from "this box needs an update" | Yes |
-| `test_gateway_callsites.py` | Gateway-auth discovery across every box-talking call site: record the mapping on a discovery 401, retry once with a held token, surface genuine denials, and keep rendering the other boxes' rows | Yes |
-| `test_host_cli.py` | Host-OS CLI install helpers shared by `lager install` and `lager update`: the reconcile decision table, `--check` labels, exit codes, the probe snippet under a real shell, and the drift guard pinning the deploy scripts' mirror | Yes |
-| `test_io_imports.py` | The `lager.io.*` import surface and re-export identity; asserts the removed root-level aliases stay removed | Yes |
-| `test_box_lager_imports.py` | Import-verification report across the box package. **No assert statements** -- excluded by `cli/tests/conftest.py`; run it directly | No |
 
 ### MCP Tests (`test/mcp/`)
 
@@ -852,7 +841,7 @@ a collision, and `-c /dev/null` stops `test/mcp` from shadowing the `mcp` PyPI p
 export PYTHONPATH="$PWD:$PWD/box"
 PYTEST="pytest -v --import-mode=importlib -c /dev/null --timeout=60"
 
-$PYTEST test/unit/cli/ cli/tests/
+$PYTEST test/unit/cli/
 $PYTEST test/unit/box/
 $PYTEST test/unit/measurement/
 $PYTEST test/unit/blufi/

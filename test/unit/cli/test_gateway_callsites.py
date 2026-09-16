@@ -16,7 +16,7 @@ import requests
 
 from cli import gateway_auth
 from cli.errors import LagerError
-from cli.tests.test_gateway_auth import make_jwt
+from test.unit.cli.test_gateway_auth import make_jwt
 
 
 @pytest.fixture(autouse=True)

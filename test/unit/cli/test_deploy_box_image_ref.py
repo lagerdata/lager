@@ -13,7 +13,7 @@ image ref is computed inside the SAME arm of the SAME conditional that already
 resolves a semver pin to a tag ref. These tests pin that agreement by running a
 table of versions through both the extracted bash and
 ``_box_image_ref_for_version`` and requiring identical verdicts, the same way
-cli/tests/test_update_gate.py pins the client against ``resolve_version_ref``.
+test/unit/cli/test_update_gate.py pins the client against ``resolve_version_ref``.
 
 The digest resolver is the other half. It is a third implementation of the GHCR
 protocol (after update.py's ``_resolve_image_digest``), so it is tested against

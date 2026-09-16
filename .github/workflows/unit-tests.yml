@@ -48,12 +48,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # cli/tests/ rides in the existing `unit (cli)` context rather than
-          # getting its own: the two share a process cleanly in either order,
-          # and a new context would need a separate branch-ruleset update
-          # before it could block anything.
           - name: cli
-            path: test/unit/cli/ cli/tests/
+            path: test/unit/cli/
           - name: box
             path: test/unit/box/
           - name: measurement
@@ -153,7 +149,7 @@ jobs:
             pytest $2 -q --import-mode=importlib -c /dev/null --timeout=60 || fail=1
             echo "::endgroup::"
           }
-          run cli         "test/unit/cli/ cli/tests/"
+          run cli         "test/unit/cli/"
           run box         "test/unit/box/"
           run measurement "test/unit/measurement/"
           run blufi       "test/unit/blufi/"

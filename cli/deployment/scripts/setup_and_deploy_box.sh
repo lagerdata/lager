@@ -1784,7 +1784,7 @@ print_step "Installing Lager CLI on Box Host"
 # box can invoke `lager` locally. Non-fatal: the box works without it.
 #
 # Mirrors host_cli_install_cmd() in cli/commands/utility/_host_cli.py — keep
-# the two in sync (cli/tests/test_host_cli.py pins the load-bearing literals).
+# the two in sync (test/unit/cli/test_host_cli.py pins the load-bearing literals).
 HOST_CLI_STATUS="not installed"
 HOST_CLI_VERSION=""
 
