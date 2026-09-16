@@ -27,6 +27,12 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 ### Fixed
 
+- **`lager debug SWD flash` and `lager debug SWD erase` work again on a DA1469x.**
+  The RAM-resident flash loader was entered with the Thumb bit clear, so the core
+  faulted on its first instruction and locked up, and the failure was reported as
+  "flash_loader boot (fl_state==1): timed out after 10.0s" three times over. The
+  loader is now entered in Thumb state, and a core that locks up on entry says so
+  instead of being retried.
 - **`lager dac`, `lager adc`, `lager gpi` and `lager gpo` name the supported
   instruments when they refuse a net's instrument.** A bare `LabJack`, which names
   no model, and a `LabJack_T4` or `LabJack_T8`, which no driver supports, now get
