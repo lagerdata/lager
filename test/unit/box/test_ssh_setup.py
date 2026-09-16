@@ -333,7 +333,7 @@ class ControlPlaneManagedBox(unittest.TestCase):
                                    managed=True, removed=False)
         self.assertNotEqual(result.exit_code, 0)
         self.assertEqual(copy_run.removals, ["boxuser@1.2.3.4"])
-        self.assertIn("could not remove the key again", _text(result))
+        self.assertIn("the removal failed", _text(result))
         self.assertNotIn("has been removed again", _text(result))
 
     def test_leaves_an_already_authorized_key_alone(self):

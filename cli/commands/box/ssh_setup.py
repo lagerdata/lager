@@ -293,7 +293,7 @@ def provision_lager_box_key(dest: str) -> bool:
         removed = remove_lager_box_key(dest)
         if not removed:
             click.secho(
-                "Warning: could not remove the key again — it is still in "
+                "Warning: the removal failed — the key is still in "
                 f"{dest}'s authorized_keys, outside the control plane's "
                 "management. Remove it by hand, or let the control plane's "
                 "next lockdown sweep it.\n"
