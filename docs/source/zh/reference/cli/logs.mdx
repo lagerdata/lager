@@ -121,7 +121,7 @@ Note: Docker logs are automatically rotated with max-size=10m, max-file=3
 Total maximum per container: ~30MB
 ```
 
-该命令通过非交互式 SSH 会话，用 `sudo` 读取日志文件。如果 Box 上的 `sudo` 要求输入密码，容器名称下方就不会出现大小那一行。
+该命令通过非交互式 SSH 会话，用 `sudo -n` 读取日志文件。如果 Box 上的 `sudo` 要求输入密码，大小那一行会显示 `unknown`，命令还会提示您为该 Box 的登录用户允许 `sudo -n ls`。
 
 ---
 
@@ -211,7 +211,7 @@ lager logs docker --box my-lager-box  # Check Docker logs
 ## 说明
 
 - `--box` 接受已保存 Lager Box 的名称，不接受 IP 地址。
-- 这些命令以用户 `lagerdata` 通过 SSH 连接，并且只使用密钥认证。它们不使用您用 `lager boxes add --user` 保存的用户，因此在登录用户不同的 Box 上会失败。
+- 这些命令以您用 `lager boxes add --user` 保存的用户通过 SSH 连接；如果没有保存用户，则使用 `lagerdata`。它们只使用密钥认证：先用 `lager_box` 密钥，再用您自己的 SSH 密钥。
 - Docker 日志会自动轮转
 - 用 `--verbose` 找出体积大的日志文件
 - 定期清理可以避免磁盘空间问题

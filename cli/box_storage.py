@@ -1820,6 +1820,22 @@ def empty_box_name_error():
     )
 
 
+def explicit_box_option(ctx, box_opt):
+    """The ``--box`` value given on this command or on its group, else None.
+
+    For commands that pick the box themselves before calling a resolver. A
+    truthiness test treats ``--box ""`` as "not given" and falls through to
+    the default box, so an unset ``$BOX`` in CI silently targets a different
+    box. A blank value raises instead, as the shared resolvers do.
+    """
+    value = box_opt
+    if value is None and ctx.parent is not None:
+        value = ctx.parent.params.get("box")
+    if value is not None and not value.strip():
+        raise empty_box_name_error()
+    return value
+
+
 def box_not_found_error(box_name):
     """Build an actionable LagerError for an unrecognized ``--box`` value.
 

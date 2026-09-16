@@ -249,7 +249,7 @@ def _get_service_client(box):
         click.secho("Possible causes:", err=True)
         click.secho("  - The debug service does not run on the box", err=True)
         click.secho("  - The Docker container 'lager' is not up", err=True)
-        click.secho(f"Check with: ssh lagerdata@{box} 'docker ps | grep lager'", err=True)
+        click.secho(f"Check with: lager ssh --box {box} -- docker ps", err=True)
         return None
     except TimeoutError:
         click.secho(f"Error: Connection timed out to debug service on {box}:8765", fg='red', err=True)

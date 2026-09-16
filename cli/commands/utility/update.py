@@ -1516,8 +1516,9 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
     # `git fetch origin` (an explicit tag refspec for tags; see resolve_version_ref).
     target_version, git_ref, fetch_ref = resolve_version_ref(target_version)
 
-    # Use default box if none specified
-    if not box:
+    # Use the default box only when --box was not given. `--box ""` goes on
+    # to the resolver, which refuses it.
+    if box is None:
         box = get_default_box(ctx)
 
     box_name = box
@@ -1538,8 +1539,10 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
             ctx.exit(2)
         raise
 
-    # Get username (defaults to 'lagerdata' if not specified)
-    username = get_box_user(box) or 'lagerdata'
+    # The stored user for a saved name, else the one saved for this IP (an
+    # IP or the default box never matches a name), else 'lagerdata'.
+    from ..box._ssh import resolve_box_user
+    username = (get_box_user(box) if box else None) or resolve_box_user(resolved_box)
 
     ssh_host = f'{username}@{resolved_box}'
 
@@ -3728,8 +3731,8 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         click.echo('  3. The startup script hangs', err=True)
         click.echo()
         click.echo('Try:', err=True)
-        click.echo(f'  ssh lagerdata@{resolved_box} "docker logs lager"', err=True)
-        click.echo(f'  ssh lagerdata@{resolved_box} "docker ps -a"', err=True)
+        click.echo(f'  ssh {ssh_host} "docker logs lager"', err=True)
+        click.echo(f'  ssh {ssh_host} "docker ps -a"', err=True)
         ctx.exit(1)
 
     # Record the version now that the container runs again. This write used to

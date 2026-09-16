@@ -359,7 +359,7 @@ def config(ctx, box, frequency, pull_ups):
     Example:
       lager i2c MY_I2C config --frequency 400k --pull-ups on
     """
-    box_param = box or getattr(ctx.obj, 'i2c_box_param', None)
+    box_param = box if box is not None else getattr(ctx.obj, 'i2c_box_param', None)
     box_ip, _ = _resolve_box_with_name(ctx, box_param)
 
     netname = getattr(ctx.obj, 'netname', None)
@@ -391,7 +391,7 @@ def scan(ctx, box, start, end):
     Example:
       lager i2c MY_I2C scan
     """
-    box_param = box or getattr(ctx.obj, 'i2c_box_param', None)
+    box_param = box if box is not None else getattr(ctx.obj, 'i2c_box_param', None)
     box_ip, _ = _resolve_box_with_name(ctx, box_param)
 
     netname = getattr(ctx.obj, 'netname', None)
@@ -432,7 +432,7 @@ def read(ctx, num_bytes, box, address, frequency, output_format):
     Example:
       lager i2c MY_I2C read 4 --address 0x48
     """
-    box_param = box or getattr(ctx.obj, 'i2c_box_param', None)
+    box_param = box if box is not None else getattr(ctx.obj, 'i2c_box_param', None)
     box_ip, _ = _resolve_box_with_name(ctx, box_param)
 
     netname = getattr(ctx.obj, 'netname', None)
@@ -473,7 +473,7 @@ def write(ctx, data, box, address, data_file, frequency, output_format):
     Example:
       lager i2c MY_I2C write 0x0A03 --address 0x48
     """
-    box_param = box or getattr(ctx.obj, 'i2c_box_param', None)
+    box_param = box if box is not None else getattr(ctx.obj, 'i2c_box_param', None)
     box_ip, _ = _resolve_box_with_name(ctx, box_param)
 
     netname = getattr(ctx.obj, 'netname', None)
@@ -527,7 +527,7 @@ def transfer(ctx, num_bytes, box, address, data_str, data_file, frequency, outpu
     Example:
       lager i2c MY_I2C transfer 2 --address 0x48 --data 0x0A
     """
-    box_param = box or getattr(ctx.obj, 'i2c_box_param', None)
+    box_param = box if box is not None else getattr(ctx.obj, 'i2c_box_param', None)
     box_ip, _ = _resolve_box_with_name(ctx, box_param)
 
     netname = getattr(ctx.obj, 'netname', None)

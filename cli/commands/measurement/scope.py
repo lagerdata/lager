@@ -1408,7 +1408,8 @@ def stream_capture(ctx, box, output, duration, samples, quiet, json_output, verb
     )
 
     click.secho(f"\nNote: Data file saved on box at: {output}", fg="yellow")
-    click.secho(f"To retrieve: scp lagerdata@{box_ip}:/tmp/{output} .", fg="yellow")
+    from ..box._ssh import resolve_box_user
+    click.secho(f"To retrieve: scp {resolve_box_user(box_ip)}@{box_ip}:/tmp/{output} .", fg="yellow")
 
 
 @stream.command("config")

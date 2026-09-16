@@ -19,6 +19,7 @@ from ...address_utils import validate_ip_or_hostname, VALID_FORMATS_CHEATSHEET
 from ...box_storage import (
     add_box,
     auto_lock_around_command,
+    empty_box_name_error,
     get_box_ip,
     get_box_user,
     default_install_timeout_seconds,
@@ -293,6 +294,8 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
     deploy_timeout = timeout if timeout is not None else default_install_timeout_seconds()
 
     # 1. Resolve box name to IP and username if --box is provided
+    if box is not None and not box.strip():
+        raise empty_box_name_error()
     if box and ip:
         click.secho("Error: Cannot specify both --box and --ip", fg='red', err=True)
         ctx.exit(1)
@@ -387,12 +390,12 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
                 identity = lager_box_key_if_present()
                 click.secho("SSH connection OK", fg='green')
             elif "connection refused" in stderr or "no route to host" in stderr:
-                ssh_error(result.stderr, ip).die()
+                ssh_error(result.stderr, ip, user=user).die()
             elif "host key verification failed" in stderr:
                 # Distinguish between new host (not in known_hosts) vs changed key
                 if host_in_known_hosts(ip):
                     # Changed key - security concern, require manual intervention.
-                    ssh_error("host key verification failed", ip).die()
+                    ssh_error("host key verification failed", ip, user=user).die()
                 else:
                     # New host - offer to accept the key
                     click.secho("New SSH host detected", fg='yellow')
@@ -429,7 +432,7 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
                         click.secho("Installation cancelled.", fg='yellow')
                         ctx.exit(0)
             elif "could not resolve hostname" in stderr or "name or service not known" in stderr:
-                ssh_error(result.stderr, ip).die()
+                ssh_error(result.stderr, ip, user=user).die()
             else:
                 LagerError(
                     f'SSH connection to {ssh_host} failed.',

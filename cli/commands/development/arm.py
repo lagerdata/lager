@@ -96,7 +96,7 @@ def _resolve_box_for_command(ctx, target_box):
     """Resolve box from command-level --box option or group-level stored box.
     Acquires an ephemeral lock for hardware interaction.
     """
-    if target_box:
+    if target_box is not None:
         return resolve_box_locked(ctx, target_box, 'arm')
     # Fall back to box stored by the group command
     stored = getattr(ctx.obj, "resolved_box", None)
@@ -141,7 +141,7 @@ def arm(ctx, box, netname):
 
     # Only resolve box if box is provided at group level
     # Otherwise, let subcommands resolve it
-    if box:
+    if box is not None:
         resolved = resolve_box_locked(ctx, box, 'arm')
         setattr(ctx.obj, "resolved_box", resolved)
     else:

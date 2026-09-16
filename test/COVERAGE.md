@@ -46,13 +46,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 2293 (+2 xfailed) |
+| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 2336 (+2 xfailed) |
 | `unit (box)` | `test/unit/box/` | 2876 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 195 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 195 (+1 skipped) |
-| | **Total gated** | **5753** |
+| | **Total gated** | **5796** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -454,7 +454,7 @@ cli/tests/                #  7 files: 6 pytest suites (GATED via `unit (cli)`),
                           #           plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 219 files)
+### Local Unit Tests (`test/unit/` -- 222 files)
 
 #### Box Unit Tests (`test/unit/box/` -- 120 files)
 
@@ -585,7 +585,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_ykush_driver.py` | YKUSH USB hub driver: device-contention regression from an indefinitely cached handle |
 | `test_automation_exports.py` | Static parse of `automation/__init__.py`'s lazy export table: no name guarded twice, every returned driver reachable under its own name, everything in `__all__` resolvable -- the copy-paste class of defect that made one driver answer to another's name |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 81 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 84 files)
 
 | File | What it tests |
 |------|---------------|
@@ -639,8 +639,10 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_python_exit_codes.py` | `normalize_exit_code` maps a signal death (`-9`) onto the 128+N convention `SIGKILL_EXIT_CODE` is written in, so a timeout kill reports 137 rather than 247, and never returns a negative code to `sys.exit` |
 | `test_resolve_box_locked.py` | `resolve_box_locked`: acquires an ephemeral lock on resolution, stashes the release on the context, passes through under `LAGER_AUTO_LOCK_DISABLE`, and reports `already_ours` for a lock we already hold. Pins the holder via `get_lock_holder` and forbids real HTTP, so the result cannot depend on whether it runs on a laptop or a CI runner |
 | `test_empty_box_name.py` | An explicit `--box ""` (or whitespace-only) is refused rather than silently resolving to the DEFAULT box, in BOTH `resolve_and_validate_box` and `resolve_and_validate_box_with_name` -- they duplicate the resolution logic, so a guard in one would leave the other's callers still defaulting. Also pins the half that must not change: `None` still means "not given" and falls back to the default |
+| `test_empty_box_everywhere.py` | `--box ""` is refused by every command that picked its box before the shared resolver (update, ssh, binaries, nets, box-config, arm, spi, i2c, logs, install, uninstall) and never falls back to the default box; an AST guard flags a new `if not box: box = ...` or `x = box or ...` under `cli/commands` |
 | `test_simple_hdlc.py` | `cli/simple_hdlc.py`: the CRC-16/CCITT-FALSE checksum pinned to the values of the PyCRC implementation it replaced, HDLC encode/decode round trips including escaped flag and escape bytes, and a corrupted CRC reported as an error frame |
 | `test_ssh.py` | SSH ensure_lager_box_keypair and key_auth_works helpers |
+| `test_ssh_user_by_ip.py` | `lager ssh` and `lager update` log in as the user saved for the box, whether `--box` names it, gives its IP, or is left to the default box |
 | `test_supply_tui.py` | SupplyTUI render output, command parsing, worker threads, connection failure |
 | `test_uart_session_release.py` | UART teardown releases the box-side session on every exit path (including Ctrl+C, and when the session never came up), never skips the disconnect that follows, and reports a held net with the take-over command; plus the connect banner keeping a by-id device path readable |
 | `test_uart_ws_status_events.py` | CLI handling of box-side `uart_status` events when a UART device re-enumerates |
@@ -657,6 +659,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_watt_subcommands.py` | `lager watt` NetGroup reading power/current/voltage/all over the box API |
 | `test_ws_diagnose.py` | WebSocket failure message generation pointing to instrument vs. box based on health |
 | `test_box_lock_command.py` | `lager boxes lock`/`unlock` command layer: the no-expiry reservation body (`holder_type`/`ttl_seconds`), exit codes on 409/403, `--force`, the Docker-root warning, and unlock sending the stored holder for a lock the CLI counts as ours (not for a `ci:generic` sibling; the plain user when the lock read fails; `--user`) |
+| `test_logs_command.py` | `lager logs` runs every SSH call through the shared runner, so it uses the box's saved user and the lager_box key; `logs docker`'s remote script, run under bash with stub `docker`/`sudo`, prints each size, says when `sudo -n` needs a password, and exits 3 when docker fails |
 | `test_lock_holder_matching.py` | `holder_is_ours` is the one lock-holder comparison: its truth table (scope, plain user, the email of a four-part holder from another tool, `ci:generic` refused for unlock), `holder_email`, `heartbeat_holder`, the acquire decisions using the same rule, and AST scans that fail on a raw holder comparison, a stray `lock_scope` call, or a heartbeat that does not send `heartbeat_holder(...)` |
 | `test_boxes_live_listing.py` | Concurrent `lager boxes` listing: the fan-out is parallel (asserted with a `threading.Barrier`, not a stopwatch), an unanswering box is abandoned at the deadline rather than hanging the command, gateway denials stay counted apart from unreachable boxes for every `denial_label` verdict, each probe's gateway retry inherits that probe's timeout so it cannot outlive the deadline, only the bare version is cached and only from the calling thread, plus the repaint arithmetic (line truncation, over-tall fleets falling back to a single print, a settled table repainting no further) and the waiting indicators (`locked by` present from the first frame, the wheel visiting every glyph, an outstanding box still repainting as it turns, a resolved row dropping it) and the `gateway_auth` thread safety it depends on -- single-flight refresh so a fan-out cannot spend Stout's rotating refresh cookie N times, and atomic store writes |
 | `test_config_roundtrip.py` | `cli/config.py` JSON<->ConfigParser round-trip, legacy-key migration, `read`/`write_lager_json`, `expand_devenv_path`, `get_debug_script_for_net` |

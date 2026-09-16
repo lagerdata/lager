@@ -78,7 +78,7 @@ SSH 用户名按以下顺序解析：
 1. 随 Box 配置保存的用户名（`lager boxes add --user`）
 2. 默认用户名：`lagerdata`
 
-`lager ssh` 按 Box 名称查找已保存的用户名。如果您给 `--box` 传的是 IP 地址，它会使用 `lagerdata`。请传入 Box 名称，以使用它保存的用户名。
+`lager ssh` 按 Box 名称查找已保存的用户名。如果您给 `--box` 传的是 IP 地址，或使用默认 Box，它会使用该 IP 地址对应的已保存 Box 的用户名。
 
 若要为某台 Lager Box 使用不同的用户名：
 ```bash
