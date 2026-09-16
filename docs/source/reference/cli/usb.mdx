@@ -110,17 +110,18 @@ lager usb USB2 cycle --box my-lager-box
 Two other results are possible:
 
 ```bash
-# The device did not return within 5 seconds
-# [OK] USB port 'USB1' power-cycled, but the device did not come back before the timeout
+# The device did not return within 5 seconds (exit code 1)
+# Error: USB port 'USB1' power-cycled, but the device did not come back before the timeout
 
 # The box could not read its own USB topology
 # [OK] USB port 'USB1' power-cycled (re-enumeration not verified: the box's USB topology could not be read)
 ```
 
-<Warning>
-`cycle` exits `0` for all four results, including a device that did not come
-back. If a script needs the device, it must check the output text.
-</Warning>
+`cycle` exits `1` when the device did not come back. The other three results exit `0`.
+An empty port and an unreadable topology confirm nothing about a device. A
+script that needs the device must check the output text for those two results.
+A box too old to report whether the device came back makes `cycle` exit `0` for
+all four results.
 
 How `cycle` decides that the device came back depends on the hub:
 

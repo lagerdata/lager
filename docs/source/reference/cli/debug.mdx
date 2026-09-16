@@ -134,9 +134,6 @@ clean state (this is what RTT initialization wants). Pass `--no-erase` only when
 you intentionally want to preserve existing flash contents. The older `--erase`
 flag is now a no-op kept for backward compatibility.</Note>
 
-<Note>The CLI sends a `--bin` load address of `0` as `0x08000000`. If the flash
-of your target starts at `0x0`, use `--hex` or `--elf` instead.</Note>
-
 **Failure output:**
 
 - If the erase before programming fails, `flash` prints `Flash erase failed:` and the error, then exits 1. It does not program the target.
@@ -213,7 +210,7 @@ lager debug [NET_NAME] erase [OPTIONS]
 
 If the erase fails, `erase` prints `Erase failed:` and the error, then exits 1.
 
-A box on 0.42.0 or later finds a J-Link attach failure itself and returns an error. The message of the box also starts with `Erase failed:`, so the CLI shows that prefix two times.
+A box on 0.42.0 or later finds a J-Link attach failure itself and returns an error, which the CLI prints after `Erase failed:`.
 
 An older box returns the probe output with no error. The CLI then checks each line of that output. A line fails the erase when it is, starts with, or ends with one of these messages:
 

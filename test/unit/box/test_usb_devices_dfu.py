@@ -464,6 +464,25 @@ class CycleMessageTests(unittest.TestCase):
         self.assertIn('re-enumeration not verified', body['message'])
         self.assertIn('could not be read', body['message'])
 
+    def test_each_result_carries_its_outcome(self):
+        """A field a caller can test, instead of the message text (#502)."""
+        cases = [
+            (True, ('a-device',), 'reconnected'),
+            (False, ('a-device',), 'not_reconnected'),
+            (None, ('a-device',), 'no_device'),
+            (None, (), 'topology_unreadable'),
+        ]
+        for result, bus, outcome in cases:
+            with self.subTest(outcome=outcome):
+                self.assertEqual(self._cycle(result, bus=bus)['outcome'], outcome)
+
+    def test_only_a_cycle_carries_an_outcome(self):
+        with patch.object(usb_handler.usb_hub, 'enable', return_value=None):
+            resp = self.client.post('/usb/command',
+                                    json={'netname': 'usb1', 'action': 'enable'})
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn('outcome', resp.get_json())
+
     def test_the_port_is_reported_powered_whatever_the_verdict(self):
         """A cycle always ends powered; the verdict is about the device."""
         for result in (True, False, None):

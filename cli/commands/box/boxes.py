@@ -542,8 +542,8 @@ def _list_boxes_live(port=9000, timeout=_DEFAULT_STATUS_TIMEOUT):
     click.echo(f'\nYour CLI: {cli_version}')
 
     if needs_update_count > 0:
-        box_word = 'box' if needs_update_count == 1 else 'boxes'
-        click.secho(f'{needs_update_count} {box_word} need updating', fg='yellow')
+        box_word = 'box needs' if needs_update_count == 1 else 'boxes need'
+        click.secho(f'{needs_update_count} {box_word} updating', fg='yellow')
     if newer_count > 0:
         box_word = 'box is' if newer_count == 1 else 'boxes are'
         click.secho(f'{newer_count} {box_word} newer than your CLI', fg='cyan')

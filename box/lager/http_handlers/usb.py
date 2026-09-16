@@ -380,6 +380,9 @@ def register_usb_routes(app: Flask) -> None:
             # toggle and state both return the live port state from the
             # dispatcher; enable/disable are unambiguous from the action itself.
             reconnected = None
+            # For a cycle, which of the four results it was, as a field a
+            # caller can test instead of the message text.
+            outcome = None
             if action == "toggle":
                 state = "enabled" if result else "disabled"
                 message = f"USB port '{netname}' toggled → {state}"
@@ -400,16 +403,20 @@ def register_usb_routes(app: Flask) -> None:
                 state = "enabled"
                 reconnected = result
                 if result is True:
+                    outcome = "reconnected"
                     message = (f"USB port '{netname}' power-cycled; "
                                "device re-enumerated")
                 elif result is False:
+                    outcome = "not_reconnected"
                     message = (f"USB port '{netname}' power-cycled, but the "
                                "device did not come back before the timeout")
                 elif enumerate_usb_devices():
+                    outcome = "no_device"
                     message = (f"USB port '{netname}' power-cycled; no device "
                                "on this port to watch for, so re-enumeration "
                                "was not confirmed")
                 else:
+                    outcome = "topology_unreadable"
                     message = (f"USB port '{netname}' power-cycled "
                                "(re-enumeration not verified: the box's USB "
                                "topology could not be read)")
@@ -439,6 +446,8 @@ def register_usb_routes(app: Flask) -> None:
             }
             if reconnected is not None:
                 body['reconnected'] = reconnected
+            if outcome is not None:
+                body['outcome'] = outcome
             return jsonify(body)
         except Exception as e:
             logger.exception("[HTTP] /usb/command unexpected error")

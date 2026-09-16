@@ -131,8 +131,6 @@ lager debug [NET_NAME] flash [OPTIONS]
 
 <Note>`flash` **默认**会先擦除再编程，因此不需要任何标志就能得到干净状态（这正是 RTT 初始化所需要的）。只有当您有意保留现有闪存内容时才传 `--no-erase`。旧的 `--erase` 标志现在是空操作，仅为向后兼容而保留。</Note>
 
-<Note>CLI 会把 `--bin` 的加载地址 `0` 当作 `0x08000000` 发送。如果您目标的闪存起始于 `0x0`，请改用 `--hex` 或 `--elf`。</Note>
-
 **失败输出：**
 
 - 如果编程前的擦除失败，`flash` 会打印 `Flash erase failed:` 和错误，然后以 1 退出。它不会对目标编程。
@@ -211,8 +209,7 @@ lager debug [NET_NAME] erase [OPTIONS]
 
 如果擦除失败，`erase` 会打印 `Erase failed:` 和错误，然后以 1 退出。
 
-0.42.0 及以上版本的 Box 会自己识别 J-Link 连接失败并返回错误。
-Box 给出的信息同样以 `Erase failed:` 开头，因此 CLI 会显示两次这个前缀。
+0.42.0 及以上版本的 Box 会自己识别 J-Link 连接失败并返回错误，CLI 会在 `Erase failed:` 之后打印该错误。
 
 较旧的 Box 会返回探针输出而不报错。此时 CLI 会逐行检查那段输出。当某一行是、以下列信息开头，或以它们结尾时，该行判定为擦除失败：
 
