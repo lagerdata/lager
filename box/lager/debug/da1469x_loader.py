@@ -71,7 +71,7 @@ logger = logging.getLogger(__name__)
 # container ``/home/www-data/customer-binaries/openocd/flash-loaders/<family>/``)
 # so the files persist across ``lager update`` — anything baked directly
 # into the container filesystem gets blown away when the image is
-# refreshed. Operators drop files in via ``lager box ssh`` the same way
+# refreshed. Operators drop files in via ``lager ssh --box <box>`` the same way
 # they upload custom tools.
 DEFAULT_FLASH_LOADERS_DIR = '/home/www-data/customer-binaries/openocd/flash-loaders'
 ENV_LOADER_DIR_OVERRIDE = 'LAGER_FLASH_LOADERS_DIR'
@@ -259,7 +259,7 @@ def _resolve_loader_paths(family: str) -> Tuple[str, str]:
     actionable message if either is missing.
 
     Layout: ``<root>/<family>/flash_loader.elf`` and ``...elf.bin``. The
-    operator is expected to drop these via ``lager box ssh`` once per box.
+    operator is expected to drop these via ``lager ssh --box <box>`` once per box.
     """
     root = _flash_loaders_root()
     family_dir = os.path.join(root, family)
@@ -273,7 +273,7 @@ def _resolve_loader_paths(family: str) -> Tuple[str, str]:
             f'Expected:\n'
             f'  {elf_path}\n'
             f'  {bin_path}\n'
-            f'Run `lager box ssh <box>` and copy the matching loader build into '
+            f'Run `lager ssh --box <box>` and copy the matching loader build into '
             f'{family_dir} (override the parent dir with '
             f'{ENV_LOADER_DIR_OVERRIDE}=<path>). Missing: '
             f'{", ".join(os.path.basename(p) for p in missing)}.'
