@@ -46,9 +46,12 @@ _BENCH_JSON_PATH = "/etc/lager/bench.json"
 # Staged in /tmp (world-writable, 1777) rather than inside /etc/lager, which on a
 # normally-installed box is owned by www-data (setup_and_deploy_box.sh chowns it
 # to uid 33), so the login user cannot create files there. Fixed name (not
-# mktemp) so the passwordless-sudo grant can be an exact literal path, mirroring
-# /tmp/lager_version_tmp. Both paths must stay free of shell-special chars so
-# shlex.quote is a no-op and the quoted command still matches the sudoers spec.
+# mktemp) so the passwordless-sudo grant can be an exact literal path. Both this
+# path and the destination must stay free of shell-special chars so shlex.quote
+# is a no-op and the quoted command still matches the sudoers spec. bench.json is
+# now the only file staged this way: version and ref go through the no-sudo
+# writer in update.py, which mktemps inside /etc/lager and renames over the
+# target, so their old /tmp staging grants were removed.
 _BENCH_JSON_TMP_PATH = "/tmp/lager-bench.json.tmp"
 
 _BENCH_SUDOERS_BANNER = sudoers_banner_lines(

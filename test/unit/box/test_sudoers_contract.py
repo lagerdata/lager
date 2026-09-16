@@ -551,9 +551,23 @@ class UdevSudoersGrantsWhatIsActuallyCalled(unittest.TestCase):
             "/bin/chmod 755 /etc/lager",               # convert_to_sparse_checkout
             "/bin/chmod 644 /etc/lager/saved_nets.json",
             "/bin/chown 33:33 /etc/lager/saved_nets.json",
-            "/bin/chmod 666 /etc/lager/version",       # install.py
         ):
             self.assertIn(needed, rules, f"missing grant: {needed}")
+
+    def test_the_version_and_ref_files_are_not_granted_at_all(self):
+        # They are written without sudo (a mktemp file inside /etc/lager, then
+        # `mv -f` over the target), so every grant that used to back the old
+        # /tmp staging is gone. Pinned as an absence: an unused NOPASSWD rule
+        # widens what the login user can do as root for no benefit, and these
+        # in particular name files that decide what `lager hello` reports.
+        rules = _unescape("\n".join(_rule_lines(_udev_heredoc_body())))
+        for gone in (
+            "/etc/lager/version",
+            "/etc/lager/ref",
+            "/tmp/lager_version_tmp",
+            "/tmp/lager_ref_tmp",
+        ):
+            self.assertNotIn(gone, rules, f"grant should be gone: {gone}")
 
     def test_the_gid_grant_is_resolved_on_the_box(self):
         # `id -g` cannot be answered client-side; the dynamic block is why it

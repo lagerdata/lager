@@ -735,28 +735,20 @@ ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod 2775 /etc/lager
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod 755 /etc/lager
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod 644 /etc/lager/saved_nets.json
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chown 33\:33 /etc/lager/saved_nets.json
-${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod 666 /etc/lager/version
 ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chmod 2775 /etc/lager
 ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chmod 755 /etc/lager
 ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chmod 644 /etc/lager/saved_nets.json
 ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chown 33\:33 /etc/lager/saved_nets.json
-${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chmod 666 /etc/lager/version
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/mkdir -p /etc/lager
 ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/tee /etc/lager/saved_nets.json
-${BOX_USER} ALL=(ALL) NOPASSWD: /bin/rm -f /etc/lager/version
-${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/rm -f /etc/lager/version
-${BOX_USER} ALL=(ALL) NOPASSWD: /bin/mv /tmp/lager_version_tmp /etc/lager/version
-${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/mv /tmp/lager_version_tmp /etc/lager/version
-# install.py records the deployed ref in /etc/lager/ref the same way it writes
-# version (rm + mv from /tmp + chmod). Without these grants the ref sudo has no
-# passwordless path and the write step stalls until its timeout. Both bin dirs,
-# because secure_path resolves the bare command to whichever exists first.
-${BOX_USER} ALL=(ALL) NOPASSWD: /bin/rm -f /etc/lager/ref
-${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/rm -f /etc/lager/ref
-${BOX_USER} ALL=(ALL) NOPASSWD: /bin/mv /tmp/lager_ref_tmp /etc/lager/ref
-${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/mv /tmp/lager_ref_tmp /etc/lager/ref
-${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod 644 /etc/lager/ref
-${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chmod 644 /etc/lager/ref
+# /etc/lager/version and /etc/lager/ref need no sudo at all. Install and update
+# both write them through one helper: a mktemp file inside /etc/lager, then an
+# atomic rename over the target. The login user can do that because the
+# deployment makes the directory group-writable and setgid, and replacing a file
+# needs write access to its directory rather than to the file. The old
+# rm + mv-from-/tmp + chmod grants for both files are therefore gone: nothing
+# invoked them, and an unused NOPASSWD rule only widens what the login user can
+# do as root.
 # Allow ${BOX_USER} to write /etc/lager/bench.json (lager box dut edit/add-doc).
 # /etc/lager is owned by www-data, so the login user can't create files there;
 # the CLI stages to /tmp/lager-bench.json.tmp then cp's it in under this grant.

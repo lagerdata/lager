@@ -637,6 +637,16 @@ _BUILD_HASH_SOURCE_DIRS = [
 _BUILD_HASH_GIT_SOURCE_PREFIX = 'box/lager'
 
 
+def _relative_to_box(tilde_path):
+    """`~/box/lager/...` -> `lager/...`, the form both hashers feed sha256sum.
+
+    The constants above stay written as `~/box/...` because that is what they
+    mean on the box and what the flatten tests pin. Only the hashers need the
+    relative form, and they need exactly the same one as each other.
+    """
+    return tilde_path.replace('~/box/', '', 1)
+
+
 def _build_hash_shell_cmd():
     """Shell snippet that prints a hash of the docker-build inputs.
 
@@ -646,29 +656,35 @@ def _build_hash_shell_cmd():
     requirements.txt). Prints an empty string if nothing matched, which we
     treat as "skip auto-invalidation".
 
-    `~/box/...` paths are tilde-expanded by the for-loop's word-expansion
-    pass before iteration, so `$f` inside the body is already absolute —
-    no `eval` needed. The `[ -n "$out" ]` gate is what makes the "empty
-    string when nothing matched" promise true; without it, an empty pipe
-    into sha256sum would hash the empty string (`e3b0c44...`) and mask the
-    no-files case.
+    Paths are hashed RELATIVE to ~/box. `sha256sum` prints the path beside
+    each digest, so absolute paths put the login user's home directory into
+    the value: the same commit hashed differently under /home/alice/box and
+    /home/bob/box, and the next update after a login-user change saw a
+    mismatch and rebuilt an image that had not changed. The `cd` lives inside
+    the `$(...)` so it cannot leak — this snippet is also spliced into the
+    box-state probe, which runs further commands after it.
+
+    The `[ -n "$out" ]` gate is what makes the "empty string when nothing
+    matched" promise true; without it, an empty pipe into sha256sum would hash
+    the empty string (`e3b0c44...`) and mask the no-files case. A box with no
+    ~/box at all fails the `cd` and takes the same empty path.
 
     `sort -z` is required for determinism: `find` walks in filesystem order,
     which is not stable across boxes or across a tree that has been rewritten
     by the flatten. Sorting first means the same tree always produces the same
-    hash. Because `sha256sum` prints the path alongside the digest, a rename
-    or a deletion changes the hash too — which is the point, since an
-    additive-copy bug used to leave deleted files in the build context.
+    hash. The path still appears in each line, so a rename or a deletion
+    changes the hash — which is the point, since an additive-copy bug used to
+    leave deleted files in the build context. Only the root is dropped.
 
     `__pycache__` and `.pyc` files are excluded. They are derived artifacts
     regenerated on the box, so hashing them would make the value unstable and
     wipe the image on every run; any real change to a `.py` is caught by the
     `.py` itself.
     """
-    paths = ' '.join(_BUILD_HASH_INPUTS)
-    dirs = ' '.join(_BUILD_HASH_SOURCE_DIRS)
+    paths = ' '.join(_relative_to_box(p) for p in _BUILD_HASH_INPUTS)
+    dirs = ' '.join(_relative_to_box(d) for d in _BUILD_HASH_SOURCE_DIRS)
     return (
-        'out=$('
+        'out=$(cd "$HOME/box" 2>/dev/null && { '
         'for f in ' + paths + '; do '
         '[ -f "$f" ] && sha256sum "$f"; '
         'done; '
@@ -677,7 +693,7 @@ def _build_hash_shell_cmd():
         "-not -path '*/__pycache__/*' -not -name '*.pyc' -print0 "
         '| sort -z | xargs -0 -r sha256sum; '
         'done'
-        '); '
+        '; }); '
         '[ -n "$out" ] && echo "$out" | sha256sum | cut -d" " -f1'
     )
 
@@ -687,11 +703,15 @@ def _build_hash_at_ref_shell_cmd(git_ref):
 
     Emits the same aggregate sha256 as `_build_hash_shell_cmd` when the
     working tree matches ``git_ref`` for those files — ``sha256sum`` lines use
-    the post-flatten absolute paths so they compose identically (including the
-    deliberate double-count of Dockerfile/requirements: once via the individual
-    inputs list, once via the source-tree walk). Missing blobs at the ref are
-    skipped (same as a missing working-tree file). Empty output means nothing
-    was measurable.
+    the post-flatten paths RELATIVE to ~/box so they compose identically
+    (including the deliberate double-count of Dockerfile/requirements: once via
+    the individual inputs list, once via the source-tree walk). Missing blobs at
+    the ref are skipped (same as a missing working-tree file). Empty output
+    means nothing was measurable.
+
+    Both hashers must agree on the path form, or every `--check` reports a
+    rebuild that is not needed: the stored /etc/lager/build-hash comes from the
+    working-tree hasher and is compared against this one.
     """
     # Sanitize: only allow refs that git will accept as a single argument
     # (branch, tag, SHA, origin/main). Reject shell metacharacters.
@@ -702,30 +722,32 @@ def _build_hash_at_ref_shell_cmd(git_ref):
     # and no `printf -v`.
     #
     # `git show | sha256sum` prints "<hash>  -"; the sed rewrites the "-" to
-    # the absolute working-tree path so each line is byte-identical to what
-    # `sha256sum <file>` produces in `_build_hash_shell_cmd`. The aggregate
-    # then uses the same `out=$(...)` + `echo "$out" | sha256sum` composition,
-    # so a ref whose blobs match the working tree yields the same digest.
+    # the working-tree path RELATIVE to ~/box, so each line is byte-identical
+    # to what `sha256sum <file>` produces in `_build_hash_shell_cmd` (which
+    # runs from inside ~/box). The aggregate then uses the same `out=$(...)` +
+    # `echo "$out" | sha256sum` composition, so a ref whose blobs match the
+    # working tree yields the same digest.
     clauses = []
     for git_path, abs_tilde in _BUILD_HASH_GIT_BLOBS:
-        abs_shell = abs_tilde.replace('~', '$HOME', 1)
+        rel_path = _relative_to_box(abs_tilde)
         # `&&` inside a clause (skip missing blobs), `;` between clauses so a
         # missing requirements.txt does not suppress the Dockerfile line.
         clauses.append(
             f'git cat-file -e {git_ref}:{git_path} 2>/dev/null && '
             f'git show {git_ref}:{git_path} | sha256sum | '
-            f'sed "s|  -$|  {abs_shell}|"'
+            f'sed "s|  -$|  {rel_path}|"'
         )
-    # Source-tree walk: same files as `find ~/box/lager ... | sort -z`, but
-    # read from the git object database. Paths are mapped from the pre-flatten
-    # git prefix (`box/lager/...`) to the post-flatten absolute path.
+    # Source-tree walk: same files as `find lager ... | sort -z` from inside
+    # ~/box, but read from the git object database. Paths are mapped from the
+    # pre-flatten git prefix (`box/lager/...`) to the post-flatten path
+    # relative to ~/box (`lager/...`).
     src_prefix = _BUILD_HASH_GIT_SOURCE_PREFIX
     clauses.append(
         f'git ls-tree -r --name-only {git_ref} {src_prefix} 2>/dev/null | '
         f'grep -v "/__pycache__/" | grep -v "\\.pyc$" | sort | '
         f'while IFS= read -r path; do '
-        f'abs="$HOME/box/${{path#box/}}"; '
-        f'git show {git_ref}:"$path" | sha256sum | sed "s|  -$|  $abs|"; '
+        f'rel="${{path#box/}}"; '
+        f'git show {git_ref}:"$path" | sha256sum | sed "s|  -$|  $rel|"; '
         f'done'
     )
     return (
@@ -1903,7 +1925,11 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         if not ref_value:
             return True
         content = f'{ref_value}@{sha_value}' if sha_value else str(ref_value)
-        write_cmd = _state_file_write_cmd('ref', content)
+        # skip_if_identical, as the version write does: a run that changes
+        # nothing must leave this file alone. Rewriting identical content moves
+        # the mtime, which is the only thing that says when the ref last
+        # actually changed.
+        write_cmd = _state_file_write_cmd('ref', content, skip_if_identical=True)
         try:
             return run_ssh_command_with_output(
                 write_cmd, timeout_secs=30).returncode == 0
@@ -3478,7 +3504,9 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
             fg='yellow', err=True,
         )
 
-    # Write the version file BEFORE the container restart (SSH is stable here).
+    # Work out which version to record. The write itself happens after the
+    # container is running, further down: a failed write must not leave the box
+    # with no lager container, which is exactly what exiting here used to do.
     # A version tag (v0.3.14 / 0.3.14) is used directly. For a branch target
     # we ask the box for the closest preceding `vX.Y.Z` tag at HEAD via
     # `git describe`, which reflects the actual code on disk — not the CLI's
@@ -3499,23 +3527,6 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         # where the file isn't in the working tree.
         src_version = _read_box_source_version(run_ssh_command_with_output)
         box_cli_version = src_version if src_version else cli_version
-
-    if box_cli_version:
-        if progress:
-            progress.update("Storing version...")
-        log('Storing version...', nl=False)
-
-        if not write_box_version_file(box_cli_version):
-            if progress:
-                progress.finish(success=False)
-            log_status('FAILED', 'red')
-            log_error('Error: Failed to write version file to /etc/lager/version')
-            click.echo('The code was updated, but the CLI did not write the version file.', err=True)
-            click.echo()
-            click.echo('Manually fix with:', err=True)
-            click.echo(f'  ssh {ssh_host} "echo \\"{box_cli_version}|{cli_version}\\" | sudo tee /etc/lager/version"', err=True)
-            ctx.exit(1)
-        log_status(f'OK ({box_cli_version})', 'green')
 
     # Step 11: Start container
     if progress:
@@ -3561,6 +3572,29 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         click.echo(f'  ssh lagerdata@{resolved_box} "docker logs lager"', err=True)
         click.echo(f'  ssh lagerdata@{resolved_box} "docker ps -a"', err=True)
         ctx.exit(1)
+
+    # Record the version now that the container runs again. This write used to
+    # come before Step 11, so a failure exited with the old container already
+    # torn down and nothing started in its place: the box lost its service over
+    # a bookkeeping file. `lager install` already records state after the box is
+    # up, and this matches it. The box is serving by the time we get here, so a
+    # failure below is worth reporting and no longer takes the box down.
+    if box_cli_version:
+        if progress:
+            progress.update("Storing version...")
+        log('Storing version...', nl=False)
+
+        if not write_box_version_file(box_cli_version):
+            if progress:
+                progress.finish(success=False)
+            log_status('FAILED', 'red')
+            log_error('Error: Failed to write version file to /etc/lager/version')
+            click.echo('The box runs the new code, but the CLI did not record the version.', err=True)
+            click.echo()
+            click.echo('Manually fix with:', err=True)
+            click.echo(f'  ssh {ssh_host} "printf \'%s\\n\' \\"{box_cli_version}|{cli_version}\\" > /etc/lager/version"', err=True)
+            ctx.exit(1)
+        log_status(f'OK ({box_cli_version})', 'green')
 
     # Wait for the on-box services to become reachable. Previously this was a
     # blind `time.sleep(5)`; on slower boxes the on-box services could still be
