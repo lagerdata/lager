@@ -25,6 +25,7 @@ from ._ssh import (
     _KEY_FALLBACK_DESTS,
     _LAGER_BOX_KEY,
     BOX_KEYS_DIR,
+    box_accepts_a_password,
     box_has_control_plane,
     ensure_lager_box_keypair,
     key_installed_on_box,
@@ -95,7 +96,7 @@ def control_plane_error(dest: str, *, removed: bool) -> LagerError:
     )
 
 
-def register_or_warn(dest: str) -> bool:
+def register_or_warn(dest: str, *, key_path: str = _LAGER_BOX_KEY) -> bool:
     """Register the key in the box's key directory, warning if it fails.
 
     Not fatal. By the time this runs the key is installed and authenticating,
@@ -103,8 +104,15 @@ def register_or_warn(dest: str) -> bool:
     durability. It is worth a visible warning rather than silence, because
     the failure mode it prevents is invisible until the day someone rebuilds
     the box's authorized_keys and every operator loses access at once.
+
+    `lager update` calls this rather than keeping its own copy. It had one,
+    and the copy went on telling operators of control-plane-managed boxes to
+    widen sudo for months after this one stopped — advice that reopens
+    precisely what the tight scoping closed. Both callers name the same key
+    today; the argument is what keeps that true by construction rather than
+    by coincidence.
     """
-    ok, detail = register_lager_box_key(dest)
+    ok, detail = register_lager_box_key(dest, key_path=key_path)
     if ok:
         return True
 
@@ -114,7 +122,7 @@ def register_or_warn(dest: str) -> bool:
     # control plane approved, that no revocation reaches, and that outlives the
     # operator. The key they installed is already loose and already at risk of
     # being swept; the honest instruction is to get it managed properly.
-    if box_has_control_plane(dest):
+    if box_has_control_plane(dest, key_path=key_path):
         # No instruction, because there is nothing for the operator to do. The
         # access that lasts on this box is the grant the control plane holds,
         # and it installs their key for them. Telling them to publish a second
@@ -207,6 +215,30 @@ def provision_lager_box_key(dest: str) -> bool:
             ],
         )
 
+    # Asked before the promise is made, not after it fails. A hardened box
+    # sets PasswordAuthentication no, so ssh-copy-id cannot work there at all
+    # — and its failure then blamed the operator for a wrong password that was
+    # never accepted, on what is now the commonest kind of box in a managed
+    # fleet. False is a real answer; None ("could not ask") falls through and
+    # lets the attempt report for itself, because a box that is merely down
+    # needs a different thing said about it.
+    if box_accepts_a_password(dest) is False:
+        raise LagerError(
+            f"No way to install a key on {dest} from here.",
+            cause=(
+                "The box accepts only key authentication, so there is no "
+                "password to install one with, and none of your keys reaches "
+                "it yet."
+            ),
+            fixes=[
+                "If a control plane manages this box, ask an admin to grant "
+                "you access there — your key is installed on every box you "
+                "are granted.",
+                "Otherwise have someone who can already log in add your "
+                f"public key: {_LAGER_BOX_KEY}.pub",
+            ],
+        )
+
     click.echo(f"Installing key on {dest} — enter the box password when prompted.")
     # -f, because ssh-copy-id's own "is it already installed?" filter has the
     # same blind spot this command was just fixed for: it decides by logging
@@ -226,7 +258,12 @@ def provision_lager_box_key(dest: str) -> bool:
     if rc != 0:
         raise LagerError(
             f"ssh-copy-id to {dest} failed.",
-            cause="Wrong password, or the box rejected the connection.",
+            cause=(
+                "Wrong password, or the box rejected the connection."
+                if box_accepts_a_password(dest) is not False
+                else "The box accepts only key authentication — no password "
+                     "would have worked."
+            ),
             fixes=[
                 f"Retry manually: ssh-copy-id -i {_LAGER_BOX_KEY}.pub {dest}",
                 "Confirm the box user and password with your admin.",

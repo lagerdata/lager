@@ -323,6 +323,65 @@ def box_has_control_plane(
     return proc.returncode == 0
 
 
+# sshd names what it would have accepted in its refusal line:
+# "Permission denied (publickey,password,keyboard-interactive)."
+_AUTH_METHODS_RE = re.compile(r"Permission denied \(([^)]*)\)")
+
+# The two methods that let an operator who knows the box password install a
+# key. A box with neither cannot be bootstrapped into, and saying "enter the
+# box password" to its operator is a promise nothing can keep.
+PASSWORD_METHODS = frozenset({"password", "keyboard-interactive"})
+
+
+def box_auth_methods(dest: str, *, timeout: int = 10) -> Optional[frozenset]:
+    """The authentication methods ``dest``'s sshd offers, or None if unknown.
+
+    ``PreferredAuthentications=none`` offers nothing, so sshd refuses at once
+    and names what it would have taken — the only way to ask the question
+    without first satisfying it.
+
+    None means the box did not answer, which must not be read as "offers
+    nothing": a box that is down and a box that refuses passwords need
+    different things said about them, and only one of them is the operator's
+    problem to fix.
+    """
+    if shutil.which("ssh") is None:
+        return None
+    try:
+        proc = subprocess.run(
+            [
+                "ssh",
+                "-o", "BatchMode=yes",
+                "-o", "PreferredAuthentications=none",
+                "-o", "StrictHostKeyChecking=accept-new",
+                "-o", f"ConnectTimeout={timeout}",
+                dest, "true",
+            ],
+            capture_output=True, text=True, timeout=timeout + 5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    match = _AUTH_METHODS_RE.search(proc.stderr or "")
+    if not match:
+        return None
+    return frozenset(m.strip() for m in match.group(1).split(",") if m.strip())
+
+
+def box_accepts_a_password(dest: str, *, timeout: int = 10) -> Optional[bool]:
+    """Whether a password could install a key on ``dest``. None if unknown.
+
+    A hardened box sets ``PasswordAuthentication no``, so every path that
+    offers to "enter the box password once" is offering something that cannot
+    work — and ssh-copy-id's failure then reports a wrong password for one
+    that was never accepted. Which is every box a control plane has locked
+    down, so the misleading message is the common case, not the edge one.
+    """
+    methods = box_auth_methods(dest, timeout=timeout)
+    if methods is None:
+        return None
+    return bool(methods & PASSWORD_METHODS)
+
+
 def working_identity_args(key_path: str = _LAGER_BOX_KEY) -> List[str]:
     """``-i`` flags naming every identity that might reach the box.
 
