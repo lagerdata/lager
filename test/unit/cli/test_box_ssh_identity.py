@@ -1103,7 +1103,13 @@ class ControlPlaneManagedBox(unittest.TestCase):
     account able to file its own key can mint access that no control plane
     approved, that no revocation reaches, and that outlives whoever made it --
     which is precisely what the tight sudo scoping closed. So the advice for
-    that box has to be "register with the control plane", never "widen sudo".
+    that box is never "widen sudo".
+
+    Nor is it "publish a key of your own". The operator's lasting access on
+    such a box is the grant the control plane holds, and it installs their key
+    for them; asking for a second key hands them a credential to look after in
+    exchange for access they already have. The message states what is true
+    about the loose key and asks for nothing.
     """
 
     def _warn(self, *, managed):
@@ -1119,13 +1125,18 @@ class ControlPlaneManagedBox(unittest.TestCase):
             result = ssh_setup.register_or_warn("lagerdata@10.0.0.1")
         return result, "\n".join(messages)
 
-    def test_control_plane_box_is_told_to_register_there(self):
+    def test_control_plane_box_is_told_the_key_is_outside_management(self):
         ok, msg = self._warn(managed=True)
         self.assertFalse(ok)
         self.assertIn("control plane", msg)
-        self.assertIn("Register your public key", msg)
-        # And is shown where its public half is, so the instruction is usable.
-        self.assertIn(".pub", msg)
+        self.assertIn("outside the control plane", msg)
+        # What happens to it, so the note is worth reading.
+        self.assertIn("locks the box down", msg)
+
+    def test_control_plane_box_is_never_asked_for_a_second_key(self):
+        _, msg = self._warn(managed=True)
+        self.assertNotIn("Register your public key", msg)
+        self.assertNotIn("lager_box.pub", msg)
 
     def test_control_plane_box_is_never_told_to_widen_sudo(self):
         _, msg = self._warn(managed=True)

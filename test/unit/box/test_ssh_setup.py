@@ -97,23 +97,27 @@ class EnsureKeypair(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 def _invoke(*, copy_results=None, generated=False, auth_sequence=(),
-            which="/usr/bin/ssh-copy-id", register=(True, "")):
+            which="/usr/bin/ssh-copy-id", register=(True, ""),
+            managed=False, removed=True):
     """Run `lager ssh-setup` with the helpers mocked.
 
     auth_sequence drives successive key_installed_on_box() return values
     (probe, then post-copy verify): True installed, False absent, None
     "could not ask". copy_results feeds mod.subprocess.run for the
-    ssh-copy-id call.
+    ssh-copy-id call. `managed` is what the box answers about a control
+    plane; `removed` whether taking the key back out succeeded.
 
-    register_lager_box_key MUST be mocked here even where a test does not
-    assert on it: it lives in _ssh and runs its own subprocess.run, which
-    patching mod.subprocess does not reach — so leaving it live makes these
+    register_lager_box_key, box_has_control_plane and remove_lager_box_key
+    MUST all be mocked here even where a test does not assert on them: they
+    live in _ssh and run their own subprocess.run, which patching
+    mod.subprocess does not reach — so leaving any of them live makes these
     tests open a real SSH connection to 1.2.3.4 and sit there until the
-    30s timeout.
+    timeout.
     """
     copy_run = RecordingRun(copy_results or [])
     auth = list(auth_sequence)
     registered = []
+    removals = []
 
     def fake_installed(dest, **kwargs):
         return auth.pop(0)
@@ -122,16 +126,23 @@ def _invoke(*, copy_results=None, generated=False, auth_sequence=(),
         registered.append(dest)
         return register
 
+    def fake_remove(dest, **kwargs):
+        removals.append(dest)
+        return removed
+
     with patch.object(mod, "subprocess") as sub, \
          patch.object(mod, "resolve_and_validate_box", lambda ctx, box: "1.2.3.4"), \
          patch.object(mod, "resolve_box_user", lambda ip: "boxuser"), \
          patch.object(mod, "ensure_lager_box_keypair", lambda *a, **k: generated), \
          patch.object(mod, "key_installed_on_box", fake_installed), \
          patch.object(mod, "register_lager_box_key", fake_register), \
+         patch.object(mod, "box_has_control_plane", lambda dest, **k: managed), \
+         patch.object(mod, "remove_lager_box_key", fake_remove), \
          patch.object(mod.shutil, "which", lambda name: which):
         sub.run = copy_run
         result = CliRunner().invoke(mod.ssh_setup, [])
     copy_run.registered = registered
+    copy_run.removals = removals
     return result, copy_run
 
 
@@ -238,6 +249,78 @@ class KeyRegistration(unittest.TestCase):
         result, copy_run = _invoke(copy_results=[_proc(1)], auth_sequence=[False])
         self.assertNotEqual(result.exit_code, 0)
         self.assertEqual(copy_run.registered, [])
+
+
+class ControlPlaneManagedBox(unittest.TestCase):
+    """A key this command installs on a managed box is a credential the
+    control plane never granted, cannot account for, and cannot revoke when
+    the operator leaves. Every box `lager install` touched grew one, because
+    the control-plane question was asked only after ssh-copy-id had already
+    planted the key and could do nothing but choose a warning."""
+
+    def test_a_reachable_managed_box_is_already_set_up(self):
+        # False means the box answered, so an identity authenticated to ask --
+        # passwordless SSH already works, using the key the control plane
+        # installed. Installing a second one adds a credential and no access.
+        result, copy_run = _invoke(auth_sequence=[False], managed=True)
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(copy_run.calls, [])
+        self.assertEqual(copy_run.removals, [])
+        self.assertIn("no separate Lager key is needed", _text(result))
+        self.assertIn("already authorized", _text(result))
+
+    def test_never_asks_a_reachable_operator_to_file_a_second_key(self):
+        # One key, registered once with the control plane, is the whole
+        # contract. Telling someone who already has working access to publish
+        # another key of their own breaks it.
+        result, _copy_run = _invoke(auth_sequence=[False], managed=True)
+        self.assertNotIn("Register this public key", _text(result))
+        self.assertNotIn("lager_box.pub", _text(result))
+
+    def test_takes_the_key_back_out_when_it_could_only_ask_afterwards(self):
+        # None is "could not reach the box at all": the question has to wait
+        # for the connection ssh-copy-id's password prompt buys.
+        result, copy_run = _invoke(copy_results=[_proc(0)],
+                                   auth_sequence=[None, True], managed=True)
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertEqual(len(copy_run.calls), 1)
+        self.assertEqual(copy_run.removals, ["boxuser@1.2.3.4"])
+        self.assertIn("has been removed again", _text(result))
+        self.assertEqual(copy_run.registered, [])
+        # A grant, not a key: the operator is missing access, and handing them
+        # a credential to file themselves is the thing this refuses to do.
+        self.assertIn("Ask an admin to grant you access", _text(result))
+        self.assertNotIn("Register this public key", _text(result))
+
+    def test_says_so_when_the_key_could_not_be_taken_back_out(self):
+        result, copy_run = _invoke(copy_results=[_proc(0)],
+                                   auth_sequence=[None, True],
+                                   managed=True, removed=False)
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertEqual(copy_run.removals, ["boxuser@1.2.3.4"])
+        self.assertIn("could not remove the key again", _text(result))
+        self.assertNotIn("has been removed again", _text(result))
+
+    def test_leaves_an_already_authorized_key_alone(self):
+        # Pulling a working key would lock out an operator whose control-plane
+        # key is not installed yet. Warn, and let registration plus the next
+        # lockdown retire it.
+        result, copy_run = _invoke(auth_sequence=[True], managed=True,
+                                   register=(False, "Permission denied"))
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(copy_run.removals, [])
+        self.assertIn("outside the control plane", _text(result))
+        # Says what is true, asks for nothing: the operator's lasting access is
+        # the grant, and the control plane installs their key for them.
+        self.assertNotIn("Register your public key", _text(result))
+        self.assertNotIn("lager_box.pub", _text(result))
+
+    def test_unmanaged_boxes_are_untouched(self):
+        result, copy_run = _invoke(copy_results=[_proc(0)],
+                                   auth_sequence=[False, True], managed=False)
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(copy_run.removals, [])
+        self.assertEqual(copy_run.registered, ["boxuser@1.2.3.4"])
 
 
 if __name__ == "__main__":
