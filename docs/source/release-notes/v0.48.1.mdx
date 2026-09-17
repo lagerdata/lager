@@ -1,0 +1,66 @@
+---
+title: "Version 0.48.1"
+description: "September 16, 2026"
+---
+
+## <u>Bug Fixes</u>
+
+- **`lager ssh-setup` and `lager update` no longer install their own key on a box a control
+  plane manages.** That control plane installs the key of every user it grants, so a key added
+  here is one it does not know about and cannot revoke. Both commands now use the key that is
+  already on the box, and name the one they used. On a box that no control plane manages,
+  nothing changes: the commands generate, install and register a key as before.
+
+- **A box you have no access to asks for a grant, not a password.** `lager ssh-setup` against
+  such a box tells you to ask an admin for access in the control plane, which installs your key
+  on every box you are granted and removes it again when you are not. A key installed to reach
+  the box is taken back out, and a removal that fails says so.
+
+- **A box that refuses passwords no longer reports a wrong password.** Both commands ask the
+  box's SSH server which authentication methods it accepts before they offer to install a key.
+  A box with password authentication off now says that, instead of running `ssh-copy-id` and
+  blaming the password you typed.
+
+- **`lager debug SWD flash` and `lager debug SWD erase` work again on a DA1469x.** The
+  RAM-resident flash loader was entered with the Thumb bit clear, so the core faulted on its
+  first instruction and locked up. The loader is now entered in Thumb state, and a core that
+  locks up on entry says so instead of being retried. The missing-loader message also names a
+  command that exists: `lager ssh --box <box>`.
+
+- **`lager dac`, `lager adc`, `lager gpi` and `lager gpo` name the supported instruments when
+  they refuse a net's instrument.** A bare `LabJack`, which names no model, and a `LabJack_T4`
+  or `LabJack_T8`, which no driver supports, now get an error that lists the models the net can
+  use.
+
+- **`lager boxes unlock` releases a lock that the CLI already counts as yours, without
+  `--force`.** This includes the auto-lock that an earlier step of the same CI job left, and a
+  lock that another tool took under your email. The new `--user` option names the holder of a
+  lock recorded under a different name.
+
+- **Ending a `lager uart` session no longer logs a read error on the box.** A read that fails
+  because teardown closed the port is not reported, and a session that `lager uart --force`
+  displaces is told that another client took the net.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.48.1
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli==0.48.1
+```
+
+Then update your boxes:
+
+```bash
+lager update --box <box-name>
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.48.1/)

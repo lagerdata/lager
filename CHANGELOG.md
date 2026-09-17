@@ -12,6 +12,8 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+## [0.48.1] - 2026-09-16
+
 ### Added
 
 - **`lager dut add-doc` can point at a document in an external document store.**
@@ -26,6 +28,20 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   network mode `host`.
 
 ### Fixed
+
+- **`lager ssh-setup` and `lager update` no longer install their own key on a box
+  a control plane manages.** That control plane installs the key of every user it
+  grants, so a key added here is one it does not know about and cannot revoke.
+  Both commands now use the key that is already on the box, and say which one.
+- **A box you have no access to asks for a grant, not a password.** `lager
+  ssh-setup` against such a box tells you to ask an admin for access in the
+  control plane. A key installed to reach the box is taken back out.
+- **A box that refuses passwords no longer reports a wrong password.** Both
+  commands ask the box's SSH server what it accepts before they offer to install
+  a key, so a box with password authentication off says that, instead of blaming
+  the password you typed.
+- **The DA1469x flash-loader error names a command that exists.** It said to run
+  `lager box ssh <box>`; the command is `lager ssh --box <box>`.
 
 - **`lager debug SWD flash` and `lager debug SWD erase` work again on a DA1469x.**
   The RAM-resident flash loader was entered with the Thumb bit clear, so the core
