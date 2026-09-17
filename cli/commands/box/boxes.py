@@ -58,6 +58,13 @@ _STRAGGLER_GRACE = 3.0
 # reached often enough to turn smoothly; also what bounds how long Ctrl+C
 # waits. Idle cost is one timed queue wait per tick.
 _POLL_INTERVAL = 0.1
+# Wall-clock allowance for the whole pre-warm below. It runs before the first
+# paint, so every second of it is a second the user stares at nothing, and it
+# is not covered by the per-box budgets or by the countdown. One unreachable
+# auth server costs AUTH_SERVER_TIMEOUT; this stops a second and a third from
+# being charged as well. A server left unresolved is not an error: the workers
+# send whatever the store already holds, and an unexpired token still works.
+_PREWARM_BUDGET = 10.0
 
 _PENDING = 'pending'
 _CANCELLED = 'cancelled'
@@ -103,34 +110,74 @@ def _status_color(status):
     return 'red'
 
 
-def _resolve_auth_headers(boxes):
-    """Stout bearer headers per box IP, resolved before any fan-out.
+def _resolve_auth_headers(boxes, budget=_PREWARM_BUDGET):
+    """Bearer headers per box IP, resolved before any fan-out.
 
-    Deliberately serial, on the calling thread. `auth_headers_for_box` can
-    spend the refresh cookie, and Stout rotates that cookie on every
+    Deliberately serial, on the calling thread. Resolving a token can spend
+    the refresh cookie, and the auth server rotates that cookie on every
     successful refresh -- so N threads each finding the same near-expiry
     token would refresh N times, and the losers would rotate the session out
     from under the winner. The user would be logged out by `lager boxes`.
 
-    Resolving here means any refresh happens once, before a second thread
-    exists to race it. A worker does re-read the store between its two calls,
-    to pick up a mapping its own first request just discovered, but by then
-    the token is fresh and that read costs no round trip.
+    Resolved once per auth SERVER, not once per box. A fleet shares a server,
+    and a token is a property of the server, so asking per box repeated the
+    same work: against a server that was not answering, each box paid its own
+    AUTH_SERVER_TIMEOUT, in series, before the table was drawn at all. The
+    boxes are grouped by the server their stored mapping names, and the one
+    token each group resolves is handed to every box in it.
+
+    Two things this must never do, because it runs before the table exists
+    and before Ctrl+C has anything to interrupt: raise, and run long. An
+    unreadable store or an unreachable server leaves some boxes without a
+    header, and a box with no header takes the same path as a box nobody has
+    contacted -- gateway discovery, on its own worker, under its own budget.
     """
-    from ...gateway_auth import auth_headers_for_box
+    from ...gateway_auth import (
+        access_token_for, auth_server_for_box, pinned_token,
+    )
     headers = {}
-    for _, ip, _ in boxes:
-        if ip != 'unknown' and ip not in headers:
-            headers[ip] = auth_headers_for_box(ip)
+    try:
+        pinned = pinned_token()
+        if pinned:
+            # Applies to every box and costs no round trip; the store and the
+            # box->server map are not consulted at all (contract 6.2).
+            header = {'Authorization': f'Bearer {pinned}'}
+            return {ip: header for _, ip, _ in boxes if ip != 'unknown'}
+
+        by_server = {}
+        for _, ip, _ in boxes:
+            if ip == 'unknown':
+                continue
+            url = auth_server_for_box(ip)
+            if url:
+                by_server.setdefault(url, []).append(ip)
+
+        deadline = time.monotonic() + budget
+        for url, ips in by_server.items():
+            if time.monotonic() >= deadline:
+                break
+            token = access_token_for(url)
+            if token:
+                header = {'Authorization': f'Bearer {token}'}
+                for ip in ips:
+                    headers[ip] = header
+    except Exception:  # pylint: disable=broad-except
+        # A store the user cannot read used to end the whole command here,
+        # with a traceback and no table. Whatever was resolved before the
+        # failure is still worth sending.
+        return headers
     return headers
 
 
 def _probe_box(name, ip, user, port, status_timeout, cli_version, auth_headers):
     """Probe one box's lock and version state. Runs on a worker thread.
 
-    Never raises. The collect loop needs a row for every box it started, and
-    an exception escaping here would strand that box on 'pending' until the
-    deadline instead of naming what went wrong.
+    Never raises, and every statement that can is inside one of the two try
+    blocks below -- `probe`, the thread body that calls this, has no handler
+    of its own, so anything escaping here kills the thread before it answers.
+    The collect loop needs a row for every box it started, and a box whose
+    thread died is stranded on 'pending' until the deadline and then reported
+    as silent, which says nothing about what actually went wrong.
     """
     import requests
     from ...box_storage import check_gateway_status
@@ -156,7 +203,8 @@ def _probe_box(name, ip, user, port, status_timeout, cli_version, auth_headers):
         # still answering. stream mirrors this buffered call, as the retry
         # requires.
         lock_resp, _ = check_gateway_status(
-            lock_resp, ip, timeout=_LOCK_TIMEOUT, stream=False)
+            lock_resp, ip, timeout=_LOCK_TIMEOUT, stream=False,
+            allow_refresh=False)
         if lock_resp.status_code == 200:
             lock_data = lock_resp.json()
             if lock_data.get('locked'):
@@ -166,16 +214,23 @@ def _probe_box(name, ip, user, port, status_timeout, cli_version, auth_headers):
         # version below, and that is the more useful answer.
         pass
 
-    # The /lock call may have just learned that this box is gated -- the
-    # box->auth-server mapping only exists once a 401 has disclosed it. Asking
-    # again here is what lets /status authenticate up front instead of
-    # spending a discovery round trip of its own. Cheap and safe on a worker
-    # thread: the pre-warm already did any refresh this needs, so this is a
-    # store read, and `access_token_for` is single-flight if it is not.
-    from ...gateway_auth import auth_headers_for_box
-    status_headers = auth_headers_for_box(ip)
-
     try:
+        # The /lock call may have just learned that this box is gated -- the
+        # box->auth-server mapping only exists once a 401 has disclosed it.
+        # Asking again here is what lets /status authenticate up front
+        # instead of spending a discovery round trip of its own.
+        #
+        # Inside the try, and never refreshing. This pair of lines used to sit
+        # between the two try blocks, so a store this thread could not read
+        # raised out of a function whose contract is "never raises": the
+        # thread died before it could answer, and the box was reported as
+        # silent rather than as an error. allow_refresh=False keeps it to a
+        # store read -- the pre-warm owns refreshing, and a worker that the
+        # collect loop abandons mid-rotation is how the session gets lost.
+        from ...gateway_auth import auth_headers_for_box
+        status_headers = auth_headers or auth_headers_for_box(
+            ip, allow_refresh=False)
+
         # /status on :9000 reports the box version (from /etc/lager/version).
         # It predates the newer capability fields, so even older box images
         # answer it -- unlike a brand-new endpoint would.
@@ -185,7 +240,8 @@ def _probe_box(name, ip, user, port, status_timeout, cli_version, auth_headers):
             headers={'Cache-Control': 'no-cache', 'Pragma': 'no-cache', **status_headers},
         )
         response, gate_verdict = check_gateway_status(
-            response, ip, timeout=status_timeout, stream=False)
+            response, ip, timeout=status_timeout, stream=False,
+            allow_refresh=False)
         if gate_verdict:
             return _Row(name, ip, user, '-', gate_verdict, locked_by, auth_denied=True)
 
@@ -466,6 +522,16 @@ def _list_boxes_live(port=9000, timeout=_DEFAULT_STATUS_TIMEOUT):
     stranded = _CANCELLED if interrupted else _ABANDONED
     for name, ip, user in table.pending():
         table.record(_Row(name, ip, user, '-', stranded))
+
+    # The workers are daemon threads, so returning here can end the process
+    # while one is still inside a refresh. The auth server rotates the cookie
+    # before the reply that carries it is stored, and a process that dies in
+    # that window sends the superseded cookie next time: the user is told the
+    # session was rejected and has to run `lager login` again, because they
+    # listed their boxes. Bounded, so a wedged server costs a short pause
+    # rather than the command.
+    from ...gateway_auth import wait_for_refreshes
+    wait_for_refreshes()
 
     results = table.rows()
 

@@ -92,10 +92,38 @@ def test_auth_headers_for_url_parses_host():
 # ---------------------------------------------------------------------------
 
 class FakeAuthServer:
-    """Auth server stub implementing the login/refresh contract."""
+    """Auth server stub implementing the login/refresh contract.
 
-    def __init__(self):
+    `delay` makes /api/auth/refresh slow, which is the whole subject of the
+    slow-server section at the bottom of this file: the interesting bugs are
+    all about what the rest of the process is allowed to do while one refresh
+    is outstanding. `refresh_started` fires as the handler is entered, before
+    the delay, so a test can act during the window rather than guess at it.
+
+    `hold` is an Event a refresh waits on instead of sleeping, for a test that
+    needs one still in flight. It is released in `stop()`, so the handler
+    always finishes while its socket is open. An earlier version slept for 30
+    seconds instead, and the handler woke up long after the fixture had closed
+    the server -- the write to a dead socket then took the whole pytest
+    process down, 30 seconds later and 35% further into the suite, in an
+    unrelated test.
+
+    `gate` is a `threading.Barrier` shared between two servers. A refresh
+    waits on it, so two refreshes pass only if they are genuinely in flight
+    at the same time; if something serializes them, the barrier times out and
+    the handler answers 500. That turns "did these run in parallel" into a
+    pass/fail the machine decides, instead of a wall-clock comparison that
+    goes red on a loaded laptop.
+    """
+
+    def __init__(self, delay=0.0, gate=None, status=200):
         self.refresh_calls = []
+        self.refresh_started = threading.Event()
+        self.refresh_done = threading.Event()
+        self.hold = None
+        self.delay = delay
+        self.gate = gate
+        self.status = status
         server_ref = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -103,6 +131,26 @@ class FakeAuthServer:
                 if self.path == '/api/auth/refresh':
                     cookie = self.headers.get('Cookie', '')
                     server_ref.refresh_calls.append(cookie)
+                    server_ref.refresh_started.set()
+                    status = server_ref.status
+                    if server_ref.gate is not None:
+                        try:
+                            server_ref.gate.wait(timeout=5)
+                        except threading.BrokenBarrierError:
+                            status = 500
+                    if server_ref.hold is not None:
+                        server_ref.hold.wait(timeout=30)
+                    if server_ref.delay:
+                        time.sleep(server_ref.delay)
+                    if status != 200:
+                        self.send_response(status)
+                        self.send_header('Content-Length', '0')
+                        self.end_headers()
+                        # Every exit from this branch marks itself done, or
+                        # stop() waits out its whole budget for a refresh
+                        # that already answered.
+                        server_ref.refresh_done.set()
+                        return
                     body = json.dumps(
                         {'accessToken': make_jwt(time.time() + 900)}).encode()
                     self.send_response(200)
@@ -113,6 +161,7 @@ class FakeAuthServer:
                         'refresh_token=rotated-token; Path=/api/auth; HttpOnly')
                     self.end_headers()
                     self.wfile.write(body)
+                    server_ref.refresh_done.set()
                 elif self.path == '/api/auth/login':
                     length = int(self.headers.get('Content-Length', 0))
                     payload = json.loads(self.rfile.read(length))
@@ -143,6 +192,14 @@ class FakeAuthServer:
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
     def stop(self):
+        # Release a held refresh and let it finish BEFORE the socket goes
+        # away. ThreadingHTTPServer runs handlers as daemon threads and does
+        # not join them, so closing underneath one leaves it to write into a
+        # closed socket at some arbitrary later moment.
+        if self.hold is not None:
+            self.hold.set()
+        if self.refresh_started.is_set():
+            self.refresh_done.wait(timeout=10)
         self.server.shutdown()
         self.server.server_close()
 
@@ -681,3 +738,170 @@ def test_ws_recovery_with_pinned_token_fails_without_recording(monkeypatch, pinn
     assert headers == {}
     assert gateway_auth.PINNED_TOKEN_ENV in error.problem
     assert not isolated_store.exists()
+
+
+# ---------------------------------------------------------------------------
+# A slow or unreachable auth server (#539)
+#
+# None of this is about a server that answers. It is about what the rest of
+# the process is allowed to do while one refresh is outstanding, and about
+# how many times a fleet pays for a server that never answers at all.
+# ---------------------------------------------------------------------------
+
+def test_a_slow_refresh_leaves_the_store_lock_free(auth_server):
+    """A refresh holds its server's lock, not the lock over the store.
+
+    `_store_lock` used to span the whole refresh, so a server taking the
+    full AUTH_SERVER_TIMEOUT froze every other thread that wanted the store
+    -- including threads recording a discovery for a different box, and
+    threads resolving a different auth server entirely. In `lager boxes`
+    that is the difference between one slow box and a slow table.
+    """
+    auth_server.delay = 0.5
+    gateway_auth.save_login(
+        auth_server.url, make_jwt(time.time() - 10), {'refresh_token': 'r1'})
+
+    done = threading.Event()
+    threading.Thread(
+        target=lambda: (gateway_auth.access_token_for(auth_server.url),
+                        done.set()),
+        daemon=True).start()
+
+    assert auth_server.refresh_started.wait(timeout=5), 'refresh never started'
+    assert not done.is_set(), 'refresh finished before the assertion'
+    acquired = gateway_auth._store_lock.acquire(blocking=False)
+    if acquired:
+        gateway_auth._store_lock.release()
+    assert done.wait(timeout=10)
+    assert acquired, '_store_lock was held across the network call'
+
+
+def test_two_auth_servers_refresh_at_the_same_time():
+    """Per-URL locking, proved by a barrier rather than by a stopwatch.
+
+    Both handlers wait on the same two-party barrier. If the two refreshes
+    are serialized, the first waits for a partner that cannot arrive, the
+    barrier breaks, and that server answers 500 -- so the assertion below
+    fails for the right reason instead of measuring a loaded machine.
+    """
+    gate = threading.Barrier(2, timeout=5)
+    first, second = FakeAuthServer(gate=gate), FakeAuthServer(gate=gate)
+    try:
+        tokens = {}
+        for server in (first, second):
+            gateway_auth.save_login(
+                server.url, make_jwt(time.time() - 10),
+                {'refresh_token': 'r1'})
+
+        def refresh(server):
+            tokens[server.url] = gateway_auth.access_token_for(server.url)
+
+        threads = [threading.Thread(target=refresh, args=(s,), daemon=True)
+                   for s in (first, second)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=15)
+
+        assert tokens.get(first.url), 'first server never returned a token'
+        assert tokens.get(second.url), 'second server never returned a token'
+    finally:
+        first.stop()
+        second.stop()
+
+
+def test_a_server_that_refuses_is_asked_once_per_process(auth_server):
+    """A failed refresh is remembered, so a fleet pays one timeout, not N.
+
+    A failed refresh writes nothing to the store, so before this the next
+    caller behind the same server found exactly what the last one did and
+    started the same doomed round trip. On a fleet sharing one auth server
+    that was the whole budget once per box, in series, before the table was
+    drawn.
+    """
+    auth_server.status = 503
+    gateway_auth.save_login(
+        auth_server.url, make_jwt(time.time() - 10), {'refresh_token': 'r1'})
+
+    assert gateway_auth.access_token_for(auth_server.url) is None
+    assert gateway_auth.access_token_for(auth_server.url) is None
+    assert gateway_auth.access_token_for(auth_server.url) is None
+    assert len(auth_server.refresh_calls) == 1
+
+
+def test_a_remembered_failure_does_not_cross_stores(auth_server, monkeypatch,
+                                                    tmp_path):
+    """The memo is keyed by store, because the store is the session.
+
+    Point LAGER_GATEWAY_AUTH_FILE somewhere else and the credentials are
+    different ones, so what failed for the old store says nothing about the
+    new one. This is also what stops the memo outliving a test.
+    """
+    auth_server.status = 503
+    gateway_auth.save_login(
+        auth_server.url, make_jwt(time.time() - 10), {'refresh_token': 'r1'})
+    assert gateway_auth.access_token_for(auth_server.url) is None
+
+    monkeypatch.setenv('LAGER_GATEWAY_AUTH_FILE', str(tmp_path / 'other.json'))
+    auth_server.status = 200
+    gateway_auth.save_login(
+        auth_server.url, make_jwt(time.time() - 10), {'refresh_token': 'r2'})
+    assert gateway_auth.access_token_for(auth_server.url)
+
+
+def test_allow_refresh_false_never_contacts_the_server(auth_server):
+    """A caller under a deadline sends the stored token and spends nothing.
+
+    The token is inside its refresh margin, so the default path would
+    refresh. A worker thread that its caller can abandon passes False
+    instead: an unexpired token is still a token the gateway accepts, and a
+    rotation left half-finished is how the session is lost.
+    """
+    stored = make_jwt(time.time() + 5)
+    gateway_auth.save_login(auth_server.url, stored, {'refresh_token': 'r1'})
+
+    assert gateway_auth.access_token_for(
+        auth_server.url, allow_refresh=False) == stored
+    assert auth_server.refresh_calls == []
+
+
+def test_wait_for_refreshes_lets_an_in_flight_rotation_finish(auth_server):
+    """The drain that stops `lager boxes` logging the user out.
+
+    The server rotates the cookie before the reply carrying it is stored.
+    The workers are daemon threads, so a command that returns while one is
+    inside that window leaves the superseded cookie on disk, and the next
+    command is told the session was rejected.
+    """
+    auth_server.delay = 0.4
+    gateway_auth.save_login(
+        auth_server.url, make_jwt(time.time() - 10), {'refresh_token': 'old'})
+
+    threading.Thread(
+        target=lambda: gateway_auth.access_token_for(auth_server.url),
+        daemon=True).start()
+    assert auth_server.refresh_started.wait(timeout=5), 'refresh never started'
+
+    assert gateway_auth.wait_for_refreshes(timeout=10)
+    entry = gateway_auth._load_store()['authServers'][auth_server.url]
+    assert entry['cookies']['refresh_token'] == 'rotated-token'
+
+
+def test_the_drain_gives_up_rather_than_hanging(auth_server):
+    """Bounded: a server that never answers costs a pause, not the command.
+
+    The refresh is held open by an Event rather than by a long sleep, so the
+    handler is released during teardown and never outlives its socket.
+    """
+    auth_server.hold = threading.Event()
+    gateway_auth.save_login(
+        auth_server.url, make_jwt(time.time() - 10), {'refresh_token': 'old'})
+
+    threading.Thread(
+        target=lambda: gateway_auth.access_token_for(auth_server.url),
+        daemon=True).start()
+    assert auth_server.refresh_started.wait(timeout=5), 'refresh never started'
+
+    started = time.monotonic()
+    assert gateway_auth.wait_for_refreshes(timeout=0.2) is False
+    assert time.monotonic() - started < 5

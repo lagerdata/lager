@@ -766,7 +766,8 @@ def _resend_with_auth(prepared, headers, *, timeout: Optional[float] = 30,
 
 
 def _resolve_gateway(resp, ip, *, timeout: Optional[float] = 30,
-                     stream: bool = True, session=None):
+                     stream: bool = True, session=None,
+                     allow_refresh: bool = True):
     """Record-and-retry core shared by :func:`_check_gateway` and
     :func:`check_gateway_status` — the single implementation of gateway
     discovery. Returns ``(resp, denied)``:
@@ -787,6 +788,12 @@ def _resolve_gateway(resp, ip, *, timeout: Optional[float] = 30,
     mirror the original call; see :func:`_resend_with_auth`. They exist for
     the debug service's streaming RTT endpoint, which cannot be replayed
     buffered.
+
+    ``allow_refresh=False`` reaches :func:`~cli.gateway_auth.access_token_for`
+    and stops this call spending the refresh cookie. The token attached to
+    the retry is then whatever the store already holds. A worker thread that
+    its caller can abandon at a deadline passes False; there is no budget
+    here that bounds a refresh, so one would otherwise outlive the call.
     """
     from .gateway_auth import (
         DISCOVERY_HEADER, record_box_auth_server, auth_headers_for_box,
@@ -799,7 +806,7 @@ def _resolve_gateway(resp, ip, *, timeout: Optional[float] = 30,
     record_box_auth_server(ip, resp_headers[DISCOVERY_HEADER])
     sent_auth = 'Authorization' in getattr(resp.request, 'headers', {})
     if resp.status_code == 401 and not sent_auth:
-        headers = auth_headers_for_box(ip)
+        headers = auth_headers_for_box(ip, allow_refresh=allow_refresh)
         if headers:
             retried = _resend_with_auth(resp.request, headers, timeout=timeout,
                                         stream=stream, session=session)
@@ -814,7 +821,8 @@ def _resolve_gateway(resp, ip, *, timeout: Optional[float] = 30,
 
 
 def _check_gateway(resp, ip, *, timeout: Optional[float] = 30,
-                   stream: bool = True, session=None):
+                   stream: bool = True, session=None,
+                   allow_refresh: bool = True):
     """Resolve a gateway response, returning the response the caller should use.
 
     On a plain (un-gated) box this is a passthrough. On a gated box the
@@ -830,14 +838,15 @@ def _check_gateway(resp, ip, *, timeout: Optional[float] = 30,
     """
     from .gateway_auth import handle_gateway_denial
     resp, denied = _resolve_gateway(resp, ip, timeout=timeout,
-                                    stream=stream, session=session)
+                                    stream=stream, session=session,
+                                    allow_refresh=allow_refresh)
     if denied:
         handle_gateway_denial(resp, ip)     # raises the actionable error
     return resp
 
 
 def check_gateway_status(resp, ip, *, timeout: Optional[float] = 30,
-                         stream: bool = True):
+                         stream: bool = True, allow_refresh: bool = True):
     """Non-raising variant of :func:`_check_gateway` for fan-out and
     fail-open callers (`lager boxes`, health polls) that must not abort on a
     single box's denial.
@@ -859,9 +868,14 @@ def check_gateway_status(resp, ip, *, timeout: Optional[float] = 30,
     cannot be attached up front — and on the old fixed 30s it could outlast
     a caller's own timeout. The caller then reported a box as silent while
     its retry was still in flight and about to succeed.
+
+    The same caller passes ``allow_refresh=False``: the budget above bounds
+    the retry, but nothing bounds a token refresh, so a worker under a
+    deadline leaves refreshing to whoever owns the fan-out.
     """
     from .gateway_auth import denial_label
-    resp, denied = _resolve_gateway(resp, ip, timeout=timeout, stream=stream)
+    resp, denied = _resolve_gateway(resp, ip, timeout=timeout, stream=stream,
+                                    allow_refresh=allow_refresh)
     if not denied:
         return resp, None
     return resp, denial_label(resp)

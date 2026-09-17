@@ -73,8 +73,12 @@ def make_jwt(exp, iat=None):
     return f"{seg({'alg': 'none'})}.{seg({'exp': exp, 'iat': iat or (exp - 900)})}.sig"
 
 
-class BoxesListingTestCase(unittest.TestCase):
-    """Drives ``_list_boxes_live`` directly, the way the click group does."""
+class ListingHarnessTestCase(unittest.TestCase):
+    """Drives ``_list_boxes_live`` directly, the way the click group does.
+
+    Harness only, so that a second suite can reuse it without re-running
+    every test in the first one.
+    """
 
     def setUp(self):
         self.addCleanup(mock.patch.stopall)
@@ -108,6 +112,9 @@ class BoxesListingTestCase(unittest.TestCase):
             result = runner.invoke(boxes_mod.boxes, [])
         self.assertIsNone(result.exception, msg=result.output)
         return result.output
+
+
+class BoxesListingTestCase(ListingHarnessTestCase):
 
     def test_all_boxes_are_probed_concurrently(self):
         # Every box must be in flight at once for the barrier to trip, so a
@@ -179,9 +186,9 @@ class BoxesListingTestCase(unittest.TestCase):
             resp.request.url = url          # so the spy can tell them apart
             return resp
 
-        def spy(resp, ip, *, timeout=None, stream=None):
+        def spy(resp, ip, *, timeout=None, stream=None, allow_refresh=None):
             endpoint = resp.request.url.rsplit('/', 1)[-1]
-            budgets.append((endpoint, timeout, stream))
+            budgets.append((endpoint, timeout, stream, allow_refresh))
             return resp, None
 
         mock.patch.object(import_module('cli.box_storage'),
@@ -190,9 +197,13 @@ class BoxesListingTestCase(unittest.TestCase):
         self._run({'GATED': '10.0.0.1'}, fake_get)
 
         # stream=False mirrors the buffered probe calls, as the retry demands.
+        # allow_refresh=False for the same reason the budgets are passed at
+        # all: the timeouts bound the retry, but nothing bounds a token
+        # refresh, so a worker the collect loop can abandon leaves refreshing
+        # to the pre-warm on the calling thread.
         self.assertEqual(budgets, [
-            ('lock', boxes_mod._LOCK_TIMEOUT, False),
-            ('status', boxes_mod._DEFAULT_STATUS_TIMEOUT, False),
+            ('lock', boxes_mod._LOCK_TIMEOUT, False, False),
+            ('status', boxes_mod._DEFAULT_STATUS_TIMEOUT, False, False),
         ])
 
     def test_boxes_with_no_ip_need_no_network(self):
@@ -495,3 +506,147 @@ class GatewayAuthConcurrencyTestCase(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class PreWarmTestCase(ListingHarnessTestCase):
+    """The auth pre-warm that runs before the table exists (#539).
+
+    It is serial, on the calling thread, before the first paint and before
+    the countdown starts -- so nothing the user can see is happening while
+    it runs, and Ctrl+C has nothing to interrupt. Two properties follow: it
+    resolves once per auth SERVER rather than once per box, and it neither
+    raises nor runs long.
+    """
+
+    def _ok_get(self):
+        def fake_get(url, timeout=None, headers=None):
+            body = {'locked': False} if url.endswith('/lock') \
+                else {'version': CLI_VERSION}
+            return make_response(200, body)
+        return fake_get
+
+    def test_one_token_is_resolved_per_auth_server_not_per_box(self):
+        """A fleet behind one auth server asks it once, not once per box.
+
+        A token belongs to the server, not to the box, so asking per box
+        repeated identical work. Against a server that was not answering,
+        each box paid its own AUTH_SERVER_TIMEOUT in series before the table
+        was drawn at all -- the listing looked hung, and the boxes that were
+        abandoned at the deadline were reported as silent.
+        """
+        gw = import_module('cli.gateway_auth')
+        asked = []
+        mock.patch.object(gw, 'pinned_token', lambda: None).start()
+        mock.patch.object(gw, 'auth_server_for_box',
+                          lambda ip: 'https://auth.example.com').start()
+
+        def count(url, **kwargs):
+            asked.append(url)
+            return 'tok'
+
+        mock.patch.object(gw, 'access_token_for', count).start()
+
+        headers = boxes_mod._resolve_auth_headers(
+            [('A', '10.0.0.1', 'u'), ('B', '10.0.0.2', 'u'),
+             ('C', '10.0.0.3', 'u')])
+
+        self.assertEqual(asked, ['https://auth.example.com'])
+        self.assertEqual(
+            {ip: h['Authorization'] for ip, h in headers.items()},
+            {'10.0.0.1': 'Bearer tok', '10.0.0.2': 'Bearer tok',
+             '10.0.0.3': 'Bearer tok'})
+
+    def test_two_auth_servers_are_each_resolved_once(self):
+        gw = import_module('cli.gateway_auth')
+        asked = []
+        mapping = {'10.0.0.1': 'https://one.example.com',
+                   '10.0.0.2': 'https://one.example.com',
+                   '10.0.0.3': 'https://two.example.com'}
+        mock.patch.object(gw, 'pinned_token', lambda: None).start()
+        mock.patch.object(gw, 'auth_server_for_box', mapping.get).start()
+        mock.patch.object(gw, 'access_token_for',
+                          lambda url, **kw: asked.append(url) or 'tok').start()
+
+        boxes_mod._resolve_auth_headers(
+            [('A', '10.0.0.1', 'u'), ('B', '10.0.0.2', 'u'),
+             ('C', '10.0.0.3', 'u')])
+
+        self.assertEqual(sorted(asked),
+                         ['https://one.example.com', 'https://two.example.com'])
+
+    def test_a_box_with_no_stored_auth_server_costs_nothing(self):
+        """A plain box is never asked for a token it has no server for."""
+        gw = import_module('cli.gateway_auth')
+        mock.patch.object(gw, 'pinned_token', lambda: None).start()
+        mock.patch.object(gw, 'auth_server_for_box', lambda ip: None).start()
+        mock.patch.object(gw, 'access_token_for', mock.Mock(
+            side_effect=AssertionError('asked for a token'))).start()
+
+        self.assertEqual(
+            boxes_mod._resolve_auth_headers([('A', '10.0.0.1', 'u')]), {})
+
+    def test_an_unreadable_store_still_prints_the_table(self):
+        """A store the user cannot read is a row's problem, not the command's.
+
+        `_resolve_auth_headers` runs on the main thread with no handler above
+        it, so a PermissionError on the store used to end `lager boxes` with
+        a traceback and no table -- including for every plain box in the
+        fleet, which needed no store at all.
+        """
+        gw = import_module('cli.gateway_auth')
+        mock.patch.object(gw, 'pinned_token', lambda: None).start()
+        mock.patch.object(gw, 'auth_server_for_box', mock.Mock(
+            side_effect=PermissionError(13, 'Permission denied'))).start()
+
+        self.assertEqual(
+            boxes_mod._resolve_auth_headers([('A', '10.0.0.1', 'u')]), {})
+
+        out = self._run({'A': '10.0.0.1'}, self._ok_get())
+        self.assertIn('10.0.0.1', out)
+
+    def test_the_prewarm_stops_at_its_budget(self):
+        """A second slow auth server is not charged to the same listing.
+
+        The budget is checked before each server, so one call can overrun it;
+        what it bounds is how many servers a single listing waits on.
+        """
+        gw = import_module('cli.gateway_auth')
+        asked = []
+
+        def slow(url, **kwargs):
+            asked.append(url)
+            time.sleep(0.2)
+            return 'tok'
+
+        mapping = {f'10.0.0.{n}': f'https://auth{n}.example.com'
+                   for n in (1, 2, 3)}
+        mock.patch.object(gw, 'pinned_token', lambda: None).start()
+        mock.patch.object(gw, 'auth_server_for_box', mapping.get).start()
+        mock.patch.object(gw, 'access_token_for', slow).start()
+
+        boxes_mod._resolve_auth_headers(
+            [(f'B{n}', f'10.0.0.{n}', 'u') for n in (1, 2, 3)], budget=0.1)
+
+        self.assertEqual(len(asked), 1)
+
+    def test_a_worker_that_cannot_read_the_store_reports_error(self):
+        """A failure in the worker is a row that says 'error', not silence.
+
+        `auth_headers_for_box` sat between `_probe_box`'s two try blocks, and
+        the thread body has no handler of its own. Anything it raised killed
+        the thread before it could answer, so the box sat on 'pending' until
+        the deadline and was then reported as 'no response' -- which is what
+        a powered-off box looks like, and says nothing about the real fault.
+        """
+        gw = import_module('cli.gateway_auth')
+        mock.patch.object(gw, 'auth_headers_for_box', mock.Mock(
+            side_effect=PermissionError(13, 'Permission denied'))).start()
+
+        def gated_get(url, timeout=None, headers=None):
+            # No /lock answer, so the pre-warmed header stays empty and the
+            # worker falls through to its own store read.
+            raise requests.ConnectionError('no route')
+
+        out = self._run({'GATED': '10.0.0.1'}, gated_get)
+        self.assertIn('error', out)
+        self.assertNotIn(boxes_mod._ABANDONED, out)
