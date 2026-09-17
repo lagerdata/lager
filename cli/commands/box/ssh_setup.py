@@ -29,6 +29,7 @@ from ._ssh import (
     box_has_control_plane,
     ensure_lager_box_keypair,
     key_installed_on_box,
+    key_registered_on_box,
     register_lager_box_key,
     remove_lager_box_key,
     resolve_box_user,
@@ -114,6 +115,17 @@ def register_or_warn(dest: str, *, key_path: str = _LAGER_BOX_KEY) -> bool:
     """
     ok, detail = register_lager_box_key(dest, key_path=key_path)
     if ok:
+        return True
+
+    # A write that failed is not evidence the key is missing. On a box a
+    # control plane has hardened, the key directory is root-owned and this
+    # write can never succeed — so on the ordinary box, where the key is
+    # already registered, the failure means nothing and the warning below was
+    # simply false. It said so on every ssh-setup and every update.
+    #
+    # Only True suppresses it: False is a real "not registered", and None is
+    # "could not ask", where the warning is still the better guess.
+    if key_registered_on_box(dest, key_path=key_path) is True:
         return True
 
     # A control plane owns this box's key directory. Telling the operator to

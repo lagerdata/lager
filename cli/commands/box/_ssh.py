@@ -455,6 +455,57 @@ def remove_lager_box_key(
     return proc.returncode == 0
 
 
+def key_registered_on_box(
+    dest: str,
+    *,
+    key_path: str = _LAGER_BOX_KEY,
+    timeout: int = 15,
+) -> Optional[bool]:
+    """Is this machine's key already a `.pub` in the box's key directory?
+
+    Registration failing and the key being unregistered are different facts,
+    and only the second is worth telling an operator about. On a box a control
+    plane has hardened, the key directory is root-owned and the write can NEVER
+    succeed — so a failed write there says nothing at all about whether the key
+    is in it. Reporting the failure as "this key is outside the control plane"
+    was wrong on every box where the key was already registered, which is the
+    ordinary case, and it said so on every ssh-setup and every update.
+
+    The files are 0644 in a 0755 directory, so the login user can read them
+    without sudo. Matched on the blob, like :func:`key_installed_on_box`,
+    because the filename carries the operator's machine name and the comment
+    drifts.
+
+    None means the box could not be asked, which is not evidence either way;
+    callers should keep whatever they would have said.
+    """
+    blob = lager_box_pubkey_blob(key_path)
+    if blob is None or shutil.which("ssh") is None:
+        return None
+    cmd = f"grep -lF '{blob}' {shlex.quote(BOX_KEYS_DIR)}/*.pub 2>/dev/null"
+    try:
+        proc = subprocess.run(
+            [
+                "ssh",
+                *widened_identity_args(key_path),
+                "-o", "BatchMode=yes",
+                "-o", "StrictHostKeyChecking=accept-new",
+                "-o", f"ConnectTimeout={timeout}",
+                dest, cmd,
+            ],
+            capture_output=True, text=True, timeout=timeout + 5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    # grep exits 1 for "no match", which here means "not registered" -- an
+    # answer. 255 is ssh never getting there, which is not one.
+    if proc.returncode == 0:
+        return bool((proc.stdout or "").strip())
+    if proc.returncode == 1:
+        return False
+    return None
+
+
 def register_lager_box_key(
     dest: str,
     *,

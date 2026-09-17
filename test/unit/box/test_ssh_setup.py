@@ -98,7 +98,8 @@ class EnsureKeypair(unittest.TestCase):
 
 def _invoke(*, copy_results=None, generated=False, auth_sequence=(),
             which="/usr/bin/ssh-copy-id", register=(True, ""),
-            managed=False, removed=True, accepts_password=None):
+            managed=False, removed=True, accepts_password=None,
+            registered_already=False):
     """Run `lager ssh-setup` with the helpers mocked.
 
     auth_sequence drives successive key_installed_on_box() return values
@@ -141,6 +142,7 @@ def _invoke(*, copy_results=None, generated=False, auth_sequence=(),
          patch.object(mod, "register_lager_box_key", fake_register), \
          patch.object(mod, "box_has_control_plane", lambda dest, **k: managed), \
          patch.object(mod, "box_accepts_a_password", lambda dest, **k: accepts_password), \
+         patch.object(mod, "key_registered_on_box", lambda dest, **k: registered_already), \
          patch.object(mod, "remove_lager_box_key", fake_remove), \
          patch.object(mod.shutil, "which", lambda name: which):
         sub.run = copy_run
