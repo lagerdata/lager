@@ -634,12 +634,12 @@ If the build commands are in your `.lager` file, `lager exec` runs them.
 `lager exec` has two behaviors:
 
 - On a developer machine, it starts a container from the DEVENV `image`.
-- In a CI job that the CLI detects, it runs the command directly. The CLI expects
-  the job to run in the image already, so there is nothing to start. A job
-  container also has no Docker.
+- In a CI job that runs inside a container, it runs the command directly. The
+  job is in the image already, so there is nothing to start. A job container
+  also has no Docker.
 
-The CLI detects the job from the CI variables only. It does not check for a
-container. Give the image to the job with `container:`:
+The CLI reads the CI variables, then checks whether this process is in a
+container. Both have to be true. Give the image to the job with `container:`:
 
 ```yaml
 jobs:
@@ -652,10 +652,10 @@ jobs:
       - run: lager exec build-ci
 ```
 
-Every job on GitHub Actions, GitLab CI, Drone, and Bitbucket Pipelines gets the
-second behavior. This includes a job with no `container:`. In that job, the command
-runs on the runner itself, not in the image. A Jenkins agent and other CI systems
-get the first behavior.
+A job on GitHub Actions, GitLab CI, Drone, or Bitbucket Pipelines gets the second
+behavior. It gets that behavior only when it runs in a container. A job with no
+`container:` runs on the runner. The CLI then starts a container there and prints
+one line. A Jenkins agent and other CI systems get the first behavior.
 
 The command runs in the directory of the check-out. It does not run in `mount_dir`,
 because there is no bind-mount.
@@ -666,19 +666,24 @@ that names them. These `.lager` keys also do nothing: `network`, `ports`, `platf
 `macaddr`, `hostname`, `volumes`, `user`, and `group`. The CLI names these keys only
 with `--verbose`. The `--env` option and the `environment` key operate as usual.
 
-To start a container from a CI job, set `LAGER_CI_OVERRIDE` to any value that is not
-empty. The job must have Docker. Set the variable only on the `lager exec` step:
+To choose the path yourself, set `LAGER_EXEC_IN_PLACE`. Set it to `1` to run the
+command in place, and to `0` to start a container. The job must have Docker for
+`0` to work:
 
 ```yaml
 - run: lager exec build-ci
   env:
-    LAGER_CI_OVERRIDE: "1"
+    LAGER_EXEC_IN_PLACE: "1"
 ```
 
+`LAGER_EXEC_IN_PLACE` changes `lager exec` and nothing else. Box locking is the
+same with it set.
+
 <Warning>
-`LAGER_CI_OVERRIDE` stops CI detection for each `lager` command that sees it. A
-lock collision then gives an error at once, and the lock holder is the user name.
-Do not set it for the whole job.
+`LAGER_CI_OVERRIDE` also starts a container, and it costs more. It stops CI
+detection for each `lager` command that sees it. A lock collision then gives an
+error at once, and the lock holder is the user name. Prefer
+`LAGER_EXEC_IN_PLACE=0`, and do not set `LAGER_CI_OVERRIDE` for the whole job.
 </Warning>
 
 ### Set the check-out to `github.sha`
@@ -1616,6 +1621,7 @@ token with the first command, so there is no mapping to record.
 | `LAGER_NO_UPDATE_CHECK` | Stop the background version check. |
 | `CI` | The value `true` selects the CI lock behavior. Actions sets this. |
 | `LAGER_CI_OVERRIDE` | Any value that is not empty turns off CI detection. `lager exec` then starts a container, and the lock uses the user behavior. |
+| `LAGER_EXEC_IN_PLACE` | `1` runs the `lager exec` command in place, `0` starts a container. It changes no other command and no lock. |
 
 `lager python` sends these variables **to** your script on the box:
 `LAGER_RUNNABLE`, `LAGER_PROCESS_ID` and `LAGER_OUTPUT_CHANNEL`. It sends
@@ -1704,8 +1710,15 @@ directly, it does not use these two options.
 
 **`lager exec` gives the error `Docker is not installed or not in PATH`.**
 The job is in a container, but the CLI tried to start one. Make sure that
-`LAGER_CI_OVERRIDE` is not set. A CLI older than 0.46.2 always starts a container.
-Update the CLI. See [section 6](#build-with-lager-exec).
+`LAGER_CI_OVERRIDE` is not set, and that `LAGER_EXEC_IN_PLACE` is not `0`. If
+the container hides the usual markers, set `LAGER_EXEC_IN_PLACE=1`. A CLI older
+than 0.46.2 always starts a container, so update the CLI.
+See [section 6](#build-with-lager-exec).
+
+**`lager exec` starts a container where it used to run the command in place.**
+The job declares no `container:`, so the command ran on the runner, not in the
+image. The CLI now says so and uses Docker. Add `container:` to the
+job, or set `LAGER_EXEC_IN_PLACE=1` to keep the old behavior.
 
 **Your test cannot read an environment variable from the workflow.**
 The `env:` block of a step applies to the runner. Your script operates on the

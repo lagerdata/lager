@@ -520,9 +520,9 @@ jobs:
 `lager exec` 有两种行为：
 
 - 在开发者计算机上，它从 DEVENV 的 `image` 启动一个容器。
-- 在 CLI 能识别的 CI 作业中，它直接运行命令。CLI 认为作业已经在该镜像中运行，所以没有容器需要启动。作业容器中通常也没有 Docker。
+- 在运行于容器中的 CI 作业中，它直接运行命令。作业已经在该镜像中，所以没有容器需要启动。作业容器中通常也没有 Docker。
 
-CLI 只根据 CI 变量来识别作业，它不检查是否处于容器中。请用 `container:` 把镜像交给作业：
+CLI 会先读取 CI 变量，再检查当前进程是否处于容器中。两者都成立时才算数。请用 `container:` 把镜像交给作业：
 
 ```yaml
 jobs:
@@ -535,7 +535,7 @@ jobs:
       - run: lager exec build-ci
 ```
 
-GitHub Actions、GitLab CI、Drone 和 Bitbucket Pipelines 上的每个作业都得到第二种行为，包括没有 `container:` 的作业。在那种作业中，命令运行在运行器本身，而不是在镜像中。
+GitHub Actions、GitLab CI、Drone 和 Bitbucket Pipelines 上的作业会得到第二种行为，但只有当它运行在容器中时才会如此。没有 `container:` 的作业运行在运行器本身，此时 CLI 会在那里启动容器，并打印一行说明。
 Jenkins 代理和其他 CI 系统得到第一种行为。
 
 命令在检出目录中运行，不在 `mount_dir` 中运行，因为没有绑定挂载。
@@ -544,16 +544,18 @@ Jenkins 代理和其他 CI 系统得到第一种行为。
 `network`、`ports`、`platform`、`macaddr`、`hostname`、`volumes`、`user` 和 `group`。
 CLI 只在 `--verbose` 时才列出这些键。`--env` 选项和 `environment` 键照常工作。
 
-若要从 CI 作业启动容器，请把 `LAGER_CI_OVERRIDE` 设为任意非空值。作业必须有 Docker。请只在 `lager exec` 这一步设置该变量：
+若要自行选择运行方式，请设置 `LAGER_EXEC_IN_PLACE`。设为 `1` 表示就地运行命令，设为 `0` 表示启动容器。要让 `0` 生效，作业必须有 Docker：
 
 ```yaml
 - run: lager exec build-ci
   env:
-    LAGER_CI_OVERRIDE: "1"
+    LAGER_EXEC_IN_PLACE: "1"
 ```
 
+`LAGER_EXEC_IN_PLACE` 只影响 `lager exec`，不影响其他任何命令。设置它之后，Box 加锁行为保持不变。
+
 <Warning>
-`LAGER_CI_OVERRIDE` 会让看到它的每条 `lager` 命令都停止 CI 识别。此时锁冲突会立即报错，并且锁持有者是用户名。请不要为整个作业设置它。
+`LAGER_CI_OVERRIDE` 同样可以启动容器，但代价更大。它会让看到它的每条 `lager` 命令都停止 CI 识别。此时锁冲突会立即报错，并且锁持有者是用户名。请优先使用 `LAGER_EXEC_IN_PLACE=0`，并且不要为整个作业设置 `LAGER_CI_OVERRIDE`。
 </Warning>
 
 ### 把检出固定到 `github.sha`
@@ -1335,6 +1337,7 @@ lager whoami
 | `LAGER_NO_UPDATE_CHECK` | 关闭后台版本检查。 |
 | `CI` | 值为 `true` 时启用 CI 的锁行为。Actions 会设置它。 |
 | `LAGER_CI_OVERRIDE` | 任何非空值都会关闭 CI 识别。此时 `lager exec` 会启动容器，锁采用用户行为。 |
+| `LAGER_EXEC_IN_PLACE` | `1` 让 `lager exec` 就地运行命令，`0` 启动容器。它不影响其他命令，也不影响锁。 |
 
 `lager python` 会把这些变量发送**给** Box 上的脚本：
 `LAGER_RUNNABLE`、`LAGER_PROCESS_ID` 和 `LAGER_OUTPUT_CHANNEL`。只有当命令带有 `--box` 标志时，它才发送 `LAGER_BOX`。作业环境中的 `LAGER_BOX` 不会传到脚本。
@@ -1408,7 +1411,10 @@ CLI 也会读取项目中的 `.lager` 文件。它先在工作目录中查找，
 默认值是 `--interactive` 和 `--tty`。在 CI 中请传入 `--no-tty`。这适用于 `lager exec` 启动容器的情况。当 CLI 识别出 CI 作业并直接运行命令时，它不使用这两个选项。
 
 **`lager exec` 报出 `Docker is not installed or not in PATH`。**
-作业在容器中，但 CLI 试图再启动一个容器。请确认没有设置 `LAGER_CI_OVERRIDE`。低于 0.46.2 的 CLI 总是会启动容器，请升级 CLI。请参阅 [第 6 节](#用-lager-exec-构建)。
+作业在容器中，但 CLI 试图再启动一个容器。请确认没有设置 `LAGER_CI_OVERRIDE`，并且 `LAGER_EXEC_IN_PLACE` 不是 `0`。如果该容器没有留下常见的标记，请设置 `LAGER_EXEC_IN_PLACE=1`。低于 0.46.2 的 CLI 总是会启动容器，请升级 CLI。请参阅 [第 6 节](#用-lager-exec-构建)。
+
+**`lager exec` 现在会启动容器，而以前是就地运行命令。**
+该作业没有声明 `container:`，因此命令一直运行在运行器上，而不是在镜像中。CLI 现在会说明这一点并改用 Docker。请给作业加上 `container:`，或者设置 `LAGER_EXEC_IN_PLACE=1` 以保持原有行为。
 
 **您的测试读不到工作流中的环境变量。**
 步骤的 `env:` 块作用于运行器，而您的脚本运行在 Box 上。只有 `--env FOO=bar` 和 `--passenv FOO` 才能把变量发送到 Box。

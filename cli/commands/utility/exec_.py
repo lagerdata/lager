@@ -16,7 +16,10 @@ import platform
 from pathlib import Path
 import click
 from ...config import get_devenv_json, write_lager_json, LAGER_CONFIG_FILE_NAME, get_global_config_file_path, devenv_config_list, expand_devenv_path
-from ...context.ci_detection import get_ci_environment, is_container_ci
+from ...context.ci_detection import (
+    get_ci_environment, is_container_ci, running_in_container,
+    exec_in_place_override, EXEC_IN_PLACE_ENV,
+)
 from ...core.param_types import EnvVarType
 
 
@@ -330,10 +333,34 @@ def exec_(ctx, cmd_name, extra_args, command, save_as, warn, env, passenv, mount
 
     debug = ctx.obj.debug or verbose
 
-    # Under container-based CI the job is already running inside the devenv image, so the
-    # command runs in place. Starting a container from in there would need a Docker the job
-    # container does not have. LAGER_CI_OVERRIDE forces this back to the Docker path.
-    if is_container_ci(get_ci_environment()):
+    # A container-based CI job USUALLY runs inside the devenv image, so the command runs
+    # in place: starting a container from in there would need a Docker the job container
+    # does not have. "Usually" is the whole problem. The CI variables say which system this
+    # is, not whether this process is in a container, and a GitHub Actions job with no
+    # `container:` block runs on the runner host. Running in place there executed the
+    # command against the runner's filesystem and toolchain while reporting a devenv build,
+    # with nothing said about it.
+    #
+    # So both have to be true. When only the first is, the job asked for no image and the
+    # Docker path is the honest one -- hosted runners have Docker -- and the user is told,
+    # because this used to be silent.
+    if exec_in_place_override() is None and os.getenv('LAGER_CI_OVERRIDE'):
+        click.secho(
+            f'LAGER_CI_OVERRIDE turns off CI detection for every lager command that sees '
+            f'it, not just this one: a box lock then fails at once instead of waiting, and '
+            f'the lock holder is your user name. Set {EXEC_IN_PLACE_ENV}=0 to change only '
+            f'lager exec.', fg='yellow', err=True)
+
+    in_place = exec_in_place_override()
+    if in_place is None:
+        in_place = is_container_ci(get_ci_environment()) and running_in_container()
+        if is_container_ci(get_ci_environment()) and not in_place:
+            click.secho(
+                f'This CI job declares no container, so the command runs in Docker rather '
+                f'than on the runner. Give the job an image with `container:`, or set '
+                f'{EXEC_IN_PLACE_ENV}=1 to run it here.', fg='yellow', err=True)
+
+    if in_place:
         _warn_docker_only_options(section, mount, volumes, requested_user, requested_group, debug)
         # passenv needs no argument here: the child inherits our environment already.
         returncode = _run_command_container(section, cmd_to_run, extra_args, debug, env)

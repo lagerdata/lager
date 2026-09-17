@@ -105,10 +105,15 @@ container:
 | Drone | `CI=true` and `DRONE=true` |
 | Bitbucket Pipelines | `CI=true` and `BITBUCKET_BUILD_NUMBER` is set |
 
-The CLI expects such a job to run inside the devenv image already. Detection
-reads only these variables and does not check for a container. A GitHub Actions
-or GitLab CI job without a `container:` block also runs the command in place, on
-the runner itself.
+A job on one of these systems usually runs inside the devenv image already.
+The variables name the CI system, not the container, so the CLI also checks
+whether this process is in one. It looks for `/.dockerenv`,
+`/run/.containerenv`, the `container` environment variable, and a container
+runtime in the cgroup of process 1.
+
+The command runs in place only when both are true. A GitHub Actions or GitLab
+CI job without a `container:` block runs on the runner itself. The CLI starts a
+container there and prints one line to say so.
 
 In place, the command runs as follows:
 
@@ -126,18 +131,29 @@ In place, the command runs as follows:
 A Jenkins agent, another CI system, or a computer outside CI still starts a
 container.
 
-To start a container in a job that the CLI detects, set `LAGER_CI_OVERRIDE` to
-any non-empty value. `0` also counts.
+### Choosing the path yourself
+
+`LAGER_EXEC_IN_PLACE` overrides the check. Set it to `1`, `true`, or `yes` to
+run the command in place, and to `0`, `false`, or `no` to start a container.
+Any other value is ignored, and the CLI falls back to what it detected.
 
 ```bash
-LAGER_CI_OVERRIDE=1 lager exec build
+# A runner with no Docker to fall back to.
+LAGER_EXEC_IN_PLACE=1 lager exec build
+
+# A job inside a container that still wants a fresh one.
+LAGER_EXEC_IN_PLACE=0 lager exec build
 ```
 
+`LAGER_EXEC_IN_PLACE` changes `lager exec` and nothing else. Box locking, the
+lock holder, and the collision wait are the same with it set.
+
 <Warning>
-`LAGER_CI_OVERRIDE` also stops every other `lager` command that sees it from
-detecting CI. A box lock then fails at once instead of waiting, unless
-`LAGER_LOCK_WAIT` is set. The lock holder is your user name, not the CI job.
-Set the variable only on the step that runs `lager exec`.
+`LAGER_CI_OVERRIDE` still works here, and it costs more. It stops every other
+`lager` command that sees it from detecting CI. A box lock then fails at once
+instead of waiting, unless `LAGER_LOCK_WAIT` is set. The lock holder is your
+user name rather than the CI job. Prefer `LAGER_EXEC_IN_PLACE=0`, which starts
+a container without touching locks.
 </Warning>
 
 ## How It Differs from Other Commands
