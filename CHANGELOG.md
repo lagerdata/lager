@@ -12,6 +12,15 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Fixed
+
+- **`lager ssh-setup` and `lager update` no longer report a registered key as
+  unregistered.** On a box whose key directory a control plane owns, the write
+  that files the key there cannot succeed, and both commands read that failure
+  as proof the key was outside the control plane's management. They now ask the
+  box whether the key is already in its key directory, and say nothing when it
+  is.
+
 ## [0.48.1] - 2026-09-16
 
 ### Added

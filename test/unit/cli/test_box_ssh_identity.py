@@ -1197,7 +1197,7 @@ class ControlPlaneManagedBox(unittest.TestCase):
     about the loose key and asks for nothing.
     """
 
-    def _warn(self, *, managed):
+    def _warn(self, *, managed, registered=False):
         from cli.commands.box import ssh_setup
 
         messages = []
@@ -1208,6 +1208,8 @@ class ControlPlaneManagedBox(unittest.TestCase):
                                lambda _d, **_kw: (False, "permission denied")), \
                 mock.patch.object(ssh_setup, "box_has_control_plane",
                                   lambda _d, **_kw: managed), \
+                mock.patch.object(ssh_setup, "key_registered_on_box",
+                                  lambda _d, **_kw: registered), \
                 mock.patch.object(ssh_setup.click, "secho",
                                   lambda msg, **_kw: messages.append(msg)):
             result = ssh_setup.register_or_warn("lagerdata@10.0.0.1")
@@ -1220,6 +1222,27 @@ class ControlPlaneManagedBox(unittest.TestCase):
         self.assertIn("outside the control plane", msg)
         # What happens to it, so the note is worth reading.
         self.assertIn("locks the box down", msg)
+
+    def test_a_key_already_registered_says_nothing(self):
+        """The ordinary hardened box. Its key directory is root-owned, so the
+        write can never succeed there — and reporting that failure as "this key
+        is outside the control plane" was false on every box where the key was
+        already in the directory, on every ssh-setup and every update."""
+        ok, msg = self._warn(managed=True, registered=True)
+        self.assertTrue(ok, 'a registered key is registered, failed write or not')
+        self.assertEqual(msg, '')
+
+    def test_a_key_that_really_is_missing_still_warns(self):
+        ok, msg = self._warn(managed=True, registered=False)
+        self.assertFalse(ok)
+        self.assertIn("outside the control plane", msg)
+
+    def test_a_box_that_could_not_be_asked_still_warns(self):
+        """None is "could not ask", not "registered". Staying quiet there would
+        hide a genuinely loose key behind one unreachable check."""
+        ok, msg = self._warn(managed=True, registered=None)
+        self.assertFalse(ok)
+        self.assertIn("outside the control plane", msg)
 
     def test_control_plane_box_is_never_asked_for_a_second_key(self):
         _, msg = self._warn(managed=True)

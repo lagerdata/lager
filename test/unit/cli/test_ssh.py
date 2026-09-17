@@ -21,6 +21,7 @@ from cli.commands.box._ssh import (
     key_installed_on_box,
     box_accepts_a_password,
     box_auth_methods,
+    key_registered_on_box,
     remove_lager_box_key,
     working_identity_args,
 )
@@ -247,6 +248,64 @@ class TestBoxAcceptsAPassword(unittest.TestCase):
         with patch('cli.commands.box._ssh.box_auth_methods',
                    return_value=None):
             self.assertIsNone(box_accepts_a_password('user@192.0.2.1'))
+
+
+class TestKeyRegisteredOnBox(unittest.TestCase):
+    """A failed write to the key directory and an unregistered key are
+    different facts. On a hardened box the directory is root-owned, so the
+    write can never succeed and says nothing about what is in it."""
+
+    def _run(self, returncode, stdout=''):
+        class P:
+            pass
+        P.returncode = returncode
+        P.stdout = stdout
+        P.stderr = ''
+        with tempfile.TemporaryDirectory() as d:
+            key = os.path.join(d, 'lager_box')
+            with open(f'{key}.pub', 'w') as fh:
+                fh.write('ssh-ed25519 AAAABLOB lager-box-access\n')
+            with patch('shutil.which', return_value='/usr/bin/ssh'), \
+                 patch('subprocess.run', return_value=P()):
+                return key_registered_on_box('user@192.0.2.1', key_path=key)
+
+    def test_a_matching_pub_means_registered(self):
+        self.assertIs(self._run(0, '/etc/lager/authorized_keys.d/lager-box-x.pub\n'), True)
+
+    def test_no_match_means_not_registered(self):
+        """grep exits 1 for no match, which is a real answer."""
+        self.assertIs(self._run(1), False)
+
+    def test_unreachable_is_not_an_answer(self):
+        """255 is ssh never getting there. None keeps the caller's warning."""
+        self.assertIsNone(self._run(255))
+
+    def test_matches_on_the_blob_not_the_filename(self):
+        seen = {}
+
+        def fake_run(argv, **_kw):
+            seen['cmd'] = argv[-1]
+            class P:
+                returncode = 1
+                stdout = ''
+                stderr = ''
+            return P()
+
+        with tempfile.TemporaryDirectory() as d:
+            key = os.path.join(d, 'lager_box')
+            with open(f'{key}.pub', 'w') as fh:
+                fh.write('ssh-ed25519 AAAABLOB lager-box-access\n')
+            with patch('shutil.which', return_value='/usr/bin/ssh'), \
+                 patch('subprocess.run', fake_run):
+                key_registered_on_box('user@192.0.2.1', key_path=key)
+        self.assertIn("grep -lF 'AAAABLOB'", seen['cmd'])
+        self.assertIn('/etc/lager/authorized_keys.d', seen['cmd'])
+
+    def test_no_public_key_means_no_answer(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertIsNone(
+                key_registered_on_box('user@192.0.2.1',
+                                      key_path=os.path.join(d, 'lager_box')))
 
 
 if __name__ == '__main__':
