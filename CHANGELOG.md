@@ -17,6 +17,12 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 - **The `lager-cli` sdist no longer contains test files.** The CLI tests moved
   from `cli/tests/` to `test/unit/cli/`, so the copy of `cli/` on a box no
   longer carries them either.
+- **`lager exec` starts a container in a CI job that declares no container.**
+  It used to run the command in place in any GitHub Actions, GitLab CI, Drone
+  or Bitbucket job, which on a job with no `container:` meant the runner's own
+  filesystem and toolchain rather than the devenv image. Hosted runners have
+  Docker, so the container path works there; set `LAGER_EXEC_IN_PLACE=1` to
+  keep the old behavior on a runner that does not.
 
 ### Fixed
 
@@ -84,6 +90,15 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   carrying it is stored, and the command could exit inside that window. The
   next command then sent the superseded cookie and asked for a new
   `lager login`.
+- **`lager exec` checks for a real container, not just for CI variables.** It
+  reads `/.dockerenv`, `/run/.containerenv`, the `container` variable and the
+  cgroup of process 1, and it says which path it took when a CI job declares no
+  container.
+- **`LAGER_EXEC_IN_PLACE` chooses that path without changing box locking.**
+  `LAGER_CI_OVERRIDE` still works for `lager exec`, but it also turns off CI
+  detection for every other command: the lock holder becomes a plain user name
+  and the collision wait drops to zero. The new variable affects `lager exec`
+  alone, and `lager exec` now names that cost when it sees the old one.
 
 ## [0.48.1] - 2026-09-16
 

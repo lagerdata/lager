@@ -100,7 +100,9 @@ lager exec --command 'make build' --passenv BUILD_ID
 | Drone | `CI=true` 且 `DRONE=true` |
 | Bitbucket Pipelines | `CI=true` 且设置了 `BITBUCKET_BUILD_NUMBER` |
 
-CLI 认为这样的作业已经运行在 devenv 镜像中。识别只读取这些变量，不检查是否处于容器内。没有 `container:` 块的 GitHub Actions 或 GitLab CI 作业同样会就地运行命令，也就是直接运行在运行器上。
+这些系统上的作业通常已经运行在 devenv 镜像中。但这些变量标识的是 CI 系统，而不是容器，所以 CLI 还会检查当前进程是否真的处于容器内。它会查看 `/.dockerenv`、`/run/.containerenv`、`container` 环境变量，以及 1 号进程的 cgroup 中是否出现容器运行时。
+
+只有两者都成立时，命令才会就地运行。没有 `container:` 块的 GitHub Actions 或 GitLab CI 作业直接运行在运行器上，因此 CLI 会在那里启动容器，并打印一行说明。
 
 就地运行时，命令的行为如下：
 
@@ -116,15 +118,22 @@ CLI 认为这样的作业已经运行在 devenv 镜像中。识别只读取这�
 
 Jenkins 代理、其他 CI 系统，或者不在 CI 中的计算机，仍然会启动容器。
 
-若要在被 CLI 识别为 CI 的作业中启动容器，请把 `LAGER_CI_OVERRIDE`
-设为任意非空值。`0` 也算非空。
+### 自行选择运行方式
+
+`LAGER_EXEC_IN_PLACE` 可以覆盖这项检查。设为 `1`、`true` 或 `yes` 表示就地运行命令，设为 `0`、`false` 或 `no` 表示启动容器。其他取值会被忽略，CLI 回退到自己检测到的结果。
 
 ```bash
-LAGER_CI_OVERRIDE=1 lager exec build
+# 没有 Docker 可用的运行器。
+LAGER_EXEC_IN_PLACE=1 lager exec build
+
+# 已在容器内，但仍希望启动一个新容器的作业。
+LAGER_EXEC_IN_PLACE=0 lager exec build
 ```
 
+`LAGER_EXEC_IN_PLACE` 只影响 `lager exec`，不影响其他任何命令。设置它之后，Box 锁、锁的持有者和冲突等待时间都保持不变。
+
 <Warning>
-`LAGER_CI_OVERRIDE` 也会让看到它的其他每条 `lager` 命令停止识别 CI。此时 Box 锁会立即失败而不是等待，除非设置了 `LAGER_LOCK_WAIT`。并且锁的持有者会是您的用户名，而不是该 CI 作业。请只在运行 `lager exec` 的那一步设置这个变量。
+`LAGER_CI_OVERRIDE` 在这里仍然有效，但代价更大。它会让看到它的其他每条 `lager` 命令停止识别 CI：此时 Box 锁会立即失败而不是等待，除非设置了 `LAGER_LOCK_WAIT`；并且锁的持有者会是您的用户名，而不是该 CI 作业。推荐使用 `LAGER_EXEC_IN_PLACE=0`，它可以启动容器而不影响锁。
 </Warning>
 
 ## 与其他命令的区别
