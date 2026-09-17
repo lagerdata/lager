@@ -123,7 +123,7 @@ The job installs `libps2000` from PicoTech's Debian repo, the same one `build_da
 documents for setting up a box, and asserts the header exists before continuing.
 
 That makes the job depend on an external apt host. If `labs.picotech.com` proves flaky, split the
-job so the SDK-free crates (`cli`, `protocol`, `wtransport_test`) keep gating while the daemon
+job so the SDK-free crates (`cli`, `protocol`) keep gating while the daemon
 check degrades to advisory.
 
 The toolchain is pinned to 1.95.0, for the same reason `shellcheck` is pinned in
@@ -159,7 +159,7 @@ OS.
 | `test/api/` | 84 scripts | Needs real hardware. The bench workflows invoke 10 by name; the other 73 execute nowhere -- though all are now syntax-checked. |
 | `test/integration/` | 38 bash scripts | Needs a real box and instruments. **8 execute:** `communication/jlink_script.sh` nightly via `integration-tests.yml`, plus 7 weekly via `bench-extended.yml` -- 5 infrastructure suites (`deployment`, `devenv`, `nets`, `box_config`, `generic`) and 2 power suites (`power/supply.sh`, `power/battery.sh`). The other 30 are syntax-checked and shellchecked but never executed. |
 | `test/mcp/integration/` | 1 file | Needs two live boxes. Import-checked only. |
-| `test/manual/` | 2 bash scripts, 1 Python report | Operator-driven. The bash scripts are syntax-checked only. `box_lager_import_report.py` prints an import report and has no `assert` statements, so its name keeps pytest from collecting it. Run it directly. |
+| `test/manual/` | 2 bash scripts, 1 Python report, 1 browser client | Operator-driven. The bash scripts are syntax-checked only. `box_lager_import_report.py` prints an import report and has no `assert` statements, so its name keeps pytest from collecting it. Run it directly. |
 
 Known gaps in the gate itself, in rough priority order:
 
@@ -441,7 +441,9 @@ test/
 │   ├── blufi/            # BluFi protocol unit tests
 │   ├── tools/            # tests for the scripts in tools/
 │   └── test_*.py         # repo-wide guards, plus the DP821 settle helper
-├── manual/               #  2 bash scripts + 1 Python import report: operator-driven, not automated
+├── manual/               # operator-driven, not automated: 2 bash scripts, 1 Python
+│                         # import report, and scope_daemon/ (a WebTransport browser
+│                         # client and how to drive the daemon by hand)
 ├── assets/               # Fixture data (note: assets/firmware/ holds only a README)
 └── framework/            # Test utilities
     ├── harness.sh        # Bash test framework (sourced by all 38 integration scripts)

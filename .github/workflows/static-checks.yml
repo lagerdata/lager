@@ -8,7 +8,7 @@
 # That leaves large areas with no automated validation at all:
 #
 #   test/integration/  38 bash scripts, run against a real box
-#   test/manual/        2 bash scripts
+#   test/manual/        2 bash scripts, 1 Python report, 1 browser client
 #   test/framework/     2 bash scripts, sourced by all 38 integration scripts
 #   test/api/          81 standalone Python scripts, only 6 of which any
 #                      workflow invokes -- the other 75 run nowhere

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Oscilloscope Client</title>
+    <title>Oscilloscope WebTransport Client</title>
     <style>
         body {
             margin: 0;
@@ -205,9 +205,8 @@
 </head>
 <body>
     <div class="header">
-        <h1>Oscilloscope Client</h1>
+        <h1 style="color: #ff69b4;">Lager</h1>
         <div class="settings-display">
-            <span id="voltsPerDivDisplay">Volts/div: --</span>
             <span id="timePerDivDisplay">Time/div: --</span>
             <span id="captureModeDisplay">Mode: --</span>
             <div class="trigger-display" id="triggerDisplay">
@@ -256,7 +255,9 @@
     <script>
         class OscilloscopeClient {
             constructor() {
-                this.ws = null;
+                this.transport = null;
+                this.commandsTransport = null;
+                this.browserTransport = null;
                 this.connected = false;
                 this.waveformCanvas = null;
                 this.waveformCtx = null;
@@ -264,10 +265,8 @@
                 this.historyIndex = -1;
                 
                 // Oscilloscope settings
-                this.voltsPerDiv = 0.01; // Default 10mV/div
                 this.timePerDiv = 1e-6;  // Default 1μs/div
-                this.voltageOffset = 0.0; // Default 0V offset
-                this.timeOffset = 0.0;    // Default 0s time offset
+                this.timeOffset = 0.0;    // Global time offset (affects all channels)
                 this.captureMode = 'normal'; // Default capture mode
                 
                 // Channel states
@@ -277,6 +276,30 @@
                     'C': false,
                     'D': false
                 };
+                
+                // Channel volts per div (per channel) - match daemon defaults
+                this.channelVoltsPerDiv = {
+                    'A': 1.0,
+                    'B': 1.0,
+                    'C': 1.0,
+                    'D': 1.0
+                };
+                
+                // Channel voltage offsets (per channel)
+                this.channelVoltageOffset = {
+                    'A': 0.0,
+                    'B': 0.0,
+                    'C': 0.0,
+                    'D': 0.0
+                };
+            
+                // Track pending commands for UI updates
+                this.pendingVoltsPerDiv = null;
+                
+                // Frame rate limiting for smooth rendering
+                this.lastRenderTime = 0;
+                this.targetFrameRate = 60; // FPS
+                this.minFrameInterval = 1000 / this.targetFrameRate; // ~16.67ms for 60 FPS
                 
                 // Store triggered data for saving
                 this.lastTriggeredData = null;
@@ -305,7 +328,16 @@
                 // Get host and port from URL parameters
                 const urlParams = new URLSearchParams(window.location.search);
                 this.host = urlParams.get('host') || 'localhost';
-                this.port = parseInt(urlParams.get('port')) || 8082;
+                this.commandsPort = parseInt(urlParams.get('commandsPort')) || 8082;
+                this.browserPort = parseInt(urlParams.get('browserPort')) || 8083;
+                
+                // SHA-256 hash of the certificate the daemon loads from certs/server.crt
+                // (daemon/src/webtransport/server.rs). Regenerate this when that certificate changes.
+                this.certificateHash = Uint8Array.from([
+                    0xa8, 0x0a, 0xd2, 0x53, 0xdd, 0x27, 0x1e, 0x49, 0xac, 0x65, 0x9d, 0x38,
+                    0x89, 0x32, 0x27, 0xa9, 0x61, 0xac, 0xf1, 0xa7, 0xde, 0x4f, 0xff, 0x2d,
+                    0x10, 0xeb, 0xc7, 0x2f, 0x2d, 0x1e, 0x37, 0xc7
+                ]);
                 
                 this.initCanvas();
                 this.initCLI();
@@ -314,7 +346,7 @@
                 this.updateTriggerDisplay();
                 this.updateProbeDisplay();
                 this.logMessage("Oscilloscope Web Client Ready");
-                this.logMessage(`Target: ${this.host}:${this.port}`);
+                this.logMessage(`Target: ${this.host}:${this.commandsPort} (commands), ${this.host}:${this.browserPort} (browser)`);
                 this.logMessage("Type 'help' for available commands");
                 this.logMessage("Type 'connect' to connect to daemon");
                 this.logMessage("");
@@ -368,11 +400,11 @@
                 // Clear canvas
                 ctx.clearRect(0, 0, canvas.width, canvas.height);
                 
-                // Set grid style
+                // Set grid style for major divisions
                 ctx.strokeStyle = 'rgba(0, 255, 0, 0.5)';
                 ctx.lineWidth = 1;
                 
-                // Draw vertical lines (9 lines for 8 divisions, centered at 0)
+                // Draw vertical major lines (9 lines for 8 divisions, centered at 0)
                 for (let i = -4; i <= 4; i++) {
                     const x = ((i + 4) / 8) * canvas.width;
                     ctx.beginPath();
@@ -381,12 +413,61 @@
                     ctx.stroke();
                 }
                 
-                // Draw horizontal lines (9 lines for 8 divisions, centered at 0)
+                // Draw horizontal major lines (9 lines for 8 divisions, centered at 0)
                 for (let i = -4; i <= 4; i++) {
                     const y = ((i + 4) / 8) * canvas.height;
                     ctx.beginPath();
                     ctx.moveTo(0, y);
                     ctx.lineTo(canvas.width, y);
+                    ctx.stroke();
+                }
+                
+                // Draw sub-ticks (5 ticks per division)
+                ctx.strokeStyle = 'rgba(0, 255, 0, 0.2)';
+                ctx.lineWidth = 0.5;
+                
+                // Vertical sub-ticks
+                for (let i = -4; i <= 4; i++) {
+                    for (let j = 1; j < 5; j++) {
+                        const x = ((i + 4) / 8 + j / 40) * canvas.width; // 5 ticks per div = 1/40 of total width per tick
+                        ctx.beginPath();
+                        ctx.moveTo(x, 0);
+                        ctx.lineTo(x, canvas.height);
+                        ctx.stroke();
+                    }
+                }
+                
+                // Horizontal sub-ticks
+                for (let i = -4; i <= 4; i++) {
+                    for (let j = 1; j < 5; j++) {
+                        const y = ((i + 4) / 8 + j / 40) * canvas.height; // 5 ticks per div = 1/40 of total height per tick
+                        ctx.beginPath();
+                        ctx.moveTo(0, y);
+                        ctx.lineTo(canvas.width, y);
+                        ctx.stroke();
+                    }
+                }
+                
+                // Draw thick center line (0V reference) with hash marks
+                ctx.strokeStyle = 'rgba(0, 255, 0, 0.8)';
+                ctx.lineWidth = 2;
+                const centerY = canvas.height / 2;
+                ctx.beginPath();
+                ctx.moveTo(0, centerY);
+                ctx.lineTo(canvas.width, centerY);
+                ctx.stroke();
+                
+                // Add hash marks along the center line (5 ticks per division)
+                ctx.strokeStyle = 'rgba(0, 255, 0, 0.8)';
+                ctx.lineWidth = 1;
+                const hashMarkLength = 8; // Length of hash marks
+                
+                // Draw hash marks every 1/40th of the width (5 ticks per division)
+                for (let i = 0; i <= 40; i++) {
+                    const x = (i / 40) * canvas.width;
+                    ctx.beginPath();
+                    ctx.moveTo(x, centerY - hashMarkLength / 2);
+                    ctx.lineTo(x, centerY + hashMarkLength / 2);
                     ctx.stroke();
                 }
             }
@@ -546,14 +627,19 @@
                     case 'v':
                         if (parts.length >= 3) {
                             const newVoltsPerDiv = parseFloat(parts[2]);
+                            const channel = this.parseChannelId(parts[1]);
+                            
+                            // Store pending command for UI update
+                            this.pendingVoltsPerDiv = {
+                                channel: channel,
+                                volts_per_div: newVoltsPerDiv
+                            };
+                            
                             this.sendWebSocketCommand({ 
                                 command: 'SetVoltsPerDiv', 
-                                channel: this.parseChannelId(parts[1]), 
+                                channel: channel, 
                                 volts_per_div: newVoltsPerDiv 
                             });
-                            // Update client-side setting immediately
-                            this.voltsPerDiv = newVoltsPerDiv;
-                            this.updateSettingsDisplay();
                         } else {
                             this.logMessage('Usage: sv <channel> <volts>', 'error');
                         }
@@ -571,6 +657,55 @@
                             this.updateSettingsDisplay();
                         } else {
                             this.logMessage('Usage: tp <time>', 'error');
+                        }
+                        break;
+                    case 'to':
+                    case 'time_offset':
+                        if (parts.length >= 2) {
+                            const newTimeOffset = parseFloat(parts[1]);
+                            this.sendWebSocketCommand({ 
+                                command: 'SetTimeOffset', 
+                                time_offset: newTimeOffset 
+                            });
+                            // Update client-side setting immediately
+                            this.timeOffset = newTimeOffset;
+                        } else {
+                            this.logMessage('Usage: to <time_offset>', 'error');
+                        }
+                        break;
+                    case 'vo':
+                    case 'voltage_offset':
+                        if (parts.length >= 3) {
+                            const channel = this.parseChannelId(parts[1]);
+                            const newVoltageOffset = parseFloat(parts[2]);
+                            this.sendWebSocketCommand({ 
+                                command: 'SetVoltsOffset', 
+                                channel: channel,
+                                volts_offset: newVoltageOffset 
+                            });
+                            // Update client-side setting immediately
+                            const channelStr = this.formatChannelId(channel);
+                            this.channelVoltageOffset[channelStr] = newVoltageOffset;
+                        } else {
+                            this.logMessage('Usage: vo <channel> <voltage_offset>', 'error');
+                        }
+                        break;
+                    case 'gto':
+                    case 'get_time_offset':
+                        this.sendWebSocketCommand({ 
+                            command: 'GetTimeOffset'
+                        });
+                        break;
+                    case 'gvo':
+                    case 'get_voltage_offset':
+                        if (parts.length >= 2) {
+                            const channel = this.parseChannelId(parts[1]);
+                            this.sendWebSocketCommand({ 
+                                command: 'GetVoltsOffset',
+                                channel: channel
+                            });
+                        } else {
+                            this.logMessage('Usage: gvo <channel>', 'error');
                         }
                         break;
                     case 'trigger_level':
@@ -839,17 +974,35 @@
                 }
             }
             
-            sendWebSocketCommand(command) {
-                if (!this.connected) {
+            async sendWebSocketCommand(command) {
+                if (!this.connected || !this.commandsTransport) {
                     this.logMessage('Not connected to daemon!', 'error');
                     return;
                 }
                 
                 try {
-                    this.ws.send(JSON.stringify(command));
-                    this.logMessage(`Sent: ${JSON.stringify(command)}`, 'response');
+                    // Create a bidirectional stream for the command
+                    const stream = await this.commandsTransport.createBidirectionalStream();
+                    const writer = stream.writable.getWriter();
+                    
+                    // Send the command
+                    const commandText = JSON.stringify(command);
+                    await writer.write(new TextEncoder().encode(commandText));
+                    await writer.close();
+                    
+                    this.logMessage(`Sent: ${commandText}`, 'response');
+                    
+                    // Read the response
+                    const reader = stream.readable.getReader();
+                    const { value } = await reader.read();
+                    const responseText = new TextDecoder().decode(value);
+                    
+                    // Handle the response
+                    this.handleMessage(responseText);
+                    
                 } catch (error) {
-                    this.logMessage(`Error sending command: ${error}`, 'error');
+                    this.logMessage(`Error sending command: ${error.message}`, 'error');
+                    console.error('WebTransport command error:', error);
                 }
             }
             
@@ -870,12 +1023,15 @@
                 this.logMessage("");
                 this.logMessage("Voltage Settings:");
                 this.logMessage("  sv/v <channel> <volts> - Set volts per division");
-                this.logMessage("  volts_offset/vo <ch> <volts> - Set voltage offset");
+                this.logMessage("  vo <channel> <volts>   - Set voltage offset (+ moves up)");
                 this.logMessage("  get_volts_per_div/gv <channel> - Get volts per division");
+                this.logMessage("  gvo <channel>          - Get voltage offset");
                 this.logMessage("");
                 this.logMessage("Time Settings:");
                 this.logMessage("  tp/t <time>            - Set time per division");
+                this.logMessage("  to <time>              - Set time offset (+ shifts right)");
                 this.logMessage("  get_time_per_div/gt    - Get time per division");
+                this.logMessage("  gto                    - Get time offset");
                 this.logMessage("");
                 this.logMessage("Trigger Settings:");
                 this.logMessage("  trigger_level/tl <volts> - Set trigger level");
@@ -911,59 +1067,56 @@
                 this.logMessage("  Enter       - Execute command (or new line if empty)");
             }
             
-            connect() {
+            async connect() {
                 if (this.connected) {
                     this.logMessage("Already connected", 'error');
                     return;
                 }
                 
-                this.logMessage(`Connecting to ${this.host}:${this.port}...`);
+                this.logMessage(`Connecting to WebTransport servers...`);
                 
                 try {
-                    this.ws = new WebSocket(`ws://${this.host}:${this.port}`);
+                    // Connect to commands endpoint
+                    this.commandsTransport = new WebTransport(`https://${this.host}:${this.commandsPort}`, {
+                        allowPooling: false,
+                        serverCertificateHashes: [{ algorithm: "sha-256", value: this.certificateHash }]
+                    });
                     
-                    this.ws.onopen = () => {
-                        this.connected = true;
-                        this.updateStatus();
-                        this.logMessage(`Connected to ${this.host}:${this.port}`);
-                        
-                        // Read current oscilloscope settings after connection
-                        this.readOscilloscopeSettings();
-                    };
+                    await this.commandsTransport.ready;
+                    this.logMessage(`Connected to commands endpoint: ${this.host}:${this.commandsPort}`);
                     
-                    this.ws.onmessage = (event) => {
-                        this.handleMessage(event.data);
-                    };
+                    // Connect to browser data endpoint
+                    this.browserTransport = new WebTransport(`https://${this.host}:${this.browserPort}`, {
+                        allowPooling: false,
+                        serverCertificateHashes: [{ algorithm: "sha-256", value: this.certificateHash }]
+                    });
                     
-                    // Try to reduce WebSocket buffering by setting a smaller buffer
-                    if (this.ws.bufferedAmount !== undefined) {
-                        // Monitor buffer size
-                        setInterval(() => {
-                            if (this.ws && this.ws.bufferedAmount > 0) {
-                                console.log(`WebSocket buffer size: ${this.ws.bufferedAmount} bytes`);
-                            }
-                        }, 1000);
-                    }
+                    await this.browserTransport.ready;
+                    this.logMessage(`Connected to browser data endpoint: ${this.host}:${this.browserPort}`);
                     
-                    this.ws.onclose = () => {
-                        this.connected = false;
-                        this.updateStatus();
-                        this.logMessage("Connection closed");
-                    };
+                    this.connected = true;
+                    this.updateStatus();
                     
-                    this.ws.onerror = (error) => {
-                        this.logMessage(`Connection error: ${error}`, 'error');
-                    };
+                    // Start listening for browser data
+                    this.startBrowserDataListener();
+                    
+                    // Read current oscilloscope settings after connection
+                    this.readOscilloscopeSettings();
                     
                 } catch (error) {
-                    this.logMessage(`Failed to connect: ${error}`, 'error');
+                    this.logMessage(`Failed to connect: ${error.message}`, 'error');
+                    console.error('WebTransport connection failed:', error);
                 }
             }
             
             disconnect() {
-                if (this.ws) {
-                    this.ws.close();
-                    this.ws = null;
+                if (this.commandsTransport) {
+                    this.commandsTransport.close();
+                    this.commandsTransport = null;
+                }
+                if (this.browserTransport) {
+                    this.browserTransport.close();
+                    this.browserTransport = null;
                 }
                 this.connected = false;
                 this.updateStatus();
@@ -975,21 +1128,105 @@
                 this.logMessage(`Status: ${status}`);
             }
             
+            async startBrowserDataListener() {
+                if (!this.browserTransport) return;
+                
+                try {
+                    // Listen for incoming unidirectional streams from browser endpoint
+                    const reader = this.browserTransport.incomingUnidirectionalStreams.getReader();
+                    
+                    while (true) {
+                        const { value: stream, done } = await reader.read();
+                        if (done) {
+                            // Transport is closed, exit the listener
+                            console.log('Browser transport closed, stopping data listener');
+                            break;
+                        }
+                        
+                        // Process this stream asynchronously to avoid delays
+                        this.processStreamData(stream);
+                    }
+                } catch (error) {
+                    console.error('Error in browser data listener:', error);
+                    this.logMessage(`Browser data listener error: ${error.message}`, 'error');
+                }
+            }
+            
+            async processStreamData(stream) {
+                try {
+                    // Read data from the stream
+                    const reader = stream.getReader();
+                    const chunks = [];
+                    
+                    while (true) {
+                        const { value: chunk, done } = await reader.read();
+                        if (done) break;
+                        chunks.push(chunk);
+                    }
+                    
+                    // Combine chunks and parse as JSON
+                    const data = new Uint8Array(chunks.reduce((acc, chunk) => acc + chunk.length, 0));
+                    let offset = 0;
+                    for (const chunk of chunks) {
+                        data.set(chunk, offset);
+                        offset += chunk.length;
+                    }
+                    
+                    const jsonText = new TextDecoder().decode(data);
+                    const triggeredData = JSON.parse(jsonText);
+                    
+                    // Handle the triggered data
+                    this.handleTriggeredData(triggeredData);
+                } catch (error) {
+                    console.error('Error processing stream data:', error);
+                    this.logMessage(`Stream data processing error: ${error.message}`, 'error');
+                }
+            }
+            
             readOscilloscopeSettings() {
                 // First, get the number of channels available
                 this.sendWebSocketCommand({
                     command: 'GetChannelCount'
                 });
                 
-                // Read current volts_per_div for channel A (assuming it's enabled)
-                this.sendWebSocketCommand({
-                    command: 'GetVoltsPerDiv',
-                    channel: { Alphabetic: 'A' }
+                // Read settings for all channels (A, B, C, D)
+                ['A', 'B', 'C', 'D'].forEach(channel => {
+                    // Get volts per div for each channel
+                    this.sendWebSocketCommand({
+                        command: 'GetVoltsPerDiv',
+                        channel: { Alphabetic: channel }
+                    });
+                    
+                    // Get channel enabled state
+                    this.sendWebSocketCommand({
+                        command: 'IsChannelEnabled',
+                        channel: { Alphabetic: channel }
+                    });
+                    
+                    // Get coupling
+                    this.sendWebSocketCommand({
+                        command: 'GetCoupling',
+                        channel: { Alphabetic: channel }
+                    });
+                    
+                    // Get attenuation
+                    this.sendWebSocketCommand({
+                        command: 'GetAttenuation',
+                        channel: { Alphabetic: channel }
+                    });
                 });
                 
-                // Read current time_per_div
+                // Read global timebase settings
                 this.sendWebSocketCommand({
                     command: 'GetTimePerDiv'
+                });
+                
+                this.sendWebSocketCommand({
+                    command: 'GetSampleRate'
+                });
+                
+                this.sendWebSocketCommand({
+                    command: 'GetMemoryDepth'
                 });
                 
                 // Read trigger settings
@@ -1005,12 +1242,14 @@
                     command: 'GetTriggerSlope'
                 });
                 
-                // Read current capture mode
                 this.sendWebSocketCommand({
                     command: 'GetCaptureMode'
                 });
                 
-                // Note: Attenuation will be read after we get the channel count
+                // Check if scope is ready
+                this.sendWebSocketCommand({
+                    command: 'IsReady'
+                });
                 
                 this.logMessage("Reading oscilloscope settings...");
             }
@@ -1109,11 +1348,13 @@
                         this.logMessage('ok', 'response');
                         break;
                     case 'ConfigureChannelVoltsPerDiv':
-                        // Update client-side volts_per_div when daemon confirms the change
-                        if (response.volts_per_div !== undefined) {
-                            this.voltsPerDiv = response.volts_per_div;
+                        // Update per-channel volts per div using pending command data
+                        if (this.pendingVoltsPerDiv) {
+                            const channel = this.formatChannelId(this.pendingVoltsPerDiv.channel);
+                            this.channelVoltsPerDiv[channel] = this.pendingVoltsPerDiv.volts_per_div;
+                            this.updateChannelDisplay();
+                            this.pendingVoltsPerDiv = null; // Clear pending command
                         }
-                        this.updateSettingsDisplay();
                         this.logMessage('ok', 'response');
                         break;
                     case 'ConfigureTimePerDiv':
@@ -1122,6 +1363,12 @@
                             this.timePerDiv = response.time_per_div;
                         }
                         this.updateSettingsDisplay();
+                        this.logMessage('ok', 'response');
+                        break;
+                    case 'ConfigureTimeOffset':
+                        this.logMessage('ok', 'response');
+                        break;
+                    case 'ConfigureChannelVoltsOffset':
                         this.logMessage('ok', 'response');
                         break;
                     case 'IsReady':
@@ -1138,9 +1385,22 @@
                         this.logMessage(`${response.is_enabled}`, 'response');
                         break;
                     case 'GetVoltsPerDiv':
-                        this.voltsPerDiv = response.volts_per_div;
-                        this.updateSettingsDisplay();
+                        // Update per-channel volts per div
+                        if (response.channel) {
+                            const channel = this.formatChannelId(response.channel);
+                            this.channelVoltsPerDiv[channel] = response.volts_per_div;
+                            this.updateChannelDisplay();
+                        }
                         this.logMessage(`${response.volts_per_div}`, 'response');
+                        break;
+                    case 'IsChannelEnabled':
+                        // Update channel enabled state
+                        if (response.channel) {
+                            const channel = this.formatChannelId(response.channel);
+                            this.channelStates[channel] = response.is_enabled;
+                            this.updateChannelDisplay();
+                        }
+                        this.logMessage(`${response.is_enabled}`, 'response');
                         break;
                     case 'GetTriggerLevel':
                         // Store raw trigger level and apply probe attenuation scaling
@@ -1171,6 +1431,17 @@
                         break;
                     case 'GetCoupling':
                         this.logMessage(`${response.coupling}`, 'response');
+                        break;
+                    case 'GetTimeOffset':
+                        this.timeOffset = response.time_offset;
+                        this.logMessage(`${response.time_offset}`, 'response');
+                        break;
+                    case 'GetVoltsOffset':
+                        if (response.channel) {
+                            const channel = this.formatChannelId(response.channel);
+                            this.channelVoltageOffset[channel] = response.volts_offset;
+                        }
+                        this.logMessage(`${response.volts_offset}`, 'response');
                         break;
                     case 'GetTimePerDiv':
                     case 'GetTimeConfig':
@@ -1229,7 +1500,6 @@
                 }
                 
                 
-                
                 // Store the triggered data for saving
                 this.lastTriggeredData = data;
                 
@@ -1245,16 +1515,26 @@
                     const time_ns = (sample.sample_index - data.trigger_position) * data.sample_interval_ns;
                     const time_us = time_ns / 1000.0; // Convert to microseconds
                     
-                    channelData[channel].time.push(time_us);
-                    channelData[channel].voltage.push(sample.voltage);
+                    // Apply time offset - shift the viewing window
+                    const adjustedTime_us = time_us - (this.timeOffset * 1e6);
+                    
+                    channelData[channel].time.push(adjustedTime_us);
+                    channelData[channel].voltage.push(sample.voltage); // Store raw voltage, apply offset later
                 });
                 
                 
                 // Update chart with full waveform data using stored settings
-                this.updateChart(channelData, this.voltsPerDiv);
+                this.updateChart(channelData);
             }
             
-            updateChart(channelData, voltsPerDiv = 0.01) {
+            updateChart(channelData) {
+                // Frame rate limiting - skip render if too soon since last render
+                const now = Date.now();
+                if (now - this.lastRenderTime < this.minFrameInterval) {
+                    return; // Skip this frame to maintain 60 FPS
+                }
+                this.lastRenderTime = now;
+                
                 // Resize canvas if needed
                 this.resizeCanvas();
                 
@@ -1262,32 +1542,37 @@
                 this.waveformCtx.clearRect(0, 0, this.waveformCanvas.width, this.waveformCanvas.height);
                 
                 
-                const colors = ['#ff69b4', '#ffff00', '#0000ff', '#00ff00']; // Pink, Yellow, Blue, Green
-                let colorIndex = 0;
+                const colors = {
+                    'A': '#ff69b4', // Pink
+                    'B': '#ffff00', // Yellow  
+                    'C': '#0000ff', // Blue
+                    'D': '#00ff00'  // Green
+                };
                 
                 // Add waveforms for each channel
                 Object.entries(channelData).forEach(([channel, data]) => {
                     if (data.time.length > 0) {
-                        const color = colors[colorIndex % colors.length];
+                        const color = colors[channel] || '#ffffff'; // Default to white if channel not found
                         this.waveformCtx.strokeStyle = color;
                         
                         // Filter and convert data to pixel coordinates
                         const points = data.time.map((time_us, index) => {
-                            // Apply time offset: shift waveform horizontally
-                            const adjustedTime_us = time_us - (this.timeOffset * 1e6);
                             
                             // Convert time to divisions (trigger at center = 0 divisions)
-                            const timeDivs = adjustedTime_us / (this.timePerDiv * 1e6);
+                            const timeDivs = time_us / (this.timePerDiv * 1e6);
                             
                             // Apply probe attenuation correction
                             const probeAttenuation = this.probeAttenuation[channel] || 1;
                             const correctedVoltage = data.voltage[index] * probeAttenuation;
                             
-                            // Apply voltage offset: shift waveform vertically from center
-                            const adjustedVoltage = correctedVoltage - this.voltageOffset;
+                            // Apply voltage offset - shift the waveform vertically
+                            const channelVoltageOffset = this.channelVoltageOffset[channel] || 0.0;
+                            const adjustedVoltage = correctedVoltage + channelVoltageOffset;
                             
                             // Convert voltage to divisions (0V at center = 0 divisions)
-                            const voltageDivs = adjustedVoltage / voltsPerDiv;
+                            // Use per-channel volts per div
+                            const channelVoltsPerDiv = this.channelVoltsPerDiv[channel] || 1.0;
+                            const voltageDivs = adjustedVoltage / channelVoltsPerDiv;
                             
                             
                             return {
@@ -1299,11 +1584,11 @@
                             return Math.abs(point.x) <= 4; // 4 divisions on each side of center
                         });
                         
-                        // Convert divisions to pixel coordinates
+                        // Convert divisions to pixel coordinates with extra precision
                         const pixelPoints = points.map(point => {
                             // Convert divisions to pixels using the same logic as the grid
-                            const x = ((point.x + 4) / 8) * this.waveformCanvas.width;
-                            const y = ((4 - point.y) / 8) * this.waveformCanvas.height; // Flip Y axis
+                            const x = Math.floor(((point.x + 4) / 8) * this.waveformCanvas.width + 0.5);
+                            const y = Math.floor(((4 - point.y) / 8) * this.waveformCanvas.height + 0.5); // Flip Y axis
                             
                             return { x, y };
                         });
@@ -1320,24 +1605,25 @@
                             
                             this.waveformCtx.stroke();
                         }
-                        
-                        colorIndex++;
                     }
                 });
                 
                 // Draw trigger line
-                this.drawTriggerLine(voltsPerDiv);
+                this.drawTriggerLine();
                 
                 // Grid is drawn by the gridOverlay canvas
             }
             
-            drawTriggerLine(voltsPerDiv) {
+            drawTriggerLine() {
                 if (!this.showTriggerLine || this.triggerLevel === undefined || this.triggerLevel === null) {
                     return; // Trigger line hidden or no trigger level set
                 }
                 
                 // Calculate trigger level in divisions (0V at center = 0 divisions)
-                const triggerLevelDivs = this.triggerLevel / voltsPerDiv;
+                // Use trigger source channel's volts per div
+                const triggerSourceChannel = this.triggerSource || 'A';
+                const triggerVoltsPerDiv = this.channelVoltsPerDiv[triggerSourceChannel] || 0.01;
+                const triggerLevelDivs = this.triggerLevel / triggerVoltsPerDiv;
                 
                 // Convert to pixel coordinates
                 const y = ((4 - triggerLevelDivs) / 8) * this.waveformCanvas.height; // Flip Y axis
@@ -1375,7 +1661,10 @@
                 this.waveformCtx.clearRect(0, 0, this.waveformCanvas.width, this.waveformCanvas.height);
                 
                 // Calculate trigger level in divisions (0V at center = 0 divisions)
-                const triggerLevelDivs = this.triggerLevel / this.voltsPerDiv;
+                // Use trigger source channel's volts per div
+                const triggerSourceChannel = this.triggerSource || 'A';
+                const triggerVoltsPerDiv = this.channelVoltsPerDiv[triggerSourceChannel] || 0.01;
+                const triggerLevelDivs = this.triggerLevel / triggerVoltsPerDiv;
                 
                 // Convert to pixel coordinates
                 const y = ((4 - triggerLevelDivs) / 8) * this.waveformCanvas.height; // Flip Y axis
@@ -1403,23 +1692,12 @@
             updateStatus() {
                 const statusBar = document.getElementById('statusBar');
                 const status = this.connected ? "Connected" : "Disconnected";
-                statusBar.textContent = `Status: ${status} | Host: ${this.host}:${this.port}`;
+                statusBar.textContent = `Status: ${status} | Commands: ${this.host}:${this.commandsPort} | Browser: ${this.host}:${this.browserPort}`;
             }
             
             updateSettingsDisplay() {
-                const voltsDisplay = document.getElementById('voltsPerDivDisplay');
                 const timeDisplay = document.getElementById('timePerDivDisplay');
                 const captureModeDisplay = document.getElementById('captureModeDisplay');
-                
-                // Format volts per div
-                let voltsText = '--';
-                if (this.voltsPerDiv >= 1) {
-                    voltsText = `${this.voltsPerDiv.toFixed(1)}V/div`;
-                } else if (this.voltsPerDiv >= 0.001) {
-                    voltsText = `${(this.voltsPerDiv * 1000).toFixed(0)}mV/div`;
-                } else {
-                    voltsText = `${(this.voltsPerDiv * 1000000).toFixed(0)}μV/div`;
-                }
                 
                 // Format time per div
                 let timeText = '--';
@@ -1433,9 +1711,11 @@
                     timeText = `${(this.timePerDiv * 1000000000).toFixed(0)}ns/div`;
                 }
                 
-                voltsDisplay.textContent = `Volts/div: ${voltsText}`;
                 timeDisplay.textContent = `Time/div: ${timeText}`;
                 captureModeDisplay.textContent = `Mode: ${this.captureMode}`;
+                
+                // Redraw trigger line when volts per division changes
+                this.drawTriggerLineOnly();
             }
             
             showChannels(channelCount) {
@@ -1459,12 +1739,36 @@
             }
             
             updateChannelDisplay() {
+                const colors = {
+                    'A': '#ff69b4', // Pink
+                    'B': '#ffff00', // Yellow  
+                    'C': '#0000ff', // Blue
+                    'D': '#00ff00'  // Green
+                };
+                
                 ['A', 'B', 'C', 'D'].forEach(channel => {
                     const element = document.getElementById(`channel${channel}`);
                     if (element.style.display !== 'none') {
                         const isEnabled = this.channelStates[channel];
-                        element.textContent = `${channel}: ${isEnabled ? 'ON' : 'OFF'}`;
+                        const voltsPerDiv = this.channelVoltsPerDiv[channel];
+                        
+                        // Format volts per div
+                        let voltsText = '';
+                        if (voltsPerDiv >= 1) {
+                            voltsText = `${voltsPerDiv.toFixed(1)}V`;
+                        } else if (voltsPerDiv >= 0.001) {
+                            voltsText = `${(voltsPerDiv * 1000).toFixed(0)}mV`;
+                        } else {
+                            voltsText = `${(voltsPerDiv * 1000000).toFixed(0)}μV`;
+                        }
+                        
+                        element.textContent = `${channel}: ${isEnabled ? 'ON' : 'OFF'} (${voltsText}/div)`;
                         element.className = `channel-status ${isEnabled ? 'enabled' : 'disabled'}`;
+                        
+                        // Add color indicator
+                        element.style.borderLeftColor = colors[channel];
+                        element.style.borderLeftWidth = '4px';
+                        element.style.borderLeftStyle = 'solid';
                     }
                 });
             }
@@ -1548,7 +1852,7 @@
                 const saveData = {
                     timestamp: new Date().toISOString(),
                     oscilloscope_settings: {
-                        volts_per_div: this.voltsPerDiv,
+                        channel_volts_per_div: this.channelVoltsPerDiv,
                         time_per_div: this.timePerDiv,
                         voltage_offset: this.voltageOffset,
                         time_offset: this.timeOffset

@@ -2071,16 +2071,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wtransport_test"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "rustls-pemfile",
- "tokio",
- "wtransport",
-]
-
-[[package]]
 name = "x509-parser"
 version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

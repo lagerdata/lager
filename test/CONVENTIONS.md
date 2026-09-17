@@ -37,6 +37,7 @@ test/
 │   └── integration/      # Real hardware tests (~64 tests)
 │
 ├── manual/               # Operator-run scripts and reports, not automated
+│   └── scope_daemon/     # Scope daemon clients, driven by hand
 │
 ├── framework/            # Shared test infrastructure
 │   ├── colors.sh         # Color definitions for bash tests

@@ -4,7 +4,6 @@ members = [
     "cli",
     "daemon",
     "protocol",
-    "wtransport_test",
 ]
 
 [workspace.package]
