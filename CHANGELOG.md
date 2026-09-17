@@ -68,6 +68,22 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 - **`lager nets tui` edits the pins of a LabJack U3 net, and `nets add` refuses
   a U3's FIO0-FIO3 as custom pins.** The pin editor offered only T7 pins and
   defaults, and the box refused FIO0-FIO3 only at the first transfer.
+- **`lager boxes` asks a gateway auth server for a token once, not once per
+  box.** A gated fleet shares one auth server, but the listing resolved a
+  token for every box in turn, so a server that was not answering charged the
+  full timeout again for each one before the table appeared. A connect
+  timeout also charged that timeout twice, because it was retried.
+- **`lager boxes` reports a box whose stored session cannot be read as
+  `error`.** An unreadable or corrupt `~/.lager_gateway_auth` either ended
+  the command with a traceback or killed one box's probe, listing that box as
+  `no response` -- what a powered-off box shows. A slow auth server no longer
+  blocks unrelated boxes either: the refresh holds its own server's lock
+  rather than the lock over the whole file.
+- **`lager boxes` no longer ends a login session when it stops waiting on a
+  box.** The auth server issues a new refresh cookie before the reply
+  carrying it is stored, and the command could exit inside that window. The
+  next command then sent the superseded cookie and asked for a new
+  `lager login`.
 
 ## [0.48.1] - 2026-09-16
 
