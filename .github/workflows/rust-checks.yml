@@ -125,7 +125,7 @@ jobs:
       # (labs.picotech.com). If that host is down, this fails for a reason that
       # has nothing to do with the change under review. If that turns out to
       # happen in practice, split this job so the SDK-free crates
-      # (cli, protocol, wtransport_test) still gate while the daemon check
+      # (cli, protocol) still gate while the daemon check
       # degrades to advisory.
       - name: Install PicoScope SDK and build deps
         if: steps.detect.outputs.rust_changed == 'true'
