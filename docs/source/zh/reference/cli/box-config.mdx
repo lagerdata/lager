@@ -63,6 +63,7 @@ lager box-config apply --box my-lager-box                # 2. apply
 | `pip` / `cargo` / `npm` | 容器内的语言软件包 |
 | `sysctl` | 宿主机 sysctl 值，重启后依然保留 |
 | `network-mode` | 容器所运行的 docker 网络 |
+| `mcp-token` | Box MCP 服务器上的可选 Bearer 令牌。它不属于配置 |
 
 ---
 
@@ -227,7 +228,7 @@ lager box-config env set LAGER_DISABLE_UART_SERVICE=1 --box my-lager-box
 lager box-config apply --box my-lager-box
 ```
 
-**`LAGER_MCP_NO_PUBLISH`。** 把这个变量设为 `1`、`true` 或 `yes`，可以停止在宿主机上发布端口 8100。MCP 服务器仍然在容器内运行，其他端口照常发布。MCP 服务器不做任何认证，因此可以用这个变量把它从网络上撤下。`lagernet` Docker 网络上的客户端仍然可以访问它。
+**`LAGER_MCP_NO_PUBLISH`。** 把这个变量设为 `1`、`true` 或 `yes`，可以停止在宿主机上发布端口 8100。MCP 服务器仍然在容器内运行，其他端口照常发布。默认情况下 MCP 服务器不要求任何凭据，因此可以用这个变量把它从网络上撤下。`lagernet` Docker 网络上的客户端仍然可以访问它。如果想保持端口发布、改为要求令牌，请参阅 [`mcp-token`](#mcp-token)。
 
 在 `host` 网络模式下，这个变量不起作用，因为容器直接绑定宿主机的端口 8100。`lager box-config apply` 会报告它停止发布的端口。早于该变量的 Box 软件会接受它，但不会执行。
 
@@ -328,6 +329,42 @@ sudo ufw insert 1 allow in on <iface> to any port 9000 proto tcp comment 'Lager 
 `lager box-config apply`。切回 `lagernet` 不需要检查。
 
 除非您需要在容器内使用蓝牙适配器，否则请保持默认值。
+
+### `mcp-token`
+
+Box [MCP 服务器](/source/zh/reference/mcp/overview)（端口 8100）上的可选 Bearer 令牌。令牌默认关闭，此时服务器不要求任何凭据。
+
+```bash
+lager box-config mcp-token status [--json] --box my-lager-box
+lager box-config mcp-token enable --box my-lager-box
+lager box-config mcp-token rotate [--yes] --box my-lager-box
+lager box-config mcp-token disable [--yes] --box my-lager-box
+```
+
+`enable` 创建令牌并只显示一次，同时给出一段带有该令牌的客户端配置。从此之后，服务器只应答带有请求头 `Authorization: Bearer <token>` 的请求，其他请求都会得到 `401 Unauthorized`。更改立即生效：您不需要运行 `apply`，容器也不会重启。
+
+没有任何命令会再次显示令牌。如果您丢失了它，请运行 `rotate`。`rotate` 会替换令牌并显示新令牌。旧令牌立即失效，因此请更新每一个客户端。如果令牌已经存在，`enable` 会拒绝执行，并提示您使用 `rotate`。
+
+`disable` 移除令牌，之后服务器又不再要求任何凭据。除非传入 `--yes`，否则 `rotate` 和 `disable` 都会先请您确认。
+
+`status` 会打印以下四种状态之一，绝不打印令牌：
+
+| 状态 | 含义 |
+|-------|---------|
+| `enabled` | 服务器要求令牌 |
+| `disabled` | 没有令牌。服务器不要求任何凭据 |
+| `unreadable` | 令牌文件存在，但服务器读不了它。服务器拒绝所有请求 |
+| `empty` | 令牌文件没有内容。服务器拒绝所有请求 |
+
+在 `unreadable` 和 `empty` 状态下，服务器应答 `503` 而不是 `401`。服务器用不了的令牌文件绝不会让端口变成开放。`rotate` 可以修复这两种状态，`disable` 则会删除该文件。`lager update` 也会纠正该文件的属主。
+
+**令牌不属于配置。** Box 把它保存在 `/etc/lager/mcp_token` 中，权限为 `0600`，属主是容器用户。`show`、`export` 和 `copy` 都不包含它，因此 `copy` 不会把令牌带到另一台 Box 上。`audit` 会记录 `mcp-token-enable`、`mcp-token-rotate` 和 `mcp-token-disable`，但绝不记录令牌的值。
+
+<Warning>
+令牌不会加密连接。端口 8100 是普通 HTTP，因此令牌以明文在网络上传输，`enable` 的应答也是如此。请把 Box 放在您信任的网络上。
+</Warning>
+
+在 lager 版本早于该令牌的 Box 上，每条命令都会提示您先运行 `lager update`。
 
 ### `pip` / `cargo` / `npm`
 

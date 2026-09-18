@@ -71,6 +71,11 @@ on the `lagernet` Docker network, so `<box-ip>:<port>` will not connect on such 
 Set `LAGER_MCP_NO_PUBLISH=1` with `lager box-config env set` to leave port 8100 unpublished.
 The other ports stay published, and the MCP server still runs inside the container.
 
+By default the MCP server asks for no credential. `lager box-config mcp-token enable` makes it
+require a bearer token (`mcp/auth.py`). The token is the file `/etc/lager/mcp_token`, and its
+existence is the switch. A token file that the server cannot read closes the port. It does not
+open it.
+
 The **MCP server** (`mcp/server.py`) provides direct hardware access to AI coding agents via the Model Context Protocol. It uses the same `lager.Net` API as the CLI but executes everything on-box with no subprocess overhead. See the [main README](../README.md#mcp-server-ai-agent-integration) for agent setup instructions.
 
 Hardware is accessed through **nets** — named references to physical connections defined in the box configuration. The dispatcher pattern routes commands to the correct driver based on the net's device type.

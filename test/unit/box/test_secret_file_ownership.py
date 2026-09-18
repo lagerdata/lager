@@ -223,3 +223,32 @@ class TestRobustness:
         assert '/etc/lager/org_secrets.json' in OWNERSHIP_SH
         assert '/etc/lager/secret_key' in OWNERSHIP_SH
         assert 'LAGER_CONTAINER_UID:-33' in OWNERSHIP_SH
+
+    def test_the_default_list_includes_the_mcp_token_the_box_names(self):
+        """The MCP bearer token is a secret like the other two. This script
+        cannot import box code, so it spells the path out; constants.py is
+        where the box names it, and the two must agree -- or the boot-time
+        repair and warning cover a file the server never reads."""
+        import importlib.util
+        import re
+
+        constants_py = START_BOX.parent / "lager" / "constants.py"
+        spec = importlib.util.spec_from_file_location("_lager_box_constants", constants_py)
+        constants = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(constants)
+
+        default = re.search(r'LAGER_SECRET_FILES="\$\{LAGER_SECRET_FILES:-([^}]*)\}"', OWNERSHIP_SH)
+        assert default, "the default list moved or changed shape"
+        shipped = default.group(1).split()
+        assert constants.MCP_TOKEN_PATH in shipped
+        assert constants.ORG_SECRETS_PATH in shipped
+        assert shipped == sorted(set(shipped), key=shipped.index), "a path is listed twice"
+
+    def test_an_mcp_token_owned_by_someone_else_is_repaired_and_reported(self, box):
+        """The same treatment as the other secrets, exercised on this name."""
+        token = box.secret("mcp_token", mode=0o644)
+        result = box.run([token], container_uid=OTHER_UID)
+        assert result.returncode == 0, result.stderr
+        assert _mode(token) == 0o600
+        assert any("chown" in call and str(token) in call for call in box.sudo_calls())
+        assert f"the container cannot read {token}" in result.stdout

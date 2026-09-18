@@ -62,6 +62,7 @@ lager box-config apply --box my-lager-box                # 2. apply
 | `pip` / `cargo` / `npm` | In-container language packages |
 | `sysctl` | Host sysctl values persisted across reboots |
 | `network-mode` | The docker network the container runs on |
+| `mcp-token` | The optional bearer token on the box MCP server. Not part of the config |
 
 ---
 
@@ -240,9 +241,10 @@ lager box-config apply --box my-lager-box
 
 **`LAGER_MCP_NO_PUBLISH`.** Set this variable to `1`, `true` or `yes` to stop
 publishing port 8100 on the host. The MCP server still runs inside the container,
-and every other port stays published. The MCP server performs no authentication,
-so use this variable to take it off the network. Clients on the `lagernet` Docker
-network still reach it.
+and every other port stays published. By default the MCP server asks for no
+credential, so use this variable to take it off the network. Clients on the
+`lagernet` Docker network still reach it. To keep the port published and require a
+token instead, see [`mcp-token`](#mcp-token).
 
 The variable has no effect in network mode `host`, where the container binds host
 port 8100 directly. `lager box-config apply` reports the port it stopped
@@ -393,6 +395,62 @@ your interface in the firewall, or switch back.
 `lager box-config apply`. A return to `lagernet` needs no check.
 
 Leave this at the default unless you need the adapter inside the container.
+
+### `mcp-token`
+
+The optional bearer token on the box [MCP server](/source/reference/mcp/overview)
+(port 8100). The token is off by default, and the server then asks for no
+credential.
+
+```bash
+lager box-config mcp-token status [--json] --box my-lager-box
+lager box-config mcp-token enable --box my-lager-box
+lager box-config mcp-token rotate [--yes] --box my-lager-box
+lager box-config mcp-token disable [--yes] --box my-lager-box
+```
+
+`enable` creates the token and shows it one time, with a client entry that carries
+it. From then on the server answers only a request that has the header
+`Authorization: Bearer <token>`. Every other request gets `401 Unauthorized`.
+The change takes effect immediately. You do not run `apply`, and the container
+does not restart.
+
+No command shows the token again. If you lose it, run `rotate`. `rotate` replaces
+the token and shows the new one. The old token stops working immediately, so
+update every client. `enable` refuses when a token already exists, and tells you
+to use `rotate`.
+
+`disable` removes the token. The server then asks for no credential again.
+`rotate` and `disable` ask you to confirm, unless you pass `--yes`.
+
+`status` prints one of four states and never the token:
+
+| State | Meaning |
+|-------|---------|
+| `enabled` | The server requires the token |
+| `disabled` | No token exists. The server asks for no credential |
+| `unreadable` | The token file exists, but the server cannot read it. The server refuses every request |
+| `empty` | The token file has no content. The server refuses every request |
+
+In the `unreadable` and `empty` states the server answers `503`, not `401`. A
+token file that the server cannot use never opens the port. `rotate` repairs both
+states, and `disable` removes the file. `lager update` also corrects the owner of
+the file.
+
+**The token is not part of the config.** The box keeps it in
+`/etc/lager/mcp_token`, mode `0600`, owned by the container user. `show`, `export`
+and `copy` do not include it, so `copy` does not move a token to another box.
+`audit` records `mcp-token-enable`, `mcp-token-rotate` and `mcp-token-disable`,
+and never the value.
+
+<Warning>
+The token does not encrypt the connection. Port 8100 is plain HTTP, so the token
+crosses the network in clear text, and so does the reply to `enable`. Keep the box
+on a network you trust.
+</Warning>
+
+On a box whose lager predates the token, each command tells you to run
+`lager update` first.
 
 ### `pip` / `cargo` / `npm`
 

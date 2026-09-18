@@ -67,3 +67,13 @@ UDEV_REMOVE = "udev-remove"
 NETWORK_MODE_SHOW = "network-mode-show"
 NETWORK_MODE_SET = "network-mode-set"
 NETWORK_MODE_UNSET = "network-mode-unset"
+
+# The MCP server's optional bearer token. These verbs never touch
+# box_config.json: the token is a file of its own, because `show`, `export`,
+# `copy` and the audit log all carry whatever the config holds. ENABLE and
+# ROTATE return the value once; there is deliberately no verb that reads it
+# back, and STATUS reports a state and nothing else.
+MCP_TOKEN_STATUS = "mcp-token-status"
+MCP_TOKEN_ENABLE = "mcp-token-enable"
+MCP_TOKEN_ROTATE = "mcp-token-rotate"
+MCP_TOKEN_DISABLE = "mcp-token-disable"

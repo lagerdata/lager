@@ -61,8 +61,8 @@ port 8100 on the host. The MCP server still runs and binds `0.0.0.0:8100` inside
 the container. It is reachable only on the internal `lagernet` Docker network,
 where a reverse proxy owns the host ports. On such a box, point the client at the
 container's `lagernet` address, because `<box-ip>:8100` will not connect. Do not
-route port 8100 through the proxy, because the MCP server performs no
-authentication.
+route port 8100 through the proxy. By default the MCP server asks for no
+credential, and its optional token is not a gateway credential.
 
 The mode persists across restarts in `/etc/lager/no_publish`, and
 `start_box.sh --publish` clears it. At the end of each run, `start_box.sh`
@@ -72,6 +72,46 @@ To keep only port 8100 off the host, set `LAGER_MCP_NO_PUBLISH=1` with
 `lager box-config env set` and apply it. Every other port stays published. See
 [`lager box-config`](/source/reference/cli/box-config).
 </Note>
+
+## Requiring a token
+
+By default the MCP server asks for no credential. Anything that can reach port
+8100 can read the bench context. You can make the server require a bearer token:
+
+```bash
+lager box-config mcp-token enable --box <BOX>
+```
+
+The command shows the token one time. It also prints a client entry that carries
+the token:
+
+```json
+{
+  "mcpServers": {
+    "lager": {
+      "url": "http://<box-ip>:8100/mcp",
+      "headers": { "Authorization": "Bearer <token>" }
+    }
+  }
+}
+```
+
+The token takes effect immediately, and the container does not restart. A request
+without the token gets `401 Unauthorized`. For `status`, `rotate`, and `disable`,
+see [`lager box-config`](/source/reference/cli/box-config#mcp-token).
+
+Every client must send the token after you enable it. That includes a
+control-plane MCP client that connects to the box directly. Confirm that each
+client can send the header before you enable the token. If a client cannot send a
+custom header, leave the token disabled and keep port 8100 off untrusted networks.
+
+<Warning>
+The token does not encrypt the connection. Port 8100 is plain HTTP, so the token
+crosses the network in clear text. Keep the box on a network you trust.
+
+The token belongs to the box alone. It is not a gateway credential, and an
+authenticating gateway must not forward port 8100.
+</Warning>
 
 ## What the agent sees
 
@@ -121,6 +161,10 @@ Two environment variables, both **off** unless explicitly set, register addition
 tools when the box's MCP server starts. Each widens what a connected agent can do
 to the box, so treat them as deployment decisions rather than conveniences.
 
+Enable the [token](#requiring-a-token) before you set either variable. With a gate
+on and no token, the server logs a warning at startup. In that state, anything
+that can reach port 8100 can use the added tools.
+
 #### `LAGER_MCP_ALLOW_CONTROL`
 
 Adds three scoped tools. These read bench state and power-cycle a hub port — they
@@ -135,8 +179,9 @@ do not execute arbitrary code.
 #### `LAGER_MCP_ALLOW_EXEC`
 
 <Warning>
-This gate exposes **arbitrary command execution and file writes** on the box to any
-agent that can reach the MCP port. An agent can run any command the box's service
+This gate exposes **arbitrary command execution and file writes** on the box. Without
+a [token](#requiring-a-token), that means any agent that can reach the MCP port.
+With one, it means any agent that holds the token. An agent can run any command the box's service
 user can run, and overwrite any file it can write. The server itself logs a warning
 at startup when this is set. Enable it only on a bench you control, on a trusted
 network, and never on a shared or production box.
