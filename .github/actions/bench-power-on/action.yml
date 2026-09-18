@@ -1,0 +1,172 @@
+# Copyright 2024-2026 Lager Data
+# SPDX-License-Identifier: Apache-2.0
+#
+# Power on the bench's relay-switched instruments and wait until they are
+# usable. Called at the start of the hardware phase of integration-tests.yml,
+# update-regression.yml and bench-extended.yml.
+#
+# WHY THIS IS AN ACTION. Those three workflows each carried this block, about
+# ninety lines, and the copies drifted: a fix that added the relay-write retry
+# and put the Keithley 2281S behind KEITHLEY_PRESENT landed in one of them, the
+# nightly ran another FIRST, and the run dispatched against the very commit that
+# added the gate failed waiting for an instrument that was off the bench. The
+# copies were then made byte-identical and a test compared them. One copy needs
+# no comparing. See issue #432.
+#
+# WHAT A CALLER KEEPS. Everything that legitimately differs per caller stays on
+# the caller's `uses:` step: `id`, `if` and `continue-on-error`.
+# bench-extended.yml sets all three, because it runs suites that do not need
+# these instruments and reads `steps.power-on.outcome` afterwards. The other
+# two set none ON PURPOSE: if the instruments cannot be powered, failing here
+# beats seven suites failing one by one. `outcome` belongs to the calling step,
+# so this action declares no outputs.
+#
+# INPUTS, NOT CONTEXTS. A composite action cannot read `vars`, so each caller
+# passes the repository variables in, with their defaults. The box is an input
+# too: the callers set LAGER_BOX at job level, and an action that silently read
+# its caller's environment would have a dependency nobody could see here.
+# Every input reaches the script through `env:`, never by being expanded inside
+# `run:`, so a value can never become shell.
+#
+# REQUIRES: the repository checked out (a local action is read from the
+# workspace) and `lager` on PATH. All three callers do both before this step.
+#
+# NOT LINTED BY actionlint, which reads workflows only. zizmor does read it:
+# static-checks.yml passes this directory to it as well as the workflows. And
+# static-checks.yml writes each `run:` here out as a script and shellchecks it,
+# so the script stays a bash step.
+# Dependabot's github-actions updates do not scan this directory either, which
+# is fine while this action has no `uses:` of its own.
+#
+# POWER-OFF IS NOT HERE. The power-off steps are duplicated too, but
+# test_bench_cleanup_timeouts.py requires each one to emit `::warning` from its
+# OWN `run:` when it fails, so that a bench left powered is never silent. Moving
+# them into an action would hide that from the test.
+
+name: Bench power-on
+description: >-
+  Drive the bench AC relays high, wait for every relay-powered instrument to
+  enumerate, then wait until the box hardware service answers a supply read.
+
+inputs:
+  box:
+    description: The Lager Box that drives the relays (name or IP).
+    required: true
+  rigol-power-net:
+    description: GPIO net of the AC relay that powers the Rigol instruments.
+    required: true
+  keithley-power-net:
+    description: GPIO net of the AC relay that powers the Keithley 2281S.
+    required: true
+  probe-supply-net:
+    description: Supply net to read until the hardware service answers.
+    required: true
+  keithley-present:
+    description: >-
+      "true" when the Keithley 2281S is on the bench. Any other value, or none,
+      leaves it out of the list of instruments to wait for.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Power on bench instruments (AC relays)
+      env:
+        LAGER_BOX: ${{ inputs.box }}
+        RIGOL_POWER_NET: ${{ inputs.rigol-power-net }}
+        KEITHLEY_POWER_NET: ${{ inputs.keithley-power-net }}
+        PROBE_SUPPLY_NET: ${{ inputs.probe-supply-net }}
+        KEITHLEY_PRESENT: ${{ inputs.keithley-present }}
+      run: |
+        # Retry each relay write. The hardware service self-restarts by
+        # design when it finds an orphaned USB claim (self_restart.py exits
+        # so the supervisor respawns with a clean USB context), and it is
+        # unavailable for ~4s while that happens. Bare calls under `set -e`
+        # made the first hardware command of the night a coin flip against
+        # that window -- run 33318035290 lost it and the whole night was
+        # skipped. The relay level latches in LabJack hardware, so retrying
+        # is idempotent. See issue #409.
+        for net in "$RIGOL_POWER_NET" "$KEITHLEY_POWER_NET"; do
+          set_ok=""
+          for _ in $(seq 1 12); do
+            if lager gpo "$net" high --box "$LAGER_BOX"; then
+              set_ok=1
+              break
+            fi
+            sleep 5
+          done
+          if [ -z "$set_ok" ]; then
+            echo "Could not drive $net high after 60s"
+            exit 1
+          fi
+        done
+        # EVERY instrument on the relays has to finish enumerating before any
+        # suite runs -- not just the ones a suite talks to. A device that is
+        # still coming up when this step returns hotplugs later, and the
+        # hotplug restarts the box's hardware service underneath whatever is
+        # already running.
+        #
+        # Measured from a dark relay: DP821 6s, Keithley 2281S 11s, Rigol
+        # MSO5204 52s and 60s across two runs. The MSO5204 shares the
+        # RIGOL_POWER outlet, so waiting only for the first two returned
+        # about 35s before it had finished, and a command issued in that
+        # window came back `Connection refused` on localhost:8080 --
+        # reproduced deliberately on the bench, not inferred.
+        #
+        # This list is the bench's actual relay-powered inventory, so adding
+        # an instrument to a relay means adding it here. An entry that is
+        # genuinely gone fails this step BY NAME after 180s, which is the
+        # outcome we want: the bench changed and the workflow should say so
+        # rather than quietly race whatever is left.
+        # The Keithley 2281S is gated on the KEITHLEY_PRESENT repository
+        # variable, which is currently unset. Its USB device port stopped
+        # presenting on 2026-08-31: the instrument powers and boots and the
+        # relay switches, but it never reaches the bus. Proven not to be the
+        # bench -- two hub ports across two segments, a cable swap, and the
+        # same hub cold-booting three other devices on demand. See #417.
+        #
+        # ONE switch restores it: set KEITHLEY_PRESENT=true in repository
+        # variables. That puts it back in this list in every bench workflow
+        # AND re-enables every suite that drives it, all gated on the same
+        # variable. Leaving it unset hides a real absence, so set it the day
+        # the instrument returns.
+        expected=(Rigol_DP821 Rigol_MSO5204)
+        if [ "${KEITHLEY_PRESENT:-}" = "true" ]; then
+          expected+=(Keithley_2281S)
+        fi
+        enumerated=""
+        missing=""
+        for _ in $(seq 1 36); do
+          out=$(lager instruments --box "$LAGER_BOX" 2>/dev/null || true)
+          missing=""
+          for inst in "${expected[@]}"; do
+            printf '%s' "$out" | grep -q "$inst" || missing="$missing $inst"
+          done
+          if [ -z "$missing" ]; then
+            enumerated=1
+            break
+          fi
+          sleep 5
+        done
+        if [ -z "$enumerated" ]; then
+          echo "Did not enumerate within 180s of relay power-on:$missing"
+          exit 1
+        fi
+        echo "All relay-powered instruments enumerated."
+        # Enumeration is not readiness: the USB hotplug from the relay
+        # power-on restarts the box's hardware service, and supply
+        # connections are refused for a few seconds after the instruments
+        # appear (observed live: two Rigol suites failed inside that window
+        # while everything after passed). Poll an actual supply read until
+        # the service answers before letting any suite run.
+        for _ in $(seq 1 24); do
+          if lager supply "$PROBE_SUPPLY_NET" state --box "$LAGER_BOX" >/dev/null 2>&1; then
+            echo "Hardware service is answering supply reads."
+            exit 0
+          fi
+          sleep 5
+        done
+        echo "Hardware service did not answer supply reads within 120s of power-on"
+        exit 1
+      shell: bash

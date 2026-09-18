@@ -94,11 +94,18 @@ jobs:
       # this deterministic -- no API dependency in a required job. Findings
       # at `low` and above fail; deliberate exceptions live in
       # .github/zizmor.yml with their reasons.
+      #
+      # Both directories, named. A composite action's `run:` is the same
+      # injection surface a workflow's is, and an action under
+      # .github/actions/ was outside this audit until it was listed here --
+      # moving a script out of a workflow would otherwise have moved it out of
+      # the lint as well. actionlint, below, reads workflows only; the
+      # composite-action ShellCheck step above lints the action's script.
       - name: zizmor (workflow audit)
         if: always()
         run: |
           zizmor --no-online-audits --min-severity low \
-            --config .github/zizmor.yml .github/workflows/
+            --config .github/zizmor.yml .github/workflows/ .github/actions/
         shell: bash
 
       # Syntax/semantics for the workflow files: expression typos, bad
@@ -185,6 +192,39 @@ jobs:
           shellcheck -S warning \
             -e SC2034,SC2320,SC2155,SC2164,SC2046 \
             -f gcc $(find test tools box cli/deployment -name '*.sh')
+        shell: bash
+
+      # A composite action's `run:` is shell that no other step lints: the
+      # step above reads *.sh files, and actionlint reads workflows only and
+      # runs with its shellcheck integration off. Each `run:` under
+      # .github/actions/ is written out as a script and held to the same gate.
+      # A step in another shell fails here, so the lint cannot skip it quietly.
+      - name: 'ShellCheck composite actions (severity: warning)'
+        if: always()
+        run: |
+          out="${RUNNER_TEMP:-/tmp}/action-scripts"
+          rm -rf "$out" && mkdir -p "$out"
+          python - "$out" <<'EOF'
+          import pathlib, sys, yaml
+          out = pathlib.Path(sys.argv[1])
+          for action in sorted(pathlib.Path(".github/actions").glob("*/action.y*ml")):
+              steps = yaml.safe_load(action.read_text())["runs"].get("steps") or []
+              for i, step in enumerate(steps):
+                  if "run" not in step:
+                      continue
+                  if step.get("shell") != "bash":
+                      sys.exit(f"{action} step {i}: shell {step.get('shell')!r}, not bash")
+                  script = out / f"{action.parent.name}-{i}.sh"
+                  script.write_text("#!/usr/bin/env bash\n" + step["run"])
+                  print(script)
+          EOF
+          shopt -s nullglob
+          scripts=("$out"/*.sh)
+          if [ "${#scripts[@]}" -eq 0 ]; then
+            echo "No composite action scripts found under .github/actions/"
+            exit 1
+          fi
+          shellcheck -S warning -f gcc "${scripts[@]}"
         shell: bash
 
       # test/api/ is 81 standalone scripts, not pytest (see test/CONVENTIONS.md),

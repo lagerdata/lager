@@ -137,7 +137,12 @@ label rather than just passing a different title.
 Both notify paths run on HOSTED runners — the bench being down is exactly the
 condition they must survive. Manual `workflow_dispatch` of the child bench
 workflows does not notify; a dispatch has a human watching by definition. The
-same holds for a dispatch of `nightly-bench.yml` on any ref other than `main`.
+same holds for a dispatch of `nightly-bench.yml` or `bench-extended.yml` on any
+ref other than `main`: both limit their notify jobs to the scheduled run and to
+runs of `main`, so a branch dispatched to find out whether it goes red cannot
+file against `main` when it does. A dispatch of either one ON `main` still
+notifies. `test_nightly_notify_scope.py` holds every job that can write an
+issue to that clause, or to a written reason for not carrying it.
 
 Both labels must exist in the repo. If alerting itself breaks (missing label,
 token without `issues: write`), the notify job goes red inside the run — loud,
@@ -246,7 +251,18 @@ determines when that step may return.
 Each bench workflow powers the instruments on at the start of its job and off
 at the end (also on failure and cancellation), so the bench sits dark between
 runs. The driven level latches in LabJack hardware — nothing stays alive to
-hold it. Manual control:
+hold it.
+
+Power-on is one composite action, `.github/actions/bench-power-on`, called by
+`integration-tests.yml`, `update-regression.yml` and `bench-extended.yml`. Each
+of them used to carry its own copy of that script, and a fix that reached one
+copy left the nightly red against another (#432). What differs per caller
+stays on the caller's step: `bench-extended.yml` sets `id`, `if` and
+`continue-on-error`, and the other two deliberately set none. Power-off is
+still a step in each workflow, because `test_bench_cleanup_timeouts.py`
+requires each one to emit `::warning` from its own `run:`.
+
+Manual control:
 
 ```bash
 lager gpo RIGOL_POWER high --box <box>    # or: low
@@ -272,10 +288,11 @@ Notes and footguns:
   running. Measured from a dark relay: DP821 6s, Keithley 2281S 11s, Rigol
   MSO5204 52-60s. While the step waited only for the first two it returned
   about 35s early, and a command issued in that gap came back `Connection
-  refused` on localhost:8080. The `expected=(...)` list in each power-on step
-  is the bench's relay-powered inventory: **add an instrument to a relay, add
-  it to that list**, or it becomes a source of intermittent mid-suite
-  failures that look like flakes.
+  refused` on localhost:8080. The `expected=(...)` list in the
+  `bench-power-on` action is the bench's relay-powered inventory: **add an
+  instrument to a relay, add it to that list** — one list now, not three — or
+  it becomes a source of intermittent mid-suite failures that look like
+  flakes.
 - A box reboot or LabJack power-cycle resets the pins to floating inputs,
   which opens the relays: the instruments go dark until the next run (or a
   manual `gpo ... high`) powers them back on.

@@ -29,9 +29,8 @@ workflow reintroduces a value declared in one file and consumed in another with
 nothing asserting they agree, which is the defect class the watchdog itself
 exists to catch.
 
-Same enforcement style as `test_bench_power_on_blocks_match.py` and
-`test_firewall_port_allowlist.py`: parse both sides, compare, and make an
-exception a visible edit to this file.
+Same enforcement style as `test_firewall_port_allowlist.py`: parse both sides,
+compare, and make an exception a visible edit to this file.
 """
 
 import ast
