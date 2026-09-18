@@ -53,10 +53,15 @@ class UnknownAction(Exception):
 # Result helpers — every action returns {"message": str, "value": <optional>}.
 # ---------------------------------------------------------------------------
 
-def _ok(message, value=None):
+def _ok(message, value=None, warnings=None):
     out = {"message": message}
     if value is not None:
         out["value"] = value
+    # Omitted when empty, so a box that has nothing to say sends nothing new.
+    # An older CLI reads `message`, `value` and `error` only, so it ignores
+    # this key rather than breaking on it.
+    if warnings:
+        out["warnings"] = [str(w) for w in warnings]
     return out
 
 
@@ -443,7 +448,8 @@ def _spi(netname, role, action, params):
         if cfg.get("frequency_hz") is not None and int(cfg["frequency_hz"]) <= 0:
             raise ValueError("Invalid SPI frequency: %sHz" % cfg["frequency_hz"])
         # Apply to the live driver, persist explicit overrides, read back effective.
-        dev.config(cfg)
+        _cfg_result = dev.config(cfg)
+        warnings = list((_cfg_result or {}).get("warnings") or [])
         if cfg:
             spi_disp._persist_params(netname, **cfg)
         rec = spi_disp.helpers.find_saved_net(netname, spi_disp.SPIBackendError)
@@ -460,15 +466,20 @@ def _spi(netname, role, action, params):
         achieved = (_achieved_fn(rec, effective["frequency_hz"])
                     if _achieved_fn else effective["frequency_hz"])
         freq_note = "freq=%sHz" % achieved
-        if effective["frequency_hz"] is not None and achieved != effective["frequency_hz"]:
-            freq_note += " (requested %sHz)" % effective["frequency_hz"]
+        # Name a request only when one was actually made. _get_spi_params
+        # fills in a 1 MHz default for a net that stored no frequency, and a
+        # U3 cannot reach it -- so an unconfigured U3 net reported
+        # "(requested 1000000Hz)" for a request nobody had made.
+        asked = (rec.get("params") or {}).get("frequency_hz")
+        if asked is not None and achieved != asked:
+            freq_note += " (requested %sHz)" % asked
         msg = ("SPI configured: mode=%s, %s, word_size=%s, "
                "bit_order=%s, cs_active=%s, cs_mode=%s" % (
                    effective["mode"], freq_note,
                    effective["word_size"], effective["bit_order"],
                    effective["cs_active"], effective["cs_mode"]))
         effective = dict(effective, achieved_frequency_hz=achieved)
-        return _ok(msg, effective)
+        return _ok(msg, effective, warnings)
 
     if action not in ("transfer", "read", "write", "read_write"):
         raise UnknownAction(action)
@@ -507,7 +518,8 @@ def _i2c(netname, role, action, params):
         stored = rec.get("params", {})
         eff_freq = freq if freq is not None else stored.get("frequency_hz", 100_000)
         eff_pull_ups = pull_ups if pull_ups is not None else stored.get("pull_ups", False)
-        dev.config(eff_freq, eff_pull_ups)
+        _cfg_result = dev.config(eff_freq, eff_pull_ups)
+        warnings = list((_cfg_result or {}).get("warnings") or [])
         persist = {}
         if freq is not None:
             persist["frequency_hz"] = freq
@@ -519,8 +531,13 @@ def _i2c(netname, role, action, params):
         _achieved_fn = getattr(i2c_disp, "achieved_frequency_hz", None)
         achieved = _achieved_fn(i2c_rec, eff_freq) if _achieved_fn else eff_freq
         freq_note = "freq=%sHz" % achieved
-        if eff_freq is not None and achieved != eff_freq:
-            freq_note += " (requested %sHz)" % eff_freq
+        # `eff_freq` carries a 100 kHz default for a net that stored no
+        # frequency, and a U3 rounds that to a reachable delay count -- so an
+        # unconfigured net reported a request nobody made. Name a request only
+        # when the command carried one or the net stored one.
+        asked = freq if freq is not None else stored.get("frequency_hz")
+        if asked is not None and achieved != asked:
+            freq_note += " (requested %sHz)" % asked
         # A U3 has no controllable pull-ups; reporting on/off states a bus
         # condition the driver cannot set and the user must supply externally.
         _is_ud = getattr(i2c_disp, "is_ud_net", None)
@@ -531,7 +548,8 @@ def _i2c(netname, role, action, params):
         return _ok(
             "I2C configured: %s, %s" % (freq_note, pull_note),
             {"frequency_hz": eff_freq, "achieved_frequency_hz": achieved,
-             "pull_ups": bool(eff_pull_ups)})
+             "pull_ups": bool(eff_pull_ups)},
+            warnings)
 
     if action not in ("scan", "read", "write", "transfer"):
         raise UnknownAction(action)

@@ -18,11 +18,35 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 from typing import Optional
 
 from lager.io.dac.dac_net import DACBase
 
 DEBUG = bool(os.environ.get("LAGER_DAC_DEBUG"))
+
+# The last voltage written to each physical U3 DAC in this process, keyed by
+# (serial, DAC number).
+#
+# It lives here rather than on the driver because the driver does not survive
+# long enough to be useful. hardware_service releases every direct-USB
+# dispatcher before each `lager python` run, which empties the DAC
+# dispatcher's driver cache -- so a value written before a script ran was gone
+# after it, and the next `lager dac NET` read failed with "has no readback"
+# until something set the output again. The pin keeps its voltage across all
+# of that; only the record of it was being thrown away.
+#
+# Deliberately NOT called `_driver_cache`: the release walks the dispatcher
+# modules clearing anything by that name, and this has to outlive exactly that
+# sweep.
+#
+# Keyed by the physical output, not by net name, so two nets pointing at one
+# DAC agree about it -- they are reading the same pin. A U3 address with an
+# empty serial field resolves to None ("first found"), which collapses the key
+# on a box with one U3; a box with two is issue #515 item 5 and is refused
+# earlier for the same reason.
+_LAST_WRITTEN: dict = {}
+_LAST_WRITTEN_LOCK = threading.Lock()
 
 # Datasheet output range for a UD DAC with no load. Writing outside it does not
 # fail -- the device clamps -- so the driver refuses instead, which is the only
@@ -73,8 +97,6 @@ class LabJackUDDAC(DACBase):
         from lager.io.labjack_ud_handle import serial_from_address
         self._serial = serial_from_address(unique_id)
         self._model = (model or "u3").lower()
-        # Last value this process wrote, per get_voltage's contract below.
-        self._last_written: Optional[float] = None
 
     def _get_device(self):
         """Get the UD device object from the global handle manager."""
@@ -117,21 +139,28 @@ class LabJackUDDAC(DACBase):
         because a T7 DAC is a Modbus register; a U3 DAC is written by a
         Feedback command and there is no corresponding read.
 
-        So this reports the last value written *through this driver instance*,
-        and raises if nothing has been. Returning 0.0 for "unknown" would be
-        indistinguishable from a real 0 V reading and would quietly satisfy
-        ``DACBase.input()``, whose callers expect a measurement.
+        So this reports the last value written to this physical DAC by this
+        process, and raises if nothing has been. Returning 0.0 for "unknown"
+        would be indistinguishable from a real 0 V reading and would quietly
+        satisfy ``DACBase.input()``, whose callers expect a measurement.
+
+        The record is module-level and survives a dispatcher release, which
+        happens before every ``lager python`` run. It used to live on the
+        driver instance, so a script anywhere in between erased it and the
+        next read failed on a pin that was still holding its voltage.
 
         Raises:
-            LabJackUDDACError: If this instance has not written a voltage.
+            LabJackUDDACError: If nothing has written a voltage to this DAC.
         """
-        if self._last_written is None:
+        with _LAST_WRITTEN_LOCK:
+            last = _LAST_WRITTEN.get((self._serial, self._get_dac_number()))
+        if last is None:
             raise LabJackUDDACError(
                 f"LabJack UD DAC net '{self._name}' has no readback: the "
                 f"device provides none, and this process has not written a "
                 f"value to report. Set an output first."
             )
-        return self._last_written
+        return last
 
     def output(self, voltage: float) -> None:
         """
@@ -167,4 +196,5 @@ class LabJackUDDAC(DACBase):
         _debug(f"Writing {voltage} V ({bits} bits) to DAC{dac_number} "
                f"for net '{self._name}'")
         device.getFeedback(ud.DAC16(dac_number, bits))
-        self._last_written = voltage
+        with _LAST_WRITTEN_LOCK:
+            _LAST_WRITTEN[(self._serial, dac_number)] = voltage

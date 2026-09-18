@@ -446,8 +446,16 @@ def config(
     # bus condition the driver cannot set and the user must supply externally.
     achieved_hz = achieved_frequency_hz(rec, effective_freq)
     freq_note = f"freq={achieved_hz}Hz"
-    if effective_freq is not None and achieved_hz != effective_freq:
-        freq_note += f" (requested {effective_freq}Hz)"
+    # `stored_freq` carries a 100 kHz default for a net that stored nothing,
+    # and a U3 rounds that to a reachable delay count. Name a request only
+    # when this call carried one or the net actually stored one.
+    asked_hz = (frequency_hz if frequency_hz is not None
+                else stored_params.get("frequency_hz"))
+    if asked_hz is not None and achieved_hz != asked_hz:
+        freq_note += f" (requested {asked_hz}Hz)"
+
+    for note in getattr(drv, 'clamp_warnings', ()) or ():
+        print(f"WARNING: {note}")
 
     if is_ud_net(rec):                       # a U3 has no pull-ups at all
         pull_note = "pull_ups=n/a (external resistors required)"

@@ -420,6 +420,12 @@ def post_net_command(
         raise SystemExit(1)
 
     if resp.status_code == 200 and result.get("success"):
+        # Outside the `quiet` guard on purpose. Callers that format their own
+        # output pass quiet=True -- `lager spi`, `lager dac`, `lager gpi` --
+        # and those are exactly the commands a clamped clock or a refused
+        # setting matters to. A box that sends no warnings adds no output.
+        for note in result.get("warnings") or []:
+            click.secho(f"[WARNING] {note}", fg="yellow", err=True)
         if not quiet:
             message = result.get("message", "Command executed")
             click.echo(f"[OK] {message}")
@@ -494,6 +500,12 @@ def post_box_command(
         raise SystemExit(1)
 
     if resp.status_code == 200 and result.get("success"):
+        # Outside the `quiet` guard on purpose. Callers that format their own
+        # output pass quiet=True -- `lager spi`, `lager dac`, `lager gpi` --
+        # and those are exactly the commands a clamped clock or a refused
+        # setting matters to. A box that sends no warnings adds no output.
+        for note in result.get("warnings") or []:
+            click.secho(f"[WARNING] {note}", fg="yellow", err=True)
         if not quiet:
             message = result.get("message", "Command executed")
             click.echo(f"[OK] {message}")

@@ -402,6 +402,7 @@ def _install_fake_u3(device):
 
 import lager.io.labjack_ud_handle as udh  # noqa: E402
 from lager.io.adc.labjack_ud import LabJackUDADC  # noqa: E402
+import lager.io.dac.labjack_ud as labjack_ud_dac_mod  # noqa: E402
 from lager.io.dac.labjack_ud import (  # noqa: E402
     LabJackUDDAC, LabJackUDDACError,
 )
@@ -684,6 +685,19 @@ class ADCTests(_UDTestCase):
 
 
 class DACTests(_UDTestCase):
+    """The U3 DAC, whose only readback is what this process last wrote.
+
+    That record is module-level on purpose -- it has to outlive the dispatcher
+    release that runs before every `lager python` script -- so it also
+    outlives a test. Each test here starts from an empty one, or an earlier
+    test's write answers a later test's "nothing has been written" case.
+    """
+
+    def setUp(self):
+        super().setUp()
+        labjack_ud_dac_mod._LAST_WRITTEN.clear()
+        self.addCleanup(labjack_ud_dac_mod._LAST_WRITTEN.clear)
+
     def test_writes_a_dac16_feedback_command(self):
         dac = LabJackUDDAC("dac1", "DAC0")
         dac.output(2.5)
@@ -1779,3 +1793,109 @@ class UDSPIDispatcherTests(unittest.TestCase):
         with self.assertRaises(SPIBackendError) as ctx:
             dispatcher._make_driver(self._rec(pin="FIO0-FIO3"), None)
         self.assertIn("high-voltage", str(ctx.exception))
+
+
+class ClampWarningsReachTheCallerTests(_UDTestCase):
+    """A clamped clock has to reach the person who asked for it (#515 item 1).
+
+    Both drivers are built inside hardware_service, whose stderr is
+    /tmp/lager-hardware-service.log in the container. Writing the warning
+    there and nowhere else meant no user ever saw it. Worse, the one-shot
+    `_speed_warning_shown` flag is per CLASS and per process, so even someone
+    reading the log only saw the first clamp the box ever made.
+    """
+
+    def setUp(self):
+        super().setUp()
+        # Imported here, not at module scope: the fake `u3` module has to be
+        # in sys.modules before these import, which _UDTestCase arranges.
+        from lager.protocols.spi.labjack_ud_spi import LabJackUDSPI
+        from lager.protocols.i2c.labjack_ud_i2c import LabJackUDI2C
+        self.SPI, self.I2C = LabJackUDSPI, LabJackUDI2C
+        LabJackUDSPI._speed_warning_shown = False
+        LabJackUDI2C._speed_warning_shown = False
+        self.addCleanup(setattr, LabJackUDSPI, '_speed_warning_shown', False)
+        self.addCleanup(setattr, LabJackUDI2C, '_speed_warning_shown', False)
+
+    def test_a_clamped_spi_clock_is_returned_as_data(self):
+        notes = []
+        self.SPI._clock_byte_for(10_000_000, notes)
+        self.assertEqual(len(notes), 1)
+        self.assertIn('71400', notes[0])
+
+    def test_an_unclamped_spi_clock_says_nothing(self):
+        notes = []
+        self.SPI._clock_byte_for(50_000, notes)
+        self.assertEqual(notes, [])
+
+    def test_every_caller_is_told_not_just_the_first(self):
+        """The defect the one-shot flag caused: the second user got silence."""
+        first, second = [], []
+        self.SPI._clock_byte_for(10_000_000, first)
+        self.SPI._clock_byte_for(10_000_000, second)
+        self.assertEqual(len(first), 1)
+        self.assertEqual(len(second), 1, 'the second caller was told nothing')
+
+    def test_a_clamped_i2c_clock_is_returned_as_data(self):
+        notes = []
+        self.I2C._speed_adjust_for(1_000_000, notes)
+        self.assertEqual(len(notes), 1)
+        self.assertIn('150000', notes[0])
+
+    def test_the_arithmetic_helper_still_takes_no_list(self):
+        """The dispatcher's achieved_frequency_hz is a calculation, not a report.
+
+        It calls the same helper to work out what the hardware would do. It
+        must not be able to manufacture a warning for a config nobody applied.
+        """
+        self.assertEqual(self.SPI._clock_byte_for(10_000_000), 0)
+        self.assertEqual(self.I2C._speed_adjust_for(1_000_000), 0)
+
+    def test_a_driver_exposes_the_clamp_from_its_own_config(self):
+        spi = self.SPI(cs_pin='FIO4', clk_pin='FIO5', miso_pin='FIO6',
+                       mosi_pin='FIO7', frequency_hz=10_000_000)
+        self.assertTrue(spi.clamp_warnings)
+        self.assertIn('71400', spi.clamp_warnings[0])
+
+    def test_a_driver_that_clamped_nothing_reports_nothing(self):
+        spi = self.SPI(cs_pin='FIO4', clk_pin='FIO5', miso_pin='FIO6',
+                       mosi_pin='FIO7', frequency_hz=50_000)
+        self.assertEqual(spi.clamp_warnings, [])
+
+
+class DACReadbackSurvivesAReleaseTests(_UDTestCase):
+    """#515 item 3: the last written value outlived nothing.
+
+    hardware_service releases every direct-USB dispatcher before each
+    `lager python` run, which empties the DAC dispatcher's driver cache. The
+    value lived on the driver instance, so a script anywhere in between erased
+    it and the next `lager dac NET` failed with "has no readback" -- on a pin
+    that was still holding the voltage.
+    """
+
+    def setUp(self):
+        super().setUp()
+        labjack_ud_dac_mod._LAST_WRITTEN.clear()
+        self.addCleanup(labjack_ud_dac_mod._LAST_WRITTEN.clear)
+
+    def test_a_new_driver_for_the_same_pin_reports_the_last_write(self):
+        LabJackUDDAC('dac1', 'DAC0').output(3.3)
+        # What a release leaves behind: the old instance is gone, the pin is
+        # not, and the next command builds a fresh driver.
+        self.assertEqual(LabJackUDDAC('dac1', 'DAC0').get_voltage(), 3.3)
+
+    def test_two_nets_on_one_dac_agree(self):
+        """They address the same physical output, so they read the same value."""
+        LabJackUDDAC('dac1', 'DAC0').output(2.5)
+        self.assertEqual(LabJackUDDAC('other-name', 'DAC0').get_voltage(), 2.5)
+
+    def test_a_different_dac_is_not_answered_from_the_first(self):
+        LabJackUDDAC('dac1', 'DAC0').output(2.5)
+        with self.assertRaises(LabJackUDDACError):
+            LabJackUDDAC('dac2', 'DAC1').get_voltage()
+
+    def test_the_release_sweep_does_not_reach_this_cache(self):
+        """It must not be named `_driver_cache`, which the sweep clears by name."""
+        self.assertFalse(
+            hasattr(labjack_ud_dac_mod, '_driver_cache'),
+            'a cache called _driver_cache is emptied by the release sweep')
