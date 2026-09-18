@@ -23,8 +23,12 @@ these are gates, not advice.
 WHAT IS CHECKED
 
   nav       every docs.json page exists on disk, and every .mdx under
-            docs/source is reachable from docs.json (an unlisted page is not
-            published, so it is invisible rather than merely untidy)
+            docs/source is reachable from docs.json (an unlisted page keeps
+            building, so it is reachable by URL and by search while being
+            invisible in the navigation)
+  unlisted  every .md/.mdx under docs/ is either in docs.json or excluded by
+            .mintignore -- Mintlify builds the whole directory, so a file
+            nobody listed is a published page nobody reviewed
   notes     every CHANGELOG version has a release-notes page and every page
             has a CHANGELOG entry, counting both CHANGELOG.md and its
             docs/changelog/ archive; no version appears twice; CHANGELOG.md
@@ -69,6 +73,7 @@ off within a week:
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import re
 import sys
@@ -76,6 +81,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 DOCS = REPO / 'docs'
+MINTIGNORE = DOCS / '.mintignore'
 DOCS_JSON = DOCS / 'docs.json'
 SOURCE = DOCS / 'source'
 CHANGELOG = REPO / 'CHANGELOG.md'
@@ -172,6 +178,54 @@ def load_cli_tree():
     return flags, visible, hidden
 
 
+def mintignore_patterns():
+    """The non-comment rules in docs/.mintignore, as written.
+
+    Nothing else in the repository reads this file, and no tool validated it,
+    which is how it came to list one directory while four pages it was assumed
+    to cover were live on the site.
+    """
+    if not MINTIGNORE.exists():
+        return []
+    rules = []
+    for line in MINTIGNORE.read_text().splitlines():
+        line = line.split('#', 1)[0].strip()
+        if line:
+            rules.append(line)
+    return rules
+
+
+def _covered_by(rel, pattern):
+    """Whether `rel` (a path under docs/) is excluded by one .mintignore rule.
+
+    Deliberately simple: a leading slash anchors the rule to docs/, a trailing
+    slash means a directory, and anything else is an exact path or a glob. A
+    rule this does not understand is reported as NOT covering the file, so the
+    result is a page named for review rather than one silently exempted.
+
+    The leading slash is the load-bearing part. Unanchored, `reference/` also
+    matches docs/source/reference/ -- the published CLI, Python, Rust and MCP
+    reference -- and unpublishes a few hundred pages while this check stays
+    green, because they are excluded rather than unlisted. Every rule in the
+    file is anchored for that reason.
+    """
+    text = str(rel)
+    if pattern.startswith('/'):
+        anchored, pattern = True, pattern[1:]
+    else:
+        anchored = False
+    if pattern.endswith('/'):
+        if anchored:
+            return text.startswith(pattern)
+        return text.startswith(pattern) or f'/{pattern}' in text
+    if anchored:
+        # fnmatch, not Path.match: Path.match anchors at the RIGHT, so
+        # `/STYLE.md` would also match source/getting-started/STYLE.md, which
+        # is the opposite of what a leading slash asks for.
+        return fnmatch.fnmatchcase(text, pattern)
+    return text == pattern or rel.match(pattern)
+
+
 def nav_pages():
     nav = json.loads(DOCS_JSON.read_text())
     pages: list[str] = []
@@ -236,7 +290,8 @@ def lager_flags_in(path: Path) -> set[str]:
 def main() -> int:
     parser = argparse.ArgumentParser(
         description='Assert that docs/ still describes the CLI that actually ships.')
-    parser.add_argument('--only', choices=['nav', 'notes', 'commands', 'flags'],
+    parser.add_argument('--only',
+                        choices=['nav', 'unlisted', 'notes', 'commands', 'flags'],
                         help='run a single check')
     args = parser.parse_args()
 
@@ -258,8 +313,41 @@ def main() -> int:
         for page in missing:
             failures.append(f'nav: docs.json lists "{page}", which is not on disk')
         for page in orphans:
-            failures.append(f'nav: {page}.mdx is not in docs.json, so it is not published')
+            failures.append(
+                f'nav: {page}.mdx is not in docs.json, so it is published but '
+                f'unreachable from the navigation')
         print(f'  nav       {len(pages)} nav entries, {len(on_disk)} files on disk')
+
+    if run('unlisted'):
+        # The gap the nav check above cannot see. It globs *.mdx under
+        # docs/source only, so it is blind to .md and to everything beside
+        # source/ -- and Mintlify builds every .md and .mdx under docs/.
+        # docs/STYLE.md, docs/TRANSLATION.md and two files under
+        # docs/reference/ were all live on the site, each returning 200, while
+        # a CI comment described them as never published.
+        #
+        # A page is fine if it is in the navigation, or if .mintignore excludes
+        # it. Anything else is published prose nobody decided to publish.
+        ignored = mintignore_patterns()
+        listed = set(nav_pages())
+        unlisted = []
+        for path in sorted(DOCS.rglob('*.md')) + sorted(DOCS.rglob('*.mdx')):
+            rel = path.relative_to(DOCS)
+            # Mintlify skips README.md, and a leading underscore marks a
+            # partial that exists to be included rather than published.
+            if path.name == 'README.md' or path.name.startswith('_'):
+                continue
+            if any(_covered_by(rel, pattern) for pattern in ignored):
+                continue
+            if str(rel).removesuffix('.mdx').removesuffix('.md') in listed:
+                continue
+            unlisted.append(str(rel))
+        for rel in unlisted:
+            failures.append(
+                f'unlisted: docs/{rel} is neither in docs.json nor excluded by '
+                f'.mintignore, so it publishes as a page nobody listed')
+        print(f'  unlisted  {len(ignored)} .mintignore rule(s), '
+              f'{len(unlisted)} unlisted file(s)')
 
     if run('notes'):
         # A rollover that copies instead of moves leaves a version in both files;

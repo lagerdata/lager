@@ -149,6 +149,8 @@ RUN git clone --depth 1 --branch v2.7.0 https://github.com/labjack/exodriver.git
 # from-scratch rebuild silently rides the box's file-upload path on whatever
 # Werkzeug is current that day. The sansio API has been stable since 2.3; the
 # cap is a tripwire for a major bump, not distrust of the library.
+COPY docker/requirements-mcp.txt /tmp/requirements-mcp.txt
+
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
 	/usr/local/bin/python -m pip install --upgrade pip \
 && pip3 install --upgrade setuptools \
@@ -195,14 +197,13 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
 	'rich' \
 	'cbor2' \
 	'websocket-client>=1.6.0' \
-	# This is the pin that governs the running MCP service -- the container
-	# starts it with `python3 -m lager.mcp` (see start-services.sh). server.py
-	# is now on the 2.x MCPServer API and cannot import under 1.x, so the
-	# floor is a requirement, not just a ceiling-widening. Both bounds matter:
-	# an unconstrained `>=1.0.0` is what silently picked up 2.0.0 on release
-	# day and crash-looped the service with nothing listening on port 8100.
-	'mcp>=2.0.0,<3' \
-	'git+https://github.com/Vaskivskyi/asusrouter.git@8de97bfa8ffe3efa2f6d1ec30bb95187d13ab37a'
+	'git+https://github.com/Vaskivskyi/asusrouter.git@8de97bfa8ffe3efa2f6d1ec30bb95187d13ab37a' \
+	# The pin that governs the running MCP service now lives in a file, so one
+	# declaration serves the image, pip-audit and CI; see the file for why both
+	# bounds matter. Inside this RUN on purpose: a separate layer would cost
+	# one for a single requirement, and editing the file invalidates the same
+	# pip layer an inline pin did.
+	-r /tmp/requirements-mcp.txt
 
 RUN git config --global http.version HTTP/1.1
 

@@ -295,10 +295,11 @@ jobs:
       # hand. Anchor checking is on because a heading-slug link is the variant
       # nobody verifies by eye.
       #
-      # Scoped to source/ deliberately: docs/reference/*.md are working notes
-      # that are not in docs.json, are therefore never published, and carry ~40
-      # stale relative paths. Gating on them would fail for links no reader can
-      # follow.
+      # Scoped to source/ deliberately: docs/reference/*.md are contributor
+      # working notes carrying ~40 relative paths that only resolve on GitHub,
+      # so gating on them would fail for links no site reader can follow.
+      # docs/.mintignore keeps them off the site; being absent from docs.json
+      # never did, which is how three of them were live until #530.
       # Pinned, for the same reason shellcheck and actionlint above are: an
       # unpinned tool in a required gate can turn red with no repo change. Node
       # comes from the runner image; only the checker is pinned.
@@ -394,10 +395,10 @@ jobs:
   # introduction -- the tree was clean).
   #
   # SCOPE, stated honestly: this audits the environment CI RESOLVES TODAY
-  # (cli + [mcp] extra + the unit-test requirements). The box RUNTIME
-  # resolves its own dependencies unpinned at image-build time and is NOT
-  # covered here; that needs an audit against the box image's actual
-  # resolution, tracked as follow-up work.
+  # (cli + the box's mcp requirement + the unit-test requirements). The rest
+  # of the box RUNTIME resolves its own dependencies unpinned at image-build
+  # time and is NOT covered here; that needs an audit against the box image's
+  # actual resolution, tracked as follow-up work.
   pip-audit:
     name: pip-audit
     runs-on: ubuntu-latest
@@ -422,7 +423,8 @@ jobs:
           # tells us about the runner image, not about this project's
           # dependency tree.
           pip install --upgrade pip setuptools
-          pip install -e "cli/[mcp]"
+          pip install -e "cli/"
+          pip install -r box/lager/docker/requirements-mcp.txt
           pip install 'pytest>=9,<10' 'pytest-timeout>=2.3,<3'
           pip install -r test/requirements-unit.txt
           pip install 'pip-audit==2.10.1'

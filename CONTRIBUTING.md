@@ -29,7 +29,7 @@ required check passes. Run the local equivalents before you push, to save a roun
 
 | Workflow | What it checks |
 |----------|----------------|
-| **PR Gate: Unit Tests** | The six unit suites on Python 3.11, all six again on 3.10, 3.12, 3.13 and 3.14, and the MCP suite with the `cli[mcp]` extra installed |
+| **PR Gate: Unit Tests** | The six unit suites on Python 3.11, all six again on 3.10, 3.12, 3.13 and 3.14, and the MCP suite against the SDK the box image installs |
 | **PR Gate: Static Checks** | ShellCheck, `bash -n`, `actionlint`, `zizmor`, `ruff` (errors only), the `test/COVERAGE.md` counts, the docs checks, the prose style check, and broken links. A coverage report and `pip-audit` also run, but do not gate. |
 | **PR Gate: Rust Checks** | `cargo check`, `clippy` correctness lints, `cargo test` and `cargo audit` for `box/oscilloscope-daemon`. `cargo fmt` is reported, not gated. |
 | **PR Gate: Packaging** | Builds the sdist and the wheel, installs each one in a clean virtual environment, and imports every module |

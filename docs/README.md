@@ -50,7 +50,10 @@ app. Nothing in this repository produces the published site.
 
 1. Create the `.mdx` file under the appropriate `source/` subdirectory.
 2. Add its path (including the `source/` prefix) to the right group in
-   `docs.json` — a page not listed in the navigation will not be published.
+   `docs.json`. Mintlify builds every `.md` and `.mdx` under `docs/`. An
+   unlisted page still publishes, and a reader reaches it by URL. It is
+   absent from the navigation and nothing else. `tools/check_docs.py` fails
+   on a page that is neither listed nor excluded by `docs/.mintignore`.
 3. Preview with `npm run dev` before opening a pull request.
 
 ## Troubleshooting

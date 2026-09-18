@@ -3,4 +3,19 @@
 
 # Archived CHANGELOG sections. The release-notes pages under source/ are the
 # published history; this is the repository record.
-changelog/
+/changelog/
+
+# Contributor material. These were live on docs.lagerdata.com -- /STYLE,
+# /TRANSLATION, /reference/gateway-auth-contract and /reference/net-9000-coverage
+# all returned 200 -- because being absent from docs.json removes a page from
+# the navigation, not from the build. They are working notes for people
+# editing this repository, they carry relative paths that only resolve on
+# GitHub, and they are outside the broken-links gate for that reason.
+# Every rule here is anchored with a leading slash, which is what keeps it to
+# this directory. An unanchored `reference/` also matches
+# docs/source/reference/ -- the published CLI, Python, Rust and MCP reference
+# -- and silently unpublishes a few hundred pages. `mint broken-links` caught
+# exactly that: 54 broken links across 20 pages.
+/STYLE.md
+/TRANSLATION.md
+/reference/

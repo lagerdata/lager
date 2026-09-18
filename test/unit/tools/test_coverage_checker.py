@@ -220,3 +220,52 @@ class TestSuiteFailureIsClassified:
         assert 'ImportError' in err, (
             'a failure explained only on stderr must still reach the reader'
         )
+
+
+# --- .mintignore coverage (#530) -------------------------------------------
+#
+# Mintlify builds every .md and .mdx under docs/, so a page absent from
+# docs.json is published and simply missing from the navigation. Four were
+# live on the site while a CI comment called them unpublished.
+
+def _covered(rel, pattern):
+    from tools.check_docs import _covered_by
+    import pathlib
+    return _covered_by(pathlib.PurePosixPath(rel), pattern)
+
+
+def test_an_anchored_directory_rule_stays_in_the_docs_root():
+    """The trap this rule exists to avoid.
+
+    Unanchored, `reference/` also matches docs/source/reference/ -- the
+    published CLI, Python, Rust and MCP reference. Excluding that unpublishes
+    a few hundred pages, and the unlisted check stays green because they are
+    excluded rather than unlisted. `mint broken-links` reported 54 broken
+    links across 20 pages before the rules were anchored.
+    """
+    assert _covered('reference/gateway-auth-contract.md', '/reference/')
+    assert not _covered('source/reference/cli/overview.mdx', '/reference/')
+
+
+def test_an_unanchored_directory_rule_reaches_further():
+    """Kept as the contrast, so the anchoring above is not mistaken for noise."""
+    assert _covered('source/reference/cli/overview.mdx', 'reference/')
+
+
+def test_an_anchored_file_rule_matches_only_that_file():
+    assert _covered('STYLE.md', '/STYLE.md')
+    assert not _covered('source/getting-started/STYLE.md', '/STYLE.md')
+
+
+def test_the_shipped_rules_exclude_the_notes_and_nothing_else():
+    from tools.check_docs import mintignore_patterns
+    rules = mintignore_patterns()
+    assert rules, '.mintignore has no rules'
+    assert all(r.startswith('/') for r in rules), \
+        'every rule is anchored, or it can reach into source/'
+    for published in ('source/reference/cli/overview.mdx',
+                      'source/getting-started/overview.mdx'):
+        assert not any(_covered(published, r) for r in rules), published
+    for note in ('STYLE.md', 'TRANSLATION.md',
+                 'reference/gateway-auth-contract.md'):
+        assert any(_covered(note, r) for r in rules), note
