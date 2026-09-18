@@ -22,6 +22,8 @@ Before you start a release, confirm each item:
       `### Fixed` block both merge cleanly. Merge the blocks in Keep a Changelog order: Added,
       Changed, Deprecated, Removed, Fixed, Security. Keep every bullet.
 - [ ] No open security issue blocks the release.
+- [ ] `box/lager/docker/licenses/THIRD_PARTY.md` has a row for each vendor download in
+      `box.Dockerfile`, and each pin matches. `unit (box)` fails when one does not.
 
 This command counts the `###` headings under `## [Unreleased]`:
 

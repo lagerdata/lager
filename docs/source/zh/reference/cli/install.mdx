@@ -56,6 +56,8 @@ lager install [OPTIONS]
 
 拉取之后，`/etc/lager/image-source` 会记录 `ghcr:<digest>`。在 Box 上构建则会删除该文件。
 
+镜像把它的许可证声明放在 `/usr/share/licenses/lager/` 中。该目录包含 Lager 自身的 `LICENSE` 和 `NOTICE`，以及列出镜像中第三方软件的 `THIRD_PARTY.md`。`pip/` 目录保存每个 Python 软件包的声明文件。要列出它们，请在 Box 上运行 `docker exec lager ls /usr/share/licenses/lager`。
+
 传入 `--no-pull` 可以跳过预构建镜像，始终进行构建。若要在整个 shell 中关闭安装时的拉取，请把 `LAGER_BOX_IMAGE_PULL` 设置为 `0`、`false`、`no` 或 `off`。该变量只有取 `1`、`true` 或 `yes`（不区分大小写）时才打开拉取，其他任何值都会关闭它。`--pull` 优先于该变量。
 `lager update` 以完全相同的方式解读这些取值，只有默认值不同：install 对发布标签默认使用预构建镜像，而 update 不会。同时传入 `--pull` 和 `--no-pull` 属于用法错误。
 

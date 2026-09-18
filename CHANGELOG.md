@@ -61,6 +61,10 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   author. The MCP tools, `/status`, the manifest and the per-net metadata
   endpoint all carry them, so a control plane that keeps these fields per net
   round-trips them instead of getting a 400.
+- **The box image carries its license notices.** `/usr/share/licenses/lager/`
+  in the container holds Lager's `LICENSE` and `NOTICE`, a `THIRD_PARTY.md`
+  manifest of the vendor software in the image, and the notice files of each
+  Python package under `pip/`.
 
 ### Changed
 

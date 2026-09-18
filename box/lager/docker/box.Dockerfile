@@ -310,6 +310,36 @@ RUN chmod +x /usr/local/bin/start-services.sh
 # Copy oscilloscope web visualization files
 COPY docker/web_oscilloscope.html /app/lager/web_oscilloscope.html
 
+# License notices, in the image because the image is published.
+#
+#   /usr/share/licenses/lager/LICENSE, NOTICE     Lager's own
+#   /usr/share/licenses/lager/THIRD_PARTY.md      everything installed above that
+#                                                 is neither a Debian package
+#                                                 nor a PyPI distribution
+#   /usr/share/licenses/lager/pip/                each Python distribution's
+#                                                 notice files, and INDEX.tsv
+#
+# The files under docker/licenses/ are copies: the build context is box/lager,
+# so the LICENSE and NOTICE at the repository root are out of reach of COPY.
+# test/unit/box/test_box_image_notices.py keeps the copies byte-identical, and
+# fails when a vendor download above has no row in THIRD_PARTY.md.
+#
+# ONE RUN, and it is the last pip-aware step: every `pip install` is above it,
+# so the notices cover all of them. It is above the first source COPY for the
+# reason given a few lines up, and the collector's output is deterministic, so
+# this layer keeps its digest from release to release while the packages do.
+#
+# The static files are copied AFTER the RUN. A manifest-only edit then rebuilds
+# one small layer and does not run the collector again.
+#
+# No org.opencontainers.image.licenses label. It describes all the software in
+# an image, and whether every component here may be redistributed is still
+# under review (issue #532). THIRD_PARTY.md says what is known.
+COPY docker/collect_pip_licenses.py /tmp/collect_pip_licenses.py
+RUN python3 /tmp/collect_pip_licenses.py /usr/share/licenses/lager/pip \
+    && rm -f /tmp/collect_pip_licenses.py
+COPY docker/licenses/ /usr/share/licenses/lager/
+
 # Copy Python lager package modules (grouped structure)
 # All root-level .py modules (box_http_server, hardware_service, *_hs
 # adapters, ble shim, …). A glob avoids per-file omission bugs when new
