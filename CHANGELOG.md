@@ -12,6 +12,35 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Added
+
+- **The nightly bench run now proves `lager uart` actually moves data.** The uart
+  suite gained a device round-trip section that drives a live ESP32 peer through
+  the CLI, WebSocket and box bridge, asserting `PING`/`PONG`, an echoed per-run
+  token, an advancing device-side counter, and a clean net release on exit. Its
+  other fourteen sections only exercise argument parsing and net bookkeeping, so
+  a `lager uart` that connected and transferred nothing would have passed all of
+  them. The suite is also wired into the nightly (`integration-tests.yml`), where
+  it had never run at all. Firmware and flashing instructions are in
+  `test/assets/uart_ci_peer/`; the section skips itself on benches with no peer
+  attached, and fails rather than skips when the CLI will not open the session.
+- **The uart suite's own defects are fixed, so it gates the nightly at zero
+  failures.** It had been failing 8 of 74 checks, none of which were faults in
+  `lager uart`: five asserted the presence of flags the command does not have,
+  the net-creation checks called `lager nets create` (not a command, so they
+  failed and then recorded a pass anyway), device detection did not recognise
+  CP210x adapters and quietly downgraded whole sections to no-op passes, and two
+  checks grepped a table that wraps long net names across two lines. Creation
+  failures now report the box's own message instead of a bare red mark, deletes
+  pass `--yes` so a run cannot block on an invisible confirmation prompt, and
+  duplicate-net rejection is asserted deliberately rather than tripped over.
+- **The nightly creates the UART peer net itself if the bench has lost it.**
+  Rebuilding a box's nets with `delete-all` + `add-all` wipes named nets, which
+  for this one would have meant the round-trip section skipping and the night
+  staying green while testing no data path at all. The run now heals the net,
+  and on a bench with no serial adapter it says so as a warning rather than
+  passing a silent skip off as coverage.
+
 ## [0.49.0] - 2026-09-18
 
 ### Added
