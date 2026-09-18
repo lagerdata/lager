@@ -24,6 +24,14 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   Docker, so the container path works there; set `LAGER_EXEC_IN_PLACE=1` to
   keep the old behavior on a runner that does not.
 
+### Removed
+
+- **The `lager-cli[mcp]` extra.** Nothing in the CLI imports the MCP SDK: the
+  server is box-side code the wheel does not ship, and the `lager-mcp` console
+  script went in v0.37.0. `pip install lager-cli[mcp]` installed a dependency
+  the CLI never used. The box image's own requirement is unchanged, so the MCP
+  service on a box is unaffected.
+
 ### Fixed
 
 - **`lager ssh-setup` and `lager update` no longer report a registered key as
@@ -130,6 +138,12 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   control ports whether or not the box published them, so a listener on 9000
   that was never Lager's refused the apply. A refusal over a held port also
   stops calling the other listener a gateway, which it need not be.
+- **Contributor notes are no longer published on the docs site.** `STYLE.md`,
+  `TRANSLATION.md` and the files under `docs/reference/` were live at
+  `docs.lagerdata.com`, because leaving a page out of `docs.json` removes it
+  from the navigation and not from the build. They are excluded now, and
+  `tools/check_docs.py` fails on a docs file that is neither listed nor
+  excluded.
 
 ## [0.48.1] - 2026-09-16
 

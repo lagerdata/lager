@@ -6,8 +6,6 @@ __version__ = '0.2'
 import binascii
 import logging
 import struct
-import time
-from threading import Thread
 
 
 logger = logging.getLogger(__name__)
@@ -140,16 +138,3 @@ class HDLC(object):
                 data.append(byte)
         data.append(0x7E)
         return bytes(data)
-
-    def _receiveLoop(self):
-        while self.running:
-            i = self.serial.in_waiting
-            if i < 1:
-                time.sleep(0.001)
-                continue
-            res = self._readBytes(i)
-
-    def stopReader(self):
-        self.running = False
-        self.reader.join()
-        self.reader = None

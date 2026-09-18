@@ -67,9 +67,6 @@ if __name__ == "__main__":
             pymongo >= 4.0, < 6
             prompt_toolkit >= 3.0, < 4
         ''',
-        extras_require={
-            'mcp': ['mcp>=2.0.0,<3'],
-        },
         project_urls={
             'Bug Reports': 'https://github.com/lagerdata/lager/issues',
             'Documentation': 'https://docs.lagerdata.com',

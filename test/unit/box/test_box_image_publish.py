@@ -296,3 +296,48 @@ class TestDependabotMovesThePin:
         }
         assert "/box/lager/docker" in directories
         assert DOCKERFILE.parent == ROOT / "box" / "lager" / "docker"
+
+
+MCP_REQUIREMENTS = ROOT / "box" / "lager" / "docker" / "requirements-mcp.txt"
+UNIT_REQUIREMENTS = ROOT / "test" / "requirements-unit.txt"
+
+
+def _mcp_constraint(path):
+    """The `mcp` requirement line from a requirements file, without comments."""
+    for line in path.read_text().splitlines():
+        line = line.split("#", 1)[0].strip()
+        if line.replace(" ", "").startswith("mcp>") or line == "mcp":
+            return line.replace(" ", "")
+    raise AssertionError(f"no mcp requirement found in {path}")
+
+
+# One SDK constraint, declared in two places that have to agree (#519). The
+# image installs box/lager/docker/requirements-mcp.txt and the test suite
+# installs test/requirements-unit.txt. If they drift, the suite proves
+# something about an SDK the running service does not have -- the failure mode
+# that made `mcp-extra` a required check in the first place.
+#
+# It used to be three places: cli/setup.py carried a `[mcp]` extra that nothing
+# under cli/ imported. That one is gone.
+
+def test_the_image_and_the_test_suite_ask_for_the_same_sdk():
+    assert _mcp_constraint(MCP_REQUIREMENTS) == _mcp_constraint(UNIT_REQUIREMENTS)
+
+
+def test_the_dockerfile_installs_the_file_rather_than_an_inline_pin():
+    text = DOCKERFILE.read_text()
+    assert "-r /tmp/requirements-mcp.txt" in text
+    assert "COPY docker/requirements-mcp.txt" in text
+    assert not re.search(r"'mcp[><=]", text), \
+        "an inline mcp pin is a second declaration that can drift"
+
+
+def test_the_file_is_copied_before_the_pip_run_that_reads_it():
+    text = DOCKERFILE.read_text()
+    assert (text.index("COPY docker/requirements-mcp.txt")
+            < text.index("-r /tmp/requirements-mcp.txt"))
+
+
+def test_the_cli_declares_no_mcp_extra():
+    """Nothing under cli/ imports mcp; the extra added an unused dependency."""
+    assert "extras_require" not in (ROOT / "cli" / "setup.py").read_text()

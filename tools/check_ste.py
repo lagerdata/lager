@@ -98,9 +98,11 @@ SOURCE = DOCS / 'source'
 BASELINE = Path(__file__).resolve().parent / 'ste_baseline.json'
 
 # Prose files outside docs/source that a user reads. docs/reference/*.md are
-# deliberately absent: they are unpublished working notes, outside the mint
-# broken-links gate for the same reason, and holding them to a published-prose
-# standard would be inventing work.
+# deliberately absent: they are contributor working notes, excluded from the
+# site by docs/.mintignore and outside the mint broken-links gate for the same
+# reason, and holding them to a published-prose standard would be inventing
+# work. (They were live on the docs site until #530 -- absence from docs.json
+# was never what kept a page off it.)
 #
 # LICENSE, NOTICE and CODE_OF_CONDUCT.md are absent on purpose and must stay
 # absent. The Code of Conduct is verbatim Contributor Covenant; editing its

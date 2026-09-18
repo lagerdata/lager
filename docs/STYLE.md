@@ -41,8 +41,8 @@ Three bodies of text are out of scope entirely:
 - `docs/source/release-notes/` — a historical record. A release note says what shipped on
   a date; editing it makes the archive disagree with itself. New notes are written against
   `docs/source/release-notes/_template.mdx`.
-- `docs/reference/*.md` — unpublished working notes, outside the mint broken-links gate for
-  the same reason.
+- `docs/reference/*.md` — contributor working notes, kept off the site by `docs/.mintignore`
+  and outside the mint broken-links gate for the same reason.
 - `LICENSE`, `NOTICE`, `CODE_OF_CONDUCT.md` — the Code of Conduct is verbatim Contributor
   Covenant. Rewriting its sentences stops it being that document, which is the only
   property it has.

@@ -58,3 +58,22 @@ def test_corrupted_crc_reports_an_error_frame():
     frames, errors = _decode(bytes(encoded))
     assert frames == []
     assert errors == [b"lager"]
+
+
+# The reader half was removed in #531. It was not merely unused: HDLC.__init__
+# never set `self.serial` or `self.reader`, and `self._readBytes` does not
+# exist (the method is `_readByte`), so all three names would have raised
+# AttributeError on any call. There was no `startReader` to populate them and
+# `self.running` was only ever set False, so the loop could not even enter.
+# Nothing called either method and no test covered them.
+
+def test_the_unusable_reader_half_is_gone():
+    for name in ("_receiveLoop", "stopReader"):
+        assert not hasattr(HDLC, name), f"{name} came back"
+
+
+def test_the_module_pulls_in_nothing_it_does_not_use():
+    """`time` and `threading.Thread` existed only for that dead loop."""
+    import cli.simple_hdlc as mod
+    assert not hasattr(mod, "Thread")
+    assert not hasattr(mod, "time")

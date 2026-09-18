@@ -1,0 +1,23 @@
+# Copyright 2024-2026 Lager Data
+# SPDX-License-Identifier: Apache-2.0
+#
+# The MCP SDK the box's MCP service runs on. The container starts it with
+# `python3 -m lager.mcp` (see start-services.sh).
+#
+# It lives in a file rather than inline in box.Dockerfile so that one
+# declaration can be installed into the image, audited by pip-audit, and
+# resolved on its own in CI. It used to be `cli/setup.py`'s `[mcp]` extra as
+# well, which was the wrong home: nothing under cli/ imports mcp, the server
+# is box-side code the wheel does not ship, and the `lager-mcp` console script
+# was removed in v0.37.0. Installing `lager-cli[mcp]` added a dependency the
+# CLI never used.
+#
+# Both bounds matter. `lager.mcp.server` imports `mcp.server.mcpserver`, which
+# 2.0 renamed from `mcp.server.fastmcp`, so the server cannot import under 1.x
+# and the floor is a requirement rather than a widened ceiling. An
+# unconstrained `>=1.0.0` is what silently picked up 2.0.0 on release day and
+# crash-looped the service with nothing listening on port 8100.
+#
+# test/requirements-unit.txt declares the same constraint for the test suite,
+# and a test asserts the two agree.
+mcp>=2.0.0,<3

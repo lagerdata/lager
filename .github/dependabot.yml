@@ -55,23 +55,45 @@ updates:
   # so a raised floor can make the package uninstallable on a version it
   # claims to support.
   #
-  # mcp majors used to be ignored here (see PR #209) because no CI job
-  # installed the [mcp] extra -- a widened cap merged green while
-  # `pip install lager-cli[mcp]` broke at runtime. The `mcp-extra` job in
-  # unit-tests.yml now installs the extra explicitly and runs the mcp suite
-  # against whatever the declared constraint resolves, so majors can flow
-  # again and fail HONESTLY. That is exactly what happened next: the SDK 2.0
-  # cap-widening PR sat red on that job until the server was ported to the
-  # MCPServer API, which is the signal working as designed rather than noise
-  # to be suppressed. The same will hold at 3.0 -- expect the next major's PR
-  # to be red until someone does the porting work behind it.
-  #
-  # Note the extra's FLOOR moves with a port, not just its ceiling: the server
-  # cannot import under 1.x any more, so `mcp>=2.0.0,<3` is the honest
-  # constraint. A dependabot PR that only widens the ceiling is superseded by
-  # the port, not merged alongside it.
+  # mcp is no longer declared here at all. It used to be a `[mcp]` extra on
+  # cli/setup.py, which was the wrong home -- nothing under cli/ imports it
+  # (#519) -- and it now lives in box/lager/docker/requirements-mcp.txt, with
+  # its own ecosystem entry below.
   - package-ecosystem: pip
     directory: /cli
+    versioning-strategy: increase-if-necessary
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      pip-security:
+        applies-to: security-updates
+        patterns: ['*']
+      pip-version-updates:
+        applies-to: version-updates
+        patterns: ['*']
+
+  # box/lager/docker/requirements-mcp.txt -- the MCP SDK the box image runs.
+  #
+  # mcp majors used to be ignored (see PR #209) because no CI job installed
+  # what the image would get, so a widened cap merged green while the service
+  # broke at runtime. The `mcp-extra` job in unit-tests.yml now resolves this
+  # file on its own in a clean venv and runs the mcp suite against it, so
+  # majors can flow again and fail HONESTLY. That is exactly what happened
+  # next: the SDK 2.0 cap-widening PR sat red on that job until the server was
+  # ported to the MCPServer API, which is the signal working as designed
+  # rather than noise to be suppressed. The same will hold at 3.0 -- expect
+  # the next major's PR to be red until someone does the porting work.
+  #
+  # Note the FLOOR moves with a port, not just the ceiling: the server cannot
+  # import under 1.x any more, so `mcp>=2.0.0,<3` is the honest constraint. A
+  # dependabot PR that only widens the ceiling is superseded by the port, not
+  # merged alongside it.
+  #
+  # Same directory as the docker ecosystem below, which watches the base image
+  # digest. Distinct ecosystems on one directory do not collide.
+  - package-ecosystem: pip
+    directory: /box/lager/docker
     versioning-strategy: increase-if-necessary
     schedule:
       interval: weekly
