@@ -1388,8 +1388,12 @@ def _apply_one(
     # apply must be a true no-op. Only when the config is actually switching to
     # host; a box already on host has already paid this cost.
     if _switches_to_host(current_show, applied_snapshot):
+        # With LAGER_DISABLE_UART_SERVICE set, start_box.sh does not publish
+        # 9000 at all, so whatever is listening there is not Lager's and the
+        # reason for protecting the port does not apply (#507).
+        _ports = ((5000,) if _uart_service_disabled(current_show) else None)
         if not _preflight_host_networking(
-                resolved, skip_check=skip_host_network_check):
+                resolved, skip_check=skip_host_network_check, ports=_ports):
             return _APPLY_FAILED
 
     if not yes:
@@ -1528,16 +1532,33 @@ def _switches_to_host(current_show: dict, applied_snapshot: Optional[dict]) -> b
 # Named for the flag that actually reaches it. Calling this `force` is what
 # produced two user-facing messages naming `--force`, which is a different flag
 # ("restart even if unchanged") and is not wired to this check at all.
-def _preflight_host_networking(resolved_box: str, *, skip_check: bool = False) -> bool:
+def _uart_service_disabled(show: dict) -> bool:
+    """Whether the box config frees port 9000 by turning off the UART service.
+
+    The shell reads this key with a fixed truthiness rule -- lowercase `1`,
+    `true` or `yes`, and nothing else -- in both `start_box.sh` and
+    `start-services.sh`. The same rule applies here, so the CLI and the box
+    cannot disagree about what the setting says.
+    """
+    raw = ((show or {}).get("env") or {}).get("LAGER_DISABLE_UART_SERVICE")
+    return str(raw).strip().lower() in ("1", "true", "yes")
+
+
+def _preflight_host_networking(resolved_box: str, *, skip_check: bool = False,
+                               ports=None) -> bool:
     """Refuse an apply that would strand the box. True to proceed.
 
     Prints remediation rather than running it. Opening a Lager port to a LAN is
     a security posture decision that belongs to whoever owns box security, not
     to a side effect of enabling a Bluetooth feature.
-    """
-    from ._net_preflight import check
 
-    result = check(resolved_box)
+    `ports` narrows what counts as a collision. The default pair exists to keep
+    the box reachable, and 9000 is only Lager's while the UART service owns it.
+    """
+    from ._net_preflight import check, CONTROL_PLANE_PORTS
+
+    result = check(resolved_box,
+                   ports=CONTROL_PLANE_PORTS if ports is None else ports)
     if result.ok:
         # The substantive warning belongs here, not on `set`: this is the step
         # that actually changes the box, and it is the only point where we know

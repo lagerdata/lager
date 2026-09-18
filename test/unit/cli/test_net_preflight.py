@@ -23,6 +23,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 from cli.commands.box._net_preflight import (
     CONTROL_PLANE_PORTS,
@@ -398,10 +399,17 @@ class GatewayCollision(unittest.TestCase):
         replacement, so those ports are its own and about to be freed."""
         self.assertTrue(evaluate(_normal_box()).ok)
 
-    def test_no_publish_marker_refuses(self):
+    def test_no_publish_marker_refuses_without_calling_it_a_gateway(self):
+        """The marker records `--no-publish`, not a gateway (#507).
+
+        It says nothing about what, if anything, is in front of the box, and
+        it does not mean a port is contended. Naming a "port-publishing
+        gateway" sent the operator looking for a process that need not exist.
+        """
         r = evaluate(_normal_box(no_publish=True))
         self.assertFalse(r.ok)
-        self.assertTrue(any("gateway" in b for b in r.blockers))
+        self.assertTrue(any("--no-publish" in b for b in r.blockers))
+        self.assertFalse(any("gateway" in b for b in r.blockers))
 
     def test_another_container_holding_a_port_refuses(self):
         r = evaluate(_result(
@@ -427,8 +435,8 @@ class GatewayCollision(unittest.TestCase):
     def test_unrelated_bound_ports_are_ignored(self):
         self.assertTrue(evaluate(_result(bound_ports=[22, 53, 8472])).ok)
 
-    def test_a_gateway_blocker_still_tells_the_operator_what_to_do(self):
-        """No firewall rule fixes a gateway conflict, but a blocker with no way
+    def test_a_port_blocker_still_tells_the_operator_what_to_do(self):
+        """No firewall rule fixes a port conflict, but a blocker with no way
         forward is exactly what drives people to --skip-host-network-check."""
         r = evaluate(_normal_box(no_publish=True))
         self.assertEqual(r.remediation, [], "no shell command can fix this")
@@ -453,3 +461,66 @@ class ProbeFailure(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CheckPassesItsPortsToBothHalves(unittest.TestCase):
+    """`check` narrowed the verdict but not the probe (#507).
+
+    It forwarded `ports` to `evaluate` and left `probe` on the default, so a
+    caller that narrowed the list had the box look at the default ports while
+    the verdict was read against the narrowed ones -- `bound_ports` and
+    `publishers` simply had no entry for a port nobody had looked at.
+
+    Latent until now, because the only caller passed no ports. It survived
+    because no test in this file imported `check` at all.
+    """
+
+    def test_a_narrowed_list_reaches_the_probe(self):
+        from cli.commands.box._net_preflight import check
+        seen = {}
+
+        def fake_probe(box_ip, *, runner=None, ports=None, **kw):
+            seen["probe"] = ports
+            return _normal_box()
+
+        def fake_evaluate(result, *, ports=None):
+            seen["evaluate"] = ports
+            return result
+
+        with mock.patch("cli.commands.box._net_preflight.probe", fake_probe), \
+             mock.patch("cli.commands.box._net_preflight.evaluate", fake_evaluate):
+            check("10.0.0.1", ports=(5000,))
+
+        self.assertEqual(seen["probe"], (5000,))
+        self.assertEqual(seen["evaluate"], (5000,))
+
+    def test_the_default_is_still_both_control_ports(self):
+        from cli.commands.box._net_preflight import check
+        seen = {}
+
+        def fake_probe(box_ip, *, runner=None, ports=None, **kw):
+            seen["probe"] = ports
+            return _normal_box()
+
+        with mock.patch("cli.commands.box._net_preflight.probe", fake_probe), \
+             mock.patch("cli.commands.box._net_preflight.evaluate",
+                        lambda r, *, ports=None: r):
+            check("10.0.0.1")
+
+        self.assertEqual(seen["probe"], CONTROL_PLANE_PORTS)
+
+    def test_9000_is_not_a_collision_when_it_was_not_checked(self):
+        """The point of narrowing: a listener on 9000 that is not Lager's.
+
+        With LAGER_DISABLE_UART_SERVICE set the box does not publish 9000, so
+        whatever holds it is someone else's and the reason for protecting the
+        port does not apply.
+        """
+        def busy():
+            # A fresh result each time: evaluate() appends to the object it is
+            # given, so reusing one carries the first verdict into the second.
+            return _result(bound_ports=[9000],
+                           publishers={"9000": ["some-service"]})
+
+        self.assertFalse(evaluate(busy()).ok)
+        self.assertTrue(evaluate(busy(), ports=(5000,)).ok)

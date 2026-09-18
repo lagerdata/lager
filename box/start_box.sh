@@ -583,11 +583,24 @@ _sync_authorized_keys
 # `9>&-` closes the inherited single-instance lock fd — without it this
 # long-lived child would hold the lock forever and every later start_box.sh
 # would refuse to run.
-_SSH_SYNC_PID_FILE="/tmp/lager-ssh-sync.pid"
+# --- BEGIN ssh-sync pid file (extracted verbatim by test/unit/box/test_authorized_keys_sync.py) ---
+# Per login user, and overridable. /tmp is sticky, so a PID file this user
+# cannot remove is one a DIFFERENT login user wrote -- and `rm -f` forgives a
+# missing file, not EPERM. Under `set -e` that ended the whole script, after
+# the old containers were already gone, leaving the box with no lager
+# container at all. An install as a second account failed exactly there, and
+# so did the next install back as the first account.
+#
+# A per-uid name means two accounts never contend for one path. Every step
+# here still warns and continues rather than aborting, because a poller that
+# does not start is a missed key sync, while a script that exits here is a box
+# with nothing running on it.
+_SSH_SYNC_PID_FILE="${LAGER_SSH_SYNC_PID_FILE:-/tmp/lager-ssh-sync-$(id -u).pid}"
 if [ -f "$_SSH_SYNC_PID_FILE" ]; then
     _old_pid=$(cat "$_SSH_SYNC_PID_FILE" 2>/dev/null || true)
     [ -n "$_old_pid" ] && kill "$_old_pid" 2>/dev/null || true
-    rm -f "$_SSH_SYNC_PID_FILE"
+    rm -f "$_SSH_SYNC_PID_FILE" 2>/dev/null \
+        || echo "[WARNING] Could not remove $_SSH_SYNC_PID_FILE. Continuing."
 fi
 (
     while true; do
@@ -595,8 +608,13 @@ fi
         _sync_authorized_keys 2>/dev/null
     done
 ) 9>&- > /dev/null 2>&1 &
-echo "$!" > "$_SSH_SYNC_PID_FILE"
-disown "$!"
+_SSH_SYNC_PID=$!
+echo "$_SSH_SYNC_PID" > "$_SSH_SYNC_PID_FILE" 2>/dev/null \
+    || echo "[WARNING] Could not write $_SSH_SYNC_PID_FILE. A poller from an earlier run may outlive this one."
+# `disown` fails when the job has already exited and been reaped, which is not
+# a reason to end the script.
+disown "$_SSH_SYNC_PID" 2>/dev/null || true
+# --- END ssh-sync pid file ---
 echo ""
 
 # Check for JLink directory
@@ -1027,7 +1045,6 @@ docker run -d \
     --env "PIGPIO_ADDR=$PIGPIO_ADDR" \
     --env "LAGER_HOST=$DOCKER_IFACE" \
     --env "PYTHONBREAKPOINT=lager.breakpoint.pause" \
-    --env "LOCAL_ADDRESS=172.18.0.10" \
     -e HOME=/home/www-data \
     --log-driver json-file \
     --log-opt max-size=10m \

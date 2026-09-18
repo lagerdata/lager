@@ -113,6 +113,23 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   run.** The box releases its direct-USB drivers before every script, and the
   U3 DAC's record of its own output went with them, so a read failed with
   "has no readback" on a pin that was still holding its voltage.
+- **An install as a second login user no longer fails at the SSH key sync.**
+  `start_box.sh` kept its key-poller PID in one fixed path under `/tmp`, which
+  is sticky, so a file written by another login user could not be removed. The
+  script exited there under `set -e`, after the old containers were gone,
+  leaving the box with nothing running. The path is now per user, and a
+  failure to read or write it warns instead of ending the install.
+- **`LOCAL_ADDRESS` names an address the box actually has.** It was fixed at
+  `172.18.0.10`, the container's address on lagernet, so under `lager
+  box-config network-mode host` a script that bound to or advertised it used
+  an address on no interface. It is now read from the routing table when a
+  script is launched, and an explicit `LOCAL_ADDRESS` in the box config still
+  wins.
+- **`lager box-config apply` allows a box that freed port 9000 with
+  `LAGER_DISABLE_UART_SERVICE`.** The host-network pre-flight checked both
+  control ports whether or not the box published them, so a listener on 9000
+  that was never Lager's refused the apply. A refusal over a held port also
+  stops calling the other listener a gateway, which it need not be.
 
 ## [0.48.1] - 2026-09-16
 

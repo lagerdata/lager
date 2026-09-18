@@ -3155,3 +3155,55 @@ class MountAddSshFailed(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UartServiceFreesPort9000(unittest.TestCase):
+    """The pre-flight guarded a port the box was not publishing (#507).
+
+    `LAGER_DISABLE_UART_SERVICE` exists so another service can own host port
+    9000: with it set, `start_box.sh` does not publish 9000 at all. The
+    host-network pre-flight still checked both control ports, so it refused
+    such a box over a listener that was never Lager's -- and told the operator
+    the box was "fronted by a port-publishing gateway", which it need not be.
+    """
+
+    def test_the_shell_truthiness_rule_is_the_one_the_box_uses(self):
+        """start_box.sh and start-services.sh both accept exactly these."""
+        for value in ("1", "true", "yes", "TRUE", "Yes", " true "):
+            with self.subTest(value=value):
+                self.assertTrue(box_config_cli._uart_service_disabled(
+                    {"env": {"LAGER_DISABLE_UART_SERVICE": value}}))
+
+    def test_anything_else_leaves_the_service_on(self):
+        for value in ("0", "false", "no", "", "on", "enabled", "2"):
+            with self.subTest(value=value):
+                self.assertFalse(box_config_cli._uart_service_disabled(
+                    {"env": {"LAGER_DISABLE_UART_SERVICE": value}}))
+
+    def test_a_config_with_no_env_at_all_leaves_it_on(self):
+        self.assertFalse(box_config_cli._uart_service_disabled({}))
+        self.assertFalse(box_config_cli._uart_service_disabled({"env": {}}))
+        self.assertFalse(box_config_cli._uart_service_disabled(None))
+
+    def test_the_preflight_is_narrowed_to_5000_when_the_service_is_off(self):
+        seen = {}
+
+        def fake_check(box_ip, *, runner=None, ports=None):
+            seen["ports"] = ports
+            return _PreflightResult(True, data={})
+
+        with patch("cli.commands.box._net_preflight.check", side_effect=fake_check):
+            box_config_cli._preflight_host_networking("10.0.0.1", ports=(5000,))
+        self.assertEqual(seen["ports"], (5000,))
+
+    def test_both_control_ports_are_checked_by_default(self):
+        from cli.commands.box._net_preflight import CONTROL_PLANE_PORTS
+        seen = {}
+
+        def fake_check(box_ip, *, runner=None, ports=None):
+            seen["ports"] = ports
+            return _PreflightResult(True, data={})
+
+        with patch("cli.commands.box._net_preflight.check", side_effect=fake_check):
+            box_config_cli._preflight_host_networking("10.0.0.1")
+        self.assertEqual(seen["ports"], CONTROL_PLANE_PORTS)

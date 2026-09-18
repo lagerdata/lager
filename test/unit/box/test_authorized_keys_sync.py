@@ -320,3 +320,79 @@ def test_only_one_start_box_may_run(tmp_path):
                            capture_output=True, text=True, timeout=15)
     assert third.returncode == 0, "lock was not released after the holder exited"
     assert "ACQUIRED" in third.stdout
+
+
+PID_SH = _extract("ssh-sync pid file")
+
+
+def _run_pid_block(pid_file):
+    """Run the PID-file block under `set -e`, then stop the poller it starts."""
+    script = "\n".join([
+        "set -e",
+        "_sync_authorized_keys() { :; }",
+        f"export LAGER_SSH_SYNC_PID_FILE={shlex.quote(str(pid_file))}",
+        PID_SH,
+        'kill "$_SSH_SYNC_PID" 2>/dev/null || true',
+        'echo "REACHED-THE-END"',
+    ])
+    return subprocess.run(["bash", "-c", script],
+                          capture_output=True, text=True, timeout=30)
+
+
+# The PID file that ended an install as a second login user (#547). /tmp is
+# sticky, so a file written by one login user cannot be removed by another.
+# `rm -f` forgives a missing file, not EPERM -- and the block ran unguarded
+# under `set -e`, after the old containers were already gone, so the install
+# stopped there and left the box with no lager container.
+
+def test_the_pid_path_is_per_user_by_default():
+    """Two login users never contend for one path in the first place."""
+    assert 'lager-ssh-sync-$(id -u).pid' in PID_SH
+    assert '"/tmp/lager-ssh-sync.pid"' not in PID_SH
+
+
+def test_a_pid_file_that_cannot_be_removed_does_not_end_the_script(tmp_path):
+    """The reported failure: `rm` gets EPERM and `set -e` kills the run."""
+    sticky = tmp_path / "sticky"
+    sticky.mkdir()
+    pid_file = sticky / "lager-ssh-sync.pid"
+    pid_file.write_text("999999\n")
+    # A read-only directory holds the file and refuses the unlink, which is
+    # what a sticky /tmp does to another user's file.
+    sticky.chmod(0o500)
+    try:
+        proc = _run_pid_block(pid_file)
+    finally:
+        sticky.chmod(0o700)
+    assert proc.returncode == 0, proc.stderr
+    assert "REACHED-THE-END" in proc.stdout
+    assert "[WARNING]" in proc.stdout + proc.stderr
+
+
+def test_a_pid_file_that_cannot_be_written_does_not_end_the_script(tmp_path):
+    ro = tmp_path / "ro"
+    ro.mkdir()
+    ro.chmod(0o500)
+    try:
+        proc = _run_pid_block(ro / "lager-ssh-sync.pid")
+    finally:
+        ro.chmod(0o700)
+    assert proc.returncode == 0, proc.stderr
+    assert "REACHED-THE-END" in proc.stdout
+
+
+def test_the_normal_path_still_records_the_poller(tmp_path):
+    pid_file = tmp_path / "lager-ssh-sync.pid"
+    proc = _run_pid_block(pid_file)
+    assert proc.returncode == 0, proc.stderr
+    assert pid_file.exists(), "the poller's pid was not recorded"
+    assert pid_file.read_text().strip().isdigit()
+    assert "[WARNING]" not in proc.stdout + proc.stderr
+
+
+def test_a_stale_pid_file_is_replaced(tmp_path):
+    pid_file = tmp_path / "lager-ssh-sync.pid"
+    pid_file.write_text("999999\n")
+    proc = _run_pid_block(pid_file)
+    assert proc.returncode == 0, proc.stderr
+    assert pid_file.read_text().strip() != "999999"
