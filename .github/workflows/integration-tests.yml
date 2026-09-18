@@ -764,6 +764,107 @@ jobs:
           fi
         shell: bash
 
+      - name: Ensure the UART peer net exists (self-heal)
+        # Same hazard the relay-net heal above exists for: `lager nets
+        # delete-all` + `add-all` on the bench wipes named nets, and add-all
+        # would re-create this one under a generated name. The consequence is
+        # quieter here and therefore worse -- section 15 of the uart suite
+        # skips when its net is missing, so the night would stay GREEN while
+        # testing no UART data path at all. Heal the net, and when there is no
+        # uart-capable adapter on the bench say so loudly rather than letting
+        # a silent skip pass for coverage.
+        #
+        # Soft, unlike the relay heal: a bench with no peer attached is a
+        # configuration this suite explicitly supports, so it must not fail
+        # the night. The annotation is what keeps it from being invisible.
+        id: uart-net-heal
+        continue-on-error: true
+        env:
+          UART_PEER_NET: ${{ vars.UART_PEER_NET || 'ESP_UART' }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re, subprocess, sys
+
+          box = os.environ["LAGER_BOX"]
+          want = os.environ["UART_PEER_NET"]
+
+          def lager(*args, parse=False, check=True):
+              res = subprocess.run(["lager", *args, "--box", box],
+                                   capture_output=True, text=True)
+              if check and res.returncode != 0:
+                  print(res.stdout + res.stderr)
+                  sys.exit(f"lager {' '.join(args)} failed (rc {res.returncode})")
+              return json.loads(res.stdout) if parse else res.stdout
+
+          nets = lager("nets", "state", "--json", parse=True)
+          for n in nets:
+              if n.get("name") == want and n.get("role") == "uart":
+                  print(f"{want} present")
+                  break
+          else:
+              # The box advertises a uart device as `uart: /dev/ttyXXX` in the
+              # channels column. Match the path itself rather than the device
+              # name -- that column wraps, and a wrapped line defeats a
+              # name-anchored match.
+              out = lager("instruments")
+              m = re.search(r"uart:\s*(/dev/tty\S+)", out)
+              if not m:
+                  print(f"::warning title=UART peer::no uart-capable adapter on "
+                        f"{box}; the uart suite's device round-trip will SKIP, "
+                        f"so this run proves nothing about UART data flow")
+                  sys.exit(0)
+              tty = m.group(1)
+              # CHANNEL is the tty path for a uart net; the 4th argument is a
+              # free label and must be distinct per net on the same device.
+              lager("nets", "add", want, "uart", tty, f"{want}-ci-peer")
+              print(f"created {want} on {tty}")
+          PY
+        shell: bash
+
+      - name: Test UART round-trip and net lifecycle (CLI)
+        # Section 15 of this suite is the only check anywhere in the repo that
+        # moves real bytes over a serial link. It drives an ESP32 peer
+        # (test/assets/uart_ci_peer) through the CLI, WebSocket and box
+        # bridge, and asserts on the replies. The suite's other fourteen
+        # sections exercise argument parsing and net bookkeeping only, so a
+        # `lager uart` that opened a session, reported it correctly and
+        # transferred nothing in either direction would pass all of them.
+        #
+        # Section 15 needs a peer on UART_PEER_NET. It skips when nothing
+        # answers ID?, so a bench with no ESP32 attached reports SKIPs rather
+        # than failures -- but it FAILS when the CLI refuses to open the
+        # session at all, which is a different thing and must not be filed
+        # under "no hardware".
+        #
+        # Gated through tools/bench_suite_gate.sh rather than the inline
+        # ratchet above: the shared gate already addresses the summary columns
+        # by position, which matters here because any track_test "skip" makes
+        # print_summary emit a fifth column and `$NF` then reads the skip
+        # count instead of the failures.
+        id: uart-cli
+        continue-on-error: true
+        timeout-minutes: 15
+        env:
+          SSH_USER: lagerdata
+          # Net carrying the CI peer on this bench. Section 15 skips without it.
+          UART_PEER_NET: ${{ vars.UART_PEER_NET || 'ESP_UART' }}
+          # Zero, and it should stay zero. The suite started this change at 8
+          # failures out of 74, all of them defects in the tests rather than in
+          # `lager uart`: checks for flags that never existed, `lager nets
+          # create` (not a command), a device-detection grep that did not know
+          # about CP210x, and greps against a table that wraps long names. Each
+          # was fixed rather than baselined, so there is no known gap to
+          # tolerate and any failure here is new. Measured 71/0 on a real bench
+          # 2026-09-21.
+          UART_BASELINE: "0"
+        # Pass the box NAME, not the IP: given an IP the suite registers a
+        # `temp_box_<ip>` entry, polluting the box list.
+        run: |
+          LOG="$RUNNER_TEMP/uart-cli.log"
+          bash test/integration/communication/uart.sh "$LAGER_BOX" 2>&1 | tee "$LOG" || true
+          bash tools/bench_suite_gate.sh harness uart.sh "$UART_BASELINE" "$LOG"
+        shell: bash
+
       - name: Fail job if any test failed
         # Every instrument step is continue-on-error so all instruments get
         # exercised in one run; this gate turns any failure into a job failure.
