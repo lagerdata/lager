@@ -12,6 +12,18 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Added
+
+- **The nightly bench run now proves `lager uart` actually moves data.** The uart
+  suite gained a device round-trip section that drives a live ESP32 peer through
+  the CLI, WebSocket and box bridge, asserting `PING`/`PONG`, an echoed per-run
+  token, an advancing device-side counter, and a clean net release on exit. Its
+  other fourteen sections only exercise argument parsing and net bookkeeping, so
+  a `lager uart` that connected and transferred nothing would have passed all of
+  them. The suite is also wired into `bench-extended.yml`, where it had never run
+  at all. Firmware and flashing instructions are in `test/assets/uart_ci_peer/`;
+  the section skips itself on benches with no peer attached.
+
 ### Changed
 
 - **The `lager-cli` sdist no longer contains test files.** The CLI tests moved

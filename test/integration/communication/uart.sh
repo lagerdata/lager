@@ -705,6 +705,123 @@ fi
 echo ""
 
 # ============================================================
+# SECTION 15: UART DEVICE ROUND-TRIP
+# ============================================================
+# The only section that moves real bytes over the wire. Every section above
+# exercises argument parsing and net bookkeeping, so none of them can catch a
+# regression in the read/write path itself -- a `lager uart` that connects,
+# reports a session, and transfers nothing would pass all fourteen.
+#
+# Needs a peer running the uart_ci_peer firmware, which answers PING with
+# PONG. Without one every check SKIPs rather than fails, so a bench that has
+# no peer attached stays green.
+#
+# One session carries every command. The CLI suppresses one inbound line per
+# send (websocket_client.py:145) but `suppress_next_line` is a boolean, not a
+# counter, so a fast burst of commands has only its first reply-line eaten.
+# Each assertion below is therefore anchored and textually distinct from the
+# command that triggers it, and holds whether or not the echo was suppressed.
+start_section "UART Device Round-Trip"
+echo "========================================================================"
+echo "SECTION 15: UART DEVICE ROUND-TRIP"
+echo "========================================================================"
+echo ""
+
+UART_PEER_NET="${UART_PEER_NET:-ESP_UART}"
+UART_PEER_BAUD="${UART_PEER_BAUD:-115200}"
+UART_PEER_SETTLE="${UART_PEER_SETTLE:-3}"
+UART_PEER_DEADLINE="${UART_PEER_DEADLINE:-45}"
+UART_PEER_TOKEN="ci-$$-${RANDOM}"
+
+# Send each argument as a line, wait for replies, then 0x03.
+#
+# 0x03 is how the CLI's stdin reader is asked to stop: it sets stop_event,
+# which runs _release_box_session() on the way out. Killing the process with
+# `timeout` instead leaves the net held box-side and the NEXT run fails with
+# "already in use by another session". The `timeout` here is only a backstop,
+# because piped stdin reaching EOF does not end the session on its own.
+uart_peer_exchange() {
+  {
+    local _line
+    for _line in "$@"; do printf '%s\n' "$_line"; done
+    sleep "$UART_PEER_SETTLE"
+    printf '\003'
+  } | timeout "$UART_PEER_DEADLINE" lager uart "$UART_PEER_NET" -i \
+        --baudrate "$UART_PEER_BAUD" --box "$BOX" 2>&1
+}
+
+PEER_OUT=$(uart_peer_exchange \
+  'ID?' 'PING' "ECHO ${UART_PEER_TOKEN}" 'RESET' 'COUNT?' 'COUNT?' 'Ping')
+echo "$PEER_OUT"
+echo ""
+
+echo "Test 15.1: Peer identifies itself (ID?)"
+if echo "$PEER_OUT" | grep -q 'LAGER-UART-PEER'; then
+  UART_PEER_PRESENT=true
+  track_test "pass"
+else
+  UART_PEER_PRESENT=false
+  echo -e "${YELLOW}No CI peer on net '$UART_PEER_NET' - round-trip checks skipped${NC}"
+  echo -e "${YELLOW}Flash test/assets/uart_ci_peer and set UART_PEER_NET to enable${NC}"
+  track_test "skip"
+fi
+echo ""
+
+echo "Test 15.2: PING returns PONG"
+if [ "$UART_PEER_PRESENT" = true ]; then
+  echo "$PEER_OUT" | grep -qE '^PONG[[:space:]]*$' && track_test "pass" || track_test "fail"
+else
+  track_test "skip"
+fi
+echo ""
+
+echo "Test 15.3: ECHO round-trips a per-run token"
+# A fresh token each run, so a stale buffer or a replayed log cannot pass.
+if [ "$UART_PEER_PRESENT" = true ]; then
+  echo "$PEER_OUT" | grep -qE "^${UART_PEER_TOKEN}[[:space:]]*$" && track_test "pass" || track_test "fail"
+else
+  track_test "skip"
+fi
+echo ""
+
+echo "Test 15.4: COUNT? advances device-side state (1 then 2 after RESET)"
+# Proves the device is executing, not replaying a fixed response.
+if [ "$UART_PEER_PRESENT" = true ]; then
+  if echo "$PEER_OUT" | grep -qE '^1[[:space:]]*$' && echo "$PEER_OUT" | grep -qE '^2[[:space:]]*$'; then
+    track_test "pass"
+  else
+    track_test "fail"
+  fi
+else
+  track_test "skip"
+fi
+echo ""
+
+echo "Test 15.5: Unknown command still answers (ERR unknown)"
+# Not cosmetic: a command that replied with nothing would leave the CLI's
+# line suppression armed, and it would swallow the next command's reply.
+if [ "$UART_PEER_PRESENT" = true ]; then
+  echo "$PEER_OUT" | grep -qE '^ERR unknown[[:space:]]*$' && track_test "pass" || track_test "fail"
+else
+  track_test "skip"
+fi
+echo ""
+
+echo "Test 15.6: Net released after disconnect"
+# A leaked net is a regression in its own right: it makes the next run fail
+# for a reason that has nothing to do with the next run.
+if [ "$UART_PEER_PRESENT" = true ]; then
+  if lager uart --sessions --box "$BOX" 2>&1 | grep -q "$UART_PEER_NET"; then
+    track_test "fail"
+  else
+    track_test "pass"
+  fi
+else
+  track_test "skip"
+fi
+echo ""
+
+# ============================================================
 # CLEANUP
 # ============================================================
 echo "========================================================================"
@@ -752,9 +869,10 @@ echo "  - Net persistence across operations"
 echo "  - Edge cases (long names, special paths, empty parameters)"
 echo "  - Regression tests (error recovery, state consistency)"
 echo "  - Session management (--sessions listing and --force take-over)"
+echo "  - Device round-trip against a live peer (PING/ECHO/COUNT over the wire)"
 echo ""
 echo "Test Statistics:"
-echo "  - Total test sections: 14"
+echo "  - Total test sections: 15"
 echo "  - Total test cases: $GLOBAL_TOTAL"
 echo "  - Command categories tested: uart, nets (UART-specific)"
 echo "  - Net-based configuration: Create, list, rename, delete UART nets"

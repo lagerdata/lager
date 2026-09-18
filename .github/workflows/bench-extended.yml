@@ -587,6 +587,38 @@ jobs:
           bash tools/bench_suite_gate.sh harness nets.sh "$NETS_BASELINE" "$LOG"
         shell: bash
 
+      - name: Suite uart.sh (uart nets, params, and a live device round-trip)
+        # Section 15 is the only check in the repo that moves real bytes over
+        # a serial link: it drives an ESP32 peer (test/assets/uart_ci_peer)
+        # through the CLI, WebSocket and box bridge and asserts on the
+        # replies. Everything else in the suite tests argument parsing and
+        # net bookkeeping, so a `lager uart` that connected and transferred
+        # nothing would pass all of it.
+        #
+        # Placed after nets.sh and before box_config.sh: it needs a healthy
+        # box and a working net layer, and box_config bounces the container.
+        #
+        # Section 15 self-skips when no peer answers ID?, so a bench with no
+        # ESP32 attached reports SKIPs, not failures.
+        id: suite-uart
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          # Net carrying the CI peer. Section 15 skips entirely if absent.
+          UART_PEER_NET: "ESP_UART"
+          # UNCALIBRATED. This suite has never run in CI, so the failure count
+          # of sections 1-14 on a real bench is unknown. 0 is deliberate: the
+          # gate errors when failures EXCEED the baseline, so starting low
+          # fails loudly with a number to adopt, rather than silently
+          # baselining breakage in. Raise it once, to the first run's count,
+          # and name the owning issue here when you do.
+          UART_BASELINE: "0"
+        run: |
+          LOG="$RUNNER_TEMP/uart.log"
+          bash test/integration/communication/uart.sh "$LAGER_BOX" 2>&1 | tee "$LOG" || true
+          bash tools/bench_suite_gate.sh harness uart.sh "$UART_BASELINE" "$LOG"
+        shell: bash
+
       - name: Suite box_config.sh (box-config apply, bounce + rollback)
         # Late on purpose: exercises the container bounce path, so the box
         # may be briefly degraded; nothing after it needs full box health

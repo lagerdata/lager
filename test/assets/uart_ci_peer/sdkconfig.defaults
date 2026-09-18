@@ -1,0 +1,13 @@
+# The whole point of this build: the ESP32-U4WDH is single core, and a
+# multi-core image aborts on it with "Running on single core variant of a
+# chip, but app is built with multi-core support".
+CONFIG_FREERTOS_UNICORE=y
+
+# Console on UART0 at 115200, matching what lager uart connects with.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
+
+# Silence the IDF log. Anything the framework printed would land on UART0
+# alongside the protocol replies and break the CI assertions.
+CONFIG_LOG_DEFAULT_LEVEL_NONE=y
+CONFIG_BOOTLOADER_LOG_LEVEL_NONE=y
