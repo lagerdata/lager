@@ -48,12 +48,12 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` | 3175 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 4199 |
+| `unit (box)` | `test/unit/box/` | 4193 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 405 |
-| `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 166 (+1 skipped) |
-| | **Total gated** | **8139** |
+| `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 204 (+1 skipped) |
+| | **Total gated** | **8171** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -482,7 +482,7 @@ test/
 
 ### Local Unit Tests (`test/unit/` -- 295 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 159 files)
+#### Box Unit Tests (`test/unit/box/` -- 158 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -497,7 +497,6 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_battery_model_authoring.py` | Battery model authoring (create/export of 2281S memory slots), against hardware-verified ground truth |
 | `test_bench_quiesce.py` | The quiesce registry that makes a starting job wait for the previous one's teardown, and the arithmetic tying its bounds to the reap they must cover |
 | `test_battery_model_catalog.py` | Read-only battery model catalog; the 2281S has no `:BATT:MODel:CATalog?` query |
-| `test_bench_power_on_blocks_match.py` | The three bench workflows' power-on `run:` blocks are byte-identical, and none of them names the Keithley 2281S unconditionally |
 | `test_binaries_store.py` | `lager.binaries.store` plus the `:9000` `/binaries/*` and `/download-file` handlers |
 | `test_ble_central_loop.py` | The box BLE `Central()` makes its own event loop when none is passed: no `DeprecationWarning` with no current loop, a working loop off the main thread, and a passed-in `loop` is used |
 | `test_box_config.py` | box_config v1 schema validation rules and idempotency hash |
@@ -801,14 +800,15 @@ These tests cover the scripts in `tools/`. The `unit (root)` job runs them.
 | `test_coverage_checker.py` | `tools/check_coverage_counts.py`: platform-gated rows are not drift (and `--fix` must not rewrite them), the anchored summary parse `FORCE_COLOR` defeated, and a missing `pytest-timeout` reported as the missing plugin rather than as a failing suite |
 | `test_pdf_pages.py` | `tools/pdf_pages.py`: PNG and text extraction (skips without pymupdf, which is AGPL) |
 
-#### Root Unit Tests (`test/unit/test_*.py` -- 7 files)
+#### Root Unit Tests (`test/unit/test_*.py` -- 8 files)
 
 | File | What it tests |
 |------|---------------|
 | `test_bench_chain_trigger.py` | `nightly-bench.yml` holds its own `bench-chain-*` concurrency group for the whole run, different from the children's `hardware-ci-*` group; only the chain triggers on push to `main`, never a leaf; its docs-only filter never skips a change under `cli/`, `box/`, `tools/`, `test/` or the workflows; the failure alert links the commits since the last green run |
 | `test_bench_stale_lock_release.py` | Every bench workflow starts by releasing a box lock left by a dead run of this repository, before its connectivity check, in one byte-identical step; run against a stand-in `lager`, the step releases a lock held by a run of this repo and leaves a person's lock, another repo's CI lock, an unlocked box and an unreachable box alone |
 | `test_bench_cleanup_timeouts.py` | Tree-wide guard: every `if: always()` step on a `self-hosted` bench job carries `timeout-minutes` and `continue-on-error`, and the bench jobs are still serialized on one non-cancelling concurrency group |
-| `test_nightly_notify_scope.py` | `nightly-bench.yml`: every job that can write the `bench-alert` issue runs only for the scheduled run or a run of main, with that term ANDed onto its existing condition |
+| `test_bench_power_on_action.py` | The three bench workflows power the instruments on through ONE composite action, `bench-power-on`, where each used to carry its own copy of the script. Every caller `uses` it with no `run:` of its own, passes the same five inputs from the same expressions, and sets exactly its own keys (`bench-extended.yml` keeps `id`, `if` and `continue-on-error`; the other two have none). The action is composite, takes every input through `env:` and expands none inside `run:`, reads no variable it is not given, and still gates the Keithley 2281S on `KEITHLEY_PRESENT`. No workflow drives the relays itself, and zizmor is given the actions directory as well as the workflows |
+| `test_nightly_notify_scope.py` | Every workflow job that can write an issue runs only for the scheduled run or a run of `main`, so a branch dispatch cannot file or close an alert that describes main: both notify jobs of `nightly-bench.yml`, and the notify job of `bench-extended.yml`. ALL workflows are scanned, and an issue-writing job must be in that table or in a second one with a written reason (the schedule watchdog is). Each job's existing condition is pinned too, since the clause is ANDed onto it |
 | `test_no_global_os_path_patches.py` | Tree-wide guard: no test may patch `os.path` (process-global; on Python >= 3.14 it also rewrites every `pathlib.Path.exists()`) — patch the module's seam or use a real temp path |
 | `test_upstream_attribution.py` | Code derived from upstream projects keeps their notices: `cli/simple_hdlc.py` and every file under `box/lager/blufi/` (globbed, so a new file must carry it) name the upstream copyright and SPDX expression; `NOTICE` carries the full simple-hdlc and EspBlufiForAndroid license texts; `cli/NOTICE` (shipped in the wheel) has the same simple-hdlc entry as the root; `cli/MANIFEST.in` includes it |
 | `test_supply_settle.py` | The DP821 suite's `_wait_for_regulation`: replays the captured 0.17 A enable transient to pin that agreeing reads inside a plateau are not a settle, that a genuine steady load settles at once and is left for the caller to judge, and that a wired channel names its fixture on failure |
