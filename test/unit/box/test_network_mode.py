@@ -28,6 +28,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from unittest import mock
 import types
 import unittest
 
@@ -495,6 +496,66 @@ class AllowlistDoesNotDrift(unittest.TestCase):
         spec.loader.exec_module(render)
         self.assertEqual(render._CONFIRM_ENV, cli_cfg._NETWORK_SWITCH_CONFIRM_ENV)
         self.assertEqual(render._CONFIRM_ENV, _CONFIRM)
+
+
+
+def _import_executor():
+    """The box-side python executor, imported by path.
+
+    box/lager/python/executor.py pulls in box-runtime modules on import, so it
+    is loaded the same way the rest of this file loads box modules rather than
+    through a plain `import lager...`.
+    """
+    import importlib
+    return importlib.import_module("lager.python.executor")
+
+
+class LocalAddressUnderHostNetworking(unittest.TestCase):
+    """LOCAL_ADDRESS named an interface that need not exist (#508).
+
+    start_box.sh passed `--env LOCAL_ADDRESS=172.18.0.10` and the executor
+    overwrote whatever arrived with the same constant. That is the container's
+    address on lagernet; under `network-mode host` the container shares the
+    host's stack and has no lagernet address at all, so a script that bound to
+    or advertised it was using an address that existed nowhere.
+
+    The container cannot be told its own address on the `docker run` line --
+    it does not exist yet -- so it is read from the routing table at the
+    moment a script is launched.
+    """
+
+    def test_start_box_no_longer_asserts_an_address(self):
+        text = _start_box_text()
+        self.assertNotIn("LOCAL_ADDRESS=172.18.0.10", text)
+
+    def test_the_resolver_returns_an_address_from_the_routing_table(self):
+        executor = _import_executor()
+        os.environ.pop("LOCAL_ADDRESS", None)
+        addr = executor._local_address()
+        self.assertRegex(addr, r"^\d+\.\d+\.\d+\.\d+$")
+
+    def test_an_explicit_value_wins(self):
+        """An operator can still name one through the box config."""
+        executor = _import_executor()
+        os.environ["LOCAL_ADDRESS"] = "10.1.2.3"
+        self.addCleanup(os.environ.pop, "LOCAL_ADDRESS", None)
+        self.assertEqual(executor._local_address(), "10.1.2.3")
+
+    def test_a_blank_value_is_not_an_answer(self):
+        """An unset variable in the box config expands to the empty string."""
+        executor = _import_executor()
+        os.environ["LOCAL_ADDRESS"] = "   "
+        self.addCleanup(os.environ.pop, "LOCAL_ADDRESS", None)
+        self.assertNotEqual(executor._local_address().strip(), "")
+
+    def test_a_box_with_no_route_falls_back_rather_than_raising(self):
+        """It runs on the path that launches every script; it cannot raise."""
+        executor = _import_executor()
+        os.environ.pop("LOCAL_ADDRESS", None)
+        with mock.patch.object(executor.socket, "socket",
+                               side_effect=OSError("no route")):
+            self.assertEqual(executor._local_address(),
+                             executor.LAGER_PYTHON_IP_ADDR)
 
 
 if __name__ == "__main__":

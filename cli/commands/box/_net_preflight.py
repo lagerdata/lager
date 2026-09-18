@@ -350,21 +350,34 @@ def evaluate(result: PreflightResult, *, ports=CONTROL_PLANE_PORTS) -> Preflight
             continue
         collisions.append(port)
 
-    if d.get("no_publish") or collisions:
-        detail = (
-            "ports held by something else: "
-            + ", ".join(str(p) for p in collisions)
-            if collisions else "/etc/lager/no_publish is set"
-        )
+    # Two different problems, told apart. A port another process holds is a
+    # collision and names that process. `/etc/lager/no_publish` only records
+    # that this box was installed with --no-publish, which is not a gateway
+    # and not a port conflict -- calling it one sent the operator looking for
+    # a process that was not there.
+    if collisions:
+        owners = sorted({o for p in collisions
+                         for o in (publishers.get(str(p)) or [])})
+        who = ", ".join(owners) if owners else "another process"
         result.blockers.append(
-            "This box is fronted by a port-publishing gateway "
-            f"({detail}). On host networking the lager container binds those "
-            "ports itself and will fail to start. Host mode and a publishing "
-            "gateway cannot both own the same ports."
+            "Ports "
+            + ", ".join(str(p) for p in collisions)
+            + f" are already held by {who}. On host networking the lager "
+            "container binds those ports itself and will fail to start."
         )
         result.notes.append(
-            "No firewall rule fixes this. Either leave this box on lagernet, or "
-            "move the gateway off the Lager ports first."
+            "No firewall rule fixes this. Either leave this box on lagernet, "
+            "or move the other listener off the Lager ports first."
+        )
+    elif d.get("no_publish"):
+        result.blockers.append(
+            "This box was installed with --no-publish, so something in front "
+            "of it is expected to own the Lager ports. On host networking the "
+            "lager container binds them itself, and the two cannot both."
+        )
+        result.notes.append(
+            "No firewall rule fixes this. Either leave this box on lagernet, "
+            "or reinstall with --publish if nothing is fronting it."
         )
 
     # 2. The firewall cuts the operator's own route.
@@ -437,4 +450,12 @@ def evaluate(result: PreflightResult, *, ports=CONTROL_PLANE_PORTS) -> Preflight
 
 
 def check(box_ip: str, *, runner=None, ports=CONTROL_PLANE_PORTS) -> PreflightResult:
-    return evaluate(probe(box_ip, runner=runner), ports=ports)
+    """Probe the box and judge the result, both against the same ports.
+
+    `ports` goes to BOTH halves. It used to reach `evaluate` only, so a caller
+    that narrowed the list had the box probe the default ports while the
+    verdict was read against the narrowed ones: `publishers` and `bound_ports`
+    carried no entry for a port that was never looked at. Nothing caught it
+    because no test imported this function.
+    """
+    return evaluate(probe(box_ip, runner=runner, ports=ports), ports=ports)
