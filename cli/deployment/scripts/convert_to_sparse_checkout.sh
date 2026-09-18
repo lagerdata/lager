@@ -99,7 +99,10 @@ if ssh "${BOX_USER}@${BOX_IP}" "test -d /etc/lager" 2>/dev/null; then
     echo -e "${GREEN}[OK] exists${NC}"
 else
     echo -e "${YELLOW}[WARNING] creating${NC}"
-    ssh "${BOX_USER}@${BOX_IP}" "sudo mkdir -p /etc/lager && sudo chown -R 33:33 /etc/lager && sudo chmod 755 /etc/lager"
+    # Not recursive: the directory was created on the line before, so there is
+    # nothing under it to walk. A recursive chown is never granted, because it
+    # cannot skip authorized_keys.d.
+    ssh "${BOX_USER}@${BOX_IP}" "sudo mkdir -p /etc/lager && sudo chown 33:33 /etc/lager && sudo chmod 755 /etc/lager"
     echo "  Created /etc/lager (owned by www-data UID 33)"
 fi
 

@@ -31,6 +31,17 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   filesystem and toolchain rather than the devenv image. Hosted runners have
   Docker, so the container path works there; set `LAGER_EXEC_IN_PLACE=1` to
   keep the old behavior on a runner that does not.
+- **`lager install` asks for the sudo password one time on a fresh box, and not
+  at all on a box that is already installed.** It wrote its two sudoers files in
+  separate sessions, and two later steps ran commands that no sudoers rule
+  granted, so each one asked again. One session now does all of it, and install
+  skips that session when the grants on the box are current. A fresh box without
+  Docker is asked twice. `lager update` is unchanged.
+- **`lager install` sets the owner of `/etc/lager` with a root-owned script.**
+  `/usr/local/lib/lager/etc_lager_perms.sh` replaces a `sudo find` and a
+  recursive `sudo chown`. For a symbolic link under `/etc/lager`, it changes the
+  owner of the link and never of the file the link names. `lager uninstall
+  --all` removes the script.
 
 ### Removed
 

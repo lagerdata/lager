@@ -752,3 +752,352 @@ class CommandArgumentsEscapeSudoersMetacharacters(unittest.TestCase):
         bad = "${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chown 33:33 /etc/lager"
         _, _, cmd = bad.partition("NOPASSWD: ")
         self.assertTrue(any(ch in cmd for ch in _SUDOERS_METACHARS))
+
+
+# ---------------------------------------------------------------------------
+# One sudo session on a fresh box, and none on a re-install
+# ---------------------------------------------------------------------------
+#
+# `lager install` asked for the sudo password several times: the sudo step ran
+# unconditionally, two later steps ran commands no rule granted (`sudo find`,
+# a recursive `sudo chown`), and install.py wrote the box-config file in a
+# session of its own at the end. The fix is one session that does everything,
+# and a check, asked with no terminal, that skips it when the box is current.
+#
+# A shell script proves nothing by being read, so most of what follows RUNS
+# the extracted shell under bash.
+
+DEPLOYMENT_DIR = REPO_ROOT / "cli" / "deployment"
+_BASH = shutil.which("bash") or "/bin/bash"
+
+
+def _extract_block(topic):
+    """The shell between the BEGIN/END sentinels naming `topic`."""
+    begin, end = f"# --- BEGIN {topic}", f"# --- END {topic}"
+    body, inside, seen = [], False, False
+    for line in DEPLOY_SCRIPT.read_text(encoding="utf-8").splitlines():
+        if line.startswith(begin):
+            inside, seen = True, True
+            continue
+        if line.startswith(end):
+            inside = False
+            continue
+        if inside:
+            body.append(line)
+    assert seen, f"sentinel {begin!r} not found in {DEPLOY_SCRIPT}"
+    assert body, f"no shell extracted for {topic!r}"
+    return "\n".join(body)
+
+
+def _code(text):
+    """Without comment lines: a comment may name the thing it forbids."""
+    return "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
+
+
+_SUDO_FIND = re.compile(r"\bsudo(?:\s+-\S+)*\s+find\b")
+_SUDO_RECURSIVE_CHOWN = re.compile(r"\bsudo(?:\s+-\S+)*\s+chown\s+(?:-\w*R\w*|--recursive)\b")
+
+
+class NothingUngrantableRunsUnderSudo(unittest.TestCase):
+    """`find -exec` is a root shell and a recursive chown cannot skip
+    authorized_keys.d, so neither may ever be granted -- which means neither
+    may be RUN, or the operator is asked for a password every time."""
+
+    def _offenders(self, pattern):
+        found = []
+        for path in sorted(DEPLOYMENT_DIR.rglob("*.sh")):
+            for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                if not line.lstrip().startswith("#") and pattern.search(line):
+                    found.append(f"{path.relative_to(REPO_ROOT)}:{number}: {line.strip()}")
+        return found
+
+    def test_no_script_runs_find_under_sudo(self):
+        self.assertEqual(self._offenders(_SUDO_FIND), [])
+
+    def test_no_script_runs_a_recursive_chown_under_sudo(self):
+        self.assertEqual(self._offenders(_SUDO_RECURSIVE_CHOWN), [])
+
+    def test_the_scan_sees_shell_scripts(self):
+        self.assertGreater(len(list(DEPLOYMENT_DIR.rglob("*.sh"))), 3)
+
+    def test_both_shapes_would_be_caught(self):
+        self.assertTrue(_SUDO_FIND.search("ssh_t x 'sudo find /etc/lager -exec chown 33 {} +'"))
+        self.assertTrue(_SUDO_FIND.search("sudo -n find / -delete"))
+        self.assertTrue(_SUDO_RECURSIVE_CHOWN.search('sudo chown -R 33:"$(id -g)" /etc/lager'))
+        self.assertTrue(_SUDO_RECURSIVE_CHOWN.search("sudo -n chown -hR 33:33 /x"))
+        self.assertFalse(_SUDO_RECURSIVE_CHOWN.search("sudo chown 33:33 /etc/lager"))
+
+
+class TheEtcLagerHelperGrant(unittest.TestCase):
+    @staticmethod
+    def _grant():
+        # Looked up when a test runs, not when the class is defined: a missing
+        # constant then fails these tests, not the collection of the whole file.
+        return "${BOX_USER} ALL=(ALL) NOPASSWD: " + ops.ETC_LAGER_PERMS_HELPER
+
+    def test_it_is_granted_by_exact_path(self):
+        self.assertIn(self._grant(), _rule_lines(_udev_heredoc_body()))
+
+    def test_no_rule_installs_it(self):
+        # The firewall script is installed under a NOPASSWD grant, and its own
+        # comment concedes what that costs: the login user picks the content.
+        # This helper is put in place only inside the password session.
+        rules = _rule_lines(_udev_heredoc_body()) + _rule_lines(_udev_dynamic_body())
+        name = pathlib.PurePosixPath(ops.ETC_LAGER_PERMS_HELPER).name
+        installers = [r for r in rules if name in r and r != self._grant()]
+        self.assertEqual(installers, [])
+
+    def test_the_session_installs_it_root_owned_before_it_writes_any_grant(self):
+        text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+        install = text.index(
+            'sudo install -D -m 0755 -o root -g root "\\$BOOT_DIR/etc_lager_perms.sh"')
+        first_grant_file = text.index('visudo -c -f "\\$LAGER_SUDOERS_TMP"')
+        self.assertLess(install, first_grant_file)
+
+    def test_the_script_and_host_ops_name_the_same_two_paths(self):
+        text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn(f'ETC_LAGER_PERMS_HELPER="{ops.ETC_LAGER_PERMS_HELPER}"', text)
+        self.assertIn(f'DEPLOY_SUDOERS_MARKER="{ops.DEPLOY_SUDOERS_MARKER}"', text)
+        # One assignment each; everything else goes through the variable.
+        self.assertEqual(text.count(ops.DEPLOY_SUDOERS_MARKER), 1)
+
+    def test_the_marker_is_not_under_sudoers_d(self):
+        # It would be a fourth file there, and the ownership contract is three.
+        self.assertTrue(ops.DEPLOY_SUDOERS_MARKER.startswith("/etc/lager/."))
+
+    def test_uninstall_removes_the_helper(self):
+        joined = " ".join(cmd for _n, _d, cmd in uninstall.UNINSTALL_ALL_PRIV_STEPS)
+        self.assertIn(f"rm -f {ops.ETC_LAGER_PERMS_HELPER}", joined)
+
+    def test_the_helper_ships_beside_the_firewall_script(self):
+        self.assertTrue((DEPLOYMENT_DIR / "security" / "etc_lager_perms.sh").is_file())
+        self.assertIn('ETC_LAGER_PERMS_SRC="${SCRIPT_DIR}/../security/etc_lager_perms.sh"',
+                      DEPLOY_SCRIPT.read_text(encoding="utf-8"))
+
+
+class EverySystemctlTheDeployRunsIsGranted(unittest.TestCase):
+    """`daemon-reload` and `restart docker.socket` were run and never granted,
+    so a box whose Docker needed a restart asked for the password again."""
+
+    # The verb, then its arguments. `(?!\d*>)` keeps a redirection's file
+    # descriptor (`docker.socket 2>/dev/null`) from being read as an argument.
+    _CALL = re.compile(r"\bsudo systemctl ((?:[a-z-]+)(?: (?!\d*>)[A-Za-z0-9_.@-]+)*)")
+
+    def _calls(self):
+        # Commands the script RUNS. A line that echoes advice to the operator
+        # ("sudo systemctl status docker") runs nothing and needs no grant.
+        ran = "\n".join(
+            ln for ln in _code(DEPLOY_SCRIPT.read_text(encoding="utf-8")).splitlines()
+            if not ln.lstrip().startswith("echo "))
+        return sorted(set(self._CALL.findall(ran)))
+
+    def test_each_one_has_a_rule_in_both_bin_directories(self):
+        rules = _rule_lines(_udev_heredoc_body())
+        for call in self._calls():
+            for directory in ("/bin", "/usr/bin"):
+                self.assertIn(
+                    f"${{BOX_USER}} ALL=(ALL) NOPASSWD: {directory}/systemctl {call}", rules,
+                    f"`sudo systemctl {call}` is run and not granted")
+
+    def test_the_scan_sees_the_recovery_chain(self):
+        calls = self._calls()
+        for expected in ("daemon-reload", "restart docker.socket", "restart docker",
+                         "reset-failed docker.service docker.socket", "enable docker"):
+            self.assertIn(expected, calls)
+
+
+class TheBoxConfigFileIsValidatedBeforeItIsInstalled(unittest.TestCase):
+    def test_same_discipline_as_the_udev_file(self):
+        text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+        check = text.index('visudo -c -f "\\$LAGER_BOXCFG_TMP"')
+        install = text.index(
+            'install -m 0440 -o root -g root "\\$LAGER_BOXCFG_TMP" '
+            '/etc/sudoers.d/lager-box-config')
+        self.assertLess(check, install)
+
+    def test_its_heredoc_cannot_be_mistaken_for_the_udev_one(self):
+        # _udev_heredoc_body() reads up to the first line that is exactly
+        # SUDOERS. A second heredoc with that delimiter would be folded in.
+        text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("<< 'BOXCFG_RULES_EOF'", text)
+        self.assertEqual(len(re.findall(r"<< 'SUDOERS'\n", text)), 1)
+
+
+class _RendersTheSession(unittest.TestCase):
+    """Harness only: renders the sudo session script as the deploy script does."""
+
+    def _render(self, user="benchtest", vpn="", content="", marker="", helper_dir=None):
+        import subprocess
+        import tempfile
+        block = _extract_block("sudo session render")
+        script_dir = helper_dir or str(DEPLOY_SCRIPT.parent)
+        with tempfile.TemporaryDirectory() as tmp:
+            source = pathlib.Path(tmp) / "render.sh"
+            source.write_text(block, encoding="utf-8")
+            driver = (
+                "set -e\n"
+                'print_warning() { echo "WARN: $*" >&2; }\n'
+                'print_error() { echo "ERR: $*" >&2; }\n'
+                f'. "{source}"\n'
+                'echo "HAVE_BOXCFG=$HAVE_BOXCFG" >&2\n'
+                'cat "$TEMP_SCRIPT"\n'
+                'rm -f "$TEMP_SCRIPT"\n'
+            )
+            env = {
+                "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+                "BOX_USER": user, "CORPORATE_VPN": vpn, "SCRIPT_DIR": script_dir,
+                "LAGER_BOXCFG_SUDOERS_CONTENT": content,
+                "LAGER_BOXCFG_SUDOERS_MARKER": marker,
+            }
+            proc = subprocess.run([_BASH, "-c", driver], env=env,
+                                  capture_output=True, text=True, timeout=60)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return proc.stdout, proc.stderr
+
+    def _parses(self, rendered):
+        import subprocess
+        proc = subprocess.run([_BASH, "-n"], input=rendered,
+                              capture_output=True, text=True, timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+
+class TheSessionScriptRenders(_RendersTheSession):
+    def test_standalone_it_writes_the_udev_file_alone_and_still_parses(self):
+        rendered, log = self._render()
+        self.assertIn("HAVE_BOXCFG=0", log)
+        self._parses(rendered)
+        self.assertIn('if [ "0" = "1" ]; then', rendered)
+
+    def test_the_real_box_config_text_is_accepted_and_embedded_verbatim(self):
+        # Ties the two halves together: what _host_ops renders must pass the
+        # validator in the shell script, for every shape of user name.
+        for user in ("benchtest", "lagerdata", "a.b-c_d", "Upper9"):
+            content = ops.boxcfg_sudoers_content(user)
+            rendered, log = self._render(user=user, content=content,
+                                         marker=ops.BOXCFG_SUDOERS_MARKER)
+            self.assertIn("HAVE_BOXCFG=1", log, user)
+            self._parses(rendered)
+            self.assertIn(content + "\nBOXCFG_RULES_EOF\n", rendered)
+            self.assertIn(f'sudo touch "{ops.BOXCFG_SUDOERS_MARKER}"', rendered)
+
+    def test_a_rule_for_anyone_else_is_refused(self):
+        content = ops.boxcfg_sudoers_content("benchtest") + "\nmallory ALL=(ALL) NOPASSWD: ALL"
+        rendered, log = self._render(content=content, marker=ops.BOXCFG_SUDOERS_MARKER)
+        self.assertIn("HAVE_BOXCFG=0", log)
+        self.assertIn("WARN:", log)
+        self.assertNotIn("mallory", rendered)
+
+    def test_a_rule_that_only_mentions_the_user_later_on_the_line_is_refused(self):
+        content = "mallory ALL=(ALL) NOPASSWD: ALL # benchtest ALL=(root) NOPASSWD: x"
+        rendered, log = self._render(content=content, marker=ops.BOXCFG_SUDOERS_MARKER)
+        self.assertIn("HAVE_BOXCFG=0", log)
+        self.assertNotIn("mallory", rendered)
+
+    def test_a_rule_running_as_anyone_but_root_is_refused(self):
+        content = "benchtest ALL=(ALL) NOPASSWD: /bin/true"
+        _rendered, log = self._render(content=content, marker=ops.BOXCFG_SUDOERS_MARKER)
+        self.assertIn("HAVE_BOXCFG=0", log)
+
+    def test_a_marker_outside_etc_lager_is_refused(self):
+        content = ops.boxcfg_sudoers_content("benchtest")
+        for marker in ("/etc/sudoers.d/x", "/etc/lager/../shadow", "/etc/lager/.a b",
+                       "/etc/lager/.x; rm -rf /", "", "/tmp/.marker"):
+            rendered, log = self._render(content=content, marker=marker)
+            self.assertIn("HAVE_BOXCFG=0", log, marker)
+            self.assertNotIn("lager-box-config \\", rendered.split("BOXCFG_RULES_EOF")[0])
+
+    def test_the_marker_is_recorded_last(self):
+        rendered, _ = self._render(content=ops.boxcfg_sudoers_content("benchtest"),
+                                   marker=ops.BOXCFG_SUDOERS_MARKER)
+        recorded = rendered.index(f'mv -f "{ops.DEPLOY_SUDOERS_MARKER}.tmp"')
+        for earlier in ("/etc/sudoers.d/lagerdata-udev", "/etc/sudoers.d/lager-box-config",
+                        f"sudo {ops.ETC_LAGER_PERMS_HELPER}", "python3-venv", "docker-buildx"):
+            self.assertLess(rendered.rindex(earlier), recorded, earlier)
+
+    def test_the_session_has_no_bare_sudo_assignment(self):
+        rendered, _ = self._render()
+        self.assertEqual(
+            [ln for ln in _code(rendered).splitlines() if _SUDO_BARE_ENV_ASSIGN.search(ln)], [])
+
+
+class TheDigestChangesWithWhatWouldBeInstalled(_RendersTheSession):
+    def _digest(self, rendered, helper_text=None):
+        import subprocess
+        import tempfile
+        block = _extract_block("deploy sudoers digest")
+        helper = DEPLOYMENT_DIR / "security" / "etc_lager_perms.sh"
+        with tempfile.TemporaryDirectory() as tmp:
+            session = pathlib.Path(tmp) / "session.sh"
+            session.write_text(rendered, encoding="utf-8")
+            helper_copy = pathlib.Path(tmp) / "helper.sh"
+            helper_copy.write_text(
+                helper.read_text(encoding="utf-8") if helper_text is None else helper_text,
+                encoding="utf-8")
+            proc = subprocess.run(
+                [_BASH, "-c", f'{block}\ndeploy_sudoers_digest "{session}" "{helper_copy}"'],
+                capture_output=True, text=True, timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        digest = proc.stdout.strip()
+        self.assertRegex(digest, r"^[0-9a-f]{64}$")
+        return digest
+
+    def test_the_same_inputs_give_the_same_digest(self):
+        self.assertEqual(self._digest(self._render()[0]), self._digest(self._render()[0]))
+
+    def test_each_of_these_changes_it(self):
+        base = self._digest(self._render()[0])
+        content = ops.boxcfg_sudoers_content("benchtest")
+        changed = {
+            "another login user": self._digest(self._render(user="someoneelse")[0]),
+            "a corporate vpn interface": self._digest(self._render(vpn="tun0")[0]),
+            "box-config rules present": self._digest(
+                self._render(content=content, marker=ops.BOXCFG_SUDOERS_MARKER)[0]),
+            "a changed helper": self._digest(self._render()[0], helper_text="#!/bin/sh\nexit 0\n"),
+        }
+        for what, digest in changed.items():
+            self.assertNotEqual(digest, base, what)
+        self.assertEqual(len(set(changed.values())), len(changed))
+
+    def test_a_comment_in_the_session_script_does_not(self):
+        rendered = self._render()[0]
+        reworded = rendered.replace("#!/bin/bash\n", "#!/bin/bash\n# a reworded comment\n", 1)
+        self.assertNotEqual(rendered, reworded)
+        self.assertEqual(self._digest(rendered), self._digest(reworded))
+
+
+class TheCheckThatSkipsTheSessionCannotPrompt(unittest.TestCase):
+    def setUp(self):
+        self.code = _code(_extract_block("deploy sudoers probe"))
+
+    def test_it_has_no_terminal(self):
+        self.assertIn("-o BatchMode=yes", self.code)
+        self.assertNotIn("ssh_t", self.code)
+        self.assertNotRegex(self.code, r"\bssh\b[^\n]*\s-t\b")
+
+    def test_every_sudo_in_it_is_sudo_n(self):
+        self.assertEqual(re.findall(r"\bsudo\b(?! -n\b)", self.code), [])
+        self.assertGreaterEqual(len(re.findall(r"\bsudo -n\b", self.code)), 2)
+
+    def test_it_does_not_ask_sudo_to_list(self):
+        self.assertNotRegex(self.code, r"sudo(\s+-\S+)*\s+-l\b")
+
+    def test_it_runs_the_helper_not_just_reads_the_marker(self):
+        # A marker can outlive its grants: `uninstall --all --keep-config`
+        # removes the sudoers files and leaves /etc/lager behind.
+        self.assertIn("sudo -n ${ETC_LAGER_PERMS_HELPER}", self.code)
+        self.assertIn("${DEPLOY_SUDOERS_MARKER}", self.code)
+
+    def test_an_empty_digest_never_skips(self):
+        self.assertIn("test -n '${DEPLOY_DIGEST}'", self.code)
+
+    def test_the_session_runs_only_when_the_check_fails(self):
+        text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+        asked = text.index("if deploy_sudoers_current; then")
+        session = text.index('ssh_t "${BOX_USER}@${BOX_IP}" "bash ${BOOT_DIR}/setup_sudo.sh')
+        self.assertLess(asked, session)
+
+    def test_it_asks_what_lager_install_will_ask_later(self):
+        install_py = (REPO_ROOT / "cli" / "commands" / "utility" / "install.py").read_text()
+        self.assertIn("test -f {BOXCFG_SUDOERS_MARKER}", install_py)
+        self.assertIn("test -f ${BOXCFG_SUDOERS_MARKER} && sudo -n /usr/bin/apt-get --version",
+                      self.code)

@@ -21,6 +21,7 @@ from ...box_storage import (
     project_files_defining_box,
 )
 from ...core.ssh_utils import host_in_known_hosts, get_ssh_connection_pool
+from ..box._host_ops import ETC_LAGER_PERMS_HELPER
 from ..box._ssh import (
     BOX_KEYS_DIR,
     probe_box_identity,
@@ -70,6 +71,11 @@ UNINSTALL_ALL_PRIV_STEPS = [
         "firewall_script",
         "Removing firewall helper script",
         "sudo rm -f /usr/local/lib/lager/secure_box_firewall.sh",
+    ),
+    (
+        "etc_lager_perms_script",
+        "Removing /etc/lager ownership helper script",
+        f"sudo rm -f {ETC_LAGER_PERMS_HELPER}",
     ),
     (
         "ufw_reset",
@@ -637,6 +643,10 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
             # Firewall helper script
             fw_script = query_ssh("ls /usr/local/lib/lager/secure_box_firewall.sh 2>/dev/null")
             click.echo(f"  Firewall helper script: {'present' if fw_script else '(not found)'}")
+
+            # /etc/lager ownership helper (installed by `lager install`)
+            perms_script = query_ssh(f"ls {ETC_LAGER_PERMS_HELPER} 2>/dev/null")
+            click.echo(f"  /etc/lager helper script: {'present' if perms_script else '(not found)'}")
 
             # lager group (instrument device access)
             lager_group = query_ssh("getent group lager 2>/dev/null")

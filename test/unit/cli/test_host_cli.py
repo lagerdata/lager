@@ -275,15 +275,26 @@ class TestDeployScriptDrift:
         # directory holds the .pub files authorizing SSH, and a box that runs
         # untrusted code could then authorize its own key. The repair excludes
         # it with -prune, leaving whatever owner it already has.
+        #
+        # The repair is now a root-owned helper the deploy script calls, not a
+        # `sudo find` of its own (which no sudoers rule could ever grant), so
+        # the prune is pinned where it lives. test_etc_lager_perms_helper.py
+        # RUNS the helper and checks the directory really is skipped; this
+        # keeps the text from drifting and the deploy script from growing a
+        # second, unguarded repair.
+        helper = (Path(cli_pkg.__file__).parent / 'deployment' / 'security'
+                  / 'etc_lager_perms.sh').read_text()
         assert (
-            "find /etc/lager -path /etc/lager/authorized_keys.d -prune "
-            "-o -exec chown 33:" in deploy_script
+            '-path "$ETC_LAGER/authorized_keys.d" -prune -o -exec chown -h '
+            in helper
         )
-        # The old unguarded form must not come back on the always-run line.
-        assert (
-            '''sudo chown -R 33:"$(id -g)" /etc/lager && sudo chmod 2775'''
-            not in deploy_script
-        )
+        assert 'sudo -n ${ETC_LAGER_PERMS_HELPER}' in deploy_script
+        # Neither old form may come back: not the unguarded recursive chown,
+        # and not the find that replaced it.
+        code = "\n".join(ln for ln in deploy_script.splitlines()
+                         if not ln.lstrip().startswith('#'))
+        assert 'sudo chown -R' not in code
+        assert 'sudo find' not in code
 
     def test_version_and_ref_writes_need_no_grant(self, deploy_script):
         # install and update write /etc/lager/version and /etc/lager/ref with

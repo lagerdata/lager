@@ -154,6 +154,27 @@ UDEV_SUDOERS_BANNER = sudoers_banner_lines(
     "Managed by lager install; manual edits are overwritten."
 )
 
+# What lets `lager install` skip its sudo session, and with it the password
+# prompt, on a box that already has everything the session installs.
+#
+# setup_and_deploy_box.sh writes this file LAST in that session. Its content is
+# a sha256 of what the session installed: the rendered session script (the udev
+# grants, the box-config grants below, the login user, any --corporate-vpn
+# rule) plus the helper script. The next install computes the same digest for
+# what it WOULD install and skips the session only on a match -- and only if
+# `sudo -n` can also run the helper, so a marker that outlived its grants
+# (uninstall --all --keep-config leaves /etc/lager behind) skips nothing.
+#
+# So unlike BOXCFG_SUDOERS_MARKER above, this one needs no bump when a rule
+# changes: a changed rule is a changed digest, and costs each box one prompt on
+# its next install. The name is versioned for a change to the file's FORMAT.
+#
+# The shell script cannot import this module and carries the same two
+# literals; test_sudoers_contract.py pins them together. `lager update` reads
+# neither: it has never needed the session, and asks for no password.
+DEPLOY_SUDOERS_MARKER = "/etc/lager/.deploy-sudoers-v1"
+ETC_LAGER_PERMS_HELPER = "/usr/local/lib/lager/etc_lager_perms.sh"
+
 # useradd's default charset plus uppercase and dots (both appear in real
 # deployments and are harmless in sudoers). Every allowed character is inert
 # inside the single-quoted rule strings and sudoers syntax; anything else
@@ -213,6 +234,22 @@ def boxcfg_sudoers_rules(user: str = "lagerdata") -> List[str]:
     ]
 
 
+def boxcfg_sudoers_lines(user: str = "lagerdata") -> list:
+    """Every line of /etc/sudoers.d/lager-box-config: the banner, then the rules.
+
+    The one source of that file's text. Two writers install it, and they must
+    install the same thing: boxcfg_sudoers_bootstrap_cmd() below, and the sudo
+    session of setup_and_deploy_box.sh, which `lager install` hands
+    boxcfg_sudoers_content() so that a fresh box is asked for its password
+    once, not once per sudoers file."""
+    return BOXCFG_SUDOERS_BANNER + boxcfg_sudoers_rules(user)
+
+
+def boxcfg_sudoers_content(user: str = "lagerdata") -> str:
+    """boxcfg_sudoers_lines() as the text of the file, without a final newline."""
+    return "\n".join(boxcfg_sudoers_lines(user))
+
+
 def boxcfg_sudoers_bootstrap_cmd(user: str = "lagerdata") -> str:
     """One shell command that installs the box-config sudoers rule plus the
     versioned marker file. Used verbatim by `lager install` and
@@ -221,7 +258,7 @@ def boxcfg_sudoers_bootstrap_cmd(user: str = "lagerdata") -> str:
     The banner lines are `#` comments, so they are inert to sudoers and to
     `visudo -c` — they exist to tell whoever opens the file on the box that
     Lager rewrites it (see the ownership-contract comment above)."""
-    lines = BOXCFG_SUDOERS_BANNER + boxcfg_sudoers_rules(user)
+    lines = boxcfg_sudoers_lines(user)
     quoted_rules = " ".join(f"'{r}'" for r in lines)
     return (
         f"printf '%s\\n' {quoted_rules} "

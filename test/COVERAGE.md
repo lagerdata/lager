@@ -46,13 +46,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 2554 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 2938 |
+| `unit (cli)` | `test/unit/cli/` | 2580 (+2 xfailed) |
+| `unit (box)` | `test/unit/box/` | 2971 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 241 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 82 (+1 skipped) |
-| | **Total gated** | **6009** |
+| | **Total gated** | **6068** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -452,7 +452,7 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 233 files)
+### Local Unit Tests (`test/unit/` -- 235 files)
 
 #### Box Unit Tests (`test/unit/box/` -- 122 files)
 
@@ -509,7 +509,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_gdbserver_zombie_status.py` | Defunct/zombie gdbserver detection that a bare `os.kill(pid, 0)` check passes |
 | `test_hardware_service_fail_fast.py` | `/invoke` fail-fast locking and hang recovery: per-device and per-address locks answer `device-busy` rather than queueing behind a wedged `open_resource`, and a hung driver call expires into `invoke-timeout` plus a supervised restart |
 | `test_hardware_service_retry.py` | Close-then-recreate retry path for concurrent Keithley resource collisions |
-| `test_host_ops.py` | apt_install and sysctl_apply SSH execution branches |
+| `test_host_ops.py` | apt_install and sysctl_apply SSH execution branches. Also `udev_apply`, the box-config sudoers rules and bootstrap command, the v2 marker pin, username validation and the bootstrap texts |
 | `test_hub_lock_fail_fast.py` | The same treatment on the USB hub path: bounded waits on the module-level and per-hub locks (`hub-busy`), a per-operation deadline (`hub-op-timeout`), the restart that follows, and the state sweep's per-hub sub-budget (clamp + `hub-skipped`) |
 | `test_jlink_commander_use_poll.py` | JLinkExe spawned with use_poll=True to avoid fd >= 1024 select() failure |
 | `test_jlink_error_masking.py` | Three debug-path defects that masked on-bench J-Link failures |
@@ -568,7 +568,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_ssh_setup.py` | `lager ssh-setup` command and SSH key provisioning with TTY passthrough |
 | `test_stream_disconnect.py` | `peer_is_connected` and the idle tick that let the box notice a vanished client in under a second instead of waiting for the script's next write |
 | `test_stream_teardown.py` | `lager python` child reaped when the client disconnects mid-run, instead of orphaning at 100% CPU holding a device flock |
-| `test_sudoers_contract.py` | The `/etc/sudoers.d/` ownership contract: Lager writes exactly three files there, never globs and never touches the directory itself, and every writer — including the shell copy in `setup_and_deploy_box.sh` — emits the banner telling an operator those files are regenerated wholesale. Also pins the recorded escalation posture: the box login user is root-equivalent by design, and no source may claim a scoped entry confines it |
+| `test_sudoers_contract.py` | The `/etc/sudoers.d/` ownership contract: Lager writes exactly three files there, never globs and never touches the directory itself, and every writer — including the shell copy in `setup_and_deploy_box.sh` — emits the banner telling an operator those files are regenerated wholesale. Also pins the recorded escalation posture: the box login user is root-equivalent by design, and no source may claim a scoped entry confines it. Also the one-session install: no deployment script runs `find` or a recursive `chown` under sudo; the `/etc/lager` helper is granted by exact path and never install-granted; every `systemctl` the deploy runs has a rule; and, RUN under bash, the session script renders and parses, accepts the real box-config text and refuses a rule for anyone else or a marker outside `/etc/lager`, the digest changes with the user, the VPN interface, the rules and the helper but not with a comment, and the check that skips the session has no terminal and only `sudo -n` |
 | `test_supply_command_handler.py` | `POST /supply/command` handler, covering v0.32.0 hardware-found regressions |
 | `test_trigger_option_contract.py` | `lager scope` and `lager logic` trigger options against the shared handler and the real MSO5000 mappers: every offered value and every default reaches a method the mapper defines, the scope/logic spellings that differ (`read_write`, `ack_miss`, `rising`, `gt`) map to the same condition, hex `--data`/`--address` arrive as integers, and `lager dac` refuses a voltage above 5 V |
 | `test_uart_bridge_params.py` | UARTBridge serial parameters: a `timeout` reaches the opened port (default 0.1 s), parity names and pyserial letters map to pyserial's constants, and any other parity raises before a port opens. The drivers the dispatcher builds for sessions keep the 0.1 s read timeout |
@@ -585,7 +585,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_automation_exports.py` | Static parse of `automation/__init__.py`'s lazy export table: no name guarded twice, every returned driver reachable under its own name, everything in `__all__` resolvable -- the copy-paste class of defect that made one driver answer to another's name |
 | `test_io_imports.py` | The `lager.io.*` import surface and re-export identity; asserts the removed root-level aliases stay removed |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 97 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 99 files)
 
 | File | What it tests |
 |------|---------------|
@@ -607,6 +607,8 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_devenv_config_commands.py` | `lager devenv mount` / `env`: editing project-local `.lager` volumes and environment keys |
 | `test_devenv_terminal_docker_args.py` | `docker run` args for `devenv terminal` and `exec`; regression for the `--group` bare-flag bug |
 | `test_docker_install_diagnosis.py` | The Docker install step names the command that failed and its exit status, instead of one generic error for an eight-command `&&` chain -- the chain is rebuilt the way bash builds it and EXECUTED under `bash` and `sh`, so the `\$`/`\"` escaping is covered rather than just matched as text; `ssh_t`'s stderr filter is synchronous, so the real error cannot land after the caller's generic line (the async form lost the ordering in 26 of 200 runs); its one run-scoped capture file survives a Ctrl-C and reports a TMPDIR it cannot write; and the printed recovery instructions match the chain they replace, including `systemctl enable` |
+| `test_etc_lager_perms_helper.py` | `cli/deployment/security/etc_lager_perms.sh`, the root-owned helper that replaces install's `sudo find` and recursive `sudo chown`: the REAL script runs under `sh` with the real `find` and a recording `chown`. Everything under `/etc/lager` goes to uid 33 and the caller's group except `authorized_keys.d`, which is pruned; every `chown` carries `-h`, so a symbolic link's target is never re-owned; and any argument, a caller that is not root, and a group that is not a plain number are each refused before anything is touched |
+| `test_install_sudo_handoff.py` | `lager install` hands the deploy script the box-config sudoers text in its environment, so one sudo session writes both files: the text is exactly what the other writer installs, a name that is not a plain unix username gets nothing, and a stale variable in the operator's shell is never inherited. Over a faked transport, install opens no terminal when the grant is already live, and warns of a prompt only on the branch that prompts |
 | `test_docker_start_limit.py` | The installer must not trip docker.service's `StartLimitBurst=3`: one service start per step, `reset-failed` before every restart, and `start-limit-hit` diagnosed as itself rather than a bad daemon.json |
 | `test_diagnose_classify.py` | `lager diagnose` classification decision tree for one-line user diagnosis |
 | `test_diagnose_classify_jlink.py` | `lager diagnose` J-Link classification from `/diagnose/usb` + `/diagnose/jlink` payloads |

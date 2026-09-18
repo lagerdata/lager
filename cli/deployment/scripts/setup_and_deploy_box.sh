@@ -657,10 +657,85 @@ fi
 # =============================================================================
 print_step "Configuring Passwordless Sudo"
 
-# Always create/update sudoers file to ensure it has latest rules
-# (Don't skip even if file exists - it might have outdated rules)
-print_info "Setting up passwordless sudo (you may be prompted for password once)..."
-echo ""
+# ONE sudo session, and only when the box needs one.
+#
+# Everything on a box that needs the sudo password is done in the single
+# session below: both Lager sudoers files, the root-owned /etc/lager helper, and
+# the two packages a fresh box can be missing. A box that already has all of it
+# is detected first, without a terminal, and the session is skipped -- so a
+# reinstall asks for no password at all.
+#
+# This step used to run unconditionally ("it might have outdated rules"), which
+# cost a password prompt on every install. The digest below is what makes
+# skipping safe: it changes whenever the rules would.
+
+# --- BEGIN sudo session render (extracted verbatim by test/unit/box/test_sudoers_contract.py) ---
+# The box-config grants, handed over by `lager install`. _host_ops.py is their
+# one source, and this script cannot import it, so install.py renders them and
+# passes them in the environment. Run by hand, with neither variable set, this
+# script writes lagerdata-udev alone, as it always has.
+BOXCFG_SUDOERS_CONTENT="${LAGER_BOXCFG_SUDOERS_CONTENT:-}"
+BOXCFG_SUDOERS_MARKER="${LAGER_BOXCFG_SUDOERS_MARKER:-}"
+HAVE_BOXCFG=0
+if [ -n "$BOXCFG_SUDOERS_CONTENT" ]; then
+    # This text is about to be installed as a root-owned sudoers file, so it is
+    # held to the one shape it is allowed to have: comments, blank lines, and
+    # rules for THIS user running as root.
+    # index() == 1 is "starts with", as a plain string: a user name is not a
+    # regular expression, and the rule text holds parentheses.
+    BOXCFG_BAD_LINES=$(printf '%s\n' "$BOXCFG_SUDOERS_CONTENT" \
+        | awk -v want="${BOX_USER} ALL=(root) NOPASSWD: " \
+            '!/^[[:space:]]*$/ && !/^#/ && index($0, want) != 1' || true)
+    if [ -n "$BOXCFG_BAD_LINES" ]; then
+        print_warning "Ignoring the box-config sudo rules handed to this script: a line is not a rule for ${BOX_USER}"
+    elif ! printf '%s' "$BOXCFG_SUDOERS_MARKER" | grep -Eq '^/etc/lager/\.[A-Za-z0-9._-]+$'; then
+        print_warning "Ignoring the box-config sudo rules handed to this script: the marker path is not under /etc/lager"
+    else
+        HAVE_BOXCFG=1
+    fi
+fi
+if [ "$HAVE_BOXCFG" != "1" ]; then
+    BOXCFG_SUDOERS_CONTENT=""
+    BOXCFG_SUDOERS_MARKER=""
+fi
+
+ETC_LAGER_PERMS_SRC="${SCRIPT_DIR}/../security/etc_lager_perms.sh"
+if [ ! -f "$ETC_LAGER_PERMS_SRC" ]; then
+    print_error "Missing ${ETC_LAGER_PERMS_SRC} - this CLI install is incomplete"
+    exit 1
+fi
+
+# --- BEGIN deploy sudoers digest (extracted verbatim by test/unit/box/test_sudoers_contract.py) ---
+# The marker records a digest of everything the sudo session installs. The
+# session is skipped only while the box's marker equals the digest of what THIS
+# run would install, so each of these costs exactly one prompt and no more:
+# a different --user, a different --corporate-vpn interface, a changed grant, a
+# changed helper, changed box-config rules. Nobody has to remember to bump a
+# version. Comment lines are left out, so rewording one does not charge every
+# box a password.
+#
+# The name is versioned for the day the FORMAT of this file changes. The rules
+# changing is what the digest is for.
+DEPLOY_SUDOERS_MARKER="/etc/lager/.deploy-sudoers-v1"
+ETC_LAGER_PERMS_HELPER="/usr/local/lib/lager/etc_lager_perms.sh"
+
+lager_sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum | cut -d' ' -f1
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 | cut -d' ' -f1
+    elif command -v openssl >/dev/null 2>&1; then
+        openssl dgst -sha256 | sed 's/^.*= *//'
+    else
+        return 1
+    fi
+}
+
+# $1: the rendered session script.  $2: the helper it installs.
+deploy_sudoers_digest() {
+    { grep -v '^[[:space:]]*#' "$1"; cat "$2"; } | lager_sha256
+}
+# --- END deploy sudoers digest ---
 
 # The firewall grant, resolved here rather than left as a wildcard.
 #
@@ -679,6 +754,19 @@ fi
 TEMP_SCRIPT=$(mktemp)
 cat > "$TEMP_SCRIPT" << SCRIPT_EOF
 #!/bin/bash
+# \$1 is the digest this run computed; it is recorded at the very end.
+DEPLOY_DIGEST="\${1:-}"
+BOOT_DIR="\$(cd "\$(dirname "\$0")" && pwd)"
+
+# The /etc/lager helper goes in FIRST, and only here. This is the one place
+# its content can be set, and it needs the sudo password: no NOPASSWD grant
+# installs it, so nothing can replace it later without that password. The
+# grant written below names the installed path and nothing else.
+if ! sudo install -D -m 0755 -o root -g root "\$BOOT_DIR/etc_lager_perms.sh" ${ETC_LAGER_PERMS_HELPER}; then
+    echo "[ERROR] Could not install ${ETC_LAGER_PERMS_HELPER}"
+    exit 1
+fi
+
 echo "Creating sudoers configuration for passwordless udev management..."
 
 # Create sudoers file (using actual username: ${BOX_USER})
@@ -806,6 +894,25 @@ ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart docker
 # self-healing instead of permanently wedged.
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/systemctl reset-failed docker.service docker.socket
 ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl reset-failed docker.service docker.socket
+# The other two commands of the Docker recovery chain. Both were run and
+# neither was granted, so a box whose Docker needed restarting asked for the
+# password again. Fixed commands with fixed arguments.
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/systemctl daemon-reload
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl daemon-reload
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/systemctl restart docker.socket
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart docker.socket
+# /etc/lager ownership: the root-owned helper, by exact path. It replaces a
+# sudo find and a recursive sudo chown, neither of which can ever be granted:
+# find -exec runs anything as root, and a recursive chown cannot skip
+# authorized_keys.d.
+# The helper takes no arguments and refuses any it is given (exit 64), which is
+# what makes a bare path safe here: sudoers lets a bare path run with any
+# arguments, and the stricter spelling for "none" is not one every sudo
+# implementation on a box is known to parse. A rule that fails to parse aborts
+# the install (#313), so the refusal lives in the script, where it is tested.
+# There is on purpose no grant that INSTALLS the helper -- unlike the firewall
+# script below, it is put in place only inside the password session.
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/local/lib/lager/etc_lager_perms.sh
 # Firewall: install the shipped script to a ROOT-owned path, then run it.
 # The root-owned destination is what stops a LATER edit -- by another user, or
 # by this one -- between install and execution; NOPASSWD directly on a /tmp
@@ -853,20 +960,129 @@ else
     rm -f "\$LAGER_SUDOERS_TMP"
     exit 1
 fi
-SCRIPT_EOF
 
-# Copy script to box and execute with -t for terminal allocation
-scp $SCP_OPTS "$TEMP_SCRIPT" "${BOX_USER}@${BOX_IP}:/tmp/setup_sudo.sh" >/dev/null
-ssh_t "${BOX_USER}@${BOX_IP}" "chmod +x /tmp/setup_sudo.sh && /tmp/setup_sudo.sh && rm /tmp/setup_sudo.sh"
-rm "$TEMP_SCRIPT"
-echo ""
-
-# Verify setup
-if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "test -f /etc/sudoers.d/lagerdata-udev" 2>/dev/null; then
-    print_success "Sudo configuration completed"
-else
-    print_warning "Sudo setup may have failed - deployment may require password"
+# /etc/lager, now that the helper is in and its grant is live. Runs here, in
+# the session, so a fresh box needs no second prompt for it.
+if ! sudo ${ETC_LAGER_PERMS_HELPER}; then
+    echo "[ERROR] ${ETC_LAGER_PERMS_HELPER} failed -- /etc/lager is not set up"
+    exit 1
 fi
+echo "[OK] /etc/lager is owned by uid 33 and writable by group \$(id -gn)"
+
+# The box-config grants (/etc/sudoers.d/lager-box-config), in this same
+# session. lager install used to write them in a session of its own at the end
+# of the install, which was a second password prompt on every fresh box. Same
+# discipline as the file above: stage, validate, and only then install. A
+# failure here is not fatal -- lager install still has its own step for this
+# file, and says what to do.
+if [ "${HAVE_BOXCFG}" = "1" ]; then
+    LAGER_BOXCFG_TMP="\$(mktemp)"
+    cat > "\$LAGER_BOXCFG_TMP" << 'BOXCFG_RULES_EOF'
+${BOXCFG_SUDOERS_CONTENT}
+BOXCFG_RULES_EOF
+    if sudo visudo -c -f "\$LAGER_BOXCFG_TMP"; then
+        sudo install -m 0440 -o root -g root "\$LAGER_BOXCFG_TMP" /etc/sudoers.d/lager-box-config \\
+            && sudo touch "${BOXCFG_SUDOERS_MARKER}" \\
+            && sudo chmod 644 "${BOXCFG_SUDOERS_MARKER}" \\
+            && echo "[OK] Passwordless sudo for lager box-config configured"
+    else
+        echo "[WARNING] The box-config sudo rules did not validate -- /etc/sudoers.d/lager-box-config was NOT modified"
+    fi
+    rm -f "\$LAGER_BOXCFG_TMP"
+fi
+
+# Two packages a fresh box can be missing. Each is checked again later in the
+# deploy, in a session of its own, which is where they used to cost a password
+# apiece. Best effort: those later steps still run, and still report.
+# sudo env VAR=value, not sudo VAR=value: see the Docker install step.
+if command -v docker >/dev/null 2>&1 && ! docker buildx version >/dev/null 2>&1; then
+    echo "Installing the Docker buildx plugin..."
+    sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get update -qq || true
+    sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y docker-buildx \\
+        || sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y docker-buildx-plugin \\
+        || true
+fi
+if command -v python3 >/dev/null 2>&1 && ! python3 -Im ensurepip --version >/dev/null 2>&1; then
+    echo "Installing python3-venv..."
+    sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get update -qq || true
+    sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y --no-install-recommends python3-venv || true
+fi
+
+# LAST, and only after everything above: the marker says "this box has what
+# digest X installs". Written without sudo -- /etc/lager is group-writable by
+# this user as of the helper run above -- and moved into place so a reader
+# never sees half a digest.
+if [ -n "\$DEPLOY_DIGEST" ]; then
+    printf '%s\n' "\$DEPLOY_DIGEST" > "${DEPLOY_SUDOERS_MARKER}.tmp" \\
+        && mv -f "${DEPLOY_SUDOERS_MARKER}.tmp" "${DEPLOY_SUDOERS_MARKER}" \\
+        || echo "[WARNING] Could not record ${DEPLOY_SUDOERS_MARKER}; the next install will ask for the password again"
+fi
+SCRIPT_EOF
+# --- END sudo session render ---
+
+# What this run would install, as one digest. Empty when this machine has no
+# sha256 tool, and an empty digest never skips.
+DEPLOY_DIGEST="$(deploy_sudoers_digest "$TEMP_SCRIPT" "$ETC_LAGER_PERMS_SRC" 2>/dev/null || true)"
+
+# --- BEGIN deploy sudoers probe (extracted verbatim by test/unit/box/test_sudoers_contract.py) ---
+# Is the session needed? Asked with no terminal, so nothing here can prompt:
+# a sudo that wants a password fails, and that failure is the answer.
+#
+#   - the marker holds this run's digest: the rules on the box are these rules;
+#   - the helper runs under sudo -n: the grant is really live, not just written
+#     (this is also the /etc/lager repair every install performs);
+#   - buildx and ensurepip are there, or the box has no docker / python3 for
+#     them to belong to: nothing the session would install is missing;
+#   - the box-config marker is there and apt-get runs under sudo -n: lager
+#     install's own check, a few minutes from now, will pass too.
+#
+# Deliberately no `sudo -l`: it is answered differently by different sudo
+# implementations, and what matters is that the command runs.
+DEPLOY_PROBE="test -n '${DEPLOY_DIGEST}'"
+DEPLOY_PROBE="${DEPLOY_PROBE} && test \"\$(cat ${DEPLOY_SUDOERS_MARKER} 2>/dev/null)\" = '${DEPLOY_DIGEST}'"
+DEPLOY_PROBE="${DEPLOY_PROBE} && sudo -n ${ETC_LAGER_PERMS_HELPER}"
+DEPLOY_PROBE="${DEPLOY_PROBE} && { ! command -v docker >/dev/null 2>&1 || docker buildx version >/dev/null 2>&1; }"
+DEPLOY_PROBE="${DEPLOY_PROBE} && { ! command -v python3 >/dev/null 2>&1 || python3 -Im ensurepip --version >/dev/null 2>&1; }"
+if [ "$HAVE_BOXCFG" = "1" ]; then
+    DEPLOY_PROBE="${DEPLOY_PROBE} && test -f ${BOXCFG_SUDOERS_MARKER} && sudo -n /usr/bin/apt-get --version >/dev/null 2>&1"
+fi
+
+deploy_sudoers_current() {
+    ssh $SSH_OPTS -o BatchMode=yes "${BOX_USER}@${BOX_IP}" "$DEPLOY_PROBE" >/dev/null 2>&1
+}
+# --- END deploy sudoers probe ---
+
+if deploy_sudoers_current; then
+    print_success "Passwordless sudo is already configured and current - no password needed"
+else
+    print_info "Setting up passwordless sudo (you will be asked for the sudo password once)..."
+    echo ""
+
+    # A private directory, not fixed names in /tmp. The helper staged here is
+    # about to be installed root-owned and granted NOPASSWD, and /tmp is
+    # world-writable: a fixed name is one another local user could be holding.
+    BOOT_DIR="$(ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" 'mktemp -d /tmp/lager-bootstrap.XXXXXX' 2>/dev/null | tr -d '\r\n' || true)"
+    if ! printf '%s' "$BOOT_DIR" | grep -Eq '^/tmp/lager-bootstrap\.[A-Za-z0-9]+$'; then
+        print_error "Could not create a staging directory on the box"
+        rm -f "$TEMP_SCRIPT"
+        exit 1
+    fi
+    scp $SCP_OPTS "$TEMP_SCRIPT" "${BOX_USER}@${BOX_IP}:${BOOT_DIR}/setup_sudo.sh" >/dev/null
+    scp $SCP_OPTS "$ETC_LAGER_PERMS_SRC" "${BOX_USER}@${BOX_IP}:${BOOT_DIR}/etc_lager_perms.sh" >/dev/null
+    # -t for a terminal: this is the one step that may ask for a password.
+    ssh_t "${BOX_USER}@${BOX_IP}" "bash ${BOOT_DIR}/setup_sudo.sh '${DEPLOY_DIGEST}'; rc=\$?; rm -rf ${BOOT_DIR}; exit \$rc"
+    echo ""
+
+    # Verify with the same question that would have skipped the step.
+    if deploy_sudoers_current; then
+        print_success "Sudo configuration completed"
+    elif ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "test -f /etc/sudoers.d/lagerdata-udev" 2>/dev/null; then
+        print_warning "Sudo is configured, but the box is missing something the next install will ask the password for again"
+    else
+        print_warning "Sudo setup may have failed - deployment may require password"
+    fi
+fi
+rm -f "$TEMP_SCRIPT"
 
 # Check for git on box (required for deployment)
 print_info "Checking for git on box..."
@@ -1162,64 +1378,35 @@ else
 fi
 echo ""
 
-# Ensure /etc/lager directory exists (always check, even if sudo was already configured)
+# /etc/lager: exists, owned by the container user, writable by this user's
+# group. One root-owned helper does all of it -- see
+# cli/deployment/security/etc_lager_perms.sh for the ownership rules and for why
+# authorized_keys.d is left alone.
+#
+# This ran as two steps, each in a terminal session of its own: a recursive
+# `sudo chown` on a fresh box, and then, on EVERY install, a `sudo find ...
+# -exec chown`. No sudoers rule granted either, so each one asked for the
+# password -- and neither can be granted, since `find -exec` runs anything as
+# root. The helper is granted by exact path instead.
+#
+# It has normally just run: inside the sudo session on a box that needed one,
+# or as part of the check that skipped the session. It is run again here
+# because this step must hold whatever happened above, and it is idempotent.
+# No terminal first, so a box with the grant never sees a prompt; the fallback
+# with a terminal is for a box where the grant did not take.
 echo ""
-print_info "Ensuring /etc/lager directory exists..."
-if ! ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "test -d /etc/lager" 2>/dev/null; then
-    print_warning "/etc/lager does not exist - creating it now (may require password)..."
-
-    TEMP_SCRIPT=$(mktemp)
-    cat > "$TEMP_SCRIPT" << 'SCRIPT_EOF'
-#!/bin/bash
-# Create /etc/lager directory for box configuration.
-#
-# Ownership is shared between two writers, and both need it:
-#   - the container, which runs as www-data (UID 33)  -> owner
-#   - start_box.sh, which runs on the host as the box's login user, and whose
-#     box_config renderers create files here          -> group
-# Owner-only 33:33 755 (the old value) silently broke every renderer: creating
-# a file needs write permission on the DIRECTORY, so `lager box config apply`
-# reported success while none of the pip/cargo/npm/mount config was applied.
-# setgid keeps files created here in the box user's group.
-if [ ! -d /etc/lager ]; then
-    sudo mkdir -p /etc/lager
-    sudo chown -R 33:"$(id -g)" /etc/lager
-    sudo chmod 2775 /etc/lager
-    echo "[OK] /etc/lager directory created (www-data UID 33, group $(id -gn), group-writable)"
-fi
-
-# Initialize saved_nets.json if it doesn't exist
-if [ ! -f /etc/lager/saved_nets.json ]; then
-    echo "[]" | sudo tee /etc/lager/saved_nets.json > /dev/null
-    # Set ownership to www-data (UID 33) so container can write to it
-    sudo chown 33:33 /etc/lager/saved_nets.json
-    sudo chmod 644 /etc/lager/saved_nets.json
-    echo "[OK] Initialized /etc/lager/saved_nets.json (owned by www-data UID 33)"
-fi
-SCRIPT_EOF
-
-    scp $SCP_OPTS "$TEMP_SCRIPT" "${BOX_USER}@${BOX_IP}:/tmp/setup_lager_dir.sh" >/dev/null
-    ssh_t "${BOX_USER}@${BOX_IP}" "chmod +x /tmp/setup_lager_dir.sh && /tmp/setup_lager_dir.sh && rm /tmp/setup_lager_dir.sh"
-    rm "$TEMP_SCRIPT"
+print_info "Ensuring /etc/lager exists with the right ownership..."
+if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "sudo -n ${ETC_LAGER_PERMS_HELPER}" 2>/dev/null; then
+    print_success "/etc/lager is ready (www-data UID 33, group-writable by ${BOX_USER})"
+elif ssh_t "${BOX_USER}@${BOX_IP}" "sudo ${ETC_LAGER_PERMS_HELPER}"; then
+    print_success "/etc/lager is ready (www-data UID 33, group-writable by ${BOX_USER})"
 else
-    print_success "/etc/lager directory exists"
+    print_error "Could not set up /etc/lager on the box"
+    echo ""
+    echo "The sudo step above installs ${ETC_LAGER_PERMS_HELPER}."
+    echo "Check that it completed, then run this script again."
+    exit 1
 fi
-
-# Always ensure correct permissions (even if directory existed before). This
-# also repairs boxes provisioned by an older CLI, which left /etc/lager
-# owner-only and therefore unwritable by start_box.sh's box_config renderers.
-# Single-quoted so $(id -g) is evaluated ON THE BOX, not on the operator's host.
-#
-# The recursive chown deliberately SKIPS authorized_keys.d. That directory
-# holds the .pub files that authorize SSH, and its ownership is managed
-# separately (root-owned on a locked-down box so nothing but the key manager
-# can add a key). A plain `chown -R` here swept it into www-data ownership,
-# which on a box that runs untrusted code lets that code authorize its own SSH
-# key. `-prune` leaves whatever owner the directory already has, so this stays
-# correct on both a plain box (box-writable) and a locked-down one (root).
-print_info "Ensuring correct permissions on /etc/lager..."
-ssh_t "${BOX_USER}@${BOX_IP}" 'sudo find /etc/lager -path /etc/lager/authorized_keys.d -prune -o -exec chown 33:"$(id -g)" {} + && sudo chmod 2775 /etc/lager'
-print_success "Permissions set correctly (www-data UID 33, group-writable by ${BOX_USER})"
 
 # Register the lager_box key in the box's key directory.
 #
