@@ -72,6 +72,12 @@ mismatched label. A slow install that works beats a fast one that does not.
 After a pull, `/etc/lager/image-source` records `ghcr:<digest>`. A build on the
 box removes that file.
 
+The image carries its license notices in `/usr/share/licenses/lager/`. That
+directory holds the `LICENSE` and `NOTICE` of Lager, and `THIRD_PARTY.md`, which
+lists the third-party software in the image. The `pip/` directory holds the
+notice files of each Python package. To list them, run
+`docker exec lager ls /usr/share/licenses/lager` on the box.
+
 Pass `--no-pull` to skip the pre-built image and always build. To turn the
 install pull off for a whole shell, set `LAGER_BOX_IMAGE_PULL` to `0`, `false`,
 `no` or `off`. The variable turns the pull on only for `1`, `true` or `yes`, in
