@@ -34,6 +34,7 @@ class PrivStepSpec(unittest.TestCase):
             "/etc/sudoers.d/lager-box-config",
             "/etc/sudoers.d/lager-bench-json",
             "/usr/local/lib/lager/secure_box_firewall.sh",
+            "/usr/local/lib/lager/etc_lager_perms.sh",
             "/etc/sysctl.d/99-lager-box-config.conf",
             "groupdel lager",
         ]:

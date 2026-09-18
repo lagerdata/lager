@@ -8,6 +8,7 @@
 """
 import click
 from click.exceptions import Abort, Exit
+import os
 import re
 import shlex
 import subprocess
@@ -30,6 +31,7 @@ from ...errors import ssh_error, LagerError
 from ..box._host_ops import (
     BOXCFG_SUDOERS_MARKER,
     boxcfg_sudoers_bootstrap_cmd,
+    boxcfg_sudoers_content,
     is_valid_unix_username,
 )
 from ..box._ssh import (
@@ -155,6 +157,36 @@ def _format_duration(seconds):
 # `lager update` uses for its final version write, so a pre-release tag reads
 # its number from the tree, exactly as update does.
 _RELEASE_NUMBER_RE = re.compile(r'^v?(\d+\.\d+\.\d+)$')
+
+# How the deploy script is given the box-config sudoers file to install.
+_BOXCFG_CONTENT_ENV = "LAGER_BOXCFG_SUDOERS_CONTENT"
+_BOXCFG_MARKER_ENV = "LAGER_BOXCFG_SUDOERS_MARKER"
+
+
+def _deploy_env(user):
+    """The environment setup_and_deploy_box.sh runs in.
+
+    The deploy script opens one sudo session on the box, and that is the only
+    password prompt a fresh install needs -- provided /etc/sudoers.d/lager-box-config
+    is written in it too. That file used to be written by a second `ssh -t` at
+    the end of the install, which was a second prompt. Its text has one source,
+    _host_ops, which a shell script cannot import, so it is rendered here and
+    handed over.
+
+    Not handed over for a username that is not a plain unix username: the text
+    names the user inside a root-owned sudoers file, and the step further down
+    already declines to write it for such a name. The deploy script then writes
+    its own file alone, exactly as it does when run by hand.
+
+    Stale values are dropped rather than inherited: a LAGER_BOXCFG_* variable
+    left in the operator's shell must never become a sudoers file.
+    """
+    env = {k: v for k, v in os.environ.items()
+           if k not in (_BOXCFG_CONTENT_ENV, _BOXCFG_MARKER_ENV)}
+    if is_valid_unix_username(user):
+        env[_BOXCFG_CONTENT_ENV] = boxcfg_sudoers_content(user)
+        env[_BOXCFG_MARKER_ENV] = BOXCFG_SUDOERS_MARKER
+    return env
 
 
 def _install_state_runner(ssh_host, identity_args):
@@ -557,6 +589,7 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
                 result = subprocess.run(
                     deploy_args,
                     check=False,
+                    env=_deploy_env(user),
                     # None = no timeout, which is what --timeout 0 asks for.
                     timeout=deploy_timeout or None,
                 )
@@ -667,7 +700,6 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
     # content. Failure here is a warning, not fatal — the box is otherwise    # installed; the operator can apply the rule manually later.
     click.echo()
     click.secho("Configuring passwordless sudo for `lager box-config apply`...", fg='cyan')
-    click.echo("(One-time setup. You'll be prompted for the sudo password on the box.)")
     click.echo()
 
     if not is_valid_unix_username(user):
@@ -699,8 +731,15 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
             already_configured = False
 
         if already_configured:
+            # The usual case now, on a fresh box as well as a re-install: the
+            # deploy script wrote this file in its own sudo session (see
+            # _deploy_env), so there is nothing left here to ask a password for.
             click.secho("Passwordless sudo for `lager box-config` already configured", fg='green')
         else:
+            # Said only on this branch. It used to be printed before the check,
+            # so an install that went on to ask for nothing still told the
+            # operator to expect a prompt.
+            click.echo("(One-time setup. The box asks for the sudo password.)")
             sudoers_cmd = boxcfg_sudoers_bootstrap_cmd(user)
 
             try:

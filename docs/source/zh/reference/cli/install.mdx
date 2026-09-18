@@ -99,7 +99,7 @@ lager install [OPTIONS]
 4. **部署** - 运行部署脚本。使用预构建镜像时约 2 分钟；在普通 Box 硬件上从零构建大约 14 分钟（见上文）。这一步受 `--timeout` 限制，默认 30 分钟 ——
    在较慢的硬件上请调高它，那里正常的构建也可能合理地超过默认值
 5. **保存版本** - 把部署的版本和 CLI 版本写入 `/etc/lager/version`，把部署的 ref 和提交写入 `/etc/lager/ref`。它还会把构建哈希写入 `/etc/lager/build-hash`，并读回版本文件进行核对。任何一次写入失败时，install 会指出该文件，打印手动修复方法，并以 `1` 退出。此时部署本身已经完成
-6. **配置免密码 sudo** - 写入 `lager box-config apply` 所需的 sudoers 授权。这一步会要求输入一次 Box 的 sudo 密码。这里失败只是警告，不算安装失败
+6. **检查免密码 sudo** - 确认 `lager box-config apply` 所需的 sudoers 授权已经就位。通常部署步骤已经写好了它，这一步就不会再要求输入任何内容。如果授权缺失，这一步会写入它，并要求输入 Box 的 sudo 密码。这里失败只是警告，不算安装失败
 7. **添加到配置** - 询问是否把该 Box 添加到 `~/.lager`。使用 `--yes` 时以及使用 `--box` 时（该 Box 已经保存过）会跳过这一步
 
 ## 示例
@@ -138,7 +138,7 @@ Lager 在 `/etc/sudoers.d/` 下写入以下文件，并且只写这些文件：
 
 | 文件 | 写入者 | 授权内容 |
 |------|-----------|--------|
-| `lagerdata-udev` | `lager install` | 部署 udev 规则、modprobe 黑名单、Docker 组和服务控制、安装/运行防火墙辅助脚本、写入 `/etc/lager` 中的文件 |
+| `lagerdata-udev` | `lager install` | 部署 udev 规则、modprobe 黑名单、Docker 组和服务控制、安装/运行防火墙辅助脚本、`/etc/lager` 属主辅助脚本、写入 `/etc/lager` 中的文件 |
 | `lager-box-config` | `lager install`、`lager update` | `apt-get`、`sysctl`，以及 `lager box-config apply` 所需的按路径限定的写入 |
 | `lager-bench-json` | 由运维人员在早于 `lagerdata-udev` 授权的 Box 上写入 | 写入 `/etc/lager/bench.json` |
 
@@ -148,10 +148,26 @@ Lager 在 `/etc/sudoers.d/` 下写入以下文件，并且只写这些文件：
 在决定谁持有它的 SSH 密钥时，请把 Box 登录账户视为等同于 root，并建议在专用计算机上使用专用用户。
 </Warning>
 
-这三个文件在每次运行时都会被**完整重新生成** —— 正是这一点让 Box 始终保持当前的授权形态。写在其中*内部*的额外授权，会在下次写入时丢失，因此每个文件开头都有一段说明这一点的注释。
+这三个文件在 Lager 每次写入时都会被**完整重新生成** —— 正是这一点让 Box 始终保持当前的授权形态。写在其中*内部*的额外授权，会在下次写入时丢失，因此每个文件开头都有一段说明这一点的注释。
 
 Lager 从不读取、编辑或删除 `/etc/sudoers.d/` 中的任何其他文件。如果您或某个 Box 管理平台需要额外授权，请把它们放在该目录下的单独文件中。例如 `/etc/sudoers.d/zz-local` 排在 Lager 的文件之后，因此它的规则会生效。
 Lager 不会碰那个文件，`lager uninstall` 期间也不会。
+
+### sudo 密码提示
+
+`lager install` 在部署步骤的早期，用一次 sudo 会话写入它的两个文件。它只在这次会话里要求输入 Box 的 sudo 密码，其他地方都不会：
+
+| Box | 密码提示次数 |
+|-----|------------------|
+| 已经安装过，且授权是最新的 | 0 |
+| 已有 Docker 的全新 Box | 1 |
+| 没有 Docker 的全新 Box | 2。安装 Docker 是第二次会话，没有任何授权覆盖其中的命令 |
+
+在这次会话之前，install 会在不分配终端的情况下检查 Box。它把 `/etc/lager/.deploy-sudoers-v1` 与本次运行将要写入的授权的摘要进行比较，并用 `sudo -n` 运行一条已授权的命令。两项检查都通过时，install 会跳过这次会话。不同的 `--user` 或 `--corporate-vpn` 值会改变授权，更新的 CLI 也可能改变它们。此时 install 会运行一次会话，并要求输入一次密码。
+
+如果想让下一次安装重新写入这些文件，请在 Box 上删除 `/etc/lager/.deploy-sudoers-v1`。`lager update` 不使用这个文件，也不要求输入密码。
+
+同一次会话还会安装 `/usr/local/lib/lager/etc_lager_perms.sh`。这个属主为 root 的脚本会创建 `/etc/lager` 并设置它的属主。它不会改动 `/etc/lager/authorized_keys.d`。授权按确切路径指明该脚本，而脚本会拒绝一切参数。Lager 不授权 `find` 命令，也不授权递归的 `chown`。
 
 ## SSH 认证
 

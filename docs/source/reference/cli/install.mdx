@@ -142,9 +142,11 @@ Each run of the script resets ufw first. A later `lager install` without
    It also writes the build hash to `/etc/lager/build-hash` and reads the
    version file back. If a write fails, install names the file, prints the
    manual fix, and exits `1`. The deployment is complete at that point
-6. **Configure passwordless sudo** - Writes the sudoers grant that
-   `lager box-config apply` needs. This step asks for the box's sudo password
-   once. A failure here is a warning, not an install failure
+6. **Check passwordless sudo** - Confirms the sudoers grant that
+   `lager box-config apply` needs. The deploy step normally writes it, and this
+   step then asks for nothing. If the box does not have the grant, this step
+   writes it and asks for the box's sudo password. A failure here is a warning, not an install
+   failure
 7. **Add to config** - Asks whether to add the box to `~/.lager`. Install skips
    this step with `--yes`, and with `--box` (the box is already stored)
 
@@ -186,7 +188,7 @@ Lager writes these files, and only these files, under `/etc/sudoers.d/`:
 
 | File | Written by | Grants |
 |------|-----------|--------|
-| `lagerdata-udev` | `lager install` | udev rule deployment, modprobe blacklist, Docker group and service control, firewall helper install/run, `/etc/lager` file writes |
+| `lagerdata-udev` | `lager install` | udev rule deployment, modprobe blacklist, Docker group and service control, firewall helper install/run, the `/etc/lager` ownership helper, `/etc/lager` file writes |
 | `lager-box-config` | `lager install`, `lager update` | `apt-get`, `sysctl`, and the path-scoped writes `lager box-config apply` needs |
 | `lager-bench-json` | Operator, on boxes predating the grant in `lagerdata-udev` | Writing `/etc/lager/bench.json` |
 
@@ -202,9 +204,37 @@ Treat the box login account as equivalent to root when deciding who holds its
 SSH key, and prefer a dedicated user on a dedicated machine.
 </Warning>
 
-Each of the three files is **regenerated in full** on every run — that is what
-keeps a box on the current grant shape. A grant added *inside* one of them is
-lost the next time it is written, so each file opens with a header saying so.
+Lager **regenerates each file in full** when it writes that file. That keeps a
+box on the current grant shape. A grant added *inside* one of them is lost the
+next time it is written, so each file opens with a header saying so.
+
+### Sudo password prompts
+
+`lager install` writes both of its files in one sudo session, early in the deploy
+step. It asks for the box's sudo password in that session and nowhere else:
+
+| Box | Password prompts |
+|-----|------------------|
+| Already installed, and the grants are current | 0 |
+| Fresh box that has Docker | 1 |
+| Fresh box without Docker | 2. The Docker install is a second session, and no grant covers its commands |
+
+Before the session, install checks the box without a terminal. It compares
+`/etc/lager/.deploy-sudoers-v1` with a digest of the grants that this run writes,
+and it runs one granted command with `sudo -n`. If both checks pass, install
+skips the session. A different `--user` or `--corporate-vpn` value changes the
+grants, and a newer CLI can change them too. Install then runs the session one
+time and asks for the password one time.
+
+To make the next install write the files again, delete
+`/etc/lager/.deploy-sudoers-v1` on the box. `lager update` does not use this
+file, and it asks for no password.
+
+The same session installs `/usr/local/lib/lager/etc_lager_perms.sh`. This
+root-owned script creates `/etc/lager` and sets its owner. It does not change
+`/etc/lager/authorized_keys.d`. The grant names the script by its exact path,
+and the script refuses all arguments. Lager grants no `find` command and no
+recursive `chown`.
 
 Lager never reads, edits, or removes any other file in `/etc/sudoers.d/`. If you
 or a box-management platform need additional grants, put them in a separate file

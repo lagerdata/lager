@@ -48,6 +48,7 @@ lager uninstall [OPTIONS]
 | modprobe 配置 | `/etc/modprobe.d/blacklist-usbtmc.conf` |
 | sudoers 配置 | `/etc/sudoers.d/lagerdata-udev`、`/etc/sudoers.d/lager-box-config`、`/etc/sudoers.d/lager-bench-json` |
 | 防火墙脚本 | `/usr/local/lib/lager/secure_box_firewall.sh`，并把 UFW 重置为拒绝入站/允许 SSH |
+| `/etc/lager` 属主脚本 | `/usr/local/lib/lager/etc_lager_perms.sh` |
 | sysctl 配置 | `/etc/sysctl.d/99-lager-box-config.conf` |
 | `lager` 组 | 如果存在则移除 |
 | `~/third_party` | J-Link、自定义二进制程序 |
