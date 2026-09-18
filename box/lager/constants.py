@@ -10,6 +10,7 @@ __all__ = [
     'SAVED_NETS_PATH',
     'AVAILABLE_INSTRUMENTS_PATH',
     'ORG_SECRETS_PATH',
+    'MCP_TOKEN_PATH',
     'BOX_ID_PATH',
     'BOX_METADATA_PATH',
     'VERSION_FILE_PATH',
@@ -35,6 +36,11 @@ LAGER_CONFIG_DIR = "/etc/lager"
 SAVED_NETS_PATH = "/etc/lager/saved_nets.json"
 AVAILABLE_INSTRUMENTS_PATH = "/etc/lager/available_instruments.json"
 ORG_SECRETS_PATH = "/etc/lager/org_secrets.json"
+# The MCP server's optional bearer token. Off by default: the file's existence
+# is the switch. Written by `lager box-config mcp-token enable`; mode 0600 and
+# owned by the container user. start_box.sh and `lager update` each carry this
+# path in their secret-file lists, and tests pin both to this constant.
+MCP_TOKEN_PATH = "/etc/lager/mcp_token"
 BOX_ID_PATH = "/etc/lager/box_id"
 VERSION_FILE_PATH = "/etc/lager/version"
 # Which ref produced the code on this box, as `<ref>@<sha>`. Written by

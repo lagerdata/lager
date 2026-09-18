@@ -12,6 +12,14 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Added
+
+- **`lager box-config mcp-token`: an optional bearer token on the box MCP
+  server.** `enable` makes port 8100 answer only a request that carries
+  `Authorization: Bearer <token>`, and shows the token one time. `rotate`,
+  `disable` and `status` manage it, and it takes effect with no restart. The
+  token is off by default, so a box that does not enable it behaves as before.
+
 ### Changed
 
 - **The `lager-cli` sdist no longer contains test files.** The CLI tests moved

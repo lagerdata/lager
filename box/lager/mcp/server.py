@@ -34,6 +34,11 @@ MCP client configuration:
         }
     }
 
+The server asks for no credential by default. An operator can turn on a bearer
+token with ``lager box-config mcp-token enable``; the client entry then also
+carries ``"headers": {"Authorization": "Bearer <token>"}``. See
+``lager.mcp.auth``.
+
 On a box started with ``--no-publish`` (see ``box/start_box.sh``), port 8100 is
 NOT published on the host: the container is reachable only on the ``lagernet``
 Docker network, where a reverse proxy owns the host ports. ``<box-ip>:8100``
@@ -183,11 +188,14 @@ from .tools import box  # noqa: E402, F401
 # operator opts in via LAGER_MCP_ALLOW_CONTROL (see config.control_tools_enabled).
 from .config import control_tools_enabled, exec_tools_enabled  # noqa: E402
 
+# Neither tier is announced here. This runs at import, before main() has
+# configured logging: an INFO line is dropped and a WARNING comes out bare,
+# with no timestamp or logger name. _log_security_posture() says both, once
+# logging works.
 if control_tools_enabled():
     from .tools import control  # noqa: E402
 
     control.register(mcp)
-    logger.info("Lager MCP control tools enabled (LAGER_MCP_ALLOW_CONTROL set)")
 
 # General box-control primitives (arbitrary exec + file I/O) — a separate,
 # more dangerous tier behind its own gate. Off by default.
@@ -195,10 +203,6 @@ if exec_tools_enabled():
     from .tools import exec as exec_tools  # noqa: E402
 
     exec_tools.register(mcp)
-    logger.warning(
-        "Lager MCP EXEC tools enabled (LAGER_MCP_ALLOW_EXEC set) — arbitrary "
-        "command execution and file writes are now exposed over MCP"
-    )
 
 # ---------------------------------------------------------------------------
 # Register prompts (slash-command entry points for MCP clients)
@@ -213,26 +217,66 @@ prompts.register(mcp)
 # ---------------------------------------------------------------------------
 
 
-def main():
-    """Start the on-box Lager MCP server."""
+def _log_security_posture(token_path=None):
+    """Say, once logging works, which tiers are on and whether a token guards them.
+
+    The one line that matters is the WARNING: a control or exec tier with no
+    bearer token means anything that can reach the port can drive hardware or
+    run commands on the box.
+    """
+    from ..box_config import mcp_token
+    from ..constants import MCP_TOKEN_PATH
+
+    token_path = MCP_TOKEN_PATH if token_path is None else token_path
+    control_on, exec_on = control_tools_enabled(), exec_tools_enabled()
+
+    if control_on:
+        logger.info("Lager MCP control tools enabled (LAGER_MCP_ALLOW_CONTROL set)")
+    if exec_on:
+        logger.warning(
+            "Lager MCP EXEC tools enabled (LAGER_MCP_ALLOW_EXEC set) — arbitrary "
+            "command execution and file writes are now exposed over MCP"
+        )
+
+    state = mcp_token.state(token_path)
+    if state == mcp_token.ENABLED:
+        logger.info("MCP bearer token required (%s)", token_path)
+    elif state in mcp_token.FAIL_CLOSED_STATES:
+        logger.error(
+            "MCP token file %s is %s: every request is refused until it is "
+            "repaired (`lager box-config mcp-token rotate`) or removed "
+            "(`lager box-config mcp-token disable`)", token_path, state,
+        )
+    elif control_on or exec_on:
+        tiers = " and ".join(
+            name for name, on in (("control", control_on), ("exec", exec_on)) if on
+        )
+        logger.warning(
+            "Lager MCP %s tools are enabled with NO bearer token: anything that "
+            "can reach this port can use them. Run `lager box-config mcp-token "
+            "enable` and give the token to your MCP clients.", tiers,
+        )
+    else:
+        logger.info("No MCP bearer token set: the MCP port is unauthenticated")
+
+
+def build_app(server=None, token_path=None):
+    """The ASGI app uvicorn serves: the SDK's app behind the optional bearer check.
+
+    Separate from main() so that it can be built, and inspected, without
+    binding a port.
+    """
     import contextlib
 
-    import uvicorn
     from starlette.applications import Starlette
+    from starlette.middleware import Middleware
     from starlette.routing import Mount
 
-    from .config import MCP_PORT
-    from .server_state import init_state
+    from ..constants import MCP_TOKEN_PATH
+    from .auth import BearerTokenMiddleware
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(name)s %(levelname)s %(message)s",
-    )
-
-    init_state()
-
-    host = os.environ.get("LAGER_MCP_HOST", "0.0.0.0")
-    logger.info("Lager MCP server starting on %s:%d (streamable-http)", host, MCP_PORT)
+    server = mcp if server is None else server
+    token_path = MCP_TOKEN_PATH if token_path is None else token_path
 
     # SDK 2.0 moved transport config off ``mcp.settings`` (which no longer
     # carries host/port/transport_security -- assigning raises) and onto the
@@ -249,25 +293,53 @@ def main():
         enable_dns_rebinding_protection=False,
     )
 
+    # streamable_http_path still defaults to "/mcp", so the documented client
+    # URL (http://<box-ip>:8100/mcp) is unchanged.
+    inner = server.streamable_http_app(transport_security=transport_security)
+
+    # Taken NOW, not read off ``server`` inside the lifespan. Every
+    # streamable_http_app() call makes a new session manager and points
+    # ``server.session_manager`` at it, and a manager's run() works once. A
+    # lifespan that looked the manager up late would, after any second build,
+    # start the newer app's manager while this app's route still held the
+    # unstarted one -- and every request here would fail with "Task group is
+    # not initialized". Holding the pair together makes each app self-contained.
+    manager = server.session_manager
+
+    # The SDK app has a lifespan of its own that does this, but Starlette does
+    # not run the lifespan of a mounted app, so it is run from the outer one.
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette):
-        async with mcp.session_manager.run():
+        async with manager.run():
             yield
 
-    # streamable_http_path still defaults to "/mcp", so the documented client
-    # URL (http://<box-ip>:8100/mcp) is unchanged. The routes are built before
-    # the lifespan runs, which is what makes mcp.session_manager exist by the
-    # time the lifespan touches it.
-    app = Starlette(
-        routes=[
-            Mount("/", app=mcp.streamable_http_app(
-                transport_security=transport_security,
-            )),
-        ],
+    return Starlette(
+        routes=[Mount("/", app=inner)],
         lifespan=lifespan,
+        # Off unless a token file exists; see lager.mcp.auth.
+        middleware=[Middleware(BearerTokenMiddleware, token_path=token_path)],
     )
 
-    uvicorn.run(app, host=host, port=MCP_PORT)
+
+def main():
+    """Start the on-box Lager MCP server."""
+    import uvicorn
+
+    from .config import MCP_PORT
+    from .server_state import init_state
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+
+    init_state()
+
+    host = os.environ.get("LAGER_MCP_HOST", "0.0.0.0")
+    logger.info("Lager MCP server starting on %s:%d (streamable-http)", host, MCP_PORT)
+    _log_security_posture()
+
+    uvicorn.run(build_app(), host=host, port=MCP_PORT)
 
 
 if __name__ == "__main__":

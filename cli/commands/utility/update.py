@@ -515,7 +515,17 @@ def wait_for_box_ready(box_ip, *, timeout_s=60, initial_delay_s=2):
 # Files whose contents are secret and whose owner therefore matters as much as
 # their mode. Mode 0600 grants the OWNER alone, so tightening one of these under
 # the wrong owner locks the runtime out of it entirely.
-_SECRET_FILES = ('/etc/lager/org_secrets.json', '/etc/lager/secret_key')
+#
+# mcp_token is the MCP server's optional bearer token. The box writes it as the
+# container user, so it needs no repair in the normal course; it is here for
+# the copy restored from a backup or placed by hand, where a wrong owner makes
+# the server refuse every request. box/start_box.sh carries the same list, and
+# box/lager/constants.py is where the box side names the path.
+_SECRET_FILES = (
+    '/etc/lager/org_secrets.json',
+    '/etc/lager/secret_key',
+    '/etc/lager/mcp_token',
+)
 
 # uid 33 is www-data, the user the container runs as. Hardcoded because it is
 # baked into the container image, not discovered at runtime.

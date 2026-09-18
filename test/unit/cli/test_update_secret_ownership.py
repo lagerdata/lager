@@ -142,10 +142,26 @@ class SecretOwnershipShellTests(unittest.TestCase):
         self.assertEqual(_CONTAINER_UID, 33)
         self.assertIn('/etc/lager/org_secrets.json', cmd)
         self.assertIn('/etc/lager/secret_key', cmd)
+        self.assertIn('/etc/lager/mcp_token', cmd)
         self.assertIn('33:33', cmd)
         self.assertEqual(
             _SECRET_FILES,
-            ('/etc/lager/org_secrets.json', '/etc/lager/secret_key'))
+            ('/etc/lager/org_secrets.json', '/etc/lager/secret_key',
+             '/etc/lager/mcp_token'))
+
+    def test_the_mcp_token_path_is_the_one_the_box_names(self):
+        """The CLI cannot import box code, so this list spells the path out.
+        box/lager/constants.py is where the box names it; the two must agree,
+        or `lager update` repairs a file the server never reads."""
+        import importlib.util
+        repo = os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__)))))
+        spec = importlib.util.spec_from_file_location(
+            '_lager_box_constants', os.path.join(repo, 'box', 'lager', 'constants.py'))
+        constants = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(constants)
+        self.assertIn(constants.MCP_TOKEN_PATH, _SECRET_FILES)
+        self.assertIn(constants.ORG_SECRETS_PATH, _SECRET_FILES)
 
     def test_paths_are_shell_quoted(self):
         cmd = _secret_ownership_shell_cmd(files=['/etc/lager/a b.json'])

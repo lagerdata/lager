@@ -2948,6 +2948,188 @@ def network_mode_unset_cmd(ctx: click.Context, box: Optional[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# mcp-token: the optional bearer token on the box MCP server (port 8100)
+#
+# Not a box_config.json setting, on purpose. Whatever that file holds is printed
+# by `show`, carried by `export` and `copy`, and written to the audit log by
+# the verb that set it. The token is a file of its own on the box. `enable` and
+# `rotate` print its value once, and no command reads it back.
+# ---------------------------------------------------------------------------
+
+_MCP_PORT = 8100
+
+_MCP_TOKEN_STATES = {
+    "enabled": ("enabled. MCP clients must send the token.", "green"),
+    "disabled": ("disabled. The MCP server asks for no credential.", "yellow"),
+    "unreadable": (
+        "UNREADABLE. The token file exists, but the MCP server cannot read it, "
+        "so it refuses every request.", "red"),
+    "empty": (
+        "EMPTY. The token file has nothing in it, so the MCP server refuses "
+        "every request.", "red"),
+}
+
+
+def _parse_token_response(raw: str, ctx: click.Context) -> dict:
+    """`_parse_response` for a reply that can hold a secret.
+
+    `_parse_response` prints the raw reply when it cannot parse it. That is
+    right for every other verb and wrong here: the reply to `enable` and
+    `rotate` carries the token, so one stray line around the JSON would put
+    the token on the terminal inside an error message. This never prints what
+    the box sent.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        click.secho("No response from box. Check connectivity with 'lager hello'.", fg="red", err=True)
+        ctx.exit(1)
+    for candidate in [raw] + [line.strip() for line in reversed(raw.splitlines())]:
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    click.secho(
+        "The box sent a reply that is not valid JSON. It is not shown here, "
+        "because it can contain the token.", fg="red", err=True)
+    click.secho(
+        "Run `lager box-config mcp-token status` to see the state the box is in.",
+        fg="red", err=True)
+    ctx.exit(1)
+
+
+def _mcp_token_unsupported(payload: dict) -> bool:
+    """True when the box predates the mcp-token verbs. See _network_mode_unsupported."""
+    err = " ".join(
+        str(e) for e in (payload.get("errors") or []) + [payload.get("error") or ""]
+    )
+    return "unknown command" in err and "mcp-token" in err
+
+
+def _mcp_token_call(ctx: click.Context, resolved: str, verb: str, doing: str) -> dict:
+    payload = _parse_token_response(
+        _run_box_config_py(ctx, resolved, verb, allow_ssh_fallback=True), ctx)
+    if payload.get("ok"):
+        return payload
+    if _mcp_token_unsupported(payload):
+        click.secho(
+            f"{resolved} runs a lager that predates the MCP token. "
+            "Run `lager update` on it first.", fg="red", err=True)
+        ctx.exit(1)
+    click.secho(f"Failed to {doing}:", fg="red", err=True)
+    _print_errors(payload.get("errors") or [payload.get("error", "unknown error")])
+    ctx.exit(1)
+
+
+def _echo_new_mcp_token(resolved: str, token: str) -> None:
+    client_entry = {
+        "mcpServers": {
+            "lager": {
+                "url": f"http://{resolved}:{_MCP_PORT}/mcp",
+                "headers": {"Authorization": f"Bearer {token}"},
+            }
+        }
+    }
+    click.echo("")
+    click.echo(f"  {token}")
+    click.echo("")
+    click.secho(
+        "This is the only time the token is shown. Lager keeps no copy that it "
+        "can show again.", fg="yellow")
+    click.echo("If you lose it, run `lager box-config mcp-token rotate` and update every client.")
+    click.echo("")
+    click.echo("MCP client configuration:")
+    click.echo(json.dumps(client_entry, indent=2))
+    click.echo("")
+    click.echo(
+        f"The token is in effect now. Port {_MCP_PORT} is plain HTTP, so the token "
+        "crosses the network unencrypted.")
+
+
+@box_config.group(
+    "mcp-token",
+    help="Manage the optional bearer token on the box MCP server (port 8100).",
+)
+def mcp_token_group() -> None:
+    pass
+
+
+@mcp_token_group.command(
+    "status",
+    help="Show whether the box MCP server asks for a token. Never shows the token.",
+)
+@click.option("--box", help="Lager Box name or IP")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
+@click.pass_context
+def mcp_token_status_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
+    resolved = _resolve_box(ctx, box)
+    payload = _mcp_token_call(ctx, resolved, verbs.MCP_TOKEN_STATUS, "read the MCP token state")
+    state = str(payload.get("state") or "unknown")
+    if as_json:
+        click.echo(json.dumps({"box": resolved, "state": state}, indent=2))
+        return
+    text, color = _MCP_TOKEN_STATES.get(state, (state, "yellow"))
+    click.secho(f"{resolved}: MCP token {text}", fg=color)
+    if state in ("unreadable", "empty"):
+        click.echo(
+            "Run `lager box-config mcp-token rotate` to replace the file, or "
+            "`disable` to remove it.")
+
+
+@mcp_token_group.command(
+    "enable",
+    help="Create the token and show it once. MCP clients must send it from then on.",
+)
+@click.option("--box", help="Lager Box name or IP")
+@click.pass_context
+def mcp_token_enable_cmd(ctx: click.Context, box: Optional[str]) -> None:
+    resolved = _resolve_box(ctx, box)
+    payload = _mcp_token_call(ctx, resolved, verbs.MCP_TOKEN_ENABLE, "enable the MCP token")
+    click.secho(f"MCP token enabled on {resolved}.", fg="green")
+    _echo_new_mcp_token(resolved, str(payload.get("token") or ""))
+
+
+@mcp_token_group.command(
+    "rotate",
+    help="Replace the token and show the new one once. The old token stops working at once.",
+)
+@click.option("--box", help="Lager Box name or IP")
+@click.option("--yes", is_flag=True, help="Do not ask for confirmation")
+@click.pass_context
+def mcp_token_rotate_cmd(ctx: click.Context, box: Optional[str], yes: bool) -> None:
+    resolved = _resolve_box(ctx, box)
+    if not yes:
+        click.confirm(
+            f"Every MCP client of {resolved} stops working until it has the new token. Rotate?",
+            abort=True)
+    payload = _mcp_token_call(ctx, resolved, verbs.MCP_TOKEN_ROTATE, "rotate the MCP token")
+    click.secho(f"MCP token rotated on {resolved}.", fg="green")
+    _echo_new_mcp_token(resolved, str(payload.get("token") or ""))
+
+
+@mcp_token_group.command(
+    "disable",
+    help="Remove the token. The box MCP server then asks for no credential.",
+)
+@click.option("--box", help="Lager Box name or IP")
+@click.option("--yes", is_flag=True, help="Do not ask for confirmation")
+@click.pass_context
+def mcp_token_disable_cmd(ctx: click.Context, box: Optional[str], yes: bool) -> None:
+    resolved = _resolve_box(ctx, box)
+    if not yes:
+        click.confirm(
+            f"Anything that can reach port {_MCP_PORT} on {resolved} will be able to "
+            "use its MCP server. Disable the token?", abort=True)
+    payload = _mcp_token_call(ctx, resolved, verbs.MCP_TOKEN_DISABLE, "disable the MCP token")
+    if payload.get("previous") == "disabled":
+        click.secho(f"No MCP token was set on {resolved}.", fg="yellow")
+        return
+    click.secho(f"MCP token removed from {resolved}.", fg="green")
+    click.echo("The MCP server asks for no credential now.")
+
+
+# ---------------------------------------------------------------------------
 # cargo_packages: in-container Rust crates installed during container start
 # ---------------------------------------------------------------------------
 

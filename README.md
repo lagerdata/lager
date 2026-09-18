@@ -171,8 +171,11 @@ others). The agent runs each test with `lager python`. Two opt-in environment
 variables, `LAGER_MCP_ALLOW_CONTROL` and `LAGER_MCP_ALLOW_EXEC`, add tools that
 drive hardware or run commands on the box.
 
-The MCP server performs no authentication. Keep port 8100 on a trusted network.
-Do not forward it through a gateway or a public proxy. A box started with
+By default the MCP server asks for no credential. Keep port 8100 on a trusted
+network. Do not forward it through a gateway or a public proxy.
+`lager box-config mcp-token enable` makes the server require a bearer token. The
+client entry then also carries `"headers": {"Authorization": "Bearer <token>"}`.
+The token does not encrypt the connection. A box started with
 `--no-publish` does not publish port 8100 on the host. To keep only port 8100 off
 the host, set `LAGER_MCP_NO_PUBLISH=1` with `lager box-config env set`. The
 [MCP reference](https://docs.lagerdata.com/source/reference/mcp/overview) tells

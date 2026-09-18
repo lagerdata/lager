@@ -389,7 +389,13 @@ fi
 # user can no longer chmod it, so setting the mode while we are still the owner
 # reaches the target state in one pass; doing it the other way round leaves the
 # mode for the container to fix on its next load.
-LAGER_SECRET_FILES="${LAGER_SECRET_FILES:-/etc/lager/org_secrets.json /etc/lager/secret_key}"
+#
+# mcp_token is the MCP server's optional bearer token (`lager box-config
+# mcp-token`). The container writes it as uid 33, so it is normally already
+# right; it is listed for the copy placed by hand or restored from a backup. A
+# token file the server cannot read does not open the MCP port -- the server
+# refuses every request -- so the warning below is the operator's explanation.
+LAGER_SECRET_FILES="${LAGER_SECRET_FILES:-/etc/lager/org_secrets.json /etc/lager/secret_key /etc/lager/mcp_token}"
 # uid 33 is www-data, the user the container runs as. Hardcoded because it is
 # baked into the container image, not discovered at runtime.
 LAGER_CONTAINER_UID="${LAGER_CONTAINER_UID:-33}"

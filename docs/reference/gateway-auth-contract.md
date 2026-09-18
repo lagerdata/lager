@@ -214,11 +214,19 @@ an in-fabric service, reachable over the local network, Tailscale or the
 corporate VPN and no further. It is deliberately excluded rather than
 overlooked, for two reasons:
 
-- It performs no authentication of its own, and it disables DNS-rebinding
-  protection on purpose (`box/lager/mcp/server.py`) because the box is reached
-  at an arbitrary LAN address that cannot be known ahead of time. That is a
-  reasonable posture for a service on an internal fabric and a poor one for a
-  published service.
+- By default it performs no authentication of its own, and it disables
+  DNS-rebinding protection on purpose (`box/lager/mcp/server.py`) because the
+  box is reached at an arbitrary LAN address that cannot be known ahead of time.
+  That is a reasonable posture for a service on an internal fabric and a poor
+  one for a published service.
+
+  Its one credential is optional and box-local: a static bearer token an
+  operator turns on with `lager box-config mcp-token` (`box/lager/mcp/auth.py`).
+  That token is **not** the credential this contract describes. The auth server
+  does not mint it, the gateway cannot verify it, it never expires, and it
+  crosses the network in cleartext HTTP. It narrows who on the fabric can use
+  the server; it does not make `:8100` fit to publish, and it does not change
+  this exclusion.
 - Its tool surface is not read-only. `LAGER_MCP_ALLOW_CONTROL` adds hardware
   control, and `LAGER_MCP_ALLOW_EXEC` adds `box_exec`, `read_file`,
   `write_file` and `list_dir` — arbitrary command execution and file writes,
@@ -243,8 +251,8 @@ A conforming gateway:
   never emits `X-Gateway-Auth-Url`, so there is no collision.)
 - MUST cover every box port it exposes (9000, 8765, WebSocket upgrades)
   with the same policy — clients assume one credential works box-wide.
-- MUST NOT forward `:8100` (MCP). It is an in-fabric service with no
-  authentication of its own (§6.4).
+- MUST NOT forward `:8100` (MCP). It is an in-fabric service, and its only
+  credential is an optional box-local token the gateway cannot verify (§6.4).
 
 ## 8. Environment variables (client side)
 
@@ -276,6 +284,9 @@ This contract is versioned by the integer at the top of this file.
   Additive clarification of an unstated boundary; no version bump per §9.
 - **v1** (2026-09-10): the Python CLI now implements §6.1 pinned tokens
   (`LAGER_GATEWAY_TOKEN`), which until now only lager-rs did.
+- **v1** (2026-09-18): §6.4 and §7 name the box MCP server's optional box-local
+  bearer token and say why it changes nothing here: `:8100` stays excluded.
+  Additive clarification; no version bump per §9.
 
   Writing that client found two places where §6.1 and the sections below it
   disagreed, both now stated: §6.2 said the first request to an unknown box

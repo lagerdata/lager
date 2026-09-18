@@ -46,13 +46,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 2534 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 2916 |
+| `unit (cli)` | `test/unit/cli/` | 2554 (+2 xfailed) |
+| `unit (box)` | `test/unit/box/` | 2938 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
-| `unit (mcp)` | `test/mcp/unit/` | 195 |
+| `unit (mcp)` | `test/mcp/unit/` | 241 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 82 (+1 skipped) |
-| | **Total gated** | **5921** |
+| | **Total gated** | **6009** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -452,9 +452,9 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 231 files)
+### Local Unit Tests (`test/unit/` -- 233 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 121 files)
+#### Box Unit Tests (`test/unit/box/` -- 122 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -535,6 +535,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_mapper_range_checks.py` | Tree-wide guard: no `LO > x > HI` range check in `box/` or `cli/`, a shape that is always false so the `raise` under it is unreachable; plus both ends of the seven inverted bounds fixed in the Rigol MSO5000 and Keithley mappers |
 | `test_network_mode.py` | Opt-in container network mode: `--network` rendered from box_config rather than hardcoded, the host-mode fallback for an unknown value, port publishing suppressed on host while every `-p` literal stays inside the firewall-allowlist sentinels, the shim set/unset verbs, and the cli/box allowlist agreeing. Also that a switch to host takes effect only through `apply`: every other start keeps the mode the last apply recorded and announces the pending one, a return to lagernet needs no apply, an unreadable snapshot withholds host, and the CLI and renderer agree on the confirmation variable |
 | `test_mcp_publish_opt_out.py` | `LAGER_MCP_NO_PUBLISH`: runs the opt-out scan and the port-publishing block of `start_box.sh` under bash with a rendered `BOX_CONFIG_ENV`. A truthy value drops exactly the 8100 mapping, any other value drops nothing, and both opt-outs together drop 8100 and 9000. `--no-publish` still publishes nothing, and host mode warns that the variable has no effect |
+| `test_mcp_token_shim.py` | The box-side `mcp-token-*` verbs, with the REAL `_audit` pointed at a temp file: `enable` creates a mode-0600 file whatever the umask and refuses when one exists, `rotate` replaces it atomically and repairs an empty or unreadable one, `disable` is idempotent; no verb touches `box_config.json`, the audit log names the verb and never the value, no verb reads the value back, and the path comes from `lager/constants.py` alone |
 | `test_nets_display.py` | `lager nets` table no-truncation for long UART pins and VISA addresses |
 | `test_net_metadata_endpoint.py` | `/nets/<name>/metadata`: merging purpose/notes/tags without disturbing the rest of the record, and reporting bench.json overrides |
 | `test_nets_safety_limits_endpoint.py` | `/nets/safety-limits`: reading and writing a net's voltage/current ceilings |
@@ -559,7 +560,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_rtt_handlers.py` | Bi-directional RTT over the `/rtt` WebSocket namespace: read loop, J-Link banner stripping, shutdown cleanup, and the three ways a held RTT port is freed — a departed client (which the loop's own heartbeat cannot detect), a wedged reader, and the port-keyed guard that keeps two channels of one net independent |
 | `test_safety_interlock.py` | Per-net voltage and current ceilings enforced on instrument commands |
 | `test_script_backend_sniff.py` | `sniff_script_backend` routes a debug-script override by format so `DebugNet.connect(script=...)` works on both backends: extension beats content, every declared extension and marker is asserted individually because a base64 blob has no filename to fall back on, and an ambiguous file abstains rather than picking a side. Also pins the two J-Link forms the marker list misses (`InitTarget(void)`, `JLINK_ExecCommand`) — safe, because abstaining raises rather than guessing, but it is why `jlink_script=` exists |
-| `test_secret_file_ownership.py` | The ownership block extracted verbatim from `box/start_box.sh`: mode 0600 grants the OWNER alone, so a secrets file owned by the host login user locks the container runtime out of its own secrets |
+| `test_secret_file_ownership.py` | The ownership block extracted verbatim from `box/start_box.sh`: mode 0600 grants the OWNER alone, so a secrets file owned by the host login user locks the container runtime out of its own secrets. Also that the shipped default list names the MCP token path the box's `constants.py` names |
 | `test_serial_id_cables.py` | tty enumeration and resolution via fake /sys tree lookup |
 | `test_store_path_containment.py` | A binary name, a device-lock key and a DFU staging file are each named after something off the wire: the existing reduction is pinned as what rejects, and the containment check beside each join pins where the result lands, so widening a reduction cannot silently widen the directory. Also pins that names with spaces, `+` and parentheses still work, since the CLI forwards the basename of any local file |
 | `test_spi_word_conversion.py` | SPI word/byte packing shared by every backend: the LSB-first bit reversal, the multi-byte split, the oversize refusal and the short trailing word. Every expected value was captured from the T7 driver before the helpers moved to `SPIBase`, so the suite fails if the move changed any observable output -- the helpers were lifted so a second LabJack family could reuse them rather than carry a copy of the reversal that disagrees only on a scope |
@@ -584,7 +585,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_automation_exports.py` | Static parse of `automation/__init__.py`'s lazy export table: no name guarded twice, every returned driver reachable under its own name, everything in `__all__` resolvable -- the copy-paste class of defect that made one driver answer to another's name |
 | `test_io_imports.py` | The `lager.io.*` import surface and re-export identity; asserts the removed root-level aliases stay removed |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 96 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 97 files)
 
 | File | What it tests |
 |------|---------------|
@@ -651,7 +652,8 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_update_flatten.py` | `lager update` sparse-checkout flatten: deletions propagate, root entries preserved, and the docker-build hash covers the source tree |
 | `test_update_probe.py` | `lager update` probe script modprobe/usbtmc detection and output parsing, and the re-derivation that runs after the checkout. The probe reads the tree as it was before the pull, so a blacklist file changed by a release reads as current until that state is read again |
 | `test_control_flow_exits.py` | `ctx.exit()` survives the broad handler of its own try block: `lager update --check` exits 2 (not 1) with no traceback, plus the `tools/check_control_flow_handlers.py` gate and its own detection cases |
-| `test_update_secret_ownership.py` | `lager update`'s secret-file ownership repair, run as real shell against a throwaway directory with a recording `sudo` stub |
+| `test_update_secret_ownership.py` | `lager update`'s secret-file ownership repair, run as real shell against a throwaway directory with a recording `sudo` stub. Also that its list names the MCP token path the box's `constants.py` names |
+| `test_box_config_mcp_token.py` | `lager box-config mcp-token`: `enable` and `rotate` show the token once with a client entry that carries it, `status` shows a state and never a value, `rotate` and `disable` confirm before they reach the box, and a reply that does not parse is never echoed -- the shared `_parse_response` prints the raw reply, which for these verbs holds the token |
 | `test_usb_command_errors.py` | `lager usb <net> <command>` error wiring: a 404 for a missing device must not be reported as an out-of-date box image |
 | `test_usb_cycle_command.py` | `lager usb <net> cycle|recover` wiring: off-time reaches the box, no client-side default that could drift from the box's, and the client budget outlasts the longest legal cycle. Also that a cycle whose device did not come back exits 1, read from an old box's `reconnected: false` too |
 | `test_user_facing_messages.py` | Messages that stated something untrue: `lager debug gdbserver`/`disconnect` name the GDB server of the net's backend, the `lager nets state` old-box note names 0.34.0, and the host-networking warning links a docs page and heading that exist |
@@ -723,7 +725,7 @@ These tests cover the scripts in `tools/`. The `unit (root)` job runs them.
 
 ### MCP Tests (`test/mcp/`)
 
-#### Unit Tests (`test/mcp/unit/` -- 11 files)
+#### Unit Tests (`test/mcp/unit/` -- 13 files)
 
 | File | What it tests |
 |------|---------------|
@@ -738,6 +740,8 @@ These tests cover the scripts in `tools/`. The `unit (root)` job runs them.
 | `test_heuristic_engine.py` | Heuristic engine: requirement inference and suitability assessment |
 | `test_schemas.py` | MCP schema model validation (BenchDefinition, NetDescriptor, CapabilityGraph) |
 | `test_server_state_reload.py` | Auto-reload of bench state when bench.json or saved_nets.json change |
+| `test_bearer_auth.py` | `lager.mcp.auth`, the optional bearer token on the MCP port, driven as a raw ASGI callable: no token file changes nothing; a token file the server cannot use (empty, unreadable, a directory) refuses every request with 503 and never opens the port; a refused request never reaches the app; `enable`, `rotate` and `disable` take effect on the same instance with no restart; and neither the token nor a presented value reaches a log |
+| `test_server_app.py` | `lager.mcp.server.build_app` puts the bearer check in the request path of the BUILT app, each app runs the session manager its own route uses (the SDK makes a new one per build), and the startup posture lines warn when a control or exec tier is on with no token |
 
 #### Integration Tests (`test/mcp/integration/` -- 1 file)
 
