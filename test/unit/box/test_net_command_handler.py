@@ -457,6 +457,93 @@ class TestNetCommandHandler(unittest.TestCase):
         dev.config.assert_called_once_with({"frequency_hz": 2_000_000})
         fake._persist_params.assert_called_once_with("spi1", frequency_hz=2_000_000)
 
+    def test_spi_config_carries_a_box_side_warning_to_the_cli(self):
+        """#515 item 1: a clamp used to reach a container log and stop there.
+
+        The adapter hands it back across /invoke, the handler puts it in the
+        response, and the CLI prints it. An older CLI reads message, value and
+        error only, so the new key is ignored rather than fatal.
+        """
+        helpers = MagicMock()
+        helpers.find_saved_net.return_value = {"name": "spi1", "params": {}}
+        effective = {"mode": 0, "bit_order": "msb", "frequency_hz": 2_000_000,
+                     "word_size": 8, "cs_active": "low", "cs_mode": "auto"}
+        ctx, fake = self._patch_dispatcher(
+            'lager.protocols.spi.dispatcher',
+            _persist_params=MagicMock(),
+            _get_spi_params=MagicMock(return_value=effective),
+            helpers=helpers,
+            SPIBackendError=type('SPIBackendError', (Exception,), {}))
+        dev = MagicMock()
+        dev.config.return_value = {"warnings": ["clock clamped to 71400 Hz"]}
+        with ctx:
+            r, dev = self._run({"netname": "spi1", "action": "config",
+                                "params": {"frequency_hz": 2_000_000}}, dev)
+        self.assertEqual(r.get_json()["warnings"],
+                         ["clock clamped to 71400 Hz"])
+
+    def test_a_config_with_nothing_to_warn_about_sends_no_warnings_key(self):
+        helpers = MagicMock()
+        helpers.find_saved_net.return_value = {"name": "spi1", "params": {}}
+        effective = {"mode": 0, "bit_order": "msb", "frequency_hz": 2_000_000,
+                     "word_size": 8, "cs_active": "low", "cs_mode": "auto"}
+        ctx, fake = self._patch_dispatcher(
+            'lager.protocols.spi.dispatcher',
+            _persist_params=MagicMock(),
+            _get_spi_params=MagicMock(return_value=effective),
+            helpers=helpers,
+            SPIBackendError=type('SPIBackendError', (Exception,), {}))
+        dev = MagicMock()
+        dev.config.return_value = {"warnings": []}
+        with ctx:
+            r, dev = self._run({"netname": "spi1", "action": "config",
+                                "params": {"frequency_hz": 2_000_000}}, dev)
+        self.assertNotIn("warnings", r.get_json())
+
+    def test_an_unconfigured_net_names_no_request(self):
+        """#515 item 2: the default was being reported as a user's request.
+
+        `_get_spi_params` fills in 1 MHz for a net that stored no frequency.
+        A U3 cannot reach it, so the message read "(requested 1000000Hz)" for
+        a request nobody had made.
+        """
+        helpers = MagicMock()
+        helpers.find_saved_net.return_value = {"name": "spi1", "params": {}}
+        effective = {"mode": 0, "bit_order": "msb", "frequency_hz": 1_000_000,
+                     "word_size": 8, "cs_active": "low", "cs_mode": "auto"}
+        ctx, fake = self._patch_dispatcher(
+            'lager.protocols.spi.dispatcher',
+            _persist_params=MagicMock(),
+            _get_spi_params=MagicMock(return_value=effective),
+            achieved_frequency_hz=MagicMock(return_value=71_400),
+            helpers=helpers,
+            SPIBackendError=type('SPIBackendError', (Exception,), {}))
+        with ctx:
+            r, _ = self._run({"netname": "spi1", "action": "config",
+                              "params": {}}, MagicMock())
+        self.assertNotIn("requested", r.get_json()["message"])
+        self.assertIn("freq=71400Hz", r.get_json()["message"])
+
+    def test_a_real_request_is_still_named(self):
+        """The clause earns its place when the user did ask for something."""
+        helpers = MagicMock()
+        helpers.find_saved_net.return_value = {
+            "name": "spi1", "params": {"frequency_hz": 2_000_000}}
+        effective = {"mode": 0, "bit_order": "msb", "frequency_hz": 2_000_000,
+                     "word_size": 8, "cs_active": "low", "cs_mode": "auto"}
+        ctx, fake = self._patch_dispatcher(
+            'lager.protocols.spi.dispatcher',
+            _persist_params=MagicMock(),
+            _get_spi_params=MagicMock(return_value=effective),
+            achieved_frequency_hz=MagicMock(return_value=71_400),
+            helpers=helpers,
+            SPIBackendError=type('SPIBackendError', (Exception,), {}))
+        with ctx:
+            r, _ = self._run({"netname": "spi1", "action": "config",
+                              "params": {"frequency_hz": 2_000_000}},
+                             MagicMock())
+        self.assertIn("(requested 2000000Hz)", r.get_json()["message"])
+
     def test_spi_config_rejects_bad_frequency(self):
         r, _ = self._run({"netname": "spi1", "action": "config",
                           "params": {"frequency_hz": 0}})

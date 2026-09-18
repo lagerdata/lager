@@ -107,7 +107,10 @@ class LabJackUDI2C(I2CBase):
             )
 
         self._frequency_hz = frequency_hz
-        self._speed_adjust = self._speed_adjust_for(frequency_hz)
+        # See LabJackUDSPI: the box's stderr reaches a log, not a user.
+        self._clamp_warnings = []
+        self._speed_adjust = self._speed_adjust_for(
+            frequency_hz, self._clamp_warnings)
         self._serial = serial_from_address(unique_id)
         self._model = (model or "u3").lower()
 
@@ -162,7 +165,7 @@ class LabJackUDI2C(I2CBase):
     # -- speed --
 
     @classmethod
-    def _speed_adjust_for(cls, frequency_hz) -> int:
+    def _speed_adjust_for(cls, frequency_hz, warnings=None) -> int:
         """Map a requested bus clock onto the SpeedAdjust delay count.
 
         The achieved clock is approximate and, by construction, no faster than
@@ -185,16 +188,29 @@ class LabJackUDI2C(I2CBase):
         adjust = math.ceil(
             (1e6 / freq - _PERIOD_US_AT_ZERO) / _PERIOD_US_PER_COUNT)
         clamped = max(0, min(MAX_SPEED_ADJUST, adjust))
-        if clamped != adjust and not cls._speed_warning_shown:
-            cls._speed_warning_shown = True
-            sys.stderr.write(
-                f"WARNING: A LabJack U3 I2C bus runs between "
-                f"{I2C_MIN_FREQ_HZ} Hz and {I2C_MAX_FREQ_HZ} Hz. "
-                f"{int(freq)} Hz was requested; using "
-                f"{cls._frequency_for(clamped):.0f} Hz.\n"
+        if clamped != adjust:
+            note = (
+                f"A LabJack U3 I2C bus runs between {I2C_MIN_FREQ_HZ} Hz and "
+                f"{I2C_MAX_FREQ_HZ} Hz. {int(freq)} Hz was requested; using "
+                f"{cls._frequency_for(clamped):.0f} Hz."
             )
-            sys.stderr.flush()
+            if warnings is not None:
+                warnings.append(note)
+            if not cls._speed_warning_shown:
+                cls._speed_warning_shown = True
+                sys.stderr.write(f"WARNING: {note}\n")
+                sys.stderr.flush()
         return clamped
+
+    @property
+    def clamp_warnings(self):
+        """Messages about the last configuration, for the caller to show.
+
+        Empty when nothing was clamped. The dispatcher copies these into the
+        command result so the CLI can print them; the box's own stderr is a
+        log file, and a user never sees it.
+        """
+        return list(self._clamp_warnings)
 
     @staticmethod
     def _frequency_for(speed_adjust: int) -> float:
@@ -341,7 +357,10 @@ class LabJackUDI2C(I2CBase):
                       VS, 4.7k being the usual choice.
         """
         self._frequency_hz = frequency_hz
-        self._speed_adjust = self._speed_adjust_for(frequency_hz)
+        # Replaced, not appended: these describe the config now in force.
+        self._clamp_warnings = []
+        self._speed_adjust = self._speed_adjust_for(
+            frequency_hz, self._clamp_warnings)
         if pull_ups is not None:
             _debug("pull_ups is not settable on a U3; the part has none. "
                    "Fit external resistors on SDA and SCL.")

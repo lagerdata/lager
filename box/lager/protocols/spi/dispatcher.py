@@ -509,9 +509,15 @@ def config(
     # takes the frequency literally and reports it unchanged.
     achieved_hz = achieved_frequency_hz(rec, effective['frequency_hz'])
     freq_note = f"freq={achieved_hz}Hz"
-    if (effective['frequency_hz'] is not None
-            and achieved_hz != effective['frequency_hz']):
-        freq_note += f" (requested {effective['frequency_hz']}Hz)"
+    # Only a request the caller actually made. `_get_spi_params` supplies a
+    # 1 MHz default for a net that stored no frequency, which a U3 cannot
+    # reach -- reporting it as "requested" named a request nobody made.
+    asked_hz = (rec.get('params') or {}).get('frequency_hz')
+    if asked_hz is not None and achieved_hz != asked_hz:
+        freq_note += f" (requested {asked_hz}Hz)"
+
+    for note in getattr(drv, 'clamp_warnings', ()) or ():
+        print(f"WARNING: {note}")
 
     print(f"SPI configured: mode={effective['mode']}, {freq_note}, "
           f"word_size={effective['word_size']}, bit_order={effective['bit_order']}, "

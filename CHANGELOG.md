@@ -99,6 +99,20 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   detection for every other command: the lock holder becomes a plain user name
   and the collision wait drops to zero. The new variable affects `lager exec`
   alone, and `lager exec` now names that cost when it sees the old one.
+- **A clamped LabJack U3 clock is reported to whoever asked for it.** `lager
+  spi NET config` and `lager i2c NET config` wrote the warning to the box's
+  own log, which no user reads, and a one-shot flag meant even that appeared
+  once per box process. The box now returns it and the CLI prints it, for
+  every caller.
+- **`lager spi NET config` and `lager i2c NET config` stop naming a request
+  nobody made.** A net with no stored frequency took a 1 MHz default for SPI
+  or 100 kHz for I2C, which a U3 cannot reach, so the output read
+  `(requested 1000000Hz)`. The clause now appears only when a frequency was
+  passed or stored.
+- **`lager dac NET` reads back the last value written after a `lager python`
+  run.** The box releases its direct-USB drivers before every script, and the
+  U3 DAC's record of its own output went with them, so a read failed with
+  "has no readback" on a pin that was still holding its voltage.
 
 ## [0.48.1] - 2026-09-16
 

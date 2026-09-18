@@ -165,7 +165,13 @@ class LabJackUDSPI(SPIBase):
         self._set_mode(mode)
         self._set_bit_order(bit_order)
         self._set_word_size(word_size)
-        self._clock_byte = self._clock_byte_for(frequency_hz)
+        # Warnings from the most recent configuration, for a caller that can
+        # reach a user. The driver is built inside hardware_service, whose
+        # stderr goes to a container log, so anything only written there is
+        # invisible to whoever ran the command.
+        self._clamp_warnings = []
+        self._clock_byte = self._clock_byte_for(
+            frequency_hz, self._clamp_warnings)
         self._frequency_hz = frequency_hz
 
         self._serial = serial_from_address(unique_id)
@@ -236,7 +242,7 @@ class LabJackUDSPI(SPIBase):
     # -- clock --
 
     @classmethod
-    def _clock_byte_for(cls, frequency_hz) -> int:
+    def _clock_byte_for(cls, frequency_hz, warnings=None) -> int:
         """Map a requested clock onto the SPIClockFactor delay count, 0..255.
 
         Rounds the count UP, which rounds the frequency DOWN, so the bus is
@@ -259,16 +265,32 @@ class LabJackUDSPI(SPIBase):
         count = math.ceil(
             (1e6 / freq - _BIT_PERIOD_US_AT_ZERO) / _BIT_PERIOD_US_PER_COUNT)
         clamped = max(0, min(MAX_CLOCK_BYTE, count))
-        if clamped != count and not cls._speed_warning_shown:
-            cls._speed_warning_shown = True
-            sys.stderr.write(
-                f"WARNING: A LabJack U3 SPI clock runs between "
-                f"{SPI_MIN_FREQ_HZ} Hz and {SPI_MAX_FREQ_HZ} Hz. "
-                f"{int(freq)} Hz was requested; using "
-                f"{cls._frequency_for(clamped):.0f} Hz.\n"
+        if clamped != count:
+            note = (
+                f"A LabJack U3 SPI clock runs between {SPI_MIN_FREQ_HZ} Hz "
+                f"and {SPI_MAX_FREQ_HZ} Hz. {int(freq)} Hz was requested; "
+                f"using {cls._frequency_for(clamped):.0f} Hz."
             )
-            sys.stderr.flush()
+            # The caller that can reach a user gets it every time. stderr
+            # stays one-shot: it goes to the box's hardware-service log, which
+            # no user reads, and repeating it there helps nobody.
+            if warnings is not None:
+                warnings.append(note)
+            if not cls._speed_warning_shown:
+                cls._speed_warning_shown = True
+                sys.stderr.write(f"WARNING: {note}\n")
+                sys.stderr.flush()
         return clamped
+
+    @property
+    def clamp_warnings(self):
+        """Messages about the last configuration, for the caller to show.
+
+        Empty when nothing was clamped. The dispatcher copies these into the
+        command result so the CLI can print them; the box's own stderr is a
+        log file, and a user never sees it.
+        """
+        return list(self._clamp_warnings)
 
     @staticmethod
     def _frequency_for(clock_byte: int) -> float:
@@ -403,7 +425,10 @@ class LabJackUDSPI(SPIBase):
         if word_size is not None:
             self._set_word_size(word_size)
         if frequency_hz is not None:
-            self._clock_byte = self._clock_byte_for(frequency_hz)
+            # Replaced, not appended: these describe the config now in force.
+            self._clamp_warnings = []
+            self._clock_byte = self._clock_byte_for(
+                frequency_hz, self._clamp_warnings)
             self._frequency_hz = frequency_hz
         _debug(f"config: mode={self._mode} bit_order={self._bit_order} "
                f"word_size={self._word_size} cs_mode={self._cs_mode} "
