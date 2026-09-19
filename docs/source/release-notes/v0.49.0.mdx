@@ -1,0 +1,188 @@
+---
+title: "Version 0.49.0"
+description: "September 18, 2026"
+---
+
+## <u>Upgrade Notes</u>
+
+- **The `lager-cli[mcp]` extra is gone.** Nothing in the CLI imports the MCP SDK. The MCP
+  server is box-side code, and the wheel does not ship it. Remove `[mcp]` from your
+  requirements. `pip install lager-cli[mcp]` still installs the CLI, and pip warns that the
+  extra does not exist. The MCP service on a Lager Box is unaffected.
+
+- **`lager exec` starts a container in a CI job that declares no container.** It ran the
+  command in place in every GitHub Actions, GitLab CI, Drone and Bitbucket job. On a job with
+  no `container:`, that meant the toolchain of the runner and not the devenv image. Hosted
+  runners have Docker, so the container path works there. On a runner that has no Docker, set
+  `LAGER_EXEC_IN_PLACE=1` to keep the old behavior.
+
+- **`lager usb NET cycle` exits `1` when the device does not come back.** It printed `[OK]` and
+  exited `0` for every result. A script that checks the exit code now sees the failure. The
+  `/usb/command` response of the box also names the result in a new `outcome` field.
+
+- **Every command refuses `--box ""`.** `lager update`, `ssh`, `binaries`, `nets`,
+  `box-config`, `arm`, `spi`, `i2c` and `logs` read an empty `--box` as no `--box`. A script
+  with `--box "$BOX"` and `BOX` unset therefore ran against the default box. These commands now
+  print `Box name cannot be empty`. Set the variable, or remove the option.
+
+- **`lager dac` refuses a voltage above 5 V.** It accepted up to 10 V, which no supported DAC
+  can output, and the error came from the box.
+
+- **The trigger options of `lager scope` and `lager logic` match the MSO5000.**
+  `lager scope NET trigger uart` no longer offers `stop`, which the MSO5000 does not have.
+  `trigger i2c` reads `--data` and `--address` as hex, and its `--data-width` is 1 to 5 bytes.
+  `lager logic NET trigger i2c --addr-width` no longer offers `9`, and
+  `trigger uart --data-width` refuses `9`. Change a script that passes one of these values.
+
+- **The next `lager install` on each Lager Box asks for the sudo password one time.** That
+  install writes the new sudo grants and a root-owned helper script. Later installs on that
+  box ask for no password. `lager update` asks for no password, as before.
+
+## <u>Features</u>
+
+- **`lager box-config mcp-token` adds an optional bearer token to the MCP server of a Lager
+  Box.** `enable` makes port 8100 answer only a request that carries
+  `Authorization: Bearer <token>`. It shows the token one time, with a client entry that
+  carries it. `rotate`, `disable` and `status` manage the token, and each change takes effect
+  with no restart. The token is off by default, so a box that does not enable it behaves as
+  before. See [`lager box-config`](/source/reference/cli/box-config#mcp-token) and
+  [MCP Server](/source/reference/mcp/overview#requiring-a-token).
+
+## <u>Bug Fixes</u>
+
+- **`lager debug NET flash --bin FILE,0` programs at address 0.** Both debug service clients
+  replaced an address of 0 with `0x08000000`. The CLI programmed a target whose flash starts
+  at 0 at the wrong address.
+
+- **`lager ssh-setup` and `lager update` no longer report a registered key as unregistered.**
+  On a box whose key directory a control plane owns, the write that files the key there cannot
+  succeed. Both commands read that failure as proof that the key was unmanaged. They now ask
+  the box whether the key is already in its key directory.
+
+- **`lager scope NET trigger i2c`, `uart` and `spi` accept their defaults and every value they
+  offer.** The I2C trigger refused its default `--direction read_write` and `ack_miss`.
+  `--clk-slope` now sets the clock edge, and the UART `error` and `cerror` conditions reach
+  the scope.
+
+- **`lager logic NET trigger pulse` accepts `gt`, `lt` and `gtlt`.** The command refused every
+  value that it offered.
+
+- **`lager ssh`, `lager update` and `lager logs` log in as the saved user of the box.** `ssh`
+  and `update` looked the user up by box name only, so an IP or the default box got
+  `lagerdata`. `logs` always used `lagerdata`. `lager logs docker` now says when it needs
+  passwordless `sudo` to read a log size.
+
+- **`lager nets add` accepts the Rigol DP832, Keysight E36312A, MCC USB-202, J-Link Base
+  Compact and Phidget.** `lager instruments` listed their channels, but `nets add` refused
+  every net on them.
+
+- **`lager nets add-batch` saves the `params` of a record and refuses keys that it does not
+  read.** It dropped custom LabJack pins and an FTDI channel without a word. It now checks
+  them, the role and the address as `nets add` does. It saves nothing if one record fails.
+
+- **`lager nets tui` edits the pins of a LabJack U3 net.** The pin editor offered only T7 pins
+  and defaults. `nets add` also refuses FIO0-FIO3 of a U3 as custom pins, which the box refused
+  only at the first transfer.
+
+- **`lager boxes` asks a gateway auth server for a token one time, not one time per box.** A
+  gated fleet shares one auth server. A server that did not answer charged the full timeout
+  again for each box before the table appeared.
+
+- **`lager boxes` reports a box whose stored session cannot be read as `error`.** An unreadable
+  `~/.lager_gateway_auth` ended the command with a traceback, or listed the box as
+  `no response`. A slow auth server also no longer blocks unrelated boxes.
+
+- **`lager boxes` no longer ends a login session when it stops waiting on a box.** The command
+  sometimes exited before it stored a new refresh cookie. The next command then sent the old cookie,
+  and the server asked for a new `lager login`.
+
+- **`lager exec` checks for a real container, not only for CI variables.** It reads
+  `/.dockerenv`, `/run/.containerenv`, the `container` variable and the cgroup of process 1.
+  `LAGER_EXEC_IN_PLACE` affects `lager exec` alone. `LAGER_CI_OVERRIDE` still works, but it
+  also turns off CI detection for every other command.
+
+- **The caller now sees the warning for a clamped LabJack U3 clock.** `lager spi NET config` and
+  `lager i2c NET config` wrote the warning to the log of the box, which no user reads. The box
+  now returns it, and the CLI prints it.
+
+- **`lager spi NET config` and `lager i2c NET config` stop naming a request that nobody made.**
+  A net with no stored frequency took a default that a U3 cannot reach, so the output read
+  `(requested 1000000Hz)`. The clause now appears only for a frequency that you passed or
+  stored.
+
+- **`lager dac NET` reads back the last value written after a `lager python` run.** The box
+  releases its direct-USB drivers before every script, and the U3 DAC lost the record of its
+  output. A read failed with "has no readback" on a pin that still held its voltage.
+
+- **An install as a second login user no longer fails at the SSH key sync.** `start_box.sh`
+  kept its key-poller PID in one fixed path under `/tmp`. The script was not able to remove a file
+  that another login user wrote there, and it exited after it removed the old containers. The
+  path is now per user, and a failure there is a warning.
+
+- **`LOCAL_ADDRESS` names an address that the box has.** It was fixed at `172.18.0.10`, the
+  address of the container on lagernet. Under `lager box-config network-mode host`, a script
+  that used it bound to an address on no interface. The box now reads the address from the
+  routing table, and an explicit `LOCAL_ADDRESS` in the box config still wins.
+
+- **`lager box-config apply` allows a box that freed port 9000 with
+  `LAGER_DISABLE_UART_SERVICE`.** The host-network check tested both control ports, whether
+  or not the box published them. A listener on 9000 that was never part of Lager refused the
+  apply.
+
+- **Several messages are corrected.** `lager debug erase` prints `Erase failed:` one time, and
+  a failed pre-erase in `flash` prints the error from the box. `gdbserver` and `disconnect`
+  name OpenOCD on an OpenOCD net. `lager boxes` says "1 box needs updating", and `nets state`
+  names 0.34.0 for an old box.
+
+## <u>Improvements</u>
+
+- **`lager install` asks for the sudo password one time on a fresh Lager Box, and not at all
+  on a box that is already installed.** It wrote its two sudoers files in separate sessions,
+  and two later steps ran commands that no sudoers rule granted. One session now does all of
+  it, and install skips that session when the grants on the box are current. See
+  [`lager install`](/source/reference/cli/install#sudo-password-prompts).
+
+- **`lager install` sets the owner of `/etc/lager` with a root-owned script.**
+  `/usr/local/lib/lager/etc_lager_perms.sh` replaces a `sudo find` and a recursive
+  `sudo chown`. For a symbolic link under `/etc/lager`, the script changes the owner of the
+  link and never of the file that the link names. `lager uninstall --all` removes the script.
+
+- **The `lager-cli` sdist no longer contains test files.** The CLI tests moved out of the
+  package, so the copy of `cli/` on a box no longer carries them.
+
+- **Contributor notes are no longer published on the docs site.** `STYLE.md`,
+  `TRANSLATION.md` and the files under `docs/reference/` were live at `docs.lagerdata.com`.
+
+## <u>Known Limitations</u>
+
+- **The MCP token does not encrypt the connection.** Port 8100 is plain HTTP, so the token
+  crosses the network in clear text. Keep the box on a network that you trust. The token is
+  off by default. Without it, anything that can reach port 8100 can use the MCP server,
+  including the control and exec tools when you enable them.
+
+- **A fresh Lager Box without Docker asks for the sudo password two times.** The Docker
+  install is a second session, and no grant covers its commands.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.49.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli==0.49.0
+```
+
+Then update your boxes:
+
+```bash
+lager update --box <box-name>
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.49.0/)
