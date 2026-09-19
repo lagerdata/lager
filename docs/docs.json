@@ -291,6 +291,7 @@
               {
                 "group": "0.40 and later",
                 "pages": [
+                  "source/release-notes/v0.49.0",
                   "source/release-notes/v0.48.1",
                   "source/release-notes/v0.48.0",
                   "source/release-notes/v0.47.1",
