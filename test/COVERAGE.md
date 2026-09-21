@@ -47,12 +47,12 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` | 2580 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 2971 |
+| `unit (box)` | `test/unit/box/` | 2972 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 241 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 82 (+1 skipped) |
-| | **Total gated** | **6068** |
+| | **Total gated** | **6069** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -476,7 +476,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_box_config_cli.py` | `lager box-config` CLI: mount prep, readiness polling, rollback on bounce failure. Also the `network-mode` verbs and `apply`'s host-networking path: the pre-flight refusing before anything mutates, exit codes 0/3/1, the SSH fallback that keeps a stranded box recoverable, `--skip-restart` refusing a pending switch to host, and only `apply`'s bounce confirming that switch to the box |
 | `test_box_dut_cli.py` | `lager dut` CLI detached-list regression fix |
 | `test_box_http_server_capabilities.py` | /status capabilities block advertises netCommand based on route registration |
-| `test_box_image_publish.py` | What keeps a published box image cheap to pull. `box-image-publish.yml` keeps its layer cache in the registry, not in GitHub Actions, whose cache is scoped to the tag that wrote it so no release could read the last one's; its tag-resolution script is run for a tag push, a cache-only dispatch and a bad tag. `box.Dockerfile` pins its base image by digest and puts nothing but box source below the first source COPY, with a synthetic Dockerfile proving the scan catches a static step placed there. Dependabot moves the base pin |
+| `test_box_image_publish.py` | What keeps a published box image cheap to pull. `box-image-publish.yml` keeps its layer cache in the registry, not in GitHub Actions, whose cache is scoped to the tag that wrote it so no release could read the last one's; its tag-resolution script is run for a tag push, a cache-only dispatch and a bad tag. `box.Dockerfile` pins its base image by digest and puts nothing but box source below the first source COPY, with a synthetic Dockerfile proving the scan catches a static step placed there. Dependabot moves the base pin, and only the pin: its config ignores minor and major updates of the `python` image, because no pull-request check builds the image, so a new interpreter passes CI and then fails to install the image's pins |
 | `test_box_metadata_endpoint.py` | `/box-metadata`: reading and writing the box's own description, and degrading to empty on a truncated file |
 | `test_box_level_command_handlers.py` | Box-level `POST /ble\|wifi\|blufi/command` handlers driving the box's own radios |
 | `test_breakpoint_pause.py` | `lager.pause()` interactive breakpoint: timeout handling and resume signaling |

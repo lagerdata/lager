@@ -146,6 +146,19 @@ updates:
   # costs every box that full download on the next release, which is why this
   # runs monthly rather than weekly: security fixes in the base still arrive,
   # a few at a time rather than one download per rebuild upstream.
+  #
+  # The INTERPRETER does not move here; only the digest of the current tag
+  # does. To dependabot, `python:3.12-slim-bookworm` -> `3.14-slim-bookworm`
+  # is an ordinary version update, and it passes every PR check (#587 did, 19
+  # of 19), because no PR workflow builds this image: the unit suites leave
+  # the hardware SDKs out on purpose, `compat (py3.14)` resolves different
+  # versions than the image pins, and the one test that reads the FROM line
+  # asserts a digest pin, not a tag. The image's pins then have no wheel for
+  # the new interpreter and the pip layer fails -- on every box, at once,
+  # since `lager update` builds from main on the box by default. A new Python
+  # minor is a deliberate change that builds the image and runs the bench
+  # (#595). Closing a grouped PR does not stop the next run re-opening it, so
+  # the stop has to live here.
   - package-ecosystem: docker
     directory: /box/lager/docker
     schedule:
@@ -154,3 +167,8 @@ updates:
     groups:
       box-base-image:
         patterns: ['*']
+    ignore:
+      - dependency-name: python
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
