@@ -297,6 +297,24 @@ class TestDependabotMovesThePin:
         assert "/box/lager/docker" in directories
         assert DOCKERFILE.parent == ROOT / "box" / "lager" / "docker"
 
+    def test_the_interpreter_does_not_move_by_itself(self):
+        """Only the digest moves unattended. No PR check builds the image, so a
+        new Python minor passes CI and then fails to install the image's pins."""
+        updates = yaml.safe_load(DEPENDABOT.read_text())["updates"]
+        (docker,) = [
+            u for u in updates
+            if u["package-ecosystem"] == "docker"
+            and u["directory"] == "/box/lager/docker"
+        ]
+        rules = {
+            rule["dependency-name"]: set(rule.get("update-types", []))
+            for rule in docker.get("ignore", [])
+        }
+        assert rules.get("python") == {
+            "version-update:semver-major",
+            "version-update:semver-minor",
+        }
+
 
 MCP_REQUIREMENTS = ROOT / "box" / "lager" / "docker" / "requirements-mcp.txt"
 UNIT_REQUIREMENTS = ROOT / "test" / "requirements-unit.txt"
