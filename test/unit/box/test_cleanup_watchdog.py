@@ -19,6 +19,7 @@ cover is the decision logic built on top of it.
 """
 
 import os
+import select
 import subprocess
 import sys
 import time
@@ -51,6 +52,38 @@ class WatchdogTestCase(unittest.TestCase):
         self.children.append(proc)
         return proc
 
+    def spawn_ready(self, body, timeout=60.0):
+        """Spawn ``body`` and return once it has printed ``ready``.
+
+        These tests signal the child and assert on what it does with the
+        signal, so the child has to have reached the point where that is
+        decided: its handlers installed, or its ``try`` entered. A fixed sleep
+        guessed how long an interpreter takes to get there. On a busy machine
+        the guess was wrong, the interrupt arrived first and killed the child
+        outright, and the test failed for a reason that had nothing to do with
+        what it checks (#590). So the child says when it is ready. ``timeout``
+        is not a budget the child is expected to use; it only stops a child
+        that never starts from hanging the suite.
+        """
+        proc = self.spawn(body)
+        readable, _, _ = select.select([proc.stdout], [], [], timeout)
+        self.assertTrue(readable, 'the child never reported ready')
+        self.assertEqual(proc.stdout.readline(), b'ready\n')
+        return proc
+
+    def wait_until(self, predicate, timeout=60.0, poll_s=0.05):
+        """True once ``predicate()`` holds; False if it never does.
+
+        For the same reason as ``spawn_ready``: wait for the thing itself, not
+        for a length of time in which it usually happens.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return True
+            time.sleep(poll_s)
+        return False
+
     def progress(self, sequence):
         """Patch progress_snapshot to yield ``sequence``, repeating the last."""
         state = {'i': 0}
@@ -66,14 +99,14 @@ class WatchdogTestCase(unittest.TestCase):
 class IdleBudgetTests(WatchdogTestCase):
     def test_a_teardown_that_keeps_working_runs_past_the_idle_budget(self):
         """The whole point: 6s of cleanup completes under a 1s idle budget."""
-        proc = self.spawn(
+        proc = self.spawn_ready(
             'import time\n'
             'try:\n'
+            '    print("ready", flush=True)\n'
             '    time.sleep(60)\n'
             'except KeyboardInterrupt:\n'
             '    time.sleep(3.0)\n'      # stands in for a real teardown
         )
-        time.sleep(0.3)
 
         # Progress ticks forward on every sample, i.e. the script is busy.
         counter = {'n': 0}
@@ -98,13 +131,13 @@ class IdleBudgetTests(WatchdogTestCase):
 
     def test_a_wedged_teardown_is_cut_off_at_the_idle_budget(self):
         """No progress means no amount of waiting would have helped."""
-        proc = self.spawn(
+        proc = self.spawn_ready(
             'import signal, time\n'
             'signal.signal(signal.SIGINT, signal.SIG_IGN)\n'
             'signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+            'print("ready", flush=True)\n'
             'time.sleep(60)\n'
         )
-        time.sleep(0.3)
 
         started = time.monotonic()
         with self.progress([(1, frozenset({proc.pid}))]):  # frozen: no progress
@@ -121,13 +154,13 @@ class IdleBudgetTests(WatchdogTestCase):
     def test_the_ceiling_stops_a_script_that_ignored_the_interrupt(self):
         """A script that carried on with its test looks exactly like a busy
         teardown from out here. Only the ceiling separates them."""
-        proc = self.spawn(
+        proc = self.spawn_ready(
             'import signal, time\n'
             'signal.signal(signal.SIGINT, signal.SIG_IGN)\n'
             'signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+            'print("ready", flush=True)\n'
             'time.sleep(60)\n'
         )
-        time.sleep(0.3)
 
         counter = {'n': 0}
 
@@ -146,16 +179,51 @@ class IdleBudgetTests(WatchdogTestCase):
         self.assertLess(elapsed, 6.0, 'the ceiling did not bound a busy script')
         self.assertIn('ceiling', '\n'.join(logs.output))
 
+    def test_a_child_that_is_slow_to_start_still_meets_the_ceiling(self):
+        """#590, made repeatable: a loaded machine is a child that takes a
+        second to install its handlers. When these tests slept 0.3s and then
+        interrupted, this child died of the interrupt before it could ignore
+        it, the ceiling was never reached, and the failure read "no logs of
+        level WARNING or higher triggered". It is here so that a fixed sleep
+        cannot come back without a test saying so."""
+        started = time.monotonic()
+        proc = self.spawn_ready(
+            'import signal, time\n'
+            'time.sleep(1.0)\n'
+            'signal.signal(signal.SIGINT, signal.SIG_IGN)\n'
+            'signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+            'print("ready", flush=True)\n'
+            'time.sleep(60)\n'
+        )
+        self.assertGreaterEqual(
+            time.monotonic() - started, 1.0,
+            'spawn_ready returned before the child said it was ready',
+        )
+
+        counter = {'n': 0}
+
+        def busy(pid):
+            counter['n'] += 1
+            return (counter['n'], frozenset({pid}))
+
+        with mock.patch.object(quiesce, 'progress_snapshot', busy), \
+                mock.patch.object(process_mod, 'CLEANUP_MAX_S', 1.0):
+            with self.assertLogs('lager.exec.process', level='WARNING') as logs:
+                returncode = terminate_process(proc, cleanup_grace_s=0.5)
+
+        self.assertEqual(returncode, -1)
+        self.assertIn('ceiling', '\n'.join(logs.output))
+
     def test_without_progress_information_it_behaves_exactly_as_before(self):
         """No /proc (macOS, and any future non-Linux host) must not regress
         into either an instant kill or an unbounded wait."""
-        proc = self.spawn(
+        proc = self.spawn_ready(
             'import signal, time\n'
             'signal.signal(signal.SIGINT, signal.SIG_IGN)\n'
             'signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+            'print("ready", flush=True)\n'
             'time.sleep(60)\n'
         )
-        time.sleep(0.3)
 
         started = time.monotonic()
         with mock.patch.object(quiesce, 'progress_snapshot', lambda pid: None):
@@ -183,24 +251,42 @@ class ProcReaderTests(WatchdogTestCase):
     """The Linux-only half. Skipped on the macOS dev box; runs in CI/on-box."""
 
     def test_a_busy_process_moves_its_snapshot(self):
-        proc = self.spawn('x = 0\nwhile True:\n    x += 1\n')
-        time.sleep(0.2)
+        proc = self.spawn_ready(
+            'print("ready", flush=True)\nx = 0\nwhile True:\n    x += 1\n'
+        )
         first = quiesce.progress_snapshot(proc.pid)
-        time.sleep(0.4)
-        second = quiesce.progress_snapshot(proc.pid)
         self.assertIsNotNone(first)
-        self.assertNotEqual(first, second)
+        self.assertTrue(
+            self.wait_until(lambda: quiesce.progress_snapshot(proc.pid) != first),
+            'a process in a busy loop never moved its snapshot',
+        )
 
     def test_a_sleeping_process_does_not(self):
         """One long sleep parks the process once and then nothing happens, so
         neither counter moves. This is the case the watchdog must still cut
         off, and it is what stops the context-switch signal from simply
         declaring everything busy."""
-        proc = self.spawn('import time; time.sleep(60)')
-        time.sleep(0.3)
-        first = quiesce.progress_snapshot(proc.pid)
+        proc = self.spawn_ready(
+            'import time; print("ready", flush=True); time.sleep(60)'
+        )
+
+        # "ready" is printed a moment before the sleep parks the process, so
+        # wait for the snapshot to stop moving before asserting that it stays
+        # still. A reader that called everything busy never settles, and
+        # fails here; one that settles and moves again fails below.
+        last = {'snapshot': None}
+
+        def settled():
+            previous, last['snapshot'] = (
+                last['snapshot'], quiesce.progress_snapshot(proc.pid))
+            return previous is not None and previous == last['snapshot']
+
+        self.assertTrue(
+            self.wait_until(settled, poll_s=0.2),
+            'a process in one long sleep never stopped showing progress',
+        )
         time.sleep(0.5)
-        self.assertEqual(first, quiesce.progress_snapshot(proc.pid))
+        self.assertEqual(last['snapshot'], quiesce.progress_snapshot(proc.pid))
 
     def test_a_process_blocked_on_io_shows_progress(self):
         """The defect the context-switch signal exists for.
@@ -211,26 +297,29 @@ class ProcReaderTests(WatchdogTestCase):
         to 4.17s -- past the cleanup budget, which cut it off mid-cleanup.
         Repeated short blocking stands in for that here.
         """
-        proc = self.spawn(
+        # Sampled only once the child is in its loop, so that what moves the
+        # counters is the blocking, not the interpreter starting up.
+        proc = self.spawn_ready(
             'import time\n'
+            'print("ready", flush=True)\n'
             'while True:\n'
             '    time.sleep(0.05)\n'
         )
-        time.sleep(0.3)
-
-        first_switches = quiesce.ctxt_switches(proc.pid)
+        # The snapshot is read BEFORE the counter it is compared with. Read the
+        # other way round, a switch between the two reads puts the newer count
+        # in the snapshot, the wait below is met at once, and the snapshot then
+        # looks unchanged although it moved.
         first_snapshot = quiesce.progress_snapshot(proc.pid)
-        time.sleep(0.5)
-        second_switches = quiesce.ctxt_switches(proc.pid)
-        second_snapshot = quiesce.progress_snapshot(proc.pid)
+        first_switches = quiesce.ctxt_switches(proc.pid)
 
-        self.assertGreater(
-            second_switches, first_switches,
+        self.assertTrue(
+            self.wait_until(
+                lambda: quiesce.ctxt_switches(proc.pid) > first_switches),
             'a process blocked on I/O registered no progress at all, which is '
             'what truncated cleanup mid-teardown on hardware',
         )
         self.assertNotEqual(
-            first_snapshot, second_snapshot,
+            first_snapshot, quiesce.progress_snapshot(proc.pid),
             'the switch counter moved but the snapshot did not, so the '
             'watchdog would still not see the progress',
         )
@@ -246,9 +335,8 @@ class ProcReaderTests(WatchdogTestCase):
             'subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])\n'
             'time.sleep(30)\n'
         )
-        time.sleep(0.6)
-        self.assertGreaterEqual(
-            len(quiesce.process_tree(proc.pid)), 2,
+        self.assertTrue(
+            self.wait_until(lambda: len(quiesce.process_tree(proc.pid)) >= 2),
             'a grandchild doing the cleanup work would be invisible',
         )
 

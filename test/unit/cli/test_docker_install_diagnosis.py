@@ -316,10 +316,21 @@ def test_ssh_t_cleans_up_when_the_operator_interrupts(tmp_path):
     interrupt, forever, in TMPDIR. The EXIT trap does run (bash runs EXIT
     traps on SIGINT), which is why the file is created once at script scope
     instead of once per call.
+
+    The interrupt is sent once the stub has written "connecting", which is the
+    case being tested: Ctrl-C during an ssh session. Sending it as soon as the
+    capture file existed was a different test on a different day (#590). bash
+    makes the file before it installs the EXIT trap, so an early interrupt
+    left the file behind; and bash blocks SIGINT while it forks, so an
+    interrupt that landed in the fork reached bash but not the newborn stub,
+    which then slept its 30 seconds while bash waited for it. Both windows are
+    under a millisecond on an idle machine and wide open on a busy one. The
+    stub execs `sleep` for the same reason: a second fork would be a second
+    window.
     """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    _write_stub(bin_dir, "ssh", 'echo "connecting" >&2\nsleep 30')
+    _write_stub(bin_dir, "ssh", 'echo "connecting" >&2\nexec sleep 30')
 
     harness = tmp_path / "harness.sh"
     harness.write_text(
@@ -338,8 +349,14 @@ def test_ssh_t_cleans_up_when_the_operator_interrupts(tmp_path):
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         stdin=subprocess.DEVNULL,
     )
+    def in_session():
+        try:
+            return any(b"connecting" in p.read_bytes() for p in scratch.iterdir())
+        except OSError:     # listed one instant, gone the next
+            return False
+
     try:
-        assert _wait_until(lambda: any(scratch.iterdir())), "capture file never appeared"
+        assert _wait_until(in_session, timeout=60), "the ssh stub never started"
         os.killpg(proc.pid, signal.SIGINT)
         proc.wait(timeout=30)
     finally:
