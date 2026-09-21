@@ -47,12 +47,12 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` | 2580 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 2972 |
+| `unit (box)` | `test/unit/box/` | 2973 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 241 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 82 (+1 skipped) |
-| | **Total gated** | **6069** |
+| | **Total gated** | **6070** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -480,7 +480,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_box_metadata_endpoint.py` | `/box-metadata`: reading and writing the box's own description, and degrading to empty on a truncated file |
 | `test_box_level_command_handlers.py` | Box-level `POST /ble\|wifi\|blufi/command` handlers driving the box's own radios |
 | `test_breakpoint_pause.py` | `lager.pause()` interactive breakpoint: timeout handling and resume signaling |
-| `test_cleanup_watchdog.py` | Cleanup grace as an *idle* budget: a teardown making progress keeps its deadline pushed out, a wedged one is still cut off, and blocking on an instrument counts as progress |
+| `test_cleanup_watchdog.py` | Cleanup grace as an *idle* budget: a teardown making progress keeps its deadline pushed out, a wedged one is still cut off, and blocking on an instrument counts as progress. Each child says when it is ready, so that no test depends on how fast an interpreter starts; a child that is slow on purpose keeps a fixed sleep from coming back |
 | `test_custom_devices_assign.py` | `lager.devices.assign` and the `/custom-devices/*` handlers behind `lager nets assign` |
 | `test_custom_store.py` | Custom-device JSON persistence: USB cable to catalog instrument mapping |
 | `test_da1469x_loader.py` | DA1469x ELF symbol reading, loader path resolution, flash/erase/timeout paths. Also the poll helper every loader step waits on: a dropped `mdw` reply is retried to the deadline like any non-matching value, since these reads go through the debug AP while the CPU runs and a marginal SWD link drops one now and then; a link that never answers still fails, naming the read error rather than a value it never read, and a non-RPC error is not swallowed. Plus the bring-up retry underneath that fix: a loader that reads back successfully but never reports ready has its whole preparation re-run up to three times, naming the attempt that failed, while a failed image load, a missing loader symbol or an OpenOCD error still reaches the caller on the first attempt, and a spent budget names the attempt count |
