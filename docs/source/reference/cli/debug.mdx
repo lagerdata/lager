@@ -355,6 +355,8 @@ cases give that result:
 
 Check debug service health and resource usage.
 
+The output includes a `Features` line: the capabilities the box's debug service supports beyond its original requests, such as `erase_range` for `--erase-start` and `--erase-size`. A box that predates the list prints `none reported`.
+
 ```bash
 lager debug [NET_NAME] health [OPTIONS]
 ```

@@ -820,3 +820,35 @@ class TestEraseRangeFlags:
         assert "This will erase 0x16000000-0x161FFFFF (2 MiB) on DA14695" in result.output
         assert "Chip erase cancelled." in result.output
         assert client.calls == []
+
+
+# --------------------------------------------------------------------------- #
+# `health` shows the features the gate reads                                  #
+# --------------------------------------------------------------------------- #
+
+def run_health(client, args, net=JLINK_NET):
+    """Invoke `lager debug <net> health` with the box mocked at the client."""
+    obj = _Obj()
+    obj.net_name = net["name"]
+    with patch.object(debug_mod, "_resolve_box_with_username",
+                      lambda ctx, box: (BOX_IP, "lagerdata")), \
+         patch.object(debug_mod, "_get_service_client", lambda box: client):
+        return CliRunner().invoke(debug_mod.health, args, obj=obj, catch_exceptions=False)
+
+
+class TestHealthListsFeatures:
+    """The only way to see the `erase_range` capability used to be the refusal
+    message; `health` now prints the list the gate reads."""
+
+    def test_features_are_listed(self):
+        client = FakeClient(health={"status": "healthy", "version": "1.0.0",
+                                    "features": ["erase_range"], "uptime": 42.0})
+        result = run_health(client, ["--box", "mybox"])
+        assert result.exit_code == 0, result.output
+        assert "Features: erase_range" in result.output
+
+    def test_an_older_box_prints_none_reported(self):
+        client = FakeClient(health={"status": "healthy", "version": "1.0.0", "uptime": 42.0})
+        result = run_health(client, ["--box", "mybox"])
+        assert result.exit_code == 0, result.output
+        assert "Features: none reported" in result.output

@@ -27,6 +27,7 @@ keeps winning and nothing leaks into the tests that run after this one.
 
 import os
 import sys
+import tempfile
 import types
 import unittest
 from unittest.mock import MagicMock, patch
@@ -108,17 +109,23 @@ def _handler():
     return handler, recorder
 
 
-def _erase(output, request=None, device='NRF5340_XXAA_APP', seen=None):
+def _erase(output, request=None, device='NRF5340_XXAA_APP', seen=None,
+           script=None, during_erase=None):
     """Drive handle_erase down the J-Link path with `output` as JLinkExe's.
 
     `request` adds keys to the POST body (`erase_start` / `erase_size`);
-    `seen`, a dict, receives the kwargs `chip_erase` was called with.
+    `seen`, a dict, receives the kwargs `chip_erase` was called with;
+    `script` is what `_get_script_file` hands back; `during_erase` runs
+    inside the fake `chip_erase`, standing in for whatever another session
+    does to the box while Commander is busy.
     """
     handler, recorder = _handler()
 
     def chip_erase(**kwargs):
         if seen is not None:
             seen.update(kwargs)
+        if during_erase is not None:
+            during_erase()
         return iter(output)
 
     with patch.object(service.safety, 'check_destructive', lambda net, op: None), \
@@ -128,10 +135,69 @@ def _erase(output, request=None, device='NRF5340_XXAA_APP', seen=None):
          patch.object(service, '_resolve_probe',
                       lambda net: ('000051014439', 0, 2331, 2332, 2333, 2334)), \
          patch.object(service, '_openocd_ports_for_slot', lambda slot: (4444, 6666)), \
-         patch.object(service, '_get_script_file', lambda net: None), \
+         patch.object(service, '_get_script_file', lambda net: script), \
          patch.object(service, 'chip_erase', chip_erase):
         handler.handle_erase({'net': {'name': 'debug1', 'role': 'debug'}, **(request or {})})
     return recorder
+
+
+class EraseReportTests(unittest.TestCase):
+    """The `erase_range` a 200 reports is the range the erase was given, read
+    before Commander ran, not whatever the per-net script says afterwards.
+
+    On a shared bench, a `disconnect` on the same net cleared the script
+    between the erase and the report: the erase ran the script's 1536 KiB and
+    the JSON said `default`, 1 MiB. Found on a DA1469x during the hardware
+    validation of the feature.
+    """
+
+    XIP = 0x16000000
+    SCRIPT_RANGE = {
+        'start': XIP, 'end': XIP + 0x17FFFF, 'length': 0x180000,
+        'source': 'script', 'text': '0x16000000-0x1617FFFF (1536 KiB)',
+    }
+
+    def _script(self):
+        # Under /tmp on purpose: chip_erase's containment rule wants the
+        # runtime root, and macOS's default tempdir is elsewhere.
+        handle = tempfile.NamedTemporaryFile(
+            'w', dir=api._probes.RUNTIME_DIR, suffix='.JLinkScript', delete=False)
+        handle.write('LAGER_ERASE_RANGE: 0x16000000 0x1617FFFF\n')
+        handle.close()
+        self.addCleanup(lambda: os.path.exists(handle.name) and os.unlink(handle.name))
+        return handle.name
+
+    def test_the_script_range_is_reported_even_when_the_script_vanishes_mid_erase(self):
+        script = self._script()
+        recorder = _erase(ERASE_OK, device='DA14695', script=script,
+                          during_erase=lambda: os.unlink(script))
+        self.assertEqual(recorder.status, 200)
+        self.assertEqual(recorder.payload['erase_range'], self.SCRIPT_RANGE)
+
+    def test_the_script_range_is_reported_when_the_script_stays(self):
+        recorder = _erase(ERASE_OK, device='DA14695', script=self._script())
+        self.assertEqual(recorder.payload['erase_range'], self.SCRIPT_RANGE)
+
+    def test_a_request_still_wins_over_the_script(self):
+        recorder = _erase(ERASE_OK, {'erase_start': self.XIP, 'erase_size': 0x200000},
+                          device='DA14695', script=self._script())
+        self.assertEqual(recorder.payload['erase_range']['source'], 'request')
+        self.assertEqual(recorder.payload['erase_range']['length'], 0x200000)
+
+    def test_the_plan_follows_chip_erase_script_rules(self):
+        # The same helper chip_erase uses: a missing file is no script, a
+        # path outside the runtime root is refused, a request beats a script.
+        script = self._script()
+        self.assertEqual(api.jlink_erase_plan('DA14695', script),
+                         (self.XIP, 0x180000, 'script'))
+        os.unlink(script)
+        self.assertEqual(api.jlink_erase_plan('DA14695', script),
+                         (self.XIP, 0x100000, 'default'))
+        self.assertEqual(api.jlink_erase_plan('DA14695', None, start=self.XIP, length=0x1000),
+                         (self.XIP, 0x1000, 'request'))
+        self.assertIsNone(api.jlink_erase_plan('NRF5340_XXAA_APP', None))
+        with self.assertRaises(ValueError):
+            api.jlink_erase_plan('DA14695', '/etc/not-a-runtime-path.JLinkScript')
 
 
 class EraseRangeTests(unittest.TestCase):

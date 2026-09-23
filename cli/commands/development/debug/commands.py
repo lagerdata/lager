@@ -1876,6 +1876,11 @@ def health(ctx, box, verbose):
             click.secho(f"{health_data['status']}", fg='red')
 
         click.echo(f"  Version: {health_data.get('version', 'unknown')}")
+        # What the service can do beyond its original request shapes; a box
+        # that predates the list reports none, and the CLI refuses the flags
+        # that depend on a feature it does not see.
+        features = health_data.get('features')
+        click.echo(f"  Features: {', '.join(features) if features else 'none reported'}")
 
         if verbose:
             # Detailed information

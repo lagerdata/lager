@@ -353,6 +353,8 @@ Cortex-M 的 CPUID 寄存器。这次读取不会让内核停住。探针较慢�
 
 检查调试服务的健康状况和资源使用情况。
 
+输出中包含一行 `Features`：Box 调试服务在原有请求之外支持的能力，例如支持 `--erase-start` 和 `--erase-size` 的 `erase_range`。早于该列表的 Box 会打印 `none reported`。
+
 ```bash
 lager debug [NET_NAME] health [OPTIONS]
 ```

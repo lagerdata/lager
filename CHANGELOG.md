@@ -47,6 +47,9 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   or `0x200000`. The CLI prints the range the box erased, refuses the options
   on a box older than this release rather than let it erase its default range,
   and `DebugNet.erase(start, length)` takes the same pair.
+- **`lager debug <net> health` lists the debug service's `features`**, so a
+  box's support for `--erase-start` and `--erase-size` is visible without
+  trying them; a box that predates the list prints `none reported`.
 - **`GET /bench` on the box and `lager bench export`: the bench manifest.** One
   versioned JSON document with the nets and their metadata, the instruments
   detected on the box, the DUT context, the capability graph and the API

@@ -885,6 +885,36 @@ def erase_flash(start_addr, length, mcu=None, serial=None, gdb_port=2331, script
     raise JLinkNotRunning()
 
 
+def _resolve_script_path(script_file):
+    """The script path :func:`chip_erase` hands Commander, or None when there is none.
+
+    A bare path parameter with a None default, reachable from every caller of
+    this module. Contained here rather than trusted: the path must live under
+    ``probes.RUNTIME_DIR``, and a path to a file that is not on disk is no
+    script at all. See lager.util.paths.
+    """
+    if script_file:
+        script_file = os.path.normpath(script_file)
+        if not script_file.startswith(_probes.RUNTIME_DIR + os.sep):
+            raise ValueError(
+                f'refusing a script path outside {_probes.RUNTIME_DIR!r}')
+    return script_file if (script_file and os.path.exists(script_file)) else None
+
+
+def jlink_erase_plan(device, script_file=None, *, start=None, length=None):
+    """The range :func:`chip_erase` erases for these inputs: ``(start, length, source)``,
+    or None for a full chip.
+
+    Resolved from the same inputs, with the same script rules, as ``chip_erase``
+    itself, so a caller that reports the range reads it BEFORE the erase, while
+    the per-net script is still where the request left it. Resolving after the
+    erase once reported ``default`` for an erase that ran the script's range: a
+    concurrent disconnect on the same net had cleared the script in between.
+    """
+    from . import jlink as _jlink
+    return _jlink.resolve_erase_range(device, _resolve_script_path(script_file), start, length)
+
+
 def chip_erase(device, speed='4000', transport='SWD', mcu=None, script_file=None,
                serial=None, *, start=None, length=None):
     """
@@ -957,16 +987,9 @@ def chip_erase(device, speed='4000', transport='SWD', mcu=None, script_file=None
             self.script_file = script_file
             self.serial = serial
 
-    # A bare path parameter with a None default, reachable from every caller
-    # of this module. Contain it here rather than trusting the caller: the
-    # check has to sit in the function that uses the path for it to mean
-    # anything locally. See lager.util.paths.
-    if script_file:
-        script_file = os.path.normpath(script_file)
-        if not script_file.startswith(_probes.RUNTIME_DIR + os.sep):
-            raise ValueError(
-                f'refusing a script path outside {_probes.RUNTIME_DIR!r}')
-    resolved_script = script_file if (script_file and os.path.exists(script_file)) else None
+    # The same containment jlink_erase_plan() applies, so the plan a caller
+    # reported and the script Commander runs under come from one rule.
+    resolved_script = _resolve_script_path(script_file)
     if not resolved_script:
         logger.warning(
             'chip_erase: no J-Link script file; DA1469x external QSPI may not be erased'
