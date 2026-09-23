@@ -37,12 +37,13 @@ from lager.debug.gdb import get_controller, get_arch, reset as gdb_reset
 from lager.debug.api import (
     JLinkNotRunning,
     clear_script_file,
+    jlink_erase_plan,
     purge_legacy_script_file,
     _attach_failed,
 )
 from lager.debug.target_probe import target_attached
 from lager.debug.erase_bounds import bounds_dict, validate_bounds
-from lager.debug.jlink import JLink, resolve_erase_range as jlink_erase_range
+from lager.debug.jlink import JLink
 from lager.debug.openocd_flash import resolve_erase_range as openocd_erase_range
 from lager.debug.gdbserver import (
     start_jlink_gdbserver,
@@ -1384,6 +1385,14 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             # ---- J-Link path (unchanged below this point) -----------------
             script_path = _get_script_file(net)
 
+            # The range to report, resolved BEFORE the erase from the script
+            # Commander is about to run under. Resolved afterwards, it once
+            # said `default` for an erase that ran the script's range: a
+            # disconnect on the same net had cleared the script in between.
+            erase_plan = jlink_erase_plan(
+                device_type, script_path, start=erase_start, length=erase_size,
+            )
+
             erase_output = list(chip_erase(
                 device=device_type,
                 speed=speed,
@@ -1422,8 +1431,7 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                 'status': 'erase_complete',
                 'output': '\n'.join(erase_output) if erase_output else 'Erase completed',
                 'backend': BACKEND_JLINK,
-                'erase_range': _erase_range_report(
-                    jlink_erase_range(device_type, script_path, erase_start, erase_size)),
+                'erase_range': _erase_range_report(erase_plan),
             })
 
         except Exception as e:
