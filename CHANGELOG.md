@@ -40,6 +40,13 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   staying green while testing no data path at all. The run now heals the net,
   and on a bench with no serial adapter it says so as a warning rather than
   passing a silent skip off as coverage.
+- **`lager debug <net> flash` and `erase` take an erase range, with
+  `--erase-start` and `--erase-size`.** On both backends the pair replaces the
+  fixed 1 MiB from `0x16000000` on a DA1469x (and the `LAGER_ERASE_RANGE`
+  script line) or the full chip erase elsewhere; `--erase-size` accepts `2M`
+  or `0x200000`. The CLI prints the range the box erased, refuses the options
+  on a box older than this release rather than let it erase its default range,
+  and `DebugNet.erase(start, length)` takes the same pair.
 
 ## [0.49.0] - 2026-09-18
 

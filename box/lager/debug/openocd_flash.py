@@ -38,11 +38,14 @@ from typing import Iterator, Optional
 from .da1469x_loader import (
     DA1469X_FAMILY,
     DEFAULT_ERASE_LENGTH,
+    QSPI_XIP_BASE,
     Da1469xLoaderError,
     erase_range,
     flash_image,
+    xip_range_to_flash_offset,
     xip_to_flash_offset,
 )
+from .erase_bounds import format_bounds, validate_bounds
 from .openocd import OpenOcdRpcError
 from .probes import is_da1469x
 
@@ -87,28 +90,59 @@ def flash_target(rpc, device, firmware_path, *,
         yield out
 
 
-def erase_target(rpc, device) -> Iterator[str]:
+def resolve_erase_range(device, start=None, length=None):
+    """The range :func:`erase_target` erases on *device*, or ``None`` for every bank.
+
+    ``(start, length, source)``: *source* is ``'request'`` when the caller
+    gave a range and ``'default'`` for a DA1469x's first
+    :data:`DEFAULT_ERASE_LENGTH` bytes of QSPI. There is no script source on
+    this backend; the ``LAGER_ERASE_RANGE`` line lives in a JLinkScript.
+    """
+    if start is not None:
+        return (start, length, 'request')
+    if is_da1469x(device):
+        return (QSPI_XIP_BASE, DEFAULT_ERASE_LENGTH, 'default')
+    return None
+
+
+def erase_target(rpc, device, *, start=None, length=None) -> Iterator[str]:
     """Erase *device*'s flash through the daemon at *rpc*.
 
-    Every flash bank on a target that declares them. On a DA1469x, the
-    loader's address-range erase of the first :data:`DEFAULT_ERASE_LENGTH`
-    bytes of QSPI, matching the J-Link path -- ``flash erase_sector`` has
-    no bank to act on there and would report nothing after touching
-    nothing.
+    With no range: every flash bank on a target that declares them, or on
+    a DA1469x the loader's address-range erase of the first
+    :data:`DEFAULT_ERASE_LENGTH` bytes of QSPI, matching the J-Link path --
+    ``flash erase_sector`` has no bank to act on there and would report
+    nothing after touching nothing.
 
-    Yields progress lines. Raises one of :data:`FLASH_ERRORS`.
+    With *start* and *length* (absolute XIP addresses on a DA1469x, as the
+    CLI and the J-Link path take them): that range and nothing else, via
+    the loader on a DA1469x and ``flash erase_address`` elsewhere. The
+    first line yielded names the range.
+
+    Yields progress lines. Raises one of :data:`FLASH_ERRORS`, or
+    ``ValueError`` for a range no target can erase.
     """
+    resolved = resolve_erase_range(device, start, length)
+    if resolved is None:
+        out = rpc.flash_erase_all()
+        if out:
+            yield out
+        return
+    start, length, _source = resolved
+    validate_bounds(start, length, da1469x=is_da1469x(device))
+    yield f'Erasing {format_bounds(start, length)}'
     if is_da1469x(device):
+        offset = xip_range_to_flash_offset(start, length)
         yield from _run_loader(
             erase_range(
                 rpc,
-                family=DA1469X_FAMILY, flash_id=0, offset=0,
-                length=DEFAULT_ERASE_LENGTH,
+                family=DA1469X_FAMILY, flash_id=0, offset=offset,
+                length=length,
             ),
             doing='erase',
         )
         return
-    out = rpc.flash_erase_all()
+    out = rpc.flash_erase_range(start, length)
     if out:
         yield out
 

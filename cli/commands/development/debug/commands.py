@@ -15,7 +15,7 @@ import signal
 import sys
 from texttable import Texttable
 from ....context import get_default_box, get_default_net
-from ....core.param_types import MemoryAddressType, HexArrayType, BinfileType
+from ....core.param_types import MemoryAddressType, HexArrayType, BinfileType, ByteSizeType
 from ....box_storage import get_box_ip, get_box_name_by_ip, get_box_user
 from ....core.net_group import NetGroupHelpMixin, NetSubCommand
 from .service_client import DebugServiceClient
@@ -1096,6 +1096,90 @@ def _erase_failure_line(output):
     return None
 
 
+_MIB = 1 << 20
+# The DA1469x QSPI XIP window: the one `memrd` and the box's flash_loader use.
+_DA1469X_XIP_START = 0x16000000
+_DA1469X_XIP_END = 0x18000000  # exclusive
+
+# The box's debug service lists `erase_range` under /health `features` once it
+# reads erase_start/erase_size. A box that predates the keys ignores them and
+# erases its default range instead -- the under-erase a deploy script cannot
+# see -- so the flags are refused before the request is ever sent.
+_ERASE_RANGE_UNSUPPORTED = (
+    "Error: this box does not support --erase-start/--erase-size "
+    "(requires box version 0.50.0 or later). Update it with: lager update --box {box}"
+)
+
+
+def _format_erase_range(start, size):
+    """`0x16000000-0x161FFFFF (2 MiB)`, the form the box reports a range in."""
+    end = start + size - 1
+    if size % _MIB == 0:
+        human = f'{size // _MIB} MiB'
+    elif size % 1024 == 0:
+        human = f'{size // 1024} KiB'
+    else:
+        human = f'{size} bytes'
+    return f'0x{start:08X}-0x{end:08X} ({human})'
+
+
+def _erase_range_error(device_type, erase_start, erase_size, *, no_erase=False):
+    """Why this --erase-start/--erase-size pair is refused, or None.
+
+    Checked before any box traffic: one flag without the other, either flag
+    with --no-erase, a negative start, a range past the 32-bit address
+    space, and on a DA1469x a range outside its QSPI XIP window. The box
+    checks the same rules again for callers that bypass the CLI.
+    """
+    if erase_start is None and erase_size is None:
+        return None
+    if erase_start is None or erase_size is None:
+        return "Error: --erase-start and --erase-size must be given together"
+    if no_erase:
+        return "Error: --no-erase cannot be combined with --erase-start/--erase-size"
+    if erase_start < 0:
+        return f"Error: --erase-start must not be negative, got {erase_start}"
+    if erase_start + erase_size > 1 << 32:
+        return (f"Error: erase range {_format_erase_range(erase_start, erase_size)} "
+                f"runs past the end of the 32-bit address space")
+    if 'DA1469' in str(device_type).upper():
+        if erase_start < _DA1469X_XIP_START or erase_start + erase_size > _DA1469X_XIP_END:
+            return (f"Error: erase range {_format_erase_range(erase_start, erase_size)} "
+                    f"is outside the DA1469x QSPI XIP window "
+                    f"(0x{_DA1469X_XIP_START:08X}-0x{_DA1469X_XIP_END - 1:08X})")
+    return None
+
+
+def _box_supports_erase_range(client):
+    """True when the box's debug service lists `erase_range` under /health `features`.
+
+    An older box answers with no `features` at all, and a box that cannot be
+    reached reads the same: either way the flags are refused rather than sent
+    to a box that would ignore them.
+    """
+    try:
+        health = client.get_service_health()
+    except Exception:
+        return False
+    features = health.get('features') if isinstance(health, dict) else None
+    return 'erase_range' in (features or [])
+
+
+def _erase_complete_line(result):
+    """The success line, naming the range the box reports it erased.
+
+    A box that predates `erase_range` sends no such key and keeps the old
+    line. `None` is a full-chip erase.
+    """
+    if not isinstance(result, dict) or 'erase_range' not in result:
+        return "Erase complete!"
+    erased = result['erase_range']
+    if erased is None:
+        return "Erase complete: full chip"
+    text = erased.get('text') if isinstance(erased, dict) else None
+    return f"Erase complete: {text}" if text else "Erase complete!"
+
+
 @click.command(cls=NetSubCommand)
 @click.pass_context
 @click.option("--box", required=False, help="Lager Box name or IP")
@@ -1111,9 +1195,16 @@ def _erase_failure_line(output):
 @click.option('--erase', is_flag=True, default=False, hidden=True,
               help='(Deprecated) Erase before programming — now the default behavior. '
                    'DA1469x erases external QSPI XIP range only, not full chip.')
+@click.option('--erase-start', type=MemoryAddressType(), default=None, metavar='ADDR',
+              help='First address of the pre-erase, hex (0x16000000) or decimal. '
+                   'Given together with --erase-size.')
+@click.option('--erase-size', type=ByteSizeType(), default=None, metavar='BYTES',
+              help='Bytes to erase from --erase-start: decimal, 0x hex, or a K/M suffix (2M). '
+                   'On a DA1469x the range must lie inside 0x16000000-0x17FFFFFF.')
 @click.option('--halt/--no-halt', is_flag=True, default=False,
               help='Halt the device after flashing (keeps debugger connected)', show_default=True)
-def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, no_erase, erase, halt):
+def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, no_erase, erase,
+          erase_start, erase_size, halt):
     """Flash firmware to target"""
 
     target_box = box
@@ -1128,9 +1219,23 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, no_erase, erase, ha
         ctx, net_name or debug_net.get('name'), debug_net
     )
 
+    device_type = str(_debug_net_jlink_device(debug_net) or '').upper()
+
+    # An explicit erase range is checked before any box traffic.
+    range_error = _erase_range_error(device_type, erase_start, erase_size, no_erase=no_erase)
+    if range_error:
+        click.secho(range_error, fg='red', err=True)
+        ctx.exit(1)
+    erase_range_requested = erase_start is not None
+
     client = _get_service_client(target_box)
     if not client:
         click.secho("Error: Failed to create debug service client", fg='red', err=True)
+        ctx.exit(1)
+
+    if erase_range_requested and not _box_supports_erase_range(client):
+        click.secho(_ERASE_RANGE_UNSUPPORTED.format(box=box or target_box), fg='red', err=True)
+        client.close()
         ctx.exit(1)
 
     # Auto-connect if not already connected
@@ -1140,8 +1245,6 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, no_erase, erase, ha
     ):
         client.close()
         ctx.exit(1)
-
-    device_type = str(_debug_net_jlink_device(debug_net) or '').upper()
 
     # Erase flash before flashing (default behavior; skip with --no-erase).
     #
@@ -1171,8 +1274,15 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, no_erase, erase, ha
     # path warns and continues rather than aborting.
     if not no_erase:
         try:
-            click.echo("Erasing flash memory...", err=True)
-            erase_result = client.erase(debug_net, speed='4000', transport='SWD')
+            if erase_range_requested:
+                click.echo(
+                    f"Erasing flash memory ({_format_erase_range(erase_start, erase_size)})...",
+                    err=True,
+                )
+            else:
+                click.echo("Erasing flash memory...", err=True)
+            erase_result = client.erase(debug_net, speed='4000', transport='SWD',
+                                        erase_start=erase_start, erase_size=erase_size)
             # /debug/erase answers 200 on the J-Link path whether or not the
             # probe ever attached, so the returned text is the only evidence
             # that anything was erased.
@@ -1182,7 +1292,7 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, no_erase, erase, ha
                 click.secho(f"Flash erase failed: {erase_failure}", fg='red', err=True)
                 client.close()
                 ctx.exit(1)
-            click.secho("Erase complete!", fg='green', err=True)
+            click.secho(_erase_complete_line(erase_result), fg='green', err=True)
         except click.exceptions.Exit:
             raise
         except Exception as e:
@@ -1307,10 +1417,16 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, no_erase, erase, ha
               help='Suppress warning messages')
 @click.option('--json', 'json_output', is_flag=True, default=False,
               help='Output results in JSON format')
+@click.option('--erase-start', type=MemoryAddressType(), default=None, metavar='ADDR',
+              help='First address to erase, hex (0x16000000) or decimal. '
+                   'Given together with --erase-size.')
+@click.option('--erase-size', type=ByteSizeType(), default=None, metavar='BYTES',
+              help='Bytes to erase from --erase-start: decimal, 0x hex, or a K/M suffix (2M). '
+                   'On a DA1469x the range must lie inside 0x16000000-0x17FFFFFF.')
 @click.option('--halt/--no-halt', is_flag=True, default=False,
               help='Halt the device after erase (keeps debugger connected)', show_default=True)
-def erase(ctx, box, speed, yes, quiet, json_output, halt):
-    """Erase all flash memory on target"""
+def erase(ctx, box, speed, yes, quiet, json_output, erase_start, erase_size, halt):
+    """Erase flash memory on target"""
 
     target_box = box
 
@@ -1324,9 +1440,21 @@ def erase(ctx, box, speed, yes, quiet, json_output, halt):
     )
     device_type = _debug_net_jlink_device(debug_net) or 'unknown'
 
+    # An explicit erase range is checked before any box traffic.
+    range_error = _erase_range_error(device_type, erase_start, erase_size)
+    if range_error:
+        click.secho(range_error, fg='red', err=True)
+        ctx.exit(1)
+    erase_range_requested = erase_start is not None
+
     # Confirm the erase operation (skip if quiet or json mode)
     if not yes and not quiet and not json_output:
-        if 'DA1469' in str(device_type).upper():
+        if erase_range_requested:
+            click.echo(
+                f"WARNING: This will erase {_format_erase_range(erase_start, erase_size)} "
+                f"on {device_type}"
+            )
+        elif 'DA1469' in str(device_type).upper():
             click.echo(
                 f"WARNING: On {device_type} this erases the external QSPI XIP range "
                 f"(J-Link address-range erase), not internal flash."
@@ -1343,6 +1471,11 @@ def erase(ctx, box, speed, yes, quiet, json_output, halt):
         click.secho("Error: Failed to create debug service client", fg='red', err=True)
         ctx.exit(1)
 
+    if erase_range_requested and not _box_supports_erase_range(client):
+        click.secho(_ERASE_RANGE_UNSUPPORTED.format(box=box or target_box), fg='red', err=True)
+        client.close()
+        ctx.exit(1)
+
     # Auto-connect if not already connected
     if not _auto_connect_if_needed(
         client, debug_net, ctx, quiet=quiet,
@@ -1353,10 +1486,16 @@ def erase(ctx, box, speed, yes, quiet, json_output, halt):
 
     # Execute erase
     if not quiet:
-        click.echo("Erasing flash memory...")
+        if erase_range_requested:
+            click.echo(
+                f"Erasing flash memory ({_format_erase_range(erase_start, erase_size)})..."
+            )
+        else:
+            click.echo("Erasing flash memory...")
 
     try:
-        result = client.erase(debug_net, speed=speed, transport='SWD')
+        result = client.erase(debug_net, speed=speed, transport='SWD',
+                              erase_start=erase_start, erase_size=erase_size)
     except requests.exceptions.HTTPError as e:
         error_detail = _http_error_detail(e, 'Erase failed:')
 
@@ -1391,7 +1530,7 @@ def erase(ctx, box, speed, yes, quiet, json_output, halt):
     if json_output:
         click.echo(json.dumps(result, indent=2))
     elif not quiet:
-        click.secho("Erase complete!", fg='green')
+        click.secho(_erase_complete_line(result), fg='green')
 
     # Erase internally disconnects (requires exclusive hardware access via JLinkExe)
     # Always reconnect to restore debugger connection (force=True so gdbserver + script

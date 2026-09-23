@@ -99,6 +99,10 @@ class _Rpc:
         self.calls.append(('flash_erase_all',))
         return 'erased'
 
+    def flash_erase_range(self, start, length):
+        self.calls.append(('flash_erase_range', start, length))
+        return 'range erased'
+
 
 class _Loader:
     """Fake ``flash_image`` / ``erase_range``, patched at the dispatch's seam."""
@@ -186,11 +190,11 @@ def _service_flash(device, address, **loader_kw):
     return run
 
 
-def _service_erase(device, **loader_kw):
+def _service_erase(device, request=None, **loader_kw):
     run = _Run()
     run.loader = _Loader(**loader_kw)
     with _service_env(device, run, run.loader):
-        _handler(run).handle_erase({'net': {'name': 'SWD', 'role': 'debug'}})
+        _handler(run).handle_erase({'net': {'name': 'SWD', 'role': 'debug'}, **(request or {})})
     if run.status == 200:
         run.output = run.payload['output'].split('\n')
     else:
@@ -231,12 +235,12 @@ def _net_flash(device, address, **loader_kw):
     return run
 
 
-def _net_erase(device, **loader_kw):
+def _net_erase(device, start=None, length=None, **loader_kw):
     run = _Run()
     run.loader = _Loader(**loader_kw)
     with _net_env(run, run.loader):
         try:
-            run.output = _net(device).erase().split('\n')
+            run.output = _net(device).erase(start, length).split('\n')
         except Da1469xLoaderError as exc:
             run.error = str(exc)
     return run
@@ -330,6 +334,48 @@ class EraseParityTests(unittest.TestCase):
         self.assertEqual(svc.rpc.built_with['device'], DA1469X)
         self.assertEqual(net.rpc.built_with['device'], DA1469X)
 
+    def test_a_requested_range_reaches_the_loader_on_both_paths(self):
+        # --erase-start 0x16100000 --erase-size 2M: the loader wants the
+        # flash offset, 0x100000, and both callers translate it the same way.
+        svc = _service_erase(DA1469X, request={'erase_start': XIP + 0x100000,
+                                               'erase_size': 0x200000})
+        net = _net_erase(DA1469X, XIP + 0x100000, 0x200000)
+        self.assertEqual(svc.loader.calls,
+                         [('erase_range', 'da1469x', 0, 0x100000, 0x200000)])
+        self.assertEqual(net.loader.calls, svc.loader.calls)
+        self.assertEqual(svc.status, 200)
+        self.assertEqual(net.output, svc.output)
+        self.assertEqual(svc.output[0], 'Erasing 0x16100000-0x162FFFFF (2 MiB)')
+        self.assertEqual(svc.payload['erase_range'], {
+            'start': XIP + 0x100000, 'end': XIP + 0x2FFFFF, 'length': 0x200000,
+            'source': 'request', 'text': '0x16100000-0x162FFFFF (2 MiB)',
+        })
+
+    def test_other_device_with_a_range_uses_erase_address_on_both_paths(self):
+        svc = _service_erase(OTHER, request={'erase_start': 0x08000000, 'erase_size': 0x1000})
+        net = _net_erase(OTHER, 0x08000000, 0x1000)
+        self.assertEqual(svc.rpc.calls, [('flash_erase_range', 0x08000000, 0x1000)])
+        self.assertEqual(net.rpc.calls, svc.rpc.calls)
+        self.assertEqual(svc.loader.calls, [])
+        self.assertEqual(net.output, svc.output)
+        self.assertEqual(svc.output, ['Erasing 0x08000000-0x08000FFF (4 KiB)', 'range erased'])
+        self.assertEqual(svc.payload['erase_range']['source'], 'request')
+
+    def test_the_response_reports_the_default_range_or_none(self):
+        self.assertEqual(_service_erase(DA1469X).payload['erase_range'], {
+            'start': XIP, 'end': XIP + DEFAULT_ERASE_LENGTH - 1, 'length': DEFAULT_ERASE_LENGTH,
+            'source': 'default', 'text': '0x16000000-0x160FFFFF (1 MiB)',
+        })
+        self.assertIsNone(_service_erase(OTHER).payload['erase_range'])
+
+    def test_a_range_outside_the_window_is_a_400_before_the_loader_runs(self):
+        svc = _service_erase(DA1469X, request={'erase_start': 0x15000000, 'erase_size': 0x1000})
+        self.assertEqual(svc.status, 400)
+        self.assertIn('QSPI XIP window', svc.error)
+        self.assertEqual(svc.loader.calls, [])
+        with self.assertRaises(ValueError):
+            _net_erase(DA1469X, 0x15000000, 0x1000)
+
 
 # ---- 2. the source scan --------------------------------------------------------
 
@@ -391,7 +437,10 @@ class OneDispatchInTheTree(unittest.TestCase):
     def test_the_dispatch_itself_calls_all_of_them(self):
         # A scanner that silently matches nothing is worse than no scanner.
         names = {name for _, name in _flash_calls(DISPATCH)}
-        self.assertEqual(names, {'program', 'flash_erase_all', 'flash_image', 'erase_range'})
+        self.assertEqual(
+            names,
+            {'program', 'flash_erase_all', 'flash_erase_range', 'flash_image', 'erase_range'},
+        )
 
     def test_the_scanner_sees_attribute_and_name_calls(self):
         src = 'rpc.program(p)\nx = self._rpc().flash_erase_all()\nfor l in flash_image(r, p): pass\n'

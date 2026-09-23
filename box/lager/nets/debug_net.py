@@ -1240,8 +1240,22 @@ try:
                 results.append(line)
             return '\n'.join(results)
 
-        def erase(self):
-            """Erase flash (whole chip on most targets)."""
+        def erase(self, start=None, length=None):
+            """Erase flash. Returns combined output as a string.
+
+            With no arguments: the whole chip on most targets, and on a
+            DA1469x the first 1 MiB of the external QSPI from ``0x16000000``
+            (or the ``LAGER_ERASE_RANGE`` line of the net's JLinkScript, on
+            J-Link). With ``start`` and ``length``, always given together:
+            exactly that range, on either backend and any target. Pass
+            absolute addresses; on a DA1469x that is the XIP address
+            (``0x16000000`` for the start of QSPI), as ``flash()`` takes it,
+            and the range must lie inside the QSPI XIP window. A range the
+            target cannot erase raises ``ValueError`` before the probe is
+            touched. When a range applies, the first output line names it.
+            """
+            if (start is None) != (length is None):
+                raise ValueError('erase() takes both start and length, or neither')
             def _erase():
                 if self.backend == BACKEND_OPENOCD:
                     self._ensure_openocd_running()
@@ -1250,10 +1264,12 @@ try:
                     # range erase on a DA1469x.
                     return '\n'.join(erase_target(
                         self._openocd_rpc(timeout=ERASE_RPC_TIMEOUT_S), self.device,
+                        start=start, length=length,
                     ))
                 return '\n'.join(chip_erase(
                     device=self.device, speed=self.speed, transport=self.transport,
                     serial=self.serial, script_file=self._jlink_script_path,
+                    start=start, length=length,
                 ))
             return self._self_heal(_erase)
 

@@ -133,7 +133,7 @@ def _build_dispatch_stub():
         if out:
             yield out
 
-    def erase_target(rpc, device):
+    def erase_target(rpc, device, *, start=None, length=None):
         out = rpc.flash_erase_all()
         if out:
             yield out

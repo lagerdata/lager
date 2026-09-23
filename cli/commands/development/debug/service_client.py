@@ -19,6 +19,7 @@ on-box ``lager python`` script. Do not "sync" these two files.
 import json
 import base64
 import requests
+import math
 from typing import Dict, Any, Optional
 from pathlib import Path
 
@@ -238,18 +239,31 @@ class DebugServiceClient:
         ).json()
 
     def erase(self, net: Dict[str, Any], speed: str = '4000',
-              transport: str = 'SWD') -> Dict[str, Any]:
-        """Erase flash memory."""
+              transport: str = 'SWD', *, erase_start: Optional[int] = None,
+              erase_size: Optional[int] = None) -> Dict[str, Any]:
+        """Erase flash memory.
+
+        ``erase_start`` / ``erase_size`` are sent only when given, so a box
+        that predates them sees the body it always did. The wait grows with
+        the size, a minute per MiB, as the box's own erase budgets do.
+        """
         data = {
             'net': net,
             'speed': speed,
             'transport': transport,
         }
+        if erase_start is not None:
+            data['erase_start'] = erase_start
+        if erase_size is not None:
+            data['erase_size'] = erase_size
+        timeout = 120  # Erase can take a while
+        if erase_size is not None:
+            timeout += 60 * math.ceil(erase_size / (1 << 20))
 
         return self._request(
             'POST', '/debug/erase',
             json=data,
-            timeout=120,  # Erase can take a while
+            timeout=timeout,
         ).json()
 
     def read_memory(self, net: Dict[str, Any], start_addr: int,

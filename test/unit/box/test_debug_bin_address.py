@@ -65,3 +65,45 @@ def _box_address(binfile, address):
 ])
 def test_the_address_given_is_the_address_sent(sent, binfile, address, expected):
     assert sent(binfile, address) == expected
+
+
+# --------------------------------------------------------------------------- #
+# /debug/erase: erase_start / erase_size are sent only when given             #
+# --------------------------------------------------------------------------- #
+
+NET = {"name": "debug1", "role": "debug"}
+
+
+def _cli_erase(**kwargs):
+    client = cli_client_mod.DebugServiceClient("192.0.2.5", ssh_tunnel=False)
+    with mock.patch.object(client, "_request", return_value=_Resp()) as request:
+        client.erase(NET, **kwargs)
+    return request.call_args.kwargs
+
+
+def _box_erase(**kwargs):
+    client = box_client_mod.DebugServiceClient("127.0.0.1")
+    with mock.patch.object(client.session, "post", return_value=_Resp()) as post:
+        client.erase(NET, **kwargs)
+    return post.call_args.kwargs
+
+
+@pytest.mark.parametrize("sent", [_cli_erase, _box_erase], ids=["cli", "box"])
+def test_no_range_keeps_the_body_an_older_box_expects(sent):
+    kwargs = sent()
+    assert kwargs["json"] == {"net": NET, "speed": "4000", "transport": "SWD"}
+    assert kwargs["timeout"] == 120
+
+
+@pytest.mark.parametrize("sent", [_cli_erase, _box_erase], ids=["cli", "box"])
+def test_a_range_is_sent_as_two_integer_keys(sent):
+    kwargs = sent(erase_start=0x16000000, erase_size=0x200000)
+    assert kwargs["json"]["erase_start"] == 0x16000000
+    assert kwargs["json"]["erase_size"] == 0x200000
+    assert kwargs["json"]["net"] == NET
+
+
+@pytest.mark.parametrize("sent", [_cli_erase, _box_erase], ids=["cli", "box"])
+def test_the_wait_grows_a_minute_per_mib(sent):
+    assert sent(erase_start=0x16000000, erase_size=0x200000)["timeout"] == 240
+    assert sent(erase_start=0x16000000, erase_size=0x200001)["timeout"] == 300

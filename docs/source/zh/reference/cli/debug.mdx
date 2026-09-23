@@ -26,7 +26,7 @@ lager debug [OPTIONS] [NET_NAME] COMMAND [ARGS]...
 | `disconnect` | 停止 GDB 服务器 |
 | `flash` | 把固件烧录到目标 |
 | `reset` | 复位目标设备 |
-| `erase` | 擦除闪存（在 DA1469x 上为 1 MiB 范围） |
+| `erase` | 擦除闪存（全部，或给定的范围；DA1469x 上默认为 1 MiB） |
 | `memrd` | 从目标读取内存 |
 | `status` | 显示调试 Net 的状态 |
 | `health` | 检查调试服务的健康状况 |
@@ -127,9 +127,13 @@ lager debug [NET_NAME] flash [OPTIONS]
 - `--verbose` - 显示详细的 J-Link 输出
 - `--force-reconnect` - 烧录前强制干净重连
 - `--no-erase` - 跳过擦除步骤（默认情况下 `flash` 会先擦除再编程，以获得干净状态）
+- `--erase-start ADDR` - 编程前擦除的起始地址，十六进制（`0x16000000`）或十进制。必须与 `--erase-size` 一起给出。
+- `--erase-size BYTES` - 从 `--erase-start` 起擦除的字节数：十进制、`0x` 十六进制，或带 `K`/`M` 后缀（例如 `2M`）。
 - `--halt / --no-halt` - 烧录之后让设备停住（默认 no-halt）
 
 <Note>`flash` **默认**会先擦除再编程，因此不需要任何标志就能得到干净状态（这正是 RTT 初始化所需要的）。只有当您有意保留现有闪存内容时才传 `--no-erase`。旧的 `--erase` 标志现在是空操作，仅为向后兼容而保留。</Note>
+
+`--erase-start` 和 `--erase-size` 设定这次擦除的范围，在两种后端上都有效。不带它们时，`flash` 擦除整片，在 DA1469x 上则从 `0x16000000` 擦除 1 MiB。下面的 `erase` 一节说明了范围的规则，以及它需要的 Box 版本。
 
 **失败输出：**
 
@@ -152,6 +156,9 @@ lager debug flash --bin build/firmware.bin,0x08000000 --box my-lager-box
 
 # Flash while preserving existing flash contents (skip the default erase)
 lager debug flash --hex build/firmware.hex --no-erase --box my-lager-box
+
+# Erase 2 MiB from the start of QSPI on a DA1469x, then flash
+lager debug flash --bin build/app.bin,0x16000000 --erase-start 0x16000000 --erase-size 2M --box my-lager-box
 
 # Flash and halt for debugging
 lager debug flash --elf build/firmware.elf --halt --box my-lager-box
@@ -188,7 +195,7 @@ lager debug reset --force-reconnect --box my-lager-box
 
 ### `erase`
 
-擦除目标上的全部闪存。**这是一个破坏性操作。**
+擦除目标上的闪存：全部，或用 `--erase-start` 和 `--erase-size` 给定的范围。**这是一个破坏性操作。**
 
 在 DA1469x 上，`erase` 只擦除外部 QSPI 闪存的一段范围。请参阅
 [DA1469x 目标](#da1469x-目标)。
@@ -203,7 +210,17 @@ lager debug [NET_NAME] erase [OPTIONS]
 - `--yes` - 跳过确认提示
 - `--quiet` - 抑制警告信息。它同时也会跳过确认提示。
 - `--json` - 以 JSON 格式输出结果。它同时也会跳过确认提示。
+- `--erase-start ADDR` - 擦除的起始地址，十六进制（`0x16000000`）或十进制。必须与 `--erase-size` 一起给出。
+- `--erase-size BYTES` - 从 `--erase-start` 起擦除的字节数：十进制、`0x` 十六进制，或带 `K`/`M` 后缀（例如 `2M`）。
 - `--halt / --no-halt` - 擦除后让设备停住（默认 no-halt）
+
+**擦除范围：**
+
+`--erase-start` 和 `--erase-size` 必须一起给出。`--erase-start` 接受十六进制（`0x16000000`）或十进制。`--erase-size` 接受十进制、`0x` 十六进制，或带 `K`/`M` 后缀（例如 `2M`，以 1024 为基数）。范围必须落在 32 位地址空间内。在 DA1469x 上，范围必须位于 `0x16000000`–`0x17FFFFFF` 之内，并且会取代 1 MiB 的默认值和 JLinkScript 中的 `LAGER_ERASE_RANGE` 行。在其他目标上，该范围取代全片擦除：J-Link 运行 `erase <start> <end>`，OpenOCD 运行 `flash erase_address`。无效的范围会在 CLI 联系 Box 之前就被拒绝。
+
+0.50.0 及以上版本的 Box 接受该范围。在较旧的 Box 上，CLI 会在擦除之前拒绝这两个选项，并给出提到 `lager update` 的信息。Box 不会收到请求，因此也不会改为擦除它的默认范围。
+
+成功时 CLI 会打印 `Erase complete:` 和 Box 实际擦除的范围，例如 `Erase complete: 0x16000000-0x161FFFFF (2 MiB)`，或 `Erase complete: full chip`。早于 0.50.0 的 Box 不报告范围，此时 CLI 打印 `Erase complete!`。使用 `--json` 时，`erase_range` 字段包含 `start`、`end`（闭区间）、`length`、`source` 和 `text`。`source` 为 `request`、`script` 或 `default`。全片擦除时该字段为 `null`。
 
 **失败输出：**
 
@@ -231,6 +248,9 @@ lager debug erase --box my-lager-box
 
 # Erase without confirmation
 lager debug erase --box my-lager-box --yes
+
+# Erase 2 MiB from the start of QSPI on a DA1469x
+lager debug erase --box my-lager-box --yes --erase-start 0x16000000 --erase-size 2M
 
 # Erase and halt afterward
 lager debug erase --box my-lager-box --yes --halt
@@ -542,9 +562,8 @@ lager nets remove-script debug1 --box my-lager-box
 以便就地执行（XIP）。
 
 - **地址。** 请传入绝对的 XIP 地址，例如 `--bin build/app.bin,0x16000000`。不要传闪存偏移量。
-- **擦除。** 在两种后端上，`erase` 都从 `0x16000000` 擦除 1 MiB。在这个系列上它从不做全片擦除。
-- **J-Link 上的擦除范围。** 请在该 Net 的 JLinkScript 中加入类似
-  `LAGER_ERASE_RANGE: 0x16000000 0x160FFFFF` 的一行。J-Link 后端随后会擦除这个闭区间。
+- **擦除。** 默认情况下，`erase` 以及 `flash` 之前的擦除，在两种后端上都从 `0x16000000` 擦除 1 MiB。这个系列从不做全片擦除。
+- **擦除范围。** `--erase-start` 和 `--erase-size` 在两种后端上设定范围，该范围必须位于 `0x16000000`–`0x17FFFFFF` 之内。在 J-Link 上，当这两个选项缺省时，该 Net 的 JLinkScript 中类似 `LAGER_ERASE_RANGE: 0x16000000 0x160FFFFF` 的一行会设定范围。J-Link 后端随后会擦除这个闭区间。选项优先于脚本行，脚本行优先于默认值。
 
 在 OpenOCD 探针上，主线 OpenOCD 没有这种 QSPI 闪存的驱动。
 Box 改为运行一个驻留在 RAM 中的闪存加载器：
@@ -557,7 +576,7 @@ Box 改为运行一个驻留在 RAM 中的闪存加载器：
   设为一个容器内路径，然后运行 `lager box-config apply`。
 - OpenOCD 没有这个系列的内置目标配置。请用 `lager nets set-script` 或
   `lager nets add --openocd-config` 为该 Net 附加一份配置。
-- 一次丢失的调试读取不会中止加载器。加载器会重试读取，直到该步骤的截止时间。截止时间为：启动 10 秒，擦除 60 秒，每个编程块 30 秒。
+- 一次丢失的调试读取不会中止加载器。加载器会重试读取，直到该步骤的截止时间。截止时间为：启动 10 秒，擦除每 MiB 60 秒，每个编程块 30 秒。
 
 加载器失败时会指出它打印的最后一行进度信息：
 

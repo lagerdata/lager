@@ -886,7 +886,7 @@ def erase_flash(start_addr, length, mcu=None, serial=None, gdb_port=2331, script
 
 
 def chip_erase(device, speed='4000', transport='SWD', mcu=None, script_file=None,
-               serial=None):
+               serial=None, *, start=None, length=None):
     """
     Erase flash via J-Link Commander.
 
@@ -896,6 +896,11 @@ def chip_erase(device, speed='4000', transport='SWD', mcu=None, script_file=None
     (``SetEnableFlashbank``), then unlocks external erase (``EnableEraseAllFlashBanks``),
     then ``erase <start> <end>`` — not a global chip erase — to avoid wiping internal
     flash. No extra Commander steps after the range erase (connect, erase, disconnect).
+
+    A *start* / *length* pair is an explicit range, in absolute addresses, and takes
+    precedence over the script line and the default on every device; on a DA1469x it
+    must lie inside the QSPI XIP window. It is checked here, before the probe's other
+    sessions are stopped, and the first line yielded then names the range.
 
     WARNING: On non-DA1469 devices, full chip erase erases ALL data on the chip.
 
@@ -907,15 +912,25 @@ def chip_erase(device, speed='4000', transport='SWD', mcu=None, script_file=None
         script_file: Optional path to J-Link script (from debug service); if None,
             uses a temp file left by connect or api._get_script_file().
         serial: J-Link USB serial. None falls back to the legacy single-probe path.
+        start: First address to erase, given together with *length*, or None.
+        length: Number of bytes to erase, given together with *start*, or None.
 
     Returns:
         Generator yielding output from erase operation
 
     Raises:
         JLinkStartError: If J-Link fails to start
+        ValueError: for a range the device cannot erase, before anything is touched
     """
     # Lazy import to avoid circular dependencies
+    from . import jlink as _jlink
     from .jlink import JLink
+    from .erase_bounds import format_bounds, validate_bounds
+
+    if (start is None) != (length is None):
+        raise ValueError('chip_erase() takes both start and length, or neither')
+    if start is not None:
+        validate_bounds(start, length, da1469x=_probes.is_da1469x(device))
 
     # Stop running J-Link processes for *this* probe to free its USB handle for JLinkExe.
     # Legacy start_jlink() uses /tmp/jlink.pid (or per-serial when *serial* is set);
@@ -960,7 +975,16 @@ def chip_erase(device, speed='4000', transport='SWD', mcu=None, script_file=None
     jlink = TempJLink(cmd_args, script_file=resolved_script, serial=serial)
     jlink.__class__ = JLink
 
-    return jlink.chip_erase()
+    # Name the range first, the way the OpenOCD path does, so a caller that
+    # joins the output (the service, DebugNet.erase()) shows what was erased.
+    resolved = _jlink.resolve_erase_range(device, resolved_script, start, length)
+
+    def _lines():
+        if resolved is not None:
+            yield f'Erasing {format_bounds(resolved[0], resolved[1])}'
+        yield from jlink.chip_erase(start=start, length=length)
+
+    return _lines()
 
 
 def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None, use_gdb=True,

@@ -54,6 +54,7 @@ import re
 import struct
 import tempfile
 import time
+import math
 from typing import Dict, Iterator, Iterable, Optional, Tuple
 
 from .openocd import OpenOcdRpc, OpenOcdRpcError
@@ -242,6 +243,25 @@ def xip_to_flash_offset(addr: Optional[int]) -> int:
             f'the address to flash from the start of QSPI.'
         )
     return addr - QSPI_XIP_BASE
+
+
+def xip_range_to_flash_offset(start: int, length: int) -> int:
+    """Translate an erase range given in absolute XIP addresses to a flash offset.
+
+    Unlike :func:`xip_to_flash_offset`, both ends must lie inside the QSPI
+    XIP window and ``0`` is not a stand-in for "the start of QSPI": an erase
+    range is always explicit. Raises :class:`Da1469xLoaderError` otherwise.
+    """
+    if length <= 0:
+        raise Da1469xLoaderError(f'erase length must be positive, got {length}')
+    if not (QSPI_XIP_BASE <= start and start + length <= QSPI_XIP_END):
+        raise Da1469xLoaderError(
+            f'erase range {hex(start)}-{hex(start + length - 1)} is outside '
+            f'the DA1469x QSPI XIP window ({hex(QSPI_XIP_BASE)}-'
+            f'{hex(QSPI_XIP_END - 1)}). Pass absolute XIP addresses '
+            f'(e.g. {hex(QSPI_XIP_BASE)} for the start of QSPI).'
+        )
+    return start - QSPI_XIP_BASE
 
 
 # ---------------------------------------------------------------------------
@@ -724,6 +744,16 @@ def _fl_ping(rpc: OpenOcdRpc, syms: Dict[str, int]) -> None:
         raise Da1469xLoaderError(f'flash_loader ping returned rc={rc}')
 
 
+def _fl_erase_timeout_s(amount: int) -> float:
+    """:data:`_FL_ERASE_TIMEOUT_S` per MiB of *amount*, never less than one budget.
+
+    The constant was sized for the 1 MiB default erase. ``--erase-size`` can
+    ask for more, and the loader erases the whole range in one command, so
+    the wait grows with it.
+    """
+    return _FL_ERASE_TIMEOUT_S * max(1, math.ceil(amount / (1 << 20)))
+
+
 def _fl_erase(rpc: OpenOcdRpc, syms: Dict[str, int],
               flash_id: int, addr: int, amount: int) -> None:
     """Equivalent of the ``fl_erase`` GDB macro: ping, set parameters,
@@ -736,7 +766,7 @@ def _fl_erase(rpc: OpenOcdRpc, syms: Dict[str, int],
     rpc.mww(syms['fl_cmd'], FL_CMD_ERASE)
     rc = _poll_word(
         rpc, syms['fl_cmd_rc'], lambda v: v != 0,
-        timeout_s=_FL_ERASE_TIMEOUT_S, label='erase (fl_cmd_rc!=0)',
+        timeout_s=_fl_erase_timeout_s(amount), label='erase (fl_cmd_rc!=0)',
     )
     if rc != FL_RC_OK:
         raise Da1469xLoaderError(
@@ -974,4 +1004,6 @@ __all__ = [
     'Da1469xLoaderError',
     'erase_range',
     'flash_image',
+    'xip_range_to_flash_offset',
+    'xip_to_flash_offset',
 ]
