@@ -893,12 +893,15 @@ def _resolve_script_path(script_file):
     ``probes.RUNTIME_DIR``, and a path to a file that is not on disk is no
     script at all. See lager.util.paths.
     """
-    if script_file:
-        script_file = os.path.normpath(script_file)
-        if not script_file.startswith(_probes.RUNTIME_DIR + os.sep):
-            raise ValueError(
-                f'refusing a script path outside {_probes.RUNTIME_DIR!r}')
-    return script_file if (script_file and os.path.exists(script_file)) else None
+    if not script_file:
+        return None
+    # One definition, normpath, a direct startswith that dominates the use:
+    # the shape CodeQL recognizes as a barrier (see lager.util.paths).
+    path = os.path.normpath(script_file)
+    if not path.startswith(_probes.RUNTIME_DIR + os.sep):
+        raise ValueError(
+            f'refusing a script path outside {_probes.RUNTIME_DIR!r}')
+    return path if os.path.exists(path) else None
 
 
 def jlink_erase_plan(device, script_file=None, *, start=None, length=None):
