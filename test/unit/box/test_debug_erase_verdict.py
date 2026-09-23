@@ -108,21 +108,96 @@ def _handler():
     return handler, recorder
 
 
-def _erase(output):
-    """Drive handle_erase down the J-Link path with `output` as JLinkExe's."""
+def _erase(output, request=None, device='NRF5340_XXAA_APP', seen=None):
+    """Drive handle_erase down the J-Link path with `output` as JLinkExe's.
+
+    `request` adds keys to the POST body (`erase_start` / `erase_size`);
+    `seen`, a dict, receives the kwargs `chip_erase` was called with.
+    """
     handler, recorder = _handler()
+
+    def chip_erase(**kwargs):
+        if seen is not None:
+            seen.update(kwargs)
+        return iter(output)
+
     with patch.object(service.safety, 'check_destructive', lambda net, op: None), \
-         patch.object(service, '_resolve_device_type',
-                      lambda net: 'NRF5340_XXAA_APP'), \
+         patch.object(service, '_resolve_device_type', lambda net: device), \
          patch.object(service, 'resolve_backend',
                       lambda net: service.BACKEND_JLINK), \
          patch.object(service, '_resolve_probe',
                       lambda net: ('000051014439', 0, 2331, 2332, 2333, 2334)), \
          patch.object(service, '_openocd_ports_for_slot', lambda slot: (4444, 6666)), \
          patch.object(service, '_get_script_file', lambda net: None), \
-         patch.object(service, 'chip_erase', lambda **kwargs: iter(output)):
-        handler.handle_erase({'net': {'name': 'debug1', 'role': 'debug'}})
+         patch.object(service, 'chip_erase', chip_erase):
+        handler.handle_erase({'net': {'name': 'debug1', 'role': 'debug'}, **(request or {})})
     return recorder
+
+
+class EraseRangeTests(unittest.TestCase):
+    """`erase_start` / `erase_size` in the body reach `chip_erase`, are
+    checked before it runs, and the range erased is reported back."""
+
+    XIP = 0x16000000
+
+    def test_no_range_forwards_none_and_reports_a_full_chip(self):
+        seen = {}
+        recorder = _erase(ERASE_OK, seen=seen)
+        self.assertEqual(recorder.status, 200)
+        self.assertEqual((seen['start'], seen['length']), (None, None))
+        self.assertIn('erase_range', recorder.payload)
+        self.assertIsNone(recorder.payload['erase_range'])
+
+    def test_a_da1469x_with_no_range_reports_the_default(self):
+        recorder = _erase(ERASE_OK, device='DA14695')
+        self.assertEqual(recorder.status, 200)
+        self.assertEqual(recorder.payload['erase_range'], {
+            'start': self.XIP, 'end': self.XIP + 0xFFFFF, 'length': 0x100000,
+            'source': 'default', 'text': '0x16000000-0x160FFFFF (1 MiB)',
+        })
+
+    def test_a_request_reaches_chip_erase_and_is_reported(self):
+        seen = {}
+        recorder = _erase(ERASE_OK, {'erase_start': self.XIP, 'erase_size': 0x200000},
+                          device='DA14695', seen=seen)
+        self.assertEqual(recorder.status, 200)
+        self.assertEqual((seen['start'], seen['length']), (self.XIP, 0x200000))
+        self.assertEqual(recorder.payload['erase_range']['source'], 'request')
+        self.assertEqual(recorder.payload['erase_range']['text'],
+                         '0x16000000-0x161FFFFF (2 MiB)')
+
+    def test_half_a_pair_is_a_400_and_nothing_runs(self):
+        for request in ({'erase_start': self.XIP}, {'erase_size': 0x200000}):
+            with self.subTest(request=request):
+                seen = {}
+                recorder = _erase(ERASE_OK, request, seen=seen)
+                self.assertEqual(recorder.status, 400)
+                self.assertIn('together', recorder.payload['error'])
+                self.assertEqual(seen, {}, 'chip_erase must not run')
+
+    def test_a_range_outside_the_da1469x_window_is_a_400(self):
+        seen = {}
+        recorder = _erase(ERASE_OK, {'erase_start': 0x15000000, 'erase_size': 0x1000},
+                          device='DA14695', seen=seen)
+        self.assertEqual(recorder.status, 400)
+        self.assertIn('QSPI XIP window', recorder.payload['error'])
+        self.assertEqual(seen, {})
+
+    def test_the_same_range_is_fine_on_another_part(self):
+        seen = {}
+        recorder = _erase(ERASE_OK, {'erase_start': 0x15000000, 'erase_size': 0x1000}, seen=seen)
+        self.assertEqual(recorder.status, 200)
+        self.assertEqual((seen['start'], seen['length']), (0x15000000, 0x1000))
+
+    def test_non_integer_values_are_a_400(self):
+        for request in ({'erase_start': '0x16000000', 'erase_size': 0x1000},
+                        {'erase_start': self.XIP, 'erase_size': True}):
+            with self.subTest(request=request):
+                recorder = _erase(ERASE_OK, request)
+                self.assertEqual(recorder.status, 400)
+
+    def test_health_lists_the_feature(self):
+        self.assertIn('erase_range', service.SERVICE_FEATURES)
 
 
 class EraseVerdictTests(unittest.TestCase):

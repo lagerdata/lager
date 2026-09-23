@@ -26,7 +26,7 @@ lager debug [OPTIONS] [NET_NAME] COMMAND [ARGS]...
 | `disconnect` | Stop the GDB server |
 | `flash` | Flash firmware to target |
 | `reset` | Reset target device |
-| `erase` | Erase flash memory (a 1 MiB range on DA1469x) |
+| `erase` | Erase flash memory (all of it or a given range; 1 MiB on DA1469x by default) |
 | `memrd` | Read memory from target |
 | `status` | Show debug net status |
 | `health` | Check debug service health |
@@ -127,12 +127,16 @@ lager debug [NET_NAME] flash [OPTIONS]
 - `--verbose` - Show detailed J-Link output
 - `--force-reconnect` - Force clean reconnect before flash
 - `--no-erase` - Skip the erase step (by default `flash` erases before programming for a clean state)
+- `--erase-start ADDR` - First address of the erase before programming, hex (`0x16000000`) or decimal. Given together with `--erase-size`.
+- `--erase-size BYTES` - Bytes to erase from `--erase-start`: decimal, `0x` hex, or a `K`/`M` suffix such as `2M`.
 - `--halt / --no-halt` - Halt device after flashing (default: no-halt)
 
 <Note>`flash` erases before programming **by default**, so no flag is needed for a
 clean state (this is what RTT initialization wants). Pass `--no-erase` only when
 you intentionally want to preserve existing flash contents. The older `--erase`
 flag is now a no-op kept for backward compatibility.</Note>
+
+`--erase-start` and `--erase-size` set the range of that erase, on both backends. Without them, `flash` erases the whole chip, or 1 MiB from `0x16000000` on a DA1469x. The `erase` section below describes the range, and the box version it needs.
 
 **Failure output:**
 
@@ -154,6 +158,9 @@ lager debug flash --bin build/firmware.bin,0x08000000 --box my-lager-box
 
 # Flash while preserving existing flash contents (skip the default erase)
 lager debug flash --hex build/firmware.hex --no-erase --box my-lager-box
+
+# Erase 2 MiB from the start of QSPI on a DA1469x, then flash
+lager debug flash --bin build/app.bin,0x16000000 --erase-start 0x16000000 --erase-size 2M --box my-lager-box
 
 # Flash and halt for debugging
 lager debug flash --elf build/firmware.elf --halt --box my-lager-box
@@ -190,7 +197,7 @@ lager debug reset --force-reconnect --box my-lager-box
 
 ### `erase`
 
-Erase all flash memory on target. **This is a destructive operation.**
+Erase flash memory on the target: all of it, or the range you give with `--erase-start` and `--erase-size`. **This is a destructive operation.**
 
 On a DA1469x, `erase` erases only a range of the external QSPI flash. See [DA1469x Targets](#da1469x-targets).
 
@@ -204,7 +211,17 @@ lager debug [NET_NAME] erase [OPTIONS]
 - `--yes` - Skip confirmation prompt
 - `--quiet` - Suppress warning messages. This also skips the confirmation prompt.
 - `--json` - Output results in JSON format. This also skips the confirmation prompt.
+- `--erase-start ADDR` - First address to erase, hex (`0x16000000`) or decimal. Given together with `--erase-size`.
+- `--erase-size BYTES` - Bytes to erase from `--erase-start`: decimal, `0x` hex, or a `K`/`M` suffix such as `2M`.
 - `--halt / --no-halt` - Halt after erase (default: no-halt)
+
+**Erase range:**
+
+`--erase-start` and `--erase-size` are given together. `--erase-start` takes hex (`0x16000000`) or decimal. `--erase-size` takes decimal, `0x` hex, or a `K`/`M` suffix such as `2M` (1024-based). The range must fit in the 32-bit address space. On a DA1469x it must lie inside `0x16000000`–`0x17FFFFFF`, and it replaces both the 1 MiB default and the `LAGER_ERASE_RANGE` line of the JLinkScript. On any other target, the range replaces the full chip erase: J-Link runs `erase <start> <end>`, and OpenOCD runs `flash erase_address`. A bad range is refused before the CLI contacts the box.
+
+A box on 0.50.0 or later accepts the range. On an older box, the CLI refuses the two options before the erase, with a message that names `lager update`. The box never sees the request, so it never erases its default range in place of yours.
+
+On success the CLI prints `Erase complete:` and the range the box erased, for example `Erase complete: 0x16000000-0x161FFFFF (2 MiB)`, or `Erase complete: full chip`. A box older than 0.50.0 does not report the range, and the CLI prints `Erase complete!`. With `--json`, the `erase_range` field carries `start`, `end` (inclusive), `length`, `source`, and `text`. `source` is `request`, `script`, or `default`. The field is `null` for a full chip erase.
 
 **Failure output:**
 
@@ -230,6 +247,9 @@ lager debug erase --box my-lager-box
 
 # Erase without confirmation
 lager debug erase --box my-lager-box --yes
+
+# Erase 2 MiB from the start of QSPI on a DA1469x
+lager debug erase --box my-lager-box --yes --erase-start 0x16000000 --erase-size 2M
 
 # Erase and halt afterward
 lager debug erase --box my-lager-box --yes --halt
@@ -536,8 +556,8 @@ Once attached, the script is used automatically for all debug operations (connec
 A device name that contains `DA1469` selects the DA1469x handling. On this family, `flash` and `erase` act on the external QSPI flash. The CPU maps that flash for execute-in-place (XIP) at `0x16000000`.
 
 - **Addresses.** Pass an absolute XIP address, for example `--bin build/app.bin,0x16000000`. Do not pass a flash offset.
-- **Erase.** `erase` erases 1 MiB from `0x16000000` on both backends. It never does a full chip erase on this family.
-- **Erase range on J-Link.** Add a line such as `LAGER_ERASE_RANGE: 0x16000000 0x160FFFFF` to the JLinkScript of the net. The J-Link backend then erases that inclusive range.
+- **Erase.** By default, `erase` and the erase before `flash` erase 1 MiB from `0x16000000` on both backends. This family never gets a full chip erase.
+- **Erase range.** `--erase-start` and `--erase-size` set the range on both backends, and it must lie inside `0x16000000`–`0x17FFFFFF`. On J-Link, when the two options are absent, a line such as `LAGER_ERASE_RANGE: 0x16000000 0x160FFFFF` in the JLinkScript of the net sets the range. The J-Link backend then erases that inclusive range. The options win over the script line, and the script line wins over the default.
 
 On an OpenOCD probe, mainline OpenOCD has no driver for this QSPI flash. The box runs a RAM-resident flash loader instead:
 
@@ -546,7 +566,7 @@ On an OpenOCD probe, mainline OpenOCD has no driver for this QSPI flash. The box
 - Put `flash_loader.elf` and `flash_loader.elf.bin` in `~/third_party/customer-binaries/openocd/flash-loaders/da1469x/` on the box host. The container sees that directory as `/home/www-data/customer-binaries/openocd/flash-loaders/da1469x/`.
 - To use a different parent directory, set `LAGER_FLASH_LOADERS_DIR` to a container path with `lager box-config env set`, then run `lager box-config apply`.
 - OpenOCD has no built-in target config for this family. Attach one to the net with `lager nets set-script` or `lager nets add --openocd-config`.
-- A dropped debug read does not stop the loader. The loader retries the read until the deadline of its step. The deadlines are 10 s for boot, 60 s for erase, and 30 s per program chunk.
+- A dropped debug read does not stop the loader. The loader retries the read until the deadline of its step. The deadlines are 10 s for boot, 60 s per MiB for erase, and 30 s per program chunk.
 
 A loader failure names the last progress line that the loader printed:
 

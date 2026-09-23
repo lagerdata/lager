@@ -69,6 +69,10 @@ class _Rpc:
         self.calls.append(('flash_erase_all',))
         return 'erased'
 
+    def flash_erase_range(self, start, length):
+        self.calls.append(('flash_erase_range', start, length))
+        return 'range erased'
+
 
 class _Loader:
     """Fake ``flash_image`` / ``erase_range`` recording every dispatch."""
@@ -103,8 +107,8 @@ class _DispatchCase(unittest.TestCase):
     def flash(self, device, path='/tmp/app.bin', address=None):
         return list(openocd_flash.flash_target(self.rpc, device, path, address=address))
 
-    def erase(self, device):
-        return list(openocd_flash.erase_target(self.rpc, device))
+    def erase(self, device, **kwargs):
+        return list(openocd_flash.erase_target(self.rpc, device, **kwargs))
 
 
 class FlashDispatchTests(_DispatchCase):
@@ -179,6 +183,40 @@ class EraseDispatchTests(_DispatchCase):
     def test_erase_with_empty_output_yields_nothing(self):
         self.rpc.flash_erase_all = lambda: ''
         self.assertEqual(self.erase('NRF52840_XXAA'), [])
+
+    def test_da1469x_default_names_the_range_first(self):
+        out = self.erase('DA14695')
+        self.assertEqual(out[0], 'Erasing 0x16000000-0x160FFFFF (1 MiB)')
+
+    def test_da1469x_request_reaches_the_loader_as_a_flash_offset(self):
+        # --erase-start 0x16100000 --erase-size 2M -> offset 0x100000.
+        out = self.erase('DA14695', start=XIP + 0x100000, length=0x200000)
+        self.assertEqual(self.loader.calls,
+                         [('erase_range', 'da1469x', 0, 0x100000, 0x200000)])
+        self.assertEqual(self.rpc.calls, [])
+        self.assertEqual(out[0], 'Erasing 0x16100000-0x162FFFFF (2 MiB)')
+        self.assertEqual(out[-1], 'Erased 2097152 bytes successfully')
+
+    def test_da1469x_request_outside_the_window_touches_nothing(self):
+        with self.assertRaises(ValueError) as ctx:
+            self.erase('DA14695', start=0x15000000, length=0x1000)
+        self.assertIn('QSPI XIP window', str(ctx.exception))
+        self.assertEqual(self.loader.calls, [])
+        self.assertEqual(self.rpc.calls, [])
+
+    def test_other_device_request_uses_erase_address(self):
+        out = self.erase('NRF52840_XXAA', start=0x08000000, length=0x1000)
+        self.assertEqual(self.rpc.calls, [('flash_erase_range', 0x08000000, 0x1000)])
+        self.assertEqual(self.loader.calls, [])
+        self.assertEqual(out, ['Erasing 0x08000000-0x08000FFF (4 KiB)', 'range erased'])
+
+    def test_a_request_needs_both_start_and_length(self):
+        # ``erase_target`` only ever sees a full pair from the service and
+        # the Net API; a half pair is a caller bug, and it must not be read
+        # as "the default".
+        with self.assertRaises(ValueError):
+            self.erase('NRF52840_XXAA', start=0x08000000)
+        self.assertEqual(self.rpc.calls, [])
 
 
 class LoaderFailureTests(_DispatchCase):

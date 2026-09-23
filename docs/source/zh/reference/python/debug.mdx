@@ -22,7 +22,7 @@ from lager import Net, NetType
 | `reset(halt)` | 复位设备 |
 | `halt()` | 让目标停在原地，不做复位（仅 OpenOCD） |
 | `flash(firmware_path, flash_address=None)` | 把固件烧录到设备 |
-| `erase()` | 擦除 Flash（多数目标为整片擦除，DA1469x 为 1 MiB 的 QSPI 范围） |
+| `erase(start=None, length=None)` | 擦除 Flash（多数目标为整片擦除，DA1469x 为 1 MiB 的 QSPI 范围，或给定的范围） |
 | `read_memory(address, length)` | 从设备读取内存 |
 | `status()` | 获取连接状态 |
 | `rtt(channel, search_addr, search_size, chunk_size)` | 创建用于双向通信的 RTT 会话（原始字节） |
@@ -199,17 +199,26 @@ print(output)
 - 调试读取丢失一次不会让加载器停下。加载器会一直重试，直到本步骤的截止时间。
 - 失败时抛出的错误会带上加载器最后一行进度信息。如果擦除阶段已经执行过，信息中会说明板子可能已经是空白的。请重新烧录一次。
 
-### `erase()`
+### `erase(start=None, length=None)`
 
-擦除目标的 Flash。在多数目标上这是整片擦除，会擦掉全部 Flash 存储，包括保护设置。
+擦除目标的 Flash。不带参数时，在多数目标上这是整片擦除，会擦掉全部 Flash 存储，包括保护设置。
 
 在 DA1469x 上，`erase()` 只擦除外部 QSPI 从 `0x16000000` 开始的前 1 MiB。两种后端都是如此。OpenOCD 后端使用 flash_loader；J-Link 后端使用范围擦除，在该 Net 的 JLinkScript 中写一行 `LAGER_ERASE_RANGE` 可以设定不同的范围。
 
+`start` 和 `length` 改为设定擦除范围，在两种后端和任何目标上都有效。要么两个都传，要么都不传。`start` 是绝对地址，在 DA1469x 上就是 XIP 地址，与 `flash()` 的用法完全一样。在 DA1469x 上，范围必须位于 `0x16000000`–`0x17FFFFFF` 之内，并且会取代 1 MiB 的默认值和 `LAGER_ERASE_RANGE` 行。在其他目标上，该范围取代整片擦除。目标无法擦除的范围会在 Box 触碰探针之前抛出 `ValueError`。当范围生效时，输出的第一行会写明它，例如 `Erasing 0x16000000-0x161FFFFF (2 MiB)`。
+
 ```python
-# Full chip erase
+# Full chip erase (1 MiB of QSPI on a DA1469x)
 output = dbg.erase()
 print(output)
+
+# Erase 2 MiB from the start of QSPI on a DA1469x
+output = dbg.erase(0x16000000, 2 * 1024 * 1024)
 ```
+
+**参数：**
+- `start`（int，可选）：擦除的起始地址，必须与 `length` 一起给出
+- `length`（int，可选）：从 `start` 起擦除的字节数
 
 **返回：** `str` - 擦除操作的合并输出
 
@@ -552,5 +561,5 @@ J-Link 支持种类广泛的 ARM Cortex-M 及其他微控制器。常见的设�
 - 多数使用场景推荐用 CLI（`lager debug`）
 - Python Net API 面向运行在 Lager Box 上的高级自动化脚本
 - 结束时请务必调用 `disconnect()` 以释放调试探针
-- 用 `erase()` 进行整片擦除并清除保护设置（在 DA1469x 上，`erase()` 擦除的是 1 MiB 的 QSPI 范围）
+- 用 `erase()` 进行整片擦除并清除保护设置（在 DA1469x 上为 1 MiB 的 QSPI 范围）。`erase(start, length)` 擦除一段范围。
 - RTT 需要已建立的调试连接（见上面的 RTT 流式传输一节）

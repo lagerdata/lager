@@ -37,6 +37,7 @@ from cli.core.param_types import (
     ADCChannelType,
     Binfile,
     BinfileType,
+    ByteSizeType,
     CanbusRange,
     CanFilter,
     CanFilterType,
@@ -114,6 +115,45 @@ class HexParamTypeTests(unittest.TestCase):
 
     def test_repr(self):
         self.assertEqual(repr(HexParamType()), 'HEX')
+
+
+class ByteSizeTypeTests(unittest.TestCase):
+    """`lager debug <net> flash|erase --erase-size` -- a byte count with an
+    optional K/M suffix, so a deploy script can say `2M`."""
+
+    def test_decimal(self):
+        self.assertEqual(convert(ByteSizeType(), '4096'), 4096)
+
+    def test_hex(self):
+        self.assertEqual(convert(ByteSizeType(), '0x200000'), 0x200000)
+        self.assertEqual(convert(ByteSizeType(), '0X200000'), 0x200000)
+
+    def test_suffixes_are_1024_based(self):
+        self.assertEqual(convert(ByteSizeType(), '2M'), 2 * 1024 * 1024)
+        self.assertEqual(convert(ByteSizeType(), '512k'), 512 * 1024)
+
+    def test_unit_spellings(self):
+        for text in ('2M', '2m', '2MB', '2MiB', '2mib', '2 M'):
+            with self.subTest(text=text):
+                self.assertEqual(convert(ByteSizeType(), text), 2 * 1024 * 1024)
+
+    def test_an_int_passes_through(self):
+        self.assertEqual(convert(ByteSizeType(), 4096), 4096)
+
+    def test_zero_and_negative_are_rejected(self):
+        for text in ('0', '0x0', '0M', '-1', '-2M'):
+            with self.subTest(text=text):
+                with self.assertRaises(click.BadParameter):
+                    convert(ByteSizeType(), text)
+
+    def test_malformed_is_rejected(self):
+        for text in ('', 'abc', '2G', '1.5M', 'M', '0x', '2MM', '0x10M'):
+            with self.subTest(text=text):
+                with self.assertRaises(click.BadParameter):
+                    convert(ByteSizeType(), text)
+
+    def test_repr_is_the_metavar(self):
+        self.assertEqual(repr(ByteSizeType()), 'BYTES')
 
 
 class GrouperTests(unittest.TestCase):

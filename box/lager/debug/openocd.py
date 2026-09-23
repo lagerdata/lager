@@ -23,6 +23,7 @@ collide unpredictably.
 """
 
 import logging
+import math
 import os
 import re
 import signal
@@ -991,11 +992,21 @@ class OpenOcdRpc:
         return '\n'.join(outputs)
 
     def flash_erase_range(self, start, length):
+        """Erase ``[start, start + length)`` with ``flash erase_address``.
+
+        The generic-target analog of the DA1469x loader's range erase, for
+        ``lager debug <net> erase --erase-start/--erase-size`` on a part
+        OpenOCD can flash directly. The wait grows with the range: a minute
+        per MiB, and never less than the two minutes a bank erase gets.
+        Raises :class:`OpenOcdNoFlashDriverError` for a DA1469x, whose QSPI
+        no OpenOCD flash driver reaches.
+        """
         self._refuse_without_flash_driver('flash erase_address')
         end = start + length - 1
+        timeout = max(120, 60 * math.ceil(length / (1 << 20)))
         return self.cmd_checked(
             f'flash erase_address {hex(start)} {hex(end)}',
-            timeout=120, label='flash erase_address',
+            timeout=timeout, label='flash erase_address',
         )
 
     def read_memory(self, address, length):

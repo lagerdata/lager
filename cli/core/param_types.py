@@ -49,6 +49,45 @@ class HexParamType(click.ParamType):
     def __repr__(self):
         return 'HEX'
 
+
+class ByteSizeType(click.ParamType):
+    """
+        Byte count parameter: decimal, ``0x`` hex, or decimal with a ``K`` or
+        ``M`` suffix (1024-based, so ``2M`` is 2097152). Never zero.
+    """
+    name = 'byte size'
+
+    _SUFFIXED = re.compile(r'^(\d+)\s*([km])(?:i?b)?$')
+    _MULTIPLIER = {'k': 1 << 10, 'm': 1 << 20}
+
+    def convert(self, value, param, ctx):
+        if isinstance(value, int):
+            size = value
+        else:
+            size = self._parse(str(value), param, ctx)
+        if size <= 0:
+            self.fail(f"{value} must be greater than 0", param, ctx)
+        return size
+
+    def _parse(self, value, param, ctx):
+        text = value.strip().lower()
+        if text.startswith('0x'):
+            try:
+                return int(text, 16)
+            except ValueError:
+                self.fail(f"{value} is not a valid hex integer", param, ctx)
+        if text.isdigit():
+            return int(text, 10)
+        match = self._SUFFIXED.match(text)
+        if not match:
+            self.fail(
+                f"{value} is not a byte count: give a number, 0x hex, "
+                f"or a K/M suffix such as 2M", param, ctx)
+        return int(match.group(1)) * self._MULTIPLIER[match.group(2)]
+
+    def __repr__(self):
+        return 'BYTES'
+
 def grouper(iterator, n):
     while chunk := list(itertools.islice(iterator, n)):
         yield chunk

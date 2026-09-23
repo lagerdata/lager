@@ -127,8 +127,8 @@ def _build_dispatch_stub():
         yield f"flashed {device}"
         yield "done"
 
-    def erase_target(rpc, device):
-        m.calls.append(("erase_target", rpc, device))
+    def erase_target(rpc, device, *, start=None, length=None):
+        m.calls.append(("erase_target", rpc, device, start, length))
         yield f"erased {device}"
 
     m.flash_target = flash_target
@@ -264,8 +264,9 @@ class EraseHandOffTests(_Case):
         net = _make_net("DA14695")
         out = net.erase()
         self.assertEqual(len(dispatch.calls), 1)
-        kind, rpc, device = dispatch.calls[0]
+        kind, rpc, device, start, length = dispatch.calls[0]
         self.assertEqual((kind, device), ("erase_target", "DA14695"))
+        self.assertEqual((start, length), (None, None), "no range given, none forwarded")
         self.assertEqual(rpc.timeout, dispatch.ERASE_RPC_TIMEOUT_S)
         self.assertEqual(rpc.device, "DA14695")
         self.assertEqual(out, "erased DA14695")
@@ -275,10 +276,36 @@ class EraseHandOffTests(_Case):
         net.erase()
         self.assertEqual(dispatch.calls[0][2], "NRF52840_XXAA")
 
+    def test_a_range_is_forwarded_to_the_dispatch(self):
+        net = _make_net("DA14695")
+        net.erase(QSPI_XIP_BASE, 0x200000)
+        self.assertEqual(dispatch.calls[0][3:], (QSPI_XIP_BASE, 0x200000))
+
+    def test_start_without_length_is_refused_before_the_dispatch(self):
+        net = _make_net("DA14695")
+        for args in ((QSPI_XIP_BASE,), (None, 0x200000)):
+            with self.subTest(args=args):
+                with self.assertRaises(ValueError):
+                    net.erase(*args)
+        self.assertEqual(dispatch.calls, [])
+
     def test_jlink_backend_untouched(self):
         net = _make_net("DA14695", backend="jlink")
         debug_net.chip_erase = lambda **kwargs: iter(["jlink erased"])
         self.assertEqual(net.erase(), "jlink erased")
+        self.assertEqual(dispatch.calls, [])
+
+    def test_jlink_backend_receives_the_range(self):
+        net = _make_net("DA14695", backend="jlink")
+        seen = {}
+
+        def chip_erase(**kwargs):
+            seen.update(kwargs)
+            return iter(["jlink erased"])
+
+        debug_net.chip_erase = chip_erase
+        net.erase(QSPI_XIP_BASE, 0x200000)
+        self.assertEqual((seen["start"], seen["length"]), (QSPI_XIP_BASE, 0x200000))
         self.assertEqual(dispatch.calls, [])
 
     def test_daemon_down_still_raises_connect_first(self):
@@ -298,8 +325,8 @@ class EraseHandOffTests(_Case):
         # not a transient daemon hiccup: retrying it thrice with backoff
         # would just re-erase a board three times. Only RuntimeError /
         # OpenOcdRpcError are transient.
-        def failing_erase(rpc, device):
-            dispatch.calls.append(("erase_target", rpc, device))
+        def failing_erase(rpc, device, *, start=None, length=None):
+            dispatch.calls.append(("erase_target", rpc, device, start, length))
             raise _LoaderError("DA1469x flash_loader erase failed: fl_cmd_status=2")
             yield  # pragma: no cover -- makes this a generator
 

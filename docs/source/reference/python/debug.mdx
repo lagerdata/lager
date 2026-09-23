@@ -22,7 +22,7 @@ The Net-based API provides methods for embedded debugging operations.
 | `reset(halt)` | Reset the device |
 | `halt()` | Halt the target where it is, without a reset (OpenOCD only) |
 | `flash(firmware_path, flash_address=None)` | Flash firmware to device |
-| `erase()` | Erase flash (full chip on most targets, a 1 MiB QSPI range on DA1469x) |
+| `erase(start=None, length=None)` | Erase flash (full chip on most targets, a 1 MiB QSPI range on DA1469x, or the range given) |
 | `read_memory(address, length)` | Read memory from device |
 | `status()` | Get connection status |
 | `rtt(channel, search_addr, search_size, chunk_size)` | Create RTT session for bidirectional communication (raw bytes) |
@@ -253,21 +253,37 @@ raises rather than falling back to OpenOCD's `program`, which cannot reach QSPI.
 - A failure raises with the last progress line of the loader. If the erase stage
   already ran, the message says that the board can be blank. Flash it again.
 
-### `erase()`
+### `erase(start=None, length=None)`
 
-Erase the flash of the target. On most targets this is a full chip erase, which
-erases ALL flash memory including protection settings.
+Erase the flash of the target. With no arguments, on most targets this is a full
+chip erase, which erases ALL flash memory including protection settings.
 
 On a DA1469x, `erase()` erases only the first 1 MiB of the external QSPI, from
 `0x16000000`. This applies on both backends. The OpenOCD backend uses the
 flash_loader. The J-Link backend uses a range erase, and a `LAGER_ERASE_RANGE`
 line in the JLinkScript of the net sets a different range.
 
+`start` and `length` set the range instead, on either backend and any target.
+Pass both or neither. `start` is an absolute address, and on a DA1469x the XIP
+address, exactly as `flash()` takes it. On a DA1469x the range must lie inside
+`0x16000000`–`0x17FFFFFF`, and it replaces both the 1 MiB default and the
+`LAGER_ERASE_RANGE` line. On any other target the range replaces the full chip
+erase. A range the target cannot erase raises `ValueError` before the box touches
+the probe. When a range applies, the first line of the output names it, for
+example `Erasing 0x16000000-0x161FFFFF (2 MiB)`.
+
 ```python
-# Full chip erase
+# Full chip erase (1 MiB of QSPI on a DA1469x)
 output = dbg.erase()
 print(output)
+
+# Erase 2 MiB from the start of QSPI on a DA1469x
+output = dbg.erase(0x16000000, 2 * 1024 * 1024)
 ```
+
+**Parameters:**
+- `start` (int, optional): First address to erase, given together with `length`
+- `length` (int, optional): Number of bytes to erase from `start`
 
 **Returns:** `str` - Combined output from erase operation
 
@@ -642,5 +658,5 @@ For a complete list, see [SEGGER's supported devices](https://www.segger.com/sup
 - The CLI (`lager debug`) is recommended for most use cases
 - Python Net API is intended for advanced automation scripts running on the Lager Box
 - Always call `disconnect()` when finished to release the debug probe
-- Use `erase()` to perform a full chip erase and clear protection settings (on DA1469x, `erase()` erases a 1 MiB QSPI range)
+- Use `erase()` for a full chip erase that also clears protection settings (on DA1469x, a 1 MiB QSPI range). `erase(start, length)` erases one range.
 - RTT requires an active debug connection (see RTT Streaming section above)

@@ -41,7 +41,9 @@ from lager.debug.api import (
     _attach_failed,
 )
 from lager.debug.target_probe import target_attached
-from lager.debug.jlink import JLink
+from lager.debug.erase_bounds import bounds_dict, validate_bounds
+from lager.debug.jlink import JLink, resolve_erase_range as jlink_erase_range
+from lager.debug.openocd_flash import resolve_erase_range as openocd_erase_range
 from lager.debug.gdbserver import (
     start_jlink_gdbserver,
     stop_jlink_gdbserver,
@@ -429,9 +431,40 @@ SERVICE_HOST = '0.0.0.0'  # Listen on all interfaces (container is isolated)
 SERVICE_PORT = 8765
 SERVICE_VERSION = '1.0.0'
 
+# What this service can do beyond the original request shapes, listed on
+# /health so a CLI can refuse a flag the box would silently ignore. A box
+# that predates the list answers with no ``features`` key at all, which reads
+# as "none". Append; never remove or rename an entry.
+SERVICE_FEATURES = ('erase_range',)
+
 # Track active connections (with thread safety for concurrent access)
 active_connections = {}
 connections_lock = threading.Lock()
+
+
+def _parse_erase_range(data, device_type):
+    """The ``erase_start`` / ``erase_size`` pair of a /debug/erase body, checked.
+
+    Both absent (an older CLI, or no ``--erase-start``) is ``(None, None)``,
+    the backend's default. Anything else must be a pair of ints the target
+    can erase; ``ValueError`` names what is wrong, for a 400.
+    """
+    start = data.get('erase_start')
+    size = data.get('erase_size')
+    if start is None and size is None:
+        return None, None
+    if start is None or size is None:
+        raise ValueError('erase_start and erase_size must be given together')
+    validate_bounds(start, size, da1469x=is_da1469x(device_type))
+    return start, size
+
+
+def _erase_range_report(resolved):
+    """The ``erase_range`` field of a /debug/erase response: a dict, or None for a full chip."""
+    if resolved is None:
+        return None
+    start, length, source = resolved
+    return bounds_dict(start, length, source)
 
 # Service start time
 start_time = None
@@ -467,6 +500,7 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             self.send_json_response(200, {
                 'status': 'healthy',
                 'version': SERVICE_VERSION,
+                'features': list(SERVICE_FEATURES),
                 'uptime': time.time() - start_time,
             })
         elif self.path == '/health/detailed':
@@ -485,6 +519,7 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                 health_data = {
                     'status': 'healthy',
                     'version': SERVICE_VERSION,
+                    'features': list(SERVICE_FEATURES),
                     'jlink_gdbserver_running': gdbserver_status['running'],
                     'jlink_gdbserver_pid': gdbserver_status.get('pid'),
                     'gdb_controllers_cached': gdb_controllers,
@@ -1292,6 +1327,14 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             device_type = _resolve_device_type(net)
             speed = data.get('speed', '4000')
             transport = data.get('transport', 'SWD')
+            # An explicit range, from ``--erase-start`` / ``--erase-size``.
+            # Refused here, before either backend is touched, so a bad range
+            # is a 400 that names the problem rather than a probe bounce.
+            try:
+                erase_start, erase_size = _parse_erase_range(data, device_type)
+            except ValueError as bad_range:
+                self.send_error_response(400, str(bad_range))
+                return
             backend = resolve_backend(net)
             serial, slot, _gdb_port, _swo_port, _telnet_port, _rtt_port = _resolve_probe(net)
             _openocd_telnet, openocd_tcl_port = _openocd_ports_for_slot(slot)
@@ -1313,7 +1356,9 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                 # ``flash erase_sector`` has no QSPI bank to act on there.
                 try:
                     erase_output = []
-                    for line in erase_target(rpc, device_type):
+                    for line in erase_target(
+                        rpc, device_type, start=erase_start, length=erase_size,
+                    ):
                         logger.info('[ERASE] %s', line)
                         erase_output.append(line)
                 except FLASH_ERRORS as exc:
@@ -1331,6 +1376,8 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                     'status': 'erase_complete',
                     'output': '\n'.join(erase_output) if erase_output else 'Erase completed',
                     'backend': BACKEND_OPENOCD,
+                    'erase_range': _erase_range_report(
+                        openocd_erase_range(device_type, erase_start, erase_size)),
                 })
                 return
 
@@ -1344,6 +1391,8 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                 mcu=None,
                 script_file=script_path,
                 serial=serial,
+                start=erase_start,
+                length=erase_size,
             ))
 
             connection_id = f"{net.get('name', 'unknown')}:{device_type}"
@@ -1373,6 +1422,8 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                 'status': 'erase_complete',
                 'output': '\n'.join(erase_output) if erase_output else 'Erase completed',
                 'backend': BACKEND_JLINK,
+                'erase_range': _erase_range_report(
+                    jlink_erase_range(device_type, script_path, erase_start, erase_size)),
             })
 
         except Exception as e:
