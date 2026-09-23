@@ -2,31 +2,31 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Load a BenchDefinition from a Lager box.
+Load a BenchDefinition from the files on a Lager box.
 
-Two data sources are combined:
+Two files are combined:
 
 1. /etc/lager/bench.json -- static bench metadata authored once per box
-   (DUT slots, aliases, safety constraints, interface groupings)
+   (DUT slots, aliases, safety constraints, interface groupings, and
+   ``net_overrides`` that shadow a saved net's own metadata)
 2. /etc/lager/saved_nets.json -- dynamic net list maintained by
-   ``lager nets add`` / ``lager nets add-all``
-3. Live instrument and hello data from box HTTP endpoints
+   ``lager nets add`` / ``lager nets add-all`` and ``lager nets describe``
 
-The loader can operate in two modes:
+Box identity (id, version, hostname) is seeded from its own files so an
+unauthored box still reports it.
 
-* **remote** -- fetches data over HTTP from a running box (used by the
-  MCP server at runtime).
-* **local** -- reads JSON files from disk (used in tests or when running
-  on-box).
+Instruments are NOT read here. They come from a live USB scan, which
+``server_state.get_bench`` attaches from ``engine.instruments`` behind a
+short cache, so this loader stays a pure function of the files and the
+scan rate stays bounded.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any
-
-import requests
 
 from ..schemas.bench import (
     BenchDefinition,
@@ -34,134 +34,38 @@ from ..schemas.bench import (
     DocRef,
     DUTContext,
     InstrumentDescriptor,
-    InstrumentHealth,
-    RoutingEntry,
     SubSystem,
     VoltageRange,
 )
 from ..schemas.net import InterfaceDescriptor, NetDescriptor, SafetyLimits
 from ..schemas.safety_types import SafetyConstraints
+from .instruments import instrument_from_record
+from .net_types import info_for
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Net-type → electrical-type mapping
-# ---------------------------------------------------------------------------
+#: The per-net fields a ``bench.json`` ``net_overrides`` entry may shadow,
+#: and the keys ``BenchDefinition.metadata_sources`` reports on.
+OVERRIDABLE_NET_FIELDS: tuple[str, ...] = (
+    "purpose",
+    "notes",
+    "tags",
+    "dut_connection",
+    "test_hints",
+    "aliases",
+    "voltage_domain",
+    "safety_limits",
+)
 
-_ELECTRICAL_TYPE_MAP: dict[str, str] = {
-    "power-supply": "power",
-    "power-supply-2q": "power",
-    "battery": "power",
-    "eload": "power",
-    "solar": "power",
-    "analog": "analog",
-    "adc": "analog",
-    "dac": "analog",
-    "thermocouple": "analog",
-    "watt-meter": "analog",
-    "energy-analyzer": "analog",
-    "gpio": "digital",
-    "logic": "digital",
-    "spi": "protocol",
-    "i2c": "protocol",
-    "uart": "protocol",
-    "debug": "digital",
-    "usb": "digital",
-    "wifi": "protocol",
-    "webcam": "other",
-    "arm": "other",
-    "rotation": "other",
-    "actuate": "other",
-    "scope": "analog",
-    "waveform": "analog",
-    "mikrotik": "protocol",
-    "router": "protocol",
-}
-
-# Roles each net type supports -- used by capability_graph.py as well
-NET_TYPE_ROLES: dict[str, list[str]] = {
-    "power-supply": [
-        "source_power", "drive", "measure", "sweep_voltage",
-    ],
-    "power-supply-2q": [
-        "source_power", "sink_power", "drive", "measure", "sweep_voltage",
-    ],
-    "battery": [
-        "source_power", "drive", "measure", "sweep_voltage",
-    ],
-    "eload": [
-        "sink_power", "measure",
-    ],
-    "solar": [
-        "source_power", "drive", "measure",
-    ],
-    "analog": [
-        "observe", "measure", "capture_waveform",
-    ],
-    "scope": [
-        "observe", "measure", "capture_waveform",
-    ],
-    "logic": [
-        "observe", "capture_logic",
-    ],
-    "adc": [
-        "observe", "measure",
-    ],
-    "dac": [
-        "drive", "sweep_analog", "waveform_gen",
-    ],
-    "gpio": [
-        "drive", "observe", "control_state",
-    ],
-    "spi": [
-        "protocol_master", "capture_protocol",
-    ],
-    "i2c": [
-        "protocol_controller", "capture_protocol",
-    ],
-    "uart": [
-        "observe", "protocol_master",
-    ],
-    "debug": [
-        "flash_firmware", "control_state",
-    ],
-    "thermocouple": [
-        "observe", "measure",
-    ],
-    "watt-meter": [
-        "observe", "measure",
-    ],
-    "energy-analyzer": [
-        "observe", "measure",
-    ],
-    "usb": [
-        "control_state",
-    ],
-    "wifi": [
-        "observe",
-    ],
-    "waveform": [
-        "observe", "capture_waveform",
-    ],
-    "webcam": [
-        "observe",
-    ],
-    "arm": [],
-    "rotation": [],
-    "actuate": [
-        "drive", "control_state",
-    ],
-    "mikrotik": ["observe"],
-    "router": ["observe"],
-}
-
-
-def _directionality_for(net_type: str) -> str:
-    if net_type in ("adc", "thermocouple", "watt-meter", "energy-analyzer", "analog", "scope", "logic"):
-        return "input"
-    if net_type in ("dac",):
-        return "output"
-    return "bidirectional"
+#: The subset a ``PUT /nets/<name>/metadata`` write can set. The rest come
+#: from ``lager nets add`` or bench.json only.
+USER_METADATA_FIELDS: tuple[str, ...] = (
+    "purpose",
+    "notes",
+    "tags",
+    "dut_connection",
+    "test_hints",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -173,17 +77,18 @@ def _net_from_raw(raw: dict[str, Any]) -> NetDescriptor:
     role = raw.get("role", "")
     instrument = raw.get("instrument", "")
     channel = str(raw.get("channel", raw.get("pin", "")))
+    info = info_for(role)
 
     return NetDescriptor(
         name=raw.get("name") or "",
         aliases=raw.get("aliases") or [],
         net_type=role,
-        electrical_type=_ELECTRICAL_TYPE_MAP.get(role, "unknown"),
+        electrical_type=info.electrical_type if info else "unknown",
         voltage_domain=None,
-        directionality=_directionality_for(role),
-        controllable=role not in ("adc", "thermocouple", "watt-meter", "energy-analyzer", "logic"),
+        directionality=info.directionality if info else "bidirectional",
+        controllable=info.controllable if info else True,
         observable=True,
-        roles=list(NET_TYPE_ROLES.get(role, [])),
+        roles=info.role_names if info else [],
         safety_limits=None,
         timing_constraints=None,
         instrument=instrument,
@@ -192,6 +97,8 @@ def _net_from_raw(raw: dict[str, Any]) -> NetDescriptor:
         purpose=raw.get("purpose") or "",
         notes=raw.get("notes") or "",
         tags=raw.get("tags") or [],
+        dut_connection=raw.get("dut_connection") or "",
+        test_hints=[str(h) for h in (raw.get("test_hints") or [])],
     )
 
 
@@ -329,79 +236,7 @@ def _infer_interfaces(nets: list[NetDescriptor]) -> list[InterfaceDescriptor]:
 
 
 # ---------------------------------------------------------------------------
-# Remote loader (HTTP to box)
-# ---------------------------------------------------------------------------
-
-def load_from_box(
-    box_ip: str,
-    *,
-    timeout: float = 10.0,
-    bench_json_override: dict[str, Any] | None = None,
-) -> BenchDefinition:
-    """
-    Build a BenchDefinition by querying a live Lager box over HTTP.
-
-    Fetches /hello, /nets, /instruments, and optionally /bench.json.
-    """
-    base = f"http://{box_ip}:5000"
-    session = requests.Session()
-
-    # -- hello ---------------------------------------------------------------
-    hello_data: dict[str, Any] = {}
-    try:
-        resp = session.get(f"{base}/hello", timeout=timeout)
-        if resp.ok:
-            hello_data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
-    except Exception as exc:
-        logger.warning("Could not reach /hello on %s: %s", box_ip, exc)
-
-    # -- nets ----------------------------------------------------------------
-    raw_nets: list[dict[str, Any]] = []
-    try:
-        resp = session.get(f"{base}/nets", timeout=timeout)
-        if resp.ok:
-            body = resp.json()
-            if isinstance(body, list):
-                raw_nets = body
-            elif isinstance(body, dict) and "nets" in body:
-                raw_nets = body["nets"]
-    except Exception as exc:
-        logger.warning("Could not fetch /nets on %s: %s", box_ip, exc)
-
-    # -- instruments ---------------------------------------------------------
-    raw_instruments: list[dict[str, Any]] = []
-    try:
-        resp = session.get(f"{base}/instruments", timeout=timeout)
-        if resp.ok:
-            body = resp.json()
-            if isinstance(body, list):
-                raw_instruments = body
-            elif isinstance(body, dict) and "instruments" in body:
-                raw_instruments = body["instruments"]
-    except Exception as exc:
-        logger.warning("Could not fetch /instruments on %s: %s", box_ip, exc)
-
-    # -- bench.json (optional static config) ---------------------------------
-    bench_cfg = bench_json_override or {}
-    if not bench_cfg:
-        try:
-            resp = session.get(f"{base}/bench.json", timeout=timeout)
-            if resp.ok:
-                bench_cfg = resp.json()
-        except Exception:
-            pass  # bench.json is optional
-
-    return _assemble(
-        hello_data=hello_data,
-        raw_nets=raw_nets,
-        raw_instruments=raw_instruments,
-        bench_cfg=bench_cfg,
-        box_ip=box_ip,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Local loader (files on disk)
+# Loaders
 # ---------------------------------------------------------------------------
 
 def load_from_files(
@@ -412,7 +247,10 @@ def load_from_files(
     version_path: str = "/etc/lager/version",
     hostname_path: str = "/host/etc/hostname",
 ) -> BenchDefinition:
-    """Build a BenchDefinition from on-disk JSON files (used on-box or in tests)."""
+    """Build a BenchDefinition from on-disk JSON files (used on-box or in tests).
+
+    Instruments are left empty here; see the module docstring.
+    """
 
     raw_nets = _read_json(saved_nets_path, default=[])
     bench_cfg = _read_json(bench_json_path, default={})
@@ -428,11 +266,19 @@ def load_from_files(
     # hostname bind-mounted into the container); the container's own
     # /etc/hostname is the container id, so we do NOT fall back to it -- an
     # empty hostname is better than a misleading one.
-    hello_data: dict[str, Any] = {"box_id": _read_line(box_id_path)}
+    hostname = _read_line(hostname_path)
+    # Same fallback chain as config.get_box_id: a box installed before the id
+    # file existed still has a hostname every operator knows it by, and an
+    # empty box_id is useless to a client that keys many boxes on it.
+    box_id = (
+        _read_line(box_id_path)
+        or os.environ.get("LAGER_BOX_ID", "").strip()
+        or hostname
+    )
+    hello_data: dict[str, Any] = {"box_id": box_id}
     version = _read_box_version(version_path)
     if version:
         hello_data["version"] = version
-    hostname = _read_line(hostname_path)
     if hostname:
         hello_data["hostname"] = hostname
 
@@ -441,7 +287,6 @@ def load_from_files(
         raw_nets=raw_nets if isinstance(raw_nets, list) else [],
         raw_instruments=[],
         bench_cfg=bench_cfg if isinstance(bench_cfg, dict) else {},
-        box_ip="",
     )
 
 
@@ -458,7 +303,6 @@ def load_from_dicts(
         raw_nets=raw_nets or [],
         raw_instruments=raw_instruments or [],
         bench_cfg=bench_cfg or {},
-        box_ip="",
     )
 
 
@@ -466,68 +310,97 @@ def load_from_dicts(
 # Internal assembly
 # ---------------------------------------------------------------------------
 
+def _apply_override(nd: NetDescriptor, ovr: dict[str, Any]) -> list[str]:
+    """Apply one ``net_overrides`` entry to a descriptor.
+
+    Returns the fields the override set, malformed ones excluded, so the
+    caller can record which source authored each field.
+    """
+    applied: list[str] = []
+    if "aliases" in ovr:
+        nd.aliases = ovr["aliases"] or []
+        applied.append("aliases")
+    if "voltage_domain" in ovr and isinstance(ovr["voltage_domain"], dict):
+        try:
+            nd.voltage_domain = VoltageRange(**ovr["voltage_domain"])
+            applied.append("voltage_domain")
+        except (TypeError, ValueError) as e:
+            logger.warning("net %s: bad voltage_domain override (%s)", nd.name, e)
+    if "safety_limits" in ovr and isinstance(ovr["safety_limits"], dict):
+        try:
+            nd.safety_limits = SafetyLimits(**ovr["safety_limits"])
+            applied.append("safety_limits")
+        except (TypeError, ValueError) as e:
+            logger.warning("net %s: bad safety_limits override (%s)", nd.name, e)
+    if "purpose" in ovr:
+        nd.purpose = ovr["purpose"] or ""
+        applied.append("purpose")
+    if "notes" in ovr:
+        nd.notes = ovr["notes"] or ""
+        applied.append("notes")
+    if "tags" in ovr:
+        nd.tags = ovr["tags"] or []
+        applied.append("tags")
+    if "dut_connection" in ovr:
+        nd.dut_connection = ovr["dut_connection"] or ""
+        applied.append("dut_connection")
+    if "test_hints" in ovr:
+        nd.test_hints = [str(h) for h in (ovr["test_hints"] or [])]
+        applied.append("test_hints")
+    return applied
+
+
+def _saved_fields(raw: dict[str, Any]) -> list[str]:
+    """The overridable fields a saved-net record carries a value for."""
+    return [
+        field for field in OVERRIDABLE_NET_FIELDS
+        if raw.get(field) not in (None, "", [], {})
+    ]
+
+
 def _assemble(
     *,
     hello_data: dict[str, Any],
     raw_nets: list[dict[str, Any]],
     raw_instruments: list[dict[str, Any]],
     bench_cfg: dict[str, Any],
-    box_ip: str,
 ) -> BenchDefinition:
     box_id = (
         bench_cfg.get("box_id")
         or hello_data.get("box_id")
         or hello_data.get("id")
-        or box_ip
         or ""
     )
     hostname = bench_cfg.get("hostname", hello_data.get("hostname", ""))
     version = bench_cfg.get("version", hello_data.get("version", ""))
 
-    # Nets
-    nets = [_net_from_raw(rn) for rn in raw_nets]
-
-    # Merge bench_cfg net overrides (aliases, safety limits, voltage domains).
-    # Each override is applied independently so one malformed entry can't
-    # corrupt the rest of the bench.
+    # Nets, with a record of which file authored each metadata field.
+    nets: list[NetDescriptor] = []
+    metadata_sources: dict[str, dict[str, str]] = {}
     net_overrides: dict[str, dict[str, Any]] = {
         o["name"]: o
         for o in (bench_cfg.get("net_overrides") or [])
         if isinstance(o, dict) and "name" in o
     }
-    for nd in nets:
-        ovr = net_overrides.get(nd.name)
-        if not ovr:
+    for raw in raw_nets:
+        if not isinstance(raw, dict):
+            logger.warning("saved_nets: skipping non-dict entry %r", raw)
             continue
-        if "aliases" in ovr:
-            nd.aliases = ovr["aliases"]
-        if "voltage_domain" in ovr and isinstance(ovr["voltage_domain"], dict):
-            try:
-                nd.voltage_domain = VoltageRange(**ovr["voltage_domain"])
-            except TypeError as e:
-                logger.warning("net %s: bad voltage_domain override (%s)", nd.name, e)
-        if "safety_limits" in ovr and isinstance(ovr["safety_limits"], dict):
-            try:
-                nd.safety_limits = SafetyLimits(**ovr["safety_limits"])
-            except TypeError as e:
-                logger.warning("net %s: bad safety_limits override (%s)", nd.name, e)
-        if "purpose" in ovr:
-            nd.purpose = ovr["purpose"] or ""
-        if "notes" in ovr:
-            nd.notes = ovr["notes"] or ""
-        if "tags" in ovr:
-            nd.tags = ovr["tags"] or []
+        nd = _net_from_raw(raw)
+        sources = {field: "saved_net" for field in _saved_fields(raw)}
+        # Each override is applied independently so one malformed entry
+        # can't corrupt the rest of the bench.
+        ovr = net_overrides.get(nd.name)
+        if ovr:
+            for field in _apply_override(nd, ovr):
+                sources[field] = "bench.json"
+        nets.append(nd)
+        if sources:
+            metadata_sources[nd.name] = sources
 
-    # Instruments
-    instruments = [
-        InstrumentDescriptor(
-            name=ri.get("name", ri.get("instrument", "")),
-            instrument_type=ri.get("type", ri.get("instrument", "")),
-            connection=ri.get("address", ri.get("connection", "")),
-            channels=ri.get("channels") or [],
-        )
-        for ri in raw_instruments
-        if isinstance(ri, dict)
+    # Instruments (in-memory callers only; on a box they are attached live).
+    instruments: list[InstrumentDescriptor] = [
+        instrument_from_record(ri) for ri in raw_instruments if isinstance(ri, dict)
     ]
 
     # DUT slots — skip individual malformed entries instead of failing the
@@ -570,7 +443,7 @@ def _assemble(
             continue
         try:
             static_ifaces.append(InterfaceDescriptor(**iface))
-        except TypeError as e:
+        except (TypeError, ValueError) as e:
             logger.warning("interfaces: skipping malformed entry %r (%s)", iface, e)
     inferred_ifaces = _infer_interfaces(nets)
     seen_names = {i.name for i in static_ifaces}
@@ -581,7 +454,7 @@ def _assemble(
     if "constraints" in bench_cfg and isinstance(bench_cfg["constraints"], dict):
         try:
             constraints = SafetyConstraints(**bench_cfg["constraints"])
-        except TypeError as e:
+        except (TypeError, ValueError) as e:
             logger.warning("bench.json: bad constraints block (%s); ignoring", e)
 
     # Calibration — bench-level, fall back to default empty status.
@@ -589,7 +462,7 @@ def _assemble(
     if "calibration" in bench_cfg and isinstance(bench_cfg["calibration"], dict):
         try:
             cal = CalibrationStatus(**bench_cfg["calibration"])
-        except TypeError as e:
+        except (TypeError, ValueError) as e:
             logger.warning("bench.json: bad calibration block (%s); ignoring", e)
 
     return BenchDefinition(
@@ -603,6 +476,7 @@ def _assemble(
         routing=[],
         constraints=constraints,
         calibration=cal,
+        metadata_sources=metadata_sources,
     )
 
 

@@ -46,13 +46,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 2609 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 3037 |
+| `unit (cli)` | `test/unit/cli/` | 2620 (+2 xfailed) |
+| `unit (box)` | `test/unit/box/` | 3052 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
-| `unit (mcp)` | `test/mcp/unit/` | 241 |
+| `unit (mcp)` | `test/mcp/unit/` | 380 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 82 (+1 skipped) |
-| | **Total gated** | **6163** |
+| | **Total gated** | **6328** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -452,9 +452,9 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 237 files)
+### Local Unit Tests (`test/unit/` -- 241 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 124 files)
+#### Box Unit Tests (`test/unit/box/` -- 126 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -586,8 +586,10 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_ykush_driver.py` | YKUSH USB hub driver: device-contention regression from an indefinitely cached handle |
 | `test_automation_exports.py` | Static parse of `automation/__init__.py`'s lazy export table: no name guarded twice, every returned driver reachable under its own name, everything in `__all__` resolvable -- the copy-paste class of defect that made one driver answer to another's name |
 | `test_io_imports.py` | The `lager.io.*` import surface and re-export identity; asserts the removed root-level aliases stay removed |
+| `test_bench_endpoint.py` | `GET /bench` on the box HTTP server: the body is the bench manifest built from the loaded MCP state (`box_id`, nets with `dut_connection`, `reference_keys`, `metadata_sources`, `capability_bindings`); `ETag` is the quoted content hash and a matching `If-None-Match` in any spelling (quoted, weak, bare, listed, `*`) gets 304 with no body; a build failure is a 500 that says why; the first request on a process that never called `init_state` loads from disk once |
+| `test_status_bench_fields.py` | `/status` advertises `capabilities.benchManifest` from the route's registration (never hardcoded), the real app mounts `/bench`, and the nets block carries `dut_connection` and `test_hints` with the same present-when-unset contract as `purpose` |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 99 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 101 files)
 
 | File | What it tests |
 |------|---------------|
@@ -690,6 +692,8 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_install_wheel.py` | install-wheel command: wheel filename to package name parsing |
 | `test_uninstall_spec.py` | Pins `lager uninstall`'s removal spec to what `install` / `box-config apply` actually create; lock dissolves when the teardown removes the lock server |
 | `test_update_version_ref.py` | Version reference resolution for git checkouts (semver tags vs. named branches) |
+| `test_bench_export.py` | `lager bench export`: fetches `GET /bench` on :9000 and prints the manifest with sorted keys (or one line with `--compact`, or to a file with `--out` plus a one-line summary on stderr); a 404 is an update prompt naming 0.50.0, other HTTP errors show the status and body, a connection failure points at `lager hello`, and a reply that is not a manifest is refused and never written |
+| `test_nets_describe_fields.py` | `lager nets describe --dut-connection` / `--test-hint` / `--clear-test-hints`: the two control-plane fields are merged onto the saved record next to purpose, notes and tags, duplicate hints collapse, side-car fields survive, and the nothing-given message names the new options |
 
 #### Measurement Unit Tests (`test/unit/measurement/` -- 4 files)
 
@@ -729,7 +733,7 @@ These tests cover the scripts in `tools/`. The `unit (root)` job runs them.
 
 ### MCP Tests (`test/mcp/`)
 
-#### Unit Tests (`test/mcp/unit/` -- 13 files)
+#### Unit Tests (`test/mcp/unit/` -- 15 files)
 
 | File | What it tests |
 |------|---------------|
@@ -743,9 +747,11 @@ These tests cover the scripts in `tools/`. The `unit (root)` job runs them.
 | `test_exec_tools.py` | `lager.mcp.tools.exec`: box_exec/read_file/write_file/list_dir, gated by `LAGER_MCP_ALLOW_EXEC` |
 | `test_heuristic_engine.py` | Heuristic engine: requirement inference and suitability assessment |
 | `test_schemas.py` | MCP schema model validation (BenchDefinition, NetDescriptor, CapabilityGraph) |
-| `test_server_state_reload.py` | Auto-reload of bench state when bench.json or saved_nets.json change |
+| `test_server_state_reload.py` | MCP server state: auto-reload when bench.json or saved_nets.json change (including a watched file that appears after startup), injected state never reloads, the bench and graph are published as one object so racing readers of `get_bench_and_graph` never see a torn pair while two separate reads can, `reload_bench` takes the reload lock, a file-backed bench carries the live instruments on a copy while an injected one never scans, and `ensure_loaded` loads from disk once |
 | `test_bearer_auth.py` | `lager.mcp.auth`, the optional bearer token on the MCP port, driven as a raw ASGI callable: no token file changes nothing; a token file the server cannot use (empty, unreadable, a directory) refuses every request with 503 and never opens the port; a refused request never reaches the app; `enable`, `rotate` and `disable` take effect on the same instance with no restart; and neither the token nor a presented value reaches a log |
 | `test_server_app.py` | `lager.mcp.server.build_app` puts the bearer check in the request path of the BUILT app, each app runs the session manager its own route uses (the SDK makes a new one per build), and the startup posture lines warn when a control or exec tier is on with no token |
+| `test_net_types.py` | The one net-type table (`engine.net_types`): every `NetType` member has a row and every row's role resolves through `NetType.from_role` (the no-enum allowlist stays honest), every `reference` names an `API_REFERENCE` entry and the rows without one are exactly the documented exceptions, role and alias lookups resolve while an enum name is never aliased (`PowerSupply2Q` stays unanswered), and the bench loader, the capability graph and the planner's phase all read the same row |
+| `test_bench_manifest.py` | The bench manifest and what feeds it: `schema_version`, `box_id` and a content hash that ignores `generated_at`, changes with the bench and survives a JSON round trip; `capability_bindings` filled from the graph on a copy (the shared bench is never mutated); `reference_keys` per net; `metadata_sources` naming `bench.json` or `saved_net` per field, a malformed override not credited; the HTTP loader gone; scanner records flattened to descriptors; the instrument cache scanning once per TTL, remembering a failed scan for the TTL, sharing one scan across concurrent callers and handing out copies; and `get_test_example` returning per-type snippets plus a repository link with no file dependency |
 
 #### Integration Tests (`test/mcp/integration/` -- 1 file)
 

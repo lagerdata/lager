@@ -10,7 +10,7 @@ import json
 from mcp.server.mcpserver import Context
 
 from ..server import connecting_host, mcp
-from ..server_state import get_bench, get_capability_graph
+from ..server_state import get_bench_and_graph
 
 
 def _instrument_entry(inst) -> dict:
@@ -46,17 +46,25 @@ def discover_bench(ctx: Context, net_name: str | None = None) -> str:
     Args:
         net_name: Optional net to inspect (e.g. 'psu1', 'spi0').
     """
-    bench = get_bench()
-    graph = get_capability_graph()
+    bench, graph = get_bench_and_graph()
 
     if net_name is not None:
         for net in bench.nets:
             if net.name == net_name:
                 caps = graph.by_target(net_name)
                 payload: dict = {
+                    "box_id": bench.box_id,
                     **net.model_dump(exclude_none=True),
                     "capabilities": [c.model_dump() for c in caps],
                 }
+                # Which file authored each metadata field. A bench.json
+                # override wins over the saved net, so a value written with
+                # `lager nets describe` is invisible while an override
+                # shadows it; this says so instead of leaving the agent to
+                # wonder why an edit did not take.
+                sources = bench.metadata_sources.get(net_name)
+                if sources:
+                    payload["metadata_sources"] = sources
                 # Attach DUT subsystem + relevant doc refs so the agent
                 # can ask one question and learn *which schematic page*
                 # this net lives on, not just what it is electrically.
@@ -108,6 +116,10 @@ def discover_bench(ctx: Context, net_name: str | None = None) -> str:
             entry["purpose"] = n.purpose
         if n.tags:
             entry["tags"] = n.tags
+        if n.dut_connection:
+            entry["dut_connection"] = n.dut_connection
+        if n.test_hints:
+            entry["test_hints"] = list(n.test_hints)
         nets_out.append(entry)
 
     summary: dict = {

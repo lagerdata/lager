@@ -849,8 +849,8 @@ Nets reporting no state:
 
 为已保存的 Net 设置元数据，让 AI 智能体（以及人）理解该 Net 在被测设备上的作用。自 **lager 0.24.0** 引入；这些字段通过
 [MCP 服务器](/source/zh/reference/mcp/overview)用于智能体辅助测试。
-`--purpose`、`--notes` 或 `--tag`（或 `--clear-tags`）中至少要提供一个。
-0.46.0 及以上版本的 Lager Box 会通过 HTTP 提供这些字段，因此已接入的控制平面可以同步它们。
+`--purpose`、`--notes`、`--tag`、`--dut-connection` 或 `--test-hint`（或任一 `--clear-*` 标志）中至少要提供一个。
+0.46.0 及以上版本的 Lager Box 会通过 HTTP 提供这些字段，因此已接入的控制平面可以同步它们；`dut_connection` 和 `test_hints` 需要 0.50.0 及以上版本的 Box。
 
 ```bash
 lager nets describe NAME [OPTIONS]
@@ -864,6 +864,9 @@ lager nets describe NAME [OPTIONS]
 - `-n`, `--notes TEXT` - 可选备注（注意事项、跳线位置、示波器探测点）
 - `-t`, `--tag TEXT` - 用于分类/匹配的标签（可重复）
 - `--clear-tags` - 在添加新标签之前移除全部已有标签
+- `--dut-connection TEXT` - 该 Net 落在被测设备的哪个位置：连接器、引脚或测试点（例如 `"J3 pin 4"`）
+- `--test-hint TEXT` - 给编写测试的人的一行提示（可重复）
+- `--clear-test-hints` - 在添加新提示之前移除全部已有测试提示
 - `--box TEXT` - Lager Box 名称或 IP
 
 **示例：**
@@ -873,6 +876,12 @@ lager nets describe NAME [OPTIONS]
 lager nets describe battery1 \
   --purpose "Main battery rail powering the MCU" \
   --tag power --tag critical \
+  --box my-lager-box
+
+# Say where the net lands on the DUT and leave a hint for the test author
+lager nets describe battery1 \
+  --dut-connection "J1 pin 2 (VBAT)" \
+  --test-hint "ramp from 3.0 V; the DUT browns out below 2.8 V" \
   --box my-lager-box
 
 # Replace the existing tags

@@ -22,11 +22,12 @@ rather than raised exceptions), and logs one audit line before acting.
 from __future__ import annotations
 
 import difflib
-import json
 import logging
 import os
 import subprocess
 import time
+
+from ._payload import reply as _reply
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +70,7 @@ def box_exec(command: str, timeout_s: int = 60, cwd: str | None = None) -> str:
     except subprocess.TimeoutExpired as exc:
         out, out_trunc = _tail((exc.stdout or b"").decode("utf-8", errors="replace"))
         err, err_trunc = _tail((exc.stderr or b"").decode("utf-8", errors="replace"))
-        return json.dumps({
+        return _reply({
             "command": command,
             "exit_code": None,
             "stdout": out,
@@ -78,11 +79,11 @@ def box_exec(command: str, timeout_s: int = 60, cwd: str | None = None) -> str:
             "timed_out": True,
         })
     except Exception as exc:
-        return json.dumps({"error": f"box_exec failed to launch: {exc}"})
+        return _reply({"error": f"box_exec failed to launch: {exc}"})
 
     out, out_trunc = _tail((proc.stdout or b"").decode("utf-8", errors="replace"))
     err, err_trunc = _tail((proc.stderr or b"").decode("utf-8", errors="replace"))
-    return json.dumps({
+    return _reply({
         "command": command,
         "exit_code": proc.returncode,
         "stdout": out,
@@ -106,11 +107,11 @@ def read_file(path: str, max_bytes: int = _DEFAULT_READ_BYTES) -> str:
         with open(path, "r", encoding="utf-8", errors="replace") as fh:
             data = fh.read(max_bytes + 1)
     except (FileNotFoundError, IsADirectoryError, PermissionError, OSError) as exc:
-        return json.dumps({"error": f"Cannot read '{path}': {exc}"})
+        return _reply({"error": f"Cannot read '{path}': {exc}"})
 
     truncated = len(data) > max_bytes
     content = data[:max_bytes] if truncated else data
-    return json.dumps({
+    return _reply({
         "path": path,
         "content": content,
         "bytes": len(content),
@@ -157,7 +158,7 @@ def write_file(path: str, content: str) -> str:
                 os.unlink(tmp)
             except OSError:
                 pass
-        return json.dumps({"error": f"Cannot write '{path}': {exc}"})
+        return _reply({"error": f"Cannot write '{path}': {exc}"})
 
     diff = "".join(
         difflib.unified_diff(
@@ -168,7 +169,7 @@ def write_file(path: str, content: str) -> str:
         )
     )
     diff_text, diff_trunc = _tail(diff)
-    return json.dumps({
+    return _reply({
         "path": path,
         "bytes_written": len(content),
         "backup": backup,
@@ -201,10 +202,10 @@ def list_dir(path: str) -> str:
                 )
                 entries.append({"name": entry.name, "type": kind, "size": size})
     except (FileNotFoundError, NotADirectoryError, PermissionError, OSError) as exc:
-        return json.dumps({"error": f"Cannot list '{path}': {exc}"})
+        return _reply({"error": f"Cannot list '{path}': {exc}"})
 
     entries.sort(key=lambda e: e["name"])
-    return json.dumps({"path": path, "entries": entries})
+    return _reply({"path": path, "entries": entries})
 
 
 def register(mcp) -> None:

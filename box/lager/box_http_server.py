@@ -219,6 +219,14 @@ except Exception as e:
     logger.warning("Instruments handlers not available: %s", e)
     _has_instruments = False
 
+# Import bench-manifest handler (GET /bench: the whole bench as one document)
+try:
+    from lager.http_handlers.bench_manifest_handler import register_bench_manifest_routes
+    _has_bench_manifest = True
+except Exception as e:
+    logger.warning("Bench manifest handler not available: %s", e)
+    _has_bench_manifest = False
+
 # Import custom-devices handler (`lager nets assign` backend)
 try:
     from lager.http_handlers.custom_devices_handler import register_custom_devices_routes
@@ -339,6 +347,8 @@ def status():
                 'purpose': net.get('purpose') or '',
                 'notes': net.get('notes') or '',
                 'tags': list(net.get('tags') or []),
+                'dut_connection': net.get('dut_connection') or '',
+                'test_hints': list(net.get('test_hints') or []),
                 'metadata_timestamps': net.get('metadata_timestamps') or {},
             })
     except (FileNotFoundError, _json.JSONDecodeError, TypeError):
@@ -402,6 +412,11 @@ def status():
             # keys entirely, which reads as false.
             'netMetadataSync': _has_net_metadata,
             'boxMetadataSync': _has_box_metadata,
+            # GET /bench (the bench manifest) is served on :9000. A client
+            # that stores a copy of the bench gates its fetch on this so a
+            # box predating the route is read as "older box", not as "no
+            # bench". Absent entirely on such a box, which reads as false.
+            'benchManifest': _has_bench_manifest,
         },
     })
 
@@ -490,6 +505,14 @@ if _has_instruments:
     print("[INIT] Instruments REST endpoints registered", flush=True)
 else:
     print("[INIT] Instruments REST endpoints NOT available", flush=True)
+
+# Register bench-manifest REST handler (if available)
+if _has_bench_manifest:
+    register_bench_manifest_routes(app)
+    logger.info("Bench manifest REST endpoint registered")
+    print("[INIT] Bench manifest REST endpoint registered", flush=True)
+else:
+    print("[INIT] Bench manifest REST endpoint NOT available", flush=True)
 
 # Register custom-devices REST handlers (if available)
 if _has_custom_devices:

@@ -703,38 +703,14 @@ def get_reference_for_type(net_type: str) -> dict | None:
 
     Accepts both the raw net_type from saved_nets (e.g. "power-supply",
     "spi", "gpio") and the NetType enum name (e.g. "PowerSupply", "SPI").
+    Roles and their aliases resolve through the one net-type table in
+    ``engine.net_types``; an enum name is looked up as written, so a type
+    with no entry of its own (``PowerSupply2Q``) is not answered with a
+    neighbour's under the enum's name.
     """
-    _ALIAS_MAP = {
-        "power-supply": "PowerSupply",
-        "power-supply-2q": "PowerSupply",
-        "supply": "PowerSupply",
-        "gpio": "GPIO",
-        "adc": "ADC",
-        "dac": "DAC",
-        "uart": "UART",
-        "spi": "SPI",
-        "i2c": "I2C",
-        "debug": "Debug",
-        "battery": "Battery",
-        "batt": "Battery",
-        "eload": "ELoad",
-        "thermocouple": "Thermocouple",
-        "watt-meter": "WattMeter",
-        "usb": "Usb",
-        "energy-analyzer": "EnergyAnalyzer",
-        # Raw saved-net roles for the types added in #372. bench_loader sets
-        # net_type=role, so plan_firmware_test looks these up by role string;
-        # without them the entries are reachable only via lager://reference/.
-        "router": "Router",
-        "mikrotik": "Router",
-        "arm": "Arm",
-        "webcam": "Webcam",
-        "wifi": "Wifi",
-        "scope": "Analog",
-        "analog": "Analog",
-        "logic": "Logic",
-    }
-    key = _ALIAS_MAP.get(net_type.lower(), net_type)
+    from ..engine.net_types import reference_key
+
+    key = reference_key(net_type) or net_type
     return API_REFERENCE.get(key)
 
 

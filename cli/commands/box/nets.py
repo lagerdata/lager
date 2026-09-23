@@ -2701,12 +2701,17 @@ def show_script_cmd(
 
 
 @nets.command("describe", short_help="Set metadata on a saved net",
-              help="Set metadata on a saved net (purpose, notes, tags).")
+              help="Set metadata on a saved net (purpose, notes, tags, DUT connection, test hints).")
 @click.argument("name")
 @click.option("--purpose", "-p", default=None, help="One sentence: what this net does on the DUT")
 @click.option("--notes", "-n", default=None, help="Optional notes (gotchas, jumper positions, scope probe points)")
 @click.option("--tag", "-t", "tags", multiple=True, help="Tag for categorisation/matching (repeatable)")
 @click.option("--clear-tags", is_flag=True, help="Remove all existing tags before adding new ones")
+@click.option("--dut-connection", default=None,
+              help='Where the net lands on the DUT: connector, pin or test point (e.g. "J3 pin 4")')
+@click.option("--test-hint", "test_hints", multiple=True,
+              help="One-line advice for a test author (repeatable)")
+@click.option("--clear-test-hints", is_flag=True, help="Remove all existing test hints before adding new ones")
 @click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def describe_cmd(
@@ -2716,13 +2721,24 @@ def describe_cmd(
     notes: str | None,
     tags: tuple[str, ...],
     clear_tags: bool,
+    dut_connection: str | None,
+    test_hints: tuple[str, ...],
+    clear_test_hints: bool,
     box: str | None,
 ) -> None:
     """Set metadata fields on a saved net for agent-assisted testing."""
     resolved_box = _resolve_box(ctx, box)
 
-    if purpose is None and notes is None and not tags and not clear_tags:
-        click.secho("Nothing to update. Provide at least one of --purpose, --notes, or --tag.", fg="yellow")
+    nothing_given = (
+        purpose is None and notes is None and not tags and not clear_tags
+        and dut_connection is None and not test_hints and not clear_test_hints
+    )
+    if nothing_given:
+        click.secho(
+            "Nothing to update. Provide at least one of --purpose, --notes, --tag, "
+            "--dut-connection, or --test-hint.",
+            fg="yellow",
+        )
         return
 
     recs = _fetch_saved_nets(ctx, resolved_box)
@@ -2743,6 +2759,15 @@ def describe_cmd(
         existing = target.get("tags", [])
         merged = list(dict.fromkeys(existing + list(tags)))
         target["tags"] = merged
+
+    if dut_connection is not None:
+        target["dut_connection"] = dut_connection
+
+    if clear_test_hints:
+        target["test_hints"] = []
+    if test_hints:
+        existing_hints = target.get("test_hints") or []
+        target["test_hints"] = list(dict.fromkeys(list(existing_hints) + list(test_hints)))
 
     _save_net_http(ctx, resolved_box, target)
     click.secho(f"Updated metadata for net '{name}' on box {resolved_box}.", fg="green")

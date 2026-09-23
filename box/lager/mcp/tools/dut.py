@@ -122,11 +122,12 @@ def cite_schematic(net_name: str) -> str:
 
     net = next((n for n in bench.nets if n.name == net_name), None)
     if net is None:
-        return json.dumps({"error": f"Net '{net_name}' not found."})
+        return json.dumps({"box_id": bench.box_id, "error": f"Net '{net_name}' not found."})
 
     dut, sub = _find_dut_for_net(bench, net_name)
     if dut is None:
         return json.dumps({
+            "box_id": bench.box_id,
             "net": net_name,
             "warning": "No DUT context has been authored on this box yet.",
             "doc_refs": [],
@@ -139,9 +140,12 @@ def cite_schematic(net_name: str) -> str:
         subsystem_refs = [d.model_dump(exclude_none=True) for d in sub.doc_refs]
 
     return json.dumps({
+        "box_id": bench.box_id,
         "net": net_name,
         "net_purpose": net.purpose,
         "net_notes": net.notes,
+        "net_dut_connection": net.dut_connection,
+        "net_test_hints": net.test_hints,
         "dut": dut.name,
         "subsystem": sub.name if sub is not None else None,
         "subsystem_summary": sub.summary if sub is not None else None,

@@ -177,8 +177,15 @@ class TestNetFromRaw:
         assert nd.purpose == "flash bus"
         assert nd.notes == "idle high"
 
-    def test_legacy_fields_are_ignored(self):
-        """Old description/dut_connection/test_hints keys no longer exist."""
+    def test_description_is_ignored_but_the_control_plane_fields_pass_through(self):
+        """``description`` became ``purpose`` in v0.24.0 and is never read.
+
+        ``dut_connection`` and ``test_hints`` were dropped in the same
+        release and are back as first-class fields: they are what the
+        control plane keeps per net, and they now reach the agent through
+        ``discover_bench``, ``cite_schematic`` and the bench manifest, so
+        accepting them no longer means writing keys nothing reads.
+        """
         nd = _net_from_raw({
             "name": "uart1", "role": "uart",
             "description": "DUT debug CLI",
@@ -188,8 +195,8 @@ class TestNetFromRaw:
         assert nd.purpose == ""
         assert nd.notes == ""
         assert not hasattr(nd, "description")
-        assert not hasattr(nd, "dut_connection")
-        assert not hasattr(nd, "test_hints")
+        assert nd.dut_connection == "PA9/PA10"
+        assert nd.test_hints == ["boot banner"]
 
     def test_tags_pass_through(self):
         nd = _net_from_raw({
@@ -600,8 +607,7 @@ class TestDiscoverBenchEnrichment:
         from lager.mcp.engine.capability_graph import build_capability_graph
 
         graph = build_capability_graph(populated_bench)
-        monkeypatch.setattr(discover_tool, "get_bench", lambda: populated_bench)
-        monkeypatch.setattr(discover_tool, "get_capability_graph", lambda: graph)
+        monkeypatch.setattr(discover_tool, "get_bench_and_graph", lambda: (populated_bench, graph))
 
         fn = getattr(discover_tool.discover_bench, "fn", discover_tool.discover_bench)
         body = fn(None, "flash_cs")
@@ -616,8 +622,7 @@ class TestDiscoverBenchEnrichment:
         from lager.mcp.engine.capability_graph import build_capability_graph
 
         graph = build_capability_graph(populated_bench)
-        monkeypatch.setattr(discover_tool, "get_bench", lambda: populated_bench)
-        monkeypatch.setattr(discover_tool, "get_capability_graph", lambda: graph)
+        monkeypatch.setattr(discover_tool, "get_bench_and_graph", lambda: (populated_bench, graph))
 
         fn = getattr(discover_tool.discover_bench, "fn", discover_tool.discover_bench)
         body = fn(None)
@@ -771,8 +776,7 @@ class TestDiscoverBenchInstrumentDetail:
             nets=[NetDescriptor(name="supply1", net_type="power-supply", instrument="psu", channel="CH1")],
         )
         discover_tool, fn = _discover_fn()
-        monkeypatch.setattr(discover_tool, "get_bench", lambda: bench)
-        monkeypatch.setattr(discover_tool, "get_capability_graph", lambda: build_capability_graph(bench))
+        monkeypatch.setattr(discover_tool, "get_bench_and_graph", lambda: (bench, build_capability_graph(bench)))
 
         inst = json.loads(fn())["instruments"][0]
         assert inst["channels"] == ["CH1", "CH2"]
@@ -787,8 +791,7 @@ class TestDiscoverBenchInstrumentDetail:
             instruments=[InstrumentDescriptor(name="lj", instrument_type="labjack_t7", connection="usb")],
         )
         discover_tool, fn = _discover_fn()
-        monkeypatch.setattr(discover_tool, "get_bench", lambda: bench)
-        monkeypatch.setattr(discover_tool, "get_capability_graph", lambda: build_capability_graph(bench))
+        monkeypatch.setattr(discover_tool, "get_bench_and_graph", lambda: (bench, build_capability_graph(bench)))
 
         inst = json.loads(fn())["instruments"][0]
         assert set(inst) == {"name", "type", "connection"}
@@ -805,8 +808,7 @@ class TestDiscoverBenchNotFound:
             ],
         )
         discover_tool, fn = _discover_fn()
-        monkeypatch.setattr(discover_tool, "get_bench", lambda: bench)
-        monkeypatch.setattr(discover_tool, "get_capability_graph", lambda: build_capability_graph(bench))
+        monkeypatch.setattr(discover_tool, "get_bench_and_graph", lambda: (bench, build_capability_graph(bench)))
 
         payload = json.loads(fn("does_not_exist"))
         assert "not found" in payload["error"]

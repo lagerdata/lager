@@ -33,9 +33,15 @@ from .heuristic import (
     SuitabilityReport,
     TestRequirement,
 )
+from .manifest import (
+    MANIFEST_SCHEMA_VERSION,
+    BenchManifest,
+)
 
 __all__ = [
+    "MANIFEST_SCHEMA_VERSION",
     "BenchDefinition",
+    "BenchManifest",
     "CalibrationStatus",
     "CapabilityGraph",
     "CapabilityMatch",

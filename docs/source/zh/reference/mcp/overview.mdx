@@ -107,12 +107,14 @@ lager box-config mcp-token enable --box <BOX>
 | 工具 | 用途 |
 |------|---------|
 | `discover_dut()` | 一次调用完成定位：被测设备的用途、MCU、外设、子系统和文档引用。 |
-| `discover_bench(net_name?)` | 枚举硬件 —— 各个 Net，以及各台仪器及其通道、能力和已录入的规格/量程。带 Net 名称调用时，返回该 Net 的完整元数据、能力、所属子系统和相关文档引用（如果该 Net 不存在，则返回可用 Net 名称的列表）。 |
+| `discover_bench(net_name?)` | 枚举硬件 —— 各个 Net 及其 `purpose`、`tags`、`dut_connection` 和 `test_hints`，以及 Box 上检测到的各台仪器及其通道和能力。带 Net 名称调用时，返回该 Net 的完整元数据、能力、所属子系统、相关文档引用，以及 `metadata_sources`（每个字段由哪个文件写入）。如果该 Net 不存在，则返回可用 Net 名称的列表。 |
 | `cite_schematic(net_name)` | 只返回与某个 Net 相关的原理图/数据手册引用和页码提示。 |
 | `plan_firmware_test(firmware_description, test_goals)` | 生成分阶段的测试计划，限定到相关的 Net，并附上 DUT 上下文和文档引用。 |
 | `assess_suitability(test_type)` | 检查这个实验台能否运行某一类测试。 |
-| `get_test_example(query)` | 按 Net 类型、模式或关键字查找可运行的示例脚本。 |
+| `get_test_example(query)` | 按 Net 类型、模式或关键字查找示例。每个匹配项都带有其 Net 类型的精选代码片段，以及指向 lager 仓库中完整脚本的链接；这些脚本并不在 Box 上。 |
 | `box_manage(action)` | `health` 健康检查，或从磁盘 `reload` 实验台配置。 |
+
+每个工具的回复都带有 `box_id`，下面受开关控制的工具也不例外，因此通过一个会话与多台 Box 对话的客户端可以区分它们。
 
 <Note>
 **默认情况下，工具接口是只读的。** 上面这七个工具不驱动硬件（设置电压、翻转 GPIO、烧录固件），也不改动 Box。这些都发生在智能体编写、并用 `lager python` 运行的测试脚本里，或者发生在专门的 [CLI 命令](/source/zh/reference/cli/overview)中。
@@ -185,11 +187,30 @@ Box 的 MCP 服务器在启动时会注册额外的工具。每一个都会扩�
   </Step>
 </Steps>
 
+## 实验台清单
+
+上面的工具一次只回答一个问题。保存着多台 Box 副本的客户端（控制平面、面向整个机群的 MCP 主机，或者您自己）可以改为用一个请求获取完整的描述：
+
+```bash
+curl http://<box-ip>:9000/bench
+```
+
+回复是**实验台清单**，一个 JSON 文档。它包含：
+
+- `schema_version` 和 `box_id`；
+- 实验台本身：各个 Net 及其元数据、Box 上检测到的仪器、DUT 槽位、接口、以 `capability_bindings` 表示的能力图，以及 `metadata_sources`；
+- `reference_keys`，即每个 Net 对应的 `lager://reference/{net_type}` 条目。
+
+它由 MCP 工具所读取的同一份已加载状态构建，因此两者永远不会不一致。
+
+`ETag` 头就是清单的 `content_hash`。把它作为 `If-None-Match` 发回去。只要清单没有变化，Box 就返回不带正文的 `304`，因此每分钟轮询一次的客户端不会给 Box 带来任何开销。`/status` 通过 `capabilities.benchManifest` 声明这个路由；早于该路由的 Box（lager 0.50.0 之前）不会带这个标志。在 CLI 中，[`lager bench export`](/source/zh/reference/cli/bench) 获取的是同一份文档。
+
 ## 上下文来自哪里
 
 上面这一切的质量，都取决于您在搭建实验台时一次性录入的元数据：
 
 - **每个 Net 的 `purpose`** —— 在 Net 管理器 TUI（`lager nets tui`）中设置，或用 `lager nets describe NAME --purpose "..."` 设置。用一句话描述每根线在被测设备上做什么。
+- **每个 Net 的 `dut_connection` 和 `test_hints`** —— 用 `lager nets describe NAME --dut-connection "J3 pin 4" --test-hint "hold nRST low while flashing"` 设置。前者说明该 Net 落在被测设备的哪个位置，后者是给编写测试的人的一行提示。为每个 Net 保存这两个字段的控制平面会把它们同步到 Box。
 - **DUT 上下文** —— 用 [`lager dut`](/source/zh/reference/cli/dut) 设置：这台 Box 的用途、MCU、子系统，以及原理图和数据手册的引用。
 
 完整指南请参阅[编写 DUT 上下文](/source/zh/reference/mcp/dut-context)。
