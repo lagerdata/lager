@@ -199,9 +199,10 @@ curl http://<box-ip>:9000/bench
 
 - `schema_version` 和 `box_id`；
 - 实验台本身：各个 Net 及其元数据、Box 上检测到的仪器、DUT 槽位、接口、以 `capability_bindings` 表示的能力图，以及 `metadata_sources`；
-- `reference_keys`，即每个 Net 对应的 `lager://reference/{net_type}` 条目。
+- `reference_keys`，即每个 Net 对应的 `lager://reference/{net_type}` 条目；
+- `reference_entries`，即这些条目本身：实验台上每种 Net 类型的方法、注意事项和示例代码片段。
 
-它由 MCP 工具所读取的同一份已加载状态构建，因此两者永远不会不一致。
+它由 MCP 工具所读取的同一份已加载状态构建，因此两者永远不会不一致。`bench.dut_updated_at` 说明 DUT 上下文最后一次变更的时间，因此保存着自己副本的客户端可以判断哪一边更新。
 
 `ETag` 头就是清单的 `content_hash`。把它作为 `If-None-Match` 发回去。只要清单没有变化，Box 就返回不带正文的 `304`，因此每分钟轮询一次的客户端不会给 Box 带来任何开销。`/status` 通过 `capabilities.benchManifest` 声明这个路由；早于该路由的 Box（lager 0.50.0 之前）不会带这个标志。在 CLI 中，[`lager bench export`](/source/zh/reference/cli/bench) 获取的是同一份文档。
 

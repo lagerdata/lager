@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from datetime import datetime, timezone
 from typing import Any
 
 from ..schemas.bench import (
@@ -282,12 +283,67 @@ def load_from_files(
     if hostname:
         hello_data["hostname"] = hostname
 
+    bench_cfg = bench_cfg if isinstance(bench_cfg, dict) else {}
     return _assemble(
         hello_data=hello_data,
         raw_nets=raw_nets if isinstance(raw_nets, list) else [],
         raw_instruments=[],
-        bench_cfg=bench_cfg if isinstance(bench_cfg, dict) else {},
+        bench_cfg=bench_cfg,
+        dut_updated_at=dut_clock(bench_cfg, bench_json_path),
     )
+
+
+def iso_utc(moment: datetime) -> str:
+    """``moment`` as ISO 8601 UTC with a ``Z`` suffix and no microseconds."""
+    return (
+        moment.astimezone(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+def parse_iso(value: Any) -> datetime | None:
+    """A timezone-aware datetime from an ISO 8601 string, or None.
+
+    A value with no zone is taken as UTC, so a clock written by a client that
+    forgot the suffix still compares.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def dut_clock(bench_cfg: dict[str, Any], bench_json_path: str) -> str:
+    """When the DUT context last changed: the later of bench.json's own
+    ``dut_updated_at`` key and the file's mtime, as ISO 8601 UTC.
+
+    The key is written by ``PUT /dut`` and by a current ``lager dut``; the
+    mtime covers an edit by an older CLI or by hand, which writes no key.
+    Empty when the file does not exist.
+    """
+    candidates: list[datetime] = []
+    keyed = parse_iso(bench_cfg.get("dut_updated_at"))
+    if keyed is not None:
+        candidates.append(keyed)
+    try:
+        candidates.append(
+            datetime.fromtimestamp(os.path.getmtime(bench_json_path), tz=timezone.utc)
+        )
+    except OSError:
+        pass
+    if not candidates:
+        return ""
+    return iso_utc(max(candidates))
 
 
 def load_from_dicts(
@@ -298,11 +354,14 @@ def load_from_dicts(
     raw_instruments: list[dict[str, Any]] | None = None,
 ) -> BenchDefinition:
     """Build a BenchDefinition from in-memory dicts (primarily for tests)."""
+    cfg = bench_cfg or {}
+    keyed = parse_iso(cfg.get("dut_updated_at"))
     return _assemble(
         hello_data=hello_data or {},
         raw_nets=raw_nets or [],
         raw_instruments=raw_instruments or [],
-        bench_cfg=bench_cfg or {},
+        bench_cfg=cfg,
+        dut_updated_at=iso_utc(keyed) if keyed is not None else "",
     )
 
 
@@ -364,6 +423,7 @@ def _assemble(
     raw_nets: list[dict[str, Any]],
     raw_instruments: list[dict[str, Any]],
     bench_cfg: dict[str, Any],
+    dut_updated_at: str = "",
 ) -> BenchDefinition:
     box_id = (
         bench_cfg.get("box_id")
@@ -470,6 +530,7 @@ def _assemble(
         hostname=hostname,
         version=version,
         dut_slots=dut_slots,
+        dut_updated_at=dut_updated_at,
         instruments=instruments,
         nets=nets,
         interfaces=interfaces,
