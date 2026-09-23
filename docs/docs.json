@@ -72,6 +72,7 @@
                   "source/reference/cli/diagnose",
                   "source/reference/cli/nets",
                   "source/reference/cli/dut",
+                  "source/reference/cli/bench",
                   "source/reference/cli/defaults"
                 ]
               },
@@ -544,6 +545,7 @@
                   "source/zh/reference/cli/diagnose",
                   "source/zh/reference/cli/nets",
                   "source/zh/reference/cli/dut",
+                  "source/zh/reference/cli/bench",
                   "source/zh/reference/cli/defaults"
                 ]
               },

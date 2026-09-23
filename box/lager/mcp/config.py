@@ -17,20 +17,37 @@ logger = logging.getLogger(__name__)
 
 MCP_PORT = int(os.environ.get("LAGER_MCP_PORT", "8100"))
 
-# Ports for co-located box services (used for inter-service calls on localhost)
-BOX_SERVICE_PORT = 5000
-BOX_HARDWARE_PORT = 8080
-BOX_HTTP_PORT = 9000
-BOX_DEBUG_PORT = 8765
+BOX_ID_PATH = "/etc/lager/box_id"
+#: The host's hostname, bind-mounted into the container. The container's own
+#: /etc/hostname is the container id, so it is never used as a fallback.
+HOST_HOSTNAME_PATH = "/host/etc/hostname"
 
 
-def get_box_id() -> str:
-    """Read the box identifier from /etc/lager/box_id."""
+def _read_line(path: str) -> str:
     try:
-        with open("/etc/lager/box_id", "r") as fh:
+        with open(path, "r", encoding="utf-8") as fh:
             return fh.read().strip()
-    except FileNotFoundError:
-        return os.environ.get("LAGER_BOX_ID", "unknown")
+    except OSError:
+        return ""
+
+
+def get_box_id(
+    *, box_id_path: str = BOX_ID_PATH, hostname_path: str = HOST_HOSTNAME_PATH,
+) -> str:
+    """The box identifier: the box_id file, else ``LAGER_BOX_ID``, else the
+    host's hostname, else ``"unknown"``.
+
+    A box installed before the id file existed has no ``/etc/lager/box_id``
+    and no env value, but its hostname is the name every operator knows it
+    by; answering ``unknown`` there left every tool reply and the manifest
+    without an identity a fleet client could key on.
+    """
+    return (
+        _read_line(box_id_path)
+        or os.environ.get("LAGER_BOX_ID", "").strip()
+        or _read_line(hostname_path)
+        or "unknown"
+    )
 
 
 def get_box_version() -> str:

@@ -1,0 +1,72 @@
+---
+title: Bench Manifest
+description: 导出 Lager Box 为 AI 工具发布的实验台清单
+---
+
+`lager bench` 读取**实验台清单**：一个 JSON 文档，把一台 Lager Box 描述给保存着多台 Box 副本的客户端，例如控制平面或面向整个机群的 MCP 主机。Box 在 `GET http://<box-ip>:9000/bench` 提供它，并由 [MCP 服务器](/source/zh/reference/mcp/overview)所读取的同一份已加载状态构建，因此两者永远不会不一致。相关概念请参阅[实验台清单](/source/zh/reference/mcp/overview#实验台清单)。
+
+## 语法
+
+```bash
+lager bench [COMMAND] [OPTIONS]
+```
+
+## 选项
+
+`lager bench` 命令组本身只接受 `--help`。请把 `--box` 传给各个子命令。
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--box TEXT` | Lager Box 名称或 IP 地址（用于 `export`） |
+| `--help` | 显示帮助信息并退出 |
+
+## 命令
+
+| 命令 | 说明 |
+|---------|-------------|
+| `export` | 以 JSON 获取该 Box 的实验台清单 |
+
+## 命令参考
+
+### Export
+
+获取清单并打印，或写入文件。
+
+```bash
+lager bench export --box my-lager-box
+lager bench export --box my-lager-box --out my-lager-box.json
+```
+
+**选项：**
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--box TEXT` | Lager Box 名称或 IP。 |
+| `--out FILE` | 把清单写入这个文件，而不是标准输出。一行摘要（Box id、schema 版本、内容哈希）会输出到标准错误。 |
+| `--compact` | 输出一行 JSON，而不是缩进的文档。 |
+
+输出就是 Box 提供的清单本身，键已排序，因此同一台 Box 的两次导出可以干净地做 diff。
+
+## 清单包含什么
+
+| 字段 | 含义 |
+|-------|---------|
+| `schema_version` | 清单格式。目前为 `1`。使用方应先读取它。 |
+| `generated_at` | Box 构建这份清单的时间（ISO 8601，UTC）。 |
+| `content_hash` | 除 `generated_at` 和它自身之外全部内容的 SHA-256。Box 把它作为 `ETag` 头发送。 |
+| `box_id` | Box 标识符，与 `bench.box_id` 相同。 |
+| `bench.nets` | 每个已保存的 Net，含类型、角色、仪器、通道，以及用户元数据：`purpose`、`notes`、`tags`、`dut_connection`、`test_hints`。 |
+| `bench.instruments` | Box 上检测到的仪器，按角色列出通道。背后的扫描每分钟最多运行一次。 |
+| `bench.dut_slots` | 用 [`lager dut`](/source/zh/reference/cli/dut) 编写的 DUT 上下文，包含文档引用。 |
+| `bench.interfaces` | 协议接口（SPI、I2C、UART）及其 Net。 |
+| `bench.capability_bindings` | 能力图：一个 Net 能扮演的每个角色各占一条，并带有置信度。 |
+| `bench.metadata_sources` | 每个 Net 的每个字段由哪个文件写入：`bench.json`（`net_overrides` 条目）或 `saved_net`。覆盖值优先，因此这里能看出保存的值何时被遮住。 |
+| `reference_keys` | Net 名称到记载它的 `lager://reference/{net_type}` 条目。 |
+
+## 零开销轮询
+
+Box 把 `content_hash` 作为 `ETag` 头发送。客户端把它作为 `If-None-Match` 发回去，在内容没有变化时会得到不带正文的 `304 Not Modified`。`/status` 通过 `capabilities.benchManifest` 声明这个路由。
+
+## 较旧的 Box
+
+0.50.0 之前版本的 Box 不提供 `/bench`。`lager bench export` 会说明这一点并请您运行 `lager update --box <BOX>`；它不会把 404 当作空的实验台。

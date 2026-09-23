@@ -16,7 +16,10 @@ def register(mcp):
         """All nets on the bench with type, roles, instrument, metadata, and limits."""
         bench = get_bench()
         nets = [
-            {k: v for k, v in n.model_dump(exclude_none=True).items() if v != "" and v != []}
+            {
+                k: v for k, v in n.model_dump(exclude_none=True).items()
+                if v != "" and v != [] and v != {}
+            }
             for n in bench.nets
         ]
         return json.dumps(nets, indent=2)

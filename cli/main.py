@@ -73,6 +73,7 @@ from .commands.measurement.energy import energy
 from .commands.box import hello, boxes, instruments, nets, ssh, box
 from .commands.box.config import box_config
 from .commands.box.dut import box_dut
+from .commands.box.bench import box_bench
 from .commands.box.ssh_setup import ssh_setup, authorize
 from .commands.box.diagnose import diagnose
 
@@ -246,6 +247,7 @@ cli.add_command(boxes)
 cli.add_command(box)
 cli.add_command(box_config)
 cli.add_command(box_dut)
+cli.add_command(box_bench)
 cli.add_command(instruments)
 cli.add_command(ssh)
 cli.add_command(ssh_setup)

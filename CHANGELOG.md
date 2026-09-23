@@ -47,6 +47,40 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   or `0x200000`. The CLI prints the range the box erased, refuses the options
   on a box older than this release rather than let it erase its default range,
   and `DebugNet.erase(start, length)` takes the same pair.
+- **`GET /bench` on the box and `lager bench export`: the bench manifest.** One
+  versioned JSON document with the nets and their metadata, the instruments
+  detected on the box, the DUT context, the capability graph and the API
+  reference key for each net, with a content hash as its `ETag`. A client that
+  keeps a copy of many boxes fetches it in one request and gets `304` while
+  nothing changed; `/status` advertises it as `capabilities.benchManifest`.
+- **`lager nets describe --dut-connection` and `--test-hint`.** Two more fields
+  on a saved net: where the net lands on the DUT, and one-line advice for a test
+  author. The MCP tools, `/status`, the manifest and the per-net metadata
+  endpoint all carry them, so a control plane that keeps these fields per net
+  round-trips them instead of getting a 400.
+
+### Changed
+
+- **Every MCP tool reply carries `box_id`**, the control and exec tiers included,
+  so a client that talks to several boxes through one session can tell the
+  replies apart. A box with no `/etc/lager/box_id` file and no `LAGER_BOX_ID`
+  is named by its hostname instead of an empty string or `unknown`.
+- **`get_test_example` returns the curated snippet for each of the pattern's net
+  types and a link to the full example in the repository.** The example scripts
+  were never in the box image, so on a box the tool returned no script content.
+
+### Fixed
+
+- **`discover_bench` lists the instruments on the box.** It always answered an
+  empty list because the bench was loaded from files and nothing read the USB
+  inventory. The inventory now comes from a scan that runs at most once a minute,
+  and only when an agent asks.
+- **`plan_firmware_test` gives a solar net an API reference and a plan phase.**
+  The net-type knowledge lived in four tables that had drifted apart; there is
+  now one, checked against `NetType`.
+- **The MCP server never pairs a new bench with an old capability graph.** A
+  reload triggered by `lager dut edit` or `lager nets describe` published the two
+  in sequence, so a request in flight could read one of each.
 
 ## [0.49.0] - 2026-09-18
 

@@ -139,12 +139,15 @@ agent reads) and **tools** (callable functions).
 | Tool | Purpose |
 |------|---------|
 | `discover_dut()` | One call for orientation: DUT purpose, MCU, peripherals, subsystems, and document references. |
-| `discover_bench(net_name?)` | Enumerate hardware — nets, plus instruments with their channels, capabilities, and authored specs/ranges. With a net name, return that net's full metadata, capabilities, parent subsystem, and relevant document references (and, if the net is unknown, the list of available net names). |
+| `discover_bench(net_name?)` | Enumerate hardware — nets with their `purpose`, `tags`, `dut_connection` and `test_hints`, plus the instruments detected on the box with their channels and capabilities. With a net name, return that net's full metadata, capabilities, parent subsystem, relevant document references, and `metadata_sources` (which file authored each field). If the net is unknown, the list of available net names. |
 | `cite_schematic(net_name)` | Return just the schematic/datasheet references and page hints relevant to one net. |
 | `plan_firmware_test(firmware_description, test_goals)` | Generate a phased test plan, scoped to relevant nets, with DUT context and document references attached. |
 | `assess_suitability(test_type)` | Check whether the bench can run a given test type. |
-| `get_test_example(query)` | Find runnable example scripts by net type, pattern, or keyword. |
+| `get_test_example(query)` | Find worked examples by net type, pattern, or keyword. Each match carries the curated snippet for its net types and a link to the full script in the lager repository; the scripts are not on the box. |
 | `box_manage(action)` | `health` check or `reload` the bench config from disk. |
+
+Every tool reply carries `box_id`, the gated tools below included. A client
+that talks to several boxes through one session can tell the replies apart.
 
 <Note>
 **By default the tool surface is read-only.** The seven tools above do not drive
@@ -241,6 +244,34 @@ agent follows with the tools above.
   </Step>
 </Steps>
 
+## The bench manifest
+
+The tools above answer one question at a time. A client that keeps a copy of
+many boxes can fetch the whole description in one request instead. Such a
+client is a control plane, a fleet-level MCP host, or you:
+
+```bash
+curl http://<box-ip>:9000/bench
+```
+
+The reply is the **bench manifest**, one JSON document. It carries:
+
+- `schema_version` and `box_id`;
+- the bench: nets with their metadata, the instruments detected on the box, DUT
+  slots, interfaces, the capability graph as `capability_bindings`, and
+  `metadata_sources`;
+- `reference_keys`, the `lager://reference/{net_type}` entry for each net.
+
+It is built from the same loaded state the MCP tools read, so the two never
+disagree.
+
+The `ETag` header is the manifest's `content_hash`. Send it back as
+`If-None-Match`. While the manifest is the same, the box answers `304` with no
+body, so a client that polls every minute costs the box nothing. `/status`
+advertises the route as `capabilities.benchManifest`; a box that predates it
+(before lager 0.50.0) omits the flag. From the CLI, [`lager bench
+export`](/source/reference/cli/bench) fetches the same document.
+
 ## Where context comes from
 
 The quality of everything above depends on the metadata you author once, at
@@ -249,6 +280,11 @@ bench setup:
 - **Per-net `purpose`** — set in the Net Manager TUI (`lager nets tui`), or
   with `lager nets describe NAME --purpose "..."`. One sentence describing what
   each wire does on the DUT.
+- **Per-net `dut_connection` and `test_hints`** — set with `lager nets describe
+  NAME --dut-connection "J3 pin 4" --test-hint "hold nRST low while flashing"`.
+  Where the net lands on the DUT, and one-line advice for whoever writes the
+  test. A control plane that keeps these two fields per net syncs them to the
+  box.
 - **DUT context** — set with [`lager dut`](/source/reference/cli/dut):
   the box's purpose, MCU, subsystems, and references to schematics and
   datasheets.

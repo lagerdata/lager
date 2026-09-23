@@ -95,6 +95,13 @@ class BenchDefinition(BaseModel):
     # Populated by the capability graph engine after loading
     capability_bindings: list[dict[str, Any]] = Field(default_factory=list)
 
+    # Which file authored each net's user metadata, per net name and per
+    # field: ``"bench.json"`` when a ``net_overrides`` entry set it, else
+    # ``"saved_net"`` when the saved-net record carries it. An override wins
+    # over the saved record, so a client that edits a net through the
+    # metadata endpoint can read here whether its write will be visible.
+    metadata_sources: dict[str, dict[str, str]] = Field(default_factory=dict)
+
     def primary_dut(self) -> DUTContext | None:
         """Return the first active DUTContext, or the first one if none active."""
         for d in self.dut_slots:

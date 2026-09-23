@@ -860,8 +860,10 @@ A box without this endpoint prints a note to update it. The table still prints, 
 Set metadata on a saved net so AI agents (and humans) understand what the net does
 on the DUT. Introduced in **lager 0.24.0**; the fields feed agent-assisted testing
 via the [MCP server](/source/reference/mcp/overview). At least one of `--purpose`,
-`--notes`, or `--tag` (or `--clear-tags`) must be provided. A Lager Box on 0.46.0
-or later serves these fields over HTTP, so a connected control plane can sync them.
+`--notes`, `--tag`, `--dut-connection` or `--test-hint` (or one of the `--clear-*`
+flags) must be provided. A Lager Box on 0.46.0 or later serves these fields over
+HTTP, so a connected control plane can sync them. `dut_connection` and
+`test_hints` need a box on 0.50.0 or later.
 
 ```bash
 lager nets describe NAME [OPTIONS]
@@ -875,6 +877,9 @@ lager nets describe NAME [OPTIONS]
 - `-n`, `--notes TEXT` - Optional notes (gotchas, jumper positions, scope probe points)
 - `-t`, `--tag TEXT` - Tag for categorisation/matching (repeatable)
 - `--clear-tags` - Remove all existing tags before adding new ones
+- `--dut-connection TEXT` - Where the net lands on the DUT: connector, pin or test point (e.g. `"J3 pin 4"`)
+- `--test-hint TEXT` - One-line advice for a test author (repeatable)
+- `--clear-test-hints` - Remove all existing test hints before adding new ones
 - `--box TEXT` - Lager Box name or IP
 
 **Example:**
@@ -884,6 +889,12 @@ lager nets describe NAME [OPTIONS]
 lager nets describe battery1 \
   --purpose "Main battery rail powering the MCU" \
   --tag power --tag critical \
+  --box my-lager-box
+
+# Say where the net lands on the DUT and leave a hint for the test author
+lager nets describe battery1 \
+  --dut-connection "J1 pin 2 (VBAT)" \
+  --test-hint "ramp from 3.0 V; the DUT browns out below 2.8 V" \
   --box my-lager-box
 
 # Replace the existing tags

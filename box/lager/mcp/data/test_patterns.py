@@ -2,18 +2,23 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Index of test patterns mapped to real example scripts in test/api/.
+Index of test patterns, each naming a worked example in the lager
+repository's ``test/api/`` tree.
 
-Used by the ``get_test_example`` MCP tool to return proven, runnable
-examples to agents.
+Used by the ``get_test_example`` MCP tool. The scripts themselves are NOT
+on the box (the box image carries ``box/lager`` only), so the tool hands
+back the pattern's metadata plus the curated ``example_snippet`` for its
+net types from ``data.api_reference``; ``repo_script`` tells the agent
+where the full example lives in the public repository.
 """
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
-_TEST_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "test", "api")
+#: The repository the ``script`` paths are relative to, for an agent that
+#: wants the full example rather than the snippet.
+REPO_TEST_ROOT = "https://github.com/lagerdata/lager/tree/main/test/api"
 
 TEST_PATTERNS: dict[str, dict[str, Any]] = {
     # ── Power ──────────────────────────────────────────────────────────
@@ -208,11 +213,17 @@ def list_patterns() -> list[dict[str, Any]]:
     ]
 
 
-def get_script_content(script_path: str) -> str | None:
-    """Read the content of a test script from the test/api/ directory."""
-    full_path = os.path.join(_TEST_DIR, script_path)
-    try:
-        with open(full_path, "r", encoding="utf-8") as f:
-            return f.read()
-    except FileNotFoundError:
-        return None
+def example_snippets(net_types: list[str]) -> dict[str, str]:
+    """The curated ``example_snippet`` for each of ``net_types`` that has one.
+
+    Keyed by the ``API_REFERENCE`` entry name. A pattern's net type with no
+    reference (``BLE``) is simply absent.
+    """
+    from .api_reference import get_reference_for_type
+
+    out: dict[str, str] = {}
+    for net_type in net_types:
+        ref = get_reference_for_type(net_type)
+        if ref and ref.get("example_snippet"):
+            out[ref.get("net_type_enum", f"NetType.{net_type}").split(".")[-1]] = ref["example_snippet"]
+    return out

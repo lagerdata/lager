@@ -76,7 +76,7 @@ require a bearer token (`mcp/auth.py`). The token is the file `/etc/lager/mcp_to
 existence is the switch. A token file that the server cannot read closes the port. It does not
 open it.
 
-The **MCP server** (`mcp/server.py`) provides direct hardware access to AI coding agents via the Model Context Protocol. It uses the same `lager.Net` API as the CLI but executes everything on-box with no subprocess overhead. See the [main README](../README.md#mcp-server-ai-agent-integration) for agent setup instructions.
+The **MCP server** (`mcp/server.py`) describes the bench and the DUT to AI coding agents via the Model Context Protocol: nets, instruments, DUT context, capabilities and the API reference. It is read-only by default; the agent runs its test over the CLI (`lager python`). The same description is served whole as the **bench manifest** at `GET /bench` on the :9000 server (`http_handlers/bench_manifest_handler.py`), built from `mcp/engine/manifest.py`, for a client that keeps a copy of many boxes. See the [main README](../README.md#mcp-server-ai-agent-integration) for agent setup instructions.
 
 Hardware is accessed through **nets** — named references to physical connections defined in the box configuration. The dispatcher pattern routes commands to the correct driver based on the net's device type.
 

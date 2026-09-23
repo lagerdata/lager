@@ -12,7 +12,7 @@ DUT 上下文保存在 `/etc/lager/bench.json` 中，并通过 MCP 资源
 
 ### 1. 每个 Net 的用途
 
-每个 Net 都带有一句话的 **purpose**，以及可选的 **notes**。请在 Net 管理器 TUI 中设置它们：
+每个 Net 都带有一句话的 **purpose**，以及可选的 **notes**，另外还有两个给编写测试的人的字段：**dut_connection**（该 Net 落在被测设备的哪个位置：连接器、引脚或测试点）和 **test_hints**（一行一条的提示）。purpose、notes 和 tags 请在 Net 管理器 TUI 中设置：
 
 ```bash
 lager nets tui --box my-lager-box
@@ -33,12 +33,16 @@ lager nets describe uart1 \
   --purpose "DUT debug CLI over UART" \
   --notes "PA9/PA10; 115200 8N1" \
   --tag cli --tag boot-critical \
+  --dut-connection "J3 pins 2-3 (PA9/PA10)" \
+  --test-hint "115200 8N1, no flow control" \
   --box my-lager-box
 ```
+
+`--dut-connection` 和 `--test-hint` 是在 CLI 中设置这两个字段的唯一途径；TUI 只编辑 purpose、notes 和 tags。
 </Note>
 
 <Warning>
-`/etc/lager/bench.json` 中可以为某个 Net 保存一条 `net_overrides` 条目。如果该条目设置了 `purpose`、`notes` 或 `tags`，智能体看到的是覆盖值，而不是保存在该 Net 上的值。TUI 和 `lager nets describe` 都不会对此给出警告。请先从覆盖条目中删除该字段，再到 Net 上设置它。
+`/etc/lager/bench.json` 中可以为某个 Net 保存一条 `net_overrides` 条目。如果该条目设置了 `purpose`、`notes`、`tags`、`dut_connection` 或 `test_hints`，智能体看到的是覆盖值，而不是保存在该 Net 上的值。TUI 和 `lager nets describe` 都不会对此给出警告。`discover_bench(net_name)` 和[实验台清单](/source/zh/reference/mcp/overview#实验台清单)都带有 `metadata_sources`，它指明每个字段来自哪个文件（`bench.json` 或 `saved_net`），因此您可以看出覆盖值何时遮住了保存的值。请先从覆盖条目中删除该字段，再到 Net 上设置它。
 </Warning>
 
 ### 2. 整个 DUT 的上下文

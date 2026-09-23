@@ -17,8 +17,10 @@ the MCP resources `lager://dut/overview.md` and `lager://dut/context`, and the
 
 ### 1. Per-net purpose
 
-Each net carries a single-sentence **purpose** plus optional **notes**. Set them
-in the Net Manager TUI:
+Each net carries a single-sentence **purpose** plus optional **notes**. Two
+more fields serve the test author. **dut_connection** says where the net lands
+on the DUT: a connector, pin or test point. **test_hints** holds one-line
+advice, one entry per hint. Set purpose, notes and tags in the Net Manager TUI:
 
 ```bash
 lager nets tui --box my-lager-box
@@ -41,15 +43,24 @@ lager nets describe uart1 \
   --purpose "DUT debug CLI over UART" \
   --notes "PA9/PA10; 115200 8N1" \
   --tag cli --tag boot-critical \
+  --dut-connection "J3 pins 2-3 (PA9/PA10)" \
+  --test-hint "115200 8N1, no flow control" \
   --box my-lager-box
 ```
+
+`--dut-connection` and `--test-hint` are the only way to set those two fields
+from the CLI; the TUI edits purpose, notes and tags.
 </Note>
 
 <Warning>
 `/etc/lager/bench.json` can hold a `net_overrides` entry for a net. If that entry sets
-`purpose`, `notes` or `tags`, agents see the override value, not the value saved on
-the net. The TUI and `lager nets describe` give no warning about this. Remove the field
-from the override before you set it on the net.
+`purpose`, `notes`, `tags`, `dut_connection` or `test_hints`, agents see the override
+value, not the value saved on the net. The TUI and `lager nets describe` give no
+warning about this. `discover_bench(net_name)` and the [bench
+manifest](/source/reference/mcp/overview#the-bench-manifest) carry
+`metadata_sources`. It names the file each field came from, `bench.json` or
+`saved_net`, so you can see when an override shadows a saved value. Remove the
+field from the override before you set it on the net.
 </Warning>
 
 ### 2. DUT-wide context
