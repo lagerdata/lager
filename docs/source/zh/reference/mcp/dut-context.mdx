@@ -8,6 +8,10 @@ AI 智能体可以读取网表，但仅凭网表并不能告诉它*这台 Box �
 DUT 上下文保存在 `/etc/lager/bench.json` 中，并通过 MCP 资源
 `lager://dut/overview.md` 和 `lager://dut/context`，以及 `discover_dut()` 和 `cite_schematic()` 工具提供给智能体。
 
+<Note>
+DUT 上下文也是[实验台清单](/source/zh/reference/mcp/overview#实验台清单)的一部分，控制平面通过 Box 端口 9000 上的 `GET|PUT /dut` 读写它。
+</Note>
+
 ## 需要编写的两样东西
 
 ### 1. 每个 Net 的用途

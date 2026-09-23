@@ -85,6 +85,11 @@ class BenchDefinition(BaseModel):
     hostname: str = ""
     version: str = ""
     dut_slots: list[DUTContext] = Field(default_factory=list)
+    #: When the DUT context last changed, ISO 8601 UTC. The greater of the
+    #: ``dut_updated_at`` key in bench.json and that file's mtime, so an edit
+    #: by an older CLI that writes no key still reads as "the box is newer".
+    #: A client that keeps its own copy compares clocks before overwriting.
+    dut_updated_at: str = ""
     instruments: list[InstrumentDescriptor] = Field(default_factory=list)
     nets: list["NetDescriptor"] = Field(default_factory=list)  # forward ref
     interfaces: list["InterfaceDescriptor"] = Field(default_factory=list)  # forward ref

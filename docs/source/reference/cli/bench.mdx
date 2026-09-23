@@ -65,10 +65,12 @@ two exports of the same box diff cleanly.
 | `bench.nets` | Every saved net with type, roles, instrument, channel, and the user metadata: `purpose`, `notes`, `tags`, `dut_connection`, `test_hints`. |
 | `bench.instruments` | The instruments detected on the box, with channels by role. The scan behind this runs at most once a minute. |
 | `bench.dut_slots` | The DUT context authored with [`lager dut`](/source/reference/cli/dut), document references included. |
+| `bench.dut_updated_at` | When the DUT context last changed (ISO 8601, UTC): the later of the clock a writer records and the file's mtime. A client that keeps its own copy compares clocks before it overwrites either side. |
 | `bench.interfaces` | Protocol interfaces (SPI, I2C, UART) and their nets. |
 | `bench.capability_bindings` | The capability graph: one entry per role a net can play, with a confidence. |
 | `bench.metadata_sources` | For each net and field, which file authored it: `bench.json` (a `net_overrides` entry) or `saved_net`. An override wins, so this shows when a saved value is shadowed. |
 | `reference_keys` | Net name to the `lager://reference/{net_type}` entry that documents it. |
+| `reference_entries` | Those entries, for the keys in `reference_keys` only: `get_pattern`, `methods`, `gotchas`, `example_snippet`. The method list is introspected from the drivers on this box. |
 
 ## Polling without cost
 

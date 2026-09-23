@@ -104,3 +104,9 @@ request, so agents see your changes with no manual step.
 
 To force a reload at once, have a connected agent call the `box_manage` tool with
 `action="reload"`. You can also restart the box service.
+
+A control plane with a DUT editor writes the same block through `PUT /dut` on the
+box's port 9000, which `/status` advertises as `capabilities.dutSync`. The
+[bench manifest](/source/reference/cli/bench) reports `dut_updated_at`: the
+later of the clock a writer records and the file's mtime. Both sides can then
+tell which copy is newer. `lager dut edit` and `add-doc` record that clock.

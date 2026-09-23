@@ -83,6 +83,22 @@ class BenchManifestCapabilityTest(unittest.TestCase):
         rules = {r.rule for r in box_http_server.app.url_map.iter_rules()}
         self.assertIn('/bench', rules)
 
+    def test_dut_sync_capability_reflects_registration(self):
+        # A control plane with a DUT editor gates its PUT /dut on this flag.
+        orig = box_http_server._has_dut
+        try:
+            box_http_server._has_dut = True
+            self.assertIs(self._capabilities()['dutSync'], True)
+            box_http_server._has_dut = False
+            self.assertIs(self._capabilities()['dutSync'], False)
+        finally:
+            box_http_server._has_dut = orig
+
+    def test_the_dut_route_is_registered_on_the_real_app(self):
+        self.assertTrue(box_http_server._has_dut)
+        rules = {r.rule for r in box_http_server.app.url_map.iter_rules()}
+        self.assertIn('/dut', rules)
+
 
 class StatusNetMetadataFieldsTest(unittest.TestCase):
     """The nets block on /status carries every user-metadata field."""

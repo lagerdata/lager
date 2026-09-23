@@ -93,6 +93,80 @@ class TestManifestShape:
         assert spi.test_hints == []
 
 
+class TestReferenceEntries:
+    """The manifest carries the API reference for the types on the bench, so a
+    consumer that plans tests needs nothing else from the box."""
+
+    def test_entries_cover_exactly_the_keys_in_reference_keys(self):
+        m = _manifest()
+        assert set(m.reference_entries) == set(m.reference_keys.values()) == {"PowerSupply", "SPI"}
+        entry = m.reference_entries["SPI"]
+        assert entry["get_pattern"].startswith("spi = Net.get(")
+        assert {"name", "sig", "desc"} <= set(entry["methods"][0])
+        assert "example_snippet" in entry and "gotchas" in entry
+
+    def test_entries_are_copies_not_the_module_dicts(self):
+        from lager.mcp.data.api_reference import API_REFERENCE
+
+        m = _manifest()
+        m.reference_entries["SPI"]["gotchas"].append("mutated through the manifest")
+        assert "mutated through the manifest" not in API_REFERENCE["SPI"]["gotchas"]
+
+    def test_entries_are_in_the_content_hash(self):
+        m = _manifest()
+        again = BenchManifest(**json.loads(m.model_dump_json()))
+        again.reference_entries["SPI"]["gotchas"] = ["changed"]
+        assert again.compute_hash() != m.content_hash
+
+    def test_an_empty_bench_has_no_entries(self):
+        m = _manifest(load_from_dicts(raw_nets=[], hello_data={"box_id": "e"}))
+        assert m.reference_entries == {} and m.reference_keys == {}
+
+    def test_size_stays_bounded_for_a_full_bench(self):
+        roles = ["power-supply", "power-supply-2q", "battery", "eload", "adc", "dac", "gpio", "spi",
+                 "i2c", "uart", "debug", "thermocouple", "watt-meter", "energy-analyzer", "usb",
+                 "scope", "logic", "wifi", "router", "arm", "webcam"]
+        m = _manifest(load_from_dicts(raw_nets=[{"name": f"n{i}", "role": r} for i, r in enumerate(roles)]))
+        assert len(m.reference_entries) == 20
+        assert len(m.model_dump_json()) < 120_000
+
+
+class TestDutClock:
+    """``dut_updated_at``: the later of the bench.json key and the file mtime."""
+
+    def test_from_dicts_uses_the_key_and_normalises_it(self):
+        bench = load_from_dicts(bench_cfg={"dut_updated_at": "2026-09-23T10:00:00+02:00"})
+        assert bench.dut_updated_at == "2026-09-23T08:00:00Z"
+        assert load_from_dicts(bench_cfg={"dut_updated_at": "not a date"}).dut_updated_at == ""
+        assert load_from_dicts().dut_updated_at == ""
+
+    def test_from_files_takes_the_later_of_key_and_mtime(self, tmp_path):
+        import os
+        import time
+
+        from lager.mcp.engine.bench_loader import load_from_files
+
+        cfg = tmp_path / "bench.json"
+        # Key in the future beats the mtime.
+        cfg.write_text(json.dumps({"dut_updated_at": "2030-01-01T00:00:00Z"}))
+        kw = dict(saved_nets_path="/nonexistent", bench_json_path=str(cfg),
+                  box_id_path="/nonexistent", version_path="/nonexistent",
+                  hostname_path="/nonexistent")
+        assert load_from_files(**kw).dut_updated_at == "2030-01-01T00:00:00Z"
+        # An old key loses to the mtime of a fresh edit (an older CLI wrote no key).
+        cfg.write_text(json.dumps({"dut_updated_at": "2020-01-01T00:00:00Z"}))
+        now = time.time()
+        os.utime(str(cfg), (now, now))
+        stamp = load_from_files(**kw).dut_updated_at
+        assert stamp.startswith("202") and stamp.endswith("Z") and stamp > "2020-01-01T00:00:00Z"
+        # No file at all: empty.
+        assert load_from_files(**{**kw, "bench_json_path": "/nonexistent"}).dut_updated_at == ""
+
+    def test_the_clock_travels_in_the_manifest(self):
+        m = _manifest(load_from_dicts(bench_cfg={"dut_updated_at": "2026-09-23T10:00:00Z"}))
+        assert m.bench.dut_updated_at == "2026-09-23T10:00:00Z"
+
+
 class TestMetadataSources:
     def test_names_the_file_that_authored_each_field(self):
         bench = _bench(bench_cfg={"net_overrides": [

@@ -260,10 +260,13 @@ The reply is the **bench manifest**, one JSON document. It carries:
 - the bench: nets with their metadata, the instruments detected on the box, DUT
   slots, interfaces, the capability graph as `capability_bindings`, and
   `metadata_sources`;
-- `reference_keys`, the `lager://reference/{net_type}` entry for each net.
+- `reference_keys`, the `lager://reference/{net_type}` entry for each net;
+- `reference_entries`, those entries themselves: methods, gotchas and an example
+  snippet for each net type on the bench.
 
 It is built from the same loaded state the MCP tools read, so the two never
-disagree.
+disagree. `bench.dut_updated_at` says when the DUT context last changed, so a
+client that keeps its own copy can tell which side is newer.
 
 The `ETag` header is the manifest's `content_hash`. Send it back as
 `If-None-Match`. While the manifest is the same, the box answers `304` with no
