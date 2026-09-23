@@ -110,12 +110,15 @@ def resolve_erase_range(device, script_file, start=None, length=None):
 
 # Commander answers ``erase <start> <end>`` only once the erase is done, and
 # ``commander()`` spawns JLinkExe with pexpect's default 30 s per command -- a
-# budget sized for the 1 MiB DA1469x default. Scale it with the range.
-_ERASE_TIMEOUT_PER_MIB_S = 30
+# budget sized for the 1 MiB DA1469x default. A range erase is a sector-by-
+# sector job, unlike the mass erase behind a bare ``erase``: 1 MiB of nRF5340
+# internal flash measured 22 s of Commander time on the bench. So a minute per
+# MiB, the flash_loader's own erase budget on the OpenOCD path.
+_ERASE_TIMEOUT_PER_MIB_S = 60
 
 
 def _erase_timeout_s(length):
-    """Seconds to wait for ``erase`` over *length* bytes: 30 per MiB, at least 30."""
+    """Seconds to wait for ``erase`` over *length* bytes: 60 per MiB, at least 60."""
     return _ERASE_TIMEOUT_PER_MIB_S * max(1, math.ceil(length / (1 << 20)))
 
 

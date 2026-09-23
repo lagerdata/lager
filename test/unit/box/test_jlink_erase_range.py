@@ -90,26 +90,26 @@ class ChipEraseCommandTests(unittest.TestCase):
     def test_da1469x_default_is_one_mib_at_the_xip_base(self):
         out, fake = run_chip_erase('DA14695')
         self.assertEqual(fake.commands, PRELUDE + ['erase 0x16000000 0x160fffff'])
-        self.assertEqual(fake.timeouts[-1], 30)
+        self.assertEqual(fake.timeouts[-1], 60)
         self.assertEqual(out, [f'{c}-OUT' for c in fake.commands])
 
     def test_da1469x_script_line_sets_the_range(self):
         script = self._script('LAGER_ERASE_RANGE: 0x16000000 0x161FFFFF\n')
         _, fake = run_chip_erase('DA14695', script)
         self.assertEqual(fake.commands, PRELUDE + ['erase 0x16000000 0x161fffff'])
-        self.assertEqual(fake.timeouts[-1], 60)
+        self.assertEqual(fake.timeouts[-1], 120)
 
     def test_da1469x_request_wins_over_the_script_line(self):
         script = self._script('LAGER_ERASE_RANGE: 0x16000000 0x161FFFFF\n')
         _, fake = run_chip_erase('DA14695', script, start=XIP + MIB, length=MIB)
         self.assertEqual(fake.commands, PRELUDE + ['erase 0x16100000 0x161fffff'])
-        self.assertEqual(fake.timeouts[-1], 30)
+        self.assertEqual(fake.timeouts[-1], 60)
 
     def test_da1469x_request_keeps_the_prelude(self):
         _, fake = run_chip_erase('DA14695', start=XIP, length=4 * MIB)
         self.assertEqual(fake.commands[:3], PRELUDE)
         self.assertEqual(fake.commands[3], 'erase 0x16000000 0x163fffff')
-        self.assertEqual(fake.timeouts[3], 120)
+        self.assertEqual(fake.timeouts[3], 240)
 
     def test_da1469x_never_runs_a_bare_erase(self):
         for kwargs in ({}, {'start': XIP, 'length': MIB}):
@@ -126,7 +126,7 @@ class ChipEraseCommandTests(unittest.TestCase):
     def test_another_part_with_a_request_erases_that_range_only(self):
         _, fake = run_chip_erase('NRF52840_XXAA', start=0x08000000, length=2 * MIB)
         self.assertEqual(fake.commands, ['connect', 'erase 0x8000000 0x81fffff'])
-        self.assertEqual(fake.timeouts, [-1, 60])
+        self.assertEqual(fake.timeouts, [-1, 120])
 
     def test_a_script_line_does_nothing_on_another_part(self):
         script = self._script('LAGER_ERASE_RANGE: 0x16000000 0x161FFFFF\n')

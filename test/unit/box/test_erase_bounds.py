@@ -240,10 +240,12 @@ class JLinkResolutionTests(unittest.TestCase):
         self.assertIsNone(jlink.resolve_erase_range('NRF52840_XXAA', script))
 
     def test_the_commander_wait_scales_with_the_range(self):
-        self.assertEqual(jlink._erase_timeout_s(MIB), 30)
-        self.assertEqual(jlink._erase_timeout_s(4 * KIB), 30)
-        self.assertEqual(jlink._erase_timeout_s(2 * MIB), 60)
-        self.assertEqual(jlink._erase_timeout_s(MIB + MIB // 2), 60)
+        # 1 MiB of nRF5340 internal flash measured 22 s on the bench: a range
+        # erase is sector by sector, so the budget is a minute per MiB.
+        self.assertEqual(jlink._erase_timeout_s(MIB), 60)
+        self.assertEqual(jlink._erase_timeout_s(4 * KIB), 60)
+        self.assertEqual(jlink._erase_timeout_s(2 * MIB), 120)
+        self.assertEqual(jlink._erase_timeout_s(MIB + MIB // 2), 120)
 
 
 if __name__ == '__main__':
