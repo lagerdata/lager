@@ -40,6 +40,38 @@ ROLE = "i2c"
 # This is the same pattern the adc/dac/gpio dispatchers already match a U3 on.
 _UD_RE = re.compile(r"labjack[_\-\s]*u[36]", re.IGNORECASE)
 
+# LabJack T-series. A regex for the same reason as _UD_RE, plus the short
+# "t7" alias older records carry. A bare "labjack" is deliberately NOT here:
+# it names a family, not a model, and on a box with a U3 and a T7 routing it
+# to LJM drives the T7 and reports success while the U3 sees nothing.
+_T7_RE = re.compile(r"labjack[_\-\s]*t7", re.IGNORECASE)
+
+# Driver kinds _choose_driver returns; _make_driver builds one per kind.
+UD, T7, AARDVARK, FTDI = "ud", "t7", "aardvark", "ftdi"
+
+
+def _choose_driver(instrument: str, netname: Optional[str] = None) -> str:
+    """Which driver a net's instrument string selects, without opening it.
+
+    Pure, so the routing can be tested without hardware or driver imports.
+    The U3 check is first; the patterns are mutually exclusive, so the order
+    is for readability. Anything unmatched -- a bare "LabJack" included -- is
+    refused with the same message the GPIO/ADC/DAC dispatchers give.
+    """
+    inst = (instrument or "").strip().lower()
+    if _UD_RE.search(inst):
+        return UD
+    if _T7_RE.search(inst) or inst == "t7":
+        return T7
+    if inst in ("aardvark_i2c", "aardvark", "totalphase_aardvark"):
+        return AARDVARK
+    if is_ftdi_instrument(inst) or inst == "ft232h_i2c":
+        return FTDI
+    message = helpers.unsupported_instrument_message(ROLE, instrument)
+    if netname:
+        message = f"Net '{netname}': {message}"
+    raise I2CBackendError(message)
+
 
 def is_ud_net(rec):
     """True when this net's instrument is a LabJack the UD drivers own."""
@@ -209,15 +241,11 @@ def _make_driver(rec: Dict[str, Any], overrides: Dict[str, Any] = None):
     if overrides:
         i2c_params.update(overrides)
 
-    # Select driver based on instrument type.
-    #
-    # The UD (U3) branch is deliberately FIRST. The T7 tuple below includes a
-    # bare "labjack", and while exact-string membership means "labjack_u3"
-    # cannot reach it today, a U3 that did would not fail loudly: LJM does not
-    # speak to a U3 at all, so on a box carrying both parts the net would drive
-    # the *T7* and report success. box/lager/io/dac/dispatcher.py carries the
-    # same warning for the same reason.
-    if _UD_RE.search(instrument):
+    # Select driver based on instrument type. _choose_driver refuses anything
+    # it cannot name a model for, before any pin parsing or device open.
+    kind = _choose_driver(instrument, netname)
+
+    if kind == UD:
         from .labjack_ud_i2c import LabJackUDI2C
 
         pin_config = _get_pin_config(rec)
@@ -235,7 +263,7 @@ def _make_driver(rec: Dict[str, Any], overrides: Dict[str, Any] = None):
                 f"Failed to create U3 I2C driver: {exc}"
             ) from exc
 
-    if instrument in ("labjack_t7", "labjack", "t7"):
+    if kind == T7:
         from .labjack_i2c import LabJackI2C
 
         pin_config = _get_pin_config(rec)
@@ -249,7 +277,7 @@ def _make_driver(rec: Dict[str, Any], overrides: Dict[str, Any] = None):
             raise I2CBackendError(
                 f"Failed to create I2C driver: {exc}"
             ) from exc
-    elif instrument in ("aardvark_i2c", "aardvark", "totalphase_aardvark"):
+    elif kind == AARDVARK:
         from .aardvark_i2c import AardvarkI2C
 
         port = rec.get("params", {}).get("port", 0)
@@ -272,7 +300,7 @@ def _make_driver(rec: Dict[str, Any], overrides: Dict[str, Any] = None):
             raise I2CBackendError(
                 f"Failed to create Aardvark I2C driver: {exc}"
             ) from exc
-    elif is_ftdi_instrument(instrument) or instrument == "ft232h_i2c":
+    elif kind == FTDI:
         # Every FTDI part, not only the FT232H: the driver takes the part from
         # the PID in the address and the channel from params.interface.
         from .ft232h_i2c import FT232HI2C
@@ -292,11 +320,6 @@ def _make_driver(rec: Dict[str, Any], overrides: Dict[str, Any] = None):
             raise I2CBackendError(
                 f"Failed to create FT232H I2C driver: {exc}"
             ) from exc
-    else:
-        raise I2CBackendError(
-            f"Unsupported I2C instrument '{instrument}' for net '{netname}'. "
-            f"Supported: labjack_t7, labjack_u3, aardvark_i2c, ft232h"
-        )
 
 
 def _resolve_net_and_driver(netname: str, overrides: Dict[str, Any] = None):

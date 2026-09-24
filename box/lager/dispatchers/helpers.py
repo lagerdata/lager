@@ -259,6 +259,10 @@ SUPPORTED_INSTRUMENTS: Dict[str, Tuple[str, ...]] = {
     "dac": ("LabJack_T7", "LabJack_U3", "MCC_USB-202"),
     "gpio": ("LabJack_T7", "LabJack_U3", "MCC_USB-202",
              "FTDI_FT232H", "FTDI_FT2232H", "FTDI_FT4232H", "Aardvark"),
+    "i2c": ("LabJack_T7", "LabJack_U3", "Aardvark",
+            "FTDI_FT232H", "FTDI_FT2232H", "FTDI_FT4232H"),
+    "spi": ("LabJack_T7", "LabJack_U3", "Aardvark",
+            "FTDI_FT232H", "FTDI_FT2232H", "FTDI_FT4232H"),
 }
 
 
