@@ -12,6 +12,8 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+## [0.50.0] - 2026-09-23
+
 ### Added
 
 - **The nightly bench run now proves `lager uart` actually moves data.** The uart
