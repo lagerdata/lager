@@ -18,6 +18,9 @@ from ....context import get_default_box, get_default_net
 from ....core.param_types import MemoryAddressType, HexArrayType, BinfileType, ByteSizeType
 from ....box_storage import get_box_ip, get_box_name_by_ip, get_box_user
 from ....core.net_group import NetGroupHelpMixin, NetSubCommand
+from ....errors import LagerError
+from ....gateway_auth import auth_server_for_box
+from ....gateway_tunnel import ROUTE_DIRECT, ROUTE_TUNNEL, GatewayTunnel, choose_route
 from .service_client import DebugServiceClient
 from .net_cache import get_net_cache
 
@@ -648,9 +651,22 @@ def _debug(ctx, box):
               help='Size of RAM region to search for RTT control block (hex, e.g., 0x4000)')
 @click.option('--rtt-chunk-size', type=str, default=None,
               help='Read chunk size for RTT search (hex, e.g., 0x1000)')
+@click.option('--local-port', type=click.IntRange(1, 65535), default=None,
+              help='Local port for the tunnel on a box behind a gateway '
+                   '(default: the same port as the GDB server on the box)')
+@click.option('--no-tunnel', is_flag=True, default=False,
+              help='On a box behind a gateway, start the GDB server and return '
+                   'without opening a local tunnel to it')
 def gdbserver(ctx, box, force, halt, speed, quiet, json_output, rtt, rtt_reset, interactive,
-              rtt_channel, reset, gdb_port, rtt_search_addr, rtt_search_size, rtt_chunk_size):
-    """Start the GDB server for the probe (JLinkGDBServer or OpenOCD)"""
+              rtt_channel, reset, gdb_port, rtt_search_addr, rtt_search_size, rtt_chunk_size,
+              local_port, no_tunnel):
+    """Start the GDB server for the probe (JLinkGDBServer or OpenOCD)
+
+    On a box behind an authenticating gateway, the GDB port is reachable
+    only through the gateway. The command then opens a tunnel on
+    localhost and stays in the foreground until Ctrl-C; the GDB server
+    keeps running on the box afterwards.
+    """
     # --interactive only makes sense with an RTT stream to attach to.
     if interactive and not (rtt or rtt_reset):
         click.secho("Error: --interactive requires --rtt or --rtt-reset", fg='red', err=True)
@@ -764,29 +780,131 @@ def gdbserver(ctx, box, force, halt, speed, quiet, json_output, rtt, rtt_reset, 
     # that don't yet emit ``backend`` keep their existing wording.
     backend_label = _backend_server_label(result)
 
+    gdb_info = result.get('gdb_server') if isinstance(result, dict) else None
+    server_up = gdb_info is None or (
+        isinstance(gdb_info, dict)
+        and gdb_info.get('status') in ('started', 'already_running'))
+    box_label = box if box is not None else target_box
+    net_label = net_name or debug_net.get('name')
+    streaming = rtt or rtt_reset
+
+    # A box behind a gateway does not publish its GDB port, so the address
+    # the box reports is one this machine cannot reach. Route through a
+    # local tunnel instead; a plain box keeps today's direct address.
+    route, route_error = ROUTE_DIRECT, None
+    if server_up and effective_gdb_port:
+        try:
+            route = choose_route(target_box, effective_gdb_port)
+        except LagerError as err:
+            route_error = err
+    if route_error is not None and not streaming:
+        # The server is up but no debugger here can reach it. RTT does not
+        # need the GDB port (it streams over HTTP), so it goes on below.
+        client.close()
+        raise route_error
+
+    tunnel = None
+    if route == ROUTE_TUNNEL and not no_tunnel:
+        tunnel = GatewayTunnel(target_box, effective_gdb_port,
+                               local_port=local_port, box_label=box_label)
+        try:
+            tunnel.bind()
+        except LagerError:
+            client.close()
+            raise
+
     if not quiet:
         if json_output:
+            if tunnel is not None:
+                result['tunnel'] = {'local_host': '127.0.0.1',
+                                    'local_port': tunnel.local_port,
+                                    'box_port': effective_gdb_port}
             click.echo(json.dumps(result, indent=2))
+            # A script reading the JSON must see it now, not when the
+            # tunnel below finally returns.
+            sys.stdout.flush()
         else:
             # Display GDB server info
             if 'gdb_server' in result:
-                gdb_info = result['gdb_server']
                 if gdb_info.get('status') == 'started':
                     click.secho(f"{backend_label} started!", fg='green', err=True)
-                    click.secho(f"GDB server listening on {target_box}:{effective_gdb_port}", fg='cyan', err=True)
-                    click.secho(f"Connect with: arm-none-eabi-gdb -ex 'target remote {target_box}:{effective_gdb_port}'", fg='cyan', err=True)
+                    _echo_gdb_address(target_box, box_label, effective_gdb_port, route, tunnel)
                 elif gdb_info.get('status') == 'already_running':
                     click.secho(f"{backend_label} already running!", fg='green', err=True)
-                    click.secho(f"GDB server listening on {target_box}:{effective_gdb_port}", fg='cyan', err=True)
-                    click.secho(f"Connect with: arm-none-eabi-gdb -ex 'target remote {target_box}:{effective_gdb_port}'", fg='cyan', err=True)
+                    _echo_gdb_address(target_box, box_label, effective_gdb_port, route, tunnel)
                 elif 'error' in gdb_info:
                     click.secho(f"Error: GDB server failed to start: {gdb_info.get('message', 'Unknown error')}", fg='red', err=True)
                     ctx.exit(1)
             else:
                 click.secho(f"{backend_label} started!", fg='green', err=True)
-                click.secho(f"GDB server listening on {target_box}:{effective_gdb_port}", fg='cyan', err=True)
-                click.secho(f"Connect with: arm-none-eabi-gdb -ex 'target remote {target_box}:{effective_gdb_port}'", fg='cyan', err=True)
+                _echo_gdb_address(target_box, box_label, effective_gdb_port, route, tunnel)
+    if route_error is not None:
+        # Streaming mode: the RTT stream still works, the GDB port does not.
+        route_error.show()
 
+    try:
+        _gdbserver_post_connect(
+            ctx, client, debug_net, target_box, quiet=quiet, rtt=rtt,
+            rtt_reset=rtt_reset, interactive=interactive,
+            rtt_channel=rtt_channel, reset=reset,
+            rtt_search_addr=rtt_search_addr, rtt_search_size=rtt_search_size,
+            rtt_chunk_size=rtt_chunk_size, tunnel=tunnel,
+        )
+        if tunnel is not None and not streaming:
+            _serve_tunnel_foreground(tunnel, box_label, net_label, quiet=quiet)
+    finally:
+        if tunnel is not None:
+            tunnel.close()
+
+
+def _echo_gdb_address(target_box, box_label, port, route, tunnel):
+    """Tell the user where their debugger connects.
+
+    Only ever prints an address that works from this machine: the box's own
+    on a plain box, the local tunnel's on a gated one.
+    """
+    if tunnel is not None:
+        click.secho(f"GDB server running on {box_label}. Connect to localhost:{tunnel.local_port}", fg='cyan', err=True)
+        click.secho(f"Connect with: arm-none-eabi-gdb -ex 'target remote localhost:{tunnel.local_port}'", fg='cyan', err=True)
+    elif route == ROUTE_TUNNEL:
+        # --no-tunnel on a gated box: the box's address would not connect.
+        click.secho(f"GDB server running on {box_label}, port {port}. The box's "
+                    "gateway is the only way to reach it.", fg='cyan', err=True)
+        click.secho("Run this command without --no-tunnel to open a local tunnel to it.",
+                    fg='cyan', err=True)
+    else:
+        click.secho(f"GDB server listening on {target_box}:{port}", fg='cyan', err=True)
+        click.secho(f"Connect with: arm-none-eabi-gdb -ex 'target remote {target_box}:{port}'", fg='cyan', err=True)
+
+
+def _serve_tunnel_foreground(tunnel, box_label, net_label, *, quiet):
+    """Keep the GDB tunnel open until Ctrl-C.
+
+    Ctrl-C closes the tunnel only. The GDB server stays up on the box, as it
+    does when this command returns on a plain box.
+    """
+    if not quiet:
+        click.secho("Tunnelling through the box's gateway. Press Ctrl-C to "
+                    "close the tunnel.", err=True)
+    try:
+        tunnel.serve_forever()
+    except KeyboardInterrupt:
+        tunnel.close()
+        if not quiet:
+            click.echo(err=True)
+            click.secho(f"Tunnel closed. The GDB server continues to run on {box_label}.", err=True)
+            click.secho(f"Stop it with: lager debug {net_label} disconnect --box {box_label}", err=True)
+
+
+def _gdbserver_post_connect(ctx, client, debug_net, target_box, *, quiet, rtt,
+                            rtt_reset, interactive, rtt_channel, reset,
+                            rtt_search_addr, rtt_search_size, rtt_chunk_size,
+                            tunnel):
+    """What `gdbserver` does once the server is up: RTT, a reset, or nothing.
+
+    ``tunnel``, when set, serves the GDB port from a background thread for
+    as long as an RTT stream runs, so a debugger can attach alongside it.
+    """
     # Parse RTT search parameters (hex strings to integers)
     rtt_search_params = {}
     if rtt_search_addr is not None:
@@ -813,6 +931,8 @@ def gdbserver(ctx, box, force, halt, speed, quiet, json_output, rtt, rtt_reset, 
 
     # Handle post-connect actions
     if rtt or rtt_reset:
+        if tunnel is not None:
+            tunnel.start()
         # Wait for GDB server to fully initialize before attempting reset/RTT
         # This prevents "No debugger connection found" errors
         # The server takes ~2-3s to fully initialize:
@@ -960,8 +1080,20 @@ def disconnect(ctx, box, keep_server):
     if keep_server:
         # Effective port comes from the box (per-probe slot for multi-J-Link).
         running_port = (disc_result or {}).get('gdb_port', 2331)
-        click.secho(f"{server_label} still running on {target_box}:{running_port}", fg='green')
-        click.secho(f"You can connect with: arm-none-eabi-gdb firmware.elf -ex 'target extended-remote {target_box}:{running_port}'", fg='cyan')
+        # Only the recorded gateway mapping decides this, never a probe: the
+        # server is being kept for a debugger that may still be attached,
+        # and a probe would open a second connection to it.
+        if auth_server_for_box(target_box):
+            box_label = box if box is not None else target_box
+            click.secho(f"{server_label} still running on {box_label}, port {running_port}", fg='green')
+            click.secho("This box is behind a gateway, so its GDB port is not "
+                        "reachable directly.", fg='cyan')
+            click.secho(f"To debug from here, run: lager debug {net_name or debug_net.get('name')} "
+                        f"gdbserver --box {box_label}", fg='cyan')
+            click.secho("It restarts the GDB server and opens a local tunnel to it.", fg='cyan')
+        else:
+            click.secho(f"{server_label} still running on {target_box}:{running_port}", fg='green')
+            click.secho(f"You can connect with: arm-none-eabi-gdb firmware.elf -ex 'target extended-remote {target_box}:{running_port}'", fg='cyan')
     else:
         click.secho(f"{server_label} stopped", fg='green')
 

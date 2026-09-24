@@ -101,6 +101,7 @@ wrong account", and "signed in but no access".
 | **signed in but not authorized** | Your account is valid but has no access grant for this box. | Ask an org admin to grant you access. |
 | **could not verify your access right now** | The box couldn't reach its auth server. | Try again shortly; if it persists, contact your admin. |
 | **refused the token in LAGER_GATEWAY_TOKEN** | The gateway rejected the token the job supplied. | Get a new token from the auth server named in the message. |
+| **does not support debug tunnels yet** | `lager debug ... gdbserver` started the GDB server, but the gateway of the box cannot open a tunnel to it. | Ask the administrator of the box to update its gateway. |
 
 If you hit any of these on an **old** Lager version, upgrade first —
 sign-in support needs a current CLI:

@@ -81,6 +81,7 @@ lager whoami
 | **signed in but not authorized** | 您的账户有效，但没有针对这台 Box 的访问授权。 | 请组织管理员为您授予访问权限。 |
 | **could not verify your access right now** | 该 Box 无法访问它的认证服务器。 | 稍后重试；如果持续出现，请联系您的管理员。 |
 | **refused the token in LAGER_GATEWAY_TOKEN** | 网关拒绝了作业提供的令牌。 | 请从提示中指明的认证服务器获取新令牌。 |
+| **does not support debug tunnels yet** | `lager debug ... gdbserver` 已启动 GDB 服务器，但该 Box 的网关无法为它建立隧道。 | 请联系该 Box 的管理员更新网关。 |
 
 如果您在**较旧的** Lager 版本上遇到这些提示，请先升级 ——
 登录支持需要较新的 CLI：

@@ -12,6 +12,14 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Added
+
+- **`lager debug <net> gdbserver` works on a box behind an authenticating gateway.**
+  Such a box does not open its GDB port to the network, so the command now tunnels it
+  through the gateway to `localhost` and stays in the foreground until Ctrl-C. Connect with
+  `target remote localhost:2331`. On a plain Lager Box the command behaves as before.
+  `--local-port` selects a different local port, and `--no-tunnel` returns without a tunnel.
+
 ## [0.50.1] - 2026-09-23
 
 ### Fixed

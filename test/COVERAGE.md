@@ -46,7 +46,7 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 2622 (+2 xfailed) |
+| `unit (cli)` | `test/unit/cli/` | 2674 (+2 xfailed) |
 | `unit (box)` | `test/unit/box/` | 3100 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
@@ -591,7 +591,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_bench_endpoint.py` | `GET /bench` on the box HTTP server: the body is the bench manifest built from the loaded MCP state (`box_id`, nets with `dut_connection`, `reference_keys`, `metadata_sources`, `capability_bindings`); `ETag` is the quoted content hash and a matching `If-None-Match` in any spelling (quoted, weak, bare, listed, `*`) gets 304 with no body; a build failure is a 500 that says why; the first request on a process that never called `init_state` loads from disk once |
 | `test_status_bench_fields.py` | `/status` advertises `capabilities.benchManifest` from the route's registration (never hardcoded), the real app mounts `/bench`, and the nets block carries `dut_connection` and `test_hints` with the same present-when-unset contract as `purpose` |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 101 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 103 files)
 
 | File | What it tests |
 |------|---------------|
@@ -622,6 +622,8 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_error_mapping.py` | map_system_error errno mapping [16/19/110] to actionable headlines and actions |
 | `test_exec_container_ci.py` | Which runner `lager exec` picks: a container-based CI job runs the command in place and spawns no `docker`, while a Jenkins agent, a bare `CI=true` runner and a developer's machine still assemble the `docker run` line. Pins the regression where the in-place runner was lost in the move to `cli/commands/utility/exec_.py` and `is_container_ci()` was left as dead code -- neither runner had a test. Also the absence of a chdir, `--env` / the `environment` key reaching the child, exit-code propagation, `LAGER_CI_OVERRIDE`, the `/bin/bash` fallback for an absent or empty `shell`, and the warning for container-only flags |
 | `test_gateway_auth_refresh.py` | Gateway-auth refresh margin scaling with token lifetime -- pins the refresh-storm fix |
+| `test_gateway_tunnel.py` | `cli/gateway_tunnel.py` against a fake gateway on real sockets: the CONNECT handshake, a splice in both directions including a 4 MiB payload and bytes that arrive with the response head, several clients at once, a freshly resolved token on each connection (pinned tokens too), a listener on 127.0.0.1 only, and a taken local port naming `--local-port`. Each refusal maps to its own message: 401/403/503 with the discovery header go through `handle_gateway_denial` (with the first-contact retry), a 403 without it is a port the gateway will not tunnel, a 502 drops only that connection, and a plain box's 501 is unsupported. A debug-service port that refuses TCP drops one connection, keeps a plain box on the direct route, and is reported on a gated one. A gateway-side close is reported once and the listener stays up. `choose_route` tunnels on a 200, never probes the debug port of a box not known to be gated, and reports a known-gated box's old gateway as needing an update |
+| `test_gdbserver_tunnel.py` | `lager debug <net> gdbserver` on a plain box still prints `<box>:<port>` and returns; on a gated box it prints `localhost:<port>` (never the box address, in the `already_running` branch too) and serves the tunnel in the foreground until Ctrl-C without stopping the server. Also `--local-port`, a taken port failing before any address prints, `--json` carrying a `tunnel` object, `--quiet`, `--no-tunnel`, a fatal refusal exiting 1, `--rtt` / `--interactive` / `--reset` alongside the tunnel, an old gateway failing the plain command but not an RTT stream, and `disconnect --keep-server` deciding from the recorded mapping without a probe |
 | `test_gdbserver_interactive_rtt.py` | `gdbserver --rtt --interactive`: the flag is rejected without `--rtt`, the streaming leg moves to the `/rtt` WebSocket, and plain `--rtt` still uses the HTTP stream |
 | `test_net_9000_migration.py` | Tier-1 net CLI commands (adc, dac, gpi, gpo, spi, i2c, watt, energy, ...) driving the box `:9000` API |
 | `test_net_tui_assign.py` | Custom-device assignment TUI helpers; per-device uart tty preference over the shared channel map |
