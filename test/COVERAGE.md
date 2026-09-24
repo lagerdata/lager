@@ -52,7 +52,7 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 380 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 82 (+1 skipped) |
-| | **Total gated** | **6378** |
+| | **Total gated** | **6430** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -452,7 +452,7 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 243 files)
+### Local Unit Tests (`test/unit/` -- 245 files)
 
 #### Box Unit Tests (`test/unit/box/` -- 128 files)
 
