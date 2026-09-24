@@ -1326,11 +1326,23 @@ class UDI2CDispatcherTests(unittest.TestCase):
     def test_a_t7_still_reaches_the_t7_driver(self):
         from lager.protocols.i2c import dispatcher
         from lager.protocols.i2c.labjack_i2c import LabJackI2C
-        for name in ("labjack_t7", "LabJack_T7", "t7", "labjack"):
+        for name in ("labjack_t7", "LabJack_T7", "t7"):
             with self.subTest(instrument=name):
                 driver = dispatcher._make_driver(
                     self._rec(name, pin="FIO4-FIO5"), None)
                 self.assertIsInstance(driver, LabJackI2C)
+
+    def test_a_bare_labjack_is_refused_not_sent_to_the_t7(self):
+        """A bare "LabJack" names no model. On a box with a U3 and a T7, the
+        T7 driver would drive the T7 and report success."""
+        from lager.exceptions import I2CBackendError
+        from lager.protocols.i2c import dispatcher
+        for name in ("labjack", "LabJack"):
+            with self.subTest(instrument=name):
+                with self.assertRaises(I2CBackendError) as ctx:
+                    dispatcher._make_driver(
+                        self._rec(name, pin="FIO4-FIO5"), None)
+                self.assertIn("names no LabJack model", str(ctx.exception))
 
     def test_eio_and_cio_spans_parse_for_a_u3(self):
         """The T7 parser cannot see these; two thirds of a U3's lines are here."""
@@ -1709,11 +1721,22 @@ class UDSPIDispatcherTests(unittest.TestCase):
     def test_a_t7_still_reaches_the_t7_driver(self):
         from lager.protocols.spi import dispatcher
         from lager.protocols.spi.labjack_spi import LabJackSPI
-        for name in ("labjack_t7", "LabJack_T7", "t7", "labjack"):
+        for name in ("labjack_t7", "LabJack_T7", "t7"):
             with self.subTest(instrument=name):
                 self.assertIsInstance(
                     dispatcher._make_driver(self._rec(name, pin="FIO0-FIO3"),
                                             None), LabJackSPI)
+
+    def test_a_bare_labjack_is_refused_not_sent_to_the_t7(self):
+        """Same as the I2C case: a bare "LabJack" names no model."""
+        from lager.exceptions import SPIBackendError
+        from lager.protocols.spi import dispatcher
+        for name in ("labjack", "LabJack"):
+            with self.subTest(instrument=name):
+                with self.assertRaises(SPIBackendError) as ctx:
+                    dispatcher._make_driver(
+                        self._rec(name, pin="FIO0-FIO3"), None)
+                self.assertIn("names no LabJack model", str(ctx.exception))
 
     def test_the_t7_span_order_is_unchanged(self):
         """CS / CLK / MOSI / MISO on a T7. Pinned so the U3 cannot disturb it."""

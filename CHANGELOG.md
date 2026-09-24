@@ -12,6 +12,15 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Fixed
+
+- **An `i2c` or `spi` net whose instrument is a bare `LabJack` is refused instead of
+  driving the T7.** On a Lager Box with a LabJack U3 and a T7, such a net sent its
+  traffic to the T7 and reported success. `lager i2c`, `lager spi` and
+  `Net.get(..., NetType.I2C)` or `NetType.SPI` now say the name matches no LabJack
+  model and list `LabJack_T7` and `LabJack_U3`, as `gpio`, `adc` and `dac` nets
+  already did.
+
 ## [0.50.0] - 2026-09-23
 
 ### Added
