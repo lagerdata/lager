@@ -1,0 +1,47 @@
+---
+title: "Version 0.50.2"
+description: "September 24, 2026"
+---
+
+## <u>Upgrade Notes</u>
+
+- **On a box behind an authenticating gateway, `lager debug NET gdbserver` needs a gateway
+  with debug-tunnel support.** The CLI now reaches the GDB port of such a box through its
+  gateway. If the gateway is older, the command starts the GDB server and then stops with an
+  error that the gateway does not support debug tunnels yet, and exits with status 1. Before
+  this release it printed a `target remote <box>:<port>` address that could not connect. Ask
+  the administrator of the box to update its gateway. A plain Lager Box needs no change.
+
+## <u>Features</u>
+
+- **`lager debug NET gdbserver` works on a box behind an authenticating gateway.** Such a box
+  does not open its GDB port to the network, so GDB could not connect to it. The command now
+  opens a tunnel through the gateway, listens on `localhost` only, and stays in the foreground
+  until Ctrl-C. Connect with `arm-none-eabi-gdb -ex 'target remote localhost:2331'`. GDB can
+  disconnect and connect again while the tunnel is open. Ctrl-C closes only the tunnel: the
+  GDB server continues to run on the box, and `lager debug NET disconnect` stops it. The
+  command decides for each box whether a tunnel is necessary; on a plain Lager Box it behaves
+  as before.
+- **New `gdbserver` options.** `--local-port` selects a different local port for the tunnel.
+  `--no-tunnel` starts the GDB server and returns without a tunnel, for scripts. With `--json`,
+  the output has a `tunnel` object with `local_host` and `local_port`.
+
+The change is in the CLI only. Boxes do not need `lager update` for it.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.50.2
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli==0.50.2
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.50.2/)
