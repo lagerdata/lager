@@ -1,6 +1,6 @@
 # Lager Gateway Auth Contract
 
-**Version: 1** · Status: stable · Last updated: 2026-07-22
+**Version: 1** · Status: stable · Last updated: 2026-09-24
 
 This document is the normative specification of the authentication contract
 between Lager clients and boxes fronted by an authenticating reverse proxy
@@ -253,6 +253,9 @@ A conforming gateway:
   with the same policy — clients assume one credential works box-wide.
 - MUST NOT forward `:8100` (MCP). It is an in-fabric service, and its only
   credential is an optional box-local token the gateway cannot verify (§6.4).
+- MAY offer the box's raw-TCP debug ports through `CONNECT` tunnels on
+  `:8765` (§10), under the same bearer policy. It MUST NOT publish those
+  ports unauthenticated instead.
 
 ## 8. Environment variables (client side)
 
@@ -308,3 +311,103 @@ This contract is versioned by the integer at the top of this file.
   the Rust one, and this note is the record of that gap. A third-party
   client should implement §6.3 as written: the requirement is not in
   question, only one implementation's conformance with it.
+- **v1** (2026-09-24): §10 specifies debug tunnels, an HTTP `CONNECT` on the
+  debug-service port that reaches the box's raw-TCP debug ports through the
+  gateway. Optional for gateways and additive for clients, so no version
+  bump per §9. The Python CLI implements the client side
+  (`cli/gateway_tunnel.py`, tests in `test/unit/cli/test_gateway_tunnel.py`).
+  lager-rs has no counterpart to implement: it drives debug nets only over
+  the HTTP debug service and Socket.IO, and never opens a raw debug port.
+
+## 10. Debug tunnels (optional)
+
+The debug servers on a box speak raw TCP, not HTTP: GDB, OpenOCD's telnet and
+TCL interfaces, and RTT. A gateway can only check a bearer token on HTTP, so a
+box it fronts does not publish those ports, and a debugger on the client
+machine cannot reach them directly. A gateway MAY instead offer them through
+an HTTP `CONNECT` tunnel on the debug-service port. Supporting it is optional
+for gateways, and using it is optional for clients.
+
+### 10.1 Handshake
+
+The client opens a TCP connection to the box host on port **8765** and sends
+a `CONNECT` request carrying the same credential as any other request (§6):
+
+```
+CONNECT <host>:<port> HTTP/1.1
+Host: <host>:<port>
+Authorization: Bearer <token>
+
+```
+
+- The request target MAY be the standard authority form `<host>:<port>` or
+  the bare port `<port>`. The host part is **ignored**: a tunnel only ever
+  reaches the named port in the Lager container, never another host.
+- `Authorization` follows §6.1 and §6.2 exactly: a pinned token, or the
+  store's token for a known-gated box, or nothing for a box not yet known to
+  be gated. It is resolved **per tunnel**. A client MUST NOT reuse a token
+  resolved for an earlier tunnel without checking its expiry (§4), because
+  one debugging session can outlive many tokens.
+- A gateway MUST authorize each tunnel on its own, never from a cached
+  verdict, so a client MAY open one tunnel per debugger connection.
+
+### 10.2 Responses
+
+| Status | Headers | Meaning |
+| --- | --- | --- |
+| `200 Connection Established` | — | Tunnel open. Every byte after the response head is raw TCP to that port, in both directions. Bytes MAY follow the head in the same segment; a client MUST forward them. |
+| `401` | discovery header | No credential, or a rejected one. A gateway denial (§2), handled per §6.3, including the in-call retry on first contact. |
+| `403` | discovery header | Signed in but not authorized for this box. A gateway denial (§2). |
+| `403` | **no** discovery header, `text/plain` | The port is not one the gateway tunnels (§10.3). Not a denial: the client records nothing. |
+| `502` | `text/plain` | Nothing is listening on that port in the Lager container, for example a debug server that has not started. |
+| `503` | discovery header | The gateway cannot reach its auth server. A gateway denial (§2). |
+
+Any other answer means the service on 8765 does not support tunnels (§10.4).
+
+### 10.3 Tunnelable ports
+
+A gateway MUST refuse (`403` without the discovery header) every port
+outside the debug ranges, and SHOULD accept all of these:
+
+| Service | Ports |
+| --- | --- |
+| GDB server | 2331–2342 |
+| OpenOCD telnet | 4444–4447 |
+| OpenOCD TCL | 6666–6669 |
+| RTT telnet | 9090–9097 |
+
+A client SHOULD NOT filter ports itself; the gateway's answer is
+authoritative, and a later gateway may widen the list.
+
+### 10.4 Gateways and boxes without tunnel support
+
+- A gateway that does **not** enforce auth MAY still accept `CONNECT`, with
+  no credential required.
+- An older gateway that predates this section forwards the `CONNECT` to the
+  box's own debug service (after checking auth, if it enforces it), or
+  splices it there unchanged if it is a pass-through. A plain box with no
+  gateway answers on 8765 itself. In all of these cases the answer is the
+  Lager debug service's `501`, not a `200`.
+
+A client therefore cannot learn from the `CONNECT` alone whether a box has
+an old gateway or none. The Python CLI (`cli/gateway_tunnel.py`,
+`choose_route`) decides like this:
+
+1. `200` → tunnel.
+2. Anything that is not a tunnel, on a box never seen to answer with a
+   gateway denial → a plain box; connect to the debug port directly.
+3. Not a tunnel, on a box known to be gated (§5 `boxes` entry) → try the
+   debug port directly; if that fails, report that the box's gateway needs
+   updating.
+
+Step 3 is the only one that connects to a debug port just to learn
+something. A client SHOULD NOT probe debug ports on a box it has no reason
+to think is gated: accepting a connection can have side effects on the
+target, such as a debug server halting the CPU when a GDB client attaches.
+
+### 10.5 Revocation
+
+A gateway MAY close an open tunnel when the user's access to the box is
+revoked; it is expected to recheck about once a minute. The client sees the
+connection close. It SHOULD tell the user and MUST NOT reopen the tunnel in
+a loop: the next tunnel request is authorized afresh and gets the denial.

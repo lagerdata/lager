@@ -59,6 +59,8 @@ lager debug [NET_NAME] gdbserver [OPTIONS]
 - `--rtt-search-addr HEX` - 搜索 RTT 控制块的 RAM 起始地址（十六进制，例如 `0x20020000`）
 - `--rtt-search-size HEX` - 搜索 RTT 控制块的 RAM 区域大小（十六进制，例如 `0x4000`）
 - `--rtt-chunk-size HEX` - RTT 搜索的读取块大小（十六进制，例如 `0x1000`）
+- `--local-port PORT` - 在网关之后的 Box 上，隧道使用的本地端口（默认与 Box 上 GDB 服务器的端口相同）
+- `--no-tunnel` - 在网关之后的 Box 上，启动 GDB 服务器后直接返回，不建立隧道
 
 **示例：**
 
@@ -88,6 +90,37 @@ lager debug gdbserver --box my-lager-box --speed 4000 --gdb-port 3333
 # After starting gdbserver, connect with:
 arm-none-eabi-gdb firmware.elf -ex 'target remote <BOX_IP>:2331'
 ```
+
+命令会打印应当使用的确切地址。在普通的 Lager Box 上，它打印 Box 的地址，然后返回。
+
+**位于网关之后的 Box：**
+
+有些 Box 位于做认证的访问网关之后（请参阅 [`lager login`](/source/zh/reference/cli/login)）。网关会检查每个连接的登录状态。这类 Box 的 GDB 端口不对网络开放，因此 GDB 无法直接连接到 Box。
+
+在这类 Box 上，`gdbserver` 启动 GDB 服务器之后，会通过网关建立一条隧道。隧道只在 `localhost` 上监听，端口号与 Box 上 GDB 服务器的端口相同。隧道打开期间，命令保持在前台运行：
+
+```text
+JLinkGDBServer started!
+GDB server running on my-lager-box. Connect to localhost:2331
+Connect with: arm-none-eabi-gdb -ex 'target remote localhost:2331'
+Tunnelling through the box's gateway. Press Ctrl-C to close the tunnel.
+```
+
+```bash
+# In a second terminal
+arm-none-eabi-gdb firmware.elf -ex 'target remote localhost:2331'
+```
+
+- 命令会针对每台 Box 自行判断是否需要隧道，您不需要为此设置任何选项。
+- 隧道打开期间，GDB 可以断开后重新连接，也可以有多个客户端同时连接。
+- Ctrl-C 只关闭隧道，GDB 服务器继续在 Box 上运行。要停止它，请使用 `lager debug <NET> disconnect`。
+- 如果本地端口已被占用，命令会报错并停止。请用 `--local-port` 选择其他本地端口。
+- 使用 `--rtt`、`--rtt-reset` 或 `--interactive` 时，隧道在 RTT 串流期间保持打开。RTT 本身不经过隧道，而是作为普通 HTTP 通过网关。
+- 使用 `--json` 时，输出中带有一个 `tunnel` 对象，包含 `local_host` 和 `local_port`，之后命令保持在前台运行。
+- 如果脚本需要在 GDB 服务器启动后继续执行，可以使用 `--no-tunnel`。这时命令直接返回，不建立隧道。
+- 如果管理员撤销了您对该 Box 的访问权限，网关会在大约一分钟内关闭隧道，命令会提示您。之后的下一个连接会收到访问错误。
+
+如果命令提示该 Box 的网关还不支持调试隧道，说明网关需要更新。请联系该 Box 的管理员。
 
 ### `disconnect`
 

@@ -59,6 +59,8 @@ lager debug [NET_NAME] gdbserver [OPTIONS]
 - `--rtt-search-addr HEX` - RAM start address for the RTT control block search (hex, e.g., `0x20020000`)
 - `--rtt-search-size HEX` - Size of the RAM region to search for the RTT control block (hex, e.g., `0x4000`)
 - `--rtt-chunk-size HEX` - Read chunk size for the RTT search (hex, e.g., `0x1000`)
+- `--local-port PORT` - Local port for the tunnel on a box behind a gateway (default: the same port as the GDB server on the box)
+- `--no-tunnel` - On a box behind a gateway, start the GDB server and return without a tunnel to it
 
 **Examples:**
 
@@ -88,6 +90,37 @@ lager debug gdbserver --box my-lager-box --speed 4000 --gdb-port 3333
 # After starting gdbserver, connect with:
 arm-none-eabi-gdb firmware.elf -ex 'target remote <BOX_IP>:2331'
 ```
+
+The command prints the exact address to use. On a plain Lager Box, it prints the address of the box and returns.
+
+**Boxes behind a gateway:**
+
+Some boxes are behind an authenticating gateway (see [`lager login`](/source/reference/cli/login)). The gateway checks your sign-in on each connection. The GDB port of such a box is not open to the network, so GDB cannot connect to the box directly.
+
+On such a box, `gdbserver` starts the GDB server and then opens a tunnel through the gateway. The tunnel listens on `localhost` only, on the same port number as the GDB server on the box. The command stays in the foreground while the tunnel is open:
+
+```text
+JLinkGDBServer started!
+GDB server running on my-lager-box. Connect to localhost:2331
+Connect with: arm-none-eabi-gdb -ex 'target remote localhost:2331'
+Tunnelling through the box's gateway. Press Ctrl-C to close the tunnel.
+```
+
+```bash
+# In a second terminal
+arm-none-eabi-gdb firmware.elf -ex 'target remote localhost:2331'
+```
+
+- The command decides for each box whether a tunnel is necessary. You do not set an option for it.
+- GDB can disconnect and connect again while the tunnel is open. More than one client can connect at the same time.
+- Ctrl-C closes the tunnel only. The GDB server continues to run on the box. To stop it, use `lager debug <NET> disconnect`.
+- If the local port is in use, the command stops with an error. Use `--local-port` to select a different local port.
+- With `--rtt`, `--rtt-reset` or `--interactive`, the tunnel stays open while the RTT stream runs. RTT does not use the tunnel: it goes through the gateway as normal HTTP.
+- With `--json`, the output has a `tunnel` object with `local_host` and `local_port`. Then the command stays in the foreground.
+- A script that must continue after the GDB server starts can use `--no-tunnel`. The command then returns and does not open a tunnel.
+- If an administrator removes your access to the box, the gateway closes the tunnel within about one minute. The command tells you. The next connection gets the access error.
+
+If the command says that the gateway of the box does not support debug tunnels yet, the gateway must be updated. Speak to the administrator of the box.
 
 ### `disconnect`
 
