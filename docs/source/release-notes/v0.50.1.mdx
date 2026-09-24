@@ -1,0 +1,46 @@
+---
+title: "Version 0.50.1"
+description: "September 23, 2026"
+---
+
+## <u>Upgrade Notes</u>
+
+- **An `i2c` or `spi` net saved with the instrument `LabJack` now fails instead of using the
+  T7.** Before this release, the Lager Box sent such a net to the LabJack T7 driver. Now
+  `lager i2c`, `lager spi` and `Net.get()` stop with an error that the instrument names no
+  LabJack model. No `lager nets` command changes the instrument of a saved net. Delete the net
+  and add it again with the instrument `LabJack_T7` or `LabJack_U3`. A net that already names
+  `LabJack_T7` or `LabJack_U3` needs no change.
+
+## <u>Bug Fixes</u>
+
+- **An `i2c` or `spi` net for a LabJack U3 drove the T7 instead.** This happened when the
+  saved instrument was `LabJack` and the Lager Box also had a T7. The net then sent its traffic
+  to the T7 and reported success, and the U3 bus stayed idle. The `i2c` and `spi` nets now
+  refuse the name `LabJack`, as `gpio`, `adc` and `dac` nets already do. The error lists
+  `LabJack_T7` and `LabJack_U3`. The fix is in the Lager Box code, so each box must run
+  `lager update`.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.50.1
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli==0.50.1
+```
+
+Then update your boxes:
+
+```bash
+lager update --box <box-name>
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.50.1/)
