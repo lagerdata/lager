@@ -314,10 +314,13 @@ This contract is versioned by the integer at the top of this file.
 - **v1** (2026-09-24): §10 specifies debug tunnels, an HTTP `CONNECT` on the
   debug-service port that reaches the box's raw-TCP debug ports through the
   gateway. Optional for gateways and additive for clients, so no version
-  bump per §9. The Python CLI implements the client side
-  (`cli/gateway_tunnel.py`, tests in `test/unit/cli/test_gateway_tunnel.py`).
-  lager-rs has no counterpart to implement: it drives debug nets only over
-  the HTTP debug service and Socket.IO, and never opens a raw debug port.
+  bump per §9. Both reference implementations carry the client side: the
+  Python CLI in `cli/gateway_tunnel.py` (tests in
+  `test/unit/cli/test_gateway_tunnel.py`), and lager-rs as
+  `LagerBox::debug_tunnel` / `AsyncLagerBox::debug_tunnel` in `src/tunnel.rs`
+  (tests in `tests/debug_tunnel.rs`, lagerdata/lager-rs#8). The crate had
+  never opened a raw debug port before; it gained the tunnel because a Rust
+  harness built on it needs a GDB server's port on gated boxes.
 
 ## 10. Debug tunnels (optional)
 
@@ -327,6 +330,10 @@ box it fronts does not publish those ports, and a debugger on the client
 machine cannot reach them directly. A gateway MAY instead offer them through
 an HTTP `CONNECT` tunnel on the debug-service port. Supporting it is optional
 for gateways, and using it is optional for clients.
+
+Client implementations: `cli/gateway_tunnel.py` (Python CLI, used by
+`lager debug <net> gdbserver`) and `src/tunnel.rs` in lager-rs
+(`LagerBox::debug_tunnel`).
 
 ### 10.1 Handshake
 
@@ -390,8 +397,8 @@ authoritative, and a later gateway may widen the list.
   Lager debug service's `501`, not a `200`.
 
 A client therefore cannot learn from the `CONNECT` alone whether a box has
-an old gateway or none. The Python CLI (`cli/gateway_tunnel.py`,
-`choose_route`) decides like this:
+an old gateway or none. Both clients (the Python CLI's `choose_route`, and
+lager-rs's `debug_tunnel`) decide like this:
 
 1. `200` → tunnel.
 2. Anything that is not a tunnel, on a box never seen to answer with a
