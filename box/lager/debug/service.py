@@ -39,7 +39,7 @@ from lager.debug.api import (
     clear_script_file,
     jlink_erase_plan,
     purge_legacy_script_file,
-    _attach_failed,
+    _erase_failure,
 )
 from lager.debug.target_probe import target_attached
 from lager.debug.probe_lock import ProbeBusyError, probe_lock
@@ -1457,16 +1457,17 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             # printed "Erase complete!" over a part it had not touched. The
             # OpenOCD branches above already raise (Da1469xLoaderError /
             # OpenOcdRpcError); this is the J-Link equivalent.
-            if _attach_failed(erase_output):
+            #
+            # Short of a failure line, it needs J-Link's own confirmation: a
+            # Commander whose probe was taken by another client, or dropped
+            # off USB, can print neither and still exit normally.
+            erase_failure = _erase_failure(erase_output)
+            if erase_failure:
                 joined = '\n'.join(erase_output)
-                logger.error(
-                    '[ERASE] J-Link never attached to %s; nothing was erased',
-                    device_type,
-                )
+                logger.error('[ERASE] %s: %s', device_type, erase_failure)
                 self.send_error_response(
                     500,
-                    'Erase failed: the probe never attached to the target, so '
-                    'nothing was erased.\n' + joined,
+                    f'Erase failed: {erase_failure}; nothing was erased.\n' + joined,
                 )
                 return
 

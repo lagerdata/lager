@@ -137,6 +137,27 @@ class ProbeLockTests(_Case):
                     pass
         self.assertIn('busy with flash', str(caught.exception))
 
+    def test_a_thread_that_waits_says_so_in_the_log(self):
+        """So the service log shows requests being ordered, not only
+        processes."""
+        entered, done = threading.Event(), threading.Event()
+
+        def holder():
+            with probe_lock('111', 'flash'):
+                entered.set()
+                done.wait(5)
+
+        t = threading.Thread(target=holder)
+        t.start()
+        entered.wait()
+        threading.Timer(0.2, done.set).start()
+        with self.assertLogs(probe_lock_mod.logger, level='INFO') as logs:
+            with probe_lock('111', 'connect'):
+                pass
+        t.join()
+        self.assertTrue(any('Probe 111 busy (flash (pid' in m and 'connect waiting' in m
+                            for m in logs.output), logs.output)
+
     def test_a_dead_holder_releases_the_probe(self):
         proc = self.hold_in_another_process('111')
         proc.kill()

@@ -288,12 +288,21 @@ class EraseVerdictTests(unittest.TestCase):
         self.assertEqual(recorder.payload['status'], 'erase_complete')
         self.assertEqual(recorder.payload['backend'], service.BACKEND_JLINK)
 
-    def test_silent_output_keeps_its_existing_meaning(self):
-        # An older JLinkExe, or one that printed nothing. Unrecognised output
-        # must not be newly reported as failing.
+    def test_silent_output_is_not_an_erase(self):
+        # This used to be a 200, on the grounds that unrecognised output must
+        # not newly fail. On hardware, a J-Link that dropped off USB and a
+        # probe taken by another client both left Commander output with no
+        # erase in it, and "Erase complete" was printed over an untouched
+        # part. Every J-Link version lager ships prints `Erasing done.`
+        # after an erase, so its absence is the failure.
         recorder = _erase([])
+        self.assertEqual(recorder.status, 500)
+        self.assertIn(api.NO_ERASE_DONE, recorder.payload['error'])
+
+    def test_a_range_erase_confirmation_is_an_erase(self):
+        recorder = _erase(['Erasing selected range...',
+                           'Flash sectors within Range [0x16000000 - 0x160FFFFF] deleted.'])
         self.assertEqual(recorder.status, 200)
-        self.assertEqual(recorder.payload['output'], 'Erase completed')
 
 
 class AttachFailedIsStricterThanConnectFailed(unittest.TestCase):

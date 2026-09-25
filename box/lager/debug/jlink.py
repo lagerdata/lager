@@ -400,10 +400,42 @@ def commander(args, script_file=None, serial=None):
     with closing(child):
         try:
             repl = replwrap.REPLWrapper(child, "J-Link>", None)
+        except pexpect.exceptions.EOF as exc:
+            # Returning here without yielding surfaced as contextlib's
+            # "generator didn't yield", which says nothing about the probe.
+            raise JLinkCommanderExited(
+                f'{COMMANDER_EXITED} before its prompt{_last_output(child)}') from exc
+        # Only the EOF that `q` causes is expected. One raised by a command in
+        # the caller's block used to be caught here too -- and a context
+        # manager that swallows an exception suppresses it, so a J-Link that
+        # dropped off USB mid-flash returned no output and no error, and the
+        # flash read as a success.
+        try:
             yield repl
+        except pexpect.exceptions.EOF as exc:
+            raise JLinkCommanderExited(
+                f'{COMMANDER_EXITED} mid-session{_last_output(child)}') from exc
+        try:
             repl.run_command('q')
         except pexpect.exceptions.EOF:
             pass
+
+
+# The start of JLinkCommanderExited's message, which box/lager/debug/api.py
+# matches in flash output to name the failure.
+COMMANDER_EXITED = 'JLinkExe exited'
+
+
+class JLinkCommanderExited(Exception):
+    """JLinkExe exited while lager was driving it: the probe went away (off
+    USB, or taken by another client) and whatever was asked of it did not
+    happen."""
+
+
+def _last_output(child):
+    """`: <what JLinkExe printed last>`, or nothing, for an error message."""
+    text = ' '.join(str(getattr(child, 'before', '') or '').split())
+    return f': {text[-300:]}' if text else ''
 
 
 class JLink:

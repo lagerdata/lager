@@ -276,37 +276,79 @@ _PROGRAMMING_FAILED_RE = re.compile(
 
 
 # J-Link's evidence that `loadfile` reached flash: one line per bank, including
-# `Skipped. Contents already match` when there was nothing to write.
+# `Skipped. Contents already match` when there was nothing to write, or a bare
+# `O.K.` for a load that touched no flash bank. Checked per `loadfile`: each
+# `Downloading file` needs one before the next.
 _FLASH_DOWNLOAD_RE = re.compile(r'^\s*(?:J-Link:\s*)?Flash download:', re.IGNORECASE)
 _DOWNLOADING_FILE_RE = re.compile(r'^\s*Downloading file\b', re.IGNORECASE)
 
+# `jlink.COMMANDER_EXITED`, spelt out: api.py is also loaded against a stubbed
+# `.jlink`. test_flash_programming_verdict pins the two together.
+_COMMANDER_EXITED = 'JLinkExe exited'
+
+NO_LOADFILE = ('J-Link printed no `Downloading file` line: `loadfile` never ran, '
+               'so nothing was programmed')
 NO_FLASH_DOWNLOAD = ('J-Link printed `Downloading file` but no `Flash download` '
                      'line after it: nothing was programmed')
+
+
+def _is_flash_evidence(line):
+    return bool(_FLASH_DOWNLOAD_RE.search(line)) or line.strip() == 'O.K.'
 
 
 def _flash_failure(output_chunks):
     """The line showing a J-Link flash session programmed nothing, else None.
 
-    A programming failure first, then a failed attach or an unusable probe.
-    Failing those, a `Downloading file` with no `Flash download` line before
-    the next one (or the end) means J-Link never reached flash. Pass only the
-    flash session's own Commander output: a connect error from the post-flash
-    reconnect says nothing about the flash.
+    Failure lines win: JLinkExe exiting under us, a programming failure, a
+    failed attach or an unusable probe. Short of those, success needs
+    evidence -- a `Downloading file` for the load, and a `Flash download` line
+    (or `O.K.`) after each one. A session with no evidence programmed
+    nothing, however quiet it was: a J-Link that drops off USB mid-session
+    can leave no text at all. Pass only the flash session's own Commander
+    output: a connect error from the post-flash reconnect says nothing about
+    the flash.
     """
     lines = '\n'.join(output_chunks).splitlines()
+    for line in lines:
+        if line.strip().startswith(_COMMANDER_EXITED):
+            return line.strip()
     for pattern in (_PROGRAMMING_FAILED_RE, _ATTACH_FAILED_RE):
         for line in lines:
             if pattern.search(line):
                 return line.strip()
-    downloading = False
+    downloading = seen = False
     for line in lines:
         if _DOWNLOADING_FILE_RE.search(line):
             if downloading:
                 return NO_FLASH_DOWNLOAD
-            downloading = True
-        elif downloading and _FLASH_DOWNLOAD_RE.search(line):
+            downloading = seen = True
+        elif downloading and _is_flash_evidence(line):
             downloading = False
-    return NO_FLASH_DOWNLOAD if downloading else None
+    if downloading:
+        return NO_FLASH_DOWNLOAD
+    return None if seen else NO_LOADFILE
+
+
+# J-Link's erase confirmations: `Erasing done.` after a chip or range erase,
+# `Flash sectors within Range [...] deleted.` for a range.
+_ERASE_DONE_RE = re.compile(
+    r'^\s*(?:Erasing done\.|Mass erase done\.|Flash sectors within Range .* deleted\.)',
+    re.IGNORECASE | re.MULTILINE,
+)
+NO_ERASE_DONE = ('J-Link printed no `Erasing done.` line, so nothing was erased')
+
+
+def _erase_failure(output_chunks):
+    """The line showing a J-Link erase touched nothing, else None.
+
+    A failed attach or an unusable probe names itself; short of that, an
+    erase with no J-Link confirmation erased nothing.
+    """
+    joined = '\n'.join(output_chunks)
+    for line in joined.splitlines():
+        if _ATTACH_FAILED_RE.search(line):
+            return line.strip()
+    return None if _ERASE_DONE_RE.search(joined) else NO_ERASE_DONE
 
 
 # The two causes of a failed RAMCode download seen so far, told apart after
@@ -325,12 +367,27 @@ _DA1469X_RESET_CAUSES = (
 
 _MEM32_RE = re.compile(r'^\s*[0-9A-Fa-f]{8}\s*=\s*([0-9A-Fa-f]{8})\b', re.MULTILINE)
 
+# How a J-Link client names its probe on the command line: `-SelectEmuBySN
+# <sn>` (Commander), `-select USB=<sn>` (GDB server), `-USB <sn>`. SEGGER
+# prints and accepts serials without leading zeros, so they compare as numbers.
+_SERIAL_SELECTOR_RE = re.compile(r'(?:selectemubysn|usb)\s*[=\s]\s*(\d+)', re.IGNORECASE)
 
-def _jlink_processes(serial, proc_root='/proc'):
-    """J-Link processes on this box bound to *serial* (any, if None).
+
+def _same_serial(a, b):
+    try:
+        return int(str(a)) == int(str(b))
+    except ValueError:
+        return str(a) == str(b)
+
+
+def _jlink_processes(serial, proc_root='/proc', exclude_ppid=None):
+    """J-Link processes on this box that may be using probe *serial*.
 
     Read from /proc, so it finds clients lager did not start and does not
-    track. Returns ``'<pid> <command line>'`` strings.
+    track. A process that selects a probe by serial counts only if that serial
+    is *serial* (compared as numbers); one that names no probe takes whichever
+    it finds first, so it counts too. Children of *exclude_ppid* (this
+    process's own JLinkExe) are left out. Returns ``'<pid> <command line>'``.
     """
     found = []
     try:
@@ -345,38 +402,108 @@ def _jlink_processes(serial, proc_root='/proc'):
             continue
         if not argv or not os.path.basename(argv[0]).startswith('JLink'):
             continue
-        cmdline = ' '.join(argv)
-        if serial and str(serial) not in cmdline:
+        if exclude_ppid is not None and _ppid(proc_root, pid) == exclude_ppid:
             continue
-        found.append(f'{pid} {cmdline}')
+        cmdline = ' '.join(argv)
+        selected = _SERIAL_SELECTOR_RE.findall(cmdline)
+        if serial and selected and not any(_same_serial(s, serial) for s in selected):
+            continue
+        found.append(f'{pid} {cmdline}' + ('' if selected else '  (names no probe)'))
     return found
 
 
-def _da1469x_reset_causes(jlink_args, script_file, serial):
-    """(RESET_STAT_REG value, cause names), or (None, reason) if unreadable."""
+def _ppid(proc_root, pid):
     try:
-        with commander(jlink_args, script_file=script_file, serial=serial) as jl:
-            jl.run_command('connect')
-            output = jl.run_command(f'mem32 {hex(_jlink_mod.DA1469X_RESET_STAT_REG)} 1')
-    except Exception as exc:  # noqa: BLE001 -- a diagnosis must not mask the failure
-        return None, f'{type(exc).__name__}: {exc}'
-    match = _MEM32_RE.search(str(output))
-    if not match:
-        return None, 'no value in the Commander output'
-    value = int(match.group(1), 16)
-    return value, [name for bit, name in _DA1469X_RESET_CAUSES if value & (1 << bit)]
+        with open(os.path.join(proc_root, pid, 'stat'), encoding='utf-8') as f:
+            # `pid (comm) state ppid ...`; comm may hold spaces, so split after it.
+            return int(f.read().rsplit(')', 1)[1].split()[1])
+    except (OSError, IndexError, ValueError):
+        return None
 
 
-def _flash_failure_diagnosis(device, jlink_args, script_file, serial):
-    """Lines saying what else was going on when a J-Link flash programmed nothing."""
+class _JLinkClientSampler:
+    """Watch for other J-Link clients on a probe while a flash runs.
+
+    A client that interferes and exits before the flash fails is gone by the
+    time the failure is diagnosed, so the scan runs every *interval* seconds
+    for the whole Commander session and keeps everything it saw. This
+    process's own JLinkExe is excluded by parent pid.
+    """
+
+    def __init__(self, serial, interval=0.25):
+        self.serial = serial
+        self.interval = interval
+        self.seen = {}
+        self._stop = None
+        self._thread = None
+
+    def _scan(self):
+        for entry in _jlink_processes(self.serial, exclude_ppid=os.getpid()):
+            self.seen.setdefault(entry.split(' ', 1)[0], entry)
+
+    def _run(self):
+        while not self._stop.wait(self.interval):
+            self._scan()
+
+    def __enter__(self):
+        import threading
+        self._stop = threading.Event()
+        self._scan()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._stop.set()
+        self._thread.join(timeout=2)
+        self._scan()
+        return False
+
+
+def _da1469x_reset_causes(jlink_args, script_file, serial, attempts=3, wait_s=1.5):
+    """(RESET_STAT_REG value, cause names), or (None, reason) if unreadable.
+
+    Tried *attempts* times, *wait_s* apart: when another client is on the
+    probe this read fails for the same reason the flash did, and the other
+    client may be gone a moment later.
+    """
+    reason = None
+    for attempt in range(attempts):
+        if attempt:
+            time.sleep(wait_s)
+        try:
+            with commander(jlink_args, script_file=script_file, serial=serial) as jl:
+                jl.run_command('connect')
+                output = jl.run_command(f'mem32 {hex(_jlink_mod.DA1469X_RESET_STAT_REG)} 1')
+        except Exception as exc:  # noqa: BLE001 -- a diagnosis must not mask the failure
+            reason = f'{type(exc).__name__}: {exc}'
+            continue
+        match = _MEM32_RE.search(str(output))
+        if not match:
+            reason = 'no value in the Commander output'
+            continue
+        value = int(match.group(1), 16)
+        return value, [name for bit, name in _DA1469X_RESET_CAUSES if value & (1 << bit)]
+    return None, f'{reason}; tried {attempts} times'
+
+
+def _flash_failure_diagnosis(device, jlink_args, script_file, serial, seen=()):
+    """Lines saying what else was going on when a J-Link flash programmed nothing.
+
+    *seen* is what a `_JLinkClientSampler` saw during the flash; the probe is
+    scanned again now and the two are reported together.
+    """
     lines = []
-    others = _jlink_processes(serial)
+    others = dict((entry.split(' ', 1)[0], entry) for entry in seen)
+    for entry in _jlink_processes(serial, exclude_ppid=os.getpid()):
+        others.setdefault(entry.split(' ', 1)[0], entry)
     if others:
-        lines.append('Diagnosis: another J-Link client is using this probe, which can '
-                     'corrupt the RAMCode download. Stop it and flash again:')
-        lines.extend(f'  {proc}' for proc in others)
+        lines.append('Diagnosis: another J-Link client used this probe during the flash, '
+                     'which can stop Commander using it or corrupt the RAMCode download. '
+                     'Stop it and flash again:')
+        lines.extend(f'  {proc}' for proc in others.values())
     else:
-        lines.append('Diagnosis: no other J-Link client is using this probe.')
+        lines.append('Diagnosis: no other J-Link client was seen on this probe.')
     if _probes.is_da1469x(device):
         value, causes = _da1469x_reset_causes(jlink_args, script_file, serial)
         if value is None:
@@ -1248,7 +1375,15 @@ def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None,
     def _run_flash(script):
         jl = TempJLink(jlink_args, script_file=script, serial=serial)
         jl.__class__ = JLink
-        return [str(chunk) for chunk in jl.flash(files, preverify, verify)]
+        output = []
+        try:
+            for chunk in jl.flash(files, preverify, verify):
+                output.append(str(chunk))
+        except _jlink_mod.JLinkCommanderExited as exc:
+            # The probe went away mid-session. Kept as a line of output so the
+            # verdict names it and the diagnosis and reset-skip below still run.
+            output.append(str(exc))
+        return output
 
     # Same defect as the gdbserver attach, but this is J-Link Commander, which
     # reports a failed connect as TEXT in its output rather than by raising --
@@ -1256,13 +1391,16 @@ def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None,
     # actually fails after `flash` erases: the erase blanks the part, and the
     # Commander connect that follows cannot attach with the device's
     # InitTarget() displaced by the user's. Issue #195.
-    flash_output = _run_flash(resolved_script)
+    sampler = _JLinkClientSampler(serial)
+    with sampler:
+        flash_output = _run_flash(resolved_script)
     if resolved_script and _connect_failed(flash_output):
         logger.warning(
             'Flash could not attach with the J-Link script %s; retrying '
             'without it.', resolved_script,
         )
-        retry_output = _run_flash(None)
+        with sampler:
+            retry_output = _run_flash(None)
         if not _connect_failed(retry_output):
             yield (f'WARNING: could not attach with the configured J-Link script '
                    f'({resolved_script}), so it was SKIPPED for this flash. A '
@@ -1280,7 +1418,8 @@ def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None,
 
     if failure:
         # Before the post-flash steps below start a client of their own.
-        yield from _flash_failure_diagnosis(device, jlink_args, resolved_script, serial)
+        yield from _flash_failure_diagnosis(device, jlink_args, resolved_script, serial,
+                                            seen=sampler.seen.values())
 
     is_da1469 = _probes.is_da1469x(device)
 
