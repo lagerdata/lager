@@ -42,7 +42,7 @@ from lager.debug.api import (
     _attach_failed,
 )
 from lager.debug.target_probe import target_attached
-from lager.debug.probe_lock import probe_lock
+from lager.debug.probe_lock import ProbeBusyError, probe_lock
 from lager.debug.erase_bounds import bounds_dict, validate_bounds
 from lager.debug.jlink import JLink
 from lager.debug.openocd_flash import resolve_erase_range as openocd_erase_range
@@ -123,6 +123,33 @@ def _resolve_probe_channel(net: Dict[str, Any]):
     device = net.get('channel') or net.get('pin')
     _target, parsed = parse_device_field(device)
     return parsed
+
+
+# Endpoints that drive the probe, and the operation name each holds the probe
+# lock under. The lock covers the WHOLE handler, not just the J-Link calls in
+# it: /debug/connect checks status, stops the running server on a force
+# reconnect and starts a new one, and a flash running between those steps had
+# its GDB server stopped under it. Re-entrant, so the api.py functions these
+# handlers call take it again without waiting. /debug/rtt is not here: it
+# streams for as long as the client reads, and would hold the probe for that
+# long.
+_PROBE_LOCKED_ENDPOINTS = {
+    '/debug/connect': 'connect',
+    '/debug/disconnect': 'disconnect',
+    '/debug/reset': 'reset',
+    '/debug/flash': 'flash',
+    '/debug/erase': 'erase',
+    '/debug/memrd': 'memrd',
+}
+
+
+def _lock_serial(data):
+    """The probe serial a request's net resolves to: the handlers' own key."""
+    net = data.get('net') if isinstance(data, dict) else None
+    try:
+        return resolve_serial_from_net(net) if isinstance(net, dict) else None
+    except Exception:  # noqa: BLE001 -- the handler reports a bad net itself
+        return None
 
 
 def _resolve_probe(net: Dict[str, Any]):
@@ -577,19 +604,17 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             body = self.rfile.read(content_length)
             request_data = json.loads(body.decode('utf-8'))
 
-            # Route to appropriate handler
-            if self.path == '/debug/connect':
-                self.handle_connect(request_data)
-            elif self.path == '/debug/disconnect':
-                self.handle_disconnect(request_data)
-            elif self.path == '/debug/reset':
-                self.handle_reset(request_data)
-            elif self.path == '/debug/flash':
-                self.handle_flash(request_data)
-            elif self.path == '/debug/erase':
-                self.handle_erase(request_data)
-            elif self.path == '/debug/memrd':
-                self.handle_memrd(request_data)
+            # Route to appropriate handler. The probe-driving endpoints run
+            # whole under the probe lock (see _PROBE_LOCKED_ENDPOINTS).
+            operation = _PROBE_LOCKED_ENDPOINTS.get(self.path)
+            if operation is not None:
+                handler = getattr(self, f'handle_{operation}')
+                try:
+                    with probe_lock(_lock_serial(request_data), operation):
+                        handler(request_data)
+                except ProbeBusyError as busy:
+                    logger.warning(str(busy))
+                    self.send_error_response(503, str(busy))
             elif self.path == '/debug/info':
                 self.handle_info(request_data)
             elif self.path == '/debug/status':
@@ -1048,8 +1073,7 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                 logger.error(f"Failed to create JLink from cmdline: {e}")
                 raise JLinkNotRunning()
 
-            with probe_lock(serial, 'reset'):
-                reset_output = list(jlink.reset(halt))
+            reset_output = list(jlink.reset(halt))
             logger.info(f"[RESET] J-Link reset complete, halt={halt}")
 
             self.send_json_response(200, {
@@ -1533,10 +1557,9 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             # Read memory using J-Link Commander (bypasses GDB entirely).
             # --no-reset maps to reset_halt=False so the DA1469x reset+halt is
             # skipped; None lets jlink honour LAGER_DA1469_MEMRD_RESET_HALT.
-            with probe_lock(serial, 'memory read'):
-                memory_data = jlink.read_memory(
-                    start_addr, length, reset_halt=(False if no_reset else None)
-                )
+            memory_data = jlink.read_memory(
+                start_addr, length, reset_halt=(False if no_reset else None)
+            )
 
             if not memory_data:
                 self.send_error_response(500, "Memory read returned no data")

@@ -1184,6 +1184,19 @@ _CONNECT_FAILURE_SIGNATURES = (
     'Failed to power up DAP',
 )
 
+# Commander failing to use the probe at all, seen when a second J-Link client
+# was driving the same probe: every later command is refused and the session
+# exits normally, so an erase or flash that touched nothing looked complete.
+# Unlike a connect failure these win over `Downloading file` in a flash --
+# they come from the flash's own Commander session, never from the post-flash
+# reconnect. Mirrors the tail of `_ATTACH_FAILED_RE` in box/lager/debug/api.py.
+_PROBE_UNUSABLE_SIGNATURES = (
+    'is not supported by the connected probe.',   # Selected interface (SWD) ...
+    'Target connection not established yet but required for command.',
+    'J-Link connection not established yet but required for command.',
+    'Connecting to J-Link via USB...FAILED',
+)
+
 
 # The GDB server a debug net's backend runs, keyed by the `backend` field the
 # box returns. A box too old to send that field predates OpenOCD support, so
@@ -1246,6 +1259,31 @@ def _line_matches_programming_failure(line):
             or text.startswith(_FLASH_PROGRAMMING_FAILURE_PREFIXES))
 
 
+_NO_FLASH_DOWNLOAD = ('J-Link printed `Downloading file` but no `Flash download` '
+                      'line after it: nothing was programmed')
+
+
+def _downloaded_without_flash_download(lines):
+    """True if a J-Link `Downloading file` has no `Flash download` line after
+    it, before the next one or the end: `loadfile` never reached flash.
+
+    J-Link prints `J-Link: Flash download: Bank ...` for every bank it touches,
+    `Skipped. Contents already match` included, so a flash that did anything
+    always has one. Mirrors `_flash_failure` in box/lager/debug/api.py.
+    """
+    downloading = False
+    for line in lines:
+        text = line.strip()
+        if text.startswith('Downloading file'):
+            if downloading:
+                return True
+            downloading = True
+        elif downloading and (text.startswith('J-Link: Flash download:')
+                              or text.startswith('Flash download:')):
+            downloading = False
+    return downloading
+
+
 def _flash_failure_line(output):
     """Return the programmer's failure line from flash output, else None.
 
@@ -1257,8 +1295,11 @@ def _flash_failure_line(output):
     """
     lines = (output or '').splitlines()
     for line in lines:
-        if _line_matches_programming_failure(line):
+        if (_line_matches_programming_failure(line)
+                or _line_matches(line, _PROBE_UNUSABLE_SIGNATURES)):
             return line.strip()
+    if _downloaded_without_flash_download(lines):
+        return _NO_FLASH_DOWNLOAD
     if any(_line_matches(line, _FLASH_PROGRAMMED_SIGNATURES) for line in lines):
         return None
     for line in lines:
@@ -1294,7 +1335,7 @@ def _erase_failure_line(output):
     backend we have not characterised is never newly reported as failing.
     """
     for line in (output or '').splitlines():
-        if _line_matches(line, _CONNECT_FAILURE_SIGNATURES):
+        if _line_matches(line, _CONNECT_FAILURE_SIGNATURES + _PROBE_UNUSABLE_SIGNATURES):
             return line.strip()
     return None
 

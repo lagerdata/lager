@@ -192,7 +192,9 @@ class FlashDeviceVerdictTests(unittest.TestCase):
         """Out of scope on purpose: on a DA1469x the cached-XIP compare reports
         a false one on a correctly programmed part."""
         self.assertIsNone(api._flash_failure(
-            ['Downloading file [img.bin]...\nVerification failed @ address 0x16000000.\n']))
+            ['Downloading file [img.bin]...\n'
+             'J-Link: Flash download: Bank 0 @ 0x16000000: 1 range affected\n'
+             'Verification failed @ address 0x16020000.\n']))
 
     def test_a_clean_flash_has_no_verdict(self):
         _rec, _lines, failure = _flash(DA1469X, PROGRAMMED)
@@ -229,6 +231,52 @@ class Da1469xPostFlashResetTests(unittest.TestCase):
         self.assertEqual(rec.gdbserver_starts, 1)
         self.assertNotIn(_SW_RESET, rec.commands)
         self.assertIn('Reconnecting GDB server...', lines)
+
+
+# A second J-Link client was driving the probe, so this Commander session could
+# not use it at all -- captured on a DA1469x bench, where it printed "Flashed!"
+# with nothing written.
+PROBE_UNUSABLE = """\
+Selected interface (SWD) is not supported by the connected probe.
+Downloading file [/tmp/tmpq1w2e3r4.bin]...
+Target connection not established yet but required for command.
+"""
+
+
+class UnusableProbeAndMissingDownloadTests(unittest.TestCase):
+    def test_an_unusable_probe_is_the_verdict(self):
+        self.assertEqual(
+            api._flash_failure([PROBE_UNUSABLE]),
+            'Selected interface (SWD) is not supported by the connected probe.')
+
+    def test_each_unusable_line_fails_erase_and_flash(self):
+        for line in ('Selected interface (SWD) is not supported by the connected probe.',
+                     'Target connection not established yet but required for command.',
+                     'J-Link connection not established yet but required for command.',
+                     'Connecting to J-Link via USB...FAILED'):
+            with self.subTest(line=line):
+                self.assertTrue(api._attach_failed([line]))
+                self.assertEqual(api._flash_failure([PROGRAMMED + line]), line)
+
+    def test_downloading_without_a_flash_download_is_the_verdict(self):
+        self.assertEqual(api._flash_failure(['Downloading file [a.bin]...\nO.K.\n']),
+                         api.NO_FLASH_DOWNLOAD)
+
+    def test_every_file_needs_its_own_flash_download(self):
+        output = PROGRAMMED + 'Downloading file [b.bin]...\nO.K.\n'
+        self.assertEqual(api._flash_failure([output]), api.NO_FLASH_DOWNLOAD)
+
+    def test_a_skipped_bank_is_a_flash_download(self):
+        self.assertIsNone(api._flash_failure([
+            'Downloading file [a.bin]...\n'
+            'J-Link: Flash download: Bank 0 @ 0x16000000: Skipped. Contents already match\n']))
+
+    def test_an_unusable_probe_skips_the_reset_and_is_diagnosed(self):
+        rec, lines, failure = _flash(DA1469X, PROBE_UNUSABLE)
+        self.assertIsNotNone(failure)
+        self.assertNotIn(_SW_RESET, rec.commands)
+        self.assertIn('DA1469x: programming failed; skipping the post-flash reset', lines)
+        self.assertTrue(any(line.startswith('Diagnosis:') for line in lines), lines)
 
 
 class FailureDiagnosisTests(unittest.TestCase):
@@ -422,6 +470,83 @@ class DebugFlashResponseTests(unittest.TestCase):
         self.assertEqual(run.status, 200, run.payload)
         self.assertIs(run.payload['programmed'], True)
         self.assertIsNone(run.payload['error'])
+
+
+class ProbeEndpointLockTests(unittest.TestCase):
+    """The probe-driving endpoints run whole under the probe lock. /debug/connect
+    used to check status, stop the running server on a force reconnect and
+    start a new one outside it, and a flash in between had its GDB server
+    stopped under it."""
+
+    def _post(self, path, body, **patches):
+        import io
+        import json as _json
+        run = _Run()
+        handler = _handler(run)
+        raw = _json.dumps(body).encode()
+        handler.path = path
+        handler.headers = {'Content-Length': str(len(raw))}
+        handler.rfile = io.BytesIO(raw)
+        with contextlib.ExitStack() as stack:
+            for name, value in patches.items():
+                stack.enter_context(patch.object(service, name, value))
+            handler.do_POST()
+        return run
+
+    def test_each_probe_endpoint_runs_under_its_probes_lock(self):
+        seen = {}
+
+        def recorder(operation):
+            def handle(self_, data):
+                seen[operation] = held(operation)
+                self_.send_json_response(200, {'status': 'ok'})
+            return handle
+
+        held_now = []
+
+        @contextlib.contextmanager
+        def fake_lock(serial, operation):
+            held_now.append((serial, operation))
+            yield
+
+        def held(operation):
+            return (('000123456789', operation) in held_now)
+
+        net = {'name': 'SWD', 'address': 'USB::0x1366::0x0101::000123456789::INSTR'}
+        for path, operation in service._PROBE_LOCKED_ENDPOINTS.items():
+            with self.subTest(path=path), \
+                 patch.object(service.DebugServiceHandler, f'handle_{operation}',
+                              recorder(operation)):
+                run = self._post(path, {'net': net}, probe_lock=fake_lock,
+                                 resolve_serial_from_net=lambda n: '000123456789')
+                self.assertEqual(run.status, 200)
+        self.assertEqual(set(seen), set(service._PROBE_LOCKED_ENDPOINTS.values()))
+        self.assertTrue(all(seen.values()), seen)
+
+    def test_rtt_is_not_locked(self):
+        self.assertNotIn('/debug/rtt', service._PROBE_LOCKED_ENDPOINTS)
+
+    def test_a_busy_probe_answers_503_naming_the_holder(self):
+        @contextlib.contextmanager
+        def busy(serial, operation):
+            raise service.ProbeBusyError('J-Link probe 111 is busy with flash (pid 7)')
+            yield  # pragma: no cover
+
+        with patch.object(service.DebugServiceHandler, 'handle_connect',
+                          lambda self_, data: self.fail('handler ran')):
+            run = self._post('/debug/connect', {'net': {'name': 'SWD'}}, probe_lock=busy)
+        self.assertEqual(run.status, 503)
+        self.assertIn('busy with flash', run.payload['error'])
+
+    def test_a_net_that_does_not_resolve_still_reaches_the_handler(self):
+        def boom(net):
+            raise ValueError('bad address')
+
+        with patch.object(service.DebugServiceHandler, 'handle_memrd',
+                          lambda self_, data: self_.send_json_response(200, {})):
+            run = self._post('/debug/memrd', {'net': {'name': 'SWD'}},
+                             resolve_serial_from_net=boom)
+        self.assertEqual(run.status, 200)
 
 
 if __name__ == '__main__':
