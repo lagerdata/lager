@@ -432,10 +432,25 @@ class JLinkCommanderExited(Exception):
     happen."""
 
 
+# JLinkExe lines that say nothing about why it exited: its USB resync banner,
+# which it repeats while a probe re-enumerates, and asterisk rules.
+_EXIT_NOISE_RE = re.compile(r'^(?:\*+|WARNING: Out of sync\b.*|.*resynchronizing.*)$',
+                            re.IGNORECASE)
+
+
 def _last_output(child):
-    """`: <what JLinkExe printed last>`, or nothing, for an error message."""
-    text = ' '.join(str(getattr(child, 'before', '') or '').split())
-    return f': {text[-300:]}' if text else ''
+    """`: <JLinkExe's last meaningful line>`, or nothing, for an error message.
+
+    The last line that is not resync noise -- `Connecting to J-Link via
+    USB...FAILED`, say -- rather than a tail of the banner around it.
+    """
+    lines = [' '.join(line.split())
+             for line in str(getattr(child, 'before', '') or '').splitlines()]
+    meaningful = [line for line in lines if line and not _EXIT_NOISE_RE.match(line)]
+    if meaningful:
+        return f': {meaningful[-1][:300]}'
+    tail = ' '.join(' '.join(lines).split())
+    return f': {tail[-300:]}' if tail else ''
 
 
 class JLink:
