@@ -87,8 +87,13 @@ class _ProbeLock:
 
     def acquire(self, operation, timeout):
         deadline = time.monotonic() + timeout
-        if not self.rlock.acquire(timeout=timeout):
-            raise ProbeBusyError(self._busy_message(operation, timeout, self.holder))
+        if not self.rlock.acquire(blocking=False):
+            # Another thread of this process holds it. Said in the log so the
+            # service log shows requests being ordered, not only processes.
+            logger.info('Probe %s busy (%s); %s waiting for it',
+                        self.key, self.holder or 'another thread', operation)
+            if not self.rlock.acquire(timeout=timeout):
+                raise ProbeBusyError(self._busy_message(operation, timeout, self.holder))
         if self.depth:
             self.depth += 1
             return
@@ -107,8 +112,9 @@ class _ProbeLock:
                         raise ProbeBusyError(
                             self._busy_message(operation, timeout, holder))
                     if not waited:
-                        logger.info('Probe %s busy (%s); waiting for it',
-                                    self.key, self._other_holder() or 'another process')
+                        logger.info('Probe %s busy (%s); %s waiting for it',
+                                    self.key, self._other_holder() or 'another process',
+                                    operation)
                         waited = True
                     time.sleep(_POLL_S)
         except BaseException:

@@ -129,7 +129,7 @@ def _bench(commander_output, reset_stat='00000000', jlink_procs=()):
 
     with patch.object(api.JLink, 'flash', fake_flash), \
          patch.object(api, 'commander', fake_commander), \
-         patch.object(api, '_jlink_processes', lambda serial: list(jlink_procs)), \
+         patch.object(api, '_jlink_processes', lambda serial, **kw: list(jlink_procs)), \
          patch.object(api, 'start_jlink_gdbserver', side_effect=fake_start), \
          patch.object(api, 'stop_jlink'), \
          patch.object(api, 'stop_jlink_gdbserver'), \
@@ -186,7 +186,7 @@ class FlashDeviceVerdictTests(unittest.TestCase):
 
     def test_a_signature_mid_line_is_not_a_match(self):
         self.assertIsNone(api._flash_failure(
-            ['note: the text "Failed to download RAMCode!" appears in this log\n']))
+            [PROGRAMMED + 'note: the text "Failed to download RAMCode!" appears in this log\n']))
 
     def test_a_verify_failure_is_not_a_verdict(self):
         """Out of scope on purpose: on a DA1469x the cached-XIP compare reports
@@ -259,11 +259,11 @@ class UnusableProbeAndMissingDownloadTests(unittest.TestCase):
                 self.assertEqual(api._flash_failure([PROGRAMMED + line]), line)
 
     def test_downloading_without_a_flash_download_is_the_verdict(self):
-        self.assertEqual(api._flash_failure(['Downloading file [a.bin]...\nO.K.\n']),
+        self.assertEqual(api._flash_failure(['Downloading file [a.bin]...\n']),
                          api.NO_FLASH_DOWNLOAD)
 
     def test_every_file_needs_its_own_flash_download(self):
-        output = PROGRAMMED + 'Downloading file [b.bin]...\nO.K.\n'
+        output = PROGRAMMED + 'Downloading file [b.bin]...\n'
         self.assertEqual(api._flash_failure([output]), api.NO_FLASH_DOWNLOAD)
 
     def test_a_skipped_bank_is_a_flash_download(self):
@@ -277,6 +277,60 @@ class UnusableProbeAndMissingDownloadTests(unittest.TestCase):
         self.assertNotIn(_SW_RESET, rec.commands)
         self.assertIn('DA1469x: programming failed; skipping the post-flash reset', lines)
         self.assertTrue(any(line.startswith('Diagnosis:') for line in lines), lines)
+
+
+class NoEvidenceIsNoFlashTests(unittest.TestCase):
+    """A J-Link that dropped off USB mid-session left Commander output with no
+    text at all, and lager printed "Flashed!" over an erased part. Success
+    now needs evidence; silence is a failure."""
+
+    def test_silent_commander_output_is_the_verdict(self):
+        rec, lines, failure = _flash(DA1469X, '')
+        self.assertEqual(failure, api.NO_LOADFILE)
+        self.assertNotIn(_SW_RESET, rec.commands)
+        self.assertTrue(any(line.startswith('Diagnosis:') for line in lines), lines)
+
+    def test_jlinkexe_exiting_mid_flash_is_named(self):
+        def exits(self_, files, preverify=False, verify=False, **kw):
+            yield 'Connecting to target...'
+            raise api._jlink_mod.JLinkCommanderExited(
+                'JLinkExe exited mid-session: Connecting to J-Link via USB...FAILED')
+
+        with _bench(PROGRAMMED) as rec, patch.object(api.JLink, 'flash', exits):
+            lines, failure = _drain(api.flash_device(
+                ([], [('/tmp/fw.bin', 0x16000000)], []), mcu=DA1469X))
+        self.assertTrue(failure.startswith('JLinkExe exited mid-session'), failure)
+        self.assertNotIn(_SW_RESET, rec.commands)
+
+    def test_the_exit_marker_matches_jlink(self):
+        self.assertEqual(api._COMMANDER_EXITED, api._jlink_mod.COMMANDER_EXITED)
+
+    def test_ok_after_downloading_is_evidence(self):
+        self.assertIsNone(api._flash_failure(['Downloading file [a.bin]...\nO.K.\n']))
+
+    def test_an_api_trace_ok_is_not_evidence(self):
+        self.assertEqual(
+            api._flash_failure(['Downloading file [a.bin]...\n'
+                                '- 10.056ms returns "O.K."\n']),
+            api.NO_FLASH_DOWNLOAD)
+
+
+class EraseEvidenceTests(unittest.TestCase):
+    def test_erasing_done_is_an_erase(self):
+        self.assertIsNone(api._erase_failure(['Erasing device...\r\nErasing done.\r\n']))
+
+    def test_a_range_confirmation_is_an_erase(self):
+        self.assertIsNone(api._erase_failure(
+            ['Flash sectors within Range [0x16000000 - 0x160FFFFF] deleted.\n']))
+
+    def test_silence_is_not_an_erase(self):
+        self.assertEqual(api._erase_failure(['Erasing 0x16000000-0x160FFFFF (1 MiB)', '']),
+                         api.NO_ERASE_DONE)
+
+    def test_an_unusable_probe_names_itself(self):
+        self.assertEqual(
+            api._erase_failure(['J-Link connection not established yet but required for command.']),
+            'J-Link connection not established yet but required for command.')
 
 
 class FailureDiagnosisTests(unittest.TestCase):
@@ -301,19 +355,19 @@ class FailureDiagnosisTests(unittest.TestCase):
     def test_another_jlink_client_is_listed(self):
         proc = '4242 /opt/SEGGER/JLink/JLinkExe -SelectEmuBySN 000123456789'
         _rec, lines, _f = _flash(DA1469X, RAMCODE_VERIFY_FAILED, jlink_procs=[proc])
-        self.assertTrue(any(line.startswith('Diagnosis: another J-Link client')
+        self.assertTrue(any(line.startswith('Diagnosis: another J-Link client used this probe')
                             for line in lines), lines)
         self.assertIn(f'  {proc}', lines)
 
     def test_no_other_client_is_said_plainly(self):
         _rec, lines, _f = _flash(DA1469X, RAMCODE_VERIFY_FAILED)
-        self.assertIn('Diagnosis: no other J-Link client is using this probe.', lines)
+        self.assertIn('Diagnosis: no other J-Link client was seen on this probe.', lines)
 
     def test_diagnosis_comes_before_the_post_flash_steps(self):
         """The non-DA1469x reconnect starts a J-Link client of its own; the
         process list must be taken before it."""
         _rec, lines, _f = _flash(OTHER, RAMCODE_VERIFY_FAILED)
-        diag = lines.index('Diagnosis: no other J-Link client is using this probe.')
+        diag = lines.index('Diagnosis: no other J-Link client was seen on this probe.')
         self.assertLess(diag, lines.index('Reconnecting GDB server...'))
 
     def test_other_targets_do_not_read_the_da1469x_register(self):
@@ -336,6 +390,55 @@ class FailureDiagnosisTests(unittest.TestCase):
             value, reason = api._da1469x_reset_causes(['-device', DA1469X], None, None)
         self.assertIsNone(value)
         self.assertIn('probe gone', reason)
+
+
+class ResetStatRetryTests(unittest.TestCase):
+    """The diagnostic read fails for the same reason the flash did while
+    another client holds the probe; it is retried after a pause."""
+
+    def _commander(self, outcomes):
+        calls = []
+
+        @contextlib.contextmanager
+        def fake(*a, **kw):
+            outcome = outcomes[len(calls)]
+            calls.append(outcome)
+            if isinstance(outcome, Exception):
+                raise outcome
+            jl = MagicMock()
+            jl.run_command.return_value = outcome
+            yield jl
+        return fake, calls
+
+    def test_a_later_attempt_is_used(self):
+        fake, calls = self._commander([RuntimeError('busy'), '500000BC = 00000008'])
+        with patch.object(api, 'commander', fake), patch.object(api.time, 'sleep'):
+            value, causes = api._da1469x_reset_causes([], None, None)
+        self.assertEqual((value, causes), (8, ['SYS watchdog']))
+        self.assertEqual(len(calls), 2)
+
+    def test_every_attempt_failing_says_so(self):
+        fake, calls = self._commander([RuntimeError('busy')] * 3)
+        with patch.object(api, 'commander', fake), patch.object(api.time, 'sleep'):
+            value, reason = api._da1469x_reset_causes([], None, None)
+        self.assertIsNone(value)
+        self.assertIn('tried 3 times', reason)
+
+
+class JLinkClientSamplerTests(unittest.TestCase):
+    def test_a_client_that_came_and_went_is_remembered(self):
+        scans = iter([[], ['77 JLinkExe -SelectEmuBySN 50115930'], []])
+
+        def fake_scan(serial, **kw):
+            return next(scans, [])
+
+        with patch.object(api, '_jlink_processes', fake_scan):
+            sampler = api._JLinkClientSampler('000050115930', interval=0.01)
+            with sampler:
+                import time as _time
+                _time.sleep(0.1)
+        self.assertEqual(list(sampler.seen.values()),
+                         ['77 JLinkExe -SelectEmuBySN 50115930'])
 
 
 class JLinkProcessScanTests(unittest.TestCase):
@@ -364,6 +467,27 @@ class JLinkProcessScanTests(unittest.TestCase):
             11: ['/opt/SEGGER/JLink/JLinkExe'],
         })
         self.assertEqual(len(api._jlink_processes(None, proc_root=root)), 2)
+
+    def test_serials_compare_as_numbers(self):
+        """SEGGER drops leading zeros: a client selecting 50115930 is on the
+        probe lager knows as 000050115930."""
+        root = self._proc({
+            10: ['/opt/SEGGER/JLink/JLinkExe', '-SelectEmuBySN', '50115930'],
+            11: ['/opt/SEGGER/JLink/JLinkGDBServerCLExe', '-select', 'USB=000050115930'],
+        })
+        self.assertEqual(len(api._jlink_processes('000050115930', proc_root=root)), 2)
+
+    def test_a_client_naming_no_probe_is_a_candidate(self):
+        root = self._proc({10: ['/opt/SEGGER/JLink/JLinkExe', '-device', 'DA14695']})
+        self.assertEqual(api._jlink_processes('111', proc_root=root),
+                         ['10 /opt/SEGGER/JLink/JLinkExe -device DA14695  (names no probe)'])
+
+    def test_this_process_s_own_children_are_left_out(self):
+        root = self._proc({10: ['/opt/SEGGER/JLink/JLinkExe', '-SelectEmuBySN', '111']})
+        with open(os.path.join(root, '10', 'stat'), 'w') as f:
+            f.write('10 (JLinkExe) S 4242 10 10 0')
+        self.assertEqual(api._jlink_processes('111', proc_root=root, exclude_ppid=4242), [])
+        self.assertEqual(len(api._jlink_processes('111', proc_root=root, exclude_ppid=1)), 1)
 
     def test_a_missing_proc_is_an_empty_list(self):
         self.assertEqual(api._jlink_processes('111', proc_root='/nonexistent-proc'), [])

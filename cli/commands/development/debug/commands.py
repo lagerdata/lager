@@ -1195,6 +1195,7 @@ _PROBE_UNUSABLE_SIGNATURES = (
     'Target connection not established yet but required for command.',
     'J-Link connection not established yet but required for command.',
     'Connecting to J-Link via USB...FAILED',
+    'JLinkExe exited',   # the box: JLinkCommanderExited, the probe went away mid-session
 )
 
 
@@ -1261,11 +1262,18 @@ def _line_matches_programming_failure(line):
 
 _NO_FLASH_DOWNLOAD = ('J-Link printed `Downloading file` but no `Flash download` '
                       'line after it: nothing was programmed')
+_NO_LOADFILE = ('J-Link printed no `Downloading file` line: `loadfile` never ran, '
+                'so nothing was programmed')
+_NO_ERASE_DONE = 'J-Link printed no `Erasing done.` line, so nothing was erased'
+
+# The box's first line of every J-Link flash.
+_JLINK_FLASH_BANNER = ' via JLinkExe...'
 
 
 def _downloaded_without_flash_download(lines):
-    """True if a J-Link `Downloading file` has no `Flash download` line after
-    it, before the next one or the end: `loadfile` never reached flash.
+    """True if a J-Link `Downloading file` has no `Flash download` line (or
+    bare `O.K.`) after it, before the next one or the end: `loadfile` never
+    reached flash.
 
     J-Link prints `J-Link: Flash download: Bank ...` for every bank it touches,
     `Skipped. Contents already match` included, so a flash that did anything
@@ -1279,19 +1287,32 @@ def _downloaded_without_flash_download(lines):
                 return True
             downloading = True
         elif downloading and (text.startswith('J-Link: Flash download:')
-                              or text.startswith('Flash download:')):
+                              or text.startswith('Flash download:')
+                              or text == 'O.K.'):
             downloading = False
     return downloading
+
+
+def _jlink_flash_without_loadfile(lines):
+    """True for a J-Link flash (the box's `... via JLinkExe...` line) that
+    never printed `Downloading file`. A J-Link that dropped off USB
+    mid-session left exactly this: the banner, then nothing."""
+    stripped = [line.strip() for line in lines]
+    return (any(text.endswith(_JLINK_FLASH_BANNER) for text in stripped)
+            and not any(text.startswith('Downloading file') for text in stripped))
 
 
 def _flash_failure_line(output):
     """Return the programmer's failure line from flash output, else None.
 
     `output` is the joined /debug/flash text. A programming failure (a failed
-    RAMCode download, say) is returned whatever else the output says. Short of
-    that, returns None whenever the output shows the session reached
-    programming, even if a later line reports a connect failure -- that is the
-    post-flash gdbserver, not the flash.
+    RAMCode download, say) or an unusable probe is returned whatever else the
+    output says, and so is a `Downloading file` with no `Flash download` after
+    it. Short of that, returns None whenever the output shows the session
+    reached programming, even if a later line reports a connect failure --
+    that is the post-flash gdbserver, not the flash. Last, a J-Link flash that
+    never ran `loadfile` at all fails: that is what a probe dropping off USB
+    mid-session leaves.
     """
     lines = (output or '').splitlines()
     for line in lines:
@@ -1305,6 +1326,8 @@ def _flash_failure_line(output):
     for line in lines:
         if _line_matches(line, _CONNECT_FAILURE_SIGNATURES):
             return line.strip()
+    if _jlink_flash_without_loadfile(lines):
+        return _NO_LOADFILE
     return None
 
 
@@ -1334,9 +1357,21 @@ def _erase_failure_line(output):
     Output matching nothing keeps its existing meaning, so an older box or a
     backend we have not characterised is never newly reported as failing.
     """
-    for line in (output or '').splitlines():
+    lines = (output or '').splitlines()
+    for line in lines:
         if _line_matches(line, _CONNECT_FAILURE_SIGNATURES + _PROBE_UNUSABLE_SIGNATURES):
             return line.strip()
+    # J-Link started an erase and never confirmed it. (A newer box refuses
+    # this itself; this covers an older one.) Mirrors `_erase_failure` in
+    # box/lager/debug/api.py.
+    stripped = [line.strip() for line in lines]
+    started = any(text in ('Erasing device...', 'Erasing selected range...')
+                  for text in stripped)
+    confirmed = any(text in ('Erasing done.', 'Mass erase done.')
+                    or (text.startswith('Flash sectors within Range') and text.endswith('deleted.'))
+                    for text in stripped)
+    if started and not confirmed:
+        return _NO_ERASE_DONE
     return None
 
 

@@ -26,9 +26,16 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   J-Link client on the probe, Commander answers `Selected interface (SWD) is not
   supported by the connected probe.` or `Target connection not established yet but
   required for command.` and exits normally; `lager` printed `Erase complete` and
-  `Flashed!` with nothing erased or written. Both now fail on those lines. A flash also
-  fails when J-Link printed `Downloading file` but no `Flash download` line after it,
-  since J-Link prints one for every bank it touches, an already-matching one included.
+  `Flashed!` with nothing erased or written. Both now fail on those lines. Past those,
+  success needs J-Link's own evidence: a flash needs `Downloading file` followed by a
+  `Flash download` line (J-Link prints one for every bank it touches, an
+  already-matching one included), and an erase needs `Erasing done.`. A J-Link that
+  dropped off USB mid-flash left no text at all and printed `Flashed!` over an erased
+  part; that now fails.
+- **JLinkExe exiting under the box is an error, not silence.** When JLinkExe exited
+  mid-session, the box swallowed the error and returned what it had, often nothing.
+  When it exited before its prompt, the command failed with `generator didn't yield`.
+  Both now fail with `JLinkExe exited ...`, followed by the last thing it printed.
 - **Two J-Link operations on one probe no longer run at the same time.** J-Link lets
   several clients open one probe, and a `connect`, `memrd`, `reset` or a `lager python`
   script that ran during a flash could corrupt its RAMCode download or stop its GDB
@@ -37,11 +44,13 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   `flash`, `erase` and `memrd` request. A second operation waits for the first and
   gives up with `J-Link probe <serial> is busy` (HTTP 503) after
   `LAGER_PROBE_LOCK_TIMEOUT_S` seconds (default 300).
-- **A failed J-Link flash says what else was going on.** The output lists any other
-  J-Link process still using the probe. On a DA1469x it also reports whether the target
-  reset during programming, and which reset (for example `SYS watchdog`). To tell that
-  reset apart from the one before programming, the box clears the DA1469x
-  `RESET_STAT_REG` after its pre-flash halt.
+- **A failed J-Link flash says what else was going on.** The output lists every other
+  J-Link process seen on the probe during the flash. It matches serials as numbers, so
+  `50115930` and `000050115930` are the same probe, and includes clients that name no
+  probe. On a DA1469x it also reports whether the target reset during programming, and
+  which reset (for example `SYS watchdog`). The box clears the DA1469x `RESET_STAT_REG`
+  after its pre-flash halt, so the reading belongs to this attempt, and retries the read
+  while another client holds the probe.
 
 ## [0.50.2] - 2026-09-24
 
