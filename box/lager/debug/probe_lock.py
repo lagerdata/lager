@@ -140,7 +140,7 @@ class _ProbeLock:
         self.rlock.release()
 
     def _busy_message(self, operation, timeout, holder):
-        return (f'J-Link probe {self.key} is busy'
+        return (f'Debug probe {self.key} is busy'
                 f'{f" with {holder}" if holder else ""}; {operation} gave up after '
                 f'{timeout:g} s. Wait for the other operation to finish and retry.')
 

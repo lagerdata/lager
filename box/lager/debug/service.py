@@ -144,12 +144,29 @@ _PROBE_LOCKED_ENDPOINTS = {
 
 
 def _lock_serial(data):
-    """The probe serial a request's net resolves to: the handlers' own key."""
+    """The probe-lock key for a request's net.
+
+    Its probe serial, the key the api.py functions the handler calls lock on.
+    With no serial:
+    - An OpenOCD net keys on its address (`da14695@A`), so two such probes on
+      one box do not wait for each other. Nothing below the handler takes a
+      J-Link lock for it.
+    - A J-Link net stays on the shared `default` key. J-Link then opens
+      whichever probe it finds first, so two such nets can land on the same
+      one.
+    """
     net = data.get('net') if isinstance(data, dict) else None
-    try:
-        return resolve_serial_from_net(net) if isinstance(net, dict) else None
-    except Exception:  # noqa: BLE001 -- the handler reports a bad net itself
+    if not isinstance(net, dict):
         return None
+    try:
+        serial = resolve_serial_from_net(net)
+        if serial:
+            return serial
+        if resolve_backend(net) == BACKEND_OPENOCD and net.get('address'):
+            return f'openocd-{net["address"]}'
+    except Exception:  # noqa: BLE001 -- the handler reports a bad net itself
+        pass
+    return None
 
 
 def _resolve_probe(net: Dict[str, Any]):

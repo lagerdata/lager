@@ -647,13 +647,34 @@ class ProbeEndpointLockTests(unittest.TestCase):
         self.assertEqual(set(seen), set(service._PROBE_LOCKED_ENDPOINTS.values()))
         self.assertTrue(all(seen.values()), seen)
 
+    def test_the_lock_key_is_the_probe_serial(self):
+        with patch.object(service, 'resolve_serial_from_net', lambda n: '000123456789'):
+            self.assertEqual(service._lock_serial({'net': {'address': 'x'}}), '000123456789')
+
+    def test_an_openocd_net_without_a_serial_keys_on_its_address(self):
+        """Two such probes on one box used to share `default` and wait for
+        each other."""
+        net = {'address': 'da14695@A', 'debug_backend': 'openocd'}
+        with patch.object(service, 'resolve_serial_from_net', lambda n: None):
+            self.assertEqual(service._lock_serial({'net': net}), 'openocd-da14695@A')
+            self.assertNotEqual(
+                service._lock_serial({'net': net}),
+                service._lock_serial({'net': {**net, 'address': 'da14695@B'}}))
+
+    def test_a_j_link_net_without_a_serial_stays_on_default(self):
+        """J-Link then opens whichever probe it finds first, so two such
+        nets can land on the same one."""
+        net = {'address': 'NRF52840_XXAA', 'debug_backend': 'jlink'}
+        with patch.object(service, 'resolve_serial_from_net', lambda n: None):
+            self.assertIsNone(service._lock_serial({'net': net}))
+
     def test_rtt_is_not_locked(self):
         self.assertNotIn('/debug/rtt', service._PROBE_LOCKED_ENDPOINTS)
 
     def test_a_busy_probe_answers_503_naming_the_holder(self):
         @contextlib.contextmanager
         def busy(serial, operation):
-            raise service.ProbeBusyError('J-Link probe 111 is busy with flash (pid 7)')
+            raise service.ProbeBusyError('Debug probe 111 is busy with flash (pid 7)')
             yield  # pragma: no cover
 
         with patch.object(service.DebugServiceHandler, 'handle_connect',
