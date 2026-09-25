@@ -10,6 +10,7 @@ import itertools
 import click
 from click.exceptions import Abort, Exit
 import json
+import re
 import requests
 import signal
 import sys
@@ -1121,10 +1122,46 @@ def disconnect(ctx, box, keep_server):
 # `- 10.056ms returns "O.K."` in the middle of a FAILED session, so substring
 # matching on success text reports success on exactly the run this exists to
 # catch. Lines can carry a log prefix, hence the endswith.
+#
+# `Downloading file` is here as evidence that the Commander session attached
+# and reached `loadfile` -- which is all this tuple is for: a connect error
+# after it belongs to the post-flash reconnect. It does NOT prove anything was
+# programmed. J-Link prints it before it downloads its flash RAMCode, and that
+# download can still fail; `_FLASH_PROGRAMMING_FAILURE_SIGNATURES` below is
+# checked first and decides that case.
 _FLASH_PROGRAMMED_SIGNATURES = (
     'J-Link: Flash download:',   # J-Link, one line per programmed range
-    'Downloading file',          # J-Link loadfile
+    'Downloading file',          # J-Link loadfile (attached, not programmed)
     'wrote ',                    # OpenOCD flash write_image
+)
+
+# J-Link lines that mean `loadfile` programmed nothing. These win over
+# everything above, including `J-Link: Flash download:`: a failed RAMCode
+# download is followed by `Unspecified error -1` and nothing else, and the box
+# still answers 200.
+#
+# Mirrors `_PROGRAMMING_FAILED_RE` in box/lager/debug/api.py; keep the two in
+# step. The texts are J-Link's own (JLinkExe / libjlinkarm). J-Link can wrap a
+# line in a `****** Error: ` banner, which `_line_matches_programming_failure`
+# drops before matching.
+#
+# Exact lines: J-Link also prints `Failed to download RAMCode for indirect
+# memory access!` and `... used to read FPU registers.`, which are not flash
+# programming failures, so `Failed to download RAMCode` is never a prefix.
+#
+# Verify failures (`Verification failed @ address ...`, `ERROR: Verify
+# failed.`) are deliberately absent. On a DA1469x the cached-XIP compare
+# reports a false one on a correctly programmed part unless the box ran its
+# uncached read-back (LAGER_DA1469_UNCACHED_VERIFY, default off).
+_FLASH_PROGRAMMING_FAILURE_LINES = (
+    'Failed to download RAMCode!',
+    'Failed to download RAMCode.',
+    'Failed to prepare for programming.',
+    'Error while programming flash: Programming failed.',
+)
+_FLASH_PROGRAMMING_FAILURE_PREFIXES = (
+    'Verification of RAMCode failed',       # ... @ address 0x0080073C.
+    'Error while determining flash info',   # ... (Bank @ 0x16000000)
 )
 
 # Mirrors `_CONNECT_FAILED_RE` in box/lager/debug/api.py, which the box already
@@ -1195,20 +1232,54 @@ def _line_matches(line, signatures):
                for sig in signatures)
 
 
+_JLINK_ERROR_BANNER_RE = re.compile(r'^[*\s]*(?:error:\s*)?', re.IGNORECASE)
+
+
+def _line_matches_programming_failure(line):
+    """True if `line` is one of J-Link's "nothing was programmed" lines.
+
+    Drops J-Link's `****** Error: ` / `ERROR: ` banner, then matches the whole
+    remaining line or its start -- never a substring, like `_line_matches`.
+    """
+    text = _JLINK_ERROR_BANNER_RE.sub('', line.strip(), count=1)
+    return (text in _FLASH_PROGRAMMING_FAILURE_LINES
+            or text.startswith(_FLASH_PROGRAMMING_FAILURE_PREFIXES))
+
+
 def _flash_failure_line(output):
     """Return the programmer's failure line from flash output, else None.
 
-    `output` is the joined /debug/flash text. Returns None whenever the output
-    shows the device was actually programmed, even if a later line reports a
-    connect failure -- that is the post-flash gdbserver, not the flash.
+    `output` is the joined /debug/flash text. A programming failure (a failed
+    RAMCode download, say) is returned whatever else the output says. Short of
+    that, returns None whenever the output shows the session reached
+    programming, even if a later line reports a connect failure -- that is the
+    post-flash gdbserver, not the flash.
     """
     lines = (output or '').splitlines()
+    for line in lines:
+        if _line_matches_programming_failure(line):
+            return line.strip()
     if any(_line_matches(line, _FLASH_PROGRAMMED_SIGNATURES) for line in lines):
         return None
     for line in lines:
         if _line_matches(line, _CONNECT_FAILURE_SIGNATURES):
             return line.strip()
     return None
+
+
+def _flash_verdict(result, output):
+    """Return why /debug/flash programmed nothing, else None.
+
+    A box that reports `programmed` decided that from the programming session
+    alone, which is more precise than reading the whole log: it knows where
+    programming ends and the post-flash reconnect begins. Older boxes do not
+    send it, so their text is read instead.
+    """
+    if isinstance(result, dict) and 'programmed' in result:
+        if result['programmed']:
+            return None
+        return result.get('error') or 'the box reported that nothing was programmed'
+    return _flash_failure_line(output)
 
 
 def _erase_failure_line(output):
@@ -1489,9 +1560,10 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, no_erase, erase,
         if output:
             click.echo(output)
 
-        # /debug/flash answers 200 even when the probe never attached, so the
-        # returned text is the only evidence that anything was programmed.
-        failure = _flash_failure_line(output)
+        # /debug/flash answers 200 even when nothing was programmed. A newer
+        # box says so in `programmed` / `error`; for an older one the returned
+        # text is the only evidence.
+        failure = _flash_verdict(result, output)
         if failure:
             click.secho(f"\nFlash failed: {failure}", fg='red', err=True)
             click.secho(

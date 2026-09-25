@@ -127,6 +127,15 @@ class TempBinMixin:
         return f.name
 
 
+def _is_verify_command(command):
+    """A command the uncached verify issues. The DA1469x reset-record clear
+    before loadfile (a `w4` to RESET_STAT_REG) is not one: it runs on every
+    DA1469x flash, flag or no flag."""
+    if command == f'w4 {hex(jlink.DA1469X_RESET_STAT_REG)} 0':
+        return False
+    return command.startswith('w4 ') or command.startswith('mem8 ')
+
+
 class FlagOffRegressionTests(TempBinMixin, unittest.TestCase):
     """Flag unset/off and non-DA1469x devices must be byte-identical to the
     pre-feature path, with no verify commands issued."""
@@ -142,7 +151,7 @@ class FlagOffRegressionTests(TempBinMixin, unittest.TestCase):
                 yields, commands = run_flash('DA14695', responder, binfiles=[(path, XIP)])
                 self.assertEqual(yields, expected)
                 self.assertFalse([c for c in commands
-                                  if c.startswith('w4 ') or c.startswith('mem8 ')])
+                                  if _is_verify_command(c)])
 
     def test_non_da1469_device_ignores_flag(self):
         data = b'\xAA' * 64
@@ -154,7 +163,7 @@ class FlagOffRegressionTests(TempBinMixin, unittest.TestCase):
         # No DA1469x gate at all: no rnh/h, no verify commands.
         self.assertEqual(yields, ['CONNECT-OUT', 'LOADFILE-OK\r\nDone.\r'])
         self.assertFalse([c for c in commands
-                          if c.startswith('w4 ') or c.startswith('mem8 ')])
+                          if _is_verify_command(c)])
 
 
 class GeneratorParityTests(TempBinMixin, unittest.TestCase):
@@ -254,7 +263,7 @@ class MismatchAndInconclusiveTests(TempBinMixin, unittest.TestCase):
         self.assertNotIn('verification failed', '\n'.join(yields).lower())
         # File read precedes the flush: nothing was issued.
         self.assertFalse([c for c in commands
-                          if c.startswith('w4 ') or c.startswith('mem8 ')])
+                          if _is_verify_command(c)])
 
     def test_short_read_inconclusive_preserves_failure_line(self):
         data = b'\x11' * 64

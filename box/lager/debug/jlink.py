@@ -50,6 +50,11 @@ _DA1469X_QSPI_UNCACHED_OFFSET = 0x20000000
 # DA1469x CACHE_CTRL1_REG: writing 1 sets the cache-flush field, so subsequent
 # cached fetches refill from QSPI (datasheet: CACHE_CTRL1_REG).
 _DA1469X_CACHE_CTRL1_REG = 0x100C0000
+# CRG_TOP RESET_STAT_REG: which reset(s) happened since it was last cleared.
+# Bits: 0 POR, 1 HW (nRESET), 2 SW, 3 SYS watchdog, 4 SWD HW reset, 5 CMAC
+# watchdog. Written 0 before loadfile, so a bit read after a failed flash
+# names a reset that happened DURING programming.
+DA1469X_RESET_STAT_REG = 0x500000BC
 # mem8 read-back chunk for the uncached verify: ~256 Commander output lines per
 # command — big enough to amortise REPL round-trips, small enough to stay well
 # inside pexpect/replwrap buffering.
@@ -620,6 +625,9 @@ class JLink:
                     yield jl.run_command('rnh')
                     time.sleep(0.1)
                     yield jl.run_command('h')
+                # Start the reset record from here, so a failed flash can tell
+                # a reset during programming from the one `rnh` just did.
+                jl.run_command(f'w4 {hex(DA1469X_RESET_STAT_REG)} 0')
                 # Opt-in cache-coherent post-program verify (default OFF; an
                 # empty value counts as off, unlike the default-on flag above).
                 uncached = os.environ.get('LAGER_DA1469_UNCACHED_VERIFY', '0').strip().lower()
