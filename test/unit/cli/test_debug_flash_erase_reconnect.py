@@ -534,11 +534,31 @@ class TestFlashVerdictFollowsTheProgrammer:
         """Older boxes return an empty body, and backends we have not
         characterised print something else entirely. Neither may start failing
         on an upgrade, so anything unmatched stays a success."""
-        for output in ("", "Flashing device DA14695 via JLinkExe...\n"):
+        for output in ("", "Programming target...\nDone.\n"):
             client = FakeClient(flash_output=output)
             result = run_flash(client, ["--hex", hexfile, "--box", "mybox"])
             assert result.exit_code == 0, result.output
             assert "Flashed!" in result.output
+
+    def test_a_j_link_flash_that_never_loaded_a_file_fails(self, hexfile):
+        """What a J-Link that dropped off USB mid-session left on a DA1469x
+        bench: the box's banner, its post-flash reset, and nothing from
+        Commander. This read as "Flashed!" over an erased part."""
+        client = FakeClient(flash_output=(
+            "Flashing device da14695 via JLinkExe...\n"
+            "DA1469x: resetting target via J-Link Commander...\n"
+            "Target reset \u2014 bootrom will reinitialise and boot application\n"))
+        result = run_flash(client, ["--hex", hexfile, "--box", "mybox", "--no-erase"])
+        assert result.exit_code == 1, result.output
+        assert "Flash failed: J-Link printed no `Downloading file` line" in result.output
+        assert "Flashed!" not in result.output
+
+    def test_a_box_reporting_jlinkexe_exited_names_it(self, hexfile):
+        line = "JLinkExe exited mid-session: Connecting to J-Link via USB...FAILED"
+        client = FakeClient(flash_output="Flashing device DA14695 via JLinkExe...\n" + line + "\n")
+        result = run_flash(client, ["--hex", hexfile, "--box", "mybox"])
+        assert result.exit_code == 1, result.output
+        assert f"Flash failed: {line}" in result.output
 
     def test_verdict_applies_to_no_erase_runs_too(self, hexfile):
         client = FakeClient(flash_output=JLINK_CONNECT_FAILED)
@@ -691,14 +711,15 @@ class TestADownloadThatNeverReachedFlashIsNotSuccess:
 
     def test_no_flash_download_line_fails_the_flash(self, hexfile):
         client = FakeClient(flash_output=(
-            "Downloading file [/tmp/img.bin]...\nO.K.\n"))
+            "Downloading file [/tmp/img.bin]...\n"
+            "Unspecified error -1\n"))
         result = run_flash(client, ["--hex", hexfile, "--box", "mybox"])
         assert result.exit_code == 1, result.output
         assert ("Flash failed: J-Link printed `Downloading file` but no "
                 "`Flash download` line after it") in result.output
 
     def test_a_second_file_without_a_flash_download_fails(self):
-        output = JLINK_PROGRAMMED + "Downloading file [/tmp/second.bin]...\nO.K.\n"
+        output = JLINK_PROGRAMMED + "Downloading file [/tmp/second.bin]...\n"
         assert debug_mod._flash_failure_line(output) == debug_mod._NO_FLASH_DOWNLOAD
 
     def test_a_bank_skipped_because_it_already_matches_is_success(self, hexfile):
@@ -713,6 +734,26 @@ class TestADownloadThatNeverReachedFlashIsNotSuccess:
     def test_openocd_output_is_not_held_to_the_j_link_rule(self, hexfile):
         client = FakeClient(flash_output=OPENOCD_PROGRAMMED)
         result = run_flash(client, ["--hex", hexfile, "--box", "mybox"])
+        assert result.exit_code == 0, result.output
+
+
+class TestAnEraseJLinkNeverConfirmedIsNotSuccess:
+    """For an older box, which answers 200 whatever Commander printed."""
+
+    def test_an_erase_started_and_never_confirmed_fails(self):
+        client = FakeClient(erase_output="Erasing selected range...\n")
+        result = run_erase(client, ["--box", "mybox", "--yes"])
+        assert result.exit_code == 1, result.output
+        assert "J-Link printed no `Erasing done.` line" in result.output
+        assert "Erase complete!" not in result.output
+
+    @pytest.mark.parametrize("confirmation", [
+        "Erasing done.",
+        "Flash sectors within Range [0x16000000 - 0x160FFFFF] deleted.",
+    ])
+    def test_a_confirmed_erase_passes(self, confirmation):
+        client = FakeClient(erase_output=f"Erasing selected range...\n{confirmation}\n")
+        result = run_erase(client, ["--box", "mybox", "--yes"])
         assert result.exit_code == 0, result.output
 
 
