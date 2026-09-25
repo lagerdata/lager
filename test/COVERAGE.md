@@ -47,12 +47,12 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` | 2709 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 3173 |
+| `unit (box)` | `test/unit/box/` | 3176 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 380 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 82 (+1 skipped) |
-| | **Total gated** | **6538** |
+| | **Total gated** | **6541** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -516,7 +516,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_host_ops.py` | apt_install and sysctl_apply SSH execution branches. Also `udev_apply`, the box-config sudoers rules and bootstrap command, the v2 marker pin, username validation and the bootstrap texts |
 | `test_hub_lock_fail_fast.py` | The same treatment on the USB hub path: bounded waits on the module-level and per-hub locks (`hub-busy`), a per-operation deadline (`hub-op-timeout`), the restart that follows, and the state sweep's per-hub sub-budget (clamp + `hub-skipped`) |
 | `test_jlink_commander_use_poll.py` | JLinkExe spawned with use_poll=True to avoid fd >= 1024 select() failure |
-| `test_jlink_commander_exit.py` | `commander()` when JLinkExe goes away: exiting before its prompt raises `JLinkCommanderExited` naming what it printed last, instead of contextlib's `generator didn't yield`; an EOF from a command mid-session raises instead of being swallowed at the `yield`, which had made a flash whose probe dropped off USB return no output and no error; the EOF `q` causes is still absorbed, and other errors in the body propagate |
+| `test_jlink_commander_exit.py` | `commander()` when JLinkExe goes away: exiting before its prompt raises `JLinkCommanderExited` naming what it printed last, instead of contextlib's `generator didn't yield`; an EOF from a command mid-session raises instead of being swallowed at the `yield`, which had made a flash whose probe dropped off USB return no output and no error; the EOF `q` causes is still absorbed, and other errors in the body propagate; the message names JLinkExe's last meaningful line, not its USB resync banner |
 | `test_jlink_erase_range.py` | The exact Commander sequence `JLink.chip_erase` issues per range source: a DA1469x keeps its bank prelude and never runs a bare `erase`, a request beats the `LAGER_ERASE_RANGE` script line and the 1 MiB default, another part runs `erase <start> <end>` for a request and the full-chip `erase` otherwise, and the `erase` command's timeout scales with the range |
 | `test_jlink_error_masking.py` | Three debug-path defects that masked on-bench J-Link failures |
 | `test_jlink_memrd_reset_halt.py` | DA1469x reset+halt-before-read gating, regression guard, env-var opt-out |

@@ -335,7 +335,7 @@ _ERASE_DONE_RE = re.compile(
     r'^\s*(?:Erasing done\.|Mass erase done\.|Flash sectors within Range .* deleted\.)',
     re.IGNORECASE | re.MULTILINE,
 )
-NO_ERASE_DONE = ('J-Link printed no `Erasing done.` line, so nothing was erased')
+NO_ERASE_DONE = 'J-Link printed no `Erasing done.` line'
 
 
 def _erase_failure(output_chunks):
