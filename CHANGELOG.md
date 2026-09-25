@@ -42,10 +42,12 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   server. The box now holds one lock per probe, across threads and processes, for every
   J-Link operation and for the whole of each `/debug/connect`, `disconnect`, `reset`,
   `flash`, `erase` and `memrd` request. A second operation waits for the first and
-  gives up with `J-Link probe <serial> is busy` (HTTP 503) after
+  gives up with `Debug probe <serial> is busy` (HTTP 503) after
   `LAGER_PROBE_LOCK_TIMEOUT_S` seconds (default 300). The CLI now allows 90 s more for
   `connect`, `disconnect`, `reset` and `memrd`, so a command queued behind a flash is
-  not reported as timed out while the box goes on to serve it.
+  not reported as timed out while the box goes on to serve it. The lock orders requests,
+  not whole commands: a `gdbserver` started during a flash runs between the flash's own
+  requests, and the flash's later steps may replace that server.
 - **A failed J-Link flash says what else was going on.** The output lists every other
   J-Link process seen on the probe during the flash. It matches serials as numbers, so
   `50115930` and `000050115930` are the same probe, and includes clients that name no

@@ -115,7 +115,7 @@ class ProbeLockTests(_Case):
                 with probe_lock('111', 'connect'):
                     pass
         message = str(caught.exception)
-        self.assertIn('J-Link probe 111 is busy with flash (pid', message)
+        self.assertIn('Debug probe 111 is busy with flash (pid', message)
         self.assertIn('connect gave up after 0.3 s', message)
 
     def test_a_thread_that_waits_too_long_gives_up(self):
