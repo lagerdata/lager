@@ -12,6 +12,28 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Fixed
+
+- **`lager debug <net> flash` fails when J-Link programmed nothing.** J-Link prints
+  `Downloading file` before it downloads the RAMCode it programs flash with. When that
+  download failed (`Failed to download RAMCode!`, `Verification of RAMCode failed`),
+  the command still printed `Flashed!` and exited 0, and the part was left erased. It
+  now prints `Flash failed:` with the J-Link line and exits 1. On a DA1469x the box no
+  longer runs its post-flash reset after a failed program. `/debug/flash` now reports
+  `programmed` and `error`, which the CLI uses when present; older boxes are still
+  judged from their output.
+- **Two J-Link operations on one probe no longer run at the same time.** J-Link lets
+  several clients open one probe, and a `connect`, `memrd`, `reset` or a `lager python`
+  script that ran during a flash could corrupt its RAMCode download. The box now holds
+  one lock per probe across threads and processes for every J-Link operation. A second
+  operation waits for the first and gives up with `J-Link probe <serial> is busy` after
+  `LAGER_PROBE_LOCK_TIMEOUT_S` seconds (default 300).
+- **A failed J-Link flash says what else was going on.** The output lists any other
+  J-Link process still using the probe. On a DA1469x it also reports whether the target
+  reset during programming, and which reset (for example `SYS watchdog`). To tell that
+  reset apart from the one before programming, the box clears the DA1469x
+  `RESET_STAT_REG` after its pre-flash halt.
+
 ## [0.50.2] - 2026-09-24
 
 ### Added

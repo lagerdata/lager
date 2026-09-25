@@ -130,7 +130,9 @@ Flash firmware to device.
 - `run_after`: Reset and run after flashing (optional)
 - `mcu`: MCU identifier (optional)
 
-**Returns:** Generator yielding output
+**Returns:** Generator yielding output. When it finishes, its return value
+(`StopIteration.value`) is the J-Link line showing nothing was programmed, or
+`None`. A plain `for` loop ignores it.
 
 #### `erase_flash(start_addr, length, mcu=None)`
 Erase flash memory.

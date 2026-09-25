@@ -42,6 +42,7 @@ from lager.debug.api import (
     _attach_failed,
 )
 from lager.debug.target_probe import target_attached
+from lager.debug.probe_lock import probe_lock
 from lager.debug.erase_bounds import bounds_dict, validate_bounds
 from lager.debug.jlink import JLink
 from lager.debug.openocd_flash import resolve_erase_range as openocd_erase_range
@@ -1047,7 +1048,8 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                 logger.error(f"Failed to create JLink from cmdline: {e}")
                 raise JLinkNotRunning()
 
-            reset_output = list(jlink.reset(halt))
+            with probe_lock(serial, 'reset'):
+                reset_output = list(jlink.reset(halt))
             logger.info(f"[RESET] J-Link reset complete, halt={halt}")
 
             self.send_json_response(200, {
@@ -1176,6 +1178,9 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                         'status': 'flash_complete',
                         'output': flash_output,
                         'backend': BACKEND_OPENOCD,
+                        # A failed OpenOCD flash raises and answers 500.
+                        'programmed': True,
+                        'error': None,
                     })
                     return
                 finally:
@@ -1271,12 +1276,22 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                 # Collect all output from the flash_device generator
                 flash_output = []
                 files = (hexfiles, binfiles, elffiles)
-                for output in flash_device(
+                flash_steps = iter(flash_device(
                     files, run_after=True, mcu=device_type, use_gdb=(not verbose),
                     script_file=script_path, serial=serial,
                     gdb_port=gdb_port, rtt_telnet_port=rtt_telnet_port,
                     swo_port=swo_port, telnet_port=telnet_port,
-                ):
+                ))
+                # Driven by hand, not with `for`, to keep the generator's
+                # return value: the line showing nothing was programmed, or
+                # None. The endpoint answers 200 either way.
+                failure = None
+                while True:
+                    try:
+                        output = next(flash_steps)
+                    except StopIteration as done:
+                        failure = done.value
+                        break
                     logger.info(f"[FLASH] {output}")  # Log flash progress
                     flash_output.append(output)  # Collect for client
 
@@ -1287,9 +1302,13 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                     with connections_lock:
                         active_connections.pop(connection_id, None)
 
+                # `programmed` / `error` let the CLI stop reading the log for
+                # a verdict. Older CLIs ignore them and still read the log.
                 self.send_json_response(200, {
                     'status': 'flash_complete',
                     'output': flash_output,  # Include verbose output
+                    'programmed': failure is None,
+                    'error': failure,
                 })
 
             finally:
@@ -1514,9 +1533,10 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             # Read memory using J-Link Commander (bypasses GDB entirely).
             # --no-reset maps to reset_halt=False so the DA1469x reset+halt is
             # skipped; None lets jlink honour LAGER_DA1469_MEMRD_RESET_HALT.
-            memory_data = jlink.read_memory(
-                start_addr, length, reset_halt=(False if no_reset else None)
-            )
+            with probe_lock(serial, 'memory read'):
+                memory_data = jlink.read_memory(
+                    start_addr, length, reset_halt=(False if no_reset else None)
+                )
 
             if not memory_data:
                 self.send_error_response(500, "Memory read returned no data")
