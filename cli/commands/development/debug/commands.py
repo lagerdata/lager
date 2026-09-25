@@ -1264,7 +1264,7 @@ _NO_FLASH_DOWNLOAD = ('J-Link printed `Downloading file` but no `Flash download`
                       'line after it: nothing was programmed')
 _NO_LOADFILE = ('J-Link printed no `Downloading file` line: `loadfile` never ran, '
                 'so nothing was programmed')
-_NO_ERASE_DONE = 'J-Link printed no `Erasing done.` line, so nothing was erased'
+_NO_ERASE_DONE = 'J-Link printed no `Erasing done.` line'
 
 # The box's first line of every J-Link flash.
 _JLINK_FLASH_BANNER = ' via JLinkExe...'

@@ -24,6 +24,14 @@ from typing import Dict, Any, Optional
 from pathlib import Path
 
 
+
+# How long a probe request may wait on the box behind another operation on the
+# same probe, on top of its own time. The box runs one J-Link operation per
+# probe at a time and queues the rest; a request that waits behind a flash
+# (about 20 s on J-Link, 40 s through the OpenOCD loader) used to hit its own
+# 10-30 s timeout here while the box went on to serve it.
+PROBE_QUEUE_S = 90
+
 class DebugServiceClient:
     """Client for interacting with lager-debug-service."""
 
@@ -171,7 +179,8 @@ class DebugServiceClient:
         if openocd_config:
             data['openocd_config'] = openocd_config
 
-        return self._request('POST', '/debug/connect', json=data, timeout=30).json()
+        return self._request('POST', '/debug/connect', json=data,
+                             timeout=30 + PROBE_QUEUE_S).json()
 
     def disconnect(self, net: Dict[str, Any], keep_jlink_running: bool = False) -> Dict[str, Any]:
         """
@@ -186,7 +195,8 @@ class DebugServiceClient:
             'keep_jlink_running': keep_jlink_running
         }
 
-        return self._request('POST', '/debug/disconnect', json=data, timeout=10).json()
+        return self._request('POST', '/debug/disconnect', json=data,
+                             timeout=10 + PROBE_QUEUE_S).json()
 
     def reset(self, net: Dict[str, Any], halt: bool = False) -> Dict[str, Any]:
         """Reset target device."""
@@ -195,7 +205,8 @@ class DebugServiceClient:
             'halt': halt
         }
 
-        return self._request('POST', '/debug/reset', json=data, timeout=10).json()
+        return self._request('POST', '/debug/reset', json=data,
+                             timeout=10 + PROBE_QUEUE_S).json()
 
     def flash(self, firmware_file: Path, file_type: str = 'hex',
               address: Optional[int] = None, verbose: bool = False, net: Optional[Dict[str, Any]] = None,
@@ -283,7 +294,7 @@ class DebugServiceClient:
         result = self._request(
             'POST', '/debug/memrd',
             json=data,
-            timeout=30,  # Increased timeout for GDB memory reads
+            timeout=30 + PROBE_QUEUE_S,  # Increased timeout for GDB memory reads
         ).json()
         hex_data = result['data']
         return bytes.fromhex(hex_data)

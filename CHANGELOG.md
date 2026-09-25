@@ -43,7 +43,9 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   J-Link operation and for the whole of each `/debug/connect`, `disconnect`, `reset`,
   `flash`, `erase` and `memrd` request. A second operation waits for the first and
   gives up with `J-Link probe <serial> is busy` (HTTP 503) after
-  `LAGER_PROBE_LOCK_TIMEOUT_S` seconds (default 300).
+  `LAGER_PROBE_LOCK_TIMEOUT_S` seconds (default 300). The CLI now allows 90 s more for
+  `connect`, `disconnect`, `reset` and `memrd`, so a command queued behind a flash is
+  not reported as timed out while the box goes on to serve it.
 - **A failed J-Link flash says what else was going on.** The output lists every other
   J-Link process seen on the probe during the flash. It matches serials as numbers, so
   `50115930` and `000050115930` are the same probe, and includes clients that name no

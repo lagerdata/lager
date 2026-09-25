@@ -78,6 +78,27 @@ class CommanderExitTests(unittest.TestCase):
         self.assertEqual([c.args[0] for c in repl.run_command.call_args_list],
                          ['connect', 'q'])
 
+    def test_the_message_names_the_last_meaningful_line(self):
+        """Not JLinkExe's USB resync banner, which it repeats while the
+        probe re-enumerates and which buried the useful line on the bench."""
+        child = mock.MagicMock()
+        child.before = ('Connecting to J-Link via USB...FAILED\r\n'
+                        '****************************\r\n'
+                        'WARNING: Out of sync , resynchronizing...\r\n'
+                        'WARNING: Out of sync , resynchronizing...\r\n')
+        self.assertEqual(jlink._last_output(child),
+                         ': Connecting to J-Link via USB...FAILED')
+
+    def test_only_noise_still_says_something(self):
+        child = mock.MagicMock()
+        child.before = 'WARNING: Out of sync , resynchronizing...\r\n'
+        self.assertIn('resynchronizing', jlink._last_output(child))
+
+    def test_nothing_printed_adds_nothing(self):
+        child = mock.MagicMock()
+        child.before = ''
+        self.assertEqual(jlink._last_output(child), '')
+
     def test_other_errors_in_the_body_still_propagate(self):
         repl = mock.MagicMock()
         with self.assertRaises(ValueError):
