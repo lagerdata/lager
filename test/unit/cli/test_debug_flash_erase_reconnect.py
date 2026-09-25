@@ -615,13 +615,105 @@ class TestAFailedProgrammingStepIsNotSuccess:
     def test_lines_that_are_not_a_programming_failure(self, line):
         assert debug_mod._flash_failure_line(JLINK_PROGRAMMED + line + "\n") is None
 
-    def test_a_verify_failure_after_downloading_is_still_success(self, hexfile):
+    def test_a_verify_failure_after_programming_is_still_success(self, hexfile):
+        """As a DA1469x bench printed it for an encrypted image body that was
+        programmed correctly."""
         client = FakeClient(flash_output=(
             "Downloading file [/tmp/img.bin]...\n"
-            "Verification failed @ address 0x16000000.\n"))
+            "J-Link: Flash download: Bank 0 @ 0x16000000: 1 range affected (131072 bytes)\n"
+            "Verification failed @ address 0x16020000.\n"))
         result = run_flash(client, ["--hex", hexfile, "--box", "mybox"])
         assert result.exit_code == 0, result.output
         assert "Flashed!" in result.output
+
+
+# A second J-Link client was driving the probe (a raw JLinkExe halting and
+# resuming the target), so this Commander session could not use it at all.
+# The session still exits normally; on a DA1469x bench the CLI printed
+# "Erase complete" (in 0.24 s) and "Flashed!", exit 0, with the image header
+# untouched. Note `Downloading file` and no `Flash download` line.
+JLINK_PROBE_UNUSABLE = """\
+Flashing device DA14695 via JLinkExe...
+Selected interface (SWD) is not supported by the connected probe.
+Downloading file [/tmp/tmpq1w2e3r4.bin]...
+Target connection not established yet but required for command.
+"""
+
+JLINK_ERASE_PROBE_UNUSABLE = """\
+Device "DA14695" selected.
+Selected interface (SWD) is not supported by the connected probe.
+Target connection not established yet but required for command.
+"""
+
+
+class TestAProbeThatCannotBeUsedIsNotSuccess:
+    """Commander refusing every command because the probe is busy with another
+    client is not a connect failure J-Link names as such, and it does not
+    stop the session -- so erase and flash both read as complete."""
+
+    def test_the_flash_fails_on_the_first_unusable_line(self, hexfile):
+        client = FakeClient(flash_output=JLINK_PROBE_UNUSABLE)
+        result = run_flash(client, ["--hex", hexfile, "--box", "mybox"])
+        assert result.exit_code == 1, result.output
+        assert ("Flash failed: Selected interface (SWD) is not supported by the "
+                "connected probe.") in result.output
+        assert "Flashed!" not in result.output
+
+    @pytest.mark.parametrize("line", [
+        "Selected interface (SWD) is not supported by the connected probe.",
+        "Target connection not established yet but required for command.",
+        "J-Link connection not established yet but required for command.",
+        "Connecting to J-Link via USB...FAILED",
+    ])
+    def test_each_unusable_line_wins_over_programmed_evidence(self, line):
+        assert debug_mod._flash_failure_line(JLINK_PROGRAMMED + line + "\n") == line
+
+    def test_the_erase_fails_too(self):
+        client = FakeClient(erase_output=JLINK_ERASE_PROBE_UNUSABLE)
+        result = run_erase(client, ["--box", "mybox", "--yes"])
+        assert result.exit_code == 1, result.output
+        assert "Erase complete!" not in result.output
+        assert "Selected interface (SWD) is not supported" in result.output
+
+    def test_the_flash_pre_erase_fails_too(self, hexfile):
+        client = FakeClient(erase_output=JLINK_ERASE_PROBE_UNUSABLE,
+                            flash_output=JLINK_PROGRAMMED)
+        result = run_flash(client, ["--hex", hexfile, "--box", "mybox"])
+        assert result.exit_code == 1, result.output
+        assert "Flash erase failed" in result.output
+        assert "flash" not in client.calls
+
+
+class TestADownloadThatNeverReachedFlashIsNotSuccess:
+    """J-Link prints `J-Link: Flash download: Bank ...` for every bank it
+    touches, a skipped one included. `Downloading file` with none after it
+    means `loadfile` never reached flash, whatever else was printed."""
+
+    def test_no_flash_download_line_fails_the_flash(self, hexfile):
+        client = FakeClient(flash_output=(
+            "Downloading file [/tmp/img.bin]...\nO.K.\n"))
+        result = run_flash(client, ["--hex", hexfile, "--box", "mybox"])
+        assert result.exit_code == 1, result.output
+        assert ("Flash failed: J-Link printed `Downloading file` but no "
+                "`Flash download` line after it") in result.output
+
+    def test_a_second_file_without_a_flash_download_fails(self):
+        output = JLINK_PROGRAMMED + "Downloading file [/tmp/second.bin]...\nO.K.\n"
+        assert debug_mod._flash_failure_line(output) == debug_mod._NO_FLASH_DOWNLOAD
+
+    def test_a_bank_skipped_because_it_already_matches_is_success(self, hexfile):
+        client = FakeClient(flash_output=(
+            "Downloading file [/tmp/img.bin]...\n"
+            "J-Link: Flash download: Bank 0 @ 0x16000000: Skipped. Contents already match\n"
+            "O.K.\n"))
+        result = run_flash(client, ["--hex", hexfile, "--box", "mybox"])
+        assert result.exit_code == 0, result.output
+        assert "Flashed!" in result.output
+
+    def test_openocd_output_is_not_held_to_the_j_link_rule(self, hexfile):
+        client = FakeClient(flash_output=OPENOCD_PROGRAMMED)
+        result = run_flash(client, ["--hex", hexfile, "--box", "mybox"])
+        assert result.exit_code == 0, result.output
 
 
 class TestTheBoxVerdictIsUsedWhenPresent:

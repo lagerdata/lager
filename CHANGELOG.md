@@ -22,11 +22,20 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   longer runs its post-flash reset after a failed program. `/debug/flash` now reports
   `programmed` and `error`, which the CLI uses when present; older boxes are still
   judged from their output.
+- **`erase` and `flash` fail when J-Link could not use the probe.** With a second
+  J-Link client on the probe, Commander answers `Selected interface (SWD) is not
+  supported by the connected probe.` or `Target connection not established yet but
+  required for command.` and exits normally; `lager` printed `Erase complete` and
+  `Flashed!` with nothing erased or written. Both now fail on those lines. A flash also
+  fails when J-Link printed `Downloading file` but no `Flash download` line after it,
+  since J-Link prints one for every bank it touches, an already-matching one included.
 - **Two J-Link operations on one probe no longer run at the same time.** J-Link lets
   several clients open one probe, and a `connect`, `memrd`, `reset` or a `lager python`
-  script that ran during a flash could corrupt its RAMCode download. The box now holds
-  one lock per probe across threads and processes for every J-Link operation. A second
-  operation waits for the first and gives up with `J-Link probe <serial> is busy` after
+  script that ran during a flash could corrupt its RAMCode download or stop its GDB
+  server. The box now holds one lock per probe, across threads and processes, for every
+  J-Link operation and for the whole of each `/debug/connect`, `disconnect`, `reset`,
+  `flash`, `erase` and `memrd` request. A second operation waits for the first and
+  gives up with `J-Link probe <serial> is busy` (HTTP 503) after
   `LAGER_PROBE_LOCK_TIMEOUT_S` seconds (default 300).
 - **A failed J-Link flash says what else was going on.** The output lists any other
   J-Link process still using the probe. On a DA1469x it also reports whether the target

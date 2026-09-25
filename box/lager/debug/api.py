@@ -228,10 +228,20 @@ def _connect_failed(output_chunks):
 # completed operation as failed. Nothing is lost by excluding it: in the
 # captured failures it always appears alongside `Could not connect to target.`
 # (see test/unit/box/test_jlink_script_attach_retry.py), which is matched here.
+#
+# The last four are Commander failing to use the probe at all, seen when a
+# second J-Link client was driving the same probe: every later command is
+# refused, the session exits normally, and an erase or flash that touched
+# nothing looked complete. Kept in step with `_PROBE_UNUSABLE_SIGNATURES` in
+# cli/commands/development/debug/commands.py.
 _ATTACH_FAILED_RE = re.compile(
     r'could not connect to (?:the )?target'
     r'|cannot connect to target'
-    r'|failed to power up dap',
+    r'|failed to power up dap'
+    r'|selected interface \(\w+\) is not supported by the connected probe'
+    r'|target connection not established yet but required for command'
+    r'|j-link connection not established yet but required for command'
+    r'|connecting to j-link via usb\.\.\.failed',
     re.IGNORECASE,
 )
 
@@ -265,11 +275,22 @@ _PROGRAMMING_FAILED_RE = re.compile(
 )
 
 
+# J-Link's evidence that `loadfile` reached flash: one line per bank, including
+# `Skipped. Contents already match` when there was nothing to write.
+_FLASH_DOWNLOAD_RE = re.compile(r'^\s*(?:J-Link:\s*)?Flash download:', re.IGNORECASE)
+_DOWNLOADING_FILE_RE = re.compile(r'^\s*Downloading file\b', re.IGNORECASE)
+
+NO_FLASH_DOWNLOAD = ('J-Link printed `Downloading file` but no `Flash download` '
+                     'line after it: nothing was programmed')
+
+
 def _flash_failure(output_chunks):
     """The line showing a J-Link flash session programmed nothing, else None.
 
-    A programming failure first, then a failed attach. Pass only the flash
-    session's own Commander output: a connect error from the post-flash
+    A programming failure first, then a failed attach or an unusable probe.
+    Failing those, a `Downloading file` with no `Flash download` line before
+    the next one (or the end) means J-Link never reached flash. Pass only the
+    flash session's own Commander output: a connect error from the post-flash
     reconnect says nothing about the flash.
     """
     lines = '\n'.join(output_chunks).splitlines()
@@ -277,7 +298,15 @@ def _flash_failure(output_chunks):
         for line in lines:
             if pattern.search(line):
                 return line.strip()
-    return None
+    downloading = False
+    for line in lines:
+        if _DOWNLOADING_FILE_RE.search(line):
+            if downloading:
+                return NO_FLASH_DOWNLOAD
+            downloading = True
+        elif downloading and _FLASH_DOWNLOAD_RE.search(line):
+            downloading = False
+    return NO_FLASH_DOWNLOAD if downloading else None
 
 
 # The two causes of a failed RAMCode download seen so far, told apart after
