@@ -76,6 +76,8 @@ def _load_api():
         read_memory=lambda *a, **k: b"",
         get_controller=lambda *a, **k: None,
     )
+    # The probe lock is a pass-through here: these tests run one thread.
+    _stub(f"{PKG}.probe_lock", holds_probe=lambda operation: (lambda fn: fn))
     _stub(
         f"{PKG}.probes",
         gdb_port_for_slot=lambda slot: 2331 + 3 * slot,

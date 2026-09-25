@@ -93,11 +93,13 @@ class FakeClient:
 
     def __init__(self, connect_error=None, erase_error=None, flash_output="",
                  erase_output="Erase completed", erase_range=_NO_RANGE,
-                 health=None, health_error=None):
+                 health=None, health_error=None, flash_verdict=None):
         self.calls: list[str] = []
         self.connect_error = connect_error
         self.erase_error = erase_error
         self.flash_output = flash_output
+        # `programmed` / `error`, as a newer box adds them; None is an older box.
+        self.flash_verdict = flash_verdict
         self.erase_output = erase_output
         self.erase_range = erase_range
         self.health = HEALTH_WITH_RANGE if health is None else health
@@ -136,7 +138,10 @@ class FakeClient:
     def flash(self, firmware_file, file_type='hex', address=None, verbose=False,
               net=None, jlink_script=None, openocd_config=None):
         self.calls.append("flash")
-        return {"status": "flash_complete", "output": self.flash_output}
+        result = {"status": "flash_complete", "output": self.flash_output}
+        if self.flash_verdict is not None:
+            result.update(self.flash_verdict)
+        return result
 
     def reset(self, net, halt=False):
         self.calls.append("reset")
@@ -362,6 +367,39 @@ wrote 32768 bytes from file /tmp/fw.hex in 1.203366s (26.593 KiB/s)
 ** Programming Finished **
 """
 
+# J-Link could not download the RAMCode it programs flash with, so nothing was
+# programmed -- from a DA1469x bench, box output verbatim. `Downloading file`
+# comes FIRST: J-Link prints it before the RAMCode download, so it is no
+# evidence of programming. The reset lines at the end are the box's post-flash
+# step, which ran regardless on boxes before the fix.
+JLINK_RAMCODE_VERIFY_FAILED = """\
+Flashing device DA14695 via JLinkExe...
+Downloading file [/tmp/tmp72n8yao0.bin]...
+****** Error: Verification of RAMCode failed @ address 0x0080073C.
+Write: 0x23009306 00039309
+Read: 0x91804986 00039309
+Failed to prepare for programming.
+Failed to download RAMCode!
+Error while determining flash info (Bank @ 0x16000000)
+Unspecified error -1
+
+DA1469x: resetting target via J-Link Commander...
+Target reset — bootrom will reinitialise and boot application
+"""
+
+# The same failure reading back all zeros.
+JLINK_RAMCODE_READ_ZEROS = JLINK_RAMCODE_VERIFY_FAILED.replace(
+    "Write: 0x23009306 00039309\nRead: 0x91804986 00039309",
+    "Write: 0x401D6541 D0092E00\nRead: 0x00000000 00000000",
+)
+
+JLINK_PROGRAMMING_FAILED = """\
+Flashing device nRF5340_xxAA_APP via JLinkExe...
+'loadfile': Performing implicit reset & halt of MCU.
+Downloading file [/tmp/tmpbh7c0j19.hex]...
+Error while programming flash: Programming failed.
+"""
+
 # An erase whose probe never attached, captured from a real run: J-Link Plus
 # on an nRF5340, board unpowered, probe still enumerated. /debug/erase answered
 # HTTP 200 with status "erase_complete" for this, which is the whole defect --
@@ -508,6 +546,116 @@ class TestFlashVerdictFollowsTheProgrammer:
             client, ["--hex", hexfile, "--box", "mybox", "--no-erase"])
         assert result.exit_code == 1, result.output
         assert "Flash failed" in result.output
+
+
+class TestAFailedProgrammingStepIsNotSuccess:
+    """J-Link prints `Downloading file [...]` and only THEN downloads the
+    RAMCode it programs flash with. `Downloading file` counted as evidence of
+    programming, so a failed RAMCode download -- nothing programmed, the part
+    left erased -- printed "Flashed!" and exited 0."""
+
+    def test_a_failed_ramcode_download_fails_the_flash(self, hexfile):
+        client = FakeClient(flash_output=JLINK_RAMCODE_VERIFY_FAILED)
+        result = run_flash(client, ["--hex", hexfile, "--box", "mybox"])
+        assert result.exit_code == 1, result.output
+        assert ("Flash failed: ****** Error: Verification of RAMCode failed "
+                "@ address 0x0080073C.") in result.output
+        assert "NOT programmed" in result.output
+        assert "now erased" in result.output
+        assert "Flashed!" not in result.output
+
+    def test_the_all_zeros_read_fails_the_flash(self, hexfile):
+        assert "Read: 0x00000000 00000000" in JLINK_RAMCODE_READ_ZEROS
+        client = FakeClient(flash_output=JLINK_RAMCODE_READ_ZEROS)
+        result = run_flash(client, ["--hex", hexfile, "--box", "mybox"])
+        assert result.exit_code == 1, result.output
+        assert "Flashed!" not in result.output
+
+    def test_crlf_output_from_a_real_box_is_handled(self, hexfile):
+        client = FakeClient(
+            flash_output=JLINK_RAMCODE_VERIFY_FAILED.replace("\n", "\r\n"))
+        result = run_flash(client, ["--hex", hexfile, "--box", "mybox"])
+        assert result.exit_code == 1, result.output
+
+    def test_no_erase_runs_fail_too(self, hexfile):
+        client = FakeClient(flash_output=JLINK_RAMCODE_VERIFY_FAILED)
+        result = run_flash(
+            client, ["--hex", hexfile, "--box", "mybox", "--no-erase"])
+        assert result.exit_code == 1, result.output
+        assert "Flash failed" in result.output
+
+    def test_a_programming_failure_after_downloading_fails_the_flash(self, hexfile):
+        client = FakeClient(flash_output=JLINK_PROGRAMMING_FAILED)
+        result = run_flash(client, ["--hex", hexfile, "--box", "mybox"])
+        assert result.exit_code == 1, result.output
+        assert ("Flash failed: Error while programming flash: Programming failed."
+                in result.output)
+
+    @pytest.mark.parametrize("line", [
+        "Failed to download RAMCode!",
+        "Failed to download RAMCode.",
+        "Failed to prepare for programming.",
+        "Error while determining flash info (Bank @ 0x16000000)",
+        "ERROR: Verification of RAMCode failed @ address 0x0080073C.",
+    ])
+    def test_each_failure_line_wins_over_programmed_evidence(self, line):
+        assert debug_mod._flash_failure_line(
+            JLINK_PROGRAMMED + line + "\n") == line
+
+    @pytest.mark.parametrize("line", [
+        # RAMCode J-Link downloads for other jobs, not for programming flash.
+        "Failed to download RAMCode for indirect memory access!",
+        "Failed to download RAMCode used to read FPU registers.",
+        # A signature inside a line, not a line of its own.
+        'note: "Failed to download RAMCode!" appears in this log',
+        # Out of scope on purpose: a DA1469x cached-XIP compare reports a false
+        # one on a correctly programmed part.
+        "Verification failed @ address 0x16000000.",
+    ])
+    def test_lines_that_are_not_a_programming_failure(self, line):
+        assert debug_mod._flash_failure_line(JLINK_PROGRAMMED + line + "\n") is None
+
+    def test_a_verify_failure_after_downloading_is_still_success(self, hexfile):
+        client = FakeClient(flash_output=(
+            "Downloading file [/tmp/img.bin]...\n"
+            "Verification failed @ address 0x16000000.\n"))
+        result = run_flash(client, ["--hex", hexfile, "--box", "mybox"])
+        assert result.exit_code == 0, result.output
+        assert "Flashed!" in result.output
+
+
+class TestTheBoxVerdictIsUsedWhenPresent:
+    """A newer box judges the flash from the programming session alone and
+    says so in `programmed` / `error`; an older box sends neither, and its
+    text is read instead."""
+
+    def test_a_box_reporting_not_programmed_fails_the_flash(self, hexfile):
+        client = FakeClient(
+            flash_output=JLINK_RAMCODE_VERIFY_FAILED,
+            flash_verdict={"programmed": False, "error": "Failed to download RAMCode!"})
+        result = run_flash(client, ["--hex", hexfile, "--box", "mybox"])
+        assert result.exit_code == 1, result.output
+        assert "Flash failed: Failed to download RAMCode!" in result.output
+        assert "now erased" in result.output
+
+    def test_a_box_reporting_not_programmed_without_a_line_still_fails(self, hexfile):
+        client = FakeClient(flash_output="",
+                            flash_verdict={"programmed": False, "error": None})
+        result = run_flash(client, ["--hex", hexfile, "--box", "mybox"])
+        assert result.exit_code == 1, result.output
+        assert "Flash failed" in result.output
+
+    def test_a_box_reporting_programmed_wins_over_reconnect_noise(self, hexfile):
+        client = FakeClient(flash_output=JLINK_PROGRAMMED_THEN_RECONNECT_FAILED,
+                            flash_verdict={"programmed": True, "error": None})
+        result = run_flash(client, ["--hex", hexfile, "--box", "mybox"])
+        assert result.exit_code == 0, result.output
+        assert "Flashed!" in result.output
+
+    def test_an_older_box_is_judged_by_its_text(self, hexfile):
+        client = FakeClient(flash_output=JLINK_RAMCODE_VERIFY_FAILED)
+        result = run_flash(client, ["--hex", hexfile, "--box", "mybox"])
+        assert result.exit_code == 1, result.output
 
 
 # --------------------------------------------------------------------------- #

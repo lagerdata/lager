@@ -17,6 +17,7 @@ import tempfile
 import time
 from pathlib import Path
 from .jlink import JLink, commander
+from . import jlink as _jlink_mod
 from .mappings import (
     get_jlink_status,
     readfile,
@@ -27,6 +28,7 @@ from .process import (
 )
 from .gdbserver import get_jlink_gdbserver_status, stop_jlink_gdbserver, start_jlink_gdbserver
 from .gdb import get_arch, reset as gdb_reset, read_memory as gdb_read_memory
+from .probe_lock import holds_probe
 from . import probes as _probes
 from .probes import (
     gdb_port_for_slot,
@@ -238,6 +240,125 @@ def _attach_failed(output_chunks):
     """True if Commander output shows it never attached, strictly enough to
     fail the operation on rather than retry it."""
     return bool(_ATTACH_FAILED_RE.search('\n'.join(output_chunks)))
+
+
+# Lines J-Link Commander prints when `loadfile` programmed nothing: its flash
+# RAMCode could not be downloaded or set up. `Downloading file [...]` comes
+# BEFORE these, so it is no evidence of programming on its own.
+#
+# Kept in step with `_FLASH_PROGRAMMING_FAILURE_LINES` / `_PREFIXES` in
+# cli/commands/development/debug/commands.py: the box and the CLI must not
+# disagree about the same output. Matched per line, after J-Link's
+# `****** Error: ` banner, as the whole line or its start -- never a substring.
+# `Failed to download RAMCode` is exact-only because J-Link also prints
+# `... for indirect memory access!` and FPU variants, which are not flash
+# programming. Verify failures are deliberately absent: on a DA1469x the
+# cached-XIP compare reports a false one on a correctly programmed part.
+_PROGRAMMING_FAILED_RE = re.compile(
+    r'^[*\s]*(?:error:\s*)?'
+    r'(?:failed to download ramcode[!.]'
+    r'|failed to prepare for programming\.'
+    r'|error while programming flash: programming failed\.'
+    r'|verification of ramcode failed.*'
+    r'|error while determining flash info.*)\s*$',
+    re.IGNORECASE,
+)
+
+
+def _flash_failure(output_chunks):
+    """The line showing a J-Link flash session programmed nothing, else None.
+
+    A programming failure first, then a failed attach. Pass only the flash
+    session's own Commander output: a connect error from the post-flash
+    reconnect says nothing about the flash.
+    """
+    lines = '\n'.join(output_chunks).splitlines()
+    for pattern in (_PROGRAMMING_FAILED_RE, _ATTACH_FAILED_RE):
+        for line in lines:
+            if pattern.search(line):
+                return line.strip()
+    return None
+
+
+# The two causes of a failed RAMCode download seen so far, told apart after
+# the fact: a second J-Link client driving the same probe, or the target
+# resetting mid-download (a DA1469x SYS watchdog reads back all zeros).
+# Neither is visible in J-Link's own output, so a failed flash reports both.
+
+_DA1469X_RESET_CAUSES = (
+    (0, 'power-on'),
+    (1, 'nRESET pin'),
+    (2, 'software'),
+    (3, 'SYS watchdog'),
+    (4, 'SWD hardware reset'),
+    (5, 'CMAC watchdog'),
+)
+
+_MEM32_RE = re.compile(r'^\s*[0-9A-Fa-f]{8}\s*=\s*([0-9A-Fa-f]{8})\b', re.MULTILINE)
+
+
+def _jlink_processes(serial, proc_root='/proc'):
+    """J-Link processes on this box bound to *serial* (any, if None).
+
+    Read from /proc, so it finds clients lager did not start and does not
+    track. Returns ``'<pid> <command line>'`` strings.
+    """
+    found = []
+    try:
+        pids = [p for p in os.listdir(proc_root) if p.isdigit()]
+    except OSError:
+        return found
+    for pid in pids:
+        try:
+            with open(os.path.join(proc_root, pid, 'cmdline'), 'rb') as f:
+                argv = [a.decode(errors='replace') for a in f.read().split(b'\0') if a]
+        except OSError:
+            continue
+        if not argv or not os.path.basename(argv[0]).startswith('JLink'):
+            continue
+        cmdline = ' '.join(argv)
+        if serial and str(serial) not in cmdline:
+            continue
+        found.append(f'{pid} {cmdline}')
+    return found
+
+
+def _da1469x_reset_causes(jlink_args, script_file, serial):
+    """(RESET_STAT_REG value, cause names), or (None, reason) if unreadable."""
+    try:
+        with commander(jlink_args, script_file=script_file, serial=serial) as jl:
+            jl.run_command('connect')
+            output = jl.run_command(f'mem32 {hex(_jlink_mod.DA1469X_RESET_STAT_REG)} 1')
+    except Exception as exc:  # noqa: BLE001 -- a diagnosis must not mask the failure
+        return None, f'{type(exc).__name__}: {exc}'
+    match = _MEM32_RE.search(str(output))
+    if not match:
+        return None, 'no value in the Commander output'
+    value = int(match.group(1), 16)
+    return value, [name for bit, name in _DA1469X_RESET_CAUSES if value & (1 << bit)]
+
+
+def _flash_failure_diagnosis(device, jlink_args, script_file, serial):
+    """Lines saying what else was going on when a J-Link flash programmed nothing."""
+    lines = []
+    others = _jlink_processes(serial)
+    if others:
+        lines.append('Diagnosis: another J-Link client is using this probe, which can '
+                     'corrupt the RAMCode download. Stop it and flash again:')
+        lines.extend(f'  {proc}' for proc in others)
+    else:
+        lines.append('Diagnosis: no other J-Link client is using this probe.')
+    if _probes.is_da1469x(device):
+        value, causes = _da1469x_reset_causes(jlink_args, script_file, serial)
+        if value is None:
+            lines.append(f'Diagnosis: could not read RESET_STAT_REG ({causes}).')
+        elif causes:
+            lines.append(f'Diagnosis: the target reset during programming '
+                         f'(RESET_STAT_REG=0x{value:08X}: {", ".join(causes)}).')
+        else:
+            lines.append('Diagnosis: the target did not reset during programming '
+                         '(RESET_STAT_REG=0x00000000).')
+    return lines
 
 
 class DebugError(Exception):
@@ -464,6 +585,7 @@ def detect_and_configure_rtt(device_type=None, search_addr=0x20000000, search_si
     return result
 
 
+@holds_probe('connect')
 def connect_jlink(speed, device, transport, force=False, ignore_if_connected=False,
                   vardefs=None, attach='attach', idcode=None, serial=None,
                   gdb_port=2331, rtt_telnet_port=9090, script_file=None):
@@ -762,6 +884,7 @@ def connect(interface, speed, device, transport, **kwargs):
     return connect_jlink(speed, device, transport, **kwargs)
 
 
+@holds_probe('disconnect')
 def disconnect(mcu=None, keep_jlink_running=False, serial=None, gdb_port=2331):
     """
     Disconnect from debug target (J-Link only)
@@ -803,6 +926,7 @@ def disconnect(mcu=None, keep_jlink_running=False, serial=None, gdb_port=2331):
         return {'stop': 'ok'}
 
 
+@holds_probe('reset')
 def reset_device(halt=False, mcu=None, serial=None, gdb_port=2331, script_file=None):
     """
     Reset connected device (J-Link only)
@@ -844,6 +968,7 @@ def reset_device(halt=False, mcu=None, serial=None, gdb_port=2331, script_file=N
     raise JLinkNotRunning()
 
 
+@holds_probe('erase')
 def erase_flash(start_addr, length, mcu=None, serial=None, gdb_port=2331, script_file=None):
     """
     Erase flash memory (J-Link only)
@@ -918,6 +1043,7 @@ def jlink_erase_plan(device, script_file=None, *, start=None, length=None):
     return _jlink.resolve_erase_range(device, _resolve_script_path(script_file), start, length)
 
 
+@holds_probe('erase')
 def chip_erase(device, speed='4000', transport='SWD', mcu=None, script_file=None,
                serial=None, *, start=None, length=None):
     """
@@ -1013,6 +1139,7 @@ def chip_erase(device, speed='4000', transport='SWD', mcu=None, script_file=None
     return _lines()
 
 
+@holds_probe('flash')
 def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None, use_gdb=True,
                  script_file=None, serial=None, gdb_port=2331, rtt_telnet_port=9090,
                  swo_port=None, telnet_port=None):
@@ -1042,7 +1169,9 @@ def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None,
         telnet_port: Telnet port for the post-flash reconnect. None means ``gdb_port + 2``.
 
     Returns:
-        Generator yielding output from flash operation
+        Generator yielding output from flash operation. Its return value
+        (``StopIteration.value``) is the line showing nothing was programmed,
+        or None; a plain ``for`` loop ignores it.
     """
     from .jlink import JLink
 
@@ -1116,12 +1245,22 @@ def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None,
         # Retry failed too: keep the original output, which carries the real error.
 
     yield from flash_output
+    failure = _flash_failure(flash_output)
 
     time.sleep(1.0)  # Give JLinkExe time to fully disconnect
 
+    if failure:
+        # Before the post-flash steps below start a client of their own.
+        yield from _flash_failure_diagnosis(device, jlink_args, resolved_script, serial)
+
     is_da1469 = _probes.is_da1469x(device)
 
-    if is_da1469:
+    if is_da1469 and failure:
+        # Nothing was programmed, so there is no application to boot, and
+        # "Target reset -- bootrom will ... boot application" would read as
+        # success under a failed flash.
+        yield "DA1469x: programming failed; skipping the post-flash reset"
+    elif is_da1469:
         # DA1469x: issue a software reset via J-Link Commander so the bootrom
         # re-initialises QSPI, clocks, and cache from scratch.  This mirrors
         # what the flash_loader GDB template does (write to SYS_CTRL_REG
@@ -1165,8 +1304,11 @@ def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None,
         except Exception as e:
             yield f"Warning: Failed to reconnect GDB server: {e}"
 
+    return failure
 
 
+
+@holds_probe('memory read')
 def read_memory(address, length, mcu=None, serial=None, gdb_port=2331, script_file=None):
     """
     Read memory from target device via J-Link monitor command

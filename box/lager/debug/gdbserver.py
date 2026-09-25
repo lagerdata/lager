@@ -15,6 +15,7 @@ import time
 import logging
 
 from . import probes as _probes
+from .probe_lock import holds_probe
 from .mappings import check_process
 from .probes import (
     BINDABLE_SERIAL_RE,
@@ -242,6 +243,7 @@ def stop_jlink_gdbserver(serial=None):
         logger.error(f'Failed to stop JLinkGDBServer: {exc}')
 
 
+@holds_probe('gdbserver start')
 def start_jlink_gdbserver(device, speed='adaptive', transport='SWD', halt=False,
                           gdb_port=2331, script_file=None, serial=None,
                           rtt_telnet_port=9090, swo_port=None, telnet_port=None):
