@@ -1673,12 +1673,14 @@ else
     lager debug $NET2 disconnect --box $BOX 2>/dev/null || true
     cleanup_jlink_processes
 
+    # --no-tunnel: on a gated box gdbserver otherwise holds a localhost
+    # tunnel in the foreground and run_test never returns.
     echo "Test 16.1: Connect probe 1 ($NET) gdbserver"
-    run_test "16.1 connect probe 1 gdbserver" lager debug $NET gdbserver --box $BOX --quiet
+    run_test "16.1 connect probe 1 gdbserver" lager debug $NET gdbserver --no-tunnel --box $BOX --quiet
     sleep 1
 
     echo "Test 16.2: Connect probe 2 ($NET2) gdbserver — must NOT tear down probe 1"
-    run_test "16.2 connect probe 2 gdbserver" lager debug $NET2 gdbserver --box $BOX --quiet
+    run_test "16.2 connect probe 2 gdbserver" lager debug $NET2 gdbserver --no-tunnel --box $BOX --quiet
     sleep 1
 
     echo "Test 16.3: Both gdbserver processes are running on the box"

@@ -84,6 +84,13 @@ else
     echo "Using box name: $BOX_NAME"
 fi
 
+# Every gdbserver call passes --no-tunnel. On a box behind a gateway
+# (CI sets LAGER_GATEWAY_TOKEN) gdbserver otherwise stays in the
+# foreground serving a localhost tunnel until Ctrl-C, so the calls
+# backgrounded with & below would pile up, hold the local port, and
+# keep the CI step open until its timeout. This suite checks the
+# server on the box, not the tunnel.
+
 # Create test directory
 TEST_DIR=$(mktemp -d)
 ORIGINAL_DIR=$(pwd)
@@ -260,7 +267,7 @@ echo "Test 1.1: Valid script path in config"
 create_test_script "test_script.JLinkScript" 'int InitTarget(void) { Report("TEST SCRIPT 1.1"); return 0; }'
 echo '{"DEBUG": {"'$NET'": "./test_script.JLinkScript"}}' > .lager
 
-OUTPUT=$(lager debug $NET gdbserver --box $BOX 2>&1) &
+OUTPUT=$(lager debug $NET gdbserver --no-tunnel --box $BOX 2>&1) &
 GDB_PID=$!
 sleep 5
 
@@ -281,7 +288,7 @@ echo "Test 1.2: Missing script file in config path"
 echo '{"DEBUG": {"'$NET'": "./nonexistent_script.JLinkScript"}}' > .lager
 
 echo -n "  Checking warning for missing script... "
-OUTPUT=$(timeout 10 lager debug $NET gdbserver --box $BOX 2>&1) || true
+OUTPUT=$(timeout 10 lager debug $NET gdbserver --no-tunnel --box $BOX 2>&1) || true
 
 if echo "$OUTPUT" | grep -qi "warning\|not found\|does not exist\|Connected"; then
     track_test "pass"
@@ -298,7 +305,7 @@ echo "Test 1.3: No DEBUG section in config"
 cleanup_script_file
 echo '{"boxes": {"'$BOX'": "'$BOX_IP'"}}' > .lager
 
-OUTPUT=$(lager debug $NET gdbserver --box $BOX 2>&1) &
+OUTPUT=$(lager debug $NET gdbserver --no-tunnel --box $BOX 2>&1) &
 GDB_PID=$!
 sleep 5
 
@@ -325,7 +332,7 @@ echo "Test 1.4: Net not in DEBUG section"
 echo '{"DEBUG": {"other-net": "./test_script.JLinkScript"}}' > .lager
 
 echo -n "  Checking net without script config... "
-OUTPUT=$(timeout 10 lager debug $NET gdbserver --box $BOX 2>&1) &
+OUTPUT=$(timeout 10 lager debug $NET gdbserver --no-tunnel --box $BOX 2>&1) &
 GDB_PID=$!
 sleep 5
 
@@ -345,7 +352,7 @@ echo "Test 1.5: Empty DEBUG section"
 echo '{"DEBUG": {}}' > .lager
 
 echo -n "  Checking empty DEBUG handling... "
-OUTPUT=$(timeout 10 lager debug $NET gdbserver --box $BOX 2>&1) &
+OUTPUT=$(timeout 10 lager debug $NET gdbserver --no-tunnel --box $BOX 2>&1) &
 GDB_PID=$!
 sleep 5
 
@@ -365,7 +372,7 @@ echo "Test 1.6: Invalid JSON in config"
 echo '{"DEBUG": invalid}' > .lager
 
 echo -n "  Checking JSON parse error... "
-OUTPUT=$(lager debug $NET gdbserver --box $BOX 2>&1) || true
+OUTPUT=$(lager debug $NET gdbserver --no-tunnel --box $BOX 2>&1) || true
 
 if echo "$OUTPUT" | grep -qi "json\|parse\|error\|invalid"; then
     track_test "pass"
@@ -384,7 +391,7 @@ my-debug-net=./test_script.JLinkScript
 EOF
 
 echo -n "  Checking INI format error handling... "
-OUTPUT=$(lager debug $NET gdbserver --box $BOX 2>&1) || true
+OUTPUT=$(lager debug $NET gdbserver --no-tunnel --box $BOX 2>&1) || true
 
 if echo "$OUTPUT" | grep -qi "json\|invalid\|error"; then
     track_test "pass"
@@ -399,7 +406,7 @@ echo "Test 1.8: Mixed case section name (lowercase 'debug')"
 create_test_script "test_script.JLinkScript" 'int InitTarget(void) { Report("LOWERCASE DEBUG"); return 0; }'
 echo '{"debug": {"'$NET'": "./test_script.JLinkScript"}}' > .lager
 
-OUTPUT=$(lager debug $NET gdbserver --box $BOX 2>&1) &
+OUTPUT=$(lager debug $NET gdbserver --no-tunnel --box $BOX 2>&1) &
 GDB_PID=$!
 sleep 5
 
@@ -431,7 +438,7 @@ mkdir -p scripts
 create_test_script "scripts/device.JLinkScript" 'int InitTarget(void) { Report("RELATIVE PATH"); return 0; }'
 echo '{"DEBUG": {"'$NET'": "./scripts/device.JLinkScript"}}' > .lager
 
-OUTPUT=$(lager debug $NET gdbserver --box $BOX 2>&1) &
+OUTPUT=$(lager debug $NET gdbserver --no-tunnel --box $BOX 2>&1) &
 GDB_PID=$!
 sleep 5
 
@@ -451,7 +458,7 @@ echo "Test 2.2: Absolute path"
 create_test_script "$TEST_DIR/absolute_script.JLinkScript" 'int InitTarget(void) { Report("ABSOLUTE PATH"); return 0; }'
 echo '{"DEBUG": {"'$NET'": "'$TEST_DIR'/absolute_script.JLinkScript"}}' > .lager
 
-OUTPUT=$(lager debug $NET gdbserver --box $BOX 2>&1) &
+OUTPUT=$(lager debug $NET gdbserver --no-tunnel --box $BOX 2>&1) &
 GDB_PID=$!
 sleep 5
 
@@ -472,7 +479,7 @@ mkdir -p "my scripts"
 create_test_script "my scripts/device script.JLinkScript" 'int InitTarget(void) { Report("SPACES PATH"); return 0; }'
 echo '{"DEBUG": {"'$NET'": "./my scripts/device script.JLinkScript"}}' > .lager
 
-OUTPUT=$(lager debug $NET gdbserver --box $BOX 2>&1) &
+OUTPUT=$(lager debug $NET gdbserver --no-tunnel --box $BOX 2>&1) &
 GDB_PID=$!
 sleep 5
 
@@ -494,7 +501,7 @@ mkdir -p "scripts-v2.0"
 create_test_script "scripts-v2.0/test_device.JLinkScript" 'int InitTarget(void) { Report("SPECIAL CHARS"); return 0; }'
 echo '{"DEBUG": {"'$NET'": "./scripts-v2.0/test_device.JLinkScript"}}' > .lager
 
-OUTPUT=$(lager debug $NET gdbserver --box $BOX 2>&1) &
+OUTPUT=$(lager debug $NET gdbserver --no-tunnel --box $BOX 2>&1) &
 GDB_PID=$!
 sleep 5
 
@@ -516,7 +523,7 @@ cd subdir
 create_test_script "../parent_script.JLinkScript" 'int InitTarget(void) { Report("PARENT DIR"); return 0; }'
 echo '{"DEBUG": {"'$NET'": "../parent_script.JLinkScript"}}' > .lager
 
-OUTPUT=$(lager debug $NET gdbserver --box $BOX 2>&1) &
+OUTPUT=$(lager debug $NET gdbserver --no-tunnel --box $BOX 2>&1) &
 GDB_PID=$!
 sleep 5
 
@@ -546,7 +553,7 @@ echo "Test 3.1: Empty script file"
 touch empty_script.JLinkScript
 echo '{"DEBUG": {"'$NET'": "./empty_script.JLinkScript"}}' > .lager
 
-OUTPUT=$(lager debug $NET gdbserver --box $BOX 2>&1) &
+OUTPUT=$(lager debug $NET gdbserver --no-tunnel --box $BOX 2>&1) &
 GDB_PID=$!
 sleep 5
 
@@ -587,7 +594,7 @@ int ResetTarget(void) {
 EOF
 echo '{"DEBUG": {"'$NET'": "./full_script.JLinkScript"}}' > .lager
 
-OUTPUT=$(lager debug $NET gdbserver --box $BOX 2>&1) &
+OUTPUT=$(lager debug $NET gdbserver --no-tunnel --box $BOX 2>&1) &
 GDB_PID=$!
 sleep 5
 
@@ -612,7 +619,7 @@ EOF
 echo '{"DEBUG": {"'$NET'": "./bad_script.JLinkScript"}}' > .lager
 
 echo -n "  Checking syntax error handling... "
-OUTPUT=$(timeout 15 lager debug $NET gdbserver --box $BOX 2>&1) || true
+OUTPUT=$(timeout 15 lager debug $NET gdbserver --no-tunnel --box $BOX 2>&1) || true
 
 # Script should still be transferred - J-Link reports error
 if check_script_on_box "Test"; then
@@ -639,7 +646,7 @@ echo "Test 3.4: Large script file (stress test)"
 } > large_script.JLinkScript
 echo '{"DEBUG": {"'$NET'": "./large_script.JLinkScript"}}' > .lager
 
-OUTPUT=$(lager debug $NET gdbserver --box $BOX 2>&1) &
+OUTPUT=$(lager debug $NET gdbserver --no-tunnel --box $BOX 2>&1) &
 GDB_PID=$!
 sleep 8
 
@@ -673,7 +680,7 @@ int InitTarget(void) {
 EOF
 echo '{"DEBUG": {"'$NET'": "./unicode_script.JLinkScript"}}' > .lager
 
-OUTPUT=$(lager debug $NET gdbserver --box $BOX 2>&1) &
+OUTPUT=$(lager debug $NET gdbserver --no-tunnel --box $BOX 2>&1) &
 GDB_PID=$!
 sleep 5
 
@@ -693,7 +700,7 @@ echo "Test 3.6: Script with binary content"
 printf 'int InitTarget(void) { Report("BINARY TEST"); return 0; }\x00\x01' > binary_script.JLinkScript
 echo '{"DEBUG": {"'$NET'": "./binary_script.JLinkScript"}}' > .lager
 
-OUTPUT=$(lager debug $NET gdbserver --box $BOX 2>&1) &
+OUTPUT=$(lager debug $NET gdbserver --no-tunnel --box $BOX 2>&1) &
 GDB_PID=$!
 sleep 5
 
@@ -731,7 +738,7 @@ echo '{"DEBUG": {"'$NET'": "./ops_script.JLinkScript"}}' > .lager
 if [ -n "$HEXFILE" ] && [ -f "$HEXFILE" ]; then
     echo "Test 4.1: Flash operation with script"
 
-    lager debug $NET gdbserver --box $BOX 2>&1 &
+    lager debug $NET gdbserver --no-tunnel --box $BOX 2>&1 &
     GDB_PID=$!
     sleep 5
 
@@ -754,7 +761,7 @@ echo ""
 
 # Test 4.2: Reset Operation with Script
 echo "Test 4.2: Reset operation with script"
-lager debug $NET gdbserver --box $BOX 2>&1 &
+lager debug $NET gdbserver --no-tunnel --box $BOX 2>&1 &
 GDB_PID=$!
 sleep 5
 
@@ -773,7 +780,7 @@ echo ""
 
 # Test 4.3: Reset with Halt with Script
 echo "Test 4.3: Reset with halt with script"
-lager debug $NET gdbserver --box $BOX 2>&1 &
+lager debug $NET gdbserver --no-tunnel --box $BOX 2>&1 &
 GDB_PID=$!
 sleep 5
 
@@ -792,7 +799,7 @@ echo ""
 
 # Test 4.4: Memory Read with Script
 echo "Test 4.4: Memory read with script"
-lager debug $NET gdbserver --box $BOX 2>&1 &
+lager debug $NET gdbserver --no-tunnel --box $BOX 2>&1 &
 GDB_PID=$!
 sleep 5
 
@@ -812,7 +819,7 @@ echo ""
 
 # Test 4.5: Multiple Operations in Sequence
 echo "Test 4.5: Multiple operations in sequence"
-lager debug $NET gdbserver --box $BOX 2>&1 &
+lager debug $NET gdbserver --no-tunnel --box $BOX 2>&1 &
 GDB_PID=$!
 sleep 5
 
@@ -849,7 +856,7 @@ echo "Test 5.1: Script persists across operations"
 create_test_script "persist_script.JLinkScript" 'int InitTarget(void) { Report("PERSIST TEST"); return 0; }'
 echo '{"DEBUG": {"'$NET'": "./persist_script.JLinkScript"}}' > .lager
 
-lager debug $NET gdbserver --box $BOX 2>&1 &
+lager debug $NET gdbserver --no-tunnel --box $BOX 2>&1 &
 GDB_PID=$!
 sleep 5
 
@@ -879,7 +886,7 @@ echo "Test 5.2: New connect overwrites old script"
 create_test_script "script_v1.JLinkScript" 'int InitTarget(void) { Report("VERSION 1"); return 0; }'
 echo '{"DEBUG": {"'$NET'": "./script_v1.JLinkScript"}}' > .lager
 
-lager debug $NET gdbserver --box $BOX 2>&1 &
+lager debug $NET gdbserver --no-tunnel --box $BOX 2>&1 &
 GDB_PID=$!
 sleep 5
 
@@ -898,7 +905,7 @@ sleep 2
 create_test_script "script_v2.JLinkScript" 'int InitTarget(void) { Report("VERSION 2"); return 0; }'
 echo '{"DEBUG": {"'$NET'": "./script_v2.JLinkScript"}}' > .lager
 
-lager debug $NET gdbserver --box $BOX 2>&1 &
+lager debug $NET gdbserver --no-tunnel --box $BOX 2>&1 &
 GDB_PID=$!
 sleep 5
 
@@ -929,7 +936,7 @@ chmod 000 no_read_script.JLinkScript
 echo '{"DEBUG": {"'$NET'": "./no_read_script.JLinkScript"}}' > .lager
 
 echo -n "  Permission denied handling... "
-OUTPUT=$(timeout 10 lager debug $NET gdbserver --box $BOX 2>&1) || true
+OUTPUT=$(timeout 10 lager debug $NET gdbserver --no-tunnel --box $BOX 2>&1) || true
 
 # Should warn but potentially continue
 if echo "$OUTPUT" | grep -qi "permission\|denied\|cannot read\|warning\|Connected"; then
@@ -948,7 +955,7 @@ mkdir -p script_dir.JLinkScript
 echo '{"DEBUG": {"'$NET'": "./script_dir.JLinkScript"}}' > .lager
 
 echo -n "  Directory path handling... "
-OUTPUT=$(timeout 10 lager debug $NET gdbserver --box $BOX 2>&1) || true
+OUTPUT=$(timeout 10 lager debug $NET gdbserver --no-tunnel --box $BOX 2>&1) || true
 
 if echo "$OUTPUT" | grep -qi "directory\|not a file\|error\|warning\|Connected"; then
     track_test "pass"
@@ -966,7 +973,7 @@ echo 'int InitTarget(void) { Report("SYMLINK TEST"); return 0; }' > real_script.
 ln -sf real_script.JLinkScript link_script.JLinkScript
 echo '{"DEBUG": {"'$NET'": "./link_script.JLinkScript"}}' > .lager
 
-lager debug $NET gdbserver --box $BOX 2>&1 &
+lager debug $NET gdbserver --no-tunnel --box $BOX 2>&1 &
 GDB_PID=$!
 sleep 5
 
@@ -987,7 +994,7 @@ ln -sf nonexistent_target.JLinkScript broken_link.JLinkScript
 echo '{"DEBUG": {"'$NET'": "./broken_link.JLinkScript"}}' > .lager
 
 echo -n "  Broken symlink handling... "
-OUTPUT=$(timeout 10 lager debug $NET gdbserver --box $BOX 2>&1) || true
+OUTPUT=$(timeout 10 lager debug $NET gdbserver --no-tunnel --box $BOX 2>&1) || true
 
 if echo "$OUTPUT" | grep -qi "not found\|broken\|warning\|Connected"; then
     track_test "pass"
@@ -1016,7 +1023,7 @@ echo '{"DEBUG": {"'$NET'": "./rapid_script.JLinkScript"}}' > .lager
 echo -n "  Rapid connect/disconnect... "
 FAILED=0
 for i in 1 2 3; do
-    timeout 10 lager debug $NET gdbserver --box $BOX 2>&1 &
+    timeout 10 lager debug $NET gdbserver --no-tunnel --box $BOX 2>&1 &
     GDB_PID=$!
     sleep 3
     kill $GDB_PID 2>/dev/null || true
@@ -1037,7 +1044,7 @@ echo "Test 7.2: Config change during active session"
 create_test_script "script_a.JLinkScript" 'int InitTarget(void) { Report("SCRIPT A"); return 0; }'
 echo '{"DEBUG": {"'$NET'": "./script_a.JLinkScript"}}' > .lager
 
-lager debug $NET gdbserver --box $BOX 2>&1 &
+lager debug $NET gdbserver --no-tunnel --box $BOX 2>&1 &
 GDB_PID=$!
 sleep 5
 
@@ -1088,7 +1095,7 @@ cat > .lager << EOF
 }
 EOF
 
-lager debug $NET gdbserver --box $BOX 2>&1 &
+lager debug $NET gdbserver --no-tunnel --box $BOX 2>&1 &
 GDB_PID=$!
 sleep 5
 
@@ -1117,7 +1124,7 @@ echo -n "  Testing net without config entry... "
 # Current net is not in config, should proceed without script
 cleanup_script_file
 
-lager debug $NET gdbserver --box $BOX 2>&1 &
+lager debug $NET gdbserver --no-tunnel --box $BOX 2>&1 &
 GDB_PID=$!
 sleep 5
 
@@ -1146,7 +1153,7 @@ echo "Test 9.1: Verify script content on box"
 create_test_script "verify_script.JLinkScript" 'int InitTarget(void) { Report("VERIFY TEST"); return 0; }'
 echo '{"DEBUG": {"'$NET'": "./verify_script.JLinkScript"}}' > .lager
 
-lager debug $NET gdbserver --box $BOX 2>&1 &
+lager debug $NET gdbserver --no-tunnel --box $BOX 2>&1 &
 GDB_PID=$!
 sleep 5
 
@@ -1211,7 +1218,7 @@ echo '{"DEBUG": {"'$NET'": "./smoke_script.JLinkScript"}}' > .lager
 
 # Step 1: Connect
 echo -n "  1. Connect with script... "
-lager debug $NET gdbserver --box $BOX 2>&1 &
+lager debug $NET gdbserver --no-tunnel --box $BOX 2>&1 &
 GDB_PID=$!
 sleep 8  # Allow more time for script transfer
 if check_script_on_box "SMOKE TEST"; then
