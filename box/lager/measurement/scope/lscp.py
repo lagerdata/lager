@@ -31,6 +31,12 @@ CHANNEL_DESC_SIZE = 16
 
 FLAG_TRIGGERED = 1 << 0
 FLAG_STREAMING = 1 << 1
+# Samples are (minimum, maximum) pairs, one pair per 2 * sample_interval_ns.
+FLAG_ENVELOPE = 1 << 2
+
+# A sample that was not captured: the part of a rolling screen the stream has
+# not reached yet. No ADC produces it, every range topping out at +/-32767.
+NO_SAMPLE = -32768
 
 _HEADER = struct.Struct("<IHHQQdIIIBBH")
 _CHANNEL = struct.Struct("<BBBBffI")
@@ -75,6 +81,11 @@ class CaptureFrame:
         return bool(self.flags & FLAG_STREAMING)
 
     @property
+    def is_envelope(self) -> bool:
+        """Whether samples are (minimum, maximum) pairs, as roll mode sends."""
+        return bool(self.flags & FLAG_ENVELOPE)
+
+    @property
     def sample_rate_hz(self) -> float:
         if self.sample_interval_ns <= 0:
             return 0.0
@@ -99,13 +110,21 @@ class CaptureFrame:
         return self.samples[index * n:(index + 1) * n]
 
     def volts(self, channel) -> "np.ndarray":
-        """Channel converted to volts. Allocates, unlike :meth:`counts`."""
+        """Channel converted to volts. Allocates, unlike :meth:`counts`.
+
+        A sample that was not captured is NaN rather than the -32768 it is
+        carried as, which as a voltage would be the bottom of the range.
+        """
         index = channel if isinstance(channel, int) else self.channel_index(channel)
         if index is None or index >= len(self.channels):
             raise LscpError(f"no such channel: {channel!r}")
         descriptor = self.channels[index]
         raw = self.counts(index)
-        return raw.astype(np.float64) * descriptor.scale_v_per_count + descriptor.offset_v
+        volts = raw.astype(np.float64) * descriptor.scale_v_per_count + descriptor.offset_v
+        missing = raw == NO_SAMPLE
+        if missing.any():
+            volts[missing] = np.nan
+        return volts
 
     def time_axis(self) -> "np.ndarray":
         """Seconds relative to the trigger, so t=0 is the trigger point."""
