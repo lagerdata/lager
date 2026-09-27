@@ -1972,11 +1972,12 @@ class ScopeApp {
     return this.persist;
   }
 
-  /** Fade the persistence layer by the time since it was last drawn on. */
+  /** Fade the persistence layer by the time since it was last faded. */
   fadePersistence(seconds) {
     const layer = this.persist;
     const now = performance.now();
     const fade = render.persistenceFade(seconds, now - layer.at);
+    if (fade < render.MIN_FADE_STEP) return;
     layer.at = now;
     if (fade > 0) {
       layer.ctx.save();
