@@ -66,12 +66,14 @@ const MAX_HOLDOFF_S: f64 = 10.0;
 /// wide plot, so the trace is as detailed as the display can show.
 const ROLL_COLUMNS: usize = 2000;
 
-/// How often roll mode collects what has streamed in.
-const ROLL_POLL_INTERVAL: Duration = Duration::from_millis(10);
+/// How often roll mode collects what has streamed in. Well under a frame, so
+/// each published screen is at most this stale.
+const ROLL_POLL_INTERVAL: Duration = Duration::from_millis(4);
 
-/// Shortest interval between published roll frames: 60 a second. Each one
-/// is the whole screen, so a client that misses one loses nothing.
-const ROLL_FRAME_INTERVAL: Duration = Duration::from_millis(16);
+/// Interval between published roll frames: 120 a second, enough for a 120 Hz
+/// display, which is where an uneven scroll shows most. Each is the whole
+/// screen, so a client that takes fewer loses nothing but frames.
+const ROLL_FRAME_INTERVAL: Duration = Duration::from_nanos(8_333_333);
 
 /// A capture as the loop published it: the frame, and its LSCP encoding,
 /// made once and shared by every connection that sends it.
@@ -884,7 +886,9 @@ struct Roller {
     sink: RollSink,
     /// Pairs have arrived since the last frame was published.
     fresh: bool,
-    published_at: Option<Instant>,
+    /// When the next screen is due, on a fixed schedule so the frames are
+    /// evenly spaced whatever the poll happens to land on.
+    next_publish: Option<Instant>,
 }
 
 impl Roller {
@@ -900,7 +904,7 @@ impl Roller {
             rings,
             sink: RollSink::default(),
             fresh: false,
-            published_at: None,
+            next_publish: None,
         }
     }
 
@@ -1056,15 +1060,17 @@ fn roll_step(
     scope.poll_roll(&mut roller.sink)?;
     roller.absorb();
 
-    let due = roller
-        .published_at
-        .is_none_or(|at| at.elapsed() >= ROLL_FRAME_INTERVAL);
+    let now = Instant::now();
+    let due = roller.next_publish.is_none_or(|at| now >= at);
     if !(roller.fresh && due) {
         return Ok(());
     }
     let mut frame = roller.snapshot();
     roller.fresh = false;
-    roller.published_at = Some(Instant::now());
+    roller.next_publish = Some(match roller.next_publish {
+        Some(at) if at + ROLL_FRAME_INTERVAL >= now => at + ROLL_FRAME_INTERVAL,
+        _ => now + ROLL_FRAME_INTERVAL,
+    });
 
     state.sequence += 1;
     frame.seq = state.sequence;
