@@ -20,7 +20,47 @@ import { NO_SAMPLE } from './lscp.js';
  * covers a round trip of about two display frames; beyond that a slow link
  * lowers the frame rate rather than queueing frames that arrive stale.
  */
-export const CREDIT_WINDOW = 3;
+export const CREDIT_WINDOW = 6;
+
+/**
+ * Credit to hold so the stream keeps up across a round trip of `rttMs`.
+ *
+ * A credit spends a round trip in flight before the daemon can use it again,
+ * plus up to a display frame waiting to be returned, so this many frames at
+ * `fps` covers it with two to spare. Measured over the internet, three held
+ * a 60 Hz display to 48 frames a second; on a LAN this is the floor.
+ */
+export function creditWindow(rttMs, fps) {
+  const frameMs = 1000 / Math.max(1, fps);
+  const needed = Math.ceil((Math.max(0, rttMs) + frameMs) / frameMs) + 2;
+  return Math.min(16, Math.max(CREDIT_WINDOW, needed));
+}
+
+/** How far behind live a rolling screen is drawn, in ms. Enough to absorb
+ * the arrival jitter of a frame over a real network, so the scroll never
+ * waits on one; little enough not to read as lag. */
+export const ROLL_DELAY_MS = 60;
+
+/**
+ * The sample range to draw a rolling screen through, `nowBoxMs` being the
+ * box's clock at this moment as best the page can tell.
+ *
+ * The frame's last pair is at its capture time. Drawn as it arrived, the
+ * screen would jump by however far the next frame had moved, at whatever
+ * moment it happened to land, which is a scroll that stutters with the
+ * network. Shifting by the time elapsed since the frame was captured scrolls
+ * it continuously; a late frame shows as a sliver of unfilled screen at the
+ * right edge instead of a pause.
+ */
+export function rollWindow(total, pairIntervalMs, frameEndBoxMs, nowBoxMs) {
+  const viewEnd = nowBoxMs - ROLL_DELAY_MS;
+  const shiftPairs = (viewEnd - frameEndBoxMs) / pairIntervalMs;
+  const pairs = total / 2;
+  // Beyond half a screen something is wrong with the clocks; draw it as is.
+  const clamped = Math.max(-pairs * 0.1, Math.min(pairs * 0.5, shiftPairs));
+  const shift = Number.isFinite(clamped) ? clamped * 2 : 0;
+  return { start: shift, end: total + shift };
+}
 
 /**
  * The lowest and highest count in each pixel column of `counts[start, end)`.
