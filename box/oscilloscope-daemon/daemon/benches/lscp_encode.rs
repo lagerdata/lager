@@ -48,6 +48,7 @@ fn frame(samples_per_channel: u32, channel_count: usize) -> CaptureFrame {
         samples_per_channel,
         resolution_bits: 8,
         overflow_mask: 0,
+        screen_samples: 0,
         flags: FLAG_TRIGGERED,
         channels,
         samples,

@@ -22,6 +22,7 @@ fn main() {
         samples_per_channel: 4,
         resolution_bits: 8,
         overflow_mask: 0b10,
+        screen_samples: 0,
         flags: FLAG_TRIGGERED,
         channels: vec![
             ChannelFrame {

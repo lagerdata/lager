@@ -1550,6 +1550,7 @@ impl PicoScope2000 {
             // Every ps2000-family part is 8-bit.
             resolution_bits: 8,
             overflow_mask,
+            screen_samples: 0,
             // Whether this block triggered is the acquisition loop's call: it
             // knows the mode and whether the capture was forced, and reads
             // the answer off the samples in auto mode, where a block also

@@ -66,6 +66,14 @@ const MAX_HOLDOFF_S: f64 = 10.0;
 /// wide plot, so the trace is as detailed as the display can show.
 const ROLL_COLUMNS: usize = 2000;
 
+/// History a rolling screen carries before its left edge, at the least.
+///
+/// A page draws the screen behind live, by the lateness of the stream it has
+/// seen, so that it never scrolls past the newest data -- and a screen drawn
+/// that far behind needs that much from before the screen to fill its left
+/// edge. Without it the left 6% of a 100 ms/div screen was blank.
+const ROLL_HISTORY: Duration = Duration::from_millis(250);
+
 /// How often roll mode collects what has streamed in. Well under a frame, so
 /// each published screen is at most this stale.
 const ROLL_POLL_INTERVAL: Duration = Duration::from_millis(4);
@@ -907,6 +915,8 @@ impl Averager {
 struct Roller {
     info: RollInfo,
     time_per_div: f64,
+    /// Pairs kept before the screen: see `ROLL_HISTORY`.
+    history: usize,
     rings: Vec<VecDeque<(i16, i16)>>,
     sink: RollSink,
     /// Pairs have arrived since the last frame was published.
@@ -918,14 +928,23 @@ struct Roller {
 
 impl Roller {
     fn new(info: RollInfo, time_per_div: f64) -> Self {
+        // A quarter of a screen, or the history time if that is more, and
+        // never more than a second screen.
+        let for_time = if info.bucket_ns > 0.0 {
+            (ROLL_HISTORY.as_nanos() as f64 / info.bucket_ns).ceil() as usize
+        } else {
+            0
+        };
+        let history = for_time.max(ROLL_COLUMNS / 4).min(ROLL_COLUMNS);
         let rings = info
             .channels
             .iter()
-            .map(|_| VecDeque::with_capacity(ROLL_COLUMNS))
+            .map(|_| VecDeque::with_capacity(ROLL_COLUMNS + history))
             .collect();
         Roller {
             info,
             time_per_div,
+            history,
             rings,
             sink: RollSink::default(),
             fresh: false,
@@ -938,7 +957,7 @@ impl Roller {
         for (ring, pairs) in self.rings.iter_mut().zip(&self.sink.pairs) {
             arrived = arrived.max(pairs.len());
             for &pair in pairs {
-                if ring.len() == ROLL_COLUMNS {
+                if ring.len() == ROLL_COLUMNS + self.history {
                     ring.pop_front();
                 }
                 ring.push_back(pair);
@@ -952,14 +971,18 @@ impl Roller {
 
     /// The whole screen as one frame, newest pair at the right edge, with
     /// the part of the screen not yet streamed marked as not captured.
-    fn snapshot(&self) -> CaptureFrame {
-        let pairs_per_channel = ROLL_COLUMNS;
+    ///
+    /// With `history`, the pairs from before the screen come first, for a
+    /// page that draws behind live; without, the frame is the screen alone,
+    /// which is what a measurement or a script reads.
+    fn snapshot(&self, history: bool) -> CaptureFrame {
+        let pairs_per_channel = ROLL_COLUMNS + if history { self.history } else { 0 };
         let per_channel = pairs_per_channel * 2;
         let mut samples = Vec::with_capacity(per_channel * self.rings.len());
         for ring in &self.rings {
-            let missing = pairs_per_channel - ring.len().min(pairs_per_channel);
-            samples.extend(std::iter::repeat_n(NO_SAMPLE, missing * 2));
-            for &(low, high) in ring {
+            let kept = ring.len().min(pairs_per_channel);
+            samples.extend(std::iter::repeat_n(NO_SAMPLE, (pairs_per_channel - kept) * 2));
+            for &(low, high) in ring.range(ring.len() - kept..) {
                 samples.push(low);
                 samples.push(high);
             }
@@ -977,6 +1000,7 @@ impl Roller {
             resolution_bits: self.info.resolution_bits,
             overflow_mask: 0,
             flags: FLAG_STREAMING | FLAG_ENVELOPE,
+            screen_samples: if history { (ROLL_COLUMNS * 2) as u32 } else { 0 },
             channels: self.info.channels.clone(),
             samples,
         }
@@ -1090,7 +1114,8 @@ fn roll_step(
     if !(roller.fresh && due) {
         return Ok(());
     }
-    let mut frame = roller.snapshot();
+    let mut frame = roller.snapshot(true);
+    let mut screen = roller.snapshot(false);
     roller.fresh = false;
     roller.next_publish = Some(match roller.next_publish {
         Some(at) if at + ROLL_FRAME_INTERVAL >= now => at + ROLL_FRAME_INTERVAL,
@@ -1099,8 +1124,10 @@ fn roll_step(
 
     state.sequence += 1;
     frame.seq = state.sequence;
+    screen.seq = state.sequence;
+    screen.capture_mono_ns = frame.capture_mono_ns;
     let frame = Arc::new(frame);
-    state.last_frame = Some(frame.clone());
+    state.last_frame = Some(Arc::new(screen));
     state.captured_since_arm = true;
     capture_count.fetch_add(1, Ordering::Relaxed);
     let _ = captures.send(Published::new(frame));
@@ -1543,6 +1570,7 @@ mod tests {
                 samples_per_channel: 2,
                 resolution_bits: 8,
                 overflow_mask: 0,
+                screen_samples: 0,
                 flags: 0,
                 channels: vec![ChannelFrame {
                     channel: ChannelId::Alphabetic('A'),
@@ -1755,6 +1783,7 @@ mod tests {
             samples_per_channel: 2,
             resolution_bits: 8,
             overflow_mask: 0,
+            screen_samples: 0,
             flags: 0,
             channels: vec![ChannelFrame {
                 channel: ChannelId::Alphabetic('A'),
@@ -2159,6 +2188,7 @@ mod tests {
             samples_per_channel: len as u32,
             resolution_bits: 8,
             overflow_mask: 0,
+            screen_samples: 0,
             flags: FLAG_TRIGGERED,
             channels: vec![ChannelFrame {
                 channel: ChannelId::Alphabetic('A'),
@@ -2397,9 +2427,10 @@ mod tests {
         roller.sink.pairs = vec![vec![(-5, 5), (-6, 6)]];
         assert_eq!(roller.absorb(), 2);
 
-        let frame = roller.snapshot();
+        let frame = roller.snapshot(false);
         assert!(frame.is_envelope());
         assert_eq!(frame.samples_per_channel as usize, ROLL_COLUMNS * 2);
+        assert_eq!(frame.screen_samples, 0, "a screen alone is all screen");
         let tail = &frame.samples[frame.samples.len() - 4..];
         assert_eq!(tail, &[-5, 5, -6, 6], "newest pairs sit at the right edge");
         assert!(frame.samples[..frame.samples.len() - 4].iter().all(|&s| s == NO_SAMPLE));
@@ -2413,11 +2444,40 @@ mod tests {
         let pairs: Vec<(i16, i16)> = (0..ROLL_COLUMNS as i16 + 10).map(|i| (i, i)).collect();
         roller.sink.pairs = vec![pairs.clone(), pairs];
         roller.absorb();
-        let frame = roller.snapshot();
+        let frame = roller.snapshot(false);
         let per_channel = ROLL_COLUMNS * 2;
         assert_eq!(frame.samples.len(), per_channel * 2);
         assert_eq!(frame.samples[0], 10, "the oldest ten pairs scrolled off");
         assert_eq!(frame.samples[per_channel - 1], ROLL_COLUMNS as i16 + 9);
+    }
+
+    #[test]
+    fn a_streamed_screen_carries_history_before_its_left_edge() {
+        // 1 us pairs: 250 ms of history is more than a second screen, so a
+        // second screen is what is kept.
+        let mut roller = Roller::new(roll_info(1), 0.05);
+        assert_eq!(roller.history, ROLL_COLUMNS);
+        let total = ROLL_COLUMNS * 3;
+        let pairs: Vec<(i16, i16)> = (0..total as i16).map(|i| (i, i)).collect();
+        roller.sink.pairs = vec![pairs];
+        roller.absorb();
+
+        let streamed = roller.snapshot(true);
+        assert_eq!(streamed.samples_per_channel as usize, (ROLL_COLUMNS + roller.history) * 2);
+        assert_eq!(streamed.screen_samples as usize, ROLL_COLUMNS * 2);
+        assert_eq!(*streamed.samples.last().unwrap(), total as i16 - 1);
+
+        let screen = roller.snapshot(false);
+        assert_eq!(screen.samples[0], (total - ROLL_COLUMNS) as i16,
+                   "the screen alone starts where the streamed screen's history ends");
+    }
+
+    #[test]
+    fn history_is_a_quarter_screen_at_the_least() {
+        let mut info = roll_info(1);
+        // 1 s/div: a 10 s screen of 5 ms pairs, where 250 ms is 50 pairs.
+        info.bucket_ns = 1.0 * 10.0 * 1e9 / ROLL_COLUMNS as f64;
+        assert_eq!(Roller::new(info, 1.0).history, ROLL_COLUMNS / 4);
     }
 
     #[test]

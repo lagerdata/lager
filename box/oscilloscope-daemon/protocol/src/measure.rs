@@ -391,6 +391,7 @@ mod tests {
             samples_per_channel: counts.len() as u32,
             resolution_bits: 16,
             overflow_mask: 0,
+            screen_samples: 0,
             flags: 0,
             channels: vec![ChannelFrame {
                 channel: ChannelId::Alphabetic('A'),

@@ -368,6 +368,7 @@ class ScopeApp {
     // rolling screen can be scrolled by how long ago it was captured.
     this.clockOffsets = [];
     this.clockOffset = null;
+    this.resetRollDelay();
 
     this.console = new Console(el('console-output'));
     this.canvas = el('scope-canvas');
@@ -1279,6 +1280,7 @@ class ScopeApp {
       this.pendingBuffer = null;
       this.clockOffsets = [];
       this.clockOffset = null;
+      this.resetRollDelay();
       this.streamFps = Math.round(Math.min(120, Math.max(30, this.refreshHz)));
       this.subscribedAt = performance.now();
       socket.send(JSON.stringify({
@@ -1374,6 +1376,46 @@ class ScopeApp {
     this.clockOffsets.push(offset);
     if (this.clockOffsets.length > 240) this.clockOffsets.shift();
     this.clockOffset = Math.min(...this.clockOffsets);
+
+    if (!frame.streaming) {
+      this.rollLastEnd = null;
+      return;
+    }
+    // How stale the screen on display had become by the time this one came:
+    // the delay that would have kept its right edge on arrived samples. The
+    // worst of the last few seconds, with a margin, is the delay to draw at.
+    const end = frame.captureMonoNs / 1e6;
+    if (this.rollLastEnd !== null) {
+      this.rollNeeds.push([arrival, arrival - this.clockOffset - this.rollLastEnd]);
+      while (arrival - this.rollNeeds[0][0] > 3000) this.rollNeeds.shift();
+      let worst = 0;
+      for (const [, need] of this.rollNeeds) if (need > worst) worst = need;
+      this.rollTarget = worst + render.ROLL_DELAY_MARGIN_MS;
+    }
+    this.rollLastEnd = end;
+  }
+
+  resetRollDelay() {
+    this.rollNeeds = [];
+    this.rollLastEnd = null;
+    this.rollTarget = render.ROLL_DELAY_MS;
+    this.rollDelay = NaN;
+    this.rollDelayAt = null;
+  }
+
+  /** The sample range of a rolling frame to draw now, behind live. */
+  rollView(frame) {
+    const now = performance.now();
+    this.rollDelay = render.nextRollDelay(this.rollDelay, this.rollTarget,
+      this.rollDelayAt === null ? 0 : now - this.rollDelayAt);
+    this.rollDelayAt = now;
+    const pairMs = (frame.sampleIntervalNs * 2) / 1e6;
+    const screen = frame.screen;
+    // No further behind than the history reaches, or the left edge empties.
+    const historyMs = ((frame.samplesPerChannel - screen) / 2) * pairMs;
+    const delay = Math.min(this.rollDelay, historyMs);
+    return render.rollWindow(frame.samplesPerChannel, screen, pairMs,
+      frame.captureMonoNs / 1e6, now - this.clockOffset, delay);
   }
 
   /** Account for a frame that is about to be drawn. */
@@ -1405,7 +1447,8 @@ class ScopeApp {
     const interval = frame.envelope ? frame.sampleIntervalNs * 2 : frame.sampleIntervalNs;
     el('stat-rate-samples').textContent = frame.envelope
       ? `${si(1e9 / interval, 'pts/s', 3)}` : si(1e9 / interval, 'S/s', 3);
-    el('stat-latency').textContent = `${frame.samplesPerChannel.toLocaleString()} pts`;
+    const points = frame.screen !== undefined ? frame.screen : frame.samplesPerChannel;
+    el('stat-latency').textContent = `${points.toLocaleString()} pts`;
     // The capture says how deep a block is, which with the unit's fastest
     // interval is what bounds the reachable timebases. Only known once one
     // has arrived, so the list is trimmed here rather than at connect -- and
@@ -1717,10 +1760,10 @@ class ScopeApp {
     const intervalS = (frame.envelope ? frame.sampleIntervalNs * 2 : frame.sampleIntervalNs) / 1e9;
     let view;
     if (frame.streaming && this.clockOffset !== null) {
-      view = render.rollWindow(frame.samplesPerChannel, frame.sampleIntervalNs * 2 / 1e6,
-        frame.captureMonoNs / 1e6, performance.now() - this.clockOffset);
+      view = this.rollView(frame);
     } else if (frame.envelope) {
-      view = { start: 0, end: frame.samplesPerChannel };
+      const screen = frame.screen;
+      view = { start: frame.samplesPerChannel - screen, end: frame.samplesPerChannel };
     } else {
       view = render.zoomWindow(frame.samplesPerChannel, frame.preTriggerSamples,
         frame.sampleIntervalNs / 1e9, display.zoom);
