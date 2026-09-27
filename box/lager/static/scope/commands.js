@@ -179,11 +179,10 @@ export const COMMANDS = [
   {
     verb: 'trigger',
     usage: 'trigger [level <v>] [slope rising|falling] [source <ch>] [mode auto|normal|single]',
-    help: 'Configure the edge trigger; only the parts you name change',
+    help: 'Configure the edge trigger; only the parts you name change; alone, show it',
     parse: (args) => {
-      if (args.length === 0) {
-        throw new CommandError('trigger what? e.g. "trigger level 1.2 slope rising"');
-      }
+      // Reading it back, as `lager scope <net> trigger` does.
+      if (args.length === 0) return new ParsedCommand('get_trigger', {}, 'trigger');
       // `trigger edge ...` is accepted because that is how the terminal CLI
       // spells it (`lager scope trigger edge`).
       const tokens = args[0] === 'edge' ? args.slice(1) : args.slice();
@@ -237,6 +236,120 @@ export const COMMANDS = [
       ];
       return new ParsedCommand('set_cursor', { [kind]: pair },
         `cursor ${args.slice(0, 3).join(' ')}`);
+    },
+  },
+  {
+    verb: 'holdoff',
+    usage: 'holdoff [<seconds>]',
+    help: 'Get or set trigger holdoff, e.g. "holdoff 1e-3"',
+    parse: (args) => (args.length === 0
+      ? new ParsedCommand('get_trigger_holdoff', {}, 'holdoff')
+      : new ParsedCommand('set_trigger_holdoff',
+        { seconds: requireNumber(args[0], 'seconds') }, `holdoff ${args[0]}`)),
+  },
+  {
+    verb: 'acquire',
+    usage: 'acquire [normal | average [<count>] | peak]',
+    help: 'Get or set how captures combine, e.g. "acquire average 64"',
+    parse: (args) => {
+      if (args.length === 0) return new ParsedCommand('get_acquire', {}, 'acquire');
+      const mode = args[0].toLowerCase();
+      if (!['normal', 'average', 'peak'].includes(mode)) {
+        throw new CommandError(`unknown acquisition mode "${args[0]}"; try normal, average or peak`);
+      }
+      const params = { mode };
+      if (args[1] !== undefined) {
+        if (mode !== 'average') throw new CommandError('only average takes a count');
+        params.count = requireNumber(args[1], 'count');
+      }
+      return new ParsedCommand('set_acquire', params, `acquire ${args.join(' ')}`);
+    },
+  },
+  {
+    verb: 'roll',
+    usage: 'roll [auto|on|off]',
+    help: 'Get or set roll mode for slow timebases',
+    parse: (args) => (args.length === 0
+      ? new ParsedCommand('get_roll', {}, 'roll')
+      : new ParsedCommand('set_roll', { mode: args[0].toLowerCase() }, `roll ${args[0]}`)),
+  },
+  {
+    verb: 'status',
+    usage: 'status',
+    help: 'Show every setting: channels, timebase, trigger, acquisition',
+    parse: () => new ParsedCommand('get_state', {}, 'status'),
+  },
+  {
+    verb: 'display',
+    usage: 'display',
+    help: 'Show the display settings below',
+    parse: () => new ParsedCommand('get_display', {}, 'display'),
+  },
+  {
+    verb: 'persistence',
+    usage: 'persistence <seconds|infinite|off>',
+    help: 'Let traces linger and fade, e.g. "persistence 2"',
+    parse: (args) => {
+      if (args[0] === undefined) throw new CommandError('persistence needs seconds, infinite or off');
+      const value = args[0].toLowerCase();
+      const persistence = (value === 'off' || value === 'infinite')
+        ? value : requireNumber(args[0], 'seconds');
+      return new ParsedCommand('set_display', { persistence }, `persistence ${args[0]}`);
+    },
+  },
+  {
+    verb: 'xy',
+    usage: 'xy on|off',
+    help: 'Plot channel B against channel A',
+    parse: (args) => {
+      const value = (args[0] || '').toLowerCase();
+      if (value !== 'on' && value !== 'off') throw new CommandError('xy takes on or off');
+      return new ParsedCommand('set_display', { xy: value }, `xy ${value}`);
+    },
+  },
+  {
+    verb: 'zoom',
+    usage: 'zoom <factor|off> [<center-seconds>]',
+    help: 'Magnify around a time from the trigger, e.g. "zoom 8 1e-3"',
+    parse: (args) => {
+      if (args[0] === undefined) throw new CommandError('zoom needs a factor or off');
+      if (args[0].toLowerCase() === 'off') {
+        return new ParsedCommand('set_display', { zoom: 'off' }, 'zoom off');
+      }
+      const zoom = { factor: requireNumber(args[0], 'factor') };
+      if (args[1] !== undefined) zoom.center = requireNumber(args[1], 'center');
+      return new ParsedCommand('set_display', { zoom }, `zoom ${args.join(' ')}`);
+    },
+  },
+  {
+    verb: 'math',
+    usage: 'math <a+b|a-b|a*b|off>',
+    help: 'Draw a trace computed from two channels',
+    parse: (args) => {
+      if (args[0] === undefined) throw new CommandError('math needs an expression like a-b, or off');
+      return new ParsedCommand('set_display', { math: args.join('') }, `math ${args.join(' ')}`);
+    },
+  },
+  {
+    verb: 'fft',
+    usage: 'fft <channel|off> [hann|hamming|blackman|flattop|rectangular]',
+    help: 'Show a spectrum pane under the trace',
+    parse: (args) => {
+      if (args[0] === undefined) throw new CommandError('fft needs a channel, or off');
+      const fft = args[0].toLowerCase() === 'off'
+        ? 'off' : { channel: args[0].toUpperCase(), window: (args[1] || 'hann').toLowerCase() };
+      return new ParsedCommand('set_display', { fft }, `fft ${args.join(' ')}`);
+    },
+  },
+  {
+    verb: 'spectrum',
+    usage: 'spectrum [<channel>] [<peaks>]',
+    help: 'List the strongest frequency components, computed on the box',
+    parse: (args) => {
+      const params = {};
+      if (args[0] !== undefined) params.channel = args[0].toUpperCase();
+      if (args[1] !== undefined) params.peaks = requireNumber(args[1], 'peaks');
+      return new ParsedCommand('fft', params, `spectrum ${args.join(' ')}`.trim());
     },
   },
   {
