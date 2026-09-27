@@ -131,4 +131,116 @@ pub trait Oscilloscope: Send + Sync {
     fn suggested_poll_interval(&self) -> std::time::Duration {
         std::time::Duration::from_millis(2)
     }
+
+    /// Arm the next block after one has been read, nothing having changed.
+    ///
+    /// The acquisition loop calls this once per capture, so it is the hot
+    /// path: a driver that reprograms channels and trigger on every arm spends
+    /// the gap between blocks on setup the hardware already has. The default
+    /// arms the long way, for drivers with nothing faster.
+    fn rearm(&mut self) -> anyhow::Result<()> {
+        let position = self.get_trigger_position()?;
+        self.start_triggered_capture(position)
+    }
+
+    /// Samples in a block at the current settings, answered from what the
+    /// driver already knows. `get_memory_depth` may ask the hardware.
+    fn current_memory_depth(&self) -> anyhow::Result<usize> {
+        self.get_memory_depth()
+    }
+
+    /// The time/div last asked for, before rounding to a sample interval.
+    /// Roll mode has no such rounding, so it works from this.
+    fn requested_time_per_div(&self) -> anyhow::Result<f64> {
+        self.get_time_per_div()
+    }
+
+    /// Whether this driver can stream continuously, for roll mode.
+    fn supports_roll(&self) -> bool {
+        false
+    }
+
+    /// Start streaming minimum/maximum pairs, one per `plan.bucket_ns`.
+    fn start_roll(&mut self, _plan: &RollPlan) -> anyhow::Result<RollInfo> {
+        anyhow::bail!("this scope cannot stream, so it has no roll mode")
+    }
+
+    /// Append whatever pairs have arrived since the last call to `sink`,
+    /// returning how many per channel.
+    fn poll_roll(&mut self, _sink: &mut RollSink) -> anyhow::Result<usize> {
+        anyhow::bail!("this scope cannot stream, so it has no roll mode")
+    }
+
+    fn stop_roll(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+/// What roll mode asks the driver for.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RollPlan {
+    /// Time each minimum/maximum pair should cover.
+    pub bucket_ns: f64,
+}
+
+/// What the driver actually set up, which can differ from the plan: the
+/// bucket is a whole number of the hardware's sample intervals.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RollInfo {
+    pub bucket_ns: f64,
+    /// The channels streamed, in the order `RollSink` fills them.
+    pub channels: Vec<protocol::ChannelFrame>,
+    pub resolution_bits: u8,
+}
+
+/// Pairs delivered by `poll_roll`, one list per streamed channel.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct RollSink {
+    pub pairs: Vec<Vec<(i16, i16)>>,
+}
+
+impl RollSink {
+    pub fn clear(&mut self) {
+        for pairs in &mut self.pairs {
+            pairs.clear();
+        }
+    }
+}
+
+/// How long auto mode waits for a trigger before capturing anyway.
+///
+/// Scaled to the block, where it was a fixed 500 ms on one family and 100 ms
+/// on the other. Fixed at 500 ms, a scope in auto with nothing crossing the
+/// level refreshed twice a second, which reads as a frozen screen. Twice the
+/// block plus a margin still gives any signal that repeats within the
+/// window time to trigger, and the floor keeps a fast timebase from
+/// auto-triggering between the edges of an ordinary signal.
+pub fn auto_trigger_timeout_ms(block_seconds: f64) -> u32 {
+    let block_ms = (block_seconds * 1000.0).max(0.0);
+    ((2.0 * block_ms + 20.0).ceil() as u32).clamp(40, 500)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::auto_trigger_timeout_ms;
+
+    #[test]
+    fn a_fast_block_waits_the_floor() {
+        assert_eq!(auto_trigger_timeout_ms(80e-6), 40);
+        assert_eq!(auto_trigger_timeout_ms(0.0), 40);
+    }
+
+    #[test]
+    fn a_slower_block_waits_about_two_windows() {
+        // 1 ms/div: a 10 ms block.
+        assert_eq!(auto_trigger_timeout_ms(0.010), 40);
+        // 10 ms/div: a 100 ms block.
+        assert_eq!(auto_trigger_timeout_ms(0.100), 220);
+    }
+
+    #[test]
+    fn the_wait_is_capped_where_roll_mode_takes_over() {
+        assert_eq!(auto_trigger_timeout_ms(0.5), 500);
+        assert_eq!(auto_trigger_timeout_ms(10.0), 500);
+    }
 }

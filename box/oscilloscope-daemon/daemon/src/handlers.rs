@@ -251,9 +251,60 @@ async fn control(command: Command, scope: &ScopeHandle) -> Response {
         // Intercepted by `handle`, which needs to send a binary frame too.
         Command::GetTriggeredData => unreachable!("handled before control dispatch"),
 
+        Command::GetState => match scope.request(ScopeRequest::GetState).await {
+            ScopeReply::State(state) => Response::State { state },
+            other => other.into_error(),
+        },
+
+        Command::SetDisplay { display } => scope
+            .request(ScopeRequest::SetDisplay(display))
+            .await
+            .into_ack(Response::ConfigureDisplay),
+
+        Command::GetDisplay => match scope.request(ScopeRequest::GetDisplay).await {
+            ScopeReply::Display(display) => Response::Display { display },
+            other => other.into_error(),
+        },
+
+        Command::SetAcquisition {
+            mode,
+            average_count,
+        } => scope
+            .request(ScopeRequest::SetAcquisition(mode, average_count))
+            .await
+            .into_ack(Response::ConfigureAcquisition),
+
+        Command::GetAcquisition => match scope.request(ScopeRequest::GetAcquisition).await {
+            ScopeReply::Acquisition(mode, average_count) => Response::Acquisition {
+                mode,
+                average_count,
+            },
+            other => other.into_error(),
+        },
+
+        Command::SetHoldoff { holdoff_s } => scope
+            .request(ScopeRequest::SetHoldoff(holdoff_s))
+            .await
+            .into_ack(Response::ConfigureHoldoff),
+
+        Command::GetHoldoff => match scope.request(ScopeRequest::GetHoldoff).await {
+            ScopeReply::Float(holdoff_s) => Response::Holdoff { holdoff_s },
+            other => other.into_error(),
+        },
+
+        Command::SetRoll { roll } => scope
+            .request(ScopeRequest::SetRoll(roll))
+            .await
+            .into_ack(Response::ConfigureRoll),
+
+        Command::GetRoll => match scope.request(ScopeRequest::GetRoll).await {
+            ScopeReply::Roll(roll, rolling) => Response::Roll { roll, rolling },
+            other => other.into_error(),
+        },
+
         // Connection-scoped, so the server answers these itself; the hardware
         // thread has no notion of who is listening.
-        Command::Subscribe | Command::Unsubscribe => {
+        Command::Subscribe { .. } | Command::Unsubscribe | Command::Credit { .. } => {
             unreachable!("handled by the connection loop")
         }
     }

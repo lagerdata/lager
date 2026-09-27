@@ -18,6 +18,7 @@
 //! double-counts every noisy edge, which reports a harmonic of the true
 //! frequency rather than the frequency.
 
+use crate::lscp::NO_SAMPLE;
 use crate::CaptureFrame;
 use serde::{Deserialize, Serialize};
 
@@ -233,15 +234,45 @@ pub fn measure_channel(frame: &CaptureFrame, channel_index: usize) -> Option<Mea
 
     let scale = descriptor.scale_v_per_count as f64;
     let offset = descriptor.offset_v as f64;
-    let samples: Vec<f64> = counts.iter().map(|&c| c as f64 * scale + offset).collect();
+    let to_volts = |count: i16| count as f64 * scale + offset;
 
     let mut vmax = f64::NEG_INFINITY;
     let mut vmin = f64::INFINITY;
+    // For a min/max frame the extremes come from the pairs, which is the
+    // point of capturing them, and the timing from the midpoint of each: the
+    // pairs read as samples would alternate at the Nyquist rate and every
+    // edge would be found twice per interval.
+    let (samples, interval_s): (Vec<f64>, f64) = if frame.is_envelope() {
+        let mut midpoints = Vec::with_capacity(counts.len() / 2);
+        for pair in counts.chunks_exact(2) {
+            if pair[0] == NO_SAMPLE || pair[1] == NO_SAMPLE {
+                continue;
+            }
+            let (low, high) = (to_volts(pair[0]), to_volts(pair[1]));
+            vmin = vmin.min(low);
+            vmax = vmax.max(high);
+            midpoints.push((low + high) / 2.0);
+        }
+        (midpoints, frame.sample_interval_ns * 2.0 / 1e9)
+    } else {
+        let volts: Vec<f64> = counts
+            .iter()
+            .filter(|&&c| c != NO_SAMPLE)
+            .map(|&c| to_volts(c))
+            .collect();
+        for &v in &volts {
+            vmax = vmax.max(v);
+            vmin = vmin.min(v);
+        }
+        (volts, frame.sample_interval_ns / 1e9)
+    };
+    if samples.is_empty() {
+        return None;
+    }
+
     let mut sum = 0.0;
     let mut sum_squares = 0.0;
     for &v in &samples {
-        vmax = vmax.max(v);
-        vmin = vmin.min(v);
         sum += v;
         sum_squares += v * v;
     }
@@ -249,8 +280,6 @@ pub fn measure_channel(frame: &CaptureFrame, channel_index: usize) -> Option<Mea
     let vavg = sum / n;
     let vrms = (sum_squares / n).sqrt();
     let vpp = vmax - vmin;
-
-    let interval_s = frame.sample_interval_ns / 1e9;
     let mid = (vmax + vmin) / 2.0;
     let crossings = find_crossings(&samples, vmin, vmax, mid);
 
