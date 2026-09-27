@@ -99,6 +99,15 @@ class TestRoundTrip:
         assert decoded.sample_interval_ns == original.sample_interval_ns
         np.testing.assert_array_equal(decoded.samples, original.samples)
 
+    def test_a_rolling_screens_span_round_trips(self):
+        frame = _sample_frame()
+        frame.screen_samples = 2
+        assert lscp.decode(lscp.encode(frame)).screen_samples == 2
+
+    def test_a_frame_from_before_the_screen_span_is_all_screen(self):
+        # The Rust fixture predates the field; its reserved bytes are zero.
+        assert lscp.decode(RUST_FIXTURE).screen_samples == 0
+
     def test_empty_capture_round_trips(self):
         frame = lscp.CaptureFrame(
             seq=0,

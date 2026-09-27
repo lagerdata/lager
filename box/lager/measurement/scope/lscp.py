@@ -38,7 +38,9 @@ FLAG_ENVELOPE = 1 << 2
 # not reached yet. No ADC produces it, every range topping out at +/-32767.
 NO_SAMPLE = -32768
 
-_HEADER = struct.Struct("<IHHQQdIIIBBH")
+# The last field sits where the header's reserved tail began, so an older
+# encoder's frames read it as zero, which is what a block carries.
+_HEADER = struct.Struct("<IHHQQdIIIBBHI")
 _CHANNEL = struct.Struct("<BBBBffI")
 
 _COUPLING = {0: "DC", 1: "AC", 2: "GND"}
@@ -71,6 +73,10 @@ class CaptureFrame:
     channels: List[ChannelFrame]
     # int16 counts, channel-major. A view over the source buffer, not a copy.
     samples: "np.ndarray"
+    # For a rolling screen, the samples per channel the screen spans, counted
+    # back from the newest; the ones before are history, for a page that
+    # draws behind live. Zero for a block, where all of it is the screen.
+    screen_samples: int = 0
 
     @property
     def triggered(self) -> bool:
@@ -175,6 +181,7 @@ def decode(buf: bytes) -> CaptureFrame:
         channel_count,
         resolution_bits,
         overflow_mask,
+        screen_samples,
     ) = _HEADER.unpack_from(buf, 0)
 
     if magic != MAGIC:
@@ -232,6 +239,7 @@ def decode(buf: bytes) -> CaptureFrame:
         flags=flags,
         channels=channels,
         samples=samples,
+        screen_samples=screen_samples,
     )
 
 
@@ -256,6 +264,7 @@ def encode(frame: CaptureFrame) -> bytes:
         len(frame.channels),
         frame.resolution_bits,
         frame.overflow_mask,
+        frame.screen_samples,
     )
 
     inverse_coupling = {v: k for k, v in _COUPLING.items()}

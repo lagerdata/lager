@@ -742,6 +742,7 @@ impl Oscilloscope for PicoScopeModern {
             samples_per_channel: returned as u32,
             resolution_bits: self.resolution_bits,
             overflow_mask,
+            screen_samples: 0,
             // Whether this block triggered is the acquisition loop's call; see
             // the same field in the ps2000 driver.
             flags: 0,
