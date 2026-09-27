@@ -360,6 +360,14 @@ class ScopeApp {
     this.frameSeq = null;
     this.drawnCount = 0;
     this.status = '';
+    // The display's refresh rate, measured from animation frames, which is
+    // the rate worth asking the daemon for.
+    this.refreshHz = 60;
+    this.frameTimes = [];
+    // Page clock minus box clock plus the quickest transit seen, so a
+    // rolling screen can be scrolled by how long ago it was captured.
+    this.clockOffsets = [];
+    this.clockOffset = null;
 
     this.console = new Console(el('console-output'));
     this.canvas = el('scope-canvas');
@@ -369,7 +377,7 @@ class ScopeApp {
     this.wireConsole();
     this.observeCanvas();
 
-    requestAnimationFrame(() => this.tick());
+    requestAnimationFrame((t) => this.tick(t));
   }
 
   // ---------- setup ----------
@@ -1269,8 +1277,13 @@ class ScopeApp {
       // credit, and with the state pushed after every change.
       this.owedCredits = 0;
       this.pendingBuffer = null;
+      this.clockOffsets = [];
+      this.clockOffset = null;
+      this.streamFps = Math.round(Math.min(120, Math.max(30, this.refreshHz)));
+      this.subscribedAt = performance.now();
       socket.send(JSON.stringify({
-        command: 'Subscribe', credits: render.CREDIT_WINDOW, state: true,
+        command: 'Subscribe', credits: render.CREDIT_WINDOW,
+        max_fps: this.streamFps, state: true,
       }));
     });
 
@@ -1320,6 +1333,20 @@ class ScopeApp {
       this.applyState(response.state);
       return;
     }
+    if (response.response === 'Subscribed' && this.subscribedAt) {
+      // The reply's round trip is the link's, near enough: the daemon
+      // answers it without touching the hardware. Top the credit up to what
+      // that round trip needs, which on a slow link is more than the start.
+      const rtt = performance.now() - this.subscribedAt;
+      this.subscribedAt = null;
+      const window = render.creditWindow(rtt, this.streamFps || 60);
+      if (window > render.CREDIT_WINDOW && this.socket) {
+        this.socket.send(JSON.stringify({
+          command: 'Credit', count: window - render.CREDIT_WINDOW,
+        }));
+      }
+      return;
+    }
     if (response.response === 'Error') {
       // The daemon reports dropped captures this way; it is a warning about
       // the display, not a failed command.
@@ -1332,7 +1359,21 @@ class ScopeApp {
     // Kept encoded until the animation frame: the newest wins, and one
     // replaced before it is drawn is never decoded at all.
     this.pendingBuffer = buffer;
+    this.pendingArrival = performance.now();
     this.owedCredits += 1;
+  }
+
+  /** Fold a frame's arrival into the page-to-box clock mapping.
+   *
+   * Both clocks are monotonic, so arrival minus capture is a constant offset
+   * plus that frame's transit. The smallest over recent frames is the offset
+   * plus the quickest transit, which is the mapping a rolling screen needs.
+   */
+  noteArrival(frame, arrival) {
+    const offset = arrival - frame.captureMonoNs / 1e6;
+    this.clockOffsets.push(offset);
+    if (this.clockOffsets.length > 240) this.clockOffsets.shift();
+    this.clockOffset = Math.min(...this.clockOffsets);
   }
 
   /** Account for a frame that is about to be drawn. */
@@ -1591,7 +1632,16 @@ class ScopeApp {
     resize();
   }
 
-  tick() {
+  tick(timestamp) {
+    if (timestamp !== undefined && this.frameTimes) {
+      this.frameTimes.push(timestamp);
+      if (this.frameTimes.length > 31) this.frameTimes.shift();
+      if (this.frameTimes.length === 31) {
+        const gaps = this.frameTimes.slice(1).map((t, i) => t - this.frameTimes[i]).sort((a, b) => a - b);
+        const median = gaps[15];
+        if (median > 0) this.refreshHz = 1000 / median;
+      }
+    }
     if (this.pendingBuffer) {
       const buffer = this.pendingBuffer;
       this.pendingBuffer = null;
@@ -1599,6 +1649,7 @@ class ScopeApp {
         this.latest = decode(buffer);
         this.dirty = true;
         this.noteFrame(this.latest);
+        if (this.pendingArrival !== undefined) this.noteArrival(this.latest, this.pendingArrival);
       } catch (e) {
         if (!this.decodeFailed) {
           this.decodeFailed = true;
@@ -1625,7 +1676,9 @@ class ScopeApp {
     // paces the stream to the display, and a hidden tab, which gets no
     // animation frames, stops being sent frames at all.
     if (this.returnCredits) this.returnCredits();
-    requestAnimationFrame(() => this.tick());
+    // A rolling screen moves between frames, so it is drawn every time.
+    if (this.latest && this.latest.streaming) this.dirty = true;
+    requestAnimationFrame((t) => this.tick(t));
   }
 
   draw(frame) {
@@ -1662,10 +1715,16 @@ class ScopeApp {
     // The part of the record across the screen: all of it, or the zoomed
     // window. Held so the cursors and markers use the same mapping.
     const intervalS = (frame.envelope ? frame.sampleIntervalNs * 2 : frame.sampleIntervalNs) / 1e9;
-    const view = frame.envelope
-      ? { start: 0, end: frame.samplesPerChannel }
-      : render.zoomWindow(frame.samplesPerChannel, frame.preTriggerSamples,
+    let view;
+    if (frame.streaming && this.clockOffset !== null) {
+      view = render.rollWindow(frame.samplesPerChannel, frame.sampleIntervalNs * 2 / 1e6,
+        frame.captureMonoNs / 1e6, performance.now() - this.clockOffset);
+    } else if (frame.envelope) {
+      view = { start: 0, end: frame.samplesPerChannel };
+    } else {
+      view = render.zoomWindow(frame.samplesPerChannel, frame.preTriggerSamples,
         frame.sampleIntervalNs / 1e9, display.zoom);
+    }
     this.currentView = view;
 
     if (display.persistence) {

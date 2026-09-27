@@ -90,6 +90,8 @@ async def probe(args, headers):
         subscribe = {"command": "Subscribe"}
         if args.credits:
             subscribe["credits"] = args.credits
+        if args.max_fps:
+            subscribe["max_fps"] = args.max_fps
         await ws.send(json.dumps(subscribe))
 
         owed = 0
@@ -125,7 +127,8 @@ async def probe(args, headers):
     base = min(offsets)
     queued = [(o - base) * 1000 for o in offsets]
     return {
-        "mode": "credits=%d" % args.credits if args.credits else "every capture",
+        "mode": ("credits=%d" % args.credits if args.credits else "every capture")
+                + (" max_fps=%g" % args.max_fps if args.max_fps else ""),
         "frames": len(arrivals),
         "fps": (len(arrivals) - 1) / span,
         "gap_ms_p50": percentile(gaps, 0.50),
@@ -148,6 +151,7 @@ def main():
     parser.add_argument("--net", required=True, help="the scope net")
     parser.add_argument("--duration", type=float, default=15.0)
     parser.add_argument("--credits", type=int, default=0)
+    parser.add_argument("--max-fps", type=float, default=0.0)
     parser.add_argument("--setup", action="store_true",
                         help="enable channel A, 1 V trigger, and run, before measuring")
     parser.add_argument("--channel-net", default=None, help="channel net for --setup")
