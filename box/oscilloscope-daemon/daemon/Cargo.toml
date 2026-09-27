@@ -30,6 +30,9 @@ libloading = "0.8"
 tokio-tungstenite = "0.30"
 tungstenite = "0.30"
 futures-util = "0.3"
+# A capture is encoded once and handed to every connection that sends it;
+# Bytes is what tungstenite takes, so each send is a reference-count bump.
+bytes = "1"
 
 [build-dependencies]
 bindgen = "0.73"

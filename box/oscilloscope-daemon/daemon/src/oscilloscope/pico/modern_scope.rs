@@ -33,7 +33,6 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use protocol::capabilities::ScopeCapabilities;
-use protocol::lscp::FLAG_TRIGGERED;
 use protocol::{
     CaptureFrame, CaptureMode, ChannelFrame, ChannelId, Coupling as WireCoupling, TriggerSlope,
 };
@@ -65,8 +64,6 @@ const DEFAULT_CAPTURE_SAMPLES: u32 = 2000;
 /// slowest, so nothing usable lies beyond it.
 const MAX_TIMEBASE: u32 = 1 << 24;
 
-/// How long `auto` mode waits for a trigger before capturing anyway.
-const AUTO_TRIGGER_MS: i16 = 100;
 
 pub struct PicoScopeModern {
     api: Box<dyn PicoModernApi>,
@@ -136,7 +133,8 @@ impl PicoScopeModern {
                 trigger_slope: TriggerSlope::Rising,
                 capture_mode: CaptureMode::Auto,
                 delay: 0.0,
-                trigger_position: 0.5,
+                // Percent, as the trait and every caller spell it.
+                trigger_position: 50.0,
             },
             cursors: Vec::new(),
             time_per_div: 1e-3,
@@ -291,7 +289,7 @@ impl PicoScopeModern {
         // Single is armed the same as normal -- what makes it single is that
         // the acquisition loop does not re-arm.
         let auto_trigger_ms = match trigger.capture_mode {
-            CaptureMode::Auto => AUTO_TRIGGER_MS,
+            CaptureMode::Auto => self.auto_trigger_ms(),
             CaptureMode::Normal | CaptureMode::Single => 0,
         };
 
@@ -390,8 +388,10 @@ impl PicoScopeModern {
 
         self.timebase = timebase;
         self.interval_seconds = interval;
-        self.pre_trigger_samples =
-            (f64::from(self.samples_per_capture) * self.settings.trigger.trigger_position) as u32;
+        self.pre_trigger_samples = pre_trigger_samples(
+            self.samples_per_capture,
+            self.settings.trigger.trigger_position,
+        );
         self.settings.sample_rate = Some(1.0 / interval);
 
         Ok(())
@@ -645,10 +645,19 @@ impl Oscilloscope for PicoScopeModern {
         Ok(self.settings.trigger.trigger_position)
     }
 
+    /// Arm, with the trigger `trigger_position_percent` of the way into the
+    /// block.
+    ///
+    /// Percent, as the trait names it and every caller sends it. This clamped
+    /// to 0..1 as though it were a fraction, so the 50 the Python driver and
+    /// the web UI send for a centred window became 1.0 and put the whole
+    /// capture before the trigger.
     fn start_triggered_capture(&mut self, trigger_position_percent: f64) -> Result<()> {
-        self.settings.trigger.trigger_position = trigger_position_percent.clamp(0.0, 1.0);
-        self.pre_trigger_samples = (f64::from(self.samples_per_capture)
-            * self.settings.trigger.trigger_position) as u32;
+        self.settings.trigger.trigger_position = trigger_position_percent.clamp(0.0, 100.0);
+        self.pre_trigger_samples = pre_trigger_samples(
+            self.samples_per_capture,
+            self.settings.trigger.trigger_position,
+        );
         self.arm()
     }
 
@@ -733,7 +742,9 @@ impl Oscilloscope for PicoScopeModern {
             samples_per_channel: returned as u32,
             resolution_bits: self.resolution_bits,
             overflow_mask,
-            flags: FLAG_TRIGGERED,
+            // Whether this block triggered is the acquisition loop's call; see
+            // the same field in the ps2000 driver.
+            flags: 0,
             channels,
             samples,
         })
@@ -747,6 +758,10 @@ impl Oscilloscope for PicoScopeModern {
         self.settings.trigger.capture_mode = CaptureMode::Auto;
         let result = self.apply_trigger().and_then(|()| self.arm());
         self.settings.trigger.capture_mode = previous;
+        // The device still holds the auto timeout, and the next arm only
+        // re-applies a configuration it knows to be stale -- so without this
+        // a scope in normal went on auto-triggering after one press of Force.
+        self.dirty = true;
         result
     }
 
@@ -763,9 +778,23 @@ impl Oscilloscope for PicoScopeModern {
         let tenth = self.expected_capture.as_millis() as u64 / 10;
         Duration::from_millis(tenth.clamp(1, 20))
     }
+
+    fn current_memory_depth(&self) -> Result<usize> {
+        Ok(self.samples_per_capture as usize)
+    }
+}
+
+/// Pre-trigger samples for a trigger `percent` of the way into a block.
+fn pre_trigger_samples(samples: u32, percent: f64) -> u32 {
+    (f64::from(samples) * percent.clamp(0.0, 100.0) / 100.0) as u32
 }
 
 impl PicoScopeModern {
+    fn auto_trigger_ms(&self) -> i16 {
+        let block_seconds = self.interval_seconds * f64::from(self.samples_per_capture);
+        crate::oscilloscope::auto_trigger_timeout_ms(block_seconds) as i16
+    }
+
     /// Compute one measurement from the most recent capture.
     fn measure(&self, channel: ChannelId, which: protocol::Measurement) -> Result<f64> {
         let frame = self.get_triggered_data()?;
@@ -1039,6 +1068,8 @@ mod tests {
             smart_probes: true,
             signal_generator: None,
             advanced_triggers: Vec::new(),
+            roll_mode: false,
+            peak_detect: false,
         }
     }
 
@@ -1181,7 +1212,7 @@ mod tests {
         assert!(
             triggers
                 .iter()
-                .any(|c| c.contains(&format!("auto_ms={AUTO_TRIGGER_MS}"))),
+                .any(|c| c.contains(&format!("auto_ms={}", s.auto_trigger_ms()))),
             "{triggers:?}"
         );
     }
@@ -1253,7 +1284,7 @@ mod tests {
     fn a_capture_produces_a_frame_matching_the_enabled_channels() {
         let mut s = scope();
         s.enable_channel(ChannelId::Alphabetic('B')).unwrap();
-        s.start_triggered_capture(0.5).unwrap();
+        s.start_triggered_capture(50.0).unwrap();
 
         let frame = s.get_triggered_data().unwrap();
         assert_eq!(frame.channels.len(), 2);
@@ -1270,7 +1301,7 @@ mod tests {
     fn the_frame_declares_a_length_matching_its_payload() {
         // A mismatch here is undecodable at the other end.
         let mut s = scope();
-        s.start_triggered_capture(0.5).unwrap();
+        s.start_triggered_capture(50.0).unwrap();
         let frame = s.get_triggered_data().unwrap();
 
         assert_eq!(
@@ -1286,7 +1317,7 @@ mod tests {
     #[test]
     fn the_trigger_position_splits_the_capture() {
         let mut s = scope();
-        s.start_triggered_capture(0.25).unwrap();
+        s.start_triggered_capture(25.0).unwrap();
         let frame = s.get_triggered_data().unwrap();
 
         let ratio = f64::from(frame.pre_trigger_samples)
@@ -1295,12 +1326,40 @@ mod tests {
     }
 
     #[test]
+    fn a_centred_window_is_what_the_callers_send_for_one() {
+        // They send 50, meaning percent. Read as a fraction it clamped to 1.0
+        // and the whole capture landed before the trigger.
+        let mut s = scope();
+        s.start_triggered_capture(50.0).unwrap();
+        let frame = s.get_triggered_data().unwrap();
+        assert_eq!(frame.pre_trigger_samples * 2, frame.samples_per_channel);
+        assert_eq!(s.get_trigger_position().unwrap(), 50.0);
+    }
+
+    #[test]
+    fn a_forced_capture_leaves_the_next_arm_to_reprogram_the_trigger() {
+        // The device is left holding the auto timeout. Without re-applying,
+        // a scope in normal auto-triggered from then on.
+        let mock = MockScope::new();
+        let log = mock.log_handle();
+        let mut s = PicoScopeModern::adopt(Box::new(mock), 1, capabilities(4)).unwrap();
+        s.set_capture_mode(CaptureMode::Normal).unwrap();
+        s.force_trigger().unwrap();
+
+        let before = count(&log, "set_simple_trigger");
+        s.start_triggered_capture(50.0).unwrap();
+        let after = matching(&log, "set_simple_trigger");
+        assert!(after.len() > before, "the arm after a force left the trigger alone");
+        assert!(after.last().unwrap().contains("auto_ms=0"), "{after:?}");
+    }
+
+    #[test]
     fn capture_data_reaches_the_frame() {
         let mock = MockScope::new();
         mock.channel_data.lock().unwrap()[0] = vec![100, 200, 300, 400];
         let mut s = PicoScopeModern::adopt(Box::new(mock), 1, capabilities(4)).unwrap();
 
-        s.start_triggered_capture(0.5).unwrap();
+        s.start_triggered_capture(50.0).unwrap();
         let frame = s.get_triggered_data().unwrap();
 
         assert_eq!(&frame.samples[..4], &[100, 200, 300, 400]);
@@ -1315,7 +1374,7 @@ mod tests {
         let mut s = PicoScopeModern::adopt(Box::new(mock), 1, capabilities(4)).unwrap();
         s.set_volts_per_div(ChannelId::Alphabetic('A'), 1.0).unwrap();
 
-        s.start_triggered_capture(0.5).unwrap();
+        s.start_triggered_capture(50.0).unwrap();
         let volts = s.get_data(ChannelId::Alphabetic('A')).unwrap();
 
         // The 5 V range, at full-scale count.
@@ -1331,7 +1390,7 @@ mod tests {
         s.set_attenuation(ch, 10.0).unwrap();
         s.set_volts_per_div(ch, 1.0).unwrap();
 
-        s.start_triggered_capture(0.5).unwrap();
+        s.start_triggered_capture(50.0).unwrap();
         let volts = s.get_data(ch).unwrap();
 
         // 500 mV range at the input, times the 10x probe.
@@ -1349,7 +1408,7 @@ mod tests {
 
         s.disable_channel(ChannelId::Alphabetic('A')).unwrap();
         s.enable_channel(ChannelId::Alphabetic('B')).unwrap();
-        s.start_triggered_capture(0.5).unwrap();
+        s.start_triggered_capture(50.0).unwrap();
 
         let frame = s.get_triggered_data().unwrap();
         assert_eq!(frame.channels.len(), 1);
@@ -1376,7 +1435,7 @@ mod tests {
     #[test]
     fn stopping_clears_the_capturing_state() {
         let mut s = scope();
-        s.start_triggered_capture(0.5).unwrap();
+        s.start_triggered_capture(50.0).unwrap();
         assert!(s.is_ready().unwrap());
         s.stop_triggered_capture().unwrap();
         assert!(!s.is_ready().unwrap());
@@ -1390,7 +1449,7 @@ mod tests {
 
         s.enable_channel(ChannelId::Alphabetic('B')).unwrap();
         s.enable_channel(ChannelId::Alphabetic('C')).unwrap();
-        s.start_triggered_capture(0.5).unwrap();
+        s.start_triggered_capture(50.0).unwrap();
 
         assert_eq!(count(&log, "set_data_buffer"), 3);
     }
@@ -1400,7 +1459,7 @@ mod tests {
     #[test]
     fn the_poll_interval_follows_the_drivers_own_estimate() {
         let mut s = scope();
-        s.start_triggered_capture(0.5).unwrap();
+        s.start_triggered_capture(50.0).unwrap();
         // The mock reports 20 ms, so a tenth is 2 ms.
         assert_eq!(s.suggested_poll_interval(), Duration::from_millis(2));
     }
