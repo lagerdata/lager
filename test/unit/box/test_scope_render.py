@@ -57,19 +57,59 @@ class TestCredits:
 
 
 class TestRollWindow:
+    # 4000 samples a channel: a 3000-sample screen and 500 pairs of history,
+    # at 1 ms a pair.
 
-    def test_a_frame_just_due_is_drawn_as_it_came(self):
-        window = _js("r.rollWindow(4000, 1, 1000, 1000 + r.ROLL_DELAY_MS)")
-        assert window == {"start": 0, "end": 4000}
+    def test_a_frame_just_due_shows_its_newest_screen(self):
+        window = _js("r.rollWindow(4000, 3000, 1, 1000, 1000 + r.ROLL_DELAY_MS)")
+        assert window == {"start": 1000, "end": 4000}
 
     def test_it_scrolls_with_the_time_since_the_frame(self):
         # 10 ms later at 1 ms a pair is 10 pairs on, 20 samples.
-        window = _js("r.rollWindow(4000, 1, 1000, 1010 + r.ROLL_DELAY_MS)")
-        assert window == {"start": 20, "end": 4020}
+        window = _js("r.rollWindow(4000, 3000, 1, 1000, 1010 + r.ROLL_DELAY_MS)")
+        assert window == {"start": 1020, "end": 4020}
+
+    def test_drawing_behind_live_uses_the_history_for_the_left_edge(self):
+        # 100 ms behind a frame that has just arrived: 100 pairs back, and
+        # still a whole screen of samples.
+        window = _js("r.rollWindow(4000, 3000, 1, 1000, 1000, 100)")
+        assert window == {"start": 800, "end": 3800}
+
+    def test_it_is_never_drawn_from_before_the_history(self):
+        window = _js("r.rollWindow(4000, 3000, 1, 1000, 1000, 5000)")
+        assert window == {"start": 0, "end": 3000}
 
     def test_clocks_that_disagree_by_an_hour_are_clamped(self):
-        window = _js("r.rollWindow(4000, 1, 0, 3600e3)")
-        assert window == {"start": 2000, "end": 6000}
+        # Half a screen ahead at most: 750 pairs, 1500 samples.
+        window = _js("r.rollWindow(4000, 3000, 1, 0, 3600e3)")
+        assert window == {"start": 2500, "end": 5500}
+
+    def test_a_frame_that_does_not_say_is_all_screen(self):
+        window = _js("r.rollWindow(4000, 0, 1, 1000, 1000 + r.ROLL_DELAY_MS)")
+        assert window == {"start": 0, "end": 4000}
+
+
+class TestRollDelay:
+
+    def test_the_first_delay_is_the_target(self):
+        assert _js("r.nextRollDelay(NaN, 120, 16)") == 120
+
+    def test_it_rises_by_at_most_a_quarter_of_the_time(self):
+        assert _js("r.nextRollDelay(60, 200, 16)") == 64
+
+    def test_it_falls_by_a_fiftieth(self):
+        assert _js("r.nextRollDelay(200, 60, 100)") == 198
+
+    def test_it_stops_at_the_target(self):
+        assert _js("r.nextRollDelay(100, 101, 1000)") == 101
+        assert _js("r.nextRollDelay(100, 99, 1000)") == 99
+
+    def test_the_target_is_held_between_its_bounds(self):
+        assert _js("r.nextRollDelay(NaN, 5, 16)") == _js("r.ROLL_DELAY_MS")
+        assert _js("r.nextRollDelay(NaN, 1e6, 16)") == _js("r.ROLL_DELAY_MAX_MS")
+
+    def test_no_time_is_no_change(self):
+        assert _js("r.nextRollDelay(100, 300, 0)") == 100
 
 
 class TestColumnExtremes:
