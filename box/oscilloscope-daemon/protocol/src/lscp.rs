@@ -34,6 +34,16 @@ pub const CHANNEL_DESC_SIZE: usize = 16;
 pub const FLAG_TRIGGERED: u16 = 1 << 0;
 /// Frame came from continuous streaming mode rather than block mode.
 pub const FLAG_STREAMING: u16 = 1 << 1;
+/// Samples are (minimum, maximum) pairs, one pair per interval of
+/// `2 * sample_interval_ns`, rather than single samples. A decoder that
+/// ignores the flag draws the pairs as a zigzag between the two, which still
+/// covers the envelope.
+pub const FLAG_ENVELOPE: u16 = 1 << 2;
+
+/// A sample that was not captured, in a rolling record that has not yet
+/// filled the screen. Never produced by an ADC: every PicoScope's range tops
+/// out at plus and minus `i16::MAX`.
+pub const NO_SAMPLE: i16 = i16::MIN;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ChannelFrame {
@@ -287,6 +297,10 @@ impl CaptureFrame {
 
     pub fn is_triggered(&self) -> bool {
         self.flags & FLAG_TRIGGERED != 0
+    }
+
+    pub fn is_envelope(&self) -> bool {
+        self.flags & FLAG_ENVELOPE != 0
     }
 }
 

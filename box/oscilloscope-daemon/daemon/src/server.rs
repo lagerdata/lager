@@ -15,17 +15,19 @@
 //! copying them through a second encode: it forwards opaque bytes.
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
-use protocol::{Command, Response, WebSocketMessage};
+use protocol::{Command, Response, ScopeState, WebSocketMessage};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, UnixListener};
 use tokio_tungstenite::accept_async;
 use tungstenite::Message;
 
 use crate::handlers;
-use crate::scope_thread::ScopeHandle;
+use crate::scope_thread::{Published, ScopeHandle};
 
 pub struct ServerConfig {
     pub tcp_port: Option<u16>,
@@ -154,6 +156,66 @@ pub async fn serve(config: ServerConfig, scope: ScopeHandle) -> Result<()> {
     anyhow::bail!("a scope listener returned when it should have run forever")
 }
 
+/// What a subscribed connection has asked for, and where it has got to.
+struct Subscription {
+    captures: tokio::sync::broadcast::Receiver<Published>,
+    /// Frames this connection may still be sent. None sends every capture
+    /// as it is taken, which is what a client that predates flow control
+    /// asked for by subscribing.
+    credits: Option<u32>,
+    /// The newest capture not yet sent. Each arrival replaces the last, so
+    /// what goes out when credit returns is the scope now, not a queue of
+    /// the scope as it was.
+    pending: Option<Published>,
+    /// Shortest interval between frames, from `max_fps`.
+    min_interval: Option<Duration>,
+    sent_at: Option<Instant>,
+}
+
+impl Subscription {
+    fn new(captures: tokio::sync::broadcast::Receiver<Published>, credits: Option<u32>, max_fps: Option<f64>) -> Self {
+        let min_interval = max_fps
+            .filter(|fps| fps.is_finite() && *fps > 0.0)
+            .map(|fps| Duration::from_secs_f64(1.0 / fps));
+        Subscription {
+            captures,
+            credits,
+            pending: None,
+            min_interval,
+            sent_at: None,
+        }
+    }
+
+    fn has_credit(&self) -> bool {
+        self.credits.is_none_or(|credits| credits > 0)
+    }
+
+    /// When the frame rate cap next allows a frame, if it is holding one.
+    fn paced_until(&self) -> Option<Instant> {
+        let (interval, sent) = (self.min_interval?, self.sent_at?);
+        let next = sent + interval;
+        (next > Instant::now()).then_some(next)
+    }
+
+    /// The pending frame, if credit and pacing allow it to go now.
+    fn take_sendable(&mut self) -> Option<Published> {
+        if !self.has_credit() || self.paced_until().is_some() {
+            return None;
+        }
+        let frame = self.pending.take()?;
+        if let Some(credits) = self.credits.as_mut() {
+            *credits -= 1;
+        }
+        self.sent_at = Some(Instant::now());
+        Some(frame)
+    }
+}
+
+/// Most credit a connection may hold. A display returns one per frame drawn
+/// and needs a handful in flight to cover the round trip; more than this is
+/// a client asking to be sent a queue, which is what credit exists to stop.
+const MAX_CREDITS: u32 = 64;
+
 /// Drive one client: read commands, write responses, forward captures.
 async fn serve_connection<S>(stream: S, scope: ScopeHandle) -> Result<()>
 where
@@ -166,30 +228,61 @@ where
     // (CLI, Python driver) would otherwise be sent the whole capture stream,
     // which wastes bandwidth and puts binary frames in front of the reply it
     // is waiting for.
-    let mut captures: Option<
-        tokio::sync::broadcast::Receiver<std::sync::Arc<protocol::CaptureFrame>>,
-    > = None;
+    let mut subscription: Option<Subscription> = None;
+    // State pushes, for a connection that subscribed with `state`.
+    let mut states: Option<tokio::sync::watch::Receiver<Arc<ScopeState>>> = None;
 
     loop {
+        let paced_until = subscription
+            .as_ref()
+            .filter(|s| s.pending.is_some() && s.has_credit())
+            .and_then(Subscription::paced_until);
+
         tokio::select! {
             incoming = source.next() => {
                 let Some(message) = incoming else { break };
                 match message? {
                     Message::Text(text) => {
-                        // Subscription is connection state, not hardware
-                        // state, so it is handled here rather than on the
-                        // hardware thread.
+                        // Subscription and credit are connection state, not
+                        // hardware state, so they are handled here rather
+                        // than on the hardware thread.
                         match serde_json::from_str::<Command>(&text) {
-                            Ok(Command::Subscribe) => {
-                                if captures.is_none() {
-                                    captures = Some(scope.subscribe());
-                                }
+                            Ok(Command::Subscribe { credits, max_fps, state }) => {
+                                let receiver = match subscription.take() {
+                                    Some(existing) => existing.captures,
+                                    None => scope.subscribe(),
+                                };
+                                let credits = credits.map(|c| c.min(MAX_CREDITS));
+                                subscription = Some(Subscription::new(receiver, credits, max_fps));
                                 sink.send(Message::Text(
                                     encode(Response::Subscribed).into())).await?;
+                                if state {
+                                    let mut receiver = scope.watch_state();
+                                    let current = receiver.borrow_and_update().clone();
+                                    sink.send(Message::Text(encode(Response::State {
+                                        state: Box::new((*current).clone()),
+                                    }).into())).await?;
+                                    states = Some(receiver);
+                                } else {
+                                    states = None;
+                                }
+                                continue;
+                            }
+                            Ok(Command::Credit { count }) => {
+                                // Unanswered by design: see Command::Credit.
+                                if let Some(sub) = subscription.as_mut() {
+                                    if let Some(credits) = sub.credits.as_mut() {
+                                        *credits = credits.saturating_add(count).min(MAX_CREDITS);
+                                    }
+                                    if let Some(frame) = sub.take_sendable() {
+                                        sink.send(Message::Binary(frame.encoded)).await?;
+                                    }
+                                }
                                 continue;
                             }
                             Ok(Command::Unsubscribe) => {
-                                captures = None;
+                                subscription = None;
+                                states = None;
                                 sink.send(Message::Text(
                                     encode(Response::Unsubscribed).into())).await?;
                                 continue;
@@ -226,30 +319,69 @@ where
             // Parks forever while unsubscribed, so this arm simply never
             // fires rather than needing the loop restructured.
             capture = async {
-                match captures.as_mut() {
-                    Some(receiver) => receiver.recv().await,
+                match subscription.as_mut() {
+                    Some(sub) => sub.captures.recv().await,
                     None => std::future::pending().await,
                 }
             } => {
+                let Some(sub) = subscription.as_mut() else { continue };
                 match capture {
                     Ok(frame) => {
-                        sink.send(Message::Binary(frame.encode().into())).await?;
+                        sub.pending = Some(frame);
+                        if let Some(frame) = sub.take_sendable() {
+                            sink.send(Message::Binary(frame.encoded)).await?;
+                        }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
-                        // This client could not keep up. Dropping stale
-                        // captures is right for a live display; tell the
-                        // client so it can report the gap rather than
-                        // silently showing an incomplete record.
-                        tracing::debug!(missed, "client lagged, dropped captures");
-                        let notice = encode(Response::Error {
-                            message: format!(
-                                "dropped {missed} captures: client is not keeping up"
-                            ),
-                        });
-                        sink.send(Message::Text(notice.into())).await?;
+                        // With credit, skipping stale captures is the design:
+                        // the next one received is newer and replaces them.
+                        // Without it, the client expected every capture and
+                        // is told how many it did not get.
+                        if sub.credits.is_none() {
+                            tracing::debug!(missed, "client lagged, dropped captures");
+                            let notice = encode(Response::Error {
+                                message: format!(
+                                    "dropped {missed} captures: client is not keeping up"
+                                ),
+                            });
+                            sink.send(Message::Text(notice.into())).await?;
+                        }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
+            }
+
+            // A frame held back only by the frame rate cap goes when it lifts.
+            _ = async {
+                match paced_until {
+                    Some(at) => tokio::time::sleep_until(at.into()).await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                if let Some(sub) = subscription.as_mut() {
+                    if let Some(frame) = sub.take_sendable() {
+                        sink.send(Message::Binary(frame.encoded)).await?;
+                    }
+                }
+            }
+
+            changed = async {
+                match states.as_mut() {
+                    Some(receiver) => receiver.changed().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                if changed.is_err() {
+                    states = None;
+                    continue;
+                }
+                let current = match states.as_mut() {
+                    Some(receiver) => receiver.borrow_and_update().clone(),
+                    None => continue,
+                };
+                sink.send(Message::Text(encode(Response::State {
+                    state: Box::new((*current).clone()),
+                }).into())).await?;
             }
         }
     }
