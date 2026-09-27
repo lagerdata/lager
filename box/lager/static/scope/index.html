@@ -44,6 +44,10 @@
       <span id="stat-latency">&mdash;</span>
     </div>
 
+    <!-- What the last frame drawn was: triggered, auto-triggered, rolling, or
+         stopped. A bench scope shows this in the corner of its screen; it is
+         the first thing to look at when a trace will not hold still. -->
+    <span id="trig-status" class="trig trig--stop" role="status">STOP</span>
     <span id="link" class="link link--down">disconnected</span>
     <button id="connect" class="btn btn--primary" type="button">Connect</button>
   </header>
@@ -89,6 +93,29 @@
                     title="Centre the trigger">0</button>
           </div>
         </div>
+        <!-- How consecutive captures combine. The count only applies to
+             average. Peak detect is offered disabled on a unit that cannot
+             do it, with the reason in its title. -->
+        <div class="field field--stack">
+          <span>Acquire</span>
+          <div class="field-row">
+            <select id="acquire-mode" aria-label="Acquisition mode">
+              <option value="normal">Normal</option>
+              <option value="average">Average</option>
+              <option value="peak">Peak detect</option>
+            </select>
+            <input id="acquire-count" type="number" min="1" max="1024" step="1"
+                   value="16" aria-label="Captures to average" title="Captures to average">
+          </div>
+        </div>
+        <label id="roll-field" class="field field--stack">
+          <span>Roll</span>
+          <select id="roll-mode">
+            <option value="auto">Auto (50 ms/div and slower)</option>
+            <option value="on">On</option>
+            <option value="off">Off</option>
+          </select>
+        </label>
       </div>
 
       <div class="group">
@@ -123,12 +150,63 @@
           <span>Level (V)</span>
           <input id="trigger-level" type="number" step="0.01" value="0">
         </label>
+        <label class="field field--stack">
+          <span>Holdoff (s)</span>
+          <input id="trigger-holdoff" type="number" step="any" min="0" max="10" value="0">
+        </label>
         <!-- On by default: a trigger level you cannot see is one you cannot
              set with any confidence. Off for a crowded screen, or to read a
              trace the markers cross. -->
         <label class="field field--inline">
           <input id="trigger-markers" type="checkbox" checked>
           <span>Show trigger markers</span>
+        </label>
+      </div>
+
+      <!-- How the trace is drawn. Held on the box, like the cursors, so the
+           terminal CLI can set these and this page follows. -->
+      <div class="group">
+        <div class="group__title">Display</div>
+        <label class="field field--stack">
+          <span>Persistence</span>
+          <select id="display-persistence">
+            <option value="off">Off</option>
+            <option value="0.5">0.5 s</option>
+            <option value="1">1 s</option>
+            <option value="2">2 s</option>
+            <option value="5">5 s</option>
+            <option value="infinite">Infinite</option>
+          </select>
+        </label>
+        <div class="field field--stack">
+          <span>Zoom &times; / centre (s)</span>
+          <div class="field-row">
+            <input id="display-zoom" type="number" min="1" max="1000" step="any"
+                   value="1" aria-label="Zoom factor">
+            <input id="display-zoom-center" type="number" step="any" value="0"
+                   aria-label="Zoom centre, seconds from the trigger"
+                   title="Seconds from the trigger">
+          </div>
+        </div>
+        <label class="field field--stack">
+          <span>Math</span>
+          <select id="display-math">
+            <option value="off">Off</option>
+            <option value="A+B">A + B</option>
+            <option value="A-B">A &minus; B</option>
+            <option value="B-A">B &minus; A</option>
+            <option value="A*B">A &times; B</option>
+          </select>
+        </label>
+        <label class="field field--stack">
+          <span>FFT</span>
+          <select id="display-fft">
+            <option value="off">Off</option>
+          </select>
+        </label>
+        <label class="field field--inline">
+          <input id="display-xy" type="checkbox">
+          <span>XY (B against A)</span>
         </label>
       </div>
 

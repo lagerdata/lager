@@ -15,6 +15,12 @@ const CHANNEL_DESC_SIZE = 16;
 
 export const FLAG_TRIGGERED = 1 << 0;
 export const FLAG_STREAMING = 1 << 1;
+// Samples are (minimum, maximum) pairs, one pair per 2 * sampleIntervalNs.
+export const FLAG_ENVELOPE = 1 << 2;
+
+// A sample that was not captured: the part of a rolling screen the stream
+// has not reached. No ADC produces it.
+export const NO_SAMPLE = -32768;
 
 const COUPLING = ['DC', 'AC', 'GND'];
 
@@ -31,6 +37,10 @@ export class CaptureFrame {
 
   get streaming() {
     return (this.flags & FLAG_STREAMING) !== 0;
+  }
+
+  get envelope() {
+    return (this.flags & FLAG_ENVELOPE) !== 0;
   }
 
   get sampleRateHz() {
@@ -68,7 +78,7 @@ export class CaptureFrame {
     const raw = this.counts(index);
     const out = new Float64Array(raw.length);
     for (let i = 0; i < raw.length; i += 1) {
-      out[i] = raw[i] * scaleVPerCount + offsetV;
+      out[i] = raw[i] === NO_SAMPLE ? NaN : raw[i] * scaleVPerCount + offsetV;
     }
     return out;
   }

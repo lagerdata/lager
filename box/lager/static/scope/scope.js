@@ -9,15 +9,25 @@
  * Commands go over `POST /net/command` -- the same endpoint the terminal CLI
  * uses -- so the UI has no privileged path to the hardware.
  *
- * Rendering decodes on the socket and draws on a frame callback rather than
- * drawing per capture: captures arrive at ~100/s while a display only needs
- * ~60, so drawing each one would burn CPU on frames nobody sees.
+ * The stream is paced by the page. It subscribes with a few credits and
+ * returns one for each frame it draws, on the animation frame, so the daemon
+ * sends at the rate the display consumes and always sends the newest capture.
+ * Before this every capture was pushed as it was taken -- 130 a second, 2 MB/s
+ * -- and on a link that could not keep up they queued, which showed as a
+ * trace that froze and then caught up. A hidden tab draws nothing, returns
+ * nothing, and is sent nothing.
+ *
+ * Settings arrive the same way: the daemon pushes its state after every
+ * change, whoever made it, so a timebase set from the terminal moves the
+ * dropdown on a page that is already open.
  */
 
-import { decode, FLAG_TRIGGERED } from './lscp.js';
+import { decode, FLAG_TRIGGERED, NO_SAMPLE } from './lscp.js';
 import * as grammar from './commands.js';
+import * as render from './render.js';
 
 const CHANNEL_COLORS = ['--ch-a', '--ch-b', '--ch-c', '--ch-d'];
+const MATH_COLOR = '--ch-math';
 
 const TIMEBASES = [
   1e-6, 2e-6, 5e-6, 1e-5, 2e-5, 5e-5, 1e-4, 2e-4, 5e-4,
@@ -160,7 +170,9 @@ function timebaseChoices(caps, memoryDepth) {
   const fastest = depth / (rate * HORIZONTAL_DIVISIONS);
   if (!(fastest > 0)) return TIMEBASES.slice();
 
-  const slowest = TIMEBASES[TIMEBASES.length - 1];
+  // Roll mode takes a slow timebase as asked, so a unit that can roll gets
+  // the ladder out to 10 s/div; block mode stops where the list always did.
+  const slowest = caps && caps.roll_mode ? 10 : TIMEBASES[TIMEBASES.length - 1];
   const reachable = [];
   // Past the slowest offered by one step, so the ladder does not stop just
   // short of a whole second on a unit whose steps straddle it.
@@ -213,6 +225,31 @@ function sampleTraceAt(frame, volts, seconds) {
 }
 
 const el = (id) => document.getElementById(id);
+
+/** A channel as the daemon's JSON spells it -- {"Alphabetic": "A"} -- as "A". */
+function channelName(id) {
+  if (!id) return '';
+  if (typeof id === 'string') return id;
+  if (id.Alphabetic) return id.Alphabetic;
+  if (id.Numeric !== undefined) return String.fromCharCode(64 + Number(id.Numeric));
+  return String(id);
+}
+
+/** Set a control from pushed state unless someone is editing it. */
+function setIdle(id, value) {
+  const control = typeof id === 'string' ? el(id) : id;
+  if (!control || value === undefined || value === null) return;
+  if (typeof document !== 'undefined' && document.activeElement === control) return;
+  const text = String(value);
+  if (control.type === 'checkbox') {
+    control.checked = Boolean(value);
+    return;
+  }
+  if (control.tagName === 'SELECT' && ![...control.options].some((o) => o.value === text)) {
+    control.append(new Option(text, text));
+  }
+  control.value = text;
+}
 
 /** Format a value with an SI prefix, for axis labels and readouts. */
 function si(value, unit, digits = 3) {
@@ -305,6 +342,24 @@ class ScopeApp {
     this.lastRateAt = performance.now();
     this.rate = 0;
     this.latencyMs = null;
+
+    // The newest capture not yet drawn, still encoded: decoding waits for
+    // the animation frame, so a capture replaced before it is drawn costs
+    // nothing but its arrival.
+    this.pendingBuffer = null;
+    // Frames received since credit was last returned.
+    this.owedCredits = 0;
+    // The daemon's last pushed state, and the display settings in it.
+    this.state = null;
+    this.display = {};
+    // Working buffers the renderer reuses from frame to frame.
+    this.extremes = { min: new Float32Array(0), max: new Float32Array(0) };
+    this.spectrumCache = {};
+    this.persist = null;
+    this.colors = null;
+    this.frameSeq = null;
+    this.drawnCount = 0;
+    this.status = '';
 
     this.console = new Console(el('console-output'));
     this.canvas = el('scope-canvas');
@@ -469,7 +524,119 @@ class ScopeApp {
     }
     timebase.value = String(1e-3);
 
+    // Spectrum: one choice per channel this unit has.
+    const fft = el('display-fft');
+    if (fft) {
+      fft.replaceChildren(new Option('Off', 'off'));
+      labels.forEach((label) => fft.append(new Option(`Channel ${label}`, label)));
+    }
+    // Roll mode only where the unit can stream; peak detect only where its
+    // driver can aggregate, and disabled rather than hidden so its absence
+    // is explained.
+    const rollField = el('roll-field');
+    if (rollField) rollField.hidden = !caps.roll_mode;
+    const peak = el('acquire-mode') && [...el('acquire-mode').options].find((o) => o.value === 'peak');
+    if (peak) {
+      peak.disabled = !caps.peak_detect;
+      peak.title = caps.peak_detect ? ''
+        : `The ${caps.model || 'unit'} keeps one sample per interval in block mode; roll mode is always peak-detected`;
+    }
+
     this.showCapabilityNotes(caps);
+  }
+
+  /**
+   * Bring every control into step with the state the daemon pushed.
+   *
+   * Nothing is sent back: this is what the hardware already has. A field
+   * someone is typing in is left alone until they finish.
+   */
+  applyState(state) {
+    const previous = this.state;
+    this.state = state;
+    this.display = state.display || {};
+    this.adoptCursors(this.display.cursors || null);
+
+    for (const channel of state.channels || []) {
+      const label = channelName(channel.channel);
+      const cs = this.channelState.get(label);
+      if (!cs) continue;
+      cs.enabled = Boolean(channel.enabled);
+      if (cs.toggle) cs.toggle.checked = cs.enabled;
+      if (channel.attenuation && channel.attenuation !== cs.attenuation) {
+        cs.attenuation = channel.attenuation;
+        this.showProbe(cs, channel.attenuation);
+        this.rebuildScaleChoices(label);
+      }
+      if (channel.volts_per_div && channel.volts_per_div !== cs.voltsPerDiv) {
+        this.applyVoltsPerDiv(label, channel.volts_per_div, { push: false });
+      }
+      if (cs.couplingSelect && channel.coupling) {
+        setIdle(cs.couplingSelect, String(channel.coupling).toLowerCase());
+      }
+    }
+
+    const timebase = state.timebase || {};
+    const select = el('timebase');
+    if (timebase.time_per_div > 0 && select && document.activeElement !== select) {
+      this.showTimebase(timebase.time_per_div);
+    }
+    if (timebase.time_per_div > 0 && timebase.time_offset !== undefined) {
+      const divisions = timebase.time_offset / timebase.time_per_div;
+      if (Math.abs(divisions - this.timePositionDiv) > 1e-6
+          && document.activeElement !== el('time-position')) {
+        this.applyTimePosition(divisions, { push: false });
+      }
+    }
+
+    const trigger = state.trigger || {};
+    setIdle('trigger-mode', state.capture_mode);
+    setIdle('trigger-source', channelName(trigger.source));
+    setIdle('trigger-slope', trigger.slope);
+    if (Number.isFinite(trigger.level)) setIdle('trigger-level', Number(trigger.level.toPrecision(6)));
+    if (Number.isFinite(trigger.holdoff_s)) setIdle('trigger-holdoff', trigger.holdoff_s);
+
+    const acquisition = state.acquisition || {};
+    setIdle('acquire-mode', acquisition.mode);
+    setIdle('acquire-count', acquisition.average_count);
+    setIdle('roll-mode', timebase.roll);
+
+    const display = this.display;
+    const persistence = display.persistence;
+    setIdle('display-persistence', persistence === undefined ? 'off' : persistence);
+    setIdle('display-xy', Boolean(display.xy));
+    setIdle('display-zoom', display.zoom ? display.zoom.factor : 1);
+    setIdle('display-zoom-center', display.zoom ? display.zoom.center : 0);
+    setIdle('display-math', display.math ? display.math.expr : 'off');
+    setIdle('display-fft', display.fft ? display.fft.channel : 'off');
+
+    // Earlier traces were drawn at another scale or another time; keeping
+    // them would smear the old settings over the new ones.
+    if (previous && JSON.stringify(previous.channels) !== JSON.stringify(state.channels)) {
+      this.persist = null;
+    }
+    if (previous && previous.timebase && previous.timebase.time_per_div !== timebase.time_per_div) {
+      this.persist = null;
+    }
+    this.status = '';
+    this.requestRedraw();
+  }
+
+  /** Change display settings, drawing them now and telling the box. */
+  setDisplay(settings) {
+    // Drawn before the reply, so the control feels immediate; the state the
+    // box pushes back confirms it, or puts it right if it refused.
+    const merged = { ...(this.display || {}) };
+    for (const [key, value] of Object.entries(settings)) {
+      if (value === 'off') delete merged[key];
+      else if (key === 'xy') merged.xy = value === 'on';
+      else if (key === 'math') merged.math = { expr: value };
+      else merged[key] = value;
+    }
+    this.display = merged;
+    this.persist = null;
+    this.requestRedraw();
+    return this.runCommand('set_display', settings, 'display');
   }
 
   buildChannelStrip(label, index, caps) {
@@ -1098,8 +1265,13 @@ class ScopeApp {
       el('connect').textContent = 'Disconnect';
       this.console.write('Capture stream connected.', 'note');
       // Captures are off until asked for, so that a control-only client is
-      // not sent the stream. This is the client that wants it.
-      socket.send(JSON.stringify({ command: 'Subscribe' }));
+      // not sent the stream. This is the client that wants it -- paced by
+      // credit, and with the state pushed after every change.
+      this.owedCredits = 0;
+      this.pendingBuffer = null;
+      socket.send(JSON.stringify({
+        command: 'Subscribe', credits: render.CREDIT_WINDOW, state: true,
+      }));
     });
 
     socket.addEventListener('message', (event) => {
@@ -1144,6 +1316,10 @@ class ScopeApp {
       return;
     }
     const response = message.Response || message;
+    if (response.response === 'State' && response.state) {
+      this.applyState(response.state);
+      return;
+    }
     if (response.response === 'Error') {
       // The daemon reports dropped captures this way; it is a warning about
       // the display, not a failed command.
@@ -1153,39 +1329,57 @@ class ScopeApp {
   }
 
   onCapture(buffer) {
-    let frame;
-    try {
-      frame = decode(buffer);
-    } catch (e) {
-      this.console.error(`Bad capture frame: ${e.message}`);
-      return;
-    }
+    // Kept encoded until the animation frame: the newest wins, and one
+    // replaced before it is drawn is never decoded at all.
+    this.pendingBuffer = buffer;
+    this.owedCredits += 1;
+  }
 
-    this.latest = frame;
-    // Coalesce: the newest frame wins and is drawn on the next animation
-    // frame. Drawing every capture would render frames the display never
-    // shows.
-    this.dirty = true;
-    this.captureCount += 1;
+  /** Account for a frame that is about to be drawn. */
+  noteFrame(frame) {
+    this.drawnCount += 1;
+    // Captures between this frame and the last, from their sequence numbers:
+    // the rate the scope is capturing at, as opposed to the rate drawn.
+    if (this.frameSeq !== null && frame.seq > this.frameSeq) {
+      this.captureCount += frame.seq - this.frameSeq;
+    }
+    this.frameSeq = frame.seq;
 
     const now = performance.now();
     if (now - this.lastRateAt >= 500) {
-      this.rate = (this.captureCount * 1000) / (now - this.lastRateAt);
+      const seconds = (now - this.lastRateAt) / 1000;
+      this.rate = this.captureCount / seconds;
+      this.fps = this.drawnCount / seconds;
       this.captureCount = 0;
+      this.drawnCount = 0;
       this.lastRateAt = now;
       this.updateStats(frame);
     }
   }
 
   updateStats(frame) {
-    el('stat-rate').textContent = `${this.rate.toFixed(0)} cap/s`;
-    const rate = 1e9 / frame.sampleIntervalNs;
-    el('stat-rate-samples').textContent = si(rate, 'S/s', 3);
+    el('stat-rate').textContent = frame.streaming
+      ? `${(this.fps || 0).toFixed(0)} fps rolling`
+      : `${this.rate.toFixed(0)} cap/s \u00b7 ${(this.fps || 0).toFixed(0)} fps`;
+    const interval = frame.envelope ? frame.sampleIntervalNs * 2 : frame.sampleIntervalNs;
+    el('stat-rate-samples').textContent = frame.envelope
+      ? `${si(1e9 / interval, 'pts/s', 3)}` : si(1e9 / interval, 'S/s', 3);
     el('stat-latency').textContent = `${frame.samplesPerChannel.toLocaleString()} pts`;
     // The capture says how deep a block is, which with the unit's fastest
     // interval is what bounds the reachable timebases. Only known once one
-    // has arrived, so the list is trimmed here rather than at connect.
-    this.rebuildTimebaseChoices(frame.samplesPerChannel);
+    // has arrived, so the list is trimmed here rather than at connect -- and
+    // only from a block: a rolling screen's length is its column count.
+    if (!frame.streaming) this.rebuildTimebaseChoices(frame.samplesPerChannel);
+  }
+
+  /** Return credit for every frame received since the last return. */
+  returnCredits() {
+    if (!this.owedCredits || !this.socket) return;
+    if (this.socket.readyState !== undefined && this.socket.readyState !== 1) return;
+    try {
+      this.socket.send(JSON.stringify({ command: 'Credit', count: this.owedCredits }));
+      this.owedCredits = 0;
+    } catch { /* the close handler reports it */ }
   }
 
   setLink(text, className) {
@@ -1398,6 +1592,20 @@ class ScopeApp {
   }
 
   tick() {
+    if (this.pendingBuffer) {
+      const buffer = this.pendingBuffer;
+      this.pendingBuffer = null;
+      try {
+        this.latest = decode(buffer);
+        this.dirty = true;
+        this.noteFrame(this.latest);
+      } catch (e) {
+        if (!this.decodeFailed) {
+          this.decodeFailed = true;
+          this.console.error(`Bad capture frame: ${e.message}`);
+        }
+      }
+    }
     if (this.dirty && this.latest) {
       // Guarded because the next frame is scheduled below: an exception
       // escaping here would take the whole render loop with it, and every
@@ -1413,6 +1621,10 @@ class ScopeApp {
       }
       this.dirty = false;
     }
+    // After drawing, not on arrival: credit returned per frame drawn is what
+    // paces the stream to the display, and a hidden tab, which gets no
+    // animation frames, stops being sent frames at all.
+    if (this.returnCredits) this.returnCredits();
     requestAnimationFrame(() => this.tick());
   }
 
@@ -1421,72 +1633,62 @@ class ScopeApp {
     const ratio = window.devicePixelRatio || 1;
     const width = this.canvas.width / ratio;
     const height = this.canvas.height / ratio;
+    const display = this.display || {};
 
     ctx.clearRect(0, 0, width, height);
-    el('plot-empty').hidden = true;
+    if (!this.overlayHidden) {
+      el('plot-empty').hidden = true;
+      this.overlayHidden = true;
+    }
 
+    // The spectrum pane takes the lower part of the plot when it is on.
+    const spectrum = display.fft && display.fft.channel ? display.fft : null;
+    const plotHeight = spectrum ? Math.round(height * 0.62) : height;
+
+    if (display.xy) {
+      this.drawXY(ctx, frame, width, plotHeight);
+    } else {
+      this.drawTimeDomain(ctx, frame, width, plotHeight);
+    }
+    if (spectrum) this.drawSpectrum(ctx, frame, spectrum, plotHeight, width, height - plotHeight);
+    this.updateTriggerStatus(frame);
+  }
+
+  /** The channels against time, with everything drawn over them. */
+  drawTimeDomain(ctx, frame, width, height) {
+    const display = this.display || {};
     this.drawGraticule(ctx, width, height);
 
-    const styles = getComputedStyle(document.documentElement);
-    let overflowed = [];
+    // The part of the record across the screen: all of it, or the zoomed
+    // window. Held so the cursors and markers use the same mapping.
+    const intervalS = (frame.envelope ? frame.sampleIntervalNs * 2 : frame.sampleIntervalNs) / 1e9;
+    const view = frame.envelope
+      ? { start: 0, end: frame.samplesPerChannel }
+      : render.zoomWindow(frame.samplesPerChannel, frame.preTriggerSamples,
+        frame.sampleIntervalNs / 1e9, display.zoom);
+    this.currentView = view;
 
+    if (display.persistence) {
+      this.drawPersistence(ctx, frame, view, width, height, display.persistence);
+    } else if (this.persist) {
+      this.persist = null;
+    }
+
+    const overflowed = [];
     frame.channels.forEach((descriptor, index) => {
-      const volts = frame.volts(index);
-      if (!volts || volts.length === 0) return;
-
-      const label = descriptor.channel;
-      const state = this.channelState.get(label);
-      const voltsPerDiv = (state && state.voltsPerDiv) || 1;
-      const fullScale = voltsPerDiv * 4; // 8 divisions, centre at zero.
-      // The channel's vertical position, converted from divisions to the
-      // units the plot works in: half the screen is four divisions, so a
-      // division is a quarter of it.
-      const shift = ((state && state.positionDiv) || 0) / 4;
-
-      ctx.strokeStyle = styles
-        .getPropertyValue(CHANNEL_COLORS[index % CHANNEL_COLORS.length]).trim();
-      ctx.lineWidth = 1.25;
-      ctx.beginPath();
-
-      // One vertical span per horizontal pixel: with 8000+ samples across
-      // ~1000 px, plotting every sample would draw the same column many
-      // times and lose the peaks. Min/max per column keeps the envelope,
-      // which is what makes narrow glitches visible at all.
-      const columns = Math.max(1, Math.floor(width));
-      const perColumn = volts.length / columns;
-      for (let column = 0; column < columns; column += 1) {
-        const start = Math.floor(column * perColumn);
-        const end = Math.min(volts.length, Math.floor((column + 1) * perColumn) + 1);
-        if (start >= end) continue;
-
-        let min = volts[start];
-        let max = volts[start];
-        for (let i = start + 1; i < end; i += 1) {
-          const v = volts[i];
-          if (v < min) min = v;
-          if (v > max) max = v;
-        }
-
-        const yMin = height / 2 - (min / fullScale + shift) * (height / 2);
-        const yMax = height / 2 - (max / fullScale + shift) * (height / 2);
-        if (column === 0) ctx.moveTo(column, yMax);
-        ctx.lineTo(column, yMax);
-        ctx.lineTo(column, yMin);
-      }
-      ctx.stroke();
-
-      if (frame.overflowed && frame.overflowed(index)) overflowed.push(label);
+      this.drawTrace(ctx, frame, index, view, width, height, this.channelColor(index));
+      if (frame.overflowed && frame.overflowed(index)) overflowed.push(descriptor.channel);
     });
+    if (display.math) this.drawMath(ctx, frame, view, width, height, display.math);
 
     // Clipping silently distorts every measurement taken from the capture,
     // so it has to be visible rather than inferred from a flat top.
     const warning = el('overflow-warning');
-    if (overflowed.length) {
-      warning.textContent = `Channel ${overflowed.join(', ')} clipped \u2014 `
-        + 'increase volts/div';
-      warning.hidden = false;
-    } else {
-      warning.hidden = true;
+    const message = overflowed.length
+      ? `Channel ${overflowed.join(', ')} clipped \u2014 increase volts/div` : '';
+    if (warning && warning.textContent !== message) {
+      warning.textContent = message;
+      warning.hidden = !message;
     }
 
     if (this.showTriggerMarkers) {
@@ -1495,14 +1697,383 @@ class ScopeApp {
       // is a setting rather than a property of the capture, so it is drawn
       // either way. That is the case that matters: when nothing is
       // triggering, the level is exactly what you want to see.
-      if (frame.flags & FLAG_TRIGGERED) {
+      if ((frame.flags & FLAG_TRIGGERED) && !frame.streaming) {
         this.drawTriggerMarker(ctx, frame, width, height);
       }
-      this.drawTriggerLevel(ctx, width, height);
+      if (!frame.streaming) this.drawTriggerLevel(ctx, width, height);
     }
 
     // Last, so the readout box sits over the trace rather than under it.
     if (this.cursors) this.drawCursors(ctx, frame, width, height);
+    if (display.zoom && !frame.envelope) this.drawZoomOverview(ctx, frame, view, width, intervalS);
+  }
+
+  /** A channel's colour, read from the stylesheet once rather than per frame. */
+  channelColor(index) {
+    if (!this.colors) {
+      const styles = getComputedStyle(document.documentElement);
+      this.colors = [...CHANNEL_COLORS, MATH_COLOR].map(
+        (name) => styles.getPropertyValue(name).trim() || '#9fe870');
+    }
+    return this.colors[index % CHANNEL_COLORS.length];
+  }
+
+  mathColor() {
+    this.channelColor(0);
+    return this.colors[CHANNEL_COLORS.length];
+  }
+
+  /** Vertical mapping for a channel: volts to y, with its scale and position. */
+  channelMapping(label, height) {
+    const state = this.channelState.get(label);
+    const fullScale = ((state && state.voltsPerDiv) || 1) * 4; // 8 divisions, centre at zero.
+    // The channel's vertical position, converted from divisions to the
+    // units the plot works in: half the screen is four divisions, so a
+    // division is a quarter of it.
+    const shift = ((state && state.positionDiv) || 0) / 4;
+    const half = height / 2;
+    return (volts) => half - (volts / fullScale + shift) * half;
+  }
+
+  /**
+   * One channel, as a vertical span per pixel column.
+   *
+   * With 8000 samples across ~1000 px, plotting every sample would draw the
+   * same column many times and lose the peaks; the lowest and highest of
+   * each column keep the envelope, which is what makes a narrow glitch
+   * visible at all. Zoomed in past a sample per column, it joins the samples
+   * instead, and marks them once they are far enough apart to tell apart.
+   */
+  drawTrace(ctx, frame, index, view, width, height, color) {
+    const descriptor = frame.channels[index];
+    const counts = frame.counts(index);
+    const scale = descriptor.scaleVPerCount;
+    const offset = descriptor.offsetV;
+    const toY = this.channelMapping(descriptor.channel, height);
+    const span = view.end - view.start;
+    const columns = Math.max(1, Math.floor(width));
+
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.25;
+    ctx.beginPath();
+
+    if (!frame.envelope && span < columns) {
+      // Fewer samples than columns: a line through the samples.
+      const first = Math.max(0, Math.floor(view.start));
+      const last = Math.min(counts.length - 1, Math.ceil(view.end));
+      const pixelsPerSample = width / span;
+      for (let i = first; i <= last; i += 1) {
+        const x = ((i - view.start) / span) * width;
+        const y = toY(counts[i] * scale + offset);
+        if (i === first) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+      if (pixelsPerSample >= 6) {
+        ctx.fillStyle = color;
+        for (let i = first; i <= last; i += 1) {
+          const x = ((i - view.start) / span) * width;
+          ctx.fillRect(x - 1.5, toY(counts[i] * scale + offset) - 1.5, 3, 3);
+        }
+      }
+      return;
+    }
+
+    if (this.extremes.min.length < columns) {
+      this.extremes = { min: new Float32Array(columns), max: new Float32Array(columns) };
+    }
+    render.columnExtremes(this.extremes, counts, view.start, view.end, columns, frame.envelope);
+    const { min, max } = this.extremes;
+    let drawing = false;
+    for (let column = 0; column < columns; column += 1) {
+      if (Number.isNaN(min[column])) {
+        // Not captured yet: the unfilled part of a rolling screen.
+        drawing = false;
+        continue;
+      }
+      const yMax = toY(max[column] * scale + offset);
+      const yMin = toY(min[column] * scale + offset);
+      if (!drawing) {
+        ctx.moveTo(column, yMax);
+        drawing = true;
+      }
+      ctx.lineTo(column, yMax);
+      ctx.lineTo(column, yMin);
+    }
+    ctx.stroke();
+  }
+
+  /** A trace computed from two channels, sample by sample. */
+  drawMath(ctx, frame, view, width, height, math) {
+    const parsed = render.parseMath(math.expr);
+    const a = parsed ? frame.channelIndex(parsed.left) : -1;
+    const b = parsed ? frame.channelIndex(parsed.right) : -1;
+    if (a < 0 || b < 0 || frame.envelope) {
+      this.drawNote(ctx, width, height, frame.envelope
+        ? 'Math is not drawn in roll mode'
+        : `Math ${math.expr} needs channels ${parsed ? `${parsed.left} and ${parsed.right}` : ''} on`);
+      return;
+    }
+    const ca = frame.counts(a);
+    const cb = frame.counts(b);
+    const da = frame.channels[a];
+    const db = frame.channels[b];
+    // On the first channel's scale for a sum or difference; a product is in
+    // volts squared, drawn at the product of the two scales.
+    const perDiv = (label) => ((this.channelState.get(label) || {}).voltsPerDiv || 1);
+    const scale = parsed.op === '*' ? perDiv(parsed.left) * perDiv(parsed.right)
+      : Math.max(perDiv(parsed.left), perDiv(parsed.right));
+    const toY = (v) => height / 2 - (v / (scale * 4)) * (height / 2);
+    const columns = Math.max(1, Math.floor(width));
+    const span = view.end - view.start;
+    const perColumn = span / columns;
+
+    ctx.strokeStyle = this.mathColor();
+    ctx.lineWidth = 1.25;
+    ctx.beginPath();
+    for (let column = 0; column < columns; column += 1) {
+      const from = Math.floor(view.start + column * perColumn);
+      const to = Math.min(ca.length, Math.floor(view.start + (column + 1) * perColumn) + 1);
+      let low = Infinity;
+      let high = -Infinity;
+      for (let i = from; i < to; i += 1) {
+        const v = render.combine(parsed.op,
+          ca[i] * da.scaleVPerCount + da.offsetV, cb[i] * db.scaleVPerCount + db.offsetV);
+        if (v < low) low = v;
+        if (v > high) high = v;
+      }
+      if (low === Infinity) continue;
+      if (column === 0) ctx.moveTo(column, toY(high));
+      ctx.lineTo(column, toY(high));
+      ctx.lineTo(column, toY(low));
+    }
+    ctx.stroke();
+
+    const unit = parsed.op === '*' ? 'V\u00b2' : 'V';
+    this.drawNote(ctx, width, height,
+      `M ${parsed.left}${parsed.op}${parsed.right}  ${si(scale, unit, 2)}/div`, 'right');
+  }
+
+  /** Channel B against channel A. */
+  drawXY(ctx, frame, width, height) {
+    this.drawGraticule(ctx, width, height);
+    if (frame.channels.length < 2) {
+      this.drawNote(ctx, width, height, 'XY needs two channels on');
+      return;
+    }
+    const [da, db] = frame.channels;
+    const ca = frame.counts(0);
+    const cb = frame.counts(1);
+    const stateA = this.channelState.get(da.channel) || {};
+    const stateB = this.channelState.get(db.channel) || {};
+    // A across ten divisions, B up eight, each at its own volts/div and moved
+    // by its own position.
+    const halfW = width / 2;
+    const halfH = height / 2;
+    const xOf = (v) => halfW + (v / ((stateA.voltsPerDiv || 1) * 5) + (stateA.positionDiv || 0) / 5) * halfW;
+    const yOf = (v) => halfH - (v / ((stateB.voltsPerDiv || 1) * 4) + (stateB.positionDiv || 0) / 4) * halfH;
+
+    const target = this.display.persistence ? this.persistLayer(width, height) : null;
+    const draw = (context) => {
+      context.strokeStyle = this.channelColor(0);
+      context.lineWidth = 1;
+      context.beginPath();
+      const step = frame.envelope ? 2 : 1;
+      let moved = false;
+      for (let i = 0; i < ca.length; i += step) {
+        if (ca[i] === NO_SAMPLE || cb[i] === NO_SAMPLE) { moved = false; continue; }
+        const x = xOf(ca[i] * da.scaleVPerCount + da.offsetV);
+        const y = yOf(cb[i] * db.scaleVPerCount + db.offsetV);
+        if (!moved) { context.moveTo(x, y); moved = true; } else context.lineTo(x, y);
+      }
+      context.stroke();
+    };
+    if (target) {
+      this.fadePersistence(this.display.persistence);
+      draw(target.ctx);
+      ctx.drawImage(target.canvas, 0, 0, width, height);
+    } else {
+      draw(ctx);
+    }
+    this.drawNote(ctx, width, height,
+      `X ${da.channel} ${si(stateA.voltsPerDiv || 1, 'V', 2)}/div   Y ${db.channel} ${si(stateB.voltsPerDiv || 1, 'V', 2)}/div`);
+  }
+
+  /** The offscreen layer traces accumulate on, sized to the plot. */
+  persistLayer(width, height) {
+    const ratio = window.devicePixelRatio || 1;
+    const w = Math.max(1, Math.floor(width * ratio));
+    const h = Math.max(1, Math.floor(height * ratio));
+    if (!this.persist || this.persist.canvas.width !== w || this.persist.canvas.height !== h) {
+      const canvas = typeof OffscreenCanvas !== 'undefined'
+        ? new OffscreenCanvas(w, h) : Object.assign(document.createElement('canvas'), { width: w, height: h });
+      const context = canvas.getContext('2d');
+      context.setTransform(ratio, 0, 0, ratio, 0, 0);
+      this.persist = { canvas, ctx: context, at: performance.now() };
+    }
+    return this.persist;
+  }
+
+  /** Fade the persistence layer by the time since it was last drawn on. */
+  fadePersistence(seconds) {
+    const layer = this.persist;
+    const now = performance.now();
+    const fade = render.persistenceFade(seconds, now - layer.at);
+    layer.at = now;
+    if (fade > 0) {
+      layer.ctx.save();
+      layer.ctx.setTransform(1, 0, 0, 1, 0, 0);
+      layer.ctx.globalCompositeOperation = 'destination-out';
+      layer.ctx.fillStyle = `rgba(0, 0, 0, ${Math.min(1, fade)})`;
+      layer.ctx.fillRect(0, 0, layer.canvas.width, layer.canvas.height);
+      layer.ctx.restore();
+    }
+  }
+
+  /** Earlier traces, fading, under the live one. */
+  drawPersistence(ctx, frame, view, width, height, seconds) {
+    const layer = this.persistLayer(width, height);
+    this.fadePersistence(seconds);
+    layer.ctx.globalAlpha = 0.55;
+    frame.channels.forEach((descriptor, index) => {
+      this.drawTrace(layer.ctx, frame, index, view, width, height, this.channelColor(index));
+    });
+    layer.ctx.globalAlpha = 1;
+    ctx.drawImage(layer.canvas, 0, 0, width, height);
+  }
+
+  /** Where the zoomed window sits in the whole record, along the top. */
+  drawZoomOverview(ctx, frame, view, width, intervalS) {
+    const total = frame.samplesPerChannel || 1;
+    const x0 = (view.start / total) * width;
+    const x1 = (view.end / total) * width;
+    ctx.save();
+    ctx.fillStyle = '#1c2430';
+    ctx.fillRect(0, 0, width, 5);
+    ctx.fillStyle = '#d29922';
+    ctx.fillRect(x0, 0, Math.max(2, x1 - x0), 5);
+    ctx.font = '11px ui-monospace, monospace';
+    ctx.fillStyle = '#8b98a5';
+    ctx.textBaseline = 'top';
+    const factor = this.display.zoom.factor;
+    const span = (view.end - view.start) * intervalS;
+    ctx.fillText(`zoom \u00d7${factor}  ${si(span / 10, 's', 3)}/div`, 4, 8);
+    ctx.restore();
+  }
+
+  /** A line of text in a corner of the plot. */
+  drawNote(ctx, width, height, text, corner = 'left') {
+    ctx.save();
+    ctx.font = '11px ui-monospace, monospace';
+    ctx.textBaseline = 'bottom';
+    const w = ctx.measureText(text).width + 8;
+    const x = corner === 'right' ? width - w - 4 : 4;
+    ctx.fillStyle = '#05080dcc';
+    ctx.fillRect(x, height - 18, w, 15);
+    ctx.fillStyle = '#8b98a5';
+    ctx.fillText(text, x + 4, height - 5);
+    ctx.restore();
+  }
+
+  /** The spectrum of one channel, in a pane under the trace. */
+  drawSpectrum(ctx, frame, settings, top, width, height) {
+    ctx.save();
+    ctx.translate(0, top);
+    ctx.fillStyle = '#05080d';
+    ctx.fillRect(0, 0, width, height);
+    ctx.strokeStyle = '#2b3542';
+    ctx.beginPath();
+    ctx.moveTo(0, 0.5);
+    ctx.lineTo(width, 0.5);
+    ctx.stroke();
+
+    const index = frame.channelIndex(settings.channel);
+    if (index < 0) {
+      this.drawNote(ctx, width, height, `FFT: channel ${settings.channel} is off`);
+      ctx.restore();
+      return;
+    }
+    const counts = frame.counts(index);
+    const d = frame.channels[index];
+    const envelope = frame.envelope;
+    const count = envelope ? counts.length / 2 : counts.length;
+    if (!this.spectrumSamples || this.spectrumSamples.length < count) {
+      this.spectrumSamples = new Float64Array(count);
+    }
+    const samples = this.spectrumSamples;
+    let filled = 0;
+    for (let i = 0; i < count; i += 1) {
+      const c = envelope ? (counts[2 * i] + counts[2 * i + 1]) / 2 : counts[i];
+      if (counts[envelope ? 2 * i : i] === NO_SAMPLE) continue;
+      samples[filled] = c * d.scaleVPerCount + d.offsetV;
+      filled += 1;
+    }
+    const intervalS = (envelope ? frame.sampleIntervalNs * 2 : frame.sampleIntervalNs) / 1e9;
+    const result = render.spectrumDbv(samples, filled, 1 / intervalS,
+      settings.window || 'hann', this.spectrumCache);
+    if (!result) {
+      this.drawNote(ctx, width, height, 'FFT: too few samples');
+      ctx.restore();
+      return;
+    }
+
+    // +20 dBV at the top to -100 at the bottom, a line every 20.
+    const topDb = 20;
+    const bottomDb = -100;
+    const yOf = (db) => ((topDb - Math.max(bottomDb, Math.min(topDb, db))) / (topDb - bottomDb)) * height;
+    ctx.strokeStyle = '#1c2430';
+    ctx.fillStyle = '#56606b';
+    ctx.font = '10px ui-monospace, monospace';
+    ctx.textBaseline = 'top';
+    ctx.beginPath();
+    for (let db = topDb; db >= bottomDb; db -= 20) {
+      const y = Math.round(yOf(db)) + 0.5;
+      ctx.moveTo(0, y);
+      ctx.lineTo(width, y);
+    }
+    ctx.stroke();
+    for (let db = topDb - 20; db > bottomDb; db -= 20) ctx.fillText(`${db} dBV`, 2, yOf(db) + 1);
+
+    // Peak per pixel column, as on the trace, so a narrow spur survives.
+    const bins = result.db;
+    const columns = Math.max(1, Math.floor(width));
+    const perColumn = (bins.length - 1) / columns;
+    let peakBin = 1;
+    ctx.strokeStyle = this.channelColor(index);
+    ctx.beginPath();
+    for (let column = 0; column < columns; column += 1) {
+      const from = Math.max(1, Math.floor(column * perColumn));
+      const to = Math.min(bins.length, Math.floor((column + 1) * perColumn) + 1);
+      let high = -Infinity;
+      for (let k = from; k < to; k += 1) {
+        if (bins[k] > high) high = bins[k];
+        if (bins[k] > bins[peakBin]) peakBin = k;
+      }
+      if (high === -Infinity) continue;
+      if (column === 0) ctx.moveTo(column, yOf(high)); else ctx.lineTo(column, yOf(high));
+    }
+    ctx.stroke();
+
+    const nyquist = result.resolution * (bins.length - 1);
+    this.drawNote(ctx, width, height,
+      `FFT ${settings.channel} ${settings.window || 'hann'}  0\u2013${si(nyquist, 'Hz', 3)}  `
+      + `RBW ${si(result.resolution, 'Hz', 3)}  peak ${si(peakBin * result.resolution, 'Hz', 4)} `
+      + `${bins[peakBin].toFixed(1)} dBV`);
+    ctx.restore();
+  }
+
+  /** "Trig'd", "Auto", "Roll" or "Stop", as a bench scope's status reads. */
+  updateTriggerStatus(frame) {
+    const acquiring = this.state ? this.state.acquiring : true;
+    let status;
+    if (frame.streaming) status = 'roll';
+    else if (!acquiring) status = 'stop';
+    else status = (frame.flags & FLAG_TRIGGERED) ? 'trigd' : 'auto';
+    if (status === this.status) return;
+    this.status = status;
+    const badge = el('trig-status');
+    if (!badge) return;
+    badge.textContent = { roll: 'ROLL', stop: 'STOP', trigd: 'TRIG\u2019D', auto: 'AUTO' }[status];
+    badge.className = `trig trig--${status}`;
   }
 
   /** The cursors, and what they read on the frame being drawn.
@@ -1605,10 +2176,10 @@ class ScopeApp {
 
   /** Where a time relative to the trigger falls, in pixels across the plot. */
   timeToX(frame, seconds, width) {
-    const total = frame.samplesPerChannel;
+    const view = this.currentView || { start: 0, end: frame.samplesPerChannel };
     const index = frame.preTriggerSamples
       + (seconds * 1e9) / frame.sampleIntervalNs;
-    return (index / total) * width;
+    return ((index - view.start) / (view.end - view.start)) * width;
   }
 
   /** A frame's volts for a channel label, or null if it is not in the frame. */
@@ -1713,7 +2284,8 @@ class ScopeApp {
   drawTriggerMarker(ctx, frame, width, height) {
     const total = frame.samplesPerChannel;
     if (!total) return;
-    const x = (frame.preTriggerSamples / total) * width;
+    const x = this.timeToX(frame, 0, width);
+    if (x < 0 || x > width) return;
     ctx.strokeStyle = '#d29922';
     ctx.lineWidth = 1;
     ctx.setLineDash([4, 4]);
@@ -1820,6 +2392,50 @@ class ScopeApp {
       this.requestRedraw();
     });
 
+    el('trigger-holdoff').addEventListener('change', (event) => {
+      const seconds = Number(event.target.value);
+      if (event.target.value === '' || !Number.isFinite(seconds)) return;
+      this.runCommand('set_trigger_holdoff', { seconds }, `holdoff ${seconds}`);
+    });
+
+    const sendAcquire = () => {
+      const mode = el('acquire-mode').value;
+      const params = { mode };
+      if (mode === 'average') params.count = Number(el('acquire-count').value) || 16;
+      this.runCommand('set_acquire', params, `acquire ${mode}`);
+    };
+    el('acquire-mode').addEventListener('change', sendAcquire);
+    el('acquire-count').addEventListener('change', () => {
+      if (el('acquire-mode').value === 'average') sendAcquire();
+    });
+    el('roll-mode').addEventListener('change', (event) => {
+      this.runCommand('set_roll', { mode: event.target.value }, `roll ${event.target.value}`);
+    });
+
+    el('display-persistence').addEventListener('change', (event) => {
+      const value = event.target.value;
+      this.setDisplay({
+        persistence: value === 'off' || value === 'infinite' ? value : Number(value),
+      });
+    });
+    el('display-xy').addEventListener('change', (event) => {
+      this.setDisplay({ xy: event.target.checked ? 'on' : 'off' });
+    });
+    const sendZoom = () => {
+      const factor = Number(el('display-zoom').value);
+      const center = Number(el('display-zoom-center').value) || 0;
+      this.setDisplay({ zoom: !(factor > 1) ? 'off' : { factor, center } });
+    };
+    el('display-zoom').addEventListener('change', sendZoom);
+    el('display-zoom-center').addEventListener('change', sendZoom);
+    el('display-math').addEventListener('change', (event) => {
+      this.setDisplay({ math: event.target.value });
+    });
+    el('display-fft').addEventListener('change', (event) => {
+      const value = event.target.value;
+      this.setDisplay({ fft: value === 'off' ? 'off' : { channel: value, window: 'hann' } });
+    });
+
     el('trigger-markers').addEventListener('change', (event) => {
       this.showTriggerMarkers = event.target.checked;
       this.requestRedraw();
@@ -1893,7 +2509,7 @@ class ScopeApp {
 // `trace_voltage_at`: the reading in the terminal and the label on the plot
 // come from different implementations of the same interpolation.
 export { ScopeApp, voltsPerDivChoices, timebaseChoices, sampleTraceAt,
-         PER_CHANNEL_ACTIONS, isPerChannelAction };
+         PER_CHANNEL_ACTIONS, isPerChannelAction, channelName };
 
 if (typeof document !== 'undefined') {
   const app = new ScopeApp();
