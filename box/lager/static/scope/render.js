@@ -13,12 +13,12 @@
 
 import { NO_SAMPLE } from './lscp.js';
 
-/** Frames the daemon may send ahead of the display.
+/** Frames the daemon may send ahead of the display, at the least.
  *
  * One is drawn per animation frame and its credit returned then, so this is
- * how many can be in flight across the network while the page draws. Three
- * covers a round trip of about two display frames; beyond that a slow link
- * lowers the frame rate rather than queueing frames that arrive stale.
+ * how many can be in flight across the network while the page draws. Six
+ * covers a round trip of about four display frames at 60 Hz; a longer one
+ * is sized by `creditWindow` from the round trip measured.
  */
 export const CREDIT_WINDOW = 6;
 
@@ -144,9 +144,20 @@ export function combine(op, a, b) {
 export function persistenceFade(seconds, dtMs) {
   if (seconds === 'infinite') return 0;
   const tau = (Number(seconds) * 1000) / 3;
-  if (!(tau > 0) || !(dtMs > 0)) return 1;
+  if (!(tau > 0)) return 1;
+  if (!(dtMs > 0)) return 0;
   return 1 - Math.exp(-dtMs / tau);
 }
+
+/** The smallest fade worth applying to a persistence layer.
+ *
+ * Its alpha is 8 bits, and a fade of `f` rounds a pixel below 0.5/f back to
+ * where it was. Applied every display frame, a 2 s persistence fades 2.5% a
+ * frame and leaves every trace stuck at 8% brightness for good; saved up to
+ * 10%, what is left is under 2%, and the steps come faster than the eye
+ * separates them.
+ */
+export const MIN_FADE_STEP = 0.1;
 
 // Coherent gain of each window: the factor it scales a tone's amplitude by,
 // which the spectrum divides back out so a 1 V RMS tone reads 0 dBV.
@@ -221,8 +232,8 @@ export function spectrumDbv(samples, count, sampleRate, windowName, cache) {
     for (; j & bit; bit >>= 1) j ^= bit;
     j ^= bit;
     if (i < j) {
-      [re[i], re[j]] = [re[j], re[i]];
-      [im[i], im[j]] = [im[j], im[i]];
+      let t = re[i]; re[i] = re[j]; re[j] = t;
+      t = im[i]; im[i] = im[j]; im[j] = t;
     }
   }
   for (let size = 2; size <= n; size *= 2) {

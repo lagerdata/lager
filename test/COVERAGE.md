@@ -92,7 +92,7 @@ anywhere in the tree.
 
 `box/oscilloscope-daemon` is Rust, and until this workflow **no job in this repo referenced
 cargo**. That crate is not a side project. `docker/start-services.sh` launches it on box boot
-whenever the binary is present, and it drives the PicoScope through the vendor SDK's FFI --
+whenever the binary is present. It drives the PicoScope through the vendor SDK's FFI, so it is
 runtime code on customer hardware.
 
 It binds loopback only (`127.0.0.1:8085` plus a Unix socket) and is reached from outside
@@ -125,15 +125,15 @@ panics, and nothing downstream is checked. The first run of this workflow failed
 (`wrapper.h:2:10: fatal error: 'ps2000.h' file not found`).
 
 The headers are deliberately **not** in this repo: PicoTech licenses them rather than selling
-them and limits redistribution, which a public repo cannot honour. `build.rs` looks for them in
-`picoscope/include/<family>/` at the repo root first (for a local unpack of the SDK) and falls
+them and limits redistribution, which a public repo cannot honour. `build.rs` looks for them first in
+`picoscope/include/<family>/` at the repo root, for a local unpack of the SDK. It then falls
 back to `/opt/picoscope/include/<family>/`, where the PicoTech packages install them. A checkout
-with neither fails the build with a message saying where to put them, rather than silently
-producing a daemon that cannot talk to any scope.
+with neither fails the build with a message that says where to put them. It does not build a
+daemon that cannot talk to any scope.
 
 The job installs `libps2000`, `libps2000a`, `libps3000a`, `libps4000a`, `libps5000a` and
-`libps6000a` from PicoTech's Debian repo -- the same one `build_daemon.sh` documents for setting
-up a box -- and asserts every header `build.rs` opens exists before continuing. All five
+`libps6000a` from PicoTech's Debian repo, which `build_daemon.sh` also uses to set up a box.
+It then asserts that every header `build.rs` opens is present. All five
 families are needed because the daemon generates a binding set per family, so one binary serves
 whichever driver a given box has. `libps6000a` is there for its headers alone: `libps3000a`'s
 `PicoDeviceStructs.h` includes `PicoConnectProbes.h`, which PicoTech ships under the 4000a and
@@ -458,8 +458,8 @@ test/
 │   ├── tools/            # tests for the scripts in tools/
 │   └── test_*.py         # repo-wide guards, plus the DP821 settle helper
 ├── manual/               # operator-driven, not automated: 2 bash scripts, 1 Python
-│                         # import report, and scope_daemon/ (a WebTransport browser
-│                         # client and how to drive the daemon by hand)
+│                         # import report, and scope_daemon/ (how to drive the
+│                         # daemon by hand)
 ├── assets/               # Fixture data (note: assets/firmware/ holds only a README)
 └── framework/            # Test utilities
     ├── harness.sh        # Bash test framework (sourced by all 38 integration scripts)
@@ -468,9 +468,9 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 265 files)
+### Local Unit Tests (`test/unit/` -- 261 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 136 files)
+#### Box Unit Tests (`test/unit/box/` -- 146 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -614,8 +614,26 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_io_imports.py` | The `lager.io.*` import surface and re-export identity; asserts the removed root-level aliases stay removed |
 | `test_bench_endpoint.py` | `GET /bench` on the box HTTP server: the body is the bench manifest built from the loaded MCP state (`box_id`, nets with `dut_connection`, `reference_keys`, `metadata_sources`, `capability_bindings`); `ETag` is the quoted content hash and a matching `If-None-Match` in any spelling (quoted, weak, bare, listed, `*`) gets 304 with no body; a build failure is a 500 that says why; the first request on a process that never called `init_state` loads from disk once |
 | `test_status_bench_fields.py` | `/status` advertises `capabilities.benchManifest` from the route's registration (never hardcoded), the real app mounts `/bench`, and the nets block carries `dut_connection` and `test_hints` with the same present-when-unset contract as `purpose` |
+| `test_lscp_codec.py` | The LSCP/1 frame codec in `measurement/scope/lscp.py`: header and per-channel layout, and counts-to-volts scaling, checked against a fixture the Rust encoder produced, so the daemon and the Python decoder cannot drift apart on the wire |
+| `test_picoscope_bench_features.py` | The PicoScope driver's bench-scope settings: acquisition, holdoff and roll tokens, display settings checked before the daemon stores them (persistence, zoom, XY, math, FFT), cursors handed to the daemon so an open page follows, `get_state` naming channels by letter, and the box-side spectrum finding each tone at its frequency and RMS amplitude |
+| `test_picoscope_net_mapper.py` | The PicoScope net mapper that `Net.get(name, NetType.Analog)` returns: calls reach the driver with the net's own channel as the default, and a feature a PicoScope lacks raises and names the gap instead of returning zero |
+| `test_picoscope_streaming_api.py` | `stream_start`, `stream_frames` and `stream_capture` on the PicoScope driver: the keyword arguments the Python reference documents, and a CSV layout identical to the one `lager scope stream capture` writes |
+| `test_picoscope_time_position.py` | The PicoScope horizontal position: a time offset becomes the trigger's pre/post split of the block, clamped at one window of travel each way, and reads back as the offset in force |
+| `test_rigol_trigger_level.py` | The exact SCPI the Rigol MSO5000 driver sends for the edge trigger level: one real in the trigger source's units, not the two-argument form the instrument rejects without an error |
+| `test_scope_bench_actions.py` | The box handler's status, trigger readback, acquisition, holdoff, roll, display and spectrum actions: refused on a Rigol net before anything reaches the instrument, a missing value named, and each answered with the sentence the CLI prints |
+| `test_scope_command_grammar.py` | The web UI's command grammar (`static/scope/commands.js`, run under node) against the real box handler, so a renamed action cannot leave the page sending commands the box rejects |
+| `test_scope_cursors.py` | Typed scope cursors: interpolated voltage under each cursor, delta-t and 1/delta-t, a cursor outside the record or on a disabled channel reported as absent, one pair per instrument shared by every net, and the browser's interpolation agreeing with the box's |
+| `test_scope_net_migration.py` | Converting saved scope nets to the `scope` and `scope-channel` roles: every old record becomes a channel with its name and pin, exactly one scope net appears per physical unit, and a second read changes nothing |
+| `test_scope_render.py` | The web scope's drawing arithmetic (`static/scope/render.js`, run under node): the credit window sized from the round trip, the continuous scroll of a rolling screen, per-column extremes that keep envelope pairs whole, zoom windows, math expressions, persistence that fades by elapsed time in steps an 8-bit alpha channel keeps, and an FFT that reads a 1 V RMS tone at 0 dBV in every window |
+| `test_scope_role_gating.py` | Which actions a `scope` net and a `scope-channel` net accept: an instrument setting is carried out from a channel net, and a channel setting sent to the scope net is refused, naming the channel nets that would take it |
+| `test_scope_trigger_coupling.py` | Trigger coupling kept apart from channel coupling: `trigger coupling` never changes the input path, and a PicoScope, which has no trigger filter, refuses it rather than applying one to the input |
+| `test_scope_trigger_mode.py` | Who may change a PicoScope's trigger mode: `run()` keeps auto and normal, single-shot arms, and each trigger control sends only its own setting |
+| `test_scope_ui_channel_nets.py` | The scope web UI sends each channel's controls to that channel's net, hides the empty-plot overlay for real, and never shows a channel state it did not apply |
+| `test_scope_ui_instrument_net.py` | The scope web UI routes each command to the net that owns it: device-wide settings and readbacks to the scope net, per-channel ones to the channel's net |
+| `test_scope_ui_stream.py` | The web scope's credit-paced stream and pushed state: one credit returned for each frame received, only the newest frame kept for drawing, extra credit for a slow round trip, and every control following the daemon's state except a field being edited |
+| `test_usb_scanner_picoscope.py` | PicoScope discovery in `usb_scanner.py`: every Pico Technology product ID is recognized, and the channel count comes from the device rather than from a static table |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 111 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 107 files)
 
 | File | What it tests |
 |------|---------------|
@@ -730,6 +748,10 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_update_version_ref.py` | Version reference resolution for git checkouts (semver tags vs. named branches) |
 | `test_bench_export.py` | `lager bench export`: fetches `GET /bench` on :9000 and prints the manifest with sorted keys (or one line with `--compact`, or to a file with `--out` plus a one-line summary on stderr); a 404 is an update prompt naming 0.50.0, other HTTP errors show the status and body, a connection failure points at `lager hello`, and a reply that is not a manifest is refused and never written |
 | `test_nets_describe_fields.py` | `lager nets describe --dut-connection` / `--test-hint` / `--clear-test-hints`: the two control-plane fields are merged onto the saved record next to purpose, notes and tags, duplicate hints collapse, side-car fields survive, and the nothing-given message names the new options |
+| `test_nets_channel_less_roles.py` | Roles with no channel, spelled as an empty channel list: a `scope` net is saved without a pin, because a pin is what tells the box an old record is a channel |
+| `test_update_scope_daemon.py` | Every box carries a scope daemon built from the Rust it runs: `start_box.sh` builds it on install, update and config apply, and rebuilds it when the daemon sources change |
+| `test_scope_bench_commands.py` | `lager scope` status, trigger readback, holdoff, acquire, roll, fft and display: each command line is one action on the box's warm handler with its parameters, a value out of range is refused before the box, and a PicoScope edge trigger sends only the settings named while a Rigol keeps the script path |
+| `test_scope_impl_daemon_errors.py` | The scope impl script reads a daemon refusal as a failure: `{"Response": {"response": "Error"}}` comes back as an error, where a trigger level beyond the range used to print that it had been applied |
 
 #### Measurement Unit Tests (`test/unit/measurement/` -- 4 files)
 
@@ -773,7 +795,7 @@ These tests cover the scripts in `tools/`. The `unit (root)` job runs them.
 
 ### MCP Tests (`test/mcp/`)
 
-#### Unit Tests (`test/mcp/unit/` -- 15 files)
+#### Unit Tests (`test/mcp/unit/` -- 16 files)
 
 | File | What it tests |
 |------|---------------|
@@ -792,6 +814,7 @@ These tests cover the scripts in `tools/`. The `unit (root)` job runs them.
 | `test_server_app.py` | `lager.mcp.server.build_app` puts the bearer check in the request path of the BUILT app, each app runs the session manager its own route uses (the SDK makes a new one per build), and the startup posture lines warn when a control or exec tier is on with no token |
 | `test_net_types.py` | The one net-type table (`engine.net_types`): every `NetType` member has a row and every row's role resolves through `NetType.from_role` (the no-enum allowlist stays honest), every `reference` names an `API_REFERENCE` entry and the rows without one are exactly the documented exceptions, role and alias lookups resolve while an enum name is never aliased (`PowerSupply2Q` stays unanswered), and the bench loader, the capability graph and the planner's phase all read the same row |
 | `test_bench_manifest.py` | The bench manifest and what feeds it: `schema_version`, `box_id` and a content hash that ignores `generated_at`, changes with the bench and survives a JSON round trip; `capability_bindings` filled from the graph on a copy (the shared bench is never mutated); `reference_keys` per net; `metadata_sources` naming `bench.json` or `saved_net` per field, a malformed override not credited; the HTTP loader gone; scanner records flattened to descriptors; the instrument cache scanning once per TTL, remembering a failed scan for the TTL, sharing one scan across concurrent callers and handing out copies; and `get_test_example` returning per-type snippets plus a repository link with no file dependency |
+| `test_test_patterns.py` | The agent-facing test-pattern catalog names only real `NetType` members, so a script an agent generates cannot fail on an enum member that does not exist |
 
 #### Integration Tests (`test/mcp/integration/` -- 1 file)
 
@@ -799,7 +822,7 @@ These tests cover the scripts in `tools/`. The `unit (root)` job runs them.
 |------|---------------|
 | `test_agent_loop.py` | End-to-end agent workflow: discovery, suitability, `lager python` execution, verify |
 
-### Python API Tests (`test/api/` -- 84 files)
+### Python API Tests (`test/api/` -- 85 files)
 
 These are **standalone scripts, not pytest** (see `test/CONVENTIONS.md`): each defines `main()`
 and runs on a box via `lager python`. None of them run in the PR gate.
@@ -847,6 +870,12 @@ and runs on a box via `lager python`. None of them run in the PR gate.
 
 Thermocouple (single, multiple, monitor), watt profile, multi-sensor lifecycle, energy analysis
 and statistics, `test_joulescope.py` (254 assertions), and `test_ppk2.py`.
+
+#### Measurement (1 file)
+
+`test_scope_picoscope.py` drives a real PicoScope through `lager python`. It checks that the SDK
+opens and reports a model and channel count, and that settings survive a round trip through the
+hardware. The measurements must agree with each other, so the suite passes on an open probe.
 
 #### Peripherals (9 files)
 
