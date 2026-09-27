@@ -611,8 +611,24 @@ def edge(ctx, mcu, box, mode, coupling, source, slope, level):
     box_ip = _resolve_box(ctx, box)
     netname = _require_netname(ctx)
 
-    if _validate_scope_net(ctx, box_ip, netname) is None:
+    net = _validate_scope_net(ctx, box_ip, netname)
+    if net is None:
         return  # Error already displayed with available nets
+
+    # A PicoScope's edge trigger is the box's in-process handler, which
+    # reports a refused setting as the failure it is. The script this used
+    # to run read every refusal as success -- a level beyond the range
+    # printed "Trigger configured successfully" -- and ignored --source.
+    if _is_picoscope(str(net.get("instrument") or "")):
+        params = {key: value for key, value in (
+            ("mode", mode), ("coupling", coupling), ("source", source),
+            ("slope", slope), ("level", level)) if value is not None}
+        if not params:
+            click.secho("Error: give at least one of --mode, --source, --slope, --level",
+                        fg="red", err=True)
+            ctx.exit(1)
+        post_net_command(ctx, box_ip, netname, "trigger_edge", role=SCOPE_ROLE, **params)
+        return
 
     data = {
         "action": "trigger_edge",
@@ -921,7 +937,15 @@ def display_xy(ctx, state, box):
 @click.option("--box", required=False, help="Lager Box name or IP")
 def display_zoom(ctx, factor, center, box):
     """Magnify the capture by FACTOR (1 to 1000), or off"""
-    zoom = "off" if factor.lower() == "off" else {"factor": float(factor), "center": center}
+    if factor.lower() == "off":
+        zoom = "off"
+    else:
+        try:
+            zoom = {"factor": float(factor), "center": center}
+        except ValueError:
+            click.secho("Error: zoom is a factor from 1 to 1000, or off; got %r" % factor,
+                        fg="red", err=True)
+            ctx.exit(1)
     _set_display(ctx, box, zoom=zoom)
 
 

@@ -129,7 +129,15 @@ def send_command_pico(command: dict) -> dict:
             async with websockets.connect(uri, close_timeout=5) as ws:
                 await ws.send(json.dumps(command))
                 response = await asyncio.wait_for(ws.recv(), timeout=10.0)
-                return json.loads(response)
+                message = json.loads(response)
+                # The daemon answers a refusal as {"Response": {"response":
+                # "Error", "message": ...}}, with no top-level "error" -- so
+                # every caller's `"error" in response` check read a refused
+                # setting as applied, and printed that it had been.
+                reply = message.get("Response", message) if isinstance(message, dict) else message
+                if isinstance(reply, dict) and reply.get("response") == "Error":
+                    return {"error": reply.get("message") or "oscilloscope daemon error"}
+                return message
         except ConnectionRefusedError:
             return {"error": "Oscilloscope daemon not running"}
         except asyncio.TimeoutError:

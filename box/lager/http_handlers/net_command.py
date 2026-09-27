@@ -1271,7 +1271,8 @@ def _describe_state(state):
             c.get("channel"), "on" if c.get("enabled") else "off",
             c.get("volts_per_div") or 0, c.get("coupling"), c.get("attenuation") or 1)
         for c in state.get("channels") or [])
-    return ("%s, %s; %s/div%s; trigger %s %s %s at %g V; acquisition %s; channels: %s" % (
+    holdoff = float(trigger.get("holdoff_s") or 0.0)
+    return ("%s, %s; %s/div%s; trigger %s %s %s at %g V%s; acquisition %s; channels: %s" % (
         "running" if state.get("acquiring") else "stopped",
         "rolling" if state.get("rolling") else "block mode",
         _seconds(float(timebase.get("time_per_div") or 0)),
@@ -1279,6 +1280,7 @@ def _describe_state(state):
         if timebase.get("time_offset") else "",
         state.get("capture_mode"), trigger.get("source"), trigger.get("slope"),
         trigger.get("level") or 0.0,
+        (", holdoff %s" % _seconds(holdoff)) if holdoff else "",
         _describe_acquisition(acquisition).replace("Acquisition ", ""),
         channels or "none"))
 

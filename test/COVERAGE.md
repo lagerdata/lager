@@ -46,13 +46,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 2719 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 3514 |
+| `unit (cli)` | `test/unit/cli/` | 2754 (+2 xfailed) |
+| `unit (box)` | `test/unit/box/` | 3616 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 405 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 82 (+1 skipped) |
-| | **Total gated** | **6914** |
+| | **Total gated** | **7051** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -470,7 +470,7 @@ test/
 
 ### Local Unit Tests (`test/unit/` -- 261 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 142 files)
+#### Box Unit Tests (`test/unit/box/` -- 146 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -607,21 +607,25 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_bench_endpoint.py` | `GET /bench` on the box HTTP server: the body is the bench manifest built from the loaded MCP state (`box_id`, nets with `dut_connection`, `reference_keys`, `metadata_sources`, `capability_bindings`); `ETag` is the quoted content hash and a matching `If-None-Match` in any spelling (quoted, weak, bare, listed, `*`) gets 304 with no body; a build failure is a 500 that says why; the first request on a process that never called `init_state` loads from disk once |
 | `test_status_bench_fields.py` | `/status` advertises `capabilities.benchManifest` from the route's registration (never hardcoded), the real app mounts `/bench`, and the nets block carries `dut_connection` and `test_hints` with the same present-when-unset contract as `purpose` |
 | `test_lscp_codec.py` | The LSCP/1 frame codec in `measurement/scope/lscp.py`: header and per-channel layout, and counts-to-volts scaling, checked against a fixture the Rust encoder produced, so the daemon and the Python decoder cannot drift apart on the wire |
+| `test_picoscope_bench_features.py` | The PicoScope driver's bench-scope settings: acquisition, holdoff and roll tokens, display settings checked before the daemon stores them (persistence, zoom, XY, math, FFT), cursors handed to the daemon so an open page follows, `get_state` naming channels by letter, and the box-side spectrum finding each tone at its frequency and RMS amplitude |
 | `test_picoscope_net_mapper.py` | The PicoScope net mapper that `Net.get(name, NetType.Analog)` returns: calls reach the driver with the net's own channel as the default, and a feature a PicoScope lacks raises and names the gap instead of returning zero |
 | `test_picoscope_streaming_api.py` | `stream_start`, `stream_frames` and `stream_capture` on the PicoScope driver: the keyword arguments the Python reference documents, and a CSV layout identical to the one `lager scope stream capture` writes |
 | `test_picoscope_time_position.py` | The PicoScope horizontal position: a time offset becomes the trigger's pre/post split of the block, clamped at one window of travel each way, and reads back as the offset in force |
 | `test_rigol_trigger_level.py` | The exact SCPI the Rigol MSO5000 driver sends for the edge trigger level: one real in the trigger source's units, not the two-argument form the instrument rejects without an error |
+| `test_scope_bench_actions.py` | The box handler's status, trigger readback, acquisition, holdoff, roll, display and spectrum actions: refused on a Rigol net before anything reaches the instrument, a missing value named, and each answered with the sentence the CLI prints |
 | `test_scope_command_grammar.py` | The web UI's command grammar (`static/scope/commands.js`, run under node) against the real box handler, so a renamed action cannot leave the page sending commands the box rejects |
 | `test_scope_cursors.py` | Typed scope cursors: interpolated voltage under each cursor, delta-t and 1/delta-t, a cursor outside the record or on a disabled channel reported as absent, one pair per instrument shared by every net, and the browser's interpolation agreeing with the box's |
 | `test_scope_net_migration.py` | Converting saved scope nets to the `scope` and `scope-channel` roles: every old record becomes a channel with its name and pin, exactly one scope net appears per physical unit, and a second read changes nothing |
+| `test_scope_render.py` | The web scope's drawing arithmetic (`static/scope/render.js`, run under node): the credit window sized from the round trip, the continuous scroll of a rolling screen, per-column extremes that keep envelope pairs whole, zoom windows, math expressions, persistence that fades by elapsed time in steps an 8-bit alpha channel keeps, and an FFT that reads a 1 V RMS tone at 0 dBV in every window |
 | `test_scope_role_gating.py` | Which actions a `scope` net and a `scope-channel` net accept: an instrument setting is carried out from a channel net, and a channel setting sent to the scope net is refused, naming the channel nets that would take it |
 | `test_scope_trigger_coupling.py` | Trigger coupling kept apart from channel coupling: `trigger coupling` never changes the input path, and a PicoScope, which has no trigger filter, refuses it rather than applying one to the input |
 | `test_scope_trigger_mode.py` | Who may change a PicoScope's trigger mode: `run()` keeps auto and normal, single-shot arms, and each trigger control sends only its own setting |
 | `test_scope_ui_channel_nets.py` | The scope web UI sends each channel's controls to that channel's net, hides the empty-plot overlay for real, and never shows a channel state it did not apply |
 | `test_scope_ui_instrument_net.py` | The scope web UI routes each command to the net that owns it: device-wide settings and readbacks to the scope net, per-channel ones to the channel's net |
+| `test_scope_ui_stream.py` | The web scope's credit-paced stream and pushed state: one credit returned for each frame received, only the newest frame kept for drawing, extra credit for a slow round trip, and every control following the daemon's state except a field being edited |
 | `test_usb_scanner_picoscope.py` | PicoScope discovery in `usb_scanner.py`: every Pico Technology product ID is recognized, and the channel count comes from the device rather than from a static table |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 105 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 107 files)
 
 | File | What it tests |
 |------|---------------|
@@ -730,6 +734,8 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_nets_describe_fields.py` | `lager nets describe --dut-connection` / `--test-hint` / `--clear-test-hints`: the two control-plane fields are merged onto the saved record next to purpose, notes and tags, duplicate hints collapse, side-car fields survive, and the nothing-given message names the new options |
 | `test_nets_channel_less_roles.py` | Roles with no channel, spelled as an empty channel list: a `scope` net is saved without a pin, because a pin is what tells the box an old record is a channel |
 | `test_update_scope_daemon.py` | Every box carries a scope daemon built from the Rust it runs: `start_box.sh` builds it on install, update and config apply, and rebuilds it when the daemon sources change |
+| `test_scope_bench_commands.py` | `lager scope` status, trigger readback, holdoff, acquire, roll, fft and display: each command line is one action on the box's warm handler with its parameters, a value out of range is refused before the box, and a PicoScope edge trigger sends only the settings named while a Rigol keeps the script path |
+| `test_scope_impl_daemon_errors.py` | The scope impl script reads a daemon refusal as a failure: `{"Response": {"response": "Error"}}` comes back as an error, where a trigger level beyond the range used to print that it had been applied |
 
 #### Measurement Unit Tests (`test/unit/measurement/` -- 4 files)
 
