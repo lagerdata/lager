@@ -709,21 +709,29 @@ class TestAChannelCanBeMovedUpAndDown:
           measureText: () => ({ width: 10 }),
           moveTo() {}, lineTo(x, y) { ys.push(y); },
         };
+        // Counts at 1 V a count, so a count is the volt the test names.
+        const counts = Int16Array.from(%s);
         const frame = {
-          channels: [{ channel: 'A' }],
+          channels: [{ channel: 'A', scaleVPerCount: 1, offsetV: 0 }],
           flags: 0,
-          volts: () => %s,
+          samplesPerChannel: counts.length,
+          preTriggerSamples: 0,
+          sampleIntervalNs: 1,
+          counts: () => counts,
           overflowed: () => false,
         };
-        const self = {
+        // The renderer's own helpers, with a hand-built canvas and state.
+        const self = Object.assign(Object.create(ScopeApp.prototype), {
           ctx,
           // One pixel wide, so the trace is a single column and its y is
           // unambiguous.
           canvas: { width: 1, height: %d },
           channelState: new Map([['A', { voltsPerDiv: 1, positionDiv: %s }]]),
           showTriggerMarkers: false,
+          extremes: { min: new Float32Array(0), max: new Float32Array(0) },
+          display: {},
           drawGraticule() {},
-        };
+        });
         ScopeApp.prototype.draw.call(self, frame);
         process.stdout.write(JSON.stringify(ys));
         """ % (json.dumps(list(volts)), self.HEIGHT, json.dumps(position_div)))
@@ -766,13 +774,17 @@ class TestAChannelCanBeMovedUpAndDown:
             moveTo() {}, lineTo(x, y) { ys.push(y); },
           };
           // Zero volts, so only the shift decides where it lands.
-          const frame = { channels: [{ channel: 'A' }], flags: 0,
-            volts: () => [0], overflowed: () => false };
-          const self = {
+          const counts = Int16Array.from([0]);
+          const frame = { channels: [{ channel: 'A', scaleVPerCount: 1, offsetV: 0 }],
+            flags: 0, samplesPerChannel: 1, preTriggerSamples: 0, sampleIntervalNs: 1,
+            counts: () => counts, overflowed: () => false };
+          const self = Object.assign(Object.create(ScopeApp.prototype), {
             ctx, canvas: { width: 1, height: 400 },
             channelState: new Map([['A', { voltsPerDiv: perDiv, positionDiv: 2 }]]),
             showTriggerMarkers: false, drawGraticule() {},
-          };
+            extremes: { min: new Float32Array(0), max: new Float32Array(0) },
+            display: {},
+          });
           ScopeApp.prototype.draw.call(self, frame);
           runs[perDiv] = ys[0];
         }
