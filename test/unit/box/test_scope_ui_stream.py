@@ -40,6 +40,7 @@ function socket(readyState = 1) {
 function app(extra = {}) {
   return Object.assign(Object.create(ScopeApp.prototype), {
     owedCredits: 0,
+    clockOffsets: [],
     console: { lines: [], write(text, kind) { this.lines.push([kind, text]); },
                error(text) { this.lines.push(['error', text]); } },
   }, extra);
@@ -119,6 +120,52 @@ class TestCredits:
         process.stdout.write(JSON.stringify(a.console.lines));
         """)
         assert lines == [["note", "dropped 4 captures"], ["error", "level out of range"]]
+
+
+class TestRollDelay:
+    """A rolling screen is drawn as far behind live as its stream runs late."""
+
+    def test_the_delay_is_learned_from_how_late_frames_arrive(self):
+        target = _run_js("""
+        const a = app({});
+        a.resetRollDelay();
+        // Box frames every 50 ms, arriving 20 ms late now and then.
+        const lateness = [0, 0, 20, 0, 5, 0];
+        lateness.forEach((late, i) => {
+          const end = 1000 + 50 * i;
+          a.noteArrival({ streaming: true, captureMonoNs: end * 1e6 }, 5000 + end + late);
+        });
+        process.stdout.write(JSON.stringify(a.rollTarget));
+        """)
+        # 50 ms between frames plus the 20 ms late one, and the margin.
+        assert target == pytest.approx(70 + 15)
+
+    def test_a_block_ends_the_rolling_account(self):
+        out = _run_js("""
+        const a = app({});
+        a.resetRollDelay();
+        a.noteArrival({ streaming: true, captureMonoNs: 1e9 }, 5000);
+        a.noteArrival({ streaming: false, captureMonoNs: 2e9 }, 6000);
+        process.stdout.write(JSON.stringify(a.rollLastEnd));
+        """)
+        assert out is None
+
+    def test_the_delay_is_no_more_than_the_history_reaches(self):
+        view = _run_js("""
+        const a = app({ clockOffset: 0 });
+        a.resetRollDelay();
+        a.rollDelay = 400;
+        a.rollTarget = 400;
+        const realNow = performance.now();
+        // 1 ms pairs: 100 pairs of history is 100 ms, less than the 400 wanted.
+        const frame = { samplesPerChannel: 2200, screen: 2000,
+                        sampleIntervalNs: 0.5e6, captureMonoNs: realNow * 1e6 };
+        process.stdout.write(JSON.stringify(a.rollView(frame)));
+        """)
+        # Not before the history; the few samples past it are the time the
+        # test took to get here.
+        assert 0 <= view["start"] < 20
+        assert view["end"] - view["start"] == 2000
 
 
 STATE = {
