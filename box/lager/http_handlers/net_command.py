@@ -1100,6 +1100,69 @@ def _scope(netname, role, action, params):
     if action == "measure_all":
         return _scope_measure_all(dev)
 
+    # Everything at once, and the trigger on its own. The CLI could set every
+    # one of these and read none of them back.
+    if action == "get_state":
+        _require_picoscope(netname, role, action)
+        state = dev.get_state()
+        return _ok(_describe_state(state), state)
+    if action == "get_trigger":
+        return _scope_trigger_readback(dev, netname, role)
+
+    # Acquisition, holdoff and roll: what happens between the hardware and a
+    # published frame, which the daemon does for a PicoScope.
+    if action == "set_acquire":
+        _require_picoscope(netname, role, action)
+        if params.get("mode") is None:
+            raise KeyError("mode")
+        result = dev.set_acquisition(params["mode"], params.get("count"))
+        return _ok(_describe_acquisition(result), result)
+    if action == "get_acquire":
+        _require_picoscope(netname, role, action)
+        result = dev.get_acquisition()
+        return _ok(_describe_acquisition(result), result)
+    if action == "set_trigger_holdoff":
+        _require_picoscope(netname, role, action)
+        if params.get("seconds") is None:
+            raise KeyError("seconds")
+        dev.set_trigger_holdoff(float(params["seconds"]))
+        return _ok("Trigger holdoff %s" % _seconds(float(params["seconds"])))
+    if action == "get_trigger_holdoff":
+        _require_picoscope(netname, role, action)
+        return _ok_read(float(dev.get_trigger_holdoff()), "s")
+    if action == "set_roll":
+        _require_picoscope(netname, role, action)
+        if params.get("mode") is None:
+            raise KeyError("mode")
+        result = dev.set_roll(params["mode"])
+        return _ok(_describe_roll(result), result)
+    if action == "get_roll":
+        _require_picoscope(netname, role, action)
+        result = dev.get_roll()
+        return _ok(_describe_roll(result), result)
+
+    # How the web UI draws: held by the daemon so the terminal can set it and
+    # an open page follows.
+    if action == "set_display":
+        _require_picoscope(netname, role, action)
+        settings = {key: params[key] for key in _DISPLAY_SETTINGS if key in params}
+        unknown = sorted(set(params) - set(_DISPLAY_SETTINGS))
+        if unknown:
+            raise ValueError("unknown display setting(s): %s" % ", ".join(unknown))
+        display = dev.set_display(**settings)
+        return _ok(_describe_display(display), display)
+    if action == "get_display":
+        _require_picoscope(netname, role, action)
+        display = dev.get_display()
+        return _ok(_describe_display(display), display)
+
+    if action == "fft":
+        _require_picoscope(netname, role, action)
+        result = dev.fft(channel=params.get("channel"),
+                         window=params.get("window") or "hann",
+                         peaks=int(params.get("peaks") or 5))
+        return _ok(_describe_spectrum(result), result)
+
     # Cursors. Placed by typing, in either CLI, and held on the box so both
     # they and the web UI's plot are looking at one set.
     if action == "set_cursor":
@@ -1116,6 +1179,128 @@ def _scope(netname, role, action, params):
         return _scope_measure(dev, action)
 
     raise UnknownAction(action)
+
+
+_DISPLAY_SETTINGS = ("persistence", "xy", "zoom", "math", "fft")
+
+
+def _require_picoscope(netname, role, action):
+    """Refuse an action only the PicoScope path has, naming why.
+
+    A Rigol averages, holds off and rolls on its own front panel, and draws
+    its own screen; these are the box doing that work for a PicoScope, which
+    has neither. Without this a Rigol net answered with the driver's missing
+    attribute, which reads as a bug rather than as the answer.
+    """
+    try:
+        rec = next((n for n in Net.get_local_nets() if n.get("name") == netname), None)
+    except Exception:
+        return
+    instrument = str((rec or {}).get("instrument") or "")
+    if rec is None or "pico" in instrument.lower():
+        return
+    raise WrongNetForAction(
+        "%s is a %s, and %s is done by the box for a PicoScope; on a Rigol, "
+        "use the instrument's own front panel" % (netname, instrument or "scope", action))
+
+
+def _seconds(value):
+    """A time for a message, in the unit a scope would print it in."""
+    magnitude = abs(value)
+    for scale, unit in ((1.0, "s"), (1e-3, "ms"), (1e-6, "us"), (1e-9, "ns")):
+        if magnitude >= scale or scale == 1e-9:
+            return "%g %s" % (value / scale, unit)
+    return "%g s" % value
+
+
+def _describe_acquisition(result):
+    mode = result.get("mode")
+    if mode == "average":
+        return "Acquisition average of %s captures" % result.get("average_count")
+    return "Acquisition %s" % mode
+
+
+def _describe_roll(result):
+    return "Roll %s (%s)" % (result.get("roll"),
+                             "rolling now" if result.get("rolling") else "capturing blocks")
+
+
+def _describe_display(display):
+    parts = []
+    persistence = display.get("persistence")
+    if persistence:
+        parts.append("persistence %s" % (
+            persistence if persistence == "infinite" else _seconds(float(persistence))))
+    if display.get("xy"):
+        parts.append("XY")
+    zoom = display.get("zoom")
+    if zoom:
+        parts.append("zoom x%g at %s" % (zoom.get("factor"), _seconds(float(zoom.get("center") or 0))))
+    math = display.get("math")
+    if math:
+        parts.append("math %s" % math.get("expr"))
+    fft = display.get("fft")
+    if fft:
+        parts.append("FFT of %s (%s)" % (fft.get("channel"), fft.get("window")))
+    return "Display: " + (", ".join(parts) if parts else "normal")
+
+
+def _describe_spectrum(result):
+    peaks = result.get("peaks") or []
+    if not peaks:
+        return "No spectral peaks in channel %s" % result.get("channel")
+    listed = ", ".join(
+        "%s %.1f dBV" % (_hertz(p["frequency_hz"]), p["dbv"]) for p in peaks)
+    return "Channel %s spectrum (%s window, %s bins): %s" % (
+        result.get("channel"), result.get("window"), _hertz(result.get("resolution_hz") or 0), listed)
+
+
+def _hertz(value):
+    for scale, unit in ((1e9, "GHz"), (1e6, "MHz"), (1e3, "kHz")):
+        if abs(value) >= scale:
+            return "%.4g %s" % (value / scale, unit)
+    return "%.4g Hz" % value
+
+
+def _describe_state(state):
+    trigger = state.get("trigger") or {}
+    timebase = state.get("timebase") or {}
+    acquisition = state.get("acquisition") or {}
+    channels = ", ".join(
+        "%s %s %g V/div %s %gx" % (
+            c.get("channel"), "on" if c.get("enabled") else "off",
+            c.get("volts_per_div") or 0, c.get("coupling"), c.get("attenuation") or 1)
+        for c in state.get("channels") or [])
+    return ("%s, %s; %s/div%s; trigger %s %s %s at %g V; acquisition %s; channels: %s" % (
+        "running" if state.get("acquiring") else "stopped",
+        "rolling" if state.get("rolling") else "block mode",
+        _seconds(float(timebase.get("time_per_div") or 0)),
+        (", offset %s" % _seconds(float(timebase.get("time_offset"))))
+        if timebase.get("time_offset") else "",
+        state.get("capture_mode"), trigger.get("source"), trigger.get("slope"),
+        trigger.get("level") or 0.0,
+        _describe_acquisition(acquisition).replace("Acquisition ", ""),
+        channels or "none"))
+
+
+def _scope_trigger_readback(dev, netname, role):
+    """The trigger as the instrument has it, for `lager scope <net> trigger`."""
+    trigger = {
+        "mode": dev.get_capture_mode(),
+        "source": dev.get_trigger_source(),
+        "slope": dev.get_trigger_slope(),
+        "level": float(dev.get_trigger_level()),
+    }
+    try:
+        _require_picoscope(netname, role, "holdoff")
+        trigger["holdoff"] = float(dev.get_trigger_holdoff())
+    except WrongNetForAction:
+        pass
+    message = "Trigger %s, source %s, %s, level %g V" % (
+        trigger["mode"], trigger["source"], trigger["slope"], trigger["level"])
+    if trigger.get("holdoff"):
+        message += ", holdoff %s" % _seconds(trigger["holdoff"])
+    return _ok(message, trigger)
 
 
 # CLI action -> (driver measurement name, unit). The names on the left are the
