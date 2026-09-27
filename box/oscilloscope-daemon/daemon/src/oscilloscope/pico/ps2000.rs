@@ -3,7 +3,7 @@
 
 use crate::oscilloscope::CaptureMode;
 use crate::oscilloscope::Coupling;
-use crate::oscilloscope::Oscilloscope;
+use crate::oscilloscope::{Oscilloscope, RollInfo, RollPlan, RollSink};
 use crate::oscilloscope::{
     ChannelId, ChannelSettings, Cursor, CursorType, OscilloscopeSettings, TriggerSettings,
     TriggerSlope,
@@ -15,7 +15,8 @@ use std::fmt::Debug;
 
 use protocol::ScopeCapabilities;
 use protocol::capabilities::{DriverFamily, ResolutionSupport, VoltageRange};
-use protocol::lscp::{CaptureFrame, ChannelFrame, FLAG_TRIGGERED};
+use protocol::lscp::{CaptureFrame, ChannelFrame};
+use std::sync::atomic::Ordering;
 
 use protocol::{measure_channel, Measurement};
 
@@ -235,6 +236,20 @@ pub struct PicoScope2000 {
     armed_at: Option<std::time::Instant>,
     /// Filled in once at open time from the variant string.
     capabilities: ScopeCapabilities,
+    /// The unit `ps2000_get_timebase` suggests for the current timebase's
+    /// time axis, which `ps2000_get_times_and_values` needs: it refuses a unit
+    /// in which the block's times would overflow.
+    current_time_units: i16,
+    /// Set when the hardware holds something other than the configured
+    /// trigger -- after a forced capture, or roll mode, which switches the
+    /// trigger off -- so the next re-arm has to program it again.
+    needs_full_arm: bool,
+    /// `ps2000_get_times_and_values` failed once, so readouts fall back to
+    /// `ps2000_get_values` and the trigger point the arm asked for. Atomic
+    /// because the readout takes `&self` and the trait requires `Sync`.
+    times_unavailable: std::sync::atomic::AtomicBool,
+    /// Fast streaming is running, for roll mode.
+    is_streaming: bool,
 }
 
 impl PicoScope2000 {
@@ -250,7 +265,7 @@ impl PicoScope2000 {
                 // interval to know which of the driver's candidates it can
                 // actually sample at.
                 let capabilities = Self::detect_capabilities(&info, &settings);
-                let (current_timebase, current_time_interval_ns) =
+                let (current_timebase, current_time_interval_ns, current_time_units) =
                     Self::get_timebase_for_sample_rate(
                         handle,
                         settings.memory_depth.unwrap_or(MIN_MEMORY_DEPTH) as f64,
@@ -281,6 +296,10 @@ impl PicoScope2000 {
                     expected_capture_ms: 0,
                     armed_at: None,
                     capabilities,
+                    current_time_units,
+                    needs_full_arm: true,
+                    times_unavailable: std::sync::atomic::AtomicBool::new(false),
+                    is_streaming: false,
                 });
             }
         }
@@ -344,6 +363,10 @@ impl PicoScope2000 {
             smart_probes: false,
             signal_generator: None,
             advanced_triggers: vec!["edge".to_string()],
+            roll_mode: fast_streaming_model(&info.variant_info),
+            // `ps2000_get_values` has no downsampling mode, so a block holds
+            // one sample per interval and nothing between them.
+            peak_detect: false,
         }
     }
 
@@ -964,7 +987,12 @@ impl PicoScope2000 {
         tracing::debug!("raw level: {}", trigger_level_adc_count);
         tracing::debug!("raw direction: {}", direction_raw_value);
         tracing::debug!("raw delay: {}", delay_raw_value);
-        let auto_trigger_ms = Self::get_auto_trigger_ms(self.settings.trigger.capture_mode, 500);
+        let block_seconds =
+            self.memory_depth as f64 * self.current_time_interval_ns / NANOSECONDS_PER_SECOND;
+        let auto_trigger_ms = Self::get_auto_trigger_ms(
+            self.settings.trigger.capture_mode,
+            crate::oscilloscope::auto_trigger_timeout_ms(block_seconds) as i32,
+        );
 
         let mut trigger_conditions = match self.settings.trigger.trigger_source {
             ChannelId::Alphabetic('A') => {
@@ -1187,7 +1215,7 @@ impl PicoScope2000 {
         handle: i16,
         memory_depth: f64,
         time_per_div: f64,
-    ) -> anyhow::Result<(i16, f64)> {
+    ) -> anyhow::Result<(i16, f64, i16)> {
         let api = ps2000()?;
         let mut timebase_found = false;
         let total_divisions: f64 = TOTAL_NUM_TIME_DIVISIONS as f64;
@@ -1197,6 +1225,7 @@ impl PicoScope2000 {
         let mut best_timebase = 0;
         let mut best_error = f64::INFINITY;
         let mut best_interval = 0.001;
+        let mut best_units = enPS2000TimeUnits_PS2000_NS as i16;
 
         for timebase in 0..MAX_NUM_TIMEBASES {
             let mut time_interval = 0i32;
@@ -1233,13 +1262,14 @@ impl PicoScope2000 {
                     best_error = error;
                     best_timebase = timebase;
                     best_interval = actual_interval;
+                    best_units = time_units;
                 }
             }
         }
         if !timebase_found {
             return Err(anyhow::anyhow!("No timebase found"));
         }
-        Ok((best_timebase, best_interval))
+        Ok((best_timebase, best_interval, best_units))
     }
 
     fn run_block(&mut self, trigger_position_percent: f64) -> anyhow::Result<()> {
@@ -1293,6 +1323,7 @@ impl PicoScope2000 {
             ))
         } else {
             self.is_capturing = true;
+            self.needs_full_arm = false;
             // How long the driver says this capture will take. Polling any
             // faster than this cannot produce data, so it sets the floor for
             // the readiness poll.
@@ -1400,21 +1431,61 @@ impl PicoScope2000 {
         let mut buffer_d = vec![0i16; total_samples];
 
         let mut overflow = 0i16;
-        let result = unsafe {
-            api.ps2000_get_values(
-                self.handle,
-                buffer_a.as_mut_ptr(),
-                buffer_b.as_mut_ptr(),
-                buffer_c.as_mut_ptr(),
-                buffer_d.as_mut_ptr(),
-                &mut overflow,
-                total_samples as i32,
-            )
-        };
-        if result == 0 {
-            return Err(anyhow::anyhow!(
-                "ps2000_get_values failed while reading {total_samples} samples"
-            ));
+        // Read with the times, when the driver will give them: each is the
+        // interval from the trigger event to that sample, so the first that is
+        // not negative is where the trigger actually landed. Without them the
+        // frame can only repeat where the arm asked for it, and a block whose
+        // trigger fell elsewhere would be drawn shifted with nothing to say so.
+        let mut measured_trigger: Option<usize> = None;
+        let mut result = 0;
+        if !self.times_unavailable.load(Ordering::Relaxed) {
+            let mut times = vec![0i32; total_samples];
+            result = unsafe {
+                api.ps2000_get_times_and_values(
+                    self.handle,
+                    times.as_mut_ptr(),
+                    buffer_a.as_mut_ptr(),
+                    buffer_b.as_mut_ptr(),
+                    buffer_c.as_mut_ptr(),
+                    buffer_d.as_mut_ptr(),
+                    &mut overflow,
+                    self.current_time_units,
+                    total_samples as i32,
+                )
+            };
+            if result > 0 {
+                let returned = (result as usize).min(total_samples);
+                measured_trigger =
+                    Some(times[..returned].iter().position(|&t| t >= 0).unwrap_or(returned));
+            }
+        }
+        if result <= 0 {
+            result = unsafe {
+                api.ps2000_get_values(
+                    self.handle,
+                    buffer_a.as_mut_ptr(),
+                    buffer_b.as_mut_ptr(),
+                    buffer_c.as_mut_ptr(),
+                    buffer_d.as_mut_ptr(),
+                    &mut overflow,
+                    total_samples as i32,
+                )
+            };
+            if result == 0 {
+                return Err(anyhow::anyhow!(
+                    "ps2000_get_values failed while reading {total_samples} samples"
+                ));
+            }
+            // The plain read worked where the timed one did not, so it is the
+            // times the driver will not give, not the block. Said once.
+            if !self.times_unavailable.swap(true, Ordering::Relaxed) {
+                tracing::warn!(
+                    time_units = self.current_time_units,
+                    "ps2000_get_times_and_values refused this block; frames now \
+                     report the trigger point the arm asked for rather than the \
+                     one the device measured"
+                );
+            }
         }
 
         // The driver may return fewer samples than requested. Trust its
@@ -1481,20 +1552,28 @@ impl PicoScope2000 {
             }
         }
 
+        let pre = measured_trigger
+            .map(|index| index as u32)
+            .unwrap_or(self.pre_trigger_samples)
+            .min(returned as u32);
         Ok(CaptureFrame {
             // Assigned by the acquisition loop, which is the only thing that
             // can number captures monotonically across clients.
             seq: 0,
             capture_mono_ns: monotonic_ns(),
             sample_interval_ns: self.current_time_interval_ns,
-            pre_trigger_samples: self.pre_trigger_samples.min(returned as u32),
-            post_trigger_samples: returned as u32
-                - self.pre_trigger_samples.min(returned as u32),
+            pre_trigger_samples: pre,
+            post_trigger_samples: returned as u32 - pre,
             samples_per_channel: returned as u32,
             // Every ps2000-family part is 8-bit.
             resolution_bits: 8,
             overflow_mask,
-            flags: FLAG_TRIGGERED,
+            // Whether this block triggered is the acquisition loop's call: it
+            // knows the mode and whether the capture was forced, and reads
+            // the answer off the samples in auto mode, where a block also
+            // completes when the auto timeout runs out. This driver cannot
+            // tell the two apart, and every frame used to claim a trigger.
+            flags: 0,
             channels,
             samples,
         })
@@ -1547,13 +1626,14 @@ impl PicoScope2000 {
         self.settings.time_per_div = time_per_div;
         let memory_depth = memory_depth as f64;
         tracing::debug!("Memory depth: {}", memory_depth);
-        if let Ok((timebase, interval)) = Self::get_timebase_for_sample_rate(
+        if let Ok((timebase, interval, units)) = Self::get_timebase_for_sample_rate(
             self.handle,
             memory_depth,
             time_per_div,
         ) {
             self.current_timebase = timebase;
             self.current_time_interval_ns = interval;
+            self.current_time_units = units;
         } else {
             return Err(anyhow::anyhow!("Failed to get timebase for sample rate"));
         }
@@ -1871,6 +1951,10 @@ impl Oscilloscope for PicoScope2000 {
         let position = self.settings.trigger.trigger_position;
         let result = self.run_block(position);
         self.settings.trigger.capture_mode = previous;
+        // The hardware is still armed with the auto timeout, and a fast
+        // re-arm would keep it: a scope in normal would go on auto-triggering
+        // after one press of Force. The next arm programs the trigger again.
+        self.needs_full_arm = true;
         result
     }
 
@@ -1888,6 +1972,303 @@ impl Oscilloscope for PicoScope2000 {
         let tenth = self.expected_capture_ms / 10;
         std::time::Duration::from_millis(tenth.clamp(1, 20))
     }
+
+    /// Arm the next block with the setup the hardware already holds.
+    ///
+    /// The Programmer's Guide (3.1, block mode) is explicit that the driver
+    /// performs setup before each block when setup functions are called
+    /// between blocks, taking up to 50 ms, and that the way to the minimum gap
+    /// is to call nothing but `ps2000_run_block`, `ps2000_ready` and
+    /// `ps2000_get_values` in the loop. The full path here stopped the unit and
+    /// reprogrammed every channel and the whole trigger for every capture.
+    fn rearm(&mut self) -> anyhow::Result<()> {
+        if self.needs_full_arm || !self.is_capturing {
+            return self.run_block(self.settings.trigger.trigger_position);
+        }
+        let api = ps2000()?;
+        let mut time_indisposed_ms = 0i32;
+        let result = unsafe {
+            api.ps2000_run_block(
+                self.handle,
+                self.memory_depth as i32,
+                self.current_timebase,
+                1,
+                &mut time_indisposed_ms,
+            )
+        };
+        tracing::trace!(result, time_indisposed_ms, "ps2000_run_block (re-arm)");
+        if result == 0 {
+            // Not fatal yet: the long way stops the unit and sets everything
+            // up again, which recovers from whatever state refused this.
+            tracing::debug!("fast re-arm refused; arming from scratch");
+            return self.run_block(self.settings.trigger.trigger_position);
+        }
+        self.expected_capture_ms = time_indisposed_ms.max(0) as u64;
+        self.armed_at = Some(std::time::Instant::now());
+        Ok(())
+    }
+
+    fn current_memory_depth(&self) -> anyhow::Result<usize> {
+        Ok(self.memory_depth as usize)
+    }
+
+    fn requested_time_per_div(&self) -> anyhow::Result<f64> {
+        Ok(self.settings.time_per_div)
+    }
+
+    fn supports_roll(&self) -> bool {
+        self.capabilities.roll_mode
+    }
+
+    fn start_roll(&mut self, plan: &RollPlan) -> anyhow::Result<RollInfo> {
+        let api = ps2000()?;
+        if self.is_capturing {
+            let _ = self.stop_triggering();
+        }
+        self.do_update_channel()?;
+        // Roll mode free-runs, as it does on a bench scope. Passing no
+        // conditions switches triggering off (Programmer's Guide 5.20).
+        unsafe {
+            api.ps2000SetAdvTriggerChannelConditions(self.handle, std::ptr::null_mut(), 0)
+        };
+
+        let streaming = roll_streaming_plan(plan.bucket_ns);
+        roll_collector().reset();
+        let result = unsafe {
+            api.ps2000_run_streaming_ns(
+                self.handle,
+                streaming.interval_us,
+                enPS2000TimeUnits_PS2000_US,
+                ROLL_DRIVER_SAMPLES,
+                0, // run until stopped
+                streaming.aggregate,
+                ROLL_OVERVIEW_BUFFER,
+            )
+        };
+        if result == 0 {
+            // Put the trigger back before failing, or a block capture after
+            // this would free-run too.
+            self.needs_full_arm = true;
+            anyhow::bail!(
+                "ps2000_run_streaming_ns refused {} us per sample, {} samples per pair",
+                streaming.interval_us,
+                streaming.aggregate
+            );
+        }
+        self.is_streaming = true;
+        self.needs_full_arm = true;
+
+        let channels = self
+            .settings
+            .channels
+            .iter()
+            .filter(|c| c.enabled)
+            .filter(|c| matches!(c.channel_id, ChannelId::Alphabetic('A' | 'B')))
+            .map(|channel| {
+                let range_code =
+                    Self::volts_per_div_to_range(channel.volts_per_div, channel.attenuation);
+                ChannelFrame {
+                    channel: channel.channel_id,
+                    range_code: range_code as u8,
+                    coupling: channel.coupling,
+                    scale_v_per_count: volts_per_count(
+                        Self::raw_range_to_volts(range_code),
+                        channel.attenuation,
+                    ) as f32,
+                    offset_v: channel.volts_offset as f32,
+                }
+            })
+            .collect();
+        Ok(RollInfo {
+            bucket_ns: streaming.bucket_ns(),
+            channels,
+            resolution_bits: 8,
+        })
+    }
+
+    fn poll_roll(&mut self, sink: &mut RollSink) -> anyhow::Result<usize> {
+        if !self.is_streaming {
+            anyhow::bail!("roll mode is not running");
+        }
+        let api = ps2000()?;
+        // Zero means nothing new since the last call, which at a slow
+        // timebase is most calls; not an error.
+        unsafe { api.ps2000_get_streaming_last_values(self.handle, Some(roll_callback)) };
+        let (pairs, overflow) = roll_collector().take();
+        if overflow != 0 {
+            tracing::trace!(overflow, "roll mode input overflow");
+        }
+
+        let streamed: Vec<usize> = self
+            .settings
+            .channels
+            .iter()
+            .filter(|c| c.enabled)
+            .filter_map(|c| match c.channel_id {
+                ChannelId::Alphabetic('A') => Some(0),
+                ChannelId::Alphabetic('B') => Some(1),
+                _ => None,
+            })
+            .collect();
+        sink.pairs.resize(streamed.len(), Vec::new());
+        let mut delivered = 0;
+        for (slot, hardware) in streamed.into_iter().enumerate() {
+            delivered = delivered.max(pairs[hardware].len());
+            sink.pairs[slot].extend_from_slice(&pairs[hardware]);
+        }
+        Ok(delivered)
+    }
+
+    fn stop_roll(&mut self) -> anyhow::Result<()> {
+        if !self.is_streaming {
+            return Ok(());
+        }
+        let api = ps2000()?;
+        let result = unsafe { api.ps2000_stop(self.handle) };
+        self.is_streaming = false;
+        self.is_capturing = false;
+        self.needs_full_arm = true;
+        if result == 0 {
+            anyhow::bail!("ps2000_stop failed while leaving roll mode");
+        }
+        Ok(())
+    }
+}
+
+/// Whether a model has fast streaming, which roll mode is built on: the 2202,
+/// 2203, 2204(A) and 2205(A) only (Programmer's Guide 3.2.2), and on those it
+/// carries channels A and B.
+fn fast_streaming_model(model: &str) -> bool {
+    let model = model.trim().to_uppercase();
+    ["2202", "2203", "2204", "2205"]
+        .iter()
+        .any(|prefix| model.starts_with(prefix))
+}
+
+/// Samples the driver keeps per channel while streaming. It holds them for
+/// `ps2000_get_streaming_values`, which roll mode never calls, so this only
+/// needs to be large enough not to make the driver stop early.
+const ROLL_DRIVER_SAMPLES: u32 = 1_000_000;
+
+/// Pairs the driver buffers between polls. The guide suggests 15 000; roll
+/// polls every 10 ms, and at the fastest roll this is several polls' worth.
+const ROLL_OVERVIEW_BUFFER: u32 = 30_000;
+
+/// Most raw samples folded into one pair. Bounds the rate the unit streams
+/// at on a slow screen, where sampling at 1 MS/s would only be thrown away.
+const ROLL_MAX_AGGREGATE: f64 = 1000.0;
+
+/// How fast to sample, and how many samples to fold into each pair.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct RollStreaming {
+    interval_us: u32,
+    aggregate: u32,
+}
+
+impl RollStreaming {
+    fn bucket_ns(&self) -> f64 {
+        f64::from(self.interval_us) * 1000.0 * f64::from(self.aggregate)
+    }
+}
+
+/// The streaming settings that give `bucket_ns` per pair.
+///
+/// As fast as fast streaming goes, 1 us, until that would fold more than
+/// `ROLL_MAX_AGGREGATE` samples into a pair; slower beyond. The pairs are
+/// the minimum and maximum of everything sampled, so sampling fast is what
+/// makes roll mode catch a glitch narrower than a pixel.
+fn roll_streaming_plan(bucket_ns: f64) -> RollStreaming {
+    let bucket_us = (bucket_ns / 1000.0).max(1.0);
+    let interval_us = (bucket_us / ROLL_MAX_AGGREGATE).floor().max(1.0);
+    let aggregate = (bucket_us / interval_us).round().max(1.0);
+    RollStreaming {
+        interval_us: interval_us as u32,
+        aggregate: aggregate as u32,
+    }
+}
+
+/// What `roll_callback` has collected since the last `take`: maximum and
+/// minimum per channel, and the overflow bits.
+#[derive(Default)]
+struct RollCollected {
+    max: [Vec<i16>; 2],
+    min: [Vec<i16>; 2],
+    overflow: i16,
+}
+
+struct RollCollector(std::sync::Mutex<RollCollected>);
+
+impl RollCollector {
+    fn lock(&self) -> std::sync::MutexGuard<'_, RollCollected> {
+        // A panic cannot happen while this is held, but a poisoned lock
+        // would otherwise turn one bad callback into a dead roll mode.
+        self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn reset(&self) {
+        *self.lock() = RollCollected::default();
+    }
+
+    /// Pairs per hardware channel as (min, max), and the overflow bits.
+    fn take(&self) -> ([Vec<(i16, i16)>; 2], i16) {
+        let mut collected = self.lock();
+        let mut pairs: [Vec<(i16, i16)>; 2] = Default::default();
+        for channel in 0..2 {
+            let count = collected.max[channel].len().min(collected.min[channel].len());
+            pairs[channel] = collected.min[channel][..count]
+                .iter()
+                .zip(&collected.max[channel][..count])
+                .map(|(&low, &high)| (low.min(high), low.max(high)))
+                .collect();
+            collected.max[channel].clear();
+            collected.min[channel].clear();
+        }
+        let overflow = std::mem::take(&mut collected.overflow);
+        (pairs, overflow)
+    }
+}
+
+/// The callback has no user-data argument, so what it collects has to be
+/// reachable from a static. One unit per daemon, so one collector.
+fn roll_collector() -> &'static RollCollector {
+    static COLLECTOR: std::sync::OnceLock<RollCollector> = std::sync::OnceLock::new();
+    COLLECTOR.get_or_init(|| RollCollector(std::sync::Mutex::new(RollCollected::default())))
+}
+
+/// `my_get_overview_buffers` (Programmer's Guide 5.34): copy and return.
+///
+/// `overview_buffers` points at four buffers of `n_values` each -- A's
+/// maximum, A's minimum, B's maximum, B's minimum -- and a channel that is
+/// off has null pointers.
+unsafe extern "C" fn roll_callback(
+    overview_buffers: *mut *mut i16,
+    overflow: i16,
+    _triggered_at: u32,
+    _triggered: i16,
+    _auto_stop: i16,
+    n_values: u32,
+) {
+    if overview_buffers.is_null() || n_values == 0 {
+        return;
+    }
+    let count = n_values as usize;
+    let mut collected = roll_collector().lock();
+    for channel in 0..2 {
+        // SAFETY: the driver passes four buffer pointers, each valid for
+        // `n_values` samples for the duration of this call, or null.
+        let (max, min) = unsafe {
+            (*overview_buffers.add(channel * 2), *overview_buffers.add(channel * 2 + 1))
+        };
+        if max.is_null() || min.is_null() {
+            continue;
+        }
+        let (max, min) = unsafe {
+            (std::slice::from_raw_parts(max, count), std::slice::from_raw_parts(min, count))
+        };
+        collected.max[channel].extend_from_slice(max);
+        collected.min[channel].extend_from_slice(min);
+    }
+    collected.overflow |= overflow;
 }
 
 impl PicoScope2000 {

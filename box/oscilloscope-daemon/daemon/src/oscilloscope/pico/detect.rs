@@ -327,6 +327,10 @@ pub fn capabilities_from_variant(
         smart_probes: matches!(family, DriverFamily::Ps4000a | DriverFamily::Ps5000a),
         signal_generator: signal_generator(family),
         advanced_triggers: advanced_triggers(family),
+        // `RunStreaming` and the aggregating `GetValues` modes exist on these
+        // families but are not wired up, so neither is advertised.
+        roll_mode: false,
+        peak_detect: false,
     }
 }
 

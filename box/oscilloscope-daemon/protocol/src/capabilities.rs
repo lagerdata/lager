@@ -129,6 +129,15 @@ pub struct ScopeCapabilities {
     pub signal_generator: Option<SignalGeneratorSupport>,
     /// Hardware trigger types this model accepts beyond a simple edge.
     pub advanced_triggers: Vec<String>,
+    /// Slow timebases can stream continuously and draw as the signal
+    /// arrives, rather than a block at a time.
+    #[serde(default)]
+    pub roll_mode: bool,
+    /// Block captures can keep the minimum and maximum of every sample
+    /// interval, which needs aggregation in the hardware or its driver. Roll
+    /// mode always does this, whatever this says.
+    #[serde(default)]
+    pub peak_detect: bool,
 }
 
 impl ScopeCapabilities {
