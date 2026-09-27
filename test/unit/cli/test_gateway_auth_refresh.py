@@ -53,7 +53,14 @@ class FakeResponse:
         return self._body
 
 
-class GatewayAuthRefreshTests(unittest.TestCase):
+class StoreIsolatedTestCase(unittest.TestCase):
+    """Points the auth store at a file unique to this test instance.
+
+    Unique per instance, not per class: `gateway_auth` keys its
+    remembered-failure set by store path, so tests that share a path also
+    share that memory and one test's dead auth server suppresses the next
+    test's refresh.
+    """
 
     def setUp(self):
         self.tmp = mock.patch.dict(os.environ, {
@@ -73,6 +80,9 @@ class GatewayAuthRefreshTests(unittest.TestCase):
 
     def store_session(self, token, cookies=None):
         gateway_auth.save_login(URL, token, cookies or {'refresh_token': 'r1'})
+
+
+class GatewayAuthRefreshTests(StoreIsolatedTestCase):
 
     # -- margin scaling ----------------------------------------------------
 
@@ -148,6 +158,83 @@ class GatewayAuthRefreshTests(unittest.TestCase):
         self.assertEqual(entry['accessToken'], fresh)
         self.assertEqual(entry['cookies']['refresh_token'], 'r2')
         self.assertEqual(entry['cookies']['csrf_token'], 'c1')  # unrotated cookie kept
+
+
+    # -- a connect timeout is not a retryable connection error -------------
+
+    def test_a_connect_timeout_is_not_retried(self):
+        """ConnectTimeout subclasses ConnectionError, and used to be retried.
+
+        The retry exists for a request that failed fast without reaching the
+        server. A connect timeout did not reach the server either, but it
+        already spent a whole AUTH_SERVER_TIMEOUT proving it -- so retrying
+        charged the caller a second one for the same answer. On a fleet
+        listing that doubled cost was paid once per gated box.
+        """
+        self.store_session(make_token(lifetime=60, expires_in=-5))
+        calls = []
+
+        def timeout_post(*args, **kwargs):
+            calls.append(kwargs.get('timeout'))
+            raise requests.ConnectTimeout('no SYN-ACK')
+
+        with mock.patch.object(gateway_auth.requests, 'post', timeout_post):
+            self.assertIsNone(gateway_auth.access_token_for(URL))
+        self.assertEqual(len(calls), 1)
+
+    def test_a_connection_error_is_still_retried(self):
+        """The fast failure the retry was written for keeps its retry."""
+        self.store_session(make_token(lifetime=60, expires_in=-5))
+        calls = []
+
+        def refused_post(*args, **kwargs):
+            calls.append(1)
+            raise requests.ConnectionError('connection refused')
+
+        with mock.patch.object(gateway_auth.requests, 'post', refused_post):
+            self.assertIsNone(gateway_auth.access_token_for(URL))
+        self.assertEqual(len(calls), 2)
+
+
+class StoreRobustnessTests(StoreIsolatedTestCase):
+    """A store that cannot be read, or is not an object, is not a crash.
+
+    Every caller indexes what `_load_store` returns, so anything that is not
+    a dict used to raise out of whichever thread asked. In `lager boxes` the
+    call sat outside the per-box handler, so the traceback printed over the
+    live table and the box was reported as silent rather than as an error.
+    """
+
+    def test_a_store_holding_an_array_reads_as_empty(self):
+        with open(os.environ['LAGER_GATEWAY_AUTH_FILE'], 'w') as handle:
+            handle.write('[]')
+        self.assertEqual(gateway_auth._load_store(), {})
+        self.assertIsNone(gateway_auth.access_token_for(URL))
+        self.assertEqual(gateway_auth.auth_headers_for_box('10.0.0.1'), {})
+
+    def test_a_store_holding_a_string_reads_as_empty(self):
+        with open(os.environ['LAGER_GATEWAY_AUTH_FILE'], 'w') as handle:
+            handle.write('"not an object"')
+        self.assertEqual(gateway_auth._load_store(), {})
+        self.assertIsNone(gateway_auth.access_token_for(URL))
+
+    def test_a_store_the_user_cannot_read_reads_as_empty(self):
+        real_open = open
+
+        def denied(path, *args, **kwargs):
+            if str(path) == os.environ['LAGER_GATEWAY_AUTH_FILE']:
+                raise PermissionError(13, 'Permission denied')
+            return real_open(path, *args, **kwargs)
+
+        with mock.patch('builtins.open', denied):
+            self.assertEqual(gateway_auth._load_store(), {})
+            self.assertEqual(gateway_auth.auth_headers_for_box('10.0.0.1'), {})
+
+    def test_a_store_that_is_a_directory_reads_as_empty(self):
+        path = os.environ['LAGER_GATEWAY_AUTH_FILE']
+        os.makedirs(path, exist_ok=True)
+        self.addCleanup(os.rmdir, path)
+        self.assertEqual(gateway_auth._load_store(), {})
 
 
 if __name__ == '__main__':

@@ -55,3 +55,25 @@ NPM_ADD = "npm-add"
 NPM_REMOVE = "npm-remove"
 UDEV_ADD = "udev-add"
 UDEV_REMOVE = "udev-remove"
+
+# Container network mode. Unset deletes the key rather than writing the default
+# back, so a config returns to byte-for-byte what it was before the mode was
+# ever set -- and therefore to the same hash.
+# Read verb, listed with the mutating pair because it shares their vocabulary.
+# It is also the deploy discriminator: the generic `show` verb predates this
+# feature and answers identically on a box that has it and one that does not,
+# so asking through `show` cannot tell you whether the box understands the
+# setting at all.
+NETWORK_MODE_SHOW = "network-mode-show"
+NETWORK_MODE_SET = "network-mode-set"
+NETWORK_MODE_UNSET = "network-mode-unset"
+
+# The MCP server's optional bearer token. These verbs never touch
+# box_config.json: the token is a file of its own, because `show`, `export`,
+# `copy` and the audit log all carry whatever the config holds. ENABLE and
+# ROTATE return the value once; there is deliberately no verb that reads it
+# back, and STATUS reports a state and nothing else.
+MCP_TOKEN_STATUS = "mcp-token-status"
+MCP_TOKEN_ENABLE = "mcp-token-enable"
+MCP_TOKEN_ROTATE = "mcp-token-rotate"
+MCP_TOKEN_DISABLE = "mcp-token-disable"

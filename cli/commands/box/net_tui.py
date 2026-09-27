@@ -535,9 +535,13 @@ class Net:
         return self._uid
 
 
+# LabJack models whose i2c/spi masters take pins from the net's params.
+_PIN_CONFIGURABLE_INSTRUMENTS = ("LabJack_T7", "LabJack_U3")
+
+
 def _is_pin_configurable(net: "Net") -> bool:
     """True for nets whose DIO pins the pin-picker dialog can reassign."""
-    return net.instrument == "LabJack_T7" and net.type in ("i2c", "spi")
+    return net.instrument in _PIN_CONFIGURABLE_INSTRUMENTS and net.type in ("i2c", "spi")
 
 
 @dataclass
@@ -1617,7 +1621,7 @@ def _labjack_claimed_pin_map(all_nets: list["Net"], target: "Net") -> dict[str, 
     for s in all_nets:
         if not s.saved or s.addr != target.addr:
             continue
-        if s.instrument != "LabJack_T7":
+        if s.instrument not in _PIN_CONFIGURABLE_INSTRUMENTS:
             continue
         for pin in _lj.claimed_pins_from_chan(s.type, s.chan):
             claimed.setdefault(pin, s.net)
@@ -1660,7 +1664,7 @@ class LabJackPinDialog(Screen):
         self.callback = callback
         self.add_screen = add_screen
         self.signals = _lj.I2C_SIGNALS if net.type == "i2c" else _lj.SPI_SIGNALS
-        self.initial = _lj.current_pin_selection(net.type, net.params)
+        self.initial = _lj.current_pin_selection(net.type, net.params, net.instrument)
 
     def _select_id(self, signal: str) -> str:
         return f"pin_{signal.lower()}"
@@ -1670,7 +1674,12 @@ class LabJackPinDialog(Screen):
             self.net.key(), self.net.net)
 
     def compose(self) -> ComposeResult:
-        pin_options = [(name, name) for name in _lj.ALL_PIN_NAMES]
+        pin_options = [(name, name) for name in _lj.pin_names(self.net.instrument)]
+        if self.net.instrument == _lj.U3:
+            pin_rule = ("FIO4-FIO7, EIO0-EIO7 and CIO0-CIO3 may be used (EIO and "
+                        "CIO are on the DB15)")
+        else:
+            pin_rule = "Any DIO pin may be used"
         editing = self.add_screen is not None
         with Vertical(classes="dialog"):
             yield Static(
@@ -1679,8 +1688,8 @@ class LabJackPinDialog(Screen):
                 classes="dialog-title",
             )
             yield Static(
-                f"Net: {self.net.net}  |  Instrument: LabJack T7\n"
-                f"Any DIO pin may be used; the preselected pins are just "
+                f"Net: {self.net.net}  |  Instrument: {self.net.instrument.replace('_', ' ')}\n"
+                f"{pin_rule}; the preselected pins are just "
                 f"{'defaults' if self.net.params is None else 'your current selection'}.",
                 classes="dialog-content",
             )
@@ -1744,7 +1753,8 @@ class LabJackPinDialog(Screen):
         if event.button.id != "pin-confirm":
             return
 
-        label, params, error = _lj.resolve_pin_selection(self.net.type, self._chosen())
+        label, params, error = _lj.resolve_pin_selection(
+            self.net.type, self._chosen(), self.net.instrument)
         if error:
             self.query_one("#pin_warn", Static).update(f"Error: {error}")
             return
@@ -1778,7 +1788,8 @@ class LabJackPinDialog(Screen):
         elif self.net.params is not None:
             # A previously customized net reverted to the defaults:
             # restore the legacy record.
-            self.net.chan = self.net.legacy_chan or _lj.DEFAULT_CHAN[self.net.type]
+            self.net.chan = (self.net.legacy_chan
+                             or _lj.default_chan(self.net.type, self.net.instrument))
             self.net.params = None
 
         self.app.pop_screen()

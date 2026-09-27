@@ -513,7 +513,9 @@ def _jlink_monitor_reset(device):
     ``monitor reset`` (SEGGER type 0 / SYSRESETREQ) for boards where pin reset
     misbehaves or nRESET is not wired.
     """
-    if device and 'DA1469' in device.upper():
+    from .probes import is_da1469x
+
+    if is_da1469x(device):
         pin = os.environ.get('LAGER_DA1469_PIN_RESET', '1').strip().lower()
         if pin in ('0', 'false', 'no', 'off'):
             logger.info('DA1469x: LAGER_DA1469_PIN_RESET disabled — using monitor reset (type 0)')
@@ -538,6 +540,10 @@ def reset(halt=False, device=None, port=2331, host='127.0.0.1'):
     gdbmi = get_controller(device=device, host=host, port=port)
     output = []
     mon_reset = _jlink_monitor_reset(device)
+    # Decided here rather than in the finally below: that block swallows every
+    # exception, so a failure there would silently skip gdbmi.exit().
+    from .probes import is_da1469x
+    settle_s = 0.2 if is_da1469x(device) else 0.1
 
     try:
         if halt:
@@ -555,7 +561,7 @@ def reset(halt=False, device=None, port=2331, host='127.0.0.1'):
                 # For running device: Give monitor go command time to execute
                 # before we disconnect GDB
                 import time
-                time.sleep(0.2 if device and 'DA1469' in device.upper() else 0.1)
+                time.sleep(settle_s)
             gdbmi.exit()
             # Reap zombie gdb-multiarch processes
             reap_gdb_zombies()

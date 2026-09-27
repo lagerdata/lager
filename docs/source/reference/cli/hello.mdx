@@ -37,21 +37,28 @@ lager hello --box <BOX_IP>
 
 ## Output
 
-The hello command displays a success message along with the Lager Box version:
+The hello command prints the box name, its IP address, the box version, and a success line:
 
-```bash
+```text
 $ lager hello --box my-lager-box
-Hello from my-lager-box!
-Version: 0.3.22
+
+Box: my-lager-box
+IP: 100.64.1.42
+Version: 0.47.0 (v0.47.0@1fbc4c39fce62f1041d439d1b164bbf7b6f6ad3a)
+
+my-lager-box is online and responding!
 ```
 
-If the box version cannot be determined (older box software that does not support version reporting), the version is shown as unknown:
+The value in brackets is the ref that the box runs, as `<ref>@<commit>`. A box
+deployed from a branch or a commit adds `-- not a release build`:
 
+```text
+Version: 0.47.0 (main@5d84c68612384eed2854638c1e0941a4ff8b7893 -- not a release build)
 ```
-$ lager hello --box old-box
-Hello from old-box!
-Version: Unknown
-```
+
+A box that predates the ref record shows only the version. If the box reports no
+version, the line reads `Version: Unknown`. If the box answers `/hello` with an
+error, the last line reads `my-lager-box responded with HTTP <code>`.
 
 ---
 
@@ -75,7 +82,7 @@ lager hello --box my-lager-box
 
 - Simple validation command to test CLI installation
 - Verifies connectivity to the Lager Box
-- Displays the Lager Box software version by querying the `/cli-version` endpoint
+- Reads the version and ref from the box API on port 9000 (`/status`), then checks `/hello`
 - Useful for troubleshooting connection issues
 - No arguments required when a default box is set
 - Returns a success message when the connection works

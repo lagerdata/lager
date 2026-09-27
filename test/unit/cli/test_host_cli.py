@@ -1,0 +1,363 @@
+# Copyright 2026 Lager Data
+# SPDX-License-Identifier: Apache-2.0
+
+"""
+Tests for the host-OS CLI install helpers shared by `lager install` and
+`lager update`: the reconcile decision table, the --check status labels, the
+install command's contract (exit codes, non-editable install), the probe
+snippet executed under a real shell, and the drift guard pinning the deploy
+scripts' mirrored shell to _host_cli.py.
+"""
+import os
+import stat
+import subprocess
+from pathlib import Path
+
+import pytest
+
+import cli as cli_pkg
+from cli.commands.utility._host_cli import (
+    HOST_CLI_EXIT_MESSAGES,
+    HOST_CLI_PROBE_SNIPPET,
+    HOST_VENV_APT_CMD,
+    host_cli_check_status,
+    host_cli_failure_message,
+    host_cli_install_cmd,
+    host_cli_reconcile_action,
+    host_python_supported,
+)
+from cli.commands.utility.update import _parse_probe_output
+
+PY_OK = {'HOST_PY_VERSION': '3.11'}
+
+
+class TestReconcileAction:
+    @pytest.mark.parametrize('host_v, box_v, code_changed, expected', [
+        # Fast path: matching versions genuinely mean matching code.
+        ('0.32.5', '0.32.5', False, 'skip'),
+        # Rebuild path: the ref changed this run — a branch deploy can change
+        # code without bumping __version__, so matching strings prove nothing.
+        ('0.32.5', '0.32.5', True, 'install'),
+        ('0.32.4', '0.32.5', False, 'install'),
+        ('0.32.4', '0.32.5', True, 'install'),
+        # Empty host version = missing or broken venv.
+        ('', '0.32.5', False, 'install'),
+        ('', '', False, 'install'),
+        ('', '0.32.5', True, 'install'),
+        # Unreadable box version fails open on the fast path only.
+        ('0.32.5', '', False, 'skip-unknown'),
+        ('0.32.5', '', True, 'install'),
+    ])
+    def test_matrix(self, host_v, box_v, code_changed, expected):
+        assert host_cli_reconcile_action(
+            host_v, box_v, code_changed=code_changed
+        ) == expected
+
+
+class TestHostPythonSupported:
+    @pytest.mark.parametrize('raw, expected', [
+        ('3.10', True),
+        ('3.12', True),
+        ('4.0', True),
+        ('3.9', False),
+        ('3.8', False),
+        ('2.7', False),
+        ('', None),
+        ('garbage', None),
+        ('3', None),
+    ])
+    def test_versions(self, raw, expected):
+        assert host_python_supported({'HOST_PY_VERSION': raw}) is expected
+
+    def test_absent_key_is_unknown(self):
+        assert host_python_supported({}) is None
+
+
+class TestCheckStatus:
+    def test_python_too_old_skips_without_will_change(self):
+        # A state `lager update` cannot fix must not flip --check's exit code
+        # to "would change" forever.
+        label, will_change = host_cli_check_status(
+            {'HOST_PY_VERSION': '3.8'}, '0.32.5', True
+        )
+        assert label.startswith('skipped (host python3 3.8')
+        assert will_change is False
+
+    def test_python_unknown_skips_without_will_change(self):
+        label, will_change = host_cli_check_status({}, '0.32.5', True)
+        assert label == 'skipped (host python3 version unknown)'
+        assert will_change is False
+
+    def test_code_out_of_sync_defers_to_update(self):
+        label, will_change = host_cli_check_status(PY_OK, '0.32.5', False)
+        assert label == 'will install/upgrade (update will run)'
+        assert will_change is True
+
+    def test_missing_install(self):
+        facts = {**PY_OK, 'HOST_CLI_VERSION': '', 'HOST_VENV_DIR': '0'}
+        label, will_change = host_cli_check_status(facts, '0.32.5', True)
+        assert label == 'will install (not present)'
+        assert will_change is True
+
+    def test_broken_venv_reinstall(self):
+        facts = {**PY_OK, 'HOST_CLI_VERSION': '', 'HOST_VENV_DIR': '1'}
+        label, will_change = host_cli_check_status(facts, '0.32.5', True)
+        assert label == 'will reinstall (venv broken)'
+        assert will_change is True
+
+    def test_unreadable_box_version_fails_open(self):
+        facts = {**PY_OK, 'HOST_CLI_VERSION': '0.32.5'}
+        label, will_change = host_cli_check_status(facts, '', True)
+        assert label == 'unknown (box version unreadable)'
+        assert will_change is False
+
+    def test_in_sync(self):
+        facts = {**PY_OK, 'HOST_CLI_VERSION': '0.32.5'}
+        label, will_change = host_cli_check_status(facts, '0.32.5', True)
+        assert label == 'in sync (0.32.5)'
+        assert will_change is False
+
+    def test_upgrade(self):
+        facts = {**PY_OK, 'HOST_CLI_VERSION': '0.32.4'}
+        label, will_change = host_cli_check_status(facts, '0.32.5', True)
+        assert label == 'will upgrade (0.32.4 -> 0.32.5)'
+        assert will_change is True
+
+
+class TestInstallCmdContract:
+    def test_sparse_checkout_guard_comes_first(self):
+        first = host_cli_install_cmd().splitlines()[0]
+        assert 'test -d "$HOME/box/cli"' in first
+        assert 'git -C "$HOME/box" sparse-checkout add cli' in first
+
+    def test_load_bearing_pieces(self):
+        cmd = host_cli_install_cmd()
+        assert 'python3 -m venv' in cmd
+        assert 'install --quiet "$HOME/box/cli"' in cmd
+        assert 'ln -sfn "$HOME/.lager_venv/bin/lager" "$HOME/.local/bin/lager"' in cmd
+        assert 'import cli; print(cli.__version__)' in cmd
+
+    def test_venv_is_not_under_the_config_file_path(self):
+        # ~/.lager is the CLI's own global config FILE and box registry, so a
+        # venv inside it can never coexist with it: whichever is created first
+        # makes the other impossible. v0.32.6-v0.38.0 shipped that collision.
+        # The only line allowed to name the old path is the cleanup.
+        cmd = host_cli_install_cmd()
+        assert '"$HOME/.lager_venv"' in cmd
+        legacy = '$HOME/.lager' + '/venv'
+        for line in cmd.splitlines():
+            if line.startswith('if [ -d "$HOME/.lager" ]'):
+                continue
+            assert legacy not in line, line
+
+    def test_legacy_venv_is_retired_without_risking_the_config_file(self):
+        cmd = host_cli_install_cmd()
+        # Guarded on -d, so it is inert where ~/.lager is the config file...
+        assert 'if [ -d "$HOME/.lager" ]' in cmd
+        # ...and rmdir, so it cannot take anything else with it.
+        assert 'rmdir "$HOME/.lager"' in cmd
+        # An unguarded recursive delete of ~/.lager would destroy the box
+        # registry of every box that never had the broken venv.
+        assert 'rm -rf "$HOME/.lager"' not in cmd
+
+    def test_cleanup_runs_only_after_the_new_venv_is_proven(self):
+        lines = host_cli_install_cmd().splitlines()
+        cleanup = next(i for i, l in enumerate(lines) if l.startswith('if [ -d "$HOME/.lager"'))
+        venv = next(i for i, l in enumerate(lines) if 'python3 -m venv' in l)
+        pip = next(i for i, l in enumerate(lines) if 'install --quiet' in l)
+        assert cleanup > venv and cleanup > pip
+
+    def test_non_editable_install(self):
+        # An editable install would advance the host CLI on every git pull,
+        # not just when a deploy actually runs the install command.
+        assert ' -e ' not in host_cli_install_cmd()
+
+    def test_distinct_exit_codes_present(self):
+        cmd = host_cli_install_cmd()
+        for code in HOST_CLI_EXIT_MESSAGES:
+            assert f'exit {code}' in cmd
+
+    def test_lager_mcp_link_is_removed_not_created(self):
+        # The lager-mcp console script targeted lager.mcp.server in the box
+        # tree, which the wheel never shipped, so the symlink this command
+        # used to create always pointed at a script that exited immediately.
+        # Boxes deployed from an older ref still carry it, so the install
+        # actively removes it rather than merely no longer creating it. Its
+        # absence must not fail the command.
+        mcp_line = next(
+            line for line in host_cli_install_cmd().splitlines()
+            if 'lager-mcp' in line
+        )
+        assert mcp_line.startswith('rm -f ')
+        assert 'ln -sfn' not in mcp_line
+        assert mcp_line.rstrip().endswith('|| true')
+
+    def test_failure_messages(self):
+        for code, message in HOST_CLI_EXIT_MESSAGES.items():
+            assert host_cli_failure_message(code) == message
+        assert 'exit 7' in host_cli_failure_message(7)
+
+
+class TestProbeSnippetShellExecution:
+    """Run the real probe snippet under `sh` with a scratch HOME, pinning the
+    facts' shell-level contract (and guarding against a quoting error)."""
+
+    def _facts(self, home):
+        env = dict(os.environ, HOME=str(home))
+        result = subprocess.run(
+            ['sh'], input=HOST_CLI_PROBE_SNIPPET, text=True,
+            capture_output=True, env=env, timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+        return _parse_probe_output(result.stdout)
+
+    def test_bare_host_reports_nothing_installed(self, tmp_path):
+        facts = self._facts(tmp_path)
+        assert facts['HOST_CLI_VERSION'] == ''
+        assert facts['HOST_VENV_DIR'] == '0'
+        assert facts['HOST_BOX_CLI_DIR'] == '0'
+        # Environment-dependent values: only the keys are pinned.
+        assert 'HOST_PY_VERSION' in facts
+        assert facts['HOST_ENSUREPIP'] in ('0', '1')
+
+    def test_venv_version_passes_through(self, tmp_path):
+        venv_bin = tmp_path / '.lager_venv' / 'bin'
+        venv_bin.mkdir(parents=True)
+        shim = venv_bin / 'python'
+        shim.write_text('#!/bin/sh\necho 9.9.9\n')
+        shim.chmod(shim.stat().st_mode | stat.S_IXUSR)
+        facts = self._facts(tmp_path)
+        assert facts['HOST_CLI_VERSION'] == '9.9.9'
+        assert facts['HOST_VENV_DIR'] == '1'
+
+    def test_box_cli_dir_detected(self, tmp_path):
+        (tmp_path / 'box' / 'cli').mkdir(parents=True)
+        facts = self._facts(tmp_path)
+        assert facts['HOST_BOX_CLI_DIR'] == '1'
+
+
+class TestDeployScriptDrift:
+    """setup_and_deploy_box.sh mirrors the install sequence in shell (it must
+    stay standalone-runnable); these assertions pin its load-bearing literals
+    to _host_cli.py so the two can't drift silently."""
+
+    @pytest.fixture()
+    def deploy_script(self):
+        path = Path(cli_pkg.__file__).parent / 'deployment' / 'scripts' / 'setup_and_deploy_box.sh'
+        return path.read_text()
+
+    @pytest.fixture()
+    def convert_script(self):
+        path = Path(cli_pkg.__file__).parent / 'deployment' / 'scripts' / 'convert_to_sparse_checkout.sh'
+        return path.read_text()
+
+    def test_sparse_checkout_includes_cli_in_both_paths(self, deploy_script):
+        # Fresh-clone and existing-repo paths must both materialize cli/.
+        assert deploy_script.count('git sparse-checkout set box cli') == 2
+        assert 'git sparse-checkout set box &&' not in deploy_script
+
+    def test_tag_fetch_is_forced(self, deploy_script):
+        # An unforced `git fetch --tags` exits non-zero on a tag that points
+        # somewhere other than origin's ("would clobber existing tag"). It sits
+        # in an && chain under `set -e`, so one such tag aborted the deploy at
+        # [5/8] -- and kept aborting it, because nothing in the install path
+        # repairs the tag. Thirteen tags did this on a live box before the flag
+        # was added; dropping it strands those boxes again.
+        assert 'git fetch origin --tags --force' in deploy_script
+        for line in deploy_script.splitlines():
+            if 'git fetch' in line and not line.lstrip().startswith('#'):
+                assert '--force' in line, line
+
+    def test_keydir_ownership_is_preserved(self, deploy_script):
+        # The always-run permission repair chowns /etc/lager to the container
+        # user (UID 33) so the container and box_config renderers can write
+        # there. It must NOT sweep authorized_keys.d into that ownership: that
+        # directory holds the .pub files authorizing SSH, and a box that runs
+        # untrusted code could then authorize its own key. The repair excludes
+        # it with -prune, leaving whatever owner it already has.
+        #
+        # The repair is now a root-owned helper the deploy script calls, not a
+        # `sudo find` of its own (which no sudoers rule could ever grant), so
+        # the prune is pinned where it lives. test_etc_lager_perms_helper.py
+        # RUNS the helper and checks the directory really is skipped; this
+        # keeps the text from drifting and the deploy script from growing a
+        # second, unguarded repair.
+        helper = (Path(cli_pkg.__file__).parent / 'deployment' / 'security'
+                  / 'etc_lager_perms.sh').read_text()
+        assert (
+            '-path "$ETC_LAGER/authorized_keys.d" -prune -o -exec chown -h '
+            in helper
+        )
+        assert 'sudo -n ${ETC_LAGER_PERMS_HELPER}' in deploy_script
+        # Neither old form may come back: not the unguarded recursive chown,
+        # and not the find that replaced it.
+        code = "\n".join(ln for ln in deploy_script.splitlines()
+                         if not ln.lstrip().startswith('#'))
+        assert 'sudo chown -R' not in code
+        assert 'sudo find' not in code
+
+    def test_version_and_ref_writes_need_no_grant(self, deploy_script):
+        # install and update write /etc/lager/version and /etc/lager/ref with
+        # no sudo at all: _state_file_write_cmd mktemps inside /etc/lager and
+        # renames over the target, which the login user can do because the
+        # deployment makes that directory group-writable and setgid.
+        #
+        # This test used to assert the opposite, that rm + mv-from-/tmp + chmod
+        # were granted for both files. Nothing has invoked those commands since
+        # the shared writer landed, and a NOPASSWD rule that nothing uses only
+        # widens what the login user can do as root, so the grants were removed.
+        for d in ("/bin", "/usr/bin"):
+            for path, tmp, mode in (
+                ("/etc/lager/version", "/tmp/lager_version_tmp", "666"),
+                ("/etc/lager/ref", "/tmp/lager_ref_tmp", "644"),
+            ):
+                assert f"{d}/rm -f {path}" not in deploy_script, f"{d}/rm {path}"
+                assert f"{d}/mv {tmp} {path}" not in deploy_script, f"{d}/mv {path}"
+                assert f"{d}/chmod {mode} {path}" not in deploy_script, f"{d}/chmod {path}"
+
+    def test_install_sequence_literals(self, deploy_script):
+        for literal in (
+            '.lager_venv',
+            '.local/bin/lager',
+            'python3 -m venv',
+            'python3 -Im ensurepip',
+            'import cli; print(cli.__version__)',
+        ):
+            assert literal in deploy_script, literal
+        # The collision this feature shipped with: the old path may appear
+        # only inside the guarded cleanup line.
+        assert 'if [ -d "$HOME/.lager" ]' in deploy_script
+        legacy = '$HOME/.lager' + '/venv'
+        for line in deploy_script.splitlines():
+            if 'if [ -d "$HOME/.lager" ]' in line:
+                continue
+            assert legacy not in line, line
+
+    def test_exit_code_reasons_match_the_python_side(self, deploy_script):
+        # Substring checks let these drift once already: the shell said
+        # "is python3-venv installed?" while _host_cli said "is the
+        # python3-venv package installed?", and nothing noticed. Pin each
+        # reason string the shell reports to the module's own text.
+        for code, message in HOST_CLI_EXIT_MESSAGES.items():
+            assert f'{code}) HOST_CLI_REASON="{message}"' in deploy_script, code
+
+    def test_shell_does_not_create_the_lager_mcp_link_python_removes(self, deploy_script):
+        # _host_cli removes ~/.local/bin/lager-mcp (it pointed at box-side code
+        # the wheel never shipped). The shell mirror used to create it.
+        assert 'rm -f "$HOME/.local/bin/lager-mcp"' in deploy_script
+        assert 'ln -sfn "$HOME/.lager_venv/bin/lager-mcp"' not in deploy_script
+
+    def test_venv_apt_package_matches(self, deploy_script):
+        assert 'python3-venv' in deploy_script
+        assert 'python3-venv' in HOST_VENV_APT_CMD
+
+    def test_venv_apt_cannot_block_on_needrestart(self):
+        # needrestart is an apt post-invoke hook and DEBIAN_FRONTEND does not
+        # reach it: unsuppressed it can open a full-screen "Pending kernel
+        # upgrade" dialog that waits on a keypress over a non-tty ssh channel,
+        # and in mode=a it restarts docker on its own -- spending a start
+        # against docker.service's StartLimitBurst.
+        assert HOST_VENV_APT_CMD.count('NEEDRESTART_SUSPEND=1') == 2
+
+    def test_convert_script_includes_cli(self, convert_script):
+        assert 'git sparse-checkout set box cli' in convert_script

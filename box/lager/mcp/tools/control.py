@@ -20,8 +20,9 @@ is the single action tool and merely toggles a USB hub port off then on.
 
 from __future__ import annotations
 
-import json
 import time
+
+from ._payload import reply as _reply
 
 
 # How long to leave the hub port off before re-enabling, so the downstream
@@ -118,14 +119,14 @@ def debug_probe_status(net: str) -> str:
 
     raw = _find_local_net(net)
     if raw is None:
-        return json.dumps({"error": f"Unknown net '{net}'."})
+        return _reply({"error": f"Unknown net '{net}'."})
 
     address = raw.get("address") or ""
     vid, pid, serial = parse_probe_address(address)
     backend = resolve_backend(raw)
 
     if vid is None or pid is None:
-        return json.dumps({
+        return _reply({
             "net": net,
             "backend": backend,
             "probe_serial": serial,
@@ -152,7 +153,7 @@ def debug_probe_status(net: str) -> str:
             else f"probe not found on USB bus ({source})"
         )
     except Exception as exc:  # pragma: no cover - environment/permission dependent
-        return json.dumps({
+        return _reply({
             "net": net,
             "backend": backend,
             "probe_serial": serial,
@@ -162,7 +163,7 @@ def debug_probe_status(net: str) -> str:
             "detail": f"USB enumeration unavailable: {exc}",
         })
 
-    return json.dumps({
+    return _reply({
         "net": net,
         "backend": backend,
         "probe_serial": serial,
@@ -190,7 +191,7 @@ def net_status(net: str) -> str:
     bench = get_bench()
     for descriptor in bench.nets:
         if descriptor.name == net:
-            return json.dumps({
+            return _reply({
                 "net": descriptor.name,
                 "net_type": descriptor.net_type,
                 "electrical_type": descriptor.electrical_type,
@@ -201,7 +202,7 @@ def net_status(net: str) -> str:
                 "roles": descriptor.roles,
                 "purpose": descriptor.purpose,
             })
-    return json.dumps({"error": f"Unknown net '{net}'."})
+    return _reply({"error": f"Unknown net '{net}'."})
 
 
 def power_cycle_hub(hub: str) -> str:
@@ -238,11 +239,11 @@ def power_cycle_hub(hub: str) -> str:
             time.sleep(_HUB_REENUM_SECONDS)
             waited = _HUB_REENUM_SECONDS
     except (KeyError, FileNotFoundError, RuntimeError) as exc:
-        return json.dumps({"error": f"Cannot power-cycle '{hub}': {exc}"})
+        return _reply({"error": f"Cannot power-cycle '{hub}': {exc}"})
     except Exception as exc:  # hub/library errors surface as data, not a crash
-        return json.dumps({"error": f"Power-cycle of '{hub}' failed: {exc}"})
+        return _reply({"error": f"Power-cycle of '{hub}' failed: {exc}"})
 
-    return json.dumps({
+    return _reply({
         "hub": hub,
         "actions": ["disable", "enable"],
         "settled_ms": int(_HUB_SETTLE_SECONDS * 1000),

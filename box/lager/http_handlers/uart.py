@@ -71,6 +71,28 @@ def _readable_open_error(netname: str, driver, exc: Exception) -> str:
     return f"Failed to open UART {target}: {text}"
 
 
+def _net_in_use_error(requested_netname, holder_netname=None, device_path=None) -> dict:
+    """The error a start_uart gets when a live session holds the net or device.
+
+    ``code`` and ``netname`` let a current CLI print the take-over command with
+    the --box the user typed, which the box cannot know. Older CLIs ignore the
+    extra fields and print ``message``. ``held_by`` names the net to take over:
+    when two nets share one device it is the other net, and releasing the
+    requested net would free nothing.
+    """
+    holder = holder_netname or requested_netname
+    if device_path:
+        message = f"UART device {device_path} is already in use by net '{holder}'"
+    else:
+        message = f"UART net '{requested_netname}' is already in use by another session"
+    return {
+        'message': message,
+        'code': 'net_in_use',
+        'netname': requested_netname,
+        'held_by': holder,
+    }
+
+
 def _uart_read_loop(socketio, session_id, netname, driver, stop_event):
     """Body of the per-session UART read thread.
 
@@ -190,6 +212,14 @@ def _uart_read_loop(socketio, session_id, netname, driver, stop_event):
                     emit_buffer()
 
             except Exception as e:
+                if stop_event.is_set():
+                    # Teardown (stop_uart, disconnect, a force release or
+                    # shutdown) sets the stop event and then closes the port
+                    # under this read. The read failing is the expected result
+                    # of that, not a read error for a client that is leaving.
+                    logger.debug(
+                        "UART read for session %s ended by teardown: %s", session_id, e)
+                    break
                 if driver.is_device_gone(e) and not stop_event.is_set():
                     # The adapter re-enumerated (hub power-cycle, DUT reflash,
                     # replug). Flush what we have, then re-resolve and reopen.
@@ -308,16 +338,28 @@ def _session_is_stale(session) -> bool:
     return False
 
 
-def _release_session(session_id, session, reason: str) -> None:
+def _release_session(session_id, session, reason: str, notify: str | None = None) -> None:
     """Tear *session* down and free its net/device. Idempotent.
 
     Call while holding active_uart_sessions_lock. Shared by the stale-session
     reclaim and the operator-driven force release so the two cannot drift —
     they differ only in how they decide, never in how they tear down.
+
+    ``notify`` is sent to the session's client as an ``error`` event before the
+    teardown. The read loop exits quietly once the stop event is set, so a
+    client displaced by a force release would otherwise just stop receiving
+    data with no reason given.
     """
     logger.warning(
         "Releasing UART session %s (netname=%s): %s",
         session_id, session.get('netname'), reason)
+    if notify and _socketio is not None:
+        try:
+            _socketio.emit('error', {'message': notify},
+                           namespace='/uart', room=session_id)
+        except Exception as e:
+            logger.warning(
+                "Could not tell UART session %s it was released: %s", session_id, e)
     stop_event = session.get('stop_event')
     if stop_event is not None:
         # If the wedged thread ever unblocks, tell it to exit rather than
@@ -483,7 +525,8 @@ def register_uart_routes(app: Flask) -> None:
                         continue
                     released.append(sid)
                     _release_session(
-                        sid, sess, f"force-released via DELETE /uart/sessions/{netname}")
+                        sid, sess, f"force-released via DELETE /uart/sessions/{netname}",
+                        notify=f"UART net '{netname}' was taken over by another client")
             if not released:
                 return jsonify({
                     'error': f"No UART session is holding net '{netname}'",
@@ -583,16 +626,7 @@ def register_uart_socketio(socketio: SocketIO) -> None:
                 # list(): _reclaim_if_stale may pop entries as we scan.
                 for sid, sess in list(active_uart_sessions.items()):
                     if sess.get('netname') == netname and not _reclaim_if_stale(sid, sess):
-                        # 'code'/'netname' let a current CLI print the
-                        # take-over command with the --box the user actually
-                        # typed (which the box cannot know). Older CLIs ignore
-                        # the extra fields and print 'message' as before.
-                        emit('error', {
-                            'message': f"UART net '{netname}' is already in "
-                                       f"use by another session",
-                            'code': 'net_in_use',
-                            'netname': netname,
-                        })
+                        emit('error', _net_in_use_error(netname))
                         return
 
             # Resolve net and create driver
@@ -611,13 +645,11 @@ def register_uart_socketio(socketio: SocketIO) -> None:
                             if (other is not None
                                     and getattr(other, 'device_path', None) == device_path
                                     and not _reclaim_if_stale(sid, sess)):
-                                emit('error', {
-                                    'message': f"UART device {device_path} is "
-                                               f"already in use by another "
-                                               f"session",
-                                    'code': 'net_in_use',
-                                    'netname': netname,
-                                })
+                                emit('error', _net_in_use_error(
+                                    netname,
+                                    holder_netname=sess.get('netname'),
+                                    device_path=device_path,
+                                ))
                                 return
 
                 driver._connect()

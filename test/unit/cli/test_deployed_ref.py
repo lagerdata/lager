@@ -21,6 +21,7 @@ import re
 from pathlib import Path
 
 import click
+import pytest
 
 from cli.core.utils import looks_like_release_tag
 from cli.commands.box.hello import _ref_suffix
@@ -245,3 +246,194 @@ class TestRefIsASiblingFileNotAThirdVersionField:
     def test_the_constant_exists(self):
         src = (ROOT / 'box' / 'lager' / 'constants.py').read_text()
         assert re.search(r'REF_FILE_PATH\s*=\s*"/etc/lager/ref"', src)
+
+
+class _Result:
+    def __init__(self, returncode, stdout='', stderr=''):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+class _FakeBox:
+    """Plays the box's side of install's post-deploy ssh calls.
+
+    Commands are matched by what they do rather than by exact text, except the
+    build-hash command, which install must take verbatim from update.py.
+    """
+
+    def __init__(self, *, source_version='0.46.2', head_sha='85c1b64',
+                 build_hash='f' * 64, fail_write=None, readback=None):
+        update = importlib.import_module('cli.commands.utility.update')
+        self._build_hash_cmd = update._build_hash_shell_cmd()
+        self.source_version = source_version
+        self.head_sha = head_sha
+        self.build_hash = build_hash
+        self.fail_write = fail_write
+        self.readback = readback
+        self.files = {}
+        self.calls = []
+
+    def __call__(self, cmd, timeout_secs=30):
+        import shlex
+        self.calls.append(cmd)
+        if cmd.startswith('git -C ~/box show HEAD:cli/__init__.py'):
+            if not self.source_version:
+                return _Result(1)
+            return _Result(0, f"__version__ = '{self.source_version}'\n")
+        if 'rev-parse --short HEAD' in cmd:
+            return _Result(0, f'{self.head_sha}\n')
+        if cmd == self._build_hash_cmd:
+            return _Result(0, f'{self.build_hash}\n' if self.build_hash else '')
+        if cmd == 'cat /etc/lager/version':
+            content = self.readback if self.readback is not None else self.files.get('version', '')
+            return _Result(0, f'{content}\n')
+        written = re.search(r'mv -f "\$tmp" /etc/lager/([a-z-]+)', cmd)
+        if written:
+            name = written.group(1)
+            if name == self.fail_write:
+                return _Result(1, '', 'mktemp: failed to create file via template\n')
+            self.files[name] = shlex.split(cmd.split("printf '%s\\n' ", 1)[1])[0]
+            return _Result(0)
+        raise AssertionError(f'unexpected command sent to the box: {cmd}')
+
+
+class TestInstallRecordsWhatItInstalled:
+    """`lager install` records the installed version, or fails and says so.
+
+    install used to write /etc/lager/version and /etc/lager/ref through sudo
+    over `ssh -t`, discard the exit status, and print "Version X stored on box"
+    either way. A write that failed left an older release's number in place,
+    and `lager hello` reported it for a box that had just been installed.
+    """
+
+    @staticmethod
+    def _install():
+        return importlib.import_module('cli.commands.utility.install')
+
+    def _record(self, box, version, cli_version='0.47.0'):
+        return self._install()._record_install_state(
+            box, 'lagerdata@10.0.0.1', version=version, cli_version=cli_version)
+
+    def test_a_release_tag_records_its_own_number_and_ref(self):
+        box = _FakeBox()
+        box_version, ref, build_hash = self._record(box, '0.46.2')
+        assert box_version == '0.46.2'
+        assert box.files['version'] == '0.46.2|0.47.0'
+        assert box.files['ref'] == ref == 'v0.46.2@85c1b64'
+        assert box.files['build-hash'] == build_hash == 'f' * 64
+
+    def test_a_branch_records_the_trees_version_not_the_clis(self):
+        box = _FakeBox(source_version='0.46.2')
+        box_version, ref, _ = self._record(box, 'main', cli_version='9.9.9')
+        assert box_version == '0.46.2'
+        assert box.files['version'] == '0.46.2|9.9.9'
+        assert ref == 'main@85c1b64'
+
+    def test_a_commit_sha_is_recorded_the_way_update_resolves_it(self):
+        box = _FakeBox()
+        sha = '5D84C68612384EED2854638C1E0941A4FF8B7893'
+        _, ref, _ = self._record(box, sha)
+        assert ref == f'{sha.lower()}@85c1b64'
+
+    def test_an_unknown_tree_version_is_an_error_not_the_clis_version(self):
+        from cli.errors import LagerError
+        box = _FakeBox(source_version='')
+        with pytest.raises(LagerError):
+            self._record(box, 'main')
+        assert box.files == {}, 'nothing may be written without a version'
+
+    @pytest.mark.parametrize('name', ['version', 'ref', 'build-hash'])
+    def test_a_failed_write_raises_naming_the_file(self, name):
+        from cli.errors import LagerError
+        box = _FakeBox(fail_write=name)
+        with pytest.raises(LagerError) as excinfo:
+            self._record(box, 'v0.46.2')
+        assert f'/etc/lager/{name}' in str(excinfo.value)
+
+    def test_a_version_file_that_reads_back_wrong_raises(self):
+        from cli.errors import LagerError
+        box = _FakeBox(readback='0.27.0|0.45.0')
+        with pytest.raises(LagerError):
+            self._record(box, 'v0.46.2')
+
+    def test_no_build_hash_skips_only_that_file(self):
+        box = _FakeBox(build_hash='')
+        _, _, build_hash = self._record(box, 'v0.46.2')
+        assert build_hash == ''
+        assert set(box.files) == {'version', 'ref'}
+
+    def test_nothing_it_sends_uses_sudo_or_a_fixed_tmp_path(self):
+        box = _FakeBox()
+        self._record(box, 'v0.46.2')
+        for cmd in box.calls:
+            assert 'sudo' not in cmd, cmd
+            assert '/tmp/lager_' not in cmd, cmd
+
+    def test_the_runner_never_allocates_a_tty(self, monkeypatch):
+        install = self._install()
+        seen = []
+
+        def fake_run(argv, **kwargs):
+            seen.append(argv)
+            return _Result(0)
+
+        monkeypatch.setattr(install.subprocess, 'run', fake_run)
+        install._install_state_runner('lagerdata@10.0.0.1', ['-i', 'key'])('true')
+        assert '-t' not in seen[0]
+        assert 'BatchMode=yes' in seen[0]
+
+    def test_the_old_unconditional_success_line_is_gone(self):
+        src = (ROOT / 'cli' / 'commands' / 'utility' / 'install.py').read_text()
+        assert 'stored on box' not in src
+        assert '/tmp/lager_version_tmp' not in src
+        assert '/tmp/lager_ref_tmp' not in src
+
+    @pytest.fixture
+    def run_install(self, monkeypatch):
+        """Drive the real `lager install` command with the SSH side faked."""
+        from contextlib import contextmanager, nullcontext
+        from click.testing import CliRunner
+
+        install = self._install()
+
+        class _Session:
+            def suspended(self):
+                return nullcontext()
+
+        @contextmanager
+        def fake_lock(*args, **kwargs):
+            yield _Session()
+
+        monkeypatch.setattr(install, 'probe_box_identity',
+                            lambda host, extra_args=(): (None, _Result(0)))
+        monkeypatch.setattr(install, 'auto_lock_around_command', fake_lock)
+        # The deploy script and the box-config sudoers precheck both report
+        # success; the state writes go to the fake box.
+        monkeypatch.setattr(install.subprocess, 'run', lambda *a, **k: _Result(0))
+
+        def _run(box):
+            monkeypatch.setattr(install, '_install_state_runner', lambda host, args: box)
+            return CliRunner().invoke(
+                install.install,
+                ['--ip', '10.0.0.1', '--version', 'v0.46.2', '--yes'],
+            )
+        return _run
+
+    def test_install_exits_non_zero_when_the_version_write_fails(self, run_install):
+        result = run_install(_FakeBox(fail_write='version'))
+        assert result.exit_code != 0
+        assert '/etc/lager/version' in result.output
+        assert 'Installation complete' not in result.output
+
+    def test_install_exits_non_zero_when_the_version_reads_back_wrong(self, run_install):
+        result = run_install(_FakeBox(readback='0.27.0|0.45.0'))
+        assert result.exit_code != 0
+        assert 'Installation complete' not in result.output
+
+    def test_install_reports_the_recorded_version_on_success(self, run_install):
+        box = _FakeBox()
+        result = run_install(box)
+        assert result.exit_code == 0, result.output
+        assert 'Recorded version 0.46.2 (v0.46.2@85c1b64)' in result.output
+        assert box.files['version'].startswith('0.46.2|')

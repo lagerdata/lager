@@ -7,16 +7,14 @@ driven over OpenOCD's TCL/RPC channel.
 
 Mainline OpenOCD has no QSPI flash driver for the Dialog/Renesas DA1469x
 family, so the OpenOCD ``program`` command can't touch external NOR at the
-XIP base ``0x16000000``. The standard workaround (also what works against
-this rig from a laptop) is to load the upstream
+XIP base ``0x16000000``. The standard workaround is to load the upstream
 ``apache-mynewt-core/apps/flash_loader`` app into RAM, jump to it, and drive
 its small command struct over the debug link to do erase / program / verify.
 
-This module is the box-side, pure-Python translation of the GDB scripts in
-[xl/openocd/flash_loader/](xl/openocd/flash_loader/) (``flash.gdb``,
-``erase.gdb``, ``flash_loader.gdb``) — same sequence, same memory writes,
-same protocol — but issued via :class:`OpenOcdRpc` instead of an external
-``gdb-multiarch``. That keeps the box-side debug service self-contained
+This module is a box-side, pure-Python port of a GDB-script flow for that
+loader (``flash.gdb``, ``erase.gdb``, ``flash_loader.gdb``) — same sequence,
+same memory writes, same protocol — but issued via :class:`OpenOcdRpc`
+instead of an external ``gdb-multiarch``. That keeps the box-side debug service self-contained
 (no extra subprocess, no extra binary dependency) and lets the existing
 ``lager debug SWD flash`` / ``lager debug SWD erase`` CLI dispatch into
 the same code path used for J-Link DA14695.
@@ -44,9 +42,9 @@ which snapshots the current pointer into ``fl_write.buf`` and toggles
 the loader is still flashing chunk N. The host therefore must
 *dereference* ``fl_cmd_data`` (read the pointer's current value) before
 each ``load_image`` — the static ELF symbol address points at the
-pointer variable itself. The GDB macro at
-[xl/openocd/flash_loader/flash_loader.gdb] does this automatically by
-re-evaluating bare ``fl_cmd_data`` each iteration; the pure-RPC path
+pointer variable itself. The ``flash_loader.gdb`` macro does this
+automatically by re-evaluating bare ``fl_cmd_data`` each iteration; the
+pure-RPC path
 issues an extra ``mdw`` per chunk for the same effect.
 """
 
@@ -56,6 +54,7 @@ import re
 import struct
 import tempfile
 import time
+import math
 from typing import Dict, Iterator, Iterable, Optional, Tuple
 
 from .openocd import OpenOcdRpc, OpenOcdRpcError
@@ -73,7 +72,7 @@ logger = logging.getLogger(__name__)
 # container ``/home/www-data/customer-binaries/openocd/flash-loaders/<family>/``)
 # so the files persist across ``lager update`` — anything baked directly
 # into the container filesystem gets blown away when the image is
-# refreshed. Operators drop files in via ``lager box ssh`` the same way
+# refreshed. Operators drop files in via ``lager ssh --box <box>`` the same way
 # they upload custom tools.
 DEFAULT_FLASH_LOADERS_DIR = '/home/www-data/customer-binaries/openocd/flash-loaders'
 ENV_LOADER_DIR_OVERRIDE = 'LAGER_FLASH_LOADERS_DIR'
@@ -97,8 +96,8 @@ QSPI_XIP_RANGE = 0x02000000  # 32 MiB — datasheet maximum XIP window.
 QSPI_XIP_END = QSPI_XIP_BASE + QSPI_XIP_RANGE  # exclusive upper bound
 
 # RAM address the Mynewt RAM-resident loader links at. Vector table sits at
-# the very start: word[0] = MSP, word[1] = reset handler PC. Matches
-# [xl/openocd/flash_loader/flash.gdb:7-10](xl/openocd/flash_loader/flash.gdb).
+# the very start: word[0] = MSP, word[1] = reset handler PC. Matches the
+# vector-table setup in ``flash.gdb``.
 LOADER_RAM_BASE = 0x20000000
 
 # Pre-load DA1469x register pokes (mirrors the working flash.gdb / erase.gdb).
@@ -112,10 +111,27 @@ REG_MTB_MASTER = 0xE0043004
 REG_MTB_FLOW = 0xE0043008
 REG_MPU_CTRL = 0xE000ED94
 REG_SYS_CTRL_REG = 0x100C0050  # write 1 -> bootrom re-runs (software reset)
+REG_DHCSR = 0xE000EDF0  # Debug Halting Control and Status Register
+DHCSR_S_LOCKUP = 1 << 19  # core is in LOCKUP: a fault escalated past HardFault
+
+#: ``EPSR.T`` inside ``xPSR``. On Cortex-M the Thumb bit is NOT carried in
+#: the PC — writing an odd PC through the debug AP does not set it, because
+#: OpenOCD masks bit 0 and leaves ``xPSR`` alone. GDB's ``set $pc = <odd>``
+#: applied the Thumb convention for us; the OpenOCD port has to do it by hand.
+#: With ``T`` clear the core faults INVSTATE on the first instruction it
+#: fetches, escalates to HardFault, and ends in LOCKUP having run nothing.
+#: Whether ``T`` arrives set is not predictable, so it is always written.
+XPSR_THUMB_BIT = 1 << 24
+
+#: Names OpenOCD may use for the combined program status register. A
+#: Cortex-M33 target answers to ``xPSR``; the lowercase spelling is
+#: rejected outright ("register xpsr not found in current target"), so the
+#: casing is not cosmetic.
+PSR_REG_NAMES = ('xPSR', 'XPSR', 'xpsr', 'psr')
 
 # Symbols we resolve from the loader ELF. Names match the upstream Apache
 # Mynewt ``apps/flash_loader/src/main.c`` globals (same set the ``fl_*``
-# GDB macros at [xl/openocd/flash_loader/flash_loader.gdb] reference).
+# GDB macros in ``flash_loader.gdb`` reference).
 LOADER_SYMBOLS = (
     'fl_state',
     'fl_cmd',
@@ -154,6 +170,19 @@ _FL_CHUNK_TIMEOUT_S = 30.0  # one program-and-verify iteration.
 _FL_FINAL_READY_TIMEOUT_S = 10.0
 _POLL_INTERVAL_S = 0.05
 
+# How many times to run the whole loader bring-up sequence before giving up.
+# Not a timeout: the failure this covers is "the loader never started", not
+# "the loader was slow". On the bench that produced it, a bring-up that works
+# publishes ``fl_state==1`` in well under a second and a bring-up that fails
+# publishes ``0`` for the entire budget, so a longer
+# :data:`_LOADER_BOOT_TIMEOUT_S` buys nothing — only starting the loader
+# again does. Measured at roughly one failed bring-up in five, three attempts
+# put the step's failure rate near 0.5%; the cost of the extra passes is a
+# couple of seconds of reset-and-reload each, paid only when an attempt has
+# already failed. Bounded on purpose — a board that is genuinely dead must
+# still report itself dead rather than spin.
+_LOADER_BOOT_ATTEMPTS = 3
+
 
 class Da1469xLoaderError(Exception):
     """Raised when the DA1469x flash_loader path cannot complete the request.
@@ -161,6 +190,25 @@ class Da1469xLoaderError(Exception):
     Distinct from :class:`OpenOcdRpcError` so callers can tell "the loader
     bounced us back with an error code" / "the loader never came up" apart
     from raw RPC transport / OpenOCD-side failures.
+    """
+
+
+class _LoaderBootTimeout(Da1469xLoaderError):
+    """The loader was reloaded and resumed, but never published ``fl_state==1``.
+
+    Internal to this module and raised at exactly one site — the readiness
+    poll at the end of :func:`_prepare_loader_once`. It exists so
+    :func:`_prepare_loader` can retry *that* failure and nothing else:
+    the bring-up is a sequence of steps that either work or indicate a real
+    problem (a missing artefact, an ELF without the symbols, an OpenOCD or
+    link error on a write), and only the last one has been observed to fail
+    on hardware that a second identical pass then brings up. Retrying a
+    failed ``load_image`` or a missing symbol would just repeat a diagnosis
+    the caller needs to see, so those keep propagating on the first try.
+
+    Callers outside this module never see it as such: it is a
+    :class:`Da1469xLoaderError`, and once the attempts are exhausted
+    :func:`_prepare_loader` raises a plain one that names the attempt count.
     """
 
 
@@ -197,6 +245,25 @@ def xip_to_flash_offset(addr: Optional[int]) -> int:
     return addr - QSPI_XIP_BASE
 
 
+def xip_range_to_flash_offset(start: int, length: int) -> int:
+    """Translate an erase range given in absolute XIP addresses to a flash offset.
+
+    Unlike :func:`xip_to_flash_offset`, both ends must lie inside the QSPI
+    XIP window and ``0`` is not a stand-in for "the start of QSPI": an erase
+    range is always explicit. Raises :class:`Da1469xLoaderError` otherwise.
+    """
+    if length <= 0:
+        raise Da1469xLoaderError(f'erase length must be positive, got {length}')
+    if not (QSPI_XIP_BASE <= start and start + length <= QSPI_XIP_END):
+        raise Da1469xLoaderError(
+            f'erase range {hex(start)}-{hex(start + length - 1)} is outside '
+            f'the DA1469x QSPI XIP window ({hex(QSPI_XIP_BASE)}-'
+            f'{hex(QSPI_XIP_END - 1)}). Pass absolute XIP addresses '
+            f'(e.g. {hex(QSPI_XIP_BASE)} for the start of QSPI).'
+        )
+    return start - QSPI_XIP_BASE
+
+
 # ---------------------------------------------------------------------------
 # Loader artefact resolution
 # ---------------------------------------------------------------------------
@@ -212,7 +279,7 @@ def _resolve_loader_paths(family: str) -> Tuple[str, str]:
     actionable message if either is missing.
 
     Layout: ``<root>/<family>/flash_loader.elf`` and ``...elf.bin``. The
-    operator is expected to drop these via ``lager box ssh`` once per box.
+    operator is expected to drop these via ``lager ssh --box <box>`` once per box.
     """
     root = _flash_loaders_root()
     family_dir = os.path.join(root, family)
@@ -226,7 +293,7 @@ def _resolve_loader_paths(family: str) -> Tuple[str, str]:
             f'Expected:\n'
             f'  {elf_path}\n'
             f'  {bin_path}\n'
-            f'Run `lager box ssh <box>` and copy the matching loader build into '
+            f'Run `lager ssh --box <box>` and copy the matching loader build into '
             f'{family_dir} (override the parent dir with '
             f'{ENV_LOADER_DIR_OVERRIDE}=<path>). Missing: '
             f'{", ".join(os.path.basename(p) for p in missing)}.'
@@ -383,33 +450,136 @@ def _poll_word(rpc: OpenOcdRpc, address: int, predicate, *,
     """Poll ``mdw(address)`` until *predicate(value)* is True or *timeout_s*
     elapses. Returns the matching value; raises :class:`Da1469xLoaderError`
     on timeout.
+
+    A read that *fails* is treated exactly like a read that returns a
+    non-matching value: retried until the deadline. Every one of these polls
+    reads target RAM through the debug AP while the CPU is running (the
+    loader is spinning on its command word), which is precisely where a
+    marginal SWD link drops a response and OpenOCD answers with no parseable
+    words — :class:`OpenOcdRpcError`. Aborting a flash on a single such read,
+    with seconds of budget and hundreds of iterations still to go, punishes
+    "read nothing" harder than "read the wrong value", which this loop is
+    built to ride out. A genuinely dead link still fails at the deadline,
+    and the message then names the read error rather than a stale or
+    fabricated last value.
     """
     deadline = time.monotonic() + timeout_s
     last = None
+    last_err = None
     while True:
-        last = rpc.mdw(int(address))
-        if predicate(last):
-            return last
+        try:
+            last = rpc.mdw(int(address))
+        except OpenOcdRpcError as exc:
+            # Transient by assumption; fall through to the deadline check.
+            # Deliberately narrow — an OpenOcdRpcError means the link or the
+            # reply misbehaved, while a bug in the RPC layer raises something
+            # else and still surfaces immediately.
+            last_err = exc
+            logger.debug('flash_loader %s: mdw %s failed, retrying: %s',
+                         label, hex(address), exc)
+        else:
+            last_err = None
+            if predicate(last):
+                return last
         if time.monotonic() >= deadline:
+            if last_err is not None:
+                reason = f'(last read of {hex(address)} failed: {last_err})'
+            else:
+                reason = f'(last value at {hex(address)} = {hex(last)})'
             raise Da1469xLoaderError(
                 f'flash_loader {label}: timed out after {timeout_s:.1f}s '
-                f'(last value at {hex(address)} = {hex(last)})'
+                f'{reason}'
             )
         time.sleep(_POLL_INTERVAL_S)
 
 
-def _prepare_loader(rpc: OpenOcdRpc, elf_path: str, bin_path: str,
-                    syms: Dict[str, int]) -> Iterator[str]:
-    """Reset, load the loader into RAM, jump to it, wait for ready.
+def _force_thumb_state(rpc: OpenOcdRpc) -> Iterator[str]:
+    """Set ``EPSR.T`` so the core executes the loader as Thumb code.
 
-    Mirrors [xl/openocd/flash_loader/flash.gdb:1-26](xl/openocd/flash_loader/flash.gdb)
-    line-for-line. Yields human-readable progress lines; raises on any
+    The loader's reset vector is an odd address (``0x20000201``) — the
+    standard Thumb function-pointer convention. ``rpc.reg_write('pc', ...)``
+    cannot convey it: OpenOCD masks bit 0 of a PC write and never touches
+    ``xPSR``, so on a core whose ``T`` bit is already clear the loader is
+    entered in ARM state and dies on its first instruction. Observed on a
+    DA1469x whose flash had been erased: ``xPSR`` read ``0xf8000000``
+    (``T`` clear) after ``reset halt``, the loader took an INVSTATE
+    UsageFault at ``0x20000200``, escalated to HardFault, and locked up —
+    reported by the layer above as "the loader never reported ready".
+
+    The incoming ``T`` state is not deterministic: the same board, still
+    blank, later halted with ``T`` already set. Which state you get depends
+    on what the core was doing before the reset, so the bit is set here
+    unconditionally rather than inherited — that is the whole point. It also
+    explains why this hid for so long: ``T`` is usually set already.
+
+    Yields a progress line only when it actually has to set the bit, so a
+    healthy bring-up's log is unchanged.
+    """
+    last_exc = None
+    for name in PSR_REG_NAMES:
+        try:
+            value = rpc.reg_read(name)
+        except OpenOcdRpcError as exc:
+            last_exc = exc
+            continue
+        if value & XPSR_THUMB_BIT:
+            return
+        rpc.reg_write(name, value | XPSR_THUMB_BIT)
+        yield (f'Core was in ARM state ({name}={hex(value)}, Thumb bit clear); '
+               f'set {name}.T before entering the loader')
+        return
+    raise Da1469xLoaderError(
+        'cannot read the core status register to set the Thumb bit; tried '
+        f'{", ".join(PSR_REG_NAMES)} (last error: {last_exc}). Without it the '
+        'loader is entered in ARM state and faults on its first instruction.'
+    )
+
+
+def _raise_if_locked_up(rpc: OpenOcdRpc, when: str) -> None:
+    """Fail loudly if the core is in LOCKUP rather than genuinely halted.
+
+    OpenOCD reports a locked-up core as *halted*, so ``wait_halt`` returns
+    success and the caller believes its breakpoint was hit. It was not: the
+    core faulted, escalated past HardFault and stopped fetching. Left
+    undetected this surfaces 10 seconds later as a readiness timeout, and
+    :data:`_LOADER_BOOT_ATTEMPTS` then replays the whole bring-up against a
+    core that cannot recover without a reset. Naming LOCKUP here turns a
+    confusing timeout into the actual diagnosis, and — because this is not
+    a :class:`_LoaderBootTimeout` — stops the futile retries.
+    """
+    try:
+        dhcsr = rpc.mdw(REG_DHCSR)
+    except OpenOcdRpcError as exc:
+        # A single dropped read is not evidence of lockup; let the caller
+        # carry on and fail on its own terms if the loader really is dead.
+        logger.info('DHCSR read failed while checking for lockup (%s)', exc)
+        return
+    if dhcsr & DHCSR_S_LOCKUP:
+        raise Da1469xLoaderError(
+            f'core is in LOCKUP {when} (DHCSR={hex(dhcsr)}): a fault escalated '
+            f'past HardFault and the core has stopped executing. The loader '
+            f'image is in RAM but nothing ran. Read CFSR (0xE000ED28) and the '
+            f'stacked frame at MSP to see which fault; INVSTATE there means '
+            f'the core entered the loader in ARM state.'
+        )
+
+
+def _prepare_loader_once(rpc: OpenOcdRpc, elf_path: str, bin_path: str,
+                         syms: Dict[str, int]) -> Iterator[str]:
+    """Run the bring-up sequence once: reset, load into RAM, jump, wait ready.
+
+    Mirrors the setup section of ``flash.gdb`` line-for-line. Yields human-readable progress lines; raises on any
     OpenOCD or loader-level error.
+
+    Every step here is idempotent by construction — the sequence opens by
+    resetting the core and overwrites the loader image in RAM — so running
+    it again on top of a failed pass is safe. :func:`_prepare_loader` is
+    the entry point that does exactly that; call it, not this.
     """
     yield f'Preparing DA1469x flash_loader from {elf_path}'
 
-    # POR-pin debug enable poke. The user added this to the OpenOCD scripts
-    # specifically (the J-Link path doesn't need it because Commander's
+    # POR-pin debug enable poke. The OpenOCD scripts perform it explicitly
+    # (the J-Link path doesn't need it because Commander's
     # device profile handles equivalent setup).
     rpc.mww(REG_POR_PIN_DEBUG_ENABLE, REG_POR_PIN_DEBUG_ENABLE_VALUE)
 
@@ -431,7 +601,10 @@ def _prepare_loader(rpc: OpenOcdRpc, elf_path: str, bin_path: str,
     pc = rpc.mdw(LOADER_RAM_BASE + 4)
     yield f'Loader vector table: MSP={hex(msp)} PC={hex(pc)}'
     rpc.reg_write('msp', msp)
-    rpc.reg_write('pc', pc)
+    # Mask the Thumb bit out of the PC (OpenOCD ignores it there anyway) and
+    # apply it where the architecture actually keeps it, in ``xPSR``.
+    rpc.reg_write('pc', pc & ~1)
+    yield from _force_thumb_state(rpc)
 
     # Disable QSPIC / MTB before we run — same writes the GDB scripts make.
     # MPU is intentionally disabled later, while the loader is running.
@@ -466,7 +639,10 @@ def _prepare_loader(rpc: OpenOcdRpc, elf_path: str, bin_path: str,
     # ``b mynewt_main; c; d 1`` — break at the loader's entry, run until we
     # hit it, then drop the breakpoint so the next ``resume`` goes straight
     # into the command-poll loop.
-    mynewt_main = syms['mynewt_main']
+    # ``mynewt_main`` is a Thumb function pointer, so its symbol value is
+    # odd (0x20002545). GDB's ``b mynewt_main`` masks bit 0; an FPB
+    # comparator requires a halfword-aligned address, so we must too.
+    mynewt_main = syms['mynewt_main'] & ~1
     rpc.bp(mynewt_main, length=4, hw=True)
     try:
         rpc.resume()
@@ -480,6 +656,10 @@ def _prepare_loader(rpc: OpenOcdRpc, elf_path: str, bin_path: str,
             logger.warning('rbp at %s after wait_halt failed: %s',
                            hex(mynewt_main), exc)
 
+    # ``wait_halt`` says "halted" for a locked-up core too, so a success
+    # here is not yet evidence the breakpoint was reached.
+    _raise_if_locked_up(rpc, 'after entering the loader')
+
     # Resume into the loader's main, then disable the MPU on the fly. The
     # MPU write happens through the debug AP while the CPU runs — Cortex-M
     # allows that. Keeps the loader's command-poll loop from being trapped
@@ -488,13 +668,67 @@ def _prepare_loader(rpc: OpenOcdRpc, elf_path: str, bin_path: str,
     rpc.mww(REG_MPU_CTRL, 0)
 
     # Wait for the loader to finish its own init and report ``fl_state==1``.
+    # Re-raise a timeout here as the one failure :func:`_prepare_loader`
+    # retries: we got the image in and the core running, and the loader
+    # simply never announced itself.
     yield 'Waiting for flash_loader to be ready...'
-    _poll_word(
-        rpc, syms['fl_state'], lambda v: v == FL_STATE_READY,
-        timeout_s=_LOADER_BOOT_TIMEOUT_S,
-        label='boot (fl_state==1)',
-    )
+    try:
+        _poll_word(
+            rpc, syms['fl_state'], lambda v: v == FL_STATE_READY,
+            timeout_s=_LOADER_BOOT_TIMEOUT_S,
+            label='boot (fl_state==1)',
+        )
+    except Da1469xLoaderError as exc:
+        raise _LoaderBootTimeout(str(exc)) from exc
     yield 'flash_loader ready'
+
+
+def _prepare_loader(rpc: OpenOcdRpc, elf_path: str, bin_path: str,
+                    syms: Dict[str, int]) -> Iterator[str]:
+    """Bring the loader up, re-running the whole sequence if it never starts.
+
+    :func:`_prepare_loader_once` ends by polling ``fl_state`` for
+    :data:`_LOADER_BOOT_TIMEOUT_S`, and on some boards that poll reads a
+    steady ``0`` for the full budget: the loader did not start, rather than
+    started slowly. Waiting longer cannot fix that, and a fresh pass
+    reliably does — so on a readiness timeout we reset the core, reload the
+    image and try again, up to :data:`_LOADER_BOOT_ATTEMPTS` times.
+
+    Only that timeout is retried; see :class:`_LoaderBootTimeout`.
+    Everything else — a missing artefact, an ELF without the loader
+    symbols, an :class:`OpenOcdRpcError` from a write or a breakpoint —
+    propagates on the first attempt, because none of those describe a chip
+    that a second identical pass would treat differently.
+
+    Yields the same progress lines as a single pass, plus one line per
+    retry saying which attempt failed and why, so a reader can tell a
+    re-run apart from a duplicated log line.
+    """
+    last_exc = None
+    for attempt in range(1, _LOADER_BOOT_ATTEMPTS + 1):
+        if attempt > 1:
+            yield (f'flash_loader did not come up on attempt {attempt - 1} '
+                   f'of {_LOADER_BOOT_ATTEMPTS} ({last_exc}); resetting the '
+                   f'core and reloading the loader for attempt {attempt}')
+        try:
+            yield from _prepare_loader_once(rpc, elf_path, bin_path, syms)
+        except _LoaderBootTimeout as exc:
+            logger.warning(
+                'flash_loader bring-up attempt %d of %d failed: %s',
+                attempt, _LOADER_BOOT_ATTEMPTS, exc,
+            )
+            last_exc = exc
+            continue
+        return
+
+    # Every attempt reloaded the image and every attempt was ignored. Say
+    # how many times we tried and what the last one saw, so a board that is
+    # actually dead still reads as a dead board and not as a flaky retry.
+    raise Da1469xLoaderError(
+        f'flash_loader never reported ready in {_LOADER_BOOT_ATTEMPTS} '
+        f'bring-up attempts, each one a full reset + reload of '
+        f'{LOADER_BIN_NAME}. Last attempt: {last_exc}'
+    ) from last_exc
 
 
 def _fl_ping(rpc: OpenOcdRpc, syms: Dict[str, int]) -> None:
@@ -510,6 +744,16 @@ def _fl_ping(rpc: OpenOcdRpc, syms: Dict[str, int]) -> None:
         raise Da1469xLoaderError(f'flash_loader ping returned rc={rc}')
 
 
+def _fl_erase_timeout_s(amount: int) -> float:
+    """:data:`_FL_ERASE_TIMEOUT_S` per MiB of *amount*, never less than one budget.
+
+    The constant was sized for the 1 MiB default erase. ``--erase-size`` can
+    ask for more, and the loader erases the whole range in one command, so
+    the wait grows with it.
+    """
+    return _FL_ERASE_TIMEOUT_S * max(1, math.ceil(amount / (1 << 20)))
+
+
 def _fl_erase(rpc: OpenOcdRpc, syms: Dict[str, int],
               flash_id: int, addr: int, amount: int) -> None:
     """Equivalent of the ``fl_erase`` GDB macro: ping, set parameters,
@@ -522,7 +766,7 @@ def _fl_erase(rpc: OpenOcdRpc, syms: Dict[str, int],
     rpc.mww(syms['fl_cmd'], FL_CMD_ERASE)
     rc = _poll_word(
         rpc, syms['fl_cmd_rc'], lambda v: v != 0,
-        timeout_s=_FL_ERASE_TIMEOUT_S, label='erase (fl_cmd_rc!=0)',
+        timeout_s=_fl_erase_timeout_s(amount), label='erase (fl_cmd_rc!=0)',
     )
     if rc != FL_RC_OK:
         raise Da1469xLoaderError(
@@ -548,8 +792,7 @@ def _fl_program(rpc: OpenOcdRpc, syms: Dict[str, int],
     The driver therefore must dereference ``fl_cmd_data`` (read the
     pointer's current value with ``mdw``) before each ``load_image`` —
     the static ELF symbol address points at the pointer variable itself,
-    not the staging buffer. This mirrors the way
-    [flash_loader.gdb](xl/openocd/flash_loader/flash_loader.gdb)
+    not the staging buffer. This mirrors the way ``flash_loader.gdb``
     re-resolves bare ``fl_cmd_data`` on every iteration.
     """
     _fl_ping(rpc, syms)
@@ -697,15 +940,15 @@ def flash_image(rpc: OpenOcdRpc, image_path: str, *,
                 _resolver=_resolve_loader_paths,
                 _symbol_resolver=_resolve_loader_symbols) -> Iterator[str]:
     """Flash *image_path* to the chip's external flash via the RAM-resident
-    flash_loader. Equivalent to running [xl/openocd/flash_loader/flash.gdb]
-    against the OpenOCD GDB server, but executed in-process via TCL/RPC.
+    flash_loader. Equivalent to running ``flash.gdb`` against the OpenOCD
+    GDB server, but executed in-process via TCL/RPC.
 
     Yields human-readable progress lines for the box-side log; raises
     :class:`Da1469xLoaderError` (or :class:`OpenOcdRpcError`) on failure.
 
     Parameters mirror the GDB ``fl_load <file> <id> <offset>`` macro: by
-    default, flash_id=0, offset=0 — same as the ``fl_load xl.img 0 0`` line
-    in [xl/openocd/flash_loader/flash.gdb:27].
+    default, flash_id=0, offset=0 — same as the ``fl_load <image> 0 0`` line
+    in ``flash.gdb``.
 
     The ``_resolver`` / ``_symbol_resolver`` hooks are dependency-injection
     seams for tests; production callers don't pass them.
@@ -736,8 +979,7 @@ def erase_range(rpc: OpenOcdRpc, *,
                 _symbol_resolver=_resolve_loader_symbols) -> Iterator[str]:
     """Erase ``[offset, offset+length)`` on flash bank *flash_id* via the
     RAM-resident flash_loader. Default 1 MiB at offset 0 — matches the
-    ``fl_erase 0 0x00000000 1048576`` line in
-    [xl/openocd/flash_loader/erase.gdb:27].
+    ``fl_erase 0 0x00000000 1048576`` line in ``erase.gdb``.
 
     Yields progress lines; raises on failure.
     """
@@ -762,4 +1004,6 @@ __all__ = [
     'Da1469xLoaderError',
     'erase_range',
     'flash_image',
+    'xip_range_to_flash_offset',
+    'xip_to_flash_offset',
 ]

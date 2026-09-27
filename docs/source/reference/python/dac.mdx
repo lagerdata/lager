@@ -3,7 +3,7 @@ title: DAC
 description: Control digital-to-analog converter outputs
 ---
 
-Set analog voltage outputs using DAC pins. Supports LabJack T7 and MCC USB-202 hardware.
+Set analog voltage outputs using DAC pins. Supports LabJack T7, LabJack U3 and MCC USB-202 hardware.
 
 ## Import
 
@@ -50,7 +50,9 @@ dac.output(2.5)  # Set to 2.5V
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `voltage` | `float` | Output voltage in volts |
+| `voltage` | `float` | Output voltage in volts. LabJack T7 and USB-202: 0-5 V. LabJack U3: 0.04-4.95 V |
+
+**Raises:** `ValueError` if the voltage is outside the range of the instrument. A LabJack U3 refuses a value outside 0.04-4.95 V, so you cannot set it to 0 V.
 
 ### `get_voltage()`
 
@@ -62,6 +64,8 @@ print(f"DAC set to: {v}V")
 ```
 
 **Returns:** `float` - Configured voltage in volts
+
+A LabJack U3 has no DAC readback. On a U3, `get_voltage()` returns the last value that this net object set. If it set no value, the call raises an error with the text `has no readback`. The MCC USB-202 has no readback, so the call raises `NotImplementedError`.
 
 ### `input()`
 
@@ -139,8 +143,11 @@ print(f"Set: 3.3V, Readback: {readback}V")
 
 | Hardware | Channels | Range |
 |----------|----------|-------|
-| LabJack T7 | DAC0-DAC1 | 0-10 V |
+| LabJack T7 | DAC0-DAC1 | 0-5 V |
+| LabJack U3 | DAC0-DAC1 | 0.04-4.95 V |
 | MCC USB-202 | AOUT0-AOUT1 | 0-5 V |
+
+The examples above output 0 V and 5 V. On a LabJack U3, keep every value from 0.04 V to 4.95 V.
 
 ### Pin Naming
 
@@ -162,8 +169,10 @@ print(f"Set: 3.3V, Readback: {readback}V")
 ## Notes
 
 - DAC nets work directly without `enable()`/`disable()` calls
-- LabJack T7 output range: 0-10 V
+- LabJack T7 output range: 0-5 V
+- LabJack U3 output range: 0.04-4.95 V
 - USB-202 output range: 0-5 V
 - `input()` is an alias for `get_voltage()` and returns the configured output value
+- A LabJack U3 and a USB-202 give no hardware readback
 - Output values are maintained until changed or power cycle
 - Net names must match those configured on the Lager Box

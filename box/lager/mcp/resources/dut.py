@@ -27,7 +27,13 @@ def _doc_ref_md(ref) -> str:
     if ref.url:
         where.append(f"[{ref.url}]({ref.url})")
     if ref.repo_path:
-        where.append(f"`{ref.repo_path}` (in your project repo)")
+        where.append(
+            f"`{ref.repo_path}` (in your project, else under `~/.lager_dut_docs/`)"
+        )
+    if ref.external_url:
+        where.append(f"[{ref.external_url}]({ref.external_url}) (document store)")
+    if ref.external_id:
+        where.append(f"`{ref.external_id}` (document store ID)")
     if where:
         parts.append(" — " + " / ".join(where))
     if ref.pages:
@@ -89,11 +95,14 @@ def _render_overview(bench) -> str:
         if any_docs:
             lines.append("\n### Documents to read")
             lines.append(
-                "_The box does not host these files. Use your own file "
-                "tools to open `repo_path` entries, or fetch `url` entries "
-                "directly. Vision models analyse per-sheet PNGs faster "
-                "than full PDFs. See `lager://guide/workflow` section 0b for "
-                "the exact page-render recipe._\n"
+                "_The box does not host these files. Open `repo_path` "
+                "entries with your own file tools, from your project root or "
+                "else from `~/.lager_dut_docs/`. Fetch `url` entries directly. "
+                "Reach `external_url` and `external_id` entries through a "
+                "document-store connector that holds the credentials. Vision "
+                "models analyse per-sheet PNGs faster than full PDFs. See "
+                "`lager://guide/workflow` section 0b for the exact "
+                "page-render recipe._\n"
             )
             for title, refs in doc_sections:
                 if not refs:

@@ -156,13 +156,30 @@ class ValidationTests(unittest.TestCase):
         self.assertIn('description', err)
         self.assertIn('purpose', err)
 
-    def test_pre_v0_24_vocabulary_is_refused(self):
-        # `description`/`dut_connection`/`test_hints` were renamed in v0.24.0.
-        # Accepting them would write keys nothing on the box reads back.
-        for legacy in ('description', 'dut_connection', 'test_hints'):
-            with self.subTest(field=legacy):
-                err = net_metadata_handler._validate_payload({"fields": {legacy: "x"}})
-                self.assertIsNotNone(err)
+    def test_description_is_still_refused(self):
+        # `description` became `purpose` in v0.24.0; nothing on the box reads
+        # the old key, so accepting it would report a save that took no effect.
+        err = net_metadata_handler._validate_payload({"fields": {"description": "x"}})
+        self.assertIsNotNone(err)
+
+    def test_dut_connection_and_test_hints_are_accepted(self):
+        # Dropped in v0.24.0 as legacy, back as first-class fields: the MCP
+        # server, /status and the bench manifest all read them now, and they
+        # are the two per-net fields the control plane keeps.
+        self.assertIsNone(net_metadata_handler._validate_payload(
+            {"fields": {"dut_connection": "J3 pin 4", "test_hints": ["hold nRST"]}}
+        ))
+        self.assertIn('dut_connection must be a string',
+                      net_metadata_handler._validate_payload({"fields": {"dut_connection": 4}}))
+        self.assertIn('test_hints must be an array of strings',
+                      net_metadata_handler._validate_payload({"fields": {"test_hints": "one"}}))
+
+    def test_allowed_fields_match_the_mcp_bench_loader(self):
+        # The handler keeps its own tuple so a failed MCP import cannot take
+        # this route down; this is what keeps the two lists equal.
+        from lager.mcp.engine.bench_loader import USER_METADATA_FIELDS
+
+        self.assertEqual(set(net_metadata_handler.ALLOWED_FIELDS), set(USER_METADATA_FIELDS))
 
     def test_purpose_must_be_a_string(self):
         err = net_metadata_handler._validate_payload({"fields": {"purpose": 42}})
@@ -271,8 +288,30 @@ class WriteTests(_NetsFileFixture):
 
     def test_get_reports_empty_defaults_for_an_undescribed_net(self):
         got = self.client.get('/nets/uart1/metadata').get_json()
-        self.assertEqual(got['fields'], {'purpose': '', 'notes': '', 'tags': []})
+        self.assertEqual(got['fields'], {
+            'purpose': '', 'notes': '', 'tags': [], 'dut_connection': '', 'test_hints': [],
+        })
         self.assertEqual(got['metadata_timestamps'], {})
+
+    def test_dut_connection_and_test_hints_round_trip(self):
+        res = self.client.put('/nets/uart1/metadata', json={
+            "fields": {"dut_connection": "J3 pin 4", "test_hints": ["hold nRST", "115200 8N1"]},
+            "timestamps": {"dut_connection": "2026-09-23T10:00:00Z",
+                           "test_hints": "2026-09-23T10:00:00Z"},
+        })
+        self.assertEqual(res.status_code, 200, res.get_json())
+        rec = self.record('uart1')
+        self.assertEqual(rec['dut_connection'], 'J3 pin 4')
+        self.assertEqual(rec['test_hints'], ['hold nRST', '115200 8N1'])
+        self.assertEqual(rec['metadata_timestamps']['dut_connection'], '2026-09-23T10:00:00Z')
+        # Side-car fields on the record are untouched.
+        self.assertEqual(rec['jlink_script'], 'Zm9v')
+        got = self.client.get('/nets/uart1/metadata').get_json()['fields']
+        self.assertEqual(got['dut_connection'], 'J3 pin 4')
+        self.assertEqual(got['test_hints'], ['hold nRST', '115200 8N1'])
+        # null clears, as for the other fields.
+        self.client.put('/nets/uart1/metadata', json={"fields": {"test_hints": None}})
+        self.assertNotIn('test_hints', self.record('uart1'))
 
 
 class RefusedWriteTests(_NetsFileFixture):

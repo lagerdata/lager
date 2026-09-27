@@ -2,734 +2,350 @@
 
 # Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
-# Comprehensive test suite for lager arm commands
-# Tests all edge cases, error conditions, and production features
+# Hardware test suite for lager arm (Rotrics Dexarm).
 #
-# Usage: ./arm.sh <BOX_NAME_OR_IP> <ARM_NET>
+# Usage: ./arm.sh <BOX_NAME_OR_IP> <ARM_NET> [USB_NET]
+#
+#   USB_NET  Optional usb hub net that carries the arm's USB cable. When given,
+#            the reconnect test switches that hub port off and on again.
+#
+# THIS MOVES THE ARM. Every target stays within about 50 mm of home
+# (X0 Y300 Z0). The script never runs read-and-save-position: that command
+# sends M889, which overwrites the arm's stored calibration.
+#
+# The arm must run DexArm firmware V2.1.4 or later. Older firmware swaps the X
+# and Y axes, and lager refuses moves on it.
+#
+# Optional environment:
+#   ARM_ACCELERATION, ARM_TRAVEL, ARM_RETRACT
+#       Values that set-acceleration writes (defaults 200, 200, 60: what a
+#       Dexarm on Marlin 2.0.1 firmware reports). The CLI cannot read them back.
+#   ARM_TEST_DISABLE_MOTOR=1
+#       Also run disable-motor. The arm goes limp and can drop onto whatever is
+#       below it, so this test is skipped unless you ask for it.
 
 set +e  # DON'T exit on error - we want to track failures
 
-# Determine script directory for relative paths
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Source test framework
 source "${SCRIPT_DIR}/../../framework/colors.sh"
 source "${SCRIPT_DIR}/../../framework/harness.sh"
 
-# Initialize the test harness
 init_harness
 
-# Check if required arguments are provided
 if [ $# -lt 2 ]; then
-  echo "Usage: $0 <BOX_NAME_OR_IP> <ARM_NET>"
+  echo "Usage: $0 <BOX_NAME_OR_IP> <ARM_NET> [USB_NET]"
   echo ""
   echo "Examples:"
   echo "  $0 my-box arm1"
-  echo "  $0 <BOX_IP> rotrics_arm"
-  echo ""
-  echo "Arguments:"
-  echo "  BOX_NAME_OR_IP - Box name or Tailscale IP address"
-  echo "  ARM_NET        - Name of the arm net to test"
+  echo "  $0 my-box arm1 usb1     (also run the reconnect test on hub net usb1)"
   echo ""
   exit 1
 fi
 
 BOX_INPUT="$1"
 ARM_NET="$2"
+USB_NET="${3:-}"
+ARM_ACCELERATION="${ARM_ACCELERATION:-200}"
+ARM_TRAVEL="${ARM_TRAVEL:-200}"
+ARM_RETRACT="${ARM_RETRACT:-60}"
+TOL_MM=2
 
-# Register box from IP if needed
 register_box_from_ip "$BOX_INPUT"
 
-print_script_header "LAGER ARM COMPREHENSIVE TEST SUITE" "$BOX" "$ARM_NET"
-echo "IMPORTANT: This test will physically move the arm!"
-echo "Ensure the workspace is clear and the arm can move safely."
+print_script_header "LAGER ARM TEST SUITE" "$BOX" "$ARM_NET"
+echo "IMPORTANT: This test physically moves the arm."
+echo "Clear the workspace within about 50 mm of home (X0 Y300 Z0) before you continue."
+echo ""
+
+# ----------------------------------------------------------------------------
+# Helpers
+# ----------------------------------------------------------------------------
+
+lager_arm() {
+  lager arm "$ARM_NET" "$@" --box "$BOX"
+}
+
+# Print "X Y Z" from `lager arm <net> position`. Fails if the read fails or
+# does not carry all three axes.
+read_position() {
+  local out pos
+  out=$(lager_arm position 2>&1) || return 1
+  pos=$(echo "$out" | awk '{for (i = 1; i <= NF; i++) if ($i == "X:" || $i == "Y:" || $i == "Z:") printf "%s ", $(i + 1)}')
+  [ "$(echo "$pos" | wc -w | tr -d ' ')" -eq 3 ] || return 1
+  echo "$pos"
+}
+
+# near X Y Z: succeed if the arm is within TOL_MM of the target on every axis.
+near() {
+  local pos x y z
+  pos=$(read_position) || return 1
+  read -r x y z <<< "$pos"
+  awk -v x="$x" -v y="$y" -v z="$z" -v tx="$1" -v ty="$2" -v tz="$3" -v tol="$TOL_MM" \
+    'function abs(v) { return v < 0 ? -v : v }
+     BEGIN { exit !(abs(x - tx) <= tol && abs(y - ty) <= tol && abs(z - tz) <= tol) }'
+}
+
+# wait_near X Y Z SECONDS: poll until the arm is near the target.
+wait_near() {
+  local deadline=$((SECONDS + $4))
+  while [ $SECONDS -lt $deadline ]; do
+    near "$1" "$2" "$3" && return 0
+    sleep 1
+  done
+  return 1
+}
+
+# expect_fail DESCRIPTION PATTERN COMMAND...: the command must exit non-zero and
+# print PATTERN (case-insensitive).
+expect_fail() {
+  local desc="$1" pattern="$2" out rc
+  shift 2
+  out=$("$@" 2>&1)
+  rc=$?
+  if [ $rc -ne 0 ] && echo "$out" | grep -qi -- "$pattern"; then
+    track_test_msg "pass" "$desc"
+  else
+    track_test_msg "fail" "$desc (exit $rc): $(echo "$out" | tail -2 | tr '\n' ' ')"
+  fi
+}
+
+# ============================================================================
+# SECTION 1: PRECONDITIONS AND CLI SURFACE (no motion)
+# ============================================================================
+print_section_header "SECTION 1: PRECONDITIONS AND CLI SURFACE"
+start_section "Preconditions"
+
+if lager arm --box "$BOX" 2>&1 | grep -q -- "$ARM_NET"; then
+  track_test_msg "pass" "lager arm --box lists $ARM_NET"
+else
+  track_test_msg "fail" "lager arm --box does not list $ARM_NET"
+fi
+
+POS=$(read_position)
+if [ -n "$POS" ]; then
+  track_test_msg "pass" "position answers: $POS"
+else
+  track_test_msg "fail" "position did not answer with X, Y and Z"
+fi
+
+if lager arm --help 2>&1 | grep -q "Control robot arm"; then
+  track_test_msg "pass" "lager arm --help"
+else
+  track_test_msg "fail" "lager arm --help text missing"
+fi
+
+# The recalibration gate must exist. This only reads the help text: running
+# the command would send M889.
+HELP=$(lager arm "$ARM_NET" read-and-save-position --help 2>&1)
+if echo "$HELP" | grep -q -- "--yes" && echo "$HELP" | grep -q "M889"; then
+  track_test_msg "pass" "read-and-save-position is gated behind --yes"
+else
+  track_test_msg "fail" "read-and-save-position has no --yes gate; do not run it"
+fi
 echo ""
 
 # ============================================================================
-# SECTION 1: BASIC COMMANDS
+# SECTION 2: ERROR CASES (no motion)
 # ============================================================================
-print_section_header "SECTION 1: BASIC COMMANDS (No Connection Required)"
-start_section "Basic Commands"
-
-echo "Test 1.1: List available boxes"
-lager boxes 2>&1 | grep -q '.' && track_test_msg "pass" "Boxes listed" || track_test_msg "fail" "Could not list boxes"
-echo ""
-
-echo "Test 1.2: List available nets"
-lager nets --box $BOX 2>&1 | grep -q '.' && track_test_msg "pass" "Nets listed" || track_test_msg "fail" "Could not list nets"
-echo ""
-
-echo "Test 1.3: Verify arm net exists"
-lager nets --box $BOX 2>&1 | grep -q "$ARM_NET" && track_test_msg "pass" "Arm net found" || track_test_msg "fail" "Arm net not found"
-echo ""
-
-echo "Test 1.4: ARM help output"
-lager arm --help 2>&1 | grep -q "Interface for robot arm" && track_test_msg "pass" "Help output OK" || track_test_msg "fail" "Help output missing"
-echo ""
-
-# ============================================================================
-# SECTION 2: ERROR CASES
-# ============================================================================
-print_section_header "SECTION 2: ERROR CASES (Invalid Commands)"
+print_section_header "SECTION 2: ERROR CASES"
 start_section "Error Cases"
 
-echo "Test 2.1: Invalid net name"
-OUTPUT=$(lager arm nonexistent_net position --box $BOX 2>&1)
-if echo "$OUTPUT" | grep -qi "error\|not found\|required"; then
-  track_test_msg "pass" "Error caught correctly"
-else
-  track_test_msg "fail" "No error for invalid net"
-fi
+expect_fail "unknown net is refused" "not found" \
+  lager arm nonexistent_net position --box "$BOX"
+expect_fail "move without --z is a usage error" "missing option" \
+  lager_arm move --x 0 --y 300 --yes
+expect_fail "move outside the workspace is refused" "out of bounds" \
+  lager_arm move --x 500 --y 300 --z 0 --yes
+expect_fail "move --timeout past the 25 s cap is refused" "timeout" \
+  lager_arm move --x 0 --y 300 --z 0 --timeout 26 --yes
+expect_fail "set-acceleration 0 is refused" "acceleration" \
+  lager_arm set-acceleration --acceleration 0 --travel 10
 echo ""
 
-echo "Test 2.2: Invalid box"
-OUTPUT=$(lager arm $ARM_NET position --box INVALID-BOX 2>&1)
-if echo "$OUTPUT" | grep -qi "error\|don't have"; then
-  track_test_msg "pass" "Error caught correctly"
-else
-  track_test_msg "fail" "No error for invalid box"
-fi
-echo ""
+# ============================================================================
+# SECTION 3: HOME
+# ============================================================================
+print_section_header "SECTION 3: HOME (X0 Y300 Z0)"
+start_section "Home"
 
-echo "Test 2.3: Missing net name argument"
-OUTPUT=$(lager arm position --box $BOX 2>&1)
-if echo "$OUTPUT" | grep -qi "required\|missing\|error\|usage"; then
-  track_test_msg "pass" "Missing argument caught"
+if lager_arm go-home --yes >/dev/null 2>&1; then
+  track_test_msg "pass" "go-home exits 0"
 else
-  track_test_msg "fail" "Missing argument not caught"
+  track_test_msg "fail" "go-home failed"
 fi
-echo ""
 
-echo "Test 2.4: Move without coordinates"
-OUTPUT=$(lager arm $ARM_NET move --box $BOX --yes 2>&1)
-if echo "$OUTPUT" | grep -qi "missing\|required"; then
-  track_test_msg "pass" "Missing coordinates caught"
+# go-home must return with the arm at home, not while it is still travelling.
+if near 0 300 0; then
+  track_test_msg "pass" "arm is at home when go-home returns"
 else
-  track_test_msg "fail" "Missing coordinates not caught"
+  track_test_msg "fail" "arm was not at home when go-home returned: $(read_position)"
 fi
-echo ""
 
-echo "Test 2.5: Move with invalid coordinate format"
-OUTPUT=$(lager arm $ARM_NET move abc def ghi --box $BOX --yes 2>&1)
-if echo "$OUTPUT" | grep -qi "error\|invalid"; then
-  track_test_msg "pass" "Invalid format caught"
+if wait_near 0 300 0 30; then
+  track_test_msg "pass" "arm reaches home"
 else
-  track_test_msg "fail" "Invalid format not caught"
-fi
-echo ""
-
-echo "Test 2.6: Negative timeout value"
-OUTPUT=$(lager arm $ARM_NET move 0 300 0 --timeout -1 --box $BOX --yes 2>&1)
-if echo "$OUTPUT" | grep -qi "error\|invalid"; then
-  track_test_msg "pass" "Negative timeout caught"
-else
-  echo -e "  ${YELLOW}[WARNING] Negative timeout may have been accepted${NC}"
-  track_test_msg "pass" "Negative timeout accepted (non-fatal)"
-fi
-echo ""
-
-echo "Test 2.7: Set acceleration with invalid values"
-OUTPUT=$(lager arm $ARM_NET set-acceleration -10 20 --box $BOX 2>&1)
-if echo "$OUTPUT" | grep -qi "error\|invalid\|negative"; then
-  track_test_msg "pass" "Invalid acceleration caught"
-else
-  track_test_msg "fail" "Invalid acceleration not caught"
+  track_test_msg "fail" "arm did not reach home within 30 s: $(read_position)"
 fi
 echo ""
 
 # ============================================================================
-# SECTION 3: MOTOR CONTROL
+# SECTION 4: ABSOLUTE MOVE
 # ============================================================================
-print_section_header "SECTION 3: MOTOR CONTROL (Enable/Disable)"
-start_section "Motor Control"
+print_section_header "SECTION 4: ABSOLUTE MOVE"
+start_section "Absolute Move"
 
-echo "Test 3.1: Disable motors"
-if lager arm $ARM_NET disable-motor --box $BOX 2>&1; then
-  track_test_msg "pass" "Motors disabled"
+if lager_arm move --x 50 --y 250 --z 30 --yes >/dev/null 2>&1 && near 50 250 30; then
+  track_test_msg "pass" "move --x 50 --y 250 --z 30 arrives (within ${TOL_MM} mm)"
 else
-  track_test_msg "fail" "Failed to disable motors"
+  track_test_msg "fail" "move to (50, 250, 30) did not arrive: $(read_position)"
 fi
-echo ""
 
-echo "Test 3.2: Read position with motors disabled"
-OUTPUT=$(lager arm $ARM_NET position --box $BOX 2>&1)
-if echo "$OUTPUT" | grep -qE "X:.*Y:.*Z:"; then
-  track_test_msg "pass" "Position read with motors disabled"
+if lager_arm move --x 0 --y 300 --z 0 --yes >/dev/null 2>&1 && near 0 300 0; then
+  track_test_msg "pass" "move back to home arrives"
 else
-  echo -e "  ${YELLOW}[WARNING] Position read failed with motors disabled${NC}"
-  track_test_msg "pass" "Position read with motors disabled (non-fatal)"
-fi
-echo ""
-
-echo "Test 3.3: Enable motors"
-if lager arm $ARM_NET enable-motor --box $BOX 2>&1; then
-  track_test_msg "pass" "Motors enabled"
-else
-  track_test_msg "fail" "Failed to enable motors"
-fi
-echo ""
-
-echo "Test 3.4: Multiple enable/disable cycles"
-for i in {1..3}; do
-  lager arm $ARM_NET disable-motor --box $BOX >/dev/null 2>&1
-  lager arm $ARM_NET enable-motor --box $BOX >/dev/null 2>&1
-done
-track_test_msg "pass" "Multiple cycles completed"
-echo ""
-
-# ============================================================================
-# SECTION 4: POSITION READING
-# ============================================================================
-print_section_header "SECTION 4: POSITION READING"
-start_section "Position Reading"
-
-echo "Test 4.1: Read current position"
-POS_OUTPUT=$(lager arm $ARM_NET position --box $BOX 2>&1)
-echo "$POS_OUTPUT"
-if echo "$POS_OUTPUT" | grep -qE "X:.*Y:.*Z:"; then
-  track_test_msg "pass" "Position read successful"
-else
-  track_test_msg "fail" "Position read failed"
-fi
-echo ""
-
-echo "Test 4.2: Extract position values"
-X_VAL=$(echo "$POS_OUTPUT" | grep -oE "X: *[-+]?[0-9]*\.?[0-9]+" | grep -oE "[-+]?[0-9]*\.?[0-9]+")
-Y_VAL=$(echo "$POS_OUTPUT" | grep -oE "Y: *[-+]?[0-9]*\.?[0-9]+" | grep -oE "[-+]?[0-9]*\.?[0-9]+")
-Z_VAL=$(echo "$POS_OUTPUT" | grep -oE "Z: *[-+]?[0-9]*\.?[0-9]+" | grep -oE "[-+]?[0-9]*\.?[0-9]+")
-if [[ -n "$X_VAL" && -n "$Y_VAL" && -n "$Z_VAL" ]]; then
-  track_test_msg "pass" "Position values: X=$X_VAL Y=$Y_VAL Z=$Z_VAL"
-else
-  track_test_msg "fail" "Could not extract position values"
-fi
-echo ""
-
-echo "Test 4.3: Multiple position reads (stability)"
-echo "Reading position 5 times:"
-for i in {1..5}; do
-  POS=$(lager arm $ARM_NET position --box $BOX 2>&1)
-  X=$(echo "$POS" | grep -oE "X: *[-+]?[0-9]*\.?[0-9]+" | grep -oE "[-+]?[0-9]*\.?[0-9]+")
-  Y=$(echo "$POS" | grep -oE "Y: *[-+]?[0-9]*\.?[0-9]+" | grep -oE "[-+]?[0-9]*\.?[0-9]+")
-  Z=$(echo "$POS" | grep -oE "Z: *[-+]?[0-9]*\.?[0-9]+" | grep -oE "[-+]?[0-9]*\.?[0-9]+")
-  echo "  Read $i: X=$X Y=$Y Z=$Z"
-done
-track_test_msg "pass" "All reads completed"
-echo ""
-
-echo "Test 4.4: Rapid position reads (10x)"
-FAIL_COUNT=0
-for i in {1..10}; do
-  lager arm $ARM_NET position --box $BOX >/dev/null 2>&1 || FAIL_COUNT=$((FAIL_COUNT + 1))
-done
-if [ $FAIL_COUNT -eq 0 ]; then
-  track_test_msg "pass" "10 rapid reads completed"
-else
-  track_test_msg "fail" "$FAIL_COUNT/10 reads failed"
+  track_test_msg "fail" "move back to (0, 300, 0) did not arrive: $(read_position)"
 fi
 echo ""
 
 # ============================================================================
-# SECTION 5: HOME POSITION
+# SECTION 5: RELATIVE MOVE
 # ============================================================================
-print_section_header "SECTION 5: HOME POSITION (X0 Y300 Z0)"
-start_section "Home Position"
+print_section_header "SECTION 5: RELATIVE MOVE"
+start_section "Relative Move"
 
-echo "Test 5.1: Move to home position"
-if lager arm $ARM_NET go-home --box $BOX --yes 2>&1; then
-  track_test_msg "pass" "Moved to home position"
+if lager_arm move-by --dz 10 --yes >/dev/null 2>&1 && near 0 300 10; then
+  track_test_msg "pass" "move-by --dz 10 arrives"
 else
-  track_test_msg "fail" "Failed to move home"
+  track_test_msg "fail" "move-by --dz 10 did not arrive at (0, 300, 10): $(read_position)"
+fi
+
+if lager_arm move-by --dz -10 --yes >/dev/null 2>&1 && near 0 300 0; then
+  track_test_msg "pass" "move-by --dz -10 returns home"
+else
+  track_test_msg "fail" "move-by --dz -10 did not return home: $(read_position)"
+fi
+
+expect_fail "move-by past the workspace is refused" "out of bounds" \
+  lager_arm move-by --dz 200 --yes
+if near 0 300 0; then
+  track_test_msg "pass" "a refused move-by does not move the arm"
+else
+  track_test_msg "fail" "arm moved after a refused move-by: $(read_position)"
 fi
 echo ""
 
-echo "Test 5.2: Verify home position coordinates"
-sleep 1  # Allow movement to complete
-POS=$(lager arm $ARM_NET position --box $BOX 2>&1)
-echo "$POS"
-X=$(echo "$POS" | grep -oE "X: *[-+]?[0-9]*\.?[0-9]+" | grep -oE "[-+]?[0-9]*\.?[0-9]+" | head -1)
-Y=$(echo "$POS" | grep -oE "Y: *[-+]?[0-9]*\.?[0-9]+" | grep -oE "[-+]?[0-9]*\.?[0-9]+" | head -1)
-Z=$(echo "$POS" | grep -oE "Z: *[-+]?[0-9]*\.?[0-9]+" | grep -oE "[-+]?[0-9]*\.?[0-9]+" | head -1)
+# ============================================================================
+# SECTION 6: ACCELERATION
+# ============================================================================
+print_section_header "SECTION 6: ACCELERATION"
+start_section "Acceleration"
 
-# Home position should be approximately X=0, Y=300, Z=0 (with tolerance)
-if [ -n "$X" ] && [ -n "$Y" ] && [ -n "$Z" ]; then
-  X_ABS=$(echo "$X" | sed 's/-//')
-  Y_DIFF=$(echo "$Y - 300" | bc | sed 's/-//')
-  Z_ABS=$(echo "$Z" | sed 's/-//')
+OUT=$(lager_arm set-acceleration --acceleration "$ARM_ACCELERATION" \
+  --travel "$ARM_TRAVEL" --retract "$ARM_RETRACT" 2>&1)
+if echo "$OUT" | grep -q "travel=$ARM_TRAVEL retract=$ARM_RETRACT"; then
+  track_test_msg "pass" "set-acceleration $ARM_ACCELERATION/$ARM_TRAVEL/$ARM_RETRACT"
+else
+  track_test_msg "fail" "set-acceleration: $OUT"
+fi
+echo ""
 
-  # Check with 5mm tolerance
-  if (( $(echo "$X_ABS < 5 && $Y_DIFF < 5 && $Z_ABS < 5" | bc -l) )); then
-    track_test_msg "pass" "At home position (tolerance: +/-5mm)"
+# ============================================================================
+# SECTION 7: MOTORS
+# ============================================================================
+print_section_header "SECTION 7: MOTORS"
+start_section "Motors"
+
+if lager_arm enable-motor >/dev/null 2>&1; then
+  track_test_msg "pass" "enable-motor"
+else
+  track_test_msg "fail" "enable-motor failed"
+fi
+
+if [ "${ARM_TEST_DISABLE_MOTOR:-}" = "1" ]; then
+  if lager_arm disable-motor >/dev/null 2>&1 && lager_arm enable-motor >/dev/null 2>&1; then
+    track_test_msg "pass" "disable-motor then enable-motor"
   else
-    echo -e "  ${YELLOW}[WARNING] Position differs from expected home (X=$X Y=$Y Z=$Z)${NC}"
-    track_test_msg "pass" "Position differs from expected home (non-fatal)"
+    track_test_msg "fail" "disable-motor / enable-motor failed"
   fi
+  lager_arm go-home --yes >/dev/null 2>&1
 else
-  track_test_msg "fail" "Could not verify position"
+  skip_test "disable-motor" "set ARM_TEST_DISABLE_MOTOR=1; the arm goes limp and can drop"
 fi
 echo ""
 
-echo "Test 5.3: Multiple go-home commands"
-for i in {1..3}; do
-  lager arm $ARM_NET go-home --box $BOX --yes >/dev/null 2>&1
-  sleep 1
+# ============================================================================
+# SECTION 8: INSTRUMENT SCAN DURING ARM COMMANDS
+# ============================================================================
+print_section_header "SECTION 8: INSTRUMENT SCAN DURING ARM COMMANDS"
+start_section "Concurrent Scan"
+
+# The scan used to write M105 into the arm's open port and take its reply, so
+# an arm command running at the same time failed.
+FAIL_FILE=$(mktemp)
+(
+  fails=0
+  for _ in $(seq 1 30); do
+    read_position >/dev/null || fails=$((fails + 1))
+  done
+  echo "$fails" > "$FAIL_FILE"
+) &
+READER=$!
+LISTED=0
+for _ in 1 2 3; do
+  lager instruments --box "$BOX" 2>&1 | grep -q "Rotrix_Dexarm" && LISTED=$((LISTED + 1))
 done
-track_test_msg "pass" "Multiple go-home commands completed"
-echo ""
+wait "$READER"
+FAILS=$(cat "$FAIL_FILE")
+rm -f "$FAIL_FILE"
 
-# ============================================================================
-# SECTION 6: ABSOLUTE MOVEMENT
-# ============================================================================
-print_section_header "SECTION 6: ABSOLUTE MOVEMENT"
-start_section "Absolute Movement"
-
-# Return to home first
-lager arm $ARM_NET go-home --box $BOX --yes >/dev/null 2>&1
-sleep 1
-
-echo "Test 6.1: Move to safe position (X=50, Y=250, Z=50)"
-if lager arm $ARM_NET move 50 250 50 --box $BOX --yes 2>&1; then
-  track_test_msg "pass" "Move command succeeded"
+if [ "$FAILS" = "0" ]; then
+  track_test_msg "pass" "30 position reads during 3 scans, 0 failures"
 else
-  track_test_msg "fail" "Move command failed"
+  track_test_msg "fail" "$FAILS of 30 position reads failed during scans"
 fi
-sleep 2  # Allow movement to complete
-echo ""
-
-echo "Test 6.2: Verify position after move"
-POS=$(lager arm $ARM_NET position --box $BOX 2>&1)
-echo "$POS"
-X=$(echo "$POS" | grep -oE "X: *[-+]?[0-9]*\.?[0-9]+" | grep -oE "[-+]?[0-9]*\.?[0-9]+" | head -1)
-Y=$(echo "$POS" | grep -oE "Y: *[-+]?[0-9]*\.?[0-9]+" | grep -oE "[-+]?[0-9]*\.?[0-9]+" | head -1)
-Z=$(echo "$POS" | grep -oE "Z: *[-+]?[0-9]*\.?[0-9]+" | grep -oE "[-+]?[0-9]*\.?[0-9]+" | head -1)
-
-# Check with 5mm tolerance
-X_DIFF=$(echo "$X - 50" | bc | sed 's/-//')
-Y_DIFF=$(echo "$Y - 250" | bc | sed 's/-//')
-Z_DIFF=$(echo "$Z - 50" | bc | sed 's/-//')
-
-if (( $(echo "$X_DIFF < 5 && $Y_DIFF < 5 && $Z_DIFF < 5" | bc -l) )); then
-  track_test_msg "pass" "Position verified (tolerance: +/-5mm)"
+if [ "$LISTED" -eq 3 ]; then
+  track_test_msg "pass" "arm listed in 3 of 3 scans"
 else
-  echo -e "  ${YELLOW}[WARNING] Position differs (X=$X Y=$Y Z=$Z)${NC}"
-  track_test_msg "pass" "Position differs (non-fatal)"
-fi
-echo ""
-
-echo "Test 6.3: Move to another position (X=0, Y=280, Z=30)"
-lager arm $ARM_NET move 0 280 30 --box $BOX --yes >/dev/null 2>&1
-sleep 2
-POS=$(lager arm $ARM_NET position --box $BOX 2>&1)
-echo "$POS"
-track_test_msg "pass" "Second move completed"
-echo ""
-
-echo "Test 6.4: Move with custom timeout (2 seconds)"
-if lager arm $ARM_NET move 25 275 25 --timeout 2.0 --box $BOX --yes 2>&1; then
-  track_test_msg "pass" "Move with custom timeout succeeded"
-else
-  echo -e "  ${YELLOW}[WARNING] Move with short timeout may have timed out${NC}"
-  track_test_msg "pass" "Move with short timeout (non-fatal)"
-fi
-sleep 2
-echo ""
-
-echo "Test 6.5: Sequential moves (5 positions)"
-POSITIONS=(
-  "10 290 10"
-  "20 280 20"
-  "30 270 30"
-  "20 280 20"
-  "10 290 10"
-)
-for pos in "${POSITIONS[@]}"; do
-  lager arm $ARM_NET move $pos --box $BOX --yes >/dev/null 2>&1
-  sleep 1
-done
-track_test_msg "pass" "Sequential moves completed"
-echo ""
-
-# Return to home
-lager arm $ARM_NET go-home --box $BOX --yes >/dev/null 2>&1
-sleep 2
-
-# ============================================================================
-# SECTION 7: RELATIVE MOVEMENT (DELTA)
-# ============================================================================
-print_section_header "SECTION 7: RELATIVE MOVEMENT (DELTA)"
-start_section "Relative Movement"
-
-# Ensure we're at home
-lager arm $ARM_NET go-home --box $BOX --yes >/dev/null 2>&1
-sleep 2
-
-echo "Test 7.1: Move by delta (dX=10, dY=0, dZ=10)"
-BEFORE=$(lager arm $ARM_NET position --box $BOX 2>&1)
-X_BEFORE=$(echo "$BEFORE" | grep -oE "X: *[-+]?[0-9]*\.?[0-9]+" | grep -oE "[-+]?[0-9]*\.?[0-9]+" | head -1)
-Z_BEFORE=$(echo "$BEFORE" | grep -oE "Z: *[-+]?[0-9]*\.?[0-9]+" | grep -oE "[-+]?[0-9]*\.?[0-9]+" | head -1)
-
-if lager arm $ARM_NET move-by 10 0 10 --box $BOX --yes 2>&1; then
-  track_test_msg "pass" "Delta move succeeded"
-else
-  track_test_msg "fail" "Delta move failed"
-fi
-sleep 2
-echo ""
-
-echo "Test 7.2: Verify delta movement"
-AFTER=$(lager arm $ARM_NET position --box $BOX 2>&1)
-echo "$AFTER"
-X_AFTER=$(echo "$AFTER" | grep -oE "X: *[-+]?[0-9]*\.?[0-9]+" | grep -oE "[-+]?[0-9]*\.?[0-9]+" | head -1)
-Z_AFTER=$(echo "$AFTER" | grep -oE "Z: *[-+]?[0-9]*\.?[0-9]+" | grep -oE "[-+]?[0-9]*\.?[0-9]+" | head -1)
-
-X_DELTA=$(echo "$X_AFTER - $X_BEFORE" | bc)
-Z_DELTA=$(echo "$Z_AFTER - $Z_BEFORE" | bc)
-echo "Deltas measured: dX=$X_DELTA dZ=$Z_DELTA"
-
-X_DELTA_ABS=$(echo "$X_DELTA - 10" | bc | sed 's/-//')
-Z_DELTA_ABS=$(echo "$Z_DELTA - 10" | bc | sed 's/-//')
-
-if (( $(echo "$X_DELTA_ABS < 5 && $Z_DELTA_ABS < 5" | bc -l) )); then
-  track_test_msg "pass" "Delta movement verified (tolerance: +/-5mm)"
-else
-  echo -e "  ${YELLOW}[WARNING] Delta differs from expected${NC}"
-  track_test_msg "pass" "Delta differs from expected (non-fatal)"
-fi
-echo ""
-
-echo "Test 7.3: Move by negative delta (return)"
-lager arm $ARM_NET move-by -10 0 -10 --box $BOX --yes >/dev/null 2>&1
-sleep 2
-POS=$(lager arm $ARM_NET position --box $BOX 2>&1)
-echo "$POS"
-track_test_msg "pass" "Negative delta completed"
-echo ""
-
-echo "Test 7.4: Single-axis deltas"
-echo "  Moving X only (+20mm)"
-lager arm $ARM_NET move-by 20 0 0 --box $BOX --yes >/dev/null 2>&1
-sleep 1
-echo "  Moving Y only (-10mm)"
-lager arm $ARM_NET move-by 0 -10 0 --box $BOX --yes >/dev/null 2>&1
-sleep 1
-echo "  Moving Z only (+15mm)"
-lager arm $ARM_NET move-by 0 0 15 --box $BOX --yes >/dev/null 2>&1
-sleep 1
-track_test_msg "pass" "Single-axis deltas completed"
-echo ""
-
-echo "Test 7.5: Multiple small deltas"
-for i in {1..5}; do
-  lager arm $ARM_NET move-by 2 0 2 --box $BOX --yes >/dev/null 2>&1
-  sleep 0.5
-done
-track_test_msg "pass" "Multiple small deltas completed"
-echo ""
-
-# Return to home
-lager arm $ARM_NET go-home --box $BOX --yes >/dev/null 2>&1
-sleep 2
-
-# ============================================================================
-# SECTION 8: ACCELERATION CONTROL
-# ============================================================================
-print_section_header "SECTION 8: ACCELERATION CONTROL"
-start_section "Acceleration Control"
-
-echo "Test 8.1: Set acceleration to default values (60, 60, 60)"
-if lager arm $ARM_NET set-acceleration 60 60 60 --box $BOX 2>&1; then
-  track_test_msg "pass" "Acceleration set"
-else
-  track_test_msg "fail" "Failed to set acceleration"
-fi
-echo ""
-
-echo "Test 8.2: Set low acceleration (30, 30, 30)"
-if lager arm $ARM_NET set-acceleration 30 30 30 --box $BOX 2>&1; then
-  track_test_msg "pass" "Low acceleration set"
-else
-  track_test_msg "fail" "Failed to set low acceleration"
-fi
-echo ""
-
-echo "Test 8.3: Test movement with low acceleration"
-lager arm $ARM_NET move 20 280 20 --box $BOX --yes >/dev/null 2>&1
-sleep 2
-lager arm $ARM_NET go-home --box $BOX --yes >/dev/null 2>&1
-sleep 2
-track_test_msg "pass" "Movement with low acceleration completed"
-echo ""
-
-echo "Test 8.4: Set high acceleration (100, 100, 80)"
-if lager arm $ARM_NET set-acceleration 100 100 80 --box $BOX 2>&1; then
-  track_test_msg "pass" "High acceleration set"
-else
-  track_test_msg "fail" "Failed to set high acceleration"
-fi
-echo ""
-
-echo "Test 8.5: Test movement with high acceleration"
-lager arm $ARM_NET move 30 270 30 --box $BOX --yes >/dev/null 2>&1
-sleep 2
-lager arm $ARM_NET go-home --box $BOX --yes >/dev/null 2>&1
-sleep 2
-track_test_msg "pass" "Movement with high acceleration completed"
-echo ""
-
-# Reset to default
-lager arm $ARM_NET set-acceleration 60 60 60 --box $BOX >/dev/null 2>&1
-
-# ============================================================================
-# SECTION 9: CALIBRATION
-# ============================================================================
-print_section_header "SECTION 9: CALIBRATION (Read and Save Position)"
-start_section "Calibration"
-
-echo "Test 9.1: Read and save current position"
-if lager arm $ARM_NET read-and-save-position --box $BOX 2>&1; then
-  track_test_msg "pass" "Position saved"
-else
-  track_test_msg "fail" "Failed to save position"
-fi
-echo ""
-
-echo "Test 9.2: Move and save again"
-lager arm $ARM_NET move 15 285 15 --box $BOX --yes >/dev/null 2>&1
-sleep 2
-if lager arm $ARM_NET read-and-save-position --box $BOX 2>&1; then
-  track_test_msg "pass" "New position saved"
-else
-  track_test_msg "fail" "Failed to save new position"
-fi
-echo ""
-
-echo "Test 9.3: Multiple calibration saves"
-for i in {1..3}; do
-  lager arm $ARM_NET read-and-save-position --box $BOX >/dev/null 2>&1
-done
-track_test_msg "pass" "Multiple saves completed"
-echo ""
-
-# Return to home
-lager arm $ARM_NET go-home --box $BOX --yes >/dev/null 2>&1
-sleep 2
-
-# ============================================================================
-# SECTION 10: PERFORMANCE BENCHMARKS
-# ============================================================================
-print_section_header "SECTION 10: PERFORMANCE BENCHMARKS"
-start_section "Performance Benchmarks"
-
-echo "Test 10.1: Position read latency (10 iterations average)"
-TOTAL_TIME=0
-for i in {1..10}; do
-  START_TIME=$(get_timestamp_ms)
-  lager arm $ARM_NET position --box $BOX >/dev/null
-  END_TIME=$(get_timestamp_ms)
-  TOTAL_TIME=$((TOTAL_TIME + (END_TIME - START_TIME)))
-done
-AVG_MS=$((TOTAL_TIME / 10))
-echo "  Average read time: ${AVG_MS}ms"
-if [ $AVG_MS -gt 5000 ]; then
-  echo "  [WARNING] Slow (>5s per read)"
-  track_test_msg "fail" "Average read time ${AVG_MS}ms (>5s)"
-else
-  track_test_msg "pass" "Average read time: ${AVG_MS}ms"
-fi
-echo ""
-
-echo "Test 10.2: Move command latency"
-START_TIME=$(get_timestamp_ms)
-lager arm $ARM_NET move 10 290 10 --box $BOX --yes >/dev/null 2>&1
-END_TIME=$(get_timestamp_ms)
-MOVE_TIME=$((END_TIME - START_TIME))
-track_test_msg "pass" "Move time: ${MOVE_TIME}ms"
-sleep 1
-lager arm $ARM_NET go-home --box $BOX --yes >/dev/null 2>&1
-sleep 2
-echo ""
-
-echo "Test 10.3: Motor enable/disable latency"
-START_TIME=$(get_timestamp_ms)
-lager arm $ARM_NET disable-motor --box $BOX >/dev/null 2>&1
-lager arm $ARM_NET enable-motor --box $BOX >/dev/null 2>&1
-END_TIME=$(get_timestamp_ms)
-MOTOR_TIME=$((END_TIME - START_TIME))
-track_test_msg "pass" "Motor toggle time: ${MOTOR_TIME}ms"
-echo ""
-
-# ============================================================================
-# SECTION 11: TIMEOUT HANDLING
-# ============================================================================
-print_section_header "SECTION 11: TIMEOUT HANDLING"
-start_section "Timeout Handling"
-
-echo "Test 11.1: Move with very short timeout (likely to timeout)"
-OUTPUT=$(lager arm $ARM_NET move 50 250 50 --timeout 0.1 --box $BOX --yes 2>&1)
-if echo "$OUTPUT" | grep -qi "timeout\|error"; then
-  track_test_msg "pass" "Timeout detected correctly"
-else
-  echo -e "  ${YELLOW}[WARNING] Move completed faster than expected or timeout not detected${NC}"
-  track_test_msg "pass" "Move completed (non-fatal)"
-fi
-sleep 2
-echo ""
-
-echo "Test 11.2: Move with generous timeout (10 seconds)"
-if lager arm $ARM_NET move 0 300 0 --timeout 10.0 --box $BOX --yes >/dev/null 2>&1; then
-  track_test_msg "pass" "Move with long timeout succeeded"
-else
-  track_test_msg "fail" "Move failed even with long timeout"
-fi
-sleep 2
-echo ""
-
-echo "Test 11.3: Multiple moves with standard timeout"
-FAIL_COUNT=0
-for i in {1..5}; do
-  lager arm $ARM_NET move 10 290 10 --timeout 5.0 --box $BOX --yes >/dev/null 2>&1 || FAIL_COUNT=$((FAIL_COUNT + 1))
-  sleep 1
-done
-if [ $FAIL_COUNT -eq 0 ]; then
-  track_test_msg "pass" "All moves completed within timeout"
-else
-  echo -e "  ${YELLOW}[WARNING] ${FAIL_COUNT}/5 moves timed out${NC}"
-  track_test_msg "pass" "${FAIL_COUNT}/5 moves timed out (non-fatal)"
-fi
-lager arm $ARM_NET go-home --box $BOX --yes >/dev/null 2>&1
-sleep 2
-echo ""
-
-# ============================================================================
-# SECTION 12: ERROR RECOVERY
-# ============================================================================
-print_section_header "SECTION 12: ERROR RECOVERY"
-start_section "Error Recovery"
-
-echo "Test 12.1: Recover from invalid command"
-lager arm invalid_net position --box $BOX >/dev/null 2>&1 || true
-if lager arm $ARM_NET position --box $BOX >/dev/null 2>&1; then
-  track_test_msg "pass" "Recovered after invalid command"
-else
-  track_test_msg "fail" "Failed to recover"
-fi
-echo ""
-
-echo "Test 12.2: Recover from movement error"
-lager arm $ARM_NET move 99999 99999 99999 --timeout 0.1 --box $BOX --yes >/dev/null 2>&1 || true
-sleep 1
-if lager arm $ARM_NET position --box $BOX >/dev/null 2>&1; then
-  track_test_msg "pass" "System functional after movement error"
-else
-  track_test_msg "fail" "System not responsive after error"
-fi
-lager arm $ARM_NET go-home --box $BOX --yes >/dev/null 2>&1
-sleep 2
-echo ""
-
-echo "Test 12.3: Multiple errors then valid operation"
-lager arm invalid1 position --box $BOX >/dev/null 2>&1 || true
-lager arm invalid2 position --box $BOX >/dev/null 2>&1 || true
-if lager arm $ARM_NET position --box $BOX >/dev/null 2>&1; then
-  track_test_msg "pass" "Recovered after multiple errors"
-else
-  track_test_msg "fail" "Failed to recover after multiple errors"
+  track_test_msg "fail" "arm listed in only $LISTED of 3 scans"
 fi
 echo ""
 
 # ============================================================================
-# SECTION 13: STRESS TEST
+# SECTION 9: RECONNECT AFTER A USB DROP
 # ============================================================================
-print_section_header "SECTION 13: STRESS TEST (Continuous Operations)"
-start_section "Stress Test"
+print_section_header "SECTION 9: RECONNECT AFTER A USB DROP"
+start_section "Reconnect"
 
-echo "Test 13.1: Continuous position reads (30 seconds)"
-echo "Reading position continuously for 30 seconds..."
-START_TIME=$(date +%s)
-SAMPLE_COUNT=0
-FAIL_COUNT=0
-while [ $(($(date +%s) - START_TIME)) -lt 30 ]; do
-  lager arm $ARM_NET position --box $BOX >/dev/null 2>&1 && SAMPLE_COUNT=$((SAMPLE_COUNT + 1)) || FAIL_COUNT=$((FAIL_COUNT + 1))
-done
-echo "  Completed $SAMPLE_COUNT reads with $FAIL_COUNT failures"
-if [ $FAIL_COUNT -eq 0 ]; then
-  track_test_msg "pass" "$SAMPLE_COUNT reads, 0 failures"
+if [ -z "$USB_NET" ]; then
+  skip_test "reconnect" "pass a USB_NET that carries the arm's cable"
 else
-  track_test_msg "fail" "$SAMPLE_COUNT reads, $FAIL_COUNT failures"
+  read_position >/dev/null   # the box now holds the arm's port open
+  lager usb "$USB_NET" disable --box "$BOX" >/dev/null 2>&1
+  sleep 3
+  if read_position >/dev/null; then
+    lager usb "$USB_NET" enable --box "$BOX" >/dev/null 2>&1
+    skip_test "reconnect" "position still answered with $USB_NET off; the hub port does not cut the arm's USB"
+  else
+    lager usb "$USB_NET" enable --box "$BOX" >/dev/null 2>&1
+    if wait_near 0 300 0 20; then
+      track_test_msg "pass" "arm answers again after $USB_NET is switched back on"
+    else
+      track_test_msg "fail" "arm did not answer within 20 s after $USB_NET came back"
+    fi
+  fi
 fi
 echo ""
-
-echo "Test 13.2: Repeated movement sequence (5 cycles)"
-for _ in {1..5}; do
-  lager arm $ARM_NET move 20 280 20 --box $BOX --yes >/dev/null 2>&1
-  sleep 1
-  lager arm $ARM_NET move 10 290 10 --box $BOX --yes >/dev/null 2>&1
-  sleep 1
-  lager arm $ARM_NET go-home --box $BOX --yes >/dev/null 2>&1
-  sleep 1
-done
-track_test_msg "pass" "5 movement cycles completed"
-echo ""
-
-echo "Test 13.3: Mixed operations (position, move, enable/disable)"
-for i in {1..10}; do
-  lager arm $ARM_NET position --box $BOX >/dev/null 2>&1
-  lager arm $ARM_NET move-by 1 0 1 --box $BOX --yes >/dev/null 2>&1
-  lager arm $ARM_NET disable-motor --box $BOX >/dev/null 2>&1
-  lager arm $ARM_NET enable-motor --box $BOX >/dev/null 2>&1
-done
-track_test_msg "pass" "Mixed operations completed"
-lager arm $ARM_NET go-home --box $BOX --yes >/dev/null 2>&1
-sleep 2
-echo ""
-
-# ============================================================================
-# SECTION 14: BOUNDARY TESTING
-# ============================================================================
-print_section_header "SECTION 14: BOUNDARY TESTING"
-start_section "Boundary Testing"
-
-echo "Test 14.1: Move to workspace limits (safe boundaries)"
-echo "Testing Y-axis maximum (safe value: 350mm)"
-lager arm $ARM_NET move 0 350 0 --timeout 10.0 --box $BOX --yes >/dev/null 2>&1 || echo "  Note: May be outside workspace"
-sleep 2
-track_test_msg "pass" "Boundary test completed"
-echo ""
-
-echo "Test 14.2: Move to workspace limits (Z-axis)"
-lager arm $ARM_NET move 0 300 100 --timeout 10.0 --box $BOX --yes >/dev/null 2>&1 || echo "  Note: May be outside workspace"
-sleep 2
-track_test_msg "pass" "Z-axis boundary test completed"
-echo ""
-
-echo "Test 14.3: Zero coordinates (X=0, Y=0, Z=0 - may be invalid)"
-OUTPUT=$(lager arm $ARM_NET move 0 0 0 --timeout 5.0 --box $BOX --yes 2>&1)
-if echo "$OUTPUT" | grep -qi "error\|timeout\|obstructed"; then
-  track_test_msg "pass" "Invalid position detected correctly"
-else
-  echo -e "  ${YELLOW}[WARNING] Zero coordinates may have been accepted${NC}"
-  track_test_msg "pass" "Zero coordinates accepted (non-fatal)"
-fi
-sleep 1
-echo ""
-
-# Return to safe position
-lager arm $ARM_NET go-home --box $BOX --yes >/dev/null 2>&1
-sleep 2
 
 # ============================================================================
 # CLEANUP
 # ============================================================================
 print_section_header "CLEANUP"
 
-echo "Returning arm to home position and disabling motors..."
-lager arm $ARM_NET go-home --box $BOX --yes >/dev/null 2>&1
-sleep 2
-lager arm $ARM_NET disable-motor --box $BOX >/dev/null 2>&1
+echo "Returning the arm to home..."
+lager_arm go-home --yes >/dev/null 2>&1
 echo -e "${GREEN}[OK] Cleanup complete${NC}"
 echo ""
 
-# ============================================================================
-# PRINT SUMMARY
-# ============================================================================
 print_summary
 exit_with_status

@@ -8,9 +8,10 @@ agent understand the bench, understand the device under test (DUT), and plan
 hardware-in-the-loop tests. It runs on-box and is reachable over the box's local
 IP.
 
-The MCP server is **read-only**: it describes the bench and DUT but never drives
-hardware or runs code. The agent executes tests over a separate channel — the
-`lager` CLI.
+By default, the MCP server is **read-only**: it describes the bench and DUT, and
+it does not drive hardware or run code. Two opt-in environment variables change
+that; see [Optional tool gates](#optional-tool-gates). The agent executes tests
+over a separate channel — the `lager` CLI.
 
 ```
 MCP-compatible AI agent
@@ -59,9 +60,58 @@ started with `start_box.sh --no-publish` (or `LAGER_NO_PUBLISH=1`) does not publ
 port 8100 on the host. The MCP server still runs and binds `0.0.0.0:8100` inside
 the container. It is reachable only on the internal `lagernet` Docker network,
 where a reverse proxy owns the host ports. On such a box, point the client at the
-container's lagernet address or at the route the proxy exposes -- `<box-ip>:8100`
-will not connect.
+container's `lagernet` address, because `<box-ip>:8100` will not connect. Do not
+route port 8100 through the proxy. By default the MCP server asks for no
+credential, and its optional token is not a gateway credential.
+
+The mode persists across restarts in `/etc/lager/no_publish`, and
+`start_box.sh --publish` clears it. At the end of each run, `start_box.sh`
+reports which mode the box is in.
+
+To keep only port 8100 off the host, set `LAGER_MCP_NO_PUBLISH=1` with
+`lager box-config env set` and apply it. Every other port stays published. See
+[`lager box-config`](/source/reference/cli/box-config).
 </Note>
+
+## Requiring a token
+
+By default the MCP server asks for no credential. Anything that can reach port
+8100 can read the bench context. You can make the server require a bearer token:
+
+```bash
+lager box-config mcp-token enable --box <BOX>
+```
+
+The command shows the token one time. It also prints a client entry that carries
+the token:
+
+```json
+{
+  "mcpServers": {
+    "lager": {
+      "url": "http://<box-ip>:8100/mcp",
+      "headers": { "Authorization": "Bearer <token>" }
+    }
+  }
+}
+```
+
+The token takes effect immediately, and the container does not restart. A request
+without the token gets `401 Unauthorized`. For `status`, `rotate`, and `disable`,
+see [`lager box-config`](/source/reference/cli/box-config#mcp-token).
+
+Every client must send the token after you enable it. That includes a
+control-plane MCP client that connects to the box directly. Confirm that each
+client can send the header before you enable the token. If a client cannot send a
+custom header, leave the token disabled and keep port 8100 off untrusted networks.
+
+<Warning>
+The token does not encrypt the connection. Port 8100 is plain HTTP, so the token
+crosses the network in clear text. Keep the box on a network you trust.
+
+The token belongs to the box alone. It is not a gateway credential, and an
+authenticating gateway must not forward port 8100.
+</Warning>
 
 ## What the agent sees
 
@@ -89,12 +139,15 @@ agent reads) and **tools** (callable functions).
 | Tool | Purpose |
 |------|---------|
 | `discover_dut()` | One call for orientation: DUT purpose, MCU, peripherals, subsystems, and document references. |
-| `discover_bench(net_name?)` | Enumerate hardware — nets, plus instruments with their channels, capabilities, and authored specs/ranges. With a net name, return that net's full metadata, capabilities, parent subsystem, and relevant document references (and, if the net is unknown, the list of available net names). |
+| `discover_bench(net_name?)` | Enumerate hardware — nets with their `purpose`, `tags`, `dut_connection` and `test_hints`, plus the instruments detected on the box with their channels and capabilities. With a net name, return that net's full metadata, capabilities, parent subsystem, relevant document references, and `metadata_sources` (which file authored each field). If the net is unknown, the list of available net names. |
 | `cite_schematic(net_name)` | Return just the schematic/datasheet references and page hints relevant to one net. |
 | `plan_firmware_test(firmware_description, test_goals)` | Generate a phased test plan, scoped to relevant nets, with DUT context and document references attached. |
 | `assess_suitability(test_type)` | Check whether the bench can run a given test type. |
-| `get_test_example(query)` | Find runnable example scripts by net type, pattern, or keyword. |
+| `get_test_example(query)` | Find worked examples by net type, pattern, or keyword. Each match carries the curated snippet for its net types and a link to the full script in the lager repository; the scripts are not on the box. |
 | `box_manage(action)` | `health` check or `reload` the bench config from disk. |
+
+Every tool reply carries `box_id`, the gated tools below included. A client
+that talks to several boxes through one session can tell the replies apart.
 
 <Note>
 **By default the tool surface is read-only.** The seven tools above do not drive
@@ -111,6 +164,10 @@ Two environment variables, both **off** unless explicitly set, register addition
 tools when the box's MCP server starts. Each widens what a connected agent can do
 to the box, so treat them as deployment decisions rather than conveniences.
 
+Enable the [token](#requiring-a-token) before you set either variable. With a gate
+on and no token, the server logs a warning at startup. In that state, anything
+that can reach port 8100 can use the added tools.
+
 #### `LAGER_MCP_ALLOW_CONTROL`
 
 Adds three scoped tools. These read bench state and power-cycle a hub port — they
@@ -120,13 +177,14 @@ do not execute arbitrary code.
 |------|---------|
 | `net_status(net)` | Compact read-only status for one net on the bench. |
 | `debug_probe_status(net)` | Whether a debug net's probe is present on the USB bus. |
-| `power_cycle_hub(hub)` | Power-cycle an Acroname-controlled USB hub port (disable, settle, enable). **Drives hardware.** |
+| `power_cycle_hub(hub)` | Power-cycle one USB hub port (Acroname, YKUSH, or Plugable) with the same `cycle` as `lager usb`, holding the port off for 1 second. The result carries `reconnected`: `true`, `false`, or `null`. The tool waits 4 more seconds only when the box cannot read its USB topology. **Drives hardware.** |
 
 #### `LAGER_MCP_ALLOW_EXEC`
 
 <Warning>
-This gate exposes **arbitrary command execution and file writes** on the box to any
-agent that can reach the MCP port. An agent can run any command the box's service
+This gate exposes **arbitrary command execution and file writes** on the box. Without
+a [token](#requiring-a-token), that means any agent that can reach the MCP port.
+With one, it means any agent that holds the token. An agent can run any command the box's service
 user can run, and overwrite any file it can write. The server itself logs a warning
 at startup when this is set. Enable it only on a bench you control, on a trusted
 network, and never on a shared or production box.
@@ -178,20 +236,55 @@ agent follows with the tools above.
     The runnable can also be a **folder** (entrypoint `main.py`), which syncs
     and imports everything in it — handy for shipping reusable helper modules:
     `lager python path/to/test_dir --box <box-ip>`. (Optionally,
-    `lager boxes add --name <name> --ip <box-ip>` registers a friendly alias.)
+    `lager boxes add --name <name> --ip <box-ip> --user <ssh-user>` registers a
+    friendly alias; all three options are required.)
   </Step>
   <Step title="Analyse & iterate">
     Review the CLI output, adjust the script, and re-run it with `lager python`.
   </Step>
 </Steps>
 
+## The bench manifest
+
+The tools above answer one question at a time. A client that keeps a copy of
+many boxes can fetch the whole description in one request instead. Such a
+client is a control plane, a fleet-level MCP host, or you:
+
+```bash
+curl http://<box-ip>:9000/bench
+```
+
+The reply is the **bench manifest**, one JSON document. It carries:
+
+- `schema_version` and `box_id`;
+- the bench: nets with their metadata, the instruments detected on the box, DUT
+  slots, interfaces, the capability graph as `capability_bindings`, and
+  `metadata_sources`;
+- `reference_keys`, the `lager://reference/{net_type}` entry for each net.
+
+It is built from the same loaded state the MCP tools read, so the two never
+disagree.
+
+The `ETag` header is the manifest's `content_hash`. Send it back as
+`If-None-Match`. While the manifest is the same, the box answers `304` with no
+body, so a client that polls every minute costs the box nothing. `/status`
+advertises the route as `capabilities.benchManifest`; a box that predates it
+(before lager 0.50.0) omits the flag. From the CLI, [`lager bench
+export`](/source/reference/cli/bench) fetches the same document.
+
 ## Where context comes from
 
 The quality of everything above depends on the metadata you author once, at
 bench setup:
 
-- **Per-net `purpose`** — set in the Net Manager TUI (`lager nets tui`). One
-  sentence describing what each wire does on the DUT.
+- **Per-net `purpose`** — set in the Net Manager TUI (`lager nets tui`), or
+  with `lager nets describe NAME --purpose "..."`. One sentence describing what
+  each wire does on the DUT.
+- **Per-net `dut_connection` and `test_hints`** — set with `lager nets describe
+  NAME --dut-connection "J3 pin 4" --test-hint "hold nRST low while flashing"`.
+  Where the net lands on the DUT, and one-line advice for whoever writes the
+  test. A control plane that keeps these two fields per net syncs them to the
+  box.
 - **DUT context** — set with [`lager dut`](/source/reference/cli/dut):
   the box's purpose, MCU, subsystems, and references to schematics and
   datasheets.

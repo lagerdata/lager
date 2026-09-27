@@ -23,8 +23,8 @@
 # baseline would drift from the packaging job's. One artifact, one walk
 # semantics, per-OS deltas only.
 #
-# ADVISORY while it soaks: not in the branch ruleset yet. The `xplat (...)`
-# job names below are the future required contexts -- never rename them.
+# The `xplat (...)` job names below are required contexts in the main branch
+# ruleset -- never rename them.
 
 name: "PR Gate: Cross-Platform Smoke"
 

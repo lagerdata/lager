@@ -1,0 +1,107 @@
+---
+title: "Version 0.47.0"
+description: "September 10, 2026"
+---
+
+## <u>Upgrade Notes</u>
+
+- **`lager box-config apply` exits `3` when the container is up but runs the previous
+  config.** Before this version, `apply` exited `1` for that case and for a failed
+  restart. The exit codes are now `0` for applied, `3` for up on the previous config,
+  and `1` for every other failure. A script that tests only for a non-zero exit needs
+  no change. A script that treats every non-zero exit as a stopped box must handle `3`.
+
+## <u>Features</u>
+
+- **`lager box-config network-mode` can run the box container on the host network.**
+  Set `host` when a tool needs the Bluetooth adapter (`hci0`) inside the container. On
+  the default `lagernet` network, the kernel keeps that adapter out of the container.
+  Only `lager box-config apply` makes the switch, and it first checks that the box
+  stays reachable. It refuses on a box behind a port-publishing gateway. It also
+  refuses when the firewall does not admit ports 5000 and 9000 on your interface. A
+  box that does not set the mode does not change. The box needs this version, so run
+  `lager update` first. See the
+  [box-config reference](/source/reference/cli/box-config).
+
+- **`lager webcam NET snapshot` saves one JPEG frame from a running stream.** The frame
+  comes back through the box's command endpoint, so a script does not need the stream
+  port or the multipart feed. The streamer also serves `GET /snapshot`.
+
+- **`lager spi` and `lager i2c` work with a LabJack U3.** A U3 now covers every net role
+  that a T7 covers. SPI uses `FIO4` to `FIO7`, and I2C uses `FIO6` and `FIO7`.
+  `lager nets add` refuses a U3 `spi` or `i2c` net on other pins, and names the pins
+  that work. A transfer is at most 50 bytes. The clock rate is approximate, and `config`
+  reports the rate that the hardware uses. I2C needs external pull-up resistors, because
+  the U3 has none. The driver refuses `cs_active="high"` and `keep_cs=True`. Use
+  `cs_mode="manual"` with a `gpio` net to control CS. The U3 needs hardware version 1.21
+  or later.
+
+## <u>Bug Fixes</u>
+
+- **`lager webcam <net> start` printed a stop command that did not run.** The hint put
+  the net name after `stop`, and it named the box by its IP address. The hint now reads
+  `lager webcam <net> stop --box <label>`, with the label that you typed.
+
+- **One dropped debug read stopped a DA1469x flash.** The flash loader reads target RAM
+  while the CPU runs, and a marginal SWD link can drop one reply. The loader gave up on
+  a failed read. It now retries a failed read until its deadline. A link that never
+  answers still fails, and the error says that the read failed.
+
+- **The "add a box" hints printed a command that did not run.** `lager boxes add`
+  requires `--user`, but five hints left it out. The hints, the README, and the
+  reference pages now include `--user`.
+
+- **The installer's offer to register the box always failed.** The call left out
+  `--user` and hid its own error. The installer now passes the login user and shows a
+  real error.
+
+## <u>Improvements</u>
+
+- **Webcam links work on access-gated boxes.** `lager webcam start` and
+  `lager webcam url` print a link that carries your sign-in token. The link works for
+  about the lifetime of the token, and the CLI tells you how many minutes. Run
+  `lager webcam url` to get a new link.
+
+- **A webcam stream records its origin.** `lager webcam url` shows which tool started
+  the stream and the user that the tool named.
+
+- **`lager boxes` shows a clear name for a lock holder.** Another service can record a
+  holder as `origin:id:name:email`. `lager boxes` now shows only the name.
+
+- The help for `lager defaults add --user` tells you to use the same name that you use
+  in other tools that lock boxes.
+
+## <u>Known Limitations</u>
+
+- **The host-network check needs passwordless `sudo ufw status` on the box.** Lager
+  does not grant that command. On a box where `sudo` asks for a password, `apply`
+  refuses the switch. It prints the one sudoers line that you can add with
+  `sudo visudo -f` to a sudoers file of your own.
+
+- **A box behind a port-publishing gateway cannot use host networking.** The gateway
+  holds ports 5000 and 9000, so the container cannot bind them. `apply` refuses the
+  switch on such a box.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.47.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli==0.47.0
+```
+
+Then update your boxes:
+
+```bash
+lager update --box <box-name>
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.47.0/)

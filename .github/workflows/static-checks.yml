@@ -4,11 +4,11 @@
 # Cheap, hardware-free checks over the parts of the tree the unit-test gate
 # cannot reach.
 #
-# unit-tests.yml runs pytest over test/unit/, test/mcp/unit/ and cli/tests/.
+# unit-tests.yml runs pytest over test/unit/ and test/mcp/unit/.
 # That leaves large areas with no automated validation at all:
 #
 #   test/integration/  38 bash scripts, run against a real box
-#   test/manual/        2 bash scripts
+#   test/manual/        2 bash scripts, 1 Python report, 1 browser client
 #   test/framework/     2 bash scripts, sourced by all 38 integration scripts
 #   test/api/          81 standalone Python scripts, only 6 of which any
 #                      workflow invokes -- the other 75 run nowhere
@@ -119,10 +119,6 @@ jobs:
       # syntax-checked by anything, while every script under test/ was. A typo
       # in those two breaks an install on a real box, which is a worse place to
       # find it than a PR. All 11 added scripts were clean when this landed.
-      #
-      # shellcheck below is deliberately NOT widened to match: these are 900-
-      # and 1700-line scripts that have never been linted, and their backlog
-      # would swamp the gate. Widening it is its own change.
       - name: Bash syntax (bash -n)
         if: always()
         run: |
@@ -274,16 +270,36 @@ jobs:
         run: python tools/check_ste.py
         shell: bash
 
+      # The three checks above all read English. This one is the only thing
+      # standing behind the translated pages, and it exists because a
+      # translation fails in a way no other gate can see: the English page gets
+      # a new flag or a corrected default, the Chinese page keeps the old one,
+      # and the Chinese page still builds, still links, still renders. A reader
+      # follows a confident instruction that stopped being true.
+      #
+      # Mintlify sells an automation that re-translates on push. It is gated to
+      # the Pro plan, so this repository translates in-repo and replaces the
+      # resync with a hash: docs/translations.json holds the SHA-256 of each
+      # English page as it read when its translation was made, and a mismatch
+      # fails here. It cannot tell a reworded warning from a fixed typo, so it
+      # reports both -- a checker that guesses which edits matter is a checker
+      # that eventually guesses wrong in silence.
+      - name: Translations match their English pages
+        if: always()
+        run: python tools/check_translations.py
+        shell: bash
+
       # The docs check above compares docs to the CLI; this catches the other
       # half -- links that point nowhere. Three cross-references shipped missing
       # the `/source` prefix that every published URL carries, each found by
       # hand. Anchor checking is on because a heading-slug link is the variant
       # nobody verifies by eye.
       #
-      # Scoped to source/ deliberately: docs/reference/*.md are working notes
-      # that are not in docs.json, are therefore never published, and carry ~40
-      # stale relative paths. Gating on them would fail for links no reader can
-      # follow.
+      # Scoped to source/ deliberately: docs/reference/*.md are contributor
+      # working notes carrying ~40 relative paths that only resolve on GitHub,
+      # so gating on them would fail for links no site reader can follow.
+      # docs/.mintignore keeps them off the site; being absent from docs.json
+      # never did, which is how three of them were live until #530.
       # Pinned, for the same reason shellcheck and actionlint above are: an
       # unpinned tool in a required gate can turn red with no repo change. Node
       # comes from the runner image; only the checker is pinned.
@@ -296,13 +312,11 @@ jobs:
 
       # Errors only: undefined names, syntax errors, f-string and assert
       # mistakes. Not style. The full default ruleset reports ~6300 findings on
-      # this tree, which would be noise, not a gate. Vendored trees are
-      # excluded -- they are third-party code we do not edit.
+      # this tree, which would be noise, not a gate.
       - name: Ruff (errors only)
         if: always()
         run: |
           ruff check --select E9,F63,F7,F82 \
-            --exclude cli/vendor \
             cli/ box/ test/ tools/
         shell: bash
 
@@ -344,12 +358,12 @@ jobs:
           COV="--cov=cli --cov=box/lager --cov-append --cov-report="
           BASE="-q --import-mode=importlib -c /dev/null --timeout=60"
           rm -f .coverage
-          pytest test/unit/cli/ cli/tests/          $BASE $COV
-          pytest test/unit/box/                     $BASE $COV
-          pytest test/unit/measurement/             $BASE $COV
-          pytest test/unit/blufi/                   $BASE $COV
-          pytest test/mcp/unit/                     $BASE $COV
-          pytest test/unit/test_*.py test/test_*.py $BASE $COV
+          pytest test/unit/cli/                       $BASE $COV
+          pytest test/unit/box/                       $BASE $COV
+          pytest test/unit/measurement/               $BASE $COV
+          pytest test/unit/blufi/                     $BASE $COV
+          pytest test/mcp/unit/                       $BASE $COV
+          pytest test/unit/test_*.py test/unit/tools/ $BASE $COV
         shell: bash
 
       # Omit the test files themselves and the vendored trees: measuring how
@@ -381,10 +395,10 @@ jobs:
   # introduction -- the tree was clean).
   #
   # SCOPE, stated honestly: this audits the environment CI RESOLVES TODAY
-  # (cli + [mcp] extra + the unit-test requirements). The box RUNTIME
-  # resolves its own dependencies unpinned at image-build time and is NOT
-  # covered here; that needs an audit against the box image's actual
-  # resolution, tracked as follow-up work.
+  # (cli + the box's mcp requirement + the unit-test requirements). The rest
+  # of the box RUNTIME resolves its own dependencies unpinned at image-build
+  # time and is NOT covered here; that needs an audit against the box image's
+  # actual resolution, tracked as follow-up work.
   pip-audit:
     name: pip-audit
     runs-on: ubuntu-latest
@@ -409,7 +423,8 @@ jobs:
           # tells us about the runner image, not about this project's
           # dependency tree.
           pip install --upgrade pip setuptools
-          pip install -e "cli/[mcp]"
+          pip install -e "cli/"
+          pip install -r box/lager/docker/requirements-mcp.txt
           pip install 'pytest>=9,<10' 'pytest-timeout>=2.3,<3'
           pip install -r test/requirements-unit.txt
           pip install 'pip-audit==2.10.1'

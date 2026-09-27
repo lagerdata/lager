@@ -14,6 +14,9 @@ lager/debug/
 ├── gdb.py               # GDB integration
 ├── mappings.py          # Status checking utilities
 ├── process.py           # Process management for debug servers
+├── openocd.py           # OpenOCD daemon lifecycle + TCL/RPC client
+├── openocd_flash.py     # The one flash/erase dispatch for OpenOCD targets (generic vs DA1469x flash_loader)
+├── da1469x_loader.py    # DA1469x QSPI via the RAM-resident Apache Mynewt flash_loader, over TCL/RPC
 ├── probes.py            # Per-probe USB-serial → slot/port/path helpers
 ├── service.py           # HTTP service for debug operations (port 8765)
 └── README.md            # This file

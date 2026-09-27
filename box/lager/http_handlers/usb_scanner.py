@@ -3,10 +3,13 @@
 
 """USB instrument scanner for the Lager Box HTTP server.
 
-Extracted from cli/impl/query_instruments.py so the scan logic can be
-imported by HTTP handlers that are deployed inside the box container.
-The CLI version (query_instruments.py) remains the canonical copy for
-CLI usage; this module keeps the box HTTP server self-contained.
+Originally extracted from cli/impl/query_instruments.py so the scan logic
+could be imported by HTTP handlers deployed inside the box container. That
+CLI-side copy was deleted in the :9000 migration, so this module is now the
+only copy -- see the note above ``custom_instruments`` below. There is no
+CLI-side scan fallback: ``lager nets add``, ``add-all``, ``instruments`` and
+the net TUI all read the tables here through GET :9000/instruments/list,
+which is why narrowing a channel list here closes every one of them at once.
 """
 
 import glob
@@ -106,11 +109,13 @@ SUPPORTED_USB: Dict[str, Dict] = {
     "LabJack_T7":        {"vid": "0cd5", "pid": "0007", "net_type": ["gpio", "adc", "dac", "spi", "i2c"]},
     # U3-HV and U3-LV share this product id -- the scanner cannot tell them
     # apart, so the entry is the family. The driver reads the variant from
-    # the device (u3.U3.isHV) when it opens, which is also what decides
-    # whether FIO0-FIO3 are usable as digital I/O.
-    # No spi/i2c: the UD drivers implement adc/dac/gpio only, and
-    # advertising a role with no driver behind it just moves the failure.
-    "LabJack_U3":        {"vid": "0cd5", "pid": "0003", "net_type": ["gpio", "adc", "dac"]},
+    # the device (u3.U3.isHV) when it opens; the scanner cannot, so
+    # CHANNEL_MAPS below treats every U3 as an HV and leaves FIO0-FIO3 out of
+    # the gpio channels. See the comment there for why that is not a setting.
+    # spi/i2c are U3 firmware commands (0xF8/0x3A and 0xF8/0x3B), not LJM
+    # registers, and are driven through LabJackPython over the Exodriver. They
+    # need U3 hardware 1.21 or greater; every U3 we have is well past that.
+    "LabJack_U3":        {"vid": "0cd5", "pid": "0003", "net_type": ["gpio", "adc", "dac", "spi", "i2c"]},
     "Aardvark":          {"vid": "0403", "pid": "e0d0", "net_type": ["spi", "i2c", "gpio"]},
     # FT232H — single channel. The chip can run in MPSSE mode (SPI / I2C /
     # GPIO / JTAG-SWD via libftdi) OR in async-serial mode (UART via
@@ -234,13 +239,27 @@ CHANNEL_MAPS: Dict[str, Dict[str, List[str]]] = {
     # A U3's AIN and DIO numbers name the SAME physical pins: AIN4-AIN7 are
     # FIO4-FIO7 and AIN8-AIN15 are EIO0-EIO7, in analog rather than digital
     # mode. Both are listed because either is a valid choice; the driver sets
-    # the mode when the net is used. On a U3-HV, AIN0-AIN3 (FIO0-FIO3) are
-    # fixed high-voltage analog inputs and are NOT available as gpio -- the
-    # driver rejects that with an explicit error, since a U3-LV has the same
-    # product id and the same pins are flexible there.
+    # the mode when the net is used.
+    #
+    # FIO0-FIO3 are absent from "gpio" on purpose: the whole family is treated
+    # as a U3-HV, where those four are the fixed high-voltage analog inputs and
+    # no mask bit will ever make them digital. This table is built from a USB
+    # descriptor and a U3-LV reports the same product id, so the scanner has
+    # nothing to ask -- only an open handle knows (u3.U3.isHV), and by then the
+    # net exists. Of the two ways to be wrong, advertising a pin that cannot
+    # work is the worse one: the net is created happily and then fails at first
+    # use, on hardware, in the middle of a run. Omitting it costs a U3-LV owner
+    # four digital lines; AIN0-AIN3 and the other sixteen DIO are unaffected.
+    #
+    # Not configurable on purpose. An env var or a --force flag is a knob whose
+    # only correct setting depends on the variant we cannot detect, so it moves
+    # the guess to the user without handing them anything to decide it with.
+    # The driver still reads isHV and still rejects a bad pin at use time
+    # (box/lager/io/labjack_ud_handle.py), which is what catches a net created
+    # before this change or written straight to the box.
     "LabJack_U3": {
         "gpio": [
-            "FIO0", "FIO1", "FIO2", "FIO3", "FIO4", "FIO5", "FIO6", "FIO7",
+            "FIO4", "FIO5", "FIO6", "FIO7",
             "EIO0", "EIO1", "EIO2", "EIO3", "EIO4", "EIO5", "EIO6", "EIO7",
             "CIO0", "CIO1", "CIO2", "CIO3",
         ],
@@ -250,6 +269,20 @@ CHANNEL_MAPS: Dict[str, Dict[str, List[str]]] = {
             "AIN15",
         ],
         "dac": ["DAC0", "DAC1"],
+        # LabJackPython's own defaults, and what LabJack's U3 wiring diagrams
+        # show: SPI is CS=FIO4, CLK=FIO5, MISO=FIO6, MOSI=FIO7; I2C is
+        # SDA=FIO6, SCL=FIO7. Note the SPI span runs CS/CLK/MISO/MOSI -- MISO
+        # before MOSI, the opposite of the T7 span above. That is the vendor's
+        # ordering, not a typo here.
+        #
+        # The two spans OVERLAP, which the T7's do not. On a U3-HV every usable
+        # FIO sits inside FIO4-FIO7, so there is nowhere disjoint to put them
+        # that does not require the DB15 for EIO/CIO -- and advertising a
+        # channel that needs a breakout the scanner cannot know is attached is
+        # the same mistake as advertising FIO0-FIO3. One net of each is fine;
+        # the pin conflict tracker warns if a single script drives both.
+        "spi": ["FIO4-FIO7"],
+        "i2c": ["FIO6-FIO7"],
     },
     "MCC_USB-202": {
         "adc": ["CH0", "CH1", "CH2", "CH3", "CH4", "CH5", "CH6", "CH7"],
@@ -919,21 +952,61 @@ def _arm_probe_mode() -> str:
     The handshake writes G-code into a serial port, so who it is allowed to
     write to is a safety question, not a tuning one:
 
-        mode     vid:pid gate  exclusion set  exclusive open  DTR/RTS low
+        mode     vid:pid gate  exclusion set  exclusive open  DTR high, RTS low
         auto     on            on             on              on
         force    OFF           on             on              on
         off      (no probe at all)
 
     ``force`` is NOT "the old behaviour" -- it widens the candidate list back
     to every tty and nothing else. The exclusion set, the exclusive open and
-    the deasserted modem lines stay on in every mode, so no setting of this
-    variable can put G-code into a port another process is holding.
+    the modem-line settings stay on in every mode, so no setting of this
+    variable can put G-code into a port another process holds with an
+    exclusive lock. DTR is asserted because the Dexarm does not answer without
+    it (see _by_handshake).
 
     Read per call rather than at import so an operator can change it without
     restarting the box. Anything unrecognized means ``auto``.
     """
     mode = os.environ.get("LAGER_ARM_PROBE", "auto").strip().lower()
     return mode if mode in ("auto", "force", "off") else "auto"
+
+
+def _dexarm_record(port: str, serial_number: str) -> dict:
+    """The instrument record for a Dexarm on ``port``."""
+    return {
+        "name": "Rotrix_Dexarm",
+        "address": f"USB0::0x{_DEXARM_VID}::0x{_DEXARM_PID}::{serial_number}::INSTR",
+        "net_type": ["arm"],
+        "channels": {"arm": [port]},
+    }
+
+
+def _saved_arm_serials() -> set:
+    """USB serials of every arm a saved net already points at.
+
+    ``_by_handshake`` lists these arms from their USB identity and writes
+    nothing to them. hardware_service keeps a saved arm's port open between
+    commands, without an exclusive lock, so a handshake can land in the middle
+    of a command and take the arm's reply. The command then fails with
+    "device reports readiness to read but returned no data".
+
+    Guarded like ``_saved_net_ttys``: if saved nets are unreadable, every arm
+    gets a handshake, as before this set existed.
+    """
+    serials = set()
+    try:
+        from lager.nets.net import Net
+        from lager.automation.arm.rotrics import Dexarm
+        saved = Net.list_saved()
+    except Exception:
+        logger.exception("arm probe: saved nets unreadable; every arm gets a handshake")
+        return serials
+    for rec in saved or []:
+        if isinstance(rec, dict) and rec.get("role") == "arm":
+            serial_number = Dexarm.serial_from_net_record(rec)
+            if serial_number:
+                serials.add(serial_number)
+    return serials
 
 
 def _dexarm_serials_by_tty() -> Dict[str, Any]:
@@ -967,12 +1040,17 @@ def _dexarm_serials_by_tty() -> Dict[str, Any]:
 
 
 @with_timeout(seconds=_HANDSHAKE_BUDGET_S, default=[])
-def _by_handshake(*, exclude: Optional[set] = None) -> List[dict]:
+def _by_handshake(*, exclude: Optional[set] = None,
+                  known_arm_serials: Optional[set] = None) -> List[dict]:
     """Find a Dexarm by writing M105 at it and reading the reply.
 
     This is the only scan step that WRITES to hardware, so it is gated three
     ways: the port must look like a Dexarm, must not be owned by anything the
     box knows about, and must not be held by another process.
+
+    An arm whose USB serial is in ``known_arm_serials`` (a saved arm net
+    already points at it) is listed from its sysfs identity with no write at
+    all; see ``_saved_arm_serials``.
     """
     mode = _arm_probe_mode()
     if mode == "off":
@@ -986,6 +1064,7 @@ def _by_handshake(*, exclude: Optional[set] = None) -> List[dict]:
 
     results = []
     exclude = exclude or set()
+    known = {str(s) for s in (known_arm_serials or ()) if s}
     ports = sorted(glob.glob("/dev/ttyUSB*") + glob.glob("/dev/ttyACM*"))
 
     # One sysfs pass serves both the gate and the serial fallback below.
@@ -1000,8 +1079,17 @@ def _by_handshake(*, exclude: Optional[set] = None) -> List[dict]:
         candidates = [p for p in candidates if p in dexarm_serials]
 
     probed = []
+    listed = []
     deadline = time.monotonic() + _HANDSHAKE_BUDGET_S
     for port in candidates:
+        saved_serial = dexarm_serials.get(port)
+        if saved_serial and str(saved_serial) in known:
+            # A saved arm net already identified this arm. List it and write
+            # nothing: hardware_service may be in the middle of a command on
+            # this port.
+            results.append(_dexarm_record(port, saved_serial))
+            listed.append(port)
+            continue
         if time.monotonic() >= deadline:
             skipped[port] = "probe budget spent"
             continue
@@ -1066,16 +1154,13 @@ def _by_handshake(*, exclude: Optional[set] = None) -> List[dict]:
             skipped[port] = "answered but has no USB serial"
             continue
 
-        results.append({
-            "name": "Rotrix_Dexarm",
-            "address": f"USB0::0x{_DEXARM_VID}::0x{_DEXARM_PID}::{serial_number}::INSTR",
-            "net_type": ["arm"],
-            "channels": {"arm": [port]},
-        })
+        results.append(_dexarm_record(port, serial_number))
 
     logger.info(
-        "arm probe (mode=%s): wrote M105 to %s; skipped %s; found %d",
-        mode, probed or "nothing", skipped or "nothing", len(results),
+        "arm probe (mode=%s): listed saved arms on %s without a write; "
+        "wrote M105 to %s; skipped %s; found %d",
+        mode, listed or "nothing", probed or "nothing", skipped or "nothing",
+        len(results),
     )
     return results
 
@@ -1285,7 +1370,10 @@ def list_instruments() -> List[dict]:
     # it, and writing it at a saved uart net corrupts a live DUT console.
     uart_ports = _instrument_ttys(instruments) | _instrument_ttys(custom)
     uart_ports |= _saved_net_ttys()
-    for dex in _by_handshake(exclude=uart_ports):
+    # An arm that a saved arm net points at is listed without a handshake;
+    # see _saved_arm_serials.
+    for dex in _by_handshake(exclude=uart_ports,
+                             known_arm_serials=_saved_arm_serials()):
         merge_or_append(dex, instruments)
     for cam in _by_camera():
         merge_or_append(cam, instruments)

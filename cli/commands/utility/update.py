@@ -34,11 +34,17 @@ from ..box._host_ops import (
     is_valid_unix_username,
 )
 from ..box._ssh import (
-    BOX_KEYS_DIR,
+    box_accepts_a_password,
+    box_has_control_plane,
+    remove_lager_box_key,
     ensure_lager_box_keypair,
     key_installed_on_box,
-    register_lager_box_key,
+    working_identity_args,
 )
+# One implementation of the registration warning, shared with ssh-setup.
+# ssh_setup imports only from .box._ssh and the error/storage modules, so this
+# direction introduces no cycle.
+from ..box.ssh_setup import register_or_warn
 from ._host_cli import (
     HOST_CLI_PROBE_SNIPPET,
     HOST_VENV_APT_CMD,
@@ -101,6 +107,40 @@ def resolve_version_ref(target_version):
         sha = target_version.lower()
         return sha, sha, sha
     return target_version, f'origin/{target_version}', target_version
+
+
+def _fetch_shell_script(fetch_ref, git_ref):
+    """One round-trip: fetch, report fetch's own rc, then measure divergence.
+
+    ``--force`` is load-bearing, for the same reason the deploy script forces
+    its ``--tags`` fetch. A box cloned before a tag was re-created upstream
+    holds that tag at a different object, and an unforced fetch of
+    ``refs/tags/<tag>:refs/tags/<tag>`` exits non-zero on it ("would clobber
+    existing tag") — which stranded the box, because every later update failed
+    the same way until someone force-fetched by hand. Origin's tag is the one
+    that is right by definition here: the box checkout is a disposable mirror
+    that this flow resets hard a few steps later.
+
+    Forcing a branch fetch changes nothing — git already updates
+    ``refs/remotes/origin/*`` forcibly through the default refspec.
+
+    fetch's combined stdout+stderr precedes the ``LAGER_FETCH_RC=`` marker (so
+    the caller's error classification still sees it); the rev-list line follows
+    it.
+
+    ``--left-right --count HEAD...<ref>`` returns a tab-separated ``<ahead>``
+    and ``<behind>`` — commits on HEAD-not-in-target and on-target-not-in-HEAD
+    respectively. Both directions are needed so a rollback
+    (``--version <older>``) doesn't read as
+    "already up to date" the way the older one-way ``HEAD..ref`` rev-list did:
+    that variant only counted commits the box was *behind* and treated any
+    "ahead" state as in-sync, making a downgrade impossible.
+    """
+    return (
+        f'cd ~/box && git fetch origin --force {fetch_ref} 2>&1; '
+        'echo "LAGER_FETCH_RC=$?"; '
+        f'git rev-list --left-right --count HEAD...{git_ref} 2>/dev/null'
+    )
 
 
 # --- Pre-built box image (GHCR) --------------------------------------------
@@ -475,7 +515,17 @@ def wait_for_box_ready(box_ip, *, timeout_s=60, initial_delay_s=2):
 # Files whose contents are secret and whose owner therefore matters as much as
 # their mode. Mode 0600 grants the OWNER alone, so tightening one of these under
 # the wrong owner locks the runtime out of it entirely.
-_SECRET_FILES = ('/etc/lager/org_secrets.json', '/etc/lager/secret_key')
+#
+# mcp_token is the MCP server's optional bearer token. The box writes it as the
+# container user, so it needs no repair in the normal course; it is here for
+# the copy restored from a backup or placed by hand, where a wrong owner makes
+# the server refuse every request. box/start_box.sh carries the same list, and
+# box/lager/constants.py is where the box side names the path.
+_SECRET_FILES = (
+    '/etc/lager/org_secrets.json',
+    '/etc/lager/secret_key',
+    '/etc/lager/mcp_token',
+)
 
 # uid 33 is www-data, the user the container runs as. Hardcoded because it is
 # baked into the container image, not discovered at runtime.
@@ -692,6 +742,16 @@ def _daemon_needs_build(facts, *, force):
     return False, 'daemon up to date'
 
 
+def _relative_to_box(tilde_path):
+    """`~/box/lager/...` -> `lager/...`, the form both hashers feed sha256sum.
+
+    The constants above stay written as `~/box/...` because that is what they
+    mean on the box and what the flatten tests pin. Only the hashers need the
+    relative form, and they need exactly the same one as each other.
+    """
+    return tilde_path.replace('~/box/', '', 1)
+
+
 def _build_hash_shell_cmd():
     """Shell snippet that prints a hash of the docker-build inputs.
 
@@ -701,29 +761,35 @@ def _build_hash_shell_cmd():
     requirements.txt). Prints an empty string if nothing matched, which we
     treat as "skip auto-invalidation".
 
-    `~/box/...` paths are tilde-expanded by the for-loop's word-expansion
-    pass before iteration, so `$f` inside the body is already absolute —
-    no `eval` needed. The `[ -n "$out" ]` gate is what makes the "empty
-    string when nothing matched" promise true; without it, an empty pipe
-    into sha256sum would hash the empty string (`e3b0c44...`) and mask the
-    no-files case.
+    Paths are hashed RELATIVE to ~/box. `sha256sum` prints the path beside
+    each digest, so absolute paths put the login user's home directory into
+    the value: the same commit hashed differently under /home/alice/box and
+    /home/bob/box, and the next update after a login-user change saw a
+    mismatch and rebuilt an image that had not changed. The `cd` lives inside
+    the `$(...)` so it cannot leak — this snippet is also spliced into the
+    box-state probe, which runs further commands after it.
+
+    The `[ -n "$out" ]` gate is what makes the "empty string when nothing
+    matched" promise true; without it, an empty pipe into sha256sum would hash
+    the empty string (`e3b0c44...`) and mask the no-files case. A box with no
+    ~/box at all fails the `cd` and takes the same empty path.
 
     `sort -z` is required for determinism: `find` walks in filesystem order,
     which is not stable across boxes or across a tree that has been rewritten
     by the flatten. Sorting first means the same tree always produces the same
-    hash. Because `sha256sum` prints the path alongside the digest, a rename
-    or a deletion changes the hash too — which is the point, since an
-    additive-copy bug used to leave deleted files in the build context.
+    hash. The path still appears in each line, so a rename or a deletion
+    changes the hash — which is the point, since an additive-copy bug used to
+    leave deleted files in the build context. Only the root is dropped.
 
     `__pycache__` and `.pyc` files are excluded. They are derived artifacts
     regenerated on the box, so hashing them would make the value unstable and
     wipe the image on every run; any real change to a `.py` is caught by the
     `.py` itself.
     """
-    paths = ' '.join(_BUILD_HASH_INPUTS)
-    dirs = ' '.join(_BUILD_HASH_SOURCE_DIRS)
+    paths = ' '.join(_relative_to_box(p) for p in _BUILD_HASH_INPUTS)
+    dirs = ' '.join(_relative_to_box(d) for d in _BUILD_HASH_SOURCE_DIRS)
     return (
-        'out=$('
+        'out=$(cd "$HOME/box" 2>/dev/null && { '
         'for f in ' + paths + '; do '
         '[ -f "$f" ] && sha256sum "$f"; '
         'done; '
@@ -732,7 +798,7 @@ def _build_hash_shell_cmd():
         "-not -path '*/__pycache__/*' -not -name '*.pyc' -print0 "
         '| sort -z | xargs -0 -r sha256sum; '
         'done'
-        '); '
+        '; }); '
         '[ -n "$out" ] && echo "$out" | sha256sum | cut -d" " -f1'
     )
 
@@ -742,11 +808,15 @@ def _build_hash_at_ref_shell_cmd(git_ref):
 
     Emits the same aggregate sha256 as `_build_hash_shell_cmd` when the
     working tree matches ``git_ref`` for those files — ``sha256sum`` lines use
-    the post-flatten absolute paths so they compose identically (including the
-    deliberate double-count of Dockerfile/requirements: once via the individual
-    inputs list, once via the source-tree walk). Missing blobs at the ref are
-    skipped (same as a missing working-tree file). Empty output means nothing
-    was measurable.
+    the post-flatten paths RELATIVE to ~/box so they compose identically
+    (including the deliberate double-count of Dockerfile/requirements: once via
+    the individual inputs list, once via the source-tree walk). Missing blobs at
+    the ref are skipped (same as a missing working-tree file). Empty output
+    means nothing was measurable.
+
+    Both hashers must agree on the path form, or every `--check` reports a
+    rebuild that is not needed: the stored /etc/lager/build-hash comes from the
+    working-tree hasher and is compared against this one.
     """
     # Sanitize: only allow refs that git will accept as a single argument
     # (branch, tag, SHA, origin/main). Reject shell metacharacters.
@@ -757,30 +827,32 @@ def _build_hash_at_ref_shell_cmd(git_ref):
     # and no `printf -v`.
     #
     # `git show | sha256sum` prints "<hash>  -"; the sed rewrites the "-" to
-    # the absolute working-tree path so each line is byte-identical to what
-    # `sha256sum <file>` produces in `_build_hash_shell_cmd`. The aggregate
-    # then uses the same `out=$(...)` + `echo "$out" | sha256sum` composition,
-    # so a ref whose blobs match the working tree yields the same digest.
+    # the working-tree path RELATIVE to ~/box, so each line is byte-identical
+    # to what `sha256sum <file>` produces in `_build_hash_shell_cmd` (which
+    # runs from inside ~/box). The aggregate then uses the same `out=$(...)` +
+    # `echo "$out" | sha256sum` composition, so a ref whose blobs match the
+    # working tree yields the same digest.
     clauses = []
     for git_path, abs_tilde in _BUILD_HASH_GIT_BLOBS:
-        abs_shell = abs_tilde.replace('~', '$HOME', 1)
+        rel_path = _relative_to_box(abs_tilde)
         # `&&` inside a clause (skip missing blobs), `;` between clauses so a
         # missing requirements.txt does not suppress the Dockerfile line.
         clauses.append(
             f'git cat-file -e {git_ref}:{git_path} 2>/dev/null && '
             f'git show {git_ref}:{git_path} | sha256sum | '
-            f'sed "s|  -$|  {abs_shell}|"'
+            f'sed "s|  -$|  {rel_path}|"'
         )
-    # Source-tree walk: same files as `find ~/box/lager ... | sort -z`, but
-    # read from the git object database. Paths are mapped from the pre-flatten
-    # git prefix (`box/lager/...`) to the post-flatten absolute path.
+    # Source-tree walk: same files as `find lager ... | sort -z` from inside
+    # ~/box, but read from the git object database. Paths are mapped from the
+    # pre-flatten git prefix (`box/lager/...`) to the post-flatten path
+    # relative to ~/box (`lager/...`).
     src_prefix = _BUILD_HASH_GIT_SOURCE_PREFIX
     clauses.append(
         f'git ls-tree -r --name-only {git_ref} {src_prefix} 2>/dev/null | '
         f'grep -v "/__pycache__/" | grep -v "\\.pyc$" | sort | '
         f'while IFS= read -r path; do '
-        f'abs="$HOME/box/${{path#box/}}"; '
-        f'git show {git_ref}:"$path" | sha256sum | sed "s|  -$|  $abs|"; '
+        f'rel="${{path#box/}}"; '
+        f'git show {git_ref}:"$path" | sha256sum | sed "s|  -$|  $rel|"; '
         f'done'
     )
     return (
@@ -862,6 +934,60 @@ def _read_box_head_sha(ssh_runner):
         if re.fullmatch(r'[0-9a-f]{7,40}', candidate):
             return candidate
     return ''
+
+
+# --- State files under /etc/lager ------------------------------------------
+#
+# What the CLI records about a deploy: the version number (`version`), the ref
+# and commit that produced the code (`ref`), the docker-build inputs
+# (`build-hash`), and where the running image came from (`image-source`).
+_ETC_LAGER = '/etc/lager'
+_STATE_FILE_NAMES = frozenset({'version', 'ref', 'build-hash', 'image-source'})
+
+
+def _state_file_write_cmd(name, content, *, skip_if_identical=False,
+                          directory=_ETC_LAGER):
+    """Shell snippet that replaces ``<directory>/<name>`` with ``content``.
+
+    One writer for every state file, shared by `lager update` and `lager
+    install` so the two cannot record a deploy differently. install used to
+    write the version and ref files through `sudo` over an interactive session,
+    via a fixed name in /tmp, and never looked at the result: a failed write
+    left the previous file in place while the command printed success.
+
+    No sudo is needed. The deployment makes /etc/lager group-writable by the
+    login user (owner www-data, group <login user>, setgid), and replacing a
+    file needs write access to its directory only. So the content goes to a
+    mktemp file in the same directory and `mv -f` renames it over the target:
+    an atomic rename on one filesystem, which also works when the old file is
+    owned by www-data and cannot be written in place. A temporary file that
+    fails part way is removed rather than left behind.
+
+    When the directory itself is not writable -- a box whose /etc/lager
+    predates the group-writable layout -- the snippet falls back to writing the
+    existing file in place, which is what the version writer always did. It
+    exits non-zero only when neither path wrote the file.
+
+    ``skip_if_identical`` makes the write a no-op, in the same round trip, when
+    the file already holds exactly ``content``.
+
+    ``directory`` exists so tests can run the snippet against a scratch
+    directory; production callers never pass it.
+    """
+    if name not in _STATE_FILE_NAMES:
+        raise ValueError(f'not a /etc/lager state file: {name!r}')
+    target = shlex.quote(f'{directory}/{name}')
+    template = shlex.quote(f'{directory}/.{name}.XXXXXX')
+    value = shlex.quote(content)
+    replace = (
+        f'tmp=$(mktemp {template}) && '
+        f'{{ {{ printf \'%s\\n\' {value} > "$tmp" && chmod 644 "$tmp" '
+        f'&& mv -f "$tmp" {target}; }} || {{ rm -f "$tmp"; false; }}; }}'
+    )
+    write = f'{{ {replace}; }} || printf \'%s\\n\' {value} > {target}'
+    if skip_if_identical:
+        return f'[ "$(cat {target} 2>/dev/null)" = {value} ] || {{ {write}; }}'
+    return write
 
 
 # --- Box-state probe -------------------------------------------------------
@@ -965,6 +1091,51 @@ echo "LAGER_PROBE_ETC_VERSION=$(cat /etc/lager/version 2>/dev/null)"
         .replace('__BOXCFG_SUDOERS_MARKER__', BOXCFG_SUDOERS_MARKER)
         .replace('__HOST_CLI_PROBE__\n', HOST_CLI_PROBE_SNIPPET)
     )
+
+
+def _modprobe_recheck_shell_cmd():
+    """Re-derive the modprobe.d facts after the checkout, in one round trip.
+
+    The box-state probe runs before the pull, so every modprobe.d fact it
+    gathered describes the PREVIOUS checkout. Emits `PATH=`, `CONFS=`, `SYNC=`
+    and `LOADED=` lines -- the same shape the udev re-check uses.
+
+    At module level so it can be run against a fake box tree in a test. The
+    re-check this replaces was inline, conditional, and had no coverage.
+    """
+    return (
+        'if [ -d ~/box/modprobe_d ]; then _mp=~/box/modprobe_d; '
+        'elif [ -d ~/box/box/modprobe_d ]; then _mp=~/box/box/modprobe_d; '
+        'else _mp=""; fi; '
+        'echo "PATH=$_mp"; '
+        'if [ -n "$_mp" ] && [ -f "$_mp/blacklist-usbtmc.conf" ]; then '
+        '  echo "CONFS=1"; '
+        '  if diff -q "$_mp/blacklist-usbtmc.conf" '
+        '       /etc/modprobe.d/blacklist-usbtmc.conf >/dev/null 2>&1; then '
+        '    echo "SYNC=1"; else echo "SYNC=0"; fi; '
+        'else echo "CONFS=0"; echo "SYNC=0"; fi; '
+        'if lsmod 2>/dev/null | grep -q "^usbtmc"; then echo "LOADED=1"; '
+        'else echo "LOADED=0"; fi'
+    )
+
+
+def _apply_modprobe_recheck(stdout, facts):
+    """Fold `_modprobe_recheck_shell_cmd` output over the probed facts.
+
+    Overwrites rather than fills in: every key here was gathered before the
+    pull, and the point of re-running is that those values can now be stale.
+    """
+    for line in (stdout or '').splitlines():
+        line = line.strip()
+        if line.startswith('PATH='):
+            facts['MODPROBE_SRC_PATH'] = line[5:]
+        elif line.startswith('CONFS='):
+            facts['MODPROBE_SRC_CONFS'] = line[6:]
+        elif line.startswith('SYNC='):
+            facts['MODPROBE_IN_SYNC'] = line[5:]
+        elif line.startswith('LOADED='):
+            facts['USBTMC_LOADED'] = line[7:]
+    return facts
 
 
 def _parse_probe_output(stdout):
@@ -1410,6 +1581,22 @@ class ProgressBar:
             self._start_periodic_thread()
 
 
+def _undetermined_exit_code(check):
+    """Exit code for a failure that leaves the box's state unknown.
+
+    `--check` documents three outcomes: 0 in sync, 1 an update is needed, 2
+    the state could not be determined. But every failure below it exited 1
+    too -- an SSH timeout, an unanswered probe, a box that is not a checkout,
+    a failed fetch, a box another holder locked. A CI gate could therefore not
+    tell a stale box from an unreachable one without matching on output text,
+    which is exactly what the CI guide had to tell people to do.
+
+    Outside `--check`, 1 remains the right code for a failed command and
+    scripts test for it, so this widening applies only to the dry run.
+    """
+    return 2 if check else 1
+
+
 def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
                   pull=False, no_pull=False):
     """Core update logic behind `lager update`.
@@ -1454,17 +1641,33 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
     # `git fetch origin` (an explicit tag refspec for tags; see resolve_version_ref).
     target_version, git_ref, fetch_ref = resolve_version_ref(target_version)
 
-    # Use default box if none specified
-    if not box:
+    # Use the default box only when --box was not given. `--box ""` goes on
+    # to the resolver, which refuses it.
+    if box is None:
         box = get_default_box(ctx)
 
     box_name = box
 
-    # Resolve box name to IP address
-    resolved_box = resolve_and_validate_box(ctx, box)
+    # Resolve box name to IP address.
+    #
+    # The resolver exits for a name it cannot resolve, and `_check_box_lock`
+    # inside it raises SystemExit(1) when another holder has the box. Under
+    # `--check` both mean "the state could not be determined", so both become
+    # 2 here. This is the one such failure raised from shared code every other
+    # command also calls, so it is converted at this call site rather than in
+    # the resolver, where it would change what `lager uart`, `lager python`
+    # and the rest exit with.
+    try:
+        resolved_box = resolve_and_validate_box(ctx, box)
+    except SystemExit as exc:
+        if check and exc.code == 1:
+            ctx.exit(2)
+        raise
 
-    # Get username (defaults to 'lagerdata' if not specified)
-    username = get_box_user(box) or 'lagerdata'
+    # The stored user for a saved name, else the one saved for this IP (an
+    # IP or the default box never matches a name), else 'lagerdata'.
+    from ..box._ssh import resolve_box_user
+    username = (get_box_user(box) if box else None) or resolve_box_user(resolved_box)
 
     ssh_host = f'{username}@{resolved_box}'
 
@@ -1500,6 +1703,13 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
     key_file = os.path.expanduser('~/.ssh/lager_box')
     use_interactive_ssh = False
     use_explicit_key = False
+    # Reachable on one of the operator's own identities, on a box whose keys a
+    # control plane manages. Neither of the two flags above fits: there is no
+    # lager_box key to name with -i, and no password to prompt for. Without a
+    # third state this box fell into "SSH key not configured" and was offered
+    # a key install it did not need -- which is how a managed box grew a loose
+    # lager-box-access line on every update.
+    control_plane_key = False
 
     def setup_ssh_key():
         """Create lager_box key if needed and copy to box. Returns True if successful."""
@@ -1525,6 +1735,20 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
 
         # Copy key to box using ssh directly — ssh-copy-id is a POSIX shell
         # script not available on Windows, even when Git for Windows is installed.
+        # A hardened box takes no password, so there is nothing to prompt
+        # for and nothing ssh could install. Saying so beats offering a
+        # prompt that never comes and then reporting a wrong password.
+        if box_accepts_a_password(ssh_host) is False:
+            click.echo()
+            click.secho(
+                'This box accepts only key authentication, so a key cannot '
+                'be installed from here.', fg='yellow')
+            click.secho(
+                '  If a control plane manages it, ask an admin to grant you '
+                'access there — your key is installed on every box you are '
+                'granted.', fg='yellow')
+            return False
+
         click.echo()
         click.echo('Copying SSH key to box (enter password when prompted):')
         try:
@@ -1565,6 +1789,38 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         except OSError:
             _key_works = False
         if _key_works:
+            # Only now can the box be asked whether a control plane owns its
+            # keys — the question needs a connection, and until this moment
+            # there wasn't one. A managed box gets the key taken straight back
+            # out: it was installed to ask, not to keep, and leaving it is how
+            # a box grows a standing credential its control plane never
+            # granted and cannot revoke.
+            #
+            # ssh-setup has refused this since the same key worked there;
+            # `lager update` is the command an operator actually runs, and it
+            # was still planting them. The window is a box that is managed but
+            # not yet hardened — after hardening the password check above
+            # refuses first, because there is no password to install with.
+            if box_has_control_plane(ssh_host):
+                removed = remove_lager_box_key(ssh_host, key_path=key_file)
+                click.echo()
+                click.secho(
+                    'This box\'s SSH keys are managed by a control plane, so '
+                    'the key just installed is one it does not know about.',
+                    fg='yellow')
+                if removed:
+                    click.secho('  The key is gone again; the box is as '
+                                'it was found.', fg='yellow')
+                else:
+                    click.secho('  The removal FAILED — the key is still in '
+                                'the box\'s authorized_keys, outside that '
+                                'control plane\'s management.', fg='yellow')
+                click.secho(
+                    '  Ask an admin to grant you access there instead; your '
+                    'key is installed on every box you are granted, and '
+                    'removed again when you are not.', fg='yellow')
+                return False
+
             click.echo()
             click.secho('SSH key installed successfully!', fg='green')
             click.echo('Future connections will not require a password.')
@@ -1583,17 +1839,13 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         /etc/lager/authorized_keys.d survives another key manager rebuilding
         that file. Best-effort — the key is already working when this runs —
         but warned about, because the failure is invisible until the rebuild.
+
+        Delegated rather than reimplemented: one copy of this warning went
+        on recommending a sudoers grant to control-plane-managed boxes long
+        after the other stopped, which is the drift the shared function
+        exists to prevent.
         """
-        ok, detail = register_lager_box_key(ssh_host, key_path=key_file)
-        if not ok:
-            click.secho(
-                f'Warning: the SSH key works, but it did not register in '
-                f'{BOX_KEYS_DIR} on the box ({detail}); it will not survive a '
-                'rebuild of the box\'s authorized_keys. Run `lager ssh-setup '
-                f'--box {ssh_host.split("@")[-1]}` for the grant a tightly '
-                'scoped fleet needs. Do not widen the directory instead.',
-                fg='yellow', err=True,
-            )
+        register_or_warn(ssh_host, key_path=key_file)
 
     try:
         # First try with the lager_box key if it exists. Same unattended
@@ -1635,9 +1887,23 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
             log_status('OK', 'green')
             # Repairs a box whose key predates registration.
             register_key_or_warn()
+        elif key_probe is False and box_has_control_plane(ssh_host):
+            # False means the box answered, so an identity authenticated to
+            # ask -- ssh's own defaults, since lager_box is what failed. Pass
+            # no -i and they are offered again on every later connection.
+            # Deliberately not attempted for None: that box answered nothing,
+            # so there is no identity to keep using and no way to know it is
+            # managed. It keeps the setup path below, unchanged.
+            control_plane_key = True
+            log_status('OK', 'green')
+            click.secho(
+                "  (using your control-plane key; this box's SSH keys are "
+                'managed, so Lager installs none of its own)',
+                fg='green',
+            )
 
         # If lager_box key didn't work for this box, we need to set it up
-        if not use_explicit_key:
+        if not use_explicit_key and not control_plane_key:
             if progress:
                 progress.finish(success=False)
             click.echo()  # New line after progress bar
@@ -1667,6 +1933,18 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
                 else:
                     # Key setup failed, ask if they want to continue with password
                     click.echo()
+                    # Not offered when the box takes no password: it is the
+                    # same dead end the key setup just hit, and accepting it
+                    # only moves the failure further down the run.
+                    if box_accepts_a_password(ssh_host) is False:
+                        click.secho(
+                            'Password authentication is not available on this '
+                            'box either.', fg='yellow')
+                        # Not a bare 1: under --check this leaves the box's
+                        # state undetermined, which is what 2 means. A CI gate
+                        # must be able to tell "no way in" from "an update is
+                        # needed" without matching on output text.
+                        ctx.exit(_undetermined_exit_code(check))
                     if yes or click.confirm('SSH key setup failed. Continue with password authentication?'):
                         use_interactive_ssh = True
                         if not verbose:
@@ -1680,10 +1958,10 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
                 ctx.exit(0)
 
         # At this point we should have either key-based or password-based auth ready
-        if not use_explicit_key and not use_interactive_ssh:
+        if not use_explicit_key and not use_interactive_ssh and not control_plane_key:
             # This shouldn't happen, but just in case
             log_error('Error: No SSH authentication method available')
-            ctx.exit(1)
+            ctx.exit(_undetermined_exit_code(check))
 
     except (Exit, Abort):
         # click's control-flow exceptions subclass RuntimeError, so the broad
@@ -1700,7 +1978,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         if progress:
             progress.finish(success=False)
         log_error(f'Error: Connection to {ssh_host} timed out')
-        ctx.exit(1)
+        ctx.exit(_undetermined_exit_code(check))
     except Exception as e:
         import traceback as _tb
         tb_str = _tb.format_exc()
@@ -1715,7 +1993,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         if verbose:
             click.echo(tb_str, err=True)
         log_error(f'Error: {str(e)}')
-        ctx.exit(1)
+        ctx.exit(_undetermined_exit_code(check))
 
     # Multiplex all subsequent SSH commands over a single TCP connection.
     # ControlMaster=auto starts the master on the first call (which is
@@ -1779,6 +2057,11 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         ssh_cmd = ['ssh']
         if use_explicit_key:
             ssh_cmd.extend(['-i', key_file])
+        elif control_plane_key:
+            # Name the identities explicitly. Passing none lets an ssh_config
+            # IdentityFile narrow the list to keys this box does not hold —
+            # the probe reached it only because it named the defaults itself.
+            ssh_cmd.extend(working_identity_args())
         if not use_interactive_ssh:
             ssh_cmd.extend(['-o', 'BatchMode=yes'])
         ssh_cmd.extend(_ssh_mux_opts)
@@ -1801,6 +2084,11 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         ssh_cmd = ['ssh', '-t']  # Always use -t for interactive commands
         if use_explicit_key:
             ssh_cmd.extend(['-i', key_file])
+        elif control_plane_key:
+            # Name the identities explicitly. Passing none lets an ssh_config
+            # IdentityFile narrow the list to keys this box does not hold —
+            # the probe reached it only because it named the defaults itself.
+            ssh_cmd.extend(working_identity_args())
         # Only use BatchMode if we don't need sudo prompts
         if not use_interactive_ssh and not allow_sudo_prompt:
             ssh_cmd.extend(['-o', 'BatchMode=yes'])
@@ -1826,13 +2114,13 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
             return True
         version_content = f'{box_cli_version_value}|{cli_version}'
 
-        # One round-trip per attempt: the `[ ... ] ||` guard makes the write
-        # a no-op when the file already matches, folding the old separate
-        # read-then-write into a single command.
-        write_cmd = (
-            f'[ "$(cat /etc/lager/version 2>/dev/null)" = "{version_content}" ] '
-            f'|| echo "{version_content}" > /etc/lager/version'
-        )
+        # One round-trip per attempt: `skip_if_identical` makes the write a
+        # no-op when the file already matches, folding the old separate
+        # read-then-write into a single command. The file is replaced rather
+        # than written in place, so a version file that a `sudo tee` left
+        # root-owned no longer blocks every later update.
+        write_cmd = _state_file_write_cmd(
+            'version', version_content, skip_if_identical=True)
         for attempt in range(3):
             result = run_ssh_command_with_output(write_cmd, timeout_secs=30)
             if result.returncode == 0:
@@ -1862,12 +2150,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         """
         if not hash_value:
             return True
-        write_cmd = (
-            'tmp=$(mktemp /etc/lager/.build-hash.XXXXXX) && '
-            f'printf "%s\\n" "{hash_value}" > "$tmp" && '
-            'chmod 644 "$tmp" && '
-            'mv -f "$tmp" /etc/lager/build-hash'
-        )
+        write_cmd = _state_file_write_cmd('build-hash', hash_value)
         for attempt in range(3):
             result = run_ssh_command_with_output(write_cmd, timeout_secs=30)
             if result.returncode == 0:
@@ -1897,12 +2180,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         """
         if not value:
             return True
-        write_cmd = (
-            'tmp=$(mktemp /etc/lager/.image-source.XXXXXX) && '
-            f'printf "%s\\n" "{value}" > "$tmp" && '
-            'chmod 644 "$tmp" && '
-            'mv -f "$tmp" /etc/lager/image-source'
-        )
+        write_cmd = _state_file_write_cmd('image-source', value)
         try:
             return run_ssh_command_with_output(
                 write_cmd, timeout_secs=30).returncode == 0
@@ -1940,12 +2218,11 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         if not ref_value:
             return True
         content = f'{ref_value}@{sha_value}' if sha_value else str(ref_value)
-        write_cmd = (
-            'tmp=$(mktemp /etc/lager/.ref.XXXXXX) && '
-            f'printf "%s\\n" "{content}" > "$tmp" && '
-            'chmod 644 "$tmp" && '
-            'mv -f "$tmp" /etc/lager/ref'
-        )
+        # skip_if_identical, as the version write does: a run that changes
+        # nothing must leave this file alone. Rewriting identical content moves
+        # the mtime, which is the only thing that says when the ref last
+        # actually changed.
+        write_cmd = _state_file_write_cmd('ref', content, skip_if_identical=True)
         try:
             return run_ssh_command_with_output(
                 write_cmd, timeout_secs=30).returncode == 0
@@ -1968,7 +2245,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         log_error('Error: Could not inspect box state over SSH')
         if probe_result.stderr and probe_result.stderr.strip():
             click.echo(probe_result.stderr.strip(), err=True)
-        ctx.exit(1)
+        ctx.exit(_undetermined_exit_code(check))
     facts = _parse_probe_output(probe_result.stdout)
 
     # 2a: the box directory must be a git checkout.
@@ -1978,7 +2255,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         log_error('Error: Box directory is not a git repository')
         click.echo('A deploy with rsync instead of git clone can cause this.')
         click.echo('Please re-deploy the box using the latest deployment script.')
-        ctx.exit(1)
+        ctx.exit(_undetermined_exit_code(check))
 
     # 2b: migrate a legacy git@github.com: remote to HTTPS (open-source
     # migration). This is the one probed fact that needs a follow-up write,
@@ -2058,21 +2335,10 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         progress.update("Fetching updates...")
     log(f'Fetching {git_ref}...', nl=False)
 
-    # `git fetch` then `git rev-list` in a single round-trip. fetch's combined
-    # stdout+stderr precedes the `LAGER_FETCH_RC=` marker (so the detailed
-    # error classification below still works); the rev-list line follows it.
-    #
-    # `--left-right --count HEAD...{git_ref}` returns `<ahead>\t<behind>` —
-    # commits on HEAD-not-in-target and on-target-not-in-HEAD respectively.
-    # We need *both* directions so a rollback (`--version <older>`) doesn't
-    # look like "already up to date" the way the older one-way `HEAD..ref`
-    # rev-list did: that variant only counted commits the box was *behind*
-    # and treated any "ahead" state as in-sync, making downgrade impossible.
-    fetch_script = (
-        f'cd ~/box && git fetch origin {fetch_ref} 2>&1; '
-        'echo "LAGER_FETCH_RC=$?"; '
-        f'git rev-list --left-right --count HEAD...{git_ref} 2>/dev/null'
-    )
+    # `git fetch` then `git rev-list` in a single round-trip; see
+    # :func:`_fetch_shell_script` for what each piece does, and why the
+    # fetch is forced.
+    fetch_script = _fetch_shell_script(fetch_ref, git_ref)
     # Retry the fetch on *transient* failures only. Boxes on flaky links (e.g.
     # WiFi with a slow/intermittent resolver) hit sporadic DNS-resolution or
     # connection timeouts on `git fetch` that clear on a retry seconds later;
@@ -2191,7 +2457,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
             log_error('Error: Failed to fetch updates from GitHub')
             if stderr:
                 click.secho(f"Git error: {stderr}", err=True)
-        ctx.exit(1)
+        ctx.exit(_undetermined_exit_code(check))
 
     # Parse "<ahead>\t<behind>" from the rev-list line. Only trust an
     # "already up to date" fast-path when rev-list produced two integers;
@@ -2522,9 +2788,43 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
     def enqueue_priv(name, snippet, render):
         priv_jobs.append({'name': name, 'snippet': snippet, 'render': render})
 
-    # Step 5: udev rules. The probe already located the source dir and diffed
-    # its 99-instrument.rules against the installed copy, so we only touch the
-    # box when an install/update is actually needed.
+    # Step 5: udev rules.
+    #
+    # The probe located the source dir and diffed its 99-instrument.rules
+    # against the installed copy -- but it ran BEFORE the git pull, so both of
+    # those facts describe the PREVIOUS checkout. When an update is what brings
+    # a new rule in, the pre-pull diff says "in sync" (correctly, about the old
+    # tree), the step reports OK, and the new rule is never installed.
+    #
+    # That is not hypothetical: a box updated from main onto a branch carrying
+    # the LabJack U3 rule reported "OK (already current)" and left the U3
+    # unopenable, because /etc matched the pre-pull source byte for byte. The
+    # modprobe step below has a re-check for the narrower "source dir appeared"
+    # case; this is the same idea applied to the file's CONTENT, which is what
+    # actually changes on an upgrade.
+    #
+    # Re-derive both facts post-pull/flatten before deciding anything.
+    _udev_recheck = run_ssh_command_with_output(
+        'if [ -d ~/box/udev_rules ]; then _up=~/box/udev_rules; '
+        'elif [ -d ~/box/box/udev_rules ]; then _up=~/box/box/udev_rules; '
+        'else _up=""; fi; '
+        'echo "PATH=$_up"; '
+        'if [ -n "$_up" ] && [ -f "$_up/99-instrument.rules" ]; then '
+        '  echo "RULES=1"; '
+        '  if diff -q "$_up/99-instrument.rules" '
+        '       /etc/udev/rules.d/99-instrument.rules >/dev/null 2>&1; then '
+        '    echo "SYNC=1"; else echo "SYNC=0"; fi; '
+        'else echo "RULES=0"; echo "SYNC=0"; fi'
+    )
+    for _line in (_udev_recheck.stdout or '').splitlines():
+        _line = _line.strip()
+        if _line.startswith('PATH='):
+            facts['UDEV_SRC_PATH'] = _line[5:]
+        elif _line.startswith('RULES='):
+            facts['UDEV_SRC_RULES'] = _line[6:]
+        elif _line.startswith('SYNC='):
+            facts['UDEV_IN_SYNC'] = _line[5:]
+
     if progress:
         progress.update("Checking udev rules...")
     log('Checking udev rules...', nl=False)
@@ -2589,33 +2889,22 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         progress.update("Checking modprobe.d blacklists...")
     log('Checking modprobe.d blacklists...', nl=False)
 
+    # Every modprobe.d fact the probe gathered describes the PREVIOUS checkout,
+    # because the probe ran before the pull. Two cases hide in that, and only
+    # the narrower one used to be handled: the source dir first appearing
+    # (re-detected), and the blacklist file's CONTENT changing in the very
+    # release being installed (missed). In the second case the pre-pull diff
+    # says "in sync" -- truthfully, about the old tree -- this step reports
+    # `OK (already current)`, and the new blacklist never reaches
+    # /etc/modprobe.d. It lands on the next update instead, one release late.
+    #
+    # That is the defect the udev step above was fixed for. This is the same
+    # fix: re-derive every fact post-pull/flatten, unconditionally, and in one
+    # round trip rather than the four the old re-detect path used.
+    _mp_recheck = run_ssh_command_with_output(_modprobe_recheck_shell_cmd())
+    _apply_modprobe_recheck(_mp_recheck.stdout, facts)
     mp_src_path = facts.get('MODPROBE_SRC_PATH', '')
-    # The probe runs BEFORE the git pull. When modprobe_d first lands on a
-    # box (i.e. this very update), the pre-pull probe correctly reports it
-    # missing — but now it exists post-pull/flatten. Re-detect by checking
-    # the canonical post-flatten path and the pre-flatten fallback.
-    if not mp_src_path:
-        recheck = run_ssh_command_with_output(
-            'if [ -d ~/box/modprobe_d ]; then echo ~/box/modprobe_d; '
-            'elif [ -d ~/box/box/modprobe_d ]; then echo ~/box/box/modprobe_d; fi'
-        )
-        mp_src_path = (recheck.stdout or '').strip()
-        # Re-check whether the file is in sync against the rediscovered path.
-        if mp_src_path:
-            conf_file = f'{mp_src_path}/blacklist-usbtmc.conf'
-            confs_check = run_ssh_command_with_output(
-                f'test -f {conf_file} && echo 1 || echo 0'
-            )
-            facts['MODPROBE_SRC_CONFS'] = (confs_check.stdout or '').strip()
-            sync_check = run_ssh_command_with_output(
-                f'diff -q {conf_file} /etc/modprobe.d/blacklist-usbtmc.conf '
-                '>/dev/null 2>&1 && echo 1 || echo 0'
-            )
-            facts['MODPROBE_IN_SYNC'] = (sync_check.stdout or '').strip()
-            usbtmc_check = run_ssh_command_with_output(
-                'lsmod 2>/dev/null | grep -q "^usbtmc" && echo 1 || echo 0'
-            )
-            facts['USBTMC_LOADED'] = (usbtmc_check.stdout or '').strip()
+
     if not mp_src_path:
         log_status('SKIPPED (source dir missing)', 'yellow')
         if verbose:
@@ -3305,6 +3594,11 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         ssh_cmd = ['ssh']
         if use_explicit_key:
             ssh_cmd.extend(['-i', key_file])
+        elif control_plane_key:
+            # Name the identities explicitly. Passing none lets an ssh_config
+            # IdentityFile narrow the list to keys this box does not hold —
+            # the probe reached it only because it named the defaults itself.
+            ssh_cmd.extend(working_identity_args())
         if not use_interactive_ssh:
             ssh_cmd.extend(['-o', 'BatchMode=yes'])
         ssh_cmd.extend(_ssh_mux_opts)
@@ -3535,7 +3829,9 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
             fg='yellow', err=True,
         )
 
-    # Write the version file BEFORE the container restart (SSH is stable here).
+    # Work out which version to record. The write itself happens after the
+    # container is running, further down: a failed write must not leave the box
+    # with no lager container, which is exactly what exiting here used to do.
     # A version tag (v0.3.14 / 0.3.14) is used directly. For a branch target
     # we ask the box for the closest preceding `vX.Y.Z` tag at HEAD via
     # `git describe`, which reflects the actual code on disk — not the CLI's
@@ -3556,23 +3852,6 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         # where the file isn't in the working tree.
         src_version = _read_box_source_version(run_ssh_command_with_output)
         box_cli_version = src_version if src_version else cli_version
-
-    if box_cli_version:
-        if progress:
-            progress.update("Storing version...")
-        log('Storing version...', nl=False)
-
-        if not write_box_version_file(box_cli_version):
-            if progress:
-                progress.finish(success=False)
-            log_status('FAILED', 'red')
-            log_error('Error: Failed to write version file to /etc/lager/version')
-            click.echo('The code was updated, but the CLI did not write the version file.', err=True)
-            click.echo()
-            click.echo('Manually fix with:', err=True)
-            click.echo(f'  ssh {ssh_host} "echo \\"{box_cli_version}|{cli_version}\\" | sudo tee /etc/lager/version"', err=True)
-            ctx.exit(1)
-        log_status(f'OK ({box_cli_version})', 'green')
 
     # Step 11: Start container
     if progress:
@@ -3615,9 +3894,32 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         click.echo('  3. The startup script hangs', err=True)
         click.echo()
         click.echo('Try:', err=True)
-        click.echo(f'  ssh lagerdata@{resolved_box} "docker logs lager"', err=True)
-        click.echo(f'  ssh lagerdata@{resolved_box} "docker ps -a"', err=True)
+        click.echo(f'  ssh {ssh_host} "docker logs lager"', err=True)
+        click.echo(f'  ssh {ssh_host} "docker ps -a"', err=True)
         ctx.exit(1)
+
+    # Record the version now that the container runs again. This write used to
+    # come before Step 11, so a failure exited with the old container already
+    # torn down and nothing started in its place: the box lost its service over
+    # a bookkeeping file. `lager install` already records state after the box is
+    # up, and this matches it. The box is serving by the time we get here, so a
+    # failure below is worth reporting and no longer takes the box down.
+    if box_cli_version:
+        if progress:
+            progress.update("Storing version...")
+        log('Storing version...', nl=False)
+
+        if not write_box_version_file(box_cli_version):
+            if progress:
+                progress.finish(success=False)
+            log_status('FAILED', 'red')
+            log_error('Error: Failed to write version file to /etc/lager/version')
+            click.echo('The box runs the new code, but the CLI did not record the version.', err=True)
+            click.echo()
+            click.echo('Manually fix with:', err=True)
+            click.echo(f'  ssh {ssh_host} "printf \'%s\\n\' \\"{box_cli_version}|{cli_version}\\" > /etc/lager/version"', err=True)
+            ctx.exit(1)
+        log_status(f'OK ({box_cli_version})', 'green')
 
     # Wait for the on-box services to become reachable. Previously this was a
     # blind `time.sleep(5)`; on slower boxes the on-box services could still be

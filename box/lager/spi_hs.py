@@ -20,9 +20,13 @@ class SPIHardwareAdapter:
     def __init__(self, netname: str) -> None:
         self._netname = netname
 
-    def config(self, cfg=None) -> None:
+    def config(self, cfg=None) -> dict:
         from lager.protocols.spi import dispatcher as _disp
-        _disp._resolve_net_and_driver(self._netname, cfg or None)
+        drv = _disp._resolve_net_and_driver(self._netname, cfg or None)
+        # The driver runs in THIS process, whose stderr is a container log
+        # nobody opens. Anything the operator has to see travels back with
+        # the result instead.
+        return {"warnings": list(getattr(drv, "clamp_warnings", ()) or ())}
 
     def _result(self, drv, words):
         return {

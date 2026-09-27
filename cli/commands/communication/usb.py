@@ -66,6 +66,19 @@ def _display_usb_nets(ctx: click.Context, box: str) -> None:
 _USB_COMMAND_TIMEOUT_S = 45
 
 
+def _device_did_not_return(result: dict) -> bool:
+    """True when a cycle's device was watched for and did not come back.
+
+    A box from before `outcome` existed still sends `reconnected: false` for
+    that case. The two other results that confirm nothing -- no device on
+    the port, and a USB topology the box could not read -- are not failures:
+    their messages already say re-enumeration was not confirmed.
+    """
+    if 'outcome' in result:
+        return result['outcome'] == 'not_reconnected'
+    return result.get('reconnected') is False
+
+
 def _invoke_remote(
     ctx: click.Context,
     net_name: str,
@@ -115,6 +128,10 @@ def _invoke_remote(
 
     if resp.status_code == 200 and result.get('success'):
         message = result.get('message') or f"USB port '{net_name}' {command}d"
+        if command == 'cycle' and _device_did_not_return(result):
+            # The power cycle itself worked; what the caller needed did not.
+            click.secho(f"Error: {message}", fg='red', err=True)
+            ctx.exit(1)
         click.echo(f"[OK] {message}")
         return
 

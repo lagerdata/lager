@@ -327,6 +327,8 @@ def format_lock_user(user):
     Recognized formats:
     - ``<origin>:<id>:<email>``                   -> just the email
       (reservations written by other services, e.g. the web dashboard)
+    - ``<origin>:<id>:<name>:<email>``            -> just the name
+      (the same services, once they started recording a display name)
     - ``ci:github:<repo>#<run>-<attempt>/<job>@<runner>:<pid>``
                                                   -> ``github <repo> run <run> job <job> on <runner>``
     - ``ci:drone:<repo>#<build>:<pid>@<host>``    -> ``drone <repo> build <build>``
@@ -399,10 +401,15 @@ def format_lock_user(user):
             return user
 
     # Reservation holders written by other services (e.g. the web dashboard)
-    # look like ``<origin>:<id>:<email>``; show just the email. The ``ci:``
-    # prefix is excluded above, and requiring an ``@`` keeps genuinely
-    # unrecognized strings visible unchanged.
+    # look like ``<origin>:<id>:<email>`` or, once those services record a
+    # display name, ``<origin>:<id>:<name>:<email>``; show the email or the
+    # name respectively. The ``ci:`` prefix is excluded above, and requiring
+    # an ``@`` in the last segment keeps genuinely unrecognized strings
+    # visible unchanged.
     if not user.startswith('ci:'):
+        parts = user.split(':')
+        if len(parts) == 4 and '@' in parts[3] and parts[2] and '@' not in parts[2]:
+            return parts[2]
         parts = user.split(':', 2)
         if len(parts) == 3 and '@' in parts[2]:
             return parts[2]
@@ -493,6 +500,71 @@ def lock_scope(identity):
     return _LOCK_PID_RE.sub('', identity)
 
 
+def holder_email(stored):
+    """The email in a holder written by another tool, or None.
+
+    Such a holder reads ``<origin>:<id>:<name>:<email>``, the shape
+    ``format_lock_user`` parses to display the name; this reads the same shape
+    the same way. ``ci:`` holders are never read as one: a GitLab holder such
+    as ``ci:gitlab:group/p#9/job:42@runner.example.com`` also splits on colons
+    into parts whose last one contains an ``@``.
+    """
+    if not stored or stored.startswith('ci:'):
+        return None
+    parts = stored.split(':')
+    if (len(parts) == 4 and parts[0] and parts[1] and parts[2]
+            and '@' not in parts[2] and '@' in parts[3]):
+        return parts[3]
+    return None
+
+
+def holder_is_ours(stored, holder, user, *, coarse_scope_ok=True):
+    """Is the lock stored under ``stored`` one that ``holder``/``user`` may use?
+
+    The one rule every holder comparison on the CLI goes through: the
+    pre-command check, the three decisions in ``acquire_box_lock``, and
+    ``lager boxes unlock``. It is true when ``stored`` is:
+
+    - exactly ``holder``;
+    - the same scope as ``holder``, meaning the same CI run, attempt, job and
+      runner from a different process (see ``lock_scope``);
+    - exactly ``user``, the plain name that ``lager boxes lock`` and
+      ``test/framework/harness.sh`` record; or
+    - a holder another tool wrote whose email is ``user``, ignoring case.
+
+    ``coarse_scope_ok=False`` refuses a scope match on ``ci:generic``, which
+    every CI job on one host shares. Unlock passes it so it never releases a
+    sibling job's live lock; an exact match still counts.
+    """
+    if not stored:
+        return False
+    if holder and stored == holder:
+        return True
+    if holder and lock_scope(stored) == lock_scope(holder):
+        if coarse_scope_ok or not stored.startswith('ci:generic:'):
+            return True
+    if user and stored == user:
+        return True
+    email = holder_email(stored)
+    return bool(email and user and '@' in user
+                and email.casefold() == user.casefold())
+
+
+def heartbeat_holder(state, lock_data, holder):
+    """The holder string a heartbeat for this lock must send.
+
+    The box renews a lock only for the exact holder string it stored. A lock
+    this process resumed (``already_ours``) was stored under another
+    process's holder, so renewing it under ``holder`` was refused with 403,
+    quietly, and the lock expired while the command was still running.
+    """
+    if state == 'already_ours':
+        stored = (lock_data or {}).get('user')
+        if stored:
+            return stored
+    return holder
+
+
 def _lock_held_by_self(locked_by):
     """Is ``locked_by`` a lock this process is entitled to use?
 
@@ -504,9 +576,7 @@ def _lock_held_by_self(locked_by):
     bug is invisible on a dev machine because ``get_lock_holder()`` falls back
     to ``get_lager_user()`` there, making both arms the same string.
     """
-    if lock_scope(locked_by) == lock_scope(get_lock_holder()):
-        return True
-    return locked_by == get_lager_user()
+    return holder_is_ours(locked_by, get_lock_holder(), get_lager_user())
 
 
 # Boxes we've already warned about missing :9000 lock support (old images);
@@ -592,18 +662,34 @@ _DEFAULT_LOCK_TTL_SECONDS = 1800
 _DEFAULT_HEARTBEAT_INTERVAL = 60
 
 
+# An unparseable LAGER_LOCK_WAIT is reported once per process, not per acquire.
+_lock_wait_warned = False
+
+
 def default_lock_wait_seconds():
     """Default ``wait_seconds`` for :func:`acquire_box_lock`.
 
     ``LAGER_LOCK_WAIT`` env var wins. Otherwise CI gets a long wait so matrix
     jobs queue, and dev gets fail-fast so a typo doesn't silently block.
+
+    A value that is not a whole number warns once and falls back to that
+    environment default. It used to give 0 even in CI, which quietly turned a
+    job that should queue for the box into one that failed on first contact.
     """
+    global _lock_wait_warned
     env = os.getenv('LAGER_LOCK_WAIT')
     if env is not None:
         try:
             return max(0, int(env))
         except ValueError:
-            return _DEFAULT_LOCK_WAIT_DEV
+            if not _lock_wait_warned:
+                _lock_wait_warned = True
+                import click
+                click.secho(
+                    f"Warning: LAGER_LOCK_WAIT={env!r} is not a whole number "
+                    f"of seconds. The default wait applies.",
+                    fg='yellow', err=True,
+                )
     try:
         from .context.ci_detection import get_ci_environment, CIEnvironment
         if get_ci_environment() != CIEnvironment.HOST:
@@ -680,7 +766,8 @@ def _resend_with_auth(prepared, headers, *, timeout: Optional[float] = 30,
 
 
 def _resolve_gateway(resp, ip, *, timeout: Optional[float] = 30,
-                     stream: bool = True, session=None):
+                     stream: bool = True, session=None,
+                     allow_refresh: bool = True):
     """Record-and-retry core shared by :func:`_check_gateway` and
     :func:`check_gateway_status` — the single implementation of gateway
     discovery. Returns ``(resp, denied)``:
@@ -701,6 +788,12 @@ def _resolve_gateway(resp, ip, *, timeout: Optional[float] = 30,
     mirror the original call; see :func:`_resend_with_auth`. They exist for
     the debug service's streaming RTT endpoint, which cannot be replayed
     buffered.
+
+    ``allow_refresh=False`` reaches :func:`~cli.gateway_auth.access_token_for`
+    and stops this call spending the refresh cookie. The token attached to
+    the retry is then whatever the store already holds. A worker thread that
+    its caller can abandon at a deadline passes False; there is no budget
+    here that bounds a refresh, so one would otherwise outlive the call.
     """
     from .gateway_auth import (
         DISCOVERY_HEADER, record_box_auth_server, auth_headers_for_box,
@@ -713,7 +806,7 @@ def _resolve_gateway(resp, ip, *, timeout: Optional[float] = 30,
     record_box_auth_server(ip, resp_headers[DISCOVERY_HEADER])
     sent_auth = 'Authorization' in getattr(resp.request, 'headers', {})
     if resp.status_code == 401 and not sent_auth:
-        headers = auth_headers_for_box(ip)
+        headers = auth_headers_for_box(ip, allow_refresh=allow_refresh)
         if headers:
             retried = _resend_with_auth(resp.request, headers, timeout=timeout,
                                         stream=stream, session=session)
@@ -728,7 +821,8 @@ def _resolve_gateway(resp, ip, *, timeout: Optional[float] = 30,
 
 
 def _check_gateway(resp, ip, *, timeout: Optional[float] = 30,
-                   stream: bool = True, session=None):
+                   stream: bool = True, session=None,
+                   allow_refresh: bool = True):
     """Resolve a gateway response, returning the response the caller should use.
 
     On a plain (un-gated) box this is a passthrough. On a gated box the
@@ -744,13 +838,15 @@ def _check_gateway(resp, ip, *, timeout: Optional[float] = 30,
     """
     from .gateway_auth import handle_gateway_denial
     resp, denied = _resolve_gateway(resp, ip, timeout=timeout,
-                                    stream=stream, session=session)
+                                    stream=stream, session=session,
+                                    allow_refresh=allow_refresh)
     if denied:
         handle_gateway_denial(resp, ip)     # raises the actionable error
     return resp
 
 
-def check_gateway_status(resp, ip):
+def check_gateway_status(resp, ip, *, timeout: Optional[float] = 30,
+                         stream: bool = True, allow_refresh: bool = True):
     """Non-raising variant of :func:`_check_gateway` for fan-out and
     fail-open callers (`lager boxes`, health polls) that must not abort on a
     single box's denial.
@@ -760,9 +856,26 @@ def check_gateway_status(resp, ip):
     ``resp`` (plain box, or the retry authenticated transparently), else a
     short user-facing verdict — 'sign-in required', 'session rejected',
     'no access', or 'auth server down'.
+
+    ``timeout``/``stream`` are forwarded to the retry and must mirror the
+    original call; see :func:`_resend_with_auth`. The defaults reproduce the
+    values this function used before they were exposed, so a caller that
+    passes neither is unaffected.
+
+    A caller working to a deadline must pass the budget it gave the original
+    request. The retry is a second round trip on first contact — the
+    box->auth-server mapping is only learned from that first 401, so a token
+    cannot be attached up front — and on the old fixed 30s it could outlast
+    a caller's own timeout. The caller then reported a box as silent while
+    its retry was still in flight and about to succeed.
+
+    The same caller passes ``allow_refresh=False``: the budget above bounds
+    the retry, but nothing bounds a token refresh, so a worker under a
+    deadline leaves refreshing to whoever owns the fan-out.
     """
     from .gateway_auth import denial_label
-    resp, denied = _resolve_gateway(resp, ip)
+    resp, denied = _resolve_gateway(resp, ip, timeout=timeout, stream=stream,
+                                    allow_refresh=allow_refresh)
     if not denied:
         return resp, None
     return resp, denial_label(resp)
@@ -807,6 +920,10 @@ def acquire_box_lock(
     import click
     import requests
 
+    # Every "is this lock ours?" below goes through holder_is_ours, the rule
+    # the pre-command check uses too, so the two can no longer disagree.
+    user = get_lager_user()
+
     # Check the lock state BEFORE posting an acquire. If the box is already
     # locked by us (a pre-existing `lager boxes lock`), we must not touch it
     # at all: a re-acquire POST would let the server rewrite the lock's
@@ -822,10 +939,11 @@ def acquire_box_lock(
                 pre_data = pre.json()
             except ValueError:
                 pre_data = {}
-            # Scope, not raw equality: the stored holder ends in the pid of
-            # whichever process took the lock, and this is a later one.
+            # Not raw equality: the stored holder can end in the pid of an
+            # earlier process of this job, be the plain user of a `lager boxes
+            # lock` reservation, or be a holder another tool wrote.
             if pre_data.get('locked') and \
-                    lock_scope(pre_data.get('user', '')) == lock_scope(holder):
+                    holder_is_ours(pre_data.get('user', ''), holder, user):
                 return ('already_ours', pre_data)
     except requests.exceptions.RequestException:
         # Unreachable for the GET; let the POST loop below produce the
@@ -868,7 +986,7 @@ def acquire_box_lock(
                 # pre-existing lock of ours, so reaching a 200 here means
                 # we genuinely created the lock.
                 state = 'acquired'
-            elif lock_scope(previous_holder) == lock_scope(holder):
+            elif holder_is_ours(previous_holder, holder, user):
                 state = 'already_ours'
             else:
                 state = 'acquired'
@@ -882,11 +1000,12 @@ def acquire_box_lock(
             lock_info = data.get('lock', {}) or {}
             other = lock_info.get('user', 'unknown')
 
-            # A 409 naming our own scope means the pre-acquire GET raced, or
-            # the box did not report the lock on that GET. Waiting here blocks
-            # for LAGER_LOCK_WAIT -- 1800s under CI -- on a lock this job
-            # already holds, which is how a refusal became a half-hour stall.
-            if lock_scope(other) == lock_scope(holder):
+            # A 409 naming a lock that is ours means the pre-acquire GET raced,
+            # or the box did not report the lock on that GET. Waiting here
+            # blocks for LAGER_LOCK_WAIT -- 1800s under CI -- on a lock this
+            # job may already use, which is how a refusal became a half-hour
+            # stall.
+            if holder_is_ours(other, holder, user):
                 return ('already_ours', lock_info or data)
 
             now = time.monotonic()
@@ -1290,6 +1409,40 @@ def default_install_timeout_seconds():
 INSTALL_LOCK_TTL_SECONDS = 3600
 
 
+class _NoLockExpiry:
+    """Sentinel: this caller wants a lock that never expires.
+
+    ``ttl_seconds=None`` cannot say this. At the auto-lock boundary ``None``
+    already means "I have no opinion, use the default", so an unbounded
+    ``lager install`` asking for no expiry was handed the 1800 s default
+    instead and could have its own lock reaped while the deploy still ran.
+    One value cannot carry both meanings, so "no expiry" gets its own.
+    """
+
+    def __repr__(self):  # pragma: no cover - debugging aid only
+        return 'NO_LOCK_EXPIRY'
+
+
+#: Pass as ``ttl_seconds`` for a lock with no expiry. Resolves to the ``None``
+#: the box stores as a null TTL (see ``acquire_box_lock``), never to a default.
+NO_LOCK_EXPIRY = _NoLockExpiry()
+
+
+def _resolve_ttl_seconds(ttl_seconds):
+    """Turn an auto-lock ``ttl_seconds`` argument into what the box is sent.
+
+    Three inputs, three meanings, and the first two used to collide:
+      * ``None``            -> unset; take this command's configured default.
+      * ``NO_LOCK_EXPIRY``  -> a lock with no expiry; send a null TTL.
+      * a number            -> that TTL.
+    """
+    if ttl_seconds is NO_LOCK_EXPIRY:
+        return None
+    if ttl_seconds is None:
+        return default_lock_ttl_seconds()
+    return ttl_seconds
+
+
 def install_lock_ttl_seconds(deploy_timeout=None):
     """TTL for `lager install`'s auto-lock, derived from the deploy timeout.
 
@@ -1300,14 +1453,17 @@ def install_lock_ttl_seconds(deploy_timeout=None):
     budget, a fixed TTL would let a legitimately-running install have its own
     lock reaped mid-deploy.
 
-    ``deploy_timeout`` of 0 (no timeout) yields ``None`` — an unbounded deploy
-    cannot be outlasted by any finite TTL, so the lock lives on renewals and
-    the explicit release instead.
+    ``deploy_timeout`` of 0 (no timeout) yields ``NO_LOCK_EXPIRY``: no finite
+    TTL can outlast an unbounded deploy, so the lock gets none and ends at the
+    explicit release. It gets no heartbeat either — a lock that cannot expire
+    has nothing to renew. The cost is that a hard kill (SIGKILL, power loss)
+    during an unbounded install leaves the box locked with no deadline to
+    clear it, and `lager boxes unlock` is the way out.
     """
     if deploy_timeout is None:
         deploy_timeout = default_install_timeout_seconds()
     if not deploy_timeout:
-        return None
+        return NO_LOCK_EXPIRY
     return max(INSTALL_LOCK_TTL_SECONDS, deploy_timeout * 2)
 
 
@@ -1375,9 +1531,7 @@ def auto_lock_around_command(
             return
 
         resolved_holder = holder or get_lock_holder()
-        resolved_ttl = (
-            default_lock_ttl_seconds() if ttl_seconds is None else ttl_seconds
-        )
+        resolved_ttl = _resolve_ttl_seconds(ttl_seconds)
         resolved_wait = (
             default_lock_wait_seconds() if wait_seconds is None else wait_seconds
         )
@@ -1431,7 +1585,9 @@ def auto_lock_around_command(
         if (should_release and resolved_ttl is not None) or resumed_ttl is not None:
             heartbeat = HeartbeatThread(
                 ip,
-                resolved_holder,
+                # A resumed lock renews under the holder the box stored, since
+                # the box renews a lock only for that exact string.
+                heartbeat_holder(state, lock_data, resolved_holder),
                 heartbeat_interval or default_heartbeat_interval(),
                 warn_label=f'{command_name} lock heartbeat',
                 # The TTL the warning is measured against is whichever one
@@ -1540,9 +1696,7 @@ def auto_lock_acquire_for_command(
         return _noop_release
 
     resolved_holder = holder or get_lock_holder()
-    resolved_ttl = (
-        default_lock_ttl_seconds() if ttl_seconds is None else ttl_seconds
-    )
+    resolved_ttl = _resolve_ttl_seconds(ttl_seconds)
     resolved_wait = (
         default_lock_wait_seconds() if wait_seconds is None else wait_seconds
     )
@@ -1625,7 +1779,7 @@ def auto_lock_acquire_for_command(
         if resolved_ttl is not None:
             heartbeat = HeartbeatThread(
                 ip,
-                resolved_holder,
+                heartbeat_holder(state, lock_data, resolved_holder),
                 heartbeat_interval or default_heartbeat_interval(),
                 warn_label=f'{command_name} lock heartbeat',
                 # Same as the `with` variant: the warning is measured against
@@ -1644,7 +1798,9 @@ def auto_lock_acquire_for_command(
         # ttl null and skip this branch.
         heartbeat = HeartbeatThread(
             ip,
-            resolved_holder,
+            # The stored holder, not ours: it ends in the pid of the process
+            # that took the lock, and the box renews only for that string.
+            heartbeat_holder(state, lock_data, resolved_holder),
             heartbeat_interval or default_heartbeat_interval(),
             warn_label=f'{command_name} lock heartbeat',
             # The resumed lock's own TTL, not ours — we are keeping someone
@@ -1678,6 +1834,22 @@ def empty_box_name_error():
     )
 
 
+def explicit_box_option(ctx, box_opt):
+    """The ``--box`` value given on this command or on its group, else None.
+
+    For commands that pick the box themselves before calling a resolver. A
+    truthiness test treats ``--box ""`` as "not given" and falls through to
+    the default box, so an unset ``$BOX`` in CI silently targets a different
+    box. A blank value raises instead, as the shared resolvers do.
+    """
+    value = box_opt
+    if value is None and ctx.parent is not None:
+        value = ctx.parent.params.get("box")
+    if value is not None and not value.strip():
+        raise empty_box_name_error()
+    return value
+
+
 def box_not_found_error(box_name):
     """Build an actionable LagerError for an unrecognized ``--box`` value.
 
@@ -1701,7 +1873,7 @@ def box_not_found_error(box_name):
         f"No box named '{box_name}'.",
         cause=cause,
         fixes=[
-            f'Add it: lager boxes add --name {box_name} --ip [IP_ADDRESS]',
+            f'Add it: lager boxes add --name {box_name} --ip [IP_ADDRESS] --user [USERNAME]',
             'Or use an existing name / an IP address with --box.',
         ],
     )

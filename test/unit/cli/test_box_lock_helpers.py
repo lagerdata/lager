@@ -175,7 +175,30 @@ class TestDefaultLockWaitSeconds:
 
     def test_env_garbage_falls_back_to_dev(self, monkeypatch):
         monkeypatch.setenv('LAGER_LOCK_WAIT', 'not-an-int')
+        monkeypatch.setattr(
+            'cli.context.ci_detection.get_ci_environment',
+            lambda: CIEnvironment.HOST,
+        )
         assert box_storage.default_lock_wait_seconds() == 0
+
+    def test_env_garbage_in_ci_keeps_the_ci_wait_and_warns(self, monkeypatch, capsys):
+        # It used to give 0 in CI too, turning a job that should queue for
+        # the box into one that failed on first contact.
+        monkeypatch.setattr(box_storage, '_lock_wait_warned', False)
+        monkeypatch.setenv('LAGER_LOCK_WAIT', 'thirty')
+        monkeypatch.setattr(
+            'cli.context.ci_detection.get_ci_environment',
+            lambda: CIEnvironment.GITHUB,
+        )
+        assert box_storage.default_lock_wait_seconds() == 1800
+        assert 'LAGER_LOCK_WAIT' in capsys.readouterr().err
+
+    def test_env_garbage_warns_once_per_process(self, monkeypatch, capsys):
+        monkeypatch.setattr(box_storage, '_lock_wait_warned', False)
+        monkeypatch.setenv('LAGER_LOCK_WAIT', 'thirty')
+        box_storage.default_lock_wait_seconds()
+        box_storage.default_lock_wait_seconds()
+        assert capsys.readouterr().err.count('LAGER_LOCK_WAIT') == 1
 
 
 # ---------------------------------------------------------------------------
@@ -562,21 +585,28 @@ class TestAutoLockAroundCommand:
     def test_already_ours_with_ttl_heartbeats_but_never_releases(self, monkeypatch):
         # Resuming a leftover ephemeral lock (crashed run): keep it alive
         # with a heartbeat so it can't TTL-expire mid-command, but still
-        # never release it.
+        # never release it. The heartbeat sends the holder the box stored,
+        # which ends in the pid of the process that took the lock: the box
+        # renews only for that exact string.
         released = []
+        renewed_as = []
         hb = mock.Mock(start=mock.Mock(), stop=mock.Mock())
         monkeypatch.setattr(
             box_storage, 'acquire_box_lock',
-            lambda *a, **k: ('already_ours', {'ttl_seconds': 1800}),
+            lambda *a, **k: ('already_ours',
+                             {'ttl_seconds': 1800, 'user': 'test-holder:111'}),
         )
         monkeypatch.setattr(
             box_storage, 'release_box_lock',
             lambda *a, **k: released.append(a) or True,
         )
         monkeypatch.setattr(
-            box_storage, 'get_lock_holder', lambda: 'test-holder',
+            box_storage, 'get_lock_holder', lambda: 'test-holder:222',
         )
-        monkeypatch.setattr(box_storage, 'HeartbeatThread', lambda *a, **k: hb)
+        monkeypatch.setattr(
+            box_storage, 'HeartbeatThread',
+            lambda ip, holder, *a, **k: renewed_as.append(holder) or hb,
+        )
 
         with box_storage.auto_lock_around_command(
             '10.0.0.1', 'lab-box', 'install',
@@ -586,6 +616,7 @@ class TestAutoLockAroundCommand:
         hb.start.assert_called_once()
         hb.stop.assert_called_once()
         assert released == []
+        assert renewed_as == ['test-holder:111']
 
     def test_already_ours_eternal_lock_gets_no_heartbeat(self, monkeypatch):
         # A pre-existing user lock (ttl null) needs no keep-alive.
@@ -869,19 +900,24 @@ class TestAutoLockAcquireForCommand:
 
     def test_already_ours_with_ttl_heartbeats_but_never_releases(self, monkeypatch):
         released = []
+        renewed_as = []
         hb = mock.Mock(start=mock.Mock(), stop=mock.Mock())
         monkeypatch.setattr(
             box_storage, 'acquire_box_lock',
-            lambda *a, **k: ('already_ours', {'ttl_seconds': 1800}),
+            lambda *a, **k: ('already_ours',
+                             {'ttl_seconds': 1800, 'user': 'test-holder:111'}),
         )
         monkeypatch.setattr(
             box_storage, 'release_box_lock',
             lambda *a, **k: released.append(a) or True,
         )
         monkeypatch.setattr(
-            box_storage, 'get_lock_holder', lambda: 'test-holder',
+            box_storage, 'get_lock_holder', lambda: 'test-holder:222',
         )
-        monkeypatch.setattr(box_storage, 'HeartbeatThread', lambda *a, **k: hb)
+        monkeypatch.setattr(
+            box_storage, 'HeartbeatThread',
+            lambda ip, holder, *a, **k: renewed_as.append(holder) or hb,
+        )
 
         release = box_storage.auto_lock_acquire_for_command(
             '10.0.0.1', 'lab-box', 'update',
@@ -891,6 +927,7 @@ class TestAutoLockAcquireForCommand:
         release()
         hb.stop.assert_called_once()
         assert released == [], "must not release a resumed lock"
+        assert renewed_as == ['test-holder:111'], "must renew as the stored holder"
 
     def test_already_ours_eternal_lock_gets_no_heartbeat(self, monkeypatch):
         def no_heartbeat(*a, **k):
@@ -1174,10 +1211,44 @@ class TestInstallLockTtl:
         # steps around the deploy need.
         assert box_storage.install_lock_ttl_seconds(60) == box_storage.INSTALL_LOCK_TTL_SECONDS
 
-    def test_no_timeout_means_no_ttl(self):
-        # `--timeout 0` is an unbounded deploy; no finite TTL can outlast it,
-        # so the lock lives on renewals and the explicit release instead.
-        assert box_storage.install_lock_ttl_seconds(0) is None
+    def test_no_timeout_asks_for_a_lock_that_never_expires(self):
+        # `--timeout 0` is an unbounded deploy: no finite TTL can outlast it.
+        # It has to say so with the sentinel rather than with None, because
+        # None is how a caller says "no opinion" and the auto-lock boundary
+        # answers that with the 1800s default -- so an unbounded install held
+        # a lock that could expire half an hour into a build still running.
+        assert box_storage.install_lock_ttl_seconds(0) is box_storage.NO_LOCK_EXPIRY
+
+    def test_the_boundary_tells_the_three_inputs_apart(self):
+        # Unset, no-expiry, and an explicit number. The first two used to be
+        # the same value, which is the whole defect.
+        assert box_storage._resolve_ttl_seconds(box_storage.NO_LOCK_EXPIRY) is None
+        assert box_storage._resolve_ttl_seconds(None) == box_storage.default_lock_ttl_seconds()
+        assert box_storage._resolve_ttl_seconds(900) == 900
+
+    def test_an_unbounded_install_reaches_the_box_with_a_null_ttl(self, monkeypatch):
+        # End to end through the boundary, because the boundary is where the
+        # two meanings collided -- asserting on the helper alone would pass
+        # even if nothing downstream honored it. The box stores a null
+        # ttl_seconds as "this lock does not expire".
+        captured = {}
+
+        def fake_acquire(ip, box_label, holder, **kwargs):
+            captured.update(kwargs)
+            return ('acquired', {})
+
+        monkeypatch.delenv('LAGER_AUTO_LOCK_DISABLE', raising=False)
+        monkeypatch.setattr(box_storage, 'acquire_box_lock', fake_acquire)
+        monkeypatch.setattr(box_storage, 'release_box_lock', lambda *a, **k: True)
+        monkeypatch.setattr(box_storage, 'get_lock_holder', lambda: 'test-holder')
+
+        with box_storage.auto_lock_around_command(
+            '10.0.0.1', 'box', 'install',
+            ttl_seconds=box_storage.install_lock_ttl_seconds(0),
+        ):
+            pass
+
+        assert captured['ttl_seconds'] is None
 
     def test_it_defaults_to_the_configured_timeout(self, monkeypatch):
         monkeypatch.setenv('LAGER_INSTALL_TIMEOUT', '5400')

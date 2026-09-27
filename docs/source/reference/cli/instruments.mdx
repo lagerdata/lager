@@ -33,21 +33,22 @@ lager instruments --box my-lager-box
 
 ## Output
 
-The command displays a table of connected instruments:
+The command displays a table of connected instruments. The `Channels` column has one line for each net type that the instrument offers, with the channels for that type. Use the name, a channel, and the address from this table with `lager nets add`.
 
 ```
-┌─────────────────────────┬──────────┬────────────────────────────────┐
-│ Instrument              │ Channels │ Address                        │
-├─────────────────────────┼──────────┼────────────────────────────────┤
-│ Rigol_DP832             │ CH1,CH2  │ USB0::0x1AB1::0x0E11::DP8...   │
-│ Rigol_MSO5074           │ 1,2,3,4  │ USB0::0x1AB1::0x0515::MS5...   │
-│ Keithley_2281S          │ -        │ USB0::0x05E6::0x2281::912...   │
-│ LabJack_T7              │ AIN0-13  │ T7-12345678                    │
-│ MCC_USB202              │ CH0-7,DAC0-1,DIO0-7 │ USB::9999::USB202       │
-│ FTDI_USB_Serial         │ uart     │ /dev/ttyUSB0 (A12BC3...)       │
-│ Acroname_8Port          │ 1-8      │ USB-HUB-SERIAL                 │
-└─────────────────────────┴──────────┴────────────────────────────────┘
+Name                     Channels                                                       VISA Address
+========================================================================================================================
+Rigol_DP831              power-supply: 1, 2, 3                                          USB0::0x1AB1::0x0E31::DP8C123456789::INSTR
+LabJack_U3               adc: AIN0, AIN1, AIN2, AIN3, AIN4, AIN5, AIN6, AIN7, AIN8,     USB0::0x0CD5::0x0003::::INSTR
+                         AIN9, AIN10, AIN11, AIN12, AIN13, AIN14, AIN15
+                         dac: DAC0, DAC1
+                         gpio: FIO4, FIO5, FIO6, FIO7, EIO0, EIO1, EIO2, EIO3, EIO4,
+                         EIO5, EIO6, EIO7, CIO0, CIO1, CIO2, CIO3
+                         i2c: FIO6-FIO7
+                         spi: FIO4-FIO7
 ```
+
+The box holds the channel list. Run `lager update` on the box to get the current list.
 
 ---
 
@@ -73,7 +74,8 @@ The following instrument types are automatically detected:
 - Rigol DL3000 series
 
 ### Data Acquisition
-- LabJack T7 (ADC, DAC, GPIO)
+- LabJack T7 (ADC, DAC, GPIO, SPI, I2C)
+- LabJack U3 (ADC, DAC, GPIO, SPI, I2C)
 - MCC USB-202 (ADC, DAC, GPIO)
 - Phidget thermocouples
 - Yocto watt meters
@@ -92,19 +94,17 @@ The following instrument types are automatically detected:
 
 ---
 
-## Multiple Device Warning
+## Two Devices That Report One Address
 
-The command warns if multiple instances of multi-hub devices are detected:
+An address normally includes the USB serial number of the device, so two devices of one model have different addresses. Both appear in the table, and each can have nets.
+
+A LabJack T7 and a LabJack U3 report no serial number. Two T7 units, or two U3 units, on one Lager Box therefore report the same address. A net cannot say which device it means. The command hides those rows and prints this message under the table:
 
 ```
-[WARNING] Multiple LabJack_T7 devices detected.
-  Consider using net configuration to specify which device to use.
+LabJack_T7 at USB0::0x0CD5::0x0007::::INSTR: more than one device reports this address, so a net could not say which one it means. This model exposes no unique serial number. Use only one at a time, or drive them from separate boxes.
 ```
 
-This applies to:
-- LabJack_T7
-- Acroname_8Port
-- Acroname_4Port
+`lager nets add` refuses a net on that address. See [Nets](/source/reference/cli/nets) for the same rule in `add-all` and the TUI.
 
 ---
 
@@ -114,13 +114,10 @@ Different instruments use different address formats:
 
 | Type | Format | Example |
 |------|--------|---------|
-| VISA | USB resource | `USB0::0x1AB1::0x0E11::DP8...` |
-| MCC USB | USB resource | `USB::9999::USB202` |
-| LabJack | Serial number | `T7-12345678` |
-| UART | Device path | `/dev/ttyUSB0` |
-| USB Hub | Serial | `USB-HUB-SERIAL` |
-
-Long UART serial numbers are truncated to 10 characters for readability.
+| USB instrument | `USB0::0x<VID>::0x<PID>::<serial>::INSTR` | `USB0::0x1AB1::0x0E31::DP8C123456789::INSTR` |
+| LabJack T7 or U3 | USB resource with an empty serial field | `USB0::0x0CD5::0x0003::::INSTR` |
+| Nordic PPK2 | `ppk2:<serial>` | `ppk2:ABCDEF123456` |
+| Assigned RS-232 instrument | `serial://<vid>:<pid>/serial/<serial>` | `serial://067b:23a3/serial/00000006` |
 
 ---
 
@@ -143,7 +140,7 @@ lager nets --box my-lager-box  # Then configure nets for discovered instruments
 |-------|-------|-----|
 | No instruments listed | USB cables disconnected, or Docker not running | Check physical USB connections. Run `lager hello --box <box>` to verify the service is running. |
 | Specific instrument missing | Instrument needs power, USB re-seat, or updated udev rules | Unplug and replug the USB cable. Ensure the instrument is powered on. Run `lager update --box <box>` for latest drivers. |
-| "Multiple devices detected" warning | More than one of the same instrument type connected | This is informational. Use net configuration to specify which device to use for each net. |
+| "more than one device reports this address" message | Two devices with no serial number, such as two LabJack T7 units, are connected | Use only one of them on this Lager Box. Connect the other one to a different Lager Box. |
 
 ## Notes
 

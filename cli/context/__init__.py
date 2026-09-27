@@ -6,7 +6,10 @@
 
     Context management subpackage
 """
-from .ci_detection import CIEnvironment, is_container_ci, get_ci_environment, _CONTAINER_CI
+from .ci_detection import (
+    CIEnvironment, is_container_ci, get_ci_environment, _CONTAINER_CI,
+    running_in_container, exec_in_place_override, EXEC_IN_PLACE_ENV,
+)
 from .error_handlers import (
     DOCKER_ERROR_CODES,
     CANBUS_ERROR_CODES,
@@ -40,6 +43,9 @@ __all__ = [
     'is_container_ci',
     'get_ci_environment',
     '_CONTAINER_CI',
+    'running_in_container',
+    'exec_in_place_override',
+    'EXEC_IN_PLACE_ENV',
     # Error handlers
     'DOCKER_ERROR_CODES',
     'CANBUS_ERROR_CODES',

@@ -78,10 +78,24 @@ BOX_IMAGE_REGISTRY="ghcr.io/lagerdata/lager-box"
 # install, whose cache is always cold. Every miss falls back to the local
 # build, so the worst case is what this script has always done.
 #
-# LAGER_BOX_IMAGE_PULL=0 disables it for a whole shell, --no-pull for one run.
-# `lager update` reads the same variable as an opt-IN, so =1 turns both on and
-# =0 turns both off; it never means opposite things in the two commands.
-BOX_IMAGE_PULL="${LAGER_BOX_IMAGE_PULL:-1}"
+# The DEFAULT differs between the two commands on purpose. The VOCABULARY must
+# not. `lager update` reads this variable as an opt-IN: 1, true or yes in any
+# letter case turns its pull on, and every other value leaves it off. This
+# script starts from on, so it applies that same rule in reverse -- a value
+# outside that set turns the pre-built image off. Before this, =false left the
+# install pull ON while turning the update pull OFF: one spelling, opposite
+# meanings in the two commands. Unset still leaves each command's own default.
+# --no-pull and --pull below override whatever this resolves to.
+# --- BEGIN image pull vocabulary (extracted verbatim by test/unit/cli/test_deploy_box_image_ref.py) ---
+if [ -n "${LAGER_BOX_IMAGE_PULL:-}" ]; then
+    case "$(printf '%s' "$LAGER_BOX_IMAGE_PULL" | tr '[:upper:]' '[:lower:]')" in
+        1|true|yes) BOX_IMAGE_PULL=1 ;;
+        *)          BOX_IMAGE_PULL=0 ;;
+    esac
+else
+    BOX_IMAGE_PULL=1
+fi
+# --- END image pull vocabulary ---
 
 # Set at version-resolution time below, and only for a release tag.
 BOX_IMAGE_TAG_REF=""
@@ -653,10 +667,85 @@ fi
 # =============================================================================
 print_step "Configuring Passwordless Sudo"
 
-# Always create/update sudoers file to ensure it has latest rules
-# (Don't skip even if file exists - it might have outdated rules)
-print_info "Setting up passwordless sudo (you may be prompted for password once)..."
-echo ""
+# ONE sudo session, and only when the box needs one.
+#
+# Everything on a box that needs the sudo password is done in the single
+# session below: both Lager sudoers files, the root-owned /etc/lager helper, and
+# the two packages a fresh box can be missing. A box that already has all of it
+# is detected first, without a terminal, and the session is skipped -- so a
+# reinstall asks for no password at all.
+#
+# This step used to run unconditionally ("it might have outdated rules"), which
+# cost a password prompt on every install. The digest below is what makes
+# skipping safe: it changes whenever the rules would.
+
+# --- BEGIN sudo session render (extracted verbatim by test/unit/box/test_sudoers_contract.py) ---
+# The box-config grants, handed over by `lager install`. _host_ops.py is their
+# one source, and this script cannot import it, so install.py renders them and
+# passes them in the environment. Run by hand, with neither variable set, this
+# script writes lagerdata-udev alone, as it always has.
+BOXCFG_SUDOERS_CONTENT="${LAGER_BOXCFG_SUDOERS_CONTENT:-}"
+BOXCFG_SUDOERS_MARKER="${LAGER_BOXCFG_SUDOERS_MARKER:-}"
+HAVE_BOXCFG=0
+if [ -n "$BOXCFG_SUDOERS_CONTENT" ]; then
+    # This text is about to be installed as a root-owned sudoers file, so it is
+    # held to the one shape it is allowed to have: comments, blank lines, and
+    # rules for THIS user running as root.
+    # index() == 1 is "starts with", as a plain string: a user name is not a
+    # regular expression, and the rule text holds parentheses.
+    BOXCFG_BAD_LINES=$(printf '%s\n' "$BOXCFG_SUDOERS_CONTENT" \
+        | awk -v want="${BOX_USER} ALL=(root) NOPASSWD: " \
+            '!/^[[:space:]]*$/ && !/^#/ && index($0, want) != 1' || true)
+    if [ -n "$BOXCFG_BAD_LINES" ]; then
+        print_warning "Ignoring the box-config sudo rules handed to this script: a line is not a rule for ${BOX_USER}"
+    elif ! printf '%s' "$BOXCFG_SUDOERS_MARKER" | grep -Eq '^/etc/lager/\.[A-Za-z0-9._-]+$'; then
+        print_warning "Ignoring the box-config sudo rules handed to this script: the marker path is not under /etc/lager"
+    else
+        HAVE_BOXCFG=1
+    fi
+fi
+if [ "$HAVE_BOXCFG" != "1" ]; then
+    BOXCFG_SUDOERS_CONTENT=""
+    BOXCFG_SUDOERS_MARKER=""
+fi
+
+ETC_LAGER_PERMS_SRC="${SCRIPT_DIR}/../security/etc_lager_perms.sh"
+if [ ! -f "$ETC_LAGER_PERMS_SRC" ]; then
+    print_error "Missing ${ETC_LAGER_PERMS_SRC} - this CLI install is incomplete"
+    exit 1
+fi
+
+# --- BEGIN deploy sudoers digest (extracted verbatim by test/unit/box/test_sudoers_contract.py) ---
+# The marker records a digest of everything the sudo session installs. The
+# session is skipped only while the box's marker equals the digest of what THIS
+# run would install, so each of these costs exactly one prompt and no more:
+# a different --user, a different --corporate-vpn interface, a changed grant, a
+# changed helper, changed box-config rules. Nobody has to remember to bump a
+# version. Comment lines are left out, so rewording one does not charge every
+# box a password.
+#
+# The name is versioned for the day the FORMAT of this file changes. The rules
+# changing is what the digest is for.
+DEPLOY_SUDOERS_MARKER="/etc/lager/.deploy-sudoers-v1"
+ETC_LAGER_PERMS_HELPER="/usr/local/lib/lager/etc_lager_perms.sh"
+
+lager_sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum | cut -d' ' -f1
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 | cut -d' ' -f1
+    elif command -v openssl >/dev/null 2>&1; then
+        openssl dgst -sha256 | sed 's/^.*= *//'
+    else
+        return 1
+    fi
+}
+
+# $1: the rendered session script.  $2: the helper it installs.
+deploy_sudoers_digest() {
+    { grep -v '^[[:space:]]*#' "$1"; cat "$2"; } | lager_sha256
+}
+# --- END deploy sudoers digest ---
 
 # The firewall grant, resolved here rather than left as a wildcard.
 #
@@ -675,6 +764,19 @@ fi
 TEMP_SCRIPT=$(mktemp)
 cat > "$TEMP_SCRIPT" << SCRIPT_EOF
 #!/bin/bash
+# \$1 is the digest this run computed; it is recorded at the very end.
+DEPLOY_DIGEST="\${1:-}"
+BOOT_DIR="\$(cd "\$(dirname "\$0")" && pwd)"
+
+# The /etc/lager helper goes in FIRST, and only here. This is the one place
+# its content can be set, and it needs the sudo password: no NOPASSWD grant
+# installs it, so nothing can replace it later without that password. The
+# grant written below names the installed path and nothing else.
+if ! sudo install -D -m 0755 -o root -g root "\$BOOT_DIR/etc_lager_perms.sh" ${ETC_LAGER_PERMS_HELPER}; then
+    echo "[ERROR] Could not install ${ETC_LAGER_PERMS_HELPER}"
+    exit 1
+fi
+
 echo "Creating sudoers configuration for passwordless udev management..."
 
 # Create sudoers file (using actual username: ${BOX_USER})
@@ -754,16 +856,20 @@ ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod 2775 /etc/lager
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod 755 /etc/lager
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod 644 /etc/lager/saved_nets.json
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chown 33\:33 /etc/lager/saved_nets.json
-${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod 666 /etc/lager/version
 ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chmod 2775 /etc/lager
 ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chmod 755 /etc/lager
 ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chmod 644 /etc/lager/saved_nets.json
 ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chown 33\:33 /etc/lager/saved_nets.json
-${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chmod 666 /etc/lager/version
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/mkdir -p /etc/lager
 ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/tee /etc/lager/saved_nets.json
-${BOX_USER} ALL=(ALL) NOPASSWD: /bin/rm -f /etc/lager/version
-${BOX_USER} ALL=(ALL) NOPASSWD: /bin/mv /tmp/lager_version_tmp /etc/lager/version
+# /etc/lager/version and /etc/lager/ref need no sudo at all. Install and update
+# both write them through one helper: a mktemp file inside /etc/lager, then an
+# atomic rename over the target. The login user can do that because the
+# deployment makes the directory group-writable and setgid, and replacing a file
+# needs write access to its directory rather than to the file. The old
+# rm + mv-from-/tmp + chmod grants for both files are therefore gone: nothing
+# invoked them, and an unused NOPASSWD rule only widens what the login user can
+# do as root.
 # Allow ${BOX_USER} to write /etc/lager/bench.json (lager box dut edit/add-doc).
 # /etc/lager is owned by www-data, so the login user can't create files there;
 # the CLI stages to /tmp/lager-bench.json.tmp then cp's it in under this grant.
@@ -807,6 +913,25 @@ ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart docker
 # self-healing instead of permanently wedged.
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/systemctl reset-failed docker.service docker.socket
 ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl reset-failed docker.service docker.socket
+# The other two commands of the Docker recovery chain. Both were run and
+# neither was granted, so a box whose Docker needed restarting asked for the
+# password again. Fixed commands with fixed arguments.
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/systemctl daemon-reload
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl daemon-reload
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/systemctl restart docker.socket
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart docker.socket
+# /etc/lager ownership: the root-owned helper, by exact path. It replaces a
+# sudo find and a recursive sudo chown, neither of which can ever be granted:
+# find -exec runs anything as root, and a recursive chown cannot skip
+# authorized_keys.d.
+# The helper takes no arguments and refuses any it is given (exit 64), which is
+# what makes a bare path safe here: sudoers lets a bare path run with any
+# arguments, and the stricter spelling for "none" is not one every sudo
+# implementation on a box is known to parse. A rule that fails to parse aborts
+# the install (#313), so the refusal lives in the script, where it is tested.
+# There is on purpose no grant that INSTALLS the helper -- unlike the firewall
+# script below, it is put in place only inside the password session.
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/local/lib/lager/etc_lager_perms.sh
 # Firewall: install the shipped script to a ROOT-owned path, then run it.
 # The root-owned destination is what stops a LATER edit -- by another user, or
 # by this one -- between install and execution; NOPASSWD directly on a /tmp
@@ -854,20 +979,129 @@ else
     rm -f "\$LAGER_SUDOERS_TMP"
     exit 1
 fi
-SCRIPT_EOF
 
-# Copy script to box and execute with -t for terminal allocation
-scp $SCP_OPTS "$TEMP_SCRIPT" "${BOX_USER}@${BOX_IP}:/tmp/setup_sudo.sh" >/dev/null
-ssh_t "${BOX_USER}@${BOX_IP}" "chmod +x /tmp/setup_sudo.sh && /tmp/setup_sudo.sh && rm /tmp/setup_sudo.sh"
-rm "$TEMP_SCRIPT"
-echo ""
-
-# Verify setup
-if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "test -f /etc/sudoers.d/lagerdata-udev" 2>/dev/null; then
-    print_success "Sudo configuration completed"
-else
-    print_warning "Sudo setup may have failed - deployment may require password"
+# /etc/lager, now that the helper is in and its grant is live. Runs here, in
+# the session, so a fresh box needs no second prompt for it.
+if ! sudo ${ETC_LAGER_PERMS_HELPER}; then
+    echo "[ERROR] ${ETC_LAGER_PERMS_HELPER} failed -- /etc/lager is not set up"
+    exit 1
 fi
+echo "[OK] /etc/lager is owned by uid 33 and writable by group \$(id -gn)"
+
+# The box-config grants (/etc/sudoers.d/lager-box-config), in this same
+# session. lager install used to write them in a session of its own at the end
+# of the install, which was a second password prompt on every fresh box. Same
+# discipline as the file above: stage, validate, and only then install. A
+# failure here is not fatal -- lager install still has its own step for this
+# file, and says what to do.
+if [ "${HAVE_BOXCFG}" = "1" ]; then
+    LAGER_BOXCFG_TMP="\$(mktemp)"
+    cat > "\$LAGER_BOXCFG_TMP" << 'BOXCFG_RULES_EOF'
+${BOXCFG_SUDOERS_CONTENT}
+BOXCFG_RULES_EOF
+    if sudo visudo -c -f "\$LAGER_BOXCFG_TMP"; then
+        sudo install -m 0440 -o root -g root "\$LAGER_BOXCFG_TMP" /etc/sudoers.d/lager-box-config \\
+            && sudo touch "${BOXCFG_SUDOERS_MARKER}" \\
+            && sudo chmod 644 "${BOXCFG_SUDOERS_MARKER}" \\
+            && echo "[OK] Passwordless sudo for lager box-config configured"
+    else
+        echo "[WARNING] The box-config sudo rules did not validate -- /etc/sudoers.d/lager-box-config was NOT modified"
+    fi
+    rm -f "\$LAGER_BOXCFG_TMP"
+fi
+
+# Two packages a fresh box can be missing. Each is checked again later in the
+# deploy, in a session of its own, which is where they used to cost a password
+# apiece. Best effort: those later steps still run, and still report.
+# sudo env VAR=value, not sudo VAR=value: see the Docker install step.
+if command -v docker >/dev/null 2>&1 && ! docker buildx version >/dev/null 2>&1; then
+    echo "Installing the Docker buildx plugin..."
+    sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get update -qq || true
+    sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y docker-buildx \\
+        || sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y docker-buildx-plugin \\
+        || true
+fi
+if command -v python3 >/dev/null 2>&1 && ! python3 -Im ensurepip --version >/dev/null 2>&1; then
+    echo "Installing python3-venv..."
+    sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get update -qq || true
+    sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y --no-install-recommends python3-venv || true
+fi
+
+# LAST, and only after everything above: the marker says "this box has what
+# digest X installs". Written without sudo -- /etc/lager is group-writable by
+# this user as of the helper run above -- and moved into place so a reader
+# never sees half a digest.
+if [ -n "\$DEPLOY_DIGEST" ]; then
+    printf '%s\n' "\$DEPLOY_DIGEST" > "${DEPLOY_SUDOERS_MARKER}.tmp" \\
+        && mv -f "${DEPLOY_SUDOERS_MARKER}.tmp" "${DEPLOY_SUDOERS_MARKER}" \\
+        || echo "[WARNING] Could not record ${DEPLOY_SUDOERS_MARKER}; the next install will ask for the password again"
+fi
+SCRIPT_EOF
+# --- END sudo session render ---
+
+# What this run would install, as one digest. Empty when this machine has no
+# sha256 tool, and an empty digest never skips.
+DEPLOY_DIGEST="$(deploy_sudoers_digest "$TEMP_SCRIPT" "$ETC_LAGER_PERMS_SRC" 2>/dev/null || true)"
+
+# --- BEGIN deploy sudoers probe (extracted verbatim by test/unit/box/test_sudoers_contract.py) ---
+# Is the session needed? Asked with no terminal, so nothing here can prompt:
+# a sudo that wants a password fails, and that failure is the answer.
+#
+#   - the marker holds this run's digest: the rules on the box are these rules;
+#   - the helper runs under sudo -n: the grant is really live, not just written
+#     (this is also the /etc/lager repair every install performs);
+#   - buildx and ensurepip are there, or the box has no docker / python3 for
+#     them to belong to: nothing the session would install is missing;
+#   - the box-config marker is there and apt-get runs under sudo -n: lager
+#     install's own check, a few minutes from now, will pass too.
+#
+# Deliberately no `sudo -l`: it is answered differently by different sudo
+# implementations, and what matters is that the command runs.
+DEPLOY_PROBE="test -n '${DEPLOY_DIGEST}'"
+DEPLOY_PROBE="${DEPLOY_PROBE} && test \"\$(cat ${DEPLOY_SUDOERS_MARKER} 2>/dev/null)\" = '${DEPLOY_DIGEST}'"
+DEPLOY_PROBE="${DEPLOY_PROBE} && sudo -n ${ETC_LAGER_PERMS_HELPER}"
+DEPLOY_PROBE="${DEPLOY_PROBE} && { ! command -v docker >/dev/null 2>&1 || docker buildx version >/dev/null 2>&1; }"
+DEPLOY_PROBE="${DEPLOY_PROBE} && { ! command -v python3 >/dev/null 2>&1 || python3 -Im ensurepip --version >/dev/null 2>&1; }"
+if [ "$HAVE_BOXCFG" = "1" ]; then
+    DEPLOY_PROBE="${DEPLOY_PROBE} && test -f ${BOXCFG_SUDOERS_MARKER} && sudo -n /usr/bin/apt-get --version >/dev/null 2>&1"
+fi
+
+deploy_sudoers_current() {
+    ssh $SSH_OPTS -o BatchMode=yes "${BOX_USER}@${BOX_IP}" "$DEPLOY_PROBE" >/dev/null 2>&1
+}
+# --- END deploy sudoers probe ---
+
+if deploy_sudoers_current; then
+    print_success "Passwordless sudo is already configured and current - no password needed"
+else
+    print_info "Setting up passwordless sudo (you will be asked for the sudo password once)..."
+    echo ""
+
+    # A private directory, not fixed names in /tmp. The helper staged here is
+    # about to be installed root-owned and granted NOPASSWD, and /tmp is
+    # world-writable: a fixed name is one another local user could be holding.
+    BOOT_DIR="$(ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" 'mktemp -d /tmp/lager-bootstrap.XXXXXX' 2>/dev/null | tr -d '\r\n' || true)"
+    if ! printf '%s' "$BOOT_DIR" | grep -Eq '^/tmp/lager-bootstrap\.[A-Za-z0-9]+$'; then
+        print_error "Could not create a staging directory on the box"
+        rm -f "$TEMP_SCRIPT"
+        exit 1
+    fi
+    scp $SCP_OPTS "$TEMP_SCRIPT" "${BOX_USER}@${BOX_IP}:${BOOT_DIR}/setup_sudo.sh" >/dev/null
+    scp $SCP_OPTS "$ETC_LAGER_PERMS_SRC" "${BOX_USER}@${BOX_IP}:${BOOT_DIR}/etc_lager_perms.sh" >/dev/null
+    # -t for a terminal: this is the one step that may ask for a password.
+    ssh_t "${BOX_USER}@${BOX_IP}" "bash ${BOOT_DIR}/setup_sudo.sh '${DEPLOY_DIGEST}'; rc=\$?; rm -rf ${BOOT_DIR}; exit \$rc"
+    echo ""
+
+    # Verify with the same question that would have skipped the step.
+    if deploy_sudoers_current; then
+        print_success "Sudo configuration completed"
+    elif ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "test -f /etc/sudoers.d/lagerdata-udev" 2>/dev/null; then
+        print_warning "Sudo is configured, but the box is missing something the next install will ask the password for again"
+    else
+        print_warning "Sudo setup may have failed - deployment may require password"
+    fi
+fi
+rm -f "$TEMP_SCRIPT"
 
 # Check for git on box (required for deployment)
 print_info "Checking for git on box..."
@@ -1163,56 +1397,35 @@ else
 fi
 echo ""
 
-# Ensure /etc/lager directory exists (always check, even if sudo was already configured)
-echo ""
-print_info "Ensuring /etc/lager directory exists..."
-if ! ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "test -d /etc/lager" 2>/dev/null; then
-    print_warning "/etc/lager does not exist - creating it now (may require password)..."
-
-    TEMP_SCRIPT=$(mktemp)
-    cat > "$TEMP_SCRIPT" << 'SCRIPT_EOF'
-#!/bin/bash
-# Create /etc/lager directory for box configuration.
+# /etc/lager: exists, owned by the container user, writable by this user's
+# group. One root-owned helper does all of it -- see
+# cli/deployment/security/etc_lager_perms.sh for the ownership rules and for why
+# authorized_keys.d is left alone.
 #
-# Ownership is shared between two writers, and both need it:
-#   - the container, which runs as www-data (UID 33)  -> owner
-#   - start_box.sh, which runs on the host as the box's login user, and whose
-#     box_config renderers create files here          -> group
-# Owner-only 33:33 755 (the old value) silently broke every renderer: creating
-# a file needs write permission on the DIRECTORY, so `lager box config apply`
-# reported success while none of the pip/cargo/npm/mount config was applied.
-# setgid keeps files created here in the box user's group.
-if [ ! -d /etc/lager ]; then
-    sudo mkdir -p /etc/lager
-    sudo chown -R 33:"$(id -g)" /etc/lager
-    sudo chmod 2775 /etc/lager
-    echo "[OK] /etc/lager directory created (www-data UID 33, group $(id -gn), group-writable)"
-fi
-
-# Initialize saved_nets.json if it doesn't exist
-if [ ! -f /etc/lager/saved_nets.json ]; then
-    echo "[]" | sudo tee /etc/lager/saved_nets.json > /dev/null
-    # Set ownership to www-data (UID 33) so container can write to it
-    sudo chown 33:33 /etc/lager/saved_nets.json
-    sudo chmod 644 /etc/lager/saved_nets.json
-    echo "[OK] Initialized /etc/lager/saved_nets.json (owned by www-data UID 33)"
-fi
-SCRIPT_EOF
-
-    scp $SCP_OPTS "$TEMP_SCRIPT" "${BOX_USER}@${BOX_IP}:/tmp/setup_lager_dir.sh" >/dev/null
-    ssh_t "${BOX_USER}@${BOX_IP}" "chmod +x /tmp/setup_lager_dir.sh && /tmp/setup_lager_dir.sh && rm /tmp/setup_lager_dir.sh"
-    rm "$TEMP_SCRIPT"
+# This ran as two steps, each in a terminal session of its own: a recursive
+# `sudo chown` on a fresh box, and then, on EVERY install, a `sudo find ...
+# -exec chown`. No sudoers rule granted either, so each one asked for the
+# password -- and neither can be granted, since `find -exec` runs anything as
+# root. The helper is granted by exact path instead.
+#
+# It has normally just run: inside the sudo session on a box that needed one,
+# or as part of the check that skipped the session. It is run again here
+# because this step must hold whatever happened above, and it is idempotent.
+# No terminal first, so a box with the grant never sees a prompt; the fallback
+# with a terminal is for a box where the grant did not take.
+echo ""
+print_info "Ensuring /etc/lager exists with the right ownership..."
+if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "sudo -n ${ETC_LAGER_PERMS_HELPER}" 2>/dev/null; then
+    print_success "/etc/lager is ready (www-data UID 33, group-writable by ${BOX_USER})"
+elif ssh_t "${BOX_USER}@${BOX_IP}" "sudo ${ETC_LAGER_PERMS_HELPER}"; then
+    print_success "/etc/lager is ready (www-data UID 33, group-writable by ${BOX_USER})"
 else
-    print_success "/etc/lager directory exists"
+    print_error "Could not set up /etc/lager on the box"
+    echo ""
+    echo "The sudo step above installs ${ETC_LAGER_PERMS_HELPER}."
+    echo "Check that it completed, then run this script again."
+    exit 1
 fi
-
-# Always ensure correct permissions (even if directory existed before). This
-# also repairs boxes provisioned by an older CLI, which left /etc/lager
-# owner-only and therefore unwritable by start_box.sh's box_config renderers.
-# Single-quoted so $(id -g) is evaluated ON THE BOX, not on the operator's host.
-print_info "Ensuring correct permissions on /etc/lager..."
-ssh_t "${BOX_USER}@${BOX_IP}" 'sudo chown -R 33:"$(id -g)" /etc/lager && sudo chmod 2775 /etc/lager'
-print_success "Permissions set correctly (www-data UID 33, group-writable by ${BOX_USER})"
 
 # Register the lager_box key in the box's key directory.
 #
@@ -1349,10 +1562,20 @@ print_step "Deploying Box Code"
         # Update existing sparse checkout (discard any local changes)
         # Re-configure sparse checkout to ensure box directory is included.
         # `git fetch origin --tags` is required so release tags are available.
+        #
+        # --force is load-bearing. A box cloned before a tag was re-created
+        # upstream holds that tag at a different object, and an unforced fetch
+        # exits non-zero on it ("would clobber existing tag"). This fetch is in
+        # an && chain under `set -e`, so one stale tag aborted the whole deploy
+        # -- permanently, because every later install failed the same way until
+        # someone force-fetched by hand. Forcing is correct, not a workaround:
+        # the next two commands are `git reset --hard` and `git clean -fd`, so
+        # the script already asserts this checkout is a disposable mirror of
+        # origin. A tag is no different.
         ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "
             cd ~/box && \
             git sparse-checkout set box cli && \
-            git fetch origin --tags && \
+            git fetch origin --tags --force && \
             git reset --hard HEAD && \
             git clean -fd && \
             git checkout ${GIT_VERSION} && \
@@ -1825,7 +2048,7 @@ print_step "Installing Lager CLI on Box Host"
 # box can invoke `lager` locally. Non-fatal: the box works without it.
 #
 # Mirrors host_cli_install_cmd() in cli/commands/utility/_host_cli.py — keep
-# the two in sync (cli/tests/test_host_cli.py pins the load-bearing literals).
+# the two in sync (test/unit/cli/test_host_cli.py pins the load-bearing literals).
 HOST_CLI_STATUS="not installed"
 HOST_CLI_VERSION=""
 
@@ -1917,54 +2140,12 @@ else
     echo "  Enable it by hand: ssh ${BOX_USER}@${BOX_IP} 'sudo systemctl enable docker'"
 fi
 
-print_info "Stopping and removing lager containers..."
-# Scoped to the containers this deployment owns (lager, pigpio, and the
-# legacy controller). A box may run third-party containers alongside lager
-# — a management agent, a user's own services — and removing containers we
-# did not create takes down infrastructure this script cannot restore.
-# Update restart policy first to prevent auto-restart, then force remove.
-ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "
-    for c in lager pigpio controller; do
-        docker update --restart=no \$c 2>/dev/null || true
-        docker stop \$c 2>/dev/null || true
-        docker rm -f \$c 2>/dev/null || true
-    done
-    # Wait a moment for Docker to clean up
-    sleep 2
-" 2>/dev/null || true
-print_success "Lager containers cleaned up"
-
-print_info "Cleaning up Docker build cache and dangling images..."
-echo ""
-# Dangling-only (no -a): 'prune -af' would also delete images belonging to
-# third-party containers stopped at this moment, which cannot be re-pulled
-# by this script.
-ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "
-    echo 'Removing dangling Docker images...'
-    docker image prune -f 2>/dev/null || true
-    echo 'Removing Docker build cache...'
-    docker builder prune -af 2>/dev/null || true
-    echo 'Cleanup complete'
-" 2>/dev/null || true
-echo ""
-print_success "Docker build cache and dangling images cleaned up"
-
-print_info "Checking available disk space..."
-ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "df -h / | tail -n 1 | awk '{print \"Available: \" \$4 \" (\" \$5 \" used)\"}'" 2>/dev/null || true
-echo ""
-
-# Configure VPN interface if specified
-if [ -n "$VPN_INTERFACE" ]; then
-    print_info "Configuring VPN interface: $VPN_INTERFACE"
-    ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "echo 'LAGER_WG_IFACE=${VPN_INTERFACE}' > /home/${BOX_USER}/.env"
-    print_success "VPN interface configured: $VPN_INTERFACE"
-    echo ""
-fi
-
+# --- BEGIN image and container handoff ---
 # Every docker command in this step is best-effort (`|| true`), so a daemon that is
-# down leaves no trace here and start_box.sh is the first thing to notice -- failing
+# down leaves no trace in them and start_box.sh is the first thing to notice -- failing
 # on `docker network create` with a bare "Cannot connect to the Docker daemon", well
-# after whatever actually stopped it. Check explicitly, while the cause is still near.
+# after whatever actually stopped it. Check explicitly, before anything below touches
+# Docker, while the cause is still near. The image pre-pull below needs the daemon too.
 print_info "Verifying the Docker daemon is running..."
 if ! ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "docker info >/dev/null 2>&1"; then
     print_error "The Docker daemon is not running on the box"
@@ -1999,11 +2180,47 @@ fi
 print_success "Docker daemon is running"
 echo ""
 
-# Resolve the pre-built image before handing off. On a hit, start_box.sh pulls
-# the digest instead of building; on any miss -- unpublished tag, unreachable
-# registry, no curl -- LAGER_BOX_IMAGE_ENV stays empty and the line below is
-# byte-identical to what it has always been.
+# Remove dangling images while the old containers still run. Dangling-only (no
+# -a): 'prune -af' would also delete images belonging to third-party containers
+# stopped at this moment, which this script cannot re-pull.
+#
+# This runs BEFORE the pre-pull below, never after it. An image pulled by digest
+# carries no tag until start_box.sh names it `lager`, so a prune that ran after
+# the pull could reach the image this deploy just downloaded.
+print_info "Removing dangling Docker images..."
+ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "docker image prune -f >/dev/null 2>&1 || true" 2>/dev/null || true
+print_success "Dangling Docker images removed"
+echo ""
+
+# --- BEGIN image pre-pull ---
+# Print the remote command that pulls the pre-built image onto the box by digest.
+#
+# start_box.sh pulls the same digest itself, but it runs after the containers
+# below are gone, so on its own the box would sit down for the whole ~1 GB
+# transfer. This pull runs first, while the box still serves. start_box.sh then
+# finds every layer already present, and it still verifies the version label
+# before it tags anything.
+#
+# The shape matches update.py's _docker_pull_cmd: a throwaway docker config so
+# the request goes out anonymously, the box's own platform, a 300s ceiling, and
+# the pull's exit status kept past the cleanup. $(dpkg ...) and $cfg stay
+# literal here and expand on the box.
+box_image_prepull_cmd() {
+    local ref="$1"
+    local platform='linux/$(dpkg --print-architecture 2>/dev/null || uname -m)'
+    local pull="docker --config \"\$cfg\" pull --platform \"${platform}\" ${ref}"
+    printf '%s' "cfg=\$(mktemp -d) || exit 1; "
+    printf '%s' "if command -v timeout >/dev/null 2>&1; then timeout 300 ${pull}; else ${pull}; fi; "
+    printf '%s\n' "rc=\$?; rm -rf \"\$cfg\"; exit \$rc"
+}
+# --- END image pre-pull ---
+
+# Resolve the pre-built image, then pull it while the old containers still
+# serve. On any miss -- unpublished tag, unreachable registry, no curl, a pull
+# that fails -- LAGER_BOX_IMAGE_ENV stays empty and start_box.sh builds, exactly
+# as it always has.
 LAGER_BOX_IMAGE_ENV=""
+BOX_IMAGE_PREPULLED=0
 if [ "$BOX_IMAGE_PULL" != "0" ] && [ -n "$BOX_IMAGE_TAG_REF" ]; then
     print_info "Resolving pre-built image ${BOX_IMAGE_TAG_REF}..."
     # The reason is captured rather than left to scroll past as bare stderr:
@@ -2012,8 +2229,24 @@ if [ "$BOX_IMAGE_PULL" != "0" ] && [ -n "$BOX_IMAGE_TAG_REF" ]; then
     # if it arrives unlabelled among a hundred other lines.
     RESOLVE_ERR=$(mktemp)
     if BOX_IMAGE_DIGEST=$(resolve_box_image_digest "$BOX_IMAGE_TAG_REF" 2>"$RESOLVE_ERR"); then
-        LAGER_BOX_IMAGE_ENV="LAGER_BOX_IMAGE=${BOX_IMAGE_REGISTRY}@${BOX_IMAGE_DIGEST} LAGER_BOX_IMAGE_VERSION=${GIT_VERSION} "
         print_success "Pre-built image resolved (${BOX_IMAGE_DIGEST:0:19}...)"
+        # The digest becomes part of a remote command line, so hold it to the
+        # one shape a registry digest has before it goes anywhere near ssh.
+        if ! printf '%s' "$BOX_IMAGE_DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+            print_warning "The registry returned a digest in an unexpected form; building on the box instead"
+        else
+            BOX_IMAGE_DIGEST_REF="${BOX_IMAGE_REGISTRY}@${BOX_IMAGE_DIGEST}"
+            print_info "Pulling the pre-built image while the current containers keep running..."
+            PULL_ERR=$(mktemp)
+            if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "$(box_image_prepull_cmd "$BOX_IMAGE_DIGEST_REF")" 2>"$PULL_ERR"; then
+                LAGER_BOX_IMAGE_ENV="LAGER_BOX_IMAGE=${BOX_IMAGE_DIGEST_REF} LAGER_BOX_IMAGE_VERSION=${GIT_VERSION} "
+                BOX_IMAGE_PREPULLED=1
+                print_success "Pre-built image pulled"
+            else
+                print_warning "Pre-built image pull failed ($(grep -v '^[[:space:]]*$' "$PULL_ERR" | tail -n 1 | tr -d '\r')); building on the box instead"
+            fi
+            rm -f "$PULL_ERR"
+        fi
     else
         print_warning "Pre-built image unavailable ($(tr -d '\n' < "$RESOLVE_ERR")); building on the box instead"
     fi
@@ -2025,6 +2258,48 @@ elif [ "$BOX_IMAGE_PULL" != "0" ]; then
     print_info "No pre-built image for '${GIT_VERSION}' -- only release tags are published."
     print_info "A release tag (--version v0.39.1) installs in about 2 minutes instead of 14."
 fi
+echo ""
+
+print_info "Stopping and removing lager containers..."
+# Scoped to the containers this deployment owns (lager, pigpio, and the
+# legacy controller). A box may run third-party containers alongside lager
+# — a management agent, a user's own services — and removing containers we
+# did not create takes down infrastructure this script cannot restore.
+# Update restart policy first to prevent auto-restart, then force remove.
+ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "
+    for c in lager pigpio controller; do
+        docker update --restart=no \$c 2>/dev/null || true
+        docker stop \$c 2>/dev/null || true
+        docker rm -f \$c 2>/dev/null || true
+    done
+    # Wait a moment for Docker to clean up
+    sleep 2
+" 2>/dev/null || true
+print_success "Lager containers cleaned up"
+
+# The build cache is dead weight only when the pre-built image is already on
+# the box. On the build path it is what lets a rebuild reuse unchanged layers,
+# and pruning it there unconditionally made every install a cold build.
+if [ "$BOX_IMAGE_PREPULLED" = "1" ]; then
+    print_info "Removing the Docker build cache (the pre-built image needs no build)..."
+    ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "docker builder prune -af >/dev/null 2>&1 || true" 2>/dev/null || true
+    print_success "Docker build cache removed"
+else
+    print_info "Keeping the Docker build cache for the build on the box"
+fi
+echo ""
+
+print_info "Checking available disk space..."
+ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "df -h / | tail -n 1 | awk '{print \"Available: \" \$4 \" (\" \$5 \" used)\"}'" 2>/dev/null || true
+echo ""
+
+# Configure VPN interface if specified
+if [ -n "$VPN_INTERFACE" ]; then
+    print_info "Configuring VPN interface: $VPN_INTERFACE"
+    ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "echo 'LAGER_WG_IFACE=${VPN_INTERFACE}' > /home/${BOX_USER}/.env"
+    print_success "VPN interface configured: $VPN_INTERFACE"
+    echo ""
+fi
 
 if [ -n "$LAGER_BOX_IMAGE_ENV" ]; then
     print_info "Starting containers with the pre-built image..."
@@ -2033,6 +2308,16 @@ else
 fi
 echo ""
 ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "cd ~/box && chmod +x start_box.sh && ${LAGER_BOX_IMAGE_ENV}./start_box.sh"
+
+# Reclaim the image this deploy replaced. start_box.sh has just moved the
+# `lager` tag onto the new image, which leaves the previous one dangling and
+# referenced by no container -- roughly 3 GB per release. The prune before the
+# pre-pull above cannot reach it: back then the old image still carried the
+# tag. Dangling-only (no -a), for the same reason as that one.
+print_info "Removing the image this deploy replaced..."
+ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "docker image prune -f >/dev/null 2>&1 || true" 2>/dev/null || true
+print_success "Replaced image removed"
+# --- END image and container handoff ---
 
 echo ""
 print_success "Docker containers started successfully"
@@ -2070,9 +2355,19 @@ if [ "$SKIP_VERIFY" = false ]; then
     # since — either way it must never scroll by silently (fresh boxes shipped
     # without instrument rules three times before this check existed).
     echo ""
+    # Verify by CONTENT, not presence. A stale copy left over from an older
+    # checkout passes `test -f` while missing whatever rule the update added,
+    # which is exactly how a box ended up reporting a clean install with an
+    # inaccessible LabJack U3.
     print_info "Verifying instrument udev rules..."
-    if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "test -f /etc/udev/rules.d/99-instrument.rules"; then
-        print_success "Instrument udev rules present (/etc/udev/rules.d/99-instrument.rules)"
+    if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" \
+        'if [ -d ~/box/udev_rules ]; then _up=~/box/udev_rules; \
+         elif [ -d ~/box/box/udev_rules ]; then _up=~/box/box/udev_rules; \
+         else exit 2; fi; \
+         diff -q "$_up/99-instrument.rules" /etc/udev/rules.d/99-instrument.rules >/dev/null 2>&1'; then
+        print_success "Instrument udev rules present and current"
+    elif ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "test -f /etc/udev/rules.d/99-instrument.rules"; then
+        print_warning "Instrument udev rules are STALE — some instruments may not be accessible"
     else
         print_warning "Instrument udev rules MISSING — instruments will not be accessible"
     fi
@@ -2137,7 +2432,7 @@ echo -e "${BOLD}Next Steps:${NC}"
 echo ""
 echo "1. Add box to your local .lager configuration:"
 echo -e "   ${BLUE}cd your-project-directory${NC}"
-echo -e "   ${BLUE}lager boxes add --name my-box --ip ${BOX_IP}${NC}"
+echo -e "   ${BLUE}lager boxes add --name my-box --ip ${BOX_IP} --user ${BOX_USER}${NC}"
 echo ""
 echo "2. Test connectivity:"
 echo -e "   ${BLUE}lager hello --box ${BOX_IP}${NC}"
@@ -2163,7 +2458,7 @@ if [ "$SKIP_ADD_BOX" != "true" ] && [ -f ".lager" ]; then
     if [ -n "$BOX_NAME" ]; then
         # Check if lager CLI is available
         if command -v lager &> /dev/null; then
-            if lager boxes add --name "$BOX_NAME" --ip "${BOX_IP}" 2>/dev/null; then
+            if lager boxes add --name "$BOX_NAME" --ip "${BOX_IP}" --user "${BOX_USER}"; then
                 print_success "Added '${BOX_NAME}' to .lager configuration"
                 echo ""
                 echo "You can now use:"

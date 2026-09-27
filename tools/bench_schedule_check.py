@@ -38,10 +38,11 @@ WHAT IS CHECKED
   stale     The newest scheduled run is older than STALE_ALERT_HOURS. The
             backstop nothing else provides: if the cron is dead, no further run
             ever arrives, so no gap and no lateness sample is ever formed.
-  gap       An interval above GAP_ALERT_HOURS within the recent lookback. Set
-            well above nominal, because a merely late night is lateness, not a
-            miss. Bounded by GAP_LOOKBACK_HOURS so a gap from last week stops
-            alarming once the cadence recovers.
+  gap       The NEWEST interval between scheduled runs, when it is above
+            GAP_ALERT_HOURS. Set well above nominal, because a merely late
+            night is lateness, not a miss. Only the newest interval counts;
+            see WHY A RECOVERED GAP IS SILENT. GAP_LOOKBACK_HOURS also drops a
+            gap whose closing run is itself old, which `stale` reports.
 These are PROBLEMS: any one of them exits 1 and files a `bench-alert` issue.
 
 WHAT IS WARNED ABOUT
@@ -71,6 +72,19 @@ which is the failure this file's own docstring set out to avoid.
 Raising the threshold was the other option and is worse: it silences the signal
 on exactly the nights it was built to catch, and re-mutes itself as the queue
 degrades further. So the measurement is kept and the paging is dropped.
+
+WHY A RECOVERED GAP IS SILENT
+-----------------------------
+The gap check used to report the largest interval anywhere in the lookback, so
+a gap kept alarming for GAP_LOOKBACK_HOURS after it ended. That is the loop
+above in another form. One 120.6h gap that ended on 2026-09-15 filed five
+issues in two days (#568): a green nightly closed each one, and the next
+watchdog run still saw the gap in its window and filed another.
+
+A gap stops being the newest interval as soon as the next scheduled night
+runs. From then on the nightly's own notify jobs own the issue: a green night
+closes it and a red one files it. So only the newest interval can raise a gap,
+and each missed night alarms until the schedule shows it has come back.
 
 The cron is parsed from the workflow rather than duplicated here, so the two
 cannot drift.
@@ -186,15 +200,16 @@ def check_schedule(runs, now=None, cron=None):
             f"disabled?"
         )
 
-    recent = [
-        (gap, newer) for gap, newer in intervals_hours(sched)
-        if (now - newer).total_seconds() / 3600 <= GAP_LOOKBACK_HOURS
-    ]
-    if recent:
-        worst, when = max(recent, key=lambda pair: pair[0])
-        if worst > GAP_ALERT_HOURS:
+    # Only the newest interval: an older gap has been followed by a scheduled
+    # night, whose notify jobs now own the issue. See WHY A RECOVERED GAP IS
+    # SILENT.
+    intervals = intervals_hours(sched)
+    if intervals:
+        gap, when = intervals[0]
+        recent = (now - when).total_seconds() / 3600 <= GAP_LOOKBACK_HOURS
+        if recent and gap > GAP_ALERT_HOURS:
             problems.append(
-                f"a {worst:.1f}h gap between consecutive scheduled nightlies, "
+                f"a {gap:.1f}h gap between consecutive scheduled nightlies, "
                 f"ending {when:%Y-%m-%d %H:%M} UTC (nominal is 24h) - a night "
                 f"did not run"
             )

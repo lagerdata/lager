@@ -1,0 +1,54 @@
+---
+title: "Version 0.46.1"
+description: "September 8, 2026"
+---
+
+## <u>Upgrade Notes</u>
+
+- **The channel table lives on the Lager Box.** A 0.46.1 CLI against a 0.46.0
+  Lager Box still sees the old list, including the `FIO0`-`FIO3` gpio channels
+  this release removes. Run `lager update` to get the fix.
+
+## <u>Bug Fixes</u>
+
+- **A LabJack U3 no longer offers `FIO0`-`FIO3` as `gpio` channels.** Those four
+  pins are the U3-HV's fixed high-voltage analog inputs. The scanner advertised
+  them anyway. `lager nets add` then accepted a `gpio` net on one of them, and
+  the net failed at first use. `lager nets add-all` generated four such nets on
+  every Lager Box with a U3. Read those pins with an `adc` net on `AIN0`-`AIN3`
+  instead. The usable digital lines are `FIO4`-`FIO7`, `EIO0`-`EIO7` and
+  `CIO0`-`CIO3`.
+
+## <u>Improvements</u>
+
+- **A rejected channel now names the ones that work.** `lager nets add` lists
+  the valid channels for the role and instrument, and points a `FIO0`-`FIO3`
+  attempt on a U3 at `AIN0`-`AIN3`. `lager nets add-batch` gained the same
+  check and reports every bad record at once.
+
+## <u>Known Limitations</u>
+
+- **A U3-LV loses four digital lines.** The scanner reads a USB descriptor, and
+  a U3-LV reports the same product id as a U3-HV. Lager therefore treats every
+  U3 as an HV. On a U3-LV, `FIO0`-`FIO3` are flexible, and Lager no longer
+  offers them as `gpio`. They remain readable as an `adc` net on `AIN0`-`AIN3`.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.46.1
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli==0.46.1
+```
+
+Then update your boxes:
+
+```bash
+lager update --box <box-name>
+```

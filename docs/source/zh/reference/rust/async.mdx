@@ -1,0 +1,89 @@
+---
+title: 异步客户端
+description: AsyncLagerBox，以及它与阻塞客户端究竟有哪些差异
+---
+
+`AsyncLagerBox` 是基于 tokio/reqwest 的客户端。它与 `LagerBox` 逐个方法一一对应，而且两者运行的是同一套传输层，因此请求体和解析逻辑不会在两者之间跑偏。
+
+## 启用
+
+```toml
+[dev-dependencies]
+lager = { package = "lager-net", version = "0.4", default-features = false, features = ["async"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+```
+
+`blocking` 是默认 feature，因此关闭默认值可以在您只想要异步客户端时，把 `ureq` 挡在依赖树之外。两个都启用也没问题 —— 它们可以共存。
+
+## 使用方式
+
+```rust
+use lager::AsyncLagerBox;
+
+#[tokio::test]
+async fn rail_comes_up() -> lager::Result<()> {
+    let lager = AsyncLagerBox::from_env()?;      // not async
+    let supply = lager.supply("supply1");        // not async
+
+    supply.set_voltage(3.3).await?;
+    supply.enable().await?;
+    let state = supply.state().await?;
+    assert_eq!(state.enabled, Some(true));
+
+    supply.disable().await
+}
+```
+
+构造方法和取句柄的方法都是普通函数；只有真正做 I/O 的调用才是 `async`。句柄类型带有前缀：`AsyncSupply`、`AsyncGpio`、`AsyncDebugNet` 等等。
+
+## 异步客户端没有的东西
+
+| 功能 | 阻塞 | 异步 |
+|---|---|---|
+| 全部 Net 类型、全部 Box 查询、安全限值 | 有 | 有 |
+| 加锁、心跳、解锁 | 有 | 有 |
+| `lock_guard()` 和 `BoxLockGuard` | 有 | **无** |
+| `uart()` 会话 | 有 | **无** |
+| `debug.rtt()` 和 `RttStream` | 有 | **无** |
+| `debug.rtt_interactive()` | 有 | **无** |
+
+`uart` 和 `rtt` 这两个 feature 都隐含启用 `blocking`，因此启用它们就会把阻塞客户端拉进来，无论您是否想要。`Scope` 是两者共用的：它在两边都是占位实现，方法是同步的。
+
+<Note>
+  异步客户端上没有 RAII 式的锁守卫。请显式地取锁和释放锁，并确保错误路径上也会执行释放。
+</Note>
+
+## 两者并用
+
+没有什么会阻止您在测试套件中需要并行的部分使用异步客户端，而在 UART 或 RTT 会话上使用阻塞客户端：
+
+```rust
+let lager = AsyncLagerBox::from_env()?;         // fan out reads
+let blocking = lager::LagerBox::from_env()?;    // for the UART session
+let mut uart = blocking.uart("uart1")?;
+```
+
+## 并发
+
+Box 会按物理仪器串行化访问。对同一台仪器发出的大量并发请求并不会让它的 I/O 交错执行，因为这些请求会在 Box 上排队。并发只有在跨*不同*仪器时才换来真正的并行。
+
+```rust
+// Three different instruments: genuinely parallel.
+// Bind the handles first -- a handle created inline is a temporary, and the
+// future borrows it, so `try_join!` on inline constructors will not borrow-check.
+let adc = lager.adc("adc1");
+let tc = lager.thermocouple("tc1");
+let meter = lager.watt_meter("watt1");
+
+let (v, temp, power) = tokio::try_join!(
+    adc.read(),
+    tc.read(),
+    meter.power(0.5),
+)?;
+```
+
+## 说明
+
+- `reqwest` 是以 `default-features = false` 引入的，因此没有 TLS 栈。与 Box 之间的流量是本地网络上或 Tailscale 上的明文 HTTP。
+- 异步客户端本身只需要 `tokio` 的 `time` feature。上面代码片段中的 `macros` 和 `rt-multi-thread` 是为了写测试用的。
+- 网关认证在两种客户端上的工作方式完全相同，自动刷新令牌也包括在内。

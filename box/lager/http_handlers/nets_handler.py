@@ -15,6 +15,7 @@ from concurrent.futures import TimeoutError as FuturesTimeoutError
 
 from flask import Flask, jsonify, request
 
+from ..exceptions import I2CBackendError, SPIBackendError
 from ..nets.net import Net
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,70 @@ logger = logging.getLogger(__name__)
 # answers with nulls for whatever has not come back. Sized to stay well inside
 # the CLI's own 30s HTTP timeout.
 _STATE_TIMEOUT = 8
+
+
+_UD_INSTRUMENT_RE = re.compile(r"labjack[_\-\s]*u[36]", re.IGNORECASE)
+
+
+def _ud_pin_span_error(data):
+    """Reject a LabJack UD spi/i2c net whose pins the hardware cannot drive.
+
+    Returns an error string, or None when the record is fine or is not a UD
+    spi/i2c net.
+
+    This runs at CREATE time on purpose. Without it the only guard is in the
+    driver's ``_resolve_pin``, which does not run until the first transaction --
+    so a net naming FIO0-FIO3 on a U3-HV saved cleanly, listed cleanly, and only
+    failed later, at the point of use, a long way from the mistake. ``lager nets
+    add`` already refuses these via ``_channel_rejection_hint``; this closes the
+    same hole for the HTTP API and the net TUI, which reach this handler
+    directly.
+
+    The two parsers are deliberately kept apart -- a U3's SPI span is
+    CS/CLK/MISO/MOSI while a T7's is CS/CLK/MOSI/MISO -- so this dispatches to
+    whichever one owns the record rather than reimplementing either.
+    """
+    role = str(data.get("role", "")).lower()
+    if role not in ("spi", "i2c"):
+        return None
+    if not _UD_INSTRUMENT_RE.search(str(data.get("instrument", ""))):
+        return None
+
+    try:
+        if role == "spi":
+            from ..protocols.spi.dispatcher import _ud_spi_pin_config
+            config = _ud_spi_pin_config(data)
+        else:
+            from ..protocols.i2c.dispatcher import _ud_pin_config
+            config = _ud_pin_config(data)
+    except (SPIBackendError, I2CBackendError) as exc:
+        # These two carry a specific, net-named message the dispatchers wrote
+        # for a user to read, so pass it through verbatim.
+        return str(exc)
+    except Exception:
+        # Anything else is a defect in the parser, not something the caller
+        # did wrong, and an arbitrary exception's text can carry internal
+        # paths or state to an HTTP client. Log it where an operator will see
+        # it and hand back a fixed string.
+        logger.exception("Unexpected error validating a LabJack UD %s net", role)
+        return (
+            f"Could not validate the {role} pin configuration for this net. "
+            f"See the box log for details."
+        )
+
+    usable = "FIO4-FIO7" if role == "spi" else "FIO6-FIO7"
+    for key, dio in sorted(config.items()):
+        if isinstance(dio, int) and dio <= 3:
+            signal = key.replace("_pin", "").upper()
+            return (
+                f"{signal} pin FIO{dio} cannot be used for {role.upper()}. "
+                f"FIO0-FIO3 are the U3-HV's fixed high-voltage analog inputs "
+                f"and no configuration makes them digital. Use {usable}, "
+                f"EIO0-EIO7 or CIO0-CIO3 (EIO and CIO need the DB15). Those "
+                f"pins are readable as an adc net on AIN0-AIN3, the same "
+                f"physical pins."
+            )
+    return None
 
 
 def _brief_supply(netname):
@@ -778,6 +843,10 @@ def register_nets_routes(app: Flask) -> None:
             return jsonify({'error': 'Invalid JSON body'}), 400
         if not data.get('name') or not data.get('role') or not data.get('instrument'):
             return jsonify({'error': 'name, role, and instrument are required'}), 400
+
+        error = _ud_pin_span_error(data)
+        if error:
+            return jsonify({'error': error}), 400
 
         # If the name is changing, delete the old entry first
         if data['name'] != name:

@@ -32,6 +32,7 @@ import re
 
 from flask import Flask, request, jsonify
 
+from lager.arm_hs import validate_move_timeout
 from lager.nets.net import Net
 from lager.nets.device import ConnectionFailed, DeviceError, Device
 from lager.dispatchers import helpers
@@ -65,10 +66,15 @@ class WrongNetForAction(UnknownAction):
 # Result helpers — every action returns {"message": str, "value": <optional>}.
 # ---------------------------------------------------------------------------
 
-def _ok(message, value=None):
+def _ok(message, value=None, warnings=None):
     out = {"message": message}
     if value is not None:
         out["value"] = value
+    # Omitted when empty, so a box that has nothing to say sends nothing new.
+    # An older CLI reads `message`, `value` and `error` only, so it ignores
+    # this key rather than breaking on it.
+    if warnings:
+        out["warnings"] = [str(w) for w in warnings]
     return out
 
 
@@ -477,17 +483,38 @@ def _spi(netname, role, action, params):
         if cfg.get("frequency_hz") is not None and int(cfg["frequency_hz"]) <= 0:
             raise ValueError("Invalid SPI frequency: %sHz" % cfg["frequency_hz"])
         # Apply to the live driver, persist explicit overrides, read back effective.
-        dev.config(cfg)
+        _cfg_result = dev.config(cfg)
+        warnings = list((_cfg_result or {}).get("warnings") or [])
         if cfg:
             spi_disp._persist_params(netname, **cfg)
         rec = spi_disp.helpers.find_saved_net(netname, spi_disp.SPIBackendError)
         effective = spi_disp._get_spi_params(rec)
-        msg = ("SPI configured: mode=%s, freq=%sHz, word_size=%s, "
+        # Report the achieved clock, not the request. A U3's clock is a coarse
+        # delay count, so a request is rounded down or clamped; echoing it back
+        # told the user they had a bus they did not have. Shared with the
+        # in-process dispatcher so the two cannot drift.
+        # getattr, not a direct call: this module is resolved at run time with
+        # importlib, so a dispatcher without the helper -- a partially upgraded
+        # box, or a stubbed module under test -- must degrade to reporting the
+        # request rather than raising out of the whole config command.
+        _achieved_fn = getattr(spi_disp, "achieved_frequency_hz", None)
+        achieved = (_achieved_fn(rec, effective["frequency_hz"])
+                    if _achieved_fn else effective["frequency_hz"])
+        freq_note = "freq=%sHz" % achieved
+        # Name a request only when one was actually made. _get_spi_params
+        # fills in a 1 MHz default for a net that stored no frequency, and a
+        # U3 cannot reach it -- so an unconfigured U3 net reported
+        # "(requested 1000000Hz)" for a request nobody had made.
+        asked = (rec.get("params") or {}).get("frequency_hz")
+        if asked is not None and achieved != asked:
+            freq_note += " (requested %sHz)" % asked
+        msg = ("SPI configured: mode=%s, %s, word_size=%s, "
                "bit_order=%s, cs_active=%s, cs_mode=%s" % (
-                   effective["mode"], effective["frequency_hz"],
+                   effective["mode"], freq_note,
                    effective["word_size"], effective["bit_order"],
                    effective["cs_active"], effective["cs_mode"]))
-        return _ok(msg, effective)
+        effective = dict(effective, achieved_frequency_hz=achieved)
+        return _ok(msg, effective, warnings)
 
     if action not in ("transfer", "read", "write", "read_write"):
         raise UnknownAction(action)
@@ -526,7 +553,8 @@ def _i2c(netname, role, action, params):
         stored = rec.get("params", {})
         eff_freq = freq if freq is not None else stored.get("frequency_hz", 100_000)
         eff_pull_ups = pull_ups if pull_ups is not None else stored.get("pull_ups", False)
-        dev.config(eff_freq, eff_pull_ups)
+        _cfg_result = dev.config(eff_freq, eff_pull_ups)
+        warnings = list((_cfg_result or {}).get("warnings") or [])
         persist = {}
         if freq is not None:
             persist["frequency_hz"] = freq
@@ -534,10 +562,29 @@ def _i2c(netname, role, action, params):
             persist["pull_ups"] = pull_ups
         if persist:
             i2c_disp._persist_params(netname, **persist)
+        i2c_rec = i2c_disp.helpers.find_saved_net(netname, i2c_disp.I2CBackendError)
+        _achieved_fn = getattr(i2c_disp, "achieved_frequency_hz", None)
+        achieved = _achieved_fn(i2c_rec, eff_freq) if _achieved_fn else eff_freq
+        freq_note = "freq=%sHz" % achieved
+        # `eff_freq` carries a 100 kHz default for a net that stored no
+        # frequency, and a U3 rounds that to a reachable delay count -- so an
+        # unconfigured net reported a request nobody made. Name a request only
+        # when the command carried one or the net stored one.
+        asked = freq if freq is not None else stored.get("frequency_hz")
+        if asked is not None and achieved != asked:
+            freq_note += " (requested %sHz)" % asked
+        # A U3 has no controllable pull-ups; reporting on/off states a bus
+        # condition the driver cannot set and the user must supply externally.
+        _is_ud = getattr(i2c_disp, "is_ud_net", None)
+        if _is_ud and _is_ud(i2c_rec):
+            pull_note = "pull_ups=n/a (external resistors required)"
+        else:
+            pull_note = "pull_ups=%s" % ("on" if eff_pull_ups else "off")
         return _ok(
-            "I2C configured: freq=%sHz, pull_ups=%s" % (
-                eff_freq, "on" if eff_pull_ups else "off"),
-            {"frequency_hz": eff_freq, "pull_ups": bool(eff_pull_ups)})
+            "I2C configured: %s, %s" % (freq_note, pull_note),
+            {"frequency_hz": eff_freq, "achieved_frequency_hz": achieved,
+             "pull_ups": bool(eff_pull_ups)},
+            warnings)
 
     if action not in ("scan", "read", "write", "transfer"):
         raise UnknownAction(action)
@@ -604,11 +651,16 @@ def _arm(netname, role, action, params):
     # G-code. Moves block on the box until the arm reaches the target, so the
     # internal proxy timeout is widened past the caller's move timeout.
     if action == "position":
-        pos = _proxy(netname, role).position()
+        # Past Device's 10 s default: the driver tries M114 three times at 3 s
+        # each, and its own error is more useful than a transport timeout.
+        pos = _proxy(netname, role, timeout=20.0).position()
         return _ok("X: %s Y: %s Z: %s" % tuple(pos), [float(v) for v in pos])
 
     if action in ("move", "move_by"):
-        timeout = float(params.get("timeout") or 15.0)
+        # Refused here, before any device call: a wait past the cap would
+        # outlive hardware_service's 30 s call deadline, which restarts the
+        # service and every instrument on it (see arm_hs.MAX_MOVE_TIMEOUT_S).
+        timeout = validate_move_timeout(params.get("timeout") or 15.0)
         dev = _proxy(netname, role, timeout=timeout + 15.0)
         if action == "move":
             for key in ("x", "y", "z"):
@@ -626,7 +678,7 @@ def _arm(netname, role, action, params):
     dev = _proxy(netname, role, timeout=30.0)
     if action == "go_home":
         dev.go_home()
-        return _ok("Arm moving to home position (X0 Y300 Z0)")
+        return _ok("Arm at home position (X0 Y300 Z0)")
     if action == "enable_motor":
         dev.enable_motor()
         return _ok("Arm motors enabled")
@@ -679,7 +731,13 @@ def _webcam(netname, role, action, params):
         if not video_device.startswith("/dev/"):
             video_device = "/dev/" + video_device
         try:
-            result = webcam_svc.start_stream(netname, video_device, box_ip)
+            result = webcam_svc.start_stream(
+                netname, video_device, box_ip,
+                # Which surface asked, and who it says asked. The CLI is the
+                # historical caller, so it stays the default when a client
+                # predates the field.
+                source=params.get("source") or "cli",
+                started_by=params.get("started_by"))
         except RuntimeError as e:
             raise DeviceError(str(e))
         msg = ("Stream already running at %s" if result.get("already_running")
@@ -705,6 +763,33 @@ def _webcam(netname, role, action, params):
             "url": info["url"],
             "port": info["port"],
             "video_device": info["video_device"],
+            "source": info.get("source"),
+            "started_by": info.get("started_by"),
+        })
+
+    if action == "snapshot":
+        # One frame, fetched over loopback from the streamer and returned
+        # inline, so the caller needs nothing but this endpoint — the
+        # streamer's own port may not be reachable from where they sit.
+        import base64
+        import requests
+
+        info = webcam_svc.get_stream_info(netname, box_ip)
+        if not info:
+            raise DeviceError(
+                "No active stream for net '%s' — start it first" % netname)
+        try:
+            resp = requests.get(
+                "http://127.0.0.1:%s/snapshot/%s" % (info["port"], netname),
+                timeout=8)
+        except requests.RequestException as e:
+            raise DeviceError("Snapshot request failed: %s" % e)
+        if resp.status_code != 200:
+            raise DeviceError(
+                "Snapshot failed: streamer answered %s" % resp.status_code)
+        return _ok("Snapshot captured", {
+            "jpeg_base64": base64.b64encode(resp.content).decode(),
+            "bytes": len(resp.content),
         })
 
     raise UnknownAction(action)

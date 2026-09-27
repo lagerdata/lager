@@ -31,7 +31,10 @@ class NetDescriptor(BaseModel):
     User-authored metadata is intentionally minimal: a single ``purpose``
     sentence (what this wire does on the DUT) plus optional ``notes`` for
     gotchas, jumper positions, scope probe points, etc. ``tags`` are short
-    keywords the planning tools match on.
+    keywords the planning tools match on. ``dut_connection`` names where the
+    net lands on the DUT and ``test_hints`` carry one-line advice for a test
+    author; both are the fields the control plane keeps per net, so one
+    vocabulary serves the box, the MCP server and the control plane.
     """
 
     name: str
@@ -60,6 +63,17 @@ class NetDescriptor(BaseModel):
     """Optional markdown for gotchas, jumper positions, scope probe points."""
 
     tags: list[str] = Field(default_factory=list)
+
+    dut_connection: str = ""
+    """Where this net lands on the DUT: a connector, pin, test point or
+    header. Example: *"J3 pin 4 (UART_TX), also TP12"*."""
+
+    test_hints: list[str] = Field(default_factory=list)
+    """Short, actionable hints for a test author, one per entry.
+
+    Example: *"hold nRST low while flashing"*. A list so a hint can be added
+    without rewriting the others.
+    """
 
 
 class InterfaceDescriptor(BaseModel):

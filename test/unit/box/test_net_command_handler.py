@@ -466,6 +466,93 @@ class TestNetCommandHandler(unittest.TestCase):
         dev.config.assert_called_once_with({"frequency_hz": 2_000_000})
         fake._persist_params.assert_called_once_with("spi1", frequency_hz=2_000_000)
 
+    def test_spi_config_carries_a_box_side_warning_to_the_cli(self):
+        """#515 item 1: a clamp used to reach a container log and stop there.
+
+        The adapter hands it back across /invoke, the handler puts it in the
+        response, and the CLI prints it. An older CLI reads message, value and
+        error only, so the new key is ignored rather than fatal.
+        """
+        helpers = MagicMock()
+        helpers.find_saved_net.return_value = {"name": "spi1", "params": {}}
+        effective = {"mode": 0, "bit_order": "msb", "frequency_hz": 2_000_000,
+                     "word_size": 8, "cs_active": "low", "cs_mode": "auto"}
+        ctx, fake = self._patch_dispatcher(
+            'lager.protocols.spi.dispatcher',
+            _persist_params=MagicMock(),
+            _get_spi_params=MagicMock(return_value=effective),
+            helpers=helpers,
+            SPIBackendError=type('SPIBackendError', (Exception,), {}))
+        dev = MagicMock()
+        dev.config.return_value = {"warnings": ["clock clamped to 71400 Hz"]}
+        with ctx:
+            r, dev = self._run({"netname": "spi1", "action": "config",
+                                "params": {"frequency_hz": 2_000_000}}, dev)
+        self.assertEqual(r.get_json()["warnings"],
+                         ["clock clamped to 71400 Hz"])
+
+    def test_a_config_with_nothing_to_warn_about_sends_no_warnings_key(self):
+        helpers = MagicMock()
+        helpers.find_saved_net.return_value = {"name": "spi1", "params": {}}
+        effective = {"mode": 0, "bit_order": "msb", "frequency_hz": 2_000_000,
+                     "word_size": 8, "cs_active": "low", "cs_mode": "auto"}
+        ctx, fake = self._patch_dispatcher(
+            'lager.protocols.spi.dispatcher',
+            _persist_params=MagicMock(),
+            _get_spi_params=MagicMock(return_value=effective),
+            helpers=helpers,
+            SPIBackendError=type('SPIBackendError', (Exception,), {}))
+        dev = MagicMock()
+        dev.config.return_value = {"warnings": []}
+        with ctx:
+            r, dev = self._run({"netname": "spi1", "action": "config",
+                                "params": {"frequency_hz": 2_000_000}}, dev)
+        self.assertNotIn("warnings", r.get_json())
+
+    def test_an_unconfigured_net_names_no_request(self):
+        """#515 item 2: the default was being reported as a user's request.
+
+        `_get_spi_params` fills in 1 MHz for a net that stored no frequency.
+        A U3 cannot reach it, so the message read "(requested 1000000Hz)" for
+        a request nobody had made.
+        """
+        helpers = MagicMock()
+        helpers.find_saved_net.return_value = {"name": "spi1", "params": {}}
+        effective = {"mode": 0, "bit_order": "msb", "frequency_hz": 1_000_000,
+                     "word_size": 8, "cs_active": "low", "cs_mode": "auto"}
+        ctx, fake = self._patch_dispatcher(
+            'lager.protocols.spi.dispatcher',
+            _persist_params=MagicMock(),
+            _get_spi_params=MagicMock(return_value=effective),
+            achieved_frequency_hz=MagicMock(return_value=71_400),
+            helpers=helpers,
+            SPIBackendError=type('SPIBackendError', (Exception,), {}))
+        with ctx:
+            r, _ = self._run({"netname": "spi1", "action": "config",
+                              "params": {}}, MagicMock())
+        self.assertNotIn("requested", r.get_json()["message"])
+        self.assertIn("freq=71400Hz", r.get_json()["message"])
+
+    def test_a_real_request_is_still_named(self):
+        """The clause earns its place when the user did ask for something."""
+        helpers = MagicMock()
+        helpers.find_saved_net.return_value = {
+            "name": "spi1", "params": {"frequency_hz": 2_000_000}}
+        effective = {"mode": 0, "bit_order": "msb", "frequency_hz": 2_000_000,
+                     "word_size": 8, "cs_active": "low", "cs_mode": "auto"}
+        ctx, fake = self._patch_dispatcher(
+            'lager.protocols.spi.dispatcher',
+            _persist_params=MagicMock(),
+            _get_spi_params=MagicMock(return_value=effective),
+            achieved_frequency_hz=MagicMock(return_value=71_400),
+            helpers=helpers,
+            SPIBackendError=type('SPIBackendError', (Exception,), {}))
+        with ctx:
+            r, _ = self._run({"netname": "spi1", "action": "config",
+                              "params": {"frequency_hz": 2_000_000}},
+                             MagicMock())
+        self.assertIn("(requested 2000000Hz)", r.get_json()["message"])
+
     def test_spi_config_rejects_bad_frequency(self):
         r, _ = self._run({"netname": "spi1", "action": "config",
                           "params": {"frequency_hz": 0}})
@@ -636,6 +723,8 @@ class TestNetCommandHandler(unittest.TestCase):
         device_name, net_info = self._DeviceMock.call_args.args
         self.assertEqual(device_name, "arm_hs")
         self.assertEqual(net_info["device_id"], "dexarm:ARM123")
+        # Wide enough for the driver's own bounded M114 attempts to report first.
+        self.assertEqual(self._DeviceMock.call_args.kwargs["timeout"], 20.0)
 
     def test_arm_move_passes_coords_and_timeout(self):
         dev = MagicMock()
@@ -660,6 +749,34 @@ class TestNetCommandHandler(unittest.TestCase):
                             "params": {"dy": -10}}, dev)
         self.assertEqual(r.status_code, 200)
         dev.move_by.assert_called_once_with(0.0, -10.0, 0.0, timeout=15.0)
+
+    def test_arm_move_timeout_over_cap_is_400_before_any_device_call(self):
+        # A wait past arm_hs.MAX_MOVE_TIMEOUT_S outlives hardware_service's
+        # 30 s call deadline, which restarts the service. Refused up front.
+        dev = MagicMock()
+        r, dev = self._run({"netname": "arm1", "action": "move",
+                            "params": {"x": 0, "y": 300, "z": 0,
+                                       "timeout": 30}}, dev)
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("at most 25", r.get_json()["error"])
+        self._DeviceMock.assert_not_called()
+        dev.move.assert_not_called()
+
+    def test_arm_move_by_negative_timeout_is_400(self):
+        r, _ = self._run({"netname": "arm1", "action": "move_by",
+                          "params": {"dz": 5, "timeout": -1}})
+        self.assertEqual(r.status_code, 400)
+        self._DeviceMock.assert_not_called()
+
+    def test_arm_move_timeout_at_cap_is_accepted(self):
+        dev = MagicMock()
+        dev.move.return_value = [0.0, 300.0, 0.0]
+        r, dev = self._run({"netname": "arm1", "action": "move",
+                            "params": {"x": 0, "y": 300, "z": 0,
+                                       "timeout": 25}}, dev)
+        self.assertEqual(r.status_code, 200)
+        dev.move.assert_called_once_with(0.0, 300.0, 0.0, timeout=25.0)
+        self.assertEqual(self._DeviceMock.call_args.kwargs["timeout"], 40.0)
 
     def test_arm_home_and_motors(self):
         for action, method in (("go_home", "go_home"),
@@ -742,9 +859,73 @@ class TestNetCommandHandler(unittest.TestCase):
         self.assertFalse(data["value"]["already_running"])
         self.assertIn("Stream started", data["message"])
         # Video device is normalized to /dev/...; box_ip comes from the
-        # request host when not supplied.
+        # request host when not supplied. A client that predates the origin
+        # fields is recorded as the CLI with no attributed user.
         fake.start_stream.assert_called_once_with(
-            "cam1", "/dev/video0", "localhost")
+            "cam1", "/dev/video0", "localhost", source="cli", started_by=None)
+
+    def test_webcam_start_records_origin(self):
+        start_stream = MagicMock(return_value={
+            "url": "http://localhost:8090/", "port": 8090})
+        r, fake = self._run_webcam(
+            {"netname": "cam1", "action": "start",
+             "params": {"source": "api", "started_by": "alice"}},
+            start_stream=start_stream)
+        self.assertEqual(r.status_code, 200)
+        fake.start_stream.assert_called_once_with(
+            "cam1", "/dev/video0", "localhost", source="api", started_by="alice")
+
+    def test_webcam_status_includes_origin(self):
+        info = MagicMock(return_value={
+            "url": "http://localhost:8090/", "port": 8090,
+            "video_device": "/dev/video0", "source": "cli",
+            "started_by": "alice"})
+        r, _ = self._run_webcam(
+            {"netname": "cam1", "action": "status"}, get_stream_info=info)
+        data = r.get_json()
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(data["value"]["running"])
+        self.assertEqual(data["value"]["source"], "cli")
+        self.assertEqual(data["value"]["started_by"], "alice")
+
+    def test_webcam_snapshot_returns_frame_inline(self):
+        info = MagicMock(return_value={
+            "url": "http://localhost:8090/", "port": 8090,
+            "video_device": "/dev/video0"})
+        resp = MagicMock(status_code=200, content=b"\xff\xd8jpeg-bytes")
+        with patch('requests.get', return_value=resp) as get:
+            r, _ = self._run_webcam(
+                {"netname": "cam1", "action": "snapshot"}, get_stream_info=info)
+        data = r.get_json()
+        self.assertEqual(r.status_code, 200)
+        # Loopback to the streamer: the stream port need not be reachable
+        # from wherever the caller sits.
+        get.assert_called_once_with(
+            "http://127.0.0.1:8090/snapshot/cam1", timeout=8)
+        import base64
+        self.assertEqual(base64.b64decode(data["value"]["jpeg_base64"]),
+                         b"\xff\xd8jpeg-bytes")
+        self.assertEqual(data["value"]["bytes"], len(b"\xff\xd8jpeg-bytes"))
+
+    def test_webcam_snapshot_without_stream_is_device_error(self):
+        with patch('requests.get') as get:
+            r, _ = self._run_webcam(
+                {"netname": "cam1", "action": "snapshot"},
+                get_stream_info=MagicMock(return_value=None))
+        self.assertGreaterEqual(r.status_code, 400)
+        self.assertIn("start it first", r.get_json().get("error", ""))
+        get.assert_not_called()
+
+    def test_webcam_snapshot_streamer_failure_is_device_error(self):
+        info = MagicMock(return_value={
+            "url": "http://localhost:8090/", "port": 8090,
+            "video_device": "/dev/video0"})
+        resp = MagicMock(status_code=503, content=b"No frame available")
+        with patch('requests.get', return_value=resp):
+            r, _ = self._run_webcam(
+                {"netname": "cam1", "action": "snapshot"}, get_stream_info=info)
+        self.assertGreaterEqual(r.status_code, 400)
+        self.assertIn("503", r.get_json().get("error", ""))
 
     def test_webcam_start_already_running(self):
         start_stream = MagicMock(return_value={

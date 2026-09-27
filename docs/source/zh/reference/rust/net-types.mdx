@@ -1,0 +1,78 @@
+---
+title: Net 类型
+description: Rust crate 开放的全部 Net 句柄与 Box 级能力
+---
+
+每种 Net 类型都有一个从 `LagerBox` 取得的句柄，以及一个属于自己的页面。句柄非常轻量，在您调用方法之前不会产生任何网络流量。Box 在每次请求时都会解析并校验 Net 名称，因此写错名字会明确报错。
+
+## 仪器 Net
+
+通过您用 `lager nets add` 给它们起的 Net 名称来寻址。
+
+| 句柄 | 获取方式 | 参考 |
+|---|---|---|
+| `Supply` | `lager.supply(name)` | [电源](/source/zh/reference/rust/supply) |
+| `Battery` | `lager.battery(name)` | [电池仿真](/source/zh/reference/rust/battery) |
+| `Solar` | `lager.solar(name)` | [太阳能仿真](/source/zh/reference/rust/solar) |
+| `Eload` | `lager.eload(name)` | [电子负载](/source/zh/reference/rust/eload) |
+| `WattMeter` | `lager.watt_meter(name)` | [功率计](/source/zh/reference/rust/watt) |
+| `EnergyAnalyzer` | `lager.energy_analyzer(name)` | [能量分析仪](/source/zh/reference/rust/energy) |
+| `Adc` | `lager.adc(name)` | [ADC](/source/zh/reference/rust/adc) |
+| `Dac` | `lager.dac(name)` | [DAC](/source/zh/reference/rust/dac) |
+| `Thermocouple` | `lager.thermocouple(name)` | [热电偶](/source/zh/reference/rust/thermocouple) |
+| `Gpio` | `lager.gpio(name)` | [GPIO](/source/zh/reference/rust/gpio) |
+| `I2c` | `lager.i2c(name)` | [I2C](/source/zh/reference/rust/i2c) |
+| `Spi` | `lager.spi(name)` | [SPI](/source/zh/reference/rust/spi) |
+| `UsbPort` | `lager.usb(name)` | [USB 集线器端口](/source/zh/reference/rust/usb) |
+| `Uart` | `lager.uart(name)?` | [UART](/source/zh/reference/rust/uart) |
+| `DebugNet` | `lager.debug(name)` | [调试探针](/source/zh/reference/rust/debug) |
+| `Arm` | `lager.arm(name)` | [机械臂](/source/zh/reference/rust/arm) |
+| `Webcam` | `lager.webcam(name)` | [摄像头](/source/zh/reference/rust/webcam) |
+| `Router` | `lager.router(name)` | [路由器](/source/zh/reference/rust/router) |
+| `Scope` | `lager.scope(name)` | [示波器](/source/zh/reference/rust/scope) —— 占位实现 |
+
+## Box 级能力
+
+它们驱动的是 Box 自己的硬件，因此不需要 Net 名称，也没有 `name()`。
+
+| 句柄 | 获取方式 | 参考 |
+|---|---|---|
+| `Ble` | `lager.ble()` | [BLE](/source/zh/reference/rust/ble) |
+| `Wifi` | `lager.wifi()` | [WiFi](/source/zh/reference/rust/wifi) |
+| `Blufi` | `lager.blufi()` | [BluFi](/source/zh/reference/rust/blufi) |
+| `Dfu` | `lager.dfu()` | [USB DFU](/source/zh/reference/rust/dfu) |
+
+## 两个行为不同的句柄
+
+上面几乎每个构造方法都会立即返回一个句柄，并且不会失败。有两个例外：
+
+- **`lager.uart(name)?` 返回 `Result`** —— 它会打开一个 Socket.IO 会话并立即开始流式传输，因此构造阶段就可能失败。
+- **`lager.scope(name)` 返回的是值，不是借用。** `Scope` 没有生命周期参数，也没有异步版本，因为 Box 上还没有它可以通信的端点。
+
+## 发现
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+
+for net in lager.nets()? {
+    println!("{:<12} {:<14} {:?}", net.name, net.role, net.instrument);
+}
+```
+
+`NetRecord` 携带：
+
+- 名称
+- 角色
+- 仪器
+- 引脚或通道
+- VISA 或设备地址
+- 该角色特有的已保存参数
+- 该 Net 的安全限值
+
+发现接口的其余部分请参阅 [客户端与 Box](/source/zh/reference/rust/client)。
+
+## 尚不可用
+
+`Scope` 是有文档记录的占位实现，而逻辑分析仪则完全没有句柄：Box 目前还没有用于示波器或逻辑采集的 HTTP 端点。`Rotation` 和 `Actuate` Net 服务于配置流程，而不是测试期的 Net 访问，该 crate 有意不收录它们。待办清单在 [MISSING_ENDPOINTS.md](https://github.com/lagerdata/lager-rs/blob/main/MISSING_ENDPOINTS.md) 中。

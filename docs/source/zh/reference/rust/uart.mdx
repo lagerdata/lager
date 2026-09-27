@@ -1,0 +1,131 @@
+---
+title: UART
+description: 从 cargo test 流式接收串口数据
+---
+
+对 Box 上的某个串口打开一个流式会话，并从测试中驱动被测设备的控制台。
+
+## 启用该 feature
+
+UART 会话基于 Socket.IO，因此它位于一个 cargo feature 之后：
+
+```toml
+[dev-dependencies]
+lager = { package = "lager-net", version = "0.4", features = ["uart"] }
+```
+
+`uart` feature 隐含启用 `blocking`。它没有异步版本。
+
+## 句柄
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let mut uart = lager.uart("uart1")?;
+```
+
+<Note>
+  `uart()` 是唯一返回 `Result` 的句柄构造方法。其他每个 Net 句柄在您调用方法之前都是静止的，而 `uart()` 会连接会话并立即开始流式传输，因此它在这一步就可能失败。
+</Note>
+
+## 方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `netname()` | 该会话所流式接收的 Net |
+| `device_path()` | Box 上的设备路径，例如 `/dev/ttyUSB0` |
+| `baudrate()` | 打开该端口时使用的波特率 |
+| `last_status()` | 最近一次会话状态通知 |
+| `read()` | 在超时时间内到达的字节；可能为空 |
+| `try_read()` | 已经缓冲的字节，不等待 |
+| `wait_for()` | 一直累积，直到出现指定的标记 |
+| `write()` | 向设备写入原始字节 |
+| `write_str()` | 向设备写入一个字符串 |
+| `stop()` | 干净地停止，并关闭 Box 上的该端口 |
+
+## 方法参考
+
+### `read(timeout: Duration) -> Result<Vec<u8>>`
+
+在 `timeout` 时间内到达的字节。该调用可能返回空 vector。
+
+<Note>
+  设备空闲时，`read()` 会把**整个**超时时间等满。在轮询循环里请用 `try_read()`，否则每一轮迭代都要花掉整个超时时长。
+</Note>
+
+### `try_read() -> Result<Vec<u8>>`
+
+已经收到的字节，不等待。
+
+### `wait_for(needle: &[u8], timeout: Duration) -> Result<Vec<u8>>`
+
+一直累积，直到出现 `needle`。
+
+**返回：** 直到该标记为止、**并且包含**该标记的全部内容；剩余部分继续留在缓冲区里。空标记会立即返回；没找到则是 `Error::Timeout`。
+
+### `write(data: &[u8]) -> Result<()>` 和 `write_str(s: &str) -> Result<()>`
+
+向设备写入。
+
+### `last_status() -> Option<&str>`
+
+最近一次会话状态通知，在读取过程中更新。当一个 USB 串口适配器正在重新枚举时 —— 因为某个集线器端口被断电重启，或者被测设备被重新烧录 —— 它读到的是 `"reconnecting"`，然后是 `"reconnected"`。检查它可以区分"被测设备很安静"和"适配器不见了"。
+
+### `stop() -> Result<()>`
+
+干净地停止，并关闭 Box 上的该端口。它会消耗掉该会话。把会话 drop 掉同样会停止它，但 `stop()` 会把错误暴露出来。
+
+## 示例
+
+### 等待启动横幅，然后驱动控制台
+
+```rust
+use lager::LagerBox;
+use std::time::Duration;
+
+let lager = LagerBox::from_env()?;
+let supply = lager.supply("supply1");
+let mut uart = lager.uart("uart1")?;
+
+supply.set_voltage(3.3)?;
+supply.enable()?;
+
+uart.wait_for(b"boot complete", Duration::from_secs(10))?;
+uart.write_str("status\r\n")?;
+let reply = uart.wait_for(b"OK", Duration::from_secs(2))?;
+println!("{}", String::from_utf8_lossy(&reply));
+
+uart.stop()?;
+supply.disable()?;
+```
+
+### 在重新烧录过程中保住会话
+
+```rust
+use std::time::Duration;
+
+dbg.flash_bin("target/app.bin", 0x0)?;   // the adapter may re-enumerate
+
+// The session reconnects on its own; watch the status while it does.
+let banner = uart.wait_for(b"ready", Duration::from_secs(30))?;
+println!("status during reflash: {:?}", uart.last_status());
+assert!(String::from_utf8_lossy(&banner).contains("ready"));
+```
+
+## 受支持的硬件
+
+| 适配器 | 备注 |
+|---|---|
+| SiLabs CP210x | |
+| FTDI FT232R / FT232H / FT2232H / FT4232H | 在多通道芯片上，四个通道都能承载 UART |
+| Prolific USB 串口 | |
+| ESP32 JTAG/串口 | |
+
+## 说明
+
+- **Box 独占该端口，并且每个 Net 或设备只允许一个会话。** 第二个打开者会得到 `Error::Stream`，说明该端口已被占用。这也包括您自己上一个测试泄漏下来的会话 —— 请调用 `stop()`。
+- 连接确认的超时是 15 秒；超过它是 `Error::Timeout`。
+- 字节是原始的。没有行规程、不处理回显、也不做编码转换；`wait_for` 是按字节工作的。
+- 会话会在 Socket.IO 握手时带上网关 bearer 令牌，因此受网关保护的 Box 无需额外配置。
+- 在 FTDI 多通道芯片上，UART 四个通道都能用，这与只限于通道 A 和 B 的 MPSSE 协议（debug、spi、i2c）不同。在单通道的 FT232H 上，占用 UART 会让 MPSSE 类角色不可用，反之亦然。

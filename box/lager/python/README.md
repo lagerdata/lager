@@ -157,10 +157,13 @@ The executor automatically injects these environment variables into every Python
 - `LAGER_HOST_MODULE_FOLDER`: Path to script/module on host
 - `LAGER_OUTPUT_CHANNEL`: Path to output channel file
 - `LAGER_STDOUT_IS_STDERR`: Whether stderr is redirected
-- `PYTHONBREAKPOINT`: Set to `remote_pdb.set_trace`
-- `LOCAL_ADDRESS`: Python container IP (172.18.0.10)
-- `REMOTE_PDB_HOST`: Host for remote debugger (0.0.0.0)
-- `REMOTE_PDB_PORT`: Port for remote debugger (5555)
+- `PYTHONBREAKPOINT`: Set to `lager.breakpoint.pause`, so a script's
+  `breakpoint()` behaves like `lager.pause()`
+- `LOCAL_ADDRESS`: The address this container can be reached on, read from the
+  routing table at launch. On lagernet that is the container's own address
+  (typically `172.18.0.10`); under `lager box-config network-mode host` the
+  container shares the host's stack, and this is the host address. Set
+  `LOCAL_ADDRESS` in the box config to name one explicitly.
 
 ### Box Metadata
 - `LAGER_BOX_ID`: Box ID from `/etc/lager/box_id`

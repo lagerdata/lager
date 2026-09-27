@@ -203,7 +203,7 @@ class TestTheCeilingFitsInsideTheClientsReadTimeout:
 
     The two numbers live either side of the wheel boundary (box/ does not ship
     in lager-cli), so this reads the literal out of the source the way
-    cli/tests/test_host_cli.py pins its shell mirror.
+    test/unit/cli/test_host_cli.py pins its shell mirror.
     """
 
     def _client_read_timeout(self):

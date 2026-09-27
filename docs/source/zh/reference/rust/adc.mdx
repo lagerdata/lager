@@ -1,0 +1,98 @@
+---
+title: ADC
+description: 从 ADC Net 读取模拟电压
+---
+
+从 LabJack、MCC 或类似采集设备上的 ADC Net 读取单端模拟电压。
+
+## 句柄
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let adc = lager.adc("adc1");
+```
+
+句柄很轻量，在您调用方法之前不会产生任何 I/O。Box 在每次请求时都会解析并校验 Net 名称，因此写错名字会明确报错，而不是去读错误的引脚。
+
+## 方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `name()` | 该句柄所指向的 Net 名称 |
+| `read()` | 读取输入电压，单位伏特 |
+
+## 方法参考
+
+### `name() -> &str`
+
+创建该句柄时使用的 Net 名称。不会触及网络。
+
+```rust
+assert_eq!(lager.adc("adc1").name(), "adc1");
+```
+
+### `read() -> Result<f64>`
+
+读取 ADC 输入端上的电压，单位伏特。
+
+```rust
+let volts = adc.read()?;
+println!("{volts:.4} V");
+```
+
+**返回：** `f64` —— 测得的电压，单位伏特。带符号：负读数就是真实的负电压，而不是错误。
+
+## 示例
+
+### 断言电源轨已经建立
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let supply = lager.supply("supply1");
+let vbat = lager.adc("adc1");
+
+supply.set_voltage(3.3)?;
+supply.enable()?;
+std::thread::sleep(std::time::Duration::from_millis(200));
+
+let measured = vbat.read()?;
+assert!((measured - 3.3).abs() < 0.2, "rail is at {measured:.3} V, expected 3.3");
+supply.disable()?;
+```
+
+### 轮询一条正在跌落的电源轨
+
+`read()` 是一次开销很小的请求，因此在循环里轮询是合理的。
+
+```rust
+use std::time::{Duration, Instant};
+
+let start = Instant::now();
+while start.elapsed() < Duration::from_secs(5) {
+    let v = adc.read()?;
+    if v < 1.0 {
+        println!("rail collapsed after {:?}", start.elapsed());
+        break;
+    }
+    std::thread::sleep(Duration::from_millis(50));
+}
+```
+
+## 受支持的硬件
+
+| 仪器 | 通道 | 备注 |
+|---|---|---|
+| LabJack T7 | AIN0-AIN13 | 14 路单端输入 |
+| LabJack U3 | AIN0-AIN15 | 16 路单端输入；`AIN4`-`AIN15` 与 `FIO4`-`FIO7` 和 `EIO0`-`EIO7` 共用引脚 |
+| MCC USB-202 | CH0-CH7 | 8 路单端输入 |
+
+## 说明
+
+- 读数**始终**是伏特。这个 Net 类型没有单位选择。
+- 未连接的输入是悬空的；断开的引脚上读到接近 0 的值，是仪器在报告噪声，而不是失败。
+- 每个 ADC Net 对应一个通道。一台有十四路输入的设备就是十四个 Net。
+- Box 会按物理仪器串行化访问，因此对同一台设备上多个 ADC Net 的并发读取会排队，而不是交错执行。

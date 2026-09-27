@@ -148,7 +148,32 @@ communication testing and validation.
 - SPI (1 bus)
 - 14 ADC channels
 - 2 DAC channels
-- 24 GPIO pins
+- 23 GPIO pins
+
+### LabJack U3
+
+**Control Commands:** `lager i2c`, `lager spi`, `lager adc`,
+`lager dac`, `lager gpi`, `lager gpo`
+
+**Interfaces:**
+- I2C (1 bus, needs external pull-up resistors)
+- SPI (1 bus)
+- 16 ADC channels
+- 2 DAC channels (0.04 V to 4.95 V)
+- 16 GPIO pins
+
+**Differences from the LabJack T7:**
+- The U3 uses the LabJack Exodriver and LabJackPython, not LJM. A T7 and a U3 can share one Lager Box.
+- `FIO0`-`FIO3` are not GPIO pins. Lager treats every U3 as a U3-HV, where those four pins are fixed high-voltage analog inputs.
+- `AIN4`-`AIN15` share pins with `FIO4`-`FIO7` and `EIO0`-`EIO7`. A read sets the analog or digital mode of the pin.
+- The DAC has no readback. A read returns the last value that the box set.
+- SPI and I2C need U3 hardware version 1.21 or later. A transfer is at most 50 bytes, and the clock rate is approximate.
+- The U3 has no MIO pins. Its EIO and CIO lines are on the DB15 connector.
+- Two U3 units on one Lager Box cannot have nets, because a U3 reports no serial number.
+
+<Warning>
+If a U3 is connected, a call to LJM with the device type `"ANY"` fails with `LJME_U3_NOT_SUPPORTED_BY_LJM`. Lager names the device type in its own T7 calls. In your own code, pass `"T7"` to `ljm.openS` and `ljm.listAllS`, not `"ANY"`.
+</Warning>
 
 ### Total Phase Aardvark
 
@@ -225,7 +250,10 @@ scripts and CI pipelines.
 - Multi-channel FTDIs (FT2232H, FT4232H) expose each MPSSE channel as
   a separate debug net. The channel is an `@A`/`@B`/`@C`/`@D` suffix on
   the device field, so a single chip can drive multiple targets
-  independently. Channels C and D on the FT4232H are UART-only. See the
+  independently. Channels C and D on the FT4232H have no MPSSE engine.
+  They carry `gpio` and `uart` nets, but not `debug`, `i2c` or `spi`
+  nets. Pick the channel of a `gpio`, `i2c` or `spi` net with
+  `lager nets add --interface`. See the
   [nets reference](../reference/cli/nets) for the channel-suffix
   syntax.
 - Lager selects the target chip configuration from the device name for
@@ -370,6 +398,17 @@ echo 1-1.4.4:1.0 | sudo tee /sys/bus/usb/drivers/hub/bind
 - Wireless device testing
 - Remote connectivity validation
 - Automated provisioning tests
+
+## Network Routers
+
+| Manufacturer | Model | Control Command |
+|---|---|---|
+| MikroTik | hAP (RouterOS v7 or later, REST API) | `lager router` |
+
+**Enables:**
+- Interface and Wi-Fi fault injection
+- Network-resilience testing
+- Inspection of wireless clients and DHCP leases
 
 ---
 

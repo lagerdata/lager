@@ -52,10 +52,10 @@ def _ufw_form(host_spec):
 def published_host_ports():
     """Every host port start_box.sh can publish, conditional arms included.
 
-    9000 is appended separately when the UART service is enabled, so a naive read
-    of the array literal alone would miss it. The firewall has to admit it either
-    way -- the allowlist is written once at provisioning time and cannot know which
-    arm a later `start_box.sh` run will take.
+    9000 and 8100 are appended separately, each behind its own opt-out, so a naive
+    read of the array literal alone would miss them. The firewall has to admit them
+    either way -- the allowlist is written once at provisioning time and cannot know
+    which arm a later `start_box.sh` run will take.
     """
     block = _extract("port publishing")
     return {_ufw_form(host) for host, _container in _PUBLISH_RE.findall(block)}
@@ -89,6 +89,14 @@ def test_the_conditional_9000_arm_is_covered():
     """Guards the specific shape the array-literal-only parse would miss."""
     assert "9000" in published_host_ports(), (
         "9000 is appended to PORT_PUBLISH_ARGS outside the array literal; "
+        "if this fails the extractor stopped seeing the conditional arm."
+    )
+
+
+def test_the_conditional_8100_arm_is_covered():
+    """8100 is appended behind LAGER_MCP_NO_PUBLISH, outside the literal too."""
+    assert "8100" in published_host_ports(), (
+        "8100 is appended to PORT_PUBLISH_ARGS outside the array literal; "
         "if this fails the extractor stopped seeing the conditional arm."
     )
 

@@ -1,0 +1,92 @@
+---
+title: "Version 0.50.0"
+description: "September 23, 2026"
+---
+
+## <u>Upgrade Notes</u>
+
+- **`lager debug NET flash --erase-start/--erase-size` needs a Lager Box on 0.50.0.** The
+  options are new on both the CLI and the box. On an older box the CLI refuses them before the
+  erase and prints `this box does not support --erase-start/--erase-size (requires box version
+  0.50.0 or later)`. The box therefore never erases its default range in place of yours. Run
+  `lager update --box <box-name>` before you use them.
+
+## <u>Features</u>
+
+- **`lager debug NET flash` and `lager debug NET erase` take an erase range.** Pass
+  `--erase-start ADDR` and `--erase-size BYTES` together; `BYTES` accepts `2M`, `512K`, decimal
+  or `0x` hex. On a DA1469x the range replaces the fixed 1 MiB from `0x16000000` and the
+  `LAGER_ERASE_RANGE` line of the JLinkScript. On any other target it replaces the full chip
+  erase. Both backends report the range they erased, and `erase --json` carries it as
+  `erase_range`. `DebugNet.erase(start, length)` takes the same pair. See
+  [`lager debug`](/source/reference/cli/debug#erase).
+
+- **`GET /bench` on the Lager Box and `lager bench export`: the bench manifest.** One versioned
+  JSON document with the nets and their metadata, the instruments on the box, the DUT context
+  and the capability graph. Each net carries its API reference key, and a content hash serves
+  as the `ETag`. A client that keeps a copy of many boxes fetches it in one request and gets
+  `304` while nothing changed. `/status` advertises it as `capabilities.benchManifest`.
+
+- **`lager nets describe --dut-connection` and `--test-hint`.** Two more fields on a saved net:
+  where the net lands on the DUT, and one line of advice for a test author. The MCP tools,
+  `/status`, the manifest and the per-net metadata endpoint all carry them.
+
+- **The box image carries its license notices.** `/usr/share/licenses/lager/` in the container
+  holds Lager's `LICENSE` and `NOTICE` and a `THIRD_PARTY.md` manifest of the vendor software
+  in the image. The notice files of each Python package sit under `pip/`.
+
+## <u>Bug Fixes</u>
+
+- **`discover_bench` lists the instruments on the Lager Box.** It always answered an empty
+  list, because the bench was loaded from files and nothing read the USB inventory. The
+  inventory now comes from a scan that runs at most once a minute, and only when an agent asks.
+
+- **`plan_firmware_test` gives a solar net an API reference and a plan phase.** The net-type
+  knowledge lived in four tables that had drifted apart. There is now one table, checked
+  against `NetType`.
+
+- **The MCP server never pairs a new bench with an old capability graph.** A reload triggered
+  by `lager dut edit` or `lager nets describe` published the two in sequence, so a request in
+  flight read one of each.
+
+## <u>Improvements</u>
+
+- **`lager debug NET health` prints a `Features` line.** It lists what the debug service of the
+  box supports beyond its original requests, such as `erase_range`. A box that predates the
+  list prints `none reported`.
+
+- **Every MCP tool reply carries `box_id`**, the control and exec tiers included. A client that
+  talks to several boxes through one session can tell the replies apart. A box with no
+  `/etc/lager/box_id` file and no `LAGER_BOX_ID` is named by its hostname.
+
+- **`get_test_example` returns the curated snippet for each net type of the pattern** and a
+  link to the full example in the repository. The example scripts were never in the box image,
+  so on a box the tool returned no script content.
+
+- **The nightly bench run drives a live UART peer through `lager uart`.** The uart suite gained
+  a device round-trip section, and its own defects are fixed, so it gates the night at zero
+  failures. The run creates the peer net itself when a bench has lost it.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.50.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli==0.50.0
+```
+
+Then update your boxes:
+
+```bash
+lager update --box <box-name>
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.50.0/)

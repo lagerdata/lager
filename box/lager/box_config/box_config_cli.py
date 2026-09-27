@@ -20,6 +20,7 @@ from contextlib import contextmanager
 from typing import Any
 
 from . import config as cfg
+from . import mcp_token
 
 
 _BOX_CONFIG_LOCK_PATH = "/etc/lager/box_config.lock"
@@ -169,6 +170,23 @@ def _load_or_init() -> "cfg.BoxConfig":
     raw = _load_raw()
     if raw is None:
         return cfg.init_default()
+    return cfg.BoxConfig.from_dict(raw)
+
+
+def _load_or_bare() -> "cfg.BoxConfig":
+    """Like _load_or_init, but seeds nothing when there is no config yet.
+
+    `init_default()` is the `box-config init` shape: it includes the box-tools
+    volume, which is a sensible starting point for someone provisioning a box
+    deliberately. It is the wrong shape for a single-setting change on a box
+    that happens to have no config file -- the operator asked to change one
+    field and would get a volume they never mentioned, applied on the next
+    bounce. Observed on hardware: setting the network mode on a fresh box
+    produced `+ box-tools -> /opt/box-tools` alongside the mode change.
+    """
+    raw = _load_raw()
+    if raw is None:
+        return cfg.BoxConfig()
     return cfg.BoxConfig.from_dict(raw)
 
 
@@ -441,6 +459,132 @@ def _cmd_env_set(payload: str) -> None:
     cfg.save(cfg.BoxConfig.from_dict(raw))
     _audit("env-set", {"entries": dict(entries)})
     _stdout_json({"ok": True, "set": set_keys})
+
+
+def _cmd_network_mode_show() -> None:
+    """Report the configured network mode without creating or touching config.
+
+    Deliberately reads the raw file rather than going through _load_or_init:
+    a read must never materialize a default config, and _load_or_init seeds
+    one (with the box-tools volume) when none exists.
+    """
+    raw = _load_raw()
+    mode = raw.get("network_mode") if isinstance(raw, dict) else None
+    _stdout_json({
+        "ok": True,
+        "exists": raw is not None,
+        "mode": mode if isinstance(mode, str) else cfg.DEFAULT_NETWORK_MODE,
+        "explicit": isinstance(mode, str),
+    })
+
+
+def _cmd_network_mode_set(payload: str) -> None:
+    data = json.loads(payload)
+    mode = data.get("mode")
+    if not isinstance(mode, str):
+        _stdout_json({"ok": False, "errors": ["payload.mode must be a string"]})
+        return
+    if mode not in cfg.NETWORK_MODES:
+        allowed = ", ".join(cfg.NETWORK_MODES)
+        _stdout_json({"ok": False, "errors": [f"network_mode must be one of: {allowed}"]})
+        return
+    current = _load_or_bare()
+    previous = current.network_mode
+    current.network_mode = mode
+    raw = current.to_dict()
+    errors = cfg.validate(raw)
+    if errors:
+        _stdout_json({"ok": False, "errors": errors})
+        return
+    cfg.save(cfg.BoxConfig.from_dict(raw))
+    _audit("network-mode-set", {"mode": mode, "previous": previous})
+    _stdout_json({"ok": True, "mode": mode, "previous": previous})
+
+
+def _cmd_network_mode_unset() -> None:
+    current = _load_or_bare()
+    previous = current.network_mode
+    current.network_mode = cfg.DEFAULT_NETWORK_MODE
+    raw = current.to_dict()
+    errors = cfg.validate(raw)
+    if errors:
+        _stdout_json({"ok": False, "errors": errors})
+        return
+    cfg.save(cfg.BoxConfig.from_dict(raw))
+    _audit("network-mode-unset", {"previous": previous})
+    _stdout_json({"ok": True, "mode": cfg.DEFAULT_NETWORK_MODE, "previous": previous})
+
+
+# --- MCP bearer token ---
+#
+# The token is a secret, and box_config.json is not a place for one: `show`
+# prints it, `export` and `copy` carry it, and `env-set` writes its whole
+# payload to the audit log. So the token is a file of its own beside the
+# config, these verbs never touch box_config.json, and every _audit() call
+# below passes an empty dict -- the verb is the record, the value never is.
+#
+# The value leaves the box exactly once, in the JSON reply to `enable` or
+# `rotate`. No verb can read it back.
+
+def _mcp_token_path() -> str:
+    """Resolved on use, not at import.
+
+    ``lager.constants`` is the box-side home of the path, and the unit tests
+    load this package under a synthetic name where ``lager`` is not importable
+    (it needs on-box dependencies). They replace this function; nothing else
+    in the module needs the real package.
+    """
+    from lager.constants import MCP_TOKEN_PATH  # pylint: disable=import-outside-toplevel
+    return MCP_TOKEN_PATH
+
+
+def _cmd_mcp_token_status() -> None:
+    _stdout_json({"ok": True, "state": mcp_token.state(_mcp_token_path())})
+
+
+def _mcp_token_mint(verb: str, mint) -> None:
+    path = _mcp_token_path()
+    previous = mcp_token.state(path)
+    try:
+        token = mint(path)
+    except mcp_token.TokenError as e:
+        _stdout_json({"ok": False, "code": e.code, "errors": [str(e)]})
+        return
+    except OSError as e:
+        # strerror, not str(e): the path is ours to name, and naming it once
+        # keeps the sentence readable.
+        _stdout_json({
+            "ok": False,
+            "code": "write-failed",
+            "errors": [f"Cannot write {path}: {e.strerror or e}"],
+        })
+        return
+    _audit(verb, {})
+    _stdout_json({"ok": True, "state": mcp_token.ENABLED, "previous": previous, "token": token})
+
+
+def _cmd_mcp_token_enable() -> None:
+    _mcp_token_mint("mcp-token-enable", mcp_token.enable)
+
+
+def _cmd_mcp_token_rotate() -> None:
+    _mcp_token_mint("mcp-token-rotate", mcp_token.rotate)
+
+
+def _cmd_mcp_token_disable() -> None:
+    path = _mcp_token_path()
+    try:
+        previous = mcp_token.disable(path)
+    except OSError as e:
+        _stdout_json({
+            "ok": False,
+            "code": "write-failed",
+            "errors": [f"Cannot remove {path}: {e.strerror or e}"],
+        })
+        return
+    if previous != mcp_token.DISABLED:
+        _audit("mcp-token-disable", {})
+    _stdout_json({"ok": True, "state": mcp_token.DISABLED, "previous": previous})
 
 
 def _cmd_env_unset(keys: list) -> None:
@@ -734,7 +878,14 @@ _DISPATCH = {
     "npm-remove":        lambda args: _cmd_npm_remove(_require_rest(args)),
     "udev-add":          lambda args: _cmd_udev_add(_require(args, 1)),
     "udev-remove":       lambda args: _cmd_udev_remove(_require_rest(args)),
-    "set-raw":           lambda args: _cmd_set_raw(_require(args, 1)),
+    "network-mode-show": lambda _args: _cmd_network_mode_show(),
+    "network-mode-set":  lambda args: _cmd_network_mode_set(_require(args, 1)),
+    "network-mode-unset": lambda _args: _cmd_network_mode_unset(),
+    "mcp-token-status":  lambda _args: _cmd_mcp_token_status(),
+    "mcp-token-enable":  lambda _args: _cmd_mcp_token_enable(),
+    "mcp-token-rotate":  lambda _args: _cmd_mcp_token_rotate(),
+    "mcp-token-disable": lambda _args: _cmd_mcp_token_disable(),
+    "set-raw":          lambda args: _cmd_set_raw(_require(args, 1)),
     "audit-tail":        lambda args: _cmd_audit_tail(args[1] if len(args) >= 2 else "20"),
 }
 

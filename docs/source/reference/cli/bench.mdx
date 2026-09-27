@@ -1,0 +1,83 @@
+---
+title: Bench Manifest
+description: Export the bench manifest a Lager Box publishes for AI tooling
+---
+
+`lager bench` reads the **bench manifest**: one JSON document that describes a
+Lager Box. It is for a client that keeps a copy of many boxes, such as a
+control plane or a fleet-level MCP host. The box serves it at `GET http://<box-ip>:9000/bench`
+and builds it from the same loaded state the [MCP
+server](/source/reference/mcp/overview) reads, so the two never disagree. See
+[The bench manifest](/source/reference/mcp/overview#the-bench-manifest) for
+the concepts.
+
+## Syntax
+
+```bash
+lager bench [COMMAND] [OPTIONS]
+```
+
+## Options
+
+The `lager bench` group takes only `--help`. Pass `--box` to each subcommand.
+
+| Option | Description |
+|--------|-------------|
+| `--box TEXT` | Lager Box name or IP address (on `export`) |
+| `--help` | Show help message and exit |
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `export` | Fetch the box's bench manifest as JSON |
+
+## Command Reference
+
+### Export
+
+Fetch the manifest and print it, or write it to a file.
+
+```bash
+lager bench export --box my-lager-box
+lager bench export --box my-lager-box --out my-lager-box.json
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--box TEXT` | Lager Box name or IP. |
+| `--out FILE` | Write the manifest to this file instead of standard output. A one-line summary (box id, schema version, content hash) goes to standard error. |
+| `--compact` | One line of JSON instead of an indented document. |
+
+The output is the manifest exactly as the box served it, with keys sorted so
+two exports of the same box diff cleanly.
+
+## What the manifest contains
+
+| Field | Meaning |
+|-------|---------|
+| `schema_version` | The manifest format. `1` today. A consumer reads this before anything else. |
+| `generated_at` | When the box built this manifest (ISO 8601, UTC). |
+| `content_hash` | SHA-256 of everything except `generated_at` and itself. The box sends it as the `ETag` header. |
+| `box_id` | The box identifier, repeated from `bench.box_id`. |
+| `bench.nets` | Every saved net with type, roles, instrument, channel, and the user metadata: `purpose`, `notes`, `tags`, `dut_connection`, `test_hints`. |
+| `bench.instruments` | The instruments detected on the box, with channels by role. The scan behind this runs at most once a minute. |
+| `bench.dut_slots` | The DUT context authored with [`lager dut`](/source/reference/cli/dut), document references included. |
+| `bench.interfaces` | Protocol interfaces (SPI, I2C, UART) and their nets. |
+| `bench.capability_bindings` | The capability graph: one entry per role a net can play, with a confidence. |
+| `bench.metadata_sources` | For each net and field, which file authored it: `bench.json` (a `net_overrides` entry) or `saved_net`. An override wins, so this shows when a saved value is shadowed. |
+| `reference_keys` | Net name to the `lager://reference/{net_type}` entry that documents it. |
+
+## Polling without cost
+
+The box sends `content_hash` as the `ETag` header. A client that sends it back
+as `If-None-Match` gets `304 Not Modified` with no body while the manifest is
+the same. `/status` advertises the route as `capabilities.benchManifest`.
+
+## Older boxes
+
+A box on a release before 0.50.0 does not serve `/bench`. `lager bench export`
+says so and asks you to run `lager update --box <BOX>`; it does not read the
+404 as an empty bench.

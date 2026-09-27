@@ -89,6 +89,13 @@ loop {
 }
 ```
 
+<Warning>
+  On a Plugable dock, a device on a powered-off port stays listed on the bus until
+  power returns. The loop above can then match the old entry at once, before the DUT
+  re-enumerates. On a Plugable dock, use `lager usb NET cycle` from the CLI, which
+  waits for the hub to report the reconnect.
+</Warning>
+
 ## Supported Hardware
 
 | Instrument | Ports |

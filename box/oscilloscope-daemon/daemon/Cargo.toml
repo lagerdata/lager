@@ -32,7 +32,7 @@ tungstenite = "0.30"
 futures-util = "0.3"
 
 [build-dependencies]
-bindgen = "0.72"
+bindgen = "0.73"
 cc = "1.0"
 
 [dev-dependencies]

@@ -115,6 +115,8 @@ def run_gdbserver(client, args, ws_exit_code=0):
          patch.object(debug_mod, "_get_service_client", lambda box: client), \
          patch.object(rtt_ws_mod, "connect_rtt_interactive",
                       fake_connect_rtt), \
+         patch.object(debug_mod, "choose_route",
+                      lambda box, port: debug_mod.ROUTE_DIRECT), \
          patch("time.sleep", lambda *a, **k: None):
         result = CliRunner().invoke(debug_mod.gdbserver, args, obj=obj,
                                     catch_exceptions=False)

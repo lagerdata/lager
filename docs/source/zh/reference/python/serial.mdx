@@ -1,0 +1,261 @@
+---
+title: Serial
+description: 用原生 pyserial 进行串行通信
+---
+
+原生支持 `pyserial`，用于与您的被测设备进行串行通信。
+
+## 导入
+
+```python
+import serial
+```
+
+## 方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `Serial()` | 创建串口连接 |
+| `readline()` | 读取一行 |
+| `read()` | 读取指定字节数 |
+| `read_until()` | 读取直到出现分隔符 |
+| `write()` | 写入数据 |
+| `open()` | 打开连接 |
+| `close()` | 关闭连接 |
+| `is_open` | 查看连接状态 |
+
+## 方法参考
+
+### `serial.Serial(port, baudrate, **kwargs)`
+
+创建一个串口连接。
+
+```python
+import serial
+
+ser = serial.Serial('/dev/ttyUSB1', 115200)
+
+# With additional parameters
+ser = serial.Serial(
+    port='/dev/ttyUSB1',
+    baudrate=115200,
+    timeout=60,
+    bytesize=serial.EIGHTBITS,
+    parity=serial.PARITY_NONE,
+    stopbits=serial.STOPBITS_ONE
+)
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `port` | `str` | 串口设备路径（例如 `/dev/ttyUSB1`） |
+| `baudrate` | `int` | 波特率，单位比特每秒 |
+| `timeout` | `float` | 读取超时时间，单位秒 |
+| `bytesize` | `int` | 数据位（5、6、7 或 8） |
+| `parity` | `str` | 校验位（`PARITY_NONE`、`PARITY_EVEN`、`PARITY_ODD`） |
+| `stopbits` | `int` | 停止位（1、1.5 或 2） |
+
+**返回：** `Serial` 对象
+
+### `readline()`
+
+从串口读取一行。
+
+```python
+line = ser.readline()
+print(f"Received: {line.decode('utf-8').strip()}")
+```
+
+**返回：** `bytes` - 读到的那一行
+
+### `read(size)`
+
+读取指定数量的字节。
+
+```python
+data = ser.read(10)
+```
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `size` | `int` | 要读取的字节数 |
+
+**返回：** `bytes` - 读到的数据
+
+### `read_until(expected=b'\n', size=None)`
+
+一直读取，直到出现指定的字节序列。
+
+```python
+line = ser.read_until(b'\n')
+```
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `expected` | `bytes` | 读取到该序列为止 |
+| `size` | `int` | 最多读取的字节数 |
+
+**返回：** `bytes` - 直到该序列为止的数据
+
+### `write(data)`
+
+向串口写入数据。
+
+```python
+ser.write(b'AT+VER\r\n')
+```
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `data` | `bytes` | 要写入的数据 |
+
+**返回：** `int` - 已写入的字节数
+
+### `close()`
+
+关闭串口连接。
+
+```python
+ser.close()
+```
+
+### `is_open`
+
+查看连接是否已打开。
+
+```python
+if ser.is_open:
+    print("Connected")
+```
+
+**返回：** `bool` - 连接已打开时为 True
+
+## 示例
+
+### 基本通信
+
+```python
+import serial
+import time
+
+ser = serial.Serial('/dev/ttyUSB1', 115200, timeout=60)
+
+# Send command
+ser.write(b'AT+VER\r\n')
+time.sleep(0.1)
+
+# Read response
+response = ser.readline()
+print(f"Response: {response.decode('utf-8').strip()}")
+
+ser.close()
+```
+
+### 交互式会话
+
+```python
+import serial
+
+def interactive_session(port, baudrate=115200):
+    ser = serial.Serial(port, baudrate, timeout=1)
+    print(f"Connected to {port}")
+
+    while True:
+        try:
+            # Read any available data
+            if ser.in_waiting:
+                data = ser.read(ser.in_waiting)
+                print(data.decode('utf-8'), end='')
+
+            # Get user input
+            command = input()
+            if command.lower() == 'quit':
+                break
+
+            ser.write(f"{command}\r\n".encode('utf-8'))
+
+        except KeyboardInterrupt:
+            break
+
+    ser.close()
+```
+
+### 数据记录
+
+```python
+import serial
+import time
+from datetime import datetime
+
+def log_serial(port, log_file, duration=60):
+    ser = serial.Serial(port, 115200, timeout=1)
+
+    with open(log_file, 'w') as f:
+        start = time.time()
+
+        while time.time() - start < duration:
+            if ser.in_waiting:
+                data = ser.read(ser.in_waiting)
+                timestamp = datetime.now().isoformat()
+                f.write(f"[{timestamp}] {data.decode('utf-8')}")
+                f.flush()
+
+            time.sleep(0.1)
+
+    ser.close()
+```
+
+### 命令/响应模式
+
+```python
+import serial
+import time
+
+class SerialDevice:
+    def __init__(self, port, baudrate=115200):
+        self.ser = serial.Serial(port, baudrate, timeout=60)
+
+    def send_command(self, command, timeout=5):
+        self.ser.reset_input_buffer()
+        self.ser.write(f"{command}\r\n".encode('utf-8'))
+
+        response = ""
+        start = time.time()
+
+        while time.time() - start < timeout:
+            if self.ser.in_waiting:
+                line = self.ser.readline().decode('utf-8').strip()
+                response += line + "\n"
+
+            time.sleep(0.1)
+
+        return response
+
+    def close(self):
+        self.ser.close()
+
+# Usage
+device = SerialDevice('/dev/ttyUSB1')
+response = device.send_command('AT+VER')
+print(response)
+device.close()
+```
+
+## 硬件集成
+
+| 连接 | 说明 |
+|------------|-------------|
+| 原始 UART | 直接连接 TX/RX 线 |
+| USB CDC | 通过 USB 的虚拟串口 |
+| 流控 | 硬件流控（RTS/CTS）和软件流控（XON/XOFF） |
+
+## 说明
+
+- Lager 原生支持用 `pyserial` 进行串行通信
+- 串口在 Lager 配置阶段指定
+- 同时支持原始 UART 和 USB CDC 连接
+- 默认波特率为 115200
+- 请妥善处理 `SerialException` 错误
+- 用 `decode('utf-8')` 转换为字符串

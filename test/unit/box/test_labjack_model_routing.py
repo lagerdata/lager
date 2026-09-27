@@ -216,5 +216,112 @@ class DeviceLockIdentityTests(unittest.TestCase):
         self.assertNotEqual(t7, u3)
 
 
+class BusDispatcherModelTests(unittest.TestCase):
+    """The i2c and spi dispatchers must not hand a U3 net to the T7 driver.
+
+    They carried ``("labjack_t7", "labjack", "t7")`` as their T7 test, so a
+    net saved with a bare ``LabJack`` went to LJM. On a box with a U3 and a
+    T7, that drove the T7 and reported success while the U3 saw nothing.
+    """
+
+    def setUp(self):
+        from lager.protocols.i2c import dispatcher as i2c_dispatcher
+        from lager.protocols.spi import dispatcher as spi_dispatcher
+        self.modules = {"i2c": i2c_dispatcher, "spi": spi_dispatcher}
+
+    def test_u3_spellings_route_to_the_ud_driver(self):
+        for role, mod in self.modules.items():
+            for name in ("LabJack_U3", "labjack_u3", "LabJack U3"):
+                with self.subTest(role=role, instrument=name):
+                    self.assertEqual(mod._choose_driver(name), mod.UD)
+
+    def test_t7_spellings_still_route_to_the_t7_driver(self):
+        for role, mod in self.modules.items():
+            for name in ("LabJack_T7", "labjack_t7", "LabJack T7", "t7"):
+                with self.subTest(role=role, instrument=name):
+                    self.assertEqual(mod._choose_driver(name), mod.T7)
+
+    def test_a_bare_labjack_never_reaches_the_t7_driver(self):
+        for role, mod in self.modules.items():
+            with self.subTest(role=role):
+                with self.assertRaises(Exception) as ctx:
+                    mod._choose_driver("LabJack", "I2C_NET")
+                self.assertIn("names no LabJack model", str(ctx.exception))
+                self.assertIn("Net 'I2C_NET'", str(ctx.exception))
+
+    def test_the_other_bus_adapters_are_unchanged(self):
+        for role, mod in self.modules.items():
+            for name in ("Aardvark", "aardvark", "totalphase_aardvark",
+                         f"aardvark_{role}"):
+                with self.subTest(role=role, instrument=name):
+                    self.assertEqual(mod._choose_driver(name), mod.AARDVARK)
+            for name in ("FTDI_FT232H", "FTDI_FT2232H", "FTDI_FT4232H",
+                         "ft232h", f"ft232h_{role}"):
+                with self.subTest(role=role, instrument=name):
+                    self.assertEqual(mod._choose_driver(name), mod.FTDI)
+
+
+class UnsupportedInstrumentMessageTests(unittest.TestCase):
+    """A refused instrument must say what the net can be set to instead.
+
+    A bare ``LabJack``, a ``LabJack_T4`` and a ``LabJack_T8`` are refused on
+    purpose: the only T-series driver opens a T7, and the T7 and U3 need
+    different drivers. The refusal used to name only what was wrong.
+    """
+
+    def setUp(self):
+        from lager.exceptions import I2CBackendError, SPIBackendError
+        from lager.io.adc.dispatcher import ADCDispatcher
+        from lager.io.gpio.dispatcher import GPIODispatcher
+        from lager.protocols.i2c import dispatcher as i2c_dispatcher
+        from lager.protocols.spi import dispatcher as spi_dispatcher
+        # The i2c/spi dispatchers are modules, not classes; each exposes the
+        # same _choose_driver(instrument) the class dispatchers do.
+        self.dispatchers = {
+            "adc": (ADCDispatcher(), ADCDispatcher.ERROR_CLASS),
+            "dac": (DACDispatcher(), DACBackendError),
+            "gpio": (GPIODispatcher(), GPIODispatcher.ERROR_CLASS),
+            "i2c": (i2c_dispatcher, I2CBackendError),
+            "spi": (spi_dispatcher, SPIBackendError),
+        }
+
+    def _refusal(self, role, instrument):
+        dispatcher, error = self.dispatchers[role]
+        with self.assertRaises(error) as ctx:
+            dispatcher._choose_driver(instrument)
+        return str(ctx.exception)
+
+    def test_a_bare_labjack_is_told_it_names_no_model(self):
+        for role in self.dispatchers:
+            for name in ("LabJack", "labjack", " LABJACK "):
+                with self.subTest(role=role, instrument=name):
+                    message = self._refusal(role, name)
+                    self.assertIn("names no LabJack model", message)
+                    self.assertIn("LabJack_T7", message)
+                    self.assertIn("LabJack_U3", message)
+
+    def test_a_t4_or_t8_is_refused_naming_the_supported_models(self):
+        for role in self.dispatchers:
+            for name in ("LabJack_T4", "LabJack_T8"):
+                with self.subTest(role=role, instrument=name):
+                    message = self._refusal(role, name)
+                    self.assertIn(f"'{name}'", message)
+                    self.assertIn("LabJack_T7", message)
+
+    def test_the_gpio_message_also_names_the_ftdi_parts_and_aardvark(self):
+        message = self._refusal("gpio", "Some_Unknown_Box")
+        for name in ("FTDI_FT232H", "FTDI_FT2232H", "FTDI_FT4232H", "Aardvark"):
+            self.assertIn(name, message)
+
+    def test_every_model_a_message_suggests_routes_to_a_driver(self):
+        # Suggesting a name that is then refused would be worse than no hint.
+        from lager.dispatchers.helpers import SUPPORTED_INSTRUMENTS
+        for role, names in SUPPORTED_INSTRUMENTS.items():
+            dispatcher, _ = self.dispatchers[role]
+            for name in names:
+                with self.subTest(role=role, instrument=name):
+                    dispatcher._choose_driver(name)  # must not raise
+
+
 if __name__ == "__main__":
     unittest.main()

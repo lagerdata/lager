@@ -346,35 +346,39 @@ class TestUtils:
         assert generateAESIV(256)[0] == 0
         assert generateAESIV(257)[0] == 1
 
+    # The Android branch is gone with the P4A_BOOTSTRAP check it depended on
+    # (#531). python-for-android sets that variable inside an APK it built;
+    # nothing in this repository packages one, and nothing in the Dockerfile
+    # or the start scripts sets it, so on a box `get_platform_type()` always
+    # took the Linux branch. The only thing keeping the branch reachable was
+    # the test that set the variable itself.
+
     @patch("lager.blufi.utils.platform.system", return_value="Linux")
-    @patch.dict(os.environ, {}, clear=False)
     def test_get_platform_type_linux(self, mock_sys):
-        # Remove P4A_BOOTSTRAP if present
-        os.environ.pop("P4A_BOOTSTRAP", None)
         assert get_platform_type() == "Linux"
 
     @patch("lager.blufi.utils.platform.system", return_value="Darwin")
-    @patch.dict(os.environ, {}, clear=False)
     def test_get_platform_type_darwin(self, mock_sys):
-        os.environ.pop("P4A_BOOTSTRAP", None)
         assert get_platform_type() == "Darwin"
 
-    @patch.dict(os.environ, {"P4A_BOOTSTRAP": "sdl2"})
-    def test_get_platform_type_android(self):
-        assert get_platform_type() == "Android"
-
     @patch("lager.blufi.utils.platform.system", return_value="FreeBSD")
-    @patch.dict(os.environ, {}, clear=False)
     def test_get_platform_type_unsupported(self, mock_sys):
-        os.environ.pop("P4A_BOOTSTRAP", None)
         with pytest.raises(Exception, match="Unsupported platform"):
             get_platform_type()
 
     @patch("lager.blufi.utils.platform.system", return_value="Windows")
-    @patch.dict(os.environ, {}, clear=False)
     def test_get_platform_type_windows(self, mock_sys):
-        os.environ.pop("P4A_BOOTSTRAP", None)
         assert get_platform_type() == "Windows"
+
+    def test_event_ts_needs_a_loop_to_be_given_one(self):
+        """The loop is required, not discovered (#531).
+
+        `asyncio.get_event_loop()` has been deprecated since 3.10 and raises
+        with no running loop on 3.12, and the one thing this class must not do
+        is guess which loop its waiters are on. Every call site passes one.
+        """
+        with pytest.raises(TypeError):
+            Event_ts()
 
     def test_event_ts_set_clear(self):
         loop = asyncio.new_event_loop()

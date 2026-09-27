@@ -9,12 +9,14 @@ Uses shared helpers from lager.dispatchers.helpers for common patterns.
 from __future__ import annotations
 
 import json
+import re
 import sys
 import threading
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from lager.dispatchers import helpers
 from lager.exceptions import I2CBackendError
+from lager.util.ftdi_url import is_ftdi_instrument
 
 if TYPE_CHECKING:
     from lager.protocols.i2c.i2c_base import I2CBase
@@ -31,6 +33,66 @@ __all__ = [
 
 # Role constant for I2C nets
 ROLE = "i2c"
+
+# LabJack UD series (U3/U6). A regex, not the exact-string tuples the other
+# branches use, because a net record can spell the instrument "LabJack_U3",
+# "labjack_u3" or "LabJack U3" and only the first two survive a tuple test.
+# This is the same pattern the adc/dac/gpio dispatchers already match a U3 on.
+_UD_RE = re.compile(r"labjack[_\-\s]*u[36]", re.IGNORECASE)
+
+# LabJack T-series. A regex for the same reason as _UD_RE, plus the short
+# "t7" alias older records carry. A bare "labjack" is deliberately NOT here:
+# it names a family, not a model, and on a box with a U3 and a T7 routing it
+# to LJM drives the T7 and reports success while the U3 sees nothing.
+_T7_RE = re.compile(r"labjack[_\-\s]*t7", re.IGNORECASE)
+
+# Driver kinds _choose_driver returns; _make_driver builds one per kind.
+UD, T7, AARDVARK, FTDI = "ud", "t7", "aardvark", "ftdi"
+
+
+def _choose_driver(instrument: str, netname: Optional[str] = None) -> str:
+    """Which driver a net's instrument string selects, without opening it.
+
+    Pure, so the routing can be tested without hardware or driver imports.
+    The U3 check is first; the patterns are mutually exclusive, so the order
+    is for readability. Anything unmatched -- a bare "LabJack" included -- is
+    refused with the same message the GPIO/ADC/DAC dispatchers give.
+    """
+    inst = (instrument or "").strip().lower()
+    if _UD_RE.search(inst):
+        return UD
+    if _T7_RE.search(inst) or inst == "t7":
+        return T7
+    if inst in ("aardvark_i2c", "aardvark", "totalphase_aardvark"):
+        return AARDVARK
+    if is_ftdi_instrument(inst) or inst == "ft232h_i2c":
+        return FTDI
+    message = helpers.unsupported_instrument_message(ROLE, instrument)
+    if netname:
+        message = f"Net '{netname}': {message}"
+    raise I2CBackendError(message)
+
+
+def is_ud_net(rec):
+    """True when this net's instrument is a LabJack the UD drivers own."""
+    return bool(_UD_RE.search(str(rec.get("instrument", ""))))
+
+
+def achieved_frequency_hz(rec, requested_hz):
+    """What the bus will actually clock at. See the SPI dispatcher's twin.
+
+    Pure arithmetic on the driver class, so the HTTP path can call it against a
+    proxied driver. Both message sites use this rather than formatting the
+    number independently.
+    """
+    if requested_hz is None or not is_ud_net(rec):
+        return requested_hz
+    try:
+        from .labjack_ud_i2c import LabJackUDI2C
+        return int(round(LabJackUDI2C._frequency_for(
+            LabJackUDI2C._speed_adjust_for(requested_hz))))
+    except Exception:
+        return requested_hz
 
 # Driver cache to avoid recreating drivers for each call
 _driver_cache: Dict[str, 'I2CBase'] = {}
@@ -49,8 +111,11 @@ def _get_pin_config(rec: Dict[str, Any]) -> Dict[str, int]:
     instrument = rec.get("instrument", "").lower()
     if instrument in ("aardvark_i2c", "aardvark", "totalphase_aardvark"):
         return {}
-    if instrument in ("ft232h", "ftdi_ft232h", "ft232h_i2c"):
+    if is_ftdi_instrument(instrument) or instrument == "ft232h_i2c":
         return {}
+
+    if _UD_RE.search(instrument):
+        return _ud_pin_config(rec)
 
     params = rec.get("params", {})
     pin_field = rec.get("pin", "")
@@ -87,6 +152,47 @@ def _get_pin_config(rec: Dict[str, Any]) -> Dict[str, int]:
             )
 
     return pin_config
+
+
+def _ud_pin_config(rec: Dict[str, Any]) -> Dict[str, int]:
+    """
+    Extract I2C pin configuration for a LabJack UD (U3) net.
+
+    Separate from the T7 path above because that one reaches a pin number with
+    ``int(part.replace("FIO", ""))``, which cannot see an ``EIO`` or ``CIO``
+    spelling at all -- and on a U3-HV those are two thirds of the usable
+    digital lines. Everything here goes through ``pin_to_dio``, so any name the
+    handle manager accepts works.
+
+    ``params`` wins over the pin span: it is the only way to name lines that
+    are not adjacent.
+    """
+    from lager.io.labjack_ud_handle import pin_to_dio
+
+    params = rec.get("params", {}) or {}
+    pin_field = rec.get("pin", "") or ""
+    netname = rec.get("name", "<unknown>")
+
+    if params.get("sda_pin") is not None and params.get("scl_pin") is not None:
+        try:
+            return {"sda_pin": pin_to_dio(params["sda_pin"]),
+                    "scl_pin": pin_to_dio(params["scl_pin"])}
+        except ValueError as exc:
+            raise I2CBackendError(f"Net '{netname}': {exc}") from None
+
+    if "-" in pin_field:
+        parts = pin_field.split("-")
+        if len(parts) == 2:
+            try:
+                return {"sda_pin": pin_to_dio(parts[0]),
+                        "scl_pin": pin_to_dio(parts[1])}
+            except ValueError as exc:
+                raise I2CBackendError(f"Net '{netname}': {exc}") from None
+
+    raise I2CBackendError(
+        f"Net '{netname}' has no usable I2C pin configuration. Give a pin "
+        f"span such as 'FIO6-FIO7', or params with sda_pin and scl_pin."
+    )
 
 
 def _get_i2c_params(rec: Dict[str, Any]) -> Dict[str, Any]:
@@ -135,8 +241,29 @@ def _make_driver(rec: Dict[str, Any], overrides: Dict[str, Any] = None):
     if overrides:
         i2c_params.update(overrides)
 
-    # Select driver based on instrument type
-    if instrument in ("labjack_t7", "labjack", "t7"):
+    # Select driver based on instrument type. _choose_driver refuses anything
+    # it cannot name a model for, before any pin parsing or device open.
+    kind = _choose_driver(instrument, netname)
+
+    if kind == UD:
+        from .labjack_ud_i2c import LabJackUDI2C
+
+        pin_config = _get_pin_config(rec)
+        try:
+            return LabJackUDI2C(
+                sda_pin=pin_config["sda_pin"],
+                scl_pin=pin_config["scl_pin"],
+                frequency_hz=i2c_params.get("frequency_hz", 100_000),
+                unique_id=rec.get("address", ""),
+            )
+        except I2CBackendError:
+            raise   # already specific; wrapping would bury the pin advice
+        except Exception as exc:
+            raise I2CBackendError(
+                f"Failed to create U3 I2C driver: {exc}"
+            ) from exc
+
+    if kind == T7:
         from .labjack_i2c import LabJackI2C
 
         pin_config = _get_pin_config(rec)
@@ -150,7 +277,7 @@ def _make_driver(rec: Dict[str, Any], overrides: Dict[str, Any] = None):
             raise I2CBackendError(
                 f"Failed to create I2C driver: {exc}"
             ) from exc
-    elif instrument in ("aardvark_i2c", "aardvark", "totalphase_aardvark"):
+    elif kind == AARDVARK:
         from .aardvark_i2c import AardvarkI2C
 
         port = rec.get("params", {}).get("port", 0)
@@ -173,7 +300,9 @@ def _make_driver(rec: Dict[str, Any], overrides: Dict[str, Any] = None):
             raise I2CBackendError(
                 f"Failed to create Aardvark I2C driver: {exc}"
             ) from exc
-    elif instrument in ("ft232h", "ftdi_ft232h", "ft232h_i2c"):
+    elif kind == FTDI:
+        # Every FTDI part, not only the FT232H: the driver takes the part from
+        # the PID in the address and the channel from params.interface.
         from .ft232h_i2c import FT232HI2C
 
         from lager.nets.net import _ftdi_address_parts
@@ -191,11 +320,6 @@ def _make_driver(rec: Dict[str, Any], overrides: Dict[str, Any] = None):
             raise I2CBackendError(
                 f"Failed to create FT232H I2C driver: {exc}"
             ) from exc
-    else:
-        raise I2CBackendError(
-            f"Unsupported I2C instrument '{instrument}' for net '{netname}'. "
-            f"Supported: labjack_t7, aardvark_i2c, ft232h"
-        )
 
 
 def _resolve_net_and_driver(netname: str, overrides: Dict[str, Any] = None):
@@ -340,8 +464,28 @@ def config(
     if persist_kwargs:
         _persist_params(netname, **persist_kwargs)
 
-    print(f"I2C configured: freq={effective_freq}Hz, "
-          f"pull_ups={'on' if effective_pull_ups else 'off'}")
+    # Same reasoning as the SPI dispatcher: report what the part will do. A U3
+    # has no controllable pull-ups at all, so printing on/off for one states a
+    # bus condition the driver cannot set and the user must supply externally.
+    achieved_hz = achieved_frequency_hz(rec, effective_freq)
+    freq_note = f"freq={achieved_hz}Hz"
+    # `stored_freq` carries a 100 kHz default for a net that stored nothing,
+    # and a U3 rounds that to a reachable delay count. Name a request only
+    # when this call carried one or the net actually stored one.
+    asked_hz = (frequency_hz if frequency_hz is not None
+                else stored_params.get("frequency_hz"))
+    if asked_hz is not None and achieved_hz != asked_hz:
+        freq_note += f" (requested {asked_hz}Hz)"
+
+    for note in getattr(drv, 'clamp_warnings', ()) or ():
+        print(f"WARNING: {note}")
+
+    if is_ud_net(rec):                       # a U3 has no pull-ups at all
+        pull_note = "pull_ups=n/a (external resistors required)"
+    else:
+        pull_note = f"pull_ups={'on' if effective_pull_ups else 'off'}"
+
+    print(f"I2C configured: {freq_note}, {pull_note}")
 
 
 def scan(

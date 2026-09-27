@@ -17,7 +17,10 @@ import sys
 
 def raise_for_status(resp):
     """Raises :class:`HTTPError`, if one occurred.
-       Copied from requests and modified. """
+
+    Adapted from ``requests.models.Response.raise_for_status``
+    (https://github.com/psf/requests, Apache License 2.0); see NOTICE.
+    """
     from requests.exceptions import HTTPError
 
     http_error_msg = ''

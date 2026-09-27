@@ -287,75 +287,15 @@ class LabJackSPI(SPIBase):
         _debug(f"SPI registers configured: mode={self._mode}, throttle={throttle}, "
                f"options={options:#04x}, num_bytes={num_bytes}")
 
-    def _reverse_byte(self, value: int) -> int:
-        """Reverse bits in a byte for LSB-first mode."""
-        return self.reverse_bits(value, 8)
-
-    def _reverse_word(self, value: int) -> int:
-        """Reverse bits in a word for LSB-first mode."""
-        return self.reverse_bits(value, self._word_size)
-
     def _words_to_bytes(self, words: List[int]) -> List[int]:
-        """
-        Convert words to bytes based on word_size and bit_order.
-
-        For word_size > 8, each word is split into multiple bytes.
-        MSB-first: Most significant byte first
-        LSB-first: Least significant byte first (bits reversed)
-        """
-        max_value = (1 << self._word_size) - 1
-        for w in words:
-            if w > max_value:
-                raise SPIBackendError(
-                    f"Data value 0x{w:X} exceeds {self._word_size}-bit word size "
-                    f"(max 0x{max_value:X}). Use commas to separate into "
-                    f"{self._word_size}-bit values, or set --word-size to match "
-                    f"your data."
-                )
-
-        if self._word_size == 8:
-            # For 8-bit words, optionally reverse bits for LSB-first
-            if self._bit_order == "lsb":
-                return [self._reverse_byte(w & 0xFF) for w in words]
-            return [w & 0xFF for w in words]
-
-        bytes_per_word = self._word_size // 8
-        result = []
-
-        for word in words:
-            if self._bit_order == "lsb":
-                word = self._reverse_word(word)
-
-            # Split word into bytes (MSB first for transmission)
-            word_bytes = []
-            for i in range(bytes_per_word - 1, -1, -1):
-                word_bytes.append((word >> (i * 8)) & 0xFF)
-            result.extend(word_bytes)
-
-        return result
+        """Pack words for transmission, per this net's word_size/bit_order."""
+        return self.words_to_bytes(words, word_size=self._word_size,
+                                   bit_order=self._bit_order)
 
     def _bytes_to_words(self, data_bytes: List[int]) -> List[int]:
-        """
-        Convert received bytes back to words based on word_size and bit_order.
-        """
-        if self._word_size == 8:
-            if self._bit_order == "lsb":
-                return [self._reverse_byte(b) for b in data_bytes]
-            return list(data_bytes)
-
-        bytes_per_word = self._word_size // 8
-        result = []
-
-        for i in range(0, len(data_bytes), bytes_per_word):
-            word = 0
-            for j in range(bytes_per_word):
-                if i + j < len(data_bytes):
-                    word = (word << 8) | data_bytes[i + j]
-            if self._bit_order == "lsb":
-                word = self._reverse_word(word)
-            result.append(word)
-
-        return result
+        """Reassemble received bytes, per this net's word_size/bit_order."""
+        return self.bytes_to_words(data_bytes, word_size=self._word_size,
+                                   bit_order=self._bit_order)
 
     def _execute_transaction(
         self,

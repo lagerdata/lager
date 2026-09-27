@@ -574,7 +574,7 @@ def run_python_internal(ctx, runnable, box, env, passenv, kill, download, allow_
         if 'connection refused' in error_str:
             click.secho(f'Error: Connection refused by box ({box_ip})', fg='red', err=True)
             click.secho('The box service can be down.', err=True)
-            click.secho(f'Check that the Docker container runs: ssh lagerdata@{box_ip} "docker ps"', err=True)
+            click.secho(f'Check that the Docker container runs: lager ssh --box {box_ip} -- docker ps', err=True)
         elif 'no route to host' in error_str or 'network is unreachable' in error_str:
             click.secho(f'Error: No route to host ({box_ip})', fg='red', err=True)
             click.secho('Check your network connection and that Tailscale/VPN is connected.', err=True)
@@ -917,6 +917,7 @@ def python(ctx, runnable, box, env, passenv, kill, kill_all, download, allow_ove
         resolve_and_validate_box,
         acquire_box_lock,
         get_lock_holder,
+        heartbeat_holder,
         default_auto_holder_type,
         default_lock_wait_seconds,
         default_lock_ttl_seconds,
@@ -1036,20 +1037,23 @@ def python(ctx, runnable, box, env, passenv, kill, kill_all, download, allow_ove
             should_release = not detach
             if not detach and ttl is not None:
                 heartbeat = _HeartbeatThread(
-                    box_ip, holder, default_heartbeat_interval(), ttl_seconds=ttl,
+                    box_ip, heartbeat_holder(state, lock_data, holder),
+                    default_heartbeat_interval(), ttl_seconds=ttl,
                 )
                 heartbeat.start()
         elif state == 'already_ours':
-            # Pre-existing lock with our holder string. Do NOT release on
-            # exit — for a `lager boxes lock` reservation that's the whole
-            # guarantee, and for a leftover ephemeral lock the release is
+            # Pre-existing lock that is ours (see holder_is_ours). Do NOT
+            # release on exit — for a `lager boxes lock` reservation that's the
+            # whole guarantee, and for a leftover ephemeral lock the release is
             # the original holder's call. If the resumed lock carries a TTL
             # (leftover ephemeral, not a user reservation), heartbeat it so
-            # it can't expire mid-run.
+            # it can't expire mid-run, under the holder string the box stored:
+            # the only one it renews for.
             resumed_ttl = (lock_data or {}).get('ttl_seconds')
             if not detach and resumed_ttl is not None:
                 heartbeat = _HeartbeatThread(
-                    box_ip, holder, default_heartbeat_interval(),
+                    box_ip, heartbeat_holder(state, lock_data, holder),
+                    default_heartbeat_interval(),
                     ttl_seconds=resumed_ttl,
                 )
                 heartbeat.start()

@@ -1,0 +1,64 @@
+---
+title: "Version 0.46.2"
+description: "September 8, 2026"
+---
+
+## <u>Upgrade Notes</u>
+
+- **`lager exec` runs your command in place when the CI job is already inside the
+  devenv image.** Before this version, `lager exec` always started a container. A job
+  that runs inside the image has no Docker, so the command failed with `Docker is not
+  installed or not in PATH`. It now runs the command directly in that job. GitHub
+  Actions, GitLab CI, Drone, and Bitbucket Pipelines get this behavior. A Jenkins agent
+  and a runner with no `container:` still start a container. If your CI sets the
+  container variables and also has a working Docker, your commands now run in the job
+  instead of in a new container. Set `LAGER_CI_OVERRIDE=1` to keep the old behavior.
+
+## <u>Bug Fixes</u>
+
+- **`lager exec` failed with `Docker is not installed or not in PATH` inside a CI job
+  container.** The CLI has two ways to run a saved command: it starts a container, or it
+  runs the command directly. The second way was lost when the command moved to a new
+  module, and no test covered either way. Both ways work again. The command runs in the
+  directory of the check-out. The `--env` option and the `environment` key reach the
+  command. The options `--mount`, `--volume`, `--user`, and `--group` need a container,
+  so the CLI now gives a warning for each one instead of ignoring it.
+
+- **OpenOCD `flash` and `erase` made the same decision in two places.** The HTTP debug
+  service and the Net API each decided for themselves whether a target needs the
+  RAM-resident flash loader. The Net API was missing the DA1469x path because of that
+  split. Both now use one module. A loader failure names the step that failed instead of
+  an OpenOCD tcl traceback. A flash that stops after its erase stage will tell you that
+  the board can be blank. An address outside the DA1469x flash window is refused before
+  any I/O. Callers keep passing absolute XIP addresses. Other OpenOCD targets and the
+  J-Link backend do not change.
+
+## <u>Improvements</u>
+
+- The CI guide covers the job that runs inside the devenv image. It shows the
+  `container:` block, the options that do nothing in that job, and the error you will
+  see on a CLI that is too old.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.46.2
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli==0.46.2
+```
+
+Then update your boxes:
+
+```bash
+lager update --box <box-name>
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.46.2/)

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 DocKind = Literal[
     "schematic",
@@ -25,23 +25,48 @@ DocKind = Literal[
     "other",
 ]
 
+#: Where an agent looks for a ``repo_path`` document that the user's project
+#: does not contain. Deliberately outside the project tree: ``lager python``
+#: zips the project directory, following symlinks, under a size cap, so a
+#: documents folder inside the project would be uploaded on every run.
+LOCAL_DOCS_DIR = "~/.lager_dut_docs"
+
 
 class DocRef(BaseModel):
     """A reference to an external document the agent can fetch and analyse.
 
-    Either ``url`` or ``repo_path`` must be set (or both). ``repo_path`` is
-    interpreted relative to the user's test project (the directory synced
-    to the box when running ``lager python path/to/test.py --box <box-ip>``),
-    so the agent can open it with its local file tools without any blob
-    transfer over MCP.
+    At least one locator must be set: ``url``, ``repo_path``, ``external_id``
+    or ``external_url``. ``repo_path`` is interpreted relative to the user's
+    test project (the directory synced to the box when running
+    ``lager python path/to/test.py --box <box-ip>``); when the project does
+    not have the file, the agent looks under ``LOCAL_DOCS_DIR`` at the same
+    relative path. ``external_id`` and ``external_url`` name the document in
+    an external document store, which the agent reaches through its own
+    authenticated connector -- the box never authenticates.
+
+    Unknown fields are kept (``extra="allow"``), so a field written by a newer
+    tool survives the trip to the agent.
     """
+
+    model_config = ConfigDict(extra="allow")
 
     title: str
     kind: DocKind = "other"
     url: str | None = None
     repo_path: str | None = None
+    external_id: str | None = None
+    external_url: str | None = None
     pages: str | None = None  # e.g. "3", "3-5", "POWER sheet"
     notes: str | None = None
+
+    @model_validator(mode="after")
+    def _needs_a_locator(self) -> DocRef:
+        if not (self.url or self.repo_path or self.external_id or self.external_url):
+            raise ValueError(
+                "DocRef needs at least one of url, repo_path, external_id "
+                "or external_url"
+            )
+        return self
 
 
 class SubSystem(BaseModel):

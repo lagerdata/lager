@@ -848,5 +848,69 @@ class UpgradeCompat(unittest.TestCase):
         self.assertEqual(c1.compute_hash(), c2.compute_hash())
 
 
+class ValidateNetworkMode(unittest.TestCase):
+    def test_absent_is_valid_and_defaults(self):
+        self.assertEqual(cfg.validate(_v()), [])
+        self.assertEqual(cfg.BoxConfig.from_dict(_v()).network_mode,
+                         cfg.DEFAULT_NETWORK_MODE)
+
+    def test_each_allowed_mode_validates(self):
+        for mode in cfg.NETWORK_MODES:
+            with self.subTest(mode=mode):
+                self.assertEqual(cfg.validate(_v({"network_mode": mode})), [])
+
+    def test_unknown_mode_is_rejected_by_name(self):
+        errors = cfg.validate(_v({"network_mode": "bridge"}))
+        self.assertEqual(len(errors), 1)
+        self.assertIn("network_mode", errors[0])
+        self.assertIn("bridge", errors[0])
+
+    def test_non_string_is_rejected(self):
+        self.assertIn("must be a string", cfg.validate(_v({"network_mode": 5}))[0])
+
+    def test_default_is_omitted_from_to_dict(self):
+        """to_dict feeds compute_hash. Emitting the default unconditionally
+        would change the hash of every config already deployed, so every box
+        would report drift and take one pointless restart on its next apply."""
+        self.assertNotIn("network_mode", cfg.BoxConfig.from_dict(_v()).to_dict())
+        self.assertNotIn(
+            "network_mode",
+            cfg.BoxConfig.from_dict(_v({"network_mode": "lagernet"})).to_dict())
+
+    def test_non_default_is_written(self):
+        out = cfg.BoxConfig.from_dict(_v({"network_mode": "host"})).to_dict()
+        self.assertEqual(out["network_mode"], "host")
+
+    def test_adding_the_field_does_not_change_an_existing_hash(self):
+        """The compatibility guarantee: a config written before network_mode
+        existed must still hash to what it hashed to then."""
+        legacy = {
+            "version": 1, "mounts": [], "volumes": [], "env": {"A": "1"},
+            "pip_packages": [], "apt_packages": [], "sysctl": {},
+            "cargo_packages": [], "npm_packages": [], "udev_rules": [],
+        }
+        expected = hashlib.sha256(
+            json.dumps(legacy, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        self.assertEqual(cfg.BoxConfig.from_dict(dict(legacy)).compute_hash(), expected)
+
+    def test_host_mode_changes_the_hash(self):
+        base = cfg.BoxConfig.from_dict(_v()).compute_hash()
+        host = cfg.BoxConfig.from_dict(_v({"network_mode": "host"})).compute_hash()
+        self.assertNotEqual(base, host)
+
+    def test_round_trips(self):
+        c1 = cfg.BoxConfig.from_dict(_v({"network_mode": "host"}))
+        c2 = cfg.BoxConfig.from_dict(c1.to_dict())
+        self.assertEqual(c2.network_mode, "host")
+        self.assertEqual(c1.compute_hash(), c2.compute_hash())
+
+    def test_it_is_first_class_not_an_extra(self):
+        """In `extras` it would round-trip but never reach the renderer."""
+        c = cfg.BoxConfig.from_dict(_v({"network_mode": "host"}))
+        self.assertNotIn("network_mode", c.extras)
+        self.assertIn("network_mode", cfg._FIRST_CLASS_KEYS)
+
+
 if __name__ == "__main__":
     unittest.main()

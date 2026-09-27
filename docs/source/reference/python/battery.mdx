@@ -19,6 +19,7 @@ The Net-based API provides methods that can either get or set values. When calle
 |--------|-------------|
 | `mode(mode_type)` | Set or read simulation mode ('static' or 'dynamic') |
 | `set_mode_battery()` | Initialize battery simulation mode |
+| `setup_battery(...)` | Apply several battery settings in one call, with the output off |
 | `soc(value)` | Set or read state of charge (0-100%) |
 | `voc(value)` | Set or read open-circuit voltage |
 | `voltage_full(value)` | Set or read full charge voltage |
@@ -68,6 +69,30 @@ Initialize the instrument for battery simulation mode.
 ```python
 batt.set_mode_battery()
 ```
+
+### `setup_battery(*, sim_mode=None, soc=None, voc=None, voltage_full=None, voltage_empty=None, current_limit=None, capacity=None, model=None)`
+
+Apply several battery settings in one call. All parameters are keyword-only.
+
+```python
+batt.setup_battery(
+    sim_mode='dynamic',
+    model=1,
+    voltage_full=4.2,
+    voltage_empty=3.0,
+    current_limit=1.0,
+    soc=0,
+    capacity=2.0,
+)
+batt.enable()
+```
+
+`setup_battery()` puts the instrument in battery mode and turns the output off. It then applies each parameter that is not `None`, in this order: `sim_mode`, `model`, `voltage_full`, `voltage_empty`, `current_limit`, `soc`, `voc`, `capacity`.
+
+- `soc` must be 0 to 100, and `0` is applied. A value outside the range raises `ValueError`.
+- `voltage_full` is rounded to 0.1 V.
+- `sim_mode` is `'static'` or `'dynamic'`.
+- The output stays off. Call `enable()` after `setup_battery()`.
 
 ### `mode(mode_type=None)`
 

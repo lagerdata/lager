@@ -14,7 +14,7 @@ client budget has to cover it).
 import importlib
 import io
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import MagicMock, patch
 
 import click
@@ -86,6 +86,82 @@ class UsbCycleWiringTests(unittest.TestCase):
     def test_cycle_exposes_an_off_time_option(self):
         opts = {o.name for o in usb_cmd.usb.commands["cycle"].params}
         self.assertIn("off_time", opts)
+
+
+def _cycle_result(payload):
+    """Drive a cycle against a box answering `payload`; return (exited, stdout, stderr)."""
+    ctx = MagicMock(spec=click.Context)
+    ctx.exit.side_effect = SystemExit(1)
+    out, err = io.StringIO(), io.StringIO()
+    exited = False
+    with patch("requests.post", return_value=_Resp(payload)), \
+            patch("cli.box_storage._check_gateway", side_effect=lambda r, b: r), \
+            patch("cli.gateway_auth.auth_headers_for_box", return_value={}), \
+            redirect_stdout(out), redirect_stderr(err):
+        try:
+            usb_cmd._invoke_remote(ctx, "usb1", "10.0.0.1", "cycle")
+        except SystemExit:
+            exited = True
+    return exited, out.getvalue(), err.getvalue()
+
+
+class UsbCycleExitCodeTests(unittest.TestCase):
+    """A cycle whose device did not come back exits 1 (#502).
+
+    It used to print `[OK]` and exit 0 for all four results, so a script could
+    tell only from the message text that the device it needed was gone.
+    """
+
+    BACK = "USB port 'usb1' power-cycled; device re-enumerated"
+    GONE = ("USB port 'usb1' power-cycled, but the device did not come back "
+            "before the timeout")
+
+    def _body(self, message, **fields):
+        return {"success": True, "action": "cycle", "state": "enabled",
+                "message": message, **fields}
+
+    def test_a_device_that_did_not_come_back_exits_1(self):
+        exited, out, err = _cycle_result(self._body(
+            self.GONE, reconnected=False, outcome="not_reconnected"))
+        self.assertTrue(exited)
+        self.assertNotIn("[OK]", out)
+        self.assertIn("did not come back", err)
+
+    def test_an_older_box_without_outcome_is_read_from_reconnected(self):
+        exited, _, err = _cycle_result(self._body(self.GONE, reconnected=False))
+        self.assertTrue(exited)
+        self.assertIn("did not come back", err)
+
+    def test_a_returned_device_is_ok(self):
+        for fields in ({"reconnected": True, "outcome": "reconnected"},
+                       {"reconnected": True}):
+            with self.subTest(fields=fields):
+                exited, out, _ = _cycle_result(self._body(self.BACK, **fields))
+                self.assertFalse(exited)
+                self.assertIn("[OK]", out)
+
+    def test_the_unconfirmed_results_are_not_failures(self):
+        """No device on the port, or a bus the box could not read."""
+        for outcome in ("no_device", "topology_unreadable"):
+            with self.subTest(outcome=outcome):
+                exited, out, _ = _cycle_result(self._body(
+                    "USB port 'usb1' power-cycled (not confirmed)", outcome=outcome))
+                self.assertFalse(exited)
+                self.assertIn("[OK]", out)
+
+    def test_other_commands_ignore_the_cycle_fields(self):
+        ctx = MagicMock(spec=click.Context)
+        ctx.exit.side_effect = SystemExit(1)
+        out = io.StringIO()
+        body = {"success": True, "action": "enable", "message": "on",
+                "reconnected": False}
+        with patch("requests.post", return_value=_Resp(body)), \
+                patch("cli.box_storage._check_gateway", side_effect=lambda r, b: r), \
+                patch("cli.gateway_auth.auth_headers_for_box", return_value={}), \
+                redirect_stdout(out):
+            usb_cmd._invoke_remote(ctx, "usb1", "10.0.0.1", "enable")
+        self.assertIn("[OK] on", out.getvalue())
+        ctx.exit.assert_not_called()
 
 
 if __name__ == "__main__":

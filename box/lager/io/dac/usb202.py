@@ -186,7 +186,7 @@ class USB202DAC(DACBase):
             raise ValueError(
                 f"Voltage {voltage}V out of range for MCC USB-202 DAC. "
                 f"Supported range: 0V to 5V (unipolar). "
-                f"Note: Unlike LabJack (±10V), USB-202 DAC cannot output negative voltages."
+                f"The USB-202 DAC cannot output negative voltages."
             )
 
         device_descriptor = self._get_device()

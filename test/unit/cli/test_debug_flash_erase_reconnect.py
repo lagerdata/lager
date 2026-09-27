@@ -34,6 +34,7 @@ handed back from `_get_service_client` -- so no hardware or network is touched.
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import sys
 from unittest.mock import patch
@@ -69,29 +70,57 @@ class _Obj:
     """Settable stand-in for the LagerContext (the group stashes `net_name`)."""
 
 
+# "The box sent no `erase_range` key at all" -- what a box older than the
+# key answers -- as distinct from `erase_range: None`, a full-chip erase.
+_NO_RANGE = object()
+
+# What a box that reads erase_start/erase_size lists under /health.
+HEALTH_WITH_RANGE = {"status": "healthy", "version": "1.0.0", "features": ["erase_range"]}
+
+
 class FakeClient:
     """A DebugServiceClient that records every box call in order.
 
     `connect_error` makes `/debug/connect` behave the way the box does against
     a just-erased part: HTTP 500. `erase_error` does the same for
-    `/debug/erase`. Signatures mirror `service_client.DebugServiceClient` so a
-    change there surfaces here as a TypeError rather than a false pass.
+    `/debug/erase`. `erase_range` is echoed in the erase response; left unset,
+    the response has no such key, like an older box. `health` is what
+    `/health` answers (a box that reads the erase range, by default) and
+    `health_error` makes that call raise. Signatures mirror
+    `service_client.DebugServiceClient` so a change there surfaces here as a
+    TypeError rather than a false pass.
     """
 
     def __init__(self, connect_error=None, erase_error=None, flash_output="",
-                 erase_output="Erase completed"):
+                 erase_output="Erase completed", erase_range=_NO_RANGE,
+                 health=None, health_error=None):
         self.calls: list[str] = []
         self.connect_error = connect_error
         self.erase_error = erase_error
         self.flash_output = flash_output
         self.erase_output = erase_output
+        self.erase_range = erase_range
+        self.health = HEALTH_WITH_RANGE if health is None else health
+        self.health_error = health_error
+        self.erase_kwargs: list[dict] = []
         self.closed = False
 
-    def erase(self, net, speed='4000', transport='SWD'):
+    def erase(self, net, speed='4000', transport='SWD', *, erase_start=None,
+              erase_size=None):
         self.calls.append("erase")
+        self.erase_kwargs.append({"erase_start": erase_start, "erase_size": erase_size})
         if self.erase_error:
             raise self.erase_error
-        return {"status": "erase_complete", "output": self.erase_output}
+        result = {"status": "erase_complete", "output": self.erase_output}
+        if self.erase_range is not _NO_RANGE:
+            result["erase_range"] = self.erase_range
+        return result
+
+    def get_service_health(self, detailed=False):
+        self.calls.append("health")
+        if self.health_error:
+            raise self.health_error
+        return self.health
 
     def connect(self, net, speed=None, force=False, halt=False, gdb=False,
                 gdb_port=None, jlink_script=None, openocd_config=None):
@@ -167,10 +196,11 @@ def run_flash(client, args, net=JLINK_NET):
                                   catch_exceptions=False)
 
 
-def run_erase(client, args, net=JLINK_NET):
+def run_erase(client, args, net=JLINK_NET, input=None):
     """Invoke `lager debug <net> erase` with everything below the CLI mocked.
 
-    Same seams as `run_flash`. `--yes` skips the destructive-operation prompt.
+    Same seams as `run_flash`. `--yes` skips the destructive-operation prompt;
+    `input` answers it instead.
     """
     obj = _Obj()
     obj.net_name = net["name"]
@@ -184,7 +214,7 @@ def run_erase(client, args, net=JLINK_NET):
          patch.object(debug_mod, "_auto_connect_if_needed", lambda *a, **k: True), \
          patch("time.sleep", lambda *a, **k: None):
         return CliRunner().invoke(debug_mod.erase, args, obj=obj,
-                                  catch_exceptions=False)
+                                  catch_exceptions=False, input=input)
 
 
 # --------------------------------------------------------------------------- #
@@ -591,3 +621,234 @@ class TestEraseVerdictFollowsTheProgrammer:
         assert "Flash erase failed" in result.output
         assert "flash" not in client.calls
         assert client.closed
+
+
+# --------------------------------------------------------------------------- #
+# The box's message is what the user sees, once (#517)                        #
+# --------------------------------------------------------------------------- #
+
+def http_500_with_error(error, path="/debug/erase"):
+    """An HTTPError whose response carries the box's JSON `error` body."""
+    response = requests.Response()
+    response.status_code = 500
+    response.reason = "Internal Server Error"
+    response.url = f"http://{BOX_IP}:8765{path}"
+    response._content = json.dumps({"error": error}).encode()
+    return requests.exceptions.HTTPError(
+        "500 Server Error: Internal Server Error", response=response)
+
+
+class TestTheBoxErrorIsPrintedOnce:
+    """`lager debug erase` read the box's `error` field; the flash pre-erase
+    printed the raw HTTPError instead. And the box's erase message already
+    starts with "Erase failed:", so `erase` printed that prefix twice.
+    """
+
+    BOX_ERROR = "Erase failed: Could not connect to target."
+
+    def test_a_failed_pre_erase_prints_the_box_error(self, hexfile):
+        client = FakeClient(erase_error=http_500_with_error(self.BOX_ERROR))
+        result = run_flash(client, ["--hex", hexfile, "--box", "mybox"])
+        assert result.exit_code == 1, result.output
+        assert "Flash erase failed: Could not connect to target." in result.output
+        assert "500 Server Error" not in result.output
+        assert "flash" not in client.calls
+
+    def test_a_failed_erase_says_erase_failed_once(self):
+        client = FakeClient(erase_error=http_500_with_error(self.BOX_ERROR))
+        result = run_erase(client, ["--box", "mybox", "--yes"])
+        assert result.exit_code == 1, result.output
+        assert result.output.count("Erase failed:") == 1, result.output
+        assert "Erase failed: Could not connect to target." in result.output
+
+    def test_a_box_error_without_the_prefix_is_kept_whole(self):
+        client = FakeClient(erase_error=http_500_with_error("No debugger connection found"))
+        result = run_erase(client, ["--box", "mybox", "--yes"])
+        assert "Erase failed: No debugger connection found" in result.output
+
+    def test_an_error_with_no_json_body_falls_back_to_the_exception(self):
+        client = FakeClient(erase_error=http_500("Failed to power up DAP"))
+        result = run_erase(client, ["--box", "mybox", "--yes"])
+        assert result.exit_code == 1, result.output
+        assert "Erase failed: 500 Server Error: Failed to power up DAP" in result.output
+
+
+# --------------------------------------------------------------------------- #
+# --erase-start / --erase-size                                                #
+# --------------------------------------------------------------------------- #
+
+RANGE_2M = ["--erase-start", "0x16000000", "--erase-size", "2M"]
+
+# What the box reports for RANGE_2M.
+ERASED_2M = {"start": 0x16000000, "end": 0x161FFFFF, "length": 0x200000,
+             "source": "request", "text": "0x16000000-0x161FFFFF (2 MiB)"}
+
+
+class TestEraseRangeFlags:
+    """An explicit erase range: parsed on the CLI, checked before any box
+    traffic, refused on a box that would ignore it, and reported back."""
+
+    def test_both_flags_exist_on_both_commands(self):
+        for command in (debug_mod.flash, debug_mod.erase):
+            assert {"erase_start", "erase_size"} <= {p.name for p in command.params}
+
+    def test_the_range_is_sent_as_integers(self):
+        client = FakeClient(erase_range=ERASED_2M)
+        result = run_erase(client, ["--box", "mybox", "--yes", *RANGE_2M], net=DA1469X_NET)
+        assert result.exit_code == 0, result.output
+        assert client.erase_kwargs == [{"erase_start": 0x16000000, "erase_size": 0x200000}]
+        assert "Erasing flash memory (0x16000000-0x161FFFFF (2 MiB))..." in result.output
+        assert "Erase complete: 0x16000000-0x161FFFFF (2 MiB)" in result.output
+
+    def test_no_flags_send_no_range_and_ask_nothing_of_health(self):
+        client = FakeClient()
+        run_erase(client, ["--box", "mybox", "--yes"])
+        assert client.erase_kwargs == [{"erase_start": None, "erase_size": None}]
+        assert "health" not in client.calls
+
+    def test_the_flash_pre_erase_carries_the_range(self, hexfile):
+        client = FakeClient(erase_range=ERASED_2M)
+        result = run_flash(client, ["--hex", hexfile, "--box", "mybox", *RANGE_2M],
+                           net=DA1469X_NET)
+        assert result.exit_code == 0, result.output
+        assert client.calls == ["health", "erase", "flash"]
+        assert client.erase_kwargs == [{"erase_start": 0x16000000, "erase_size": 0x200000}]
+        assert "Erasing flash memory (0x16000000-0x161FFFFF (2 MiB))..." in result.output
+        assert "Erase complete: 0x16000000-0x161FFFFF (2 MiB)" in result.output
+
+    @pytest.mark.parametrize("args, net, message", [
+        (["--erase-start", "0x16000000"], DA1469X_NET, "must be given together"),
+        (["--erase-size", "2M"], DA1469X_NET, "must be given together"),
+        (["--erase-start", "0x15000000", "--erase-size", "1M"], DA1469X_NET,
+         "outside the DA1469x QSPI XIP window"),
+        (["--erase-start", "0x17F00000", "--erase-size", "2M"], DA1469X_NET,
+         "outside the DA1469x QSPI XIP window"),
+        (["--erase-start", "0xFFFFF000", "--erase-size", "8K"], JLINK_NET,
+         "32-bit address space"),
+        (["--erase-start=-1", "--erase-size", "1M"], JLINK_NET, "must not be negative"),
+    ], ids=["start-only", "size-only", "below-window", "past-window", "past-4gib", "negative"])
+    def test_a_bad_range_is_refused_before_any_box_traffic(self, args, net, message):
+        client = FakeClient()
+        result = run_erase(client, ["--box", "mybox", "--yes", *args], net=net)
+        assert result.exit_code == 1, result.output
+        assert message in result.output
+        assert client.calls == []
+
+    def test_a_bad_range_is_refused_by_flash_too(self, hexfile):
+        client = FakeClient()
+        result = run_flash(client, ["--hex", hexfile, "--box", "mybox", "--erase-size", "2M"])
+        assert result.exit_code == 1, result.output
+        assert "must be given together" in result.output
+        assert client.calls == []
+
+    def test_no_erase_with_a_range_is_refused(self, hexfile):
+        client = FakeClient()
+        result = run_flash(client, ["--hex", hexfile, "--box", "mybox", "--no-erase", *RANGE_2M],
+                           net=DA1469X_NET)
+        assert result.exit_code == 1, result.output
+        assert "--no-erase cannot be combined with --erase-start/--erase-size" in result.output
+        assert client.calls == []
+
+    def test_a_non_da1469x_net_is_not_held_to_the_window(self):
+        client = FakeClient(erase_range={"start": 0x08000000, "end": 0x08000FFF, "length": 4096,
+                                         "source": "request",
+                                         "text": "0x08000000-0x08000FFF (4 KiB)"})
+        result = run_erase(client, ["--box", "mybox", "--yes",
+                                    "--erase-start", "0x08000000", "--erase-size", "4096"])
+        assert result.exit_code == 0, result.output
+        assert client.erase_kwargs == [{"erase_start": 0x08000000, "erase_size": 4096}]
+        assert "Erase complete: 0x08000000-0x08000FFF (4 KiB)" in result.output
+
+    def test_an_old_box_is_refused_before_the_erase(self):
+        # A box that predates the keys lists no `features`: it would accept
+        # the request, ignore the range, and erase its default 1 MiB.
+        client = FakeClient(health={"status": "healthy", "version": "1.0.0"})
+        result = run_erase(client, ["--box", "mybox", "--yes", *RANGE_2M], net=DA1469X_NET)
+        assert result.exit_code == 1, result.output
+        assert "does not support --erase-start/--erase-size" in result.output
+        assert "requires box version 0.50.0 or later" in result.output
+        assert "lager update --box mybox" in result.output
+        assert client.calls == ["health"]
+        assert client.closed
+
+    def test_an_unreachable_health_endpoint_reads_as_unsupported(self):
+        client = FakeClient(health_error=http_500("connection refused"))
+        result = run_erase(client, ["--box", "mybox", "--yes", *RANGE_2M], net=DA1469X_NET)
+        assert result.exit_code == 1, result.output
+        assert "does not support --erase-start/--erase-size" in result.output
+        assert "erase" not in client.calls
+
+    def test_the_flash_pre_erase_is_gated_the_same_way(self, hexfile):
+        client = FakeClient(health={"status": "healthy"})
+        result = run_flash(client, ["--hex", hexfile, "--box", "mybox", *RANGE_2M],
+                           net=DA1469X_NET)
+        assert result.exit_code == 1, result.output
+        assert "does not support --erase-start/--erase-size" in result.output
+        assert client.calls == ["health"]
+        assert client.closed
+
+    def test_a_full_chip_erase_says_so(self):
+        client = FakeClient(erase_range=None)
+        result = run_erase(client, ["--box", "mybox", "--yes"])
+        assert result.exit_code == 0, result.output
+        assert "Erase complete: full chip" in result.output
+
+    def test_a_reported_default_range_is_shown_without_flags(self):
+        client = FakeClient(erase_range={"start": 0x16000000, "end": 0x160FFFFF,
+                                         "length": 0x100000, "source": "default",
+                                         "text": "0x16000000-0x160FFFFF (1 MiB)"})
+        result = run_erase(client, ["--box", "mybox", "--yes"], net=DA1469X_NET)
+        assert "Erase complete: 0x16000000-0x160FFFFF (1 MiB)" in result.output
+
+    def test_an_older_box_keeps_the_old_line(self, hexfile):
+        client = FakeClient()  # no erase_range key at all
+        assert "Erase complete!" in run_erase(client, ["--box", "mybox", "--yes"]).output
+        assert "Erase complete!" in run_flash(client, ["--hex", hexfile, "--box", "mybox"]).output
+
+    def test_json_output_carries_the_range(self):
+        client = FakeClient(erase_range=ERASED_2M)
+        result = run_erase(client, ["--box", "mybox", "--json", *RANGE_2M], net=DA1469X_NET)
+        assert result.exit_code == 0, result.output
+        # The payload follows the progress line; it is the box dict, verbatim.
+        start = result.output.index("{")
+        payload = json.loads(result.output[start:result.output.index("\n}", start) + 2])
+        assert payload["erase_range"] == ERASED_2M
+
+    def test_the_prompt_names_the_range(self):
+        client = FakeClient(erase_range=ERASED_2M)
+        result = run_erase(client, ["--box", "mybox", *RANGE_2M], net=DA1469X_NET, input="n\n")
+        assert "This will erase 0x16000000-0x161FFFFF (2 MiB) on DA14695" in result.output
+        assert "Chip erase cancelled." in result.output
+        assert client.calls == []
+
+
+# --------------------------------------------------------------------------- #
+# `health` shows the features the gate reads                                  #
+# --------------------------------------------------------------------------- #
+
+def run_health(client, args, net=JLINK_NET):
+    """Invoke `lager debug <net> health` with the box mocked at the client."""
+    obj = _Obj()
+    obj.net_name = net["name"]
+    with patch.object(debug_mod, "_resolve_box_with_username",
+                      lambda ctx, box: (BOX_IP, "lagerdata")), \
+         patch.object(debug_mod, "_get_service_client", lambda box: client):
+        return CliRunner().invoke(debug_mod.health, args, obj=obj, catch_exceptions=False)
+
+
+class TestHealthListsFeatures:
+    """The only way to see the `erase_range` capability used to be the refusal
+    message; `health` now prints the list the gate reads."""
+
+    def test_features_are_listed(self):
+        client = FakeClient(health={"status": "healthy", "version": "1.0.0",
+                                    "features": ["erase_range"], "uptime": 42.0})
+        result = run_health(client, ["--box", "mybox"])
+        assert result.exit_code == 0, result.output
+        assert "Features: erase_range" in result.output
+
+    def test_an_older_box_prints_none_reported(self):
+        client = FakeClient(health={"status": "healthy", "version": "1.0.0", "uptime": 42.0})
+        result = run_health(client, ["--box", "mybox"])
+        assert result.exit_code == 0, result.output
+        assert "Features: none reported" in result.output

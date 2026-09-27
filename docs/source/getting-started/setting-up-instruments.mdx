@@ -20,15 +20,23 @@ This command detects and lists all physical instruments connected to the Lager B
 **Example output:**
 
 ```
-┌─────────────────────────┬──────────┬────────────────────────────────┐
-│ Instrument              │ Channels │ Address                        │
-├─────────────────────────┼──────────┼────────────────────────────────┤
-│ Rigol_DP832             │ CH1,CH2  │ USB0::0x1AB1::0x0E11::DP8...   │
-│ LabJack_T7              │ AIN0-13  │ T7-12345678                    │
-│ Aardvark                │ I2C,SPI  │ USB0::0x0403::0xE0D0::...      │
-│ Segger_JLink            │ SWD      │ USB::001::002                  │
-└─────────────────────────┴──────────┴────────────────────────────────┘
+Name                     Channels                                                       VISA Address
+========================================================================================================================
+Rigol_DP831              power-supply: 1, 2, 3                                          USB0::0x1AB1::0x0E31::DP8C123456789::INSTR
+LabJack_T7               adc: AIN0, AIN1, AIN2, AIN3, AIN4, AIN5, AIN6, AIN7, AIN8,     USB0::0x0CD5::0x0007::::INSTR
+                         AIN9, AIN10, AIN11, AIN12, AIN13
+                         dac: DAC0, DAC1
+                         gpio: CIO0, CIO1, CIO2, CIO3, EIO0, EIO1, EIO2, EIO3, EIO4,
+                         EIO5, EIO6, EIO7, MIO0, MIO1, MIO2, FIO0, FIO1, FIO2, FIO3,
+                         FIO4, FIO5, FIO6, FIO7
+                         i2c: FIO4-FIO5
+                         spi: FIO0-FIO3
+Aardvark                 gpio: SCL, SDA, MISO, SCK, MOSI, SS                            USB0::0x0403::0xE0D0::2420032::INSTR
+                         i2c: I2C0
+                         spi: SPI0
 ```
+
+Each line in the `Channels` column names a net type and the channels for that type.
 
 To view configured nets (logical mappings to instruments), use:
 
@@ -36,43 +44,38 @@ To view configured nets (logical mappings to instruments), use:
 lager nets --box my-lager-box
 ```
 
-This shows the nets you've created, their types, and which instruments they're mapped to.
+This shows the nets you created, grouped by instrument. Each group shows the instrument address.
 
 ### Example Output:
 
 ```
-Name      Net Type      Instrument        Channel       Address
-===============================================================================================
-ADC_0     adc           LabJack_T7        AIN0          USB0::0x0CD5::0x0007::::INSTR
-ARM       arm           Rotrix_Dexarm     /dev/ttyACM0  USB0::0x0483::0x5740::206E399E4753::INSTR
-GPIO_0    gpio          LabJack_T7        FIO3          USB0::0x0CD5::0x0007::::INSTR
-GPIO_1    gpio          LabJack_T7        FIO2          USB0::0x0CD5::0x0007::::INSTR
-GPIO_2    gpio          LabJack_T7        FIO1          USB0::0x0CD5::0x0007::::INSTR
-GPIO_3    gpio          LabJack_T7        FIO0          USB0::0x0CD5::0x0007::::INSTR
-I2C_0     i2c           Aardvark          --            USB0::0x0403::0xE0D0::2420032::INSTR
-SPI_0     spi           Aardvark          --            USB0::0x0403::0xE0D0::2420032::INSTR
-TEMP_0    thermocouple  Phidget           0             USB0::0x06C2::0x0046::751053::INSTR
-TEMP_1    thermocouple  Phidget           1             USB0::0x06C2::0x0046::751053::INSTR
-UART      uart          SiLabs_CP210x     0001          USB0::0x10C4::0xEA60::0001::INSTR
-USB_0     usb           Acroname_8Port    0             USB0::0x24FF::0x0013::807D0C12::INSTR
-USB_1     usb           Acroname_8Port    1             USB0::0x24FF::0x0013::807D0C12::INSTR
-USB_2     usb           Acroname_8Port    2             USB0::0x24FF::0x0013::807D0C12::INSTR
-USB_3     usb           Acroname_8Port    3             USB0::0x24FF::0x0013::807D0C12::INSTR
-USB_4     usb           Acroname_8Port    4             USB0::0x24FF::0x0013::807D0C12::INSTR
-USB_5     usb           Acroname_8Port    5             USB0::0x24FF::0x0013::807D0C12::INSTR
-USB_6     usb           Acroname_8Port    6             USB0::0x24FF::0x0013::807D0C12::INSTR
-USB_7     usb           Acroname_8Port    7             USB0::0x24FF::0x0013::807D0C12::INSTR
-WEBCAM    webcam        Logitech_BRIO_HD  /dev/video0   USB0::0x046D::0x085E::20786B34::INSTR
+    Name      Net Type    Channel
+======================================
+Aardvark [USB0::0x0403::0xE0D0::2420032::INSTR]
+├── I2C_0     i2c         I2C0
+└── SPI_0     spi         SPI0
+
+LabJack T7 [USB0::0x0CD5::0x0007::::INSTR]
+├── ADC_0     adc         AIN0
+├── GPIO_0    gpio        FIO3
+└── GPIO_1    gpio        FIO2
+
+SiLabs CP210x [USB0::0x10C4::0xEA60::0001::INSTR]
+└── UART      uart        /dev/ttyUSB0
 ```
 
-## Automatic Net Creation
+## Create Nets
 
-When you plug an instrument into a Lager Box, Lager creates a default Net for each supported function.
-- A simple, single-function device like a power supply will create one `Supply` Net.
-- A multi-function device such as a LabJack T7 DAQ creates several Nets. It creates one each for `GPIO`, `ADC` and `DAC`, plus `I2C` and `SPI` when you configure them.
-- An I2C/SPI adapter supports both protocols. A Total Phase Aardvark, for example, creates an `I2C` Net and an `SPI` Net.
+Lager does not create nets when you plug in an instrument. Create them with one of these commands:
+
+- `lager nets add` creates one net on a channel that you name.
+- `lager nets add-all` creates a net for each free channel of each connected instrument.
+- `lager nets add-batch` creates the nets in a JSON file.
+- `lager nets tui` opens the Net Manager, where you select nets to add.
 
 Some instruments carry several channels of the same type, such as a 4-channel oscilloscope. You can assign and configure a Net for each channel.
+
+The LabJack T7 and the LabJack U3 report no serial number. Two units of the same model on one Lager Box cannot have nets. See the [Nets reference](/source/reference/cli/nets) for this rule and the other channel rules.
 
 ---
 
@@ -89,8 +92,12 @@ lager nets tui --box my-lager-box
 ### Within the TUI, you can:
 
 - **Add** new Nets
+- Pick the pins of a LabJack T7 `i2c` or `spi` Net
 - **Rename** existing Nets
+- **Edit Details** of a Net: its purpose, notes, and tags
 - **Delete** unused Nets
+
+See the [`nets tui` reference](/source/reference/cli/nets#tui) for the full list.
 
 ---
 

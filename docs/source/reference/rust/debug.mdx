@@ -110,10 +110,12 @@ Reset the target. `halt: true` leaves it stopped at the reset vector.
 Mass-erase the target's flash.
 
 <Warning>
-  **`erase()` drops the debugger connection.** The next `read_memory()` fails with
+  **On a J-Link probe, or on a DA1469x target, `erase()` drops the debugger
+  connection.** The next `read_memory()` fails with
   `Error::Box` and `No debugger connection found`. `flash` re-establishes on its own,
   so an erase-then-flash sequence works, but an erase-then-read does not — call
-  `connect()` again first.
+  `connect()` again first. On an OpenOCD probe with any other target, the OpenOCD
+  daemon stays up after the erase.
 </Warning>
 
 ### `flash(firmware_path) -> Result<()>`

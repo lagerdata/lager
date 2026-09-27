@@ -59,6 +59,18 @@ class DeviceNotFoundError(ArmBackendError):
     """Raised when the specified arm device cannot be found or opened."""
     pass
 
+class OutOfBoundsError(ArmBackendError, ValueError):
+    """Raised when a move target is outside the arm's workspace bounds."""
+    pass
+
+class UnsupportedFirmwareError(ArmBackendError):
+    """Raised when the arm's firmware is too old, or unknown, for a coordinate move."""
+    pass
+
+class NotHomedError(ArmBackendError):
+    """Raised when the firmware refuses motion because the arm is not homed since power-on."""
+    pass
+
 class ArmBase(ABC):
     """Abstract Arm net; do NOT instantiate directly."""
 

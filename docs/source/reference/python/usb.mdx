@@ -113,12 +113,17 @@ if not usb.state():
 
 ### `cycle(off_time=None)`
 
-Power-cycle the port: off, wait, on. The return value tells you what the hub saw:
+Power-cycle the port: off, wait, on. After power returns, `cycle` waits up to 5
+seconds for the device. The return value tells you what the box saw:
 
 - `True` — the device re-enumerated.
-- `False` — the device did not come back in time.
-- `None` — the hub reports nothing attached, or the driver cannot observe
-  re-enumeration.
+- `False` — the device did not come back within 5 seconds.
+- `None` — no device was on the port. On an Acroname or YKUSH hub, `None` also
+  means that the box did not read its USB topology.
+
+On an Acroname or YKUSH hub, the box compares the kernel USB topology before the
+power cut and while the port is off. On a Plugable dock, it reads the connect
+status that the hub reports for the port.
 
 <Note>
 **`None` does not mean the port is unused.** A hub only sees a device that pulls
@@ -130,7 +135,8 @@ or a current measurement.
 </Note>
 
 `off_time` is how long the port stays unpowered, defaulting to 1 second and
-limited to 0.5-10 seconds. **Too short an off time is the failure that matters.**
+limited to 0.5-10 seconds. A value outside that range raises `PortStateError`
+before the port is switched. **Too short an off time is the failure that matters.**
 The device's rails do not fully discharge, so the device warm-starts and only
 appears to reset. Raise it for a device with large bulk capacitance.
 
@@ -142,27 +148,31 @@ if usb.cycle(off_time=2):
     print("DUT cold-booted and came back")
 ```
 
-Prefer this over a hand-rolled `disable`/`sleep`/`enable`. It gives two guarantees
-that the hand-rolled form does not:
+Prefer this over a hand-rolled `disable`/`sleep`/`enable`. It gives these
+guarantees that the hand-rolled form does not:
 
-- It holds the hub for the whole sequence, so nothing else can switch the port
-  while it is dark.
 - It restores power on every failure path, so an exception partway through cannot
   leave a port stranded.
+- It reports whether the device came back.
+- On a Plugable dock, it holds the hub for the whole sequence, so nothing else
+  can switch the port while it is dark. On an Acroname or YKUSH hub, another
+  process can switch the port during the off time.
 
 <Note>
-`cycle` returns on the **hub's** reconnect signal, a few hundred milliseconds
-after power returns — not on Linux finishing enumeration. So `/dev/ttyUSB*` can
-be absent when it returns, and a `/sys` read taken immediately still shows the
-pre-cycle device number. Poll for what you need rather than reading once.
+On a Plugable dock, `cycle` returns on the **hub's** reconnect signal, a few
+hundred milliseconds after power returns — not on Linux finishing enumeration.
+So `/dev/ttyUSB*` can be absent when it returns, and a `/sys` read taken
+immediately still shows the pre-cycle device number. On an Acroname or YKUSH hub,
+`cycle` returns when the device is back in the kernel USB topology. On every hub,
+poll for what you need rather than reading once.
 </Note>
 
 <Warning>
-**A powered-off port still appears in `lsusb` and keeps its `/dev/ttyUSB*`.**
-Hubs raise no change notification while a port is unpowered, so the kernel does
-not process the disconnect until power returns. Never check for a device's
-absence to decide whether a port is off — use `state()`, which reads the hub's
-own power bit.
+**On a Plugable dock, a powered-off port still appears in `lsusb` and keeps its
+`/dev/ttyUSB*`.** The hub raises no change notification while a port is
+unpowered, so the kernel does not process the disconnect until power returns.
+Never check for a device's absence to decide whether a port is off — use
+`state()`, which reads the hub's own power bit.
 </Warning>
 
 ### `recover()`
@@ -363,7 +373,7 @@ edit code rather than the net record.
   does this waiting for you and tells you whether the device returned
 - Power cycling can be useful for device reset/recovery; prefer `cycle()` over a
   hand-rolled `disable`/`sleep`/`enable` so a failure cannot leave a port off
-- A port that is powered off still appears in `lsusb` and keeps its device
-  nodes. Never use device presence to test whether a port is off
+- On a Plugable dock, a port that is powered off still appears in `lsusb` and
+  keeps its device nodes. Never use device presence to test whether a port is off
 - The `toggle()` function is useful for quick state changes
 - Use exception handling for robust error recovery

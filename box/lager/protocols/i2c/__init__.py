@@ -33,6 +33,7 @@ from .dispatcher import (
 from .i2c_base import I2CBase
 from .i2c_net import I2CNet
 from .labjack_i2c import LabJackI2C
+from .labjack_ud_i2c import LabJackUDI2C
 from .aardvark_i2c import AardvarkI2C
 from .ft232h_i2c import FT232HI2C
 from lager.exceptions import I2CBackendError
@@ -49,6 +50,7 @@ __all__ = [
     # Classes
     'I2CBase',
     'LabJackI2C',
+    'LabJackUDI2C',
     'AardvarkI2C',
     'FT232HI2C',
     # Exceptions

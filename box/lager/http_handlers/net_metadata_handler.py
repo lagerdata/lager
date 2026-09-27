@@ -3,9 +3,9 @@
 
 """Per-net metadata HTTP handler for the Lager Box HTTP server.
 
-Serves the user-authored metadata on a saved net -- ``purpose``, ``notes`` and
-``tags`` -- as a focused endpoint, so a caller can update it without modelling
-the whole net record.
+Serves the user-authored metadata on a saved net -- ``purpose``, ``notes``,
+``tags``, ``dut_connection`` and ``test_hints`` -- as a focused endpoint, so a
+caller can update it without modelling the whole net record.
 
 ``PUT /nets/<name>`` cannot serve this purpose: it takes a complete net
 definition and rederives ``mappings`` and ``scope_points`` from it, so a caller
@@ -19,9 +19,12 @@ fields it owns plus an ISO 8601 timestamp per field. Timestamps are merged into
 decide which is newer.
 
 The field names are the ones ``lager nets describe`` writes and the MCP server
-reads (``box/lager/mcp/schemas/net.py``). They are deliberately minimal: one
-``purpose`` sentence, free-form ``notes``, and ``tags`` that the planning tools
-match on.
+reads (``box/lager/mcp/schemas/net.py``; ``USER_METADATA_FIELDS`` in its bench
+loader is the same list, and a unit test keeps the two equal). They are
+deliberately minimal: one ``purpose`` sentence, free-form ``notes``, ``tags``
+that the planning tools match on, ``dut_connection`` for where the net lands on
+the DUT, and ``test_hints`` for one-line advice to a test author. The last two
+are the fields the control plane keeps per net, so its edits round-trip.
 """
 
 import json
@@ -37,10 +40,10 @@ logger = logging.getLogger(__name__)
 # The canonical user-authored metadata keys. Closed on purpose: an unknown key
 # would be written into saved_nets.json and then silently ignored by everything
 # that reads it, which reads to the caller as a successful save.
-ALLOWED_FIELDS = ("purpose", "notes", "tags")
+ALLOWED_FIELDS = ("purpose", "notes", "tags", "dut_connection", "test_hints")
 
-_STRING_FIELDS = ("purpose", "notes")
-_LIST_FIELDS = ("tags",)
+_STRING_FIELDS = ("purpose", "notes", "dut_connection")
+_LIST_FIELDS = ("tags", "test_hints")
 
 # Where per-net overrides live. An entry here wins over saved_nets.json in the
 # MCP bench loader, so a write that lands under one is invisible to agents.
@@ -127,6 +130,8 @@ def _current_metadata(record: Dict[str, Any]) -> Dict[str, Any]:
         "purpose": record.get("purpose") or "",
         "notes": record.get("notes") or "",
         "tags": list(record.get("tags") or []),
+        "dut_connection": record.get("dut_connection") or "",
+        "test_hints": list(record.get("test_hints") or []),
     }
 
 

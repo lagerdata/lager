@@ -32,7 +32,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 THIS_FILE = pathlib.Path(__file__).resolve()
 
 #: Every directory whose tests any CI gate runs (see unit-tests.yml).
-TEST_TREES = ("test", "cli/tests")
+TEST_TREES = ("test",)
 
 # mock.patch.object(anything.os.path, "exists"/"isfile"/...): the first
 # argument names os.path itself, so whatever attribute is swapped, the swap

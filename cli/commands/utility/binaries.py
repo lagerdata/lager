@@ -51,8 +51,8 @@ def add(ctx, binary_path, box, name, yes):
     """
         Upload a binary to a box
     """
-    # Resolve box
-    if not box:
+    # Resolve box (the resolver refuses `--box ""`)
+    if box is None:
         box = get_default_box(ctx)
 
     resolved_ip = resolve_and_validate_box(ctx, box)
@@ -163,8 +163,8 @@ def list_binaries(ctx, box):
     """
         List custom binaries on a box
     """
-    # Resolve box
-    if not box:
+    # Resolve box (the resolver refuses `--box ""`)
+    if box is None:
         box = get_default_box(ctx)
 
     resolved_ip = resolve_and_validate_box(ctx, box)
@@ -241,8 +241,8 @@ def remove(ctx, binary_name, box, yes):
     """
         Remove a binary from a box
     """
-    # Resolve box
-    if not box:
+    # Resolve box (the resolver refuses `--box ""`)
+    if box is None:
         box = get_default_box(ctx)
 
     resolved_ip = resolve_and_validate_box(ctx, box)

@@ -262,6 +262,250 @@ def register_key_command(pub_key: str, filename: str) -> str:
     )
 
 
+# Written by a control plane's own installer when it takes over a box, and read
+# by the box runtime to find it. Nothing in Lager creates it, which is exactly
+# what makes its presence meaningful here: it says the key directory belongs to
+# that control plane rather than to whoever is at the keyboard.
+#
+# So it appears only once that installer has run. A box being brought up
+# Lager-first answers "not managed" until then — correctly, because at that
+# moment it is not, and the key installed then is the operator's own on a box
+# nobody else claims yet.
+CONTROL_PLANE_CONFIG = "/etc/lager/control_plane.json"
+
+
+def box_has_control_plane(
+    dest: str,
+    *,
+    key_path: str = _LAGER_BOX_KEY,
+    timeout: int = 15,
+) -> bool:
+    """Whether a control plane manages this box.
+
+    Asked over whatever identity reaches the box, not over lager_box alone.
+    The question has to be answerable BEFORE that key is installed — that is
+    the point at which the answer decides whether to install it at all — and
+    an operator in that position is reaching the box on one of their own keys.
+    A lone ``-i`` would withdraw exactly those (see
+    :func:`widened_identity_args`) and report "not managed" for every box whose
+    key had been purged, which is the case that matters most.
+
+    A box we cannot reach answers False rather than guessing: a transient
+    network failure must not silently turn a managed box into an unmanaged one.
+    Callers that act on True are the ones changing behavior, so an unreachable
+    box falls through to the path that asks the operator for a password, where
+    the question gets asked again over a connection that works.
+
+    Presence of the config, not its contents: a box whose control plane is
+    configured but temporarily disabled is still a box whose key directory
+    that control plane owns, and the difference does not change the advice.
+    """
+    if shutil.which("ssh") is None:
+        return False
+    cmd = f"test -s {shlex.quote(CONTROL_PLANE_CONFIG)}"
+    try:
+        proc = subprocess.run(
+            [
+                "ssh",
+                *widened_identity_args(key_path),
+                "-o", "BatchMode=yes",
+                "-o", "StrictHostKeyChecking=accept-new",
+                "-o", f"ConnectTimeout={timeout}",
+                dest,
+                cmd,
+            ],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    # `test` exits 1 for a missing or empty file — an answer, and it means no
+    # control plane. 255 is ssh never getting there, which is not an answer.
+    return proc.returncode == 0
+
+
+# sshd names what it would have accepted in its refusal line:
+# "Permission denied (publickey,password,keyboard-interactive)."
+_AUTH_METHODS_RE = re.compile(r"Permission denied \(([^)]*)\)")
+
+# The two methods that let an operator who knows the box password install a
+# key. A box with neither cannot be bootstrapped into, and saying "enter the
+# box password" to its operator is a promise nothing can keep.
+PASSWORD_METHODS = frozenset({"password", "keyboard-interactive"})
+
+
+def box_auth_methods(dest: str, *, timeout: int = 10) -> Optional[frozenset]:
+    """The authentication methods ``dest``'s sshd offers, or None if unknown.
+
+    ``PreferredAuthentications=none`` offers nothing, so sshd refuses at once
+    and names what it would have taken — the only way to ask the question
+    without first satisfying it.
+
+    None means the box did not answer, which must not be read as "offers
+    nothing": a box that is down and a box that refuses passwords need
+    different things said about them, and only one of them is the operator's
+    problem to fix.
+    """
+    if shutil.which("ssh") is None:
+        return None
+    try:
+        proc = subprocess.run(
+            [
+                "ssh",
+                "-o", "BatchMode=yes",
+                "-o", "PreferredAuthentications=none",
+                "-o", "StrictHostKeyChecking=accept-new",
+                "-o", f"ConnectTimeout={timeout}",
+                dest, "true",
+            ],
+            capture_output=True, text=True, timeout=timeout + 5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    match = _AUTH_METHODS_RE.search(proc.stderr or "")
+    if not match:
+        return None
+    return frozenset(m.strip() for m in match.group(1).split(",") if m.strip())
+
+
+def box_accepts_a_password(dest: str, *, timeout: int = 10) -> Optional[bool]:
+    """Whether a password could install a key on ``dest``. None if unknown.
+
+    A hardened box sets ``PasswordAuthentication no``, so every path that
+    offers to "enter the box password once" is offering something that cannot
+    work — and ssh-copy-id's failure then reports a wrong password for one
+    that was never accepted. Which is every box a control plane has locked
+    down, so the misleading message is the common case, not the edge one.
+    """
+    methods = box_auth_methods(dest, timeout=timeout)
+    if methods is None:
+        return None
+    return bool(methods & PASSWORD_METHODS)
+
+
+def working_identity_args(key_path: str = _LAGER_BOX_KEY) -> List[str]:
+    """``-i`` flags naming every identity that might reach the box.
+
+    Like :func:`widened_identity_args`, except it names the defaults even when
+    there is no lager_box key — which is exactly the case it exists for.
+
+    Passing no ``-i`` is NOT the same as offering ssh's defaults. An
+    ``IdentityFile`` in ssh_config replaces ssh's built-in list precisely as
+    ``-i`` does, so a ``Host *`` block naming two keys leaves a box authorized
+    on a third unreachable. Measured on a real fleet: ``ssh -G`` for a managed
+    box resolved to two of the operator's other keys, while the key in its
+    authorized_keys was id_ed25519 — so a connection that passed no identity
+    was refused for a box the probe had just reached, because the probe named
+    the defaults and the connection let the config narrow them away.
+
+    Returns [] only when nothing exists to name, which leaves ssh's behavior
+    untouched because there is no better answer available.
+    """
+    args: List[str] = []
+    key = lager_box_key_if_present(key_path)
+    if key is not None:
+        args.extend(ssh_identity_args(key))
+    for path in default_identities_if_present():
+        args.extend(ssh_identity_args(path))
+    return args
+
+
+def remove_lager_box_key(
+    dest: str,
+    *,
+    key_path: str = _LAGER_BOX_KEY,
+    timeout: int = 30,
+) -> bool:
+    """Take this machine's lager_box key back out of ``dest``'s authorized_keys.
+
+    Used to undo an install that should not have happened: a key planted on a
+    control-plane-managed box is a standing credential that control plane never
+    granted and cannot revoke, and leaving it there is the thing this whole
+    path exists to stop.
+
+    Matched on the blob, like :func:`key_installed_on_box`, because the comment
+    differs between the line ssh-copy-id wrote and anything that re-rendered
+    it. Rewritten through a temp file and copied back with ``cat``, so the
+    file keeps its mode and owner and a failed write cannot leave
+    authorized_keys truncated.
+    """
+    blob = lager_box_pubkey_blob(key_path)
+    if blob is None or shutil.which("ssh") is None:
+        return False
+    cmd = (
+        "set -e; f=~/.ssh/authorized_keys; [ -f \"$f\" ] || exit 0; "
+        "t=$(mktemp); "
+        f"grep -vF '{blob}' \"$f\" > \"$t\" || true; "
+        "cat \"$t\" > \"$f\"; rm -f \"$t\""
+    )
+    try:
+        proc = subprocess.run(
+            [
+                "ssh",
+                *widened_identity_args(key_path),
+                "-o", "BatchMode=yes",
+                "-o", "StrictHostKeyChecking=accept-new",
+                "-o", "ConnectTimeout=15",
+                dest,
+                cmd,
+            ],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0
+
+
+def key_registered_on_box(
+    dest: str,
+    *,
+    key_path: str = _LAGER_BOX_KEY,
+    timeout: int = 15,
+) -> Optional[bool]:
+    """Is this machine's key already a `.pub` in the box's key directory?
+
+    Registration failing and the key being unregistered are different facts,
+    and only the second is worth telling an operator about. On a box a control
+    plane has hardened, the key directory is root-owned and the write can NEVER
+    succeed — so a failed write there says nothing at all about whether the key
+    is in it. Reporting the failure as "this key is outside the control plane"
+    was wrong on every box where the key was already registered, which is the
+    ordinary case, and it said so on every ssh-setup and every update.
+
+    The files are 0644 in a 0755 directory, so the login user can read them
+    without sudo. Matched on the blob, like :func:`key_installed_on_box`,
+    because the filename carries the operator's machine name and the comment
+    drifts.
+
+    None means the box could not be asked, which is not evidence either way;
+    callers should keep whatever they would have said.
+    """
+    blob = lager_box_pubkey_blob(key_path)
+    if blob is None or shutil.which("ssh") is None:
+        return None
+    cmd = f"grep -lF '{blob}' {shlex.quote(BOX_KEYS_DIR)}/*.pub 2>/dev/null"
+    try:
+        proc = subprocess.run(
+            [
+                "ssh",
+                *widened_identity_args(key_path),
+                "-o", "BatchMode=yes",
+                "-o", "StrictHostKeyChecking=accept-new",
+                "-o", f"ConnectTimeout={timeout}",
+                dest, cmd,
+            ],
+            capture_output=True, text=True, timeout=timeout + 5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    # grep exits 1 for "no match", which here means "not registered" -- an
+    # answer. 255 is ssh never getting there, which is not one.
+    if proc.returncode == 0:
+        return bool((proc.stdout or "").strip())
+    if proc.returncode == 1:
+        return False
+    return None
+
+
 def register_lager_box_key(
     dest: str,
     *,

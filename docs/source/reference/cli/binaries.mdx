@@ -61,11 +61,18 @@ lager binaries list --box BOX
 
 Output:
 ```
-Custom binaries on my-lager-box:
-  rt_newtmgr (1.2 MB)
-  firmware_flasher (856 KB)
-  custom_tool (234 KB)
+Custom binaries on my-lager-box (<BOX_IP>):
+  Host directory: /home/lagerdata/third_party/customer-binaries
+  Container path: /home/www-data/customer-binaries
+
+  - rt_newtmgr (1.2 MB) (executable)
+  - firmware_flasher (856.0 KB) (executable)
+  - custom_tool (234.0 KB) (not executable)
 ```
+
+If the box has no binaries, the list reads `(no binaries installed)`. If the
+directory is not mounted in the container yet, the output ends with
+`Note: Directory is not yet mounted in container.` and `Run: lager update --box my-lager-box`.
 
 ### `remove`
 
@@ -198,6 +205,9 @@ lager binaries add ./validate_output --box my-lager-box
 
 - Binaries must be Linux x86_64 compatible
 - Files are automatically made executable
-- Container restart is not required (volume mount)
+- A new binary is visible in the container at once, through a volume mount. On a
+  box where that mount is not active yet, `add` prints
+  `Note: A first-time setup needs a container restart.` Run `lager update` on
+  that box once
 - File sizes are displayed in human-readable format
 - Use `--yes` to skip confirmation in scripts

@@ -99,8 +99,8 @@ jobs:
             > scheduled.json
 
           # The arithmetic lives in tools/bench_schedule_check.py so it can be
-          # tested -- test/unit/test_bench_schedule_check.py. It was wrong here
-          # for as long as it was untestable here.
+          # tested -- test/unit/tools/test_bench_schedule_check.py. It was
+          # wrong here for as long as it was untestable here.
           #
           # Exit codes are load-bearing: 0 healthy, 1 problems found, >1 the
           # check itself could not run. This shell runs under `-e`, so an

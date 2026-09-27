@@ -22,11 +22,11 @@ lager debug [OPTIONS] [NET_NAME] COMMAND [ARGS]...
 
 | Command | Description |
 |---------|-------------|
-| `gdbserver` | Start JLinkGDBServer for debugging |
-| `disconnect` | Stop JLinkGDBServer |
+| `gdbserver` | Start the GDB server (JLinkGDBServer or OpenOCD) for debugging |
+| `disconnect` | Stop the GDB server |
 | `flash` | Flash firmware to target |
 | `reset` | Reset target device |
-| `erase` | Erase all flash memory |
+| `erase` | Erase flash memory (all of it or a given range; 1 MiB on DA1469x by default) |
 | `memrd` | Read memory from target |
 | `status` | Show debug net status |
 | `health` | Check debug service health |
@@ -35,7 +35,9 @@ lager debug [OPTIONS] [NET_NAME] COMMAND [ARGS]...
 
 ### `gdbserver`
 
-Start JLinkGDBServer for remote debugging. This is the primary command to establish a debug connection.
+Start the GDB server for remote debugging. This is the primary command to establish a debug connection.
+
+The box selects the backend from the probe. A J-Link probe uses JLinkGDBServer. Other supported probes use OpenOCD. See [Supported Debug Probes](#supported-debug-probes).
 
 ```bash
 lager debug [NET_NAME] gdbserver [OPTIONS]
@@ -57,6 +59,8 @@ lager debug [NET_NAME] gdbserver [OPTIONS]
 - `--rtt-search-addr HEX` - RAM start address for the RTT control block search (hex, e.g., `0x20020000`)
 - `--rtt-search-size HEX` - Size of the RAM region to search for the RTT control block (hex, e.g., `0x4000`)
 - `--rtt-chunk-size HEX` - Read chunk size for the RTT search (hex, e.g., `0x1000`)
+- `--local-port PORT` - Local port for the tunnel on a box behind a gateway (default: the same port as the GDB server on the box)
+- `--no-tunnel` - On a box behind a gateway, start the GDB server and return without a tunnel to it
 
 **Examples:**
 
@@ -87,9 +91,40 @@ lager debug gdbserver --box my-lager-box --speed 4000 --gdb-port 3333
 arm-none-eabi-gdb firmware.elf -ex 'target remote <BOX_IP>:2331'
 ```
 
+The command prints the exact address to use. On a plain Lager Box, it prints the address of the box and returns.
+
+**Boxes behind a gateway:**
+
+Some boxes are behind an authenticating gateway (see [`lager login`](/source/reference/cli/login)). The gateway checks your sign-in on each connection. The GDB port of such a box is not open to the network, so GDB cannot connect to the box directly.
+
+On such a box, `gdbserver` starts the GDB server and then opens a tunnel through the gateway. The tunnel listens on `localhost` only, on the same port number as the GDB server on the box. The command stays in the foreground while the tunnel is open:
+
+```text
+JLinkGDBServer started!
+GDB server running on my-lager-box. Connect to localhost:2331
+Connect with: arm-none-eabi-gdb -ex 'target remote localhost:2331'
+Tunnelling through the box's gateway. Press Ctrl-C to close the tunnel.
+```
+
+```bash
+# In a second terminal
+arm-none-eabi-gdb firmware.elf -ex 'target remote localhost:2331'
+```
+
+- The command decides for each box whether a tunnel is necessary. You do not set an option for it.
+- GDB can disconnect and connect again while the tunnel is open. More than one client can connect at the same time.
+- Ctrl-C closes the tunnel only. The GDB server continues to run on the box. To stop it, use `lager debug <NET> disconnect`.
+- If the local port is in use, the command stops with an error. Use `--local-port` to select a different local port.
+- With `--rtt`, `--rtt-reset` or `--interactive`, the tunnel stays open while the RTT stream runs. RTT does not use the tunnel: it goes through the gateway as normal HTTP.
+- With `--json`, the output has a `tunnel` object with `local_host` and `local_port`. Then the command stays in the foreground.
+- A script that must continue after the GDB server starts can use `--no-tunnel`. The command then returns and does not open a tunnel.
+- If an administrator removes your access to the box, the gateway closes the tunnel within about one minute. The command tells you. The next connection gets the access error.
+
+If the command says that the gateway of the box does not support debug tunnels yet, the gateway must be updated. Speak to the administrator of the box.
+
 ### `disconnect`
 
-Stop JLinkGDBServer and free debug resources.
+Stop the GDB server (JLinkGDBServer or OpenOCD) and free debug resources.
 
 ```bash
 lager debug [NET_NAME] disconnect [OPTIONS]
@@ -97,7 +132,7 @@ lager debug [NET_NAME] disconnect [OPTIONS]
 
 **Options:**
 - `--box TEXT` - Lager Box name or IP
-- `--keep-server` - Keep JLinkGDBServer running for external connections
+- `--keep-server` - Keep the GDB server running for external connections
 
 **Examples:**
 
@@ -121,16 +156,26 @@ lager debug [NET_NAME] flash [OPTIONS]
 - `--box TEXT` - Lager Box name or IP
 - `--hex FILE` - Path to Intel HEX file
 - `--elf FILE` - Path to ELF executable
-- `--bin ADDRESS FILE` - Path to binary file with load address
+- `--bin FILE,ADDRESS` - Path to a binary file and its load address, as one argument (for example `build/app.bin,0x08000000`)
 - `--verbose` - Show detailed J-Link output
 - `--force-reconnect` - Force clean reconnect before flash
 - `--no-erase` - Skip the erase step (by default `flash` erases before programming for a clean state)
+- `--erase-start ADDR` - First address of the erase before programming, hex (`0x16000000`) or decimal. Given together with `--erase-size`.
+- `--erase-size BYTES` - Bytes to erase from `--erase-start`: decimal, `0x` hex, or a `K`/`M` suffix such as `2M`.
 - `--halt / --no-halt` - Halt device after flashing (default: no-halt)
 
 <Note>`flash` erases before programming **by default**, so no flag is needed for a
 clean state (this is what RTT initialization wants). Pass `--no-erase` only when
 you intentionally want to preserve existing flash contents. The older `--erase`
 flag is now a no-op kept for backward compatibility.</Note>
+
+`--erase-start` and `--erase-size` set the range of that erase, on both backends. Without them, `flash` erases the whole chip, or 1 MiB from `0x16000000` on a DA1469x. The `erase` section below describes the range, and the box version it needs.
+
+**Failure output:**
+
+- If the erase before programming fails, `flash` prints `Flash erase failed:` and the error, then exits 1. It does not program the target.
+- If programming fails, `flash` prints `Flash failed:` and the failing line, then `The target was NOT programmed. If this ran without --no-erase it is now erased.` It exits 1.
+- The CLI finds a failure from a connect-failure line in the output of the probe. The `erase` section below lists those lines.
 
 **Examples:**
 
@@ -142,10 +187,13 @@ lager debug flash --hex build/firmware.hex --box my-lager-box
 lager debug flash --elf build/firmware.elf --box my-lager-box
 
 # Flash binary with base address
-lager debug flash --bin 0x08000000 build/firmware.bin --box my-lager-box
+lager debug flash --bin build/firmware.bin,0x08000000 --box my-lager-box
 
 # Flash while preserving existing flash contents (skip the default erase)
 lager debug flash --hex build/firmware.hex --no-erase --box my-lager-box
+
+# Erase 2 MiB from the start of QSPI on a DA1469x, then flash
+lager debug flash --bin build/app.bin,0x16000000 --erase-start 0x16000000 --erase-size 2M --box my-lager-box
 
 # Flash and halt for debugging
 lager debug flash --elf build/firmware.elf --halt --box my-lager-box
@@ -182,7 +230,9 @@ lager debug reset --force-reconnect --box my-lager-box
 
 ### `erase`
 
-Erase all flash memory on target. **This is a destructive operation.**
+Erase flash memory on the target: all of it, or the range you give with `--erase-start` and `--erase-size`. **This is a destructive operation.**
+
+On a DA1469x, `erase` erases only a range of the external QSPI flash. See [DA1469x Targets](#da1469x-targets).
 
 ```bash
 lager debug [NET_NAME] erase [OPTIONS]
@@ -192,9 +242,35 @@ lager debug [NET_NAME] erase [OPTIONS]
 - `--box TEXT` - Lager Box name or IP
 - `--speed KHZ` - SWD/JTAG speed in kHz (default: 4000)
 - `--yes` - Skip confirmation prompt
-- `--quiet` - Suppress warning messages
-- `--json` - Output results in JSON format
+- `--quiet` - Suppress warning messages. This also skips the confirmation prompt.
+- `--json` - Output results in JSON format. This also skips the confirmation prompt.
+- `--erase-start ADDR` - First address to erase, hex (`0x16000000`) or decimal. Given together with `--erase-size`.
+- `--erase-size BYTES` - Bytes to erase from `--erase-start`: decimal, `0x` hex, or a `K`/`M` suffix such as `2M`.
 - `--halt / --no-halt` - Halt after erase (default: no-halt)
+
+**Erase range:**
+
+`--erase-start` and `--erase-size` are given together. `--erase-start` takes hex (`0x16000000`) or decimal. `--erase-size` takes decimal, `0x` hex, or a `K`/`M` suffix such as `2M` (1024-based). The range must fit in the 32-bit address space. On a DA1469x it must lie inside `0x16000000`–`0x17FFFFFF`, and it replaces both the 1 MiB default and the `LAGER_ERASE_RANGE` line of the JLinkScript. On any other target, the range replaces the full chip erase: J-Link runs `erase <start> <end>`, and OpenOCD runs `flash erase_address`. A bad range is refused before the CLI contacts the box.
+
+A box on 0.50.0 or later accepts the range. On an older box, the CLI refuses the two options before the erase, with a message that names `lager update`. The box never sees the request, so it never erases its default range in place of yours.
+
+On success the CLI prints `Erase complete:` and the range the box erased, for example `Erase complete: 0x16000000-0x161FFFFF (2 MiB)`, or `Erase complete: full chip`. A box older than 0.50.0 does not report the range, and the CLI prints `Erase complete!`. With `--json`, the `erase_range` field carries `start`, `end` (inclusive), `length`, `source`, and `text`. `source` is `request`, `script`, or `default`. The field is `null` for a full chip erase.
+
+**Failure output:**
+
+If the erase fails, `erase` prints `Erase failed:` and the error, then exits 1.
+
+A box on 0.42.0 or later finds a J-Link attach failure itself and returns an error, which the CLI prints after `Erase failed:`.
+
+An older box returns the probe output with no error. The CLI then checks each line of that output. A line fails the erase when it is, starts with, or ends with one of these messages:
+
+- `ERROR: Could not connect to target.`
+- `Could not connect to target.`
+- `Could not connect to the target device.`
+- `Cannot connect to target.`
+- `Failed to power up DAP`
+
+For such a line, the CLI prints `Erase failed:` and the line, then `The target was NOT erased. Check that it is connected and powered.` If the output contains none of these lines, `erase` exits 0.
 
 **Examples:**
 
@@ -204,6 +280,9 @@ lager debug erase --box my-lager-box
 
 # Erase without confirmation
 lager debug erase --box my-lager-box --yes
+
+# Erase 2 MiB from the start of QSPI on a DA1469x
+lager debug erase --box my-lager-box --yes --erase-start 0x16000000 --erase-size 2M
 
 # Erase and halt afterward
 lager debug erase --box my-lager-box --yes --halt
@@ -286,14 +365,30 @@ so the CLI reports them separately. A gdbserver can outlive the device it
 drove, and a command that flashes or erases cares about the second field, not
 the first.
 
-`Target attached` reads `Unknown` when the box cannot establish an answer.
-Two cases give that result: a box older than this field, or a probe that
-cannot run because a debugger already holds the session. `Unknown` does not
-mean the target is absent.
+To answer `Target attached`, `status` reads the Cortex-M CPUID register through
+the running GDB server. The read does not halt the core. A slow probe can make
+`status` take up to 20 seconds.
+
+`Target attached` reads `No` in two cases:
+
+- No GDB server runs for the probe.
+- The log of the GDB server records a failed attach.
+
+`Target attached` reads `Unknown` when the box cannot establish an answer. These
+cases give that result:
+
+- The box is older than this field.
+- The probe cannot run, because a debugger already holds the session.
+- The read of the register timed out.
+- OpenOCD gave an empty reply.
+
+`Unknown` does not mean that the target is absent.
 
 ### `health`
 
 Check debug service health and resource usage.
+
+The output includes a `Features` line: the capabilities the box's debug service supports beyond its original requests, such as `erase_range` for `--erase-start` and `--erase-size`. A box that predates the list prints `none reported`.
 
 ```bash
 lager debug [NET_NAME] health [OPTIONS]
@@ -491,15 +586,51 @@ lager nets remove-script debug1 --box my-lager-box
 
 Once attached, the script is used automatically for all debug operations (connect, flash, erase, reset) without any additional flags.
 
+## DA1469x Targets
+
+A device name that contains `DA1469` selects the DA1469x handling. On this family, `flash` and `erase` act on the external QSPI flash. The CPU maps that flash for execute-in-place (XIP) at `0x16000000`.
+
+- **Addresses.** Pass an absolute XIP address, for example `--bin build/app.bin,0x16000000`. Do not pass a flash offset.
+- **Erase.** By default, `erase` and the erase before `flash` erase 1 MiB from `0x16000000` on both backends. This family never gets a full chip erase.
+- **Erase range.** `--erase-start` and `--erase-size` set the range on both backends, and it must lie inside `0x16000000`–`0x17FFFFFF`. On J-Link, when the two options are absent, a line such as `LAGER_ERASE_RANGE: 0x16000000 0x160FFFFF` in the JLinkScript of the net sets the range. The J-Link backend then erases that inclusive range. The options win over the script line, and the script line wins over the default.
+
+On an OpenOCD probe, mainline OpenOCD has no driver for this QSPI flash. The box runs a RAM-resident flash loader instead:
+
+- An address outside `0x16000000`–`0x17FFFFFF` is refused before the box touches the probe.
+- Use `--bin`. The loader writes the bytes of the file unchanged, so it does not decode a `.hex` or `.elf` file.
+- Put `flash_loader.elf` and `flash_loader.elf.bin` in `~/third_party/customer-binaries/openocd/flash-loaders/da1469x/` on the box host. The container sees that directory as `/home/www-data/customer-binaries/openocd/flash-loaders/da1469x/`.
+- To use a different parent directory, set `LAGER_FLASH_LOADERS_DIR` to a container path with `lager box-config env set`, then run `lager box-config apply`.
+- OpenOCD has no built-in target config for this family. Attach one to the net with `lager nets set-script` or `lager nets add --openocd-config`.
+- A dropped debug read does not stop the loader. The loader retries the read until the deadline of its step. The deadlines are 10 s for boot, 60 s per MiB for erase, and 30 s per program chunk.
+
+A loader failure names the last progress line that the loader printed:
+
+```
+DA1469x flash_loader flash failed after '<last progress line>': <cause>. The QSPI erase already ran, so the board may be left blank until a flash succeeds.
+```
+
+If the message says that the QSPI erase already ran, the board can be blank. Flash it again before you reset it.
+
+```bash
+# Flash a DA1469x image at the start of QSPI
+lager debug SWD flash --bin build/app.bin,0x16000000 --box my-lager-box
+```
+
 ## Supported Debug Probes
+
+The box selects the backend from the USB vendor ID of the probe.
 
 | Probe | Backend | Notes |
 |-------|---------|-------|
 | J-Link | JLinkGDBServer | Full feature support, RTT, JLinkScript |
 | J-Link Plus | JLinkGDBServer | Full feature support, RTT, JLinkScript |
-| CMSIS-DAP | pyOCD | Open source, wide device support |
-| ST-Link | pyOCD | STM32 devices |
 | Flasher ARM | JLinkGDBServer | Production programming |
+| CMSIS-DAP (Arm DAPLink) | OpenOCD | Open source, wide device support |
+| ST-Link | OpenOCD | STM32 devices |
+| Raspberry Pi Debug Probe (Picoprobe) | OpenOCD | CMSIS-DAP firmware |
+| FTDI adapters (FT2232H, FT232H, FT4232H) | OpenOCD | Uses an MPSSE channel |
+| Atmel EDBG | OpenOCD | Microchip evaluation boards |
+| Olimex ARM-USB-OCD-H | OpenOCD | FTDI adapter |
 
 ## Supported Device Families
 
@@ -581,6 +712,7 @@ Devices not in the table above default to Cortex-M4 (ARMv7E-M) architecture. If 
 
 - Debug nets are created with `lager nets add <name> debug <device_type> <address>`
 - The system auto-connects when needed for commands like `flash` and `reset`
+- Before `flash`, `erase` and `reset` run, the CLI checks that the target answers. If the GDB server is up but the target does not answer, the CLI prints `The debug session is up, but the target does not answer; reconnecting...` and starts a new session. If that reconnect fails, the command exits 1.
 - `flash` erases before programming by default, giving a clean state for RTT initialization (use `--no-erase` to opt out)
 - RTT streaming requires the device to have RTT support in firmware
 - Memory reads are more reliable with `--halt` to pause the CPU

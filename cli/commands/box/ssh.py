@@ -13,7 +13,7 @@ import subprocess
 import platform
 from ...box_storage import resolve_and_validate_box
 from ...context import get_default_box
-from ._ssh import widened_identity_args
+from ._ssh import resolve_box_user, widened_identity_args
 
 
 def _get_ssh_install_hint() -> str:
@@ -90,15 +90,17 @@ def ssh(ctx, box, command):
     """
     from ...box_storage import get_box_user
 
-    # Use default box if none specified
-    if not box:
+    # Use the default box only when --box was not given; the resolver refuses
+    # `--box ""`.
+    if box is None:
         box = get_default_box(ctx)
 
     # Resolve and validate the box (handles both names and IPs)
     resolved_box = resolve_and_validate_box(ctx, box)
 
-    # Get username from box storage (defaults to 'lagerdata' if not found)
-    username = get_box_user(box) or 'lagerdata'
+    # The stored user for a saved name, else the one saved for this IP (an
+    # IP or the default box never matches a name), else 'lagerdata'.
+    username = (get_box_user(box) if box else None) or resolve_box_user(resolved_box)
 
     # Build SSH command: lager_box first, then the operator's own default
     # identities, so a box authorized on either connects (see _identity_args).

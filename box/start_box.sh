@@ -389,7 +389,13 @@ fi
 # user can no longer chmod it, so setting the mode while we are still the owner
 # reaches the target state in one pass; doing it the other way round leaves the
 # mode for the container to fix on its next load.
-LAGER_SECRET_FILES="${LAGER_SECRET_FILES:-/etc/lager/org_secrets.json /etc/lager/secret_key}"
+#
+# mcp_token is the MCP server's optional bearer token (`lager box-config
+# mcp-token`). The container writes it as uid 33, so it is normally already
+# right; it is listed for the copy placed by hand or restored from a backup. A
+# token file the server cannot read does not open the MCP port -- the server
+# refuses every request -- so the warning below is the operator's explanation.
+LAGER_SECRET_FILES="${LAGER_SECRET_FILES:-/etc/lager/org_secrets.json /etc/lager/secret_key /etc/lager/mcp_token}"
 # uid 33 is www-data, the user the container runs as. Hardcoded because it is
 # baked into the container image, not discovered at runtime.
 LAGER_CONTAINER_UID="${LAGER_CONTAINER_UID:-33}"
@@ -459,14 +465,23 @@ _normalize_secret_files
 #     could add keys but never remove them),
 #   * a key can never be appended twice, so concurrent passes cannot duplicate
 #     lines the way the old grep-then-append race did.
-# Every line OUTSIDE the block is preserved byte-for-byte. That is what keeps
-# keys installed by `lager ssh-setup` / ssh-copy-id / cloud-init — which never
-# create a .pub here — from being revoked by this loop.
+# Lines OUTSIDE the block are preserved, which is what keeps keys installed by
+# `lager ssh-setup` / ssh-copy-id / cloud-init — which never create a .pub
+# here — from being revoked by this loop. The one exception is adoption: a
+# loose copy of a key we are about to publish is dropped, so the block is the
+# single source for it (see the rebuild comment below).
 #
 # Any other system that manages this file must claim its OWN distinct sentinel
-# pair. Two managers sharing one pair would each rebuild the other's region from
-# its own source and fight on every pass; distinct pairs is what lets them
-# coexist, since each preserves everything outside its own block.
+# pair. Two managers sharing one pair would each rebuild the other's region
+# from its own source and fight on every pass.
+#
+# Distinct pairs are necessary but NOT sufficient: adoption has to stop at
+# another manager's block too. A peer publishing from this same key directory
+# has every one of our staged keys in its region, so adopting across the whole
+# file emptied that region on every pass — and the peer, following the same
+# rule, emptied ours right back. Whichever ran more often looked like the only
+# working publisher. So: never delete inside a region another manager has
+# marked, and let it revoke its own entries from its own source.
 _AK_BEGIN="# BEGIN LAGER MANAGED KEYS (managed by start_box.sh — do not edit by hand)"
 _AK_END="# END LAGER MANAGED KEYS"
 
@@ -509,11 +524,15 @@ _sync_authorized_keys() {
     ) | awk '!seen[$0]++' > "$staged"
 
     # Rebuild in two parts:
-    #  1. every line outside our block, minus any line that is itself a
+    #  1. every line outside our block, minus any LOOSE line that is itself a
     #     currently-staged key. Dropping those adopts copies that a previous
     #     append-only sync left loose in the file, and collapses the duplicate
     #     lines that the old race produced — without touching keys we do not
     #     manage (they are not in the key directory, so they are not dropped).
+    #     Lines inside another manager's marked region are printed untouched,
+    #     staged or not: that region is its source of truth, not ours. An
+    #     unterminated foreign BEGIN therefore preserves the rest of the file,
+    #     which is the safe direction for a truncated or hand-edited file.
     #  2. our block, regenerated from the key directory.
     # The staged keys are loaded in BEGIN rather than with the usual two-file
     # `NR == FNR` idiom: when the key directory is empty the staged file is
@@ -525,6 +544,9 @@ _sync_authorized_keys() {
             $0 == b { inblock = 1; next }
             $0 == e { inblock = 0; next }
             inblock { next }
+            /^# BEGIN .* MANAGED KEYS/ { foreign = 1; print; next }
+            /^# END .* MANAGED KEYS/ { foreign = 0; print; next }
+            foreign { print; next }
             ($0 in staged) { next }
             { print }
         ' "$auth_keys" > "$tmp"; then
@@ -567,11 +589,24 @@ _sync_authorized_keys
 # `9>&-` closes the inherited single-instance lock fd — without it this
 # long-lived child would hold the lock forever and every later start_box.sh
 # would refuse to run.
-_SSH_SYNC_PID_FILE="/tmp/lager-ssh-sync.pid"
+# --- BEGIN ssh-sync pid file (extracted verbatim by test/unit/box/test_authorized_keys_sync.py) ---
+# Per login user, and overridable. /tmp is sticky, so a PID file this user
+# cannot remove is one a DIFFERENT login user wrote -- and `rm -f` forgives a
+# missing file, not EPERM. Under `set -e` that ended the whole script, after
+# the old containers were already gone, leaving the box with no lager
+# container at all. An install as a second account failed exactly there, and
+# so did the next install back as the first account.
+#
+# A per-uid name means two accounts never contend for one path. Every step
+# here still warns and continues rather than aborting, because a poller that
+# does not start is a missed key sync, while a script that exits here is a box
+# with nothing running on it.
+_SSH_SYNC_PID_FILE="${LAGER_SSH_SYNC_PID_FILE:-/tmp/lager-ssh-sync-$(id -u).pid}"
 if [ -f "$_SSH_SYNC_PID_FILE" ]; then
     _old_pid=$(cat "$_SSH_SYNC_PID_FILE" 2>/dev/null || true)
     [ -n "$_old_pid" ] && kill "$_old_pid" 2>/dev/null || true
-    rm -f "$_SSH_SYNC_PID_FILE"
+    rm -f "$_SSH_SYNC_PID_FILE" 2>/dev/null \
+        || echo "[WARNING] Could not remove $_SSH_SYNC_PID_FILE. Continuing."
 fi
 (
     while true; do
@@ -579,8 +614,13 @@ fi
         _sync_authorized_keys 2>/dev/null
     done
 ) 9>&- > /dev/null 2>&1 &
-echo "$!" > "$_SSH_SYNC_PID_FILE"
-disown "$!"
+_SSH_SYNC_PID=$!
+echo "$_SSH_SYNC_PID" > "$_SSH_SYNC_PID_FILE" 2>/dev/null \
+    || echo "[WARNING] Could not write $_SSH_SYNC_PID_FILE. A poller from an earlier run may outlive this one."
+# `disown` fails when the job has already exited and been reaped, which is not
+# a reason to end the script.
+disown "$_SSH_SYNC_PID" 2>/dev/null || true
+# --- END ssh-sync pid file ---
 echo ""
 
 # Check for JLink directory
@@ -796,6 +836,15 @@ NPM_PKGS_FILE="/etc/lager/npm_packages.txt"
 BOX_CONFIG_MOUNTS=()
 BOX_CONFIG_ENV=()
 BOX_CONFIG_HOST_PATHS=()
+# Scalar, not an array. Overwritten by the render below when a config declares
+# it; the default stands for a box with no /etc/lager/box_config.json, an
+# unreadable one, or a lager predating the setting.
+BOX_CONFIG_NETWORK=lagernet
+# The configured mode when the render withheld it, else empty. A switch to host
+# networking happens only through `lager box-config apply`, which runs this
+# script with LAGER_APPLY_NETWORK_SWITCH=1 after checking the box stays
+# reachable; every other start keeps the mode the last apply recorded.
+BOX_CONFIG_NETWORK_PENDING=
 # Set by any renderer that fails below. The container still comes up (that is a
 # hard requirement of this script), but the script exits 3 at the end so the
 # caller can tell "box is up AND config applied" from "box is up but the config
@@ -914,8 +963,38 @@ if command -v tailscale &> /dev/null; then
     fi
 fi
 
+# --- BEGIN network mode (extracted verbatim by test/unit/box/test_network_mode.py) ---
+# Docker network for the container, from box_config.json via
+# render_docker_args.py. "host" exists so AF_BLUETOOTH/hci0 is reachable inside
+# the container: the kernel registers that address family only in the initial
+# network namespace, so raw HCI tooling cannot see the adapter on lagernet.
+# bleak is unaffected either way -- it reaches the host's bluetoothd over the
+# mounted /var/run/dbus socket rather than through a BT socket of its own.
+#
+# An unknown value is corrected to the default rather than passed through. The
+# renderer validates against the same allowlist, so a bad value only reaches
+# here from a hand-edited box_config.docker.sh -- and an unknown --network makes
+# `docker run` fail outright, which would take the whole box down to punish a
+# typo.
+case "$BOX_CONFIG_NETWORK" in
+    lagernet|host) ;;
+    *)
+        echo "[WARNING] Unknown network mode '$BOX_CONFIG_NETWORK'; falling back to lagernet"
+        BOX_CONFIG_NETWORK=lagernet
+        ;;
+esac
+# The render already chose the network. This only says why it differs from the
+# config, so an operator who set host and then ran an update is not left
+# guessing.
+if [ -n "$BOX_CONFIG_NETWORK_PENDING" ]; then
+    echo "[WARNING] Network mode '$BOX_CONFIG_NETWORK_PENDING' is configured but not applied;"
+    echo "          staying on '$BOX_CONFIG_NETWORK'. Run 'lager box-config apply' to switch."
+fi
+# --- END network mode ---
+
 echo "Network configuration:"
 echo "  Docker Interface: $DOCKER_IFACE"
+echo "  Container network: $BOX_CONFIG_NETWORK"
 if [ -n "$VPN_INFO" ]; then
     echo "  VPN: $VPN_INFO"
 fi
@@ -989,14 +1068,22 @@ else
     echo "              sudo groupadd lager && sudo udevadm trigger"
 fi
 
-# LAGER_DISABLE_UART_SERVICE reaches the container through BOX_CONFIG_ENV
-# (sourced above), and start-services.sh already declines to launch
+# LAGER_DISABLE_UART_SERVICE and LAGER_MCP_NO_PUBLISH reach the container
+# through BOX_CONFIG_ENV (sourced above). Both are read here with the same
+# truthiness rule as start-services.sh.
+#
+# LAGER_DISABLE_UART_SERVICE: start-services.sh already declines to launch
 # box_http_server.py when it is truthy. That alone does not free port 9000:
 # docker-proxy binds a published port whether or not anything listens behind
 # it, so the host port stayed occupied and the flag did not deliver the one
-# thing it exists for. Read the same value here, with the same truthiness rule
-# as start-services.sh, and decline to publish the port too.
+# thing it exists for. Decline to publish the port too.
+#
+# LAGER_MCP_NO_PUBLISH: the MCP server keeps running inside the container, but
+# port 8100 is not published on the host. The server performs no
+# authentication, and --no-publish would take every other port with it.
+# --- BEGIN service publish opt-outs (run by test/unit/box/test_mcp_publish_opt_out.py) ---
 UART_SERVICE_DISABLED=0
+MCP_PUBLISH_DISABLED=0
 for _env_arg in "${BOX_CONFIG_ENV[@]}"; do
     case "$_env_arg" in
         LAGER_DISABLE_UART_SERVICE=*)
@@ -1004,31 +1091,46 @@ for _env_arg in "${BOX_CONFIG_ENV[@]}"; do
                 1|true|yes) UART_SERVICE_DISABLED=1 ;;
             esac
             ;;
+        LAGER_MCP_NO_PUBLISH=*)
+            case "$(echo "${_env_arg#LAGER_MCP_NO_PUBLISH=}" | tr '[:upper:]' '[:lower:]')" in
+                1|true|yes) MCP_PUBLISH_DISABLED=1 ;;
+            esac
+            ;;
     esac
 done
 unset _env_arg
+# --- END service publish opt-outs ---
 
 # Host port publishing. Empty under --no-publish: lagernet-only, a reverse
 # proxy on the same network owns the host ports.
 # --- BEGIN port publishing (extracted verbatim by test/unit/box/test_firewall_port_allowlist.py) ---
 PORT_PUBLISH_ARGS=()
-if [ -z "$NO_PUBLISH" ]; then
+if [ -z "$NO_PUBLISH" ] && [ "$BOX_CONFIG_NETWORK" != "host" ]; then
     PORT_PUBLISH_ARGS=(
         -p 5000:5000
         -p 8301:5000
         -p 8080:8080
         -p 8081-8090:8081-8090
-        -p 8100:8100
         -p 8765:8765
         -p 2331-2342:2331-2342
         -p 4444-4447:4444-4447
         -p 6666-6669:6666-6669
         -p 9090-9097:9090-9097
     )
+    if [ "$MCP_PUBLISH_DISABLED" = "1" ]; then
+        echo "Not publishing port 8100 (LAGER_MCP_NO_PUBLISH set; the MCP server runs inside the container only)"
+    else
+        PORT_PUBLISH_ARGS+=(-p 8100:8100)
+    fi
     if [ "$UART_SERVICE_DISABLED" = "1" ]; then
         echo "Not publishing port 9000 (LAGER_DISABLE_UART_SERVICE set; port left free on the host)"
     else
         PORT_PUBLISH_ARGS+=(-p 9000:9000)
+    fi
+elif [ "$BOX_CONFIG_NETWORK" = "host" ]; then
+    echo "Port publishing skipped (network mode 'host'): the container binds host ports directly"
+    if [ "$MCP_PUBLISH_DISABLED" = "1" ]; then
+        echo "[WARNING] LAGER_MCP_NO_PUBLISH has no effect in network mode 'host': the MCP server listens on host port 8100 directly"
     fi
 else
     echo "Port publishing disabled (--no-publish): container reachable via lagernet only"
@@ -1036,7 +1138,7 @@ fi
 # --- END port publishing ---
 
 docker run -d \
-    --network lagernet \
+    --network "$BOX_CONFIG_NETWORK" \
     --privileged \
     "${LAGER_GROUP_ADD[@]}" \
     -v /tmp:/tmp \
@@ -1060,7 +1162,6 @@ docker run -d \
     --env "PIGPIO_ADDR=$PIGPIO_ADDR" \
     --env "LAGER_HOST=$DOCKER_IFACE" \
     --env "PYTHONBREAKPOINT=lager.breakpoint.pause" \
-    --env "LOCAL_ADDRESS=172.18.0.10" \
     -e HOME=/home/www-data \
     --log-driver json-file \
     --log-opt max-size=10m \
@@ -1248,6 +1349,8 @@ fi
 echo "  - Python Execution Service: port 5000 (and 8301 for backwards compatibility)"
 if [ -n "$NO_PUBLISH" ]; then
     echo "  - MCP Server (AI): port 8100 (MCP clients: lagernet address, not <box-ip>)"
+elif [ "$MCP_PUBLISH_DISABLED" = "1" ] && [ "$BOX_CONFIG_NETWORK" != "host" ]; then
+    echo "  - MCP Server (AI): port 8100, NOT published on the host (LAGER_MCP_NO_PUBLISH set; MCP clients: lagernet address)"
 else
     echo "  - MCP Server (AI): port 8100 (MCP clients: http://<box-ip>:8100/mcp)"
 fi

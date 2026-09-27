@@ -37,11 +37,14 @@ from lager.debug.gdb import get_controller, get_arch, reset as gdb_reset
 from lager.debug.api import (
     JLinkNotRunning,
     clear_script_file,
+    jlink_erase_plan,
     purge_legacy_script_file,
     _attach_failed,
 )
 from lager.debug.target_probe import target_attached
+from lager.debug.erase_bounds import bounds_dict, validate_bounds
 from lager.debug.jlink import JLink
+from lager.debug.openocd_flash import resolve_erase_range as openocd_erase_range
 from lager.debug.gdbserver import (
     start_jlink_gdbserver,
     stop_jlink_gdbserver,
@@ -63,6 +66,7 @@ from lager.debug.probes import (
     openocd_tcl_port_for_slot,
     jlink_gdbserver_pidfile,
     openocd_pidfile,
+    is_da1469x,
     BACKEND_JLINK,
     BACKEND_OPENOCD,
 )
@@ -72,6 +76,13 @@ from lager.debug.openocd import (
     get_openocd_status,
     OpenOcdRpc,
     OpenOcdRpcError,
+)
+from lager.debug.openocd_flash import (
+    ERASE_RPC_TIMEOUT_S,
+    FLASH_ERRORS,
+    FLASH_RPC_TIMEOUT_S,
+    erase_target,
+    flash_target,
 )
 
 OPENOCD_CONFIG_TEMP_PATH = '/tmp/lager_openocd_user.cfg'
@@ -421,9 +432,40 @@ SERVICE_HOST = '0.0.0.0'  # Listen on all interfaces (container is isolated)
 SERVICE_PORT = 8765
 SERVICE_VERSION = '1.0.0'
 
+# What this service can do beyond the original request shapes, listed on
+# /health so a CLI can refuse a flag the box would silently ignore. A box
+# that predates the list answers with no ``features`` key at all, which reads
+# as "none". Append; never remove or rename an entry.
+SERVICE_FEATURES = ('erase_range',)
+
 # Track active connections (with thread safety for concurrent access)
 active_connections = {}
 connections_lock = threading.Lock()
+
+
+def _parse_erase_range(data, device_type):
+    """The ``erase_start`` / ``erase_size`` pair of a /debug/erase body, checked.
+
+    Both absent (an older CLI, or no ``--erase-start``) is ``(None, None)``,
+    the backend's default. Anything else must be a pair of ints the target
+    can erase; ``ValueError`` names what is wrong, for a 400.
+    """
+    start = data.get('erase_start')
+    size = data.get('erase_size')
+    if start is None and size is None:
+        return None, None
+    if start is None or size is None:
+        raise ValueError('erase_start and erase_size must be given together')
+    validate_bounds(start, size, da1469x=is_da1469x(device_type))
+    return start, size
+
+
+def _erase_range_report(resolved):
+    """The ``erase_range`` field of a /debug/erase response: a dict, or None for a full chip."""
+    if resolved is None:
+        return None
+    start, length, source = resolved
+    return bounds_dict(start, length, source)
 
 # Service start time
 start_time = None
@@ -459,6 +501,7 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             self.send_json_response(200, {
                 'status': 'healthy',
                 'version': SERVICE_VERSION,
+                'features': list(SERVICE_FEATURES),
                 'uptime': time.time() - start_time,
             })
         elif self.path == '/health/detailed':
@@ -477,6 +520,7 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                 health_data = {
                     'status': 'healthy',
                     'version': SERVICE_VERSION,
+                    'features': list(SERVICE_FEATURES),
                     'jlink_gdbserver_running': gdbserver_status['running'],
                     'jlink_gdbserver_pid': gdbserver_status.get('pid'),
                     'gdb_controllers_cached': gdb_controllers,
@@ -1027,8 +1071,10 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
         gdbserver — if /debug/erase just stopped it for DA1469x we flash
         anyway.
 
-        OpenOCD: dispatches ``program <file> verify reset`` over the
-        already-running daemon's TCL/RPC port. No process bouncing.
+        OpenOCD: programs over the already-running daemon's TCL/RPC port,
+        no process bouncing. How -- OpenOCD's own ``program``, or the
+        RAM-resident flash_loader for a DA1469x -- is decided by
+        ``lager.debug.openocd_flash``, shared with ``DebugNet.flash()``.
         """
         try:
             import base64
@@ -1085,80 +1131,50 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                         )
                         return
 
-                    rpc = OpenOcdRpc(port=openocd_tcl_port, timeout=300)
+                    # ``device=`` lets the RPC layer refuse a generic
+                    # ``program`` for a part it cannot flash, should
+                    # anything ever bypass the dispatch below.
+                    rpc = OpenOcdRpc(
+                        port=openocd_tcl_port, timeout=FLASH_RPC_TIMEOUT_S,
+                        device=device_type,
+                    )
 
-                    # DA1469x family: mainline OpenOCD has no QSPI flash
-                    # driver, so ``program ... 0x16000000 verify reset``
-                    # cannot touch external NOR. Drive the RAM-resident
-                    # Apache Mynewt flash_loader instead — the OpenOCD
-                    # counterpart of the J-Link DA1469x special path in
-                    # ``lager/box/lager/debug/jlink.py``.
-                    if 'DA1469' in device_type.upper():
-                        from .da1469x_loader import (
-                            DA1469X_FAMILY,
-                            Da1469xLoaderError,
-                            flash_image,
-                            xip_to_flash_offset,
-                        )
-                        try:
-                            # ``flash_address`` is the CLI value from
-                            # ``--bin <file>,<addr>`` (set above for the
-                            # binfile branch; ``None`` for hex/elf). The
-                            # CLI accepts absolute XIP addresses
-                            # (matching the J-Link path); the loader
-                            # wants flash-relative offsets. Translate here
-                            # so the user-facing CLI behaves the same
-                            # across backends.
-                            loader_offset = xip_to_flash_offset(flash_address)
-                            flash_output = []
-                            for line in flash_image(
-                                rpc, flash_path,
-                                family=DA1469X_FAMILY,
-                                flash_id=0,
-                                offset=loader_offset,
-                            ):
-                                logger.info('[FLASH] %s', line)
-                                flash_output.append(line)
-                        except (Da1469xLoaderError, OpenOcdRpcError) as exc:
-                            self.send_error_response(500, str(exc))
-                            return
-
-                        # Drop the active connection entry so the next
-                        # ``/debug/connect`` re-initialises cleanly — the
-                        # software reset above leaves the chip running its
-                        # bootrom, which puts it in a fresh state for any
-                        # following ``gdbserver --rtt`` attach. Mirrors the
-                        # J-Link DA1469x post-flash bookkeeping at
-                        # ``service.py:handle_flash`` (J-Link branch).
-                        connection_id = f"{net.get('name', 'unknown')}:{device_type}"
-                        with connections_lock:
-                            active_connections.pop(connection_id, None)
-
-                        self.send_json_response(200, {
-                            'status': 'flash_complete',
-                            'output': flash_output,
-                            'backend': BACKEND_OPENOCD,
-                        })
-                        return
-
+                    # The DA1469x-vs-generic decision is
+                    # ``openocd_flash``'s, shared with the Net API
+                    # (``DebugNet.flash``), so ``lager debug <net> flash``
+                    # and ``dbg.flash()`` cannot take different paths for
+                    # one target. ``flash_address`` is the CLI value from
+                    # ``--bin <file>,<addr>`` (set above for the binfile
+                    # branch; ``None`` for hex/elf) -- an absolute XIP
+                    # address on a DA1469x, as on the J-Link path; the
+                    # dispatch derives the loader's flash-relative offset.
                     try:
-                        # ``program <file> [<addr>] verify reset`` runs erase +
-                        # write + verify + reset on the existing daemon — the
-                        # OpenOCD equivalent of the JLinkExe ``loadfile`` path.
-                        out = rpc.program(
-                            flash_path,
-                            verify=True,
-                            reset_after=True,
-                            address=flash_address,
-                        )
-                    except OpenOcdRpcError as exc:
+                        flash_output = []
+                        for line in flash_target(
+                            rpc, device_type, flash_path, address=flash_address,
+                        ):
+                            logger.info('[FLASH] %s', line)
+                            flash_output.append(line)
+                    except FLASH_ERRORS as exc:
                         self.send_error_response(500, str(exc))
                         return
 
-                    logger.info('[FLASH] OpenOCD program complete')
+                    if is_da1469x(device_type):
+                        # Drop the active connection entry so the next
+                        # ``/debug/connect`` re-initialises cleanly -- the
+                        # loader's software reset leaves the chip running
+                        # its bootrom, which puts it in a fresh state for
+                        # any following ``gdbserver --rtt`` attach. Mirrors
+                        # the J-Link DA1469x post-flash bookkeeping below.
+                        connection_id = f"{net.get('name', 'unknown')}:{device_type}"
+                        with connections_lock:
+                            active_connections.pop(connection_id, None)
+                    else:
+                        logger.info('[FLASH] OpenOCD program complete')
+
                     self.send_json_response(200, {
                         'status': 'flash_complete',
-                        'output': [out] if out else [],
+                        'output': flash_output,
                         'backend': BACKEND_OPENOCD,
                     })
                     return
@@ -1266,7 +1282,7 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
 
                 # DA1469x post-flash may stop JLinkGDBServer for this probe;
                 # drop only this probe's tracking entry so siblings keep their state.
-                if 'DA1469' in device_type.upper():
+                if is_da1469x(device_type):
                     connection_id = f"{net.get('name', 'unknown')}:{device_type}"
                     with connections_lock:
                         active_connections.pop(connection_id, None)
@@ -1296,8 +1312,10 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
         active_connections accordingly. Callers don't need to reconnect
         before ``/debug/flash`` (JLinkExe handles its own session).
 
-        OpenOCD: send ``flash erase_sector 0 0 last`` to the running daemon
-        via TCL/RPC — no process bouncing, no connection state to clear.
+        OpenOCD: erases over the running daemon's TCL/RPC port -- every
+        flash bank, or the flash_loader's QSPI range erase for a DA1469x --
+        as decided by ``lager.debug.openocd_flash``, shared with
+        ``DebugNet.erase()``. No process bouncing.
         """
         try:
             net = data.get('net', {})
@@ -1310,6 +1328,14 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             device_type = _resolve_device_type(net)
             speed = data.get('speed', '4000')
             transport = data.get('transport', 'SWD')
+            # An explicit range, from ``--erase-start`` / ``--erase-size``.
+            # Refused here, before either backend is touched, so a bad range
+            # is a 400 that names the problem rather than a probe bounce.
+            try:
+                erase_start, erase_size = _parse_erase_range(data, device_type)
+            except ValueError as bad_range:
+                self.send_error_response(400, str(bad_range))
+                return
             backend = resolve_backend(net)
             serial, slot, _gdb_port, _swo_port, _telnet_port, _rtt_port = _resolve_probe(net)
             _openocd_telnet, openocd_tcl_port = _openocd_ports_for_slot(slot)
@@ -1321,60 +1347,51 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                         'OpenOCD is not running; call /debug/connect first',
                     )
                     return
-                rpc = OpenOcdRpc(port=openocd_tcl_port, timeout=120)
+                rpc = OpenOcdRpc(
+                    port=openocd_tcl_port, timeout=ERASE_RPC_TIMEOUT_S,
+                    device=device_type,
+                )
+                # Same shared dispatch as /debug/flash and DebugNet.erase:
+                # generic targets erase every flash bank; a DA1469x goes
+                # through the flash_loader's address-range erase, since
+                # ``flash erase_sector`` has no QSPI bank to act on there.
+                try:
+                    erase_output = []
+                    for line in erase_target(
+                        rpc, device_type, start=erase_start, length=erase_size,
+                    ):
+                        logger.info('[ERASE] %s', line)
+                        erase_output.append(line)
+                except FLASH_ERRORS as exc:
+                    self.send_error_response(500, str(exc))
+                    return
 
-                # DA1469x family: route to the RAM-resident flash_loader
-                # (matching the J-Link DA1469x address-range erase path).
-                # Mainline OpenOCD has no QSPI flash bank for DA1469x, so
-                # ``flash erase_sector`` would silently do nothing.
-                if 'DA1469' in device_type.upper():
-                    from .da1469x_loader import (
-                        DA1469X_FAMILY,
-                        DEFAULT_ERASE_LENGTH,
-                        Da1469xLoaderError,
-                        erase_range,
-                    )
-                    try:
-                        erase_output = []
-                        for line in erase_range(
-                            rpc,
-                            family=DA1469X_FAMILY,
-                            flash_id=0,
-                            offset=0,
-                            length=DEFAULT_ERASE_LENGTH,
-                        ):
-                            logger.info('[ERASE] %s', line)
-                            erase_output.append(line)
-                    except (Da1469xLoaderError, OpenOcdRpcError) as exc:
-                        self.send_error_response(500, str(exc))
-                        return
-
+                if is_da1469x(device_type):
                     connection_id = f"{net.get('name', 'unknown')}:{device_type}"
                     with connections_lock:
                         active_connections.pop(connection_id, None)
+                else:
+                    logger.info('[ERASE] OpenOCD erase complete')
 
-                    self.send_json_response(200, {
-                        'status': 'erase_complete',
-                        'output': '\n'.join(erase_output) if erase_output else 'Erase completed',
-                        'backend': BACKEND_OPENOCD,
-                    })
-                    return
-
-                try:
-                    out = rpc.flash_erase_all()
-                except OpenOcdRpcError as exc:
-                    self.send_error_response(500, str(exc))
-                    return
-                logger.info('[ERASE] OpenOCD erase complete')
                 self.send_json_response(200, {
                     'status': 'erase_complete',
-                    'output': out or 'Erase completed',
+                    'output': '\n'.join(erase_output) if erase_output else 'Erase completed',
                     'backend': BACKEND_OPENOCD,
+                    'erase_range': _erase_range_report(
+                        openocd_erase_range(device_type, erase_start, erase_size)),
                 })
                 return
 
             # ---- J-Link path (unchanged below this point) -----------------
             script_path = _get_script_file(net)
+
+            # The range to report, resolved BEFORE the erase from the script
+            # Commander is about to run under. Resolved afterwards, it once
+            # said `default` for an erase that ran the script's range: a
+            # disconnect on the same net had cleared the script in between.
+            erase_plan = jlink_erase_plan(
+                device_type, script_path, start=erase_start, length=erase_size,
+            )
 
             erase_output = list(chip_erase(
                 device=device_type,
@@ -1383,6 +1400,8 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                 mcu=None,
                 script_file=script_path,
                 serial=serial,
+                start=erase_start,
+                length=erase_size,
             ))
 
             connection_id = f"{net.get('name', 'unknown')}:{device_type}"
@@ -1412,6 +1431,7 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                 'status': 'erase_complete',
                 'output': '\n'.join(erase_output) if erase_output else 'Erase completed',
                 'backend': BACKEND_JLINK,
+                'erase_range': _erase_range_report(erase_plan),
             })
 
         except Exception as e:

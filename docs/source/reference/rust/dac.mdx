@@ -55,8 +55,9 @@ let v = dac.read()?;
 <Warning>
   Not every DAC supports readback. On an MCC USB-202 this call fails with
   `Error::Box` and the message `USB-202 does not support DAC output readback`.
-  Where you need a verified output, measure it with an ADC net instead of trusting
-  `read()` to exist.
+  A LabJack U3 has no readback either. The box returns the last value that it set,
+  and the call fails when the box has no value. Where you need a verified output,
+  measure it with an ADC net instead of trusting `read()` to exist.
 </Warning>
 
 ## Examples
@@ -82,11 +83,13 @@ dac.set(0.0)?;
 | Instrument | Channels | Readback |
 |---|---|---|
 | LabJack T7 | DAC0, DAC1 | Supported |
+| LabJack U3 | DAC0, DAC1 | Last value that the box set; output range 0.04 V to 4.95 V |
 | MCC USB-202 | DAC0, DAC1 | Not supported |
 
 ## Notes
 
 - Leave the output where the next test expects it. A DAC holds its last value after
-  your test ends; setting it back to `0.0` in teardown is usually right.
+  your test ends; setting it back to `0.0` in teardown is usually right. A LabJack U3
+  refuses `0.0`, because its range is 0.04 V to 4.95 V. On a U3, use `0.04`.
 - Output accuracy is the instrument's, not the API's. A LabJack T7 asked for 1.0 V
   reads back around 0.99995 V, which is the DAC's resolution rather than an error.

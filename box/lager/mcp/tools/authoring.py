@@ -8,27 +8,8 @@ from __future__ import annotations
 import json
 import re
 
+from ..engine.net_types import PHASE_LABELS, PHASE_PERIPHERALS, PHASE_SETUP_POWER, info_for
 from ..server import mcp
-
-# ── Ordered phases for structuring a test plan ────────────────────────────
-
-_PHASE_ORDER = {
-    "power-supply": 0, "power-supply-2q": 0, "battery": 0, "eload": 0,
-    "debug": 1,
-    "uart": 2, "spi": 2, "i2c": 2,
-    "gpio": 3, "adc": 3, "dac": 3,
-    "watt-meter": 4, "thermocouple": 4, "energy-analyzer": 4,
-    "usb": 5, "webcam": 5,
-}
-
-_PHASE_LABELS = {
-    0: "setup_power",
-    1: "flash_and_boot",
-    2: "protocol_tests",
-    3: "io_tests",
-    4: "measurement",
-    5: "peripherals",
-}
 
 _POWER_SIGNALS = {"power", "power-cycle", "powercycle", "vbus", "vcc", "vdd", "source_power"}
 
@@ -65,6 +46,8 @@ def _net_text(net) -> str:
     parts = [
         net.purpose or "",
         net.notes or "",
+        net.dut_connection or "",
+        " ".join(net.test_hints or []),
     ]
     return " ".join(p for p in parts if p)
 
@@ -84,24 +67,38 @@ def _infer_phase(net) -> int:
     metadata_words.update(_net_text(net).lower().split())
 
     if metadata_words & _POWER_SIGNALS:
-        return 0  # setup_power
+        return PHASE_SETUP_POWER
 
-    return _PHASE_ORDER.get(net.net_type, 5)
+    info = info_for(net.net_type)
+    return info.phase if info is not None else PHASE_PERIPHERALS
 
 
 @mcp.tool()
 def get_test_example(query: str) -> str:
-    """Find runnable test script examples by net type, pattern name, or keyword.
+    """Find worked test examples by net type, pattern name, or keyword.
+
+    Each match names a full example script in the public lager repository
+    (``repo_script``; the box does not carry the scripts) and includes the
+    curated example snippet for each of the pattern's net types, which is
+    usually enough to start from.
 
     Args:
         query: Net type ("SPI"), pattern ("spi_flash_readback"), or keyword ("power").
     """
-    from ..data.test_patterns import find_pattern, get_script_content, list_patterns
+    from ..data.test_patterns import (
+        REPO_TEST_ROOT,
+        example_snippets,
+        find_pattern,
+        list_patterns,
+    )
+    from ..server_state import get_bench
 
+    box_id = get_bench().box_id
     matches = find_pattern(query)
     if not matches:
         return json.dumps(
             {
+                "box_id": box_id,
                 "error": f"No test examples matching '{query}'.",
                 "hint": (
                     "Retry with one of the pattern keys or net types below "
@@ -112,21 +109,32 @@ def get_test_example(query: str) -> str:
             indent=2,
         )
 
-    results = []
+    examples = []
     for m in matches[:3]:
         entry = {
             "pattern": m["pattern_key"],
             "description": m["description"],
             "net_types": m["net_types"],
             "tags": m.get("tags", []),
-            "script_path": m["script"],
+            "repo_script": f"{REPO_TEST_ROOT}/{m['script']}",
         }
-        content = get_script_content(m["script"])
-        if content:
-            entry["script_content"] = content
-        results.append(entry)
+        snippets = example_snippets(m["net_types"])
+        if snippets:
+            entry["example_snippets"] = snippets
+        examples.append(entry)
 
-    return json.dumps(results, indent=2)
+    return json.dumps(
+        {
+            "box_id": box_id,
+            "examples": examples,
+            "note": (
+                "example_snippets are the curated per-type snippets from "
+                "lager://reference/{net_type}; repo_script is the full example "
+                "in the lager repository, which is not on the box."
+            ),
+        },
+        indent=2,
+    )
 
 
 def _dut_block(dut) -> dict | None:
@@ -165,6 +173,10 @@ def _score_net(net, goal_words: set[str]) -> int:
         for word in net.purpose.lower().split():
             if word in goal_words:
                 score += 3
+    for hint in net.test_hints or []:
+        for word in hint.lower().split():
+            if word in goal_words:
+                score += 2
     if net.notes:
         for word in net.notes.lower().split():
             if word in goal_words:
@@ -220,6 +232,10 @@ def plan_firmware_test(firmware_description: str, test_goals: str) -> str:
         }
         if net.notes:
             step["notes"] = net.notes
+        if net.dut_connection:
+            step["dut_connection"] = net.dut_connection
+        if net.test_hints:
+            step["test_hints"] = list(net.test_hints)
         # Surface the parent subsystem + any doc refs so the agent knows
         # exactly which schematic sheet to open for this step.
         for dut in bench.dut_slots:
@@ -257,7 +273,7 @@ def plan_firmware_test(firmware_description: str, test_goals: str) -> str:
     ordered_phases = []
     for idx in sorted(phases):
         ordered_phases.append({
-            "phase": _PHASE_LABELS.get(idx, "other"),
+            "phase": PHASE_LABELS.get(idx, "other"),
             "nets": phases[idx],
         })
 
@@ -273,6 +289,7 @@ def plan_firmware_test(firmware_description: str, test_goals: str) -> str:
             missing.append(f"{label} — mentioned in firmware but no matching net on bench")
 
     plan: dict = {
+        "box_id": bench.box_id,
         "firmware": firmware_description,
         "goals": test_goals,
         "phases": ordered_phases,

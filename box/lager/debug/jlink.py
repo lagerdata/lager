@@ -9,6 +9,7 @@ debug probes using the J-Link Commander (JLinkExe).
 """
 
 import logging
+import math
 import os
 import re
 import time
@@ -24,6 +25,14 @@ logger = logging.getLogger(__name__)
 # argv assembly -- so it cannot import from ``.probes`` or from ``lager.*`` at
 # all. test_jlink_script_root_matches_probes pins the two together.
 _RUNTIME_DIR = '/tmp'
+
+
+# Mirrors ``probes.is_da1469x``, duplicated for the same reason as the runtime
+# root above. test_da1469x_predicate pins the two together.
+def _is_da1469x(device):
+    """True when *device* names a DA1469x-family part (see probes.is_da1469x)."""
+    return 'DA1469' in str(device or '').upper()
+
 
 # DA1469x external QSPI XIP default: 1 MiB at XIP base (matches common loader erase size).
 # Off-chip "offset 0" for the slot maps to CPU XIP 0x16000000 — Commander uses absolute XIP.
@@ -78,6 +87,39 @@ def parse_lager_erase_range_from_script(script_path):
         logger.warning('LAGER_ERASE_RANGE: start > end (%#x > %#x), ignoring', start, end)
         return None
     return (start, end)
+
+
+def resolve_erase_range(device, script_file, start=None, length=None):
+    """The range :meth:`JLink.chip_erase` erases on *device*, or ``None`` for the whole chip.
+
+    ``(start, length, source)``. A requested range wins (``'request'``); on
+    a DA1469x the ``LAGER_ERASE_RANGE`` line of *script_file* comes next
+    (``'script'``), then the family default of 1 MiB at the XIP base
+    (``'default'``). Any other part with no request erases the whole chip.
+    """
+    if start is not None:
+        return (start, length, 'request')
+    if not _is_da1469x(device):
+        return None
+    parsed = parse_lager_erase_range_from_script(script_file)
+    if parsed:
+        s, e = parsed
+        return (s, e - s + 1, 'script')
+    return (_DA1469X_QSPI_XIP_START, _DA1469X_QSPI_RANGE_BYTES, 'default')
+
+
+# Commander answers ``erase <start> <end>`` only once the erase is done, and
+# ``commander()`` spawns JLinkExe with pexpect's default 30 s per command -- a
+# budget sized for the 1 MiB DA1469x default. A range erase is a sector-by-
+# sector job, unlike the mass erase behind a bare ``erase``: 1 MiB of nRF5340
+# internal flash measured 22 s of Commander time on the bench. So a minute per
+# MiB, the flash_loader's own erase budget on the OpenOCD path.
+_ERASE_TIMEOUT_PER_MIB_S = 60
+
+
+def _erase_timeout_s(length):
+    """Seconds to wait for ``erase`` over *length* bytes: 60 per MiB, at least 60."""
+    return _ERASE_TIMEOUT_PER_MIB_S * max(1, math.ceil(length / (1 << 20)))
 
 
 def _loadfile_skipped_programming(output):
@@ -397,7 +439,7 @@ class JLink:
 
     def _is_da1469(self):
         """True if this J-Link target is a Dialog DA1469x device."""
-        return 'DA1469' in self._device().upper()
+        return _is_da1469x(self._device())
 
     def erase(self, start_addr, length, *, close=True):
         """
@@ -415,7 +457,7 @@ class JLink:
             yield jl.run_command('connect')
             yield jl.run_command(f'erase {hex(start_addr)} {hex(start_addr + length - 1)}')
 
-    def chip_erase(self, *, close=True):
+    def chip_erase(self, *, start=None, length=None, close=True):
         """
         Perform chip erase (non-DA1469) or **address-range erase** on DA1469x external QSPI.
 
@@ -429,12 +471,21 @@ class JLink:
 
         Other devices: plain ``erase`` (whole chip).
 
+        A *start* / *length* pair (absolute addresses; on a DA1469x inside the QSPI
+        XIP map) replaces both the default and the script line, on any device: that
+        range is erased with ``erase <start> <end>`` and nothing else is touched. See
+        :func:`resolve_erase_range` for the order. The caller validates the pair;
+        ``api.chip_erase`` does, before it stops the probe's other sessions.
+
         Args:
+            start: First address to erase, or None for the resolved default.
+            length: Number of bytes to erase, given together with *start*.
             close: Whether to close connection after operation (unused for J-Link)
 
         Yields:
             Output from J-Link commands
         """
+        resolved = resolve_erase_range(self._device(), self.script_file, start, length)
         with commander(self.args, script_file=self.script_file, serial=self.serial) as jl:
             yield jl.run_command('connect')
             if self._is_da1469():
@@ -446,21 +497,18 @@ class JLink:
                     f'Exec SetEnableFlashbank {hex(_DA1469X_QSPI_FLASH_BANK0_BASE)}=1'
                 )
                 yield jl.run_command('Exec EnableEraseAllFlashBanks')
-                qspi_start, qspi_end = _DA1469X_QSPI_XIP_START, _DA1469X_QSPI_XIP_END
-                parsed = parse_lager_erase_range_from_script(self.script_file)
-                if parsed:
-                    qspi_start, qspi_end = parsed
-                logger.info(
-                    'DA1469x: QSPI bank0 base %#x; range erase %s–%s',
-                    _DA1469X_QSPI_FLASH_BANK0_BASE,
-                    hex(qspi_start),
-                    hex(qspi_end),
-                )
-                yield jl.run_command(
-                    f'erase {hex(qspi_start)} {hex(qspi_end)}'
-                )
-            else:
+            if resolved is None:
                 yield jl.run_command('erase')
+                return
+            erase_start, erase_len, source = resolved
+            erase_end = erase_start + erase_len - 1
+            logger.info(
+                'range erase %s-%s (%s)', hex(erase_start), hex(erase_end), source,
+            )
+            yield jl.run_command(
+                f'erase {hex(erase_start)} {hex(erase_end)}',
+                timeout=_erase_timeout_s(erase_len),
+            )
 
     def read_memory(self, address, length, *, reset_halt=None, close=True):
         """

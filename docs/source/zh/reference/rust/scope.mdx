@@ -1,0 +1,65 @@
+---
+title: 示波器
+description: 为什么示波器和逻辑采集目前还不能从 Rust 使用
+---
+
+`Scope` 是一个**有文档记录的占位实现**。除 `name()` 之外的每个方法都返回 `Error::NotSupportedByBox`。这个类型之所以存在，是为了让今天照着它写的代码能够编译通过，并且在 Box 长出背后的端点之后继续编译通过。
+
+## 句柄
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let scope = lager.scope("scope1");   // returns Scope by value, not a borrow
+```
+
+`Scope` 是少数几个既没有生命周期参数、也没有异步版本的句柄之一：目前还没有需要它去做的客户端工作。
+
+## 方法
+
+| 方法 | 行为 |
+|--------|-------------|
+| `name()` | 可用。返回 Net 名称。 |
+| `enable()` | `Error::NotSupportedByBox` |
+| `disable()` | `Error::NotSupportedByBox` |
+| `capture()` | `Error::NotSupportedByBox` |
+| `measure()` | `Error::NotSupportedByBox` |
+
+错误会原样带上原因：
+
+```text
+'scope' is not yet available over the box HTTP API: the box needs
+`POST :9000/net/command` scope/logic roles (or a dedicated capture endpoint)
+for trigger config, single capture, and measurement queries; see
+MISSING_ENDPOINTS.md
+```
+
+## 原因
+
+这个 crate 是 Box 在 9000 端口上那套 API 的纯 HTTP/JSON 客户端。其他每种 Net 类型在那里都有对应的路由，示波器和逻辑分析仪的工作却没有。`lager scope` 和 `lager logic` 仍然走 5000 端口上的旧 exec 路径，以及 8082-8085 端口上专用的示波器流式守护进程。这两者都不是本 crate 能够对话的 HTTP/JSON API。
+
+要填上这个缺口，需要在 Box 的 `/net/command` 的 `ROLE_ACTIONS` 中加入 `analog` 和 `logic` 角色。这些角色必须覆盖触发配置、一次返回 JSON 波形的单次采集，以及标量测量。流式采集可以继续留在那个专用守护进程上。待办清单在 [MISSING_ENDPOINTS.md](https://github.com/lagerdata/lager-rs/blob/main/MISSING_ENDPOINTS.md) 中。
+
+## 替代做法
+
+示波器和逻辑相关的工作请用 Python API 或 CLI，其余一切用 Rust。它们驱动的是同一台 Box 和同一批 Net。
+
+```rust
+// Detect the stub explicitly rather than letting it surprise you.
+match scope.measure("vpp") {
+    Err(lager::Error::NotSupportedByBox { .. }) => {
+        eprintln!("scope capture is not on the HTTP API yet; skipping");
+    }
+    Ok(v) => println!("vpp = {v}"),
+    Err(e) => return Err(e),
+}
+```
+
+如果断言真正需要的只是一个标量，一个 ADC Net 往往就够了，而且它今天就可用。确实需要真实波形时，请在测试的 shell 步骤里驱动 `lager scope`，或者把那一部分用 Python 写。
+
+## 说明
+
+- 该占位实现返回的是 `Error::NotSupportedByBox`，这与 `Error::UnsupportedByBox` 是**不同的变体**。`NotSupportedByBox` 表示该 crate 对此根本没有路由；`UnsupportedByBox` 表示确实存在这条路由，只是这台 Box 太旧。请参阅 [错误](/source/zh/reference/rust/errors)。
+- 逻辑分析仪 Net 在 Rust 中完全没有句柄 —— 没有 `lager.logic(...)`。
+- 这里的一切都与 Box 版本无关。即便 Box 运行的是最新软件，返回的仍然是这个占位错误。

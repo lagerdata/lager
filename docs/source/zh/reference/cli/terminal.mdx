@@ -1,0 +1,89 @@
+---
+title: Terminal
+description: 用于运行 Lager 命令的交互式 REPL
+---
+
+启动一个交互式终端，它带有 Tab 补全、命令历史和自动建议，用于运行 Lager CLI 命令。
+
+## 语法
+
+```bash
+lager terminal
+```
+
+当您运行 `lager` 而不带任何子命令时，这个终端也会自动启动。
+
+## 功能
+
+| 功能 | 说明 |
+|---------|-------------|
+| Tab 补全 | 自动补全命令、子命令和标志 |
+| 命令历史 | 持久保存在 `~/.lager_terminal_history` 中 |
+| 自动建议 | 输入时根据历史给出建议 |
+| 方向键导航 | 用上/下方向键浏览之前的命令 |
+| 彩色输出 | 成功为绿色，错误为红色 |
+| 执行计时 | 显示每条命令的耗时 |
+
+## 内置命令
+
+在 REPL 内部，除了全部 `lager` 命令之外，还可以使用这些命令：
+
+| 命令 | 说明 |
+|---------|-------------|
+| `help`、`?` | 显示可用命令和帮助 |
+| `clear` | 清屏 |
+| `exit`、`quit` | 退出终端 |
+
+## 键盘快捷键
+
+| 快捷键 | 操作 |
+|----------|--------|
+| `Tab` | 补全当前输入 |
+| `Up / Down` | 浏览命令历史 |
+| `Ctrl+R` | 搜索命令历史 |
+| `Ctrl+C` | 取消当前输入 |
+| `Ctrl+D` | 退出终端 |
+
+## 用法
+
+在终端内部，所有 Lager 命令都不需要写 `lager` 前缀：
+
+```bash
+# 启动终端
+lager terminal
+
+# 在 REPL 内部：
+> hello --box my-lager-box
+> supply voltage 3.3 --yes
+> adc VCC
+> boxes
+> debug flash --hex firmware.hex
+> ?
+> exit
+```
+
+终端会自动在每条命令前加上 `lager` 并通过 CLI 执行，因此认证、Box 解析和所有标准行为都与平常一致。
+
+## 被禁止的命令
+
+需要独占终端会话的交互式命令在 REPL 内部被禁止：
+
+- 带 `tui` 子命令的命令（例如 `supply tui`、`battery tui`）
+- 交互式 UART 会话
+
+终端会提示您，并建议改在普通 shell 中运行这些命令。
+
+## 依赖
+
+该终端需要 `prompt_toolkit` 和 `rich`。如果没有安装，CLI 会退回到显示普通的帮助输出：
+
+```bash
+pip install prompt_toolkit rich
+```
+
+## 说明
+
+- 不带任何参数运行 `lager` 会自动启动该终端
+- 命令历史跨会话持久保存在 `~/.lager_terminal_history` 中
+- 每条命令的退出码会用对勾或叉号标示
+- 欢迎界面会根据您的终端宽度自适应

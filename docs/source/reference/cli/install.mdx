@@ -17,9 +17,9 @@ lager install [OPTIONS]
 |--------|------|---------|-------------|
 | `--box TEXT` | string | | Box name (uses stored IP and username from `.lager` config) |
 | `--ip TEXT` | string | | Target box IP address or DNS hostname |
-| `--user TEXT` | string | `lagerdata` | SSH username |
+| `--user TEXT` | string | `lagerdata` | SSH username. With `--box`, the stored username is the default |
 | `--version TEXT` | string | `main` | Box version to deploy: a release tag (e.g. `v0.15.0`), a git branch, or a full 40-character commit SHA |
-| `--skip-jlink` | flag | | Skip J-Link installation (pyOCD is always installed) |
+| `--skip-jlink` | flag | | Skip J-Link installation |
 | `--skip-picoscope` | flag | | Skip PicoScope 7 SDK installation |
 | `--skip-firewall` | flag | | Skip UFW firewall configuration |
 | `--skip-verify` | flag | | Skip post-deployment verification |
@@ -27,48 +27,113 @@ lager install [OPTIONS]
 | `--yes` | flag | | Skip confirmation prompts |
 | `--pull` | flag | on | Use the pre-built box image when the target is a release tag (the default) |
 | `--no-pull` | flag | | Always build the box image on the box |
-| `--timeout INTEGER` | int | `1800` | Max seconds for the deploy step, which includes the container build. `0` disables the budget. Overridden by `LAGER_INSTALL_TIMEOUT` |
+| `--timeout INTEGER` | int | `1800` | Max seconds for the deploy step, which includes the container build. `0` disables the budget. Without the flag, `LAGER_INSTALL_TIMEOUT` sets the value. The flag overrides the variable |
 | `--help` | | | Show help message and exit |
 
 Either `--box` or `--ip` is required. If both are provided, the command exits with an error.
 
 ## The Box Image
 
-The slowest part of an install is the box's Docker image. A build on the box
-takes roughly 14 minutes, and an install always pays the full cost. The
-deployment prunes the builder cache before it starts, so there is never a warm
-layer cache to reuse.
+The slowest part of an install is the box's Docker image. A cold build on the
+box takes roughly 14 minutes.
+
+When a pre-built image is available, the deployment pulls it before it stops
+the running containers. The box keeps its services up during the download.
+The old containers stop only after the pull succeeds. The deployment then
+clears the Docker build cache, because the pulled image needs no build.
+
+When the deployment builds on the box, it keeps the build cache. A later build
+on the same box reuses the layers that did not change. `lager uninstall` clears
+that cache.
 
 Every release tag publishes a pre-built image, and `lager install` uses it by
 default: about 2 minutes instead of 14.
 
-This only applies when `--version` names a **release tag**. Branches such as
-`main` and `staging` have no published image, so they always build on the box.
-Pinning a release tag is the difference between a two-minute install and a
-fourteen-minute one.
+This only applies when `--version` names a **release tag**. The default
+`--version main` has no published image, and neither does any other branch, so
+those always build on the box. Pinning a release tag is the difference between
+a two-minute install and a fourteen-minute one.
 
-The image is verified before it is used. Lager fetches it by immutable digest
-rather than by tag, and the image must carry a label naming the exact version
-you requested. Lager discards an image that is unlabeled or that claims a
-different version. Three things can go wrong: the tag has no published image,
-the box cannot reach the registry, or the image fails verification. In each
-case the install falls back to a build on the box, exactly as it always did.
-A slow install that works beats a fast one that does not.
+A full 40-character commit SHA also builds on the box, and the box must be able
+to fetch that commit from the remote. A shorter hex value is read as a branch
+name.
 
-Pass `--no-pull` to skip the pre-built image and always build. Setting
-`LAGER_BOX_IMAGE_PULL=0` in the environment does the same for every command in
-that shell.
+The image is verified before it is used:
+
+1. The computer that runs `lager install` resolves the tag to an immutable image
+   digest. This step needs `curl` and access to `ghcr.io`.
+2. The box pulls that digest, pinned to its own architecture.
+3. The box checks the version label of the image. The label must name the exact
+   version that you requested.
+
+Any miss means a build on the box, exactly as it always did. A miss is a tag with
+no published image, no `curl`, an unreachable registry, or a missing or
+mismatched label. A slow install that works beats a fast one that does not.
+
+After a pull, `/etc/lager/image-source` records `ghcr:<digest>`. A build on the
+box removes that file.
+
+The image carries its license notices in `/usr/share/licenses/lager/`. That
+directory holds the `LICENSE` and `NOTICE` of Lager, and `THIRD_PARTY.md`, which
+lists the third-party software in the image. The `pip/` directory holds the
+notice files of each Python package. To list them, run
+`docker exec lager ls /usr/share/licenses/lager` on the box.
+
+Pass `--no-pull` to skip the pre-built image and always build. To turn the
+install pull off for a whole shell, set `LAGER_BOX_IMAGE_PULL` to `0`, `false`,
+`no` or `off`. The variable turns the pull on only for `1`, `true` or `yes`, in
+any letter case, and every other value turns it off. `--pull` overrides the
+variable. `lager update` reads the same words in the same way. Only the default
+differs: install uses a pre-built image for a release tag, and update does not.
+`--pull` together with `--no-pull` is a usage error.
+
+## Deploy Timeout
+
+`--timeout` bounds the deploy step, which includes the container build. The
+default is 1800 seconds. Without the flag, `LAGER_INSTALL_TIMEOUT` sets the
+value. An unparseable or negative `LAGER_INSTALL_TIMEOUT` gives the default.
+`--timeout 0` removes the bound, and a negative `--timeout` is refused.
+
+When the budget runs out, install prints `Deployment timed out after ...`. It
+also says that the build can still be healthy, and it prints retry commands with
+twice the budget. It then exits `1`. A re-run is safe.
+
+The install lock stays valid for the larger of 3600 seconds and twice the
+timeout. The lock cannot be renewed while the container that serves it is down.
+With `--timeout 0` the lock never expires, because no fixed time outlasts an
+unbounded deploy. An install that ends normally releases the lock. After a hard
+kill, such as a power loss, the lock has no expiry time to clear it, and
+`lager boxes unlock` releases it.
 
 ## What Gets Installed
 
 | Component | Description |
 |-----------|-------------|
-| Docker container | Lager service container (ports 5000 and 8765) with auto-restart |
-| pyOCD | Open-source debug probe tool (automatic) |
+| Docker container | The `lager` service container with auto-restart. It publishes ports 5000, 8301, 8080, 8081-8090, 8100, 8765, 9000, 2331-2342, 4444-4447, 6666-6669 and 9090-9097 |
 | J-Link | SEGGER debug probe software (optional, skipped with `--skip-jlink`) |
 | PicoScope 7 SDK | PicoTech USB drivers for every current PicoScope series (`libps2000` through `libps6000a`), plus the PicoScope 7 application. Installed from PicoTech's apt repository onto the Ubuntu host at `/opt/picoscope/lib` (optional, skipped with `--skip-picoscope`). USB access is granted for the whole PicoTech vendor ID. `lager scope` drives the 2000 series (2204A/2205A) plus the 2000a, 3000a, 4000a and 5000a series through the box daemon, detecting the attached model at runtime |
-| UFW firewall | Restricts service ports to VPN and localhost (skipped with `--skip-firewall`) |
+| UFW firewall | Host firewall rules from `secure_box_firewall.sh` (skipped with `--skip-firewall`). They do not filter the ports that the container publishes |
 | Box code | Python libraries and services in `~/box` |
+| Host CLI | The `lager` CLI in `~/.lager_venv` on the box host, linked as `~/.local/bin/lager` and installed from the box checkout. Needs host python3 3.10 or newer, or install skips it with a warning. A failure is not fatal |
+
+<Warning>
+**The host firewall does not protect the published ports.** Docker installs its
+forwarding rules ahead of the host chain. A published port therefore answers
+anyone who can route to the box, whatever `ufw status` reports. Put the box on a
+VPN or an isolated LAN. See the Security Model section of
+[SECURITY.md](https://github.com/lagerdata/lager/blob/main/SECURITY.md#security-model).
+</Warning>
+
+The firewall script sets a default deny policy for incoming traffic and allows
+SSH from anywhere. It allows the Lager ports on `lo`, `docker0`, `tailscale0`
+(if Tailscale is up) and the `--corporate-vpn` interface. It denies them on
+every other interface. These rules govern the Lager ports only on a box set to
+`lager box-config network-mode host`, where the container does not publish
+ports.
+
+Each run of the script resets ufw first. A later `lager install` without
+`--skip-firewall` therefore removes firewall rules that you added by hand.
+`lager update` does not run the script.
 
 ## Installation Flow
 
@@ -80,8 +145,18 @@ that shell.
    (see below). The step is bounded by `--timeout`, 30 minutes by default --
    raise it on slower hardware, where a healthy build can legitimately exceed
    the default
-5. **Store version** - Writes the CLI version to `/etc/lager/version` on the box
-6. **Add to config** - Optionally adds the box to your local `.lager` config
+5. **Store version** - Writes the deployed version and the CLI version to
+   `/etc/lager/version`, and the deployed ref and commit to `/etc/lager/ref`.
+   It also writes the build hash to `/etc/lager/build-hash` and reads the
+   version file back. If a write fails, install names the file, prints the
+   manual fix, and exits `1`. The deployment is complete at that point
+6. **Check passwordless sudo** - Confirms the sudoers grant that
+   `lager box-config apply` needs. The deploy step normally writes it, and this
+   step then asks for nothing. If the box does not have the grant, this step
+   writes it and asks for the box's sudo password. A failure here is a warning, not an install
+   failure
+7. **Add to config** - Asks whether to add the box to `~/.lager`. Install skips
+   this step with `--yes`, and with `--box` (the box is already stored)
 
 ## Examples
 
@@ -121,7 +196,7 @@ Lager writes these files, and only these files, under `/etc/sudoers.d/`:
 
 | File | Written by | Grants |
 |------|-----------|--------|
-| `lagerdata-udev` | `lager install` | udev rule deployment, modprobe blacklist, Docker group and service control, firewall helper install/run, `/etc/lager` file writes |
+| `lagerdata-udev` | `lager install` | udev rule deployment, modprobe blacklist, Docker group and service control, firewall helper install/run, the `/etc/lager` ownership helper, `/etc/lager` file writes |
 | `lager-box-config` | `lager install`, `lager update` | `apt-get`, `sysctl`, and the path-scoped writes `lager box-config apply` needs |
 | `lager-bench-json` | Operator, on boxes predating the grant in `lagerdata-udev` | Writing `/etc/lager/bench.json` |
 
@@ -137,9 +212,37 @@ Treat the box login account as equivalent to root when deciding who holds its
 SSH key, and prefer a dedicated user on a dedicated machine.
 </Warning>
 
-Each of the three files is **regenerated in full** on every run — that is what
-keeps a box on the current grant shape. A grant added *inside* one of them is
-lost the next time it is written, so each file opens with a header saying so.
+Lager **regenerates each file in full** when it writes that file. That keeps a
+box on the current grant shape. A grant added *inside* one of them is lost the
+next time it is written, so each file opens with a header saying so.
+
+### Sudo password prompts
+
+`lager install` writes both of its files in one sudo session, early in the deploy
+step. It asks for the box's sudo password in that session and nowhere else:
+
+| Box | Password prompts |
+|-----|------------------|
+| Already installed, and the grants are current | 0 |
+| Fresh box that has Docker | 1 |
+| Fresh box without Docker | 2. The Docker install is a second session, and no grant covers its commands |
+
+Before the session, install checks the box without a terminal. It compares
+`/etc/lager/.deploy-sudoers-v1` with a digest of the grants that this run writes,
+and it runs one granted command with `sudo -n`. If both checks pass, install
+skips the session. A different `--user` or `--corporate-vpn` value changes the
+grants, and a newer CLI can change them too. Install then runs the session one
+time and asks for the password one time.
+
+To make the next install write the files again, delete
+`/etc/lager/.deploy-sudoers-v1` on the box. `lager update` does not use this
+file, and it asks for no password.
+
+The same session installs `/usr/local/lib/lager/etc_lager_perms.sh`. This
+root-owned script creates `/etc/lager` and sets its owner. It does not change
+`/etc/lager/authorized_keys.d`. The grant names the script by its exact path,
+and the script refuses all arguments. Lager grants no `find` command and no
+recursive `chown`.
 
 Lager never reads, edits, or removes any other file in `/etc/sudoers.d/`. If you
 or a box-management platform need additional grants, put them in a separate file

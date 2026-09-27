@@ -16,12 +16,15 @@ class I2CHardwareAdapter:
     def __init__(self, netname: str) -> None:
         self._netname = netname
 
-    def config(self, frequency_hz, pull_ups) -> None:
+    def config(self, frequency_hz, pull_ups) -> dict:
         from lager.protocols.i2c import dispatcher as _disp
         drv = _disp._resolve_net_and_driver(
             self._netname,
             {"frequency_hz": frequency_hz, "pull_ups": pull_ups})
         drv.config(frequency_hz=frequency_hz, pull_ups=pull_ups)
+        # See spi_hs.config: this process's stderr is a container log, so a
+        # clamp the operator has to know about travels back with the result.
+        return {"warnings": list(getattr(drv, "clamp_warnings", ()) or ())}
 
     def scan(self, start_addr=None, end_addr=None, overrides=None) -> list:
         from lager.protocols.i2c import dispatcher as _disp

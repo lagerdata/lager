@@ -15,9 +15,12 @@ import signal
 import sys
 from texttable import Texttable
 from ....context import get_default_box, get_default_net
-from ....core.param_types import MemoryAddressType, HexArrayType, BinfileType
+from ....core.param_types import MemoryAddressType, HexArrayType, BinfileType, ByteSizeType
 from ....box_storage import get_box_ip, get_box_name_by_ip, get_box_user
 from ....core.net_group import NetGroupHelpMixin, NetSubCommand
+from ....errors import LagerError
+from ....gateway_auth import auth_server_for_box
+from ....gateway_tunnel import ROUTE_DIRECT, ROUTE_TUNNEL, GatewayTunnel, choose_route
 from .service_client import DebugServiceClient
 from .net_cache import get_net_cache
 
@@ -249,7 +252,7 @@ def _get_service_client(box):
         click.secho("Possible causes:", err=True)
         click.secho("  - The debug service does not run on the box", err=True)
         click.secho("  - The Docker container 'lager' is not up", err=True)
-        click.secho(f"Check with: ssh lagerdata@{box} 'docker ps | grep lager'", err=True)
+        click.secho(f"Check with: lager ssh --box {box} -- docker ps", err=True)
         return None
     except TimeoutError:
         click.secho(f"Error: Connection timed out to debug service on {box}:8765", fg='red', err=True)
@@ -648,9 +651,22 @@ def _debug(ctx, box):
               help='Size of RAM region to search for RTT control block (hex, e.g., 0x4000)')
 @click.option('--rtt-chunk-size', type=str, default=None,
               help='Read chunk size for RTT search (hex, e.g., 0x1000)')
+@click.option('--local-port', type=click.IntRange(1, 65535), default=None,
+              help='Local port for the tunnel on a box behind a gateway '
+                   '(default: the same port as the GDB server on the box)')
+@click.option('--no-tunnel', is_flag=True, default=False,
+              help='On a box behind a gateway, start the GDB server and return '
+                   'without opening a local tunnel to it')
 def gdbserver(ctx, box, force, halt, speed, quiet, json_output, rtt, rtt_reset, interactive,
-              rtt_channel, reset, gdb_port, rtt_search_addr, rtt_search_size, rtt_chunk_size):
-    """Start JLinkGDBServer for debugging"""
+              rtt_channel, reset, gdb_port, rtt_search_addr, rtt_search_size, rtt_chunk_size,
+              local_port, no_tunnel):
+    """Start the GDB server for the probe (JLinkGDBServer or OpenOCD)
+
+    On a box behind an authenticating gateway, the GDB port is reachable
+    only through the gateway. The command then opens a tunnel on
+    localhost and stays in the foreground until Ctrl-C; the GDB server
+    keeps running on the box afterwards.
+    """
     # --interactive only makes sense with an RTT stream to attach to.
     if interactive and not (rtt or rtt_reset):
         click.secho("Error: --interactive requires --rtt or --rtt-reset", fg='red', err=True)
@@ -762,35 +778,133 @@ def gdbserver(ctx, box, force, halt, speed, quiet, json_output, rtt, rtt_reset, 
     # box-side response carries ``backend`` at the top level (one of
     # ``jlink`` / ``openocd``); fall back to ``J-Link`` so legacy boxes
     # that don't yet emit ``backend`` keep their existing wording.
-    backend = result.get('backend') if isinstance(result, dict) else None
-    backend_label = {
-        'openocd': 'OpenOCD',
-        'jlink': 'JLinkGDBServer',
-    }.get(backend, 'JLinkGDBServer')
+    backend_label = _backend_server_label(result)
+
+    gdb_info = result.get('gdb_server') if isinstance(result, dict) else None
+    server_up = gdb_info is None or (
+        isinstance(gdb_info, dict)
+        and gdb_info.get('status') in ('started', 'already_running'))
+    box_label = box if box is not None else target_box
+    net_label = net_name or debug_net.get('name')
+    streaming = rtt or rtt_reset
+
+    # A box behind a gateway does not publish its GDB port, so the address
+    # the box reports is one this machine cannot reach. Route through a
+    # local tunnel instead; a plain box keeps today's direct address.
+    route, route_error = ROUTE_DIRECT, None
+    if server_up and effective_gdb_port:
+        try:
+            route = choose_route(target_box, effective_gdb_port)
+        except LagerError as err:
+            route_error = err
+    if route_error is not None and not streaming:
+        # The server is up but no debugger here can reach it. RTT does not
+        # need the GDB port (it streams over HTTP), so it goes on below.
+        client.close()
+        raise route_error
+
+    tunnel = None
+    if route == ROUTE_TUNNEL and not no_tunnel:
+        tunnel = GatewayTunnel(target_box, effective_gdb_port,
+                               local_port=local_port, box_label=box_label)
+        try:
+            tunnel.bind()
+        except LagerError:
+            client.close()
+            raise
 
     if not quiet:
         if json_output:
+            if tunnel is not None:
+                result['tunnel'] = {'local_host': '127.0.0.1',
+                                    'local_port': tunnel.local_port,
+                                    'box_port': effective_gdb_port}
             click.echo(json.dumps(result, indent=2))
+            # A script reading the JSON must see it now, not when the
+            # tunnel below finally returns.
+            sys.stdout.flush()
         else:
             # Display GDB server info
             if 'gdb_server' in result:
-                gdb_info = result['gdb_server']
                 if gdb_info.get('status') == 'started':
                     click.secho(f"{backend_label} started!", fg='green', err=True)
-                    click.secho(f"GDB server listening on {target_box}:{effective_gdb_port}", fg='cyan', err=True)
-                    click.secho(f"Connect with: arm-none-eabi-gdb -ex 'target remote {target_box}:{effective_gdb_port}'", fg='cyan', err=True)
+                    _echo_gdb_address(target_box, box_label, effective_gdb_port, route, tunnel)
                 elif gdb_info.get('status') == 'already_running':
                     click.secho(f"{backend_label} already running!", fg='green', err=True)
-                    click.secho(f"GDB server listening on {target_box}:{effective_gdb_port}", fg='cyan', err=True)
-                    click.secho(f"Connect with: arm-none-eabi-gdb -ex 'target remote {target_box}:{effective_gdb_port}'", fg='cyan', err=True)
+                    _echo_gdb_address(target_box, box_label, effective_gdb_port, route, tunnel)
                 elif 'error' in gdb_info:
                     click.secho(f"Error: GDB server failed to start: {gdb_info.get('message', 'Unknown error')}", fg='red', err=True)
                     ctx.exit(1)
             else:
                 click.secho(f"{backend_label} started!", fg='green', err=True)
-                click.secho(f"GDB server listening on {target_box}:{effective_gdb_port}", fg='cyan', err=True)
-                click.secho(f"Connect with: arm-none-eabi-gdb -ex 'target remote {target_box}:{effective_gdb_port}'", fg='cyan', err=True)
+                _echo_gdb_address(target_box, box_label, effective_gdb_port, route, tunnel)
+    if route_error is not None:
+        # Streaming mode: the RTT stream still works, the GDB port does not.
+        route_error.show()
 
+    try:
+        _gdbserver_post_connect(
+            ctx, client, debug_net, target_box, quiet=quiet, rtt=rtt,
+            rtt_reset=rtt_reset, interactive=interactive,
+            rtt_channel=rtt_channel, reset=reset,
+            rtt_search_addr=rtt_search_addr, rtt_search_size=rtt_search_size,
+            rtt_chunk_size=rtt_chunk_size, tunnel=tunnel,
+        )
+        if tunnel is not None and not streaming:
+            _serve_tunnel_foreground(tunnel, box_label, net_label, quiet=quiet)
+    finally:
+        if tunnel is not None:
+            tunnel.close()
+
+
+def _echo_gdb_address(target_box, box_label, port, route, tunnel):
+    """Tell the user where their debugger connects.
+
+    Only ever prints an address that works from this machine: the box's own
+    on a plain box, the local tunnel's on a gated one.
+    """
+    if tunnel is not None:
+        click.secho(f"GDB server running on {box_label}. Connect to localhost:{tunnel.local_port}", fg='cyan', err=True)
+        click.secho(f"Connect with: arm-none-eabi-gdb -ex 'target remote localhost:{tunnel.local_port}'", fg='cyan', err=True)
+    elif route == ROUTE_TUNNEL:
+        # --no-tunnel on a gated box: the box's address would not connect.
+        click.secho(f"GDB server running on {box_label}, port {port}. The box's "
+                    "gateway is the only way to reach it.", fg='cyan', err=True)
+        click.secho("Run this command without --no-tunnel to open a local tunnel to it.",
+                    fg='cyan', err=True)
+    else:
+        click.secho(f"GDB server listening on {target_box}:{port}", fg='cyan', err=True)
+        click.secho(f"Connect with: arm-none-eabi-gdb -ex 'target remote {target_box}:{port}'", fg='cyan', err=True)
+
+
+def _serve_tunnel_foreground(tunnel, box_label, net_label, *, quiet):
+    """Keep the GDB tunnel open until Ctrl-C.
+
+    Ctrl-C closes the tunnel only. The GDB server stays up on the box, as it
+    does when this command returns on a plain box.
+    """
+    if not quiet:
+        click.secho("Tunnelling through the box's gateway. Press Ctrl-C to "
+                    "close the tunnel.", err=True)
+    try:
+        tunnel.serve_forever()
+    except KeyboardInterrupt:
+        tunnel.close()
+        if not quiet:
+            click.echo(err=True)
+            click.secho(f"Tunnel closed. The GDB server continues to run on {box_label}.", err=True)
+            click.secho(f"Stop it with: lager debug {net_label} disconnect --box {box_label}", err=True)
+
+
+def _gdbserver_post_connect(ctx, client, debug_net, target_box, *, quiet, rtt,
+                            rtt_reset, interactive, rtt_channel, reset,
+                            rtt_search_addr, rtt_search_size, rtt_chunk_size,
+                            tunnel):
+    """What `gdbserver` does once the server is up: RTT, a reset, or nothing.
+
+    ``tunnel``, when set, serves the GDB port from a background thread for
+    as long as an RTT stream runs, so a debugger can attach alongside it.
+    """
     # Parse RTT search parameters (hex strings to integers)
     rtt_search_params = {}
     if rtt_search_addr is not None:
@@ -817,6 +931,8 @@ def gdbserver(ctx, box, force, halt, speed, quiet, json_output, rtt, rtt_reset, 
 
     # Handle post-connect actions
     if rtt or rtt_reset:
+        if tunnel is not None:
+            tunnel.start()
         # Wait for GDB server to fully initialize before attempting reset/RTT
         # This prevents "No debugger connection found" errors
         # The server takes ~2-3s to fully initialize:
@@ -941,9 +1057,9 @@ def gdbserver(ctx, box, force, halt, speed, quiet, json_output, rtt, rtt_reset, 
 @click.pass_context
 @click.option("--box", required=False, help="Lager Box name or IP")
 @click.option('--keep-server', is_flag=True, default=False,
-              help="Keep JLinkGDBServer running for external GDB client connections")
+              help="Keep the GDB server running for external GDB client connections")
 def disconnect(ctx, box, keep_server):
-    """Stop JLinkGDBServer"""
+    """Stop the GDB server for the probe (JLinkGDBServer or OpenOCD)"""
     target_box = box
 
     net_name = getattr(ctx.obj, 'net_name', None)
@@ -957,16 +1073,29 @@ def disconnect(ctx, box, keep_server):
         click.secho("Error: Failed to create debug service client", fg='red', err=True)
         ctx.exit(1)
 
-    # Stop JLinkGDBServer
+    # Stop the GDB server (JLinkGDBServer or OpenOCD, per the net's backend)
     disc_result = client.disconnect(debug_net, keep_jlink_running=keep_server)
+    server_label = _backend_server_label(disc_result)
 
     if keep_server:
         # Effective port comes from the box (per-probe slot for multi-J-Link).
         running_port = (disc_result or {}).get('gdb_port', 2331)
-        click.secho(f"JLinkGDBServer still running on {target_box}:{running_port}", fg='green')
-        click.secho(f"You can connect with: arm-none-eabi-gdb firmware.elf -ex 'target extended-remote {target_box}:{running_port}'", fg='cyan')
+        # Only the recorded gateway mapping decides this, never a probe: the
+        # server is being kept for a debugger that may still be attached,
+        # and a probe would open a second connection to it.
+        if auth_server_for_box(target_box):
+            box_label = box if box is not None else target_box
+            click.secho(f"{server_label} still running on {box_label}, port {running_port}", fg='green')
+            click.secho("This box is behind a gateway, so its GDB port is not "
+                        "reachable directly.", fg='cyan')
+            click.secho(f"To debug from here, run: lager debug {net_name or debug_net.get('name')} "
+                        f"gdbserver --box {box_label}", fg='cyan')
+            click.secho("It restarts the GDB server and opens a local tunnel to it.", fg='cyan')
+        else:
+            click.secho(f"{server_label} still running on {target_box}:{running_port}", fg='green')
+            click.secho(f"You can connect with: arm-none-eabi-gdb firmware.elf -ex 'target extended-remote {target_box}:{running_port}'", fg='cyan')
     else:
-        click.secho("JLinkGDBServer stopped", fg='green')
+        click.secho(f"{server_label} stopped", fg='green')
 
     client.close()
 
@@ -1019,6 +1148,40 @@ _CONNECT_FAILURE_SIGNATURES = (
 )
 
 
+# The GDB server a debug net's backend runs, keyed by the `backend` field the
+# box returns. A box too old to send that field predates OpenOCD support, so
+# it ran JLinkGDBServer.
+_BACKEND_SERVER_LABELS = {'openocd': 'OpenOCD', 'jlink': 'JLinkGDBServer'}
+
+
+def _backend_server_label(result):
+    backend = result.get('backend') if isinstance(result, dict) else None
+    return _BACKEND_SERVER_LABELS.get(backend, 'JLinkGDBServer')
+
+
+def _http_error_detail(exc, prefix=None):
+    """The box's `error` text for a failed request, else the exception text.
+
+    `service_client._request` raises `requests.HTTPError`, whose own text is
+    the status line; the box's message is in the JSON body. With `prefix`, a
+    copy of it that the box already put at the front is dropped, so the CLI's
+    own prefix is not printed twice.
+    """
+    detail = str(exc)
+    # `is not None`: a Response is falsy for any 4xx/5xx status.
+    response = getattr(exc, 'response', None)
+    if response is not None:
+        try:
+            body = response.json()
+        except Exception:
+            body = None
+        if isinstance(body, dict) and body.get('error'):
+            detail = str(body['error'])
+    if prefix and detail.startswith(prefix):
+        detail = detail[len(prefix):].lstrip()
+    return detail
+
+
 def _joined_output(output):
     """Box output is a str, or a list of lines in verbose mode."""
     if isinstance(output, list):
@@ -1065,6 +1228,90 @@ def _erase_failure_line(output):
     return None
 
 
+_MIB = 1 << 20
+# The DA1469x QSPI XIP window: the one `memrd` and the box's flash_loader use.
+_DA1469X_XIP_START = 0x16000000
+_DA1469X_XIP_END = 0x18000000  # exclusive
+
+# The box's debug service lists `erase_range` under /health `features` once it
+# reads erase_start/erase_size. A box that predates the keys ignores them and
+# erases its default range instead -- the under-erase a deploy script cannot
+# see -- so the flags are refused before the request is ever sent.
+_ERASE_RANGE_UNSUPPORTED = (
+    "Error: this box does not support --erase-start/--erase-size "
+    "(requires box version 0.50.0 or later). Update it with: lager update --box {box}"
+)
+
+
+def _format_erase_range(start, size):
+    """`0x16000000-0x161FFFFF (2 MiB)`, the form the box reports a range in."""
+    end = start + size - 1
+    if size % _MIB == 0:
+        human = f'{size // _MIB} MiB'
+    elif size % 1024 == 0:
+        human = f'{size // 1024} KiB'
+    else:
+        human = f'{size} bytes'
+    return f'0x{start:08X}-0x{end:08X} ({human})'
+
+
+def _erase_range_error(device_type, erase_start, erase_size, *, no_erase=False):
+    """Why this --erase-start/--erase-size pair is refused, or None.
+
+    Checked before any box traffic: one flag without the other, either flag
+    with --no-erase, a negative start, a range past the 32-bit address
+    space, and on a DA1469x a range outside its QSPI XIP window. The box
+    checks the same rules again for callers that bypass the CLI.
+    """
+    if erase_start is None and erase_size is None:
+        return None
+    if erase_start is None or erase_size is None:
+        return "Error: --erase-start and --erase-size must be given together"
+    if no_erase:
+        return "Error: --no-erase cannot be combined with --erase-start/--erase-size"
+    if erase_start < 0:
+        return f"Error: --erase-start must not be negative, got {erase_start}"
+    if erase_start + erase_size > 1 << 32:
+        return (f"Error: erase range {_format_erase_range(erase_start, erase_size)} "
+                f"runs past the end of the 32-bit address space")
+    if 'DA1469' in str(device_type).upper():
+        if erase_start < _DA1469X_XIP_START or erase_start + erase_size > _DA1469X_XIP_END:
+            return (f"Error: erase range {_format_erase_range(erase_start, erase_size)} "
+                    f"is outside the DA1469x QSPI XIP window "
+                    f"(0x{_DA1469X_XIP_START:08X}-0x{_DA1469X_XIP_END - 1:08X})")
+    return None
+
+
+def _box_supports_erase_range(client):
+    """True when the box's debug service lists `erase_range` under /health `features`.
+
+    An older box answers with no `features` at all, and a box that cannot be
+    reached reads the same: either way the flags are refused rather than sent
+    to a box that would ignore them.
+    """
+    try:
+        health = client.get_service_health()
+    except Exception:
+        return False
+    features = health.get('features') if isinstance(health, dict) else None
+    return 'erase_range' in (features or [])
+
+
+def _erase_complete_line(result):
+    """The success line, naming the range the box reports it erased.
+
+    A box that predates `erase_range` sends no such key and keeps the old
+    line. `None` is a full-chip erase.
+    """
+    if not isinstance(result, dict) or 'erase_range' not in result:
+        return "Erase complete!"
+    erased = result['erase_range']
+    if erased is None:
+        return "Erase complete: full chip"
+    text = erased.get('text') if isinstance(erased, dict) else None
+    return f"Erase complete: {text}" if text else "Erase complete!"
+
+
 @click.command(cls=NetSubCommand)
 @click.pass_context
 @click.option("--box", required=False, help="Lager Box name or IP")
@@ -1080,9 +1327,16 @@ def _erase_failure_line(output):
 @click.option('--erase', is_flag=True, default=False, hidden=True,
               help='(Deprecated) Erase before programming — now the default behavior. '
                    'DA1469x erases external QSPI XIP range only, not full chip.')
+@click.option('--erase-start', type=MemoryAddressType(), default=None, metavar='ADDR',
+              help='First address of the pre-erase, hex (0x16000000) or decimal. '
+                   'Given together with --erase-size.')
+@click.option('--erase-size', type=ByteSizeType(), default=None, metavar='BYTES',
+              help='Bytes to erase from --erase-start: decimal, 0x hex, or a K/M suffix (2M). '
+                   'On a DA1469x the range must lie inside 0x16000000-0x17FFFFFF.')
 @click.option('--halt/--no-halt', is_flag=True, default=False,
               help='Halt the device after flashing (keeps debugger connected)', show_default=True)
-def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, no_erase, erase, halt):
+def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, no_erase, erase,
+          erase_start, erase_size, halt):
     """Flash firmware to target"""
 
     target_box = box
@@ -1097,9 +1351,23 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, no_erase, erase, ha
         ctx, net_name or debug_net.get('name'), debug_net
     )
 
+    device_type = str(_debug_net_jlink_device(debug_net) or '').upper()
+
+    # An explicit erase range is checked before any box traffic.
+    range_error = _erase_range_error(device_type, erase_start, erase_size, no_erase=no_erase)
+    if range_error:
+        click.secho(range_error, fg='red', err=True)
+        ctx.exit(1)
+    erase_range_requested = erase_start is not None
+
     client = _get_service_client(target_box)
     if not client:
         click.secho("Error: Failed to create debug service client", fg='red', err=True)
+        ctx.exit(1)
+
+    if erase_range_requested and not _box_supports_erase_range(client):
+        click.secho(_ERASE_RANGE_UNSUPPORTED.format(box=box or target_box), fg='red', err=True)
+        client.close()
         ctx.exit(1)
 
     # Auto-connect if not already connected
@@ -1109,8 +1377,6 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, no_erase, erase, ha
     ):
         client.close()
         ctx.exit(1)
-
-    device_type = str(_debug_net_jlink_device(debug_net) or '').upper()
 
     # Erase flash before flashing (default behavior; skip with --no-erase).
     #
@@ -1140,8 +1406,15 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, no_erase, erase, ha
     # path warns and continues rather than aborting.
     if not no_erase:
         try:
-            click.echo("Erasing flash memory...", err=True)
-            erase_result = client.erase(debug_net, speed='4000', transport='SWD')
+            if erase_range_requested:
+                click.echo(
+                    f"Erasing flash memory ({_format_erase_range(erase_start, erase_size)})...",
+                    err=True,
+                )
+            else:
+                click.echo("Erasing flash memory...", err=True)
+            erase_result = client.erase(debug_net, speed='4000', transport='SWD',
+                                        erase_start=erase_start, erase_size=erase_size)
             # /debug/erase answers 200 on the J-Link path whether or not the
             # probe ever attached, so the returned text is the only evidence
             # that anything was erased.
@@ -1151,11 +1424,12 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, no_erase, erase, ha
                 click.secho(f"Flash erase failed: {erase_failure}", fg='red', err=True)
                 client.close()
                 ctx.exit(1)
-            click.secho("Erase complete!", fg='green', err=True)
+            click.secho(_erase_complete_line(erase_result), fg='green', err=True)
         except click.exceptions.Exit:
             raise
         except Exception as e:
-            click.secho(f"Flash erase failed: {e}", fg='red', err=True)
+            click.secho(f"Flash erase failed: {_http_error_detail(e, 'Erase failed:')}",
+                        fg='red', err=True)
             client.close()
             ctx.exit(1)
 
@@ -1238,11 +1512,7 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, no_erase, erase, ha
                 err=True,
             )
     except requests.exceptions.HTTPError as e:
-        # Extract error message from response if available
-        try:
-            error_detail = e.response.json().get('error', str(e))
-        except Exception:
-            error_detail = str(e)
+        error_detail = _http_error_detail(e, 'Flash failed:')
 
         click.secho(f"Flash failed: {error_detail}", fg='red', err=True)
         client.close()
@@ -1279,10 +1549,16 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, no_erase, erase, ha
               help='Suppress warning messages')
 @click.option('--json', 'json_output', is_flag=True, default=False,
               help='Output results in JSON format')
+@click.option('--erase-start', type=MemoryAddressType(), default=None, metavar='ADDR',
+              help='First address to erase, hex (0x16000000) or decimal. '
+                   'Given together with --erase-size.')
+@click.option('--erase-size', type=ByteSizeType(), default=None, metavar='BYTES',
+              help='Bytes to erase from --erase-start: decimal, 0x hex, or a K/M suffix (2M). '
+                   'On a DA1469x the range must lie inside 0x16000000-0x17FFFFFF.')
 @click.option('--halt/--no-halt', is_flag=True, default=False,
               help='Halt the device after erase (keeps debugger connected)', show_default=True)
-def erase(ctx, box, speed, yes, quiet, json_output, halt):
-    """Erase all flash memory on target"""
+def erase(ctx, box, speed, yes, quiet, json_output, erase_start, erase_size, halt):
+    """Erase flash memory on target"""
 
     target_box = box
 
@@ -1296,9 +1572,21 @@ def erase(ctx, box, speed, yes, quiet, json_output, halt):
     )
     device_type = _debug_net_jlink_device(debug_net) or 'unknown'
 
+    # An explicit erase range is checked before any box traffic.
+    range_error = _erase_range_error(device_type, erase_start, erase_size)
+    if range_error:
+        click.secho(range_error, fg='red', err=True)
+        ctx.exit(1)
+    erase_range_requested = erase_start is not None
+
     # Confirm the erase operation (skip if quiet or json mode)
     if not yes and not quiet and not json_output:
-        if 'DA1469' in str(device_type).upper():
+        if erase_range_requested:
+            click.echo(
+                f"WARNING: This will erase {_format_erase_range(erase_start, erase_size)} "
+                f"on {device_type}"
+            )
+        elif 'DA1469' in str(device_type).upper():
             click.echo(
                 f"WARNING: On {device_type} this erases the external QSPI XIP range "
                 f"(J-Link address-range erase), not internal flash."
@@ -1315,6 +1603,11 @@ def erase(ctx, box, speed, yes, quiet, json_output, halt):
         click.secho("Error: Failed to create debug service client", fg='red', err=True)
         ctx.exit(1)
 
+    if erase_range_requested and not _box_supports_erase_range(client):
+        click.secho(_ERASE_RANGE_UNSUPPORTED.format(box=box or target_box), fg='red', err=True)
+        client.close()
+        ctx.exit(1)
+
     # Auto-connect if not already connected
     if not _auto_connect_if_needed(
         client, debug_net, ctx, quiet=quiet,
@@ -1325,22 +1618,24 @@ def erase(ctx, box, speed, yes, quiet, json_output, halt):
 
     # Execute erase
     if not quiet:
-        click.echo("Erasing flash memory...")
+        if erase_range_requested:
+            click.echo(
+                f"Erasing flash memory ({_format_erase_range(erase_start, erase_size)})..."
+            )
+        else:
+            click.echo("Erasing flash memory...")
 
     try:
-        result = client.erase(debug_net, speed=speed, transport='SWD')
+        result = client.erase(debug_net, speed=speed, transport='SWD',
+                              erase_start=erase_start, erase_size=erase_size)
     except requests.exceptions.HTTPError as e:
-        # Extract error message from response if available
-        try:
-            error_detail = e.response.json().get('error', str(e))
-        except Exception:
-            error_detail = str(e)
+        error_detail = _http_error_detail(e, 'Erase failed:')
 
         click.secho(f"Erase failed: {error_detail}", fg='red', err=True)
         client.close()
         ctx.exit(1)
     except Exception as e:
-        click.secho(f"Erase failed: {e}", fg='red', err=True)
+        click.secho(f"Erase failed: {_http_error_detail(e, 'Erase failed:')}", fg='red', err=True)
         client.close()
         ctx.exit(1)
 
@@ -1367,7 +1662,7 @@ def erase(ctx, box, speed, yes, quiet, json_output, halt):
     if json_output:
         click.echo(json.dumps(result, indent=2))
     elif not quiet:
-        click.secho("Erase complete!", fg='green')
+        click.secho(_erase_complete_line(result), fg='green')
 
     # Erase internally disconnects (requires exclusive hardware access via JLinkExe)
     # Always reconnect to restore debugger connection (force=True so gdbserver + script
@@ -1713,6 +2008,11 @@ def health(ctx, box, verbose):
             click.secho(f"{health_data['status']}", fg='red')
 
         click.echo(f"  Version: {health_data.get('version', 'unknown')}")
+        # What the service can do beyond its original request shapes; a box
+        # that predates the list reports none, and the CLI refuses the flags
+        # that depend on a feature it does not see.
+        features = health_data.get('features')
+        click.echo(f"  Features: {', '.join(features) if features else 'none reported'}")
 
         if verbose:
             # Detailed information

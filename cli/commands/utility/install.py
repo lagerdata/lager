@@ -8,6 +8,9 @@
 """
 import click
 from click.exceptions import Abort, Exit
+import os
+import re
+import shlex
 import subprocess
 import tempfile
 import shutil
@@ -17,6 +20,7 @@ from ...address_utils import validate_ip_or_hostname, VALID_FORMATS_CHEATSHEET
 from ...box_storage import (
     add_box,
     auto_lock_around_command,
+    empty_box_name_error,
     get_box_ip,
     get_box_user,
     default_install_timeout_seconds,
@@ -27,6 +31,7 @@ from ...errors import ssh_error, LagerError
 from ..box._host_ops import (
     BOXCFG_SUDOERS_MARKER,
     boxcfg_sudoers_bootstrap_cmd,
+    boxcfg_sudoers_content,
     is_valid_unix_username,
 )
 from ..box._ssh import (
@@ -41,6 +46,15 @@ from ..box.ssh_setup import provision_lager_box_key
 # lives in setup_and_deploy_box.sh, and a third copy here is a third thing to
 # drift.
 from .update import _box_image_ref_for_version
+# The same state-file writer and box readers `lager update` uses, so the two
+# commands record a deploy identically.
+from .update import (
+    _read_box_head_sha,
+    _read_box_source_version,
+    _read_build_hash,
+    _state_file_write_cmd,
+    resolve_version_ref,
+)
 
 
 def no_usable_identity_error(ssh_host, ip):
@@ -139,29 +153,151 @@ def _format_duration(seconds):
     return f"{seconds} seconds"
 
 
-def _read_installed_head_sha(ssh_host, identity_args):
-    """Short commit SHA at the freshly-installed box's HEAD, or ''.
+# A release tag's own version number. Deliberately the same strict X.Y.Z shape
+# `lager update` uses for its final version write, so a pre-release tag reads
+# its number from the tree, exactly as update does.
+_RELEASE_NUMBER_RE = re.compile(r'^v?(\d+\.\d+\.\d+)$')
 
-    Best-effort and short-timeout: this only decorates /etc/lager/ref, so a
-    box whose layout puts the repo somewhere unexpected records the bare ref
-    name rather than failing an otherwise-successful install.
+# How the deploy script is given the box-config sudoers file to install.
+_BOXCFG_CONTENT_ENV = "LAGER_BOXCFG_SUDOERS_CONTENT"
+_BOXCFG_MARKER_ENV = "LAGER_BOXCFG_SUDOERS_MARKER"
+
+
+def _deploy_env(user):
+    """The environment setup_and_deploy_box.sh runs in.
+
+    The deploy script opens one sudo session on the box, and that is the only
+    password prompt a fresh install needs -- provided /etc/sudoers.d/lager-box-config
+    is written in it too. That file used to be written by a second `ssh -t` at
+    the end of the install, which was a second prompt. Its text has one source,
+    _host_ops, which a shell script cannot import, so it is rendered here and
+    handed over.
+
+    Not handed over for a username that is not a plain unix username: the text
+    names the user inside a root-owned sudoers file, and the step further down
+    already declines to write it for such a name. The deploy script then writes
+    its own file alone, exactly as it does when run by hand.
+
+    Stale values are dropped rather than inherited: a LAGER_BOXCFG_* variable
+    left in the operator's shell must never become a sudoers file.
     """
-    import re as _re
-    try:
-        result = subprocess.run(
-            ["ssh", *identity_args, ssh_host,
-             'git -C ~/box rev-parse --short HEAD 2>/dev/null'],
-            capture_output=True, text=True, timeout=15,
+    env = {k: v for k, v in os.environ.items()
+           if k not in (_BOXCFG_CONTENT_ENV, _BOXCFG_MARKER_ENV)}
+    if is_valid_unix_username(user):
+        env[_BOXCFG_CONTENT_ENV] = boxcfg_sudoers_content(user)
+        env[_BOXCFG_MARKER_ENV] = BOXCFG_SUDOERS_MARKER
+    return env
+
+
+def _install_state_runner(ssh_host, identity_args):
+    """Non-interactive ssh runner for the post-deploy state writes.
+
+    BatchMode and no `-t`: nothing here can prompt, so nothing here can sit
+    waiting on an operator who stepped away during a long deploy -- which is
+    how the old sudo-over-`ssh -t` writes came to fail unseen.
+    """
+    def run(cmd, timeout_secs=30):
+        return subprocess.run(
+            ["ssh", *identity_args, "-o", "BatchMode=yes", ssh_host, cmd],
+            capture_output=True, text=True, timeout=timeout_secs,
         )
-    except (subprocess.SubprocessError, OSError):
-        return ''
+    return run
+
+
+def _installed_box_version(runner, deployed_ref):
+    """The version number the installed tree declares, or ''.
+
+    The same rule as `lager update`'s final version write: a release tag's own
+    number, else `__version__` from the installed tree's cli/__init__.py. Never
+    the version of the CLI that ran the install -- a box that records the
+    CLI's number instead of its own reports a release it is not running.
+    """
+    m = _RELEASE_NUMBER_RE.match(deployed_ref)
+    if m:
+        return m.group(1)
+    return _read_box_source_version(runner)
+
+
+def _last_line(text):
+    """Last non-blank line of ``text``, stripped, or ''.
+
+    ssh can put banner or known-hosts noise ahead of the line that matters.
+    """
+    lines = [line.strip() for line in (text or '').splitlines() if line.strip()]
+    return lines[-1] if lines else ''
+
+
+def _state_file_fixes(ssh_host, name, content):
+    return [
+        f'Log in to the box: ssh {ssh_host}',
+        f"Then write the file by hand: printf '%s\\n' {shlex.quote(content)} "
+        f"| sudo tee /etc/lager/{name}",
+        f'Confirm the result: lager hello --box {ssh_host.split("@", 1)[-1]}',
+    ]
+
+
+def _record_install_state(runner, ssh_host, *, version, cli_version):
+    """Record what was installed in /etc/lager, and prove the version landed.
+
+    Writes /etc/lager/version, /etc/lager/ref and /etc/lager/build-hash with
+    `lager update`'s own writer and readers, checks every exit code, and reads
+    the version file back. Raises LagerError naming the file on any failure.
+
+    The version file is what `lager hello` and `lager boxes` report. install
+    used to write it through sudo over `ssh -t`, ignore the result, and print
+    success regardless, so a failed write left an older release's number on a
+    box that had just been installed from a newer one.
+
+    Returns ``(box_version, ref_content, build_hash)``; ``build_hash`` is ''
+    when the box reported none, in which case that file is not written.
+    """
+    deployed_ref, _reset, _fetch = resolve_version_ref(version)
+    box_version = _installed_box_version(runner, deployed_ref)
+    if not box_version:
+        raise LagerError(
+            'The CLI did not find the version of the code it installed.',
+            cause=(
+                f'{deployed_ref} is not a release tag, and cli/__init__.py in '
+                'the box checkout declares no __version__.'
+            ),
+            fixes=[
+                f"Inspect the checkout on the box: ssh {ssh_host} 'git -C ~/box log -1'",
+                'Then run the install again.',
+            ],
+        )
+
+    version_content = f'{box_version}|{cli_version}'
+    result = runner(_state_file_write_cmd('version', version_content))
     if result.returncode != 0:
-        return ''
-    for line in (result.stdout or '').splitlines():
-        candidate = line.strip()
-        if _re.fullmatch(r'[0-9a-f]{7,40}', candidate):
-            return candidate
-    return ''
+        raise LagerError(
+            'The CLI did not write /etc/lager/version on the box.',
+            cause=_last_line(result.stderr) or f'ssh exited with status {result.returncode}.',
+            fixes=_state_file_fixes(ssh_host, 'version', version_content),
+        )
+    readback = runner('cat /etc/lager/version')
+    found = _last_line(readback.stdout) if readback.returncode == 0 else ''
+    if found != version_content:
+        raise LagerError(
+            'The version file on the box does not hold the version the CLI wrote.',
+            cause=f'The CLI wrote {version_content!r} and read back {found!r}.',
+            fixes=_state_file_fixes(ssh_host, 'version', version_content),
+        )
+
+    head_sha = _read_box_head_sha(runner)
+    ref_content = f'{deployed_ref}@{head_sha}' if head_sha else deployed_ref
+    build_hash = _read_build_hash(runner)
+    writes = [('ref', ref_content)]
+    if build_hash:
+        writes.append(('build-hash', build_hash))
+    for name, content in writes:
+        result = runner(_state_file_write_cmd(name, content))
+        if result.returncode != 0:
+            raise LagerError(
+                f'The CLI did not write /etc/lager/{name} on the box.',
+                cause=_last_line(result.stderr) or f'ssh exited with status {result.returncode}.',
+                fixes=_state_file_fixes(ssh_host, name, content),
+            )
+    return box_version, ref_content, build_hash
 
 
 @click.command()
@@ -191,6 +327,8 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_picoscope, skip_firewa
     deploy_timeout = timeout if timeout is not None else default_install_timeout_seconds()
 
     # 1. Resolve box name to IP and username if --box is provided
+    if box is not None and not box.strip():
+        raise empty_box_name_error()
     if box and ip:
         click.secho("Error: Cannot specify both --box and --ip", fg='red', err=True)
         ctx.exit(1)
@@ -285,12 +423,12 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_picoscope, skip_firewa
                 identity = lager_box_key_if_present()
                 click.secho("SSH connection OK", fg='green')
             elif "connection refused" in stderr or "no route to host" in stderr:
-                ssh_error(result.stderr, ip).die()
+                ssh_error(result.stderr, ip, user=user).die()
             elif "host key verification failed" in stderr:
                 # Distinguish between new host (not in known_hosts) vs changed key
                 if host_in_known_hosts(ip):
                     # Changed key - security concern, require manual intervention.
-                    ssh_error("host key verification failed", ip).die()
+                    ssh_error("host key verification failed", ip, user=user).die()
                 else:
                     # New host - offer to accept the key
                     click.secho("New SSH host detected", fg='yellow')
@@ -327,7 +465,7 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_picoscope, skip_firewa
                         click.secho("Installation cancelled.", fg='yellow')
                         ctx.exit(0)
             elif "could not resolve hostname" in stderr or "name or service not known" in stderr:
-                ssh_error(result.stderr, ip).die()
+                ssh_error(result.stderr, ip, user=user).die()
             else:
                 LagerError(
                     f'SSH connection to {ssh_host} failed.',
@@ -456,6 +594,7 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_picoscope, skip_firewa
                 result = subprocess.run(
                     deploy_args,
                     check=False,
+                    env=_deploy_env(user),
                     # None = no timeout, which is what --timeout 0 asks for.
                     timeout=deploy_timeout or None,
                 )
@@ -504,85 +643,50 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_picoscope, skip_firewa
     click.secho("Box deployment complete!", fg='green', bold=True)
     click.echo()
 
-    # 6.5. Store version information on the box
+    # 6.5. Record what was installed, in /etc/lager.
+    #
+    # `lager hello` and `lager boxes` report the first field of
+    # /etc/lager/version, so this write is what an operator sees. It goes
+    # through the writer `lager update` uses, over non-interactive ssh, and a
+    # failure ends the install. Printing success over a write that did not
+    # happen is how a freshly installed box came to report an older release.
+    # The deployment has already made /etc/lager group-writable by this login
+    # user, which is all the writer needs -- no sudo. See _record_install_state.
+    #
+    # The ref is recorded as well (#266): the version file holds only a
+    # number, and a branch that has not been bumped declares the same number
+    # as the release tag it came from.
     from ... import __version__ as cli_version
     from ...box_storage import update_box_version
 
-    click.echo("Storing version information...")
-    click.echo("(Requires the sudo password if passwordless sudo is not configured)")
-    click.echo()
-
-    # Read CLI version from deployed cli/__init__.py
-    read_version_cmd = (
-        'cd ~/box && '
-        'if [ -f cli/__init__.py ]; then '
-        'grep -E "^__version__\\s*=\\s*" cli/__init__.py 2>/dev/null | '
-        'sed -E "s/__version__\\s*=\\s*[\'\\"]([^\'\\\"]+)[\'\\\"]/\\1/"; '
-        'elif [ -f box/cli/__init__.py ]; then '
-        'grep -E "^__version__\\s*=\\s*" box/cli/__init__.py 2>/dev/null | '
-        'sed -E "s/__version__\\s*=\\s*[\'\\"]([^\'\\\"]+)[\'\\\"]/\\1/"; '
-        'fi'
-    )
-
+    click.echo("Recording the installed version on the box...")
     identity_args = ssh_identity_args(identity)
-
     try:
-        result = subprocess.run(
-            ["ssh", *identity_args, ssh_host, read_version_cmd],
-            capture_output=True,
-            text=True,
-            timeout=10
+        box_cli_version, ref_content, build_hash = _record_install_state(
+            _install_state_runner(ssh_host, identity_args),
+            ssh_host,
+            version=version,
+            cli_version=cli_version,
         )
-
-        if result.returncode == 0 and result.stdout.strip():
-            box_cli_version = result.stdout.strip()
-        else:
-            # Fallback to local CLI version
-            box_cli_version = cli_version
-
-        version_content = f'{box_cli_version}|{cli_version}'
-
-        # Write version file using sudo (may prompt for password)
-        write_version_cmd = (
-            f'echo "{version_content}" > /tmp/lager_version_tmp && '
-            'sudo rm -f /etc/lager/version && '
-            'sudo mv /tmp/lager_version_tmp /etc/lager/version && '
-            'sudo chmod 666 /etc/lager/version'
+    except LagerError as exc:
+        exc.die()
+    except (subprocess.SubprocessError, OSError) as exc:
+        LagerError(
+            'The SSH connection failed while the CLI recorded the installed version.',
+            cause=str(exc) or type(exc).__name__,
+            fixes=[
+                f'Confirm that the box answers: ssh {ssh_host} true',
+                'Then run the install again.',
+            ],
+            raw=exc,
+        ).die()
+    click.secho(f"Recorded version {box_cli_version} ({ref_content}) on the box", fg='green')
+    if not build_hash:
+        click.secho(
+            "Warning: the box reported no build hash, so the CLI did not write "
+            "/etc/lager/build-hash. The next `lager update` has no build inputs to compare.",
+            fg='yellow', err=True,
         )
-
-        subprocess.run(
-            ["ssh", "-t", *identity_args, ssh_host, write_version_cmd],
-            timeout=120,  # Increased from 30 to match update.py timeout
-            stderr=subprocess.DEVNULL,  # Suppress "Shared connection closed" noise
-        )
-
-        # Record WHICH ref produced this code, the same way `lager update`
-        # does. Without it a box installed from a branch is indistinguishable
-        # from one on the release tag, because the version file holds only a
-        # number and an unbumped branch declares the same one (#266). Written
-        # here rather than shared with update.py's store_deployed_ref because
-        # the two write paths differ: install has no /etc/lager yet owned by
-        # the box user, so it goes through sudo, where update's mktemp+mv in
-        # an already-group-writable dir does not.
-        deployed_sha = _read_installed_head_sha(ssh_host, identity_args)
-        ref_content = f'{version}@{deployed_sha}' if deployed_sha else str(version)
-        write_ref_cmd = (
-            f'echo "{ref_content}" > /tmp/lager_ref_tmp && '
-            'sudo rm -f /etc/lager/ref && '
-            'sudo mv /tmp/lager_ref_tmp /etc/lager/ref && '
-            'sudo chmod 644 /etc/lager/ref'
-        )
-        subprocess.run(
-            ["ssh", "-t", *identity_args, ssh_host, write_ref_cmd],
-            timeout=120,
-            stderr=subprocess.DEVNULL,
-        )
-
-        click.secho(f"Version {box_cli_version} stored on box", fg='green')
-
-    except Exception as e:
-        click.secho(f"Warning: the CLI did not store the version information: {e}", fg='yellow')
-        box_cli_version = version  # Fallback to requested version
 
     click.echo()
 
@@ -601,7 +705,6 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_picoscope, skip_firewa
     # content. Failure here is a warning, not fatal — the box is otherwise    # installed; the operator can apply the rule manually later.
     click.echo()
     click.secho("Configuring passwordless sudo for `lager box-config apply`...", fg='cyan')
-    click.echo("(One-time setup. You'll be prompted for the sudo password on the box.)")
     click.echo()
 
     if not is_valid_unix_username(user):
@@ -633,8 +736,15 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_picoscope, skip_firewa
             already_configured = False
 
         if already_configured:
+            # The usual case now, on a fresh box as well as a re-install: the
+            # deploy script wrote this file in its own sudo session (see
+            # _deploy_env), so there is nothing left here to ask a password for.
             click.secho("Passwordless sudo for `lager box-config` already configured", fg='green')
         else:
+            # Said only on this branch. It used to be printed before the check,
+            # so an install that went on to ask for nothing still told the
+            # operator to expect a prompt.
+            click.echo("(One-time setup. The box asks for the sudo password.)")
             sudoers_cmd = boxcfg_sudoers_bootstrap_cmd(user)
 
             try:

@@ -33,9 +33,9 @@ You can check your version to make sure it's installed:
 lager --version
 ```
 
-**Expected output:**
+**Expected output:** the version number alone, for example:
 ```
-lager-cli, version 0.16.1
+0.47.0
 ```
 
 ---
@@ -77,10 +77,16 @@ lager hello --box my-lager-box
 
 **Expected output:**
 ```
-my-lager-box says hello!
+Box: my-lager-box
+IP: 100.64.1.42
+Version: 0.47.0 (v0.47.0@1fbc4c39fce62f1041d439d1b164bbf7b6f6ad3a)
+
+my-lager-box is online and responding!
 ```
 
-If your Lager Box says hello back, then you are ready to start using it!
+If the last line says that your Lager Box is online, you are ready to start using it!
+The value in brackets names the ref that the box runs. See
+[`lager hello`](/source/reference/cli/hello) for the other forms of that line.
 
 <Accordion title="Troubleshooting: lager hello fails">
 

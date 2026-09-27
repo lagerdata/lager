@@ -1,5 +1,9 @@
 # syntax=docker/dockerfile:1.4
-FROM python:3.12-slim-bookworm
+# The base image is pinned by digest, not only by tag. Docker Hub rebuilds this
+# tag regularly, and a moved base gives every layer above it a new digest -- a
+# full ~1 GB download for every box, from a release that may have changed
+# nothing. Dependabot moves the pin as a reviewable PR (.github/dependabot.yml).
+FROM python:3.12-slim-bookworm@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
@@ -153,6 +157,8 @@ RUN git clone --depth 1 --branch v2.7.0 https://github.com/labjack/exodriver.git
 # from-scratch rebuild silently rides the box's file-upload path on whatever
 # Werkzeug is current that day. The sansio API has been stable since 2.3; the
 # cap is a tripwire for a major bump, not distrust of the library.
+COPY docker/requirements-mcp.txt /tmp/requirements-mcp.txt
+
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
 	/usr/local/bin/python -m pip install --upgrade pip \
 && pip3 install --upgrade setuptools \
@@ -199,14 +205,13 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
 	'rich' \
 	'cbor2' \
 	'websocket-client>=1.6.0' \
-	# This is the pin that governs the running MCP service -- the container
-	# starts it with `python3 -m lager.mcp` (see start-services.sh). server.py
-	# is now on the 2.x MCPServer API and cannot import under 1.x, so the
-	# floor is a requirement, not just a ceiling-widening. Both bounds matter:
-	# an unconstrained `>=1.0.0` is what silently picked up 2.0.0 on release
-	# day and crash-looped the service with nothing listening on port 8100.
-	'mcp>=2.0.0,<3' \
-	'git+https://github.com/Vaskivskyi/asusrouter.git@8de97bfa8ffe3efa2f6d1ec30bb95187d13ab37a'
+	'git+https://github.com/Vaskivskyi/asusrouter.git@8de97bfa8ffe3efa2f6d1ec30bb95187d13ab37a' \
+	# The pin that governs the running MCP service now lives in a file, so one
+	# declaration serves the image, pip-audit and CI; see the file for why both
+	# bounds matter. Inside this RUN on purpose: a separate layer would cost
+	# one for a single requirement, and editing the file invalidates the same
+	# pip layer an inline pin did.
+	-r /tmp/requirements-mcp.txt
 
 RUN git config --global http.version HTTP/1.1
 
@@ -291,6 +296,55 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     pip3 install 'brainstem==2.12.5'
 
+# Everything from here to the first source COPY uses nothing from the box
+# source tree, so it stays ABOVE that COPY. Any layer below it is rebuilt
+# whenever box code changes -- every release -- and a rebuilt layer gets a new
+# digest, which every box then downloads again on its next pull. Only box
+# source and the import smoke check below it belong under that line;
+# test/unit/box/test_box_image_publish.py enforces it.
+RUN usermod -aG dialout,plugdev,bluetooth,lpadmin,video www-data \
+    && mkdir -p /var/www /etc/lager \
+    && chown -R www-data:www-data /var/www /etc/lager
+
+# Startup script that starts every box service
+COPY docker/start-services.sh /usr/local/bin/start-services.sh
+RUN chmod +x /usr/local/bin/start-services.sh
+
+# Oscilloscope streaming daemon (PicoScope support)
+# The daemon binary is mounted from the host at runtime via start_box.sh
+# Location: /home/lagerdata/third_party/oscilloscope-daemon -> /usr/local/bin/oscilloscope-daemon
+# Build instructions: cd box/oscilloscope-daemon && ./build_daemon.sh
+
+# License notices, in the image because the image is published.
+#
+#   /usr/share/licenses/lager/LICENSE, NOTICE     Lager's own
+#   /usr/share/licenses/lager/THIRD_PARTY.md      everything installed above that
+#                                                 is neither a Debian package
+#                                                 nor a PyPI distribution
+#   /usr/share/licenses/lager/pip/                each Python distribution's
+#                                                 notice files, and INDEX.tsv
+#
+# The files under docker/licenses/ are copies: the build context is box/lager,
+# so the LICENSE and NOTICE at the repository root are out of reach of COPY.
+# test/unit/box/test_box_image_notices.py keeps the copies byte-identical, and
+# fails when a vendor download above has no row in THIRD_PARTY.md.
+#
+# ONE RUN, and it is the last pip-aware step: every `pip install` is above it,
+# so the notices cover all of them. It is above the first source COPY for the
+# reason given a few lines up, and the collector's output is deterministic, so
+# this layer keeps its digest from release to release while the packages do.
+#
+# The static files are copied AFTER the RUN. A manifest-only edit then rebuilds
+# one small layer and does not run the collector again.
+#
+# No org.opencontainers.image.licenses label. It describes all the software in
+# an image, and whether every component here may be redistributed is still
+# under review (issue #532). THIRD_PARTY.md says what is known.
+COPY docker/collect_pip_licenses.py /tmp/collect_pip_licenses.py
+RUN python3 /tmp/collect_pip_licenses.py /usr/share/licenses/lager/pip \
+    && rm -f /tmp/collect_pip_licenses.py
+COPY docker/licenses/ /usr/share/licenses/lager/
+
 # Copy Python lager package modules (grouped structure)
 # All root-level .py modules (box_http_server, hardware_service, *_hs
 # adapters, ble shim, …). A glob avoids per-file omission bugs when new
@@ -331,6 +385,8 @@ COPY protocols /app/lager/lager/protocols
 COPY blufi /app/lager/lager/blufi
 # Automation group: arm, usb_hub, webcam
 COPY automation /app/lager/lager/automation
+# Scope UI assets, served by box_http_server at GET /scope on :9000
+COPY static /app/lager/lager/static
 
 COPY run.sh /app
 
@@ -351,33 +407,6 @@ missing = [nt for nt, dotted in api_reference._DRIVER_CLASSES.items() \
            if 'source_module' not in api_reference.API_REFERENCE.get(nt, {})]; \
 sys.exit(f'api_reference introspection failed for: {missing}') if missing else \
 print(f'api_reference: introspected {len(api_reference._DRIVER_CLASSES)} drivers OK')"
-
-RUN usermod -aG dialout www-data
-RUN usermod -aG plugdev www-data
-RUN usermod -aG bluetooth www-data
-RUN usermod -aG lpadmin www-data
-RUN usermod -aG video www-data
-
-RUN mkdir -p /var/www
-RUN chown -R www-data:www-data /var/www
-
-# Create /etc/lager directory for saved nets
-RUN mkdir -p /etc/lager
-RUN chown -R www-data:www-data /etc/lager
-
-# Copy startup script that starts debug service
-COPY docker/start-services.sh /usr/local/bin/start-services.sh
-RUN chmod +x /usr/local/bin/start-services.sh
-
-# Oscilloscope streaming daemon (PicoScope support)
-# The daemon binary is mounted from the host at runtime via start_box.sh
-# Location: /home/lagerdata/third_party/oscilloscope-daemon -> /usr/local/bin/oscilloscope-daemon
-# Build instructions: cd box/oscilloscope-daemon && ./build_daemon.sh
-
-# Scope UI assets, served by box_http_server at GET /scope on :9000.
-# This replaces docker/web_oscilloscope.html, which was served by a separate
-# http.server on :8081 that the box never published.
-COPY static /app/lager/lager/static
 
 # Use tini as init system to reap zombie processes
 # This prevents zombie processes from accumulating when debug tools (JLink, GDB) are started/stopped

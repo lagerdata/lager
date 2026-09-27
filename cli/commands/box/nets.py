@@ -436,6 +436,47 @@ def canonical_instrument(instrument):
     return _INSTRUMENT_ALIASES.get(instrument, instrument)
 
 
+# Pins whose rejection has a better answer than "pick another channel". On a
+# U3 these four are the fixed high-voltage analog inputs, so a user reaching
+# for gpio there wants an adc net on the SAME physical pins, under the name
+# they carry in analog mode. The scanner stopped advertising them as gpio
+# (box/lager/http_handlers/usb_scanner.py), and this is what turns the
+# resulting rejection into a next step rather than a dead end. Raw DIO
+# numbers are included because the U3 drivers accept either spelling.
+_U3_HV_PINS = {"FIO0", "FIO1", "FIO2", "FIO3", "0", "1", "2", "3",
+               # The spans a user reaches for after reading the T7's docs.
+               "FIO0-FIO3", "FIO1-FIO3", "FIO0-FIO1", "FIO2-FIO3"}
+# Roles whose channels are digital lines, so a high-voltage pin is wrong for
+# every one of them. adc is deliberately absent: FIO0-FIO3 are exactly where
+# an adc net belongs.
+_U3_DIGITAL_ROLES = {"gpio", "spi", "i2c"}
+
+
+def _channel_rejection_hint(instrument, role, channel):
+    """An extra line for channel rejections that have a specific remedy.
+
+    Returns None when the generic "here are the valid channels" line is the
+    whole story, which is the case for every instrument but the U3.
+    """
+    if (canonical_instrument(instrument) == "LabJack_U3"
+            and role in _U3_DIGITAL_ROLES
+            and str(channel).upper() in _U3_HV_PINS):
+        if role == "gpio":
+            return (
+                "FIO0-FIO3 on a LabJack U3 are fixed high-voltage analog "
+                "inputs and are never digital I/O. Read them with an adc net "
+                "on AIN0-AIN3, the same physical pins."
+            )
+        usable = "FIO4-FIO7" if role == "spi" else "FIO6-FIO7"
+        return (
+            f"FIO0-FIO3 on a LabJack U3 are fixed high-voltage analog inputs "
+            f"and are never digital I/O, so they cannot carry a {role} net. "
+            f"Use {usable}. (Those pins are readable as an adc net on "
+            f"AIN0-AIN3, the same physical pins.)"
+        )
+    return None
+
+
 # Chips that can run in exactly one mode at a time, across ALL roles. The
 # canonical case is the FT232H: one physical channel, hardware-multiplexed
 # between MPSSE (spi/i2c/gpio/debug) and async-serial (uart). Once the user
@@ -451,6 +492,7 @@ INSTRUMENT_NET_MAP: dict[str, list[str]] = {
     "Rigol_DP811": ["power-supply"],
     "Rigol_DP821": ["power-supply"],
     "Rigol_DP831": ["power-supply"],
+    "Rigol_DP832": ["power-supply"],
     # DP711: RS-232-only, surfaced via a custom-device assignment (serial://
     # address) rather than USB enumeration. Roles mirror
     # box/lager/devices/catalog.py — same catalog-data duplication tech debt
@@ -459,6 +501,7 @@ INSTRUMENT_NET_MAP: dict[str, list[str]] = {
     "EA_PSB_10080_60": ["power-supply", "solar"],
     "EA_PSB_10060_60": ["power-supply", "solar"],
     "KEYSIGHT_E36233A": ["power-supply"],
+    "KEYSIGHT_E36312A": ["power-supply"],
     "KEYSIGHT_E36313A": ["power-supply"],
 
     # battery
@@ -475,13 +518,19 @@ INSTRUMENT_NET_MAP: dict[str, list[str]] = {
     # scope
     "Rigol_MSO5204": ["scope", "scope-channel", "logic"],
     "Picoscope_2000": ["scope", "scope-channel"],
+    # Every PicoScope other than the 2204A/2205A, which the scanner matches by
+    # Pico's vendor id rather than per model.
+    "Picoscope": ["scope", "scope-channel"],
 
     # adc / gpio / dac / spi
     "LabJack_T7": ["gpio", "adc", "dac", "spi", "i2c"],
     # U3-HV and U3-LV share one product id, so this entry is the family;
-    # the box-side driver reads the variant from the device. adc/dac/gpio
-    # only -- the UD drivers do not implement spi/i2c.
-    "LabJack_U3": ["gpio", "adc", "dac"],
+    # the box-side driver reads the variant from the device. spi/i2c run over
+    # the Exodriver's low-level commands rather than LJM, and only on the
+    # digital lines -- a U3-HV's FIO0-FIO3 are fixed analog, which
+    # _channel_rejection_hint explains at the point of rejection.
+    "LabJack_U3": ["gpio", "adc", "dac", "spi", "i2c"],
+    "MCC_USB-202": ["adc", "dac", "gpio"],
     "Aardvark": ["spi", "i2c", "gpio"],
     "FTDI_FT232H": ["spi", "i2c", "gpio", "debug", "uart"],
     # FT2232H / FT4232H carry the new multi-channel debug role plus UART.
@@ -499,6 +548,7 @@ INSTRUMENT_NET_MAP: dict[str, list[str]] = {
     "J-Link_Plus": ["debug"],
     "Flasher_ARM": ["debug"],
     "J-Link_Flasher_Pro": ["debug"],
+    "J-Link_Base_Compact": ["debug"],
     # debug — OpenOCD-backed probes
     "STLink_v2": ["debug"],
     "STLink_v2_1": ["debug"],
@@ -537,6 +587,9 @@ INSTRUMENT_NET_MAP: dict[str, list[str]] = {
     # watt-meter
     "Yocto_Watt": ["watt-meter"],
 
+    # thermocouple
+    "Phidget": ["thermocouple"],
+
     # uart
     "Prolific_USB_Serial": ["uart"],
     "SiLabs_CP210x": ["uart"],
@@ -557,18 +610,40 @@ INSTRUMENT_NET_MAP: dict[str, list[str]] = {
 
 from . import labjack_pins as _lj
 
-_LJ_INSTRUMENT_NAMES = {"labjack_t7", "labjack", "t7"}
+# Instruments whose spi/i2c masters run on selectable DIO lines, so the
+# --cs/--sck/--mosi/--miso/--sda/--scl options mean something. The U3 is
+# here as well as the T7: its UD drivers take pin numbers the same way.
+_LJ_INSTRUMENT_NAMES = {"labjack_t7", "labjack", "t7",
+                        "labjack_u3", "u3"}
 
 
-def _parse_labjack_pin(value: str, signal: str) -> int:
+# A U3's digital lines stop at CIO3 = DIO19; it has no MIO block at all. The
+# T7 goes to MIO2 = DIO22. Kept in step with MAX_DIO in
+# box/lager/io/labjack_ud_handle.py, which is what actually refuses the pin --
+# without this the CLI would accept MIO0 for a U3 and let it fail later, on the
+# box, at the first transaction.
+_U3_MAX_DIO = 19
+# FIO0-FIO3 on a U3-HV are fixed analog inputs, and the UD drivers refuse
+# them for every U3 (labjack_ud_i2c.py / labjack_ud_spi.py), because the
+# CLI cannot tell an HV from an LV. Refusing them here reports that at
+# `nets add` instead of at the first transfer.
+_U3_MIN_DIGITAL_DIO = 4
+
+
+def _parse_labjack_pin(value: str, signal: str, instrument: str = "") -> int:
     """Convert a pin name (FIO4/EIO0/CIO1/MIO2) or DIO number to a DIO int."""
+    is_u3 = canonical_instrument(instrument) == "LabJack_U3" if instrument else False
     dio = _lj.try_parse_pin(value)
-    if dio is None:
-        raise LagerError(
-            f"Invalid LabJack pin '{value}' for {signal}.",
-            fixes=["Use a pin name (FIO0-FIO7, EIO0-EIO7, CIO0-CIO3, MIO0-MIO2) "
-                   "or a DIO number 0-22."],
-        )
+    if dio is None or (is_u3 and not _U3_MIN_DIGITAL_DIO <= dio <= _U3_MAX_DIO):
+        if is_u3:
+            fixes = ["Use a pin name (FIO4-FIO7, EIO0-EIO7, CIO0-CIO3) or a "
+                     "DIO number 4-19. A U3 has no MIO pins, and its FIO0-FIO3 "
+                     "are analog inputs."]
+        else:
+            fixes = ["Use a pin name (FIO0-FIO7, EIO0-EIO7, CIO0-CIO3, "
+                     "MIO0-MIO2) or a DIO number 0-22."]
+        raise LagerError(f"Invalid LabJack pin '{value}' for {signal}.",
+                         fixes=fixes)
     return dio
 
 
@@ -596,7 +671,7 @@ def _build_custom_pin_config(role: str, instrument: str, pin_opts: dict) -> Opti
     opts_str = ", ".join(f"--{k}" for k in given)
     if instrument.lower() not in _LJ_INSTRUMENT_NAMES:
         raise LagerError(
-            f"Pin options ({opts_str}) are only supported for LabJack T7 nets; "
+            f"Pin options ({opts_str}) are only supported for LabJack nets; "
             f"'{instrument}' uses fixed hardware pins."
         )
 
@@ -634,7 +709,7 @@ def _build_custom_pin_config(role: str, instrument: str, pin_opts: dict) -> Opti
     for signal in order:
         if signal not in given:
             continue
-        dio = _parse_labjack_pin(given[signal], signal.upper())
+        dio = _parse_labjack_pin(given[signal], signal.upper(), instrument)
         if dio in seen:
             raise LagerError(
                 f"Pin {_labjack_pin_name(dio)} is assigned to both "
@@ -645,6 +720,70 @@ def _build_custom_pin_config(role: str, instrument: str, pin_opts: dict) -> Opti
         label_parts.append(f"{signal.upper()}:{_labjack_pin_name(dio)}")
 
     return {"pin": " ".join(label_parts), "params": params}
+
+
+# FTDI channels each part has, and the subset with an MPSSE engine, by scanner
+# instrument name. The box refuses a bad channel when the net first opens
+# (_PRODUCT_CHANNELS / _PRODUCT_MPSSE_CHANNELS in box/lager/util/ftdi_url.py);
+# checking here moves that refusal to `nets add`, where the user can act on it.
+# test_nets_add_ftdi_interface.py loads ftdi_url.py and asserts the two agree.
+_FTDI_CHANNELS = {"FTDI_FT232H": "A", "FTDI_FT2232H": "AB", "FTDI_FT4232H": "ABCD"}
+_FTDI_MPSSE_CHANNELS = {"FTDI_FT232H": "A", "FTDI_FT2232H": "AB", "FTDI_FT4232H": "AB"}
+_FTDI_INTERFACE_ROLES = ("gpio", "i2c", "spi")
+
+
+def _normalize_ftdi_interface(value) -> str:
+    """Channel letter for a stored or typed interface; None and "" mean A.
+
+    Takes the vocabulary the box drivers take (``A``-``D``, ``@B``, ``0``-``3``),
+    so a net saved by hand with ``"interface": 1`` compares equal to one added
+    with ``--interface B``. Any other value comes back upper-cased and can only
+    ever equal itself.
+    """
+    if value is None:
+        return "A"
+    text = str(value).strip().lstrip("@").upper()
+    if not text:
+        return "A"
+    if text in ("0", "1", "2", "3"):
+        return "ABCD"[int(text)]
+    return text
+
+
+def _ftdi_interface_params(role: str, instrument: str,
+                           interface: Optional[str]) -> Optional[dict]:
+    """Validate ``--interface`` and return the params it adds, or None."""
+    if interface is None:
+        return None
+    letter = interface.upper()
+    part = canonical_instrument(instrument)
+    channels = _FTDI_CHANNELS.get(part)
+    if channels is None:
+        raise LagerError(
+            f"--interface applies only to FTDI FT232H, FT2232H and FT4232H "
+            f"nets, not to '{instrument}'."
+        )
+    if role not in _FTDI_INTERFACE_ROLES:
+        fixes = []
+        if role == "debug":
+            fixes.append(f"For a debug net, add the channel to the device name, "
+                         f"for example STM32F4x@{letter}.")
+        raise LagerError(
+            f"--interface applies only to gpio, i2c and spi nets, not to a "
+            f"{role} net.",
+            fixes=fixes,
+        )
+    allowed = channels if role == "gpio" else _FTDI_MPSSE_CHANNELS[part]
+    if letter not in allowed:
+        reason = ""
+        if letter in channels:
+            reason = (f" I2C and SPI need an MPSSE engine, and channel {letter} "
+                      f"has none. A gpio net can use channel {letter}.")
+        raise LagerError(
+            f"{instrument} has no channel {letter} for a {role} net. "
+            f"Channels for {role}: {', '.join(allowed)}.{reason}"
+        )
+    return {"interface": letter}
 
 
 def _labjack_claimed_pins(saved_nets: list, address: str) -> dict[str, tuple[str, str]]:
@@ -707,7 +846,7 @@ def _resolve_box(ctx: click.Context, box_opt: Optional[str] = None) -> str:
     3. get_default_box(ctx) (automatically resolves local box names)
     """
     import ipaddress
-    from ...box_storage import get_box_ip, list_boxes
+    from ...box_storage import explicit_box_option, get_box_ip, list_boxes
 
     def _warn_version_skew(ip, name):
         # `lager nets` is :9000-only; warn (once per process) before a
@@ -718,13 +857,9 @@ def _resolve_box(ctx: click.Context, box_opt: Optional[str] = None) -> str:
         except Exception:
             pass
 
-    target_box = None
-    if box_opt:
-        target_box = box_opt
-    elif ctx.parent is not None and "box" in ctx.parent.params and ctx.parent.params["box"]:
-        target_box = ctx.parent.params["box"]
+    target_box = explicit_box_option(ctx, box_opt)
 
-    if target_box:
+    if target_box is not None:
         # Check if this is a local box name first
         local_ip = get_box_ip(target_box)
         if local_ip:
@@ -757,7 +892,7 @@ def _resolve_box(ctx: click.Context, box_opt: Optional[str] = None) -> str:
 
             click.echo("", err=True)
             click.echo("To add a new box, use:", err=True)
-            click.echo(f"  lager boxes add --name {target_box} --ip [IP_ADDRESS]", err=True)
+            click.echo(f"  lager boxes add --name {target_box} --ip [IP_ADDRESS] --user [USERNAME]", err=True)
             ctx.exit(1)
 
     # get_default_box already handles local box resolution
@@ -1201,22 +1336,29 @@ def rename_cmd(
               help="LabJack MOSI pin for spi nets (e.g. FIO2, EIO3, or DIO number)")
 @click.option("--miso", default=None,
               help="LabJack MISO pin for spi nets (e.g. FIO3, EIO4, or DIO number)")
+@click.option("--interface", default=None, metavar="[A|B|C|D]",
+              type=click.Choice(["A", "B", "C", "D"], case_sensitive=False),
+              help="FTDI channel for a gpio, i2c or spi net on an FT2232H or "
+                   "FT4232H. The default is A.")
 @click.pass_context
 def add_cmd(ctx, name, role, channel, address, box, jlink_script, openocd_config,
-            sda, scl, cs, sck, mosi, miso):
+            sda, scl, cs, sck, mosi, miso, interface):
     """
     Add a net using inferred instrument from VISA address.
 
-    For LabJack T7 i2c/spi nets, custom pins may be chosen with
-    --sda/--scl (i2c) or --cs/--sck/--mosi/--miso (spi); any DIO pin
-    (FIO0-FIO7, EIO0-EIO7, CIO0-CIO3, MIO0-MIO2) is accepted. When pin
-    options are given, the CHANNEL argument is ignored (pass e.g. 'custom').
+    For LabJack i2c/spi nets, custom pins may be chosen with --sda/--scl
+    (i2c) or --cs/--sck/--mosi/--miso (spi). A T7 accepts any DIO pin
+    (FIO0-FIO7, EIO0-EIO7, CIO0-CIO3, MIO0-MIO2); a U3 has no MIO block and
+    stops at CIO3, and its FIO0-FIO3 are fixed analog inputs that cannot carry
+    a digital net at all. When pin options are given, the CHANNEL argument is
+    ignored (pass e.g. 'custom').
 
     \b
     Examples:
       lager nets add mybus i2c FIO4-FIO5 <addr>
       lager nets add mybus i2c custom <addr> --sda EIO0 --scl EIO1
       lager nets add flash spi custom <addr> --cs FIO6 --sck FIO7 --mosi EIO0 --miso EIO1
+      lager nets add ctrl gpio 5 <ft4232h-addr> --interface C
     """
     from ...box_storage import resolve_and_validate_box
 
@@ -1304,12 +1446,21 @@ def add_cmd(ctx, name, role, channel, address, box, jlink_script, openocd_config
                     fg="yellow", err=True,
                 )
 
+    # ─────────── FTDI channel (--interface) ───────────
+    ftdi_params = _ftdi_interface_params(role, instrument, interface)
+    new_interface = _normalize_ftdi_interface((ftdi_params or {}).get("interface"))
+
     if role == "debug":
+        # One debug net per channel, the rule add-all and the TUI already
+        # apply: a multi-channel FTDI names its channel as a device suffix
+        # (STM32F4x@B), and a probe with no suffix keeps one net per address.
+        new_suffix = _debug_channel_suffix(channel)
         for net in saved_nets:
             if (
                 net["role"] == "debug"
                 and net["instrument"] == instrument
                 and net["address"] == address
+                and _debug_channel_suffix(net.get("pin") or net.get("channel")) == new_suffix
             ):
                 click.secho(
                     f"A debug net already exists for instrument {instrument} at {address}.",
@@ -1345,6 +1496,18 @@ def add_cmd(ctx, name, role, channel, address, box, jlink_script, openocd_config
                     f"The channel '{channel}' is not valid for role '{role}' on the instrument at {address}.",
                     fg="red",
                 )
+                # Naming what IS valid, the way the role rejection below
+                # does. Both lines stay on stdout with the one above them:
+                # cli/setup.py pins only click>=8.1.2, and 8.2's CliRunner
+                # stopped folding stderr into result.output, so moving them
+                # would change what every existing CLI test can see.
+                click.secho(
+                    f"Valid {role} channels for {instrument}: "
+                    f"{', '.join(str(ch) for ch in role_chans)}"
+                )
+                hint = _channel_rejection_hint(instrument, role, channel)
+                if hint:
+                    click.secho(hint, fg="yellow")
                 ctx.exit(1)
 
     # ─────────── unique net name (regardless of type) ────────────────
@@ -1358,11 +1521,15 @@ def add_cmd(ctx, name, role, channel, address, box, jlink_script, openocd_config
     # ─────────── unique role/instrument/channel/address ──────────────
     # Saved roles are canonicalized for the comparison so legacy nets stored
     # with the short tokens ("supply") still block duplicates.
+    # The FTDI channel is part of the identity: pin 4 on channel A and pin 4 on
+    # channel B are different pins. A net with no interface compares as A, so
+    # nothing changes for any other instrument.
     if any(
         _canonical_role(n.get("role", "")) == role
         and n["instrument"] == instrument
         and str(n["pin"]) == str(channel)
         and n["address"] == address
+        and _normalize_ftdi_interface((n.get("params") or {}).get("interface")) == new_interface
         for n in saved_nets
     ):
         click.secho(
@@ -1408,8 +1575,13 @@ def add_cmd(ctx, name, role, channel, address, box, jlink_script, openocd_config
         "instrument": instrument,
         "pin":        channel,
     }
+    net_params: dict = {}
     if custom_pins is not None:
-        net_data["params"] = custom_pins["params"]
+        net_params.update(custom_pins["params"])
+    if ftdi_params:
+        net_params.update(ftdi_params)
+    if net_params:
+        net_data["params"] = net_params
     if is_uart_device_path:
         net_data["device_path"] = channel
 
@@ -2022,6 +2194,49 @@ def create_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
     _save_nets_batch(ctx, resolved_box, nets_to_save)
 
 
+# Keys a `nets add-batch` record may carry. Anything else is refused: a key
+# this command does not read used to vanish without a word, which is how a
+# record's `params` (custom LabJack pins, the FTDI channel) was lost (#516).
+_BATCH_KEYS = ("name", "role", "channel", "address", "instrument", "params")
+# `params` keys that stand for a `nets add` pin option, and the option each is.
+_BATCH_PIN_PARAMS = {param: signal for signal, param in
+                     {**_I2C_PIN_PARAMS, **_SPI_PIN_PARAMS}.items()}
+_BATCH_PARAM_KEYS = tuple(sorted(_BATCH_PIN_PARAMS)) + ("interface",)
+
+
+def _batch_record_params(record: dict, role: str, instrument: str):
+    """Validate a batch record's ``params`` as `nets add` validates the pin and
+    ``--interface`` options. Returns ``(pin label or None, params or None)``.
+
+    Raises LagerError. The pin label replaces the record's channel, as the pin
+    options replace the CHANNEL argument of `nets add`.
+    """
+    params = record.get("params")
+    if params is None:
+        return None, None
+    if not isinstance(params, dict):
+        raise LagerError("'params' must be an object.")
+    unknown = sorted(set(params) - set(_BATCH_PARAM_KEYS))
+    if unknown:
+        raise LagerError(
+            f"unknown params key(s) {', '.join(unknown)}. Accepted: "
+            f"{', '.join(_BATCH_PARAM_KEYS)}."
+        )
+    out: dict = {}
+    label = None
+    custom = _build_custom_pin_config(role, instrument, {
+        _BATCH_PIN_PARAMS[key]: str(value)
+        for key, value in params.items() if key in _BATCH_PIN_PARAMS
+    })
+    if custom is not None:
+        out.update(custom["params"])
+        label = custom["pin"]
+    if params.get("interface") is not None:
+        letter = _normalize_ftdi_interface(params["interface"])
+        out.update(_ftdi_interface_params(role, instrument, letter) or {})
+    return label, (out or None)
+
+
 @nets.command("add-batch", help="Add multiple nets from a JSON file")
 @click.argument("json_file", type=click.File("r"))
 @click.option("--box", help="Lager Box name or IP")
@@ -2045,6 +2260,11 @@ def create_batch_cmd(ctx: click.Context, json_file, box: str | None) -> None:
             "address": "192.168.1.100"
         }
     ]
+
+    A record may also carry "instrument", and "params" with the values the
+    `nets add` options set: sda_pin/scl_pin (i2c) or cs_pin/clk_pin/mosi_pin/
+    miso_pin (spi) for custom LabJack pins, and interface (A-D) for an FTDI
+    channel. Any other key is refused.
     """
     resolved_box = _resolve_box(ctx, box)
 
@@ -2067,7 +2287,13 @@ def create_batch_cmd(ctx: click.Context, json_file, box: str | None) -> None:
     # net never need the scan.
     _instrument_cache: list | None = None
 
-    def _get_instrument_from_address(address: str, fallback_instrument: str = "Unknown") -> str:
+    def _get_scanned_device(address: str) -> dict | None:
+        """The scanned record for *address*, or None when it is not present.
+
+        Shares the one lazy scan with _get_instrument_from_address. A batch
+        run against a box that is down, or naming hardware that is unplugged,
+        gets None here and keeps its pre-0.46.1 behavior.
+        """
         nonlocal _instrument_cache
         if _instrument_cache is None:
             try:
@@ -2076,11 +2302,20 @@ def create_batch_cmd(ctx: click.Context, json_file, box: str | None) -> None:
                 _instrument_cache = []
         for inst in _instrument_cache:
             if inst.get("address") == address:
-                return inst.get("name", "Unknown")
-        return fallback_instrument
+                return inst
+        return None
+
+    def _get_instrument_from_address(address: str, fallback_instrument: str = "Unknown") -> str:
+        inst = _get_scanned_device(address)
+        return inst.get("name", "Unknown") if inst else fallback_instrument
 
     # Validate and normalize each net in the batch
     normalized_nets = []
+    # Rejections are collected, not raised in the loop, and nothing is saved
+    # while any exist: telling the user about record 3 and hiding record 7
+    # would cost them a second run to find the next one. (The save itself
+    # still goes record by record, so a failed PUT can leave a partial batch.)
+    channel_errors: list[str] = []
 
     for i, net_data in enumerate(nets_data):
         if not isinstance(net_data, dict):
@@ -2092,6 +2327,15 @@ def create_batch_cmd(ctx: click.Context, json_file, box: str | None) -> None:
             if field not in net_data:
                 click.secho(f"Net {i+1}: missing required field '{field}'", fg="red", err=True)
                 ctx.exit(1)
+
+        label = f"Net {i+1} ('{net_data['name']}')"
+        unknown_keys = sorted(set(net_data) - set(_BATCH_KEYS))
+        if unknown_keys:
+            channel_errors.append(
+                f"{label}: unknown key(s) {', '.join(unknown_keys)}. add-batch "
+                f"reads {', '.join(_BATCH_KEYS)}. Add a debug script afterwards "
+                f"with `lager nets set-script`."
+            )
 
         # Look up instrument if not provided
         instrument = net_data.get("instrument")
@@ -2107,7 +2351,79 @@ def create_batch_cmd(ctx: click.Context, json_file, box: str | None) -> None:
             "pin": net_data["channel"],
             "instrument": instrument
         }
+        batch_role = normalized_net["role"]
+        uart_device_path = (batch_role == "uart"
+                            and str(net_data["channel"]).startswith("/dev/"))
+        if uart_device_path:
+            normalized_net["device_path"] = net_data["channel"]
+
+        try:
+            pin_label, params = _batch_record_params(net_data, batch_role, instrument)
+        except LagerError as exc:
+            channel_errors.append(f"{label}: {exc.problem}")
+            pin_label = params = None
+        if pin_label:
+            normalized_net["pin"] = pin_label
+        if params:
+            normalized_net["params"] = params
+
+        # The role check `nets add` makes. An instrument the scan could not
+        # name ("Unknown", absent hardware) and a uart device path skip it,
+        # as they do there.
+        if instrument != "Unknown" and not uart_device_path:
+            allowed = INSTRUMENT_NET_MAP.get(canonical_instrument(instrument), [])
+            if batch_role not in allowed:
+                supported = (f" Supported: {', '.join(allowed)}." if allowed
+                             else " No net types are defined for it.")
+                channel_errors.append(
+                    f"{label}: instrument '{instrument}' does not support net "
+                    f"type '{batch_role}'.{supported}"
+                )
+
+        # The ambiguity check `nets add` makes, when the scan saw the device.
+        scanned = None if uart_device_path else _get_scanned_device(net_data["address"])
+        if scanned is not None and net_data["address"] in ambiguous_addresses(_instrument_cache or []):
+            channel_errors.append(
+                f"{label}: {describe_ambiguity(instrument, net_data['address'])}")
+
+        # Reject a channel the present hardware does not offer, the way
+        # `nets add` does. Deliberately narrow:
+        #
+        #   * only when the device is actually in the scan. This command is
+        #     built to provision a box whose instruments are absent or named
+        #     by bare IP, and _get_instrument_from_address already falls back
+        #     to "Unknown" for those. Rejecting what we cannot see would break
+        #     that, fleet-wide, for hardware unrelated to the U3.
+        #   * never for uart, whose channels are per-device tty paths rather
+        #     than the static list (see uart_channel_paths).
+        #
+        # What it does catch is the case this exists for: a hand-written
+        # record naming a pin the instrument cannot drive, which used to be
+        # saved without complaint and fail at first use.
+        if batch_role != "uart" and pin_label is None:
+            dev = scanned
+            role_chans = (dev.get("channels") or {}).get(batch_role) if dev else None
+            if isinstance(role_chans, list) and role_chans:
+                if str(net_data["channel"]) not in [str(ch) for ch in role_chans]:
+                    detail = (
+                        f"Net {i+1} ('{net_data['name']}'): channel "
+                        f"'{net_data['channel']}' is not valid for role "
+                        f"'{batch_role}' on {instrument}. Valid: "
+                        f"{', '.join(str(ch) for ch in role_chans)}"
+                    )
+                    hint = _channel_rejection_hint(
+                        instrument, batch_role, net_data["channel"])
+                    if hint:
+                        detail = f"{detail}\n    {hint}"
+                    channel_errors.append(detail)
+
         normalized_nets.append(normalized_net)
+
+    if channel_errors:
+        for detail in channel_errors:
+            click.secho(detail, fg="red", err=True)
+        click.secho("No nets were saved.", fg="red", err=True)
+        ctx.exit(1)
 
     # Use batch save for better performance
     _save_nets_batch(ctx, resolved_box, normalized_nets)
@@ -2415,12 +2731,17 @@ def show_script_cmd(
 
 
 @nets.command("describe", short_help="Set metadata on a saved net",
-              help="Set metadata on a saved net (purpose, notes, tags).")
+              help="Set metadata on a saved net (purpose, notes, tags, DUT connection, test hints).")
 @click.argument("name")
 @click.option("--purpose", "-p", default=None, help="One sentence: what this net does on the DUT")
 @click.option("--notes", "-n", default=None, help="Optional notes (gotchas, jumper positions, scope probe points)")
 @click.option("--tag", "-t", "tags", multiple=True, help="Tag for categorisation/matching (repeatable)")
 @click.option("--clear-tags", is_flag=True, help="Remove all existing tags before adding new ones")
+@click.option("--dut-connection", default=None,
+              help='Where the net lands on the DUT: connector, pin or test point (e.g. "J3 pin 4")')
+@click.option("--test-hint", "test_hints", multiple=True,
+              help="One-line advice for a test author (repeatable)")
+@click.option("--clear-test-hints", is_flag=True, help="Remove all existing test hints before adding new ones")
 @click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def describe_cmd(
@@ -2430,13 +2751,24 @@ def describe_cmd(
     notes: str | None,
     tags: tuple[str, ...],
     clear_tags: bool,
+    dut_connection: str | None,
+    test_hints: tuple[str, ...],
+    clear_test_hints: bool,
     box: str | None,
 ) -> None:
     """Set metadata fields on a saved net for agent-assisted testing."""
     resolved_box = _resolve_box(ctx, box)
 
-    if purpose is None and notes is None and not tags and not clear_tags:
-        click.secho("Nothing to update. Provide at least one of --purpose, --notes, or --tag.", fg="yellow")
+    nothing_given = (
+        purpose is None and notes is None and not tags and not clear_tags
+        and dut_connection is None and not test_hints and not clear_test_hints
+    )
+    if nothing_given:
+        click.secho(
+            "Nothing to update. Provide at least one of --purpose, --notes, --tag, "
+            "--dut-connection, or --test-hint.",
+            fg="yellow",
+        )
         return
 
     recs = _fetch_saved_nets(ctx, resolved_box)
@@ -2457,6 +2789,15 @@ def describe_cmd(
         existing = target.get("tags", [])
         merged = list(dict.fromkeys(existing + list(tags)))
         target["tags"] = merged
+
+    if dut_connection is not None:
+        target["dut_connection"] = dut_connection
+
+    if clear_test_hints:
+        target["test_hints"] = []
+    if test_hints:
+        existing_hints = target.get("test_hints") or []
+        target["test_hints"] = list(dict.fromkeys(list(existing_hints) + list(test_hints)))
 
     _save_net_http(ctx, resolved_box, target)
     click.secho(f"Updated metadata for net '{name}' on box {resolved_box}.", fg="green")
@@ -2490,7 +2831,7 @@ def state_cmd(ctx: click.Context, box: str | None, as_json: bool) -> None:
     if state_list is None:
         click.secho(
             "Note: this box does not support 'lager nets state' "
-            "(requires box version ≥ 0.33). Update with: lager update",
+            "(requires box version 0.34.0 or later). Update with: lager update",
             fg="yellow", err=True,
         )
     elif isinstance(state_list, list):

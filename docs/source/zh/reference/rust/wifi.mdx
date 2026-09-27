@@ -1,0 +1,109 @@
+---
+title: WiFi
+description: 管理 Box 自己的无线接口
+---
+
+用 Box 自己的无线接口扫描接入点并加入网络。被测设备本身就是接入点时，这很有用；测试过程中 Box 必须在多个网络之间切换时，它也很有用。
+
+## 句柄
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let wifi = lager.wifi();
+```
+
+WiFi 是 **Box 级**能力，不是一个 Net。它没有 Net 名称，也没有 `name()`。
+
+<Note>
+  这里说的是 Box 自己的接口。它不是 Python API 中那个通过路由器家长控制来限制某台被测设备上网的 `NetType.Wifi` Net，也不是路由器 Net。
+</Note>
+
+## 方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `status()` | Box 上每一个无线接口的状态 |
+| `scan()` | 在某个接口上扫描接入点 |
+| `connect()` | 加入一个网络 |
+| `delete()` | 删除一份已保存的连接配置 |
+
+## 类型
+
+```rust
+pub struct WifiInterface {
+    pub interface: String,   // e.g. "wlan0"
+    pub ssid: String,        // or a placeholder like "Not Connected"
+    pub state: String,       // "Connected" / "Disconnected"
+}
+
+pub struct WifiAccessPoint {
+    pub ssid: Option<String>,      // "Hidden" for hidden networks
+    pub address: Option<String>,   // BSSID
+    pub strength: Option<i64>,     // approximate percent, 0-100
+    pub security: Option<String>,  // "Open" / "Secured"
+}
+
+pub struct WifiConnection {
+    pub ssid: String,
+    pub connected: bool,
+    pub interface: Option<String>,
+    pub method: Option<String>,    // "nmcli" / "wpa_supplicant"
+}
+```
+
+## 方法参考
+
+### `status() -> Result<Vec<WifiInterface>>`
+
+Box 上每一个无线接口的状态。
+
+### `scan(interface: &str) -> Result<Vec<WifiAccessPoint>>`
+
+扫描接入点，信号最强的排在前面。
+
+```rust
+for ap in wifi.scan("wlan0")? {
+    println!("{:?} {:?}% {:?}", ap.ssid, ap.strength, ap.security);
+}
+```
+
+### `connect(ssid: &str, password: &str) -> Result<WifiConnection>`
+
+加入一个网络。开放网络请传空密码。
+
+### `delete(ssid: &str) -> Result<()>`
+
+按 SSID 删除一份已保存的连接配置。
+
+## 示例
+
+### 断言被测设备已经把它的接入点建起来了
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let wifi = lager.wifi();
+let supply = lager.supply("supply1");
+
+supply.set_voltage(3.3)?;
+supply.enable()?;
+std::thread::sleep(std::time::Duration::from_secs(15));
+
+let aps = wifi.scan("wlan0")?;
+let dut_ap = aps.iter()
+    .find(|ap| ap.ssid.as_deref() == Some("DUT-SETUP"))
+    .expect("DUT did not bring up its setup AP");
+println!("AP up at {:?}% signal", dut_ap.strength);
+
+supply.disable()?;
+```
+
+## 说明
+
+- `capabilities.wifi_command` 为 `true` 只表示 Box **提供这条路由**，而不表示它能完成这项工作。容器里没装 `nmcli` 的 Box 会让 `scan()` 得到 `Error::Box` 和 HTTP 502，并携带 `[Errno 2] No such file or directory: 'nmcli'`。而在同一台 Box 上，`status()` 根本不会报错：它会返回一个报告 `Interface detection failed` 的接口。
+- 每个动作都有固定的 90 秒预算。nmcli 和 iwlist 调用会阻塞数秒，一次连接可能经由 wpa_supplicant 重试，而且它们会在 Box 的 wifi 锁上排队。
+- `strength` 是一个近似的百分比，不是 dBm。
+- 把 Box 在网络之间挪动，可能会改变您访问它所用的地址。如果被测设备提供的接入点也是您的测试所使用的路径，请谨慎地把 Box 连上去。

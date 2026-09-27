@@ -13,11 +13,15 @@ Example usage:
     # Create arm instance
     arm = Dexarm(port="/dev/ttyUSB0")
 
+    # Home the arm first after power-on
+    arm.go_home()
+
     # Get current position
     x, y, z = arm.position()
 
-    # Move to a specific position
-    arm.move_to(200, 0, 100)
+    # Move to a specific position (raises OutOfBoundsError outside the workspace,
+    # and UnsupportedFirmwareError on arm firmware older than V2.1.4)
+    arm.move_to(100, 250, 50)
 
     # Move relative
     arm.move_relative(dx=10, dy=0, dz=0)
@@ -29,6 +33,9 @@ from .arm_net import (
     MovementTimeoutError,
     LibraryMissingError,
     DeviceNotFoundError,
+    OutOfBoundsError,
+    UnsupportedFirmwareError,
+    NotHomedError,
 )
 from .rotrics import Dexarm
 
@@ -44,6 +51,9 @@ __all__ = [
     'MovementTimeoutError',
     'LibraryMissingError',
     'DeviceNotFoundError',
+    'OutOfBoundsError',
+    'UnsupportedFirmwareError',
+    'NotHomedError',
     # Implementations
     'Dexarm',
     'RotricsArm',  # Alias for backward compatibility

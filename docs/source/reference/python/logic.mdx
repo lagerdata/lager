@@ -6,13 +6,8 @@ description: Digital signal capture and protocol decoding
 Capture and analyze digital signals using the logic analyzer functionality of mixed-signal oscilloscopes.
 
 <Warning>
-**Not Yet Available:** The Logic Analyzer Python API for Rigol MSO5000 series is currently under development.
-The Net-based API and associated methods are documented for preview purposes only. The underlying device
-implementation is not yet complete. Attempting to use logic analyzer nets will result in a "method not found"
-error. Check back in a future release for full functionality.
+**Known limitations on the Rigol MSO5000.** Channel control, capture, measurements, and the edge and SPI triggers work. The pulse, UART, I2C and CAN triggers fail. Every bus decoder fails when you create it. A method that fails raises an error that contains `Function not found`. [Issue #418](https://github.com/lagerdata/lager/issues/418) tracks this work.
 </Warning>
-
-<Accordion title="Preview: Python API Reference">
 
 ## Import
 
@@ -248,6 +243,24 @@ can.trigger_settings.can.set_trigger_on_sof()
 can.trigger_settings.can.set_trigger_on_error_frame()
 ```
 
+### Valid Ranges
+
+A value outside these ranges raises `ValueError`, and the message names the valid range.
+
+| Method | Parameter | Valid values |
+|--------|-----------|--------------|
+| `uart.set_uart_params()` | `bits` | 5 to 8 |
+| `uart.set_trigger_on_data()` | `data` | 0 to 2^bits − 1 |
+| `i2c.set_trigger_on_address()` | `bits` | 7, 8 or 10 |
+| `i2c.set_trigger_on_address()` | `address` | Up to 127 (7-bit), 255 (8-bit) or 1023 (10-bit) |
+| `i2c.set_trigger_on_data()` | `width` | 1 to 5 bytes |
+| `i2c.set_trigger_on_data()` | `data` | 0 to 2^(8 × width) − 1 |
+| `spi.set_trigger_data()` | `bits` | 4 to 32 |
+| `spi.set_trigger_data()` | `data` | 0 to 2^bits − 1 |
+| `BusUART.set_data_bits()` | `bits` | 5 to 9 |
+| `BusUART.set_stop_bits()` | `bits` | 1, 1.5 or 2 |
+| `BusSPI.set_data_width()` | `bits` | 4 to 32 |
+
 ## Measurements
 
 Logic analyzer nets support digital timing measurements:
@@ -379,84 +392,6 @@ clk.stop_capture()
 clk.disable()
 ```
 
-### SPI Communication Test
-
-```python
-from lager import Net, NetType
-from lager.nets.mappers.rigol_mso5000 import BusSPI_RigolMSO5000FunctionMapper
-import time
-
-# Get SPI signals
-clk = Net.get('SPI_CLK', type=NetType.Logic)
-mosi = Net.get('SPI_MOSI', type=NetType.Logic)
-miso = Net.get('SPI_MISO', type=NetType.Logic)
-cs = Net.get('SPI_CS', type=NetType.Logic)
-
-# Enable channels
-for net in [clk, mosi, miso, cs]:
-    net.enable()
-    net.set_signal_threshold(1.65)
-
-# Create bus decoder
-bus = BusSPI_RigolMSO5000FunctionMapper(clk=clk, mosi=mosi, miso=miso, cs=cs)
-bus.set_sck_phase_rising_edge()
-bus.set_data_width(8)
-bus.enable()
-bus.show_table()
-
-# Trigger on CS going low
-clk.trigger_settings.spi.set_trigger_on_cs_low()
-clk.trigger_settings.set_mode_single()
-
-# Start capture
-clk.start_single_capture()
-
-# Wait for trigger or timeout
-time.sleep(5)
-
-# View decoded data in table
-print("SPI transaction captured - check scope display")
-
-# Clean up
-bus.disable()
-for net in [clk, mosi, miso, cs]:
-    net.disable()
-```
-
-### I2C Address Scanner
-
-```python
-from lager import Net, NetType
-import time
-
-scl = Net.get('I2C_SCL', type=NetType.Logic)
-sda = Net.get('I2C_SDA', type=NetType.Logic)
-
-scl.enable()
-sda.enable()
-scl.set_signal_threshold(1.65)
-sda.set_signal_threshold(1.65)
-
-# Configure I2C trigger
-scl.trigger_settings.i2c.set_source(net_scl=scl, net_sda=sda)
-scl.trigger_settings.i2c.set_scl_trigger_level(1.65)
-scl.trigger_settings.i2c.set_sda_trigger_level(1.65)
-
-# Trigger on start condition to capture all traffic
-scl.trigger_settings.i2c.set_trigger_on_start()
-scl.trigger_settings.set_mode_normal()
-
-scl.start_capture()
-print("Monitoring I2C bus - trigger on start condition")
-
-# Let it run and capture activity
-time.sleep(10)
-
-scl.stop_capture()
-scl.disable()
-sda.disable()
-```
-
 ### Protocol Timing Verification
 
 ```python
@@ -510,5 +445,3 @@ uart_tx.disable()
 - Use `NetType.Logic` for digital channels, `NetType.Analog` for analog
 - Bus decoders work with both Logic and Analog nets as sources
 - The trigger can use any combination of analog and digital channels
-
-</Accordion>

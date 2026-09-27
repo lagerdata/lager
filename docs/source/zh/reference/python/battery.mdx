@@ -1,0 +1,412 @@
+---
+title: 电池仿真
+description: 控制电池仿真 Net
+---
+
+仿真电池行为，测试被测设备对各种电量、电压和保护事件的响应。
+
+## 导入
+
+```python
+from lager import Net, NetType
+```
+
+## 方法
+
+基于 Net 的 API 提供的方法既能读取也能设置。不带值参数调用时，方法读取并打印当前值；带值调用时，则设置该值。
+
+| 方法 | 说明 |
+|--------|-------------|
+| `mode(mode_type)` | 设置或读取仿真模式（'static' 或 'dynamic'） |
+| `set_mode_battery()` | 初始化电池仿真模式 |
+| `setup_battery(...)` | 一次调用应用多项电池设置，且输出保持关闭 |
+| `soc(value)` | 设置或读取荷电状态（0-100%） |
+| `voc(value)` | 设置或读取开路电压 |
+| `voltage_full(value)` | 设置或读取满电电压 |
+| `voltage_empty(value)` | 设置或读取亏电电压 |
+| `capacity(value)` | 设置或读取电池容量（Ah） |
+| `current_limit(value)` | 设置或读取电流上限（A） |
+| `ovp(value)` | 设置或读取过压保护阈值 |
+| `ocp(value)` | 设置或读取过流保护阈值 |
+| `model(partnumber)` | 设置或读取电池模型 |
+| `model_catalog()` | 列出仪器上可用的电池模型（只读） |
+| `read_model(slot)` | 从某个存储槽读出已保存模型的曲线点（只读） |
+| `define_model(slot, voc, resistance)` | 把自定义电池模型写入某个存储槽 |
+| `enable()` | 启用电池仿真输出 |
+| `disable()` | 禁用电池仿真输出 |
+| `clear_ovp()` | 清除过压保护故障 |
+| `clear_ocp()` | 清除过流保护故障 |
+| `print_state()` | 打印完整的电池状态 |
+| `terminal_voltage()` | 读取端电压（返回 float） |
+| `current()` | 读取电流（返回 float） |
+| `esr()` | 读取 ESR（返回 float） |
+
+## 方法参考
+
+### `Net.get(name, type=NetType.Battery)`
+
+按名称获取一个电池仿真 Net。
+
+```python
+from lager import Net, NetType
+
+batt = Net.get('BATT', type=NetType.Battery)
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `name` | `str` | 电池 Net 的名称 |
+| `type` | `NetType` | 必须为 `NetType.Battery` |
+
+**返回：** 电池仿真 Net 实例
+
+### `set_mode_battery()`
+
+把仪器初始化为电池仿真模式。
+
+```python
+batt.set_mode_battery()
+```
+
+### `setup_battery(*, sim_mode=None, soc=None, voc=None, voltage_full=None, voltage_empty=None, current_limit=None, capacity=None, model=None)`
+
+一次调用应用多项电池设置。所有参数都只能按关键字传入。
+
+```python
+batt.setup_battery(
+    sim_mode='dynamic',
+    model=1,
+    voltage_full=4.2,
+    voltage_empty=3.0,
+    current_limit=1.0,
+    soc=0,
+    capacity=2.0,
+)
+batt.enable()
+```
+
+`setup_battery()` 把仪器置于电池模式并关闭输出。随后它按这个顺序应用每一个非 `None` 的参数：`sim_mode`、`model`、`voltage_full`、`voltage_empty`、`current_limit`、`soc`、`voc`、`capacity`。
+
+- `soc` 必须在 0 到 100 之间，其中 `0` 会被实际应用。超出该范围的值会抛出 `ValueError`。
+- `voltage_full` 会被舍入到 0.1 V。
+- `sim_mode` 为 `'static'` 或 `'dynamic'`。
+- 输出保持关闭。请在 `setup_battery()` 之后调用 `enable()`。
+
+### `mode(mode_type=None)`
+
+设置或读取电池仿真模式。
+
+```python
+# Set mode
+batt.mode('static')   # Fixed parameters
+batt.mode('dynamic')  # Parameters evolve based on battery model
+
+# Read mode (prints current mode)
+batt.mode()
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `mode_type` | `str` 或 `None` | 'static' 或 'dynamic'。为 None 时读取当前模式。 |
+
+### `soc(value=None)`
+
+设置或读取荷电状态。
+
+```python
+# Set SOC
+batt.soc(80)  # Set to 80%
+
+# Read SOC (prints current value)
+batt.soc()
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `value` | `float` 或 `None` | 荷电状态（0-100）。会舍入到最接近的整数。为 None 时读取当前值。 |
+
+### `voc(value=None)`
+
+设置或读取开路电压。
+
+```python
+# Set VOC
+batt.voc(3.7)  # Set to 3.7V
+
+# Read VOC (prints current value)
+batt.voc()
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `value` | `float` 或 `None` | 电压，单位伏特。为 None 时读取当前值。 |
+
+### `voltage_full(value=None)` / `voltage_empty(value=None)`
+
+设置或读取满电/亏电电压。
+
+```python
+# Set voltages
+batt.voltage_full(4.2)   # Full charge at 4.2V
+batt.voltage_empty(3.0)  # Empty at 3.0V
+
+# Read voltages
+batt.voltage_full()
+batt.voltage_empty()
+```
+
+### `capacity(value=None)`
+
+设置或读取电池容量。必须大于 0。仪器可能把该值钳位到它支持的范围内。实际应用的值与请求值不同时，它会给出警告。
+
+```python
+# Set capacity
+batt.capacity(2.5)  # 2.5 Ah
+
+# Read capacity
+batt.capacity()
+```
+
+### `current_limit(value=None)`
+
+设置或读取最大充放电电流。范围：0.001 A 至 6.0 A（Keithley 2281S）。
+
+```python
+# Set current limit
+batt.current_limit(1.5)  # 1.5A max
+
+# Read current limit
+batt.current_limit()
+```
+
+### `ovp(value=None)` / `ocp(value=None)`
+
+设置或读取保护阈值。
+
+```python
+# Set protection thresholds
+batt.ovp(4.4)  # Over-voltage protection at 4.4V
+batt.ocp(2.0)  # Over-current protection at 2.0A
+
+# Read thresholds
+batt.ovp()
+batt.ocp()
+```
+
+### `model(partnumber=None)`
+
+设置或读取电池模型。
+
+```python
+# Set model to discharge (always available)
+batt.model('discharge')
+
+# Or use pre-configured battery models (if available)
+batt.model('18650')   # Requires model saved in slot 1
+batt.model('liion')   # Requires model saved in slot 1
+batt.model('nimh')    # Requires model saved in slot 2
+
+# Read current model
+batt.model()
+```
+
+**Keithley 2281S 电池模型：**
+
+Keithley 2281S 把电池模型保存在存储槽（0-9）中：
+
+| 模型别名 | 存储槽 | 可用性 |
+|-------------|------|--------------|
+| `'discharge'` | 0 | 始终可用（基本的恒压仿真） |
+| `'18650'`、`'liion'` | 1 | 需要事先保存模型 |
+| `'nimh'` | 2 | 需要事先保存模型 |
+| `'nicd'` | 3 | 需要事先保存模型 |
+| `'lead-acid'` | 4 | 需要事先保存模型 |
+
+**注意：** 如果某个存储槽是空的，该调用会抛出错误。错误信息会提示您改用 `'discharge'`，或者先从仪器前面板或用下面的 `define_model()` 保存一个模型。基本的电池仿真请用 `'discharge'`，它在所有仪器上都能用。
+
+### `model_catalog()`
+
+列出仪器上可用的电池模型。返回的列表涵盖各个编号存储槽，以及固件内置的模型。只读 —— 汇总这份目录不会改变仪器状态。
+
+```python
+for entry in batt.model_catalog():
+    print(entry)
+```
+
+在 Keithley 2281S 上，存储槽 1-9 在其中有模型时才会被列出。五个固件内置模型列出时不带存储槽编号。放电模式不会被列出，因为它只能在前面板操作，在当前固件上没有对应的 SCPI 调用形式。
+
+### `read_model(slot)`
+
+从某个存储槽读出已保存模型的曲线点。返回一个字典。只读 —— 导出模型不会改变当前激活的是哪个模型。
+
+```python
+model = batt.read_model(1)
+```
+
+在 Keithley 2281S 上，存储槽 1-9 保存模型，没有可导出的 0 号槽。每个模型的 VOC 和内阻各有 101 个点。读取空存储槽会被拒绝，并提示改用 `model_catalog()`。
+
+### `define_model(slot, voc, resistance)`
+
+把自定义电池模型写入某个存储槽，可创建也可覆盖。一个模型由两条以荷电状态为索引的曲线组成：`voc`（非递减）和 `resistance`。
+
+```python
+batt.define_model(3, voc=voc_points, resistance=resistance_points)
+```
+
+<Warning>
+保存到已占用的存储槽会静默覆盖它。事后您无法删除或清空存储槽，因为 Keithley 2281S 没有对应的 SCPI 命令。存储槽只能被覆盖。请在您自己的代码中给覆盖操作加上显式确认。有效的目标存储槽是 1-9。
+</Warning>
+
+### `enable()` / `disable()`
+
+启用或禁用电池仿真输出。
+
+```python
+batt.enable()   # Enable output
+batt.disable()  # Disable output
+```
+
+### `clear_ovp()` / `clear_ocp()`
+
+清除保护故障。
+
+```python
+batt.clear_ovp()  # Clear over-voltage fault
+batt.clear_ocp()  # Clear over-current fault
+```
+
+### `print_state()`
+
+打印电池仿真器的完整状态。
+
+```python
+batt.print_state()
+# Prints: terminal voltage, current, ESR, SOC, VOC, capacity, protection status
+```
+
+### `terminal_voltage()` / `current()` / `esr()`
+
+读取测量值（返回数值，不打印）。
+
+```python
+v = batt.terminal_voltage()  # Returns terminal voltage in volts
+i = batt.current()           # Returns current in amps
+r = batt.esr()               # Returns ESR in ohms
+
+print(f"Voltage: {v}V, Current: {i}A, ESR: {r} ohms")
+```
+
+**返回：** `float` - 测量值
+
+## 示例
+
+### 基本的电池仿真
+
+```python
+from lager import Net, NetType
+
+# Get battery net
+batt = Net.get('BATT', type=NetType.Battery)
+
+# Initialize and configure
+batt.set_mode_battery()
+batt.mode('static')
+batt.model('discharge')  # Use discharge mode (always available)
+batt.voc(3.7)
+batt.capacity(2.5)
+
+# Enable output
+batt.enable()
+
+# Read state
+batt.print_state()
+print(f"Terminal voltage: {batt.terminal_voltage()}V")
+
+# Disable when done
+batt.disable()
+```
+
+### 仿真电池放电
+
+```python
+from lager import Net, NetType
+import time
+
+batt = Net.get('BATT', type=NetType.Battery)
+batt.set_mode_battery()
+
+# Configure battery parameters
+batt.mode('static')
+batt.model('discharge')
+batt.voc(4.2)
+batt.voltage_full(4.2)
+batt.voltage_empty(3.0)
+batt.capacity(3.0)
+batt.soc(100)  # Start fully charged
+
+batt.enable()
+
+# Simulate discharge by stepping SOC
+for soc_level in [100, 75, 50, 25, 10]:
+    batt.soc(soc_level)
+    time.sleep(0.5)
+    v = batt.terminal_voltage()
+    print(f"SOC: {soc_level}%, Terminal: {v:.2f}V")
+
+batt.disable()
+```
+
+### 带保护监测
+
+```python
+from lager import Net, NetType
+
+batt = Net.get('BATT', type=NetType.Battery)
+batt.set_mode_battery()
+
+# Configure with protection
+batt.model('discharge')
+batt.voc(3.7)
+batt.capacity(2.0)
+batt.ovp(4.3)  # Over-voltage at 4.3V
+batt.ocp(2.0)  # Over-current at 2.0A
+
+batt.enable()
+
+# Monitor
+print(f"Voltage: {batt.terminal_voltage():.2f}V")
+print(f"Current: {batt.current():.3f}A")
+
+# Clear any faults if needed
+batt.clear_ovp()
+batt.clear_ocp()
+
+batt.disable()
+```
+
+## 受支持的硬件
+
+| 厂商 | 型号 | 功能 |
+|--------------|-------|----------|
+| Keithley | 2281S | 电池仿真、动态建模 |
+
+## 说明
+
+- 使用其他电池方法之前请先调用 `set_mode_battery()`
+- 像 `soc()`、`voc()` 这样的方法，是读取还是设置，取决于是否传入了值
+- `soc()` 的值在发送到仪器之前会被舍入到最接近的整数
+- 参数固定时请用 `mode('static')`，需要行为随时间演变时请用 `mode('dynamic')`
+- 结束时请务必调用 `disable()`
+- `terminal_voltage()`、`current()` 和 `esr()` 返回数值（供代码使用）
+- `print_state()` 打印数值（用于调试）
+- 保护阈值有助于避免损坏您的被测设备
+- Keithley 2281S 的限制：输出 0-20 V，电流 0.001-6.0 A，容量必须大于 0
+- OVP 范围：0-60 V；OCP 范围：0.001-6.0 A

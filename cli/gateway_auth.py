@@ -26,10 +26,19 @@
     server URL so one machine can talk to boxes gated by different
     deployments. Access tokens are short-lived; they are refreshed
     transparently, replaying the cookies the auth server set at login.
+
+    A CI runner has no person to be, so it uses the other credential
+    source: a token its auth server minted, handed to the job in
+    ``LAGER_GATEWAY_TOKEN``. Such a *pinned* token outranks anything in the
+    store, rides on every request, and is never refreshed — see §6.1 of the
+    contract. Nothing here writes the store while one is set: a self-hosted
+    runner keeps its filesystem between jobs, and a box→auth-server entry
+    left behind there is silently wrong the day that box changes address.
 """
 import base64
 import json
 import os
+import threading
 import time
 from pathlib import Path
 from urllib.parse import urlparse
@@ -39,11 +48,107 @@ import requests
 from .errors import LagerError
 
 DISCOVERY_HEADER = 'X-Gateway-Auth-Url'
+# Pinned bearer token, supplied by whoever runs the command (contract §6.1).
+PINNED_TOKEN_ENV = 'LAGER_GATEWAY_TOKEN'
 # Public troubleshooting page linked from every gateway auth error.
 ACCESS_DOCS_URL = 'https://docs.lagerdata.com/source/reference/cli/login'
 # Refresh the access token when it expires within this many seconds.
 EXPIRY_MARGIN_SECONDS = 60
 AUTH_SERVER_TIMEOUT = 10
+# How long a command waits on exit for a refresh that is still in flight. Long
+# enough for a server that is answering to finish rotating the cookie, short
+# enough that a wedged one does not hold the command open.
+REFRESH_DRAIN_SECONDS = 2.0
+
+# Serializes every read-modify-write of the store and every refresh, so a
+# command that contacts boxes concurrently (`lager boxes`) cannot interleave
+# them. Two things would otherwise break:
+#
+#   - Lost writes. Each mutator loads the whole store, edits it, and writes it
+#     back; two threads doing that concurrently silently drop one edit.
+#   - A burned session. The auth server rotates the refresh token on every
+#     successful refresh, so N threads refreshing the same near-expiry token
+#     spend the cookie N times. One wins, the rest rotate it out from under
+#     the winner, and the user is logged out by the very command they ran.
+#
+# Reentrant because the refresh path saves the rotated session while holding
+# it. Process-local only: it does not coordinate with a second `lager`
+# process, which `_save_store`'s atomic replace covers instead.
+_store_lock = threading.RLock()
+
+# One lock per auth-server URL, held across the refresh round trip -- the part
+# that talks to the network. `_store_lock` covers the store and is taken
+# underneath this one by `save_login`, never the other way round, so the two
+# cannot deadlock.
+#
+# Splitting them is what stops a slow auth server from stalling unrelated work.
+# `_store_lock` used to span the refresh, so one unreachable server blocked
+# every other thread's store access for the whole of AUTH_SERVER_TIMEOUT --
+# including threads resolving a different server, and threads recording a
+# discovery for a box that needs no refresh at all.
+_refresh_locks = {}
+_refresh_locks_guard = threading.Lock()
+
+# Refreshes that already failed in this process, keyed by (store, URL). A
+# failed refresh writes nothing, so without this the next caller behind the
+# same server starts the same doomed round trip: `lager boxes` on a fleet
+# behind one unreachable server paid the full budget once per box. One
+# process, one timeout per server. Not persisted -- the next command retries.
+#
+# Keyed by store as well as URL because the store is the session's identity:
+# point LAGER_GATEWAY_AUTH_FILE somewhere else and the credentials are
+# different ones, so what failed for the old store says nothing about the new
+# one. That also stops the memo outliving a test, which is the only way a
+# process here ever changes stores -- without it, one test's dead server
+# silently suppressed the next test's refresh.
+_refresh_failed = set()
+
+
+def _failed_key(url):
+    return (str(_store_path()), url)
+
+
+def _refresh_lock_for(url):
+    """The refresh lock for one auth server, created on first use."""
+    with _refresh_locks_guard:
+        lock = _refresh_locks.get(url)
+        if lock is None:
+            lock = _refresh_locks[url] = threading.Lock()
+        return lock
+
+
+def wait_for_refreshes(timeout=REFRESH_DRAIN_SECONDS):
+    """Wait for in-flight refreshes to finish. True if all of them did.
+
+    The auth server rotates the refresh cookie before `save_login` records
+    the rotation, so a process that exits inside that window sends the old
+    cookie next time, gets `session rejected`, and makes the user run
+    `lager login` again. A command that fans out and then returns without
+    joining its workers drains here first, bounded so that a server which
+    never answers cannot hold the command open.
+    """
+    deadline = time.monotonic() + timeout
+    with _refresh_locks_guard:
+        locks = list(_refresh_locks.values())
+    for lock in locks:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        if not lock.acquire(timeout=remaining):
+            return False
+        lock.release()
+    return True
+
+
+def pinned_token():
+    """The explicitly supplied bearer token, or None.
+
+    Whitespace-only counts as unset. ``LAGER_GATEWAY_TOKEN: ${{ secrets.X }}``
+    expands to the empty string when the secret is missing, and sending
+    ``Authorization: Bearer `` for that would answer a missing secret with a
+    401 from the gateway instead of the plain no-credential path.
+    """
+    return (os.environ.get(PINNED_TOKEN_ENV) or '').strip() or None
 
 
 def _store_path():
@@ -54,18 +159,50 @@ def _store_path():
 
 
 def _load_store():
+    """The parsed store, or {} when it is unreadable or is not an object.
+
+    Every caller indexes the result straight away, so anything that is not a
+    dict has to read as "no session" rather than raise. Two cases reached
+    past the narrower FileNotFoundError/JSONDecodeError pair: a store the
+    user cannot read (PermissionError, or a directory where the file
+    belongs), and a hand-edited store holding a JSON array or string, which
+    raises AttributeError from the caller's own `.get`. Both arrived as a
+    traceback printed over the live `lager boxes` table.
+
+    A failed read writes nothing back, so reading it as empty costs a login
+    at worst and never destroys a stored session.
+    """
     try:
         with open(_store_path(), 'r') as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
+            store = json.load(f)
+    except (OSError, ValueError):
         return {}
+    return store if isinstance(store, dict) else {}
 
 
 def _save_store(store):
+    """Write the store atomically, so no reader ever sees a partial file.
+
+    Writing in place would truncate first, leaving a window where a
+    concurrent reader (another thread, or a second `lager` process) parses an
+    empty or half-written file as "no session" and re-prompts for a login the
+    user already has. The temp file is created mode 0600 before it holds a
+    token, never 0644-then-chmod.
+    """
     path = _store_path()
-    with open(path, 'w') as f:
-        json.dump(store, f, indent=2)
-    os.chmod(path, 0o600)
+    tmp = path.with_name(f'{path.name}.{os.getpid()}.tmp')
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, 'w') as f:
+            json.dump(store, f, indent=2)
+        # Only publish a fully written file.
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -73,11 +210,17 @@ def _save_store(store):
 # ---------------------------------------------------------------------------
 
 def record_box_auth_server(box_ip, url):
-    store = _load_store()
-    boxes = store.setdefault('boxes', {})
-    if boxes.get(box_ip) != url:
-        boxes[box_ip] = url
-        _save_store(store)
+    # A pinned token needs no mapping: it goes on every request, so there is
+    # nothing to learn here and nothing to look up later. Writing anyway
+    # would leave a store behind on a runner that outlives the job.
+    if pinned_token():
+        return
+    with _store_lock:
+        store = _load_store()
+        boxes = store.setdefault('boxes', {})
+        if boxes.get(box_ip) != url:
+            boxes[box_ip] = url
+            _save_store(store)
 
 
 def auth_server_for_box(box_ip):
@@ -123,32 +266,40 @@ def _refresh_margin(access_token):
 def save_login(url, access_token, cookies):
     """Store a session: the bearer token plus whatever cookies the auth
     server set at login (typically an httpOnly refresh token)."""
-    store = _load_store()
-    store.setdefault('authServers', {})[url] = {
-        'accessToken': access_token,
-        'cookies': dict(cookies or {}),
-    }
-    _save_store(store)
+    with _store_lock:
+        store = _load_store()
+        store.setdefault('authServers', {})[url] = {
+            'accessToken': access_token,
+            'cookies': dict(cookies or {}),
+        }
+        _save_store(store)
 
 
 def clear_login(url=None):
     """Forget stored tokens for one auth server, or all of them."""
-    store = _load_store()
-    if url is None:
-        store.pop('authServers', None)
-    else:
-        store.get('authServers', {}).pop(url, None)
-    _save_store(store)
+    with _store_lock:
+        store = _load_store()
+        if url is None:
+            store.pop('authServers', None)
+        else:
+            store.get('authServers', {}).pop(url, None)
+        _save_store(store)
 
 
 def _refresh_access_token(url, entry):
     """Ask the auth server for a fresh access token, or return None.
 
-    Retries once, but ONLY when the request never reached the server
-    (connection error): the server rotates the refresh token on every
-    successful refresh, so replaying the request after an ambiguous
-    failure (e.g. a read timeout) could trip the server's replay
-    detection and burn the whole session.
+    Retries once, but ONLY when the request never reached the server and
+    failed fast: the server rotates the refresh token on every successful
+    refresh, so replaying the request after an ambiguous failure (e.g. a
+    read timeout) risks tripping the server's replay detection and burning
+    the whole session.
+
+    A connect timeout is excluded even though it never reached the server.
+    It is a ConnectionError by inheritance, so the retry used to catch it
+    and spend a second AUTH_SERVER_TIMEOUT on a server that had already
+    failed to answer one SYN. The caller waited twice as long for the same
+    answer, and a fleet listing paid that doubled cost once per box.
     """
     cookies = entry.get('cookies') or {}
     if not cookies:
@@ -162,6 +313,8 @@ def _refresh_access_token(url, entry):
                 timeout=AUTH_SERVER_TIMEOUT,
             )
             break
+        except requests.ConnectTimeout:
+            return None
         except requests.ConnectionError:
             continue
         except requests.RequestException:
@@ -180,35 +333,89 @@ def _refresh_access_token(url, entry):
     return access_token
 
 
-def access_token_for(url):
+def access_token_for(url, *, allow_refresh=True):
     """Stored access token for an auth server, refreshed if near expiry.
+
+    A pinned token wins over any stored session and is returned as-is: it
+    is deliberately not a JWT in the general case, so there is no ``exp`` to
+    read and no refresh credential to spend.
 
     A failed refresh is not immediately fatal: if the stored token has not
     actually expired, return it anyway and let the gateway judge it — a
     transient auth-server error should not fail a command whose token is
     still valid.
+
+    Refreshing is single-flight per auth server: the still-valid case reads
+    the store without taking any lock, and only a caller that intends to
+    spend the refresh cookie serializes, on that URL's lock alone. Whoever
+    waited re-reads the store first, so N threads needing a refresh produce
+    one round trip and one rotation, not N. Two servers refresh in parallel,
+    and neither blocks a thread that only wants to read or record.
+
+    `allow_refresh=False` returns the stored token without ever contacting
+    the server, even when it is inside its refresh margin. A worker thread
+    that can be abandoned at a deadline passes it: the caller that owns the
+    fan-out has already refreshed, and a rotation left half-finished by an
+    abandoned worker is what loses the session.
     """
+    pinned = pinned_token()
+    if pinned:
+        return pinned
+
+    def _usable(entry, *, margin):
+        """The entry's token if it is good for `margin` more seconds."""
+        token = entry.get('accessToken') if entry else None
+        if not token:
+            return None
+        horizon = time.time() + (_refresh_margin(token) if margin else 0)
+        return token if _token_expires_at(token) > horizon else None
+
     entry = _load_store().get('authServers', {}).get(url)
     if not entry:
         return None
-    access_token = entry.get('accessToken')
-    now = time.time()
-    if access_token and _token_expires_at(access_token) > now + _refresh_margin(access_token):
-        return access_token
-    refreshed = _refresh_access_token(url, entry)
-    if refreshed:
-        return refreshed
-    if access_token and _token_expires_at(access_token) > now:
-        return access_token
-    return None
+    fresh = _usable(entry, margin=True)
+    if fresh:
+        return fresh
+    # An unexpired token still beats no token: the gateway is the judge, and a
+    # caller that declined to refresh, or a server already known to be down,
+    # has no reason to send nothing instead.
+    if not allow_refresh or _failed_key(url) in _refresh_failed:
+        return _usable(entry, margin=False)
+
+    with _refresh_lock_for(url):
+        # Re-read: another thread may have refreshed while we waited, in
+        # which case its token is already in the store and spending our
+        # (now superseded) cookie would rotate the session out from under it.
+        entry = _load_store().get('authServers', {}).get(url) or {}
+        fresh = _usable(entry, margin=True)
+        if fresh:
+            return fresh
+        if _failed_key(url) in _refresh_failed:
+            return _usable(entry, margin=False)
+        refreshed = _refresh_access_token(url, entry)
+        if refreshed:
+            return refreshed
+        _refresh_failed.add(_failed_key(url))
+        return _usable(entry, margin=False)
 
 
-def auth_headers_for_box(box_ip):
-    """Authorization header for a box known to be gated, else {}."""
+def auth_headers_for_box(box_ip, *, allow_refresh=True):
+    """Authorization header for a box known to be gated, else {}.
+
+    A pinned token consults neither the store nor the box→auth-server map:
+    it applies to every box, which is what makes the first request to a box
+    nobody has ever contacted carry it (contract §6.2).
+
+    `allow_refresh` is handed straight to `access_token_for`; see there for
+    when a caller passes False.
+    """
+    pinned = pinned_token()
+    if pinned:
+        return {'Authorization': f'Bearer {pinned}'}
     url = auth_server_for_box(box_ip)
     if not url:
         return {}
-    token = access_token_for(url)
+    token = access_token_for(url, allow_refresh=allow_refresh)
     if not token:
         return {}
     return {'Authorization': f'Bearer {token}'}
@@ -316,6 +523,31 @@ def handle_gateway_denial(response, box_ip):
     Lager boxes (and ordinary application 401/403s) are never affected.
     """
     url = response.headers[DISCOVERY_HEADER]
+
+    # A pinned token is the whole credential: no stored session to fall back
+    # on, no refresh to try, and nothing to learn from the discovery header
+    # because the token already goes to every box. So record nothing, retry
+    # nothing, and name the server that refused it — `lager login` is not the
+    # fix when the caller supplied a credential and the gateway said no.
+    # A 503 falls through: it describes the gateway, not the credential.
+    pinned = pinned_token()
+    if pinned and response.status_code == 401:
+        raise LagerError(
+            f'Box {box_ip} refused the token in {PINNED_TOKEN_ENV}.',
+            cause=f'The auth server at {url} does not accept it. '
+                  'The token expired, or someone revoked it.',
+            fixes=[f'Get a new token from {url}, then set {PINNED_TOKEN_ENV} to it.',
+                   f'Details: {ACCESS_DOCS_URL}'],
+        )
+    if pinned and response.status_code == 403:
+        raise LagerError(
+            f'The token in {PINNED_TOKEN_ENV} has no access to box {box_ip}.',
+            cause=f'The auth server at {url} accepts the token. '
+                  'Its account has no access grant for this box.',
+            fixes=['Ask an org admin to grant that account access to this box.',
+                   f'Details: {ACCESS_DOCS_URL}'],
+        )
+
     record_box_auth_server(box_ip, url)
 
     if response.status_code == 401:
@@ -371,6 +603,10 @@ def denial_label(response):
         return 'no access'
     if response.status_code == 503:
         return 'auth server down'
+    if pinned_token():
+        # No session exists on this path, so 'session rejected' would name a
+        # thing the caller never had.
+        return 'token rejected'
     if 'Authorization' in getattr(response.request, 'headers', {}):
         return 'session rejected'
     return 'sign-in required'

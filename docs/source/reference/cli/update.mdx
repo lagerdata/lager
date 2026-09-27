@@ -45,14 +45,24 @@ tag, an unreachable registry, or a mismatched image.
 <Note>
 For `lager update`, pulling is **off by default**. It changes how the most
 load-bearing command in the fleet obtains the code it runs, so it soaks on
-Lager's own boxes first. Pass `--pull` to opt a single run in, or set
-`LAGER_BOX_IMAGE_PULL=1` to opt in a whole shell.
+Lager's own boxes first. Pass `--pull` to opt a single run in. To opt in a whole
+shell, set `LAGER_BOX_IMAGE_PULL` to `1`, `true` or `yes` (in any letter case).
+Any other value leaves the pull off.
 
 This differs from [`lager install`](/source/reference/cli/install), which already
 uses a pre-built image for a release tag by default. `--no-pull` works the same
 way on both. It is the switch that routes a fleet around a bad published image,
 and it needs no CLI release.
 </Note>
+
+More rules for the update pull:
+
+- `--force` never pulls. It always builds the image on the box.
+- `--pull` together with `--no-pull` is a usage error.
+- The pull runs before the update stops the container, so the box keeps serving
+  during the download. A miss leaves the box on its previous version.
+- The update records the image source in `/etc/lager/image-source`:
+  `ghcr:<digest>` for a pulled image, or `local:<build-hash>` for a build.
 
 ## Version pinning
 
@@ -135,23 +145,63 @@ loop it drove. A plain shell loop continues to the next box when one fails, so a
 unreachable box does not stop the run.
 </Note>
 
+### Check Mode
+
+`--check` changes nothing on the box. It prints a preview:
+
+```text
+Update preview
+  Box:        my-lager-box (100.64.1.42)
+  Current:    0.46.2
+  Target:     main
+  Code:       ...
+  Deps:       ...
+  Container:  ...
+  Host CLI:   will upgrade (0.46.2 -> 0.47.0)
+  Estimated:  ...
+```
+
+`Current:` comes from `/etc/lager/version`. The preview does not show the
+deployed ref. Use `lager hello` for the ref.
+
+| Exit code | Meaning |
+|-----------|---------|
+| `0` | The box is in sync. Nothing to do |
+| `1` | The update changes something, or the check failed |
+| `2` | No SSH key is confirmed for the box, or git could not compare the box with the target |
+
+Exit `1` does not always mean that the box is behind. The check also exits `1`
+when it fails. Examples are an SSH timeout, a failed probe of the box state, and
+a box directory that is not a git checkout. A failed `git fetch` also gives `1`,
+and that includes a commit SHA that the box cannot fetch. A box locked by another
+holder also gives `1`. Read the output before you treat `1` as "update needed".
+
 ---
 
 ## Update Process
 
 The update command performs the following steps (shown in progress bar):
 
-1. **SSH Connection** - Establish secure connection to Lager Box
-2. **Git Repository Check** - Validate lager repository exists
-3. **Git Pull** - Pull latest code from specified branch
-4. **Udev Rules** - Install USB instrument access rules
-5. **Docker Build** - Build updated containers (no-cache)
-6. **Firewall Setup** - Configure UFW if needed
-7. **Customer Binaries** - Set up custom binaries directory
-8. **J-Link Check** - Verify debug probe software (optional)
-9. **Version Update** - Record version in `/etc/lager/version`
-10. **Container Restart** - Start updated containers
-11. **Status Verification** - Confirm that the containers are up
+1. **SSH Check** - Confirm key-based SSH access to the Lager Box
+2. **Inspect and Fetch** - Read the box state, then fetch the target version
+3. **Pull Updates** - Check out the target version on the box
+4. **Host Setup** - Check the udev rules, the modprobe blacklists, the sudoers files and the host CLI
+5. **Image Pull** - With `--pull` and a release tag, pull the pre-built image
+6. **Container Stop and Build** - Stop the running container, then build the image on the box if the update did not pull one
+7. **Directories** - Set up the directories that the container mounts, such as the custom binaries directory
+8. **Version Update** - Record the version in `/etc/lager/version` and the deployed ref in `/etc/lager/ref`
+9. **Container Start** - Start the new container
+10. **Status Verification** - Wait for the services, then confirm that they answer
+11. **J-Link** - Install J-Link if the box does not have it (a failure here is not fatal)
+12. **Host CLI** - Reinstall the `lager` CLI in `~/.lager_venv` on the box host, because the code changed
+
+A host CLI failure is not fatal. The update prints a warning, and the final
+summary adds `Host CLI on the box host was NOT updated: ...`. The box host needs
+python3 3.10 or newer, or the update skips this step with a warning. A box that
+is already up to date still gets the host CLI if its copy is absent, broken or
+older.
+
+`lager update` does not change the host firewall.
 
 ---
 
@@ -166,35 +216,56 @@ in the `version` column:
 lager boxes
 ```
 
+The box also records the deployed ref in `/etc/lager/ref`, as
+`<ref>@<short-sha>` (for example `main@85c1b64`). If the update cannot read the
+commit, the file holds the bare `<ref>`. `lager update` writes the file on every
+successful run, including a run where the box is already up to date.
+`lager install` writes it too.
+
+The version number alone cannot tell a branch deploy from a release deploy, so
+two commands show the ref:
+
+- `lager hello` shows the full ref. A ref that is not a release tag adds
+  `-- not a release build`.
+- `lager boxes` shows `<version> (<ref-name>)` for a ref that is not a release
+  tag.
+
+A box last deployed by a CLI older than 0.43.0 has no ref file.
+
 ---
 
 ## SSH Key Authentication
 
-The update command automatically detects SSH key configuration:
+The update command checks for a working SSH key before it changes anything:
 
-- **With SSH keys**: Updates proceed without password prompts
-- **Without SSH keys**: Prompts for password (interactive mode)
+- **With a working key**: The update runs without password prompts.
+- **Without a working key**: The update offers to set up the `lager_box` key. That setup asks for the box password once.
+- **If the key setup fails**: The update asks whether to continue with password authentication.
+- **With `--yes`**: The update accepts both prompts.
+- **With `--check`**: The update does not set up a key. It exits `2` when no key works.
 
-To set up SSH keys:
+To set up the key as a separate step:
 
 ```bash
-ssh-copy-id lagerdata@<box-ip>
+lager ssh-setup --box my-lager-box
 ```
 
 ---
 
-## Firewall Auto-Configuration
+## Firewall
 
-If UFW is not configured, the update command will:
-
-1. Detect missing firewall rules
-2. Offer to install and configure UFW
-3. Apply secure defaults (VPN-only access to Lager ports)
+`lager update` does not install, change or run the host firewall. `lager install`
+configures it. To run the firewall script again, run it on the box:
 
 ```bash
-# Manual firewall configuration
-cli/deployment/security/secure_box_firewall.sh <box-ip>
+ssh -t <user>@<box-ip> 'sudo /usr/local/lib/lager/secure_box_firewall.sh'
 ```
+
+The script resets ufw before it writes its rules, so it removes rules that you
+added by hand. On the default `lagernet` network, these rules do not filter the
+ports that the container publishes. See
+[`lager install`](/source/reference/cli/install) and the Security Model section
+of [SECURITY.md](https://github.com/lagerdata/lager/blob/main/SECURITY.md#security-model).
 
 ---
 
@@ -237,17 +308,17 @@ ssh lagerdata@<box-ip> 'cd ~/box && git remote set-url origin https://github.com
 # SSH in and check Docker status
 ssh lagerdata@<box-ip>
 docker ps -a
-docker logs controller
+docker logs lager
 ```
 
 ### Firewall Issues
 
 ```bash
-# Check firewall status
-ssh lagerdata@<box-ip> 'sudo ufw status verbose'
+# Check firewall status (sudo can prompt, so allocate a terminal)
+ssh -t lagerdata@<box-ip> 'sudo ufw status verbose'
 
-# Re-run firewall setup
-cli/deployment/security/secure_box_firewall.sh <box-ip>
+# Re-run firewall setup on the box
+ssh -t lagerdata@<box-ip> 'sudo /usr/local/lib/lager/secure_box_firewall.sh'
 ```
 
 ---
@@ -255,7 +326,7 @@ cli/deployment/security/secure_box_firewall.sh <box-ip>
 ## Notes
 
 - Progress bar is disabled when `--verbose` is used
-- Container builds use `--no-cache` to ensure fresh builds
+- Container builds use the BuildKit layer cache. `--force` removes the cached image and the cargo/npm volumes first
 - Version defaults to `main` if not specified
 - Update automatically verifies container health after restart
 - `--check` reports what will change without modifying the box, so it is the safe

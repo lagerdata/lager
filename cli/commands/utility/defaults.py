@@ -72,7 +72,10 @@ def defaults(ctx):
 @click.option('--thermocouple-net', required=False, help='Set default thermocouple net name')
 @click.option('--uart-net', required=False, help='Set default UART net name')
 @click.option('--arm-net', required=False, help='Set default robotic arm net name')
-@click.option('--user', required=False, help='Set default username for box locking')
+@click.option('--user', required=False,
+              help='Set the username recorded on box locks. To have a lock that '
+                   'another tool records under your email recognized as yours, '
+                   'set this to that email.')
 def add(box, serial_port, supply_net, battery_net, solar_net, scope_net, logic_net,
         adc_net, dac_net, gpio_net, debug_net, eload_net, usb_net, webcam_net,
         watt_meter_net, thermocouple_net, uart_net, arm_net, user):
@@ -125,7 +128,7 @@ def add(box, serial_port, supply_net, battery_net, solar_net, scope_net, logic_n
             else:
                 click.echo("\nNo boxes are currently saved.", err=True)
                 click.echo("To add a new box:", err=True)
-            click.echo(f"  lager boxes add --name {box} --ip [TAILSCALE_IP]", err=True)
+            click.echo(f"  lager boxes add --name {box} --ip [TAILSCALE_IP] --user [USERNAME]", err=True)
             click.echo("\nTo find your Tailscale IP, run: tailscale status", err=True)
             raise click.Abort()
 

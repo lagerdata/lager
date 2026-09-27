@@ -1,0 +1,154 @@
+---
+title: USB DFU
+description: 不用调试探针，通过 USB DFU 烧录设备
+---
+
+用 Box 上的 `dfu-util` 通过 USB DFU 烧录固件。对于没有接调试探针的被测设备，或者本身提供 DFU 引导程序的设备，这就是烧录途径。
+
+需要 Box 软件 0.33.0 或更高版本，并且 Box 上已安装 `dfu-util`。
+
+## 句柄
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let dfu = lager.dfu();
+```
+
+DFU 是 **Box 级**能力，不是一个 Net。它没有 Net 名称，也没有 `name()`。
+
+## 方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `list()` | 枚举 Box USB 总线上支持 DFU 的设备 |
+| `download()` | 上传固件并烧录它 |
+| `detach()` | 让设备脱离 DFU 模式 |
+
+## 类型
+
+### `DfuOptions`
+
+```rust
+pub struct DfuOptions {
+    pub vid_pid: Option<String>,        // "0483:df11"
+    pub serial: Option<String>,
+    pub alt: Option<u32>,               // alternate setting
+    pub dfuse_address: Option<String>,  // "0x08000000:leave"
+    pub reset: bool,                    // reset after download
+}
+```
+
+`Default` 会选中总线上唯一的那台 DFU 设备。接了不止一台时，`dfu-util` 会因为无法确定而报错，而不是靠猜，所以请指名一台。
+
+### `DfuDevice`
+
+```rust
+pub struct DfuDevice {
+    pub mode: String,             // "DFU" or "Runtime"
+    pub vid: String,
+    pub pid: String,
+    pub devnum: Option<i64>,
+    pub cfg: Option<i64>,
+    pub intf: Option<i64>,
+    pub alt: Option<i64>,
+    pub name: Option<String>,     // e.g. "@Internal Flash /0x08000000/..."
+    pub serial: Option<String>,
+    pub path: Option<String>,     // hub port path, e.g. "1-1.4"
+}
+```
+
+对于已经进入引导程序的设备，`mode` 是 `"DFU"`；对于正在运行应用、同时声明具备 DFU 能力的设备，则是 `"Runtime"`。
+
+### `DfuOutput`
+
+```rust
+pub struct DfuOutput {
+    pub exit_code: Option<i64>,
+    pub stdout: String,
+    pub stderr: String,
+}
+```
+
+## 方法参考
+
+### `list() -> Result<Vec<DfuDevice>>`
+
+枚举支持 DFU 的设备，由 `dfu-util -l` 的输出解析成带类型的记录。
+
+```rust
+for d in dfu.list()? {
+    println!("{}:{} ({}) {:?}", d.vid, d.pid, d.mode, d.name);
+}
+```
+
+### `download(firmware: &[u8], opts: &DfuOptions) -> Result<DfuOutput>`
+
+把固件上传到 Box 并烧录。这些字节以 base64 编码放进请求，因此不需要先在 Box 的文件系统上准备任何东西。
+
+```rust
+use lager::DfuOptions;
+
+let image = std::fs::read("target/app.bin").expect("firmware image");
+let out = dfu.download(&image, &DfuOptions {
+    vid_pid: Some("0483:df11".into()),
+    dfuse_address: Some("0x08000000:leave".into()),
+    reset: true,
+    ..Default::default()
+})?;
+assert_eq!(out.exit_code, Some(0), "{}", out.stderr);
+```
+
+<Note>
+  STM32 的系统引导程序需要 `dfuse_address`。没有它，`dfu-util` 就没有可写入的基地址，下载会失败。
+</Note>
+
+### `detach(opts: &DfuOptions) -> Result<DfuOutput>`
+
+让设备脱离 DFU 模式，从而离开引导程序并运行应用。
+
+## 示例
+
+### 给没有调试探针的被测设备烧录
+
+```rust
+use lager::{DfuOptions, LagerBox};
+
+let lager = LagerBox::from_env()?;
+let dfu = lager.dfu();
+
+// The DUT must already be in its bootloader.
+let devices = dfu.list()?;
+let target = devices.iter().find(|d| d.mode == "DFU")
+    .expect("no device in DFU mode; hold BOOT0 and power-cycle");
+println!("flashing {}:{}", target.vid, target.pid);
+
+let image = std::fs::read("target/app.bin").expect("firmware image");
+let out = dfu.download(&image, &DfuOptions {
+    vid_pid: Some(format!("{}:{}", target.vid, target.pid)),
+    dfuse_address: Some("0x08000000:leave".into()),
+    reset: true,
+    ..Default::default()
+})?;
+assert_eq!(out.exit_code, Some(0), "dfu-util failed:\n{}", out.stderr);
+```
+
+### 通过给集线器端口断电重启来进入 DFU
+
+```rust
+let port = lager.usb("usb3");
+port.disable()?;
+std::thread::sleep(std::time::Duration::from_millis(500));
+port.enable()?;
+std::thread::sleep(std::time::Duration::from_secs(2));
+
+assert!(dfu.list()?.iter().any(|d| d.mode == "DFU"), "did not enter DFU");
+```
+
+## 说明
+
+- **`dfu-util` 把进度写到 stderr**，而不是 stdout。一次成功的下载同样会填满 `DfuOutput::stderr`；请检查 `exit_code`，而不是看 stderr 是否为空。
+- 没装 `dfu-util` 的 Box 会用 `Error::Box` 和 HTTP 500 回应，并携带 `dfu-util is not installed on this box. Install it with 'lager box-config apt add dfu-util'`。这里有意**不是** `UnsupportedByBox` —— 路由是存在的，只是工具没装。
+- 早于 0.33.0 的 Box 根本不提供这条路由，那种情况**才是** `Error::UnsupportedByBox`。
+- 客户端给下载留了 180 秒，高于 Box 自己给 `dfu-util` 的 120 秒预算，以便为上传和排队留出余量。

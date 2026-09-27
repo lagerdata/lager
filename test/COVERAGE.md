@@ -17,20 +17,25 @@ with a real description.
 
 ## What runs in CI
 
-Two workflows run on `pull_request`: `unit-tests.yml` and `static-checks.yml`. The rest are push-,
-schedule-, or dispatch-triggered and need the bench.
+Five workflows run on `pull_request`: `unit-tests.yml`, `static-checks.yml`, `rust-checks.yml`,
+`packaging.yml` and `xplat-smoke.yml`. The others run on a schedule, through `workflow_call`, on a
+tag push, or on manual dispatch.
 
 | Workflow | Trigger | Runner | Gates a PR |
 |---|---|---|:---:|
 | `unit-tests.yml` | `pull_request`, push to `main`, dispatch | GitHub-hosted `ubuntu-latest` | **Yes** |
-| `static-checks.yml` | `pull_request`, push to `main`, dispatch | GitHub-hosted `ubuntu-latest` | Reports (see below) |
-| `rust-checks.yml` | `pull_request`, push to `main`, dispatch -- **path-filtered** to `box/oscilloscope-daemon/**` | GitHub-hosted `ubuntu-latest` | Reports (see below) |
-| `integration-tests.yml` | push to `main`, `workflow_call`, dispatch | self-hosted `lager-bench` | No |
+| `static-checks.yml` | `pull_request`, push to `main`, dispatch | GitHub-hosted `ubuntu-latest` | **Yes** (the `static-checks` job) |
+| `rust-checks.yml` | `pull_request`, dispatch; push to `main` **path-filtered** to `box/oscilloscope-daemon/**` | GitHub-hosted `ubuntu-latest` | **Yes** |
+| `packaging.yml` | `pull_request`, push to `main`, dispatch | GitHub-hosted `ubuntu-latest` | **Yes** |
+| `xplat-smoke.yml` | `pull_request`, push to `main`, dispatch | GitHub-hosted `macos-latest`, `windows-latest` | **Yes** |
+| `integration-tests.yml` | `workflow_call`, dispatch | self-hosted `lager-bench` | No |
 | `update-regression.yml` (Bench: Box Lifecycle) | `workflow_call`, dispatch | self-hosted `lager-bench` | No |
 | `nightly-bench.yml` | nightly schedule, dispatch | orchestrator | No |
+| `bench-extended.yml` | weekly schedule, dispatch | self-hosted `lager-bench` | No |
+| `bench-watchdog.yml` | schedule every 6 hours, dispatch | GitHub-hosted `ubuntu-latest` | No |
 
-`nightly-bench.yml` is the only workflow with a schedule. It reaches the other two bench
-workflows through `workflow_call`, so neither of those carries a `schedule` trigger of its own.
+`nightly-bench.yml` reaches the other two bench workflows above it through `workflow_call`, so
+neither of those carries a `schedule` trigger of its own.
 
 A job only *blocks* a merge once its status context is listed in branch ruleset 14535039.
 Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `compat (...)` jobs,
@@ -41,18 +46,17 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1916 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 2222 |
+| `unit (cli)` | `test/unit/cli/` | 2719 (+2 xfailed) |
+| `unit (box)` | `test/unit/box/` | 3514 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
-| `unit (mcp)` | `test/mcp/unit/` | 181 |
-| `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 183 (+1 skipped) |
-| | **Total gated** | **4696** |
+| `unit (mcp)` | `test/mcp/unit/` | 405 |
+| `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 82 (+1 skipped) |
+| | **Total gated** | **6914** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
-name `lager`. `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never
-runs, which skips the heavy box deps. `test/unit/box/conftest.py` imports the real package
-instead. The two cannot share a process.
+name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
+A second suite in the same process inherits that state instead of building its own.
 
 `unit-tests.yml` also runs a **`compat (pyX.Y)`** job covering the other versions `cli/setup.py`
 advertises. It runs all six suites sequentially, one process per version.
@@ -77,18 +81,18 @@ anywhere in the tree.
 
 | Check | Scope | Baseline when added |
 |---|---|---|
-| `bash -n` | 56 shell scripts under `test/ tools/ box/ cli/deployment/` | clean |
-| `shellcheck -S warning`, excluding `SC2034,SC2320,SC2155,SC2164,SC2046` | the 45 under `test/ tools/` only -- `box/` and `cli/deployment/` are syntax-checked but not linted | clean. Pinned to `shellcheck-py==0.11.0.1`, not the runner image's binary. See below for what the exclusions cost. |
+| `bash -n` | every shell script under `test/ tools/ box/ cli/deployment/` | clean |
+| `shellcheck -S warning`, excluding `SC2034,SC2320,SC2155,SC2164,SC2046` | the same scripts as `bash -n` (`box/` and `cli/deployment/` were added after `test/ tools/`) | clean. Pinned to `shellcheck-py==0.11.0.1`, not the runner image's binary. See below for what the exclusions cost. |
 | `compileall` | every `.py` in `cli/ box/ test/ tools/` | clean |
 | `pytest --collect-only` | `test/mcp/integration/` | 8 tests collect |
-| `ruff --select E9,F63,F7,F82` | `cli/ box/ test/ tools/`, vendored excluded | clean (default ruleset would be ~6300) |
+| `ruff --select E9,F63,F7,F82` | `cli/ box/ test/ tools/` | clean (default ruleset would be ~6300) |
 | `coverage` | all six unit suites | ~38%, reporting only, no threshold |
 
 ### Rust: `rust-checks.yml`
 
 `box/oscilloscope-daemon` is Rust, and until this workflow **no job in this repo referenced
 cargo**. That crate is not a side project. `docker/start-services.sh` launches it on box boot
-whenever the binary is present, and it drives the PicoScope through the vendor SDK's FFI --
+whenever the binary is present. It drives the PicoScope through the vendor SDK's FFI, so it is
 runtime code on customer hardware.
 
 It binds loopback only (`127.0.0.1:8085` plus a Unix socket) and is reached from outside
@@ -121,15 +125,15 @@ panics, and nothing downstream is checked. The first run of this workflow failed
 (`wrapper.h:2:10: fatal error: 'ps2000.h' file not found`).
 
 The headers are deliberately **not** in this repo: PicoTech licenses them rather than selling
-them and limits redistribution, which a public repo cannot honour. `build.rs` looks for them in
-`picoscope/include/<family>/` at the repo root first (for a local unpack of the SDK) and falls
+them and limits redistribution, which a public repo cannot honour. `build.rs` looks for them first in
+`picoscope/include/<family>/` at the repo root, for a local unpack of the SDK. It then falls
 back to `/opt/picoscope/include/<family>/`, where the PicoTech packages install them. A checkout
-with neither fails the build with a message saying where to put them, rather than silently
-producing a daemon that cannot talk to any scope.
+with neither fails the build with a message that says where to put them. It does not build a
+daemon that cannot talk to any scope.
 
 The job installs `libps2000`, `libps2000a`, `libps3000a`, `libps4000a`, `libps5000a` and
-`libps6000a` from PicoTech's Debian repo -- the same one `build_daemon.sh` documents for setting
-up a box -- and asserts every header `build.rs` opens exists before continuing. All five
+`libps6000a` from PicoTech's Debian repo, which `build_daemon.sh` also uses to set up a box.
+It then asserts that every header `build.rs` opens is present. All five
 families are needed because the daemon generates a binding set per family, so one binary serves
 whichever driver a given box has. `libps6000a` is there for its headers alone: `libps3000a`'s
 `PicoDeviceStructs.h` includes `PicoConnectProbes.h`, which PicoTech ships under the 4000a and
@@ -168,11 +172,10 @@ OS.
 
 | Area | Size | Why not |
 |---|---|---|
-| `test/api/` | 83 scripts | Needs real hardware. The bench workflows invoke 10 by name; the other 72 execute nowhere -- though all are now syntax-checked. |
+| `test/api/` | 84 scripts | Needs real hardware. The bench workflows invoke 10 by name; the other 73 execute nowhere -- though all are now syntax-checked. |
 | `test/integration/` | 38 bash scripts | Needs a real box and instruments. **8 execute:** `communication/jlink_script.sh` nightly via `integration-tests.yml`, plus 7 weekly via `bench-extended.yml` -- 5 infrastructure suites (`deployment`, `devenv`, `nets`, `box_config`, `generic`) and 2 power suites (`power/supply.sh`, `power/battery.sh`). The other 30 are syntax-checked and shellchecked but never executed. |
 | `test/mcp/integration/` | 1 file | Needs two live boxes. Import-checked only. |
-| `test/manual/` | 2 bash scripts | Operator-driven. Syntax-checked only. |
-| `cli/tests/test_box_lager_imports.py` | 1 file | Excluded via `cli/tests/conftest.py`: it is a printed report with no `assert` statements, so under pytest its 16 functions pass unconditionally. Still useful run directly. |
+| `test/manual/` | 2 bash scripts, 1 Python report, 1 browser client | Operator-driven. The bash scripts are syntax-checked only. `box_lager_import_report.py` prints an import report and has no `assert` statements, so its name keeps pytest from collecting it. Run it directly. |
 
 Known gaps in the gate itself, in rough priority order:
 
@@ -347,7 +350,6 @@ Ranked by risk. These are `cli/` modules that no test in the PR gate exercises a
 | `cli/core/ssh_utils.py` | 203 | SSH invocation and argument building. |
 | `cli/core/net_group.py` | 200 | Net-scoped click group base class. |
 | `cli/context/core.py` | 160 | `LagerContext` construction. |
-| `cli/simple_hdlc.py` | 156 | Frame parser / state machine. |
 | `cli/update_check.py` | 138 | Background update-check thread. |
 | `cli/terminal/**` | ~800 | The whole interactive REPL. |
 
@@ -385,7 +387,7 @@ Five other param types (`EnvVarType`, `PortForwardType`, `MemoryAddressType`, `H
 | Module | Lines | Gated coverage | Gap |
 |---|---:|---|---|
 | `cli/commands/utility/update.py` | 2440 | 14 tests | Only version-ref resolution and the probe. Rollback, staging, service restart untested. |
-| `cli/gateway_auth.py` | 376 | 27 tests | Refresh path plus the `cli/tests/` suite. `handle_gateway_denial`, `gateway_response_hook`, `auth_headers_for_box` remain thin. |
+| `cli/gateway_auth.py` | 521 | 51 tests | Refresh path, the pinned-token path (`LAGER_GATEWAY_TOKEN`) and `test/unit/cli/test_gateway_auth.py`. `gateway_response_hook` remains thin. |
 | `cli/config.py` | 435 | 63 tests | Cache, the configparser round-trip and legacy-key migration, `read_lager_json`/`write_lager_json`, `expand_devenv_path` and `get_debug_script_for_net` are covered. `get_includes_from_config` and `_find_config_files` are not. |
 | `cli/commands/utility/install.py` | 575 | indirect | Only `install_wheel` is exercised. |
 | `cli/commands/utility/uninstall.py` | 837 | 13 tests | Spec parsing plus the teardown's lock lifecycle. The privileged sudo session, the `--all` extras and `--dry-run` inspection are untested. |
@@ -428,7 +430,7 @@ Five other param types (`EnvVarType`, `PortForwardType`, `MemoryAddressType`, `H
 
 ```
 test/
-├── api/                  # Python API tests (83 files, run on box via `lager python`)
+├── api/                  # Python API tests (84 files, run on box via `lager python`)
 │   ├── communication/    # 30 files: I2C, SPI, UART, BLE, BluFi, WiFi, debug
 │   ├── io/               # 17 files: ADC, DAC, GPIO, PWM, pin conflict, USB-202
 │   ├── peripherals/      #  9 files: scope, arm, webcam, rotation, actuate
@@ -448,28 +450,27 @@ test/
 ├── mcp/                  # MCP server tests (pytest)
 │   ├── unit/             # 11 files: mocked, no hardware -- GATED
 │   └── integration/      #  1 file: live hardware required
-├── unit/                 # Local unit tests (135 files) -- ALL GATED
-│   ├── box/              # 74 files: box-side Python unit tests
-│   ├── cli/              # 50 files: CLI Python unit tests
-│   ├── measurement/      #  4 files: Joulescope / PPK2 / watt unit tests
-│   ├── blufi/            #  2 files: BluFi protocol unit tests
-│   └── test_*.py         #  5 files: root-level unit tests
-├── manual/               #  2 bash scripts: operator-driven, not automated
+├── unit/                 # Local unit tests -- ALL GATED (file counts: the headings below)
+│   ├── box/              # box-side Python unit tests
+│   ├── cli/              # CLI Python unit tests
+│   ├── measurement/      # Joulescope / PPK2 / watt unit tests
+│   ├── blufi/            # BluFi protocol unit tests
+│   ├── tools/            # tests for the scripts in tools/
+│   └── test_*.py         # repo-wide guards, plus the DP821 settle helper
+├── manual/               # operator-driven, not automated: 2 bash scripts, 1 Python
+│                         # import report, and scope_daemon/ (how to drive the
+│                         # daemon by hand)
 ├── assets/               # Fixture data (note: assets/firmware/ holds only a README)
 └── framework/            # Test utilities
     ├── harness.sh        # Bash test framework (sourced by all 38 integration scripts)
     ├── colors.sh         # Bash color utilities
     ├── fixtures.py       # Pytest fixtures with auto-cleanup
     └── test_utils.py     # Python test helpers
-
-test/test_*.py            #  2 files: run by the `unit (root)` job
-cli/tests/                #  7 files: 6 pytest suites (GATED via `unit (cli)`),
-                          #           plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 194 files)
+### Local Unit Tests (`test/unit/` -- 261 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 106 files)
+#### Box Unit Tests (`test/unit/box/` -- 142 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -478,6 +479,8 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | File | What it tests |
 |------|---------------|
 | `test_acroname_driver.py` | Acroname USB hub driver: contention (bounded session hold, cross-process lock), latency (discovery cache, scan-free warm opens, cycle timing log), and exit cleanup (a parked handle is closed at interpreter shutdown, including through a real subprocess exit) |
+| `test_arm_driver.py` | Rotrics Dexarm driver against a scripted serial port: `set_acceleration` sends Marlin's P/T/R letters (the old P/T/T string set travel acceleration to the retract value), `move_to`/`move_relative` refuse an out-of-bounds target before any write, and also refuse firmware older than V2.1.4 (where Rotrics swapped X and Y) or firmware that reports no version, `go_home` returns on M1112's ok and times out without it, a move before homing raises `NotHomedError`, the firmware's M114 reply parses (including an `ok` that arrives before the position line), a silent arm fails a position read within three bounded attempts, and an `add-all` arm net opens the arm by the serial in its address |
+| `test_arm_hs_adapter.py` | Robot-arm hardware_service adapter: a serial error drops the cached port so the next command reopens it (hardware_service's own retry does not recognize pyserial errors), `position` retries once but motion never does, and a move wait past 25 s is refused before the port opens because it would outlive the service's 30 s call deadline |
 | `test_authorized_keys_sync.py` | `start_box.sh` authorized_keys marker-block rebuild (revocation, no duplicates, foreign keys preserved) and its single-instance lock |
 | `test_battery_model_authoring.py` | Battery model authoring (create/export of 2281S memory slots), against hardware-verified ground truth |
 | `test_bench_quiesce.py` | The quiesce registry that makes a starting job wait for the previous one's teardown, and the arithmetic tying its bounds to the reap they must cover |
@@ -486,21 +489,27 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_binaries_store.py` | `lager.binaries.store` plus the `:9000` `/binaries/*` and `/download-file` handlers |
 | `test_box_config.py` | box_config v1 schema validation rules and idempotency hash |
 | `test_box_config_addverb_idempotency.py` | mount-add/apt-add/udev-add upsert behavior for provisioning re-runs |
-| `test_box_config_cli.py` | `lager box-config` CLI: mount prep, readiness polling, rollback on bounce failure |
+| `test_box_config_cli.py` | `lager box-config` CLI: mount prep, readiness polling, rollback on bounce failure. Also the `network-mode` verbs and `apply`'s host-networking path: the pre-flight refusing before anything mutates, exit codes 0/3/1, the SSH fallback that keeps a stranded box recoverable, `--skip-restart` refusing a pending switch to host, and only `apply`'s bounce confirming that switch to the box |
 | `test_box_dut_cli.py` | `lager dut` CLI detached-list regression fix |
 | `test_box_http_server_capabilities.py` | /status capabilities block advertises netCommand based on route registration |
+| `test_box_image_publish.py` | What keeps a published box image cheap to pull. `box-image-publish.yml` keeps its layer cache in the registry, not in GitHub Actions, whose cache is scoped to the tag that wrote it so no release could read the last one's; its tag-resolution script is run for a tag push, a cache-only dispatch and a bad tag. `box.Dockerfile` pins its base image by digest and puts nothing but box source below the first source COPY, with a synthetic Dockerfile proving the scan catches a static step placed there. Dependabot moves the base pin, and only the pin: its config ignores minor and major updates of the `python` image, because no pull-request check builds the image, so a new interpreter passes CI and then fails to install the image's pins |
+| `test_box_image_notices.py` | The license notices the published box image carries. The list of vendor downloads is READ from `box.Dockerfile` (wget and curl URLs, source builds, pip installs from a repository, `cargo install`, rustup, `nrfutil install`, third-party apt repositories, vendor SDKs on PyPI), and each needs a row in `docker/licenses/THIRD_PARTY.md` whose pin still matches; an unpinned one must be recorded as unpinned. Synthetic extra downloads and a bumped pin prove the scan catches them. Also that the copies of `LICENSE` and `NOTICE` are byte-identical to the repository root, that the collector runs after every `pip install` and above the first source COPY, that the manifest makes no redistribution claim, and that no `image.licenses` label is asserted |
+| `test_collect_pip_licenses.py` | `docker/collect_pip_licenses.py`, which the image build runs to gather each Python distribution's notice files, against distributions made up in a temp directory: PEP 639 and legacy layouts, a missing RECORD, a license declared three ways, a field holding tabs or the whole license text. Output is byte-identical from run to run, a removed package leaves nothing behind, an unreadable file never fails the run, and the script imports only the standard library |
 | `test_box_metadata_endpoint.py` | `/box-metadata`: reading and writing the box's own description, and degrading to empty on a truncated file |
 | `test_box_level_command_handlers.py` | Box-level `POST /ble\|wifi\|blufi/command` handlers driving the box's own radios |
 | `test_breakpoint_pause.py` | `lager.pause()` interactive breakpoint: timeout handling and resume signaling |
-| `test_cleanup_watchdog.py` | Cleanup grace as an *idle* budget: a teardown making progress keeps its deadline pushed out, a wedged one is still cut off, and blocking on an instrument counts as progress |
+| `test_cleanup_watchdog.py` | Cleanup grace as an *idle* budget: a teardown making progress keeps its deadline pushed out, a wedged one is still cut off, and blocking on an instrument counts as progress. Each child says when it is ready, so that no test depends on how fast an interpreter starts; a child that is slow on purpose keeps a fixed sleep from coming back |
 | `test_custom_devices_assign.py` | `lager.devices.assign` and the `/custom-devices/*` handlers behind `lager nets assign` |
 | `test_custom_store.py` | Custom-device JSON persistence: USB cable to catalog instrument mapping |
-| `test_da1469x_loader.py` | DA1469x ELF symbol reading, loader path resolution, flash/erase/timeout paths |
+| `test_da1469x_loader.py` | DA1469x ELF symbol reading, loader path resolution, flash/erase/timeout paths. Also the poll helper every loader step waits on: a dropped `mdw` reply is retried to the deadline like any non-matching value, since these reads go through the debug AP while the CPU runs and a marginal SWD link drops one now and then; a link that never answers still fails, naming the read error rather than a value it never read, and a non-RPC error is not swallowed. Plus the bring-up retry underneath that fix: a loader that reads back successfully but never reports ready has its whole preparation re-run up to three times, naming the attempt that failed, while a failed image load, a missing loader symbol or an OpenOCD error still reaches the caller on the first attempt, and a spent budget names the attempt count |
+| `test_da1469x_predicate.py` | `lager.debug.probes.is_da1469x` is the one DA1469x-family predicate on the box. An AST scan of `box/lager` fails on an inline `'DA1469' in ...` test anywhere except that function, the standalone copy in `debug/jlink.py` (which must agree with it), and the CPU-architecture table in `gdb.get_arch`. `flash_device`, the GDB reset and `JLink._is_da1469` must call a predicate rather than spell the test out |
+| `test_debug_bin_address.py` | Both debug service clients send a `--bin` load address of 0 as 0, and use `0x08000000` only when no address was given; both send `erase_start` / `erase_size` on `/debug/erase` only when given, with a timeout that grows per MiB |
 | `test_debug_connect_ports.py` | `/debug/connect` port overrides are coerced and range-checked at the boundary, because they are used to build the debug backend's command line: a non-integer is refused rather than forwarded. A quoted number still works |
 | `test_debug_defmt_rtt.py` | Defmt RTT decoding wrapper threading and piping logic, plus the down-channel `write()` that makes a decoding session bi-directional — including the late write that must not reopen the telnet port it just released |
 | `test_debug_status_target_attached.py` | `/debug/status` must report `gdbserver_running` and `target_attached` separately, keep `connected` pinned to its old server-liveness meaning for older clients, and preserve the tri-state -- None (older box, refused probe, timeout) is not False. Also pins the log-scrape/probe split: the cheap path always runs, the wire read is opt-in |
-| `test_debug_erase_verdict.py` | `/debug/erase` must not answer 200 for a J-Link session that never attached, and the verdict predicate `_attach_failed` must stay stricter than the flash-retry predicate `_connect_failed` |
-| `test_debug_net_da1469x.py` | `DebugNet.flash()` / `.erase()` dispatch DA1469x targets on OpenOCD through the RAM-resident flash_loader rather than `program` / `flash_erase_all`, with absolute XIP addresses translated to flash-relative offsets; non-DA1469x OpenOCD and the J-Link backend stay on their existing paths; loader failures name the step that failed, a flash dying after its erase warns the board may be left blank, and a down daemon still routes through `_self_heal` |
+| `test_debug_erase_verdict.py` | `/debug/erase` must not answer 200 for a J-Link session that never attached, and the verdict predicate `_attach_failed` must stay stricter than the flash-retry predicate `_connect_failed`. Also the request's `erase_start` / `erase_size`: a checked pair reaches `chip_erase` and is reported back as `erase_range`, half a pair or a range outside the DA1469x window is a 400 before anything runs, and `/health` lists the feature. The reported `erase_range` is resolved before Commander runs, so a script cleared mid-erase (a concurrent disconnect) still reports `source: script`; `api.jlink_erase_plan` follows `chip_erase`'s script rules |
+| `test_debug_flash_dispatch_parity.py` | The HTTP debug service (`/debug/flash`, `/debug/erase`) and the Net API (`DebugNet.flash()`, `.erase()`) must select the same flash backend for the same OpenOCD target: both driven through the real `openocd_flash` dispatch for a DA1469x (flash_loader, identical offsets and output) and an nRF52 (`program` / bank erase), building the RPC the same way and reporting a loader failure in the same words; a requested erase range reaches the loader as the same flash offset and `flash erase_address` on both paths, and an out-of-window range is refused by both. Plus an AST scan of `box/lager`: the generic OpenOCD flash commands and the loader generators are called from `openocd_flash.py` and nowhere else, so a private copy of the dispatch cannot come back |
+| `test_debug_net_da1469x.py` | `DebugNet.flash()` / `.erase()` hand every OpenOCD flash and erase to the shared `openocd_flash` dispatch -- with the device, the shared timeouts, and an RPC that knows its device -- for DA1469x and other targets alike; `.bin` without an address is refused first; the J-Link backend and a down daemon behave as before; a deterministic loader failure is not retried by `_self_heal`; `erase(start, length)` forwards the pair to either backend and refuses half a pair before any dispatch |
 | `test_debug_net_self_heal.py` | DebugNet self-heal retry and session endpoints |
 | `test_debug_net_user_scripts.py` | User-script/slot helpers: OpenOCD/J-Link base64 fields and serial in debug_net.py |
 | `test_debug_rtt_reconnect.py` | J-Link RTT reader reconnect-aware socket handling across J-Link restart |
@@ -510,6 +519,8 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_diagnose_jlink_parse.py` | Box-side J-Link diagnose parsers, pinned with captured JLinkExe text |
 | `test_dispatcher_channel_resolution.py` | `resolve_channel`: v0.32.0 regression where int()-only parsing broke named adc/dac channels |
 | `test_download_file_headers.py` | `GET /download-file` names the attachment after the path it resolved, with the three characters a header value cannot carry reduced -- a filename may legally contain all of them. Spaces and parentheses survive, so the download keeps a name the user recognises |
+| `test_erase_bounds.py` | The shared erase-range rules behind `--erase-start` / `--erase-size` and `DebugNet.erase(start, length)`: `validate_bounds` (ints only, no negative start, no zero size, inside the 32-bit address space, inside the DA1469x QSPI XIP window), `format_bounds` / `bounds_dict` as the service reports them, the loader's `xip_range_to_flash_offset` translation and refusals, and every erase timeout scaling per MiB (loader poll, OpenOCD `flash erase_address`, J-Link Commander); plus `jlink.resolve_erase_range`'s request > script line > default order, loaded standalone |
+| `test_ftdi_dispatch_routing.py` | FTDI nets reach the FTDI drivers through the dispatchers, not only when the drivers are built directly: every FT232H, FT2232H and FT4232H net routes through the I2C, SPI and GPIO dispatchers, `params.interface` and the PID reach the driver, a non-MPSSE channel is refused with the reason, a raw `ftdi://` address is used verbatim, and the shared FTDI name set is pinned to the scanner's `SUPPORTED_USB` table so the dispatchers cannot drift from it again |
 | `test_ftdi_driver_addressing.py` | The FTDI GPIO/I2C/SPI drivers addressed by part and channel: existing single-channel FT232H URLs are byte-identical, an FT2232H opens at all (it was advertised but unreachable), I2C/SPI refuse the FT4232H's non-MPSSE C/D while GPIO accepts them, ACBUS pins are refused on a part with no ACBUS, and the GPIO state cache keys on interface so two channels of one chip stop clobbering each other |
 | `test_ftdi_url.py` | `lager.util.ftdi_url`: PID to pyftdi product, interface letter/index parsing, and the base-0/base-1 split between OpenOCD's `ftdi channel` and pyftdi's URL — asserted against `probes.parse_device_field` so `@B` cannot come to mean different channels on the two paths |
 | `test_firewall_port_allowlist.py` | The deployed `secure_box_firewall.sh` allowlist must match the ports `box/start_box.sh` publishes, parsed from both files rather than duplicated -- including the conditionally-appended `9000` an array-literal read would miss. The two had drifted three times behind a keep-in-sync comment |
@@ -517,9 +528,10 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_gdbserver_zombie_status.py` | Defunct/zombie gdbserver detection that a bare `os.kill(pid, 0)` check passes |
 | `test_hardware_service_fail_fast.py` | `/invoke` fail-fast locking and hang recovery: per-device and per-address locks answer `device-busy` rather than queueing behind a wedged `open_resource`, and a hung driver call expires into `invoke-timeout` plus a supervised restart |
 | `test_hardware_service_retry.py` | Close-then-recreate retry path for concurrent Keithley resource collisions |
-| `test_host_ops.py` | apt_install and sysctl_apply SSH execution branches |
+| `test_host_ops.py` | apt_install and sysctl_apply SSH execution branches. Also `udev_apply`, the box-config sudoers rules and bootstrap command, the v2 marker pin, username validation and the bootstrap texts |
 | `test_hub_lock_fail_fast.py` | The same treatment on the USB hub path: bounded waits on the module-level and per-hub locks (`hub-busy`), a per-operation deadline (`hub-op-timeout`), the restart that follows, and the state sweep's per-hub sub-budget (clamp + `hub-skipped`) |
 | `test_jlink_commander_use_poll.py` | JLinkExe spawned with use_poll=True to avoid fd >= 1024 select() failure |
+| `test_jlink_erase_range.py` | The exact Commander sequence `JLink.chip_erase` issues per range source: a DA1469x keeps its bank prelude and never runs a bare `erase`, a request beats the `LAGER_ERASE_RANGE` script line and the 1 MiB default, another part runs `erase <start> <end>` for a request and the full-chip `erase` otherwise, and the `erase` command's timeout scales with the range |
 | `test_jlink_error_masking.py` | Three debug-path defects that masked on-bench J-Link failures |
 | `test_jlink_memrd_reset_halt.py` | DA1469x reset+halt-before-read gating, regression guard, env-var opt-out |
 | `test_jlink_multi.py` | Multi-probe start_jlink_gdbserver with per-probe serial/port/RTT configuration |
@@ -529,8 +541,8 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_jlink_uncached_verify.py` | DA1469x opt-in uncached QSPI post-program verify to detect false XIP failures |
 | `test_lager_package_identity.py` | Guards this suite's conftest invariant: `lager` must be the real on-disk package with its `__init__` executed, not a placeholder |
 | `test_labjack_batch_read.py` | `POST /labjack/batch_read`: locks on the same device identity `/invoke` does, and writes nothing to the instrument |
-| `test_labjack_model_routing.py` | LabJack model disambiguation across the DAC dispatcher, the LJM batch-read grouping and the device-lock identity: a non-T7 LabJack must reach none of the three T7 paths, and the T7's own routing is byte-for-byte unchanged |
-| `test_labjack_ud.py` | LabJack UD-series (U3) drivers and handle manager against a fake u3 module: pin-name mapping, device selection by serial, and the analog/digital pin mux -- which has no T7 counterpart and fails silently, since a line read in the wrong mode returns a plausible number rather than an error. Also the UD DAC's 0.04-4.95 V range and its absent readback |
+| `test_labjack_model_routing.py` | LabJack model disambiguation across the DAC dispatcher, the LJM batch-read grouping and the device-lock identity: a non-T7 LabJack must reach none of the three T7 paths, and the T7's own routing is byte-for-byte unchanged. Also that the ADC, DAC and GPIO dispatchers refuse a bare `LabJack`, a T4 or a T8 with an error that lists the supported models, and that every listed model routes to a driver |
+| `test_labjack_ud.py` | LabJack UD-series (U3) drivers and handle manager against a fake u3 module: pin-name mapping, device selection by serial, and the analog/digital pin mux -- which has no T7 counterpart and fails silently, since a line read in the wrong mode returns a plausible number rather than an error. Also the UD DAC's 0.04-4.95 V range and its absent readback. Also that the scanner omits FIO0-FIO3 from the U3's gpio channels -- they are the U3-HV's fixed high-voltage analog inputs, and while they were advertised a net on them was accepted and then failed at first use. Also the U3 SPI and I2C drivers against a fake `u3.spi()`/`u3.i2c()` written from the LabJackPython source rather than from the drivers: the odd-packet padding SPI must trim and I2C must not, the AckArray bit order (bit 0 is the LAST data byte, so a partially acknowledged write is non-zero and a ported `acks == 0` check would call it success), the unshifted address, the 50/50/52 byte limits, and a transaction that fails when a pin is left in analog mode -- with a negative control that neuters the mux call and asserts the transaction then breaks, so a pass cannot be coincidental |
 | `test_load_box_secrets.py` | `load_box_secrets()` returns `{}` on every failure, which makes an unreadable secrets file indistinguishable from a box with none configured -- pins that distinction |
 | `test_lock_state.py` | lock_state.py single source of truth for box-side lock behavior |
 | `test_logic_net_type.py` | `lager logic`'s workers must resolve nets under `NetType.from_role(LOGIC_ROLE)`; `Net.get` matches on type equality, so a mismatch is a silent no-op rather than an error |
@@ -541,11 +553,15 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_net_command_handler.py` | Generic POST /net/command Flask handler dispatch by role and error handling |
 | `test_net_save_uart_identity.py` | `usb_identity_for_net_record`: durable USB identity snapshot at UART net save time |
 | `test_mapper_range_checks.py` | Tree-wide guard: no `LO > x > HI` range check in `box/` or `cli/`, a shape that is always false so the `raise` under it is unreachable; plus both ends of the seven inverted bounds fixed in the Rigol MSO5000 and Keithley mappers |
+| `test_network_mode.py` | Opt-in container network mode: `--network` rendered from box_config rather than hardcoded, the host-mode fallback for an unknown value, port publishing suppressed on host while every `-p` literal stays inside the firewall-allowlist sentinels, the shim set/unset verbs, and the cli/box allowlist agreeing. Also that a switch to host takes effect only through `apply`: every other start keeps the mode the last apply recorded and announces the pending one, a return to lagernet needs no apply, an unreadable snapshot withholds host, and the CLI and renderer agree on the confirmation variable |
+| `test_mcp_publish_opt_out.py` | `LAGER_MCP_NO_PUBLISH`: runs the opt-out scan and the port-publishing block of `start_box.sh` under bash with a rendered `BOX_CONFIG_ENV`. A truthy value drops exactly the 8100 mapping, any other value drops nothing, and both opt-outs together drop 8100 and 9000. `--no-publish` still publishes nothing, and host mode warns that the variable has no effect |
+| `test_mcp_token_shim.py` | The box-side `mcp-token-*` verbs, with the REAL `_audit` pointed at a temp file: `enable` creates a mode-0600 file whatever the umask and refuses when one exists, `rotate` replaces it atomically and repairs an empty or unreadable one, `disable` is idempotent; no verb touches `box_config.json`, the audit log names the verb and never the value, no verb reads the value back, and the path comes from `lager/constants.py` alone |
 | `test_nets_display.py` | `lager nets` table no-truncation for long UART pins and VISA addresses |
 | `test_net_metadata_endpoint.py` | `/nets/<name>/metadata`: merging purpose/notes/tags without disturbing the rest of the record, and reporting bench.json overrides |
 | `test_nets_safety_limits_endpoint.py` | `/nets/safety-limits`: reading and writing a net's voltage/current ceilings |
 | `test_nets_state_endpoint.py` | `GET /nets/state`: wedged-instrument resilience, per-instrument probing, LabJack cross-role batch routing through hardware_service (no USB contention), I2C bus scan, and the request deadline handed to the USB batch as a per-hub budget |
 | `test_openocd_dispatch.py` | OpenOCD interface .cfg dispatch and user-cfg override behavior |
+| `test_openocd_flash.py` | `openocd_flash`, the one flash/erase dispatch for OpenOCD targets: a DA1469x goes to the RAM-resident flash_loader with absolute XIP addresses translated to flash-relative offsets (out-of-window addresses refused before any I/O), everything else to `program` / bank erase; a requested erase range reaches the loader as a flash offset (named first in the output) or `flash erase_address` elsewhere, and an out-of-window range touches nothing; loader failures name the failed step and a flash dying after its erase warns the board may be blank. Also `OpenOcdRpc(device=...)` refusing `program` / erase for a DA1469x by name before sending anything, and the shared `is_da1469x` predicate |
 | `test_pigpio_addr_fallback.py` | The pigpio address block in `box/start_box.sh`: the fallback actually fires when no pigpio container exists (`||` used to test the pipeline, whose `tr` always exits 0, so it never did), plus the `<no value>` a container off `lagernet` renders, and whitespace or garbage -- the result is always a usable address |
 | `test_prebuilt_image.py` | The pre-built-image block in `box/start_box.sh`: a mutable tag refused before any docker call, the OCI version label asserted and an unlabelled image rejected, `--platform` pinned, the pull sent through a throwaway docker config, and every miss falling back to the local build rather than failing the deploy |
 | `test_probes_paths.py` | Per-probe pid/log paths are built from a serial read from a permissive field of a client-supplied VISA address: whatever that field carries, the path stays inside `/tmp`, while an ordinary serial keeps the byte-identical filename it had before so an upgrade cannot orphan a running gdbserver; slot assignment still matches on the raw serial, and the unused `/pip` endpoint stays removed |
@@ -564,61 +580,91 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_rtt_handlers.py` | Bi-directional RTT over the `/rtt` WebSocket namespace: read loop, J-Link banner stripping, shutdown cleanup, and the three ways a held RTT port is freed — a departed client (which the loop's own heartbeat cannot detect), a wedged reader, and the port-keyed guard that keeps two channels of one net independent |
 | `test_safety_interlock.py` | Per-net voltage and current ceilings enforced on instrument commands |
 | `test_script_backend_sniff.py` | `sniff_script_backend` routes a debug-script override by format so `DebugNet.connect(script=...)` works on both backends: extension beats content, every declared extension and marker is asserted individually because a base64 blob has no filename to fall back on, and an ambiguous file abstains rather than picking a side. Also pins the two J-Link forms the marker list misses (`InitTarget(void)`, `JLINK_ExecCommand`) — safe, because abstaining raises rather than guessing, but it is why `jlink_script=` exists |
-| `test_secret_file_ownership.py` | The ownership block extracted verbatim from `box/start_box.sh`: mode 0600 grants the OWNER alone, so a secrets file owned by the host login user locks the container runtime out of its own secrets |
+| `test_secret_file_ownership.py` | The ownership block extracted verbatim from `box/start_box.sh`: mode 0600 grants the OWNER alone, so a secrets file owned by the host login user locks the container runtime out of its own secrets. Also that the shipped default list names the MCP token path the box's `constants.py` names |
 | `test_serial_id_cables.py` | tty enumeration and resolution via fake /sys tree lookup |
 | `test_store_path_containment.py` | A binary name, a device-lock key and a DFU staging file are each named after something off the wire: the existing reduction is pinned as what rejects, and the containment check beside each join pins where the result lands, so widening a reduction cannot silently widen the directory. Also pins that names with spaces, `+` and parentheses still work, since the CLI forwards the basename of any local file |
+| `test_spi_word_conversion.py` | SPI word/byte packing shared by every backend: the LSB-first bit reversal, the multi-byte split, the oversize refusal and the short trailing word. Every expected value was captured from the T7 driver before the helpers moved to `SPIBase`, so the suite fails if the move changed any observable output -- the helpers were lifted so a second LabJack family could reuse them rather than carry a copy of the reversal that disagrees only on a scope |
 | `test_ssh_runner.py` | SSH key selection and auth fallback logic |
 | `test_ssh_setup.py` | `lager ssh-setup` command and SSH key provisioning with TTY passthrough |
 | `test_stream_disconnect.py` | `peer_is_connected` and the idle tick that let the box notice a vanished client in under a second instead of waiting for the script's next write |
 | `test_stream_teardown.py` | `lager python` child reaped when the client disconnects mid-run, instead of orphaning at 100% CPU holding a device flock |
-| `test_sudoers_contract.py` | The `/etc/sudoers.d/` ownership contract: Lager writes exactly three files there, never globs and never touches the directory itself, and every writer — including the shell copy in `setup_and_deploy_box.sh` — emits the banner telling an operator those files are regenerated wholesale. Also pins the recorded escalation posture: the box login user is root-equivalent by design, and no source may claim a scoped entry confines it |
+| `test_sudoers_contract.py` | The `/etc/sudoers.d/` ownership contract: Lager writes exactly three files there, never globs and never touches the directory itself, and every writer — including the shell copy in `setup_and_deploy_box.sh` — emits the banner telling an operator those files are regenerated wholesale. Also pins the recorded escalation posture: the box login user is root-equivalent by design, and no source may claim a scoped entry confines it. Also the one-session install: no deployment script runs `find` or a recursive `chown` under sudo; the `/etc/lager` helper is granted by exact path and never install-granted; every `systemctl` the deploy runs has a rule; and, RUN under bash, the session script renders and parses, accepts the real box-config text and refuses a rule for anyone else or a marker outside `/etc/lager`, the digest changes with the user, the VPN interface, the rules and the helper but not with a comment, and the check that skips the session has no terminal and only `sudo -n` |
 | `test_supply_command_handler.py` | `POST /supply/command` handler, covering v0.32.0 hardware-found regressions |
+| `test_trigger_option_contract.py` | `lager scope` and `lager logic` trigger options against the shared handler and the real MSO5000 mappers: every offered value and every default reaches a method the mapper defines, the scope/logic spellings that differ (`read_write`, `ack_miss`, `rising`, `gt`) map to the same condition, hex `--data`/`--address` arrive as integers, and `lager dac` refuses a voltage above 5 V |
+| `test_uart_bridge_params.py` | UARTBridge serial parameters: a `timeout` reaches the opened port (default 0.1 s), parity names and pyserial letters map to pyserial's constants, and any other parity raises before a port opens. The drivers the dispatcher builds for sessions keep the 0.1 s read timeout |
 | `test_uart_bridge_reconnect.py` | UARTBridge re-enumeration healing after an adapter changes its /dev/tty node |
-| `test_uart_session_cleanup.py` | Websocket UART read loop heals in place instead of stopping on a failed read, plus the three ways a held UART net is freed — a departed client (which the loop's own heartbeat cannot detect, because the loop writes it), a wedged reader, and an operator force-release |
+| `test_uart_session_cleanup.py` | Websocket UART read loop heals in place instead of stopping on a failed read, plus the three ways a held UART net is freed — a departed client (which the loop's own heartbeat cannot detect, because the loop writes it), a wedged reader, and an operator force-release. Also that a read failing after teardown closed the port is not a read error, and that the in-use error names the net holding the device |
 | `test_usb_cycle_reenumeration.py` | `USBNet.cycle`'s re-enumeration verdict, read from the kernel's USB topology rather than from the hub: the bus sampled before the port is cut and again while it is dark, so what left in between is what the port carries. All four outcomes -- a device that returns, one that does not, a genuinely empty port, and a bus that could not be read (which must never be reported as empty) -- plus power restored on every path, a bounded wait, and a guard that the Acroname and YKUSH drivers still inherit this rather than overriding it |
-| `test_usb_devices_dfu.py` | `GET /usb/devices` sysfs enumeration and `POST /usb/dfu` list/download/detach argument building |
-| `test_usb_scanner_custom.py` | Custom-device surfacing in box HTTP scanner GET /instruments/list. Also the SuperSpeed companion dedupe: one physical dock lists as one instrument, and a missing bus root pairs nothing rather than pairing everything. Also what the Dexarm handshake -- the one scan step that WRITES to hardware -- is allowed to touch: every channel of a multi-interface chip and every saved uart net's tty reach the exclusion set, a foreign or unresolvable VID:PID is never opened at all, a port held by another process is skipped, and `LAGER_ARM_PROBE` off/force widen or close the gate without ever dropping the exclusive open or the deasserted modem lines. |
+| `test_usb_devices_dfu.py` | `GET /usb/devices` sysfs enumeration and `POST /usb/dfu` list/download/detach argument building, and what `POST /usb/command` reports for each `cycle` result: the message and the `outcome` field |
+| `test_usb_scanner_custom.py` | Custom-device surfacing in box HTTP scanner GET /instruments/list. Also the SuperSpeed companion dedupe: one physical dock lists as one instrument, and a missing bus root pairs nothing rather than pairing everything. Also what the Dexarm handshake -- the one scan step that WRITES to hardware -- is allowed to touch: every channel of a multi-interface chip and every saved uart net's tty reach the exclusion set, a foreign or unresolvable VID:PID is never opened at all, a port held by another process is skipped, an arm that a saved arm net points at is listed with no write at all (a handshake there used to take that arm's reply in the middle of a command), and `LAGER_ARM_PROBE` off/force widen or close the gate without ever dropping the exclusive open or the modem-line settings. |
 | `test_usb_scanner_uart_fallback.py` | UART enumeration without USB serial by matching sysfs path; two identical adapters keep distinct ttys and the channel catalog stays unmutated |
 | `test_webcam_detection.py` | sysfs-based webcam detection (`_by_camera`) against a fake sysfs tree |
+| `test_webcam_stream_state.py` | `WebcamStreamState.add_stream` persisting the `source`/`started_by` origin fields, `get_stream_info` returning them, and the generated streamer script still compiling with the `/snapshot` handler in it |
 | `test_plugable_driver.py` | Plugable RTS5411 dock driver: USB hub-class per-port power switching over pyusb -- ganged/no-switching hubs refused without touching a port, a disable NOT judged by device presence (the kernel cannot see a disconnect while a port is unpowered, so the sysfs node persists), cycle restoring power on every failure path and reporting re-enumeration, off-time range enforced before any transfer, SuperSpeed companion pairing refused when ambiguous, network-device and inter-hub-link guards, one-session batch reads, handle disposal on every path |
 | `test_ykush_driver.py` | YKUSH USB hub driver: device-contention regression from an indefinitely cached handle |
 | `test_automation_exports.py` | Static parse of `automation/__init__.py`'s lazy export table: no name guarded twice, every returned driver reachable under its own name, everything in `__all__` resolvable -- the copy-paste class of defect that made one driver answer to another's name |
+| `test_io_imports.py` | The `lager.io.*` import surface and re-export identity; asserts the removed root-level aliases stay removed |
+| `test_bench_endpoint.py` | `GET /bench` on the box HTTP server: the body is the bench manifest built from the loaded MCP state (`box_id`, nets with `dut_connection`, `reference_keys`, `metadata_sources`, `capability_bindings`); `ETag` is the quoted content hash and a matching `If-None-Match` in any spelling (quoted, weak, bare, listed, `*`) gets 304 with no body; a build failure is a 500 that says why; the first request on a process that never called `init_state` loads from disk once |
+| `test_status_bench_fields.py` | `/status` advertises `capabilities.benchManifest` from the route's registration (never hardcoded), the real app mounts `/bench`, and the nets block carries `dut_connection` and `test_hints` with the same present-when-unset contract as `purpose` |
+| `test_lscp_codec.py` | The LSCP/1 frame codec in `measurement/scope/lscp.py`: header and per-channel layout, and counts-to-volts scaling, checked against a fixture the Rust encoder produced, so the daemon and the Python decoder cannot drift apart on the wire |
+| `test_picoscope_net_mapper.py` | The PicoScope net mapper that `Net.get(name, NetType.Analog)` returns: calls reach the driver with the net's own channel as the default, and a feature a PicoScope lacks raises and names the gap instead of returning zero |
+| `test_picoscope_streaming_api.py` | `stream_start`, `stream_frames` and `stream_capture` on the PicoScope driver: the keyword arguments the Python reference documents, and a CSV layout identical to the one `lager scope stream capture` writes |
+| `test_picoscope_time_position.py` | The PicoScope horizontal position: a time offset becomes the trigger's pre/post split of the block, clamped at one window of travel each way, and reads back as the offset in force |
+| `test_rigol_trigger_level.py` | The exact SCPI the Rigol MSO5000 driver sends for the edge trigger level: one real in the trigger source's units, not the two-argument form the instrument rejects without an error |
+| `test_scope_command_grammar.py` | The web UI's command grammar (`static/scope/commands.js`, run under node) against the real box handler, so a renamed action cannot leave the page sending commands the box rejects |
+| `test_scope_cursors.py` | Typed scope cursors: interpolated voltage under each cursor, delta-t and 1/delta-t, a cursor outside the record or on a disabled channel reported as absent, one pair per instrument shared by every net, and the browser's interpolation agreeing with the box's |
+| `test_scope_net_migration.py` | Converting saved scope nets to the `scope` and `scope-channel` roles: every old record becomes a channel with its name and pin, exactly one scope net appears per physical unit, and a second read changes nothing |
+| `test_scope_role_gating.py` | Which actions a `scope` net and a `scope-channel` net accept: an instrument setting is carried out from a channel net, and a channel setting sent to the scope net is refused, naming the channel nets that would take it |
+| `test_scope_trigger_coupling.py` | Trigger coupling kept apart from channel coupling: `trigger coupling` never changes the input path, and a PicoScope, which has no trigger filter, refuses it rather than applying one to the input |
+| `test_scope_trigger_mode.py` | Who may change a PicoScope's trigger mode: `run()` keeps auto and normal, single-shot arms, and each trigger control sends only its own setting |
+| `test_scope_ui_channel_nets.py` | The scope web UI sends each channel's controls to that channel's net, hides the empty-plot overlay for real, and never shows a channel state it did not apply |
+| `test_scope_ui_instrument_net.py` | The scope web UI routes each command to the net that owns it: device-wide settings and readbacks to the scope net, per-channel ones to the channel's net |
+| `test_usb_scanner_picoscope.py` | PicoScope discovery in `usb_scanner.py`: every Pico Technology product ID is recognized, and the channel count comes from the device rather than from a static table |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 71 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 105 files)
 
 | File | What it tests |
 |------|---------------|
 | `test_address_utils.py` | IPv4/IPv6/Tailscale/hostname validation rejecting schemes, ports, and paths |
+| `test_arm_command.py` | `lager arm` CLI: `read-and-save-position` sends nothing until the M889 recalibration is confirmed (or `--yes` is passed), `move`/`move-by` reject a `--timeout` past the box's 25 s cap before any request, and listing arm nets takes no box lock |
 | `test_battery_tui.py` | BatteryTUI render output, command parsing, and worker thread offloading |
 | `test_binaries_9000.py` | `lager binaries add/list/remove` and `download_file` migrated to the box HTTP server on `:9000` |
 | `test_box_command_error.py` | `box_command_error`: a 404 that means "net or instrument not found" must not also tell the user their box image is out of date |
-| `test_box_lock_helpers.py` | Lock holder resolution, acquire/release/heartbeat, `LockSession.dissolve`, format_lock_user CI support, `lock_scope`/`_lock_held_by_self` identity matching across all four lock-path comparisons (check, pre-acquire probe, `previous_user`, and the conflict branch that decides whether to wait), and the `_check_box_lock` refusal path |
+| `test_box_lock_helpers.py` | Lock holder resolution, acquire/release/heartbeat, `LockSession.dissolve`, format_lock_user CI support, `lock_scope`/`_lock_held_by_self` identity matching across all four lock-path comparisons (check, pre-acquire probe, `previous_user`, and the conflict branch that decides whether to wait), the `_check_box_lock` refusal path, the holder that a resumed lock's heartbeat sends, and a `LAGER_LOCK_WAIT` that is not a number keeping the CI wait with one warning. Also the no-expiry sentinel: `--timeout 0` asks for a lock that never expires, and the auto-lock boundary tells that apart from a caller that states no TTL at all, which used to collapse into the 1800 s default |
 | `test_box_request_failure_messages.py` | `echo_box_request_failure`: distinguishing a slow box-side op from a dead box |
 | `test_box_ssh_identity.py` | Admin commands offer the `lager_box` key with keyless fallback (probe, pool, install/uninstall); key registration under `/etc/lager/authorized_keys.d`, de-registration on `uninstall --all`, and install's password-fallback removal. Also that `-i` does not cost the operator ssh's own defaults: `lager ssh` names `lager_box` first and then each default identity file present, in ssh's order, and passes no `-i` at all when no `lager_box` key exists |
 | `test_configure_docker_dns.py` | `configure_docker_dns`: daemon.json `dns` entries must be bare IPs or Docker refuses to start |
-| `test_configure_docker_dns_rollback.py` | Rollback behavior of `configure_docker_dns.sh` when the DNS optimization fails |
-| `test_deploy_box_image_ref.py` | `setup_and_deploy_box.sh` and `_box_image_ref_for_version` agree on which versions have a published image, computed in one conditional so the two cannot drift; plus the anonymous GHCR digest resolution and the `LAGER_BOX_IMAGE` handoff to `start_box.sh` |
-| `test_deployed_ref.py` | `/etc/lager/ref` records which ref produced the box's code (`<ref>@<sha>`), so a branch deploy is distinguishable from the release tag it shares a version number with; the release-tag predicate is pinned against `resolve_version_ref` so the two cannot drift, and a box reporting no ref renders exactly as before |
+| `test_configure_docker_dns_rollback.py` | Rollback behavior of `configure_docker_dns.sh` when the DNS optimization fails, and that a run whose staged daemon.json already matches the current one installs nothing and restarts nothing. Two runs, so the second one recognizes what the first settled on |
+| `test_deploy_box_image_ref.py` | `setup_and_deploy_box.sh` and `_box_image_ref_for_version` agree on which versions have a published image, computed in one conditional so the two cannot drift; plus the anonymous GHCR digest resolution and the `LAGER_BOX_IMAGE` handoff to `start_box.sh`. The deploy's image and container handoff runs for real with ssh stubbed: the image is pulled before the containers stop, the build cache is cleared and the image handed to `start_box.sh` only after a successful pull, a miss builds with the cache kept, and a stopped daemon ends the deploy first. The generated pull command runs against a fake docker. Also the second prune that reclaims the replaced image once `start_box.sh` tags the new one, pinned by count and order, and `LAGER_BOX_IMAGE_PULL` resolving to the same on and off words `lager update` reads |
+| `test_deployed_ref.py` | `/etc/lager/ref` records which ref produced the box's code (`<ref>@<sha>`), so a branch deploy is distinguishable from the release tag it shares a version number with; the release-tag predicate is pinned against `resolve_version_ref` so the two cannot drift, and a box reporting no ref renders exactly as before; `lager install` records version, ref and build-hash through update's writer, reads the version back, and exits non-zero when a write fails |
 | `test_debug_auto_connect_gate.py` | `_auto_connect_if_needed` gates on the target answering, not on a live gdbserver: a confirmed attachment skips the connect, an absent target forces a reconnect rather than proceeding, and an inconclusive answer falls back to server liveness so a working session is never torn down. Covers `_is_connected` and `_target_attached`, which had no direct tests |
-| `test_debug_flash_erase_reconnect.py` | `lager debug flash`'s default erase step: no reconnect between `/debug/erase` and `/debug/flash`, a failing `/debug/connect` cannot abort the flash, and the verdict of both `flash` and `erase` follows the programmer's own output rather than reporting "Flashed!" / "Erase complete!" unconditionally |
+| `test_debug_flash_erase_reconnect.py` | `lager debug flash`'s default erase step: no reconnect between `/debug/erase` and `/debug/flash`, a failing `/debug/connect` cannot abort the flash, and the verdict of both `flash` and `erase` follows the programmer's own output rather than reporting "Flashed!" / "Erase complete!" unconditionally. Also that a failed erase prints the box's own error, with its `Erase failed:` prefix shown once. And `--erase-start` / `--erase-size` on both commands: parsed to integers (`2M`), refused before any box traffic when half a pair, combined with `--no-erase`, negative, past 4 GiB, or outside the DA1469x window; refused on a box whose `/health` lists no `erase_range` feature; the range the box reports printed after `Erase complete:`, with the old line kept for a box that reports none. Also `health` printing the service's `features` line, `none reported` for a box that has none |
 | `test_debug_service_client_auth.py` | Gateway auth on the debug service client |
 | `test_devenv_config_commands.py` | `lager devenv mount` / `env`: editing project-local `.lager` volumes and environment keys |
 | `test_devenv_terminal_docker_args.py` | `docker run` args for `devenv terminal` and `exec`; regression for the `--group` bare-flag bug |
 | `test_docker_install_diagnosis.py` | The Docker install step names the command that failed and its exit status, instead of one generic error for an eight-command `&&` chain -- the chain is rebuilt the way bash builds it and EXECUTED under `bash` and `sh`, so the `\$`/`\"` escaping is covered rather than just matched as text; `ssh_t`'s stderr filter is synchronous, so the real error cannot land after the caller's generic line (the async form lost the ordering in 26 of 200 runs); its one run-scoped capture file survives a Ctrl-C and reports a TMPDIR it cannot write; and the printed recovery instructions match the chain they replace, including `systemctl enable` |
+| `test_etc_lager_perms_helper.py` | `cli/deployment/security/etc_lager_perms.sh`, the root-owned helper that replaces install's `sudo find` and recursive `sudo chown`: the REAL script runs under `sh` with the real `find` and a recording `chown`. Everything under `/etc/lager` goes to uid 33 and the caller's group except `authorized_keys.d`, which is pruned; every `chown` carries `-h`, so a symbolic link's target is never re-owned; and any argument, a caller that is not root, and a group that is not a plain number are each refused before anything is touched |
+| `test_install_sudo_handoff.py` | `lager install` hands the deploy script the box-config sudoers text in its environment, so one sudo session writes both files: the text is exactly what the other writer installs, a name that is not a plain unix username gets nothing, and a stale variable in the operator's shell is never inherited. Over a faked transport, install opens no terminal when the grant is already live, and warns of a prompt only on the branch that prompts |
 | `test_docker_start_limit.py` | The installer must not trip docker.service's `StartLimitBurst=3`: one service start per step, `reset-failed` before every restart, and `start-limit-hit` diagnosed as itself rather than a bad daemon.json |
 | `test_diagnose_classify.py` | `lager diagnose` classification decision tree for one-line user diagnosis |
 | `test_diagnose_classify_jlink.py` | `lager diagnose` J-Link classification from `/diagnose/usb` + `/diagnose/jlink` payloads |
 | `test_diagnose_classify_usbhub.py` | `lager diagnose` USB hub classification from `/diagnose/usbhub`, including the wedged hub that sysfs and lsof both call healthy Also that an unsupported hub vendor gets its own permanent-state classification instead of the transient BUSY one, which told people to rerun when idle for a condition that never changes. |
 | `test_error_mapping.py` | map_system_error errno mapping [16/19/110] to actionable headlines and actions |
+| `test_exec_container_ci.py` | Which runner `lager exec` picks: a container-based CI job runs the command in place and spawns no `docker`, while a Jenkins agent, a bare `CI=true` runner and a developer's machine still assemble the `docker run` line. Pins the regression where the in-place runner was lost in the move to `cli/commands/utility/exec_.py` and `is_container_ci()` was left as dead code -- neither runner had a test. Also the absence of a chdir, `--env` / the `environment` key reaching the child, exit-code propagation, `LAGER_CI_OVERRIDE`, the `/bin/bash` fallback for an absent or empty `shell`, and the warning for container-only flags |
 | `test_gateway_auth_refresh.py` | Gateway-auth refresh margin scaling with token lifetime -- pins the refresh-storm fix |
+| `test_gateway_tunnel.py` | `cli/gateway_tunnel.py` against a fake gateway on real sockets: the CONNECT handshake, a splice in both directions including a 4 MiB payload and bytes that arrive with the response head, several clients at once, a freshly resolved token on each connection (pinned tokens too), a listener on 127.0.0.1 only, and a taken local port naming `--local-port`. Each refusal maps to its own message: 401/403/503 with the discovery header go through `handle_gateway_denial` (with the first-contact retry), a 403 without it is a port the gateway will not tunnel, a 502 drops only that connection, and a plain box's 501 is unsupported. A debug-service port that refuses TCP drops one connection, keeps a plain box on the direct route, and is reported on a gated one. A gateway-side close is reported once and the listener stays up. `choose_route` tunnels on a 200, never probes the debug port of a box not known to be gated, and reports a known-gated box's old gateway as needing an update |
+| `test_gdbserver_tunnel.py` | `lager debug <net> gdbserver` on a plain box still prints `<box>:<port>` and returns; on a gated box it prints `localhost:<port>` (never the box address, in the `already_running` branch too) and serves the tunnel in the foreground until Ctrl-C without stopping the server. Also `--local-port`, a taken port failing before any address prints, `--json` carrying a `tunnel` object, `--quiet`, `--no-tunnel`, a fatal refusal exiting 1, `--rtt` / `--interactive` / `--reset` alongside the tunnel, an old gateway failing the plain command but not an RTT stream, and `disconnect --keep-server` deciding from the recorded mapping without a probe |
 | `test_gdbserver_interactive_rtt.py` | `gdbserver --rtt --interactive`: the flag is rejected without `--rtt`, the streaming leg moves to the `/rtt` WebSocket, and plain `--rtt` still uses the HTTP stream |
 | `test_net_9000_migration.py` | Tier-1 net CLI commands (adc, dac, gpi, gpo, spi, i2c, watt, energy, ...) driving the box `:9000` API |
 | `test_net_tui_assign.py` | Custom-device assignment TUI helpers; per-device uart tty preference over the shared channel map |
-| `test_net_tui_labjack_pins.py` | TUI LabJack pin dialog (prefill/revert/legacy-channel preservation) + combined name+pin editor behind the Add-row pencil, dismissable notices |
+| `test_net_tui_labjack_pins.py` | TUI LabJack pin dialog (prefill/revert/legacy-channel preservation) + combined name+pin editor behind the Add-row pencil, dismissable notices. Also the LabJack U3: its own pin list and defaults in the dialog and the helpers, its analog FIO0-FIO3 refused, and its default SPI span counted as claimed |
 | `test_net_tui_metadata_preserves_record.py` | TUI metadata edits merge into the stored record instead of replacing it with a partial one |
 | `test_net_tui_uart_guard.py` | UART net save validation rejecting bare interface indices and empty pins |
+| `test_net_preflight.py` | Host-networking pre-flight: the ufw-allow parse against real `ufw status` output, refusal when the interface carrying the operator's own connection is not admitted, interface-scoped remediation rather than a blanket open, gateway port-collision refusal, and refusal when the box cannot be probed. Also that rules are read in ufw's first-match order, so an allow appended behind the blanket deny does not admit; address family and source scoping; and the refusal for an unreadable ufw, which names the exact `sudo -n <path> status` and prints a visudo-checked grant for a file Lager does not own |
+| `test_nets_add_ftdi_interface.py` | `lager nets add --interface`: the channel saved as `params.interface`, and refused for a channel the part lacks, an I2C/SPI net on a non-MPSSE channel, a non-FTDI instrument, and a debug net (pointed at the `@B` suffix). Also that the channel is part of a net's identity -- the same pin on two channels is two nets, no interface compares as A, a hand-saved `1` equals `B` -- that a second debug net on another channel suffix is accepted while a single-target probe keeps one, and that the CLI's channel tables agree with `box/lager/util/ftdi_url.py` |
 | `test_nets_add_labjack_pins.py` | LabJack I2C/SPI arbitrary pin selection via --sda/--scl/--cs/--sck/--mosi/--miso |
-| `test_nets_add_roles.py` | Role-token normalization converting legacy supply/batt to power-supply/battery |
+| `test_nets_add_coverage.py` | `lager nets add` accepts the instruments the scanner detects (DP832, E36312A, USB-202, Phidget, J-Link Base Compact) and refuses a U3's FIO0-FIO3 as custom pins; `add-batch` saves `params` (LabJack pins, FTDI channel) and a uart device path, and saves nothing when any record has an unknown key, a bad `params` value, an unsupported role or an ambiguous address |
+| `test_nets_add_roles.py` | Role-token normalization converting legacy supply/batt to power-supply/battery. Also channel-rejection messaging: a rejected channel names the valid ones, a U3 high-voltage pin is pointed at AIN0-AIN3, and add-batch applies the same check while staying permissive for hardware the scan does not find |
 | `test_nets_assign.py` | `lager nets assign` flow with custom-device backend and net creation |
 | `test_nets_channel_display.py` | `lager nets` Channel column rule for uart nets carrying a durable `live_path` |
 | `test_nets_debug_scripts.py` | Smart `lager nets set-script` auto-detection and probe/file reconciliation |
@@ -634,31 +680,56 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_python_exit_codes.py` | `normalize_exit_code` maps a signal death (`-9`) onto the 128+N convention `SIGKILL_EXIT_CODE` is written in, so a timeout kill reports 137 rather than 247, and never returns a negative code to `sys.exit` |
 | `test_resolve_box_locked.py` | `resolve_box_locked`: acquires an ephemeral lock on resolution, stashes the release on the context, passes through under `LAGER_AUTO_LOCK_DISABLE`, and reports `already_ours` for a lock we already hold. Pins the holder via `get_lock_holder` and forbids real HTTP, so the result cannot depend on whether it runs on a laptop or a CI runner |
 | `test_empty_box_name.py` | An explicit `--box ""` (or whitespace-only) is refused rather than silently resolving to the DEFAULT box, in BOTH `resolve_and_validate_box` and `resolve_and_validate_box_with_name` -- they duplicate the resolution logic, so a guard in one would leave the other's callers still defaulting. Also pins the half that must not change: `None` still means "not given" and falls back to the default |
+| `test_empty_box_everywhere.py` | `--box ""` is refused by every command that picked its box before the shared resolver (update, ssh, binaries, nets, box-config, arm, spi, i2c, logs, install, uninstall) and never falls back to the default box; an AST guard flags a new `if not box: box = ...` or `x = box or ...` under `cli/commands` |
+| `test_simple_hdlc.py` | `cli/simple_hdlc.py`: the CRC-16/CCITT-FALSE checksum pinned to the values of the PyCRC implementation it replaced, HDLC encode/decode round trips including escaped flag and escape bytes, and a corrupted CRC reported as an error frame |
 | `test_ssh.py` | SSH ensure_lager_box_keypair and key_auth_works helpers |
+| `test_ssh_user_by_ip.py` | `lager ssh` and `lager update` log in as the user saved for the box, whether `--box` names it, gives its IP, or is left to the default box |
 | `test_supply_tui.py` | SupplyTUI render output, command parsing, worker threads, connection failure |
 | `test_uart_session_release.py` | UART teardown releases the box-side session on every exit path (including Ctrl+C, and when the session never came up), never skips the disconnect that follows, and reports a held net with the take-over command; plus the connect banner keeping a by-id device path readable |
 | `test_uart_ws_status_events.py` | CLI handling of box-side `uart_status` events when a UART device re-enumerates |
 | `test_update_deps_preview.py` | `lager update --check`'s build-cache line never promises a cached build the rebuild gate would override — a pending layout flatten is a certain rebuild, and an unmeasurable build hash is reported as unknown rather than as a valid cache |
+| `test_update_fetch.py` | `lager update`'s fetch command line: the tag refspec is forced, so a box holding a tag that points somewhere other than origin's can still be updated; the `LAGER_FETCH_RC=` marker still precedes the divergence count |
 | `test_update_flatten.py` | `lager update` sparse-checkout flatten: deletions propagate, root entries preserved, and the docker-build hash covers the source tree |
-| `test_update_probe.py` | `lager update` probe script modprobe/usbtmc detection and output parsing |
+| `test_update_probe.py` | `lager update` probe script modprobe/usbtmc detection and output parsing, and the re-derivation that runs after the checkout. The probe reads the tree as it was before the pull, so a blacklist file changed by a release reads as current until that state is read again |
 | `test_control_flow_exits.py` | `ctx.exit()` survives the broad handler of its own try block: `lager update --check` exits 2 (not 1) with no traceback, plus the `tools/check_control_flow_handlers.py` gate and its own detection cases |
-| `test_update_secret_ownership.py` | `lager update`'s secret-file ownership repair, run as real shell against a throwaway directory with a recording `sudo` stub |
+| `test_update_secret_ownership.py` | `lager update`'s secret-file ownership repair, run as real shell against a throwaway directory with a recording `sudo` stub. Also that its list names the MCP token path the box's `constants.py` names |
+| `test_box_config_mcp_token.py` | `lager box-config mcp-token`: `enable` and `rotate` show the token once with a client entry that carries it, `status` shows a state and never a value, `rotate` and `disable` confirm before they reach the box, and a reply that does not parse is never echoed -- the shared `_parse_response` prints the raw reply, which for these verbs holds the token |
 | `test_usb_command_errors.py` | `lager usb <net> <command>` error wiring: a 404 for a missing device must not be reported as an out-of-date box image |
-| `test_usb_cycle_command.py` | `lager usb <net> cycle|recover` wiring: off-time reaches the box, no client-side default that could drift from the box's, and the client budget outlasts the longest legal cycle |
+| `test_usb_cycle_command.py` | `lager usb <net> cycle|recover` wiring: off-time reaches the box, no client-side default that could drift from the box's, and the client budget outlasts the longest legal cycle. Also that a cycle whose device did not come back exits 1, read from an old box's `reconnected: false` too |
+| `test_user_facing_messages.py` | Messages that stated something untrue: `lager debug gdbserver`/`disconnect` name the GDB server of the net's backend, the `lager nets state` old-box note names 0.34.0, and the host-networking warning links a docs page and heading that exist |
 | `test_version_skew.py` | Version skew warning when CLI minor > box minor with per-process caching |
 | `test_watt_subcommands.py` | `lager watt` NetGroup reading power/current/voltage/all over the box API |
 | `test_ws_diagnose.py` | WebSocket failure message generation pointing to instrument vs. box based on health |
-| `test_box_lock_command.py` | `lager boxes lock`/`unlock` command layer: the no-expiry reservation body (`holder_type`/`ttl_seconds`), exit codes on 409/403, `--force`, and the Docker-root warning |
+| `test_box_lock_command.py` | `lager boxes lock`/`unlock` command layer: the no-expiry reservation body (`holder_type`/`ttl_seconds`), exit codes on 409/403, `--force`, the Docker-root warning, and unlock sending the stored holder for a lock the CLI counts as ours (not for a `ci:generic` sibling; the plain user when the lock read fails; `--user`) |
+| `test_logs_command.py` | `lager logs` runs every SSH call through the shared runner, so it uses the box's saved user and the lager_box key; `logs docker`'s remote script, run under bash with stub `docker`/`sudo`, prints each size, says when `sudo -n` needs a password, and exits 3 when docker fails |
+| `test_lock_holder_matching.py` | `holder_is_ours` is the one lock-holder comparison: its truth table (scope, plain user, the email of a four-part holder from another tool, `ci:generic` refused for unlock), `holder_email`, `heartbeat_holder`, the acquire decisions using the same rule, and AST scans that fail on a raw holder comparison, a stray `lock_scope` call, or a heartbeat that does not send `heartbeat_holder(...)` |
+| `test_boxes_live_listing.py` | Concurrent `lager boxes` listing: the fan-out is parallel (asserted with a `threading.Barrier`, not a stopwatch), an unanswering box is abandoned at the deadline rather than hanging the command, gateway denials stay counted apart from unreachable boxes for every `denial_label` verdict, each probe's gateway retry inherits that probe's timeout so it cannot outlive the deadline, only the bare version is cached and only from the calling thread, plus the repaint arithmetic (line truncation, over-tall fleets falling back to a single print, a settled table repainting no further) and the waiting indicators (`locked by` present from the first frame, the wheel visiting every glyph, an outstanding box still repainting as it turns, a resolved row dropping it) and the `gateway_auth` thread safety it depends on -- single-flight refresh so a fan-out cannot spend Stout's rotating refresh cookie N times, and atomic store writes |
 | `test_config_roundtrip.py` | `cli/config.py` JSON<->ConfigParser round-trip, legacy-key migration, `read`/`write_lager_json`, `expand_devenv_path`, `get_debug_script_for_net` |
 | `test_impl_host_importable.py` | Every `cli/impl/*` module must import with `box/` off `sys.path` and `lager` blocked -- they ship in the wheel but the box tree does not, so a module-level `import lager` breaks them on any pip install |
 | `test_import_surface.py` | Import guards: `cli/status.py` needs pymongo's `bson.decode`, and `termios`/`tty` must stay optional (simulated via a `meta_path` finder) |
 | `test_impl_script_dispatch.py` | Every `run_backend`/`get_impl_path` call site names an impl script that exists on disk, against a two-sided `KNOWN_MISSING` baseline (now empty, #261); plus `get_impl_path` subdir/root resolution, its raise-on-missing behavior, and that the formerly-dead `lager logic` subcommands reach the backend |
-| `test_instrument_role_tables.py` | The three instrument role tables -- the box's `SUPPORTED_USB` and `CHANNEL_MAPS`, the CLI's `INSTRUMENT_NET_MAP` -- agree for every instrument; a channel advertised for a role the CLI will not create a net for is a silently unusable capability |
+| `test_instrument_role_tables.py` | The three instrument role tables -- the box's `SUPPORTED_USB` and `CHANNEL_MAPS`, the CLI's `INSTRUMENT_NET_MAP` -- agree for every instrument; a channel advertised for a role the CLI will not create a net for is a silently unusable capability. Also that every instrument the scanner detects has a `lager nets add` entry |
 | `test_logic_dispatch_actions.py` | Every action `lager logic` sends is one the impl script it targets actually handles -- the contract that broke in #261, which a file-existence check cannot see (the pulse-width pair named an existing file with an action it does not register) |
 | `test_login_commands.py` | `lager login`/`logout`/`whoami`: display-name fallback, MFA prompt wiring, logout URL rstrip, and the four `whoami` session states |
 | `test_matchers.py` | Test-output matchers and the v1 stream framing parser; markers split across chunk boundaries must still set the exit code |
-| `test_param_types.py` | Every custom click ParamType, valid and invalid, incl. the five on live command paths |
+| `test_param_types.py` | Every custom click ParamType, valid and invalid, incl. the five on live command paths and `ByteSizeType` (`--erase-size`: decimal, `0x` hex, `K`/`M` suffixes, never zero) |
 | `test_safe_unpickle.py` | Deserialization allowlist: refused globals must not be imported as a side effect of refusing them |
+| `test_webcam_command.py` | `lager webcam` CLI: the tokenised viewer link on access-gated boxes (`_viewer_url`, the expiry note, the `lager login` hint), `start` sending `source`/`started_by`, and `snapshot` writing the decoded JPEG to `--out`. Also the stop hints `start` and `start-all` print, each replayed through the group so the line a user copies stays a command that parses and names the box the way they typed it |
+| `test_box_storage.py` | `box_storage.py` project-level `.lager` merging behavior |
+| `test_gateway_auth.py` | `gateway_auth.py` bearer-token auth for boxes behind an authenticating gateway, including the pinned CI token (`LAGER_GATEWAY_TOKEN`), and that `check_gateway_status` holds its first-contact retry to the caller's own timeout rather than a fixed 30s -- otherwise a caller with a deadline reports a box that was still answering |
+| `test_update_gate.py` | Update rebuild gate: probe parsing, build-hash mismatch, early-exit verdict; the shared `/etc/lager` state-file writer, run against a scratch directory, including that the ref write skips identical content and that the version is recorded only after the container starts; and the `--check` exit-code contract, guarded structurally so no failure ahead of the dry run exits 1 and becomes indistinguishable from "this box needs an update" |
+| `test_gateway_callsites.py` | Gateway-auth discovery across every box-talking call site: record the mapping on a discovery 401, retry once with a held token, surface genuine denials, and keep rendering the other boxes' rows |
+| `test_host_cli.py` | Host-OS CLI install helpers shared by `lager install` and `lager update`: the reconcile decision table, `--check` labels, exit codes, the probe snippet under a real shell, and the drift guard pinning the deploy scripts' mirror |
+| `test_errors.py` | `cli/errors.py` taxonomy, plus main/box_storage/config error paths |
+| `test_format_lock_user.py` | `box_storage.format_lock_user` rendering of lock holder identities |
+| `test_group_usage.py` | Usage-line formatting for CLI command groups (CommandFirstUsageMixin / LagerGroup) |
+| `test_install_wheel.py` | install-wheel command: wheel filename to package name parsing |
+| `test_uninstall_spec.py` | Pins `lager uninstall`'s removal spec to what `install` / `box-config apply` actually create; lock dissolves when the teardown removes the lock server |
+| `test_update_version_ref.py` | Version reference resolution for git checkouts (semver tags vs. named branches) |
+| `test_bench_export.py` | `lager bench export`: fetches `GET /bench` on :9000 and prints the manifest with sorted keys (or one line with `--compact`, or to a file with `--out` plus a one-line summary on stderr); a 404 is an update prompt naming 0.50.0, other HTTP errors show the status and body, a connection failure points at `lager hello`, and a reply that is not a manifest is refused and never written |
+| `test_nets_describe_fields.py` | `lager nets describe --dut-connection` / `--test-hint` / `--clear-test-hints`: the two control-plane fields are merged onto the saved record next to purpose, notes and tags, duplicate hints collapse, side-car fields survive, and the nothing-given message names the new options |
+| `test_nets_channel_less_roles.py` | Roles with no channel, spelled as an empty channel list: a `scope` net is saved without a pin, because a pin is what tells the box an old record is a channel |
+| `test_update_scope_daemon.py` | Every box carries a scope daemon built from the Rust it runs: `start_box.sh` builds it on install, update and config apply, and rebuilds it when the daemon sources change |
 
 #### Measurement Unit Tests (`test/unit/measurement/` -- 4 files)
 
@@ -676,46 +747,29 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_blufi_unit.py` | BluFi protocol parsing (696-line pytest suite) |
 | `test_blufi_scan.py` | `BlufiClient.scan()` BLE advertisement presence checks |
 
-#### Root Unit Tests (`test/unit/test_*.py` -- 11 files)
+#### Tools Unit Tests (`test/unit/tools/` -- 4 files)
+
+These tests cover the scripts in `tools/`. The `unit (root)` job runs them.
+
+| File | What it tests |
+|------|---------------|
+| `test_bench_schedule_check.py` | `tools/bench_schedule_check.py`: the nightly cadence signals kept distinct -- a missed night (gap), a dead cron (stale), and a schedule drifting later (lateness vs the cron parsed from `nightly-bench.yml`), which spacing alone cannot see. Also that only the newest interval raises a gap, so a missed night stops alarming once the next scheduled night runs |
+| `test_bench_watchdog_env.py` | Pins `bench-watchdog.yml`'s `env:` block against the names `tools/bench_schedule_check.py` reads: the workflow must set no threshold at all (a second copy is how the gap threshold came to override 36 with 26 and alarm on a late night), and every threshold the tool reads must carry a default |
+| `test_coverage_checker.py` | `tools/check_coverage_counts.py`: platform-gated rows are not drift (and `--fix` must not rewrite them), the anchored summary parse `FORCE_COLOR` defeated, and a missing `pytest-timeout` reported as the missing plugin rather than as a failing suite |
+| `test_pdf_pages.py` | `tools/pdf_pages.py`: PNG and text extraction (skips without pymupdf, which is AGPL) |
+
+#### Root Unit Tests (`test/unit/test_*.py` -- 4 files)
 
 | File | What it tests |
 |------|---------------|
 | `test_bench_cleanup_timeouts.py` | Tree-wide guard: every `if: always()` step on a `self-hosted` bench job carries `timeout-minutes` and `continue-on-error`, and the bench jobs are still serialized on one non-cancelling concurrency group |
-| `test_bench_schedule_check.py` | `tools/bench_schedule_check.py`: the nightly cadence signals kept distinct -- a missed night (gap), a dead cron (stale), and a schedule drifting later (lateness vs the cron parsed from `nightly-bench.yml`), which spacing alone cannot see |
-| `test_bench_watchdog_env.py` | Pins `bench-watchdog.yml`'s `env:` block against the names `tools/bench_schedule_check.py` reads: the workflow must set no threshold at all (a second copy is how the gap threshold came to override 36 with 26 and alarm on a late night), and every threshold the tool reads must carry a default |
-| `test_coverage_checker.py` | `tools/check_coverage_counts.py`: platform-gated rows are not drift (and `--fix` must not rewrite them), the anchored summary parse `FORCE_COLOR` defeated, and a missing `pytest-timeout` reported as the missing plugin rather than as a failing suite |
-| `test_group_usage.py` | Usage-line formatting for CLI command groups (CommandFirstUsageMixin / LagerGroup) |
-| `test_install_wheel.py` | install-wheel command: wheel filename to package name parsing |
+| `test_nightly_notify_scope.py` | `nightly-bench.yml`: every job that can write the `bench-alert` issue runs only for the scheduled run or a run of main, with that term ANDed onto its existing condition |
 | `test_no_global_os_path_patches.py` | Tree-wide guard: no test may patch `os.path` (process-global; on Python >= 3.14 it also rewrites every `pathlib.Path.exists()`) — patch the module's seam or use a real temp path |
-| `test_pdf_pages.py` | `tools/pdf_pages.py`: PNG and text extraction (skips without pymupdf, which is AGPL) |
 | `test_supply_settle.py` | The DP821 suite's `_wait_for_regulation`: replays the captured 0.17 A enable transient to pin that agreeing reads inside a plateau are not a settle, that a genuine steady load settles at once and is left for the caller to judge, and that a wired channel names its fixture on failure |
-| `test_uninstall_spec.py` | Pins `lager uninstall`'s removal spec to what `install` / `box-config apply` actually create; lock dissolves when the teardown removes the lock server |
-| `test_update_version_ref.py` | Version reference resolution for git checkouts (semver tags vs. named branches) |
-
-#### Repo-Root Unit Tests (`test/test_*.py` -- 2 files)
-
-| File | What it tests |
-|------|---------------|
-| `test_errors.py` | `cli/errors.py` taxonomy, plus main/box_storage/config error paths |
-| `test_format_lock_user.py` | `box_storage.format_lock_user` rendering of lock holder identities |
-
-#### In-Package CLI Tests (`cli/tests/` -- 7 files)
-
-Gated as part of the `unit (cli)` job.
-
-| File | What it tests | Gated |
-|------|---------------|:---:|
-| `test_box_storage.py` | `box_storage.py` project-level `.lager` merging behavior | Yes |
-| `test_gateway_auth.py` | `gateway_auth.py` bearer-token auth for boxes behind an authenticating gateway | Yes |
-| `test_update_gate.py` | Update rebuild gate: probe parsing, build-hash mismatch, early-exit verdict | Yes |
-| `test_gateway_callsites.py` | Gateway-auth discovery across every box-talking call site: record the mapping on a discovery 401, retry once with a held token, surface genuine denials, and keep rendering the other boxes' rows | Yes |
-| `test_host_cli.py` | Host-OS CLI install helpers shared by `lager install` and `lager update`: the reconcile decision table, `--check` labels, exit codes, the probe snippet under a real shell, and the drift guard pinning the deploy scripts' mirror | Yes |
-| `test_io_imports.py` | The `lager.io.*` import surface and re-export identity; asserts the removed root-level aliases stay removed | Yes |
-| `test_box_lager_imports.py` | Import-verification report across the box package. **No assert statements** -- excluded by `cli/tests/conftest.py`; run it directly | No |
 
 ### MCP Tests (`test/mcp/`)
 
-#### Unit Tests (`test/mcp/unit/` -- 11 files)
+#### Unit Tests (`test/mcp/unit/` -- 16 files)
 
 | File | What it tests |
 |------|---------------|
@@ -729,7 +783,12 @@ Gated as part of the `unit (cli)` job.
 | `test_exec_tools.py` | `lager.mcp.tools.exec`: box_exec/read_file/write_file/list_dir, gated by `LAGER_MCP_ALLOW_EXEC` |
 | `test_heuristic_engine.py` | Heuristic engine: requirement inference and suitability assessment |
 | `test_schemas.py` | MCP schema model validation (BenchDefinition, NetDescriptor, CapabilityGraph) |
-| `test_server_state_reload.py` | Auto-reload of bench state when bench.json or saved_nets.json change |
+| `test_server_state_reload.py` | MCP server state: auto-reload when bench.json or saved_nets.json change (including a watched file that appears after startup), injected state never reloads, the bench and graph are published as one object so racing readers of `get_bench_and_graph` never see a torn pair while two separate reads can, `reload_bench` takes the reload lock, a file-backed bench carries the live instruments on a copy while an injected one never scans, and `ensure_loaded` loads from disk once |
+| `test_bearer_auth.py` | `lager.mcp.auth`, the optional bearer token on the MCP port, driven as a raw ASGI callable: no token file changes nothing; a token file the server cannot use (empty, unreadable, a directory) refuses every request with 503 and never opens the port; a refused request never reaches the app; `enable`, `rotate` and `disable` take effect on the same instance with no restart; and neither the token nor a presented value reaches a log |
+| `test_server_app.py` | `lager.mcp.server.build_app` puts the bearer check in the request path of the BUILT app, each app runs the session manager its own route uses (the SDK makes a new one per build), and the startup posture lines warn when a control or exec tier is on with no token |
+| `test_net_types.py` | The one net-type table (`engine.net_types`): every `NetType` member has a row and every row's role resolves through `NetType.from_role` (the no-enum allowlist stays honest), every `reference` names an `API_REFERENCE` entry and the rows without one are exactly the documented exceptions, role and alias lookups resolve while an enum name is never aliased (`PowerSupply2Q` stays unanswered), and the bench loader, the capability graph and the planner's phase all read the same row |
+| `test_bench_manifest.py` | The bench manifest and what feeds it: `schema_version`, `box_id` and a content hash that ignores `generated_at`, changes with the bench and survives a JSON round trip; `capability_bindings` filled from the graph on a copy (the shared bench is never mutated); `reference_keys` per net; `metadata_sources` naming `bench.json` or `saved_net` per field, a malformed override not credited; the HTTP loader gone; scanner records flattened to descriptors; the instrument cache scanning once per TTL, remembering a failed scan for the TTL, sharing one scan across concurrent callers and handing out copies; and `get_test_example` returning per-type snippets plus a repository link with no file dependency |
+| `test_test_patterns.py` | The agent-facing test-pattern catalog names only real `NetType` members, so a script an agent generates cannot fail on an enum member that does not exist |
 
 #### Integration Tests (`test/mcp/integration/` -- 1 file)
 
@@ -737,7 +796,7 @@ Gated as part of the `unit (cli)` job.
 |------|---------------|
 | `test_agent_loop.py` | End-to-end agent workflow: discovery, suitability, `lager python` execution, verify |
 
-### Python API Tests (`test/api/` -- 83 files)
+### Python API Tests (`test/api/` -- 85 files)
 
 These are **standalone scripts, not pytest** (see `test/CONVENTIONS.md`): each defines `main()`
 and runs on a box via `lager python`. None of them run in the PR gate.
@@ -785,6 +844,12 @@ and runs on a box via `lager python`. None of them run in the PR gate.
 
 Thermocouple (single, multiple, monitor), watt profile, multi-sensor lifecycle, energy analysis
 and statistics, `test_joulescope.py` (254 assertions), and `test_ppk2.py`.
+
+#### Measurement (1 file)
+
+`test_scope_picoscope.py` drives a real PicoScope through `lager python`. It checks that the SDK
+opens and reports a model and channel count, and that settings survive a round trip through the
+hardware. The measurements must agree with each other, so the suite passes on an open probe.
 
 #### Peripherals (9 files)
 
@@ -836,12 +901,12 @@ a collision, and `-c /dev/null` stops `test/mcp` from shadowing the `mcp` PyPI p
 export PYTHONPATH="$PWD:$PWD/box"
 PYTEST="pytest -v --import-mode=importlib -c /dev/null --timeout=60"
 
-$PYTEST test/unit/cli/ cli/tests/
+$PYTEST test/unit/cli/
 $PYTEST test/unit/box/
 $PYTEST test/unit/measurement/
 $PYTEST test/unit/blufi/
 $PYTEST test/mcp/unit/
-$PYTEST test/unit/test_*.py test/test_*.py
+$PYTEST test/unit/test_*.py test/unit/tools/
 ```
 
 Do **not** run `pytest test/unit/` as a single command: `test/unit/box/` and

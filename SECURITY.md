@@ -22,8 +22,12 @@ report it responsibly.
 ### How to Report
 
 1. **Do not** open a public GitHub issue for security vulnerabilities.
-2. Email **hello@lagerdata.com**.
-3. Include as much detail as you can:
+2. Report the vulnerability privately through GitHub. On the repository's
+   **Security** tab, select **Report a vulnerability**. You can also open the
+   [private reporting form](https://github.com/lagerdata/lager/security/advisories/new)
+   directly.
+3. If you cannot use GitHub, email **hello@lagerdata.com**.
+4. Include as much detail as you can:
    - Description of the vulnerability
    - Steps to reproduce
    - Potential impact
@@ -36,7 +40,8 @@ report it responsibly.
 - **Assessment** — we confirm the issue and determine severity.
 - **Updates** — we keep you informed of progress.
 - **Resolution** — we aim to resolve critical issues within 30 days.
-- **Credit** — with your permission, we credit you in the release notes.
+- **Credit** — with your permission, we credit you in the security advisory
+  and the release notes.
 
 ### Scope
 
@@ -88,7 +93,9 @@ nothing about nets.
 
 **The box is trusted-network infrastructure.** The services it exposes are
 unauthenticated by design, on the assumption stated in the Security Model below.
-For deployments that need authenticated access, put the gateway in front of it.
+The MCP server has an optional bearer token, which is off by default.
+For deployments that need authenticated access, put an authenticating gateway
+in front of it.
 
 ## Security Model
 
@@ -107,14 +114,21 @@ infrastructure on a trusted network:
   **not** filter the ports the box's containers publish. Docker installs its own
   forwarding rules ahead of the host chain. A published service port is
   therefore reachable from anywhere that can route to the box, whatever
-  `ufw status` reports. Put the box on a VPN or an isolated LAN, and rely on
-  that.
+  `ufw status` reports. On a box set to `lager box-config network-mode host`,
+  the container publishes no ports, and UFW does govern the Lager ports. In
+  either mode, put the box on a VPN or an isolated LAN, and rely on that.
+- **Keep the MCP server off a network you do not trust.** By default it asks for
+  no credential. Because the host firewall cannot filter a published port,
+  set `LAGER_MCP_NO_PUBLISH=1` with `lager box-config env set` to stop
+  publishing port 8100 while the box keeps its other ports.
+- **Require a token on the MCP server when you enable its control or exec
+  tools.** `lager box-config mcp-token enable` makes the server answer only a
+  request that carries the token. The token does not encrypt the connection. Port
+  8100 is plain HTTP, so the token does not replace a trusted network. The token
+  belongs to the box alone and is not a gateway credential. An authenticating
+  gateway must not forward port 8100.
 - **Rotate VPN auth keys** periodically.
 
 For deployments that need authenticated access, Lager supports placing an
 authenticating gateway in front of a box; the CLI discovers it and prompts for
 `lager login`.
-
-## Acknowledgments
-
-We thank the security researchers who responsibly disclose vulnerabilities to us.

@@ -1,4 +1,4 @@
-# Copyright 2024-2026 Lager Data LLC
+# Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 """
 Unit tests for box/lager/debug/da1469x_loader.py
@@ -9,16 +9,31 @@ Covers:
   - ``flash_image`` / ``erase_range`` against an in-memory fake OpenOcdRpc
     that mimics the real loader's ``fl_*`` global behaviour, and verifies
     the exact OpenOCD command sequence matches the working ``flash.gdb`` /
-    ``erase.gdb`` scripts in [xl/openocd/flash_loader/].
+    ``erase.gdb`` scripts.
   - Failure modes: rc != 1 from ping / erase / program raises with the rc.
   - Timeout paths: a fake that never advances ``fl_state`` raises
     ``Da1469xLoaderError``.
+  - ``_poll_word`` retry: a dropped ``mdw`` reply (``OpenOcdRpcError``) is
+    retried to the deadline like any non-matching value, a link that never
+    answers still times out naming the read error, and a non-RPC error is
+    not swallowed.
+  - ``_prepare_loader`` retry: a loader that never publishes ``fl_state==1``
+    gets the whole bring-up sequence run again (reset + reload, not just
+    another poll), a loader that is ready first time gets exactly one pass,
+    a failure that is not a readiness timeout is not retried, and exhausting
+    the attempts names the count and what the last attempt saw.
+  - Core entry state: the loader is entered in Thumb state (``EPSR.T`` set
+    in ``xPSR`` before the core resumes, PC written without bit 0, a core
+    already in Thumb state left alone), the ``mynewt_main`` breakpoint is
+    halfword-aligned, and a core that locked up on entry is reported as
+    LOCKUP on the first pass rather than replayed as a readiness timeout.
 
 Module is loaded via the same stub-package trick as
 ``test_openocd_dispatch.py`` so the real ``lager`` package's hardware
 imports stay out of the test environment.
 """
 
+import contextlib
 import importlib.util
 import os
 import struct
@@ -182,11 +197,22 @@ class FakeRpc:
       ``FL_CMD_PROGRAM_VERIFY`` write so tests catch the regression
       class "host stages chunks at the static symbol address of the
       pointer variable instead of dereferencing it".
+    * ``xpsr`` — value ``reg_read`` reports for the program status
+      register. Defaults to ``0xF8000000`` — the value hardware actually
+      published after ``reset halt`` on the board that exposed the Thumb
+      bug — so every test in this file drives the broken-by-default core
+      and the regression cannot quietly stop being exercised.
+    * ``psr_reg_name`` — which spelling this target answers to. OpenOCD
+      rejects the others outright ("register <name> not found in current
+      target"), which is what the probe in ``_force_thumb_state`` walks.
+    * ``locked_up`` — set ``DHCSR.S_LOCKUP`` so the core reads as halted
+      *and* locked up, the way a core that faulted into LOCKUP does.
     """
 
     def __init__(self, syms, *, ping_rc=1, erase_rc=1, program_rc=1,
                  boot_state=1, buf_sz=0x40, stale_bps=(),
-                 fl_cmd_data_base=0x20010000):
+                 fl_cmd_data_base=0x20010000, xpsr=0xF8000000,
+                 locked_up=False, psr_reg_name='xPSR'):
         self.syms = syms
         self.calls = []
         self.mem = {}
@@ -195,6 +221,12 @@ class FakeRpc:
         self.program_rc = program_rc
         self.boot_state = boot_state
         self.buf_sz = buf_sz
+        # Core entry state. ``xpsr`` defaults to the hardware-observed
+        # ``0xF8000000`` — Thumb bit CLEAR — so the driver has to set it
+        # on the way in for anything in this file to pass.
+        self.xpsr = xpsr
+        self.psr_reg_name = psr_reg_name
+        self.locked_up = locked_up
         # Pre-existing breakpoints — drains via ``bp_list``+``rbp``; tests
         # that exercise the defensive cleanup pass populate this.
         self.bps = list(stale_bps)
@@ -287,12 +319,30 @@ class FakeRpc:
         addr = int(addr)
         # Always record the read so tests can assert on poll order.
         self._record(f'mdw {hex(addr)} {count}')
+        if addr == loader.REG_DHCSR and count == 1:
+            # S_HALT always set (this fake only ever answers a halted or
+            # a locked-up core); S_LOCKUP only when the test asks for it.
+            return (1 << 17) | (loader.DHCSR_S_LOCKUP if self.locked_up else 0)
         if count == 1:
             return self.mem.get(addr, 0)
         return [self.mem.get(addr + 4 * i, 0) for i in range(count)]
 
     def reg_write(self, name, value):
         self._record(f'reg {name} {hex(int(value) & 0xFFFFFFFF)}')
+        if name == self.psr_reg_name:
+            self.xpsr = int(value) & 0xFFFFFFFF
+
+    def reg_read(self, name):
+        # Recorded distinctly from ``reg_write`` — both are ``reg <name>``
+        # on the wire, and a trace that cannot tell them apart cannot
+        # prove the Thumb bit was written rather than merely read.
+        self._record(f'reg-read {name}')
+        if name == self.psr_reg_name:
+            return self.xpsr
+        raise openocd.OpenOcdRpcError(
+            f'OpenOCD reg {name} failed:\n'
+            f'Error: register {name} not found in current target'
+        )
 
     def bp(self, address, length=4, hw=True):
         self._record(f'bp {hex(int(address))} {length} {"hw" if hw else "sw"}')
@@ -319,6 +369,57 @@ class FakeRpc:
 
     def wait_halt(self, timeout_ms=5000):
         self._record(f'wait_halt {int(timeout_ms)}')
+
+
+class FlakyMdwRpc(FakeRpc):
+    """``FakeRpc`` whose ``mdw`` drops the first *fail_count* replies for
+    *fail_addr*, raising the same ``OpenOcdRpcError`` the real
+    :class:`OpenOcdRpc` raises when OpenOCD answers with no parseable words.
+    """
+
+    def __init__(self, *args, fail_addr=None, fail_count=1, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fail_addr = fail_addr
+        self.fail_count = fail_count
+        self.failures_raised = 0
+
+    def mdw(self, addr, count=1):
+        if int(addr) == self.fail_addr and self.failures_raised < self.fail_count:
+            self.failures_raised += 1
+            self._record(f'mdw {hex(int(addr))} {count} -> DROPPED')
+            raise openocd.OpenOcdRpcError(
+                f'OpenOCD mdw {hex(int(addr))} returned no values:\n'
+            )
+        return super().mdw(addr, count)
+
+
+class SlowToBootRpc(FakeRpc):
+    """``FakeRpc`` whose loader only publishes ``fl_state==1`` from the
+    *ready_from_pass*-th bring-up pass onwards.
+
+    Models the field failure precisely: the ``mdw`` reads all SUCCEED and
+    answer ``0`` for the full budget — the loader simply never started.
+    That is what distinguishes it from :class:`FlakyMdwRpc` (dropped
+    replies) and it is why waiting longer cannot help while starting the
+    loader again can.
+
+    Passes are counted by ``reset halt``, the first command of the
+    sequence, so a fake that flips to ready only on a genuine re-run
+    cannot be satisfied by a driver that merely re-polls.
+    """
+
+    def __init__(self, *args, ready_from_pass=2, **kwargs):
+        kwargs.setdefault('boot_state', 0)
+        super().__init__(*args, **kwargs)
+        self.ready_from_pass = ready_from_pass
+        self.passes = 0
+
+    def reset(self, halt=False):
+        super().reset(halt=halt)
+        self.passes += 1
+        self.mem[self.syms['fl_state']] = (
+            loader.FL_STATE_READY if self.passes >= self.ready_from_pass else 0
+        )
 
 
 _DEFAULT_SYM_ADDRS = {
@@ -430,14 +531,18 @@ class ResolveLoaderPathsTests(unittest.TestCase):
                     os.environ[loader.ENV_LOADER_DIR_OVERRIDE] = old
             msg = str(ctx.exception)
             self.assertIn('flash_loader.elf', msg)
-            self.assertIn('lager box ssh', msg)
+            # The real command is a top-level `ssh` taking --box; `lager box
+            # ssh` never existed, so the message sent operators to a usage
+            # error at the moment they were already stuck.
+            self.assertIn('lager ssh --box', msg)
+            self.assertNotIn('lager box ssh', msg)
 
 
 class XipToFlashOffsetTests(unittest.TestCase):
     """``xip_to_flash_offset`` translates the CLI's absolute XIP addresses
     (e.g. ``0x16000000``) to the flash-relative offsets the loader's
     ``fl_cmd_flash_addr`` expects. This is the missing translation that on
-    real hardware caused ``lager debug SWD flash --bin xl.img,0x16000000``
+    real hardware caused ``lager debug SWD flash --bin firmware.img,0x16000000``
     to silently mean "flash to absolute offset 0x16000000 in QSPI" — far
     past the end of any plausible flash chip.
     """
@@ -480,6 +585,120 @@ class XipToFlashOffsetTests(unittest.TestCase):
             loader.xip_to_flash_offset(loader.QSPI_XIP_END + 0x100)
 
 
+class ScriptedMdw:
+    """Minimal ``mdw``-only stub for driving ``_poll_word`` directly.
+
+    *results* is replayed one entry per call — an ``int`` is returned, an
+    ``Exception`` instance is raised — and the final entry repeats forever
+    once the script runs out, so "fails every time" / "never matches" are
+    both single-entry scripts.
+    """
+
+    def __init__(self, results):
+        self.results = list(results)
+        self.calls = 0
+
+    def mdw(self, addr, count=1):
+        self.calls += 1
+        item = self.results[min(self.calls - 1, len(self.results) - 1)]
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+def _dropped_read_error(addr=0x20004108):
+    """The exact error ``OpenOcdRpc.mdw`` raises when OpenOCD's reply holds
+    no parseable words — the field symptom on a marginal SWD link."""
+    return openocd.OpenOcdRpcError(
+        f'OpenOCD mdw {hex(addr)} returned no values:\n'
+    )
+
+
+class PollWordTests(unittest.TestCase):
+    """``_poll_word`` must treat a *failed* read like a non-matching value.
+
+    Every one of the five poll sites reads target RAM through the debug AP
+    while the CPU is running, so a marginal link occasionally drops a reply
+    and ``mdw`` raises. Aborting the flash on the first such read wasted a
+    deadline with hundreds of iterations left in it; measured at ~12% of
+    flash attempts on a bench with known-marginal SWD wiring.
+    """
+
+    ADDR = 0x20004108
+
+    def _poll(self, rpc, predicate, *, timeout_s, label='boot (fl_state==1)'):
+        return loader._poll_word(
+            rpc, self.ADDR, predicate, timeout_s=timeout_s, label=label,
+        )
+
+    def test_transient_read_error_is_retried(self):
+        # One dropped reply, then the ready value: the caller sees no error.
+        rpc = ScriptedMdw([_dropped_read_error(self.ADDR),
+                           loader.FL_STATE_READY])
+        value = self._poll(
+            rpc, lambda v: v == loader.FL_STATE_READY, timeout_s=5.0,
+        )
+        self.assertEqual(value, loader.FL_STATE_READY)
+        self.assertEqual(rpc.calls, 2, msg='the failed read must be retried')
+
+    def test_persistent_read_failure_times_out_naming_the_error(self):
+        # A genuinely dead link still fails — and reports the read error,
+        # never a fabricated "last value" that was never read.
+        rpc = ScriptedMdw([_dropped_read_error(self.ADDR)])
+        with self.assertRaises(loader.Da1469xLoaderError) as ctx:
+            self._poll(rpc, lambda v: v == loader.FL_STATE_READY,
+                       timeout_s=0.01)
+        msg = str(ctx.exception)
+        self.assertIn('timed out after', msg)
+        self.assertIn('boot (fl_state==1)', msg)
+        self.assertIn('returned no values', msg)
+        self.assertIn(f'last read of {hex(self.ADDR)} failed', msg)
+        self.assertNotIn('last value at', msg)
+
+    def test_non_matching_value_times_out_reporting_last_value(self):
+        # Unchanged behaviour for the case the loop always handled.
+        rpc = ScriptedMdw([0])
+        with self.assertRaises(loader.Da1469xLoaderError) as ctx:
+            self._poll(rpc, lambda v: v == loader.FL_STATE_READY,
+                       timeout_s=0.01)
+        msg = str(ctx.exception)
+        self.assertIn('timed out after', msg)
+        self.assertIn(f'last value at {hex(self.ADDR)} = 0x0', msg)
+        self.assertNotIn('last read of', msg)
+
+    def test_recovered_link_reports_the_value_not_the_stale_error(self):
+        # Drop once, then read a real (but non-matching) value until the
+        # deadline. The report must be the value we actually saw last — a
+        # stale error would misdiagnose a live link as a dead one.
+        rpc = ScriptedMdw([_dropped_read_error(self.ADDR), 0x66A4E0])
+        with self.assertRaises(loader.Da1469xLoaderError) as ctx:
+            self._poll(rpc, lambda v: v == loader.FL_STATE_READY,
+                       timeout_s=0.01)
+        msg = str(ctx.exception)
+        self.assertIn(f'last value at {hex(self.ADDR)} = 0x66a4e0', msg)
+        self.assertNotIn('last read of', msg)
+
+    def test_non_rpc_error_is_not_swallowed(self):
+        # Only OpenOcdRpcError is link flakiness. A programming error in
+        # the RPC layer must surface immediately, not burn the deadline.
+        rpc = ScriptedMdw([TypeError('mdw() got an unexpected keyword')])
+        with self.assertRaises(TypeError):
+            self._poll(rpc, lambda v: v == loader.FL_STATE_READY,
+                       timeout_s=5.0)
+        self.assertEqual(rpc.calls, 1)
+
+    def test_poll_timeout_constants_unchanged(self):
+        # The retry fix must not paper over anything by widening a budget:
+        # these values are the contract with the bench, and every one of
+        # them was already long enough to ride out a dropped read.
+        self.assertEqual(loader._LOADER_BOOT_TIMEOUT_S, 10.0)
+        self.assertEqual(loader._FL_PING_TIMEOUT_S, 5.0)
+        self.assertEqual(loader._FL_ERASE_TIMEOUT_S, 60.0)
+        self.assertEqual(loader._FL_CHUNK_TIMEOUT_S, 30.0)
+        self.assertEqual(loader._FL_FINAL_READY_TIMEOUT_S, 10.0)
+        self.assertEqual(loader._POLL_INTERVAL_S, 0.05)
+
+
 class FlashImageTests(unittest.TestCase):
     """End-to-end command-trace assertions for ``flash_image``.
 
@@ -519,7 +738,8 @@ class FlashImageTests(unittest.TestCase):
         # 2. load_image of loader bin into RAM
         # 3. MSP/PC reads (mdw 0x20000000 / +4) + reg writes
         # 4. QSPIC + MTB pokes
-        # 5. bp <mynewt_main>; resume; wait_halt; rbp; resume; mww MPU
+        # 5. bp <mynewt_main & ~1>; resume; wait_halt; rbp; lockup check;
+        #    resume; mww MPU
         # 6. fl_state poll == 1
         # 7. ping (fl_cmd_rc=0; fl_cmd=1; poll fl_cmd_rc != 0)
         # 8. erase params + fl_cmd=3 + poll
@@ -541,25 +761,34 @@ class FlashImageTests(unittest.TestCase):
         self.assertEqual(c[5], f'mdw {hex(loader.LOADER_RAM_BASE)} 1')
         self.assertEqual(c[6], f'mdw {hex(loader.LOADER_RAM_BASE + 4)} 1')
         self.assertEqual(c[7], 'reg msp 0x20040000')
-        self.assertEqual(c[8], 'reg pc 0x20000401')
+        # The vector-table PC is odd (0x20000401, Thumb convention). It
+        # goes to the PC with bit 0 masked off — OpenOCD drops it there
+        # anyway — and the Thumb bit is applied where the architecture
+        # keeps it, in xPSR, before the core is allowed to run.
+        self.assertEqual(c[8], 'reg pc 0x20000400')
+        self.assertEqual(c[9], 'reg-read xPSR')
+        self.assertEqual(c[10],
+                         f'reg xPSR {hex(0xF8000000 | loader.XPSR_THUMB_BIT)}')
         # QSPIC / MTB writes (4 of them, in the same order as the GDB script).
-        self.assertEqual(c[9], f'mww {hex(loader.REG_QSPIC_DUMMYBYTES)} 0x0')
-        self.assertEqual(c[10], f'mww {hex(loader.REG_MTB_POSITION)} 0x0')
-        self.assertEqual(c[11], f'mww {hex(loader.REG_MTB_MASTER)} 0x0')
-        self.assertEqual(c[12], f'mww {hex(loader.REG_MTB_FLOW)} 0x0')
+        self.assertEqual(c[11], f'mww {hex(loader.REG_QSPIC_DUMMYBYTES)} 0x0')
+        self.assertEqual(c[12], f'mww {hex(loader.REG_MTB_POSITION)} 0x0')
+        self.assertEqual(c[13], f'mww {hex(loader.REG_MTB_MASTER)} 0x0')
+        self.assertEqual(c[14], f'mww {hex(loader.REG_MTB_FLOW)} 0x0')
         # Defensive bp list (no stale bps in this test) precedes our own
         # bp set — same address space, but the list is read-only and
         # short-circuits when empty.
-        self.assertEqual(c[13], 'bp')
-        # Breakpoint dance.
-        self.assertEqual(c[14],
-                         f'bp {hex(_DEFAULT_SYM_ADDRS["mynewt_main"])} 4 hw')
-        self.assertEqual(c[15], 'resume')
-        self.assertEqual(c[16], 'wait_halt 5000')
-        self.assertEqual(c[17],
-                         f'rbp {hex(_DEFAULT_SYM_ADDRS["mynewt_main"])}')
-        self.assertEqual(c[18], 'resume')
-        self.assertEqual(c[19], f'mww {hex(loader.REG_MPU_CTRL)} 0x0')
+        self.assertEqual(c[15], 'bp')
+        # Breakpoint dance, at the halfword-aligned form of the symbol.
+        bp_addr = _DEFAULT_SYM_ADDRS['mynewt_main'] & ~1
+        self.assertEqual(c[16], f'bp {hex(bp_addr)} 4 hw')
+        self.assertEqual(c[17], 'resume')
+        self.assertEqual(c[18], 'wait_halt 5000')
+        self.assertEqual(c[19], f'rbp {hex(bp_addr)}')
+        # ``wait_halt`` reports a locked-up core as halted, so the state
+        # is checked before we hand the core the loader's main loop.
+        self.assertEqual(c[20], f'mdw {hex(loader.REG_DHCSR)} 1')
+        self.assertEqual(c[21], 'resume')
+        self.assertEqual(c[22], f'mww {hex(loader.REG_MPU_CTRL)} 0x0')
 
         # SYS_CTRL_REG SW reset is the very last command issued by flash_image.
         self.assertEqual(c[-1], f'mww {hex(loader.REG_SYS_CTRL_REG)} 0x1')
@@ -797,8 +1026,10 @@ class FlashImageTests(unittest.TestCase):
             f'rbp {hex(_DEFAULT_SYM_ADDRS["mynewt_main"])}', list_idx,
         )
         rbp_other = c.index('rbp 0x20009999', list_idx)
+        # Our own set uses the halfword-aligned address; the defensive
+        # rbp above uses whatever OpenOCD listed, odd stale entry included.
         bp_set_idx = c.index(
-            f'bp {hex(_DEFAULT_SYM_ADDRS["mynewt_main"])} 4 hw',
+            f'bp {hex(_DEFAULT_SYM_ADDRS["mynewt_main"] & ~1)} 4 hw',
         )
         self.assertLess(list_idx, rbp_main_defensive)
         self.assertLess(list_idx, rbp_other)
@@ -824,24 +1055,430 @@ class FlashImageTests(unittest.TestCase):
         fake = FakeRpcFlakyBpList(_DEFAULT_SYM_ADDRS, buf_sz=0x40)
         out = self._run(fake, image_size=16)
         self.assertIn(
-            f'bp {hex(_DEFAULT_SYM_ADDRS["mynewt_main"])} 4 hw',
+            f'bp {hex(_DEFAULT_SYM_ADDRS["mynewt_main"] & ~1)} 4 hw',
             fake.calls,
             msg='our own bp set must still happen when bp_list errors',
         )
         self.assertIn('Programmed 16 bytes successfully', '\n'.join(out))
 
+    def test_dropped_read_during_boot_poll_does_not_abort_flash(self):
+        # The field failure: ``mdw fl_state`` drops one reply right after
+        # ``resume`` + ``mww MPU_CTRL 0`` (reading RAM through the debug AP
+        # while the CPU runs). Before the retry it surfaced as
+        # "flash_loader flash failed after 'Waiting for flash_loader to be
+        # ready...': OpenOCD mdw 0x... returned no values:" and killed the
+        # whole flash. Now the flash completes.
+        fake = FlakyMdwRpc(
+            _DEFAULT_SYM_ADDRS, buf_sz=0x40,
+            fail_addr=_DEFAULT_SYM_ADDRS['fl_state'], fail_count=1,
+        )
+        out = self._run(fake, image_size=16)
+        self.assertEqual(fake.failures_raised, 1,
+                         msg='the fake must actually have dropped a read')
+        self.assertIn('Programmed 16 bytes successfully', '\n'.join(out))
+
+    def test_dropped_reads_during_program_polls_do_not_abort_flash(self):
+        # The erase and per-chunk program polls run against a running CPU
+        # too, so they are exposed to the same drop. Fail every read of
+        # ``fl_cmd`` and ``fl_cmd_rc`` once each.
+        for sym in ('fl_cmd', 'fl_cmd_rc'):
+            with self.subTest(sym=sym):
+                fake = FlakyMdwRpc(
+                    _DEFAULT_SYM_ADDRS, buf_sz=0x20,
+                    fail_addr=_DEFAULT_SYM_ADDRS[sym], fail_count=2,
+                )
+                out = self._run(fake, image_size=80)  # 3 chunks
+                self.assertEqual(fake.failures_raised, 2)
+                self.assertIn('Programmed 80 bytes successfully',
+                              '\n'.join(out))
+
     def test_loader_boot_timeout_raises(self):
-        # boot_state=0 -> fl_state never reaches READY.
+        # boot_state=0 -> fl_state never reaches READY, on every attempt.
         fake = FakeRpc(_DEFAULT_SYM_ADDRS, boot_state=0)
-        # Shrink the boot timeout so the test is fast — patch via attr swap.
-        orig = loader._LOADER_BOOT_TIMEOUT_S
-        loader._LOADER_BOOT_TIMEOUT_S = 0.01
-        try:
+        with _fast_boot_timeout():
             with self.assertRaises(loader.Da1469xLoaderError) as ctx:
                 self._run(fake, image_size=16)
-        finally:
-            loader._LOADER_BOOT_TIMEOUT_S = orig
         self.assertIn('boot', str(ctx.exception))
+
+
+@contextlib.contextmanager
+def _fast_boot_timeout(timeout_s=0.01):
+    """Shrink ``_LOADER_BOOT_TIMEOUT_S`` for the duration of a test.
+
+    Only so a test that must burn the boot budget (three times over, now
+    that bring-up retries) finishes in milliseconds. The production value
+    is asserted unchanged by
+    ``PollWordTests.test_poll_timeout_constants_unchanged``.
+    """
+    orig = loader._LOADER_BOOT_TIMEOUT_S
+    loader._LOADER_BOOT_TIMEOUT_S = timeout_s
+    try:
+        yield
+    finally:
+        loader._LOADER_BOOT_TIMEOUT_S = orig
+
+
+class PrepareLoaderRetryTests(unittest.TestCase):
+    """``_prepare_loader`` re-runs its whole sequence when the loader never
+    starts.
+
+    The field failure, seen after dropped debug reads stopped aborting the
+    flash: ``mdw fl_state`` answers ``0`` successfully for the entire
+    10-second budget. Successful flashes on the same bench cluster inside a
+    4-second spread that also contains USB enumeration and a battery
+    settle, so there is no population of "slow but eventually ready" runs
+    to widen a timeout for — the loader either comes up promptly or not at
+    all, and a fresh reset + reload is what recovers it. Every one of 13
+    observed failures recovered on a re-run of the whole prepare sequence.
+    """
+
+    def _run(self, fake, image_size=16, **flash_kwargs):
+        with tempfile.NamedTemporaryFile(suffix='.bin', delete=False) as f:
+            f.write(b'\xab' * image_size)
+            image_path = f.name
+
+        def fake_resolver(_family):
+            return ('/fake/elf', '/fake/bin')
+
+        def fake_sym_resolver(_path):
+            return _DEFAULT_SYM_ADDRS
+
+        try:
+            return list(loader.flash_image(
+                fake, image_path,
+                _resolver=fake_resolver,
+                _symbol_resolver=fake_sym_resolver,
+                **flash_kwargs,
+            ))
+        finally:
+            os.unlink(image_path)
+
+    @staticmethod
+    def _loader_image_loads(fake):
+        """Every ``load_image`` of the loader binary — i.e. one per
+        bring-up pass. Chunk loads target the image under test and carry a
+        temp-file path, so filtering on ``/fake/bin`` isolates bring-up."""
+        return [c for c in fake.calls if c.startswith('load_image /fake/bin ')]
+
+    def test_loader_that_starts_on_the_second_pass_flashes_successfully(self):
+        # The whole point: a first bring-up that times out must not cost
+        # the caller the flash. Before this, the only thing that recovered
+        # it was a harness re-running the entire ~60s step.
+        fake = SlowToBootRpc(_DEFAULT_SYM_ADDRS, ready_from_pass=2)
+        with _fast_boot_timeout():
+            out = self._run(fake, image_size=16)
+        self.assertEqual(fake.passes, 2,
+                         msg='expected exactly one retry of the bring-up')
+        self.assertIn('Programmed 16 bytes successfully', '\n'.join(out))
+
+    def test_retry_is_visible_in_the_progress_output(self):
+        # A reader of the box-side log must be able to tell a retry apart
+        # from a duplicated line: "Preparing DA1469x flash_loader" twice
+        # with nothing between them explains nothing.
+        fake = SlowToBootRpc(_DEFAULT_SYM_ADDRS, ready_from_pass=2)
+        with _fast_boot_timeout():
+            out = self._run(fake, image_size=16)
+        retry_lines = [
+            line for line in out if 'did not come up on attempt' in line
+        ]
+        self.assertEqual(
+            len(retry_lines), 1,
+            msg=f'expected one retry line explaining the re-run, got: {out}',
+        )
+        line = retry_lines[0]
+        self.assertIn('attempt 1', line)
+        self.assertIn('attempt 2', line)
+        # And it must carry the reason, not just the fact.
+        self.assertIn('boot (fl_state==1)', line)
+        self.assertIn('timed out after', line)
+        # The retry line precedes the second "Preparing..." line, so the
+        # duplicate is explained before it appears.
+        prepares = [i for i, l in enumerate(out) if l.startswith('Preparing ')]
+        self.assertEqual(len(prepares), 2)
+        self.assertLess(out.index(line), prepares[1])
+
+    def test_ready_on_the_first_pass_runs_exactly_one_sequence(self):
+        # No behavioural change for the common case: no wasted reset, no
+        # second image load, no retry noise in the log.
+        fake = FakeRpc(_DEFAULT_SYM_ADDRS)
+        out = self._run(fake, image_size=16)
+        self.assertEqual(fake.calls.count('reset halt'), 1)
+        self.assertEqual(len(self._loader_image_loads(fake)), 1)
+        joined = '\n'.join(out)
+        self.assertNotIn('did not come up', joined)
+        self.assertEqual(
+            sum(1 for line in out if line.startswith('Preparing ')), 1,
+        )
+        self.assertIn('Programmed 16 bytes successfully', joined)
+
+    def test_retry_reruns_the_full_sequence_not_just_the_poll(self):
+        # A loader that never started is not fixed by asking it again.
+        # Assert the second attempt resets the core and re-loads the image
+        # into RAM, in that order, before it polls a second time.
+        fake = SlowToBootRpc(_DEFAULT_SYM_ADDRS, ready_from_pass=2)
+        with _fast_boot_timeout():
+            self._run(fake, image_size=16)
+        c = fake.calls
+        load_cmd = f'load_image /fake/bin {hex(loader.LOADER_RAM_BASE)} bin'
+        self.assertEqual(
+            len(self._loader_image_loads(fake)), 2,
+            msg='the retry must re-load flash_loader.elf.bin into RAM',
+        )
+        first_reset = c.index('reset halt')
+        first_load = c.index(load_cmd)
+        second_reset = c.index('reset halt', first_load + 1)
+        second_load = c.index(load_cmd, second_reset + 1)
+        # reset, load, reset, load — one image load per pass, each after
+        # its own reset, so neither pass reuses the other's RAM contents.
+        self.assertLess(first_reset, first_load)
+        self.assertLess(first_load, second_reset)
+        self.assertLess(second_reset, second_load)
+        # The POR-pin debug-enable poke opens each pass too — the retry is
+        # the sequence from the top, not a resumption partway through.
+        por = f'mww {hex(loader.REG_POR_PIN_DEBUG_ENABLE)} ' \
+              f'{hex(loader.REG_POR_PIN_DEBUG_ENABLE_VALUE)}'
+        self.assertEqual(c.count(por), 2)
+        # And the readiness poll ran on both passes.
+        self.assertGreaterEqual(
+            c.count(f'mdw {hex(_DEFAULT_SYM_ADDRS["fl_state"])} 1'), 2,
+        )
+
+    def test_never_ready_raises_naming_attempts_and_last_state(self):
+        # A genuinely dead board must still read as a dead board: the
+        # message says how many full attempts were made and what the last
+        # one actually saw at fl_state.
+        fake = FakeRpc(_DEFAULT_SYM_ADDRS, boot_state=0)
+        with _fast_boot_timeout():
+            with self.assertRaises(loader.Da1469xLoaderError) as ctx:
+                self._run(fake, image_size=16)
+        msg = str(ctx.exception)
+        self.assertIn(str(loader._LOADER_BOOT_ATTEMPTS), msg)
+        self.assertIn('attempts', msg)
+        # What the last attempt saw, verbatim from the poll that gave up.
+        self.assertIn('boot (fl_state==1)', msg)
+        self.assertIn(
+            f'last value at {hex(_DEFAULT_SYM_ADDRS["fl_state"])} = 0x0', msg,
+        )
+        # Bounded: it gave up rather than spinning.
+        self.assertEqual(fake.calls.count('reset halt'),
+                         loader._LOADER_BOOT_ATTEMPTS)
+        self.assertEqual(len(self._loader_image_loads(fake)),
+                         loader._LOADER_BOOT_ATTEMPTS)
+
+    def test_non_readiness_failure_is_not_retried(self):
+        # The boundary. A readiness timeout says "the loader did not
+        # start", which a second identical pass has been observed to fix.
+        # A failed image load says the artefact or the link is wrong —
+        # repeating it just delays a diagnosis the caller needs, so it
+        # propagates on the first attempt.
+        class BadImageLoadRpc(FakeRpc):
+            def load_image(self, path, addr, fmt='bin'):
+                super().load_image(path, addr, fmt=fmt)
+                raise openocd.OpenOcdRpcError(
+                    'OpenOCD load_image failed:\n'
+                    'Error: couldn\'t open /fake/bin'
+                )
+
+        fake = BadImageLoadRpc(_DEFAULT_SYM_ADDRS)
+        with self.assertRaises(openocd.OpenOcdRpcError):
+            self._run(fake, image_size=16)
+        self.assertEqual(
+            fake.calls.count('reset halt'), 1,
+            msg='a failed image load must not be retried as if it were a '
+                'loader that did not start',
+        )
+
+    def test_boot_attempts_is_small_and_bounded(self):
+        # The measured per-attempt failure rate was ~18%: two attempts take
+        # the step to ~3%, three to ~0.6%. More than that trades a real
+        # diagnosis for diminishing returns, and unbounded retrying would
+        # hide a dead board entirely.
+        self.assertIsInstance(loader._LOADER_BOOT_ATTEMPTS, int)
+        self.assertIn(loader._LOADER_BOOT_ATTEMPTS, (2, 3))
+
+
+class _LoaderEntryRunner:
+    """Shared ``flash_image`` driver for the core-entry-state tests.
+
+    Same resolver/symbol seams as :class:`FlashImageTests._run`; split out
+    because both classes below care about how the core is *entered*, not
+    about the flash protocol that follows.
+    """
+
+    def _run(self, fake, image_size=16, **flash_kwargs):
+        with tempfile.NamedTemporaryFile(suffix='.bin', delete=False) as f:
+            f.write(b'\xab' * image_size)
+            image_path = f.name
+
+        def fake_resolver(_family):
+            return ('/fake/elf', '/fake/bin')
+
+        def fake_sym_resolver(_path):
+            return _DEFAULT_SYM_ADDRS
+
+        try:
+            return list(loader.flash_image(
+                fake, image_path,
+                _resolver=fake_resolver,
+                _symbol_resolver=fake_sym_resolver,
+                **flash_kwargs,
+            ))
+        finally:
+            os.unlink(image_path)
+
+
+class ThumbStateEntryTests(_LoaderEntryRunner, unittest.TestCase):
+    """The loader must be entered in Thumb state.
+
+    The field failure, on box JUL-14: every ``lager debug SWD flash`` on a
+    DA1469x died with "flash_loader boot (fl_state==1): timed out after
+    10.0s (last value at 0x20004108 = 0x0)", three identical attempts, and
+    the loader had not executed a single instruction. Halting the core
+    afterwards showed ``pc=0xeffffffe`` (the ARM architectural LOCKUP
+    address), one exception frame below the loader's MSP, a stacked PC of
+    ``0x20000200`` (the loader's first instruction) with a stacked ``xPSR``
+    of ``0xf8000000`` — ``EPSR.T`` clear — and ``CFSR=0x00020101``, whose
+    UFSR half is INVSTATE: "execute attempted with EPSR.T clear".
+
+    The cause is a lost convention. The GDB script this module ports did
+    ``set $pc = *(int *)0x20000004``, and GDB applies the Thumb rule to an
+    odd function pointer by setting ``T`` for you. OpenOCD's ``reg pc``
+    masks bit 0 and never touches ``xPSR``, so the port silently entered
+    the core in ARM state whenever ``T`` was not already set.
+    """
+
+    def test_thumb_bit_is_set_before_the_core_is_resumed(self):
+        # Setting it after ``resume`` would be setting it on a core that
+        # has already faulted, so the ordering is the test.
+        fake = FakeRpc(_DEFAULT_SYM_ADDRS)
+        self._run(fake)
+        c = fake.calls
+        write = f'reg xPSR {hex(0xF8000000 | loader.XPSR_THUMB_BIT)}'
+        self.assertIn(write, c, msg=f'no Thumb-bit write in trace: {c}')
+        self.assertLess(c.index(write), c.index('resume'))
+
+    def test_pc_is_written_without_the_thumb_bit(self):
+        # Belt and braces: OpenOCD masks bit 0 itself, but writing the odd
+        # form would imply the PC is where T lives, which is the bug.
+        fake = FakeRpc(_DEFAULT_SYM_ADDRS)
+        self._run(fake)
+        self.assertIn('reg pc 0x20000400', fake.calls)
+        self.assertNotIn('reg pc 0x20000401', fake.calls)
+
+    def test_core_already_in_thumb_state_is_left_alone(self):
+        # The common case — and why this hid for 95 consecutive clean HIL
+        # runs. Nothing is written and the log is unchanged.
+        fake = FakeRpc(_DEFAULT_SYM_ADDRS, xpsr=0x01000000)
+        out = self._run(fake)
+        self.assertIn('reg-read xPSR', fake.calls)
+        self.assertEqual(
+            [c for c in fake.calls if c.startswith('reg xPSR ')], [],
+            msg='a core already in Thumb state must not be written to',
+        )
+        self.assertNotIn('ARM state', '\n'.join(out))
+
+    def test_progress_line_names_the_register_and_the_value_it_saw(self):
+        # When it does act, the operator gets to see it: this line is the
+        # difference between "the loader is flaky" and "the core was in
+        # the wrong execution state".
+        fake = FakeRpc(_DEFAULT_SYM_ADDRS)
+        out = self._run(fake)
+        lines = [line for line in out if 'ARM state' in line]
+        self.assertEqual(len(lines), 1, msg=f'expected one notice, got: {out}')
+        self.assertIn('xPSR=0xf8000000', lines[0])
+        self.assertIn('set xPSR.T', lines[0])
+
+    def test_unknown_psr_register_name_raises_naming_the_thumb_bit(self):
+        # A target that answers to none of the spellings we know would
+        # otherwise be entered in ARM state silently. Fail at the point of
+        # the problem, naming what was tried and what it costs.
+        fake = FakeRpc(_DEFAULT_SYM_ADDRS, psr_reg_name='nonesuch')
+        with self.assertRaises(loader.Da1469xLoaderError) as ctx:
+            self._run(fake)
+        msg = str(ctx.exception)
+        self.assertIn('Thumb bit', msg)
+        self.assertIn('ARM state', msg)
+        for name in loader.PSR_REG_NAMES:
+            self.assertIn(name, msg)
+
+    def test_breakpoint_address_is_halfword_aligned(self):
+        # ``mynewt_main`` is a Thumb function pointer, so the ELF symbol
+        # value is odd. GDB's ``b mynewt_main`` masks bit 0; an FPB
+        # comparator needs a halfword-aligned address and rejects the odd
+        # form outright.
+        odd = _DEFAULT_SYM_ADDRS['mynewt_main']
+        self.assertTrue(
+            odd & 1,
+            msg='fixture must carry the odd Thumb symbol value for this '
+                'test to mean anything',
+        )
+        fake = FakeRpc(_DEFAULT_SYM_ADDRS)
+        self._run(fake)
+        self.assertIn(f'bp {hex(odd & ~1)} 4 hw', fake.calls)
+        self.assertIn(f'rbp {hex(odd & ~1)}', fake.calls)
+        self.assertNotIn(f'bp {hex(odd)} 4 hw', fake.calls)
+
+
+class LockupDetectionTests(_LoaderEntryRunner, unittest.TestCase):
+    """A locked-up core must be named, not retried.
+
+    OpenOCD reports LOCKUP as *halted*, so ``wait_halt`` after the
+    ``mynewt_main`` breakpoint returns success and the sequence believes
+    the breakpoint was hit. It was not — the core faulted on entry,
+    escalated past HardFault and stopped fetching. Undetected, that
+    surfaced 10 seconds later as a readiness timeout and was then replayed
+    twice more by :data:`loader._LOADER_BOOT_ATTEMPTS`, pointing the
+    operator at the loader instead of at the core.
+    """
+
+    def test_locked_up_core_is_reported_as_lockup(self):
+        fake = FakeRpc(_DEFAULT_SYM_ADDRS, locked_up=True)
+        with self.assertRaises(loader.Da1469xLoaderError) as ctx:
+            self._run(fake)
+        msg = str(ctx.exception)
+        self.assertIn('LOCKUP', msg)
+        # Points at the register that says *which* fault, so the next
+        # person does not have to rediscover INVSTATE from first
+        # principles.
+        self.assertIn('CFSR', msg)
+        self.assertIn('0xE000ED28', msg)
+        self.assertNotIn('never reported ready', msg)
+
+    def test_lockup_is_not_retried(self):
+        # Replaying the bring-up against a core that cannot recover
+        # without a reset buys nothing and buries the diagnosis under two
+        # more identical failures.
+        fake = FakeRpc(_DEFAULT_SYM_ADDRS, locked_up=True)
+        with self.assertRaises(loader.Da1469xLoaderError):
+            self._run(fake)
+        loads = [c for c in fake.calls
+                 if c.startswith('load_image /fake/bin ')]
+        self.assertEqual(
+            len(loads), 1,
+            msg=f'LOCKUP must fail on the first pass, saw {len(loads)} '
+                f'bring-ups',
+        )
+        self.assertEqual(fake.calls.count('reset halt'), 1)
+
+    def test_healthy_core_is_unaffected(self):
+        fake = FakeRpc(_DEFAULT_SYM_ADDRS)
+        out = self._run(fake)
+        self.assertIn(f'mdw {hex(loader.REG_DHCSR)} 1', fake.calls)
+        self.assertIn('Programmed 16 bytes successfully', '\n'.join(out))
+
+    def test_dropped_dhcsr_read_does_not_fail_the_flash(self):
+        # The check runs over the same debug AP as every other read here,
+        # so it can drop a reply. One missing answer is not evidence of
+        # lockup — the flash carries on and fails on its own terms if the
+        # loader really is dead.
+        fake = FlakyMdwRpc(
+            _DEFAULT_SYM_ADDRS,
+            fail_addr=loader.REG_DHCSR, fail_count=1,
+        )
+        out = self._run(fake)
+        self.assertEqual(fake.failures_raised, 1,
+                         msg='the fake must actually have dropped the read')
+        self.assertIn('Programmed 16 bytes successfully', '\n'.join(out))
 
 
 class EraseRangeTests(unittest.TestCase):

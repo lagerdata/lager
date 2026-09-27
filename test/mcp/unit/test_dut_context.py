@@ -51,11 +51,12 @@ def _call_dut(dut_tools):
 
 class TestDocRef:
     def test_minimal(self):
-        d = DocRef(title="Main schematic")
+        d = DocRef(title="Main schematic", repo_path="docs/sch.pdf")
         assert d.title == "Main schematic"
         assert d.kind == "other"
         assert d.url is None
-        assert d.repo_path is None
+        assert d.external_id is None
+        assert d.external_url is None
 
     def test_full(self):
         d = DocRef(
@@ -68,6 +69,22 @@ class TestDocRef:
         )
         assert d.kind == "schematic"
         assert d.url and d.repo_path  # both allowed
+
+    def test_a_ref_with_no_locator_is_refused(self):
+        """A title and a page hint say nothing about where the document is."""
+        with pytest.raises(ValueError, match="at least one of"):
+            DocRef(title="Main schematic", pages="3")
+
+    @pytest.mark.parametrize(
+        "locator", ["url", "repo_path", "external_id", "external_url"],
+    )
+    def test_each_locator_alone_is_enough(self, locator):
+        d = DocRef(title="Main schematic", **{locator: "x"})
+        assert getattr(d, locator) == "x"
+
+    def test_unknown_fields_survive_a_dump(self):
+        d = DocRef(title="Main schematic", url="https://example.com/s.pdf", revision="B")
+        assert d.model_dump(exclude_none=True)["revision"] == "B"
 
 
 class TestSubSystem:
@@ -82,7 +99,8 @@ class TestSubSystem:
             name="Power tree",
             summary="PMIC + LDOs",
             nets=["psu1", "psu2"],
-            doc_refs=[DocRef(title="Power sheet", kind="schematic", pages="2")],
+            doc_refs=[DocRef(title="Power sheet", kind="schematic",
+                             repo_path="docs/sch.pdf", pages="2")],
         )
         assert s.nets == ["psu1", "psu2"]
         assert s.doc_refs[0].pages == "2"
@@ -99,12 +117,12 @@ class TestDUTContext:
     def test_all_doc_refs_combines(self):
         d = DUTContext(
             name="main",
-            schematic_refs=[DocRef(title="A")],
-            datasheet_refs=[DocRef(title="B")],
-            firmware_refs=[DocRef(title="C")],
-            extra_docs=[DocRef(title="D")],
+            schematic_refs=[DocRef(title="A", repo_path="a.pdf")],
+            datasheet_refs=[DocRef(title="B", repo_path="b.pdf")],
+            firmware_refs=[DocRef(title="C", repo_path="c.pdf")],
+            extra_docs=[DocRef(title="D", repo_path="d.pdf")],
             subsystems=[
-                SubSystem(name="X", doc_refs=[DocRef(title="E")]),
+                SubSystem(name="X", doc_refs=[DocRef(title="E", repo_path="e.pdf")]),
             ],
         )
         titles = [r.title for r in d.all_doc_refs()]
@@ -159,8 +177,15 @@ class TestNetFromRaw:
         assert nd.purpose == "flash bus"
         assert nd.notes == "idle high"
 
-    def test_legacy_fields_are_ignored(self):
-        """Old description/dut_connection/test_hints keys no longer exist."""
+    def test_description_is_ignored_but_the_control_plane_fields_pass_through(self):
+        """``description`` became ``purpose`` in v0.24.0 and is never read.
+
+        ``dut_connection`` and ``test_hints`` were dropped in the same
+        release and are back as first-class fields: they are what the
+        control plane keeps per net, and they now reach the agent through
+        ``discover_bench``, ``cite_schematic`` and the bench manifest, so
+        accepting them no longer means writing keys nothing reads.
+        """
         nd = _net_from_raw({
             "name": "uart1", "role": "uart",
             "description": "DUT debug CLI",
@@ -170,8 +195,8 @@ class TestNetFromRaw:
         assert nd.purpose == ""
         assert nd.notes == ""
         assert not hasattr(nd, "description")
-        assert not hasattr(nd, "dut_connection")
-        assert not hasattr(nd, "test_hints")
+        assert nd.dut_connection == "PA9/PA10"
+        assert nd.test_hints == ["boot banner"]
 
     def test_tags_pass_through(self):
         nd = _net_from_raw({
@@ -216,7 +241,8 @@ class TestDUTContextFromRaw:
             "schematic_refs": [{"title": "Main", "kind": "schematic", "repo_path": "x.pdf"}],
             "subsystems": [
                 {"name": "Flash", "nets": ["flash_cs"],
-                 "doc_refs": [{"title": "Sheet", "kind": "schematic", "pages": "3"}]},
+                 "doc_refs": [{"title": "Sheet", "kind": "schematic",
+                               "repo_path": "docs/sch.pdf", "pages": "3"}]},
             ],
         })
         assert d.purpose == "Power regression"
@@ -235,6 +261,114 @@ class TestDUTContextFromRaw:
     def test_missing_name_raises(self):
         with pytest.raises(ValueError):
             _dut_context_from_raw({"purpose": "no name"})
+
+
+class TestDocumentLocators:
+    """Where a DocRef says its document is, from bench.json to the agent."""
+
+    @staticmethod
+    def _schematic_refs(*raw_refs):
+        return _dut_context_from_raw(
+            {"name": "main", "schematic_refs": list(raw_refs)},
+        ).schematic_refs
+
+    @pytest.fixture
+    def store_bench(self):
+        return load_from_dicts(
+            raw_nets=[{"name": "flash_cs", "role": "gpio"}],
+            bench_cfg={
+                "dut_context": {
+                    "name": "main",
+                    "schematic_refs": [{
+                        "title": "Main schematic", "kind": "schematic",
+                        "external_id": "doc-123",
+                        "external_url": "https://docs.example.com/d/123",
+                    }],
+                },
+            },
+        )
+
+    def test_loader_carries_external_fields(self):
+        (ref,) = self._schematic_refs({
+            "title": "Main", "kind": "schematic",
+            "external_id": "doc-123",
+            "external_url": "https://docs.example.com/d/123",
+        })
+        assert ref.external_id == "doc-123"
+        assert ref.external_url == "https://docs.example.com/d/123"
+
+    def test_loader_keeps_keys_it_does_not_map(self):
+        (ref,) = self._schematic_refs(
+            {"title": "Main", "url": "https://example.com/s.pdf", "revision": "B"},
+        )
+        assert ref.model_dump(exclude_none=True)["revision"] == "B"
+
+    def test_loader_does_not_copy_its_aliases_as_extras(self):
+        (ref,) = self._schematic_refs({"name": "Main", "path": "docs/sch.pdf"})
+        dumped = ref.model_dump(exclude_none=True)
+        assert dumped["title"] == "Main"
+        assert dumped["repo_path"] == "docs/sch.pdf"
+        assert "name" not in dumped
+        assert "path" not in dumped
+
+    def test_ref_with_no_locator_is_skipped_and_logged(self, caplog):
+        import logging
+        with caplog.at_level(logging.WARNING, logger="lager.mcp.engine.bench_loader"):
+            refs = self._schematic_refs(
+                {"title": "Bare", "kind": "schematic", "pages": "3"},
+                {"title": "Good", "repo_path": "docs/sch.pdf"},
+            )
+        assert [r.title for r in refs] == ["Good"]
+        assert any(
+            "Bare" in r.getMessage() and "at least one of" in r.getMessage()
+            for r in caplog.records
+        )
+
+    def test_cite_schematic_returns_external_fields(self, monkeypatch, store_bench):
+        import lager.mcp.tools.dut as dut_tools
+        monkeypatch.setattr(dut_tools, "get_bench", lambda: store_bench)
+        fn = getattr(dut_tools.cite_schematic, "fn", dut_tools.cite_schematic)
+        (ref,) = json.loads(fn("flash_cs"))["schematic_refs"]
+        assert ref["external_id"] == "doc-123"
+        assert ref["external_url"] == "https://docs.example.com/d/123"
+
+    def test_cite_schematic_guidance_names_both_roots(self, monkeypatch, store_bench):
+        import lager.mcp.tools.dut as dut_tools
+        from lager.mcp.schemas.dut import LOCAL_DOCS_DIR
+        monkeypatch.setattr(dut_tools, "get_bench", lambda: store_bench)
+        fn = getattr(dut_tools.cite_schematic, "fn", dut_tools.cite_schematic)
+        guidance = json.loads(fn("flash_cs"))["guidance"]
+        assert "project root" in guidance
+        assert f"{LOCAL_DOCS_DIR}/" in guidance
+        assert "external_url" in guidance
+
+    def test_overview_renders_document_store_refs(self, store_bench):
+        import lager.mcp.resources.dut as dut_resource
+        from lager.mcp.schemas.dut import LOCAL_DOCS_DIR
+        md = dut_resource._render_overview(store_bench)
+        assert "https://docs.example.com/d/123" in md
+        assert "`doc-123` (document store ID)" in md
+        assert f"{LOCAL_DOCS_DIR}/" in md
+
+    def test_workflow_guide_names_the_docs_dir_not_a_project_helper(self):
+        import lager.mcp.resources.guide as guide
+        from lager.mcp.schemas.dut import LOCAL_DOCS_DIR
+        captured = {}
+
+        class _MCP:
+            def resource(self, uri):
+                def deco(fn):
+                    captured[uri] = fn
+                    return fn
+                return deco
+
+        guide.register(_MCP())
+        text = captured["lager://guide/workflow"]()
+        assert f"{LOCAL_DOCS_DIR}/" in text
+        assert "external_url" in text
+        # tools/pdf_pages.py ships in the lager repository, not in the user's
+        # project and not in the installed CLI.
+        assert "the project's `tools/pdf_pages.py`" not in text
 
 
 class TestLoaderDUTContextBlock:
@@ -473,8 +607,7 @@ class TestDiscoverBenchEnrichment:
         from lager.mcp.engine.capability_graph import build_capability_graph
 
         graph = build_capability_graph(populated_bench)
-        monkeypatch.setattr(discover_tool, "get_bench", lambda: populated_bench)
-        monkeypatch.setattr(discover_tool, "get_capability_graph", lambda: graph)
+        monkeypatch.setattr(discover_tool, "get_bench_and_graph", lambda: (populated_bench, graph))
 
         fn = getattr(discover_tool.discover_bench, "fn", discover_tool.discover_bench)
         body = fn(None, "flash_cs")
@@ -489,8 +622,7 @@ class TestDiscoverBenchEnrichment:
         from lager.mcp.engine.capability_graph import build_capability_graph
 
         graph = build_capability_graph(populated_bench)
-        monkeypatch.setattr(discover_tool, "get_bench", lambda: populated_bench)
-        monkeypatch.setattr(discover_tool, "get_capability_graph", lambda: graph)
+        monkeypatch.setattr(discover_tool, "get_bench_and_graph", lambda: (populated_bench, graph))
 
         fn = getattr(discover_tool.discover_bench, "fn", discover_tool.discover_bench)
         body = fn(None)
@@ -644,8 +776,7 @@ class TestDiscoverBenchInstrumentDetail:
             nets=[NetDescriptor(name="supply1", net_type="power-supply", instrument="psu", channel="CH1")],
         )
         discover_tool, fn = _discover_fn()
-        monkeypatch.setattr(discover_tool, "get_bench", lambda: bench)
-        monkeypatch.setattr(discover_tool, "get_capability_graph", lambda: build_capability_graph(bench))
+        monkeypatch.setattr(discover_tool, "get_bench_and_graph", lambda: (bench, build_capability_graph(bench)))
 
         inst = json.loads(fn())["instruments"][0]
         assert inst["channels"] == ["CH1", "CH2"]
@@ -660,8 +791,7 @@ class TestDiscoverBenchInstrumentDetail:
             instruments=[InstrumentDescriptor(name="lj", instrument_type="labjack_t7", connection="usb")],
         )
         discover_tool, fn = _discover_fn()
-        monkeypatch.setattr(discover_tool, "get_bench", lambda: bench)
-        monkeypatch.setattr(discover_tool, "get_capability_graph", lambda: build_capability_graph(bench))
+        monkeypatch.setattr(discover_tool, "get_bench_and_graph", lambda: (bench, build_capability_graph(bench)))
 
         inst = json.loads(fn())["instruments"][0]
         assert set(inst) == {"name", "type", "connection"}
@@ -678,8 +808,7 @@ class TestDiscoverBenchNotFound:
             ],
         )
         discover_tool, fn = _discover_fn()
-        monkeypatch.setattr(discover_tool, "get_bench", lambda: bench)
-        monkeypatch.setattr(discover_tool, "get_capability_graph", lambda: build_capability_graph(bench))
+        monkeypatch.setattr(discover_tool, "get_bench_and_graph", lambda: (bench, build_capability_graph(bench)))
 
         payload = json.loads(fn("does_not_exist"))
         assert "not found" in payload["error"]

@@ -885,8 +885,41 @@ def erase_flash(start_addr, length, mcu=None, serial=None, gdb_port=2331, script
     raise JLinkNotRunning()
 
 
+def _resolve_script_path(script_file):
+    """The script path :func:`chip_erase` hands Commander, or None when there is none.
+
+    A bare path parameter with a None default, reachable from every caller of
+    this module. Contained here rather than trusted: the path must live under
+    ``probes.RUNTIME_DIR``, and a path to a file that is not on disk is no
+    script at all. See lager.util.paths.
+    """
+    if not script_file:
+        return None
+    # One definition, normpath, a direct startswith that dominates the use:
+    # the shape CodeQL recognizes as a barrier (see lager.util.paths).
+    path = os.path.normpath(script_file)
+    if not path.startswith(_probes.RUNTIME_DIR + os.sep):
+        raise ValueError(
+            f'refusing a script path outside {_probes.RUNTIME_DIR!r}')
+    return path if os.path.exists(path) else None
+
+
+def jlink_erase_plan(device, script_file=None, *, start=None, length=None):
+    """The range :func:`chip_erase` erases for these inputs: ``(start, length, source)``,
+    or None for a full chip.
+
+    Resolved from the same inputs, with the same script rules, as ``chip_erase``
+    itself, so a caller that reports the range reads it BEFORE the erase, while
+    the per-net script is still where the request left it. Resolving after the
+    erase once reported ``default`` for an erase that ran the script's range: a
+    concurrent disconnect on the same net had cleared the script in between.
+    """
+    from . import jlink as _jlink
+    return _jlink.resolve_erase_range(device, _resolve_script_path(script_file), start, length)
+
+
 def chip_erase(device, speed='4000', transport='SWD', mcu=None, script_file=None,
-               serial=None):
+               serial=None, *, start=None, length=None):
     """
     Erase flash via J-Link Commander.
 
@@ -896,6 +929,11 @@ def chip_erase(device, speed='4000', transport='SWD', mcu=None, script_file=None
     (``SetEnableFlashbank``), then unlocks external erase (``EnableEraseAllFlashBanks``),
     then ``erase <start> <end>`` — not a global chip erase — to avoid wiping internal
     flash. No extra Commander steps after the range erase (connect, erase, disconnect).
+
+    A *start* / *length* pair is an explicit range, in absolute addresses, and takes
+    precedence over the script line and the default on every device; on a DA1469x it
+    must lie inside the QSPI XIP window. It is checked here, before the probe's other
+    sessions are stopped, and the first line yielded then names the range.
 
     WARNING: On non-DA1469 devices, full chip erase erases ALL data on the chip.
 
@@ -907,15 +945,25 @@ def chip_erase(device, speed='4000', transport='SWD', mcu=None, script_file=None
         script_file: Optional path to J-Link script (from debug service); if None,
             uses a temp file left by connect or api._get_script_file().
         serial: J-Link USB serial. None falls back to the legacy single-probe path.
+        start: First address to erase, given together with *length*, or None.
+        length: Number of bytes to erase, given together with *start*, or None.
 
     Returns:
         Generator yielding output from erase operation
 
     Raises:
         JLinkStartError: If J-Link fails to start
+        ValueError: for a range the device cannot erase, before anything is touched
     """
     # Lazy import to avoid circular dependencies
+    from . import jlink as _jlink
     from .jlink import JLink
+    from .erase_bounds import format_bounds, validate_bounds
+
+    if (start is None) != (length is None):
+        raise ValueError('chip_erase() takes both start and length, or neither')
+    if start is not None:
+        validate_bounds(start, length, da1469x=_probes.is_da1469x(device))
 
     # Stop running J-Link processes for *this* probe to free its USB handle for JLinkExe.
     # Legacy start_jlink() uses /tmp/jlink.pid (or per-serial when *serial* is set);
@@ -942,16 +990,9 @@ def chip_erase(device, speed='4000', transport='SWD', mcu=None, script_file=None
             self.script_file = script_file
             self.serial = serial
 
-    # A bare path parameter with a None default, reachable from every caller
-    # of this module. Contain it here rather than trusting the caller: the
-    # check has to sit in the function that uses the path for it to mean
-    # anything locally. See lager.util.paths.
-    if script_file:
-        script_file = os.path.normpath(script_file)
-        if not script_file.startswith(_probes.RUNTIME_DIR + os.sep):
-            raise ValueError(
-                f'refusing a script path outside {_probes.RUNTIME_DIR!r}')
-    resolved_script = script_file if (script_file and os.path.exists(script_file)) else None
+    # The same containment jlink_erase_plan() applies, so the plan a caller
+    # reported and the script Commander runs under come from one rule.
+    resolved_script = _resolve_script_path(script_file)
     if not resolved_script:
         logger.warning(
             'chip_erase: no J-Link script file; DA1469x external QSPI may not be erased'
@@ -960,7 +1001,16 @@ def chip_erase(device, speed='4000', transport='SWD', mcu=None, script_file=None
     jlink = TempJLink(cmd_args, script_file=resolved_script, serial=serial)
     jlink.__class__ = JLink
 
-    return jlink.chip_erase()
+    # Name the range first, the way the OpenOCD path does, so a caller that
+    # joins the output (the service, DebugNet.erase()) shows what was erased.
+    resolved = _jlink.resolve_erase_range(device, resolved_script, start, length)
+
+    def _lines():
+        if resolved is not None:
+            yield f'Erasing {format_bounds(resolved[0], resolved[1])}'
+        yield from jlink.chip_erase(start=start, length=length)
+
+    return _lines()
 
 
 def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None, use_gdb=True,
@@ -1069,7 +1119,7 @@ def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None,
 
     time.sleep(1.0)  # Give JLinkExe time to fully disconnect
 
-    is_da1469 = 'DA1469' in (device or '').upper()
+    is_da1469 = _probes.is_da1469x(device)
 
     if is_da1469:
         # DA1469x: issue a software reset via J-Link Commander so the bootrom

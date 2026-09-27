@@ -44,23 +44,22 @@ class TestBoxTools:
         assert result["nets"] == 1
         assert result["instruments"] == 1
 
-    @patch("lager.mcp.server_state.get_capability_graph")
-    @patch("lager.mcp.server_state.get_bench")
+    @patch("lager.mcp.server_state.get_bench_and_graph")
     @patch("lager.mcp.server_state.reload_bench")
-    def test_box_manage_reload(self, mock_reload, mock_get_bench, mock_get_graph):
+    def test_box_manage_reload(self, mock_reload, mock_pair):
         bench = BenchDefinition(
             nets=[NetDescriptor(name="n1", net_type="gpio")],
             instruments=[
                 InstrumentDescriptor(name="lj", instrument_type="labjack_t7", connection="usb", channels=[]),
             ],
         )
-        mock_get_bench.return_value = bench
         graph = CapabilityGraph(
             nodes=[
                 CapabilityNode(role=CapabilityRole.MEASURE, target="n1"),
             ],
         )
-        mock_get_graph.return_value = graph
+        # The reload reply reads bench and graph from ONE published state.
+        mock_pair.return_value = (bench, graph)
         from lager.mcp.tools.box import box_manage
 
         result = json.loads(box_manage("reload"))

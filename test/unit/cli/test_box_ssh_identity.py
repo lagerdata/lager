@@ -20,6 +20,7 @@ No real ssh, no network: subprocess.run is faked throughout.
 """
 
 import importlib
+import inspect
 import os
 import pathlib
 import subprocess
@@ -531,6 +532,69 @@ def _unreachable_ssh(*_a, **_kw):
         stdout='', stderr='ssh: connect to host port 22: Network is unreachable')
 
 
+class OneRegistrationWarningNotTwo(unittest.TestCase):
+    """`lager update` kept its own copy of the registration warning.
+
+    The copy went on telling operators of control-plane-managed boxes to add
+    a sudoers grant for months after ssh-setup's version stopped — advice that
+    reopens exactly what the tight scoping closed, given by the command an
+    operator runs most often. Two copies of a message only one of which knows
+    about control planes is the defect; sharing the function is the fix, and
+    this is what keeps it shared."""
+
+    def test_update_does_not_carry_its_own_warning(self):
+        import importlib
+        src = inspect.getsource(
+            importlib.import_module('cli.commands.utility.update'))
+        self.assertNotIn('for the grant a tightly', src)
+        self.assertNotIn('Do not widen the directory instead', src)
+
+    def test_update_calls_the_shared_one(self):
+        import importlib
+        src = inspect.getsource(
+            importlib.import_module('cli.commands.utility.update'))
+        self.assertIn('register_or_warn(ssh_host, key_path=key_file)', src)
+
+
+class NeitherCommandKeepsAKeyOnAManagedBox(unittest.TestCase):
+    """ssh-setup refused this first; `lager update` went on planting.
+
+    The window is a box that is managed but not yet hardened: after hardening
+    there is no password to install a key with and the auth-method check
+    refuses earlier, but between Stout's installer writing control_plane.json
+    and the lockdown running, `lager update` would install a key, keep it, and
+    register it. That is the command an operator actually runs on a new box.
+
+    A source check rather than a driven one: reaching setup_ssh_key means
+    running the whole update past its nineteen steps, and the behaviour it
+    guards -- install, discover, remove -- is driven end to end in
+    test_ssh_setup.py's ControlPlaneManagedBox against the same two helpers.
+    What can silently regress here is the wiring, and that is what this
+    pins."""
+
+    def _update_src(self):
+        import importlib
+        return inspect.getsource(
+            importlib.import_module('cli.commands.utility.update'))
+
+    def test_update_asks_before_keeping_the_key(self):
+        self.assertIn('if box_has_control_plane(ssh_host):', self._update_src())
+
+    def test_update_takes_it_back_out(self):
+        src = self._update_src()
+        self.assertIn('remove_lager_box_key(ssh_host, key_path=key_file)', src)
+
+    def test_update_does_not_register_a_key_it_is_removing(self):
+        """Registering would file the key in the box's key directory, which is
+        the one place a purge does not reach."""
+        src = self._update_src()
+        gate = src.index('if box_has_control_plane(ssh_host):')
+        success = src.index("SSH key installed successfully!")
+        self.assertLess(gate, success,
+                        'the control-plane check must run before the success '
+                        'path that registers the key')
+
+
 class CallersHonourTheThreeOutcomeContract(unittest.TestCase):
     """None means "couldn't tell" and must not be read as "not installed".
 
@@ -546,13 +610,20 @@ class CallersHonourTheThreeOutcomeContract(unittest.TestCase):
     caller's bare truthiness test collapsed that into False.
     """
 
-    def _check_run(self, probe_result, *, key_file_exists=True):
+    def _check_run(self, probe_result, *, key_file_exists=True,
+                   managed=False):
         """Drive `lager update --check` with the probe forced to *probe_result*.
 
         Whether the local key file exists is set up as a REAL file under a
         temporary HOME, not by patching os.path -- that is process-global and
         on 3.14+ rewrites every pathlib.Path.exists()
         (test_no_global_os_path_patches.py enforces this).
+
+        box_has_control_plane is mocked for the same reason the probe is: it
+        lives in _ssh and runs its own subprocess.run, which patching
+        update_mod.subprocess does not reach, so leaving it live waits out a
+        real connect timeout to the fixture address on every case. False keeps
+        each existing case on the path it was written for.
 
         It has to be controlled at all because the gate is
         ``os.path.exists(key_file) and <probe>``: on a host without
@@ -580,6 +651,12 @@ class CallersHonourTheThreeOutcomeContract(unittest.TestCase):
                                    return_value='lagerdata'), \
                  mock.patch.object(update_mod, 'key_installed_on_box',
                                    return_value=probe_result), \
+                 mock.patch.object(update_mod, 'box_has_control_plane',
+                                   return_value=managed), \
+                 mock.patch.object(update_mod, 'box_accepts_a_password',
+                                   return_value=None), \
+                 mock.patch.object(update_mod, 'remove_lager_box_key',
+                                   return_value=True), \
                  mock.patch.object(update_mod.subprocess, 'run',
                                    side_effect=_unreachable_ssh), \
                  mock.patch.object(
@@ -588,6 +665,14 @@ class CallersHonourTheThreeOutcomeContract(unittest.TestCase):
                 return CliRunner().invoke(
                     update_mod.update, ['--box', 'testbox', '--check'],
                     catch_exceptions=False)
+
+    def test_a_managed_box_is_not_offered_a_key_it_does_not_need(self):
+        """False on a managed box means an identity authenticated to ask --
+        the operator's own, installed by the control plane. Offering to set up
+        lager_box there is what put a loose key on every box in the fleet."""
+        result = self._check_run(False, managed=True)
+        self.assertNotIn('SSH key not configured for this box', result.output)
+        self.assertNotIn('Set up SSH key for this box?', result.output)
 
     def test_a_definite_no_still_reports_the_key_is_not_configured(self):
         """False is a real answer and must keep its existing behaviour."""
@@ -798,6 +883,29 @@ class ConnectionPoolIdentity(unittest.TestCase):
                         "stderr must be a real file object")
 
 
+def _answer_install_state(remote, written):
+    """Answer install's post-deploy state calls the way a healthy box does.
+
+    install reads the installed version from the box checkout, writes the
+    /etc/lager state files, and reads the version file back -- and fails when
+    any of that does not add up, instead of printing success regardless. A
+    fake that answers every command with the same line cannot satisfy that, so
+    these calls get real answers. Returns None for any other command.
+    """
+    import re
+    import shlex
+
+    if "show HEAD:cli/__init__.py" in remote:
+        return _proc(0, "__version__ = '0.36.2'\n")
+    target = re.search(r'mv -f "\$tmp" /etc/lager/([a-z-]+)', remote)
+    if target:
+        written[target.group(1)] = shlex.split(remote.split("printf '%s\\n' ", 1)[1])[0]
+        return _proc(0)
+    if remote == "cat /etc/lager/version":
+        return _proc(0, written.get("version", "") + "\n")
+    return None
+
+
 class _CommandCase(unittest.TestCase):
     """Drives install/uninstall over a faked SSH transport.
 
@@ -820,6 +928,7 @@ class _CommandCase(unittest.TestCase):
 class InstallOffersTheKey(_CommandCase):
     def _install(self, *, key_exists=True, key_accepted=True):
         calls = []
+        written = {}
 
         def fake_run(cmd, **_kw):
             cmd = list(cmd) if isinstance(cmd, (list, tuple)) else [cmd]
@@ -832,6 +941,9 @@ class InstallOffersTheKey(_CommandCase):
             # interactive `ssh -t` bootstrap runs and is covered too.
             if install_mod.BOXCFG_SUDOERS_MARKER in cmd[-1]:
                 return _proc(1)
+            answered = _answer_install_state(cmd[-1], written)
+            if answered is not None:
+                return answered
             return _proc(0, "0.36.2\n")
 
         patches = self._lock_patches() + [
@@ -879,6 +991,8 @@ class InstallHasNoPasswordFallback(_CommandCase):
         PasswordAuthentication no does.
         """
         calls = []
+        written = {}
+        state = {"provisioned": False}
 
         def fake_run(cmd, **_kw):
             cmd = list(cmd) if isinstance(cmd, (list, tuple)) else [cmd]
@@ -886,10 +1000,21 @@ class InstallHasNoPasswordFallback(_CommandCase):
             # The deploy script; only SSH is being refused here.
             if cmd and cmd[0] != "ssh":
                 return _proc(0)
+            # Once the key is set up the box accepts it, and install's
+            # post-deploy state writes need real answers to succeed.
+            if state["provisioned"]:
+                answered = _answer_install_state(cmd[-1], written)
+                if answered is not None:
+                    return answered
             return _proc(255, "", DENIED)
 
         def refuses(dest, **_kw):
             raise install_mod.LagerError(f"ssh-copy-id to {dest} failed.")
+
+        def provisions(dest, **kw):
+            outcome = (provision or refuses)(dest, **kw)
+            state["provisioned"] = True
+            return outcome
 
         patches = self._lock_patches() + [
             mock.patch.object(install_mod.subprocess, "run", fake_run),
@@ -897,8 +1022,7 @@ class InstallHasNoPasswordFallback(_CommandCase):
                               _fake_key_if_present(True)),
             mock.patch.object(install_mod, "lager_box_key_if_present",
                               _fake_key_if_present(True)),
-            mock.patch.object(install_mod, "provision_lager_box_key",
-                              provision or refuses),
+            mock.patch.object(install_mod, "provision_lager_box_key", provisions),
         ]
         for p in patches:
             p.start()
@@ -1055,3 +1179,116 @@ class UninstallDeregisters(_CommandCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ControlPlaneManagedBox(unittest.TestCase):
+    """What `lager ssh-setup` says when a control plane owns the key directory.
+
+    Registration failing there is not a misconfiguration to route around. A box
+    account able to file its own key can mint access that no control plane
+    approved, that no revocation reaches, and that outlives whoever made it --
+    which is precisely what the tight sudo scoping closed. So the advice for
+    that box is never "widen sudo".
+
+    Nor is it "publish a key of your own". The operator's lasting access on
+    such a box is the grant the control plane holds, and it installs their key
+    for them; asking for a second key hands them a credential to look after in
+    exchange for access they already have. The message states what is true
+    about the loose key and asks for nothing.
+    """
+
+    def _warn(self, *, managed, registered=False):
+        from cli.commands.box import ssh_setup
+
+        messages = []
+        # **_kw because register_or_warn forwards key_path= to both: one
+        # implementation now serves ssh-setup and update, and it names the
+        # caller's key rather than assuming the default.
+        with mock.patch.object(ssh_setup, "register_lager_box_key",
+                               lambda _d, **_kw: (False, "permission denied")), \
+                mock.patch.object(ssh_setup, "box_has_control_plane",
+                                  lambda _d, **_kw: managed), \
+                mock.patch.object(ssh_setup, "key_registered_on_box",
+                                  lambda _d, **_kw: registered), \
+                mock.patch.object(ssh_setup.click, "secho",
+                                  lambda msg, **_kw: messages.append(msg)):
+            result = ssh_setup.register_or_warn("lagerdata@10.0.0.1")
+        return result, "\n".join(messages)
+
+    def test_control_plane_box_is_told_the_key_is_outside_management(self):
+        ok, msg = self._warn(managed=True)
+        self.assertFalse(ok)
+        self.assertIn("control plane", msg)
+        self.assertIn("outside the control plane", msg)
+        # What happens to it, so the note is worth reading.
+        self.assertIn("locks the box down", msg)
+
+    def test_a_key_already_registered_says_nothing(self):
+        """The ordinary hardened box. Its key directory is root-owned, so the
+        write can never succeed there — and reporting that failure as "this key
+        is outside the control plane" was false on every box where the key was
+        already in the directory, on every ssh-setup and every update."""
+        ok, msg = self._warn(managed=True, registered=True)
+        self.assertTrue(ok, 'a registered key is registered, failed write or not')
+        self.assertEqual(msg, '')
+
+    def test_a_key_that_really_is_missing_still_warns(self):
+        ok, msg = self._warn(managed=True, registered=False)
+        self.assertFalse(ok)
+        self.assertIn("outside the control plane", msg)
+
+    def test_a_box_that_could_not_be_asked_still_warns(self):
+        """None is "could not ask", not "registered". Staying quiet there would
+        hide a genuinely loose key behind one unreachable check."""
+        ok, msg = self._warn(managed=True, registered=None)
+        self.assertFalse(ok)
+        self.assertIn("outside the control plane", msg)
+
+    def test_control_plane_box_is_never_asked_for_a_second_key(self):
+        _, msg = self._warn(managed=True)
+        self.assertNotIn("Register your public key", msg)
+        self.assertNotIn("lager_box.pub", msg)
+
+    def test_control_plane_box_is_never_told_to_widen_sudo(self):
+        _, msg = self._warn(managed=True)
+        self.assertNotIn("NOPASSWD", msg)
+        self.assertNotIn("sudoers", msg.lower())
+
+    def test_unmanaged_box_keeps_the_grant_advice(self):
+        # A plain box managed by some other provisioning is a different case:
+        # there is no control plane to register with, and the scoped grant is
+        # the right way to add registration through that provisioning.
+        _, msg = self._warn(managed=False)
+        self.assertIn("NOPASSWD", msg)
+        self.assertIn("lager-box-*.pub", msg)
+
+    def test_detection_is_a_file_test_over_the_authenticating_key(self):
+        calls = []
+
+        def fake_run(cmd, **_kw):
+            calls.append(list(cmd))
+            return _proc(0)
+
+        with mock.patch.object(_ssh.subprocess, "run", fake_run):
+            self.assertIs(_ssh.box_has_control_plane("lagerdata@10.0.0.1"), True)
+
+        argv = calls[0]
+        self.assertIn("BatchMode=yes", argv, "must never prompt")
+        self.assertIn(_ssh.CONTROL_PLANE_CONFIG, argv[-1])
+
+    def test_unreachable_box_is_not_assumed_managed(self):
+        # Guessing "managed" for a box we could not reach would replace working
+        # advice with the wrong advice on a transient network failure.
+        def boom(*_a, **_kw):
+            raise OSError("no route to host")
+
+        with mock.patch.object(_ssh.subprocess, "run", boom):
+            self.assertIs(_ssh.box_has_control_plane("lagerdata@10.0.0.1"), False)
+
+    def test_no_reference_to_any_particular_control_plane(self):
+        # Lager is the open standard; it names the role, never a product.
+        import inspect
+        from cli.commands.box import ssh_setup
+
+        for module in (_ssh, ssh_setup):
+            self.assertNotIn("stout", inspect.getsource(module).lower())

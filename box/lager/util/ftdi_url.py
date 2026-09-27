@@ -66,6 +66,23 @@ _PRODUCT_MPSSE_CHANNELS = {'232h': 1, '2232h': 2, '4232h': 2}
 # than written into thin air.
 _PRODUCT_PIN_WIDTH = {'232h': 16, '2232h': 16, '4232h': 8}
 
+# Instrument strings, lower-cased, that select the FTDI drivers: the scanner's
+# names for the three parts plus the bare part names. The I2C and SPI
+# dispatchers each carried their own list naming only the FT232H, so an
+# FT2232H or FT4232H net was created, advertised, and then refused at first
+# use. Every dispatcher reads this one set instead;
+# test_ftdi_dispatch_routing.py checks it against the scanner's table.
+FTDI_INSTRUMENT_NAMES = frozenset({
+    'ft232h', 'ftdi_ft232h',
+    'ft2232h', 'ftdi_ft2232h',
+    'ft4232h', 'ftdi_ft4232h',
+})
+
+
+def is_ftdi_instrument(name) -> bool:
+    """True when *name* is an instrument string that the FTDI drivers serve."""
+    return str(name or '').strip().lower() in FTDI_INSTRUMENT_NAMES
+
 
 class FtdiUrlError(ValueError):
     """An interface or pin that the addressed FTDI part does not have."""

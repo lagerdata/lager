@@ -14,6 +14,7 @@ Now performs direct execution to eliminate the controller container dependency.
 
 import os
 import glob
+import socket
 import json
 import tempfile
 import shutil
@@ -54,7 +55,47 @@ from .exceptions import (
 logger = logging.getLogger(__name__)
 
 MAX_TIMEOUT = 300
-LAGER_PYTHON_IP_ADDR = '172.18.0.10'  # Docker-internal network default; overridden by LOCAL_ADDRESS env var
+# Last-resort value for LOCAL_ADDRESS: the address the container gets on
+# lagernet, the default network. Only used when the address cannot be read off
+# a live socket, and wrong under host networking -- which is the whole reason
+# `_local_address()` below exists.
+LAGER_PYTHON_IP_ADDR = '172.18.0.10'
+
+
+def _local_address():
+    """The address a script on this box should advertise, as LOCAL_ADDRESS.
+
+    Read off a live socket rather than hardcoded, because there is no one
+    right answer. On lagernet the container has its own address; under
+    `lager box-config network-mode host` it shares the host's stack and has no
+    lagernet address at all, so the old constant named an interface that
+    existed nowhere and a script that bound to or advertised it failed.
+
+    `connect` on a UDP socket sends nothing -- it only asks the routing table
+    which source address would be used to reach that destination, which is the
+    address other hosts can actually reach this process on. The target is a
+    documented test-net address (RFC 5737), never routed and never contacted.
+
+    An explicit LOCAL_ADDRESS in the environment wins, so an operator can
+    still name one. Never raises: a box with no default route falls back to
+    the lagernet default, which is what every box used to get unconditionally.
+    """
+    override = (os.environ.get('LOCAL_ADDRESS') or '').strip()
+    if override:
+        return override
+    sock = None
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.connect(('192.0.2.1', 9))
+        return sock.getsockname()[0]
+    except Exception:  # pylint: disable=broad-except
+        return LAGER_PYTHON_IP_ADDR
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except Exception:  # pylint: disable=broad-except
+                pass
 
 # Where a detached job's reattach registry lives: one directory per job holding
 # meta.json and output.log (and, when a script pauses, breakpoint.json/resume).
@@ -918,7 +959,7 @@ class PythonExecutor:
             # script's `breakpoint()` works like `lager.pause()` instead of
             # crashing on the never-installed remote_pdb.
             'PYTHONBREAKPOINT': 'lager.breakpoint.pause',
-            'LOCAL_ADDRESS': LAGER_PYTHON_IP_ADDR,
+            'LOCAL_ADDRESS': _local_address(),
         })
 
         # Box metadata

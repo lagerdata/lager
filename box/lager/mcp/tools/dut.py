@@ -38,7 +38,10 @@ def discover_dut(ctx: Context) -> str:
     Returns the DUT purpose, MCU, key peripherals, subsystem list, and
     pointers to the schematic / datasheet / firmware references. The actual
     documents are NOT included in the response — use your own file tools
-    to open ``repo_path`` entries or fetch ``url`` entries.
+    to open ``repo_path`` entries (from your project root, else from
+    ``~/.lager_dut_docs/``), fetch ``url`` entries, and reach
+    ``external_url`` / ``external_id`` entries through a document-store
+    connector.
 
     For the full structured shape, read the ``lager://dut/context``
     resource. For a markdown briefing, read ``lager://dut/overview.md``.
@@ -119,11 +122,12 @@ def cite_schematic(net_name: str) -> str:
 
     net = next((n for n in bench.nets if n.name == net_name), None)
     if net is None:
-        return json.dumps({"error": f"Net '{net_name}' not found."})
+        return json.dumps({"box_id": bench.box_id, "error": f"Net '{net_name}' not found."})
 
     dut, sub = _find_dut_for_net(bench, net_name)
     if dut is None:
         return json.dumps({
+            "box_id": bench.box_id,
             "net": net_name,
             "warning": "No DUT context has been authored on this box yet.",
             "doc_refs": [],
@@ -136,9 +140,12 @@ def cite_schematic(net_name: str) -> str:
         subsystem_refs = [d.model_dump(exclude_none=True) for d in sub.doc_refs]
 
     return json.dumps({
+        "box_id": bench.box_id,
         "net": net_name,
         "net_purpose": net.purpose,
         "net_notes": net.notes,
+        "net_dut_connection": net.dut_connection,
+        "net_test_hints": net.test_hints,
         "dut": dut.name,
         "subsystem": sub.name if sub is not None else None,
         "subsystem_summary": sub.summary if sub is not None else None,
@@ -146,9 +153,12 @@ def cite_schematic(net_name: str) -> str:
         "datasheet_refs": datasheet_refs,
         "subsystem_doc_refs": subsystem_refs,
         "guidance": (
-            "Open `repo_path` entries with your own file tools, or fetch "
-            "`url` entries directly. Prefer per-sheet PNG exports for "
-            "vision analysis; use the `pages` field to focus on the "
-            "relevant sheet."
+            "Open `repo_path` entries with your own file tools: look under "
+            "your project root first, then under `~/.lager_dut_docs/` at the "
+            "same relative path. Fetch `url` entries directly. Reach "
+            "`external_url` and `external_id` entries through a "
+            "document-store connector that holds the credentials; the box "
+            "never authenticates. Prefer per-sheet PNG exports for vision "
+            "analysis; use the `pages` field to focus on the relevant sheet."
         ),
     }, indent=2)

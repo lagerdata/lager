@@ -72,6 +72,36 @@ class TestPostNetCommand:
         assert captured["timeout"] == net_helpers._NET_HTTP_TIMEOUT
         assert result["value"] == 1
 
+    def test_a_box_warning_is_printed_even_when_the_caller_is_quiet(self, capsys):
+        """#515 item 1: quiet=True is where a clamp warning matters most.
+
+        `lager spi`, `lager dac` and `lager gpi` all pass quiet=True and
+        format their own output. Gating the warning on quiet would suppress it
+        in exactly the commands a clamped clock affects. It goes to stderr, so
+        it never contaminates a value another command is parsing.
+        """
+        def fake_post(url, json=None, timeout=None, headers=None):
+            return _Resp(200, {"success": True, "message": "SPI configured",
+                               "warnings": ["clock clamped to 71400 Hz"]})
+
+        with patch("requests.post", fake_post):
+            net_helpers.post_net_command(
+                None, "1.2.3.4", "spi1", "config", role="spi", quiet=True)
+
+        captured = capsys.readouterr()
+        assert "clock clamped to 71400 Hz" in captured.err
+        assert "[OK]" not in captured.out
+
+    def test_a_response_with_no_warnings_prints_nothing_extra(self, capsys):
+        def fake_post(url, json=None, timeout=None, headers=None):
+            return _Resp(200, {"success": True, "message": "SPI configured"})
+
+        with patch("requests.post", fake_post):
+            net_helpers.post_net_command(
+                None, "1.2.3.4", "spi1", "config", role="spi", quiet=True)
+
+        assert capsys.readouterr().err == ""
+
     def test_http_timeout_forwarded_to_requests(self):
         # Regression: long-running actions (energy/watt windows, gpi wait) widen
         # the client timeout; post_net_command must actually pass it through.

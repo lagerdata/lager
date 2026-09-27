@@ -22,6 +22,28 @@ from typing import Optional
 
 import serial
 
+#: pyserial's parity constants are these one-letter strings. Spelled out here,
+#: not read from ``serial``, so the mapping does not depend on which pyserial
+#: (or test stub) is loaded.
+_PARITY_CHARS = {
+    'none': 'N', 'even': 'E', 'odd': 'O', 'mark': 'M', 'space': 'S',
+    'n': 'N', 'e': 'E', 'o': 'O', 'm': 'M', 's': 'S',
+}
+
+
+def _parity_char(parity) -> str:
+    """Map a parity name or pyserial letter, in any case, to pyserial's constant.
+
+    An unknown value raises rather than quietly opening the port with no
+    parity, which is what a typo or a pyserial letter used to get.
+    """
+    char = _PARITY_CHARS.get(str(parity).strip().lower())
+    if char is None:
+        raise ValueError(
+            f"Unsupported UART parity {parity!r}; use none, even, odd, mark "
+            f"or space (or N, E, O, M, S)")
+    return char
+
 
 class UARTBridge:
     """Driver for UART bridge devices."""
@@ -41,6 +63,7 @@ class UARTBridge:
         dsrdtr: bool = False,
         opost: bool = False,
         line_ending: str = 'lf',
+        timeout: float | None = 0.1,
         **kwargs
     ):
         """
@@ -58,6 +81,8 @@ class UARTBridge:
         dsrdtr: Enable DSR/DTR hardware flow control
         opost: Enable output post-processing (convert \n to \r\n)
         line_ending: Line ending for commands (lf/crlf/cr)
+        timeout: Read timeout in seconds for the opened port (default 0.1;
+            None blocks until data arrives)
         device_path: Optional direct /dev/tty* path for adapters without USB serial numbers
         usb_identity: Optional durable USB identity snapshot ({vid, pid,
             serial, port_path, interface}) recorded when the net was saved;
@@ -71,6 +96,9 @@ class UARTBridge:
         self.baudrate = baudrate
         self.bytesize = bytesize
         self.parity = parity
+        # Validated here, so an unknown value fails before any port is opened.
+        self._parity_char = _parity_char(parity)
+        self.timeout = timeout
         self.stopbits = stopbits
         self.xonxoff = xonxoff
         self.rtscts = rtscts
@@ -283,15 +311,8 @@ class UARTBridge:
 
     def _connect(self):
         """Open the serial connection."""
-        # Map parity string to pyserial constant
-        parity_map = {
-            "none": serial.PARITY_NONE,
-            "even": serial.PARITY_EVEN,
-            "odd": serial.PARITY_ODD,
-            "mark": serial.PARITY_MARK,
-            "space": serial.PARITY_SPACE,
-        }
-        parity_val = parity_map.get(self.parity.lower(), serial.PARITY_NONE)
+        # Validated in __init__ (see _parity_char).
+        parity_val = self._parity_char
 
         # Map stopbits string to pyserial constant
         stopbits_val = serial.STOPBITS_ONE
@@ -319,7 +340,7 @@ class UARTBridge:
             xonxoff=self.xonxoff,
             rtscts=self.rtscts,
             dsrdtr=self.dsrdtr,
-            timeout=0.1,
+            timeout=self.timeout,
             exclusive=True
         )
 

@@ -1,6 +1,6 @@
 # Lager Gateway Auth Contract
 
-**Version: 1** · Status: stable · Last updated: 2026-07-22
+**Version: 1** · Status: stable · Last updated: 2026-09-24
 
 This document is the normative specification of the authentication contract
 between Lager clients and boxes fronted by an authenticating reverse proxy
@@ -11,7 +11,7 @@ identity while every Lager client works against them unchanged.
 
 Conforming implementations of the client side:
 
-- `cli/gateway_auth.py` (Python CLI; test suite `cli/tests/test_gateway_auth.py`)
+- `cli/gateway_auth.py` (Python CLI; test suite `test/unit/cli/test_gateway_auth.py`)
 - `lager-rs/src/auth.rs` (Rust crate; test suite `lager-rs/tests/gateway_auth.rs`)
 
 If an implementation and this document disagree, this document wins; fix the
@@ -175,11 +175,19 @@ MUST attach the bearer token on the first request rather than waiting for a
 denial. If the box is not in the store, the first request goes out bare —
 this is what keeps plain boxes zero-overhead.
 
+A pinned token (§6.1) satisfies this rule for free: it goes on every request,
+so the first contact with a box no store has ever heard of already carries
+it, and no `boxes` entry is consulted.
+
 ### 6.3 Handling a denial
 
 On a gateway denial (§2):
 
-1. Record the box→auth-server mapping in the store, unconditionally.
+1. Record the box→auth-server mapping in the store — except when a pinned
+   token is in play. A pinned client never reads that mapping (§6.2), so the
+   entry buys nothing, and CI is exactly where writing it costs: a
+   self-hosted runner keeps its filesystem between jobs, and the entry
+   outlives the address it names. A pinned client writes no store at all.
 2. For a **401** when not using a pinned token: resolve a credential from
    the store — refreshing if stale, and never re-sending the exact token
    the gateway just rejected — then retry the request **once** within the
@@ -206,11 +214,19 @@ an in-fabric service, reachable over the local network, Tailscale or the
 corporate VPN and no further. It is deliberately excluded rather than
 overlooked, for two reasons:
 
-- It performs no authentication of its own, and it disables DNS-rebinding
-  protection on purpose (`box/lager/mcp/server.py`) because the box is reached
-  at an arbitrary LAN address that cannot be known ahead of time. That is a
-  reasonable posture for a service on an internal fabric and a poor one for a
-  published service.
+- By default it performs no authentication of its own, and it disables
+  DNS-rebinding protection on purpose (`box/lager/mcp/server.py`) because the
+  box is reached at an arbitrary LAN address that cannot be known ahead of time.
+  That is a reasonable posture for a service on an internal fabric and a poor
+  one for a published service.
+
+  Its one credential is optional and box-local: a static bearer token an
+  operator turns on with `lager box-config mcp-token` (`box/lager/mcp/auth.py`).
+  That token is **not** the credential this contract describes. The auth server
+  does not mint it, the gateway cannot verify it, it never expires, and it
+  crosses the network in cleartext HTTP. It narrows who on the fabric can use
+  the server; it does not make `:8100` fit to publish, and it does not change
+  this exclusion.
 - Its tool surface is not read-only. `LAGER_MCP_ALLOW_CONTROL` adds hardware
   control, and `LAGER_MCP_ALLOW_EXEC` adds `box_exec`, `read_file`,
   `write_file` and `list_dir` — arbitrary command execution and file writes,
@@ -235,8 +251,11 @@ A conforming gateway:
   never emits `X-Gateway-Auth-Url`, so there is no collision.)
 - MUST cover every box port it exposes (9000, 8765, WebSocket upgrades)
   with the same policy — clients assume one credential works box-wide.
-- MUST NOT forward `:8100` (MCP). It is an in-fabric service with no
-  authentication of its own (§6.4).
+- MUST NOT forward `:8100` (MCP). It is an in-fabric service, and its only
+  credential is an optional box-local token the gateway cannot verify (§6.4).
+- MAY offer the box's raw-TCP debug ports through `CONNECT` tunnels on
+  `:8765` (§10), under the same bearer policy. It MUST NOT publish those
+  ports unauthenticated instead.
 
 ## 8. Environment variables (client side)
 
@@ -266,3 +285,136 @@ This contract is versioned by the integer at the top of this file.
   shipped in CLI ≥ 0.32.0 (`lager login`) and lager-net 0.2.0.
 - **v1** (2026-08-26): recorded the `:8100` (MCP) decision in §6.4 and §7.
   Additive clarification of an unstated boundary; no version bump per §9.
+- **v1** (2026-09-10): the Python CLI now implements §6.1 pinned tokens
+  (`LAGER_GATEWAY_TOKEN`), which until now only lager-rs did.
+- **v1** (2026-09-18): §6.4 and §7 name the box MCP server's optional box-local
+  bearer token and say why it changes nothing here: `:8100` stays excluded.
+  Additive clarification; no version bump per §9.
+
+  Writing that client found two places where §6.1 and the sections below it
+  disagreed, both now stated: §6.2 said the first request to an unknown box
+  goes out bare, and §6.3 said a denial records the mapping
+  *unconditionally* — neither of which can hold for a token that §6.1
+  already attaches to every request and keeps out of the store. Both are
+  clarifications of an interaction the spec left unstated, not new
+  requirements, so no version bump per §9.
+
+  §6.3 as clarified also caught a real divergence: lager-rs *records* the
+  mapping whatever the credential, so a Rust CI job holding only a pinned
+  token leaves a token store behind exactly as the Python one used to. That
+  is a known non-conformance rather than an open spec question — the fix is
+  one guard in `GatewayAuth::learn_auth_server`, written and tested in
+  lagerdata/lager-rs#7, which is open and not merged.
+
+  §9 asks that a change reach both reference implementations. Until #7
+  merges, §6.3's pinned exception is met by the Python client and pending in
+  the Rust one, and this note is the record of that gap. A third-party
+  client should implement §6.3 as written: the requirement is not in
+  question, only one implementation's conformance with it.
+- **v1** (2026-09-24): §10 specifies debug tunnels, an HTTP `CONNECT` on the
+  debug-service port that reaches the box's raw-TCP debug ports through the
+  gateway. Optional for gateways and additive for clients, so no version
+  bump per §9. Both reference implementations carry the client side: the
+  Python CLI in `cli/gateway_tunnel.py` (tests in
+  `test/unit/cli/test_gateway_tunnel.py`), and lager-rs as
+  `LagerBox::debug_tunnel` / `AsyncLagerBox::debug_tunnel` in `src/tunnel.rs`
+  (tests in `tests/debug_tunnel.rs`, lagerdata/lager-rs#8). The crate had
+  never opened a raw debug port before; it gained the tunnel because a Rust
+  harness built on it needs a GDB server's port on gated boxes.
+
+## 10. Debug tunnels (optional)
+
+The debug servers on a box speak raw TCP, not HTTP: GDB, OpenOCD's telnet and
+TCL interfaces, and RTT. A gateway can only check a bearer token on HTTP, so a
+box it fronts does not publish those ports, and a debugger on the client
+machine cannot reach them directly. A gateway MAY instead offer them through
+an HTTP `CONNECT` tunnel on the debug-service port. Supporting it is optional
+for gateways, and using it is optional for clients.
+
+Client implementations: `cli/gateway_tunnel.py` (Python CLI, used by
+`lager debug <net> gdbserver`) and `src/tunnel.rs` in lager-rs
+(`LagerBox::debug_tunnel`).
+
+### 10.1 Handshake
+
+The client opens a TCP connection to the box host on port **8765** and sends
+a `CONNECT` request carrying the same credential as any other request (§6):
+
+```
+CONNECT <host>:<port> HTTP/1.1
+Host: <host>:<port>
+Authorization: Bearer <token>
+
+```
+
+- The request target MAY be the standard authority form `<host>:<port>` or
+  the bare port `<port>`. The host part is **ignored**: a tunnel only ever
+  reaches the named port in the Lager container, never another host.
+- `Authorization` follows §6.1 and §6.2 exactly: a pinned token, or the
+  store's token for a known-gated box, or nothing for a box not yet known to
+  be gated. It is resolved **per tunnel**. A client MUST NOT reuse a token
+  resolved for an earlier tunnel without checking its expiry (§4), because
+  one debugging session can outlive many tokens.
+- A gateway MUST authorize each tunnel on its own, never from a cached
+  verdict, so a client MAY open one tunnel per debugger connection.
+
+### 10.2 Responses
+
+| Status | Headers | Meaning |
+| --- | --- | --- |
+| `200 Connection Established` | — | Tunnel open. Every byte after the response head is raw TCP to that port, in both directions. Bytes MAY follow the head in the same segment; a client MUST forward them. |
+| `401` | discovery header | No credential, or a rejected one. A gateway denial (§2), handled per §6.3, including the in-call retry on first contact. |
+| `403` | discovery header | Signed in but not authorized for this box. A gateway denial (§2). |
+| `403` | **no** discovery header, `text/plain` | The port is not one the gateway tunnels (§10.3). Not a denial: the client records nothing. |
+| `502` | `text/plain` | Nothing is listening on that port in the Lager container, for example a debug server that has not started. |
+| `503` | discovery header | The gateway cannot reach its auth server. A gateway denial (§2). |
+
+Any other answer means the service on 8765 does not support tunnels (§10.4).
+
+### 10.3 Tunnelable ports
+
+A gateway MUST refuse (`403` without the discovery header) every port
+outside the debug ranges, and SHOULD accept all of these:
+
+| Service | Ports |
+| --- | --- |
+| GDB server | 2331–2342 |
+| OpenOCD telnet | 4444–4447 |
+| OpenOCD TCL | 6666–6669 |
+| RTT telnet | 9090–9097 |
+
+A client SHOULD NOT filter ports itself; the gateway's answer is
+authoritative, and a later gateway may widen the list.
+
+### 10.4 Gateways and boxes without tunnel support
+
+- A gateway that does **not** enforce auth MAY still accept `CONNECT`, with
+  no credential required.
+- An older gateway that predates this section forwards the `CONNECT` to the
+  box's own debug service (after checking auth, if it enforces it), or
+  splices it there unchanged if it is a pass-through. A plain box with no
+  gateway answers on 8765 itself. In all of these cases the answer is the
+  Lager debug service's `501`, not a `200`.
+
+A client therefore cannot learn from the `CONNECT` alone whether a box has
+an old gateway or none. Both clients (the Python CLI's `choose_route`, and
+lager-rs's `debug_tunnel`) decide like this:
+
+1. `200` → tunnel.
+2. Anything that is not a tunnel, on a box never seen to answer with a
+   gateway denial → a plain box; connect to the debug port directly.
+3. Not a tunnel, on a box known to be gated (§5 `boxes` entry) → try the
+   debug port directly; if that fails, report that the box's gateway needs
+   updating.
+
+Step 3 is the only one that connects to a debug port just to learn
+something. A client SHOULD NOT probe debug ports on a box it has no reason
+to think is gated: accepting a connection can have side effects on the
+target, such as a debug server halting the CPU when a GDB client attaches.
+
+### 10.5 Revocation
+
+A gateway MAY close an open tunnel when the user's access to the box is
+revoked; it is expected to recheck about once a minute. The client sees the
+connection close. It SHOULD tell the user and MUST NOT reopen the tunnel in
+a loop: the next tunnel request is authorized afresh and gets the denial.
