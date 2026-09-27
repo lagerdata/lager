@@ -431,8 +431,11 @@ impl PicoScope2000 {
             trigger: TriggerSettings {
                 trigger_level: 0.0,
                 trigger_source: ChannelId::Alphabetic('A'),
-                trigger_slope: TriggerSlope::Either,
-                capture_mode: CaptureMode::Normal,
+                // Rising and auto, as a bench scope powers up: auto shows a
+                // trace whether or not anything crosses the level, where
+                // normal at 0 V on a logic signal showed a blank screen.
+                trigger_slope: TriggerSlope::Rising,
+                capture_mode: CaptureMode::Auto,
                 delay: 0.0,
                 trigger_position: DEFAULT_TRIGGER_POSITION,
             },
@@ -440,40 +443,23 @@ impl PicoScope2000 {
     }
 
     fn disable_scope_channel(&mut self, channel: ChannelId) -> anyhow::Result<()> {
-        tracing::debug!("Disabling channel {}", channel.as_str());
-        self.settings
-            .channels
-            .iter_mut()
-            .find(|c| c.channel_id == channel)
-            .ok_or(anyhow::anyhow!("Channel not found"))?
-            .enabled = false;
         self.is_new_channel_enabled_disabled = true;
-        tracing::debug!("is_capturing={}", self.is_capturing);
-        if self.is_capturing {
-            self.stop_triggering()?;
-            self.do_update_channel()?;
-            self.is_capturing = true;
-        }
-        self.do_update_trigger()?;
-        if self.is_capturing {
-            self.do_memory_depth_update()?;
-            self.start_triggered_capture(self.settings.trigger.trigger_position)?;
-        }
-        tracing::debug!("Channel {} disabled successfully", channel.as_str());
-        Ok(())
+        self.change_settings(|settings| {
+            channel_settings_mut(settings, channel)?.enabled = false;
+            Ok(())
+        })
     }
 
     fn enable_scope_channel(&mut self, channel: ChannelId) -> anyhow::Result<()> {
-        tracing::debug!("Enabling channel {}", channel.as_str());
-        self.settings
-            .channels
-            .iter_mut()
-            .find(|c| c.channel_id == channel)
-            .ok_or(anyhow::anyhow!("Channel not found"))?
-            .enabled = true;
         self.is_new_channel_enabled_disabled = true;
-        tracing::debug!("is_capturing={}, calling do_update_channel if capturing",
-            self.is_capturing);
+        self.change_settings(|settings| {
+            channel_settings_mut(settings, channel)?.enabled = true;
+            Ok(())
+        })
+    }
+
+    /// Push the stored settings to the hardware, re-arming if it was capturing.
+    fn reprogram(&mut self) -> anyhow::Result<()> {
         if self.is_capturing {
             self.stop_triggering()?;
             self.do_update_channel()?;
@@ -484,7 +470,50 @@ impl PicoScope2000 {
             self.do_memory_depth_update()?;
             self.start_triggered_capture(self.settings.trigger.trigger_position)?;
         }
-        tracing::debug!("Channel {} enabled successfully", channel.as_str());
+        Ok(())
+    }
+
+    /// Change the settings and apply them to the hardware, all or nothing.
+    ///
+    /// Every setter stops a running capture, reprograms the unit and re-arms
+    /// it. When the hardware refused part of that -- a trigger level beyond
+    /// the range, say -- the new value stayed stored and the unit stayed
+    /// stopped, while the acquisition loop, told nothing, went on polling a
+    /// scope that would never be ready. The trace froze, with nothing on
+    /// screen or in the log to say why. Now the previous settings go back
+    /// and the unit is re-armed with them before the error is returned.
+    fn change_settings(
+        &mut self,
+        change: impl FnOnce(&mut OscilloscopeSettings) -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
+        let previous = self.settings.clone();
+        let was_capturing = self.is_capturing;
+        let result = change(&mut self.settings).and_then(|()| {
+            clamp_trigger_level_to_range(&mut self.settings);
+            self.reprogram()
+        });
+        if let Err(error) = result {
+            self.settings = previous;
+            if let Err(recovery) = self.restore_hardware(was_capturing) {
+                tracing::warn!(error = %recovery, "could not re-arm after a refused setting");
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Put the hardware back on the settings held, which are known good.
+    fn restore_hardware(&mut self, was_capturing: bool) -> anyhow::Result<()> {
+        // A plain stop: stop_triggering also ends a single-shot, and the
+        // single-shot the settings describe is still wanted.
+        let api = ps2000()?;
+        unsafe { api.ps2000_stop(self.handle) };
+        self.is_capturing = false;
+        self.do_update_channel()?;
+        self.do_update_trigger()?;
+        if was_capturing {
+            self.run_block(self.settings.trigger.trigger_position)?;
+        }
         Ok(())
     }
 
@@ -629,23 +658,10 @@ impl PicoScope2000 {
         channel: ChannelId,
         volts_per_div: f64,
     ) -> anyhow::Result<()> {
-        self.settings
-            .channels
-            .iter_mut()
-            .find(|c| c.channel_id == channel)
-            .ok_or(anyhow::anyhow!("Channel not found"))?
-            .volts_per_div = volts_per_div;
-        if self.is_capturing {
-            self.stop_triggering()?;
-            self.do_update_channel()?;
-            self.is_capturing = true;
-        }
-        self.do_update_trigger()?;
-        if self.is_capturing {
-            self.do_memory_depth_update()?;         
-            self.start_triggered_capture(self.settings.trigger.trigger_position)?;
-        }
-        Ok(())
+        self.change_settings(|settings| {
+            channel_settings_mut(settings, channel)?.volts_per_div = volts_per_div;
+            Ok(())
+        })
     }
 
     pub fn set_ac_dc_coupling(
@@ -653,24 +669,10 @@ impl PicoScope2000 {
         channel: ChannelId,
         coupling: Coupling,
     ) -> anyhow::Result<()> {
-        self.settings
-            .channels
-            .iter_mut()
-            .find(|c| c.channel_id == channel)
-            .ok_or(anyhow::anyhow!("Channel not found"))?
-            .coupling = coupling;
-
-        if self.is_capturing {
-            self.stop_triggering()?;
-            self.do_update_channel()?;
-            self.is_capturing = true;
-        }
-        self.do_update_trigger()?;
-        if self.is_capturing {
-            self.do_memory_depth_update()?;         
-            self.start_triggered_capture(self.settings.trigger.trigger_position)?;
-        }
-        Ok(())
+        self.change_settings(|settings| {
+            channel_settings_mut(settings, channel)?.coupling = coupling;
+            Ok(())
+        })
     }
 
     fn read_channel_count(base_model: &str) -> usize {
@@ -772,18 +774,10 @@ impl PicoScope2000 {
     }
 
     fn set_scope_trigger_source(&mut self, trigger_source: ChannelId) -> anyhow::Result<()> {
-        self.settings.trigger.trigger_source = trigger_source;
-        if self.is_capturing {
-            self.stop_triggering()?;
-            self.do_update_channel()?;
-            self.is_capturing = true;
-        }
-        self.do_update_trigger()?;
-        if self.is_capturing {
-            self.do_memory_depth_update()?;           
-            self.start_triggered_capture(self.settings.trigger.trigger_position)?;
-        }
-        Ok(())
+        self.change_settings(|settings| {
+            settings.trigger.trigger_source = trigger_source;
+            Ok(())
+        })
     }
 
     fn get_scope_trigger_source(&self) -> anyhow::Result<ChannelId> {
@@ -791,18 +785,10 @@ impl PicoScope2000 {
     }
 
     fn set_trigger_direction(&mut self, trigger_slope: TriggerSlope) -> anyhow::Result<()> {
-        self.settings.trigger.trigger_slope = trigger_slope;
-        if self.is_capturing {
-            self.stop_triggering()?;
-            self.do_update_channel()?;
-            self.is_capturing = true;
-        }
-        self.do_update_trigger()?;
-        if self.is_capturing {
-            self.do_memory_depth_update()?;
-            self.start_triggered_capture(self.settings.trigger.trigger_position)?;
-        }
-        Ok(())
+        self.change_settings(|settings| {
+            settings.trigger.trigger_slope = trigger_slope;
+            Ok(())
+        })
     }
 
     fn get_trigger_direction_value(trigger_slope: TriggerSlope) -> i16 {
@@ -870,22 +856,34 @@ impl PicoScope2000 {
     }
 
     fn set_scope_trigger_level(&mut self, trigger_level: f64) -> anyhow::Result<()> {
+        // Refused with the reason before anything is touched. A level beyond
+        // the source's range can never be crossed, and the driver's own
+        // refusal came as "Voltage out of range 0.95 > 0.5", in input volts
+        // no one had typed.
+        let source = self.settings.trigger.trigger_source;
+        if let Some(channel) = self.settings.channels.iter().find(|c| c.channel_id == source) {
+            let range = Self::raw_range_to_volts(Self::volts_per_div_to_range(
+                channel.volts_per_div,
+                channel.attenuation,
+            ));
+            let reach = to_probe_volts(range, channel.attenuation);
+            if trigger_level.abs() > reach {
+                anyhow::bail!(
+                    "a trigger level of {trigger_level} V is beyond channel {source}'s range of \
+                     +/-{reach} V at {} V/div, so the signal could never cross it; lower the \
+                     level or widen volts/div",
+                    channel.volts_per_div
+                );
+            }
+        }
         // Stored at the input, since that is what converts to ADC counts.
         // `get_scope_trigger_level` converts back; both go through the
         // helpers below so the pair cannot drift.
-        self.settings.trigger.trigger_level =
-            to_input_volts(trigger_level, self.trigger_source_attenuation());
-        if self.is_capturing {
-            self.stop_triggering()?;
-            self.do_update_channel()?;
-            self.is_capturing = true;
-        }
-        self.do_update_trigger()?;
-        if self.is_capturing {
-            self.do_memory_depth_update()?;           
-            self.start_triggered_capture(self.settings.trigger.trigger_position)?;
-        }
-        Ok(())
+        let at_input = to_input_volts(trigger_level, self.trigger_source_attenuation());
+        self.change_settings(|settings| {
+            settings.trigger.trigger_level = at_input;
+            Ok(())
+        })
     }
 
     fn do_update_channel(&mut self) -> anyhow::Result<()> {
@@ -1057,7 +1055,7 @@ impl PicoScope2000 {
         let trigger_source_channel = Self::channel_id_to_raw_value(self.settings.trigger.trigger_source);
         let permissive_direction = enPS2000ThresholdDirection_PS2000_ADV_NONE;
         let active_direction = direction_raw_value as u32;
-        
+
         let result = unsafe {
             api.ps2000SetAdvTriggerChannelDirections(
                 self.handle,
@@ -1134,18 +1132,10 @@ impl PicoScope2000 {
 
     #[allow(dead_code)]
     fn set_trigger_delay(&mut self, delay: f64) -> anyhow::Result<()> {
-        self.settings.trigger.delay = delay;
-        if self.is_capturing {
-            self.stop_triggering()?;
-            self.do_update_channel()?;
-            self.is_capturing = true;
-        }
-        self.do_update_trigger()?;
-        if self.is_capturing {
-            self.do_memory_depth_update()?;
-            self.start_triggered_capture(self.settings.trigger.trigger_position)?;
-        }
-        Ok(())
+        self.change_settings(|settings| {
+            settings.trigger.delay = delay;
+            Ok(())
+        })
     }
 
     #[allow(dead_code)]
@@ -1154,18 +1144,10 @@ impl PicoScope2000 {
     }
 
     fn set_scope_capture_mode(&mut self, capture_mode: CaptureMode) -> anyhow::Result<()> {
-        self.settings.trigger.capture_mode = capture_mode;
-        if self.is_capturing {
-            self.stop_triggering()?;
-            self.do_update_channel()?;
-            self.is_capturing = true;
-        }
-        self.do_update_trigger()?;
-        if self.is_capturing {
-            self.do_memory_depth_update()?;
-            self.start_triggered_capture(self.settings.trigger.trigger_position)?;
-        }
-        Ok(())
+        self.change_settings(|settings| {
+            settings.trigger.capture_mode = capture_mode;
+            Ok(())
+        })
     }
 
     fn get_scope_capture_mode(&self) -> anyhow::Result<CaptureMode> {
@@ -1650,7 +1632,7 @@ impl PicoScope2000 {
             self.is_new_channel_enabled_disabled = false;
         }
         Ok(())
-    }        
+    }
 }
 
 
@@ -2213,9 +2195,9 @@ impl RollCollector {
     fn take(&self) -> ([Vec<(i16, i16)>; 2], i16) {
         let mut collected = self.lock();
         let mut pairs: [Vec<(i16, i16)>; 2] = Default::default();
-        for channel in 0..2 {
+        for (channel, out) in pairs.iter_mut().enumerate() {
             let count = collected.max[channel].len().min(collected.min[channel].len());
-            pairs[channel] = collected.min[channel][..count]
+            *out = collected.min[channel][..count]
                 .iter()
                 .zip(&collected.max[channel][..count])
                 .map(|(&low, &high)| (low.min(high), low.max(high)))
@@ -2316,6 +2298,46 @@ impl Drop for PicoScope2000 {
             Err(e) => tracing::warn!(error = %e, "cannot close unit: driver unavailable"),
         }
     }
+}
+
+/// Keep the trigger level inside the source channel's range.
+///
+/// The threshold is an ADC count, so it cannot sit beyond full scale. A
+/// narrower volts/div on the trigger channel therefore moves the level to the
+/// edge of the new range, as a bench scope's level follows its screen --
+/// rather than refusing the volts/div, which is what an all-or-nothing change
+/// would otherwise do whenever the level was near the top of the old range.
+/// A level asked for outright beyond the range is refused before this runs.
+fn clamp_trigger_level_to_range(settings: &mut OscilloscopeSettings) {
+    let source = settings.trigger.trigger_source;
+    let Some(channel) = settings.channels.iter().find(|c| c.channel_id == source) else {
+        return;
+    };
+    // The level is stored at the input, where the range applies directly.
+    let range = PicoScope2000::raw_range_to_volts(PicoScope2000::volts_per_div_to_range(
+        channel.volts_per_div,
+        channel.attenuation,
+    ));
+    let level = settings.trigger.trigger_level;
+    if level.abs() > range {
+        settings.trigger.trigger_level = range.copysign(level);
+        tracing::info!(
+            requested = level,
+            clamped = settings.trigger.trigger_level,
+            "trigger level moved inside the channel's new range"
+        );
+    }
+}
+
+fn channel_settings_mut(
+    settings: &mut OscilloscopeSettings,
+    channel: ChannelId,
+) -> anyhow::Result<&mut ChannelSettings> {
+    settings
+        .channels
+        .iter_mut()
+        .find(|c| c.channel_id == channel)
+        .ok_or_else(|| anyhow::anyhow!("channel {channel} is not on this scope"))
 }
 
 /// A probe divides the signal before it reaches the input, so the two ends of
@@ -2577,6 +2599,81 @@ mod tests {
     fn the_couplings_this_scope_has_are_still_accepted() {
         assert!(reject_unsupported_coupling(Coupling::DC).is_ok());
         assert!(reject_unsupported_coupling(Coupling::AC).is_ok());
+    }
+
+    fn settings_with(volts_per_div: f64, attenuation: f64, level_at_input: f64) -> OscilloscopeSettings {
+        OscilloscopeSettings {
+            channels: vec![ChannelSettings {
+                channel_id: ChannelId::Alphabetic('A'),
+                volts_per_div,
+                volts_offset: 0.0,
+                coupling: Coupling::DC,
+                attenuation,
+                enabled: true,
+            }],
+            trigger: TriggerSettings {
+                trigger_level: level_at_input,
+                trigger_source: ChannelId::Alphabetic('A'),
+                ..TriggerSettings::default()
+            },
+            cursors: vec![],
+            time_per_div: 1e-3,
+            time_offset: 0.0,
+            sample_rate: None,
+            memory_depth: None,
+            bandwidth: None,
+        }
+    }
+
+    #[test]
+    fn a_narrower_range_brings_the_trigger_level_inside_it() {
+        // 0.1 V/div through 1x is the +/-500 mV range; a 0.9 V level cannot
+        // be a threshold on it, so it moves to the edge rather than the
+        // volts/div being refused.
+        let mut settings = settings_with(0.1, 1.0, 0.9);
+        clamp_trigger_level_to_range(&mut settings);
+        assert!((settings.trigger.trigger_level - 0.5).abs() < 1e-12);
+
+        let mut negative = settings_with(0.1, 1.0, -0.9);
+        clamp_trigger_level_to_range(&mut negative);
+        assert!((negative.trigger.trigger_level + 0.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_level_inside_the_range_is_left_alone() {
+        let mut settings = settings_with(1.0, 1.0, 0.9);
+        clamp_trigger_level_to_range(&mut settings);
+        assert_eq!(settings.trigger.trigger_level, 0.9);
+    }
+
+    /// Every setter goes through the all-or-nothing path, so a refusal
+    /// cannot leave the unit stopped under an acquisition loop that thinks
+    /// it is running -- the freeze a trigger level beyond the range caused.
+    #[test]
+    fn every_setter_applies_its_change_all_or_nothing() {
+        let source = include_str!("ps2000.rs");
+        for setter in [
+            "fn enable_scope_channel(",
+            "fn disable_scope_channel(",
+            "fn set_volts_per_div_range(",
+            "fn set_ac_dc_coupling(",
+            "fn set_scope_trigger_source(",
+            "fn set_trigger_direction(",
+            "fn set_scope_trigger_level(",
+            "fn set_scope_capture_mode(",
+        ] {
+            let body = source
+                .split(setter)
+                .nth(1)
+                .unwrap_or_else(|| panic!("{setter} exists"))
+                .split("\n    fn ")
+                .next()
+                .unwrap();
+            assert!(
+                body.contains("self.change_settings("),
+                "{setter} re-arms without restoring the settings when the hardware refuses"
+            );
+        }
     }
 
     #[test]
