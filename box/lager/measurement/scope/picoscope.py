@@ -237,6 +237,21 @@ def channel_label(channel) -> str:
     return str(wire["Numeric"])
 
 
+def _plain_channel_ids(value):
+    """A daemon state with every ``{"Alphabetic": "A"}`` channel id as ``"A"``.
+
+    Everything else in the state is already plain JSON; the channel ids are
+    the one Rust enum that reached scripts, and printed as a dict.
+    """
+    if isinstance(value, dict):
+        if len(value) == 1 and ("Alphabetic" in value or "Numeric" in value):
+            return channel_label(value)
+        return {key: _plain_channel_ids(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_plain_channel_ids(item) for item in value]
+    return value
+
+
 def _lookup(table, value, kind):
     key = str(value).strip().lower()
     if key not in table:
@@ -802,8 +817,9 @@ class PicoScope:
         Channels, timebase, trigger, acquisition and the display settings,
         as the daemon last published them -- the same message it pushes to
         the web UI after every change, so a script and the page agree.
+        Channels are named by letter, as everywhere else in this class.
         """
-        return self._command("GetState").get("state") or {}
+        return _plain_channel_ids(self._command("GetState").get("state") or {})
 
     # ============ Acquisition ============
     def set_acquisition(self, mode, count=None) -> dict:
