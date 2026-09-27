@@ -62,8 +62,35 @@ COMMAND_LINES = [
     "measure fall",
     "measure overshoot",
     "measure all",
+    "trigger",
     "trigger level 1.2 slope rising",
     "trigger edge level 0 source A",
+    "trigger mode auto",
+    "holdoff",
+    "holdoff 1e-3",
+    "acquire",
+    "acquire normal",
+    "acquire average 64",
+    "acquire peak",
+    "roll",
+    "roll auto",
+    "roll on",
+    "roll off",
+    "status",
+    "display",
+    "persistence 2",
+    "persistence infinite",
+    "persistence off",
+    "xy on",
+    "xy off",
+    "zoom 8 1e-3",
+    "zoom off",
+    "math a-b",
+    "math off",
+    "fft a flattop",
+    "fft off",
+    "spectrum",
+    "spectrum a 3",
     "cursor",
     "cursor time 1e-3 2e-3",
     "cursor volts 0.5 -0.5",
@@ -192,6 +219,14 @@ class _MockScope:
     """
 
     _CURSORS = {"time": [1e-3, 2e-3], "volts": None, "channel": "A"}
+    _STATE = {
+        "acquiring": True, "rolling": False, "capture_mode": "auto",
+        "timebase": {"time_per_div": 1e-3, "time_offset": 0.0},
+        "trigger": {"source": "A", "slope": "rising", "level": 0.5},
+        "acquisition": {"mode": "normal", "average_count": 16},
+        "channels": [{"channel": "A", "enabled": True, "volts_per_div": 1.0,
+                      "coupling": "DC", "attenuation": 1.0}],
+    }
 
     def __getattr__(self, name):
         def call(*_args, **_kwargs):
@@ -206,6 +241,18 @@ class _MockScope:
                 return {"cursors": dict(self._CURSORS),
                         "readings": {"t1": 1e-3, "t2": 2e-3,
                                      "delta_t": 1e-3, "frequency": 1000.0}}
+            # The rest of the settings the handler describes back.
+            if name == "get_state":
+                return dict(self._STATE)
+            if name in ("set_acquisition", "get_acquisition"):
+                return {"mode": "average", "average_count": 64}
+            if name in ("set_roll", "get_roll"):
+                return {"roll": "auto", "rolling": False}
+            if name in ("set_display", "get_display"):
+                return {"persistence": 2.0, "zoom": {"factor": 8.0, "center": 1e-3}}
+            if name == "fft":
+                return {"channel": "A", "window": "hann", "resolution_hz": 12.5,
+                        "peaks": [{"frequency_hz": 1000.0, "vrms": 0.7, "dbv": -3.1}]}
             if name.startswith("get_") or name.startswith("measure"):
                 return 0.0
             return {"status": "ok"}

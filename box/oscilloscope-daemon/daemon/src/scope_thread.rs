@@ -465,23 +465,10 @@ fn run(
         };
 
         if let Some((request, reply_to)) = envelope {
-            let pauses_roll = touches_hardware(&request);
-            let changes = changes_state(&request);
-            // Streaming runs on setup the setters are about to change, and
-            // the driver cannot reprogram it mid-stream. It stops for them
-            // and starts again, below, with whatever they leave.
-            let was_rolling = state.roller.is_some();
-            if pauses_roll && was_rolling {
-                stop_rolling(&mut scope, &mut state);
-            }
-            let reply = handle(&mut scope, request, &acquiring, &mut state);
+            let (reply, changed) = serve(&mut scope, &acquiring, &mut state, request);
             // A client that hung up mid-request is normal, not an error.
             let _ = reply_to.send(reply);
-            if pauses_roll || changes {
-                state.refresh_trigger(&*scope);
-                reconcile_roll(&mut scope, &acquiring, &mut state, was_rolling);
-            }
-            if changes {
+            if changed {
                 publish_state(&*scope, &mut state, &acquiring, &state_tx);
                 next_poll = None;
             }
@@ -677,6 +664,44 @@ fn invalidates_the_published_capture(request: &ScopeRequest) -> bool {
         | ScopeRequest::GetHoldoff
         | ScopeRequest::GetRoll => false,
     }
+}
+
+/// Answer one request, with the steps around `handle` that keep the
+/// acquisition in line with it. Returns the reply and whether the state
+/// subscribers are shown may have changed.
+fn serve(
+    scope: &mut Box<dyn Oscilloscope>,
+    acquiring: &AtomicBool,
+    state: &mut LoopState,
+    request: ScopeRequest,
+) -> (ScopeReply, bool) {
+    let pauses_roll = touches_hardware(&request);
+    let changes = changes_state(&request);
+    // Streaming runs on setup the setters are about to change, and the driver
+    // cannot reprogram it mid-stream. It stops for them and starts again,
+    // below, with whatever they leave.
+    let was_rolling = state.roller.is_some();
+    if pauses_roll && was_rolling {
+        stop_rolling(scope, state);
+    }
+    let reply = handle(scope, request, acquiring, state);
+    let refused = pauses_roll && matches!(reply, ScopeReply::Error(_));
+    if pauses_roll || changes {
+        state.refresh_trigger(&**scope);
+        reconcile_roll(scope, acquiring, state, was_rolling);
+    }
+    // A setting the hardware refused can stop the unit on its way to the
+    // refusal. The drivers put it back; this is the backstop for one that
+    // does not, because an acquisition polling a stopped unit is a frozen
+    // trace with no error anywhere.
+    if refused && state.roller.is_none() && acquiring.load(Ordering::Relaxed) {
+        state.arm_at = None;
+        if let Err(e) = scope.rearm() {
+            tracing::warn!(error = %e, "failed to rearm after a refused setting");
+            acquiring.store(false, Ordering::Relaxed);
+        }
+    }
+    (reply, changes || refused)
 }
 
 /// Whether this request programs the device, which roll mode has to stop
@@ -2478,6 +2503,15 @@ mod tests {
         fn get_coupling(&self, _c: ChannelId) -> anyhow::Result<Coupling> { Ok(Coupling::DC) }
         fn get_attenuation(&self, _c: ChannelId) -> anyhow::Result<f64> { Ok(1.0) }
         fn get_trigger_level(&self) -> anyhow::Result<f64> { Ok(0.0) }
+        fn set_trigger_level(&mut self, level: f64) -> anyhow::Result<()> {
+            // Refused the way the hardware refuses, without re-arming: what
+            // the loop has to recover from.
+            if level.abs() > 10.0 {
+                self.note("stop");
+                anyhow::bail!("Voltage out of range");
+            }
+            Ok(())
+        }
         fn get_time_offset(&self) -> anyhow::Result<f64> { Ok(0.0) }
         fn get_trigger_source(&self) -> anyhow::Result<ChannelId> { Ok(ChannelId::Alphabetic('A')) }
         fn get_trigger_slope(&self) -> anyhow::Result<TriggerSlope> { Ok(TriggerSlope::Rising) }
@@ -2512,7 +2546,6 @@ mod tests {
             set_volts_offset(ChannelId, f64);
             set_coupling(ChannelId, Coupling);
             set_attenuation(ChannelId, f64);
-            set_trigger_level(f64);
             set_time_offset(f64);
             set_trigger_source(ChannelId);
             set_trigger_slope(TriggerSlope);
@@ -2521,25 +2554,49 @@ mod tests {
         }
     }
 
-    /// Drive requests through the same steps the loop takes around `handle`.
+    /// Drive requests through the steps the loop takes around `handle`.
     fn drive(
         scope: &mut Box<dyn Oscilloscope>,
         acquiring: &AtomicBool,
         state: &mut LoopState,
         request: ScopeRequest,
     ) -> ScopeReply {
-        let pauses_roll = touches_hardware(&request);
-        let changes = changes_state(&request);
-        let was_rolling = state.roller.is_some();
-        if pauses_roll && was_rolling {
-            stop_rolling(scope, state);
-        }
-        let reply = handle(scope, request, acquiring, state);
-        if pauses_roll || changes {
-            state.refresh_trigger(&**scope);
-            reconcile_roll(scope, acquiring, state, was_rolling);
-        }
-        reply
+        serve(scope, acquiring, state, request).0
+    }
+
+    #[test]
+    fn a_refused_setting_while_acquiring_leaves_the_scope_armed() {
+        // The freeze: a trigger level the hardware refused left the unit
+        // stopped while the loop went on polling it.
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut scope: Box<dyn Oscilloscope> = Box::new(RollingScope::new(log.clone()));
+        let acquiring = AtomicBool::new(false);
+        let mut state = LoopState::new();
+        drive(&mut scope, &acquiring, &mut state, ScopeRequest::SetTimePerDiv(1e-3));
+        drive(&mut scope, &acquiring, &mut state, ScopeRequest::StartAcquisition(50.0));
+        log.lock().unwrap().clear();
+
+        let reply = drive(&mut scope, &acquiring, &mut state, ScopeRequest::SetTriggerLevel(99.0));
+
+        assert!(matches!(reply, ScopeReply::Error(_)), "the refusal is still reported");
+        assert!(acquiring.load(Ordering::Relaxed));
+        assert_eq!(log.lock().unwrap().last().map(String::as_str), Some("arm"),
+                   "a refused setting has to leave the scope armed: {:?}", log.lock().unwrap());
+    }
+
+    #[test]
+    fn a_refused_setting_while_stopped_arms_nothing() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut scope: Box<dyn Oscilloscope> = Box::new(RollingScope::new(log.clone()));
+        let acquiring = AtomicBool::new(false);
+        let mut state = LoopState::new();
+
+        let (reply, changed) =
+            serve(&mut scope, &acquiring, &mut state, ScopeRequest::SetTriggerLevel(99.0));
+
+        assert!(matches!(reply, ScopeReply::Error(_)));
+        assert!(changed, "subscribers are shown the settings that stand");
+        assert!(!log.lock().unwrap().iter().any(|e| e == "arm"), "{:?}", log.lock().unwrap());
     }
 
     #[test]
