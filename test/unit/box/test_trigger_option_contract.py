@@ -163,10 +163,17 @@ def call_names(calls):
 # Every offered value, generated from the click options themselves
 # ---------------------------------------------------------------------------
 
+#: Subcommands of `trigger` that are settings of the trigger rather than
+#: trigger types. They go to the box's in-process handler, not through the
+#: shared handler to the MSO5000 mapper, so the contract here does not apply.
+TRIGGER_SETTINGS = {"holdoff"}
+
+
 def _trigger_commands(group):
     module = scope_cli if group == "scope" else logic_cli
     trigger_group = getattr(module, group).commands["trigger"]
-    return trigger_group.commands
+    return {name: command for name, command in trigger_group.commands.items()
+            if name not in TRIGGER_SETTINGS}
 
 
 def _companions(sub, option, value):
