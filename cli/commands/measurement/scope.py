@@ -144,6 +144,9 @@ _WARM_ACTIONS = frozenset({
     "measure_dc_pos", "measure_dc_neg",
     "measure_pulse_width_pos", "measure_pulse_width_neg",
     "measure_rise_time", "measure_fall_time",
+    "get_state", "get_trigger", "get_trigger_holdoff", "set_trigger_holdoff",
+    "set_acquire", "get_acquire", "set_roll", "get_roll",
+    "set_display", "get_display", "fft",
 })
 
 
@@ -554,10 +557,34 @@ def duty_cycle_neg(ctx, mcu, box, display, cursor):
     _run_measurement(ctx, box, "measure_dc_neg", mcu, display, cursor)
 
 
-@scope.group()
-def trigger():
-    """Configure trigger settings"""
-    pass
+@scope.command()
+@click.pass_context
+@click.option("--box", required=False, help="Lager Box name or IP")
+def status(ctx, box):
+    """Show every scope setting: channels, timebase, trigger, acquisition
+
+    One request, answered from what the box last applied -- the same state
+    the web UI draws its controls from. PicoScope only.
+    """
+    box_ip = _resolve_box(ctx, box)
+    netname = _require_netname(ctx)
+    if _validate_scope_net(ctx, box_ip, netname) is None:
+        return  # Error already displayed with available nets
+    _run_backend(ctx, box_ip, "get_state", netname=netname)
+
+
+@scope.group(invoke_without_command=True)
+@click.pass_context
+@click.option("--box", required=False, help="Lager Box name or IP")
+def trigger(ctx, box):
+    """Configure trigger settings, or show them with no subcommand"""
+    if ctx.invoked_subcommand is not None:
+        return
+    box_ip = _resolve_box(ctx, box)
+    netname = _require_netname(ctx)
+    if _validate_scope_net(ctx, box_ip, netname) is None:
+        return  # Error already displayed with available nets
+    _run_backend(ctx, box_ip, "get_trigger", netname=netname)
 
 
 MODE_CHOICES = click.Choice(("normal", "auto", "single"))
@@ -735,6 +762,190 @@ def pulse(ctx, mcu, box, mode, coupling, source, level, trigger_on, upper, lower
     _run_backend(ctx, box_ip, "trigger_pulse", netname=netname, mcu=mcu, mode=mode,
                  coupling=coupling, source=source, level=level, trigger_on=trigger_on,
                  upper=upper, lower=lower)
+
+
+@trigger.command()
+@click.argument("seconds", type=click.FloatRange(0.0, 10.0), required=False)
+@click.pass_context
+@click.option("--box", required=False, help="Lager Box name or IP")
+def holdoff(ctx, seconds, box):
+    """Ignore triggers for SECONDS after each one (0 to 10); show it with none
+
+    Steadies the trace on a signal with several edges that cross the level,
+    such as a burst or a serial byte, by waiting out the rest of one before
+    triggering on the next. PicoScope only.
+    """
+    box_ip = _resolve_box(ctx, box)
+    netname = _require_netname(ctx)
+    if _validate_scope_net(ctx, box_ip, netname) is None:
+        return  # Error already displayed with available nets
+    if seconds is None:
+        _run_backend(ctx, box_ip, "get_trigger_holdoff", netname=netname)
+    else:
+        _run_backend(ctx, box_ip, "set_trigger_holdoff", netname=netname, seconds=seconds)
+
+
+ACQUIRE_CHOICES = click.Choice(("normal", "average", "peak"))
+
+
+@scope.command()
+@click.argument("mode", type=ACQUIRE_CHOICES, required=False)
+@click.option("--count", type=click.IntRange(1, 1024),
+              help="Captures to average, for average mode (default 16)")
+@click.pass_context
+@click.option("--box", required=False, help="Lager Box name or IP")
+def acquire(ctx, mode, count, box):
+    """Set how captures combine (normal, average, peak); show it with none
+
+    average is a running mean of the last --count captures, which takes
+    random noise down by the square root of the count. peak keeps the
+    minimum and maximum of every sample interval, where the unit can.
+    PicoScope only.
+    """
+    box_ip = _resolve_box(ctx, box)
+    netname = _require_netname(ctx)
+    if _validate_scope_net(ctx, box_ip, netname) is None:
+        return  # Error already displayed with available nets
+    if mode is None:
+        if count is not None:
+            click.secho("Error: --count needs a mode, e.g. `acquire average --count 64`",
+                        fg="red", err=True)
+            ctx.exit(1)
+        _run_backend(ctx, box_ip, "get_acquire", netname=netname)
+        return
+    params = {"mode": mode}
+    if count is not None:
+        params["count"] = count
+    _run_backend(ctx, box_ip, "set_acquire", netname=netname, **params)
+
+
+@scope.command()
+@click.argument("mode", type=click.Choice(("auto", "on", "off")), required=False)
+@click.pass_context
+@click.option("--box", required=False, help="Lager Box name or IP")
+def roll(ctx, mode, box):
+    """Stream slow timebases continuously (auto, on, off); show it with none
+
+    auto rolls at 50 ms/div and slower while the trigger is in auto, as a
+    bench scope does. on rolls at any timebase and ignores the trigger.
+    PicoScope only.
+    """
+    box_ip = _resolve_box(ctx, box)
+    netname = _require_netname(ctx)
+    if _validate_scope_net(ctx, box_ip, netname) is None:
+        return  # Error already displayed with available nets
+    if mode is None:
+        _run_backend(ctx, box_ip, "get_roll", netname=netname)
+    else:
+        _run_backend(ctx, box_ip, "set_roll", netname=netname, mode=mode)
+
+
+@scope.command()
+@click.pass_context
+@click.option("--box", required=False, help="Lager Box name or IP")
+@click.option("--channel", required=False, help="Channel to analyse (default: the net's own)")
+@click.option("--window", type=click.Choice(("hann", "hamming", "blackman", "flattop", "rectangular")),
+              default="hann", show_default=True, help="FFT window")
+@click.option("--peaks", type=click.IntRange(1, 50), default=5, show_default=True,
+              help="How many of the strongest components to report")
+def fft(ctx, box, channel, window, peaks):
+    """Report the strongest frequency components of a channel
+
+    Computed on the box from the capture on screen. Amplitudes are RMS volts
+    at the probe tip, in dBV. PicoScope only.
+    """
+    box_ip = _resolve_box(ctx, box)
+    netname = _require_netname(ctx)
+    if _validate_scope_net(ctx, box_ip, netname) is None:
+        return  # Error already displayed with available nets
+    params = {"window": window, "peaks": peaks}
+    if channel:
+        params["channel"] = channel
+    _run_backend(ctx, box_ip, "fft", netname=netname, **params)
+
+
+@scope.group("display", invoke_without_command=True)
+@click.pass_context
+@click.option("--box", required=False, help="Lager Box name or IP")
+def display_group(ctx, box):
+    """Set how the web UI draws the trace, or show it with no subcommand
+
+    Held on the box, so a page that is already open follows a change made
+    here. PicoScope only.
+
+    \b
+    lager scope picoscope1 display persistence 2     # traces fade over 2 s
+    lager scope picoscope1 display xy on             # B against A
+    lager scope picoscope1 display zoom 8 --center 0.001
+    lager scope picoscope1 display math a-b
+    lager scope picoscope1 display fft a
+    """
+    if ctx.invoked_subcommand is not None:
+        return
+    box_ip = _resolve_box(ctx, box)
+    netname = _require_netname(ctx)
+    if _validate_scope_net(ctx, box_ip, netname) is None:
+        return  # Error already displayed with available nets
+    _run_backend(ctx, box_ip, "get_display", netname=netname)
+
+
+def _set_display(ctx, box, **settings):
+    box_ip = _resolve_box(ctx, box)
+    netname = _require_netname(ctx)
+    if _validate_scope_net(ctx, box_ip, netname) is None:
+        return  # Error already displayed with available nets
+    _run_backend(ctx, box_ip, "set_display", netname=netname, **settings)
+
+
+@display_group.command("persistence")
+@click.argument("value")
+@click.pass_context
+@click.option("--box", required=False, help="Lager Box name or IP")
+def display_persistence(ctx, value, box):
+    """Let traces linger: seconds (up to 60), infinite, or off"""
+    _set_display(ctx, box, persistence=value)
+
+
+@display_group.command("xy")
+@click.argument("state", type=click.Choice(("on", "off")))
+@click.pass_context
+@click.option("--box", required=False, help="Lager Box name or IP")
+def display_xy(ctx, state, box):
+    """Plot channel B against channel A instead of against time"""
+    _set_display(ctx, box, xy=state)
+
+
+@display_group.command("zoom")
+@click.argument("factor")
+@click.option("--center", type=float, default=0.0, show_default=True,
+              help="Time to zoom around, in seconds from the trigger")
+@click.pass_context
+@click.option("--box", required=False, help="Lager Box name or IP")
+def display_zoom(ctx, factor, center, box):
+    """Magnify the capture by FACTOR (1 to 1000), or off"""
+    zoom = "off" if factor.lower() == "off" else {"factor": float(factor), "center": center}
+    _set_display(ctx, box, zoom=zoom)
+
+
+@display_group.command("math")
+@click.argument("expr")
+@click.pass_context
+@click.option("--box", required=False, help="Lager Box name or IP")
+def display_math(ctx, expr, box):
+    """Draw a trace computed from two channels: a+b, a-b, a*b, or off"""
+    _set_display(ctx, box, math=expr)
+
+
+@display_group.command("fft")
+@click.argument("channel")
+@click.option("--window", type=click.Choice(("hann", "hamming", "blackman", "flattop", "rectangular")),
+              default="hann", show_default=True, help="FFT window")
+@click.pass_context
+@click.option("--box", required=False, help="Lager Box name or IP")
+def display_fft(ctx, channel, window, box):
+    """Show a spectrum pane for CHANNEL, or off"""
+    value = "off" if channel.lower() == "off" else {"channel": channel, "window": window}
+    _set_display(ctx, box, fft=value)
 
 
 @scope.group(invoke_without_command=True)
