@@ -167,9 +167,15 @@ struct Subscription {
     /// what goes out when credit returns is the scope now, not a queue of
     /// the scope as it was.
     pending: Option<Published>,
-    /// Shortest interval between frames, from `max_fps`.
+    /// Interval between frames, from `max_fps`.
     min_interval: Option<Duration>,
-    sent_at: Option<Instant>,
+    /// When the next frame is due under `max_fps`.
+    ///
+    /// Kept as a schedule rather than derived from when the last frame went:
+    /// tokio's timer rounds a sleep up to the millisecond, so "one interval
+    /// after the last send" loses a millisecond or so a frame, and a stream
+    /// asked for at 60 ran at 56.
+    next_due: Option<Instant>,
 }
 
 impl Subscription {
@@ -182,7 +188,7 @@ impl Subscription {
             credits,
             pending: None,
             min_interval,
-            sent_at: None,
+            next_due: None,
         }
     }
 
@@ -192,9 +198,9 @@ impl Subscription {
 
     /// When the frame rate cap next allows a frame, if it is holding one.
     fn paced_until(&self) -> Option<Instant> {
-        let (interval, sent) = (self.min_interval?, self.sent_at?);
-        let next = sent + interval;
-        (next > Instant::now()).then_some(next)
+        self.min_interval?;
+        let due = self.next_due?;
+        (due > Instant::now()).then_some(due)
     }
 
     /// The pending frame, if credit and pacing allow it to go now.
@@ -206,8 +212,25 @@ impl Subscription {
         if let Some(credits) = self.credits.as_mut() {
             *credits -= 1;
         }
-        self.sent_at = Some(Instant::now());
+        if let Some(interval) = self.min_interval {
+            self.next_due = Some(next_due(self.next_due, interval, Instant::now()));
+        }
         Some(frame)
+    }
+}
+
+/// When the frame after one sent at `now` is due, `previous` having been when
+/// that one was.
+///
+/// One interval after the previous due time, so the average rate is exactly
+/// the one asked for: a frame that goes late is followed by one that goes
+/// early. After an idle spell -- nothing captured, or no credit -- that would
+/// let a burst through to catch up, so a schedule more than an interval
+/// behind starts again from now.
+fn next_due(previous: Option<Instant>, interval: Duration, now: Instant) -> Instant {
+    match previous {
+        Some(due) if due + interval >= now => due + interval,
+        _ => now + interval,
     }
 }
 
@@ -420,5 +443,83 @@ fn encode(response: Response) -> String {
         Err(e) => format!(
             r#"{{"Response":{{"response":"Error","message":"failed to encode response: {e}"}}}}"#
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frames_follow_a_schedule_not_the_last_send() {
+        // Sent a millisecond late, the next is still due on the schedule.
+        let interval = Duration::from_micros(16_667);
+        let start = Instant::now();
+        let first = next_due(None, interval, start);
+        assert_eq!(first, start + interval);
+        let late = first + Duration::from_millis(1);
+        assert_eq!(next_due(Some(first), interval, late), first + interval);
+    }
+
+    #[test]
+    fn an_idle_spell_restarts_the_schedule_rather_than_bursting() {
+        let interval = Duration::from_millis(10);
+        let start = Instant::now();
+        let due = start + interval;
+        let much_later = start + Duration::from_secs(1);
+        assert_eq!(next_due(Some(due), interval, much_later), much_later + interval);
+    }
+
+    fn published(seq: u64) -> Published {
+        Published::new(Arc::new(protocol::CaptureFrame {
+            seq,
+            capture_mono_ns: 0,
+            sample_interval_ns: 1.0,
+            pre_trigger_samples: 0,
+            post_trigger_samples: 1,
+            samples_per_channel: 1,
+            resolution_bits: 8,
+            overflow_mask: 0,
+            flags: 0,
+            channels: vec![],
+            samples: vec![],
+        }))
+    }
+
+    fn subscription(credits: Option<u32>, max_fps: Option<f64>) -> Subscription {
+        let (sender, receiver) = tokio::sync::broadcast::channel(4);
+        drop(sender);
+        Subscription::new(receiver, credits, max_fps)
+    }
+
+    #[test]
+    fn without_credit_nothing_is_sent_and_the_newest_waits() {
+        let mut sub = subscription(Some(1), None);
+        sub.pending = Some(published(1));
+        assert_eq!(sub.take_sendable().map(|p| p.frame.seq), Some(1));
+        sub.pending = Some(published(2));
+        sub.pending = Some(published(3));
+        assert!(sub.take_sendable().is_none(), "no credit left");
+        sub.credits = Some(1);
+        assert_eq!(sub.take_sendable().map(|p| p.frame.seq), Some(3), "the newest, not a queue");
+    }
+
+    #[test]
+    fn a_subscriber_without_credits_is_sent_everything() {
+        let mut sub = subscription(None, None);
+        for seq in 1..=5 {
+            sub.pending = Some(published(seq));
+            assert_eq!(sub.take_sendable().map(|p| p.frame.seq), Some(seq));
+        }
+    }
+
+    #[test]
+    fn a_frame_rate_cap_holds_the_next_frame_until_it_is_due() {
+        let mut sub = subscription(Some(10), Some(10.0));
+        sub.pending = Some(published(1));
+        assert!(sub.take_sendable().is_some());
+        sub.pending = Some(published(2));
+        assert!(sub.take_sendable().is_none(), "100 ms have not passed");
+        assert!(sub.paced_until().is_some());
     }
 }
