@@ -36,30 +36,53 @@ export function creditWindow(rttMs, fps) {
   return Math.min(16, Math.max(CREDIT_WINDOW, needed));
 }
 
-/** How far behind live a rolling screen is drawn, in ms. Enough to absorb
- * the arrival jitter of a frame over a real network, so the scroll never
- * waits on one; little enough not to read as lag. */
+/** How far behind live a rolling screen is drawn, in ms, at the least... */
 export const ROLL_DELAY_MS = 60;
+/** ...and at the most: a stream later than this is drawn late, not held. */
+export const ROLL_DELAY_MAX_MS = 400;
+/** Added to the worst lateness seen, for the next frame's variation. */
+export const ROLL_DELAY_MARGIN_MS = 15;
 
 /**
- * The sample range to draw a rolling screen through, `nowBoxMs` being the
- * box's clock at this moment as best the page can tell.
+ * The sample range to draw a rolling screen through.
  *
- * The frame's last pair is at its capture time. Drawn as it arrived, the
- * screen would jump by however far the next frame had moved, at whatever
- * moment it happened to land, which is a scroll that stutters with the
- * network. Shifting by the time elapsed since the frame was captured scrolls
- * it continuously; a late frame shows as a sliver of unfilled screen at the
- * right edge instead of a pause.
+ * The frame holds `total` samples a channel, the newest `screen` of them the
+ * screen and the rest history, with its last pair at `frameEndBoxMs`.
+ * `nowBoxMs` is the box's clock at this moment as near as the page can tell.
+ *
+ * Drawn as it arrived, the screen would jump by however far the next frame
+ * had moved, at whatever moment it happened to land: a scroll that stutters
+ * with the network. Shifted by the time since its last pair, it scrolls
+ * continuously. Drawn `delayMs` behind that, its right edge stays on samples
+ * that have arrived until the next frame does, and the history fills the
+ * left edge the delay uncovers.
  */
-export function rollWindow(total, pairIntervalMs, frameEndBoxMs, nowBoxMs) {
-  const viewEnd = nowBoxMs - ROLL_DELAY_MS;
-  const shiftPairs = (viewEnd - frameEndBoxMs) / pairIntervalMs;
-  const pairs = total / 2;
-  // Beyond half a screen something is wrong with the clocks; draw it as is.
-  const clamped = Math.max(-pairs * 0.1, Math.min(pairs * 0.5, shiftPairs));
+export function rollWindow(total, screen, pairIntervalMs, frameEndBoxMs, nowBoxMs,
+  delayMs = ROLL_DELAY_MS) {
+  const span = screen > 0 && screen <= total ? screen : total;
+  const shiftPairs = (nowBoxMs - delayMs - frameEndBoxMs) / pairIntervalMs;
+  const history = (total - span) / 2;
+  // Ahead by more than half a screen, the clocks are wrong; behind, only as
+  // far as the history reaches.
+  const clamped = Math.max(-history, Math.min(span / 4, shiftPairs));
   const shift = Number.isFinite(clamped) ? clamped * 2 : 0;
-  return { start: shift, end: total + shift };
+  return { start: total - span + shift, end: total + shift };
+}
+
+/**
+ * The roll delay `dtMs` later, moved toward `target`.
+ *
+ * The delay decides where the trace is drawn, so changing it moves the
+ * trace, and all at once the scroll would lurch. It rises by at most a
+ * quarter of the time elapsed -- the scroll slows by a quarter while it makes
+ * room for a later network -- and falls by a fiftieth, too slowly to see.
+ */
+export function nextRollDelay(current, target, dtMs) {
+  const goal = Math.min(ROLL_DELAY_MAX_MS, Math.max(ROLL_DELAY_MS, Number(target) || 0));
+  if (!Number.isFinite(current)) return goal;
+  if (!(dtMs > 0)) return current;
+  if (goal > current) return Math.min(goal, current + dtMs / 4);
+  return Math.max(goal, current - dtMs / 50);
 }
 
 /**

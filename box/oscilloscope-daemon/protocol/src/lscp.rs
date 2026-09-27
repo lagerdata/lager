@@ -73,6 +73,12 @@ pub struct CaptureFrame {
     pub resolution_bits: u8,
     pub overflow_mask: u16,
     pub flags: u16,
+    /// For a rolling screen, the samples per channel the screen spans,
+    /// counted back from the newest. The rest are history: a client drawing
+    /// behind live, to ride out a network's jitter, needs samples for the
+    /// left edge of the screen from before the screen began. Zero for a
+    /// block, where all of it is the screen.
+    pub screen_samples: u32,
     pub channels: Vec<ChannelFrame>,
     pub samples: Vec<i16>,
 }
@@ -156,6 +162,10 @@ impl CaptureFrame {
         out.push(self.channels.len() as u8);
         out.push(self.resolution_bits);
         out.extend_from_slice(&self.overflow_mask.to_le_bytes());
+        // Written into what was reserved, so a decoder that predates it reads
+        // the zero of a block and a decoder that knows it reads zero from an
+        // encoder that does not.
+        out.extend_from_slice(&self.screen_samples.to_le_bytes());
         out.resize(HEADER_SIZE, 0); // reserved tail
 
         for channel in &self.channels {
@@ -218,6 +228,7 @@ impl CaptureFrame {
         let channel_count = buf[44] as usize;
         let resolution_bits = buf[45];
         let overflow_mask = u16::from_le_bytes(buf[46..48].try_into().unwrap());
+        let screen_samples = u32::from_le_bytes(buf[48..52].try_into().unwrap());
 
         let descriptors_end = HEADER_SIZE + channel_count * CHANNEL_DESC_SIZE;
         if buf.len() < descriptors_end {
@@ -264,6 +275,7 @@ impl CaptureFrame {
             samples_per_channel,
             resolution_bits,
             overflow_mask,
+            screen_samples,
             flags,
             channels,
             samples,
@@ -318,6 +330,7 @@ mod tests {
             samples_per_channel: 8,
             resolution_bits: 8,
             overflow_mask: 0b10,
+            screen_samples: 0,
             flags: FLAG_TRIGGERED,
             channels: vec![
                 ChannelFrame {
@@ -355,6 +368,16 @@ mod tests {
         assert_eq!(frame.encode().len(), frame.encoded_len());
         // 64 header + 2*16 descriptors + 16 samples * 2 bytes
         assert_eq!(frame.encode().len(), 64 + 32 + 32);
+    }
+
+    #[test]
+    fn the_screen_span_of_a_rolling_frame_round_trips() {
+        let mut frame = sample_frame();
+        frame.screen_samples = 6;
+        let decoded = CaptureFrame::decode(&frame.encode()).unwrap();
+        assert_eq!(decoded.screen_samples, 6);
+        // Where the reserved tail was, so a block's zero reads as before.
+        assert_eq!(&frame.encode()[48..52], &6u32.to_le_bytes());
     }
 
     #[test]
@@ -437,6 +460,7 @@ mod tests {
             samples_per_channel: 0,
             resolution_bits: 12,
             overflow_mask: 0,
+            screen_samples: 0,
             flags: 0,
             channels: vec![],
             samples: vec![],
@@ -456,6 +480,7 @@ mod tests {
             samples_per_channel: 8000,
             resolution_bits: 8,
             overflow_mask: 0,
+            screen_samples: 0,
             flags: FLAG_TRIGGERED,
             channels: vec![ChannelFrame {
                 channel: ChannelId::Alphabetic('A'),
