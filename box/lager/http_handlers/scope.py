@@ -198,7 +198,12 @@ def register_scope_routes(app):
             return jsonify({"success": False, "error": "Expected a WebSocket upgrade"}), 400
 
         try:
-            upstream = simple_websocket.Client(daemon_client.daemon_url())
+            # A capture is 16 KB and up; read it in one piece rather than in
+            # simple_websocket's default 4 KB slices, each of which is a
+            # syscall and a parser pass on a thread that shares the GIL with
+            # every other request this server is handling.
+            upstream = simple_websocket.Client(daemon_client.daemon_url(),
+                                               receive_bytes=65536)
         except Exception as e:
             logger.warning("scope %s: daemon unreachable for relay: %s", netname, e)
             # Report through the socket the client already has open; a 503
