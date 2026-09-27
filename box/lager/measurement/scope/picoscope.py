@@ -64,6 +64,28 @@ _CAPTURE_MODES = {
     "auto": "auto", "normal": "normal", "norm": "normal", "single": "single",
 }
 
+# How consecutive captures combine: the daemon's AcquisitionMode tokens, and
+# the names a bench scope's Acquire menu uses for them.
+_ACQUISITION_MODES = {
+    "normal": "normal", "sample": "normal",
+    "average": "average", "avg": "average", "averages": "average",
+    "peak": "peak", "peak_detect": "peak", "peakdetect": "peak",
+}
+
+_ROLL_MODES = {
+    "auto": "auto", "on": "on", "off": "off",
+    "true": "on", "false": "off", "yes": "on", "no": "off",
+}
+
+# Display settings the web UI draws with, held by the daemon so that the
+# terminal CLI can set one and an open page follows. Checked here, where a
+# bad value can be refused with a reason, because the daemon stores them
+# without looking.
+_MATH_OPERATORS = {"+": "sum", "-": "difference", "*": "product"}
+_FFT_WINDOWS = ("hann", "hamming", "blackman", "flattop", "rectangular")
+MAX_PERSISTENCE_S = 60.0
+MAX_ZOOM = 1000.0
+
 # Rigol measurement item names -> daemon measurement names, so
 # get_measure_item() accepts what a Rigol caller already passes.
 _MEASURE_ITEMS = {
@@ -682,6 +704,7 @@ class PicoScope:
         # only mean something read off the channel they were measured on.
         self._cursors["channel"] = channel_label(
             channel if channel is not None else self.channel)
+        self._publish_cursors()
         return self.get_cursors()
 
     def get_cursors(self) -> dict:
@@ -702,7 +725,25 @@ class PicoScope:
 
     def clear_cursors(self) -> dict:
         self._cursors.update({"time": None, "volts": None, "channel": None})
+        self._publish_cursors()
         return self.get_cursors()
+
+    def _publish_cursors(self) -> None:
+        """Hand the cursors to the daemon, which pushes them to the web UI.
+
+        The page learns every other setting from the state the daemon pushes
+        after each change, so a pair placed from the terminal appears on a
+        page that is already open instead of waiting for it to reload. Best
+        effort: the box's copy above is the one readings come from, and a
+        daemon that cannot be reached costs the page an update, not the
+        command.
+        """
+        cursors = self.get_cursors()
+        stored = cursors if (cursors["time"] or cursors["volts"]) else None
+        try:
+            self._command("SetDisplay", display={"cursors": stored})
+        except daemon_client.ScopeDaemonError as e:
+            logger.debug("cursors not published to the daemon: %s", e)
 
     def measure_cursors(self, channel=None, timeout: float | None = None) -> dict:
         """Read the cursors against a capture.
@@ -753,6 +794,149 @@ class PicoScope:
         except daemon_client.ScopeDaemonError:
             self._start_acquisition()
             return self.capture(timeout=wait)
+
+    # ============ Everything at once ============
+    def get_state(self) -> dict:
+        """Every setting the controls show, from one daemon request.
+
+        Channels, timebase, trigger, acquisition and the display settings,
+        as the daemon last published them -- the same message it pushes to
+        the web UI after every change, so a script and the page agree.
+        """
+        return self._command("GetState").get("state") or {}
+
+    # ============ Acquisition ============
+    def set_acquisition(self, mode, count=None) -> dict:
+        """How consecutive captures combine before they are published.
+
+        ``normal`` is each capture as taken. ``average`` is a running mean of
+        the last ``count`` (1 to 1024; 16 until set), which takes random noise
+        down by the square root of the count. ``peak`` keeps the minimum and
+        maximum of every sample interval, where the unit can: the daemon
+        refuses it on one whose driver returns a single sample per interval.
+        """
+        token = _lookup(_ACQUISITION_MODES, mode, "acquisition mode")
+        self._command("SetAcquisition", mode=token,
+                      average_count=int(count) if count is not None else None)
+        return self.get_acquisition()
+
+    def get_acquisition(self) -> dict:
+        response = self._command("GetAcquisition")
+        return {"mode": response.get("mode"),
+                "average_count": response.get("average_count")}
+
+    # ============ Trigger holdoff ============
+    def set_trigger_holdoff(self, seconds) -> dict:
+        """Ignore triggers for this long after each one, 0 to 10 s.
+
+        What gets a stable trace from a signal with several edges that all
+        cross the level -- a burst, or a UART byte -- by making the scope
+        wait out the rest of one before it can trigger on the next.
+        """
+        self._command("SetHoldoff", holdoff_s=float(seconds))
+        return {"holdoff": float(seconds)}
+
+    def get_trigger_holdoff(self) -> float:
+        return float(self._command("GetHoldoff").get("holdoff_s") or 0.0)
+
+    # ============ Roll mode ============
+    def set_roll(self, mode) -> dict:
+        """Whether slow timebases stream continuously instead of in blocks.
+
+        ``auto`` rolls at 50 ms/div and slower while the trigger is in auto,
+        as a bench scope does; ``on`` rolls at any timebase and ignores the
+        trigger; ``off`` never rolls.
+        """
+        token = _lookup(_ROLL_MODES, mode, "roll mode")
+        self._command("SetRoll", roll=token)
+        return self.get_roll()
+
+    def get_roll(self) -> dict:
+        response = self._command("GetRoll")
+        return {"roll": response.get("roll"), "rolling": bool(response.get("rolling"))}
+
+    # ============ Display ============
+    def set_display(self, persistence=None, xy=None, zoom=None, math=None,
+                    fft=None, **unknown) -> dict:
+        """Change how the web UI draws, from anywhere that can reach the box.
+
+        Only the settings given change. ``"off"`` clears one.
+
+        * ``persistence``: seconds a trace lingers as it fades, 0 to 60, or
+          ``"infinite"``.
+        * ``xy``: plot channel B against channel A instead of both against time.
+        * ``zoom``: ``{"factor": 4, "center": 0.001}`` -- magnify the capture
+          around a time from the trigger. Factor 1 to 1000.
+        * ``math``: ``"a-b"`` -- a trace computed from two channels, with
+          ``+``, ``-`` or ``*``.
+        * ``fft``: ``{"channel": "A", "window": "hann"}`` -- a spectrum pane.
+        """
+        if unknown:
+            raise ValueError("unknown display setting(s): %s" % ", ".join(sorted(unknown)))
+        patch = {}
+        if persistence is not None:
+            patch["persistence"] = _display_persistence(persistence)
+        if xy is not None:
+            patch["xy"] = _display_switch(xy, "xy") or None
+        if zoom is not None:
+            patch["zoom"] = _display_zoom(zoom)
+        if math is not None:
+            patch["math"] = self._display_math(math)
+        if fft is not None:
+            patch["fft"] = self._display_fft(fft)
+        if not patch:
+            raise ValueError("no display setting given")
+        self._command("SetDisplay", display=patch)
+        return self.get_display()
+
+    def get_display(self) -> dict:
+        return self._command("GetDisplay").get("display") or {}
+
+    def _display_math(self, value):
+        if _is_off(value):
+            return None
+        if isinstance(value, dict):
+            value = value.get("expr", "")
+        expr = str(value).replace(" ", "").lower()
+        for operator in _MATH_OPERATORS:
+            left, found, right = expr.partition(operator)
+            if found and len(left) == 1 and len(right) == 1:
+                first, second = left.upper(), right.upper()
+                self._require_channel(first)
+                self._require_channel(second)
+                if first == second:
+                    raise ValueError("math needs two different channels, got %r" % value)
+                return {"expr": "%s%s%s" % (first, operator, second)}
+        raise ValueError(
+            "math is two channels and an operator, like a-b or a+b or a*b; got %r" % value)
+
+    def _display_fft(self, value):
+        if _is_off(value):
+            return None
+        settings = value if isinstance(value, dict) else {"channel": value}
+        channel = channel_label(self._require_channel(settings.get("channel") or self.channel))
+        window = str(settings.get("window") or "hann").lower()
+        if window not in _FFT_WINDOWS:
+            raise ValueError("unknown FFT window %r; expected one of %s"
+                             % (window, ", ".join(_FFT_WINDOWS)))
+        return {"channel": channel, "window": window}
+
+    # ============ Spectrum ============
+    def fft(self, channel=None, window="hann", peaks=5, timeout=None) -> dict:
+        """The spectrum of one channel, and its strongest components.
+
+        Computed on the box from the capture on screen, the same one a
+        measurement reads, so it describes the trace being drawn. Amplitudes
+        are RMS volts at the probe tip, and in dBV, which is decibels relative
+        to 1 V RMS.
+
+        The window trades frequency resolution against leakage: ``hann`` for
+        general use, ``flattop`` when the amplitude of a tone matters,
+        ``rectangular`` for a signal that fits the capture exactly.
+        """
+        return spectrum_peaks(self._capture_for_cursors(timeout),
+                              channel_label(self._require_channel(channel)),
+                              window=window, peaks=peaks)
 
     # ============ Waveform capture ============
     def capture(self, timeout: float | None = None):
@@ -900,6 +1084,139 @@ class PicoScope:
 
     def stream_stop(self):
         return self.stop()
+
+
+def _is_off(value) -> bool:
+    return value is None or (isinstance(value, str) and value.strip().lower() in ("off", "none", ""))
+
+
+def _display_switch(value, name) -> bool:
+    if isinstance(value, bool):
+        return value
+    token = str(value).strip().lower()
+    if token in ("on", "true", "yes", "1"):
+        return True
+    if token in ("off", "false", "no", "0"):
+        return False
+    raise ValueError("%s is on or off, got %r" % (name, value))
+
+
+def _display_persistence(value):
+    """Seconds a trace lingers, "infinite", or None for off."""
+    if _is_off(value):
+        return None
+    if isinstance(value, str) and value.strip().lower() in ("infinite", "inf"):
+        return "infinite"
+    seconds = float(value)
+    if seconds == 0:
+        return None
+    if not 0 < seconds <= MAX_PERSISTENCE_S:
+        raise ValueError("persistence is 0 to %g s, or infinite; got %r"
+                         % (MAX_PERSISTENCE_S, value))
+    return seconds
+
+
+def _display_zoom(value):
+    """{"factor", "center"}, or None for off."""
+    if _is_off(value):
+        return None
+    settings = value if isinstance(value, dict) else {"factor": value}
+    factor = float(settings.get("factor", 1.0))
+    if not 1.0 <= factor <= MAX_ZOOM:
+        raise ValueError("zoom is a factor from 1 to %g, got %r" % (MAX_ZOOM, factor))
+    if factor == 1.0:
+        return None
+    return {"factor": factor, "center": float(settings.get("center") or 0.0)}
+
+
+# Coherent gain and equivalent noise bandwidth of each window, which is what
+# turns a windowed FFT bin back into the amplitude of the tone under it.
+_WINDOW_CORRECTIONS = {
+    "rectangular": 1.0,
+    "hann": 0.5,
+    "hamming": 0.54,
+    "blackman": 0.42,
+    "flattop": 0.2156,
+}
+
+
+def _window(name, count):
+    import numpy as np
+    n = np.arange(count)
+    if count < 2 or name == "rectangular":
+        return np.ones(count)
+    phase = 2 * np.pi * n / (count - 1)
+    if name == "hann":
+        return 0.5 - 0.5 * np.cos(phase)
+    if name == "hamming":
+        return 0.54 - 0.46 * np.cos(phase)
+    if name == "blackman":
+        return 0.42 - 0.5 * np.cos(phase) + 0.08 * np.cos(2 * phase)
+    if name == "flattop":
+        return (0.21557895 - 0.41663158 * np.cos(phase) + 0.277263158 * np.cos(2 * phase)
+                - 0.083578947 * np.cos(3 * phase) + 0.006947368 * np.cos(4 * phase))
+    raise ValueError("unknown FFT window %r; expected one of %s" % (name, ", ".join(_FFT_WINDOWS)))
+
+
+def spectrum_peaks(frame, channel, window="hann", peaks=5) -> dict:
+    """The strongest components of one channel of a capture.
+
+    A free function, so the arithmetic can be tested without a scope. Each
+    peak is a local maximum of the magnitude spectrum, DC excluded, with its
+    frequency refined between bins by fitting a parabola through the three
+    around it -- a bin is sample rate over record length wide, and a tone
+    rarely sits in the middle of one.
+    """
+    import numpy as np
+
+    window = str(window or "hann").lower()
+    if window not in _WINDOW_CORRECTIONS:
+        raise ValueError("unknown FFT window %r; expected one of %s" % (window, ", ".join(_FFT_WINDOWS)))
+    if frame.channel_index(channel) is None:
+        raise UnsupportedScopeFeature(
+            "channel %s is not enabled, so there is no spectrum to take" % channel)
+
+    volts = np.asarray(frame.volts(channel), dtype=float)
+    if frame.is_envelope:
+        # A rolling screen holds minimum/maximum pairs; their midpoints are
+        # the trace, one per pair.
+        volts = volts.reshape(-1, 2).mean(axis=1)
+        interval_s = frame.sample_interval_ns * 2 / 1e9
+    else:
+        interval_s = frame.sample_interval_ns / 1e9
+    volts = volts[np.isfinite(volts)]
+    count = len(volts)
+    if count < 16 or interval_s <= 0:
+        raise UnsupportedScopeFeature("the capture holds too few samples for a spectrum")
+
+    coefficients = _window(window, count)
+    spectrum = np.abs(np.fft.rfft((volts - volts.mean()) * coefficients))
+    # One-sided, RMS, corrected for the window's coherent gain.
+    rms = spectrum * np.sqrt(2) / (count * _WINDOW_CORRECTIONS[window])
+    rate = 1.0 / interval_s
+    resolution = rate / count
+
+    local = [i for i in range(2, len(rms) - 1) if rms[i] >= rms[i - 1] and rms[i] > rms[i + 1]]
+    local.sort(key=lambda i: rms[i], reverse=True)
+    found = []
+    for i in local[:max(1, int(peaks))]:
+        left, centre, right = rms[i - 1], rms[i], rms[i + 1]
+        denominator = left - 2 * centre + right
+        shift = 0.5 * (left - right) / denominator if denominator else 0.0
+        vrms = float(centre)
+        found.append({
+            "frequency_hz": float((i + shift) * resolution),
+            "vrms": vrms,
+            "dbv": float(20 * np.log10(vrms)) if vrms > 0 else float("-inf"),
+        })
+    return {
+        "channel": channel,
+        "window": window,
+        "sample_rate_hz": rate,
+        "resolution_hz": resolution,
+        "samples": count,
+        "peaks": found,
+    }
 
 
 def create_device(net_info=None, **kwargs):
