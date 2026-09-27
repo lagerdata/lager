@@ -47,6 +47,13 @@ export class CaptureFrame {
     return this.sampleIntervalNs > 0 ? 1e9 / this.sampleIntervalNs : 0;
   }
 
+  /** Samples per channel the screen spans; the rest of a rolling frame is
+   * history from before the screen, for drawing it behind live. */
+  get screen() {
+    return this.screenSamples > 0 && this.screenSamples <= this.samplesPerChannel
+      ? this.screenSamples : this.samplesPerChannel;
+  }
+
   get durationS() {
     return (this.samplesPerChannel * this.sampleIntervalNs) / 1e9;
   }
@@ -139,6 +146,9 @@ export function decode(buffer) {
   const channelCount = view.getUint8(44);
   const resolutionBits = view.getUint8(45);
   const overflowMask = view.getUint16(46, true);
+  // Where the reserved tail began, so an encoder that predates it gives the
+  // zero a block carries: all of the frame is the screen.
+  const screenSamples = view.getUint32(48, true);
 
   const descriptorsEnd = HEADER_SIZE + channelCount * CHANNEL_DESC_SIZE;
   if (bytes.byteLength < descriptorsEnd) {
@@ -182,6 +192,7 @@ export function decode(buffer) {
     samplesPerChannel,
     resolutionBits,
     overflowMask,
+    screenSamples,
     flags,
     channels,
     samples,

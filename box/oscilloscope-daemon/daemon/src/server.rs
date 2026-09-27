@@ -480,6 +480,7 @@ mod tests {
             samples_per_channel: 1,
             resolution_bits: 8,
             overflow_mask: 0,
+            screen_samples: 0,
             flags: 0,
             channels: vec![],
             samples: vec![],
