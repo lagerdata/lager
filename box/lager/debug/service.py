@@ -1322,6 +1322,7 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                     script_file=script_path, serial=serial,
                     gdb_port=gdb_port, rtt_telnet_port=rtt_telnet_port,
                     swo_port=swo_port, telnet_port=telnet_port,
+                    require_evidence=data.get('require_evidence'),
                 ))
                 # Driven by hand, not with `for`, to keep the generator's
                 # return value: the line showing nothing was programmed, or
@@ -1478,7 +1479,7 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             # Short of a failure line, it needs J-Link's own confirmation: a
             # Commander whose probe was taken by another client, or dropped
             # off USB, can print neither and still exit normally.
-            erase_failure = _erase_failure(erase_output)
+            erase_failure = _erase_failure(erase_output, data.get('require_evidence'))
             if erase_failure:
                 joined = '\n'.join(erase_output)
                 logger.error('[ERASE] %s: %s', device_type, erase_failure)

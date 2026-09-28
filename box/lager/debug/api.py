@@ -292,11 +292,27 @@ NO_FLASH_DOWNLOAD = ('J-Link printed `Downloading file` but no `Flash download` 
                      'line after it: nothing was programmed')
 
 
+# Set to 0 (in a `lager python` script, or per request from the CLI's own
+# LAGER_JLINK_REQUIRE_EVIDENCE) to stop requiring J-Link's evidence lines, for
+# a target whose J-Link output is worded differently. Explicit failure lines,
+# JLinkExe exiting included, still fail.
+REQUIRE_EVIDENCE_ENV = 'LAGER_JLINK_REQUIRE_EVIDENCE'
+
+
+def _require_evidence(override=None):
+    """Whether success needs J-Link's evidence lines: *override* if given,
+    else the environment (default on)."""
+    if override is not None:
+        return bool(override)
+    value = os.environ.get(REQUIRE_EVIDENCE_ENV, '1').strip().lower()
+    return value not in ('0', 'false', 'no', 'off')
+
+
 def _is_flash_evidence(line):
     return bool(_FLASH_DOWNLOAD_RE.search(line)) or line.strip() == 'O.K.'
 
 
-def _flash_failure(output_chunks):
+def _flash_failure(output_chunks, require_evidence=None):
     """The line showing a J-Link flash session programmed nothing, else None.
 
     Failure lines win: JLinkExe exiting under us, a programming failure, a
@@ -316,6 +332,8 @@ def _flash_failure(output_chunks):
         for line in lines:
             if pattern.search(line):
                 return line.strip()
+    if not _require_evidence(require_evidence):
+        return None
     downloading = seen = False
     for line in lines:
         if _DOWNLOADING_FILE_RE.search(line):
@@ -338,7 +356,7 @@ _ERASE_DONE_RE = re.compile(
 NO_ERASE_DONE = 'J-Link printed no `Erasing done.` line'
 
 
-def _erase_failure(output_chunks):
+def _erase_failure(output_chunks, require_evidence=None):
     """The line showing a J-Link erase touched nothing, else None.
 
     A failed attach or an unusable probe names itself; short of that, an
@@ -348,7 +366,9 @@ def _erase_failure(output_chunks):
     for line in joined.splitlines():
         if _ATTACH_FAILED_RE.search(line):
             return line.strip()
-    return None if _ERASE_DONE_RE.search(joined) else NO_ERASE_DONE
+    if not _require_evidence(require_evidence) or _ERASE_DONE_RE.search(joined):
+        return None
+    return NO_ERASE_DONE
 
 
 # The two causes of a failed RAMCode download seen so far, told apart after
@@ -1298,7 +1318,7 @@ def chip_erase(device, speed='4000', transport='SWD', mcu=None, script_file=None
 @holds_probe('flash')
 def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None, use_gdb=True,
                  script_file=None, serial=None, gdb_port=2331, rtt_telnet_port=9090,
-                 swo_port=None, telnet_port=None):
+                 swo_port=None, telnet_port=None, require_evidence=None):
     """
     Flash firmware to device using JLinkExe.
 
@@ -1323,6 +1343,8 @@ def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None,
         rtt_telnet_port: RTT telnet port to bind on the post-flash reconnect (default: 9090).
         swo_port: SWO port for the post-flash reconnect. None means ``gdb_port + 1``.
         telnet_port: Telnet port for the post-flash reconnect. None means ``gdb_port + 2``.
+        require_evidence: False to accept a flash with no J-Link evidence line
+            (see ``REQUIRE_EVIDENCE_ENV``). None reads the environment.
 
     Returns:
         Generator yielding output from flash operation. Its return value
@@ -1412,7 +1434,7 @@ def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None,
         # Retry failed too: keep the original output, which carries the real error.
 
     yield from flash_output
-    failure = _flash_failure(flash_output)
+    failure = _flash_failure(flash_output, require_evidence)
 
     time.sleep(1.0)  # Give JLinkExe time to fully disconnect
 

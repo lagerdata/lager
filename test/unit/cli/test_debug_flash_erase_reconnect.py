@@ -40,6 +40,7 @@ import sys
 from unittest.mock import patch
 
 import pytest
+from pathlib import Path
 import requests
 from click.testing import CliRunner
 
@@ -755,6 +756,53 @@ class TestAnEraseJLinkNeverConfirmedIsNotSuccess:
         client = FakeClient(erase_output=f"Erasing selected range...\n{confirmation}\n")
         result = run_erase(client, ["--box", "mybox", "--yes"])
         assert result.exit_code == 0, result.output
+
+
+class TestTheEvidenceEscapeHatch:
+    """LAGER_JLINK_REQUIRE_EVIDENCE=0 on the machine running the CLI: sent to
+    the box with each flash and erase, and applied to an older box's text."""
+
+    def _client(self):
+        client = debug_mod.DebugServiceClient.__new__(debug_mod.DebugServiceClient)
+        sent = {}
+
+        class _Resp:
+            def json(self):
+                return {"status": "ok"}
+
+        def request(method, path, json=None, timeout=None, **kw):
+            sent[path] = json
+            return _Resp()
+        client._request = request
+        return client, sent
+
+    def test_off_is_sent_with_flash_and_erase(self, hexfile, monkeypatch):
+        monkeypatch.setenv("LAGER_JLINK_REQUIRE_EVIDENCE", "0")
+        client, sent = self._client()
+        client.flash(Path(hexfile), file_type="hex", net={"name": "SWD"})
+        client.erase({"name": "SWD"})
+        assert sent["/debug/flash"]["require_evidence"] is False
+        assert sent["/debug/erase"]["require_evidence"] is False
+
+    def test_by_default_nothing_extra_is_sent(self, hexfile, monkeypatch):
+        monkeypatch.delenv("LAGER_JLINK_REQUIRE_EVIDENCE", raising=False)
+        client, sent = self._client()
+        client.flash(Path(hexfile), file_type="hex", net={"name": "SWD"})
+        client.erase({"name": "SWD"})
+        assert "require_evidence" not in sent["/debug/flash"]
+        assert "require_evidence" not in sent["/debug/erase"]
+
+    def test_off_accepts_an_older_box_s_quiet_flash(self, hexfile, monkeypatch):
+        monkeypatch.setenv("LAGER_JLINK_REQUIRE_EVIDENCE", "0")
+        client = FakeClient(flash_output="Flashing device X via JLinkExe...\n")
+        result = run_flash(client, ["--hex", hexfile, "--box", "mybox"])
+        assert result.exit_code == 0, result.output
+
+    def test_off_still_fails_on_a_failure_line(self, hexfile, monkeypatch):
+        monkeypatch.setenv("LAGER_JLINK_REQUIRE_EVIDENCE", "0")
+        client = FakeClient(flash_output=JLINK_RAMCODE_VERIFY_FAILED)
+        result = run_flash(client, ["--hex", hexfile, "--box", "mybox"])
+        assert result.exit_code == 1, result.output
 
 
 class TestTheBoxVerdictIsUsedWhenPresent:

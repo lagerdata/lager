@@ -120,7 +120,7 @@ arm-none-eabi-gdb firmware.elf -ex 'target remote localhost:2331'
 - A script that must continue after the GDB server starts can use `--no-tunnel`. The command then returns and does not open a tunnel.
 - If an administrator removes your access to the box, the gateway closes the tunnel within about one minute. The command tells you. The next connection gets the access error.
 
-If the command says that the gateway of the box does not support debug tunnels yet, the gateway must be updated. Speak to the administrator of the box.
+If the gateway of the box does not support debug tunnels yet, the command still starts the GDB server and exits successfully. It warns that no debugger on this machine can reach the server, and prints no address to connect to. The gateway must be updated before you can attach a debugger. Speak to the administrator of the box.
 
 ### `disconnect`
 
@@ -175,7 +175,9 @@ flag is now a no-op kept for backward compatibility.</Note>
 
 - If the erase before programming fails, `flash` prints `Flash erase failed:` and the error, then exits 1. It does not program the target.
 - If programming fails, `flash` prints `Flash failed:` and the failing line, then `The target was NOT programmed. If this ran without --no-erase it is now erased.` It exits 1.
-- The CLI finds a failure from a connect-failure line in the output of the probe. The `erase` section below lists those lines.
+- On J-Link, the output of the probe decides. These lines fail the command: a connect failure, a probe that another client holds, and a failed RAMCode download. Examples are `Selected interface (SWD) is not supported by the connected probe.` and `Failed to download RAMCode!`. The `erase` section below lists the connect-failure lines. Success also needs J-Link's own evidence: a `J-Link: Flash download:` line (or `O.K.`) after `Downloading file`. A flash without it did not program the target, and it fails.
+- A failed J-Link flash adds `Diagnosis:` lines. They name any other J-Link program that used the probe during the flash. On a DA1469x, they also tell if the target reset during programming.
+- If your target's J-Link output does not contain these evidence lines, set `LAGER_JLINK_REQUIRE_EVIDENCE=0` in the environment of the CLI. The CLI then does not require them for `flash` and `erase`. Failure lines still fail the command.
 
 **Examples:**
 
