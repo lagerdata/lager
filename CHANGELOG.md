@@ -12,58 +12,41 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+## [0.51.0] - 2026-09-28
+
+### Added
+
+- **`LAGER_JLINK_REQUIRE_EVIDENCE=0` for J-Link targets worded differently.** Set in the
+  CLI's environment (or a `lager python` script), it stops `flash` and `erase` requiring
+  J-Link's evidence lines. A failure line still fails.
+- **A failed J-Link flash prints `Diagnosis:` lines.** They list any other J-Link program
+  seen on the probe during the flash and, on a DA1469x, whether the target reset during
+  programming.
+- **`lager debug <net> gdbserver --json` reports `"gdb_port_reachable": false`** when the
+  box's gateway cannot tunnel to the GDB server.
+
+### Changed
+
+- **The box runs one J-Link operation per probe at a time.** A second `connect`, `memrd`,
+  `reset`, `flash`, `erase` or Net API call waits for the first, and gives up with
+  `Debug probe <serial> is busy` (HTTP 503) after `LAGER_PROBE_LOCK_TIMEOUT_S` (default
+  300 s). The CLI allows 90 s more for `connect`, `disconnect`, `reset` and `memrd`.
+- **`lager debug <net> gdbserver` exits 0 on a box whose gateway cannot tunnel.** It starts
+  the GDB server, warns that no debugger on this machine can reach it, and prints no
+  address. In 0.50.2 it exited 1, even with `--no-tunnel`.
+
 ### Fixed
 
-- **`lager debug <net> flash` fails when J-Link programmed nothing.** J-Link prints
-  `Downloading file` before it downloads the RAMCode it programs flash with. When that
-  download failed (`Failed to download RAMCode!`, `Verification of RAMCode failed`),
-  the command still printed `Flashed!` and exited 0, and the part was left erased. It
-  now prints `Flash failed:` with the J-Link line and exits 1. On a DA1469x the box no
-  longer runs its post-flash reset after a failed program. `/debug/flash` now reports
-  `programmed` and `error`, which the CLI uses when present; older boxes are still
-  judged from their output.
-- **`erase` and `flash` fail when J-Link could not use the probe.** With a second
-  J-Link client on the probe, Commander answers `Selected interface (SWD) is not
-  supported by the connected probe.` or `Target connection not established yet but
-  required for command.` and exits normally; `lager` printed `Erase complete` and
-  `Flashed!` with nothing erased or written. Both now fail on those lines. Past those,
-  success needs J-Link's own evidence: a flash needs `Downloading file` followed by a
-  `Flash download` line (J-Link prints one for every bank it touches, an
-  already-matching one included), and an erase needs `Erasing done.`. A J-Link that
-  dropped off USB mid-flash left no text at all and printed `Flashed!` over an erased
-  part; that now fails. For a target whose J-Link output is worded differently, set
-  `LAGER_JLINK_REQUIRE_EVIDENCE=0` in the CLI's environment (or in a `lager python`
-  script, for the Net API). Success then no longer needs those lines; a failure line
-  still fails.
-- **`lager debug <net> gdbserver` succeeds again on a box whose gateway cannot tunnel.**
-  Since 0.50.2 it exited 1 there with `the gateway does not support debug tunnels yet`,
-  even with `--no-tunnel`, which broke scripts such as `flash && gdbserver`. The GDB
-  server does start on the box. The command now says so, warns that no debugger on this
-  machine can reach it until the gateway is updated, prints no address that would not
-  connect, and exits 0. `--json` reports `"gdb_port_reachable": false`.
-- **JLinkExe exiting under the box is an error, not silence.** When JLinkExe exited
-  mid-session, the box swallowed the error and returned what it had, often nothing.
-  When it exited before its prompt, the command failed with `generator didn't yield`.
-  Both now fail with `JLinkExe exited ...`, followed by the last thing it printed.
-- **Two J-Link operations on one probe no longer run at the same time.** J-Link lets
-  several clients open one probe, and a `connect`, `memrd`, `reset` or a `lager python`
-  script that ran during a flash could corrupt its RAMCode download or stop its GDB
-  server. The box now holds one lock per probe, across threads and processes, for every
-  J-Link operation and for the whole of each `/debug/connect`, `disconnect`, `reset`,
-  `flash`, `erase` and `memrd` request. A second operation waits for the first and
-  gives up with `Debug probe <serial> is busy` (HTTP 503) after
-  `LAGER_PROBE_LOCK_TIMEOUT_S` seconds (default 300). The CLI now allows 90 s more for
-  `connect`, `disconnect`, `reset` and `memrd`, so a command queued behind a flash is
-  not reported as timed out while the box goes on to serve it. The lock orders requests,
-  not whole commands: a `gdbserver` started during a flash runs between the flash's own
-  requests, and the flash's later steps may replace that server.
-- **A failed J-Link flash says what else was going on.** The output lists every other
-  J-Link process seen on the probe during the flash. It matches serials as numbers, so
-  `50115930` and `000050115930` are the same probe, and includes clients that name no
-  probe. On a DA1469x it also reports whether the target reset during programming, and
-  which reset (for example `SYS watchdog`). The box clears the DA1469x `RESET_STAT_REG`
-  after its pre-flash halt, so the reading belongs to this attempt, and retries the read
-  while another client holds the probe.
+- **`lager debug <net> flash` no longer reports `Flashed!` when J-Link programmed
+  nothing.** A failed RAMCode download (`Failed to download RAMCode!`), a probe that
+  another client held, or a J-Link that left no evidence of a flash now exits 1 with
+  `Flash failed:`. On a DA1469x the box no longer resets the target after a failed program.
+- **`lager debug <net> erase` no longer reports `Erase complete` when J-Link erased
+  nothing.** It now needs J-Link's `Erasing done.` line, and fails on a probe that another
+  client held.
+- **A JLinkExe that exits under the box is an error, not silence.** It used to return no
+  output, or fail with `generator didn't yield`; it now fails with `JLinkExe exited ...`
+  and the last line JLinkExe printed.
 
 ## [0.50.2] - 2026-09-24
 
