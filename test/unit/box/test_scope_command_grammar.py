@@ -195,6 +195,71 @@ def test_measure_actions_cover_the_daemon_measurements(parsed):
         % (ui_measurements - handler_measurements))
 
 
+def test_help_names_one_command_in_every_form_a_user_tries():
+    """`help trigger` and `trigger --help` ask about trigger.
+
+    A bare `help` asks for the whole list. `trigger help` is not a help
+    request: it looks like a trigger setting. A line that sets something is
+    not one either, or `trigger level 1` would never reach the scope.
+    """
+    asked = _help_topics([
+        "help",
+        "help trigger",
+        "trigger --help",
+        "trigger help",
+        "enable --help",
+        "trigger level 1",
+        "start",
+    ])
+    assert asked["help"] == ""
+    assert asked["help trigger"] == "trigger"
+    assert asked["trigger --help"] == "trigger"
+    assert asked["trigger help"] is None
+    assert asked["enable --help"] == "enable"
+    assert asked["trigger level 1"] is None
+    assert asked["start"] is None
+
+    text = _help_for("trigger")
+    assert text["usage"].startswith("trigger ")
+    assert "slope" in text["usage"]
+    assert _help_for("not-a-command") is None
+
+
+def _help_topics(lines):
+    script = """
+    import { helpTopic } from %s;
+    const lines = JSON.parse(process.env.SCOPE_TEST_LINES);
+    const out = {};
+    for (const line of lines) out[line] = helpTopic(line);
+    process.stdout.write(JSON.stringify(out));
+    """ % json.dumps(str(GRAMMAR_JS))
+    import os
+    env = dict(os.environ, SCOPE_TEST_LINES=json.dumps(lines))
+    result = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        capture_output=True, text=True, timeout=60, check=False, env=env)
+    if result.returncode != 0:
+        pytest.fail("node failed: %s" % result.stderr.strip())
+    return json.loads(result.stdout)
+
+
+def _help_for(name):
+    script = """
+    import { helpFor } from %s;
+    const row = helpFor(process.env.SCOPE_HELP_FOR);
+    process.stdout.write(JSON.stringify(row
+      ? { usage: row[0], help: row[1] } : null));
+    """ % json.dumps(str(GRAMMAR_JS))
+    import os
+    env = dict(os.environ, SCOPE_HELP_FOR=name)
+    result = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        capture_output=True, text=True, timeout=60, check=False, env=env)
+    if result.returncode != 0:
+        pytest.fail("node failed: %s" % result.stderr.strip())
+    return json.loads(result.stdout)
+
+
 def test_unknown_command_is_rejected_with_a_helpful_message():
     result = _parse_with_node(["frobnicate", "measure nonsense", "scale abc"])
 
