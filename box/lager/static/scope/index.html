@@ -119,12 +119,6 @@
       </div>
 
       <div class="group">
-        <div class="group__title">Channels</div>
-        <!-- Populated from capabilities.analog_channels. -->
-        <div id="channels"></div>
-      </div>
-
-      <div class="group">
         <div class="group__title">Trigger</div>
         <label class="field field--stack">
           <span>Source</span>
@@ -161,6 +155,12 @@
           <input id="trigger-markers" type="checkbox" checked>
           <span>Show trigger markers</span>
         </label>
+      </div>
+
+      <div class="group">
+        <div class="group__title">Channels</div>
+        <!-- Populated from capabilities.analog_channels. -->
+        <div id="channels"></div>
       </div>
 
       <!-- How the trace is drawn. Held on the box, like the cursors, so the
