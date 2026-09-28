@@ -287,6 +287,69 @@ class TestTheUiAdoptsTheHardwareState:
 
 
 @needs_node
+class TestEnableNamesAChannel:
+    """`enable B` must reach channel B's net, not the first channel's."""
+
+    def test_enable_b_is_sent_to_scope2_and_checks_its_box(self):
+        out = _run_js("""
+        const sent = [];
+        const toggles = { A: { checked: false }, B: { checked: false } };
+        const self = {
+          net: 'picoscope1',
+          channelNets: [
+            { name: 'scope1', pin: 1, role: 'scope-channel' },
+            { name: 'scope2', pin: 2, role: 'scope-channel' },
+          ],
+          channelState: new Map([
+            ['A', { enabled: false, net: 'scope1', toggle: toggles.A }],
+            ['B', { enabled: false, net: 'scope2', toggle: toggles.B }],
+          ]),
+          console: { error(text) { this.message = text; } },
+          netForLabel: ScopeApp.prototype.netForLabel,
+          netForChannel: ScopeApp.prototype.netForChannel,
+          runCommand: async (action, params, summary, net) => {
+            sent.push([action, net]);
+            return { message: 'ok' };
+          },
+          refreshMeasurements() {},
+        };
+        await ScopeApp.prototype.execute.call(self, 'enable B');
+        await ScopeApp.prototype.execute.call(self, 'enable A');
+        process.stdout.write(JSON.stringify({
+          sent, a: toggles.A.checked, b: toggles.B.checked,
+        }));
+        """)
+        assert out["sent"] == [
+            ["enable_net", "scope2"],
+            ["enable_net", "scope1"],
+        ]
+        assert out["b"] is True
+        assert out["a"] is True
+
+    def test_enable_with_no_letter_still_uses_the_first_channel(self):
+        out = _run_js("""
+        const sent = [];
+        const self = {
+          net: 'picoscope1',
+          channelNets: [{ name: 'scope1', pin: 1 }, { name: 'scope2', pin: 2 }],
+          channelState: new Map(),
+          console: { error(text) { this.message = text; } },
+          netForLabel: ScopeApp.prototype.netForLabel,
+          netForChannel: ScopeApp.prototype.netForChannel,
+          netForAction: ScopeApp.prototype.netForAction,
+          runCommand: async (action, params, summary, net) => {
+            sent.push(self.netForAction(action, net));
+            return { message: 'ok' };
+          },
+          refreshMeasurements() {},
+        };
+        await ScopeApp.prototype.execute.call(self, 'enable');
+        process.stdout.write(JSON.stringify(sent));
+        """)
+        assert out == ["scope1"]
+
+
+@needs_node
 class TestControlsTargetTheirOwnNet:
     """send() must honour a per-control net override."""
 

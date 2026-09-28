@@ -459,6 +459,20 @@ class ScopeApp {
     return channel ? channel.name : this.net;
   }
 
+  /** The net `enable B` should reach, or null when that channel has none. */
+  netForLabel(label) {
+    const name = String(label || '').trim().toUpperCase();
+    const state = this.channelState && this.channelState.get(name);
+    // A strip that exists but has no net is unwired. Falling through to a
+    // pin lookup would hand the command to a different channel.
+    if (state) return state.net || null;
+    let index = null;
+    if (/^[A-D]$/.test(name)) index = name.charCodeAt(0) - 65;
+    else if (/^[1-4]$/.test(name)) index = Number(name) - 1;
+    if (index === null) return null;
+    return this.netForChannel(index);
+  }
+
   async loadCapabilities() {
     if (!this.net) return;
     try {
@@ -2664,7 +2678,29 @@ class ScopeApp {
       this.console.error(e.message);
       return undefined;
     }
-    return this.runCommand(parsed.action, parsed.params, parsed.summary);
+    // `enable B` names a channel. The action itself carries no channel: the
+    // box turns on whichever net the request is sent to, so the letter has
+    // to choose the net or both letters enable the first channel.
+    let net;
+    if (parsed.channel) {
+      net = this.netForLabel(parsed.channel);
+      if (!net) {
+        this.console.error(`channel ${parsed.channel} has no net`);
+        return undefined;
+      }
+    }
+    const body = await this.runCommand(
+      parsed.action, parsed.params, parsed.summary, net);
+    if (body && parsed.channel
+        && (parsed.action === 'enable_net' || parsed.action === 'disable_net')) {
+      const state = this.channelState && this.channelState.get(parsed.channel);
+      if (state) {
+        state.enabled = parsed.action === 'enable_net';
+        if (state.toggle) state.toggle.checked = state.enabled;
+      }
+      this.refreshMeasurements();
+    }
+    return body;
   }
 
   printHelp() {
