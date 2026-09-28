@@ -18,6 +18,7 @@ on-box ``lager python`` script. Do not "sync" these two files.
 """
 import json
 import base64
+import os
 import requests
 import math
 from typing import Dict, Any, Optional
@@ -31,6 +32,17 @@ from pathlib import Path
 # (about 20 s on J-Link, 40 s through the OpenOCD loader) used to hit its own
 # 10-30 s timeout here while the box went on to serve it.
 PROBE_QUEUE_S = 90
+
+# Set to 0 to accept a J-Link flash or erase that printed none of J-Link's
+# evidence lines (`Flash download`, `O.K.`, `Erasing done.`), for a target
+# whose J-Link output is worded differently. Sent to the box with each flash
+# and erase; an explicit failure line still fails.
+REQUIRE_EVIDENCE_ENV = 'LAGER_JLINK_REQUIRE_EVIDENCE'
+
+
+def require_jlink_evidence():
+    value = os.environ.get(REQUIRE_EVIDENCE_ENV, '1').strip().lower()
+    return value not in ('0', 'false', 'no', 'off')
 
 class DebugServiceClient:
     """Client for interacting with lager-debug-service."""
@@ -224,6 +236,8 @@ class DebugServiceClient:
             content = base64.b64encode(f.read()).decode('ascii')
 
         data = {'verbose': verbose}
+        if not require_jlink_evidence():
+            data['require_evidence'] = False
         if net:
             data['net'] = net
         if jlink_script:
@@ -267,6 +281,8 @@ class DebugServiceClient:
             data['erase_start'] = erase_start
         if erase_size is not None:
             data['erase_size'] = erase_size
+        if not require_jlink_evidence():
+            data['require_evidence'] = False
         timeout = 120  # Erase can take a while
         if erase_size is not None:
             timeout += 60 * math.ceil(erase_size / (1 << 20))

@@ -501,6 +501,8 @@ def test_an_old_gateway_on_a_gated_box_says_it_needs_updating(gateway, monkeypat
     with pytest.raises(LagerError) as info:
         choose_route(BOX, 2331, service_port=gw.port)
     assert 'does not support debug tunnels yet' in info.value.problem
+    # Its own class: `gdbserver` turns this one case into a warning.
+    assert isinstance(info.value, gateway_tunnel.GatewayCannotTunnel)
 
 
 def test_route_waits_out_a_server_that_is_still_starting(gateway, monkeypatch):

@@ -56,6 +56,15 @@ _CHUNK = 64 * 1024
 
 ROUTE_DIRECT = 'direct'
 ROUTE_TUNNEL = 'tunnel'
+# The server runs on the box, but nothing on this machine can reach its port:
+# the gateway predates tunnels and the port is not published.
+ROUTE_UNREACHABLE = 'unreachable'
+
+
+class GatewayCannotTunnel(LagerError):
+    """The box is behind a gateway that predates tunnels, and its port is
+    not reachable directly either. The server on the box is fine; only a
+    debugger on this machine cannot reach it."""
 
 
 class TunnelError(LagerError):
@@ -328,7 +337,7 @@ def choose_route(box_ip, port, *, service_port=TUNNEL_SERVICE_PORT,
         return ROUTE_DIRECT
     if port_reachable(box_ip, port, timeout=direct_timeout):
         return ROUTE_DIRECT
-    raise LagerError(
+    raise GatewayCannotTunnel(
         f'Port {port} on box {box_ip} is reachable only through its gateway, '
         'and that gateway does not support debug tunnels yet.',
         cause='The debug server runs on the box. The gateway in front of it '

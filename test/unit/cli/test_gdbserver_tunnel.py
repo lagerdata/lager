@@ -37,6 +37,7 @@ debug_mod = importlib.import_module("cli.commands.development.debug.commands")
 rtt_ws_mod = importlib.import_module(
     "cli.commands.development.debug.rtt_websocket_client")
 from cli.errors import LagerError  # noqa: E402
+from cli.gateway_tunnel import GatewayCannotTunnel  # noqa: E402
 
 BOX_IP = "10.9.8.7"
 NET = {"name": "dbg1", "role": "debug", "channel": "NRF52840_XXAA",
@@ -270,16 +271,54 @@ def test_reset_on_a_gated_box_resets_then_serves():
 # Gated box whose gateway cannot tunnel
 # ---------------------------------------------------------------------------
 
-OLD_GATEWAY = LagerError(
+OLD_GATEWAY = GatewayCannotTunnel(
     f"Port 2331 on box {BOX_IP} is reachable only through its gateway, and "
     "that gateway does not support debug tunnels yet.")
 
 
-def test_an_old_gateway_fails_the_command_without_a_box_address():
+def test_an_old_gateway_is_a_warning_not_a_failure():
+    """The server IS running on the box; only a debugger on this machine
+    cannot reach it. v0.50.2 exited 1 here, which broke `flash && gdbserver`
+    on every box whose gateway predates tunnels."""
     result, _, _ = run([], route=OLD_GATEWAY)
-    assert result.exit_code == 1
+    assert result.exit_code == 0, result.output
+    assert "started!" in result.output
+    assert "Warning: Port 2331" in result.output
     assert "does not support debug tunnels yet" in result.output
+    assert "Error:" not in result.output
+
+
+def test_an_old_gateway_prints_no_address_that_would_not_connect():
+    result, _, _ = run([], route=OLD_GATEWAY)
     assert f"target remote {BOX_IP}" not in result.output
+    assert f"{BOX_IP}:2331" not in result.output
+    assert "localhost" not in result.output
+
+
+def test_an_old_gateway_opens_no_tunnel_and_returns():
+    result, _, _ = run([], route=OLD_GATEWAY)
+    assert FakeTunnel.instances == []
+
+
+def test_an_old_gateway_with_no_tunnel_also_succeeds():
+    """--no-tunnel is documented as returning without a tunnel; it used to
+    fail here too, because the route was probed first."""
+    result, _, _ = run(["--no-tunnel"], route=OLD_GATEWAY)
+    assert result.exit_code == 0, result.output
+
+
+def test_an_old_gateway_is_reported_in_json():
+    result, _, _ = run(["--json"], route=OLD_GATEWAY)
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output[result.output.index("{"):result.output.rindex("}") + 1])
+    assert payload["gdb_port_reachable"] is False
+
+
+def test_a_gateway_that_cannot_reach_the_server_still_fails():
+    """Only the old-gateway case is softened. A gateway that answers but
+    cannot reach the server is a real failure."""
+    result, _, _ = run([], route=LagerError("The gateway of box x could not reach the debug server"))
+    assert result.exit_code == 1
 
 
 def test_an_old_gateway_does_not_stop_an_rtt_stream():

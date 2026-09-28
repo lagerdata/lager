@@ -21,8 +21,11 @@ from ....box_storage import get_box_ip, get_box_name_by_ip, get_box_user
 from ....core.net_group import NetGroupHelpMixin, NetSubCommand
 from ....errors import LagerError
 from ....gateway_auth import auth_server_for_box
-from ....gateway_tunnel import ROUTE_DIRECT, ROUTE_TUNNEL, GatewayTunnel, choose_route
-from .service_client import DebugServiceClient
+from ....gateway_tunnel import (
+    ROUTE_DIRECT, ROUTE_TUNNEL, ROUTE_UNREACHABLE, GatewayCannotTunnel, GatewayTunnel,
+    choose_route,
+)
+from .service_client import DebugServiceClient, require_jlink_evidence
 from .net_cache import get_net_cache
 
 DEBUG_ROLE = "debug"
@@ -796,10 +799,18 @@ def gdbserver(ctx, box, force, halt, speed, quiet, json_output, rtt, rtt_reset, 
     if server_up and effective_gdb_port:
         try:
             route = choose_route(target_box, effective_gdb_port)
+        except GatewayCannotTunnel as err:
+            # The server IS running on the box; only a debugger here cannot
+            # reach it until the gateway supports tunnels. Starting it is what
+            # this command was asked to do, so this is a warning, not a
+            # failure: v0.50.2 exited 1 here and broke `flash && gdbserver`
+            # on every such box. No box address is printed -- it would not
+            # connect.
+            route, route_error = ROUTE_UNREACHABLE, err
         except LagerError as err:
             route_error = err
-    if route_error is not None and not streaming:
-        # The server is up but no debugger here can reach it. RTT does not
+    if route_error is not None and route != ROUTE_UNREACHABLE and not streaming:
+        # The gateway could not reach the server, or refused us. RTT does not
         # need the GDB port (it streams over HTTP), so it goes on below.
         client.close()
         raise route_error
@@ -820,6 +831,8 @@ def gdbserver(ctx, box, force, halt, speed, quiet, json_output, rtt, rtt_reset, 
                 result['tunnel'] = {'local_host': '127.0.0.1',
                                     'local_port': tunnel.local_port,
                                     'box_port': effective_gdb_port}
+            if route == ROUTE_UNREACHABLE:
+                result['gdb_port_reachable'] = False
             click.echo(json.dumps(result, indent=2))
             # A script reading the JSON must see it now, not when the
             # tunnel below finally returns.
@@ -839,7 +852,13 @@ def gdbserver(ctx, box, force, halt, speed, quiet, json_output, rtt, rtt_reset, 
             else:
                 click.secho(f"{backend_label} started!", fg='green', err=True)
                 _echo_gdb_address(target_box, box_label, effective_gdb_port, route, tunnel)
-    if route_error is not None:
+    if route == ROUTE_UNREACHABLE:
+        if not quiet:
+            click.secho(f"Warning: {route_error.problem}", fg='yellow', err=True)
+            click.secho("  The GDB server runs on the box. To attach a debugger from "
+                        "this machine, the box's gateway must be updated to support debug "
+                        "tunnels.", fg='yellow', err=True)
+    elif route_error is not None:
         # Streaming mode: the RTT stream still works, the GDB port does not.
         route_error.show()
 
@@ -867,6 +886,10 @@ def _echo_gdb_address(target_box, box_label, port, route, tunnel):
     if tunnel is not None:
         click.secho(f"GDB server running on {box_label}. Connect to localhost:{tunnel.local_port}", fg='cyan', err=True)
         click.secho(f"Connect with: arm-none-eabi-gdb -ex 'target remote localhost:{tunnel.local_port}'", fg='cyan', err=True)
+    elif route == ROUTE_UNREACHABLE:
+        # The gateway cannot tunnel and the port is not published: no address
+        # on this machine connects, so none is printed. The warning says why.
+        click.secho(f"GDB server running on {box_label}, port {port}.", fg='cyan', err=True)
     elif route == ROUTE_TUNNEL:
         # --no-tunnel on a gated box: the box's address would not connect.
         click.secho(f"GDB server running on {box_label}, port {port}. The box's "
@@ -1319,14 +1342,15 @@ def _flash_failure_line(output):
         if (_line_matches_programming_failure(line)
                 or _line_matches(line, _PROBE_UNUSABLE_SIGNATURES)):
             return line.strip()
-    if _downloaded_without_flash_download(lines):
+    evidence = require_jlink_evidence()
+    if evidence and _downloaded_without_flash_download(lines):
         return _NO_FLASH_DOWNLOAD
     if any(_line_matches(line, _FLASH_PROGRAMMED_SIGNATURES) for line in lines):
         return None
     for line in lines:
         if _line_matches(line, _CONNECT_FAILURE_SIGNATURES):
             return line.strip()
-    if _jlink_flash_without_loadfile(lines):
+    if evidence and _jlink_flash_without_loadfile(lines):
         return _NO_LOADFILE
     return None
 
@@ -1370,7 +1394,7 @@ def _erase_failure_line(output):
     confirmed = any(text in ('Erasing done.', 'Mass erase done.')
                     or (text.startswith('Flash sectors within Range') and text.endswith('deleted.'))
                     for text in stripped)
-    if started and not confirmed:
+    if started and not confirmed and require_jlink_evidence():
         return _NO_ERASE_DONE
     return None
 

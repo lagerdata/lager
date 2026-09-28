@@ -315,6 +315,71 @@ class NoEvidenceIsNoFlashTests(unittest.TestCase):
             api.NO_FLASH_DOWNLOAD)
 
 
+class EvidenceEscapeHatchTests(unittest.TestCase):
+    """LAGER_JLINK_REQUIRE_EVIDENCE=0 (or `require_evidence: false` from the
+    CLI) accepts output with no J-Link evidence line, for a target worded
+    differently. Explicit failure lines still fail."""
+
+    def test_off_accepts_a_flash_with_no_evidence(self):
+        self.assertIsNone(api._flash_failure(['Downloading file [a.bin]...\n'],
+                                             require_evidence=False))
+        self.assertIsNone(api._flash_failure([''], require_evidence=False))
+
+    def test_off_still_fails_on_a_failure_line(self):
+        self.assertEqual(api._flash_failure(['Failed to download RAMCode!'],
+                                            require_evidence=False),
+                         'Failed to download RAMCode!')
+        self.assertTrue(api._flash_failure(['JLinkExe exited mid-session: x'],
+                                           require_evidence=False).startswith('JLinkExe exited'))
+
+    def test_off_accepts_an_erase_with_no_confirmation(self):
+        self.assertIsNone(api._erase_failure(['Erasing device...'], require_evidence=False))
+        self.assertIsNotNone(api._erase_failure(
+            ['Target connection not established yet but required for command.'],
+            require_evidence=False))
+
+    def test_the_environment_decides_when_no_override(self):
+        for value, expected in (('0', False), ('off', False), ('1', True), ('', True)):
+            with self.subTest(value=value), patch.dict(os.environ,
+                                                       {api.REQUIRE_EVIDENCE_ENV: value}):
+                self.assertEqual(api._require_evidence(), expected)
+        with patch.dict(os.environ, {api.REQUIRE_EVIDENCE_ENV: '0'}):
+            self.assertTrue(api._require_evidence(True))
+
+    def test_flash_device_passes_it_through(self):
+        rec, lines, failure = _flash(DA1469X, '')
+        self.assertEqual(failure, api.NO_LOADFILE)
+        with _bench('') as rec:
+            lines, failure = _drain(api.flash_device(
+                ([], [('/tmp/fw.bin', 0x16000000)], []), mcu=DA1469X,
+                require_evidence=False))
+        self.assertIsNone(failure)
+
+    def test_the_service_forwards_the_request_field(self):
+        seen = {}
+
+        def fake_flash_device(files, **kwargs):
+            seen.update(kwargs)
+            yield 'O.K.'
+            return None
+
+        run = _Run()
+        with patch.object(service.safety, 'check_destructive', lambda net, op: None), \
+             patch.object(service, '_resolve_device_type', lambda net: OTHER), \
+             patch.object(service, 'resolve_backend', lambda net: BACKEND_JLINK), \
+             patch.object(service, '_resolve_probe',
+                          lambda net: ('000123456789', 0, 2331, 2332, 2333, 9090)), \
+             patch.object(service, 'get_jlink_gdbserver_status',
+                          lambda serial=None: {'running': False}), \
+             patch.object(service, '_get_script_file', lambda net: None), \
+             patch.object(service, 'flash_device', fake_flash_device):
+            _handler(run).handle_flash({
+                'net': {'name': 'SWD', 'role': 'debug'}, 'require_evidence': False,
+                'hexfile': {'content': base64.b64encode(b':00000001FF\n').decode()},
+            })
+        self.assertIs(seen['require_evidence'], False)
+
+
 class EraseEvidenceTests(unittest.TestCase):
     def test_erasing_done_is_an_erase(self):
         self.assertIsNone(api._erase_failure(['Erasing device...\r\nErasing done.\r\n']))

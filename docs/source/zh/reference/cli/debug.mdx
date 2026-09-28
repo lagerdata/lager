@@ -120,7 +120,7 @@ arm-none-eabi-gdb firmware.elf -ex 'target remote localhost:2331'
 - 如果脚本需要在 GDB 服务器启动后继续执行，可以使用 `--no-tunnel`。这时命令直接返回，不建立隧道。
 - 如果管理员撤销了您对该 Box 的访问权限，网关会在大约一分钟内关闭隧道，命令会提示您。之后的下一个连接会收到访问错误。
 
-如果命令提示该 Box 的网关还不支持调试隧道，说明网关需要更新。请联系该 Box 的管理员。
+如果该 Box 的网关还不支持调试隧道，命令仍会启动 GDB 服务器并成功退出。命令会警告本机上的调试器无法连接到该服务器，并且不会打印可供连接的地址。需要先更新网关，才能连接调试器。请联系该 Box 的管理员。
 
 ### `disconnect`
 
@@ -173,7 +173,9 @@ lager debug [NET_NAME] flash [OPTIONS]
 - 如果编程前的擦除失败，`flash` 会打印 `Flash erase failed:` 和错误，然后以 1 退出。它不会对目标编程。
 - 如果编程失败，`flash` 会打印 `Flash failed:` 和出错的那一行，然后打印
   `The target was NOT programmed. If this ran without --no-erase it is now erased.`，并以 1 退出。
-- CLI 从探针输出中的连接失败行判断出失败。下面的 `erase` 一节列出了那些行。
+- 在 J-Link 上，由探针的输出决定结果。以下几类行会使命令失败：连接失败、探针被另一个客户端占用、RAMCode 下载失败。例如 `Selected interface (SWD) is not supported by the connected probe.` 和 `Failed to download RAMCode!`。下面的 `erase` 一节列出了连接失败的行。成功还需要 J-Link 自己的证据：`Downloading file` 之后要有 `J-Link: Flash download:` 行（或 `O.K.`）。没有证据的烧录并没有对目标编程，命令会失败。
+- J-Link 烧录失败时，会追加 `Diagnosis:` 行。这些行列出烧录期间使用该探针的其他 J-Link 程序。在 DA1469x 上，还会说明目标在编程期间是否复位。
+- 如果您的目标的 J-Link 输出中没有这些证据行，请在 CLI 的环境中设置 `LAGER_JLINK_REQUIRE_EVIDENCE=0`。这样 `flash` 和 `erase` 就不再要求它们。失败行仍会使命令失败。
 
 **示例：**
 

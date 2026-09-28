@@ -31,7 +31,16 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   `Flash download` line (J-Link prints one for every bank it touches, an
   already-matching one included), and an erase needs `Erasing done.`. A J-Link that
   dropped off USB mid-flash left no text at all and printed `Flashed!` over an erased
-  part; that now fails.
+  part; that now fails. For a target whose J-Link output is worded differently, set
+  `LAGER_JLINK_REQUIRE_EVIDENCE=0` in the CLI's environment (or in a `lager python`
+  script, for the Net API). Success then no longer needs those lines; a failure line
+  still fails.
+- **`lager debug <net> gdbserver` succeeds again on a box whose gateway cannot tunnel.**
+  Since 0.50.2 it exited 1 there with `the gateway does not support debug tunnels yet`,
+  even with `--no-tunnel`, which broke scripts such as `flash && gdbserver`. The GDB
+  server does start on the box. The command now says so, warns that no debugger on this
+  machine can reach it until the gateway is updated, prints no address that would not
+  connect, and exits 0. `--json` reports `"gdb_port_reachable": false`.
 - **JLinkExe exiting under the box is an error, not silence.** When JLinkExe exited
   mid-session, the box swallowed the error and returned what it had, often nothing.
   When it exited before its prompt, the command failed with `generator didn't yield`.
