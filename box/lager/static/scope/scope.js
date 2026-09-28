@@ -2665,8 +2665,10 @@ class ScopeApp {
   async execute(line) {
     const verb = line.split(/\s+/)[0].toLowerCase();
 
-    // Page-local verbs never reach the box.
-    if (verb === 'help') return this.printHelp();
+    // Page-local verbs never reach the box. Help is recognized in every
+    // form a user reaches for: `help trigger` and `trigger --help`.
+    const topic = grammar.helpTopic(line);
+    if (topic !== null) return this.printHelp(topic);
     if (verb === 'clear') return this.console.clear();
     if (verb === 'connect') return this.connect();
     if (verb === 'disconnect') return this.disconnect();
@@ -2703,7 +2705,17 @@ class ScopeApp {
     return body;
   }
 
-  printHelp() {
+  printHelp(topic) {
+    if (topic) {
+      const row = grammar.helpFor(topic);
+      if (!row) {
+        this.console.error(`no command "${topic}"; type "help" to list them`);
+        return;
+      }
+      this.console.write(`  ${row[0]}`, 'table');
+      this.console.write(`  ${row[1]}`, 'note');
+      return;
+    }
     const rows = grammar.helpRows();
     const width = Math.max(...rows.map(([usage]) => usage.length));
     for (const [usage, help] of rows) {
