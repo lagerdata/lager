@@ -2548,6 +2548,7 @@ class ScopeApp {
   }
 
   wireConsole() {
+    this.wireConsoleResize();
     const form = el('console-form');
     const input = el('console-line');
 
@@ -2574,6 +2575,76 @@ class ScopeApp {
         if (matches.length === 1) input.value = `${matches[0]} `;
         else if (matches.length > 1) this.console.write(matches.join('  '), 'table');
       }
+    });
+  }
+
+  /** Drag the console's top edge. The height is remembered for the next visit. */
+  wireConsoleResize() {
+    const handle = el('console-resize');
+    const log = el('console-output');
+    const section = handle && handle.closest('.console');
+    if (!handle || !log || !section) return;
+
+    const room = () => {
+      const header = document.querySelector('.bar');
+      const headerH = header ? header.offsetHeight : 0;
+      const chrome = section.offsetHeight - log.offsetHeight;
+      // 160px keeps a readable waveform under the header.
+      return window.innerHeight - headerH - chrome - 160;
+    };
+    // `preferred` is the height the user asked for. The pane shows that
+    // height clamped to the window, so shrinking the window and growing it
+    // again brings the log back.
+    let preferred = CONSOLE_LOG_DEFAULT;
+    const apply = () => {
+      const height = consoleLogHeight(preferred, 0, room());
+      document.documentElement.style.setProperty('--console-log', `${height}px`);
+      handle.setAttribute('aria-valuenow', String(height));
+      handle.setAttribute('aria-valuemax', String(Math.round(Math.max(CONSOLE_LOG_MIN, room()))));
+      return height;
+    };
+    const remember = (height) => {
+      preferred = Math.max(CONSOLE_LOG_MIN, height);
+      const shown = apply();
+      try { localStorage.setItem(CONSOLE_LOG_KEY, String(preferred)); } catch { /* see below */ }
+      return shown;
+    };
+
+    try {
+      const saved = Number(localStorage.getItem(CONSOLE_LOG_KEY));
+      if (saved >= CONSOLE_LOG_MIN) preferred = saved;
+    } catch { /* a private window with storage blocked keeps the default */ }
+    apply();
+    window.addEventListener('resize', () => apply());
+
+    const drag = (startY, startH) => {
+      document.body.classList.add('is-resizing-console');
+      const at = (clientY) => consoleLogHeight(startH, startY - clientY, Number.POSITIVE_INFINITY);
+      const move = (event) => { preferred = at(event.clientY); apply(); };
+      const stop = (event) => {
+        document.body.classList.remove('is-resizing-console');
+        handle.removeEventListener('pointermove', move);
+        handle.removeEventListener('pointerup', stop);
+        handle.removeEventListener('pointercancel', stop);
+        remember(at(event.clientY));
+      };
+      handle.addEventListener('pointermove', move);
+      handle.addEventListener('pointerup', stop);
+      handle.addEventListener('pointercancel', stop);
+    };
+    handle.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      try { handle.setPointerCapture(event.pointerId); } catch { /* drag still follows the pointer */ }
+      drag(event.clientY, log.getBoundingClientRect().height);
+    });
+    handle.addEventListener('dblclick', () => remember(CONSOLE_LOG_DEFAULT));
+    handle.addEventListener('keydown', (event) => {
+      const step = event.shiftKey ? 48 : 16;
+      if (event.key === 'ArrowUp') remember(preferred + step);
+      else if (event.key === 'ArrowDown') remember(preferred - step);
+      else return;
+      event.preventDefault();
     });
   }
 
@@ -2611,6 +2682,28 @@ class ScopeApp {
 // sampleTraceAt is exported so it can be checked against the box's
 // `trace_voltage_at`: the reading in the terminal and the label on the plot
 // come from different implementations of the same interpolation.
+/** Height of the command log, and the smallest it may be dragged to. */
+export const CONSOLE_LOG_DEFAULT = 150;
+export const CONSOLE_LOG_MIN = 48;
+const CONSOLE_LOG_KEY = 'lager-scope-console-log';
+
+/**
+ * Log height after a drag.
+ *
+ * `offset` is how far the pointer moved upward from the start of the drag:
+ * the console sits at the bottom, so pulling its edge up makes the log
+ * taller. `room` is what the window has left once the waveform keeps a
+ * usable strip, so the log cannot be dragged off the screen.
+ */
+export function consoleLogHeight(start, offset, room) {
+  const base = Number.isFinite(start) ? start : CONSOLE_LOG_DEFAULT;
+  const next = Math.max(CONSOLE_LOG_MIN, base + (Number.isFinite(offset) ? offset : 0));
+  // A room that has not been measured is not a cap. A measured room always
+  // leaves the minimum, even when the window is shorter than that.
+  if (!Number.isFinite(room)) return Math.round(next);
+  return Math.round(Math.min(Math.max(CONSOLE_LOG_MIN, room), next));
+}
+
 export { ScopeApp, voltsPerDivChoices, timebaseChoices, sampleTraceAt,
          PER_CHANNEL_ACTIONS, isPerChannelAction, channelName };
 

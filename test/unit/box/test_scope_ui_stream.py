@@ -29,7 +29,7 @@ pytestmark = pytest.mark.skipif(
     reason="node is required to run the scope UI code")
 
 PRELUDE = """
-import { ScopeApp } from %s;
+import { ScopeApp, consoleLogHeight } from %s;
 import * as render from %s;
 globalThis.Option = class {
   constructor(text, value) { this.text = text; this.value = value; }
@@ -48,6 +48,10 @@ function app(extra = {}) {
 """ % (json.dumps(str(SCOPE_DIR / "scope.js")), json.dumps(str(SCOPE_DIR / "render.js")))
 
 
+def _height(expr):
+    return _run_js("process.stdout.write(JSON.stringify(%s));" % expr)
+
+
 def _run_js(body):
     script = PRELUDE + body
     result = subprocess.run(
@@ -56,6 +60,24 @@ def _run_js(body):
     if result.returncode != 0:
         pytest.fail("node failed: %s" % result.stderr.strip())
     return json.loads(result.stdout)
+
+
+class TestConsoleResize:
+
+    def test_pulling_the_edge_up_makes_the_log_taller(self):
+        assert _height("consoleLogHeight(150, 80, 600)") == 230
+
+    def test_the_log_cannot_cover_the_waveform(self):
+        assert _height("consoleLogHeight(150, 5000, 400)") == 400
+
+    def test_the_log_keeps_a_few_lines(self):
+        assert _height("consoleLogHeight(150, -5000, 400)") == 48
+
+    def test_a_short_window_still_leaves_the_minimum(self):
+        assert _height("consoleLogHeight(150, 0, 10)") == 48
+
+    def test_an_unmeasured_window_does_not_collapse_the_log(self):
+        assert _height("consoleLogHeight(150, 80, Infinity)") == 230
 
 
 class TestCredits:
