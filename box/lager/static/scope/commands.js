@@ -394,7 +394,8 @@ export const COMMANDS = [
 
 /** Verbs the page handles itself, listed so `help` can show them. */
 export const LOCAL_COMMANDS = [
-  { verb: 'help', usage: 'help', help: 'List commands' },
+  { verb: 'help', usage: 'help [<command>]',
+    help: 'List commands, or one of them: "help trigger" or "trigger --help"' },
   { verb: 'clear', usage: 'clear', help: 'Clear the console' },
   { verb: 'connect', usage: 'connect', help: 'Reconnect the capture stream' },
   { verb: 'disconnect', usage: 'disconnect', help: 'Stop the capture stream' },
@@ -441,7 +442,33 @@ export function complete(prefix) {
   return all.filter((verb) => verb.startsWith(lowered)).sort();
 }
 
+const HELP_ENTRIES = [...COMMANDS, ...LOCAL_COMMANDS];
+
 /** Help text as `[usage, help]` rows. */
 export function helpRows() {
-  return [...COMMANDS, ...LOCAL_COMMANDS].map((c) => [c.usage, c.help]);
+  return HELP_ENTRIES.map((c) => [c.usage, c.help]);
+}
+
+/** One command's `[usage, help]`, or null when `name` is not a verb. */
+export function helpFor(name) {
+  const verb = String(name || '').trim().toLowerCase();
+  const entry = HELP_ENTRIES.find((c) => c.verb === verb);
+  return entry ? [entry.usage, entry.help] : null;
+}
+
+/**
+ * The command a line is asking about, when the line is a help request.
+ *
+ * `help` alone asks for the whole list (`topic` is ''). `help trigger` and
+ * `trigger --help` ask for that one command. A bare word `help` is not a
+ * request: `trigger help` looks like a trigger setting, so it is left for
+ * the command to reject. A line that is not asking for help returns null.
+ */
+export function helpTopic(line) {
+  const tokens = tokenize(String(line || '').trim());
+  if (tokens.length === 0) return null;
+  const verb = tokens[0].toLowerCase();
+  if (verb === 'help') return tokens[1] ? tokens[1].toLowerCase() : '';
+  if (tokens.slice(1).some((token) => token === '--help')) return verb;
+  return null;
 }
