@@ -48,7 +48,7 @@ body {
   font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   height: 100vh;
   display: grid;
-  grid-template-rows: auto 1fr auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   overflow: hidden;
 }
 
@@ -98,7 +98,10 @@ body {
   min-height: 0;
 }
 
-.plot { position: relative; min-width: 0; background: #05080d; }
+/* min-height: 0 lets the waveform give up space when the console is dragged
+ * taller. Without it the canvas's bitmap is a minimum, and the log grows
+ * over the trace instead of the trace getting shorter. */
+.plot { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: #05080d; }
 #scope-canvas { display: block; width: 100%; height: 100%; }
 
 .plot-empty {
@@ -227,7 +230,26 @@ select:focus-visible, input:focus-visible {
   border-top: 1px solid var(--border);
   background: var(--bg-panel);
   display: grid;
-  grid-template-rows: auto 150px auto;
+  /* The log row is the one the separator moves. The rest is chrome. */
+  grid-template-rows: 6px auto var(--console-log, 150px) auto;
+  min-height: 0;
+}
+
+.console__resize {
+  cursor: ns-resize;
+  touch-action: none;
+  background:
+    linear-gradient(var(--text-dim), var(--text-dim)) center / 28px 2px no-repeat;
+  opacity: 0.45;
+}
+.console__resize:hover,
+.console__resize:focus-visible,
+body.is-resizing-console .console__resize {
+  background: var(--accent);
+}
+body.is-resizing-console {
+  cursor: ns-resize;
+  user-select: none;
 }
 
 .console__bar {
