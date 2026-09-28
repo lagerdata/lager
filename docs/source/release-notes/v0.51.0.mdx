@@ -1,0 +1,94 @@
+---
+title: "Version 0.51.0"
+description: "September 28, 2026"
+---
+
+## <u>Upgrade Notes</u>
+
+- **Update your boxes.** The new flash and erase checks, the probe lock and the diagnosis run on
+  the box. Run `lager update --box <box-name>` after you upgrade the CLI. A 0.51.0 CLI still
+  works with an older box, and judges the flash from its output text.
+- **`flash` and `erase` can now fail where they reported success.** On J-Link, a flash that
+  programmed nothing now exits 1 with `Flash failed:`. An erase that erased nothing exits 1 too.
+  A script that relied on exit 0 will now stop at the real failure. Fix the cause that the
+  output names, then run the command again.
+- **J-Link must show evidence of a flash or an erase.** A flash needs a `J-Link: Flash download:`
+  line (or `O.K.`) after `Downloading file`. An erase needs `Erasing done.`. If your target's
+  J-Link output does not contain these lines, set `LAGER_JLINK_REQUIRE_EVIDENCE=0` in the CLI's
+  environment.
+- **`lager debug NET gdbserver` exits 0 on a box whose gateway cannot tunnel.** Version 0.50.2
+  exited 1 there, even with `--no-tunnel`. The command now starts the GDB server, prints a
+  warning, and exits 0. It prints no address, because no debugger on this machine can reach the
+  server. A script that must know this can read `"gdb_port_reachable": false` from `--json`.
+- **A second operation on one probe now waits.** A `connect`, `memrd`, `reset`, `flash` or
+  `erase` that arrives during another one on the same probe waits for it to finish. After 300
+  seconds it fails with `Debug probe <serial> is busy`. Set `LAGER_PROBE_LOCK_TIMEOUT_S` on the
+  box to change the limit.
+
+## <u>Features</u>
+
+- **A failed J-Link flash tells you what else happened.** `Diagnosis:` lines list every other
+  J-Link program that used the probe during the flash. On a DA1469x, they also tell you if the
+  target reset during programming, and which reset it was.
+- **`LAGER_JLINK_REQUIRE_EVIDENCE=0`** turns off the evidence check for a target whose J-Link
+  output uses different wording. The CLI sends it with each flash and erase. A failure line still
+  fails the command.
+- **`gdbserver --json` reports `gdb_port_reachable`** as `false` when no debugger on this
+  machine can reach the GDB server.
+
+## <u>Bug Fixes</u>
+
+- **`lager debug NET flash` printed `Flashed!` when J-Link programmed nothing.** J-Link prints
+  `Downloading file` before it downloads the RAMCode that programs the flash. When that download
+  failed, the CLI still counted the flash as done. The erase before the flash cleared the part, so
+  the target stayed blank. The CLI now reads J-Link's failure lines first, and
+  requires J-Link's evidence of a flash.
+- **The cause: a second J-Link client on the probe.** J-Link lets two programs open one probe,
+  and it does not stop them from interfering. The Lager Box ran a flash and a `connect`,
+  `memrd`, `reset` or Python script on the same probe at the same time. The box now runs one
+  operation per probe at a time.
+- **A probe that another program held gave a false success.** J-Link answered
+  `Selected interface (SWD) is not supported by the connected probe.` and exited normally. Both
+  `flash` and `erase` then reported success with nothing written or erased. They now fail on
+  that line.
+- **A J-Link that dropped off USB during a flash gave a false success.** The box discarded the
+  error and returned no output, and the CLI printed `Flashed!`. The flash now fails with
+  `JLinkExe exited mid-session:` and the last line that J-Link printed.
+- **A flash that failed on a DA1469x still reset the target.** The box no longer resets the
+  target after a failed program, and it no longer prints `Target reset` over a failure.
+
+## <u>Known Limitations</u>
+
+- **On an nRF5340 with J-Link V9.50, a plain `erase` does not erase.** J-Link prints
+  `Erasing done.` with `Erase: 0.000s`, and the flash does not change. A range erase with
+  `--erase-start` and `--erase-size` works. See
+  [issue #618](https://github.com/lagerdata/lager/issues/618).
+- **A J-Link verify failure does not fail the flash.** A DA1469x reports a false
+  `Verification failed` on a correctly programmed part, so the CLI ignores these lines. See
+  [issue #617](https://github.com/lagerdata/lager/issues/617).
+- **The probe lock orders requests, not whole commands.** A `memrd` that you start during a
+  flash can run between its erase and its program step, and read the erased flash.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.51.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli==0.51.0
+```
+
+Then update your boxes:
+
+```bash
+lager update --box <box-name>
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.51.0/)
