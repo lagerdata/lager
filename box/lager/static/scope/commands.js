@@ -17,14 +17,32 @@
 
 /** A parsed command, ready to POST. */
 export class ParsedCommand {
-  constructor(action, params, summary) {
+  constructor(action, params, summary, channel) {
     this.action = action;
     this.params = params || {};
     this.summary = summary || action;
+    // Which channel the verb named, when it named one. Not a parameter of
+    // the action: the box addresses a channel by which net the request is
+    // sent to, and a letter here would be an argument the handler does not
+    // read.
+    this.channel = channel || null;
   }
 }
 
 export class CommandError extends Error {}
+
+/** A channel letter, or null when the command named none.
+ *
+ * "1" is A and "2" is B, the same numbering the channel nets use for their
+ * pins. Anything else is a typo, not a channel the scope can have.
+ */
+function channelToken(token) {
+  if (token === undefined) return null;
+  const name = String(token).trim().toUpperCase();
+  if (/^[A-D]$/.test(name)) return name;
+  if (/^[1-4]$/.test(name)) return String.fromCharCode(64 + Number(name));
+  throw new CommandError(`channel must be A-D, got "${token}"`);
+}
 
 function requireNumber(token, what) {
   if (token === undefined) {
@@ -70,15 +88,23 @@ const MEASUREMENTS = {
 export const COMMANDS = [
   {
     verb: 'enable',
-    usage: 'enable',
-    help: 'Enable this net\u2019s channel',
-    parse: () => new ParsedCommand('enable_net', {}, 'enable'),
+    usage: 'enable [<channel>]',
+    help: 'Enable a channel, e.g. "enable B". With no channel, the first one',
+    parse: (args) => {
+      const channel = channelToken(args[0]);
+      return new ParsedCommand(
+        'enable_net', {}, channel ? `enable ${channel}` : 'enable', channel);
+    },
   },
   {
     verb: 'disable',
-    usage: 'disable',
-    help: 'Disable this net\u2019s channel',
-    parse: () => new ParsedCommand('disable_net', {}, 'disable'),
+    usage: 'disable [<channel>]',
+    help: 'Disable a channel, e.g. "disable B". With no channel, the first one',
+    parse: (args) => {
+      const channel = channelToken(args[0]);
+      return new ParsedCommand(
+        'disable_net', {}, channel ? `disable ${channel}` : 'disable', channel);
+    },
   },
   {
     verb: 'start',

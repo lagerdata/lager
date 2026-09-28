@@ -29,7 +29,10 @@ GRAMMAR_JS = REPO_ROOT / "box" / "lager" / "static" / "scope" / "commands.js"
 # one of these must parse in JS and be accepted by the Python handler.
 COMMAND_LINES = [
     "enable",
+    "enable A",
+    "enable B",
     "disable",
+    "disable B",
     "start",
     "start single",
     "stop",
