@@ -9,6 +9,9 @@ Cache is invalidated when:
 - User explicitly changes net name
 - Cache is older than 5 minutes
 - User runs 'lager debug clear-cache'
+- A `lager nets` command changes a net record on the box (every entry for
+  that box goes: an entry carries the net's `jlink_script`, which erase and
+  flash send to the box, and the box prefers it over the saved net)
 """
 import json
 import time
@@ -132,3 +135,20 @@ _net_cache = DebugNetCache()
 def get_net_cache() -> DebugNetCache:
     """Get the global debug net cache instance."""
     return _net_cache
+
+
+def forget_box_debug_nets(box: str) -> None:
+    """Drop every cached debug net for *box* after a net record on it changed.
+
+    Called by `lager nets` and the Net-Manager TUI after each write. An entry
+    carries the net's `jlink_script`, and `flash` / `erase` send that copy to
+    the box, which prefers it over the saved net, so a `set-script` did not
+    take effect until the entry expired. Every entry for the box goes, not
+    only the named net's: one cached without a net name holds the box's first
+    debug net. Best effort: a cache that cannot be read or written must never
+    fail the command that changed the net.
+    """
+    try:
+        get_net_cache().clear(box=box)
+    except Exception:
+        pass

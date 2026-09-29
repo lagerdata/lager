@@ -62,6 +62,10 @@ _UNCACHED_VERIFY_CHUNK = 4096
 # J-Link Commander's loadfile compare-failure line; wording varies across
 # Commander versions ("Verification failed", "Verify failed").
 _VERIFY_FAILED_RE = re.compile(r'verif(?:y|ication)\s+failed', re.IGNORECASE)
+# The tail of the line _verify_bin_uncached adds for a real mismatch. On a
+# DA1469x it is the only verify failure the flash verdict trusts (api.py
+# spells it out as _UNCACHED_VERIFY_MISMATCH).
+UNCACHED_VERIFY_MISMATCH = '(uncached QSPI read-back mismatch after cache flush)'
 
 # Optional in .JLinkScript: LAGER_ERASE_RANGE: 0x16000000 0x160FFFFF
 _LAGER_ERASE_RANGE_PATTERN = re.compile(
@@ -272,8 +276,7 @@ def _verify_bin_uncached(jl, captured_output, path, address):
 
     if mismatch is not None:
         yield captured_output
-        yield (f'Verification failed @ {hex(mismatch)} '
-               f'(uncached QSPI read-back mismatch after cache flush)')
+        yield f'Verification failed @ {hex(mismatch)} {UNCACHED_VERIFY_MISMATCH}'
     elif inconclusive is not None:
         yield captured_output
         yield (f'WARNING: uncached verify could not complete ({inconclusive}); '

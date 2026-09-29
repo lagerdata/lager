@@ -188,14 +188,6 @@ class FlashDeviceVerdictTests(unittest.TestCase):
         self.assertIsNone(api._flash_failure(
             [PROGRAMMED + 'note: the text "Failed to download RAMCode!" appears in this log\n']))
 
-    def test_a_verify_failure_is_not_a_verdict(self):
-        """Out of scope on purpose: on a DA1469x the cached-XIP compare reports
-        a false one on a correctly programmed part."""
-        self.assertIsNone(api._flash_failure(
-            ['Downloading file [img.bin]...\n'
-             'J-Link: Flash download: Bank 0 @ 0x16000000: 1 range affected\n'
-             'Verification failed @ address 0x16020000.\n']))
-
     def test_a_clean_flash_has_no_verdict(self):
         _rec, _lines, failure = _flash(DA1469X, PROGRAMMED)
         self.assertIsNone(failure)
@@ -210,6 +202,73 @@ class FlashDeviceVerdictTests(unittest.TestCase):
             lines = list(api.flash_device(([], [('/tmp/fw.bin', 0x16000000)], []),
                                           mcu=DA1469X))
         self.assertIn(RAMCODE_VERIFY_FAILED, lines)
+
+
+# A load J-Link programmed, then compared and found wrong (#617).
+def _verified(line):
+    return ('Downloading file [img.bin]...\n'
+            'J-Link: Flash download: Bank 0 @ 0x16000000: 1 range affected\n'
+            f'{line}\n')
+
+
+UNCACHED_MISMATCH = ('Verification failed @ 0x16000010 '
+                     '(uncached QSPI read-back mismatch after cache flush)')
+
+
+class VerifyFailureTests(unittest.TestCase):
+    """J-Link's read-back compare failing fails the flash, except the
+    DA1469x cached-XIP compare, which reports a false one on a correctly
+    programmed part. There, only the uncached read-back's line counts."""
+
+    VERIFY_LINES = ('Verification failed @ address 0x00001000.',
+                    'ERROR: Verify failed.',
+                    '****** Error: Verify failed.',
+                    'Error while programming flash: Verify failed.')
+
+    def test_each_verify_line_fails_other_targets(self):
+        for line in self.VERIFY_LINES:
+            with self.subTest(line=line):
+                self.assertEqual(api._flash_failure([_verified(line)], device=OTHER),
+                                 line)
+
+    def test_no_device_is_not_a_da1469x(self):
+        self.assertEqual(api._flash_failure([_verified('ERROR: Verify failed.')]),
+                         'ERROR: Verify failed.')
+
+    def test_a_da1469x_cached_compare_is_not_believed(self):
+        for line in self.VERIFY_LINES:
+            with self.subTest(line=line):
+                self.assertIsNone(
+                    api._flash_failure([_verified(line)], device=DA1469X))
+
+    def test_a_da1469x_uncached_mismatch_fails(self):
+        output = _verified('Verification failed @ address 0x16000000.') + UNCACHED_MISMATCH
+        self.assertEqual(api._flash_failure([output], device=DA1469X), UNCACHED_MISMATCH)
+
+    def test_the_channel_suffix_is_still_a_da1469x(self):
+        self.assertIsNone(api._flash_failure(
+            [_verified('ERROR: Verify failed.')], device='DA14695@A'))
+
+    def test_a_verify_line_mid_line_is_not_a_match(self):
+        self.assertIsNone(api._flash_failure(
+            [_verified('note: "Verify failed." would mean a bad compare')],
+            device=OTHER))
+
+    def test_the_escape_hatch_does_not_hide_one(self):
+        self.assertEqual(
+            api._flash_failure(['ERROR: Verify failed.\n'], require_evidence=False,
+                               device=OTHER),
+            'ERROR: Verify failed.')
+
+    def test_flash_device_judges_by_its_own_target(self):
+        _rec, _lines, failure = _flash(OTHER, _verified('ERROR: Verify failed.'))
+        self.assertEqual(failure, 'ERROR: Verify failed.')
+        _rec, _lines, failure = _flash(DA1469X, _verified('ERROR: Verify failed.'))
+        self.assertIsNone(failure)
+
+    def test_the_mismatch_marker_matches_jlink(self):
+        self.assertEqual(api._UNCACHED_VERIFY_MISMATCH,
+                         api._jlink_mod.UNCACHED_VERIFY_MISMATCH)
 
 
 class Da1469xPostFlashResetTests(unittest.TestCase):
@@ -396,6 +455,43 @@ class EraseEvidenceTests(unittest.TestCase):
         self.assertEqual(
             api._erase_failure(['J-Link connection not established yet but required for command.']),
             'J-Link connection not established yet but required for command.')
+
+
+class ChipEraseReturnsItsVerdictTests(unittest.TestCase):
+    """``chip_erase()`` returns ``_erase_failure``'s line as its generator
+    return value, as ``flash_device()`` does, so ``DebugNet.erase()`` can
+    fail an erase J-Link never confirmed (#617)."""
+
+    def _erase(self, commander_output, **kwargs):
+        def fake_chip_erase(self, **kw):
+            yield commander_output
+
+        with patch.object(api.JLink, 'chip_erase', fake_chip_erase), \
+             patch.object(api, 'stop_jlink'), \
+             patch.object(api, 'stop_jlink_gdbserver'), \
+             patch.object(api.time, 'sleep'):
+            return _drain(api.chip_erase('NRF5340_XXAA_APP', **kwargs))
+
+    def test_an_unconfirmed_erase_is_the_verdict(self):
+        lines, failure = self._erase('Erasing device...\n')
+        self.assertEqual(lines, ['Erasing device...\n'])
+        self.assertEqual(failure, api.NO_ERASE_DONE)
+
+    def test_a_confirmed_erase_has_none(self):
+        _lines, failure = self._erase('Erasing device...\nErasing done.\n')
+        self.assertIsNone(failure)
+
+    def test_the_escape_hatch_is_honoured(self):
+        _lines, failure = self._erase('Erasing device...\n', require_evidence=False)
+        self.assertIsNone(failure)
+
+    def test_the_range_line_is_not_judged(self):
+        """The `Erasing <range>` line chip_erase adds is not Commander output."""
+        with patch.object(api._jlink_mod, 'resolve_erase_range',
+                          lambda *a: (0x0, 0x1000)):
+            lines, failure = self._erase('Flash sectors within Range [0x0 - 0xFFF] deleted.\n')
+        self.assertTrue(lines[0].startswith('Erasing '), lines)
+        self.assertIsNone(failure)
 
 
 class FailureDiagnosisTests(unittest.TestCase):

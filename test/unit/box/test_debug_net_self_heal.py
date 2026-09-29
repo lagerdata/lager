@@ -622,3 +622,128 @@ class SessionHelperTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class JLinkVerdictRaisesTests(unittest.TestCase):
+    """``flash()`` / ``erase()`` raise when J-Link reports it did nothing
+    (#617). ``flash_device`` and ``chip_erase`` return that line as their
+    generator return value, which the old ``for`` loop and ``join`` dropped,
+    so a script saw a failed flash as success."""
+
+    @staticmethod
+    def _steps(lines, verdict):
+        def gen(*a, **k):
+            yield from lines
+            return verdict
+        return gen
+
+    def test_a_failed_flash_raises_with_the_line_and_the_output(self):
+        net = _make_net()
+        debug_net.flash_device = self._steps(
+            ["Downloading file [fw.hex]...", "Failed to download RAMCode!"],
+            "Failed to download RAMCode!")
+        with self.assertRaises(RuntimeError) as ctx:
+            net.flash("/tmp/fw.hex")
+        self.assertIn("failed: Failed to download RAMCode!", str(ctx.exception))
+        self.assertIn("Downloading file [fw.hex]...", str(ctx.exception))
+
+    def test_a_clean_flash_returns_its_output(self):
+        net = _make_net()
+        debug_net.flash_device = self._steps(["a", "b"], None)
+        self.assertEqual(net.flash("/tmp/fw.hex"), "a\nb")
+
+    def test_a_failed_erase_raises_and_is_not_retried(self):
+        net = _make_net()
+        calls = {"n": 0}
+
+        def chip_erase(**kwargs):
+            calls["n"] += 1
+            yield "Erasing device..."
+            return "J-Link printed no `Erasing done.` line"
+
+        debug_net.chip_erase = chip_erase
+        with self.assertRaises(RuntimeError) as ctx:
+            net.erase()
+        self.assertIn("printed no `Erasing done.` line", str(ctx.exception))
+        self.assertEqual(calls["n"], 1, "a failed erase must not be re-run by self-heal")
+
+    def test_a_clean_erase_returns_its_output(self):
+        net = _make_net()
+        debug_net.chip_erase = self._steps(["Erasing device...", "Erasing done."], None)
+        self.assertEqual(net.erase(), "Erasing device...\nErasing done.")
+
+    def test_a_list_from_an_older_chip_erase_is_still_accepted(self):
+        net = _make_net()
+        debug_net.chip_erase = lambda **k: ["Erasing done."]
+        self.assertEqual(net.erase(), "Erasing done.")
+
+
+class ConnectHaltOnJLinkTests(unittest.TestCase):
+    """``connect(halt=True)`` on J-Link raised nothing and did nothing (#514)."""
+
+    def test_raises_before_the_probe_is_touched(self):
+        net = _make_net()
+        touched = []
+        debug_net.connect_jlink = lambda **k: touched.append(k)
+        with self.assertRaises(ValueError) as ctx:
+            net.connect(halt=True)
+        self.assertIn("halt-first .JLinkScript", str(ctx.exception))
+        self.assertEqual(touched, [])
+
+    def test_halt_false_still_connects(self):
+        net = _make_net()
+        touched = []
+        debug_net.connect_jlink = lambda **k: touched.append(k) or {"pid": 1}
+        net.connect()
+        self.assertEqual(len(touched), 1)
+
+
+class OpenOcdOverrideLastsTheSessionTests(unittest.TestCase):
+    """An ``openocd_config`` override survives a relaunch, as a J-Link
+    script override does, until ``disconnect()`` (#514). It used to reach
+    only the daemon the overriding ``connect()`` launched."""
+
+    OVERRIDE = "/tmp/lager-test-override.cfg"
+
+    def setUp(self):
+        self.launches = []
+        self.running = False
+        debug_net.get_openocd_status = lambda **k: {"running": self.running, "pid": 1}
+        debug_net.start_openocd_gdbserver = (
+            lambda **k: self.launches.append(k["openocd_config"]) or {"pid": 1})
+        self._saved = (debug_net._repoint_script, debug_net.stop_openocd)
+        debug_net._repoint_script = lambda script, name=None, suffix=".JLinkScript": (
+            self.OVERRIDE if suffix == ".cfg" else None)
+        debug_net.stop_openocd = lambda **k: {"stopped": True}
+        api = types.ModuleType("lager.debug.api")
+        api.clear_config_file = lambda name: None
+        self._api = sys.modules.get("lager.debug.api")
+        sys.modules["lager.debug.api"] = api
+
+    def tearDown(self):
+        debug_net._repoint_script, debug_net.stop_openocd = self._saved
+        if self._api is None:
+            sys.modules.pop("lager.debug.api", None)
+        else:
+            sys.modules["lager.debug.api"] = self._api
+
+    def test_a_forced_relaunch_keeps_the_override(self):
+        net = _make_net(backend="openocd")
+        net.connect(openocd_config="adapter driver ftdi")
+        self.running = True
+        net.connect(force=True)
+        self.assertEqual(self.launches, [self.OVERRIDE, self.OVERRIDE])
+
+    def test_the_self_heal_reconnect_keeps_the_override(self):
+        net = _make_net(backend="openocd")
+        net.connect(openocd_config="adapter driver ftdi")
+        net.connect(ignore_if_connected=True)   # the daemon died: relaunch
+        self.assertEqual(self.launches, [self.OVERRIDE, self.OVERRIDE])
+
+    def test_disconnect_drops_it(self):
+        net = _make_net(backend="openocd")
+        net._openocd_config_path = "/tmp/net-record.cfg"
+        net.connect(openocd_config="adapter driver ftdi")
+        net.disconnect()
+        net.connect()
+        self.assertEqual(self.launches, [self.OVERRIDE, "/tmp/net-record.cfg"])

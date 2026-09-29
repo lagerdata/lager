@@ -137,6 +137,13 @@ def _save_net_http(ctx: click.Context, box_ip: str, record: dict,
     record = {k: v for k, v in record.items() if k != "live_path"}
     _box_request(ctx, box_ip, "PUT",
                  f"/nets/{old_name or record.get('name')}", json_body=record)
+    _forget_cached_debug_nets(box_ip)
+
+
+def _forget_cached_debug_nets(box_ip: str) -> None:
+    """Drop `lager debug`'s cached nets for the box; see forget_box_debug_nets."""
+    from ..development.debug.net_cache import forget_box_debug_nets
+    forget_box_debug_nets(box_ip)
 
 
 def _fetch_instruments(ctx: click.Context, box_ip: str) -> List[dict]:
@@ -1228,6 +1235,7 @@ def delete_cmd(
 
     _box_request(ctx, resolved_box, "DELETE", f"/nets/{name}",
                  params={"role": match[0].get("role", net_type)})
+    _forget_cached_debug_nets(resolved_box)
     click.secho(f"Deleted '{name}' ({net_type}) on box {resolved_box}.", fg="green")
 
 
@@ -1245,6 +1253,7 @@ def delete_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
         return
 
     _box_request(ctx, resolved_box, "DELETE", "/nets")
+    _forget_cached_debug_nets(resolved_box)
     click.secho(f"Deleted all nets on box {resolved_box}.", fg="green")
 
 

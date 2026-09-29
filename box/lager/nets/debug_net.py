@@ -509,6 +509,22 @@ class _NullDebug:
     def rtt_defmt(self, *a, **k): raise RuntimeError("Debug module not available")
 
 
+def _drain(steps):
+    """(joined output, return value) of a J-Link flash or erase generator.
+
+    ``flash_device`` and ``chip_erase`` return the line showing the probe did
+    nothing as their generator return value, which a ``for`` loop or a
+    ``join`` drops.
+    """
+    steps = iter(steps)
+    lines = []
+    while True:
+        try:
+            lines.append(next(steps))
+        except StopIteration as done:
+            return '\n'.join(str(line) for line in lines), done.value
+
+
 # -------- optional debug import (never crash if lager.debug is missing) --------
 try:
     from ..debug import (
@@ -764,6 +780,11 @@ try:
                 b64_key='jlink_script',
                 suffix='.JLinkScript',
             )
+            # A per-connect OpenOCD cfg override, kept for the session like
+            # ``_jlink_script_path`` so a relaunch (``force=True``, the
+            # self-heal's reconnect) does not fall back to the net's cfg.
+            # ``disconnect`` drops it.
+            self._openocd_config_override = None
 
         # ---- OpenOCD helpers (in-process Python API) ------------------------
 
@@ -902,7 +923,7 @@ try:
             box-wide cfg the net record and the HTTP debug service share, so
             an in-process override cannot leak onto another net.
             """
-            cfg_path = self._openocd_config_path
+            cfg_path = self._openocd_config_override or self._openocd_config_path
 
             if script:
                 script_backend = self._classify_override(script)
@@ -916,7 +937,7 @@ try:
                 if script_backend == BACKEND_OPENOCD:
                     new_cfg = _repoint_script(script, self.name, '.cfg')
                     if new_cfg:
-                        cfg_path = new_cfg
+                        cfg_path = self._openocd_config_override = new_cfg
                 else:
                     new_script = _repoint_script(
                         script, self.name, '.JLinkScript')
@@ -932,7 +953,7 @@ try:
                     )
                 new_cfg = _repoint_script(openocd_config, self.name, '.cfg')
                 if new_cfg:
-                    cfg_path = new_cfg
+                    cfg_path = self._openocd_config_override = new_cfg
 
             if jlink_script:
                 if self.backend == BACKEND_OPENOCD:
@@ -1026,10 +1047,18 @@ try:
             part that executes in place out of QSPI this re-runs the
             bootloader. When you want the core stopped *where it is* with
             XIP untouched -- the usual want straight after ``flash()`` --
-            call :meth:`halt` instead. Ignored on J-Link, whose connect
-            ladder has no equivalent; use a halt-first ``.JLinkScript``
-            there.
+            call :meth:`halt` instead. On J-Link, whose connect ladder has no
+            equivalent, ``halt=True`` raises ``ValueError`` before the probe
+            is touched; attach a halt-first ``.JLinkScript`` via
+            ``connect(script=...)`` there.
             """
+            if halt and self.backend != BACKEND_OPENOCD:
+                raise ValueError(
+                    f"connect(halt=True) is OpenOCD-only, and debug net "
+                    f"'{self.name}' uses the {self.backend} backend, which has "
+                    f"no halt-on-connect. Attach a halt-first .JLinkScript via "
+                    f"connect(script=...) instead."
+                )
             speed = speed or self.speed
             transport = transport or self.transport
 
@@ -1119,6 +1148,7 @@ try:
                 finally:
                     from lager.debug.api import clear_config_file
                     clear_config_file(self.name)
+                    self._openocd_config_override = None
             try:
                 result = disconnect(serial=self.serial, gdb_port=self.gdb_port)
             finally:
@@ -1197,6 +1227,10 @@ try:
             isn't aliased to 0 (STM32: ``0x08000000``, nRF52/53:
             ``0x00000000`` *is* flash but only by coincidence). Pass the
             target's flash base explicitly to avoid foot-guns.
+
+            Raises ``RuntimeError`` when the probe reports the flash failed:
+            nothing programmed, or a failed read-back compare, on J-Link as
+            on OpenOCD. The message carries the failing line and the output.
             """
             import os
             ext = os.path.splitext(firmware_path)[1].lower()
@@ -1231,14 +1265,15 @@ try:
             else:  # .elf
                 files = ([], [], [firmware_path])
 
-            results = []
-            for line in flash_device(
+            output, failure = _drain(flash_device(
                 files, mcu=self.device, serial=self.serial,
                 gdb_port=self.gdb_port, rtt_telnet_port=self.rtt_telnet_port,
                 script_file=self._jlink_script_path,
-            ):
-                results.append(line)
-            return '\n'.join(results)
+            ))
+            if failure:
+                raise RuntimeError(
+                    f"flash on debug net '{self.name}' failed: {failure}\n{output}")
+            return output
 
         def erase(self, start=None, length=None):
             """Erase flash. Returns combined output as a string.
@@ -1253,6 +1288,10 @@ try:
             and the range must lie inside the QSPI XIP window. A range the
             target cannot erase raises ``ValueError`` before the probe is
             touched. When a range applies, the first output line names it.
+
+            Raises ``RuntimeError`` when J-Link erased nothing (it never
+            attached, or never confirmed the erase), as the OpenOCD path
+            raises for a failed erase.
             """
             if (start is None) != (length is None):
                 raise ValueError('erase() takes both start and length, or neither')
@@ -1266,11 +1305,17 @@ try:
                         self._openocd_rpc(timeout=ERASE_RPC_TIMEOUT_S), self.device,
                         start=start, length=length,
                     ))
-                return '\n'.join(chip_erase(
+                output, failure = _drain(chip_erase(
                     device=self.device, speed=self.speed, transport=self.transport,
                     serial=self.serial, script_file=self._jlink_script_path,
                     start=start, length=length,
                 ))
+                if failure:
+                    # RuntimeError, not DebugError: _self_heal retries a
+                    # DebugError, and J-Link already answered this erase.
+                    raise RuntimeError(
+                        f"erase on debug net '{self.name}' failed: {failure}\n{output}")
+                return output
             return self._self_heal(_erase)
 
         def read_memory(self, address, length):

@@ -629,23 +629,74 @@ class TestAFailedProgrammingStepIsNotSuccess:
         "Failed to download RAMCode used to read FPU registers.",
         # A signature inside a line, not a line of its own.
         'note: "Failed to download RAMCode!" appears in this log',
-        # Out of scope on purpose: a DA1469x cached-XIP compare reports a false
-        # one on a correctly programmed part.
-        "Verification failed @ address 0x16000000.",
     ])
     def test_lines_that_are_not_a_programming_failure(self, line):
         assert debug_mod._flash_failure_line(JLINK_PROGRAMMED + line + "\n") is None
 
-    def test_a_verify_failure_after_programming_is_still_success(self, hexfile):
+
+
+# A DA1469x load J-Link programmed and then compared through the cached XIP
+# window: a false `Verification failed` on a correctly programmed part.
+JLINK_DA1469X_CACHED_VERIFY = """\
+Flashing device DA14695 via JLinkExe...
+Downloading file [/tmp/img.bin]...
+J-Link: Flash download: Bank 0 @ 0x16000000: 1 range affected (131072 bytes)
+Verification failed @ address 0x16020000.
+"""
+
+UNCACHED_MISMATCH = ("Verification failed @ 0x16000010 "
+                     "(uncached QSPI read-back mismatch after cache flush)")
+
+
+class TestAFailedVerifyIsNotSuccess:
+    """J-Link's read-back compare failing fails the flash (#617), read from
+    the text for a box that sends no `programmed`. Not on a DA1469x, whose
+    cached-XIP compare reports a false one; there only the box's uncached
+    read-back mismatch counts. Mirrors `_verify_failure` in the box."""
+
+    @pytest.mark.parametrize("line", [
+        "Verification failed @ address 0x00001000.",
+        "ERROR: Verify failed.",
+        "****** Error: Verify failed.",
+        "Error while programming flash: Verify failed.",
+    ])
+    def test_each_verify_line_fails_an_nrf5340(self, line):
+        assert debug_mod._flash_failure_line(JLINK_PROGRAMMED + line + "\n") == line
+
+    def test_the_flash_command_fails(self, hexfile):
+        client = FakeClient(flash_output=JLINK_PROGRAMMED + "ERROR: Verify failed.\n")
+        result = run_flash(client, ["--hex", hexfile, "--box", "mybox"])
+        assert result.exit_code == 1, result.output
+        assert "Flash failed: ERROR: Verify failed." in result.output
+        assert "bad or partial image" in result.output
+        assert "NOT programmed" not in result.output
+        assert "Flashed!" not in result.output
+
+    def test_a_da1469x_cached_compare_is_still_success(self, hexfile):
         """As a DA1469x bench printed it for an encrypted image body that was
         programmed correctly."""
-        client = FakeClient(flash_output=(
-            "Downloading file [/tmp/img.bin]...\n"
-            "J-Link: Flash download: Bank 0 @ 0x16000000: 1 range affected (131072 bytes)\n"
-            "Verification failed @ address 0x16020000.\n"))
+        client = FakeClient(flash_output=JLINK_DA1469X_CACHED_VERIFY)
         result = run_flash(client, ["--hex", hexfile, "--box", "mybox"])
         assert result.exit_code == 0, result.output
         assert "Flashed!" in result.output
+
+    def test_a_da1469x_uncached_mismatch_fails(self):
+        output = JLINK_DA1469X_CACHED_VERIFY + UNCACHED_MISMATCH + "\n"
+        assert debug_mod._flash_failure_line(output) == UNCACHED_MISMATCH
+
+    def test_no_banner_reads_no_verify_line(self):
+        """Output this CLI cannot place on a target is never newly failed."""
+        output = JLINK_PROGRAMMED.split("\n", 1)[1] + "ERROR: Verify failed.\n"
+        assert debug_mod._flash_failure_line(output) is None
+
+    def test_a_verify_line_mid_line_is_not_a_match(self):
+        assert debug_mod._flash_failure_line(
+            JLINK_PROGRAMMED + 'note: "Verify failed." would mean a bad compare\n') is None
+
+    def test_the_mismatch_marker_matches_the_box(self):
+        box_jlink = Path(__file__).resolve().parents[3] / "box" / "lager" / "debug" / "jlink.py"
+        assert f"UNCACHED_VERIFY_MISMATCH = {debug_mod._UNCACHED_VERIFY_MISMATCH!r}" \
+            in box_jlink.read_text()
 
 
 # A second J-Link client was driving the probe (a raw JLinkExe halting and

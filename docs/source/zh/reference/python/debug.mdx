@@ -81,7 +81,7 @@ dbg.connect(script='/home/lagerdata/probes/my_target.JLinkScript')
 | `ignore_if_connected` | `bool` | `False` | 如果该探针已有 gdbserver 在运行，返回它的状态而不做任何改动。 |
 | `openocd_config` | `str` | `None` | `script` 的 OpenOCD 明确形式，跳过格式判定。必须是**完整的** cfg，而不是片段 —— 请看下面的警告。在 J-Link Net 上它会抛出 `ValueError`。 |
 | `jlink_script` | `str` | `None` | `script` 的 J-Link 明确形式，跳过格式判定。base64 数据块请用这个参数：数据块没有文件名可供归类，而两种最常见的 J-Link 写法（`void InitTarget(void)` 和 `JLINK_ExecCommand`）都不在内容标记之列，因此这样的数据块会抛错，而不是靠猜测来分派。在 OpenOCD Net 上它会抛出 `ValueError`。 |
-| `halt` | `bool` | `False` | **仅 OpenOCD。** 守护进程起来之后执行一次 `reset halt`。请注意这是先*复位*再暂停 —— 要让内核停在原地，请看 [`halt()`](#halt)。在 J-Link Net 上，`connect()` 忽略 `halt`。 |
+| `halt` | `bool` | `False` | **仅 OpenOCD。** 守护进程起来之后执行一次 `reset halt`。请注意这是先*复位*再暂停 —— 要让内核停在原地，请看 [`halt()`](#halt)。在 J-Link Net 上，`halt=True` 会在触碰探针之前抛出 `ValueError`。要在 J-Link 上暂停，请把一个先暂停的 `.JLinkScript` 作为 `script` 传入。 |
 
 `connect()` 先对 `script` 归类，然后才应用 `openocd_config` 或 `jlink_script`。如果您同时给出 `script` 和其中之一，只有当 `script` 属于同一个后端时，显式参数才会胜出。属于另一个后端的 `script` 会先抛出 `ValueError`。
 
@@ -90,7 +90,7 @@ dbg.connect(script='/home/lagerdata/probes/my_target.JLinkScript')
 **抛出：** 如果该探针已有 gdbserver 在运行，而您既没有传 `force` 也没有传 `ignore_if_connected`，`connect()` 会抛错。在 OpenOCD 上是 `RuntimeError`，在 J-Link 上是 `JLinkAlreadyRunningError`（来自 `lager.debug`）。
 
 <Note>
-脚本覆盖只有在 gdbserver 重新启动时才生效。如果服务器已经起来，请传 `force=True` 用新脚本重启它。`ignore_if_connected=True` 会提前返回，不会重启。在 J-Link 上，它仍然会为后续操作重新指向该脚本。在 OpenOCD 上，覆盖用的 cfg 只会交给本次 `connect()` 调用启动的那个守护进程。之后的任何一次重启，包括自愈式重启，都会使用保存在 Net 上的 cfg。无效输入指的是一个既不存在、又不是合法 base64 的路径，或者空字符串。Net 会静默忽略这类输入，之前落地的脚本继续生效。
+脚本覆盖只有在 gdbserver 重新启动时才生效。如果服务器已经起来，请传 `force=True` 用新脚本重启它。`ignore_if_connected=True` 会提前返回，不会重启。在 J-Link 上，它仍然会为后续操作重新指向该脚本。在 OpenOCD 上，覆盖用的 cfg 对之后的每一次重启都有效，包括自愈式重启，直到 `disconnect()`。无效输入指的是一个既不存在、又不是合法 base64 的路径，或者空字符串。Net 会静默忽略这类输入，之前落地的脚本继续生效。
 
 覆盖的作用域是**本 Net 和本次会话**。Lager 把它写到按 Net 区分的路径下，而不是写到 Net 记录与 HTTP 调试服务共享的那份全局 Box 配置。`disconnect()` 会清除该覆盖。因此，用不同脚本连接的两个调试 Net 不会再互相干扰。
 </Note>
@@ -188,6 +188,8 @@ print(output)
 
 **返回：** `str` - 烧录操作的合并输出
 
+**抛出：** 当探针报告烧录失败时，两种后端都会抛出 `RuntimeError`。在 J-Link 上，这指的是没有编程任何内容的烧录，或者回读比对失败，也就是会使 `lager debug <net> flash` 失败的那些行。消息包含出错的那一行和输出。
+
 **注意：** `.bin` 内部不带地址，因此缺少 `flash_address` 时 `flash()` 会抛错，而不是默认用 `0x0`。请传入目标的 Flash 基地址：STM32 为 `0x08000000`，nRF52 为 `0x00000000`，DA1469x QSPI 为 `0x16000000`。
 
 **OpenOCD 上的 DA1469x：** 主线 OpenOCD 没有针对 DA1469x 外部 QSPI 的 Flash 驱动。在该系列上，`flash()` 和 `erase()` 改为驱动常驻 RAM 的 flash_loader，与 `lager debug <net> flash` 走的是同一条路径。请传入绝对的 XIP 地址（`0x16000000`），与在 J-Link 上完全一样。缺少加载器时会抛错，而不是回退到 OpenOCD 的 `program`，因为后者够不到 QSPI。
@@ -221,6 +223,8 @@ output = dbg.erase(0x16000000, 2 * 1024 * 1024)
 - `length`（int，可选）：从 `start` 起擦除的字节数
 
 **返回：** `str` - 擦除操作的合并输出
+
+**抛出：** 当 J-Link 什么也没有擦除时（它没有挂接上，或者没有确认擦除），抛出 `RuntimeError`。消息包含出错的那一行和输出。自愈不会再次执行擦除。在 OpenOCD 上，擦除失败照旧抛错。
 
 ### `read_memory(address, length)`
 
