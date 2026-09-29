@@ -185,7 +185,7 @@ The update command performs the following steps (shown in progress bar):
 1. **SSH Check** - Confirm key-based SSH access to the Lager Box
 2. **Inspect and Fetch** - Read the box state, then fetch the target version
 3. **Pull Updates** - Check out the target version on the box
-4. **Host Setup** - Check the udev rules, the modprobe blacklists, the sudoers files and the host CLI
+4. **Host Setup** - Check the udev rules, the modprobe blacklists, the sudoers files, the host packages (BlueZ) and the host CLI. A missing host package is installed without a password prompt. If that is not possible, the update prints the command to run on the box and continues
 5. **Image Pull** - With `--pull` and a release tag, pull the pre-built image
 6. **Container Stop and Build** - Stop the running container, then build the image on the box if the update did not pull one
 7. **Directories** - Set up the directories that the container mounts, such as the custom binaries directory

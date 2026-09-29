@@ -388,6 +388,34 @@ class TestProbeHostCliFacts:
         assert 'HOST_CLI_VERSION' not in facts
 
 
+class TestProbeHostPackageFacts:
+    """Step 7c (host packages, BlueZ) reads these two keys. The probe must
+    always emit both, so a missing key means "not probed", never "missing"."""
+
+    def test_probe_script_emits_both_keys(self):
+        script = _probe_shell_script()
+        assert 'LAGER_PROBE_HOST_PKGS_MISSING=' in script
+        assert 'LAGER_PROBE_HOST_SVCS_DISABLED=' in script
+        assert '__HOST_PACKAGES_PROBE__' not in script
+
+    def test_the_whole_probe_reports_them_when_run(self, tmp_path):
+        # Stub dpkg-query / systemctl as absent-or-negative: bluez reads as
+        # missing and its unit as disabled, whatever machine runs this.
+        shim_dir = tmp_path / 'bin'
+        shim_dir.mkdir()
+        for name in ('docker', 'dpkg-query', 'systemctl'):
+            shim = shim_dir / name
+            shim.write_text('#!/bin/sh\nexit 1\n')
+            shim.chmod(shim.stat().st_mode | stat.S_IXUSR)
+        env = dict(os.environ, PATH=f'{shim_dir}:{os.environ["PATH"]}')
+        result = subprocess.run(['sh'], input=_probe_shell_script(), text=True,
+                                capture_output=True, env=env, timeout=30)
+        assert result.returncode == 0, result.stderr
+        facts = _parse_probe_output(result.stdout)
+        assert facts['HOST_PKGS_MISSING'] == 'bluez'
+        assert facts['HOST_SVCS_DISABLED'] == 'bluetooth'
+
+
 class TestDepsPreviewAtTargetRef:
     """`--check` must hash the *target* ref when a pull is pending.
 
@@ -1069,3 +1097,49 @@ class TestPullMissReporting:
                        'registry unreachable (ConnectTimeout)',
                        'pull exceeded 300s'):
             assert not _pull_miss_is_actionable(reason)
+
+
+class TestHostPackagesStep:
+    """Step 7c. A no-op when the probe says everything is there; otherwise one
+    BatchMode install that never fails the update."""
+
+    def _step(self, facts, answers=()):
+        from cli.commands.utility.update import _host_packages_step
+        calls = []
+        answers = list(answers)
+
+        def runner(_ip, cmd):
+            calls.append(cmd)
+            return answers.pop(0) if answers else (0, '', '')
+
+        return _host_packages_step(facts, 'benchtest@192.0.2.4', 'benchtest', runner), calls
+
+    def test_present_is_ok_with_no_round_trip(self):
+        (status, _color, warning), calls = self._step(
+            {'HOST_PKGS_MISSING': '', 'HOST_SVCS_DISABLED': ''})
+        assert status == 'OK'
+        assert warning is None
+        assert calls == []
+
+    def test_an_old_probe_is_skipped_not_installed(self):
+        (status, _color, warning), calls = self._step({})
+        assert status.startswith('SKIPPED')
+        assert warning is None
+        assert calls == []
+
+    def test_missing_bluez_is_installed(self):
+        (status, color, warning), calls = self._step(
+            {'HOST_PKGS_MISSING': 'bluez', 'HOST_SVCS_DISABLED': 'bluetooth'})
+        assert status.startswith('OK') and color == 'green'
+        assert warning is None
+        assert 'apt-get install -y --no-install-recommends bluez' in calls[0]
+        assert all('sudo ' not in c.replace('sudo -n', '') for c in calls)
+
+    def test_no_grant_warns_with_the_manual_command(self):
+        (status, _color, warning), _calls = self._step(
+            {'HOST_PKGS_MISSING': 'bluez', 'HOST_SVCS_DISABLED': 'bluetooth'},
+            answers=[(1, '', 'sudo: a password is required')])
+        assert status == 'FAILED'
+        assert 'benchtest@192.0.2.4' in warning
+        assert warning.endswith(
+            'sudo apt-get install -y bluez && sudo systemctl enable --now bluetooth')

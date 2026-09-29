@@ -52,6 +52,25 @@ def get_bleak_loop():
         return _bleak_loop
 
 
+# bleak reaches the HOST's bluetoothd over the mounted /var/run/dbus socket; the
+# container runs no bluetoothd of its own. With BlueZ missing on the host (Ubuntu
+# Server ships without it) every call fails with D-Bus ServiceUnknown for
+# org.bluez, which says nothing about the fix. cli/core/net_helpers.py carries
+# the same text for boxes whose image predates this one; a unit test pins them.
+BLUEZ_UNAVAILABLE_MESSAGE = (
+    "BlueZ is not running on the box host. Run `lager update` for this box, "
+    "or on the box run: sudo apt install -y bluez && sudo systemctl enable --now bluetooth"
+)
+
+
+def bluez_unavailable_hint(exc):
+    """BLUEZ_UNAVAILABLE_MESSAGE when `exc` is the host having no BlueZ, else None."""
+    text = str(exc)
+    if "org.bluez" in text and "ServiceUnknown" in text:
+        return BLUEZ_UNAVAILABLE_MESSAGE
+    return None
+
+
 def run_bleak(coro, timeout):
     """Run a coroutine on the bleak loop from Flask's worker thread."""
     future = asyncio.run_coroutine_threadsafe(coro, get_bleak_loop())
@@ -108,7 +127,7 @@ async def _disconnect_async(address):
     except Exception as e:
         # Unreachable means already disconnected — that's the desired state.
         return {"address": address, "disconnected": True,
-                "note": "Device not reachable: %s" % e}
+                "note": bluez_unavailable_hint(e) or "Device not reachable: %s" % e}
 
 
 def scan(params):
@@ -202,7 +221,7 @@ def register_ble_routes(app: Flask) -> None:
                 # timeout) are hardware errors, not server bugs.
                 logger.exception("[HTTP] /ble/command %s failed", action)
                 return jsonify({'success': False,
-                                'error': 'BLE error: %s' % e}), 502
+                                'error': bluez_unavailable_hint(e) or 'BLE error: %s' % e}), 502
 
             logger.info("[HTTP] /ble/command %s ok", action)
             return jsonify({'success': True, 'action': action, **result})

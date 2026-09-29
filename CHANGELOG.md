@@ -31,6 +31,12 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 ### Fixed
 
+- **BLE and BluFi work on a box running Ubuntu Server.** `lager install` installs BlueZ on
+  the box host when it is missing and enables `bluetooth.service`, and `lager update`
+  does the same for boxes set up before, without a password prompt. The next
+  `lager install` on each box asks for the sudo password once.
+- **`lager ble` and `lager blufi` say how to fix a box host without BlueZ,** instead of
+  printing `The name org.bluez was not provided by any .service files`.
 - **`lager debug <net> flash` fails on a J-Link read-back compare failure**
   (`Verification failed @ address ...`, `ERROR: Verify failed.`) instead of printing
   `Flashed!`. On a DA1469x, whose cached compare can report a false failure, only the

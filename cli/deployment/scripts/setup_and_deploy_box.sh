@@ -661,7 +661,7 @@ print_step "Configuring Passwordless Sudo"
 #
 # Everything on a box that needs the sudo password is done in the single
 # session below: both Lager sudoers files, the root-owned /etc/lager helper, and
-# the two packages a fresh box can be missing. A box that already has all of it
+# the packages a fresh box can be missing. A box that already has all of it
 # is detected first, without a terminal, and the session is skipped -- so a
 # reinstall asks for no password at all.
 #
@@ -698,6 +698,33 @@ if [ "$HAVE_BOXCFG" != "1" ]; then
     BOXCFG_SUDOERS_CONTENT=""
     BOXCFG_SUDOERS_MARKER=""
 fi
+
+# The host packages Lager needs (BlueZ), and the units they bring, handed over
+# by `lager install` from _host_ops.HOST_APT_PACKAGES for the same reason as
+# the rules above. Both end up in commands run as root, so each is held to a
+# space-separated list of plain names; anything else is dropped. Run by hand,
+# with neither set, the session installs neither.
+HOST_APT_PACKAGES="${LAGER_HOST_APT_PACKAGES:-}"
+HOST_SERVICES="${LAGER_HOST_SERVICES:-}"
+HOST_PKG_LIST_RE='^([a-z0-9][a-z0-9.+-]*( [a-z0-9][a-z0-9.+-]*)*)?$'
+# Each name starts with a letter or digit, so none can be read as an option.
+HOST_UNIT_LIST_RE='^([A-Za-z0-9][A-Za-z0-9_.@-]*( [A-Za-z0-9][A-Za-z0-9_.@-]*)*)?$'
+if [[ ! "$HOST_APT_PACKAGES" =~ $HOST_PKG_LIST_RE ]]; then
+    print_warning "Ignoring the host package list handed to this script: not a list of package names"
+    HOST_APT_PACKAGES=""
+fi
+if [[ ! "$HOST_SERVICES" =~ $HOST_UNIT_LIST_RE ]]; then
+    print_warning "Ignoring the host service list handed to this script: not a list of unit names"
+    HOST_SERVICES=""
+fi
+# `systemctl enable --now <unit>` for each, granted so `lager update` can
+# re-enable a unit without a password. Rendered into the udev file below.
+HOST_SERVICE_SUDOERS_RULES=""
+for HOST_UNIT in $HOST_SERVICES; do
+    HOST_SERVICE_SUDOERS_RULES="${HOST_SERVICE_SUDOERS_RULES}${BOX_USER} ALL=(ALL) NOPASSWD: /bin/systemctl enable --now ${HOST_UNIT}
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl enable --now ${HOST_UNIT}
+"
+done
 
 ETC_LAGER_PERMS_SRC="${SCRIPT_DIR}/../security/etc_lager_perms.sh"
 if [ ! -f "$ETC_LAGER_PERMS_SRC" ]; then
@@ -924,6 +951,7 @@ ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/install -D -m 0755 -o root -g root /tmp
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/install -D -m 0755 -o root -g root /tmp/secure_box_firewall.sh /usr/local/lib/lager/secure_box_firewall.sh
 ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/local/lib/lager/secure_box_firewall.sh
 ${FIREWALL_SUDOERS_RULES}
+${HOST_SERVICE_SUDOERS_RULES}
 SUDOERS
 
 # The gid-dependent grants. id -g can only be answered on the box, and the
@@ -1008,6 +1036,26 @@ if command -v python3 >/dev/null 2>&1 && ! python3 -Im ensurepip --version >/dev
     sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y --no-install-recommends python3-venv || true
 fi
 
+# The host packages Lager needs (BlueZ: Ubuntu Server ships without it, and BLE
+# in the container uses the host's bluetoothd). Only what is missing, so a box
+# that has them (Ubuntu Desktop) spends no time here. Best effort, like the two
+# above: lager update installs anything still missing.
+HOST_PKGS_MISSING=""
+for pkg in ${HOST_APT_PACKAGES}; do
+    dpkg-query -W -f='\${Status}' "\$pkg" 2>/dev/null | grep -q 'install ok installed' \\
+        || HOST_PKGS_MISSING="\$HOST_PKGS_MISSING \$pkg"
+done
+if [ -n "\$HOST_PKGS_MISSING" ]; then
+    echo "Installing\$HOST_PKGS_MISSING..."
+    sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get update -qq || true
+    sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y --no-install-recommends \$HOST_PKGS_MISSING || true
+fi
+# A host with no Bluetooth adapter is fine: bluetooth.service is conditioned on
+# /sys/class/bluetooth, so this enables it and the start is skipped quietly.
+for unit in ${HOST_SERVICES}; do
+    sudo systemctl enable --now "\$unit" >/dev/null 2>&1 || true
+done
+
 # LAST, and only after everything above: the marker says "this box has what
 # digest X installs". Written without sudo -- /etc/lager is group-writable by
 # this user as of the helper run above -- and moved into place so a reader
@@ -1032,7 +1080,8 @@ DEPLOY_DIGEST="$(deploy_sudoers_digest "$TEMP_SCRIPT" "$ETC_LAGER_PERMS_SRC" 2>/
 #   - the helper runs under sudo -n: the grant is really live, not just written
 #     (this is also the /etc/lager repair every install performs);
 #   - buildx and ensurepip are there, or the box has no docker / python3 for
-#     them to belong to: nothing the session would install is missing;
+#     them to belong to, and every host package is installed: nothing the
+#     session would install is missing;
 #   - the box-config marker is there and apt-get runs under sudo -n: lager
 #     install's own check, a few minutes from now, will pass too.
 #
@@ -1043,6 +1092,9 @@ DEPLOY_PROBE="${DEPLOY_PROBE} && test \"\$(cat ${DEPLOY_SUDOERS_MARKER} 2>/dev/n
 DEPLOY_PROBE="${DEPLOY_PROBE} && sudo -n ${ETC_LAGER_PERMS_HELPER}"
 DEPLOY_PROBE="${DEPLOY_PROBE} && { ! command -v docker >/dev/null 2>&1 || docker buildx version >/dev/null 2>&1; }"
 DEPLOY_PROBE="${DEPLOY_PROBE} && { ! command -v python3 >/dev/null 2>&1 || python3 -Im ensurepip --version >/dev/null 2>&1; }"
+for pkg in $HOST_APT_PACKAGES; do
+    DEPLOY_PROBE="${DEPLOY_PROBE} && dpkg-query -W -f='\${Status}' ${pkg} 2>/dev/null | grep -q 'install ok installed'"
+done
 if [ "$HAVE_BOXCFG" = "1" ]; then
     DEPLOY_PROBE="${DEPLOY_PROBE} && test -f ${BOXCFG_SUDOERS_MARKER} && sudo -n /usr/bin/apt-get --version >/dev/null 2>&1"
 fi

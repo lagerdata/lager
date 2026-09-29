@@ -14,7 +14,7 @@ import json
 import click
 
 from ...core.group_usage import LagerGroup
-from ...core.net_helpers import resolve_box, resolve_box_locked, post_box_command
+from ...core.net_helpers import resolve_box, resolve_box_locked, post_box_command, _box_error_text
 
 
 @click.group(name='ble', cls=LagerGroup)
@@ -222,7 +222,7 @@ def disconnect(ctx, box, address):
 
     click.secho(f"[OK] Disconnected from {address}", fg='green')
     if value.get('note'):
-        click.secho(f"  Note: {value['note']}", fg='green')
+        click.secho(f"  Note: {_box_error_text(value['note'])}", fg='green')
 
     click.echo("\nJSON Output:")
     click.echo(json.dumps(value, indent=2))

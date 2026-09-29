@@ -447,6 +447,23 @@ def post_net_command(
     raise SystemExit(1)
 
 
+# The box host has no BlueZ, so bleak's D-Bus call for org.bluez fails. A box
+# on a current image already sends this text (box/lager/http_handlers/ble.py
+# BLUEZ_UNAVAILABLE_MESSAGE; a unit test pins the two); an older image sends the
+# raw D-Bus error, which is rewritten here so it reads the same.
+BLUEZ_UNAVAILABLE_MESSAGE = (
+    "BlueZ is not running on the box host. Run `lager update` for this box, "
+    "or on the box run: sudo apt install -y bluez && sudo systemctl enable --now bluetooth"
+)
+
+
+def _box_error_text(error: Any) -> str:
+    text = str(error)
+    if "org.bluez" in text and "ServiceUnknown" in text:
+        return BLUEZ_UNAVAILABLE_MESSAGE
+    return text
+
+
 def post_box_command(
     ctx: click.Context,
     box_ip: str,
@@ -522,7 +539,7 @@ def post_box_command(
             fg="red", err=True,
         )
     else:
-        click.secho(f"Error: {error}", fg="red", err=True)
+        click.secho(f"Error: {_box_error_text(error)}", fg="red", err=True)
     raise SystemExit(1)
 
 
