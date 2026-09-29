@@ -20,7 +20,7 @@ description: 把一台 Ubuntu 计算机配置为 Lager Box
 - **Ubuntu 22.04 或更新版本**，包括 24.04 LTS。关于 Ubuntu 25.10 及更高版本，请参阅下方的说明。
 - 一个网络连接，以及一个您可以访问的 IP 地址或主机名。
 - 一个 SSH 服务器，以及一个**具有 `sudo` 权限的登录账户**，并且您知道它的密码。
-- 已安装 **`git`**。Box 需要的其他软件（包括 Docker）由 Lager 安装。第 1 步说明为什么您可以先自己安装 Docker。这一步是可选的。
+- 已安装 **`git`**。Box 需要的其他软件（包括 Docker 和 BlueZ（蓝牙））由 Lager 安装。第 1 步说明为什么您可以先自己安装 Docker。这一步是可选的。
 
 **在您自己的计算机上：**
 
@@ -34,6 +34,10 @@ uname -m           # 必须是 x86_64
 lsb_release -ds    # Ubuntu 22.04 或更新版本
 sudo --version     # 请参阅下方关于 sudo-rs 的说明
 ```
+
+<Note>
+Box 上的 BLE 和 BluFi 使用 Box 宿主机上的 BlueZ。Ubuntu Desktop 自带 BlueZ，Ubuntu Server 没有。如果缺少 BlueZ，`lager install` 会安装它；对于之前已经配置好的 Box，`lager update` 会安装它。没有蓝牙适配器的计算机也受支持：BlueZ 会被安装，但保持空闲。
+</Note>
 
 <Note>
 安装默认的 `main` 会在 Box 上自行构建 Lager 容器。在普通的 Box 硬件上，这大约需要 14 分钟。请预留出 Box 忙碌的时间。`lager install` 默认把这一步限制在 30 分钟以内。用 `--version`

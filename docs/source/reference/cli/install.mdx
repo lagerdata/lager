@@ -112,6 +112,7 @@ kill, such as a power loss, the lock has no expiry time to clear it, and
 | J-Link | SEGGER debug probe software (optional, skipped with `--skip-jlink`) |
 | UFW firewall | Host firewall rules from `secure_box_firewall.sh` (skipped with `--skip-firewall`). They do not filter the ports that the container publishes |
 | Box code | Python libraries and services in `~/box` |
+| Host packages | BlueZ (`bluez`), installed only if it is missing, with `bluetooth.service` enabled. BLE and BluFi need it on the host. `lager update` installs it on boxes set up before it was added |
 | Host CLI | The `lager` CLI in `~/.lager_venv` on the box host, linked as `~/.local/bin/lager` and installed from the box checkout. Needs host python3 3.10 or newer, or install skips it with a warning. A failure is not fatal |
 
 <Warning>

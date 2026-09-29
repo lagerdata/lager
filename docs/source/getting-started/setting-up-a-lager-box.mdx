@@ -22,8 +22,9 @@ If someone has already set up a box for you, you do not need this page. Go strai
 - **Ubuntu 22.04 or newer**, including 24.04 LTS. See the note on Ubuntu 25.10 and later below.
 - A network connection, and an IP address or hostname you can reach.
 - An SSH server, and a **login account with `sudo`** whose password you know.
-- **`git`** installed. Lager installs everything else the box needs, including Docker.
-  Step 1 explains why you can install Docker yourself first. That step is optional.
+- **`git`** installed. Lager installs everything else the box needs, including Docker
+  and BlueZ (Bluetooth). Step 1 explains why you can install Docker yourself first. That
+  step is optional.
 
 **On your computer:**
 
@@ -37,6 +38,13 @@ uname -m           # must be x86_64
 lsb_release -ds    # Ubuntu 22.04 or newer
 sudo --version     # see the sudo-rs note below
 ```
+
+<Note>
+BLE and BluFi on the box use BlueZ on the box host. Ubuntu Desktop includes BlueZ.
+Ubuntu Server does not. `lager install` installs BlueZ when the host does not have it.
+On a box that you set up before, `lager update` installs it. A machine with no Bluetooth
+adapter is supported: BlueZ is installed and stays idle.
+</Note>
 
 <Note>
 An install of the default `main` builds the Lager container on the box itself. That takes

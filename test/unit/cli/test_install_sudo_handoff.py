@@ -38,6 +38,22 @@ MARKER = "LAGER_BOXCFG_SUDOERS_MARKER"
 
 
 class DeployEnv(unittest.TestCase):
+    def test_it_always_carries_the_host_package_list(self):
+        # BlueZ on the host; the deploy script validates and installs it.
+        for user in ("benchtest", "bad user"):
+            env = install_mod._deploy_env(user)
+            self.assertEqual(env["LAGER_HOST_APT_PACKAGES"],
+                             " ".join(ops.host_package_names()), user)
+            self.assertEqual(env["LAGER_HOST_SERVICES"],
+                             " ".join(ops.host_service_names()), user)
+
+    def test_a_stale_host_list_in_the_operators_shell_is_replaced(self):
+        with mock.patch.dict(os.environ, {"LAGER_HOST_APT_PACKAGES": "evil",
+                                          "LAGER_HOST_SERVICES": "evil"}):
+            env = install_mod._deploy_env("benchtest")
+        self.assertEqual(env["LAGER_HOST_APT_PACKAGES"], "bluez")
+        self.assertEqual(env["LAGER_HOST_SERVICES"], "bluetooth")
+
     def test_it_carries_the_file_text_and_the_marker_for_the_install_user(self):
         env = install_mod._deploy_env("benchtest")
         self.assertEqual(env[CONTENT], ops.boxcfg_sudoers_content("benchtest"))

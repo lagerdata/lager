@@ -79,6 +79,7 @@ lager install [OPTIONS]
 | J-Link | SEGGER 调试探针软件（可选，用 `--skip-jlink` 跳过） |
 | UFW 防火墙 | 来自 `secure_box_firewall.sh` 的主机防火墙规则（用 `--skip-firewall` 跳过）。它们不会过滤容器发布的端口 |
 | Box 代码 | `~/box` 中的 Python 库和服务 |
+| 主机软件包 | BlueZ（`bluez`），仅在缺少时安装，并启用 `bluetooth.service`。BLE 和 BluFi 需要宿主机上有它。对于在添加它之前配置的 Box，`lager update` 会安装它 |
 | 主机 CLI | Box 宿主机上 `~/.lager_venv` 中的 `lager` CLI，链接为 `~/.local/bin/lager`，从 Box 检出安装。需要宿主机 python3 3.10 或更高版本，否则安装会跳过它并给出警告。这一步失败不是致命错误 |
 
 <Warning>

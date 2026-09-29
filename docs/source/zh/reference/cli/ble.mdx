@@ -162,6 +162,7 @@ lager ble info AA:BB:CC:DD:EE:FF
 ## 说明
 
 - BLE 扫描需要 Box 上有蓝牙硬件
+- BLE 使用 Box 宿主机上的 BlueZ。`lager install` 和 `lager update` 会安装它。如果缺少 BlueZ，BLE 命令会失败并显示 `BlueZ is not running on the box host`。要修复这个问题，请对该 Box 运行 `lager update`，或在 Box 上运行 `sudo apt install -y bluez && sudo systemctl enable --now bluetooth`
 - 地址格式为 `XX:XX:XX:XX:XX:XX`（用冒号分隔的十六进制）
 - 扫描超时时间决定 Box 搜索设备的时长
 - 有些设备在连接之前不广播自己的名称

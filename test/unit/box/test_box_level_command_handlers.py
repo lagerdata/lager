@@ -171,9 +171,31 @@ class TestBleHandler(unittest.TestCase):
         self.assertEqual(r.status_code, 502)
         self.assertIn("BLE error", r.get_json()["error"])
 
+    def test_no_bluez_on_the_host_says_how_to_fix_it(self):
+        # The error bleak raises on a host with no BlueZ (Ubuntu Server).
+        with patch.object(ble_handler, 'run_bleak',
+                          _fake_run_bleak(RuntimeError(_NO_BLUEZ))):
+            r = self._post({"action": "scan", "params": {}})
+        self.assertEqual(r.status_code, 502)
+        error = r.get_json()["error"]
+        self.assertEqual(error, ble_handler.BLUEZ_UNAVAILABLE_MESSAGE)
+        self.assertNotIn("ServiceUnknown", error)
+        self.assertIn("sudo apt install -y bluez", error)
+
+    def test_the_hint_matches_only_the_missing_bluez_error(self):
+        self.assertEqual(ble_handler.bluez_unavailable_hint(RuntimeError(_NO_BLUEZ)),
+                         ble_handler.BLUEZ_UNAVAILABLE_MESSAGE)
+        for other in ("adapter off", "org.bluez.Error.NotReady: Resource Not Ready",
+                      "[org.freedesktop.DBus.Error.ServiceUnknown] The name org.example was not provided"):
+            self.assertIsNone(ble_handler.bluez_unavailable_hint(RuntimeError(other)), other)
+
     def test_unknown_action_is_400(self):
         r = self._post({"action": "bogus", "params": {}})
         self.assertEqual(r.status_code, 400)
+
+
+_NO_BLUEZ = ("[org.freedesktop.DBus.Error.ServiceUnknown] The name org.bluez "
+             "was not provided by any .service files")
 
 
 # ---------------------------------------------------------------------------
@@ -403,6 +425,13 @@ class TestBlufiHandler(unittest.TestCase):
     def test_connect_requires_device_name(self):
         r = self._post({"action": "connect", "params": {}})
         self.assertEqual(r.status_code, 400)
+
+    def test_no_bluez_on_the_host_says_how_to_fix_it(self):
+        with patch.object(blufi_handler, 'run_bleak',
+                          _fake_run_bleak(RuntimeError(_NO_BLUEZ))):
+            r = self._post({"action": "scan", "params": {}})
+        self.assertEqual(r.status_code, 502)
+        self.assertEqual(r.get_json()["error"], ble_handler.BLUEZ_UNAVAILABLE_MESSAGE)
 
     def test_connect_failure_is_502_and_cleans_up(self):
         client = _make_blufi_client(connect_ok=False)

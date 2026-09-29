@@ -294,6 +294,17 @@ def _unescape(text):
     return text
 
 
+# Heredoc lines that are shell variables, filled in client-side.
+_TEMPLATED_RULES = ("${FIREWALL_SUDOERS_RULES}", "${HOST_SERVICE_SUDOERS_RULES}")
+
+
+def _host_service_rules(user):
+    """What ${HOST_SERVICE_SUDOERS_RULES} expands to for the shipped list."""
+    return "".join(
+        f"{user} ALL=(ALL) NOPASSWD: {d}/systemctl enable --now {unit}\n"
+        for unit in ops.host_service_names() for d in ("/bin", "/usr/bin"))
+
+
 def _rule_lines(body):
     """Just the NOPASSWD rules: comments and blank lines are not parsed by
     sudo, and a comment may legitimately discuss a wildcard."""
@@ -321,8 +332,10 @@ class DeployScriptCopyStaysInSync(unittest.TestCase):
         for line in _rule_lines(_udev_heredoc_body()):
             # The firewall grant is templated in from the client side, because
             # its argument (--corporate-vpn <iface>) is only known there; it
-            # expands to a ${BOX_USER} rule or to nothing. See #313.
-            if line.strip() == "${FIREWALL_SUDOERS_RULES}":
+            # expands to a ${BOX_USER} rule or to nothing. See #313. The
+            # host-service grants are templated from the list `lager install`
+            # hands over, and expand to ${BOX_USER} rules or to nothing.
+            if line.strip() in _TEMPLATED_RULES:
                 continue
             self.assertTrue(
                 line.startswith("${BOX_USER} ALL=(ALL) NOPASSWD: "), line,
@@ -674,6 +687,7 @@ def _assembled_sudoers(user="benchtest", gid="1000", vpn_iface=None):
         if vpn_iface else ""
     )
     static = static.replace("${FIREWALL_SUDOERS_RULES}", firewall)
+    static = static.replace("${HOST_SERVICE_SUDOERS_RULES}", _host_service_rules(user))
     dynamic = (
         _udev_dynamic_body()
         .replace("${BOX_USER}", user)
@@ -724,7 +738,7 @@ class CommandArgumentsEscapeSudoersMetacharacters(unittest.TestCase):
         rules = _rule_lines(_udev_heredoc_body()) + _rule_lines(_udev_dynamic_body())
         parts = []
         for rule in rules:
-            if rule.strip() == "${FIREWALL_SUDOERS_RULES}":
+            if rule.strip() in _TEMPLATED_RULES:
                 continue
             _, _, cmd = rule.partition("NOPASSWD: ")
             if cmd:
@@ -886,10 +900,16 @@ class EverySystemctlTheDeployRunsIsGranted(unittest.TestCase):
     def _calls(self):
         # Commands the script RUNS. A line that echoes advice to the operator
         # ("sudo systemctl status docker") runs nothing and needs no grant.
+        # A call whose next argument is a shell variable ("\$unit") is one per
+        # host service; SessionInstallsTheHostPackages checks those rendered.
         ran = "\n".join(
             ln for ln in _code(DEPLOY_SCRIPT.read_text(encoding="utf-8")).splitlines()
             if not ln.lstrip().startswith("echo "))
-        return sorted(set(self._CALL.findall(ran)))
+        calls = set()
+        for m in self._CALL.finditer(ran):
+            if not re.match(r' "?\\?\$', ran[m.end():]):
+                calls.add(m.group(1))
+        return sorted(calls)
 
     def test_each_one_has_a_rule_in_both_bin_directories(self):
         rules = _rule_lines(_udev_heredoc_body())
@@ -926,7 +946,8 @@ class TheBoxConfigFileIsValidatedBeforeItIsInstalled(unittest.TestCase):
 class _RendersTheSession(unittest.TestCase):
     """Harness only: renders the sudo session script as the deploy script does."""
 
-    def _render(self, user="benchtest", vpn="", content="", marker="", helper_dir=None):
+    def _render(self, user="benchtest", vpn="", content="", marker="", helper_dir=None,
+                packages=None, services=None):
         import subprocess
         import tempfile
         block = _extract_block("sudo session render")
@@ -948,6 +969,10 @@ class _RendersTheSession(unittest.TestCase):
                 "BOX_USER": user, "CORPORATE_VPN": vpn, "SCRIPT_DIR": script_dir,
                 "LAGER_BOXCFG_SUDOERS_CONTENT": content,
                 "LAGER_BOXCFG_SUDOERS_MARKER": marker,
+                "LAGER_HOST_APT_PACKAGES": (" ".join(ops.host_package_names())
+                                            if packages is None else packages),
+                "LAGER_HOST_SERVICES": (" ".join(ops.host_service_names())
+                                        if services is None else services),
             }
             proc = subprocess.run([_BASH, "-c", driver], env=env,
                                   capture_output=True, text=True, timeout=60)
@@ -1011,13 +1036,73 @@ class TheSessionScriptRenders(_RendersTheSession):
                                    marker=ops.BOXCFG_SUDOERS_MARKER)
         recorded = rendered.index(f'mv -f "{ops.DEPLOY_SUDOERS_MARKER}.tmp"')
         for earlier in ("/etc/sudoers.d/lagerdata-udev", "/etc/sudoers.d/lager-box-config",
-                        f"sudo {ops.ETC_LAGER_PERMS_HELPER}", "python3-venv", "docker-buildx"):
+                        f"sudo {ops.ETC_LAGER_PERMS_HELPER}", "python3-venv", "docker-buildx",
+                        *ops.host_package_names(), *ops.host_service_names()):
             self.assertLess(rendered.rindex(earlier), recorded, earlier)
 
     def test_the_session_has_no_bare_sudo_assignment(self):
         rendered, _ = self._render()
         self.assertEqual(
             [ln for ln in _code(rendered).splitlines() if _SUDO_BARE_ENV_ASSIGN.search(ln)], [])
+
+
+class SessionInstallsTheHostPackages(_RendersTheSession):
+    """BlueZ on the host: Ubuntu Server has none, and BLE in the container uses
+    the host's bluetoothd. `lager install` hands the list over in the
+    environment (_host_ops.HOST_APT_PACKAGES); the script validates it."""
+
+    def test_the_shipped_list_is_rendered_into_the_session(self):
+        rendered, log = self._render()
+        self._parses(rendered)
+        self.assertNotIn("WARN:", log)
+        self.assertIn(f"for pkg in {' '.join(ops.host_package_names())}; do", rendered)
+        self.assertIn(f"for unit in {' '.join(ops.host_service_names())}; do", rendered)
+        self.assertIn("apt-get install -y --no-install-recommends $HOST_PKGS_MISSING", rendered)
+        self.assertIn('sudo systemctl enable --now "$unit"', rendered)
+
+    def test_each_service_enabled_is_granted_in_both_bin_directories(self):
+        rendered, _ = self._render()
+        for unit in ops.host_service_names():
+            for directory in ("/bin", "/usr/bin"):
+                self.assertIn(
+                    f"benchtest ALL=(ALL) NOPASSWD: {directory}/systemctl enable --now {unit}",
+                    rendered)
+
+    def test_bluez_and_its_unit_are_on_the_list(self):
+        self.assertIn("bluez", ops.host_package_names())
+        self.assertIn("bluetooth", ops.host_service_names())
+
+    def test_run_by_hand_it_installs_nothing_and_still_parses(self):
+        rendered, log = self._render(packages="", services="")
+        self._parses(rendered)
+        self.assertNotIn("WARN:", log)
+        self.assertIn("for pkg in ; do", rendered)
+        self.assertNotIn("systemctl enable --now bluetooth", rendered)
+
+    def test_anything_but_plain_names_is_dropped(self):
+        for bad in ("bluez; rm -rf /", "$(id)", "bluez\nfoo", "-o foo",
+                    "bluez  x", " bluez", "a`b`"):
+            rendered, log = self._render(packages=bad, services=bad)
+            self.assertIn("WARN:", log, bad)
+            self.assertIn("for pkg in ; do", rendered, bad)
+            self.assertIn("for unit in ; do", rendered, bad)
+            self.assertNotIn("rm -rf", rendered)
+            self._parses(rendered)
+
+    def test_a_package_name_is_lower_case(self):
+        # Debian policy; a unit name may be mixed case.
+        rendered, log = self._render(packages="Bluez", services="Bluez")
+        self.assertIn("Ignoring the host package list", log)
+        self.assertNotIn("Ignoring the host service list", log)
+        self.assertIn("for pkg in ; do", rendered)
+
+    def test_the_skip_probe_checks_every_host_package(self):
+        # Without this a box whose marker is current would skip the session
+        # and never get the package.
+        probe = _extract_block("deploy sudoers probe")
+        self.assertIn("for pkg in $HOST_APT_PACKAGES; do", probe)
+        self.assertIn("dpkg-query -W", probe)
+        self.assertNotIn("dpkg-query -W -f='\\${Status}' ${pkg} 2>/dev/null | sudo", probe)
 
 
 class TheDigestChangesWithWhatWouldBeInstalled(_RendersTheSession):

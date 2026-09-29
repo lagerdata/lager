@@ -5,6 +5,8 @@
 Host-side SSH helpers for `lager box-config apply`:
   - apt_install: `sudo apt-get install -y` over SSH
   - sysctl_apply: write /etc/sysctl.d/99-lager-box-config.conf + sysctl --system
+  - ensure_host_packages: the HOST_APT_PACKAGES `lager install` and
+    `lager update` keep on every box host (BlueZ)
 
 Both use the same passwordless-sudo + BatchMode SSH pattern as
 `_mount_prep.ensure_host_path_owned`. When sudo isn't configured, callers
@@ -377,6 +379,131 @@ def apt_install(
         action="installed",
         message=f"Installed/verified {len(packages)} apt package(s): " + ", ".join(packages),
     )
+
+
+# --- Host packages ----------------------------------------------------------
+#
+# Packages the box HOST needs that a stock Ubuntu install may lack. This is the
+# one list: `lager install` hands it to setup_and_deploy_box.sh (which cannot
+# import it) and `lager update` installs whatever of it is missing.
+#
+# bluez: the container has no bluetoothd of its own. bleak inside it talks to
+# the HOST's bluetoothd over the mounted /var/run/dbus socket, and the host's
+# bluez package is also what ships the D-Bus policy and activation file for
+# org.bluez. Ubuntu Desktop has it; Ubuntu Server does not, and there every BLE
+# and BluFi command fails with "The name org.bluez was not provided by any
+# .service files". A host with no Bluetooth adapter is fine: the unit's
+# ConditionPathIsDirectory=/sys/class/bluetooth skips the start quietly.
+
+
+@dataclass(frozen=True)
+class HostPackage:
+    name: str
+    service: Optional[str] = None  # systemd unit to enable once installed
+
+
+HOST_APT_PACKAGES = (
+    HostPackage("bluez", service="bluetooth"),
+)
+
+
+def host_package_names() -> List[str]:
+    return [p.name for p in HOST_APT_PACKAGES]
+
+
+def host_service_names() -> List[str]:
+    return [p.service for p in HOST_APT_PACKAGES if p.service]
+
+
+def host_packages_manual_fix(packages: List[str], services: List[str]) -> str:
+    """The one line an operator runs on the box when Lager could not."""
+    parts = []
+    if packages:
+        parts.append("sudo apt-get install -y " + " ".join(shlex.quote(p) for p in packages))
+    for unit in services:
+        parts.append(f"sudo systemctl enable --now {shlex.quote(unit)}")
+    return " && ".join(parts)
+
+
+def host_packages_probe_snippet() -> str:
+    """Shell lines for `lager update`'s probe. Emits which listed packages are
+    not installed and which listed units are not enabled. Needs no sudo, and
+    names only what is listed above."""
+    pkgs = " ".join(host_package_names())
+    units = " ".join(host_service_names())
+    return (
+        "_lager_missing=''\n"
+        f"for _p in {pkgs}; do\n"
+        "  dpkg-query -W -f='${Status}' \"$_p\" 2>/dev/null | grep -q 'install ok installed' "
+        "|| _lager_missing=\"$_lager_missing $_p\"\n"
+        "done\n"
+        "echo \"LAGER_PROBE_HOST_PKGS_MISSING=${_lager_missing# }\"\n"
+        "_lager_disabled=''\n"
+        f"for _u in {units}; do\n"
+        "  systemctl is-enabled --quiet \"$_u\" 2>/dev/null "
+        "|| _lager_disabled=\"$_lager_disabled $_u\"\n"
+        "done\n"
+        "echo \"LAGER_PROBE_HOST_SVCS_DISABLED=${_lager_disabled# }\"\n"
+    )
+
+
+def ensure_host_packages(
+    box_ip: str,
+    missing: List[str],
+    disabled: List[str],
+    *,
+    ssh_runner: Optional[SshRunner] = None,
+    user: str = "lagerdata",
+) -> HostOpResult:
+    """Install the missing listed packages and enable the disabled listed
+    units, without ever prompting. Only names on HOST_APT_PACKAGES are acted
+    on, so a probe line cannot smuggle anything else in.
+
+    The install rides the box-config `SETENV: /usr/bin/apt-get` grant. Enabling
+    a unit needs the `systemctl enable --now <unit>` grant that `lager install`
+    writes; a box installed before that grant existed gets the manual fix. A
+    fresh bluez install enables and starts its own unit from its postinst, so
+    that grant only matters for a unit someone disabled by hand."""
+    known_pkgs = set(host_package_names())
+    known_units = set(host_service_names())
+    missing = [p for p in missing if p in known_pkgs]
+    disabled = [u for u in disabled if u in known_units]
+    if not missing and not disabled:
+        return HostOpResult(ok=True, action="noop", message="Host packages present.")
+    runner = ssh_runner or default_ssh_runner
+    # A unit whose package is being installed is enabled by that install, and
+    # is re-checked below either way.
+    units = sorted(set(disabled) | {p.service for p in HOST_APT_PACKAGES
+                                    if p.name in missing and p.service})
+    manual_fix = host_packages_manual_fix(missing, units)
+
+    if missing:
+        result = apt_install(box_ip, missing, ssh_runner=runner, user=user)
+        if not result.ok:
+            return HostOpResult(ok=False, action="failed", message=result.message,
+                                manual_fix=manual_fix)
+
+    still_disabled = []
+    for unit in units:
+        q = shlex.quote(unit)
+        rc, _out, _err = runner(
+            box_ip,
+            f"systemctl is-enabled --quiet {q} || sudo -n systemctl enable --now {q}")
+        if rc != 0:
+            still_disabled.append(unit)
+    if still_disabled:
+        return HostOpResult(
+            ok=False,
+            action="failed",
+            message="could not enable " + ", ".join(still_disabled) + " without a password",
+            manual_fix=host_packages_manual_fix([], still_disabled),
+        )
+    done = []
+    if missing:
+        done.append("installed " + ", ".join(missing))
+    if disabled:
+        done.append("enabled " + ", ".join(disabled))
+    return HostOpResult(ok=True, action="installed", message="; ".join(done))
 
 
 def sysctl_apply(

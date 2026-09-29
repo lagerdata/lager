@@ -109,6 +109,6 @@ supply.disable()?;
 ## 说明
 
 - **每台 Box 只有一个适配器。** Box 会把它上面所有的 BLE **和** BluFi 工作串行化，因此并发调用会排队而不是失败。一次 BluFi 配网和一次 BLE 扫描不能重叠。
-- `capabilities.ble_command` 为 `true` 只表示 Box **提供这条路由**，而不表示它能完成这项工作。容器里没有运行 BlueZ 的 Box 会用 `Error::Box` 和 HTTP 502 作答，并携带 `The name org.bluez was not provided by any .service files`。即使 USB 总线上确实有蓝牙控制器也会这样。请检查错误，而不是只看能力标志。
+- `capabilities.ble_command` 为 `true` 只表示 Box **提供这条路由**，而不表示它能完成这项工作。宿主机上没有运行 BlueZ 的 Box 会用 `Error::Box` 和 HTTP 502 作答，并携带 `BlueZ is not running on the box host`（较旧的 Box 镜像会发送 `The name org.bluez was not provided by any .service files`）。即使 USB 总线上确实有蓝牙控制器也会这样。请检查错误，而不是只看能力标志。`lager update` 会在宿主机上安装 BlueZ。
 - `info`、`connect` 和 `disconnect` 在 Box 侧的连接超时是 10 秒；客户端在此之上再加 30 秒。
 - `rssi` 是恰好收到的那条广播的一次快照。请把它当作排序提示，而不是测量值。

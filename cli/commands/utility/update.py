@@ -31,6 +31,8 @@ from ...core.ssh_utils import get_ssh_connection_pool
 from ..box._host_ops import (
     BOXCFG_SUDOERS_MARKER,
     boxcfg_sudoers_bootstrap_cmd,
+    ensure_host_packages,
+    host_packages_probe_snippet,
     is_valid_unix_username,
 )
 from ..box._ssh import (
@@ -979,6 +981,7 @@ else
   echo "LAGER_PROBE_LAGER_RUNNING="
 fi
 __HOST_CLI_PROBE__
+__HOST_PACKAGES_PROBE__
 echo "LAGER_PROBE_ETC_VERSION=$(cat /etc/lager/version 2>/dev/null)"
 '''
     return (
@@ -986,7 +989,32 @@ echo "LAGER_PROBE_ETC_VERSION=$(cat /etc/lager/version 2>/dev/null)"
         .replace('__BUILD_HASH_CMD__', _build_hash_shell_cmd())
         .replace('__BOXCFG_SUDOERS_MARKER__', BOXCFG_SUDOERS_MARKER)
         .replace('__HOST_CLI_PROBE__\n', HOST_CLI_PROBE_SNIPPET)
+        .replace('__HOST_PACKAGES_PROBE__\n', host_packages_probe_snippet())
     )
+
+
+def _host_packages_step(facts, ssh_host, username, ssh_runner):
+    """Step 7c: install the host packages the probe found missing (BlueZ).
+
+    Returns (status, color, warning-or-None). Never raises and never fails
+    the update: a box the probe could not read is skipped, and a failure
+    yields one warning naming the command to run on the box.
+    """
+    if 'HOST_PKGS_MISSING' not in facts:
+        # A probe that did not answer is unknown, not missing.
+        return 'SKIPPED (not probed)', 'yellow', None
+    missing = facts.get('HOST_PKGS_MISSING', '').split()
+    disabled = facts.get('HOST_SVCS_DISABLED', '').split()
+    if not missing and not disabled:
+        return 'OK', 'green', None
+    res = ensure_host_packages(ssh_host, missing, disabled,
+                               ssh_runner=ssh_runner, user=username)
+    if res.ok:
+        return f'OK ({res.message})', 'green', None
+    reason = (res.message or '').strip().splitlines()[0] if res.message else 'unknown error'
+    return 'FAILED', 'yellow', (
+        f'Warning: could not set up host packages ({reason}). BLE needs them. '
+        f'On the box ({ssh_host}) run: {res.manual_fix}')
 
 
 def _modprobe_recheck_shell_cmd():
@@ -1258,12 +1286,12 @@ def _deployed_version_stale(tree_version, etc_version_raw):
     return bool(tree_version) and bool(deployed) and deployed != tree_version
 
 
-# Progress-bar denominator. 16 steps always run; 3 are conditional (flatten,
+# Progress-bar denominator. 17 steps always run; 3 are conditional (flatten,
 # cached-image wipe, J-Link install). We use the max so the denominator never
-# jumps mid-flight — light paths simply finish below 19/19 and `finish()`
+# jumps mid-flight — light paths simply finish below 20/20 and `finish()`
 # overrides with a full bar. Keep in sync with the `progress.update()` calls
 # in `_update_logic`.
-_PROGRESS_TOTAL_STEPS = 19
+_PROGRESS_TOTAL_STEPS = 20
 
 
 class ProgressBar:
@@ -2985,6 +3013,28 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
 
         for job in priv_jobs:
             job['render'](priv_results.get(job['name']) == 'OK')
+
+    # Step 7c: host packages (_host_ops.HOST_APT_PACKAGES -- BlueZ, which
+    # Ubuntu Server lacks and every BLE/BluFi command needs on the host).
+    # After the session above, so a box-config grant it just wrote is live.
+    # Nothing to do is the common case and costs nothing: the probe already
+    # answered, so there is no round trip and no `apt-get update`. Otherwise
+    # it installs over BatchMode with `sudo -n` on the box-config apt-get
+    # grant; it never prompts, and a failure prints the one command to run by
+    # hand and never fails the update.
+    if progress:
+        progress.update("Checking host packages...")
+    log('Checking host packages...', nl=False)
+
+    def _host_pkg_runner(_ip, cmd):
+        res = run_ssh_command_with_output(cmd, timeout_secs=600)
+        return res.returncode, res.stdout or '', res.stderr or ''
+
+    host_pkg_status, host_pkg_color, host_pkg_warning = _host_packages_step(
+        facts, ssh_host, username, _host_pkg_runner)
+    log_status(host_pkg_status, host_pkg_color)
+    if host_pkg_warning:
+        click.secho(host_pkg_warning, fg='yellow', err=True)
 
     # No git updates, no box/→root flatten work, and the docker-build inputs
     # match what's already cached: a second consecutive `lager update` would

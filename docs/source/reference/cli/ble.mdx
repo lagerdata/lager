@@ -162,6 +162,10 @@ lager ble info AA:BB:CC:DD:EE:FF
 ## Notes
 
 - BLE scanning requires Bluetooth hardware on the box
+- BLE uses BlueZ on the box host. `lager install` and `lager update` install it. If the
+  box host does not have BlueZ, BLE commands fail with
+  `BlueZ is not running on the box host`. To fix this, run `lager update` for the box, or
+  run `sudo apt install -y bluez && sudo systemctl enable --now bluetooth` on the box
 - Address format is `XX:XX:XX:XX:XX:XX` (colon-separated hex)
 - Scan timeout affects how long the box searches for devices
 - Some devices do not advertise their name until they connect

@@ -32,6 +32,8 @@ from ..box._host_ops import (
     BOXCFG_SUDOERS_MARKER,
     boxcfg_sudoers_bootstrap_cmd,
     boxcfg_sudoers_content,
+    host_package_names,
+    host_service_names,
     is_valid_unix_username,
 )
 from ..box._ssh import (
@@ -161,6 +163,9 @@ _RELEASE_NUMBER_RE = re.compile(r'^v?(\d+\.\d+\.\d+)$')
 # How the deploy script is given the box-config sudoers file to install.
 _BOXCFG_CONTENT_ENV = "LAGER_BOXCFG_SUDOERS_CONTENT"
 _BOXCFG_MARKER_ENV = "LAGER_BOXCFG_SUDOERS_MARKER"
+# ... and the host packages it installs (BlueZ), with the units they bring.
+_HOST_PACKAGES_ENV = "LAGER_HOST_APT_PACKAGES"
+_HOST_SERVICES_ENV = "LAGER_HOST_SERVICES"
 
 
 def _deploy_env(user):
@@ -180,9 +185,15 @@ def _deploy_env(user):
 
     Stale values are dropped rather than inherited: a LAGER_BOXCFG_* variable
     left in the operator's shell must never become a sudoers file.
+
+    The host package list (_host_ops.HOST_APT_PACKAGES) goes over the same way,
+    for the same reason, and is always set: it names no user.
     """
     env = {k: v for k, v in os.environ.items()
-           if k not in (_BOXCFG_CONTENT_ENV, _BOXCFG_MARKER_ENV)}
+           if k not in (_BOXCFG_CONTENT_ENV, _BOXCFG_MARKER_ENV,
+                        _HOST_PACKAGES_ENV, _HOST_SERVICES_ENV)}
+    env[_HOST_PACKAGES_ENV] = " ".join(host_package_names())
+    env[_HOST_SERVICES_ENV] = " ".join(host_service_names())
     if is_valid_unix_username(user):
         env[_BOXCFG_CONTENT_ENV] = boxcfg_sudoers_content(user)
         env[_BOXCFG_MARKER_ENV] = BOXCFG_SUDOERS_MARKER

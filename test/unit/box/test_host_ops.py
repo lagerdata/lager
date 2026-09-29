@@ -346,3 +346,108 @@ class BootstrapTexts(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _scripted_runner(results):
+    """A runner that answers each call with the next (rc, stdout, stderr)."""
+    calls = []
+    answers = list(results)
+
+    def runner(box_ip, cmd, *, stdin=None):
+        calls.append(cmd)
+        return answers.pop(0) if answers else (0, "", "")
+
+    return runner, calls
+
+
+class HostPackages(unittest.TestCase):
+    """BlueZ on the box host: `lager update` installs what the probe says is
+    missing, never prompting, and hands back one manual line when it can't."""
+
+    def test_the_list_carries_bluez_and_its_unit(self):
+        self.assertEqual(ops.host_package_names(), ["bluez"])
+        self.assertEqual(ops.host_service_names(), ["bluetooth"])
+
+    def test_nothing_missing_touches_nothing(self):
+        runner, calls = _scripted_runner([])
+        result = ops.ensure_host_packages("1.2.3.4", [], [], ssh_runner=runner)
+        self.assertTrue(result.ok)
+        self.assertEqual(result.action, "noop")
+        self.assertEqual(calls, [])
+
+    def test_a_missing_package_is_installed_then_its_unit_checked(self):
+        runner, calls = _scripted_runner([(0, "", ""), (0, "", "")])
+        result = ops.ensure_host_packages("1.2.3.4", ["bluez"], [], ssh_runner=runner)
+        self.assertTrue(result.ok, result.message)
+        self.assertEqual(result.action, "installed")
+        self.assertEqual(len(calls), 2)
+        self.assertIn("sudo -n DEBIAN_FRONTEND=noninteractive", calls[0])
+        self.assertIn("apt-get install -y --no-install-recommends bluez", calls[0])
+        self.assertEqual(
+            calls[1],
+            "systemctl is-enabled --quiet bluetooth || sudo -n systemctl enable --now bluetooth")
+
+    def test_a_disabled_unit_alone_is_enabled_without_apt(self):
+        runner, calls = _scripted_runner([(0, "", "")])
+        result = ops.ensure_host_packages("1.2.3.4", [], ["bluetooth"], ssh_runner=runner)
+        self.assertTrue(result.ok)
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn("apt-get", calls[0])
+
+    def test_apt_without_the_grant_gives_the_one_line_fix(self):
+        runner, calls = _scripted_runner([(1, "", "sudo: a password is required")])
+        result = ops.ensure_host_packages("1.2.3.4", ["bluez"], [], ssh_runner=runner)
+        self.assertFalse(result.ok)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(
+            result.manual_fix,
+            "sudo apt-get install -y bluez && sudo systemctl enable --now bluetooth")
+
+    def test_an_enable_that_needs_a_password_gives_the_enable_line(self):
+        runner, _ = _scripted_runner([(1, "", "sudo: a password is required")])
+        result = ops.ensure_host_packages("1.2.3.4", [], ["bluetooth"], ssh_runner=runner)
+        self.assertFalse(result.ok)
+        self.assertEqual(result.manual_fix, "sudo systemctl enable --now bluetooth")
+
+    def test_names_not_on_the_list_are_ignored(self):
+        runner, calls = _scripted_runner([])
+        result = ops.ensure_host_packages(
+            "1.2.3.4", ["curl; rm -rf /"], ["ssh"], ssh_runner=runner)
+        self.assertEqual(result.action, "noop")
+        self.assertEqual(calls, [])
+
+
+class HostPackagesProbe(unittest.TestCase):
+    """The probe snippet, run for real against stub dpkg-query / systemctl."""
+
+    def _run(self, installed, enabled):
+        import os
+        import subprocess
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            for name, body in (
+                ("dpkg-query",
+                 f'case " {" ".join(installed)} " in *" $3 "*) printf "install ok installed";; '
+                 '*) exit 1;; esac'),
+                ("systemctl",
+                 f'case " {" ".join(enabled)} " in *" $3 "*) exit 0;; *) exit 1;; esac'),
+            ):
+                path = os.path.join(tmp, name)
+                with open(path, "w") as fh:
+                    fh.write("#!/bin/sh\n" + body + "\n")
+                os.chmod(path, 0o755)
+            proc = subprocess.run(
+                ["sh"], input=ops.host_packages_probe_snippet(), text=True,
+                capture_output=True, env={"PATH": f"{tmp}:/usr/bin:/bin"}, timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return dict(ln.split("=", 1) for ln in proc.stdout.splitlines() if "=" in ln)
+
+    def test_present_and_enabled_reports_nothing(self):
+        facts = self._run(["bluez"], ["bluetooth"])
+        self.assertEqual(facts["LAGER_PROBE_HOST_PKGS_MISSING"], "")
+        self.assertEqual(facts["LAGER_PROBE_HOST_SVCS_DISABLED"], "")
+
+    def test_missing_package_and_unit_are_reported(self):
+        facts = self._run([], [])
+        self.assertEqual(facts["LAGER_PROBE_HOST_PKGS_MISSING"], "bluez")
+        self.assertEqual(facts["LAGER_PROBE_HOST_SVCS_DISABLED"], "bluetooth")
