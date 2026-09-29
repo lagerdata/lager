@@ -12,6 +12,29 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Changed
+
+- **`DebugNet.flash()` and `DebugNet.erase()` raise `RuntimeError` when J-Link did
+  nothing,** as they already did on OpenOCD. A script that called them on a J-Link net
+  got the output back and saw a failed flash or erase as success (#617).
+- **`DebugNet.connect(halt=True)` raises `ValueError` on a J-Link net.** J-Link has no
+  halt-on-connect, and the argument was ignored without a word. Attach a halt-first
+  `.JLinkScript` with `connect(script=...)` instead (#514).
+
+### Fixed
+
+- **`lager debug <net> flash` fails on a J-Link read-back compare failure**
+  (`Verification failed @ address ...`, `ERROR: Verify failed.`) instead of printing
+  `Flashed!`. On a DA1469x, whose cached compare can report a false failure, only the
+  box's uncached read-back (`LAGER_DA1469_UNCACHED_VERIFY=1`) fails it (#617).
+- **A `lager nets` change reaches the next `lager debug` command.** `set-script`,
+  `remove-script`, `add`, `rename`, `delete` and the Net Manager now drop the CLI's
+  cached debug nets for the box, so `flash` and `erase` no longer send the old J-Link
+  script for up to five minutes (#604).
+- **A `DebugNet.connect()` OpenOCD config override lasts until `disconnect()`.** A
+  relaunch with `force=True`, or the self-heal's reconnect, used the net's own cfg
+  instead (#514).
+
 ## [0.51.0] - 2026-09-28
 
 ### Added

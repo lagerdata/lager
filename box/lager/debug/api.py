@@ -262,8 +262,8 @@ def _attach_failed(output_chunks):
 # `****** Error: ` banner, as the whole line or its start -- never a substring.
 # `Failed to download RAMCode` is exact-only because J-Link also prints
 # `... for indirect memory access!` and FPU variants, which are not flash
-# programming. Verify failures are deliberately absent: on a DA1469x the
-# cached-XIP compare reports a false one on a correctly programmed part.
+# programming. Verify failures are separate (`_VERIFY_FAILED_RE` below),
+# because on a DA1469x they cannot all be believed.
 _PROGRAMMING_FAILED_RE = re.compile(
     r'^[*\s]*(?:error:\s*)?'
     r'(?:failed to download ramcode[!.]'
@@ -273,6 +273,43 @@ _PROGRAMMING_FAILED_RE = re.compile(
     r'|error while determining flash info.*)\s*$',
     re.IGNORECASE,
 )
+
+
+# J-Link's read-back compare failed: `Verification failed @ address 0x...`,
+# `ERROR: Verify failed.`, `Error while programming flash: Verify failed.`.
+# Matched like `_PROGRAMMING_FAILED_RE`: after the banner, from the line start.
+# A failure on every target but a DA1469x, whose compare reads through the
+# cached XIP window and reports a false one on a correctly programmed part.
+# There, only the uncached read-back's own mismatch line counts
+# (LAGER_DA1469_UNCACHED_VERIFY=1): it drops the false line when flash
+# matches. Kept in step with `_flash_verify_failure_line` in
+# cli/commands/development/debug/commands.py.
+_VERIFY_FAILED_RE = re.compile(
+    r'^[*\s]*(?:error:\s*)?'
+    r'(?:verification failed\b|verify failed\b'
+    r'|error while programming flash: verify failed\b)',
+    re.IGNORECASE,
+)
+
+# `jlink.UNCACHED_VERIFY_MISMATCH`, spelt out for the same reason as
+# `_COMMANDER_EXITED` below. test_flash_programming_verdict pins the two.
+_UNCACHED_VERIFY_MISMATCH = '(uncached QSPI read-back mismatch after cache flush)'
+
+
+def _verify_failure(lines, device=None):
+    """The line showing J-Link's read-back compare failed, else None.
+
+    On a DA1469x only the uncached read-back's mismatch line counts; see
+    `_VERIFY_FAILED_RE`.
+    """
+    da1469x = _probes.is_da1469x(device or '')
+    for line in lines:
+        text = line.strip()
+        if not _VERIFY_FAILED_RE.search(text):
+            continue
+        if not da1469x or text.endswith(_UNCACHED_VERIFY_MISMATCH):
+            return text
+    return None
 
 
 # J-Link's evidence that `loadfile` reached flash: one line per bank, including
@@ -312,11 +349,13 @@ def _is_flash_evidence(line):
     return bool(_FLASH_DOWNLOAD_RE.search(line)) or line.strip() == 'O.K.'
 
 
-def _flash_failure(output_chunks, require_evidence=None):
-    """The line showing a J-Link flash session programmed nothing, else None.
+def _flash_failure(output_chunks, require_evidence=None, device=None):
+    """The line showing a J-Link flash session failed, else None.
 
     Failure lines win: JLinkExe exiting under us, a programming failure, a
-    failed attach or an unusable probe. Short of those, success needs
+    failed attach or an unusable probe, and a failed read-back compare
+    (`_verify_failure`; *device* decides which verify lines count). Short of
+    those, success needs
     evidence -- a `Downloading file` for the load, and a `Flash download` line
     (or `O.K.`) after each one. A session with no evidence programmed
     nothing, however quiet it was: a J-Link that drops off USB mid-session
@@ -332,6 +371,9 @@ def _flash_failure(output_chunks, require_evidence=None):
         for line in lines:
             if pattern.search(line):
                 return line.strip()
+    verify_failed = _verify_failure(lines, device)
+    if verify_failed:
+        return verify_failed
     if not _require_evidence(require_evidence):
         return None
     downloading = seen = False
@@ -1221,7 +1263,7 @@ def jlink_erase_plan(device, script_file=None, *, start=None, length=None):
 
 @holds_probe('erase')
 def chip_erase(device, speed='4000', transport='SWD', mcu=None, script_file=None,
-               serial=None, *, start=None, length=None):
+               serial=None, *, start=None, length=None, require_evidence=None):
     """
     Erase flash via J-Link Commander.
 
@@ -1249,9 +1291,13 @@ def chip_erase(device, speed='4000', transport='SWD', mcu=None, script_file=None
         serial: J-Link USB serial. None falls back to the legacy single-probe path.
         start: First address to erase, given together with *length*, or None.
         length: Number of bytes to erase, given together with *start*, or None.
+        require_evidence: False to accept an erase J-Link never confirmed
+            (see ``REQUIRE_EVIDENCE_ENV``). None reads the environment.
 
     Returns:
-        Generator yielding output from erase operation
+        Generator yielding output from erase operation. Its return value
+        (``StopIteration.value``) is the line showing nothing was erased
+        (``_erase_failure``), or None; a plain ``for`` loop ignores it.
 
     Raises:
         JLinkStartError: If J-Link fails to start
@@ -1310,7 +1356,11 @@ def chip_erase(device, speed='4000', transport='SWD', mcu=None, script_file=None
     def _lines():
         if resolved is not None:
             yield f'Erasing {format_bounds(resolved[0], resolved[1])}'
-        yield from jlink.chip_erase(start=start, length=length)
+        output = []
+        for chunk in jlink.chip_erase(start=start, length=length):
+            output.append(str(chunk))
+            yield chunk
+        return _erase_failure(output, require_evidence)
 
     return _lines()
 
@@ -1434,7 +1484,7 @@ def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None,
         # Retry failed too: keep the original output, which carries the real error.
 
     yield from flash_output
-    failure = _flash_failure(flash_output, require_evidence)
+    failure = _flash_failure(flash_output, require_evidence, device=device)
 
     time.sleep(1.0)  # Give JLinkExe time to fully disconnect
 

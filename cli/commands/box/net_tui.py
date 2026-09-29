@@ -238,6 +238,13 @@ def _save_net_http(dut: str, record: dict, old_name: str | None = None) -> None:
     """PUT /nets/<name> — create or replace a net (rename when old_name given)."""
     _box_http(dut, "PUT", f"/nets/{old_name or record.get('name')}",
               json_body=record)
+    _forget_cached_debug_nets(dut)
+
+
+def _forget_cached_debug_nets(dut: str) -> None:
+    """Drop `lager debug`'s cached nets for the box; see forget_box_debug_nets."""
+    from ..development.debug.net_cache import forget_box_debug_nets
+    forget_box_debug_nets(dut)
 
 
 # ──────────── custom-device (cable) assignment helpers ────────────
@@ -1354,6 +1361,7 @@ class ConfirmDelete(Screen):
         def work() -> dict:
             _box_http(app.dut, "DELETE", f"/nets/{self.net.net}",
                       params={"role": self.net.type})
+            _forget_cached_debug_nets(app.dut)
             return {"saved": app._fetch_saved_records()}
 
         def done(out: object) -> None:
@@ -2264,6 +2272,7 @@ class ConfirmDeleteAll(Screen):
         # Delete all saved nets over the box HTTP API (off the UI thread)
         def work() -> dict:
             _box_http(app.dut, "DELETE", "/nets")
+            _forget_cached_debug_nets(app.dut)
             return {"saved": app._fetch_saved_records()}
 
         def done(out: object) -> None:

@@ -1172,10 +1172,8 @@ _FLASH_PROGRAMMED_SIGNATURES = (
 # memory access!` and `... used to read FPU registers.`, which are not flash
 # programming failures, so `Failed to download RAMCode` is never a prefix.
 #
-# Verify failures (`Verification failed @ address ...`, `ERROR: Verify
-# failed.`) are deliberately absent. On a DA1469x the cached-XIP compare
-# reports a false one on a correctly programmed part unless the box ran its
-# uncached read-back (LAGER_DA1469_UNCACHED_VERIFY, default off).
+# Verify failures are separate (`_flash_verify_failure_line`), because on a
+# DA1469x they cannot all be believed.
 _FLASH_PROGRAMMING_FAILURE_LINES = (
     'Failed to download RAMCode!',
     'Failed to download RAMCode.',
@@ -1283,6 +1281,50 @@ def _line_matches_programming_failure(line):
             or text.startswith(_FLASH_PROGRAMMING_FAILURE_PREFIXES))
 
 
+# J-Link's read-back compare failed. Mirrors `_VERIFY_FAILED_RE` and
+# `_verify_failure` in box/lager/debug/api.py: a failure on every target but
+# a DA1469x, whose compare reads through the cached XIP window and reports a
+# false one on a correctly programmed part. There only the box's uncached
+# read-back mismatch line counts (LAGER_DA1469_UNCACHED_VERIFY=1).
+_FLASH_VERIFY_FAILURE_PREFIXES = (
+    'Verification failed',                              # ... @ address 0x...
+    'Verify failed',                                    # ERROR: Verify failed.
+    'Error while programming flash: Verify failed',
+)
+_UNCACHED_VERIFY_MISMATCH = '(uncached QSPI read-back mismatch after cache flush)'
+_JLINK_FLASH_DEVICE_RE = re.compile(r'^Flashing device (\S+) via JLinkExe\.\.\.$')
+
+
+def _is_verify_failure(line):
+    """True if *line* is one of J-Link's failed read-back compare lines."""
+    text = _JLINK_ERROR_BANNER_RE.sub('', (line or '').strip(), count=1).lower()
+    return text.startswith(tuple(p.lower() for p in _FLASH_VERIFY_FAILURE_PREFIXES))
+
+
+def _flash_verify_failure_line(lines):
+    """J-Link's failed read-back compare line, else None.
+
+    The target comes from the box's `Flashing device <X> via JLinkExe...`
+    banner. Without one (OpenOCD, or output this CLI does not recognise)
+    verify lines are not read, so an unknown target is never newly failed.
+    """
+    device = None
+    for line in lines:
+        match = _JLINK_FLASH_DEVICE_RE.match(line.strip())
+        if match:
+            device = match.group(1)
+            break
+    if device is None:
+        return None
+    da1469x = 'DA1469' in device.upper()
+    for line in lines:
+        if not _is_verify_failure(line):
+            continue
+        if not da1469x or line.strip().endswith(_UNCACHED_VERIFY_MISMATCH):
+            return line.strip()
+    return None
+
+
 _NO_FLASH_DOWNLOAD = ('J-Link printed `Downloading file` but no `Flash download` '
                       'line after it: nothing was programmed')
 _NO_LOADFILE = ('J-Link printed no `Downloading file` line: `loadfile` never ran, '
@@ -1329,7 +1371,8 @@ def _flash_failure_line(output):
     """Return the programmer's failure line from flash output, else None.
 
     `output` is the joined /debug/flash text. A programming failure (a failed
-    RAMCode download, say) or an unusable probe is returned whatever else the
+    RAMCode download, say), a failed read-back compare
+    (`_flash_verify_failure_line`) or an unusable probe is returned whatever else the
     output says, and so is a `Downloading file` with no `Flash download` after
     it. Short of that, returns None whenever the output shows the session
     reached programming, even if a later line reports a connect failure --
@@ -1342,6 +1385,9 @@ def _flash_failure_line(output):
         if (_line_matches_programming_failure(line)
                 or _line_matches(line, _PROBE_UNUSABLE_SIGNATURES)):
             return line.strip()
+    verify_failed = _flash_verify_failure_line(lines)
+    if verify_failed:
+        return verify_failed
     evidence = require_jlink_evidence()
     if evidence and _downloaded_without_flash_download(lines):
         return _NO_FLASH_DOWNLOAD
@@ -1666,11 +1712,13 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, no_erase, erase,
         failure = _flash_verdict(result, output)
         if failure:
             click.secho(f"\nFlash failed: {failure}", fg='red', err=True)
-            click.secho(
-                "The target was NOT programmed. If this ran without --no-erase "
-                "it is now erased.",
-                fg='red', err=True,
-            )
+            if _is_verify_failure(failure):
+                consequence = ("Flash does not read back as the image: the target "
+                               "holds a bad or partial image. Flash it again.")
+            else:
+                consequence = ("The target was NOT programmed. If this ran without "
+                               "--no-erase it is now erased.")
+            click.secho(consequence, fg='red', err=True)
             client.close()
             ctx.exit(1)
 

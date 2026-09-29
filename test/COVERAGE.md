@@ -46,13 +46,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 2718 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 3185 |
+| `unit (cli)` | `test/unit/cli/` | 2734 (+2 xfailed) |
+| `unit (box)` | `test/unit/box/` | 3207 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 380 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 82 (+1 skipped) |
-| | **Total gated** | **6559** |
+| | **Total gated** | **6597** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -452,7 +452,7 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 248 files)
+### Local Unit Tests (`test/unit/` -- 249 files)
 
 #### Box Unit Tests (`test/unit/box/` -- 131 files)
 
@@ -594,7 +594,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_bench_endpoint.py` | `GET /bench` on the box HTTP server: the body is the bench manifest built from the loaded MCP state (`box_id`, nets with `dut_connection`, `reference_keys`, `metadata_sources`, `capability_bindings`); `ETag` is the quoted content hash and a matching `If-None-Match` in any spelling (quoted, weak, bare, listed, `*`) gets 304 with no body; a build failure is a 500 that says why; the first request on a process that never called `init_state` loads from disk once |
 | `test_status_bench_fields.py` | `/status` advertises `capabilities.benchManifest` from the route's registration (never hardcoded), the real app mounts `/bench`, and the nets block carries `dut_connection` and `test_hints` with the same present-when-unset contract as `purpose` |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 103 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 104 files)
 
 | File | What it tests |
 |------|---------------|
@@ -639,6 +639,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_nets_add_coverage.py` | `lager nets add` accepts the instruments the scanner detects (DP832, E36312A, USB-202, Phidget, J-Link Base Compact) and refuses a U3's FIO0-FIO3 as custom pins; `add-batch` saves `params` (LabJack pins, FTDI channel) and a uart device path, and saves nothing when any record has an unknown key, a bad `params` value, an unsupported role or an ambiguous address |
 | `test_nets_add_roles.py` | Role-token normalization converting legacy supply/batt to power-supply/battery. Also channel-rejection messaging: a rejected channel names the valid ones, a U3 high-voltage pin is pointed at AIN0-AIN3, and add-batch applies the same check while staying permissive for hardware the scan does not find |
 | `test_nets_assign.py` | `lager nets assign` flow with custom-device backend and net creation |
+| `test_nets_cache_invalidation.py` | Every `lager nets` and Net-Manager write drops the box's cached `lager debug` nets, so `flash`/`erase` stop sending the old J-Link script; a broken cache never fails the command |
 | `test_nets_channel_display.py` | `lager nets` Channel column rule for uart nets carrying a durable `live_path` |
 | `test_nets_debug_scripts.py` | Smart `lager nets set-script` auto-detection and probe/file reconciliation |
 | `test_nets_dual_role_notice.py` | Dual-role single-channel chips (Keithley 2281S, EA PSB, DP711): second role offered with a warn-once notice instead of a hard block, FT232H keeps the block, batch conflicts count selected rows only |

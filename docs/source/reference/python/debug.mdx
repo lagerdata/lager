@@ -82,7 +82,7 @@ dbg.connect(script='/home/lagerdata/probes/my_target.JLinkScript')
 | `ignore_if_connected` | `bool` | `False` | If a gdbserver is already running for this probe, return its status without touching it. |
 | `openocd_config` | `str` | `None` | The unambiguous OpenOCD form of `script`, skipping format detection. Must be a **complete** cfg, not a fragment — see the warning below. On a J-Link net, it raises `ValueError`. |
 | `jlink_script` | `str` | `None` | The unambiguous J-Link form of `script`, skipping format detection. Use this for a base64 blob: a blob has no filename to classify, and the two commonest J-Link forms (`void InitTarget(void)` and `JLINK_ExecCommand`) are not among the content markers, so such a blob raises rather than routing on a guess. On an OpenOCD net, it raises `ValueError`. |
-| `halt` | `bool` | `False` | **OpenOCD only.** Run `reset halt` once the daemon is up. Note this is a *reset* followed by a halt — see [`halt()`](#halt) for stopping the core where it is. On a J-Link net, `connect()` ignores `halt`. |
+| `halt` | `bool` | `False` | **OpenOCD only.** Run `reset halt` once the daemon is up. Note this is a *reset* followed by a halt — see [`halt()`](#halt) for stopping the core where it is. On a J-Link net, `halt=True` raises `ValueError` before the probe is touched. To halt on J-Link, give a halt-first `.JLinkScript` as `script`. |
 
 `connect()` classifies `script` before it applies `openocd_config` or `jlink_script`. If you give `script` and one of those two, the explicit parameter wins only when `script` is for the same backend. A `script` for the other backend raises `ValueError` first.
 
@@ -94,9 +94,9 @@ dbg.connect(script='/home/lagerdata/probes/my_target.JLinkScript')
 A script override takes effect only when the gdbserver relaunches. If a server is
 already up, pass `force=True` to restart it with the new script.
 `ignore_if_connected=True` returns early and does not relaunch. On J-Link, it
-still repoints the script for later operations. On OpenOCD, an override cfg goes
-only to the daemon that this `connect()` call starts. A later relaunch, including
-a self-heal relaunch, uses the cfg that is stored on the net. Invalid input means
+still repoints the script for later operations. On OpenOCD, the override cfg
+stays in effect for each relaunch, including a self-heal relaunch, until
+`disconnect()`. Invalid input means
 a missing path that is not valid base64, or an empty string. The net ignores such
 input silently, and the script that it materialized earlier stays in effect.
 
@@ -226,6 +226,11 @@ print(output)
 
 **Returns:** `str` - Combined output from flash operation
 
+**Raises:** `RuntimeError` when the probe reports that the flash failed, on both
+backends. On J-Link, that is a flash that programmed nothing or a failed read-back
+compare, the same lines that fail `lager debug <net> flash`. The message holds the
+failing line and the output.
+
 **Note:** A `.bin` has no embedded address, so `flash()` raises without
 `flash_address` rather than defaulting to `0x0`. Pass the target's flash base:
 STM32 `0x08000000`, nRF52 `0x00000000`, DA1469x QSPI `0x16000000`.
@@ -286,6 +291,11 @@ output = dbg.erase(0x16000000, 2 * 1024 * 1024)
 - `length` (int, optional): Number of bytes to erase from `start`
 
 **Returns:** `str` - Combined output from erase operation
+
+**Raises:** `RuntimeError` when J-Link erased nothing: it did not attach, or it
+did not confirm the erase. The message holds the failing line and the output.
+The self-heal does not run the erase again. On OpenOCD, a failed erase raises as
+before.
 
 ### `read_memory(address, length)`
 

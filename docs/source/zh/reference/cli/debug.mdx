@@ -173,7 +173,10 @@ lager debug [NET_NAME] flash [OPTIONS]
 - 如果编程前的擦除失败，`flash` 会打印 `Flash erase failed:` 和错误，然后以 1 退出。它不会对目标编程。
 - 如果编程失败，`flash` 会打印 `Flash failed:` 和出错的那一行，然后打印
   `The target was NOT programmed. If this ran without --no-erase it is now erased.`，并以 1 退出。
+- 如果回读比对失败，`flash` 会打印 `Flash failed:` 和出错的那一行，然后打印
+  `Flash does not read back as the image: the target holds a bad or partial image. Flash it again.`，并以 1 退出。
 - 在 J-Link 上，由探针的输出决定结果。以下几类行会使命令失败：连接失败、探针被另一个客户端占用、RAMCode 下载失败。例如 `Selected interface (SWD) is not supported by the connected probe.` 和 `Failed to download RAMCode!`。下面的 `erase` 一节列出了连接失败的行。成功还需要 J-Link 自己的证据：`Downloading file` 之后要有 `J-Link: Flash download:` 行（或 `O.K.`）。没有证据的烧录并没有对目标编程，命令会失败。
+- J-Link 回读比对失败的行也会使命令失败：`Verification failed @ address 0x...`、`ERROR: Verify failed.` 或 `Error while programming flash: Verify failed.`。DA1469x 是例外。它的比对经过带缓存的 XIP 窗口读取，对已经正确编程的器件也可能报告失败。在 DA1469x 上，只有 Box 的无缓存回读才会使命令失败。在 Box 上设置 `LAGER_DA1469_UNCACHED_VERIFY=1` 即可开启它。
 - J-Link 烧录失败时，会追加 `Diagnosis:` 行。这些行列出烧录期间使用该探针的其他 J-Link 程序。在 DA1469x 上，还会说明目标在编程期间是否复位。
 - 如果您的目标的 J-Link 输出中没有这些证据行，请在 CLI 的环境中设置 `LAGER_JLINK_REQUIRE_EVIDENCE=0`。这样 `flash` 和 `erase` 就不再要求它们。失败行仍会使命令失败。
 
