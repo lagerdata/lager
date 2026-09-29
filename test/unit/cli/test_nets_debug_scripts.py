@@ -292,7 +292,7 @@ def fake_box(monkeypatch):
                 state['db'][i] = rec
                 break
 
-    def fake_resolve_box(ctx, box_opt=None):
+    def fake_resolve_box(ctx, box_opt=None, *, read_only=False):
         return 'TESTBOX'
 
     monkeypatch.setattr(nets_mod, '_fetch_saved_nets', fake_fetch_saved_nets)

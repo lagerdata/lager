@@ -161,7 +161,8 @@ def usb(ctx, netname, box):
 
     # No subcommand → list available USB nets
     if ctx.invoked_subcommand is None:
-        resolved_box = resolve_box(ctx, box)
+        # Listing only reads saved nets, so it proceeds under another holder's lock.
+        resolved_box = resolve_box(ctx, box, read_only=True)
         _display_usb_nets(ctx, resolved_box)
 
 

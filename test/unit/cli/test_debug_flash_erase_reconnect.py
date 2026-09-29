@@ -1210,8 +1210,9 @@ def run_health(client, args, net=JLINK_NET):
     """Invoke `lager debug <net> health` with the box mocked at the client."""
     obj = _Obj()
     obj.net_name = net["name"]
-    with patch.object(debug_mod, "_resolve_box_with_username",
-                      lambda ctx, box: (BOX_IP, "lagerdata")), \
+    # health is read-only: it resolves the box without the auto-lock.
+    with patch.object(debug_mod, "_resolve_box",
+                      lambda ctx, box, read_only=False: BOX_IP), \
          patch.object(debug_mod, "_get_service_client", lambda box: client):
         return CliRunner().invoke(debug_mod.health, args, obj=obj, catch_exceptions=False)
 

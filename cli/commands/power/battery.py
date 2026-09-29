@@ -156,7 +156,8 @@ def battery(ctx, box, netname):
 
     # Only resolve box if no subcommand (listing nets)
     if ctx.invoked_subcommand is None:
-        resolved_box = resolve_box(ctx, box)
+        # Listing only reads saved nets, so it proceeds under another holder's lock.
+        resolved_box = resolve_box(ctx, box, read_only=True)
         display_nets(ctx, resolved_box, None, BATTERY_ROLE, "battery")
 
 

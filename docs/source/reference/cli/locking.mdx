@@ -33,9 +33,11 @@ TTL reap.
 | Development | `debug` (flash/connect/erase/reset/etc.), `arm`, `webcam` | Single command invocation | Flashing or debug sessions must not collide. |
 | Admin | `install`, `uninstall`, `update`, `install-wheel` | Destructive section only | Container restart/mutation mid-test would kill the test. |
 
-Read-only commands (`lager hello`, `lager boxes list`, `lager boxes lock` /
-`unlock` itself, net-listing paths like `lager supply --box X` with no
-subcommand, status / dry-run paths, etc.) do **not** acquire the auto-lock.
+Read-only commands do **not** acquire the auto-lock. Examples are `lager hello`,
+`lager boxes list`, `lager boxes lock` / `unlock`, status and dry-run paths, and
+net listings such as `lager supply --box X` or `lager scope --box X`. The read-only commands in
+[Read-only commands run under a lock](#read-only-commands-run-under-a-lock)
+also run when another holder has the box.
 
 The v0.12–0.13.3 design used a shared decorator on every command, and
 v0.13.4 reverted it. This implementation instead uses the same
@@ -240,6 +242,43 @@ auto-acquire:
 This is what lets you Ctrl+C a hung detached script and immediately
 `--kill` it without first having to fight an unrelated user lock.
 
+## Read-only commands run under a lock
+
+When another holder has the box, a read-only command does not stop. It
+prints one note and runs:
+
+```text
+Note: Box 'my-lager-box' is locked by alice; running read-only.
+```
+
+This applies to a user lock and to a CI lock. A read-only command writes
+nothing to the box or to its instruments, and it takes no instrument lock. It
+cannot change or delay the run of the holder. These commands are read-only:
+
+| Command | What it reads |
+|---------|---------------|
+| `lager nets`, `lager nets show`, `lager nets show-script` | The saved nets |
+| `lager hello` | The box version and status |
+| `lager binaries list` | The custom binaries on the box |
+| `lager debug <net> health` | The status of the debug service |
+| A group with no net name: `lager supply`, `battery`, `eload`, `solar`, `watt`, `energy`, `usb`, `arm`, `debug`, `webcam`, `logic`, `scope`, `i2c`, `spi`, `uart` | The saved nets of that type |
+
+All other commands stop with `Error: Box '<box>' is locked by <holder>`, as
+before. Some commands that only show a value are on this list of commands
+that stop:
+
+- `lager nets state` reads each instrument, and some of those reads change the
+  instrument. A PPK2 goes to source-meter mode. A solar simulator can turn its
+  output on. An I2C net sends an address scan on the bus. Some GPIO adapters set
+  the pin direction.
+- `lager supply <net> state`, `battery`, `eload` and `usb` state commands wait
+  for the lock of the instrument, so they can delay the holder.
+- `lager adc`, `lager gpi`, `lager instruments`, `lager diagnose` and
+  `lager debug <net> status` configure or touch the hardware.
+
+`lager nets` checks the lock for every box: a saved name, an IP address, or
+the default box. Before, it checked the lock only for a saved name.
+
 ## `lager boxes` shows lock holders
 
 When boxes are locked, `lager boxes` shows an extra column:
@@ -299,7 +338,8 @@ call needed.
   same eternal-lock behavior. The server treats a payload with neither field
   as legacy, and applies the same defaults.
 - `_check_box_lock` (the read-only lock check that already gates every
-  command in resolve_and_validate_box) is unchanged.
+  command in resolve_and_validate_box) now lets the read-only commands above
+  run with a note. It still refuses every other command.
 
 ### How this differs from v0.13.0 – v0.13.3 (removed in v0.13.4)
 

@@ -482,8 +482,10 @@ def spi(ctx, netname, box):
     ctx.obj.spi_box_param = box
 
     if ctx.invoked_subcommand is None:
+        # Listing nets, or showing one net's saved config, only reads saved
+        # nets: no auto-lock, and it proceeds under another holder's lock.
         # No subcommand - list nets or show net info
-        target_box, _ = _resolve_box_with_name(ctx, box)
+        target_box = resolve_box(ctx, box, read_only=True)
 
         if not netname:
             display_nets(ctx, target_box, None)

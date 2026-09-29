@@ -489,10 +489,10 @@ def _auto_disconnect(client, debug_net, no_disconnect=False, quiet=False):
     except Exception:
         pass  # Ignore disconnect errors
 
-def _resolve_box(ctx, box):
+def _resolve_box(ctx, box, read_only=False):
     """Resolve box name to IP address if it's a local box."""
     from ....box_storage import resolve_and_validate_box
-    return resolve_and_validate_box(ctx, box)
+    return resolve_and_validate_box(ctx, box, read_only=read_only)
 
 
 def _list_debug_nets(ctx, box):
@@ -596,7 +596,7 @@ class NetDebugGroup(NetGroupHelpMixin, click.MultiCommand):
         if not ctx.protected_args and not ctx.invoked_subcommand:
             if box:
                 # List debug nets for the specified box
-                resolved_box = _resolve_box(ctx, box)
+                resolved_box = _resolve_box(ctx, box, read_only=True)
                 _display_debug_nets(ctx, resolved_box)
                 return
             else:
@@ -2208,7 +2208,10 @@ def health(ctx, box, verbose):
     # Get net_name from parent context (though health doesn't need it)
     net_name = getattr(ctx.obj, 'net_name', None)
 
-    target_box, username = _resolve_box_with_username(ctx, target_box)
+    # Health only reports the debug service's own status: no probe, no
+    # target, no device lock. So it takes no box lock and proceeds under
+    # another holder's.
+    target_box = _resolve_box(ctx, target_box, read_only=True)
 
     client = _get_service_client(target_box)
     if not client:

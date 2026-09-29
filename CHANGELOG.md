@@ -14,6 +14,14 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 ### Changed
 
+- **Read-only commands run on a box that someone else has locked.** `lager nets`,
+  `nets show`, `nets show-script`, `lager hello`, `lager binaries list`,
+  `lager debug <net> health` and the net listings of each command group print one
+  note naming the holder and continue, for a user lock and a CI lock. Every other
+  command still refuses. See the read-only list on the Box Locking page.
+- **`lager nets` checks the box lock for an IP address and the default box too.**
+  Before, only a saved box name was checked, so `nets delete`, `rename`, `add-all`,
+  `set-script` and the other changing subcommands ran under another holder's lock.
 - **`DebugNet.flash()` and `DebugNet.erase()` raise `RuntimeError` when J-Link did
   nothing,** as they already did on OpenOCD. A script that called them on a J-Link net
   got the output back and saw a failed flash or erase as success (#617).

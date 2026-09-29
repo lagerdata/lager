@@ -46,13 +46,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 2734 (+2 xfailed) |
+| `unit (cli)` | `test/unit/cli/` | 2818 (+2 xfailed) |
 | `unit (box)` | `test/unit/box/` | 3207 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 380 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 82 (+1 skipped) |
-| | **Total gated** | **6597** |
+| | **Total gated** | **6681** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -452,7 +452,7 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 249 files)
+### Local Unit Tests (`test/unit/` -- 250 files)
 
 #### Box Unit Tests (`test/unit/box/` -- 131 files)
 
@@ -594,7 +594,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_bench_endpoint.py` | `GET /bench` on the box HTTP server: the body is the bench manifest built from the loaded MCP state (`box_id`, nets with `dut_connection`, `reference_keys`, `metadata_sources`, `capability_bindings`); `ETag` is the quoted content hash and a matching `If-None-Match` in any spelling (quoted, weak, bare, listed, `*`) gets 304 with no body; a build failure is a 500 that says why; the first request on a process that never called `init_state` loads from disk once |
 | `test_status_bench_fields.py` | `/status` advertises `capabilities.benchManifest` from the route's registration (never hardcoded), the real app mounts `/bench`, and the nets block carries `dut_connection` and `test_hints` with the same present-when-unset contract as `purpose` |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 104 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 105 files)
 
 | File | What it tests |
 |------|---------------|
@@ -652,6 +652,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_python_stop_signals.py` | `lager python` stop handlers cover SIGINT, SIGTERM and SIGHUP on both registration paths, and restore every one; asserts real signal dispositions rather than recorded calls |
 | `test_python_detach_lock.py` | The CLI hands a detached run's lock to the box only when it freshly acquired that lock -- never a resumed reservation -- and arms the lapse TTL only once the box confirms it is heartbeating, so an older box that ignores the handoff keeps today's eternal hold instead of letting the lock lapse under a running job |
 | `test_python_exit_codes.py` | `normalize_exit_code` maps a signal death (`-9`) onto the 128+N convention `SIGKILL_EXIT_CODE` is written in, so a timeout kill reports 137 rather than 247, and never returns a negative code to `sys.exit` |
+| `test_readonly_under_lock.py` | Read-only commands under another holder's box lock, run through the root CLI with only HTTP faked: each command on the read-only list prints one note and proceeds without taking the lock, a representative set of state-changing commands (including `nets state`) still refuses, for a user lock and a CI lock, and `lager nets` checks the lock for a saved name, a raw IP and the default box alike |
 | `test_resolve_box_locked.py` | `resolve_box_locked`: acquires an ephemeral lock on resolution, stashes the release on the context, passes through under `LAGER_AUTO_LOCK_DISABLE`, and reports `already_ours` for a lock we already hold. Pins the holder via `get_lock_holder` and forbids real HTTP, so the result cannot depend on whether it runs on a laptop or a CI runner |
 | `test_empty_box_name.py` | An explicit `--box ""` (or whitespace-only) is refused rather than silently resolving to the DEFAULT box, in BOTH `resolve_and_validate_box` and `resolve_and_validate_box_with_name` -- they duplicate the resolution logic, so a guard in one would leave the other's callers still defaulting. Also pins the half that must not change: `None` still means "not given" and falls back to the default |
 | `test_empty_box_everywhere.py` | `--box ""` is refused by every command that picked its box before the shared resolver (update, ssh, binaries, nets, box-config, arm, spi, i2c, logs, install, uninstall) and never falls back to the default box; an AST guard flags a new `if not box: box = ...` or `x = box or ...` under `cli/commands` |

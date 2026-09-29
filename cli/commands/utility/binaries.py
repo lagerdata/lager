@@ -167,7 +167,8 @@ def list_binaries(ctx, box):
     if box is None:
         box = get_default_box(ctx)
 
-    resolved_ip = resolve_and_validate_box(ctx, box)
+    # Read-only: proceeds under another holder's lock, with a note.
+    resolved_ip = resolve_and_validate_box(ctx, box, read_only=True)
 
     url = f'http://{resolved_ip}:9000/binaries/list'
     try:

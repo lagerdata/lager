@@ -444,12 +444,18 @@ def uart(ctx, netname, action, box, baudrate, bytesize, parity, stopbits, xonxof
         display_uart_sessions(ctx, target_box)
         return
 
-    # Resolve box to box IP
-    target_box, box_name = _resolve_box_with_name(ctx, box)
-
     # If no netname provided, try to use default
     if not netname:
         netname = get_default_net(ctx, 'uart')
+
+    # Still no netname and no action: list the UART nets. That only reads saved
+    # nets, so it takes no auto-lock and proceeds under another holder's lock.
+    if not netname and not action:
+        display_nets(ctx, resolve_box(ctx, box, read_only=True), None)
+        return
+
+    # Resolve box to box IP
+    target_box, box_name = _resolve_box_with_name(ctx, box)
 
     # Handle sub-action to report the current serial port in use
     # (ACTION is validated by click.Choice; 'serial-port' is the only value)
@@ -471,11 +477,6 @@ def uart(ctx, netname, action, box, baudrate, bytesize, parity, stopbits, xonxof
         else:
             click.secho(f"Serial port for net '{netname}' ({usb_serial}) is not connected.", fg="yellow", err=True)
             ctx.exit(1)
-        return
-
-    # If still no netname, list all UART nets
-    if not netname:
-        display_nets(ctx, target_box, None)
         return
 
     # Validate baudrate range

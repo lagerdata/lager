@@ -42,7 +42,8 @@ def _ref_suffix(box_ref):
 def hello(ctx, box):
     """Test box connectivity and show version"""
     # Resolve and validate the box
-    resolved_box, box_name = resolve_and_validate_box_with_name(ctx, box)
+    # Read-only: proceeds under another holder's lock, with a note.
+    resolved_box, box_name = resolve_and_validate_box_with_name(ctx, box, read_only=True)
     display_name = box_name or resolved_box
 
     # Port for the box HTTP API

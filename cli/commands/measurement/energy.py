@@ -104,7 +104,7 @@ def energy(ctx, netname):
 
     if ctx.invoked_subcommand is None:
         # No subcommand → list nets
-        box_ip = resolve_box(ctx, None)
+        box_ip = resolve_box(ctx, None, read_only=True)
         display_nets(ctx, box_ip, None, ENERGY_ROLE, "energy analyzer")
 
 

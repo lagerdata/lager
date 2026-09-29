@@ -55,7 +55,9 @@ def logic(ctx, box, netname):
         ctx.obj.netname = netname
 
     if ctx.invoked_subcommand is None:
-        box_ip = _resolve_box(ctx, box)
+        # Listing only reads saved nets: no auto-lock, and it proceeds under
+        # another holder's lock.
+        box_ip = resolve_box(ctx, box, read_only=True)
         display_nets(ctx, box_ip, None, LOGIC_ROLE, "logic")
 
 
