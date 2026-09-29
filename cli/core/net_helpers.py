@@ -45,7 +45,7 @@ if TYPE_CHECKING:
 # Box Resolution
 # =============================================================================
 
-def resolve_box(ctx: click.Context, box: str | None) -> str:
+def resolve_box(ctx: click.Context, box: str | None, *, read_only: bool = False) -> str:
     """
     Resolve box name to IP address if it's a local box.
 
@@ -63,11 +63,15 @@ def resolve_box(ctx: click.Context, box: str | None) -> str:
     Raises:
         click.UsageError: If box cannot be resolved
 
+    A read-only caller (``read_only=True``) is not refused by another
+    holder's lock; it gets a one-line note instead. Pass it only for commands
+    that write nothing to the box or its instruments and take no device lock.
+
     Example:
         box_ip = resolve_box(ctx, box)
     """
     from ..box_storage import resolve_and_validate_box
-    return resolve_and_validate_box(ctx, box)
+    return resolve_and_validate_box(ctx, box, read_only=read_only)
 
 
 def resolve_box_locked(

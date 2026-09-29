@@ -155,7 +155,7 @@ def watt(ctx, box, netname):
             _run_watt(ctx, box, netname, "power", 0.1, False)
         else:
             # No net resolved -> list available watt meter nets.
-            box_ip = resolve_box(ctx, box)
+            box_ip = resolve_box(ctx, box, read_only=True)
             display_nets(ctx, box_ip, None, WATT_ROLE, "watt meter")
 
 

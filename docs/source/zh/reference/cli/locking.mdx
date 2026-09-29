@@ -24,8 +24,7 @@ Lager 提供两种锁机制：
 | 开发 | `debug`（flash/connect/erase/reset 等）、`arm`、`webcam` | 单次命令调用 | 烧录或调试会话不能相互冲突。 |
 | 管理 | `install`、`uninstall`、`update`、`install-wheel` | 仅破坏性的部分 | 测试进行中重启或改动容器会终止测试。 |
 
-只读命令（`lager hello`、`lager boxes list`、`lager boxes lock` / `unlock` 本身、诸如不带子命令的 `lager supply --box X` 之类的列表路径、状态 / 预演路径等）
-**不会**获取自动锁。
+只读命令**不会**获取自动锁。例如 `lager hello`、`lager boxes list`、`lager boxes lock` / `unlock`、状态和预演路径，以及诸如 `lager supply --box X` 或 `lager scope --box X` 之类的网络列表。[在锁下运行的只读命令](#在锁下运行的只读命令)中列出的只读命令在别人持有 Box 时也会运行。
 
 v0.12–0.13.3 的设计在每条命令上使用一个共享装饰器，v0.13.4 撤销了它。当前的实现改为使用与 `lager python` 相同的 TTL + 心跳 + atexit 基础设施，从而避开了当初促使撤销的那三个边角情况。完整的历史请参阅下方的*向后兼容*。
 
@@ -179,6 +178,32 @@ lager boxes unlock --box my-lager-box --force
 
 正因为如此，您才可以对一个卡住的分离脚本按 Ctrl+C，然后立即 `--kill` 它，而不必先去处理一个无关的用户锁。
 
+## 在锁下运行的只读命令
+
+当别人持有 Box 时，只读命令不会停止。它会打印一条说明，然后运行：
+
+```text
+Note: Box 'my-lager-box' is locked by alice; running read-only.
+```
+
+这适用于用户锁和 CI 锁。只读命令不会向 Box 或其仪器写入任何内容，也不会获取仪器锁。它不会改变或延迟持有者的运行。以下命令是只读的：
+
+| 命令 | 读取的内容 |
+|------|-----------|
+| `lager nets`、`lager nets show`、`lager nets show-script` | 已保存的网络 |
+| `lager hello` | Box 的版本和状态 |
+| `lager binaries list` | Box 上的自定义二进制文件 |
+| `lager debug <net> health` | 调试服务的状态 |
+| 不带网络名称的命令组：`lager supply`、`battery`、`eload`、`solar`、`watt`、`energy`、`usb`、`arm`、`debug`、`webcam`、`logic`、`scope`、`i2c`、`spi`、`uart` | 该类型的已保存网络 |
+
+其他所有命令都会像以前一样停止，并显示 `Error: Box '<box>' is locked by <holder>`。一些只显示数值的命令也在会停止的命令之列：
+
+- `lager nets state` 会读取每台仪器，其中一些读取会改变仪器。PPK2 会进入源表模式。太阳能模拟器可能会打开输出。I2C 网络会在总线上发送地址扫描。某些 GPIO 适配器会设置引脚方向。
+- `lager supply <net> state`、`battery`、`eload` 和 `usb` 的状态命令会等待仪器的锁，因此可能延迟持有者。
+- `lager adc`、`lager gpi`、`lager instruments`、`lager diagnose` 和 `lager debug <net> status` 会配置或接触硬件。
+
+`lager nets` 对每台 Box 都检查锁：已保存的名称、IP 地址或默认 Box。以前它只对已保存的名称检查锁。
+
 ## `lager boxes` 显示锁的持有者
 
 当有 Box 被锁定时，`lager boxes` 会多显示一列：
@@ -228,7 +253,7 @@ jobs:
 
 - `lager boxes lock` 和 `lager boxes unlock` 的行为与以前完全一致。
   CLI 现在会在协议上发送 `holder_type: "user"` + `ttl_seconds: null`。旧客户端 —— 即用较旧的 CLI 访问新的 Box 服务端 —— 仍然得到同样的永不过期行为。服务端把两个字段都没有的负载视为旧版，并应用相同的默认值。
-- `_check_box_lock`（在 resolve_and_validate_box 中已经对每条命令把关的只读锁检查）保持不变。
+- `_check_box_lock`（在 resolve_and_validate_box 中已经对每条命令把关的只读锁检查）现在让上面的只读命令带着一条说明运行。它仍然拒绝其他所有命令。
 
 ### 与 v0.13.0 – v0.13.3 的区别（已在 v0.13.4 中移除）
 

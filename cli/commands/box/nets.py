@@ -10,6 +10,7 @@ List all saved nets
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import Any, List, Optional
 from collections import defaultdict
@@ -828,15 +829,22 @@ def _labjack_claimed_pins(saved_nets: list, address: str) -> dict[str, tuple[str
     return claimed
 
 
-def _resolve_box(ctx: click.Context, box_opt: Optional[str] = None) -> str:
+def _resolve_box(ctx: click.Context, box_opt: Optional[str] = None, *,
+                 read_only: bool = False) -> str:
     """
     Resolve box precedence:
     1. explicit --box given to this sub-command (check local boxes first)
     2. --box passed to the *parent* ("nets …") command (check local boxes first)
     3. get_default_box(ctx) (automatically resolves local box names)
+
+    The box lock is checked however the box was named. It used to be checked
+    only for a saved box name, so a raw IP or the default box let `nets delete`
+    and friends run under another holder's lock. A read-only subcommand
+    (`read_only=True`: list, show, show-script) is not refused; it prints a
+    note naming the holder and proceeds.
     """
     import ipaddress
-    from ...box_storage import explicit_box_option, get_box_ip, list_boxes
+    from ...box_storage import _check_box_lock, explicit_box_option, get_box_ip, list_boxes
 
     def _warn_version_skew(ip, name):
         # `lager nets` is :9000-only; warn (once per process) before a
@@ -853,40 +861,45 @@ def _resolve_box(ctx: click.Context, box_opt: Optional[str] = None) -> str:
         # Check if this is a local box name first
         local_ip = get_box_ip(target_box)
         if local_ip:
-            from ...box_storage import acquire_command_lock_with_cleanup
-            acquire_command_lock_with_cleanup(ctx, local_ip, target_box, ctx.info_name or 'nets')
+            _check_box_lock(local_ip, target_box, read_only=read_only)
             _warn_version_skew(local_ip, target_box)
             return local_ip
 
         # Check if it looks like an IP address
         try:
             ipaddress.ip_address(target_box)
+            is_ip = True
+        except ValueError:
+            is_ip = False
+        if is_ip:
             # It's a valid IP address, use it directly
+            _check_box_lock(target_box, None, read_only=read_only)
             _warn_version_skew(target_box, None)
             return target_box
-        except ValueError:
-            # Not a valid IP and not in local boxes
-            # Show helpful error message
-            click.secho(f"Error: Box '{target_box}' is not recorded in the system.", fg='red', err=True)
-            click.echo("", err=True)
+        # Not a valid IP and not in local boxes
+        # Show helpful error message
+        click.secho(f"Error: Box '{target_box}' is not recorded in the system.", fg='red', err=True)
+        click.echo("", err=True)
 
-            saved_boxes = list_boxes()
-            if saved_boxes:
-                click.echo("Available boxes:", err=True)
-                for name, ip in sorted(saved_boxes.items(), key=lambda x: _natural_sort_key(x[0])):
-                    if isinstance(ip, dict):
-                        ip = ip.get('ip', 'unknown')
-                    click.echo(f"  - {name} ({ip})", err=True)
-            else:
-                click.echo("No boxes are currently saved.", err=True)
+        saved_boxes = list_boxes()
+        if saved_boxes:
+            click.echo("Available boxes:", err=True)
+            for name, ip in sorted(saved_boxes.items(), key=lambda x: _natural_sort_key(x[0])):
+                if isinstance(ip, dict):
+                    ip = ip.get('ip', 'unknown')
+                click.echo(f"  - {name} ({ip})", err=True)
+        else:
+            click.echo("No boxes are currently saved.", err=True)
 
-            click.echo("", err=True)
-            click.echo("To add a new box, use:", err=True)
-            click.echo(f"  lager boxes add --name {target_box} --ip [IP_ADDRESS] --user [USERNAME]", err=True)
-            ctx.exit(1)
+        click.echo("", err=True)
+        click.echo("To add a new box, use:", err=True)
+        click.echo(f"  lager boxes add --name {target_box} --ip [IP_ADDRESS] --user [USERNAME]", err=True)
+        ctx.exit(1)
 
     # get_default_box already handles local box resolution
     resolved = get_default_box(ctx)
+    default_name = os.getenv('LAGER_BOX') or getattr(ctx.obj, 'default_box', None)
+    _check_box_lock(resolved, default_name, read_only=read_only)
     _warn_version_skew(resolved, None)
     return resolved
 
@@ -1196,7 +1209,7 @@ def nets(ctx: click.Context, box: str | None) -> None:  # noqa: D401
     If no sub-command is supplied, default to "list".
     """
     if ctx.invoked_subcommand is None:
-        _list_nets(ctx, _resolve_box(ctx, box))
+        _list_nets(ctx, _resolve_box(ctx, box, read_only=True))
 
 
 # --------------------------------------------------------------------------- #
@@ -2542,7 +2555,7 @@ def _show_debug_script_impl(
     """
     import base64
 
-    resolved_box = _resolve_box(ctx, box)
+    resolved_box = _resolve_box(ctx, box, read_only=True)
     target = _load_debug_net(ctx, resolved_box, name)
 
     has_jlink = bool(target.get("jlink_script"))
@@ -2853,7 +2866,7 @@ def show_cmd(
     as_json: bool,
 ) -> None:
     """Display all fields of a net, including user-provided metadata."""
-    resolved_box = _resolve_box(ctx, box)
+    resolved_box = _resolve_box(ctx, box, read_only=True)
 
     recs = _fetch_saved_nets(ctx, resolved_box)
 

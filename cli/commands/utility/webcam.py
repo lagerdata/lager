@@ -45,10 +45,10 @@ def _get_box_ip_address(ctx: click.Context, box: str = None) -> str:
     return resolve_box_locked(ctx, box, 'webcam')
 
 
-def _resolve_box(ctx, box):
+def _resolve_box(ctx, box, read_only=False):
     """Resolve box name to IP address if it's a local box."""
     from ...box_storage import resolve_and_validate_box
-    return resolve_and_validate_box(ctx, box)
+    return resolve_and_validate_box(ctx, box, read_only=read_only)
 
 
 def _gated_token(box_ip):
@@ -314,7 +314,7 @@ def webcam(ctx, box):
     if ctx.invoked_subcommand is None:
         if box:
             # List webcam nets for the specified box
-            target_box = _resolve_box(ctx, box)
+            target_box = _resolve_box(ctx, box, read_only=True)
             _display_webcam_nets(ctx, target_box)
         else:
             # Show help if no --box and no subcommand

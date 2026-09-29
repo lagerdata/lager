@@ -162,7 +162,8 @@ def eload(ctx, netname, box):
 
     # If no subcommand and no netname, list nets
     if ctx.invoked_subcommand is None:
-        resolved_box = resolve_box(ctx, box)
+        # Listing only reads saved nets, so it proceeds under another holder's lock.
+        resolved_box = resolve_box(ctx, box, read_only=True)
         display_nets(ctx, resolved_box, None, ELOAD_ROLE, "electronic load")
 
 

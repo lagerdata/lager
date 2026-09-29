@@ -133,10 +133,10 @@ def arm(ctx, box, netname):
     setattr(ctx.obj, "arm_netname", netname)
 
     # No subcommand: list arm nets. Listing only reads saved nets, so it takes
-    # no box lock.
+    # no box lock, and proceeds under another holder's.
     if ctx.invoked_subcommand is None:
         setattr(ctx.obj, "resolved_box", None)
-        _display_arm_nets(ctx, resolve_box(ctx, box))
+        _display_arm_nets(ctx, resolve_box(ctx, box, read_only=True))
         return
 
     # Only resolve box if box is provided at group level

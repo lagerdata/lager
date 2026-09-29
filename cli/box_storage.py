@@ -584,12 +584,19 @@ def _lock_held_by_self(locked_by):
 _lock_check_unsupported_warned = set()
 
 
-def _check_box_lock(ip, box_name):
+def _check_box_lock(ip, box_name, read_only=False):
     """Check if a box is locked by another user. Exits if locked.
+
+    A read-only command (``read_only=True``) is not refused: it prints one note
+    naming the holder and carries on. Read-only means the command writes
+    nothing to the box or its instruments and takes no device lock, so it
+    cannot disturb the holder's run (see READ_ONLY_COMMANDS). The lock is
+    enforced here, in the CLI, and nowhere on the box.
 
     Args:
         ip: Box IP address
         box_name: Box name for display purposes
+        read_only: Note a foreign lock instead of refusing
     """
     import click
     import requests
@@ -617,6 +624,13 @@ def _check_box_lock(ip, box_name):
                 if not _lock_held_by_self(locked_by):
                     display = box_name or ip
                     display_user = format_lock_user(locked_by)
+                    if read_only:
+                        click.secho(
+                            f"Note: Box '{display}' is locked by {display_user}; "
+                            f"running read-only.",
+                            fg='yellow', err=True,
+                        )
+                        return
                     click.secho(
                         f"Error: Box '{display}' is locked by {display_user}",
                         fg='red', err=True,
@@ -1879,7 +1893,8 @@ def box_not_found_error(box_name):
     )
 
 
-def resolve_and_validate_box_with_name(ctx, box_name: Optional[str] = None, _skip_lock_check=False, _force=False) -> tuple:
+def resolve_and_validate_box_with_name(ctx, box_name: Optional[str] = None, _skip_lock_check=False, _force=False,
+                                       read_only=False) -> tuple:
     """
     Resolve and validate a box name, returning both IP and name.
 
@@ -1888,6 +1903,7 @@ def resolve_and_validate_box_with_name(ctx, box_name: Optional[str] = None, _ski
         box_name: Box name to resolve (if None, uses default box)
         _skip_lock_check: If True, skip user lock check
         _force: Unused, kept for call-site compatibility
+        read_only: A foreign lock prints a note instead of refusing
 
     Returns:
         Tuple of (resolved_ip_or_box_id, original_box_name_or_None)
@@ -1904,7 +1920,7 @@ def resolve_and_validate_box_with_name(ctx, box_name: Optional[str] = None, _ski
 
     def _do_lock_check(ip, name):
         if not _skip_lock_check:
-            _check_box_lock(ip, name)
+            _check_box_lock(ip, name, read_only=read_only)
 
     def _do_version_check(ip, name):
         # 0.20.0+: warn once per process if the CLI is a minor version
@@ -1943,7 +1959,8 @@ def resolve_and_validate_box_with_name(ctx, box_name: Optional[str] = None, _ski
         raise box_not_found_error(box_name)
 
 
-def resolve_and_validate_box(ctx, box_name: Optional[str] = None, _skip_lock_check=False, _force=False) -> str:
+def resolve_and_validate_box(ctx, box_name: Optional[str] = None, _skip_lock_check=False, _force=False,
+                             read_only=False) -> str:
     """
     Resolve and validate a box name.
 
@@ -1952,6 +1969,7 @@ def resolve_and_validate_box(ctx, box_name: Optional[str] = None, _skip_lock_che
         box_name: Box name to resolve (if None, uses default box)
         _skip_lock_check: If True, skip user lock check
         _force: Unused, kept for call-site compatibility
+        read_only: A foreign lock prints a note instead of refusing
 
     Returns:
         Resolved box IP address or box ID
@@ -1967,7 +1985,7 @@ def resolve_and_validate_box(ctx, box_name: Optional[str] = None, _skip_lock_che
 
     def _do_lock_check(ip, name):
         if not _skip_lock_check:
-            _check_box_lock(ip, name)
+            _check_box_lock(ip, name, read_only=read_only)
 
     def _do_version_check(ip, name):
         # Warn once per process if the CLI is a minor version ahead of the

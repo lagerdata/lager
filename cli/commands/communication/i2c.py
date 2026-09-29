@@ -329,7 +329,9 @@ def i2c(ctx, netname, box):
     ctx.obj.i2c_box_param = box
 
     if ctx.invoked_subcommand is None:
-        target_box, _ = _resolve_box_with_name(ctx, box)
+        # Listing nets, or showing one net's saved config, only reads saved
+        # nets: no auto-lock, and it proceeds under another holder's lock.
+        target_box = resolve_box(ctx, box, read_only=True)
 
         if not netname:
             display_nets(ctx, target_box, None)

@@ -152,7 +152,8 @@ def supply(ctx, box, netname):
         ctx.obj.netname = netname
 
     if ctx.invoked_subcommand is None:
-        resolved_box = resolve_box(ctx, box)
+        # Listing only reads saved nets, so it proceeds under another holder's lock.
+        resolved_box = resolve_box(ctx, box, read_only=True)
         display_nets(ctx, resolved_box, None, SUPPLY_ROLE, "power supply")
 
 
