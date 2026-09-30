@@ -47,10 +47,11 @@ adapter is supported: BlueZ is installed and stays idle.
 </Note>
 
 <Note>
-An install of the default `main` builds the Lager container on the box itself. That takes
+By default, `lager install` deploys the release tag that matches your CLI version. A release
+tag uses the pre-built image, and the install takes about 2 minutes. An install of `main` or
+another branch with `--version` builds the Lager container on the box itself. That takes
 roughly 14 minutes on ordinary box hardware. Plan for the box to be busy. `lager install`
-bounds the step at 30 minutes by default. An install of a release tag with `--version` uses
-the pre-built image instead, and takes about 2 minutes.
+bounds the step at 30 minutes by default.
 
 Slower hardware runs longer. An emulated guest, a low-power mini PC, or a throttled VM can
 exceed 30 minutes on a healthy build. Raise the budget with `--timeout <seconds>` or
@@ -179,10 +180,10 @@ is safe to re-run. It rewrites its own configuration each time and skips finishe
 second run continues rather than starts over.
 
 <Note>
-To install a specific release instead of the latest code, add `--version` -- for example
-`--version v0.39.0`. A release tag uses the pre-built image, so the install runs much
-faster. The default `main` builds on the box. See the
-[Install reference](/source/reference/cli/install) for every option.
+The install deploys the release tag that matches your CLI version. To install a different
+release, add `--version` -- for example `--version v0.39.0`. To install the latest
+development code, add `--version main`. A branch builds on the box, so that install is much
+slower. See the [Install reference](/source/reference/cli/install) for every option.
 </Note>
 
 ---
@@ -263,14 +264,14 @@ lager hello --box bench-1
 ```
 Box: bench-1
 IP: 100.64.1.42
-Version: 0.47.0 (main@5d84c68612384eed2854638c1e0941a4ff8b7893 -- not a release build)
+Version: 0.47.0 (v0.47.0@5d84c68)
 
 bench-1 is online and responding!
 ```
 
-The value in brackets names the ref that the box runs. A default install deploys `main`, so
-the line says `not a release build`. A box installed from a release tag shows only the tag
-and the commit.
+The value in brackets names the ref that the box runs. A default install deploys the release
+tag, so the line shows the tag and the commit. A box installed from a branch such as `main`
+also says `not a release build`.
 
 Then see what hardware it can find:
 
@@ -310,7 +311,8 @@ single-threaded C++ build. That takes a few minutes natively, and it is very slo
 emulation. Expect that step alone to run for hours.
 
 Pull the pre-built image instead of building it. Install a release tag rather than `main`,
-so that a published image exists. `lager install` pulls it by default:
+so that a published image exists. `lager install` deploys a release tag and pulls its image by
+default. To name a release, use `--version`:
 
 ```bash
 lager install --ip <box-ip> --user <box-user> --version <release-tag>

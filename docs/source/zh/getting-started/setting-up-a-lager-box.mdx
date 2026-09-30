@@ -40,8 +40,8 @@ Box 上的 BLE 和 BluFi 使用 Box 宿主机上的 BlueZ。Ubuntu Desktop 自�
 </Note>
 
 <Note>
-安装默认的 `main` 会在 Box 上自行构建 Lager 容器。在普通的 Box 硬件上，这大约需要 14 分钟。请预留出 Box 忙碌的时间。`lager install` 默认把这一步限制在 30 分钟以内。用 `--version`
-安装一个发布标签则使用预构建镜像，大约需要 2 分钟。
+默认情况下，`lager install` 部署与您的 CLI 版本相匹配的发布标签。发布标签使用预构建镜像，安装大约需要 2 分钟。用 `--version`
+安装 `main` 或其他分支会在 Box 上自行构建 Lager 容器。在普通的 Box 硬件上，这大约需要 14 分钟。请预留出 Box 忙碌的时间。`lager install` 默认把这一步限制在 30 分钟以内。
 
 硬件越慢，耗时越长。模拟的客户机、低功耗迷你主机或被限速的虚拟机，即使构建正常也可能超过
 30 分钟。请用 `--timeout <秒数>` 或 `LAGER_INSTALL_TIMEOUT` 提高上限，以免构建中途停止。
@@ -153,7 +153,7 @@ install runs unattended) [Y/n]:
 **如果中途失败，请修复它报告的问题，然后重新运行同一条命令。** `lager install` 可以安全地重复运行。它每次都会重写自己的配置，并跳过已完成的工作，因此第二次运行是继续，而不是从头开始。
 
 <Note>
-若要安装特定的发布版本而不是最新代码，请加上 `--version`，例如 `--version v0.39.0`。发布标签使用预构建镜像，因此安装快得多。默认的 `main` 会在 Box 上构建。全部选项请参阅 [安装参考](/source/zh/reference/cli/install)。
+安装会部署与您的 CLI 版本相匹配的发布标签。若要安装其他发布版本，请加上 `--version`，例如 `--version v0.39.0`。若要安装最新的开发代码，请加上 `--version main`。分支会在 Box 上构建，因此安装慢得多。全部选项请参阅 [安装参考](/source/zh/reference/cli/install)。
 </Note>
 
 ---
@@ -225,12 +225,12 @@ lager hello --box bench-1
 ```
 Box: bench-1
 IP: 100.64.1.42
-Version: 0.47.0 (main@5d84c68612384eed2854638c1e0941a4ff8b7893 -- not a release build)
+Version: 0.47.0 (v0.47.0@5d84c68)
 
 bench-1 is online and responding!
 ```
 
-括号中的值是该 Box 运行的 ref。默认安装部署 `main`，因此该行显示 `not a release build`。从发布标签安装的 Box 只显示标签和提交。
+括号中的值是该 Box 运行的 ref。默认安装部署发布标签，因此该行显示标签和提交。从 `main` 等分支安装的 Box 还会显示 `not a release build`。
 
 然后看看它能找到哪些硬件：
 
@@ -260,7 +260,7 @@ lager instruments --box bench-1
 原因在于容器构建。Box 镜像会从源码编译一个 USB 数据采集库，这是一个单线程的 C++ 构建。它在原生环境下需要几分钟，而在模拟环境下非常慢。请预计仅这一步就会运行数小时。
 
 请拉取预构建镜像，而不是自行构建。请安装一个发布标签而不是 `main`，这样才存在已发布的镜像。
-`lager install` 默认会拉取它：
+`lager install` 默认部署一个发布标签并拉取其镜像。若要指定发布版本，请使用 `--version`：
 
 ```bash
 lager install --ip <box-ip> --user <box-user> --version <release-tag>

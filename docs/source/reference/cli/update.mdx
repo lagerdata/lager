@@ -16,7 +16,7 @@ lager update [OPTIONS]
 | Option | Description |
 |--------|-------------|
 | `--box BOX` | Lager Box name or IP address |
-| `--version VERSION` | Release tag, semver pin, branch, or full 40-character commit SHA to update to (default: main). See [Version pinning](#version-pinning). |
+| `--version VERSION` | Release tag, semver pin, branch, or full 40-character commit SHA to update to (default: this CLI's release tag). See [Version pinning](#version-pinning). |
 | `--yes` | Skip confirmation prompt |
 | `--check` | Dry run: report what will change without modifying the box |
 | `--force` | Update even if the box reports it is already up to date, and force a clean rebuild (wipes the cached image and the cargo/npm volumes) |
@@ -97,6 +97,19 @@ remote.
 Any other value (`main`, `staging`, or a feature branch name) resolves to
 `origin/<name>` as before.
 
+### Default version
+
+With no `--version`, the update targets the release tag that matches the CLI.
+For example, lager 0.52.0 updates a box to `v0.52.0`. To move a box to a newer
+release, upgrade the CLI and then run `lager update`. To get the latest
+development code, pass `--version main`. Earlier releases of the CLI used
+`main` as the default.
+
+A default update never rolls a box back. If the box is ahead of the CLI's
+release tag, the update changes nothing and exits 0, also with `--check`. The
+box can be on a newer release or on a branch. The message names the command to
+move the box to the CLI's release, and the command to update it along `main`.
+
 <Warning>
 Per-release **version branches** (bare `X.Y.Z` branches) are deprecated in favour
 of tags. A value like `0.26.0` now resolves to the tag `v0.26.0`, not a branch of
@@ -108,8 +121,11 @@ the same name. See `RELEASE_PROCESS.md` in the repository.
 ### Basic Update
 
 ```bash
-# Update to latest main branch
+# Update to the release that matches this CLI
 lager update --box my-lager-box --yes
+
+# Update to the latest main branch
+lager update --box my-lager-box --version main --yes
 
 # Update to staging branch
 lager update --box my-lager-box --version staging --yes
@@ -327,7 +343,7 @@ ssh -t lagerdata@<box-ip> 'sudo /usr/local/lib/lager/secure_box_firewall.sh'
 
 - Progress bar is disabled when `--verbose` is used
 - Container builds use the BuildKit layer cache. `--force` removes the cached image and the cargo/npm volumes first
-- Version defaults to `main` if not specified
+- Version defaults to this CLI's release tag if not specified
 - Update automatically verifies container health after restart
 - `--check` reports what will change without modifying the box, so it is the safe
   way to find out whether a box is behind

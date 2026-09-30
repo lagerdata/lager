@@ -18,7 +18,7 @@ lager install [OPTIONS]
 | `--box TEXT` | 字符串 | | Box 名称（使用 `.lager` 配置中保存的 IP 和用户名） |
 | `--ip TEXT` | 字符串 | | 目标 Box 的 IP 地址或 DNS 主机名 |
 | `--user TEXT` | 字符串 | `lagerdata` | SSH 用户名。使用 `--box` 时，默认值是已保存的用户名 |
-| `--version TEXT` | 字符串 | `main` | 要部署的 Box 版本：发布标签（例如 `v0.15.0`）、git 分支，或完整的 40 位提交 SHA |
+| `--version TEXT` | 字符串 | 本 CLI 的发布标签 | 要部署的 Box 版本：发布标签（例如 `v0.15.0`）、git 分支，或完整的 40 位提交 SHA |
 | `--skip-jlink` | 标志 | | 跳过 J-Link 安装 |
 | `--skip-firewall` | 标志 | | 跳过 UFW 防火墙配置 |
 | `--skip-verify` | 标志 | | 跳过部署后的验证 |
@@ -41,8 +41,8 @@ lager install [OPTIONS]
 
 每个发布标签都会发布一个预构建镜像，`lager install` 默认使用它：大约 2 分钟，而不是 14 分钟。
 
-这只适用于 `--version` 指定**发布标签**的情况。默认的 `--version main`
-没有已发布的镜像，其他分支也没有，因此它们总是在 Box 上构建。固定一个发布标签，就是两分钟安装和十四分钟安装之间的区别。
+这只适用于版本为**发布标签**的情况。不指定 `--version` 时，install 部署与 CLI 相匹配的发布标签（例如 lager 0.52.0 对应 `v0.52.0`），因此默认安装会使用该镜像。`--version main`
+没有已发布的镜像，其他分支也没有，因此它们总是在 Box 上构建。发布标签就是两分钟安装和十四分钟安装之间的区别。
 
 完整的 40 位提交 SHA 同样会在 Box 上构建，并且 Box 必须能从远端拉取该提交。较短的十六进制值会被当作分支名。
 

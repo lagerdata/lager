@@ -111,6 +111,33 @@ def resolve_version_ref(target_version):
     return target_version, f'origin/{target_version}', target_version
 
 
+def default_box_version():
+    """The ref `lager install` and `lager update` deploy when ``--version`` is
+    not given: the release tag of the CLI doing the deploy.
+
+    Both used to default to ``main``. That put every customer box on whatever
+    had merged most recently, and `lager hello` flagged a freshly installed box
+    as "not a release build" even when ``main`` happened to sit on the release
+    commit. The CLI's own tag keeps the box and the CLI that drives it at the
+    same release, needs no lookup to resolve, and has a pre-built image.
+
+    ``main`` is still one ``--version main`` away. On an editable install the
+    declared ``__version__`` is the last release even while the checkout is on
+    a branch, so a bare deploy from a dev clone goes to that release, not to
+    the branch -- the notice from `default_version_notice` says so.
+    """
+    from ... import __version__
+    return f'v{__version__}'
+
+
+def default_version_notice(target_version):
+    """One line naming the default a bare `--version` resolved to."""
+    return (
+        f'No --version given: deploying {target_version}, the release that '
+        'matches this CLI. Pass --version main for the latest development build.'
+    )
+
+
 def _fetch_shell_script(fetch_ref, git_ref):
     """One round-trip: fetch, report fetch's own rc, then measure divergence.
 
@@ -1543,8 +1570,9 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         """Always print errors."""
         click.secho(message, fg='red', err=True)
 
-    # Default to 'main' version if not specified
-    target_version = version or 'main'
+    # No --version: the release tag matching this CLI (see default_box_version).
+    version_defaulted = not version
+    target_version = version or default_box_version()
 
     # Resolve the version to git refs. A semver pin (with or without a leading
     # 'v') maps to the release TAG 'vX.Y.Z'; version branches are deprecated in
@@ -1591,6 +1619,8 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
     click.echo(f'Version: {target_version}')
     if verbose:
         click.echo(f'CLI:     {cli_version}')
+    if version_defaulted:
+        click.secho(default_version_notice(target_version), fg='cyan')
     click.echo()
 
     # Confirm before proceeding (skipped in --check: the dry-run is read-only,
@@ -2356,6 +2386,13 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
                 )
             else:
                 click.secho(f"'{target_version}' does not exist on GitHub as a tag or branch.", err=True)
+                if version_defaulted:
+                    click.secho(
+                        f"{target_version} is this CLI's own version, used because "
+                        "--version was not given. Pass --version with a published "
+                        "tag, or --version main.",
+                        err=True,
+                    )
                 click.secho("Release versions are tags (e.g. v0.21.3): https://github.com/lagerdata/lager/tags", err=True)
                 click.secho("Branches (main, staging, ...): https://github.com/lagerdata/lager/branches", err=True)
         elif "Connection refused" in stderr:
@@ -2405,6 +2442,28 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         log_status(f'{commits_behind} new commit(s)', 'green')
     else:
         log_status(f'switching ({commits_ahead} ahead, {commits_behind} behind)', 'yellow')
+
+    # A defaulted target never rolls a box back. The box being ahead of this
+    # CLI's release means it is on a newer release or on a branch, and in
+    # neither case did anyone ask for it to go backwards -- `--yes` would
+    # otherwise let a bare `lager update` in a script downgrade it silently.
+    # Nothing to do by default is "in sync" for --check too, hence exit 0.
+    if is_rollback and version_defaulted:
+        if progress:
+            progress.finish(success=True)
+        click.echo()
+        click.secho(
+            f'{box_name} is {commits_ahead} commit(s) ahead of {target_version}, '
+            'the release that matches this CLI. Leaving it where it is.',
+            fg='yellow',
+        )
+        click.echo('To move it to that release:  '
+                   f'lager update --box {box_name} --version {target_version}')
+        click.echo('To update it along its branch:  '
+                   f'lager update --box {box_name} --version main')
+        click.echo('If the box is on a newer release, upgrade the CLI first: '
+                   'pip install --upgrade lager-cli')
+        ctx.exit(0)
 
     # Rollback is destructive in the sense that it rewrites the on-box git
     # tree backward, so confirm explicitly when not in --yes / --check mode.
@@ -4127,7 +4186,7 @@ def _update_options(fn):
     for opt in reversed([
         click.option('--box', required=False, help='Lager Box name or IP'),
         click.option('--yes', is_flag=True, help='Skip confirmation prompt'),
-        click.option('--version', required=False, help='Version to update to: a release tag (e.g. v0.21.3), a branch (main, staging), or a full 40-character commit SHA'),
+        click.option('--version', required=False, help="Version to update to: a release tag (e.g. v0.21.3), a branch (main, staging), or a full 40-character commit SHA (default: this CLI's release tag)"),
         click.option('--verbose', '-v', is_flag=True, help='Show detailed output (default shows progress bar only)'),
         click.option('--check', is_flag=True, help='Dry run: report what will change without modifying the box'),
         click.option('--force', is_flag=True, help='Update even if the box reports it is already up to date, and force a clean rebuild (wipes the cached image and cargo/npm volumes)'),

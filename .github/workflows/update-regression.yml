@@ -349,9 +349,12 @@ jobs:
 
       - name: Update dry run (--check)
         # rc 0 = up to date, rc 1 = update available; both fine. --check must
-        # not mutate the box; the phases below prove the real paths.
+        # not mutate the box; the phases below prove the real paths. Pinned to
+        # github.sha like the steps below: bare `lager update` now targets the
+        # CLI's release tag, and a box on the commit under test is usually
+        # ahead of that, which a defaulted target reports as nothing to do.
         run: |
-          rc=0; lager update --check --box "$LAGER_BOX" || rc=$?
+          rc=0; lager update --check --box "$LAGER_BOX" --version "${{ github.sha }}" || rc=$?
           [ "$rc" -le 1 ] || exit "$rc"
         shell: bash
 
@@ -389,8 +392,9 @@ jobs:
         # version-file reconciliation logic behind it).
         #
         # Pinned to github.sha for the same reason as the step above, and
-        # missed when that one was pinned. Bare `lager update` targets the
-        # CLI's `main` default, while the step above deployed github.sha.
+        # missed when that one was pinned. Bare `lager update` then targeted
+        # the CLI's `main` default (it now targets the CLI's release tag),
+        # while the step above deployed github.sha.
         # Those are the same commit only when github.sha IS main's head -- true
         # for the nightly, false for every workflow_dispatch on a branch. On a
         # branch this step therefore asked the box to move from the commit

@@ -55,6 +55,8 @@ from .update import (
     _read_box_source_version,
     _read_build_hash,
     _state_file_write_cmd,
+    default_box_version,
+    default_version_notice,
     resolve_version_ref,
 )
 
@@ -316,7 +318,7 @@ def _record_install_state(runner, ssh_host, *, version, cli_version):
 @click.option("--box", default=None, help="Box name (uses stored IP and username)")
 @click.option("--ip", default=None, help="Target box IP address or DNS hostname")
 @click.option("--user", default=None, help="SSH username (default: lagerdata, or stored username if using --box)")
-@click.option("--version", "version", default="main", help="Version to deploy: a release tag (e.g. v0.21.3), a branch (main, staging), or a full 40-character commit SHA (default: main)")
+@click.option("--version", "version", default=None, help="Version to deploy: a release tag (e.g. v0.21.3), a branch (main, staging), or a full 40-character commit SHA (default: this CLI's release tag)")
 @click.option("--skip-jlink", is_flag=True, help="Skip J-Link installation")
 @click.option("--skip-firewall", is_flag=True, help="Skip UFW firewall configuration")
 @click.option("--skip-verify", is_flag=True, help="Skip post-deployment verification")
@@ -331,6 +333,10 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
     """
     if pull and no_pull:
         raise click.UsageError('--pull and --no-pull are mutually exclusive')
+
+    # No --version: the release tag matching this CLI (see default_box_version).
+    version_defaulted = not version
+    version = version or default_box_version()
 
     # Flag wins over the env var, which wins over the default. `--timeout 0`
     # is a real value (no timeout), so test for None rather than falsiness.
@@ -526,6 +532,8 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
     else:
         click.secho(f"Installing lager to {ip}...", fg='cyan', bold=True)
     click.echo(f"  Version: {version}")
+    if version_defaulted:
+        click.secho(f"  {default_version_notice(version)}", fg='cyan')
     click.echo(f"  User: {user}")
     click.echo(f"  Mode: Git sparse checkout (enables 'lager update')")
     click.echo("  Host CLI: ~/.lager_venv (installed from the box checkout)")
