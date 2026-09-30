@@ -54,6 +54,10 @@ _SLOW_CYCLE_INFO_S = 2.0
 # which is the half that tells you the hub is physically there.
 _ACRONAME_VID = "24ff"
 
+# ``usb.getPortState`` bit 0 is "USB Vbus Enabled" on the USBHub2x4, USBHub3p
+# and USBHub3c alike. See ``_port_enabled``.
+_PORT_STATE_VBUS_ENABLED = 1 << 0
+
 # The open-failure summary is appended to a DeviceNotFoundError message, which
 # reaches a user as a `lager nets state` footnote. Bounded so a bench with many
 # hubs cannot turn one line into a screenful; the box log gets it uncapped.
@@ -187,6 +191,8 @@ class AcronameUSBNet(USBNet):
     # exclusive USB claim and blocks other processes. Bounded live reuse is
     # the session pool's job (_session_pool), which owns the idle window.
     _conn_cache: dict = {}
+    # Lock keys already warned about a serial-less address on a multi-hub bus.
+    _ambiguous_warned: set = set()
 
     # ------------------------------------------------------------------ #
     # helper: import BrainStem only when needed
@@ -323,6 +329,8 @@ class AcronameUSBNet(USBNet):
         if self._serial is None:
             # No address to match against: only safe when exactly one hub.
             diag["spec_match"] = "no address serial to match"
+            if len(specs) > 1:
+                self._warn_ambiguous_hub(diag["spec_serials"])
             return specs[0] if len(specs) == 1 else None
         # Compare NORMALISED serials, not raw values. The address parses to an
         # int; what the SDK puts on spec.serial_number is the SDK's business
@@ -337,6 +345,29 @@ class AcronameUSBNet(USBNet):
                 return spec
         diag["spec_match"] = False
         return None
+
+    def _warn_ambiguous_hub(self, serials):
+        """Say, once per net address per process, that this net cannot pick
+        its hub.
+
+        With no serial in the address, the connect below falls back to a bare
+        ``discoverAndConnect``, which binds whichever hub answers first. Every
+        read and write for the net then lands on that hub, so the net reports
+        (and switches) another hub's port with nothing anywhere saying so.
+        Once only: the state sweep polls every few seconds, and the fix is a
+        one-time edit to the net, not something the log needs to repeat.
+        """
+        key = self._lock_key()
+        if key in AcronameUSBNet._ambiguous_warned:
+            return
+        AcronameUSBNet._ambiguous_warned.add(key)
+        logger.warning(
+            "Acroname net address %r names no hub serial, but %d Acroname "
+            "hubs are attached (%s): it binds whichever hub answers first, so "
+            "its state and port switching may be another hub's. Add the hub "
+            "serial to the net's address.",
+            self.address, len(serials), ", ".join(serials),
+        )
 
     def _try_connect(self, candidate, spec_obj):
         """Connect one candidate hub object, preferring the scan-free
@@ -745,11 +776,20 @@ class AcronameUSBNet(USBNet):
         return result
 
     # ------------------------------------------------------------------ #
-    # internal – decode enable+power bits
+    # internal – decode the port-state bitfield
     # ------------------------------------------------------------------ #
     @staticmethod
     def _port_enabled(raw_state: int) -> bool:
-        return (raw_state & 0b11) == 0b11
+        """Whether the port is powered: bit 0, "USB Vbus Enabled".
+
+        Same bit on every supported model (USBHub2x4, USBHub3p, USBHub3c).
+        Bit 1 is the USB2 data enable and says nothing about power: a port
+        powered with its data lines off reads 0b01, and used to be reported
+        "disabled" while it was supplying VBUS to whatever was plugged in. A
+        net's state is about power, which is what enable/disable switch and
+        what a user checks by watching a device come up.
+        """
+        return bool(raw_state & _PORT_STATE_VBUS_ENABLED)
 
     def _read_enabled(self, hub, port: int) -> bool:
         """Read the live enabled/disabled state of a port from the hub."""

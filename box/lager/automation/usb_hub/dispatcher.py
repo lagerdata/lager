@@ -9,7 +9,7 @@ import os
 import time
 from typing import Dict
 
-from .usb_net import HUB_SKIPPED, USBNet
+from .usb_net import HUB_SKIPPED, USBNet, net_port
 from .acroname import AcronameUSBNet
 from .ykush import YKUSHUSBNet
 from .plugable import PlugableUSBNet
@@ -45,11 +45,11 @@ def _load_net_definitions() -> Dict[str, Dict]:
     for row in data if isinstance(data, list) else []:
         if (row.get("role") or row.get("net_type")) != "usb":
             continue
-        port = row.get("pin") or row.get("channel")
+        port = net_port(row)
         if port is None:
             continue
         mapping[row["name"]] = {
-            "port": int(port),
+            "port": port,
             "instrument": row.get("instrument", ""),
             "address": row.get("address", ""),
             # Carried through because a driver may take per-net options (the

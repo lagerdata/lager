@@ -1451,5 +1451,155 @@ class _ClosedStream:
         raise ValueError("I/O operation on closed file")
 
 
+# ---------------------------------------------------------------------------
+# Port-state decoding: a net's state is port POWER (bit 0), not power AND data
+# ---------------------------------------------------------------------------
+
+# Raw ``usb.getPortState`` values. The USBHub3p rows were read from a real
+# 8-port hub; the USBHub2x4 rows are composed from its documented bitfield
+# (bit 0 VBUS enabled, bit 1 USB2 data enabled, bit 23 device attached), which
+# gives bits 0 and 1 the same meaning as the 3p.
+PORT_STATE_FIXTURES = [
+    # (label,                                  raw,        powered)
+    ("3p enabled, device attached",            0x0080080B, True),
+    ("3p enabled, no device",                  0x0000000B, True),
+    ("3p disabled",                            0x00000000, False),
+    ("3p power only (data lines off)",         0x00000001, True),
+    ("3p data only (no power)",                0x0000000A, False),
+    ("2x4 enabled, device attached",           0x00800003, True),
+    ("2x4 enabled, no device",                 0x00000003, True),
+    ("2x4 disabled",                           0x00000000, False),
+    ("2x4 power only (data lines off)",        0x00000001, True),
+    ("2x4 data only (no power)",               0x00000002, False),
+    ("high status bits alone are not power",   0x01881800, False),
+    ("high status bits with power",            0x01881801, True),
+]
+
+# The physical hub's raw port words, persisting across connects like hardware.
+_raw_ports: dict = {}
+
+
+class _RawUsb:
+    """Port words as the hub reports them; enable/disable set and clear the
+    power and USB2/USB3 data bits together, as setPortEnable/Disable do."""
+
+    def setPortEnable(self, port):
+        _raw_ports[port] = _raw_ports.get(port, 0) | 0b1011
+
+    def setPortDisable(self, port):
+        _raw_ports[port] = _raw_ports.get(port, 0) & ~0b1011
+
+    def getPortState(self, port):
+        return types.SimpleNamespace(error=_FakeResult.NO_ERROR,
+                                     value=_raw_ports.get(port, 0))
+
+
+class _RawHub(_FakeHub):
+    def __init__(self):
+        super().__init__()
+        self.usb = _RawUsb()
+
+
+class AcronamePortStateTests(unittest.TestCase):
+    def setUp(self):
+        _claim["held_by"] = None
+        _raw_ports.clear()
+        stem = types.SimpleNamespace(
+            USBHub3p=_RawHub, USBHub3c=_RawHub, USBHub2x4=_RawHub)
+        link = types.SimpleNamespace(Spec=types.SimpleNamespace(USB="usb-spec"))
+        acroname.AcronameUSBNet._brainstem = types.SimpleNamespace(
+            stem=stem, link=link)
+        acroname.AcronameUSBNet._Result = _FakeResult
+        acroname.AcronameUSBNet._conn_cache = {}
+        _install_no_hold_pool(self)
+        self.nets = {
+            "3p": acroname.AcronameUSBNet(
+                {"address": "USB0::0x24FF::0x0013::BFABDDC4::INSTR"}),
+            "2x4": acroname.AcronameUSBNet(
+                {"address": "USB0::0x24FF::0x0011::0A1B2C3D::INSTR"}),
+        }
+
+    def _net_for(self, label):
+        return self.nets["2x4" if label.startswith("2x4") else "3p"]
+
+    def test_decision_follows_the_power_bit(self):
+        for label, raw, powered in PORT_STATE_FIXTURES:
+            with self.subTest(label):
+                self.assertIs(acroname.AcronameUSBNet._port_enabled(raw), powered)
+
+    def test_state_reports_power_for_every_fixture(self):
+        for label, raw, powered in PORT_STATE_FIXTURES:
+            with self.subTest(label):
+                _raw_ports[2] = raw
+                self.assertIs(self._net_for(label).state("usb", 2), powered)
+
+    def test_states_sweep_agrees_with_state(self):
+        # The Nets view reads the sweep, not state(); the two must never differ.
+        for port, (label, raw, powered) in enumerate(PORT_STATE_FIXTURES):
+            _raw_ports[port] = raw
+        got = self.nets["3p"].states(list(range(len(PORT_STATE_FIXTURES))))
+        for port, (label, _raw, powered) in enumerate(PORT_STATE_FIXTURES):
+            with self.subTest(label):
+                self.assertIs(got[port], powered)
+
+    def test_toggle_flips_power_for_every_fixture(self):
+        for label, raw, powered in PORT_STATE_FIXTURES:
+            with self.subTest(label):
+                _raw_ports[1] = raw
+                net = self._net_for(label)
+                self.assertIs(net.toggle("usb", 1), not powered)
+                # Whatever toggle reported is what the hub now reads.
+                self.assertIs(net.state("usb", 1), not powered)
+
+    def test_a_powered_port_with_data_off_toggles_off(self):
+        # Previously read as "disabled", so toggle sent setPortEnable and the
+        # port stayed powered while toggle claimed to have turned it on.
+        _raw_ports[0] = 0b01
+        self.assertFalse(self.nets["2x4"].toggle("usb", 0))
+        self.assertEqual(_raw_ports[0] & 0b1, 0)
+
+
+class AcronameAmbiguousHubWarningTests(unittest.TestCase):
+    """A net address with no serial, on a bus with several hubs, binds
+    whichever hub answers first. That must be said, once."""
+
+    def setUp(self):
+        _claim["held_by"] = None
+        _discover_calls.clear()
+        _spec_connects.clear()
+        acroname.AcronameUSBNet._Result = _FakeResult
+        acroname.AcronameUSBNet._conn_cache = {}
+        prior = acroname.AcronameUSBNet._ambiguous_warned
+        acroname.AcronameUSBNet._ambiguous_warned = set()
+        self.addCleanup(setattr, acroname.AcronameUSBNet,
+                        "_ambiguous_warned", prior)
+        _install_no_hold_pool(self)
+        self.net = acroname.AcronameUSBNet(
+            {"address": "USB0::0x24FF::0x0011::INSTR"})
+
+    def test_serial_less_address_parses_to_no_serial(self):
+        self.assertIsNone(self.net._serial)
+
+    def test_warns_once_when_several_hubs_are_attached(self):
+        acroname.AcronameUSBNet._brainstem = _make_spec_brainstem(
+            [_FakeSpec(0xBFABDDC4), _FakeSpec(0x0A1B2C3D)])
+        with self.assertLogs(acroname.logger, level="WARNING") as cm:
+            self.net.state("usb", 0)
+            self.net.state("usb", 0)
+        warnings = [r for r in cm.records
+                    if r.levelname == "WARNING" and "names no hub serial" in r.getMessage()]
+        self.assertEqual(len(warnings), 1)
+        msg = warnings[0].getMessage()
+        self.assertIn("0xBFABDDC4", msg)
+        self.assertIn("0x0A1B2C3D", msg)
+
+    def test_single_hub_stays_silent(self):
+        acroname.AcronameUSBNet._brainstem = _make_spec_brainstem(
+            [_FakeSpec(0xBFABDDC4)])
+        with patch.object(acroname.logger, "warning") as warn:
+            self.net.state("usb", 0)
+        warn.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
