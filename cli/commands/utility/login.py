@@ -16,21 +16,56 @@ from ...gateway_auth import ACCESS_DOCS_URL
 
 @click.command(name='login')
 @click.argument('auth_server_url')
-@click.option('--email', prompt=True, help='Account email')
-@click.option('--password', prompt=True, hide_input=True, help='Account password')
-def login(auth_server_url, email, password):
+@click.option('--email', help='Account email')
+@click.option('--password', help='Account password')
+@click.option('--web', is_flag=True,
+              help='Sign in in a web browser instead of typing a password here. '
+                   'Works for single sign-on accounts.')
+@click.option('--no-browser', is_flag=True,
+              help='With --web: do not open a browser here; print a link to open on '
+                   'any machine, then paste the code it shows. Implies --web.')
+def login(auth_server_url, email, password, web, no_browser):
     """Log in to the auth server at AUTH_SERVER_URL.
 
     Stores a session token in ~/.lager_gateway_auth; subsequent lager
     commands against boxes gated by that auth server authenticate
     automatically.
     """
-    def mfa_prompt():
-        return click.prompt('MFA code')
+    web = web or no_browser
+    if web:
+        if email or password:
+            raise click.UsageError('--web signs in through the browser; '
+                                   'do not also pass --email or --password.')
+        user = gateway_auth.login_web(
+            auth_server_url,
+            open_browser=not no_browser,
+            show_link=_show_link,
+            paste_prompt=lambda: click.prompt('Code shown on the page'),
+        )
+    else:
+        if email is None:
+            email = click.prompt('Email')
+        if password is None:
+            password = click.prompt('Password', hide_input=True)
 
-    user = gateway_auth.login(auth_server_url, email, password, mfa_code_prompt=mfa_prompt)
+        def mfa_prompt():
+            return click.prompt('MFA code')
+
+        user = gateway_auth.login(auth_server_url, email, password, mfa_code_prompt=mfa_prompt)
     display = user.get('displayName') or user.get('email') or email
     click.secho(f'Logged in to {auth_server_url.rstrip("/")} as {display}.', fg='green')
+
+
+def _show_link(link, opened):
+    if opened:
+        click.echo('Opened your browser to sign in. If it did not open, go to:')
+    else:
+        click.echo('Open this link in a browser to sign in:')
+    click.secho(f'  {link}', fg='cyan')
+    if opened:
+        click.echo('Waiting for you to approve the sign-in in the browser...')
+    else:
+        click.echo('Select Authorize on that page. It then shows a code: paste it below.')
 
 
 @click.command(name='logout')

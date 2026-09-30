@@ -129,6 +129,60 @@ class LoginTests(LoginCommandTestCase):
         self.assertNotEqual(result.exit_code, 0)
 
 
+class WebLoginTests(LoginCommandTestCase):
+
+    def invoke(self, args, **kwargs):
+        return self.runner.invoke(login_mod.login, args, **kwargs)
+
+    def test_web_opens_the_browser_and_never_prompts_for_a_password(self):
+        with mock.patch.object(login_mod.gateway_auth, 'login_web',
+                               return_value={'email': 'sso@example.com'}) as gw, \
+             mock.patch.object(login_mod.gateway_auth, 'login') as pw:
+            result = self.invoke([URL, '--web'])
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(gw.call_args.args, (URL,))
+        self.assertTrue(gw.call_args.kwargs['open_browser'])
+        pw.assert_not_called()
+        self.assertNotIn('Password', result.output)
+        self.assertIn('as sso@example.com', result.output)
+
+    def test_no_browser_implies_web_and_collects_the_pasted_code(self):
+        captured = {}
+
+        def fake_login_web(url, *, open_browser, show_link, paste_prompt):
+            show_link(f'{url}/cli/authorize?code_challenge=c', False)
+            captured['code'] = paste_prompt()
+            return {'email': 'sso@example.com'}
+
+        with mock.patch.object(login_mod.gateway_auth, 'login_web',
+                               side_effect=fake_login_web) as gw:
+            result = self.invoke([URL, '--no-browser'], input='the-code\n')
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertFalse(gw.call_args.kwargs['open_browser'])
+        self.assertEqual(captured['code'], 'the-code')
+        self.assertIn('Open this link in a browser', result.output)
+        self.assertIn('Select Authorize on that page', result.output)
+        self.assertIn(f'{URL}/cli/authorize?code_challenge=c', result.output)
+
+    def test_opened_browser_still_prints_the_link(self):
+        def fake_login_web(url, *, open_browser, show_link, paste_prompt):
+            show_link(f'{url}/cli/authorize?x=1', True)
+            return {}
+
+        with mock.patch.object(login_mod.gateway_auth, 'login_web',
+                               side_effect=fake_login_web):
+            result = self.invoke([URL, '--web'])
+        self.assertIn('If it did not open', result.output)
+        self.assertIn(f'{URL}/cli/authorize?x=1', result.output)
+
+    def test_web_refuses_a_password_as_well(self):
+        with mock.patch.object(login_mod.gateway_auth, 'login_web') as gw:
+            result = self.invoke([URL, '--web', '--password', 'hunter2'])
+        self.assertEqual(result.exit_code, 2)
+        self.assertIn('do not also pass --email or --password', result.output)
+        gw.assert_not_called()
+
+
 class LogoutTests(LoginCommandTestCase):
 
     def test_logout_of_one_server_strips_the_trailing_slash(self):

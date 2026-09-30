@@ -17,6 +17,24 @@ lager login https://your-control-plane.example.com
 
 系统会询问您的账户邮箱和密码（如果您的账户启用了 MFA，还会询问 MFA 验证码）。会话保存在 `~/.lager_gateway_auth`（只有您本人可读），并会自动续期，因此您很少需要登录第二次。此后，`lager hello`、`lager python`、各种 Net 命令，以及其他所有命令，对那台 Box 都可以直接工作。
 
+### 通过浏览器登录
+
+加上 `--web`，即可在网页上登录，而不必在终端中输入密码：
+
+```bash
+lager login https://your-control-plane.example.com --web
+```
+
+Lager 会在您的浏览器中打开认证服务器的登录页面。请按平时的方式在该页面登录，然后批准该请求。终端也会显示该链接，以防浏览器没有打开。如果您的账户使用单点登录（SSO），因而没有密码，这是唯一的登录方式。
+
+在没有浏览器的计算机上（例如通过 SSH 连接的计算机），请加上 `--no-browser`。Lager 会显示一个链接并等待。在任意一台计算机上打开该链接，批准请求，然后把页面上显示的代码粘贴到终端中。
+
+```bash
+lager login https://your-control-plane.example.com --no-browser
+```
+
+浏览器登录需要认证服务器支持。如果服务器不支持，Lager 会明确说明，此时请使用密码登录。
+
 ### 非交互式登录
 
 两项凭据都可以作为选项传入，而不必等待提示，这正是 CI 作业所需要的：
