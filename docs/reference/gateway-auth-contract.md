@@ -105,6 +105,53 @@ Cookie: <the cookies captured at login, plus any later rotations>
   is simply unusable; clients fall back to "no credential" behavior. A
   failed refresh MUST NOT clear the stored session.
 
+### 3.4 Browser sign-in (optional)
+
+An interactive alternative to §3.1 for accounts with no password (single
+sign-on) and for users who do not want to type one into a shell. Auth
+servers MAY implement it; the result is the same session as §3.1, so
+nothing after sign-in changes.
+
+```
+GET <url>/api/auth/cli/config
+```
+
+- `200` → `{"authorizeUrl": "<http(s) URL of a browser page>"}`. Any other
+  answer means the server does not support browser sign-in; clients say so
+  and point at §3.1.
+
+The client makes a PKCE pair (RFC 7636, `S256`: a verifier of 43-128
+unreserved characters, and the base64url SHA-256 of it as the challenge)
+and sends the user's browser to `authorizeUrl` with these query parameters:
+
+| Parameter | Meaning |
+| --- | --- |
+| `code_challenge` | The PKCE challenge. Always present. |
+| `port` | A loopback port the client listens on. Absent in paste mode. |
+| `state` | An unguessable value, 16-128 base64url characters. Present with `port`. |
+
+The page signs the user in however the server chooses, asks them to approve,
+and mints a single-use code bound to that user and challenge. Then:
+
+- **Loopback mode** (`port` present): the page redirects the browser to
+  `http://127.0.0.1:<port>/callback?code=<code>&state=<state>`, or to
+  `...?error=access_denied&state=<state>` when the user declines. The client
+  MUST ignore any request whose `state` does not match: any web page can make
+  a browser request a loopback URL.
+- **Paste mode** (no `port`, for a machine without a browser): the page
+  shows the code, and the user pastes it into the client.
+
+```
+POST <url>/api/auth/cli/exchange
+{"code": "<code>", "codeVerifier": "<verifier>"}
+```
+
+Same success/cookie semantics as §3.1. The server MUST reject a code it has
+already seen, an expired code, and a verifier that does not hash to the
+challenge; a failed attempt SHOULD consume the code. Only the verifier,
+which never leaves the client, turns a code into a session, so a code
+exposed in a browser history or a pasted terminal is useless on its own.
+
 ## 4. Tokens
 
 - The credential is an **access token** sent as `Authorization: Bearer
@@ -321,6 +368,13 @@ This contract is versioned by the integer at the top of this file.
   (tests in `tests/debug_tunnel.rs`, lagerdata/lager-rs#8). The crate had
   never opened a raw debug port before; it gained the tunnel because a Rust
   harness built on it needs a GDB server's port on gated boxes.
+
+- **v1** (2026-09-30): §3.4 specifies browser sign-in (`lager login --web`).
+  Optional for auth servers and additive for clients, so no version bump per
+  §9. It is interactive and ends in the same stored session as §3.1, so only
+  the Python CLI implements it (`login_web` in `cli/gateway_auth.py`, tests in
+  `test/unit/cli/test_gateway_auth_web.py`); lager-rs never signs a person in,
+  only reads the store, and needs no change.
 
 ## 10. Debug tunnels (optional)
 

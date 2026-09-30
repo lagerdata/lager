@@ -26,6 +26,31 @@ your account uses one). Your session is stored in `~/.lager_gateway_auth`
 than once. From then on, `lager hello`, `lager python`, net commands, and
 everything else just work against that box.
 
+### Signing in with a browser
+
+Add `--web` to sign in on a web page instead of typing a password into the
+terminal:
+
+```bash
+lager login https://your-control-plane.example.com --web
+```
+
+Lager opens the sign-in page of the auth server in your browser. Sign in there
+the way you usually do, then approve the request. The terminal shows the link
+too, in case the browser does not open. This is the only way to sign in if your
+account uses single sign-on (SSO) and so has no password.
+
+On a computer with no browser, such as one you connect to over SSH, add
+`--no-browser`. Lager shows a link and waits. Open the link on any computer,
+approve the request, and paste the code that the page shows into the terminal.
+
+```bash
+lager login https://your-control-plane.example.com --no-browser
+```
+
+Browser sign-in needs an auth server that supports it. If the server does not,
+Lager says so, and you sign in with a password.
+
 ### Non-interactive sign-in
 
 Both credentials can be supplied as options instead of being prompted for,

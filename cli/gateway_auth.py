@@ -21,6 +21,12 @@
         POST <url>/api/auth/login       {email, password}  -> {accessToken, ...}
         POST <url>/api/auth/login/mfa   {mfaToken, code}   -> {accessToken, ...}
         POST <url>/api/auth/refresh     (login cookies)    -> {accessToken}
+        GET  <url>/api/auth/cli/config                     -> {authorizeUrl}
+        POST <url>/api/auth/cli/exchange {code, codeVerifier} -> {accessToken, ...}
+
+    The last two are optional: browser sign-in (`lager login --web`), for
+    accounts that have no password, such as single sign-on accounts, and for
+    users who would rather not type one into a shell.
 
     Tokens live in ``~/.lager_gateway_auth`` (mode 0600), keyed by auth
     server URL so one machine can talk to boxes gated by different
@@ -36,12 +42,16 @@
     left behind there is silently wrong the day that box changes address.
 """
 import base64
+import hashlib
 import json
 import os
+import secrets
 import threading
 import time
+import webbrowser
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import requests
 
@@ -55,6 +65,10 @@ ACCESS_DOCS_URL = 'https://docs.lagerdata.com/source/reference/cli/login'
 # Refresh the access token when it expires within this many seconds.
 EXPIRY_MARGIN_SECONDS = 60
 AUTH_SERVER_TIMEOUT = 10
+# How long `lager login --web` waits for the browser to send the user back.
+# The server's login code lives for 5 minutes; a user who takes longer to sign
+# in at the identity provider starts again.
+WEB_LOGIN_TIMEOUT_SECONDS = 300
 # How long a command waits on exit for a refresh that is still in flight. Long
 # enough for a server that is answering to finish rotating the cookie, short
 # enough that a wedged one does not hold the command open.
@@ -493,6 +507,167 @@ def login(url, email, password, mfa_code_prompt=None):
             timeout=AUTH_SERVER_TIMEOUT,
         )
         data = _json_or_raise(resp, url)
+
+    access_token = data.get('accessToken')
+    if not access_token:
+        raise LagerError(f'Login to {url} did not return an access token.')
+    save_login(url, access_token, requests.utils.dict_from_cookiejar(resp.cookies))
+    return data.get('user', {})
+
+
+def _b64url(raw):
+    return base64.urlsafe_b64encode(raw).rstrip(b'=').decode('ascii')
+
+
+def _pkce_pair():
+    """A PKCE (RFC 7636) S256 verifier and its challenge."""
+    verifier = _b64url(secrets.token_bytes(32))
+    challenge = _b64url(hashlib.sha256(verifier.encode('ascii')).digest())
+    return verifier, challenge
+
+
+def _web_authorize_url(url):
+    """Ask the auth server which browser page approves a CLI sign-in (§3.4)."""
+    unsupported = LagerError(
+        f'The auth server at {url} does not support browser sign-in.',
+        fixes=[f'Sign in with a password: lager login {url}'],
+    )
+    try:
+        resp = requests.get(f'{url}/api/auth/cli/config', timeout=AUTH_SERVER_TIMEOUT)
+    except requests.RequestException as e:
+        raise LagerError(f'The auth server at {url} did not answer.', cause=str(e))
+    if resp.status_code != 200:
+        raise unsupported
+    try:
+        authorize_url = resp.json().get('authorizeUrl')
+    except (ValueError, AttributeError):
+        authorize_url = None
+    if not isinstance(authorize_url, str) or urlparse(authorize_url).scheme not in ('http', 'https'):
+        raise unsupported
+    return authorize_url
+
+
+class _LoopbackCallback:
+    """A one-shot HTTP listener on 127.0.0.1 that receives the browser's
+    redirect after the user approves (or cancels) the sign-in.
+
+    A request that does not carry our ``state`` is answered and ignored, not
+    treated as a failure: any web page can make the browser request a
+    loopback URL, and it must not be able to end or answer the sign-in.
+    """
+
+    def __init__(self, state):
+        self.state = state
+        self.code = None
+        self.error = None
+        owner = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                parsed = urlparse(self.path)
+                query = parse_qs(parsed.query)
+                if parsed.path != '/callback' or query.get('state', [None])[0] != owner.state:
+                    self._reply(404, 'Not found.')
+                    return
+                if query.get('code'):
+                    owner.code = query['code'][0]
+                    self._reply(200, 'Signed in to the lager CLI. You can close this tab.')
+                else:
+                    owner.error = query.get('error', ['cancelled'])[0]
+                    self._reply(200, 'Sign-in cancelled. You can close this tab.')
+
+            def _reply(self, status, message):
+                body = (f'<!doctype html><meta charset="utf-8"><title>lager login</title>'
+                        f'<p style="font-family:sans-serif">{message}</p>').encode()
+                self.send_response(status)
+                self.send_header('Content-Type', 'text/html; charset=utf-8')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        self.server = HTTPServer(('127.0.0.1', 0), Handler)
+        self.server.timeout = 0.5
+        self.port = self.server.server_address[1]
+
+    def wait(self, timeout):
+        """Serve until the callback arrives. Returns (code, error); both are
+        None on timeout."""
+        deadline = time.monotonic() + timeout
+        try:
+            while self.code is None and self.error is None and time.monotonic() < deadline:
+                self.server.handle_request()
+        finally:
+            self.server.server_close()
+        return self.code, self.error
+
+
+def login_web(url, *, open_browser=True, show_link=None, paste_prompt=None,
+              timeout=WEB_LOGIN_TIMEOUT_SECONDS):
+    """Sign in through the auth server's web page instead of a password (§3.4).
+
+    With ``open_browser`` the page is opened here and redirects back to a
+    one-shot listener on 127.0.0.1. Without it (a machine with no browser,
+    such as one reached over SSH) the user opens the link anywhere and
+    ``paste_prompt`` (no args) collects the code the page shows.
+
+    ``show_link(link, opened)`` is called with the page URL, and whether a
+    browser was opened, so the caller can print it. Returns the user object.
+    """
+    url = url.rstrip('/')
+    authorize_url = _web_authorize_url(url)
+    verifier, challenge = _pkce_pair()
+    separator = '&' if urlparse(authorize_url).query else '?'
+
+    if open_browser:
+        callback = _LoopbackCallback(secrets.token_urlsafe(24))
+        link = authorize_url + separator + urlencode({
+            'code_challenge': challenge,
+            'port': callback.port,
+            'state': callback.state,
+        })
+        try:
+            opened = webbrowser.open(link)
+        except webbrowser.Error:
+            opened = False
+        if show_link:
+            show_link(link, opened)
+        code, error = callback.wait(timeout)
+        if error:
+            raise LagerError('Browser sign-in was cancelled.')
+        if code is None:
+            raise LagerError(
+                'Browser sign-in timed out.',
+                fixes=[f'Run lager login {url} --web again.',
+                       f'On a machine with no browser, run lager login {url} --web --no-browser.'],
+            )
+    else:
+        if paste_prompt is None:
+            raise LagerError('Browser sign-in without a browser needs a terminal.',
+                             fixes=['Re-run interactively so the code can be entered.'])
+        link = authorize_url + separator + urlencode({'code_challenge': challenge})
+        if show_link:
+            show_link(link, False)
+        code = (paste_prompt() or '').strip()
+        if code == challenge:
+            # The link carries a code-shaped value of its own; pasting it is
+            # the easy mistake, and the server would only say "invalid code".
+            raise LagerError(
+                'That is the code_challenge from the link, not the sign-in code.',
+                fixes=['Open the link, select Authorize, and paste the code that the page then shows.'],
+            )
+
+    try:
+        resp = requests.post(
+            f'{url}/api/auth/cli/exchange',
+            json={'code': code, 'codeVerifier': verifier},
+            timeout=AUTH_SERVER_TIMEOUT,
+        )
+    except requests.RequestException as e:
+        raise LagerError(f'The auth server at {url} did not answer.', cause=str(e))
+    data = _json_or_raise(resp, url)
 
     access_token = data.get('accessToken')
     if not access_token:
