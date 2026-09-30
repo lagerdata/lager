@@ -75,6 +75,18 @@ class BenchManifestCapabilityTest(unittest.TestCase):
         finally:
             box_http_server._has_bench_manifest = orig
 
+    def test_nets_state_enabled_capability_follows_the_nets_routes(self):
+        # GET /nets/state is registered with the other nets routes, so the
+        # structured ``enabled`` it carries is advertised exactly when they are.
+        orig = box_http_server._has_nets
+        try:
+            box_http_server._has_nets = True
+            self.assertIs(self._capabilities()['netsStateEnabled'], True)
+            box_http_server._has_nets = False
+            self.assertIs(self._capabilities()['netsStateEnabled'], False)
+        finally:
+            box_http_server._has_nets = orig
+
     def test_the_route_is_registered_on_the_real_app(self):
         # The handler imports cleanly on a developer host, so the flag is
         # true and /bench is mounted; this guards against the import guard

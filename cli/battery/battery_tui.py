@@ -271,7 +271,9 @@ class BatteryTUI(App):
         state_widget.esr = format_value(state.get("esr"))
         state_widget.soc = format_value(state.get("soc"))
         state_widget.voc = format_value(state.get("voc"))
-        state_widget.enabled = "ON" if state.get("enabled") else "OFF"
+        # None: the instrument did not say. Showing that as OFF is a confident
+        # wrong answer; "--" matches the other unread fields.
+        state_widget.enabled = {True: "ON", False: "OFF"}.get(state.get("enabled"), "--")
         state_widget.mode = format_value(state.get("mode"))
         state_widget.model = format_value(state.get("model"))
         state_widget.capacity = format_value(state.get("capacity"))

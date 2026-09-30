@@ -790,7 +790,8 @@ def register_supply_socketio(socketio: SocketIO) -> None:
                 elif action == 'state':
                     logger.info(f"[COMMAND-{thread_name}] Getting state for channel {channel}...")
                     try:
-                        enabled = supply.output_is_enabled(channel=channel)
+                        # None = the supply did not say; never reported as OFF.
+                        enabled = supply.output_state(channel=channel)
                         voltage_set = float(supply.get_channel_voltage(source=channel))
                         current_set = float(supply.get_channel_current(source=channel))
                         if enabled:
@@ -798,12 +799,13 @@ def register_supply_socketio(socketio: SocketIO) -> None:
                                 voltage_meas = float(supply.measure_voltage(channel))
                                 current_meas = float(supply.measure_current(channel))
                             except Exception:
-                                voltage_meas = 0.0
-                                current_meas = 0.0
+                                voltage_meas = current_meas = "n/a"
+                        elif enabled is None:
+                            voltage_meas = current_meas = "n/a"
                         else:
                             voltage_meas = 0.0
                             current_meas = 0.0
-                        state_str = "ON" if enabled else "OFF"
+                        state_str = {True: "ON", False: "OFF"}.get(enabled, "UNKNOWN")
                         msg = (
                             f'Channel {channel}: {state_str}, Set: {voltage_set}V/{current_set}A, '
                             f'Measured: {voltage_meas}V/{current_meas}A'

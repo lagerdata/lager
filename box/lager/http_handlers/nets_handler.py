@@ -99,6 +99,23 @@ def _ud_pin_span_error(data):
     return None
 
 
+def _on_off(enabled):
+    """The on/off slot of a brief: ``?`` when the instrument did not say.
+
+    ``"on" if enabled else "off"`` rendered an unreadable output state
+    (``None``) as a confident "off" -- the one wrong answer a state report must
+    not give. ``?`` matches the ``?V``/``?A`` already used for unread values.
+    """
+    if enabled is None:
+        return "?"
+    return "on" if enabled else "off"
+
+
+def _enabled_or_none(value):
+    """A driver's output state as True/False, or None when it is not a bool."""
+    return value if isinstance(value, bool) else None
+
+
 def _brief_supply(netname):
     """Power-supply: CH<n>/<on|off>/<V>/<I>."""
     from ..dispatchers.helpers import resolve_net_proxy
@@ -109,14 +126,13 @@ def _brief_supply(netname):
             netname, "power-supply", SupplyBackendError)
         supply = Device(device_name, net_info)
         state = supply.get_monitor_state(channel)
-        enabled = state.get("enabled")
-        on_off = "on" if enabled else "off"
+        enabled = _enabled_or_none(state.get("enabled"))
         v = state.get("voltage")
         i = state.get("current")
         v_s = "%.2fV" % v if v is not None else "?V"
         i_s = "%.3fA" % i if i is not None else "?A"
-        parts = ["CH%s" % channel, on_off, v_s, i_s]
-        return "/".join(parts)
+        parts = ["CH%s" % channel, _on_off(enabled), v_s, i_s]
+        return "/".join(parts), enabled
     except Exception as e:
         logger.debug("brief_supply %s: %s", netname, e)
         return None
@@ -132,15 +148,14 @@ def _brief_battery(netname):
             netname, "battery", BatteryBackendError)
         battery = Device(device_name, net_info)
         state = battery.get_monitor_state(channel)
-        enabled = state.get("enabled")
-        on_off = "on" if enabled else "off"
+        enabled = _enabled_or_none(state.get("enabled"))
         v = state.get("terminal_voltage")
         i = state.get("current")
         soc = state.get("soc")
         v_s = "%.2fV" % v if v is not None else "?V"
         i_s = "%.3fA" % i if i is not None else "?A"
         soc_s = "%d%%" % soc if soc is not None else "?%"
-        return "/".join(["CH%s" % channel, on_off, v_s, i_s, soc_s])
+        return "/".join(["CH%s" % channel, _on_off(enabled), v_s, i_s, soc_s]), enabled
     except Exception as e:
         logger.debug("brief_battery %s: %s", netname, e)
         return None
@@ -222,6 +237,19 @@ def _is_labjack_t7(rec):
 _LABJACK_BATCH_ROLES = {"gpio", "adc", "dac"}
 
 
+def _record_pin(rec):
+    """``pin``, else ``channel``, else ``""`` -- skipping only absent or blank.
+
+    ``rec.get("pin") or rec.get("channel")`` treated an integer pin of 0 as
+    missing, so FIO0/AIN0/DAC0 nets read as having no pin.
+    """
+    for key in ("pin", "channel"):
+        value = rec.get(key)
+        if value is not None and str(value).strip() != "":
+            return value
+    return ""
+
+
 def _brief_labjack_batch(recs):
     """Batch probe for all GPIO/ADC/DAC nets on one LabJack T7.
 
@@ -244,7 +272,7 @@ def _brief_labjack_batch(recs):
 
     payload = [
         {"name": r.get("name", ""), "role": r.get("role", ""),
-         "pin": r.get("pin") or r.get("channel") or ""}
+         "pin": _record_pin(r)}
         for r in recs
     ]
     device_id = _physical_device_id(
@@ -331,12 +359,12 @@ def _brief_eload(netname):
                         ELoadBackendError)
         state = dev.get_state_dict()
         mode = state.get("mode", "?")
-        on_off = "on" if state.get("input_enabled") else "off"
+        enabled = _enabled_or_none(state.get("input_enabled"))
         v = state.get("measured_voltage")
         i = state.get("measured_current")
         v_s = "%.2fV" % v if v is not None else "?V"
         i_s = "%.3fA" % i if i is not None else "?A"
-        return "/".join([mode, on_off, v_s, i_s])
+        return "/".join([mode, _on_off(enabled), v_s, i_s]), enabled
     except Exception as e:
         logger.debug("brief_eload %s: %s", netname, e)
         return None
@@ -354,16 +382,29 @@ def _brief_webcam(netname):
         return None
 
 
+def _fmt_reading(value, fmt, missing):
+    """Format one measured value, or ``missing`` when it was not reported.
+
+    A field the instrument did not return used to default to 0, and 0.0000 A
+    is a real, plausible reading -- indistinguishable from an idle load.
+    """
+    if value is None:
+        return missing
+    try:
+        return fmt % float(value)
+    except (TypeError, ValueError):
+        return missing
+
+
 def _brief_watt(netname):
     """Watt-meter: quick 0.1s reading → I/V/P."""
     from .net_command import _proxy
     try:
         dev = _proxy(netname, "watt-meter", timeout=15.0)
-        r = dev.measure("all", 0.1)
-        i = float(r.get("current", 0))
-        v = float(r.get("voltage", 0))
-        p = float(r.get("power", 0))
-        return "%.4fA/%.3fV/%.4fW" % (i, v, p)
+        r = dev.measure("all", 0.1) or {}
+        return "/".join((_fmt_reading(r.get("current"), "%.4fA", "?A"),
+                         _fmt_reading(r.get("voltage"), "%.3fV", "?V"),
+                         _fmt_reading(r.get("power"), "%.4fW", "?W")))
     except Exception as e:
         logger.debug("brief_watt %s: %s", netname, e)
         return None
@@ -378,11 +419,9 @@ def _brief_energy_analyzer(netname):
         c = r.get("current") or {}
         v = r.get("voltage") or {}
         p = r.get("power") or {}
-        return "%.4fA/%.3fV/%.4fW" % (
-            float(c.get("mean", 0)),
-            float(v.get("mean", 0)),
-            float(p.get("mean", 0)),
-        )
+        return "/".join((_fmt_reading(c.get("mean"), "%.4fA", "?A"),
+                         _fmt_reading(v.get("mean"), "%.3fV", "?V"),
+                         _fmt_reading(p.get("mean"), "%.4fW", "?W")))
     except Exception as e:
         logger.debug("brief_ea %s: %s", netname, e)
         return None
@@ -525,7 +564,23 @@ def _unreadable(detail):
     return f"unreadable: {detail}" if detail else "unreadable"
 
 
-def _entry(name, role, state, reason=None, code=None):
+def _split_brief(role, value):
+    """A probe's answer as ``(state text, enabled)``.
+
+    Probes for roles with an on/off output return ``(text, enabled)``; the rest
+    return the text alone. USB answers are the words ``enabled``/``disabled``,
+    so their bool is read from the word rather than threaded through the hub
+    batch. ``enabled`` is None whenever the on/off is not known.
+    """
+    if isinstance(value, tuple):
+        text, enabled = value
+        return text, _enabled_or_none(enabled)
+    if role == "usb" and value in ("enabled", "disabled"):
+        return value, value == "enabled"
+    return value, None
+
+
+def _entry(name, role, state, reason=None, code=None, enabled=None):
     """One net's answer.
 
     ``reason`` is attached only when *state* is None, so its presence means
@@ -535,6 +590,12 @@ def _entry(name, role, state, reason=None, code=None):
     ``.get("reason_code")`` sees nothing rather than something falsy.
     """
     out = {"name": name, "role": role, "state": state}
+    # Machine-readable on/off for roles that have one. Present only when known:
+    # absent means "no on/off here, or it could not be read" -- never False.
+    # The text in ``state`` stays complete on its own (see the compatibility
+    # rule above), so a consumer that ignores this key loses nothing.
+    if state is not None and isinstance(enabled, bool):
+        out["enabled"] = enabled
     if state is None and reason:
         out["reason"] = reason
         if code:
@@ -550,7 +611,8 @@ def _probe_net_state(net_rec):
     if probe is None:
         return _entry(name, role, None, REASON_NO_PROBE)
     try:
-        return _entry(name, role, probe(name))
+        state, enabled = _split_brief(role, probe(name))
+        return _entry(name, role, state, enabled=enabled)
     except Exception as e:
         logger.debug("probe %s (%s) failed: %s", name, role, e)
         return _entry(name, role, None, _unreadable(f"{type(e).__name__}: {e}"))
@@ -645,18 +707,19 @@ def _probe_group(recs, deadline=None):
         reason = _unreadable(f"{type(e).__name__}: {e}")
         return [_unknown(rec, reason) for rec in recs]
 
-    return [
-        _entry(
-            rec.get("name", ""),
+    out = []
+    for rec in recs:
+        name = rec.get("name", "")
+        state, enabled = _split_brief(role, states.get(name))
+        out.append(_entry(
+            name,
             role,
-            states.get(rec.get("name", "")),
-            _unreadable(
-                causes.get(rec.get("name", "")) or "no value from instrument"
-            ),
-            codes.get(rec.get("name", "")),
-        )
-        for rec in recs
-    ]
+            state,
+            _unreadable(causes.get(name) or "no value from instrument"),
+            codes.get(name),
+            enabled=enabled,
+        ))
+    return out
 
 
 # Keys accepted in a net's ``safety_limits`` record, mirroring what
@@ -742,7 +805,14 @@ def register_nets_routes(app: Flask) -> None:
     def nets_state():
         """Return brief live state for every saved net.
 
-        Response: [{"name": "usb1", "role": "usb", "state": "enabled"}, ...]
+        Response: [{"name": "usb1", "role": "usb", "state": "enabled",
+                    "enabled": true}, ...]
+
+        ``enabled`` is a bool for roles with an on/off output (usb,
+        power-supply, battery, eload) and is present only when that on/off was
+        actually read. An unreadable on/off shows as ``?`` in the ``state``
+        text (``"CH1/?/3.30V/0.120A"``) and leaves ``enabled`` out; it is never
+        reported as off.
 
         One work unit per physical instrument, run in parallel, under a whole-
         request deadline of ``_STATE_TIMEOUT``. A net whose instrument is slow,

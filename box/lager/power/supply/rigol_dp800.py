@@ -9,6 +9,7 @@ import pyvisa
 
 from lager.power.supply.supply_net import SupplyNet, SupplyBackendError, LibraryMissingError, DeviceNotFoundError
 from lager.instrument_wrappers.instrument_wrap import InstrumentWrap
+from lager.util.on_off import parse_on_off
 
 # ANSI color codes
 GREEN = '\033[92m'
@@ -1312,6 +1313,23 @@ class RigolDP800(SupplyNet):
     def output_is_enabled(self, channel=None):
         """
         Query the status of the specified channel.
+
+        A plain bool for control flow: an unreadable state is False here.
+        State reports use ``output_state``, which keeps it distinct.
+        """
+        return self._read_output(channel) is True
+
+    def output_state(self, channel=None):
+        """True / False / None (unknown) -- see ``SupplyNet.output_state``."""
+        return self._read_output(channel)
+
+    def _read_output(self, channel=None):
+        """``:OUTP?`` as True, False, or None when no clear answer came back.
+
+        Retried: a DP800 occasionally answers a query issued right after a
+        state change with something other than ON/OFF. ``1``/``0`` are
+        accepted as well as ``ON``/``OFF``, in any case -- only ``ON``/``OFF``
+        were, so any other spelling was reported as off.
         """
         import time
         try:
@@ -1327,21 +1345,20 @@ class RigolDP800(SupplyNet):
             # Try multiple queries with slight delays for robustness
             for attempt in range(3):
                 if channel_str is not None:
-                    val = self.instr.query(":OUTP? {0}".format(channel_str)).strip()
+                    val = self.instr.query(":OUTP? {0}".format(channel_str))
                 else:
-                    val = self.instr.query(":OUTP?").strip()
+                    val = self.instr.query(":OUTP?")
 
-                if val == "ON":
-                    return True
-                elif val == "OFF":
-                    return False
+                state = parse_on_off(val)
+                if state is not None:
+                    return state
                 # If we get an unclear response, wait and retry
                 if attempt < 2:
                     time.sleep(0.1)  # Increased from 0.05 for better stability
-            # Default to False if all attempts are ambiguous
-            return False
+            # Every attempt was ambiguous: the supply did not say.
+            return None
         except Exception:
-            return False
+            return None
 
     def num_channels(self):
         # Prefer product field; e.g., "DP821", "DP832A" etc.

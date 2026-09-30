@@ -38,6 +38,7 @@ except (ImportError, ModuleNotFoundError):  # pragma: no cover - box always has 
 
 from lager.devices.catalog import get_device, serial_params, limits_for
 from lager.devices.serial_id import is_serial_address, resolve_address_to_tty
+from lager.util.on_off import parse_on_off
 from lager.instrument_wrappers.instrument_wrap import InstrumentWrap
 from lager.util.device_lock import device_lock
 from .supply_net import (
@@ -400,8 +401,14 @@ class RigolDP700(SupplyNet):
         time.sleep(0.2)
 
     def output_is_enabled(self, channel: Any = None) -> bool:
-        resp = self._safe_query(":OUTP?", "OFF").strip().upper()
-        return resp in ("ON", "1")
+        return self.output_state(channel) is True
+
+    def output_state(self, channel: Any = None):
+        """True / False / None (unknown) -- see ``SupplyNet.output_state``.
+
+        A failed query used to default to "OFF", so it was reported as off.
+        """
+        return parse_on_off(self._safe_query(":OUTP?", ""))
 
     def get_output_mode(self, channel: Any = None) -> str:
         # DP700 reports CV/CC via :OUTP:MODE? on supported firmware; fall back

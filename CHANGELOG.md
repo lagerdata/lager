@@ -12,6 +12,13 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Added
+
+- **`GET /nets/state` entries carry an `enabled` field** (`true`/`false`) for USB,
+  power-supply, battery and electronic-load nets, present only when the on/off state
+  was actually read, so a consumer no longer has to parse the `state` text. The box's
+  `/status` advertises this as `capabilities.netsStateEnabled`.
+
 ### Changed
 
 - **`lager install` and `lager update` deploy this CLI's release tag by default, not `main`.** With no `--version`, lager 0.52.0 deploys `v0.52.0`, so a new box runs a release, uses the pre-built image, and `lager hello` no longer reports `not a release build`. Pass `--version main` for the latest development code. A default `lager update` never rolls a box back: a box ahead of the CLI's release is left where it is, even with `--yes`.
@@ -24,6 +31,25 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 - **`lager ssh-setup` installs its key on a key-only box that one of your keys already reaches.** It refused with "none of your keys reaches it yet", although a key had just answered its probe. It now runs `ssh-copy-id` over that key, with no password prompt. A key-only box that no key reaches is still refused.
 - **`lager install` without a terminal says that it needs one.** When the box's sudo needed a password, the first error named a file it could not install (`etc_lager_perms.sh`), and the missing terminal showed only in ssh's and sudo's output below it. Install now stops before the sudo session and says to run it in a terminal. A box that needs no password still installs without one.
 - **The box's BLE `Central()` makes its own event loop when none is passed.** It called `asyncio.get_event_loop()`, which raises with no current loop: off the main thread today, and in any synchronous script on Python 3.14. Pass `loop=` to share a loop.
+- **An Acroname USB net that is powered now reports `enabled`.** `lager usb <net> state`, `lager nets state` and `lager usb <net> toggle` decided from the port's power and data bits together, so a port powered with its data lines off read `disabled` and `toggle` left it on. They now follow port power on every Acroname model; boxes pick this up with `lager update`.
+- **A USB net saved with an integer `pin` of `0` now controls port 0.** It was treated as having no pin, so the net read the port named by `channel` or was not found at all.
+- **The box log now warns when an Acroname net's address has no hub serial and more than one Acroname hub is attached.** Such a net binds whichever hub answers first, so its state and switching can belong to another hub; add the hub serial to the net's address.
+- **A power supply, battery or electronic load whose output state cannot be read is
+  reported as unknown, not off.** `lager nets state` shows `?` in the on/off slot
+  (`CH1/?/3.30V/0.120A`), the `state` actions of `lager supply`, `lager battery` and
+  `lager eload` print `UNKNOWN`, and the supply and battery TUIs show `--`. Covers the
+  Rigol DP800 and DP700, EA, Keithley 2281S and Rigol DL3021; the DP800 also now
+  accepts `1`/`0` replies, which it read as off.
+- **Battery readings that fail are reported as missing, not as 0.** A failed terminal
+  voltage, current, state-of-charge or open-circuit voltage query read as `0.00V` /
+  `0%`, which looks like a flat battery.
+- **A YKUSH port whose state read fails is reported as unknown, not enabled.**
+- **A LabJack T7 GPIO, ADC or DAC net saved with an integer `pin` of `0` now reads in
+  `lager nets state`.** An ADC or DAC net on pin 0 also blanked every other ADC or DAC
+  net on that T7.
+- **Two USB nets on the same hub port both report its state.** One of them was shown
+  as unreadable.
+- **A watt meter or energy analyzer reading that is missing shows as `?`, not 0.**
 
 ## [0.52.0] - 2026-09-30
 
@@ -47,9 +73,6 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 - **The bench watchdog reports a disabled bench workflow.** It checks that every
   `Bench:` workflow is enabled, and that Bench: Extended has had a scheduled run in
   the last 8 days. Extended problems are filed on the `bench-alert-extended` issue.
-- **An Acroname USB net that is powered now reports `enabled`.** `lager usb <net> state`, `lager nets state` and `lager usb <net> toggle` decided from the port's power and data bits together, so a port powered with its data lines off read `disabled` and `toggle` left it on. They now follow port power on every Acroname model; boxes pick this up with `lager update`.
-- **A USB net saved with an integer `pin` of `0` now controls port 0.** It was treated as having no pin, so the net read the port named by `channel` or was not found at all.
-- **The box log now warns when an Acroname net's address has no hub serial and more than one Acroname hub is attached.** Such a net binds whichever hub answers first, so its state and switching can belong to another hub; add the hub serial to the net's address.
 
 ## [0.51.1] - 2026-09-30
 

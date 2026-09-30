@@ -360,7 +360,7 @@ def _eload(netname, role, action, params):
     if action == "state":
         state = dev.get_state_dict()
         msg = "Mode %s, %s, V %.3f, I %.3f, P %.3f" % (
-            state["mode"], "Enabled" if state["input_enabled"] else "Disabled",
+            state["mode"], {True: "Enabled", False: "Disabled"}.get(state["input_enabled"], "Unknown"),
             state["measured_voltage"], state["measured_current"],
             state["measured_power"])
         return _ok(msg, state)

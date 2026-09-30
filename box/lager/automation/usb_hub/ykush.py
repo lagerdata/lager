@@ -13,6 +13,7 @@ from typing import Any, Callable, Sequence
 from .usb_net import (
     HUB_OP_TIMEOUT_S,
     LibraryMissingError,
+    PortStateError,
     USBNet,
     hub_access,
     run_hub_op,
@@ -342,11 +343,24 @@ class YKUSHUSBNet(USBNet):
 
     @staticmethod
     def _read_enabled(dev, port: int) -> bool:
-        """Read the live enabled/disabled state of a port from the device."""
-        try:
-            return bool(dev.get_port_state(port))
-        except AttributeError:
-            return bool(getattr(dev, "switch_port_state_get", lambda p: 0)(port))
+        """Read the live enabled/disabled state of a port from the device.
+
+        pykush answers ``YKUSH_PORT_STATE_UP``, ``YKUSH_PORT_STATE_DOWN``, or
+        ``YKUSH_PORT_STATE_ERROR`` (255) when the hub did not answer the query.
+        ``bool()`` of that read the error as "enabled"; anything but UP/DOWN
+        now raises, which a state report shows as unknown. A pykush build with
+        neither read method raises too, rather than reading as "disabled".
+        """
+        reader = getattr(dev, "get_port_state", None) or getattr(
+            dev, "switch_port_state_get", None)
+        if reader is None:
+            raise PortStateError("pykush build has no port-state read")
+        raw = reader(port)
+        if raw == _PORT_UP:
+            return True
+        if raw == _PORT_DOWN:
+            return False
+        raise PortStateError(f"YKUSH port {port} state unreadable (got {raw!r})")
 
     def state(self, net_name: str, port: int) -> bool:        # type: ignore[override]
         self._validate_port(port)

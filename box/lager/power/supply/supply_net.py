@@ -91,6 +91,20 @@ class SupplyNet(abc.ABC):
         # Default implementation falls back to state()
         self.state()
 
+    def output_state(self, channel=None):
+        """Whether the output is on: ``True``, ``False``, or ``None`` if unknown.
+
+        What a state REPORT reads. ``output_is_enabled()`` stays a plain bool
+        for the drivers' own control flow (restore-after-configure, "enable
+        first" guards), and several drivers fold a failed or garbled query into
+        ``False`` there. Reported through that, a read that failed is shown as a
+        confident "off". This must never do that: a driver whose
+        ``output_is_enabled`` swallows errors overrides this with a read that
+        can say "unknown". The default covers drivers whose
+        ``output_is_enabled`` raises on failure.
+        """
+        return _safe(lambda: bool(self.output_is_enabled(channel)))
+
     def get_monitor_state(self, channel=None) -> dict:
         """Gather the supply TUI's full monitor state in ONE call.
 
@@ -137,7 +151,7 @@ class SupplyNet(abc.ABC):
             'voltage': _safe(lambda: float(self.measure_voltage(channel))),
             'current': _safe(lambda: float(self.measure_current(channel))),
             'power': _safe(lambda: float(self.measure_power(channel))),
-            'enabled': _safe(lambda: self.output_is_enabled(channel)),
+            'enabled': self.output_state(channel),
             'mode': _safe(lambda: self.get_output_mode(channel), 'CV')
                     if hasattr(self, 'get_output_mode') else 'CV',
             'voltage_set': _safe(lambda: float(self.get_channel_voltage(source=channel))),

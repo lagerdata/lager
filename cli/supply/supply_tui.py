@@ -284,7 +284,9 @@ class SupplyTUI(App):
         state_widget.voltage = format_value(state.get("voltage"))
         state_widget.current = format_value(state.get("current"))
         state_widget.power = format_value(state.get("power"))
-        state_widget.enabled = "ON" if state.get("enabled") else "OFF"
+        # None: the instrument did not say. Showing that as OFF is a confident
+        # wrong answer; "--" matches the other unread fields.
+        state_widget.enabled = {True: "ON", False: "OFF"}.get(state.get("enabled"), "--")
         state_widget.mode = format_value(state.get("mode"))
         state_widget.ocp_limit = format_value(state.get("ocp_limit"))
         state_widget.ocp_tripped = "YES" if state.get("ocp_tripped") else "NO"

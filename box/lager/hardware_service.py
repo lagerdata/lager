@@ -1125,6 +1125,17 @@ def cache_stats():
 _DIO_OFFSETS = {"FIO": 0, "EIO": 8, "CIO": 16, "MIO": 20}
 
 
+def _batch_pin(net):
+    """The pin a batch_read entry names, as sent: ``""`` only when it is absent.
+
+    ``net.get("pin") or ""`` turned an integer pin of 0 into ``""``, so FIO0
+    read as having no pin and AIN0/DAC0 became an empty register name -- which
+    fails the one ``eReadNames`` call for every ADC (or DAC) net on the T7.
+    """
+    pin = net.get("pin")
+    return "" if pin is None else pin
+
+
 def _dio_bit_position(pin_str):
     """Map a LabJack T7 pin name to its DIO bit position (0-22), or None."""
     import re
@@ -1224,7 +1235,7 @@ def labjack_batch_read():
                     dir_bits = int(ljm_mod.eReadName(handle, "DIO_DIRECTION"))
                     state_bits = int(ljm_mod.eReadName(handle, "DIO_STATE"))
                     for n in gpio_nets:
-                        pin = n.get("pin") or ""
+                        pin = _batch_pin(n)
                         bit = _dio_bit_position(pin)
                         if bit is None:
                             continue
@@ -1237,7 +1248,7 @@ def labjack_batch_read():
                 try:
                     ain_names, ain_ordered = [], []
                     for n in adc_nets:
-                        pin = n.get("pin") or ""
+                        pin = _batch_pin(n)
                         try:
                             ch = f"AIN{int(pin)}"
                         except (ValueError, TypeError):
@@ -1254,7 +1265,7 @@ def labjack_batch_read():
                 try:
                     dac_names, dac_ordered = [], []
                     for n in dac_nets:
-                        pin = n.get("pin") or ""
+                        pin = _batch_pin(n)
                         try:
                             ch = f"DAC{int(pin)}"
                         except (ValueError, TypeError):

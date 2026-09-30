@@ -15,6 +15,7 @@ except (ImportError, ModuleNotFoundError):
     pyvisa = None
 
 from lager.instrument_wrappers.instrument_wrap import InstrumentWrap
+from lager.util.on_off import parse_on_off
 from .supply_net import (
     SupplyNet,
     SupplyBackendError,
@@ -302,9 +303,16 @@ class EA(SupplyNet):
             pass
 
     def _enabled(self) -> bool:
-        # EA might return "1"/"0" instead of "ON"/"OFF"
-        resp = self._safe_query("OUTPut?", "OFF").strip().upper()
-        return resp in ("ON", "1")
+        return self.output_state() is True
+
+    def output_state(self, channel=None):
+        """True / False / None (unknown) -- see ``SupplyNet.output_state``.
+
+        EA answers "1"/"0" or "ON"/"OFF". A failed query, or an SCPI error
+        reply (which ``_safe_query`` turns into its default), used to default
+        to "OFF" and read as off.
+        """
+        return parse_on_off(self._safe_query("OUTPut?", ""))
 
     # Limits - Use proper EA SCPI commands with :LEVel
     def _get_ovp(self) -> str:

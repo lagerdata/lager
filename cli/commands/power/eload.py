@@ -93,7 +93,8 @@ def _print_mode_result(mode: str, value: float, *, is_set: bool) -> None:
 
 def _print_eload_state(state: dict) -> None:
     """Multi-line state block matching rigol_dl3021.print_state()."""
-    input_state = "Enabled" if state.get("input_enabled") else "Disabled"
+    input_state = {True: "Enabled", False: "Disabled"}.get(
+        state.get("input_enabled"), "Unknown")
     mode = state.get("mode", "?")
 
     click.secho("Electronic Load State:", fg="green")
