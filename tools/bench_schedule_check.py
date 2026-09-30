@@ -88,6 +88,26 @@ and each missed night alarms until the schedule shows it has come back.
 
 The cron is parsed from the workflow rather than duplicated here, so the two
 cannot drift.
+
+WHY EVERY BENCH WORKFLOW, NOT JUST THE NIGHTLY
+----------------------------------------------
+Everything above reads nightly-bench.yml's history, so it is blind to the other
+bench workflows. Bench: Extended was switched to `disabled_manually` and missed
+at least three Saturdays with nothing reporting it, because a disabled
+workflow produces no run to fail and nothing here looked. Two checks close that:
+
+  disabled  any workflow whose display name starts with BENCH_PREFIX is not
+            `active`. The set is read from the workflow files, so a new bench
+            workflow is covered without an edit here.
+  extended  the newest scheduled Bench: Extended run is older than
+            EXTENDED_STALE_ALERT_HOURS: a weekly cron plus a day of headroom,
+            since the scheduled-event queue has delayed runs by up to ~11h.
+
+Both are PROBLEMS. A problem about Bench: Extended is routed to its own alert
+stream (`bench-alert-extended`), not the nightly's: the nightly's recovery job
+closes `bench-alert` on a green night, which would close a still-true Extended
+problem and have the next watchdog run file it again -- the loop described in
+WHY A RECOVERED GAP IS SILENT.
 """
 
 import json
@@ -97,7 +117,14 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-NIGHTLY = os.path.join(REPO_ROOT, ".github", "workflows", "nightly-bench.yml")
+WORKFLOWS_DIR = os.path.join(REPO_ROOT, ".github", "workflows")
+NIGHTLY = os.path.join(WORKFLOWS_DIR, "nightly-bench.yml")
+
+#: Display-name prefix that marks a workflow as driving (or guarding) the bench.
+#: The workflows README documents the convention.
+BENCH_PREFIX = "Bench:"
+#: Repository path of the weekly workflow, as the Actions API reports it.
+EXTENDED_PATH = ".github/workflows/bench-extended.yml"
 
 QUEUED_ALERT_HOURS = float(os.environ.get("QUEUED_ALERT_HOURS", "3"))
 RUNNING_ALERT_HOURS = float(os.environ.get("RUNNING_ALERT_HOURS", "5"))
@@ -105,6 +132,8 @@ STALE_ALERT_HOURS = float(os.environ.get("SCHEDULE_STALE_ALERT_HOURS", "26"))
 GAP_ALERT_HOURS = float(os.environ.get("SCHEDULE_GAP_ALERT_HOURS", "36"))
 GAP_LOOKBACK_HOURS = float(os.environ.get("SCHEDULE_GAP_LOOKBACK_HOURS", "96"))
 LATENESS_WARN_HOURS = float(os.environ.get("SCHEDULE_LATENESS_WARN_HOURS", "3"))
+# One week plus a day: the cron is weekly and a scheduled run can land ~11h late.
+EXTENDED_STALE_ALERT_HOURS = float(os.environ.get("EXTENDED_STALE_ALERT_HOURS", "192"))
 
 # Healthy nights land within an hour, so a mean over three or more samples is
 # already a trend. Below that one queue hiccup would dominate.
@@ -245,13 +274,73 @@ def check_lateness(runs, now=None, cron=None):
     ]
 
 
+_NAME_RE = re.compile(r'^name:\s*["\']?(.*?)["\']?\s*$', re.MULTILINE)
+
+
+def bench_workflow_paths(workflows_dir=WORKFLOWS_DIR):
+    """Repository paths of every workflow whose display name is a bench one."""
+    paths = set()
+    for fname in sorted(os.listdir(workflows_dir)):
+        if not fname.endswith((".yml", ".yaml")):
+            continue
+        m = _NAME_RE.search(open(os.path.join(workflows_dir, fname)).read())
+        if m and m.group(1).startswith(BENCH_PREFIX):
+            paths.add(f".github/workflows/{fname}")
+    return paths
+
+
+def check_workflow_states(workflows, expected_paths):
+    """[(path, problem)] for each bench workflow that is not `active`.
+
+    `workflows` is the Actions API's workflow list ({path, state, name}). A
+    bench workflow missing from it entirely is reported too: that is a file on
+    main that GitHub does not know about, which runs as surely never as a
+    disabled one.
+    """
+    by_path = {w.get("path"): w for w in workflows}
+    problems = []
+    for path in sorted(expected_paths):
+        w = by_path.get(path)
+        if w is None:
+            problems.append((path, f"{path} is not registered with GitHub Actions "
+                                   f"at all, so it never runs"))
+        elif w.get("state") != "active":
+            problems.append((path, f"{w.get('name') or path} ({path}) is "
+                                   f"`{w.get('state')}` - it will not run until "
+                                   f"re-enabled in the Actions tab"))
+    return problems
+
+
+def check_extended_cadence(runs, now=None):
+    """Problems when Bench: Extended has not been scheduled for over a week."""
+    now = now or datetime.now(timezone.utc)
+    sched = scheduled_runs(runs)
+    if not sched:
+        return [f"no scheduled Bench: Extended run in the {len(runs)} run(s) "
+                f"examined - is its schedule disabled?"]
+    age = (now - parse_created(sched[0])).total_seconds() / 3600
+    if age > EXTENDED_STALE_ALERT_HOURS:
+        return [f"newest scheduled Bench: Extended run is {age / 24:.1f} days old "
+                f"(its cron is weekly) - is it disabled, or is its cron dead?"]
+    return []
+
+
+def _write_list(path, items):
+    with open(path, "w") as f:
+        f.write("\n".join(f"- {item}" for item in items))
+
+
 def main():
     # Two queries, because they answer different questions. Run health needs
     # recent runs of every event; cadence needs scheduled runs only, filtered
     # server-side so a burst of manual dispatches cannot evict the history the
     # cadence check depends on.
-    if len(sys.argv) != 3:
-        print(f"usage: {sys.argv[0]} <all-runs.json> <scheduled-runs.json>",
+    #
+    # The optional second pair feeds the checks on every bench workflow: the
+    # Actions workflow list, and Bench: Extended's scheduled runs.
+    if len(sys.argv) not in (3, 5):
+        print(f"usage: {sys.argv[0]} <all-runs.json> <scheduled-runs.json> "
+              f"[<workflows.json> <extended-scheduled-runs.json>]",
               file=sys.stderr)
         return 2
 
@@ -261,6 +350,22 @@ def main():
     problems = check_run_health(all_runs) + check_schedule(scheduled)
     warnings = check_lateness(scheduled)
 
+    # Problems about Bench: Extended go to problems-extended.txt, which the
+    # workflow files under Extended's own label. See WHY EVERY BENCH WORKFLOW.
+    extended_problems = []
+    if len(sys.argv) == 5:
+        workflows = json.loads(open(sys.argv[3]).read())
+        extended_runs = json.loads(open(sys.argv[4]).read())
+        for path, item in check_workflow_states(workflows, bench_workflow_paths()):
+            (extended_problems if path == EXTENDED_PATH else problems).append(item)
+        extended_problems += check_extended_cadence(extended_runs)
+
+    if extended_problems:
+        print("EXTENDED PROBLEMS:")
+        for item in extended_problems:
+            print(f"- {item}")
+        _write_list("problems-extended.txt", extended_problems)
+
     # Written whether or not anything is wrong: the workflow puts this in the
     # run summary every time, and folds it into the alert body when a problem
     # does fire. A trend nobody is paged for still has to be visible somewhere.
@@ -268,18 +373,17 @@ def main():
         print("WARNINGS (reported, not alerted):")
         for item in warnings:
             print(f"- {item}")
-        with open("warnings.txt", "w") as f:
-            f.write("\n".join(f"- {item}" for item in warnings))
+        _write_list("warnings.txt", warnings)
 
-    if not problems:
-        print("Nightly bench runs are flowing normally.")
+    if not problems and not extended_problems:
+        print("Bench runs are flowing normally.")
         return 0
 
-    print("PROBLEMS:")
-    for item in problems:
-        print(f"- {item}")
-    with open("problems.txt", "w") as f:
-        f.write("\n".join(f"- {item}" for item in problems))
+    if problems:
+        print("PROBLEMS:")
+        for item in problems:
+            print(f"- {item}")
+        _write_list("problems.txt", problems)
     return 1
 
 

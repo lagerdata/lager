@@ -23,11 +23,12 @@
 # workflow deliberately does NOT trigger on `pull_request` — a fork PR must not
 # be able to execute code on the bench.
 #
-# No cron of its own. Nightly, nightly-bench.yml invokes this workflow behind
-# the "Bench: Box Lifecycle" run, so the instruments are exercised against a
-# box that was just updated and reinstalled rather than against whatever it
-# happened to be running. It also runs on manual dispatch. It has no push
-# trigger; see the `on:` block below for why.
+# No cron or push trigger of its own. nightly-bench.yml invokes this workflow
+# behind the "Bench: Box Lifecycle" run -- nightly and after every merge to
+# main -- so the instruments are exercised against a box that was just updated
+# and reinstalled rather than against whatever it happened to be running. It
+# also runs on manual dispatch. See the `on:` block below for why the push
+# trigger lives on the chain and not here.
 #
 # Instrument power: the Rigol and Keithley sit on AC relays driven by the
 # bench LabJack (see .github/workflows/README.md). This job powers them on
@@ -53,9 +54,12 @@ on:
   # with merges queueing behind each other. A nightly that actually tests a
   # known commit is worth more than nine runs a day that cannot.
   #
-  # Feedback latency is therefore up to one night. That is the honest cost of
-  # one bench, and it is bounded by dispatching this workflow by hand when a
-  # change warrants it -- see "Bench-testing a branch" in README.md.
+  # Merges to main ARE covered, one level up: nightly-bench.yml triggers on
+  # push to main and chains lifecycle (which deploys github.sha) before this
+  # workflow, and its concurrency group collapses a burst of merges into one
+  # run of the newest commit. So the rule here is narrower than "no bench run
+  # per merge": this LEAF must never run on its own undeployed. Do not add a
+  # push trigger here; add it to the chain.
   workflow_call:
     inputs:
       box_name:

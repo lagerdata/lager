@@ -1,9 +1,9 @@
 # Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 #
-# The nightly bench sweep. Proves, in causal order and against ONE commit of
-# main, that the box can be updated and reinstalled and that its instruments
-# still work afterwards:
+# The bench chain: nightly, and after every merge to main. Proves, in causal
+# order and against ONE commit of main, that the box can be updated and
+# reinstalled and that its instruments still work afterwards:
 #
 #   Bench: Box Lifecycle (update paths -> uninstall -> install)
 #     -> Bench: Integration Tests
@@ -18,10 +18,25 @@
 # reference runs from the same commit as this workflow, so both jobs exercise
 # the same SHA.
 #
-# NOTE: deliberately no `concurrency:` key here. Both called workflows declare
-# the shared hardware-ci group; a caller sharing that group would hold the slot
-# while waiting on a child that wants the same slot — a deadlock. The bench is
-# still serialized, by that group on the children and by the box's own lock.
+# Concurrency is two-level, and the two groups must stay DIFFERENT.
+#
+#   bench-chain-<box>  (this workflow)  one chain at a time, end to end
+#   hardware-ci-<box>  (each child)     one bench job at a time
+#
+# The children alone serialize jobs, not chains. The slot is released between
+# lifecycle and integration, and a second chain waiting on the same group
+# took it there on 2026-09-28: its lifecycle deployed a branch, and the first
+# chain's integration then failed its ref-guard against a box that had just
+# been moved off the commit it was testing. The night produced no hardware
+# result. Holding bench-chain for the whole run makes a second chain wait
+# until the first has finished both jobs.
+#
+# It must not be hardware-ci itself: a caller holding the children's group
+# would wait on a child that wants the same slot, which deadlocks.
+#
+# Residual: a hand dispatch of Bench: Box Lifecycle on its own holds only
+# hardware-ci, so it can still land between this chain's two jobs. The
+# integration ref-guard reports that by name; it cannot pass silently.
 #
 # Instrument AC power (relays) lives inside each called workflow: each powers
 # the Rigol/Keithley on at its start and off at its end. Deliberately NOT
@@ -36,7 +51,10 @@
 # under which they must still be able to run. Direct dispatches of the child
 # workflows bypass notification — a dispatch has a human watching by
 # definition — and so does a dispatch of THIS workflow on any ref but main,
-# since the issue describes main's bench. bench-watchdog.yml covers the
+# since the issue describes main's bench. A push-triggered run is a run of
+# main, so it files and closes exactly as the scheduled one does, and its
+# alert names the commits added since the last green run.
+# bench-watchdog.yml covers the
 # remaining blind spot, the night that never starts (runner offline, cron
 # dead).
 
@@ -55,7 +73,40 @@ on:
     # against this cron and alarms when the mean gets large enough that a late
     # night and a missed night stop being distinguishable.
     - cron: "17 10 * * *"  # ~3 AM PDT / 2 AM PST (cron is UTC; drifts 1h across DST)
+  # Every merge to main gets the whole chain, so a regression is attributed to
+  # a handful of commits within about an hour instead of a day's worth of
+  # merges the next night. The chain is what makes this possible where a push
+  # trigger on integration-tests.yml was not: lifecycle deploys github.sha
+  # first, so integration tests the commit that was pushed rather than
+  # whatever the last run left on the box.
+  #
+  # Bursts cost one run, not one per merge. GitHub keeps one PENDING run per
+  # concurrency group and a newer arrival replaces it, so merges landing while
+  # a chain runs collapse into a single run of the newest commit. A ~41-minute
+  # chain therefore bounds bench time by merge bursts, not by merge count.
+  #
+  # The same rule means a queued run can be displaced by a merge. That is
+  # harmless for a run of main -- the replacement tests a newer main -- but a
+  # dispatch of a feature branch waiting here is lost the same way. Check the
+  # run list before dispatching, and freeze merges while a branch run waits.
+  #
+  # A push that changes only documentation cannot change what the bench
+  # measures, so it does not run. paths-ignore skips a run only when EVERY
+  # changed file matches, so a code change that also edits the CHANGELOG
+  # still runs. Workflow files are deliberately not ignored.
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - '**/*.mdx'
   workflow_dispatch:
+
+# See "Concurrency is two-level" above. `cancel-in-progress: false` protects a
+# running chain; nothing can protect a pending one.
+concurrency:
+  group: bench-chain-${{ vars.LAGER_BOX || 'MASTER' }}
+  cancel-in-progress: false
 
 # Default token: checkout only. A job that needs more must say so itself.
 permissions:
@@ -90,6 +141,8 @@ jobs:
     permissions:
       contents: read
       issues: write
+      # Reads this workflow's run history for the last green commit.
+      actions: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -104,10 +157,32 @@ jobs:
           GH_REPO: ${{ github.repository }}
           LIFECYCLE: ${{ needs.lifecycle.result }}
           INTEGRATION: ${{ needs.integration.result }}
+          EVENT: ${{ github.event_name }}
+          SHA: ${{ github.sha }}
+          SERVER_URL: ${{ github.server_url }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
+          # The commits this run added since the last fully green chain on
+          # main are the first thing triage needs, and the run page does not
+          # show them. `status=success` is the run's conclusion, which is
+          # success only when both children succeeded -- the same condition
+          # notify-recovery closes on. Best-effort: with no green run in
+          # view, or an API hiccup, the alert still files, saying so.
+          last_green=$(gh api \
+            "repos/$GH_REPO/actions/workflows/nightly-bench.yml/runs?branch=main&status=success&per_page=1" \
+            --jq '.workflow_runs[0].head_sha // empty' 2>/dev/null || true)
+          if [ -z "$last_green" ]; then
+            range="No green chain run of main found to compare against."
+          elif [ "$last_green" = "$SHA" ]; then
+            range="The last green chain run tested this same commit (\`${SHA:0:12}\`), so no new code is suspect: look at the bench before the change under test."
+          else
+            range="Commits since the last green chain run: ${SERVER_URL}/${GH_REPO}/compare/${last_green:0:12}...${SHA:0:12}"
+          fi
+
           cat > "$RUNNER_TEMP/alert-body.md" <<EOF
-          Nightly bench run failed: ${RUN_URL}
+          Bench chain run failed (trigger: \`${EVENT}\`, commit \`${SHA:0:12}\`): ${RUN_URL}
+
+          ${range}
 
           | Job | Result |
           |---|---|
@@ -118,7 +193,7 @@ jobs:
           confirm the box is running the code under test first, then
           instrument power relays and USB enumeration, then whether the box's
           auth service is reachable, then the change under test. This issue is
-          closed automatically by the next fully green nightly run of main.
+          closed automatically by the next fully green chain run of main.
           EOF
           bash tools/bench_alert.sh alert "Nightly bench is failing" "$RUNNER_TEMP/alert-body.md"
         shell: bash

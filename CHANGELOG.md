@@ -12,6 +12,23 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Changed
+
+- **Every merge to `main` now runs the bench chain.** `nightly-bench.yml` also
+  triggers on push to `main`, skipping pushes that change only documentation. A
+  burst of merges runs once, on the newest commit. The alert for a failed run
+  links the commits added since the last green run.
+
+### Fixed
+
+- **A second bench chain can no longer run between another chain's two jobs.** One
+  chain's lifecycle job could deploy its commit in the gap before another chain's
+  integration job. The ref check then failed, and that run produced no hardware
+  result. `nightly-bench.yml` now holds its own concurrency group for the whole run.
+- **The bench watchdog reports a disabled bench workflow.** It checks that every
+  `Bench:` workflow is enabled, and that Bench: Extended has had a scheduled run in
+  the last 8 days. Extended problems are filed on the `bench-alert-extended` issue.
+
 ## [0.51.1] - 2026-09-30
 
 ### Changed
