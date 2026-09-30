@@ -46,13 +46,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 2844 (+2 xfailed) |
+| `unit (cli)` | `test/unit/cli/` | 2857 (+2 xfailed) |
 | `unit (box)` | `test/unit/box/` | 3237 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 380 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 110 (+1 skipped) |
-| | **Total gated** | **6765** |
+| | **Total gated** | **6778** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -452,7 +452,7 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 255 files)
+### Local Unit Tests (`test/unit/` -- 256 files)
 
 #### Box Unit Tests (`test/unit/box/` -- 132 files)
 
@@ -595,7 +595,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_bench_endpoint.py` | `GET /bench` on the box HTTP server: the body is the bench manifest built from the loaded MCP state (`box_id`, nets with `dut_connection`, `reference_keys`, `metadata_sources`, `capability_bindings`); `ETag` is the quoted content hash and a matching `If-None-Match` in any spelling (quoted, weak, bare, listed, `*`) gets 304 with no body; a build failure is a 500 that says why; the first request on a process that never called `init_state` loads from disk once |
 | `test_status_bench_fields.py` | `/status` advertises `capabilities.benchManifest` from the route's registration (never hardcoded), the real app mounts `/bench`, and the nets block carries `dut_connection` and `test_hints` with the same present-when-unset contract as `purpose` |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 107 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 108 files)
 
 | File | What it tests |
 |------|---------------|
@@ -611,6 +611,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_configure_docker_dns.py` | `configure_docker_dns`: daemon.json `dns` entries must be bare IPs or Docker refuses to start |
 | `test_configure_docker_dns_rollback.py` | Rollback behavior of `configure_docker_dns.sh` when the DNS optimization fails, and that a run whose staged daemon.json already matches the current one installs nothing and restarts nothing. Two runs, so the second one recognizes what the first settled on |
 | `test_deploy_box_image_ref.py` | `setup_and_deploy_box.sh` and `_box_image_ref_for_version` agree on which versions have a published image, computed in one conditional so the two cannot drift; plus the anonymous GHCR digest resolution and the `LAGER_BOX_IMAGE` handoff to `start_box.sh`. The deploy's image and container handoff runs for real with ssh stubbed: the image is pulled before the containers stop, the build cache is cleared and the image handed to `start_box.sh` only after a successful pull, a miss builds with the cache kept, and a stopped daemon ends the deploy first. The generated pull command runs against a fake docker. Also the second prune that reclaims the replaced image once `start_box.sh` tags the new one, pinned by count and order, and `LAGER_BOX_IMAGE_PULL` resolving to the same on and off words `lager update` reads |
+| `test_default_deploy_version.py` | `lager install` and `lager update` with no `--version` deploy the release tag of the CLI (`v{__version__}`), not `main`: the tag resolves as a tag and has a published image, install hands it to the deploy script and says so while an explicit `--version main` is passed through unchanged, install's closing hint matches what was installed, `/etc/lager/ref`'s ref name is read past banner noise, and a defaulted update stops before the rollback prompt so `--yes` cannot downgrade a box |
 | `test_deployed_ref.py` | `/etc/lager/ref` records which ref produced the box's code (`<ref>@<sha>`), so a branch deploy is distinguishable from the release tag it shares a version number with; the release-tag predicate is pinned against `resolve_version_ref` so the two cannot drift, and a box reporting no ref renders exactly as before; `lager install` records version, ref and build-hash through update's writer, reads the version back, and exits non-zero when a write fails |
 | `test_debug_auto_connect_gate.py` | `_auto_connect_if_needed` gates on the target answering, not on a live gdbserver: a confirmed attachment skips the connect, an absent target forces a reconnect rather than proceeding, and an inconclusive answer falls back to server liveness so a working session is never torn down. Covers `_is_connected` and `_target_attached`, which had no direct tests |
 | `test_debug_flash_erase_reconnect.py` | `lager debug flash`'s default erase step: no reconnect between `/debug/erase` and `/debug/flash`, a failing `/debug/connect` cannot abort the flash, and the verdict of both `flash` and `erase` follows the programmer's own output rather than reporting "Flashed!" / "Erase complete!" unconditionally. Also that a failed erase prints the box's own error, with its `Erase failed:` prefix shown once. And `--erase-start` / `--erase-size` on both commands: parsed to integers (`2M`), refused before any box traffic when half a pair, combined with `--no-erase`, negative, past 4 GiB, or outside the DA1469x window; refused on a box whose `/health` lists no `erase_range` feature; the range the box reports printed after `Erase complete:`, with the old line kept for a box that reports none. Also `health` printing the service's `features` line, `none reported` for a box that has none. Also that a J-Link programming failure (a failed RAMCode download, as a DA1469x bench printed it, with `Downloading file` before it) fails the flash even beside programmed-evidence lines, and that the box's `programmed` / `error` verdict is used when present, with the text read for an older box. Also that a probe Commander cannot use at all, as a second J-Link client left it, fails the flash and its pre-erase and the erase command, winning over `Downloading file`, and that a `Downloading file` with no `Flash download` line after it fails the flash while a skipped already-matching bank does not. Also that a J-Link flash that never loaded a file (the banner and nothing else) fails, a box's `JLinkExe exited` line is named, and an erase J-Link started and never confirmed fails. Also that `LAGER_JLINK_REQUIRE_EVIDENCE=0` on the CLI side is sent with flash and erase (and nothing extra by default) and relaxes an older box's text verdict, but not its failure lines |
