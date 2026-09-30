@@ -47,12 +47,12 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` | 2844 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 3226 |
+| `unit (box)` | `test/unit/box/` | 3237 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 380 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 110 (+1 skipped) |
-| | **Total gated** | **6754** |
+| | **Total gated** | **6765** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -452,9 +452,9 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 254 files)
+### Local Unit Tests (`test/unit/` -- 255 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 131 files)
+#### Box Unit Tests (`test/unit/box/` -- 132 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -583,6 +583,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_uart_session_cleanup.py` | Websocket UART read loop heals in place instead of stopping on a failed read, plus the three ways a held UART net is freed — a departed client (which the loop's own heartbeat cannot detect, because the loop writes it), a wedged reader, and an operator force-release. Also that a read failing after teardown closed the port is not a read error, and that the in-use error names the net holding the device |
 | `test_usb_cycle_reenumeration.py` | `USBNet.cycle`'s re-enumeration verdict, read from the kernel's USB topology rather than from the hub: the bus sampled before the port is cut and again while it is dark, so what left in between is what the port carries. All four outcomes -- a device that returns, one that does not, a genuinely empty port, and a bus that could not be read (which must never be reported as empty) -- plus power restored on every path, a bounded wait, and a guard that the Acroname and YKUSH drivers still inherit this rather than overriding it |
 | `test_usb_devices_dfu.py` | `GET /usb/devices` sysfs enumeration and `POST /usb/dfu` list/download/detach argument building, and what `POST /usb/command` reports for each `cycle` result: the message and the `outcome` field |
+| `test_usb_port_parsing.py` | Which hub port a saved USB net names: `pin` wins over `channel` only when set, so an integer pin of 0 addresses port 0 instead of falling through or dropping the net; the dispatcher and `USBNetWrapper` agree |
 | `test_usb_scanner_custom.py` | Custom-device surfacing in box HTTP scanner GET /instruments/list. Also the SuperSpeed companion dedupe: one physical dock lists as one instrument, and a missing bus root pairs nothing rather than pairing everything. Also what the Dexarm handshake -- the one scan step that WRITES to hardware -- is allowed to touch: every channel of a multi-interface chip and every saved uart net's tty reach the exclusion set, a foreign or unresolvable VID:PID is never opened at all, a port held by another process is skipped, an arm that a saved arm net points at is listed with no write at all (a handshake there used to take that arm's reply in the middle of a command), and `LAGER_ARM_PROBE` off/force widen or close the gate without ever dropping the exclusive open or the modem-line settings. |
 | `test_usb_scanner_uart_fallback.py` | UART enumeration without USB serial by matching sysfs path; two identical adapters keep distinct ttys and the channel catalog stays unmutated |
 | `test_webcam_detection.py` | sysfs-based webcam detection (`_by_camera`) against a fake sysfs tree |

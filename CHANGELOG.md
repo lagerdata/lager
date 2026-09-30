@@ -32,6 +32,9 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 - **The bench watchdog reports a disabled bench workflow.** It checks that every
   `Bench:` workflow is enabled, and that Bench: Extended has had a scheduled run in
   the last 8 days. Extended problems are filed on the `bench-alert-extended` issue.
+- **An Acroname USB net that is powered now reports `enabled`.** `lager usb <net> state`, `lager nets state` and `lager usb <net> toggle` decided from the port's power and data bits together, so a port powered with its data lines off read `disabled` and `toggle` left it on. They now follow port power on every Acroname model; boxes pick this up with `lager update`.
+- **A USB net saved with an integer `pin` of `0` now controls port 0.** It was treated as having no pin, so the net read the port named by `channel` or was not found at all.
+- **The box log now warns when an Acroname net's address has no hub serial and more than one Acroname hub is attached.** Such a net binds whichever hub answers first, so its state and switching can belong to another hub; add the hub serial to the net's address.
 
 ## [0.51.1] - 2026-09-30
 

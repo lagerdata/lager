@@ -107,6 +107,21 @@ def validate_off_time(off_time) -> float:
     return value
 
 
+def net_port(record):
+    """The hub port a saved USB net names, or None when it names none.
+
+    ``pin`` wins over ``channel``, but only when it is actually set. The old
+    ``record.get("pin") or record.get("channel")`` treated an integer pin of 0
+    as missing: such a net fell through to ``channel`` (another port, when that
+    is set) or was dropped as having no port at all.
+    """
+    for key in ("pin", "channel"):
+        value = record.get(key)
+        if value is not None and str(value).strip() != "":
+            return int(value)
+    return None
+
+
 def _local_hub_lock(key: str) -> threading.Lock:
     with _local_hub_locks_guard:
         lock = _local_hub_locks.get(key)

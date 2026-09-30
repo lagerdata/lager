@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Optional
 
 from .dispatcher import _controller_for
+from .usb_net import net_port
 
 
 class USBNetWrapper:
@@ -47,8 +48,7 @@ class USBNetWrapper:
         self._config = net_config
 
         # Extract configuration
-        port = net_config.get('pin') or net_config.get('channel')
-        self.port = int(port) if port is not None else None
+        self.port = net_port(net_config)
         self.instrument = net_config.get('instrument', '')
         self.address = net_config.get('address', '')
 
