@@ -94,11 +94,29 @@ class InstallDefault(unittest.TestCase):
         self.assertEqual(deployed, f"v{cli.__version__}")
         self.assertIn("No --version given", result.output)
         self.assertIn("--version main", result.output)
+        # The box is already on this CLI's release; a bare update now is a no-op.
+        self.assertIn("After you upgrade the CLI", result.output)
 
     def test_an_explicit_main_is_still_main_and_says_nothing(self):
         result, deployed = self._install(["--version", "main"])
         self.assertEqual(deployed, "main")
         self.assertNotIn("No --version given", result.output)
+        self.assertIn("lager update --box [BOX_NAME] --version main", result.output)
+
+
+class DeployedRefName(unittest.TestCase):
+    def _read(self, rc, stdout):
+        return update_mod._read_deployed_ref_name(lambda cmd: _proc(rc, stdout))
+
+    def test_it_is_the_ref_half(self):
+        self.assertEqual(self._read(0, "cf/my-branch@071be04\n"), "cf/my-branch")
+
+    def test_banner_noise_is_skipped(self):
+        self.assertEqual(self._read(0, "Welcome!\n\nv0.52.0@b73aa66\n"), "v0.52.0")
+
+    def test_no_file_is_empty(self):
+        self.assertEqual(self._read(1, ""), "")
+        self.assertEqual(self._read(0, ""), "")
 
 
 class UpdateDefault(unittest.TestCase):

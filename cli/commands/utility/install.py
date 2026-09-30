@@ -826,4 +826,8 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
     click.echo()
     click.secho("Next steps:", fg='cyan')
     click.echo("  - Verify that the box works: lager hello --box [BOX_NAME]")
-    click.echo("  - Please run 'lager update --box [BOX_NAME]' to update the box to the latest version")
+    # The box is already on `version`, so a bare update right now does nothing.
+    if resolve_version_ref(version)[2].startswith('refs/tags/'):
+        click.echo("  - After you upgrade the CLI, update the box to match: lager update --box [BOX_NAME]")
+    else:
+        click.echo(f"  - To pull later commits on {version}: lager update --box [BOX_NAME] --version {version}")

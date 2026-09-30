@@ -27,6 +27,7 @@ from ...box_storage import (
     resolve_and_validate_box,
 )
 from ...context import get_default_box
+from ...core.utils import looks_like_release_tag
 from ...core.ssh_utils import get_ssh_connection_pool
 from ..box._host_ops import (
     BOXCFG_SUDOERS_MARKER,
@@ -837,6 +838,19 @@ def _read_box_source_version(ssh_runner):
         return ''
     m = re.match(r"""__version__\s*=\s*['"]([^'"]+)['"]""", r.stdout.strip())
     return m.group(1) if m else ''
+
+
+def _read_deployed_ref_name(ssh_runner):
+    """The ref name half of /etc/lager/ref (`main` of `main@b73aa66`), or ''.
+
+    Tolerates banner/motd noise the way `_read_box_head_sha` does, by taking
+    the last non-empty line.
+    """
+    r = ssh_runner('cat /etc/lager/ref 2>/dev/null')
+    if r.returncode != 0:
+        return ''
+    lines = [line.strip() for line in (r.stdout or '').splitlines() if line.strip()]
+    return lines[-1].split('@', 1)[0] if lines else ''
 
 
 def _read_box_head_sha(ssh_runner):
@@ -2459,10 +2473,18 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         )
         click.echo('To move it to that release:  '
                    f'lager update --box {box_name} --version {target_version}')
-        click.echo('To update it along its branch:  '
-                   f'lager update --box {box_name} --version main')
-        click.echo('If the box is on a newer release, upgrade the CLI first: '
-                   'pip install --upgrade lager-cli')
+        # Name the ref the box is actually on, so the hint is not `main` for a
+        # box on a feature branch. One extra read, on this path only.
+        on_ref = _read_deployed_ref_name(run_ssh_command_with_output)
+        if looks_like_release_tag(on_ref):
+            click.echo(f'The box is on {on_ref}. To keep newer releases, upgrade '
+                       'the CLI first: pip install --upgrade lager-cli')
+        elif on_ref and not _COMMIT_SHA_RE.match(on_ref):
+            click.echo(f'To update it along {on_ref}:  '
+                       f'lager update --box {box_name} --version {on_ref}')
+        else:
+            click.echo('To update it along main:  '
+                       f'lager update --box {box_name} --version main')
         ctx.exit(0)
 
     # Rollback is destructive in the sense that it rewrites the on-box git

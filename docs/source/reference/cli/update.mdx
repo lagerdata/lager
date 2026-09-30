@@ -108,7 +108,8 @@ development code, pass `--version main`. Earlier releases of the CLI used
 A default update never rolls a box back. If the box is ahead of the CLI's
 release tag, the update changes nothing and exits 0, also with `--check`. The
 box can be on a newer release or on a branch. The message names the command to
-move the box to the CLI's release, and the command to update it along `main`.
+move the box to the CLI's release. For a box on a branch, it also names the
+command to update the box along that branch.
 
 <Warning>
 Per-release **version branches** (bare `X.Y.Z` branches) are deprecated in favour
