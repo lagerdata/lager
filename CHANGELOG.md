@@ -12,6 +12,8 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+## [0.52.0] - 2026-09-30
+
 ### Added
 
 - `lager login <url> --web` signs you in on the auth server's web page instead of asking for a password in the terminal, which also lets accounts that use single sign-on and have no password sign in. On a machine with no browser, `--no-browser` prints a link to open anywhere and asks for the code that the page shows. The auth server must support browser sign-in (gateway auth contract §3.4).
