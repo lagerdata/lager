@@ -197,7 +197,7 @@ Box 还会把已部署的 ref 记录在 `/etc/lager/ref` 中，格式为
 
 仅凭版本号无法区分分支部署和发布部署，因此有两条命令会显示 ref：
 
-- `lager hello` 显示完整的 ref。不是发布标签的 ref 会附加
+- 对于 Box 版本的发布标签，`lager hello` 显示 `(release)`；对于其他任何 ref，显示完整的 ref。不是发布标签的 ref 会附加
   `-- not a release build`。
 - 对不是发布标签的 ref，`lager boxes` 显示 `<version> (<ref-name>)`。
 

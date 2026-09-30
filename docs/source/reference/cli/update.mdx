@@ -241,7 +241,8 @@ successful run, including a run where the box is already up to date.
 The version number alone cannot tell a branch deploy from a release deploy, so
 two commands show the ref:
 
-- `lager hello` shows the full ref. A ref that is not a release tag adds
+- `lager hello` shows `(release)` for the release tag of the box version, and
+  the full ref for any other ref. A ref that is not a release tag adds
   `-- not a release build`.
 - `lager boxes` shows `<version> (<ref-name>)` for a ref that is not a release
   tag.

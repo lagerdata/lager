@@ -13,9 +13,14 @@ from ...core.net_group import BoxCommand
 from ...core.utils import looks_like_release_tag
 
 
-def _ref_suffix(box_ref):
+def _ref_suffix(box_ref, box_version=None):
     """Render `/status`'s `ref` next to the version, flagged when it is not a
     release tag.
+
+    A box on the release tag of the version it reports reads `(release)`.
+    `0.52.0 (v0.52.0@b73aa66)` repeats the version and adds a SHA that a tag
+    already pins, so the full ref is kept for the cases where it says
+    something: a branch or commit, or a tag that does not match the version.
 
     Version alone cannot answer "what is this box running": a branch not yet
     bumped past the last release declares the same `__version__` as the
@@ -32,6 +37,8 @@ def _ref_suffix(box_ref):
         return ''
     ref_name = str(box_ref).split('@', 1)[0]
     if looks_like_release_tag(ref_name):
+        if box_version and ref_name == f'v{str(box_version).lstrip("v")}':
+            return ' (release)'
         return f' ({box_ref})'
     return ' ' + click.style(f'({box_ref} -- not a release build)', fg='yellow')
 
@@ -78,7 +85,7 @@ def hello(ctx, box):
             box_ref = data.get('ref')
 
         if box_version:
-            click.echo(f'Version: {box_version}{_ref_suffix(box_ref)}')
+            click.echo(f'Version: {box_version}{_ref_suffix(box_ref, box_version)}')
         else:
             click.echo(f'Version: {click.style("Unknown", fg="yellow")}')
 
