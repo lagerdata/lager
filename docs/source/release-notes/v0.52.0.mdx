@@ -1,0 +1,46 @@
+---
+title: "Version 0.52.0"
+description: "September 30, 2026"
+---
+
+## <u>Features</u>
+
+- **Sign in to an access gateway in your browser.** `lager login <url> --web` opens the sign-in
+  page of the auth server in your browser. You sign in there and approve the request, and the CLI
+  never asks for a password. This is the only way to sign in for an account that uses single
+  sign-on (SSO) and has no password. See
+  [Signing in with a browser](/source/reference/cli/login#signing-in-with-a-browser).
+- **Sign in from a computer with no browser.** `lager login <url> --no-browser` shows a link and
+  waits. Open the link on any computer, approve the request, and paste the code that the page
+  shows into the terminal. Use it on a computer that you connect to over SSH.
+
+## <u>Known Limitations</u>
+
+- **Browser sign-in needs an auth server that supports it.** A server without it makes
+  `lager login --web` fail with `does not support browser sign-in`. Sign in with a password on
+  that server. The HTTP contract for a server is in section 3.4 of
+  `docs/reference/gateway-auth-contract.md`.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.52.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli==0.52.0
+```
+
+Then update your boxes:
+
+```bash
+lager update --box <box-name>
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.52.0/)
