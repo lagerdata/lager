@@ -9,7 +9,8 @@
 # administration:read, which GITHUB_TOKEN cannot hold, so this reads run
 # history instead and needs no standing credential.
 #
-# Five checks against nightly-bench.yml's recent runs:
+# Five checks against nightly-bench.yml's recent runs, then two across every
+# bench workflow (see "Two more" below):
 #   queued    runner offline (the nightly chain's own budget is well under the
 #             threshold, and nothing else shares the bench queue slot for hours)
 #   running   stuck run (lifecycle 90m + integration 45m timeouts mean a
@@ -23,6 +24,18 @@
 #   lateness  mean delay against the cron declared in nightly-bench.yml. This
 #             is the leading indicator; spacing self-corrects and hides the
 #             decay, lateness does not.
+#
+# Two more, because the five above only ever read nightly-bench.yml:
+#   disabled  any "Bench:" workflow that is not `active`. Bench: Extended sat
+#             `disabled_manually` for three-plus Saturdays with nothing
+#             reporting it -- a disabled workflow has no run to fail.
+#   extended  no scheduled Bench: Extended run in over eight days.
+# Problems about Extended go to its own `bench-alert-extended` issue, never
+# to `bench-alert`: the nightly's recovery closes `bench-alert` on a green
+# night, and a still-true Extended problem would be refiled six hours later.
+# Extended's issue is closed by hand, and while it stays open each watchdog
+# run comments on it again. That repetition is intended: a bench workflow
+# that is not running should stay loud until someone acts.
 #
 # EVERY threshold lives in tools/bench_schedule_check.py, with its reasoning,
 # and is NOT set here. This block used to carry its own copy: it kept a stale
@@ -75,7 +88,7 @@ jobs:
           # the checkout's config (zizmor: artipacked).
           persist-credentials: false
 
-      - name: Check that nightly bench runs are flowing
+      - name: Check that bench runs are flowing
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -97,6 +110,16 @@ jobs:
             "repos/$GH_REPO/actions/workflows/nightly-bench.yml/runs?event=schedule&per_page=10" \
             --jq '[.workflow_runs[] | {databaseId: .id, status, createdAt: .created_at, event}]' \
             > scheduled.json
+          # Every workflow's state, for the disabled check. One page: the repo
+          # has well under 100 workflows.
+          gh api "repos/$GH_REPO/actions/workflows?per_page=100" \
+            --jq '[.workflows[] | {path, state, name}]' > workflows.json
+          # Extended's cadence, scheduled runs only for the same reason as
+          # the nightly's above.
+          gh api \
+            "repos/$GH_REPO/actions/workflows/bench-extended.yml/runs?event=schedule&per_page=5" \
+            --jq '[.workflow_runs[] | {databaseId: .id, status, createdAt: .created_at, event}]' \
+            > extended-scheduled.json
 
           # The arithmetic lives in tools/bench_schedule_check.py so it can be
           # tested -- test/unit/tools/test_bench_schedule_check.py. It was
@@ -109,7 +132,8 @@ jobs:
           # something to say. Anything above 1 must still fail loudly rather
           # than be read as "no problems".
           rc=0
-          python3 tools/bench_schedule_check.py runs.json scheduled.json || rc=$?
+          python3 tools/bench_schedule_check.py runs.json scheduled.json \
+            workflows.json extended-scheduled.json || rc=$?
           if [ "$rc" -gt 1 ]; then
             echo "Watchdog check could not run (exit $rc) - this is not a green bench."
             exit "$rc"
@@ -132,7 +156,7 @@ jobs:
 
           if [ -f problems.txt ]; then
             {
-              echo "Bench watchdog found nightly runs not flowing:"
+              echo "Bench watchdog found nightly bench runs not flowing:"
               echo
               cat problems.txt
               if [ -f warnings.txt ]; then
@@ -149,6 +173,25 @@ jobs:
               echo "fully green nightly."
             } > "$RUNNER_TEMP/alert-body.md"
             bash tools/bench_alert.sh alert "Nightly bench is failing" "$RUNNER_TEMP/alert-body.md"
+          fi
+
+          if [ -f problems-extended.txt ]; then
+            {
+              echo "Bench watchdog found Bench: Extended not running:"
+              echo
+              cat problems-extended.txt
+              echo
+              echo "Detected by: ${RUN_URL}"
+              echo "Re-enable it in the Actions tab if it is disabled, then"
+              echo "dispatch it once to prove it runs. Nothing closes this issue"
+              echo "automatically; close it by hand once a scheduled run lands."
+            } > "$RUNNER_TEMP/alert-extended-body.md"
+            BENCH_ALERT_LABEL=bench-alert-extended \
+              bash tools/bench_alert.sh alert "Weekly extended bench is not running" \
+              "$RUNNER_TEMP/alert-extended-body.md"
+          fi
+
+          if [ -f problems.txt ] || [ -f problems-extended.txt ]; then
             exit 1
           fi
         shell: bash
