@@ -264,14 +264,14 @@ lager hello --box bench-1
 ```
 Box: bench-1
 IP: 100.64.1.42
-Version: 0.47.0 (v0.47.0@5d84c68)
+Version: 0.47.0 (release)
 
 bench-1 is online and responding!
 ```
 
-The value in brackets names the ref that the box runs. A default install deploys the release
-tag, so the line shows the tag and the commit. A box installed from a branch such as `main`
-also says `not a release build`.
+A default install deploys the release tag, so the line says `(release)`. A box installed from
+a branch such as `main` shows the branch and its commit instead, and says
+`not a release build`.
 
 Then see what hardware it can find:
 

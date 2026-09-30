@@ -71,6 +71,19 @@ class TestRefSuffix:
     def test_a_release_tag_is_shown_plainly(self):
         assert _ref_suffix('v0.41.0@d209f02') == ' (v0.41.0@d209f02)'
 
+    def test_the_matching_release_tag_reads_release(self):
+        assert _ref_suffix('v0.52.0@b73aa66', '0.52.0') == ' (release)'
+
+    def test_a_tag_that_does_not_match_the_version_keeps_the_full_ref(self):
+        # The version file and the ref disagree; hiding the tag would hide that.
+        assert _ref_suffix('v0.51.1@3eb414a', '0.52.0') == ' (v0.51.1@3eb414a)'
+
+    def test_a_branch_on_the_release_commit_is_still_flagged(self):
+        # The client's case: main sitting on the release commit is not the tag.
+        out = click.unstyle(_ref_suffix('main@b73aa66', '0.52.0'))
+        assert 'main@b73aa66' in out
+        assert 'not a release build' in out
+
     def test_a_branch_is_flagged(self):
         out = click.unstyle(_ref_suffix('main@85c1b64'))
         assert 'main@85c1b64' in out

@@ -44,12 +44,12 @@ $ lager hello --box my-lager-box
 
 Box: my-lager-box
 IP: 100.64.1.42
-Version: 0.47.0 (v0.47.0@1fbc4c39fce62f1041d439d1b164bbf7b6f6ad3a)
+Version: 0.47.0 (release)
 
 my-lager-box is online and responding!
 ```
 
-括号中的值是该 Box 运行的 ref，格式为 `<ref>@<commit>`。从分支或提交部署的 Box 会附加 `-- not a release build`：
+`(release)` 表示该 Box 运行的是它所报告版本的发布标签。对于其他任何 ref，括号中显示该 ref 及其提交，格式为 `<ref>@<commit>`。从分支或提交部署的 Box 会附加 `-- not a release build`：
 
 ```text
 Version: 0.47.0 (main@5d84c68612384eed2854638c1e0941a4ff8b7893 -- not a release build)

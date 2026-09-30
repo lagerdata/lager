@@ -15,6 +15,7 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 ### Changed
 
 - **`lager install` and `lager update` deploy this CLI's release tag by default, not `main`.** With no `--version`, lager 0.52.0 deploys `v0.52.0`, so a new box runs a release, uses the pre-built image, and `lager hello` no longer reports `not a release build`. Pass `--version main` for the latest development code. A default `lager update` never rolls a box back: a box ahead of the CLI's release is left where it is, even with `--yes`.
+- **`lager hello` shows `(release)` for a box on its release tag.** The line was `Version: 0.52.0 (v0.52.0@b73aa66)`; it is now `Version: 0.52.0 (release)`. A branch, a commit, or a tag that does not match the version still shows the full `<ref>@<commit>`.
 
 ## [0.52.0] - 2026-09-30
 

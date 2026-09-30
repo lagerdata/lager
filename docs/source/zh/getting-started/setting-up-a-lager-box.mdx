@@ -225,12 +225,12 @@ lager hello --box bench-1
 ```
 Box: bench-1
 IP: 100.64.1.42
-Version: 0.47.0 (v0.47.0@5d84c68)
+Version: 0.47.0 (release)
 
 bench-1 is online and responding!
 ```
 
-括号中的值是该 Box 运行的 ref。默认安装部署发布标签，因此该行显示标签和提交。从 `main` 等分支安装的 Box 还会显示 `not a release build`。
+默认安装部署发布标签，因此该行显示 `(release)`。从 `main` 等分支安装的 Box 则显示该分支及其提交，并显示 `not a release build`。
 
 然后看看它能找到哪些硬件：
 

@@ -44,13 +44,15 @@ $ lager hello --box my-lager-box
 
 Box: my-lager-box
 IP: 100.64.1.42
-Version: 0.47.0 (v0.47.0@1fbc4c39fce62f1041d439d1b164bbf7b6f6ad3a)
+Version: 0.47.0 (release)
 
 my-lager-box is online and responding!
 ```
 
-The value in brackets is the ref that the box runs, as `<ref>@<commit>`. A box
-deployed from a branch or a commit adds `-- not a release build`:
+`(release)` means that the box runs the release tag of the version that it
+reports. For any other ref, the brackets show that ref and its commit, as
+`<ref>@<commit>`. A box deployed from a branch or a commit adds
+`-- not a release build`:
 
 ```text
 Version: 0.47.0 (main@5d84c68612384eed2854638c1e0941a4ff8b7893 -- not a release build)
