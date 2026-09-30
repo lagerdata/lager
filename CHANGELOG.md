@@ -12,6 +12,10 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Changed
+
+- **`lager install` and `lager update` deploy this CLI's release tag by default, not `main`.** With no `--version`, lager 0.52.0 deploys `v0.52.0`, so a new box runs a release, uses the pre-built image, and `lager hello` no longer reports `not a release build`. Pass `--version main` for the latest development code. A default `lager update` never rolls a box back: a box ahead of the CLI's release is left where it is, even with `--yes`.
+
 ## [0.52.0] - 2026-09-30
 
 ### Added

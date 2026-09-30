@@ -18,7 +18,7 @@ lager install [OPTIONS]
 | `--box TEXT` | string | | Box name (uses stored IP and username from `.lager` config) |
 | `--ip TEXT` | string | | Target box IP address or DNS hostname |
 | `--user TEXT` | string | `lagerdata` | SSH username. With `--box`, the stored username is the default |
-| `--version TEXT` | string | `main` | Box version to deploy: a release tag (e.g. `v0.15.0`), a git branch, or a full 40-character commit SHA |
+| `--version TEXT` | string | this CLI's release tag | Box version to deploy: a release tag (e.g. `v0.15.0`), a git branch, or a full 40-character commit SHA |
 | `--skip-jlink` | flag | | Skip J-Link installation |
 | `--skip-firewall` | flag | | Skip UFW firewall configuration |
 | `--skip-verify` | flag | | Skip post-deployment verification |
@@ -48,10 +48,12 @@ that cache.
 Every release tag publishes a pre-built image, and `lager install` uses it by
 default: about 2 minutes instead of 14.
 
-This only applies when `--version` names a **release tag**. The default
-`--version main` has no published image, and neither does any other branch, so
-those always build on the box. Pinning a release tag is the difference between
-a two-minute install and a fourteen-minute one.
+This only applies when the version is a **release tag**. With no `--version`,
+install deploys the release tag that matches the CLI (for example, `v0.52.0`
+for lager 0.52.0), so a default install uses the image. `--version main` has no
+published image, and neither does any other branch, so those always build on
+the box. A release tag is the difference between a two-minute install and a
+fourteen-minute one.
 
 A full 40-character commit SHA also builds on the box, and the box must be able
 to fetch that commit from the remote. A shorter hex value is read as a branch

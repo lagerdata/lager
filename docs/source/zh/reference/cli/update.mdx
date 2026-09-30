@@ -16,7 +16,7 @@ lager update [OPTIONS]
 | 选项 | 说明 |
 |--------|-------------|
 | `--box BOX` | Lager Box 名称或 IP 地址 |
-| `--version VERSION` | 要更新到的发布标签、semver 固定版本、分支，或完整的 40 位提交 SHA（默认 main）。请参阅[版本固定](#版本固定)。 |
+| `--version VERSION` | 要更新到的发布标签、semver 固定版本、分支，或完整的 40 位提交 SHA（默认为本 CLI 的发布标签）。请参阅[版本固定](#版本固定)。 |
 | `--yes` | 跳过确认提示 |
 | `--check` | 预演：报告将会改变什么，但不改动 Box |
 | `--force` | 即使 Box 报告已是最新也照样更新，并强制干净重建（清除缓存镜像以及 cargo/npm 卷） |
@@ -76,6 +76,12 @@ lager update --box my-lager-box --version 5d84c68612384eed2854638c1e0941a4ff8b78
 其他任何值（`main`、`staging` 或某个功能分支名）都像以前一样解析为
 `origin/<name>`。
 
+### 默认版本
+
+不指定 `--version` 时，更新以与 CLI 相匹配的发布标签为目标。例如，lager 0.52.0 会把 Box 更新到 `v0.52.0`。若要把 Box 移到更新的发布版本，请先升级 CLI，再运行 `lager update`。若要获取最新的开发代码，请传入 `--version main`。早期版本的 CLI 以 `main` 作为默认值。
+
+默认更新从不回滚 Box。如果 Box 领先于 CLI 的发布标签，更新不做任何改动并以 0 退出，使用 `--check` 时也是如此。Box 可能处于更新的发布版本，也可能处于某个分支。消息会给出把 Box 移到 CLI 发布版本的命令，以及沿 `main` 更新它的命令。
+
 <Warning>
 按版本划分的**版本分支**（裸的 `X.Y.Z` 分支）已被弃用，改用标签。像 `0.26.0` 这样的值现在解析为标签 `v0.26.0`，而不是同名分支。请参阅仓库中的 `RELEASE_PROCESS.md`。
 </Warning>
@@ -85,8 +91,11 @@ lager update --box my-lager-box --version 5d84c68612384eed2854638c1e0941a4ff8b78
 ### 基本更新
 
 ```bash
-# Update to latest main branch
+# Update to the release that matches this CLI
 lager update --box my-lager-box --yes
+
+# Update to the latest main branch
+lager update --box my-lager-box --version main --yes
 
 # Update to staging branch
 lager update --box my-lager-box --version staging --yes
@@ -287,7 +296,7 @@ ssh -t lagerdata@<box-ip> 'sudo /usr/local/lib/lager/secure_box_firewall.sh'
 
 - 使用 `--verbose` 时会关闭进度条
 - 容器构建使用 BuildKit 层缓存。`--force` 会先删除缓存镜像以及 cargo/npm 卷
-- 不指定时版本默认为 `main`
+- 不指定时版本默认为本 CLI 的发布标签
 - 更新会在容器重启之后自动验证其健康状态
 - `--check` 报告将会改变什么而不改动 Box，因此它是判断某台 Box 是否落后的安全方式
 - `--force` 即使在 Box 报告已是最新时也会更新，并清除缓存镜像和 cargo/npm 卷（在代码有较大变化之后很有用）
