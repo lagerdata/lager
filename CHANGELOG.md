@@ -12,6 +12,8 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+## [0.51.1] - 2026-09-30
+
 ### Changed
 
 - **Read-only commands run on a box that someone else has locked.** `lager nets`,
