@@ -13,6 +13,7 @@ except (ModuleNotFoundError, ImportError):
     pyvisa = None
 
 from lager.instrument_wrappers.instrument_wrap import InstrumentWrapKeithley
+from lager.util.on_off import parse_on_off
 from .supply_net import (
     SupplyNet,
     LibraryMissingError,
@@ -536,8 +537,9 @@ class Keithley2281S(SupplyNet):
         if _probe is not None:
             _probe.query("*IDN?", check_errors=False)
 
-        enabled_raw = self._safe_query_no_mode(":OUTP?", default="").strip().upper()
-        enabled = enabled_raw in ("1", "ON")
+        # None when the query failed or answered something else: a state report
+        # must not turn "could not read" into "off".
+        enabled = parse_on_off(self._safe_query_no_mode(":OUTP?", default=""))
 
         v_set = self._safe_float(self._safe_query_no_mode(":SOUR1:VOLT?", default="0.0"))
         i_set = self._safe_float(self._safe_query_no_mode(":SOUR1:CURR?", default="0.0"))
@@ -867,19 +869,24 @@ class Keithley2281S(SupplyNet):
         # `channel` is accepted for compatibility with multi-channel drivers
         # that the supply HTTP handler is modeled on (Rigol DP800). The
         # 2281S is single-channel, so this argument is ignored.
+        #
+        # A plain bool for control flow: unknown is False here. State reports
+        # use output_state, which keeps it distinct.
+        return self.output_state(channel) is True
+
+    def output_state(self, channel=None):
+        """True / False / None (unknown) -- see ``SupplyNet.output_state``."""
         try:
             # Try multiple queries with slight delays for robustness
             for _ in range(3):
-                val = self._safe_query(":OUTP?", "").strip().upper()
-                if val in ("1", "ON"):
-                    return True
-                elif val in ("0", "OFF"):
-                    return False
+                state = parse_on_off(self._safe_query(":OUTP?", ""))
+                if state is not None:
+                    return state
                 # If we get an unclear response, wait and retry
                 time.sleep(0.02)
-            return False
+            return None
         except Exception:
-            return False
+            return None
 
     # --- TUI-required methods (for WebSocket supply monitoring) ---
 

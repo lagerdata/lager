@@ -146,6 +146,15 @@ def recover(net_name: str):
     return restored
 
 
+def _net_names(port_to_nets):
+    """Every net name in a ``{port: [names]}`` map."""
+    return [name for names in port_to_nets.values() for name in names]
+
+
+def _net_count(port_to_nets):
+    return sum(len(names) for names in port_to_nets.values())
+
+
 # Below this much remaining budget a hub is skipped rather than probed: even a
 # healthy cached open-read-close cycle takes a large fraction of a second, so a
 # probe launched with less than this is spending the time without a realistic
@@ -200,7 +209,10 @@ def states(net_names=None, *, causes=None, codes=None,
     nets = _load_net_definitions()
     wanted = list(nets) if net_names is None else [n for n in net_names if n in nets]
 
-    # hub lock key -> (controller, {port: net_name})
+    # hub lock key -> (controller, {port: [net_name, ...]}). A list, because
+    # two saved nets can name the same port (an alias, or a net saved twice);
+    # a plain port -> name map kept only the last one and reported the other
+    # as unreadable.
     by_hub: Dict[str, tuple] = {}
     for name in wanted:
         info = nets[name]
@@ -214,7 +226,7 @@ def states(net_names=None, *, causes=None, codes=None,
             key = f"unkeyed::{name}"
         if key not in by_hub:
             by_hub[key] = (controller, {})
-        by_hub[key][1][info["port"]] = name
+        by_hub[key][1].setdefault(info["port"], []).append(name)
 
     out: Dict[str, bool | None] = {}
     for key, (controller, port_to_net) in by_hub.items():
@@ -229,9 +241,9 @@ def states(net_names=None, *, causes=None, codes=None,
                 logger.warning(
                     "USB hub %s skipped, %d net(s) not probed: %.1fs of the "
                     "state budget remains",
-                    key, len(port_to_net), max(remaining, 0.0),
+                    key, _net_count(port_to_net), max(remaining, 0.0),
                 )
-                for name in port_to_net.values():
+                for name in _net_names(port_to_net):
                     if causes is not None:
                         causes[name] = ("not probed: slower instruments "
                                         "consumed the state budget")
@@ -254,7 +266,7 @@ def states(net_names=None, *, causes=None, codes=None,
             # what made one hub look intermittently broken (issue #196).
             logger.warning(
                 "USB hub %s unreadable, reporting %d net(s) as unknown: %s: %s",
-                key, len(port_to_net), type(e).__name__, e,
+                key, _net_count(port_to_net), type(e).__name__, e,
             )
             # The log names the cause for someone on the box. Hand it to the
             # caller too, so it can reach the user's terminal -- otherwise a
@@ -263,7 +275,7 @@ def states(net_names=None, *, causes=None, codes=None,
             # like flaky hardware.
             if causes is not None:
                 cause = f"{type(e).__name__}: {e}"
-                for name in port_to_net.values():
+                for name in _net_names(port_to_net):
                     causes[name] = cause
             # The classification, where the driver produced one. Not every
             # failure has one -- a missing SDK or a lock timeout is not a
@@ -271,11 +283,12 @@ def states(net_names=None, *, causes=None, codes=None,
             # guessing, and the prose cause above still says what happened.
             code = getattr(e, "classification", None)
             if codes is not None and code:
-                for name in port_to_net.values():
+                for name in _net_names(port_to_net):
                     codes[name] = code
             port_states = {}
-        for port, name in port_to_net.items():
+        for port, names in port_to_net.items():
             value = port_states.get(port)
-            out[name] = None if value is None else bool(value)
+            for name in names:
+                out[name] = None if value is None else bool(value)
 
     return out

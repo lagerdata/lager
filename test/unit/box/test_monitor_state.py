@@ -400,7 +400,7 @@ class TestBatteryMonitorStateParsing:
 
     def test_odd_reply_formats_parse_instead_of_failing_the_tick(self, battery_cls):
         drv = object.__new__(battery_cls)
-        drv._is_batt_output_on = lambda: True
+        drv._batt_output_state = lambda: True
         drv._mode_string = lambda: "Dynamic"
         replies = {
             ":BATT:SIM:TVOL?": "3.3 V",                       # trailing unit
@@ -420,7 +420,7 @@ class TestBatteryMonitorStateParsing:
 
     def test_clean_replies_unchanged(self, battery_cls):
         drv = object.__new__(battery_cls)
-        drv._is_batt_output_on = lambda: False
+        drv._batt_output_state = lambda: False
         drv._mode_string = lambda: "OFF"
         drv._safe_query = lambda cmd, default="": {
             ":BATT:SIM:TVOL?": "0.0",

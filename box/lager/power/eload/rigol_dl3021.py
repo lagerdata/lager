@@ -6,6 +6,7 @@
 import pyvisa
 import warnings
 from .eload_net import ELoadNet, DeviceNotFoundError, LibraryMissingError
+from lager.util.on_off import parse_on_off
 
 # ANSI color codes
 GREEN = '\033[92m'
@@ -216,9 +217,15 @@ class RigolDL3021(ELoadNet):
         self._write(":SOURce:INPut:STATe OFF")
 
     def get_input_state(self) -> bool:
-        """Get input state (enabled/disabled)."""
-        response = self._query(":SOURce:INPut:STATe?")
-        return response.upper() in ["ON", "1"]
+        """Get input state (enabled/disabled). Unrecognised replies are False."""
+        return self.input_state() is True
+
+    def input_state(self):
+        """Input state as True, False, or None for a reply that is neither.
+
+        A failed query still raises, as before.
+        """
+        return parse_on_off(self._query(":SOURce:INPut:STATe?"))
 
     def measured_voltage(self) -> float:
         """Read the measured input voltage."""
@@ -299,7 +306,8 @@ class RigolDL3021(ELoadNet):
         /net/command eload `state` action (and thus the CLI / Rust crate).
         """
         mode = self.mode()
-        enabled = bool(self.get_input_state())
+        # None for an unrecognised reply: reported as unknown, never as off.
+        enabled = self.input_state()
         state = {
             "mode": mode,
             "input_enabled": enabled,

@@ -417,6 +417,11 @@ def status():
             # box predating the route is read as "older box", not as "no
             # bench". Absent entirely on such a box, which reads as false.
             'benchManifest': _has_bench_manifest,
+            # GET /nets/state entries carry a structured ``enabled`` for roles
+            # with an on/off output, present only when it was read. With this
+            # set, a missing ``enabled`` means "not known"; a box predating it
+            # omits the key, and a client falls back to the ``state`` text.
+            'netsStateEnabled': _has_nets,
         },
     })
 
@@ -665,7 +670,8 @@ def _supply_command_http_disabled():
 
             elif action == 'state':
                 # Get current state from the supply
-                enabled = supply.output_is_enabled(channel=channel)
+                # None = the supply did not say; never reported as OFF.
+                enabled = supply.output_state(channel=channel)
                 voltage_set = float(supply.get_channel_voltage(source=channel))
                 current_set = float(supply.get_channel_current(source=channel))
 
@@ -674,14 +680,15 @@ def _supply_command_http_disabled():
                     if enabled:
                         voltage_meas = float(supply.measure_voltage())
                         current_meas = float(supply.measure_current())
+                    elif enabled is None:
+                        voltage_meas = current_meas = "n/a"
                     else:
                         voltage_meas = 0.0
                         current_meas = 0.0
                 except Exception:
-                    voltage_meas = 0.0
-                    current_meas = 0.0
+                    voltage_meas = current_meas = "n/a"
 
-                state_str = "ON" if enabled else "OFF"
+                state_str = {True: "ON", False: "OFF"}.get(enabled, "UNKNOWN")
                 result['message'] = f'Channel {channel}: {state_str}, Set: {voltage_set}V/{current_set}A, Measured: {voltage_meas}V/{current_meas}A'
 
             else:

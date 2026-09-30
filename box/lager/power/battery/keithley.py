@@ -15,6 +15,7 @@ except (ModuleNotFoundError, ImportError):
 from lager.instrument_wrappers.instrument_wrap import InstrumentWrapKeithley
 from lager.instrument_wrappers.keithley_defines import Mode, SimMethod
 from lager.instrument_wrappers.util import InvalidEnumError
+from lager.util.on_off import parse_on_off
 
 from .battery_net import (
     BatteryNet,
@@ -1027,7 +1028,7 @@ class KeithleyBattery(BatteryNet):
         if _probe is not None:
             _probe.query("*IDN?", check_errors=False)
 
-        enabled = self._is_batt_output_on()
+        enabled = self._batt_output_state()
         mode_str = self._mode_string()
         model_str = self.current_model()
 
@@ -1047,12 +1048,27 @@ class KeithleyBattery(BatteryNet):
                 except (TypeError, ValueError):
                     return float(default)
 
+        def measured(cmd: str):
+            # A live reading: None when the query failed, never a fallback
+            # number. A dead query used to read as 0.00 V / 0 %, which looks
+            # exactly like a flat battery.
+            raw = self._safe_query(cmd, "")
+            if raw is None or not str(raw).strip():
+                return None
+            try:
+                return float(raw)
+            except (TypeError, ValueError):
+                try:
+                    return float(str(raw).split(',')[0].strip().rstrip('VAWs%Ω'))
+                except (TypeError, ValueError):
+                    return None
+
         return {
-            'terminal_voltage': q(":BATT:SIM:TVOL?", "0"),
-            'current': q(":BATT:SIM:CURR?", "0"),
+            'terminal_voltage': measured(":BATT:SIM:TVOL?"),
+            'current': measured(":BATT:SIM:CURR?"),
             'esr': q(":BATT:SIM:RES?", "0.067"),
-            'soc': q(":BATT:SIM:SOC?", "0"),
-            'voc': q(":BATT:SIM:VOC?", "0"),
+            'soc': measured(":BATT:SIM:SOC?"),
+            'voc': measured(":BATT:SIM:VOC?"),
             'enabled': enabled,
             'mode': mode_str,
             'model': model_str,
@@ -1102,15 +1118,24 @@ class KeithleyBattery(BatteryNet):
             pass  # allow continuation; some ops may still work
 
     def _is_batt_output_on(self) -> bool:
+        # A plain bool for control flow (restore-after-configure): unknown is
+        # False here. State reports use _batt_output_state.
+        return self._batt_output_state() is True
+
+    def _batt_output_state(self):
+        """Battery output as True, False, or None when the 2281S did not say.
+
+        A failed or garbled query used to read as off, so the monitor (and
+        everything built on it) reported a confident "off" for a read that
+        never happened.
+        """
         try:
-            val = self._safe_query(":BATT:OUTP?", "")
-            return val.strip().upper() in ("1", "ON")
+            return parse_on_off(self._safe_query(":BATT:OUTP?", ""))
         except Exception:
             try:
-                val = self._safe_query("OUTP?", "")
-                return val.strip().upper() in ("1", "ON")
+                return parse_on_off(self._safe_query("OUTP?", ""))
             except Exception:
-                return False
+                return None
 
     def _mode_string(self) -> str:
         try:

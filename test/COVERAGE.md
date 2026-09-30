@@ -47,12 +47,12 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` | 2876 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 3248 |
+| `unit (box)` | `test/unit/box/` | 3279 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 380 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 110 (+1 skipped) |
-| | **Total gated** | **6808** |
+| | **Total gated** | **6839** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -452,9 +452,9 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 259 files)
+### Local Unit Tests (`test/unit/` -- 260 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 133 files)
+#### Box Unit Tests (`test/unit/box/` -- 134 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -574,6 +574,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_spi_word_conversion.py` | SPI word/byte packing shared by every backend: the LSB-first bit reversal, the multi-byte split, the oversize refusal and the short trailing word. Every expected value was captured from the T7 driver before the helpers moved to `SPIBase`, so the suite fails if the move changed any observable output -- the helpers were lifted so a second LabJack family could reuse them rather than carry a copy of the reversal that disagrees only on a scope |
 | `test_ssh_runner.py` | SSH key selection and auth fallback logic |
 | `test_ssh_setup.py` | `lager ssh-setup` command and SSH key provisioning with TTY passthrough |
+| `test_state_unknown_is_not_off.py` | A state report says "unknown", never "off", for a read that failed: the strict on/off reply parser; each supply's (DP800, DP700, EA, Keithley 2281S) and the Keithley battery's and DL3021's reporting read against every reply shape, with `output_is_enabled` kept a plain bool; battery readings `None` not 0; YKUSH's pykush error value not read as enabled; `/nets/state` `?` on/off slot, `enabled` present only when known, unread watt/energy readings as `?`; LabJack T7 integer pin 0; two nets on one hub port |
 | `test_stream_disconnect.py` | `peer_is_connected` and the idle tick that let the box notice a vanished client in under a second instead of waiting for the script's next write |
 | `test_stream_teardown.py` | `lager python` child reaped when the client disconnects mid-run, instead of orphaning at 100% CPU holding a device flock |
 | `test_sudoers_contract.py` | The `/etc/sudoers.d/` ownership contract: Lager writes exactly three files there, never globs and never touches the directory itself, and every writer — including the shell copy in `setup_and_deploy_box.sh` — emits the banner telling an operator those files are regenerated wholesale. Also pins the recorded escalation posture: the box login user is root-equivalent by design, and no source may claim a scoped entry confines it. Also the one-session install: no deployment script runs `find` or a recursive `chown` under sudo; the `/etc/lager` helper is granted by exact path and never install-granted; every `systemctl` the deploy runs has a rule; and, RUN under bash, the session script renders and parses, accepts the real box-config text and refuses a rule for anyone else or a marker outside `/etc/lager`, the digest changes with the user, the VPN interface, the rules and the helper but not with a comment, and the check that skips the session has no terminal and only `sudo -n`; with no terminal, a box whose sudo would ask for a password stops the install before the session, and one with passwordless sudo goes ahead |
