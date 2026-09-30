@@ -1,0 +1,73 @@
+---
+title: "Version 0.51.1"
+description: "September 30, 2026"
+---
+
+## <u>Upgrade Notes</u>
+
+- **Update your boxes with the new CLI.** `lager update` now installs BlueZ on the box host when it
+  is missing, so `lager ble` and `lager blufi` work on a box running Ubuntu Server. That step runs
+  from the CLI, so upgrade the CLI first, then run `lager update --box <box-name>`. It needs no
+  password.
+- **The next `lager install` on each box asks for the sudo password once.** The install's
+  privileged session now also installs BlueZ, so its fingerprint changed.
+- **`DebugNet.flash()` and `DebugNet.erase()` can now raise on J-Link.** They raise `RuntimeError`
+  when J-Link did nothing, as they already did on OpenOCD. A script that treated the returned output
+  as success will now stop at the real failure.
+- **`DebugNet.connect(halt=True)` raises `ValueError` on a J-Link net.** J-Link has no
+  halt-on-connect, and the argument was ignored. Attach a halt-first `.JLinkScript` with
+  `connect(script=...)` instead.
+
+## <u>Features</u>
+
+- **Read-only commands run on a box that someone else has locked.** `lager nets`, `nets show`,
+  `nets show-script`, `lager hello`, `lager binaries list`, `lager debug <net> health` and the net
+  listings of each command group print one note naming the holder and continue, for a user lock
+  and a CI lock. Every other command still refuses. See the read-only list on the Box Locking page.
+
+## <u>Bug Fixes</u>
+
+- **BLE and BluFi failed on a box running Ubuntu Server.** The box host had no BlueZ, and every
+  `lager ble` and `lager blufi` command failed with
+  `The name org.bluez was not provided by any .service files`. `lager install` and `lager update`
+  now install BlueZ and enable `bluetooth.service`.
+- **`lager ble` and `lager blufi` now say how to fix a box host without BlueZ,** instead of printing
+  the raw D-Bus error.
+- **`lager nets` ignored the box lock for an IP address and the default box.** Only a saved box
+  name was checked, so `nets delete`, `rename`, `add-all`, `set-script` and the other changing
+  subcommands ran under another holder's lock.
+- **`lager debug <net> flash` printed `Flashed!` on a J-Link read-back compare failure.** It now
+  fails on `Verification failed @ address ...` and `ERROR: Verify failed.`. On a DA1469x, whose
+  cached compare can report a false failure, only the box's uncached read-back
+  (`LAGER_DA1469_UNCACHED_VERIFY=1`) fails it
+  ([issue #617](https://github.com/lagerdata/lager/issues/617)).
+- **A `lager nets` change did not reach the next `lager debug` command.** `set-script`,
+  `remove-script`, `add`, `rename`, `delete` and the Net Manager now drop the CLI's cached debug
+  nets for the box, so `flash` and `erase` no longer send the old J-Link script for up to five
+  minutes.
+- **A `DebugNet.connect()` OpenOCD config override did not last until `disconnect()`.** A relaunch
+  with `force=True`, or the self-heal's reconnect, used the net's own cfg instead.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.51.1
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli==0.51.1
+```
+
+Then update your boxes:
+
+```bash
+lager update --box <box-name>
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.51.1/)
