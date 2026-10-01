@@ -101,6 +101,59 @@ def test_static_mode():
 
 
 # ---------------------------------------------------------------------------
+# Setter readback
+# ---------------------------------------------------------------------------
+#: (setter, value, monitor key, tolerance). Every value differs from the
+#: default get_monitor_state() substitutes when a query fails (soc/voc 0,
+#: capacity 1.0, current_limit 1.0, volt_full 4.2, volt_empty 3.0), so a
+#: swallowed query cannot pass as a matching readback. SOC and VOC are coupled
+#: on the 2281S, so each is read back immediately after it is set.
+READBACK_CASES = (
+    ("set_volt_full", 4.15, "volt_full", 0.02),
+    ("set_volt_empty", 3.05, "volt_empty", 0.02),
+    ("set_capacity", 2.0, "capacity", 0.05),
+    ("set_current_limit", 1.5, "current_limit", 0.05),
+    ("set_soc", 42, "soc", 1.5),
+    ("set_voc", 3.65, "voc", 0.02),
+)
+
+
+def test_setter_readback():
+    """Each setter's value is what the instrument reports back.
+
+    The setting groups above record a setter as passing when it does not
+    raise, so an instrument that accepted a command and ignored it passed all
+    of them.
+    """
+    print("\n" + "=" * 60)
+    print("TEST: Setter Readback")
+    print("=" * 60)
+
+    ok = True
+    try:
+        from lager import Net, NetType
+        batt = Net.get(KEITHLEY_BATTERY_NET, type=NetType.Battery)
+        batt.set_to_battery_mode()
+        batt.set_mode("static")
+        for setter, value, key, tol in READBACK_CASES:
+            label = f"{setter}({value}) reads back as {key}"
+            try:
+                getattr(batt, setter)(value)
+                got = batt.get_monitor_state().get(key)
+            except Exception as e:
+                _record(label, False, str(e))
+                ok = False
+                continue
+            passed = isinstance(got, (int, float)) and abs(float(got) - value) <= tol
+            _record(label, passed, f"readback={got!r}, tolerance {tol}")
+            ok = passed and ok
+    except Exception as e:
+        _record("setter readback setup", False, str(e))
+        ok = False
+    return ok
+
+
+# ---------------------------------------------------------------------------
 # 3. Dynamic Mode
 # ---------------------------------------------------------------------------
 def test_dynamic_mode():
@@ -123,11 +176,9 @@ def test_dynamic_mode():
             msg = str(e)
             # Some instruments require a loaded battery model to enter dynamic mode
             if "model" in msg.lower() or "704" in msg or "not permitted" in msg.lower():
-                _record(
-                    "set_mode('dynamic') skipped — requires battery model loaded",
-                    True,
-                    msg[:80],
-                )
+                # Printed, not recorded: nothing was exercised, so it is
+                # not a pass.
+                print(f"  SKIP: set_mode('dynamic') -- requires a battery model loaded: {msg[:80]}")
             else:
                 _record("set_mode('dynamic')", False, msg)
                 ok = False
@@ -463,9 +514,13 @@ def test_terminal_voltage():
         if not passed:
             ok = False
 
-        passed_pos = passed and float(tv) >= 0
-        _record("terminal_voltage() >= 0", passed_pos, f"value={tv}")
-        if not passed_pos:
+        # Was `>= 0`, which a dead output (0.0 V) passed. Unloaded, the
+        # terminal sits at VOC less I*ESR with I ~ 0, so it must be near the
+        # 3.7 V just set. 0.3 V absorbs a light load on the net without
+        # letting 0 V through.
+        passed_near = passed and abs(float(tv) - 3.7) <= 0.3
+        _record("terminal_voltage() within 0.3 V of VOC 3.7 V", passed_near, f"value={tv}")
+        if not passed_near:
             ok = False
 
     except Exception as e:
@@ -829,6 +884,7 @@ def main():
         ("Voltage Full / Empty",         test_voltage_full_empty),
         ("Capacity Setting",             test_capacity_setting),
         ("Current Limit Setting",        test_current_limit_setting),
+        ("Setter Readback",              test_setter_readback),
         ("Battery Model Loading",        test_battery_model_loading),
         ("Enable / Disable Output",      test_enable_disable_output),
         ("Terminal Voltage Measurement", test_terminal_voltage),

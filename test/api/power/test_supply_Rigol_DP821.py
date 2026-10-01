@@ -475,10 +475,14 @@ def test_output_mode():
         if not passed_type:
             ok = False
         else:
-            # With no load, supply should be in constant-voltage mode
-            passed_cv = "CV" in mode.upper() or "CC" in mode.upper()
+            # With no load the supply regulates voltage, so it must report
+            # CV. This used to accept "CV or CC" -- which, with UR being the
+            # DP800's only other answer, meant any reply passed. CH2 carries
+            # the USB-202 ADC fixture, but that input is high impedance and
+            # draws nothing in steady state (see "Bench wiring fixtures").
+            passed_cv = mode.strip().upper() == "CV"
             _record(
-                "get_output_mode() is CV or CC",
+                "get_output_mode() is CV with no load",
                 passed_cv,
                 f"mode={mode!r}",
             )
@@ -808,9 +812,13 @@ def test_full_state():
         psu = Net.get(SUPPLY_NET, type=NetType.PowerSupply)
 
         if not hasattr(psu, "get_full_state"):
+            # The DP800 driver implements get_full_state(), so on this suite's
+            # instrument a missing method is a regression. This used to record
+            # the FAIL and then return True, which the group tally reads as a
+            # pass.
             _record("get_full_state() method exists", False,
-                    "method not present on this driver — skipping")
-            return True  # Not a hard failure; method is driver-specific
+                    "method not present on this net")
+            return False
 
         psu.set_voltage(min(5.0, CHANNEL_MAX_VOLTAGE))
         psu.enable()
@@ -857,8 +865,9 @@ def main():
     print("=" * 60)
 
     # Preflight: verify the supply is reachable before running any tests.
-    # Split into two blocks: Net.get() failures are config errors (exit 1);
-    # state() failures are connectivity errors (exit 0 = skip).
+    # Split into two blocks so the message names the right fix: Net.get()
+    # failures are config errors, state() failures are connectivity errors.
+    # Both exit 1 -- an unreachable instrument is a failure, not a skip.
     try:
         from lager import Net, NetType
         psu = Net.get(SUPPLY_NET, type=NetType.PowerSupply)

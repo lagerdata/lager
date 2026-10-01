@@ -301,6 +301,7 @@ belongs here.
 | From | To | Exercised by |
 |---|---|---|
 | Rigol DP821 CH2 (`supply3`) output | MCC USB-202 CH0 (`adc15`) | `test/api/io/test_usb202.py::test_adc_supply_accuracy`, gated on `USB202_SUPPLY_NET` + `USB202_SUPPLY_ADC_NET` |
+| ESP32 UART peer's on-board USB chip (`ESP_UART`) | ESP32 U0RXD (GPIO3) -- the ONLY driver allowed on that pin | `test/integration/communication/uart.sh` section 15 |
 
 This wire cost real triage time. It was built for a check whose two repository
 variables were never set, so the sub-test had never run once and nothing in the
@@ -322,3 +323,31 @@ unexercised is what produced the confusion:
 USB202_SUPPLY_NET=supply3
 USB202_SUPPLY_ADC_NET=adc15
 ```
+
+### Groups left unexercised on purpose
+
+Two groups in `test/api/io/test_usb202.py` report SKIP on every run, and that
+is intended: `DAC LabJack Verify` (`USB202_LABJACK_ADC_NET`) and `GPIO
+Loopback` (`USB202_GPIO_LOOPBACK_OUT` / `_IN`) each need a wire this bench does
+not have, so their variables stay unset. Wire one, add it to the table above,
+and set its variables in the same change.
+
+### The UART peer's RX pin takes one driver
+
+The ESP32 peer behind `ESP_UART` is a dev board; its own USB chip feeds the
+ESP32's RX pin (U0RXD / GPIO3). **Never wire a second adapter's TX to that
+pin.** A jumpered USB-serial dongle's TX holds the line high whenever it is
+idle and overpowers the board's chip, so the bytes CI sends arrive corrupted:
+the peer answers `ERR unknown` instead of identifying itself, and section 15
+of `uart.sh` skips. Exactly that happened: a second CP2102 was jumpered onto
+both UART pins, section 15 went from 6/6 passing to 6/6 skipped, and the
+nightly stayed green for days. Pulling the dongle's TX wire restored 6/6.
+
+A second adapter's RX on the ESP32's TX pin is harmless (inputs only listen),
+so it can stay to watch the console. To check the link by hand, send `ID?`
+with RTS released and expect `ID?` echoed, then `LAGER-UART-PEER v1`. The
+board's RTS drives the ESP32's reset, so a tool that asserts RTS on open (as
+pyserial does by default) holds the peer in reset and reads nothing.
+
+The skip budget on the `uart.sh` step (`UART_MAX_SKIPS`) now fails the run
+when this recurs.
