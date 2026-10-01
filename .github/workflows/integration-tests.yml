@@ -778,9 +778,10 @@ jobs:
         # uart-capable adapter on the bench say so loudly rather than letting
         # a silent skip pass for coverage.
         #
-        # Soft, unlike the relay heal: a bench with no peer attached is a
-        # configuration this suite explicitly supports, so it must not fail
-        # the night. The annotation is what keeps it from being invisible.
+        # Soft, unlike the relay heal: the step itself does not fail. It no
+        # longer needs to -- the uart step's skip budget (UART_MAX_SKIPS)
+        # fails the run when section 15 skips, which is what a missing peer
+        # produces. The annotation here names the cause.
         id: uart-net-heal
         continue-on-error: true
         env:
@@ -861,12 +862,20 @@ jobs:
           # tolerate and any failure here is new. Measured 71/0 on a real bench
           # 2026-09-21.
           UART_BASELINE: "0"
+          # Skips allowed: zero. Every skip in this suite is section 15, the
+          # device round-trip, and it skips whenever the peer does not
+          # identify itself -- the one check here that moves real bytes. It
+          # went from 6/6 passing to 6/6 skipped between two nightlies and
+          # the run stayed green for days, because the failure ratchet above
+          # cannot see a skip. This bench has the peer attached, so a skip
+          # here means the data path was not tested, and that fails the run.
+          UART_MAX_SKIPS: "0"
         # Pass the box NAME, not the IP: given an IP the suite registers a
         # `temp_box_<ip>` entry, polluting the box list.
         run: |
           LOG="$RUNNER_TEMP/uart-cli.log"
           bash test/integration/communication/uart.sh "$LAGER_BOX" 2>&1 | tee "$LOG" || true
-          bash tools/bench_suite_gate.sh harness uart.sh "$UART_BASELINE" "$LOG"
+          bash tools/bench_suite_gate.sh harness uart.sh "$UART_BASELINE" "$LOG" "$UART_MAX_SKIPS"
         shell: bash
 
       - name: Fail job if any test failed

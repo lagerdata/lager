@@ -394,7 +394,11 @@ def test_rtt_session():
                 detail = f"read {len(data)}B" if data else "no data (expected without RTT firmware)"
                 _record("RTT session read_some", True, detail)
         except Exception as e:
-            _record("RTT session", True, f"SKIPPED -- {e}")
+            # Opening the RTT channel failing is a failure, not a skip: this
+            # used to record True for ANY error here, so a broken rtt() read
+            # as a pass. No data on an open channel is still fine above.
+            _record("RTT session", False, f"rtt() failed: {e}")
+            return False
         return True
     except Exception as e:
         _record("RTT session", False, f"connect failed: {e}"); return False
@@ -431,8 +435,8 @@ def test_rtt_defmt_session():
     # rtt_defmt decodes defmt logs on-box via defmt-print; it needs the exact
     # ELF flashed on the DUT. Skip cleanly when no .elf is available.
     if not (FIRMWARE_PATH.endswith(".elf") and os.path.exists(FIRMWARE_PATH)):
-        _record("rtt_defmt session", True,
-                f"SKIPPED -- needs a matching .elf (got '{FIRMWARE_PATH}')")
+        # Printed, not recorded: nothing ran, so it is not a pass.
+        print(f"  SKIP: rtt_defmt session -- needs a matching .elf (got '{FIRMWARE_PATH}')")
         return True
     debug = Net.get(DEBUG_NET, type=NetType.Debug)
     try:
@@ -451,9 +455,10 @@ def test_rtt_defmt_session():
                 _record("rtt_defmt session", True, detail)
         return True
     except Exception as e:
-        # Missing defmt-print / non-defmt firmware shouldn't fail the suite.
-        _record("rtt_defmt session", True, f"SKIPPED -- {e}")
-        return True
+        # Reached only with a matching .elf supplied, so the caller asked for
+        # defmt decoding and it failed. That is a failure, not a skip.
+        _record("rtt_defmt session", False, str(e))
+        return False
 
 # ---------------------------------------------------------------------------
 # 21. Disconnect

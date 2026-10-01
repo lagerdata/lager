@@ -24,6 +24,12 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 - **`lager ssh-setup` installs its key on a key-only box that one of your keys already reaches.** It refused with "none of your keys reaches it yet", although a key had just answered its probe. It now runs `ssh-copy-id` over that key, with no password prompt. A key-only box that no key reaches is still refused.
 - **`lager install` without a terminal says that it needs one.** When the box's sudo needed a password, the first error named a file it could not install (`etc_lager_perms.sh`), and the missing terminal showed only in ssh's and sudo's output below it. Install now stops before the sudo session and says to run it in a terminal. A box that needs no password still installs without one.
 - **The box's BLE `Central()` makes its own event loop when none is passed.** It called `asyncio.get_event_loop()`, which raises with no current loop: off the main thread today, and in any synchronous script on Python 3.14. Pass `loop=` to share a loop.
+- **A bench run no longer reports green for checks that did not run.** A skipped
+  UART round-trip now fails the nightly, and an unreachable Acroname hub, USB-202 or
+  LabJack T7 fails its suite. The USB-hub, Keithley battery, Rigol mode and RTT
+  checks now read back what they set.
+- **`box_config.sh` fails when it cannot write the box config.** It used to go on
+  and re-apply the old config, so the checks after it tested the wrong thing.
 
 ## [0.52.0] - 2026-09-30
 

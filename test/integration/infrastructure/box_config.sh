@@ -67,6 +67,19 @@ echo "========================================================================"
 echo "Box: $BOX"
 echo ""
 
+# Write box_config.json on the box from stdin, replacing whatever is there.
+#
+# A bare `cat >` over SSH can fail with "Permission denied" when an earlier
+# apply left the file owned by another user, and nothing checked its status:
+# the next `apply --force` then re-applied the OLD config and every check
+# after it measured the wrong thing. Test 3.13 failed for exactly that reason
+# on a bench run, and was blamed on the service it tests. Remove the file first
+# (the directory is writable, which is why Test 1.1's `rm -f` works), then
+# write, and return the write's real status so the caller can fail loudly.
+write_box_config() {
+  ssh "$SSH_HOST" 'rm -f /etc/lager/box_config.json && cat > /etc/lager/box_config.json'
+}
+
 # ------------------------------------------------------------
 start_section "Baseline (no config)"
 # ------------------------------------------------------------
@@ -283,11 +296,16 @@ start_section "LAGER_DISABLE_UART_SERVICE skips port-9000 service"
 # services (e.g. a third-party message broker that binds port 9000).
 
 echo "Test 3.12: Apply config with LAGER_DISABLE_UART_SERVICE=1"
-ssh "$SSH_HOST" 'cat > /etc/lager/box_config.json' <<'EOF'
+if ! write_box_config <<'EOF'
 {"version": 1, "mounts": [], "volumes": [{"name": "box-tools", "container": "/opt/box-tools"}], "env": {"LAGER_DISABLE_UART_SERVICE": "1"}, "pip_packages": []}
 EOF
-lager box config apply --box "$BOX" --yes --force >/dev/null 2>&1 \
-  && track_test "pass" || track_test "fail"
+then
+  echo "  could not write box_config.json - 3.13/3.13b below test the OLD config"
+  track_test "fail"
+else
+  lager box config apply --box "$BOX" --yes --force >/dev/null 2>&1 \
+    && track_test "pass" || track_test "fail"
+fi
 
 echo "Test 3.13: box_http_server.py is NOT running"
 sleep 5
@@ -302,7 +320,12 @@ fi
 # port is bound by docker-proxy whether or not anything listens behind it, so
 # `-p 9000:9000` alone kept the host port occupied and the port was never freed.
 echo "Test 3.13b: host port 9000 is free"
-if ssh "$SSH_HOST" 'docker ps --filter name=lager --format "{{.Ports}}"' 2>/dev/null | grep -q '9000'; then
+if ssh "$SSH_HOST" 'test -e /etc/lager/no_publish' 2>/dev/null; then
+  # A --no-publish box publishes no port on the host whatever the config
+  # says, so "9000 is free" holds by construction and proves nothing here.
+  echo "  /etc/lager/no_publish is present: no port is ever published on this box"
+  track_test "skip"
+elif ssh "$SSH_HOST" 'docker ps --filter name=lager --format "{{.Ports}}"' 2>/dev/null | grep -q '9000'; then
   echo "  container still publishes 9000 with disable env set:"
   ssh "$SSH_HOST" 'docker ps --filter name=lager --format "{{.Ports}}"' 2>&1 | sed 's/^/    /'
   track_test "fail"
@@ -311,11 +334,16 @@ else
 fi
 
 echo "Test 3.14: Apply config without the env var"
-ssh "$SSH_HOST" 'cat > /etc/lager/box_config.json' <<'EOF'
+if ! write_box_config <<'EOF'
 {"version": 1, "mounts": [], "volumes": [{"name": "box-tools", "container": "/opt/box-tools"}], "env": {}, "pip_packages": []}
 EOF
-lager box config apply --box "$BOX" --yes --force >/dev/null 2>&1 \
-  && track_test "pass" || track_test "fail"
+then
+  echo "  could not write box_config.json - 3.15 below tests the OLD config"
+  track_test "fail"
+else
+  lager box config apply --box "$BOX" --yes --force >/dev/null 2>&1 \
+    && track_test "pass" || track_test "fail"
+fi
 
 echo "Test 3.15: box_http_server.py IS running (default behavior preserved)"
 sleep 5
@@ -500,10 +528,17 @@ start_section "Validation rejects /"
 # ------------------------------------------------------------
 
 echo "Test 5.1: Write a config with mount host=\"/\""
-ssh "$SSH_HOST" 'cat > /etc/lager/box_config.json' <<'EOF'
+# The write IS this test: it used to record a pass unconditionally, so 5.2's
+# "validate rejects /" could run against whatever config was already there.
+if write_box_config <<'EOF'
 {"version": 1, "mounts": [{"host": "/", "container": "/host"}]}
 EOF
-track_test "pass"
+then
+  track_test "pass"
+else
+  echo "  could not write box_config.json - 5.2 below tests the OLD config"
+  track_test "fail"
+fi
 
 echo "Test 5.2: validate exits non-zero"
 # validate and apply share one validate() call

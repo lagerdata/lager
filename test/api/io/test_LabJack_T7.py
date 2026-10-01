@@ -657,16 +657,19 @@ def main():
     print("=" * 60)
 
     # Preflight: open the LabJack handle and confirm the primary ADC responds.
+    # An unreachable device is a FAILURE, not a skip. This script is
+    # wired into the nightly, which configures this net on purpose, so
+    # exit 0 here reported a dead instrument as a green suite.
     try:
         adc = Net.get(ADC_NET, type=NetType.ADC)
         adc.input()
     except Exception as e:
-        print(f"\nSKIP: Cannot connect to net '{ADC_NET}' — device not reachable: {e}")
+        print(f"\nERROR: Cannot connect to net '{ADC_NET}' — device not reachable: {e}")
         print("\nDiagnose with:")
         print("  lager instruments --box <box>")
         print(f"  lager diagnose {ADC_NET} --box <box>")
-        print("\nSkipping all tests for this device.")
-        sys.exit(0)
+        print("\nNo tests ran for this device.")
+        sys.exit(1)
 
     tests = [
         ("ADC Single-Channel Read",      test_adc_single_channel),

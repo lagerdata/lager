@@ -46,6 +46,24 @@ def _record(name, passed, detail=""):
 # ---------------------------------------------------------------------------
 # 1. Net API
 # ---------------------------------------------------------------------------
+def _expect_state(usb, want, label):
+    """Read the port back from the hub and record whether it matches.
+
+    Every command below used to count as passing if it did not raise. A hub
+    that accepted the command and left the port where it was -- the failure a
+    user would actually hit -- passed all of them. `state()` reads the hub's
+    own port register, so this is the check that can tell.
+    """
+    try:
+        got = usb.state()
+    except Exception as e:
+        _record(label, False, f"state() raised: {e}")
+        return False
+    passed = got is want
+    _record(label, passed, f"state()={got!r}, expected {want!r}")
+    return passed
+
+
 def test_net_api():
     """Net.get() returns a USBNetWrapper with the expected interface."""
     print("\n" + "=" * 60)
@@ -180,7 +198,7 @@ def test_string_representation():
 # 4. Enable / Disable
 # ---------------------------------------------------------------------------
 def test_enable_disable():
-    """enable() and disable() succeed without raising exceptions."""
+    """enable() and disable() each leave the port in the state they name."""
     print("\n" + "=" * 60)
     print("TEST: Enable / Disable")
     print("=" * 60)
@@ -191,30 +209,19 @@ def test_enable_disable():
         from lager import Net, NetType
         usb = Net.get(USB_NET, type=NetType.Usb)
 
-        try:
-            usb.enable()
-            _record("enable() succeeds", True)
-        except Exception as e:
-            _record("enable()", False, str(e))
-            ok = False
-
-        time.sleep(0.3)
-
-        try:
-            usb.disable()
-            _record("disable() succeeds", True)
-        except Exception as e:
-            _record("disable()", False, str(e))
-            ok = False
-
-        time.sleep(0.3)
-
-        try:
-            usb.enable()
-            _record("re-enable() after disable succeeds", True)
-        except Exception as e:
-            _record("re-enable()", False, str(e))
-            ok = False
+        for action, want, label in (
+            (usb.enable, True, "enable() leaves the port on"),
+            (usb.disable, False, "disable() leaves the port off"),
+            (usb.enable, True, "re-enable() after disable leaves the port on"),
+        ):
+            try:
+                action()
+            except Exception as e:
+                _record(label, False, f"{action.__name__}() raised: {e}")
+                ok = False
+                continue
+            time.sleep(0.3)
+            ok = _expect_state(usb, want, label) and ok
 
     except Exception as e:
         _record("enable/disable setup", False, str(e))
@@ -233,7 +240,7 @@ def test_enable_disable():
 # 5. Toggle
 # ---------------------------------------------------------------------------
 def test_toggle():
-    """toggle() succeeds; two toggles leave the port in the original state."""
+    """toggle() reports the state it produced, and two toggles restore the port."""
     print("\n" + "=" * 60)
     print("TEST: Toggle")
     print("=" * 60)
@@ -248,21 +255,20 @@ def test_toggle():
         usb.enable()
         time.sleep(0.2)
 
-        try:
-            usb.toggle()
-            _record("toggle() first call succeeds (port now off)", True)
-        except Exception as e:
-            _record("toggle() first call", False, str(e))
-            ok = False
-
-        time.sleep(0.2)
-
-        try:
-            usb.toggle()
-            _record("toggle() second call succeeds (port back on)", True)
-        except Exception as e:
-            _record("toggle() second call", False, str(e))
-            ok = False
+        for want, label in ((False, "first toggle() turns the port off"),
+                            (True, "second toggle() turns the port back on")):
+            try:
+                returned = usb.toggle()
+            except Exception as e:
+                _record(label, False, f"toggle() raised: {e}")
+                ok = False
+                continue
+            if returned is not want:
+                _record(f"{label} (return value)", False,
+                        f"toggle() returned {returned!r}, expected {want!r}")
+                ok = False
+            time.sleep(0.2)
+            ok = _expect_state(usb, want, label) and ok
 
     except Exception as e:
         _record("toggle setup", False, str(e))
@@ -281,7 +287,7 @@ def test_toggle():
 # 6. Power Cycle
 # ---------------------------------------------------------------------------
 def test_power_cycle():
-    """Disable-then-enable cycle with timing: off-duration meets minimum."""
+    """Disable-then-enable: the port reads off during the off period, on after."""
     print("\n" + "=" * 60)
     print("TEST: Power Cycle")
     print("=" * 60)
@@ -294,23 +300,16 @@ def test_power_cycle():
         usb.enable()
         time.sleep(0.3)
 
-        t_start = time.monotonic()
+        # This used to assert the off period lasted POWER_CYCLE_DURATION,
+        # measured around a sleep of POWER_CYCLE_DURATION -- a check that
+        # could not fail. What matters is that the port is actually dark for
+        # the off period and powered again after it, so read it back.
         usb.disable()
         time.sleep(POWER_CYCLE_DURATION)
+        ok = _expect_state(usb, False, "port reads off during the off period") and ok
         usb.enable()
-        elapsed = time.monotonic() - t_start
-
-        _record("disable() succeeded", True)
-        _record("enable() succeeded after off period", True)
-
-        passed_timing = elapsed >= POWER_CYCLE_DURATION
-        _record(
-            f"off-duration >= {POWER_CYCLE_DURATION} s",
-            passed_timing,
-            f"measured={elapsed:.3f} s",
-        )
-        if not passed_timing:
-            ok = False
+        time.sleep(0.3)
+        ok = _expect_state(usb, True, "port reads on after the off period") and ok
 
     except Exception as e:
         _record("power cycle", False, str(e))
@@ -455,11 +454,14 @@ def main():
     print("=" * 60)
 
     # Preflight: confirm hardware is reachable before running any tests.
+    # An unreachable device is a FAILURE, not a skip. This script is
+    # wired into the nightly, which configures this net on purpose, so
+    # exit 0 here reported a dead instrument as a green suite.
     try:
         from lager import Net, NetType
         Net.get(USB_NET, type=NetType.Usb).enable()
     except Exception as e:
-        print(f"\nSKIP: Cannot connect to net '{USB_NET}' — device not reachable: {e}")
+        print(f"\nERROR: Cannot connect to net '{USB_NET}' — device not reachable: {e}")
         print("\nDiagnose the hardware issue with:")
         print(f"  lager instruments --box <box>")
         print(f"  lager hello --box <box>")
@@ -467,8 +469,8 @@ def main():
         print("  - Ensure the Acroname hub is connected via USB to the box")
         print("  - Verify the net is in saved_nets.json with instrument='Acroname'")
         print("  - Check the BrainStem SDK is installed on the box")
-        print("\nSkipping all tests for this device.")
-        sys.exit(0)
+        print("\nNo tests ran for this device.")
+        sys.exit(1)
 
     tests = [
         ("Net API",                  test_net_api),
