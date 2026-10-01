@@ -19,6 +19,9 @@ lager ble COMMAND [OPTIONS]
 | `info` | Get BLE device information |
 | `connect` | Connect to a BLE device |
 | `disconnect` | Disconnect from a BLE device |
+| `session` | Open a persistent GATT session with a BLE device |
+| `sessions` | List or end the BLE sessions open on the box |
+| `adapter` | Check that the box has a working Bluetooth adapter |
 
 ## Command Reference
 
@@ -90,6 +93,128 @@ lager ble disconnect ADDRESS [--box BOX]
 **Arguments:**
 - `ADDRESS` - BLE device address to disconnect from
 
+### `session`
+
+Open a persistent GATT session with a BLE device. The box keeps the connection open,
+so you can subscribe, write, read, and receive notifications across many operations.
+The session moves raw bytes only. Your code owns any framing or protocol on top.
+
+```bash
+lager ble session ADDRESS [OPTIONS]
+```
+
+**Arguments:**
+- `ADDRESS` - BLE device address (e.g., `AA:BB:CC:DD:EE:01`)
+
+**Options:**
+- `--box BOX` - Lager Box name or IP address
+- `--subscribe UUID` - Subscribe to notifications on `UUID` before any write (repeatable)
+- `--write UUID:HEX` - Write hex bytes to `UUID`, in the order given (repeatable)
+- `--read UUID` - Read `UUID` after the writes (repeatable)
+- `--no-response` - Use write-without-response for `--write`
+- `--chunk` - Split each `--write` into writes of at most MTU - 3 bytes, and never more than 512
+- `--chunk-size N` - Split each `--write` into writes of at most `N` bytes (1–512). Use it when the device accepts less than MTU - 3 bytes at a time. Implies `--chunk`
+- `--listen SECONDS` - Print notifications for `SECONDS` after the writes and reads, then close
+- `--connect-timeout FLOAT` - Seconds to find and connect to the device (default: 10)
+- `--idle-timeout FLOAT` - Seconds with no operation before the box closes the session (default: 300)
+- `--json` - Print one JSON object per line
+- `--force` - End any BLE session that is already open on the box first
+
+If you give `--subscribe`, `--write`, `--read`, or `--listen`, the command runs once.
+It subscribes, then writes, then reads, then listens, and then closes the session.
+Without these options, the command starts an interactive prompt. The prompt needs a terminal.
+
+**Interactive commands:**
+
+| Command | Description |
+|---------|-------------|
+| `info` | Show the MTU and the services |
+| `mtu` | Show the negotiated MTU |
+| `sub UUID\|HANDLE` | Subscribe to notifications |
+| `unsub UUID\|HANDLE` | Unsubscribe |
+| `write UUID\|HANDLE HEX [--no-response] [--chunk]` | Write bytes |
+| `read UUID\|HANDLE` | Read a characteristic |
+| `ping` | Reset the idle timer |
+| `close` | Close the session and exit |
+
+A UUID can be the full 128-bit form or a 16-bit short form such as `2A19`. If the same
+UUID occurs in two services, use the characteristic handle from `info`.
+
+**Examples:**
+```bash
+# Open a session, show the MTU and services, then close
+lager ble session AA:BB:CC:DD:EE:01 --box my-lager-box --listen 0
+
+# Subscribe, send a 600-byte message in MTU-sized writes, and print the reply
+lager ble session AA:BB:CC:DD:EE:01 --box my-lager-box \
+    --subscribe 12345678-1234-5678-1234-56789abcdef1 \
+    --write "12345678-1234-5678-1234-56789abcdef2:$PAYLOAD_HEX" --chunk --listen 3
+
+# Print notifications for 30 seconds as JSON lines
+lager ble session AA:BB:CC:DD:EE:01 --subscribe 12345678-1234-5678-1234-56789abcdef1 \
+    --listen 30 --json
+
+# Interactive prompt
+lager ble session AA:BB:CC:DD:EE:01 --box my-lager-box
+```
+
+**Output:**
+
+Each notification line shows the box time, a sequence number, the characteristic UUID,
+and the data in hex:
+
+```text
+[OK] Session open with AA:BB:CC:DD:EE:01: MTU 247 (negotiated), 3 service(s)
+[OK] Subscribed to 12345678-1234-5678-1234-56789abcdef1 (notify)
+[OK] Wrote 600 byte(s) to 12345678-1234-5678-1234-56789abcdef2 in 3 write(s)
+[14:02:11.482] #1 12345678-1234-5678-1234-56789abcdef1 01aa02bb
+[14:02:11.521] #2 12345678-1234-5678-1234-56789abcdef1 03cc
+First notification 61 ms after the last write result
+[OK] Session closed
+```
+
+With `--json`, each line is an object with an `event` key: `open`, `subscribe`, `write`,
+`read`, `notify`, `latency`, or `closed`. A `notify` object has `n`, `char`, `handle`,
+`ts` (Unix seconds on the box), and `data` (hex).
+
+If the session ends early, the command prints the notifications it received. Then it
+exits with status 1 and gives the reason. The reasons are `disconnected` (the device
+dropped the link), `idle_timeout`, `overflow`, and `released` (another client ended it).
+
+### `sessions`
+
+List the BLE sessions that are open on the box, or end them.
+
+```bash
+lager ble sessions [--box BOX] [--release] [--address ADDRESS]
+```
+
+**Options:**
+- `--box BOX` - Lager Box name or IP address
+- `--release` - End the open session
+- `--address ADDRESS` - With `--release`, end only the session with this device
+
+The list shows the device address, the holder, the time open, the idle time, the MTU,
+and the subscriptions.
+
+### `adapter`
+
+Check that the box has a powered Bluetooth adapter.
+
+```bash
+lager ble adapter [--box BOX] [--json]
+```
+
+**Options:**
+- `--box BOX` - Lager Box name or IP address
+- `--json` - Print the result as JSON
+
+The command lists each adapter with its address and power state. It exits with status 0
+when BLE is available and 1 when it is not, with the reason. The reason can be no
+adapter, an adapter that is powered off, or no BlueZ on the box host. A test script can
+use the exit status to skip BLE tests on a box without a radio. The command answers
+while a BLE session is open, and it does not use the adapter.
+
 ---
 
 ## Examples
@@ -121,7 +246,11 @@ The scan command returns a table with:
 - Device address (MAC address format)
 - Device name (if advertised)
 - RSSI (signal strength in dBm)
-- Manufacturer data (if available)
+- With `--verbose`, the address type and the advertised service UUIDs
+
+The address type is `public`, or the kind of random address: `static`, `resolvable`, or
+`non-resolvable`. The JSON output gives it as `address_type` (`public` or `random`) and
+`random_type`. Use `random_type` to check that a device uses a static random address.
 
 ### Device Info
 
@@ -169,3 +298,34 @@ lager ble info AA:BB:CC:DD:EE:FF
 - Address format is `XX:XX:XX:XX:XX:XX` (colon-separated hex)
 - Scan timeout affects how long the box searches for devices
 - Some devices do not advertise their name until they connect
+
+### BLE Sessions
+
+- The box has one Bluetooth adapter, so it allows one BLE session at a time. While a
+  session is open, `lager ble scan`, `info`, `connect`, `disconnect`, and `lager blufi`
+  stop at once with an "in use by an open BLE session" error. The error names the
+  device and the holder.
+- `lager ble session` holds the box lock while it runs, like the other `lager ble` commands.
+- The box closes a session when you close it, when the client disconnects, when the
+  device drops the link, or after the idle timeout. Notifications do not reset the idle
+  timer. Only operations reset it.
+- If a client stops without closing its connection, the box keeps the session for
+  about 85 seconds. To end it sooner, run `lager ble sessions --release`.
+- Subscribe before you write. The box then receives every notification that the reply causes.
+- BlueZ negotiates the ATT MTU when it connects, up to 517 bytes. The command shows
+  the negotiated value. You cannot set the MTU for one session.
+- A write with response that is longer than MTU - 3 bytes makes BlueZ use a long write
+  (Prepare Write and Execute Write). Some devices do not support long writes. Use
+  `--chunk` to send MTU-sized writes in order.
+- One write can carry at most 512 bytes, the BLE limit for one attribute value. The box
+  refuses a longer write unless you give `--chunk`.
+- Lager does not change the connection parameters. The box host uses its BlueZ
+  defaults from `/etc/bluetooth/main.conf`.
+- The box keeps at most 4 MiB of notifications that the client did not receive. If a
+  client does not read them, the box ends the session with the reason `overflow`. The
+  box never drops notifications silently.
+- The box receives notifications in the order the device sends them on one ATT channel.
+  If the device and the box both support Enhanced ATT (EATT), the device can send
+  notifications on several channels at once. Notifications on different channels can
+  arrive out of order. The `n` field numbers them in the order the box received them.
+  If the order matters to your protocol, add a sequence number to your messages.

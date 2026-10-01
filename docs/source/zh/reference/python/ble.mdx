@@ -480,6 +480,15 @@ def ble_production_test():
 ble_production_test()
 ```
 
+## 从您的计算机使用 BLE 会话
+
+`Client` 类在 Box 上的脚本中运行。要从您自己的计算机保持 GATT 连接，请使用 BLE 会话。会话在 Box 上保持连接，并把通知流式发送给您。
+
+- 在 CLI 中，使用 [`lager ble session`](/source/zh/reference/cli/ble#session)。
+- 在 Rust 测试中，使用 [`BleSession`](/source/zh/reference/rust/ble#blesession)。
+
+使用 `Client` 的脚本不参与 Box 的适配器共享。如果脚本在 BLE 会话打开期间连接设备，两者会同时使用适配器。运行这类脚本之前，请先关闭会话。
+
 ## 硬件要求
 
 | 要求 | 说明 |

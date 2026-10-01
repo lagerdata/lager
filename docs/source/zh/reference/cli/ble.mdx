@@ -19,6 +19,9 @@ lager ble COMMAND [OPTIONS]
 | `info` | 获取 BLE 设备信息 |
 | `connect` | 连接一台 BLE 设备 |
 | `disconnect` | 断开与一台 BLE 设备的连接 |
+| `session` | 与一台 BLE 设备建立持久的 GATT 会话 |
+| `sessions` | 列出或结束 Box 上打开的 BLE 会话 |
+| `adapter` | 检查 Box 是否有可用的蓝牙适配器 |
 
 ## 命令参考
 
@@ -90,6 +93,113 @@ lager ble disconnect ADDRESS [--box BOX]
 **参数：**
 - `ADDRESS` - 要断开的 BLE 设备地址
 
+### `session`
+
+与一台 BLE 设备建立持久的 GATT 会话。Box 会保持连接，因此您可以在多次操作之间订阅、写入、读取并接收通知。会话只传输原始字节，上层的分帧和协议由您的代码负责。
+
+```bash
+lager ble session ADDRESS [OPTIONS]
+```
+
+**参数：**
+- `ADDRESS` - BLE 设备地址（例如 `AA:BB:CC:DD:EE:01`）
+
+**选项：**
+- `--box BOX` - Lager Box 名称或 IP 地址
+- `--subscribe UUID` - 在任何写入之前订阅 `UUID` 上的通知（可重复）
+- `--write UUID:HEX` - 按给定顺序向 `UUID` 写入十六进制字节（可重复）
+- `--read UUID` - 在写入之后读取 `UUID`（可重复）
+- `--no-response` - `--write` 使用无响应写入（write-without-response）
+- `--chunk` - 把每个 `--write` 拆分为不超过 MTU - 3 字节的多次写入，且每次绝不超过 512 字节
+- `--chunk-size N` - 把每个 `--write` 拆分为不超过 `N` 字节（1–512）的多次写入。当设备一次接受的字节数少于 MTU - 3 时使用它。隐含 `--chunk`
+- `--listen SECONDS` - 在写入和读取之后打印 `SECONDS` 秒内的通知，然后关闭
+- `--connect-timeout FLOAT` - 查找并连接设备的秒数（默认 10）
+- `--idle-timeout FLOAT` - 没有任何操作多少秒后由 Box 关闭会话（默认 300）
+- `--json` - 每行打印一个 JSON 对象
+- `--force` - 先结束 Box 上已经打开的 BLE 会话
+
+如果给出 `--subscribe`、`--write`、`--read` 或 `--listen`，命令只运行一次：先订阅，再写入，再读取，再监听，最后关闭会话。没有这些选项时，命令启动一个交互式提示符，它需要一个终端。
+
+**交互式命令：**
+
+| 命令 | 说明 |
+|---------|-------------|
+| `info` | 显示 MTU 和服务 |
+| `mtu` | 显示协商得到的 MTU |
+| `sub UUID\|HANDLE` | 订阅通知 |
+| `unsub UUID\|HANDLE` | 取消订阅 |
+| `write UUID\|HANDLE HEX [--no-response] [--chunk]` | 写入字节 |
+| `read UUID\|HANDLE` | 读取一个特征 |
+| `ping` | 重置空闲计时器 |
+| `close` | 关闭会话并退出 |
+
+UUID 可以是完整的 128 位形式，也可以是 `2A19` 这样的 16 位短形式。如果同一个 UUID 出现在两个服务中，请使用 `info` 给出的特征句柄（handle）。
+
+**示例：**
+```bash
+# 打开会话，显示 MTU 和服务，然后关闭
+lager ble session AA:BB:CC:DD:EE:01 --box my-lager-box --listen 0
+
+# 订阅，以 MTU 大小的多次写入发送 600 字节的消息，并打印回复
+lager ble session AA:BB:CC:DD:EE:01 --box my-lager-box \
+    --subscribe 12345678-1234-5678-1234-56789abcdef1 \
+    --write "12345678-1234-5678-1234-56789abcdef2:$PAYLOAD_HEX" --chunk --listen 3
+
+# 以 JSON 行的形式打印 30 秒内的通知
+lager ble session AA:BB:CC:DD:EE:01 --subscribe 12345678-1234-5678-1234-56789abcdef1 \
+    --listen 30 --json
+
+# 交互式提示符
+lager ble session AA:BB:CC:DD:EE:01 --box my-lager-box
+```
+
+**输出：**
+
+每一行通知显示 Box 上的时间、序号、特征 UUID 和十六进制数据：
+
+```text
+[OK] Session open with AA:BB:CC:DD:EE:01: MTU 247 (negotiated), 3 service(s)
+[OK] Subscribed to 12345678-1234-5678-1234-56789abcdef1 (notify)
+[OK] Wrote 600 byte(s) to 12345678-1234-5678-1234-56789abcdef2 in 3 write(s)
+[14:02:11.482] #1 12345678-1234-5678-1234-56789abcdef1 01aa02bb
+[14:02:11.521] #2 12345678-1234-5678-1234-56789abcdef1 03cc
+First notification 61 ms after the last write result
+[OK] Session closed
+```
+
+使用 `--json` 时，每一行是一个带 `event` 键的对象：`open`、`subscribe`、`write`、`read`、`notify`、`latency` 或 `closed`。`notify` 对象包含 `n`、`char`、`handle`、`ts`（Box 上的 Unix 秒）和 `data`（十六进制）。
+
+如果会话提前结束，命令会先打印已经收到的通知，然后以状态 1 退出并给出原因。原因包括 `disconnected`（设备断开了链路）、`idle_timeout`、`overflow` 和 `released`（另一个客户端结束了它）。
+
+### `sessions`
+
+列出 Box 上打开的 BLE 会话，或结束它们。
+
+```bash
+lager ble sessions [--box BOX] [--release] [--address ADDRESS]
+```
+
+**选项：**
+- `--box BOX` - Lager Box 名称或 IP 地址
+- `--release` - 结束打开的会话
+- `--address ADDRESS` - 与 `--release` 一起使用，只结束与该设备的会话
+
+列表显示设备地址、持有者、打开时长、空闲时长、MTU 和订阅。
+
+### `adapter`
+
+检查 Box 是否有已通电的蓝牙适配器。
+
+```bash
+lager ble adapter [--box BOX] [--json]
+```
+
+**选项：**
+- `--box BOX` - Lager Box 名称或 IP 地址
+- `--json` - 以 JSON 格式打印结果
+
+该命令列出每个适配器的地址和电源状态。BLE 可用时以状态 0 退出，不可用时以状态 1 退出并给出原因。原因可能是没有适配器、适配器已断电，或 Box 宿主机上没有 BlueZ。测试脚本可以根据退出状态在没有蓝牙的 Box 上跳过 BLE 测试。BLE 会话打开期间该命令也会作答，并且不占用适配器。
+
 ---
 
 ## 示例
@@ -121,7 +231,9 @@ scan 命令返回一个表格，包含：
 - 设备地址（MAC 地址格式）
 - 设备名称（如果设备广播了名称）
 - RSSI（信号强度，单位 dBm）
-- 厂商数据（如果有）
+- 使用 `--verbose` 时，还包含地址类型和广播的服务 UUID
+
+地址类型为 `public`，或随机地址的种类：`static`、`resolvable` 或 `non-resolvable`。JSON 输出中以 `address_type`（`public` 或 `random`）和 `random_type` 给出。请用 `random_type` 检查设备是否使用静态随机地址。
 
 ### 设备信息
 
@@ -166,3 +278,17 @@ lager ble info AA:BB:CC:DD:EE:FF
 - 地址格式为 `XX:XX:XX:XX:XX:XX`（用冒号分隔的十六进制）
 - 扫描超时时间决定 Box 搜索设备的时长
 - 有些设备在连接之前不广播自己的名称
+
+### BLE 会话
+
+- Box 只有一个蓝牙适配器，因此同一时刻只允许一个 BLE 会话。会话打开期间，`lager ble scan`、`info`、`connect`、`disconnect` 和 `lager blufi` 会立即失败并报告 "in use by an open BLE session" 错误。该错误会给出设备和持有者。
+- `lager ble session` 运行期间持有 Box 锁，与其他 `lager ble` 命令相同。
+- 在以下情况下 Box 会关闭会话：您关闭它、客户端断开、设备断开链路，或达到空闲超时。通知不会重置空闲计时器，只有操作会重置它。
+- 如果客户端停止运行但没有关闭连接，Box 会保留该会话约 85 秒。要更早结束它，请运行 `lager ble sessions --release`。
+- 请先订阅再写入。这样 Box 能收到回复所产生的每一条通知。
+- BlueZ 在连接时协商 ATT MTU，最大 517 字节。命令会显示协商得到的值。您不能为单个会话设置 MTU。
+- 长度超过 MTU - 3 字节的有响应写入会让 BlueZ 使用长写入（Prepare Write 和 Execute Write）。有些设备不支持长写入。请使用 `--chunk` 按顺序发送 MTU 大小的写入。
+- 单次写入最多携带 512 字节，这是 BLE 对单个属性值的上限。除非给出 `--chunk`，否则 Box 会拒绝更长的写入。
+- Lager 不修改连接参数。Box 宿主机使用 `/etc/bluetooth/main.conf` 中的 BlueZ 默认值。
+- 对于客户端尚未接收的通知，Box 最多保留 4 MiB。如果客户端不读取它们，Box 会以 `overflow` 原因结束会话。Box 从不悄悄丢弃通知。
+- 在同一个 ATT 通道上，Box 按设备发送的顺序接收通知。如果设备和 Box 都支持增强型 ATT（EATT），设备可以同时在多个通道上发送通知。不同通道上的通知可能乱序到达。`n` 字段按 Box 接收的顺序给它们编号。如果您的协议依赖顺序，请在消息中加入序号。

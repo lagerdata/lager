@@ -61,6 +61,8 @@ READ_ONLY = [
     ["i2c", "--box", BOX],
     ["spi", "--box", BOX],
     ["uart", "--box", BOX],
+    ["ble", "adapter", "--box", BOX],
+    ["ble", "sessions", "--box", BOX],
 ]
 
 # A representative set of commands that must still refuse. `nets state` is
@@ -145,6 +147,9 @@ def box(monkeypatch):
 
     def fake_post(url, *args, **kwargs):
         state["posts"].append(url)
+        if url.endswith("/ble/command"):
+            return _Resp(200, {"success": True, "value": {
+                "available": True, "adapters": [], "reason": None}})
         # A lock POST from anyone but the holder is refused, as the box does.
         return _Resp(409, {"error": "Box is locked", "lock": state["lock"]})
 

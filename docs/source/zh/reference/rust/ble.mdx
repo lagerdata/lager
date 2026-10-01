@@ -3,7 +3,7 @@ title: BLE
 description: 从 Box 扫描并连接低功耗蓝牙设备
 ---
 
-用 Box 自带的蓝牙适配器找到正在广播的被测设备，连接它，并枚举它的 GATT 服务。
+用 Box 自带的蓝牙适配器找到正在广播的被测设备，连接它，并枚举它的 GATT 服务。要保持连接并交换数据，请使用 [`BleSession`](#blesession)。
 
 ## 句柄
 
@@ -25,6 +25,7 @@ BLE 是 **Box 级**能力，不是一个 Net：它驱动的是 Box 自己的适�
 | `info()` | 短暂连接并枚举 GATT 服务 |
 | `connect()` | 连接，并通过枚举服务来确认 |
 | `disconnect()` | 确保某个设备已与 Box 断开连接 |
+| `adapter()` | 检查 Box 是否有已通电的蓝牙适配器 |
 
 ## 类型
 
@@ -32,6 +33,8 @@ BLE 是 **Box 级**能力，不是一个 Net：它驱动的是 Box 自己的适�
 pub struct BleDevice {
     pub name: String,          // falls back to the address when unnamed
     pub address: String,       // XX:XX:XX:XX:XX:XX
+    pub address_type: Option<String>, // "public" or "random"
+    pub random_type: Option<String>,  // "static", "resolvable" or "non-resolvable"
     pub rssi: Option<i64>,     // dBm
     pub uuids: Vec<String>,
 }
@@ -50,6 +53,7 @@ pub struct BleService {
 
 pub struct BleCharacteristic {
     pub uuid: String,
+    pub handle: Option<u16>,       // ATT handle; set by BleSession
     pub description: Option<String>,
     pub properties: Vec<String>,   // e.g. ["read", "notify"]
 }
@@ -79,7 +83,141 @@ for d in ble.scan(5.0)? {
 
 按地址连接某个设备，或者确保与它断开连接。
 
+### `adapter() -> Result<BleAdapter>`
+
+检查 Box 是否有已通电的蓝牙适配器。有则 `available` 为 `true`；否则 `reason` 说明原因：没有适配器、适配器已断电，或 Box 宿主机上没有 BlueZ。会话打开期间 Box 也会作答。请先调用它，在没有蓝牙的 Box 上跳过 BLE 测试：
+
+```rust
+let adapter = lager.ble().adapter()?;
+if !adapter.available {
+    eprintln!("skipping BLE tests: {}", adapter.reason.unwrap_or_default());
+    return Ok(());
+}
+```
+
+`BleDevice::is_static_random()` 告诉您扫描到的设备是否使用静态随机地址。
+
+## BleSession
+
+`BleSession` 在 Box 上保持一个 GATT 连接。测试可以在多次操作之间订阅、写入、读取并接收通知。会话只传输原始字节，上层的分帧和协议由您的测试负责。
+
+### 启用该特性
+
+会话基于 Socket.IO，因此放在一个 cargo 特性之后：
+
+```toml
+[dev-dependencies]
+lager = { package = "lager-net", version = "0.7", features = ["ble-session"] }
+```
+
+`ble-session` 特性隐含 `blocking`。没有对应的 async 版本。
+
+### 打开会话
+
+```rust
+use lager::{BleSessionOptions, LagerBox};
+
+let lager = LagerBox::from_env()?;
+let mut s = lager.ble_session("AA:BB:CC:DD:EE:01", BleSessionOptions::default())?;
+println!("MTU {}", s.mtu());
+```
+
+`ble_session()` 会先读取 `status()`。如果 Box 没有声明 `capabilities.ble_session`，它返回 `Error::UnsupportedByBox`。请在该 Box 上运行 `lager update`。
+
+| 选项 | 默认值 | 说明 |
+|--------|---------|-------------|
+| `connect_timeout` | 10 秒 | 查找并连接设备的时间（1–120 秒） |
+| `idle_timeout` | 300 秒 | 没有任何操作达到该时间后，Box 关闭会话（5–3600 秒） |
+| `op_timeout` | 30 秒 | 客户端等待每个操作结果的时间 |
+| `holder` | `None` | 适配器被占用时，其他客户端看到的标签 |
+
+### 会话方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `mtu()` | 协商得到的 ATT MTU |
+| `max_write_len()` | 单次写入的最大长度：`mtu() - 3`，最多 512 |
+| `mtu_is_measured()` | 如果 Box 没有读到 MTU 而假定为 23，则为 `false` |
+| `services()` | GATT 表，每个特征都带句柄 |
+| `subscribe(uuid)` | 启用通知或指示 |
+| `unsubscribe(uuid)` | 禁用它们 |
+| `write(uuid, data, opts)` | 写入原始字节 |
+| `read(uuid)` | 读取一个特征 |
+| `recv(timeout)` | 下一条通知；最多等待 `timeout` |
+| `try_recv()` | 如果已有通知则返回下一条；从不等待 |
+| `info()` | 刷新并返回 MTU 和 GATT 表 |
+| `ping()` | 重置空闲计时器 |
+| `close_reason()` | 会话结束的原因；会话打开时为 `None` |
+| `close()` | 关闭会话 |
+
+`subscribe_handle`、`unsubscribe_handle`、`write_handle` 和 `read_handle` 接受 ATT 句柄而不是 UUID。当一个 UUID 出现在多个服务中时使用它们。
+
+```rust
+pub struct BleNotification {
+    pub seq: u64,          // box counter, starts at 1
+    pub char_uuid: String,
+    pub handle: u16,
+    pub timestamp: f64,    // Unix seconds on the box
+    pub data: Vec<u8>,
+}
+
+pub struct WriteOptions {
+    pub response: bool,    // default true
+    pub chunk: bool,       // default false: split into max_write_len() writes
+    pub chunk_size: Option<u16>, // cap each piece below max_write_len() (1-512)
+}
+```
+
+`WriteOptions::without_response()` 和 `WriteOptions::chunked()` 给出默认值之外的两种常用选择。`WriteOptions::chunked_to(n)` 把数据拆分为每段不超过 `n` 字节。当设备一次接受的字节数少于 `max_write_len()` 时使用它。
+
+### 错误
+
+Box 报告的失败是 `Error::Ble { kind, message }`。`kind` 的取值如下：
+
+| `BleErrorKind` | 含义 |
+|----------------|---------|
+| `DeviceNotFound` | Box 在连接扫描中没有看到该地址 |
+| `ConnectFailed` | 连接失败或超时 |
+| `AdapterBusy` | 另一个会话占用了适配器；`message` 给出它 |
+| `BluezUnavailable` | Box 宿主机上没有运行 BlueZ |
+| `UnknownCharacteristic` | GATT 表中没有该 UUID 或句柄 |
+| `AmbiguousCharacteristic` | 该 UUID 出现了多次；`message` 列出各个句柄 |
+| `NotPermitted` | 该特征不支持此操作，或设备拒绝了它 |
+| `InvalidArgument` | 地址、超时或负载无效 |
+| `Disconnected` | 设备断开了链路；会话已结束 |
+| `IdleTimeout` | 在 `idle_timeout` 内没有任何操作；会话已结束 |
+| `Overflow` | 测试读取通知太慢；会话已结束 |
+| `Released` | 另一个客户端结束了会话 |
+| `Timeout` | Box 侧的某个操作卡住；会话已结束 |
+
+传输层失败是 `Error::Connection` 或 `Error::Stream`。客户端等待超时是 `Error::Timeout`。
+
+设备断开后，`recv()` 和 `try_recv()` 会先返回断开之前到达的每一条通知，然后才返回带 `BleErrorKind::Disconnected` 的 `Error::Ble`。
+
 ## 示例
+
+### 发送请求并收集回复
+
+```rust
+use std::time::Duration;
+use lager::{BleSessionOptions, LagerBox, WriteOptions};
+
+const NOTIFY: &str = "12345678-1234-5678-1234-56789abcdef1";
+const WRITE: &str = "12345678-1234-5678-1234-56789abcdef2";
+
+let lager = LagerBox::from_env()?;
+let mut s = lager.ble_session("AA:BB:CC:DD:EE:01", BleSessionOptions::default())?;
+assert!(s.mtu_is_measured());
+
+s.subscribe(NOTIFY)?;                         // before the write
+s.write(WRITE, &request, WriteOptions::chunked())?;
+
+let mut reply = Vec::new();
+while reply.len() < expected_len {
+    reply.extend(s.recv(Duration::from_secs(2))?.data);
+}
+s.close()?;
+```
 
 ### 断言被测设备带着正确的服务在广播
 
@@ -108,7 +246,13 @@ supply.disable()?;
 
 ## 说明
 
-- **每台 Box 只有一个适配器。** Box 会把它上面所有的 BLE **和** BluFi 工作串行化，因此并发调用会排队而不是失败。一次 BluFi 配网和一次 BLE 扫描不能重叠。
+- **每台 Box 只有一个适配器。** Box 会把它上面所有的 BLE **和** BluFi 工作串行化，因此并发调用会排队而不是失败。一次 BluFi 配网和一次 BLE 扫描不能重叠。`BleSession` 打开期间，Box 会立即以 `Error::Box` 和 HTTP 409 拒绝这些调用，第二个会话会得到 `AdapterBusy`。
+- **请先订阅再写入。** 这样 Box 能收到回复所产生的每一条通知。Box 会缓存通知直到您读取它们，因此两次 `recv()` 调用之间不会丢失通知。
+- **MTU 是报告的，不是选择的。** BlueZ 在连接时协商它，最大 517 字节。单次写入最多携带 512 字节，未分块的更长写入会被 Box 拒绝。长度超过 `max_write_len()` 的有响应写入会让 BlueZ 使用长写入。有些设备不支持长写入。请使用 `WriteOptions::chunked()`。
+- **通知不会重置空闲计时器。** 只监听的测试必须比 `idle_timeout` 更频繁地调用 `ping()`。
+- Lager 不修改连接参数。Box 宿主机使用它的 BlueZ 默认值。
+- **顺序按 ATT 通道保持。** 如果设备支持增强型 ATT（EATT），它可以在多个通道上发送通知，这些通知可能乱序到达。`BleNotification::seq` 按 Box 接收的顺序给它们编号。如果顺序重要，请在您的消息中加入序号。
+- `ble_session()` 不获取 Box 锁。如果其他人共用这台 Box，请在会话期间用 `LagerBox::lock()` 持有它。
 - `capabilities.ble_command` 为 `true` 只表示 Box **提供这条路由**，而不表示它能完成这项工作。宿主机上没有运行 BlueZ 的 Box 会用 `Error::Box` 和 HTTP 502 作答，并携带 `BlueZ is not running on the box host`（较旧的 Box 镜像会发送 `The name org.bluez was not provided by any .service files`）。即使 USB 总线上确实有蓝牙控制器也会这样。请检查错误，而不是只看能力标志。`lager update` 会在宿主机上安装 BlueZ。
 - `info`、`connect` 和 `disconnect` 在 Box 侧的连接超时是 10 秒；客户端在此之上再加 30 秒。
 - `rssi` 是恰好收到的那条广播的一次快照。请把它当作排序提示，而不是测量值。

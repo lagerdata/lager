@@ -4,7 +4,8 @@ description: Scan for and connect to Bluetooth Low Energy devices from the box
 ---
 
 Use the box's own Bluetooth adapter to find your DUT advertising, connect to it, and
-enumerate its GATT services.
+enumerate its GATT services. To hold a connection open and exchange data, use a
+[`BleSession`](#blesession).
 
 ## Handle
 
@@ -27,6 +28,7 @@ is no net name and no `name()`.
 | `info()` | Connect briefly and enumerate GATT services |
 | `connect()` | Connect, enumerating services to verify |
 | `disconnect()` | Ensure a device is disconnected from the box |
+| `adapter()` | Check that the box has a powered Bluetooth adapter |
 
 ## Types
 
@@ -34,6 +36,8 @@ is no net name and no `name()`.
 pub struct BleDevice {
     pub name: String,          // falls back to the address when unnamed
     pub address: String,       // XX:XX:XX:XX:XX:XX
+    pub address_type: Option<String>, // "public" or "random"
+    pub random_type: Option<String>,  // "static", "resolvable" or "non-resolvable"
     pub rssi: Option<i64>,     // dBm
     pub uuids: Vec<String>,
 }
@@ -52,6 +56,7 @@ pub struct BleService {
 
 pub struct BleCharacteristic {
     pub uuid: String,
+    pub handle: Option<u16>,       // ATT handle; set by BleSession
     pub description: Option<String>,
     pub properties: Vec<String>,   // e.g. ["read", "notify"]
 }
@@ -82,7 +87,155 @@ Connect briefly and enumerate the device's GATT services.
 
 Connect to, or ensure disconnection from, a device by address.
 
+### `adapter() -> Result<BleAdapter>`
+
+Check that the box has a powered Bluetooth adapter. `available` is `true` when it does.
+Otherwise `reason` says why: no adapter, an adapter that is powered off, or no BlueZ on
+the box host. The box answers while a session is open. Call it first, and skip the BLE
+tests on a box without a radio:
+
+```rust
+let adapter = lager.ble().adapter()?;
+if !adapter.available {
+    eprintln!("skipping BLE tests: {}", adapter.reason.unwrap_or_default());
+    return Ok(());
+}
+```
+
+`BleDevice::is_static_random()` tells you if a scanned device uses a static random
+address.
+
+## BleSession
+
+A `BleSession` holds one GATT connection open on the box. A test can subscribe, write,
+read, and receive notifications across many operations. The session moves raw bytes
+only. Your test owns any framing or protocol on top.
+
+### Enabling the feature
+
+Sessions use Socket.IO, so they are behind a cargo feature:
+
+```toml
+[dev-dependencies]
+lager = { package = "lager-net", version = "0.7", features = ["ble-session"] }
+```
+
+The `ble-session` feature implies `blocking`. There is no async equivalent.
+
+### Opening a session
+
+```rust
+use lager::{BleSessionOptions, LagerBox};
+
+let lager = LagerBox::from_env()?;
+let mut s = lager.ble_session("AA:BB:CC:DD:EE:01", BleSessionOptions::default())?;
+println!("MTU {}", s.mtu());
+```
+
+`ble_session()` first reads `status()`. If the box does not advertise
+`capabilities.ble_session`, it returns `Error::UnsupportedByBox`. Run `lager update` on
+that box.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `connect_timeout` | 10 s | Time to find and connect to the device (1–120 s) |
+| `idle_timeout` | 300 s | The box closes the session after this time with no operation (5–3600 s) |
+| `op_timeout` | 30 s | Client wait for each operation result |
+| `holder` | `None` | A label that other clients see when the adapter is busy |
+
+### Session methods
+
+| Method | Description |
+|--------|-------------|
+| `mtu()` | The negotiated ATT MTU |
+| `max_write_len()` | The largest single write: `mtu() - 3`, at most 512 |
+| `mtu_is_measured()` | `false` if the box did not read the MTU and assumed 23 |
+| `services()` | The GATT table, with a handle for each characteristic |
+| `subscribe(uuid)` | Enable notifications or indications |
+| `unsubscribe(uuid)` | Disable them |
+| `write(uuid, data, opts)` | Write raw bytes |
+| `read(uuid)` | Read a characteristic |
+| `recv(timeout)` | The next notification; waits up to `timeout` |
+| `try_recv()` | The next notification if one arrived; never waits |
+| `info()` | Refresh and return the MTU and the GATT table |
+| `ping()` | Reset the idle timer |
+| `close_reason()` | Why the session ended, or `None` while it is open |
+| `close()` | Close the session |
+
+`subscribe_handle`, `unsubscribe_handle`, `write_handle`, and `read_handle` take an ATT
+handle instead of a UUID. Use them when a UUID occurs in more than one service.
+
+```rust
+pub struct BleNotification {
+    pub seq: u64,          // box counter, starts at 1
+    pub char_uuid: String,
+    pub handle: u16,
+    pub timestamp: f64,    // Unix seconds on the box
+    pub data: Vec<u8>,
+}
+
+pub struct WriteOptions {
+    pub response: bool,    // default true
+    pub chunk: bool,       // default false: split into max_write_len() writes
+    pub chunk_size: Option<u16>, // cap each piece below max_write_len() (1-512)
+}
+```
+
+`WriteOptions::without_response()` and `WriteOptions::chunked()` give the two common
+alternatives to the default. `WriteOptions::chunked_to(n)` splits into pieces of at most
+`n` bytes. Use it when the device accepts fewer than `max_write_len()` bytes at a time.
+
+### Errors
+
+A failure that the box reports is `Error::Ble { kind, message }`. The `kind` values are:
+
+| `BleErrorKind` | Meaning |
+|----------------|---------|
+| `DeviceNotFound` | The box did not see the address during the connect scan |
+| `ConnectFailed` | The connection failed or timed out |
+| `AdapterBusy` | Another session holds the adapter; `message` names it |
+| `BluezUnavailable` | BlueZ does not run on the box host |
+| `UnknownCharacteristic` | The UUID or handle is not in the GATT table |
+| `AmbiguousCharacteristic` | The UUID occurs more than once; `message` lists the handles |
+| `NotPermitted` | The characteristic does not support the operation, or the device refused it |
+| `InvalidArgument` | A bad address, timeout, or payload |
+| `Disconnected` | The device dropped the link; the session ended |
+| `IdleTimeout` | No operation for `idle_timeout`; the session ended |
+| `Overflow` | The test did not read notifications fast enough; the session ended |
+| `Released` | Another client ended the session |
+| `Timeout` | A box-side operation stalled; the session ended |
+
+A transport failure is `Error::Connection` or `Error::Stream`. A client wait that runs
+out is `Error::Timeout`.
+
+After the device disconnects, `recv()` and `try_recv()` first return every notification
+that arrived before the disconnect. Only then do they return `Error::Ble` with
+`BleErrorKind::Disconnected`.
+
 ## Examples
+
+### Send a request and collect the reply
+
+```rust
+use std::time::Duration;
+use lager::{BleSessionOptions, LagerBox, WriteOptions};
+
+const NOTIFY: &str = "12345678-1234-5678-1234-56789abcdef1";
+const WRITE: &str = "12345678-1234-5678-1234-56789abcdef2";
+
+let lager = LagerBox::from_env()?;
+let mut s = lager.ble_session("AA:BB:CC:DD:EE:01", BleSessionOptions::default())?;
+assert!(s.mtu_is_measured());
+
+s.subscribe(NOTIFY)?;                         // before the write
+s.write(WRITE, &request, WriteOptions::chunked())?;
+
+let mut reply = Vec::new();
+while reply.len() < expected_len {
+    reply.extend(s.recv(Duration::from_secs(2))?.data);
+}
+s.close()?;
+```
 
 ### Assert the DUT advertises with the right service
 
@@ -113,7 +266,24 @@ supply.disable()?;
 
 - **One adapter per box.** The box serializes all BLE *and* BluFi work on it, so
   concurrent calls queue rather than fail. A BluFi provisioning run and a BLE scan
-  cannot overlap.
+  cannot overlap. While a `BleSession` is open, the box refuses these calls at once
+  with `Error::Box` and HTTP 409, and a second session gets `AdapterBusy`.
+- **Subscribe before you write.** The box then receives every notification that the
+  reply causes. The box buffers notifications until you read them, so none are lost
+  between calls to `recv()`.
+- **The MTU is reported, not chosen.** BlueZ negotiates it when it connects, up to 517
+  bytes. One write can carry at most 512 bytes, and the box refuses a longer one unless
+  it is chunked. A write with response that is longer than `max_write_len()` makes BlueZ use a
+  long write. Some devices do not support long writes. Use `WriteOptions::chunked()`.
+- **Notifications do not reset the idle timer.** A test that only listens must call
+  `ping()` more often than `idle_timeout`.
+- Lager does not change the connection parameters. The box host uses its BlueZ defaults.
+- **Order is kept per ATT channel.** If the device supports Enhanced ATT (EATT), it can
+  send notifications on several channels, and they can arrive out of order.
+  `BleNotification::seq` numbers them in the order the box received them. If the order
+  matters, put a sequence number in your messages.
+- `ble_session()` does not take the box lock. If other people share the box, hold it
+  with `LagerBox::lock()` around the session.
 - `capabilities.ble_command` being `true` means the box **serves the route**, not that
   it can do the work. A box whose host has no BlueZ running answers with
   `Error::Box` and HTTP 502 carrying `BlueZ is not running on the box host` (an older box

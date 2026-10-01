@@ -480,6 +480,19 @@ def ble_production_test():
 ble_production_test()
 ```
 
+## BLE Sessions from Your Computer
+
+The `Client` class runs in a script on the box. To hold a GATT connection from your
+own computer, use a BLE session. A session keeps the connection open on the box and
+streams notifications to you.
+
+- From the CLI, use [`lager ble session`](/source/reference/cli/ble#session).
+- From Rust tests, use [`BleSession`](/source/reference/rust/ble#blesession).
+
+A script that uses `Client` does not take part in the box's adapter sharing. If a
+script connects while a BLE session is open, the two use the adapter at the same time.
+Close the session before you run such a script.
+
 ## Hardware Requirements
 
 | Requirement | Description |

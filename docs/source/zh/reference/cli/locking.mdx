@@ -194,6 +194,8 @@ Note: Box 'my-lager-box' is locked by alice; running read-only.
 | `lager hello` | Box 的版本和状态 |
 | `lager binaries list` | Box 上的自定义二进制文件 |
 | `lager debug <net> health` | 调试服务的状态 |
+| `lager ble adapter` | Box 是否有可用的蓝牙适配器 |
+| `lager ble sessions`（不带 `--release`） | 打开的 BLE 会话 |
 | 不带网络名称的命令组：`lager supply`、`battery`、`eload`、`solar`、`watt`、`energy`、`usb`、`arm`、`debug`、`webcam`、`logic`、`scope`、`i2c`、`spi`、`uart` | 该类型的已保存网络 |
 
 其他所有命令都会像以前一样停止，并显示 `Error: Box '<box>' is locked by <holder>`。一些只显示数值的命令也在会停止的命令之列：

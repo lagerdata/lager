@@ -46,13 +46,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 2857 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 3237 |
+| `unit (cli)` | `test/unit/cli/` | 2891 (+2 xfailed) |
+| `unit (box)` | `test/unit/box/` | 3296 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 380 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 110 (+1 skipped) |
-| | **Total gated** | **6778** |
+| | **Total gated** | **6871** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -452,9 +452,9 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 256 files)
+### Local Unit Tests (`test/unit/` -- 258 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 132 files)
+#### Box Unit Tests (`test/unit/box/` -- 133 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -471,6 +471,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_battery_model_catalog.py` | Read-only battery model catalog; the 2281S has no `:BATT:MODel:CATalog?` query |
 | `test_bench_power_on_blocks_match.py` | The three bench workflows' power-on `run:` blocks are byte-identical, and none of them names the Keithley 2281S unconditionally |
 | `test_binaries_store.py` | `lager.binaries.store` plus the `:9000` `/binaries/*` and `/download-file` handlers |
+| `test_ble_session.py` | BLE GATT sessions on the `/ble` namespace, against a scripted bleak client: MTU from the BlueZ property (and the default fallback), the open failure codes, seq reordering and the unfilled-gap `protocol_error`, subscribe before write, chunked writes in order, unknown and ambiguous characteristics, link loss flushing notifications before `ble_closed`, the idle timeout, overflow, and adapter ownership (`/ble` and `/blufi` commands get 409 while a session is open; `/ble/sessions` list and release) |
 | `test_box_config.py` | box_config v1 schema validation rules and idempotency hash |
 | `test_box_config_addverb_idempotency.py` | mount-add/apt-add/udev-add upsert behavior for provisioning re-runs |
 | `test_box_config_cli.py` | `lager box-config` CLI: mount prep, readiness polling, rollback on bounce failure. Also the `network-mode` verbs and `apply`'s host-networking path: the pre-flight refusing before anything mutates, exit codes 0/3/1, the SSH fallback that keeps a stranded box recoverable, `--skip-restart` refusing a pending switch to host, and only `apply`'s bounce confirming that switch to the box |
@@ -595,7 +596,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_bench_endpoint.py` | `GET /bench` on the box HTTP server: the body is the bench manifest built from the loaded MCP state (`box_id`, nets with `dut_connection`, `reference_keys`, `metadata_sources`, `capability_bindings`); `ETag` is the quoted content hash and a matching `If-None-Match` in any spelling (quoted, weak, bare, listed, `*`) gets 304 with no body; a build failure is a 500 that says why; the first request on a process that never called `init_state` loads from disk once |
 | `test_status_bench_fields.py` | `/status` advertises `capabilities.benchManifest` from the route's registration (never hardcoded), the real app mounts `/bench`, and the nets block carries `dut_connection` and `test_hints` with the same present-when-unset contract as `purpose` |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 108 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 109 files)
 
 | File | What it tests |
 |------|---------------|
@@ -603,6 +604,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_arm_command.py` | `lager arm` CLI: `read-and-save-position` sends nothing until the M889 recalibration is confirmed (or `--yes` is passed), `move`/`move-by` reject a `--timeout` past the box's 25 s cap before any request, and listing arm nets takes no box lock |
 | `test_battery_tui.py` | BatteryTUI render output, command parsing, and worker thread offloading |
 | `test_binaries_9000.py` | `lager binaries add/list/remove` and `download_file` migrated to the box HTTP server on `:9000` |
+| `test_ble_session.py` | `BLESessionClient` request fields and seq, result and notification handling, and `lager ble session` / `lager ble sessions`: one-shot order, JSON lines, MTU and latency output, actionable errors (adapter busy, device not found, no BlueZ), a disconnect mid-listen, `--force`, and an old box |
 | `test_bluez_unavailable_hint.py` | A box host with no BlueZ: the raw `org.bluez` ServiceUnknown error an older box image sends is rewritten into the one remedy line, any other error is shown as sent, and the CLI and box copies of that line are pinned together |
 | `test_box_command_error.py` | `box_command_error`: a 404 that means "net or instrument not found" must not also tell the user their box image is out of date |
 | `test_box_lock_helpers.py` | Lock holder resolution, acquire/release/heartbeat, `LockSession.dissolve`, format_lock_user CI support, `lock_scope`/`_lock_held_by_self` identity matching across all four lock-path comparisons (check, pre-acquire probe, `previous_user`, and the conflict branch that decides whether to wait), the `_check_box_lock` refusal path, the holder that a resumed lock's heartbeat sends, and a `LAGER_LOCK_WAIT` that is not a number keeping the CI wait with one warning. Also the no-expiry sentinel: `--timeout 0` asks for a lock that never expires, and the auto-lock boundary tells that apart from a caller that states no TTL at all, which used to collapse into the 1800 s default |

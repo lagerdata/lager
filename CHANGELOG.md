@@ -12,10 +12,30 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Added
+
+- **BLE GATT sessions: `lager ble session`, `lager ble sessions` and lager-net's
+  `BleSession`.** A session holds a connection to a BLE device open on the box, so a
+  client can subscribe, write (with or without response, optionally split into
+  MTU-sized or smaller writes), read and receive every notification, without SSH. It reports the
+  negotiated MTU. While a session is open, `lager ble` scans and `lager blufi` stop
+  with an "in use" error instead of waiting.
+- **`lager ble adapter` and lager-net's `Ble::adapter()` say whether the box has a
+  working Bluetooth adapter,** so a test can skip on a box without a radio.
+  `lager ble scan` and `Ble::scan()` report each device's address type: public, or
+  static, resolvable or non-resolvable random.
+
 ### Changed
 
 - **`lager install` and `lager update` deploy this CLI's release tag by default, not `main`.** With no `--version`, lager 0.52.0 deploys `v0.52.0`, so a new box runs a release, uses the pre-built image, and `lager hello` no longer reports `not a release build`. Pass `--version main` for the latest development code. A default `lager update` never rolls a box back: a box ahead of the CLI's release is left where it is, even with `--yes`.
 - **`lager hello` shows `(release)` for a box on its release tag.** The line was `Version: 0.52.0 (v0.52.0@b73aa66)`; it is now `Version: 0.52.0 (release)`. A branch, a commit, or a tag that does not match the version still shows the full `<ref>@<commit>`.
+
+### Fixed
+
+- **`lager ble info` and `lager ble disconnect` connect to a device the box connected to
+  before.** The second call to a nearby device failed with "was not found", because the
+  box waited for the device to be announced again. The box now connects to the device
+  it already knows at once.
 
 ## [0.52.0] - 2026-09-30
 

@@ -193,6 +193,68 @@ class TestBleHandler(unittest.TestCase):
         r = self._post({"action": "bogus", "params": {}})
         self.assertEqual(r.status_code, 400)
 
+    # -- address type in scan results --
+
+    def test_random_type_from_the_top_two_address_bits(self):
+        rt = ble_handler.random_type
+        self.assertEqual(rt("C0:E3:50:76:0F:7D", "random"), "static")
+        self.assertEqual(rt("4C:30:CD:D9:41:93", "random"), "resolvable")
+        self.assertEqual(rt("2A:00:00:00:00:01", "random"), "non-resolvable")
+        self.assertIsNone(rt("C0:E3:50:76:0F:7D", "public"))
+        self.assertIsNone(rt("C0:E3:50:76:0F:7D", None))
+
+    def test_scan_entry_carries_bluez_address_type(self):
+        device = MagicMock(details={"path": "/org/bluez/hci0/dev_X",
+                                    "props": {"AddressType": "random"}})
+        device.name = "peer"
+        adv = MagicMock(rssi=-40, service_uuids=["u"])
+        entry = ble_handler._device_entry("C0:E3:50:76:0F:7D", device, adv)
+        self.assertEqual((entry["address_type"], entry["random_type"]),
+                         ("random", "static"))
+        self.assertEqual((entry["name"], entry["rssi"], entry["uuids"]),
+                         ("peer", -40, ["u"]))
+        device.details = {}
+        entry = ble_handler._device_entry("C0:E3:50:76:0F:7D", device, None)
+        self.assertEqual((entry["address_type"], entry["random_type"]), (None, None))
+
+    # -- adapter: does this box have a usable radio --
+
+    def _adapter(self, result):
+        with patch.object(ble_handler, 'run_bleak', _fake_run_bleak(result)):
+            r = self._post({"action": "adapter", "params": {}})
+        self.assertEqual(r.status_code, 200)
+        return r.get_json()["value"]
+
+    def test_adapter_powered(self):
+        value = self._adapter([{"name": "hci0", "address": "C0:E3:50:76:0F:7D",
+                                "powered": True}])
+        self.assertTrue(value["available"])
+        self.assertIsNone(value["reason"])
+
+    def test_adapter_powered_off_or_missing(self):
+        value = self._adapter([{"name": "hci0", "address": "A", "powered": False}])
+        self.assertFalse(value["available"])
+        self.assertIn("powered off", value["reason"])
+        value = self._adapter([])
+        self.assertFalse(value["available"])
+        self.assertIn("no Bluetooth adapter", value["reason"])
+
+    def test_adapter_without_bluez_is_an_answer_not_an_error(self):
+        value = self._adapter(RuntimeError(_NO_BLUEZ))
+        self.assertFalse(value["available"])
+        self.assertEqual(value["reason"], ble_handler.BLUEZ_UNAVAILABLE_MESSAGE)
+
+    def test_adapter_answers_while_a_session_holds_the_radio(self):
+        owner = object()
+        ble_handler.bt_adapter_lock.acquire()
+        ble_handler.set_adapter_holder(owner, lambda: {"address": "X", "idle_s": 0})
+        try:
+            value = self._adapter([{"name": "hci0", "address": "A", "powered": True}])
+            self.assertTrue(value["available"])
+        finally:
+            ble_handler.clear_adapter_holder(owner)
+            ble_handler.bt_adapter_lock.release()
+
 
 _NO_BLUEZ = ("[org.freedesktop.DBus.Error.ServiceUnknown] The name org.bluez "
              "was not provided by any .service files")

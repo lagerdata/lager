@@ -261,6 +261,8 @@ cannot change or delay the run of the holder. These commands are read-only:
 | `lager hello` | The box version and status |
 | `lager binaries list` | The custom binaries on the box |
 | `lager debug <net> health` | The status of the debug service |
+| `lager ble adapter` | Whether the box has a working Bluetooth adapter |
+| `lager ble sessions` (without `--release`) | The open BLE sessions |
 | A group with no net name: `lager supply`, `battery`, `eload`, `solar`, `watt`, `energy`, `usb`, `arm`, `debug`, `webcam`, `logic`, `scope`, `i2c`, `spi`, `uart` | The saved nets of that type |
 
 All other commands stop with `Error: Box '<box>' is locked by <holder>`, as

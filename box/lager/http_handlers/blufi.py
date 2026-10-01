@@ -26,7 +26,13 @@ import time
 
 from flask import Flask, jsonify, request
 
-from lager.http_handlers.ble import bluez_unavailable_hint, bt_adapter_lock, run_bleak
+from lager.http_handlers.ble import (
+    acquire_adapter,
+    adapter_busy_response,
+    bluez_unavailable_hint,
+    bt_adapter_lock,
+    run_bleak,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -293,15 +299,19 @@ def register_blufi_routes(app: Flask) -> None:
                              '|version) is required',
                 }), 400
 
+            busy = acquire_adapter()
+            if busy is not None:
+                return adapter_busy_response(busy)
             try:
-                with bt_adapter_lock:
-                    result = _ACTIONS[action](params)
+                result = _ACTIONS[action](params)
             except ValueError as e:
                 return jsonify({'success': False, 'error': str(e)}), 400
             except Exception as e:
                 logger.exception("[HTTP] /blufi/command %s failed", action)
                 return jsonify({'success': False,
                                 'error': bluez_unavailable_hint(e) or 'BluFi error: %s' % e}), 502
+            finally:
+                bt_adapter_lock.release()
 
             logger.info("[HTTP] /blufi/command %s ok", action)
             return jsonify({'success': True, 'action': action, **result})

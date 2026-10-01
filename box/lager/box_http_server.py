@@ -168,6 +168,18 @@ except Exception as e:
     logger.warning("BLE handler not available: %s", e)
     _has_ble = False
 
+# Import BLE GATT sessions (the /ble Socket.IO namespace + /ble/sessions).
+try:
+    from lager.http_handlers.ble_session import (
+        cleanup_ble_sessions,
+        register_ble_session_routes,
+        register_ble_session_socketio,
+    )
+    _has_ble_session = True
+except Exception as e:
+    logger.warning("BLE session handler not available: %s", e)
+    _has_ble_session = False
+
 # Import box-level WiFi handler (nmcli/iwlist wrappers in lager.protocols.wifi).
 try:
     from lager.http_handlers.wifi import register_wifi_routes
@@ -388,6 +400,10 @@ def status():
             'netCommandRoles': _net_command_roles,
             # Box-level (non-net) command endpoints.
             'bleCommand': _has_ble,
+            # The /ble Socket.IO namespace (persistent GATT sessions) and
+            # GET /ble/sessions + POST /ble/sessions/release. A box predating
+            # them omits the key, which reads as false.
+            'bleSession': _has_ble_session,
             'wifiCommand': _has_wifi,
             'blufiCommand': _has_blufi,
             # /custom-devices/* (the `lager nets assign` backend) is served
@@ -457,6 +473,15 @@ if _has_ble:
     print("[INIT] BLE endpoint registered", flush=True)
 else:
     print("[INIT] BLE endpoint NOT available", flush=True)
+
+# Register BLE GATT sessions (if available)
+if _has_ble_session:
+    register_ble_session_routes(app)
+    register_ble_session_socketio(socketio)
+    logger.info("BLE session namespace registered (/ble)")
+    print("[INIT] BLE session namespace registered", flush=True)
+else:
+    print("[INIT] BLE session namespace NOT available", flush=True)
 
 # Register box-level WiFi handler (if available)
 if _has_wifi:
@@ -730,6 +755,9 @@ def signal_handler(signum, frame):
     # Cleanup any active supply sessions (using modular cleanup function)
     cleanup_supply_sessions()
     cleanup_battery_sessions()
+    # Close any open BLE sessions (disconnects the peripheral, frees the adapter)
+    if _has_ble_session:
+        cleanup_ble_sessions()
     # Cleanup any active battery sessions
     with active_battery_sessions_lock:
         for session_id, session in list(active_battery_sessions.items()):
