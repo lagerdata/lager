@@ -12,6 +12,15 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Fixed
+
+- **A bench run no longer reports green for checks that did not run.** A skipped
+  UART round-trip now fails the nightly, and an unreachable Acroname hub, USB-202 or
+  LabJack T7 fails its suite. The USB-hub, Keithley battery, Rigol mode and RTT
+  checks now read back what they set.
+- **`box_config.sh` fails when it cannot write the box config.** It used to go on
+  and re-apply the old config, so the checks after it tested the wrong thing.
+
 ## [0.53.0] - 2026-10-02
 
 ### Added
