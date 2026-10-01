@@ -14,6 +14,11 @@ It uses only dbus-fast (a bleak dependency, so it is in every box image) and
 the host's bluetoothd over the mounted system bus. Optional arguments:
 `[duration_seconds] [adapter]` (defaults: 3600, hci0).
 
+It re-advertises after each central disconnects. Once in testing, after the
+peer itself dropped the link (CTRL 01), it logged "advertising again" but was
+no longer seen by scans until it was restarted; if the box under test cannot
+find the peer, kill it and start it again.
+
 It advertises as `lager-ble-peer` with one service:
 
     ...def1  ECHO   notify           every write to RX comes back here,
