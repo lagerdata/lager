@@ -25,6 +25,8 @@ import threading
 
 from flask import Flask, jsonify, request
 
+from lager.protocols.ble.target import ble_target
+
 logger = logging.getLogger(__name__)
 
 _VALID_ACTIONS = ("scan", "info", "connect", "disconnect", "adapter")
@@ -132,33 +134,6 @@ def bluez_unavailable_hint(exc):
     if "org.bluez" in text and "ServiceUnknown" in text:
         return BLUEZ_UNAVAILABLE_MESSAGE
     return None
-
-
-async def ble_target(address):
-    """What to hand BleakClient for `address`: BlueZ's own record, if it has one.
-
-    Given a bare address, bleak's connect first scans and waits for BlueZ to
-    announce the device. BlueZ only announces a device it already holds (for
-    one this box connected to before, it keeps the record) when its RSSI moves
-    by several dB. A device sitting still near the box then never shows up,
-    and a second `info` or session to it fails with "not found". With BlueZ's
-    record, bleak connects directly and skips the scan. Falls back to the
-    address whenever the record is missing or cannot be read.
-    """
-    try:
-        from bleak.backends.bluezdbus.manager import get_global_bluez_manager
-        from bleak.backends.device import BLEDevice
-
-        manager = await get_global_bluez_manager()
-        path = '%s/dev_%s' % (manager.get_default_adapter(),
-                              address.upper().replace(':', '_').replace('-', '_'))
-        props = manager._properties.get(path, {}).get('org.bluez.Device1')
-    except Exception:  # noqa: BLE001 — a failed lookup just means "scan for it"
-        return address
-    if not props:
-        return address
-    return BLEDevice(props.get('Address', address), props.get('Alias'),
-                     {'path': path, 'props': props}, props.get('RSSI', -127))
 
 
 def run_bleak(coro, timeout):

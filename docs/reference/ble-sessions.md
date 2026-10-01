@@ -458,6 +458,23 @@ Added after a client listed what its BLE tests need:
   can assert a static random address. BluFi scans and older boxes leave both
   null.
 
+## On-box scripts (`lager python`)
+
+Scripts run in the box container next to the `:9000` server, so
+`lager.ble.Session` (`box/lager/protocols/ble/session.py`) is a client of the
+same `/ble` namespace over `127.0.0.1:9000`, and `lager.ble.adapter()` /
+`scan()` post to `/ble/command`. Scripts therefore share the adapter with
+remote sessions and `lager ble`, and a script that dies releases its session
+when its socket closes. The API mirrors lager-net's `BleSession` (`recv`
+raises `TimeoutError`; after the end, buffered notifications come first, then
+`SessionClosed`). It duplicates the CLI's `BLESessionClient` (~200 lines):
+the box image cannot import the CLI package, and the CLI wheel does not ship
+box code.
+
+The older `Central`/`Client` still drive bleak directly and stay outside
+adapter sharing; `Central.connect`/`pair` now use `ble_target`
+(`protocols/ble/target.py`, shared with the HTTP handlers).
+
 ## Security and pairing
 
 No pairing API in v1. If a characteristic needs encryption, BlueZ reacts to

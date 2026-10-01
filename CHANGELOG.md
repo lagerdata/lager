@@ -24,6 +24,9 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   working Bluetooth adapter,** so a test can skip on a box without a radio.
   `lager ble scan` and `Ble::scan()` report each device's address type: public, or
   static, resolvable or non-resolvable random.
+- **`lager python` scripts get the same BLE sessions:** `from lager.ble import Session,
+  adapter, scan`. A script's session shares the adapter with `lager ble`, and the box
+  closes it when the script ends.
 
 ### Changed
 
@@ -35,7 +38,8 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 - **`lager ble info` and `lager ble disconnect` connect to a device the box connected to
   before.** The second call to a nearby device failed with "was not found", because the
   box waited for the device to be announced again. The box now connects to the device
-  it already knows at once.
+  it already knows at once. The `Central.connect()` and `Central.pair()` script API gets
+  the same fix.
 
 ## [0.52.0] - 2026-09-30
 

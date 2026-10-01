@@ -8,6 +8,7 @@ description: BLE 设备扫描、连接与 GATT 操作
 ## 导入
 
 ```python
+from lager.ble import Session, adapter, scan
 from lager.ble import Client, Central, noop_handler, notify_handler, waiter
 ```
 
@@ -15,6 +16,7 @@ from lager.ble import Client, Central, noop_handler, notify_handler, waiter
 
 | 类 | 说明 |
 |-------|-------------|
+| `Session` | 通过 Box 的 BLE 服务保持的 GATT 连接（推荐） |
 | `Central` | BLE 中心设备角色，用于扫描和发起连接 |
 | `Client` | BLE 客户端，用于对已连接设备进行 GATT 操作 |
 
@@ -22,9 +24,76 @@ from lager.ble import Client, Central, noop_handler, notify_handler, waiter
 
 | 函数 | 说明 |
 |----------|-------------|
+| `adapter()` | 检查 Box 是否有已通电的蓝牙适配器 |
+| `scan()` | 通过 Box 的 BLE 服务扫描，并给出地址类型 |
 | `noop_handler()` | 空操作的通知处理函数 |
 | `notify_handler()` | 基于事件的通知处理函数 |
 | `waiter()` | 异步等待辅助函数 |
+
+## Session 类
+
+`Session` 通过 Box 的 BLE 服务保持一个 GATT 连接。它与 `lager ble session` 和 Rust 的 `BleSession` 使用的是同一种会话。新脚本请使用它：
+
+- 通知会按顺序保留，直到您读取，因此两次调用之间不会丢失通知。
+- 它报告协商得到的 MTU，并为您拆分较长的写入。
+- 它与 `lager ble` 及其他会话共享适配器。会话打开期间，其他 BLE 操作会以 "in use" 错误停止。脚本结束时（即使脚本失败）Box 会关闭会话。
+
+```python
+from lager.ble import Session, SessionClosed, adapter
+
+NOTIFY = "12345678-1234-5678-1234-56789abcdef1"
+WRITE = "12345678-1234-5678-1234-56789abcdef2"
+
+if not adapter()["available"]:
+    print("No Bluetooth on this box; skipping")
+    raise SystemExit(0)
+
+with Session("AA:BB:CC:DD:EE:01") as s:
+    print("MTU", s.mtu)
+    s.subscribe(NOTIFY)                  # before the write
+    s.write(WRITE, request, chunk=True)  # split into max_write_len pieces
+    reply = b""
+    while len(reply) < expected_len:
+        reply += s.recv(timeout=2.0).data
+```
+
+### `Session(address, connect_timeout=10.0, idle_timeout=300.0, holder=None)`
+
+连接设备并打开会话。`with` 块会在结束时关闭它。`holder` 是其他用户看到的标签，默认值为脚本名称。在 `idle_timeout` 秒内没有任何操作时，Box 会关闭会话。通知不算作活动，因此只监听的脚本必须调用 `ping()`。
+
+| 属性 | 说明 |
+|----------|-------------|
+| `mtu` | 协商得到的 ATT MTU |
+| `max_write_len` | 单次写入的最大长度：`mtu - 3`，最多 512 |
+| `mtu_is_measured` | 如果 Box 没有读到 MTU 而假定为 23，则为 `False` |
+| `services` | GATT 表，每个特征都带句柄 |
+| `close_reason` | 会话结束的原因；会话打开时为 `None` |
+
+| 方法 | 说明 |
+|--------|-------------|
+| `subscribe(char)` | 启用通知或指示。请在写入之前调用 |
+| `unsubscribe(char)` | 禁用它们 |
+| `write(char, data, response=True, chunk=False, chunk_size=None)` | 写入字节。`chunk` 把数据按 `max_write_len` 拆分并按顺序发送。`chunk_size` 把每段限制得更小 |
+| `read(char)` | 读取一个特征并返回 `bytes` |
+| `recv(timeout=None)` | 返回下一条通知。超时未到达时抛出 `TimeoutError` |
+| `try_recv()` | 如果已有通知则返回下一条，否则返回 `None` |
+| `info()` | 刷新并返回 MTU 和 GATT 表 |
+| `ping()` | 重置空闲计时器 |
+| `close()` | 关闭会话 |
+
+每个方法都接受 UUID 作为 `char`，或 ATT 句柄作为 `handle=`。当一个 UUID 出现在多个服务中时请使用句柄。
+
+通知是一个 `Notification`，包含 `seq`（Box 的计数，从 1 开始）、`char`、`handle`、`timestamp`（Box 上的 Unix 秒）和 `data`（`bytes`）。
+
+操作失败时抛出 `SessionError`，其 `code` 为 Box 的错误码，例如 `adapter_busy`、`device_not_found`、`not_permitted` 或 `unknown_characteristic`。会话结束后，`recv()` 会先返回结束前到达的每一条通知，然后抛出 `SessionClosed`，其 `code` 为原因，例如 `disconnected` 或 `idle_timeout`。
+
+### `adapter()`
+
+返回 `{"available": bool, "adapters": [...], "reason": str or None}`。会话打开期间 Box 也会作答。请先调用它，在没有蓝牙的 Box 上跳过 BLE 测试。
+
+### `scan(timeout=5.0, name_contains=None)`
+
+通过 Box 的 BLE 服务扫描。每个设备是一个 dict，包含 `name`、`address`、`address_type`（`public` 或 `random`）、`random_type`（`static`、`resolvable`、`non-resolvable` 或 `None`）、`rssi` 和 `uuids`。会话打开期间，它会抛出代码为 `adapter_busy` 的 `SessionError`。
 
 ## Central 类
 
@@ -480,14 +549,14 @@ def ble_production_test():
 ble_production_test()
 ```
 
-## 从您的计算机使用 BLE 会话
+## 从您的计算机使用会话
 
-`Client` 类在 Box 上的脚本中运行。要从您自己的计算机保持 GATT 连接，请使用 BLE 会话。会话在 Box 上保持连接，并把通知流式发送给您。
+在 Box 之外也可以使用同样的会话：
 
 - 在 CLI 中，使用 [`lager ble session`](/source/zh/reference/cli/ble#session)。
 - 在 Rust 测试中，使用 [`BleSession`](/source/zh/reference/rust/ble#blesession)。
 
-使用 `Client` 的脚本不参与 Box 的适配器共享。如果脚本在 BLE 会话打开期间连接设备，两者会同时使用适配器。运行这类脚本之前，请先关闭会话。
+`Central` 和 `Client` 直接使用适配器，不参与 Box 的适配器共享。如果脚本在会话打开期间用它们连接设备，两者会同时使用适配器。请改用 `Session`，或先关闭会话。
 
 ## 硬件要求
 

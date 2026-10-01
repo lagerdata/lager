@@ -114,10 +114,17 @@ class Central:
             devices = [device for device in devices if device.address == address]
         return devices
 
+    def _target(self, address):
+        """BlueZ's record of `address` when it has one (see target.ble_target):
+        without it a second connect to a device that sits still near the box
+        fails with "not found"."""
+        from .target import ble_target
+        return self.loop.run_until_complete(ble_target(address))
+
     def connect(self, address, *args, **kwargs):
         """connect to `address`"""
-        return Client(BleakClient(address), loop=self.loop).connect(*args, **kwargs)
+        return Client(BleakClient(self._target(address)), loop=self.loop).connect(*args, **kwargs)
 
     def pair(self, address, *args, **kwargs):
         """pair to `address`"""
-        return Client(BleakClient(address), loop=self.loop).pair(*args, **kwargs)
+        return Client(BleakClient(self._target(address)), loop=self.loop).pair(*args, **kwargs)

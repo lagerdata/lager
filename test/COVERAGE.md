@@ -47,12 +47,12 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` | 2891 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 3296 |
+| `unit (box)` | `test/unit/box/` | 3308 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 380 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 110 (+1 skipped) |
-| | **Total gated** | **6871** |
+| | **Total gated** | **6883** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -452,9 +452,9 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 258 files)
+### Local Unit Tests (`test/unit/` -- 259 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 133 files)
+#### Box Unit Tests (`test/unit/box/` -- 134 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -471,6 +471,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_battery_model_catalog.py` | Read-only battery model catalog; the 2281S has no `:BATT:MODel:CATalog?` query |
 | `test_bench_power_on_blocks_match.py` | The three bench workflows' power-on `run:` blocks are byte-identical, and none of them names the Keithley 2281S unconditionally |
 | `test_binaries_store.py` | `lager.binaries.store` plus the `:9000` `/binaries/*` and `/download-file` handlers |
+| `test_ble_script_session.py` | The on-box script API (`from lager.ble import Session, adapter, scan`) against a fake `/ble` namespace: open with the script as holder, operation fields, events run in box order, buffered notifications before `SessionClosed`, `recv` timeout, context-manager close, a lost connection failing the waiting call, `adapter()`/`scan()` over `/ble/command`, and `Central.connect` handing bleak BlueZ's record of a known device |
 | `test_ble_session.py` | BLE GATT sessions on the `/ble` namespace, against a scripted bleak client: MTU from the BlueZ property (and the default fallback), the open failure codes, seq reordering and the unfilled-gap `protocol_error`, subscribe before write, chunked writes in order, unknown and ambiguous characteristics, link loss flushing notifications before `ble_closed`, the idle timeout, overflow, and adapter ownership (`/ble` and `/blufi` commands get 409 while a session is open; `/ble/sessions` list and release) |
 | `test_box_config.py` | box_config v1 schema validation rules and idempotency hash |
 | `test_box_config_addverb_idempotency.py` | mount-add/apt-add/udev-add upsert behavior for provisioning re-runs |

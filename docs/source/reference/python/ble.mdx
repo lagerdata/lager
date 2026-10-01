@@ -8,6 +8,7 @@ Communicate with Bluetooth Low Energy (BLE) devices for scanning, connecting, re
 ## Import
 
 ```python
+from lager.ble import Session, adapter, scan
 from lager.ble import Client, Central, noop_handler, notify_handler, waiter
 ```
 
@@ -15,6 +16,7 @@ from lager.ble import Client, Central, noop_handler, notify_handler, waiter
 
 | Class | Description |
 |-------|-------------|
+| `Session` | A held GATT connection through the box's BLE service (recommended) |
 | `Central` | BLE central role for scanning and initiating connections |
 | `Client` | BLE client for GATT operations on a connected device |
 
@@ -22,9 +24,92 @@ from lager.ble import Client, Central, noop_handler, notify_handler, waiter
 
 | Function | Description |
 |----------|-------------|
+| `adapter()` | Check that the box has a powered Bluetooth adapter |
+| `scan()` | Scan through the box's BLE service, with address types |
 | `noop_handler()` | No-op notification handler |
 | `notify_handler()` | Event-based notification handler |
 | `waiter()` | Async wait helper |
+
+## Session Class
+
+`Session` holds one GATT connection open through the box's BLE service. It is the same
+session that `lager ble session` and the Rust `BleSession` use. Use it for new scripts:
+
+- Notifications are kept in order until you read them, so none are lost between calls.
+- It reports the negotiated MTU and splits long writes for you.
+- It shares the adapter with `lager ble` and other sessions. While it is open, other BLE
+  operations stop with an "in use" error. The box closes it when the script ends, even
+  if the script fails.
+
+```python
+from lager.ble import Session, SessionClosed, adapter
+
+NOTIFY = "12345678-1234-5678-1234-56789abcdef1"
+WRITE = "12345678-1234-5678-1234-56789abcdef2"
+
+if not adapter()["available"]:
+    print("No Bluetooth on this box; skipping")
+    raise SystemExit(0)
+
+with Session("AA:BB:CC:DD:EE:01") as s:
+    print("MTU", s.mtu)
+    s.subscribe(NOTIFY)                  # before the write
+    s.write(WRITE, request, chunk=True)  # split into max_write_len pieces
+    reply = b""
+    while len(reply) < expected_len:
+        reply += s.recv(timeout=2.0).data
+```
+
+### `Session(address, connect_timeout=10.0, idle_timeout=300.0, holder=None)`
+
+Connect to the device and open the session. A `with` block closes it at the end.
+`holder` is the label that other users see. The default names the script.
+The box closes the session after `idle_timeout` seconds with no operation.
+Notifications do not count as activity, so a script that only listens must call `ping()`.
+
+| Property | Description |
+|----------|-------------|
+| `mtu` | The negotiated ATT MTU |
+| `max_write_len` | The largest single write: `mtu - 3`, at most 512 |
+| `mtu_is_measured` | `False` if the box did not read the MTU and assumed 23 |
+| `services` | The GATT table, with a handle for each characteristic |
+| `close_reason` | Why the session ended, or `None` while it is open |
+
+| Method | Description |
+|--------|-------------|
+| `subscribe(char)` | Turn on notifications or indications. Do this before you write |
+| `unsubscribe(char)` | Turn them off |
+| `write(char, data, response=True, chunk=False, chunk_size=None)` | Write bytes. `chunk` splits them into `max_write_len` pieces in order. `chunk_size` caps the pieces lower |
+| `read(char)` | Read a characteristic and return `bytes` |
+| `recv(timeout=None)` | Return the next notification. Raise `TimeoutError` when none arrives in time |
+| `try_recv()` | Return the next notification if one arrived, else `None` |
+| `info()` | Refresh and return the MTU and the GATT table |
+| `ping()` | Reset the idle timer |
+| `close()` | Close the session |
+
+Each method takes a UUID as `char`, or an ATT handle as `handle=`. Use the handle when a
+UUID occurs in more than one service.
+
+A notification is a `Notification` with `seq` (the box counter, from 1), `char`,
+`handle`, `timestamp` (Unix seconds on the box) and `data` (`bytes`).
+
+A failed operation raises `SessionError`. Its `code` is the box error code, for example
+`adapter_busy`, `device_not_found`, `not_permitted` or `unknown_characteristic`. When
+the session ends, `recv()` first returns every notification that arrived before the
+end. Then it raises `SessionClosed`, with the reason as `code`, for example
+`disconnected` or `idle_timeout`.
+
+### `adapter()`
+
+Return `{"available": bool, "adapters": [...], "reason": str or None}`. The box answers
+while a session is open. Call it first, and skip BLE tests on a box without a radio.
+
+### `scan(timeout=5.0, name_contains=None)`
+
+Scan through the box's BLE service. Each device is a dict with `name`, `address`,
+`address_type` (`public` or `random`), `random_type` (`static`, `resolvable`,
+`non-resolvable` or `None`), `rssi` and `uuids`. While a session is open, it raises
+`SessionError` with the code `adapter_busy`.
 
 ## Central Class
 
@@ -480,18 +565,16 @@ def ble_production_test():
 ble_production_test()
 ```
 
-## BLE Sessions from Your Computer
+## Sessions from Your Computer
 
-The `Client` class runs in a script on the box. To hold a GATT connection from your
-own computer, use a BLE session. A session keeps the connection open on the box and
-streams notifications to you.
+The same sessions are available away from the box:
 
 - From the CLI, use [`lager ble session`](/source/reference/cli/ble#session).
 - From Rust tests, use [`BleSession`](/source/reference/rust/ble#blesession).
 
-A script that uses `Client` does not take part in the box's adapter sharing. If a
-script connects while a BLE session is open, the two use the adapter at the same time.
-Close the session before you run such a script.
+`Central` and `Client` talk to the adapter directly and do not take part in the box's
+adapter sharing. If a script connects with them while a session is open, the two use
+the adapter at the same time. Use `Session` instead, or close the session first.
 
 ## Hardware Requirements
 
