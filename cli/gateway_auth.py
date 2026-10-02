@@ -808,6 +808,19 @@ UPSTREAM_HEADER = 'X-Gateway-Upstream'
 UPSTREAM_UNAVAILABLE = 'upstream_unavailable'
 
 
+class GatewayUpstreamUnavailable(LagerError, requests.exceptions.ConnectionError):
+    """The gateway is up and the box service behind it is not.
+
+    Also a requests ConnectionError, on purpose. Before gateways answered
+    this case, the connection simply dropped, and every caller that tolerates
+    an unreachable box catches RequestException for exactly that: the lock
+    check and acquire that `lager install` runs before it deploys onto a box
+    with no lager container, `lager boxes`, health polls. Those keep working
+    as they did. A caller that lets it through shows the message below
+    instead of a bare "connection failed".
+    """
+
+
 def handle_gateway_upstream_error(response, box_ip):
     """Raise for a gateway's 502 upstream_unavailable; return otherwise.
 
@@ -824,7 +837,7 @@ def handle_gateway_upstream_error(response, box_ip):
     if headers.get(UPSTREAM_ERROR_HEADER) != UPSTREAM_UNAVAILABLE:
         return
     upstream = headers.get(UPSTREAM_HEADER) or 'the lager container'
-    raise LagerError(
+    raise GatewayUpstreamUnavailable(
         f'The lager service behind box {box_ip}\'s gateway does not answer.',
         cause=f'The gateway is up, but {upstream} did not accept its connection: '
               'the lager container is stopped, still starting, or failed to start.',

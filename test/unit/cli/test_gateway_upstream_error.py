@@ -50,6 +50,24 @@ class UpstreamUnavailable(unittest.TestCase):
         self.assertIn("lager:5000", err.cause)
         self.assertTrue(any("lager update --box 10.0.0.1" in f for f in err.fixes))
 
+    def test_callers_that_tolerate_an_unreachable_box_still_do(self):
+        # `lager install` onto a box whose lager was uninstalled checks and
+        # takes the box lock on :9000 first. The gateway answers 502 there,
+        # and the lock code skips an unreachable box by catching
+        # RequestException, as it did when the connection simply dropped.
+        # Raising a plain LagerError aborted the install before it deployed.
+        with self.assertRaises(requests.exceptions.RequestException):
+            gateway_auth.handle_gateway_upstream_error(_response(502, self.HEADERS), "10.0.0.1")
+
+    def test_the_lock_acquire_treats_it_as_unreachable(self):
+        resp = _response(502, self.HEADERS)
+        # box_storage imports requests inside each function.
+        with mock.patch("requests.get", return_value=resp), \
+                mock.patch("requests.post", return_value=resp), \
+                mock.patch.object(bs, "_resolve_gateway", return_value=(resp, False)):
+            state, _data = bs.acquire_box_lock("10.0.0.1", "PRD-X", "test-holder", quiet=True)
+        self.assertEqual(state, "unreachable")
+
     def test_the_response_hook_raises_it(self):
         hook = gateway_auth.gateway_response_hook("10.0.0.1")
         with self.assertRaises(LagerError):
