@@ -47,6 +47,11 @@ class BatteryWebSocketClient:
 
         # Create SocketIO client
         self.sio = socketio.Client(
+            # Ctrl+C belongs to the CLI. With the default (True), engine.io
+            # installs a process-wide SIGINT handler that disconnects every
+            # client before KeyboardInterrupt is raised, so our own teardown
+            # finds the socket gone and never tells the box to stop.
+            handle_sigint=False,
             logger=False,
             engineio_logger=False,
             reconnection=True,

@@ -1104,9 +1104,30 @@ deploy_sudoers_current() {
 }
 # --- END deploy sudoers probe ---
 
+# --- BEGIN deploy sudo terminal check (extracted verbatim by test/unit/box/test_sudoers_contract.py) ---
+# The session reads the box's sudo password through `ssh -t`, and ssh opens a
+# terminal on the box only when this side has one. Without it, sudo fails
+# inside the session script, and the first error line names a file it could
+# not install rather than the missing terminal. A login user whose sudo needs
+# no password runs the session fine with no terminal, so only a sudo that
+# would prompt stops the install here.
+box_sudo_needs_password() {
+    ! ssh $SSH_OPTS -o BatchMode=yes "${BOX_USER}@${BOX_IP}" "sudo -n true" >/dev/null 2>&1
+}
+
+sudo_session_needs_a_terminal() {
+    [ ! -t 0 ] && box_sudo_needs_password
+}
+# --- END deploy sudo terminal check ---
+
 if deploy_sudoers_current; then
     print_success "Passwordless sudo is already configured and current - no password needed"
 else
+    if sudo_session_needs_a_terminal; then
+        print_error "lager install needs an interactive terminal to ask for the box's sudo password once. Run it in a terminal."
+        rm -f "$TEMP_SCRIPT"
+        exit 1
+    fi
     print_info "Setting up passwordless sudo (you will be asked for the sudo password once)..."
     echo ""
 

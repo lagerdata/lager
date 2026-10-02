@@ -56,6 +56,8 @@ is installed, no further password prompts appear for that box.
    `lager_box` first, then with your default keys. If the key is present, it
    goes straight to step 6 (the command is idempotent).
 4. **Copies** the public key to the box with `ssh-copy-id -f` (one password prompt).
+   If the box accepts only key authentication and one of your keys reaches it,
+   the copy uses that key and asks for no password.
 5. **Verifies** that the key is now in `~/.ssh/authorized_keys`. It reports an
    error only when the box confirms that the key is absent. If the check cannot
    reach the box, the command continues.
