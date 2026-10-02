@@ -499,7 +499,10 @@ def main():
     print(f"GPIO loopback:     {GPIO_LOOPBACK_OUT or '(not configured)'} → {GPIO_LOOPBACK_IN or '(not configured)'}")
     print("=" * 60)
 
-    # Preflight: verify USB-202 is reachable before running any tests
+    # Preflight: verify USB-202 is reachable before running any tests.
+    # An unreachable device is a FAILURE, not a skip. This script is
+    # wired into the nightly, which configures this net on purpose, so
+    # exit 0 here reported a dead instrument as a green suite.
     try:
         from lager import Net, NetType
         if ADC_NETS:
@@ -507,9 +510,9 @@ def main():
         if GPIO_NETS:
             Net.get(GPIO_NETS[0], type=NetType.GPIO).input()
     except Exception as e:
-        print(f"\nSKIP: Cannot connect to USB-202 — device not reachable: {e}")
-        print("\nSkipping all tests for this device.")
-        sys.exit(0)
+        print(f"\nERROR: Cannot connect to USB-202 — device not reachable: {e}")
+        print("\nNo tests ran for this device.")
+        sys.exit(1)
 
     tests = [
         ("ADC Basic",            test_adc_basic),

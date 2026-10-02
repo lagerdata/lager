@@ -27,7 +27,9 @@ def main():
         binaries = list_binaries()
         _record("list_returns_list", isinstance(binaries, list),
                 f"type={type(binaries).__name__}")
-        _record("list_count", True, f"found {len(binaries)} binaries")
+        # Informational: any count is valid, so it is printed rather than
+        # recorded -- a check that cannot fail only inflates the pass count.
+        print(f"  INFO: found {len(binaries)} binaries")
         # Count, not names. This runs in public CI, and the names under
         # CUSTOMER_BINARIES_PATH are whatever a customer uploaded via
         # `lager binaries add` -- a name is not ours to publish. Anyone
@@ -62,7 +64,9 @@ def main():
         except Exception as e:
             _record("binary_with_args", False, str(e))
     else:
-        _record("run_existing_binary", True, "no test_tool installed (skip)")
+        # Not a pass: nothing ran. Printed as a skip so the summary counts
+        # only checks that exercised something.
+        print("  SKIP: run_existing_binary / binary_with_args -- no test_tool installed")
 
     # Summary
     total = len(_results)

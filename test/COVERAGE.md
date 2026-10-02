@@ -51,8 +51,8 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 380 |
-| `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 110 (+1 skipped) |
-| | **Total gated** | **6808** |
+| `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 120 (+1 skipped) |
+| | **Total gated** | **6818** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -452,7 +452,7 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 259 files)
+### Local Unit Tests (`test/unit/` -- 260 files)
 
 #### Box Unit Tests (`test/unit/box/` -- 133 files)
 
@@ -727,7 +727,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_blufi_unit.py` | BluFi protocol parsing (696-line pytest suite) |
 | `test_blufi_scan.py` | `BlufiClient.scan()` BLE advertisement presence checks |
 
-#### Tools Unit Tests (`test/unit/tools/` -- 5 files)
+#### Tools Unit Tests (`test/unit/tools/` -- 6 files)
 
 These tests cover the scripts in `tools/`. The `unit (root)` job runs them.
 
@@ -735,6 +735,7 @@ These tests cover the scripts in `tools/`. The `unit (root)` job runs them.
 |------|---------------|
 | `test_bench_schedule_check.py` | `tools/bench_schedule_check.py`: the nightly cadence signals kept distinct -- a missed night (gap), a dead cron (stale), and a schedule drifting later (lateness vs the cron parsed from `nightly-bench.yml`), which spacing alone cannot see. Also that only the newest interval raises a gap, so a missed night stops alarming once the next scheduled night runs |
 | `test_bench_workflow_health.py` | `tools/bench_schedule_check.py`'s checks across every `Bench:` workflow: one that is disabled or unknown to GitHub is a problem, Bench: Extended with no scheduled run in 8 days is a problem, and Extended's problems are written to their own file for the `bench-alert-extended` issue, never to the nightly's `bench-alert` |
+| `test_bench_suite_gate.py` | `tools/bench_suite_gate.sh` on real summary shapes: without a skip budget it still passes a run with skips but its notice names them ("all 71 checks pass" with six skipped is how a section went unnoticed); with one, a run over budget fails, a summary with no skip column counts as zero skips, a non-numeric budget and a budget on the deployment format are refused, and a missing summary still fails first |
 | `test_bench_watchdog_env.py` | Pins `bench-watchdog.yml`'s `env:` block against the names `tools/bench_schedule_check.py` reads: the workflow must set no threshold at all (a second copy is how the gap threshold came to override 36 with 26 and alarm on a late night), and every threshold the tool reads must carry a default |
 | `test_coverage_checker.py` | `tools/check_coverage_counts.py`: platform-gated rows are not drift (and `--fix` must not rewrite them), the anchored summary parse `FORCE_COLOR` defeated, and a missing `pytest-timeout` reported as the missing plugin rather than as a failing suite |
 | `test_pdf_pages.py` | `tools/pdf_pages.py`: PNG and text extraction (skips without pymupdf, which is AGPL) |
