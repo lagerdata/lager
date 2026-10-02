@@ -46,13 +46,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 2857 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 3237 |
+| `unit (cli)` | `test/unit/cli/` | 2876 (+2 xfailed) |
+| `unit (box)` | `test/unit/box/` | 3248 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 380 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 110 (+1 skipped) |
-| | **Total gated** | **6778** |
+| | **Total gated** | **6808** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -452,9 +452,9 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 256 files)
+### Local Unit Tests (`test/unit/` -- 259 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 132 files)
+#### Box Unit Tests (`test/unit/box/` -- 133 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -471,6 +471,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_battery_model_catalog.py` | Read-only battery model catalog; the 2281S has no `:BATT:MODel:CATalog?` query |
 | `test_bench_power_on_blocks_match.py` | The three bench workflows' power-on `run:` blocks are byte-identical, and none of them names the Keithley 2281S unconditionally |
 | `test_binaries_store.py` | `lager.binaries.store` plus the `:9000` `/binaries/*` and `/download-file` handlers |
+| `test_ble_central_loop.py` | The box BLE `Central()` makes its own event loop when none is passed: no `DeprecationWarning` with no current loop, a working loop off the main thread, and a passed-in `loop` is used |
 | `test_box_config.py` | box_config v1 schema validation rules and idempotency hash |
 | `test_box_config_addverb_idempotency.py` | mount-add/apt-add/udev-add upsert behavior for provisioning re-runs |
 | `test_box_config_cli.py` | `lager box-config` CLI: mount prep, readiness polling, rollback on bounce failure. Also the `network-mode` verbs and `apply`'s host-networking path: the pre-flight refusing before anything mutates, exit codes 0/3/1, the SSH fallback that keeps a stranded box recoverable, `--skip-restart` refusing a pending switch to host, and only `apply`'s bounce confirming that switch to the box |
@@ -575,7 +576,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_ssh_setup.py` | `lager ssh-setup` command and SSH key provisioning with TTY passthrough |
 | `test_stream_disconnect.py` | `peer_is_connected` and the idle tick that let the box notice a vanished client in under a second instead of waiting for the script's next write |
 | `test_stream_teardown.py` | `lager python` child reaped when the client disconnects mid-run, instead of orphaning at 100% CPU holding a device flock |
-| `test_sudoers_contract.py` | The `/etc/sudoers.d/` ownership contract: Lager writes exactly three files there, never globs and never touches the directory itself, and every writer — including the shell copy in `setup_and_deploy_box.sh` — emits the banner telling an operator those files are regenerated wholesale. Also pins the recorded escalation posture: the box login user is root-equivalent by design, and no source may claim a scoped entry confines it. Also the one-session install: no deployment script runs `find` or a recursive `chown` under sudo; the `/etc/lager` helper is granted by exact path and never install-granted; every `systemctl` the deploy runs has a rule; and, RUN under bash, the session script renders and parses, accepts the real box-config text and refuses a rule for anyone else or a marker outside `/etc/lager`, the digest changes with the user, the VPN interface, the rules and the helper but not with a comment, and the check that skips the session has no terminal and only `sudo -n` |
+| `test_sudoers_contract.py` | The `/etc/sudoers.d/` ownership contract: Lager writes exactly three files there, never globs and never touches the directory itself, and every writer — including the shell copy in `setup_and_deploy_box.sh` — emits the banner telling an operator those files are regenerated wholesale. Also pins the recorded escalation posture: the box login user is root-equivalent by design, and no source may claim a scoped entry confines it. Also the one-session install: no deployment script runs `find` or a recursive `chown` under sudo; the `/etc/lager` helper is granted by exact path and never install-granted; every `systemctl` the deploy runs has a rule; and, RUN under bash, the session script renders and parses, accepts the real box-config text and refuses a rule for anyone else or a marker outside `/etc/lager`, the digest changes with the user, the VPN interface, the rules and the helper but not with a comment, and the check that skips the session has no terminal and only `sudo -n`; with no terminal, a box whose sudo would ask for a password stops the install before the session, and one with passwordless sudo goes ahead |
 | `test_supply_command_handler.py` | `POST /supply/command` handler, covering v0.32.0 hardware-found regressions |
 | `test_trigger_option_contract.py` | `lager scope` and `lager logic` trigger options against the shared handler and the real MSO5000 mappers: every offered value and every default reaches a method the mapper defines, the scope/logic spellings that differ (`read_write`, `ack_miss`, `rising`, `gt`) map to the same condition, hex `--data`/`--address` arrive as integers, and `lager dac` refuses a voltage above 5 V |
 | `test_uart_bridge_params.py` | UARTBridge serial parameters: a `timeout` reaches the opened port (default 0.1 s), parity names and pyserial letters map to pyserial's constants, and any other parity raises before a port opens. The drivers the dispatcher builds for sessions keep the 0.1 s read timeout |
@@ -595,7 +596,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_bench_endpoint.py` | `GET /bench` on the box HTTP server: the body is the bench manifest built from the loaded MCP state (`box_id`, nets with `dut_connection`, `reference_keys`, `metadata_sources`, `capability_bindings`); `ETag` is the quoted content hash and a matching `If-None-Match` in any spelling (quoted, weak, bare, listed, `*`) gets 304 with no body; a build failure is a 500 that says why; the first request on a process that never called `init_state` loads from disk once |
 | `test_status_bench_fields.py` | `/status` advertises `capabilities.benchManifest` from the route's registration (never hardcoded), the real app mounts `/bench`, and the nets block carries `dut_connection` and `test_hints` with the same present-when-unset contract as `purpose` |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 108 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 110 files)
 
 | File | What it tests |
 |------|---------------|
@@ -619,6 +620,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_devenv_config_commands.py` | `lager devenv mount` / `env`: editing project-local `.lager` volumes and environment keys |
 | `test_devenv_terminal_docker_args.py` | `docker run` args for `devenv terminal` and `exec`; regression for the `--group` bare-flag bug |
 | `test_docker_install_diagnosis.py` | The Docker install step names the command that failed and its exit status, instead of one generic error for an eight-command `&&` chain -- the chain is rebuilt the way bash builds it and EXECUTED under `bash` and `sh`, so the `\$`/`\"` escaping is covered rather than just matched as text; `ssh_t`'s stderr filter is synchronous, so the real error cannot land after the caller's generic line (the async form lost the ordering in 26 of 200 runs); its one run-scoped capture file survives a Ctrl-C and reports a TMPDIR it cannot write; and the printed recovery instructions match the chain they replace, including `systemctl enable` |
+| `test_energy_box_option.py` | `lager energy --box <BOX>` lists nets on the named box, and a group-level `--box` serves `read` and `stats` unless they name their own |
 | `test_etc_lager_perms_helper.py` | `cli/deployment/security/etc_lager_perms.sh`, the root-owned helper that replaces install's `sudo find` and recursive `sudo chown`: the REAL script runs under `sh` with the real `find` and a recording `chown`. Everything under `/etc/lager` goes to uid 33 and the caller's group except `authorized_keys.d`, which is pruned; every `chown` carries `-h`, so a symbolic link's target is never re-owned; and any argument, a caller that is not root, and a group that is not a plain number are each refused before anything is touched |
 | `test_install_sudo_handoff.py` | `lager install` hands the deploy script the box-config sudoers text in its environment, so one sudo session writes both files: the text is exactly what the other writer installs, a name that is not a plain unix username gets nothing, and a stale variable in the operator's shell is never inherited. Over a faked transport, install opens no terminal when the grant is already live, and warns of a prompt only on the branch that prompts |
 | `test_docker_start_limit.py` | The installer must not trip docker.service's `StartLimitBurst=3`: one service start per step, `reset-failed` before every restart, and `start-limit-hit` diagnosed as itself rather than a bad daemon.json |
@@ -661,6 +663,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_empty_box_name.py` | An explicit `--box ""` (or whitespace-only) is refused rather than silently resolving to the DEFAULT box, in BOTH `resolve_and_validate_box` and `resolve_and_validate_box_with_name` -- they duplicate the resolution logic, so a guard in one would leave the other's callers still defaulting. Also pins the half that must not change: `None` still means "not given" and falls back to the default |
 | `test_empty_box_everywhere.py` | `--box ""` is refused by every command that picked its box before the shared resolver (update, ssh, binaries, nets, box-config, arm, spi, i2c, logs, install, uninstall) and never falls back to the default box; an AST guard flags a new `if not box: box = ...` or `x = box or ...` under `cli/commands` |
 | `test_simple_hdlc.py` | `cli/simple_hdlc.py`: the CRC-16/CCITT-FALSE checksum pinned to the values of the PyCRC implementation it replaced, HDLC encode/decode round trips including escaped flag and escape bytes, and a corrupted CRC reported as an error frame |
+| `test_socketio_sigint.py` | All four socket.io clients are built with `handle_sigint=False` and leave the process SIGINT handler alone; `disconnect_bounded` returns within its timeout from a peer that never closes; Ctrl+C in a UART session still sends `stop_uart` and disconnects |
 | `test_ssh.py` | SSH ensure_lager_box_keypair and key_auth_works helpers |
 | `test_ssh_user_by_ip.py` | `lager ssh` and `lager update` log in as the user saved for the box, whether `--box` names it, gives its IP, or is left to the default box |
 | `test_supply_tui.py` | SupplyTUI render output, command parsing, worker threads, connection failure |

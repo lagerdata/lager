@@ -17,6 +17,14 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 - **`lager install` and `lager update` deploy this CLI's release tag by default, not `main`.** With no `--version`, lager 0.52.0 deploys `v0.52.0`, so a new box runs a release, uses the pre-built image, and `lager hello` no longer reports `not a release build`. Pass `--version main` for the latest development code. A default `lager update` never rolls a box back: a box ahead of the CLI's release is left where it is, even with `--yes`.
 - **`lager hello` shows `(release)` for a box on its release tag.** The line was `Version: 0.52.0 (v0.52.0@b73aa66)`; it is now `Version: 0.52.0 (release)`. A branch, a commit, or a tag that does not match the version still shows the full `<ref>@<commit>`.
 
+### Fixed
+
+- **`lager energy --box <box>` lists the box's energy-analyzer nets.** The group had no `--box` option, so the form its own help shows failed with `No such option '--box'`, and the listing could reach only the default box. A group-level `--box` also serves `read` and `stats` when they are given none, as in `lager watt`.
+- **Ctrl+C ends `lager uart` in under a second, and the box is told the session ended.** The socket.io clients let engine.io install a process-wide SIGINT handler. It disconnected before the CLI's own teardown ran, so `stop_uart` was never sent, and the disconnect waited 3 s for a WebSocket close frame that the box's server never sends. The four socket.io clients now leave SIGINT to the CLI, and the UART and RTT teardowns wait at most 0.5 s for the close.
+- **`lager ssh-setup` installs its key on a key-only box that one of your keys already reaches.** It refused with "none of your keys reaches it yet", although a key had just answered its probe. It now runs `ssh-copy-id` over that key, with no password prompt. A key-only box that no key reaches is still refused.
+- **`lager install` without a terminal says that it needs one.** When the box's sudo needed a password, the first error named a file it could not install (`etc_lager_perms.sh`), and the missing terminal showed only in ssh's and sudo's output below it. Install now stops before the sudo session and says to run it in a terminal. A box that needs no password still installs without one.
+- **The box's BLE `Central()` makes its own event loop when none is passed.** It called `asyncio.get_event_loop()`, which raises with no current loop: off the main thread today, and in any synchronous script on Python 3.14. Pass `loop=` to share a loop.
+
 ## [0.52.0] - 2026-09-30
 
 ### Added

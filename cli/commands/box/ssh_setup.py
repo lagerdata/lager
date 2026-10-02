@@ -234,7 +234,14 @@ def provision_lager_box_key(dest: str) -> bool:
     # fleet. False is a real answer; None ("could not ask") falls through and
     # lets the attempt report for itself, because a box that is merely down
     # needs a different thing said about it.
-    if box_accepts_a_password(dest) is False:
+    #
+    # That refusal is only for a box none of our keys reaches (`installed` is
+    # None). False means an identity just authenticated to answer the probe,
+    # and ssh-copy-id logs in with the same agent and default identities, so
+    # it installs the key over that login with no password at all.
+    reached_by_a_key = installed is False
+    takes_a_password = box_accepts_a_password(dest)
+    if takes_a_password is False and not reached_by_a_key:
         raise LagerError(
             f"No way to install a key on {dest} from here.",
             cause=(
@@ -251,7 +258,10 @@ def provision_lager_box_key(dest: str) -> bool:
             ],
         )
 
-    click.echo(f"Installing key on {dest} — enter the box password when prompted.")
+    if reached_by_a_key:
+        click.echo(f"Installing key on {dest} over the SSH key that already reaches it.")
+    else:
+        click.echo(f"Installing key on {dest} — enter the box password when prompted.")
     # -f, because ssh-copy-id's own "is it already installed?" filter has the
     # same blind spot this command was just fixed for: it decides by logging
     # in with the key, and that login succeeds on ANY identity ssh offers —
@@ -271,8 +281,11 @@ def provision_lager_box_key(dest: str) -> bool:
         raise LagerError(
             f"ssh-copy-id to {dest} failed.",
             cause=(
-                "Wrong password, or the box rejected the connection."
-                if box_accepts_a_password(dest) is not False
+                "The box refused the key that answered a moment ago, or "
+                "dropped the connection."
+                if reached_by_a_key
+                else "Wrong password, or the box rejected the connection."
+                if takes_a_password is not False
                 else "The box accepts only key authentication — no password "
                      "would have worked."
             ),

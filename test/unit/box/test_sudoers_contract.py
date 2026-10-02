@@ -1186,3 +1186,61 @@ class TheCheckThatSkipsTheSessionCannotPrompt(unittest.TestCase):
         self.assertIn("test -f {BOXCFG_SUDOERS_MARKER}", install_py)
         self.assertIn("test -f ${BOXCFG_SUDOERS_MARKER} && sudo -n /usr/bin/apt-get --version",
                       self.code)
+
+
+class WithNoTerminalTheInstallSaysSo(unittest.TestCase):
+    """The session reads the sudo password through `ssh -t`, which needs a
+    terminal on the operator's side. Run without one, sudo used to fail inside
+    the session and the first error line named a file it could not install.
+    Now the install stops first and names the terminal, but only when the
+    box's sudo would actually ask for a password."""
+
+    def setUp(self):
+        self.block = _extract_block("deploy sudo terminal check")
+
+    def _needs_terminal(self, *, tty, sudo_n_works):
+        """Run sudo_session_needs_a_terminal with ssh stubbed; True if it stops."""
+        import os
+        import subprocess
+        stub = (f'ssh() {{ case "$*" in *"sudo -n true"*) return {0 if sudo_n_works else 1};; '
+                f'*) return 99;; esac; }}\n')
+        driver = f"{stub}{self.block}\nsudo_session_needs_a_terminal"
+        if not tty:
+            proc = subprocess.run([_BASH, "-c", driver], stdin=subprocess.PIPE,
+                                  capture_output=True, text=True, timeout=30)
+            return proc.returncode == 0
+        primary, secondary = os.openpty()
+        try:
+            proc = subprocess.run([_BASH, "-c", driver], stdin=secondary,
+                                  capture_output=True, text=True, timeout=30)
+        finally:
+            os.close(primary)
+            os.close(secondary)
+        return proc.returncode == 0
+
+    def test_no_terminal_and_a_sudo_that_wants_a_password_stops(self):
+        self.assertTrue(self._needs_terminal(tty=False, sudo_n_works=False))
+
+    def test_no_terminal_but_passwordless_sudo_goes_ahead(self):
+        self.assertFalse(self._needs_terminal(tty=False, sudo_n_works=True))
+
+    @unittest.skipUnless(hasattr(__import__("os"), "openpty"), "needs a pty")
+    def test_a_terminal_goes_ahead(self):
+        self.assertFalse(self._needs_terminal(tty=True, sudo_n_works=False))
+
+    def test_the_question_to_the_box_cannot_prompt(self):
+        code = _code(self.block)
+        self.assertIn("-o BatchMode=yes", code)
+        self.assertEqual(re.findall(r"\bsudo\b(?! -n\b)", code), [])
+
+    def test_it_stops_before_the_session_and_names_the_terminal(self):
+        text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+        asked = text.index("if deploy_sudoers_current; then")
+        check = text.index("if sudo_session_needs_a_terminal; then")
+        session = text.index('ssh_t "${BOX_USER}@${BOX_IP}" "bash ${BOOT_DIR}/setup_sudo.sh')
+        self.assertLess(asked, check)
+        self.assertLess(check, session)
+        stop = text[check:session]
+        self.assertIn("needs an interactive terminal to ask for the box's sudo password once",
+                      stop)
+        self.assertIn("exit 1", stop)

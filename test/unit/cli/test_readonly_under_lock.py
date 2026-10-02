@@ -50,7 +50,7 @@ READ_ONLY = [
     ["eload", "--box", BOX],
     ["solar", "--box", BOX],
     ["watt", "--box", BOX],
-    ["energy"],
+    ["energy", "--box", BOX],
     ["usb", "--box", BOX],
     ["arm", "--box", BOX],
     ["debug", "--box", BOX],

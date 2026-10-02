@@ -57,6 +57,11 @@ def _print_stats(netname, result):
 
 def _run_energy(ctx, box, duration, netname, mode, as_json=False):
     """Shared implementation for energy and stats commands."""
+    # Honor a group-level --box (e.g. `lager energy --box X NET read`) when the
+    # subcommand itself didn't receive one.
+    if box is None:
+        box = getattr(ctx.obj, "energy_box", None)
+
     box_ip = resolve_box_locked(ctx, box, 'energy')
 
     if netname is None:
@@ -93,18 +98,20 @@ def _run_energy(ctx, box, duration, netname, mode, as_json=False):
     invoke_without_command=True,
     help="Read energy/charge from an energy-analyzer net",
 )
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.argument("netname", required=False, metavar="[NET_NAME]")
 @click.pass_context
-def energy(ctx, netname):
+def energy(ctx, box, netname):
     """Energy analyzer group.  Usage: lager energy [NET_NAME] [COMMAND] --box [BOX_NAME]"""
     if netname is None:
         netname = get_default_net(ctx, 'energy')
     if netname is not None:
         ctx.obj.energy_netname = netname
+    ctx.obj.energy_box = box
 
     if ctx.invoked_subcommand is None:
         # No subcommand → list nets
-        box_ip = resolve_box(ctx, None, read_only=True)
+        box_ip = resolve_box(ctx, box, read_only=True)
         display_nets(ctx, box_ip, None, ENERGY_ROLE, "energy analyzer")
 
 

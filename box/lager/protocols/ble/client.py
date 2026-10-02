@@ -97,8 +97,11 @@ class Central:
         BLE Central object
     """
     def __init__(self, *, loop=None):
+        # Its own loop unless one is passed in. asyncio.get_event_loop() raises
+        # with no current loop (off the main thread, and on 3.14 anywhere), and
+        # a synchronous script has none.
         if loop is None:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.new_event_loop()
         self.loop = loop
         self._client = None
 

@@ -235,6 +235,17 @@ skips the session. A different `--user` or `--corporate-vpn` value changes the
 grants, and a newer CLI can change them too. Install then runs the session one
 time and asks for the password one time.
 
+The session needs a terminal to ask for the password. If install runs without a
+terminal and the box's `sudo` asks for a password, install stops before the
+session with this message:
+
+```
+lager install needs an interactive terminal to ask for the box's sudo password once. Run it in a terminal.
+```
+
+Install needs no terminal when it skips the session, or when the box login user
+has passwordless `sudo`.
+
 To make the next install write the files again, delete
 `/etc/lager/.deploy-sudoers-v1` on the box. `lager update` does not use this
 file, and it asks for no password.

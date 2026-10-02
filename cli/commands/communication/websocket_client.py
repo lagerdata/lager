@@ -35,6 +35,32 @@ import click
 # already gone.
 START_TIMEOUT = 15.0
 
+# How long a disconnect may wait for the box to finish the WebSocket close
+# handshake. engine.io's disconnect() sends its CLOSE packet, then waits up to
+# websocket-client's fixed 3s for the peer's close frame. The box's werkzeug
+# server never sends one: it reads the client's close frame as a malformed HTTP
+# request. So every exit cost the full 3s. Nothing after the CLOSE packet tells
+# the box anything new, and process exit closes the TCP socket regardless.
+DISCONNECT_TIMEOUT = 0.5
+
+
+def disconnect_bounded(sio, timeout: float = DISCONNECT_TIMEOUT) -> None:
+    """Disconnect `sio`, waiting at most `timeout` seconds for it to finish.
+
+    The disconnect runs on a daemon thread, so a peer that never completes the
+    close handshake cannot hold the CLI open. Errors are swallowed: the caller
+    is already on its way out.
+    """
+    def _disconnect():
+        try:
+            sio.disconnect()
+        except (Exception, KeyboardInterrupt):
+            pass
+
+    worker = threading.Thread(target=_disconnect, daemon=True)
+    worker.start()
+    worker.join(timeout)
+
 
 class UARTWebSocketClient:
     """WebSocket client for interactive UART sessions."""
@@ -83,6 +109,11 @@ class UARTWebSocketClient:
 
         # Create SocketIO client
         self.sio = socketio.Client(
+            # Ctrl+C belongs to the CLI. With the default (True), engine.io
+            # installs a process-wide SIGINT handler that disconnects every
+            # client before KeyboardInterrupt is raised, so our own teardown
+            # finds the socket gone and never tells the box to stop.
+            handle_sigint=False,
             logger=False,
             engineio_logger=False,
             reconnection=False
@@ -421,7 +452,7 @@ class UARTWebSocketClient:
             except (Exception, KeyboardInterrupt):
                 pass
         try:
-            self.sio.disconnect()
+            disconnect_bounded(self.sio)
         except (Exception, KeyboardInterrupt):
             pass
 

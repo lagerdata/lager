@@ -288,6 +288,39 @@ class ABoxThatTakesNoPassword(unittest.TestCase):
                 self.assertEqual(len(copy_run.calls), 1)
 
 
+class AKeyOnlyBoxOneOfYourKeysReaches(unittest.TestCase):
+    """The probe returning False means an identity just authenticated to it.
+
+    ssh-copy-id logs in with the same agent and default identities, so on a box
+    with password authentication off it installs the key with no password. The
+    command used to refuse here, saying none of your keys reaches the box --
+    the one thing the probe had just shown to be false."""
+
+    def test_installs_over_the_existing_key(self):
+        result, copy_run = _invoke(copy_results=[_proc(0)],
+                                   auth_sequence=[False, True],
+                                   accepts_password=False)
+        self.assertEqual(result.exit_code, 0, _text(result))
+        self.assertEqual(len(copy_run.calls), 1)
+        self.assertIn("-f", copy_run.calls[0][0])
+        self.assertIn("over the SSH key that already reaches it", _text(result))
+        self.assertNotIn("enter the box password", _text(result))
+        self.assertNotIn("none of your keys reaches", _text(result))
+
+    def test_a_failed_copy_does_not_blame_a_password(self):
+        result, _ = _invoke(copy_results=[_proc(1)], auth_sequence=[False],
+                            accepts_password=False)
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("refused the key that answered", _text(result))
+        self.assertNotIn("Wrong password", _text(result))
+
+    def test_a_box_no_key_reaches_is_still_refused(self):
+        result, copy_run = _invoke(auth_sequence=[None], accepts_password=False)
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("none of your keys reaches", _text(result))
+        self.assertEqual(copy_run.calls, [])
+
+
 class ControlPlaneManagedBox(unittest.TestCase):
     """A key this command installs on a managed box is a credential the
     control plane never granted, cannot account for, and cannot revoke when

@@ -29,6 +29,8 @@ import threading
 import socketio
 import click
 
+from ...communication.websocket_client import disconnect_bounded
+
 
 class RTTWebSocketClient:
     """WebSocket client for bi-directional RTT sessions."""
@@ -54,6 +56,11 @@ class RTTWebSocketClient:
         self.stop_event = threading.Event()
 
         self.sio = socketio.Client(
+            # Ctrl+C belongs to the CLI. With the default (True), engine.io
+            # installs a process-wide SIGINT handler that disconnects every
+            # client before KeyboardInterrupt is raised, so our own teardown
+            # finds the socket gone and never tells the box to stop.
+            handle_sigint=False,
             logger=False,
             engineio_logger=False,
             reconnection=False
@@ -210,7 +217,7 @@ class RTTWebSocketClient:
         finally:
             if self.connected:
                 try:
-                    self.sio.disconnect()
+                    disconnect_bounded(self.sio)
                 except Exception:
                     pass
 

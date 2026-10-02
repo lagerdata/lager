@@ -168,6 +168,14 @@ Lager 不会碰那个文件，`lager uninstall` 期间也不会。
 
 在这次会话之前，install 会在不分配终端的情况下检查 Box。它把 `/etc/lager/.deploy-sudoers-v1` 与本次运行将要写入的授权的摘要进行比较，并用 `sudo -n` 运行一条已授权的命令。两项检查都通过时，install 会跳过这次会话。不同的 `--user` 或 `--corporate-vpn` 值会改变授权，更新的 CLI 也可能改变它们。此时 install 会运行一次会话，并要求输入一次密码。
 
+这次会话需要一个终端来要求输入密码。如果 install 在没有终端的情况下运行，而 Box 的 `sudo` 需要密码，install 会在会话之前停止，并显示这条消息：
+
+```
+lager install needs an interactive terminal to ask for the box's sudo password once. Run it in a terminal.
+```
+
+install 跳过这次会话时，或者 Box 登录用户拥有免密码的 `sudo` 时，不需要终端。
+
 如果想让下一次安装重新写入这些文件，请在 Box 上删除 `/etc/lager/.deploy-sudoers-v1`。`lager update` 不使用这个文件，也不要求输入密码。
 
 同一次会话还会安装 `/usr/local/lib/lager/etc_lager_perms.sh`。这个属主为 root 的脚本会创建 `/etc/lager` 并设置它的属主。它不会改动 `/etc/lager/authorized_keys.d`。授权按确切路径指明该脚本，而脚本会拒绝一切参数。Lager 不授权 `find` 命令，也不授权递归的 `chown`。
