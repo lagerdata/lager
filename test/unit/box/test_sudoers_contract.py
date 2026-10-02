@@ -1167,7 +1167,7 @@ class TheCheckThatSkipsTheSessionCannotPrompt(unittest.TestCase):
         self.assertNotRegex(self.code, r"sudo(\s+-\S+)*\s+-l\b")
 
     def test_it_runs_the_helper_not_just_reads_the_marker(self):
-        # A marker can outlive its grants: `uninstall --all --keep-config`
+        # A marker can outlive its grants: `uninstall --all`
         # removes the sudoers files and leaves /etc/lager behind.
         self.assertIn("sudo -n ${ETC_LAGER_PERMS_HELPER}", self.code)
         self.assertIn("${DEPLOY_SUDOERS_MARKER}", self.code)

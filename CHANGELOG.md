@@ -22,6 +22,8 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 ### Changed
 
 - **`lager install` and `lager update` deploy this CLI's release tag by default, not `main`.** With no `--version`, lager 0.52.0 deploys `v0.52.0`, so a new box runs a release, uses the pre-built image, and `lager hello` no longer reports `not a release build`. Pass `--version main` for the latest development code. A default `lager update` never rolls a box back: a box ahead of the CLI's release is left where it is, even with `--yes`.
+- **`lager uninstall` keeps `/etc/lager` by default.** Saved nets, box config and SSH key registrations survive an uninstall, and a reinstall picks them up again. `--purge-config` deletes them after a backup to `~/lager-backup-<timestamp>/` on the box, and prints how many saved nets it is removing. A purge keeps the key registrations and the `--no-publish` marker, and on a box managed by a control plane also keeps that control plane's files unless `--include-control-plane` is passed. `--all` no longer implies a purge, and `--keep-config` is accepted as a no-op.
+- **`lager uninstall --all` revokes this machine's key only inside lager's managed block of `authorized_keys`.** A copy placed by anything else, or a key that another registration still holds, is left in place, so a key shared across several machines keeps working for the others.
 - **`lager hello` shows `(release)` for a box on its release tag.** The line was `Version: 0.52.0 (v0.52.0@b73aa66)`; it is now `Version: 0.52.0 (release)`. A branch, a commit, or a tag that does not match the version still shows the full `<ref>@<commit>`.
 
 ### Fixed

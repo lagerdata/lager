@@ -165,7 +165,7 @@ UDEV_SUDOERS_BANNER = sudoers_banner_lines(
 # rule) plus the helper script. The next install computes the same digest for
 # what it WOULD install and skips the session only on a match -- and only if
 # `sudo -n` can also run the helper, so a marker that outlived its grants
-# (uninstall --all --keep-config leaves /etc/lager behind) skips nothing.
+# (uninstall --all leaves /etc/lager behind by default) skips nothing.
 #
 # So unlike BOXCFG_SUDOERS_MARKER above, this one needs no bump when a rule
 # changes: a changed rule is a changed digest, and costs each box one prompt on

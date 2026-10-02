@@ -46,13 +46,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 2876 (+2 xfailed) |
+| `unit (cli)` | `test/unit/cli/` | 2906 (+2 xfailed) |
 | `unit (box)` | `test/unit/box/` | 3279 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 380 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 110 (+1 skipped) |
-| | **Total gated** | **6839** |
+| | **Total gated** | **6869** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -374,7 +374,7 @@ Five other param types (`EnvVarType`, `PortForwardType`, `MemoryAddressType`, `H
 | `cli/gateway_auth.py` | 521 | 51 tests | Refresh path, the pinned-token path (`LAGER_GATEWAY_TOKEN`) and `test/unit/cli/test_gateway_auth.py`. `gateway_response_hook` remains thin. |
 | `cli/config.py` | 435 | 63 tests | Cache, the configparser round-trip and legacy-key migration, `read_lager_json`/`write_lager_json`, `expand_devenv_path` and `get_debug_script_for_net` are covered. `get_includes_from_config` and `_find_config_files` are not. |
 | `cli/commands/utility/install.py` | 575 | indirect | Only `install_wheel` is exercised. |
-| `cli/commands/utility/uninstall.py` | 837 | 13 tests | Spec parsing plus the teardown's lock lifecycle. The privileged sudo session, the `--all` extras and `--dry-run` inspection are untested. |
+| `cli/commands/utility/uninstall.py` | 1237 | 55 tests | Flag combinations and the privileged-step list for each (default keeps `/etc/lager`, `--purge-config`, `--include-control-plane`, the `--keep-config` alias, `--all` not implying a purge); the purge, backup and key-revocation shell commands run on a temp tree; the `--dry-run` plan text; the lock lifecycle. The real `ssh -t` sudo session and the `--all` extras other than the key are untested. |
 | `cli/commands/communication/*.py` | — | 1 each | Smoke-only: asserts each posts to `:9000`. `spi.py` (700) and `i2c.py` (551) have no protocol or argument-parsing coverage. |
 | `cli/commands/measurement/*.py` | — | 1 each | Same `:9000` smoke pattern. |
 
@@ -707,7 +707,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_format_lock_user.py` | `box_storage.format_lock_user` rendering of lock holder identities |
 | `test_group_usage.py` | Usage-line formatting for CLI command groups (CommandFirstUsageMixin / LagerGroup) |
 | `test_install_wheel.py` | install-wheel command: wheel filename to package name parsing |
-| `test_uninstall_spec.py` | Pins `lager uninstall`'s removal spec to what `install` / `box-config apply` actually create; lock dissolves when the teardown removes the lock server |
+| `test_uninstall_spec.py` | Pins `lager uninstall`'s removal spec to what `install` / `box-config apply` actually create; lock dissolves when the teardown removes the lock server. `/etc/lager` is kept by default; a `--purge-config` keeps the key registrations, the `no_publish` marker and (on a box with `control_plane.json`) the control plane's files, and runs only after a backup holding the saved nets; `--all` revokes this machine's key only inside lager's managed block, never a loose copy or one another registration still holds |
 | `test_update_version_ref.py` | Version reference resolution for git checkouts (semver tags vs. named branches) |
 | `test_bench_export.py` | `lager bench export`: fetches `GET /bench` on :9000 and prints the manifest with sorted keys (or one line with `--compact`, or to a file with `--out` plus a one-line summary on stderr); a 404 is an update prompt naming 0.50.0, other HTTP errors show the status and body, a connection failure points at `lager hello`, and a reply that is not a manifest is refused and never written |
 | `test_nets_describe_fields.py` | `lager nets describe --dut-connection` / `--test-hint` / `--clear-test-hints`: the two control-plane fields are merged onto the saved record next to purpose, notes and tags, duplicate hints collapse, side-car fields survive, and the nothing-given message names the new options |
