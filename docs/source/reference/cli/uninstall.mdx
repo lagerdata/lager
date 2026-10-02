@@ -18,9 +18,11 @@ lager uninstall [OPTIONS]
 | `--box TEXT` | string | | Box name (uses stored IP and username from `.lager` config) |
 | `--ip TEXT` | string | | Target box IP address |
 | `--user TEXT` | string | `lagerdata` | SSH username |
-| `--keep-config` | flag | | Preserve `/etc/lager` directory (saved nets, box ID, etc.) |
+| `--purge-config` | flag | | Also delete the contents of `/etc/lager` (saved nets, box config). Backs it up first. See [Configuration](#configuration) |
+| `--include-control-plane` | flag | | With `--purge-config`, also delete a control plane's files. The box drops off its control plane until it is re-linked |
+| `--keep-config` | flag | | No effect. Keeping `/etc/lager` is the default; the flag is accepted so existing scripts still run |
 | `--keep-docker-images` | flag | | Remove containers only, keep Docker images |
-| `--all` | flag | | Remove everything including udev rules, sudoers, third-party tools, and legacy deploy key |
+| `--all` | flag | | Also remove udev rules, sudoers, third-party tools, legacy keys, and this machine's key. Does not imply `--purge-config` |
 | `--yes` | flag | | Skip confirmation prompts |
 | `--dry-run` | flag | | List what the command removes. Make no changes. |
 | `--help` | | | Show help message and exit |
@@ -33,10 +35,31 @@ Either `--box` or `--ip` is required.
 
 | Component | Description |
 |-----------|-------------|
-| Docker containers | Stops and removes the `lager` container |
-| Docker images | Removes images and build cache (unless `--keep-docker-images`) |
+| Docker containers | Stops and removes the `lager` and `pigpio` containers. Other containers, such as a control plane's gateway, are left running |
+| Docker network | Removes `lagernet` (skipped while another container still uses it) |
+| Docker images | Removes the `lager` image, dangling layers, and build cache (unless `--keep-docker-images`) |
 | `~/box` directory | Box code and services |
-| `/etc/lager` directory | Saved nets, box ID, version (unless `--keep-config`) |
+| Lock state | `/etc/lager/lock.json`, which describes the lock server being removed |
+
+### Configuration
+
+`/etc/lager` is **kept** by default: saved nets, box config, SSH key registrations, and the files of a control plane that manages the box. A reinstall picks all of it up again.
+
+`--purge-config` first copies `/etc/lager` to `~/lager-backup-<timestamp>/` on the box. The backup holds `etc-lager.tgz` (mode 600) and `saved_nets.json`. The command then prints how many saved nets it will delete, and deletes the contents of `/etc/lager`. If the backup fails, nothing is deleted. Every purge keeps:
+
+| Kept | Why |
+|------|-----|
+| `authorized_keys.d/` | SSH key registrations. Deleting them revokes keys that other operators use on the next key sync |
+| `no_publish` | The `--no-publish` network mode, which keeps lager off a gateway's ports |
+| `control_plane.json`, `dashboard/`, `telemetry_buffer.jsonl`, `org_secrets.json`, `org_secrets.json.pre-*` | Only when `control_plane.json` exists. These belong to the control plane, not lager |
+
+`--purge-config --include-control-plane` also deletes the control plane's files and the `no_publish` marker, keeping only the key registrations. A gateway in front of lager then refuses every connection until the box is re-linked from its control plane.
+
+To restore the saved nets after a reinstall, run this on the box:
+
+```bash
+sudo install -o 33 -g 33 -m 644 ~/lager-backup-<timestamp>/saved_nets.json /etc/lager/saved_nets.json
+```
 
 ### With `--all`
 
@@ -53,6 +76,9 @@ In addition to the above:
 | `lager` group | Removed if present |
 | `~/third_party` | J-Link, custom binaries |
 | Legacy deploy key | `~/.ssh/lager_deploy_key*` and SSH config entry (from pre-open-source deployments) |
+| This machine's key | Its registration in `/etc/lager/authorized_keys.d`, and its line inside lager's managed block of `~/.ssh/authorized_keys` |
+
+`--all` revokes this machine's `lager_box` key only where lager put it. A copy elsewhere in `authorized_keys` stays: `ssh-copy-id`, a person, or another key manager put it there. A key that another registration still holds also stays. So a key that several machines share keeps working for the others.
 
 <Note>
 Uninstall removes those three sudoers files **by name**. Lager never touches any
@@ -67,8 +93,8 @@ for the installs and updates that regenerate Lager's own files.
 # Basic uninstall
 lager uninstall --ip 192.168.1.100
 
-# Uninstall but keep saved nets
-lager uninstall --ip 192.168.1.100 --keep-config
+# Uninstall and delete saved nets and box config (backed up first)
+lager uninstall --ip 192.168.1.100 --purge-config
 
 # Uninstall but keep Docker images for faster reinstall
 lager uninstall --ip 192.168.1.100 --keep-docker-images
@@ -90,13 +116,13 @@ lager uninstall --box my-lager-box --yes
    - Stop and remove Docker containers
    - Clean Docker images and build cache
    - Remove `~/box` directory
-   - Remove `/etc/lager` directory
+   - Clear the lock state, or back up and purge `/etc/lager` (with `--purge-config`)
    - Remove additional components (if `--all`)
 6. **Report** - Confirms completion and suggests `--all` if not used
 
 ## Notes
 
 - Each removal step continues even if a previous step fails, so partial uninstalls are possible
-- Use `--keep-config` if you plan to reinstall and want to preserve your net configuration
+- Use `--dry-run` to see what happens to `/etc/lager` under the flags you pass, including the saved-net count
 - Use `--keep-docker-images` for a faster reinstall since images won't need to be rebuilt
 - After uninstalling, use `lager install` to redeploy

@@ -18,9 +18,11 @@ lager uninstall [OPTIONS]
 | `--box TEXT` | 字符串 | | Box 名称（使用 `.lager` 配置中保存的 IP 和用户名） |
 | `--ip TEXT` | 字符串 | | 目标 Box 的 IP 地址 |
 | `--user TEXT` | 字符串 | `lagerdata` | SSH 用户名 |
-| `--keep-config` | 标志 | | 保留 `/etc/lager` 目录（已保存的 Net、Box ID 等） |
+| `--purge-config` | 标志 | | 同时删除 `/etc/lager` 的内容（已保存的 Net、Box 配置）。删除前先备份。参见[配置](#配置) |
+| `--include-control-plane` | 标志 | | 与 `--purge-config` 一起使用时，同时删除控制平面的文件。在重新关联之前，Box 会脱离其控制平面 |
+| `--keep-config` | 标志 | | 不起作用。默认就会保留 `/etc/lager`；接受此标志是为了让现有脚本继续运行 |
 | `--keep-docker-images` | 标志 | | 只移除容器，保留 Docker 镜像 |
-| `--all` | 标志 | | 移除所有内容，包括 udev 规则、sudoers、第三方工具和旧版部署密钥 |
+| `--all` | 标志 | | 同时移除 udev 规则、sudoers、第三方工具、旧版密钥以及本机的密钥。不包含 `--purge-config` |
 | `--yes` | 标志 | | 跳过确认提示 |
 | `--dry-run` | 标志 | | 列出该命令会移除哪些内容，不做任何更改。 |
 | `--help` | | | 显示帮助信息并退出 |
@@ -33,10 +35,31 @@ lager uninstall [OPTIONS]
 
 | 组件 | 说明 |
 |-----------|-------------|
-| Docker 容器 | 停止并移除 `lager` 容器 |
-| Docker 镜像 | 移除镜像和构建缓存（除非使用 `--keep-docker-images`） |
+| Docker 容器 | 停止并移除 `lager` 和 `pigpio` 容器。其他容器（例如控制平面的网关）保持运行 |
+| Docker 网络 | 移除 `lagernet`（仍有其他容器使用时跳过） |
+| Docker 镜像 | 移除 `lager` 镜像、悬空层和构建缓存（除非使用 `--keep-docker-images`） |
 | `~/box` 目录 | Box 代码和服务 |
-| `/etc/lager` 目录 | 已保存的 Net、Box ID、版本（除非使用 `--keep-config`） |
+| 锁状态 | `/etc/lager/lock.json`，它描述的锁服务器正被移除 |
+
+### 配置
+
+默认**保留** `/etc/lager`：已保存的 Net、Box 配置、SSH 密钥注册，以及管理该 Box 的控制平面的文件。重新安装后会再次使用这些内容。
+
+`--purge-config` 先把 `/etc/lager` 复制到 Box 上的 `~/lager-backup-<时间戳>/`（`etc-lager.tgz`，权限 600，以及 `saved_nets.json`），打印即将删除的已保存 Net 数量，然后删除 `/etc/lager` 的内容。如果备份失败，则不删除任何内容。每次清除都会保留：
+
+| 保留 | 原因 |
+|------|-----|
+| `authorized_keys.d/` | SSH 密钥注册。删除后，下一次密钥同步会撤销其他操作员使用的密钥 |
+| `no_publish` | `--no-publish` 网络模式，使 lager 不占用网关的端口 |
+| `control_plane.json`、`dashboard/`、`telemetry_buffer.jsonl`、`org_secrets.json`、`org_secrets.json.pre-*` | 仅当 `control_plane.json` 存在时。这些文件属于控制平面，而不属于 lager |
+
+`--purge-config --include-control-plane` 还会删除控制平面的文件和 `no_publish` 标记，只保留密钥注册。此后 lager 前面的网关会拒绝所有连接，直到从其控制平面重新关联该 Box。
+
+重新安装后，要恢复已保存的 Net，请在 Box 上运行：
+
+```bash
+sudo install -o 33 -g 33 -m 644 ~/lager-backup-<时间戳>/saved_nets.json /etc/lager/saved_nets.json
+```
 
 ### 使用 `--all` 时
 
@@ -53,6 +76,9 @@ lager uninstall [OPTIONS]
 | `lager` 组 | 如果存在则移除 |
 | `~/third_party` | J-Link、自定义二进制程序 |
 | 旧版部署密钥 | `~/.ssh/lager_deploy_key*` 和 SSH 配置条目（来自开源之前的部署） |
+| 本机的密钥 | 它在 `/etc/lager/authorized_keys.d` 中的注册，以及它在 `~/.ssh/authorized_keys` 中 lager 托管块内的那一行 |
+
+`--all` 只在 lager 放置本机 `lager_box` 密钥的位置撤销它。`authorized_keys` 中其他位置的副本（来自 `ssh-copy-id`、手动添加或其他密钥管理器）保持不变；其他注册仍持有的密钥也保持不变，因此整个设备群共享的密钥对其他人仍然有效。
 
 <Note>
 卸载**按文件名**移除上述三个 sudoers 文件。Lager 从不改动 `/etc/sudoers.d/`
@@ -65,8 +91,8 @@ lager uninstall [OPTIONS]
 # 基本卸载
 lager uninstall --ip 192.168.1.100
 
-# 卸载但保留已保存的 Net
-lager uninstall --ip 192.168.1.100 --keep-config
+# 卸载并删除已保存的 Net 和 Box 配置（先备份）
+lager uninstall --ip 192.168.1.100 --purge-config
 
 # 卸载但保留 Docker 镜像，以便更快重新安装
 lager uninstall --ip 192.168.1.100 --keep-docker-images
@@ -88,13 +114,13 @@ lager uninstall --box my-lager-box --yes
    - 停止并移除 Docker 容器
    - 清理 Docker 镜像和构建缓存
    - 移除 `~/box` 目录
-   - 移除 `/etc/lager` 目录
+   - 清除锁状态，或者备份并清除 `/etc/lager`（使用 `--purge-config` 时）
    - 移除其他组件（使用 `--all` 时）
 6. **报告** - 确认完成；如果没有使用 `--all`，则建议使用它
 
 ## 说明
 
 - 即使前一步失败，每个移除步骤也会继续执行，因此可能出现部分卸载
-- 如果您打算重新安装并希望保留 Net 配置，请使用 `--keep-config`
+- 使用 `--dry-run` 查看在您传入的标志下 `/etc/lager` 会如何处理，包括已保存 Net 的数量
 - 使用 `--keep-docker-images` 可以加快重新安装，因为不必重新构建镜像
 - 卸载之后，请用 `lager install` 重新部署

@@ -8,6 +8,7 @@
 """
 import click
 from click.exceptions import Abort, Exit
+from datetime import datetime, timezone
 import os
 import subprocess
 from ...address_utils import validate_ip_or_hostname, VALID_FORMATS_CHEATSHEET
@@ -100,16 +101,97 @@ UNINSTALL_ALL_PRIV_STEPS = [
     ),
 ]
 
-# /etc/lager is www-data-owned on modern boxes, so its removal needs the same
-# privileged session — but it is governed by --keep-config rather than --all,
-# so it's kept out of UNINSTALL_ALL_PRIV_STEPS and prepended when applicable.
-ETC_LAGER_PRIV_STEP = (
-    "etc_lager",
-    "Removing /etc/lager directory",
-    "sudo rm -rf /etc/lager",
+# /etc/lager is kept by default. It is not lager's alone: on a box fronted by
+# a control plane, the gateway's credentials, the --no-publish marker that
+# keeps lager off the gateway's ports, and the SSH key registrations live in
+# it too. Deleting the directory took the box off its control plane, and the
+# next install then published lager's ports over the gateway's and never
+# finished. So removing anything here takes --purge-config, and removing the
+# control plane's files as well takes --include-control-plane on top of that.
+#
+# Kept by every purge: the key registrations (deleting them revokes keys that
+# other operators rely on, on the next key sync) and the --no-publish marker
+# (the network mode the box was deliberately put in).
+PURGE_ALWAYS_KEPT = ("authorized_keys.d", "no_publish")
+
+# Kept by a purge when control_plane.json is present, unless
+# --include-control-plane. These are written by the control plane or its box
+# daemon, not by lager. org_secrets.json is pushed by the control plane on such
+# a box, and its org_secrets.json.pre-* copy is the only record of a file a
+# person placed there by hand. Entries are find(1) -name patterns.
+CONTROL_PLANE_FILES = (
+    "control_plane.json",
+    "dashboard",
+    "telemetry_buffer.jsonl",
+    "org_secrets.json",
+    "org_secrets.json.pre-*",
 )
 
-# The --keep-config counterpart. Lock state is not config: /etc/lager/lock.json
+CONTROL_PLANE_CONFIG = "/etc/lager/control_plane.json"
+SAVED_NETS_PATH = "/etc/lager/saved_nets.json"
+
+
+def _purge_find_cmd(names):
+    """find(1) arguments that delete every top-level /etc/lager entry except
+    ``names``."""
+    excludes = " ".join(f"! -name '{n}'" for n in names)
+    return f"sudo find /etc/lager -mindepth 1 -maxdepth 1 {excludes} -exec rm -rf {{}} +"
+
+
+def etc_lager_purge_step(backup_dir, include_control_plane):
+    """The --purge-config privileged step.
+
+    Runs only when the backup step left its completion marker, so a failed
+    backup reports this step FAILED instead of deleting the only copy of the
+    saved nets. ``backup_dir`` is a remote path that the box's shell expands.
+
+    Without --include-control-plane the control plane's files are kept when
+    control_plane.json exists; the check runs on the box, at removal time.
+    With it, everything goes except the key registrations: the no_publish
+    marker too, since it only meant something to the gateway being removed.
+    """
+    guard = f"[ -f {backup_dir}/.complete ]"
+    if include_control_plane:
+        return (
+            "etc_lager",
+            "Removing /etc/lager contents, control plane files included (keeping key registrations)",
+            f"{guard} && if [ -d /etc/lager ]; then "
+            f"{_purge_find_cmd(('authorized_keys.d',))}; fi",
+        )
+    kept = _purge_find_cmd(PURGE_ALWAYS_KEPT)
+    kept_cp = _purge_find_cmd(PURGE_ALWAYS_KEPT + CONTROL_PLANE_FILES)
+    return (
+        "etc_lager",
+        "Removing /etc/lager contents (keeping key registrations and control plane files)",
+        f"{guard} && if [ ! -d /etc/lager ]; then true; "
+        f"elif sudo test -e {CONTROL_PLANE_CONFIG}; then {kept_cp}; "
+        f"else {kept}; fi",
+    )
+
+
+def etc_lager_backup_step(backup_dir):
+    """Copy /etc/lager into the login user's home before a purge.
+
+    ~ survives the uninstall (only ~/box is removed). The tarball holds
+    everything, secrets included, so it is mode 600; saved_nets.json is also
+    copied loose because it is what people restore. The .complete marker is
+    written last and gates the purge step.
+    """
+    return (
+        "config_backup",
+        f"Backing up /etc/lager to {backup_dir}",
+        f"mkdir -p {backup_dir} && chmod 700 {backup_dir} && "
+        f"if [ -d /etc/lager ]; then "
+        f"sudo tar -C /etc -czf {backup_dir}/etc-lager.tgz lager && "
+        f"sudo chown \"$(id -u):$(id -g)\" {backup_dir}/etc-lager.tgz && "
+        f"chmod 600 {backup_dir}/etc-lager.tgz && "
+        f"if sudo test -f {SAVED_NETS_PATH}; then "
+        f"sudo cat {SAVED_NETS_PATH} > {backup_dir}/saved_nets.json; fi; fi && "
+        f"touch {backup_dir}/.complete",
+    )
+
+
+# The default (no --purge-config) step. Lock state is not config: /etc/lager/lock.json
 # records a live claim on a box whose lock server this command is deleting.
 # The dissolve in Step 1 deliberately skips the release (there is nobody left
 # to tell), so the file is left saying locked:true — and a lock written with
@@ -118,9 +200,9 @@ ETC_LAGER_PRIV_STEP = (
 # and it comes up holding a lock for a holder that no longer exists, which
 # nothing on the box will ever clear.
 #
-# Without --keep-config the whole directory goes and the question never
-# arises; this keeps the two paths consistent rather than making
-# "keep my saved nets" quietly also mean "keep a dead lock".
+# Under --purge-config the lock files go with the rest of the directory; this
+# keeps the two paths consistent rather than making "keep my saved nets"
+# quietly also mean "keep a dead lock".
 LOCK_STATE_PRIV_STEP = (
     "lock_state",
     "Clearing box lock state",
@@ -158,20 +240,105 @@ def lager_key_matcher():
     return _LAGER_KEY_COMMENT
 
 
-def authorized_keys_cleanup_cmd():
-    """Remote command that strips this machine's lager key from the box's
-    ~/.ssh/authorized_keys (user-owned; no sudo needed).
+# start_box.sh's sentinels. Only lines between them were put there by lager.
+_AK_BEGIN = "# BEGIN LAGER MANAGED KEYS (managed by start_box.sh — do not edit by hand)"
+_AK_END = "# END LAGER MANAGED KEYS"
 
-    The `|| true` guards grep's exit-1 when every line matches (an
-    authorized_keys that only held the lager key becomes empty, which is the
-    correct result).
+
+def authorized_keys_cleanup_cmd():
+    """Remote command that revokes this machine's lager key on the box
+    (user-owned file; no sudo needed). Prints one status word.
+
+    Only the copy inside lager's managed block is removed. A loose copy
+    elsewhere in the file was put there by something else (ssh-copy-id, a
+    person, another key manager), and on a fleet that shares one lager_box
+    key, stripping it revoked the key for every operator, not just this one.
+    The key is also left alone while any registration in the key directory
+    still holds it: the next key sync would only publish it again, and the
+    other registrant still relies on it.
+
+    Matches only on the exact key blob. With no local pubkey there is nothing
+    exact to match, and the comment is shared by every lager_box key, so the
+    command does nothing and says so.
+
+    Status words: ``revoked``, ``still-registered``, ``not-found``,
+    ``no-local-key``.
     """
+    blob = lager_key_matcher()
+    if blob == _LAGER_KEY_COMMENT:
+        return "echo no-local-key"
     return (
-        "if [ -f ~/.ssh/authorized_keys ]; then "
-        f"{{ grep -vF '{lager_key_matcher()}' ~/.ssh/authorized_keys || true; }} > ~/.ssh/.lager-ak-tmp "
-        "&& mv ~/.ssh/.lager-ak-tmp ~/.ssh/authorized_keys "
-        "&& chmod 600 ~/.ssh/authorized_keys; fi"
+        "ak=~/.ssh/authorized_keys; "
+        f"d={BOX_KEYS_DIR}; "
+        "if ls \"$d\"/*.pub >/dev/null 2>&1 "
+        f"&& grep -qF '{blob}' \"$d\"/*.pub 2>/dev/null; then echo still-registered; "
+        "elif [ ! -f \"$ak\" ]; then echo not-found; "
+        f"elif ! awk -v b='{_AK_BEGIN}' -v e='{_AK_END}' -v k='{blob}' "
+        "'$0 == b { inb = 1 } $0 == e { inb = 0 } inb && index($0, k) { found = 1 } "
+        "END { exit !found }' \"$ak\"; then echo not-found; "
+        f"else awk -v b='{_AK_BEGIN}' -v e='{_AK_END}' -v k='{blob}' "
+        "'$0 == b { inb = 1; print; next } $0 == e { inb = 0; print; next } "
+        "inb && index($0, k) { next } { print }' \"$ak\" > ~/.ssh/.lager-ak-tmp "
+        "&& chmod 600 ~/.ssh/.lager-ak-tmp "
+        "&& mv -f ~/.ssh/.lager-ak-tmp \"$ak\" && echo revoked; fi"
     )
+
+
+def loose_key_count_cmd():
+    """Remote command counting copies of this machine's key OUTSIDE lager's
+    managed block. --all leaves those in place and says so."""
+    blob = lager_key_matcher()
+    if blob == _LAGER_KEY_COMMENT:
+        return "echo 0"
+    return (
+        f"awk -v b='{_AK_BEGIN}' -v e='{_AK_END}' -v k='{blob}' "
+        "'$0 == b { inb = 1; next } $0 == e { inb = 0; next } "
+        "!inb && index($0, k) { n++ } END { print n + 0 }' "
+        "~/.ssh/authorized_keys 2>/dev/null || echo 0"
+    )
+
+
+# One round trip, key=value lines. No sudo: /etc/lager and saved_nets.json are
+# world-readable, and control_plane.json's existence (not its content) is all
+# that is checked.
+CONFIG_STATE_QUERY = (
+    "echo \"etc=$([ -d /etc/lager ] && echo 1 || echo 0)\"; "
+    f"echo \"cp=$([ -e {CONTROL_PLANE_CONFIG} ] && echo 1 || echo 0)\"; "
+    "echo \"others=$(docker ps --filter network=lagernet --format '{{.Names}}' 2>/dev/null "
+    "| grep -vx -e lager -e pigpio | paste -sd, -)\"; "
+    f"echo \"nets=$(if [ -f {SAVED_NETS_PATH} ]; then "
+    "python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "
+    f"{SAVED_NETS_PATH} 2>/dev/null || echo '?'; else echo 0; fi)\""
+)
+
+
+def inspect_config_state(query):
+    """Parse CONFIG_STATE_QUERY's output. ``query`` runs a remote command and
+    returns its stdout or None.
+
+    Returns None when the query failed, else a dict with:
+    ``etc_lager`` (bool), ``control_plane`` (control_plane.json present),
+    ``other_containers`` (names of running containers on lagernet that are
+    not lager's, such as a control plane's gateway), and ``nets`` (int, or
+    None when the file could not be parsed).
+    """
+    raw = query(CONFIG_STATE_QUERY)
+    if raw is None:
+        return None
+    fields = {}
+    for line in raw.splitlines():
+        k, sep, v = line.partition("=")
+        if sep:
+            fields[k.strip()] = v.strip()
+    if "etc" not in fields:
+        return None
+    nets = fields.get("nets", "?")
+    return {
+        "etc_lager": fields.get("etc") == "1",
+        "control_plane": fields.get("cp") == "1",
+        "other_containers": [n for n in fields.get("others", "").split(",") if n],
+        "nets": int(nets) if nets.isdigit() else None,
+    }
 
 
 @click.command()
@@ -179,15 +346,42 @@ def authorized_keys_cleanup_cmd():
 @click.option("--box", default=None, help="Box name (uses stored IP and username)")
 @click.option("--ip", default=None, help="Target box IP address or DNS hostname")
 @click.option("--user", default=None, help="SSH username (default: lagerdata, or stored username if using --box)")
-@click.option("--keep-config", is_flag=True, help="Keep /etc/lager directory (saved nets, etc.)")
+@click.option("--purge-config", is_flag=True,
+              help="Also delete /etc/lager (saved nets, box config). Backs it up first. "
+                   "Keeps key registrations, and a control plane's files.")
+@click.option("--include-control-plane", is_flag=True,
+              help="With --purge-config, also delete the control plane's files. The box "
+                   "drops off its control plane until it is re-linked.")
+@click.option("--keep-config", is_flag=True,
+              help="No effect: keeping /etc/lager is now the default. Accepted so existing scripts still run.")
 @click.option("--keep-docker-images", is_flag=True, help="Keep Docker images (only remove containers)")
-@click.option("--all", "remove_all", is_flag=True, help="Remove everything including udev rules, sudoers, third_party, and deploy keys")
+@click.option("--all", "remove_all", is_flag=True,
+              help="Also remove udev rules, sudoers, third_party, and this machine's key. "
+                   "Does not imply --purge-config.")
 @click.option("--yes", is_flag=True, help="Skip confirmation prompts")
 @click.option("--dry-run", is_flag=True, help="List what the command removes. Make no changes.")
-def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, yes, dry_run):
+def uninstall(ctx, box, ip, user, purge_config, include_control_plane, keep_config,
+              keep_docker_images, remove_all, yes, dry_run):
     """
-    Uninstall Lager box code from a box
+    Uninstall Lager box code from a box.
+
+    Keeps /etc/lager (saved nets, box config, a control plane's files) unless
+    --purge-config is given.
     """
+    # 0. Flag combinations
+    if keep_config and purge_config:
+        click.secho("Error: --keep-config and --purge-config contradict each other.",
+                    fg='red', err=True)
+        click.echo("Keeping /etc/lager is the default; drop --keep-config.", err=True)
+        ctx.exit(2)
+    if include_control_plane and not purge_config:
+        click.secho("Error: --include-control-plane only applies together with --purge-config.",
+                    fg='red', err=True)
+        ctx.exit(2)
+    # Remote path; the box's shell expands the ~. Named here so the dry run,
+    # the confirmation and the purge all quote the same directory.
+    backup_dir = f"~/lager-backup-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}"
+
     # 1. Resolve box name to IP and username if --box is provided
     if box is not None and not box.strip():
         raise empty_box_name_error()
@@ -555,6 +749,33 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
         except Exception:
             return None
 
+    # What the confirmation, the dry run and the purge all need to know about
+    # /etc/lager, in one round trip. None when the query itself failed.
+    config_state = inspect_config_state(query_ssh)
+
+    def describe_config_plan():
+        """Lines saying what happens to /etc/lager under the chosen flags."""
+        if not purge_config:
+            return [
+                "/etc/lager is kept (saved nets, box config, key registrations"
+                + (", control plane files)" if config_state and config_state["control_plane"] else ")"),
+                "  only its stale lock state (lock.json) is cleared",
+            ]
+        lines = [f"/etc/lager is purged after a backup to {backup_dir}"]
+        if include_control_plane:
+            lines.append("  kept: key registrations (authorized_keys.d) only")
+            lines.append("  DELETED: control plane files and the no_publish marker")
+        else:
+            lines.append("  kept: key registrations (authorized_keys.d), the no_publish marker")
+            if config_state and config_state["control_plane"]:
+                lines.append("  kept: control plane files (" + ", ".join(CONTROL_PLANE_FILES) + ")")
+        nets = config_state["nets"] if config_state else None
+        if nets is None:
+            lines.append("  saved nets: count unknown")
+        else:
+            lines.append(f"  saved nets that will be deleted: {nets}")
+        return lines
+
     # --dry-run mode: query box state and display without changing anything
     if dry_run:
         if box:
@@ -571,6 +792,8 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
                 click.echo(f"  {line}")
         else:
             click.echo("  (none found)")
+        for name in (config_state or {}).get("other_containers", []):
+            click.echo(f"  {name}: left running (not lager's; uninstall never touches it)")
 
         # Docker images
         click.secho("Docker images:", fg='cyan')
@@ -605,6 +828,12 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
         etc_lager = query_ssh("du -sh /etc/lager 2>/dev/null || ls -d /etc/lager 2>/dev/null")
         if etc_lager:
             click.echo(f"  /etc/lager: {etc_lager.split()[0]}")
+            if config_state is None:
+                click.echo("  (its contents were not readable; the plan below assumes defaults)")
+            elif config_state["control_plane"]:
+                click.echo("  Managed by a control plane: control_plane.json present")
+            for line in describe_config_plan():
+                click.echo(f"  {line}")
         else:
             click.echo("  /etc/lager: (not found)")
 
@@ -659,9 +888,18 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
             else:
                 click.echo("  ~/third_party: (not found)")
 
-            # This machine's key in the box's authorized_keys
-            ak = query_ssh(f"grep -cF '{lager_key_matcher()}' ~/.ssh/authorized_keys 2>/dev/null")
-            click.echo(f"  This machine's key in authorized_keys: {'present' if ak and ak != '0' else '(not found)'}")
+            # This machine's key in the box's authorized_keys. Only the copy in
+            # lager's managed block is revoked; loose copies stay.
+            if lager_key_matcher() == _LAGER_KEY_COMMENT:
+                click.echo("  This machine's key in authorized_keys: (no local ~/.ssh/lager_box.pub; left alone)")
+            else:
+                ak = query_ssh(
+                    f"grep -cF '{lager_key_matcher()}' ~/.ssh/authorized_keys 2>/dev/null"
+                )
+                click.echo(f"  This machine's key in authorized_keys: {'present' if ak and ak != '0' else '(not found)'}")
+                loose = query_ssh(loose_key_count_cmd())
+                if loose and loose != "0":
+                    click.echo(f"    {loose} copy(ies) outside lager's managed block: left in place")
 
             # SSH keys (both legacy and current)
             legacy_key = query_ssh("ls ~/.ssh/lager_deploy_key 2>/dev/null")
@@ -699,10 +937,8 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
     if not keep_docker_images:
         click.echo("  - Docker images (the lager image and dangling layers only)")
     click.echo("  - ~/box directory")
-    if not keep_config:
-        click.echo("  - /etc/lager directory (saved nets)")
-    else:
-        click.echo("  - /etc/lager/lock.json (stale lock state; saved nets are kept)")
+    for i, line in enumerate(describe_config_plan()):
+        click.echo(f"  - {line}" if i == 0 else f"    {line.strip()}")
 
     if remove_all:
         click.echo("  - Instrument udev rules (99-instrument.rules, 99-lager-user.rules, lager-*.rules)")
@@ -712,12 +948,30 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
         click.echo("  - Firewall helper script + UFW rules (reset to SSH-only)")
         click.echo("  - 'lager' group")
         click.echo("  - ~/third_party directory")
-        click.echo("  - This machine's key from the box's authorized_keys")
+        click.echo("  - This machine's key registration, and its line in lager's managed")
+        click.echo("    block of authorized_keys (copies placed by anything else stay)")
         click.echo("  - Legacy box-side SSH keys and SSH config entries")
 
+    others = (config_state or {}).get("other_containers", [])
+    if others:
+        click.echo()
+        click.echo(f"Left running (not lager's): {', '.join(others)}")
+
+    if purge_config and include_control_plane and config_state and config_state["control_plane"]:
+        click.echo()
+        click.secho("WARNING: --include-control-plane deletes control_plane.json.", fg='red', bold=True)
+        click.secho("The box drops off its control plane: a gateway in front of lager refuses", fg='red')
+        click.secho("every connection until the box is re-linked from the control plane.", fg='red')
+
+    if purge_config and config_state and config_state["nets"]:
+        click.echo()
+        click.secho(f"{config_state['nets']} saved net(s) will be deleted. They are backed up first to",
+                    fg='yellow')
+        click.secho(f"{backup_dir}/ on the box.", fg='yellow')
+
     click.echo()
-    # Always at least one privileged step now: /etc/lager, or the lock state
-    # inside it under --keep-config.
+    # Always at least one privileged step: the lock state, or (with
+    # --purge-config) the backup and the purge.
     click.echo("Privileged removals run in one session. If the login user has no")
     click.echo("passwordless grant, the box asks for its sudo password once.")
     click.echo()
@@ -733,14 +987,15 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
     click.echo()
 
     # 5. Assemble the privileged removal steps. /etc/lager is governed by
-    # --keep-config (now honored even with --all); the system artifacts by
-    # --all.
+    # --purge-config (and --include-control-plane); the system artifacts by --all,
+    # which implies neither.
     priv_results = {}
     priv_steps = []
-    if keep_config:
-        priv_steps.append(LOCK_STATE_PRIV_STEP)
+    if purge_config:
+        priv_steps.append(etc_lager_backup_step(backup_dir))
+        priv_steps.append(etc_lager_purge_step(backup_dir, include_control_plane))
     else:
-        priv_steps.append(ETC_LAGER_PRIV_STEP)
+        priv_steps.append(LOCK_STATE_PRIV_STEP)
     if remove_all:
         priv_steps.extend(UNINSTALL_ALL_PRIV_STEPS)
 
@@ -840,8 +1095,8 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
         # Privileged removals — /etc/lager plus (with --all) the system
         # artifacts install creates — in one interactive session.
         click.secho("[Step 4/5] Removing system configuration...", fg='cyan')
-        if keep_config:
-            click.echo("  Keeping /etc/lager (--keep-config)")
+        if not purge_config:
+            click.echo("  Keeping /etc/lager (use --purge-config to delete it)")
         priv_results = run_priv_session(priv_steps)
         click.echo()
 
@@ -868,9 +1123,9 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
                 allow_fail=True
             )
 
-            # De-register before stripping the authorized_keys line: the
-            # registration is the durable half. Leaving the .pub behind under
-            # --keep-config (which preserves /etc/lager) would let the next
+            # De-register before revoking the authorized_keys line: the
+            # registration is the durable half. Every purge keeps the key
+            # directory, so a .pub left behind would let the next
             # start_box.sh sync re-publish the key this step just removed.
             # sudo -n fallback for the same reason registration needs one: a
             # hardened box's key directory is root-owned, so the login user
@@ -881,11 +1136,16 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
                 "De-registering this machine's key",
                 allow_fail=True
             )
-            run_ssh(
-                authorized_keys_cleanup_cmd(),
-                "Removing this machine's key from authorized_keys",
-                allow_fail=True
-            )
+            click.echo("  Revoking this machine's key in lager's managed block...", nl=False)
+            ak_status = query_ssh(authorized_keys_cleanup_cmd())
+            ak_messages = {
+                "revoked": (" done", 'green'),
+                "not-found": (" not in lager's block (nothing to revoke)", 'yellow'),
+                "still-registered": (" kept: another registration still holds this key", 'yellow'),
+                "no-local-key": (" skipped: no local ~/.ssh/lager_box.pub to match", 'yellow'),
+            }
+            msg, color = ak_messages.get(ak_status or "", (" FAILED", 'red'))
+            click.secho(msg, fg=color)
         else:
             click.echo("  Skipping additional cleanup (use --all for complete removal)")
 
@@ -906,10 +1166,21 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
     click.echo()
     click.echo(f"The CLI removed the Lager Box software from {ip}.")
 
-    if keep_config:
+    if not purge_config:
         click.echo()
-        click.secho("Note: /etc/lager directory was preserved (contains saved nets).", fg='yellow')
+        click.secho("Note: /etc/lager was kept (saved nets, box config, key registrations).", fg='yellow')
         click.secho("Its lock.json was cleared — the lock server it described is gone.", fg='yellow')
+    elif priv_results.get("config_backup") == "OK":
+        click.echo()
+        click.secho(f"/etc/lager was backed up to {backup_dir}/ on the box:", fg='yellow')
+        click.echo("  etc-lager.tgz      everything, mode 600 (holds secrets)")
+        click.echo("  saved_nets.json    the saved nets")
+        click.echo("To restore the nets after reinstalling, on the box run:")
+        click.secho(f"  sudo install -o 33 -g 33 -m 644 {backup_dir}/saved_nets.json {SAVED_NETS_PATH}",
+                    fg='cyan')
+    else:
+        click.echo()
+        click.secho("The backup did not complete, so /etc/lager was NOT purged.", fg='red')
 
     if not remove_all:
         click.echo()
@@ -930,10 +1201,9 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
         # operator installed themselves, and any key another manager renders
         # into this file, is untouched and still works — saying otherwise sends
         # someone hunting for a box password they do not need.
-        click.secho("This machine's lager_box key was removed from the box's authorized_keys", fg='yellow')
-        click.secho("and de-registered. Other keys are untouched: your own, and any installed", fg='yellow')
-        click.secho("by another key manager, still work. If lager_box was the only one, the", fg='yellow')
-        click.secho("next connection will need the box password.", fg='yellow')
+        click.secho("This machine's lager_box key was de-registered and removed from lager's", fg='yellow')
+        click.secho("managed block of authorized_keys. Copies placed by anything else, and", fg='yellow')
+        click.secho("every other key, still work.", fg='yellow')
 
     # 10. Local config cleanup - offer to remove box from .lager config
     box_name = box

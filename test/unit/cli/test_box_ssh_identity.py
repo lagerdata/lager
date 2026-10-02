@@ -1131,9 +1131,9 @@ class UninstallOffersTheKey(_CommandCase):
 
 
 class UninstallDeregisters(_CommandCase):
-    """--all strips the authorized_keys line. Without also removing the
-    registration, --keep-config preserves /etc/lager and the next
-    start_box.sh sync republishes the key uninstall just removed."""
+    """--all revokes the authorized_keys line. Without also removing the
+    registration, the kept /etc/lager would let the next start_box.sh sync
+    republish the key uninstall just removed."""
 
     def test_all_removes_the_registered_pubkey_first(self):
         calls = []
@@ -1154,20 +1154,26 @@ class UninstallDeregisters(_CommandCase):
             mock.patch.object(uninstall_mod, "get_box_name_by_ip", return_value=None),
             mock.patch.object(_ssh, "lager_box_key_if_present",
                               _fake_key_if_present(True)),
+            # The revoke step matches this machine's ~/.ssh/lager_box.pub by
+            # its key blob and does nothing without one. Supply the blob, so
+            # the test does not depend on the machine it runs on having a key.
+            mock.patch.object(uninstall_mod, "lager_key_matcher",
+                              return_value="AAAATESTBLOB"),
         ]
         for p in patches:
             p.start()
             self.addCleanup(p.stop)
         result = CliRunner().invoke(
             uninstall_mod.uninstall,
-            ["--ip", "10.0.0.1", "--yes", "--keep-config", "--all"],
+            ["--ip", "10.0.0.1", "--yes", "--all"],
         )
         self.assertEqual(result.exit_code, 0, result.output)
 
         remotes = [c[-1] for c in self._ssh_calls(calls)]
         dereg = [i for i, r in enumerate(remotes)
                  if uninstall_mod.BOX_KEYS_DIR in r and r.startswith("rm -f")]
-        strip = [i for i, r in enumerate(remotes) if "authorized_keys" in r and "grep -vF" in r]
+        strip = [i for i, r in enumerate(remotes)
+                 if "authorized_keys" in r and "LAGER MANAGED KEYS" in r]
         self.assertTrue(dereg, f"no de-registration in {remotes}")
         self.assertTrue(strip, "sanity: the authorized_keys strip still runs")
         self.assertLess(dereg[0], strip[0], "de-register before stripping")
