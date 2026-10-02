@@ -46,13 +46,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 2906 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 3279 |
+| `unit (cli)` | `test/unit/cli/` | 2926 (+2 xfailed) |
+| `unit (box)` | `test/unit/box/` | 3301 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 380 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 110 (+1 skipped) |
-| | **Total gated** | **6869** |
+| | **Total gated** | **6911** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -452,9 +452,9 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 260 files)
+### Local Unit Tests (`test/unit/` -- 262 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 134 files)
+#### Box Unit Tests (`test/unit/box/` -- 135 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -542,7 +542,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_net_save_uart_identity.py` | `usb_identity_for_net_record`: durable USB identity snapshot at UART net save time |
 | `test_mapper_range_checks.py` | Tree-wide guard: no `LO > x > HI` range check in `box/` or `cli/`, a shape that is always false so the `raise` under it is unreachable; plus both ends of the seven inverted bounds fixed in the Rigol MSO5000 and Keithley mappers |
 | `test_network_mode.py` | Opt-in container network mode: `--network` rendered from box_config rather than hardcoded, the host-mode fallback for an unknown value, port publishing suppressed on host while every `-p` literal stays inside the firewall-allowlist sentinels, the shim set/unset verbs, and the cli/box allowlist agreeing. Also that a switch to host takes effect only through `apply`: every other start keeps the mode the last apply recorded and announces the pending one, a return to lagernet needs no apply, an unreadable snapshot withholds host, and the CLI and renderer agree on the confirmation variable |
-| `test_gateway_coresidence.py` | `start_box.sh` beside a gateway that owns lager's host ports, run verbatim against a fake `docker`: a container on lagernet publishing 5000/8080/8765/9000 switches the start to `--no-publish` and writes the marker, an explicit `--publish` is not overridden, and the old `lager` container and exposed-but-unpublished ports are not holders. Any other holder of a published port, ranges expanded on both sides, fails with exit 5 naming the port and the container before the running container is stopped, and `--preflight` stops there. A refused `docker run` names the port and its holder (or a process outside Docker), removes the Created leftover and keeps a non-port exit status. Also the order of those steps in `start_box.sh`, and that the deploy script runs the preflight before its teardown, only against a `start_box.sh` that knows the flag |
+| `test_gateway_coresidence.py` | `start_box.sh` beside a gateway that owns lager's host ports, run verbatim against a fake `docker`: a container on lagernet publishing 5000/8080/8765/9000 switches the start to `--no-publish` and writes the marker, an explicit `--publish` is not overridden, and the old `lager` container and exposed-but-unpublished ports are not holders. Any other holder of a published port, ranges expanded on both sides, fails with exit 5 naming the port and the container before the running container is stopped, and `--preflight` stops there. `--publish` clears the `no_publish` marker only after that check passes, so a refused start or a `--preflight` run leaves it in place. A refused `docker run` names the port and its holder (or a process outside Docker), removes the Created leftover and keeps a non-port exit status. Also the order of those steps in `start_box.sh`, and that the deploy script runs the preflight before its teardown, only against a `start_box.sh` that knows the flag |
 | `test_mcp_publish_opt_out.py` | `LAGER_MCP_NO_PUBLISH`: runs the opt-out scan and the port-publishing block of `start_box.sh` under bash with a rendered `BOX_CONFIG_ENV`. A truthy value drops exactly the 8100 mapping, any other value drops nothing, and both opt-outs together drop 8100 and 9000. `--no-publish` still publishes nothing, and host mode warns that the variable has no effect |
 | `test_mcp_token_shim.py` | The box-side `mcp-token-*` verbs, with the REAL `_audit` pointed at a temp file: `enable` creates a mode-0600 file whatever the umask and refuses when one exists, `rotate` replaces it atomically and repairs an empty or unreadable one, `disable` is idempotent; no verb touches `box_config.json`, the audit log names the verb and never the value, no verb reads the value back, and the path comes from `lager/constants.py` alone |
 | `test_nets_display.py` | `lager nets` table no-truncation for long UART pins and VISA addresses |

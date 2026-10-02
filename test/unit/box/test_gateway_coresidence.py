@@ -150,6 +150,11 @@ class GatewayOnLagernet(_Box):
         self.assertEqual(out.returncode, PORT_CONFLICT)
         self.assertIn("port 5000: container 'gateway'", out.stdout)
 
+    def test_preflight_never_clears_the_marker(self):
+        open(self.marker, 'w').close()
+        out = self.run_coresidence(explicit_publish='1', preflight='1')
+        self.assertTrue(os.path.exists(self.marker), "a --preflight run changes nothing")
+
     def test_the_old_lager_container_is_not_a_holder(self):
         # This run replaces it: its own published ports are not a conflict.
         self.container('lager', "0.0.0.0:5000->5000/tcp", nets=('lagernet',))
@@ -186,11 +191,11 @@ class ForeignHolder(_Box):
 
 
 class PortPreflightBeforeTeardown(_Box):
-    def run_preflight(self, publish_args):
+    def run_preflight(self, publish_args, *, explicit_publish=''):
         script = "\n".join([
             "set -e",
             "NO_PUBLISH='1'",  # skip the co-residence switch; test the check alone
-            "EXPLICIT_PUBLISH=''",
+            f"EXPLICIT_PUBLISH='{explicit_publish}'",
             "PREFLIGHT=''",
             f"NO_PUBLISH_MARKER='{self.marker}'",
             _extract("gateway co-residence"),
@@ -213,6 +218,21 @@ class PortPreflightBeforeTeardown(_Box):
         out = self.run_preflight("-p 8081-8090:8081-8090")
         self.assertEqual(out.returncode, PORT_CONFLICT)
         self.assertIn("port 8086: container 'cams'", out.stdout)
+
+    def test_a_refused_publish_keeps_the_marker(self):
+        # --publish used to delete the marker before the check, so a refused
+        # start still changed the box's mode.
+        open(self.marker, 'w').close()
+        self.container('gateway', "0.0.0.0:5000->5000/tcp")
+        out = self.run_preflight("-p 5000:5000", explicit_publish='1')
+        self.assertEqual(out.returncode, PORT_CONFLICT)
+        self.assertTrue(os.path.exists(self.marker))
+
+    def test_a_passing_publish_clears_the_marker(self):
+        open(self.marker, 'w').close()
+        out = self.run_preflight("-p 5000:5000", explicit_publish='1')
+        self.assertEqual(out.returncode, 0, out.stdout)
+        self.assertFalse(os.path.exists(self.marker))
 
     def test_no_publishing_means_no_check(self):
         self.container('debugger', "0.0.0.0:5000->5000/tcp")

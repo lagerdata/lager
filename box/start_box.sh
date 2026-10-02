@@ -77,9 +77,10 @@ fi
 # --- END single-instance guard ---
 
 NO_PUBLISH_MARKER="/etc/lager/no_publish"
+# --publish clears the marker only once the port preflight has passed (see
+# "port preflight"): a refused start, or a --preflight run, changes nothing.
 if [ -n "$EXPLICIT_PUBLISH" ]; then
     NO_PUBLISH=""
-    rm -f "$NO_PUBLISH_MARKER" 2>/dev/null || true
 elif [ -z "$NO_PUBLISH" ] && [ -f "$NO_PUBLISH_MARKER" ]; then
     NO_PUBLISH=1
     echo "Keeping previous --no-publish mode (marker: $NO_PUBLISH_MARKER; pass --publish to publish ports again)"
@@ -1142,6 +1143,9 @@ if [ "${#PORT_PUBLISH_ARGS[@]}" -gt 0 ]; then
         _report_port_conflicts "$_pp_conflicts"
         exit 5
     fi
+fi
+if [ -n "$EXPLICIT_PUBLISH" ]; then
+    rm -f "$NO_PUBLISH_MARKER" 2>/dev/null || true
 fi
 # --- END port preflight ---
 
