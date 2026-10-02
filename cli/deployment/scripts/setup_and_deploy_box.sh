@@ -2256,6 +2256,17 @@ elif [ "$BOX_IMAGE_PULL" != "0" ]; then
 fi
 echo ""
 
+# Port preflight, while the current containers still run. start_box.sh decides
+# the publish mode (a gateway on lagernet that already holds lager's ports
+# means --no-publish) and exits 5 if another container holds a port lager
+# would publish. Run here, before the teardown below, a conflict leaves the
+# box serving instead of with no lager container at all. An older checkout's
+# start_box.sh ignores unknown flags and would run a full start, so ask only
+# a script that knows the flag.
+print_info "Checking host ports..."
+ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" \
+    "cd ~/box && if grep -q -- '--preflight' start_box.sh; then chmod +x start_box.sh && ./start_box.sh --preflight; fi"
+
 print_info "Stopping and removing lager containers..."
 # Scoped to the containers this deployment owns (lager, pigpio, and the
 # legacy controller). A box may run third-party containers alongside lager

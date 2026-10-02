@@ -68,6 +68,14 @@ These are the ports the container listens on. `start_box.sh` publishes them on t
 default; under `--no-publish` none of them are published and the container is reachable only
 on the `lagernet` Docker network, so `<box-ip>:<port>` will not connect on such a box.
 
+With no flag and no `/etc/lager/no_publish` marker, `start_box.sh` checks whether another
+container on `lagernet` already publishes ports 5000, 8080, 8765 or 9000. Such a container is a
+gateway in front of lager, so the start switches to `--no-publish` and writes the marker. If any
+other container holds a port that lager would publish, `start_box.sh` exits with status 5 and
+names the port and the container. It checks before it stops the running lager container.
+`start_box.sh --preflight` runs only these checks, and `lager install` and `lager update` run
+it before they stop anything.
+
 Set `LAGER_MCP_NO_PUBLISH=1` with `lager box-config env set` to leave port 8100 unpublished.
 The other ports stay published, and the MCP server still runs inside the container.
 

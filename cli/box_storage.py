@@ -850,12 +850,13 @@ def _check_gateway(resp, ip, *, timeout: Optional[float] = 30,
     mirror the original call; see :func:`_resend_with_auth`. Existing callers
     pass none of them and keep the previous behavior.
     """
-    from .gateway_auth import handle_gateway_denial
+    from .gateway_auth import handle_gateway_denial, handle_gateway_upstream_error
     resp, denied = _resolve_gateway(resp, ip, timeout=timeout,
                                     stream=stream, session=session,
                                     allow_refresh=allow_refresh)
     if denied:
         handle_gateway_denial(resp, ip)     # raises the actionable error
+    handle_gateway_upstream_error(resp, ip)  # raises when lager is down behind it
     return resp
 
 

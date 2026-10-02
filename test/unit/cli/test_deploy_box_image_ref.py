@@ -455,6 +455,7 @@ def _step(remote):
         ("docker builder prune -af", "build-cache-prune"),
         ("df -h /", "disk-check"),
         ("LAGER_WG_IFACE", "vpn"),
+        ("./start_box.sh --preflight", "port-preflight"),
         ("./start_box.sh", "start"),
     ):
         if marker in remote:
@@ -470,6 +471,8 @@ class TestImageHandoffRuns:
     it proves, per branch: the image is pulled while the old containers still
     serve, the containers stop only afterwards, the build cache is cleared only
     when the pull succeeded, and start_box.sh receives the image only then.
+    The port preflight runs while the old containers still serve, so a host
+    port another container holds stops the deploy before the teardown.
     """
 
     def _run(self, tmp_path, **env):
@@ -487,7 +490,7 @@ class TestImageHandoffRuns:
     def test_a_pulled_image_is_on_the_box_before_the_containers_stop(self, tmp_path):
         proc, steps, remotes = self._run(tmp_path, **_TAG, RESOLVE_RC="0", PULL_RC="0")
         assert proc.returncode == 0, proc.stderr
-        assert steps == ["daemon-check", "image-prune", "pre-pull", "teardown",
+        assert steps == ["daemon-check", "image-prune", "pre-pull", "port-preflight", "teardown",
                          "build-cache-prune", "disk-check", "start", "image-prune"]
         assert f"LAGER_BOX_IMAGE={REGISTRY}@{_DIGEST}" in remotes[-2]
         assert "LAGER_BOX_IMAGE_VERSION=v0.46.2" in remotes[-2]
@@ -496,7 +499,7 @@ class TestImageHandoffRuns:
     def test_a_failed_pull_builds_and_keeps_the_cache(self, tmp_path):
         proc, steps, remotes = self._run(tmp_path, **_TAG, RESOLVE_RC="0", PULL_RC="1")
         assert proc.returncode == 0, proc.stderr
-        assert steps == ["daemon-check", "image-prune", "pre-pull", "teardown",
+        assert steps == ["daemon-check", "image-prune", "pre-pull", "port-preflight", "teardown",
                          "disk-check", "start", "image-prune"]
         assert "LAGER_BOX_IMAGE" not in remotes[-2]
         assert "manifest unknown" in proc.stdout
@@ -512,8 +515,8 @@ class TestImageHandoffRuns:
     def test_no_image_means_a_build_with_the_cache_kept(self, tmp_path, env, says):
         proc, steps, remotes = self._run(tmp_path, **env)
         assert proc.returncode == 0, proc.stderr
-        assert steps == ["daemon-check", "image-prune", "teardown", "disk-check",
-                         "start", "image-prune"]
+        assert steps == ["daemon-check", "image-prune", "port-preflight", "teardown",
+                         "disk-check", "start", "image-prune"]
         assert "LAGER_BOX_IMAGE" not in remotes[-2]
         assert says in proc.stdout
         assert not (tmp_path / "INJECTED").exists()

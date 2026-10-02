@@ -303,6 +303,14 @@ A conforming gateway:
 - MAY offer the box's raw-TCP debug ports through `CONNECT` tunnels on
   `:8765` (§10), under the same bearer policy. It MUST NOT publish those
   ports unauthenticated instead.
+- SHOULD answer a request it cannot forward because the box's own service
+  does not accept the connection with `502`, the header
+  `X-Gateway-Error: upstream_unavailable`, and `X-Gateway-Upstream:
+  <host>:<port>`, rather than closing the connection. A JSON body with the
+  same `code` and `upstream` and an `error` message MAY accompany it. This is
+  not a denial: it carries no discovery header, and the credential is not in
+  question. Clients MAY report it as the box's service being down behind the
+  gateway, and otherwise treat it as any failed request.
 
 ## 8. Environment variables (client side)
 
@@ -375,6 +383,13 @@ This contract is versioned by the integer at the top of this file.
   the Python CLI implements it (`login_web` in `cli/gateway_auth.py`, tests in
   `test/unit/cli/test_gateway_auth_web.py`); lager-rs never signs a person in,
   only reads the store, and needs no change.
+
+- **v1** (2026-10-02): §7 adds the `502` + `X-Gateway-Error:
+  upstream_unavailable` answer for a box service that does not accept the
+  gateway's connection. Optional for gateways and for clients, so no version
+  bump per §9. The Python CLI reports it (`gateway_response_hook` in
+  `cli/gateway_auth.py`, tests in `test/unit/cli/test_gateway_upstream_error.py`);
+  lager-rs treats it as any failed request, which §7 allows.
 
 ## 10. Debug tunnels (optional)
 
