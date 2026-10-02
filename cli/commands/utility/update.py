@@ -36,6 +36,12 @@ from ..box._host_ops import (
     host_packages_probe_snippet,
     is_valid_unix_username,
 )
+from ..box._gateway import (
+    GATEWAY_QUERY,
+    START_BOX_PORT_CONFLICT,
+    parse_gateway_query,
+    warn_gateway_without_config,
+)
 from ..box._ssh import (
     box_accepts_a_password,
     box_has_control_plane,
@@ -1327,12 +1333,13 @@ def _deployed_version_stale(tree_version, etc_version_raw):
     return bool(tree_version) and bool(deployed) and deployed != tree_version
 
 
-# Progress-bar denominator. 17 steps always run; 3 are conditional (flatten,
+# Progress-bar denominator. 18 steps always run; 3 are conditional (flatten,
 # cached-image wipe, J-Link install). We use the max so the denominator never
-# jumps mid-flight — light paths simply finish below 20/20 and `finish()`
+# jumps mid-flight — light paths simply finish below 21/21 and `finish()`
 # overrides with a full bar. Keep in sync with the `progress.update()` calls
 # in `_update_logic`.
-_PROGRESS_TOTAL_STEPS = 20
+_PROGRESS_TOTAL_STEPS = 21
+
 
 
 class ProgressBar:
@@ -3502,6 +3509,36 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
     # the heartbeat outright, so a suspension that is never resumed cannot
     # outlive the command.
     _release_update_lock.suspend()
+
+    # Port preflight, before Step 8 stops anything: start_box.sh settles the
+    # publish mode and exits 5 when another container holds a host port lager
+    # would publish. Stopping first and failing at `docker run` afterwards
+    # left the box with no lager container. A start_box.sh that predates the
+    # flag would run a full start on it, so ask only one that knows it.
+    if progress:
+        progress.update("Checking host ports...")
+    log('Checking host ports...', nl=False)
+    gateway_query = run_ssh_command_with_output(GATEWAY_QUERY, timeout_secs=30)
+    if gateway_query.returncode == 0:
+        warn_gateway_without_config(
+            parse_gateway_query(gateway_query.stdout),
+            lambda msg, **kw: click.secho(msg, err=True, **kw),
+        )
+    preflight = run_ssh_command_with_output(
+        "cd ~/box && if grep -q -- '--preflight' start_box.sh; then "
+        "chmod +x start_box.sh && ./start_box.sh --preflight; fi",
+        timeout_secs=60,
+    )
+    if preflight.returncode == START_BOX_PORT_CONFLICT:
+        if progress:
+            progress.finish(success=False)
+        log_status('FAILED', 'red')
+        log_error('Error: a host port lager publishes is held by another container')
+        if preflight.stdout:
+            click.echo(preflight.stdout, err=True)
+        click.echo('Nothing was stopped; the box still runs its current lager container.', err=True)
+        ctx.exit(1)
+    log_status('OK', 'green')
 
     # Step 8: Stop containers
     if progress:

@@ -205,6 +205,14 @@ install runs unattended) [Y/n]:
 
 安装不会写入 `~/.ssh/config`。早期版本会添加一个按 IP 划分、指明密钥的 `Host` 块。另一个会重新生成该文件的工具删除了那个块，而且那个块还对该 Box 关闭了主机密钥验证。现在改为按命令传入身份。
 
+## Box 前面的网关
+
+有些 Box 在 lager 前面有一个网关：它是 `lagernet` Docker 网络上的另一个容器，发布 lager 的主机端口，并把请求转发给 lager 容器。控制平面可以运行这样的网关。
+
+- 当这样的容器已经发布了端口 5000、8080、8765 或 9000 时，lager 容器以 `--no-publish` 模式启动，只能通过网关访问。之后的启动会保持这个模式。
+- 在停止任何容器之前，该命令会检查是否有其他容器占用了 lager 要发布的主机端口。如果有，命令会停止并指出该端口和容器，Box 保留当前的 lager 容器。
+- 如果 `lagernet` 上仍有容器在运行，但 `/etc/lager/control_plane.json` 已不存在，命令会显示警告。在您从控制平面重新关联该 Box 之前，该网关会拒绝所有连接。Lager 无法恢复该文件。
+
 ## 说明
 
 - 逐步操作的指南，请参阅 [设置 Lager Box](/source/zh/getting-started/setting-up-a-lager-box)

@@ -6,8 +6,13 @@
 # - Debug Service (port 8765) - embedded debugging
 # - UART HTTP+WebSocket Server (port 9000) - serial communication
 #
-# Usage: ./start_box.sh [--no-publish | --publish]
+# Usage: ./start_box.sh [--no-publish | --publish] [--preflight]
 # Run this script from the box directory after copying code to the box device
+#
+# --preflight decides the publish mode and checks that no other container holds
+# a host port lager would publish, then exits without touching any container:
+# 0 when the start can proceed, 5 on a port conflict. Installers run it before
+# they stop the running lager container, so a conflict leaves the box serving.
 #
 # --no-publish (or LAGER_NO_PUBLISH=1) skips publishing the container's
 # service ports on the host: the container is reachable only on the lagernet
@@ -18,15 +23,23 @@
 # without flags keep the container lagernet-only (an update script that
 # doesn't know about the proxy would otherwise republish the ports and
 # collide with it). --publish clears the marker and returns to the default.
+#
+# With neither flag and no marker, a container on lagernet that already
+# publishes lager's API ports on the host is taken to be such a proxy, and the
+# mode becomes --no-publish (marker written). Without that, a reinstall on a
+# box whose marker had been deleted republished the ports, collided with the
+# proxy, and left the box with no lager container.
 
 set -e
 
 NO_PUBLISH="${LAGER_NO_PUBLISH:-}"
 EXPLICIT_PUBLISH=""
+PREFLIGHT=""
 for arg in "$@"; do
     case "$arg" in
         --no-publish) NO_PUBLISH=1 ;;
         --publish) EXPLICIT_PUBLISH=1 ;;
+        --preflight) PREFLIGHT=1 ;;
     esac
 done
 
@@ -104,6 +117,94 @@ if ! docker network inspect lagernet >/dev/null 2>&1; then
     docker network create lagernet
     echo ""
 fi
+
+# --- BEGIN gateway co-residence (extracted verbatim by test/unit/box/test_gateway_coresidence.py) ---
+# The API ports a gateway in front of lager publishes. If another container on
+# lagernet already holds one of them, lager must not publish its own.
+LAGER_CORE_PORTS="5000 8080 8765 9000"
+
+# "<host port> <container>" for each host port that a running container other
+# than lager publishes, one per line, ranges expanded. The old lager container
+# is excluded because this run replaces it.
+_host_port_holders() {
+    docker ps --format '{{.Names}}|{{.Ports}}' 2>/dev/null | while IFS='|' read -r _hph_name _hph_ports; do
+        [ "$_hph_name" = "lager" ] && continue
+        printf '%s\n' "$_hph_ports" | tr ',' '\n' \
+            | sed -nE 's/.*:([0-9]+(-[0-9]+)?)->.*/\1/p' \
+            | while read -r _hph_range; do
+                _hph_p=${_hph_range%-*}
+                _hph_hi=${_hph_range#*-}
+                while [ "$_hph_p" -le "$_hph_hi" ]; do
+                    echo "$_hph_p $_hph_name"
+                    _hph_p=$((_hph_p + 1))
+                done
+            done
+    done | sort -u
+}
+
+# The container holding host port $1, looked up in _host_port_holders output $2.
+_holder_of() {
+    printf '%s\n' "$2" | awk -v p="$1" '$1 == p { print $2; exit }'
+}
+
+_on_lagernet() {
+    _ol_nets=$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$1" 2>/dev/null) || return 1
+    case " $_ol_nets " in
+        *" lagernet "*) return 0 ;;
+    esac
+    return 1
+}
+
+# "<port> <container>" for each of the given host ports another container holds.
+_port_conflicts() {
+    _pc_holders=$(_host_port_holders)
+    for _pc_p in "$@"; do
+        _pc_h=$(_holder_of "$_pc_p" "$_pc_holders")
+        if [ -n "$_pc_h" ]; then
+            echo "$_pc_p $_pc_h"
+        fi
+    done
+    return 0
+}
+
+_report_port_conflicts() {
+    echo ""
+    echo "ERROR: host ports that lager publishes are already in use:"
+    printf '%s\n' "$1" | while read -r _rpc_p _rpc_h; do
+        echo "  port $_rpc_p: container '$_rpc_h'"
+    done
+    echo ""
+    echo "  No container was stopped. If that container is a gateway that forwards"
+    echo "  to lager, start lager with --no-publish. Otherwise stop it and run again."
+}
+
+if [ -z "$NO_PUBLISH" ] && [ -z "$EXPLICIT_PUBLISH" ]; then
+    _cr_holders=$(_host_port_holders)
+    for _cr_p in $LAGER_CORE_PORTS; do
+        _cr_h=$(_holder_of "$_cr_p" "$_cr_holders")
+        if [ -n "$_cr_h" ] && _on_lagernet "$_cr_h"; then
+            NO_PUBLISH=1
+            echo "Host port $_cr_p is published by '$_cr_h', a container on lagernet in front of lager."
+            echo "Starting in --no-publish mode: that container forwards to lager over lagernet."
+            touch "$NO_PUBLISH_MARKER" 2>/dev/null || \
+                echo "[WARNING] Could not write $NO_PUBLISH_MARKER — no-publish mode will not survive a plain restart"
+            break
+        fi
+    done
+fi
+
+if [ -n "$PREFLIGHT" ]; then
+    if [ -z "$NO_PUBLISH" ]; then
+        _pf_conflicts=$(_port_conflicts $LAGER_CORE_PORTS)
+        if [ -n "$_pf_conflicts" ]; then
+            _report_port_conflicts "$_pf_conflicts"
+            exit 5
+        fi
+    fi
+    echo "Preflight OK (publish mode: $([ -n "$NO_PUBLISH" ] && echo no-publish || echo publish))"
+    exit 0
+fi
+# --- END gateway co-residence ---
 
 # Check for J-Link installation (searches for any version)
 echo "Checking for J-Link GDB Server..."
@@ -890,13 +991,6 @@ fi
 echo "  PIGPIO Address: $PIGPIO_ADDR"
 echo ""
 
-# Stop existing container if running
-if docker ps -a --format '{{.Names}}' | grep -q '^lager$'; then
-    echo "Stopping existing lager container..."
-    docker stop lager 2>/dev/null || true
-    docker rm lager 2>/dev/null || true
-fi
-
 # Start the Lager container. The ports below are what the container listens
 # on; whether they are published on the host is decided by PORT_PUBLISH_ARGS
 # further down, which is empty under --no-publish.
@@ -1026,6 +1120,66 @@ else
 fi
 # --- END port publishing ---
 
+# Checked before the running container is stopped, so a conflict leaves it
+# serving. Docker would otherwise refuse the new container mid-swap and the
+# box would be left with none.
+# --- BEGIN port preflight (extracted verbatim by test/unit/box/test_gateway_coresidence.py) ---
+_publish_ports() {
+    for _pp_spec in "$@"; do
+        [ "$_pp_spec" = "-p" ] && continue
+        _pp_range=${_pp_spec%%:*}
+        _pp_p=${_pp_range%-*}
+        _pp_hi=${_pp_range#*-}
+        while [ "$_pp_p" -le "$_pp_hi" ]; do
+            echo "$_pp_p"
+            _pp_p=$((_pp_p + 1))
+        done
+    done
+}
+if [ "${#PORT_PUBLISH_ARGS[@]}" -gt 0 ]; then
+    _pp_conflicts=$(_port_conflicts $(_publish_ports "${PORT_PUBLISH_ARGS[@]}"))
+    if [ -n "$_pp_conflicts" ]; then
+        _report_port_conflicts "$_pp_conflicts"
+        exit 5
+    fi
+fi
+# --- END port preflight ---
+
+# Stop existing container if running
+if docker ps -a --format '{{.Names}}' | grep -q '^lager$'; then
+    echo "Stopping existing lager container..."
+    docker stop lager 2>/dev/null || true
+    docker rm lager 2>/dev/null || true
+fi
+
+# A docker run that fails leaves a lager container in the Created state, and
+# its stderr names the cause in Docker's words only. Say which port and which
+# container, and remove the leftover.
+# --- BEGIN docker run failure (extracted verbatim by test/unit/box/test_gateway_coresidence.py) ---
+_report_run_failure() {
+    docker rm -f lager >/dev/null 2>&1 || true
+    if grep -qiE 'port is already allocated|address already in use' "$1"; then
+        _rrf_port=$(sed -nE 's/.*(Bind for|listen tcp[46]?) [^ ]*:([0-9]+)[: ].*/\2/p' "$1" | head -n 1)
+        _rrf_holder=$(_holder_of "$_rrf_port" "$(_host_port_holders)")
+        echo ""
+        if [ -n "$_rrf_holder" ]; then
+            echo "ERROR: the lager container could not start: host port ${_rrf_port} is held by container '${_rrf_holder}'."
+        else
+            echo "ERROR: the lager container could not start: host port ${_rrf_port:-?} is in use by a process outside Docker."
+            echo "  Find it with: sudo ss -ltnp 'sport = :${_rrf_port}'"
+        fi
+        echo "  The half-created lager container was removed. Free the port, or start"
+        echo "  lager with --no-publish if a gateway on lagernet forwards to it."
+        return 5
+    fi
+    echo ""
+    echo "ERROR: docker run failed (exit $2). The half-created lager container was removed."
+    return "$2"
+}
+# --- END docker run failure ---
+
+_RUN_ERR=$(mktemp)
+_run_rc=0
 docker run -d \
     --network "$BOX_CONFIG_NETWORK" \
     --privileged \
@@ -1057,7 +1211,14 @@ docker run -d \
     --log-opt max-file=3 \
     --name lager \
     --restart always \
-    lager
+    lager 2>"$_RUN_ERR" || _run_rc=$?
+cat "$_RUN_ERR" >&2
+if [ "$_run_rc" -ne 0 ]; then
+    _report_run_failure "$_RUN_ERR" "$_run_rc" || _run_rc=$?
+    rm -f "$_RUN_ERR"
+    exit "$_run_rc"
+fi
+rm -f "$_RUN_ERR"
 
 echo "Lager Box container started"
 echo ""

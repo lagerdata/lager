@@ -800,11 +800,47 @@ def plain_error_text(err):
     return ' '.join(parts)
 
 
+# A gateway's answer when the box service behind it does not accept its
+# connection (contract §7). Not a denial: no discovery header, no credential
+# at fault.
+UPSTREAM_ERROR_HEADER = 'X-Gateway-Error'
+UPSTREAM_HEADER = 'X-Gateway-Upstream'
+UPSTREAM_UNAVAILABLE = 'upstream_unavailable'
+
+
+def handle_gateway_upstream_error(response, box_ip):
+    """Raise for a gateway's 502 upstream_unavailable; return otherwise.
+
+    Without the gateway's answer the client saw only a dropped connection,
+    reported as "connection failed": nothing said the gateway was fine and
+    the service behind it was not, which is the difference between "check
+    the network" and "update the box".
+    """
+    if getattr(response, 'status_code', None) != 502:
+        return
+    # Not every caller hands over a requests.Response: some pass a minimal
+    # object with no headers, which can carry no gateway answer.
+    headers = getattr(response, 'headers', None) or {}
+    if headers.get(UPSTREAM_ERROR_HEADER) != UPSTREAM_UNAVAILABLE:
+        return
+    upstream = headers.get(UPSTREAM_HEADER) or 'the lager container'
+    raise LagerError(
+        f'The lager service behind box {box_ip}\'s gateway does not answer.',
+        cause=f'The gateway is up, but {upstream} did not accept its connection: '
+              'the lager container is stopped, still starting, or failed to start.',
+        fixes=[f'Update the box: lager update --box {box_ip}',
+               f'If it has no lager container at all, reinstall: lager install --ip {box_ip}',
+               'Or update Lager from the control plane that manages the box.'],
+    )
+
+
 def gateway_response_hook(box_ip):
-    """requests response hook that intercepts gateway denials."""
+    """requests response hook that intercepts gateway denials, and a
+    gateway's report that the box service behind it is down."""
     def hook(response, *_args, **_kwargs):
         if response.status_code in (401, 403, 503) and DISCOVERY_HEADER in response.headers:
             handle_gateway_denial(response, box_ip)
+        handle_gateway_upstream_error(response, box_ip)
         return response
     return hook
 

@@ -341,6 +341,14 @@ ssh -t lagerdata@<box-ip> 'sudo /usr/local/lib/lager/secure_box_firewall.sh'
 
 ---
 
+## A gateway in front of the box
+
+Some boxes have a gateway in front of lager. The gateway is another container on the `lagernet` Docker network. It publishes lager's host ports and forwards requests to the lager container. A control plane can run one.
+
+- If such a container already publishes port 5000, 8080, 8765 or 9000, lager starts in `--no-publish` mode. Then lager is reachable only through the gateway. This mode stays for later starts.
+- Before any container stops, the command checks that no other container holds a host port that lager publishes. If one does, the command stops with the port and the container named, and the box keeps its current lager container.
+- If a container still runs on `lagernet` but `/etc/lager/control_plane.json` is gone, the command shows a warning. That gateway refuses every connection until you re-link the box from its control plane. Lager cannot restore the file.
+
 ## Notes
 
 - Progress bar is disabled when `--verbose` is used

@@ -36,6 +36,12 @@ from ..box._host_ops import (
     host_service_names,
     is_valid_unix_username,
 )
+from ..box._gateway import (
+    START_BOX_PORT_CONFLICT,
+    gateway_query_argv,
+    parse_gateway_query,
+    warn_gateway_without_config,
+)
 from ..box._ssh import (
     _LAGER_BOX_KEY,
     lager_box_key_if_present,
@@ -525,6 +531,20 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
 
     click.echo()
 
+    # A gateway left with no configuration refuses every connection whatever
+    # this install does, so say so before the operator waits on a deploy and
+    # then blames it.
+    try:
+        gateway_probe = subprocess.run(
+            gateway_query_argv(ssh_host, ssh_identity_args(identity)),
+            capture_output=True, text=True, timeout=25,
+        )
+        gateway_names = (parse_gateway_query(gateway_probe.stdout)
+                         if gateway_probe.returncode == 0 else [])
+    except (OSError, subprocess.SubprocessError):
+        gateway_names = []
+    warn_gateway_without_config(gateway_names, click.secho)
+
     # 5. Display summary and confirm
     click.echo()
     if box:
@@ -613,6 +633,14 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
                     timeout=deploy_timeout or None,
                 )
 
+            if result.returncode == START_BOX_PORT_CONFLICT:
+                click.echo()
+                click.secho("Deployment stopped: a host port lager publishes is held by another container.",
+                            fg='red', err=True)
+                click.secho("The port and the container are named above. Nothing was stopped, and the",
+                            fg='yellow', err=True)
+                click.secho("box was not changed beyond its code checkout.", fg='yellow', err=True)
+                ctx.exit(1)
             if result.returncode != 0:
                 click.echo()
                 click.secho("Deployment failed!", fg='red', err=True)
