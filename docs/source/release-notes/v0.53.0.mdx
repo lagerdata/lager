@@ -1,0 +1,113 @@
+---
+title: "Version 0.53.0"
+description: "October 2, 2026"
+---
+
+## <u>Upgrade Notes</u>
+
+- **`lager install` and `lager update` deploy the CLI's release tag by default, not `main`.**
+  With no `--version`, lager 0.53.0 deploys `v0.53.0`. The box runs a release and uses the
+  pre-built image. Pass `--version main` to deploy the latest development code.
+- **A default `lager update` never rolls a box back.** It leaves a box that is ahead of the
+  CLI's release where it is, even with `--yes`. Pass `--version` to move such a box.
+- **A plain `lager uninstall` keeps `/etc/lager`.** Saved nets, box config and SSH key
+  registrations survive the uninstall, and the next install uses them again. Pass
+  `--purge-config` for the old behavior. A purge first saves a backup to
+  `~/lager-backup-<timestamp>/` on the box. After a purge, the next `lager install` asks for
+  the sudo password once. `--all` no longer implies a purge.
+- **`lager install` and `lager update` stop when another container publishes a port that lager
+  uses.** They stop before they stop anything on the box, name the port and the container, and
+  exit with code 1. On the box, `start_box.sh --preflight` exits with code 5 for this conflict.
+  Free the port, then run the command again.
+- **An output state that the box cannot read is reported as unknown, not off.** `lager nets state`
+  shows `?` in the on/off slot, for example `CH1/?/3.30V/0.120A`. The `state` actions of
+  `lager supply`, `lager battery` and `lager eload` print `UNKNOWN`. A script that treats
+  anything other than `ON` as off must handle the new value.
+- **A battery, watt meter or energy reading that fails is reported as missing, not as 0.**
+  A script that reads `0.00V` or `0%` as a real value must handle the missing value.
+
+## <u>Features</u>
+
+- **`GET /nets/state` entries carry an `enabled` field.** The field is `true` or `false` for
+  USB, power supply, battery and electronic load nets. It is present only when the box reads
+  the on/off state, so a consumer does not parse the `state` text. The box's `/status`
+  advertises this as `capabilities.netsStateEnabled`.
+- **`lager energy --box <box>` lists the energy analyzer nets of that box.** The group-level
+  `--box` also serves `read` and `stats` when you give them no `--box`, as in `lager watt`.
+
+## <u>Bug Fixes</u>
+
+- **A port conflict no longer leaves a box with no lager container.** `lager install` and
+  `lager update` stopped lager first, and then failed to start it again. A `docker run` that
+  fails over a port now names that port and removes the half-created container.
+- **On a box with a gateway in front of lager, a start with no `--no-publish` marker does not
+  publish over the gateway.** If a container on `lagernet` publishes the lager API ports,
+  `start_box.sh` starts lager in `--no-publish` mode and writes the marker again.
+- **`lager install` and `lager update` warn when a gateway runs but
+  `/etc/lager/control_plane.json` is missing.** Re-link such a box from its control plane.
+- **The CLI reports a gateway's `502` as a lager service that does not answer.** A gateway
+  answers `502` with `X-Gateway-Error: upstream_unavailable` when lager is down behind it. The
+  CLI now says so and suggests `lager update`, instead of a failed connection.
+- **`lager uninstall --all` removes this machine's key only from lager's managed block of
+  `authorized_keys`.** A key that something else placed, or that another registration holds,
+  stays in place, so a shared key keeps working on the other machines.
+
+- **Ctrl+C ends `lager uart` in less than a second, and the box gets the end of the session.**
+  The socket.io clients let a library install its own Ctrl+C handler, which disconnected
+  before the CLI sent `stop_uart`. The CLI now handles Ctrl+C itself. The UART and RTT
+  teardowns wait 0.5 s maximum for the socket to close.
+- **`lager ssh-setup` installs its key on a key-only box that one of your keys already reaches.**
+  It refused with "none of your keys reaches it yet". It now runs `ssh-copy-id` over that key,
+  with no password prompt.
+- **`lager install` without a terminal says that it needs one.** When sudo on the box needed a
+  password, the first error named a file that install failed to copy. Install now stops before
+  the sudo session and tells you to run it in a terminal.
+- **The box's BLE `Central()` makes its own event loop when you pass none.** It called
+  `asyncio.get_event_loop()`, which fails off the main thread and on Python 3.14. Pass `loop=`
+  to share a loop.
+- **A powered Acroname USB net reports `enabled`.** `lager usb <net> state`, `lager nets state`
+  and `lager usb <net> toggle` read the power and data bits together. A port with power on and
+  data off read `disabled`, and `toggle` left it on. They now follow port power on every
+  Acroname model.
+- **A USB net with an integer `pin` of `0` controls port 0.** The box treated it as a net with
+  no pin.
+- **The box log warns about an Acroname net address with no hub serial when the box has more
+  than one Acroname hub.** Such a net binds the first hub that answers. Add the hub serial to
+  the net address.
+- **The Rigol DP800 power supply accepts `1` and `0` as output state replies.** It read them as
+  off. The unknown state covers the Rigol DP800 and DP700, EA, Keithley 2281S and Rigol DL3021.
+- **A YKUSH port whose state read fails is reported as unknown, not enabled.**
+- **A LabJack T7 GPIO, ADC or DAC net with an integer `pin` of `0` reads in `lager nets state`.**
+  An ADC or DAC net on pin 0 also blanked all other ADC and DAC nets on that T7.
+- **Two USB nets on the same hub port both report the port state.** One of them showed as
+  unreadable.
+
+## <u>Improvements</u>
+
+- **`lager hello` shows `(release)` for a box on its release tag.** The line was
+  `Version: 0.52.0 (v0.52.0@b73aa66)`; it is now `Version: 0.52.0 (release)`. A branch, a
+  commit, or a tag that does not match the version still shows `<ref>@<commit>`.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.53.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli==0.53.0
+```
+
+Then update your boxes:
+
+```bash
+lager update --box <box-name>
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.53.0/)
