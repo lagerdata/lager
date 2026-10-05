@@ -20,6 +20,14 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   checks now read back what they set.
 - **`box_config.sh` fails when it cannot write the box config.** It used to go on
   and re-apply the old config, so the checks after it tested the wrong thing.
+- **A bench re-run is no longer blocked by the failed run's box lock.** Every bench
+  job now releases a lock left by a dead run of this repository before it starts. A
+  lock held by anyone else is left alone, where Bench: Extended used to force any lock.
+- **One stale API answer no longer makes the bench watchdog report a dead schedule.**
+  It cross-checks the scheduled-runs query against the all-events query it already
+  reads, and reports a stale answer as a warning.
+- **Every bench suite gated on a failure count also has a skip limit.** A suite that
+  starts skipping checks now fails Bench: Extended instead of reporting green.
 
 ## [0.53.0] - 2026-10-02
 

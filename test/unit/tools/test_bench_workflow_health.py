@@ -187,3 +187,26 @@ class TestRouting:
         res = subprocess.run([sys.executable, str(TOOL), "runs.json", "scheduled.json"],
                              cwd=tmp_path, capture_output=True, text=True)
         assert res.returncode == 0, res.stdout + res.stderr
+
+
+def test_a_stale_scheduled_query_does_not_page(tmp_path):
+    """End to end, as the watchdog calls it: the #643 shape.
+
+    The scheduled-only query answers with a month-old page; the all-events
+    query shows scheduled runs from the last two days. The tool must exit 0
+    with no problems file, and say in a warning that the query looked stale.
+    """
+    now = datetime.now(timezone.utc)
+    fresh = [sched(h, now=now) for h in (20, 44)]
+    stale = [sched(744.9 + i * 24, now=now) for i in range(10)]
+    files = {"runs.json": fresh, "scheduled.json": stale,
+             "workflows.json": _all_bench_active(), "extended.json": _fresh_extended()}
+    for name, data in files.items():
+        (tmp_path / name).write_text(json.dumps(data))
+    res = subprocess.run(
+        [sys.executable, str(TOOL), "runs.json", "scheduled.json",
+         "workflows.json", "extended.json"],
+        cwd=tmp_path, capture_output=True, text=True)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert not (tmp_path / "problems.txt").exists()
+    assert "looked stale" in (tmp_path / "warnings.txt").read_text()

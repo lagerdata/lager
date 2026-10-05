@@ -16,6 +16,7 @@ These tests drive the real script on summaries shaped like harness.sh's:
 """
 
 import pathlib
+import re
 import shutil
 import subprocess
 
@@ -92,3 +93,38 @@ class TestWithASkipBudget:
         res = subprocess.run(["bash", str(GATE), "harness", "uart.sh", "0", str(log), "0"],
                              capture_output=True, text=True)
         assert res.returncode == 1 and "no test summary" in res.stdout
+
+
+class TestEveryHarnessSuiteHasASkipBudget:
+    """A harness suite gated without a skip budget can skip silently.
+
+    That is the hole the budget exists to close, so every harness-format gate
+    call in a workflow must pass one, set in the same step's env to a
+    non-negative integer. A newly wired suite that forgets it fails here.
+    """
+
+    CALL = re.compile(r'bench_suite_gate\.sh\s+harness\s+(\S+)\s+(\S+)\s+(\S+)(?:\s+(\S+))?')
+
+    def _calls(self):
+        import yaml
+        for path in sorted((REPO_ROOT / ".github" / "workflows").glob("*.yml")):
+            doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+            for job in (doc.get("jobs") or {}).values():
+                for step in (job.get("steps") or []) if isinstance(job, dict) else []:
+                    for m in self.CALL.finditer(step.get("run") or ""):
+                        yield path.name, step, m
+
+    def test_the_scan_finds_the_known_suites(self):
+        suites = {m.group(1) for _, _, m in self._calls()}
+        assert {"uart.sh", "nets.sh", "generic.sh", "box_config.sh"} <= suites, suites
+
+    def test_every_call_passes_a_budget_set_in_its_step(self):
+        offenders = []
+        for wf, step, m in self._calls():
+            budget = m.group(4)
+            var = (budget or "").strip('"').lstrip("$").strip("{}")
+            value = str((step.get("env") or {}).get(var, ""))
+            if not budget or not value.isdigit():
+                offenders.append(f"{wf}: {m.group(1)} (budget arg {budget!r}, env {var}={value!r})")
+        assert not offenders, ("harness gate calls without a skip budget set in "
+                               "their step env:\n  " + "\n  ".join(offenders))

@@ -300,3 +300,52 @@ class TestRunHealth:
         """Run health is about the runner, so the trigger is irrelevant."""
         runs = [run(4.0, event="workflow_dispatch", status="queued")]
         assert bsc.check_run_health(runs, now=NOW) != []
+
+
+class TestStaleScheduledQuery:
+    """One stale answer from the scheduled-only query must not page.
+
+    A watchdog run got a scheduled-only answer whose newest run was 744.9h old
+    while scheduled nightlies had run green the two previous days, and filed
+    "is the schedule disabled?". The all-events query already in hand showed
+    the newer scheduled runs; it is the cross-check.
+    """
+
+    STALE = [run(744.9 + i * 24) for i in range(10)]      # a month-old page
+
+    def test_a_stale_answer_is_replaced_by_the_fresh_scheduled_runs(self):
+        fresh = [run(20.0), run(44.0), run(2.0, event="push")]
+        sched, warnings = bsc.reconcile_scheduled(fresh, self.STALE)
+        assert [r["databaseId"] for r in sched] == [run(20.0)["databaseId"],
+                                                     run(44.0)["databaseId"]]
+        assert len(warnings) == 1 and "looked stale" in warnings[0]
+
+    def test_the_replaced_answer_raises_no_stale_or_gap_problem(self):
+        fresh = [run(20.0), run(44.0)]
+        sched, _ = bsc.reconcile_scheduled(fresh, self.STALE)
+        assert bsc.check_schedule(sched, now=NOW, cron=CRON) == []
+
+    def test_the_lists_are_not_merged_into_a_fake_gap(self):
+        """Fresh plus stale would put a ~700h hole between them."""
+        fresh = [run(20.0)]
+        sched, _ = bsc.reconcile_scheduled(fresh, self.STALE)
+        assert len(sched) == 1
+        assert bsc.check_schedule(sched, now=NOW, cron=CRON) == []
+
+    def test_an_agreeing_answer_is_used_as_is_with_no_warning(self):
+        runs = cadence(24.0)
+        sched, warnings = bsc.reconcile_scheduled(runs[:3], runs)
+        assert sched == runs and warnings == []
+
+    def test_no_scheduled_run_in_the_all_events_list_changes_nothing(self):
+        """A burst of dispatches can push every scheduled run out of it."""
+        dispatches = [run(h, event="workflow_dispatch") for h in (1, 2, 3)]
+        sched, warnings = bsc.reconcile_scheduled(dispatches, self.STALE)
+        assert sched == self.STALE and warnings == []
+
+    def test_a_genuinely_dead_cron_still_alarms(self):
+        """Both queries old: nothing fresher to fall back on, so stale fires."""
+        sched, warnings = bsc.reconcile_scheduled(self.STALE[:3], self.STALE)
+        assert warnings == []
+        problems = bsc.check_schedule(sched, now=NOW, cron=CRON)
+        assert any("old" in p for p in problems), problems
