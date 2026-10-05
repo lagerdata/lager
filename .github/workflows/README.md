@@ -120,6 +120,11 @@ label rather than just passing a different title.
   Saturdays unnoticed. Problems about Extended — disabled, or no scheduled
   run in 8 days — go to `bench-alert-extended`, not `bench-alert`, so the
   nightly's recovery cannot close them while they are still true.
+- The watchdog cross-checks its two queries. If the scheduled-only query's
+  newest run is older than a scheduled run the all-events query shows, that
+  answer is stale: cadence is judged from the fresh runs alone, and the stale
+  read is reported as a warning rather than paged. A single stale answer once
+  filed "is the schedule disabled?" while scheduled nightlies were green.
 - `bench-extended.yml` is weekly and deliberately has **no recovery job**: a
   green weekly must never close an alert while the nightly is still failing.
   The separate label is what makes that safe. While both shared `bench-alert`,
@@ -188,6 +193,16 @@ A merge to `main` is an arrival too. It queues a chain run, so a branch
 dispatch of `nightly-bench.yml` still *waiting* in the chain group is displaced
 by the next merge. Freeze merges until a branch chain run shows
 `in_progress`, not just until it is dispatched.
+
+### A lock left by a dead run
+
+Every bench job starts with "Release a box lock left by a dead CI run". A box
+lock held by a run of this repository when a bench job starts cannot belong to
+a live run -- the concurrency group above guarantees that -- so it is released.
+Such locks are left behind when a job dies past the CLI's release hooks (a step
+timeout ends in SIGKILL), and one blocked a re-run of a failed chain 40 minutes
+after the failure. A lock held by anyone else, such as a person working on the
+bench, is left alone; the job waits on it like any other holder.
 
 ## Triage order
 

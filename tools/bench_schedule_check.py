@@ -89,6 +89,23 @@ and each missed night alarms until the schedule shows it has come back.
 The cron is parsed from the workflow rather than duplicated here, so the two
 cannot drift.
 
+WHY THE TWO QUERIES ARE CROSS-CHECKED
+-------------------------------------
+The cadence checks read the scheduled-only query, and they used to trust it
+alone. One watchdog run got an answer from it whose newest scheduled run was
+744.9h old, while scheduled nightlies had run green the previous two days, and
+filed "is the schedule disabled?" -- with the same query returning the right
+answer minutes later. One stale read was enough to page.
+
+The all-events query already sits next to it, and it carries the newest runs
+of every event, scheduled ones included. So when a scheduled run in the
+all-events list is NEWER than anything the scheduled-only query returned, the
+scheduled-only answer is stale: cadence is judged from the scheduled runs the
+all-events list shows instead, and the stale read is reported as a warning.
+The fresh list is used ALONE rather than merged with the stale one, because a
+merge would put a fabricated hole between the fresh runs and the stale ones,
+which the gap check would then report as a missed night.
+
 WHY EVERY BENCH WORKFLOW, NOT JUST THE NIGHTLY
 ----------------------------------------------
 Everything above reads nightly-bench.yml's history, so it is blind to the other
@@ -185,6 +202,30 @@ def intervals_hours(runs_desc):
     return [
         ((times[i] - times[i + 1]).total_seconds() / 3600, times[i])
         for i in range(len(times) - 1)
+    ]
+
+
+def reconcile_scheduled(all_runs, scheduled):
+    """(scheduled runs to judge cadence by, warnings). See WHY THE TWO QUERIES.
+
+    `scheduled` is the server-filtered scheduled-only query; `all_runs` is the
+    all-events query. If a scheduled run visible in `all_runs` is newer than
+    every run in `scheduled`, the scheduled-only answer is stale and only the
+    fresh scheduled runs are used.
+    """
+    fresh = scheduled_runs(all_runs)
+    sched = scheduled_runs(scheduled)
+    if not fresh:
+        return scheduled, []
+    newest_fresh = parse_created(fresh[0])
+    if sched and parse_created(sched[0]) >= newest_fresh:
+        return scheduled, []
+    shown = f"{parse_created(sched[0]):%Y-%m-%d %H:%M} UTC" if sched else "nothing"
+    return fresh, [
+        f"the scheduled-runs query looked stale: its newest run was {shown}, "
+        f"but the all-events query shows a scheduled run at "
+        f"{newest_fresh:%Y-%m-%d %H:%M} UTC. Cadence was judged from the "
+        f"{len(fresh)} scheduled run(s) the all-events query shows."
     ]
 
 
@@ -347,8 +388,9 @@ def main():
     all_runs = json.loads(open(sys.argv[1]).read())
     scheduled = json.loads(open(sys.argv[2]).read())
 
+    scheduled, warnings = reconcile_scheduled(all_runs, scheduled)
     problems = check_run_health(all_runs) + check_schedule(scheduled)
-    warnings = check_lateness(scheduled)
+    warnings += check_lateness(scheduled)
 
     # Problems about Bench: Extended go to problems-extended.txt, which the
     # workflow files under Extended's own label. See WHY EVERY BENCH WORKFLOW.

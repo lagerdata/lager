@@ -173,26 +173,34 @@ jobs:
           fi
         shell: bash
 
-      - name: Release a still-held box lock from a killed run
-        # The CLI releases its auto-lock three ways (try/finally, atexit, and
-        # a SIGTERM/SIGINT/SIGHUP handler), but a step timeout ends in
-        # SIGKILL, which cannot be caught. The client-side release never
-        # runs, and the box-side TTL becomes the only backstop -- 1800s by
-        # default (cli/box_storage.py _DEFAULT_LOCK_TTL_SECONDS). An expired
-        # lock is reaped automatically and needs no --force; an unexpired one
-        # blocks the next run outright.
+      - name: Release a box lock left by a dead CI run
+        # A lock held by a run of THIS repository when a bench job starts
+        # belongs to a run that is no longer running: every bench workflow
+        # shares one non-cancelling concurrency group, so no other run of this
+        # repo can be on the bench now. Such a lock is left behind when a job
+        # dies past the CLI's release hooks (a step timeout ends in SIGKILL) or
+        # a release never lands. It blocks the next run outright -- a re-run of
+        # a failed chain found the failed attempt's lock still held 40 minutes
+        # later and failed its first `lager nets state`.
         #
-        # That is a real collision for back-to-back runs -- dispatches during
-        # a debugging session, or a re-run after a timeout, land well inside
-        # 30 minutes. It is NOT a threat to the schedule: the nightly and
-        # this weekly are hours apart, so any leaked lock has long expired.
+        # Only a lock whose holder is a run of this repository is released. A
+        # lock a person took to work on the bench is left alone, and the job
+        # waits on it as it would on any other holder. Forcing every lock, as
+        # this step once did, would have taken the bench out from under them.
         #
-        # Forcing is safe here because the hardware-ci concurrency group
-        # serialises every bench workflow against this box, so a lock still
-        # held when this job starts belongs to a run that is no longer
-        # running. update-regression.yml carries the same call for its own
-        # leak path (a lost release POST rather than a signal).
-        run: lager boxes unlock --box "$LAGER_BOX" --force 2>/dev/null || true
+        # `lager hello` names the holder without needing the lock itself.
+        # Best effort here: the connectivity check right after this is the
+        # step that fails loudly if the box cannot be reached.
+        run: |
+          out=$(lager hello --box "$LAGER_BOX" 2>&1 || true)
+          holder=$(printf '%s\n' "$out" \
+            | grep -o "is locked by github ${GITHUB_REPOSITORY} run [^;]*" | head -1 || true)
+          if [ -n "$holder" ]; then
+            echo "::warning title=Stale bench lock::Box ${LAGER_BOX} ${holder}; no run of this repository can still hold it, so releasing it."
+            lager boxes unlock --box "$LAGER_BOX" --force
+          else
+            echo "No lock from a run of ${GITHUB_REPOSITORY} on ${LAGER_BOX}."
+          fi
         shell: bash
 
       - name: Verify box connectivity
@@ -416,10 +424,12 @@ jobs:
           SUPPLY_NET: ${{ vars.KEITHLEY_SUPPLY_NET || 'supply1' }}
           # Measured, not assumed. See the PR body for the run this came from.
           SUPPLY_BASELINE: "0"
+          # No skips measured on the bench; any skip is a check that did not run.
+          SUPPLY_MAX_SKIPS: "0"
         run: |
           LOG="$RUNNER_TEMP/supply.log"
           bash test/integration/power/supply.sh "$LAGER_BOX" "$SUPPLY_NET" 2>&1 | tee "$LOG" || true
-          bash tools/bench_suite_gate.sh harness supply.sh "$SUPPLY_BASELINE" "$LOG"
+          bash tools/bench_suite_gate.sh harness supply.sh "$SUPPLY_BASELINE" "$LOG" "$SUPPLY_MAX_SKIPS"
         shell: bash
 
       - name: Suite battery.sh (Keithley 2281S battery simulator)
@@ -444,10 +454,12 @@ jobs:
           BATTERY_NET: ${{ vars.KEITHLEY_BATTERY_NET || 'battery1' }}
           # Measured, not assumed. See the PR body for the run this came from.
           BATTERY_BASELINE: "0"
+          # No skips measured on the bench; any skip is a check that did not run.
+          BATTERY_MAX_SKIPS: "0"
         run: |
           LOG="$RUNNER_TEMP/battery.log"
           bash test/integration/power/battery.sh "$LAGER_BOX" "$BATTERY_NET" 2>&1 | tee "$LOG" || true
-          bash tools/bench_suite_gate.sh harness battery.sh "$BATTERY_BASELINE" "$LOG"
+          bash tools/bench_suite_gate.sh harness battery.sh "$BATTERY_BASELINE" "$LOG" "$BATTERY_MAX_SKIPS"
         shell: bash
 
       - name: Power off bench instruments (AC relays)
@@ -558,10 +570,12 @@ jobs:
         env:
           # Clean, and expected to stay that way.
           DEVENV_BASELINE: "0"
+          # No skips measured on the bench; any skip is a check that did not run.
+          DEVENV_MAX_SKIPS: "0"
         run: |
           LOG="$RUNNER_TEMP/devenv.log"
           bash test/integration/infrastructure/devenv.sh 2>&1 | tee "$LOG" || true
-          bash tools/bench_suite_gate.sh harness devenv.sh "$DEVENV_BASELINE" "$LOG"
+          bash tools/bench_suite_gate.sh harness devenv.sh "$DEVENV_BASELINE" "$LOG" "$DEVENV_MAX_SKIPS"
         shell: bash
 
       # boxes_config.sh is deliberately NOT wired: its discovery section
@@ -581,10 +595,18 @@ jobs:
           # Clean. It measured 4 failures while python.sh ran ahead of it;
           # with that suite unwired every check passes. Keep at 0.
           NETS_BASELINE: "0"
+          # Skips allowed: three, each one structural on a headless runner:
+          #   13.3  TUI launch      -- needs an interactive terminal
+          #   13.4  GUI launch      -- needs a display
+          #   14.2  nets delete-all -- disabled in the script for safety; it
+          #         would wipe the bench's saved nets, relay nets included
+          # Measured on a branch run of this workflow. A fourth skip means a
+          # check that should run here did not.
+          NETS_MAX_SKIPS: "3"
         run: |
           LOG="$RUNNER_TEMP/nets.log"
           bash test/integration/infrastructure/nets.sh "$LAGER_BOX" 2>&1 | tee "$LOG" || true
-          bash tools/bench_suite_gate.sh harness nets.sh "$NETS_BASELINE" "$LOG"
+          bash tools/bench_suite_gate.sh harness nets.sh "$NETS_BASELINE" "$LOG" "$NETS_MAX_SKIPS"
         shell: bash
 
       - name: Suite box_config.sh (box-config apply, bounce + rollback)
@@ -658,10 +680,16 @@ jobs:
           # suite now snapshots and restores the config the CLI actually owns
           # (issue #273).
           GENERIC_BASELINE: "0"
+          # Skips allowed: one. Test 4.22 ("delete-all with no boxes") skips
+          # because the runner's config holds its registered bench box, and
+          # the suite will not empty a registry it did not create. Measured on
+          # a branch run of this workflow; a second skip means a check that
+          # should run here did not.
+          GENERIC_MAX_SKIPS: "1"
         run: |
           LOG="$RUNNER_TEMP/generic.log"
           bash test/integration/infrastructure/generic.sh "$LAGER_BOX" 2>&1 | tee "$LOG" || true
-          bash tools/bench_suite_gate.sh harness generic.sh "$GENERIC_BASELINE" "$LOG"
+          bash tools/bench_suite_gate.sh harness generic.sh "$GENERIC_BASELINE" "$LOG" "$GENERIC_MAX_SKIPS"
         shell: bash
 
       - name: Restore box registration (best effort)

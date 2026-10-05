@@ -173,6 +173,36 @@ jobs:
           fi
         shell: bash
 
+      - name: Release a box lock left by a dead CI run
+        # A lock held by a run of THIS repository when a bench job starts
+        # belongs to a run that is no longer running: every bench workflow
+        # shares one non-cancelling concurrency group, so no other run of this
+        # repo can be on the bench now. Such a lock is left behind when a job
+        # dies past the CLI's release hooks (a step timeout ends in SIGKILL) or
+        # a release never lands. It blocks the next run outright -- a re-run of
+        # a failed chain found the failed attempt's lock still held 40 minutes
+        # later and failed its first `lager nets state`.
+        #
+        # Only a lock whose holder is a run of this repository is released. A
+        # lock a person took to work on the bench is left alone, and the job
+        # waits on it as it would on any other holder. Forcing every lock, as
+        # this step once did, would have taken the bench out from under them.
+        #
+        # `lager hello` names the holder without needing the lock itself.
+        # Best effort here: the connectivity check right after this is the
+        # step that fails loudly if the box cannot be reached.
+        run: |
+          out=$(lager hello --box "$LAGER_BOX" 2>&1 || true)
+          holder=$(printf '%s\n' "$out" \
+            | grep -o "is locked by github ${GITHUB_REPOSITORY} run [^;]*" | head -1 || true)
+          if [ -n "$holder" ]; then
+            echo "::warning title=Stale bench lock::Box ${LAGER_BOX} ${holder}; no run of this repository can still hold it, so releasing it."
+            lager boxes unlock --box "$LAGER_BOX" --force
+          else
+            echo "No lock from a run of ${GITHUB_REPOSITORY} on ${LAGER_BOX}."
+          fi
+        shell: bash
+
       - name: Verify box connectivity
         # A pinned token rides on the first request, so the old "first
         # contact after a fresh login" race is gone. The retry stays for the
