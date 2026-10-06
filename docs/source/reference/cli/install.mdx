@@ -102,9 +102,11 @@ twice the budget. It then exits `1`. A re-run is safe.
 The install lock stays valid for the larger of 3600 seconds and twice the
 timeout. The lock cannot be renewed while the container that serves it is down.
 With `--timeout 0` the lock never expires, because no fixed time outlasts an
-unbounded deploy. An install that ends normally releases the lock. After a hard
-kill, such as a power loss, the lock has no expiry time to clear it, and
-`lager boxes unlock` releases it.
+unbounded deploy. An install that ends normally releases the lock. If the box
+does not answer the release, install retries it for up to 90 seconds. If the
+lock is still held after that, install prints the `lager boxes unlock` command
+that clears it. After a hard kill, such as a power loss, the lock has no expiry
+time to clear it, and `lager boxes unlock` releases it.
 
 ## What Gets Installed
 

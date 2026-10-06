@@ -1062,45 +1062,99 @@ def acquire_box_lock(
         raise SystemExit(1)
 
 
-def release_box_lock(ip, holder, *, quiet=True):
+#: How long `lager install` and `lager update` keep retrying their lock release
+#: while the box does not answer. Both commands rebuild and restart the
+#: container serving the :9000 lock API, so their release is the first request
+#: to reach it, and a single attempt raced the service (and any gateway in
+#: front of it) coming back. A lost release leaves the box locked for the
+#: lock's whole TTL, which for an install is an hour. When the service never
+#: comes back -- a failed build -- the retries cannot succeed, and this is how
+#: long a failed command waits before saying so.
+RELEASE_RETRY_SECONDS = 90
+_RELEASE_RETRY_INTERVAL_SECONDS = 5
+
+
+def release_box_lock(ip, holder, *, quiet=True, retry_seconds=0,
+                     _sleep=None, _clock=None):
     """Release the box lock held by ``holder``. Best-effort, never raises.
 
     Returns ``True`` if the server confirmed release, ``False`` otherwise.
+
+    With ``retry_seconds``, a box that does not answer (a transport error or
+    a 5xx, which is what a gateway returns while lager behind it is down) is
+    asked again every few seconds until that much time has passed. A refusal
+    (any other non-200) is an answer, and is never retried.
     """
+    import time
+
     import click
     import requests
 
-    try:
-        resp = requests.post(
-            f'http://{ip}:9000/unlock',
-            json={'user': holder},
-            timeout=5,
-            **_gateway_kwargs(ip),
-        )
-    except requests.exceptions.RequestException as exc:
-        if not quiet:
-            click.secho(
-                f"Warning: the box at {ip} did not answer the lock release: {exc}",
-                fg='yellow', err=True,
+    sleep = _sleep or time.sleep
+    clock = _clock or time.monotonic
+    deadline = clock() + max(0, retry_seconds or 0)
+    announced = False
+
+    while True:
+        try:
+            resp = requests.post(
+                f'http://{ip}:9000/unlock',
+                json={'user': holder},
+                timeout=5,
+                **_gateway_kwargs(ip),
             )
+        except requests.exceptions.RequestException as exc:
+            resp, failure = None, f"the box at {ip} did not answer the lock release: {exc}"
+        else:
+            # Non-raising gateway check (this function promises never to
+            # raise); a denial falls through to the failure warning below.
+            resp, _gate_verdict = check_gateway_status(resp, ip)
+            if resp.status_code == 200:
+                return True
+            failure = None
+
+        unanswered = resp is None or resp.status_code >= 500
+        if unanswered and clock() < deadline:
+            if not quiet and not announced:
+                announced = True
+                click.secho(
+                    f"The box at {ip} did not answer the lock release; retrying for up to "
+                    f"{_format_duration(int(round(deadline - clock())))}...",
+                    fg='yellow', err=True,
+                )
+            sleep(_RELEASE_RETRY_INTERVAL_SECONDS)
+            continue
+
+        if not quiet:
+            if failure is None:
+                try:
+                    data = resp.json()
+                    detail = data.get('error') or data
+                except ValueError:
+                    detail = resp.text
+                failure = f"Failed to release lock on {ip} (HTTP {resp.status_code}): {detail}"
+            click.secho(f"Warning: {failure}", fg='yellow', err=True)
         return False
 
-    # Non-raising gateway check (this function promises never to raise);
-    # a denial falls through to the failure warning below.
-    resp, _gate_verdict = check_gateway_status(resp, ip)
-    if resp.status_code == 200:
-        return True
-    if not quiet:
-        try:
-            data = resp.json()
-            detail = data.get('error') or data
-        except ValueError:
-            detail = resp.text
-        click.secho(
-            f"Warning: Failed to release lock on {ip} (HTTP {resp.status_code}): {detail}",
-            fg='yellow', err=True,
-        )
-    return False
+
+def _warn_lock_may_be_held(box_label, ttl_seconds):
+    """Say how a lock this command could not release ends, and how to end it now.
+
+    A release that fails was silent, so the next command on the box -- often
+    the same CI job, re-run -- met a lock nothing had reported.
+    """
+    import click
+
+    lasts = (
+        "with no expiry" if ttl_seconds is None
+        else f"for up to {_format_duration(ttl_seconds)}"
+    )
+    click.secho(
+        f"{box_label} did not confirm the release of this command's box lock. "
+        f"An unreleased lock stays held {lasts}. "
+        f"To clear it now: lager boxes unlock --box {box_label} --force",
+        fg='yellow', err=True,
+    )
 
 
 def heartbeat_box_lock(ip, holder, *, quiet=True):
@@ -1492,6 +1546,7 @@ def auto_lock_around_command(
     wait_seconds=None,
     holder_type=None,
     heartbeat_interval=None,
+    release_retry_seconds=0,
 ):
     """Context manager: auto-acquire a box lock for the duration of an
     admin command (`install`, `uninstall`, `update`, `install-wheel`).
@@ -1513,6 +1568,11 @@ def auto_lock_around_command(
       * ``ttl_seconds`` = :func:`default_lock_ttl_seconds` (1800).
       * ``wait_seconds`` = :func:`default_lock_wait_seconds` (0 in dev,
                             1800 in CI; overridable via ``LAGER_LOCK_WAIT``).
+
+    ``release_retry_seconds`` (0 by default: one attempt, silent on failure)
+    is for commands that restart the lock server themselves. The release is
+    retried while the box does not answer, and a release that still fails
+    prints how to clear the lock (see ``RELEASE_RETRY_SECONDS``).
 
     Set the ``LAGER_AUTO_LOCK_DISABLE`` environment variable to skip the
     lock entirely (emergency escape hatch for a wedged box).
@@ -1576,9 +1636,15 @@ def auto_lock_around_command(
             except Exception:  # pylint: disable=broad-except
                 pass
             try:
-                release_box_lock(ip, resolved_holder)
+                ok = release_box_lock(
+                    ip, resolved_holder,
+                    quiet=not release_retry_seconds,
+                    retry_seconds=release_retry_seconds,
+                )
             except Exception:  # pylint: disable=broad-except
-                pass
+                ok = False
+            if not ok and release_retry_seconds:
+                _warn_lock_may_be_held(box_label, resolved_ttl)
 
         if should_release:
             # atexit covers paths that bypass __exit__ (signals not raised
@@ -1663,6 +1729,7 @@ def auto_lock_acquire_for_command(
     wait_seconds=None,
     holder_type=None,
     heartbeat_interval=None,
+    release_retry_seconds=0,
 ):
     """Imperative variant of :func:`auto_lock_around_command` for commands
     whose destructive section sits inside a long, multi-branch function
@@ -1744,9 +1811,15 @@ def auto_lock_acquire_for_command(
             heartbeat.stop()
         if should_release:
             try:
-                release_box_lock(ip, resolved_holder)
+                ok = release_box_lock(
+                    ip, resolved_holder,
+                    quiet=not release_retry_seconds,
+                    retry_seconds=release_retry_seconds,
+                )
             except Exception:  # pylint: disable=broad-except
-                pass
+                ok = False
+            if not ok and release_retry_seconds:
+                _warn_lock_may_be_held(box_label, resolved_ttl)
 
     _release.state = state
 

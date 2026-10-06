@@ -1757,3 +1757,176 @@ class TestAcquireRecognisesOurOwnLockAcrossProcesses:
         state, _ = box_storage.acquire_box_lock(
             '10.0.0.1', 'lab-box', 'alice', wait_seconds=0)
         assert state == 'already_ours'
+
+
+# ---------------------------------------------------------------------------
+# Release retry (#645). `lager install` and `lager update` restart the
+# container serving the lock API, and their single release POST raced it
+# coming back. A lost release left the box locked for the whole lock TTL
+# (an hour for an install), and nothing said so.
+# ---------------------------------------------------------------------------
+
+
+class _FakeClock:
+    """A monotonic clock that only moves when the code under test sleeps."""
+
+    def __init__(self):
+        self.now = 0.0
+        self.sleeps = []
+
+    def clock(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+def _scripted_post(monkeypatch, outcomes):
+    """requests.post returns (or raises) each outcome in turn; records calls."""
+    calls = []
+    remaining = list(outcomes)
+
+    def fake_post(*a, **k):
+        calls.append(a)
+        outcome = remaining.pop(0) if len(remaining) > 1 else remaining[0]
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(requests, 'post', fake_post)
+    return calls
+
+
+class TestReleaseBoxLockRetry:
+    def test_no_retry_by_default(self, monkeypatch):
+        calls = _scripted_post(monkeypatch, [requests.exceptions.ConnectionError('down')])
+        assert box_storage.release_box_lock('10.0.0.1', 'alice') is False
+        assert len(calls) == 1
+
+    def test_retries_until_the_box_answers(self, monkeypatch):
+        clock = _FakeClock()
+        calls = _scripted_post(monkeypatch, [
+            requests.exceptions.ConnectionError('down'),
+            requests.exceptions.ConnectionError('still down'),
+            _FakeResp(200),
+        ])
+        assert box_storage.release_box_lock(
+            '10.0.0.1', 'alice', retry_seconds=90,
+            _sleep=clock.sleep, _clock=clock.clock,
+        ) is True
+        assert len(calls) == 3
+
+    def test_a_gateway_5xx_is_retried(self, monkeypatch):
+        # A gateway answers 502 while lager behind it is still coming up.
+        clock = _FakeClock()
+        calls = _scripted_post(monkeypatch, [
+            _FakeResp(502, {'error': 'upstream unavailable'}), _FakeResp(200),
+        ])
+        assert box_storage.release_box_lock(
+            '10.0.0.1', 'alice', retry_seconds=90,
+            _sleep=clock.sleep, _clock=clock.clock,
+        ) is True
+        assert len(calls) == 2
+
+    def test_a_refusal_is_an_answer_and_is_not_retried(self, monkeypatch):
+        clock = _FakeClock()
+        calls = _scripted_post(monkeypatch, [_FakeResp(403, {'error': 'not yours'})])
+        assert box_storage.release_box_lock(
+            '10.0.0.1', 'alice', retry_seconds=90,
+            _sleep=clock.sleep, _clock=clock.clock,
+        ) is False
+        assert len(calls) == 1
+        assert clock.sleeps == []
+
+    def test_gives_up_at_the_deadline_and_says_so(self, monkeypatch, capsys):
+        clock = _FakeClock()
+        _scripted_post(monkeypatch, [requests.exceptions.ConnectionError('down')])
+        assert box_storage.release_box_lock(
+            '10.0.0.1', 'alice', quiet=False, retry_seconds=90,
+            _sleep=clock.sleep, _clock=clock.clock,
+        ) is False
+        assert 85 <= clock.now <= 95, clock.now
+        err = capsys.readouterr().err
+        assert 'retrying for up to' in err
+        assert 'did not answer the lock release' in err
+
+
+class TestAutoLockReleaseRetry:
+    """The auto-lock variants pass the retry window through, and a release
+    that still fails names the lock and the way to clear it."""
+
+    def _patch(self, monkeypatch, release_result):
+        seen = []
+        monkeypatch.setattr(box_storage, 'acquire_box_lock', lambda *a, **k: ('acquired', {}))
+        monkeypatch.setattr(
+            box_storage, 'release_box_lock',
+            lambda *a, **k: seen.append(k) or release_result,
+        )
+        monkeypatch.setattr(box_storage, 'get_lock_holder', lambda: 'test-holder')
+        monkeypatch.setattr(
+            box_storage, 'HeartbeatThread',
+            lambda *a, **k: mock.Mock(start=mock.Mock(), stop=mock.Mock()),
+        )
+        return seen
+
+    def test_with_variant_passes_the_window(self, monkeypatch):
+        seen = self._patch(monkeypatch, True)
+        with box_storage.auto_lock_around_command(
+            '10.0.0.1', 'lab-box', 'install', release_retry_seconds=90,
+        ):
+            pass
+        assert seen == [{'quiet': False, 'retry_seconds': 90}]
+
+    def test_with_variant_failed_release_says_how_to_clear(self, monkeypatch, capsys):
+        self._patch(monkeypatch, False)
+        with box_storage.auto_lock_around_command(
+            '10.0.0.1', 'lab-box', 'install', ttl_seconds=3600, release_retry_seconds=90,
+        ):
+            pass
+        err = capsys.readouterr().err
+        assert 'did not confirm the release' in err
+        assert 'An unreleased lock stays held for up to 1h.' in err
+        assert 'lager boxes unlock --box lab-box --force' in err
+
+    def test_with_variant_default_stays_silent(self, monkeypatch, capsys):
+        seen = self._patch(monkeypatch, False)
+        with box_storage.auto_lock_around_command('10.0.0.1', 'lab-box', 'install-wheel'):
+            pass
+        assert seen == [{'quiet': True, 'retry_seconds': 0}]
+        assert 'did not confirm the release' not in capsys.readouterr().err
+
+    def test_imperative_variant_failed_release_says_how_to_clear(self, monkeypatch, capsys):
+        seen = self._patch(monkeypatch, False)
+        release = box_storage.auto_lock_acquire_for_command(
+            '10.0.0.1', 'lab-box', 'update', release_retry_seconds=90,
+        )
+        release()
+        assert seen == [{'quiet': False, 'retry_seconds': 90}]
+        err = capsys.readouterr().err
+        assert 'lager boxes unlock --box lab-box --force' in err
+
+    def test_no_expiry_lock_says_so(self, monkeypatch, capsys):
+        self._patch(monkeypatch, False)
+        with box_storage.auto_lock_around_command(
+            '10.0.0.1', 'lab-box', 'install',
+            ttl_seconds=box_storage.NO_LOCK_EXPIRY, release_retry_seconds=90,
+        ):
+            pass
+        assert 'stays held with no expiry' in capsys.readouterr().err
+
+
+@pytest.mark.parametrize('relpath, call', [
+    ('cli/commands/utility/install.py', 'auto_lock_around_command('),
+    ('cli/commands/utility/update.py', 'auto_lock_acquire_for_command('),
+])
+def test_commands_that_restart_the_lock_server_retry_their_release(relpath, call):
+    """install and update rebuild the container serving the lock API, so
+    their release must be the retrying one."""
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__)))))
+    with open(os.path.join(root, relpath), encoding='utf-8') as fh:
+        text = fh.read()
+    start = text.index(call, text.index('import (') + 1)
+    window = text[start:text.index(')', text.index('release_retry_seconds', start))]
+    assert 'release_retry_seconds=RELEASE_RETRY_SECONDS' in window, relpath
