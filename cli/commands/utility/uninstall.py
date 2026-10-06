@@ -218,18 +218,22 @@ LOCK_STATE_PRIV_STEP = (
 #
 # The poller runs under the argv[0] below (start_box.sh, `_SSH_SYNC_MARKER`).
 # Pollers started before that marker existed are plain subshells of
-# start_box.sh, so their command line names the script. The bracket in
-# `[s]tart_box` keeps the pattern from matching this command's own remote
-# shell, whose command line holds the pattern text itself. Nothing else of
-# lager's is running by now: the box lock is held, and the lager container
-# is stopped before this runs.
+# start_box.sh: bash running the script file. The pattern matches only that
+# shape, never a process that merely names the script -- such as an ssh client
+# whose remote command runs it, which is visible here when this command runs on
+# the box itself (start_box.sh, `_SSH_SYNC_LEGACY_PATTERN`). This command's own
+# remote shell is `bash -c ...`, which the shape excludes, and the bracket in
+# `[s]tart_box` keeps the pattern text from matching itself anywhere else.
+# Nothing else of lager's is running by now: the box lock is held, and the
+# lager container is stopped before this runs.
 #
 # pkill exits 1 when it matched nothing, which is the normal case on a box
 # with no leftover poller, so the step reports success either way.
 SSH_SYNC_MARKER = "lager-ssh-sync"
+SSH_SYNC_LEGACY_PATTERN = "^([^ ]*/)?bash [^ -][^ ]*[s]tart_box[.]sh( |$)"
 SSH_SYNC_STOP_CMD = (
     f"pkill -u \"$(id -u)\" -f '^{SSH_SYNC_MARKER}( |$)'; "
-    "pkill -u \"$(id -u)\" -f '[s]tart_box[.]sh'; "
+    f"pkill -u \"$(id -u)\" -f '{SSH_SYNC_LEGACY_PATTERN}'; "
     "exit 0"
 )
 
