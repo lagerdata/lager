@@ -616,15 +616,15 @@ jobs:
             --yes
         shell: bash
 
-      - name: Release the install auto-lock (workaround)
-        # install's lock release can be lost when the deploy restarts the
-        # box's docker daemon (the single-shot release POST races the
-        # gateway coming back up), leaving the box locked against its own
-        # job for the full lock TTL. Force-release our own leaked lock
-        # before verifying. Product follow-up tracked: the release should
-        # retry, and a same-job unlock should match the CI holder identity
-        # without --force.
-        run: lager boxes unlock --box "$LAGER_BOX" --force 2>/dev/null || true
+      - name: Release a lock install left behind
+        # install's single release POST used to race the restarted lock
+        # service, leaving the box locked against its own job for the full
+        # install TTL (an hour). install now retries that release (#645), so
+        # this should find nothing. If it prints "Released the box lock",
+        # install leaked its lock again. tools/bench_release_lock.sh releases
+        # only a lock held by a run of this repository, and reports a lock it
+        # could not clear instead of hiding it (#639).
+        run: bash tools/bench_release_lock.sh "$LAGER_BOX"
         shell: bash
 
       - name: Verify box healthy after reinstall
@@ -752,7 +752,9 @@ jobs:
             --ip "${{ secrets.LAGER_BOX_IP }}" \
             --user lagerdata \
             --yes || true
-          lager boxes unlock --box "$LAGER_BOX" --force 2>/dev/null || true
+          # Reports a lock it could not clear rather than hiding it, and
+          # always exits 0, so recovery goes on to its verdict below.
+          bash tools/bench_release_lock.sh "$LAGER_BOX"
 
           # The verdict that matters. A stranded bench must be something this
           # run says, not something the next one trips over.
@@ -766,15 +768,18 @@ jobs:
       - name: Best-effort lock cleanup
         # install/`lager python` auto-lock the box; if a step died in a way
         # that bypassed the CLI's release hook, free the lock rather than
-        # waiting out the server TTL. --force because the lock identity
-        # embeds the acquiring PID — a plain unlock from this (different)
-        # process is refused as a different holder, observed as a 403 in
-        # the box log. This is the end of the job on a CI-owned bench;
-        # there is no other holder to stomp.
+        # waiting out the server TTL. The helper forces the release, because
+        # the lock identity embeds the acquiring PID and a plain unlock from
+        # this (different) process is refused as a different holder. It
+        # releases only a lock held by a run of this repository, retries a box
+        # that does not answer, and turns a lock it could not clear into a
+        # warning: a silent failure here is how a lock outlived the job and
+        # blocked its own re-run (#639). The timeout covers six attempts
+        # against a box that does not answer.
         if: always()
-        timeout-minutes: 1
+        timeout-minutes: 3
         continue-on-error: true
-        run: lager boxes unlock --box "$LAGER_BOX" --force 2>/dev/null || true
+        run: bash tools/bench_release_lock.sh "$LAGER_BOX"
         shell: bash
 
       - name: Power off bench instruments (AC relays, post-recovery)
