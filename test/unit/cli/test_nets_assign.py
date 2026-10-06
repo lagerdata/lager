@@ -202,6 +202,29 @@ class TestModes:
         assert "Unassigned USB-serial cables:" in result.output
         assert SERIAL in result.output
 
+    def test_list_shows_product_and_durable_path(self, capsys):
+        nets_mod._print_assign_listing({"cables": [
+            {"vid": "c0ca", "pid": "c01a", "serial": "W123",
+             "port_path": "1-1.2", "tty": "/dev/ttyACM0",
+             "product": "Widget_CLI",
+             "by_id": "/dev/serial/by-id/usb-Acme_Labs_Widget_CLI_W123-if00",
+             "by_path": "/dev/serial/by-path/pci-0000:00:01.0-usb-0:1.2:1.0"},
+            {"vid": "0403", "pid": "6011", "serial": None,
+             "port_path": "1-1.3", "tty": "/dev/ttyUSB0",
+             "by_id": "/dev/serial/by-id/usb-Acme_Labs_Quad_UART-if00-port0",
+             "by_path": "/dev/serial/by-path/pci-0000:00:01.0-usb-0:1.3:1.0-port0"},
+            # An older box without the new keys still renders.
+            {"vid": VID, "pid": PID, "serial": SERIAL,
+             "port_path": "1-1.4", "tty": "/dev/ttyUSB1"},
+        ]})
+        out = capsys.readouterr().out
+        assert "/dev/ttyACM0  Widget_CLI" in out
+        assert "usb-Acme_Labs_Widget_CLI_W123-if00" in out
+        # Serial-less: by-path, not the possibly-shared by-id name.
+        assert "usb-0:1.3:1.0-port0" in out
+        assert "usb-Acme_Labs_Quad_UART-if00-port0" not in out
+        assert f"serial {SERIAL}  port 1-1.4  [{VID}:{PID}]  /dev/ttyUSB1\n" in out
+
     def test_remove_round_trip(self, fake_box):
         _invoke(["assign", "Rigol_DP711", "--serial", SERIAL, "--box", "b"])
         result = _invoke(["assign", "--remove", "--serial", SERIAL, "--box", "b"])

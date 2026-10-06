@@ -9,6 +9,10 @@ previously the cli/impl/custom_devices.py script executed over :5000.
 Routes (JSON contracts identical to the old impl script's stdout):
     GET  /custom-devices/list    -> {"catalog": [...], "assignments": [...],
                                      "cables": [...]}
+        each cable: {"vid", "pid", "serial", "port_path", "tty",
+                     "manufacturer", "product", "interface", "by_id",
+                     "by_path"} — the last five are additive (null when
+                     unknown); see lager.devices.serial_id.list_cables
     POST /custom-devices/assign  -> stored assignment record (+ address, tty,
                                     roles, channels, deleted_nets)
     POST /custom-devices/remove  -> {"removed": bool, "deleted_nets": [...], ...}
