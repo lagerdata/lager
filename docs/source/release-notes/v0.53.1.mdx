@@ -1,0 +1,43 @@
+---
+title: "Version 0.53.1"
+description: "October 6, 2026"
+---
+
+## <u>Bug Fixes</u>
+
+- **`lager instruments` did not list a J-Link with an unlisted USB product ID.** The Lager Box
+  knew only five SEGGER product IDs, so it skipped other probes. An example is the on-board
+  J-Link OB of a development kit. `lager nets tui` and `lager nets add` did not offer the probe
+  either. The box now lists every USB device with vendor ID `0x1366` as a `debug` instrument. A
+  probe of a known model shows its model name, for example `J-Link_OB_2VCOM` for product ID
+  `1051`. Any other probe shows as `J-Link`, and its address keeps the real product ID. The fix
+  is in the Lager Box code, so run `lager update` on each box to get it.
+
+## <u>Known Limitations</u>
+
+- **An on-board J-Link OB does not offer its serial ports as `uart` channels.** Its
+  `/dev/ttyACM*` ports do not appear in `lager instruments`.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.53.1
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli==0.53.1
+```
+
+Then update your boxes:
+
+```bash
+lager update --box <box-name>
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.53.1/)
