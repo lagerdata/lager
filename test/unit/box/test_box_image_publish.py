@@ -147,8 +147,13 @@ class TestDockerfileLayout:
         assert ("COPY docker/start-services.sh "
                 "/usr/local/bin/start-services.sh") in above
         assert "chmod +x /usr/local/bin/start-services.sh" in above
-        assert ("COPY docker/web_oscilloscope.html "
-                "/app/lager/web_oscilloscope.html") in above
+
+    def test_the_scope_ui_is_copied_with_the_box_source(self):
+        # box_http_server serves GET /scope from lager/static; without this
+        # COPY the page 404s on a box built from the published image.
+        texts = [body for _, body in _instructions(DOCKERFILE.read_text())]
+        below = texts[texts.index(FIRST_SOURCE_COPY):]
+        assert "COPY static /app/lager/lager/static" in below
 
     def test_base_image_is_pinned_by_digest(self):
         keyword, body = _instructions(DOCKERFILE.read_text())[0]

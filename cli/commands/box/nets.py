@@ -526,6 +526,9 @@ INSTRUMENT_NET_MAP: dict[str, list[str]] = {
     # scope
     "Rigol_MSO5204": ["scope", "scope-channel", "logic"],
     "Picoscope_2000": ["scope", "scope-channel"],
+    # Every PicoScope other than the 2204A/2205A, which the scanner matches by
+    # Pico's vendor id rather than per model.
+    "Picoscope": ["scope", "scope-channel"],
 
     # adc / gpio / dac / spi
     "LabJack_T7": ["gpio", "adc", "dac", "spi", "i2c"],

@@ -37,7 +37,7 @@ test/
 │   └── integration/            #  1 file: real hardware required
 │
 ├── manual/                     # Operator-run scripts and reports, not automated
-│   └── scope_daemon/           # WebTransport browser client, and websocat commands
+│   └── scope_daemon/           # How to drive the scope daemon by hand with websocat
 │
 ├── framework/                  # Shared test infrastructure
 │   ├── colors.sh               # Color definitions (GREEN, RED, YELLOW, etc.)

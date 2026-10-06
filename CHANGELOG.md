@@ -14,128 +14,46 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 ### Added
 
-- An oscilloscope is now two kinds of net. A `scope` net is the instrument and
-  a `scope-channel` net is one of its inputs, so a two-channel PicoScope offers
-  three nets rather than two. Six settings belong to a channel — enable,
-  volts/div, offset, coupling, probe, measurements — and the other fourteen,
-  including the timebase, the whole trigger and run/stop, belong to the scope.
-  Those previously had nowhere to be addressed and were sent to whichever
-  channel net the caller happened to hold; the web UI picked one arbitrarily.
-
-  Existing boxes convert themselves the first time they read their nets. Every
-  scope net saved before this is a channel — the instrument had no
-  representation to be confused with — so the conversion is total rather than a
-  guess: each keeps its name and pin as a `scope-channel` net, and a `scope`
-  net named after the model appears beside them.
-
-  A command that belongs to the instrument is still accepted on a channel net,
-  because a channel names exactly one scope, so existing scripts are unchanged.
-  The reverse is refused, and names the channel nets that would have worked.
-
-  One case cannot be read either way: a scope net saved with no pin worked as
-  channel A by accident, the driver defaulting to 1. It is now taken for the
-  instrument, and a per-channel command sent to one says so rather than
-  landing on the first channel unannounced.
+- **An oscilloscope is now a `scope` net, and each of its inputs a `scope-channel` net.**
+  Channel settings (enable, volts/div, offset, coupling, probe, measurements) go to a
+  channel net, and everything else (timebase, trigger, run and stop, cursors) to the scope
+  net. A scope setting sent to a channel net still works, and a channel setting sent to the
+  scope net is refused with the channel nets to use instead; saved scope nets convert
+  themselves to `scope-channel` nets, next to a new `scope` net, the first time a box reads them.
 
 ### Fixed
 
-- A PicoScope triggered ten percent below the level asked for, and on a signal
-  with any ringing on its edges it caught a different crossing from one capture
-  to the next — a trace that jumped sideways while the signal held still. The
-  two thresholds the trigger compares against were set to 0.90 and 1.10 of the
-  requested level, which puts the upper one below the lower, and the hysteresis
-  that decides how far the signal must come back before another crossing counts
-  was a fifth of the level. That describes the threshold rather than the input,
-  and at a level of 0 V — the default — it left all three at zero, so anything
-  passing through zero triggered. Both thresholds are now the level as asked
-  for, and the hysteresis a fixed couple of counts of the ADC.
-
-- A PicoScope could report a capture complete when the block had not yet had
-  time to fill. `ps2000_ready` does not say which block it is answering for,
-  and the flag from the one just read is not always clear by the time the next
-  is armed, so a poll landing in that window read a block the device was still
-  filling. Readiness is now refused until a block could physically have
-  filled — its depth of samples at the current interval — which is a lower
-  bound the driver can compute, and enough to tell this block's flag from the
-  last one's.
-
-- A PicoScope's trace jumped sideways every few frames however steady the
-  signal and however the trigger was set. After reading a capture the
-  acquisition loop re-armed and then polled for readiness with no delay at
-  all, and a freshly armed block cannot be complete — so the only thing that
-  poll could find was the readiness left over from the block just read. Acting
-  on it read the new block while the device was still filling it, and the
-  samples that came back were whatever the buffer held mid-collection, with
-  the trigger nowhere near where the arm had put it. Measured on a 2204A:
-  eight captures in twelve triggered at exactly the sample the arm asked for
-  and the other four were scattered up to 375 samples either side. The loop
-  now waits the same interval before its first poll that it already waited
-  when the scope reported not ready, for the same reason.
-
-- A capture published by the daemon outlived nearly every change to the scope
-  that produced it. It is kept so that a measurement describes the trace last
-  streamed out rather than re-reading a device mid-block, but it was discarded
-  only when a client armed the scope explicitly — and on this family a setter
-  re-arms from inside the driver, without taking that path. So a measurement
-  taken after a new timebase, range, coupling or trigger level described the
-  window before it. Every request that re-arms now discards it; stopping does
-  not, a stopped scope still showing its last capture.
-
-- Setting a PicoScope's time/div did not re-arm, alone among the driver's
-  setters, so a new timebase did not take effect until something else happened
-  to re-arm — and the capture it eventually produced was stamped with the
-  interval in force when it was read rather than the one it was captured at,
-  so the samples and the time axis disagreed.
-
-- Pressing Run put a PicoScope into auto, discarding the trigger mode. So
-  selecting Normal and running left the scope free-running, and the trace slid
-  about as though the trigger were being ignored — because it was. Run now
-  starts the sweep without choosing how it is triggered. A single-shot is the
-  one mode it still moves, to auto, because a single-shot stops after one
-  capture and running in it would take one frame and appear inert.
-
-- Choosing single-shot as the trigger mode now arms it, as it does on a bench
-  scope. Setting the mode alone left the scope sitting in single-shot unarmed,
-  so nothing happened until a capture was started — and starting one promotes
-  single-shot to auto, it being the mode that cannot run continuously. So the
-  trigger menu's Single was either inert or self-cancelling, while the Single
-  button beside it, which arms, worked. Both now do the same thing.
-
-- Nothing could read a scope's trigger back. `trigger_edge` set the mode,
-  source, slope and level and there was no getter for any of them, so the web
-  UI's trigger panel showed the values in its own HTML however the instrument
-  was set — and then sent all four on every change, so nudging the level
-  re-asserted a mode and a level taken from the page rather than the scope.
-  Between that and Run, the mode was written from three places and read from
-  none. There are now `get_capture_mode`, `get_trigger_source`,
-  `get_trigger_slope` and `get_trigger_level`; the panel reads the instrument
-  on connect and after Run and Single, both of which move the mode; and each
-  control sends only its own setting.
-
-- The web UI offered time/div settings a PicoScope cannot reach. Its interval
-  doubles per timebase step, so a 2204A's steps are 8 µs, 16 µs, 32 µs and so
-  on, while the list was a 1-2-5 ladder: 50 µs/div landed on 64, 5 ms/div on
-  4.096, 10 µs/div on 8. The dropdown corrected itself to the achieved value
-  after every change, inserting an off-ladder entry each time and rebuilding
-  the list underneath whoever was using it — which is why the control seemed
-  to ignore a change, snap back to the previous setting, or apply the one
-  before. It now offers the steps the unit actually has, so a request is the
-  setting and there is nothing to correct. A readback overtaken by a later
-  change is also ignored rather than allowed to land last.
-  MSO5000 takes a single real, read in the units of whichever source
-  `:TRIGger:EDGE:SOURce` names. A malformed SCPI write does not raise; the
-  instrument sets a bit in its status register and carries on, so every
-  trigger level set on a Rigol was discarded in silence and the query asked in
-  the same invalid form. The phantom second argument, which defaulted to the
-  net's own channel, was also why the trigger level looked like a per-channel
-  setting. Untested against hardware — there is no Rigol on the bench — so the
-  tests pin the SCPI against the programming guide.
-
-- A Rigol fell past every branch of the box's device-identity check to the
-  LabJack default. Its VISA address kept the lock key unique so it worked in
-  practice, but a Rigol saved without an address collapsed onto `labjack:ANY`
-  and took the lock a LabJack was already using, queueing scope commands
-  behind GPIO traffic on unrelated hardware.
+- **A PicoScope triggers at the level asked for.** The trigger thresholds sat ten percent
+  below the requested level, with a hysteresis scaled to the level, so at the default 0 V any
+  noise triggered and a signal with ringing made the trace jump sideways between captures.
+- **A PicoScope no longer returns a block it is still filling.** The acquisition loop polled
+  for readiness straight after re-arming and could act on the previous block's ready flag,
+  which made the trace jump sideways every few frames.
+- **A scope measurement no longer describes the capture from before a settings change.** The
+  daemon now discards its last capture whenever a request re-arms the scope, not only when a
+  client arms it explicitly.
+- **Setting a PicoScope's time/div takes effect at once.** It was the one setter that did not
+  re-arm, so a new timebase waited for some other change, and the capture's time axis
+  disagreed with its samples.
+- **Run keeps the trigger mode.** Pressing Run in the web UI, or calling `run()`, put a
+  PicoScope into auto, so Normal behaved like Auto. Single-shot is the one mode Run still
+  moves, to auto, because single-shot stops after one capture.
+- **Choosing single-shot as the trigger mode arms the scope**, as the Single button does.
+  `lager scope <net> trigger edge --mode single` and the web UI's trigger menu now capture
+  once and stop.
+- **A scope's trigger settings can be read back.** The box answers `get_capture_mode`,
+  `get_trigger_source`, `get_trigger_slope` and `get_trigger_level`, the web UI's trigger
+  panel shows the instrument's settings instead of its own defaults, and each trigger control
+  sends only its own setting.
+- **The web UI offers only the time/div steps a PicoScope has.** A 2204A's steps double from
+  8 µs, so the old 1-2-5 list was rounded on every pick, and the dropdown rebuilt itself in the
+  middle of a change and appeared to ignore or undo it.
+- **A Rigol MSO5000 keeps the trigger level it is sent.** The level was written as
+  `:TRIGger:EDGE:LEVel <level>,<source>`, a form the instrument rejects without an error, so
+  every level set on a Rigol was discarded. It now sends the one-argument form, in the units of
+  the trigger source.
+- **A Rigol saved without a VISA address no longer takes a LabJack's device lock.** Its lock
+  key fell through to `labjack:ANY`, so its scope commands queued behind unrelated GPIO traffic.
 - **`lager uninstall` and `lager install` now stop every SSH key-sync poller a
   previous run left on the box.** A poller the PID file no longer named kept
   rebuilding `~/.ssh/authorized_keys` until reboot, and could revoke registered keys
