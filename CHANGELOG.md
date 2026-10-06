@@ -19,6 +19,12 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   rebuilding `~/.ssh/authorized_keys` until reboot, and could revoke registered keys
   after a reinstall. `start_box.sh` now names the poller `lager-ssh-sync` and stops
   every earlier one, and `lager uninstall` stops it in Step 1.
+- **`lager install` and `lager update` no longer leave the box locked after they
+  restart its services.** They released their box lock with a single request, which
+  could arrive before the restarted service was answering. The lock then stayed
+  held for its full TTL, an hour for an install. The release now retries for up to
+  90 seconds. If it still fails, the command prints the `lager boxes unlock`
+  command that clears the lock.
 
 ## [0.53.1] - 2026-10-06
 
