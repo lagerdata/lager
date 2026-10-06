@@ -14,6 +14,7 @@ heartbeating and releasing into the void.
 import fnmatch
 import importlib
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -325,6 +326,61 @@ class LockDissolveOnContainerRemoval(unittest.TestCase):
         self.assertIn("/etc/lager/lock.json.flock", remote)
         # Only the lock state -- the saved nets are the whole point of the flag.
         self.assertNotIn("rm -rf /etc/lager", remote)
+
+
+class SshSyncPollerStop(unittest.TestCase):
+    """start_box.sh's key-sync poller is disowned, so it outlives the
+    container and ~/box. Nothing stopped it on uninstall: it kept running from
+    a deleted script, and resumed rebuilding lager's authorized_keys block the
+    moment a reinstall recreated the key directory (#646).
+    """
+
+    START_BOX = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "box", "start_box.sh",
+    )
+
+    def test_marker_matches_start_box(self):
+        # The two sides must agree on the name, or the stop step matches nothing.
+        with open(self.START_BOX, encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertIn(
+            '_SSH_SYNC_MARKER="${LAGER_SSH_SYNC_MARKER:-%s}"' % u.SSH_SYNC_MARKER, text,
+        )
+
+    def test_stops_marked_and_pre_marker_pollers(self):
+        self.assertIn(f"-f '^{u.SSH_SYNC_MARKER}( |$)'", u.SSH_SYNC_STOP_CMD)
+        self.assertIn("-f '[s]tart_box[.]sh'", u.SSH_SYNC_STOP_CMD)
+        # Only this login user's processes.
+        self.assertEqual(u.SSH_SYNC_STOP_CMD.count('-u "$(id -u)"'), 2)
+
+    def test_pattern_does_not_match_its_own_remote_shell(self):
+        # The remote shell's command line holds this command's text. A pattern
+        # that matched it would kill the shell running the step.
+        for pattern in ("[s]tart_box[.]sh", f"^{u.SSH_SYNC_MARKER}( |$)"):
+            self.assertIsNone(re.search(pattern, f"bash -c {u.SSH_SYNC_STOP_CMD}"), pattern)
+        self.assertIsNotNone(re.search("[s]tart_box[.]sh", "/bin/bash ./start_box.sh"))
+        self.assertIsNotNone(
+            re.search(f"^{u.SSH_SYNC_MARKER}( |$)", f"{u.SSH_SYNC_MARKER} -c while true"),
+        )
+
+    def test_nothing_to_stop_is_not_a_failure(self):
+        # pkill exits 1 when it matched nothing, the normal case.
+        self.assertTrue(u.SSH_SYNC_STOP_CMD.rstrip().endswith("exit 0"))
+
+    def test_runs_in_step_1_before_box_code_is_removed(self):
+        result, events, _released, _heartbeat = (
+            LockDissolveOnContainerRemoval()._drive_uninstall()
+        )
+        self.assertEqual(result.exit_code, 0, result.output)
+        remotes = [payload for kind, payload in events if kind == "ssh"]
+        self.assertIn(u.SSH_SYNC_STOP_CMD, remotes)
+        stop = remotes.index(u.SSH_SYNC_STOP_CMD)
+        box_dir = next(
+            i for i, r in enumerate(remotes)
+            if LockDissolveOnContainerRemoval.BOX_DIR_REMOVAL in r
+        )
+        self.assertLess(stop, box_dir)
+        self.assertIn("Stopping the SSH key-sync poller", result.output)
 
 
 class KeepConfigLockState(unittest.TestCase):
