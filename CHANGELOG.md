@@ -12,6 +12,14 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Fixed
+
+- **`lager uninstall` and `lager install` now stop every SSH key-sync poller a
+  previous run left on the box.** A poller the PID file no longer named kept
+  rebuilding `~/.ssh/authorized_keys` until reboot, and could revoke registered keys
+  after a reinstall. `start_box.sh` now names the poller `lager-ssh-sync` and stops
+  every earlier one, and `lager uninstall` stops it in Step 1.
+
 ## [0.53.1] - 2026-10-06
 
 ### Fixed

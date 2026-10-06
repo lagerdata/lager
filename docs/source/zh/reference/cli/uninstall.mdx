@@ -37,6 +37,7 @@ lager uninstall [OPTIONS]
 |-----------|-------------|
 | Docker 容器 | 停止并移除 `lager` 和 `pigpio` 容器。其他容器（例如控制平面的网关）保持运行 |
 | Docker 网络 | 移除 `lagernet`（仍有其他容器使用时跳过） |
+| SSH 密钥同步轮询 | 停止 `start_box.sh` 在后台运行、用于从 `/etc/lager/authorized_keys.d` 发布密钥的循环，包括之前安装遗留的循环 |
 | Docker 镜像 | 移除 `lager` 镜像、悬空层和构建缓存（除非使用 `--keep-docker-images`） |
 | `~/box` 目录 | Box 代码和服务 |
 | 锁状态 | `/etc/lager/lock.json`，它描述的锁服务器正被移除 |
@@ -111,7 +112,7 @@ lager uninstall --box my-lager-box --yes
 3. **显示摘要** - 根据所用标志列出将要移除的内容
 4. **确认** - 需要明确确认（除非使用 `--yes`）
 5. **逐步移除：**
-   - 停止并移除 Docker 容器
+   - 停止并移除 Docker 容器，并停止 SSH 密钥同步轮询
    - 清理 Docker 镜像和构建缓存
    - 移除 `~/box` 目录
    - 清除锁状态，或者备份并清除 `/etc/lager`（使用 `--purge-config` 时）
