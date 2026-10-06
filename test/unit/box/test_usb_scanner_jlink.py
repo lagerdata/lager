@@ -94,6 +94,13 @@ class TestJLinkDiscovery(unittest.TestCase):
         [entry] = self._scan_one('1366', '1051')
         self._assert_jlink_debug(entry, 'J-Link_OB_2VCOM', '1051')
 
+    def test_jlink_ob_1025_falls_back_to_jlink(self):
+        # A J-Link OB variant (two VCOMs + MSD) that has no named entry: it
+        # is found through the vendor fallback, not the PID table.
+        self.assertNotIn(('1366', '1025'), self.scanner._VIDPID_TO_NAME)
+        [entry] = self._scan_one('1366', '1025')
+        self._assert_jlink_debug(entry, 'J-Link', '1025')
+
     def test_unlisted_segger_pid_falls_back_to_jlink(self):
         [entry] = self._scan_one('1366', 'abcd')
         self._assert_jlink_debug(entry, 'J-Link', 'abcd')
