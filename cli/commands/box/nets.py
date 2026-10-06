@@ -540,6 +540,8 @@ INSTRUMENT_NET_MAP: dict[str, list[str]] = {
     "Flasher_ARM": ["debug"],
     "J-Link_Flasher_Pro": ["debug"],
     "J-Link_Base_Compact": ["debug"],
+    "J-Link_OB": ["debug"],
+    "J-Link_OB_2VCOM": ["debug"],
     # debug — OpenOCD-backed probes
     "STLink_v2": ["debug"],
     "STLink_v2_1": ["debug"],

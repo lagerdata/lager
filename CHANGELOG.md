@@ -14,6 +14,11 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 ### Fixed
 
+- **A J-Link under an unlisted USB product ID now appears in `lager instruments`,
+  `lager nets tui` and `lager nets add`.** The box scanner knew five SEGGER product
+  IDs, so a probe such as an on-board J-Link OB was skipped. It now lists any vendor
+  ID `0x1366` device as a debug instrument, named `J-Link` when its model is not
+  listed; `J-Link_OB` (`1015`) and `J-Link_OB_2VCOM` (`1051`) are new named models.
 - **A bench run no longer reports green for checks that did not run.** A skipped
   UART round-trip now fails the nightly, and an unreachable Acroname hub, USB-202 or
   LabJack T7 fails its suite. The USB-hub, Keithley battery, Rigol mode and RTT

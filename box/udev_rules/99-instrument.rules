@@ -89,7 +89,8 @@ SUBSYSTEM=="usb", ATTRS{idVendor}=="09db", ATTRS{idProduct}=="012b", MODE="0660"
 # all other variants) — match by vendor ID only. SEGGER ships J-Links under a
 # wide range of PIDs (0x0101, 0x0105, 0x1010, 0x1015, 0x1020, 0x1024, 0x1051, …);
 # the per-PID allow-list kept silently breaking new probes. Mirrors the
-# Acroname-hub VID-only rule below. VID=0x1366
+# Acroname-hub VID-only rule below. The box USB scanner also treats any VID
+# 0x1366 device as a J-Link (_VID_FALLBACK_NAME in usb_scanner.py). VID=0x1366
 SUBSYSTEM=="usb", ATTRS{idVendor}=="1366", MODE="0660", GROUP="lager"
 
 # ST-Link v2 / v2-1 / v3 (OpenOCD): VID=0x0483, PIDs 0x3748/0x374B/0x374D-F
