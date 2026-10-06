@@ -128,6 +128,11 @@ SUPPORTED_USB: Dict[str, Dict] = {
     "J-Link_Base_Compact": {"vid": "1366", "pid": "1020", "net_type": ["debug"]},
     "Flasher_ARM":       {"vid": "1366", "pid": "0503", "net_type": ["debug"]},
     "J-Link_Flasher_Pro": {"vid": "1366", "pid": "0105", "net_type": ["debug"]},
+    # On-board J-Link OB (dev-kit probes): 0x1015 is one VCOM + MSD, 0x1051 is
+    # two VCOMs + MSD. Any other SEGGER PID falls back to "J-Link" (see
+    # _VID_FALLBACK_NAME below).
+    "J-Link_OB":         {"vid": "1366", "pid": "1015", "net_type": ["debug"]},
+    "J-Link_OB_2VCOM":   {"vid": "1366", "pid": "1051", "net_type": ["debug"]},
     # debug — OpenOCD-backed probes (ST-Link, CMSIS-DAP, FTDI)
     # ST-Link v2 / v2-1 / v3 share a single OpenOCD interface/stlink.cfg.
     "STLink_v2":         {"vid": "0483", "pid": "3748", "net_type": ["debug"]},
@@ -329,6 +334,8 @@ CHANNEL_MAPS: Dict[str, Dict[str, List[str]]] = {
     "J-Link_Base_Compact":    {"debug": ["DEVICE_TYPE"]},
     "Flasher_ARM":            {"debug": ["DEVICE_TYPE"]},
     "J-Link_Flasher_Pro":     {"debug": ["DEVICE_TYPE"]},
+    "J-Link_OB":              {"debug": ["DEVICE_TYPE"]},
+    "J-Link_OB_2VCOM":        {"debug": ["DEVICE_TYPE"]},
     "STLink_v2":              {"debug": ["DEVICE_TYPE"]},
     "STLink_v2_1":            {"debug": ["DEVICE_TYPE"]},
     "STLink_v3_Mini":         {"debug": ["DEVICE_TYPE"]},
@@ -361,6 +368,15 @@ for _name, _meta in SUPPORTED_USB.items():
     if _name in ("Rigol_DL3021", "Rigol_DP811", "Rigol_DP832"):
         continue  # differentiated by serial number, handled in _scan_usb
     _VIDPID_TO_NAME[(_meta["vid"].lower(), _meta["pid"].lower())] = _name
+
+# Vendors whose every device is one instrument family, matched when the exact
+# VID:PID is not in the table. SEGGER ships J-Links under many PIDs, so a
+# per-PID list keeps missing new probes; the udev rule
+# (box/udev_rules/99-instrument.rules) matches VID 0x1366 alone for the same
+# reason, and debug routing is already by VID (lager/debug/probes.py).
+_VID_FALLBACK_NAME: Dict[str, str] = {
+    "1366": "J-Link",
+}
 
 # ─────────────  Instruments addressed by USB topology, not serial  ─────────────
 #
@@ -655,7 +671,8 @@ def scan_usb() -> List[dict]:
             pid = os.read(pid_fd, 64).decode("utf-8").strip().lower()
             os.close(pid_fd)
 
-            if (vid, pid) not in _VIDPID_TO_NAME and not (vid == "1ab1" and pid == "0e11"):
+            if ((vid, pid) not in _VIDPID_TO_NAME and vid not in _VID_FALLBACK_NAME
+                    and not (vid == "1ab1" and pid == "0e11")):
                 continue
 
             serial = None
@@ -683,7 +700,7 @@ def scan_usb() -> List[dict]:
             else:
                 meta_name = "Rigol_DP821"
         else:
-            meta_name = _VIDPID_TO_NAME.get((vid, pid))
+            meta_name = _VIDPID_TO_NAME.get((vid, pid)) or _VID_FALLBACK_NAME.get(vid)
             if meta_name is None:
                 continue
 

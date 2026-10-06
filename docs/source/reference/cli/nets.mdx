@@ -242,11 +242,13 @@ Standalone debugger boxes — one probe drives one target MCU.
 
 | Instrument | Backend | Role |
 |---|---|---|
-| `J-Link` / `J-Link_Plus` / `Flasher_ARM` / `J-Link_Flasher_Pro` | J-Link (SEGGER) | `debug` |
+| `J-Link` / `J-Link_Plus` / `J-Link_Base_Compact` / `J-Link_OB` / `J-Link_OB_2VCOM` / `Flasher_ARM` / `J-Link_Flasher_Pro` | J-Link (SEGGER) | `debug` |
 | `STLink_v2` / `v2_1` / `v3` / `v3_Mini` / `v3_2VCP` | OpenOCD | `debug` |
 | `RP2040_Picoprobe` | OpenOCD (CMSIS-DAP) | `debug` |
 | `Atmel_EDBG` | OpenOCD (CMSIS-DAP) | `debug` |
 | `DAPLink` | OpenOCD (CMSIS-DAP) | `debug` |
+
+Any other SEGGER probe (USB vendor ID `0x1366`) is listed as `J-Link`; its address keeps the real product ID.
 
 **Rule:** at most one `debug` net per `(instrument, address)`.
 

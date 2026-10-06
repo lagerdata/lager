@@ -246,11 +246,13 @@ TUI 也不允许您在一批操作中同时选中一颗芯片的两个角色。
 
 | 仪器 | 后端 | 角色 |
 |---|---|---|
-| `J-Link` / `J-Link_Plus` / `Flasher_ARM` / `J-Link_Flasher_Pro` | J-Link（SEGGER） | `debug` |
+| `J-Link` / `J-Link_Plus` / `J-Link_Base_Compact` / `J-Link_OB` / `J-Link_OB_2VCOM` / `Flasher_ARM` / `J-Link_Flasher_Pro` | J-Link（SEGGER） | `debug` |
 | `STLink_v2` / `v2_1` / `v3` / `v3_Mini` / `v3_2VCP` | OpenOCD | `debug` |
 | `RP2040_Picoprobe` | OpenOCD（CMSIS-DAP） | `debug` |
 | `Atmel_EDBG` | OpenOCD（CMSIS-DAP） | `debug` |
 | `DAPLink` | OpenOCD（CMSIS-DAP） | `debug` |
+
+其他任何 SEGGER 探针（USB 厂商 ID `0x1366`）都会显示为 `J-Link`；其地址保留实际的产品 ID。
 
 **规则：** 每个 `(仪器, 地址)` 最多一个 `debug` Net。
 
