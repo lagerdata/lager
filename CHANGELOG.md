@@ -12,6 +12,8 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+## [0.53.1] - 2026-10-06
+
 ### Fixed
 
 - **A J-Link under an unlisted USB product ID now appears in `lager instruments`,
