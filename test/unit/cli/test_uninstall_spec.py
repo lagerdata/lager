@@ -349,18 +349,46 @@ class SshSyncPollerStop(unittest.TestCase):
 
     def test_stops_marked_and_pre_marker_pollers(self):
         self.assertIn(f"-f '^{u.SSH_SYNC_MARKER}( |$)'", u.SSH_SYNC_STOP_CMD)
-        self.assertIn("-f '[s]tart_box[.]sh'", u.SSH_SYNC_STOP_CMD)
+        self.assertIn(f"-f '{u.SSH_SYNC_LEGACY_PATTERN}'", u.SSH_SYNC_STOP_CMD)
         # Only this login user's processes.
         self.assertEqual(u.SSH_SYNC_STOP_CMD.count('-u "$(id -u)"'), 2)
 
     def test_pattern_does_not_match_its_own_remote_shell(self):
         # The remote shell's command line holds this command's text. A pattern
         # that matched it would kill the shell running the step.
-        for pattern in ("[s]tart_box[.]sh", f"^{u.SSH_SYNC_MARKER}( |$)"):
+        for pattern in (u.SSH_SYNC_LEGACY_PATTERN, f"^{u.SSH_SYNC_MARKER}( |$)"):
             self.assertIsNone(re.search(pattern, f"bash -c {u.SSH_SYNC_STOP_CMD}"), pattern)
-        self.assertIsNotNone(re.search("[s]tart_box[.]sh", "/bin/bash ./start_box.sh"))
         self.assertIsNotNone(
             re.search(f"^{u.SSH_SYNC_MARKER}( |$)", f"{u.SSH_SYNC_MARKER} -c while true"),
+        )
+
+    def test_legacy_pattern_matches_only_bash_running_the_script(self):
+        # Real pre-marker pollers, as observed on a box.
+        for cmdline in ("/bin/bash ./start_box.sh", "bash box/start_box.sh --no-publish"):
+            self.assertIsNotNone(re.search(u.SSH_SYNC_LEGACY_PATTERN, cmdline), cmdline)
+        # Processes that name the script without running it. The ssh client is
+        # the one that took a bench box down: run on the box itself, it was
+        # killed mid-install by the first version of this pattern.
+        for cmdline in (
+            "ssh -o BatchMode=yes lagerdata@box cd ~/box && ./start_box.sh",
+            "bash -c cd ~/box && chmod +x start_box.sh && LAGER_SKIP_BUILD=1 ./start_box.sh",
+            "vim box/start_box.sh",
+            "tail -f start_box.sh.log",
+        ):
+            self.assertIsNone(re.search(u.SSH_SYNC_LEGACY_PATTERN, cmdline), cmdline)
+
+    def test_legacy_pattern_matches_start_box(self):
+        with open(self.START_BOX, encoding="utf-8") as fh:
+            text = fh.read()
+        # Same shape on both sides; uninstall adds only the self-match bracket.
+        self.assertIn(
+            '_SSH_SYNC_LEGACY_PATTERN="^([^ ]*/)?bash [^ -][^ ]*${_SSH_SYNC_LEGACY_NAME}( |\\$)"',
+            text,
+        )
+        self.assertIn('_SSH_SYNC_LEGACY_NAME="${LAGER_SSH_SYNC_LEGACY_NAME:-start_box[.]sh}"', text)
+        self.assertEqual(
+            u.SSH_SYNC_LEGACY_PATTERN.replace("[s]tart_box", "start_box"),
+            "^([^ ]*/)?bash [^ -][^ ]*start_box[.]sh( |$)",
         )
 
     def test_nothing_to_stop_is_not_a_failure(self):

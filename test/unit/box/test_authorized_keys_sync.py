@@ -336,13 +336,13 @@ def _pid_script(pid_file, marker=None, legacy=None, lock_held=False, after=()):
     """
     token = uuid.uuid4().hex[:12]
     marker = marker or f"lager-ssh-sync-test-{token}"
-    legacy = legacy or f"no-such-start-box-{token}"
+    legacy = legacy or f"no-such-start-box-{token}[.]sh"
     return "\n".join([
         "set -e",
         "_sync_authorized_keys() { :; }",
         f"export LAGER_SSH_SYNC_PID_FILE={shlex.quote(str(pid_file))}",
         f"export LAGER_SSH_SYNC_MARKER={shlex.quote(marker)}",
-        f"export LAGER_SSH_SYNC_LEGACY_PATTERN={shlex.quote(legacy)}",
+        f"export LAGER_SSH_SYNC_LEGACY_NAME={shlex.quote(legacy)}",
         "_START_LOCK_HELD=1" if lock_held else ":",
         PID_SH,
         *after,
@@ -501,13 +501,25 @@ def test_a_marked_poller_the_pid_file_does_not_name_is_stopped(tmp_path, stray):
     assert _gone(orphan), "a marked poller not named in the PID file survived"
 
 
+def _legacy_script(tmp_path):
+    """A stand-in for a pre-marker poller: bash running a script file, which
+    is the command line a real one has (`bash box/start_box.sh ...`).
+
+    Returns (path, name regex). The name is unique, so no real process can
+    match it.
+    """
+    stem = f"start-box-test-{uuid.uuid4().hex[:12]}"
+    path = tmp_path / f"{stem}.sh"
+    # `; :` stops bash exec-ing sleep in place, so the process stays bash.
+    path.write_text("sleep 300; :\n")
+    return path, f"{stem}[.]sh"
+
+
 def test_a_pre_marker_poller_is_stopped_under_the_lock(tmp_path, stray):
     """Pollers started before the marker are subshells of start_box.sh."""
     _needs_pkill()
-    legacy = f"start-box-test-{uuid.uuid4().hex[:12]}"
-    # `; :` stops bash exec-ing sleep in place, so the command line keeps
-    # the script name, as a real pre-marker poller's does.
-    orphan = stray(["bash", "-c", "sleep 300; :", f"/home/x/box/{legacy}"])
+    path, legacy = _legacy_script(tmp_path)
+    orphan = stray(["bash", str(path), "--no-publish"])
     proc = _run_pid_block(tmp_path / "pid", legacy=legacy, lock_held=True)
     assert proc.returncode == 0, proc.stderr
     assert _gone(orphan), "a pre-marker poller survived a run holding the lock"
@@ -518,22 +530,42 @@ def test_without_the_lock_pre_marker_processes_are_left_alone(tmp_path, stray):
     """Without the single-instance lock, a process naming start_box.sh might be
     a live run, so the sweep must not touch it."""
     _needs_pkill()
-    legacy = f"start-box-test-{uuid.uuid4().hex[:12]}"
-    other = stray(["bash", "-c", "sleep 300; :", f"/home/x/box/{legacy}"])
+    path, legacy = _legacy_script(tmp_path)
+    other = stray(["bash", str(path)])
     proc = _run_pid_block(tmp_path / "pid", legacy=legacy, lock_held=False)
     assert proc.returncode == 0, proc.stderr
     assert other.poll() is None, "the sweep ran without the lock"
+
+
+def test_a_process_that_only_names_the_script_is_left_alone(tmp_path, stray):
+    """The bench outage: `lager update` run ON the box (a CI runner on the
+    bench box, same login user) starts this script with
+    `ssh <box> 'cd ~/box && ./start_box.sh'`. That ssh client names the script
+    but does not run it. The first sweep matched any command line naming the
+    script, killed the client, and hung up the script's own session mid-start.
+    """
+    _needs_pkill()
+    path, legacy = _legacy_script(tmp_path)
+    remote = f"cd ~/box && chmod +x {path.name} && LAGER_SKIP_BUILD=1 ./{path.name}"
+    ssh_client = stray(["bash", "-c", 'exec -a ssh bash -c "sleep 300; :" ssh "$@"', "x",
+                        "-o", "BatchMode=yes", "lagerdata@box", remote])
+    wrapper = stray(["bash", "-c", f"sleep 300; : {remote}"])
+    proc = _run_pid_block(tmp_path / "pid", legacy=legacy, lock_held=True)
+    assert proc.returncode == 0, proc.stderr
+    assert ssh_client.poll() is None, "the sweep killed an ssh client that names the script"
+    assert wrapper.poll() is None, "the sweep killed a `bash -c` wrapper that names the script"
+    assert "left by an earlier run" not in proc.stdout
 
 
 def test_the_sweep_never_kills_the_shell_that_started_this_run(tmp_path):
     """An install runs `bash -c "cd ~/box && ./start_box.sh"`, and that shell's
     command line names start_box.sh too."""
     _needs_pkill()
-    legacy = f"start-box-test-{uuid.uuid4().hex[:12]}"
+    path, legacy = _legacy_script(tmp_path)
     script = _pid_script(tmp_path / "pid", legacy=legacy, lock_held=True)
     wrapper = 'bash -c "$INNER"; echo "WRAPPER-SURVIVED"'
     proc = subprocess.run(
-        ["bash", "-c", wrapper, f"/home/x/box/{legacy}"],
+        ["bash", "-c", wrapper, str(path)],
         capture_output=True, text=True, timeout=30,
         env={**os.environ, "INNER": script},
     )

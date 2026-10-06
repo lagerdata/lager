@@ -720,19 +720,29 @@ _sync_authorized_keys
 # honoured, for pollers started by a release that predates the marker.
 #
 # Pollers from before the marker are plain subshells of start_box.sh, so their
-# command line is this script's own. They are swept only by a run that holds
-# the single-instance lock: that lock proves no other start_box.sh is running,
-# so any other process for this uid that names start_box.sh is a leftover
-# poller. Without the lock that proof is gone, and the sweep is skipped. This
-# run's own ancestors are never swept: an install starts this script through a
-# shell such as `bash -c "cd ~/box && ./start_box.sh"`, whose command line
-# names it too, and killing that shell would end the install.
+# command line is this script's own: bash running the script file, as in
+# `bash box/start_box.sh --no-publish` or `/bin/bash ./start_box.sh`. They are
+# swept only by a run that holds the single-instance lock: that lock proves no
+# other start_box.sh is running, so another process of that exact shape for
+# this uid is a leftover poller. Without the lock that proof is gone, and the
+# sweep is skipped.
 #
-# The marker and the legacy pattern are overridable only so the unit tests
-# cannot touch real pollers; production always uses the defaults.
+# The shape matters, not just the name. Plenty of live processes name this
+# script without running it. The one that bit: the ssh client of the very
+# install running this script, `ssh <box> 'cd ~/box && ./start_box.sh'`. When
+# the machine running `lager install` or `lager update` is the box itself (a CI
+# runner on the bench box, under the same login user), that client is visible
+# here, and killing it hung up this script's own session mid-start. A wrapper
+# shell such as `bash -c "cd ~/box && ./start_box.sh"` is excluded by shape
+# (its first argument is `-c`), and this run's own ancestors are excluded by
+# PID as well.
+#
+# The marker and the script name are overridable only so the unit tests cannot
+# touch real processes; production always uses the defaults.
 _SSH_SYNC_PID_FILE="${LAGER_SSH_SYNC_PID_FILE:-/tmp/lager-ssh-sync-$(id -u).pid}"
 _SSH_SYNC_MARKER="${LAGER_SSH_SYNC_MARKER:-lager-ssh-sync}"
-_SSH_SYNC_LEGACY_PATTERN="${LAGER_SSH_SYNC_LEGACY_PATTERN:-start_box[.]sh}"
+_SSH_SYNC_LEGACY_NAME="${LAGER_SSH_SYNC_LEGACY_NAME:-start_box[.]sh}"
+_SSH_SYNC_LEGACY_PATTERN="^([^ ]*/)?bash [^ -][^ ]*${_SSH_SYNC_LEGACY_NAME}( |\$)"
 if [ -f "$_SSH_SYNC_PID_FILE" ]; then
     _old_pid=$(cat "$_SSH_SYNC_PID_FILE" 2>/dev/null || true)
     [ -n "$_old_pid" ] && kill "$_old_pid" 2>/dev/null || true
