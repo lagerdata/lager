@@ -25,6 +25,11 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   held for its full TTL, an hour for an install. The release now retries for up to
   90 seconds. If it still fails, the command prints the `lager boxes unlock`
   command that clears the lock.
+- **A bench job that cannot release its box lock now says so.** The end-of-job and
+  recovery releases discarded every error, so a lock left on a box whose service was
+  down blocked the run's own re-run with no warning. They now retry, release only a
+  lock held by a run of this repository, and report a lock they could not clear with
+  the `lager boxes unlock` command.
 
 ## [0.53.1] - 2026-10-06
 

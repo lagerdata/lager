@@ -963,13 +963,18 @@ jobs:
 
       - name: Best-effort lock cleanup
         # Defense in depth: if a step was killed in a way that bypassed the
-        # CLI's release hook, force-release the lock so it doesn't sit until
-        # the server TTL. The same-holder check on the box prevents stomping
-        # another holder's live lock.
+        # CLI's release hook, release the lock so it doesn't sit until the
+        # server TTL. This used to be a plain unlock, which the box refuses
+        # whenever the holder string differs, and it always does: the holder
+        # embeds the acquiring PID. So it released nothing, and said nothing.
+        # The helper forces the release, but only of a lock held by a run of
+        # this repository, so another holder's live lock is still left alone.
+        # A lock it could not clear is a warning (#639). The timeout covers
+        # six attempts against a box that does not answer.
         if: always()
-        timeout-minutes: 1
+        timeout-minutes: 3
         continue-on-error: true
-        run: lager boxes unlock --box "$LAGER_BOX" 2>/dev/null || true
+        run: bash tools/bench_release_lock.sh "$LAGER_BOX"
         shell: bash
 
       - name: Power off bench instruments (AC relays)
