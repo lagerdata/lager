@@ -39,10 +39,15 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import quote, unquote
 
 _SYS_TTY = Path("/sys/class/tty")
+_DEV = Path("/dev")
+# udev's durable names: by-id/<vendor>_<product>_<serial>-ifNN[-portN] and
+# by-path/<bus topology>[-portN]. Read as plain symlinks — the container has
+# /dev bind-mounted but not necessarily /run/udev.
+_DEV_SERIAL = Path("/dev/serial")
 _SCHEME = "serial://"
 # e.g. "serial://067b:23a3/serial/00000006"
 _ADDR_RE = re.compile(
@@ -108,6 +113,46 @@ def _read_sysfs_text(path: Path) -> Optional[str]:
             os.close(fd)
     except (OSError, UnicodeDecodeError, BlockingIOError):
         return None
+
+
+def _read_sysfs_display(path: Path) -> Optional[str]:
+    """A device-reported sysfs string (manufacturer, product) for display.
+
+    These strings come from the device's own descriptors, so they are
+    untrusted: non-printable characters are dropped and an empty result is
+    None. Use them only as display text — never in a path or a command.
+    """
+    text = _read_sysfs_text(path)
+    if text is None:
+        return None
+    text = "".join(ch for ch in text if ch.isprintable()).strip()
+    return text or None
+
+
+def _serial_links(kind: str) -> Dict[str, str]:
+    """Map tty name -> its ``/dev/serial/<kind>/`` symlink, in one pass.
+
+    *kind* is ``by-id`` or ``by-path``. Each link is resolved and kept only
+    if it lands directly in ``/dev``. udev makes both a ``-usb-`` and a
+    ``-usbv2-`` by-path name for one tty; the ``-usb-`` one wins. A missing
+    or unreadable directory yields an empty map — this never raises.
+    """
+    links: Dict[str, str] = {}
+    try:
+        dev_dir = os.path.realpath(str(_DEV))
+        entries = sorted((_DEV_SERIAL / kind).iterdir(), key=lambda p: p.name)
+        for link in entries:
+            target = os.path.realpath(str(link))
+            if os.path.dirname(target) != dev_dir:
+                continue
+            tty = os.path.basename(target)
+            current = links.get(tty)
+            if current is None or ("-usbv2-" in os.path.basename(current)
+                                   and "-usbv2-" not in link.name):
+                links[tty] = str(link)
+    except OSError:
+        return {}
+    return links
 
 
 def _usb_device_dir_for_tty(tty_dev: Path) -> Optional[Path]:
@@ -354,21 +399,40 @@ def resolve_address_to_tty(address: str) -> Optional[str]:
     )
 
 
-def list_cables() -> List[Dict[str, Optional[str]]]:
+def list_cables() -> List[Dict[str, Any]]:
     """Enumerate live USB-serial cables, one record per tty.
 
-    Returns ``[{"vid", "pid", "serial", "port_path", "tty"}]`` for every
-    ``/dev/ttyUSB*`` / ``/dev/ttyACM*`` backed by a USB device. ``port_path``
-    is the sysfs device-dir basename (e.g. ``1-1.2``) used by the port-pinned
-    assignment form; ``serial`` is None for cables without a programmed one.
+    Returns one record per ``/dev/ttyUSB*`` / ``/dev/ttyACM*`` backed by a
+    USB device, with these keys:
 
-    This is the cable picker's data source: the assign flow identifies a
-    cable by serial or port path and captures its vid/pid from here, so an
-    assignment can only be created for hardware that is actually plugged in.
+    - ``vid``, ``pid``: lowercase hex IDs.
+    - ``serial``: the USB serial, or None for cables without a programmed one.
+    - ``port_path``: the sysfs device-dir basename (e.g. ``1-1.2``) used by
+      the port-pinned assignment form.
+    - ``tty``: the live ``/dev/tty*`` node. It can renumber on replug.
+    - ``manufacturer``, ``product``: the device's own descriptor strings,
+      or None. They are device-controlled, so treat them as display text only.
+    - ``interface``: the USB interface number (int), which tells apart the
+      ports of a multi-port chip such as an FT4232H, or None.
+    - ``by_id``: the ``/dev/serial/by-id/...`` link for this tty, or None.
+      Two identical serial-less adapters share one by-id name and udev keeps
+      only one link, so only the tty it resolves to gets it.
+    - ``by_path``: the ``/dev/serial/by-path/...`` link (the ``-usb-``
+      variant, not ``-usbv2-``), or None. ACM links have no ``-port0`` suffix.
+
+    When ``serial`` is None, consumers should prefer ``by_path`` over
+    ``by_id`` as the durable path.
+
+    The first five keys are the cable picker's data source: the assign flow
+    identifies a cable by serial or port path and captures its vid/pid from
+    here, so an assignment can only be created for hardware that is actually
+    plugged in.
     """
-    cables: List[Dict[str, Optional[str]]] = []
+    cables: List[Dict[str, Any]] = []
     if not _SYS_TTY.exists():
         return cables
+    by_id = _serial_links("by-id")
+    by_path = _serial_links("by-path")
     for tty_dev in sorted(_SYS_TTY.iterdir(), key=lambda p: p.name):
         if not tty_dev.name.startswith(("ttyUSB", "ttyACM")):
             continue
@@ -385,5 +449,10 @@ def list_cables() -> List[Dict[str, Optional[str]]]:
             "serial": _read_sysfs_text(usb_dir / "serial"),
             "port_path": usb_dir.name,
             "tty": f"/dev/{tty_dev.name}",
+            "manufacturer": _read_sysfs_display(usb_dir / "manufacturer"),
+            "product": _read_sysfs_display(usb_dir / "product"),
+            "interface": _interface_for_tty(tty_dev),
+            "by_id": by_id.get(tty_dev.name),
+            "by_path": by_path.get(tty_dev.name),
         })
     return cables

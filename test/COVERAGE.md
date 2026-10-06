@@ -46,13 +46,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 2949 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 3316 |
+| `unit (cli)` | `test/unit/cli/` | 2950 (+2 xfailed) |
+| `unit (box)` | `test/unit/box/` | 3323 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 380 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 150 (+1 skipped) |
-| | **Total gated** | **6989** |
+| | **Total gated** | **6997** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -570,7 +570,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_safety_interlock.py` | Per-net voltage and current ceilings enforced on instrument commands |
 | `test_script_backend_sniff.py` | `sniff_script_backend` routes a debug-script override by format so `DebugNet.connect(script=...)` works on both backends: extension beats content, every declared extension and marker is asserted individually because a base64 blob has no filename to fall back on, and an ambiguous file abstains rather than picking a side. Also pins the two J-Link forms the marker list misses (`InitTarget(void)`, `JLINK_ExecCommand`) — safe, because abstaining raises rather than guessing, but it is why `jlink_script=` exists |
 | `test_secret_file_ownership.py` | The ownership block extracted verbatim from `box/start_box.sh`: mode 0600 grants the OWNER alone, so a secrets file owned by the host login user locks the container runtime out of its own secrets. Also that the shipped default list names the MCP token path the box's `constants.py` names |
-| `test_serial_id_cables.py` | tty enumeration and resolution via fake /sys tree lookup |
+| `test_serial_id_cables.py` | tty enumeration and resolution via fake /sys tree lookup. `list_cables()` identity fields against a fake `/dev/serial` tree: manufacturer/product (missing, blank and control characters give null or are stripped), interface number, by-id/by-path links (the `-usb-` by-path name beats `-usbv2-`, identical serial-less twins share one by-id link so only one tty reports it, links outside `/dev` are ignored), and a missing `/dev/serial` gives nulls rather than an exception |
 | `test_store_path_containment.py` | A binary name, a device-lock key and a DFU staging file are each named after something off the wire: the existing reduction is pinned as what rejects, and the containment check beside each join pins where the result lands, so widening a reduction cannot silently widen the directory. Also pins that names with spaces, `+` and parentheses still work, since the CLI forwards the basename of any local file |
 | `test_spi_word_conversion.py` | SPI word/byte packing shared by every backend: the LSB-first bit reversal, the multi-byte split, the oversize refusal and the short trailing word. Every expected value was captured from the T7 driver before the helpers moved to `SPIBase`, so the suite fails if the move changed any observable output -- the helpers were lifted so a second LabJack family could reuse them rather than carry a copy of the reversal that disagrees only on a scope |
 | `test_ssh_runner.py` | SSH key selection and auth fallback logic |
@@ -648,7 +648,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_nets_add_labjack_pins.py` | LabJack I2C/SPI arbitrary pin selection via --sda/--scl/--cs/--sck/--mosi/--miso |
 | `test_nets_add_coverage.py` | `lager nets add` accepts the instruments the scanner detects (DP832, E36312A, USB-202, Phidget, J-Link Base Compact) and refuses a U3's FIO0-FIO3 as custom pins; `add-batch` saves `params` (LabJack pins, FTDI channel) and a uart device path, and saves nothing when any record has an unknown key, a bad `params` value, an unsupported role or an ambiguous address |
 | `test_nets_add_roles.py` | Role-token normalization converting legacy supply/batt to power-supply/battery. Also channel-rejection messaging: a rejected channel names the valid ones, a U3 high-voltage pin is pointed at AIN0-AIN3, and add-batch applies the same check while staying permissive for hardware the scan does not find |
-| `test_nets_assign.py` | `lager nets assign` flow with custom-device backend and net creation |
+| `test_nets_assign.py` | `lager nets assign` flow with custom-device backend and net creation. `--list` shows a cable's product and durable path (by-id, or by-path when the cable has no serial), and still renders records from boxes that predate those fields |
 | `test_nets_cache_invalidation.py` | Every `lager nets` and Net-Manager write drops the box's cached `lager debug` nets, so `flash`/`erase` stop sending the old J-Link script; a broken cache never fails the command |
 | `test_nets_channel_display.py` | `lager nets` Channel column rule for uart nets carrying a durable `live_path` |
 | `test_nets_debug_scripts.py` | Smart `lager nets set-script` auto-detection and probe/file reconciliation |

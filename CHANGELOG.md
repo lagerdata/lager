@@ -12,6 +12,17 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Added
+
+- **The box's serial-port listing now says what each port is, not just where it
+  is.** Each `cables` record from `GET /custom-devices/list` gains `manufacturer`,
+  `product`, `interface`, `by_id` and `by_path`, and each is `null` when unknown.
+  The change is additive: every existing key is unchanged. `by_id` and `by_path`
+  are the `/dev/serial/...` names, which survive a replug that renumbers the tty.
+  `interface` tells apart the ports of one multi-port chip. When `serial` is
+  `null`, prefer `by_path`, because identical serial-less adapters share one
+  by-id name. `lager nets assign --list` shows the product and durable path.
+
 ### Fixed
 
 - **`lager uninstall` and `lager install` now stop every SSH key-sync poller a

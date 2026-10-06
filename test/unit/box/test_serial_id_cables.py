@@ -9,7 +9,9 @@
 a fake sysfs tree built in a temp dir, so they are fully hermetic. The fake
 tree mirrors the real layout: a tty dir whose ``device`` symlink targets a
 USB *interface* dir (``1-1.2:1.0``) nested under the USB *device* dir
-(``1-1.2``) that carries ``idVendor`` / ``idProduct`` / ``serial``.
+(``1-1.2``) that carries ``idVendor`` / ``idProduct`` / ``serial``. A fake
+``/dev`` holds one node per tty and the ``serial/by-id`` / ``serial/by-path``
+symlinks udev would make.
 """
 
 import importlib.util
@@ -53,16 +55,25 @@ class SerialIdCablesTests(unittest.TestCase):
         self._devices = Path(self._tmp) / "devices"
         self._sys_tty.mkdir()
         self._devices.mkdir()
+        self._dev = Path(self._tmp) / "dev"
+        self._dev.mkdir()
         self._orig_sys_tty = serial_id._SYS_TTY
+        self._orig_dev = serial_id._DEV
+        self._orig_dev_serial = serial_id._DEV_SERIAL
         serial_id._SYS_TTY = self._sys_tty
+        serial_id._DEV = self._dev
+        serial_id._DEV_SERIAL = self._dev / "serial"
 
     def tearDown(self):
         serial_id._SYS_TTY = self._orig_sys_tty
+        serial_id._DEV = self._orig_dev
+        serial_id._DEV_SERIAL = self._orig_dev_serial
         shutil.rmtree(self._tmp, ignore_errors=True)
 
     # ---- fake sysfs builders ----------------------------------------------
 
-    def _add_cable(self, tty_name, port, vid=VID, pid=PID, serial=SERIAL, iface=0):
+    def _add_cable(self, tty_name, port, vid=VID, pid=PID, serial=SERIAL, iface=0,
+                   manufacturer=None, product=None):
         """Create a USB device dir + interface dir + tty pointing at it."""
         usb_dev = self._devices / port
         usb_dev.mkdir(parents=True, exist_ok=True)
@@ -70,12 +81,24 @@ class SerialIdCablesTests(unittest.TestCase):
         (usb_dev / "idProduct").write_text(f"{pid}\n")
         if serial is not None:
             (usb_dev / "serial").write_text(f"{serial}\n")
+        if manufacturer is not None:
+            (usb_dev / "manufacturer").write_text(f"{manufacturer}\n")
+        if product is not None:
+            (usb_dev / "product").write_text(f"{product}\n")
+        (self._dev / tty_name).touch(exist_ok=True)
         iface_dir = usb_dev / f"{port}:1.{iface}"
         iface_dir.mkdir(exist_ok=True)
 
         tty_dir = self._sys_tty / tty_name
         tty_dir.mkdir()
         (tty_dir / "device").symlink_to(iface_dir)
+
+    def _add_link(self, kind, name, tty_name):
+        """Create /dev/serial/<kind>/<name> -> ../../<tty>, as udev does."""
+        d = self._dev / "serial" / kind
+        d.mkdir(parents=True, exist_ok=True)
+        (d / name).symlink_to(f"../../{tty_name}")
+        return str(d / name)
 
     # ---- list_cables --------------------------------------------------------
 
@@ -88,6 +111,11 @@ class SerialIdCablesTests(unittest.TestCase):
             "serial": SERIAL,
             "port_path": "1-1.2",
             "tty": "/dev/ttyUSB0",
+            "manufacturer": None,
+            "product": None,
+            "interface": 0,
+            "by_id": None,
+            "by_path": None,
         }])
 
     def test_list_cables_lowercases_vid_pid(self):
@@ -116,6 +144,99 @@ class SerialIdCablesTests(unittest.TestCase):
     def test_list_cables_missing_sysfs_returns_empty(self):
         serial_id._SYS_TTY = Path(self._tmp) / "does-not-exist"
         self.assertEqual(serial_id.list_cables(), [])
+
+    # ---- list_cables: identity fields (manufacturer/product/interface/links)
+
+    def test_list_cables_native_cdc_all_fields(self):
+        self._add_cable("ttyACM0", "1-1.2", vid="c0ca", pid="c01a", serial="W123",
+                        manufacturer="Acme_Labs", product="Widget_CLI")
+        by_id = self._add_link("by-id", "usb-Acme_Labs_Widget_CLI_W123-if00", "ttyACM0")
+        # ACM by-path names carry no -port0 suffix.
+        by_path = self._add_link("by-path", "pci-0000:00:01.0-usb-0:1.2:1.0", "ttyACM0")
+        self._add_link("by-path", "pci-0000:00:01.0-usbv2-0:1.2:1.0", "ttyACM0")
+        self.assertEqual(serial_id.list_cables(), [{
+            "vid": "c0ca",
+            "pid": "c01a",
+            "serial": "W123",
+            "port_path": "1-1.2",
+            "tty": "/dev/ttyACM0",
+            "manufacturer": "Acme_Labs",
+            "product": "Widget_CLI",
+            "interface": 0,
+            "by_id": by_id,
+            "by_path": by_path,
+        }])
+
+    def test_list_cables_quad_ftdi_without_serial(self):
+        for n in range(4):
+            self._add_cable(f"ttyUSB{n}", "1-1.3", vid="0403", pid="6011",
+                            serial=None, iface=n,
+                            manufacturer="Acme_Labs", product="Quad_UART")
+            # usbv2 sorts after usb, so create it first to prove the
+            # preference is by name, not by iteration order.
+            self._add_link("by-path", f"pci-0000:00:01.0-usbv2-0:1.3:1.{n}-port0",
+                           f"ttyUSB{n}")
+            self._add_link("by-path", f"pci-0000:00:01.0-usb-0:1.3:1.{n}-port0",
+                           f"ttyUSB{n}")
+            self._add_link("by-id", f"usb-Acme_Labs_Quad_UART-if0{n}-port0",
+                           f"ttyUSB{n}")
+        cables = serial_id.list_cables()
+        self.assertEqual([c["interface"] for c in cables], [0, 1, 2, 3])
+        paths = [c["by_path"] for c in cables]
+        self.assertEqual(len(set(paths)), 4)
+        for n, p in enumerate(paths):
+            self.assertTrue(p.endswith(f"-usb-0:1.3:1.{n}-port0"), p)
+        self.assertTrue(cables[2]["by_id"].endswith("usb-Acme_Labs_Quad_UART-if02-port0"))
+
+    def test_list_cables_identical_serialless_twins_share_one_by_id(self):
+        for n, port in enumerate(("1-1.2", "1-1.3")):
+            self._add_cable(f"ttyUSB{n}", port, serial=None,
+                            manufacturer="Acme_Labs", product="Widget_CLI")
+            self._add_link("by-path", f"pci-0000:00:01.0-usb-0:{port[2:]}:1.0-port0",
+                           f"ttyUSB{n}")
+        # udev keeps one link for the shared name; the last device won it.
+        self._add_link("by-id", "usb-Acme_Labs_Widget_CLI-if00-port0", "ttyUSB1")
+        c0, c1 = serial_id.list_cables()
+        self.assertIsNone(c0["by_id"])
+        self.assertTrue(c1["by_id"].endswith("usb-Acme_Labs_Widget_CLI-if00-port0"))
+        self.assertIsNotNone(c0["by_path"])
+        self.assertIsNotNone(c1["by_path"])
+        self.assertNotEqual(c0["by_path"], c1["by_path"])
+
+    def test_list_cables_missing_or_blank_strings_are_none(self):
+        self._add_cable("ttyUSB0", "1-1.2")                     # no files
+        self._add_cable("ttyUSB1", "1-1.3", serial="B",
+                        manufacturer="   ", product="")         # blank
+        c0, c1 = serial_id.list_cables()
+        self.assertIsNone(c0["manufacturer"])
+        self.assertIsNone(c0["product"])
+        self.assertIsNone(c1["manufacturer"])
+        self.assertIsNone(c1["product"])
+
+    def test_list_cables_strips_control_chars_from_strings(self):
+        self._add_cable("ttyUSB0", "1-1.2", manufacturer="Acme\x1b[31m_Labs\x07",
+                        product="\tWidget_CLI\r")
+        cable = serial_id.list_cables()[0]
+        self.assertEqual(cable["manufacturer"], "Acme[31m_Labs")
+        self.assertEqual(cable["product"], "Widget_CLI")
+
+    def test_list_cables_without_dev_serial_dir(self):
+        self._add_cable("ttyUSB0", "1-1.2")
+        self.assertFalse((self._dev / "serial").exists())
+        cable = serial_id.list_cables()[0]
+        self.assertIsNone(cable["by_id"])
+        self.assertIsNone(cable["by_path"])
+
+    def test_list_cables_ignores_foreign_and_dangling_links(self):
+        self._add_cable("ttyUSB0", "1-1.2")
+        d = self._dev / "serial" / "by-id"
+        d.mkdir(parents=True)
+        elsewhere = Path(self._tmp) / "ttyUSB0"
+        elsewhere.touch()
+        (d / "usb-points-outside-dev").symlink_to(elsewhere)
+        (d / "usb-dangling").symlink_to("../../ttyUSB7")
+        cable = serial_id.list_cables()[0]
+        self.assertIsNone(cable["by_id"])
 
     # ---- resolve_tty (back-fills coverage for the Phase-1 resolver) --------
 

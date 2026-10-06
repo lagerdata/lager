@@ -1647,8 +1647,14 @@ def _print_assign_listing(data: dict) -> None:
         click.echo("  (none)")
     for c in cables:
         serial_note = f"serial {c['serial']}" if c.get("serial") else "no serial"
+        product = f"  {c['product']}" if c.get("product") else ""
         click.echo(f"  {serial_note}  port {c.get('port_path')}"
-                   f"  [{c.get('vid')}:{c.get('pid')}]  {c.get('tty')}")
+                   f"  [{c.get('vid')}:{c.get('pid')}]  {c.get('tty')}{product}")
+        # Older boxes omit the durable names; a serial-less cable's by-id
+        # name can be shared with a twin, so by-path is shown for it instead.
+        durable = (c.get("by_id") if c.get("serial") else None) or c.get("by_path")
+        if durable:
+            click.echo(f"      {durable}")
 
 
 @nets.command("assign")
