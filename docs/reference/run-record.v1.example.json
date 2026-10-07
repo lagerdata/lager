@@ -6,8 +6,10 @@
   "startedAt": "2026-10-07T18:04:11.123456Z",
   "finishedAt": "2026-10-07T18:05:02.654321Z",
   "box": {
-    "boxId": "b7e1c0d2-5a3f-4e8b-9c6d-2f1a0e9b8c7d",
-    "hostname": "bench-07"
+    "boxId": "0b6f2d4e-7c1a-4e93-a5d8-3f2e1c9b7a60",
+    "boxName": "bench-07",
+    "hostname": "bench-07",
+    "hardwareId": "mac:3c:7c:3f:1a:2b:9e"
   },
   "boxState": {
     "lagerVersion": "0.53.1",
@@ -19,6 +21,10 @@
       "versionId": "24.04"
     },
     "kernel": "6.8.0-85-generic",
+    "clock": {
+      "synced": true,
+      "maxErrorMicroseconds": 16000
+    },
     "nets": [
       {
         "name": "vbat",
@@ -31,7 +37,7 @@
     "netsHash": "9a1f3c5e7b2d4f6a8c0e1b3d5f7a9c1e3b5d7f9a1c3e5b7d9f1a3c5e7b9d1f3a",
     "instruments": [
       {
-        "type": "keithley_2281s",
+        "type": "Keithley_2281S",
         "connection": "USB0::0x05E6::0x2281::4512345::INSTR",
         "serialNumber": "4512345",
         "serialSource": "usb-device",
@@ -69,11 +75,12 @@
   "exit": {
     "code": 0,
     "reason": "exited",
-    "timeoutSeconds": 300
+    "timeoutSeconds": 300,
+    "cancelRequestedAt": null
   },
   "outputs": [
     {
-      "name": "rtd_results.csv",
+      "name": "/tmp/lager-output/rtd_results.csv",
       "size": 18234,
       "sha256": "7b9d1f3a5c7e9b1d3f5a7c9e1b3d5f7a9c1e3b5d7f9a1c3e5b7d9f1a3c5e7b9d",
       "retained": true
@@ -83,6 +90,10 @@
     "sha256": "1e3b5d7f9a1c3e5b7d9f1a3c5e7b9d1f3a5c7e9b1d3f5a7c9e1b3d5f7a9c1e3b",
     "size": 40961,
     "retained": true
+  },
+  "retention": {
+    "mode": "collected",
+    "maxBlobBytes": 104857600
   },
   "clientAsserted": {
     "cliVersion": "0.53.1",
@@ -95,11 +106,13 @@
       "--add-file",
       "calibration.csv",
       "--download",
-      "rtd_results.csv",
+      "/tmp/lager-output/rtd_results.csv",
       "--passenv",
       "DUT_SERIAL",
       "--env",
       "MODE=<redacted>",
+      "--label",
+      "execution=EX-20419",
       "--",
       "--cycles",
       "3"
@@ -111,14 +124,24 @@
     "files": [
       {
         "path": "calibration.csv",
+        "repoPath": "xl/tests/data/calibration.csv",
         "size": 2048,
         "sha256": "4c6e8a0b2d4f6c8e0a2b4d6f8c0e2a4b6d8f0c2e4a6b8d0f2c4e6a8b0d2f4c6e"
       },
       {
         "path": "main.py",
+        "repoPath": "xl/tests/rtd.py",
         "size": 5311,
         "sha256": "e2a4c6e8b0d2f4a6c8e0b2d4f6a8c0e2b4d6f8a0c2e4b6d8f0a2c4e6b8d0f2a4"
       }
-    ]
+    ],
+    "repoRelativeRoot": "xl/tests",
+    "labels": {
+      "execution": "EX-20419"
+    }
+  },
+  "scriptAsserted": {
+    "dut.firmware": "2.14.0",
+    "dut.serial": "7Q2-00419"
   }
 }

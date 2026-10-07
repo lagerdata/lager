@@ -39,6 +39,7 @@ from ...core.utils import (
     stdout_is_stderr,
 )
 from ...core.param_types import EnvVarType, PortForwardType
+from ... import run_record as _run_record
 from ...exceptions import OutputFormatNotSupported
 
 MAX_ZIP_SIZE = 20_000_000  # Max size of zipped folder in bytes
@@ -282,7 +283,12 @@ def _restore_stop_handlers():
             signal.signal(sig, original)
 
 
-def _do_exit(exit_code, box, session, downloads):
+def _do_exit(exit_code, box, session, downloads, run=None):
+    """Report the exit, download files, save the run record, and exit.
+
+    ``run`` is ``{'run_id', 'log_hasher'}`` when this run's record should be
+    fetched and saved next to the downloads, else None.
+    """
     if exit_code == FAILED_TO_RETRIEVE_EXIT_CODE:
         click.secho('Failed to retrieve script exit code.', fg='red', err=True)
     elif exit_code == SIGTERM_EXIT_CODE:
@@ -302,6 +308,7 @@ def _do_exit(exit_code, box, session, downloads):
     # that often raced with libusb's async release-interface (surfaced as
     # [Errno 16] Resource busy). Removed.
 
+    downloaded = {}
     for filename in downloads:
         try:
             with session.download_file(box, filename) as resp:
@@ -347,6 +354,7 @@ def _do_exit(exit_code, box, session, downloads):
                     else:
                         # Write raw content
                         f_out.write(content)
+                downloaded[filename] = basename
         except requests.HTTPError as exc:
             if hasattr(exc, 'response') and exc.response.status_code == 404:
                 click.secho(f'Failed to download {filename}: File not found', fg='red', err=True)
@@ -354,6 +362,8 @@ def _do_exit(exit_code, box, session, downloads):
                 click.secho(f'Failed to download {filename}: {exc}', fg='red', err=True)
         except Exception as exc:  # pylint: disable=broad-except
             click.secho(f'Failed to download {filename}: {exc}', fg='red', err=True)
+    if run is not None:
+        _run_record.save_and_check(session, box, run['run_id'], run['log_hasher'], downloaded)
     sys.exit(exit_code)
 
 
@@ -408,10 +418,17 @@ def run_python_internal_get_output(ctx, runnable, box, env, passenv, kill, downl
     return run_python_internal(ctx, runnable, box, env, passenv, kill, download, allow_overwrite, signum, timeout, detach, port, org, args, extra_files=None, callback=collect_output_callback)
 
 
-def run_python_internal(ctx, runnable, box, env, passenv, kill, download, allow_overwrite, signum, timeout, detach, port, org, args, extra_files=None, callback=None, dut_name=None, watch_stdin_resume=True):
+def run_python_internal(ctx, runnable, box, env, passenv, kill, download, allow_overwrite, signum, timeout, detach, port, org, args, extra_files=None, callback=None, dut_name=None, watch_stdin_resume=True, labels=None, save_run_record=False):
     _default_sigpipe()
     if extra_files is None:
         extra_files = []
+
+    # Every name must be set here: the value is read now, and a missing one
+    # used to surface as a bare KeyError traceback.
+    missing = [name for name in passenv if name not in os.environ]
+    if missing:
+        raise click.UsageError(
+            f'--passenv: not set in this environment: {", ".join(missing)}')
 
     # Use appropriate session based on whether box is an IP address
     box_ip = box
@@ -476,6 +493,11 @@ def run_python_internal(ctx, runnable, box, env, passenv, kill, download, allow_
     if timeout is not None:
         post_data.append(('timeout', timeout))
 
+    # What was sent, for the run record: the bytes the box will hash, and the
+    # local file each archive entry came from.
+    sent_script = None   # (bytes, name, source path)
+    sent_module = None   # (zip bytes, {archive path: source path})
+
     # Find and read includes from nearest .lager file
     include_dirs = {}
     if os.path.isfile(runnable):
@@ -519,9 +541,10 @@ def run_python_internal(ctx, runnable, box, env, passenv, kill, download, allow_
                 temp_script_path = os.path.join(temp_dir, 'main.py')
                 shutil.copy2(runnable, temp_script_path)
 
+                manifest = {}
                 try:
                     max_content_size = MAX_ZIP_SIZE * 2
-                    zipped_folder = zip_dir(temp_dir, extra_files, max_content_size=max_content_size, include_dirs=include_dirs)
+                    zipped_folder = zip_dir(temp_dir, extra_files, max_content_size=max_content_size, include_dirs=include_dirs, manifest=manifest)
                 except SizeLimitExceeded:
                     click.secho(f'Folder content exceeds max size of {max_content_size:,} bytes', err=True, fg='red')
                     ctx.exit(1)
@@ -530,6 +553,9 @@ def run_python_internal(ctx, runnable, box, env, passenv, kill, download, allow_
                     click.secho(f'Zipped module content exceeds max size of {MAX_ZIP_SIZE:,} bytes', err=True, fg='red')
                     ctx.exit(1)
 
+                # main.py is a temporary copy; the file it came from is the runnable.
+                manifest['main.py'] = os.path.abspath(runnable)
+                sent_module = (bytes(zipped_folder), manifest)
                 post_data.append(('module', zipped_folder))
         else:
             # Single file without extra files or includes: upload as script (original behavior)
@@ -538,11 +564,13 @@ def run_python_internal(ctx, runnable, box, env, passenv, kill, download, allow_
             # Use BytesIO to create a file-like object that can be read multiple times
             import io
             script_file = io.BytesIO(script_content)
+            sent_script = (script_content, os.path.basename(runnable), os.path.abspath(runnable))
             post_data.append(('script', (os.path.basename(runnable), script_file, 'application/octet-stream')))
     elif os.path.isdir(runnable):
+        manifest = {}
         try:
             max_content_size = MAX_ZIP_SIZE * 2
-            zipped_folder = zip_dir(runnable, extra_files, max_content_size=max_content_size, include_dirs=include_dirs)
+            zipped_folder = zip_dir(runnable, extra_files, max_content_size=max_content_size, include_dirs=include_dirs, manifest=manifest)
         except SizeLimitExceeded:
             click.secho(f'Folder content exceeds max size of {max_content_size:,} bytes', err=True, fg='red')
             ctx.exit(1)
@@ -551,6 +579,7 @@ def run_python_internal(ctx, runnable, box, env, passenv, kill, download, allow_
             click.secho(f'Zipped module content exceeds max size of {MAX_ZIP_SIZE:,} bytes', err=True, fg='red')
             ctx.exit(1)
 
+        sent_module = (bytes(zipped_folder), manifest)
         post_data.append(('module', zipped_folder))
     else:
         # Was a bare ValueError, i.e. a traceback. Anything reaching here has
@@ -563,8 +592,29 @@ def run_python_internal(ctx, runnable, box, env, passenv, kill, download, allow_
             fixes=['Check the path, then re-run.'],
         )
 
+    # The client's half of the run record. Never fatal: a description the
+    # client cannot build only means the record has less in clientAsserted.
     try:
-        resp = session.run_python(box_ip, files=post_data)
+        git, toplevel = _run_record.git_context(runnable)
+        if sent_module is not None:
+            files = _run_record.client_files(module_bytes=sent_module[0], manifest=sent_module[1],
+                                             toplevel=toplevel)
+        elif sent_script is not None:
+            files = _run_record.client_files(script_bytes=sent_script[0], script_name=sent_script[1],
+                                             script_source=sent_script[2], toplevel=toplevel)
+        else:
+            files = []
+        post_data.append((_run_record.CLIENT_FIELD, _run_record.build_client_field(
+            runnable=runnable, argv=sys.argv, passenv=passenv, downloads=download,
+            labels=labels, files=files, git=git, toplevel=toplevel,
+        )))
+    except Exception as exc:  # pylint: disable=broad-except
+        if ctx.obj and getattr(ctx.obj, 'debug', False):
+            raise
+        click.secho(f'Run record: cannot describe this run: {exc}', fg='yellow', err=True)
+
+    try:
+        resp = session.run_python(box_ip, files=post_data, run_id=lager_process_id)
     except requests.exceptions.Timeout:
         click.secho(f'Error: Connection to box timed out ({box_ip})', fg='red', err=True)
         click.secho('Check that the box is online and not overloaded.', err=True)
@@ -653,23 +703,33 @@ def run_python_internal(ctx, runnable, box, env, passenv, kill, download, allow_
             daemon=True,
         ).start()
 
+    log_hasher = _run_record.LogHasher()
+    run = {'run_id': lager_process_id, 'log_hasher': log_hasher} if save_run_record else None
     try:
         done = False
         context = None
-        for (datatype, content) in stream_python_output(resp):
+        for (datatype, content) in stream_python_output(resp, frame_observer=log_hasher):
             if callback:
                 done, context = callback(datatype, content, context)
                 if done:
                     return context
             else:
                 if datatype == StreamDatatypes.EXIT:
-                    _do_exit(normalize_exit_code(content), box_ip, session, download)
+                    _do_exit(normalize_exit_code(content), box_ip, session, download, run)
                 elif datatype == StreamDatatypes.STDOUT:
                     click.echo(content.decode("utf-8", errors="ignore"), nl=False)
                 elif datatype == StreamDatatypes.STDERR:
                     click.echo(content.decode("utf-8", errors="ignore"), nl=False, err=True)
                 elif datatype == StreamDatatypes.OUTPUT:
                     click.echo(content)
+
+        if not callback:
+            # The stream ended with no exit frame: the connection dropped, or
+            # the box died mid-run. That is not a success, whatever happened
+            # to the script, and it used to exit 0. Nothing is downloaded --
+            # the files may be partial -- but the record, if the box wrote
+            # one, says how the run ended.
+            _do_exit(FAILED_TO_RETRIEVE_EXIT_CODE, box_ip, session, (), run)
 
     except BrokenPipeError:
         # Pipeline downstream closed (e.g., lager python script.py | head).
@@ -909,8 +969,10 @@ def _handle_reattach(ctx, box_ip, process_id, session, dut_name):
 @click.option('--reattach', default=None, help='Reattach to detached process by process ID')
 @click.option('--continue', 'continue_', default=None, help='Resume a script paused at a breakpoint, by process ID')
 @click.option('--console', default=None, help='Connect to the interactive console of a paused script, by process ID')
+@click.option('--label', 'labels', multiple=True, metavar='KEY=VALUE', help='Tag the run record, e.g. --label execution=1234 (unverified; repeatable)')
+@click.option('--no-run-record', 'no_run_record', is_flag=True, default=False, help='Do not save the run record next to the downloaded files')
 @click.argument('args', nargs=-1)
-def python(ctx, runnable, box, env, passenv, kill, kill_all, download, allow_overwrite, signum, timeout, detach, port, org, add_file, reattach, continue_, console, args):
+def python(ctx, runnable, box, env, passenv, kill, kill_all, download, allow_overwrite, signum, timeout, detach, port, org, add_file, reattach, continue_, console, labels, no_run_record, args):
     """Run Python script on box"""
     _default_sigpipe()
     from ...box_storage import (
@@ -980,6 +1042,8 @@ def python(ctx, runnable, box, env, passenv, kill, kill_all, download, allow_ove
         session = ctx.obj.get_session_for_box(box_ip, box_name=box_name)
         _handle_console(ctx, box_ip, console, session)
         return
+
+    labels = _run_record.parse_labels(labels)
 
     if not allow_overwrite:
         for filename in download:
@@ -1064,6 +1128,7 @@ def python(ctx, runnable, box, env, passenv, kill, kill_all, download, allow_ove
         run_python_internal(
             ctx, runnable, box_ip, env, passenv, False, download, allow_overwrite,
             signum, timeout, detach, port, org, args, add_file, dut_name=box_name,
+            labels=labels, save_run_record=not no_run_record,
         )
     finally:
         if heartbeat is not None:
