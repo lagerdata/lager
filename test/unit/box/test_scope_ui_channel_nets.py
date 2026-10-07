@@ -382,6 +382,193 @@ class TestEnableNamesAChannel:
 
 
 @needs_node
+class TestConsoleChannelCommandsFollowThePanel:
+    """A per-channel console command with no channel reaches the panel's.
+
+    The panel reads the first channel that is on. The console used to send
+    every per-channel command with no channel named to the lowest channel
+    instead. With A off and B on, `measure vpp` was refused (A has nothing to
+    measure) and `scale 0.5` changed A -- which the box accepts without
+    complaint, so a setting landed on a channel nobody was looking at.
+    """
+
+    # The real execute(), netForLabel() and netForAction(), with send()
+    # replaced by a recorder of the net each request would reach.
+    HARNESS = """
+    function app(enabled) {
+      const sent = [];
+      const self = {
+        net: 'picoscope1',
+        channelNets: [
+          { name: 'scope1', pin: 1, role: 'scope-channel' },
+          { name: 'scope2', pin: 2, role: 'scope-channel' },
+        ],
+        channelState: new Map([
+          ['A', { enabled: enabled.A, net: 'scope1' }],
+          ['B', { enabled: enabled.B, net: 'scope2' }],
+        ]),
+        console: { error(text) { self.error = text; } },
+        netForLabel: ScopeApp.prototype.netForLabel,
+        netForChannel: ScopeApp.prototype.netForChannel,
+        netForAction: ScopeApp.prototype.netForAction,
+        measuredChannel: ScopeApp.prototype.measuredChannel,
+        runCommand: async (action, params, summary, net) => {
+          sent.push([action, self.netForAction(action, net)]);
+          return { value: 1 };
+        },
+        refreshMeasurements() {},
+      };
+      self.sent = sent;
+      return self;
+    }
+    async function run(enabled, lines) {
+      const self = app(enabled);
+      for (const line of lines) {
+        await ScopeApp.prototype.execute.call(self, line);
+      }
+      return {
+        sent: self.sent, error: self.error || null,
+        panel: self.measuredChannel(),
+      };
+    }
+    """
+
+    def run(self, enabled, *lines):
+        return _run_js(self.HARNESS + """
+        const out = await run(%s, %s);
+        process.stdout.write(JSON.stringify(out));
+        """ % (json.dumps(enabled), json.dumps(list(lines))))
+
+    def test_with_a_off_measure_reads_b_as_the_panel_does(self):
+        out = self.run({"A": False, "B": True}, "measure vpp", "measure all")
+        assert out["panel"] == {"label": "B", "net": "scope2"}
+        assert out["sent"] == [["measure_vpp", "scope2"],
+                               ["measure_all", "scope2"]]
+
+    def test_with_both_on_measure_reads_a(self):
+        out = self.run({"A": True, "B": True}, "measure vpp")
+        assert out["sent"] == [["measure_vpp", "scope1"]]
+
+    def test_a_named_channel_is_measured_whatever_is_on(self):
+        """The box, not the page, says whether a channel that is off can be
+        measured, so the request goes out and its answer is shown."""
+        out = self.run({"A": False, "B": True},
+                       "measure vpp A", "measure freq 2", "measure all B")
+        assert out["sent"] == [["measure_vpp", "scope1"],
+                               ["measure_freq", "scope2"],
+                               ["measure_all", "scope2"]]
+
+    def test_with_no_channel_on_measure_says_so_and_sends_nothing(self):
+        out = self.run({"A": False, "B": False}, "measure vpp")
+        assert out["sent"] == []
+        assert out["error"] == "No channel is on. Switch one on to measure."
+
+    def test_a_named_channel_is_still_sent_with_none_on(self):
+        out = self.run({"A": False, "B": False}, "measure vpp B")
+        assert out["sent"] == [["measure_vpp", "scope2"]]
+        assert out["error"] is None
+
+    def test_with_a_off_every_channel_setting_reaches_b(self):
+        out = self.run({"A": False, "B": True},
+                       "scale 0.5", "coupling ac", "probe 10", "offset 0.1",
+                       "scale", "spectrum")
+        assert out["sent"] == [["set_scale", "scope2"],
+                               ["set_coupling", "scope2"],
+                               ["set_probe", "scope2"],
+                               ["set_offset", "scope2"],
+                               ["get_scale", "scope2"],
+                               ["fft", "scope2"]]
+
+    def test_a_named_channel_setting_reaches_that_channel_even_when_off(self):
+        out = self.run({"A": False, "B": True},
+                       "scale A 0.5", "coupling A dc", "probe A 10", "offset A 0")
+        assert [net for _, net in out["sent"]] == ["scope1"] * 4
+
+    def test_enable_with_no_channel_still_reaches_the_lowest(self):
+        """Switching on is the exception: following the channel that is on
+        would send a bare `enable` to a channel that already is."""
+        out = self.run({"A": False, "B": True}, "enable", "disable")
+        assert out["sent"] == [["enable_net", "scope1"],
+                               ["disable_net", "scope1"]]
+
+    def test_with_no_channel_on_a_setting_reaches_the_lowest(self):
+        """A channel that is off can still be set up before it is switched
+        on, and the box applies it; only a measurement has nothing to read."""
+        out = self.run({"A": False, "B": False}, "scale 0.5")
+        assert out["sent"] == [["set_scale", "scope1"]]
+        assert out["error"] is None
+
+    def test_cursor_readings_stay_on_the_scope_net(self):
+        out = self.run({"A": False, "B": True}, "cursor")
+        assert out["sent"] == [["measure_cursor", "picoscope1"]]
+
+    def test_before_the_channels_are_known_measure_falls_back_to_the_lowest(self):
+        """With no strips yet, "none is on" would be a guess, not a fact."""
+        out = _run_js("""
+        const self = {
+          net: 'picoscope1',
+          channelNets: [{ name: 'scope1', pin: 1 }, { name: 'scope2', pin: 2 }],
+        };
+        process.stdout.write(JSON.stringify([
+          ScopeApp.prototype.netForAction.call(self, 'measure_vpp'),
+          ScopeApp.prototype.netForAction.call(
+            Object.assign({ channelState: new Map() }, self), 'measure_vpp'),
+        ]));
+        """)
+        assert out == ["scope1", "scope1"]
+
+
+@needs_node
+class TestTheReplyNamesTheChannel:
+    """`scale 0.5: ok` said nothing about which channel changed, which is how
+    a write to the wrong one went unnoticed."""
+
+    def reply(self, line, enabled, message="Vertical scale 0.5 V/div"):
+        return _run_js("""
+        const written = [];
+        const self = {
+          net: 'picoscope1',
+          channelNets: [{ name: 'scope1', pin: 1 }, { name: 'scope2', pin: 2 }],
+          channelState: new Map([
+            ['A', { enabled: %s, net: 'scope1' }],
+            ['B', { enabled: %s, net: 'scope2' }],
+          ]),
+          console: {
+            write(text) { written.push(text); },
+            error(text) { written.push('error: ' + text); },
+          },
+          netForLabel: ScopeApp.prototype.netForLabel,
+          netForChannel: ScopeApp.prototype.netForChannel,
+          netForAction: ScopeApp.prototype.netForAction,
+          runCommand: ScopeApp.prototype.runCommand,
+          send: async () => (%s),
+          refreshMeasurements() {},
+          adoptCursors() {},
+        };
+        await ScopeApp.prototype.execute.call(self, %s);
+        process.stdout.write(JSON.stringify(written));
+        """ % (json.dumps(enabled["A"]), json.dumps(enabled["B"]),
+               json.dumps({"message": message} if message else {}),
+               json.dumps(line)))
+
+    def test_a_defaulted_setting_names_the_channel_it_changed(self):
+        assert self.reply("scale 0.5", {"A": False, "B": True}) == [
+            "channel B: Vertical scale 0.5 V/div"]
+
+    def test_a_named_setting_names_its_channel(self):
+        assert self.reply("scale A 0.5", {"A": False, "B": True}) == [
+            "channel A: Vertical scale 0.5 V/div"]
+
+    def test_a_reply_with_no_message_still_names_the_channel(self):
+        assert self.reply("probe 10", {"A": True, "B": False}, message=None) == [
+            "channel A: probe 10: ok"]
+
+    def test_a_device_wide_command_names_no_channel(self):
+        assert self.reply("timebase 1e-3", {"A": True, "B": True},
+                          message="Timebase 1 ms/div") == ["Timebase 1 ms/div"]
+
+
+@needs_node
 class TestControlsTargetTheirOwnNet:
     """send() must honour a per-control net override."""
 
