@@ -47,8 +47,9 @@ _STATE_TIMEOUT = 8
 # _GROUP_BUDGET_PER_NET_S for each net after the first wherever the reads are
 # sequential (see _group_budget); a flat 3s would leave a healthy three-channel
 # supply a few hundred milliseconds of headroom, and a false timeout costs that
-# instrument a whole cooldown. The LabJack and USB-hub batches read every net
-# in one operation and get the base.
+# instrument a whole cooldown. The LabJack batch reads every net in one
+# operation and gets the base. USB hubs keep the whole request deadline; see
+# _group_budget for why.
 _GROUP_BUDGET_S = 3.0
 _GROUP_BUDGET_PER_NET_S = 1.0
 
@@ -960,10 +961,12 @@ def _probe_group_entries(recs, deadline, sink):
 # USB-hub dispatcher answers hub-absent / hub-serial-mismatch on its own.
 _PRESENCE_EXEMPT_ROLES = frozenset({"usb", "debug", "webcam", "router", "mikrotik"})
 
-# Roles left out of the cooldown. USB hubs are probed in this process, under
-# the hub dispatcher's own per-hub budget and fail-fast hub lock, so there is
-# no leftover hardware_service call to back off from.
-_COOLDOWN_EXEMPT_ROLES = frozenset({"usb"})
+# USB hubs are probed in this process, under the hub dispatcher's own per-hub
+# budget and fail-fast hub lock. So they are left out of the cooldown -- there
+# is no leftover hardware_service call to back off from -- and they keep the
+# whole request deadline rather than a group budget (see _group_budget).
+_USB_HUB_ROLES = frozenset({"usb"})
+_COOLDOWN_EXEMPT_ROLES = _USB_HUB_ROLES
 
 
 def _usb_presence():
@@ -1003,16 +1006,22 @@ def _group_budget(recs):
 
     Grows per net wherever the instrument reads its nets one after another --
     the per-net path, and the supply batch, which is one call but still reads
-    each channel in turn. The LabJack and USB-hub batches read every net in
-    one operation and get the base.
+    each channel in turn. The LabJack batch reads every net in one operation
+    and gets the base.
+
+    A USB hub gets the whole request deadline, as it did before groups had
+    budgets of their own. A healthy Acroname 8-port read measured 2.1-2.5s on
+    a bench, too close to the base for a cut-off there to mean anything but a
+    false timeout on every port. Nor does a hub need one: the hub dispatcher
+    already budgets each hub (issue #205), its lock fails fast instead of
+    queueing, and an absent hub is classified ``hub-absent`` on its own.
     """
     if not recs:
         return _GROUP_BUDGET_S
     first = recs[0]
-    single_read = ((first.get("role", "") in _LABJACK_BATCH_ROLES
-                    and _is_labjack_t7(first))
-                   or first.get("role", "") == "usb")
-    if single_read:
+    if first.get("role", "") in _USB_HUB_ROLES:
+        return float(_STATE_TIMEOUT)
+    if first.get("role", "") in _LABJACK_BATCH_ROLES and _is_labjack_t7(first):
         return _GROUP_BUDGET_S
     return _GROUP_BUDGET_S + _GROUP_BUDGET_PER_NET_S * (len(recs) - 1)
 
@@ -1411,7 +1420,8 @@ def register_nets_routes(app: Flask) -> None:
         - ``"timed out: ..."``, code ``instrument-timeout`` -- probed, and no
           answer inside the instrument's own budget (``_GROUP_BUDGET_S``, plus
           ``_GROUP_BUDGET_PER_NET_S`` per extra net on the one-net-at-a-time
-          path). One slow instrument is cut short on its own.
+          path). One slow instrument is cut short on its own. USB hubs keep
+          the whole request deadline.
         - ``"not probed: ..."``, code ``probe-cooldown`` -- the last probe of
           this instrument timed out or found it busy within ``_COOLDOWN_S``;
           the reason quotes that answer. Ends early when the instrument next

@@ -820,7 +820,7 @@ Net types with no probe, such as `uart`, `spi`, `scope` and `logic`, show `–`.
 **How the box reads the nets:**
 - The box groups the nets by instrument and reads up to eight instruments at the same time.
 - All instruments share one budget of 8 seconds. When the budget ends, every net that did not answer reports `deadline`.
-- Each instrument also has its own budget of 3 seconds, plus 1 second for each extra net that the instrument reads one after another. An instrument that does not answer in its budget reports `instrument-timeout`. The other instruments continue.
+- Each instrument also has its own budget of 3 seconds, plus 1 second for each extra net that the instrument reads one after another. An instrument that does not answer in its budget reports `instrument-timeout`. The other instruments continue. USB hubs use only the shared budget.
 - Before a read, the box looks for the USB address of the instrument on the USB bus. If the address is not there, the box does not read the instrument, and its nets report `instrument-absent`.
 - After a timeout or a `device-busy` answer, the box does not read that instrument again for 30 seconds. Its nets report `probe-cooldown`. The pause ends early when any command gets an answer from the instrument.
 - The box reads USB hubs one after another. It does not read a hub that has less than 1 second of budget left, and the nets of that hub report `hub-skipped`.

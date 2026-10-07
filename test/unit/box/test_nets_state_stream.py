@@ -429,9 +429,32 @@ class GroupBudgetTests(_SweepTestCase):
         self.assertEqual(nets_handler._group_budget(three),
                          nets_handler._GROUP_BUDGET_S
                          + 2 * nets_handler._GROUP_BUDGET_PER_NET_S)
-        hubs = [_rec(f"p{i}", role="usb") for i in range(3)]
-        self.assertEqual(nets_handler._group_budget(hubs),
+        labjack = [_rec(f"a{i}", role="adc", instrument="LabJack_T7")
+                   for i in range(3)]
+        self.assertEqual(nets_handler._group_budget(labjack),
                          nets_handler._GROUP_BUDGET_S)
+
+    def test_a_usb_hub_keeps_the_request_deadline(self):
+        """A healthy Acroname 8-port read measured 2.1-2.5s on a bench, too
+        close to the group budget; a hub keeps the budget it had before."""
+        hubs = [_rec(f"p{i}", role="usb") for i in range(8)]
+        self.assertEqual(nets_handler._group_budget(hubs),
+                         nets_handler._STATE_TIMEOUT)
+
+    def test_a_slow_hub_is_not_cut_at_the_group_budget(self):
+        def slow_hub(names, causes=None, codes=None, deadline=None):
+            time.sleep(0.5)
+            return {n: "enabled" for n in names}
+
+        hub = [_rec("p1", role="usb"), _rec("p2", role="usb")]
+        for r in hub:
+            r["address"] = "USB0::0x24FF::0x0013::HUB::INSTR"
+        with patch.object(nets_handler, "_GROUP_BUDGET_S", 0.2), \
+             patch.object(nets_handler.Net, "list_saved", return_value=hub), \
+             patch.dict(nets_handler._BATCH_PROBES, {"usb": slow_hub}):
+            body = self.client.get('/nets/state').get_json()
+
+        self.assertEqual([e["state"] for e in body], ["enabled", "enabled"])
 
 
 class CooldownTests(_SweepTestCase):

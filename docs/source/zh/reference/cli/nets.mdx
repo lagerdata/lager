@@ -809,7 +809,7 @@ Nets reporting no state:
 **Box 如何读取这些 Net：**
 - Box 按仪器把 Net 分组，最多同时读取八台仪器。
 - 所有仪器共用 8 秒的总预算。预算用尽时，每个没有响应的 Net 都报告 `deadline`。
-- 每台仪器还有自己的 3 秒预算；仪器需要逐个读取的 Net 每多一个，预算增加 1 秒。在自己的预算内没有响应的仪器报告 `instrument-timeout`，其他仪器继续读取。
+- 每台仪器还有自己的 3 秒预算；仪器需要逐个读取的 Net 每多一个，预算增加 1 秒。在自己的预算内没有响应的仪器报告 `instrument-timeout`，其他仪器继续读取。USB 集线器只使用共用预算。
 - 读取之前，Box 会在 USB 总线上查找该仪器的 USB 地址。如果地址不在总线上，Box 不读取该仪器，它的 Net 报告 `instrument-absent`。
 - 出现超时或 `device-busy` 应答后，Box 在 30 秒内不再读取该仪器，它的 Net 报告 `probe-cooldown`。任何命令从该仪器得到应答时，这段暂停会提前结束。
 - Box 逐个读取 USB 集线器。剩余预算不足 1 秒时它不再读取某个集线器，该集线器的 Net 报告 `hub-skipped`。
