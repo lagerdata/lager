@@ -69,6 +69,15 @@ def _start_box_function(name):
     return body[:body.index('\n}\n') + 3]
 
 
+def _start_box_assignment(name):
+    """One `NAME="..."` line from start_box.sh."""
+    with open(_repo_file('box', 'start_box.sh')) as handle:
+        for line in handle:
+            if line.startswith(f'{name}='):
+                return line.rstrip('\n')
+    raise AssertionError(f'{name} not found in start_box.sh')
+
+
 def _setup_script_assignment(name):
     """One `NAME='...'`/`NAME="..."` line from setup_and_deploy_box.sh."""
     path = _repo_file('cli', 'deployment', 'scripts', 'setup_and_deploy_box.sh')
@@ -79,14 +88,18 @@ def _setup_script_assignment(name):
     raise AssertionError(f'{name} not found in setup_and_deploy_box.sh')
 
 
-def _make_sysfs(root, *vendors):
-    """A stand-in for /sys/bus/usb/devices holding one device per vendor."""
+def _make_sysfs(root, *devices):
+    """A stand-in for /sys/bus/usb/devices: one device per `vid:pid`, each
+    beside an interface directory, which has no idVendor, as on a real box."""
     os.makedirs(root, exist_ok=True)
-    for index, vendor in enumerate(vendors):
-        device = os.path.join(root, f'1-{index + 1}')
-        os.makedirs(device)
-        with open(os.path.join(device, 'idVendor'), 'w') as handle:
-            handle.write(vendor + '\n')
+    for index, device in enumerate(devices):
+        vendor, product = device.split(':')
+        path = os.path.join(root, f'1-{index + 1}')
+        os.makedirs(path)
+        os.makedirs(path + ':1.0')
+        for name, value in (('idVendor', vendor), ('idProduct', product)):
+            with open(os.path.join(path, name), 'w') as handle:
+                handle.write(value + '\n')
 
 
 class DaemonHashCoversRustSources(unittest.TestCase):
@@ -364,9 +377,9 @@ class StartBoxBuildsWhenStale(unittest.TestCase):
         self.block = self.block.replace(
             default, f'USB_SYSFS_DEVICES="{self.sysfs}"')
 
-    def attach(self, vendor):
+    def attach(self, *devices):
         shutil.rmtree(self.sysfs)
-        _make_sysfs(self.sysfs, '1d6b', vendor)
+        _make_sysfs(self.sysfs, '1d6b:0002', *devices)
 
     def add_header(self, header):
         path = os.path.join(self.sdk, *header.split('/'))
@@ -476,25 +489,41 @@ class StartBoxBuildsWhenStale(unittest.TestCase):
     def test_missing_sdk_with_a_picoscope_attached_warns(self):
         """The failure a scope user would otherwise first see as ECONNREFUSED."""
         shutil.rmtree(self.sdk)
-        self.attach(_update._PICOTECH_USB_VENDOR)
+        self.attach('0ce9:1007')
         result = self.run_block()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(self.built, 'ran a build that cannot succeed')
         self.assertIn('WARNING', result.stdout)
         self.assertIn('daemon is unavailable', result.stdout)
         self.assertIn(_update._PICOTECH_APT_REPO, result.stdout)
+        self.assertIn('apt-get install libps2000', result.stdout)
+        self.assertIn('lager install', result.stdout)
+
+    def test_a_2000_series_scope_names_only_its_package(self):
+        shutil.rmtree(self.sdk)
+        self.attach('0ce9:1007')
+        result = self.run_block()
+        self.assertRegex(result.stdout, r'\blibps2000\b')
+        for package in _update._PICOTECH_APT_PACKAGES[1:]:
+            self.assertNotRegex(result.stdout, rf'\b{package}\b')
+
+    def test_an_unmapped_scope_names_every_package(self):
+        shutil.rmtree(self.sdk)
+        self.attach('0ce9:1012')
+        result = self.run_block()
+        self.assertIn('WARNING', result.stdout)
         for package in _update._PICOTECH_APT_PACKAGES:
             self.assertRegex(result.stdout, rf'\b{package}\b')
 
     def test_missing_sdk_with_another_vendors_device_stays_quiet(self):
         shutil.rmtree(self.sdk)
-        self.attach('1366')
+        self.attach('1366:0101')
         result = self.run_block()
         self.assertNotIn('WARNING', result.stdout)
         self.assertIn('PicoTech SDK headers', result.stdout)
 
     def test_a_built_daemon_with_a_picoscope_attached_says_nothing(self):
-        self.attach(_update._PICOTECH_USB_VENDOR)
+        self.attach('0ce9:1007')
         result = self.run_block()
         self.assertTrue(self.built)
         self.assertNotIn('unavailable', result.stdout)
@@ -655,49 +684,78 @@ class TheHeaderChecksAgree(unittest.TestCase):
 
 
 class TheDeviceChecksAgree(unittest.TestCase):
-    """start_box.sh and update.py must agree on whether a PicoScope is
-    attached, or one of them warns where the other stays quiet."""
+    """start_box.sh and update.py must agree on which PicoScopes are attached
+    and what to install for them, or one names a package the other does not,
+    or warns where the other stays quiet."""
 
     def setUp(self):
         self.root = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
         self.sysfs = os.path.join(self.root, 'devices')
 
-    def python_side(self):
+    def python_products(self):
         result = subprocess.run(
-            ['sh', '-c', _update._pico_attached_shell_cmd(self.sysfs)],
+            ['sh', '-c', _update._pico_products_shell_cmd(self.sysfs)],
             capture_output=True, text=True,
         )
         return result.stdout.strip()
 
-    def shell_side(self):
+    def shell(self, call):
         script = (
             'set -eu\n'
             f'USB_SYSFS_DEVICES="{self.sysfs}"\n'
+            f'{_start_box_assignment("PICOTECH_APT_PACKAGES")}\n'
+            f'{_start_box_function("picotech_products")}\n'
             f'{_start_box_function("picotech_device_attached")}\n'
-            'if picotech_device_attached; then echo 1; else echo 0; fi\n'
+            f'{_start_box_function("picotech_packages_needed")}\n'
+            f'{call}\n'
         )
         result = subprocess.run(['bash', '-c', script],
                                 capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout.strip()
 
-    def assert_both(self, expected, *vendors):
-        _make_sysfs(self.sysfs, *vendors)
-        self.assertEqual(self.python_side(), expected, f'update.py, {vendors}')
-        self.assertEqual(self.shell_side(), expected, f'start_box.sh, {vendors}')
+    def assert_both(self, products, packages, *devices):
+        _make_sysfs(self.sysfs, *devices)
+        self.assertEqual(self.python_products(), products, f'update.py, {devices}')
+        self.assertEqual(self.shell('picotech_products'), products,
+                         f'start_box.sh, {devices}')
+        self.assertEqual(
+            self.shell('if picotech_device_attached; then echo 1; else echo 0; fi'),
+            '1' if products else '0')
+        if products:
+            self.assertEqual(
+                ' '.join(_update._picotech_packages_needed(products.split())),
+                packages, f'update.py packages, {devices}')
+            self.assertEqual(self.shell('picotech_packages_needed'), packages,
+                             f'start_box.sh packages, {devices}')
 
-    def test_both_see_a_picoscope(self):
-        self.assert_both('1', '1d6b', _update._PICOTECH_USB_VENDOR, '1366')
+    def test_both_see_a_2000_series_scope(self):
+        self.assert_both('1007', 'libps2000', '1d6b:0002', '0ce9:1007', '1366:0101')
+
+    def test_two_of_the_same_scope_name_its_package_once(self):
+        self.assert_both('1007', 'libps2000', '0ce9:1007', '0ce9:1007')
+
+    def test_an_unmapped_scope_gets_every_package(self):
+        self.assert_both('1007 1012', ' '.join(_update._PICOTECH_APT_PACKAGES),
+                         '0ce9:1007', '0ce9:1012')
 
     def test_both_ignore_other_vendors(self):
-        self.assert_both('0', '1d6b', '1366', '0ce90')
+        self.assert_both('', '', '1d6b:0002', '1366:0101', '0ce90:1007')
 
     def test_both_handle_no_devices(self):
-        self.assert_both('0')
+        self.assert_both('', '')
 
     def test_both_handle_no_sysfs(self):
-        self.assertEqual(self.python_side(), '0')
-        self.assertEqual(self.shell_side(), '0')
+        self.assertEqual(self.python_products(), '')
+        self.assertEqual(self.shell('picotech_products'), '')
+
+    def test_the_product_maps_agree(self):
+        """Every id update.py maps is mapped the same way in start_box.sh."""
+        for pid, package in _update._PICOTECH_PRODUCT_PACKAGES.items():
+            with self.subTest(pid=pid):
+                shutil.rmtree(self.sysfs, ignore_errors=True)
+                self.assert_both(pid, package, f'0ce9:{pid}')
 
 
 class TheSdkPackageListsAgree(unittest.TestCase):
@@ -727,14 +785,23 @@ class TheSdkPackageListsAgree(unittest.TestCase):
         self.assertEqual(tuple(install.split()[-len(_update._PICOTECH_APT_PACKAGES):]),
                          _update._PICOTECH_APT_PACKAGES)
 
-    def test_start_box_names_every_package(self):
+    def test_start_box_lists_the_same_packages_and_repo(self):
+        line = _start_box_assignment('PICOTECH_APT_PACKAGES')
+        self.assertEqual(tuple(line.split('=', 1)[1].strip('"').split()),
+                         _update._PICOTECH_APT_PACKAGES)
+        line = _start_box_assignment('PICOTECH_APT_REPO')
+        self.assertEqual(line.split('=', 1)[1].strip('"'),
+                         _update._PICOTECH_APT_REPO)
+
+    def test_no_message_says_to_build_the_daemon_by_hand(self):
+        """start_box.sh builds it; telling an operator to build and copy it
+        sends them down a path that predates that."""
         with open(_repo_file('box', 'start_box.sh')) as handle:
-            text = handle.read()
-        warning = text[text.index('if picotech_device_attached; then'):]
-        warning = warning[:warning.index('        else\n')]
-        for package in _update._PICOTECH_APT_PACKAGES:
-            self.assertRegex(warning, rf'\b{package}\b')
-        self.assertIn(_update._PICOTECH_APT_REPO, warning)
+            self.assertNotIn('Build and copy', handle.read())
+
+    def test_every_mapped_package_is_one_the_deploy_installs(self):
+        for package in _update._PICOTECH_PRODUCT_PACKAGES.values():
+            self.assertIn(package, _update._PICOTECH_APT_PACKAGES)
 
 
 class ScopeSdkWarning(unittest.TestCase):
@@ -744,26 +811,35 @@ class ScopeSdkWarning(unittest.TestCase):
         return _update._scope_sdk_warning(facts)
 
     def test_warns_with_a_picoscope_and_no_headers(self):
-        text = self.warning(DAEMON_SDK_HEADERS='0', DAEMON_PICO_ATTACHED='1')
+        text = self.warning(DAEMON_SDK_HEADERS='0', DAEMON_PICO_PRODUCTS='1007')
         self.assertIn('unavailable', text)
         self.assertIn(_update._PICOTECH_APT_REPO, text)
+        self.assertIn('apt-get install libps2000`', text)
+        self.assertIn('lager install', text)
+        self.assertIn('--version', text)
+
+    def test_names_only_the_package_a_2000_series_needs(self):
+        text = self.warning(DAEMON_SDK_HEADERS='0', DAEMON_PICO_PRODUCTS='1007')
+        for package in _update._PICOTECH_APT_PACKAGES[1:]:
+            self.assertNotRegex(text, rf'\b{package}\b')
+
+    def test_names_every_package_for_an_unmapped_scope(self):
+        text = self.warning(DAEMON_SDK_HEADERS='0', DAEMON_PICO_PRODUCTS='1012')
         for package in _update._PICOTECH_APT_PACKAGES:
-            self.assertIn(package, text)
+            self.assertRegex(text, rf'\b{package}\b')
 
     def test_quiet_without_a_picoscope(self):
         self.assertIsNone(self.warning(DAEMON_SDK_HEADERS='0',
-                                       DAEMON_PICO_ATTACHED='0'))
+                                       DAEMON_PICO_PRODUCTS=''))
 
     def test_quiet_with_headers_installed(self):
         self.assertIsNone(self.warning(DAEMON_SDK_HEADERS='1',
-                                       DAEMON_PICO_ATTACHED='1'))
+                                       DAEMON_PICO_PRODUCTS='1007'))
 
     def test_quiet_when_either_fact_was_not_probed(self):
         """An older probe says nothing about this box."""
-        self.assertIsNone(self.warning(DAEMON_PICO_ATTACHED='1'))
+        self.assertIsNone(self.warning(DAEMON_PICO_PRODUCTS='1007'))
         self.assertIsNone(self.warning(DAEMON_SDK_HEADERS='0'))
-        self.assertIsNone(self.warning(DAEMON_SDK_HEADERS='0',
-                                       DAEMON_PICO_ATTACHED=''))
 
 
 class DaemonBuildDecision(unittest.TestCase):
@@ -911,7 +987,7 @@ class ProbeReportsDaemonFacts(unittest.TestCase):
     def test_every_fact_the_decision_reads_is_emitted(self):
         for key in ('DAEMON_SOURCE_HASH', 'DAEMON_HASH_STORED',
                     'DAEMON_BINARY', 'DAEMON_SDK_HEADERS',
-                    'DAEMON_PICO_ATTACHED'):
+                    'DAEMON_PICO_PRODUCTS'):
             self.assertIn(f'{_update._PROBE_PREFIX}{key}=', self.script)
 
     def test_the_header_fact_reads_the_installed_sdk(self):
@@ -920,7 +996,7 @@ class ProbeReportsDaemonFacts(unittest.TestCase):
                       self.script)
 
     def test_the_device_fact_reads_sysfs(self):
-        self.assertIn(_update._pico_attached_shell_cmd(), self.script)
+        self.assertIn(_update._pico_products_shell_cmd(), self.script)
 
     def test_the_script_is_valid_shell(self):
         result = subprocess.run(['bash', '-n'], input=self.script,
