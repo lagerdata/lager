@@ -422,6 +422,12 @@ def status():
             # set, a missing ``enabled`` means "not known"; a box predating it
             # omits the key, and a client falls back to the ``state`` text.
             'netsStateEnabled': _has_nets,
+            # GET /nets/state?stream=1 answers application/x-ndjson, one line
+            # per instrument as it answers and a final {"type": "done"} line
+            # (format in nets_handler.nets_state). A client asks for the
+            # stream only when this is set; an older box ignores the query
+            # parameter and answers with the plain array.
+            'netsStateStream': _has_nets,
         },
     })
 

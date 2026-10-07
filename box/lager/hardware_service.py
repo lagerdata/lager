@@ -23,6 +23,7 @@ import json
 import logging
 import importlib
 import threading
+import time
 import traceback
 import atexit
 from flask import Flask, request, jsonify, send_from_directory
@@ -134,7 +135,7 @@ def _locked_call(lock, fn, *, what, lock_timeout=None, op_timeout=None):
     op_timeout = _INVOKE_DEADLINE_S if op_timeout is None else op_timeout
     if not lock.acquire(timeout=lock_timeout):
         raise DeviceBusy(
-            f"{what}: device still busy after {lock_timeout:.0f}s waiting for "
+            f"{what}: device still busy after {lock_timeout:.1f}s waiting for "
             f"a previous operation to finish"
         )
     wedged = False
@@ -147,6 +148,42 @@ def _locked_call(lock, fn, *, what, lock_timeout=None, op_timeout=None):
     finally:
         if not wedged:
             lock.release()
+
+
+def _request_lock_timeout(data):
+    """The caller's own lock wait from ``lock_timeout_s``, or None for the default.
+
+    A caller that has a budget of its own -- the /nets/state sweep -- has no use
+    for an answer that arrives after it has stopped listening, and while it
+    waits it ties up a worker that could be probing another instrument. It may
+    therefore ask for a SHORTER wait. Never a longer one: the cap is what keeps
+    the busy answer inside every other caller's HTTP timeout. Anything that is
+    not a positive number is ignored rather than rejected, so a malformed value
+    costs the caller its shortcut, not its answer.
+    """
+    raw = (data or {}).get('lock_timeout_s')
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or raw <= 0:
+        return None
+    return min(float(raw), _LOCK_TIMEOUT_S)
+
+
+# When each device last completed an operation, by lock identity (``device_id``
+# or ``address``), in this process's ``time.monotonic()``. Read by the
+# /nets/state sweep, which runs in another process, through /devices/last_ok:
+# it backs off an instrument that just timed out, and a success here from ANY
+# caller -- a `lager supply` command, the TUI monitor -- is the evidence that
+# the instrument is back and the back-off should end.
+_last_ok = {}
+_last_ok_lock = threading.Lock()
+
+
+def _note_ok(*keys):
+    """Record a completed operation under every identity the caller supplied."""
+    now = time.monotonic()
+    with _last_ok_lock:
+        for key in keys:
+            if key:
+                _last_ok[str(key)] = now
 
 
 # Shared pyvisa Resource cache keyed by VISA address. Lets multiple driver
@@ -343,6 +380,19 @@ def health_check():
         'version': SERVICE_VERSION,
         'port': SERVICE_PORT
     })
+
+
+@app.route('/devices/last_ok', methods=['GET'])
+def devices_last_ok():
+    """Seconds since each device last completed an operation.
+
+    Response: ``{"<device_id or address>": <age in seconds>, ...}``. Ages, not
+    timestamps, so a caller in another process needs no shared clock. A device
+    that has not completed an operation since this service started is absent.
+    """
+    now = time.monotonic()
+    with _last_ok_lock:
+        return jsonify({key: round(now - at, 3) for key, at in _last_ok.items()})
 
 
 @app.route('/diagnose/dispatcher', methods=['GET'])
@@ -628,6 +678,7 @@ def invoke():
             device_lock = _get_device_lock(cache_key)
 
         what = f"{device_name}.{function_name}"
+        lock_timeout = _request_lock_timeout(data)
 
         def _call_device():
             _sync_device_channel(device, net_info)
@@ -638,7 +689,9 @@ def invoke():
             # (which blocks in libusb before the 5s VISA I/O timeout is even
             # set) or a hung native driver call used to leave every later
             # /invoke thread for this device queued forever.
-            result = _locked_call(device_lock, _call_device, what=what)
+            result = _locked_call(device_lock, _call_device, what=what,
+                                  lock_timeout=lock_timeout)
+            _note_ok(device_id, address)
 
             # Return the result
             # Note: EnumEncoder is handled by device.py when it decodes the response
@@ -734,7 +787,9 @@ def invoke():
                         return func(*args, **kwargs)
 
                     result = _locked_call(device_lock, _call_fresh_device,
-                                          what=f"{what} (retry)")
+                                          what=f"{what} (retry)",
+                                          lock_timeout=lock_timeout)
+                    _note_ok(device_id, address)
                     return jsonify(result)
                 except DeviceBusy as busy_e:
                     logger.warning(f"Device busy retrying {what}: {busy_e}")
@@ -1211,17 +1266,23 @@ def labjack_batch_read():
     # a concurrent gpo/gpi/adc on the same handle. That is the contention this
     # endpoint exists to avoid. "labjack:ANY" remains the fallback only because
     # it is what _physical_device_id itself yields for an address-less record.
-    device_lock = _get_address_lock(data.get("device_id") or "labjack:ANY")
+    device_id = data.get("device_id") or "labjack:ANY"
+    device_lock = _get_address_lock(device_id)
+    lock_timeout = _request_lock_timeout(data) or _LOCK_TIMEOUT_S
     # Bounded like /invoke's: this endpoint takes the SAME lock, so a wedged
     # /invoke that never released it would otherwise hang every /nets/state
     # sweep of this LabJack -- the exact pile-up the bound exists to stop.
     # Nets that cannot be read report null, which is this endpoint's contract
-    # for an unreadable device, so a busy lock needs no separate status.
-    if not device_lock.acquire(timeout=_LOCK_TIMEOUT_S):
-        logger.warning("labjack/batch_read: device busy after %.0fs; "
+    # for an unreadable device. The body stays that contract on a busy lock;
+    # the X-Lager-Device-Busy header says why, for a caller that wants to tell
+    # "busy" from "read nothing" without a key that could collide with a net.
+    if not device_lock.acquire(timeout=lock_timeout):
+        logger.warning("labjack/batch_read: device busy after %.1fs; "
                        "reporting %d net(s) as unknown",
-                       _LOCK_TIMEOUT_S, len(nets))
-        return jsonify(results)
+                       lock_timeout, len(nets))
+        resp = jsonify(results)
+        resp.headers['X-Lager-Device-Busy'] = '1'
+        return resp
     try:
         try:
             handle = get_labjack_handle()
@@ -1283,6 +1344,8 @@ def labjack_batch_read():
     finally:
         device_lock.release()
 
+    if any(v is not None for v in results.values()):
+        _note_ok(device_id)
     return jsonify(results)
 
 

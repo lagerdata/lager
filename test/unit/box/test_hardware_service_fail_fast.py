@@ -304,5 +304,94 @@ class LabjackBatchReadLockTests(unittest.TestCase):
         lock.release()
 
 
+class CallerLockTimeoutTests(unittest.TestCase):
+    """A caller with its own budget (the /nets/state sweep) may ask for a
+    SHORTER lock wait through ``lock_timeout_s``, never a longer one. Without
+    it, a sweep probe behind a lock an abandoned call still holds waits the
+    full ``_LOCK_TIMEOUT_S`` -- past the sweep's own budget."""
+
+    def setUp(self):
+        hw.device_cache.clear()
+        hw.module_cache.clear()
+        with hw.device_locks_meta_lock:
+            hw.device_locks.clear()
+        with hw._last_ok_lock:
+            hw._last_ok.clear()
+        self.client = hw.app.test_client()
+
+    def _payload(self, device, lock_timeout_s=None, device_id=None):
+        hw.device_cache[('fake_device', _ADDRESS)] = device
+        net_info = {'address': _ADDRESS, 'channel': 1}
+        if device_id:
+            net_info['device_id'] = device_id
+        payload = {'device': 'fake_device', 'function': 'read_state',
+                   'args': [], 'kwargs': {}, 'net_info': net_info}
+        if lock_timeout_s is not None:
+            payload['lock_timeout_s'] = lock_timeout_s
+        return payload
+
+    def test_a_shorter_lock_wait_answers_busy_inside_it(self):
+        payload = self._payload(_HealthyDevice(), lock_timeout_s=0.2)
+        hw._get_address_lock(_ADDRESS).acquire()
+        try:
+            start = time.monotonic()
+            resp = self.client.post('/invoke', json=payload)
+            elapsed = time.monotonic() - start
+        finally:
+            hw._get_address_lock(_ADDRESS).release()
+
+        self.assertEqual(resp.status_code, 503)
+        self.assertTrue(resp.get_json()['error'].startswith('device-busy:'))
+        self.assertLess(elapsed, 2.0, 'the caller\'s shorter wait was ignored')
+
+    def test_the_wait_is_capped_at_the_service_default(self):
+        with patch.object(hw, '_LOCK_TIMEOUT_S', 8.0):
+            self.assertEqual(hw._request_lock_timeout({'lock_timeout_s': 60}), 8.0)
+            self.assertEqual(hw._request_lock_timeout({'lock_timeout_s': 1.5}), 1.5)
+
+    def test_a_malformed_wait_falls_back_to_the_default(self):
+        for raw in (0, -1, 'fast', True, None):
+            with self.subTest(raw=raw):
+                self.assertIsNone(hw._request_lock_timeout({'lock_timeout_s': raw}))
+        self.assertIsNone(hw._request_lock_timeout({}))
+
+    def test_a_success_is_recorded_under_address_and_device_id(self):
+        payload = self._payload(_HealthyDevice(), device_id='joulescope:JS1')
+        resp = self.client.post('/invoke', json=payload)
+        self.assertEqual(resp.status_code, 200, resp.get_json())
+
+        ages = self.client.get('/devices/last_ok').get_json()
+        self.assertIn(_ADDRESS, ages)
+        self.assertIn('joulescope:JS1', ages)
+        self.assertLess(ages[_ADDRESS], 5.0)
+
+    def test_a_failure_is_not_recorded_as_a_success(self):
+        payload = self._payload(_HealthyDevice(), lock_timeout_s=0.1)
+        hw._get_address_lock(_ADDRESS).acquire()
+        try:
+            self.client.post('/invoke', json=payload)
+        finally:
+            hw._get_address_lock(_ADDRESS).release()
+        self.assertEqual(self.client.get('/devices/last_ok').get_json(), {})
+
+    def test_labjack_busy_answer_says_so_in_a_header(self):
+        device_id = 'labjack:USB0::0x0CD5::0x0007::HDR::INSTR'
+        lock = hw._get_address_lock(device_id)
+        lock.acquire()
+        try:
+            start = time.monotonic()
+            resp = self.client.post('/labjack/batch_read', json={
+                'device_id': device_id, 'lock_timeout_s': 0.2,
+                'nets': [{'name': 'VBAT', 'role': 'adc', 'pin': '0'}],
+            })
+            elapsed = time.monotonic() - start
+        finally:
+            lock.release()
+
+        self.assertEqual(resp.get_json(), {'VBAT': None})
+        self.assertEqual(resp.headers.get('X-Lager-Device-Busy'), '1')
+        self.assertLess(elapsed, 2.0)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -820,6 +820,9 @@ Net types with no probe, such as `uart`, `spi`, `scope` and `logic`, show `–`.
 **How the box reads the nets:**
 - The box groups the nets by instrument and reads up to eight instruments at the same time.
 - All instruments share one budget of 8 seconds. When the budget ends, every net that did not answer reports `deadline`.
+- Each instrument also has its own budget of 3 seconds, plus 1 second for each extra net that the instrument reads one after another. An instrument that does not answer in its budget reports `instrument-timeout`. The other instruments continue.
+- Before a read, the box looks for the USB address of the instrument on the USB bus. If the address is not there, the box does not read the instrument, and its nets report `instrument-absent`.
+- After a timeout or a `device-busy` answer, the box does not read that instrument again for 30 seconds. Its nets report `probe-cooldown`. The pause ends early when any command gets an answer from the instrument.
 - The box reads USB hubs one after another. It does not read a hub that has less than 1 second of budget left, and the nets of that hub report `hub-skipped`.
 - A read takes the same instrument locks as a running test, so the command can wait for a test.
 - The box reads an `i2c` net with a full bus scan.
@@ -834,8 +837,11 @@ Below the table, the command explains each `–` that has a reason. It groups th
 |---|---|
 | `deadline` | The shared budget ended before the instrument answered. This alone does not mean that the instrument is slow. |
 | `unreadable: <detail>` | The box tried to read the instrument and got no value. The detail names the error. |
+| `not connected: <instrument> (<address>) is not on the USB bus` | The instrument is unplugged or off, or the bench has a different unit. The box did not read it. |
+| `timed out: no answer from <instrument>` | The instrument did not answer in its own budget. |
+| `not probed: <earlier reason>` | The last read of the instrument failed a short time ago. The reason quotes that failure. |
 
-A `usb` net can also carry a code. When all nets in a group have the same code, the footnote adds one remedy line:
+A net can also carry a code. When all nets in a group have the same code, the footnote adds one remedy line:
 
 | Code | Remedy line |
 |---|---|
@@ -844,6 +850,10 @@ A `usb` net can also carry a code. When all nets in a group have the same code, 
 | `hub-serial-mismatch` | Hubs are on the bus, but none has the serial that the net names. Check the address of the net. |
 | `hub-skipped` | The box did not read the hub, because slower instruments used the budget first. The hub can be fine. A read of that hub alone answers. |
 | `hub-open-failed` | No remedy line. The reason names the failure. |
+| `instrument-absent` | No remedy line. The USB address of the instrument is not on the USB bus. |
+| `instrument-timeout` | No remedy line. The instrument did not answer in its own budget. |
+| `device-busy` | No remedy line. Another operation held the instrument for all of the budget. |
+| `probe-cooldown` | No remedy line. The box did not read the instrument, because its last read failed less than 30 seconds ago. |
 
 **JSON output:**
 
@@ -853,9 +863,25 @@ A `usb` net can also carry a code. When all nets in a group have the same code, 
 |---|---|
 | `live_state` | The state string, or `null` |
 | `live_state_reason` | Why the state is `null`, including `no probe for role`. Present only when the box sent a reason. |
-| `live_state_reason_code` | The code of a `usb` net. Present only when the box sent a code. |
+| `live_state_reason_code` | The code of the net. Present only when the box sent a code. |
 
 A box without this endpoint prints a note to update it. The table still prints, with `–` in every `State` cell.
+
+**Box API:**
+
+The command reads `GET /nets/state` on port 9000 of the box. The answer is one JSON array, with one object for each saved net in saved order. Each object has `name`, `role` and `state`. It can also have `enabled`, `reason` and `reason_code`.
+
+`GET /nets/state?stream=1` sends the same objects as each instrument answers. Use it only when the `capabilities` object of `GET /status` has `netsStateStream` set to `true`. The answer type is `application/x-ndjson`, with one JSON object on each line:
+
+```
+{"type": "states", "entries": [<object>, ...]}
+{"type": "done", "entries": [<object>, ...], "elapsed_ms": 2412}
+```
+
+- The box sends one `states` line for each instrument when it answers or its budget ends. The first `states` line holds the nets that need no read: net types with no probe, absent instruments and instruments in a pause.
+- The `done` line is always the last line, and the box sends it one time. Its `entries` are the nets that the shared budget cut off, each with `reason` set to `deadline`. The list is often empty.
+- Each saved net is in exactly one line. The lines come in the order that the instruments answer.
+- If the stream ends without a `done` line, the connection stopped before the box finished.
 
 ### `describe`
 
