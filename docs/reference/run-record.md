@@ -98,6 +98,34 @@ Captured at spawn, before any user code runs.
 | `kernel` | `uname -r`. |
 | `nets` | The parsed content of `/etc/lager/saved_nets.json`, verbatim, or `[]`. |
 | `netsHash` | `sha256(JCS(nets))`. Two runs with the same `netsHash` ran against the same net configuration. |
+| `instruments` | §4.1.1. |
+
+#### 4.1.1 `boxState.instruments`
+
+The physical instruments behind the nets, identified down to the unit, so a
+consumer can look up a unit's calibration and maintenance history by serial
+number. One entry per instrument the box sees at spawn, from a fresh
+instrument scan, sorted by `connection`.
+
+| Field | Meaning |
+| --- | --- |
+| `type` | The instrument type, e.g. `keithley_2281s`. |
+| `connection` | The address the box uses: VISA resource, `serial://` resource, or device path. |
+| `serialNumber` | The unit's serial number, or null when the box cannot read one. |
+| `serialSource` | Where `serialNumber` came from (below), or null. |
+| `firmwareVersion` | The instrument's firmware version, or null when not read. |
+| `nets` | Names of the nets in `boxState.nets` that use this instrument, sorted. |
+
+| `serialSource` | Meaning |
+| --- | --- |
+| `usb-device` | The USB serial of the instrument itself. For USB-TMC instruments this is the instrument's own serial number. |
+| `usb-adapter` | The USB serial of a cable or adapter between the box and the instrument (for example a USB-to-RS-232 cable). It identifies the cable, not the instrument. |
+| `idn` | The serial number the instrument reported in its `*IDN?` response. |
+
+A consumer MUST NOT treat a `usb-adapter` serial as the instrument's serial
+number. The box SHOULD NOT send commands to an instrument only to fill this
+section; a box version that does not read `*IDN?` reports `firmwareVersion`
+as null and never uses `idn`.
 
 ### 4.2 `code`
 
