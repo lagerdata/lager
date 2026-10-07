@@ -11,7 +11,7 @@
 #   2. Sudo configuration (passwordless udev management)
 #   3. Box code deployment (git sparse-checkout via HTTPS)
 #   4. J-Link installation (optional, if available)
-#   5. PicoScope 7 SDK (optional; every PicoTech USB driver)
+#   5. PicoTech SDK (optional; PicoScope drivers and headers)
 #   6. Docker container startup
 #   7. Post-deployment verification
 #
@@ -2050,58 +2050,71 @@ else
 fi
 
 # =============================================================================
-# STEP 4.5: PicoScope 7 SDK (all PicoTech USB drivers)
+# STEP 4.5: PicoTech SDK (PicoScope drivers and headers)
 # =============================================================================
-# PicoTech's `picoscope` metapackage installs libps2000, libps2000a, libps3000,
-# libps3000a, libps4000, libps4000a, libps5000, libps5000a, libps6000,
-# libps6000a, and related libs into /opt/picoscope/lib, which start_box.sh
-# bind-mounts into the container. That is every current PicoScope USB driver,
-# not only 2204A/2205A. Failure here is non-fatal: the box still comes up.
-print_step "Installing PicoScope 7 SDK (Optional)"
+# Each libps* package puts its family's library in /opt/picoscope/lib, which
+# start_box.sh bind-mounts into the container for the daemon to dlopen, and
+# its headers in /opt/picoscope/include/<family>/, which the daemon's build.rs
+# generates bindings from. The headers are what decide whether a box gets a
+# daemon at all, so they are what this step checks. Same packages and repo as
+# .github/workflows/rust-checks.yml: the picoscope7 repo is the one PicoTech
+# still publishes (the older /debian/ repo stopped in 2022 and has no arm64).
+# libps6000a and libpsospa are there for the PicoConnectProbes.h the libps3000a
+# headers include. Failure here is non-fatal: the box still comes up.
+#
+# PICOSCOPE_HEADERS_CHECK exits 0 when build.rs has at least one family to
+# build. Keep its rule identical to `picotech_headers_present` in
+# box/start_box.sh; a test runs both over the same trees and compares.
+PICOSCOPE_PACKAGES="libps2000 libps2000a libps3000a libps4000a libps5000a libps6000a libpsospa"
+PICOSCOPE_HEADERS_CHECK='i=/opt/picoscope/include; for h in libps2000/ps2000.h libps2000a/ps2000aApi.h libps4000a/ps4000aApi.h libps5000a/ps5000aApi.h; do [ -f "$i/$h" ] && exit 0; done; [ -f "$i/libps3000a/ps3000aApi.h" ] || exit 1; for d in libps3000a libps4000a libps5000a libps6000a libpsospa; do [ -f "$i/$d/PicoConnectProbes.h" ] && exit 0; done; exit 1'
+print_step "Installing PicoTech SDK (Optional)"
 
 if [ "$SKIP_PICOSCOPE" = true ]; then
     print_info "Skipping PicoScope SDK installation (--skip-picoscope flag set)"
 else
-    print_info "Checking if PicoScope 7 is already installed on box..."
-    if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "dpkg-query -W -f='\${Status}' picoscope 2>/dev/null | grep -q 'install ok installed'"; then
-        print_success "PicoScope 7 already installed on box"
+    print_info "Checking for the PicoTech SDK headers on box..."
+    # Headers rather than `dpkg-query picoscope`: a box with the libraries
+    # but no headers still has no daemon, and has to be topped up.
+    if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "$PICOSCOPE_HEADERS_CHECK"; then
+        print_success "PicoTech SDK headers already installed on box"
     else
-        print_info "Installing PicoScope 7 from PicoTech's apt repository..."
+        print_info "Installing the PicoTech SDK from PicoTech's apt repository..."
         echo ""
-        echo "This installs every PicoTech USB driver (libps2000 through libps6000a)"
-        echo "plus the PicoScope 7 application. Libraries land at /opt/picoscope/lib,"
-        echo "which the box container bind-mounts. PicoTech license:"
-        echo "  https://www.picotech.com/about/legal"
+        echo "Packages: $PICOSCOPE_PACKAGES"
+        echo "Libraries land in /opt/picoscope/lib and headers in /opt/picoscope/include."
+        echo "PicoTech license: https://www.picotech.com/about/legal"
         echo ""
         # ssh_t (tty) so operator sudo still works: lager-box-config is written
         # after this script returns, and apt-get is not in lagerdata-udev.
         # `sudo env VAR=... apt-get` (not `sudo VAR= apt-get`) matches the rest
         # of this script; see #315.
-        if ssh_t "${BOX_USER}@${BOX_IP}" '
+        if ssh_t "${BOX_USER}@${BOX_IP}" "
             set -e
             sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y --no-install-recommends gnupg wget ca-certificates
             wget -O- https://labs.picotech.com/Release.gpg.key | gpg --dearmor > /tmp/picotech-archive-keyring.gpg
             sudo /bin/cp /tmp/picotech-archive-keyring.gpg /usr/share/keyrings/picotech-archive-keyring.gpg
             sudo /bin/chmod 644 /usr/share/keyrings/picotech-archive-keyring.gpg
             sudo /bin/rm -f /tmp/picotech-archive-keyring.gpg
-            printf "%s\n" "deb [signed-by=/usr/share/keyrings/picotech-archive-keyring.gpg] https://labs.picotech.com/picoscope7/debian/ picoscope main" > /tmp/picoscope7.list
+            printf '%s\n' 'deb [signed-by=/usr/share/keyrings/picotech-archive-keyring.gpg] https://labs.picotech.com/picoscope7/debian/ picoscope main' > /tmp/picoscope7.list
             sudo /bin/cp /tmp/picoscope7.list /etc/apt/sources.list.d/picoscope7.list
             sudo /bin/chmod 644 /etc/apt/sources.list.d/picoscope7.list
             sudo /bin/rm -f /tmp/picoscope7.list
             sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get update
-            sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y picoscope
-        '; then
-            if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "test -e /opt/picoscope/lib/libps2000.so || test -e /opt/picoscope/lib/libps2000.so.2"; then
-                print_success "PicoScope 7 SDK installed at /opt/picoscope/lib"
+            sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y --no-install-recommends $PICOSCOPE_PACKAGES
+        "; then
+            if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "$PICOSCOPE_HEADERS_CHECK"; then
+                print_success "PicoTech SDK installed: headers in /opt/picoscope/include"
             else
-                print_warning "PicoScope 7 package installed but /opt/picoscope/lib/libps2000.so was not found"
+                print_warning "PicoTech packages installed but no PicoScope family's headers are in /opt/picoscope/include"
+                print_info "The oscilloscope daemon cannot be built until they are."
             fi
         else
-            print_warning "PicoScope 7 SDK installation failed"
+            print_warning "PicoTech SDK installation failed"
             echo ""
-            print_info "The box will still start. PicoScope instruments need the SDK at"
-            print_info "/opt/picoscope/lib, installed from PicoTech:"
-            print_info "  https://www.picotech.com/downloads/linux"
+            print_info "The box will still start, without the oscilloscope daemon."
+            print_info "PicoScopes need the headers for their family, from:"
+            print_info "  https://labs.picotech.com/picoscope7/debian/ picoscope main"
+            print_info "  sudo apt-get install $PICOSCOPE_PACKAGES"
             echo ""
         fi
     fi

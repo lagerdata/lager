@@ -19,11 +19,15 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   `lager scope` sets volts/div, timebase, coupling and probe and takes measurements on a
   PicoScope, where most of these answered "not supported". An 8-channel 4824 works as a
   four-channel scope, on channels A to D.
-- **`lager install` installs PicoScope 7, with every PicoTech USB driver**, unless given
-  `--skip-picoscope`. A box builds its oscilloscope daemon when it starts on new daemon
-  sources or new PicoTech SDK headers, so `lager install` and `lager update` deploy it. The
-  daemon drives each series whose headers are installed, so a box with only the 2000-series
-  SDK gets one too. A box with no series' headers skips the build.
+- **`lager install` installs the PicoTech SDK, drivers and headers, for every supported
+  PicoScope series**, unless given `--skip-picoscope`. It checks for the headers, so a box
+  that has the drivers without them is topped up. A box builds its oscilloscope daemon when
+  it starts on new daemon sources or new PicoTech SDK headers, so `lager install` and
+  `lager update` deploy it. The daemon drives each series whose headers are installed, so a
+  box with only the 2000-series SDK gets one too. A box with no series' headers skips the
+  build; if a PicoScope is attached, `lager update` and the box's startup log say the scope
+  daemon is unavailable and name the packages to install. A box without a PicoScope prints
+  nothing new.
 - **A live oscilloscope page at `http://<box>:9000/scope`**, which `lager scope <net> stream
   web` and `stream start` link to, with a sign-in token on a box behind an access gateway. It
   streams a PicoScope's trace at the display's frame rate, follows settings changed from the
