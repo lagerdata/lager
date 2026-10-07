@@ -6,6 +6,7 @@
 Provides endpoints to list, update, delete, and query live state of saved nets.
 """
 
+import contextlib
 import json
 import logging
 import os
@@ -165,6 +166,80 @@ def _brief_supply(netname):
     except Exception as e:
         logger.debug("brief_supply %s: %s", netname, e)
         return None
+
+
+def _brief_supply_batch(netnames, causes=None, codes=None, deadline=None):
+    """Every channel of one supply in ONE hardware_service call.
+
+    The group is one physical supply (``_group_key`` includes the address), so
+    its channels share one cached driver and one device lock. Reading them as
+    one ``get_monitor_states`` call pays one HTTP round trip, one lock
+    acquisition and one liveness ``*IDN?`` instead of one per channel; the
+    per-channel SCPI reads are the same.
+
+    Falls back to ``_brief_supply`` per net when hardware_service does not
+    have the method, so a driver outside ``SupplyNet`` keeps working.
+
+    Returns dict[net name, (brief, enabled) | None].
+    """
+    from ..dispatchers.helpers import resolve_net_proxy
+    from ..exceptions import SupplyBackendError
+    from ..nets.device import Device, DeviceError, call_limits
+
+    out = {n: None for n in netnames}
+    channels = {}
+    device_name = net_info = None
+    for name in netnames:
+        try:
+            dev, info, channel = resolve_net_proxy(
+                name, "power-supply", SupplyBackendError)
+        except Exception as e:
+            logger.debug("brief_supply_batch %s: %s", name, e)
+            if causes is not None:
+                causes[name] = f"{type(e).__name__}: {e}"
+            continue
+        channels[name] = channel
+        if device_name is None:
+            device_name, net_info = dev, info
+    if not channels:
+        return out
+
+    limits = (call_limits(deadline) if deadline is not None
+              else contextlib.nullcontext([]))
+    with limits as failures:
+        try:
+            states = Device(device_name, net_info).get_monitor_states(
+                sorted(set(channels.values()), key=str))
+        except DeviceError as e:
+            if "Function not found" not in str(e):
+                states = None
+            else:
+                logger.debug("brief_supply_batch: no get_monitor_states on "
+                             "%s; reading per channel", device_name)
+                for name in channels:
+                    out[name] = _brief_supply(name)
+                return out
+        except Exception as e:
+            logger.debug("brief_supply_batch %s: %s", netnames, e)
+            states = None
+
+    if states is None:
+        if failures:
+            rec = {"instrument": (net_info or {}).get("instrument")}
+            reason, code = _device_failure(rec, failures[-1])
+            detail = reason.split(": ", 1)[1] if reason.startswith("unreadable: ") else reason
+            for name in channels:
+                if causes is not None:
+                    causes[name] = detail
+                if codes is not None and code:
+                    codes[name] = code
+        return out
+
+    for name, channel in channels.items():
+        state = states.get(str(channel)) if isinstance(states, dict) else None
+        if isinstance(state, dict):
+            out[name] = _supply_brief(channel, state)
+    return out
 
 
 def _brief_battery(netname):
@@ -352,6 +427,7 @@ def _brief_labjack_batch(recs, causes=None, codes=None, deadline=None):
 # at the call site rather than silently losing the diagnostics (or the budget).
 _BATCH_PROBES = {
     "usb": _brief_usb_batch,
+    "power-supply": _brief_supply_batch,
 }
 
 
@@ -925,9 +1001,10 @@ def _absent(net_rec):
 def _group_budget(recs):
     """Seconds this group may run before it is cut short on its own.
 
-    Grows per net wherever the instrument reads its nets one after another
-    (the per-net path). The LabJack and USB-hub batches read every net in one
-    operation and get the base.
+    Grows per net wherever the instrument reads its nets one after another --
+    the per-net path, and the supply batch, which is one call but still reads
+    each channel in turn. The LabJack and USB-hub batches read every net in
+    one operation and get the base.
     """
     if not recs:
         return _GROUP_BUDGET_S
