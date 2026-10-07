@@ -26,6 +26,7 @@ use protocol::capabilities::{
 };
 use protocol::DriverFamily;
 
+use super::loader::LeftOut;
 use super::modern::{api_for, PicoModernApi};
 use super::status::{self, PicoStatusError};
 use super::types::{DeviceResolution, Range, UnitInfo};
@@ -74,7 +75,10 @@ const PROBE_ORDER: &[DriverFamily] = &[
 /// scopes needs. Without it, the first unit found wins.
 ///
 /// Fails with [`NoUnitFound`] when no modern unit is attached, and with the
-/// unit's own error when one was found but could not be opened.
+/// unit's own error when one was found but could not be opened. A family
+/// whose driver is installed but which this daemon was built without is not
+/// "no unit": its units cannot be looked for at all, so that fails as itself
+/// too, naming the family and what to install.
 pub fn detect(serial: Option<&str>) -> Result<DetectedScope> {
     detect_with(serial, &super::loader::installed_families(), api_for)
 }
@@ -98,6 +102,9 @@ fn detect_with(
     // Whether any family had a unit there, listed or answering, that then
     // failed: that failure is the one to report.
     let mut found_a_unit = false;
+    // Whether an installed driver belongs to a family this daemon was built
+    // without, which would leave a scope of that series silently unused.
+    let mut left_out = false;
 
     for &family in PROBE_ORDER {
         if !installed.contains(&family) {
@@ -110,6 +117,7 @@ fn detect_with(
         let api = match api_for(family) {
             Ok(api) => api,
             Err(e) => {
+                left_out |= e.downcast_ref::<LeftOut>().is_some();
                 attempts.push(format!("{}: {e}", family.as_str()));
                 continue;
             }
@@ -197,11 +205,16 @@ fn detect_with(
     // Legacy ps2000 has its own driver and does not go through the modern
     // vtable, so it is reported as a possibility rather than probed here.
     if installed.contains(&DriverFamily::Ps2000) {
-        attempts.push(
-            "ps2000: installed, and handled by the legacy driver rather than \
-             this probe"
-                .to_string(),
-        );
+        if super::loader::BUILT.contains(&DriverFamily::Ps2000) {
+            attempts.push(
+                "ps2000: installed, and handled by the legacy driver rather than \
+                 this probe"
+                    .to_string(),
+            );
+        } else {
+            left_out = true;
+            attempts.push(format!("ps2000: {}", LeftOut(DriverFamily::Ps2000)));
+        }
     }
 
     let with_serial = serial
@@ -210,6 +223,13 @@ fn detect_with(
     if found_a_unit {
         bail!(
             "a PicoScope was found{with_serial} but could not be opened. Tried:\n  {}",
+            attempts.join("\n  ")
+        );
+    }
+    if left_out {
+        bail!(
+            "no PicoScope this daemon can drive was found{with_serial}, and it was \
+             built without a series whose driver is installed. Tried:\n  {}",
             attempts.join("\n  ")
         );
     }
@@ -907,6 +927,49 @@ mod tests {
         assert_eq!(detected.handle, 9);
         assert_eq!(detected.capabilities.model, "5444D");
         assert!(closed.is_empty(), "the caller owns closing it");
+    }
+
+    #[test]
+    fn an_installed_family_the_daemon_was_built_without_is_reported_as_itself() {
+        // A box whose libps3000a came without a PicoConnectProbes.h: the
+        // driver is there and its bindings are not. "No unit found" would
+        // hide why a 3000-series scope does nothing.
+        let result = detect_with(None, PROBE_ORDER, |family| {
+            if family == DriverFamily::Ps3000a {
+                return Err(LeftOut(family).into());
+            }
+            Ok(Box::new(FakeApi {
+                family,
+                listed: Some(Vec::new()),
+                open: Err(status::NOT_FOUND),
+                model: None,
+                closed: Arc::new(Mutex::new(Vec::new())),
+            }) as Box<dyn PicoModernApi>)
+        });
+        let err = error_of(result);
+        assert!(err.downcast_ref::<NoUnitFound>().is_none(), "{err:#}");
+        let text = format!("{err:#}");
+        assert!(
+            text.contains("ps3000a: this daemon was built without ps3000a support"),
+            "{text}"
+        );
+        assert!(text.contains("lager update"), "{text}");
+    }
+
+    #[test]
+    fn an_installed_legacy_driver_is_handled_or_reported_as_left_out() {
+        let installed = [DriverFamily::Ps2000];
+        let err = error_of(detect_with(None, &installed, |_| {
+            unreachable!("no modern family is installed")
+        }));
+        let text = format!("{err:#}");
+        if super::super::loader::BUILT.contains(&DriverFamily::Ps2000) {
+            assert!(err.downcast_ref::<NoUnitFound>().is_some(), "{text}");
+            assert!(text.contains("handled by the legacy driver"), "{text}");
+        } else {
+            assert!(err.downcast_ref::<NoUnitFound>().is_none(), "{text}");
+            assert!(text.contains("built without ps2000 support"), "{text}");
+        }
     }
 
     #[test]

@@ -3,6 +3,7 @@
 
 use crate::oscilloscope::CaptureMode;
 use crate::oscilloscope::Coupling;
+use crate::oscilloscope::monotonic_ns;
 use crate::oscilloscope::{Oscilloscope, RollInfo, RollPlan, RollSink};
 use crate::oscilloscope::{
     ChannelId, ChannelSettings, Cursor, CursorType, OscilloscopeSettings, TriggerSettings,
@@ -45,24 +46,6 @@ struct DeviceSpecs {
     sample_rate: f64,
     memory_depth: usize,
     bandwidth: f64,
-}
-
-/// Nanoseconds from `CLOCK_MONOTONIC`, used to stamp captures so a client can
-/// measure true capture-to-client latency.
-///
-/// Deliberately not `Instant`, whose epoch is opaque and process-relative:
-/// the readers are separate processes, and Python's `time.monotonic_ns()` and
-/// JavaScript's `performance.now()` both derive from `CLOCK_MONOTONIC`, so
-/// using it directly is what makes the subtraction meaningful. Monotonic
-/// rather than wall-clock so an NTP step cannot produce a negative latency.
-pub(crate) fn monotonic_ns() -> u64 {
-    let mut ts = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    // Cannot fail for CLOCK_MONOTONIC on any supported platform.
-    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
-    ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
 }
 
 static DEVICE_SPECS: Lazy<HashMap<&'static str, DeviceSpecs>> = Lazy::new(|| {

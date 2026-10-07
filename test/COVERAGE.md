@@ -47,13 +47,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 3107 (+2 xfailed) |
+| `unit (cli)` | `test/unit/cli/` | 3121 (+2 xfailed) |
 | `unit (box)` | `test/unit/box/` | 4095 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 405 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 166 (+1 skipped) |
-| | **Total gated** | **7967** |
+| | **Total gated** | **7981** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -114,6 +114,7 @@ places, because all twelve checks were Python. It broke two ways independently:
 | `cargo check --workspace --all-targets --locked` | clean |
 | `cargo metadata --locked` (lockfile in sync with manifests) | clean |
 | `cargo clippy -A clippy::all -W clippy::correctness -D warnings` | 0 findings (full default ruleset is 22) |
+| The same clippy, and `cargo test`, built with only `libps2000` and with everything but it | clean |
 | `cargo audit` | 0 vulnerabilities, 3 allowed warnings |
 | `cargo fmt --check` | **48 files differ -- reported to the job summary, not gated** |
 
@@ -121,24 +122,34 @@ places, because all twelve checks were Python. It broke two ways independently:
 what catches API breaks without resolving every link-time symbol.
 
 It still needs the **PicoScope SDK** on the runner. `daemon/build.rs` runs bindgen against the
-PicoTech headers unconditionally, and no feature flag skips it. Without them the build script
-panics, and nothing downstream is checked. The first run of this workflow failed exactly there
+PicoTech headers, and with no family's headers installed the build script fails, so nothing
+downstream is checked. The first run of this workflow failed exactly there
 (`wrapper.h:2:10: fatal error: 'ps2000.h' file not found`).
 
 The headers are deliberately **not** in this repo: PicoTech licenses them rather than selling
 them and limits redistribution, which a public repo cannot honour. `build.rs` looks for them first in
 `picoscope/include/<family>/` at the repo root, for a local unpack of the SDK. It then falls
-back to `/opt/picoscope/include/<family>/`, where the PicoTech packages install them. A checkout
-with neither fails the build with a message that says where to put them. It does not build a
-daemon that cannot talk to any scope.
+back to `/opt/picoscope/include/<family>/`, where the PicoTech packages install them.
+`LAGER_PICOSCOPE_INCLUDE` replaces both with one directory.
+
+`build.rs` builds each family whose headers it finds and leaves the others out, with a cargo
+warning that names each one. A box often has only the family its scope needs, such as
+`libps2000` alone for a 2204A. A checkout with no family's headers fails the build with a
+message that says where to put them. It does not build a daemon that cannot talk to any scope.
 
 The job installs `libps2000`, `libps2000a`, `libps3000a`, `libps4000a`, `libps5000a` and
 `libps6000a` from PicoTech's Debian repo, which `build_daemon.sh` also uses to set up a box.
-It then asserts that every header `build.rs` opens is present. All five
-families are needed because the daemon generates a binding set per family, so one binary serves
-whichever driver a given box has. `libps6000a` is there for its headers alone: `libps3000a`'s
-`PicoDeviceStructs.h` includes `PicoConnectProbes.h`, which PicoTech ships under the 4000a and
-6000a families rather than with 3000a.
+It then asserts that every header `build.rs` opens is present. Without it, a missing header
+leaves that family out of the build, and every check skips its code with no error.
+`libps6000a` is there for its headers alone: `libps3000a`'s `PicoDeviceStructs.h` includes
+`PicoConnectProbes.h`, which PicoTech ships under the 4000a and 6000a families rather than with
+3000a.
+
+Clippy and the tests then run twice more, each time with part of the SDK.
+`LAGER_PICOSCOPE_INCLUDE` points `build.rs` at `libps2000` alone, as on a box set up for a
+2204A, and then at everything except `libps2000`. Each family's code compiles only with its
+headers, so these builds reach code paths that the full build never compiles. The first leaves
+out every modern family, and the second leaves out the legacy driver.
 
 That makes the job depend on an external apt host. If `labs.picotech.com` proves flaky, split the
 job so the SDK-free `protocol` crate keeps gating while the daemon check degrades to advisory.
@@ -754,7 +765,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_bench_export.py` | `lager bench export`: fetches `GET /bench` on :9000 and prints the manifest with sorted keys (or one line with `--compact`, or to a file with `--out` plus a one-line summary on stderr); a 404 is an update prompt naming 0.50.0, other HTTP errors show the status and body, a connection failure points at `lager hello`, and a reply that is not a manifest is refused and never written |
 | `test_nets_describe_fields.py` | `lager nets describe --dut-connection` / `--test-hint` / `--clear-test-hints`: the two control-plane fields are merged onto the saved record next to purpose, notes and tags, duplicate hints collapse, side-car fields survive, and the nothing-given message names the new options |
 | `test_nets_channel_less_roles.py` | Roles with no channel, spelled as an empty channel list: a `scope` net is saved without a pin, because a pin is what tells the box an old record is a channel |
-| `test_update_scope_daemon.py` | Every box carries a scope daemon built from the Rust it runs: `start_box.sh` builds it on install, update and config apply, and rebuilds it when the daemon sources change |
+| `test_update_scope_daemon.py` | Every box carries a scope daemon built from the Rust it runs: `start_box.sh` builds it on install, update and config apply, and rebuilds it when the daemon sources or the installed PicoTech headers change. Any one family's headers are enough to build, so a box with only `libps2000` gets a daemon |
 | `test_scope_bench_commands.py` | `lager scope` status, trigger readback, holdoff, acquire, roll, fft and display: each command line is one action on the box's warm handler with its parameters, a value out of range is refused before the box, and a PicoScope edge trigger sends only the settings named while a Rigol keeps the script path |
 | `test_scope_impl_daemon_errors.py` | The scope impl script reads a daemon refusal as a failure: `{"Response": {"response": "Error"}}` comes back as an error, where a trigger level beyond the range used to print that it had been applied |
 

@@ -21,8 +21,9 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   four-channel scope, on channels A to D.
 - **`lager install` installs PicoScope 7, with every PicoTech USB driver**, unless given
   `--skip-picoscope`. A box builds its oscilloscope daemon when it starts on new daemon
-  sources, so `lager install` and `lager update` deploy it, and a box without the PicoTech SDK
-  headers skips the build.
+  sources or new PicoTech SDK headers, so `lager install` and `lager update` deploy it. The
+  daemon drives each series whose headers are installed, so a box with only the 2000-series
+  SDK gets one too. A box with no series' headers skips the build.
 - **A live oscilloscope page at `http://<box>:9000/scope`**, which `lager scope <net> stream
   web` and `stream start` link to, with a sign-in token on a box behind an access gateway. It
   streams a PicoScope's trace at the display's frame rate, follows settings changed from the
