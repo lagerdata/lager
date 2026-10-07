@@ -885,32 +885,53 @@ OSCILLOSCOPE_DAEMON="$THIRD_PARTY_DIR/oscilloscope-daemon"
 OSCILLOSCOPE_SRC="${SCRIPT_DIR}/oscilloscope-daemon"
 OSCILLOSCOPE_HASH_FILE="$THIRD_PARTY_DIR/oscilloscope-daemon.hash"
 
+# The daemon's build.rs generates its bindings from the headers here, which
+# PicoTech's licence keeps out of the repo. It builds each PicoScope family
+# whose headers are installed and leaves the others out, so a box with only
+# libps2000 gets a daemon for its 2204A.
+OSCILLOSCOPE_SDK_INCLUDE="/opt/picoscope/include"
+
 # Keep this digest identical to `_daemon_hash_shell_cmd` in
 # cli/commands/utility/update.py, which computes it over SSH to decide
 # whether `lager update` may take its "already up to date" early exit. The
 # two are pinned together by a test that runs both over one tree and
 # compares. `target/` is excluded because it is build output: hashing it
 # would mean building changes the hash, so every start would rebuild.
+#
+# The headers build.rs reads are hashed with the sources: each family's own
+# directory, plus libps6000a and libpsospa for the headers families share.
+# Otherwise a box that gained a family's SDK would keep the daemon built
+# without it until the Rust next changed.
 oscilloscope_source_hash() {
     [ -d "$OSCILLOSCOPE_SRC" ] || return 0
-    find "$OSCILLOSCOPE_SRC" -type f \
-        -not -path '*/target/*' -not -path '*/.git/*' -print0 \
-        | sort -z | xargs -0 -r sha256sum | sha256sum | cut -d' ' -f1
+    {
+        find "$OSCILLOSCOPE_SRC" -type f \
+            -not -path '*/target/*' -not -path '*/.git/*' -print0
+        for _dir in libps2000 libps2000a libps3000a libps4000a libps5000a \
+                libps6000a libpsospa; do
+            if [ -d "$OSCILLOSCOPE_SDK_INCLUDE/$_dir" ]; then
+                find "$OSCILLOSCOPE_SDK_INCLUDE/$_dir" -type f -print0
+            fi
+        done
+    } | sort -z | xargs -0 -r sha256sum | sha256sum | cut -d' ' -f1
 }
 
-# The daemon's build.rs generates its bindings from these headers, which
-# PicoTech's licence keeps out of the repo. Without them the build can only
+# Whether build.rs has any family to build. Without one the build can only
 # fail, and a failed build records no hash, so every start would try again.
-# Keep the list identical to `_DAEMON_SDK_HEADERS` in
-# cli/commands/utility/update.py, which reads the same fact over SSH; a test
-# runs both over one tree and compares.
-OSCILLOSCOPE_SDK_INCLUDE="/opt/picoscope/include"
+# ps3000a counts only beside a PicoConnectProbes.h: its headers include
+# that, and PicoTech ships it with other families. Keep this identical to
+# `_daemon_headers_shell_cmd` in cli/commands/utility/update.py, which reads
+# the same fact over SSH; a test runs both over the same trees and compares.
 picotech_headers_present() {
     for _header in libps2000/ps2000.h libps2000a/ps2000aApi.h \
-            libps3000a/ps3000aApi.h libps4000a/ps4000aApi.h \
-            libps4000a/PicoConnectProbes.h libps5000a/ps5000aApi.h; do
-        [ -f "$OSCILLOSCOPE_SDK_INCLUDE/$_header" ] || return 1
+            libps4000a/ps4000aApi.h libps5000a/ps5000aApi.h; do
+        [ -f "$OSCILLOSCOPE_SDK_INCLUDE/$_header" ] && return 0
     done
+    [ -f "$OSCILLOSCOPE_SDK_INCLUDE/libps3000a/ps3000aApi.h" ] || return 1
+    for _dir in libps3000a libps4000a libps5000a libps6000a libpsospa; do
+        [ -f "$OSCILLOSCOPE_SDK_INCLUDE/$_dir/PicoConnectProbes.h" ] && return 0
+    done
+    return 1
 }
 
 build_oscilloscope_daemon() {
@@ -964,7 +985,7 @@ if [ -d "$OSCILLOSCOPE_SRC" ] && docker image inspect lager >/dev/null 2>&1; the
     if [ -n "$_osc_stale" ] && ! picotech_headers_present; then
         # No hash is recorded, so the first start after the SDK is
         # installed builds.
-        echo "Oscilloscope daemon build skipped: the PicoTech SDK headers are not in $OSCILLOSCOPE_SDK_INCLUDE"
+        echo "Oscilloscope daemon build skipped: no PicoScope family can be built from the PicoTech SDK headers in $OSCILLOSCOPE_SDK_INCLUDE"
     elif [ -n "$_osc_stale" ]; then
         if [ -f "$OSCILLOSCOPE_DAEMON" ]; then
             echo "Oscilloscope daemon is out of date; rebuilding..."

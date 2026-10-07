@@ -31,6 +31,11 @@ Two properties are load-bearing here, and both are easy to break by
     it would mean building changes the hash, every subsequent run sees a
     mismatch, and the box rebuilds the daemon forever.
 
+The PicoTech headers are hashed with the sources. build.rs builds each
+PicoScope family whose headers are installed and leaves the others out, so a
+box with only libps2000 gets a daemon for its 2204A -- and a box that later
+gains another family has to rebuild to drive it.
+
 The shell snippets are executed here rather than string-matched, because
 what matters is the digest they produce on a real tree.
 """
@@ -49,6 +54,21 @@ _daemon_needs_build = _update._daemon_needs_build
 _rebuild_gate_verdict = _update._rebuild_gate_verdict
 
 
+def _repo_file(*parts):
+    here = os.path.abspath(__file__)          # test/unit/cli/<this file>
+    repo = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.dirname(here))))
+    return os.path.join(repo, *parts)
+
+
+def _start_box_function(name):
+    """One function's definition from start_box.sh, to run in isolation."""
+    with open(_repo_file('box', 'start_box.sh')) as handle:
+        text = handle.read()
+    body = text[text.index(f'{name}() {{'):]
+    return body[:body.index('\n}\n') + 3]
+
+
 class DaemonHashCoversRustSources(unittest.TestCase):
     def setUp(self):
         self.home = tempfile.mkdtemp()
@@ -58,6 +78,10 @@ class DaemonHashCoversRustSources(unittest.TestCase):
         self.write(os.path.join(self.src, 'Cargo.toml'), '[workspace]\n')
         self.write(os.path.join(self.src, 'daemon', 'src', 'main.rs'),
                    'fn main() {}\n')
+        # A stand-in for /opt/picoscope/include, so the machine running the
+        # tests cannot change what they hash.
+        self.sdk = os.path.join(self.home, 'picoscope-include')
+        self.write(os.path.join(self.sdk, 'libps2000', 'ps2000.h'), '/* h */\n')
 
     def write(self, path, text):
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -66,7 +90,7 @@ class DaemonHashCoversRustSources(unittest.TestCase):
 
     def hash(self):
         result = subprocess.run(
-            ['bash', '-c', _daemon_hash_shell_cmd()],
+            ['bash', '-c', _daemon_hash_shell_cmd(self.sdk)],
             env=dict(os.environ, HOME=self.home),
             capture_output=True, text=True,
         )
@@ -120,6 +144,42 @@ class DaemonHashCoversRustSources(unittest.TestCase):
         shutil.rmtree(os.path.join(self.home, 'box'))
         self.assertEqual(self.hash(), '')
 
+    def test_installing_a_family_changes_the_hash(self):
+        """Or a box that gains a family keeps the daemon built without it."""
+        before = self.hash()
+        self.write(os.path.join(self.sdk, 'libps5000a', 'ps5000aApi.h'),
+                   '/* h */\n')
+        self.assertNotEqual(before, self.hash())
+
+    def test_removing_a_family_changes_the_hash(self):
+        before = self.hash()
+        shutil.rmtree(os.path.join(self.sdk, 'libps2000'))
+        self.assertNotEqual(before, self.hash())
+
+    def test_upgrading_a_header_changes_the_hash(self):
+        before = self.hash()
+        self.write(os.path.join(self.sdk, 'libps2000', 'ps2000.h'),
+                   '/* h, newer */\n')
+        self.assertNotEqual(before, self.hash())
+
+    def test_the_shared_header_families_count_too(self):
+        """libps3000a builds against a PicoConnectProbes.h from these."""
+        for family in ('libps6000a', 'libpsospa'):
+            with self.subTest(family=family):
+                before = self.hash()
+                self.write(os.path.join(self.sdk, family, 'PicoConnectProbes.h'),
+                           '/* h */\n')
+                self.assertNotEqual(before, self.hash())
+
+    def test_a_family_build_rs_never_reads_changes_nothing(self):
+        before = self.hash()
+        self.write(os.path.join(self.sdk, 'libps3000', 'ps3000.h'), '/* h */\n')
+        self.assertEqual(before, self.hash())
+
+    def test_headers_without_the_sources_still_yield_empty(self):
+        shutil.rmtree(os.path.join(self.home, 'box'))
+        self.assertEqual(self.hash(), '')
+
 
 class DaemonHashIsNotTheBuildHash(unittest.TestCase):
     """The image must not be wiped for a change it does not contain."""
@@ -162,10 +222,19 @@ class TheTwoHashImplementationsAgree(unittest.TestCase):
         os.makedirs(os.path.dirname(noise))
         with open(noise, 'w') as handle:
             handle.write('ELF\n')
+        # A header in every directory either side reads, plus one neither
+        # does: a directory only one of them hashed would show up as a
+        # different digest.
+        self.sdk = os.path.join(self.home, 'picoscope-include')
+        for family in _update._DAEMON_SDK_DIRS + ('libps3000',):
+            path = os.path.join(self.sdk, family, 'header.h')
+            os.makedirs(os.path.dirname(path))
+            with open(path, 'w') as handle:
+                handle.write(f'/* {family} */\n')
 
     def python_side(self):
         result = subprocess.run(
-            ['bash', '-c', _daemon_hash_shell_cmd()],
+            ['bash', '-c', _daemon_hash_shell_cmd(self.sdk)],
             env=dict(os.environ, HOME=self.home),
             capture_output=True, text=True,
         )
@@ -173,18 +242,10 @@ class TheTwoHashImplementationsAgree(unittest.TestCase):
 
     def shell_side(self):
         """Run start_box.sh's `oscilloscope_source_hash` in isolation."""
-        here = os.path.abspath(__file__)          # test/unit/cli/<this file>
-        repo = os.path.dirname(os.path.dirname(os.path.dirname(
-            os.path.dirname(here))))
-        start_box = os.path.join(repo, 'box', 'start_box.sh')
-        with open(start_box) as handle:
-            text = handle.read()
-        marker = 'oscilloscope_source_hash() {'
-        body = text[text.index(marker):]
-        body = body[:body.index('\n}\n') + 3]
         script = (
             f'OSCILLOSCOPE_SRC="{self.src}"\n'
-            f'{body}\n'
+            f'OSCILLOSCOPE_SDK_INCLUDE="{self.sdk}"\n'
+            f'{_start_box_function("oscilloscope_source_hash")}\n'
             'oscilloscope_source_hash\n'
         )
         result = subprocess.run(['bash', '-c', script],
@@ -201,6 +262,16 @@ class TheTwoHashImplementationsAgree(unittest.TestCase):
     def test_they_still_agree_after_a_source_change(self):
         with open(os.path.join(self.src, 'daemon', 'src', 'main.rs'), 'w') as h:
             h.write('fn main() { println!("changed"); }\n')
+        self.assertEqual(self.python_side(), self.shell_side())
+
+    def test_they_still_agree_after_a_header_change(self):
+        with open(os.path.join(self.sdk, 'libps2000', 'header.h'), 'w') as h:
+            h.write('/* newer */\n')
+        self.assertEqual(self.python_side(), self.shell_side())
+
+    def test_they_agree_with_no_sdk_installed(self):
+        shutil.rmtree(self.sdk)
+        self.assertRegex(self.python_side(), r'^[0-9a-f]{64}$')
         self.assertEqual(self.python_side(), self.shell_side())
 
 
@@ -254,9 +325,10 @@ class StartBoxBuildsWhenStale(unittest.TestCase):
         self.block = text[begin:end]
 
         # The block skips the build without the PicoTech headers, so point
-        # it at a stand-in SDK that has them all.
+        # it at a stand-in SDK that has every family's.
         self.sdk = os.path.join(self.home, 'picoscope-include')
-        for header in _update._DAEMON_SDK_HEADERS:
+        for header in _update._DAEMON_SDK_HEADERS + (
+                _update._DAEMON_SDK_PS3000A_HEADER,):
             self.add_header(header)
         default = 'OSCILLOSCOPE_SDK_INCLUDE="/opt/picoscope/include"'
         self.assertIn(default, self.block)
@@ -368,10 +440,37 @@ class StartBoxBuildsWhenStale(unittest.TestCase):
         self.assertNotIn('WARNING', result.stdout)
         self.assertIsNone(self.hash_file())
 
-    def test_one_missing_header_is_enough_to_skip(self):
-        os.remove(os.path.join(self.sdk, 'libps4000a', 'PicoConnectProbes.h'))
+    def test_one_family_is_enough_to_build(self):
+        """A box with only libps2000 still gets a daemon for its 2204A."""
+        shutil.rmtree(self.sdk)
+        self.add_header('libps2000/ps2000.h')
+        result = self.run_block()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.built)
+        self.assertEqual(self.binary(), 'FAKE')
+
+    def test_installing_another_family_rebuilds_on_the_next_start(self):
+        shutil.rmtree(self.sdk)
+        self.add_header('libps2000/ps2000.h')
         self.run_block()
-        self.assertFalse(self.built)
+        os.remove(self.marker)
+        self.add_header('libps5000a/ps5000aApi.h')
+        self.run_block()
+        self.assertTrue(self.built, 'kept a daemon built without ps5000a')
+
+    def test_ps3000a_alone_cannot_build(self):
+        """Its headers include a PicoConnectProbes.h it does not ship."""
+        shutil.rmtree(self.sdk)
+        self.add_header('libps3000a/ps3000aApi.h')
+        self.run_block()
+        self.assertFalse(self.built, 'ran a build that cannot succeed')
+
+    def test_ps3000a_builds_beside_a_shared_probes_header(self):
+        shutil.rmtree(self.sdk)
+        self.add_header('libps3000a/ps3000aApi.h')
+        self.add_header('libps6000a/PicoConnectProbes.h')
+        self.run_block()
+        self.assertTrue(self.built)
 
     def test_installing_the_headers_builds_on_the_next_start(self):
         shutil.rmtree(self.sdk)
@@ -384,9 +483,18 @@ class StartBoxBuildsWhenStale(unittest.TestCase):
 
     def test_an_up_to_date_daemon_says_nothing_about_headers(self):
         self.run_block()
-        shutil.rmtree(self.sdk)
         result = self.run_block()
         self.assertNotIn('PicoTech', result.stdout)
+
+    def test_removing_the_sdk_keeps_the_daemon_it_built(self):
+        self.run_block()
+        os.remove(self.marker)
+        shutil.rmtree(self.sdk)
+        result = self.run_block()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.built, 'ran a build that cannot succeed')
+        self.assertEqual(self.binary(), 'FAKE')
+        self.assertIn('PicoTech SDK headers', result.stdout)
 
 
 class TheTwoHeaderChecksAgree(unittest.TestCase):
@@ -400,16 +508,18 @@ class TheTwoHeaderChecksAgree(unittest.TestCase):
     def setUp(self):
         self.include = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.include, ignore_errors=True)
-        for header in _update._DAEMON_SDK_HEADERS:
-            self.add(header)
 
     def path(self, header):
         return os.path.join(self.include, *header.split('/'))
 
-    def add(self, header):
-        os.makedirs(os.path.dirname(self.path(header)), exist_ok=True)
-        with open(self.path(header), 'w') as handle:
-            handle.write('/* header */\n')
+    def install(self, *headers):
+        """Make the stand-in SDK hold exactly `headers`."""
+        shutil.rmtree(self.include)
+        os.makedirs(self.include)
+        for header in headers:
+            os.makedirs(os.path.dirname(self.path(header)), exist_ok=True)
+            with open(self.path(header), 'w') as handle:
+                handle.write('/* header */\n')
 
     def python_side(self):
         result = subprocess.run(
@@ -420,37 +530,40 @@ class TheTwoHeaderChecksAgree(unittest.TestCase):
 
     def shell_side(self):
         """Run start_box.sh's `picotech_headers_present` in isolation."""
-        here = os.path.abspath(__file__)
-        repo = os.path.dirname(os.path.dirname(os.path.dirname(
-            os.path.dirname(here))))
-        with open(os.path.join(repo, 'box', 'start_box.sh')) as handle:
-            text = handle.read()
-        marker = 'picotech_headers_present() {'
-        body = text[text.index(marker):]
-        body = body[:body.index('\n}\n') + 3]
         script = (
             'set -eu\n'
             f'OSCILLOSCOPE_SDK_INCLUDE="{self.include}"\n'
-            f'{body}\n'
+            f'{_start_box_function("picotech_headers_present")}\n'
             'if picotech_headers_present; then echo 1; else echo 0; fi\n'
         )
         result = subprocess.run(['bash', '-c', script],
                                 capture_output=True, text=True)
         return result.stdout.strip()
 
-    def test_both_find_a_complete_sdk(self):
-        self.assertEqual(self.python_side(), '1')
-        self.assertEqual(self.shell_side(), '1')
+    def assert_both(self, expected, *headers):
+        self.install(*headers)
+        self.assertEqual(self.python_side(), expected, f'update.py, {headers}')
+        self.assertEqual(self.shell_side(), expected, f'start_box.sh, {headers}')
 
-    def test_both_notice_any_one_header_missing(self):
+    def test_both_find_a_complete_sdk(self):
+        self.assert_both('1', *_update._DAEMON_SDK_HEADERS,
+                         _update._DAEMON_SDK_PS3000A_HEADER,
+                         *_update._DAEMON_SDK_PROBES_HEADERS)
+
+    def test_both_accept_any_one_family_alone(self):
         for header in _update._DAEMON_SDK_HEADERS:
             with self.subTest(header=header):
-                os.remove(self.path(header))
-                try:
-                    self.assertEqual(self.python_side(), '0')
-                    self.assertEqual(self.shell_side(), '0')
-                finally:
-                    self.add(header)
+                self.assert_both('1', header)
+
+    def test_both_want_a_probes_header_beside_ps3000a(self):
+        self.assert_both('0', _update._DAEMON_SDK_PS3000A_HEADER)
+        for probes in _update._DAEMON_SDK_PROBES_HEADERS:
+            with self.subTest(probes=probes):
+                self.assert_both('1', _update._DAEMON_SDK_PS3000A_HEADER, probes)
+
+    def test_both_ignore_families_the_daemon_does_not_build(self):
+        self.assert_both('0', 'libps3000/ps3000.h', 'libps6000a/ps6000aApi.h',
+                         'libps6000a/PicoConnectProbes.h')
 
     def test_both_notice_no_sdk_at_all(self):
         shutil.rmtree(self.include)

@@ -35,9 +35,9 @@
 # every link-time symbol.
 #
 # It DOES need the PicoScope SDK regardless. daemon/build.rs runs bindgen
-# against /opt/picoscope/include/libps2000/ps2000.h unconditionally -- there is
-# no feature flag that skips it -- so a build script failure stops the check
-# before any Rust is looked at. The first run of this workflow proved that:
+# against the PicoTech headers in /opt/picoscope/include, and with no
+# family's headers there it fails, so the check stops before any Rust is
+# looked at. The first run of this workflow proved that:
 # `wrapper.h:2:10: fatal error: 'ps2000.h' file not found`. The SDK install
 # below is the same one build_daemon.sh documents for the box.
 
@@ -116,17 +116,20 @@ jobs:
         shell: bash
 
       # daemon/build.rs generates FFI bindings from the PicoScope headers with
-      # bindgen, unconditionally, for every family the daemon supports. Without
-      # them the build script panics and nothing downstream is checked at all,
-      # so this is a prerequisite rather than an optional extra. Same repo and
-      # packages build_daemon.sh documents for setting up a box.
+      # bindgen, for each family whose headers are installed. With none it
+      # fails and nothing downstream is checked at all, so this is a
+      # prerequisite rather than an optional extra. Same repo and packages
+      # build_daemon.sh documents for setting up a box.
       #
-      # All five families are needed, not just libps2000: the daemon generates
-      # a binding set per family so one binary serves whichever driver a given
-      # box has. libps6000a is installed for its headers only -- libps3000a's
-      # PicoDeviceStructs.h includes PicoConnectProbes.h, which PicoTech ships
-      # under the 4000a/6000a families rather than with 3000a, and build.rs
-      # adds the sibling include directories to resolve it.
+      # All five families are installed, not just libps2000. build.rs leaves
+      # out a family whose headers are missing -- a box can have only the
+      # one its scope needs -- and that family's code is then compiled out,
+      # so a header missing here would quietly drop that family from every
+      # check below. The assertion turns that into a failure. libps6000a is
+      # installed for its headers only -- libps3000a's PicoDeviceStructs.h
+      # includes PicoConnectProbes.h, which PicoTech ships under the
+      # 4000a/6000a families rather than with 3000a, and build.rs adds the
+      # sibling include directories to resolve it.
       #
       # libclang-dev is bindgen's own requirement (it parses the C headers with
       # libclang); pkg-config and build-essential match build_daemon.sh.
@@ -149,7 +152,7 @@ jobs:
           sudo apt-get install -y \
             libps2000 libps2000a libps3000a libps4000a libps5000a libps6000a
           # Assert every header build.rs opens, so a missing one fails here
-          # with the name rather than inside a bindgen panic.
+          # with the name rather than leaving its family out of the checks.
           missing=0
           for header in \
               libps2000/ps2000.h \
@@ -164,7 +167,7 @@ jobs:
             fi
           done
           [ "$missing" -eq 0 ] || {
-            echo "headers missing after install -- daemon/build.rs will panic"
+            echo "headers missing after install -- daemon/build.rs would leave their families out"
             exit 1
           }
           echo "all PicoScope headers present"
@@ -232,6 +235,29 @@ jobs:
       - name: cargo clippy (correctness only)
         if: always() && steps.detect.outputs.rust_changed == 'true'
         run: cargo clippy --workspace --all-targets -- -A clippy::all -W clippy::correctness -D warnings
+        shell: bash
+
+      # A box builds only the families it has headers for, and one set up for
+      # a 2204A can have only libps2000. Each family's code compiles only
+      # with its headers, so these builds compile code paths the full one
+      # never does: a call into one family that is not behind its cfg breaks
+      # them and nothing else. libps2000 alone leaves out every modern
+      # family; everything but libps2000 leaves out the legacy driver.
+      - name: cargo clippy and test with families left out
+        if: always() && steps.detect.outputs.rust_changed == 'true'
+        run: |
+          ps2000_only="$RUNNER_TEMP/ps2000-only"
+          mkdir -p "$ps2000_only"
+          cp -R /opt/picoscope/include/libps2000 "$ps2000_only/"
+          no_ps2000="$RUNNER_TEMP/no-ps2000"
+          cp -R /opt/picoscope/include "$no_ps2000"
+          rm -rf "$no_ps2000/libps2000"
+          for include in "$ps2000_only" "$no_ps2000"; do
+            echo "::group::LAGER_PICOSCOPE_INCLUDE=$include"
+            LAGER_PICOSCOPE_INCLUDE="$include" cargo clippy --workspace --all-targets --locked -- -A clippy::all -W clippy::correctness -D warnings
+            LAGER_PICOSCOPE_INCLUDE="$include" cargo test --workspace --locked
+            echo "::endgroup::"
+          done
         shell: bash
 
       # RustSec advisories against Cargo.lock. This is NOT redundant with

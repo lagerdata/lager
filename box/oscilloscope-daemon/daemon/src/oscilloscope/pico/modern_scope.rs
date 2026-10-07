@@ -865,7 +865,7 @@ impl Oscilloscope for PicoScopeModern {
             // Numbered by the acquisition loop, the only thing that can do
             // it monotonically across clients.
             seq: 0,
-            capture_mono_ns: super::ps2000::monotonic_ns(),
+            capture_mono_ns: crate::oscilloscope::monotonic_ns(),
             sample_interval_ns: self.interval_seconds * 1e9,
             pre_trigger_samples: pre,
             post_trigger_samples: returned as u32 - pre,
