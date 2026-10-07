@@ -792,6 +792,51 @@ def _daemon_headers_shell_cmd(include=_DAEMON_SDK_INCLUDE):
     return f'if {alone} || {ps3000a}; then echo 1; else echo 0; fi'
 
 
+# PicoTech's USB vendor id, as sysfs spells it.
+_PICOTECH_USB_VENDOR = '0ce9'
+_USB_SYSFS_DEVICES = '/sys/bus/usb/devices'
+# What `lager install` puts on a box, from PicoTech's apt repo; each ships its
+# family's headers under /opt/picoscope/include. Keep identical to Step 4.5 of
+# setup_and_deploy_box.sh and to the warning in start_box.sh.
+_PICOTECH_APT_REPO = 'https://labs.picotech.com/picoscope7/debian/'
+_PICOTECH_APT_PACKAGES = (
+    'libps2000', 'libps2000a', 'libps3000a', 'libps4000a', 'libps5000a',
+    'libps6000a', 'libpsospa',
+)
+
+
+def _pico_attached_shell_cmd(sysfs=_USB_SYSFS_DEVICES):
+    """Shell snippet that prints 1 when a PicoTech USB device is attached.
+
+    Reads sysfs because the box host need not have usbutils. Keep identical to
+    `picotech_device_attached` in start_box.sh; a test runs both and compares.
+    """
+    return (
+        f'if grep -qsx {_PICOTECH_USB_VENDOR} {sysfs}/*/idVendor; '
+        'then echo 1; else echo 0; fi'
+    )
+
+
+def _scope_sdk_warning(facts):
+    """Operator-facing text when a PicoScope is attached but no family's
+    headers are installed, so the daemon cannot be built; None otherwise.
+
+    Both facts must be an explicit answer. Most boxes have no PicoScope, and a
+    probe that predates either fact says nothing about this box.
+    """
+    if facts.get('DAEMON_SDK_HEADERS') != '0':
+        return None
+    if facts.get('DAEMON_PICO_ATTACHED') != '1':
+        return None
+    return (
+        'A PicoScope is attached but the scope daemon is unavailable: no '
+        f'PicoTech SDK headers in {_DAEMON_SDK_INCLUDE}. Install the package '
+        f'for its family ({" ".join(_PICOTECH_APT_PACKAGES)}) from '
+        f'{_PICOTECH_APT_REPO} -- `lager install` does this -- then run '
+        '`lager update`.'
+    )
+
+
 def _daemon_needs_build(facts, *, force):
     """Whether the box's daemon binary is stale relative to its Rust sources
     and the PicoTech headers it was built against.
@@ -1130,6 +1175,7 @@ echo "LAGER_PROBE_DAEMON_SOURCE_HASH=$(__DAEMON_HASH_CMD__)"
 echo "LAGER_PROBE_DAEMON_HASH_STORED=$(cat ~/third_party/oscilloscope-daemon.hash 2>/dev/null)"
 if [ -f ~/third_party/oscilloscope-daemon ]; then echo "LAGER_PROBE_DAEMON_BINARY=1"; else echo "LAGER_PROBE_DAEMON_BINARY=0"; fi
 echo "LAGER_PROBE_DAEMON_SDK_HEADERS=$(__DAEMON_HEADERS_CMD__)"
+echo "LAGER_PROBE_DAEMON_PICO_ATTACHED=$(__DAEMON_PICO_CMD__)"
 if [ -d ~/box/udev_rules ]; then _up=~/box/udev_rules
 elif [ -d ~/box/box/udev_rules ]; then _up=~/box/box/udev_rules
 else _up=""
@@ -1198,6 +1244,7 @@ echo "LAGER_PROBE_ETC_VERSION=$(cat /etc/lager/version 2>/dev/null)"
         .replace('__BUILD_HASH_CMD__', _build_hash_shell_cmd())
         .replace('__DAEMON_HASH_CMD__', _daemon_hash_shell_cmd())
         .replace('__DAEMON_HEADERS_CMD__', _daemon_headers_shell_cmd())
+        .replace('__DAEMON_PICO_CMD__', _pico_attached_shell_cmd())
         .replace('__BOXCFG_SUDOERS_MARKER__', BOXCFG_SUDOERS_MARKER)
         .replace('__HOST_CLI_PROBE__\n', HOST_CLI_PROBE_SNIPPET)
         .replace('__HOST_PACKAGES_PROBE__\n', host_packages_probe_snippet())
@@ -2838,8 +2885,11 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         click.echo(f'  Host CLI:   {host_cli_status}')
         # Only mentioned when it has something to say: most boxes have no
         # PicoScope, and a permanent "Scope daemon: n/a" line would be noise.
+        _scope_warning = _scope_sdk_warning(facts)
         if _daemon_check:
             click.echo(f'  Scope daemon: will rebuild ({_daemon_check_reason})')
+        elif _scope_warning:
+            click.secho(f'  Scope daemon: {_scope_warning}', fg='yellow')
         click.echo(f'  Estimated:  {est}')
         click.echo()
 
@@ -3503,6 +3553,9 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         )
         if _host_note:
             click.secho(_host_note, fg=_host_note_color)
+        _scope_warning = _scope_sdk_warning(facts)
+        if _scope_warning:
+            click.secho(f'  {_scope_warning}', fg='yellow')
         click.echo()
         ctx.exit(0)
 
@@ -4436,6 +4489,9 @@ fi
             f'  Host CLI on the box host was NOT updated: {_host_cli_failure}',
             fg='yellow',
         )
+    _scope_warning = _scope_sdk_warning(facts)
+    if _scope_warning:
+        click.secho(f'  {_scope_warning}', fg='yellow')
     click.echo()
 
     # Release the auto-lock on the success path. SystemExit/error paths
