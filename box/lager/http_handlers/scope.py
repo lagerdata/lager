@@ -40,6 +40,7 @@ import os
 import secrets
 import threading
 import time
+from urllib.parse import quote
 
 from flask import jsonify, request, send_from_directory
 
@@ -58,6 +59,15 @@ MAX_ACTIVE_TICKETS = 64
 # flag, so a closed peer tears down both directions within one slice instead
 # of leaking a thread until the next frame happens to arrive.
 _PUMP_SLICE_SECONDS = 0.5
+
+# How soon a browser that went away without closing -- a laptop lid shut, a
+# network dropped -- is given up on: idle this long, then probed at this
+# interval, until this many probes go unanswered. Nothing closes such a
+# connection otherwise, and its relay threads and daemon connection lived as
+# long as the kernel's default keepalive, which is two hours.
+_KEEPALIVE_IDLE_SECONDS = 30
+_KEEPALIVE_INTERVAL_SECONDS = 10
+_KEEPALIVE_PROBES = 3
 
 _tickets: dict[str, dict] = {}
 _tickets_lock = threading.Lock()
@@ -101,15 +111,15 @@ def _redeem_ticket(token: str, netname: str) -> bool:
 def _resolve_scope_net(netname: str):
     """Return the saved-net record for a scope net, or None.
 
-    Kept tolerant of the role string because scope nets have been saved as
-    both "scope" and "analog" depending on when they were created.
+    The instrument (``scope``) or one of its channels (``scope-channel``);
+    ``analog`` too, which is how scope nets were saved before either.
     """
     from lager.nets.net import Net
 
     for entry in Net.get_local_nets():
         if entry.get("name") != netname:
             continue
-        if entry.get("role") in ("scope", "analog"):
+        if entry.get("role") in ("scope", "scope-channel", "analog"):
             return entry
     return None
 
@@ -140,12 +150,23 @@ def register_scope_routes(app):
     def scope_stream_ticket(netname):
         from lager.measurement.scope import daemon_client
 
+        from lager.scope_hs import _is_picoscope
+
         rec = _resolve_scope_net(netname)
         if rec is None:
             return jsonify({
                 "success": False,
                 "error": "Net '%s' not found or is not a scope net" % netname,
             }), 404
+        instrument = rec.get("instrument") or ""
+        if not _is_picoscope(instrument):
+            # The relay is to the PicoScope daemon, which would stream
+            # whichever PicoScope it holds under this net's name.
+            return jsonify({
+                "success": False,
+                "error": "Net '%s' is a %s; the live view streams a PicoScope only"
+                         % (netname, instrument or "scope of unknown make"),
+            }), 400
 
         capabilities = None
         capability_error = None
@@ -167,8 +188,8 @@ def register_scope_routes(app):
         return jsonify({
             "success": True,
             "net": netname,
-            "instrument": rec.get("instrument") or "",
-            "ws_path": "/scope/%s/ws?token=%s" % (netname, token),
+            "instrument": instrument,
+            "ws_path": "/scope/%s/ws?token=%s" % (quote(netname, safe=""), token),
             "token": token,
             "expires_in": int(TICKET_TTL_SECONDS),
             "capabilities": capabilities,
@@ -219,6 +240,7 @@ def register_scope_routes(app):
             return ""
 
         _disable_nagle(browser, upstream)
+        _keep_alive(browser)
         _relay(browser, upstream, netname)
         return ""
 
@@ -247,6 +269,38 @@ def _disable_nagle(*sockets) -> None:
             # A Unix-domain socket has no TCP_NODELAY; nothing to do and
             # nothing wrong, so do not let it break the relay.
             logger.debug("TCP_NODELAY not applied: %s", e)
+
+
+def _keep_alive(*sockets) -> None:
+    """Have the kernel probe an idle connection, and drop it if nothing answers.
+
+    TCP keepalive rather than WebSocket pings, which simple_websocket sends
+    from its receive thread: the relay sends captures from the request
+    thread, and nothing synchronizes the two, so a ping could be written into
+    the middle of a capture. The user timeout bounds the other way a dead
+    peer holds the relay, a send blocked on a full buffer it will never drain.
+    """
+    import socket as _socket
+
+    options = (
+        ("TCP_KEEPIDLE", _KEEPALIVE_IDLE_SECONDS),
+        ("TCP_KEEPINTVL", _KEEPALIVE_INTERVAL_SECONDS),
+        ("TCP_KEEPCNT", _KEEPALIVE_PROBES),
+        ("TCP_USER_TIMEOUT", 1000 * (_KEEPALIVE_IDLE_SECONDS
+                                     + _KEEPALIVE_INTERVAL_SECONDS * _KEEPALIVE_PROBES)),
+    )
+    for wrapper in sockets:
+        sock = getattr(wrapper, "sock", None)
+        if sock is None:
+            continue
+        try:
+            sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)
+            for name, value in options:
+                if hasattr(_socket, name):
+                    sock.setsockopt(_socket.IPPROTO_TCP, getattr(_socket, name), value)
+        except OSError as e:
+            # As with Nagle: a Unix-domain socket has none of these.
+            logger.debug("TCP keepalive not applied: %s", e)
 
 
 def _no_compression(environ: dict) -> dict:

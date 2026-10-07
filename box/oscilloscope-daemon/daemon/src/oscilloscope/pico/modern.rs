@@ -35,7 +35,7 @@
 
 use std::ffi::CString;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Context, Result};
 use protocol::DriverFamily;
 
 use super::status;
@@ -193,14 +193,65 @@ pub trait PicoModernApi: Send + Sync {
 
 /// Turn a `PICO_STATUS` into a `Result`, naming the call that produced it.
 ///
-/// Not every non-zero status is a failure -- see [`status::is_success`] for
-/// the power-supply warnings that mean "open and usable".
+/// `OpenUnit`'s power-source warnings are not handled here; see
+/// [`settle_open`].
 fn check(raw: u32, call: &'static str) -> Result<()> {
     if status::is_success(raw) {
         Ok(())
     } else {
-        Err(anyhow!("{call}: {}", status::describe(raw)))
+        Err(status::PicoStatusError::new(call, raw).into())
     }
+}
+
+/// What `OpenUnit`'s status means for the handle it returned.
+///
+/// A power-source warning leaves the unit open but idle until
+/// `ChangePowerSource` is called with that same status, so it is called
+/// here; `change_power_source` answers None for a family without one. Any
+/// other failure that still produced a handle closes it, since nothing else
+/// will.
+fn settle_open(
+    open_call: &'static str,
+    raw: u32,
+    handle: i16,
+    change_power_source: impl FnOnce(u32) -> Option<(&'static str, u32)>,
+    close: impl FnOnce(i16),
+) -> Result<i16> {
+    if raw == status::OK {
+        if handle <= 0 {
+            bail!("{open_call}: driver reported success but returned handle {handle}");
+        }
+        return Ok(handle);
+    }
+    if handle <= 0 {
+        return Err(status::PicoStatusError::new(open_call, raw).into());
+    }
+    if status::is_power_source_warning(raw) {
+        match change_power_source(raw) {
+            None => return Ok(handle),
+            Some((_, status::OK)) => {
+                tracing::warn!("{}", status::describe(raw));
+                return Ok(handle);
+            }
+            Some((call, refused)) => {
+                close(handle);
+                return Err(status::PicoStatusError::new(call, refused).into());
+            }
+        }
+    }
+    close(handle);
+    Err(status::PicoStatusError::new(open_call, raw).into())
+}
+
+/// `ChangePowerSource`, which 2000a parts -- powered from USB alone -- lack.
+macro_rules! change_power_source_call {
+    (none, $lib:expr, $handle:expr, $state:expr) => {{
+        let _ = (&$lib, $handle, $state);
+        None
+    }};
+    ($f:ident, $lib:expr, $handle:expr, $state:expr) => {
+        Some((stringify!($f), unsafe { $lib.$f($handle, $state) }))
+    };
 }
 
 /// `GetTimebase2` / `RunBlock`, with or without the legacy oversample arg.
@@ -243,6 +294,7 @@ macro_rules! impl_modern_api {
         loader: $loader:path,
         oversample: $oversample:ident,
         open: $open:ident / $open_form:ident,
+        change_power_source: $change_power_source:ident,
         close: $close:ident,
         enumerate: $enumerate:ident,
         unit_info: $unit_info:ident,
@@ -317,15 +369,15 @@ macro_rules! impl_modern_api {
                 let raw = open_call!(
                     $open_form, lib, $open, &mut handle, serial_ptr, resolution
                 );
-                check(raw, stringify!($open))?;
-
-                if handle <= 0 {
-                    bail!(
-                        "{}: driver reported success but returned handle {handle}",
-                        stringify!($open)
-                    );
-                }
-                Ok(handle)
+                settle_open(
+                    stringify!($open),
+                    raw,
+                    handle,
+                    |state| change_power_source_call!($change_power_source, lib, handle, state),
+                    |handle| {
+                        let _ = unsafe { lib.$close(handle) };
+                    },
+                )
             }
 
             fn close(&self, handle: i16) -> Result<()> {
@@ -540,6 +592,7 @@ impl_modern_api! {
     loader: super::loader::ps2000a,
     oversample: with_oversample,
     open: ps2000aOpenUnit / no_resolution,
+    change_power_source: none,
     close: ps2000aCloseUnit,
     enumerate: ps2000aEnumerateUnits,
     unit_info: ps2000aGetUnitInfo,
@@ -562,6 +615,7 @@ impl_modern_api! {
     loader: super::loader::ps3000a,
     oversample: with_oversample,
     open: ps3000aOpenUnit / no_resolution,
+    change_power_source: ps3000aChangePowerSource,
     close: ps3000aCloseUnit,
     enumerate: ps3000aEnumerateUnits,
     unit_info: ps3000aGetUnitInfo,
@@ -584,6 +638,7 @@ impl_modern_api! {
     loader: super::loader::ps4000a,
     oversample: no_oversample,
     open: ps4000aOpenUnit / no_resolution,
+    change_power_source: ps4000aChangePowerSource,
     close: ps4000aCloseUnit,
     enumerate: ps4000aEnumerateUnits,
     unit_info: ps4000aGetUnitInfo,
@@ -625,6 +680,7 @@ impl_modern_api! {
     loader: super::loader::ps5000a,
     oversample: no_oversample,
     open: ps5000aOpenUnit / with_resolution,
+    change_power_source: ps5000aChangePowerSource,
     close: ps5000aCloseUnit,
     enumerate: ps5000aEnumerateUnits,
     unit_info: ps5000aGetUnitInfo,
@@ -728,10 +784,96 @@ mod tests {
     }
 
     #[test]
-    fn a_power_warning_is_not_treated_as_a_failure() {
-        // Returned by OpenUnit on USB-powered parts with no barrel jack.
-        // The unit is open and usable.
-        assert!(check(status::POWER_SUPPLY_NOT_CONNECTED, "ps5000aOpenUnit").is_ok());
+    fn a_power_status_from_any_call_but_open_is_a_failure() {
+        // Mid-session it means the supply changed and the call did not run.
+        let err = check(status::POWER_SUPPLY_NOT_CONNECTED, "ps5000aRunBlock").unwrap_err();
+        assert_eq!(
+            err.downcast_ref::<status::PicoStatusError>().map(|e| e.status),
+            Some(status::POWER_SUPPLY_NOT_CONNECTED)
+        );
+    }
+
+    /// `settle_open` with every call recorded: the state handed to
+    /// `ChangePowerSource`, and the handles closed.
+    fn settle(
+        raw: u32,
+        handle: i16,
+        power_source_answer: Option<u32>,
+    ) -> (Result<i16>, Vec<u32>, Vec<i16>) {
+        let power = std::cell::RefCell::new(Vec::new());
+        let closed = std::cell::RefCell::new(Vec::new());
+        let result = settle_open(
+            "ps5000aOpenUnit",
+            raw,
+            handle,
+            |state| {
+                power.borrow_mut().push(state);
+                power_source_answer.map(|answer| ("ps5000aChangePowerSource", answer))
+            },
+            |handle| closed.borrow_mut().push(handle),
+        );
+        (result, power.into_inner(), closed.into_inner())
+    }
+
+    #[test]
+    fn a_unit_without_its_dc_supply_is_switched_to_usb_power_and_opens() {
+        for warning in [
+            status::POWER_SUPPLY_NOT_CONNECTED,
+            status::USB3_DEVICE_NON_USB3_PORT,
+            status::POWER_SUPPLY_CONNECTED,
+        ] {
+            let (result, power, closed) = settle(warning, 7, Some(status::OK));
+            assert_eq!(result.unwrap(), 7);
+            assert_eq!(power, vec![warning], "ChangePowerSource must get the status back");
+            assert!(closed.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_refused_power_source_change_closes_the_unit() {
+        let (result, _, closed) =
+            settle(status::POWER_SUPPLY_NOT_CONNECTED, 7, Some(status::POWER_SUPPLY_UNDERVOLTAGE));
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("ps5000aChangePowerSource"), "{err}");
+        assert_eq!(closed, vec![7]);
+    }
+
+    #[test]
+    fn a_family_without_change_power_source_keeps_the_unit_it_opened() {
+        let (result, power, closed) = settle(status::POWER_SUPPLY_NOT_CONNECTED, 7, None);
+        assert_eq!(result.unwrap(), 7);
+        assert_eq!(power.len(), 1);
+        assert!(closed.is_empty());
+    }
+
+    #[test]
+    fn a_failed_open_that_still_returned_a_handle_closes_it() {
+        let (result, power, closed) = settle(0x04, 3, Some(status::OK));
+        let err = result.unwrap_err();
+        assert_eq!(
+            err.downcast_ref::<status::PicoStatusError>().map(|e| e.status),
+            Some(0x04)
+        );
+        assert!(power.is_empty(), "only a power warning asks for a power source");
+        assert_eq!(closed, vec![3]);
+    }
+
+    #[test]
+    fn an_open_that_finds_nothing_keeps_the_code_and_closes_nothing() {
+        let (result, _, closed) = settle(status::NOT_FOUND, 0, Some(status::OK));
+        let err = result.unwrap_err();
+        assert_eq!(
+            err.downcast_ref::<status::PicoStatusError>().map(|e| e.status),
+            Some(status::NOT_FOUND)
+        );
+        assert!(closed.is_empty());
+    }
+
+    #[test]
+    fn success_without_a_handle_is_still_an_error() {
+        let (result, _, closed) = settle(status::OK, 0, None);
+        assert!(result.is_err());
+        assert!(closed.is_empty());
     }
 
     #[test]

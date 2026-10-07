@@ -89,6 +89,8 @@ pub enum DecodeError {
     BadMagic(u32),
     UnsupportedVersion(u16),
     LengthMismatch { expected: usize, got: usize },
+    /// A channel code past 'Z'.
+    BadChannel(u8),
 }
 
 impl std::fmt::Display for DecodeError {
@@ -106,6 +108,9 @@ impl std::fmt::Display for DecodeError {
             DecodeError::LengthMismatch { expected, got } => {
                 write!(f, "payload length mismatch: expected {expected} bytes, got {got}")
             }
+            DecodeError::BadChannel(code) => {
+                write!(f, "channel code {code} names no channel A to Z")
+            }
         }
     }
 }
@@ -120,8 +125,15 @@ fn channel_to_u8(channel: ChannelId) -> u8 {
     }
 }
 
-fn channel_from_u8(value: u8) -> ChannelId {
-    ChannelId::Alphabetic((b'A' + value) as char)
+/// The inverse of `channel_to_u8` for the codes it gives the channels A to Z.
+/// Anything past them used to overflow the addition: a panic in a debug
+/// build, and a channel named by whatever byte it wrapped to in a release one.
+fn channel_from_u8(value: u8) -> Result<ChannelId, DecodeError> {
+    if value <= b'Z' - b'A' {
+        Ok(ChannelId::Alphabetic((b'A' + value) as char))
+    } else {
+        Err(DecodeError::BadChannel(value))
+    }
 }
 
 fn coupling_to_u8(coupling: Coupling) -> u8 {
@@ -242,7 +254,7 @@ impl CaptureFrame {
         for i in 0..channel_count {
             let at = HEADER_SIZE + i * CHANNEL_DESC_SIZE;
             channels.push(ChannelFrame {
-                channel: channel_from_u8(buf[at]),
+                channel: channel_from_u8(buf[at])?,
                 range_code: buf[at + 1],
                 coupling: coupling_from_u8(buf[at + 2]),
                 scale_v_per_count: f32::from_le_bytes(
@@ -360,6 +372,22 @@ mod tests {
         let original = sample_frame();
         let decoded = CaptureFrame::decode(&original.encode()).unwrap();
         assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn every_lettered_channel_round_trips() {
+        for letter in 'A'..='Z' {
+            let channel = ChannelId::Alphabetic(letter);
+            assert_eq!(channel_from_u8(channel_to_u8(channel)), Ok(channel));
+        }
+    }
+
+    #[test]
+    fn a_channel_code_past_z_is_refused_rather_than_overflowing() {
+        let mut bytes = sample_frame().encode();
+        bytes[HEADER_SIZE] = 200;
+        assert_eq!(CaptureFrame::decode(&bytes), Err(DecodeError::BadChannel(200)));
+        assert_eq!(channel_from_u8(u8::MAX), Err(DecodeError::BadChannel(u8::MAX)));
     }
 
     #[test]

@@ -215,6 +215,73 @@ class TestTheRolesAreRoutable:
 
         assert key("scope", "picoscope_2000", {"unique_id": "PS-1"}) == "picoscope:PS-1"
 
+    def test_a_script_describes_a_channel_net_as_the_cli_does(self, monkeypatch):
+        """hardware_service caches drivers on what it is told about a net.
+
+        `Net.get` used to tell it the whole record, address included, so it
+        built one driver per unit: every channel net on the unit shared the
+        one made for whichever was used first, channel and all.
+        """
+        from lager.http_handlers import net_command
+        from lager.nets.net import _scope_device_info
+
+        vbus = {"name": "vbus", "role": "scope-channel", "instrument": "picoscope_2000",
+                "address": "USB::0x0CE9::0x1007::GO024::INSTR", "pin": 1}
+        reset = dict(vbus, name="reset", pin=2)
+        monkeypatch.setattr(net_command.Net, "get_local_nets",
+                            staticmethod(lambda: [vbus, reset]))
+
+        assert _scope_device_info(vbus) == net_command._proxy("vbus", "scope-channel").net_info
+        assert "address" not in _scope_device_info(vbus)
+        assert _scope_device_info(vbus) != _scope_device_info(reset)
+        assert _scope_device_info(vbus)["device_id"] == _scope_device_info(reset)["device_id"]
+
+
+class TestConcurrentWriters:
+    """After an upgrade every service migrates the nets, and writes, at once."""
+
+    def test_a_reader_never_finds_the_file_half_written(self, tmp_path):
+        import json
+        import threading
+
+        from lager.nets.net import _atomic_write_json
+
+        path = str(tmp_path / "saved_nets.json")
+        payloads = [[{"name": "net%d" % i, "role": "scope-channel", "pin": i}] * 200
+                    for i in range(4)]
+        _atomic_write_json(path, payloads[0])
+        failures = []
+        done = threading.Event()
+
+        def write(payload):
+            try:
+                for _ in range(25):
+                    _atomic_write_json(path, payload)
+            except Exception as e:
+                failures.append(e)
+
+        def read():
+            while not done.is_set():
+                try:
+                    with open(path, encoding="utf-8") as f:
+                        if json.load(f) not in payloads:
+                            failures.append(AssertionError("read a mixture"))
+                except Exception as e:
+                    failures.append(e)
+
+        reader = threading.Thread(target=read)
+        reader.start()
+        writers = [threading.Thread(target=write, args=(p,)) for p in payloads]
+        for thread in writers:
+            thread.start()
+        for thread in writers:
+            thread.join()
+        done.set()
+        reader.join()
+
+        assert failures == []
+        assert not [n for n in tmp_path.iterdir() if n.name.endswith(".tmp")]
+
 
 class TestASavedScopeNetSurvivesTheRoundTrip:
     """The migration must not eat a scope net that went through the saver.

@@ -21,12 +21,62 @@ pub const BUSY: u32 = 0x00000027;
 pub const NOT_FOUND: u32 = 0x00000003;
 /// `PICO_NOT_RESPONDING`.
 pub const NOT_RESPONDING: u32 = 0x00000007;
-/// `PICO_POWER_SUPPLY_NOT_CONNECTED` -- USB-powered part needs the DC input.
-pub const POWER_SUPPLY_NOT_CONNECTED: u32 = 0x0000011E;
+/// `PICO_INVALID_HANDLE` -- the unit was closed or unplugged.
+pub const INVALID_HANDLE: u32 = 0x0000000C;
 /// `PICO_POWER_SUPPLY_CONNECTED`.
-pub const POWER_SUPPLY_CONNECTED: u32 = 0x0000011D;
+pub const POWER_SUPPLY_CONNECTED: u32 = 0x00000119;
+/// `PICO_POWER_SUPPLY_NOT_CONNECTED` -- USB-powered part needs the DC input.
+pub const POWER_SUPPLY_NOT_CONNECTED: u32 = 0x0000011A;
+/// `PICO_POWER_SUPPLY_REQUEST_INVALID`.
+pub const POWER_SUPPLY_REQUEST_INVALID: u32 = 0x0000011B;
+/// `PICO_POWER_SUPPLY_UNDERVOLTAGE`.
+pub const POWER_SUPPLY_UNDERVOLTAGE: u32 = 0x0000011C;
+/// `PICO_CAPTURING_DATA`.
+pub const CAPTURING_DATA: u32 = 0x0000011D;
 /// `PICO_USB3_0_DEVICE_NON_USB3_0_PORT`.
-pub const USB3_DEVICE_NON_USB3_PORT: u32 = 0x0000011F;
+pub const USB3_DEVICE_NON_USB3_PORT: u32 = 0x0000011E;
+/// `PICO_NOT_SUPPORTED_BY_THIS_DEVICE`.
+pub const NOT_SUPPORTED_BY_THIS_DEVICE: u32 = 0x0000011F;
+
+/// A call that returned something other than `PICO_OK`.
+///
+/// Kept as the code rather than flattened to text, so that a caller can
+/// tell "nothing is attached" or "the unit has gone" from any other
+/// failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PicoStatusError {
+    pub call: &'static str,
+    pub status: u32,
+}
+
+impl PicoStatusError {
+    pub fn new(call: &'static str, status: u32) -> Self {
+        Self { call, status }
+    }
+
+    /// Whether the unit itself is gone -- unplugged, or no longer
+    /// answering -- rather than this one request having been refused.
+    pub fn unit_is_gone(&self) -> bool {
+        matches!(self.status, NOT_RESPONDING | INVALID_HANDLE)
+    }
+}
+
+impl std::fmt::Display for PicoStatusError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.call, describe(self.status))
+    }
+}
+
+impl std::error::Error for PicoStatusError {}
+
+/// Whether `error`, or anything that caused it, says the unit is gone.
+pub fn unit_is_gone(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<PicoStatusError>()
+            .is_some_and(PicoStatusError::unit_is_gone)
+    })
+}
 
 /// Describe a status code for a log line or an error message.
 pub fn describe(status: u32) -> String {
@@ -46,8 +96,8 @@ pub fn describe(status: u32) -> String {
         0x00000009 => "PICO_KERNEL_DRIVER_TOO_OLD",
         0x0000000A => "PICO_EEPROM_CORRUPT",
         0x0000000B => "PICO_OS_NOT_SUPPORTED",
-        0x0000000C => "PICO_INVALID_HANDLE: the device handle is stale, which \
-                       means the unit was closed or unplugged",
+        INVALID_HANDLE => "PICO_INVALID_HANDLE: the device handle is stale, which \
+                           means the unit was closed or unplugged",
         0x0000000D => "PICO_INVALID_PARAMETER",
         0x0000000E => "PICO_INVALID_TIMEBASE: this timebase is not available, \
                        often because too many channels are enabled for it",
@@ -79,14 +129,29 @@ pub fn describe(status: u32) -> String {
         0x0000002B => "PICO_INVALID_SAMPLE_INTERVAL",
         0x0000002C => "PICO_TRIGGER_ERROR",
         0x0000002D => "PICO_MEMORY",
-        POWER_SUPPLY_CONNECTED => "PICO_POWER_SUPPLY_CONNECTED",
+        POWER_SUPPLY_CONNECTED => {
+            "PICO_POWER_SUPPLY_CONNECTED: the scope's DC supply was connected \
+             and the driver has to be told before the scope will run again"
+        }
         POWER_SUPPLY_NOT_CONNECTED => {
             "PICO_POWER_SUPPLY_NOT_CONNECTED: this model needs its DC supply \
              or a second USB lead for full performance"
         }
+        POWER_SUPPLY_REQUEST_INVALID => "PICO_POWER_SUPPLY_REQUEST_INVALID",
+        POWER_SUPPLY_UNDERVOLTAGE => {
+            "PICO_POWER_SUPPLY_UNDERVOLTAGE: the scope's DC supply voltage is \
+             too low"
+        }
+        CAPTURING_DATA => {
+            "PICO_CAPTURING_DATA: the scope is mid-capture; stop it first"
+        }
         USB3_DEVICE_NON_USB3_PORT => {
             "PICO_USB3_0_DEVICE_NON_USB3_0_PORT: a USB 3.0 scope is plugged \
              into a slower port, which limits its sample rate"
+        }
+        NOT_SUPPORTED_BY_THIS_DEVICE => {
+            "PICO_NOT_SUPPORTED_BY_THIS_DEVICE: this model does not have that \
+             feature"
         }
         _ => {
             return format!(
@@ -98,16 +163,25 @@ pub fn describe(status: u32) -> String {
     text.to_string()
 }
 
-/// Whether a status is one the caller should treat as success.
+/// Whether a status is one the caller should treat as success: `PICO_OK`,
+/// and nothing else.
 ///
-/// `PICO_POWER_SUPPLY_NOT_CONNECTED` is the awkward one: `OpenUnit` returns
-/// it as a *warning* on models that can run from USB alone, and the unit is
-/// open and usable. Treating it as an error would refuse to talk to a
-/// perfectly working scope that simply has no barrel jack attached.
+/// The power-source codes are the awkward ones. `OpenUnit` returns them for
+/// a unit that is open but will not run until `ChangePowerSource` confirms
+/// which supply it is on, which `open` deals with (see
+/// [`is_power_source_warning`]). From any later call they mean the supply
+/// changed under the scope and that call did not run, so passing them as
+/// success would leave the daemon waiting on a capture never armed.
 pub fn is_success(status: u32) -> bool {
+    status == OK
+}
+
+/// Whether `OpenUnit`'s status says the unit is open but waiting to be told
+/// which power source it is on.
+pub fn is_power_source_warning(status: u32) -> bool {
     matches!(
         status,
-        OK | POWER_SUPPLY_NOT_CONNECTED | POWER_SUPPLY_CONNECTED | USB3_DEVICE_NON_USB3_PORT
+        POWER_SUPPLY_CONNECTED | POWER_SUPPLY_NOT_CONNECTED | USB3_DEVICE_NON_USB3_PORT
     )
 }
 
@@ -122,18 +196,79 @@ mod tests {
     }
 
     #[test]
-    fn power_warnings_count_as_success() {
-        // The unit is open and usable; see is_success.
-        assert!(is_success(POWER_SUPPLY_NOT_CONNECTED));
-        assert!(is_success(POWER_SUPPLY_CONNECTED));
-        assert!(is_success(USB3_DEVICE_NON_USB3_PORT));
+    fn a_lost_unit_is_recognised_under_any_context() {
+        let gone: anyhow::Error = PicoStatusError::new("ps5000aIsReady", NOT_RESPONDING).into();
+        assert!(unit_is_gone(&gone.context("reading the capture")));
+        let closed: anyhow::Error = PicoStatusError::new("ps2000_ready", INVALID_HANDLE).into();
+        assert!(unit_is_gone(&closed));
+
+        let refused: anyhow::Error = PicoStatusError::new("ps5000aRunBlock", BUSY).into();
+        assert!(!unit_is_gone(&refused), "one refused request is not a lost unit");
+        assert!(!unit_is_gone(&anyhow::anyhow!("PICO_NOT_RESPONDING, in words")));
+    }
+
+    #[test]
+    fn the_codes_match_the_headers() {
+        // Every family's PicoStatus.h is the same file, so one family's
+        // bindings pin them all. A wrong value here once made the daemon
+        // accept PICO_CAPTURING_DATA and PICO_NOT_SUPPORTED_BY_THIS_DEVICE
+        // as power warnings.
+        use super::super::loader::ps5000a_sys as sys;
+        assert_eq!(OK, sys::PICO_OK);
+        assert_eq!(NOT_FOUND, sys::PICO_NOT_FOUND);
+        assert_eq!(NOT_RESPONDING, sys::PICO_NOT_RESPONDING);
+        assert_eq!(INVALID_HANDLE, sys::PICO_INVALID_HANDLE);
+        assert_eq!(BUSY, sys::PICO_BUSY);
+        assert_eq!(POWER_SUPPLY_CONNECTED, sys::PICO_POWER_SUPPLY_CONNECTED);
+        assert_eq!(POWER_SUPPLY_NOT_CONNECTED, sys::PICO_POWER_SUPPLY_NOT_CONNECTED);
+        assert_eq!(POWER_SUPPLY_REQUEST_INVALID, sys::PICO_POWER_SUPPLY_REQUEST_INVALID);
+        assert_eq!(POWER_SUPPLY_UNDERVOLTAGE, sys::PICO_POWER_SUPPLY_UNDERVOLTAGE);
+        assert_eq!(CAPTURING_DATA, sys::PICO_CAPTURING_DATA);
+        assert_eq!(USB3_DEVICE_NON_USB3_PORT, sys::PICO_USB3_0_DEVICE_NON_USB3_0_PORT);
+        assert_eq!(NOT_SUPPORTED_BY_THIS_DEVICE, sys::PICO_NOT_SUPPORTED_BY_THIS_DEVICE);
+
+        assert_eq!(POWER_SUPPLY_CONNECTED, 0x119);
+        assert_eq!(POWER_SUPPLY_NOT_CONNECTED, 0x11A);
+        assert_eq!(POWER_SUPPLY_REQUEST_INVALID, 0x11B);
+        assert_eq!(POWER_SUPPLY_UNDERVOLTAGE, 0x11C);
+        assert_eq!(CAPTURING_DATA, 0x11D);
+        assert_eq!(USB3_DEVICE_NON_USB3_PORT, 0x11E);
+        assert_eq!(NOT_SUPPORTED_BY_THIS_DEVICE, 0x11F);
+    }
+
+    #[test]
+    fn power_source_codes_are_open_warnings_but_not_success() {
+        for code in [POWER_SUPPLY_CONNECTED, POWER_SUPPLY_NOT_CONNECTED, USB3_DEVICE_NON_USB3_PORT] {
+            assert!(is_power_source_warning(code), "0x{code:X}");
+            assert!(!is_success(code), "0x{code:X} means the call did not run");
+        }
+        for code in [CAPTURING_DATA, NOT_SUPPORTED_BY_THIS_DEVICE, POWER_SUPPLY_UNDERVOLTAGE] {
+            assert!(!is_power_source_warning(code), "0x{code:X}");
+            assert!(!is_success(code), "0x{code:X}");
+        }
     }
 
     #[test]
     fn real_failures_are_not_success() {
         assert!(!is_success(NOT_FOUND));
         assert!(!is_success(BUSY));
-        assert!(!is_success(0x0000000C)); // PICO_INVALID_HANDLE
+        assert!(!is_success(INVALID_HANDLE));
+    }
+
+    #[test]
+    fn a_status_error_keeps_its_code_and_says_what_it_was() {
+        let error = PicoStatusError::new("ps5000aRunBlock", CAPTURING_DATA);
+        assert_eq!(error.status, CAPTURING_DATA);
+        let text = error.to_string();
+        assert!(text.starts_with("ps5000aRunBlock: PICO_CAPTURING_DATA"), "{text}");
+    }
+
+    #[test]
+    fn only_a_stale_handle_or_a_silent_unit_means_the_unit_is_gone() {
+        assert!(PicoStatusError::new("x", NOT_RESPONDING).unit_is_gone());
+        assert!(PicoStatusError::new("x", INVALID_HANDLE).unit_is_gone());
+        assert!(!PicoStatusError::new("x", BUSY).unit_is_gone());
+        assert!(!PicoStatusError::new("x", 0x0E).unit_is_gone());
     }
 
     #[test]

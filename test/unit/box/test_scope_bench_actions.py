@@ -23,6 +23,8 @@ NETS = [
      "address": "usb::one"},
     {"name": "rigol1", "role": "scope", "instrument": "Rigol_MSO5204",
      "address": "usb::two"},
+    {"name": "rigol_ch2", "role": "scope-channel", "instrument": "Rigol_MSO5204",
+     "address": "usb::two", "pin": 2},
 ]
 
 PICOSCOPE_ONLY = [
@@ -36,7 +38,29 @@ PICOSCOPE_ONLY = [
     ("set_display", {"persistence": 2}),
     ("get_display", {}),
     ("fft", {"channel": "A"}),
+    ("capabilities", {}),
+    ("set_cursor", {"time": [0.0, 1e-3]}),
+    ("get_cursor", {}),
+    ("clear_cursor", {}),
+    ("measure_cursor", {}),
 ]
+
+# Everything a Rigol channel net is not refused, with parameters it accepts.
+RIGOL_ACTIONS = [
+    ("enable_net", {}), ("disable_net", {}), ("get_net_enabled", {}),
+    ("start_capture", {}), ("start_single", {}), ("stop_capture", {}),
+    ("force_trigger", {}), ("autoscale", {}),
+    ("set_scale", {"volts_per_div": 0.5}), ("get_scale", {}),
+    ("set_timebase", {"seconds_per_div": 1e-3}), ("get_timebase", {}),
+    ("set_coupling", {"mode": "AC"}), ("get_coupling", {}),
+    ("set_probe", {"ratio": 10}), ("get_probe", {}),
+    ("set_offset", {"offset": 0.1}), ("get_offset", {}),
+    ("set_time_offset", {"offset": 1e-4}), ("get_time_offset", {}),
+    ("trigger_edge", {"source": "CHANnel2", "slope": "POSitive",
+                      "coupling": "DC", "level": 0.5, "mode": "normal"}),
+    ("get_capture_mode", {}), ("get_trigger_source", {}),
+    ("get_trigger_slope", {}), ("get_trigger_level", {}), ("get_trigger", {}),
+] + [(action, {}) for action in sorted(net_command._SCOPE_MEASUREMENTS)]
 
 STATE = {
     "acquiring": True, "rolling": False, "capture_mode": "auto",
@@ -52,12 +76,12 @@ STATE = {
 }
 
 
-def _run(netname, action, params=None, device=None):
+def _run(netname, action, params=None, device=None, role="scope"):
     device = device if device is not None else mock.MagicMock()
     with mock.patch.object(net_command, "Net") as NetMock, \
             mock.patch.object(net_command, "_proxy", return_value=device):
         NetMock.get_local_nets.return_value = NETS
-        return net_command._scope(netname, "scope", action, dict(params or {}))
+        return net_command._scope(netname, role, action, dict(params or {}))
 
 
 class TestOnlyAPicoScopeNetTakesThem:
@@ -80,6 +104,64 @@ class TestOnlyAPicoScopeNetTakesThem:
         assert result["value"] == {"mode": "normal", "source": "CH1",
                                    "slope": "rising", "level": 1.5}
         device.get_trigger_holdoff.assert_not_called()
+
+    def test_measure_all_on_a_rigol_channel_is_told_to_use_its_front_panel(self):
+        device = mock.MagicMock()
+        with pytest.raises(net_command.WrongNetForAction, match="front panel"):
+            _run("rigol_ch2", "measure_all", {}, device, role="scope-channel")
+        assert device.method_calls == []
+
+
+class TestARigolNetReachesOnlyWhatItsDriverHas:
+    """Whatever the gates let through reaches the Rigol driver by name.
+
+    A name it lacks failed on the box as a 502 with "Function not found",
+    which is how the trigger readback and the enabled readback failed.
+    """
+
+    @pytest.mark.parametrize("action,params", RIGOL_ACTIONS)
+    def test_every_call_is_one_the_driver_has(self, action, params):
+        from lager.measurement.scope.rigol_mso5000 import RigolMso5000
+
+        device = mock.create_autospec(RigolMso5000, instance=True)
+        device.get_measure_item.return_value = 1.0
+        _run("rigol_ch2", action, params, device, role="scope-channel")
+
+
+class TestARigolMeasurement:
+    """The measurements went out under the daemon's names, which the Rigol
+    does not have, and with no source, so they read whichever channel the
+    last caller left selected."""
+
+    def test_it_asks_by_the_rigol_name_on_the_net_channel(self):
+        device = mock.MagicMock()
+        device.get_measure_item.return_value = 1000.0
+        result = _run("rigol_ch2", "measure_freq", {}, device, role="scope-channel")
+        device.get_measure_item.assert_called_once_with("FREQuency", 2)
+        assert result == {"message": "1000.0 Hz", "value": 1000.0}
+
+    @pytest.mark.parametrize("action", sorted(net_command._SCOPE_MEASUREMENTS))
+    def test_every_name_is_a_rigol_measurement_item(self, action):
+        from lager.instrument_wrappers.rigol_mso5000_defines import MeasurementItem
+
+        device = mock.MagicMock()
+        device.get_measure_item.return_value = 1.0
+        _run("rigol_ch2", action, {}, device, role="scope-channel")
+        item = device.get_measure_item.call_args.args[0]
+        assert item in {member.value for member in MeasurementItem}
+
+    def test_no_valid_value_is_an_answer_rather_than_a_failure(self):
+        """The driver answers None for the Rigol's 'no value' reading."""
+        device = mock.MagicMock()
+        device.get_measure_item.return_value = None
+        result = _run("rigol_ch2", "measure_period", {}, device, role="scope-channel")
+        assert result == {"message": "period is not present in this capture"}
+
+    def test_a_picoscope_net_keeps_the_daemon_names(self):
+        device = mock.MagicMock()
+        device.get_measure_item.return_value = 1000.0
+        _run("pico1", "measure_freq", {}, device, role="scope-channel")
+        device.get_measure_item.assert_called_once_with("frequency")
 
 
 class TestTheReadbacks:
@@ -147,6 +229,19 @@ class TestTheReadbacks:
                                      "10 kHz -3.0 dBV, 30 kHz -15.1 dBV")
         device.fft.assert_called_once_with(channel="A", window="hann", peaks=2)
 
+    def test_the_spectrum_on_the_instrument_needs_a_channel(self):
+        """With no channel the driver fell back to channel A, silently."""
+        device = mock.MagicMock()
+        with pytest.raises(net_command.WrongNetForAction, match="one channel"):
+            _run("pico1", "fft", {}, device)
+        assert device.method_calls == []
+
+    def test_the_spectrum_on_a_channel_net_needs_none(self):
+        device = mock.MagicMock()
+        device.fft.return_value = {"channel": "A", "window": "hann", "peaks": []}
+        _run("pico1", "fft", {}, device, role="scope-channel")
+        device.fft.assert_called_once_with(channel=None, window="hann", peaks=5)
+
 
 class TestTheSetters:
 
@@ -183,3 +278,67 @@ class TestTheSetters:
         with pytest.raises(ValueError, match="brightness"):
             _run("pico1", "set_display", {"brightness": 5}, device)
         device.set_display.assert_not_called()
+
+
+class TestABadValueIsRefusedByName:
+    """These reached `float()` or `int()` unchecked, so a list or an object
+    raised TypeError, which the route answers as a 500."""
+
+    @pytest.mark.parametrize("action,key", [
+        ("set_scale", "volts_per_div"),
+        ("set_timebase", "seconds_per_div"),
+        ("set_probe", "ratio"),
+        ("set_offset", "offset"),
+        ("set_time_offset", "offset"),
+        ("set_trigger_holdoff", "seconds"),
+        ("trigger_edge", "level"),
+    ])
+    @pytest.mark.parametrize("bad", [[1], {"v": 1}, "fast", "nan", "inf"])
+    def test_a_number(self, action, key, bad):
+        device = mock.MagicMock()
+        with pytest.raises(ValueError, match=key):
+            _run("pico1", action, {key: bad}, device, role="scope-channel")
+        assert device.method_calls == []
+
+    @pytest.mark.parametrize("action,key,params", [
+        ("set_acquire", "count", {"mode": "average"}),
+        ("fft", "peaks", {"channel": "A"}),
+    ])
+    @pytest.mark.parametrize("bad", [[1], {"v": 1}, "many", float("inf")])
+    def test_a_whole_number(self, action, key, params, bad):
+        device = mock.MagicMock()
+        with pytest.raises(ValueError, match=key):
+            _run("pico1", action, dict(params, **{key: bad}), device)
+        assert device.method_calls == []
+
+    def test_a_trigger_mode_the_scope_does_not_have(self):
+        """Checked first, so the rest of the edge is not half applied."""
+        device = mock.MagicMock()
+        with pytest.raises(ValueError, match="trigger mode"):
+            _run("pico1", "trigger_edge", {"source": "A", "mode": "roll"}, device)
+        assert device.method_calls == []
+
+    @pytest.mark.parametrize("bad", [5, "12", [1], [1, None], {"1": 0.0}, ["a", "b"],
+                                     [0.0, float("nan")]])
+    def test_a_cursor_pair(self, bad):
+        device = mock.MagicMock()
+        with pytest.raises(ValueError, match="time cursors"):
+            _run("pico1", "set_cursor", {"time": bad}, device)
+        assert device.method_calls == []
+
+    def test_a_cursor_pair_reaches_the_driver_as_numbers(self):
+        device = mock.MagicMock()
+        device.set_cursors.return_value = {"time": [0.0, 0.001]}
+        _run("pico1", "set_cursor", {"time": ["0", "1e-3"]}, device)
+        device.set_cursors.assert_called_once_with(
+            time=[0.0, 0.001], volts=None, channel=None)
+
+
+class TestTheCouplingReadback:
+
+    def test_it_carries_the_value(self):
+        """The message alone left a caller parsing a sentence for the mode."""
+        device = mock.MagicMock()
+        device.get_channel_coupling.return_value = "AC"
+        result = _run("pico1", "get_coupling", {}, device, role="scope-channel")
+        assert result == {"message": "Coupling AC", "value": "AC"}

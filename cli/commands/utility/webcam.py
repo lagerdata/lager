@@ -81,12 +81,17 @@ def _viewer_url(box_ip, url):
     return f"{url}{sep}token={quote(token, safe='')}"
 
 
-def _gated_link_note(box_ip, box_label=None):
-    """Print how long a tokenised link lasts, or how to get one."""
+def _gated_link_note(box_ip, box_label=None, refresh=None):
+    """Print how long a tokenised link lasts, or how to get one.
+
+    ``refresh`` is the command that prints a fresh link; the webcam's when
+    not given.
+    """
     auth_url, token = _gated_token(box_ip)
     if not auth_url:
         return
     box_label = box_label or box_ip
+    refresh = refresh or f"lager webcam url --box {box_label}"
     if not token:
         click.secho(
             f"Note: this box is access-gated and no sign-in is stored for it, "
@@ -110,7 +115,7 @@ def _gated_link_note(box_ip, box_label=None):
     click.secho(
         f"This box is access-gated: the link carries your sign-in token and "
         f"stays valid for about {minutes} minutes. "
-        f'Run "lager webcam url --box {box_label}" for a fresh link.',
+        f'Run "{refresh}" for a fresh link.',
         fg="yellow",
     )
 

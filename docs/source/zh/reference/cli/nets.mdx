@@ -89,7 +89,7 @@ lager nets add NAME ROLE CHANNEL ADDRESS [OPTIONS]
 
 **参数：**
 - `NAME` - 该 Net 的唯一名称（例如 `supply1`、`debug_main`）
-- `ROLE` - Net 类型：`power-supply`、`battery`、`solar`、`debug`、`adc`、`dac`、`gpio`、`scope`、`logic`、`eload`、`uart`、`usb`、`webcam`、`arm`、`watt-meter`、`energy-analyzer`、`thermocouple`、`i2c`、`spi`。旧的写法 `supply` 和 `batt` 作为输入别名被接受，并归一化为 `power-supply` / `battery` —— 保存的 Net 总是带有规范角色。
+- `ROLE` - Net 类型：`power-supply`、`battery`、`solar`、`debug`、`adc`、`dac`、`gpio`、`scope`、`scope-channel`、`logic`、`eload`、`uart`、`usb`、`webcam`、`arm`、`watt-meter`、`energy-analyzer`、`thermocouple`、`i2c`、`spi`。旧的写法 `supply` 和 `batt` 作为输入别名被接受，并归一化为 `power-supply` / `battery` —— 保存的 Net 总是带有规范角色。
 - `CHANNEL` - 通道标识，与 `lager instruments` 列出的一致（例如 `1`、`AIN0`、`FIO0`、`I2C0`、`STM32F4`）
 - `ADDRESS` - VISA 地址或设备路径，与 `lager instruments` 列出的一致（例如 `USB0::0x0CD5::0x0007::::INSTR`）
 
@@ -200,11 +200,14 @@ FIO0-FIO3 on a LabJack U3 are fixed high-voltage analog inputs and are never dig
 | `KEYSIGHT_E36313A` / `E36312A` | `1`、`2`、`3` | 三路输出电源 |
 | `LabJack_T7` | `AIN0`–`AIN13`、`FIO0`–`FIO7`、`DAC0`–`DAC1` 等 | 每个引脚一个 Net |
 | `LabJack_U3` | `AIN0`–`AIN15`、`DAC0`–`DAC1`；`gpio` 在 `FIO4`–`FIO7`、`EIO0`–`EIO7`、`CIO0`–`CIO3`；`spi` 在 `FIO4-FIO7`；`i2c` 在 `FIO6-FIO7` | `FIO0`–`FIO3` 是固定的高压模拟输入 —— 请用 `AIN0`–`AIN3` 上的 `adc` Net 读取它们，绝不要用作 `gpio`、`spi` 或 `i2c`。Lager 把每一台 U3 都当作 U3-HV，因此 U3-LV 同样失去这四条数字线。`spi` 和 `i2c` 的引脚区间有重叠；各建一个 Net 是可以的 |
-| `Rigol_MSO5204` | `scope` 在 `1`–`4`；`logic` 在 `1` | 每个模拟通道一个 `scope` Net，另有一个 `logic` Net |
+| `Rigol_MSO5204` | `scope` 不带通道；`scope-channel` 在 `1`–`4`；`logic` 在 `1` | 仪器本身一个 `scope` Net，每个模拟通道一个 `scope-channel` Net，另有一个 `logic` Net |
+| `Picoscope_2000` / `Picoscope` | `scope` 不带通道；`scope-channel` 在 `1`–`2`，四通道型号为 `1`–`4` | 仪器本身一个 `scope` Net，每路输入一个 `scope-channel` Net。通道 `1` 是 A，`2` 是 B。Box 从设备读取通道数 |
 | `Aardvark` | `SPI0`、`I2C0`、GPIO 引脚 | 混合模式的多通道 |
 | `MCC_USB-202` | `CH0`–`CH7`、`DIO0`–`DIO7`、`DAC0`–`DAC1` | 每个通道一个 Net |
 | `Phidget` | `0`–`3` | 每个通道一个 `thermocouple` Net |
 | `Acroname_8Port` / `4Port`、`YKUSH_Hub` | 端口序号 | 每个端口一个 `usb` Net |
+
+`scope` Net 没有通道：它代表整台仪器，它的各路输入是单独的 `scope-channel` Net。为 `scope` Net 指定的通道会被 `lager nets add` 丢弃。哪些设置属于哪一种 Net，请参阅[示波器参考](/source/zh/reference/cli/scope)。
 
 **规则：** 每个 `(仪器, 地址, 角色, 通道)` 四元组最多一个 Net。共享 `(仪器, 地址, 角色)` 但通道不同的两个 Net 没有问题 —— 多通道正是为此而生。
 
@@ -806,7 +809,7 @@ Nets reporting no state:
 | `router` | 运行时长 | `up/<uptime>` |
 | `i2c` | 总线扫描中有响应的地址 | `0x48,0x76`、`no devices` |
 
-没有探测方式的 Net 类型（例如 `uart`、`spi`、`scope` 和 `logic`）显示 `–`。
+没有探测方式的 Net 类型（例如 `uart`、`spi`、`scope`、`scope-channel` 和 `logic`）显示 `–`。
 
 **Box 如何读取这些 Net：**
 - Box 按仪器把 Net 分组，最多同时读取八台仪器。
@@ -909,7 +912,8 @@ lager nets show battery1 --box my-lager-box
 | `gpio` | 数字 I/O | LabJack T7、LabJack U3（`FIO4` 及以上）、MCC USB-202 |
 | `i2c` | I2C 总线 | LabJack T7、LabJack U3、Aardvark、FTDI FT232H / FT2232H / FT4232H |
 | `spi` | SPI 总线 | LabJack T7、LabJack U3、Aardvark、FTDI FT232H / FT2232H / FT4232H |
-| `scope` | 示波器 | Rigol MSO5000、PicoScope |
+| `scope` | 示波器（作为整台仪器） | Rigol MSO5000、PicoScope |
+| `scope-channel` | 示波器的一路输入 | Rigol MSO5000、PicoScope |
 | `logic` | 逻辑分析仪通道 | Rigol MSO5204 |
 | `uart` | 串口 | Prolific USB、SiLabs CP210x |
 | `usb` | USB 端口控制 | Acroname 集线器、YKUSH、Plugable 扩展坞 |

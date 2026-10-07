@@ -63,6 +63,11 @@ def load_saved_nets():
 # five basic subcommands. The two must agree; test_logic_net_type.py pins them.
 _NET_ROLE = "scope"
 
+# `lager scope` addresses a scope and its channels alike, so both roles have
+# to resolve here. A channel net that does not resolve slips past the
+# PicoScope refusals in main() and lands on the Rigol path.
+_ROLE_FAMILY = {"scope": ("scope", "scope-channel")}
+
 
 def _net_type():
     """NetType for the role this invocation is acting for."""
@@ -73,9 +78,10 @@ def _net_type():
 
 def get_net_info(netname):
     """Get net info by name from saved nets."""
+    roles = _ROLE_FAMILY.get(_NET_ROLE, (_NET_ROLE,))
     nets = load_saved_nets()
     for net in nets:
-        if net.get("name") == netname and net.get("role") == _NET_ROLE:
+        if net.get("name") == netname and net.get("role") in roles:
             return net
     return None
 
@@ -698,8 +704,9 @@ def trigger_edge_pico(netname, mode, coupling, source, slope, level):
 
     if errors:
         print(f"{YELLOW}Some settings could not be applied: {'; '.join(errors)}{RESET}")
-    else:
-        print(f"{GREEN}Trigger configured successfully{RESET}")
+        return False
+    print(f"{GREEN}Trigger configured successfully{RESET}")
+    return True
 
 
 # ============================================================================
@@ -1251,7 +1258,7 @@ def main():
     # PicoScope only supports edge trigger
     if action.startswith('trigger_') and is_picoscope(net_info):
         if action == 'trigger_edge':
-            trigger_edge_pico(
+            success = trigger_edge_pico(
                 netname,
                 params.get('mode', 'auto'),
                 params.get('coupling', 'dc'),
@@ -1259,11 +1266,11 @@ def main():
                 params.get('slope'),
                 params.get('level')
             )
-            sys.exit(0)
+            sys.exit(0 if success else 1)
         else:
             print(f"{YELLOW}Only edge trigger is supported for PicoScope.{RESET}")
             print(f"{YELLOW}Use: lager scope {netname} trigger edge --slope rising --level 0{RESET}")
-            sys.exit(0)
+            sys.exit(1)
 
     # Rigol trigger configuration
     if action == 'trigger_edge':
@@ -1310,11 +1317,12 @@ def main():
             sys.exit(1)
 
     # ========== CURSOR CONTROL ==========
-    # PicoScope cursor control not supported
+    # Markers on a Rigol's own display. A PicoScope has none to put them on.
     if action.startswith(('set_', 'move_', 'hide_')) and is_picoscope(net_info):
-        print(f"{YELLOW}Cursor control is not supported for PicoScope devices.{RESET}")
-        print(f"{YELLOW}Use the web visualization for cursor measurements.{RESET}")
-        sys.exit(0)
+        print(f"{YELLOW}A PicoScope has no front panel, so these cursors have "
+              f"nothing to draw on.{RESET}")
+        print(f"{YELLOW}Mark the capture instead: lager scope {netname} cursor time T1 T2{RESET}")
+        sys.exit(1)
 
     # Rigol cursor operations
     cursor_actions = {

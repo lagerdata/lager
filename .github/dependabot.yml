@@ -12,17 +12,18 @@
 # version-bump PR.
 #
 # Cargo bumps are compile-checked by rust-checks.yml (cargo check / clippy /
-# audit on PRs touching box/oscilloscope-daemon), but deployment is still
-# manual: box.Dockerfile does not copy the binary -- it is built by hand
-# (./build_daemon.sh) and mounted from the host at runtime. So a merged
-# lockfile bump is a source fix only; boxes stay on the old binary until
-# someone rebuilds and redistributes it.
+# audit on PRs touching box/oscilloscope-daemon). A box picks one up the next
+# time start_box.sh runs, as `lager update` does: it rebuilds the daemon when
+# the sources no longer match the hash recorded for the binary, and mounts the
+# result into the container. A box without the PicoTech SDK headers builds no
+# daemon at all, so a bump changes nothing there.
 version: 2
 
 updates:
   # The daemon's Cargo.lock is where advisory 13 lives. Runtime scope: the
-  # daemon opens QUIC/WebTransport listeners on 8082-8084 when start-services.sh
-  # finds the binary present.
+  # daemon listens on loopback only, TCP 127.0.0.1:8085 and the Unix socket
+  # /tmp/lager-scope.sock. From outside the box, only the authenticated relay
+  # on :9000 reaches it.
   - package-ecosystem: cargo
     directory: /box/oscilloscope-daemon
     schedule:

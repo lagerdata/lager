@@ -29,7 +29,7 @@ pytestmark = pytest.mark.skipif(
     reason="node is required to run the scope UI code")
 
 PRELUDE = """
-import { ScopeApp, consoleLogHeight } from %s;
+import { ScopeApp, consoleLogHeight, consoleLogStep } from %s;
 import * as render from %s;
 globalThis.Option = class {
   constructor(text, value) { this.text = text; this.value = value; }
@@ -78,6 +78,130 @@ class TestConsoleResize:
 
     def test_an_unmeasured_window_does_not_collapse_the_log(self):
         assert _height("consoleLogHeight(150, 80, Infinity)") == 230
+
+    def test_a_key_step_down_from_an_overlong_drag_moves_at_once(self):
+        # Stepped from the height on screen, not the 5000 px the drag asked
+        # for, which took a keypress per 16 px of the excess.
+        assert _height("consoleLogStep(5000, -16, 400)") == 384
+
+
+# A browser's WebSocket and DOM, enough for connect() and disconnect().
+TRANSPORT = """
+const sockets = [];
+globalThis.WebSocket = class {
+  constructor(url) {
+    Object.assign(this, { url: String(url), readyState: 0, listeners: {}, sent: [], closed: false });
+    sockets.push(this);
+  }
+  addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); }
+  emit(type) { for (const fn of this.listeners[type] || []) fn({}); }
+  send(text) {
+    if (this.readyState !== 1) throw new Error('InvalidStateError');
+    this.sent.push(JSON.parse(text));
+  }
+  close() { this.closed = true; this.readyState = 3; }
+};
+globalThis.window = { location: { href: 'http://box:9000/scope', protocol: 'http:' } };
+const elements = {};
+globalThis.document = { getElementById: (id) => (elements[id] ||= { textContent: '', hidden: false }) };
+// A page whose ticket requests wait to be answered, in order.
+let answer;
+const page = app({
+  net: 'pico1', connectAttempt: 0, connecting: false, socket: null, refreshHz: 60,
+  overlayHidden: true, setLink() {}, stopMeasurementPolling() {}, resetRollDelay() {},
+  loadCapabilities() { return new Promise((resolve) => { answer = resolve; }); },
+});
+const ticket = () => answer({ ws_path: '/scope/pico1/ws?token=t' });
+"""
+
+
+class TestConnecting:
+    """One stream per page, however Connect and Disconnect are pressed."""
+
+    def _run(self, body):
+        return _run_js(TRANSPORT + body)
+
+    def test_a_second_press_while_connecting_opens_nothing_more(self):
+        out = self._run("""
+        const first = page.connect();
+        const second = page.connect();
+        ticket();
+        await Promise.all([first, second]);
+        process.stdout.write(JSON.stringify(sockets.map((s) => s.url)));
+        """)
+        assert out == ["ws://box:9000/scope/pico1/ws?token=t"]
+
+    def test_disconnecting_while_the_ticket_is_out_opens_nothing(self):
+        out = self._run("""
+        const pending = page.connect();
+        page.disconnect();
+        ticket();
+        await pending;
+        process.stdout.write(JSON.stringify({
+          sockets: sockets.length, connecting: page.connecting,
+          button: elements.connect.textContent, overlay: !elements['plot-empty'].hidden }));
+        """)
+        assert out == {"sockets": 0, "connecting": False, "button": "Connect", "overlay": True}
+
+    def test_a_socket_still_opening_is_closed_without_a_send_that_would_throw(self):
+        out = self._run("""
+        const pending = page.connect();
+        ticket();
+        await pending;
+        page.disconnect();
+        process.stdout.write(JSON.stringify({ sent: sockets[0].sent, closed: sockets[0].closed }));
+        """)
+        assert out == {"sent": [], "closed": True}
+
+    def test_a_replaced_sockets_late_close_leaves_the_new_one_connected(self):
+        out = self._run("""
+        let pending = page.connect();
+        ticket();
+        await pending;
+        page.disconnect();
+        pending = page.connect();
+        ticket();
+        await pending;
+        const [old, current] = sockets;
+        current.readyState = 1;
+        current.emit('open');
+        old.emit('close');
+        process.stdout.write(JSON.stringify({
+          connected: page.socket === current, button: elements.connect.textContent,
+          subscribed: current.sent.map((m) => m.command) }));
+        """)
+        assert out == {"connected": True, "button": "Disconnect", "subscribed": ["Subscribe"]}
+
+    def test_the_stream_ending_puts_the_overlay_back_and_drops_owed_credit(self):
+        out = self._run("""
+        page.overlayHidden = true;
+        page.owedCredits = 3;
+        page.pendingBuffer = new ArrayBuffer(8);
+        page.streamEnded();
+        process.stdout.write(JSON.stringify({
+          overlay: !elements['plot-empty'].hidden, owed: page.owedCredits,
+          pending: page.pendingBuffer }));
+        """)
+        assert out == {"overlay": True, "owed": 0, "pending": None}
+
+    def test_the_rate_reads_zero_once_nothing_more_is_coming(self):
+        # Recomputed only as frames arrive, so it went on showing the last
+        # rate measured after Stop and after Disconnect.
+        out = self._run("""
+        const stat = () => elements['stat-rate'].textContent;
+        page.rate = 27;
+        page.fps = 27;
+        elements['stat-rate'] = { textContent: '27 cap/s \u00b7 27 fps' };
+        elements['trig-status'] = {};
+        page.state = { acquiring: false };
+        page.status = 'trigd';
+        page.updateTriggerStatus({ flags: 1, streaming: false });
+        const stopped = stat();
+        elements['stat-rate'].textContent = '27 cap/s';
+        page.streamEnded();
+        process.stdout.write(JSON.stringify({ stopped, ended: stat(), rate: page.rate }));
+        """)
+        assert out == {"stopped": "0 cap/s", "ended": "0 cap/s", "rate": 0}
 
 
 class TestCredits:
@@ -188,6 +312,39 @@ class TestRollDelay:
         # test took to get here.
         assert 0 <= view["start"] < 20
         assert view["end"] - view["start"] == 2000
+
+    def _views(self, steps):
+        """Roll views of an old frame, then a new one, under each scope state."""
+        return _run_js("""
+        const a = app({ clockOffset: 0, socket: socket() });
+        a.resetRollDelay();
+        a.rollDelay = 0;
+        a.rollTarget = 0;
+        const frame = (agoMs) => ({ samplesPerChannel: 2200, screen: 2000, sampleIntervalNs: 0.5e6,
+                                    captureMonoNs: (performance.now() - agoMs) * 1e6 });
+        const old = frame(5000);
+        const views = [];
+        for (const [acquiring, fresh] of %s) {
+          a.state = { acquiring };
+          views.push(a.rollView(fresh ? frame(0) : old));
+        }
+        process.stdout.write(JSON.stringify(views));
+        """ % json.dumps(steps))
+
+    def test_a_stopped_roll_rests_on_its_newest_samples(self):
+        # Drawn against the clock, a stopped screen went on scrolling into
+        # blank, since nothing more would arrive to fill the right edge.
+        (stopped,) = self._views([[False, False]])
+        assert stopped == {"start": 200, "end": 2200}
+
+    def test_a_running_roll_keeps_moving(self):
+        (running,) = self._views([[True, False]])
+        assert running["end"] > 2200
+
+    def test_run_moves_it_on_only_when_a_newer_frame_arrives(self):
+        stopped, resumed, fresh = self._views([[False, False], [True, False], [True, True]])
+        assert stopped == resumed == {"start": 200, "end": 2200}
+        assert fresh != stopped
 
 
 STATE = {

@@ -109,10 +109,10 @@ Everything returns `lager::Result<T>` with a single `Error` enum:
 
 <Note>
 `Scope` ships as a documented stub whose methods return
-`Error::NotSupportedByBox`. The box side is no longer the blocker -- a `scope`
-role now exists on `POST /net/command` -- but the handle has not been wired to
-it yet. Logic-analyzer workflows are still missing on the box API too. The
-endpoint sketch is tracked in the crate's
+`Error::NotSupportedByBox`. The box no longer blocks it, because
+`POST /net/command` now has a `scope` role. The crate does not use that role
+yet. The box API also has no logic-analyzer workflows. The endpoint sketch is
+tracked in the crate's
 [`MISSING_ENDPOINTS.md`](https://github.com/lagerdata/lager-rs/blob/main/MISSING_ENDPOINTS.md).
 </Note>
 

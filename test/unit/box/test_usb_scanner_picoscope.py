@@ -147,6 +147,16 @@ class PicoScopeDiscovery(unittest.TestCase):
                 self.assertEqual(
                     self.scanner._pico_channel_count(model), expected)
 
+    def test_an_eight_channel_scope_offers_the_four_that_lager_names(self):
+        """Channels stop at D everywhere above the daemon, so a 4824 offers
+        A to D rather than falling back to two."""
+        self.assertEqual(self.scanner._pico_channel_count('PicoScope 4824'), 4)
+
+        entries = self._scan([('1018', 'S6', 'PicoScope 4824')])
+
+        self.assertEqual(entries[0]['channels']['scope-channel'],
+                         ['1', '2', '3', '4'])
+
     def test_the_vendor_wide_entry_is_not_in_the_vidpid_table(self):
         """It has no product id, so it must not shadow a real one."""
         pico_entries = [name for (vid, _pid), name

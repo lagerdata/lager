@@ -39,6 +39,7 @@ use protocol::{
 };
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
+use crate::oscilloscope::pico;
 use crate::oscilloscope::pico::ps2000::monotonic_ns;
 use crate::oscilloscope::{Oscilloscope, RollInfo, RollPlan, RollSink};
 use protocol::{Measurement, MeasurementSet};
@@ -61,6 +62,10 @@ const DEFAULT_AVERAGE_COUNT: u32 = 16;
 /// between features of a signal, and ten seconds of screen doing nothing is
 /// indistinguishable from a hang.
 const MAX_HOLDOFF_S: f64 = 10.0;
+
+/// Largest display state accepted, serialized. What the pages keep there --
+/// cursors, persistence, zoom, math -- is a few hundred bytes.
+const MAX_DISPLAY_BYTES: usize = 64 * 1024;
 
 /// Minimum/maximum pairs across a rolling screen: about one per pixel of a
 /// wide plot, so the trace is as detailed as the display can show.
@@ -187,7 +192,14 @@ impl ScopeReply {
     }
 }
 
-type Envelope = (ScopeRequest, oneshot::Sender<ScopeReply>);
+pub(crate) type Envelope = (ScopeRequest, oneshot::Sender<ScopeReply>);
+
+/// What the hardware thread reads off its queue.
+pub(crate) enum Message {
+    Request(Envelope),
+    /// The daemon is stopping: end any acquisition and close the scope.
+    Shutdown,
+}
 
 /// How far the hardware thread has got with opening the scope.
 ///
@@ -198,22 +210,99 @@ type Envelope = (ScopeRequest, oneshot::Sender<ScopeReply>);
 /// thread that may never read them.
 #[derive(Clone, Debug)]
 enum OpenState {
-    /// Inside the driver's open call.
-    Opening,
+    /// Inside the driver's open call, since `since`. `last_failure` is why
+    /// the attempt before this one failed, if one did.
+    Opening {
+        since: Instant,
+        last_failure: Option<String>,
+    },
     Open,
     /// The last attempt failed, with this reason. The thread keeps trying.
     Failed(String),
 }
 
+impl OpenState {
+    fn opening(last_failure: Option<String>) -> Self {
+        OpenState::Opening {
+            since: Instant::now(),
+            last_failure,
+        }
+    }
+
+    /// What a request is told when there is no scope to answer it.
+    fn refusal(&self) -> Option<String> {
+        match self {
+            OpenState::Open => None,
+            // A retry, which takes moments unless the scope is wedged. Until
+            // it is clearly stuck, why the last attempt failed is still the
+            // news: on a box with no scope attached, that is every request.
+            OpenState::Opening {
+                since,
+                last_failure: Some(reason),
+            } if since.elapsed() < OPEN_TIMEOUT => {
+                Some(format!("no oscilloscope available: {reason}"))
+            }
+            OpenState::Opening { .. } => Some(
+                "still opening the oscilloscope; if this does not clear, \
+                 the scope is likely wedged and needs reconnecting"
+                    .to_string(),
+            ),
+            OpenState::Failed(reason) => Some(format!("no oscilloscope available: {reason}")),
+        }
+    }
+}
+
+/// Lock a mutex whose holder may have panicked. Everything these guard is
+/// written whole, so what a poisoned lock holds is still valid, and a panic
+/// that already cost the scope should not cost every request after it.
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Handle used by async code to reach the hardware thread.
 #[derive(Clone)]
 pub struct ScopeHandle {
-    commands: mpsc::Sender<Envelope>,
+    commands: mpsc::Sender<Message>,
     captures: broadcast::Sender<Published>,
     acquiring: Arc<AtomicBool>,
     capture_count: Arc<AtomicU64>,
     open_state: Arc<Mutex<OpenState>>,
     state: watch::Receiver<Arc<ScopeState>>,
+    /// Set by `shutdown`, for a hardware thread that is not reading its
+    /// queue: one between attempts to open the scope.
+    stopping: Arc<AtomicBool>,
+    thread: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
+}
+
+/// An open handle with no hardware thread behind it.
+#[cfg(test)]
+pub(crate) struct Detached {
+    pub handle: ScopeHandle,
+    /// What the handle was asked, for the test to answer when it likes, or
+    /// not at all.
+    pub requests: mpsc::Receiver<Message>,
+    /// Publishes to the handle's subscribers.
+    pub captures: broadcast::Sender<Published>,
+}
+
+#[cfg(test)]
+impl ScopeHandle {
+    pub(crate) fn detached() -> Detached {
+        let (commands, requests) = mpsc::channel(COMMAND_QUEUE_DEPTH);
+        let (captures, _) = broadcast::channel(CAPTURE_BROADCAST_DEPTH);
+        let (_state_tx, state) = watch::channel(Arc::new(unopened_state()));
+        let handle = ScopeHandle {
+            commands,
+            captures: captures.clone(),
+            acquiring: Arc::new(AtomicBool::new(false)),
+            capture_count: Arc::new(AtomicU64::new(0)),
+            open_state: Arc::new(Mutex::new(OpenState::Open)),
+            state,
+            stopping: Arc::new(AtomicBool::new(false)),
+            thread: Arc::new(Mutex::new(None)),
+        };
+        Detached { handle, requests, captures }
+    }
 }
 
 impl ScopeHandle {
@@ -227,27 +316,44 @@ impl ScopeHandle {
         // may never come -- and the alternative the daemon used to take, not
         // serving at all until the scope opened, gave every client a bare
         // "connection refused" with nothing to say why.
-        match &*self.open_state.lock().expect("open state mutex poisoned") {
-            OpenState::Open => {}
-            OpenState::Opening => {
-                return ScopeReply::error(
-                    "still opening the oscilloscope; if this does not clear, \
-                     the scope is likely wedged and needs reconnecting",
-                );
-            }
-            OpenState::Failed(reason) => {
-                return ScopeReply::error(format!("no oscilloscope available: {reason}"));
-            }
+        //
+        // The guard goes before the reply is built: building one logs.
+        let refusal = lock(&self.open_state).refusal();
+        if let Some(message) = refusal {
+            return ScopeReply::error(message);
         }
 
         let (tx, rx) = oneshot::channel();
-        if self.commands.send((request, tx)).await.is_err() {
+        if self.commands.send(Message::Request((request, tx))).await.is_err() {
             return ScopeReply::error("oscilloscope thread is not running");
         }
         match rx.await {
             Ok(reply) => reply,
             Err(_) => ScopeReply::error("oscilloscope thread dropped the request"),
         }
+    }
+
+    /// Stop the hardware thread, and wait up to `wait` for it to finish.
+    ///
+    /// Any acquisition ends and the scope is closed, so the next daemon finds
+    /// the unit idle; one killed mid-transfer leaves the next open blocked
+    /// inside the driver for minutes. False if the thread did not finish in
+    /// time, which happens when it is inside the driver's open call: nothing
+    /// can interrupt that.
+    pub fn shutdown(&self, wait: Duration) -> bool {
+        self.stopping.store(true, Ordering::Relaxed);
+        // Wakes a thread waiting for its next command. A full queue means it
+        // is busy, and a busy thread checks `stopping` between commands.
+        let _ = self.commands.try_send(Message::Shutdown);
+        let Some(thread) = lock(&self.thread).take() else {
+            return true;
+        };
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = thread.join();
+            let _ = done_tx.send(());
+        });
+        done_rx.recv_timeout(wait).is_ok()
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<Published> {
@@ -308,76 +414,33 @@ pub fn spawn<F>(open: F) -> Result<ScopeHandle>
 where
     F: FnMut() -> Result<Box<dyn Oscilloscope>> + Send + 'static,
 {
-    let (command_tx, command_rx) = mpsc::channel::<Envelope>(COMMAND_QUEUE_DEPTH);
+    let (command_tx, command_rx) = mpsc::channel::<Message>(COMMAND_QUEUE_DEPTH);
     let (capture_tx, _) = broadcast::channel(CAPTURE_BROADCAST_DEPTH);
     let (state_tx, state_rx) = watch::channel(Arc::new(unopened_state()));
     let acquiring = Arc::new(AtomicBool::new(false));
     let capture_count = Arc::new(AtomicU64::new(0));
-    let open_state = Arc::new(Mutex::new(OpenState::Opening));
+    let open_state = Arc::new(Mutex::new(OpenState::opening(None)));
+    let stopping = Arc::new(AtomicBool::new(false));
 
     // Carries the first outcome, so startup can log what happened rather than
     // leaving it to be discovered by a failing command later.
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<()>>();
 
-    let thread_captures = capture_tx.clone();
-    let thread_acquiring = acquiring.clone();
-    let thread_count = capture_count.clone();
+    let shared = Shared {
+        captures: capture_tx.clone(),
+        acquiring: acquiring.clone(),
+        capture_count: capture_count.clone(),
+        state: state_tx,
+        stopping: stopping.clone(),
+    };
     let thread_state = open_state.clone();
-
-    let mut open = open;
-    std::thread::Builder::new()
+    let thread = std::thread::Builder::new()
         .name("scope-hw".into())
-        .spawn(move || {
-            let mut attempt: u64 = 0;
-            let mut complained_at: Option<Instant> = None;
-            let scope = loop {
-                attempt += 1;
-                match open() {
-                    Ok(scope) => {
-                        *thread_state.lock().expect("open state mutex poisoned") =
-                            OpenState::Open;
-                        let _ = ready_tx.send(Ok(()));
-                        if attempt > 1 {
-                            tracing::info!(attempt, "oscilloscope opened");
-                        }
-                        break scope;
-                    }
-                    Err(e) => {
-                        // `{:#}` so the causes come with it: the useful part
-                        // is usually the innermost one, naming the library
-                        // and the search path.
-                        let reason = format!("{e:#}");
-                        let due = complained_at
-                            .is_none_or(|at| at.elapsed() >= OPEN_COMPLAINT_INTERVAL);
-                        if due {
-                            tracing::error!(
-                                attempt,
-                                error = %reason,
-                                retry_in = ?OPEN_RETRY_INTERVAL,
-                                "cannot open the oscilloscope; commands will \
-                                 answer with this until it can be opened"
-                            );
-                            complained_at = Some(Instant::now());
-                        }
-                        *thread_state.lock().expect("open state mutex poisoned") =
-                            OpenState::Failed(reason);
-                        let _ = ready_tx.send(Err(e));
-                        std::thread::sleep(OPEN_RETRY_INTERVAL);
-                    }
-                }
-            };
-            run(
-                scope,
-                command_rx,
-                thread_captures,
-                thread_acquiring,
-                thread_count,
-                state_tx,
-            );
-        })?;
+        .spawn(move || hardware_thread(open, command_rx, shared, thread_state, ready_tx))?;
 
     match ready_rx.recv_timeout(OPEN_TIMEOUT) {
-        Ok(Ok(())) => tracing::info!("oscilloscope opened"),
+        // Logged by the thread, which also sees an open slower than this.
+        Ok(Ok(())) => {}
         Ok(Err(e)) => tracing::warn!(
             error = %format!("{e:#}"),
             "no oscilloscope yet; serving anyway and retrying"
@@ -398,7 +461,152 @@ where
         capture_count,
         open_state,
         state: state_rx,
+        stopping,
+        thread: Arc::new(Mutex::new(Some(thread))),
     })
+}
+
+/// What the hardware thread shares with the handles.
+struct Shared {
+    captures: broadcast::Sender<Published>,
+    acquiring: Arc<AtomicBool>,
+    capture_count: Arc<AtomicU64>,
+    state: watch::Sender<Arc<ScopeState>>,
+    stopping: Arc<AtomicBool>,
+}
+
+/// Why the acquisition loop returned.
+enum Ended {
+    /// The daemon is stopping, or nothing can send commands any more.
+    Shutdown,
+    /// The unit stopped answering, with the error that said so.
+    UnitGone(String),
+}
+
+/// Open the scope and run it, and open it again whenever it is lost or a
+/// driver call panics, until the daemon stops.
+///
+/// A panic used to end this thread and, with it, every command after: the
+/// handles stayed up and answered "not running" until someone restarted the
+/// daemon. Unwinding drops the scope, and dropping it closes the unit, so
+/// starting over from the open is safe.
+fn hardware_thread<F>(
+    mut open: F,
+    mut commands: mpsc::Receiver<Message>,
+    shared: Shared,
+    open_state: Arc<Mutex<OpenState>>,
+    ready: std::sync::mpsc::Sender<Result<()>>,
+) where
+    F: FnMut() -> Result<Box<dyn Oscilloscope>>,
+{
+    let mut attempt: u64 = 0;
+    let mut complained_at: Option<Instant> = None;
+    let mut last_failure: Option<String> = None;
+    loop {
+        let scope = loop {
+            if shared.stopping.load(Ordering::Relaxed) {
+                return;
+            }
+            attempt += 1;
+            *lock(&open_state) = OpenState::opening(last_failure.clone());
+            let opened = std::panic::catch_unwind(std::panic::AssertUnwindSafe(&mut open))
+                .unwrap_or_else(|panic| {
+                    Err(anyhow::anyhow!(
+                        "the driver panicked while opening the scope: {}",
+                        panic_message(&*panic)
+                    ))
+                });
+            match opened {
+                Ok(scope) => {
+                    *lock(&open_state) = OpenState::Open;
+                    let _ = ready.send(Ok(()));
+                    tracing::info!(attempt, "oscilloscope opened");
+                    break scope;
+                }
+                Err(e) => {
+                    // `{:#}` so the causes come with it: the useful part is
+                    // usually the innermost one, naming the library and the
+                    // search path.
+                    let reason = format!("{e:#}");
+                    let due = complained_at
+                        .is_none_or(|at| at.elapsed() >= OPEN_COMPLAINT_INTERVAL);
+                    if due {
+                        tracing::error!(
+                            attempt,
+                            error = %reason,
+                            retry_in = ?OPEN_RETRY_INTERVAL,
+                            "cannot open the oscilloscope; commands will \
+                             answer with this until it can be opened"
+                        );
+                        complained_at = Some(Instant::now());
+                    }
+                    *lock(&open_state) = OpenState::Failed(reason.clone());
+                    last_failure = Some(reason);
+                    let _ = ready.send(Err(e));
+                    sleep_unless_stopping(OPEN_RETRY_INTERVAL, &shared.stopping);
+                }
+            }
+        };
+        attempt = 0;
+        complained_at = None;
+
+        let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run(scope, &mut commands, &shared)
+        }));
+        shared.acquiring.store(false, Ordering::Relaxed);
+        let reason = match ended {
+            Ok(Ended::Shutdown) => return,
+            Ok(Ended::UnitGone(reason)) => {
+                tracing::warn!(error = %reason, "the oscilloscope stopped answering; closed it, and opening it again");
+                reason
+            }
+            Err(panic) => {
+                let message = panic_message(&*panic);
+                tracing::error!(panic = %message, "the oscilloscope thread panicked; closed the scope, and opening it again");
+                format!("the driver panicked: {message}")
+            }
+        };
+        *lock(&open_state) = OpenState::Failed(reason.clone());
+        // Requests sent to the scope that went. They are refused rather than
+        // carried over: a setting meant for that unit is not necessarily
+        // wanted on whatever opens next.
+        while let Ok(message) = commands.try_recv() {
+            match message {
+                Message::Request((_, reply_to)) => {
+                    let _ = reply_to.send(ScopeReply::Error(format!(
+                        "the oscilloscope was lost before this was answered: {reason}"
+                    )));
+                }
+                Message::Shutdown => return,
+            }
+        }
+        // Subscribers are told there is no scope, rather than left showing
+        // the settings of one that has gone.
+        let mut unopened = unopened_state();
+        unopened.version = shared.state.borrow().version + 1;
+        shared.state.send_replace(Arc::new(unopened));
+        last_failure = Some(reason);
+    }
+}
+
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
+    panic
+        .downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "no message".to_string())
+}
+
+/// Sleep, waking early if the daemon starts stopping.
+fn sleep_unless_stopping(duration: Duration, stopping: &AtomicBool) {
+    let until = Instant::now() + duration;
+    while !stopping.load(Ordering::Relaxed) {
+        let left = until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return;
+        }
+        std::thread::sleep(left.min(Duration::from_millis(50)));
+    }
 }
 
 /// What a subscriber is told before there is a scope to describe.
@@ -433,31 +641,50 @@ fn unopened_state() -> ScopeState {
 
 fn run(
     mut scope: Box<dyn Oscilloscope>,
-    mut commands: mpsc::Receiver<Envelope>,
-    captures: broadcast::Sender<Published>,
-    acquiring: Arc<AtomicBool>,
-    capture_count: Arc<AtomicU64>,
-    state_tx: watch::Sender<Arc<ScopeState>>,
-) {
+    commands: &mut mpsc::Receiver<Message>,
+    shared: &Shared,
+) -> Ended {
+    let Shared {
+        captures,
+        acquiring,
+        capture_count,
+        state: state_tx,
+        stopping,
+    } = shared;
     let mut state = LoopState::new();
+    // Carried on from any scope this thread had before, so that neither
+    // number a client sees ever goes backwards. The loop numbers every
+    // capture it publishes, and only those, so the count is the sequence.
+    state.sequence = capture_count.load(Ordering::Relaxed);
+    state.version = state_tx.borrow().version;
     state.refresh_trigger(&*scope);
-    publish_state(&*scope, &mut state, &acquiring, &state_tx);
+    publish_state(&*scope, &mut state, acquiring, state_tx);
 
     // When idle this blocks on the command channel and consumes nothing.
     // The old design polled every 10 ms whether or not anything was
     // acquiring, which is what produced ~1 GB/day of readiness logging.
     let mut next_poll: Option<Instant> = None;
+    let mut waiting: Vec<Waiting> = Vec::new();
 
-    loop {
+    let ended = loop {
+        if stopping.load(Ordering::Relaxed) {
+            break Ended::Shutdown;
+        }
+        if let Some(reason) = state.unit_gone.take() {
+            break Ended::UnitGone(reason);
+        }
         let busy = acquiring.load(Ordering::Relaxed) || state.roller.is_some();
+        if !waiting.is_empty() {
+            settle_waiting(&mut scope, acquiring, &mut state, &mut waiting, busy);
+        }
 
-        let envelope = if busy {
+        let message = if busy {
             let wait = next_poll
                 .map(|at| at.saturating_duration_since(Instant::now()))
                 .unwrap_or(Duration::ZERO);
             match commands.try_recv() {
-                Ok(envelope) => Some(envelope),
-                Err(mpsc::error::TryRecvError::Disconnected) => break,
+                Ok(message) => Some(message),
+                Err(mpsc::error::TryRecvError::Disconnected) => break Ended::Shutdown,
                 Err(mpsc::error::TryRecvError::Empty) => {
                     if !wait.is_zero() {
                         std::thread::sleep(wait.min(Duration::from_millis(5)));
@@ -467,28 +694,48 @@ fn run(
             }
         } else {
             match commands.blocking_recv() {
-                Some(envelope) => Some(envelope),
-                None => break,
+                Some(message) => Some(message),
+                None => break Ended::Shutdown,
             }
         };
 
-        if let Some((request, reply_to)) = envelope {
-            let (reply, changed) = serve(&mut scope, &acquiring, &mut state, request);
-            // A client that hung up mid-request is normal, not an error.
-            let _ = reply_to.send(reply);
-            if changed {
-                publish_state(&*scope, &mut state, &acquiring, &state_tx);
-                next_poll = None;
+        match message {
+            Some(Message::Shutdown) => break Ended::Shutdown,
+            Some(Message::Request((request, reply_to))) => {
+                if waiting.len() < MAX_WAITING
+                    && waits_for_a_capture(&request, &state, acquiring)
+                {
+                    waiting.push(Waiting {
+                        request,
+                        reply_to,
+                        deadline: Instant::now() + CAPTURE_WAIT,
+                    });
+                    continue;
+                }
+                let (reply, changed) = serve(&mut scope, acquiring, &mut state, request);
+                // A client that hung up mid-request is normal, not an error.
+                let _ = reply_to.send(reply);
+                if changed {
+                    publish_state(&*scope, &mut state, acquiring, state_tx);
+                    next_poll = None;
+                }
+                continue;
             }
-            continue;
+            None => {}
         }
 
         if state.roller.is_some() {
-            if let Err(e) = roll_step(&mut scope, &mut state, &captures, &capture_count) {
+            if let Err(e) = roll_step(&mut scope, &mut state, captures, capture_count) {
+                if pico::status::unit_is_gone(&e) {
+                    break Ended::UnitGone(format!("{e:#}"));
+                }
                 tracing::warn!(error = %e, "roll mode stopped");
                 stop_rolling(&mut scope, &mut state);
                 acquiring.store(false, Ordering::Relaxed);
-                publish_state(&*scope, &mut state, &acquiring, &state_tx);
+                publish_state(&*scope, &mut state, acquiring, state_tx);
+            }
+            if state.last_frame.is_some() {
+                answer_waiting(&mut scope, acquiring, &mut state, &mut waiting);
             }
             next_poll = Some(Instant::now() + ROLL_POLL_INTERVAL);
             continue;
@@ -506,9 +753,12 @@ fn run(
             }
             state.arm_at = None;
             if let Err(e) = scope.rearm() {
+                if pico::status::unit_is_gone(&e) {
+                    break Ended::UnitGone(format!("{e:#}"));
+                }
                 tracing::warn!(error = %e, "failed to rearm capture");
                 acquiring.store(false, Ordering::Relaxed);
-                publish_state(&*scope, &mut state, &acquiring, &state_tx);
+                publish_state(&*scope, &mut state, acquiring, state_tx);
             }
             next_poll = Some(Instant::now() + scope.suggested_poll_interval());
             continue;
@@ -531,6 +781,7 @@ fn run(
                     // acquisition loop keeps running so a reconnecting
                     // client sees live data immediately.
                     let _ = captures.send(Published::new(frame.clone()));
+                    answer_waiting(&mut scope, acquiring, &mut state, &mut waiting);
 
                     if state.trigger.mode == CaptureMode::Single {
                         acquiring.store(false, Ordering::Relaxed);
@@ -538,7 +789,7 @@ fn run(
                         // The driver returns a completed single-shot to
                         // normal; the state says so, and that it stopped.
                         state.refresh_trigger(&*scope);
-                        publish_state(&*scope, &mut state, &acquiring, &state_tx);
+                        publish_state(&*scope, &mut state, acquiring, state_tx);
                         continue;
                     }
 
@@ -549,9 +800,12 @@ fn run(
                         continue;
                     }
                     if let Err(e) = scope.rearm() {
+                        if pico::status::unit_is_gone(&e) {
+                            break Ended::UnitGone(format!("{e:#}"));
+                        }
                         tracing::warn!(error = %e, "failed to rearm capture");
                         acquiring.store(false, Ordering::Relaxed);
-                        publish_state(&*scope, &mut state, &acquiring, &state_tx);
+                        publish_state(&*scope, &mut state, acquiring, state_tx);
                     }
                     // Not immediately, which is what this once did. A freshly
                     // armed block cannot be complete, so the only thing a
@@ -569,6 +823,9 @@ fn run(
                     next_poll = Some(Instant::now() + scope.suggested_poll_interval());
                 }
                 Err(e) => {
+                    if pico::status::unit_is_gone(&e) {
+                        break Ended::UnitGone(format!("{e:#}"));
+                    }
                     tracing::warn!(error = %e, "capture read failed");
                     next_poll = Some(Instant::now() + Duration::from_millis(10));
                 }
@@ -577,16 +834,101 @@ fn run(
                 next_poll = Some(Instant::now() + scope.suggested_poll_interval());
             }
             Err(e) => {
+                if pico::status::unit_is_gone(&e) {
+                    break Ended::UnitGone(format!("{e:#}"));
+                }
                 tracing::warn!(error = %e, "readiness check failed, stopping acquisition");
                 acquiring.store(false, Ordering::Relaxed);
-                publish_state(&*scope, &mut state, &acquiring, &state_tx);
+                publish_state(&*scope, &mut state, acquiring, state_tx);
             }
         }
-    }
+    };
 
-    tracing::info!("oscilloscope thread shutting down");
+    let farewell = match &ended {
+        Ended::Shutdown => {
+            tracing::info!("oscilloscope thread shutting down");
+            "the oscilloscope daemon is stopping".to_string()
+        }
+        Ended::UnitGone(reason) => format!("the oscilloscope stopped answering: {reason}"),
+    };
+    for held in waiting.drain(..) {
+        let _ = held.reply_to.send(ScopeReply::Error(farewell.clone()));
+    }
     stop_rolling(&mut scope, &mut state);
     let _ = scope.stop_triggered_capture();
+    ended
+}
+
+/// Longest a request for samples waits for the first capture at the current
+/// settings. Inside the box client's own ten seconds, so the caller is told
+/// why rather than only that it gave up.
+const CAPTURE_WAIT: Duration = Duration::from_secs(8);
+
+/// Requests that may wait for a capture at once. A page polling its
+/// measurements on a scope that never triggers adds about one a second.
+const MAX_WAITING: usize = 64;
+
+/// A request for samples, held until the loop has some at the current
+/// settings.
+struct Waiting {
+    request: ScopeRequest,
+    reply_to: oneshot::Sender<ScopeReply>,
+    deadline: Instant,
+}
+
+/// Whether a request has to wait for the loop's next capture: it wants
+/// samples, nothing has been published since the settings last changed, and
+/// a capture is on its way.
+fn waits_for_a_capture(request: &ScopeRequest, state: &LoopState, acquiring: &AtomicBool) -> bool {
+    matches!(
+        request,
+        ScopeRequest::GetTriggeredData
+            | ScopeRequest::Measure { .. }
+            | ScopeRequest::MeasureAll { .. }
+    ) && state.last_frame.is_none()
+        && (acquiring.load(Ordering::Relaxed) || state.roller.is_some())
+}
+
+/// Answer every waiting request from the capture just published.
+fn answer_waiting(
+    scope: &mut Box<dyn Oscilloscope>,
+    acquiring: &AtomicBool,
+    state: &mut LoopState,
+    waiting: &mut Vec<Waiting>,
+) {
+    for held in waiting.drain(..) {
+        let (reply, _) = serve(scope, acquiring, state, held.request);
+        let _ = held.reply_to.send(reply);
+    }
+}
+
+/// Answer the waiting requests nothing more is coming for: all of them once
+/// the scope stops or a capture is there, and any whose wait has run out.
+fn settle_waiting(
+    scope: &mut Box<dyn Oscilloscope>,
+    acquiring: &AtomicBool,
+    state: &mut LoopState,
+    waiting: &mut Vec<Waiting>,
+    busy: bool,
+) {
+    let now = Instant::now();
+    let captured = state.last_frame.is_some();
+    let (due, still): (Vec<_>, Vec<_>) = std::mem::take(waiting)
+        .into_iter()
+        .partition(|held| !busy || captured || held.deadline <= now);
+    *waiting = still;
+    for held in due {
+        let reply = if busy && !captured {
+            ScopeReply::error(format!(
+                "no capture completed in {} s at the current settings; in normal \
+                 mode, check that the signal crosses the trigger level",
+                CAPTURE_WAIT.as_secs()
+            ))
+        } else {
+            serve(scope, acquiring, state, held.request).0
+        };
+        let _ = held.reply_to.send(reply);
+    }
 }
 
 /// When the next block may be armed, after a capture that became ready at
@@ -684,6 +1026,8 @@ fn serve(
     request: ScopeRequest,
 ) -> (ScopeReply, bool) {
     let pauses_roll = touches_hardware(&request);
+    // Forcing re-arms the unit too, and can fail part-way through.
+    let rearms = pauses_roll || matches!(request, ScopeRequest::ForceTrigger);
     let changes = changes_state(&request);
     // Streaming runs on setup the setters are about to change, and the driver
     // cannot reprogram it mid-stream. It stops for them and starts again,
@@ -693,7 +1037,7 @@ fn serve(
         stop_rolling(scope, state);
     }
     let reply = handle(scope, request, acquiring, state);
-    let refused = pauses_roll && matches!(reply, ScopeReply::Error(_));
+    let refused = rearms && matches!(reply, ScopeReply::Error(_));
     if pauses_roll || changes {
         state.refresh_trigger(&**scope);
         reconcile_roll(scope, acquiring, state, was_rolling);
@@ -791,6 +1135,9 @@ struct LoopState {
     /// The next capture is the one a `ForceTrigger` asked for.
     forced: bool,
     trigger: TriggerCache,
+    /// A driver call said the unit has gone, with what it said. The loop
+    /// closes the scope and opens it again.
+    unit_gone: Option<String>,
 }
 
 impl LoopState {
@@ -815,7 +1162,16 @@ impl LoopState {
                 level: 0.0,
                 slope: TriggerSlope::Rising,
             },
+            unit_gone: None,
         }
+    }
+
+    /// The reply for a driver error, noting whether it says the unit is gone.
+    fn failed(&mut self, error: anyhow::Error) -> ScopeReply {
+        if pico::status::unit_is_gone(&error) {
+            self.unit_gone = Some(format!("{error:#}"));
+        }
+        ScopeReply::error(error)
     }
 
     fn refresh_trigger(&mut self, scope: &dyn Oscilloscope) {
@@ -1227,7 +1583,7 @@ fn handle(
                     let _ = value;
                     $ok
                 }
-                Err(e) => ScopeReply::error(e),
+                Err(e) => state.failed(e),
             }
         };
     }
@@ -1235,7 +1591,7 @@ fn handle(
         ($expr:expr, $variant:path) => {
             match $expr {
                 Ok(value) => $variant(value),
-                Err(e) => ScopeReply::error(e),
+                Err(e) => state.failed(e),
             }
         };
     }
@@ -1254,7 +1610,13 @@ fn handle(
         // An average of captures taken under the old settings is not an
         // average of anything the scope is doing now.
         state.averager.reset();
-        state.arm_at = None;
+        // A setting the driver applies re-arms the unit, which ends the
+        // holdoff wait. One the loop applies does not: the block already read
+        // is still sitting there, flagged ready, and dropping the wait had
+        // the loop read it out and publish it a second time.
+        if touches_hardware(&request) {
+            state.arm_at = None;
+        }
     }
 
     match request {
@@ -1308,14 +1670,18 @@ fn handle(
         ScopeRequest::SetCaptureMode(m) => reply!(scope.set_capture_mode(m), ScopeReply::Ok),
         ScopeRequest::GetCaptureMode => reply_value!(scope.get_capture_mode(), ScopeReply::Mode),
         ScopeRequest::GetSampleRate => reply_value!(scope.get_sample_rate(), ScopeReply::Float),
-        ScopeRequest::GetMemoryDepth => reply_value!(scope.get_memory_depth(), ScopeReply::Usize),
+        // The block at the current settings, as the published state has it.
+        // The 2000 series answered `get_memory_depth` with the model's whole
+        // memory, and a client working out a capture's span as depth / rate
+        // put the trigger in the wrong place whenever the block was shorter.
+        ScopeRequest::GetMemoryDepth => reply_value!(scope.current_memory_depth(), ScopeReply::Usize),
         ScopeRequest::GetBandwidth => reply_value!(scope.get_bandwidth(), ScopeReply::Float),
         ScopeRequest::GetChannelCount => {
             reply_value!(scope.get_channel_count(), ScopeReply::Usize)
         }
         ScopeRequest::GetCapabilities => match scope.capabilities() {
             Ok(capabilities) => ScopeReply::Capabilities(Box::new(capabilities)),
-            Err(e) => ScopeReply::error(e),
+            Err(e) => state.failed(e),
         },
         ScopeRequest::StartAcquisition(position) => match scope.start_triggered_capture(position) {
             Ok(()) => {
@@ -1332,7 +1698,7 @@ fn handle(
                 acquiring.store(true, Ordering::Relaxed);
                 ScopeReply::Ok
             }
-            Err(e) => ScopeReply::error(e),
+            Err(e) => state.failed(e),
         },
         ScopeRequest::StopAcquisition => {
             acquiring.store(false, Ordering::Relaxed);
@@ -1345,27 +1711,42 @@ fn handle(
                 // no trigger in roll mode to force.
                 return ScopeReply::error("roll mode runs without a trigger, so there is nothing to force");
             }
+            if !acquiring.load(Ordering::Relaxed) {
+                // As on a bench scope, where Force does nothing in STOP. It
+                // used to arm a block that nothing read, and leave the last
+                // capture standing as though it were the forced one.
+                return ScopeReply::error(
+                    "the scope is stopped, so there is no trigger to force; run it, or \
+                     arm a single capture, first",
+                );
+            }
             state.forced = true;
-            reply!(scope.force_trigger(), ScopeReply::Ok)
-        }
-        // Answered from what the loop has seen, not from the driver, whenever
-        // the loop is the one watching the driver. Asking the hardware here
-        // while it is acquiring is a race the caller cannot win.
-        ScopeRequest::IsReady => {
-            if state.captured_since_arm {
-                ScopeReply::Bool(true)
-            } else if acquiring.load(Ordering::Relaxed) || state.roller.is_some() {
-                ScopeReply::Bool(false)
-            } else {
-                reply_value!(scope.is_ready(), ScopeReply::Bool)
+            match scope.force_trigger() {
+                Ok(()) => {
+                    // Forcing is asking for a capture now. Left waiting out a
+                    // holdoff, the loop would re-arm over the forced block
+                    // when the wait ended, and the force would come to nothing.
+                    state.arm_at = None;
+                    ScopeReply::Ok
+                }
+                Err(e) => {
+                    state.forced = false;
+                    state.failed(e)
+                }
             }
         }
-        ScopeRequest::GetTriggeredData => match samples_now(scope, state) {
+        // Answered from what the loop has seen, never from the driver: the
+        // loop consumes each capture as it completes, so the driver's flag
+        // loses that race while acquiring, and when idle it can describe a
+        // block from before the settings changed, which nothing will serve.
+        // Ready means a capture request would be answered with one now.
+        ScopeRequest::IsReady => ScopeReply::Bool(state.captured_since_arm),
+        ScopeRequest::GetTriggeredData => match samples_now(state, acquiring) {
             Ok(frame) => ScopeReply::Capture(frame),
             Err(e) => ScopeReply::error(e),
         },
         ScopeRequest::Measure { channel, which } => {
-            match measure_now(scope, state, channel).and_then(|set| {
+            match measure_now(state, acquiring, channel).and_then(|set| {
                 set.get(which)
                     .ok_or_else(|| anyhow::anyhow!(
                         "{:?} needs at least one full cycle in the capture",
@@ -1376,7 +1757,7 @@ fn handle(
                 Err(e) => ScopeReply::error(e),
             }
         }
-        ScopeRequest::MeasureAll { channel } => match measure_now(scope, state, channel) {
+        ScopeRequest::MeasureAll { channel } => match measure_now(state, acquiring, channel) {
             Ok(set) => ScopeReply::Measurements(Box::new(set)),
             Err(e) => ScopeReply::error(e),
         },
@@ -1386,7 +1767,18 @@ fn handle(
             acquiring.load(Ordering::Relaxed),
         ))),
         ScopeRequest::SetDisplay(patch) => {
-            merge_display(&mut state.display, patch);
+            let mut display = state.display.clone();
+            merge_display(&mut display, patch);
+            // It goes to every subscriber with every state change, so one
+            // client could otherwise make each of those as large as it liked.
+            let size = serde_json::to_vec(&display).map_or(usize::MAX, |bytes| bytes.len());
+            if size > MAX_DISPLAY_BYTES {
+                return ScopeReply::error(format!(
+                    "the display settings would come to {size} bytes, over the limit of \
+                     {MAX_DISPLAY_BYTES}"
+                ));
+            }
+            state.display = display;
             ScopeReply::Ok
         }
         ScopeRequest::GetDisplay => ScopeReply::Display(state.display.clone()),
@@ -1450,38 +1842,39 @@ fn handle(
     }
 }
 
-/// The most recent samples, from wherever they can actually be had.
+/// The most recent samples: the frame the loop last published.
 ///
-/// While the loop is acquiring, that is the frame it last published: the
-/// device is mid-block, and reading it out then returns the block already
-/// latched, which is how a polling client ends up with the same samples on
-/// every call.
-///
-/// Idle, there is no published frame to prefer and the latched block really
-/// is the last capture, so the driver is read directly. That is also what
-/// makes a one-shot work: arm, then ask.
-fn samples_now(
-    scope: &mut Box<dyn Oscilloscope>,
-    state: &mut LoopState,
-) -> Result<Arc<CaptureFrame>> {
+/// The device is never read here. While the loop is acquiring it is
+/// mid-block, and a read-out then hands back the block already latched --
+/// the same samples on every call, or ones taken before the last setting
+/// change and stamped with the new one. Idle, what it holds predates the
+/// settings too: changing one clears the published frame precisely because
+/// that frame no longer describes the scope. A request that arrives while a
+/// capture is on its way waits for it in `run`, so "arm, then ask" gets the
+/// capture it armed.
+fn samples_now(state: &LoopState, acquiring: &AtomicBool) -> Result<Arc<CaptureFrame>> {
     if let Some(frame) = state.last_frame.clone() {
         return Ok(frame);
     }
     if state.roller.is_some() {
-        // Streaming, the device holds no block to read out.
         anyhow::bail!("roll mode has not collected a screen yet; ask again in a moment");
     }
-    let frame = scope.get_triggered_data()?;
-    Ok(Arc::new(state.process(frame)))
+    if acquiring.load(Ordering::Relaxed) {
+        anyhow::bail!("no capture has completed at the current settings yet; ask again in a moment");
+    }
+    anyhow::bail!(
+        "there is no capture at the current settings; start the scope, or take a single \
+         capture, first"
+    )
 }
 
 /// Measure against the most recent capture, so the numbers follow the signal.
 fn measure_now(
-    scope: &mut Box<dyn Oscilloscope>,
-    state: &mut LoopState,
+    state: &LoopState,
+    acquiring: &AtomicBool,
     channel: ChannelId,
 ) -> Result<MeasurementSet> {
-    let frame = samples_now(scope, state)?;
+    let frame = samples_now(state, acquiring)?;
     let index = frame
         .channels
         .iter()
@@ -1512,6 +1905,15 @@ mod tests {
         /// read-outs from outside the boxed trait object.
         ready: Arc<AtomicBool>,
         captures_read: Arc<AtomicUsize>,
+        /// Captures armed, by `start_triggered_capture` or a re-arm.
+        arms: Arc<AtomicUsize>,
+        /// Set when the scope is dropped, which is what closes a real unit.
+        dropped: Arc<AtomicBool>,
+        refuse_force: bool,
+        /// Panics reading the capture mode, which `run` does first.
+        panic_on_mode: bool,
+        /// Answers readiness the way an unplugged unit does.
+        gone: Arc<AtomicBool>,
     }
 
     impl FakeScope {
@@ -1519,7 +1921,18 @@ mod tests {
             FakeScope {
                 ready: Arc::new(AtomicBool::new(false)),
                 captures_read: Arc::new(AtomicUsize::new(0)),
+                arms: Arc::new(AtomicUsize::new(0)),
+                dropped: Arc::new(AtomicBool::new(false)),
+                refuse_force: false,
+                panic_on_mode: false,
+                gone: Arc::new(AtomicBool::new(false)),
             }
+        }
+    }
+
+    impl Drop for FakeScope {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::SeqCst);
         }
     }
 
@@ -1541,6 +1954,7 @@ mod tests {
 
     impl Oscilloscope for FakeScope {
         fn start_triggered_capture(&mut self, _position: f64) -> anyhow::Result<()> {
+            self.arms.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
 
@@ -1549,7 +1963,21 @@ mod tests {
         }
 
         fn is_ready(&self) -> anyhow::Result<bool> {
+            if self.gone.load(Ordering::SeqCst) {
+                return Err(crate::oscilloscope::pico::status::PicoStatusError::new(
+                    "ps5000aIsReady",
+                    crate::oscilloscope::pico::status::NOT_RESPONDING,
+                )
+                .into());
+            }
             Ok(self.ready.load(Ordering::Relaxed))
+        }
+
+        fn force_trigger(&mut self) -> anyhow::Result<()> {
+            if self.refuse_force {
+                anyhow::bail!("the unit refused the forced capture");
+            }
+            Ok(())
         }
 
         fn get_triggered_data(&self) -> anyhow::Result<CaptureFrame> {
@@ -1584,6 +2012,9 @@ mod tests {
         }
 
         fn get_capture_mode(&self) -> anyhow::Result<CaptureMode> {
+            if self.panic_on_mode {
+                panic!("a driver bug");
+            }
             Ok(CaptureMode::Normal)
         }
 
@@ -1633,7 +2064,11 @@ mod tests {
         fn get_sample_rate(&self) -> anyhow::Result<f64> {
             Ok(1e6)
         }
+        /// The whole memory, which is not what a capture holds.
         fn get_memory_depth(&self) -> anyhow::Result<usize> {
+            Ok(8000)
+        }
+        fn current_memory_depth(&self) -> anyhow::Result<usize> {
             Ok(2)
         }
         fn capabilities(&self) -> anyhow::Result<ScopeCapabilities> {
@@ -1669,7 +2104,6 @@ mod tests {
             set_trigger_slope(TriggerSlope);
             set_capture_mode(CaptureMode);
             set_cursor_position(crate::oscilloscope::Cursor);
-            force_trigger();
         }
     }
 
@@ -1679,26 +2113,42 @@ mod tests {
         scope: Box<dyn Oscilloscope>,
         ready: Arc<AtomicBool>,
         captures_read: Arc<AtomicUsize>,
+        arms: Arc<AtomicUsize>,
         acquiring: AtomicBool,
         state: LoopState,
     }
 
     impl Harness {
         fn new() -> Self {
-            let fake = FakeScope::new();
+            Harness::with(FakeScope::new())
+        }
+
+        fn with(fake: FakeScope) -> Self {
             let ready = fake.ready.clone();
             let captures_read = fake.captures_read.clone();
+            let arms = fake.arms.clone();
             Harness {
                 scope: Box::new(fake),
                 ready,
                 captures_read,
+                arms,
                 acquiring: AtomicBool::new(false),
                 state: LoopState::new(),
             }
         }
 
+        /// Captures armed so far.
+        fn arms(&self) -> usize {
+            self.arms.load(Ordering::SeqCst)
+        }
+
         fn send(&mut self, request: ScopeRequest) -> ScopeReply {
             handle(&mut self.scope, request, &self.acquiring, &mut self.state)
+        }
+
+        /// As the loop sends it, with the re-arm after a refusal.
+        fn serve(&mut self, request: ScopeRequest) -> ScopeReply {
+            serve(&mut self.scope, &self.acquiring, &mut self.state, request).0
         }
 
         /// How many times the driver has been asked for samples.
@@ -1713,39 +2163,25 @@ mod tests {
             }
         }
 
-        fn capture_seq(&mut self) -> u64 {
-            match self.send(ScopeRequest::GetTriggeredData) {
-                ScopeReply::Capture(frame) => frame.seq,
-                other => panic!("expected a capture reply, got {other:?}"),
-            }
-        }
     }
 
     #[test]
-    fn one_shot_captures_get_distinct_sequence_numbers() {
-        // The streaming path stamped a sequence number and the one-shot path
-        // did not, so every `GetTriggeredData` came back as seq 0. A client
-        // uses the number to tell one capture from the next, and to match a
-        // binary frame against the reply that announced it, so a constant
-        // zero silently makes three different captures look like one.
+    fn an_idle_scope_with_no_capture_at_its_settings_says_so() {
+        // It used to be read out instead, handing back whatever block the
+        // unit last held: one taken before the settings changed, labelled
+        // with the new ones, or the same block on every call.
         let mut harness = Harness::new();
+        harness.ready.store(true, Ordering::Relaxed);
 
-        assert_eq!(harness.capture_seq(), 1);
-        assert_eq!(harness.capture_seq(), 2);
-        assert_eq!(harness.capture_seq(), 3);
-    }
-
-    #[test]
-    fn one_shot_and_streaming_captures_share_one_counter() {
-        // Two counters would hand the same number to a streamed frame and a
-        // requested one, which is worse than no numbering: the client would
-        // accept the wrong frame as its reply.
-        let mut harness = Harness::new();
-
-        assert_eq!(harness.capture_seq(), 1);
-        // Stand in for the acquisition loop publishing a frame.
-        harness.state.sequence += 1;
-        assert_eq!(harness.capture_seq(), 3);
+        let message = error_from(harness.send(ScopeRequest::GetTriggeredData));
+        assert!(message.contains("start the scope"), "say what to do: {message}");
+        assert!(matches!(
+            harness.send(ScopeRequest::MeasureAll {
+                channel: ChannelId::Alphabetic('A'),
+            }),
+            ScopeReply::Error(_)
+        ));
+        assert_eq!(harness.captures_read(), 0, "the device was read");
     }
 
     #[test]
@@ -1868,25 +2304,6 @@ mod tests {
     }
 
     #[test]
-    fn an_idle_scope_is_read_from_the_device() {
-        // With no loop running there is nothing published to prefer, and the
-        // latched block really is the last capture. This is what makes a
-        // one-shot work: arm, stop, then ask.
-        let mut harness = Harness::new();
-
-        let before = harness.captures_read();
-        match harness.send(ScopeRequest::GetTriggeredData) {
-            ScopeReply::Capture(_) => {}
-            other => panic!("expected a capture, got {other:?}"),
-        }
-        assert_eq!(
-            harness.captures_read(),
-            before + 1,
-            "an idle scope has to be read from the device"
-        );
-    }
-
-    #[test]
     fn rearming_discards_the_published_frame() {
         // A re-arm is how a new timebase or range takes effect, so answering
         // from the frame captured under the old settings would describe a
@@ -1902,10 +2319,11 @@ mod tests {
             harness.state.last_frame.is_none(),
             "a capture taken under the previous settings is still servable"
         );
-        // And with nothing published, the next request goes to the device.
-        let before = harness.captures_read();
-        harness.send(ScopeRequest::GetTriggeredData);
-        assert_eq!(harness.captures_read(), before + 1);
+        // Nor is the device read for one: it is mid-block. In the loop the
+        // request waits for the next capture; here it is told to ask again.
+        let message = error_from(harness.send(ScopeRequest::GetTriggeredData));
+        assert!(message.contains("ask again"), "{message}");
+        assert_eq!(harness.captures_read(), 0);
     }
 
     #[test]
@@ -1927,16 +2345,163 @@ mod tests {
     }
 
     #[test]
-    fn readiness_falls_back_to_the_driver_when_idle() {
-        // With no acquisition running there is no loop to race, so the
-        // driver's own flag is the truthful answer -- it covers a capture
-        // armed outside the loop.
+    fn readiness_when_idle_is_whether_a_capture_would_be_served() {
+        // The driver's flag can describe a block from before the settings
+        // changed, which nothing serves: a client that saw it, then asked
+        // for the capture, was refused.
         let mut harness = Harness::new();
-
+        harness.ready.store(true, Ordering::Relaxed);
         assert!(!harness.is_ready());
 
-        harness.ready.store(true, Ordering::Relaxed);
+        publish(&mut harness, 1);
+        harness.state.captured_since_arm = true;
         assert!(harness.is_ready());
+    }
+
+    #[test]
+    fn forcing_a_stopped_scope_is_refused() {
+        // As on a bench scope. It used to arm a block nothing read, and the
+        // capture still being served was the one from before the force.
+        let mut harness = Harness::new();
+        let message = error_from(harness.serve(ScopeRequest::ForceTrigger));
+        assert!(message.contains("stopped"), "{message}");
+        assert!(!harness.state.forced);
+        assert_eq!(harness.arms(), 0, "nothing should have been armed");
+    }
+
+    #[test]
+    fn a_refused_force_while_acquiring_leaves_the_scope_armed() {
+        let mut fake = FakeScope::new();
+        fake.refuse_force = true;
+        let mut harness = Harness::with(fake);
+        harness.serve(ScopeRequest::StartAcquisition(50.0));
+        let armed = harness.arms();
+
+        assert!(matches!(harness.serve(ScopeRequest::ForceTrigger), ScopeReply::Error(_)));
+        assert!(!harness.state.forced, "the next capture is not a forced one");
+        assert_eq!(harness.arms(), armed + 1, "a refused force has to re-arm the unit");
+        assert!(harness.acquiring.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn a_force_during_holdoff_is_captured_rather_than_re_armed_over() {
+        let mut harness = Harness::new();
+        harness.serve(ScopeRequest::StartAcquisition(50.0));
+        harness.state.arm_at = Some(Instant::now() + Duration::from_secs(5));
+
+        assert!(matches!(harness.serve(ScopeRequest::ForceTrigger), ScopeReply::Ok));
+        assert_eq!(harness.state.arm_at, None);
+    }
+
+    #[test]
+    fn a_setting_the_loop_applies_keeps_the_holdoff_wait() {
+        // The block from before the wait is still flagged ready on the unit:
+        // dropping the wait had the loop read it out again and publish the
+        // same capture twice.
+        let mut harness = Harness::new();
+        harness.serve(ScopeRequest::StartAcquisition(50.0));
+        let due = Instant::now() + Duration::from_secs(5);
+        harness.state.arm_at = Some(due);
+
+        harness.serve(ScopeRequest::SetAcquisition(AcquisitionMode::Average, Some(16)));
+        assert_eq!(harness.state.arm_at, Some(due));
+
+        // One the driver applies re-arms the unit, which ends the wait.
+        harness.serve(ScopeRequest::SetTimePerDiv(1e-3));
+        assert_eq!(harness.state.arm_at, None);
+    }
+
+    fn waiting_for(request: ScopeRequest, deadline: Instant) -> (Waiting, oneshot::Receiver<ScopeReply>) {
+        let (reply_to, reply) = oneshot::channel();
+        (Waiting { request, reply_to, deadline }, reply)
+    }
+
+    #[test]
+    fn a_wait_for_a_capture_that_never_comes_says_why() {
+        let mut harness = Harness::new();
+        harness.serve(ScopeRequest::StartAcquisition(50.0));
+        let now = Instant::now();
+        let (expired, mut expired_reply) = waiting_for(ScopeRequest::GetTriggeredData, now);
+        let (patient, mut patient_reply) =
+            waiting_for(ScopeRequest::GetTriggeredData, now + Duration::from_secs(60));
+        let mut waiting = vec![expired, patient];
+
+        settle_waiting(&mut harness.scope, &harness.acquiring, &mut harness.state, &mut waiting, true);
+
+        let message = error_from(expired_reply.try_recv().expect("answered"));
+        assert!(message.contains("trigger level"), "{message}");
+        assert!(patient_reply.try_recv().is_err(), "still inside its wait");
+        assert_eq!(waiting.len(), 1);
+    }
+
+    #[test]
+    fn waiting_requests_are_answered_with_the_capture_that_arrives() {
+        let mut harness = Harness::new();
+        harness.serve(ScopeRequest::StartAcquisition(50.0));
+        let (held, mut reply) =
+            waiting_for(ScopeRequest::GetTriggeredData, Instant::now() + Duration::from_secs(60));
+        let mut waiting = vec![held];
+        assert!(waits_for_a_capture(
+            &ScopeRequest::GetTriggeredData,
+            &harness.state,
+            &harness.acquiring
+        ));
+
+        publish(&mut harness, 4);
+        answer_waiting(&mut harness.scope, &harness.acquiring, &mut harness.state, &mut waiting);
+
+        match reply.try_recv().expect("answered") {
+            ScopeReply::Capture(frame) => assert_eq!(frame.samples, vec![-4, 4]),
+            other => panic!("expected the capture, got {other:?}"),
+        }
+        assert!(waiting.is_empty());
+    }
+
+    #[test]
+    fn stopping_answers_the_requests_waiting_for_a_capture() {
+        let mut harness = Harness::new();
+        let (held, mut reply) =
+            waiting_for(ScopeRequest::GetTriggeredData, Instant::now() + Duration::from_secs(60));
+        let mut waiting = vec![held];
+
+        settle_waiting(&mut harness.scope, &harness.acquiring, &mut harness.state, &mut waiting, false);
+
+        let message = error_from(reply.try_recv().expect("answered"));
+        assert!(message.contains("start the scope"), "{message}");
+    }
+
+    #[test]
+    fn only_requests_for_samples_wait() {
+        let mut harness = Harness::new();
+        harness.serve(ScopeRequest::StartAcquisition(50.0));
+        assert!(!waits_for_a_capture(&ScopeRequest::IsReady, &harness.state, &harness.acquiring));
+        assert!(!waits_for_a_capture(&ScopeRequest::GetState, &harness.state, &harness.acquiring));
+
+        publish(&mut harness, 1);
+        assert!(
+            !waits_for_a_capture(&ScopeRequest::GetTriggeredData, &harness.state, &harness.acquiring),
+            "there is a capture to answer with"
+        );
+    }
+
+    #[test]
+    fn memory_depth_is_the_block_a_capture_holds() {
+        let mut harness = Harness::new();
+        assert!(matches!(harness.send(ScopeRequest::GetMemoryDepth), ScopeReply::Usize(2)));
+    }
+
+    #[test]
+    fn an_oversized_display_state_is_refused_and_changes_nothing() {
+        let mut harness = Harness::new();
+        harness.send(ScopeRequest::SetDisplay(serde_json::json!({"xy": true})));
+        let blob = "x".repeat(MAX_DISPLAY_BYTES);
+
+        let message = error_from(harness.send(ScopeRequest::SetDisplay(serde_json::json!({"notes": blob}))));
+        assert!(message.contains("limit"), "{message}");
+        match harness.send(ScopeRequest::GetDisplay) {
+            ScopeReply::Display(display) => assert_eq!(display, serde_json::json!({"xy": true})),
+            other => panic!("expected the display back, got {other:?}"),
+        }
     }
 
     #[test]
@@ -2040,7 +2605,7 @@ mod tests {
     /// get "thread is not running" rather than the state's own message, so
     /// they cannot pass by accident when the short-circuit is removed.
     fn handle_in(state: OpenState) -> ScopeHandle {
-        let (commands, rx) = mpsc::channel::<Envelope>(1);
+        let (commands, rx) = mpsc::channel::<Message>(1);
         drop(rx);
         let (captures, _) = broadcast::channel(1);
         let (_state_tx, state_rx) = watch::channel(Arc::new(unopened_state()));
@@ -2051,6 +2616,8 @@ mod tests {
             capture_count: Arc::new(AtomicU64::new(0)),
             open_state: Arc::new(Mutex::new(state)),
             state: state_rx,
+            stopping: Arc::new(AtomicBool::new(false)),
+            thread: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -2068,7 +2635,7 @@ mod tests {
         // It used to not arise, because the daemon did not listen until the
         // scope was open -- which turned a wedged scope into "connection
         // refused", indistinguishable from no daemon at all.
-        let handle = handle_in(OpenState::Opening);
+        let handle = handle_in(OpenState::opening(None));
 
         let message = error_from(handle.request(ScopeRequest::IsReady).await);
         assert!(
@@ -2079,6 +2646,169 @@ mod tests {
             message.contains("reconnect"),
             "and what to do if it stays that way, got {message:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_retry_in_progress_says_why_the_last_attempt_failed() {
+        // Each retry used to replace the reason with "still opening", so
+        // for most of every retry interval the daemon hid why it had no scope.
+        let handle = handle_in(OpenState::opening(Some("no PicoScope found".into())));
+
+        let message = error_from(handle.request(ScopeRequest::IsReady).await);
+        assert!(message.contains("no PicoScope found"), "{message:?}");
+    }
+
+    /// Opens a fresh `FakeScope` each time, made by `make`, and counts the opens.
+    fn opening_fakes(
+        opens: Arc<AtomicUsize>,
+        mut make: impl FnMut(usize) -> FakeScope + Send + 'static,
+    ) -> impl FnMut() -> anyhow::Result<Box<dyn Oscilloscope>> + Send + 'static {
+        move || {
+            let nth = opens.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(make(nth)) as Box<dyn Oscilloscope>)
+        }
+    }
+
+    /// Wait, up to five seconds, for `done`.
+    fn eventually(what: &str, done: impl Fn() -> bool) {
+        let until = Instant::now() + Duration::from_secs(5);
+        while !done() {
+            assert!(Instant::now() < until, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn a_request_for_samples_waits_for_the_capture_it_armed() {
+        // Arm, then ask, straight away: answered with the capture that arm
+        // produced, not refused for being early and not the block before it.
+        let fake = FakeScope::new();
+        let ready = fake.ready.clone();
+        let mut fake = Some(fake);
+        let handle = spawn(move || Ok(Box::new(fake.take().expect("opened once")) as Box<dyn Oscilloscope>))
+            .expect("spawn");
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+
+        runtime.block_on(async {
+            assert!(matches!(handle.request(ScopeRequest::StartAcquisition(50.0)).await, ScopeReply::Ok));
+            let asked = tokio::spawn({
+                let handle = handle.clone();
+                async move { handle.request(ScopeRequest::GetTriggeredData).await }
+            });
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert!(!asked.is_finished(), "answered before any capture completed");
+
+            ready.store(true, Ordering::Relaxed);
+            let reply = tokio::time::timeout(Duration::from_secs(5), asked)
+                .await
+                .expect("the capture should have answered it")
+                .unwrap();
+            match reply {
+                ScopeReply::Capture(frame) => assert!(frame.seq >= 1),
+                other => panic!("expected a capture, got {other:?}"),
+            }
+        });
+        assert!(handle.shutdown(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn shutting_down_stops_the_scope_and_closes_it() {
+        // A daemon killed with the unit armed left it to the kernel to tidy
+        // up, and the next start could find it still claimed.
+        let fake = FakeScope::new();
+        let dropped = fake.dropped.clone();
+        let mut fake = Some(fake);
+        let handle = spawn(move || Ok(Box::new(fake.take().expect("opened once")) as Box<dyn Oscilloscope>))
+            .expect("spawn");
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(handle.request(ScopeRequest::StartAcquisition(50.0)));
+
+        assert!(handle.shutdown(Duration::from_secs(5)), "the thread should have finished");
+        assert!(dropped.load(Ordering::SeqCst), "the scope was not closed");
+        assert!(matches!(
+            runtime.block_on(handle.request(ScopeRequest::IsReady)),
+            ScopeReply::Error(_)
+        ));
+    }
+
+    #[test]
+    fn shutting_down_between_attempts_to_open_does_not_wait_out_the_retry() {
+        let handle = spawn(|| anyhow::bail!("nothing plugged in")).expect("spawn");
+        let started = Instant::now();
+        assert!(handle.shutdown(Duration::from_secs(5)));
+        assert!(started.elapsed() < OPEN_RETRY_INTERVAL, "took {:?}", started.elapsed());
+    }
+
+    #[test]
+    fn a_panic_in_the_driver_closes_the_scope_and_opens_it_again() {
+        // A panic used to end the thread, leaving a daemon that answered
+        // every command with "not running" until someone restarted it.
+        let opens = Arc::new(AtomicUsize::new(0));
+        let first_dropped = Arc::new(AtomicBool::new(false));
+        let flag = first_dropped.clone();
+        let handle = spawn(opening_fakes(opens.clone(), move |nth| {
+            let mut fake = FakeScope::new();
+            if nth == 0 {
+                fake.panic_on_mode = true;
+                fake.dropped = flag.clone();
+            }
+            fake
+        }))
+        .expect("spawn");
+
+        eventually("a second open", || opens.load(Ordering::SeqCst) >= 2);
+        eventually("the scope to be open", || matches!(*lock(&handle.open_state), OpenState::Open));
+        assert!(first_dropped.load(Ordering::SeqCst), "the panicked scope was not closed");
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        assert!(matches!(
+            runtime.block_on(handle.request(ScopeRequest::GetCapabilities)),
+            ScopeReply::Capabilities(_)
+        ));
+        assert!(handle.shutdown(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn a_unit_that_stops_answering_is_closed_and_opened_again() {
+        // Unplugged mid-acquisition, the loop polled the dead handle for
+        // ever; plugging the unit back in did nothing until a restart.
+        let opens = Arc::new(AtomicUsize::new(0));
+        let first = FakeScope::new();
+        let (ready, gone, first_dropped) = (first.ready.clone(), first.gone.clone(), first.dropped.clone());
+        let mut first = Some(first);
+        let handle = spawn(opening_fakes(opens.clone(), move |_| {
+            first.take().unwrap_or_else(|| {
+                let fake = FakeScope::new();
+                fake.ready.store(true, Ordering::Relaxed);
+                fake
+            })
+        }))
+        .expect("spawn");
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+
+        ready.store(true, Ordering::Relaxed);
+        runtime.block_on(handle.request(ScopeRequest::StartAcquisition(50.0)));
+        eventually("a capture", || handle.capture_count.load(Ordering::Relaxed) >= 3);
+        let version = handle.state.borrow().version;
+
+        gone.store(true, Ordering::SeqCst);
+        eventually("a second open", || opens.load(Ordering::SeqCst) >= 2);
+        eventually("the scope to be open", || matches!(*lock(&handle.open_state), OpenState::Open));
+        assert!(first_dropped.load(Ordering::SeqCst), "the lost scope was not closed");
+        assert!(handle.state.borrow().version > version, "the state went backwards");
+
+        // And numbering carries on from the scope before, so a client does
+        // not take the new unit's first captures for ones it already has.
+        let before = handle.capture_count.load(Ordering::Relaxed);
+        runtime.block_on(handle.request(ScopeRequest::StartAcquisition(50.0)));
+        let frame = runtime.block_on(async {
+            let mut captures = handle.subscribe();
+            tokio::time::timeout(Duration::from_secs(5), captures.recv())
+                .await
+                .expect("a capture from the new scope")
+                .expect("the stream is open")
+        });
+        assert!(frame.frame.seq > before, "seq {} after {before}", frame.frame.seq);
+        assert!(handle.shutdown(Duration::from_secs(5)));
     }
 
     #[tokio::test]
