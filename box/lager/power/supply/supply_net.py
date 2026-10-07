@@ -105,6 +105,21 @@ class SupplyNet(abc.ABC):
         """
         return _safe(lambda: bool(self.output_is_enabled(channel)))
 
+    def get_monitor_states(self, channels) -> dict:
+        """``get_monitor_state`` for several channels in ONE call.
+
+        For the /nets/state sweep, which used to read a three-channel supply as
+        three ``/invoke`` calls -- three HTTP round trips, three lock
+        acquisitions, three ``*IDN?`` liveness probes -- one after another.
+        Each channel is still read through ``get_monitor_state``, so a driver's
+        non-intrusive override (the Keithley's) is what runs, and a failure
+        raises out of the whole call exactly as it would out of one channel's.
+
+        Returns ``{str(channel): state}``; string keys because that is what the
+        answer is once it has crossed hardware_service's JSON.
+        """
+        return {str(ch): self.get_monitor_state(ch) for ch in channels}
+
     def get_monitor_state(self, channel=None) -> dict:
         """Gather the supply TUI's full monitor state in ONE call.
 

@@ -809,6 +809,9 @@ Nets reporting no state:
 **Box 如何读取这些 Net：**
 - Box 按仪器把 Net 分组，最多同时读取八台仪器。
 - 所有仪器共用 8 秒的总预算。预算用尽时，每个没有响应的 Net 都报告 `deadline`。
+- 每台仪器还有自己的 3 秒预算；仪器需要逐个读取的 Net 每多一个，预算增加 1 秒。在自己的预算内没有响应的仪器报告 `instrument-timeout`，其他仪器继续读取。USB 集线器只使用共用预算。
+- 读取之前，Box 会在 USB 总线上查找该仪器的 USB 地址。如果地址不在总线上，Box 不读取该仪器，它的 Net 报告 `instrument-absent`。
+- 出现超时或 `device-busy` 应答后，Box 在 30 秒内不再读取该仪器，它的 Net 报告 `probe-cooldown`。任何命令从该仪器得到应答时，这段暂停会提前结束。
 - Box 逐个读取 USB 集线器。剩余预算不足 1 秒时它不再读取某个集线器，该集线器的 Net 报告 `hub-skipped`。
 - 一次读取会获取与运行中的测试相同的仪器锁，因此该命令可能需要等待某个测试。
 - Box 读取 `i2c` Net 时会做一次完整的总线扫描。
@@ -823,8 +826,11 @@ Nets reporting no state:
 |---|---|
 | `deadline` | 共用预算在该仪器响应之前用尽了。仅凭这一点并不说明该仪器慢。 |
 | `unreadable: <detail>` | Box 尝试读取该仪器但没有取到值。detail 中给出错误。 |
+| `not connected: <instrument> (<address>) is not on the USB bus` | 该仪器被拔掉或已关机，或者工作台上是另一台设备。Box 没有读取它。 |
+| `timed out: no answer from <instrument>` | 该仪器在自己的预算内没有响应。 |
+| `not probed: <earlier reason>` | 不久前对该仪器的上一次读取失败了。原因中引用了那次失败。 |
 
-`usb` Net 还可能带有一个代码。当同一组中所有 Net 的代码相同时，脚注会多加一行补救建议：
+Net 还可能带有一个代码。当同一组中所有 Net 的代码相同时，脚注会多加一行补救建议：
 
 | 代码 | 补救建议 |
 |---|---|
@@ -833,6 +839,10 @@ Nets reporting no state:
 | `hub-serial-mismatch` | 总线上有集线器，但没有一个的序列号与该 Net 指定的相符。请检查该 Net 的地址。 |
 | `hub-skipped` | Box 没有读取该集线器，因为较慢的仪器先用掉了预算。该集线器可能是正常的，单独读取它就会有响应。 |
 | `hub-open-failed` | 没有补救建议。原因中已给出该失败。 |
+| `instrument-absent` | 没有补救建议。该仪器的 USB 地址不在 USB 总线上。 |
+| `instrument-timeout` | 没有补救建议。该仪器在自己的预算内没有响应。 |
+| `device-busy` | 没有补救建议。另一个操作在整个预算期间占用了该仪器。 |
+| `probe-cooldown` | 没有补救建议。Box 没有读取该仪器，因为它的上一次读取在 30 秒内失败过。 |
 
 **JSON 输出：**
 
@@ -842,10 +852,26 @@ Nets reporting no state:
 |---|---|
 | `live_state` | 状态字符串，或 `null` |
 | `live_state_reason` | 状态为 `null` 的原因，包括 `no probe for role`。只有当 Box 发来原因时才存在。 |
-| `live_state_reason_code` | `usb` Net 的代码。只有当 Box 发来代码时才存在。 |
+| `live_state_reason_code` | 该 Net 的代码。只有当 Box 发来代码时才存在。 |
 
 没有这个端点的 Box 会打印一条提示，让您更新它。表格仍然会打印，只是每个 `State`
 单元格都是 `–`。
+
+**Box API：**
+
+该命令读取 Box 9000 端口上的 `GET /nets/state`。应答是一个 JSON 数组，按保存顺序，每个已保存的 Net 对应一个对象。每个对象包含 `name`、`role` 和 `state`，还可能包含 `enabled`、`reason` 和 `reason_code`。
+
+`GET /nets/state?stream=1` 在每台仪器响应时发送同样的对象。只有当 `GET /status` 的 `capabilities` 对象中 `netsStateStream` 为 `true` 时才使用它。应答类型为 `application/x-ndjson`，每行一个 JSON 对象：
+
+```
+{"type": "states", "entries": [<object>, ...]}
+{"type": "done", "entries": [<object>, ...], "elapsed_ms": 2412}
+```
+
+- 每台仪器响应或其预算用尽时，Box 发送一行 `states`。第一行 `states` 包含不需要读取的 Net：没有探测方式的 Net 类型、不在总线上的仪器，以及处于暂停中的仪器。
+- `done` 行总是最后一行，Box 只发送一次。它的 `entries` 是被共用预算截断的 Net，每个的 `reason` 都是 `deadline`。该列表通常为空。
+- 每个已保存的 Net 只出现在一行中。各行按仪器响应的顺序到达。
+- 如果流在没有 `done` 行的情况下结束，说明连接在 Box 完成之前中断了。
 
 ### `describe`
 

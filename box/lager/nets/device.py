@@ -1,8 +1,12 @@
 # Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 
-import requests
+import contextlib
 import json
+import threading
+import time
+
+import requests
 from lager.instrument_wrappers.visa_enum import EnumEncoder
 from lager.instrument_wrappers import rigol_mso5000_defines
 from lager.instrument_wrappers import rigol_dm3000_defines
@@ -86,6 +90,39 @@ def describe_error(exc: Exception) -> str:
     return f"{name}: {text}" if text else name
 
 
+# Per-thread limits for every Device call made inside ``call_limits``.
+_limits = threading.local()
+
+
+@contextlib.contextmanager
+def call_limits(deadline):
+    """Bound every ``Device`` call this thread makes to an absolute deadline.
+
+    For a caller with a budget of its own -- the /nets/state sweep -- that runs
+    code it does not control (a probe that builds its own ``Device``) and needs
+    two things from it. Each call's HTTP timeout and its wait for the device
+    lock (``lock_timeout_s``) are cut to the time left before ``deadline``, so
+    a probe behind a lock that a previous, abandoned call still holds answers
+    "busy" within the budget instead of queueing for the full lock wait. And
+    the calls that failed are recorded, because the probes swallow every error
+    and the caller otherwise cannot say why one came back empty.
+
+    Yields a list the failures are appended to, in order. Nesting is not
+    supported; the inner block replaces the outer one until it exits.
+
+    Args:
+        deadline: absolute ``time.monotonic()`` by which every call must end.
+    """
+    errors = []
+    _limits.deadline = deadline
+    _limits.errors = errors
+    try:
+        yield errors
+    finally:
+        _limits.deadline = None
+        _limits.errors = None
+
+
 def enum_decoder(obj):
     if '__enum__' in obj:
         cls, name = obj['__enum__']['type'], obj['__enum__']['value']
@@ -116,21 +153,36 @@ class Device:
             'kwargs': kwargs,
             'net_info': self.net_info,
         }
+        timeout = self.timeout
+        deadline = getattr(_limits, 'deadline', None)
+        errors = getattr(_limits, 'errors', None)
+        if deadline is not None:
+            # Floor, not zero: requests treats 0 as "no timeout" on some paths,
+            # and an already-spent budget should fail fast, not block forever.
+            remaining = max(deadline - time.monotonic(), 0.05)
+            timeout = min(timeout, remaining)
+            data['lock_timeout_s'] = remaining
         try:
-            # Note: Using localhost since all services run in same container
-            resp = _session.post(
-                f'http://localhost:{HARDWARE_PORT}/invoke',
-                headers={'Content-Type': 'application/json'},
-                data=json.dumps(data, cls=EnumEncoder),
-                timeout=self.timeout
-            )
-        except Exception as exc:
-            raise ConnectionFailed from exc
-        if not resp.ok:
             try:
-                raise DeviceError(resp.json())
-            except (ValueError, KeyError):
-                raise DeviceError(resp.content)
+                # Note: Using localhost since all services run in same container
+                resp = _session.post(
+                    f'http://localhost:{HARDWARE_PORT}/invoke',
+                    headers={'Content-Type': 'application/json'},
+                    data=json.dumps(data, cls=EnumEncoder),
+                    timeout=timeout
+                )
+            except Exception as exc:
+                raise ConnectionFailed from exc
+            if not resp.ok:
+                try:
+                    payload = resp.json()
+                except (ValueError, KeyError):
+                    payload = resp.content
+                raise DeviceError(payload)
+        except (ConnectionFailed, DeviceError) as exc:
+            if errors is not None:
+                errors.append(exc)
+            raise
         return json.loads(resp.content, object_hook=enum_decoder)
 
     def __getattr__(self, func):

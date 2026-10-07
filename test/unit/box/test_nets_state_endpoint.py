@@ -196,7 +196,8 @@ class ProbeGroupTests(unittest.TestCase):
                           return_value={"g1": "HIGH (1)", "a1": "3.3V"}) as mock:
             out = nets_handler._probe_group(recs)
 
-        mock.assert_called_once_with(recs)
+        mock.assert_called_once()
+        self.assertEqual(mock.call_args[0], (recs,))
         self.assertEqual(out[0]["state"], "HIGH (1)")
         self.assertEqual(out[1]["state"], "3.3V")
 
