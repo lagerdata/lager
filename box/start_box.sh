@@ -934,6 +934,14 @@ picotech_headers_present() {
     return 1
 }
 
+# Whether a PicoTech USB device (vendor 0ce9) is attached. sysfs, because the
+# host need not have usbutils. Keep identical to `_pico_attached_shell_cmd`
+# in cli/commands/utility/update.py; a test runs both and compares.
+USB_SYSFS_DEVICES="/sys/bus/usb/devices"
+picotech_device_attached() {
+    grep -qsx 0ce9 "$USB_SYSFS_DEVICES"/*/idVendor
+}
+
 build_oscilloscope_daemon() {
     # Built in a throwaway container from the `lager` image because that is
     # where the binary runs -- it gets mounted over
@@ -984,8 +992,18 @@ if [ -d "$OSCILLOSCOPE_SRC" ] && docker image inspect lager >/dev/null 2>&1; the
 
     if [ -n "$_osc_stale" ] && ! picotech_headers_present; then
         # No hash is recorded, so the first start after the SDK is
-        # installed builds.
-        echo "Oscilloscope daemon build skipped: no PicoScope family can be built from the PicoTech SDK headers in $OSCILLOSCOPE_SDK_INCLUDE"
+        # installed builds. Loud only with a scope attached: most boxes
+        # have none and never will.
+        if picotech_device_attached; then
+            echo "WARNING: a PicoScope is attached but the oscilloscope daemon is unavailable:"
+            echo "         no PicoTech SDK headers in $OSCILLOSCOPE_SDK_INCLUDE."
+            echo "         Install the package for its family (libps2000 libps2000a libps3000a"
+            echo "         libps4000a libps5000a libps6000a libpsospa) from"
+            echo "         https://labs.picotech.com/picoscope7/debian/ -- 'lager install' does"
+            echo "         this -- and the next start builds the daemon."
+        else
+            echo "Oscilloscope daemon build skipped: no PicoScope family can be built from the PicoTech SDK headers in $OSCILLOSCOPE_SDK_INCLUDE"
+        fi
     elif [ -n "$_osc_stale" ]; then
         if [ -f "$OSCILLOSCOPE_DAEMON" ]; then
             echo "Oscilloscope daemon is out of date; rebuilding..."

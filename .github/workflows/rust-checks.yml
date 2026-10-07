@@ -39,7 +39,7 @@
 # family's headers there it fails, so the check stops before any Rust is
 # looked at. The first run of this workflow proved that:
 # `wrapper.h:2:10: fatal error: 'ps2000.h' file not found`. The SDK install
-# below is the same one build_daemon.sh documents for the box.
+# below is the same one Step 4.5 of setup_and_deploy_box.sh does on a box.
 
 name: "PR Gate: Rust Checks"
 
@@ -119,14 +119,15 @@ jobs:
       # bindgen, for each family whose headers are installed. With none it
       # fails and nothing downstream is checked at all, so this is a
       # prerequisite rather than an optional extra. Same repo and packages
-      # build_daemon.sh documents for setting up a box.
+      # as Step 4.5 of cli/deployment/scripts/setup_and_deploy_box.sh, so CI
+      # builds against the headers a box gets.
       #
       # All five families are installed, not just libps2000. build.rs leaves
       # out a family whose headers are missing -- a box can have only the
       # one its scope needs -- and that family's code is then compiled out,
       # so a header missing here would quietly drop that family from every
-      # check below. The assertion turns that into a failure. libps6000a is
-      # installed for its headers only -- libps3000a's PicoDeviceStructs.h
+      # check below. The assertion turns that into a failure. libps6000a and
+      # libpsospa are installed for their headers only -- libps3000a's PicoDeviceStructs.h
       # includes PicoConnectProbes.h, which PicoTech ships under the
       # 4000a/6000a families rather than with 3000a, and build.rs adds the
       # sibling include directories to resolve it.
@@ -144,13 +145,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential pkg-config libclang-dev
-          wget -qO - https://labs.picotech.com/debian/dists/picoscope/Release.gpg.key \
-            | sudo gpg --dearmor -o /usr/share/keyrings/picoscope-archive-keyring.gpg
-          echo "deb [signed-by=/usr/share/keyrings/picoscope-archive-keyring.gpg] https://labs.picotech.com/debian/ picoscope main" \
-            | sudo tee /etc/apt/sources.list.d/picoscope.list
+          wget -qO - https://labs.picotech.com/Release.gpg.key \
+            | sudo gpg --dearmor -o /usr/share/keyrings/picotech-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/picotech-archive-keyring.gpg] https://labs.picotech.com/picoscope7/debian/ picoscope main" \
+            | sudo tee /etc/apt/sources.list.d/picoscope7.list
           sudo apt-get update
-          sudo apt-get install -y \
-            libps2000 libps2000a libps3000a libps4000a libps5000a libps6000a
+          sudo apt-get install -y --no-install-recommends \
+            libps2000 libps2000a libps3000a libps4000a libps5000a libps6000a libpsospa
           # Assert every header build.rs opens, so a missing one fails here
           # with the name rather than leaving its family out of the checks.
           missing=0
