@@ -27,7 +27,24 @@ use protocol::capabilities::{
 use protocol::DriverFamily;
 
 use super::modern::{api_for, PicoModernApi};
+use super::status::{self, PicoStatusError};
 use super::types::{DeviceResolution, Range, UnitInfo};
+
+/// Detection found no unit at all, as opposed to one that would not open.
+///
+/// The difference decides which error the daemon reports: with no modern
+/// unit attached the legacy ps2000 driver's answer is the useful one, but a
+/// modern unit that was there and failed has to be reported as itself.
+#[derive(Debug)]
+pub struct NoUnitFound(pub String);
+
+impl std::fmt::Display for NoUnitFound {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for NoUnitFound {}
 
 /// A unit that was found, opened and identified.
 pub struct DetectedScope {
@@ -55,17 +72,32 @@ const PROBE_ORDER: &[DriverFamily] = &[
 ///
 /// `serial` restricts the search to one unit, which is what a box with two
 /// scopes needs. Without it, the first unit found wins.
+///
+/// Fails with [`NoUnitFound`] when no modern unit is attached, and with the
+/// unit's own error when one was found but could not be opened.
 pub fn detect(serial: Option<&str>) -> Result<DetectedScope> {
-    let installed = super::loader::installed_families();
+    detect_with(serial, &super::loader::installed_families(), api_for)
+}
+
+fn detect_with(
+    serial: Option<&str>,
+    installed: &[DriverFamily],
+    api_for: impl Fn(DriverFamily) -> Result<Box<dyn PicoModernApi>>,
+) -> Result<DetectedScope> {
     if installed.is_empty() {
-        bail!(
+        return Err(NoUnitFound(
             "no PicoScope driver libraries are installed. Run `lager install` \
              on the box, or set LD_LIBRARY_PATH if the SDK is somewhere \
              unusual."
-        );
+                .to_string(),
+        )
+        .into());
     }
 
     let mut attempts: Vec<String> = Vec::new();
+    // Whether any family had a unit there, listed or answering, that then
+    // failed: that failure is the one to report.
+    let mut found_a_unit = false;
 
     for &family in PROBE_ORDER {
         if !installed.contains(&family) {
@@ -88,7 +120,7 @@ pub fn detect(serial: Option<&str>) -> Result<DetectedScope> {
         // three firmware uploads into three descriptor reads. A driver that
         // cannot enumerate is still tried, since failing to list units is
         // not proof that none are there.
-        match api.enumerate() {
+        let listed = match api.enumerate() {
             Ok(serials) if serials.is_empty() => {
                 attempts.push(format!("{}: no units attached", family.as_str()));
                 continue;
@@ -109,6 +141,7 @@ pub fn detect(serial: Option<&str>) -> Result<DetectedScope> {
                     ?serials,
                     "family reports attached units"
                 );
+                true
             }
             Err(e) => {
                 tracing::debug!(
@@ -116,8 +149,9 @@ pub fn detect(serial: Option<&str>) -> Result<DetectedScope> {
                     error = %e,
                     "could not enumerate; trying to open anyway"
                 );
+                false
             }
-        }
+        };
 
         // Open at 8 bits. It is the one resolution every flexible part
         // supports with all channels enabled, so opening cannot fail on a
@@ -130,6 +164,7 @@ pub fn detect(serial: Option<&str>) -> Result<DetectedScope> {
                         // Identified badly is worse than not found: close up
                         // rather than leave a half-known unit open.
                         let _ = api.close(handle);
+                        found_a_unit = true;
                         attempts.push(format!("{}: opened but {e}", family.as_str()));
                         continue;
                     }
@@ -150,7 +185,12 @@ pub fn detect(serial: Option<&str>) -> Result<DetectedScope> {
                     api,
                 });
             }
-            Err(e) => attempts.push(format!("{}: {e}", family.as_str())),
+            Err(e) => {
+                if listed || open_failure_means_a_unit(&e) {
+                    found_a_unit = true;
+                }
+                attempts.push(format!("{}: {e:#}", family.as_str()));
+            }
         }
     }
 
@@ -164,13 +204,29 @@ pub fn detect(serial: Option<&str>) -> Result<DetectedScope> {
         );
     }
 
-    bail!(
-        "no supported PicoScope was found{}. Tried:\n  {}",
-        serial
-            .map(|s| format!(" with serial {s}"))
-            .unwrap_or_default(),
+    let with_serial = serial
+        .map(|s| format!(" with serial {s}"))
+        .unwrap_or_default();
+    if found_a_unit {
+        bail!(
+            "a PicoScope was found{with_serial} but could not be opened. Tried:\n  {}",
+            attempts.join("\n  ")
+        );
+    }
+    Err(NoUnitFound(format!(
+        "no supported PicoScope was found{with_serial}. Tried:\n  {}",
         attempts.join("\n  ")
-    )
+    ))
+    .into())
+}
+
+/// Whether an `OpenUnit` failure came from a unit rather than from there
+/// being none: anything the driver answered other than `PICO_NOT_FOUND`.
+fn open_failure_means_a_unit(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .filter_map(|cause| cause.downcast_ref::<PicoStatusError>())
+        .any(|failure| failure.status != status::NOT_FOUND)
 }
 
 /// Read a unit's identity and turn it into capabilities.
@@ -186,21 +242,7 @@ fn identify(api: &dyn PicoModernApi, handle: i16) -> Result<ScopeCapabilities> {
         .unit_info(handle, UnitInfo::BatchAndSerial)
         .unwrap_or_default();
 
-    // Read the resolution from the device where it is a setting, so a
-    // 5000-series part opened at 8 bits reports 8 rather than its maximum.
-    let resolution = if api.supports_resolution_switching() {
-        let current = api.resolution(handle).unwrap_or(DeviceResolution::Bits8);
-        ResolutionSupport {
-            available_bits: available_resolutions(api.family())
-                .iter()
-                .map(|r| r.bits())
-                .collect(),
-            current_bits: current.bits(),
-            switchable: true,
-        }
-    } else {
-        ResolutionSupport::fixed(8)
-    };
+    let resolution = resolution_support(api.family(), &model, || api.resolution(handle));
 
     Ok(capabilities_from_variant(
         api.family(),
@@ -208,6 +250,35 @@ fn identify(api: &dyn PicoModernApi, handle: i16) -> Result<ScopeCapabilities> {
         &serial,
         resolution,
     ))
+}
+
+/// A unit's ADC resolution, and whether it can be changed.
+///
+/// Read from the device where it is a setting, so a 5000-series part opened
+/// at 8 bits reports 8 rather than its maximum. Of the 4000a parts only the
+/// 4444 has a second resolution and `GetDeviceResolution` to ask; the rest
+/// are 12-bit, which the 8-bit fallback used to report them as.
+fn resolution_support(
+    family: DriverFamily,
+    model: &str,
+    current: impl FnOnce() -> Result<DeviceResolution>,
+) -> ResolutionSupport {
+    let switchable = |fallback: DeviceResolution| ResolutionSupport {
+        available_bits: available_resolutions(family)
+            .iter()
+            .map(|r| r.bits())
+            .collect(),
+        current_bits: current().unwrap_or(fallback).bits(),
+        switchable: true,
+    };
+    match family {
+        DriverFamily::Ps5000a => switchable(DeviceResolution::Bits8),
+        DriverFamily::Ps4000a if model_number(model) == "4444" => {
+            switchable(DeviceResolution::Bits12)
+        }
+        DriverFamily::Ps4000a => ResolutionSupport::fixed(12),
+        _ => ResolutionSupport::fixed(8),
+    }
 }
 
 /// Resolutions a family's `SetDeviceResolution` accepts.
@@ -222,10 +293,18 @@ fn available_resolutions(family: DriverFamily) -> &'static [DeviceResolution] {
             DeviceResolution::Bits15,
             DeviceResolution::Bits16,
         ],
-        // 4000a parts are 12-bit, with a 14-bit mode on the 4444 and 4824.
+        // The 4444, the one 4000a part with a 14-bit mode.
         DriverFamily::Ps4000a => &[DeviceResolution::Bits12, DeviceResolution::Bits14],
         _ => &[DeviceResolution::Bits8],
     }
+}
+
+/// The model number in a variant string: "4444" from "PicoScope 4444".
+fn model_number(model: &str) -> &str {
+    let start = model.find(|c: char| c.is_ascii_digit()).unwrap_or(model.len());
+    let digits = &model[start..];
+    let end = digits.find(|c: char| !c.is_ascii_digit()).unwrap_or(digits.len());
+    &digits[..end]
 }
 
 /// Analog channel count encoded in a PicoScope model number.
@@ -287,8 +366,7 @@ pub fn capabilities_from_variant(
     // Pico marks mixed-signal parts in the variant string itself.
     let digital_ports = if model.to_uppercase().contains("MSO") { 1 } else { 0 };
 
-    let voltage_ranges: Vec<VoltageRange> = Range::ALL
-        .iter()
+    let voltage_ranges: Vec<VoltageRange> = Range::supported(family)
         .map(|r| VoltageRange {
             code: r.code() as u8,
             full_scale_volts: r.full_scale_volts(),
@@ -520,22 +598,23 @@ mod tests {
     }
 
     #[test]
-    fn every_modern_family_offers_the_full_range_set() {
-        for family in [
-            DriverFamily::Ps2000a,
-            DriverFamily::Ps3000a,
-            DriverFamily::Ps4000a,
-            DriverFamily::Ps5000a,
+    fn each_modern_family_offers_only_the_ranges_it_has() {
+        // (family, first label, first code, last label, last code). The code
+        // must be the driver's own index, or a range change would select
+        // the wrong one.
+        for (family, first, first_code, last, last_code) in [
+            (DriverFamily::Ps2000a, "20 mV", 1, "20 V", 10),
+            (DriverFamily::Ps3000a, "50 mV", 2, "20 V", 10),
+            (DriverFamily::Ps4000a, "10 mV", 0, "50 V", 11),
+            (DriverFamily::Ps5000a, "10 mV", 0, "20 V", 10),
         ] {
             let caps =
                 capabilities_from_variant(family, "3204D", "S", ResolutionSupport::fixed(8));
-            assert_eq!(caps.voltage_ranges.len(), 12, "{family:?}");
-            assert_eq!(caps.voltage_ranges[0].label, "10 mV");
-            assert_eq!(caps.voltage_ranges[11].label, "50 V");
-            // The code must be the driver's own index, or a range change
-            // would select the wrong one.
-            assert_eq!(caps.voltage_ranges[0].code, 0);
-            assert_eq!(caps.voltage_ranges[11].code, 11);
+            let ranges = &caps.voltage_ranges;
+            assert_eq!(ranges[0].label, first, "{family:?}");
+            assert_eq!(ranges[0].code, first_code, "{family:?}");
+            assert_eq!(ranges[ranges.len() - 1].label, last, "{family:?}");
+            assert_eq!(ranges[ranges.len() - 1].code, last_code, "{family:?}");
         }
     }
 
@@ -625,6 +704,209 @@ mod tests {
         // 8-bit only.
         assert_eq!(available_resolutions(DriverFamily::Ps2000a).len(), 1);
         assert_eq!(available_resolutions(DriverFamily::Ps3000a).len(), 1);
+    }
+
+    #[test]
+    fn only_the_4444_is_a_switchable_4000a_and_the_rest_are_twelve_bit() {
+        let unasked = || -> Result<DeviceResolution> {
+            panic!("only the 4444 has GetDeviceResolution to ask")
+        };
+        for model in ["4224A", "4424A", "4824", "4824A"] {
+            let support = resolution_support(DriverFamily::Ps4000a, model, unasked);
+            assert_eq!(support, ResolutionSupport::fixed(12), "{model}");
+        }
+
+        let support =
+            resolution_support(DriverFamily::Ps4000a, "4444", || Ok(DeviceResolution::Bits14));
+        assert!(support.switchable);
+        assert_eq!(support.available_bits, vec![12, 14]);
+        assert_eq!(support.current_bits, 14);
+
+        let unreadable = resolution_support(DriverFamily::Ps4000a, "PicoScope 4444", || {
+            bail!("no answer")
+        });
+        assert_eq!(unreadable.current_bits, 12);
+    }
+
+    #[test]
+    fn the_flexible_and_fixed_families_report_their_resolution() {
+        let five = resolution_support(DriverFamily::Ps5000a, "5444D", || {
+            Ok(DeviceResolution::Bits12)
+        });
+        assert!(five.switchable);
+        assert_eq!(five.current_bits, 12);
+        assert_eq!(
+            resolution_support(DriverFamily::Ps3000a, "3204D", || bail!("unasked")),
+            ResolutionSupport::fixed(8)
+        );
+    }
+
+    #[test]
+    fn the_model_number_is_the_first_run_of_digits() {
+        assert_eq!(model_number("4444"), "4444");
+        assert_eq!(model_number("PicoScope 4444"), "4444");
+        assert_eq!(model_number("2205AMSO"), "2205");
+        assert_eq!(model_number("no digits"), "");
+    }
+
+    use super::super::modern::{CaptureResult, TimebaseInfo};
+    use super::super::types::{Coupling, RatioMode, ThresholdDirection};
+    use std::sync::{Arc, Mutex};
+
+    /// A driver family with a scripted enumerate, open and identity. No
+    /// `listed` makes enumerate fail.
+    struct FakeApi {
+        family: DriverFamily,
+        listed: Option<Vec<String>>,
+        open: std::result::Result<i16, u32>,
+        model: Option<&'static str>,
+        closed: Arc<Mutex<Vec<i16>>>,
+    }
+
+    impl PicoModernApi for FakeApi {
+        fn family(&self) -> DriverFamily {
+            self.family
+        }
+        fn enumerate(&self) -> Result<Vec<String>> {
+            match &self.listed {
+                Some(listed) => Ok(listed.clone()),
+                None => bail!("ps5000aEnumerateUnits failed"),
+            }
+        }
+        fn open(&self, _: Option<&str>, _: DeviceResolution) -> Result<i16> {
+            self.open
+                .map_err(|status| PicoStatusError::new("ps5000aOpenUnit", status).into())
+        }
+        fn close(&self, handle: i16) -> Result<()> {
+            self.closed.lock().unwrap().push(handle);
+            Ok(())
+        }
+        fn unit_info(&self, _: i16, info: UnitInfo) -> Result<String> {
+            match (info, self.model) {
+                (UnitInfo::VariantInfo, Some(model)) => Ok(model.to_string()),
+                (UnitInfo::VariantInfo, None) => bail!("PICO_INFO_UNAVAILABLE"),
+                _ => Ok("AB123/0001".to_string()),
+            }
+        }
+        fn set_channel(&self, _: i16, _: u8, _: bool, _: Coupling, _: Range, _: f32) -> Result<()> {
+            unimplemented!()
+        }
+        fn get_timebase(&self, _: i16, _: u32, _: u32) -> Result<TimebaseInfo> {
+            unimplemented!()
+        }
+        fn run_block(&self, _: i16, _: u32, _: u32, _: u32) -> Result<std::time::Duration> {
+            unimplemented!()
+        }
+        fn is_ready(&self, _: i16) -> Result<bool> {
+            unimplemented!()
+        }
+        fn set_data_buffer(&self, _: i16, _: u8, _: &mut [i16]) -> Result<()> {
+            unimplemented!()
+        }
+        fn get_values(&self, _: i16, _: u32, _: u32, _: RatioMode) -> Result<CaptureResult> {
+            unimplemented!()
+        }
+        fn stop(&self, _: i16) -> Result<()> {
+            unimplemented!()
+        }
+        fn set_simple_trigger(
+            &self,
+            _: i16,
+            _: bool,
+            _: u8,
+            _: i16,
+            _: ThresholdDirection,
+            _: u32,
+            _: i16,
+        ) -> Result<()> {
+            unimplemented!()
+        }
+        fn maximum_value(&self, _: i16) -> Result<i16> {
+            unimplemented!()
+        }
+    }
+
+    /// Detect with every modern family installed: the 5000a behaving as
+    /// described, the others with nothing attached.
+    fn detect_on(
+        listed: Option<&[&str]>,
+        open: std::result::Result<i16, u32>,
+        model: Option<&'static str>,
+    ) -> (Result<DetectedScope>, Vec<i16>) {
+        let closed = Arc::new(Mutex::new(Vec::new()));
+        let listed: Option<Vec<String>> =
+            listed.map(|serials| serials.iter().map(|s| s.to_string()).collect());
+        let result = detect_with(None, PROBE_ORDER, |family| {
+            let attached = family == DriverFamily::Ps5000a;
+            Ok(Box::new(FakeApi {
+                family,
+                listed: if attached { listed.clone() } else { Some(Vec::new()) },
+                open: if attached { open } else { Err(status::NOT_FOUND) },
+                model,
+                closed: closed.clone(),
+            }) as Box<dyn PicoModernApi>)
+        });
+        let closed = closed.lock().unwrap().clone();
+        (result, closed)
+    }
+
+    fn error_of(result: Result<DetectedScope>) -> anyhow::Error {
+        match result {
+            Ok(_) => panic!("detection was expected to fail"),
+            Err(e) => e,
+        }
+    }
+
+    const ATTACHED: Option<&[&str]> = Some(&["GQ94/0135"]);
+
+    #[test]
+    fn nothing_attached_is_reported_as_no_unit_found() {
+        let err = error_of(detect_on(Some(&[]), Err(status::NOT_FOUND), Some("5444D")).0);
+        assert!(err.downcast_ref::<NoUnitFound>().is_some(), "{err:#}");
+    }
+
+    #[test]
+    fn an_open_answering_not_found_after_enumerate_failed_is_still_no_unit() {
+        // Enumerate failing is not proof of absence, so open is tried; its
+        // PICO_NOT_FOUND is.
+        let err = error_of(detect_on(None, Err(status::NOT_FOUND), Some("5444D")).0);
+        assert!(err.downcast_ref::<NoUnitFound>().is_some(), "{err:#}");
+    }
+
+    #[test]
+    fn a_listed_unit_that_will_not_open_is_reported_as_itself() {
+        // Held by another process: listed, then PICO_NOT_FOUND from open.
+        let err = error_of(detect_on(ATTACHED, Err(status::NOT_FOUND), Some("5444D")).0);
+        assert!(err.downcast_ref::<NoUnitFound>().is_none(), "{err:#}");
+        let text = format!("{err:#}");
+        assert!(text.contains("could not be opened"), "{text}");
+        assert!(text.contains("PICO_NOT_FOUND"), "lost the unit's own error: {text}");
+    }
+
+    #[test]
+    fn a_unit_that_fails_to_open_for_any_other_reason_is_reported_as_itself() {
+        for listed in [ATTACHED, None] {
+            let err = error_of(detect_on(listed, Err(0x04), Some("5444D")).0);
+            assert!(err.downcast_ref::<NoUnitFound>().is_none(), "{err:#}");
+            assert!(format!("{err:#}").contains("PICO_FW_FAIL"), "{err:#}");
+        }
+    }
+
+    #[test]
+    fn a_unit_that_opens_but_cannot_be_identified_is_closed_and_reported() {
+        let (result, closed) = detect_on(ATTACHED, Ok(9), None);
+        let err = error_of(result);
+        assert!(err.downcast_ref::<NoUnitFound>().is_none(), "{err:#}");
+        assert_eq!(closed, vec![9]);
+    }
+
+    #[test]
+    fn an_identified_unit_is_handed_over_open() {
+        let (result, closed) = detect_on(ATTACHED, Ok(9), Some("5444D"));
+        let detected = result.unwrap_or_else(|e| panic!("{e:#}"));
+        assert_eq!(detected.handle, 9);
+        assert_eq!(detected.capabilities.model, "5444D");
+        assert!(closed.is_empty(), "the caller owns closing it");
     }
 
     #[test]

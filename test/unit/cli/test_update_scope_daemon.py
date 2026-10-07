@@ -253,6 +253,22 @@ class StartBoxBuildsWhenStale(unittest.TestCase):
         end = text.index('\nif [ -f "$OSCILLOSCOPE_DAEMON" ]; then', begin)
         self.block = text[begin:end]
 
+        # The block skips the build without the PicoTech headers, so point
+        # it at a stand-in SDK that has them all.
+        self.sdk = os.path.join(self.home, 'picoscope-include')
+        for header in _update._DAEMON_SDK_HEADERS:
+            self.add_header(header)
+        default = 'OSCILLOSCOPE_SDK_INCLUDE="/opt/picoscope/include"'
+        self.assertIn(default, self.block)
+        self.block = self.block.replace(
+            default, f'OSCILLOSCOPE_SDK_INCLUDE="{self.sdk}"')
+
+    def add_header(self, header):
+        path = os.path.join(self.sdk, *header.split('/'))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w') as handle:
+            handle.write('/* header */\n')
+
     def run_block(self, fail=False):
         # `set -e` matches start_box.sh, and matters: under it a non-zero
         # exit from a command substitution aborts the script, so a box could
@@ -342,6 +358,105 @@ class StartBoxBuildsWhenStale(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(self.built)
 
+    def test_missing_sdk_headers_skip_the_build_with_a_note(self):
+        """A build without the headers can only fail, on every start."""
+        shutil.rmtree(self.sdk)
+        result = self.run_block()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.built, 'ran a build that cannot succeed')
+        self.assertIn('PicoTech SDK headers', result.stdout)
+        self.assertNotIn('WARNING', result.stdout)
+        self.assertIsNone(self.hash_file())
+
+    def test_one_missing_header_is_enough_to_skip(self):
+        os.remove(os.path.join(self.sdk, 'libps4000a', 'PicoConnectProbes.h'))
+        self.run_block()
+        self.assertFalse(self.built)
+
+    def test_installing_the_headers_builds_on_the_next_start(self):
+        shutil.rmtree(self.sdk)
+        self.run_block()
+        for header in _update._DAEMON_SDK_HEADERS:
+            self.add_header(header)
+        self.run_block()
+        self.assertTrue(self.built)
+        self.assertEqual(self.binary(), 'FAKE')
+
+    def test_an_up_to_date_daemon_says_nothing_about_headers(self):
+        self.run_block()
+        shutil.rmtree(self.sdk)
+        result = self.run_block()
+        self.assertNotIn('PicoTech', result.stdout)
+
+
+class TheTwoHeaderChecksAgree(unittest.TestCase):
+    """start_box.sh and update.py must agree on whether the SDK is there.
+
+    If update.py saw headers that start_box.sh does not, every `lager
+    update` would take the rebuild path for a build start_box.sh then
+    skips: the loop the header check exists to break.
+    """
+
+    def setUp(self):
+        self.include = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.include, ignore_errors=True)
+        for header in _update._DAEMON_SDK_HEADERS:
+            self.add(header)
+
+    def path(self, header):
+        return os.path.join(self.include, *header.split('/'))
+
+    def add(self, header):
+        os.makedirs(os.path.dirname(self.path(header)), exist_ok=True)
+        with open(self.path(header), 'w') as handle:
+            handle.write('/* header */\n')
+
+    def python_side(self):
+        result = subprocess.run(
+            ['sh', '-c', _update._daemon_headers_shell_cmd(self.include)],
+            capture_output=True, text=True,
+        )
+        return result.stdout.strip()
+
+    def shell_side(self):
+        """Run start_box.sh's `picotech_headers_present` in isolation."""
+        here = os.path.abspath(__file__)
+        repo = os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.dirname(here))))
+        with open(os.path.join(repo, 'box', 'start_box.sh')) as handle:
+            text = handle.read()
+        marker = 'picotech_headers_present() {'
+        body = text[text.index(marker):]
+        body = body[:body.index('\n}\n') + 3]
+        script = (
+            'set -eu\n'
+            f'OSCILLOSCOPE_SDK_INCLUDE="{self.include}"\n'
+            f'{body}\n'
+            'if picotech_headers_present; then echo 1; else echo 0; fi\n'
+        )
+        result = subprocess.run(['bash', '-c', script],
+                                capture_output=True, text=True)
+        return result.stdout.strip()
+
+    def test_both_find_a_complete_sdk(self):
+        self.assertEqual(self.python_side(), '1')
+        self.assertEqual(self.shell_side(), '1')
+
+    def test_both_notice_any_one_header_missing(self):
+        for header in _update._DAEMON_SDK_HEADERS:
+            with self.subTest(header=header):
+                os.remove(self.path(header))
+                try:
+                    self.assertEqual(self.python_side(), '0')
+                    self.assertEqual(self.shell_side(), '0')
+                finally:
+                    self.add(header)
+
+    def test_both_notice_no_sdk_at_all(self):
+        shutil.rmtree(self.include)
+        self.assertEqual(self.python_side(), '0')
+        self.assertEqual(self.shell_side(), '0')
+
 
 class DaemonBuildDecision(unittest.TestCase):
     BASE = {
@@ -403,6 +518,33 @@ class DaemonBuildDecision(unittest.TestCase):
         self.assertTrue(build)
         self.assertIn('force', reason)
 
+    def test_missing_sdk_headers_never_build(self):
+        """A failed build records no hash, so this used to rebuild forever."""
+        for overrides in ({'DAEMON_BINARY': '0'},
+                          {'DAEMON_HASH_STORED': ''},
+                          {'DAEMON_SOURCE_HASH': 'bbb'}):
+            with self.subTest(**overrides):
+                build, reason = self.decide(DAEMON_SDK_HEADERS='0',
+                                            **overrides)
+                self.assertFalse(build)
+                self.assertIn('PicoTech SDK headers', reason)
+
+    def test_missing_sdk_headers_win_over_force(self):
+        """start_box.sh skips the build without them whatever was asked."""
+        build, _reason = self.decide(force=True, DAEMON_SDK_HEADERS='0')
+        self.assertFalse(build)
+
+    def test_installed_sdk_headers_change_nothing(self):
+        self.assertEqual(self.decide(DAEMON_BINARY='0', DAEMON_SDK_HEADERS='1'),
+                         self.decide(DAEMON_BINARY='0'))
+
+    def test_a_probe_without_the_header_fact_still_builds(self):
+        """Fail open: an unknown answer must not switch the feature off."""
+        build, _reason = self.decide(DAEMON_BINARY='0')
+        self.assertTrue(build)
+        build, _reason = self.decide(DAEMON_BINARY='0', DAEMON_SDK_HEADERS='')
+        self.assertTrue(build)
+
 
 class DaemonBuildTakesTheRebuildPath(unittest.TestCase):
     """A stale daemon must not be hidden by the "already up to date" exit.
@@ -430,6 +572,15 @@ class DaemonBuildTakesTheRebuildPath(unittest.TestCase):
         verdict = _rebuild_gate_verdict({'LAGER_RUNNING': '1'}, **self.IN_SYNC)
         self.assertEqual(verdict, 'skip')
 
+    def test_a_box_without_the_sdk_takes_the_up_to_date_exit(self):
+        """No daemon and no headers: nothing a rebuild could fix."""
+        facts = {'LAGER_RUNNING': '1', 'DAEMON_SOURCE_HASH': 'aaa',
+                 'DAEMON_BINARY': '0', 'DAEMON_SDK_HEADERS': '0'}
+        wanted, _reason = _daemon_needs_build(facts, force=False)
+        verdict = _rebuild_gate_verdict(
+            facts, daemon_needs_build=wanted, **self.IN_SYNC)
+        self.assertEqual(verdict, 'skip')
+
 
 class ProbeReportsDaemonFacts(unittest.TestCase):
     """The decision needs four facts, and they ride the existing probe.
@@ -445,12 +596,18 @@ class ProbeReportsDaemonFacts(unittest.TestCase):
 
     def test_no_placeholders_survive(self):
         self.assertNotIn('__DAEMON_HASH_CMD__', self.script)
+        self.assertNotIn('__DAEMON_HEADERS_CMD__', self.script)
         self.assertNotIn('__PICO_VENDOR_ID__', self.script)
 
     def test_every_fact_the_decision_reads_is_emitted(self):
         for key in ('DAEMON_SOURCE_HASH', 'DAEMON_HASH_STORED',
-                    'DAEMON_BINARY'):
+                    'DAEMON_BINARY', 'DAEMON_SDK_HEADERS'):
             self.assertIn(f'{_update._PROBE_PREFIX}{key}=', self.script)
+
+    def test_the_header_fact_reads_the_installed_sdk(self):
+        self.assertIn(_update._daemon_headers_shell_cmd(), self.script)
+        self.assertIn('/opt/picoscope/include/libps2000/ps2000.h',
+                      self.script)
 
     def test_the_script_is_valid_shell(self):
         result = subprocess.run(['bash', '-n'], input=self.script,

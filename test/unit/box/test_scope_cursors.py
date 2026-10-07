@@ -695,14 +695,19 @@ class TestThePlotDrawsOnlyTheCursorsTheBoxHas:
         """Run drawCursors and report which lines it drew."""
         script = """
         import { ScopeApp } from %s;
-        globalThis.getComputedStyle = () => ({ getPropertyValue: () => '#fff' });
-        const drawn = { lines: [], labels: [] };
+        const COLORS = { '--ch-a': '#aaa', '--ch-b': '#bbb' };
+        globalThis.getComputedStyle = () => ({ getPropertyValue: (name) => COLORS[name] || '#fff' });
+        globalThis.document = { documentElement: {} };
+        const drawn = { lines: [], labels: [], colors: [] };
         const ctx = {
           save() {}, restore() {}, beginPath() {}, stroke() {}, fill() {},
           setLineDash() {}, fillRect() {},
           measureText: (t) => ({ width: t.length * 6 }),
           moveTo(x, y) { this._from = [x, y]; },
-          lineTo(x, y) { drawn.lines.push([...this._from, x, y]); },
+          lineTo(x, y) {
+            drawn.lines.push([...this._from, x, y]);
+            drawn.colors.push(this.strokeStyle);
+          },
           fillText(text) { drawn.labels.push(text); },
         };
         const frame = {
@@ -713,10 +718,13 @@ class TestThePlotDrawsOnlyTheCursorsTheBoxHas:
         };
         const self = {
           cursors: JSON.parse(process.env.CURSORS),
-          channelState: new Map([['A', { voltsPerDiv: 1, positionDiv: 0 }]]),
+          channelState: new Map([['A', { voltsPerDiv: 1, positionDiv: 0 }],
+                                 ['B', { voltsPerDiv: 1, positionDiv: 0 }]]),
           drawCursorLine: ScopeApp.prototype.drawCursorLine,
           timeToX: ScopeApp.prototype.timeToX,
           traceAt: ScopeApp.prototype.traceAt,
+          channelColor: ScopeApp.prototype.channelColor,
+          palette: ScopeApp.prototype.palette,
         };
         ScopeApp.prototype.drawCursors.call(self, ctx, frame, 1000, 400);
         process.stdout.write(JSON.stringify(drawn));
@@ -775,6 +783,18 @@ class TestThePlotDrawsOnlyTheCursorsTheBoxHas:
         # One second out on a 1 ms window: pinned to the right edge of the
         # 1000 px plot rather than drawn a thousand screens away.
         assert max(ln[0] for ln in vertical) < 1000
+
+    def test_voltage_cursors_are_in_their_channels_colour(self):
+        """They are on that channel's scale; the colour says whose it is."""
+        drawn = self._draw({"time": [0.0, 1e-4], "volts": [1.0, -1.0],
+                            "channel": "B"})
+        colors = {
+            "vertical" if ln[0] == ln[2] else "horizontal": color
+            for ln, color in zip(drawn["lines"], drawn["colors"])
+        }
+        assert colors["horizontal"] == "#bbb"
+        # Time is the same for every channel, so those stay neutral.
+        assert colors["vertical"] not in ("#aaa", "#bbb")
 
 
 class TestReadingCursorsOnADisabledChannel:

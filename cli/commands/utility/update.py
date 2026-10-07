@@ -719,6 +719,20 @@ _DAEMON_HASH_FILE = '~/third_party/oscilloscope-daemon.hash'
 # Cargo registry and target volumes used by start_box.sh's build. Named
 # here only so `--force` can wipe them for a genuinely cold rebuild.
 _DAEMON_VOLUMES = ('lager-daemon-cargo', 'lager-daemon-target')
+# The PicoTech headers the daemon's build.rs generates its bindings from.
+# PicoTech's licence keeps them out of the repo, so on a box without the SDK
+# the build can only fail -- and, recording no hash, fail again on every
+# update. Keep this list identical to `picotech_headers_present` in
+# start_box.sh; `test_update_scope_daemon.py` runs both and compares.
+_DAEMON_SDK_INCLUDE = '/opt/picoscope/include'
+_DAEMON_SDK_HEADERS = (
+    'libps2000/ps2000.h',
+    'libps2000a/ps2000aApi.h',
+    'libps3000a/ps3000aApi.h',
+    'libps4000a/ps4000aApi.h',
+    'libps4000a/PicoConnectProbes.h',
+    'libps5000a/ps5000aApi.h',
+)
 
 
 def _daemon_hash_shell_cmd():
@@ -744,6 +758,14 @@ def _daemon_hash_shell_cmd():
     )
 
 
+def _daemon_headers_shell_cmd(include=_DAEMON_SDK_INCLUDE):
+    """Shell snippet that prints 1 when every header the daemon build needs
+    is installed, and 0 when any is missing."""
+    present = ' && '.join(
+        f'[ -f {include}/{header} ]' for header in _DAEMON_SDK_HEADERS)
+    return f'if {present}; then echo 1; else echo 0; fi'
+
+
 def _daemon_needs_build(facts, *, force):
     """Whether the box's daemon binary is stale relative to its Rust sources.
 
@@ -762,6 +784,12 @@ def _daemon_needs_build(facts, *, force):
     """
     if not facts.get('DAEMON_SOURCE_HASH'):
         return False, 'no daemon sources on the box'
+    # Ahead of `--force` because start_box.sh skips the build without the
+    # headers whatever was asked. Only an explicit '0' counts: a probe from
+    # before this fact existed says nothing, and must not stop builds.
+    if facts.get('DAEMON_SDK_HEADERS') == '0':
+        return False, (
+            f'PicoTech SDK headers are not installed in {_DAEMON_SDK_INCLUDE}')
     if force:
         return True, '--force'
     if facts.get('DAEMON_BINARY') != '1':
@@ -1072,6 +1100,7 @@ echo "LAGER_PROBE_BUILD_HASH_STORED=$(cat /etc/lager/build-hash 2>/dev/null)"
 echo "LAGER_PROBE_DAEMON_SOURCE_HASH=$(__DAEMON_HASH_CMD__)"
 echo "LAGER_PROBE_DAEMON_HASH_STORED=$(cat ~/third_party/oscilloscope-daemon.hash 2>/dev/null)"
 if [ -f ~/third_party/oscilloscope-daemon ]; then echo "LAGER_PROBE_DAEMON_BINARY=1"; else echo "LAGER_PROBE_DAEMON_BINARY=0"; fi
+echo "LAGER_PROBE_DAEMON_SDK_HEADERS=$(__DAEMON_HEADERS_CMD__)"
 if [ -d ~/box/udev_rules ]; then _up=~/box/udev_rules
 elif [ -d ~/box/box/udev_rules ]; then _up=~/box/box/udev_rules
 else _up=""
@@ -1139,6 +1168,7 @@ echo "LAGER_PROBE_ETC_VERSION=$(cat /etc/lager/version 2>/dev/null)"
         script
         .replace('__BUILD_HASH_CMD__', _build_hash_shell_cmd())
         .replace('__DAEMON_HASH_CMD__', _daemon_hash_shell_cmd())
+        .replace('__DAEMON_HEADERS_CMD__', _daemon_headers_shell_cmd())
         .replace('__BOXCFG_SUDOERS_MARKER__', BOXCFG_SUDOERS_MARKER)
         .replace('__HOST_CLI_PROBE__\n', HOST_CLI_PROBE_SNIPPET)
         .replace('__HOST_PACKAGES_PROBE__\n', host_packages_probe_snippet())

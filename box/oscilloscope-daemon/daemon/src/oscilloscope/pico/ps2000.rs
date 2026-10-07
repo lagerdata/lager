@@ -198,6 +198,24 @@ static DEVICE_SPECS: Lazy<HashMap<&'static str, DeviceSpecs>> = Lazy::new(|| {
     specs
 });
 
+/// The specifications of `model`, as the unit names itself.
+///
+/// A model missing from the table used to panic the hardware thread while
+/// it held the unit open, so the unit stayed claimed and the daemon reported
+/// nothing useful. Now it is refused by name.
+fn specs_for(model: &str) -> Result<&'static DeviceSpecs> {
+    let model = model.trim();
+    DEVICE_SPECS.get(model).ok_or_else(|| {
+        let mut known: Vec<&str> = DEVICE_SPECS.keys().copied().collect();
+        known.sort_unstable();
+        anyhow::anyhow!(
+            "the PicoScope {model:?} is not a 2000-series model this driver has \
+             specifications for; it knows {}",
+            known.join(", ")
+        )
+    })
+}
+
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 struct ScopeInfo {
@@ -259,47 +277,10 @@ impl PicoScope2000 {
         for _ in 0..Self::MAX_NUM_DEVICES {
             let handle = unsafe { api.ps2000_open_unit() };
             if handle > 0 {
-                let info = Self::get_scope_info(handle)?;
-                let settings = Self::initial_settings(handle)?;
-                // Before the timebase, which needs the unit's fastest
-                // interval to know which of the driver's candidates it can
-                // actually sample at.
-                let capabilities = Self::detect_capabilities(&info, &settings);
-                let (current_timebase, current_time_interval_ns, current_time_units) =
-                    Self::get_timebase_for_sample_rate(
-                        handle,
-                        settings.memory_depth.unwrap_or(MIN_MEMORY_DEPTH) as f64,
-                        settings.time_per_div,
-                    )?;
-
-                tracing::info!(
-                    model = %capabilities.model,
-                    serial = %capabilities.serial,
-                    channels = capabilities.analog_channels,
-                    timebase = current_timebase,
-                    interval_ns = current_time_interval_ns,
-                    "opened PicoScope"
-                );
-
-                return Ok(Self {
-                    handle,
-                    settings,
-                    is_capturing: false,
-                    capture_buffer: Vec::new(),
-                    pre_trigger_samples: MIN_MEMORY_DEPTH as u32 / 2,
-                    post_trigger_samples: MIN_MEMORY_DEPTH as u32 / 2,
-                    current_timebase,
-                    current_time_interval_ns,
-                    memory_depth: MIN_MEMORY_DEPTH as u32,
-                    is_new_channel_enabled_disabled: false,
-                    memory_depth_not_update: false,
-                    expected_capture_ms: 0,
-                    armed_at: None,
-                    capabilities,
-                    current_time_units,
-                    needs_full_arm: true,
-                    times_unavailable: std::sync::atomic::AtomicBool::new(false),
-                    is_streaming: false,
+                return Self::set_up(handle).inspect_err(|_| {
+                    // Left open, the unit stays claimed, and every later open
+                    // fails until it is unplugged and plugged back in.
+                    unsafe { api.ps2000_close_unit(handle) };
                 });
             }
         }
@@ -309,15 +290,60 @@ impl PicoScope2000 {
         ))
     }
 
+    /// Read what an opened unit is, and set it up to capture.
+    fn set_up(handle: i16) -> Result<Self> {
+        let info = Self::get_scope_info(handle)?;
+        let settings = Self::initial_settings(handle)?;
+        // Before the timebase, which needs the unit's fastest interval to
+        // know which of the driver's candidates it can actually sample at.
+        let capabilities = Self::detect_capabilities(&info, &settings)?;
+        let (current_timebase, current_time_interval_ns, current_time_units) =
+            Self::get_timebase_for_sample_rate(
+                handle,
+                settings.memory_depth.unwrap_or(MIN_MEMORY_DEPTH) as f64,
+                settings.time_per_div,
+            )?;
+
+        tracing::info!(
+            model = %capabilities.model,
+            serial = %capabilities.serial,
+            channels = capabilities.analog_channels,
+            timebase = current_timebase,
+            interval_ns = current_time_interval_ns,
+            "opened PicoScope"
+        );
+
+        Ok(Self {
+            handle,
+            settings,
+            is_capturing: false,
+            capture_buffer: Vec::new(),
+            pre_trigger_samples: MIN_MEMORY_DEPTH as u32 / 2,
+            post_trigger_samples: MIN_MEMORY_DEPTH as u32 / 2,
+            current_timebase,
+            current_time_interval_ns,
+            memory_depth: MIN_MEMORY_DEPTH as u32,
+            is_new_channel_enabled_disabled: false,
+            memory_depth_not_update: false,
+            expected_capture_ms: 0,
+            armed_at: None,
+            capabilities,
+            current_time_units,
+            needs_full_arm: true,
+            times_unavailable: std::sync::atomic::AtomicBool::new(false),
+            is_streaming: false,
+        })
+    }
+
     /// Build the capability set from the variant string.
     ///
     /// The ps2000 API predates `SetChannelWithOffset`, `SetBandwidthFilter`
     /// and `SetNoOfCaptures`, so those are false for every device on this
     /// driver regardless of model. What does vary by model is channel count,
     /// memory, and bandwidth, which come from the specs table.
-    fn detect_capabilities(info: &ScopeInfo, settings: &OscilloscopeSettings) -> ScopeCapabilities {
+    fn detect_capabilities(info: &ScopeInfo, settings: &OscilloscopeSettings) -> Result<ScopeCapabilities> {
         let model = info.variant_info.trim().to_string();
-        let channels = Self::read_channel_count(&model) as u8;
+        let channels = specs_for(&model)?.channels as u8;
 
         // MSO variants carry a digital port alongside the analog channels.
         let digital_ports = if model.to_uppercase().contains("MSO") {
@@ -341,7 +367,7 @@ impl PicoScope2000 {
             })
             .collect();
 
-        ScopeCapabilities {
+        Ok(ScopeCapabilities {
             family: DriverFamily::Ps2000,
             model,
             serial: info.batch_serial.trim().to_string(),
@@ -367,15 +393,16 @@ impl PicoScope2000 {
             // `ps2000_get_values` has no downsampling mode, so a block holds
             // one sample per interval and nothing between them.
             peak_detect: false,
-        }
+        })
     }
 
     fn initial_settings(handle: i16) -> Result<OscilloscopeSettings> {
         let scope_info = Self::get_scope_info(handle)?;
-        let channel_count = Self::read_channel_count(&scope_info.variant_info);
-        let sample_rate = Self::read_sample_rate(&scope_info.variant_info);
-        let memory_depth = Self::read_memory_depth(&scope_info.variant_info);
-        let bandwidth = Self::read_bandwidth(&scope_info.variant_info);
+        let specs = specs_for(&scope_info.variant_info)?;
+        let channel_count = specs.channels as usize;
+        let sample_rate = specs.sample_rate;
+        let memory_depth = specs.memory_depth;
+        let bandwidth = specs.bandwidth;
 
         let mut channels: Vec<ChannelSettings> = Vec::new();
         for i in 0..channel_count {
@@ -675,44 +702,24 @@ impl PicoScope2000 {
         })
     }
 
-    fn read_channel_count(base_model: &str) -> usize {
-        let device_specs = DEVICE_SPECS.get(&base_model).unwrap();
-        device_specs.channels as usize
-    }
-
-    fn read_sample_rate(base_model: &str) -> f64 {
-        let device_specs = DEVICE_SPECS.get(&base_model).unwrap();
-        device_specs.sample_rate
-    }
-
-    fn read_memory_depth(base_model: &str) -> usize {
-        let device_specs = DEVICE_SPECS.get(&base_model).unwrap();
-        device_specs.memory_depth
-    }
-
-    fn read_bandwidth(base_model: &str) -> f64 {
-        let device_specs = DEVICE_SPECS.get(&base_model).unwrap();
-        device_specs.bandwidth
-    }
-
     fn get_sample_rate_from_device(&self) -> Result<f64> {
         let scope_info = Self::get_scope_info(self.handle)?;
-        Ok(Self::read_sample_rate(&scope_info.variant_info))
+        Ok(specs_for(&scope_info.variant_info)?.sample_rate)
     }
 
     fn get_memory_depth_from_device(&self) -> Result<usize> {
         let scope_info = Self::get_scope_info(self.handle)?;
-        Ok(Self::read_memory_depth(&scope_info.variant_info))
+        Ok(specs_for(&scope_info.variant_info)?.memory_depth)
     }
 
     fn get_bandwidth_from_device(&self) -> Result<f64> {
         let scope_info = Self::get_scope_info(self.handle)?;
-        Ok(Self::read_bandwidth(&scope_info.variant_info))
+        Ok(specs_for(&scope_info.variant_info)?.bandwidth)
     }
 
     fn get_channel_count_from_device(&self) -> Result<usize> {
         let scope_info = Self::get_scope_info(self.handle)?;
-        Ok(Self::read_channel_count(&scope_info.variant_info))
+        Ok(specs_for(&scope_info.variant_info)?.channels as usize)
     }
 
     fn raw_range_to_volts(range: i16) -> f64 {
@@ -789,6 +796,41 @@ impl PicoScope2000 {
             settings.trigger.trigger_slope = trigger_slope;
             Ok(())
         })
+    }
+
+    /// What the trigger fires on: the source channel's condition, or no
+    /// conditions at all for `Neither`.
+    ///
+    /// None switches the trigger off and the unit free-runs, as `Neither`
+    /// does on the modern families. It used to become a direction of NONE on
+    /// a channel whose condition was still required, so in normal mode the
+    /// unit waited for ever for an edge it had been told not to look for.
+    fn trigger_conditions(
+        source: ChannelId,
+        slope: TriggerSlope,
+    ) -> Result<Option<PS2000_TRIGGER_CONDITIONS>> {
+        if slope == TriggerSlope::Neither {
+            return Ok(None);
+        }
+        let dont_care = enPS2000TriggerState_PS2000_CONDITION_DONT_CARE;
+        let on = |channel: char| {
+            if source == ChannelId::Alphabetic(channel) {
+                enPS2000TriggerState_PS2000_CONDITION_TRUE
+            } else {
+                dont_care
+            }
+        };
+        match source {
+            ChannelId::Alphabetic('A'..='D') => Ok(Some(PS2000_TRIGGER_CONDITIONS {
+                channelA: on('A'),
+                channelB: on('B'),
+                channelC: on('C'),
+                channelD: on('D'),
+                external: dont_care,
+                pulseWidthQualifier: dont_care,
+            })),
+            other => Err(anyhow::anyhow!("channel {other} cannot be a trigger source on this scope")),
+        }
     }
 
     fn get_trigger_direction_value(trigger_slope: TriggerSlope) -> i16 {
@@ -992,54 +1034,19 @@ impl PicoScope2000 {
             crate::oscilloscope::auto_trigger_timeout_ms(block_seconds) as i32,
         );
 
-        let mut trigger_conditions = match self.settings.trigger.trigger_source {
-            ChannelId::Alphabetic('A') => {
-                tracing::debug!("Trigger conditions set successfully for channel A");
-                PS2000_TRIGGER_CONDITIONS {
-                    channelA: enPS2000TriggerState_PS2000_CONDITION_TRUE,
-                    channelB: enPS2000TriggerState_PS2000_CONDITION_DONT_CARE,
-                    channelC: enPS2000TriggerState_PS2000_CONDITION_DONT_CARE,
-                    channelD: enPS2000TriggerState_PS2000_CONDITION_DONT_CARE,
-                    external: enPS2000TriggerState_PS2000_CONDITION_DONT_CARE,
-                    pulseWidthQualifier: enPS2000TriggerState_PS2000_CONDITION_DONT_CARE,
-                }
+        let Some(mut trigger_conditions) = Self::trigger_conditions(
+            self.settings.trigger.trigger_source,
+            self.settings.trigger.trigger_slope,
+        )?
+        else {
+            // No conditions is how this API switches the trigger off.
+            let result = unsafe {
+                api.ps2000SetAdvTriggerChannelConditions(self.handle, std::ptr::null_mut(), 0)
+            };
+            if result == 0 {
+                return Err(anyhow::anyhow!("Failed to switch the trigger off"));
             }
-            ChannelId::Alphabetic('B') => {
-                tracing::debug!("Trigger conditions set successfully for channel B");
-                PS2000_TRIGGER_CONDITIONS {
-                    channelA: enPS2000TriggerState_PS2000_CONDITION_DONT_CARE,
-                    channelB: enPS2000TriggerState_PS2000_CONDITION_TRUE,
-                    channelC: enPS2000TriggerState_PS2000_CONDITION_DONT_CARE,
-                    channelD: enPS2000TriggerState_PS2000_CONDITION_DONT_CARE,
-                    external: enPS2000TriggerState_PS2000_CONDITION_DONT_CARE,
-                    pulseWidthQualifier: enPS2000TriggerState_PS2000_CONDITION_DONT_CARE,
-                }
-            }
-            ChannelId::Alphabetic('C') => {
-                tracing::debug!("Trigger conditions set successfully for channel C");
-                PS2000_TRIGGER_CONDITIONS {
-                    channelA: enPS2000TriggerState_PS2000_CONDITION_DONT_CARE,
-                    channelB: enPS2000TriggerState_PS2000_CONDITION_DONT_CARE,
-                    channelC: enPS2000TriggerState_PS2000_CONDITION_TRUE,
-                    channelD: enPS2000TriggerState_PS2000_CONDITION_DONT_CARE,
-                    external: enPS2000TriggerState_PS2000_CONDITION_DONT_CARE,
-                    pulseWidthQualifier: enPS2000TriggerState_PS2000_CONDITION_DONT_CARE,
-                }
-            }
-            ChannelId::Alphabetic('D') => {
-                tracing::debug!("Trigger conditions set successfully for channel D");
-                PS2000_TRIGGER_CONDITIONS {
-                    channelA: enPS2000TriggerState_PS2000_CONDITION_DONT_CARE,
-                    channelB: enPS2000TriggerState_PS2000_CONDITION_DONT_CARE,
-                    channelC: enPS2000TriggerState_PS2000_CONDITION_DONT_CARE,
-                    channelD: enPS2000TriggerState_PS2000_CONDITION_TRUE,
-                    external: enPS2000TriggerState_PS2000_CONDITION_DONT_CARE,
-                    pulseWidthQualifier: enPS2000TriggerState_PS2000_CONDITION_DONT_CARE,
-                }
-            }
-            _ => {
-                return Err(anyhow::anyhow!("Failed to set trigger conditions"));
-            }
+            return Ok(());
         };
 
         let result = unsafe {
@@ -1385,7 +1392,14 @@ impl PicoScope2000 {
                 );
                 Ok(false)
             }
-            n if n < 0 => Err(anyhow::anyhow!("ps2000_ready reported error {n}")),
+            // The legacy API's only word for an unplugged unit. Reported as
+            // the status the modern families give, so the acquisition loop
+            // recognises it and reopens rather than polling a dead handle.
+            n if n < 0 => Err(super::status::PicoStatusError::new(
+                "ps2000_ready",
+                super::status::NOT_RESPONDING,
+            )
+            .into()),
             n => {
                 // The scope reports data ready while we believe nothing is
                 // running: a capture left over from a previous client that
@@ -1578,18 +1592,18 @@ impl PicoScope2000 {
         // range simply never fires.
         let previous = self.trigger_source_attenuation();
 
-        self.settings
-            .channels
-            .iter_mut()
-            .find(|c| c.channel_id == channel)
-            .ok_or(anyhow::anyhow!("Channel not found"))?
-            .attenuation = attenuation;
-
-        if channel == self.settings.trigger.trigger_source {
-            let at_probe = to_probe_volts(self.settings.trigger.trigger_level, previous);
-            self.settings.trigger.trigger_level = to_input_volts(at_probe, attenuation);
-        }
-        Ok(())
+        // Programmed, not only stored: the input range follows the probe.
+        // Stored alone, the unit went on capturing at the old range while
+        // its samples were scaled for the new one, and every reading was off
+        // by the ratio of the two until some other setting re-armed it.
+        self.change_settings(|settings| {
+            channel_settings_mut(settings, channel)?.attenuation = attenuation;
+            if channel == settings.trigger.trigger_source {
+                let at_probe = to_probe_volts(settings.trigger.trigger_level, previous);
+                settings.trigger.trigger_level = to_input_volts(at_probe, attenuation);
+            }
+            Ok(())
+        })
     }
 
     fn get_scope_attenuation(&self, channel: ChannelId) -> anyhow::Result<f64> {
@@ -2662,6 +2676,7 @@ mod tests {
             "fn set_trigger_direction(",
             "fn set_scope_trigger_level(",
             "fn set_scope_capture_mode(",
+            "fn set_scope_attenuation(",
         ] {
             let body = source
                 .split(setter)
@@ -2811,6 +2826,60 @@ mod tests {
         let lsb = i16::MAX as u32 / 128; // 8-bit part, full scale i16::MAX
         assert!(PicoScope2000::TRIGGER_HYSTERESIS_COUNTS as u32 >= lsb);
         assert!(PicoScope2000::TRIGGER_HYSTERESIS_COUNTS as u32 <= lsb * 4);
+    }
+
+    #[test]
+    fn a_model_the_table_lacks_is_refused_by_name() {
+        let message = specs_for("2999Z").map(|_| ()).unwrap_err().to_string();
+        assert!(message.contains("2999Z"), "{message}");
+        assert!(message.contains("2204A"), "say which models are known: {message}");
+        assert_eq!(specs_for(" 2204A ").expect("padded as the unit reports it").channels, 2);
+    }
+
+    #[test]
+    fn no_trigger_slope_switches_the_trigger_off() {
+        let conditions = PicoScope2000::trigger_conditions(ChannelId::Alphabetic('B'), TriggerSlope::Neither)
+            .expect("a valid source");
+        assert!(conditions.is_none(), "Neither has to free-run, not wait for an edge");
+    }
+
+    #[test]
+    fn the_trigger_waits_on_its_source_alone() {
+        let conditions = PicoScope2000::trigger_conditions(ChannelId::Alphabetic('C'), TriggerSlope::Rising)
+            .expect("a valid source")
+            .expect("an edge trigger has conditions");
+        // Copied out: the struct is packed, so its fields cannot be borrowed.
+        let (a, b, c, d, external) = (
+            conditions.channelA,
+            conditions.channelB,
+            conditions.channelC,
+            conditions.channelD,
+            conditions.external,
+        );
+        assert_eq!(c, enPS2000TriggerState_PS2000_CONDITION_TRUE);
+        for other in [a, b, d, external] {
+            assert_eq!(other, enPS2000TriggerState_PS2000_CONDITION_DONT_CARE);
+        }
+        assert!(PicoScope2000::trigger_conditions(ChannelId::Alphabetic('E'), TriggerSlope::Rising).is_err());
+    }
+
+    /// Read from the source: the open needs a unit.
+    #[test]
+    fn a_unit_that_fails_to_set_up_is_closed() {
+        let source = include_str!("ps2000.rs");
+        let body = source
+            .split("pub fn new() -> Result<Self> {")
+            .nth(1)
+            .expect("new exists")
+            .split("\n    fn ")
+            .next()
+            .expect("the function ends");
+        assert!(
+            body.contains("inspect_err") && body.contains("ps2000_close_unit(handle)"),
+            "an error after the open leaves the unit claimed until it is replugged"
+        );
+        let driver = source.split("#[cfg(test)]").next().expect("the driver precedes its tests");
+        assert!(!driver.contains(".unwrap()"), "a lookup can still panic with the unit open");
     }
 
     /// And the re-arm is where it can be reached without recursing.

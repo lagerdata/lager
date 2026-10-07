@@ -31,7 +31,8 @@ UART uses the `:9000` WebSocket stream plus `:9000` HTTP for discovery/listing.
 
 `ROLE_ACTIONS` currently registers: `gpio`, `adc`, `dac`, `thermocouple`,
 `watt-meter`, `eload`, `solar`, `spi`, `i2c`, `energy-analyzer`, `arm`,
-`webcam`, `router` (+ `mikrotik` alias). The `/status` capability block
+`scope` (+ `scope-channel`, which shares its handler), `webcam`, `router`
+(+ `mikrotik` alias). The `/status` capability block
 advertises the role list as `netCommandRoles` so clients can detect
 arm/webcam/router/solar support without version sniffing.
 
@@ -223,7 +224,7 @@ second half of `lager update`'s dual-port health poll).
 
 CLI features still on the `:5000` exec path:
 
-- `lager scope stream` ([measurement/scope.py](../../cli/commands/measurement/scope.py)) - the streaming/capture workflow only. The rest of `lager scope` (enable, scale, timebase, coupling, probe, trigger edge, capture control, measurements) now goes through `POST :9000/net/command` under the `scope` role. The oscilloscope daemon behind it binds loopback `:8085` and a Unix socket, reached from outside only through the `:9000` relay.
+- `lager scope` ([measurement/scope.py](../../cli/commands/measurement/scope.py)) - `stream start|stop|status|config|capture` (`cli/impl/measurement/scope_stream.py`), and the Rigol-only commands that run `cli/impl/measurement/scope.py`: `trigger edge` on a Rigol net, `trigger uart|i2c|spi|pulse`, the on-screen cursors (`cursor set-a|set-b|move-a|move-b|hide`), and `measure ... --display` or `--cursor`. Everything else in `lager scope` -- enable, scale, timebase, coupling, probe, offsets, capture control, `trigger edge` on a PicoScope, holdoff, acquire, roll, measurements, capture cursors, display, fft and status -- goes through `POST :9000/net/command` under the `scope` role (`_WARM_ACTIONS` in the CLI). The oscilloscope daemon behind it binds loopback `:8085` and a Unix socket, reached from outside only through the `:9000` relay.
 - `lager logic` ([measurement/logic.py](../../cli/commands/measurement/logic.py)) - logic-analyzer capture/trigger/cursor.
 - `lager box-config` apply/poll ([box/config.py](../../cli/commands/box/config.py)).
 - Debug flash helpers ([development/debug/commands.py](../../cli/commands/development/debug/commands.py)).

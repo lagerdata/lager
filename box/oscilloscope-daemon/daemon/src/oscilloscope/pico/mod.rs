@@ -16,7 +16,7 @@ pub mod ps2000;
 pub mod status;
 pub mod types;
 
-pub use detect::{detect, DetectedScope};
+pub use detect::{detect, DetectedScope, NoUnitFound};
 pub use loader::installed_families;
 pub use modern::{api_for, PicoModernApi};
 pub use modern_scope::PicoScopeModern;

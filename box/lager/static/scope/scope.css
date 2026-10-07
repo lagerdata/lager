@@ -27,6 +27,9 @@
   --ch-d: #db61a2;
   /* A math trace, which is none of the channels. */
   --ch-math: #bc8cff;
+
+  /* What the console leaves above it at its tallest. Read by scope.js. */
+  --plot-reserve: 160px;
 }
 
 * { box-sizing: border-box; }
@@ -47,16 +50,24 @@ body {
   color: var(--text);
   font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   height: 100vh;
+  /* The visible height where the browser knows it: on a phone 100vh runs
+   * under the toolbar, and that is where the console's input line sits. */
+  height: 100dvh;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   overflow: hidden;
 }
 
 /* ---------- header ---------- */
+/* Wrapped onto a second line when it does not fit on one. The page does not
+ * scroll, so on one line the end of it -- the Connect button -- was cut off
+ * below about 1200 px, and the scope could not be connected at all. */
 .bar {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   align-items: center;
-  gap: 16px;
+  gap: 8px 16px;
   padding: 10px 16px;
   background: var(--bg-panel);
   border-bottom: 1px solid var(--border);
@@ -215,6 +226,7 @@ select:focus-visible, input:focus-visible {
 .measurements dt { color: var(--text-dim); }
 .measurements dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
 .measurements p { grid-column: 1 / -1; margin: 0; }
+.measurements__channel { display: flex; align-items: center; gap: 6px; color: var(--text); }
 
 .group--notes ul { margin: 0; padding-left: 18px; color: var(--text-dim); font-size: 12px; }
 .group--notes li { margin-bottom: 3px; }
@@ -308,8 +320,27 @@ code {
 }
 
 @media (max-width: 820px) {
-  .layout { grid-template-columns: 1fr; grid-template-rows: 1fr auto; }
-  .controls { border-left: none; border-top: 1px solid var(--border); max-height: 40vh; }
+  /* The plot and the panel stacked under it, both above the console. */
+  :root { --plot-reserve: 280px; }
+  /* The two share the height. As an auto row the panel was sized first, to
+   * as much as 40% of the window, and the plot had what was left -- which
+   * on a short window, or under a tall console, was nothing. With no
+   * minimum on either, neither can push the other off the screen. */
+  .layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 3fr) minmax(0, 2fr);
+  }
+  /* The groups side by side where the width allows, in their usual order,
+   * so the shorter panel still shows more than one at a time. */
+  .controls {
+    border-left: none;
+    border-top: 1px solid var(--border);
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    column-gap: 16px;
+    align-items: start;
+    align-content: start;
+  }
 }
 
 /* Trigger status, as a bench scope shows it in a corner of its screen. */

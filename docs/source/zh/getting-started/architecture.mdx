@@ -71,6 +71,8 @@ CI 运行器就是一台临时的开发者计算机。它使用与所运行命�
 只有当仪器**不是** VISA 仪器时，脚本才会直接驱动它。直连驱动包括 LabJack、USB-202、
 FT232H、Aardvark、Joulescope 和 PPK2。电源、示波器、电池模拟器、电子负载和太阳能模拟器与其他调用方一样，都经过 `/invoke`。
 
+PicoScope 是唯一一种经过 `/invoke` 却不使用 VISA 会话的仪器。它是带有厂商 SDK 的 USB 设备。硬件服务把它的命令发给环回地址上的示波器守护进程，不为它打开任何 VISA 资源。守护进程拥有该设备，就像硬件服务拥有 VISA 会话一样。原因也相同：PicoTech SDK 每台设备只允许一个进程使用。
+
 ```mermaid
 flowchart TB
   subgraph container["Docker 容器：lager"]
@@ -120,8 +122,7 @@ flowchart TB
 | 8765 | WebSocket | 是 | 调试会话（GDB、烧录、复位） |
 | 8100 | HTTP | 是 | 用于 AI 工具集成的 MCP 服务。设置了 `LAGER_MCP_NO_PUBLISH` 时不发布 |
 | 8080 | Flask | 是 | 硬件服务：通过 Device 代理控制仪器，由端口 9000 的 API 调用 |
-| 8081 | HTTP | 是（存在 PicoScope 时） | 示波器串流 UI |
-| 8082-8085 | TCP / WebSocket | 是（存在 PicoScope 时） | 示波器守护进程（命令、浏览器串流、数据库串流、CLI WebSocket） |
+| 8085 | TCP / WebSocket | 否（仅环回） | 示波器守护进程的控制平面。从外部只能经由端口 9000 的中继访问，从不直接访问 |
 | 8086-8090 | HTTP | 是（存在摄像头时） | 摄像头 MJPEG 串流（每个摄像头一个端口，从 8086 开始） |
 | 2331-2342 | TCP | 是 | 调试探针的 GDB、SWO 和 telnet 端口，每个探针三个 |
 | 4444-4447 | TCP | 是 | OpenOCD telnet，每个探针一个 |

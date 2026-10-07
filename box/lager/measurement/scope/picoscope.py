@@ -27,6 +27,7 @@ which exposed no scope operations at all.
 from __future__ import annotations
 
 import csv
+import itertools
 import logging
 import time
 
@@ -1006,31 +1007,20 @@ class PicoScope:
             "memory_depth": self.get_memory_depth(),
         }
 
-    def subscribe(self):
-        """Receive captures pushed on this connection as they are acquired.
-
-        For a consumer that wants every capture. ``stream_capture`` does not
-        need it -- that asks for one capture at a time -- and a control-only
-        caller should not subscribe, since the pushed frames then share the
-        socket with its command replies.
-        """
-        self._command("Subscribe")
-        return {"subscribed": True}
-
-    def unsubscribe(self):
-        self._command("Unsubscribe")
-        return {"subscribed": False}
-
     def stream_frames(self, count: int = 1, timeout: float | None = None):
-        """Yield ``count`` captures as decoded ``lscp.CaptureFrame`` objects.
+        """Yield the next ``count`` captures as decoded ``lscp.CaptureFrame`` objects.
 
-        The zero-copy path: a frame's ``counts()`` is a view over the
+        Each is a capture taken after the one before, never the same one
+        twice. The zero-copy path: a frame's ``counts()`` is a view over the
         received buffer, so nothing is converted until the caller asks. Use
         this over ``stream_capture`` when the samples are going into numpy
         rather than onto disk.
         """
-        for _ in range(max(1, int(count))):
-            yield self.capture(timeout=timeout)
+        stream = self.client.captures(timeout=timeout)
+        try:
+            yield from itertools.islice(stream, max(1, int(count)))
+        finally:
+            stream.close()
 
     def stream_capture(self, output=None, duration: float = 1.0, samples=None,
                        timeout: float | None = None) -> dict:
@@ -1043,46 +1033,56 @@ class PicoScope:
         ``samples`` caps the rows per channel, so a long duration on a fast
         timebase cannot fill the disk unnoticed. It is a cap, not a target:
         the capture still stops at ``duration``.
+
+        Each capture the scope takes in that time is recorded once. The scope
+        has to be running already (``stream_start``, ``run`` or ``single``);
+        stopped, there is nothing to record, and this says so rather than
+        waiting out the duration to return nothing.
         """
         if duration is not None and duration <= 0:
             raise ValueError("duration must be positive, got %r" % (duration,))
         if samples is not None and samples <= 0:
             raise ValueError("samples must be positive, got %r" % (samples,))
 
+        state = self._command("GetState").get("state") or {}
+        if not (state.get("acquiring") or state.get("rolling")):
+            raise daemon_client.ScopeDaemonError(
+                "the scope is stopped, so there is nothing to capture; "
+                "start it first with stream_start(), run() or single()")
+
         deadline = time.monotonic() + float(duration)
         rows = []
         captures = 0
         per_channel = 0
 
-        while time.monotonic() < deadline:
-            if samples is not None and per_channel >= samples:
-                break
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            try:
-                frame = self.capture(timeout=timeout if timeout is not None
-                                     else remaining)
-            except daemon_client.ScopeDaemonError:
-                # A capture that does not arrive before the deadline ends the
-                # run with whatever was collected, rather than failing and
-                # discarding it.
-                break
+        stream = self.client.captures(
+            timeout=timeout if timeout is not None else float(duration), until=deadline)
+        try:
+            for frame in stream:
+                interval_ns = frame.sample_interval_ns
+                take = frame.samples_per_channel
+                if samples is not None:
+                    take = min(take, samples - per_channel)
 
-            interval_ns = frame.sample_interval_ns
-            take = frame.samples_per_channel
-            if samples is not None:
-                take = min(take, samples - per_channel)
+                if output is not None:
+                    for index, descriptor in enumerate(frame.channels):
+                        volts = frame.volts(index)
+                        for i in range(take):
+                            rows.append((captures, descriptor.channel, i,
+                                         i * interval_ns, float(volts[i])))
 
-            if output is not None:
-                for index, descriptor in enumerate(frame.channels):
-                    volts = frame.volts(index)
-                    for i in range(take):
-                        rows.append((captures, descriptor.channel, i,
-                                     i * interval_ns, float(volts[i])))
-
-            per_channel += take
-            captures += 1
+                per_channel += take
+                captures += 1
+                if samples is not None and per_channel >= samples:
+                    break
+        except daemon_client.ScopeDaemonTimeout:
+            # A capture that does not arrive in time ends the run with
+            # whatever was collected, rather than failing and discarding it.
+            # A lost daemon or a dead unit still raises: returned, the part
+            # recorded so far read as the whole run.
+            pass
+        finally:
+            stream.close()
 
         if output is not None:
             with open(output, "w", newline="") as handle:

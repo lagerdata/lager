@@ -12,28 +12,28 @@ Use the scope module to control oscilloscopes for analog signal capture, trigger
 ## Instrument support
 
 The same object and the same calls work for a Rigol MSO5000 and for a PicoScope
-(2000, 2000a, 3000a, 4000a or 5000a). The difference is underneath: the Rigol
-speaks SCPI over VISA, while a PicoScope is a USB device with a vendor SDK,
-driven through the oscilloscope daemon on the box.
+(2000, 2000a, 3000a, 4000a or 5000a). The difference is underneath. The Rigol
+speaks SCPI over VISA. A PicoScope is a USB device with a vendor SDK, and the
+oscilloscope daemon on the box drives it.
 
-Three consequences are worth knowing before writing a script against a PicoScope:
+Know these differences before you write a script for a PicoScope:
 
 - **Measurements are computed, not queried.** No PicoTech API has an equivalent
   of `:MEAS:VPP?`, so the box computes the value from a captured block. One
   capture yields the whole set, so `scope.measurement.all()` costs the same as
   a single `voltage_peak_to_peak()` and reading five values individually costs
   five captures.
-- **While running, they describe the capture last streamed out.** The block a
-  measurement or a cursor reading is computed from is the one most recently
-  sent to subscribers, so the numbers agree with the trace on screen. It also
-  means repeated reads change only as fast as captures arrive: two calls
-  between captures return the same value, because they are the same capture.
-  Stopped, they describe the last one, as a stopped bench scope does.
+- **While running, they describe the capture last streamed out.** The box
+  computes a measurement or a cursor reading from the block it last sent to
+  subscribers. The numbers therefore agree with the trace on screen. Repeated reads
+  change only as fast as captures arrive: two calls between captures return
+  the same value. Stopped, they describe the last capture, as a stopped bench
+  scope does.
 - **`display` and `measurement_cursor` do nothing.** They put a reading on the
   instrument's own screen, and a PicoScope has none. They are accepted and
   ignored so a script written for a Rigol still runs.
-- **Some features raise instead of returning.** Cursors, protocol triggers, the
-  logic analyzer, and the measurements listed as Rigol-only below raise
+- **Some features raise instead of returning.** On-screen cursors, protocol
+  triggers, the logic analyzer, and the measurements listed as Rigol-only below raise
   `UnsupportedScopeFeature` naming the gap, rather than returning a
   plausible-looking zero. Catch it if a script needs to run against both.
 
@@ -118,8 +118,9 @@ scope.stop_capture()
 
 #### `force_trigger()`
 
-Trigger now rather than waiting for the configured condition. Useful when a
-signal may never cross the trigger level and the script needs a capture anyway.
+Trigger now rather than waiting for the configured condition. Use it when a
+signal does not cross the trigger level and the script needs a capture anyway.
+The scope must be running: a stopped PicoScope refuses it.
 
 ```python
 scope.force_trigger()
@@ -144,17 +145,16 @@ from the captured samples, and these fourteen are the ones it computes:
 | `pulse_width_positive` | `pulse_width_negative` |
 | `duty_cycle_positive` | `duty_cycle_negative` |
 
-Everything else — the flat-top and threshold voltages, preshoot, period RMS,
-time-at-extreme, slew rates, edge and pulse counts, area, variance, and all the
-delay and phase measurements — is **Rigol only** and raises
-`UnsupportedScopeFeature` on a PicoScope. Delay and phase additionally compare
-two channels, which the box has no command for on a PicoScope.
+All other measurements are **Rigol only**, and raise `UnsupportedScopeFeature`
+on a PicoScope. These are the flat-top and threshold voltages, preshoot, period
+RMS, time-at-extreme, slew rates, edge and pulse counts, area and variance. The
+delay and phase measurements are Rigol only too, because they compare two
+channels. The box has no command for that on a PicoScope.
 
 `period`, `frequency`, the pulse widths, the duty cycles, the rise and fall
-times and overshoot need a resolvable waveform. On a PicoScope, asking for a
-period when the capture holds fewer than two full cycles raises rather than
-returning an imprecise guess, so put at least two cycles on screen before
-measuring timing.
+times and overshoot need a resolvable waveform. On a PicoScope, a period needs
+two full cycles in the capture. With fewer, the call raises rather than return
+an imprecise guess. Put at least two cycles on screen before you measure timing.
 
 #### `all()`
 
@@ -330,6 +330,12 @@ Returns a summary rather than the samples themselves — `captures`,
 `channel`, `sample_index`, `time_ns` and `voltage`, the same layout
 `lager scope stream capture` writes.
 
+Each capture the scope takes in that time is recorded once. The scope must be
+running already, from `stream_start()`, `start_capture()` or
+`start_single_capture()`. A stopped scope raises at once, rather than after
+`duration` with nothing recorded. A relative `output` path is relative to the
+script's working directory on the box.
+
 ```python
 result = scope.stream_capture(
     output="waveform.csv",
@@ -342,12 +348,16 @@ print(result['samples_per_channel'], "samples per channel")
 
 Yield captures as decoded frames instead of writing a file. This is the
 zero-copy path: a frame's `counts()` is a view over the received buffer, so
-nothing is converted until asked for. Use it when the samples are going into
-numpy rather than onto disk.
+nothing is converted until asked for. Use it when the samples go into numpy
+rather than onto disk.
+
+Each frame is a new capture, never one it yielded before. When no capture
+arrives within `timeout`, it raises `ScopeDaemonTimeout`. Start the scope first,
+and in normal mode make sure the signal crosses the trigger level.
 
 **Parameters:**
 - `count` (int): Number of captures to yield (default 1)
-- `timeout` (float): Seconds to wait for each capture (optional)
+- `timeout` (float): Seconds to wait for each capture (default 10)
 
 ```python
 for frame in scope.stream_frames(count=10):
@@ -357,11 +367,11 @@ for frame in scope.stream_frames(count=10):
 ```
 
 <Note>
-`volts()` is referred to the probe tip, so a 10x probe reports the signal at
-the tip rather than the tenth of it that reaches the BNC. This matches
-`volts_per_div`, the trigger level, and the measurement functions, all of
-which are at the tip. Set the ratio with `set_probe()` before capturing;
-PicoScopes default to 10x.
+`volts()` gives the voltage at the probe tip. With a 10x probe it reports the
+signal at the tip, not the tenth of it that reaches the BNC. `volts_per_div`,
+the trigger level and the measurement functions are also at the tip. Set the
+ratio with `set_channel_probe()` before you capture. A 2000-series unit starts
+at 10x, and the 2000a, 3000a, 4000a and 5000a families start at 1x.
 </Note>
 
 ## Complete Example
@@ -382,7 +392,6 @@ def measure_pwm_signal():
 
         # Configure trigger
         pwm_net.trigger_settings.set_mode_normal()
-        pwm_net.trigger_settings.set_coupling_DC()
         pwm_net.trigger_settings.edge.set_source(pwm_net)
         pwm_net.trigger_settings.edge.set_slope_rising()
         pwm_net.trigger_settings.edge.set_level(1.65)  # 50% of 3.3V
@@ -436,30 +445,30 @@ Time/div is one tenth of the capture, as on a ten-division screen, so
 `set_time_per_div(0.001)` asks for a 10 ms window.
 
 `get_time_per_div()` returns the scale in use, which is rarely the one asked
-for. A scope samples at a fixed ladder of intervals, each twice the last, so a
-request is rounded to whichever comes closest: 1 ms/div on a 2204A is really
-1.024 ms/div. Read it back if you need the exact window -- and prefer
-`get_sample_rate()` and the frame's own time axis over arithmetic on the value
+for. A scope samples at a fixed ladder of intervals, each twice the last. The
+box rounds a request to the closest one: 1 ms/div on a 2204A is really
+1.024 ms/div. Read it back if you need the exact window. Better still, use
+`get_sample_rate()` and the frame's own time axis, not arithmetic on the value
 you set.
 
-How fast a screen the unit can reach depends on the block depth as well as its
-maximum sample rate, since the two multiply out to the window. A 2204A at
+The fastest screen a unit can reach depends on the block depth and the maximum
+sample rate, because the two multiply out to the window. A 2204A at
 100 MS/s over 8000 samples bottoms out at 8 us/div, and asking for anything
 faster gets you that. Enabling a second channel halves the buffer, which makes
 the fastest screen faster rather than slower.
 </Note>
 
 <Note>
-`set_time_offset()` moves the capture window in time relative to the trigger,
-which is how you look at signal that falls off the left or right edge of one
-capture. Positive values look forward, at signal later than the trigger;
-negative values look back before it.
+`set_time_offset()` moves the capture window in time relative to the trigger.
+Use it to look at signal past the left or right edge of one capture. Positive
+values look forward, at signal later than the trigger; negative values look
+back before it.
 
-On a PicoScope the travel is one window each way -- the window is a block, and
-a block is all the scope holds, so the offset is clamped to the point where the
-capture is entirely before or entirely after the trigger. Setting it re-arms
-the scope, since a window somewhere else has to be captured to be seen, and it
-then applies to every capture until it is changed.
+On a PicoScope the travel is one window each way. The window is a block, and a
+block is all the scope holds. So the box clamps the offset where the capture is
+entirely before or entirely after the trigger. Setting it re-arms the scope,
+because a window somewhere else must be captured to be seen. The offset then
+applies to every capture until you change it.
 </Note>
 
 ### Advanced Trigger Settings
@@ -498,14 +507,13 @@ status = scope.trigger_settings.get_status()
 Access cursor functions through the `cursor` attribute.
 
 <Note>
-`scope.cursor.*` is **Rigol only**. These are markers drawn on the
-instrument's own display and positioned in screen coordinates, read back over
-SCPI; a PicoScope has no display, so every method here raises
-`UnsupportedScopeFeature` on one.
+`scope.cursor.*` is **Rigol only**. These are markers on the instrument's own
+display, positioned in screen coordinates and read back over SCPI. A PicoScope
+has no display, so every method here raises `UnsupportedScopeFeature` on one.
 
 Cursors over the *captured samples* are a different thing, and a PicoScope has
-them — placed with a time and a voltage rather than a pixel, which is why they
-are not bolted onto this screen-shaped API. Use
+them. You place them with a time and a voltage, not a pixel, so they have
+their own API. Use
 `lager scope <net> cursor time <t1> <t2>`, the same `cursor` verb in the web
 UI's console, or `set_cursors()` / `measure_cursors()` on the driver:
 
@@ -516,9 +524,8 @@ readings["frequency"]       # 1/dt, so a pair a cycle apart reads the frequency
 readings["trace_delta_v"]   # the trace's voltage change between them
 ```
 
-The box holds the pair, so cursors placed from a script, from the terminal CLI
-or from the web UI's console are all the same two markers, and the web UI draws
-whichever is set.
+The box holds the pair. Cursors placed from a script, the terminal CLI or the
+web UI's console are the same two markers, and the web UI draws them.
 </Note>
 
 ```python
@@ -556,9 +563,9 @@ scope.cursor.hide()
 | Rigol | MSO5000 | Multi-channel, mixed-signal, protocol decode, cursors, on-screen measurements |
 | PicoScope | 2000, 2000a, 3000a, 4000a, 5000a | Capture control, scaling, edge trigger, 14 computed measurements, continuous streaming |
 
-An attached PicoScope's channel count, voltage ranges, bandwidth, memory depth
-and ADC resolution are detected at runtime, so models within a series work
-without configuration. Read them with `scope.capabilities()`.
+The box detects an attached PicoScope's channel count, voltage ranges,
+bandwidth, memory depth and ADC resolution at runtime. Models within a series
+therefore work without configuration. Read them with `scope.capabilities()`.
 
 ## Notes
 

@@ -561,7 +561,7 @@ def run_net_py(ctx: click.Context, box: str, *args: str) -> list[dict]:
     return fetch_nets(box)
 
 
-def list_nets_by_role(ctx: click.Context, box: str, role: str) -> list[dict]:
+def list_nets_by_role(ctx: click.Context, box: str, role: str | tuple[str, ...]) -> list[dict]:
     """
     List all nets with the specified role.
 
@@ -571,7 +571,8 @@ def list_nets_by_role(ctx: click.Context, box: str, role: str) -> list[dict]:
     Args:
         ctx: Click context object
         box: Box IP address
-        role: Net role to filter by (e.g., "power-supply", "battery", "scope")
+        role: Net role to filter by (e.g., "power-supply", "battery", "scope"),
+            or a tuple of roles, any of which matches
 
     Returns:
         List of net dictionaries matching the specified role
@@ -580,8 +581,9 @@ def list_nets_by_role(ctx: click.Context, box: str, role: str) -> list[dict]:
         supply_nets = list_nets_by_role(ctx, box_ip, "power-supply")
         battery_nets = list_nets_by_role(ctx, box_ip, "battery")
     """
+    roles = (role,) if isinstance(role, str) else tuple(role)
     recs = run_net_py(ctx, box, "list")
-    return [r for r in recs if r.get("role") == role]
+    return [r for r in recs if r.get("role") in roles]
 
 
 def validate_net(ctx: click.Context, box: str, netname: str, net_role: str) -> bool:
@@ -645,7 +647,7 @@ def display_nets(
     ctx: click.Context,
     box: str,
     netname: str | None,
-    role: str,
+    role: str | tuple[str, ...],
     role_label: str,
 ) -> None:
     """
@@ -658,7 +660,8 @@ def display_nets(
         ctx: Click context object
         box: Box IP address
         netname: Optional specific net name to display, or None for all
-        role: Net role to filter by (e.g., "power-supply", "battery")
+        role: Net role to filter by (e.g., "power-supply", "battery"), or a
+            tuple of roles to list together (the scope and its channels)
         role_label: Human-readable label for the role (e.g., "power supply", "battery")
 
     Example:
