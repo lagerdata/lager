@@ -8,7 +8,9 @@
 //! LSCP frames.
 
 use anyhow::{Context, Result};
-use daemon::oscilloscope::{pico, Oscilloscope, PicoScope2000};
+#[cfg(pico_ps2000)]
+use daemon::oscilloscope::PicoScope2000;
+use daemon::oscilloscope::{pico, Oscilloscope};
 use daemon::scope_thread;
 use daemon::server::{self, ServerConfig};
 use tracing_subscriber::EnvFilter;
@@ -34,11 +36,16 @@ fn init_tracing() {
 /// that *is* plugged in -- previously any non-2204A scope produced the
 /// legacy driver's "no unit found", which sent people looking at USB cables
 /// when the real answer was that their model needs a different driver.
+///
+/// A daemon built without the ps2000 headers has no legacy driver to try.
 fn open_scope() -> Result<Box<dyn Oscilloscope>> {
+    #[cfg(pico_ps2000)]
     let legacy_error = match PicoScope2000::new() {
         Ok(scope) => return Ok(Box::new(scope)),
-        Err(e) => e,
+        Err(e) => Some(e),
     };
+    #[cfg(not(pico_ps2000))]
+    let legacy_error = None;
 
     // No 2000-series unit on the legacy API, so look for one of the modern
     // families. Detection already opened and identified the unit, so the
@@ -68,11 +75,13 @@ fn open_scope() -> Result<Box<dyn Oscilloscope>> {
 /// found and failed is reported as itself: answering "no 2000-series unit"
 /// for a 5000-series scope that is attached but refusing to open sends
 /// people to check a cable that is fine.
-fn open_failure(legacy_error: anyhow::Error, modern_error: anyhow::Error) -> anyhow::Error {
-    if modern_error.downcast_ref::<pico::NoUnitFound>().is_some() {
-        legacy_error
-    } else {
-        modern_error
+fn open_failure(
+    legacy_error: Option<anyhow::Error>,
+    modern_error: anyhow::Error,
+) -> anyhow::Error {
+    match legacy_error {
+        Some(legacy) if modern_error.downcast_ref::<pico::NoUnitFound>().is_some() => legacy,
+        _ => modern_error,
     }
 }
 
@@ -140,7 +149,7 @@ mod tests {
     #[test]
     fn with_no_modern_unit_attached_the_legacy_error_stands() {
         let reported = open_failure(
-            anyhow::anyhow!("ps2000: no unit found"),
+            Some(anyhow::anyhow!("ps2000: no unit found")),
             pico::NoUnitFound("no supported PicoScope was found".into()).into(),
         );
         assert_eq!(reported.to_string(), "ps2000: no unit found");
@@ -149,9 +158,18 @@ mod tests {
     #[test]
     fn a_modern_unit_that_was_found_and_failed_is_reported_as_itself() {
         let reported = open_failure(
-            anyhow::anyhow!("ps2000: no unit found"),
+            Some(anyhow::anyhow!("ps2000: no unit found")),
             anyhow::anyhow!("a PicoScope was found but could not be opened"),
         );
         assert!(reported.to_string().contains("could not be opened"), "{reported}");
+    }
+
+    #[test]
+    fn without_the_legacy_driver_built_the_modern_answer_stands() {
+        let reported = open_failure(
+            None,
+            pico::NoUnitFound("no supported PicoScope was found".into()).into(),
+        );
+        assert_eq!(reported.to_string(), "no supported PicoScope was found");
     }
 }

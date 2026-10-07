@@ -720,23 +720,37 @@ _DAEMON_HASH_FILE = '~/third_party/oscilloscope-daemon.hash'
 # here only so `--force` can wipe them for a genuinely cold rebuild.
 _DAEMON_VOLUMES = ('lager-daemon-cargo', 'lager-daemon-target')
 # The PicoTech headers the daemon's build.rs generates its bindings from.
-# PicoTech's licence keeps them out of the repo, so on a box without the SDK
-# the build can only fail -- and, recording no hash, fail again on every
-# update. Keep this list identical to `picotech_headers_present` in
-# start_box.sh; `test_update_scope_daemon.py` runs both and compares.
+# PicoTech's licence keeps them out of the repo. build.rs builds each
+# PicoScope family whose headers are installed and leaves the others out, so
+# any one family is enough; with none the build can only fail -- and,
+# recording no hash, fail again on every update. Keep these identical to
+# `picotech_headers_present` and `oscilloscope_source_hash` in start_box.sh;
+# `test_update_scope_daemon.py` runs both and compares.
 _DAEMON_SDK_INCLUDE = '/opt/picoscope/include'
+# One of these is enough for build.rs to build a family.
 _DAEMON_SDK_HEADERS = (
     'libps2000/ps2000.h',
     'libps2000a/ps2000aApi.h',
-    'libps3000a/ps3000aApi.h',
     'libps4000a/ps4000aApi.h',
-    'libps4000a/PicoConnectProbes.h',
     'libps5000a/ps5000aApi.h',
+)
+# ps3000a is enough too, but only beside a PicoConnectProbes.h: its headers
+# include that, and PicoTech ships it with other families.
+_DAEMON_SDK_PS3000A_HEADER = 'libps3000a/ps3000aApi.h'
+_DAEMON_SDK_PROBES_HEADERS = tuple(
+    f'{family}/PicoConnectProbes.h' for family in (
+        'libps3000a', 'libps4000a', 'libps5000a', 'libps6000a', 'libpsospa'))
+# Every directory build.rs reads headers from: each family's own, plus
+# libps6000a and libpsospa for the headers families share.
+_DAEMON_SDK_DIRS = (
+    'libps2000', 'libps2000a', 'libps3000a', 'libps4000a', 'libps5000a',
+    'libps6000a', 'libpsospa',
 )
 
 
-def _daemon_hash_shell_cmd():
-    """Shell snippet that prints a hash of the daemon's Rust sources.
+def _daemon_hash_shell_cmd(include=_DAEMON_SDK_INCLUDE):
+    """Shell snippet that prints a hash of the daemon's build inputs: its
+    Rust sources and the PicoTech headers they are built against.
 
     Same shape and the same guarantees as `_build_hash_shell_cmd` — sorted
     walk so the value is stable across boxes, paths included in each
@@ -746,28 +760,41 @@ def _daemon_hash_shell_cmd():
     `target/` is excluded because it is build output: hashing it would make
     the value change as a *result* of building, so every run would see a
     mismatch and rebuild forever. Nothing else under the tree is derived.
+
+    The headers are in it because build.rs builds whichever PicoScope
+    families have theirs installed. Without them, a box that gained a
+    family's SDK would keep a daemon built without it until the Rust next
+    changed.
     """
+    sdk_dirs = ' '.join(f'{include}/{d}' for d in _DAEMON_SDK_DIRS)
     return (
         'out=$('
-        '[ -d ' + _DAEMON_SOURCE_DIR + ' ] && '
+        '[ -d ' + _DAEMON_SOURCE_DIR + ' ] && { '
         'find ' + _DAEMON_SOURCE_DIR + ' -type f '
-        "-not -path '*/target/*' -not -path '*/.git/*' -print0 "
-        '| sort -z | xargs -0 -r sha256sum'
+        "-not -path '*/target/*' -not -path '*/.git/*' -print0; "
+        'for d in ' + sdk_dirs + '; do '
+        'if [ -d "$d" ]; then find "$d" -type f -print0; fi; '
+        'done; '
+        '} | sort -z | xargs -0 -r sha256sum'
         '); '
         '[ -n "$out" ] && echo "$out" | sha256sum | cut -d" " -f1'
     )
 
 
 def _daemon_headers_shell_cmd(include=_DAEMON_SDK_INCLUDE):
-    """Shell snippet that prints 1 when every header the daemon build needs
-    is installed, and 0 when any is missing."""
-    present = ' && '.join(
+    """Shell snippet that prints 1 when the headers of at least one family
+    the daemon can be built with are installed, and 0 when none are."""
+    alone = ' || '.join(
         f'[ -f {include}/{header} ]' for header in _DAEMON_SDK_HEADERS)
-    return f'if {present}; then echo 1; else echo 0; fi'
+    probes = ' || '.join(
+        f'[ -f {include}/{header} ]' for header in _DAEMON_SDK_PROBES_HEADERS)
+    ps3000a = f'{{ [ -f {include}/{_DAEMON_SDK_PS3000A_HEADER} ] && {{ {probes}; }}; }}'
+    return f'if {alone} || {ps3000a}; then echo 1; else echo 0; fi'
 
 
 def _daemon_needs_build(facts, *, force):
-    """Whether the box's daemon binary is stale relative to its Rust sources.
+    """Whether the box's daemon binary is stale relative to its Rust sources
+    and the PicoTech headers it was built against.
 
     Returns ``(stale: bool, reason: str)``; ``reason`` is for the operator,
     and is why-not when ``stale`` is False.
@@ -789,7 +816,8 @@ def _daemon_needs_build(facts, *, force):
     # before this fact existed says nothing, and must not stop builds.
     if facts.get('DAEMON_SDK_HEADERS') == '0':
         return False, (
-            f'PicoTech SDK headers are not installed in {_DAEMON_SDK_INCLUDE}')
+            'no PicoScope family can be built from the PicoTech SDK headers '
+            f'in {_DAEMON_SDK_INCLUDE}')
     if force:
         return True, '--force'
     if facts.get('DAEMON_BINARY') != '1':
@@ -803,7 +831,7 @@ def _daemon_needs_build(facts, *, force):
         # something actually vouches for.
         return True, 'daemon was installed by hand'
     if stored != facts['DAEMON_SOURCE_HASH']:
-        return True, 'Rust sources changed'
+        return True, 'Rust sources or PicoTech headers changed'
     return False, 'daemon up to date'
 
 
@@ -946,7 +974,8 @@ def _read_build_hash_at_ref(ssh_runner, git_ref):
 
 
 def _read_daemon_hash(ssh_runner):
-    """Return the sha256 of the box's *current* daemon Rust sources.
+    """Return the sha256 of the box's *current* daemon Rust sources and
+    PicoTech headers.
 
     The daemon counterpart to `_read_build_hash`, for the same reason: the
     probe's value describes the pre-pull tree, and a Rust change would

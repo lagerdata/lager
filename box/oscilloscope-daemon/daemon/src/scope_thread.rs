@@ -40,8 +40,7 @@ use protocol::{
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 use crate::oscilloscope::pico;
-use crate::oscilloscope::pico::ps2000::monotonic_ns;
-use crate::oscilloscope::{Oscilloscope, RollInfo, RollPlan, RollSink};
+use crate::oscilloscope::{monotonic_ns, Oscilloscope, RollInfo, RollPlan, RollSink};
 use protocol::{Measurement, MeasurementSet};
 
 /// Broadcast depth. Enough to absorb a brief consumer stall without the
