@@ -205,6 +205,9 @@ const PER_CHANNEL_ACTIONS = new Set([
   'set_probe', 'get_probe',
   'set_offset', 'get_offset',
   'measure_all',
+  // `spectrum` with no channel named: refused on the instrument, which
+  // would have to guess one.
+  'fft',
 ]);
 
 function isPerChannelAction(action) {
@@ -235,6 +238,69 @@ function channelName(id) {
   return String(id);
 }
 
+/**
+ * The channel a net's pin names, counting from 0 for A, or null for none.
+ *
+ * Read the way the box reads a pin: a number counts from 1, a letter names
+ * the channel, and CH2, CHAN2 or CHANNEL2 is the number with a prefix. Zero
+ * is what the box saves for a net with no pin.
+ */
+function pinIndex(net) {
+  const text = String((net && net.pin) ?? '').trim().toUpperCase()
+    .replace(/^CH(?:AN(?:NEL)?)?/, '');
+  if (/^\d+$/.test(text)) return Number(text) > 0 ? Number(text) - 1 : null;
+  if (/^[A-Z]$/.test(text)) return text.charCodeAt(0) - 65;
+  return null;
+}
+
+/**
+ * The net of the lowest channel anything is wired to: A's, or B's if A has none.
+ *
+ * By pin, not by place in the list, which is only the order the nets were
+ * saved in. The list decides only where no net names a pin.
+ */
+function firstChannelNet(nets) {
+  let first = null;
+  for (const net of nets) {
+    const index = pinIndex(net);
+    if (index !== null && (first === null || index < pinIndex(first))) first = net;
+  }
+  return first || nets[0] || null;
+}
+
+/**
+ * Which of CHANNEL_COLORS a channel is drawn in: A the first, B the second.
+ *
+ * By name rather than by place in a capture, since a capture carries only
+ * the channels that are on: with A off, B is a frame's first channel.
+ */
+function colorSlot(label) {
+  const name = String(label ?? '').trim().toUpperCase();
+  let index = 0;
+  if (/^[A-Z]$/.test(name)) index = name.charCodeAt(0) - 65;
+  else if (/^[1-9]\d*$/.test(name)) index = Number(name) - 1;
+  return index % CHANNEL_COLORS.length;
+}
+
+/** A channel's colour as CSS, for swatches the stylesheet resolves. */
+function channelColorVar(label) {
+  return `var(${CHANNEL_COLORS[colorSlot(label)]})`;
+}
+
+/**
+ * Whether two settings are the same one, give or take float noise.
+ *
+ * The daemon works a timebase out from its sample interval and memory depth,
+ * so 1.024 ms comes back as 0.0010240000000000002: not the string the
+ * dropdown holds, though no different a setting.
+ */
+function sameSetting(a, b) {
+  const x = Number(a);
+  const y = Number(b);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+  return Math.abs(x - y) <= 1e-6 * Math.max(Math.abs(x), Math.abs(y));
+}
+
 /** Set a control from pushed state unless someone is editing it. */
 function setIdle(id, value) {
   const control = typeof id === 'string' ? el(id) : id;
@@ -262,10 +328,18 @@ function si(value, unit, digits = 3) {
   ];
   for (const [factor, prefix] of prefixes) {
     if (abs >= factor) {
-      return `${(value / factor).toPrecision(digits)} ${prefix}${unit}`;
+      return `${figures(value / factor, digits)} ${prefix}${unit}`;
     }
   }
   return `${value.toPrecision(digits)} ${unit}`;
+}
+
+/** `value` to `digits` significant figures, never as 1.0e+2. */
+function figures(value, digits) {
+  const text = value.toPrecision(digits);
+  // More whole digits than figures -- 100 mV at two -- comes back in
+  // exponent form; the whole number says the same.
+  return text.includes('e+') ? String(Math.round(value)) : text;
 }
 
 class Console {
@@ -313,10 +387,24 @@ class ScopeApp {
     // Every scope net on the box, kept so a channel can be mapped to the net
     // that addresses it rather than to whichever net is selected.
     this.scopeNets = [];
+    // The stream's socket from the moment it is created, so one still
+    // opening counts as a connection.
     this.socket = null;
+    // True from Connect until the socket opens or the attempt is given up,
+    // which covers the ticket request, before there is any socket at all.
+    this.connecting = false;
+    // Moved on by every disconnect(), so an attempt still waiting on its
+    // ticket can tell it has been abandoned.
+    this.connectAttempt = 0;
+    this.ticket = null;
     this.capabilities = null;
     this.latest = null;
     this.dirty = false;
+    // Whether the "not streaming" overlay is down, so drawing does not touch
+    // the DOM every frame.
+    this.overlayHidden = false;
+    // A rolling screen held where it stopped: `{at, frame}`, or null.
+    this.rollHold = null;
     this.channelState = new Map();
     // Trigger level and position drawn on the plot. On by default: a level
     // you cannot see is one you cannot set with any confidence.
@@ -392,17 +480,37 @@ class ScopeApp {
     try {
       const response = await fetch('/nets/list');
       const body = await response.json();
-      const nets = (body.nets || body || []).filter(
-        (n) => n.role === 'scope' || n.role === 'scope-channel'
-          || n.role === 'analog');
+      const listed = body.nets || body || [];
+      const scopes = listed.filter(
+        (n) => n.role === 'scope' || n.role === 'scope-channel');
+      // The stream comes from the PicoScope daemon, so the box refuses a
+      // ticket for any other make; offered, a Rigol could only be refused.
+      const nets = scopes.filter((n) => /pico/i.test(n.instrument || ''));
+      // An analog net names a scope as well, but the box takes no commands
+      // for that role, so offering one gave a page whose every control was
+      // refused. Each kind left out is said once instead, naming them.
+      const analog = listed.filter((n) => n.role === 'analog').map((n) => n.name);
+      const otherMakes = scopes.filter((n) => n.role === 'scope' && !nets.includes(n))
+        .map((n) => n.name);
+      const notices = [];
+      if (analog.length) {
+        notices.push(`Not offered: ${analog.join(', ')}. The box takes no scope commands`
+          + ' for the "analog" role; add a scope net with "lager nets add".');
+      }
+      if (otherMakes.length) {
+        notices.push(`Not offered: ${otherMakes.join(', ')}. The live view streams`
+          + ' a PicoScope only; "lager scope" drives the others.');
+      }
 
       select.replaceChildren();
       if (nets.length === 0) {
         select.append(new Option('no scope nets', ''));
-        this.console.error(
-          'No scope nets on this box. Create one with "lager net add".');
+        this.console.error(notices.length
+          ? `No PicoScope nets on this box. ${notices.join(' ')}`
+          : 'No scope nets on this box. Create one with "lager nets add".');
         return;
       }
+      for (const notice of notices) this.console.note(notice);
 
       // The dropdown picks an instrument, not a channel. A scope net is the
       // scope; its scope-channel nets are the channels, and the strips below
@@ -450,12 +558,13 @@ class ScopeApp {
    * Most of a scope is not per-channel, so the instrument takes the timebase,
    * the trigger, acquisition and the cursors. The six settings that do belong
    * to a channel go to that channel's net, because the scope net has no
-   * channel and the box refuses to guess one.
+   * channel and the box refuses to guess one. Without a channel named, that
+   * is the lowest channel with a net, by pin, as netForChannel() reads it.
    */
   netForAction(action, explicit) {
     if (explicit) return explicit;
     if (!isPerChannelAction(action)) return this.net;
-    const channel = (this.channelNets || [])[0];
+    const channel = firstChannelNet(this.channelNets || []);
     return channel ? channel.name : this.net;
   }
 
@@ -473,14 +582,24 @@ class ScopeApp {
     return this.netForChannel(index);
   }
 
+  /**
+   * Fetch a stream ticket for the selected net, and the capabilities that
+   * come with it. Resolves to the ticket, or null when there is none.
+   */
   async loadCapabilities() {
-    if (!this.net) return;
+    // Cleared first: a ticket does not outlive a failed request, and the
+    // last one may be expired or for another net.
+    this.ticket = null;
+    const net = this.net;
+    if (!net) return null;
     try {
-      const response = await fetch(`/scope/${encodeURIComponent(this.net)}/stream`);
+      const response = await fetch(`/scope/${encodeURIComponent(net)}/stream`);
       const body = await response.json();
+      // The dropdown moved on while this was out; that net's request decides.
+      if (net !== this.net) return null;
       if (!response.ok) {
         this.console.error(body.error || `Ticket request failed (${response.status})`);
-        return;
+        return null;
       }
       this.ticket = body;
       this.capabilities = body.capabilities;
@@ -488,8 +607,10 @@ class ScopeApp {
         this.console.note(`Capabilities unavailable: ${body.capability_error}`);
       }
       this.applyCapabilities();
+      return body;
     } catch (e) {
-      this.console.error(`Could not reach the scope: ${e.message}`);
+      if (net === this.net) this.console.error(`Could not reach the scope: ${e.message}`);
+      return null;
     }
   }
 
@@ -663,7 +784,7 @@ class ScopeApp {
   }
 
   buildChannelStrip(label, index, caps) {
-    const color = `var(${CHANNEL_COLORS[index % CHANNEL_COLORS.length]})`;
+    const color = channelColorVar(label);
     const strip = document.createElement('div');
     strip.className = 'channel';
 
@@ -863,7 +984,7 @@ class ScopeApp {
     // switch came to operate channel A.
     if (!this.channelState.get(label).net) {
       const why = `No scope net is wired to channel ${label}. `
-        + 'Add one with "lager net add" to control it here.';
+        + 'Add one with "lager nets add" to control it here.';
       // The position field goes with them: it needs no net, but a channel
       // that can never be switched on has no trace to move.
       for (const control of [toggle, select, customInput, couplingSelect,
@@ -957,14 +1078,17 @@ class ScopeApp {
     const select = el('timebase');
     if (!select) return;
 
-    const asOption = String(seconds);
-    if (![...select.options].some((o) => o.value === asOption)) {
-      // Off the ladder, because the hardware rounded to an interval that is
-      // not a round number of seconds. Inserted in order so the list stays
-      // monotonic.
-      const next = [...select.options].find((o) => Number(o.value) > seconds);
-      select.add(new Option(`${si(seconds, 's', 3)}/div`, asOption), next || null);
+    const offered = [...select.options].find((o) => sameSetting(o.value, seconds));
+    if (offered) {
+      select.value = offered.value;
+      return;
     }
+    // Off the ladder, because the hardware rounded to an interval that is
+    // not a round number of seconds. Inserted in order so the list stays
+    // monotonic.
+    const asOption = String(seconds);
+    const next = [...select.options].find((o) => Number(o.value) > seconds);
+    select.add(new Option(`${si(seconds, 's', 3)}/div`, asOption), next || null);
     select.value = asOption;
   }
 
@@ -1073,22 +1197,21 @@ class ScopeApp {
 
   /** The net that addresses channel `index`, by the pin it is wired to.
    *
-   * Scope nets carry a 1-based pin that is the channel number, so channel A
-   * is the net on pin 1. Position in the list is only a fallback: nets come
-   * back in whatever order the box lists them, and a box needn't define one
-   * net per channel -- with only `scope2` defined, index 0 must not silently
-   * become channel B's net.
+   * Scope nets carry a pin that is the channel, so channel A is the net on
+   * pin 1, or pin "A" or "CH1" (see pinIndex). Position in the list is only
+   * a fallback: nets come back in whatever order the box lists them, and a
+   * box needn't define one net per channel -- with only `scope2` defined,
+   * index 0 must not silently become channel B's net.
    */
   netForChannel(index) {
     const nets = this.channelNets || this.scopeNets || [];
-    const pinOf = (n) => Number(n.pin);
-    const byPin = nets.find((n) => pinOf(n) === index + 1);
+    const byPin = nets.find((n) => pinIndex(n) === index);
     if (byPin) return byPin.name;
     // Position is a fallback only where no net declares a usable pin. If any
     // does, an unmatched channel genuinely has no net: with just `scope2`
     // (pin 2) defined, channel A must come back unwired rather than picking
     // up channel B's net and driving the wrong channel.
-    const anyPinned = nets.some((n) => Number.isFinite(pinOf(n)) && pinOf(n) > 0);
+    const anyPinned = nets.some((n) => pinIndex(n) !== null);
     if (!anyPinned && nets[index]) return nets[index].name;
     return null;
   }
@@ -1263,27 +1386,52 @@ class ScopeApp {
   }
 
   // ---------- transport ----------
+  /** Whether the capture stream is open, as opposed to closed or still opening. */
+  streamOpen() {
+    return Boolean(this.socket) && this.socket.readyState === 1;
+  }
+
   async connect() {
-    if (this.socket) return;
+    // An attempt under way counts as a connection: the button reads Connect
+    // until the socket opens, and a second press, or a double click, opened
+    // a second socket streaming into the same page.
+    if (this.socket || this.connecting) return;
     if (!this.net) {
       this.console.error('No scope net selected.');
       return;
     }
+    const attempt = this.connectAttempt + 1;
+    this.connectAttempt = attempt;
+    this.connecting = true;
+    this.setLink('connecting', 'link--down');
 
     // Tickets expire, so fetch a fresh one per connection rather than
     // reusing the one from page load.
-    await this.loadCapabilities();
-    if (!this.ticket) return;
+    const ticket = await this.loadCapabilities();
+    // Disconnected, or another net picked, while the ticket was on its way.
+    if (attempt !== this.connectAttempt) return;
+    if (!ticket) {
+      this.connecting = false;
+      this.setLink('disconnected', 'link--down');
+      return;
+    }
 
-    const url = new URL(this.ticket.ws_path, window.location.href);
+    const url = new URL(ticket.ws_path, window.location.href);
     url.protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
 
-    this.setLink('connecting', 'link--down');
     const socket = new WebSocket(url);
     socket.binaryType = 'arraybuffer';
+    this.socket = socket;
 
+    // Every listener first checks that its socket is still the page's: one
+    // that has been replaced can still deliver, and its late close marked
+    // the next connection closed.
     socket.addEventListener('open', () => {
-      this.socket = socket;
+      if (socket !== this.socket) {
+        socket.close();
+        return;
+      }
+      this.connecting = false;
       this.setLink('connected', 'link--up');
       el('connect').textContent = 'Disconnect';
       this.console.write('Capture stream connected.', 'note');
@@ -1304,6 +1452,7 @@ class ScopeApp {
     });
 
     socket.addEventListener('message', (event) => {
+      if (socket !== this.socket) return;
       if (typeof event.data === 'string') {
         this.onControlMessage(event.data);
       } else {
@@ -1312,14 +1461,15 @@ class ScopeApp {
     });
 
     socket.addEventListener('error', () => {
+      if (socket !== this.socket) return;
       this.setLink('error', 'link--error');
     });
 
     socket.addEventListener('close', () => {
+      if (socket !== this.socket) return;
       this.socket = null;
-      this.setLink('disconnected', 'link--down');
-      el('connect').textContent = 'Connect';
-      el('plot-empty').hidden = false;
+      this.connecting = false;
+      this.streamEnded();
     });
   }
 
@@ -1328,12 +1478,57 @@ class ScopeApp {
     // goes on taking a capture every half second against a scope nobody is
     // watching.
     this.stopMeasurementPolling();
-    if (!this.socket) return;
-    try {
-      this.socket.send(JSON.stringify({ command: 'Unsubscribe' }));
-    } catch { /* closing anyway */ }
-    this.socket.close();
+    // An attempt still waiting on its ticket sees this and opens nothing.
+    this.connectAttempt += 1;
+    const socket = this.socket;
+    const wasConnecting = this.connecting;
     this.socket = null;
+    this.connecting = false;
+    if (socket) {
+      // Unsubscribe only where it can be sent: a socket still connecting
+      // throws on send. Closing that one abandons the handshake, so it does
+      // not open afterwards and stream into a page that let it go.
+      if (socket.readyState === 1) {
+        try {
+          socket.send(JSON.stringify({ command: 'Unsubscribe' }));
+        } catch { /* closing anyway */ }
+      }
+      socket.close();
+    }
+    if (socket || wasConnecting) this.streamEnded();
+  }
+
+  /** Show the stream as gone, whichever end closed it. */
+  streamEnded() {
+    this.setLink('disconnected', 'link--down');
+    el('connect').textContent = 'Connect';
+    // A capture still waiting for its animation frame is not drawn, and its
+    // credit is not owed to a socket that has gone.
+    this.pendingBuffer = null;
+    this.owedCredits = 0;
+    this.showNotStreaming(true);
+    this.showIdleRate();
+  }
+
+  /** Read zero once captures stop, rather than the last rate measured. */
+  showIdleRate() {
+    // The rate is only recomputed as frames arrive, so with none coming the
+    // header went on claiming the scope was capturing.
+    this.rate = 0;
+    this.fps = 0;
+    this.captureCount = 0;
+    this.drawnCount = 0;
+    this.lastRateAt = performance.now();
+    const stat = el('stat-rate');
+    if (stat) stat.textContent = '0 cap/s';
+  }
+
+  /** Show or take down the overlay saying nothing is streaming. */
+  showNotStreaming(visible) {
+    if (this.overlayHidden === !visible) return;
+    const overlay = el('plot-empty');
+    if (overlay) overlay.hidden = !visible;
+    this.overlayHidden = !visible;
   }
 
   onControlMessage(text) {
@@ -1417,19 +1612,37 @@ class ScopeApp {
     this.rollDelayAt = null;
   }
 
+  /** Whether captures are still coming: the stream open and the scope running. */
+  capturesLive() {
+    return this.streamOpen() && !(this.state && this.state.acquiring === false);
+  }
+
   /** The sample range of a rolling frame to draw now, behind live. */
   rollView(frame) {
     const now = performance.now();
-    this.rollDelay = render.nextRollDelay(this.rollDelay, this.rollTarget,
-      this.rollDelayAt === null ? 0 : now - this.rollDelayAt);
-    this.rollDelayAt = now;
+    const live = this.capturesLive();
+    // A held screen waits for a newer frame: Run does not move the old one.
+    if (live && this.rollHold && this.rollHold.frame !== frame) this.rollHold = null;
+    if (!this.rollHold) {
+      this.rollDelay = render.nextRollDelay(this.rollDelay, this.rollTarget,
+        this.rollDelayAt === null ? 0 : now - this.rollDelayAt);
+      this.rollDelayAt = now;
+    }
     const pairMs = (frame.sampleIntervalNs * 2) / 1e6;
     const screen = frame.screen;
     // No further behind than the history reaches, or the left edge empties.
     const historyMs = ((frame.samplesPerChannel - screen) / 2) * pairMs;
     const delay = Math.min(this.rollDelay, historyMs);
-    return render.rollWindow(frame.samplesPerChannel, screen, pairMs,
-      frame.captureMonoNs / 1e6, now - this.clockOffset, delay);
+    const end = frame.captureMonoNs / 1e6;
+    if (!live && (!this.rollHold || this.rollHold.frame !== frame)) {
+      // Stopped, or with the stream gone, nothing will fill the right edge,
+      // and drawn against the clock the screen scrolled on into blank. It
+      // goes as far as this frame's newest samples and is held there.
+      this.rollHold = { frame, at: end + this.clockOffset + delay };
+    }
+    const at = this.rollHold ? Math.min(now, this.rollHold.at) : now;
+    return render.rollWindow(frame.samplesPerChannel, screen, pairMs, end,
+      at - this.clockOffset, delay);
   }
 
   /** Account for a frame that is about to be drawn. */
@@ -1608,6 +1821,13 @@ class ScopeApp {
       const body = await this.send('measure_all', {}, measured.net);
       const values = body.value || {};
       host.replaceChildren();
+      const heading = document.createElement('p');
+      heading.className = 'measurements__channel';
+      const swatch = document.createElement('span');
+      swatch.className = 'channel__swatch';
+      swatch.style.background = channelColorVar(measured.label);
+      heading.append(swatch, document.createTextNode(`Channel ${measured.label}`));
+      host.append(heading);
       for (const [label, key, unit] of MEASUREMENTS) {
         const dt = document.createElement('dt');
         dt.textContent = label;
@@ -1705,6 +1925,10 @@ class ScopeApp {
       try {
         this.latest = decode(buffer);
         this.dirty = true;
+        // Here, on a capture that has just arrived, rather than on drawing:
+        // the last capture is redrawn after the stream has gone, and that
+        // took the overlay saying so down again.
+        this.showNotStreaming(false);
         this.noteFrame(this.latest);
         if (this.pendingArrival !== undefined) this.noteArrival(this.latest, this.pendingArrival);
       } catch (e) {
@@ -1733,8 +1957,10 @@ class ScopeApp {
     // paces the stream to the display, and a hidden tab, which gets no
     // animation frames, stops being sent frames at all.
     if (this.returnCredits) this.returnCredits();
-    // A rolling screen moves between frames, so it is drawn every time.
-    if (this.latest && this.latest.streaming) this.dirty = true;
+    // A rolling screen moves between frames, so it is drawn every time,
+    // until it comes to rest where it stopped (see rollView).
+    const resting = this.rollHold && performance.now() >= this.rollHold.at;
+    if (this.latest && this.latest.streaming && !resting) this.dirty = true;
     requestAnimationFrame((t) => this.tick(t));
   }
 
@@ -1746,10 +1972,6 @@ class ScopeApp {
     const display = this.display || {};
 
     ctx.clearRect(0, 0, width, height);
-    if (!this.overlayHidden) {
-      el('plot-empty').hidden = true;
-      this.overlayHidden = true;
-    }
 
     // The spectrum pane takes the lower part of the plot when it is on.
     const spectrum = display.fft && display.fft.channel ? display.fft : null;
@@ -1792,7 +2014,8 @@ class ScopeApp {
 
     const overflowed = [];
     frame.channels.forEach((descriptor, index) => {
-      this.drawTrace(ctx, frame, index, view, width, height, this.channelColor(index));
+      this.drawTrace(ctx, frame, index, view, width, height,
+        this.channelColor(descriptor.channel));
       if (frame.overflowed && frame.overflowed(index)) overflowed.push(descriptor.channel);
     });
     if (display.math) this.drawMath(ctx, frame, view, width, height, display.math);
@@ -1824,19 +2047,23 @@ class ScopeApp {
     if (display.zoom && !frame.envelope) this.drawZoomOverview(ctx, frame, view, width, intervalS);
   }
 
-  /** A channel's colour, read from the stylesheet once rather than per frame. */
-  channelColor(index) {
+  /** The channel colours and then math's, read from the stylesheet once rather than per frame. */
+  palette() {
     if (!this.colors) {
       const styles = getComputedStyle(document.documentElement);
       this.colors = [...CHANNEL_COLORS, MATH_COLOR].map(
         (name) => styles.getPropertyValue(name).trim() || '#9fe870');
     }
-    return this.colors[index % CHANNEL_COLORS.length];
+    return this.colors;
+  }
+
+  /** Channel `label`'s colour: the same one its strip, trace and readouts use. */
+  channelColor(label) {
+    return this.palette()[colorSlot(label)];
   }
 
   mathColor() {
-    this.channelColor(0);
-    return this.colors[CHANNEL_COLORS.length];
+    return this.palette()[CHANNEL_COLORS.length];
   }
 
   /** Vertical mapping for a channel: volts to y, with its scale and position. */
@@ -1990,7 +2217,7 @@ class ScopeApp {
 
     const target = this.display.persistence ? this.persistLayer(width, height) : null;
     const draw = (context) => {
-      context.strokeStyle = this.channelColor(0);
+      context.strokeStyle = this.channelColor(da.channel);
       context.lineWidth = 1;
       context.beginPath();
       const step = frame.envelope ? 2 : 1;
@@ -2052,7 +2279,8 @@ class ScopeApp {
     this.fadePersistence(seconds);
     layer.ctx.globalAlpha = 0.55;
     frame.channels.forEach((descriptor, index) => {
-      this.drawTrace(layer.ctx, frame, index, view, width, height, this.channelColor(index));
+      this.drawTrace(layer.ctx, frame, index, view, width, height,
+        this.channelColor(descriptor.channel));
     });
     layer.ctx.globalAlpha = 1;
     ctx.drawImage(layer.canvas, 0, 0, width, height);
@@ -2155,7 +2383,7 @@ class ScopeApp {
     const columns = Math.max(1, Math.floor(width));
     const perColumn = (bins.length - 1) / columns;
     let peakBin = 1;
-    ctx.strokeStyle = this.channelColor(index);
+    ctx.strokeStyle = this.channelColor(d.channel);
     ctx.beginPath();
     for (let column = 0; column < columns; column += 1) {
       const from = Math.max(1, Math.floor(column * perColumn));
@@ -2182,11 +2410,14 @@ class ScopeApp {
   updateTriggerStatus(frame) {
     const acquiring = this.state ? this.state.acquiring : true;
     let status;
-    if (frame.streaming) status = 'roll';
-    else if (!acquiring) status = 'stop';
+    // Stopped before rolling: the last frame of a stopped roll is still a
+    // streaming one, and the badge read ROLL over a screen that had stopped.
+    if (!acquiring) status = 'stop';
+    else if (frame.streaming) status = 'roll';
     else status = (frame.flags & FLAG_TRIGGERED) ? 'trigd' : 'auto';
     if (status === this.status) return;
     this.status = status;
+    if (status === 'stop') this.showIdleRate();
     const badge = el('trig-status');
     if (!badge) return;
     badge.textContent = { roll: 'ROLL', stop: 'STOP', trigd: 'TRIG\u2019D', auto: 'AUTO' }[status];
@@ -2233,15 +2464,18 @@ class ScopeApp {
 
     if (volts) {
       // On the cursor channel's scale and shifted with its trace: a voltage
-      // means a different height on a channel at a different volts/div.
-      const state = this.channelState.get(channel)
-        || this.channelState.values().next().value;
+      // means a different height on a channel at a different volts/div. In
+      // its colour too, which is how you tell whose scale that is.
+      const label = this.channelState.has(channel)
+        ? channel : this.channelState.keys().next().value;
+      const state = this.channelState.get(label);
       const fullScale = ((state && state.voltsPerDiv) || 1) * 4;
       const shift = ((state && state.positionDiv) || 0) / 4;
+      const color = this.channelColor(label);
       volts.forEach((v, i) => {
         const y = height / 2 - (v / fullScale + shift) * (height / 2);
         this.drawCursorLine(ctx, false, clamp(y, 1, height - 1), width, height,
-          `v${i + 1}`);
+          `v${i + 1}`, color);
       });
       labels.push(`\u0394V ${si(volts[1] - volts[0], 'V', 4)}`);
     }
@@ -2264,9 +2498,9 @@ class ScopeApp {
   }
 
   /** One cursor: a dashed line across the plot with its name at the edge. */
-  drawCursorLine(ctx, vertical, at, width, height, name) {
+  drawCursorLine(ctx, vertical, at, width, height, name, color = '#8b98a5') {
     const position = Math.round(at) + 0.5;
-    ctx.strokeStyle = '#8b98a5';
+    ctx.strokeStyle = color;
     ctx.lineWidth = 1;
     ctx.setLineDash([3, 3]);
     ctx.beginPath();
@@ -2282,7 +2516,7 @@ class ScopeApp {
 
     // Named, because two identical dashed lines do not say which is which and
     // the readout box reports them in order.
-    ctx.fillStyle = '#8b98a5';
+    ctx.fillStyle = color;
     ctx.textBaseline = 'top';
     if (vertical) {
       ctx.fillText(name, Math.min(width - 14, position + 2), height - 14);
@@ -2366,9 +2600,7 @@ class ScopeApp {
     const offBy = exact < 1 ? '\u2191' : (exact > height - 1 ? '\u2193' : '');
 
     const styles = getComputedStyle(document.documentElement);
-    const index = Math.max(0, [...this.channelState.keys()].indexOf(source));
-    const colour = styles
-      .getPropertyValue(CHANNEL_COLORS[index % CHANNEL_COLORS.length]).trim();
+    const colour = styles.getPropertyValue(CHANNEL_COLORS[colorSlot(source)]).trim();
 
     ctx.save();
     ctx.strokeStyle = colour;
@@ -2416,7 +2648,10 @@ class ScopeApp {
   // ---------- wiring ----------
   wireControls() {
     el('connect').addEventListener('click', () => {
-      if (this.socket) this.disconnect(); else this.connect();
+      // Open, not merely started: a press while it is still connecting
+      // leaves it to finish, so a double click connects once rather than
+      // connecting and then cancelling.
+      if (this.streamOpen()) this.disconnect(); else this.connect();
     });
 
     el('net-select').addEventListener('change', async (event) => {
@@ -2599,12 +2834,19 @@ class ScopeApp {
     const section = handle && handle.closest('.console');
     if (!handle || !log || !section) return;
 
+    // What the log leaves above it at its tallest: a readable waveform, and
+    // on a narrow window the panel stacked under it as well. The stylesheet
+    // says how much, being what stacks the panel there.
+    const reserve = () => {
+      const value = parseFloat(getComputedStyle(document.documentElement)
+        .getPropertyValue('--plot-reserve'));
+      return value > 0 ? value : 160;
+    };
     const room = () => {
       const header = document.querySelector('.bar');
       const headerH = header ? header.offsetHeight : 0;
       const chrome = section.offsetHeight - log.offsetHeight;
-      // 160px keeps a readable waveform under the header.
-      return window.innerHeight - headerH - chrome - 160;
+      return window.innerHeight - headerH - chrome - reserve();
     };
     // `preferred` is the height the user asked for. The pane shows that
     // height clamped to the window, so shrinking the window and growing it
@@ -2655,8 +2897,8 @@ class ScopeApp {
     handle.addEventListener('dblclick', () => remember(CONSOLE_LOG_DEFAULT));
     handle.addEventListener('keydown', (event) => {
       const step = event.shiftKey ? 48 : 16;
-      if (event.key === 'ArrowUp') remember(preferred + step);
-      else if (event.key === 'ArrowDown') remember(preferred - step);
+      if (event.key === 'ArrowUp') remember(consoleLogStep(preferred, step, room()));
+      else if (event.key === 'ArrowDown') remember(consoleLogStep(preferred, -step, room()));
       else return;
       event.preventDefault();
     });
@@ -2752,8 +2994,20 @@ export function consoleLogHeight(start, offset, room) {
   return Math.round(Math.min(Math.max(CONSOLE_LOG_MIN, room), next));
 }
 
+/**
+ * Log height after an arrow-key step of `step` pixels, upward when positive.
+ *
+ * Stepped from the height on screen, not the one asked for: a drag past the
+ * top of the window asks for more than there is room for, and stepping down
+ * from that took a keypress per 16 px of the excess before the log moved.
+ */
+export function consoleLogStep(preferred, step, room) {
+  return consoleLogHeight(consoleLogHeight(preferred, 0, room), step, room);
+}
+
 export { ScopeApp, voltsPerDivChoices, timebaseChoices, sampleTraceAt,
-         PER_CHANNEL_ACTIONS, isPerChannelAction, channelName };
+         PER_CHANNEL_ACTIONS, isPerChannelAction, channelName,
+         pinIndex, colorSlot, sameSetting, si };
 
 if (typeof document !== 'undefined') {
   const app = new ScopeApp();

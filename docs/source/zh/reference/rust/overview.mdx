@@ -96,7 +96,7 @@ lager = { package = "lager-net", version = "0.4", features = ["async"] }
 - Rust 1.75 或更高版本。
 
 <Note>
-示波器 / 逻辑分析仪的工作流尚未在 Box HTTP API 上开放，因此 `Scope` 以有文档记录的占位实现发布，它的方法返回 `Error::NotSupportedByBox`。Box API 支持之后这里就会跟上；端点草案记录在该 crate 的 [`MISSING_ENDPOINTS.md`](https://github.com/lagerdata/lager-rs/blob/main/MISSING_ENDPOINTS.md) 中。
+`Scope` 以有文档记录的占位实现发布，它的方法返回 `Error::NotSupportedByBox`。Box 已不再是障碍，因为 `POST /net/command` 现在有 `scope` 角色。该 crate 还没有使用这个角色。Box API 也还没有逻辑分析仪的工作流。端点草案记录在该 crate 的 [`MISSING_ENDPOINTS.md`](https://github.com/lagerdata/lager-rs/blob/main/MISSING_ENDPOINTS.md) 中。
 </Note>
 
 ## 参考

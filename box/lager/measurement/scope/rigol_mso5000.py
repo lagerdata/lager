@@ -165,6 +165,9 @@ class RigolMso5000:
         resp = self.query(f":CHANnel{ch}:DISPlay?")
         return resp == "1" or resp.upper() == "ON"
 
+    # The PicoScope driver's name, which the box's scope handler calls on both.
+    is_channel_enabled = get_channel_display
+
     def set_channel_scale(self, scale, channel=None):
         """Set channel vertical scale (V/div)."""
         ch = channel or self.channel
@@ -376,6 +379,25 @@ class RigolMso5000:
     def get_trigger_mode(self):
         """Get trigger mode."""
         return self.query(":TRIGger:SWEep?")
+
+    # The sweep under the PicoScope driver's names, which the box's scope
+    # handler uses for both instruments.
+    _CAPTURE_MODES = {"auto": "AUTO", "normal": "NORMal", "norm": "NORMal",
+                      "single": "SINGle"}
+
+    def set_capture_mode(self, mode):
+        """Set the sweep: auto, normal or single."""
+        key = _scpi_arg(mode).strip().lower()
+        if key not in self._CAPTURE_MODES:
+            raise ValueError("Unknown capture mode %r; expected auto, normal or single"
+                             % (mode,))
+        self.set_trigger_mode(self._CAPTURE_MODES[key])
+        return {"capture_mode": "normal" if key == "norm" else key}
+
+    def get_capture_mode(self):
+        """The sweep as auto, normal or single."""
+        sweep = str(self.get_trigger_mode()).strip().lower()
+        return {"norm": "normal", "sing": "single"}.get(sweep, sweep)
 
     def set_trigger_coupling(self, coupling):
         """Set trigger coupling (DC, AC, LFReject, HFReject)."""

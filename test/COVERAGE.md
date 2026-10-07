@@ -46,13 +46,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 3029 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 3832 |
+| `unit (cli)` | `test/unit/cli/` | 3100 (+2 xfailed) |
+| `unit (box)` | `test/unit/box/` | 4066 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 405 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 150 (+1 skipped) |
-| | **Total gated** | **7610** |
+| | **Total gated** | **7915** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -468,9 +468,9 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 288 files)
+### Local Unit Tests (`test/unit/` -- 291 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 154 files)
+#### Box Unit Tests (`test/unit/box/` -- 157 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -591,6 +591,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_spi_word_conversion.py` | SPI word/byte packing shared by every backend: the LSB-first bit reversal, the multi-byte split, the oversize refusal and the short trailing word. Every expected value was captured from the T7 driver before the helpers moved to `SPIBase`, so the suite fails if the move changed any observable output -- the helpers were lifted so a second LabJack family could reuse them rather than carry a copy of the reversal that disagrees only on a scope |
 | `test_ssh_runner.py` | SSH key selection and auth fallback logic |
 | `test_ssh_setup.py` | `lager ssh-setup` command and SSH key provisioning with TTY passthrough |
+| `test_start_services_shutdown.py` | How the container's service supervisor stops, run from the functions in the shipped `start-services.sh` against a fake service: a TERM reaches the service, the script exits only after the service has finished shutting down, a stopped service is not restarted, and a crashed one still is. Also that every service starts through `start_service` and the script ends in `wait`, since bash runs a trap only after the foreground command returns |
 | `test_state_unknown_is_not_off.py` | A state report says "unknown", never "off", for a read that failed: the strict on/off reply parser; each supply's (DP800, DP700, EA, Keithley 2281S) and the Keithley battery's and DL3021's reporting read against every reply shape, with `output_is_enabled` kept a plain bool; battery readings `None` not 0; YKUSH's pykush error value not read as enabled; `/nets/state` `?` on/off slot, `enabled` present only when known, unread watt/energy readings as `?`; LabJack T7 integer pin 0; two nets on one hub port |
 | `test_stream_disconnect.py` | `peer_is_connected` and the idle tick that let the box notice a vanished client in under a second instead of waiting for the script's next write |
 | `test_stream_teardown.py` | `lager python` child reaped when the client disconnects mid-run, instead of orphaning at 100% CPU holding a device flock |
@@ -623,9 +624,11 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_scope_bench_actions.py` | The box handler's status, trigger readback, acquisition, holdoff, roll, display and spectrum actions: refused on a Rigol net before anything reaches the instrument, a missing value named, and each answered with the sentence the CLI prints |
 | `test_scope_command_grammar.py` | The web UI's command grammar (`static/scope/commands.js`, run under node) against the real box handler, so a renamed action cannot leave the page sending commands the box rejects |
 | `test_scope_cursors.py` | Typed scope cursors: interpolated voltage under each cursor, delta-t and 1/delta-t, a cursor outside the record or on a disabled channel reported as absent, one pair per instrument shared by every net, and the browser's interpolation agreeing with the box's |
+| `test_scope_daemon_client.py` | The box's client for the oscilloscope daemon: pushed captures and state never taken for a reply, an error reply that leaves the connection usable, a lost connection reported as unavailable and a silent one as a timeout, and captures subscribed on a connection of their own with one credit returned per capture, each yielded once and in order |
 | `test_scope_net_migration.py` | Converting saved scope nets to the `scope` and `scope-channel` roles: every old record becomes a channel with its name and pin, exactly one scope net appears per physical unit, and a second read changes nothing |
 | `test_scope_render.py` | The web scope's drawing arithmetic (`static/scope/render.js`, run under node): the credit window sized from the round trip, the continuous scroll of a rolling screen, per-column extremes that keep envelope pairs whole, zoom windows, math expressions, persistence that fades by elapsed time in steps an 8-bit alpha channel keeps, and an FFT that reads a 1 V RMS tone at 0 dBV in every window |
 | `test_scope_role_gating.py` | Which actions a `scope` net and a `scope-channel` net accept: an instrument setting is carried out from a channel net, and a channel setting sent to the scope net is refused, naming the channel nets that would take it |
+| `test_scope_stream_routes.py` | The scope stream ticket and its relay: a ticket for a PicoScope net or any of its channels, a scope of another make refused with the reason, a net that is not a scope not found, a WebSocket path that works as a URL whatever the net is called, and TCP keepalive on an idle browser connection |
 | `test_scope_trigger_coupling.py` | Trigger coupling kept apart from channel coupling: `trigger coupling` never changes the input path, and a PicoScope, which has no trigger filter, refuses it rather than applying one to the input |
 | `test_scope_trigger_mode.py` | Who may change a PicoScope's trigger mode: `run()` keeps auto and normal, single-shot arms, and each trigger control sends only its own setting |
 | `test_scope_ui_channel_nets.py` | The scope web UI sends each channel's controls to that channel's net, hides the empty-plot overlay for real, and never shows a channel state it did not apply |

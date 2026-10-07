@@ -14,12 +14,64 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 ### Added
 
+- **PicoScope support covers the 2000, 2000A, 3000A, 4000A and 5000A series.** The box reads
+  the attached model's channels, voltage ranges, timebases and resolution from it, and
+  `lager scope` sets volts/div, timebase, coupling and probe and takes measurements on a
+  PicoScope, where most of these answered "not supported". An 8-channel 4824 works as a
+  four-channel scope, on channels A to D.
+- **`lager install` installs PicoScope 7, with every PicoTech USB driver**, unless given
+  `--skip-picoscope`. A box builds its oscilloscope daemon when it starts on new daemon
+  sources, so `lager install` and `lager update` deploy it, and a box without the PicoTech SDK
+  headers skips the build.
+- **A live oscilloscope page at `http://<box>:9000/scope`**, which `lager scope <net> stream
+  web` and `stream start` link to, with a sign-in token on a box behind an access gateway. It
+  streams a PicoScope's trace at the display's frame rate, follows settings changed from the
+  terminal, and has a console that takes the `lager scope` commands, with `help`,
+  `help <command>` and `<command> --help`.
+- **Display modes on the live page:** persistence, XY, zoom with an overview bar, a math trace,
+  an FFT pane, vertical and horizontal position, and a trigger-level marker. A badge shows
+  whether the scope triggered, auto-triggered, rolled or stopped, and the console resizes by
+  drag or with the arrow keys.
+- **Roll mode on a PicoScope 2202, 2203, 2204(A) or 2205(A).** At 50 ms/div and slower in
+  auto, the screen scrolls as the signal arrives. `lager scope <net> roll auto|on|off` sets it.
+- **More PicoScope settings in `lager scope`:** `trigger holdoff`, `acquire` for averaging,
+  `display` for the live page's modes, and `fft` for the strongest components of a channel's
+  spectrum. `status` prints every setting, and `trigger` with no subcommand prints the trigger.
+- **Capture cursors on a PicoScope.** `lager scope <net> cursor time T1 T2` and `cursor volts
+  V1 V2` mark the capture and report the differences, `cursor` alone reads them back, and the
+  live page draws them.
+- **The oscilloscope daemon recovers when a scope is unplugged or its driver fails.** It closes
+  the scope and opens it again, answers commands meanwhile with the reason, and fails a command
+  that the scope leaves unanswered after 30 seconds.
 - **An oscilloscope is now a `scope` net, and each of its inputs a `scope-channel` net.**
   Channel settings (enable, volts/div, offset, coupling, probe, measurements) go to a
   channel net, and everything else (timebase, trigger, run and stop, cursors) to the scope
   net. A scope setting sent to a channel net still works, and a channel setting sent to the
   scope net is refused with the channel nets to use instead; saved scope nets convert
   themselves to `scope-channel` nets, next to a new `scope` net, the first time a box reads them.
+- **The box caps its service logs.** Each log rotates to `<log>.1` past 32 MiB, checked when the
+  service starts and every five minutes. `LAGER_LOG_MAX_BYTES` sets the cap.
+
+### Changed
+
+- **A PicoScope refuses GND coupling.** It has no ground relay, and the 2000 series applied GND
+  as AC, so the input stayed live while every reading said GND. Use DC or AC, or turn the
+  channel off.
+- **Time/div on a PicoScope is a tenth of the capture window, as drawn.** The capture spanned
+  eight divisions. The box reports the timebase that the scope runs at: a 2204A asked for
+  1 ms/div reports 1.024 ms/div.
+- **`lager scope` exits 1 when a PicoScope refuses a command.** A refused trigger and the
+  front-panel cursor commands (`cursor set-a` and the rest), which a PicoScope has no screen
+  for, exited 0.
+- **`lager scope <net> stream start` enables the net's own channel by default**, where it
+  always enabled A. `stream config` with no setting to change is refused.
+
+### Removed
+
+- **The PicoScope daemon's network ports, its WebTransport stream, and the old page at
+  `http://<box>:8080/web_oscilloscope.html`.** The daemon listens inside the box only, on
+  loopback port 8085 and a Unix socket, and the browser, the CLI and scripts reach it through
+  port 9000. Captures travel as binary frames of raw samples, not JSON.
 
 ### Fixed
 
@@ -54,6 +106,27 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   the trigger source.
 - **A Rigol saved without a VISA address no longer takes a LabJack's device lock.** Its lock
   key fell through to `labjack:ANY`, so its scope commands queued behind unrelated GPIO traffic.
+- **`Net.get` returns a working driver for a PicoScope net.** Every call raised `Hardware
+  module not found`. A PicoScope net now has the methods a Rigol net has, plus `capture()`,
+  `stream_frames()` and `stream_capture()`, which take each capture once, and a method that a
+  PicoScope lacks raises `UnsupportedScopeFeature`.
+- **A PicoScope's trigger level holds through a probe.** With a 10x probe, a 1.0 V level read
+  back as 0.1 V, and changing the probe turned a 1 V trigger into a 10 V one.
+- **`lager scope <net> trigger edge` changes only the settings it is given.** `--mode`
+  defaulted to normal and `--coupling` to dc, so setting a level put a single-shot trigger
+  back in normal and an AC-coupled one back to DC.
+- **On a PicoScope, `trigger edge --source` takes a channel net, as on a Rigol**, or a channel
+  letter or number.
+- **`lager scope <net> stream capture` prints the `scp` command for where the file is.** It
+  always named `/tmp/<output>`, which was wrong for any other path.
+- **`docker stop`, and with it `lager update`, stops the box's services cleanly.** The stop
+  signal reached none of them, so each was killed outright, and a PicoScope killed mid-capture
+  took minutes to open again.
+- **Two processes saving nets at once no longer leave the nets file half-written**, which read
+  as no saved nets. They shared one temporary file.
+- **The MCP API reference lists the scope methods that exist.** The `Analog` entry offered
+  `enable()`, `disable()`, `measure()` and `trigger()`, which a scope net lacks, and the
+  oscilloscope test pattern named a `Scope` net type that `NetType` does not have.
 - **`lager uninstall` and `lager install` now stop every SSH key-sync poller a
   previous run left on the box.** A poller the PID file no longer named kept
   rebuilding `~/.ssh/authorized_keys` until reboot, and could revoke registered keys

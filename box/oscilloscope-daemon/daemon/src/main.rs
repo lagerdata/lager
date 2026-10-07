@@ -57,9 +57,22 @@ fn open_scope() -> Result<Box<dyn Oscilloscope>> {
                 pico::PicoScopeModern::adopt(found.api, found.handle, found.capabilities)?;
             Ok(Box::new(scope))
         }
-        // Nothing at all is attached: the legacy driver's message is the
-        // useful one, since it names the library and search path.
-        Err(_) => Err(legacy_error),
+        Err(modern_error) => Err(open_failure(legacy_error, modern_error)),
+    }
+}
+
+/// The error to report when neither driver opened a scope.
+///
+/// With no modern unit attached the legacy driver's message is the useful
+/// one, since it names the library and search path. A modern unit that was
+/// found and failed is reported as itself: answering "no 2000-series unit"
+/// for a 5000-series scope that is attached but refusing to open sends
+/// people to check a cable that is fine.
+fn open_failure(legacy_error: anyhow::Error, modern_error: anyhow::Error) -> anyhow::Error {
+    if modern_error.downcast_ref::<pico::NoUnitFound>().is_some() {
+        legacy_error
+    } else {
+        modern_error
     }
 }
 
@@ -84,5 +97,61 @@ async fn main() -> Result<()> {
     // hardware thread keeps trying to open in the background.
     let scope = scope_thread::spawn(open_scope).context("starting the oscilloscope thread")?;
 
-    server::serve(config, scope).await
+    tokio::select! {
+        result = server::serve(config, scope.clone()) => result,
+        signal = stop_requested() => {
+            tracing::info!(signal = signal?, "stopping: closing the oscilloscope");
+            // A daemon that exits with the unit armed leaves it mid-transfer,
+            // and the next open can block inside the driver until the unit is
+            // replugged. Stopping it and closing it first is what avoids that.
+            let closed = tokio::task::spawn_blocking(move || scope.shutdown(SHUTDOWN_WAIT))
+                .await
+                .unwrap_or(false);
+            if !closed {
+                tracing::warn!(
+                    wait = ?SHUTDOWN_WAIT,
+                    "the oscilloscope thread did not finish in time; exiting without it"
+                );
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Longest the scope gets to stop and close once the daemon is told to go,
+/// inside the ten seconds `docker stop` allows between TERM and KILL.
+const SHUTDOWN_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Wait for SIGTERM or SIGINT, and say which came.
+async fn stop_requested() -> Result<&'static str> {
+    use tokio::signal::unix::{signal, SignalKind};
+    let mut terminate = signal(SignalKind::terminate()).context("listening for SIGTERM")?;
+    let mut interrupt = signal(SignalKind::interrupt()).context("listening for SIGINT")?;
+    Ok(tokio::select! {
+        _ = terminate.recv() => "SIGTERM",
+        _ = interrupt.recv() => "SIGINT",
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn with_no_modern_unit_attached_the_legacy_error_stands() {
+        let reported = open_failure(
+            anyhow::anyhow!("ps2000: no unit found"),
+            pico::NoUnitFound("no supported PicoScope was found".into()).into(),
+        );
+        assert_eq!(reported.to_string(), "ps2000: no unit found");
+    }
+
+    #[test]
+    fn a_modern_unit_that_was_found_and_failed_is_reported_as_itself() {
+        let reported = open_failure(
+            anyhow::anyhow!("ps2000: no unit found"),
+            anyhow::anyhow!("a PicoScope was found but could not be opened"),
+        );
+        assert!(reported.to_string().contains("could not be opened"), "{reported}");
+    }
 }

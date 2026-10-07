@@ -81,11 +81,10 @@ A script drives an instrument directly only when it is **not** a VISA instrument
 drivers are LabJack, USB-202, FT232H, Aardvark, Joulescope and PPK2. Supplies, scopes, battery
 simulators, e-loads and solar simulators go over `/invoke` like any other caller.
 
-A PicoScope is the one instrument that goes over `/invoke` without holding a VISA session: it is
-a USB device with a vendor SDK, so the hardware service reaches it by sending commands to the
-oscilloscope daemon on loopback rather than by opening a VISA resource. The daemon owns the
-device the way the hardware service owns a VISA session, and for the same reason — the PicoTech
-SDK admits one process per unit.
+A PicoScope is the one instrument that goes over `/invoke` without a VISA session. It is a USB
+device with a vendor SDK. The hardware service sends its commands to the oscilloscope daemon on
+loopback, and opens no VISA resource for it. The daemon owns the device as the hardware service
+owns a VISA session. The reason is the same: the PicoTech SDK admits one process per unit.
 
 ```mermaid
 flowchart TB

@@ -37,9 +37,13 @@ MISSING_ENDPOINTS.md
 
 ## 原因
 
-这个 crate 是 Box 在 9000 端口上那套 API 的纯 HTTP/JSON 客户端。其他每种 Net 类型在那里都有对应的路由，示波器和逻辑分析仪的工作却没有。`lager scope` 和 `lager logic` 仍然走 5000 端口上的旧 exec 路径，以及 8082-8085 端口上专用的示波器流式守护进程。这两者都不是本 crate 能够对话的 HTTP/JSON API。
+这个 crate 是 Box 在 9000 端口上那套 API 的纯 HTTP/JSON 客户端。它驱动的每种 Net 类型，都需要在那里有一条路由。
 
-要填上这个缺口，需要在 Box 的 `/net/command` 的 `ROLE_ACTIONS` 中加入 `analog` 和 `logic` 角色。这些角色必须覆盖触发配置、一次返回 JSON 波形的单次采集，以及标量测量。流式采集可以继续留在那个专用守护进程上。待办清单在 [MISSING_ENDPOINTS.md](https://github.com/lagerdata/lager-rs/blob/main/MISSING_ENDPOINTS.md) 中。
+对示波器来说，Box 现在已经有了这条路由。`POST :9000/net/command` 为 PicoScope 和 Rigol 提供 `scope` 角色。它覆盖通道启用、垂直和水平刻度、探头衰减、耦合、边沿触发配置、采集控制和测量。剩下的工作在 crate 这一侧。`Scope` 句柄还没有使用这些操作，因此上面的方法仍然返回 `Error::NotSupportedByBox`。
+
+两侧都还不支持逻辑分析仪的工作：`/net/command` 没有 `logic` 角色。
+
+流式采集保持现状。它是经由 WebSocket 中继传输的二进制帧流，而不是请求/响应式的 JSON，因此不适合放在这些方法后面。待办清单在 [MISSING_ENDPOINTS.md](https://github.com/lagerdata/lager-rs/blob/main/MISSING_ENDPOINTS.md) 中。
 
 ## 替代做法
 

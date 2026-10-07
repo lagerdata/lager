@@ -424,6 +424,11 @@ def _pico_channel_count(model: str) -> int:
     if not match:
         return 2
     channels = int(match.group(2))
+    # An 8-channel 4824 offers its first four. Every channel name above the
+    # daemon -- the CLI's --source, the web console, a math trace -- stops at
+    # D, so a net on E could be saved and then never addressed.
+    if channels == 8:
+        return 4
     return channels if channels in (2, 4) else 2
 
 

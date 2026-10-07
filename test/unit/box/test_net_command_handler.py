@@ -1116,6 +1116,60 @@ class TestNetCommandHandler(unittest.TestCase):
         r = self._post({"netname": "adc1"})
         self.assertEqual(r.status_code, 400)
 
+    # ----- malformed requests -----
+    # Each of these raised inside the route and came back as a 500.
+
+    def test_a_body_that_is_not_json_is_400(self):
+        r = self.client.post('/net/command', data='{"netname": ',
+                             content_type='application/json')
+        self.assertEqual(r.status_code, 400)
+
+    def test_a_body_that_is_not_an_object_is_400(self):
+        r = self._post(["adc1", "read"])
+        self.assertEqual(r.status_code, 400)
+
+    def test_params_that_are_not_an_object_are_400(self):
+        r, dev = self._run({"netname": "adc1", "action": "read",
+                            "params": "channel=1"})
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(dev.method_calls, [])
+
+    def test_a_role_that_is_not_a_string_is_400(self):
+        r, _ = self._run({"netname": "adc1", "action": "read",
+                          "role": ["adc"]})
+        self.assertEqual(r.status_code, 400)
+
+    def test_a_number_that_is_not_one_is_400(self):
+        r, dev = self._run({"netname": "scope1", "action": "set_scale",
+                            "params": {"volts_per_div": [1]}})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('volts_per_div', r.get_json()['error'])
+
+    def test_a_reading_that_is_not_a_number_is_sent_as_null(self):
+        """Python writes NaN, which is not JSON; a browser rejects the reply.
+
+        A cursor over a gap in the capture has no voltage under it, and that
+        reached the web UI as a reply its JSON parser threw away.
+        """
+        import json
+        dev = MagicMock()
+        dev.measure_cursors.return_value = {
+            "cursors": {"time": [0.0, 1e-3]},
+            "readings": {"t1": 0.0, "t2": 1e-3, "delta_t": 1e-3,
+                         "frequency": 1e3, "trace_v1": float('nan'),
+                         "trace_v2": float('inf')}}
+        r, _ = self._run({"netname": "pico1", "action": "measure_cursor"}, dev)
+        self.assertEqual(r.status_code, 200)
+
+        def refuse(constant):
+            raise ValueError("not JSON: %s" % constant)
+
+        body = json.loads(r.get_data(as_text=True), parse_constant=refuse)
+        readings = body['value']['readings']
+        self.assertIsNone(readings['trace_v1'])
+        self.assertIsNone(readings['trace_v2'])
+        self.assertEqual(readings['frequency'], 1e3)
+
 
 if __name__ == '__main__':
     unittest.main()

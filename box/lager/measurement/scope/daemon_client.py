@@ -30,6 +30,12 @@ BINARY_REPLY_COMMANDS = frozenset({"GetTriggeredData"})
 
 DEFAULT_TIMEOUT = 10.0
 
+# Captures a stream may be sent ahead of reading them: enough to cover the
+# round trip of returning credit, so a reader that keeps up never waits on
+# it, and few enough that one that falls behind holds a handful rather than
+# a backlog that grows for as long as it lags.
+STREAM_CREDITS = 4
+
 
 class ScopeDaemonError(RuntimeError):
     """The daemon replied with an Error response, or could not be reached."""
@@ -41,6 +47,10 @@ class ScopeDaemonUnavailable(ScopeDaemonError):
     Distinguished from a command error because the caller's remedy differs: a
     box with no daemon needs the service started, not a different command.
     """
+
+
+class ScopeDaemonTimeout(ScopeDaemonError):
+    """Nothing arrived in the time allowed: a reply, or a capture."""
 
 
 def daemon_url() -> str:
@@ -137,30 +147,26 @@ class ScopeDaemonClient:
             ws = self.connect()
             try:
                 ws.send(json.dumps(payload))
-                reply = self._await_text(ws, name, wait)
-            except (ScopeDaemonError, ScopeDaemonUnavailable):
+                response = _unwrap(self._await_text(ws, name, wait), name)
+                if name in BINARY_REPLY_COMMANDS:
+                    return response, self._await_capture(ws, name, wait, response.get("seq"))
+                return response
+            except ScopeDaemonError:
                 raise
             except Exception as e:
                 self.close()
                 raise ScopeDaemonUnavailable(
                     "oscilloscope daemon connection lost during %s: %s" % (name, e)) from e
 
-            response = _unwrap(reply, name)
-
-            if name in BINARY_REPLY_COMMANDS:
-                frame = self._await_capture(ws, name, wait, response.get("seq"))
-                return response, frame
-
-            return response
-
     def _await_text(self, ws, name: str, wait: float) -> str:
-        """Read frames until a text one arrives, skipping capture frames.
+        """Read frames until the reply arrives, skipping what was pushed.
 
         A connection that has issued ``Subscribe`` receives LSCP binary
-        captures interleaved with command replies. Treating the first frame as
-        the reply would read a capture as the response and leave every
-        subsequent command reading the previous one's answer -- an off-by-one
-        that returns plausible-looking wrong numbers rather than an error.
+        captures interleaved with command replies, and with ``state`` a State
+        after every change. Treating the first frame as the reply would read
+        one of those as the response and leave every subsequent command
+        reading the previous one's answer -- an off-by-one that returns
+        plausible-looking wrong numbers rather than an error.
 
         Bounded so a client that is subscribed to a fast stream cannot spin
         here forever if its reply never comes.
@@ -171,19 +177,20 @@ class ScopeDaemonClient:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 self.close()
-                raise ScopeDaemonError(
+                raise ScopeDaemonTimeout(
                     "timed out waiting for %s response%s" % (
                         name,
-                        " (skipped %d capture frames)" % skipped if skipped else ""))
+                        " (skipped %d pushed frames)" % skipped if skipped else ""))
 
             frame = ws.receive(timeout=remaining)
             if frame is None:
                 continue
-            if isinstance(frame, (bytes, bytearray)):
+            if isinstance(frame, (bytes, bytearray)) or (
+                    name != "GetState" and _is_state(frame)):
                 skipped += 1
                 continue
             if skipped:
-                logger.debug("skipped %d capture frames awaiting %s reply", skipped, name)
+                logger.debug("skipped %d pushed frames awaiting %s reply", skipped, name)
             return frame
 
     def _await_capture(self, ws, name: str, wait: float, expected_seq) -> bytes:
@@ -200,7 +207,7 @@ class ScopeDaemonClient:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 self.close()
-                raise ScopeDaemonError("timed out waiting for %s capture" % name)
+                raise ScopeDaemonTimeout("timed out waiting for %s capture" % name)
 
             frame = ws.receive(timeout=remaining)
             if frame is None:
@@ -229,6 +236,62 @@ class ScopeDaemonClient:
 
         _response, frame = self.command("GetTriggeredData", timeout=timeout)
         return lscp.decode(frame)
+
+    def captures(self, timeout: float | None = None, until: float | None = None):
+        """Yield each capture the scope takes from now on, once, decoded.
+
+        Asking for the latest capture in a loop returns the same one again
+        until the next arrives, so a stream built that way repeated captures.
+        This subscribes instead: on a connection of its own, so captures never
+        queue up on the one commands use, and with credit, so the daemon sends
+        a capture only when this side has room for it, and the newest one.
+
+        ``timeout`` bounds the wait for each capture, raising
+        ScopeDaemonTimeout when one does not come; ``until``, a
+        ``time.monotonic()`` deadline, ends the stream quietly instead.
+        """
+        from . import lscp
+
+        wait = self._timeout if timeout is None else timeout
+        stream = ScopeDaemonClient(self._url, timeout=self._timeout)
+        try:
+            ws = stream.connect()
+            try:
+                ws.send(json.dumps({"command": "Subscribe", "credits": STREAM_CREDITS}))
+                _unwrap(stream._await_text(ws, "Subscribe", wait), "Subscribe")
+                while True:
+                    limit = wait if until is None else min(wait, until - time.monotonic())
+                    if limit <= 0:
+                        return
+                    try:
+                        frame = stream._await_capture(ws, "a streamed", limit, None)
+                    except ScopeDaemonTimeout:
+                        if limit < wait:
+                            return
+                        raise ScopeDaemonTimeout(
+                            "no capture arrived in %g s; start the scope (run or single), "
+                            "and in normal mode check the trigger level" % wait) from None
+                    yield lscp.decode(frame)
+                    ws.send(json.dumps({"command": "Credit", "count": 1}))
+            except ScopeDaemonError:
+                raise
+            except Exception as e:
+                raise ScopeDaemonUnavailable(
+                    "oscilloscope daemon connection lost during a stream: %s" % e) from e
+        finally:
+            stream.close()
+
+
+def _is_state(text) -> bool:
+    """Whether a text frame is a State, which only GetState is answered with."""
+    if '"State"' not in text:
+        return False
+    try:
+        message = json.loads(text)
+    except ValueError:
+        return False
+    response = message.get("Response", message) if isinstance(message, dict) else None
+    return isinstance(response, dict) and response.get("response") == "State"
 
 
 def _unwrap(reply, command_name: str) -> dict:

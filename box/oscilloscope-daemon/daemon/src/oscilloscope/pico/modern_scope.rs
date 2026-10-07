@@ -29,6 +29,7 @@
 //! so this asks it instead -- via binary search, since the interval rises
 //! monotonically with the timebase index.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -74,10 +75,19 @@ pub struct PicoScopeModern {
     /// One buffer per enabled channel, in the same order as `enabled()`.
     ///
     /// These are owned here rather than allocated per capture because the
-    /// driver keeps the pointers it was handed in `set_data_buffer` until
-    /// the matching `get_values`. A per-capture `Vec` would be freed while
-    /// the driver still held a pointer to it.
+    /// driver keeps the pointers it was handed in `set_data_buffer` and
+    /// writes through them in `get_values`. A per-capture `Vec` would be
+    /// freed while the driver still held a pointer to it.
     buffers: Vec<Vec<i16>>,
+    /// Whether `buffers` are the ones the driver was last handed.
+    ///
+    /// Reconfiguring resizes them, which frees the old ones while the driver
+    /// still holds pointers into them. Until the next arm registers the new
+    /// ones, a read would have it write through those pointers.
+    buffers_registered: bool,
+    /// A block is armed and has not been read out yet. Atomic because the
+    /// read-out takes `&self` and the trait requires `Sync`.
+    block_pending: AtomicBool,
 
     timebase: u32,
     interval_seconds: f64,
@@ -150,6 +160,8 @@ impl PicoScopeModern {
             capabilities,
             settings,
             buffers: Vec::new(),
+            buffers_registered: false,
+            block_pending: AtomicBool::new(false),
             timebase: 0,
             interval_seconds: 0.0,
             samples_per_capture: DEFAULT_CAPTURE_SAMPLES,
@@ -223,21 +235,19 @@ impl PicoScopeModern {
             .ok_or_else(|| anyhow!("channel {id} is not on this scope"))
     }
 
-    fn settings_for_mut(&mut self, id: ChannelId) -> Result<&mut ChannelSettings> {
-        self.settings
-            .channels
-            .iter_mut()
-            .find(|c| c.channel_id == id)
-            .ok_or_else(|| anyhow!("channel {id} is not on this scope"))
-    }
-
-    /// The range a channel's volts/div and probe attenuation imply.
+    /// The range a channel's volts/div and probe attenuation imply, among
+    /// the ranges this family has.
     ///
     /// Attenuation divides the signal before it reaches the input, so a 10x
     /// probe showing 1 V/div only needs a 0.1 V/div range at the connector.
-    fn range_for(channel: &ChannelSettings) -> Range {
+    /// A range the family lacks is refused by `set_channel`, so asking a
+    /// 5000a for 50 V failed every setting until the volts/div came down.
+    fn range_for(&self, channel: &ChannelSettings) -> Range {
         let at_input = channel.volts_per_div / channel.attenuation.max(f64::MIN_POSITIVE);
-        Range::smallest_containing(at_input * VERTICAL_DIVISIONS / 2.0)
+        Range::smallest_containing_for(
+            self.capabilities.family,
+            at_input * VERTICAL_DIVISIONS / 2.0,
+        )
     }
 
     /// Push channel and trigger settings to the device, then pick a timebase.
@@ -246,6 +256,11 @@ impl PicoScopeModern {
     /// channels are enabled and at what resolution, so channels are applied
     /// first and the timebase searched afterwards.
     fn apply_configuration(&mut self) -> Result<()> {
+        // Whatever happens below, the device no longer matches a capture
+        // taken before, and the buffers may be about to move.
+        self.dirty = true;
+        self.buffers_registered = false;
+
         for channel in &self.settings.channels {
             let index = match channel.channel_id {
                 ChannelId::Alphabetic(c) => (c.to_ascii_uppercase() as u8).wrapping_sub(b'A'),
@@ -258,14 +273,18 @@ impl PicoScopeModern {
                 self.handle,
                 index,
                 channel.enabled,
-                Coupling::from(channel.coupling),
-                Self::range_for(channel),
+                Coupling::try_from(channel.coupling)?,
+                self.range_for(channel),
                 // The driver takes the offset at the input, so it is scaled
                 // the same way the range is.
                 (channel.volts_offset / channel.attenuation.max(f64::MIN_POSITIVE)) as f32,
             )?;
         }
 
+        // From the full block every time: a capture shortened to fit one
+        // timebase's memory would otherwise stay short at every timebase
+        // after it.
+        self.samples_per_capture = DEFAULT_CAPTURE_SAMPLES;
         self.select_timebase()?;
         self.apply_trigger()?;
 
@@ -283,7 +302,12 @@ impl PicoScopeModern {
         let source = self.channel_index(trigger.trigger_source)?;
         let source_settings = self.settings_for(trigger.trigger_source)?;
 
-        let threshold = self.volts_to_counts(trigger.trigger_level, source_settings);
+        // The offset is added before the comparator sees the signal, as it
+        // is before the ADC, so the threshold has to carry it too.
+        let threshold = self.volts_to_counts(
+            trigger.trigger_level + source_settings.volts_offset,
+            source_settings,
+        );
 
         // Auto mode captures anyway after a timeout; normal waits forever.
         // Single is armed the same as normal -- what makes it single is that
@@ -312,7 +336,7 @@ impl PicoScopeModern {
     /// saturates for us, and the test below pins that, since a wrapping
     /// cast would arm the trigger at the opposite end of the range.
     fn volts_to_counts(&self, volts: f64, channel: &ChannelSettings) -> i16 {
-        let full_scale = Self::range_for(channel).full_scale_volts()
+        let full_scale = self.range_for(channel).full_scale_volts()
             * channel.attenuation.max(f64::MIN_POSITIVE);
         if full_scale <= 0.0 {
             return 0;
@@ -406,6 +430,11 @@ impl PicoScopeModern {
 
     /// Arm one block capture.
     fn arm(&mut self) -> Result<()> {
+        // None of these APIs documents a RunBlock on top of a block still
+        // running, so one that has not been read out is stopped first.
+        if self.block_pending.load(Ordering::Relaxed) {
+            self.halt()?;
+        }
         self.ensure_applied()?;
 
         // Re-register buffers on every capture. The driver forgets them on
@@ -423,29 +452,104 @@ impl PicoScopeModern {
                 .set_data_buffer(self.handle, index, buffer)
                 .with_context(|| format!("registering the capture buffer for channel {index}"))?;
         }
+        self.buffers_registered = true;
 
         let post = self.samples_per_capture - self.pre_trigger_samples;
         self.expected_capture =
             self.api
                 .run_block(self.handle, self.pre_trigger_samples, post, self.timebase)?;
         self.is_capturing = true;
+        self.block_pending.store(true, Ordering::Relaxed);
         Ok(())
     }
+
+    /// Stop the unit, abandoning any block in flight.
+    fn halt(&mut self) -> Result<()> {
+        self.is_capturing = false;
+        self.block_pending.store(false, Ordering::Relaxed);
+        self.api.stop(self.handle)
+    }
+
+    /// Change the settings and the hardware with them, all or nothing.
+    ///
+    /// A running capture is stopped first. Reconfiguring resizes the
+    /// buffers the driver was handed for it, and a block left running would
+    /// complete under the old settings -- or, in normal mode with a level
+    /// the signal never reaches, not at all, so a new level would never take
+    /// effect. The unit is re-armed afterwards, as the ps2000 driver does.
+    ///
+    /// A change the device refuses puts the previous settings back on it, so
+    /// the settings never describe hardware that is not running them.
+    fn change_settings(
+        &mut self,
+        reprogram: Reprogram,
+        change: impl FnOnce(&mut OscilloscopeSettings) -> Result<()>,
+    ) -> Result<()> {
+        let was_capturing = self.is_capturing;
+        if was_capturing {
+            self.halt()?;
+        }
+        let previous = self.settings.clone();
+        let mut result = change(&mut self.settings).and_then(|()| match reprogram {
+            Reprogram::Everything => self.apply_configuration(),
+            Reprogram::Trigger => self.apply_trigger(),
+        });
+        if result.is_err() {
+            self.settings = previous;
+            if let Err(e) = self.apply_configuration() {
+                tracing::warn!(error = %e, "could not restore the settings in force before a refused one");
+            }
+        }
+        if was_capturing {
+            if let Err(e) = self.arm() {
+                if result.is_ok() {
+                    result = Err(e);
+                } else {
+                    tracing::warn!(error = %e, "could not re-arm after a refused setting");
+                }
+            }
+        }
+        result
+    }
+}
+
+/// What a settings change has to reprogram.
+#[derive(Clone, Copy)]
+enum Reprogram {
+    /// Channels, timebase and trigger, and the buffers sized to them.
+    Everything,
+    /// Only the trigger: nothing it touches moves the buffers or the
+    /// timebase, and a level dragged across the screen sends a stream of
+    /// these.
+    Trigger,
+}
+
+fn channel_settings_mut(
+    settings: &mut OscilloscopeSettings,
+    id: ChannelId,
+) -> Result<&mut ChannelSettings> {
+    settings
+        .channels
+        .iter_mut()
+        .find(|c| c.channel_id == id)
+        .ok_or_else(|| anyhow!("channel {id} is not on this scope"))
 }
 
 impl Oscilloscope for PicoScopeModern {
     fn enable_channel(&mut self, channel: ChannelId) -> Result<()> {
         self.channel_index(channel)?;
-        self.settings_for_mut(channel)?.enabled = true;
-        self.dirty = true;
-        self.apply_configuration()
+        self.change_settings(Reprogram::Everything, |settings| {
+            channel_settings_mut(settings, channel)?.enabled = true;
+            Ok(())
+        })
     }
 
     fn disable_channel(&mut self, channel: ChannelId) -> Result<()> {
         self.channel_index(channel)?;
-        self.settings_for_mut(channel)?.enabled = false;
-        self.dirty = true;
-        self.apply_configuration()
+        self.change_settings(Reprogram::Everything, |settings| {
+            channel_settings_mut(settings, channel)?.enabled = false;
+            Ok(())
+        })
     }
 
     fn is_channel_enabled(&self, channel: ChannelId) -> Result<bool> {
@@ -456,9 +560,10 @@ impl Oscilloscope for PicoScopeModern {
         if volts_per_div <= 0.0 {
             bail!("volts per division must be positive, got {volts_per_div}");
         }
-        self.settings_for_mut(channel)?.volts_per_div = volts_per_div;
-        self.dirty = true;
-        self.apply_configuration()
+        self.change_settings(Reprogram::Everything, |settings| {
+            channel_settings_mut(settings, channel)?.volts_per_div = volts_per_div;
+            Ok(())
+        })
     }
 
     fn get_volts_per_div(&self, channel: ChannelId) -> Result<f64> {
@@ -466,9 +571,10 @@ impl Oscilloscope for PicoScopeModern {
     }
 
     fn set_volts_offset(&mut self, channel: ChannelId, volts_offset: f64) -> Result<()> {
-        self.settings_for_mut(channel)?.volts_offset = volts_offset;
-        self.dirty = true;
-        self.apply_configuration()
+        self.change_settings(Reprogram::Everything, |settings| {
+            channel_settings_mut(settings, channel)?.volts_offset = volts_offset;
+            Ok(())
+        })
     }
 
     fn get_volts_offset(&self, channel: ChannelId) -> Result<f64> {
@@ -476,9 +582,13 @@ impl Oscilloscope for PicoScopeModern {
     }
 
     fn set_coupling(&mut self, channel: ChannelId, coupling: WireCoupling) -> Result<()> {
-        self.settings_for_mut(channel)?.coupling = coupling;
-        self.dirty = true;
-        self.apply_configuration()
+        // Before anything stops: a coupling the hardware lacks is the
+        // caller's mistake, not a reason to interrupt the capture.
+        Coupling::try_from(coupling)?;
+        self.change_settings(Reprogram::Everything, |settings| {
+            channel_settings_mut(settings, channel)?.coupling = coupling;
+            Ok(())
+        })
     }
 
     fn get_coupling(&self, channel: ChannelId) -> Result<WireCoupling> {
@@ -489,9 +599,10 @@ impl Oscilloscope for PicoScopeModern {
         if attenuation <= 0.0 {
             bail!("probe attenuation must be positive, got {attenuation}");
         }
-        self.settings_for_mut(channel)?.attenuation = attenuation;
-        self.dirty = true;
-        self.apply_configuration()
+        self.change_settings(Reprogram::Everything, |settings| {
+            channel_settings_mut(settings, channel)?.attenuation = attenuation;
+            Ok(())
+        })
     }
 
     fn get_attenuation(&self, channel: ChannelId) -> Result<f64> {
@@ -499,8 +610,10 @@ impl Oscilloscope for PicoScopeModern {
     }
 
     fn set_trigger_level(&mut self, trigger_level: f64) -> Result<()> {
-        self.settings.trigger.trigger_level = trigger_level;
-        self.apply_trigger()
+        self.change_settings(Reprogram::Trigger, |settings| {
+            settings.trigger.trigger_level = trigger_level;
+            Ok(())
+        })
     }
 
     fn get_trigger_level(&self) -> Result<f64> {
@@ -511,8 +624,12 @@ impl Oscilloscope for PicoScopeModern {
         if time_per_div <= 0.0 {
             bail!("time per division must be positive, got {time_per_div}");
         }
-        self.settings.time_per_div = time_per_div;
-        self.select_timebase()
+        // Everything, not just the timebase: the buffers are sized by the
+        // search, and the auto-trigger timeout by the block it finds.
+        self.change_settings(Reprogram::Everything, |settings| {
+            settings.time_per_div = time_per_div;
+            Ok(())
+        })
     }
 
     fn get_time_per_div(&self) -> Result<f64> {
@@ -530,8 +647,10 @@ impl Oscilloscope for PicoScopeModern {
 
     fn set_trigger_source(&mut self, trigger_source: ChannelId) -> Result<()> {
         self.channel_index(trigger_source)?;
-        self.settings.trigger.trigger_source = trigger_source;
-        self.apply_trigger()
+        self.change_settings(Reprogram::Trigger, |settings| {
+            settings.trigger.trigger_source = trigger_source;
+            Ok(())
+        })
     }
 
     fn get_trigger_source(&self) -> Result<ChannelId> {
@@ -539,8 +658,10 @@ impl Oscilloscope for PicoScopeModern {
     }
 
     fn set_trigger_slope(&mut self, trigger_slope: TriggerSlope) -> Result<()> {
-        self.settings.trigger.trigger_slope = trigger_slope;
-        self.apply_trigger()
+        self.change_settings(Reprogram::Trigger, |settings| {
+            settings.trigger.trigger_slope = trigger_slope;
+            Ok(())
+        })
     }
 
     fn get_trigger_slope(&self) -> Result<TriggerSlope> {
@@ -548,8 +669,10 @@ impl Oscilloscope for PicoScopeModern {
     }
 
     fn set_capture_mode(&mut self, capture_mode: CaptureMode) -> Result<()> {
-        self.settings.trigger.capture_mode = capture_mode;
-        self.apply_trigger()
+        self.change_settings(Reprogram::Trigger, |settings| {
+            settings.trigger.capture_mode = capture_mode;
+            Ok(())
+        })
     }
 
     fn get_capture_mode(&self) -> Result<CaptureMode> {
@@ -662,8 +785,7 @@ impl Oscilloscope for PicoScopeModern {
     }
 
     fn stop_triggered_capture(&mut self) -> Result<()> {
-        self.is_capturing = false;
-        self.api.stop(self.handle)
+        self.halt()
     }
 
     fn is_ready(&self) -> Result<bool> {
@@ -678,6 +800,9 @@ impl Oscilloscope for PicoScopeModern {
         if enabled.is_empty() {
             bail!("no channel is enabled, so there is nothing to capture");
         }
+        if !self.buffers_registered {
+            bail!("the settings changed after the last capture, so there is none to read at them yet");
+        }
 
         let result = self.api.get_values(
             self.handle,
@@ -685,11 +810,13 @@ impl Oscilloscope for PicoScopeModern {
             self.samples_per_capture,
             RatioMode::None,
         )?;
+        self.block_pending.store(false, Ordering::Relaxed);
 
         // Trust the driver's count over the request: returning fewer is
         // legal, and a frame whose declared length disagrees with its
         // payload cannot be decoded.
-        let returned = result.samples.min(self.samples_per_capture) as usize;
+        let held = self.buffers.iter().map(Vec::len).min().unwrap_or(0);
+        let returned = (result.samples.min(self.samples_per_capture) as usize).min(held);
 
         let mut channels = Vec::with_capacity(enabled.len());
         let mut samples = Vec::with_capacity(returned * enabled.len());
@@ -697,7 +824,7 @@ impl Oscilloscope for PicoScopeModern {
 
         for (slot, &channel_index) in enabled.iter().enumerate() {
             let channel = &self.settings.channels[channel_index];
-            let range = Self::range_for(channel);
+            let range = self.range_for(channel);
 
             // Counts stay raw on the wire. This factor is how a client turns
             // one back into volts, with the probe attenuation folded in so
@@ -711,7 +838,10 @@ impl Oscilloscope for PicoScopeModern {
                 range_code: range.code() as u8,
                 coupling: channel.coupling,
                 scale_v_per_count,
-                offset_v: channel.volts_offset as f32,
+                // The hardware added the offset before digitising, so the
+                // counts carry it and decoding takes it back out. Adding it
+                // reported every reading two offsets from the signal.
+                offset_v: -channel.volts_offset as f32,
             });
 
             // Channel-major, which is what lets the decoder hand out a
@@ -755,6 +885,9 @@ impl Oscilloscope for PicoScopeModern {
         // None of these families has a ForceTrigger entry point. The
         // equivalent is to re-arm in auto mode, which captures after the
         // timeout whether or not the condition is met.
+        if self.block_pending.load(Ordering::Relaxed) {
+            self.halt()?;
+        }
         let previous = self.settings.trigger.capture_mode;
         self.settings.trigger.capture_mode = CaptureMode::Auto;
         let result = self.apply_trigger().and_then(|()| self.arm());
@@ -852,14 +985,22 @@ mod tests {
         calls: Arc<Mutex<Vec<String>>>,
         /// Sample data handed back, per hardware channel.
         channel_data: Mutex<Vec<Vec<i16>>>,
-        /// Registered buffers, so get_values can fill them as the real
-        /// driver does.
-        registered: Mutex<Vec<(u8, *mut i16, usize)>>,
+        /// The buffer each hardware channel was last handed, so get_values
+        /// can fill them as the real driver does. A later `set_data_buffer`
+        /// for a channel replaces the one before, as it does there.
+        registered: Arc<Mutex<Vec<(u8, *mut i16, usize)>>>,
+        /// Which channels `set_channel` last turned on. The real driver
+        /// writes only those.
+        enabled: Mutex<[bool; 8]>,
         max_adc: i16,
         overflow: Mutex<i16>,
         /// Timebases below this fail, as they do when several channels are
         /// enabled on real hardware.
         min_valid_timebase: u32,
+        /// From this timebase up, memory for only this many samples.
+        short_memory: Option<(u32, u32)>,
+        /// A range `set_channel` refuses.
+        refused_range: Option<Range>,
         /// Makes `maximum_value` fail, to exercise the open error path.
         fail_maximum_value: bool,
         /// Counted so the tests can prove the handle was released.
@@ -877,13 +1018,21 @@ mod tests {
             Self {
                 calls: Arc::new(Mutex::new(Vec::new())),
                 channel_data: Mutex::new(vec![Vec::new(); 8]),
-                registered: Mutex::new(Vec::new()),
+                registered: Arc::new(Mutex::new(Vec::new())),
+                enabled: Mutex::new([false; 8]),
                 max_adc: 32767,
                 overflow: Mutex::new(0),
                 min_valid_timebase: 0,
+                short_memory: None,
+                refused_range: None,
                 fail_maximum_value: false,
                 closes: Arc::new(AtomicUsize::new(0)),
             }
+        }
+
+        /// The buffers the driver will write into on the next `get_values`.
+        fn registered_handle(&self) -> Arc<Mutex<Vec<(u8, *mut i16, usize)>>> {
+            Arc::clone(&self.registered)
         }
 
         /// 1 ns at timebase 0, doubling every index. Monotonic, which is all
@@ -961,6 +1110,10 @@ mod tests {
                 "set_channel ch={channel} on={enabled} coupling={coupling:?} \
                  range={range:?} offset={offset}"
             ));
+            if self.refused_range == Some(range) {
+                bail!("PICO_INVALID_VOLTAGE_RANGE");
+            }
+            self.enabled.lock().unwrap()[channel as usize] = enabled;
             Ok(())
         }
 
@@ -968,9 +1121,13 @@ mod tests {
             if timebase < self.min_valid_timebase {
                 bail!("PICO_INVALID_TIMEBASE");
             }
+            let max_samples = match self.short_memory {
+                Some((from, limit)) if timebase >= from => limit,
+                _ => samples.max(1000),
+            };
             Ok(TimebaseInfo {
                 interval_seconds: Self::interval_for(timebase),
-                max_samples: samples.max(1000),
+                max_samples,
             })
         }
 
@@ -985,10 +1142,9 @@ mod tests {
 
         fn set_data_buffer(&self, _h: i16, channel: u8, buffer: &mut [i16]) -> Result<()> {
             self.log(format!("set_data_buffer ch={channel} len={}", buffer.len()));
-            self.registered
-                .lock()
-                .unwrap()
-                .push((channel, buffer.as_mut_ptr(), buffer.len()));
+            let mut registered = self.registered.lock().unwrap();
+            registered.retain(|&(c, _, _)| c != channel);
+            registered.push((channel, buffer.as_mut_ptr(), buffer.len()));
             Ok(())
         }
 
@@ -1001,7 +1157,9 @@ mod tests {
         ) -> Result<CaptureResult> {
             // Fill the registered buffers the way the real driver does.
             let data = self.channel_data.lock().unwrap();
-            for &(channel, ptr, len) in self.registered.lock().unwrap().iter() {
+            let enabled = *self.enabled.lock().unwrap();
+            let registered = self.registered.lock().unwrap();
+            for &(channel, ptr, len) in registered.iter().filter(|r| enabled[r.0 as usize]) {
                 let source = &data[channel as usize];
                 let count = len.min(samples as usize);
                 for i in 0..count {
@@ -1089,7 +1247,22 @@ mod tests {
         // 1 V/div over 8 divisions is +/- 4 V, so the 5 V range.
         s.set_volts_per_div(ch, 1.0).unwrap();
         let channel = s.settings_for(ch).unwrap();
-        assert_eq!(PicoScopeModern::range_for(channel), Range::R5V);
+        assert_eq!(s.range_for(channel), Range::R5V);
+    }
+
+    #[test]
+    fn a_range_the_family_lacks_is_never_asked_for() {
+        // +/- 40 V would be the 50 V range, which a 5000a does not have, and
+        // asking for it failed the setting. Its largest is 20 V.
+        let mock = MockScope::new();
+        let log = mock.log_handle();
+        let mut s = PicoScopeModern::adopt(Box::new(mock), 1, capabilities(4)).unwrap();
+        let ch = ChannelId::Alphabetic('A');
+
+        s.set_volts_per_div(ch, 10.0).unwrap();
+
+        assert_eq!(s.range_for(s.settings_for(ch).unwrap()), Range::R20V);
+        assert!(!matching(&log, "set_channel").iter().any(|c| c.contains("R50V")));
     }
 
     #[test]
@@ -1102,7 +1275,7 @@ mod tests {
         s.set_volts_per_div(ch, 1.0).unwrap();
 
         let channel = s.settings_for(ch).unwrap();
-        assert_eq!(PicoScopeModern::range_for(channel), Range::R500mV);
+        assert_eq!(s.range_for(channel), Range::R500mV);
     }
 
     // ---------- timebase ----------
@@ -1453,6 +1626,154 @@ mod tests {
         s.start_triggered_capture(50.0).unwrap();
 
         assert_eq!(count(&log, "set_data_buffer"), 3);
+    }
+
+    // ---------- reconfiguring ----------
+
+    /// The calls logged after `mark`, the length of the log at some point.
+    fn since(log: &Arc<Mutex<Vec<String>>>, mark: usize) -> Vec<String> {
+        log.lock().unwrap()[mark..].to_vec()
+    }
+
+    #[test]
+    fn a_change_mid_capture_stops_the_block_reprograms_and_rearms() {
+        let mock = MockScope::new();
+        let log = mock.log_handle();
+        let mut s = PicoScopeModern::adopt(Box::new(mock), 1, capabilities(4)).unwrap();
+        s.start_triggered_capture(50.0).unwrap();
+        let mark = log.lock().unwrap().len();
+
+        s.set_volts_per_div(ChannelId::Alphabetic('A'), 2.0).unwrap();
+
+        let calls = since(&log, mark);
+        assert_eq!(calls.first().map(String::as_str), Some("stop"), "{calls:?}");
+        let channel = calls.iter().position(|c| c.starts_with("set_channel")).unwrap();
+        let buffer = calls.iter().rposition(|c| c.starts_with("set_data_buffer")).unwrap();
+        assert!(channel < buffer, "re-armed with buffers registered before the change: {calls:?}");
+        assert!(calls.last().unwrap().starts_with("run_block"), "{calls:?}");
+    }
+
+    #[test]
+    fn the_driver_never_holds_buffers_that_were_freed() {
+        // Each change resizes the buffers. The driver wrote a capture
+        // through the pointers it had been given for the old ones.
+        let mock = MockScope::new();
+        let registered = mock.registered_handle();
+        let mut s = PicoScopeModern::adopt(Box::new(mock), 1, capabilities(4)).unwrap();
+        s.start_triggered_capture(50.0).unwrap();
+
+        s.enable_channel(ChannelId::Alphabetic('B')).unwrap();
+        s.set_time_per_div(1e-6).unwrap();
+
+        let held: Vec<*mut i16> = s.buffers.iter_mut().map(|b| b.as_mut_ptr()).collect();
+        for &(channel, ptr, _) in registered.lock().unwrap().iter() {
+            assert!(held.contains(&ptr), "channel {channel} points at a freed buffer");
+        }
+        let frame = s.get_triggered_data().unwrap();
+        assert_eq!(frame.channels.len(), 2);
+    }
+
+    #[test]
+    fn a_read_after_reconfiguring_a_stopped_scope_is_refused() {
+        // Nothing has registered the new buffers, so the driver would write
+        // the capture through pointers into the old ones.
+        let mut s = scope();
+        s.start_triggered_capture(50.0).unwrap();
+        s.get_triggered_data().unwrap();
+        s.stop_triggered_capture().unwrap();
+
+        s.set_volts_per_div(ChannelId::Alphabetic('A'), 2.0).unwrap();
+
+        let err = s.get_triggered_data().unwrap_err().to_string();
+        assert!(err.contains("settings changed"), "got: {err}");
+        s.start_triggered_capture(50.0).unwrap();
+        assert!(s.get_triggered_data().is_ok());
+    }
+
+    #[test]
+    fn a_new_level_reaches_a_block_already_waiting_for_a_trigger() {
+        // In normal mode with a level the signal never crosses, the block
+        // armed with it never completes. Without a re-arm the new level is
+        // only applied to the next block, which never comes.
+        let mock = MockScope::new();
+        let log = mock.log_handle();
+        let mut s = PicoScopeModern::adopt(Box::new(mock), 1, capabilities(4)).unwrap();
+        s.set_capture_mode(CaptureMode::Normal).unwrap();
+        s.start_triggered_capture(50.0).unwrap();
+        let mark = log.lock().unwrap().len();
+
+        s.set_trigger_level(1.0).unwrap();
+
+        let calls = since(&log, mark);
+        assert_eq!(calls.first().map(String::as_str), Some("stop"), "{calls:?}");
+        assert!(calls.iter().any(|c| c.starts_with("set_simple_trigger")), "{calls:?}");
+        assert!(calls.last().unwrap().starts_with("run_block"), "{calls:?}");
+    }
+
+    #[test]
+    fn a_refused_change_restores_the_previous_settings_and_rearms() {
+        let mut mock = MockScope::new();
+        mock.refused_range = Some(Range::R10V);
+        let log = mock.log_handle();
+        let mut s = PicoScopeModern::adopt(Box::new(mock), 1, capabilities(4)).unwrap();
+        let ch = ChannelId::Alphabetic('A');
+        s.start_triggered_capture(50.0).unwrap();
+
+        // 2 V/div needs +/- 8 V, the refused 10 V range.
+        assert!(s.set_volts_per_div(ch, 2.0).is_err());
+
+        assert_eq!(s.get_volts_per_div(ch).unwrap(), 1.0);
+        let calls = matching(&log, "set_channel ch=0");
+        assert!(calls.last().unwrap().contains("R5V"), "not put back: {calls:?}");
+        assert!(log.lock().unwrap().last().unwrap().starts_with("run_block"));
+        assert!(s.get_triggered_data().is_ok(), "left unarmed after the refusal");
+    }
+
+    #[test]
+    fn an_offset_is_taken_back_out_of_the_reading() {
+        // An offset of -1 V centres a signal sitting at +1 V, so the ADC
+        // reads zero for it. Adding the offset back reported -1 V.
+        let mock = MockScope::new();
+        mock.channel_data.lock().unwrap()[0] = vec![0];
+        let log = mock.log_handle();
+        let mut s = PicoScopeModern::adopt(Box::new(mock), 1, capabilities(4)).unwrap();
+        let ch = ChannelId::Alphabetic('A');
+        s.set_volts_offset(ch, -1.0).unwrap();
+
+        s.start_triggered_capture(50.0).unwrap();
+        let volts = s.get_data(ch).unwrap();
+
+        assert!((volts[0] - 1.0).abs() < 1e-6, "got {} V", volts[0]);
+        assert!(matching(&log, "set_channel ch=0").last().unwrap().contains("offset=-1"));
+    }
+
+    #[test]
+    fn the_trigger_threshold_carries_the_offset() {
+        // The comparator sees the signal after the offset, so a 1 V level
+        // with -1 V of offset is zero counts.
+        let mock = MockScope::new();
+        let log = mock.log_handle();
+        let mut s = PicoScopeModern::adopt(Box::new(mock), 1, capabilities(4)).unwrap();
+        s.set_volts_offset(ChannelId::Alphabetic('A'), -1.0).unwrap();
+
+        s.set_trigger_level(1.0).unwrap();
+
+        let triggers = matching(&log, "set_simple_trigger");
+        assert!(triggers.last().unwrap().contains("threshold=0 "), "{triggers:?}");
+    }
+
+    #[test]
+    fn a_capture_shortened_to_fit_one_timebase_grows_back_at_the_next() {
+        let mut mock = MockScope::new();
+        // Slow timebases have memory for 500 samples only.
+        mock.short_memory = Some((20, 500));
+        let mut s = PicoScopeModern::adopt(Box::new(mock), 1, capabilities(4)).unwrap();
+
+        s.set_time_per_div(1.0).unwrap();
+        assert_eq!(s.get_memory_depth().unwrap(), 500);
+
+        s.set_time_per_div(1e-6).unwrap();
+        assert_eq!(s.get_memory_depth().unwrap(), DEFAULT_CAPTURE_SAMPLES as usize);
     }
 
     // ---------- polling ----------

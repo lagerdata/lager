@@ -72,7 +72,16 @@ _RESPONSES = {
     'GetSampleRate': {'sample_rate': 1e8},
     'GetMemoryDepth': {'memory_depth': 8000},
     'GetCapabilities': {'capabilities': {'model': '2204A', 'analog_channels': 2}},
+    'GetState': {'state': {'acquiring': True}},
 }
+
+
+def _stream(items):
+    """What ``captures()`` yields: each frame in turn, raising any exception."""
+    for item in items:
+        if isinstance(item, Exception):
+            raise item
+        yield item
 
 
 def _driver(frames=None):
@@ -81,7 +90,7 @@ def _driver(frames=None):
     client = MagicMock()
     client.command.side_effect = lambda name, **kwargs: _RESPONSES.get(name, {})
     if frames is not None:
-        client.capture.side_effect = list(frames)
+        client.captures.side_effect = lambda **kwargs: _stream(frames)
     scope._client = client
     return scope, client
 
@@ -224,14 +233,53 @@ class StreamCaptureTests(unittest.TestCase):
 
     def test_a_capture_that_never_arrives_keeps_what_was_collected(self):
         from lager.measurement.scope import daemon_client
-        scope, client = _driver()
-        client.capture.side_effect = [
+        scope, _ = _driver(frames=[
             _FakeFrame(samples=2),
-            daemon_client.ScopeDaemonError('timed out'),
-        ]
+            daemon_client.ScopeDaemonTimeout('timed out'),
+        ])
         result = scope.stream_capture(output=self.path, duration=5.0)
         self.assertEqual(result['captures'], 1)
         self.assertEqual(len(self._read()) - 1, 2)
+
+    def test_a_lost_daemon_is_an_error_rather_than_a_short_recording(self):
+        from lager.measurement.scope import daemon_client
+        scope, _ = _driver(frames=[
+            _FakeFrame(samples=2),
+            daemon_client.ScopeDaemonUnavailable('connection lost during a stream'),
+        ])
+        with self.assertRaisesRegex(daemon_client.ScopeDaemonUnavailable, 'lost'):
+            scope.stream_capture(output=self.path, duration=5.0)
+
+    def test_it_records_until_the_duration_is_up(self):
+        # Ending the stream at the deadline is what bounds the run, so the
+        # deadline has to reach it.
+        scope, client = _driver(frames=[_FakeFrame(samples=2)] * 3)
+        before = picoscope.time.monotonic()
+        result = scope.stream_capture(duration=2.0)
+        until = client.captures.call_args.kwargs['until']
+        self.assertAlmostEqual(until - before, 2.0, delta=0.5)
+        self.assertEqual(result['captures'], 3)
+
+    def test_the_sample_cap_ends_the_run_without_waiting_for_more(self):
+        scope, _ = _driver(frames=[_FakeFrame(samples=4), AssertionError('read past the cap')])
+        result = scope.stream_capture(duration=5.0, samples=4)
+        self.assertEqual(result['captures'], 1)
+
+    def test_a_stopped_scope_is_refused_rather_than_waited_on(self):
+        from lager.measurement.scope import daemon_client
+        scope, client = _driver(frames=[])
+        client.command.side_effect = lambda name, **kwargs: (
+            {'state': {'acquiring': False}} if name == 'GetState' else _RESPONSES.get(name, {}))
+        with self.assertRaisesRegex(daemon_client.ScopeDaemonError, 'stopped'):
+            scope.stream_capture(duration=5.0)
+        client.captures.assert_not_called()
+
+    def test_a_rolling_scope_is_running(self):
+        scope, client = _driver(frames=[_FakeFrame(samples=2)])
+        client.command.side_effect = lambda name, **kwargs: (
+            {'state': {'acquiring': False, 'rolling': True}} if name == 'GetState'
+            else _RESPONSES.get(name, {}))
+        self.assertEqual(scope.stream_capture(duration=1.0)['captures'], 1)
 
     def test_a_nonpositive_duration_is_rejected(self):
         scope, _ = _driver()
@@ -259,6 +307,29 @@ class StreamFramesTests(unittest.TestCase):
     def test_it_yields_one_by_default(self):
         scope, _ = _driver(frames=[_FakeFrame()])
         self.assertEqual(len(list(scope.stream_frames())), 1)
+
+    def test_each_frame_is_a_new_capture_not_the_latest_again(self):
+        # Asking for the latest capture in a loop returned the same one until
+        # the next arrived; a subscription yields each capture once.
+        first, second = _FakeFrame(), _FakeFrame()
+        scope, client = _driver(frames=[first, second])
+        self.assertEqual(list(scope.stream_frames(count=2)), [first, second])
+        client.capture.assert_not_called()
+
+    def test_stopping_early_closes_the_stream(self):
+        closed = []
+
+        def stream(**kwargs):
+            try:
+                while True:
+                    yield _FakeFrame()
+            finally:
+                closed.append(True)
+
+        scope, client = _driver()
+        client.captures.side_effect = stream
+        self.assertEqual(len(list(scope.stream_frames(count=2))), 2)
+        self.assertEqual(closed, [True])
 
 
 if __name__ == '__main__':

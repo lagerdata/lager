@@ -91,8 +91,17 @@ class TriggerSettingsEdge_PicoScopeFunctionMapper(_PicoScopeSubMapper):
     """Edge trigger, the only kind these units offer."""
 
     def set_source(self, source=None):
-        return self.device.set_trigger_source(
-            source if source is not None else self._channel)
+        """Trigger on a net, as the Rigol mapper takes, or a channel name.
+
+        A net is resolved to its channel here, because the device is a proxy
+        that sends its arguments as JSON, and a Net is not something JSON can
+        carry: ``edge.set_source(scope)`` from the docs failed in the proxy.
+        """
+        if source is None:
+            source = self._channel
+        elif not isinstance(source, (str, int)) and hasattr(source, "channel"):
+            source = source.channel
+        return self.device.set_trigger_source(source)
 
     def get_source(self):
         return self.device.get_trigger_source()
@@ -316,31 +325,41 @@ class PicoScopeAnalogMapper:
     # "Object of type generator is not JSON serializable" rather than samples.
     #
     # Encoding 8000 int16s as JSON numbers per capture would also undo exactly
-    # what the binary frame format was for. So these two methods talk to the
-    # daemon directly from the caller's own process. A user script runs in the
-    # same container, the daemon accepts more than one client, and
-    # `GetTriggeredData` is request/response rather than a subscription, so
-    # pulling captures here does not disturb the control connection the
-    # hardware service holds.
+    # what the binary frame format was for. A recording does not belong there
+    # either: run in the hardware service, its file landed in that process's
+    # directory rather than the script's, a run longer than the proxy's
+    # timeout failed, and the unit stayed locked to every other caller for
+    # the whole duration. So these run on a driver in the caller's own
+    # process, talking to the daemon directly. A user script runs in the same
+    # container and the daemon accepts more than one client, so this does not
+    # disturb the control connection the hardware service holds.
     @property
-    def _frame_client(self):
+    def _local(self):
         if self._frames is None:
-            from ...measurement.scope import daemon_client
-            self._frames = daemon_client.ScopeDaemonClient()
+            from ...measurement.scope.picoscope import PicoScope
+            self._frames = PicoScope(pin=getattr(self.net, "channel", None),
+                                     netname=getattr(self.net, "name", None))
         return self._frames
 
     def capture(self, timeout=None):
         """One triggered capture, decoded into an ``lscp.CaptureFrame``."""
-        return self._frame_client.capture(timeout=timeout)
+        return self._local.capture(timeout=timeout)
 
     def stream_frames(self, count: int = 1, timeout=None):
-        """Yield ``count`` captures as decoded frames.
+        """Yield the next ``count`` captures as decoded frames, each once.
 
         The zero-copy path: a frame's ``counts()`` is a view over the received
         buffer, so nothing is converted until asked for.
         """
-        for _ in range(max(1, int(count))):
-            yield self.capture(timeout=timeout)
+        return self._local.stream_frames(count=count, timeout=timeout)
+
+    def stream_capture(self, output=None, duration: float = 1.0, samples=None, timeout=None):
+        """Record ``duration`` seconds of captures, optionally to a CSV.
+
+        A relative ``output`` is relative to the script's directory.
+        """
+        return self._local.stream_capture(output=output, duration=duration,
+                                          samples=samples, timeout=timeout)
 
     def close_capture_connection(self):
         """Drop this process's sample connection, if one was opened.

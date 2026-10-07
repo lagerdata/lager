@@ -66,7 +66,7 @@ def _run_js(body):
     return json.loads(result.stdout)
 
 
-# A box with one net per channel, as `lager net add` leaves it, in the shape
+# A box with one net per channel, as `lager nets add` leaves it, in the shape
 # /nets/list actually returns (pin is a string there).
 TWO_NETS = [{"name": "scope1", "pin": "1"}, {"name": "scope2", "pin": "2"}]
 
@@ -157,6 +157,38 @@ class TestAChannelResolvesToItsOwnNet:
         }));
         """)
         assert out == {"none": None, "missing": None}
+
+    @pytest.mark.parametrize("pin_a, pin_b", [
+        ("A", "B"), ("a", "b"), ("CH1", "CH2"), ("ch1", "ch2"),
+        ("CHAN1", "CHANNEL2"), ("1", "2"), (1, 2),
+    ])
+    def test_a_pin_is_read_the_way_the_box_reads_it(self, pin_a, pin_b):
+        """The box drives channel B for pin "B" or "CH2" as well as for 2.
+
+        Only numbers were understood here, so those pins read as missing and
+        the channels went by list order: with B's net listed first, channel
+        A's strip drove channel B.
+        """
+        nets = [{"name": "scope2", "pin": pin_b}, {"name": "scope1", "pin": pin_a}]
+        out = _run_js("""
+        const f = ScopeApp.prototype.netForChannel;
+        const self = { scopeNets: %s };
+        process.stdout.write(JSON.stringify({
+          a: f.call(self, 0), b: f.call(self, 1), c: f.call(self, 2),
+        }));
+        """ % json.dumps(nets))
+        assert out == {"a": "scope1", "b": "scope2", "c": None}
+
+    def test_a_pin_that_names_no_channel_is_no_pin(self):
+        out = _run_js("""
+        const { pinIndex } = await import(%s);
+        process.stdout.write(JSON.stringify(
+          [0, '0', '', null, undefined, 'CH', 'AB', 'CH-1', 'X1']
+            .map((pin) => pinIndex({ pin }))
+            .concat([pinIndex({}), pinIndex(null), pinIndex({ pin: 'D' })])));
+        """ % json.dumps(str(SCOPE_JS)))
+        # Zero is what the box saves for a net with no pin at all.
+        assert out == [None] * 11 + [3]
 
 
 @needs_node
@@ -459,6 +491,16 @@ class TestVoltsPerDivOffersTheConventionalSteps:
     def test_a_scope_reporting_no_ranges_still_gets_a_list(self):
         offered = self._choices({}, 1)
         assert offered and all(v > 0 for v in offered)
+
+    def test_every_step_reads_as_a_plain_number(self):
+        """At two figures, toPrecision made 100 mV "1.0e+2 mV"."""
+        labels = _run_js("""
+        const { si } = await import(%s);
+        process.stdout.write(JSON.stringify(
+          [0.01, 0.1, 0.2, 0.5, 1, 20, 200, 2000].map((v) => si(v, 'V', 2))));
+        """ % json.dumps(str(SCOPE_JS)))
+        assert labels == ["10 mV", "100 mV", "200 mV", "500 mV",
+                          "1.0 V", "20 V", "200 V", "2.0 kV"]
 
 
 @needs_node
@@ -904,6 +946,157 @@ class TestAChannelCanBeMovedUpAndDown:
 
 
 @needs_node
+class TestEachChannelKeepsItsColour:
+    """A channel is one colour everywhere, chosen by its name.
+
+    A capture carries only the channels that are on, so with A off, B is a
+    frame's first channel -- and was drawn in A's colour, beside a strip
+    swatch and a trigger level in B's.
+    """
+
+    PALETTE = """
+    const COLORS = { '--ch-a': '#aaa', '--ch-b': '#bbb', '--ch-c': '#ccc',
+                     '--ch-d': '#ddd', '--ch-math': '#eee' };
+    globalThis.getComputedStyle = () => ({ getPropertyValue: (name) => COLORS[name] || '' });
+    """
+
+    def _strokes(self, display, labels=("B",)):
+        """Draw a capture of only `labels`; report the colour of every stroke."""
+        return _run_js(self.PALETTE + """
+        const strokes = [];
+        const context = () => ({
+          clearRect() {}, beginPath() {}, save() {}, restore() {}, translate() {},
+          setTransform() {}, setLineDash() {}, fillRect() {}, fillText() {},
+          drawImage() {}, moveTo() {}, lineTo() {},
+          measureText: () => ({ width: 10 }),
+          stroke() { strokes.push(this.strokeStyle); },
+        });
+        globalThis.document = {
+          documentElement: {},
+          getElementById: () => ({ hidden: false, textContent: '' }),
+          createElement: () => ({ getContext: context }),
+        };
+        globalThis.window = { devicePixelRatio: 1 };
+        const labels = %s;
+        const counts = Int16Array.from({ length: 64 }, (_, i) => Math.round(100 * Math.sin(i / 3)));
+        const frame = {
+          channels: labels.map((channel) => ({ channel, scaleVPerCount: 0.01, offsetV: 0 })),
+          flags: 0, samplesPerChannel: counts.length, preTriggerSamples: 0,
+          sampleIntervalNs: 1000, counts: () => counts, overflowed: () => false,
+          channelIndex: (label) => labels.indexOf(label),
+        };
+        const self = Object.assign(Object.create(ScopeApp.prototype), {
+          ctx: context(), canvas: { width: 200, height: 100 },
+          channelState: new Map(['A', 'B', 'C'].map((l) => [l, { voltsPerDiv: 1 }])),
+          showTriggerMarkers: false, drawGraticule() {},
+          extremes: { min: new Float32Array(0), max: new Float32Array(0) },
+          spectrumCache: {}, display: %s,
+        });
+        ScopeApp.prototype.draw.call(self, frame);
+        process.stdout.write(JSON.stringify(strokes));
+        """ % (json.dumps(list(labels)), json.dumps(display)))
+
+    def test_with_a_off_b_is_drawn_in_bs_colour(self):
+        assert self._strokes({}) == ["#bbb"]
+
+    def test_and_so_are_its_persisted_traces(self):
+        strokes = self._strokes({"persistence": 2})
+        assert strokes and set(strokes) == {"#bbb"}
+
+    def test_and_so_is_its_spectrum(self):
+        strokes = self._strokes({"fft": {"channel": "B"}})
+        assert "#bbb" in strokes and "#aaa" not in strokes
+
+    def test_xy_is_drawn_in_the_x_channels_colour(self):
+        assert self._strokes({"xy": True}, labels=("B", "C")) == ["#bbb"]
+
+    def test_bs_swatch_measurements_and_trigger_level_agree(self):
+        """B's strip built first in the list, where a colour by place is A's;
+        and the measurement panel names the channel it settled on."""
+        out = _run_js(self.PALETTE + """
+        const make = () => ({
+          children: [], style: {}, classList: { add() {} },
+          append(...kids) { this.children.push(...kids); },
+          appendChild(kid) { this.children.push(kid); },
+          replaceChildren(...kids) { this.children = kids; },
+          addEventListener() {}, setAttribute() {},
+        });
+        const host = make();
+        globalThis.document = {
+          documentElement: {},
+          createElement: make,
+          createTextNode: (text) => ({ text }),
+          getElementById: (id) => (id === 'measurements' ? host
+            : { value: id === 'trigger-source' ? 'B' : '0.5' }),
+        };
+        const self = Object.assign(Object.create(ScopeApp.prototype), {
+          net: 'pico1',
+          channelState: new Map([
+            ['A', { enabled: false, net: 'scope1', attenuation: 1 }],
+            ['B', { enabled: true, net: 'scope2', attenuation: 1, voltsPerDiv: 1 }],
+          ]),
+          send: async () => ({ value: { vpp: 1 } }),
+        });
+        const strip = self.buildChannelStrip('B', 0, {});
+        await self.refreshMeasurements();
+        const strokes = [];
+        const ctx = { save() {}, restore() {}, beginPath() {}, setLineDash() {},
+          moveTo() {}, lineTo() {}, fillRect() {}, fillText() {},
+          measureText: () => ({ width: 40 }),
+          stroke() { strokes.push(this.strokeStyle); } };
+        self.drawTriggerLevel(ctx, 800, 400);
+        const [heading] = host.children;
+        process.stdout.write(JSON.stringify({
+          strip: strip.children[0].children[0].style.background,
+          heading: [heading.children[0].style.background, heading.children[1].text],
+          level: strokes,
+        }));
+        """)
+        assert out == {
+            "strip": "var(--ch-b)",
+            "heading": ["var(--ch-b)", "Channel B"],
+            "level": ["#bbb"],
+        }
+
+
+@needs_node
+class TestARefusalFromTheScopeIsShown:
+    """`coupling gnd` is in the grammar the terminal CLI shares, and refused
+    by the daemon: a PicoScope has no ground coupling. The page adds no rule
+    of its own for that, so the daemon's reason is what it must print."""
+
+    def test_coupling_gnd_prints_the_daemons_reason(self):
+        reason = ("Hardware error: this scope has no ground coupling, so GND "
+                  "cannot be applied")
+        out = _run_js("""
+        const requests = [];
+        globalThis.fetch = async (url, init) => {
+          requests.push({ url, ...JSON.parse(init.body) });
+          return { ok: false, status: 502,
+                   json: async () => ({ success: false, error: %s }) };
+        };
+        const lines = [];
+        const self = Object.assign(Object.create(ScopeApp.prototype), {
+          net: 'pico1',
+          channelNets: [{ name: 'scope2', pin: 2 }, { name: 'scope1', pin: 1 }],
+          channelState: new Map([['A', { net: 'scope1' }], ['B', { net: 'scope2' }]]),
+          console: {
+            write: (text, kind = 'ok') => lines.push([kind, text]),
+            error: (text) => lines.push(['error', text]),
+          },
+        });
+        const body = await self.execute('coupling gnd');
+        process.stdout.write(JSON.stringify({ requests, lines, body }));
+        """ % json.dumps(reason))
+        assert out["requests"] == [{
+            "url": "/net/command", "netname": "scope1",
+            "action": "set_coupling", "params": {"mode": "gnd"},
+        }]
+        assert out["lines"] == [["error", reason]]
+        assert out["body"] is None
+
+
+@needs_node
 class TestTheWindowCanBeMovedInTime:
     """Signal past the left or right edge was never sampled.
 
@@ -1115,15 +1308,28 @@ class TestTheMeasurementPanelIsLiveAndComplete:
         stop = js.split("el('btn-stop').addEventListener")[1].split("});")[0]
         assert "stopMeasurementPolling" in stop
 
-    def test_disconnecting_stops_the_timer(self):
+    @needs_node
+    @pytest.mark.parametrize("connection", [
+        "{}",
+        "{ connecting: true }",
+        "{ socket: { readyState: 0, close() {} } }",
+        "{ socket: { readyState: 1, send() {}, close() {} } }",
+    ], ids=["never-connected", "fetching-ticket", "socket-opening", "open"])
+    def test_disconnecting_stops_the_timer(self, connection):
         """Otherwise it outlives the socket, taking a capture every half
-        second against a scope nobody is watching."""
-        js = SCOPE_JS.read_text()
-        disconnect = js.split("  disconnect() {")[1].split("\n  }")[0]
-        assert "stopMeasurementPolling" in disconnect
-        # Before the early return, or a page that never connected leaks it.
-        assert disconnect.index("stopMeasurementPolling") < disconnect.index(
-            "if (!this.socket) return;")
+        second against a scope nobody is watching -- including on a page that
+        never connected."""
+        out = _run_js("""
+        const cleared = [];
+        globalThis.clearInterval = (id) => cleared.push(id);
+        globalThis.document = { getElementById: () => ({}) };
+        const self = Object.assign(Object.create(ScopeApp.prototype),
+          { measureTimer: 7, socket: null, connecting: false, connectAttempt: 0 },
+          %s);
+        self.disconnect();
+        process.stdout.write(JSON.stringify({ cleared, timer: self.measureTimer }));
+        """ % connection)
+        assert out == {"cleared": [7], "timer": None}
 
 
 class TestTheTimebaseComesFromTheHardware:
@@ -1235,6 +1441,40 @@ class TestTheTimebaseComesFromTheHardware:
         """)
         assert shown["value"] == "0.001024"
         assert shown["order"] == sorted(shown["order"])
+
+    def test_the_achieved_value_selects_the_step_it_already_is(self):
+        """The daemon reports time/div as depth x interval / 1e9 / 10, so
+        1.024 ms/div comes back as 0.0010240000000000002. Matched as text it
+        was never on the list, and each readback added a second entry for a
+        step that was already there."""
+        out = _run_js("""
+        const { timebaseChoices } = await import(%s);
+        const app = Object.create(ScopeApp.prototype);
+        const offered = timebaseChoices(%s, %d).map(String);
+        const options = offered.map((value) => ({ value }));
+        const select = {
+          options, value: '',
+          add(option, before) {
+            const at = before ? options.indexOf(before) : options.length;
+            options.splice(at < 0 ? options.length : at, 0, option);
+          },
+        };
+        globalThis.document = { getElementById: () => select };
+        const results = offered.map((value, k) => {
+          // The 2204A's interval doubles from 10 ns with each step.
+          const readback = %d * (10 * 2 ** k) / 1e9 / 10;
+          app.showTimebase(readback);
+          return { offered: value, readback: String(readback), shown: select.value };
+        });
+        process.stdout.write(JSON.stringify({
+          offered, results, listed: options.map((o) => o.value),
+        }));
+        """ % (json.dumps(str(SCOPE_JS)), json.dumps(self.CAPS), self.DEPTH,
+               self.DEPTH))
+        assert out["listed"] == out["offered"], "a step was listed twice"
+        assert [r["shown"] for r in out["results"]] == out["offered"]
+        # Not vacuous: the readbacks really are different text.
+        assert all(r["readback"] != r["offered"] for r in out["results"])
 
     def test_the_capture_depth_trims_the_list(self):
         """Depth comes from a frame, not the capabilities: it is what the

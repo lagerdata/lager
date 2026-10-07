@@ -898,6 +898,21 @@ oscilloscope_source_hash() {
         | sort -z | xargs -0 -r sha256sum | sha256sum | cut -d' ' -f1
 }
 
+# The daemon's build.rs generates its bindings from these headers, which
+# PicoTech's licence keeps out of the repo. Without them the build can only
+# fail, and a failed build records no hash, so every start would try again.
+# Keep the list identical to `_DAEMON_SDK_HEADERS` in
+# cli/commands/utility/update.py, which reads the same fact over SSH; a test
+# runs both over one tree and compares.
+OSCILLOSCOPE_SDK_INCLUDE="/opt/picoscope/include"
+picotech_headers_present() {
+    for _header in libps2000/ps2000.h libps2000a/ps2000aApi.h \
+            libps3000a/ps3000aApi.h libps4000a/ps4000aApi.h \
+            libps4000a/PicoConnectProbes.h libps5000a/ps5000aApi.h; do
+        [ -f "$OSCILLOSCOPE_SDK_INCLUDE/$_header" ] || return 1
+    done
+}
+
 build_oscilloscope_daemon() {
     # Built in a throwaway container from the `lager` image because that is
     # where the binary runs -- it gets mounted over
@@ -940,8 +955,17 @@ if [ -d "$OSCILLOSCOPE_SRC" ] && docker image inspect lager >/dev/null 2>&1; the
     _osc_new_hash="$(oscilloscope_source_hash || true)"
     _osc_old_hash="$(cat "$OSCILLOSCOPE_HASH_FILE" 2>/dev/null || true)"
 
+    _osc_stale=""
     if [ ! -f "$OSCILLOSCOPE_DAEMON" ] || [ -z "$_osc_old_hash" ] \
        || [ "$_osc_old_hash" != "$_osc_new_hash" ]; then
+        _osc_stale=1
+    fi
+
+    if [ -n "$_osc_stale" ] && ! picotech_headers_present; then
+        # No hash is recorded, so the first start after the SDK is
+        # installed builds.
+        echo "Oscilloscope daemon build skipped: the PicoTech SDK headers are not in $OSCILLOSCOPE_SDK_INCLUDE"
+    elif [ -n "$_osc_stale" ]; then
         if [ -f "$OSCILLOSCOPE_DAEMON" ]; then
             echo "Oscilloscope daemon is out of date; rebuilding..."
         else
