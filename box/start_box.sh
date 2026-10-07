@@ -934,12 +934,37 @@ picotech_headers_present() {
     return 1
 }
 
-# Whether a PicoTech USB device (vendor 0ce9) is attached. sysfs, because the
-# host need not have usbutils. Keep identical to `_pico_attached_shell_cmd`
-# in cli/commands/utility/update.py; a test runs both and compares.
+# The USB product ids of the attached PicoTech devices (vendor 0ce9), sorted
+# and space-separated. sysfs, because the host need not have usbutils. Keep
+# identical to `_pico_products_shell_cmd` in cli/commands/utility/update.py;
+# a test runs both and compares.
 USB_SYSFS_DEVICES="/sys/bus/usb/devices"
+picotech_products() {
+    for _dev in "$USB_SYSFS_DEVICES"/*; do
+        [ "$(cat "$_dev/idVendor" 2>/dev/null)" = 0ce9 ] || continue
+        cat "$_dev/idProduct" 2>/dev/null || true
+    done | sort -u | tr '\n' ' ' | sed 's/ $//'
+}
+
 picotech_device_attached() {
-    grep -qsx 0ce9 "$USB_SYSFS_DEVICES"/*/idVendor
+    [ -n "$(picotech_products)" ]
+}
+
+# What to install for the attached PicoScopes. Only product ids whose family
+# is certain are mapped -- the daemon itself identifies a model by asking the
+# driver, not from the id -- and anything else gets the whole set. Keep the
+# map and both lists identical to update.py; a test compares them.
+PICOTECH_APT_REPO="https://labs.picotech.com/picoscope7/debian/"
+PICOTECH_APT_PACKAGES="libps2000 libps2000a libps3000a libps4000a libps5000a libps6000a libpsospa"
+picotech_packages_needed() {
+    _pkgs=""
+    for _pid in $(picotech_products); do
+        case "$_pid" in
+            1007) _pkgs="$_pkgs libps2000" ;;
+            *) echo "$PICOTECH_APT_PACKAGES"; return 0 ;;
+        esac
+    done
+    echo "${_pkgs# }"
 }
 
 build_oscilloscope_daemon() {
@@ -995,12 +1020,13 @@ if [ -d "$OSCILLOSCOPE_SRC" ] && docker image inspect lager >/dev/null 2>&1; the
         # installed builds. Loud only with a scope attached: most boxes
         # have none and never will.
         if picotech_device_attached; then
+            _osc_pkgs="$(picotech_packages_needed)"
             echo "WARNING: a PicoScope is attached but the oscilloscope daemon is unavailable:"
             echo "         no PicoTech SDK headers in $OSCILLOSCOPE_SDK_INCLUDE."
-            echo "         Install the package for its family (libps2000 libps2000a libps3000a"
-            echo "         libps4000a libps5000a libps6000a libpsospa) from"
-            echo "         https://labs.picotech.com/picoscope7/debian/ -- 'lager install' does"
-            echo "         this -- and the next start builds the daemon."
+            echo "         Install $_osc_pkgs from $PICOTECH_APT_REPO"
+            echo "         ('sudo apt-get install $_osc_pkgs' once that repo is added, or rerun"
+            echo "         'lager install' with --version set to this box's version, which adds"
+            echo "         it). The next start builds the daemon."
         else
             echo "Oscilloscope daemon build skipped: no PicoScope family can be built from the PicoTech SDK headers in $OSCILLOSCOPE_SDK_INCLUDE"
         fi
@@ -1046,7 +1072,8 @@ if [ -f "$OSCILLOSCOPE_DAEMON" ]; then
 else
     echo "Oscilloscope daemon not found (PicoScope streaming disabled)"
     echo "  Expected: $OSCILLOSCOPE_DAEMON"
-    echo "  To enable: Build and copy oscilloscope-daemon (box/oscilloscope-daemon/)"
+    echo "  Built on start from box/oscilloscope-daemon/ when the PicoTech SDK headers"
+    echo "  are in $OSCILLOSCOPE_SDK_INCLUDE; see above for why it was not."
     echo ""
 fi
 
