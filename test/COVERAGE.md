@@ -46,13 +46,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 3114 (+2 xfailed) |
+| `unit (cli)` | `test/unit/cli/` | 3131 (+2 xfailed) |
 | `unit (box)` | `test/unit/box/` | 4066 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 405 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 150 (+1 skipped) |
-| | **Total gated** | **7929** |
+| | **Total gated** | **7946** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -763,7 +763,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_bench_export.py` | `lager bench export`: fetches `GET /bench` on :9000 and prints the manifest with sorted keys (or one line with `--compact`, or to a file with `--out` plus a one-line summary on stderr); a 404 is an update prompt naming 0.50.0, other HTTP errors show the status and body, a connection failure points at `lager hello`, and a reply that is not a manifest is refused and never written |
 | `test_nets_describe_fields.py` | `lager nets describe --dut-connection` / `--test-hint` / `--clear-test-hints`: the two control-plane fields are merged onto the saved record next to purpose, notes and tags, duplicate hints collapse, side-car fields survive, and the nothing-given message names the new options |
 | `test_nets_channel_less_roles.py` | Roles with no channel, spelled as an empty channel list: a `scope` net is saved without a pin, because a pin is what tells the box an old record is a channel |
-| `test_update_scope_daemon.py` | Every box carries a scope daemon built from the Rust it runs: `start_box.sh` builds it on install, update and config apply, and rebuilds it when the daemon sources or the installed PicoTech headers change. Any one family's headers are enough to build, so a box with only `libps2000` gets a daemon |
+| `test_update_scope_daemon.py` | Every box carries a scope daemon built from the Rust it runs: `start_box.sh` builds it on install, update and config apply, and rebuilds it when the daemon sources or the installed PicoTech headers change. Any one family's headers are enough to build, so a box with only `libps2000` gets a daemon. `start_box.sh`, `lager update` and the deploy script agree on which headers count, and a box with none and a PicoScope attached is told which package to install |
 | `test_scope_bench_commands.py` | `lager scope` status, trigger readback, holdoff, acquire, roll, fft and display: each command line is one action on the box's warm handler with its parameters, a value out of range is refused before the box, and a PicoScope edge trigger sends only the settings named while a Rigol keeps the script path |
 | `test_scope_impl_daemon_errors.py` | The scope impl script reads a daemon refusal as a failure: `{"Response": {"response": "Error"}}` comes back as an error, where a trigger level beyond the range used to print that it had been applied |
 
