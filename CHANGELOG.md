@@ -98,6 +98,18 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   file path now says which file could not be written and how to mount it, rather
   than "USB device busy" with advice to run `lager diagnose`. The `--debug` hint
   now shows the form that works: `lager --debug <command>`.
+- **The console of the scope web UI no longer changes a channel you did not name.** `scale`,
+  `coupling`, `probe`, `offset`, `measure` and `spectrum`, typed with no channel, went to the
+  lowest-numbered channel even when it was off. With channel A off and B on, `scale 0.5` changed
+  A, with a reply that named no channel, because the box applies a setting to a channel that is
+  off. If
+  you set the scale, coupling, probe or offset from the console with channel A off, check the
+  settings of each channel. A measurement was refused instead ("channel A is not enabled, so
+  there is nothing to measure"), so no console reading came from the wrong channel. These
+  commands now use the first channel that is on, as the measurements panel does, and each
+  reply names the channel, as in `channel B: Vertical scale 0.5 V/div`. A command can name a
+  channel: `scale B 0.5`, `coupling B ac`, `probe B 10`, `offset B 0.1`, `measure vpp B`. With
+  every channel off, `measure` says so without sending a request.
 - **A PicoScope triggers at the level asked for.** The trigger thresholds sat ten percent
   below the requested level, with a hysteresis scaled to the level, so at the default 0 V any
   noise triggered and a signal with ringing made the trace jump sideways between captures.

@@ -44,6 +44,37 @@ function channelToken(token) {
   throw new CommandError(`channel must be A-D, got "${token}"`);
 }
 
+/** A channel named ahead of a setting's value, and the tokens after it.
+ *
+ * A letter only. These verbs take a number next, and channelToken() reads
+ * "2" as channel B, so "scale 2" would be ambiguous: here a digit is always
+ * the value. A single letter past D is still a channel, and a wrong one.
+ */
+function leadingChannel(args) {
+  if (args.length && /^[A-Za-z]$/.test(args[0])) {
+    return [channelToken(args[0]), args.slice(1)];
+  }
+  return [null, args];
+}
+
+/** The value of a channel setting, refusing anything after it.
+ *
+ * "scale 0.5 B" is the channel typed in the wrong place. Taking the 0.5 and
+ * dropping the B would set the wrong channel and report success.
+ */
+function settingValue(verb, rest) {
+  if (rest.length > 1) {
+    throw new CommandError(
+      `${verb} takes a channel first, then one value, e.g. "${verb} B ${rest[0]}"`);
+  }
+  return rest[0];
+}
+
+/** Summary text for a channel setting, with the channel the user typed. */
+function settingSummary(verb, channel, rest) {
+  return [verb, channel, ...rest].filter(Boolean).join(' ');
+}
+
 function requireNumber(token, what) {
   if (token === undefined) {
     throw new CommandError(`${what} is required`);
@@ -128,13 +159,17 @@ export const COMMANDS = [
   },
   {
     verb: 'scale',
-    usage: 'scale [<volts-per-div>]',
-    help: 'Get or set vertical scale, e.g. "scale 0.5"',
-    parse: (args) => (args.length === 0
-      ? new ParsedCommand('get_scale', {}, 'scale')
-      : new ParsedCommand('set_scale',
-        { volts_per_div: requireNumber(args[0], 'volts-per-div') },
-        `scale ${args[0]}`)),
+    usage: 'scale [<channel>] [<volts-per-div>]',
+    help: 'Get or set vertical scale, e.g. "scale B 0.5"; with no channel, the first one that is on',
+    parse: (args) => {
+      const [channel, rest] = leadingChannel(args);
+      settingValue('scale', rest);
+      const summary = settingSummary('scale', channel, rest);
+      return rest.length === 0
+        ? new ParsedCommand('get_scale', {}, summary, channel)
+        : new ParsedCommand('set_scale',
+          { volts_per_div: requireNumber(rest[0], 'volts-per-div') }, summary, channel);
+    },
   },
   {
     verb: 'timebase',
@@ -148,29 +183,44 @@ export const COMMANDS = [
   },
   {
     verb: 'coupling',
-    usage: 'coupling [dc|ac|gnd]',
-    help: 'Get or set input coupling',
-    parse: (args) => (args.length === 0
-      ? new ParsedCommand('get_coupling', {}, 'coupling')
-      : new ParsedCommand('set_coupling', { mode: args[0] }, `coupling ${args[0]}`)),
+    usage: 'coupling [<channel>] [dc|ac|gnd]',
+    help: 'Get or set input coupling, e.g. "coupling B ac"; with no channel, the first one that is on',
+    parse: (args) => {
+      const [channel, rest] = leadingChannel(args);
+      settingValue('coupling', rest);
+      const summary = settingSummary('coupling', channel, rest);
+      return rest.length === 0
+        ? new ParsedCommand('get_coupling', {}, summary, channel)
+        : new ParsedCommand('set_coupling', { mode: rest[0] }, summary, channel);
+    },
   },
   {
     verb: 'probe',
-    usage: 'probe [<ratio>]',
-    help: 'Get or set probe attenuation, e.g. "probe 10"',
-    parse: (args) => (args.length === 0
-      ? new ParsedCommand('get_probe', {}, 'probe')
-      : new ParsedCommand('set_probe',
-        { ratio: requireNumber(args[0], 'ratio') }, `probe ${args[0]}`)),
+    usage: 'probe [<channel>] [<ratio>]',
+    help: 'Get or set probe attenuation, e.g. "probe B 10"; with no channel, the first one that is on',
+    parse: (args) => {
+      const [channel, rest] = leadingChannel(args);
+      settingValue('probe', rest);
+      const summary = settingSummary('probe', channel, rest);
+      return rest.length === 0
+        ? new ParsedCommand('get_probe', {}, summary, channel)
+        : new ParsedCommand('set_probe',
+          { ratio: requireNumber(rest[0], 'ratio') }, summary, channel);
+    },
   },
   {
     verb: 'offset',
-    usage: 'offset [<volts>]',
-    help: 'Get or set vertical offset',
-    parse: (args) => (args.length === 0
-      ? new ParsedCommand('get_offset', {}, 'offset')
-      : new ParsedCommand('set_offset',
-        { offset: requireNumber(args[0], 'volts') }, `offset ${args[0]}`)),
+    usage: 'offset [<channel>] [<volts>]',
+    help: 'Get or set vertical offset, e.g. "offset B 0.1"; with no channel, the first one that is on',
+    parse: (args) => {
+      const [channel, rest] = leadingChannel(args);
+      settingValue('offset', rest);
+      const summary = settingSummary('offset', channel, rest);
+      return rest.length === 0
+        ? new ParsedCommand('get_offset', {}, summary, channel)
+        : new ParsedCommand('set_offset',
+          { offset: requireNumber(rest[0], 'volts') }, summary, channel);
+    },
   },
   {
     // Seconds rather than divisions, so the verb does not depend on how many
@@ -186,8 +236,8 @@ export const COMMANDS = [
   },
   {
     verb: 'measure',
-    usage: `measure <${Object.keys(MEASUREMENTS).slice(0, 6).join('|')}|...>`,
-    help: 'Measure the live signal; "measure" alone lists the options',
+    usage: `measure <${Object.keys(MEASUREMENTS).slice(0, 6).join('|')}|...> [<channel>]`,
+    help: 'Measure the live signal, e.g. "measure vpp B"; with no channel, the first one that is on',
     parse: (args) => {
       if (args.length === 0) {
         throw new CommandError(
@@ -199,7 +249,13 @@ export const COMMANDS = [
           `unknown measurement "${args[0]}"; try one of: `
           + Object.keys(MEASUREMENTS).join(', '));
       }
-      return new ParsedCommand(action, {}, `measure ${args[0]}`);
+      if (args.length > 2) {
+        throw new CommandError(
+          `measure takes a measurement and one channel, got "${args.join(' ')}"`);
+      }
+      const channel = channelToken(args[1]);
+      return new ParsedCommand(action, {},
+        channel ? `measure ${args[0]} ${channel}` : `measure ${args[0]}`, channel);
     },
   },
   {
