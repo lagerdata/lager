@@ -913,7 +913,7 @@ lager scope NET_NAME stream web [--box BOX] [--port PORT]
 
 该命令打开 `http://<box>:<port>/scope`。在位于访问网关之后的 Box 上，该链接带有您的登录令牌，与[摄像头串流](/source/zh/reference/cli/webcam#访问受控的-box)相同。令牌过期后，再次运行 `stream web` 即可获得新的链接。
 
-Web 界面是一个无依赖的 HTML5 示波器显示，由 Box 在 `http://<box>:9000/scope` 提供。波形以 LSCP 二进制帧的形式经 WebSocket 到达，由浏览器解码。页面根据所连接设备的能力信息构建控件，因此双通道示波器不会显示通道 C。页面还有一个命令控制台。它接受此 CLI 的大多数命令，另外还接受 `offset`、`position` 和 `capabilities`。
+Web 界面是一个无依赖的 HTML5 示波器显示，由 Box 在 `http://<box>:9000/scope` 提供。波形以 LSCP 二进制帧的形式经 WebSocket 到达，由浏览器解码。页面根据所连接设备的能力信息构建控件，因此双通道示波器不会显示通道 C。页面还有一个命令控制台。它接受此 CLI 的大多数命令，另外还接受 `offset`、`position` 和 `capabilities`。在控制台中，作用于单个通道的命令可以指定通道：`scale B 0.5`、`coupling B ac`、`probe B 10`、`offset B 0.1` 和 `measure vpp B`。请把通道写在数值之前，并且用字母表示，因为 `scale 2` 设置的是 2 V/div。不指定通道时，命令使用第一个已打开的通道，与测量面板相同。控制台中的回复会写明通道。
 
 ### `stream capture`
 

@@ -210,12 +210,15 @@ const PER_CHANNEL_ACTIONS = new Set([
   'fft',
 ]);
 
+// Cursors are the scope's, and measure_cursor reads them against the channel
+// they were placed on rather than against a net's own.
+function isMeasurement(action) {
+  return action.startsWith('measure_') && action !== 'measure_cursor';
+}
+
 function isPerChannelAction(action) {
-  // Cursors are the scope's, and measure_cursor reads them against the
-  // channel they were placed on rather than against a net's own.
   if (action === 'measure_cursor') return false;
-  if (action.startsWith('measure_')) return true;
-  return PER_CHANNEL_ACTIONS.has(action);
+  return isMeasurement(action) || PER_CHANNEL_ACTIONS.has(action);
 }
 
 function sampleTraceAt(frame, volts, seconds) {
@@ -266,6 +269,58 @@ function firstChannelNet(nets) {
     if (index !== null && (first === null || index < pinIndex(first))) first = net;
   }
   return first || nets[0] || null;
+}
+
+/**
+ * The first channel that is on and has a net, or null if none is.
+ *
+ * Channels with no net of their own cannot be reached through this endpoint,
+ * so they are passed over rather than reported as the answer. The
+ * measurements panel and the console's per-channel commands both start here,
+ * so the two cannot settle on different channels.
+ */
+function firstMeasurableChannel(channelState) {
+  if (!channelState) return null;
+  for (const [label, state] of channelState.entries()) {
+    if (state && state.enabled && state.net) return { label, net: state.net };
+  }
+  return null;
+}
+
+// Switching a channel on or off is the one per-channel thing that must not
+// follow the channel that is on: a bare `enable` would then reach a channel
+// that already is.
+const CHANNEL_SWITCH_ACTIONS = new Set(['enable_net', 'disable_net', 'get_net_enabled']);
+
+/** The letter of the channel a net is wired to, or null. */
+function labelForNet(name, channelState, nets) {
+  if (channelState) {
+    for (const [label, state] of channelState.entries()) {
+      if (state && state.net === name) return label;
+    }
+  }
+  const net = (nets || []).find((n) => n.name === name);
+  const index = net ? pinIndex(net) : null;
+  return index === null ? null : String.fromCharCode(65 + index);
+}
+
+/**
+ * The channel a per-channel action reaches when the command names none, as
+ * `{label, net}`, or null when there is no channel net at all.
+ *
+ * The first channel that is on, as the measurements panel reads it; the
+ * lowest channel by pin when none is on, or before the page knows which are.
+ * The box applies a setting to a channel that is off without complaint, so a
+ * fixed lowest channel quietly changed A while the trace on screen was B.
+ */
+function defaultChannel(action, channelState, channelNets) {
+  if (!CHANNEL_SWITCH_ACTIONS.has(action)) {
+    const on = firstMeasurableChannel(channelState);
+    if (on) return on;
+  }
+  const net = firstChannelNet(channelNets || []);
+  if (!net) return null;
+  return { label: labelForNet(net.name, channelState, channelNets), net: net.name };
 }
 
 /**
@@ -556,16 +611,16 @@ class ScopeApp {
   /** The net a command should be sent to.
    *
    * Most of a scope is not per-channel, so the instrument takes the timebase,
-   * the trigger, acquisition and the cursors. The six settings that do belong
-   * to a channel go to that channel's net, because the scope net has no
-   * channel and the box refuses to guess one. Without a channel named, that
-   * is the lowest channel with a net, by pin, as netForChannel() reads it.
+   * the trigger, acquisition and the cursors. The settings that do belong to
+   * a channel go to that channel's net, because the scope net has no channel
+   * and the box refuses to guess one. Without a channel named, that is
+   * defaultChannel()'s answer.
    */
   netForAction(action, explicit) {
     if (explicit) return explicit;
     if (!isPerChannelAction(action)) return this.net;
-    const channel = firstChannelNet(this.channelNets || []);
-    return channel ? channel.name : this.net;
+    const channel = defaultChannel(action, this.channelState, this.channelNets);
+    return channel ? channel.net : this.net;
   }
 
   /** The net `enable B` should reach, or null when that channel has none. */
@@ -805,7 +860,7 @@ class ScopeApp {
       state.enabled = toggle.checked;
       await this.runCommand(
         toggle.checked ? 'enable_net' : 'disable_net', {},
-        `Channel ${label} ${toggle.checked ? 'on' : 'off'}`, state.net);
+        `Channel ${label} ${toggle.checked ? 'on' : 'off'}`, state.net, label);
       // The panel measures the selected net's channel, so this switch decides
       // whether there is anything to measure. It is otherwise only refreshed
       // on Start, which left "Channel A is off" showing over a channel that
@@ -907,7 +962,7 @@ class ScopeApp {
     couplingSelect.addEventListener('change', () => {
       this.runCommand('set_coupling', { mode: couplingSelect.value },
         `Channel ${label} ${couplingSelect.value.toUpperCase()} coupled`,
-        state.net);
+        state.net, label);
     });
 
     const probeField = document.createElement('label');
@@ -1032,7 +1087,7 @@ class ScopeApp {
 
     if (push) {
       this.runCommand('set_scale', { volts_per_div: voltsPerDiv },
-        `Channel ${label} ${si(voltsPerDiv, 'V', 2)}/div`, state.net);
+        `Channel ${label} ${si(voltsPerDiv, 'V', 2)}/div`, state.net, label);
     }
   }
 
@@ -1127,7 +1182,7 @@ class ScopeApp {
     this.showProbe(state, ratio);
     if (push) {
       await this.runCommand('set_probe', { ratio },
-        `Channel ${label} ${ratio}x probe`, state.net);
+        `Channel ${label} ${ratio}x probe`, state.net, label);
     }
     this.rebuildScaleChoices(label);
 
@@ -1727,10 +1782,14 @@ class ScopeApp {
     return body;
   }
 
-  async runCommand(action, params, summary, net) {
+  async runCommand(action, params, summary, net, label) {
     try {
       const body = await this.send(action, params, net);
-      this.console.write(body.message || `${summary || action}: ok`);
+      // The box's reply says what changed but not on which channel, and a
+      // console command may not have named one.
+      const reply = body.message || `${summary || action}: ok`;
+      const named = label && reply.toLowerCase().includes(`channel ${label.toLowerCase()}`);
+      this.console.write(label && !named ? `channel ${label}: ${reply}` : reply);
       if (action === 'capabilities' && body.value) {
         this.capabilities = body.value;
         this.applyCapabilities();
@@ -1781,17 +1840,9 @@ class ScopeApp {
     }
   }
 
-  /** The channel the measurements panel reads, or null if none is on.
-   *
-   * The first enabled one that has a net. Channels with no net of their own
-   * cannot be measured through this endpoint, so they are passed over rather
-   * than reported as the answer.
-   */
+  /** The channel the measurements panel reads; see firstMeasurableChannel(). */
   measuredChannel() {
-    for (const [label, state] of this.channelState.entries()) {
-      if (state && state.enabled && state.net) return { label, net: state.net };
-    }
-    return null;
+    return firstMeasurableChannel(this.channelState);
   }
 
   // ---------- measurements ----------
@@ -2922,19 +2973,33 @@ class ScopeApp {
       this.console.error(e.message);
       return undefined;
     }
+    // Only once the strips exist: before then the page cannot tell "every
+    // channel is off" from "no channel is known yet".
+    if (isMeasurement(parsed.action) && !parsed.channel
+        && this.channelState && this.channelState.size
+        && !firstMeasurableChannel(this.channelState)) {
+      this.console.error('No channel is on. Switch one on to measure.');
+      return undefined;
+    }
     // `enable B` names a channel. The action itself carries no channel: the
     // box turns on whichever net the request is sent to, so the letter has
     // to choose the net or both letters enable the first channel.
     let net;
+    let label = null;
     if (parsed.channel) {
       net = this.netForLabel(parsed.channel);
       if (!net) {
         this.console.error(`channel ${parsed.channel} has no net`);
         return undefined;
       }
+      label = parsed.channel;
+    } else if (isPerChannelAction(parsed.action)) {
+      const channel = defaultChannel(
+        parsed.action, this.channelState, this.channelNets);
+      if (channel) ({ net, label } = channel);
     }
     const body = await this.runCommand(
-      parsed.action, parsed.params, parsed.summary, net);
+      parsed.action, parsed.params, parsed.summary, net, label);
     if (body && parsed.channel
         && (parsed.action === 'enable_net' || parsed.action === 'disable_net')) {
       const state = this.channelState && this.channelState.get(parsed.channel);
