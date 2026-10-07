@@ -47,12 +47,12 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` | 2950 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 3359 |
+| `unit (box)` | `test/unit/box/` | 3362 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 380 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 150 (+1 skipped) |
-| | **Total gated** | **7033** |
+| | **Total gated** | **7036** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -549,7 +549,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_net_metadata_endpoint.py` | `/nets/<name>/metadata`: merging purpose/notes/tags without disturbing the rest of the record, and reporting bench.json overrides |
 | `test_nets_safety_limits_endpoint.py` | `/nets/safety-limits`: reading and writing a net's voltage/current ceilings |
 | `test_nets_state_endpoint.py` | `GET /nets/state`: wedged-instrument resilience, per-instrument probing, LabJack cross-role batch routing through hardware_service (no USB contention), I2C bus scan, and the request deadline handed to the USB batch as a per-hub budget |
-| `test_nets_state_stream.py` | `GET /nets/state?stream=1` line format (typed lines, `done` last, deadline cut-offs) checked on arrival over a real socket, client-disconnect cleanup, and the fail-fast paths of both modes: absent-instrument check, per-instrument budget, cooldown, and `device-busy` reasons |
+| `test_nets_state_stream.py` | `GET /nets/state?stream=1` line format (typed lines, `done` last, deadline cut-offs) checked on arrival over a real socket, client-disconnect cleanup, and the fail-fast paths of both modes: absent-instrument check, per-instrument budget, cooldown, `device-busy` reasons, and the one-call supply batch |
 | `test_openocd_dispatch.py` | OpenOCD interface .cfg dispatch and user-cfg override behavior |
 | `test_openocd_flash.py` | `openocd_flash`, the one flash/erase dispatch for OpenOCD targets: a DA1469x goes to the RAM-resident flash_loader with absolute XIP addresses translated to flash-relative offsets (out-of-window addresses refused before any I/O), everything else to `program` / bank erase; a requested erase range reaches the loader as a flash offset (named first in the output) or `flash erase_address` elsewhere, and an out-of-window range touches nothing; loader failures name the failed step and a flash dying after its erase warns the board may be blank. Also `OpenOcdRpc(device=...)` refusing `program` / erase for a DA1469x by name before sending anything, and the shared `is_da1469x` predicate |
 | `test_pigpio_addr_fallback.py` | The pigpio address block in `box/start_box.sh`: the fallback actually fires when no pigpio container exists (`||` used to test the pipeline, whose `tr` always exits 0, so it never did), plus the `<no value>` a container off `lagernet` renders, and whitespace or garbage -- the result is always a usable address |

@@ -553,5 +553,84 @@ class DeviceFailureReasonTests(_SweepTestCase):
                          device_mod.Device.DEFAULT_TIMEOUT)
 
 
+class SupplyBatchTests(_SweepTestCase):
+    """One supply, every channel, one hardware_service call."""
+
+    NETS = [
+        {"name": f"v{ch}", "role": "power-supply", "instrument": "Rigol_DP821",
+         "address": "USB0::0x1AB1::0x0E11::DP8X::INSTR", "channel": ch}
+        for ch in (1, 2, 3)
+    ]
+
+    def _resolve(self, name, role, error_class):
+        ch = int(name[1:])
+        return ("rigol_dp800", {"name": name, "channel": ch,
+                                "address": self.NETS[0]["address"],
+                                "instrument": "Rigol_DP821"}, ch)
+
+    def test_three_channels_are_one_invoke(self):
+        from lager.nets import device as device_mod
+
+        ok = MagicMock(ok=True, content=json.dumps({
+            "1": {"enabled": True, "voltage": 3.3, "current": 0.1},
+            "2": {"enabled": False, "voltage": 0.0, "current": 0.0},
+            "3": {"enabled": None, "voltage": None, "current": None},
+        }).encode())
+        with patch("lager.dispatchers.helpers.resolve_net_proxy",
+                   side_effect=self._resolve), \
+             patch.object(device_mod._session, "post", return_value=ok) as post, \
+             patch.object(nets_handler.Net, "list_saved", return_value=self.NETS):
+            body = self.client.get('/nets/state').get_json()
+
+        post.assert_called_once()
+        sent = json.loads(post.call_args[1]["data"])
+        self.assertEqual(sent["function"], "get_monitor_states")
+        self.assertEqual(sent["args"], [[1, 2, 3]])
+        self.assertEqual(body, [
+            {"name": "v1", "role": "power-supply",
+             "state": "CH1/on/3.30V/0.100A", "enabled": True},
+            {"name": "v2", "role": "power-supply",
+             "state": "CH2/off/0.00V/0.000A", "enabled": False},
+            {"name": "v3", "role": "power-supply", "state": "CH3/?/?V/?A"},
+        ])
+
+    def test_falls_back_per_channel_without_the_method(self):
+        from lager.nets import device as device_mod
+
+        missing = MagicMock(ok=False, status_code=404)
+        missing.json.return_value = {"error": "Function not found: get_monitor_states"}
+        one = MagicMock(ok=True, content=json.dumps(
+            {"enabled": True, "voltage": 1.0, "current": 0.5}).encode())
+        with patch("lager.dispatchers.helpers.resolve_net_proxy",
+                   side_effect=self._resolve), \
+             patch.object(device_mod._session, "post",
+                          side_effect=[missing, one, one, one]) as post, \
+             patch.object(nets_handler.Net, "list_saved", return_value=self.NETS):
+            body = self.client.get('/nets/state').get_json()
+
+        self.assertEqual(post.call_count, 4)
+        self.assertEqual([e["state"] for e in body],
+                         ["CH1/on/1.00V/0.500A", "CH2/on/1.00V/0.500A",
+                          "CH3/on/1.00V/0.500A"])
+
+    def test_a_busy_supply_is_busy_on_every_channel(self):
+        from lager.nets import device as device_mod
+
+        busy = MagicMock(ok=False, status_code=503)
+        busy.json.return_value = {"error": "device-busy: rigol_dp800: busy"}
+        with patch("lager.dispatchers.helpers.resolve_net_proxy",
+                   side_effect=self._resolve), \
+             patch.object(device_mod._session, "post", return_value=busy), \
+             patch.object(nets_handler.Net, "list_saved", return_value=self.NETS):
+            body = self.client.get('/nets/state').get_json()
+
+        for entry in body:
+            self.assertIsNone(entry["state"])
+            self.assertEqual(entry["reason_code"], nets_handler.CODE_BUSY)
+            self.assertIn("device-busy", entry["reason"])
+        self.assertIn(nets_handler._group_key(self.NETS[0]),
+                      nets_handler._cooldown)
+
+
 if __name__ == '__main__':
     unittest.main()
