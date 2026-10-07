@@ -84,18 +84,23 @@ def usb_ids_from_address(address):
         return (None, None, None)
 
 
-def usb_device_enumerated(address):
-    """``True``/``False`` if the USB device is / isn't on the bus right now;
-    ``None`` if unknown (non-USB address or sysfs unavailable).
+def enumerated_usb_ids():
+    """Every USB device on the bus right now, from ONE pass over sysfs.
 
-    Reads sysfs (the kernel's device list) rather than libusb/PyUSB on purpose:
-    the wedge is precisely that THIS process's USB context is stale and can't
-    see the re-enumerated device, so a libusb-based check would wrongly report
-    the device as gone and suppress the restart. sysfs is unaffected."""
-    vid, pid, serial = usb_ids_from_address(address)
-    if vid is None:
-        return None
-    vid_s, pid_s = f"{vid:04x}", f"{pid:04x}"
+    Returns ``{(vid, pid): [serial, ...]}`` with ints for the IDs and the serial
+    string as the kernel reports it, or ``None`` for a device whose serial file
+    is unreadable or absent. Returns ``None`` when sysfs could not be read.
+
+    An EMPTY result is returned as ``{}``, and what it means is the caller's
+    call: a container with no USB view lists nothing, so a caller that would
+    report devices as unplugged on the strength of it should treat ``{}`` as
+    unknown, as the /nets/state sweep does.
+
+    Callers that check several addresses (the /nets/state sweep) read this once
+    and match against it with ``usb_address_enumerated``, rather than globbing
+    sysfs once per address.
+    """
+    found = {}
     try:
         for dev_dir in glob.glob("/sys/bus/usb/devices/*/"):
             def _read(name):
@@ -104,19 +109,58 @@ def usb_device_enumerated(address):
                         return fh.read().strip()
                 except OSError:
                     return None
-            if (_read("idVendor") or "").lower() != vid_s:
+            vid_s, pid_s = _read("idVendor"), _read("idProduct")
+            if not vid_s or not pid_s:
                 continue
-            if (_read("idProduct") or "").lower() != pid_s:
+            try:
+                key = (int(vid_s, 16), int(pid_s, 16))
+            except ValueError:
                 continue
-            if serial is None:
-                return True
-            dev_serial = _read("serial")
-            if dev_serial is None or dev_serial == serial:
-                # serial matches, or is unreadable but VID/PID matched — present
-                return True
-        return False
+            found.setdefault(key, []).append(_read("serial"))
     except Exception:
         return None
+    return found
+
+
+def usb_address_enumerated(address, ids, *, port_slots=True):
+    """``True``/``False`` if ``address``'s device is / isn't in ``ids``;
+    ``None`` if that cannot be told (non-USB address, or ``ids`` is None).
+
+    ``ids`` is ``enumerated_usb_ids()``'s result. A device whose serial is
+    unreadable matches on VID/PID alone, and so does a topology-addressed one
+    (a ``port-<path>`` slot where the serial would be, used for hubs whose
+    serials are not unique): neither has a serial to compare.
+    ``port_slots=False`` compares a ``port-`` slot as if it were a serial, which
+    is what ``usb_device_enumerated`` has always done (so it never matches).
+    """
+    if ids is None:
+        return None
+    vid, pid, serial = usb_ids_from_address(address)
+    if vid is None:
+        return None
+    serials = ids.get((vid, pid))
+    if not serials:
+        return False
+    if serial is None or (port_slots and serial.startswith("port-")):
+        return True
+    return any(s is None or s == serial for s in serials)
+
+
+def usb_device_enumerated(address):
+    """``True``/``False`` if the USB device is / isn't on the bus right now;
+    ``None`` if unknown (non-USB address or sysfs unavailable).
+
+    Reads sysfs (the kernel's device list) rather than libusb/PyUSB on purpose:
+    the wedge is precisely that THIS process's USB context is stale and can't
+    see the re-enumerated device, so a libusb-based check would wrongly report
+    the device as gone and suppress the restart. sysfs is unaffected."""
+    if usb_ids_from_address(address)[0] is None:
+        return None
+    # port_slots=False keeps this function's long-standing answer for a
+    # topology-addressed hub. Matching it on VID/PID would change when the
+    # self-restart below is allowed to fire, which is a separate decision.
+    return usb_address_enumerated(address, enumerated_usb_ids(),
+                                  port_slots=False)
 
 
 def looks_like_open_failure(exc):
