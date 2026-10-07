@@ -12,54 +12,41 @@ Control oscilloscope nets through the Lager CLI for waveform capture, triggering
 ## Syntax
 
 ```bash
-lager scope [NETNAME] [OPTIONS] COMMAND [ARGS]...
+lager scope [NET_NAME] [OPTIONS] COMMAND [ARGS]...
 ```
 
-If `NETNAME` is omitted, lists all available scope nets on the box.
+With no command, `lager scope` lists the `scope` and `scope-channel` nets on the box. A command without `NET_NAME` uses the default scope net. Set the default with `lager defaults add --scope-net NET_NAME`.
 
 ## The scope and its channels
 
-An oscilloscope is two kinds of net. A **`scope`** net is the instrument
-itself; a **`scope-channel`** net is one of its inputs. Plugging in a
-two-channel PicoScope offers three nets in `lager nets tui`: the two channels
-and the scope they belong to.
+An oscilloscope is two kinds of net. A **`scope`** net is the instrument itself. A **`scope-channel`** net is one of its inputs, one net for each channel. For a two-channel PicoScope, `lager nets tui` offers three nets: the two channels and the scope that they belong to.
 
-The split follows the hardware. Six settings belong to a channel, and the rest
-belong to the instrument:
+The split follows the hardware. Six settings belong to a channel, and the rest belong to the instrument:
 
 | Belongs to a `scope-channel` net | Belongs to the `scope` net |
 |---|---|
-| `enable`, `disable` | `start`, `stop`, `force` |
+| `enable`, `disable` | `start`, `stop`, `force`, `status` |
 | `scale` (volts/div) | `timebase`, horizontal position |
-| `coupling` | `trigger` (source, slope, level, mode) |
+| `coupling` | `trigger` (source, slope, level, mode, holdoff) |
 | `probe` | `cursor` |
-| vertical offset | `autoscale`, reported capabilities |
-| `measure` | |
+| vertical offset | `acquire`, `roll`, `display` |
+| `measure` | `autoscale`, reported capabilities |
 
-Both are addressed the same way, so nothing about the command changes:
+You address both kinds of net in the same way:
 
 ```bash
-lager scope vbus coupling ac      # a channel net
-lager scope picoscope1 timebase 1ms   # the scope net
+lager scope vbus coupling ac --box my-lager-box           # a channel net
+lager scope picoscope1 timebase 0.001 --box my-lager-box  # the scope net
 ```
 
 <Note>
-A command that belongs to the instrument is also accepted on one of its
-channel nets, because a channel names exactly one scope and there is nothing
-to be ambiguous about. Scripts written before scope nets existed keep working
-unchanged.
+An instrument command also works on one of its channel nets. A channel names exactly one scope, so the command is not ambiguous. Scripts from before scope nets keep working unchanged.
 
-The reverse is refused. `lager scope picoscope1 coupling ac` names no channel,
-and rather than guess one the CLI names the channel nets that would have
-worked.
+The reverse does not work. `lager scope picoscope1 coupling ac` names no channel, and the box does not guess one. The error names the channel nets to use instead.
 </Note>
 
 <Note>
-Boxes set up before scope nets existed had only channels, saved with the role
-`scope`. Those are converted the first time the box reads its nets: each
-becomes a `scope-channel` net keeping its name and pin, and a `scope` net named
-after the model — `picoscope1` — appears alongside them. Nothing needs to be
-re-added, and the new net can be renamed.
+Boxes from before scope nets had only channel nets, saved with the role `scope`. The box converts them the first time that it reads its nets. Each one becomes a `scope-channel` net with the same name and pin. A `scope` net named after the model, such as `picoscope1`, appears next to them. An old `scope` net with no pin stays a `scope` net and stands for the instrument. You do not need to add anything again, and you can rename the new net.
 </Note>
 
 ## Global Options
@@ -67,8 +54,9 @@ re-added, and the new net can be renamed.
 | Option | Description |
 |--------|-------------|
 | `--box BOX` | Lager Box name or IP address |
-| `--mcu MCU` | MCU identifier (passed to the backend; use when multiple MCUs share a scope) |
 | `--help` | Show help message and exit |
+
+Every command also accepts `--box`. The channel, capture-control, `autoscale`, `measure` and `cursor` commands also accept `--mcu MCU`, and so do the trigger types other than `holdoff`. No `lager scope` command uses its value.
 
 ## Commands
 
@@ -78,40 +66,37 @@ re-added, and the new net can be renamed.
 | `disable` | Disable oscilloscope channel | Both |
 | `start` | Start waveform capture (continuous or single) | Both |
 | `stop` | Stop waveform capture | Both |
-| `force` | Force trigger manually (bypass trigger condition) | Both |
+| `force` | Force a trigger now (bypass the trigger condition) | Both |
+| `status` | Show every scope setting in one reply | PicoScope only |
 | `autoscale` | Automatically adjust vertical scale and timebase | Rigol only |
 | `coupling` | Set channel coupling mode (dc, ac; gnd is Rigol only) | Both |
 | `probe` | Set probe attenuation ratio | Both |
 | `scale` | Set vertical scale (volts per division) | Both |
 | `timebase` | Set horizontal timebase (seconds per division) | Both |
 | `measure` | Measure waveform characteristics | Both (see note) |
-| `trigger` | Configure trigger settings | Both (see note) |
-| `cursor` | Place cursors over the capture and read the deltas | Both; `set-a`/`set-b`/`move-a`/`move-b`/`hide` are Rigol only |
+| `trigger` | Show the trigger, or set it with a subcommand | Both (see note) |
+| `acquire` | Set how captures combine (normal, average, peak) | PicoScope only |
+| `roll` | Set roll mode for slow timebases | PicoScope only |
+| `fft` | Report the strongest frequency components of a channel | PicoScope only |
+| `display` | Set how the web UI draws the trace | PicoScope only |
+| `cursor` | Place cursors over the capture and read the deltas | `time`/`volts`/`off` are PicoScope only; `set-a`/`set-b`/`move-a`/`move-b`/`hide` are Rigol only |
 | `stream` | Stream oscilloscope data with web visualization | PicoScope only |
 
 <Note>
-Edge trigger works with both PicoScope and Rigol. Protocol triggers (I2C, SPI, UART) and pulse width trigger are Rigol only.
+The edge trigger works on PicoScope and Rigol. The pulse trigger and the protocol triggers (I2C, SPI, UART) are Rigol only. `trigger holdoff` is PicoScope only.
 </Note>
 
 <Note>
-Measurements work on both instruments, but they are computed differently. A Rigol
-answers a SCPI query about what it already displays; for a PicoScope the daemon
-computes the value from a captured block, because no PicoTech API has an
-equivalent of `:MEAS:VPP?`. The consequence is that `--display` and `--cursor`
-are Rigol only: they put the reading on the instrument's own screen, and a
-PicoScope does not have one.
+Measurements work on both instruments, but each one computes them in a different way. A Rigol answers a SCPI query about the trace that it shows. For a PicoScope, the daemon computes the value from a captured block, because no PicoTech API has an equivalent of `:MEAS:VPP?`. So `--display` and `--cursor` are Rigol only. They put the reading on the screen of the instrument, and a PicoScope has no screen.
 
-While a PicoScope is acquiring, measurements and cursor readings are computed
-from the capture most recently streamed out, so they describe the trace the web
-UI is drawing rather than a separate capture taken a moment later. Stopped, they
-describe the last capture, as the readouts on a stopped bench scope do.
+While a PicoScope acquires, measurements and cursor readings use the capture that the daemon streamed out last. So they describe the trace in the web UI, not a different capture a moment later. After a stop, they describe the last capture, as the readouts on a stopped bench scope do.
 </Note>
 
 ---
 
 ## Validation Ranges
 
-The CLI validates input values before sending commands to the oscilloscope:
+The CLI checks these values before it sends a command to the oscilloscope:
 
 | Parameter | Minimum | Maximum | Unit |
 |-----------|---------|---------|------|
@@ -126,24 +111,24 @@ The CLI validates input values before sending commands to the oscilloscope:
 
 | Manufacturer | Model | Features |
 |--------------|-------|----------|
-| Rigol | MSO5000 series | 4 analog + 16 digital channels, SCPI/VISA control, edge and SPI triggers, measurements, cursors |
-| PicoScope | 2000, 2000a, 3000a, 4000a, 5000a series | Real-time streaming, web-based visualization, CSV export, edge trigger, daemon-computed measurements |
+| Rigol | MSO5000 series | 4 analog + 16 digital channels, SCPI/VISA control, edge and SPI triggers, measurements, display cursors |
+| PicoScope | 2000, 2000a, 3000a, 4000a, 5000a series | Real-time streaming, web-based visualization, CSV export, edge trigger, daemon-computed measurements, cursors over the capture |
 
-The channel count, voltage ranges, bandwidth, memory depth and ADC resolution of
-an attached PicoScope are detected at runtime rather than assumed from the
-series, so a 2-channel 2204A and an 8-channel 4824A both work without
-configuration. `lager scope <net> capabilities` reports what was detected.
+The daemon reads the channel count, voltage ranges, bandwidth, memory depth and ADC resolution from the attached PicoScope. It does not assume them from the series. Type `capabilities` in the console of the web UI to see what the daemon found.
+
+When you add nets, `lager nets tui` reads the channel count from the model number. It offers two channel nets for a 2-channel model and four for a 4-channel model. The 8-channel 4824A also gets four, channels A to D, because Lager names no channel after D. A model number that it cannot read gets two.
 
 ### Feature Comparison
 
 | Feature | Rigol MSO5000 | PicoScope |
 |---------|---------------|-----------|
-| Channels | 4 analog + 16 digital | 2-8 analog, detected at runtime |
+| Channels | 4 analog + 16 digital | 2 or 4 analog (A to D), detected at runtime |
 | Real-time streaming | No (single capture) | Yes (continuous) |
-| Measurements | 11 built-in types | 14 types, computed from the capture |
-| Trigger types | Edge and SPI (pulse, I2C and UART do not work yet) | Edge only |
+| Measurements | Queried from the instrument over SCPI | 14 types, computed from the capture |
+| Trigger types | Edge and SPI (pulse, I2C and UART do not work yet) | Edge only, with holdoff |
 | Cursor control | XY cursors on the instrument display | Time/voltage cursors over the captured samples |
 | Autoscale | Yes | No |
+| Averaging, peak detect, roll, FFT | On the front panel of the instrument | `acquire`, `roll`, `fft` |
 | Web visualization | No | Yes (HTML5) |
 | Data export | Via measurements | CSV streaming |
 | Control method | SCPI over USB/LAN | Vendor SDK, via the box daemon |
@@ -154,65 +139,79 @@ configuration. `lager scope <net> capabilities` reports what was detected.
 
 ### `enable`
 
-Enable oscilloscope channel for the specified net.
+Enable the channel of a `scope-channel` net.
 
 ```bash
-lager scope NET_NAME enable [--box BOX] [--mcu MCU]
+lager scope NET_NAME enable [--box BOX]
 ```
 
 ### `disable`
 
-Disable oscilloscope channel.
+Disable the channel of a `scope-channel` net.
 
 ```bash
-lager scope NET_NAME disable [--box BOX] [--mcu MCU]
+lager scope NET_NAME disable [--box BOX]
 ```
 
 ### `start`
 
-Start waveform capture (continuous or single).
+Start waveform capture. Without `--single`, the scope captures continuously in the trigger mode that is set.
 
 ```bash
-lager scope NET_NAME start [--box BOX] [--mcu MCU] [--single]
+lager scope NET_NAME start [--single] [--box BOX]
 ```
 
 **Options:**
-- `--single` - Capture single waveform then stop (one-shot mode)
+- `--single` - Arm one capture, then stop (one-shot mode)
+
+A PicoScope in `single` mode changes to `auto` when `start` runs without `--single`. A single-shot stops after one capture, so it cannot run continuously.
 
 ### `stop`
 
 Stop waveform capture.
 
 ```bash
-lager scope NET_NAME stop [--box BOX] [--mcu MCU]
+lager scope NET_NAME stop [--box BOX]
 ```
 
 ### `force`
 
-Force trigger manually, bypassing the trigger condition. Useful when the signal doesn't meet trigger criteria.
+Trigger now, without the trigger condition. Use it when the signal does not meet the trigger condition.
 
 ```bash
-lager scope NET_NAME force [--box BOX] [--mcu MCU]
+lager scope NET_NAME force [--box BOX]
 ```
+
+### `status`
+
+Show every scope setting in one reply: the channels, the timebase, the trigger and the acquisition. PicoScope only.
+
+```bash
+lager scope NET_NAME status [--box BOX]
+```
+
+The reply comes from the settings that the daemon published last. The web UI draws its controls from the same state.
 
 ### `autoscale`
 
-Automatically adjust vertical scale and horizontal timebase for optimal display (Rigol only).
+Automatically adjust the vertical scale and the horizontal timebase (Rigol only). The command can take 10 to 15 seconds.
 
 ```bash
-lager scope NET_NAME autoscale [--box BOX] [--mcu MCU]
+lager scope NET_NAME autoscale [--box BOX]
 ```
+
+A PicoScope refuses `autoscale`, because its SDKs have no autoset. Set `scale` and `timebase` yourself.
 
 ---
 
-## Channel Configuration (Rigol)
+## Channel Configuration
 
 ### `coupling`
 
-Set the input coupling mode for the oscilloscope channel.
+Set the input coupling mode of the channel.
 
 ```bash
-lager scope NET_NAME coupling MODE [--box BOX] [--mcu MCU]
+lager scope NET_NAME coupling MODE [--box BOX]
 ```
 
 **Arguments:**
@@ -224,16 +223,14 @@ lager scope NET_NAME coupling MODE [--box BOX] [--mcu MCU]
 | `ac` | Block DC component, pass AC only |
 | `gnd` | Ground reference (0V baseline). Rigol only |
 
-`gnd` is refused on a PicoScope 2000-series unit, which has no ground switch --
-`ps2000_set_channel` carries a single flag for coupling. Use `ac` to block the
-DC component, or unplug the probe to see where zero sits.
+A PicoScope refuses `gnd`, because no PicoScope series has a ground switch. Use `ac` to block the DC component, or disable the channel.
 
 ### `probe`
 
 Set the probe attenuation ratio for accurate voltage measurements.
 
 ```bash
-lager scope NET_NAME probe RATIO [--box BOX] [--mcu MCU]
+lager scope NET_NAME probe RATIO [--box BOX]
 ```
 
 **Arguments:**
@@ -245,12 +242,14 @@ lager scope ANALOG1 probe 1 --box my-lager-box     # Direct connection (1:1)
 lager scope ANALOG1 probe 100 --box my-lager-box   # 100:1 high-voltage probe
 ```
 
+A 2000-series PicoScope (2204A, 2205A) starts at 10x. The 2000a, 3000a, 4000a and 5000a series start at 1x. Set the ratio to match your probe.
+
 ### `scale`
 
-Set the vertical scale (volts per division) for the oscilloscope channel.
+Set the vertical scale (volts per division) of the channel.
 
 ```bash
-lager scope NET_NAME scale VOLTS_PER_DIV [--box BOX] [--mcu MCU]
+lager scope NET_NAME scale VOLTS_PER_DIV [--box BOX]
 ```
 
 **Arguments:**
@@ -265,14 +264,14 @@ lager scope ANALOG1 scale 0.001 --box my-lager-box  # 1mV/div (minimum)
 
 ### `timebase`
 
-Set the horizontal timebase (seconds per division) for the oscilloscope.
+Set the horizontal timebase (seconds per division) of the oscilloscope.
 
 ```bash
-lager scope NET_NAME timebase SEC_PER_DIV [--box BOX] [--mcu MCU]
+lager scope NET_NAME timebase SECONDS_PER_DIV [--box BOX]
 ```
 
 **Arguments:**
-- `SEC_PER_DIV` - Horizontal timebase in seconds per division (1e-9 to 50.0)
+- `SECONDS_PER_DIV` - Horizontal timebase in seconds per division (1e-9 to 50.0)
 
 ```bash
 lager scope ANALOG1 timebase 0.001 --box my-lager-box      # 1ms/div
@@ -281,34 +280,23 @@ lager scope ANALOG1 timebase 0.000001 --box my-lager-box   # 1us/div
 lager scope ANALOG1 timebase 0.000000001 --box my-lager-box # 1ns/div (minimum)
 ```
 
-The range above is what the command accepts, not what a given unit can do. A
-scope samples at a fixed ladder of intervals, so the request is rounded to the
-nearest, and how fast a screen it can reach at all depends on the block depth
-as much as the sample rate: a 2204A at 100 MS/s over 8000 samples bottoms out
-at 8 us/div. Both show up in the readback, which reports the scale in use
-rather than the one asked for.
+The range above is what the command accepts, not what a given unit can do. A scope samples at a fixed set of intervals, so it rounds the request to the nearest one. The fastest timebase also depends on the block depth, not only on the sample rate. For example, a 2204A at 100 MS/s over 8000 samples stops at 8 us/div. On a PicoScope, `status` reports the timebase in use, not the one that you asked for.
 
 ---
 
-## Measure Subcommands (Rigol)
+## Measure Subcommands
 
-Measure waveform characteristics on either instrument. A Rigol is asked for a
-reading it already computes; for a PicoScope the box captures a block and
-computes the value from the samples, so no streaming or CSV export is needed.
+Measure waveform characteristics on either instrument. A Rigol returns a reading that it computes itself. For a PicoScope, the box captures a block and the daemon computes the value from the samples. You do not need streaming or a CSV export.
 
-Because one PicoScope capture yields every quantity at once, reading several
-values costs several captures. A script that wants the whole set should use
-`measure_all` from the [Python API](/source/reference/python/scope) instead of
-calling this repeatedly.
+Each PicoScope measurement asks for its own capture, so several values cost several captures. To read the whole set from one capture, use `measurement.all()` in the [Python API](/source/reference/python/scope).
 
 **Common Options for all measure commands:**
 
 | Option | Description |
 |--------|-------------|
 | `--box BOX` | Lager Box name or IP |
-| `--mcu MCU` | MCU identifier |
-| `--display` | Display measurement on oscilloscope screen |
-| `--cursor` | Enable measurement cursor on screen |
+| `--display` | Show the measurement on the oscilloscope screen (Rigol only) |
+| `--cursor` | Show the measurement cursor on the screen (Rigol only) |
 
 ### Time Measurements
 
@@ -406,67 +394,67 @@ lager scope NET_NAME measure vrms [--box BOX] [--display] [--cursor]
 
 ## Trigger Subcommands
 
-Configure trigger settings. Edge trigger works with both PicoScope and Rigol. Protocol triggers (I2C, SPI, UART) and pulse trigger are Rigol only.
+Show or set the trigger. The edge trigger works on PicoScope and Rigol. The protocol triggers (I2C, SPI, UART) and the pulse trigger are Rigol only.
 
-**Common Trigger Options:**
+### `trigger`
+
+With no subcommand, `trigger` shows the mode, source, slope and level of the trigger. On a PicoScope, it also shows the holdoff if one is set.
+
+```bash
+lager scope NET_NAME trigger [--box BOX]
+```
+
+**Options for `pulse`, `i2c`, `spi` and `uart`:**
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--mode` | Trigger mode: `normal`, `auto`, `single` | unchanged |
-| `--coupling` | Trigger-path coupling filter: `dc`, `ac`, `low_freq_rej`, `high_freq_rej` (Rigol only) | unchanged |
-| `--source NET` | Trigger source net | Current net |
-| `--level VOLTS` | Trigger level in volts | - |
+| `--mode` | Trigger mode: `normal`, `auto`, `single` | `normal` |
+| `--coupling` | Trigger-path coupling filter: `dc`, `ac`, `low_freq_rej`, `high_freq_rej` | `dc` |
+| `--source NET` | Trigger source net (`pulse` and `uart` only) | unchanged |
+| `--level VOLTS` | Trigger level in volts (`pulse` and `uart` only) | unchanged |
+
+These four commands apply `--mode` and `--coupling` every time. So a call without them sets `normal` and `dc`. `trigger edge` has no defaults, and it changes only the settings that you give.
 
 <Note>
-`--coupling` here is the filter on the way to the trigger comparator, not the
-channel's input coupling. They share a word and do different things: this one
-lets a drifting or noisy edge be triggered on without altering the displayed
-trace, while `lager scope <net> coupling` changes what the channel passes and
-does move the trace. Only a Rigol has the trigger filter; on a PicoScope the
-comparator sees the channel as it is, and the flag is refused rather than
-quietly applied to the input.
-
-Every option leaves what it does not name alone. `--mode` and `--coupling`
-used to default to `normal` and `dc`, so adjusting a level re-applied both --
-a trigger armed for `single` went back to `normal` without being asked.
+`--coupling` is the filter in front of the trigger comparator, not the input coupling of the channel. The two settings share a word, but they do different things. The trigger filter lets the scope trigger on a noisy or drifting edge, and the trace does not change. `lager scope <net> coupling` changes what the channel passes, and the trace moves. Only a Rigol has the trigger filter. A PicoScope refuses the flag, and it does not apply it to the input instead.
 </Note>
 
 <Note>
-`--mode` says how a running sweep triggers, and `auto` is the one that will
-show you something regardless: it triggers itself if nothing crosses the level,
-so the trace keeps moving whether or not the trigger is set usefully. `normal`
-updates the screen only on a real trigger, which is what holds a repetitive
-waveform still in one place.
+`--mode` sets how a running scope triggers. In `auto`, the scope triggers itself if no edge crosses the level, so the trace always moves. In `normal`, the screen updates only on a real trigger, which holds a repetitive waveform still.
 
-`--mode single` also arms a single-shot, the same as `lager scope <net>
-single`, because a mode that captures once is not a state a scope can sit in
-waiting: `run` promotes it to `auto`, single-shot being the one mode that
-cannot run continuously.
-
-Starting a capture no longer forces `auto`. It used to, so selecting `normal`
-and then running left the scope free-running with the trigger ignored, and
-nothing read the mode back to show it.
+On a PicoScope, `--mode single` also arms one capture, the same as `lager scope <net> start --single`. A single-shot cannot run continuously. So `start` without `--single` changes `single` to `auto`. In the other modes, `start` keeps the mode that you set.
 </Note>
 
 ### `trigger edge`
 
-Set edge trigger configuration. Works with both PicoScope and Rigol.
+Set the edge trigger. It works on PicoScope and Rigol.
 
 ```bash
 lager scope NET_NAME trigger edge [OPTIONS]
 ```
 
-**Options (in addition to common):**
+**Options:**
 
 | Option | Description |
 |--------|-------------|
+| `--mode` | Trigger mode: `normal`, `auto`, `single` |
+| `--coupling` | Trigger-path coupling filter: `dc`, `ac`, `low_freq_rej`, `high_freq_rej` (Rigol only) |
+| `--source NET` | Trigger source (see below) |
 | `--slope` | Trigger slope: `rising`, `falling`, `both` |
+| `--level VOLTS` | Trigger level in volts |
+
+Every option is optional, and an option that you do not give keeps its value. On a PicoScope, give at least one option. With none, the command prints an error and exits 1.
+
+On a PicoScope, `--source` takes a channel letter (`A` to `D`), a channel number (`1` to `4`), or the name of a `scope-channel` net. On a Rigol, `--source` takes the name of a `scope-channel` net.
 
 **Examples:**
 
 ```bash
 # Rising edge at 1.5V
 lager scope ANALOG1 trigger edge --slope rising --level 1.5 --box my-lager-box
+
+# Trigger on channel B (on a Rigol, give a scope-channel net name)
+lager scope picoscope1 trigger edge --source B --box my-lager-box
 
 # Falling edge in single capture mode
 lager scope ANALOG1 trigger edge --slope falling --level 0.5 --mode single --box my-lager-box
@@ -475,9 +463,24 @@ lager scope ANALOG1 trigger edge --slope falling --level 0.5 --mode single --box
 lager scope ANALOG1 trigger edge --slope both --coupling ac --level 0 --box my-lager-box
 ```
 
+### `trigger holdoff`
+
+Ignore triggers for `SECONDS` after each trigger, from 0 to 10. With no value, the command shows the holdoff. PicoScope only.
+
+```bash
+lager scope NET_NAME trigger holdoff [SECONDS] [--box BOX]
+```
+
+A holdoff steadies the trace of a signal with several edges that cross the level, such as a burst or a serial byte. The scope waits for the rest of one burst before it triggers on the next.
+
+```bash
+lager scope picoscope1 trigger holdoff 0.001 --box my-lager-box   # 1 ms
+lager scope picoscope1 trigger holdoff --box my-lager-box         # show it
+```
+
 ### `trigger pulse`
 
-Set pulse width trigger (Rigol only). Triggers when pulse width meets specified conditions.
+Set pulse width trigger (Rigol only). The scope triggers when a pulse width meets the conditions.
 
 On the Rigol MSO5000, this trigger does not work yet. See the limitations at the top of this page.
 
@@ -485,7 +488,7 @@ On the Rigol MSO5000, this trigger does not work yet. See the limitations at the
 lager scope NET_NAME trigger pulse [OPTIONS]
 ```
 
-**Options (in addition to common):**
+**Options (in addition to the options above):**
 
 | Option | Description | Default |
 |--------|-------------|---------|
@@ -508,7 +511,7 @@ The condition does not select a polarity yet: each `positive` value and its `neg
 
 ### `trigger i2c`
 
-Set I2C protocol trigger (Rigol only). Triggers on I2C bus events.
+Set I2C protocol trigger (Rigol only). The scope triggers on I2C bus events.
 
 On the Rigol MSO5000, this command does not work yet. See the limitations at the top of this page.
 
@@ -516,7 +519,7 @@ On the Rigol MSO5000, this command does not work yet. See the limitations at the
 lager scope NET_NAME trigger i2c [OPTIONS]
 ```
 
-**Options (in addition to common mode/coupling):**
+**Options (in addition to `--mode` and `--coupling`):**
 
 | Option | Description | Default |
 |--------|-------------|---------|
@@ -545,13 +548,13 @@ lager scope NET_NAME trigger i2c [OPTIONS]
 
 ### `trigger spi`
 
-Set SPI protocol trigger (Rigol only). Triggers on SPI bus events.
+Set SPI protocol trigger (Rigol only). The scope triggers on SPI bus events.
 
 ```bash
 lager scope NET_NAME trigger spi [OPTIONS]
 ```
 
-**Options (in addition to common mode/coupling):**
+**Options (in addition to `--mode` and `--coupling`):**
 
 | Option | Description | Default |
 |--------|-------------|---------|
@@ -579,7 +582,7 @@ lager scope ANALOG1 trigger spi \
 
 ### `trigger uart`
 
-Set UART protocol trigger (Rigol only). Triggers on UART serial events.
+Set UART protocol trigger (Rigol only). The scope triggers on UART serial events.
 
 On the Rigol MSO5000, this command does not work yet. See the limitations at the top of this page.
 
@@ -587,7 +590,7 @@ On the Rigol MSO5000, this command does not work yet. See the limitations at the
 lager scope NET_NAME trigger uart [OPTIONS]
 ```
 
-**Options (in addition to common):**
+**Options (in addition to the options above):**
 
 | Option | Description | Default |
 |--------|-------------|---------|
@@ -600,59 +603,129 @@ lager scope NET_NAME trigger uart [OPTIONS]
 
 ---
 
+## Acquisition and Display
+
+These commands are PicoScope only. A Rigol does the same work on its front panel, and the box refuses them for a Rigol net.
+
+### `acquire`
+
+Set how consecutive captures combine. With no mode, the command shows the current mode.
+
+```bash
+lager scope NET_NAME acquire [MODE] [--count N] [--box BOX]
+```
+
+| Mode | Description |
+|------|-------------|
+| `normal` | Each capture as the scope takes it |
+| `average` | A running mean of the last `--count` captures (1 to 1024, default 16). It reduces random noise by the square root of the count |
+| `peak` | The minimum and maximum of every sample interval. The daemon refuses it on a unit that returns one sample for each interval |
+
+`--count` needs a mode. With `--count` and no mode, the command prints an error.
+
+```bash
+lager scope picoscope1 acquire average --count 64 --box my-lager-box
+lager scope picoscope1 acquire --box my-lager-box   # show the mode
+```
+
+### `roll`
+
+Set roll mode, which streams slow timebases continuously. With no mode, the command shows the current mode.
+
+```bash
+lager scope NET_NAME roll [auto|on|off] [--box BOX]
+```
+
+| Mode | Description |
+|------|-------------|
+| `auto` | Roll at 50 ms/div and slower while the trigger mode is `auto`, as a bench scope does |
+| `on` | Roll at any timebase, and ignore the trigger |
+| `off` | Do not roll |
+
+### `fft`
+
+Report the strongest frequency components of a channel. The box computes the spectrum from the capture on screen. Amplitudes are RMS volts at the probe tip, in dBV.
+
+```bash
+lager scope NET_NAME fft [--channel CHANNEL] [--window WINDOW] [--peaks N] [--box BOX]
+```
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--channel` | Channel to analyze: a letter such as `A` or a number such as `1` | The channel of the net |
+| `--window` | FFT window: `hann`, `hamming`, `blackman`, `flattop`, `rectangular` | `hann` |
+| `--peaks` | Number of components to report, from 1 to 50 | `5` |
+
+On a `scope` net, give `--channel`, because the instrument has no channel of its own. Use `hann` for general work and `flattop` when the amplitude of a tone is important. Use `rectangular` for a signal that fits the capture exactly.
+
+### `display`
+
+Set how the web UI draws the trace. With no subcommand, `display` shows the current settings. The box holds them, so an open page follows a change from the CLI.
+
+```bash
+lager scope NET_NAME display [SUBCOMMAND] [ARGS] [--box BOX]
+```
+
+| Subcommand | Description |
+|------------|-------------|
+| `persistence VALUE` | Keep old traces on screen: a number of seconds (up to 60), `infinite`, or `off` |
+| `xy on`, `xy off` | Plot channel B against channel A, not against time |
+| `zoom FACTOR` | Magnify the capture by `FACTOR` (1 to 1000) around `--center`, in seconds from the trigger (default 0). `zoom off` stops the zoom |
+| `math EXPR` | Draw a trace computed from two channels: `a+b`, `a-b`, `a*b`, or `off` |
+| `fft CHANNEL` | Show a spectrum pane for `CHANNEL` with `--window` (default `hann`). `fft off` hides it |
+
+```bash
+lager scope picoscope1 display persistence 2 --box my-lager-box   # traces fade over 2 s
+lager scope picoscope1 display xy on --box my-lager-box           # B against A
+lager scope picoscope1 display zoom 8 --center 0.001 --box my-lager-box
+lager scope picoscope1 display math a-b --box my-lager-box
+lager scope picoscope1 display fft a --box my-lager-box
+```
+
+---
+
 ## Cursor Subcommands
 
-Two different things share this name.
+Two different sets of commands share this name.
 
-`cursor time`, `cursor volts` and `cursor off` place cursors over the
-**captured samples** and work on any scope. They are typed rather than
-dragged: there is no knob for them and no handle on the plot to grab. The box
-holds the pair, so a cursor placed from the terminal is the one the web UI
-draws, and the same `cursor` verb works in that UI's console.
+`cursor time`, `cursor volts` and `cursor off` place cursors over the **captured samples** of a PicoScope. You type them, because there is no knob for them and no handle on the plot. The box holds the pair, so the web UI draws a cursor that you place from the terminal. The console of the web UI accepts the same `cursor` commands.
 
-`cursor set-a`, `set-b`, `move-a`, `move-b` and `hide` position markers on a
-**Rigol's own front display** in screen coordinates, over SCPI. A PicoScope
-has no display to put them on.
+`cursor set-a`, `set-b`, `move-a`, `move-b` and `hide` move markers on the **front display of a Rigol** in screen coordinates, over SCPI. A PicoScope has no display for them.
 
 ### `cursor`
 
-With no subcommand, reads whatever cursors are set.
+With no subcommand, `cursor` reads the cursors that are set. PicoScope only.
 
 ```bash
-lager scope NET_NAME cursor [--box BOX] [--mcu MCU]
+lager scope NET_NAME cursor [--box BOX]
 ```
 
 ### `cursor time`
 
-Place the two time cursors, in seconds relative to the trigger. Negative is
-before the trigger; half of a capture sits there.
+Place the two time cursors, in seconds from the trigger. A negative time is before the trigger, and half of a capture is there.
 
 ```bash
-lager scope NET_NAME cursor time T1 T2 [--box BOX] [--mcu MCU]
+lager scope NET_NAME cursor time T1 T2 [--box BOX]
 ```
 
-Reports the interval between them, its reciprocal as a frequency, and the
-voltage of the trace under each — so a pair placed a cycle apart reads the
-frequency off directly. The voltages are interpolated between samples, since
-a cursor lands where it was typed rather than on the sample grid.
+The reply gives the interval between the cursors, its reciprocal as a frequency, and the voltage of the trace under each cursor. So a pair one cycle apart shows the frequency directly. The box interpolates the voltages between samples, because a cursor stays where you put it, not on the sample grid.
 
 ### `cursor volts`
 
 Place the two voltage cursors, in volts at the probe tip.
 
 ```bash
-lager scope NET_NAME cursor volts V1 V2 [--box BOX] [--mcu MCU]
+lager scope NET_NAME cursor volts V1 V2 [--box BOX]
 ```
 
-Reports the difference. No capture is needed for this pair, so it answers
-without waiting for a trigger.
+The reply gives the difference. This pair needs no capture, so the reply comes without a wait for a trigger.
 
 ### `cursor off`
 
-Clear both pairs, and stop the web UI drawing them.
+Clear both pairs, and stop the web UI from drawing them.
 
 ```bash
-lager scope NET_NAME cursor off [--box BOX] [--mcu MCU]
+lager scope NET_NAME cursor off [--box BOX]
 ```
 
 **Examples:**
@@ -671,13 +744,9 @@ lager scope ANALOG1 cursor off --box my-lager-box
 ```
 
 <Note>
-The pairs are independent: placing time cursors leaves voltage cursors where
-they were. Each pair is placed as a pair, because one cursor on its own reads
-nothing — the quantity wanted is the difference between two.
+The pairs are independent. When you place time cursors, the voltage cursors stay where they are. You place each pair as a pair, because one cursor alone reads nothing. The quantity that you want is the difference between two cursors.
 
-A cursor outside the captured window reports no voltage rather than the
-nearest sample, which would be a reading from a different moment. The reply
-names the window so it is clear why.
+A cursor outside the captured window reports no voltage. The nearest sample comes from a different moment, so the box does not use it. The reply names the window, so the cause is clear.
 </Note>
 
 ### `cursor set-a` / `cursor set-b`
@@ -687,8 +756,8 @@ Rigol only.
 Set the absolute position of cursor A or B.
 
 ```bash
-lager scope NET_NAME cursor set-a [--x FLOAT] [--y FLOAT] [--box BOX] [--mcu MCU]
-lager scope NET_NAME cursor set-b [--x FLOAT] [--y FLOAT] [--box BOX] [--mcu MCU]
+lager scope NET_NAME cursor set-a [--x FLOAT] [--y FLOAT] [--box BOX]
+lager scope NET_NAME cursor set-b [--x FLOAT] [--y FLOAT] [--box BOX]
 ```
 
 **Options:**
@@ -700,12 +769,11 @@ lager scope NET_NAME cursor set-b [--x FLOAT] [--y FLOAT] [--box BOX] [--mcu MCU
 
 ### `cursor move-a` / `cursor move-b`
 
-Rigol only. Move a display cursor by a relative offset from its current
-position.
+Rigol only. Move a display cursor by a relative offset from its current position.
 
 ```bash
-lager scope NET_NAME cursor move-a [--x FLOAT] [--y FLOAT] [--box BOX] [--mcu MCU]
-lager scope NET_NAME cursor move-b [--x FLOAT] [--y FLOAT] [--box BOX] [--mcu MCU]
+lager scope NET_NAME cursor move-a [--x FLOAT] [--y FLOAT] [--box BOX]
+lager scope NET_NAME cursor move-b [--x FLOAT] [--y FLOAT] [--box BOX]
 ```
 
 **Options:**
@@ -717,10 +785,10 @@ lager scope NET_NAME cursor move-b [--x FLOAT] [--y FLOAT] [--box BOX] [--mcu MC
 
 ### `cursor hide`
 
-Rigol only. Hide the instrument's display cursors.
+Rigol only. Hide the display cursors of the instrument.
 
 ```bash
-lager scope NET_NAME cursor hide [--box BOX] [--mcu MCU]
+lager scope NET_NAME cursor hide [--box BOX]
 ```
 
 **Examples:**
@@ -745,37 +813,30 @@ lager scope ANALOG1 cursor hide --box my-lager-box
 
 ## Stream Subcommands (PicoScope)
 
-Stream oscilloscope data in real time from PicoScope devices. The streaming system uses a dedicated daemon on the Lager Box with a web-based visualization interface.
+Stream oscilloscope data in real time from a PicoScope. A daemon on the Lager Box owns the PicoScope, and a web page on the box shows the trace.
 
 ### Daemon Architecture
 
-Everything reaches the scope through the box HTTP server on **port 9000**, the
-same port every other net uses. The daemon that owns the PicoScope binds
-loopback only and is not reachable from outside the box:
+Everything reaches the scope through the box HTTP server on **port 9000**, the same port that every other net uses. The daemon that owns the PicoScope listens on loopback only. You cannot reach it from outside the box:
 
 | Endpoint | Purpose |
 |----------|---------|
 | `:9000` `GET /scope` | The web visualization UI |
 | `:9000` `POST /net/command` | Control: enable, scale, timebase, trigger, measure |
-| `:9000` `GET /scope/<net>/stream` | A ticket: a token, the data-socket path, and the detected capabilities |
-| `:9000` `GET /scope/<net>/ws` | WebSocket carrying capture frames, using the token above |
+| `:9000` `GET /scope/<net>/stream` | A ticket: a token, the WebSocket path, and the detected capabilities |
+| `:9000` `GET /scope/<net>/ws` | WebSocket that carries capture frames, with the token above |
 | `:9000` `/scope` (Socket.IO) | Live acquisition state for the UI |
 | `127.0.0.1:8085` and `/tmp/lager-scope.sock` | The daemon itself. Loopback only; the port 9000 relay is the only way in |
 
-Capture frames cross the relay in **LSCP/1**, a packed binary format: a 64-byte
-header followed by contiguous `int16` ADC counts. The relay forwards frames
-without decoding them, so its cost does not grow with capture size.
+Capture frames cross the relay in **LSCP/1**, a packed binary format. A frame has a 64-byte header, a 16-byte descriptor for each channel, and then contiguous `int16` ADC counts. The relay forwards frames without a decode, so its cost does not grow with the capture size.
 
 <Note>
-Earlier versions published the daemon directly on ports 8081-8085 and streamed
-to the browser over WebTransport, which needed a QUIC listener and a
-certificate mounted into the container. All of that is gone: there is one
-listener, on loopback, and one way in.
+Earlier versions published the daemon directly on ports 8081-8085. They streamed to the browser over WebTransport, which needed a QUIC listener and a certificate in the container. That design is gone. There is one listener, on loopback, and one way in.
 </Note>
 
 ### `stream start`
 
-Start oscilloscope streaming acquisition with web visualization.
+Start a streaming acquisition on a PicoScope, and print the link to the web UI.
 
 ```bash
 lager scope NET_NAME stream start [OPTIONS]
@@ -785,7 +846,7 @@ lager scope NET_NAME stream start [OPTIONS]
 
 | Option | Short | Description | Default |
 |--------|-------|-------------|---------|
-| `--channel` | `-c` | Channel: `A`, `B`, `1`, `2` | `A` |
+| `--channel` | `-c` | Channel: `A`, `B`, `1`, `2` | The channel of the net, else `A` |
 | `--volts-per-div` | `-v` | Vertical scale (V/div) | `1.0` |
 | `--time-per-div` | `-t` | Horizontal scale (s/div) | `0.001` |
 | `--trigger-level` | | Trigger threshold voltage | `0.0` |
@@ -794,7 +855,13 @@ lager scope NET_NAME stream start [OPTIONS]
 | `--coupling` | | Coupling: `dc`, `ac` | `dc` |
 | `--quiet` | `-q` | Minimal output | |
 | `--json` | | JSON output format | |
-| `--verbose` | | Verbose debugging output | |
+| `--verbose` | | Print each setting as the daemon applies it | |
+
+The command applies the settings in order, then starts the acquisition. If the daemon refuses a setting, the command prints the error and exits 1. The acquisition does not start. The trigger source is the streamed channel.
+
+After the start, the command prints the link to `http://<box>:9000/scope`. With `--json`, the link is the `visualization_url` field. On a box behind an access gateway, the link carries your sign-in token, as for [webcam streams](/source/reference/cli/webcam#access-gated-boxes).
+
+For a scope that is not a PicoScope, the command prints an error and suggests `lager scope NET_NAME start --single`.
 
 **Examples:**
 
@@ -817,7 +884,7 @@ lager scope PICO1 stream start \
 
 ### `stream stop`
 
-Stop oscilloscope streaming acquisition.
+Stop the streaming acquisition. If the daemon refuses, the command prints the error and exits 1.
 
 ```bash
 lager scope NET_NAME stream stop [--box BOX]
@@ -825,15 +892,17 @@ lager scope NET_NAME stream stop [--box BOX]
 
 ### `stream status`
 
-Check oscilloscope streaming daemon status.
+Check that the oscilloscope daemon runs. The command shows the command port, the channel count and whether a capture is ready. It does not need a net name.
 
 ```bash
-lager scope NET_NAME stream status [--box BOX]
+lager scope [NET_NAME] stream status [--box BOX]
 ```
+
+The command exits 1 if the daemon does not answer or cannot reach the scope. So a script can use it to check that a scope is ready to stream.
 
 ### `stream web`
 
-Open web browser for real-time oscilloscope visualization.
+Open the oscilloscope web UI in a browser.
 
 ```bash
 lager scope NET_NAME stream web [--box BOX] [--port PORT]
@@ -842,16 +911,13 @@ lager scope NET_NAME stream web [--box BOX] [--port PORT]
 **Options:**
 - `--port` - Box HTTP server port (default: 9000)
 
-The web interface is a dependency-free HTML5 oscilloscope display served from the
-box at `http://<box>:9000/scope`. Waveforms arrive over a WebSocket as LSCP
-binary frames and are decoded in the browser. The controls are built from the
-capabilities detected on the attached unit, so a 2-channel scope does not offer a
-channel C, and the page includes a command console that accepts the same
-vocabulary as this CLI.
+The command opens `http://<box>:<port>/scope`. On a box behind an access gateway, the link carries your sign-in token, as for [webcam streams](/source/reference/cli/webcam#access-gated-boxes). Run `stream web` again for a fresh link when the token expires.
+
+The web interface is a dependency-free HTML5 oscilloscope display that the box serves at `http://<box>:9000/scope`. Waveforms arrive over a WebSocket as LSCP binary frames, and the browser decodes them. The page builds its controls from the capabilities of the attached unit, so a 2-channel scope shows no channel C. The page also has a command console. It accepts most commands of this CLI, and also `offset`, `position` and `capabilities`.
 
 ### `stream capture`
 
-Capture oscilloscope waveform data to a CSV file.
+Record the captures that a streaming PicoScope takes during `--duration` to a CSV file. Run `stream start` first.
 
 ```bash
 lager scope NET_NAME stream capture [OPTIONS]
@@ -867,6 +933,12 @@ lager scope NET_NAME stream capture [OPTIONS]
 | `--quiet` | `-q` | Minimal output | |
 | `--json` | | JSON output format | |
 | `--verbose` | | Verbose debugging output | |
+
+The command writes the CSV file on the box, not on your computer. A relative path is relative to `/tmp` on the box. After the capture, the command prints an `scp` command that copies the file to your computer.
+
+The command either captures data or fails. If the scope is stopped, or no capture arrives during `--duration`, it prints the cause and exits 1. In `normal` and `single` mode, the scope waits for a trigger, so check the trigger level and source.
+
+The CSV columns are `capture`, `channel`, `sample_index`, `time_ns` and `voltage`.
 
 **Examples:**
 
@@ -886,7 +958,7 @@ lager scope PICO1 stream capture --json --box my-lager-box
 
 ### `stream config`
 
-Configure oscilloscope streaming settings without starting/stopping acquisition.
+Change streaming settings without a start or a stop of the acquisition.
 
 ```bash
 lager scope NET_NAME stream config [OPTIONS]
@@ -905,6 +977,8 @@ lager scope NET_NAME stream config [OPTIONS]
 | `--capture-mode` | | Mode: `auto`, `normal`, `single` |
 | `--coupling` | | Coupling: `dc`, `ac` |
 | `--enable` / `--disable` | | Enable or disable channel |
+
+Give at least one setting. `--volts-per-div`, `--coupling`, `--enable` and `--disable` apply to the channel that `--channel` names. Without `--channel`, they apply to the channel of the net, else to channel `A`. The command prints each setting that it applies. It stops at the first setting that the daemon refuses, and exits 1.
 
 **Examples:**
 
@@ -1009,15 +1083,16 @@ lager scope ANALOG1 trigger spi \
 ### Cursor Measurements
 
 ```bash
-# Measure time between two events
-lager scope ANALOG1 cursor set-a --x -0.001 --box my-lager-box
-lager scope ANALOG1 cursor set-b --x 0.002 --box my-lager-box
+# PicoScope: measure the time between two events, and read it back
+lager scope PICO1 cursor time -0.001 0.002 --box my-lager-box
+lager scope PICO1 cursor --box my-lager-box
 
-# Measure voltage difference
+# Rigol: measure the voltage difference with the display cursors
 lager scope ANALOG1 cursor set-a --y 0.0 --box my-lager-box
 lager scope ANALOG1 cursor set-b --y 3.3 --box my-lager-box
 
 # Clean up
+lager scope PICO1 cursor off --box my-lager-box
 lager scope ANALOG1 cursor hide --box my-lager-box
 ```
 
@@ -1048,22 +1123,23 @@ lager scope PICO1 stream stop --box my-lager-box
 ## Command Structure
 
 ```
-scope [NETNAME] [--box BOX]
+scope [NET_NAME] [--box BOX]
   Basic Control
-  ├── enable [--mcu]
-  ├── disable [--mcu]
-  ├── start [--mcu] [--single]
-  ├── stop [--mcu]
-  └── force [--mcu]
+  ├── enable
+  ├── disable
+  ├── start [--single]
+  ├── stop
+  ├── force
+  ├── status                                  (PicoScope)
+  └── autoscale                               (Rigol)
 
-  Channel Configuration (Rigol)
-  ├── scale VOLTS_PER_DIV [--mcu]
-  ├── coupling {dc|ac|gnd} [--mcu]
-  ├── probe {1|10|100|1000} [--mcu]
-  ├── timebase SECONDS_PER_DIV [--mcu]
-  └── autoscale [--mcu]
+  Channel Configuration
+  ├── coupling {dc|ac|gnd}
+  ├── probe {1|10|100|1000}
+  ├── scale VOLTS_PER_DIV
+  └── timebase SECONDS_PER_DIV
 
-  Measurements (Rigol)
+  Measurements
   └── measure
       ├── period [--display] [--cursor]
       ├── freq [--display] [--cursor]
@@ -1078,20 +1154,35 @@ scope [NETNAME] [--box BOX]
       └── duty-cycle-neg [--display] [--cursor]
 
   Triggers
-  └── trigger
-      ├── edge [--slope] [--level] [--mode] [--coupling] [--source]
-      ├── pulse [--trigger-on] [--upper] [--lower] [--level] ...
-      ├── i2c [--source-scl] [--source-sda] [--trigger-on] [--address] ...
-      ├── spi [--source-mosi-miso] [--source-sck] [--source-cs] ...
-      └── uart [--baud] [--parity] [--trigger-on] [--data] ...
+  └── trigger                                 (no subcommand: show it)
+      ├── edge [--mode] [--coupling] [--source] [--slope] [--level]
+      ├── holdoff [SECONDS]                   (PicoScope)
+      ├── pulse [--trigger-on] [--upper] [--lower] [--level] ...   (Rigol)
+      ├── i2c [--source-scl] [--source-sda] [--trigger-on] [--address] ...   (Rigol)
+      ├── spi [--source-mosi-miso] [--source-sck] [--source-cs] ...   (Rigol)
+      └── uart [--baud] [--parity] [--trigger-on] [--data] ...   (Rigol)
 
-  Cursors (Rigol)
-  └── cursor
-      ├── set-a [--x] [--y]
-      ├── set-b [--x] [--y]
-      ├── move-a [--x] [--y]
-      ├── move-b [--x] [--y]
-      └── hide
+  Acquisition and Display (PicoScope)
+  ├── acquire [normal|average|peak] [--count N]
+  ├── roll [auto|on|off]
+  ├── fft [--channel] [--window] [--peaks]
+  └── display
+      ├── persistence VALUE
+      ├── xy {on|off}
+      ├── zoom FACTOR|off [--center]
+      ├── math EXPR
+      └── fft CHANNEL|off [--window]
+
+  Cursors
+  └── cursor                                  (no subcommand: read them; PicoScope)
+      ├── time T1 T2                          (PicoScope)
+      ├── volts V1 V2                         (PicoScope)
+      ├── off                                 (PicoScope)
+      ├── set-a [--x] [--y]                   (Rigol)
+      ├── set-b [--x] [--y]                   (Rigol)
+      ├── move-a [--x] [--y]                  (Rigol)
+      ├── move-b [--x] [--y]                  (Rigol)
+      └── hide                                (Rigol)
 
   Streaming (PicoScope)
   └── stream
@@ -1107,16 +1198,17 @@ scope [NETNAME] [--box BOX]
 
 ## Notes
 
-- Net names refer to names assigned when setting up your testbed with `lager nets`
-- The `--mcu` option is available on all commands and is passed to the backend; use it when multiple MCUs share a scope channel
-- Streaming commands are only available for PicoScope devices
-- Measurements work on both instruments; `--display` and `--cursor` are Rigol only, since they draw on the instrument's own screen
-- Cursor commands are only available for Rigol devices. For a PicoScope, use the cursors in the web UI, which measure client-side over the captured samples
-- Edge trigger is the only trigger type supported on both PicoScope and Rigol
+- Net names are the names that you assign with `lager nets` when you set up your testbed
+- Instrument commands work on a `scope` net or on one of its `scope-channel` nets. Channel commands need a `scope-channel` net
+- Streaming commands work only on PicoScope devices
+- Measurements work on both instruments. `--display` and `--cursor` are Rigol only, because they draw on the screen of the instrument
+- `cursor time`, `cursor volts` and `cursor off` are PicoScope only. The display cursor commands are Rigol only
+- `status`, `acquire`, `roll`, `fft`, `display` and `trigger holdoff` are PicoScope only
+- The edge trigger is the only trigger type that works on both PicoScope and Rigol
 - On the Rigol MSO5000, only the edge and SPI triggers work (see [issue #418](https://github.com/lagerdata/lager/issues/418))
-- Web visualization requires port 9000 to be accessible on the Lager Box
-- Validation rejects values outside the allowed ranges before sending to hardware
-- Use `lager nets` to see available scope nets
+- The web UI needs access to port 9000 on the Lager Box
+- The CLI rejects values outside the allowed ranges before it sends them to the hardware
+- Run `lager scope --box BOX` to list the `scope` and `scope-channel` nets
 
 ## See Also
 

@@ -77,12 +77,18 @@ Lager 把测量设备整合进可编程的测试流程，实现自动化的信�
 | 厂商 | 型号 | 通道 | 控制命令 |
 |---|---|---|---|
 | Rigol | MSO5204 | 4 路模拟 + 1 路逻辑 | `lager scope`、`lager logic` |
-| Pico Technology | PicoScope 2000 | 2 路模拟 | `lager scope` |
+| Pico Technology | PicoScope 2000、2000a、3000a、4000a、5000a | 2 或 4 路模拟（A 到 D），运行时检测 | `lager scope` |
+
+Box 打开 PicoScope 时，会从设备读取它的通道数、电压量程、带宽、存储深度和 ADC 分辨率。它不根据型号假定这些值，因此受支持系列中的示波器无需配置即可工作。要查看 Box 检测到的内容，请在 Web UI 的控制台中输入 `capabilities`，或者在 Python 中调用 `capabilities()`。8 通道的 4824 作为四通道示波器使用，通道为 A 到 D。
 
 **可以实现：**
 - 自动化的波形采集
 - 基于触发的信号验证
 - 数字与模拟信号的关联分析
+- 连续串流，并在 `http://<box>:9000/scope` 提供实时 Web 视图（PicoScope）
+- 测量：由 Box 根据采集数据计算（PicoScope），或通过 SCPI 查询（Rigol）
+
+屏幕光标、协议触发（I2C、SPI、UART）和逻辑分析仪仅适用于 Rigol。PicoScope 会报告不支持，而不是返回误导性的值。采集光标（`lager scope cursor time` 和 `cursor volts`）仅适用于 PicoScope。
 
 ## 功率测量
 

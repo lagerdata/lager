@@ -20,6 +20,7 @@ lager install [OPTIONS]
 | `--user TEXT` | 字符串 | `lagerdata` | SSH 用户名。使用 `--box` 时，默认值是已保存的用户名 |
 | `--version TEXT` | 字符串 | 本 CLI 的发布标签 | 要部署的 Box 版本：发布标签（例如 `v0.15.0`）、git 分支，或完整的 40 位提交 SHA |
 | `--skip-jlink` | 标志 | | 跳过 J-Link 安装 |
+| `--skip-picoscope` | 标志 | | 跳过 PicoScope 7 SDK 安装 |
 | `--skip-firewall` | 标志 | | 跳过 UFW 防火墙配置 |
 | `--skip-verify` | 标志 | | 跳过部署后的验证 |
 | `--corporate-vpn TEXT` | 字符串 | | 用于防火墙规则的企业 VPN 接口名称（例如 `tun0`） |
@@ -77,6 +78,7 @@ lager install [OPTIONS]
 |-----------|-------------|
 | Docker 容器 | 带自动重启的 `lager` 服务容器。它发布端口 5000、8301、8080、8081-8090、8100、8765、9000、2331-2342、4444-4447、6666-6669 和 9090-9097 |
 | J-Link | SEGGER 调试探针软件（可选，用 `--skip-jlink` 跳过） |
+| PicoScope 7 SDK | 适用于所有现行 PicoScope 系列的 PicoTech USB 驱动（从 `libps2000` 到 `libps6000a`），以及 PicoScope 7 应用程序。从 PicoTech 的 apt 软件源安装到 Ubuntu 宿主机的 `/opt/picoscope/lib`（可选，用 `--skip-picoscope` 跳过）。USB 访问权限授予整个 PicoTech 厂商 ID。`lager scope` 通过 Box 守护进程驱动 2000 系列（2204A/2205A）以及 2000a、3000a、4000a 和 5000a 系列，并在运行时检测所连接的型号 |
 | UFW 防火墙 | 来自 `secure_box_firewall.sh` 的主机防火墙规则（用 `--skip-firewall` 跳过）。它们不会过滤容器发布的端口 |
 | Box 代码 | `~/box` 中的 Python 库和服务 |
 | 主机软件包 | BlueZ（`bluez`），仅在缺少时安装，并启用 `bluetooth.service`。BLE 和 BluFi 需要宿主机上有它。对于在添加它之前配置的 Box，`lager update` 会安装它 |
@@ -124,7 +126,7 @@ lager install --ip 192.168.1.100 --user pi --version staging
 lager install --ip 192.168.1.100 --corporate-vpn tun0
 
 # Skip optional components
-lager install --ip 192.168.1.100 --skip-jlink --skip-firewall
+lager install --ip 192.168.1.100 --skip-jlink --skip-picoscope --skip-firewall
 
 # Force a local build of the box image instead of using the published one
 lager install --box my-lager-box --version v0.39.1 --no-pull

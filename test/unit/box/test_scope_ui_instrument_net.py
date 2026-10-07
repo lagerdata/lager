@@ -85,7 +85,7 @@ class TestEachCommandGoesToTheNetThatOwnsIt:
         "enable_net", "disable_net", "get_net_enabled",
         "set_scale", "get_scale", "set_coupling", "get_coupling",
         "set_probe", "get_probe", "set_offset", "get_offset",
-        "measure_all", "measure_vpp", "measure_freq",
+        "measure_all", "measure_vpp", "measure_freq", "fft",
     ])
     def test_per_channel_commands_go_to_a_channel(self, action):
         assert self._routed(action) == "vbus"
@@ -111,6 +111,20 @@ class TestEachCommandGoesToTheNetThatOwnsIt:
         the channel they were placed on rather than a net's own."""
         assert self._routed("measure_cursor") == "pico1"
 
+    @pytest.mark.parametrize("channels", [
+        "[{ name: 'reset', pin: 2 }, { name: 'vbus', pin: 1 }]",
+        "[{ name: 'reset', pin: '2' }, { name: 'vbus', pin: '1' }]",
+        "[{ name: 'reset', pin: 'B' }, { name: 'vbus', pin: 'CH1' }]",
+    ])
+    def test_with_no_channel_named_it_is_the_lowest_channel(self, channels):
+        """By pin, as the strips are, not by the order the nets were saved
+        in: with channel B's saved first, a bare `scale 0.5` set channel B."""
+        assert self._routed("set_scale", channels) == "vbus"
+
+    def test_with_no_pins_at_all_the_list_decides(self):
+        assert self._routed(
+            "set_scale", "[{ name: 'reset' }, { name: 'vbus' }]") == "reset"
+
 
 class TestTheDropdownSelectsAScope:
 
@@ -124,8 +138,12 @@ class TestTheDropdownSelectsAScope:
           set value(v) { this._v = v; }, get value() { return this._v; },
         }) };
         globalThis.Option = function (label, value) { this.value = value; };
+        const lines = [];
         const self = {
-          console: { error: () => {} },
+          console: {
+            error: (text) => lines.push(['error', text]),
+            note: (text) => lines.push(['note', text]),
+          },
           adoptChannelNets: ScopeApp.prototype.adoptChannelNets,
           loadCapabilities: async () => {},
         };
@@ -134,11 +152,28 @@ class TestTheDropdownSelectsAScope:
           options,
           selected: self.net,
           channels: (self.channelNets || []).map((n) => n.name),
+          lines,
         }));
         """ % nets)
 
-    def test_only_scopes_are_offered(self):
-        assert self._loaded()["options"] == ["pico1", "rigol1"]
+    def test_only_picoscopes_are_offered(self):
+        """The box refuses a stream ticket for any other make."""
+        assert self._loaded()["options"] == ["pico1"]
+
+    def test_a_scope_of_another_make_is_named_instead(self):
+        out = self._loaded()
+        notes = [text for kind, text in out["lines"] if kind == "note"]
+        assert any("rigol1" in text and "PicoScope" in text for text in notes)
+        assert not [text for kind, text in out["lines"] if kind == "error"]
+
+    def test_a_box_with_only_another_make_says_so(self):
+        rigol = json.dumps([n for n in json.loads(NETS) if "Rigol" in n["instrument"]])
+        out = self._loaded(rigol)
+        assert out["options"] == [""]
+        (kind, text), = out["lines"]
+        assert kind == "error"
+        assert "rigol1" in text and "PicoScope" in text
+        assert "clk" not in text
 
     def test_its_channels_are_adopted(self):
         assert self._loaded()["channels"] == ["vbus", "reset"]
@@ -150,12 +185,44 @@ class TestTheDropdownSelectsAScope:
     def test_a_box_with_no_scope_net_still_works(self):
         """Nothing added since the roles split, so nothing has migrated."""
         legacy = json.dumps([
-            {"name": "scope1", "role": "scope", "instrument": "p", "pin": 1},
-            {"name": "scope2", "role": "scope", "instrument": "p", "pin": 2},
+            {"name": "scope1", "role": "scope", "instrument": "picoscope_2000", "pin": 1},
+            {"name": "scope2", "role": "scope", "instrument": "picoscope_2000", "pin": 2},
         ])
         out = self._loaded(legacy)
         assert out["options"] == ["scope1", "scope2"]
         assert out["selected"] == "scope1"
+
+    ANALOG = {"name": "old_scope", "role": "analog",
+              "instrument": "picoscope_2000", "address": "usb::one", "pin": 1}
+
+    def test_an_analog_net_is_not_offered_and_the_console_says_why(self):
+        """/net/command has no handler for the analog role: offered, every
+        control on the page came back refused."""
+        out = self._loaded(json.dumps(json.loads(NETS) + [self.ANALOG]))
+        assert out["options"] == ["pico1"]
+        assert out["selected"] == "pico1"
+        assert out["channels"] == ["vbus", "reset"]
+        notes = [text for kind, text in out["lines"] if kind == "note"]
+        assert any("old_scope" in text and "analog" in text for text in notes)
+        assert not [text for kind, text in out["lines"] if kind == "error"]
+
+    def test_an_analog_net_is_not_taken_for_a_channel_either(self):
+        """A box with no scope-channel nets uses the others as channels."""
+        legacy = json.dumps([
+            {"name": "scope1", "role": "scope", "instrument": "picoscope_2000", "pin": 1},
+            dict(self.ANALOG, address=""),
+        ])
+        out = self._loaded(legacy)
+        assert out["options"] == ["scope1"]
+        assert "old_scope" not in out["channels"]
+
+    def test_a_box_with_only_analog_nets_says_what_to_do(self):
+        out = self._loaded(json.dumps([self.ANALOG]))
+        assert out["options"] == [""]
+        assert out.get("selected") is None
+        (kind, text), = out["lines"]
+        assert kind == "error"
+        assert "old_scope" in text and "lager nets add" in text
 
 
 class TestTheTwoClassificationsAgree:

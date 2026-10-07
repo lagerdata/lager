@@ -115,6 +115,34 @@ class TestItMatchesThePicoScopeDriver:
         pico = inspect.signature(PicoScope.set_trigger_level)
         assert list(rigol.parameters) == list(pico.parameters)
 
+    @pytest.mark.parametrize("mode,sweep", [
+        ("auto", "AUTO"), ("normal", "NORMal"), ("NORM", "NORMal"),
+        ("single", "SINGle"),
+    ])
+    def test_the_capture_mode_is_the_sweep(self, scope, mode, sweep):
+        """The handler's trigger readback and edge mode called these, which
+        the Rigol driver did not have, so both failed on a Rigol net."""
+        scope.set_capture_mode(mode)
+        assert scope._fake.writes == [":TRIGger:SWEep %s" % sweep]
+
+    @pytest.mark.parametrize("answer,mode", [
+        ("AUTO", "auto"), ("NORM", "normal"), ("SING", "single"),
+    ])
+    def test_the_capture_mode_reads_back_in_the_picoscope_words(self, scope,
+                                                                answer, mode):
+        scope._fake.answers[":TRIGger:SWEep?"] = answer
+        assert scope.get_capture_mode() == mode
+
+    def test_an_unknown_capture_mode_is_refused_before_the_wire(self, scope):
+        with pytest.raises(ValueError, match="capture mode"):
+            scope.set_capture_mode("roll")
+        assert scope._fake.writes == []
+
+    def test_the_enabled_readback_is_the_channel_display(self, scope):
+        scope._fake.answers[":CHANnel2:DISPlay?"] = "1"
+        assert scope.is_channel_enabled() is True
+        assert scope._fake.queries == [":CHANnel2:DISPlay?"]
+
     def test_neither_changes_the_source_unless_told(self, scope):
         """The PicoScope driver only sets a source when one is passed."""
         import inspect

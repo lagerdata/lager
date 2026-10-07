@@ -36,20 +36,59 @@ rotate_log() {
     fi
 }
 
-# Function to restart a service if it dies
+# Function to restart a service if it dies.
+#
+# A TERM is passed on to the service, which then gets to exit cleanly. Left
+# to the default, this loop dies on TERM while the service runs on until the
+# container's init exits and the kernel SIGKILLs it. For the oscilloscope
+# daemon that means a PicoScope left mid-transfer, and the next open of it
+# blocks inside the driver for minutes.
 restart_service() {
     local service_name="$1"
     local service_cmd="$2"
     local log_file="$3"
+    local child=""
+    local stopping=0
 
-    while true; do
+    trap 'stopping=1; [ -n "$child" ] && kill -TERM "$child" 2>/dev/null' TERM
+
+    while [ "$stopping" = 0 ]; do
         rotate_log "$log_file"
         echo "$(date): Starting $service_name..." >> "$log_file"
-        eval "$service_cmd" >> "$log_file" 2>&1
+        # exec, so $child is the service itself and the TERM reaches it
+        # rather than a shell wrapped around it.
+        eval "exec $service_cmd" >> "$log_file" 2>&1 &
+        child=$!
+        # A trapped signal ends `wait` early, while the service is still
+        # shutting down.
+        while kill -0 "$child" 2>/dev/null; do
+            wait "$child"
+        done
+        child=""
+        [ "$stopping" = 0 ] || break
         echo "$(date): $service_name died! Restarting in 2 seconds..." >> "$log_file"
         sleep 2
     done
+    echo "$(date): $service_name stopped" >> "$log_file"
 }
+
+SERVICE_PIDS=()
+
+start_service() {
+    restart_service "$@" &
+    SERVICE_PIDS+=("$!")
+}
+
+# Every service has to be gone before this script exits: tini exits with it,
+# and the kernel then kills whatever is left in the container.
+stop_services() {
+    trap '' TERM INT
+    echo "Stopping services..."
+    kill -TERM "${SERVICE_PIDS[@]}" 2>/dev/null
+    wait "${SERVICE_PIDS[@]}" 2>/dev/null
+    exit 0
+}
+trap stop_services TERM INT
 
 # Trim logs periodically too, since a service that never dies never re-enters
 # the loop above and so would never rotate.
@@ -69,15 +108,15 @@ trap '' PIPE
 
 # Start Python execution service (port 5000) - THIS REPLACES THE CONTROLLER CONTAINER
 echo "Starting Lager Python Execution Service on port 5000..."
-restart_service "python execution" "python3 -m lager.python.service" "/tmp/lager-python-service.log" &
+start_service "python execution" "python3 -m lager.python.service" "/tmp/lager-python-service.log"
 
 # Start hardware invocation service (port 8080) - CRITICAL for Device proxy pattern
 echo "Starting Lager Hardware Invocation Service on port 8080..."
-restart_service "hardware service" "python3 /app/lager/lager/hardware_service.py" "/tmp/lager-hardware-service.log" &
+start_service "hardware service" "python3 /app/lager/lager/hardware_service.py" "/tmp/lager-hardware-service.log"
 
 # Start debug service in background with auto-restart
 echo "Starting Lager debug service on port 8765..."
-restart_service "debug service" "python3 -m lager.debug.service" "/tmp/lager-debug-service.log" &
+start_service "debug service" "python3 -m lager.debug.service" "/tmp/lager-debug-service.log"
 
 # Start HTTP server for direct hardware access in background with auto-restart.
 # Gated on LAGER_DISABLE_UART_SERVICE so customers can free port 9000 for their
@@ -93,13 +132,13 @@ case "$LAGER_DISABLE_UART_SERVICE_LOWER" in
     *)
         UART_SERVICE_DISABLED=0
         echo "Starting Lager Box HTTP+WebSocket server on port 9000..."
-        restart_service "HTTP server" "python3 /app/lager/lager/box_http_server.py" "/tmp/lager-http-server.log" &
+        start_service "HTTP server" "python3 /app/lager/lager/box_http_server.py" "/tmp/lager-http-server.log"
         ;;
 esac
 
 # Start MCP server for AI agent integration (port 8100)
 echo "Starting Lager MCP server on port 8100..."
-restart_service "MCP server" "python3 -m lager.mcp" "/tmp/lager-mcp-server.log" &
+start_service "MCP server" "python3 -m lager.mcp" "/tmp/lager-mcp-server.log"
 
 # Start oscilloscope daemon if available (PicoScope support).
 #
@@ -117,7 +156,7 @@ if [ -x /usr/local/bin/oscilloscope-daemon ]; then
     export LAGER_SCOPE_DATA_PORT="${LAGER_SCOPE_DATA_PORT:-8085}"
     export LAGER_SCOPE_LOG="${LAGER_SCOPE_LOG:-info}"
     export LD_LIBRARY_PATH="/opt/picoscope/lib:$LD_LIBRARY_PATH"
-    restart_service "oscilloscope daemon" "/usr/local/bin/oscilloscope-daemon" "/tmp/oscilloscope-daemon.log" &
+    start_service "oscilloscope daemon" "/usr/local/bin/oscilloscope-daemon" "/tmp/oscilloscope-daemon.log"
 else
     echo "Oscilloscope daemon not available (PicoScope support disabled)"
 fi
@@ -143,5 +182,6 @@ fi
 echo ""
 echo "Container ready! Controller container is NO LONGER NEEDED."
 
-# Keep container running
-tail -f /dev/null
+# Keep container running. `wait` rather than a foreground command, because
+# bash runs the TERM trap only once the foreground command returns.
+wait

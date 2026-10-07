@@ -28,13 +28,17 @@ Response:
 """
 import importlib
 import logging
-import re
+import math
 
 from flask import Flask, request, jsonify
 
 from lager.arm_hs import validate_move_timeout
-from lager.nets.net import Net
+from lager.nets.net import Net, channel_name_to_number
 from lager.nets.device import ConnectionFailed, DeviceError, Device
+from lager.nets.device_identity import (
+    address_from_rec as _address_from_rec,
+    physical_device_id as _physical_device_id,
+)
 from lager.dispatchers import helpers
 from lager.exceptions import LagerBackendError
 
@@ -82,6 +86,21 @@ def _ok_read(value, unit):
     return _ok("%s %s" % (value, unit), value)
 
 
+def _json_safe(value):
+    """``value`` with every NaN and infinity replaced by None.
+
+    Python's encoder writes them as the bare words NaN and Infinity, which are
+    not JSON: a browser's parser rejects the whole reply over one of them.
+    """
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
+
+
 # ---------------------------------------------------------------------------
 # hardware_service routing for the IO / bus / measurement roles.
 #
@@ -120,18 +139,6 @@ _HS_FACTORY = {
 }
 
 
-def _address_from_rec(rec):
-    """Resolve a device address from a saved-net record.
-
-    Prefers a per-net mappings[].device_override, else the top-level address —
-    the same precedence resolve_address() uses. Returns None if unset.
-    """
-    for mapping in rec.get("mappings") or []:
-        if mapping.get("device_override"):
-            return mapping["device_override"]
-    return rec.get("address")
-
-
 def _find_rec(netname, role, error_class):
     """Return the saved-net record for (netname, role) or raise error_class.
 
@@ -164,89 +171,6 @@ def _hw_proxy(netname, role, module_for_instrument, error_class, timeout=None):
             "Unsupported %s instrument '%s' for net '%s'." % (role, instrument, netname))
     net_info = {"name": netname, "address": address, "instrument": instrument}
     return Device(device_name, net_info, timeout=timeout)
-
-
-# Matches the T-series LabJack only. Kept local rather than imported from
-# nets_handler, which imports _physical_device_id from this module.
-_LABJACK_T7_RE = re.compile(r"labjack[_\-\s]*t7", re.IGNORECASE)
-
-
-def _physical_device_id(role, instrument, rec):
-    """Stable identity for the physical device backing this net.
-
-    hardware_service uses it as the shared lock key so that every net/role on
-    one physical device serializes — critically the LabJack T7, whose single
-    LJM handle is shared across GPIO/ADC/DAC/SPI/I2C, and a Joulescope/PPK2
-    shared by a watt-meter net and an energy-analyzer net. Keyed on the device
-    family + its serial/address (or a constant when a family has one shared
-    handle), NOT on the net name or pin.
-    """
-    inst = (instrument or "").lower()
-    addr = _address_from_rec(rec) or ""
-    serial = ""
-    if "::" in addr:
-        parts = addr.split("::")
-        if len(parts) > 3 and parts[3]:
-            serial = parts[3]
-    if any(k in inst for k in ("usb-202", "usb202", "mcc")):
-        return "usb202:" + (rec.get("unique_id") or addr or "ANY")
-    if "ft232h" in inst or "ftdi" in inst:
-        return "ft232h:" + (serial or addr or "ANY")
-    if "aardvark" in inst or "totalphase" in inst:
-        port = str((rec.get("params") or {}).get("port", 0))
-        return "aardvark:" + (serial or addr or port)
-    if "picoscope" in inst or "pico" in inst:
-        # A PicoScope's USB handle admits one owner at a time, and the
-        # oscilloscope daemon holds it. Every scope net on the same unit must
-        # therefore take the same lock, so a `lager scope` command queues
-        # behind a browser streaming it rather than failing to open.
-        #
-        # Keyed on the serial when the net carries one, since a bench can have
-        # several PicoScopes and those must NOT serialize against each other.
-        return "picoscope:" + (serial or rec.get("unique_id") or addr or "ANY")
-    if role in ("scope", "scope-channel") or "rigol_mso" in inst or "mso5" in inst:
-        # Every scope that is not a PicoScope, which the branch above already
-        # keyed. In practice a Rigol, and it had been falling past all of
-        # these to the LabJack default at the bottom. Its VISA address made
-        # the key unique so it worked, but a Rigol saved without an address
-        # collapsed onto "labjack:ANY" and took the lock a LabJack was using,
-        # queueing scope commands behind GPIO traffic on unrelated hardware.
-        #
-        # The scope net and its channel nets land here together, which is
-        # what they need: they address one instrument.
-        return "scope:" + (serial or addr or rec.get("unique_id") or "ANY")
-    if "joulescope" in inst or "js220" in inst:
-        return "joulescope:" + (addr or "ANY")
-    if "ppk" in inst or "nordic" in inst:
-        return "ppk2:" + (addr or "ANY")
-    if role == "thermocouple" or "phidget" in inst:
-        return "phidget:" + (addr or "ANY")
-    if role == "arm" or "dexarm" in inst or "rotrics" in inst:
-        # One serial port per arm; the lock key is the arm's serial number
-        # (saved under rec["serial"] or location.serial_number) or address.
-        location = rec.get("location")
-        loc_serial = location.get("serial_number") if isinstance(location, dict) else None
-        return "dexarm:" + (rec.get("serial") or loc_serial or addr or "ANY")
-    if role == "watt-meter" or "yocto" in inst:
-        return "yocto:" + (addr or "ANY")
-    if "labjack" in inst and not _LABJACK_T7_RE.search(inst):
-        # A LabJack that is not a T7 -- a U3/U6. It reaches the hardware over
-        # Exodriver, holds its own USB claim, and shares nothing with the T7's
-        # LJM handle, so it must not share the T7's lock either.
-        #
-        # The address alone would nearly do it (it carries the PID: 0x0007 for
-        # a T7, 0x0003 for a U3), but a LabJack net may be saved with no
-        # address at all -- the ADC dispatcher resolves an empty one on the
-        # grounds that LabJack auto-discovers. Both models would then collapse
-        # onto "labjack:ANY". Folding the model in keeps them apart in that
-        # case too.
-        #
-        # Deliberately below every other branch and additive: the T7 and every
-        # instrument that falls through to the default below keep the exact key
-        # they had, so nothing that works today changes lock identity.
-        return "labjack:" + inst + ":" + (addr or "ANY")
-    # Default: LabJack T7 — one shared LJM handle across all roles/pins.
-    return "labjack:" + (addr or "ANY")
 
 
 def _proxy(netname, role, timeout=None):
@@ -978,7 +902,7 @@ def _scope(netname, role, action, params):
     net is one of its channels, and the gate below is deliberately one-sided:
     see _refuse_channel_action_on_the_instrument.
     """
-    _refuse_channel_action_on_the_instrument(netname, role, action)
+    _refuse_channel_action_on_the_instrument(netname, role, action, params)
     dev = _proxy(netname, role, timeout=30.0)
 
     if action == "enable_net":
@@ -1015,20 +939,16 @@ def _scope(netname, role, action, params):
         return _ok("Autoscale complete")
 
     if action == "set_scale":
-        volts_per_div = params.get("volts_per_div")
-        if volts_per_div is None:
-            raise KeyError("volts_per_div")
-        dev.set_channel_scale(float(volts_per_div))
-        return _ok("Vertical scale %g V/div" % float(volts_per_div))
+        volts_per_div = _number(params, "volts_per_div")
+        dev.set_channel_scale(volts_per_div)
+        return _ok("Vertical scale %g V/div" % volts_per_div)
     if action == "get_scale":
         return _ok_read(float(dev.get_channel_scale()), "V/div")
 
     if action == "set_timebase":
-        seconds_per_div = params.get("seconds_per_div")
-        if seconds_per_div is None:
-            raise KeyError("seconds_per_div")
-        dev.set_timebase_scale(float(seconds_per_div))
-        return _ok("Timebase %g s/div" % float(seconds_per_div))
+        seconds_per_div = _number(params, "seconds_per_div")
+        dev.set_timebase_scale(seconds_per_div)
+        return _ok("Timebase %g s/div" % seconds_per_div)
     if action == "get_timebase":
         return _ok_read(float(dev.get_timebase_scale()), "s/div")
 
@@ -1039,23 +959,20 @@ def _scope(netname, role, action, params):
         dev.set_channel_coupling(mode)
         return _ok("Coupling %s" % mode)
     if action == "get_coupling":
-        return _ok("Coupling %s" % dev.get_channel_coupling())
+        coupling = dev.get_channel_coupling()
+        return _ok("Coupling %s" % coupling, coupling)
 
     if action == "set_probe":
-        ratio = params.get("ratio")
-        if ratio is None:
-            raise KeyError("ratio")
-        dev.set_channel_probe(float(ratio))
-        return _ok("Probe %gx" % float(ratio))
+        ratio = _number(params, "ratio")
+        dev.set_channel_probe(ratio)
+        return _ok("Probe %gx" % ratio)
     if action == "get_probe":
         return _ok_read(float(dev.get_channel_probe()), "x")
 
     if action == "set_offset":
-        offset = params.get("offset")
-        if offset is None:
-            raise KeyError("offset")
-        dev.set_channel_offset(float(offset))
-        return _ok("Offset %g V" % float(offset))
+        offset = _number(params, "offset")
+        dev.set_channel_offset(offset)
+        return _ok("Offset %g V" % offset)
     if action == "get_offset":
         return _ok_read(float(dev.get_channel_offset()), "V")
 
@@ -1063,11 +980,9 @@ def _scope(netname, role, action, params):
     # trigger, so signal past the left or right edge can be brought on screen.
     # Not per channel -- one window holds every channel.
     if action == "set_time_offset":
-        offset = params.get("offset")
-        if offset is None:
-            raise KeyError("offset")
-        dev.set_timebase_offset(float(offset))
-        return _ok("Time offset %g s" % float(offset))
+        offset = _number(params, "offset")
+        dev.set_timebase_offset(offset)
+        return _ok("Time offset %g s" % offset)
     if action == "get_time_offset":
         return _ok_read(float(dev.get_timebase_offset()), "s")
 
@@ -1092,12 +1007,14 @@ def _scope(netname, role, action, params):
         return _ok_read(float(dev.get_trigger_level()), "V")
 
     if action == "capabilities":
+        _require_picoscope(netname, role, action)
         capabilities = dev.capabilities()
         return _ok("%s, %s channel(s)" % (
             capabilities.get("model") or "scope",
             capabilities.get("analog_channels") or "?"), capabilities)
 
     if action == "measure_all":
+        _require_picoscope(netname, role, action)
         return _scope_measure_all(dev)
 
     # Everything at once, and the trigger on its own. The CLI could set every
@@ -1115,7 +1032,7 @@ def _scope(netname, role, action, params):
         _require_picoscope(netname, role, action)
         if params.get("mode") is None:
             raise KeyError("mode")
-        result = dev.set_acquisition(params["mode"], params.get("count"))
+        result = dev.set_acquisition(params["mode"], _whole_number(params, "count"))
         return _ok(_describe_acquisition(result), result)
     if action == "get_acquire":
         _require_picoscope(netname, role, action)
@@ -1123,10 +1040,9 @@ def _scope(netname, role, action, params):
         return _ok(_describe_acquisition(result), result)
     if action == "set_trigger_holdoff":
         _require_picoscope(netname, role, action)
-        if params.get("seconds") is None:
-            raise KeyError("seconds")
-        dev.set_trigger_holdoff(float(params["seconds"]))
-        return _ok("Trigger holdoff %s" % _seconds(float(params["seconds"])))
+        seconds = _number(params, "seconds")
+        dev.set_trigger_holdoff(seconds)
+        return _ok("Trigger holdoff %s" % _seconds(seconds))
     if action == "get_trigger_holdoff":
         _require_picoscope(netname, role, action)
         return _ok_read(float(dev.get_trigger_holdoff()), "s")
@@ -1160,11 +1076,13 @@ def _scope(netname, role, action, params):
         _require_picoscope(netname, role, action)
         result = dev.fft(channel=params.get("channel"),
                          window=params.get("window") or "hann",
-                         peaks=int(params.get("peaks") or 5))
+                         peaks=_whole_number(params, "peaks", 5))
         return _ok(_describe_spectrum(result), result)
 
     # Cursors. Placed by typing, in either CLI, and held on the box so both
     # they and the web UI's plot are looking at one set.
+    if action in ("set_cursor", "get_cursor", "clear_cursor", "measure_cursor"):
+        _require_picoscope(netname, role, action)
     if action == "set_cursor":
         return _scope_set_cursor(dev, params)
     if action == "get_cursor":
@@ -1176,12 +1094,26 @@ def _scope(netname, role, action, params):
         return _scope_measure_cursor(dev)
 
     if action in _SCOPE_MEASUREMENTS:
-        return _scope_measure(dev, action)
+        return _scope_measure(dev, netname, action)
 
     raise UnknownAction(action)
 
 
 _DISPLAY_SETTINGS = ("persistence", "xy", "zoom", "math", "fft")
+
+
+def _scope_rec(netname):
+    """The scope net's saved record, or None when it cannot be read."""
+    try:
+        return next((n for n in Net.get_local_nets() if n.get("name") == netname), None)
+    except Exception:
+        return None
+
+
+def _is_picoscope(rec):
+    """Whether the record is a PicoScope's. With no record to go on, it is
+    taken for one: the PicoScope path is the one these handlers grew up on."""
+    return rec is None or "pico" in str(rec.get("instrument") or "").lower()
 
 
 def _require_picoscope(netname, role, action):
@@ -1192,16 +1124,42 @@ def _require_picoscope(netname, role, action):
     has neither. Without this a Rigol net answered with the driver's missing
     attribute, which reads as a bug rather than as the answer.
     """
-    try:
-        rec = next((n for n in Net.get_local_nets() if n.get("name") == netname), None)
-    except Exception:
-        return
-    instrument = str((rec or {}).get("instrument") or "")
-    if rec is None or "pico" in instrument.lower():
+    rec = _scope_rec(netname)
+    if _is_picoscope(rec):
         return
     raise WrongNetForAction(
         "%s is a %s, and %s is done by the box for a PicoScope; on a Rigol, "
-        "use the instrument's own front panel" % (netname, instrument or "scope", action))
+        "use the instrument's own front panel"
+        % (netname, rec.get("instrument") or "scope", action))
+
+
+def _number(params, key):
+    """A required parameter as a finite float, refused by name otherwise.
+
+    ``float()`` raises TypeError for a list or an object, which the route
+    answers with a 500, and accepts "nan", which no instrument setting takes.
+    """
+    value = params.get(key)
+    if value is None:
+        raise KeyError(key)
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("%s must be a number, got %r" % (key, value))
+    if not math.isfinite(number):
+        raise ValueError("%s must be a finite number, got %r" % (key, value))
+    return number
+
+
+def _whole_number(params, key, default=None):
+    """An optional parameter as an int, refused by name when it is not one."""
+    value = params.get(key)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("%s must be a whole number, got %r" % (key, value))
 
 
 def _seconds(value):
@@ -1385,13 +1343,23 @@ def _pair(params, key):
     value = params.get(key)
     if value is None:
         return None
-    pair = ([value.get("1"), value.get("2")] if isinstance(value, dict)
-            else list(value))
+    if isinstance(value, dict):
+        pair = [value.get("1"), value.get("2")]
+    elif isinstance(value, (list, tuple)):
+        pair = list(value)
+    else:
+        pair = [value]
     # Named ends make it possible to send one and not the other, which would
     # otherwise reach the driver as a None to multiply by.
     if len(pair) != 2 or any(end is None for end in pair):
         raise ValueError(
             "%s cursors come in a pair, got %r" % (key, value))
+    try:
+        pair = [float(end) for end in pair]
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("%s cursors are numbers, got %r" % (key, value))
+    if not all(math.isfinite(end) for end in pair):
+        raise ValueError("%s cursors must be finite, got %r" % (key, value))
     return pair
 
 
@@ -1445,8 +1413,31 @@ def _scope_measure_cursor(dev):
     return _ok(listed, result)
 
 
-def _scope_measure(dev, action):
+# The same quantities by the Rigol's own :MEASure item names, which its driver
+# puts on the wire as given. The names above are the daemon's.
+_RIGOL_MEASUREMENTS = {
+    "measure_vpp": "VPP",
+    "measure_vmax": "VMAX",
+    "measure_vmin": "VMIN",
+    "measure_vrms": "VRMS",
+    "measure_vavg": "VAVG",
+    "measure_period": "PERiod",
+    "measure_freq": "FREQuency",
+    "measure_dc_pos": "PDUTy",
+    "measure_dc_neg": "NDUTy",
+    "measure_pulse_width_pos": "PWIDth",
+    "measure_pulse_width_neg": "NWIDth",
+    "measure_rise_time": "RTIMe",
+    "measure_fall_time": "FTIMe",
+    "measure_overshoot": "OVERshoot",
+}
+
+
+def _scope_measure(dev, netname, action):
     name, unit = _SCOPE_MEASUREMENTS[action]
+    rec = _scope_rec(netname)
+    if not _is_picoscope(rec):
+        return _rigol_measure(dev, rec, action, name, unit)
     try:
         return _ok_read(float(dev.get_measure_item(name)), unit)
     except DeviceError as e:
@@ -1457,6 +1448,26 @@ def _scope_measure(dev, action):
         if "not present in this capture" not in message:
             raise
         return _ok(message)
+
+
+def _rigol_measure(dev, rec, action, name, unit):
+    """One measurement on a Rigol, from the channel the net is wired to.
+
+    The source is named on every call: the Rigol holds one measurement
+    source for the whole instrument, so whatever the last caller left there
+    is not necessarily this net's channel.
+    """
+    from lager.nets.scope_migration import pin_of
+
+    pin = pin_of(rec)
+    value = dev.get_measure_item(
+        _RIGOL_MEASUREMENTS[action],
+        None if pin is None else channel_name_to_number(pin))
+    # The driver answers None where the Rigol reports no valid value, which
+    # is the same answer as a quantity missing from a PicoScope capture.
+    if value is None:
+        return _ok("%s is not present in this capture" % name)
+    return _ok_read(float(value), unit)
 
 
 # Actions that act on one channel. Everything else a scope accepts -- the
@@ -1470,10 +1481,15 @@ _PER_CHANNEL_SCOPE_ACTIONS = frozenset({
     "set_probe", "get_probe",
     "set_offset", "get_offset",
     "measure_all",
+    "fft",
 })
 
+# Per-channel actions that also take the channel as a parameter. Sent to the
+# instrument with one named, they say which channel they mean.
+_CHANNEL_PARAM_SCOPE_ACTIONS = frozenset({"fft"})
 
-def _refuse_channel_action_on_the_instrument(netname, role, action):
+
+def _refuse_channel_action_on_the_instrument(netname, role, action, params=None):
     """Stop a per-channel command aimed at the scope rather than a channel.
 
     Only this direction is refused, and the asymmetry is the point rather
@@ -1488,6 +1504,9 @@ def _refuse_channel_action_on_the_instrument(netname, role, action):
         return
     if action not in _PER_CHANNEL_SCOPE_ACTIONS \
             and action not in _SCOPE_MEASUREMENTS:
+        return
+    if action in _CHANNEL_PARAM_SCOPE_ACTIONS \
+            and (params or {}).get("channel") is not None:
         return
 
     channels = _scope_channel_nets(netname)
@@ -1520,6 +1539,9 @@ def _scope_channel_nets(netname):
         return []
 
 
+_TRIGGER_MODES = ("auto", "normal", "norm", "single")
+
+
 def _scope_trigger_edge(dev, params):
     """Configure an edge trigger, applying only the parts that were given.
 
@@ -1527,6 +1549,13 @@ def _scope_trigger_edge(dev, params):
     the level without resetting the source and slope to defaults, which is
     what a caller passing one flag means.
     """
+    # Checked before anything is applied, so a bad value changes nothing.
+    level = _number(params, "level") if params.get("level") is not None else None
+    mode = params.get("mode")
+    if mode is not None and str(mode).strip().lower() not in _TRIGGER_MODES:
+        raise ValueError("Unknown trigger mode %r; expected auto, normal or single"
+                         % (mode,))
+
     applied = []
     if params.get("source") is not None:
         dev.set_trigger_source(params["source"])
@@ -1543,12 +1572,11 @@ def _scope_trigger_edge(dev, params):
         # moves the waveform on screen and reads as a hardware fault.
         dev.set_trigger_coupling(params["coupling"])
         applied.append("coupling %s" % params["coupling"])
-    if params.get("level") is not None:
-        dev.set_trigger_level(float(params["level"]))
-        applied.append("level %g V" % float(params["level"]))
-    if params.get("mode") is not None:
-        mode = params["mode"]
-        if str(mode).lower() == "single":
+    if level is not None:
+        dev.set_trigger_level(level)
+        applied.append("level %g V" % level)
+    if mode is not None:
+        if str(mode).strip().lower() == "single":
             # Selecting single-shot arms it, as it does on a bench scope.
             # Setting the mode alone left the scope sitting in it unarmed, so
             # nothing happened until a capture was started -- and starting one
@@ -1618,7 +1646,9 @@ def register_net_command_routes(app: Flask) -> None:
     @app.route('/net/command', methods=['POST'])
     def net_command_http():
         try:
-            data = request.get_json() or {}
+            data = request.get_json(silent=True)
+            if not isinstance(data, dict):
+                return jsonify({'success': False, 'error': 'body must be a JSON object'}), 400
             netname = data.get('netname')
             action = data.get('action')
             params = data.get('params') or {}
@@ -1626,6 +1656,11 @@ def register_net_command_routes(app: Flask) -> None:
 
             if not netname or not action:
                 return jsonify({'success': False, 'error': 'netname and action are required'}), 400
+            if not isinstance(netname, str) or not isinstance(action, str) \
+                    or not isinstance(requested_role, (str, type(None))):
+                return jsonify({'success': False, 'error': 'netname, action and role must be strings'}), 400
+            if not isinstance(params, dict):
+                return jsonify({'success': False, 'error': 'params must be a JSON object'}), 400
 
             try:
                 role = _resolve_role(netname, requested_role)
@@ -1656,7 +1691,7 @@ def register_net_command_routes(app: Flask) -> None:
                 return jsonify({'success': False, 'error': 'Hardware error: %s' % e}), 502
 
             logger.info("[HTTP] /net/command %s on %s (%s)", action, netname, role)
-            return jsonify({'success': True, 'action': action, **result})
+            return jsonify({'success': True, 'action': action, **_json_safe(result)})
 
         except Exception as e:
             logger.exception("[HTTP] /net/command unexpected error")

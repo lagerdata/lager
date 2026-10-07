@@ -11,8 +11,10 @@ import json
 import click
 from ...context import get_impl_path, get_default_net
 from ..development.python import run_python_internal
+from ..utility.webcam import _gated_link_note, _viewer_url
 from ...core.net_group import NetGroup
 from ...core.param_types import HexParamType
+from ...core.utils import StreamDatatypes, normalize_exit_code
 from ...core.net_helpers import (
     require_netname,
     resolve_box,
@@ -109,6 +111,69 @@ def _validate_scope_net(ctx, box_ip: str, netname: str) -> dict | None:
     Error message with available nets is displayed if validation fails.
     """
     return validate_net_exists(ctx, box_ip, netname, SCOPE_ROLES)
+
+
+def _channel_letter(value) -> str | None:
+    """The letter of a channel given as B, b, 2, CH2 and the like, else None."""
+    text = str(value).strip().upper()
+    for prefix in ("CHANNEL", "CHAN", "CH"):
+        if text.startswith(prefix) and text[len(prefix):].isdigit():
+            text = text[len(prefix):]
+            break
+    if text.isdigit() and 1 <= int(text) <= 26:
+        return chr(ord("A") + int(text) - 1)
+    if len(text) == 1 and "A" <= text <= "Z":
+        return text
+    return None
+
+
+def _net_channel(net: dict) -> str | None:
+    """The channel letter a scope-channel net is wired to, else None.
+
+    Must agree with lager.nets.scope_migration.pin_of, which decides the
+    channel on the box: the record's pin, else the first mapping that names
+    one, with zero standing for none.
+    """
+    if net.get("role") != SCOPE_CHANNEL_ROLE:
+        return None
+    candidates = [net.get("pin")]
+    for mapping in net.get("mappings") or []:
+        candidates += [mapping.get("pin"), mapping.get("channel")]
+    for value in candidates:
+        if value is None or str(value).strip() in ("", "0"):
+            continue
+        return _channel_letter(value)
+    return None
+
+
+def _unit(net: dict) -> tuple[str, str]:
+    """Which physical scope a net belongs to, as the box tells them apart."""
+    return ((net.get("instrument") or "").lower(), (net.get("address") or "").lower())
+
+
+def _trigger_source(ctx, box_ip: str, net: dict, source: str) -> str:
+    """The channel letter a PicoScope trigger's --source names.
+
+    A channel letter or number names it directly. Anything else has to be a
+    channel net on the same scope, the form the Rigol triggers take.
+    """
+    letter = _channel_letter(source)
+    if letter is not None:
+        return letter
+    record = next((n for n in run_net_py(ctx, box_ip, "list")
+                   if n.get("name") == source and n.get("role") in SCOPE_ROLES), None)
+    if record is None:
+        click.secho(f"Error: --source takes a channel (A to D, or 1 to 4) or a scope "
+                    f"channel net, not '{source}'", fg="red", err=True)
+        ctx.exit(1)
+    if _unit(record) != _unit(net):
+        click.secho(f"Error: '{source}' is a channel of a different scope", fg="red", err=True)
+        ctx.exit(1)
+    letter = _net_channel(record)
+    if letter is None:
+        click.secho(f"Error: '{source}' is not one of the scope's channels", fg="red", err=True)
+        ctx.exit(1)
+    return letter
 
 
 # Actions the box implements in-process (net_command.ROLE_ACTIONS["scope"]),
@@ -232,7 +297,7 @@ def scope(ctx, box, netname):
         # Listing only reads saved nets: no auto-lock, and it proceeds under
         # another holder's lock.
         box_ip = resolve_box(ctx, box, read_only=True)
-        display_nets(ctx, box_ip, None, SCOPE_ROLE, "scope")
+        display_nets(ctx, box_ip, None, SCOPE_ROLES, "scope")
 
 
 scope.net_examples = [
@@ -599,7 +664,8 @@ COUPLING_CHOICES = click.Choice(("dc", "ac", "low_freq_rej", "high_freq_rej"))
 @click.option("--coupling", type=COUPLING_CHOICES,
               help="Trigger-path coupling filter (Rigol only; not the "
                    "channel's input coupling, which is `scope coupling`)")
-@click.option("--source", required=False, help="Trigger source", metavar="NET")
+@click.option("--source", required=False, metavar="NET",
+              help="Trigger source: a channel net, or on a PicoScope also A to D or 1 to 4")
 @click.option("--slope", type=click.Choice(("rising", "falling", "both")), help="Trigger slope")
 @click.option("--level", type=click.FLOAT, help="Trigger level")
 def edge(ctx, mcu, box, mode, coupling, source, slope, level):
@@ -629,6 +695,8 @@ def edge(ctx, mcu, box, mode, coupling, source, slope, level):
             click.secho("Error: give at least one of --mode, --source, --slope, --level",
                         fg="red", err=True)
             ctx.exit(1)
+        if "source" in params:
+            params["source"] = _trigger_source(ctx, box_ip, net, source)
         post_net_command(ctx, box_ip, netname, "trigger_edge", role=SCOPE_ROLE, **params)
         return
 
@@ -859,7 +927,7 @@ def roll(ctx, mode, box):
 @scope.command()
 @click.pass_context
 @click.option("--box", required=False, help="Lager Box name or IP")
-@click.option("--channel", required=False, help="Channel to analyse (default: the net's own)")
+@click.option("--channel", required=False, help="Channel to analyze (default: the net's own)")
 @click.option("--window", type=click.Choice(("hann", "hamming", "blackman", "flattop", "rectangular")),
               default="hann", show_default=True, help="FFT window")
 @click.option("--peaks", type=click.IntRange(1, 50), default=5, show_default=True,
@@ -982,8 +1050,8 @@ def cursor(ctx, box, mcu):
     Typed, not dragged: there is no knob for these and no handle on the plot
     to grab. With no subcommand, reads whatever cursors are set.
 
-    ``time``, ``volts`` and ``off`` mark up the captured samples and work on
-    any scope. The box holds the pair, so one placed here is the pair the web
+    ``time``, ``volts`` and ``off`` mark up the captured samples of a
+    PicoScope. The box holds the pair, so one placed here is the pair the web
     UI draws. Times are seconds relative to the trigger -- negative is before
     it -- and volts are at the probe tip.
 
@@ -1280,10 +1348,64 @@ TRIGGER_SLOPE_CHOICES = click.Choice(("rising", "falling", "either"))
 CHANNEL_CHOICES = click.Choice(("A", "B", "1", "2"))
 
 
+def _run_stream_script(ctx, box_ip: str, data: dict):
+    """Run scope_stream.py on the box; return (exit code, its stdout).
+
+    Stdout is held back so the caller can add the viewer link after it.
+    Stderr passes straight through.
+    """
+    def collect(datatype, content, held):
+        # Bytes until the end: a chunk can split a character such as the µ
+        # in µs/div, and decoding chunk by chunk dropped it.
+        held = bytearray() if held is None else held
+        if datatype == StreamDatatypes.EXIT:
+            return True, (normalize_exit_code(content), held.decode("utf-8", errors="replace"))
+        if datatype == StreamDatatypes.STDOUT:
+            held += content
+        elif datatype == StreamDatatypes.STDERR:
+            click.echo(content.decode("utf-8", errors="ignore"), nl=False, err=True)
+        elif datatype == StreamDatatypes.OUTPUT:
+            click.echo(content)
+        return False, held
+
+    result = run_python_internal(
+        ctx,
+        get_impl_path("scope_stream.py"),
+        box_ip,
+        env=(f"LAGER_COMMAND_DATA={json.dumps(data)}",),
+        passenv=(),
+        kill=False,
+        download=(),
+        allow_overwrite=False,
+        signum="SIGTERM",
+        timeout=0,
+        detach=False,
+        port=(),
+        org=None,
+        args=(),
+        callback=collect,
+    )
+    # No exit code means the stream ended early, which is no success.
+    return result if isinstance(result, tuple) else (1, "")
+
+
+def _scope_url(box_ip: str, port: int = 9000) -> str:
+    """The web UI's address, with a sign-in token for an access-gated box."""
+    return _viewer_url(box_ip, f"http://{box_ip}:{port}/scope")
+
+
+def _scope_link_note(ctx, box, box_ip: str) -> None:
+    netname = getattr(ctx.obj, "netname", None) or "[NET_NAME]"
+    label = box if box is not None else box_ip
+    _gated_link_note(box_ip, label,
+                     refresh=f"lager scope {netname} stream web --box {label}")
+
+
 @stream.command("start")
 @click.pass_context
 @click.option("--box", required=False, help="Lager Box name or IP")
-@click.option("--channel", "-c", type=CHANNEL_CHOICES, default="A", help="Channel to enable (A, B, 1, or 2)")
+@click.option("--channel", "-c", type=CHANNEL_CHOICES, default=None,
+              help="Channel to enable: A, B, 1 or 2 (default: the net's own channel, else A)")
 @click.option("--volts-per-div", "-v", type=float, default=1.0, help="Vertical scale in volts per division (default: 1.0V/div)")
 @click.option("--time-per-div", "-t", type=float, default=0.001, help="Horizontal scale in seconds per division (default: 1ms/div)")
 @click.option("--trigger-level", type=float, default=0.0, help="Trigger threshold voltage (default: 0V)")
@@ -1320,36 +1442,39 @@ def stream_start(ctx, box, channel, volts_per_div, time_per_div, trigger_level, 
         "action": "stream_start",
         "params": {
             "netname": netname,
-            "channel": channel,
+            "channel": channel or _net_channel(net_info) or "A",
             "volts_per_div": volts_per_div,
             "time_per_div": time_per_div,
             "trigger_level": trigger_level,
             "trigger_slope": trigger_slope,
             "capture_mode": capture_mode,
             "coupling": coupling,
-            "box_ip": box_ip,  # Pass box IP for browser URL
             "quiet": quiet,
             "json_output": json_output,
             "verbose": verbose,
         }
     }
 
-    run_python_internal(
-        ctx,
-        get_impl_path("scope_stream.py"),
-        box_ip,
-        env=(f"LAGER_COMMAND_DATA={json.dumps(data)}",),
-        passenv=(),
-        kill=False,
-        download=(),
-        allow_overwrite=False,
-        signum="SIGTERM",
-        timeout=0,
-        detach=False,
-        port=(),
-        org=None,
-        args=(),
-    )
+    code, output = _run_stream_script(ctx, box_ip, data)
+    if code != 0:
+        click.echo(output, nl=False)
+        ctx.exit(code)
+
+    url = _scope_url(box_ip)
+    if json_output:
+        try:
+            result = json.loads(output)
+        except ValueError:
+            result = None
+        if isinstance(result, dict):
+            result["visualization_url"] = url
+            output = json.dumps(result) + "\n"
+        click.echo(output, nl=False)
+        return
+    click.echo(output, nl=False)
+    if not quiet:
+        click.echo(f"Visualization: {url}")
+        _scope_link_note(ctx, box, box_ip)
 
 
 @stream.command("stop")
@@ -1430,9 +1555,10 @@ def stream_web(ctx, box, port):
 
     # Port 9000 is the box HTTP server, the same port every other net uses.
     # The UI opens its own capture stream, so there is nothing to start first.
-    url = f"http://{box_ip}:{port}/scope"
+    url = _scope_url(box_ip, port)
 
     click.secho(f"Opening oscilloscope UI at {url}", fg="green")
+    _scope_link_note(ctx, box, box_ip)
 
     try:
         webbrowser.open(url)
@@ -1465,6 +1591,7 @@ def stream_capture(ctx, box, output, duration, samples, quiet, json_output, verb
     if _validate_scope_net(ctx, box_ip, netname) is None:
         return  # Error already displayed with available nets
 
+    from ..box._ssh import resolve_box_user
     data = {
         "action": "stream_capture",
         "params": {
@@ -1475,11 +1602,13 @@ def stream_capture(ctx, box, output, duration, samples, quiet, json_output, verb
             "quiet": quiet,
             "json_output": json_output,
             "verbose": verbose,
+            # The script prints the copy command, because only it knows
+            # where a relative --output ends up on the box.
+            "scp_host": f"{resolve_box_user(box_ip)}@{box_ip}",
         }
     }
 
-    # Note: File is saved on box at the specified output path
-    # For direct connections, download isn't supported - file stays on box
+    # The file stays on the box: DirectHTTPSession has no download.
     run_python_internal(
         ctx,
         get_impl_path("scope_stream.py"),
@@ -1496,10 +1625,6 @@ def stream_capture(ctx, box, output, duration, samples, quiet, json_output, verb
         org=None,
         args=(),
     )
-
-    click.secho(f"\nNote: Data file saved on box at: {output}", fg="yellow")
-    from ..box._ssh import resolve_box_user
-    click.secho(f"To retrieve: scp {resolve_box_user(box_ip)}@{box_ip}:/tmp/{output} .", fg="yellow")
 
 
 @stream.command("config")
@@ -1519,8 +1644,21 @@ def stream_config(ctx, box, channel, volts_per_div, time_per_div, trigger_level,
     box_ip = _resolve_box(ctx, box)
     netname = _require_netname(ctx)
 
-    if _validate_scope_net(ctx, box_ip, netname) is None:
+    net_info = _validate_scope_net(ctx, box_ip, netname)
+    if net_info is None:
         return  # Error already displayed with available nets
+
+    settings = (volts_per_div, time_per_div, trigger_level, trigger_source,
+                trigger_slope, capture_mode, coupling, enable)
+    if all(value is None for value in settings):
+        click.secho("Error: give at least one setting to change, e.g. --volts-per-div 0.5",
+                    fg="red", err=True)
+        ctx.exit(1)
+    # The box script refuses a per-channel setting without a channel; the
+    # default is the channel `stream start` enables.
+    if channel is None and (volts_per_div is not None or coupling is not None
+                            or enable is not None):
+        channel = _net_channel(net_info) or "A"
 
     # Build config dict with only provided options
     config_params = {"netname": netname}

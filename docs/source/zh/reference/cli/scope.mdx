@@ -6,26 +6,57 @@ description: 控制示波器设置并采集波形
 通过 Lager CLI 控制示波器 Net，用于波形采集、触发、测量和串流。
 
 <Warning>
-**Rigol MSO5000 上的已知限制。** 边沿触发和 SPI 触发可以工作。脉冲、UART 和 I2C 触发在 Rigol MSO5000 上会失败。
-CAN 触发以及 Python API 中的所有总线解码器同样会失败。失败的命令会打印错误并以 1 退出。
-[Issue #418](https://github.com/lagerdata/lager/issues/418) 跟踪这项工作。
+**Rigol MSO5000 上的已知限制。** 边沿触发和 SPI 触发可以工作。脉冲、UART 和 I2C 触发在 Rigol MSO5000 上会失败。CAN 触发以及 Python API 中的所有总线解码器同样会失败。失败的命令会打印错误并以 1 退出。[Issue #418](https://github.com/lagerdata/lager/issues/418) 跟踪这项工作。
 </Warning>
 
 ## 语法
 
 ```bash
-lager scope [NETNAME] [OPTIONS] COMMAND [ARGS]...
+lager scope [NET_NAME] [OPTIONS] COMMAND [ARGS]...
 ```
 
-省略 `NETNAME` 时，列出 Box 上全部可用的示波器 Net。
+不带命令时，`lager scope` 列出 Box 上的 `scope` 和 `scope-channel` Net。不带 `NET_NAME` 的命令使用默认的示波器 Net。用 `lager defaults add --scope-net NET_NAME` 设置默认值。
+
+## 示波器及其通道
+
+一台示波器对应两种 Net。**`scope`** Net 是仪器本身。**`scope-channel`** Net 是它的一路输入，每个通道一个 Net。对于双通道 PicoScope，`lager nets tui` 提供三个 Net：两个通道，以及它们所属的示波器。
+
+这种划分与硬件一致。有六项设置属于通道，其余设置属于仪器：
+
+| 属于 `scope-channel` Net | 属于 `scope` Net |
+|---|---|
+| `enable`、`disable` | `start`、`stop`、`force`、`status` |
+| `scale`（伏特/格） | `timebase`、水平位置 |
+| `coupling` | `trigger`（触发源、边沿、电平、模式、释抑） |
+| `probe` | `cursor` |
+| 垂直偏移 | `acquire`、`roll`、`display` |
+| `measure` | `autoscale`、上报的能力信息 |
+
+两种 Net 的用法相同：
+
+```bash
+lager scope vbus coupling ac --box my-lager-box           # a channel net
+lager scope picoscope1 timebase 0.001 --box my-lager-box  # the scope net
+```
+
+<Note>
+仪器命令也可以作用于它的某个通道 Net。一个通道只属于一台示波器，因此该命令没有歧义。早于 scope Net 的脚本无需修改即可继续工作。
+
+反过来则不行。`lager scope picoscope1 coupling ac` 没有指明通道，Box 也不会去猜测。错误信息会列出应改用的通道 Net。
+</Note>
+
+<Note>
+早于 scope Net 的 Box 只有通道 Net，保存时的角色为 `scope`。Box 第一次读取 Net 时会转换它们。每个旧 Net 都变成同名、同引脚的 `scope-channel` Net。旁边会出现一个以型号命名的 `scope` Net，例如 `picoscope1`。没有引脚的旧 `scope` Net 仍然是 `scope` Net，代表整台仪器。您无需重新添加任何内容，也可以重命名新的 Net。
+</Note>
 
 ## 全局选项
 
 | 选项 | 说明 |
 |--------|-------------|
 | `--box BOX` | Lager Box 名称或 IP 地址 |
-| `--mcu MCU` | MCU 标识（传给后端；当多个 MCU 共用一台示波器时使用） |
 | `--help` | 显示帮助信息并退出 |
+
+每条命令也都接受 `--box`。通道、采集控制、`autoscale`、`measure` 和 `cursor` 命令还接受 `--mcu MCU`，除 `holdoff` 以外的各种触发类型也接受。没有任何 `lager scope` 命令使用它的值。
 
 ## 命令
 
@@ -35,26 +66,37 @@ lager scope [NETNAME] [OPTIONS] COMMAND [ARGS]...
 | `disable` | 停用示波器通道 | 两者 |
 | `start` | 开始波形采集（连续或单次） | 两者 |
 | `stop` | 停止波形采集 | 两者 |
-| `force` | 手动强制触发（绕过触发条件） | 两者 |
+| `force` | 立即强制触发（绕过触发条件） | 两者 |
+| `status` | 在一次回复中显示所有示波器设置 | 仅 PicoScope |
 | `autoscale` | 自动调整垂直刻度和时基 | 仅 Rigol |
-| `coupling` | 设置通道耦合方式（dc、ac 或 gnd） | 仅 Rigol |
-| `probe` | 设置探头衰减比 | 仅 Rigol |
-| `scale` | 设置垂直刻度（每格伏特数） | 仅 Rigol |
-| `timebase` | 设置水平时基（每格秒数） | 仅 Rigol |
-| `measure` | 测量波形特性 | 仅 Rigol |
-| `trigger` | 配置触发设置 | 两者（见下方说明） |
-| `cursor` | 控制示波器光标位置 | 仅 Rigol |
+| `coupling` | 设置通道耦合方式（dc、ac；gnd 仅限 Rigol） | 两者 |
+| `probe` | 设置探头衰减比 | 两者 |
+| `scale` | 设置垂直刻度（每格伏特数） | 两者 |
+| `timebase` | 设置水平时基（每格秒数） | 两者 |
+| `measure` | 测量波形特性 | 两者（见说明） |
+| `trigger` | 显示触发设置，或用子命令设置触发 | 两者（见说明） |
+| `acquire` | 设置多次采集的组合方式（normal、average、peak） | 仅 PicoScope |
+| `roll` | 为慢速时基设置滚动模式 | 仅 PicoScope |
+| `fft` | 报告某个通道最强的频率分量 | 仅 PicoScope |
+| `display` | 设置 Web UI 绘制波形的方式 | 仅 PicoScope |
+| `cursor` | 在采集数据上放置光标并读取差值 | `time`/`volts`/`off` 仅限 PicoScope；`set-a`/`set-b`/`move-a`/`move-b`/`hide` 仅限 Rigol |
 | `stream` | 串流示波器数据并提供 Web 可视化 | 仅 PicoScope |
 
 <Note>
-边沿触发在 PicoScope 和 Rigol 上都可用。协议触发（I2C、SPI、UART）和脉宽触发仅限 Rigol。
+边沿触发在 PicoScope 和 Rigol 上都可用。脉冲触发和协议触发（I2C、SPI、UART）仅限 Rigol。`trigger holdoff` 仅限 PicoScope。
+</Note>
+
+<Note>
+测量在两种仪器上都可用，但两者的计算方式不同。Rigol 回答关于它所显示波形的 SCPI 查询。对于 PicoScope，守护进程根据采集到的数据块计算该值，因为 PicoTech 的任何 API 都没有与 `:MEAS:VPP?` 等价的命令。因此 `--display` 和 `--cursor` 仅限 Rigol。它们把读数显示在仪器的屏幕上，而 PicoScope 没有屏幕。
+
+PicoScope 采集期间，测量和光标读数使用守护进程最近一次串流发出的采集。因此它们描述的是 Web UI 中的波形，而不是片刻之后的另一次采集。停止之后，它们描述最后一次采集，就像停止状态下台式示波器上的读数一样。
 </Note>
 
 ---
 
 ## 校验范围
 
-CLI 在把命令发送到示波器之前会先校验输入值：
+CLI 在把命令发送到示波器之前会先检查这些值：
 
 | 参数 | 最小值 | 最大值 | 单位 |
 |-----------|---------|---------|------|
@@ -69,22 +111,27 @@ CLI 在把命令发送到示波器之前会先校验输入值：
 
 | 厂商 | 型号 | 特性 |
 |--------------|-------|----------|
-| Rigol | MSO5000 系列 | 4 个模拟 + 16 个数字通道，SCPI/VISA 控制，边沿和 SPI 触发，测量，光标 |
-| PicoScope | 2000 系列 | 实时串流，基于 Web 的可视化，CSV 导出，边沿触发 |
+| Rigol | MSO5000 系列 | 4 个模拟 + 16 个数字通道，SCPI/VISA 控制，边沿和 SPI 触发，测量，显示光标 |
+| PicoScope | 2000、2000a、3000a、4000a、5000a 系列 | 实时串流，基于 Web 的可视化，CSV 导出，边沿触发，由守护进程计算的测量，基于采集数据的光标 |
+
+守护进程从所连接的 PicoScope 读取通道数、电压量程、带宽、存储深度和 ADC 分辨率。它不根据系列假定这些值。要查看守护进程检测到的内容，请在 Web UI 的控制台中输入 `capabilities`。
+
+添加 Net 时，`lager nets tui` 从型号读取通道数。对双通道型号，它提供两个通道 Net；对四通道型号，提供四个。8 通道的 4824A 同样得到四个，即通道 A 到 D，因为 Lager 不为 D 之后的通道命名。无法识别的型号得到两个。
 
 ### 功能对比
 
-| 功能 | Rigol MSO5000 | PicoScope 2000 |
-|---------|---------------|----------------|
-| 通道 | 4 个模拟 + 16 个数字 | 最多 4 个模拟 |
+| 功能 | Rigol MSO5000 | PicoScope |
+|---------|---------------|-----------|
+| 通道 | 4 个模拟 + 16 个数字 | 2 或 4 个模拟（A 到 D），运行时检测 |
 | 实时串流 | 不支持（单次采集） | 支持（连续） |
-| 测量 | 11 种内置类型 | 通过串流/CSV |
-| 触发类型 | 边沿和 SPI（脉冲、I2C 和 UART 尚不可用） | 仅边沿 |
-| 光标控制 | 手动 XY 光标 | Web 界面光标 |
+| 测量 | 通过 SCPI 向仪器查询 | 14 种，根据采集数据计算 |
+| 触发类型 | 边沿和 SPI（脉冲、I2C 和 UART 尚不可用） | 仅边沿，支持释抑 |
+| 光标控制 | 仪器屏幕上的 XY 光标 | 基于采集采样点的时间/电压光标 |
 | 自动量程 | 支持 | 不支持 |
+| 平均、峰值检测、滚动、FFT | 在仪器前面板上操作 | `acquire`、`roll`、`fft` |
 | Web 可视化 | 不支持 | 支持（HTML5） |
 | 数据导出 | 通过测量 | CSV 串流 |
-| 控制方式 | 经 USB/LAN 的 SCPI | WebSocket 守护进程 |
+| 控制方式 | 经 USB/LAN 的 SCPI | 厂商 SDK，经由 Box 守护进程 |
 
 ---
 
@@ -92,65 +139,79 @@ CLI 在把命令发送到示波器之前会先校验输入值：
 
 ### `enable`
 
-为指定的 Net 启用示波器通道。
+启用 `scope-channel` Net 的通道。
 
 ```bash
-lager scope NET_NAME enable [--box BOX] [--mcu MCU]
+lager scope NET_NAME enable [--box BOX]
 ```
 
 ### `disable`
 
-停用示波器通道。
+停用 `scope-channel` Net 的通道。
 
 ```bash
-lager scope NET_NAME disable [--box BOX] [--mcu MCU]
+lager scope NET_NAME disable [--box BOX]
 ```
 
 ### `start`
 
-开始波形采集（连续或单次）。
+开始波形采集。不带 `--single` 时，示波器以已设置的触发模式连续采集。
 
 ```bash
-lager scope NET_NAME start [--box BOX] [--mcu MCU] [--single]
+lager scope NET_NAME start [--single] [--box BOX]
 ```
 
 **选项：**
-- `--single` - 采集一次波形后停止（单次模式）
+- `--single` - 准备一次采集，然后停止（单次模式）
+
+不带 `--single` 运行 `start` 时，处于 `single` 模式的 PicoScope 会切换为 `auto`。单次采集在一次采集后停止，因此无法连续运行。
 
 ### `stop`
 
 停止波形采集。
 
 ```bash
-lager scope NET_NAME stop [--box BOX] [--mcu MCU]
+lager scope NET_NAME stop [--box BOX]
 ```
 
 ### `force`
 
-手动强制触发，绕过触发条件。当信号不满足触发条件时很有用。
+不等待触发条件，立即触发。当信号不满足触发条件时，使用它。
 
 ```bash
-lager scope NET_NAME force [--box BOX] [--mcu MCU]
+lager scope NET_NAME force [--box BOX]
 ```
+
+### `status`
+
+在一次回复中显示所有示波器设置：通道、时基、触发和采集。仅限 PicoScope。
+
+```bash
+lager scope NET_NAME status [--box BOX]
+```
+
+回复来自守护进程最近发布的设置。Web UI 也根据同一状态绘制它的控件。
 
 ### `autoscale`
 
-自动调整垂直刻度和水平时基以获得最佳显示（仅 Rigol）。
+自动调整垂直刻度和水平时基（仅 Rigol）。该命令可能需要 10 到 15 秒。
 
 ```bash
-lager scope NET_NAME autoscale [--box BOX] [--mcu MCU]
+lager scope NET_NAME autoscale [--box BOX]
 ```
+
+PicoScope 会拒绝 `autoscale`，因为它的 SDK 没有自动设置功能。请自行设置 `scale` 和 `timebase`。
 
 ---
 
-## 通道配置（Rigol）
+## 通道配置
 
 ### `coupling`
 
-设置示波器通道的输入耦合方式。
+设置通道的输入耦合方式。
 
 ```bash
-lager scope NET_NAME coupling MODE [--box BOX] [--mcu MCU]
+lager scope NET_NAME coupling MODE [--box BOX]
 ```
 
 **参数：**
@@ -160,14 +221,16 @@ lager scope NET_NAME coupling MODE [--box BOX] [--mcu MCU]
 |------|-------------|
 | `dc` | 同时通过直流和交流分量 |
 | `ac` | 阻断直流分量，只通过交流 |
-| `gnd` | 接地参考（0V 基线） |
+| `gnd` | 接地参考（0V 基线）。仅限 Rigol |
+
+PicoScope 会拒绝 `gnd`，因为没有任何 PicoScope 系列具备接地开关。要阻断直流分量，请使用 `ac`，或者停用该通道。
 
 ### `probe`
 
 设置探头衰减比，以获得准确的电压测量。
 
 ```bash
-lager scope NET_NAME probe RATIO [--box BOX] [--mcu MCU]
+lager scope NET_NAME probe RATIO [--box BOX]
 ```
 
 **参数：**
@@ -179,12 +242,14 @@ lager scope ANALOG1 probe 1 --box my-lager-box     # Direct connection (1:1)
 lager scope ANALOG1 probe 100 --box my-lager-box   # 100:1 high-voltage probe
 ```
 
+2000 系列 PicoScope（2204A、2205A）初始为 10x。2000a、3000a、4000a 和 5000a 系列初始为 1x。请把衰减比设置为与您的探头一致。
+
 ### `scale`
 
-设置示波器通道的垂直刻度（每格伏特数）。
+设置通道的垂直刻度（每格伏特数）。
 
 ```bash
-lager scope NET_NAME scale VOLTS_PER_DIV [--box BOX] [--mcu MCU]
+lager scope NET_NAME scale VOLTS_PER_DIV [--box BOX]
 ```
 
 **参数：**
@@ -202,11 +267,11 @@ lager scope ANALOG1 scale 0.001 --box my-lager-box  # 1mV/div (minimum)
 设置示波器的水平时基（每格秒数）。
 
 ```bash
-lager scope NET_NAME timebase SEC_PER_DIV [--box BOX] [--mcu MCU]
+lager scope NET_NAME timebase SECONDS_PER_DIV [--box BOX]
 ```
 
 **参数：**
-- `SEC_PER_DIV` - 水平时基，单位秒每格（1e-9 至 50.0）
+- `SECONDS_PER_DIV` - 水平时基，单位秒每格（1e-9 至 50.0）
 
 ```bash
 lager scope ANALOG1 timebase 0.001 --box my-lager-box      # 1ms/div
@@ -215,20 +280,23 @@ lager scope ANALOG1 timebase 0.000001 --box my-lager-box   # 1us/div
 lager scope ANALOG1 timebase 0.000000001 --box my-lager-box # 1ns/div (minimum)
 ```
 
+上面的范围是该命令接受的范围，而不是某台设备能达到的范围。示波器按一组固定的采样间隔采样，因此会把请求舍入到最接近的一级。最快时基还取决于数据块深度，而不只取决于采样率。例如，2204A 以 100 MS/s 采集 8000 个采样点时，最快为 8 us/div。在 PicoScope 上，`status` 报告的是实际使用的时基，而不是您请求的时基。
+
 ---
 
-## measure 子命令（Rigol）
+## measure 子命令
 
-在 Rigol 示波器上测量波形特性。PicoScope 用户必须使用串流采集命令导出波形数据再做分析。
+在任一种仪器上测量波形特性。Rigol 返回它自己计算的读数。对于 PicoScope，Box 采集一个数据块，由守护进程根据采样点计算该值。您不需要串流或 CSV 导出。
+
+每次 PicoScope 测量都需要单独的一次采集，因此读取多个值需要多次采集。要从一次采集中读取全部测量值，请使用 [Python API](/source/zh/reference/python/scope) 中的 `measurement.all()`。
 
 **所有 measure 命令的通用选项：**
 
 | 选项 | 说明 |
 |--------|-------------|
 | `--box BOX` | Lager Box 名称或 IP |
-| `--mcu MCU` | MCU 标识 |
-| `--display` | 在示波器屏幕上显示该测量 |
-| `--cursor` | 在屏幕上启用测量光标 |
+| `--display` | 在示波器屏幕上显示该测量（仅 Rigol） |
+| `--cursor` | 在屏幕上显示测量光标（仅 Rigol） |
 
 ### 时间测量
 
@@ -326,30 +394,58 @@ lager scope NET_NAME measure vrms [--box BOX] [--display] [--cursor]
 
 ## trigger 子命令
 
-配置触发设置。边沿触发在 PicoScope 和 Rigol 上都可用。协议触发（I2C、SPI、UART）和脉冲触发仅限 Rigol。
+显示或设置触发。边沿触发在 PicoScope 和 Rigol 上都可用。协议触发（I2C、SPI、UART）和脉冲触发仅限 Rigol。
 
-**通用触发选项：**
+### `trigger`
+
+不带子命令时，`trigger` 显示触发的模式、触发源、边沿和电平。在 PicoScope 上，如果设置了释抑，它也会显示释抑。
+
+```bash
+lager scope NET_NAME trigger [--box BOX]
+```
+
+**`pulse`、`i2c`、`spi` 和 `uart` 的选项：**
 
 | 选项 | 说明 | 默认值 |
 |--------|-------------|---------|
 | `--mode` | 触发模式：`normal`、`auto`、`single` | `normal` |
-| `--coupling` | 耦合方式：`dc`、`ac`、`low_freq_rej`、`high_freq_rej` | `dc` |
-| `--source NET` | 触发源 Net | 当前 Net |
-| `--level VOLTS` | 触发电平，单位伏特 | - |
+| `--coupling` | 触发路径的耦合滤波器：`dc`、`ac`、`low_freq_rej`、`high_freq_rej` | `dc` |
+| `--source NET` | 触发源 Net（仅 `pulse` 和 `uart`） | 不变 |
+| `--level VOLTS` | 触发电平，单位伏特（仅 `pulse` 和 `uart`） | 不变 |
+
+这四条命令每次都会应用 `--mode` 和 `--coupling`。因此，不带这两个选项的调用会把它们设置为 `normal` 和 `dc`。`trigger edge` 没有默认值，它只更改您给出的设置。
+
+<Note>
+`--coupling` 是触发比较器前面的滤波器，而不是通道的输入耦合。这两项设置共用一个词，但作用不同。触发滤波器让示波器能在有噪声或漂移的边沿上触发，而波形不会改变。`lager scope <net> coupling` 改变通道所通过的信号，波形会随之移动。只有 Rigol 具备触发滤波器。PicoScope 会拒绝该标志，也不会把它改用于输入耦合。
+</Note>
+
+<Note>
+`--mode` 设置运行中的示波器如何触发。在 `auto` 模式下，如果没有边沿越过电平，示波器会自行触发，因此波形始终在更新。在 `normal` 模式下，屏幕只在真实触发时更新，这能让重复波形保持稳定。
+
+在 PicoScope 上，`--mode single` 还会准备一次采集，与 `lager scope <net> start --single` 相同。单次采集无法连续运行。因此，不带 `--single` 的 `start` 会把 `single` 改为 `auto`。在其他模式下，`start` 保持您设置的模式。
+</Note>
 
 ### `trigger edge`
 
-设置边沿触发配置。PicoScope 和 Rigol 都支持。
+设置边沿触发。它在 PicoScope 和 Rigol 上都可用。
 
 ```bash
 lager scope NET_NAME trigger edge [OPTIONS]
 ```
 
-**选项（在通用选项之外）：**
+**选项：**
 
 | 选项 | 说明 |
 |--------|-------------|
+| `--mode` | 触发模式：`normal`、`auto`、`single` |
+| `--coupling` | 触发路径的耦合滤波器：`dc`、`ac`、`low_freq_rej`、`high_freq_rej`（仅 Rigol） |
+| `--source NET` | 触发源（见下文） |
 | `--slope` | 触发边沿：`rising`、`falling`、`both` |
+| `--level VOLTS` | 触发电平，单位伏特 |
+
+每个选项都是可选的，未给出的选项保持原值。在 PicoScope 上，请至少给出一个选项。一个都不给时，命令会打印错误并以 1 退出。
+
+在 PicoScope 上，`--source` 接受通道字母（`A` 到 `D`）、通道编号（`1` 到 `4`）或 `scope-channel` Net 的名称。在 Rigol 上，`--source` 接受 `scope-channel` Net 的名称。
 
 **示例：**
 
@@ -357,16 +453,34 @@ lager scope NET_NAME trigger edge [OPTIONS]
 # Rising edge at 1.5V
 lager scope ANALOG1 trigger edge --slope rising --level 1.5 --box my-lager-box
 
+# Trigger on channel B (on a Rigol, give a scope-channel net name)
+lager scope picoscope1 trigger edge --source B --box my-lager-box
+
 # Falling edge in single capture mode
 lager scope ANALOG1 trigger edge --slope falling --level 0.5 --mode single --box my-lager-box
 
-# Either edge with AC coupling
+# Either edge, with the trigger path AC coupled (Rigol only)
 lager scope ANALOG1 trigger edge --slope both --coupling ac --level 0 --box my-lager-box
+```
+
+### `trigger holdoff`
+
+每次触发之后，在 `SECONDS` 秒内忽略触发，取值范围为 0 到 10。不给值时，该命令显示释抑时间。仅限 PicoScope。
+
+```bash
+lager scope NET_NAME trigger holdoff [SECONDS] [--box BOX]
+```
+
+对于有多个边沿越过电平的信号（例如突发信号或一个串行字节），释抑能让波形保持稳定。示波器会等一次突发结束之后，再在下一次突发上触发。
+
+```bash
+lager scope picoscope1 trigger holdoff 0.001 --box my-lager-box   # 1 ms
+lager scope picoscope1 trigger holdoff --box my-lager-box         # show it
 ```
 
 ### `trigger pulse`
 
-设置脉宽触发（仅 Rigol）。当脉宽满足指定条件时触发。
+设置脉宽触发（仅 Rigol）。当脉宽满足条件时，示波器触发。
 
 在 Rigol MSO5000 上，这个触发还不能工作。请参阅本页顶部的限制说明。
 
@@ -374,7 +488,7 @@ lager scope ANALOG1 trigger edge --slope both --coupling ac --level 0 --box my-l
 lager scope NET_NAME trigger pulse [OPTIONS]
 ```
 
-**选项（在通用选项之外）：**
+**选项（在上述选项之外）：**
 
 | 选项 | 说明 | 默认值 |
 |--------|-------------|---------|
@@ -397,7 +511,7 @@ lager scope NET_NAME trigger pulse [OPTIONS]
 
 ### `trigger i2c`
 
-设置 I2C 协议触发（仅 Rigol）。在 I2C 总线事件上触发。
+设置 I2C 协议触发（仅 Rigol）。示波器在 I2C 总线事件上触发。
 
 在 Rigol MSO5000 上，这条命令还不能工作。请参阅本页顶部的限制说明。
 
@@ -405,7 +519,7 @@ lager scope NET_NAME trigger pulse [OPTIONS]
 lager scope NET_NAME trigger i2c [OPTIONS]
 ```
 
-**选项（在通用的 mode/coupling 之外）：**
+**选项（在 `--mode` 和 `--coupling` 之外）：**
 
 | 选项 | 说明 | 默认值 |
 |--------|-------------|---------|
@@ -434,13 +548,13 @@ lager scope NET_NAME trigger i2c [OPTIONS]
 
 ### `trigger spi`
 
-设置 SPI 协议触发（仅 Rigol）。在 SPI 总线事件上触发。
+设置 SPI 协议触发（仅 Rigol）。示波器在 SPI 总线事件上触发。
 
 ```bash
 lager scope NET_NAME trigger spi [OPTIONS]
 ```
 
-**选项（在通用的 mode/coupling 之外）：**
+**选项（在 `--mode` 和 `--coupling` 之外）：**
 
 | 选项 | 说明 | 默认值 |
 |--------|-------------|---------|
@@ -468,7 +582,7 @@ lager scope ANALOG1 trigger spi \
 
 ### `trigger uart`
 
-设置 UART 协议触发（仅 Rigol）。在 UART 串行事件上触发。
+设置 UART 协议触发（仅 Rigol）。示波器在 UART 串行事件上触发。
 
 在 Rigol MSO5000 上，这条命令还不能工作。请参阅本页顶部的限制说明。
 
@@ -476,7 +590,7 @@ lager scope ANALOG1 trigger spi \
 lager scope NET_NAME trigger uart [OPTIONS]
 ```
 
-**选项（在通用选项之外）：**
+**选项（在上述选项之外）：**
 
 | 选项 | 说明 | 默认值 |
 |--------|-------------|---------|
@@ -489,17 +603,161 @@ lager scope NET_NAME trigger uart [OPTIONS]
 
 ---
 
-## cursor 子命令（Rigol）
+## 采集与显示
 
-在 Rigol 示波器上控制手动 XY 光标，以进行精确的时间和电压测量。光标 A 和 B 可以独立定位，示波器会计算它们之间的差值。
+这些命令仅限 PicoScope。Rigol 在前面板上完成同样的工作，Box 会对 Rigol Net 拒绝这些命令。
+
+### `acquire`
+
+设置连续多次采集的组合方式。不给模式时，该命令显示当前模式。
+
+```bash
+lager scope NET_NAME acquire [MODE] [--count N] [--box BOX]
+```
+
+| 模式 | 说明 |
+|------|-------------|
+| `normal` | 按示波器采集到的原样使用每次采集 |
+| `average` | 最近 `--count` 次采集的滑动平均（1 到 1024，默认 16）。它把随机噪声降低到原来的 1/√count |
+| `peak` | 每个采样间隔内的最小值和最大值。对每个间隔只返回一个采样点的设备，守护进程会拒绝该模式 |
+
+`--count` 需要配合模式使用。只给 `--count` 而不给模式时，命令会打印错误。
+
+```bash
+lager scope picoscope1 acquire average --count 64 --box my-lager-box
+lager scope picoscope1 acquire --box my-lager-box   # show the mode
+```
+
+### `roll`
+
+设置滚动模式，它让慢速时基连续串流。不给模式时，该命令显示当前模式。
+
+```bash
+lager scope NET_NAME roll [auto|on|off] [--box BOX]
+```
+
+| 模式 | 说明 |
+|------|-------------|
+| `auto` | 当触发模式为 `auto` 时，在 50 ms/div 及更慢的时基下滚动，与台式示波器相同 |
+| `on` | 在任何时基下滚动，并忽略触发 |
+| `off` | 不滚动 |
+
+### `fft`
+
+报告某个通道最强的频率分量。Box 根据屏幕上的采集计算频谱。幅度为探头尖端处的 RMS 电压，单位为 dBV。
+
+```bash
+lager scope NET_NAME fft [--channel CHANNEL] [--window WINDOW] [--peaks N] [--box BOX]
+```
+
+| 选项 | 说明 | 默认值 |
+|--------|-------------|---------|
+| `--channel` | 要分析的通道：字母（如 `A`）或编号（如 `1`） | 该 Net 的通道 |
+| `--window` | FFT 窗函数：`hann`、`hamming`、`blackman`、`flattop`、`rectangular` | `hann` |
+| `--peaks` | 要报告的分量个数，1 到 50 | `5` |
+
+在 `scope` Net 上请给出 `--channel`，因为仪器本身没有通道。一般用途请使用 `hann`；当某个单音的幅度很重要时，请使用 `flattop`。对于恰好填满采集窗口的信号，请使用 `rectangular`。
+
+### `display`
+
+设置 Web UI 绘制波形的方式。不带子命令时，`display` 显示当前设置。这些设置保存在 Box 上，因此打开的页面会跟随来自 CLI 的更改。
+
+```bash
+lager scope NET_NAME display [SUBCOMMAND] [ARGS] [--box BOX]
+```
+
+| 子命令 | 说明 |
+|------------|-------------|
+| `persistence VALUE` | 让旧波形保留在屏幕上：秒数（最多 60）、`infinite` 或 `off` |
+| `xy on`、`xy off` | 以通道 A 为横轴绘制通道 B，而不是以时间为横轴 |
+| `zoom FACTOR` | 围绕 `--center`（相对触发点的秒数，默认 0）把采集放大 `FACTOR` 倍（1 到 1000）。`zoom off` 停止放大 |
+| `math EXPR` | 绘制由两个通道计算得出的波形：`a+b`、`a-b`、`a*b` 或 `off` |
+| `fft CHANNEL` | 用 `--window`（默认 `hann`）为 `CHANNEL` 显示频谱窗格。`fft off` 隐藏它 |
+
+```bash
+lager scope picoscope1 display persistence 2 --box my-lager-box   # traces fade over 2 s
+lager scope picoscope1 display xy on --box my-lager-box           # B against A
+lager scope picoscope1 display zoom 8 --center 0.001 --box my-lager-box
+lager scope picoscope1 display math a-b --box my-lager-box
+lager scope picoscope1 display fft a --box my-lager-box
+```
+
+---
+
+## cursor 子命令
+
+两组不同的命令共用这个名称。
+
+`cursor time`、`cursor volts` 和 `cursor off` 在 PicoScope 的**采集采样点**上放置光标。您需要输入这些命令，因为它们没有旋钮，绘图上也没有拖动手柄。这对光标保存在 Box 上，因此您从终端放置的光标会由 Web UI 画出来。Web UI 的控制台接受同样的 `cursor` 命令。
+
+`cursor set-a`、`set-b`、`move-a`、`move-b` 和 `hide` 通过 SCPI，以屏幕坐标移动 **Rigol 前面板显示屏**上的标记。PicoScope 没有供它们使用的显示屏。
+
+### `cursor`
+
+不带子命令时，`cursor` 读取已设置的光标。仅限 PicoScope。
+
+```bash
+lager scope NET_NAME cursor [--box BOX]
+```
+
+### `cursor time`
+
+放置两个时间光标，单位为相对触发点的秒数。负的时间位于触发之前，采集的一半就在那里。
+
+```bash
+lager scope NET_NAME cursor time T1 T2 [--box BOX]
+```
+
+回复给出两个光标之间的时间间隔、作为频率的间隔倒数，以及每个光标下波形的电压。因此，相隔一个周期的一对光标会直接显示频率。Box 在采样点之间插值计算电压，因为光标停留在您放置的位置，而不是对齐到采样网格。
+
+### `cursor volts`
+
+放置两个电压光标，单位为探头尖端处的伏特。
+
+```bash
+lager scope NET_NAME cursor volts V1 V2 [--box BOX]
+```
+
+回复给出两者的差值。这对光标不需要采集，因此回复无需等待触发。
+
+### `cursor off`
+
+清除两对光标，并让 Web UI 停止绘制它们。
+
+```bash
+lager scope NET_NAME cursor off [--box BOX]
+```
+
+**示例：**
+
+```bash
+# Measure a period: put a pair one cycle apart and read 1/dt
+lager scope ANALOG1 cursor time 0 0.001 --box my-lager-box
+
+# Read the two pairs back against the live signal
+lager scope ANALOG1 cursor --box my-lager-box
+
+# Mark a voltage window
+lager scope ANALOG1 cursor volts 3.0 3.6 --box my-lager-box
+
+lager scope ANALOG1 cursor off --box my-lager-box
+```
+
+<Note>
+两对光标相互独立。放置时间光标时，电压光标保持原位。每一对光标都要成对放置，因为单个光标读不出任何东西。您需要的量是两个光标之间的差值。
+
+位于采集窗口之外的光标不报告电压。最近的采样点来自另一个时刻，因此 Box 不使用它。回复会指明该窗口，因此原因一目了然。
+</Note>
 
 ### `cursor set-a` / `cursor set-b`
+
+仅限 Rigol。
 
 设置光标 A 或 B 的绝对位置。
 
 ```bash
-lager scope NET_NAME cursor set-a [--x FLOAT] [--y FLOAT] [--box BOX] [--mcu MCU]
-lager scope NET_NAME cursor set-b [--x FLOAT] [--y FLOAT] [--box BOX] [--mcu MCU]
+lager scope NET_NAME cursor set-a [--x FLOAT] [--y FLOAT] [--box BOX]
+lager scope NET_NAME cursor set-b [--x FLOAT] [--y FLOAT] [--box BOX]
 ```
 
 **选项：**
@@ -511,11 +769,11 @@ lager scope NET_NAME cursor set-b [--x FLOAT] [--y FLOAT] [--box BOX] [--mcu MCU
 
 ### `cursor move-a` / `cursor move-b`
 
-按相对于当前位置的偏移量移动光标。
+仅限 Rigol。按相对于当前位置的偏移量移动显示光标。
 
 ```bash
-lager scope NET_NAME cursor move-a [--x FLOAT] [--y FLOAT] [--box BOX] [--mcu MCU]
-lager scope NET_NAME cursor move-b [--x FLOAT] [--y FLOAT] [--box BOX] [--mcu MCU]
+lager scope NET_NAME cursor move-a [--x FLOAT] [--y FLOAT] [--box BOX]
+lager scope NET_NAME cursor move-b [--x FLOAT] [--y FLOAT] [--box BOX]
 ```
 
 **选项：**
@@ -527,10 +785,10 @@ lager scope NET_NAME cursor move-b [--x FLOAT] [--y FLOAT] [--box BOX] [--mcu MC
 
 ### `cursor hide`
 
-隐藏光标显示。
+仅限 Rigol。隐藏仪器的显示光标。
 
 ```bash
-lager scope NET_NAME cursor hide [--box BOX] [--mcu MCU]
+lager scope NET_NAME cursor hide [--box BOX]
 ```
 
 **示例：**
@@ -555,22 +813,30 @@ lager scope ANALOG1 cursor hide --box my-lager-box
 
 ## stream 子命令（PicoScope）
 
-从 PicoScope 设备实时串流示波器数据。串流系统在 Lager Box 上使用一个专用守护进程，并提供基于 Web 的可视化界面。
+从 PicoScope 实时串流示波器数据。Lager Box 上的一个守护进程拥有该 PicoScope，Box 上的一个网页显示波形。
 
 ### 守护进程架构
 
-PicoScope 串流守护进程通过多个端口通信：
+所有访问都经由**端口 9000** 上的 Box HTTP 服务器到达示波器，其他所有 Net 也使用这个端口。拥有 PicoScope 的守护进程只监听环回地址。您无法从 Box 外部访问它：
 
-| 端口 | 用途 |
-|------|---------|
-| 8080 | 提供 Web 可视化界面的 HTTP 服务器 |
-| 8082 | WebSocket 命令通道（浏览器） |
-| 8083 | WebTransport 串流（浏览器数据） |
-| 8085 | CLI 命令端口（WebSocket） |
+| 端点 | 用途 |
+|----------|---------|
+| `:9000` `GET /scope` | Web 可视化界面 |
+| `:9000` `POST /net/command` | 控制：启用、刻度、时基、触发、测量 |
+| `:9000` `GET /scope/<net>/stream` | 票据：令牌、WebSocket 路径以及检测到的能力信息 |
+| `:9000` `GET /scope/<net>/ws` | 携带采集帧的 WebSocket，需要上面的令牌 |
+| `:9000` `/scope`（Socket.IO） | 供 UI 使用的实时采集状态 |
+| `127.0.0.1:8085` 和 `/tmp/lager-scope.sock` | 守护进程本身。仅限环回；端口 9000 的中继是唯一的入口 |
+
+采集帧以 **LSCP/1**（一种紧凑的二进制格式）穿过中继。一帧包含 64 字节的帧头、每个通道 16 字节的描述符，然后是连续的 `int16` ADC 计数。中继不解码就转发帧，因此它的开销不会随采集大小增长。
+
+<Note>
+早期版本把守护进程直接发布在端口 8081-8085 上。它们通过 WebTransport 向浏览器串流，这需要在容器中运行 QUIC 监听器并配置证书。这种设计已经移除。现在只有一个监听器，位于环回地址，也只有一个入口。
+</Note>
 
 ### `stream start`
 
-启动带 Web 可视化的示波器串流采集。
+在 PicoScope 上启动串流采集，并打印 Web UI 的链接。
 
 ```bash
 lager scope NET_NAME stream start [OPTIONS]
@@ -580,7 +846,7 @@ lager scope NET_NAME stream start [OPTIONS]
 
 | 选项 | 简写 | 说明 | 默认值 |
 |--------|-------|-------------|---------|
-| `--channel` | `-c` | 通道：`A`、`B`、`1`、`2` | `A` |
+| `--channel` | `-c` | 通道：`A`、`B`、`1`、`2` | 该 Net 的通道，否则为 `A` |
 | `--volts-per-div` | `-v` | 垂直刻度（V/格） | `1.0` |
 | `--time-per-div` | `-t` | 水平刻度（s/格） | `0.001` |
 | `--trigger-level` | | 触发阈值电压 | `0.0` |
@@ -589,7 +855,13 @@ lager scope NET_NAME stream start [OPTIONS]
 | `--coupling` | | 耦合：`dc`、`ac` | `dc` |
 | `--quiet` | `-q` | 精简输出 | |
 | `--json` | | JSON 输出格式 | |
-| `--verbose` | | 详细的调试输出 | |
+| `--verbose` | | 在守护进程应用每项设置时打印该设置 | |
+
+该命令按顺序应用各项设置，然后启动采集。如果守护进程拒绝某项设置，命令会打印错误并以 1 退出，采集也不会启动。触发源就是被串流的通道。
+
+启动之后，命令打印指向 `http://<box>:9000/scope` 的链接。使用 `--json` 时，该链接位于 `visualization_url` 字段中。在位于访问网关之后的 Box 上，该链接带有您的登录令牌，与[摄像头串流](/source/zh/reference/cli/webcam#访问受控的-box)相同。
+
+对于不是 PicoScope 的示波器，命令会打印错误，并建议使用 `lager scope NET_NAME start --single`。
 
 **示例：**
 
@@ -612,7 +884,7 @@ lager scope PICO1 stream start \
 
 ### `stream stop`
 
-停止示波器串流采集。
+停止串流采集。如果守护进程拒绝，命令会打印错误并以 1 退出。
 
 ```bash
 lager scope NET_NAME stream stop [--box BOX]
@@ -620,28 +892,32 @@ lager scope NET_NAME stream stop [--box BOX]
 
 ### `stream status`
 
-查看示波器串流守护进程的状态。
+检查示波器守护进程是否在运行。该命令显示命令端口、通道数以及是否有采集已就绪。它不需要 Net 名称。
 
 ```bash
-lager scope NET_NAME stream status [--box BOX]
+lager scope [NET_NAME] stream status [--box BOX]
 ```
+
+如果守护进程没有应答或无法连接示波器，命令以 1 退出。因此，脚本可以用它检查示波器是否已准备好串流。
 
 ### `stream web`
 
-打开浏览器进行实时示波器可视化。
+在浏览器中打开示波器 Web UI。
 
 ```bash
 lager scope NET_NAME stream web [--box BOX] [--port PORT]
 ```
 
 **选项：**
-- `--port` - HTTP 服务器端口（默认 8080）
+- `--port` - Box HTTP 服务器端口（默认 9000）
 
-Web 界面提供一个 HTML5 示波器显示，通过 WebTransport 实时渲染波形。
+该命令打开 `http://<box>:<port>/scope`。在位于访问网关之后的 Box 上，该链接带有您的登录令牌，与[摄像头串流](/source/zh/reference/cli/webcam#访问受控的-box)相同。令牌过期后，再次运行 `stream web` 即可获得新的链接。
+
+Web 界面是一个无依赖的 HTML5 示波器显示，由 Box 在 `http://<box>:9000/scope` 提供。波形以 LSCP 二进制帧的形式经 WebSocket 到达，由浏览器解码。页面根据所连接设备的能力信息构建控件，因此双通道示波器不会显示通道 C。页面还有一个命令控制台。它接受此 CLI 的大多数命令，另外还接受 `offset`、`position` 和 `capabilities`。
 
 ### `stream capture`
 
-把示波器波形数据采集到 CSV 文件。
+把串流中的 PicoScope 在 `--duration` 期间完成的采集记录到 CSV 文件。请先运行 `stream start`。
 
 ```bash
 lager scope NET_NAME stream capture [OPTIONS]
@@ -657,6 +933,12 @@ lager scope NET_NAME stream capture [OPTIONS]
 | `--quiet` | `-q` | 精简输出 | |
 | `--json` | | JSON 输出格式 | |
 | `--verbose` | | 详细的调试输出 | |
+
+该命令把 CSV 文件写在 Box 上，而不是您的计算机上。相对路径以 Box 上的 `/tmp` 为基准。采集结束后，命令会打印一条 `scp` 命令，用于把文件复制到您的计算机。
+
+该命令要么采集到数据，要么失败。如果示波器已停止，或者在 `--duration` 内没有采集到达，它会打印原因并以 1 退出。在 `normal` 和 `single` 模式下，示波器会等待触发，因此请检查触发电平和触发源。
+
+CSV 的列为 `capture`、`channel`、`sample_index`、`time_ns` 和 `voltage`。
 
 **示例：**
 
@@ -676,7 +958,7 @@ lager scope PICO1 stream capture --json --box my-lager-box
 
 ### `stream config`
 
-配置示波器串流设置，而不启动或停止采集。
+更改串流设置，而不启动或停止采集。
 
 ```bash
 lager scope NET_NAME stream config [OPTIONS]
@@ -695,6 +977,8 @@ lager scope NET_NAME stream config [OPTIONS]
 | `--capture-mode` | | 模式：`auto`、`normal`、`single` |
 | `--coupling` | | 耦合：`dc`、`ac` |
 | `--enable` / `--disable` | | 启用或停用通道 |
+
+请至少给出一项设置。`--volts-per-div`、`--coupling`、`--enable` 和 `--disable` 作用于 `--channel` 指定的通道。不带 `--channel` 时，它们作用于该 Net 的通道，否则作用于通道 `A`。命令会打印它应用的每一项设置。遇到守护进程拒绝的第一项设置时，它会停止并以 1 退出。
 
 **示例：**
 
@@ -799,15 +1083,16 @@ lager scope ANALOG1 trigger spi \
 ### 光标测量
 
 ```bash
-# Measure time between two events
-lager scope ANALOG1 cursor set-a --x -0.001 --box my-lager-box
-lager scope ANALOG1 cursor set-b --x 0.002 --box my-lager-box
+# PicoScope: measure the time between two events, and read it back
+lager scope PICO1 cursor time -0.001 0.002 --box my-lager-box
+lager scope PICO1 cursor --box my-lager-box
 
-# Measure voltage difference
+# Rigol: measure the voltage difference with the display cursors
 lager scope ANALOG1 cursor set-a --y 0.0 --box my-lager-box
 lager scope ANALOG1 cursor set-b --y 3.3 --box my-lager-box
 
 # Clean up
+lager scope PICO1 cursor off --box my-lager-box
 lager scope ANALOG1 cursor hide --box my-lager-box
 ```
 
@@ -838,22 +1123,23 @@ lager scope PICO1 stream stop --box my-lager-box
 ## 命令结构
 
 ```
-scope [NETNAME] [--box BOX]
+scope [NET_NAME] [--box BOX]
   Basic Control
-  ├── enable [--mcu]
-  ├── disable [--mcu]
-  ├── start [--mcu] [--single]
-  ├── stop [--mcu]
-  └── force [--mcu]
+  ├── enable
+  ├── disable
+  ├── start [--single]
+  ├── stop
+  ├── force
+  ├── status                                  (PicoScope)
+  └── autoscale                               (Rigol)
 
-  Channel Configuration (Rigol)
-  ├── scale VOLTS_PER_DIV [--mcu]
-  ├── coupling {dc|ac|gnd} [--mcu]
-  ├── probe {1|10|100|1000} [--mcu]
-  ├── timebase SECONDS_PER_DIV [--mcu]
-  └── autoscale [--mcu]
+  Channel Configuration
+  ├── coupling {dc|ac|gnd}
+  ├── probe {1|10|100|1000}
+  ├── scale VOLTS_PER_DIV
+  └── timebase SECONDS_PER_DIV
 
-  Measurements (Rigol)
+  Measurements
   └── measure
       ├── period [--display] [--cursor]
       ├── freq [--display] [--cursor]
@@ -868,20 +1154,35 @@ scope [NETNAME] [--box BOX]
       └── duty-cycle-neg [--display] [--cursor]
 
   Triggers
-  └── trigger
-      ├── edge [--slope] [--level] [--mode] [--coupling] [--source]
-      ├── pulse [--trigger-on] [--upper] [--lower] [--level] ...
-      ├── i2c [--source-scl] [--source-sda] [--trigger-on] [--address] ...
-      ├── spi [--source-mosi-miso] [--source-sck] [--source-cs] ...
-      └── uart [--baud] [--parity] [--trigger-on] [--data] ...
+  └── trigger                                 (no subcommand: show it)
+      ├── edge [--mode] [--coupling] [--source] [--slope] [--level]
+      ├── holdoff [SECONDS]                   (PicoScope)
+      ├── pulse [--trigger-on] [--upper] [--lower] [--level] ...   (Rigol)
+      ├── i2c [--source-scl] [--source-sda] [--trigger-on] [--address] ...   (Rigol)
+      ├── spi [--source-mosi-miso] [--source-sck] [--source-cs] ...   (Rigol)
+      └── uart [--baud] [--parity] [--trigger-on] [--data] ...   (Rigol)
 
-  Cursors (Rigol)
-  └── cursor
-      ├── set-a [--x] [--y]
-      ├── set-b [--x] [--y]
-      ├── move-a [--x] [--y]
-      ├── move-b [--x] [--y]
-      └── hide
+  Acquisition and Display (PicoScope)
+  ├── acquire [normal|average|peak] [--count N]
+  ├── roll [auto|on|off]
+  ├── fft [--channel] [--window] [--peaks]
+  └── display
+      ├── persistence VALUE
+      ├── xy {on|off}
+      ├── zoom FACTOR|off [--center]
+      ├── math EXPR
+      └── fft CHANNEL|off [--window]
+
+  Cursors
+  └── cursor                                  (no subcommand: read them; PicoScope)
+      ├── time T1 T2                          (PicoScope)
+      ├── volts V1 V2                         (PicoScope)
+      ├── off                                 (PicoScope)
+      ├── set-a [--x] [--y]                   (Rigol)
+      ├── set-b [--x] [--y]                   (Rigol)
+      ├── move-a [--x] [--y]                  (Rigol)
+      ├── move-b [--x] [--y]                  (Rigol)
+      └── hide                                (Rigol)
 
   Streaming (PicoScope)
   └── stream
@@ -898,14 +1199,16 @@ scope [NETNAME] [--box BOX]
 ## 说明
 
 - Net 名称就是您用 `lager nets` 搭建实验台时分配的名称
-- `--mcu` 选项在所有命令上都可用，它会传给后端；当多个 MCU 共用一个示波器通道时请使用它
+- 仪器命令可以作用于 `scope` Net，也可以作用于它的某个 `scope-channel` Net。通道命令需要 `scope-channel` Net
 - 串流命令仅适用于 PicoScope 设备
-- 测量和光标命令仅适用于 Rigol 设备
+- 测量在两种仪器上都可用。`--display` 和 `--cursor` 仅限 Rigol，因为它们在仪器的屏幕上绘制
+- `cursor time`、`cursor volts` 和 `cursor off` 仅限 PicoScope。显示光标命令仅限 Rigol
+- `status`、`acquire`、`roll`、`fft`、`display` 和 `trigger holdoff` 仅限 PicoScope
 - 边沿触发是 PicoScope 和 Rigol 都支持的唯一触发类型
 - 在 Rigol MSO5000 上，只有边沿触发和 SPI 触发可以工作（见 [issue #418](https://github.com/lagerdata/lager/issues/418)）
-- Web 可视化要求 Lager Box 上的端口 8080 可访问
-- 校验会在发送到硬件之前拒绝超出允许范围的数值
-- 用 `lager nets` 查看可用的示波器 Net
+- Web UI 需要能访问 Lager Box 上的端口 9000
+- CLI 会在把值发送到硬件之前拒绝超出允许范围的值
+- 运行 `lager scope --box BOX` 列出 `scope` 和 `scope-channel` Net
 
 ## 参见
 

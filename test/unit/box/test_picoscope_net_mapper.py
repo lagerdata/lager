@@ -119,6 +119,13 @@ class ChannelDefaultingTests(unittest.TestCase):
         mapper.trigger_settings.edge.set_source('A')
         device.set_trigger_source.assert_called_once_with('A')
 
+    def test_a_net_as_the_trigger_source_is_sent_as_its_channel(self):
+        # The documented Rigol call. The device is a JSON proxy, so the Net
+        # itself cannot cross it.
+        mapper, device = _mapper(channel='B')
+        mapper.trigger_settings.edge.set_source(_FakeNet('A'))
+        device.set_trigger_source.assert_called_once_with('A')
+
     def test_a_net_without_a_channel_does_not_blow_up(self):
         # Not every net carries a pin; the driver's own default applies.
         net = _FakeNet()
@@ -237,6 +244,51 @@ class UnsupportedFeatureTests(unittest.TestCase):
             mapper.measurement.variance()
         device.measure.assert_not_called()
         device.measure_all.assert_not_called()
+
+
+class SamplesInTheScriptsProcessTests(unittest.TestCase):
+    """What cannot, or should not, go through the hardware service proxy.
+
+    A recording run there wrote its file into that process's directory,
+    failed past the proxy's timeout, and held the unit locked meanwhile.
+    """
+
+    def setUp(self):
+        from lager.measurement.scope import picoscope
+        self.driver = MagicMock()
+        self.made = []
+
+        def make(**kwargs):
+            self.made.append(kwargs)
+            return self.driver
+
+        patcher = unittest.mock.patch.object(picoscope, 'PicoScope', side_effect=make)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_stream_capture_runs_here_on_the_nets_channel(self):
+        mapper, device = _mapper(channel='B')
+        mapper.stream_capture(output='run.csv', duration=30.0, samples=100)
+        self.driver.stream_capture.assert_called_once_with(
+            output='run.csv', duration=30.0, samples=100, timeout=None)
+        self.assertEqual(self.made, [{'pin': 'B', 'netname': 'scope1'}])
+        device.stream_capture.assert_not_called()
+
+    def test_frames_and_captures_come_from_the_same_local_driver(self):
+        mapper, device = _mapper()
+        mapper.capture(timeout=2.0)
+        mapper.stream_frames(count=3)
+        self.driver.capture.assert_called_once_with(timeout=2.0)
+        self.driver.stream_frames.assert_called_once_with(count=3, timeout=None)
+        self.assertEqual(len(self.made), 1)
+        device.capture.assert_not_called()
+
+    def test_closing_drops_only_the_local_connection(self):
+        mapper, device = _mapper()
+        mapper.capture()
+        mapper.close_capture_connection()
+        self.driver.close.assert_called_once_with()
+        device.close.assert_not_called()
 
 
 class RigolParityTests(unittest.TestCase):

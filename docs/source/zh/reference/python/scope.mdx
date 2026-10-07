@@ -9,6 +9,19 @@ description: 用于示波器控制的 Python SDK
 
 用 scope 模块控制示波器，采集模拟信号、在特定事件上触发，并进行自动测量。
 
+## 仪器支持
+
+同一个对象和同样的调用既适用于 Rigol MSO5000，也适用于 PicoScope（2000、2000a、3000a、4000a 或 5000a）。区别在底层。Rigol 通过 VISA 使用 SCPI 通信。PicoScope 是带有厂商 SDK 的 USB 设备，由 Box 上的示波器守护进程驱动。
+
+为 PicoScope 编写脚本之前，请先了解以下区别：
+
+- **测量值是计算出来的，而不是查询得到的。** PicoTech 的任何 API 都没有与 `:MEAS:VPP?` 等价的命令，因此 Box 根据采集到的数据块计算该值。一次采集就能得出全部测量值，所以 `scope.measurement.all()` 的开销与单次 `voltage_peak_to_peak()` 相同，而逐个读取五个值需要五次采集。
+- **运行时，它们描述最近一次串流发出的采集。** Box 根据它最近发送给订阅者的数据块计算测量值或光标读数，因此这些数值与屏幕上的波形一致。重复读取的变化速度不会超过采集到达的速度：在两次采集之间的两次调用返回相同的值。停止时，它们描述最后一次采集，就像停止状态下的台式示波器一样。
+- **`display` 和 `measurement_cursor` 不起作用。** 它们把读数显示在仪器自己的屏幕上，而 PicoScope 没有屏幕。这两个参数会被接受并忽略，这样为 Rigol 编写的脚本仍然可以运行。
+- **有些功能会抛出异常，而不是返回值。** 屏幕光标、协议触发、逻辑分析仪，以及下文列为仅限 Rigol 的测量，会抛出指明缺失功能的 `UnsupportedScopeFeature`，而不是返回一个看似合理的零值。如果脚本需要同时在两种仪器上运行，请捕获该异常。
+
+PicoScope 的通道用字母表示（A-D），Rigol 的通道用数字表示（1-4）。每个方法都接受这两种写法并进行归一化，因此针对一种仪器编写的脚本在另一种仪器上也能继续工作。
+
 ## 导入
 
 ```python
@@ -84,9 +97,44 @@ scope.start_single_capture()
 scope.stop_capture()
 ```
 
+#### `force_trigger()`
+
+立即触发，而不是等待配置的触发条件。当信号没有越过触发电平、而脚本仍然需要一次采集时，使用它。示波器必须处于运行状态：已停止的 PicoScope 会拒绝该调用。
+
+```python
+scope.force_trigger()
+```
+
 ### 测量
 
-通过 `measurement` 属性访问完整的测量功能：
+通过 `measurement` 属性访问完整的测量功能。
+
+#### 可用性
+
+下面的所有测量都适用于 Rigol。在 PicoScope 上，Box 根据采集到的采样点计算测量值，它计算的是以下十四项：
+
+| 两者均可用 | |
+|---|---|
+| `voltage_max` | `voltage_min` |
+| `voltage_peak_to_peak` | `voltage_average` |
+| `voltage_rms` | `voltage_overshoot` |
+| `frequency` | `period` |
+| `rise_time` | `fall_time` |
+| `pulse_width_positive` | `pulse_width_negative` |
+| `duty_cycle_positive` | `duty_cycle_negative` |
+
+其他所有测量都**仅限 Rigol**，在 PicoScope 上会抛出 `UnsupportedScopeFeature`。它们包括平顶电压和阈值电压、预冲、周期 RMS、极值时刻、压摆率、边沿计数和脉冲计数、面积以及方差。延迟和相位测量同样仅限 Rigol，因为它们要比较两个通道。Box 在 PicoScope 上没有用于这种比较的命令。
+
+`period`、`frequency`、脉冲宽度、占空比、上升和下降时间以及过冲都需要可分辨的波形。在 PicoScope 上，测量周期需要采集中包含两个完整周期。周期不足时，调用会抛出异常，而不是返回不精确的估计值。测量时序之前，请让屏幕上至少显示两个周期。
+
+#### `all()`
+
+Box 计算的每一项测量，全部来自同一次采集。在 PicoScope 上，这是读取多个值的低开销方式。
+
+```python
+values = scope.measurement.all()
+print(values['vpp'], values['frequency'])
+```
 
 #### 电压测量
 
@@ -212,6 +260,10 @@ PicoScope 设备支持串流功能：
 - `capture_mode`（str）：`"auto"`、`"normal"`、`"single"`
 - `coupling`（str）：`"dc"`、`"ac"`
 
+<Note>
+API 接受 `"gnd"`，但 2000 系列设备会拒绝它，因为它们没有接地开关：`ps2000_set_channel` 只用一个标志表示耦合方式。要隔离直流分量，请使用 `"ac"`；要查看零电平的位置，请拔下探头。
+</Note>
+
 ```python
 scope.stream_start(
     channel="A",
@@ -234,19 +286,45 @@ scope.stream_stop()
 
 ### `stream_capture(output, duration, samples)`
 
-把数据采集到文件。
+采集 `duration` 秒，并写入 CSV 文件。
 
 **参数：**
-- `output`（str）：输出文件路径
+- `output`（str）：输出文件路径。省略它时只统计采样点数，不写文件
 - `duration`（float）：采集时长，单位秒
-- `samples`（int）：采样点数（可选）
+- `samples`（int）：每个通道的行数上限（可选）。它是上限而不是目标：采集仍然在 `duration` 结束时停止
+
+返回的是摘要而不是采样数据本身 —— `captures`、`samples_per_channel`、`rows` 和 `output`。CSV 的列为 `capture`、`channel`、`sample_index`、`time_ns` 和 `voltage`，与 `lager scope stream capture` 写出的格式相同。
+
+这段时间内示波器完成的每一次采集都只记录一次。示波器必须已经在运行，由 `stream_start()`、`start_capture()` 或 `start_single_capture()` 启动。示波器处于停止状态时，调用会立即抛出异常，而不是等到 `duration` 结束后一无所获。相对的 `output` 路径以脚本在 Box 上的工作目录为基准。
 
 ```python
-scope.stream_capture(
+result = scope.stream_capture(
     output="waveform.csv",
     duration=5.0
 )
+print(result['samples_per_channel'], "samples per channel")
 ```
+
+### `stream_frames(count, timeout)`
+
+以解码后的帧逐个产出采集结果，而不是写入文件。这是零拷贝路径：帧的 `counts()` 是接收缓冲区上的视图，因此在需要之前不会进行任何转换。当采样数据要送入 numpy 而不是写入磁盘时，请使用它。
+
+每一帧都是一次新的采集，绝不会重复产出之前产出过的采集。如果在 `timeout` 内没有采集到达，它会抛出 `ScopeDaemonTimeout`。请先启动示波器；在 normal 模式下，还要确保信号越过触发电平。
+
+**参数：**
+- `count`（int）：要产出的采集次数（默认 1）
+- `timeout`（float）：等待每次采集的秒数（默认 10）
+
+```python
+for frame in scope.stream_frames(count=10):
+    volts = frame.volts('A')          # numpy array, converted on request
+    times = frame.time_axis()         # seconds relative to the trigger
+    print(frame.sample_rate_hz, volts.max())
+```
+
+<Note>
+`volts()` 给出探头尖端的电压。使用 10x 探头时，它报告的是尖端处的信号，而不是到达 BNC 接口的那十分之一。`volts_per_div`、触发电平和测量函数同样以探头尖端为准。请在采集之前用 `set_channel_probe()` 设置衰减比。2000 系列设备初始为 10x，2000a、3000a、4000a 和 5000a 系列初始为 1x。
+</Note>
 
 ## 完整示例
 
@@ -266,7 +344,6 @@ def measure_pwm_signal():
 
         # Configure trigger
         pwm_net.trigger_settings.set_mode_normal()
-        pwm_net.trigger_settings.set_coupling_DC()
         pwm_net.trigger_settings.edge.set_source(pwm_net)
         pwm_net.trigger_settings.edge.set_slope_rising()
         pwm_net.trigger_settings.edge.set_level(1.65)  # 50% of 3.3V
@@ -308,12 +385,26 @@ offset = scope.trace_settings.get_volt_offset()
 
 # Horizontal scale (s/div)
 scope.trace_settings.set_time_per_div(0.001)  # 1ms/div
-time_scale = scope.trace_settings.get_time_per_div()
+time_scale = scope.trace_settings.get_time_per_div()  # 0.001024 -- see below
 
 # Horizontal offset
 scope.trace_settings.set_time_offset(0.0)
 time_offset = scope.trace_settings.get_time_offset()
 ```
+
+<Note>
+每格时间是一次采集的十分之一，与十格的屏幕相同，因此 `set_time_per_div(0.001)` 请求的是 10 ms 的窗口。
+
+`get_time_per_div()` 返回实际使用的刻度，它很少恰好等于请求的值。示波器按一组固定的采样间隔采样，每一级是上一级的两倍。Box 把请求舍入到最接近的一级：2204A 上的 1 ms/div 实际是 1.024 ms/div。如果需要精确的窗口，请读回该值。更好的做法是使用 `get_sample_rate()` 和帧自身的时间轴，而不是根据设置的值进行计算。
+
+设备能达到的最快屏幕取决于数据块深度和最大采样率，因为两者相乘就得到窗口。2204A 以 100 MS/s 采集 8000 个采样点时，最快为 8 us/div，请求更快的刻度也只会得到这个值。启用第二个通道会让缓冲区减半，这会让最快屏幕变得更快，而不是更慢。
+</Note>
+
+<Note>
+`set_time_offset()` 相对于触发点在时间上移动采集窗口。用它查看单次采集左右边缘之外的信号。正值向前看，即触发之后的信号；负值向后看，即触发之前的信号。
+
+在 PicoScope 上，每个方向最多移动一个窗口。窗口就是一个数据块，而一个数据块就是示波器能保存的全部内容。因此，Box 会把偏移限制在采集完全位于触发之前或完全位于触发之后的位置。设置偏移会重新启动示波器的触发等待，因为别处的窗口必须重新采集才能看到。此后，该偏移适用于每一次采集，直到您修改它。
+</Note>
 
 ### 高级触发设置
 
@@ -326,7 +417,9 @@ scope.trigger_settings.set_mode_normal()
 scope.trigger_settings.set_mode_single()
 mode = scope.trigger_settings.get_mode()
 
-# Trigger coupling
+# Trigger coupling (Rigol only -- a filter on the trigger path itself, which
+# a PicoScope does not have. For a PicoScope, set the channel's input coupling
+# with scope.set_channel_coupling('dc') instead.)
 scope.trigger_settings.set_coupling_DC()
 scope.trigger_settings.set_coupling_AC()
 scope.trigger_settings.set_coupling_low_freq_reject()
@@ -346,7 +439,22 @@ status = scope.trigger_settings.get_status()
 
 ### 光标控制
 
-通过 `cursor` 属性访问光标功能：
+通过 `cursor` 属性访问光标功能。
+
+<Note>
+`scope.cursor.*` **仅限 Rigol**。它们是仪器自身屏幕上的标记，按屏幕坐标定位，并通过 SCPI 读回。PicoScope 没有屏幕，因此这里的每个方法在 PicoScope 上都会抛出 `UnsupportedScopeFeature`。
+
+基于*采集到的采样点*的光标是另一回事，PicoScope 具备这种光标。您用时间和电压来放置它们，而不是用像素，因此它们有自己的 API。请使用 `lager scope <net> cursor time <t1> <t2>`、Web UI 控制台中同样的 `cursor` 命令，或者驱动上的 `set_cursors()` / `measure_cursors()`：
+
+```python
+scope.set_cursors(time=(0.0, 1e-3))
+readings = scope.measure_cursors()["readings"]
+readings["frequency"]       # 1/dt, so a pair a cycle apart reads the frequency
+readings["trace_delta_v"]   # the trace's voltage change between them
+```
+
+这对光标保存在 Box 上。从脚本、终端 CLI 或 Web UI 控制台放置的光标是同样的两个标记，Web UI 会把它们画出来。
+</Note>
 
 ```python
 # Set cursor positions
@@ -380,8 +488,10 @@ scope.cursor.hide()
 
 | 厂商 | 型号系列 | 特性 |
 |--------------|--------------|----------|
-| Rigol | MSO5000 | 多通道、混合信号、协议解码 |
-| PicoScope | 多种型号 | 支持串流 |
+| Rigol | MSO5000 | 多通道、混合信号、协议解码、光标、屏幕测量 |
+| PicoScope | 2000、2000a、3000a、4000a、5000a | 采集控制、刻度设置、边沿触发、14 种计算测量、连续串流 |
+
+Box 在运行时检测所连接 PicoScope 的通道数、电压量程、带宽、存储深度和 ADC 分辨率。因此，同一系列中的型号无需配置即可工作。用 `scope.capabilities()` 读取这些信息。
 
 ## 说明
 

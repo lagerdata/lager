@@ -15,7 +15,8 @@
 //! the four families agreeing on them, and a silent divergence in a future
 //! SDK would otherwise mean a scope quietly using the wrong voltage range.
 
-use protocol::{Coupling as WireCoupling, TriggerSlope};
+use anyhow::bail;
+use protocol::{Coupling as WireCoupling, DriverFamily, TriggerSlope};
 
 /// An input voltage range, as a full-scale deflection.
 ///
@@ -119,6 +120,39 @@ impl Range {
     pub fn for_volts_per_div(volts_per_div: f64) -> Range {
         Range::smallest_containing(volts_per_div * 4.0)
     }
+
+    /// The smallest and largest ranges `family`'s `SetChannel` accepts.
+    ///
+    /// Series-wide figures from the programmer's guides, taken as what every
+    /// part in the series has: the 3000A/B parts start at 50 mV where a
+    /// 3000D has 20 mV, so a 3000D is offered one range less than it has
+    /// rather than a 3204A one that errors. Only the 4000a reaches 50 V.
+    pub fn limits(family: DriverFamily) -> (Range, Range) {
+        match family {
+            DriverFamily::Ps2000a => (Range::R20mV, Range::R20V),
+            DriverFamily::Ps3000a => (Range::R50mV, Range::R20V),
+            DriverFamily::Ps4000a => (Range::R10mV, Range::R50V),
+            DriverFamily::Ps5000a => (Range::R10mV, Range::R20V),
+            // What pico/ps2000.rs advertises for the legacy parts.
+            DriverFamily::Ps2000 => (Range::R50mV, Range::R20V),
+        }
+    }
+
+    /// Every range `family` accepts, smallest first.
+    pub fn supported(family: DriverFamily) -> impl Iterator<Item = Range> {
+        let (smallest, largest) = Range::limits(family);
+        Range::ALL
+            .into_iter()
+            .filter(move |range| (smallest..=largest).contains(range))
+    }
+
+    /// [`Range::smallest_containing`], among the ranges `family` has.
+    pub fn smallest_containing_for(family: DriverFamily, volts: f64) -> Range {
+        let magnitude = volts.abs();
+        Range::supported(family)
+            .find(|r| r.full_scale_volts() >= magnitude)
+            .unwrap_or(Range::limits(family).1)
+    }
 }
 
 /// Input coupling. `enPS2000ACoupling` and friends are all AC = 0, DC = 1.
@@ -138,15 +172,20 @@ impl Coupling {
     }
 }
 
-impl From<WireCoupling> for Coupling {
-    /// PicoScopes have no ground-coupling relay, unlike a Rigol. Ground is
-    /// mapped to DC rather than rejected so a shared net configuration still
-    /// applies; a caller that needs a true ground reference has to disable
-    /// the channel.
-    fn from(wire: WireCoupling) -> Self {
+impl TryFrom<WireCoupling> for Coupling {
+    type Error = anyhow::Error;
+
+    /// PicoScopes have no ground-coupling relay, unlike a Rigol. Ground used
+    /// to be mapped to DC, which measured the live signal while every client
+    /// showed GND; refusing says what the hardware can do instead.
+    fn try_from(wire: WireCoupling) -> anyhow::Result<Self> {
         match wire {
-            WireCoupling::AC => Coupling::Ac,
-            WireCoupling::DC | WireCoupling::GND => Coupling::Dc,
+            WireCoupling::AC => Ok(Coupling::Ac),
+            WireCoupling::DC => Ok(Coupling::Dc),
+            WireCoupling::GND => bail!(
+                "PicoScopes have no ground coupling; use DC or AC, or disable \
+                 the channel"
+            ),
         }
     }
 }
@@ -371,11 +410,36 @@ mod tests {
     }
 
     #[test]
-    fn ground_coupling_falls_back_to_dc() {
-        // PicoScopes have no ground relay; see the From impl.
-        assert_eq!(Coupling::from(WireCoupling::GND), Coupling::Dc);
-        assert_eq!(Coupling::from(WireCoupling::AC), Coupling::Ac);
-        assert_eq!(Coupling::from(WireCoupling::DC), Coupling::Dc);
+    fn ground_coupling_is_refused_rather_than_measured_as_dc() {
+        // PicoScopes have no ground relay; see the TryFrom impl.
+        let err = Coupling::try_from(WireCoupling::GND).unwrap_err().to_string();
+        assert!(err.contains("no ground coupling"), "{err}");
+        assert_eq!(Coupling::try_from(WireCoupling::AC).unwrap(), Coupling::Ac);
+        assert_eq!(Coupling::try_from(WireCoupling::DC).unwrap(), Coupling::Dc);
+    }
+
+    #[test]
+    fn each_family_offers_only_the_ranges_its_driver_accepts() {
+        let span = |family| {
+            let ranges: Vec<Range> = Range::supported(family).collect();
+            (ranges[0], *ranges.last().unwrap(), ranges.len())
+        };
+        assert_eq!(span(DriverFamily::Ps2000a), (Range::R20mV, Range::R20V, 10));
+        assert_eq!(span(DriverFamily::Ps3000a), (Range::R50mV, Range::R20V, 9));
+        assert_eq!(span(DriverFamily::Ps4000a), (Range::R10mV, Range::R50V, 12));
+        assert_eq!(span(DriverFamily::Ps5000a), (Range::R10mV, Range::R20V, 11));
+    }
+
+    #[test]
+    fn range_selection_stays_inside_the_family() {
+        // A 40 V signal on a 5000a gets its 20 V range, not a 50 V one it
+        // does not have; a 5 mV one on a 2000a gets 20 mV, not 10 mV.
+        assert_eq!(Range::smallest_containing_for(DriverFamily::Ps5000a, 40.0), Range::R20V);
+        assert_eq!(Range::smallest_containing_for(DriverFamily::Ps4000a, 40.0), Range::R50V);
+        assert_eq!(Range::smallest_containing_for(DriverFamily::Ps2000a, 0.005), Range::R20mV);
+        assert_eq!(Range::smallest_containing_for(DriverFamily::Ps3000a, 0.005), Range::R50mV);
+        assert_eq!(Range::smallest_containing_for(DriverFamily::Ps5000a, 0.005), Range::R10mV);
+        assert_eq!(Range::smallest_containing_for(DriverFamily::Ps2000a, 3.0), Range::R5V);
     }
 
     #[test]

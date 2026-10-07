@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import json
+import threading
 import traceback
 from typing import Any, Dict, List
 
@@ -135,6 +136,26 @@ def get_state() -> Dict[str, Any]:
 
 # ------------------------------- mappers --------------------------------
 
+def _scope_device_info(record):
+    """What hardware_service is told about a PicoScope net.
+
+    Exactly what the `lager scope` route tells it: the net's name, from which
+    ``scope_hs`` reads back the channel it is wired to, and the unit's
+    identity, which is the lock every net on that unit shares. Not the
+    address: hardware_service caches one driver per address, so every channel
+    net on a unit shared the driver built for whichever was used first, and a
+    call that takes its channel from the driver ran on that net's channel.
+    """
+    from .device_identity import physical_device_id
+
+    instrument = record.get("instrument") or ""
+    return {
+        "name": record.get("name") or record.get("net"),
+        "instrument": instrument,
+        "device_id": physical_device_id(record.get("role") or "scope", instrument, record),
+    }
+
+
 def mapper_factory(net, device_type, net_info):
     if isinstance(device_type, str) and '::' in device_type:
         # VISA resource string passed as device_type; resolve via instrument field or USB vendor ID
@@ -166,7 +187,7 @@ def mapper_factory(net, device_type, net_info):
         # the same factory the CLI drives, which picks the PicoScope or Rigol
         # driver from the net's instrument string.
         from .mappers.picoscope import PicoScopeAnalogMapper
-        return PicoScopeAnalogMapper(net, Device("scope_hs", net_info))
+        return PicoScopeAnalogMapper(net, Device("scope_hs", _scope_device_info(net_info)))
     elif device_type in ("rigol_dp800", "rigol_dp800_2", "rigol_dp700"):
         # DP700 (DP711/DP712) exposes the same method surface as the DP800
         # backend, so it reuses the DP800 function mapper. The device_type is
@@ -227,11 +248,21 @@ def _load_json_file(path: str) -> Any:
 
 
 def _atomic_write_json(path: str, payload: Any) -> None:
+    """Replace ``path`` with ``payload``; a reader sees the old file or the new.
+
+    The temporary file is this writer's own. With one shared name, two
+    processes writing at once -- as every service does when it migrates the
+    nets after an upgrade -- could truncate the file the other had just moved
+    into place, and a reader then found it half written, which reads as no
+    nets at all.
+    """
     _ensure_dir(path)
-    tmp = f"{path}.tmp"
+    tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
     try:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp, path)
     except Exception:
         # Clean up temp file if something went wrong
