@@ -37,6 +37,7 @@ Either `--box` or `--ip` is required.
 |-----------|-------------|
 | Docker containers | Stops and removes the `lager` and `pigpio` containers. Other containers, such as a control plane's gateway, are left running |
 | Docker network | Removes `lagernet` (skipped while another container still uses it) |
+| SSH key-sync poller | Stops the background loop that `start_box.sh` runs to publish keys from `/etc/lager/authorized_keys.d`, including loops left by earlier installs |
 | Docker images | Removes the `lager` image, dangling layers, and build cache (unless `--keep-docker-images`) |
 | `~/box` directory | Box code and services |
 | Lock state | `/etc/lager/lock.json`, which describes the lock server being removed |
@@ -113,7 +114,7 @@ lager uninstall --box my-lager-box --yes
 3. **Show summary** - Lists what will be removed based on flags
 4. **Confirm** - Requires explicit confirmation (unless `--yes`)
 5. **Remove step by step:**
-   - Stop and remove Docker containers
+   - Stop and remove Docker containers, and stop the SSH key-sync poller
    - Clean Docker images and build cache
    - Remove `~/box` directory
    - Clear the lock state, or back up and purge `/etc/lager` (with `--purge-config`)

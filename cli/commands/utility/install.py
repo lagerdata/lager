@@ -18,6 +18,7 @@ from pathlib import Path
 from importlib import resources
 from ...address_utils import validate_ip_or_hostname, VALID_FORMATS_CHEATSHEET
 from ...box_storage import (
+    RELEASE_RETRY_SECONDS,
     add_box,
     auto_lock_around_command,
     empty_box_name_error,
@@ -612,8 +613,14 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
     # script's own timeout. Derived from that timeout rather than fixed, so
     # raising --timeout cannot leave the install's own lock reaped mid-deploy.
     # See install_lock_ttl_seconds.
+    #
+    # release_retry_seconds: the release is the first request to reach the
+    # rebuilt container, and a single attempt lost the race with it coming
+    # up, which left the box locked against the next command for the whole
+    # TTL above. See RELEASE_RETRY_SECONDS.
     with auto_lock_around_command(
         ip, box or ip, 'install', ttl_seconds=install_lock_ttl_seconds(deploy_timeout),
+        release_retry_seconds=RELEASE_RETRY_SECONDS,
     ) as lock_session:
         try:
             # Run the deploy script, streaming output to the terminal.

@@ -209,6 +209,34 @@ LOCK_STATE_PRIV_STEP = (
     "sudo rm -f /etc/lager/lock.json /etc/lager/lock.json.flock",
 )
 
+# start_box.sh runs a background poller that rebuilds lager's block in
+# ~/.ssh/authorized_keys from /etc/lager/authorized_keys.d every 5 s. It is
+# disowned, so it outlives start_box.sh, the container and ~/box, and runs from
+# a deleted script until the box reboots. Left running, it resumes the moment
+# the key directory reappears: if /etc/lager is recreated holding only the
+# reinstalling machine's key, it revokes every other managed key within 5 s.
+#
+# The poller runs under the argv[0] below (start_box.sh, `_SSH_SYNC_MARKER`).
+# Pollers started before that marker existed are plain subshells of
+# start_box.sh: bash running the script file. The pattern matches only that
+# shape, never a process that merely names the script -- such as an ssh client
+# whose remote command runs it, which is visible here when this command runs on
+# the box itself (start_box.sh, `_SSH_SYNC_LEGACY_PATTERN`). This command's own
+# remote shell is `bash -c ...`, which the shape excludes, and the bracket in
+# `[s]tart_box` keeps the pattern text from matching itself anywhere else.
+# Nothing else of lager's is running by now: the box lock is held, and the
+# lager container is stopped before this runs.
+#
+# pkill exits 1 when it matched nothing, which is the normal case on a box
+# with no leftover poller, so the step reports success either way.
+SSH_SYNC_MARKER = "lager-ssh-sync"
+SSH_SYNC_LEGACY_PATTERN = "^([^ ]*/)?bash [^ -][^ ]*[s]tart_box[.]sh( |$)"
+SSH_SYNC_STOP_CMD = (
+    f"pkill -u \"$(id -u)\" -f '^{SSH_SYNC_MARKER}( |$)'; "
+    f"pkill -u \"$(id -u)\" -f '{SSH_SYNC_LEGACY_PATTERN}'; "
+    "exit 0"
+)
+
 # Home-dir, not /tmp: a fixed name in the world-writable /tmp would let
 # another user on the box pre-create or symlink the path and swallow (or
 # poison) the per-step results. The remote shell expands the ~.
@@ -1071,6 +1099,8 @@ def uninstall(ctx, box, ip, user, purge_config, include_control_plane, keep_conf
             lock_session.dissolve()
         run_ssh("docker stop pigpio 2>/dev/null; docker rm -f pigpio 2>/dev/null", "Removing pigpio container", allow_fail=True)
         run_ssh("docker network rm lagernet 2>/dev/null", "Removing lagernet network", allow_fail=True)
+        # Nothing else stops it: it outlives the containers and ~/box.
+        run_ssh(SSH_SYNC_STOP_CMD, "Stopping the SSH key-sync poller", allow_fail=True)
         click.echo()
 
         # Remove Docker images (unless --keep-docker-images). Scoped to the

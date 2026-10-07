@@ -68,6 +68,9 @@ if ( : >>"$LOCK_FILE" ) 2>/dev/null; then
             echo "       Wait for it to finish, or stop it and retry."
             exit 1
         fi
+        # Read by the ssh-sync block below: only a run that holds this lock
+        # knows that no other start_box.sh is running right now.
+        _START_LOCK_HELD=1
     else
         echo "[WARNING] flock not found — cannot enforce single-instance startup."
     fi
@@ -685,8 +688,8 @@ _sync_authorized_keys
 # Background poller: publishes keys written to the key directory while the box
 # is running (e.g. during a control-plane-driven first install, which waits a
 # few seconds for exactly this). The single-instance guard at the top of this
-# script means only one poller can be started; the PID file additionally stops
-# the poller left behind by a PREVIOUS run, which outlives its parent.
+# script means only one poller can be started. A poller outlives its parent, so
+# this block also stops every poller a PREVIOUS run left behind.
 #
 # `9>&-` closes the inherited single-instance lock fd — without it this
 # long-lived child would hold the lock forever and every later start_box.sh
@@ -703,18 +706,83 @@ _sync_authorized_keys
 # here still warns and continues rather than aborting, because a poller that
 # does not start is a missed key sync, while a script that exits here is a box
 # with nothing running on it.
+#
+# The PID file alone is not enough to find an old poller. It names one process,
+# so a poller whose entry was overwritten without being killed is invisible to
+# every later run, and `lager uninstall` never read it at all. Such a poller
+# keeps rebuilding lager's block from the key directory for as long as the box
+# stays up. If /etc/lager is later recreated holding only the reinstalling
+# machine's key, it revokes every other managed key within 5 s.
+#
+# So the poller runs under a fixed argv[0], the marker, and every run (and
+# `lager uninstall`, which uses the same name) stops ALL marked pollers for this
+# uid, not only the one the PID file names. The PID file is still written and
+# honoured, for pollers started by a release that predates the marker.
+#
+# Pollers from before the marker are plain subshells of start_box.sh, so their
+# command line is this script's own: bash running the script file, as in
+# `bash box/start_box.sh --no-publish` or `/bin/bash ./start_box.sh`. They are
+# swept only by a run that holds the single-instance lock: that lock proves no
+# other start_box.sh is running, so another process of that exact shape for
+# this uid is a leftover poller. Without the lock that proof is gone, and the
+# sweep is skipped.
+#
+# The shape matters, not just the name. Plenty of live processes name this
+# script without running it. The one that bit: the ssh client of the very
+# install running this script, `ssh <box> 'cd ~/box && ./start_box.sh'`. When
+# the machine running `lager install` or `lager update` is the box itself (a CI
+# runner on the bench box, under the same login user), that client is visible
+# here, and killing it hung up this script's own session mid-start. A wrapper
+# shell such as `bash -c "cd ~/box && ./start_box.sh"` is excluded by shape
+# (its first argument is `-c`), and this run's own ancestors are excluded by
+# PID as well.
+#
+# The marker and the script name are overridable only so the unit tests cannot
+# touch real processes; production always uses the defaults.
 _SSH_SYNC_PID_FILE="${LAGER_SSH_SYNC_PID_FILE:-/tmp/lager-ssh-sync-$(id -u).pid}"
+_SSH_SYNC_MARKER="${LAGER_SSH_SYNC_MARKER:-lager-ssh-sync}"
+_SSH_SYNC_LEGACY_NAME="${LAGER_SSH_SYNC_LEGACY_NAME:-start_box[.]sh}"
+_SSH_SYNC_LEGACY_PATTERN="^([^ ]*/)?bash [^ -][^ ]*${_SSH_SYNC_LEGACY_NAME}( |\$)"
 if [ -f "$_SSH_SYNC_PID_FILE" ]; then
     _old_pid=$(cat "$_SSH_SYNC_PID_FILE" 2>/dev/null || true)
     [ -n "$_old_pid" ] && kill "$_old_pid" 2>/dev/null || true
     rm -f "$_SSH_SYNC_PID_FILE" 2>/dev/null \
         || echo "[WARNING] Could not remove $_SSH_SYNC_PID_FILE. Continuing."
 fi
+if command -v pkill >/dev/null 2>&1; then
+    pkill -u "$(id -u)" -f "^${_SSH_SYNC_MARKER}( |\$)" 2>/dev/null || true
+    if [ "${_START_LOCK_HELD:-0}" = 1 ]; then
+        # pgrep leaves itself out, and this shell and its ancestors are left
+        # out by PID. The list goes through a file, not a pipe, so no subshell
+        # of this script (whose command line would match) exists while pgrep
+        # looks.
+        _ancestors=" $$ "
+        _a=$$
+        while [ -n "$_a" ] && [ "$_a" -gt 1 ] 2>/dev/null; do
+            _a=$(ps -o ppid= -p "$_a" 2>/dev/null | tr -d '[:space:]') || _a=""
+            [ -n "$_a" ] && _ancestors="$_ancestors$_a "
+        done
+        _legacy_pids=$(mktemp 2>/dev/null) || _legacy_pids=""
+        if [ -n "$_legacy_pids" ]; then
+            pgrep -u "$(id -u)" -f "$_SSH_SYNC_LEGACY_PATTERN" > "$_legacy_pids" 2>/dev/null || true
+            while read -r _p; do
+                case "$_ancestors" in *" $_p "*) continue ;; esac
+                echo "  Stopping a key-sync poller left by an earlier run (pid $_p)"
+                kill "$_p" 2>/dev/null || true
+            done < "$_legacy_pids"
+            rm -f "$_legacy_pids"
+        fi
+    fi
+else
+    echo "[WARNING] pkill not found; only the poller named in $_SSH_SYNC_PID_FILE was stopped."
+fi
+# The poller re-executes bash under the marker name, so the sync function and
+# the variables it reads must be exported to it.
 (
-    while true; do
-        sleep 5
-        _sync_authorized_keys 2>/dev/null
-    done
+    export -f _sync_authorized_keys
+    export _AK_BEGIN _AK_END LAGER_AUTHORIZED_KEYS_D
+    exec -a "$_SSH_SYNC_MARKER" "$BASH" -c \
+        'while true; do sleep 5; _sync_authorized_keys 2>/dev/null; done'
 ) 9>&- > /dev/null 2>&1 &
 _SSH_SYNC_PID=$!
 echo "$_SSH_SYNC_PID" > "$_SSH_SYNC_PID_FILE" 2>/dev/null \

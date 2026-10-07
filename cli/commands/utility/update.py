@@ -22,6 +22,7 @@ import time
 import sys
 import uuid
 from ...box_storage import (
+    RELEASE_RETRY_SECONDS,
     auto_lock_acquire_for_command,
     get_box_user,
     resolve_and_validate_box,
@@ -3492,6 +3493,9 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
     # would be far riskier than registering an atexit release.
     _release_update_lock = auto_lock_acquire_for_command(
         resolved_box, box_name or resolved_box, 'update',
+        # The release follows the container restart below; see
+        # RELEASE_RETRY_SECONDS for why one attempt was not enough.
+        release_retry_seconds=RELEASE_RETRY_SECONDS,
     )
 
     # Declare the lock outage this command is about to cause. The `lager`

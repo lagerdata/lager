@@ -16,9 +16,12 @@ installed by `lager ssh-setup` / ssh-copy-id / cloud-init, which never create a
 `.pub` in the key directory.
 """
 
+import os
 import shlex
 import subprocess
 import pathlib
+import time
+import uuid
 
 import pytest
 
@@ -325,18 +328,60 @@ def test_only_one_start_box_may_run(tmp_path):
 PID_SH = _extract("ssh-sync pid file")
 
 
-def _run_pid_block(pid_file):
-    """Run the PID-file block under `set -e`, then stop the poller it starts."""
-    script = "\n".join([
+def _pid_script(pid_file, marker=None, legacy=None, lock_held=False, after=()):
+    """The PID-file block under `set -e`, stopping the poller it starts.
+
+    Every run gets its own marker and legacy pattern, so a test can never
+    stop a real poller (or a real start_box.sh) on the machine running it.
+    """
+    token = uuid.uuid4().hex[:12]
+    marker = marker or f"lager-ssh-sync-test-{token}"
+    legacy = legacy or f"no-such-start-box-{token}[.]sh"
+    return "\n".join([
         "set -e",
         "_sync_authorized_keys() { :; }",
         f"export LAGER_SSH_SYNC_PID_FILE={shlex.quote(str(pid_file))}",
+        f"export LAGER_SSH_SYNC_MARKER={shlex.quote(marker)}",
+        f"export LAGER_SSH_SYNC_LEGACY_NAME={shlex.quote(legacy)}",
+        "_START_LOCK_HELD=1" if lock_held else ":",
         PID_SH,
+        *after,
         'kill "$_SSH_SYNC_PID" 2>/dev/null || true',
         'echo "REACHED-THE-END"',
     ])
-    return subprocess.run(["bash", "-c", script],
+
+
+def _run_pid_block(pid_file, **kwargs):
+    """Run the PID-file block under `set -e`, then stop the poller it starts."""
+    return subprocess.run(["bash", "-c", _pid_script(pid_file, **kwargs)],
                           capture_output=True, text=True, timeout=30)
+
+
+def _gone(proc, timeout=5):
+    try:
+        proc.wait(timeout=timeout)
+        return True
+    except subprocess.TimeoutExpired:
+        return False
+
+
+@pytest.fixture
+def stray():
+    """Start a long-lived stand-in process; kill whatever is left at the end."""
+    procs = []
+
+    def start(argv):
+        proc = subprocess.Popen(argv)
+        procs.append(proc)
+        time.sleep(0.3)  # let exec -a / bash -c settle before anyone looks
+        assert proc.poll() is None, "the stand-in exited on its own"
+        return proc
+
+    yield start
+    for proc in procs:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
 
 
 # The PID file that ended an install as a second login user (#547). /tmp is
@@ -396,3 +441,133 @@ def test_a_stale_pid_file_is_replaced(tmp_path):
     proc = _run_pid_block(pid_file)
     assert proc.returncode == 0, proc.stderr
     assert pid_file.read_text().strip() != "999999"
+
+
+# #646: a poller the PID file did not name was never stopped, and neither
+# `lager uninstall` nor any later run could find it. Two such pollers ran for
+# more than two weeks on one box, rebuilding authorized_keys from a key
+# directory that a reinstall could recreate with fewer keys.
+
+def _needs_pkill():
+    if subprocess.run(["bash", "-c", "command -v pkill && command -v pgrep"],
+                      capture_output=True).returncode != 0:
+        pytest.skip("pkill/pgrep not available on this platform")
+
+
+def test_the_poller_runs_under_the_marker(tmp_path):
+    _needs_pkill()
+    marker = f"lager-ssh-sync-test-{uuid.uuid4().hex[:12]}"
+    proc = _run_pid_block(
+        tmp_path / "pid", marker=marker,
+        after=['ps -o args= -p "$_SSH_SYNC_PID" | sed "s/^/ARGS:/"'],
+    )
+    assert proc.returncode == 0, proc.stderr
+    args = [line for line in proc.stdout.splitlines() if line.startswith("ARGS:")]
+    assert args and args[0].startswith(f"ARGS:{marker} "), proc.stdout
+
+
+def test_the_poller_still_syncs_after_the_re_exec(box):
+    """The poller is a fresh bash, so the function and its variables must be
+    exported to it, or every pass fails silently and no key is published."""
+    _needs_pkill()
+    box.stage("a", KEY_A)
+    marker = f"lager-ssh-sync-test-{uuid.uuid4().hex[:12]}"
+    script = "\n".join([
+        "set -e",
+        f"export HOME={shlex.quote(str(box.home))}",
+        f"LAGER_AUTHORIZED_KEYS_D={shlex.quote(str(box.keys_dir))}",
+        SYNC_SH,
+        f"export LAGER_SSH_SYNC_PID_FILE={shlex.quote(str(box.home / 'pid'))}",
+        f"export LAGER_SSH_SYNC_MARKER={shlex.quote(marker)}",
+        PID_SH,
+        "sleep 7",
+        'kill "$_SSH_SYNC_PID" 2>/dev/null || true',
+    ])
+    box.home.mkdir(parents=True, exist_ok=True)
+    proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+    assert KEY_A in box.auth_keys.read_text()
+
+
+def test_a_marked_poller_the_pid_file_does_not_name_is_stopped(tmp_path, stray):
+    """The reported case: the PID file names one poller, and another runs on."""
+    _needs_pkill()
+    marker = f"lager-ssh-sync-test-{uuid.uuid4().hex[:12]}"
+    orphan = stray(["bash", "-c", f"exec -a {marker} sleep 300"])
+    pid_file = tmp_path / "pid"
+    pid_file.write_text("999999\n")
+    proc = _run_pid_block(pid_file, marker=marker)
+    assert proc.returncode == 0, proc.stderr
+    assert _gone(orphan), "a marked poller not named in the PID file survived"
+
+
+def _legacy_script(tmp_path):
+    """A stand-in for a pre-marker poller: bash running a script file, which
+    is the command line a real one has (`bash box/start_box.sh ...`).
+
+    Returns (path, name regex). The name is unique, so no real process can
+    match it.
+    """
+    stem = f"start-box-test-{uuid.uuid4().hex[:12]}"
+    path = tmp_path / f"{stem}.sh"
+    # `; :` stops bash exec-ing sleep in place, so the process stays bash.
+    path.write_text("sleep 300; :\n")
+    return path, f"{stem}[.]sh"
+
+
+def test_a_pre_marker_poller_is_stopped_under_the_lock(tmp_path, stray):
+    """Pollers started before the marker are subshells of start_box.sh."""
+    _needs_pkill()
+    path, legacy = _legacy_script(tmp_path)
+    orphan = stray(["bash", str(path), "--no-publish"])
+    proc = _run_pid_block(tmp_path / "pid", legacy=legacy, lock_held=True)
+    assert proc.returncode == 0, proc.stderr
+    assert _gone(orphan), "a pre-marker poller survived a run holding the lock"
+    assert "left by an earlier run" in proc.stdout
+
+
+def test_without_the_lock_pre_marker_processes_are_left_alone(tmp_path, stray):
+    """Without the single-instance lock, a process naming start_box.sh might be
+    a live run, so the sweep must not touch it."""
+    _needs_pkill()
+    path, legacy = _legacy_script(tmp_path)
+    other = stray(["bash", str(path)])
+    proc = _run_pid_block(tmp_path / "pid", legacy=legacy, lock_held=False)
+    assert proc.returncode == 0, proc.stderr
+    assert other.poll() is None, "the sweep ran without the lock"
+
+
+def test_a_process_that_only_names_the_script_is_left_alone(tmp_path, stray):
+    """The bench outage: `lager update` run ON the box (a CI runner on the
+    bench box, same login user) starts this script with
+    `ssh <box> 'cd ~/box && ./start_box.sh'`. That ssh client names the script
+    but does not run it. The first sweep matched any command line naming the
+    script, killed the client, and hung up the script's own session mid-start.
+    """
+    _needs_pkill()
+    path, legacy = _legacy_script(tmp_path)
+    remote = f"cd ~/box && chmod +x {path.name} && LAGER_SKIP_BUILD=1 ./{path.name}"
+    ssh_client = stray(["bash", "-c", 'exec -a ssh bash -c "sleep 300; :" ssh "$@"', "x",
+                        "-o", "BatchMode=yes", "lagerdata@box", remote])
+    wrapper = stray(["bash", "-c", f"sleep 300; : {remote}"])
+    proc = _run_pid_block(tmp_path / "pid", legacy=legacy, lock_held=True)
+    assert proc.returncode == 0, proc.stderr
+    assert ssh_client.poll() is None, "the sweep killed an ssh client that names the script"
+    assert wrapper.poll() is None, "the sweep killed a `bash -c` wrapper that names the script"
+    assert "left by an earlier run" not in proc.stdout
+
+
+def test_the_sweep_never_kills_the_shell_that_started_this_run(tmp_path):
+    """An install runs `bash -c "cd ~/box && ./start_box.sh"`, and that shell's
+    command line names start_box.sh too."""
+    _needs_pkill()
+    path, legacy = _legacy_script(tmp_path)
+    script = _pid_script(tmp_path / "pid", legacy=legacy, lock_held=True)
+    wrapper = 'bash -c "$INNER"; echo "WRAPPER-SURVIVED"'
+    proc = subprocess.run(
+        ["bash", "-c", wrapper, str(path)],
+        capture_output=True, text=True, timeout=30,
+        env={**os.environ, "INNER": script},
+    )
+    assert "REACHED-THE-END" in proc.stdout, proc.stderr
+    assert "WRAPPER-SURVIVED" in proc.stdout, "the sweep killed its own parent shell"
