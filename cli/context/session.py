@@ -156,7 +156,7 @@ class DirectIPSession:
 
         return StreamingMockResponse(process)
 
-    def run_python(self, box, files):
+    def run_python(self, box, files, run_id=None):
         """
         Run python directly in the container via SSH + docker exec
         """
@@ -518,13 +518,15 @@ class DirectHTTPSession:
         self.session.headers.update(auth_headers_for_box(box_ip))
         self.session.hooks['response'] = [gateway_response_hook(box_ip)]
 
-    def run_python(self, box, files):
+    def run_python(self, box, files, run_id=None):
         """
         Run python on box via direct HTTP.
 
         Args:
             box: Box IP (ignored, uses self.box_ip)
             files: List of (name, content) tuples for multipart upload
+            run_id: the run's LAGER_PROCESS_ID, also sent as a header so a
+                gateway in front of the box can attribute the run
 
         Returns:
             requests.Response object with streaming content
@@ -539,6 +541,9 @@ class DirectHTTPSession:
             try:
                 # Disable keep-alive to prevent connection reuse issues with multipart uploads
                 headers = {'Connection': 'close'}
+                if run_id:
+                    from ..run_record import RUN_ID_HEADER
+                    headers[RUN_ID_HEADER] = run_id
 
                 # Reset file positions if they are BytesIO objects
                 for name, value in files:
@@ -577,6 +582,17 @@ class DirectHTTPSession:
             from ..errors import connection_error
             raise connection_error(last_error, host=self.box_ip)
 
+    def get_run_record(self, box, run_id):
+        """
+        Fetch a run's final record (GET /run-records/<runId>).
+
+        The box waits up to 10s for a run that is still finalizing, so the
+        read budget allows for that.
+        """
+        from urllib.parse import quote
+        url = f'{self.base_url}/run-records/{quote(run_id, safe="")}'
+        return self.session.get(url, timeout=(7, 20))
+
     def kill_python(self, box, lager_process_id, sig=signal.SIGTERM):
         """
         Kill python process on box.
@@ -592,10 +608,14 @@ class DirectHTTPSession:
         # job. The read budget outlasts the box's own escalation window (it
         # signals the job, waits CLEANUP_GRACE_S for exit, then SIGKILLs) so a
         # slow-but-working kill is not mistaken for a hung one.
+        # The run id as a header too, so a gateway in front of the box can
+        # record who cancelled which run without parsing the body.
+        from ..run_record import RUN_ID_HEADER
+        headers = {RUN_ID_HEADER: lager_process_id} if lager_process_id else {}
         response = self.session.post(url, json={
             'lager_process_id': lager_process_id,
             'signal': int(sig)
-        }, timeout=(7, 15))
+        }, headers=headers, timeout=(7, 15))
         return response
 
     def box_hello(self, box):

@@ -45,6 +45,7 @@ from lager.exec.process import (
 from lager.exec import quiesce
 from lager.exec.quiesce import pid_is_alive as _pid_is_alive
 from .job_lock import DetachedJobLock
+from . import run_record
 from .exceptions import (
     PipInstallError,
     MissingModuleFolderError,
@@ -55,6 +56,10 @@ from .exceptions import (
 logger = logging.getLogger(__name__)
 
 MAX_TIMEOUT = 300
+
+# The interpreter scripts run under: the box image's own Python. A module
+# constant so the end-to-end tests can point it at the test interpreter.
+SCRIPT_PYTHON = '/usr/local/bin/python3'
 # Last-resort value for LOCAL_ADDRESS: the address the container gets on
 # lagernet, the default network. Only used when the address cannot be read off
 # a live socket, and wrong under host networking -- which is the whole reason
@@ -510,6 +515,7 @@ class PythonExecutor:
         muxes=None,
         usb_mapping=None,
         dut_commands=None,
+        recorder=None,
     ):
         """
         Execute a Python script in the container.
@@ -530,6 +536,7 @@ class PythonExecutor:
             muxes: Multiplexer configuration JSON
             usb_mapping: USB device mapping JSON
             dut_commands: DUT command configuration JSON
+            recorder: the run's RunRecorder, or None when it is not recorded
 
         Returns:
             Generator yielding output chunks for streaming, or -- when
@@ -552,22 +559,28 @@ class PythonExecutor:
                 muxes=muxes,
                 usb_mapping=usb_mapping,
                 dut_commands=dut_commands,
+                recorder=recorder,
             )
 
-        proc, output_channel = self._prepare_and_spawn(
-            script_file=script_file,
-            module_zip=module_zip,
-            args=args,
-            env_vars=env_vars,
-            detach=False,
-            timeout=timeout,
-            stdout_is_stderr=stdout_is_stderr,
-            client_ip=client_ip,
-            muxes=muxes,
-            usb_mapping=usb_mapping,
-            dut_commands=dut_commands,
-        )
-        return stream_process_output(proc, output_channel, self.cleanup_fns)
+        try:
+            proc, output_channel = self._prepare_and_spawn(
+                script_file=script_file,
+                module_zip=module_zip,
+                args=args,
+                env_vars=env_vars,
+                detach=False,
+                timeout=timeout,
+                stdout_is_stderr=stdout_is_stderr,
+                client_ip=client_ip,
+                muxes=muxes,
+                usb_mapping=usb_mapping,
+                dut_commands=dut_commands,
+            )
+        except Exception:
+            if recorder is not None:
+                recorder.finalize(None, ended='start-failed')
+            raise
+        return stream_process_output(proc, output_channel, self.cleanup_fns, recorder=recorder)
 
     @staticmethod
     def validate_request(script_file, module_zip):
@@ -679,7 +692,7 @@ class PythonExecutor:
             # PYTHONUNBUFFERED=1 is also set in the Dockerfile, but '-u' is the
             # belt-and-suspenders guarantee that block-buffering can't insert
             # latency in scripts that print() between time-critical I/O steps.
-            command = ['/usr/local/bin/python3', '-u']
+            command = [SCRIPT_PYTHON, '-u']
             if script_file:
                 command.append(os.path.join(module_folder, os.path.basename(script.name)))
             else:
@@ -766,6 +779,7 @@ class PythonExecutor:
         usb_mapping=None,
         dut_commands=None,
         lock_holder=None,
+        recorder=None,
     ):
         """
         Register a detached job and hand it to a background thread.
@@ -785,6 +799,7 @@ class PythonExecutor:
             lock_holder: the box-lock holder string the CLI acquired with, when
                 it wants the box to own the lock for this job's lifetime.
                 Absent for a run that did not auto-lock.
+            recorder: the run's RunRecorder, or None when it is not recorded
 
         Returns:
             dict: the response body
@@ -796,7 +811,12 @@ class PythonExecutor:
         """
         self.validate_request(script_file, module_zip)
         lager_process_id, env_vars = resolve_lager_process_id(env_vars)
-        log_path, meta_path = register_detached_job(lager_process_id)
+        try:
+            log_path, meta_path = register_detached_job(lager_process_id)
+        except Exception:
+            if recorder is not None:
+                recorder.finalize(None, ended='start-failed')
+            raise
 
         job = {
             'script_file': script_file,
@@ -814,7 +834,7 @@ class PythonExecutor:
 
         threading.Thread(
             target=self._supervise_detached,
-            args=(job, lager_process_id, log_path, meta_path, lock_holder),
+            args=(job, lager_process_id, log_path, meta_path, lock_holder, recorder),
             name=f'lager-detached-{lager_process_id[:8]}',
             daemon=True,
         ).start()
@@ -834,7 +854,7 @@ class PythonExecutor:
         }
 
     def _supervise_detached(self, job, lager_process_id, log_path, meta_path,
-                            lock_holder=None):
+                            lock_holder=None, recorder=None):
         """
         Run one detached job to completion on this thread. Never raises.
 
@@ -849,15 +869,22 @@ class PythonExecutor:
             log_path: the job's output.log
             meta_path: the job's meta.json
             lock_holder: box-lock holder to keep alive while the job runs
+            recorder: the run's RunRecorder, or None when it is not recorded
         """
         failure = None
         job_lock = DetachedJobLock(lock_holder)
         try:
-            proc, output_channel = self._prepare_and_spawn(**job)
+            try:
+                proc, output_channel = self._prepare_and_spawn(**job)
+            except Exception:
+                if recorder is not None:
+                    recorder.finalize(None, ended='start-failed')
+                raise
             update_meta(meta_path, pid=proc.pid, status=STATUS_RUNNING)
             job_lock.start()
             stream_process_output_to_file(
                 proc, output_channel, self.cleanup_fns, log_path, meta_path,
+                recorder=recorder,
             )
         except Exception as exc:
             logger.exception(
@@ -1006,6 +1033,9 @@ class PythonExecutor:
                 uuid.UUID(lager_process_id)
             except ValueError:
                 raise LagerPythonInvalidProcessIdError(lager_process_id)
+            # Before the signal, so the run's record is finalized as cancelled
+            # rather than as whatever exit code the signal produces.
+            run_record.mark_cancelled(lager_process_id)
             # Kill process by searching for it directly
             _kill_by_proc_id(sig, lager_process_id.encode())
 
@@ -1026,6 +1056,7 @@ class PythonExecutor:
                     logger.warning(f"Failed to clean up {process_dir}: {exc}")
         else:
             # No process ID — kill ALL lager python processes
+            run_record.mark_cancelled(None)
             _kill_all_lager_processes(sig)
 
             # Clean up all log directories

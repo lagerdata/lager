@@ -458,7 +458,7 @@ class TestRunPythonOffMainThread:
         script.write_text("print('hi')\n")
         fake_resp = SimpleNamespace(status_code=200)
         fake_session = SimpleNamespace(
-            run_python=lambda box, files: fake_resp,
+            run_python=lambda box, files, run_id=None: fake_resp,
             kill_python=lambda *a, **k: None,
         )
         fake_ctx = SimpleNamespace(obj=SimpleNamespace(

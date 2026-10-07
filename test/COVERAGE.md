@@ -47,13 +47,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 3188 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 4214 |
+| `unit (cli)` | `test/unit/cli/` | 3218 (+2 xfailed) |
+| `unit (box)` | `test/unit/box/` | 4287 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 405 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 204 (+1 skipped) |
-| | **Total gated** | **8205** |
+| | **Total gated** | **8308** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -480,9 +480,9 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 295 files)
+### Local Unit Tests (`test/unit/` -- 299 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 158 files)
+#### Box Unit Tests (`test/unit/box/` -- 161 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -594,6 +594,9 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_render_docker_args.py` | Sourceable bash output preserves docker-run args through array expansion |
 | `test_render_packages.py` | pip/cargo/npm renderers preserve only their own config fields and soft-fail gracefully |
 | `test_rtt_handlers.py` | Bi-directional RTT over the `/rtt` WebSocket namespace: read loop, J-Link banner stripping, shutdown cleanup, and the three ways a held RTT port is freed — a departed client (which the loop's own heartbeat cannot detect), a wedged reader, and the port-keyed guard that keeps two channels of one net independent |
+| `test_run_record.py` | The box's run record: RFC 8785 canonical JSON (UTF-16 key order, ECMAScript numbers), instrument serial numbers read from net addresses (instrument vs adapter), the record-store box ID and MAC-derived hardware ID, sanitizing what the client asserts, script assertions, the exit reason for every way a run ends (exited, timeout vs a script's own 124, cancelled, disconnected, start-failed, lost on restart), the sequence counter, and the two recording modes -- local keeps no bytes, collected retains them by hash and refuses a run it cannot record; every record validates against the published schema |
+| `test_run_record_e2e.py` | Run records through a real `/python` service and real child processes: the log hash the CLI computes from the stream equals the box's, a downloaded file checks against its recorded hash (and a changed one is reported), the box's code hashes equal the client's, a `/python/kill` is recorded as cancelled and a dropped client as disconnected, a collected box answers 503 instead of running unrecorded, and the record is gzip-compressed for a client that accepts it and plain for one that does not |
+| `test_run_record_schema.py` | The run record's schema, example and specification agree: the schema is valid draft 2020-12, the example validates, and every field and exit reason in the schema is described in `docs/reference/run-record.md` |
 | `test_safety_interlock.py` | Per-net voltage and current ceilings enforced on instrument commands |
 | `test_script_backend_sniff.py` | `sniff_script_backend` routes a debug-script override by format so `DebugNet.connect(script=...)` works on both backends: extension beats content, every declared extension and marker is asserted individually because a base64 blob has no filename to fall back on, and an ambiguous file abstains rather than picking a side. Also pins the two J-Link forms the marker list misses (`InitTarget(void)`, `JLINK_ExecCommand`) — safe, because abstaining raises rather than guessing, but it is why `jlink_script=` exists |
 | `test_secret_file_ownership.py` | The ownership block extracted verbatim from `box/start_box.sh`: mode 0600 grants the OWNER alone, so a secrets file owned by the host login user locks the container runtime out of its own secrets. Also that the shipped default list names the MCP token path the box's `constants.py` names |
@@ -649,7 +652,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_scope_ui_stream.py` | The web scope's credit-paced stream and pushed state: one credit returned for each frame received, only the newest frame kept for drawing, extra credit for a slow round trip, every control following the daemon's state except a field being edited, and an unplug dropping the live session so a replug can Start without a stop first |
 | `test_usb_scanner_picoscope.py` | PicoScope discovery in `usb_scanner.py`: every Pico Technology product ID is recognized, and the channel count comes from the device rather than from a static table |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 116 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 117 files)
 
 | File | What it tests |
 |------|---------------|
@@ -717,6 +720,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_resolve_box_locked.py` | `resolve_box_locked`: acquires an ephemeral lock on resolution, stashes the release on the context, passes through under `LAGER_AUTO_LOCK_DISABLE`, and reports `already_ours` for a lock we already hold. Pins the holder via `get_lock_holder` and forbids real HTTP, so the result cannot depend on whether it runs on a laptop or a CI runner |
 | `test_empty_box_name.py` | An explicit `--box ""` (or whitespace-only) is refused rather than silently resolving to the DEFAULT box, in BOTH `resolve_and_validate_box` and `resolve_and_validate_box_with_name` -- they duplicate the resolution logic, so a guard in one would leave the other's callers still defaulting. Also pins the half that must not change: `None` still means "not given" and falls back to the default |
 | `test_empty_box_everywhere.py` | `--box ""` is refused by every command that picked its box before the shared resolver (update, ssh, binaries, nets, box-config, arm, spi, i2c, logs, install, uninstall) and never falls back to the default box; an AST guard flags a new `if not box: box = ...` or `x = box or ...` under `cli/commands` |
+| `test_run_record_client.py` | The client's half of the run record: `--env` values redacted from argv, `--label` parsing, the log hash matching the box's framing, `repoPath` mapping each uploaded file back to the Git repository (including the renamed `main.py` and `--add-file` extras), and `lager python` saving the record, warning on a mismatch, staying silent against a box without records, exiting non-zero when the stream ends with no exit code, and refusing an unset `--passenv` |
 | `test_simple_hdlc.py` | `cli/simple_hdlc.py`: the CRC-16/CCITT-FALSE checksum pinned to the values of the PyCRC implementation it replaced, HDLC encode/decode round trips including escaped flag and escape bytes, and a corrupted CRC reported as an error frame |
 | `test_socketio_sigint.py` | All four socket.io clients are built with `handle_sigint=False` and leave the process SIGINT handler alone; `disconnect_bounded` returns within its timeout from a peer that never closes; Ctrl+C in a UART session still sends `stop_uart` and disconnects |
 | `test_ssh.py` | SSH ensure_lager_box_keypair and key_auth_works helpers |

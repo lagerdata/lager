@@ -30,6 +30,8 @@ lager python [OPTIONS] [RUNNABLE] [ARGS]...
 | `--reattach TEXT` | | 字符串 | | 按进程 ID 重新接入一个分离的进程 |
 | `--continue TEXT` | | 字符串 | | 按进程 ID 恢复一个在断点处暂停的脚本 |
 | `--console TEXT` | | 字符串 | | 按进程 ID 连接到已暂停脚本的交互式控制台 |
+| `--label KEY=VALUE` | | 可多次 | | 为运行记录添加标签，例如执行 ID |
+| `--no-run-record` | | 标志 | | 不在下载的文件旁边写入运行记录文件 |
 | `--help` | | 标志 | | 显示帮助信息并退出 |
 
 **参数：**
@@ -74,6 +76,7 @@ lager python test.py --box my-lager-box --passenv SECRET_TOKEN
 | `LAGER_PROCESS_ID` | 本次执行的唯一 UUID |
 | `LAGER_RUNNABLE` | 正在执行的脚本路径 |
 | `LAGER_BOX` | Box 名称（提供了 `--box` 时） |
+| `LAGER_RUN_ASSERTIONS` | `lager.record_value()` 写入的文件（参见下文的运行记录） |
 
 ## 文件下载
 
@@ -257,6 +260,34 @@ lager python flash_and_test.py --box my-lager-box --add-file firmware.hex --add-
 | 137 | 脚本被 SIGKILL 终止（超时，强制） |
 | 128+N | 脚本被信号 N 停止 |
 | 其他 | 脚本自身的退出码 |
+
+## 运行记录
+
+Box 为每次运行写一份运行记录。该记录是一个 JSON 文件。它说明运行了什么、在哪台 Box 上、处于什么状态，以及产生了什么：
+
+- Box 收到的每个文件的 SHA-256 哈希
+- 运行开始时的 Box 状态：Lager 版本、操作系统、net 配置，以及每台仪器的序列号
+- 开始时间、结束时间和退出码
+- 运行结束的原因：正常退出、超时、被取消，或客户端断开连接
+- 输出以及 `--download` 中每个文件的 SHA-256 哈希
+
+运行结束后，CLI 会把记录写为 `<process-id>.lager-run.json`，放在下载的文件旁边。CLI 会把输出和下载的文件与记录中的哈希进行比较。如果不一致，CLI 会显示警告。
+
+添加标签，以便以后查找该次运行：
+
+```bash
+lager python test.py --box my-lager-box --label execution=EX-20419
+```
+
+脚本可以添加只有脚本知道的值，例如被测设备的固件版本：
+
+```python
+from lager import record_value
+
+record_value('dut.firmware', '2.14.0')
+```
+
+Box 不会验证标签或脚本提供的值。不要在其中放入机密信息。完整格式请参阅 Lager 仓库中的 `docs/reference/run-record.md`。
 
 ## Box 锁
 
