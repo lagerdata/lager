@@ -3,8 +3,9 @@
 # Build script for the oscilloscope-daemon.
 #
 # Boxes do not need this: start_box.sh builds the daemon from the box's own
-# checkout whenever its Rust sources change, so `lager install` and
-# `lager update` keep it current. This script is for building by hand.
+# checkout whenever its Rust sources or PicoTech headers change, so `lager
+# install` and `lager update` keep it current. This script is for building
+# by hand.
 #
 # The daemon loads the PicoTech drivers at runtime with dlopen (see
 # daemon/src/oscilloscope/pico/loader.rs), so no PicoScope library is linked
@@ -15,11 +16,16 @@
 # so daemon/build.rs looks for them in two places, in order:
 #   - picoscope/include/<family>/ at the repo root (unpack the SDK there)
 #   - /opt/picoscope/include/<family>/ (where the PicoTech packages put them)
+# or only in $LAGER_PICOSCOPE_INCLUDE/<family>/ when that is set.
+#
+# Each family whose headers are there is built and the others are left out,
+# with a warning naming each, so the binary drives only the families this
+# machine has headers for.
 #
 # Requirements:
 #   - Rust toolchain
 #   - clang / libclang-dev (bindgen needs it to parse the headers)
-#   - the PicoTech headers, as above
+#   - the PicoTech headers for at least one family, as above
 #
 # Usage:
 #   ./build_daemon.sh              # Build release binary
@@ -57,13 +63,26 @@ if ! command -v clang &> /dev/null; then
 fi
 
 # Checked here so a missing SDK is one clear line rather than a panic from
-# deep inside the build script.
-REPO_HEADERS="$SCRIPT_DIR/../../picoscope/include"
-SDK_HEADERS="/opt/picoscope/include"
-if [ ! -f "$REPO_HEADERS/libps2000/ps2000.h" ] && [ ! -f "$SDK_HEADERS/libps2000/ps2000.h" ]; then
+# deep inside the build script. Any one family's headers are enough.
+if [ -n "${LAGER_PICOSCOPE_INCLUDE:-}" ]; then
+    HEADER_ROOTS=("$LAGER_PICOSCOPE_INCLUDE")
+else
+    HEADER_ROOTS=("$SCRIPT_DIR/../../picoscope/include" "/opt/picoscope/include")
+fi
+found=""
+for root in "${HEADER_ROOTS[@]}"; do
+    for header in libps2000/ps2000.h libps2000a/ps2000aApi.h libps3000a/ps3000aApi.h \
+            libps4000a/ps4000aApi.h libps5000a/ps5000aApi.h; do
+        if [ -f "$root/$header" ]; then
+            found=1
+        fi
+    done
+done
+if [ -z "$found" ]; then
     echo "ERROR: PicoTech headers not found"
-    echo "  Looked in: $REPO_HEADERS/<family>/"
-    echo "        and: $SDK_HEADERS/<family>/"
+    for root in "${HEADER_ROOTS[@]}"; do
+        echo "  Looked in: $root/<family>/"
+    done
     echo "Install the PicoTech packages, or unpack the PicoScope SDK into"
     echo "picoscope/include/ at the repo root."
     exit 1
@@ -74,7 +93,9 @@ echo ""
 
 cargo build --release --package daemon
 
-BINARY="$SCRIPT_DIR/target/release/daemon"
+# cargo builds into CARGO_TARGET_DIR when that is set; a relative one is
+# relative to this directory, where cargo ran.
+BINARY="${CARGO_TARGET_DIR:-$SCRIPT_DIR/target}/release/daemon"
 if [ ! -f "$BINARY" ]; then
     echo "Build reported success but $BINARY is missing"
     exit 1
@@ -97,7 +118,7 @@ echo "Build complete!"
 echo "========================================"
 echo ""
 echo "To deploy to a box by hand:"
-echo "  scp target/release/daemon lagerdata@<box-ip>:/home/lagerdata/third_party/.oscilloscope-daemon.new"
+echo "  scp $BINARY lagerdata@<box-ip>:/home/lagerdata/third_party/.oscilloscope-daemon.new"
 echo "  ssh lagerdata@<box-ip> 'mv -f ~/third_party/.oscilloscope-daemon.new ~/third_party/oscilloscope-daemon && docker restart lager'"
 echo ""
 echo "Copy to a new name, then rename: the running container executes the old"

@@ -208,11 +208,12 @@ mod tests {
     }
 
     #[test]
+    #[cfg(pico_ps5000a)]
     fn the_codes_match_the_headers() {
         // Every family's PicoStatus.h is the same file, so one family's
-        // bindings pin them all. A wrong value here once made the daemon
-        // accept PICO_CAPTURING_DATA and PICO_NOT_SUPPORTED_BY_THIS_DEVICE
-        // as power warnings.
+        // bindings pin them all; CI's full build always has ps5000a's. A
+        // wrong value here once made the daemon accept PICO_CAPTURING_DATA
+        // and PICO_NOT_SUPPORTED_BY_THIS_DEVICE as power warnings.
         use super::super::loader::ps5000a_sys as sys;
         assert_eq!(OK, sys::PICO_OK);
         assert_eq!(NOT_FOUND, sys::PICO_NOT_FOUND);

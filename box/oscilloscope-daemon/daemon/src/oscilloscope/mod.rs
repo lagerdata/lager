@@ -5,7 +5,26 @@ use protocol::{CaptureFrame, CaptureMode, ChannelId, Coupling, ScopeCapabilities
 
 pub mod pico;
 
+#[cfg(pico_ps2000)]
 pub use pico::PicoScope2000;
+
+/// Nanoseconds from `CLOCK_MONOTONIC`, used to stamp captures so a client can
+/// measure true capture-to-client latency.
+///
+/// Deliberately not `Instant`, whose epoch is opaque and process-relative:
+/// the readers are separate processes, and Python's `time.monotonic_ns()` and
+/// JavaScript's `performance.now()` both derive from `CLOCK_MONOTONIC`, so
+/// using it directly is what makes the subtraction meaningful. Monotonic
+/// rather than wall-clock so an NTP step cannot produce a negative latency.
+pub(crate) fn monotonic_ns() -> u64 {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // Cannot fail for CLOCK_MONOTONIC on any supported platform.
+    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
+    ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
+}
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd)]
 pub enum CursorType {

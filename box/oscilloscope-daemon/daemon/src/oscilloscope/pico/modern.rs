@@ -32,12 +32,23 @@
 //! Everything here is mechanical FFI. The decisions -- which range to pick,
 //! when to re-arm, how to scale counts to volts -- belong to the driver on
 //! top of this, not to this layer.
+//!
+//! Each family is compiled only when build.rs found its headers, under its
+//! `pico_<family>` cfg; [`api_for`] answers [`LeftOut`] for the rest.
+
+// Built with no modern family at all -- a box with only libps2000 -- nothing
+// expands `impl_modern_api!`, so the helpers it shares go unused.
+#![cfg_attr(
+    not(any(pico_ps2000a, pico_ps3000a, pico_ps4000a, pico_ps5000a)),
+    allow(dead_code, unused_imports, unused_macros)
+)]
 
 use std::ffi::CString;
 
 use anyhow::{bail, Context, Result};
 use protocol::DriverFamily;
 
+use super::loader::LeftOut;
 use super::status;
 use super::types::{Coupling, DeviceResolution, Range, RatioMode, ThresholdDirection, UnitInfo};
 
@@ -586,6 +597,7 @@ macro_rules! impl_modern_api {
     };
 }
 
+#[cfg(pico_ps2000a)]
 impl_modern_api! {
     Ps2000aApi,
     family: DriverFamily::Ps2000a,
@@ -609,6 +621,7 @@ impl_modern_api! {
     resolution: {}
 }
 
+#[cfg(pico_ps3000a)]
 impl_modern_api! {
     Ps3000aApi,
     family: DriverFamily::Ps3000a,
@@ -632,6 +645,7 @@ impl_modern_api! {
     resolution: {}
 }
 
+#[cfg(pico_ps4000a)]
 impl_modern_api! {
     Ps4000aApi,
     family: DriverFamily::Ps4000a,
@@ -674,6 +688,7 @@ impl_modern_api! {
     }
 }
 
+#[cfg(pico_ps5000a)]
 impl_modern_api! {
     Ps5000aApi,
     family: DriverFamily::Ps5000a,
@@ -749,14 +764,21 @@ fn resolution_from_code(code: i32) -> Result<DeviceResolution> {
 /// A vtable for `family`, or an error naming what is missing.
 pub fn api_for(family: DriverFamily) -> Result<Box<dyn PicoModernApi>> {
     match family {
+        #[cfg(pico_ps2000a)]
         DriverFamily::Ps2000a => Ok(Box::new(Ps2000aApi)),
+        #[cfg(pico_ps3000a)]
         DriverFamily::Ps3000a => Ok(Box::new(Ps3000aApi)),
+        #[cfg(pico_ps4000a)]
         DriverFamily::Ps4000a => Ok(Box::new(Ps4000aApi)),
+        #[cfg(pico_ps5000a)]
         DriverFamily::Ps5000a => Ok(Box::new(Ps5000aApi)),
         DriverFamily::Ps2000 => bail!(
             "ps2000 is the legacy snake_case API and does not fit this vtable; \
              it has its own driver in pico/ps2000.rs"
         ),
+        // Reached only for a family whose headers the build did not have.
+        #[allow(unreachable_patterns)]
+        left_out => Err(LeftOut(left_out).into()),
     }
 }
 
@@ -880,22 +902,35 @@ mod tests {
     fn every_family_reports_the_family_it_was_generated_for() {
         // Guards against a copy-paste slip in the macro invocations, which
         // would otherwise surface as a scope detected as the wrong series.
+        #[cfg(pico_ps2000a)]
         assert_eq!(Ps2000aApi.family(), DriverFamily::Ps2000a);
+        #[cfg(pico_ps3000a)]
         assert_eq!(Ps3000aApi.family(), DriverFamily::Ps3000a);
+        #[cfg(pico_ps4000a)]
         assert_eq!(Ps4000aApi.family(), DriverFamily::Ps4000a);
+        #[cfg(pico_ps5000a)]
         assert_eq!(Ps5000aApi.family(), DriverFamily::Ps5000a);
     }
 
     #[test]
-    fn api_for_returns_the_matching_vtable() {
+    fn api_for_returns_the_matching_vtable_or_says_the_family_was_left_out() {
         for family in [
             DriverFamily::Ps2000a,
             DriverFamily::Ps3000a,
             DriverFamily::Ps4000a,
             DriverFamily::Ps5000a,
         ] {
-            let api = api_for(family).expect("modern family should have a vtable");
-            assert_eq!(api.family(), family);
+            let built = super::super::loader::BUILT.contains(&family);
+            match api_for(family) {
+                Ok(api) => {
+                    assert!(built, "{family:?} has a vtable but is not listed as built");
+                    assert_eq!(api.family(), family);
+                }
+                Err(e) => {
+                    assert!(!built, "{family:?} was built but has no vtable: {e}");
+                    assert!(e.downcast_ref::<LeftOut>().is_some(), "{e}");
+                }
+            }
         }
     }
 
@@ -911,9 +946,13 @@ mod tests {
 
     #[test]
     fn only_the_flexible_resolution_families_claim_switching() {
+        #[cfg(pico_ps2000a)]
         assert!(!Ps2000aApi.supports_resolution_switching());
+        #[cfg(pico_ps3000a)]
         assert!(!Ps3000aApi.supports_resolution_switching());
+        #[cfg(pico_ps4000a)]
         assert!(Ps4000aApi.supports_resolution_switching());
+        #[cfg(pico_ps5000a)]
         assert!(Ps5000aApi.supports_resolution_switching());
     }
 
@@ -921,11 +960,14 @@ mod tests {
     fn fixed_resolution_families_report_eight_bits() {
         // 2000a and 3000a parts are 8-bit; the trait default is correct for
         // them and no device is needed to answer.
+        #[cfg(pico_ps2000a)]
         assert_eq!(Ps2000aApi.resolution(0).unwrap(), DeviceResolution::Bits8);
+        #[cfg(pico_ps3000a)]
         assert_eq!(Ps3000aApi.resolution(0).unwrap(), DeviceResolution::Bits8);
     }
 
     #[test]
+    #[cfg(pico_ps2000a)]
     fn setting_resolution_on_a_fixed_family_explains_why_not() {
         let err = Ps2000aApi
             .set_resolution(1, DeviceResolution::Bits16)
