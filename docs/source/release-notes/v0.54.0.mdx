@@ -1,0 +1,57 @@
+---
+title: "Version 0.54.0"
+description: "October 7, 2026"
+---
+
+## <u>Features</u>
+
+- **The serial-port listing of the Lager Box now says what each port is.** Each cable record
+  from `GET /custom-devices/list` gets five new fields: `manufacturer`, `product`, `interface`,
+  `by_id` and `by_path`. A field is `null` when the Lager Box cannot read it. Every existing
+  field keeps its name and value. `by_id` and `by_path` are the `/dev/serial/...` names, which
+  stay the same when a replug renumbers the tty. `interface` tells apart the ports of one
+  multi-port chip. `lager nets assign --list` shows the product and the durable path of each
+  cable. The fields come from the Lager Box code, so run `lager update` on each box to get them.
+
+## <u>Bug Fixes</u>
+
+- **`lager install` and `lager uninstall` left an old SSH key-sync poller running on the box.**
+  A poller from an earlier run kept rebuilding `~/.ssh/authorized_keys` until the box rebooted.
+  After a reinstall, the poller sometimes removed registered keys. The box now names the poller
+  `lager-ssh-sync`, and each install stops every earlier poller. `lager uninstall` stops the
+  poller in Step 1.
+- **`lager install` and `lager update` sometimes left the box locked.** The command released its
+  box lock with one request after it restarted the box services. Sometimes that request arrived
+  before the service answered, so the lock stayed in place for its full TTL. For an install, the
+  TTL is one hour. The command now retries the release for up to 90 seconds. If the release still
+  fails, the command prints the `lager boxes unlock` command that clears the lock.
+
+## <u>Known Limitations</u>
+
+- **Two identical adapters with no USB serial number share one `by_id` name.** udev keeps one
+  link for the shared name, so only one of the two cables reports `by_id`. Use `by_path` for a
+  cable whose `serial` is `null`.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.54.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli==0.54.0
+```
+
+Then update your boxes:
+
+```bash
+lager update --box <box-name>
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.54.0/)
