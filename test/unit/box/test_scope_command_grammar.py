@@ -39,14 +39,22 @@ COMMAND_LINES = [
     "force",
     "scale 0.5",
     "scale",
+    "scale B 0.5",
+    "scale B",
     "timebase 1e-3",
     "timebase",
     "coupling dc",
     "coupling",
+    "coupling B ac",
+    "coupling B",
     "probe 10",
     "probe",
+    "probe B 10",
+    "probe B",
     "offset 0.1",
     "offset",
+    "offset B 0.1",
+    "offset B",
     "position 2e-3",
     "position",
     "position -2e-3",
@@ -65,6 +73,10 @@ COMMAND_LINES = [
     "measure fall",
     "measure overshoot",
     "measure all",
+    "measure vpp A",
+    "measure vpp B",
+    "measure freq 2",
+    "measure all B",
     "trigger",
     "trigger level 1.2 slope rising",
     "trigger edge level 0 source A",
@@ -119,7 +131,9 @@ def _parse_with_node(lines):
     for (const line of lines) {
       try {
         const parsed = parse(line);
-        out[line] = { action: parsed.action, params: parsed.params };
+        out[line] = {
+          action: parsed.action, params: parsed.params, channel: parsed.channel,
+        };
       } catch (e) {
         out[line] = { error: String(e.message) };
       }
@@ -258,6 +272,61 @@ def _help_for(name):
     if result.returncode != 0:
         pytest.fail("node failed: %s" % result.stderr.strip())
     return json.loads(result.stdout)
+
+
+def test_measure_names_its_channel_by_net_not_by_parameter():
+    """A channel reaches the box as the net the request goes to.
+
+    The measure handlers read no `channel` parameter, so a letter carried as
+    one would be dropped and the first channel measured instead.
+    """
+    result = _parse_with_node(
+        ["measure vpp", "measure vpp b", "measure freq 2", "measure all B"])
+
+    assert result["measure vpp"]["channel"] is None
+    assert result["measure vpp b"]["channel"] == "B"
+    assert result["measure freq 2"]["channel"] == "B"
+    assert result["measure all B"] == {
+        "action": "measure_all", "params": {}, "channel": "B"}
+    for line in ("measure vpp b", "measure freq 2", "measure all B"):
+        assert result[line]["params"] == {}, line
+
+
+def test_measure_refuses_a_channel_the_scope_cannot_have():
+    result = _parse_with_node(["measure vpp Z", "measure vpp 5", "measure vpp A B"])
+
+    assert "channel must be A-D" in result["measure vpp Z"]["error"]
+    assert "channel must be A-D" in result["measure vpp 5"]["error"]
+    assert "one channel" in result["measure vpp A B"]["error"]
+
+
+def test_a_channel_setting_names_its_channel_first_and_by_letter():
+    """A digit there is the value: "scale 2" is 2 V/div, not channel B."""
+    result = _parse_with_node([
+        "scale 2", "scale b 0.5", "scale A", "coupling C ac",
+        "probe D 10", "offset B -0.1"])
+
+    assert result["scale 2"] == {
+        "action": "set_scale", "params": {"volts_per_div": 2}, "channel": None}
+    assert result["scale b 0.5"] == {
+        "action": "set_scale", "params": {"volts_per_div": 0.5}, "channel": "B"}
+    assert result["scale A"] == {
+        "action": "get_scale", "params": {}, "channel": "A"}
+    assert result["coupling C ac"]["channel"] == "C"
+    assert result["coupling C ac"]["params"] == {"mode": "ac"}
+    assert result["probe D 10"]["params"] == {"ratio": 10}
+    assert result["offset B -0.1"]["params"] == {"offset": -0.1}
+
+
+def test_a_channel_setting_refuses_a_channel_it_cannot_reach():
+    result = _parse_with_node(
+        ["scale E 0.5", "scale 0.5 B", "coupling ac B", "probe 10 B", "offset 0.1 B"])
+
+    assert "channel must be A-D" in result["scale E 0.5"]["error"]
+    # The channel after the value: taking the value and dropping the letter
+    # would set the default channel and report success.
+    for line in ("scale 0.5 B", "coupling ac B", "probe 10 B", "offset 0.1 B"):
+        assert "channel first" in result[line]["error"], line
 
 
 def test_unknown_command_is_rejected_with_a_helpful_message():
