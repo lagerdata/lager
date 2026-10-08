@@ -12,6 +12,14 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Changed
+
+- **The box image's `pytest` moves from 6.2.5 to 8.4.2.** A test suite run on
+  the box (`lager exec`, `lager python`) now runs under pytest 8; check a suite
+  against the removals listed in pytest's 7.0 and 8.0 changelogs. `PyYAML`
+  (6.0.3), `hidapi` (0.15.0) and `psycopg2-binary` (2.9.13) move to releases
+  with Python 3.13 and 3.14 wheels.
+
 ### Fixed
 
 - **Code derived from two MIT-licensed projects now carries their notices.**

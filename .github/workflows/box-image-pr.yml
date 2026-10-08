@@ -1,0 +1,61 @@
+# Copyright 2024-2026 Lager Data
+# SPDX-License-Identifier: Apache-2.0
+#
+# Builds the box image on a pull request that changes it, and pushes nothing.
+#
+# Before this, the first build of a box.Dockerfile change ran on a box or at
+# the release tag (#595). A dependabot PR that moved the base image passed
+# every check and could not build, because no check built the image. The
+# Dockerfile ends in an import smoke check of the box package, so a pin that
+# installs but breaks an import fails here too.
+#
+# This build only READS the registry layer cache. It never writes
+# `:buildcache`: that cache belongs to box-image-publish.yml, and a cache
+# exported from an unmerged branch would be what the next release reuses.
+# So there is no `cache-to`, no registry login, and no `packages` permission.
+# A cache miss (the package is unreadable, or the layers changed) is a slower
+# build, not a failure.
+
+name: "Box Image: PR Build"
+
+on:
+  pull_request:
+    paths:
+      - 'box/lager/docker/**'
+      - '.github/workflows/box-image-pr.yml'
+
+permissions:
+  contents: read
+
+# A new push to the PR replaces the build in flight.
+concurrency:
+  group: box-image-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  build-box-image:
+    name: build-box-image
+    runs-on: ubuntu-latest
+    # A cold build is 10-15 minutes.
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build (no push)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: box/lager
+          file: box/lager/docker/box.Dockerfile
+          push: false
+          # Same platform as the published image: the Dockerfile downloads
+          # LabJack x64 installers.
+          platforms: linux/amd64
+          cache-from: type=registry,ref=ghcr.io/lagerdata/lager-box:buildcache
+          provenance: false
+          sbom: false

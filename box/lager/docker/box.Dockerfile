@@ -161,14 +161,14 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
 	'pyserial==3.5' \
 	'beautifulsoup4==4.12.0' \
 	'esptool==4.6.2' \
-	'pytest==6.2.5' \
+	'pytest==8.4.2' \
 	'redis==4.0.2' \
-	'PyYAML==6.0.1' \
+	'PyYAML==6.0.3' \
 	'ptyprocess==0.7.0' \
 	'pexpect==4.8.0' \
 	'pexpect-serial==0.1.0' \
 	'pyusb==1.2.1' \
-	'hidapi==0.14.0' \
+	'hidapi==0.15.0' \
 	'simplejson==3.18.0' \
 	'labjack-ljm==1.23.0' \
 	'LabJackPython==2.3.0' \
@@ -176,7 +176,7 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
 	# 38.0.4 has no cp312 wheel — every cold pip layer compiled Rust from
 	# source (~2-3 min). >=42 ships manylinux wheels for python 3.12.
 	'cryptography==43.0.3' \
-	'psycopg2-binary==2.9.9' \
+	'psycopg2-binary==2.9.13' \
 	'pyvisa-py==0.5.2' \
 	'PyVISA==1.11.3' \
 	'Phidget22==1.19.20240311' \
