@@ -106,6 +106,61 @@ const HORIZONTAL_LIMIT = 5;
 
 const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
 
+// What the position fields can be read in, as [label, factor to the base
+// unit]. The value is held in volts or seconds; the selector only changes
+// how it is written.
+const VERTICAL_UNITS = [['V', 1], ['mV', 1e-3]];
+const HORIZONTAL_UNITS = [['s', 1], ['ms', 1e-3], ['\u00b5s', 1e-6], ['ns', 1e-9]];
+
+/** Decimal places `text` is written to: 2 for "1.20", 3 for "1e-3". */
+function decimalsIn(text) {
+  const match = /^[-+]?\d*(?:\.(\d*))?(?:e([-+]?\d+))?$/i.exec(String(text).trim());
+  if (!match) return 0;
+  const fraction = match[1] ? match[1].length : 0;
+  return Math.max(0, fraction - (match[2] ? Number(match[2]) : 0));
+}
+
+/** The coarsest step an arrow key may take at `perDiv`: a tenth of a
+ * division, rounded down to a power of ten.
+ *
+ * Without it "0" steps by a whole unit, which at 10 mV/div is a hundred
+ * divisions -- off the screen in one press.
+ */
+function scaleStep(perDiv) {
+  if (!(perDiv > 0)) return Infinity;
+  return 10 ** Math.floor(Math.log10(perDiv / 10) + 1e-9);
+}
+
+/** `text` moved one step up (`direction` 1) or down (-1), as text.
+ *
+ * The step is the last digit written, so "1.15" goes to "1.16" and "1.1" to
+ * "1.2"; no coarser than `maxStep`, a power of ten in the same unit. The
+ * places are kept through a carry -- "1.19" goes to "1.20", not "1.2" -- or
+ * the next press would step ten times as far.
+ */
+function stepPosition(text, direction, maxStep = Infinity) {
+  const value = Number(text);
+  const start = Number.isFinite(value) && String(text).trim() !== '' ? value : 0;
+  let places = decimalsIn(text);
+  if (Number.isFinite(maxStep) && maxStep > 0) {
+    places = Math.max(places, -Math.round(Math.log10(maxStep)));
+  }
+  // In whole steps, so 1.19 + 0.01 cannot come out as 1.2000000000000002.
+  const unit = 10 ** places;
+  return ((Math.round(start * unit) + direction) / unit).toFixed(places);
+}
+
+/** A position for a field, without float noise: 0.1 s in ms is 100. */
+function formatPosition(value) {
+  return String(Number(value.toPrecision(6)));
+}
+
+/** A channel's vertical position in divisions, which is what is drawn. */
+function positionDivisions(state) {
+  if (!state || !state.positionV) return 0;
+  return state.positionV / (state.voltsPerDiv || 1);
+}
+
 /** The 1-2-5 volts/div settings this unit can reach through `attenuation`.
  *
  * The list was previously the hardware's own range boundaries divided by
@@ -397,6 +452,79 @@ function figures(value, digits) {
   return text.includes('e+') ? String(Math.round(value)) : text;
 }
 
+/**
+ * Wire a position field: a number in the unit beside it, held in the base
+ * unit and stepped by the arrow keys at its last written digit.
+ *
+ * `set(value, {announce})` applies a value in volts or seconds and returns
+ * (or resolves to) what it applied after clamping. With `live` it is called
+ * as the field is typed in; without, only on Enter or when the field is
+ * left, and Escape puts back the value last applied. Arrows apply at once
+ * either way.
+ *
+ * Returns `{show(value)}`, which writes a value applied elsewhere into the
+ * field unless someone is editing it.
+ */
+function wirePositionField(input, unitSelect, { live, perDiv, get, set }) {
+  const factor = () => Number(unitSelect.value) || 1;
+  const write = (value) => { input.value = formatPosition(value / factor()); };
+  const typed = () => {
+    const value = Number(input.value);
+    return input.value.trim() === '' || !Number.isFinite(value) ? null : value * factor();
+  };
+  // Re-written only when the value applied is not the one typed -- a clamp --
+  // so "1.20" is not cut to "1.2" and the next arrow keeps its step.
+  const commit = async () => {
+    const value = typed();
+    if (value === null) {
+      write(get());
+      return;
+    }
+    const applied = await set(value, { announce: true });
+    if (Number.isFinite(applied) && !sameSetting(applied, value)) write(applied);
+  };
+
+  input.addEventListener('keydown', async (event) => {
+    if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+      event.preventDefault();
+      const text = typed() === null ? formatPosition(get() / factor()) : input.value;
+      const next = stepPosition(text, event.key === 'ArrowUp' ? 1 : -1,
+        scaleStep(perDiv()) / factor());
+      input.value = next;
+      const applied = await set(Number(next) * factor(), { announce: true });
+      if (Number.isFinite(applied) && !sameSetting(applied, Number(next) * factor())) {
+        input.value = (applied / factor()).toFixed(decimalsIn(next));
+      }
+    } else if (!live && event.key === 'Enter') {
+      event.preventDefault();
+      commit();
+    } else if (!live && event.key === 'Escape') {
+      event.preventDefault();
+      write(get());
+    }
+  });
+  if (live) {
+    input.addEventListener('input', () => {
+      // Blank part-way through typing a minus sign, or cleared outright.
+      // Leaving the trace where it is beats snapping it to centre and back.
+      const value = typed();
+      if (value !== null) set(value, { announce: false });
+    });
+  }
+  // Leaving the field commits a typed value, or, live, says if it was clamped.
+  input.addEventListener('blur', () => {
+    if (live || typed() === null || !sameSetting(typed(), get())) commit();
+  });
+  unitSelect.addEventListener('change', () => write(get()));
+
+  return {
+    show(value) {
+      if (typeof document !== 'undefined' && document.activeElement === input) return;
+      write(value);
+    },
+  };
+}
+
 class Console {
   constructor(output) {
     this.output = output;
@@ -464,8 +592,8 @@ class ScopeApp {
     // Trigger level and position drawn on the plot. On by default: a level
     // you cannot see is one you cannot set with any confidence.
     this.showTriggerMarkers = true;
-    // Divisions the capture window is shifted from the trigger.
-    this.timePositionDiv = 0;
+    // Seconds the capture window is shifted from the trigger.
+    this.timePositionS = 0;
     // Cursors, as the box last reported them: `{cursors, readings}` or null.
     // Held rather than derived, since the box owns them and the console is
     // the only thing that moves them.
@@ -695,8 +823,10 @@ class ScopeApp {
         // 1x until the probe is read back below. Volts/div is at the probe
         // tip, so this decides which settings the channel can reach.
         attenuation: 1,
-        // Divisions this trace is shifted from centre, for viewing only.
-        positionDiv: 0,
+        // Volts this trace is drawn above centre, for viewing only. In volts
+        // so a trace stays on its level through a scale change, which is
+        // what a control labelled in volts promises.
+        positionV: 0,
         net: this.netForChannel(index),
       });
       host.appendChild(this.buildChannelStrip(label, index, caps));
@@ -780,12 +910,10 @@ class ScopeApp {
     if (timebase.time_per_div > 0 && select && document.activeElement !== select) {
       this.showTimebase(timebase.time_per_div);
     }
-    if (timebase.time_per_div > 0 && timebase.time_offset !== undefined) {
-      const divisions = timebase.time_offset / timebase.time_per_div;
-      if (Math.abs(divisions - this.timePositionDiv) > 1e-6
-          && document.activeElement !== el('time-position')) {
-        this.applyTimePosition(divisions, { push: false });
-      }
+    if (Number.isFinite(timebase.time_offset)
+        && !sameSetting(timebase.time_offset, this.timePositionS)
+        && document.activeElement !== el('time-position')) {
+      this.applyTimePosition(timebase.time_offset, { push: false });
     }
 
     const trigger = state.trigger || {};
@@ -994,42 +1122,40 @@ class ScopeApp {
     const position = document.createElement('div');
     position.className = 'field field--stack';
     const positionCaption = document.createElement('span');
-    positionCaption.textContent = 'Position (div)';
+    positionCaption.textContent = 'Position';
     const positionRow = document.createElement('div');
     positionRow.className = 'field-row';
     const positionInput = document.createElement('input');
-    positionInput.type = 'number';
-    positionInput.step = '0.5';
-    positionInput.min = String(-VERTICAL_LIMIT);
-    positionInput.max = String(VERTICAL_LIMIT);
+    positionInput.type = 'text';
+    positionInput.inputMode = 'decimal';
     positionInput.value = '0';
     positionInput.setAttribute(
-      'aria-label', `Channel ${label} vertical position in divisions`);
+      'aria-label', `Channel ${label} vertical position`);
+    const positionUnit = document.createElement('select');
+    positionUnit.setAttribute('aria-label', `Channel ${label} vertical position unit`);
+    for (const [text, factor] of VERTICAL_UNITS) {
+      positionUnit.append(new Option(text, String(factor)));
+    }
     const positionReset = document.createElement('button');
     positionReset.type = 'button';
     positionReset.className = 'btn btn--small';
     positionReset.textContent = '0';
     positionReset.title = `Centre channel ${label}`;
-    positionRow.append(positionInput, positionReset);
+    positionRow.append(positionInput, positionUnit, positionReset);
     position.append(positionCaption, positionRow);
     state.positionInput = positionInput;
+    state.positionUnit = positionUnit;
     state.positionReset = positionReset;
 
-    const applyPosition = (divisions) => {
-      state.positionDiv = clamp(divisions, -VERTICAL_LIMIT, VERTICAL_LIMIT);
-      positionInput.value = String(state.positionDiv);
-      this.requestRedraw();
-    };
-    // On input rather than change: nothing is sent to the scope, so the trace
-    // can follow the spinner as it is held down.
-    positionInput.addEventListener('input', () => {
-      const value = Number(positionInput.value);
-      // Blank part-way through typing a minus sign, or cleared outright.
-      // Leaving the trace where it is beats snapping it to centre and back.
-      if (positionInput.value === '' || !Number.isFinite(value)) return;
-      applyPosition(value);
+    // On input rather than on Enter: nothing is sent to the scope, so the
+    // trace can follow the field as a key is held down.
+    state.positionField = wirePositionField(positionInput, positionUnit, {
+      live: true,
+      perDiv: () => state.voltsPerDiv,
+      get: () => state.positionV,
+      set: (volts, options) => this.applyVerticalPosition(label, volts, options),
     });
-    positionReset.addEventListener('click', () => applyPosition(0));
+    positionReset.addEventListener('click', () => this.applyVerticalPosition(label, 0));
 
     strip.append(head, field, custom, pair, position);
 
@@ -1043,7 +1169,7 @@ class ScopeApp {
       // The position field goes with them: it needs no net, but a channel
       // that can never be switched on has no trace to move.
       for (const control of [toggle, select, customInput, couplingSelect,
-        probeSelect, positionInput, positionReset]) {
+        probeSelect, positionInput, positionUnit, positionReset]) {
         control.disabled = true;
         control.title = why;
       }
@@ -1080,6 +1206,9 @@ class ScopeApp {
 
     state.voltsPerDiv = voltsPerDiv;
     this.showVoltsPerDiv(state, voltsPerDiv);
+    // The position is held in volts, so its reach is four divisions of the
+    // new scale; one that no longer fits is pulled in, and said so.
+    if (state.positionV) this.applyVerticalPosition(label, state.positionV);
     // The scale is applied to the drawing as well as the hardware, so the
     // picture has to be redrawn even if the command fails or the scope is
     // stopped.
@@ -1089,6 +1218,33 @@ class ScopeApp {
       this.runCommand('set_scale', { volts_per_div: voltsPerDiv },
         `Channel ${label} ${si(voltsPerDiv, 'V', 2)}/div`, state.net, label);
     }
+  }
+
+  /** Move a channel's trace up or down the screen by `volts`.
+   *
+   * A view control: it moves the drawing and nothing else. Deliberately not
+   * the hardware's analog offset, which is added into the samples
+   * themselves -- moving a trace up two divisions with it would also move
+   * Vmax, Vmin and Vavg by two divisions' worth, so a trace shifted for
+   * legibility would come back with readings that no longer describe the
+   * signal.
+   *
+   * Held to VERTICAL_LIMIT divisions of the channel's scale. Resolves to the
+   * volts applied.
+   */
+  applyVerticalPosition(label, volts, { announce = true } = {}) {
+    const state = this.channelState.get(label);
+    if (!state || !Number.isFinite(volts)) return null;
+    const limit = VERTICAL_LIMIT * (state.voltsPerDiv || 1);
+    const value = clamp(volts, -limit, limit);
+    if (announce && value !== volts) {
+      this.console.note(`Channel ${label} position limited to ${si(value, 'V', 3)}: `
+        + `${VERTICAL_LIMIT} divisions at ${si(state.voltsPerDiv, 'V', 2)}/div is the edge of the screen`);
+    }
+    state.positionV = value;
+    if (state.positionField) state.positionField.show(value);
+    this.requestRedraw();
+    return value;
   }
 
   /** Set the timebase, then show what the hardware actually landed on.
@@ -1122,10 +1278,11 @@ class ScopeApp {
       } catch { /* older box: leave the request showing */ }
     }
 
-    // The window is held in divisions, so a new time/div moves it in seconds.
-    // Re-send it against the achieved value now on the control, or a shift of
-    // two divisions set at 1 ms/div stays two divisions of the old scale.
-    if (this.timePositionDiv) await this.applyTimePosition(this.timePositionDiv);
+    // Re-sent, not just kept: the box turns seconds into a pre/post-trigger
+    // split of the window in force when it arrives, so the old split is a
+    // different time at the new scale. Re-clamped too, since the travel is
+    // five divisions of whichever scale that is.
+    if (this.timePositionS) await this.applyTimePosition(this.timePositionS);
   }
 
   /** Make the timebase dropdown display `seconds`, offered or not. */
@@ -1327,9 +1484,8 @@ class ScopeApp {
     // accident, and it read as though the timebase were channel A's.
     if (!this.net) return;
 
-    // Before the offset, which is held in divisions and converted with
-    // whatever time/div the control shows: reading the offset first would
-    // convert it against a stale one.
+    // Before the offset, which is clamped against whatever time/div the
+    // control shows: reading the offset first would clamp it to a stale one.
     try {
       const body = await this.send('get_timebase', {}, this.net);
       const seconds = Number(body.value);
@@ -1342,10 +1498,9 @@ class ScopeApp {
     try {
       const body = await this.send('get_time_offset', {}, this.net);
       const seconds = Number(body.value);
-      const perDiv = Number(el('timebase').value);
-      if (Number.isFinite(seconds) && perDiv > 0) {
+      if (Number.isFinite(seconds)) {
         // push: false -- the hardware is already there.
-        this.applyTimePosition(seconds / perDiv, { push: false });
+        this.applyTimePosition(seconds, { push: false });
       }
     } catch { /* older box: leave it centred */ }
 
@@ -1402,20 +1557,30 @@ class ScopeApp {
    * capture already fills the screen, so signal past either edge was never
    * sampled -- there is nothing on hand to pan to. Seeing it means asking the
    * scope for a window in a different place, which is the pre/post-trigger
-   * split, and that means a fresh capture. Positive divisions look forward,
-   * to signal later than the trigger; negative look back before it.
+   * split, and that means a fresh capture. Positive seconds look forward, to
+   * signal later than the trigger; negative look back before it.
+   *
+   * Held to HORIZONTAL_LIMIT divisions of the timebase. Resolves to the
+   * seconds applied.
    */
-  async applyTimePosition(divisions, { push = true } = {}) {
-    const value = clamp(divisions, -HORIZONTAL_LIMIT, HORIZONTAL_LIMIT);
-    this.timePositionDiv = value;
-    el('time-position').value = String(value);
-    this.requestRedraw();
-    if (!push) return;
-    // Divisions here, seconds on the wire: the daemon's offset is a time, and
-    // stays correct if this UI ever draws a different number of divisions.
+  async applyTimePosition(seconds, { push = true, announce = true } = {}) {
+    if (!Number.isFinite(seconds)) return null;
     const perDiv = Number(el('timebase').value) || 0;
-    await this.runCommand('set_time_offset', { offset: value * perDiv },
-      `position ${value} div`);
+    const limit = HORIZONTAL_LIMIT * perDiv;
+    // A readback is shown as the box has it, in range or not: clamping it
+    // here would show a window the scope is not capturing.
+    const value = push && limit > 0 ? clamp(seconds, -limit, limit) : seconds;
+    if (announce && value !== seconds) {
+      this.console.note(`Horizontal position limited to ${si(value, 's', 3)}: `
+        + `${HORIZONTAL_LIMIT} divisions at ${si(perDiv, 's', 3)}/div puts the trigger on the edge`);
+    }
+    this.timePositionS = value;
+    if (this.timePositionField) this.timePositionField.show(value);
+    this.requestRedraw();
+    if (!push) return value;
+    await this.runCommand('set_time_offset', { offset: value },
+      `hpos ${si(value, 's', 3)}`);
+    return value;
   }
 
   showCapabilityNotes(caps) {
@@ -2124,7 +2289,7 @@ class ScopeApp {
     // The channel's vertical position, converted from divisions to the
     // units the plot works in: half the screen is four divisions, so a
     // division is a quarter of it.
-    const shift = ((state && state.positionDiv) || 0) / 4;
+    const shift = positionDivisions(state) / 4;
     const half = height / 2;
     return (volts) => half - (volts / fullScale + shift) * half;
   }
@@ -2263,8 +2428,8 @@ class ScopeApp {
     // by its own position.
     const halfW = width / 2;
     const halfH = height / 2;
-    const xOf = (v) => halfW + (v / ((stateA.voltsPerDiv || 1) * 5) + (stateA.positionDiv || 0) / 5) * halfW;
-    const yOf = (v) => halfH - (v / ((stateB.voltsPerDiv || 1) * 4) + (stateB.positionDiv || 0) / 4) * halfH;
+    const xOf = (v) => halfW + (v / ((stateA.voltsPerDiv || 1) * 5) + positionDivisions(stateA) / 5) * halfW;
+    const yOf = (v) => halfH - (v / ((stateB.voltsPerDiv || 1) * 4) + positionDivisions(stateB) / 4) * halfH;
 
     const target = this.display.persistence ? this.persistLayer(width, height) : null;
     const draw = (context) => {
@@ -2521,7 +2686,7 @@ class ScopeApp {
         ? channel : this.channelState.keys().next().value;
       const state = this.channelState.get(label);
       const fullScale = ((state && state.voltsPerDiv) || 1) * 4;
-      const shift = ((state && state.positionDiv) || 0) / 4;
+      const shift = positionDivisions(state) / 4;
       const color = this.channelColor(label);
       volts.forEach((v, i) => {
         const y = height / 2 - (v / fullScale + shift) * (height / 2);
@@ -2641,7 +2806,7 @@ class ScopeApp {
     // so a channel moved up two divisions has to take its level line with it
     // -- left at the unshifted height it would cross the waveform somewhere
     // the scope is not triggering.
-    const shift = (state.positionDiv || 0) / 4;
+    const shift = positionDivisions(state) / 4;
     const exact = height / 2 - (level / fullScale + shift) * (height / 2);
     // A level beyond the top or bottom is pinned to that edge rather than
     // dropped. "Off screen, that way" is the useful thing to know, and a line
@@ -2751,13 +2916,18 @@ class ScopeApp {
       this.applyTimebase(Number(event.target.value));
     });
 
-    // Horizontal position. On change rather than input: unlike the vertical
-    // position this re-arms the scope, so it should not fire per keystroke
-    // while a value is being typed.
-    el('time-position').addEventListener('change', (event) => {
-      const value = Number(event.target.value);
-      if (event.target.value === '' || !Number.isFinite(value)) return;
-      this.applyTimePosition(value);
+    // Horizontal position. Typed values wait for Enter or for the field to be
+    // left: unlike the vertical position this re-arms the scope, and a
+    // capture per keystroke on the way to "0.015" is three windows nobody
+    // asked for. The arrow keys still apply at once; they are the knob.
+    const timeUnit = el('time-position-unit');
+    for (const [text, factor] of HORIZONTAL_UNITS) timeUnit.append(new Option(text, String(factor)));
+    timeUnit.value = String(1e-3);
+    this.timePositionField = wirePositionField(el('time-position'), timeUnit, {
+      live: false,
+      perDiv: () => Number(el('timebase').value) || 0,
+      get: () => this.timePositionS,
+      set: (seconds, options) => this.applyTimePosition(seconds, options),
     });
     el('time-position-reset').addEventListener('click', () => this.applyTimePosition(0));
 
@@ -2973,6 +3143,16 @@ class ScopeApp {
       this.console.error(e.message);
       return undefined;
     }
+    if (parsed.local) return this.verticalPositionCommand(parsed);
+    // Refused here rather than sent: the daemon would refuse it anyway, and
+    // the page can say where the control that does work is.
+    if (parsed.action === 'set_offset' && parsed.params.offset !== 0
+        && this.capabilities && this.capabilities.analog_offset === false) {
+      this.console.error(`The ${this.capabilities.model || 'scope'} has no analog offset, `
+        + 'so it cannot shift the signal in hardware. To move a trace on screen, '
+        + 'use "vpos <channel> <volts>" or the channel\'s Position field.');
+      return undefined;
+    }
     // Only once the strips exist: before then the page cannot tell "every
     // channel is off" from "no channel is known yet".
     if (isMeasurement(parsed.action) && !parsed.channel
@@ -3000,6 +3180,9 @@ class ScopeApp {
     }
     const body = await this.runCommand(
       parsed.action, parsed.params, parsed.summary, net, label);
+    // The box does not know where the page draws its traces, so the page
+    // adds that to the box's account of its settings.
+    if (body && parsed.action === 'get_state') this.reportVerticalPositions();
     if (body && parsed.channel
         && (parsed.action === 'enable_net' || parsed.action === 'disable_net')) {
       const state = this.channelState && this.channelState.get(parsed.channel);
@@ -3010,6 +3193,42 @@ class ScopeApp {
       this.refreshMeasurements();
     }
     return body;
+  }
+
+  /** `vpos`: read or move a trace on screen. Nothing is sent to the box. */
+  verticalPositionCommand(parsed) {
+    let label = parsed.channel;
+    if (!label) {
+      // As the other per-channel verbs choose: the first channel that is on,
+      // else the first that can be reached at all.
+      const on = firstMeasurableChannel(this.channelState);
+      label = on ? on.label
+        : [...this.channelState.keys()].find((l) => this.channelState.get(l).net);
+    }
+    const state = label && this.channelState.get(label);
+    if (!state) {
+      this.console.error(label ? `this scope has no channel ${label}` : 'no channel to position');
+      return undefined;
+    }
+    // The strip disables its Position field for an unwired channel; a typed
+    // command should not reach what the panel will not.
+    if (!state.net) {
+      this.console.error(`channel ${label} has no net`);
+      return undefined;
+    }
+    if (parsed.params.volts !== undefined) {
+      this.applyVerticalPosition(label, parsed.params.volts);
+    }
+    this.console.write(`channel ${label}: vertical position ${si(state.positionV, 'V', 3)} (display only)`);
+    return { value: state.positionV };
+  }
+
+  /** Each channel's vertical position, as `status` reports the rest. */
+  reportVerticalPositions() {
+    for (const [label, state] of this.channelState.entries()) {
+      if (!state.net) continue;
+      this.console.write(`channel ${label}: vertical position ${si(state.positionV, 'V', 3)} (display only)`);
+    }
   }
 
   printHelp(topic) {
@@ -3072,7 +3291,8 @@ export function consoleLogStep(preferred, step, room) {
 
 export { ScopeApp, voltsPerDivChoices, timebaseChoices, sampleTraceAt,
          PER_CHANNEL_ACTIONS, isPerChannelAction, channelName,
-         pinIndex, colorSlot, sameSetting, si };
+         pinIndex, colorSlot, sameSetting, si,
+         stepPosition, scaleStep, decimalsIn, wirePositionField };
 
 if (typeof document !== 'undefined') {
   const app = new ScopeApp();

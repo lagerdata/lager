@@ -70,6 +70,14 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   for, exited 0.
 - **`lager scope <net> stream start` enables the net's own channel by default**, where it
   always enabled A. `stream config` with no setting to change is refused.
+- **The live page's position controls are in volts and seconds, not divisions, and the
+  console's `position` is now `hpos`.** `hpos 100ms`, `hpos 0.1` and `hpos 1e-3` all work, and
+  `position` still parses for one release; the new `vpos B -0.5` moves a trace on screen only,
+  leaving the capture and measurements alone. Each sidebar field has a unit selector, the
+  horizontal one applies a typed value on Enter, and the arrow keys step the last digit shown.
+- **The live page's `offset` refuses up front on a scope with no analog offset** (a legacy
+  2000-series PicoScope such as the 2204A) and points at `vpos`; on a 2000A, 3000A, 4000A,
+  5000A or a Rigol it works as before.
 - **The box image's `pytest` moves from 6.2.5 to 8.4.2.** A test suite run on
   the box (`lager exec`, `lager python`) now runs under pytest 8; check a suite
   against the removals listed in pytest's 7.0 and 8.0 changelogs. `PyYAML`

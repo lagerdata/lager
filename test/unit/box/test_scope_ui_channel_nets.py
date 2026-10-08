@@ -985,8 +985,9 @@ class TestAChannelCanBeMovedUpAndDown:
     # 400 px tall: centre 200, and each of the eight divisions is 50 px.
     HEIGHT = 400
 
-    def _draw(self, position_div, volts=(1.0,)):
-        """Draw one channel at `position_div` and report the y it lands on."""
+    def _draw(self, position_v, volts=(1.0,)):
+        """Draw one channel at 1 V/div, moved `position_v` volts, and report
+        the y it lands on. At 1 V/div a volt is a division."""
         return _run_js("""
         const ys = [];
         globalThis.document = {
@@ -1018,7 +1019,7 @@ class TestAChannelCanBeMovedUpAndDown:
           // One pixel wide, so the trace is a single column and its y is
           // unambiguous.
           canvas: { width: 1, height: %d },
-          channelState: new Map([['A', { voltsPerDiv: 1, positionDiv: %s }]]),
+          channelState: new Map([['A', { voltsPerDiv: 1, positionV: %s }]]),
           showTriggerMarkers: false,
           extremes: { min: new Float32Array(0), max: new Float32Array(0) },
           display: {},
@@ -1026,14 +1027,14 @@ class TestAChannelCanBeMovedUpAndDown:
         });
         ScopeApp.prototype.draw.call(self, frame);
         process.stdout.write(JSON.stringify(ys));
-        """ % (json.dumps(list(volts)), self.HEIGHT, json.dumps(position_div)))
+        """ % (json.dumps(list(volts)), self.HEIGHT, json.dumps(position_v)))
 
     def test_a_centred_channel_draws_a_volt_one_division_up(self):
         """The unshifted case, so a shift can be measured against it."""
         ys = self._draw(0)
         assert ys == [self.HEIGHT / 2 - 50] * len(ys)
 
-    def test_shifting_up_two_divisions_moves_the_trace_two_divisions_up(self):
+    def test_shifting_up_two_volts_at_1v_per_div_moves_it_two_divisions_up(self):
         ys = self._draw(2)
         assert ys == [self.HEIGHT / 2 - 50 - 100] * len(ys)
 
@@ -1041,13 +1042,11 @@ class TestAChannelCanBeMovedUpAndDown:
         ys = self._draw(-1)
         assert ys == [self.HEIGHT / 2 - 50 + 50] * len(ys)
 
-    def test_the_shift_is_in_divisions_not_volts(self):
-        """A division is a division whatever volts/div says.
+    def test_the_shift_is_in_volts_so_it_holds_through_a_scale_change(self):
+        """2 V up is two divisions at 1 V/div and two fifths of one at 5.
 
-        Were the offset applied in volts it would scale with the setting, so
-        the same shift would move the trace by different amounts at different
-        scales -- and pulling two traces apart would undo itself on the next
-        range change.
+        The control is labelled in volts, so the trace keeps its voltage when
+        the scale changes rather than its place on the grid.
         """
         out = _run_js("""
         const runs = {};
@@ -1072,7 +1071,7 @@ class TestAChannelCanBeMovedUpAndDown:
             counts: () => counts, overflowed: () => false };
           const self = Object.assign(Object.create(ScopeApp.prototype), {
             ctx, canvas: { width: 1, height: 400 },
-            channelState: new Map([['A', { voltsPerDiv: perDiv, positionDiv: 2 }]]),
+            channelState: new Map([['A', { voltsPerDiv: perDiv, positionV: 2 }]]),
             showTriggerMarkers: false, drawGraticule() {},
             extremes: { min: new Float32Array(0), max: new Float32Array(0) },
             display: {},
@@ -1082,7 +1081,8 @@ class TestAChannelCanBeMovedUpAndDown:
         }
         process.stdout.write(JSON.stringify(runs));
         """)
-        assert out["1"] == out["5"] == 200 - 100
+        assert out["1"] == 200 - 100
+        assert out["5"] == 200 - 20
 
     def test_the_trigger_level_moves_with_the_trace_it_belongs_to(self):
         """A level left behind points at the wrong part of the waveform."""
@@ -1097,7 +1097,7 @@ class TestAChannelCanBeMovedUpAndDown:
           setLineDash() {}, moveTo() {}, fillRect() {}, fillText() {},
           lineTo(x, y) { lines.push(y); }, measureText: () => ({ width: 40 }) };
         const self = {
-          channelState: new Map([['A', { voltsPerDiv: 1, positionDiv: 2 }]]),
+          channelState: new Map([['A', { voltsPerDiv: 1, positionV: 2 }]]),
         };
         ScopeApp.prototype.drawTriggerLevel.call(self, ctx, 800, 400);
         process.stdout.write(JSON.stringify(lines));
@@ -1118,18 +1118,60 @@ class TestAChannelCanBeMovedUpAndDown:
 
     def test_the_control_is_offered_per_channel(self):
         strip = self._strip_source()
-        assert "vertical position in divisions" in strip, (
+        assert "vertical position" in strip, (
             "each strip needs its own position field")
-        assert "VERTICAL_LIMIT" in strip
+        assert "VERTICAL_UNITS" in strip
+        assert "applyVerticalPosition" in strip
 
     def test_moving_a_trace_sends_nothing_to_the_scope(self):
         """The give-away that it is a view control and not a hardware one."""
-        applier = self._strip_source().split(
-            "const applyPosition")[1].split("};")[0]
+        applier = SCOPE_JS.read_text().split(
+            "  applyVerticalPosition(label, volts, {")[1].split("\n  /**")[0]
         for hardware in ["runCommand", "this.send", "set_offset"]:
             assert hardware not in applier, (
-                "%s in applyPosition would move the measurements too" % hardware)
+                "%s in applyVerticalPosition would move the measurements too" % hardware)
         assert "requestRedraw" in applier
+
+    def _vertical(self, body):
+        return _run_js("""
+        const notes = [];
+        const shown = [];
+        const self = Object.assign(Object.create(ScopeApp.prototype), {
+          channelState: new Map([['A', {
+            voltsPerDiv: 1, positionV: 0, net: 'scope1',
+            positionField: { show: (v) => shown.push(v) },
+          }]]),
+          requestRedraw() {},
+          showVoltsPerDiv() {},
+          console: { note: (t) => notes.push(t), write: (t) => notes.push(t) },
+        });
+        %s
+        process.stdout.write(JSON.stringify({
+          positionV: self.channelState.get('A').positionV, notes, shown }));
+        """ % body)
+
+    def test_the_reach_is_four_divisions_of_the_scale_and_a_clamp_is_said(self):
+        out = self._vertical("self.applyVerticalPosition('A', 7);")
+        assert out["positionV"] == 4
+        assert out["shown"] == [4]
+        assert len(out["notes"]) == 1 and "limited" in out["notes"][0]
+
+    def test_a_smaller_scale_pulls_the_trace_in_and_says_so(self):
+        """3 V fits at 1 V/div; at 0.5 V/div the edge is 2 V."""
+        out = self._vertical("""
+        self.applyVerticalPosition('A', 3);
+        self.applyVoltsPerDiv('A', 0.5, { push: false });
+        """)
+        assert out["positionV"] == 2
+        assert len(out["notes"]) == 1 and "limited" in out["notes"][0]
+
+    def test_a_larger_scale_keeps_the_voltage(self):
+        out = self._vertical("""
+        self.applyVerticalPosition('A', 3);
+        self.applyVoltsPerDiv('A', 5, { push: false });
+        """)
+        assert out["positionV"] == 3
+        assert out["notes"] == []
 
 
 @needs_node
@@ -1292,82 +1334,82 @@ class TestTheWindowCanBeMovedInTime:
     pre/post-trigger split.
     """
 
-    def _apply(self, divisions, per_div=1e-3):
-        """Call applyTimePosition and report what it sent and displayed."""
+    def _apply(self, seconds, per_div=1e-3, push=True):
+        """Call applyTimePosition and report what it sent, showed and said."""
         return _run_js("""
         const sent = [];
-        const shown = { value: null };
-        const fields = {
-          'time-position': shown,
-          timebase: { value: String(%s) },
-        };
+        const shown = [];
+        const notes = [];
+        const fields = { timebase: { value: String(%s) } };
         globalThis.document = {
           getElementById: (id) => fields[id] || { value: '' },
         };
         const self = {
           dirty: false,
           requestRedraw() { this.dirty = true; },
+          timePositionField: { show: (v) => shown.push(v) },
+          console: { note: (t) => notes.push(t) },
           runCommand: async (action, params) => { sent.push({ action, params }); },
         };
-        await ScopeApp.prototype.applyTimePosition.call(self, %s);
+        const applied = await ScopeApp.prototype.applyTimePosition.call(
+          self, %s, { push: %s });
         process.stdout.write(JSON.stringify(
-          { sent, shown: shown.value, dirty: self.dirty }));
-        """ % (json.dumps(per_div), json.dumps(divisions)))
+          { sent, shown, notes, applied, dirty: self.dirty, held: self.timePositionS }));
+        """ % (json.dumps(per_div), json.dumps(seconds), json.dumps(push)))
 
-    def test_a_shift_is_sent_as_seconds_of_the_current_timebase(self):
-        """Divisions on the control, seconds on the wire."""
-        out = self._apply(2, per_div=1e-3)
-        assert out["sent"][0]["action"] == "set_time_offset"
-        assert out["sent"][0]["params"]["offset"] == pytest.approx(2e-3)
+    def test_seconds_go_to_the_box_as_seconds(self):
+        out = self._apply(2e-3, per_div=1e-3)
+        assert out["sent"] == [
+            {"action": "set_time_offset", "params": {"offset": 2e-3}}]
 
     def test_looking_back_sends_a_negative_offset(self):
-        out = self._apply(-1.5, per_div=1e-3)
+        out = self._apply(-1.5e-3, per_div=1e-3)
         assert out["sent"][0]["params"]["offset"] == pytest.approx(-1.5e-3)
 
-    def test_the_same_divisions_at_a_faster_timebase_is_less_time(self):
-        fast = self._apply(2, per_div=1e-6)
-        assert fast["sent"][0]["params"]["offset"] == pytest.approx(2e-6)
-
-    def test_the_travel_stops_at_the_edge_of_the_block(self):
+    def test_the_travel_stops_at_the_edge_of_the_block_and_says_so(self):
         """Past 5 divisions the trigger is off the screen and the split is
         already all-pre or all-post; asking for more cannot be honoured."""
-        assert self._apply(99)["shown"] == "5"
-        assert self._apply(-99)["shown"] == "-5"
+        out = self._apply(1, per_div=1e-3)
+        assert out["sent"][0]["params"]["offset"] == pytest.approx(5e-3)
+        assert out["shown"] == [pytest.approx(5e-3)]
+        assert len(out["notes"]) == 1 and "limited" in out["notes"][0]
+        assert self._apply(-1, per_div=1e-3)["applied"] == pytest.approx(-5e-3)
+
+    def test_the_reach_follows_the_timebase(self):
+        assert self._apply(1, per_div=1e-6)["applied"] == pytest.approx(5e-6)
 
     def test_the_field_shows_what_was_actually_applied(self):
-        assert self._apply(2.5)["shown"] == "2.5"
+        out = self._apply(2.5e-3)
+        assert out["shown"] == [2.5e-3]
+        assert out["held"] == 2.5e-3
+        assert out["notes"] == []
 
     def test_the_plot_is_redrawn(self):
-        assert self._apply(1)["dirty"] is True
+        assert self._apply(1e-3)["dirty"] is True
 
     def test_a_readback_does_not_push_the_value_back(self):
         """Adopting the daemon's own offset must not re-arm the scope."""
-        out = _run_js("""
-        const sent = [];
-        const shown = { value: null };
-        const fields = { 'time-position': shown, timebase: { value: '1e-3' } };
-        globalThis.document = { getElementById: (id) => fields[id] || { value: '' } };
-        const self = {
-          requestRedraw() {},
-          runCommand: async (action) => { sent.push(action); },
-        };
-        await ScopeApp.prototype.applyTimePosition.call(self, 2, { push: false });
-        process.stdout.write(JSON.stringify({ sent, shown: shown.value }));
-        """)
+        out = self._apply(2e-3, push=False)
         assert out["sent"] == []
-        assert out["shown"] == "2", "still shown, just not re-sent"
+        assert out["shown"] == [2e-3], "still shown, just not re-sent"
 
-    def test_the_control_exists_and_is_bounded(self):
+    def test_a_readback_is_shown_as_the_box_has_it(self):
+        """Clamping a value the box holds would show a window it is not
+        capturing; only what the page sends is held to the screen."""
+        out = self._apply(1, per_div=1e-3, push=False)
+        assert out["shown"] == [1]
+        assert out["notes"] == []
+
+    def test_the_control_exists_with_a_unit(self):
         html = (SCOPE_DIR / "index.html").read_text()
         assert 'id="time-position"' in html
-        field = html.split('id="time-position"')[1].split(">")[0]
-        assert 'min="-5"' in field and 'max="5"' in field
+        assert 'id="time-position-unit"' in html
         assert 'id="time-position-reset"' in html
 
     def test_a_new_timebase_resends_the_position(self):
-        """The shift is held in divisions, so a new time/div changes the
-        seconds it stands for; left alone the window would stay where the old
-        scale put it."""
+        """The box turns seconds into a split of the window in force when
+        they arrive, so at a new time/div the old split is a different time,
+        and the reach may have shrunk."""
         js = SCOPE_JS.read_text()
         # Wherever the change handler routes to, setting a timebase has to end
         # up re-sending the position. Asserted on applyTimebase rather than on

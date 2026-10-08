@@ -29,7 +29,7 @@ The split follows the hardware. Six settings belong to a channel, and the rest b
 | `scale` (volts/div) | `timebase`, horizontal position |
 | `coupling` | `trigger` (source, slope, level, mode, holdoff) |
 | `probe` | `cursor` |
-| vertical offset | `acquire`, `roll`, `display` |
+| analog offset | `acquire`, `roll`, `display` |
 | `measure` | `autoscale`, reported capabilities |
 
 You address both kinds of net in the same way:
@@ -913,7 +913,25 @@ lager scope NET_NAME stream web [--box BOX] [--port PORT]
 
 The command opens `http://<box>:<port>/scope`. On a box behind an access gateway, the link carries your sign-in token, as for [webcam streams](/source/reference/cli/webcam#access-gated-boxes). Run `stream web` again for a fresh link when the token expires.
 
-The web interface is a dependency-free HTML5 oscilloscope display that the box serves at `http://<box>:9000/scope`. Waveforms arrive over a WebSocket as LSCP binary frames, and the browser decodes them. The page builds its controls from the capabilities of the attached unit, so a 2-channel scope shows no channel C. The page also has a command console. It accepts most commands of this CLI, and also `offset`, `position` and `capabilities`. In the console, a command for one channel can name the channel: `scale B 0.5`, `coupling B ac`, `probe B 10`, `offset B 0.1` and `measure vpp B`. Put the channel before a value, as a letter, because `scale 2` sets 2 V/div. With no channel, the command uses the first channel that is on, as the measurements panel does. The reply in the console names the channel.
+The web interface is a dependency-free HTML5 oscilloscope display that the box serves at `http://<box>:9000/scope`. Waveforms arrive over a WebSocket as LSCP binary frames, and the browser decodes them. The page builds its controls from the capabilities of the attached unit, so a 2-channel scope shows no channel C. The page also has a command console. It accepts most commands of this CLI, and also `offset`, `hpos`, `vpos` and `capabilities`. In the console, a command for one channel can name the channel: `scale B 0.5`, `coupling B ac`, `probe B 10`, `offset B 0.1`, `vpos B -0.5` and `measure vpp B`. Put the channel before a value, as a letter, because `scale 2` sets 2 V/div. With no channel, the command uses the first channel that is on, as the measurements panel does. The reply in the console names the channel.
+
+The page has two position controls, and they work differently:
+
+| | Horizontal position | Vertical position |
+|---|---|---|
+| Console | `hpos [<seconds>]` | `vpos [<channel>] [<volts>]` |
+| Sidebar | The **Position** field under the timebase | The **Position** field in each channel strip |
+| Unit | Seconds | Volts |
+| Effect | The scope captures a different window, relative to the trigger | The page draws the trace higher or lower. The capture and the measurements do not change |
+| Lasts | The box keeps it | Until the page reloads |
+| Limit | 5 divisions each way | 4 divisions each way |
+
+- **Units.** In the console, give a number in seconds or volts, or add a unit: `hpos 100ms`, `hpos 0.1` and `hpos 1e-3` are all correct. In the sidebar, the selector beside each field changes the unit of the number that the field shows. It does not change the position.
+- **Limits.** The limits are in divisions, so they change when you change the scale. If a position is outside the limit, the page moves it to the limit and writes a note in the console. A vertical position stays at the same voltage when you change volts/div, until it is outside the limit.
+- **Applying a value.** A value that you type in the horizontal field applies when you push Enter or leave the field, because each change starts a new capture. Escape restores the last value. A value that you type in the vertical field applies immediately.
+- **Arrow keys.** Up and down apply immediately in both fields. They change the last digit that the field shows: `1.15` becomes `1.16`, and `1.1` becomes `1.2`. The field keeps the same number of decimal places, so `1.19` becomes `1.20`. The step is never more than one tenth of a division.
+- **`offset` is not `vpos`.** `offset` moves the signal in the scope hardware, before the ADC. The measurements change, and at a smaller volts/div you get more resolution on a signal that is not centred on 0 V. `vpos` only moves the trace on the screen. Legacy PicoScope 2000 models (for example the 2204A) have no analog offset. On these models, the console refuses a nonzero `offset` and tells you to use `vpos`.
+- `status` also shows the vertical position of each channel. `position` is an old name for `hpos`, and it will be removed in a later release.
 
 ### `stream capture`
 
