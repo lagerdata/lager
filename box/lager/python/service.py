@@ -54,7 +54,8 @@ from werkzeug.sansio.multipart import (
 )
 
 from . import executor as _executor
-from .executor import PythonExecutor, process_dir_for
+from .executor import PythonExecutor, process_dir_for, resolve_lager_process_id, MAX_TIMEOUT
+from . import run_record
 from ..binaries import store as binaries_store
 
 from .exceptions import (
@@ -335,6 +336,12 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
             grouped.setdefault(name, []).append((filename, bytes(data)))
 
         fields = {}
+        # The uploaded script's own name, which the field shape below drops.
+        # Only the run record reads it.
+        self.upload_filenames = {
+            key: parts[0][0] for key, parts in grouped.items()
+            if len(parts) == 1 and parts[0][0]
+        }
         for key, parts in grouped.items():
             if len(parts) > 1:
                 # Repeated name (args, env): a list of raw values, as before.
@@ -465,6 +472,10 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
                 'healthy': True,
                 'version': version,
                 'nets': nets,
+                'runRecords': {
+                    'mode': run_record.read_mode(),
+                    'outbox': run_record.outbox_size(),
+                },
             })
         elif self.path == '/instruments/list':
             # Scan USB devices and return detected instruments. Arm detection
@@ -500,8 +511,55 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
             self._handle_lock_status()
         elif self.path.startswith('/download-file'):
             self._handle_download_file()
+        elif self.path.startswith('/run-records/'):
+            self._handle_run_record_get()
         else:
             self.send_error_response(404, 'Not found')
+
+    def _handle_run_record_get(self):
+        """GET /run-records/<runId> - the final record of one run.
+
+        Waits briefly for a run that is still finalizing: the client asks the
+        moment it reads the exit frame. 202 if it is still open after that.
+        """
+        from urllib.parse import unquote, urlparse
+
+        run_id = unquote(urlparse(self.path).path[len('/run-records/'):])
+        status, record = run_record.load_final(run_id)
+        if status == 200:
+            self._send_record(record)
+        elif status == 202:
+            self.send_json_response(202, {'status': 'open', 'runId': run_id})
+        else:
+            self.send_error_response(404, f'No run record for {run_id}')
+
+    def _send_record(self, record):
+        """Send a run record, gzip-compressed when the client accepts it.
+
+        A record carries the box's whole net configuration, so on a bench with
+        many nets it is tens of KB of very repetitive JSON. Over a VPN link
+        that costs several extra round trips while TCP opens its window; gzip
+        makes it a few KB. The JSON itself is unchanged: compression is the
+        transfer only (Content-Encoding), which every HTTP client undoes
+        before the caller sees the body. A client that does not send
+        ``Accept-Encoding: gzip`` gets the plain body.
+        """
+        import gzip
+
+        body = json.dumps(record, separators=(',', ':'), sort_keys=True).encode('utf-8')
+        accept = self.headers.get('Accept-Encoding', '') or ''
+        encodings = {part.split(';', 1)[0].strip().lower() for part in accept.split(',')}
+        compress = 'gzip' in encodings
+        if compress:
+            body = gzip.compress(body, compresslevel=6)
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        if compress:
+            self.send_header('Content-Encoding', 'gzip')
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('Connection', 'close')
+        self.end_headers()
+        self.wfile.write(body)
 
     def _read_box_version(self):
         """Read box version from /etc/lager/version or fallback location.
@@ -835,6 +893,29 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
             lock_holder = lock_holder.decode()
         lock_holder = lock_holder or None
 
+        # Open the run record before anything runs. Refusing a request with
+        # nothing to run comes first, so a client mistake is not recorded as a
+        # run; and on a box whose records are collected, a run the box cannot
+        # record is refused rather than run unrecorded.
+        PythonExecutor.validate_request(script_file, module_zip)
+        lager_process_id, env_vars = resolve_lager_process_id(env_vars)
+        try:
+            recorder = run_record.RunRecorder.begin(
+                lager_process_id,
+                script_file=script_file,
+                script_name=getattr(self, 'upload_filenames', {}).get('script'),
+                module_zip=module_zip,
+                args=args,
+                timeout_seconds=run_record.effective_timeout(timeout, detach, MAX_TIMEOUT),
+                client_field=fields.get(run_record.CLIENT_FIELD),
+            )
+        except run_record.RunRecordUnavailable as e:
+            self.send_error_response(
+                503, f'This box records every run and cannot record this one, so it was not started: {e}')
+            return
+        if recorder is not None:
+            env_vars = env_vars + [f'{k}={v}' for k, v in recorder.env.items()]
+
         # Execute
         executor = PythonExecutor()
 
@@ -857,6 +938,7 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
                 usb_mapping=usb_mapping,
                 dut_commands=dut_commands,
                 lock_holder=lock_holder,
+                recorder=recorder,
             ))
             return
 
@@ -872,6 +954,7 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
             muxes=muxes,
             usb_mapping=usb_mapping,
             dut_commands=dut_commands,
+            recorder=recorder,
         ))
 
     def _handle_python_kill(self):
@@ -1199,6 +1282,10 @@ def run_python_service():
 
     logger.info("Starting Lager Python Execution Service")
     logger.info(f"Listening on {SERVICE_HOST}:{SERVICE_PORT}")
+
+    # Before the first request: a run the last process left open can only be
+    # finalized as lost, and doing it now keeps boxSequence free of holes.
+    run_record.sweep_lost()
 
     server = create_python_service()
 

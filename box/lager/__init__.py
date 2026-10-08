@@ -62,6 +62,11 @@ from .core import (
 from .breakpoint import pause
 
 # =============================================================================
+# Run record: facts only the script knows
+# =============================================================================
+from .run_assertions import record_value
+
+# =============================================================================
 # Net Abstraction (test points/signals)
 # =============================================================================
 from .nets.net import Net, NetType, InvalidNetError, SetupFunctionRequiredError
@@ -97,6 +102,8 @@ __all__ = [
     "get_saved_nets",
     # Core constants
     "LAGER_HOST",
+    # Run record
+    "record_value",
     # Interactive breakpoints
     "pause",
     # PCB Net abstraction

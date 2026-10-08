@@ -140,11 +140,15 @@ class OutputHandler:
         yield from self.parse()
 
 
-def stream_python_output_v1(response, output_handler=None):
+def stream_python_output_v1(response, output_handler=None, frame_observer=None):
     if output_handler is None:
         output_handler = OutputHandler()
 
     for (fileno, chunk) in iter_streams(response):
+        if frame_observer is not None and fileno in (STDOUT_FILENO, STDERR_FILENO, OUTPUT_CHANNEL_FILENO):
+            # Raw frames, before the output channel is decoded: the run
+            # record's log hash is over the bytes as the box sent them.
+            frame_observer(fileno, chunk)
         if fileno == EXIT_FILENO:
             yield (StreamDatatypes.EXIT, int(chunk.decode(), 10))
 
@@ -155,10 +159,10 @@ def stream_python_output_v1(response, output_handler=None):
         elif fileno == OUTPUT_CHANNEL_FILENO:
             yield from output_handler.receive(chunk)
 
-def stream_python_output(response, output_handler=None):
+def stream_python_output(response, output_handler=None, frame_observer=None):
     version = response.headers.get('Lager-Output-Version')
     if version == '1':
-        yield from stream_python_output_v1(response, output_handler)
+        yield from stream_python_output_v1(response, output_handler, frame_observer)
     else:
         raise OutputFormatNotSupported
 
@@ -201,7 +205,7 @@ class SizeLimitExceeded(RuntimeError):
     """
 
 
-def zip_dir(root, extra_files, max_content_size=math.inf, include_dirs=None):
+def zip_dir(root, extra_files, max_content_size=math.inf, include_dirs=None, manifest=None):
     """
         Zip a directory into memory
 
@@ -211,9 +215,14 @@ def zip_dir(root, extra_files, max_content_size=math.inf, include_dirs=None):
             max_content_size: Maximum uncompressed size limit
             include_dirs: Dict mapping destination path -> source path for additional directories to include
                          e.g., {"dtest": "/abs/path/to/dtest"} will add dtest/* to the zip
+            manifest: optional dict, filled with archive path -> absolute
+                source path for every file written. The run record uses it
+                to say where each file the box received sits in the repo.
     """
     if include_dirs is None:
         include_dirs = {}
+    if manifest is None:
+        manifest = {}
 
     rootpath = pathlib.Path(root)
     exclude = ['.git']
@@ -246,6 +255,7 @@ def zip_dir(root, extra_files, max_content_size=math.inf, include_dirs=None):
                 fileinfo.external_attr = stat_result.st_mode << 16
                 with open(full_name, 'rb') as f:
                     zip_archive.writestr(fileinfo, f.read(), ZIP_DEFLATED)
+                manifest[fileinfo.filename] = os.path.abspath(full_name)
 
         # Add extra individual files
         for extra in extra_files:
@@ -256,6 +266,7 @@ def zip_dir(root, extra_files, max_content_size=math.inf, include_dirs=None):
             fileinfo.external_attr = os.stat(source_file).st_mode << 16
             with open(source_file, 'rb') as f:
                 zip_archive.writestr(fileinfo, f.read(), ZIP_DEFLATED)
+            manifest[fileinfo.filename] = os.path.abspath(source_file)
 
         # Add include directories
         for dest_path, source_path in include_dirs.items():
@@ -301,6 +312,7 @@ def zip_dir(root, extra_files, max_content_size=math.inf, include_dirs=None):
                     fileinfo.external_attr = stat_result.st_mode << 16
                     with open(full_name, 'rb') as f:
                         zip_archive.writestr(fileinfo, f.read(), ZIP_DEFLATED)
+                    manifest[fileinfo.filename] = os.path.abspath(full_name)
 
     return archive.getbuffer()
 

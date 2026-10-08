@@ -30,6 +30,8 @@ lager python [OPTIONS] [RUNNABLE] [ARGS]...
 | `--reattach TEXT` | | String | | Reattach to a detached process by its process ID |
 | `--continue TEXT` | | String | | Resume a script paused at a breakpoint, by its process ID |
 | `--console TEXT` | | String | | Connect to the interactive console of a paused script, by its process ID |
+| `--label KEY=VALUE` | | Multiple | | Add a label to the run record, for example an execution ID |
+| `--no-run-record` | | Flag | | Do not write the run record file next to the downloaded files |
 | `--help` | | Flag | | Show help message and exit |
 
 **Arguments:**
@@ -74,6 +76,7 @@ The following environment variables are automatically available inside your scri
 | `LAGER_PROCESS_ID` | Unique UUID for this execution |
 | `LAGER_RUNNABLE` | Path to the script being executed |
 | `LAGER_BOX` | Box name (if `--box` was provided) |
+| `LAGER_RUN_ASSERTIONS` | File that `lager.record_value()` writes to (see Run Record below) |
 
 ## File Downloads
 
@@ -263,6 +266,42 @@ Files are available in the same directory as your script on the box.
 | 137 | Script killed by SIGKILL (timeout, force) |
 | 128+N | Script stopped by signal N |
 | Other | Script's own exit code |
+
+## Run Record
+
+The box writes a run record for each run. The record is a JSON file. It shows
+what ran, on which box, in which state, and what came out:
+
+- The SHA-256 hash of each file that the box received
+- The box state when the run started: the Lager version, the OS, the net
+  configuration, and the serial number of each instrument
+- The start time, the end time, and the exit code
+- Why the run ended: it exited, it timed out, it was cancelled, or the client
+  disconnected
+- The SHA-256 hash of the output and of each file in `--download`
+
+After the run, the CLI writes the record as `<process-id>.lager-run.json` next to
+the downloaded files. The CLI compares the output and the downloaded files with
+the hashes in the record. If they are different, the CLI shows a warning.
+
+Add labels to find a run later:
+
+```bash
+lager python test.py --box my-lager-box --label execution=EX-20419
+```
+
+A script can add values that only the script knows, for example the firmware
+version of the device under test:
+
+```python
+from lager import record_value
+
+record_value('dut.firmware', '2.14.0')
+```
+
+The box does not verify labels or values from a script. Do not put secrets in
+them. For the full format, see `docs/reference/run-record.md` in the Lager
+repository.
 
 ## Box Lock
 

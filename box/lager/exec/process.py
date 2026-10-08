@@ -569,7 +569,7 @@ def _drain_file_to_queue(readable, fileno, q, stop_event, proc):
             pass
 
 
-def stream_process_output(proc, output_channel, cleanup_fns):
+def stream_process_output(proc, output_channel, cleanup_fns, recorder=None):
     """
     Stream output from a running process.
 
@@ -586,6 +586,9 @@ def stream_process_output(proc, output_channel, cleanup_fns):
         proc: subprocess.Popen object
         output_channel: Additional output channel file object
         cleanup_fns: Set of cleanup functions to call when done
+        recorder: the run's RunRecorder, or None. Every frame is added to its
+            log, and it is finalized before the exit frame is sent, so a
+            client that asks for the record on reading that frame finds it.
 
     Yields:
         bytes: Formatted output chunks with headers
@@ -606,6 +609,7 @@ def stream_process_output(proc, output_channel, cleanup_fns):
     stop_event = threading.Event()
     drain_threads = []
     pending_eofs = 0
+    client_gone = False
 
     def _spawn_pipe_drain(readable, fileno):
         nonlocal pending_eofs
@@ -656,6 +660,8 @@ def stream_process_output(proc, output_channel, cleanup_fns):
                 pending_eofs -= 1
                 continue
 
+            if recorder is not None:
+                recorder.log_frame(fileno, chunk)
             yield from emit(fileno, chunk)
 
             now = time.time()
@@ -664,9 +670,15 @@ def stream_process_output(proc, output_channel, cleanup_fns):
                 yield from emit(0, b'')
 
         # All drains have finished. Reap the process and send final code.
-        returncode = str(terminate_process(proc))
+        returncode = terminate_process(proc)
+        if recorder is not None:
+            recorder.finalize(returncode)
+        returncode = str(returncode)
         yield f'- {len(returncode)} {returncode}'.encode()
 
+    except GeneratorExit:
+        client_gone = True
+        raise
     except Exception as exc:
         logger.exception('stream_process_output failed', exc_info=exc)
     finally:
@@ -698,6 +710,13 @@ def stream_process_output(proc, output_channel, cleanup_fns):
                 terminate_process(proc)
         except Exception:
             logger.exception('failed to terminate child process %s', getattr(proc, 'pid', '?'))
+        # Every way out of the stream other than the normal end lands here
+        # with the record still open: say how it ended.
+        if recorder is not None and not recorder.finalized:
+            recorder.finalize(
+                proc.returncode,
+                ended='disconnected' if client_gone else 'exited',
+            )
         # Best-effort thread join with a short timeout; drains are daemons
         # so they won't keep the interpreter alive if join times out.
         for t in drain_threads:
@@ -705,7 +724,8 @@ def stream_process_output(proc, output_channel, cleanup_fns):
         do_cleanup(cleanup_fns)
 
 
-def stream_process_output_to_file(proc, output_channel, cleanup_fns, log_path, meta_path):
+def stream_process_output_to_file(proc, output_channel, cleanup_fns, log_path, meta_path,
+                                  recorder=None):
     """
     Stream output from a running process into a log file on disk.
 
@@ -719,6 +739,8 @@ def stream_process_output_to_file(proc, output_channel, cleanup_fns, log_path, m
         cleanup_fns: Set of cleanup functions to call when done
         log_path: Path to the output log file (opened in append-binary mode)
         meta_path: Path to the meta.json file to update on completion
+        recorder: the run's RunRecorder, or None. Captures every frame, not
+            only those under MAX_LOG_SIZE: the record's log is the whole output.
     """
     fileno_map = {
         proc.stdout: 1,
@@ -748,6 +770,8 @@ def stream_process_output_to_file(proc, output_channel, cleanup_fns, log_path, m
                             continue
                         readables.remove(readable)
 
+                    if recorder is not None:
+                        recorder.log_frame(fileno_map[readable], chunk)
                     if not cap_reached:
                         fileno = fileno_map[readable]
                         for part in emit(fileno, chunk):
@@ -758,9 +782,13 @@ def stream_process_output_to_file(proc, output_channel, cleanup_fns, log_path, m
                             cap_reached = True
                             logger.warning(f"Log file reached {MAX_LOG_SIZE} byte cap, stopping capture")
 
-            returncode = str(terminate_process(proc))
+            returncode = terminate_process(proc)
 
             remaining = output_channel.read()
+            if recorder is not None:
+                recorder.log_frame(fileno_map[output_channel], remaining)
+                recorder.finalize(returncode)
+            returncode = str(returncode)
             if not cap_reached:
                 for part in emit(fileno_map[output_channel], remaining):
                     log_file.write(part)
@@ -774,6 +802,8 @@ def stream_process_output_to_file(proc, output_channel, cleanup_fns, log_path, m
     except Exception as exc:
         logger.exception('stream_process_output_to_file failed', exc_info=exc)
     finally:
+        if recorder is not None and not recorder.finalized:
+            recorder.finalize(proc.poll())
         do_cleanup(cleanup_fns)
 
 

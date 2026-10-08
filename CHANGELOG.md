@@ -12,6 +12,24 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Added
+
+- **Every `lager python` run now has a run record.** The box writes a JSON
+  record of what ran, on which box, in which state, and what came out: file
+  hashes, the box and net state with instrument serial numbers, exit reason,
+  and output hashes. The CLI saves it as `<process-id>.lager-run.json` beside
+  the downloads and warns when the output or a download does not match. Tag a
+  run with `--label KEY=VALUE`, and record facts from a script with
+  `lager.record_value()`. See `docs/reference/run-record.md`.
+
+### Fixed
+
+- **`lager python` no longer exits 0 when the output stream ends without an
+  exit code.** A dropped connection or a box restart mid-run now exits 255 and
+  prints `Failed to retrieve script exit code.`
+- **`lager python --passenv NAME` with `NAME` unset is a usage error, not a
+  traceback.**
+
 ## [0.54.0] - 2026-10-07
 
 ### Added

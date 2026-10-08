@@ -1264,6 +1264,7 @@ docker run -d \
     -v /etc/lager:/etc/lager \
     -v /home/lagerdata/.ssh:/home/www-data/.ssh \
     -v /etc/hostname:/host/etc/hostname:ro \
+    -v /etc/os-release:/host/etc/os-release:ro \
     -v /opt/SEGGER:/opt/SEGGER:ro \
     -v /opt/picoscope/lib:/opt/picoscope/lib:ro \
     -v lager-cargo:/opt/rust/cargo \

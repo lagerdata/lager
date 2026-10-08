@@ -169,6 +169,11 @@ The executor automatically injects these environment variables into every Python
 - `LAGER_BOX_ID`: Box ID from `/etc/lager/box_id`
 - `LAGER_CLIENT_IP`: IP address of the CLI client
 
+### Run Record
+- `LAGER_RUN_ASSERTIONS`: Where `lager.record_value(key, value)` writes the
+  facts this run's record carries in `scriptAsserted`. Set only for a recorded
+  run; see `docs/reference/run-record.md`.
+
 ### Organization Secrets
 All keys from `/etc/lager/org_secrets.json` are injected as:
 - `LAGER_SECRET_<key>`: Secret value

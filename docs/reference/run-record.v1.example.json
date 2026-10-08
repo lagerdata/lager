@@ -1,0 +1,147 @@
+{
+  "schema": "lager.run-record/v1",
+  "runId": "3f6c2a9e-8d41-4b7a-9e2f-1c5d7b0a6e13",
+  "boxSequence": 1042,
+  "state": "final",
+  "startedAt": "2026-10-07T18:04:11.123456Z",
+  "finishedAt": "2026-10-07T18:05:02.654321Z",
+  "box": {
+    "boxId": "0b6f2d4e-7c1a-4e93-a5d8-3f2e1c9b7a60",
+    "boxName": "bench-07",
+    "hostname": "bench-07",
+    "hardwareId": "mac:3c:7c:3f:1a:2b:9e"
+  },
+  "boxState": {
+    "lagerVersion": "0.53.1",
+    "deployedByCliVersion": "0.53.1",
+    "ref": "v0.53.1@af96ba48c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6",
+    "os": {
+      "prettyName": "Ubuntu 24.04.3 LTS",
+      "id": "ubuntu",
+      "versionId": "24.04"
+    },
+    "kernel": "6.8.0-85-generic",
+    "clock": {
+      "synced": true,
+      "maxErrorMicroseconds": 16000
+    },
+    "nets": [
+      {
+        "name": "vbat",
+        "role": "power-supply",
+        "instrument": "Keithley_2281S",
+        "pin": 1,
+        "address": "USB0::0x05E6::0x2281::4512345::INSTR"
+      }
+    ],
+    "netsHash": "9a1f3c5e7b2d4f6a8c0e1b3d5f7a9c1e3b5d7f9a1c3e5b7d9f1a3c5e7b9d1f3a",
+    "instruments": [
+      {
+        "type": "Keithley_2281S",
+        "connection": "USB0::0x05E6::0x2281::4512345::INSTR",
+        "serialNumber": "4512345",
+        "serialSource": "usb-device",
+        "firmwareVersion": null,
+        "nets": [
+          "vbat"
+        ]
+      }
+    ]
+  },
+  "code": {
+    "kind": "module",
+    "archiveSha256": "0d4f6b8a2c4e6f8b0d2f4a6c8e0b2d4f6a8c0e2b4d6f8a0c2e4b6d8f0a2c4e6b",
+    "files": [
+      {
+        "path": "calibration.csv",
+        "size": 2048,
+        "sha256": "4c6e8a0b2d4f6c8e0a2b4d6f8c0e2a4b6d8f0c2e4a6b8d0f2c4e6a8b0d2f4c6e"
+      },
+      {
+        "path": "main.py",
+        "size": 5311,
+        "sha256": "e2a4c6e8b0d2f4a6c8e0b2d4f6a8c0e2b4d6f8a0c2e4b6d8f0a2c4e6b8d0f2a4"
+      }
+    ],
+    "entrypoint": "main.py",
+    "args": [
+      "--cycles",
+      "3"
+    ]
+  },
+  "environmentPassed": [
+    "DUT_SERIAL"
+  ],
+  "exit": {
+    "code": 0,
+    "reason": "exited",
+    "timeoutSeconds": 300,
+    "cancelRequestedAt": null
+  },
+  "outputs": [
+    {
+      "name": "/tmp/lager-output/rtd_results.csv",
+      "size": 18234,
+      "sha256": "7b9d1f3a5c7e9b1d3f5a7c9e1b3d5f7a9c1e3b5d7f9a1c3e5b7d9f1a3c5e7b9d",
+      "retained": true
+    }
+  ],
+  "log": {
+    "sha256": "1e3b5d7f9a1c3e5b7d9f1a3c5e7b9d1f3a5c7e9b1d3f5a7c9e1b3d5f7a9c1e3b",
+    "size": 40961,
+    "retained": true
+  },
+  "retention": {
+    "mode": "collected",
+    "maxBlobBytes": 104857600
+  },
+  "clientAsserted": {
+    "cliVersion": "0.53.1",
+    "argv": [
+      "lager",
+      "python",
+      "tests/rtd",
+      "--box",
+      "bench-07",
+      "--add-file",
+      "calibration.csv",
+      "--download",
+      "/tmp/lager-output/rtd_results.csv",
+      "--passenv",
+      "DUT_SERIAL",
+      "--env",
+      "MODE=<redacted>",
+      "--label",
+      "execution=EX-20419",
+      "--",
+      "--cycles",
+      "3"
+    ],
+    "git": {
+      "commit": "c3001bb5e2f4a6c8e0b2d4f6a8c0e2b4d6f8a0c2",
+      "dirty": false
+    },
+    "files": [
+      {
+        "path": "calibration.csv",
+        "repoPath": "xl/tests/data/calibration.csv",
+        "size": 2048,
+        "sha256": "4c6e8a0b2d4f6c8e0a2b4d6f8c0e2a4b6d8f0c2e4a6b8d0f2c4e6a8b0d2f4c6e"
+      },
+      {
+        "path": "main.py",
+        "repoPath": "xl/tests/rtd.py",
+        "size": 5311,
+        "sha256": "e2a4c6e8b0d2f4a6c8e0b2d4f6a8c0e2b4d6f8a0c2e4b6d8f0a2c4e6b8d0f2a4"
+      }
+    ],
+    "repoRelativeRoot": "xl/tests",
+    "labels": {
+      "execution": "EX-20419"
+    }
+  },
+  "scriptAsserted": {
+    "dut.firmware": "2.14.0",
+    "dut.serial": "7Q2-00419"
+  }
+}
