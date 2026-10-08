@@ -286,6 +286,54 @@ class TestResolveTagScript:
         assert not marker.exists()
 
 
+# --- Pull-request build -------------------------------------------------------
+
+PR_WORKFLOW = ROOT / ".github" / "workflows" / "box-image-pr.yml"
+
+
+class TestPullRequestBuild:
+    """#595: a PR that changes the image builds it, and writes nothing.
+
+    `:buildcache` is what the next release reuses, so a branch must never
+    export to it, and the PR job must have no way to push anything.
+    """
+
+    def _workflow(self):
+        return yaml.safe_load(PR_WORKFLOW.read_text())
+
+    def _build(self):
+        steps = self._workflow()["jobs"]["build-box-image"]["steps"]
+        [build] = [s for s in steps
+                   if str(s.get("uses", "")).startswith("docker/build-push-action@")]
+        return build["with"]
+
+    def test_runs_on_a_pull_request_that_touches_the_image(self):
+        paths = _triggers(self._workflow())["pull_request"]["paths"]
+        assert "box/lager/docker/**" in paths
+
+    def test_pushes_nothing_and_reads_the_cache_only(self):
+        build = self._build()
+        assert build["push"] is False
+        assert build["cache-from"] == "type=registry,ref=ghcr.io/lagerdata/lager-box:buildcache"
+        assert "cache-to" not in build
+
+    def test_has_no_write_permission_and_no_registry_login(self):
+        workflow = self._workflow()
+        assert workflow["permissions"] == {"contents": "read"}
+        assert "permissions" not in workflow["jobs"]["build-box-image"]
+        assert "docker/login-action" not in PR_WORKFLOW.read_text()
+
+    def test_builds_the_same_file_and_platform_as_the_publisher(self):
+        build, published = self._build(), _step(uses_prefix="docker/build-push-action@")["with"]
+        for key in ("context", "file", "platforms"):
+            assert build[key] == published[key], key
+
+    def test_uses_the_same_action_pins_as_the_publisher(self):
+        def pins(text):
+            return set(re.findall(r"uses: (docker/[\w-]+@[0-9a-f]{40})", text))
+        assert pins(PR_WORKFLOW.read_text()) <= pins(WORKFLOW.read_text())
+
+
 # --- Dependabot ---------------------------------------------------------------
 
 class TestDependabotMovesThePin:

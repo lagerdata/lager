@@ -17,9 +17,9 @@ with a real description.
 
 ## What runs in CI
 
-Five workflows run on `pull_request`: `unit-tests.yml`, `static-checks.yml`, `rust-checks.yml`,
-`packaging.yml` and `xplat-smoke.yml`. The others run on a schedule, through `workflow_call`, on a
-tag push, or on manual dispatch.
+Six workflows run on `pull_request`: `unit-tests.yml`, `static-checks.yml`, `rust-checks.yml`,
+`packaging.yml`, `xplat-smoke.yml` and `box-image-pr.yml`, the last only when `box/lager/docker/`
+changes. The others run on a schedule, through `workflow_call`, on a tag push, or on manual dispatch.
 
 | Workflow | Trigger | Runner | Gates a PR |
 |---|---|---|:---:|
@@ -28,6 +28,7 @@ tag push, or on manual dispatch.
 | `rust-checks.yml` | `pull_request`, dispatch; push to `main` **path-filtered** to `box/oscilloscope-daemon/**` | GitHub-hosted `ubuntu-latest` | **Yes** |
 | `packaging.yml` | `pull_request`, push to `main`, dispatch | GitHub-hosted `ubuntu-latest` | **Yes** |
 | `xplat-smoke.yml` | `pull_request`, push to `main`, dispatch | GitHub-hosted `macos-latest`, `windows-latest` | **Yes** |
+| `box-image-pr.yml` | `pull_request`, path-filtered to `box/lager/docker/**` | GitHub-hosted `ubuntu-latest` | No (path-filtered, so not a required context) |
 | `integration-tests.yml` | `workflow_call`, dispatch | self-hosted `lager-bench` | No |
 | `update-regression.yml` (Bench: Box Lifecycle) | `workflow_call`, dispatch | self-hosted `lager-bench` | No |
 | `nightly-bench.yml` | nightly schedule, push to `main` (docs-only pushes skipped), dispatch | orchestrator | No |
@@ -47,12 +48,12 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` | 2956 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 3340 |
+| `unit (box)` | `test/unit/box/` | 3345 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 380 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 166 (+1 skipped) |
-| | **Total gated** | **7036** |
+| | **Total gated** | **7041** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -477,7 +478,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_box_config_cli.py` | `lager box-config` CLI: mount prep, readiness polling, rollback on bounce failure. Also the `network-mode` verbs and `apply`'s host-networking path: the pre-flight refusing before anything mutates, exit codes 0/3/1, the SSH fallback that keeps a stranded box recoverable, `--skip-restart` refusing a pending switch to host, and only `apply`'s bounce confirming that switch to the box |
 | `test_box_dut_cli.py` | `lager dut` CLI detached-list regression fix |
 | `test_box_http_server_capabilities.py` | /status capabilities block advertises netCommand based on route registration |
-| `test_box_image_publish.py` | What keeps a published box image cheap to pull. `box-image-publish.yml` keeps its layer cache in the registry, not in GitHub Actions, whose cache is scoped to the tag that wrote it so no release could read the last one's; its tag-resolution script is run for a tag push, a cache-only dispatch and a bad tag. `box.Dockerfile` pins its base image by digest and puts nothing but box source below the first source COPY, with a synthetic Dockerfile proving the scan catches a static step placed there. Dependabot moves the base pin, and only the pin: its config ignores minor and major updates of the `python` image, because no pull-request check builds the image, so a new interpreter passes CI and then fails to install the image's pins |
+| `test_box_image_publish.py` | What keeps a published box image cheap to pull. `box-image-publish.yml` keeps its layer cache in the registry, not in GitHub Actions, whose cache is scoped to the tag that wrote it so no release could read the last one's; its tag-resolution script is run for a tag push, a cache-only dispatch and a bad tag. `box.Dockerfile` pins its base image by digest and puts nothing but box source below the first source COPY, with a synthetic Dockerfile proving the scan catches a static step placed there. Dependabot moves the base pin, and only the pin: its config ignores minor and major updates of the `python` image, because no pull-request check built the image, so a new interpreter passed CI and then failed to install the image's pins. `box-image-pr.yml` builds the image on a pull request that changes it, pushes nothing, reads `:buildcache` without writing it, has only `contents: read`, and uses the publisher's context, file, platform and action pins |
 | `test_box_image_notices.py` | The license notices the published box image carries. The list of vendor downloads is READ from `box.Dockerfile` (wget and curl URLs, source builds, pip installs from a repository, `cargo install`, rustup, `nrfutil install`, third-party apt repositories, vendor SDKs on PyPI), and each needs a row in `docker/licenses/THIRD_PARTY.md` whose pin still matches; an unpinned one must be recorded as unpinned. Synthetic extra downloads and a bumped pin prove the scan catches them. Also that the copies of `LICENSE` and `NOTICE` are byte-identical to the repository root, that the collector runs after every `pip install` and above the first source COPY, that the manifest makes no redistribution claim, and that no `image.licenses` label is asserted |
 | `test_collect_pip_licenses.py` | `docker/collect_pip_licenses.py`, which the image build runs to gather each Python distribution's notice files, against distributions made up in a temp directory: PEP 639 and legacy layouts, a missing RECORD, a license declared three ways, a field holding tabs or the whole license text. Output is byte-identical from run to run, a removed package leaves nothing behind, an unreadable file never fails the run, and the script imports only the standard library |
 | `test_box_metadata_endpoint.py` | `/box-metadata`: reading and writing the box's own description, and degrading to empty on a truncated file |
