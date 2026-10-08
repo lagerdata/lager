@@ -79,16 +79,19 @@
         </label>
         <!-- Moves the capture window earlier or later than the trigger, to
              bring signal that sits off the left or right edge into view.
-             Divisions rather than seconds so it reads against the grid. One
-             screen of travel each way is the whole of it: at -5 the trigger
-             sits on the right edge and the screen is all pre-trigger, at +5
-             it sits on the left and the screen is all post-trigger. Not a
-             label, because it holds two controls. -->
+             In time, in the unit chosen beside it. Half a screen of travel
+             each way is the whole of it: at the negative limit the trigger
+             sits on the right edge and the screen is all pre-trigger, at the
+             positive one it sits on the left and the screen is all
+             post-trigger. Text rather than number, so the arrow keys step
+             the last digit written rather than a fixed step. Not a label,
+             because it holds three controls. -->
         <div class="field field--stack">
-          <span>Position (div)</span>
+          <span>Position</span>
           <div class="field-row">
-            <input id="time-position" type="number" step="0.5" min="-5" max="5"
-                   value="0" aria-label="Horizontal position in divisions">
+            <input id="time-position" type="text" inputmode="decimal"
+                   value="0" aria-label="Horizontal position">
+            <select id="time-position-unit" aria-label="Horizontal position unit"></select>
             <button id="time-position-reset" class="btn btn--small" type="button"
                     title="Centre the trigger">0</button>
           </div>
