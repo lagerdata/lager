@@ -527,11 +527,39 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
         run_id = unquote(urlparse(self.path).path[len('/run-records/'):])
         status, record = run_record.load_final(run_id)
         if status == 200:
-            self.send_json_response(200, record)
+            self._send_record(record)
         elif status == 202:
             self.send_json_response(202, {'status': 'open', 'runId': run_id})
         else:
             self.send_error_response(404, f'No run record for {run_id}')
+
+    def _send_record(self, record):
+        """Send a run record, gzip-compressed when the client accepts it.
+
+        A record carries the box's whole net configuration, so on a bench with
+        many nets it is tens of KB of very repetitive JSON. Over a VPN link
+        that costs several extra round trips while TCP opens its window; gzip
+        makes it a few KB. The JSON itself is unchanged: compression is the
+        transfer only (Content-Encoding), which every HTTP client undoes
+        before the caller sees the body. A client that does not send
+        ``Accept-Encoding: gzip`` gets the plain body.
+        """
+        import gzip
+
+        body = json.dumps(record, separators=(',', ':'), sort_keys=True).encode('utf-8')
+        accept = self.headers.get('Accept-Encoding', '') or ''
+        encodings = {part.split(';', 1)[0].strip().lower() for part in accept.split(',')}
+        compress = 'gzip' in encodings
+        if compress:
+            body = gzip.compress(body, compresslevel=6)
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        if compress:
+            self.send_header('Content-Encoding', 'gzip')
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('Connection', 'close')
+        self.end_headers()
+        self.wfile.write(body)
 
     def _read_box_version(self):
         """Read box version from /etc/lager/version or fallback location.
