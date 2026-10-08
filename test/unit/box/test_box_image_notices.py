@@ -176,12 +176,26 @@ class TestTheManifestClaimsNothingItHasNotChecked:
         assert "Nothing in this file states that a component can be redistributed" in text
         assert "#532" in text
 
-    @pytest.mark.parametrize("component", ["LabJack LJM", "nrfutil |", "BrainStem", "Phidget22"])
+    @pytest.mark.parametrize("component", ["nrfutil |", "BrainStem"])
     def test_a_vendors_own_terms_are_marked_not_reviewed(self, component):
         rows = [row for row in _rows(MANIFEST.read_text()) if component in row]
         assert rows, component
         for row in rows:
             assert "Not reviewed" in row, row
+
+    @pytest.mark.parametrize("component, license_name, notice", [
+        ("LabJack LJM", "MIT", "vendor/labjack-ljm.txt"),
+        ("Phidget22", "BSD-3-Clause", "vendor/libphidget22.txt"),
+    ])
+    def test_a_read_vendor_license_names_the_notice_the_image_ships(
+            self, component, license_name, notice):
+        # Read against the vendor's own license file (#532). Both are open
+        # licenses whose condition is that the notice travels with the copy,
+        # so the row must point at a notice the image actually carries.
+        [row] = [row for row in _rows(MANIFEST.read_text()) if component in row]
+        assert "Not reviewed" not in row
+        assert license_name in row
+        assert notice in row
 
     def test_every_row_has_every_cell(self):
         rows = _rows(MANIFEST.read_text())
@@ -233,8 +247,24 @@ class TestTheDockerfileShipsThem:
         body = instructions[self._index(instructions, "RUN", "collect_pip_licenses.py /usr/share")][1]
         assert "rm -f /tmp/collect_pip_licenses.py" in body
 
-    def test_the_static_directory_holds_exactly_the_three_files(self):
-        assert sorted(p.name for p in LICENSES.iterdir()) == ["LICENSE", "NOTICE", "THIRD_PARTY.md"]
+    def test_the_static_directory_holds_exactly_these_files(self):
+        assert sorted(p.name for p in LICENSES.iterdir()) == [
+            "LICENSE", "NOTICE", "THIRD_PARTY.md", "vendor"]
+        assert sorted(p.name for p in (LICENSES / "vendor").iterdir()) == ["libphidget22.txt"]
+
+    def test_the_phidgets_notice_is_the_bsd_text(self):
+        text = (LICENSES / "vendor" / "libphidget22.txt").read_text()
+        assert text.startswith("Copyright (c) 2015-2022 Phidgets Inc.")
+        assert "Redistributions in binary form must reproduce the above copyright notice" in text
+
+    def test_the_ljm_install_ships_its_license_file(self):
+        # The installer writes license.txt to /usr/local/share/LabJack. The
+        # copy is in the same RUN as the install, so a new installer that
+        # stops shipping it fails the build instead of shipping no notice.
+        [ljm] = [body for keyword, body in _instructions(DOCKERFILE.read_text())
+                 if keyword == "RUN" and "labjack_ljm_installer.run" in body]
+        assert ("install -D -m 0644 /usr/local/share/LabJack/license.txt "
+                "/usr/share/licenses/lager/vendor/labjack-ljm.txt") in ljm
 
     def test_no_licenses_label_is_asserted_for_the_whole_image(self):
         # org.opencontainers.image.licenses describes ALL the software in an
