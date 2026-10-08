@@ -145,6 +145,9 @@ function stepPosition(text, direction, maxStep = Infinity) {
   if (Number.isFinite(maxStep) && maxStep > 0) {
     places = Math.max(places, -Math.round(Math.log10(maxStep)));
   }
+  // toFixed takes 0 to 100 places and throws past that, so "1e-101" left the
+  // arrow keys doing nothing at all.
+  places = Math.min(places, 100);
   // In whole steps, so 1.19 + 0.01 cannot come out as 1.2000000000000002.
   const unit = 10 ** places;
   return ((Math.round(start * unit) + direction) / unit).toFixed(places);
@@ -472,15 +475,45 @@ function wirePositionField(input, unitSelect, { live, perDiv, get, set }) {
     const value = Number(input.value);
     return input.value.trim() === '' || !Number.isFinite(value) ? null : value * factor();
   };
+  // Typed in since the field was last applied or put back. What the field
+  // shows is rounded to six figures, so comparing it with the value held
+  // cannot tell an untouched field from an edited one: 0.00123457 is not
+  // 0.0012345678, and leaving the field re-applied it -- horizontally, a
+  // re-arm -- though nobody had typed a thing.
+  let edited = false;
+
+  // One value in flight at a time, and only the newest waiting behind it. A
+  // held arrow key repeats faster than the box answers, and sets sent side by
+  // side can finish out of order and leave the box on an older value. A value
+  // overtaken while waiting resolves to null and is never sent.
+  let busy = false;
+  let waiting = null;
+  const apply = async (value, options) => {
+    if (busy) {
+      if (waiting) waiting.resolve(null);
+      return new Promise((resolve) => { waiting = { value, options, resolve }; });
+    }
+    busy = true;
+    try {
+      return await set(value, options);
+    } finally {
+      busy = false;
+      const next = waiting;
+      waiting = null;
+      if (next) next.resolve(apply(next.value, next.options));
+    }
+  };
+
   // Re-written only when the value applied is not the one typed -- a clamp --
   // so "1.20" is not cut to "1.2" and the next arrow keeps its step.
   const commit = async () => {
+    edited = false;
     const value = typed();
     if (value === null) {
       write(get());
       return;
     }
-    const applied = await set(value, { announce: true });
+    const applied = await apply(value, { announce: true });
     if (Number.isFinite(applied) && !sameSetting(applied, value)) write(applied);
   };
 
@@ -491,8 +524,11 @@ function wirePositionField(input, unitSelect, { live, perDiv, get, set }) {
       const next = stepPosition(text, event.key === 'ArrowUp' ? 1 : -1,
         scaleStep(perDiv()) / factor());
       input.value = next;
-      const applied = await set(Number(next) * factor(), { announce: true });
-      if (Number.isFinite(applied) && !sameSetting(applied, Number(next) * factor())) {
+      edited = false;
+      const applied = await apply(Number(next) * factor(), { announce: true });
+      // Not if a later press has moved the field on since.
+      if (Number.isFinite(applied) && input.value === next
+          && !sameSetting(applied, Number(next) * factor())) {
         input.value = (applied / factor()).toFixed(decimalsIn(next));
       }
     } else if (!live && event.key === 'Enter') {
@@ -501,19 +537,21 @@ function wirePositionField(input, unitSelect, { live, perDiv, get, set }) {
     } else if (!live && event.key === 'Escape') {
       event.preventDefault();
       write(get());
+      edited = false;
     }
   });
-  if (live) {
-    input.addEventListener('input', () => {
-      // Blank part-way through typing a minus sign, or cleared outright.
-      // Leaving the trace where it is beats snapping it to centre and back.
-      const value = typed();
-      if (value !== null) set(value, { announce: false });
-    });
-  }
+  input.addEventListener('input', () => {
+    edited = true;
+    if (!live) return;
+    // Blank part-way through typing a minus sign, or cleared outright.
+    // Leaving the trace where it is beats snapping it to centre and back.
+    const value = typed();
+    if (value !== null) apply(value, { announce: false });
+  });
   // Leaving the field commits a typed value, or, live, says if it was clamped.
   input.addEventListener('blur', () => {
-    if (live || typed() === null || !sameSetting(typed(), get())) commit();
+    if (edited && (live || typed() === null || !sameSetting(typed(), get()))) commit();
+    edited = false;
   });
   unitSelect.addEventListener('change', () => write(get()));
 
@@ -3144,6 +3182,12 @@ class ScopeApp {
       return undefined;
     }
     if (parsed.local) return this.verticalPositionCommand(parsed);
+    // Through the same clamp and note as the sidebar field. Sent as typed,
+    // `hpos 100ms` at 1 ms/div was stored a hundred divisions off screen,
+    // with nothing said. A bare `hpos` is a read and goes to the box below.
+    if (parsed.action === 'set_time_offset') {
+      return { value: await this.applyTimePosition(parsed.params.offset) };
+    }
     // Refused here rather than sent: the daemon would refuse it anyway, and
     // the page can say where the control that does work is.
     if (parsed.action === 'set_offset' && parsed.params.offset !== 0

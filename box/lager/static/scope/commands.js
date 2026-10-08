@@ -256,7 +256,9 @@ export const COMMANDS = [
   {
     // Seconds rather than divisions, so the verb does not depend on how many
     // divisions this screen happens to draw. Positive looks forward, to
-    // signal later than the trigger; negative looks back before it.
+    // signal later than the trigger; negative looks back before it. The page
+    // holds a set to the screen's divisions before sending it, as it does for
+    // the sidebar field (ScopeApp.execute).
     verb: 'hpos',
     aliases: ['position'],
     usage: 'hpos [<seconds>]',
