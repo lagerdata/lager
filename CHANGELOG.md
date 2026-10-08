@@ -88,6 +88,18 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 ### Fixed
 
+- **`hpos` in the scope web UI console is now held to the screen.** A value outside 5 divisions
+  went to the box as typed, with no note: at 1.02 ms/div, `hpos 100ms` put the trigger about 98
+  divisions off screen. The console now moves it to the limit and writes the same note as the
+  sidebar **Position** field. `hpos` with no value is a read and does not change.
+- **Leaving a scope Position field without typing in it no longer applies it again.** The field
+  shows six significant figures. For a horizontal position with more digits than that, such as
+  `hpos 1.2345678e-3`, clicking into the field and out again, or pushing Escape and then leaving,
+  sent the rounded value to the box. That re-armed the scope and changed the position slightly.
+  The vertical fields had the same fault on the page alone. A field now applies on leaving only
+  if you typed in it. Two related fixes: holding an arrow key sends one value at a time, so the
+  box can no longer finish on an older value than the field shows. And the arrow keys work on a
+  value with more than 100 decimal places, such as `1e-101`, where before they did nothing.
 - **The console of the scope web UI no longer changes a channel you did not name.** `scale`,
   `coupling`, `probe`, `offset`, `measure` and `spectrum`, typed with no channel, went to the
   lowest-numbered channel even when it was off. With channel A off and B on, `scale 0.5` changed
