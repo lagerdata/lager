@@ -26,6 +26,8 @@ export class ParsedCommand {
     // sent to, and a letter here would be an argument the handler does not
     // read.
     this.channel = channel || null;
+    // Handled by the page, with no action to send.
+    this.local = false;
   }
 }
 
@@ -88,6 +90,32 @@ function requireNumber(token, what) {
   return value;
 }
 
+// SI prefixes a typed quantity may carry. Lower-case only: "M" is mega, and
+// a 1000x error in the other direction is not one to guess at.
+const PREFIXES = { n: 1e-9, u: 1e-6, '\u00b5': 1e-6, m: 1e-3 };
+
+/** A number in `unit`, bare or with the unit: "0.1", "1e-3" and "100ms" are
+ * all seconds.
+ *
+ * A prefix without the unit ("100m") is still refused, as requireNumber()
+ * refuses it.
+ */
+function requireQuantity(token, unit, what) {
+  if (token === undefined) {
+    throw new CommandError(`${what} is required`);
+  }
+  const text = String(token).trim();
+  const match = new RegExp(`^(.*?)([num\u00b5]?)${unit}$`, 'i').exec(text);
+  if (match && match[1] !== '' && Number.isFinite(Number(match[1]))) {
+    const prefix = match[2];
+    if (prefix && !(prefix in PREFIXES)) {
+      throw new CommandError(`${what} must be a number, got "${token}"`);
+    }
+    return Number(match[1]) * (prefix ? PREFIXES[prefix] : 1);
+  }
+  return requireNumber(text, what);
+}
+
 const MEASUREMENTS = {
   vpp: 'measure_vpp',
   vmax: 'measure_vmax',
@@ -114,7 +142,8 @@ const MEASUREMENTS = {
  * The grammar. Each verb maps a token list to a ParsedCommand.
  *
  * `local` verbs are handled by the page (help, clear, connect) and never
- * reach the box; they carry no action.
+ * reach the box; they carry no action. `vpos` is one too, but is parsed here
+ * because it names a channel the way the settings below do.
  */
 export const COMMANDS = [
   {
@@ -211,7 +240,9 @@ export const COMMANDS = [
   {
     verb: 'offset',
     usage: 'offset [<channel>] [<volts>]',
-    help: 'Get or set vertical offset, e.g. "offset B 0.1"; with no channel, the first one that is on',
+    help: 'Get or set analog offset, e.g. "offset B 0.1". Shifts the signal in hardware, '
+      + 'so measurements change with it and a smaller range can be used; not on every scope '
+      + '(to move only the drawing, see vpos)',
     parse: (args) => {
       const [channel, rest] = leadingChannel(args);
       settingValue('offset', rest);
@@ -226,13 +257,33 @@ export const COMMANDS = [
     // Seconds rather than divisions, so the verb does not depend on how many
     // divisions this screen happens to draw. Positive looks forward, to
     // signal later than the trigger; negative looks back before it.
-    verb: 'position',
-    usage: 'position [<seconds>]',
-    help: 'Get or set horizontal position, e.g. "position 2e-3"',
+    verb: 'hpos',
+    aliases: ['position'],
+    usage: 'hpos [<seconds>]',
+    help: 'Get or set horizontal position from the trigger, e.g. "hpos 2e-3" or "hpos 100ms"',
     parse: (args) => (args.length === 0
-      ? new ParsedCommand('get_time_offset', {}, 'position')
+      ? new ParsedCommand('get_time_offset', {}, 'hpos')
       : new ParsedCommand('set_time_offset',
-        { offset: requireNumber(args[0], 'seconds') }, `position ${args[0]}`)),
+        { offset: requireQuantity(args[0], 's', 'seconds') }, `hpos ${args[0]}`)),
+  },
+  {
+    // The one verb that changes nothing on the box: the page draws the trace
+    // higher or lower. The analog offset would move Vmax, Vmin and Vavg too.
+    verb: 'vpos',
+    usage: 'vpos [<channel>] [<volts>]',
+    help: 'Get or set where a trace is drawn, e.g. "vpos B -0.5" or "vpos B 200mV". '
+      + 'Display only: the capture and every measurement are unchanged, and it '
+      + 'resets when the page reloads (to shift the signal itself, see offset)',
+    parse: (args) => {
+      const [channel, rest] = leadingChannel(args);
+      settingValue('vpos', rest);
+      const params = rest.length === 0
+        ? {} : { volts: requireQuantity(rest[0], 'V', 'volts') };
+      const parsed = new ParsedCommand(
+        null, params, settingSummary('vpos', channel, rest), channel);
+      parsed.local = true;
+      return parsed;
+    },
   },
   {
     verb: 'measure',
@@ -457,7 +508,10 @@ export const LOCAL_COMMANDS = [
   { verb: 'disconnect', usage: 'disconnect', help: 'Stop the capture stream' },
 ];
 
-const BY_VERB = new Map(COMMANDS.map((c) => [c.verb, c]));
+// Old spellings, still parsed but not offered: `position` became `hpos` when
+// `vpos` arrived beside it, and a bare "position" no longer said which way.
+const BY_VERB = new Map(COMMANDS.flatMap(
+  (c) => [c.verb, ...(c.aliases || [])].map((verb) => [verb, c])));
 
 /**
  * Split a command line, honoring double quotes so a value may contain spaces.
@@ -508,7 +562,8 @@ export function helpRows() {
 /** One command's `[usage, help]`, or null when `name` is not a verb. */
 export function helpFor(name) {
   const verb = String(name || '').trim().toLowerCase();
-  const entry = HELP_ENTRIES.find((c) => c.verb === verb);
+  const entry = HELP_ENTRIES.find(
+    (c) => c.verb === verb || (c.aliases || []).includes(verb));
   return entry ? [entry.usage, entry.help] : null;
 }
 

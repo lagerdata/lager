@@ -55,9 +55,13 @@ COMMAND_LINES = [
     "offset",
     "offset B 0.1",
     "offset B",
-    "position 2e-3",
-    "position",
-    "position -2e-3",
+    "hpos 2e-3",
+    "hpos",
+    "hpos -2e-3",
+    "hpos 100ms",
+    "hpos 0.1",
+    "hpos 1e-3",
+    "hpos 500us",
     "measure vpp",
     "measure vmax",
     "measure vmin",
@@ -114,6 +118,17 @@ COMMAND_LINES = [
     "autoscale",
 ]
 
+# Verbs the page answers itself that still name a channel and a value, so
+# they go through the grammar like the rest. They carry no action: there is
+# nothing for the box handler to accept, and sending one would be the bug.
+PAGE_LOCAL_LINES = [
+    "vpos",
+    "vpos B",
+    "vpos B -0.5",
+    "vpos -0.5",
+    "vpos A 200mV",
+]
+
 pytestmark = pytest.mark.skipif(
     shutil.which("node") is None,
     reason="node is required to run the browser command grammar")
@@ -133,6 +148,7 @@ def _parse_with_node(lines):
         const parsed = parse(line);
         out[line] = {
           action: parsed.action, params: parsed.params, channel: parsed.channel,
+          local: parsed.local,
         };
       } catch (e) {
         out[line] = { error: String(e.message) };
@@ -159,6 +175,92 @@ def parsed():
 def test_every_documented_command_parses(parsed):
     failures = {line: r["error"] for line, r in parsed.items() if "error" in r}
     assert not failures, "grammar rejected its own commands: %s" % failures
+    assert not [line for line, r in parsed.items() if r["local"]], (
+        "page-local verbs belong in PAGE_LOCAL_LINES")
+
+
+def test_page_local_commands_parse_and_send_nothing():
+    result = _parse_with_node(PAGE_LOCAL_LINES)
+    failures = {line: r["error"] for line, r in result.items() if "error" in r}
+    assert not failures, "grammar rejected its own commands: %s" % failures
+    for line, r in result.items():
+        assert r["local"] is True and r["action"] is None, line
+
+
+def test_hpos_takes_seconds_in_any_spelling():
+    result = _parse_with_node(["hpos 100ms", "hpos 0.1", "hpos 1e-3", "hpos 5us",
+                               "hpos 2ns", "hpos 1s"])
+    offsets = {line: r["params"]["offset"] for line, r in result.items()}
+    assert offsets["hpos 100ms"] == pytest.approx(0.1)
+    assert offsets["hpos 0.1"] == pytest.approx(0.1)
+    assert offsets["hpos 1e-3"] == pytest.approx(1e-3)
+    assert offsets["hpos 5us"] == pytest.approx(5e-6)
+    assert offsets["hpos 2ns"] == pytest.approx(2e-9)
+    assert offsets["hpos 1s"] == pytest.approx(1)
+
+
+def test_a_prefix_without_its_unit_is_refused():
+    """"100m" reads as milli or mega; a wrong guess moves the window 10^9."""
+    result = _parse_with_node(["hpos 100m", "hpos 1Ms", "vpos A 1Mv", "hpos ms"])
+    for line, r in result.items():
+        assert "must be a number" in r["error"], line
+
+
+def test_position_is_still_hpos_but_not_offered():
+    """The old spelling parses for a release, and help does not list it."""
+    result = _parse_with_node(["position 1e-3", "position"])
+    assert result["position 1e-3"] == {
+        "action": "set_time_offset", "params": {"offset": 1e-3},
+        "channel": None, "local": False}
+    assert result["position"]["action"] == "get_time_offset"
+
+    out = _node_eval("""
+    import { helpRows, complete, helpFor } from %s;
+    process.stdout.write(JSON.stringify({
+      usages: helpRows().map(([usage]) => usage.split(' ')[0]),
+      completions: complete('p'),
+      asked: helpFor('position'),
+    }));
+    """)
+    assert "position" not in out["usages"]
+    assert "hpos" in out["usages"] and "vpos" in out["usages"]
+    assert "position" not in out["completions"]
+    assert out["asked"][0].startswith("hpos")
+
+
+def test_vpos_names_its_channel_as_the_other_settings_do():
+    """Letter first, like "scale B 0.5"; after the value it is refused."""
+    result = _parse_with_node(["vpos B -0.5", "vpos -0.5 B", "vpos 2", "vpos E 1"])
+    assert result["vpos B -0.5"]["channel"] == "B"
+    assert result["vpos B -0.5"]["params"] == {"volts": -0.5}
+    assert "channel first" in result["vpos -0.5 B"]["error"]
+    # A digit is the value, never channel B.
+    assert result["vpos 2"]["channel"] is None
+    assert result["vpos 2"]["params"] == {"volts": 2}
+    assert "channel must be A-D" in result["vpos E 1"]["error"]
+
+
+def test_help_tells_offset_and_vpos_apart():
+    """One changes what is measured, the other only where it is drawn."""
+    out = _node_eval("""
+    import { helpFor } from %s;
+    process.stdout.write(JSON.stringify({
+      offset: helpFor('offset')[1], vpos: helpFor('vpos')[1] }));
+    """)
+    assert "hardware" in out["offset"] and "measurements change" in out["offset"]
+    assert "vpos" in out["offset"]
+    assert "Display only" in out["vpos"]
+    assert "every measurement are unchanged" in out["vpos"]
+    assert "reload" in out["vpos"]
+
+
+def _node_eval(script):
+    result = subprocess.run(
+        ["node", "--input-type=module", "-e", script % json.dumps(str(GRAMMAR_JS))],
+        capture_output=True, text=True, timeout=60, check=False)
+    if result.returncode != 0:
+        pytest.fail("node failed: %s" % result.stderr.strip())
+    return json.loads(result.stdout)
 
 
 def test_actions_are_accepted_by_the_box_handler(parsed):
@@ -287,7 +389,7 @@ def test_measure_names_its_channel_by_net_not_by_parameter():
     assert result["measure vpp b"]["channel"] == "B"
     assert result["measure freq 2"]["channel"] == "B"
     assert result["measure all B"] == {
-        "action": "measure_all", "params": {}, "channel": "B"}
+        "action": "measure_all", "params": {}, "channel": "B", "local": False}
     for line in ("measure vpp b", "measure freq 2", "measure all B"):
         assert result[line]["params"] == {}, line
 
@@ -307,11 +409,13 @@ def test_a_channel_setting_names_its_channel_first_and_by_letter():
         "probe D 10", "offset B -0.1"])
 
     assert result["scale 2"] == {
-        "action": "set_scale", "params": {"volts_per_div": 2}, "channel": None}
+        "action": "set_scale", "params": {"volts_per_div": 2}, "channel": None,
+        "local": False}
     assert result["scale b 0.5"] == {
-        "action": "set_scale", "params": {"volts_per_div": 0.5}, "channel": "B"}
+        "action": "set_scale", "params": {"volts_per_div": 0.5}, "channel": "B",
+        "local": False}
     assert result["scale A"] == {
-        "action": "get_scale", "params": {}, "channel": "A"}
+        "action": "get_scale", "params": {}, "channel": "A", "local": False}
     assert result["coupling C ac"]["channel"] == "C"
     assert result["coupling C ac"]["params"] == {"mode": "ac"}
     assert result["probe D 10"]["params"] == {"ratio": 10}
