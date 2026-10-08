@@ -116,6 +116,26 @@ def test_nets_add_accepts_a_u3_digital_pin(fake_box):
     assert fake_box.saved_nets[0]["params"] == {"sda_pin": 8, "scl_pin": 4}
 
 
+@pytest.mark.parametrize("pin, dio", [("CIO0", 16), ("CIO3", 19), ("19", 19)])
+def test_nets_add_accepts_a_u3_cio_pin(fake_box, pin, dio):
+    # CIO3 is DIO 19, the top of a U3's range: the boundary nothing else hits.
+    result, output = _invoke(["add", "flash", "spi", "custom", U3_ADDR, "--box", "b",
+                              "--cs", pin, "--sck", "FIO4", "--mosi", "FIO5",
+                              "--miso", "FIO6"])
+    assert result.exit_code == 0, output
+    assert fake_box.saved_nets[0]["params"]["cs_pin"] == dio
+
+
+@pytest.mark.parametrize("pin", ["MIO0", "20", "CIO4"])
+def test_nets_add_refuses_a_pin_above_a_u3s_cio3(fake_box, pin):
+    result, output = _invoke(["add", "flash", "spi", "custom", U3_ADDR, "--box", "b",
+                              "--cs", pin, "--sck", "FIO4", "--mosi", "FIO5",
+                              "--miso", "FIO6"])
+    assert result.exit_code != 0
+    assert "Invalid LabJack pin" in output
+    assert fake_box.saved_nets == []
+
+
 def test_a_t7_keeps_fio0_through_fio3():
     assert nets_mod._parse_labjack_pin("FIO0", "SDA", "LabJack_T7") == 0
 

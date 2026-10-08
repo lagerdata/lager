@@ -46,13 +46,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 2950 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 3323 |
+| `unit (cli)` | `test/unit/cli/` | 2956 (+2 xfailed) |
+| `unit (box)` | `test/unit/box/` | 3340 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 380 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 166 (+1 skipped) |
-| | **Total gated** | **7013** |
+| | **Total gated** | **7036** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -452,9 +452,9 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 267 files)
+### Local Unit Tests (`test/unit/` -- 268 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 136 files)
+#### Box Unit Tests (`test/unit/box/` -- 137 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -589,6 +589,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_usb_port_parsing.py` | Which hub port a saved USB net names: `pin` wins over `channel` only when set, so an integer pin of 0 addresses port 0 instead of falling through or dropping the net; the dispatcher and `USBNetWrapper` agree |
 | `test_usb_scanner_custom.py` | Custom-device surfacing in box HTTP scanner GET /instruments/list. Also the SuperSpeed companion dedupe: one physical dock lists as one instrument, and a missing bus root pairs nothing rather than pairing everything. Also what the Dexarm handshake -- the one scan step that WRITES to hardware -- is allowed to touch: every channel of a multi-interface chip and every saved uart net's tty reach the exclusion set, a foreign or unresolvable VID:PID is never opened at all, a port held by another process is skipped, an arm that a saved arm net points at is listed with no write at all (a handshake there used to take that arm's reply in the middle of a command), and `LAGER_ARM_PROBE` off/force widen or close the gate without ever dropping the exclusive open or the modem-line settings. |
 | `test_usb_scanner_jlink.py` | Any SEGGER (VID 0x1366) device is detected as a J-Link debug instrument with the DEVICE_TYPE channel: on-board J-Link OB PIDs 1015 and 1051 get their own names, the J-Link OB variant 1025 and any other unlisted PID fall back to `J-Link` with the real PID in the address, listed models keep their names, and an unknown PID from any other vendor is still skipped |
+| `test_usb_scanner_u3.py` | #515: a LabJack U3 reports no USB serial, so `scan_usb` addresses it by topology (`USB0::0x0CD5::0x0003::port-<sysfs>::INSTR`); two serial-less U3s get two addresses, a unique real serial is kept, and a U3 is topology-addressed without joining the multi-tier hub dedupe |
 | `test_usb_scanner_uart_fallback.py` | UART enumeration without USB serial by matching sysfs path; two identical adapters keep distinct ttys and the channel catalog stays unmutated |
 | `test_webcam_detection.py` | sysfs-based webcam detection (`_by_camera`) against a fake sysfs tree |
 | `test_webcam_stream_state.py` | `WebcamStreamState.add_stream` persisting the `source`/`started_by` origin fields, `get_stream_info` returning them, and the generated streamer script still compiling with the `/snapshot` handler in it |

@@ -159,7 +159,8 @@ communication testing and validation.
 - The DAC has no readback. A read returns the last value that the box set.
 - SPI and I2C need U3 hardware version 1.21 or later. A transfer is at most 50 bytes, and the clock rate is approximate.
 - The U3 has no MIO pins. Its EIO and CIO lines are on the DB15 connector.
-- Two U3 units on one Lager Box cannot have nets, because a U3 reports no serial number.
+- A U3 reports no serial number, so its address names the USB port that it is plugged into, for example `USB0::0x0CD5::0x0003::port-1-1.3::INSTR`. Two U3 units on one Lager Box therefore have different addresses, and each can have nets.
+- A U3 net stays with the USB port. If you move the U3 to a different port, add its nets again. A net from an earlier release has an empty serial field and opens the first U3 that the box finds.
 
 <Warning>
 If a U3 is connected, a call to LJM with the device type `"ANY"` fails with `LJME_U3_NOT_SUPPORTED_BY_LJM`. Lager names the device type in its own T7 calls. In your own code, pass `"T7"` to `ljm.openS` and `ljm.listAllS`, not `"ANY"`.

@@ -39,7 +39,7 @@ The command displays a table of connected instruments. The `Channels` column has
 Name                     Channels                                                       VISA Address
 ========================================================================================================================
 Rigol_DP831              power-supply: 1, 2, 3                                          USB0::0x1AB1::0x0E31::DP8C123456789::INSTR
-LabJack_U3               adc: AIN0, AIN1, AIN2, AIN3, AIN4, AIN5, AIN6, AIN7, AIN8,     USB0::0x0CD5::0x0003::::INSTR
+LabJack_U3               adc: AIN0, AIN1, AIN2, AIN3, AIN4, AIN5, AIN6, AIN7, AIN8,     USB0::0x0CD5::0x0003::port-1-1.3::INSTR
                          AIN9, AIN10, AIN11, AIN12, AIN13, AIN14, AIN15
                          dac: DAC0, DAC1
                          gpio: FIO4, FIO5, FIO6, FIO7, EIO0, EIO1, EIO2, EIO3, EIO4,
@@ -98,13 +98,15 @@ The following instrument types are automatically detected:
 
 An address normally includes the USB serial number of the device, so two devices of one model have different addresses. Both appear in the table, and each can have nets.
 
-A LabJack T7 and a LabJack U3 report no serial number. Two T7 units, or two U3 units, on one Lager Box therefore report the same address. A net cannot say which device it means. The command hides those rows and prints this message under the table:
+A LabJack T7 reports no serial number. Two T7 units on one Lager Box therefore report the same address. A net cannot say which device it means. The command hides those rows and prints this message under the table:
 
 ```
 LabJack_T7 at USB0::0x0CD5::0x0007::::INSTR: more than one device reports this address, so a net could not say which one it means. This model exposes no unique serial number. Use only one at a time, or drive them from separate boxes.
 ```
 
 `lager nets add` refuses a net on that address. See [Nets](/source/reference/cli/nets) for the same rule in `add-all` and the TUI.
+
+A LabJack U3 also reports no serial number, but its address names the USB port, for example `USB0::0x0CD5::0x0003::port-1-1.3::INSTR`. Two U3 units have different addresses, and both appear in the table.
 
 ---
 
@@ -115,7 +117,8 @@ Different instruments use different address formats:
 | Type | Format | Example |
 |------|--------|---------|
 | USB instrument | `USB0::0x<VID>::0x<PID>::<serial>::INSTR` | `USB0::0x1AB1::0x0E31::DP8C123456789::INSTR` |
-| LabJack T7 or U3 | USB resource with an empty serial field | `USB0::0x0CD5::0x0003::::INSTR` |
+| LabJack T7 | USB resource with an empty serial field | `USB0::0x0CD5::0x0007::::INSTR` |
+| LabJack U3 | USB resource with the USB port in the serial field | `USB0::0x0CD5::0x0003::port-1-1.3::INSTR` |
 | Nordic PPK2 | `ppk2:<serial>` | `ppk2:ABCDEF123456` |
 | Assigned RS-232 instrument | `serial://<vid>:<pid>/serial/<serial>` | `serial://067b:23a3/serial/00000006` |
 

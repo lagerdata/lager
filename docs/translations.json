@@ -34,13 +34,13 @@
     "reference/cli/i2c.mdx": "2be2cbf7a1813c6893e285eab31f68a7795abb4d8f7059980b7153b8ee95138b",
     "reference/cli/install-wheel.mdx": "26796650f011f1d1f31010a92980d1a633cf4358aea4bd1d3c1a3d54c61191d3",
     "reference/cli/install.mdx": "1060d1c1d88adc03867e14e0e586ba7a728a7360dc8e28ebd1632a7962ead22f",
-    "reference/cli/instruments.mdx": "a46a36e7aaebef2255e56914a6bc7cfe7cb49bd786bab277b86e0e2d3226b907",
+    "reference/cli/instruments.mdx": "2a7f0e2b16e2e886c703c97295c0b3b3c536489d8bea2c9eba3b33c029766a87",
     "reference/cli/lager-file.mdx": "e0f5c1bb6b52161e730de9d65cf6d770152bf1dda32c8f405f206b76e9e7a36a",
     "reference/cli/locking.mdx": "4bff2c05b7d8880c791a1a6ad734ffee0d539b9c8e6cba56bf17cc3daba4ff98",
     "reference/cli/logic.mdx": "4f3ad8a7185bd1fa6f650a3361a4300df782680edcd2f2772b0230a7c6778be8",
     "reference/cli/login.mdx": "e520809836a3d3032b3b241e3ddb0f2470ef6f8669fd0b633819937045fd2025",
     "reference/cli/logs.mdx": "58c78cde4104ee64c8151ffb52b80d40074af49cb3d77524eef59a0601139dac",
-    "reference/cli/nets.mdx": "c369b77e3758fd4eb30aba032c8d7be8aa5e0ef5f8a0f5ed42a5198814a99611",
+    "reference/cli/nets.mdx": "d1650089190c7463a70bf35427d4e81e29ad97b17109ed8ebe691714dfd5ecc2",
     "reference/cli/overview.mdx": "de08fe2fb34fc1da85e3239b098acfcfea7f4ac3960808c035d0f518da0c623b",
     "reference/cli/python.mdx": "06e82ea38c1847f474ad1bea44e73f45254ab49ee1ba2616a5bcda2893b611ae",
     "reference/cli/router.mdx": "a755022b1164c8ed5406aa156be80ba132384a82d6a29b581673a21d95aebb98",
@@ -118,6 +118,6 @@
     "reference/rust/watt.mdx": "e16f8048a2fcfa6d65d6b58eb45d31b86c2aa5e0c2692f15ac28e4083b6b2afe",
     "reference/rust/webcam.mdx": "8ef2484aca45078416171dbbf1955ab0c840d0fb3837b52e59248ffcd100d1c8",
     "reference/rust/wifi.mdx": "6f514c7840ad84150c90e0674c7a785cdc161b32e851701856da2f1cdc67701b",
-    "supported-instruments/supported-instruments.mdx": "2129e3f99565c5209f073309c326254b0aa1d2783245c117190d656dc70fc093"
+    "supported-instruments/supported-instruments.mdx": "8ae5974447d32fdb1a36acf30ec7cb780aae5d268c3d8a095973e04f868cca5b"
   }
 }

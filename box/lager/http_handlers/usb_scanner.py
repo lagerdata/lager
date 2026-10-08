@@ -391,7 +391,17 @@ _VID_FALLBACK_NAME: Dict[str, str] = {
 # the one serial_id.py already documents and accepts: the net is pinned to a
 # physical box port, so moving the cable breaks it loudly instead of silently
 # driving different hardware.
-_TOPOLOGY_ADDRESSED = {"Plugable_USB_Hub"}
+#
+# A LabJack U3 is the other case: it reports no iSerial at all, so two U3s on
+# one box would share `USB0::0x0CD5::0x0003::::INSTR` (#515). The box opens a
+# `port-` U3 address by checking which USB port each open handle is on
+# (lager/io/labjack_ud_handle.py).
+_TOPOLOGY_ADDRESSED = {"Plugable_USB_Hub", "LabJack_U3"}
+
+# Hubs that enumerate as more than one USB device for one physical dock: a
+# cascaded second tier, or a SuperSpeed companion. Only the root tier is
+# registered. Kept apart from _TOPOLOGY_ADDRESSED because a U3 is one device.
+_MULTI_TIER_HUBS = {"Plugable_USB_Hub"}
 
 
 def _vidpid_serial_unique(vid, pid, serial, own_dir_name):
@@ -783,7 +793,7 @@ def scan_usb() -> List[dict]:
         # ambiguous, and split dispatcher.states' per-hub grouping across two
         # halves of the same physical device. The driver resolves the
         # downstream tier itself, so only the root tier is registered.
-        if meta_name in _TOPOLOGY_ADDRESSED:
+        if meta_name in _MULTI_TIER_HUBS:
             if _has_same_model_parent(dev, vid, pid):
                 continue
             # Same reasoning one level out: a SuperSpeed-linked hub is two
