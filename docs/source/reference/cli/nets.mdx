@@ -309,13 +309,15 @@ The user is responsible for not double-booking a channel (e.g. `debug@A` *and* a
 
 Lager decides whether it can create a net from the device address, not from the model. An address that includes a unique serial number names one device. Two devices of that model on one Lager Box both work. For example, two 8-port Acroname hubs give sixteen `usb` nets.
 
-A LabJack T7 and a LabJack U3 report no serial number, so their addresses have an empty serial field. Two T7 units, or two U3 units, on one Lager Box report the same address. A net cannot say which device it means, so Lager refuses it:
+A LabJack T7 reports no serial number, so its address has an empty serial field. Two T7 units on one Lager Box report the same address. A net cannot say which device it means, so Lager refuses it:
 
 ```
 Error: LabJack_T7 at USB0::0x0CD5::0x0007::::INSTR: more than one device reports this address, so a net could not say which one it means. This model exposes no unique serial number. Use only one at a time, or drive them from separate boxes.
 ```
 
 `add` exits with code 1. `add-all` and the TUI skip those devices with the same message. `lager instruments` hides them and prints the message. One T7 and one U3 on the same Lager Box work, because their addresses differ.
+
+A LabJack U3 also reports no serial number, but its address names the USB port, for example `USB0::0x0CD5::0x0003::port-1-1.3::INSTR`. Two U3 units on one Lager Box therefore both work. A U3 net stays with the USB port: if you move the U3 to a different port, add its nets again.
 
 ### `add-all`
 

@@ -20,6 +20,13 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   ESP8266/ESP32 chips only. `NOTICE` has both license texts, the `lager-cli`
   wheel and sdist ship a `NOTICE`, and each derived file names its upstream; the
   0.48.0 note that the wheel "contains no third-party code" was wrong.
+- **Two LabJack U3s on one box can now each have nets.** A U3 reports no USB
+  serial number, so every U3 had the address `USB0::0x0CD5::0x0003::::INSTR`
+  and `lager nets add` refused a net on either; the address now names the USB
+  port (`...::port-1-1.3::INSTR`), and the box opens the U3 on that port. A net
+  stays with its port, a net saved by an earlier release still opens the first
+  U3 found, and the 0.46.0 note that a box with two U3s "still opens the free
+  one" was wrong.
 
 ## [0.54.0] - 2026-10-07
 

@@ -51,6 +51,8 @@ Usage:
 from __future__ import annotations
 
 import atexit
+import ctypes
+import ctypes.util
 import importlib
 import os
 import re
@@ -68,6 +70,16 @@ DEBUG = bool(os.environ.get("LAGER_LABJACK_DEBUG"))
 SUPPORTED_MODELS = {
     "u3": "u3",
 }
+
+# LabJackPython's device type per model, for deviceCount().
+_DEVICE_TYPES = {
+    "u3": 3,
+}
+
+# The scanner writes this in the address's serial slot for a device that
+# reports no USB serial, followed by its sysfs name (`port-1-1.2`). See
+# _TOPOLOGY_ADDRESSED in lager/http_handlers/usb_scanner.py.
+PORT_PREFIX = "port-"
 
 
 def _debug(msg: str) -> None:
@@ -249,6 +261,64 @@ def dio_to_pin(dio: int) -> str:
     return f"DIO{dio}"
 
 
+_libusb_lib: Any = None
+
+
+def _libusb() -> Any:
+    """The libusb-1.0 the Exodriver links against, or None if it will not load.
+
+    dlopen returns the copy already in the process, so a device pointer from
+    the Exodriver is valid here.
+    """
+    global _libusb_lib
+    if _libusb_lib is None:
+        name = ctypes.util.find_library("usb-1.0") or "libusb-1.0.so.0"
+        try:
+            lib = ctypes.CDLL(name)
+        except OSError as e:
+            _debug(f"cannot load libusb-1.0 ({name}): {e}")
+            return None
+        lib.libusb_get_device.restype = ctypes.c_void_p
+        lib.libusb_get_device.argtypes = [ctypes.c_void_p]
+        lib.libusb_get_bus_number.restype = ctypes.c_uint8
+        lib.libusb_get_bus_number.argtypes = [ctypes.c_void_p]
+        lib.libusb_get_port_numbers.restype = ctypes.c_int
+        lib.libusb_get_port_numbers.argtypes = [
+            ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint8), ctypes.c_int]
+        _libusb_lib = lib
+    return _libusb_lib
+
+
+def usb_port_of(device: Any, lib: Any = None) -> Optional[str]:
+    """The sysfs name (`1-1.2`) of the USB port an open UD device is on.
+
+    An Exodriver HANDLE is a libusb_device_handle pointer, so libusb can say
+    where the device is. The Exodriver itself opens only by enumeration index
+    or serial, and a U3 reports no USB serial, so this is the only way to tell
+    which U3 an open handle belongs to. None when it cannot be told.
+    """
+    handle = getattr(device, "handle", None)
+    value = getattr(handle, "value", handle)
+    if not value:
+        return None
+    lib = lib if lib is not None else _libusb()
+    if lib is None:
+        return None
+    try:
+        dev = lib.libusb_get_device(value)
+        if not dev:
+            return None
+        bus = lib.libusb_get_bus_number(dev)
+        ports = (ctypes.c_uint8 * 7)()
+        count = lib.libusb_get_port_numbers(dev, ports, 7)
+    except Exception as e:
+        _debug(f"libusb port lookup failed: {e}")
+        return None
+    if count <= 0:
+        return None
+    return f"{bus}-" + ".".join(str(n) for n in ports[:count])
+
+
 class LabJackUDHandleManager:
     """Thread-safe registry of open UD devices, keyed by (model, serial).
 
@@ -306,6 +376,14 @@ class LabJackUDHandleManager:
         is a correct answer -- and reopening one we already hold is a
         guaranteed claim conflict rather than a second device.
         """
+        if serial is not None and serial.startswith(PORT_PREFIX):
+            # Whatever name it was opened under, the device on that port is
+            # the answer. Unique by construction: one device per port.
+            port = serial[len(PORT_PREFIX):]
+            for key, device in self._devices.items():
+                if key[0] == model and usb_port_of(device) == port:
+                    return key
+            return None
         if serial is not None:
             key = (model, serial)
             return key if key in self._devices else None
@@ -336,7 +414,8 @@ class LabJackUDHandleManager:
 
         Args:
             model: ``"u3"`` today; see SUPPORTED_MODELS.
-            serial: the device's serial number as a string, or None to take
+            serial: the device's serial number as a string, ``port-<sysfs
+                name>`` for the device on that USB port, or None to take
                 the first one found. None is correct for a box with a single
                 UD device and ambiguous for a box with two -- the caller
                 (the dispatcher, via the net's address) is what resolves it.
@@ -359,6 +438,10 @@ class LabJackUDHandleManager:
 
             mod = load_ud_module(model)
             device_cls = getattr(mod, model.upper())
+            if want and want.startswith(PORT_PREFIX):
+                device = self._open_on_port(model, mod, device_cls,
+                                            want[len(PORT_PREFIX):])
+                return self._register(model, want, device)
             device = device_cls(autoOpen=False)
             try:
                 if want:
@@ -385,23 +468,57 @@ class LabJackUDHandleManager:
                                f"first-found request")
                         return adopted
                 raise
-            # open() populates serialNumber/deviceName/isHV via configU3.
-            # Read the config once here so a driver never has to.
-            device.configU3()
-            _debug(
-                f"opened {getattr(device, 'deviceName', model)} "
-                f"serial={getattr(device, 'serialNumber', '?')}"
-            )
-            # Key on the serial the DEVICE reports, not the one requested, so
-            # a later request naming it the other way finds this same entry
-            # instead of trying to claim a device we already hold.
-            real = str(getattr(device, "serialNumber", "") or "") or None
-            key = (model, real)
-            if want is None and real is not None:
-                self._first_found[model] = real
-            self._devices[key] = device
-            self._ref_counts[key] = 1
-            return device
+            return self._register(model, want, device)
+
+    def _register(self, model: str, want: Optional[str], device: Any) -> Any:
+        """Record a freshly opened device. Caller holds the lock."""
+        # open() populates serialNumber/deviceName/isHV via configU3.
+        # Read the config once here so a driver never has to.
+        device.configU3()
+        _debug(
+            f"opened {getattr(device, 'deviceName', model)} "
+            f"serial={getattr(device, 'serialNumber', '?')}"
+        )
+        # Key on the serial the DEVICE reports, not the one requested, so
+        # a later request naming it the other way finds this same entry
+        # instead of trying to claim a device we already hold.
+        real = str(getattr(device, "serialNumber", "") or "") or None
+        key = (model, real)
+        if want is None and real is not None:
+            self._first_found[model] = real
+        self._devices[key] = device
+        self._ref_counts[key] = 1
+        return device
+
+    def _open_on_port(self, model: str, mod: Any, device_cls: Any,
+                      port: str) -> Any:
+        """Open the device of *model* on USB port *port*. Caller holds the lock.
+
+        Opens each device by enumeration index and keeps the one whose handle
+        is on that port. The index order is libusb's and is not stable, so it
+        is checked after the open rather than trusted. A device this process
+        already holds was found by _resolve_open_key; one another process
+        holds fails to open and is skipped.
+        """
+        count = int(mod.deviceCount(_DEVICE_TYPES[model]))
+        for number in range(1, count + 1):
+            device = device_cls(autoOpen=False)
+            try:
+                device.open(firstFound=False, devNumber=number)
+            except Exception as e:
+                _debug(f"devNumber {number}: {e}")
+                continue
+            if usb_port_of(device) == port:
+                return device
+            try:
+                device.close()
+            except Exception as e:
+                _debug(f"error closing devNumber {number}: {e}")
+        raise RuntimeError(
+            f"No free LabJack {model.upper()} on USB port {port}. The net is "
+            f"pinned to that port: plug the device back in there, or re-add "
+            f"the net for its new port."
+        )
 
     @staticmethod
     def _is_alive(device: Any) -> bool:
@@ -594,10 +711,12 @@ def set_channel_mode(device: Any, dio: int, analog: bool) -> None:
 def serial_from_address(address: Optional[str]) -> Optional[str]:
     """Pull a serial number out of a scanner VISA-style address.
 
-    The scanner writes ``USB0::0x0CD5::0x0003::<serial>::INSTR``. The serial
-    slot is routinely EMPTY for a LabJack, which is why this returns None
-    rather than an empty string -- None means "first found", and that is the
-    honest answer for a record that never carried a serial.
+    The scanner writes ``USB0::0x0CD5::0x0003::<serial>::INSTR``. A U3 reports
+    no serial, so the scanner now writes ``port-<sysfs name>`` in that slot,
+    which is returned as it is: get_device opens the device on that port. An
+    EMPTY slot (a net saved before that) returns None rather than an empty
+    string -- None means "first found", the honest answer for a record that
+    never carried a serial.
 
     Mirrors the parsing in ``io/adc/usb202.py``; kept here rather than shared
     because that one is a constructor detail of a different driver.
@@ -639,4 +758,6 @@ __all__ = [
     'close_all_ud_devices',
     'set_channel_mode',
     'serial_from_address',
+    'usb_port_of',
+    'PORT_PREFIX',
 ]

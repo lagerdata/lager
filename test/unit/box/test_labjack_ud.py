@@ -22,11 +22,12 @@ that ownership, the U3-HV's fixed FIO0-FIO3, and the range/readback
 differences from the T7 that a copied driver would have inherited wrongly.
 """
 
+import ctypes
 import os
 import sys
 import types
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 
 def _make_module(name: str) -> types.ModuleType:
@@ -592,6 +593,149 @@ class HandleManagerTests(_UDTestCase):
         udh.force_close_ud("u3", None)
         self.assertTrue(self.device.closed)
         self.assertEqual(udh.close_all_ud_devices(), 0)
+
+
+class _Enumerated:
+    """What ``u3.U3(autoOpen=False)`` returns before ``open(devNumber=n)``.
+
+    The Exodriver opens by enumeration index, so the object exists before
+    anyone knows which device it is. Its open binds it to the n-th device on
+    the fake bus, which still refuses a second claim.
+    """
+
+    def __init__(self, bus):
+        self._bus = bus
+        self._target = None
+
+    def open(self, firstFound=True, serial=None, devNumber=None, **kw):
+        if devNumber is not None:
+            target = self._bus[devNumber - 1]
+        else:
+            target = next(d for d in self._bus if d.serialNumber == serial)
+        target.open(firstFound=firstFound, serial=serial)
+        self._target = target
+
+    def __getattr__(self, name):
+        target = self.__dict__.get("_target")
+        if target is None:
+            raise AttributeError(name)
+        return getattr(target, name)
+
+
+class PortAddressTests(_UDTestCase):
+    """#515: a U3 reports no USB serial, so the scanner addresses it by port.
+
+    Two U3s on one box are covered here only. No box has had two attached.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.a = _FakeU3(serial=320000001)
+        self.a.usb_port = "1-1.1"
+        self.b = _FakeU3(serial=320000002)
+        self.b.usb_port = "1-1.2"
+        self.bus = [self.a, self.b]
+        mod = sys.modules["u3"]
+        mod.U3 = lambda autoOpen=False, **kw: _Enumerated(self.bus)
+        mod.deviceCount = lambda dev_type: len(self.bus)
+        patcher = patch.object(
+            udh, "usb_port_of", lambda device, lib=None: getattr(device, "usb_port", None))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_opens_the_device_on_that_port(self):
+        dev = udh.get_ud_device("u3", "port-1-1.2")
+        self.assertEqual(dev.serialNumber, 320000002)
+        # The one tried first is not left claimed.
+        self.assertTrue(self.a.closed)
+        self.assertFalse(self.b.closed)
+
+    def test_two_ports_are_two_devices(self):
+        first = udh.get_ud_device("u3", "port-1-1.1")
+        second = udh.get_ud_device("u3", "port-1-1.2")
+        self.assertEqual({first.serialNumber, second.serialNumber},
+                         {320000001, 320000002})
+        self.assertFalse(self.a.closed)
+        self.assertFalse(self.b.closed)
+
+    def test_the_same_port_reuses_one_device(self):
+        udh.get_ud_device("u3", "port-1-1.2")
+        udh.get_ud_device("u3", "port-1-1.2")
+        self.assertEqual(self.b.open_count, 1)
+
+    def test_a_device_open_under_its_serial_is_found_by_port(self):
+        udh.get_ud_device("u3", "320000002")
+        self.b.usb_port = "1-1.2"
+        dev = udh.get_ud_device("u3", "port-1-1.2")
+        self.assertEqual(dev.serialNumber, 320000002)
+        self.assertEqual(self.b.open_count, 1)
+
+    def test_a_device_another_process_holds_is_skipped(self):
+        self.a.open()                      # claimed elsewhere
+        dev = udh.get_ud_device("u3", "port-1-1.2")
+        self.assertEqual(dev.serialNumber, 320000002)
+
+    def test_no_device_on_the_port_is_an_error_naming_it(self):
+        with self.assertRaises(RuntimeError) as cm:
+            udh.get_ud_device("u3", "port-1-9")
+        self.assertIn("USB port 1-9", str(cm.exception))
+        self.assertTrue(self.a.closed)
+        self.assertTrue(self.b.closed)
+
+    def test_a_port_open_is_not_recorded_as_first_found(self):
+        udh.get_ud_device("u3", "port-1-1.2")
+        self.assertEqual(udh.LabJackUDHandleManager()._first_found, {})
+
+    def test_force_close_by_port_closes_that_device(self):
+        udh.get_ud_device("u3", "port-1-1.1")
+        udh.get_ud_device("u3", "port-1-1.2")
+        udh.force_close_ud("u3", "port-1-1.2")
+        self.assertTrue(self.b.closed)
+        self.assertFalse(self.a.closed)
+
+    def test_the_address_carries_the_port_through(self):
+        self.assertEqual(
+            udh.serial_from_address("USB0::0x0CD5::0x0003::port-1-1.2::INSTR"),
+            "port-1-1.2")
+
+
+class _FakeLibusb:
+    """Stands in for libusb-1.0: one device at bus *bus*, port path *ports*."""
+
+    def __init__(self, bus, ports):
+        self.bus, self.ports = bus, ports
+
+    def libusb_get_device(self, handle):
+        return 0xD00D
+
+    def libusb_get_bus_number(self, dev):
+        return self.bus
+
+    def libusb_get_port_numbers(self, dev, buf, size):
+        for i, n in enumerate(self.ports):
+            buf[i] = n
+        return len(self.ports)
+
+
+class UsbPortOfTests(unittest.TestCase):
+    """The sysfs name is `<bus>-<port>.<port>...`, the scanner's dev.name."""
+
+    def _device(self, handle=0x1234):
+        dev = MagicMock()
+        dev.handle = ctypes.c_void_p(handle) if handle else None
+        return dev
+
+    def test_formats_bus_and_port_path(self):
+        self.assertEqual(udh.usb_port_of(self._device(), _FakeLibusb(1, [1, 2])), "1-1.2")
+
+    def test_a_device_on_a_root_port(self):
+        self.assertEqual(udh.usb_port_of(self._device(), _FakeLibusb(3, [4])), "3-4")
+
+    def test_no_handle_is_unknown(self):
+        self.assertIsNone(udh.usb_port_of(self._device(handle=0), _FakeLibusb(1, [1])))
+
+    def test_no_port_numbers_is_unknown(self):
+        self.assertIsNone(udh.usb_port_of(self._device(), _FakeLibusb(1, [])))
 
 
 class PinMuxTests(_UDTestCase):
