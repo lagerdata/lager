@@ -22,6 +22,14 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 ### Fixed
 
+- **Every command no longer fails when `~/.lager_gateway_auth` is bind-mounted into
+  a container as a single file.** Saving the gateway login fell over when it tried
+  to rename onto a mount point. The CLI now writes the file in place when that
+  rename is refused, and skips the save when nothing changed.
+- **A busy file is no longer reported as a busy USB device.** `[Errno 16]` naming a
+  file path now says which file could not be written and how to mount it, rather
+  than "USB device busy" with advice to run `lager diagnose`. The `--debug` hint
+  now shows the form that works: `lager --debug <command>`.
 - **Code derived from two MIT-licensed projects now carries their notices.**
   `cli/simple_hdlc.py` is derived from simple-hdlc, and `box/lager/blufi/` is
   ported from Espressif's EspBlufiForAndroid, whose license covers use with

@@ -6,7 +6,10 @@ Tests for gateway_auth.py -- bearer-token auth for boxes behind an
 authenticating gateway.
 """
 import base64
+import errno
 import json
+import os
+import stat
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -85,6 +88,96 @@ def test_auth_headers_for_url_parses_host():
     gateway_auth.save_login('http://cp:3001', token, {'refresh': 'r1'})
 
     assert 'Authorization' in gateway_auth.auth_headers_for_url('http://10.0.0.5:9000')
+
+
+# ---------------------------------------------------------------------------
+# Saving over a store that cannot be renamed over (single-file bind mount)
+# ---------------------------------------------------------------------------
+
+def _refuse_replace(monkeypatch, err_no):
+    def refuse(src, dst):
+        raise OSError(err_no, os.strerror(err_no), str(src), None, str(dst))
+    monkeypatch.setattr(gateway_auth.os, 'replace', refuse)
+
+
+def _leftover_tmp_files(store_path):
+    return [p for p in store_path.parent.iterdir() if p.name.endswith('.tmp')]
+
+
+@pytest.mark.parametrize('err_no', [errno.EBUSY, errno.EXDEV, errno.EPERM])
+def test_save_falls_back_to_in_place_when_rename_refused(isolated_store, monkeypatch, err_no):
+    gateway_auth.record_box_auth_server('10.0.0.5', 'http://cp:3001')
+    _refuse_replace(monkeypatch, err_no)
+
+    gateway_auth.record_box_auth_server('10.0.0.6', 'http://cp:3001')
+
+    assert json.loads(isolated_store.read_text())['boxes'] == {
+        '10.0.0.5': 'http://cp:3001', '10.0.0.6': 'http://cp:3001'}
+    assert stat.S_IMODE(isolated_store.stat().st_mode) == 0o600
+    assert _leftover_tmp_files(isolated_store) == []
+
+
+def test_in_place_fallback_creates_a_missing_store_0600(isolated_store, monkeypatch):
+    _refuse_replace(monkeypatch, errno.EBUSY)
+
+    gateway_auth.record_box_auth_server('10.0.0.5', 'http://cp:3001')
+
+    assert stat.S_IMODE(isolated_store.stat().st_mode) == 0o600
+    assert gateway_auth.auth_server_for_box('10.0.0.5') == 'http://cp:3001'
+
+
+def test_in_place_fallback_keeps_the_existing_inode_and_mode(isolated_store, monkeypatch):
+    # The inode is what a container's bind mount is pinned to; a write that
+    # replaced it would never reach the host's copy of the file.
+    gateway_auth.record_box_auth_server('10.0.0.5', 'http://cp:3001')
+    os.chmod(isolated_store, 0o640)
+    inode = isolated_store.stat().st_ino
+    _refuse_replace(monkeypatch, errno.EBUSY)
+
+    gateway_auth.save_login('http://cp:3001', make_jwt(time.time() + 900), {'refresh': 'r'})
+
+    assert isolated_store.stat().st_ino == inode
+    # No chmod on a file that already exists, either way: it keeps whatever
+    # mode its owner gave it.
+    assert stat.S_IMODE(isolated_store.stat().st_mode) == 0o640
+    assert gateway_auth.access_token_for('http://cp:3001')
+
+
+def test_other_replace_errors_still_raise_and_clean_up(isolated_store, monkeypatch):
+    _refuse_replace(monkeypatch, errno.ENOSPC)
+
+    with pytest.raises(OSError) as excinfo:
+        gateway_auth.record_box_auth_server('10.0.0.5', 'http://cp:3001')
+
+    assert excinfo.value.errno == errno.ENOSPC
+    assert not isolated_store.exists()
+    assert _leftover_tmp_files(isolated_store) == []
+
+
+def test_failed_in_place_write_reraises_the_rename_error(isolated_store, monkeypatch):
+    _refuse_replace(monkeypatch, errno.EBUSY)
+
+    def no_write(*_args, **_kwargs):
+        raise PermissionError(errno.EACCES, 'Permission denied')
+    monkeypatch.setattr(gateway_auth, '_write_store_in_place', no_write)
+
+    with pytest.raises(OSError) as excinfo:
+        gateway_auth.record_box_auth_server('10.0.0.5', 'http://cp:3001')
+
+    assert excinfo.value.errno == errno.EBUSY
+    assert _leftover_tmp_files(isolated_store) == []
+
+
+def test_unchanged_store_is_not_written(isolated_store, monkeypatch):
+    gateway_auth.save_login('http://cp:3001', make_jwt(time.time() + 900), {'refresh': 'r'})
+    store = json.loads(isolated_store.read_text())
+
+    def no_open(*_args, **_kwargs):
+        raise AssertionError('an unchanged store was written')
+    monkeypatch.setattr(gateway_auth.os, 'open', no_open)
+
+    gateway_auth._save_store(store)
+    gateway_auth.clear_login('http://cp:3001-never-stored')
 
 
 # ---------------------------------------------------------------------------

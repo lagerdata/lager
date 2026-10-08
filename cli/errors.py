@@ -23,6 +23,7 @@
     dumping a Python traceback at the user. The full traceback is never lost:
     it is one ``--debug`` / ``LAGER_DEBUG=1`` away.
 """
+import errno
 import os
 import sys
 
@@ -56,7 +57,7 @@ def render_error(problem, cause=None, fixes=None, *, raw=None, debug_hint=True):
             → <fix 1>
             → <fix 2>
 
-          Run with --debug for the full ...      (dim hint, see below)
+          Run `lager --debug <command>` ...      (dim hint, see below)
 
     ``raw`` is the original exception/text. It is appended verbatim only
     when debug output is enabled; otherwise a one-line hint points the user
@@ -83,7 +84,7 @@ def render_error(problem, cause=None, fixes=None, *, raw=None, debug_hint=True):
     elif debug_hint and raw is not None:
         lines.append('')
         lines.append(click.style(
-            '  Run with --debug (or LAGER_DEBUG=1) for the full technical details.',
+            '  Run `lager --debug <command>` (or set LAGER_DEBUG=1) for the full technical details.',
             dim=True,
         ))
 
@@ -356,9 +357,19 @@ def system_error(exc):
     (EBUSY / ENODEV / ETIMEDOUT) live in exactly one place.
     """
     # Imported lazily to avoid a circular import at module load.
-    from .context.error_handlers import map_system_error
+    from .context.error_handlers import (
+        busy_file_error, busy_file_path, map_system_error,
+    )
 
-    mapped = map_system_error(str(exc))
+    # A local OSError names its paths outright; read them rather than parse
+    # them back out of the text. The text match below still covers errors
+    # relayed from the box, which arrive as strings.
+    mapped = None
+    if isinstance(exc, OSError) and exc.errno == errno.EBUSY:
+        path = busy_file_path([exc.filename, exc.filename2])
+        if path:
+            mapped = busy_file_error(path)
+    mapped = mapped or map_system_error(str(exc))
     if not mapped:
         return None
     headline, actions = mapped

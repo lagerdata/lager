@@ -42,6 +42,7 @@
     left behind there is silently wrong the day that box changes address.
 """
 import base64
+import errno
 import hashlib
 import json
 import os
@@ -202,7 +203,20 @@ def _save_store(store):
     empty or half-written file as "no session" and re-prompts for a login the
     user already has. The temp file is created mode 0600 before it holds a
     token, never 0644-then-chmod.
+
+    A store identical to the one on disk is not written at all: most commands
+    change nothing, and a write that is not needed is one that cannot fail.
+
+    When the rename itself is refused, the store is written in place instead.
+    The case is a store bind-mounted into a container as a single file: the
+    path is a mount point, and Linux will not rename over one (EBUSY, or
+    EXDEV on some runtimes). In-place loses atomicity for a concurrent
+    reader, which is still better than every command failing. It also keeps
+    the inode, which is the only way a write inside the container reaches
+    the host's copy of the file.
     """
+    if _load_store() == store:
+        return
     path = _store_path()
     tmp = path.with_name(f'{path.name}.{os.getpid()}.tmp')
     try:
@@ -210,13 +224,41 @@ def _save_store(store):
         with os.fdopen(fd, 'w') as f:
             json.dump(store, f, indent=2)
         # Only publish a fully written file.
-        os.replace(tmp, path)
+        try:
+            os.replace(tmp, path)
+        except OSError as replace_error:
+            if replace_error.errno not in _REPLACE_REFUSED_ERRNOS:
+                raise
+            try:
+                _write_store_in_place(path, store)
+            except OSError:
+                raise replace_error from None
+            os.unlink(tmp)
     except BaseException:
         try:
             os.unlink(tmp)
         except OSError:
             pass
         raise
+
+
+# Errnos meaning "this path cannot be renamed over", as opposed to "this
+# write failed": a mount point (EBUSY), a mount from another filesystem
+# (EXDEV), or a runtime that reports either as EPERM.
+_REPLACE_REFUSED_ERRNOS = frozenset({errno.EBUSY, errno.EXDEV, errno.EPERM})
+
+
+def _write_store_in_place(path, store):
+    """Overwrite the store through its existing inode.
+
+    The 0600 mode only applies if this creates the file; an existing file
+    keeps the mode it has, so this never loosens one the user tightened.
+    """
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, 'w') as f:
+        json.dump(store, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
 
 
 # ---------------------------------------------------------------------------

@@ -343,7 +343,7 @@ def main():
             'Something went wrong.',
             cause=f'{type(exc).__name__}: {exc}',
             fixes=[
-                'Re-run with --debug (or LAGER_DEBUG=1) to see the full traceback.',
+                'Re-run as `lager --debug <command>` (or set LAGER_DEBUG=1) to see the full traceback.',
                 'If this keeps happening, share that output with Lager support.',
             ],
         ), err=True)
