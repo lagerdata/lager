@@ -35,6 +35,10 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   stays with its port, a net saved by an earlier release still opens the first
   U3 found, and the 0.46.0 note that a box with two U3s "still opens the free
   one" was wrong.
+- **The box image now carries the license texts of LabJack LJM and libphidget22.**
+  Both licenses (MIT with bundled Boost and Apache-2.0 parts, and BSD-3-Clause)
+  require the notice to travel with each copy; they are now in
+  `/usr/share/licenses/lager/vendor/`, and `THIRD_PARTY.md` records both licenses.
 
 ## [0.54.0] - 2026-10-07
 

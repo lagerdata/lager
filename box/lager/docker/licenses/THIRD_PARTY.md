@@ -1,8 +1,10 @@
 # Third-party software in the Lager Box image
 
 This file is in the image at `/usr/share/licenses/lager/THIRD_PARTY.md`. Beside it
-are `LICENSE` and `NOTICE` for Lager itself, and `pip/`, which holds the license
-notices of every Python distribution in the image (`pip/INDEX.tsv` lists them).
+are `LICENSE` and `NOTICE` for Lager itself; `pip/`, which holds the license
+notices of every Python distribution in the image (`pip/INDEX.tsv` lists them);
+and `vendor/`, which holds the license texts of vendor components installed
+outside apt and pip.
 
 `box/lager/docker/box.Dockerfile` installs software from three kinds of source:
 
@@ -32,10 +34,10 @@ own and have not been read for that purpose.
 | Component | Pin | How it is installed | Declared license | Notice in the image | Source |
 |-----------|-----|---------------------|------------------|---------------------|--------|
 | OpenOCD | Debian package version | `apt-get install openocd` | GPL-2.0-or-later | `/usr/share/doc/openocd/copyright` | Debian archive |
-| Phidget22 library (`libphidget22`) | unpinned (latest at build) | Vendor apt repository, `apt-get install libphidget22` | Not reviewed. Vendor terms | `/usr/share/doc/libphidget22/copyright`, if the package ships one | `http://www.phidgets.com/debian`, key `https://www.phidgets.com/gpgkey/pubring.gpg` |
+| Phidget22 library (`libphidget22`) | unpinned (latest at build) | Vendor apt repository, `apt-get install libphidget22` | BSD-3-Clause | `vendor/libphidget22.txt`, the `COPYING` file of the upstream source release 1.26.20260828. The package's own `/usr/share/doc/libphidget22/copyright` names the license without its text | `http://www.phidgets.com/debian`, key `https://www.phidgets.com/gpgkey/pubring.gpg` |
 | Node.js and npm | `NODE_VERSION=20.18.1` | Official binary tarball, checked against `SHASUMS256.txt` | MIT. The tarball bundles other projects under their own licenses | `/usr/local/LICENSE` | `https://nodejs.org/dist/` |
 | MCC Universal Library for Linux (`uldaq`, C library) | `--branch v1.2.1` | Source build | MIT | None. The source tree is removed after the build | `https://github.com/mccdaq/uldaq.git` |
-| LabJack LJM | `LabJack-LJM_2024-06-10.zip` | Vendor installer. x64 only | Not reviewed. Proprietary vendor terms | None collected | `https://files.labjack.com/installers/LJM/Linux/x64/release/LabJack-LJM_2024-06-10.zip` |
+| LabJack LJM | `LabJack-LJM_2024-06-10.zip` | Vendor installer. x64 only | MIT. The library bundles Boost (BSL-1.0) and gRPC (Apache-2.0) | `vendor/labjack-ljm.txt`, copied from the installer's `/usr/local/share/LabJack/license.txt`, which carries all three texts | `https://files.labjack.com/installers/LJM/Linux/x64/release/LabJack-LJM_2024-06-10.zip` |
 | LabJack Exodriver (`liblabjackusb`) | `--branch v2.7.0` | Source build | MIT (X11) | None. The source tree is removed after the build | `https://github.com/labjack/exodriver.git` |
 | pykush (YKUSH hub control) | commit `d83ee856b4d0ea961b63b531fe4f4c533f6962f6` | `pip install` from the repository | As declared in `pip/INDEX.tsv` | `pip/` | `git+https://github.com/Yepkit/pykush` |
 | asusrouter | commit `8de97bfa8ffe3efa2f6d1ec30bb95187d13ab37a` | `pip install` from the repository | As declared in `pip/INDEX.tsv` | `pip/` | `git+https://github.com/Vaskivskyi/asusrouter.git` |

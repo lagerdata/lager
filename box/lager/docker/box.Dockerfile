@@ -97,7 +97,10 @@ RUN apt-get update && apt-get install -y autoconf automake libtool libusb-1.0-0-
 	&& ldconfig \
 	&& rm -rf /tmp/uldaq
 
-# LabJack LJM SDK -- proprietary, downloaded at build time
+# LabJack LJM SDK, downloaded at build time. MIT; the library bundles Boost
+# (BSL-1.0) and gRPC (Apache-2.0), and the installer's license.txt carries all
+# three. The image ships that file, so `install` fails the build if a new
+# installer stops providing it.
 # See: https://support.labjack.com/docs/ljm-software-installer-downloads-t4-t7-t8-digit
 # Docker install pattern from: https://github.com/labjack/ljm_docker
 RUN apt-get update && apt-get install -y unzip && rm -rf /var/lib/apt/lists/* \
@@ -106,7 +109,8 @@ RUN apt-get update && apt-get install -y unzip && rm -rf /var/lib/apt/lists/* \
 	&& ./labjack_ljm_installer.run -- --without-kipling --no-restart-device-rules \
 	&& ldconfig \
 	&& rm -f LabJack-LJM_2024-06-10.zip labjack_ljm_installer.run \
-	&& test -f /usr/local/lib/libLabJackM.so
+	&& test -f /usr/local/lib/libLabJackM.so \
+	&& install -D -m 0644 /usr/local/share/LabJack/license.txt /usr/share/licenses/lager/vendor/labjack-ljm.txt
 
 # LabJack Exodriver (liblabjackusb) -- the U3/U6/UE9 low-level driver.
 # Separate from LJM above and not a substitute for it: LJM drives the T-series
