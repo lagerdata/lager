@@ -223,3 +223,26 @@ def test_nothing_to_run_is_rejected_and_not_recorded(service):
     resp = requests.post(f'{base}/python', files=[('detach', (None, '0'))], timeout=(5, 10))
     assert resp.status_code == 422
     assert not os.path.exists(os.path.join(root, 'sequence'))
+
+
+def test_the_record_is_compressed_for_a_client_that_accepts_it(service):
+    """Records carry the whole net configuration; on a VPN link the plain body
+    costs extra round trips. Compressed transfer, same JSON."""
+    import gzip
+    import urllib.request
+
+    base, _root = service
+    run_id = str(uuid.uuid4())
+    drain(post(base, SCRIPT, run_id, env=['OUT_PATH=/tmp/lager-output/gz.csv']))
+
+    got = fetch(base, run_id)  # requests sends Accept-Encoding: gzip by default
+    assert got.headers.get('Content-Encoding') == 'gzip'
+    assert got.json()['runId'] == run_id
+
+    raw = urllib.request.urlopen(urllib.request.Request(f'{base}/run-records/{run_id}'), timeout=20)
+    assert raw.headers.get('Content-Encoding') is None
+    assert json.loads(raw.read())['runId'] == run_id
+
+    gz = urllib.request.urlopen(urllib.request.Request(
+        f'{base}/run-records/{run_id}', headers={'Accept-Encoding': 'gzip'}), timeout=20)
+    assert json.loads(gzip.decompress(gz.read()))['runId'] == run_id

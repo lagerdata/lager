@@ -47,12 +47,12 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` | 2971 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 3388 |
+| `unit (box)` | `test/unit/box/` | 3389 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 380 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 150 (+1 skipped) |
-| | **Total gated** | **7083** |
+| | **Total gated** | **7084** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -568,7 +568,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_render_packages.py` | pip/cargo/npm renderers preserve only their own config fields and soft-fail gracefully |
 | `test_rtt_handlers.py` | Bi-directional RTT over the `/rtt` WebSocket namespace: read loop, J-Link banner stripping, shutdown cleanup, and the three ways a held RTT port is freed — a departed client (which the loop's own heartbeat cannot detect), a wedged reader, and the port-keyed guard that keeps two channels of one net independent |
 | `test_run_record.py` | The box's run record: RFC 8785 canonical JSON (UTF-16 key order, ECMAScript numbers), instrument serial numbers read from net addresses (instrument vs adapter), the record-store box ID and MAC-derived hardware ID, sanitizing what the client asserts, script assertions, the exit reason for every way a run ends (exited, timeout vs a script's own 124, cancelled, disconnected, start-failed, lost on restart), the sequence counter, and the two recording modes -- local keeps no bytes, collected retains them by hash and refuses a run it cannot record; every record validates against the published schema |
-| `test_run_record_e2e.py` | Run records through a real `/python` service and real child processes: the log hash the CLI computes from the stream equals the box's, a downloaded file checks against its recorded hash (and a changed one is reported), the box's code hashes equal the client's, a `/python/kill` is recorded as cancelled and a dropped client as disconnected, and a collected box answers 503 instead of running unrecorded |
+| `test_run_record_e2e.py` | Run records through a real `/python` service and real child processes: the log hash the CLI computes from the stream equals the box's, a downloaded file checks against its recorded hash (and a changed one is reported), the box's code hashes equal the client's, a `/python/kill` is recorded as cancelled and a dropped client as disconnected, a collected box answers 503 instead of running unrecorded, and the record is gzip-compressed for a client that accepts it and plain for one that does not |
 | `test_run_record_schema.py` | The run record's schema, example and specification agree: the schema is valid draft 2020-12, the example validates, and every field and exit reason in the schema is described in `docs/reference/run-record.md` |
 | `test_safety_interlock.py` | Per-net voltage and current ceilings enforced on instrument commands |
 | `test_script_backend_sniff.py` | `sniff_script_backend` routes a debug-script override by format so `DebugNet.connect(script=...)` works on both backends: extension beats content, every declared extension and marker is asserted individually because a base64 blob has no filename to fall back on, and an ambiguous file abstains rather than picking a side. Also pins the two J-Link forms the marker list misses (`InitTarget(void)`, `JLINK_ExecCommand`) — safe, because abstaining raises rather than guessing, but it is why `jlink_script=` exists |
