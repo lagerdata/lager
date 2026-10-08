@@ -13,6 +13,7 @@ Pins:
   - LAGER_DEBUG=1 includes the raw error in the formatted output.
 """
 
+import errno
 import os
 import sys
 import unittest
@@ -98,6 +99,53 @@ class MapSystemErrorTests(unittest.TestCase):
         with patch.dict(os.environ, env, clear=True):
             out = format_system_error_for_user(raw)
         self.assertNotIn('--- raw error ---', out)
+
+
+class BusyFileTests(unittest.TestCase):
+    """EBUSY on a file path is a filesystem problem, not the libusb race."""
+
+    # The exact shape os.replace raises when the target is a file
+    # bind-mounted into a container.
+    RENAME = ("[Errno 16] Device or resource busy: "
+              "'/root/.lager_gateway_auth.25197.tmp' -> '/root/.lager_gateway_auth'")
+
+    def test_rename_over_mounted_file_names_the_destination(self):
+        headline, actions = map_system_error(self.RENAME)
+        self.assertEqual(headline, 'Could not write /root/.lager_gateway_auth: the file is busy.')
+        self.assertNotIn('USB', headline)
+        self.assertIn('bind-mounted', actions[0])
+        self.assertTrue(any('LAGER_GATEWAY_AUTH_FILE' in a for a in actions))
+        self.assertFalse(any('lager diagnose' in a for a in actions))
+
+    def test_single_path_busy_file(self):
+        headline, actions = map_system_error(
+            "[Errno 16] Device or resource busy: '/home/dev/notes.json'")
+        self.assertIn('/home/dev/notes.json', headline)
+        # The gateway hint is only for the gateway store.
+        self.assertFalse(any('LAGER_GATEWAY_AUTH_FILE' in a for a in actions))
+
+    def test_usb_device_path_stays_usb(self):
+        headline, _ = map_system_error(
+            "[Errno 16] Resource busy: '/dev/bus/usb/001/004'")
+        self.assertIn('USB device busy', headline)
+
+    def test_pathless_busy_stays_usb(self):
+        self.assertIn('USB device busy', map_system_error('[Errno 16] Resource busy')[0])
+        self.assertIn('USB device busy',
+                      map_system_error('usb.core.USBError: [Errno 16] Resource busy')[0])
+
+    def test_system_error_reads_paths_off_a_real_oserror(self):
+        from cli.errors import system_error
+        exc = OSError(errno.EBUSY, 'Device or resource busy',
+                      '/root/.lager_gateway_auth.1.tmp', None, '/root/.lager_gateway_auth')
+        err = system_error(exc)
+        self.assertEqual(err.message,
+                         'Could not write /root/.lager_gateway_auth: the file is busy.')
+
+    def test_system_error_usb_oserror_stays_usb(self):
+        from cli.errors import system_error
+        err = system_error(OSError(errno.EBUSY, 'Resource busy', '/dev/bus/usb/001/004'))
+        self.assertIn('USB device busy', err.message)
 
 
 if __name__ == '__main__':

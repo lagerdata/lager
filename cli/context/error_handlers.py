@@ -26,7 +26,9 @@ CANBUS_ERROR_CODES = {
 # Each maps to a single concrete next step — surface that instead of the
 # bare errno + traceback. Raw error stays available via LAGER_DEBUG=1.
 #
-# 16  EBUSY     — libusb interface claim race (another process or kernel)
+# 16  EBUSY     — libusb interface claim race (another process or kernel);
+#               EBUSY that names a file path is mapped separately, see
+#               busy_file_error
 # 19  ENODEV    — USB re-enumeration (instrument power cycle / unplug)
 # 110 ETIMEDOUT — SCPI command sent but no response (firmware wedged)
 _SYSTEM_ERROR_MAP = (
@@ -50,6 +52,40 @@ _SYSTEM_ERROR_MAP = (
 
 _ERRNO_RE = re.compile(r'\[Errno\s+(\d+)\]', re.IGNORECASE)
 
+# The quoted paths in an OSError's text: "...: '<src>'" or "...: '<src>' -> '<dst>'".
+_QUOTED_PATH_RE = re.compile(r"'(/[^']*)'")
+
+_GATEWAY_AUTH_FILE_NAME = '.lager_gateway_auth'
+
+
+def busy_file_error(path):
+    """(headline, action_lines) for EBUSY on a filesystem path.
+
+    EBUSY on a file is never the USB claim race the errno table assumes. The
+    common cause is the CLI renaming over a file that is bind-mounted into a
+    container on its own, which Linux refuses because the path is a mount
+    point. Sending that user to `lager diagnose` sends them after healthy
+    hardware.
+    """
+    actions = ['This usually means the file is bind-mounted into a container on its own. '
+               'Mount a directory that contains it instead.']
+    if _GATEWAY_AUTH_FILE_NAME in str(path):
+        actions.append('For the gateway login, set LAGER_GATEWAY_AUTH_FILE to a file '
+                       'inside that mounted directory.')
+    return f'Could not write {path}: the file is busy.', actions
+
+
+def busy_file_path(paths):
+    """The path to name in a busy-file message, or None if it is a device.
+
+    Of a rename's two paths the destination is the one that is busy, so the
+    last one wins. Anything under /dev is left to the USB mapping.
+    """
+    paths = [str(p) for p in paths if p]
+    if not paths or any(p.startswith('/dev/') for p in paths):
+        return None
+    return paths[-1]
+
 
 def map_system_error(error_text):
     """Translate a raw system / pyvisa / libusb error string into an
@@ -61,6 +97,12 @@ def map_system_error(error_text):
         return None
     text = str(error_text)
     lower = text.lower()
+
+    m = _ERRNO_RE.search(text)
+    if (m and int(m.group(1)) == 16) or 'resource busy' in lower:
+        path = busy_file_path(_QUOTED_PATH_RE.findall(text))
+        if path:
+            return busy_file_error(path)
 
     # Explicit errno match wins.
     m = _ERRNO_RE.search(text)

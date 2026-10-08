@@ -48,7 +48,7 @@ class TestRenderError:
         monkeypatch.setattr('sys.argv', ['lager'])
         out = plain(render_error('Boom.', raw='SECRET TRACEBACK'))
         assert 'SECRET TRACEBACK' not in out
-        assert 'Run with --debug' in out
+        assert 'Run `lager --debug <command>`' in out
 
     def test_raw_shown_with_debug(self, monkeypatch):
         monkeypatch.setenv('LAGER_DEBUG', '1')
@@ -60,7 +60,7 @@ class TestRenderError:
         monkeypatch.delenv('LAGER_DEBUG', raising=False)
         monkeypatch.setattr('sys.argv', ['lager'])
         out = plain(render_error('Boom.'))  # no raw
-        assert 'Run with --debug' not in out
+        assert 'lager --debug' not in out
 
 
 class TestLagerError:
