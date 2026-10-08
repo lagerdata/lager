@@ -77,6 +77,29 @@ jobs:
         run: twine check "$RUNNER_TEMP"/dist/*
         shell: bash
 
+      - name: The wheel and sdist ship LICENSE and NOTICE
+        # cli/simple_hdlc.py is derived from MIT-licensed code, and MIT
+        # requires its notice in every copy. setuptools picks up NOTICE by
+        # its default license_files patterns; MANIFEST.in names it for the
+        # sdist. A change to either drops it silently, so check the artifacts.
+        run: |
+          python - "$RUNNER_TEMP"/dist <<'EOF'
+          import pathlib, sys, tarfile, zipfile
+          dist = pathlib.Path(sys.argv[1])
+          wheel = zipfile.ZipFile(next(dist.glob("*.whl"))).namelist()
+          sdist = tarfile.open(next(dist.glob("*.tar.gz"))).getnames()
+          missing = [
+              f"{kind}: {name}"
+              for kind, names in (("wheel", wheel), ("sdist", sdist))
+              for name in ("LICENSE", "NOTICE")
+              if not any(n.endswith("/" + name) for n in names)
+          ]
+          if missing:
+              sys.exit("missing license files: " + ", ".join(missing))
+          print("LICENSE and NOTICE in both the wheel and the sdist")
+          EOF
+        shell: bash
+
       - name: Install the wheel in a fresh venv and smoke the entry point
         run: |
           python -m venv "$RUNNER_TEMP/wheelenv"
