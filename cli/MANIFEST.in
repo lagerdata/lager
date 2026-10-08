@@ -1,5 +1,6 @@
 include README.md
 include LICENSE
+include NOTICE
 recursive-include cli/impl *.py
 recursive-include cli *.py
 recursive-include cli/deployment *.sh

@@ -12,6 +12,15 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Fixed
+
+- **Code derived from two MIT-licensed projects now carries their notices.**
+  `cli/simple_hdlc.py` is derived from simple-hdlc, and `box/lager/blufi/` is
+  ported from Espressif's EspBlufiForAndroid, whose license covers use with
+  ESP8266/ESP32 chips only. `NOTICE` has both license texts, the `lager-cli`
+  wheel and sdist ship a `NOTICE`, and each derived file names its upstream; the
+  0.48.0 note that the wheel "contains no third-party code" was wrong.
+
 ## [0.54.0] - 2026-10-07
 
 ### Added

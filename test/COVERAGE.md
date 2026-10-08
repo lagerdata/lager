@@ -51,8 +51,8 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 380 |
-| `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 150 (+1 skipped) |
-| | **Total gated** | **6997** |
+| `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 166 (+1 skipped) |
+| | **Total gated** | **7013** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -452,7 +452,7 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 266 files)
+### Local Unit Tests (`test/unit/` -- 267 files)
 
 #### Box Unit Tests (`test/unit/box/` -- 136 files)
 
@@ -745,7 +745,7 @@ These tests cover the scripts in `tools/`. The `unit (root)` job runs them.
 | `test_coverage_checker.py` | `tools/check_coverage_counts.py`: platform-gated rows are not drift (and `--fix` must not rewrite them), the anchored summary parse `FORCE_COLOR` defeated, and a missing `pytest-timeout` reported as the missing plugin rather than as a failing suite |
 | `test_pdf_pages.py` | `tools/pdf_pages.py`: PNG and text extraction (skips without pymupdf, which is AGPL) |
 
-#### Root Unit Tests (`test/unit/test_*.py` -- 6 files)
+#### Root Unit Tests (`test/unit/test_*.py` -- 7 files)
 
 | File | What it tests |
 |------|---------------|
@@ -754,6 +754,7 @@ These tests cover the scripts in `tools/`. The `unit (root)` job runs them.
 | `test_bench_cleanup_timeouts.py` | Tree-wide guard: every `if: always()` step on a `self-hosted` bench job carries `timeout-minutes` and `continue-on-error`, and the bench jobs are still serialized on one non-cancelling concurrency group |
 | `test_nightly_notify_scope.py` | `nightly-bench.yml`: every job that can write the `bench-alert` issue runs only for the scheduled run or a run of main, with that term ANDed onto its existing condition |
 | `test_no_global_os_path_patches.py` | Tree-wide guard: no test may patch `os.path` (process-global; on Python >= 3.14 it also rewrites every `pathlib.Path.exists()`) — patch the module's seam or use a real temp path |
+| `test_upstream_attribution.py` | Code derived from upstream projects keeps their notices: `cli/simple_hdlc.py` and every file under `box/lager/blufi/` (globbed, so a new file must carry it) name the upstream copyright and SPDX expression; `NOTICE` carries the full simple-hdlc and EspBlufiForAndroid license texts; `cli/NOTICE` (shipped in the wheel) has the same simple-hdlc entry as the root; `cli/MANIFEST.in` includes it |
 | `test_supply_settle.py` | The DP821 suite's `_wait_for_regulation`: replays the captured 0.17 A enable transient to pin that agreeing reads inside a plateau are not a settle, that a genuine steady load settles at once and is left for the caller to judge, and that a wired channel names its fixture on failure |
 
 ### MCP Tests (`test/mcp/`)

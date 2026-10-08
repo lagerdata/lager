@@ -1,5 +1,9 @@
 # Copyright 2024-2026 Lager Data
-# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2016 wuttem
+# SPDX-License-Identifier: Apache-2.0 AND MIT
+#
+# Derived from simple-hdlc 0.2 (https://github.com/wuttem/simple-hdlc),
+# MIT License. The license text is in NOTICE.
 
 __version__ = '0.2'
 
