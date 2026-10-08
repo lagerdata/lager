@@ -92,6 +92,11 @@ class TestArrowStepping:
     def test_exponent_form_counts_its_places(self):
         assert _steps([["1e-3", 1, None], ["1.5e-3", 1, None]]) == ["0.002", "0.0016"]
 
+    def test_more_places_than_tofixed_takes_still_steps(self):
+        """"1e-101" asks for 101 places; toFixed throws past 100."""
+        [up] = _steps([["1e-101", 1, None]])
+        assert float(up) == pytest.approx(1e-100)
+
 
 class _Field:
     """A fake input and unit selector, driven through wirePositionField."""
@@ -186,6 +191,38 @@ class TestTheHorizontalFieldWaitsForEnter:
         """)
         assert out["applied"] == [[pytest.approx(2e-3), True]]
 
+    # More than six significant figures: the field shows 0.00123457, which
+    # is not the value held, so only an edit can say the field was changed.
+    UNROUNDED = "held = 0.0012345678; field.show(held);"
+
+    def test_leaving_it_untouched_applies_nothing(self):
+        out = _Field.run(False, self.UNROUNDED + "await input.fire('blur');")
+        assert out["applied"] == []
+        assert out["value"] == "0.00123457"
+        assert out["held"] == 0.0012345678
+
+    def test_escape_then_leaving_applies_nothing(self):
+        out = _Field.run(False, self.UNROUNDED + """
+        await type('0.004'); await key('Escape'); await input.fire('blur');
+        """)
+        assert out["applied"] == []
+        assert out["value"] == "0.00123457"
+        assert out["held"] == 0.0012345678
+
+    def test_leaving_after_enter_does_not_apply_it_twice(self):
+        """A clamp writes back a rounded value, which is not an edit."""
+        out = _Field.run(False, """
+        await type('1'); await key('Enter'); await input.fire('blur');
+        """)
+        assert out["applied"] == [[1, True]]
+
+    def test_an_edit_back_to_the_same_value_applies_nothing(self):
+        out = _Field.run(False, """
+        held = 0.002; field.show(held);
+        await type('0.002'); await input.fire('blur');
+        """)
+        assert out["applied"] == []
+
 
 class TestTheVerticalFieldIsLive:
     """Nothing is sent to the scope, so the trace follows each keystroke."""
@@ -204,10 +241,66 @@ class TestTheVerticalFieldIsLive:
         assert out["applied"][-1] == [1, True]
         assert out["value"] == "0.005"
 
+    def test_leaving_it_untouched_does_not_round_the_position(self):
+        """The shared blur path: 1.23457 must not replace 1.2345678."""
+        out = _Field.run(True, """
+        held = 0.0012345678; field.show(held); await input.fire('blur');
+        """)
+        assert out["applied"] == []
+        assert out["held"] == 0.0012345678
 
-def _execute(line, capabilities=None, state_reply=None):
-    """Run one console line through ScopeApp.execute with two wired channels."""
+
+class TestAHeldArrowKey:
+    """Auto-repeat outruns the box: one set in flight, only the newest queued."""
+
+    def test_only_the_first_and_the_newest_are_sent(self):
+        out = _run_js("""
+        const handlers = {};
+        const input = {
+          value: '0',
+          addEventListener(type, fn) { (handlers[type] ||= []).push(fn); },
+        };
+        const unit = { value: '1', addEventListener() {} };
+        let held = 0;
+        const sent = [];
+        const pending = [];
+        scope.wirePositionField(input, unit, {
+          live: false,
+          perDiv: () => 1e-3,
+          get: () => held,
+          set: (value) => new Promise((resolve) => {
+            sent.push(value);
+            pending.push(() => { held = value; resolve(value); });
+          }),
+        });
+        const press = () => handlers.keydown[0]({ key: 'ArrowUp', preventDefault() {} });
+        const presses = [press(), press(), press(), press()];
+        const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+        await tick();
+        const inFlight = sent.length;
+        while (pending.length) { pending.shift()(); await tick(); }
+        await Promise.all(presses);
+        process.stdout.write(JSON.stringify({ inFlight, sent, held, value: input.value }));
+        """)
+        assert out["inFlight"] == 1
+        assert out["sent"] == [pytest.approx(1e-4), pytest.approx(4e-4)]
+        assert out["held"] == pytest.approx(4e-4)
+        assert out["value"] == "0.0004"
+
+
+def _execute(line, capabilities=None, state_reply=None, timebase=None):
+    """Run one console line through ScopeApp.execute with two wired channels.
+
+    `timebase` is the s/div the timebase control shows, for `hpos`.
+    """
     return _run_js("""
+    const timebase = %s;
+    if (timebase !== null) {
+      globalThis.document = {
+        activeElement: null,
+        getElementById: (id) => (id === 'timebase' ? { value: String(timebase) } : null),
+      };
+    }
     const requests = [];
     globalThis.fetch = async (url, init) => {
       const body = JSON.parse(init.body);
@@ -235,8 +328,10 @@ def _execute(line, capabilities=None, state_reply=None):
     process.stdout.write(JSON.stringify({
       requests, lines,
       positions: Object.fromEntries([...self.channelState].map(([l, s]) => [l, s.positionV])),
+      timePosition: self.timePositionS ?? null,
     }));
-    """ % (json.dumps(state_reply), json.dumps(capabilities), json.dumps(line)))
+    """ % (json.dumps(timebase), json.dumps(state_reply), json.dumps(capabilities),
+           json.dumps(line)))
 
 
 class TestVposIsDisplayOnly:
@@ -263,6 +358,37 @@ class TestVposIsDisplayOnly:
         texts = [text for _, text in out["lines"]]
         assert any(t.startswith("channel A: vertical position") for t in texts)
         assert any(t.startswith("channel B: vertical position") for t in texts)
+
+
+class TestHposIsHeldToTheScreen:
+    """The console goes through the same clamp and note as the sidebar field."""
+
+    PER_DIV = 1.02e-3
+
+    def test_a_value_past_the_edge_is_clamped_with_a_note(self):
+        out = _execute("hpos 100ms", timebase=self.PER_DIV)
+        [request] = out["requests"]
+        assert request["action"] == "set_time_offset"
+        assert request["params"]["offset"] == pytest.approx(5 * self.PER_DIV)
+        assert out["timePosition"] == pytest.approx(5 * self.PER_DIV)
+        notes = [text for kind, text in out["lines"] if kind == "note"]
+        assert len(notes) == 1 and "Horizontal position limited to" in notes[0]
+
+    def test_looking_back_is_clamped_the_same_way(self):
+        out = _execute("hpos -1", timebase=self.PER_DIV)
+        assert out["requests"][0]["params"]["offset"] == pytest.approx(-5 * self.PER_DIV)
+
+    def test_a_value_on_screen_is_sent_as_typed_without_a_note(self):
+        out = _execute("hpos 2ms", timebase=self.PER_DIV)
+        assert out["requests"][0]["params"]["offset"] == pytest.approx(2e-3)
+        assert [kind for kind, _ in out["lines"]] == ["ok"]
+
+    def test_a_read_is_not_clamped_or_noted(self):
+        out = _execute("hpos", timebase=self.PER_DIV)
+        assert [r["action"] for r in out["requests"]] == ["get_time_offset"]
+        assert out["requests"][0]["params"] == {}
+        assert all(kind != "note" for kind, _ in out["lines"])
+        assert out["timePosition"] is None
 
 
 class TestOffsetIsGatedOnTheCapability:
