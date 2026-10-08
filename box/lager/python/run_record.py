@@ -56,6 +56,7 @@ import zipfile
 from datetime import datetime, timezone
 
 from lager.util.jcs import canonical_sha256
+from lager.util.paths import fs_slug
 
 logger = logging.getLogger(__name__)
 
@@ -928,19 +929,27 @@ def mark_cancelled(run_id=None, root=None):
     """
     try:
         dirs = _dirs(root or records_root())
+        open_dir = os.path.normpath(dirs['open'])
         if run_id is not None:
             if not valid_run_id(run_id):
                 return
-            targets = [run_id] if os.path.exists(
-                os.path.join(dirs['open'], f'{run_id}.json')) else []
+            targets = [run_id]
         else:
-            targets = [n[:-len('.json')] for n in os.listdir(dirs['open'])
+            targets = [n[:-len('.json')] for n in os.listdir(open_dir)
                        if n.endswith('.json') and not n.startswith('.')]
         now = utc_timestamp()
         for target in targets:
-            path = os.path.join(dirs['open'], f'{target}.cancel')
-            if not os.path.exists(path):  # the first request is the one that counts
-                with open(path, 'w') as f:
+            # run_id arrives off the wire (the /python/kill body). Joined and
+            # contained inline, per box/lager/util/paths.py.
+            record_path = os.path.normpath(os.path.join(open_dir, f'{fs_slug(target)}.json'))
+            marker_path = os.path.normpath(os.path.join(open_dir, f'{fs_slug(target)}.cancel'))
+            if not (record_path.startswith(open_dir + os.sep)
+                    and marker_path.startswith(open_dir + os.sep)):
+                continue
+            if not os.path.exists(record_path):
+                continue  # not an open run: nothing to mark
+            if not os.path.exists(marker_path):  # the first request is the one that counts
+                with open(marker_path, 'w') as f:
                     f.write(now)
     except Exception:  # pylint: disable=broad-except
         logger.exception('run record: could not mark run %s cancelled', run_id)
@@ -1009,8 +1018,14 @@ def load_final(run_id, root=None, wait_s=FETCH_WAIT_S, poll_s=0.1):
     if not valid_run_id(run_id):
         return 404, None
     dirs = _dirs(root or records_root())
-    final_path = os.path.join(dirs['final'], f'{run_id}.json')
-    open_path = os.path.join(dirs['open'], f'{run_id}.json')
+    # run_id arrives off the wire (GET /run-records/<runId>). Joined and
+    # contained inline, per box/lager/util/paths.py.
+    final_dir = os.path.normpath(dirs['final'])
+    open_dir = os.path.normpath(dirs['open'])
+    final_path = os.path.normpath(os.path.join(final_dir, f'{fs_slug(run_id)}.json'))
+    open_path = os.path.normpath(os.path.join(open_dir, f'{fs_slug(run_id)}.json'))
+    if not (final_path.startswith(final_dir + os.sep) and open_path.startswith(open_dir + os.sep)):
+        return 404, None
     deadline = time.monotonic() + wait_s
     while True:
         try:
