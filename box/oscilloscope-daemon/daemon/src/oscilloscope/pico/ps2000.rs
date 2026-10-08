@@ -2428,7 +2428,8 @@ fn reject_unsupported_offset(volts_offset: f64) -> anyhow::Result<()> {
         anyhow::bail!(
             "this scope has no analog offset, so {volts_offset} V cannot be \
              applied; it would move the measurements rather than the trace. \
-             Use the vertical position control to move a trace on screen"
+             To move a trace on screen, use `vpos <channel> <volts>` in the \
+             scope page's console or the channel's Position field"
         );
     }
     Ok(())
@@ -2564,8 +2565,8 @@ mod tests {
             "and what it would have done instead, got {message:?}"
         );
         assert!(
-            message.contains("position"),
-            "and point at the control that does work, got {message:?}"
+            message.contains("vpos") && message.contains("Position field"),
+            "and name the controls that do work, got {message:?}"
         );
     }
 
