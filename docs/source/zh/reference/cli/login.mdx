@@ -81,7 +81,7 @@ CLI 会随每个发往 Box 的请求发送这个令牌。它优先于任何已�
 开发容器（`devcontainer.json`，用于 VS Code 或 Cursor）：
 
 ```json
-"initializeCommand": "touch ~/.lager_gateway_auth",
+"initializeCommand": "touch ~/.lager_gateway_auth && chmod 600 ~/.lager_gateway_auth",
 "mounts": [
   "source=${localEnv:HOME}/.lager_gateway_auth,target=/root/.lager_gateway_auth,type=bind"
 ]
@@ -90,11 +90,11 @@ CLI 会随每个发往 Box 的请求发送这个令牌。它优先于任何已�
 `docker run`：
 
 ```bash
-touch ~/.lager_gateway_auth
+touch ~/.lager_gateway_auth && chmod 600 ~/.lager_gateway_auth
 docker run -v ~/.lager_gateway_auth:/root/.lager_gateway_auth ...
 ```
 
-- 请确保该文件在容器启动之前已经存在。如果文件不存在，Docker 会创建一个同名的目录。
+- 请确保该文件在容器启动之前已经存在。如果文件不存在，Docker 会创建一个同名的目录。请把它的权限设置为 0600：该文件包含您的会话，而容器无法更改 Docker Desktop 所挂载文件的权限。
 - 在您的计算机和容器中，都要使用包含此更改的 CLI 版本或更新的版本。较早的版本在保存时会替换该文件，于是容器会一直使用旧的副本，而且容器自己的保存也会失败。
 - 如果容器用户不是 `root`，请把挂载目标改为该用户的主目录。或者在容器中把 `LAGER_GATEWAY_AUTH_FILE` 设置为挂载目标路径。
 

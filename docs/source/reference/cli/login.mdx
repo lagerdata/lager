@@ -110,7 +110,7 @@ you start in a different way, add the mount yourself.
 A dev container (`devcontainer.json`, for VS Code or Cursor):
 
 ```json
-"initializeCommand": "touch ~/.lager_gateway_auth",
+"initializeCommand": "touch ~/.lager_gateway_auth && chmod 600 ~/.lager_gateway_auth",
 "mounts": [
   "source=${localEnv:HOME}/.lager_gateway_auth,target=/root/.lager_gateway_auth,type=bind"
 ]
@@ -119,12 +119,14 @@ A dev container (`devcontainer.json`, for VS Code or Cursor):
 `docker run`:
 
 ```bash
-touch ~/.lager_gateway_auth
+touch ~/.lager_gateway_auth && chmod 600 ~/.lager_gateway_auth
 docker run -v ~/.lager_gateway_auth:/root/.lager_gateway_auth ...
 ```
 
 - Make sure that the file exists before the container starts. If the file does
-  not exist, Docker makes a directory with that name.
+  not exist, Docker makes a directory with that name. Set its mode to 0600: the
+  file contains your session, and a container cannot change the mode of a file
+  that Docker Desktop mounts.
 - Use the CLI version that includes this change, or a later version, on your
   computer and in the container. Earlier versions replace the file when they
   save it. The container then keeps an old copy, and its own saves fail.
