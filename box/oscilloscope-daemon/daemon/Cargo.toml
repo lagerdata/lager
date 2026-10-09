@@ -23,7 +23,7 @@ libc = "0.2"
 
 # dlopen the PicoTech drivers at runtime, so one binary serves any installed
 # series and the build needs no SDK.
-libloading = "0.8"
+libloading = "0.9"
 
 # WebSocket. One transport: see the module docs in src/server.rs for why the
 # WebTransport/QUIC listeners were removed rather than kept alongside.
@@ -39,7 +39,7 @@ bindgen = "0.73"
 cc = "1.0"
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports"] }
 
 [[bench]]
 name = "lscp_encode"
