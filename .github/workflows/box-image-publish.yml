@@ -43,8 +43,8 @@
 #
 # Consequences worth knowing before touching this:
 #   - Cached layers keep whatever the build that produced them installed.
-#     rustup `stable`, the unversioned nrfutil, unpinned pip packages and apt
-#     security fixes stay frozen until an earlier Dockerfile line changes.
+#     rustup `stable`, unpinned pip packages and apt security fixes stay
+#     frozen until an earlier Dockerfile line changes.
 #     Refresh them deliberately with a `cache_only` + `no_cache` dispatch from
 #     main (RELEASE_PROCESS.md); the next release is then a full download.
 #   - box.Dockerfile pins its base image by digest for the same reason, and
@@ -61,8 +61,8 @@
 #
 # Built linux/amd64 only. That is the whole supported surface: a Lager Box is
 # documented as x86-64 (docs/source/getting-started/overview.mdx), and
-# box.Dockerfile hardcodes x64-only LabJack and nrfutil downloads, so it could
-# not build on another architecture anyway.
+# box.Dockerfile hardcodes x64-only LabJack downloads, so it could not build
+# on another architecture anyway.
 #
 # The manifest is therefore single-platform, NOT a multi-arch index -- there is
 # nothing for docker to negotiate against, so a bare `docker pull` would hand a
@@ -71,7 +71,7 @@
 # (_docker_pull_cmd), which turns it into a clean manifest miss. Defence in
 # depth rather than support for another architecture.
 #
-# Publishing other architectures would mean making the LabJack/nrfutil fetches
+# Publishing other architectures would mean making the LabJack fetches
 # arch-aware first, plus QEMU emulation time on every release.
 #
 # Retention is manual for now: delete old versions from the GHCR UI / API

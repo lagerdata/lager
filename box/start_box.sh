@@ -295,8 +295,8 @@ use_prebuilt_box_image() {
     # explicit --platform a non-amd64 host pulls the amd64 image anyway, tags
     # it `lager`, and the container dies with `exec format error`. This is
     # defence in depth, not support for another architecture -- a box is
-    # documented x86-64 only, and box.Dockerfile fetches LabJack and nrfutil
-    # from hardcoded x64 URLs regardless. It makes an unsupported host fail
+    # documented x86-64 only, and box.Dockerfile fetches LabJack from
+    # hardcoded x64 URLs regardless. It makes an unsupported host fail
     # cleanly at the manifest instead of confusingly at container start.
     platform="linux/$(dpkg --print-architecture 2>/dev/null || uname -m)"
 

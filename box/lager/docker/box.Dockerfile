@@ -268,19 +268,6 @@ RUN --mount=type=cache,target=/opt/rust/cargo/registry,sharing=locked \
     && chown -R www-data:www-data /opt/rust \
     && chmod -R 755 /opt/rust
 
-# Install nrfutil for Nordic DFU/OTA updates
-# nrfutil v7+ is a standalone binary, not a pip package
-# NRFUTIL_HOME must be set so subcommands are installed to a shared location
-# accessible by both root (build) and www-data (runtime)
-ENV NRFUTIL_HOME=/opt/nrfutil
-RUN mkdir -p /opt/tools /opt/nrfutil \
-    && wget -q https://developer.nordicsemi.com/.pc-tools/nrfutil/x64-linux/nrfutil -O /opt/tools/nrfutil \
-    && chmod +x /opt/tools/nrfutil \
-    && /opt/tools/nrfutil install nrf5sdk-tools \
-    && /opt/tools/nrfutil install device \
-    && chown -R www-data:www-data /opt/nrfutil \
-    && chmod -R 755 /opt/nrfutil
-
 # Install user-specified packages from user_requirements.txt
 COPY docker/user_requirements.txt /tmp/user_requirements.txt
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \

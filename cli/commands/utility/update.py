@@ -345,8 +345,8 @@ def _docker_pull_cmd(image_ref, digest):
 
     This is defence in depth, not support for another architecture. A box is
     documented as x86-64 only (docs/source/getting-started/overview.mdx), and
-    box.Dockerfile could not build anywhere else regardless -- the LabJack and
-    nrfutil installers below are fetched from hardcoded x64 URLs with no arch
+    box.Dockerfile could not build anywhere else regardless -- the LabJack
+    installers below are fetched from hardcoded x64 URLs with no arch
     branch. So the guard does not rescue a working arm box; it makes an
     unsupported host fail the way it always did (cleanly, at the build) instead
     of newly failing at container start with a confusing exec error. Cheap
@@ -4040,7 +4040,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
     # behind when this build retagged `lager`. The layers backing the current
     # `lager` image are NOT dangling, so they survive and serve as cache for
     # the next update. Because box.Dockerfile copies source code only after the
-    # heavy apt/pip/rust/nrfutil layers, a code-only update then reuses all of
+    # heavy apt/pip/rust layers, a code-only update then reuses all of
     # that work and finishes in ~1-2 min instead of rebuilding from scratch.
     #
     # The previous `prune -af --filter "until=24h"` deleted *all* unused images

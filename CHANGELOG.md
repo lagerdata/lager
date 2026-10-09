@@ -12,6 +12,12 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Removed
+
+- **nrfutil is no longer installed in the box image**, nor its `nrf5sdk-tools` and `device`
+  commands, and `NRFUTIL_HOME` is no longer set. Nothing in lager called it. A script that
+  ran nrfutil on the box must now install it itself.
+
 ## [0.55.0] - 2026-10-09
 
 ### Added
