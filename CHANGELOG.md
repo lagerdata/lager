@@ -110,6 +110,9 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   file path now says which file could not be written and how to mount it, rather
   than "USB device busy" with advice to run `lager diagnose`. The `--debug` hint
   now shows the form that works: `lager --debug <command>`.
+- **Disabling a channel on the scope page removes its trace.** `disable B`, or the
+  channel's switch, stopped that channel's samples, and the capture already on screen
+  kept drawing them, so the trace froze in place. It now goes when the channel goes off.
 - **`hpos` in the scope web UI console is now held to the screen.** A value outside 5 divisions
   went to the box as typed, with no note: at 1.02 ms/div, `hpos 100ms` put the trigger about 98
   divisions off screen. The console now moves it to the limit and writes the same note as the
