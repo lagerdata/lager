@@ -165,8 +165,8 @@ Pushing the tag triggers two workflows in parallel:
   The workflow keeps its layer cache in the same package, under the `buildcache`
   tag. A release reuses each layer whose inputs did not change, so a box
   downloads only the layers that changed. A cached layer also keeps the package
-  versions that it was built with. The Rust toolchain, `nrfutil`, unpinned `pip`
-  packages and Debian security fixes stay at those versions. Refresh them about
+  versions that it was built with. The Rust toolchain, unpinned `pip` packages
+  and Debian security fixes stay at those versions. Refresh them about
   once a month with a cache-only build from `main`, which pushes no version tag:
 
   ```bash

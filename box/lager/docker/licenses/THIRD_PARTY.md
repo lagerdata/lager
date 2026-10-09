@@ -43,9 +43,6 @@ own and have not been read for that purpose.
 | asusrouter | commit `8de97bfa8ffe3efa2f6d1ec30bb95187d13ab37a` | `pip install` from the repository | As declared in `pip/INDEX.tsv` | `pip/` | `git+https://github.com/Vaskivskyi/asusrouter.git` |
 | Rust toolchain (rustup, cargo, rustc) | unpinned (latest at build). `--default-toolchain stable` | The rustup installer script | MIT OR Apache-2.0 | Under `/opt/rust`, as the toolchain ships them | `https://sh.rustup.rs` |
 | defmt-print | `defmt-print@1.1.0`, `--locked` | `cargo install`. The build links many crates, each under its own license | MIT OR Apache-2.0 | None collected for the linked crates | crates.io |
-| nrfutil | unpinned (latest at build) | Vendor binary | Not reviewed. Proprietary vendor terms | None collected | `https://developer.nordicsemi.com/.pc-tools/nrfutil/x64-linux/nrfutil` |
-| nrfutil `nrf5sdk-tools` | unpinned (latest at build) | `nrfutil install nrf5sdk-tools`, downloaded at build | Not reviewed. Proprietary vendor terms | None collected | Nordic Semiconductor, through nrfutil |
-| nrfutil `device` | unpinned (latest at build) | `nrfutil install device`, downloaded at build | Not reviewed. Proprietary vendor terms | None collected | Nordic Semiconductor, through nrfutil |
 | Acroname BrainStem SDK | `brainstem==2.12.5` | `pip install` from PyPI. A vendor SDK with compiled libraries | Not reviewed. Vendor terms. `pip/INDEX.tsv` has what it declares | `pip/` | PyPI |
 
 ## Not in the image

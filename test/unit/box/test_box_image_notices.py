@@ -142,7 +142,7 @@ class TestEveryVendorDownloadHasARow:
         found = " ".join(what for what, _n, _u in vendor_downloads(DOCKERFILE.read_text()))
         assert len(vendor_downloads(DOCKERFILE.read_text())) >= 11
         for expected in ("nodejs.org", "labjack", "uldaq", "exodriver", "pykush", "asusrouter",
-                         "rustup", "defmt-print", "nrfutil", "brainstem", "phidgets", "OpenOCD"):
+                         "rustup", "defmt-print", "brainstem", "phidgets", "OpenOCD"):
             assert expected in found, expected
 
     @pytest.mark.parametrize("extra, names", [
@@ -167,7 +167,11 @@ class TestEveryVendorDownloadHasARow:
         rows = [row.replace(UNPINNED, "1.0") for row in _rows(MANIFEST.read_text())]
         problems = _missing(vendor_downloads(DOCKERFILE.read_text()), rows)
         assert any("rust toolchain stable" in p for p in problems), problems
-        assert any("nrfutil" in p for p in problems), problems
+
+    def test_the_image_does_not_install_nrfutil(self):
+        # Removed from the image (#532); the detector above still catches a
+        # reintroduced `nrfutil install`, which would then need a row.
+        assert "nrfutil" not in DOCKERFILE.read_text().lower()
 
 
 class TestTheManifestClaimsNothingItHasNotChecked:
@@ -176,7 +180,7 @@ class TestTheManifestClaimsNothingItHasNotChecked:
         assert "Nothing in this file states that a component can be redistributed" in text
         assert "#532" in text
 
-    @pytest.mark.parametrize("component", ["nrfutil |", "BrainStem"])
+    @pytest.mark.parametrize("component", ["BrainStem"])
     def test_a_vendors_own_terms_are_marked_not_reviewed(self, component):
         rows = [row for row in _rows(MANIFEST.read_text()) if component in row]
         assert rows, component
@@ -199,7 +203,7 @@ class TestTheManifestClaimsNothingItHasNotChecked:
 
     def test_every_row_has_every_cell(self):
         rows = _rows(MANIFEST.read_text())
-        assert len(rows) >= 12
+        assert len(rows) >= 11
         for row in rows:
             cells = [cell.strip() for cell in row.strip().strip("|").split("|")]
             assert len(cells) == 6, row
