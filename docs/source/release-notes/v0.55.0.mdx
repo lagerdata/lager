@@ -1,0 +1,152 @@
+---
+title: "Version 0.55.0"
+description: "October 9, 2026"
+---
+
+## <u>Upgrade Notes</u>
+
+- **Update your boxes.** The PicoScope support, the live scope page and the scope daemon run on
+  the box. Run `lager update --box <box-name>` after you upgrade the CLI. The box builds its
+  oscilloscope daemon when it starts on new daemon sources or new PicoTech SDK headers.
+- **Saved scope nets change shape the first time a box reads them.** An oscilloscope is now a
+  `scope` net, and each of its inputs is a `scope-channel` net. The box converts each saved
+  scope net to a `scope-channel` net and adds a `scope` net next to it. Send channel settings
+  (enable, volts/div, offset, coupling, probe, measurements) to a channel net. Send the
+  timebase, the trigger, run and stop, and cursors to the scope net.
+- **The old PicoScope page and ports are gone.** The page at
+  `http://<box>:8080/web_oscilloscope.html`, the daemon's network ports and its WebTransport
+  stream no longer exist. Use the live page at `http://<box>:9000/scope`. The daemon listens
+  inside the box only, and everything reaches it through port 9000.
+- **`lager scope` exits 1 when a PicoScope refuses a command.** A refused trigger, and the
+  front-panel cursor commands such as `cursor set-a`, exited 0 before. A script that relied on
+  exit 0 now stops at the refusal.
+- **A PicoScope refuses GND coupling.** The scope has no ground relay. The 2000 series applied
+  GND as AC, so the input stayed live while every reading said GND. Use DC or AC, or turn the
+  channel off.
+- **Time/div on a PicoScope is a tenth of the capture window, as the page draws it.** The
+  capture spanned eight divisions before. The box reports the timebase that the scope runs at.
+  For example, a 2204A that you set to 1 ms/div reports 1.024 ms/div.
+- **`lager scope <net> stream start` enables the channel of the net.** It always enabled
+  channel A before. `stream config` with no setting to change is now refused.
+- **The console of the live page uses `hpos` for horizontal position.** `position` still parses
+  for this release only. The position controls are in volts and seconds, not divisions. The
+  new `vpos B -0.5` moves a trace on the screen only. `offset` is refused on a legacy
+  2000-series PicoScope, such as the 2204A, and points you at `vpos`.
+- **Update the CLI on the host and in a container at the same time.** A container that mounts
+  `~/.lager_gateway_auth` now shares one live session with the host. An earlier CLI in the
+  container replaces the file when it saves a refreshed token. The save then fails on the
+  mount, and the refreshed session is lost on both sides. Install 0.55.0 on the host and in the
+  container image together.
+- **The pytest of the Lager Box image moves from 6.2.5 to 8.4.2.** A test suite that runs on
+  the box (`lager exec`, `lager python`) now runs under pytest 8. Check your suite against the
+  removals in the pytest 7.0 and 8.0 changelogs. `PyYAML` (6.0.3), `hidapi` (0.15.0) and
+  `psycopg2-binary` (2.9.13) move to releases with Python 3.13 and 3.14 wheels.
+
+## <u>Features</u>
+
+- **PicoScope support covers the 2000, 2000A, 3000A, 4000A and 5000A series.** The box reads
+  the channels, voltage ranges, timebases and resolution from the attached model. `lager scope`
+  sets volts/div, timebase, coupling and probe, and takes measurements, on a PicoScope. An
+  8-channel 4824 works as a four-channel scope, on channels A to D.
+- **`lager install` installs the PicoTech SDK, drivers and headers for every supported
+  series.** Use `--skip-picoscope` to leave them out. A box with drivers but no headers gets
+  the headers. If a PicoScope is attached and the daemon cannot build, `lager update` names the
+  packages to install.
+- **A live oscilloscope page at `http://<box>:9000/scope`.** `lager scope <net> stream web` and
+  `stream start` link to it. It streams the trace at the frame rate of the display and follows
+  settings that you change from the terminal. Its console takes the `lager scope` commands, with
+  `help`. A box behind an access gateway gives the page a sign-in token.
+- **Display modes on the live page:** persistence, XY, zoom with an overview bar, a math trace,
+  an FFT pane, vertical and horizontal position, and a trigger-level marker. A badge shows
+  whether the scope triggered, auto-triggered, rolled or stopped. `sidebar off` in the console,
+  or **Hide sidebar** in the header, hides the controls.
+- **Roll mode on a PicoScope 2202, 2203, 2204(A) or 2205(A).** At 50 ms/div and slower in auto,
+  the screen scrolls as the signal arrives. `lager scope <net> roll auto|on|off` sets it.
+- **More PicoScope settings in `lager scope`:** `trigger holdoff`, `acquire` for averaging,
+  `display` for the modes of the live page, and `fft` for the strongest components of a
+  spectrum. `status` prints every setting, and `trigger` with no subcommand prints the trigger.
+- **Capture cursors on a PicoScope.** `lager scope <net> cursor time T1 T2` and
+  `cursor volts V1 V2` mark the capture and report the differences. `cursor` alone reads them
+  back, and the live page draws them.
+- **The oscilloscope daemon recovers when a scope is unplugged or its driver fails.** It closes
+  the scope and opens it again. Meanwhile it answers commands with the reason. A command that
+  the scope leaves unanswered for 30 seconds fails.
+- **`lager devenv terminal` and `lager exec` share your `lager login` session with the
+  container.** They mount `~/.lager_gateway_auth` at `/lager/.lager_gateway_auth` and set
+  `LAGER_GATEWAY_AUTH_FILE` to that path. A sign-in on the host is immediately available in the
+  container. If the file does not exist, the CLI makes an empty file first.
+
+## <u>Bug Fixes</u>
+
+- **A PicoScope triggered below the level that you set, and on noise.** The trigger thresholds
+  sat ten percent below the level, so at 0 V any noise triggered the scope. The scope now
+  triggers at the level that you set.
+- **A PicoScope trigger level did not hold through a probe.** With a 10x probe, a 1.0 V level
+  read back as 0.1 V. The level now holds when you change the probe.
+- **A PicoScope returned a block that it was still filling.** The acquisition loop read the
+  ready flag of the previous block, so the trace jumped sideways every few frames. The loop no
+  longer acts on that flag.
+- **A scope measurement described the capture from before a settings change.** The daemon now
+  discards its last capture whenever a request re-arms the scope.
+- **Setting the time/div of a PicoScope took effect late.** It now takes effect at once.
+- **Run changed the trigger mode, and single-shot did not arm the scope.** Run put a PicoScope
+  into auto, so Normal behaved like Auto. Run now keeps the trigger mode, except single-shot,
+  which it moves to auto. Choosing single-shot as the trigger mode arms the scope, as the
+  Single button does.
+- **A Rigol MSO5000 changed the trigger level that it received.** The box now writes the level
+  in a form that the instrument keeps.
+- **`Net.get` returned a broken driver for a PicoScope net.** Every call raised a hardware
+  error. The Python API now works for a PicoScope.
+- **`lager scope <net> trigger edge` changed settings that you did not give.** It now changes
+  only the settings on the command line.
+- **`docker stop`, and with it `lager update`, did not stop the box services cleanly.** The
+  stop signal reached none of them, so Docker killed each one. A PicoScope killed during a
+  capture took minutes to open again. The services now receive the stop signal.
+- **Two processes that saved nets at once left the nets file half-written.** The two
+  processes shared one temporary file, and the box then read no saved nets. The saves no longer
+  share a temporary file.
+- **A container that mounted the gateway session failed every command against a gated box.**
+  The CLI saved the session by writing a new file and renaming it over the old one. A
+  single-file bind mount keeps the old file, so the container read a stale session. The CLI now
+  writes the file in place, so a sign-in or token refresh on either side reaches the other.
+- **A busy file showed the message "USB device busy".** `[Errno 16]` for a file path sent the
+  user to `lager diagnose`. The message now names the file that the CLI failed to write. The
+  `--debug` hint now shows the form that works: `lager --debug <command>`.
+- **A second LabJack U3 on a box got no nets.** A U3 reports no USB serial number,
+  so every U3 had the same address. The address now names the USB port
+  (`...::port-1-1.3::INSTR`), and the box opens the U3 on that port. A net from an earlier
+  release still opens the first U3 that the box finds.
+
+## <u>Improvements</u>
+
+- The box caps its service logs. Each log rotates to `<log>.1` past 32 MiB. Set
+  `LAGER_LOG_MAX_BYTES` to change the cap.
+- The MCP API reference lists the scope methods that exist.
+- `NOTICE` now has the license texts of simple-hdlc and EspBlufiForAndroid, and the `lager-cli`
+  wheel and sdist ship it. Each derived file names its upstream project.
+- The Lager Box image now carries the license texts of LabJack LJM and libphidget22 in
+  `/usr/share/licenses/lager/vendor/`.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.55.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli==0.55.0
+```
+
+Then update your boxes:
+
+```bash
+lager update --box <box-name>
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.55.0/)

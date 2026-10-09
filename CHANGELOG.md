@@ -12,6 +12,8 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+## [0.55.0] - 2026-10-09
+
 ### Added
 
 - **PicoScope support covers the 2000, 2000A, 3000A, 4000A and 5000A series.** The box reads
@@ -98,14 +100,11 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 ### Fixed
 
 - **A container that mounts `~/.lager_gateway_auth` now shares one live session
-  with the host.** The CLI saves the file in place, so a sign-in or token refresh
-  on either side reaches the other, and the container's own saves no longer fail.
-  Update the CLI on the host and in the container. `lager devenv terminal` and
-  `lager exec` now mount the session for you.
-- **Every command no longer fails when `~/.lager_gateway_auth` is bind-mounted into
-  a container as a single file.** Saving the gateway login fell over when it tried
-  to rename onto a mount point. The CLI now writes the file in place when that
-  rename is refused, and skips the save when nothing changed.
+  with the host.** Every command against a gated box used to fail in such a
+  container, and a sign-in on the host never reached it. The CLI now saves the file
+  in place, so a sign-in or token refresh on either side reaches the other. Update
+  the CLI on the host and in the container at the same time. `lager devenv
+  terminal` and `lager exec` now mount the session for you.
 - **A busy file is no longer reported as a busy USB device.** `[Errno 16]` naming a
   file path now says which file could not be written and how to mount it, rather
   than "USB device busy" with advice to run `lager diagnose`. The `--debug` hint
