@@ -22,6 +22,11 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 ### Fixed
 
+- **A container that mounts `~/.lager_gateway_auth` now shares one live session
+  with the host.** The CLI saves the file in place, so a sign-in or token refresh
+  on either side reaches the other, and the container's own saves no longer fail.
+  Update the CLI on the host and in the container. `lager devenv terminal` and
+  `lager exec` now mount the session for you.
 - **Every command no longer fails when `~/.lager_gateway_auth` is bind-mounted into
   a container as a single file.** Saving the gateway login fell over when it tried
   to rename onto a mount point. The CLI now writes the file in place when that

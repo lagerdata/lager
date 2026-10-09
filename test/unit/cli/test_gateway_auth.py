@@ -126,7 +126,7 @@ def test_in_place_fallback_creates_a_missing_store_0600(isolated_store, monkeypa
     assert gateway_auth.auth_server_for_box('10.0.0.5') == 'http://cp:3001'
 
 
-def test_in_place_fallback_keeps_the_existing_inode_and_mode(isolated_store, monkeypatch):
+def test_in_place_fallback_keeps_the_inode_and_makes_it_0600(isolated_store, monkeypatch):
     # The inode is what a container's bind mount is pinned to; a write that
     # replaced it would never reach the host's copy of the file.
     gateway_auth.record_box_auth_server('10.0.0.5', 'http://cp:3001')
@@ -137,9 +137,9 @@ def test_in_place_fallback_keeps_the_existing_inode_and_mode(isolated_store, mon
     gateway_auth.save_login('http://cp:3001', make_jwt(time.time() + 900), {'refresh': 'r'})
 
     assert isolated_store.stat().st_ino == inode
-    # No chmod on a file that already exists, either way: it keeps whatever
-    # mode its owner gave it.
-    assert stat.S_IMODE(isolated_store.stat().st_mode) == 0o640
+    # The store holds refresh cookies, so a save leaves it 0600 even when it
+    # was looser: a file made ahead of time with `touch` starts out 0644.
+    assert stat.S_IMODE(isolated_store.stat().st_mode) == 0o600
     assert gateway_auth.access_token_for('http://cp:3001')
 
 

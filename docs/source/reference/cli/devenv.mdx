@@ -105,6 +105,12 @@ config. The CLI applies the config-defined `ports`, `volumes`, and
 `~/.ssh/known_hosts` (read-only) when they exist. It also mounts your global
 `.lager` config into the container, so nested `lager` calls are authenticated.
 
+`terminal` and `lager exec` also mount your `lager login` session
+(`~/.lager_gateway_auth`) at `/lager/.lager_gateway_auth`, and set
+`LAGER_GATEWAY_AUTH_FILE` to that path. Thus nested `lager` calls can use boxes
+behind an access gateway, and a sign-in on one side is immediately available on
+the other side. If the file does not exist, they make an empty file first.
+
 Use `--info` to see what runs, without launching anything:
 
 ```bash

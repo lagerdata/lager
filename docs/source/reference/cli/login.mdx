@@ -98,6 +98,40 @@ or whitespace-only value counts as unset.
 If the gateway refuses the token, the command fails at once and names the auth
 server that refused it. There is no second credential to fall back on.
 
+### Using your session in a container
+
+To use your session in a Docker container, mount the session file into the
+container. Then the container and your computer use one session. A sign-in or
+a refresh on one side is immediately available on the other side.
+
+`lager devenv terminal` and `lager exec` do this for you. For a container that
+you start in a different way, add the mount yourself.
+
+A dev container (`devcontainer.json`, for VS Code or Cursor):
+
+```json
+"initializeCommand": "touch ~/.lager_gateway_auth",
+"mounts": [
+  "source=${localEnv:HOME}/.lager_gateway_auth,target=/root/.lager_gateway_auth,type=bind"
+]
+```
+
+`docker run`:
+
+```bash
+touch ~/.lager_gateway_auth
+docker run -v ~/.lager_gateway_auth:/root/.lager_gateway_auth ...
+```
+
+- Make sure that the file exists before the container starts. If the file does
+  not exist, Docker makes a directory with that name.
+- Use the CLI version that includes this change, or a later version, on your
+  computer and in the container. Earlier versions replace the file when they
+  save it. The container then keeps an old copy, and its own saves fail.
+- If the container user is not `root`, change the target to the home directory
+  of that user. Or set `LAGER_GATEWAY_AUTH_FILE` in the container to the target
+  path.
+
 ## Checking your status
 
 When something looks off, `lager whoami` is the first thing to run:

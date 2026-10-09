@@ -16,6 +16,7 @@ from pathlib import Path
 import click
 
 from ...core.group_usage import LagerGroup
+from ...gateway_auth import container_store_mount
 from ...core.param_types import EnvVarType
 from ...sort_utils import natural_sort_key
 from ...config import (
@@ -307,6 +308,14 @@ def terminal(ctx, mount, user, group, name, detach, port, entrypoint, network, p
             '-v',
             f'{global_config_path}:/lager/{LAGER_CONFIG_FILE_NAME}'
         ])
+
+    # The gateway login, so nested `lager` calls reach gated boxes. Ahead of the
+    # config and command-line mounts and env, so a project can override it.
+    auth_mount = container_store_mount(
+        (*devenv_config_list(devenv_config.get('volumes')), *volumes))
+    if auth_mount:
+        volume, assignment = auth_mount
+        args.extend(['-v', volume, '--env', assignment])
 
     # Custom bind mounts: config-defined first, then any passed on the command line.
     # Specs may use ~, environment variables, and ${PROJECT_ROOT} for portability.
