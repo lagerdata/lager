@@ -109,6 +109,16 @@ body {
   min-height: 0;
 }
 
+/* Hiding the aside is not enough: the 280px column would stay empty beside
+ * the plot. Drop the track as well. The class is set from the header button,
+ * from `sidebar off`, and from the script in index.html on the next visit. */
+html.is-sidebar-hidden .layout {
+  grid-template-columns: minmax(0, 1fr);
+}
+/* !important, as on [hidden]: the narrow layout later sets display:grid on
+ * .controls, and that would put the panel back under the plot. */
+html.is-sidebar-hidden .controls { display: none !important; }
+
 /* min-height: 0 lets the waveform give up space when the console is dragged
  * taller. Without it the canvas's bitmap is a minimum, and the log grows
  * over the trace instead of the trace getting shorter. */
@@ -366,6 +376,10 @@ code {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: minmax(0, 3fr) minmax(0, 2fr);
   }
+  /* The stacked panel is gone, so the plot takes the height and the console
+   * may grow as it does on a wide window. */
+  html.is-sidebar-hidden { --plot-reserve: 160px; }
+  html.is-sidebar-hidden .layout { grid-template-rows: minmax(0, 1fr); }
   /* The groups side by side where the width allows, in their usual order,
    * so the shorter panel still shows more than one at a time. */
   .controls {

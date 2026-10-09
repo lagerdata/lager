@@ -269,8 +269,8 @@ export const COMMANDS = [
         { offset: requireQuantity(args[0], 's', 'seconds') }, `hpos ${args[0]}`)),
   },
   {
-    // The one verb that changes nothing on the box: the page draws the trace
-    // higher or lower. The analog offset would move Vmax, Vmin and Vavg too.
+    // A verb that changes nothing on the box: the page draws the trace higher
+    // or lower. The analog offset would move Vmax, Vmin and Vavg too.
     verb: 'vpos',
     usage: 'vpos [<channel>] [<volts>]',
     help: 'Get or set where a trace is drawn, e.g. "vpos B -0.5" or "vpos B 200mV". '
@@ -289,26 +289,40 @@ export const COMMANDS = [
   },
   {
     verb: 'measure',
-    usage: `measure <${Object.keys(MEASUREMENTS).slice(0, 6).join('|')}|...> [<channel>]`,
-    help: 'Measure the live signal, e.g. "measure vpp B"; with no channel, the first one that is on',
+    usage: `measure [<channel>] <${Object.keys(MEASUREMENTS).slice(0, 6).join('|')}|...>`,
+    help: 'Measure the live signal, e.g. "measure B vpp"; with no channel, the first one that is on',
     parse: (args) => {
-      if (args.length === 0) {
+      // The channel first, as the net comes first in the terminal's
+      // `lager scope <net> measure vpp`. A digit is a channel here too: no
+      // measurement is a number, so "measure 2 freq" can only mean B.
+      const lone = (token) => token !== undefined && /^[A-Za-z0-9]$/.test(token);
+      const channel = lone(args[0]) ? channelToken(args[0]) : null;
+      const rest = channel ? args.slice(1) : args;
+      if (rest.length === 0) {
         throw new CommandError(
           `measure what? one of: ${Object.keys(MEASUREMENTS).join(', ')}`);
       }
-      const action = MEASUREMENTS[args[0].toLowerCase()];
+      if (lone(rest[0])) {
+        throw new CommandError(
+          `measure takes one channel, then one measurement, got "${args.join(' ')}"`);
+      }
+      const name = rest[0].toLowerCase();
+      const action = Object.prototype.hasOwnProperty.call(MEASUREMENTS, name)
+        ? MEASUREMENTS[name] : null;
       if (!action) {
         throw new CommandError(
-          `unknown measurement "${args[0]}"; try one of: `
+          `unknown measurement "${rest[0]}"; try one of: `
           + Object.keys(MEASUREMENTS).join(', '));
       }
-      if (args.length > 2) {
+      if (rest.length > 1) {
+        // "measure vpp B" names the channel last. It is refused, not read
+        // either way, so every verb that names a channel has one order.
+        const named = channel || (lone(rest[1]) ? channelToken(rest[1]) : 'B');
         throw new CommandError(
-          `measure takes a measurement and one channel, got "${args.join(' ')}"`);
+          `measure takes a channel first, then one measurement, e.g. "measure ${named} ${rest[0]}"`);
       }
-      const channel = channelToken(args[1]);
       return new ParsedCommand(action, {},
-        channel ? `measure ${args[0]} ${channel}` : `measure ${args[0]}`, channel);
+        channel ? `measure ${channel} ${rest[0]}` : `measure ${rest[0]}`, channel);
     },
   },
   {
@@ -498,6 +512,28 @@ export const COMMANDS = [
     usage: 'autoscale',
     help: 'Autoscale (Rigol only; PicoScope reports that it has none)',
     parse: () => new ParsedCommand('autoscale', {}, 'autoscale'),
+  },
+  {
+    // Page chrome. The trace and the console keep the width the sidebar had.
+    verb: 'sidebar',
+    usage: 'sidebar [on|off|show|hide]',
+    help: 'Hide or show the controls sidebar, e.g. "sidebar off". '
+      + 'With no argument, say whether it is hidden. The page keeps the choice',
+    parse: (args) => {
+      if (args.length > 1) {
+        throw new CommandError('sidebar takes on, off, show or hide');
+      }
+      const word = args.length ? args[0].toLowerCase() : '';
+      const shown = { on: true, show: true, off: false, hide: false }[word];
+      if (word && shown === undefined) {
+        throw new CommandError(
+          `sidebar takes on, off, show or hide, got "${args[0]}"`);
+      }
+      const parsed = new ParsedCommand(
+        null, word ? { shown } : {}, word ? `sidebar ${word}` : 'sidebar');
+      parsed.local = true;
+      return parsed;
+    },
   },
 ];
 

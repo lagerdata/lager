@@ -913,7 +913,9 @@ lager scope NET_NAME stream web [--box BOX] [--port PORT]
 
 该命令打开 `http://<box>:<port>/scope`。在位于访问网关之后的 Box 上，该链接带有您的登录令牌，与[摄像头串流](/source/zh/reference/cli/webcam#访问受控的-box)相同。令牌过期后，再次运行 `stream web` 即可获得新的链接。
 
-Web 界面是一个无依赖的 HTML5 示波器显示，由 Box 在 `http://<box>:9000/scope` 提供。波形以 LSCP 二进制帧的形式经 WebSocket 到达，由浏览器解码。页面根据所连接设备的能力信息构建控件，因此双通道示波器不会显示通道 C。页面还有一个命令控制台。它接受此 CLI 的大多数命令，另外还接受 `offset`、`hpos`、`vpos` 和 `capabilities`。在控制台中，作用于单个通道的命令可以指定通道：`scale B 0.5`、`coupling B ac`、`probe B 10`、`offset B 0.1`、`vpos B -0.5` 和 `measure vpp B`。请把通道写在数值之前，并且用字母表示，因为 `scale 2` 设置的是 2 V/div。不指定通道时，命令使用第一个已打开的通道，与测量面板相同。控制台中的回复会写明通道。
+Web 界面是一个无依赖的 HTML5 示波器显示，由 Box 在 `http://<box>:9000/scope` 提供。波形以 LSCP 二进制帧的形式经 WebSocket 到达，由浏览器解码。页面根据所连接设备的能力信息构建控件，因此双通道示波器不会显示通道 C。页面还有一个命令控制台。它接受此 CLI 的大多数命令，另外还接受 `offset`、`hpos`、`vpos`、`sidebar` 和 `capabilities`。在控制台中，作用于单个通道的命令可以指定通道：`scale B 0.5`、`coupling B ac`、`probe B 10`、`offset B 0.1`、`vpos B -0.5` 和 `measure B vpp`。请把通道写在最前面。请用字母表示通道，因为 `scale 2` 设置的是 2 V/div。不指定通道时，命令使用第一个已打开的通道，与测量面板相同。控制台中的回复会写明通道。
+
+收起控制侧栏，把全部宽度留给波形和控制台。使用页眉中的 **Hide sidebar** 按钮，或输入 `sidebar off`。`sidebar on` 和 **Show sidebar** 把它显示回来。不带参数的 `sidebar` 说明当前是显示还是隐藏。页面为下次访问保留这个选择。
 
 页面有两个位置控件，它们的工作方式不同：
 

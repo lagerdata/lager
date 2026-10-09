@@ -77,10 +77,10 @@ COMMAND_LINES = [
     "measure fall",
     "measure overshoot",
     "measure all",
-    "measure vpp A",
-    "measure vpp B",
-    "measure freq 2",
-    "measure all B",
+    "measure A vpp",
+    "measure B vpp",
+    "measure 2 freq",
+    "measure B all",
     "trigger",
     "trigger level 1.2 slope rising",
     "trigger edge level 0 source A",
@@ -118,15 +118,20 @@ COMMAND_LINES = [
     "autoscale",
 ]
 
-# Verbs the page answers itself that still name a channel and a value, so
-# they go through the grammar like the rest. They carry no action: there is
-# nothing for the box handler to accept, and sending one would be the bug.
+# Verbs the page answers itself, so they go through the grammar like the rest.
+# They carry no action: there is nothing for the box handler to accept, and
+# sending one would be the bug.
 PAGE_LOCAL_LINES = [
     "vpos",
     "vpos B",
     "vpos B -0.5",
     "vpos -0.5",
     "vpos A 200mV",
+    "sidebar",
+    "sidebar on",
+    "sidebar off",
+    "sidebar show",
+    "sidebar hide",
 ]
 
 pytestmark = pytest.mark.skipif(
@@ -383,23 +388,71 @@ def test_measure_names_its_channel_by_net_not_by_parameter():
     one would be dropped and the first channel measured instead.
     """
     result = _parse_with_node(
-        ["measure vpp", "measure vpp b", "measure freq 2", "measure all B"])
+        ["measure vpp", "measure b vpp", "measure 2 freq", "measure B all"])
 
     assert result["measure vpp"]["channel"] is None
-    assert result["measure vpp b"]["channel"] == "B"
-    assert result["measure freq 2"]["channel"] == "B"
-    assert result["measure all B"] == {
+    assert result["measure b vpp"]["channel"] == "B"
+    assert result["measure 2 freq"]["channel"] == "B"
+    assert result["measure B all"] == {
         "action": "measure_all", "params": {}, "channel": "B", "local": False}
-    for line in ("measure vpp b", "measure freq 2", "measure all B"):
+    for line in ("measure b vpp", "measure 2 freq", "measure B all"):
         assert result[line]["params"] == {}, line
 
 
 def test_measure_refuses_a_channel_the_scope_cannot_have():
-    result = _parse_with_node(["measure vpp Z", "measure vpp 5", "measure vpp A B"])
+    result = _parse_with_node(["measure Z vpp", "measure 5 vpp", "measure A B vpp"])
 
-    assert "channel must be A-D" in result["measure vpp Z"]["error"]
-    assert "channel must be A-D" in result["measure vpp 5"]["error"]
-    assert "one channel" in result["measure vpp A B"]["error"]
+    assert "channel must be A-D" in result["measure Z vpp"]["error"]
+    assert "channel must be A-D" in result["measure 5 vpp"]["error"]
+    assert "one channel" in result["measure A B vpp"]["error"]
+
+
+def test_measure_names_its_channel_first():
+    """As every verb that names a channel does, and as the terminal's
+    `lager scope <net> measure vpp` names the net first."""
+    result = _parse_with_node([
+        "measure vpp B", "measure freq 2", "measure vpp A B",
+        "measure B vpp extra", "measure B"])
+
+    # The channel typed last: refused, with the line in the order to type.
+    assert 'e.g. "measure B vpp"' in result["measure vpp B"]["error"]
+    assert 'e.g. "measure B freq"' in result["measure freq 2"]["error"]
+    assert 'e.g. "measure A vpp"' in result["measure vpp A B"]["error"]
+    assert "channel first" in result["measure B vpp extra"]["error"]
+    assert "measure what?" in result["measure B"]["error"]
+
+
+def test_sidebar_reports_or_sets_and_sends_nothing():
+    """The sidebar is page chrome. A letter in the request would be a channel
+    the box then tried to measure."""
+    result = _parse_with_node([
+        "sidebar", "sidebar on", "sidebar off", "sidebar show", "sidebar hide",
+        "SIDEBAR OFF"])
+
+    assert result["sidebar"] == {
+        "action": None, "params": {}, "channel": None, "local": True}
+    assert result["sidebar on"]["params"] == {"shown": True}
+    assert result["sidebar off"]["params"] == {"shown": False}
+    assert result["sidebar show"]["params"] == {"shown": True}
+    assert result["sidebar hide"]["params"] == {"shown": False}
+    assert result["SIDEBAR OFF"]["params"] == {"shown": False}
+    assert result["SIDEBAR OFF"]["local"] is True
+    assert result["SIDEBAR OFF"]["action"] is None
+
+
+def test_sidebar_refuses_anything_but_on_or_off():
+    result = _parse_with_node(["sidebar left", "sidebar off now", "sidebar 1"])
+
+    for line, row in result.items():
+        assert "sidebar takes" in row["error"], line
+
+
+def test_measure_knows_only_its_own_measurements():
+    """A name that every JavaScript object has is not a measurement."""
+    result = _parse_with_node(["measure constructor", "measure B __proto__"])
+
+    for line in ("measure constructor", "measure B __proto__"):
+        assert "unknown measurement" in result[line]["error"], line
 
 
 def test_a_channel_setting_names_its_channel_first_and_by_letter():

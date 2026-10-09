@@ -48,12 +48,12 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` | 3147 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 4182 |
+| `unit (box)` | `test/unit/box/` | 4192 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 405 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 166 (+1 skipped) |
-| | **Total gated** | **8094** |
+| | **Total gated** | **8104** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -645,7 +645,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_scope_stream_routes.py` | The scope stream ticket and its relay: a ticket for a PicoScope net or any of its channels, a scope of another make refused with the reason, a net that is not a scope not found, a WebSocket path that works as a URL whatever the net is called, and TCP keepalive on an idle browser connection |
 | `test_scope_trigger_coupling.py` | Trigger coupling kept apart from channel coupling: `trigger coupling` never changes the input path, and a PicoScope, which has no trigger filter, refuses it rather than applying one to the input |
 | `test_scope_trigger_mode.py` | Who may change a PicoScope's trigger mode: `run()` keeps auto and normal, single-shot arms, and each trigger control sends only its own setting |
-| `test_scope_ui_channel_nets.py` | The scope web UI sends each channel's controls to that channel's net, hides the empty-plot overlay for real, and never shows a channel state it did not apply |
+| `test_scope_ui_channel_nets.py` | The scope web UI sends each channel's controls to that channel's net, hides the empty-plot overlay for real, never shows a channel state it did not apply, and hides the controls sidebar from the header button and from `sidebar off` |
 | `test_scope_ui_instrument_net.py` | The scope web UI routes each command to the net that owns it: device-wide settings and readbacks to the scope net, per-channel ones to the channel's net |
 | `test_scope_ui_stream.py` | The web scope's credit-paced stream and pushed state: one credit returned for each frame received, only the newest frame kept for drawing, extra credit for a slow round trip, and every control following the daemon's state except a field being edited |
 | `test_usb_scanner_picoscope.py` | PicoScope discovery in `usb_scanner.py`: every Pico Technology product ID is recognized, and the channel count comes from the device rather than from a static table |
