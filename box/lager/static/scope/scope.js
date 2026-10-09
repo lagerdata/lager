@@ -703,6 +703,29 @@ class Console {
   }
 }
 
+/**
+ * Record that a channel is on or off.
+ *
+ * `forgetTrace` drops a persistence layer that still holds the channel.
+ * A readback does not: the first state to arrive would wipe a layer that
+ * nothing has compared yet. A switch or `disable` does, because the capture
+ * on screen still has the channel and would otherwise keep drawing it.
+ */
+function rememberChannelEnabled(app, label, enabled, forgetTrace) {
+  const state = app.channelState && app.channelState.get(label);
+  if (!state) return false;
+  const on = Boolean(enabled);
+  const changed = state.enabled !== on;
+  state.enabled = on;
+  state.enabledKnown = true;
+  if (state.toggle && state.toggle.checked !== on) state.toggle.checked = on;
+  if (!changed) return false;
+  if (forgetTrace) app.persist = null;
+  if (typeof app.requestRedraw === 'function') app.requestRedraw();
+  else app.dirty = true;
+  return true;
+}
+
 class ScopeApp {
   constructor() {
     this.net = null;
@@ -1029,8 +1052,9 @@ class ScopeApp {
       const label = channelName(channel.channel);
       const cs = this.channelState.get(label);
       if (!cs) continue;
-      cs.enabled = Boolean(channel.enabled);
-      if (cs.toggle) cs.toggle.checked = cs.enabled;
+      if (typeof channel.enabled === 'boolean') {
+        rememberChannelEnabled(this, label, channel.enabled, false);
+      }
       if (channel.attenuation && channel.attenuation !== cs.attenuation) {
         cs.attenuation = channel.attenuation;
         this.showProbe(cs, channel.attenuation);
@@ -1124,7 +1148,9 @@ class ScopeApp {
     toggle.checked = index === 0;
     toggle.addEventListener('change', async () => {
       const state = this.channelState.get(label);
-      state.enabled = toggle.checked;
+      // Before the command returns: the capture on screen still holds this
+      // channel, and leaving it up is a trace that has stopped moving.
+      this.setChannelEnabled(label, toggle.checked);
       await this.runCommand(
         toggle.checked ? 'enable_net' : 'disable_net', {},
         `Channel ${label} ${toggle.checked ? 'on' : 'off'}`, state.net, label);
@@ -1333,6 +1359,25 @@ class ScopeApp {
    */
   requestRedraw() {
     this.dirty = true;
+  }
+
+  /**
+   * Whether a channel's trace is drawn.
+   *
+   * A capture keeps the samples it was taken with, so turning a channel off
+   * does not take it out of the frame already on screen. Until a readback or
+   * a switch says, the frame is drawn as it arrived: the strips' first guess
+   * is not a reason to hide a trace.
+   */
+  channelIsShown(label) {
+    const state = this.channelState && this.channelState.get(channelName(label));
+    if (!state || !state.enabledKnown) return true;
+    return Boolean(state.enabled);
+  }
+
+  /** Record that a channel is on or off, and drop the trace already drawn. */
+  setChannelEnabled(label, enabled) {
+    rememberChannelEnabled(this, label, enabled, true);
   }
 
   /** Set a channel's volts/div: on the hardware, in the state, on the control.
@@ -1605,8 +1650,7 @@ class ScopeApp {
       try {
         const body = await this.send('get_net_enabled', {}, state.net);
         if (typeof body.value !== 'boolean') return;
-        state.enabled = body.value;
-        if (state.toggle) state.toggle.checked = body.value;
+        rememberChannelEnabled(this, label, body.value, false);
       } catch { /* older box, or the net is unreachable */ }
       try {
         const body = await this.send('get_scale', {}, state.net);
@@ -2373,6 +2417,7 @@ class ScopeApp {
 
     const overflowed = [];
     frame.channels.forEach((descriptor, index) => {
+      if (!this.channelIsShown(descriptor.channel)) return;
       this.drawTrace(ctx, frame, index, view, width, height,
         this.channelColor(descriptor.channel));
       if (frame.overflowed && frame.overflowed(index)) overflowed.push(descriptor.channel);
@@ -2509,7 +2554,8 @@ class ScopeApp {
     const parsed = render.parseMath(math.expr);
     const a = parsed ? frame.channelIndex(parsed.left) : -1;
     const b = parsed ? frame.channelIndex(parsed.right) : -1;
-    if (a < 0 || b < 0 || frame.envelope) {
+    const bothOn = parsed && this.channelIsShown(parsed.left) && this.channelIsShown(parsed.right);
+    if (a < 0 || b < 0 || !bothOn || frame.envelope) {
       this.drawNote(ctx, width, height, frame.envelope
         ? 'Math is not drawn in roll mode'
         : `Math ${math.expr} needs channels ${parsed ? `${parsed.left} and ${parsed.right}` : ''} on`);
@@ -2558,13 +2604,17 @@ class ScopeApp {
   /** Channel B against channel A. */
   drawXY(ctx, frame, width, height) {
     this.drawGraticule(ctx, width, height);
-    if (frame.channels.length < 2) {
+    const shown = frame.channels
+      .map((descriptor, index) => ({ descriptor, index }))
+      .filter(({ descriptor }) => this.channelIsShown(descriptor.channel));
+    if (shown.length < 2) {
       this.drawNote(ctx, width, height, 'XY needs two channels on');
       return;
     }
-    const [da, db] = frame.channels;
-    const ca = frame.counts(0);
-    const cb = frame.counts(1);
+    const da = shown[0].descriptor;
+    const db = shown[1].descriptor;
+    const ca = frame.counts(shown[0].index);
+    const cb = frame.counts(shown[1].index);
     const stateA = this.channelState.get(da.channel) || {};
     const stateB = this.channelState.get(db.channel) || {};
     // A across ten divisions, B up eight, each at its own volts/div and moved
@@ -2638,6 +2688,7 @@ class ScopeApp {
     this.fadePersistence(seconds);
     layer.ctx.globalAlpha = 0.55;
     frame.channels.forEach((descriptor, index) => {
+      if (!this.channelIsShown(descriptor.channel)) return;
       this.drawTrace(layer.ctx, frame, index, view, width, height,
         this.channelColor(descriptor.channel));
     });
@@ -2691,7 +2742,7 @@ class ScopeApp {
     ctx.stroke();
 
     const index = frame.channelIndex(settings.channel);
-    if (index < 0) {
+    if (index < 0 || !this.channelIsShown(settings.channel)) {
       this.drawNote(ctx, width, height, `FFT: channel ${settings.channel} is off`);
       ctx.restore();
       return;
@@ -3348,14 +3399,10 @@ class ScopeApp {
     // The box does not know where the page draws its traces, so the page
     // adds that to the box's account of its settings.
     if (body && parsed.action === 'get_state') this.reportVerticalPositions();
-    if (body && parsed.channel
+    if (body && label
         && (parsed.action === 'enable_net' || parsed.action === 'disable_net')) {
-      const state = this.channelState && this.channelState.get(parsed.channel);
-      if (state) {
-        state.enabled = parsed.action === 'enable_net';
-        if (state.toggle) state.toggle.checked = state.enabled;
-      }
-      this.refreshMeasurements();
+      rememberChannelEnabled(this, label, parsed.action === 'enable_net', true);
+      if (typeof this.refreshMeasurements === 'function') this.refreshMeasurements();
     }
     return body;
   }
