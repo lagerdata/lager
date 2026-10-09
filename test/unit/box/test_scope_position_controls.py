@@ -2,15 +2,17 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-The scope page's position controls: how the arrow keys step them, when a
-typed value takes effect, and what the console says about them.
+The scope page's position controls: how the arrows step them, from the keys
+or from the buttons inside each field, when a typed value takes effect, and
+what the console says about them.
 
 The two positions differ on purpose. Vertical never leaves the page, so it is
 applied as it is typed; horizontal re-arms the scope for a fresh capture, so
-a typed value waits for Enter. The arrow keys apply at once on both.
+a typed value waits for Enter. The arrows apply at once on both.
 """
 from __future__ import annotations
 
+import html.parser
 import json
 import os
 import pathlib
@@ -21,6 +23,7 @@ import pytest
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 SCOPE_JS = REPO_ROOT / "box" / "lager" / "static" / "scope" / "scope.js"
+INDEX_HTML = REPO_ROOT / "box" / "lager" / "static" / "scope" / "index.html"
 
 pytestmark = pytest.mark.skipif(
     shutil.which("node") is None,
@@ -54,11 +57,11 @@ def _steps(cases):
 
 
 class TestArrowStepping:
-    """The step is the last digit written, never coarser than the scale."""
+    """The step is the last digit written; only a bare 0 takes it from the scale."""
 
     def test_the_last_digit_is_the_one_stepped(self):
-        assert _steps([["1.15", 1, None], ["1.1", 1, None], ["1.1", -1, None]]) == [
-            "1.16", "1.2", "1.0"]
+        assert _steps([["1.15", 1, None], ["1.1", 1, None], ["1.1", -1, None],
+                       ["1.14", -1, None]]) == ["1.16", "1.2", "1.0", "1.13"]
 
     def test_a_carry_keeps_the_places(self):
         """1.20, not 1.2: the next press must still step by 0.01."""
@@ -68,7 +71,22 @@ class TestArrowStepping:
     def test_no_float_noise(self):
         assert _steps([["0.29", 1, None], ["0.7", -1, None]]) == ["0.30", "0.6"]
 
-    def test_the_scale_caps_the_step(self):
+    def test_the_scale_leaves_a_written_digit_alone(self):
+        """At 0.5 V/div a tenth of a division is 0.05 V, finer than the 0.1
+        that "1.1" is written to; the step is still 0.1."""
+        out = _run_js("""
+        const at = (perDiv) => scope.scaleStep(perDiv);
+        process.stdout.write(JSON.stringify([
+          scope.stepPosition('1.1', 1, at(0.5)),
+          scope.stepPosition('1.14', -1, at(0.01)),
+          scope.stepPosition('0.04', -1, at(0.01)),
+          // A zero written to a place is stepped at that place.
+          scope.stepPosition('0.0', 1, at(0.01)),
+        ]));
+        """)
+        assert out == ["1.2", "1.13", "0.03", "0.1"]
+
+    def test_a_bare_zero_steps_a_tenth_of_a_division(self):
         """At 10 mV/div, 0 must not jump a volt: a hundred divisions."""
         out = _run_js("""
         process.stdout.write(JSON.stringify({
@@ -76,18 +94,23 @@ class TestArrowStepping:
           oneV: scope.scaleStep(1),
           halfV: scope.scaleStep(0.5),
           up: scope.stepPosition('0', 1, scope.scaleStep(0.01)),
-          // A finer typed digit still wins over the cap.
+          down: scope.stepPosition('-0', -1, scope.scaleStep(0.01)),
+          // A finer typed digit is stepped as written.
           fine: scope.stepPosition('0.0005', 1, scope.scaleStep(0.01)),
           // A coarse scale does not coarsen a typed value's step.
           coarse: scope.stepPosition('1.1', 1, scope.scaleStep(100)),
+          // Nor a bare zero's past its own units digit.
+          coarseZero: scope.stepPosition('0', 1, scope.scaleStep(100)),
         }));
         """)
         assert out["tenMv"] == pytest.approx(1e-3)
         assert out["oneV"] == pytest.approx(0.1)
         assert out["halfV"] == pytest.approx(0.01)
         assert out["up"] == "0.001"
+        assert out["down"] == "-0.001"
         assert out["fine"] == "0.0006"
         assert out["coarse"] == "1.2"
+        assert out["coarseZero"] == "1"
 
     def test_exponent_form_counts_its_places(self):
         assert _steps([["1e-3", 1, None], ["1.5e-3", 1, None]]) == ["0.002", "0.0016"]
@@ -99,13 +122,21 @@ class TestArrowStepping:
 
 
 class _Field:
-    """A fake input and unit selector, driven through wirePositionField."""
+    """A fake input, unit selector and pair of buttons, driven through
+    wirePositionField.
+
+    Timers run on a fake clock: `runTimer()` fires the one due next and
+    resolves to its delay, and `pending` in the result counts those left.
+    `extra` is whatever the body leaves in `globalThis.extra`.
+    """
 
     PRELUDE = """
     const make = (value) => {
       const handlers = {};
       return {
         value,
+        focused: false,
+        focus() { this.focused = true; },
         addEventListener(type, fn) { (handlers[type] ||= []).push(fn); },
         async fire(type, extra = {}) {
           const event = { preventDefault() {}, ...extra };
@@ -113,11 +144,24 @@ class _Field:
         },
       };
     };
+    const timers = new Map();
+    let lastTimer = 0;
+    globalThis.setTimeout = (fn, ms) => { timers.set(++lastTimer, { fn, ms }); return lastTimer; };
+    globalThis.clearTimeout = (id) => { timers.delete(id); };
+    const runTimer = async () => {
+      const [id, { fn, ms }] = timers.entries().next().value;
+      timers.delete(id);
+      fn();
+      await new Promise((resolve) => setImmediate(resolve));
+      return ms;
+    };
     const input = make('0');
     const unit = make('1');
+    const up = make();
+    const down = make();
     let held = 0;
     const applied = [];
-    const LIMIT = 5e-3;
+    let LIMIT = 5e-3;
     const field = scope.wirePositionField(input, unit, {
       live: %s,
       perDiv: () => 1e-3,
@@ -125,17 +169,31 @@ class _Field:
       set: async (value, options) => {
         held = Math.max(-LIMIT, Math.min(LIMIT, value));
         applied.push([value, options.announce]);
+        // The page's setters show what they applied, which writes the field
+        // when it is not focused. Off by default: nothing here has focus.
+        if (globalThis.echo) field.show(held);
         return held;
       },
+      up,
+      down,
     });
     const key = (k) => input.fire('keydown', { key: k });
     const type = async (text) => { input.value = text; await input.fire('input'); };
+    // A pointer's whole press, as a browser sends it: down, up, then click.
+    const MOUSE = { button: 0, pointerType: 'mouse' };
+    const press = async (button, pointer = MOUSE) => {
+      await button.fire('pointerdown', pointer);
+      await button.fire('pointerup', pointer);
+      await button.fire('click', { detail: 1 });
+    };
     """
 
     @classmethod
     def run(cls, live, body):
         return _run_js(cls.PRELUDE % json.dumps(live) + body + """
-        process.stdout.write(JSON.stringify({ value: input.value, held, applied }));
+        process.stdout.write(JSON.stringify({
+          value: input.value, held, applied, focused: input.focused,
+          pending: timers.size, extra: globalThis.extra ?? null }));
         """)
 
 
@@ -250,6 +308,18 @@ class TestTheVerticalFieldIsLive:
         assert out["held"] == 0.0012345678
 
 
+class TestAValueAppliedElsewhere:
+    """`show()` writes the field with what the page applied."""
+
+    def test_a_field_that_says_it_already_keeps_its_places(self):
+        out = _Field.run(False, "input.value = '1.20'; field.show(1.2);")
+        assert out["value"] == "1.20"
+
+    def test_a_different_value_is_written(self):
+        out = _Field.run(False, "input.value = '1.20'; field.show(1.3);")
+        assert out["value"] == "1.3"
+
+
 class TestAHeldArrowKey:
     """Auto-repeat outruns the box: one set in flight, only the newest queued."""
 
@@ -286,6 +356,250 @@ class TestAHeldArrowKey:
         assert out["sent"] == [pytest.approx(1e-4), pytest.approx(4e-4)]
         assert out["held"] == pytest.approx(4e-4)
         assert out["value"] == "0.0004"
+
+
+class TestTheArrowButtons:
+    """The up and down buttons inside each field: the arrow keys' step, by pointer."""
+
+    def test_they_step_the_last_digit_shown(self):
+        """1.14 down is 1.13, 1.1 up is 1.2, and 1.19 up is 1.20."""
+        out = _Field.run(False, """
+        unit.value = String(1e-3);
+        globalThis.extra = [];
+        for (const [text, button] of [['1.14', down], ['1.1', up], ['1.19', up]]) {
+          await type(text);
+          await press(button);
+          globalThis.extra.push(input.value);
+        }
+        """)
+        assert out["extra"] == ["1.13", "1.2", "1.20"]
+        assert out["applied"] == [[pytest.approx(v), True] for v in (1.13e-3, 1.2e-3, 1.2e-3)]
+
+    def test_a_mouse_press_steps_once_and_focuses_the_field(self):
+        """Focused, as a number field is by its spinner, so the box's readback
+        leaves the field alone between presses. The press's own click is not
+        a second step."""
+        out = _Field.run(False, "await press(up);")
+        assert out["applied"] == [[pytest.approx(1e-4), True]]
+        assert out["value"] == "0.0001"
+        assert out["focused"] is True
+        assert out["pending"] == 0
+
+    def test_a_touch_press_leaves_the_focus_alone(self):
+        """Focusing the field on a touch screen opens the on-screen keyboard."""
+        out = _Field.run(False, "await press(up, { button: 0, pointerType: 'touch' });")
+        assert len(out["applied"]) == 1
+        assert out["focused"] is False
+
+    def test_a_touch_press_keeps_the_places_through_a_carry(self):
+        """Not focused, the field is written by the page's echo of what it
+        applied. That echo is 1.2 for 1.20, which must not cost the next
+        press its hundredth."""
+        out = _Field.run(False, """
+        globalThis.echo = true;
+        unit.value = String(1e-3);
+        const TOUCH = { button: 0, pointerType: 'touch' };
+        await type('1.19');
+        globalThis.extra = [];
+        for (let i = 0; i < 2; i += 1) {
+          await press(up, TOUCH);
+          globalThis.extra.push(input.value);
+        }
+        """)
+        assert out["extra"] == ["1.20", "1.21"]
+
+    def test_a_click_with_no_pointer_is_one_step(self):
+        """A screen reader activates a button with a click and nothing before it."""
+        out = _Field.run(False, "await down.fire('click', { detail: 0 });")
+        assert out["applied"] == [[pytest.approx(-1e-4), True]]
+        assert out["value"] == "-0.0001"
+
+    def test_a_press_from_a_script_is_still_one_step(self):
+        """A click sent by a script, as a browser automation tool sends one,
+        has a `detail` of 0 even at the end of a press."""
+        out = _Field.run(False, """
+        await up.fire('pointerdown', MOUSE);
+        await up.fire('pointerup', MOUSE);
+        await up.fire('click', { detail: 0 });
+        """)
+        assert out["applied"] == [[pytest.approx(1e-4), True]]
+
+    def test_a_press_spends_only_its_own_click(self):
+        """A screen reader's click after a press is still a step."""
+        out = _Field.run(False, "await press(up); await up.fire('click', { detail: 0 });")
+        assert [value for value, _ in out["applied"]] == [
+            pytest.approx(1e-4), pytest.approx(2e-4)]
+
+    def test_held_it_repeats_after_a_pause_until_released(self):
+        out = _Field.run(False, """
+        await up.fire('pointerdown', MOUSE);
+        globalThis.extra = [await runTimer(), await runTimer(), await runTimer()];
+        await up.fire('pointerup', MOUSE);
+        """)
+        pause, *rate = out["extra"]
+        assert pause > rate[0] > 0 and rate[0] == rate[1]
+        assert [value for value, _ in out["applied"]] == [
+            pytest.approx(n * 1e-4) for n in (1, 2, 3, 4)]
+        assert out["value"] == "0.0004"
+        assert out["pending"] == 0
+
+    @pytest.mark.parametrize("end", ["pointerup", "pointerleave", "pointercancel"])
+    def test_a_press_ends_with_the_pointer(self, end):
+        out = _Field.run(False, """
+        await up.fire('pointerdown', MOUSE);
+        await up.fire(%s, MOUSE);
+        """ % json.dumps(end))
+        assert len(out["applied"]) == 1
+        assert out["pending"] == 0
+
+    def test_a_disabled_button_does_nothing(self):
+        out = _Field.run(False, "up.disabled = true; await press(up);")
+        assert out["applied"] == [] and out["pending"] == 0
+
+    def test_only_the_primary_button_presses(self):
+        """A browser sends no click for the other buttons, only the press."""
+        out = _Field.run(False, """
+        const RIGHT = { button: 2, pointerType: 'mouse' };
+        await up.fire('pointerdown', RIGHT);
+        await up.fire('pointerup', RIGHT);
+        """)
+        assert out["applied"] == [] and out["pending"] == 0
+
+    def test_a_typed_value_is_stepped_from_not_applied_first(self):
+        """The horizontal field holds a typed value until Enter. A press steps
+        from it and applies once: one fresh capture, not two, and leaving the
+        field afterwards applies nothing more."""
+        out = _Field.run(False, """
+        await type('0.002'); await press(up); await input.fire('blur');
+        """)
+        assert out["applied"] == [[pytest.approx(0.003), True]]
+        assert out["value"] == "0.003"
+
+    def test_a_clamp_reached_by_a_step_is_shown_in_full(self):
+        """From "5" ms against a 5.12 ms limit: 5.12, not 5."""
+        out = _Field.run(False, """
+        LIMIT = 5.12e-3;
+        unit.value = String(1e-3);
+        held = 5e-3; field.show(held);
+        await press(up);
+        """)
+        assert out["held"] == pytest.approx(5.12e-3)
+        assert out["value"] == "5.12"
+
+
+class _Tree(html.parser.HTMLParser):
+    """Each element with an id: its tag, attributes and ancestors."""
+
+    VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link",
+            "meta", "source", "track", "wbr"}
+
+    def __init__(self):
+        super().__init__()
+        self.stack = []
+        self.by_id = {}
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if "id" in attrs:
+            self.by_id[attrs["id"]] = {
+                "tag": tag, "attrs": attrs, "parents": list(self.stack)}
+        if tag not in self.VOID:
+            self.stack.append((tag, attrs.get("class", "")))
+
+    def handle_endtag(self, tag):
+        while tag not in self.VOID and self.stack and self.stack.pop()[0] != tag:
+            pass
+
+
+class TestTheButtonsAreOnEveryPositionField:
+
+    def test_a_channel_field_gets_up_then_down_inside_it(self):
+        out = _run_js("""
+        const make = (tag) => ({
+          tag, children: [], attrs: {},
+          append(...kids) { this.children.push(...kids); },
+          setAttribute(name, value) { this.attrs[name] = value; },
+        });
+        globalThis.document = { createElement: make };
+        const input = make('input');
+        const { wrap, up, down } = scope.stepperFor(input, 'channel B vertical position');
+        const [field, buttons] = wrap.children;
+        process.stdout.write(JSON.stringify({
+          wrap: [wrap.tag, wrap.className],
+          field: field === input,
+          buttons: [buttons.tag, buttons.className],
+          wired: buttons.children[0] === up && buttons.children[1] === down,
+          each: [up, down].map((b) => [b.tag, b.type, b.className, b.tabIndex,
+                                     b.attrs['aria-label']]),
+        }));
+        """)
+        assert out == {
+            "wrap": ["span", "stepper"],
+            "field": True,
+            "buttons": ["span", "stepper__buttons"],
+            "wired": True,
+            "each": [
+                ["button", "button", "stepper__button", -1,
+                 "Increase channel B vertical position"],
+                ["button", "button", "stepper__button", -1,
+                 "Decrease channel B vertical position"],
+            ],
+        }
+
+    def test_the_horizontal_field_has_the_same_two(self):
+        """Written in the page rather than built, so held to the same shape."""
+        text = INDEX_HTML.read_text()
+        tree = _Tree()
+        tree.feed(text)
+        assert tree.by_id["time-position"]["parents"][-1] == ("span", "stepper")
+        for name, verb in (("time-position-up", "Increase"),
+                           ("time-position-down", "Decrease")):
+            button = tree.by_id[name]
+            assert button["tag"] == "button"
+            assert button["parents"][-2:] == [("span", "stepper"),
+                                              ("span", "stepper__buttons")]
+            assert button["attrs"]["class"] == "stepper__button"
+            assert button["attrs"]["type"] == "button"
+            assert button["attrs"]["tabindex"] == "-1"
+            assert button["attrs"]["aria-label"] == verb + " horizontal position"
+        assert text.index('id="time-position-up"') < text.index('id="time-position-down"')
+        js = SCOPE_JS.read_text()
+        assert "up: el('time-position-up')" in js
+        assert "down: el('time-position-down')" in js
+
+    @staticmethod
+    def _buttons_of_strip(net):
+        """Each stepper button's disabled flag, from a channel B strip."""
+        return _run_js("""
+        const make = () => ({
+          children: [], style: {}, classList: { add() {} },
+          append(...kids) { this.children.push(...kids); },
+          appendChild(kid) { this.children.push(kid); },
+          replaceChildren(...kids) { this.children = kids; },
+          addEventListener() {}, setAttribute() {},
+        });
+        globalThis.document = {
+          documentElement: {}, createElement: make,
+          createTextNode: (text) => ({ text }), getElementById: () => null,
+        };
+        const self = Object.assign(Object.create(scope.ScopeApp.prototype), {
+          channelState: new Map([['B', { enabled: false, net: %s, attenuation: 1 }]]),
+        });
+        const found = [];
+        const walk = (node) => {
+          if (node.className === 'stepper__button') found.push(node.disabled === true);
+          for (const kid of node.children || []) walk(kid);
+        };
+        walk(self.buildChannelStrip('B', 1, {}));
+        process.stdout.write(JSON.stringify(found));
+        """ % json.dumps(net))
+
+    def test_a_wired_channel_has_them(self):
+        assert self._buttons_of_strip("scope2") == [False, False]
+
+    def test_an_unwired_channel_has_them_disabled(self):
+        """With the field, which has no trace to move."""
+        assert self._buttons_of_strip(None) == [True, True]
 
 
 def _execute(line, capabilities=None, state_reply=None, timebase=None):

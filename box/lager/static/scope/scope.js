@@ -104,6 +104,11 @@ const VERTICAL_LIMIT = 4;
 // Going further needs a trigger delay the daemon does not expose.
 const HORIZONTAL_LIMIT = 5;
 
+// A position button held down repeats as a held key does: one step at once,
+// then a pause, then steps at a steady rate.
+const STEP_REPEAT_DELAY_MS = 400;
+const STEP_REPEAT_MS = 80;
+
 const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
 
 // What the position fields can be read in, as [label, factor to the base
@@ -120,11 +125,11 @@ function decimalsIn(text) {
   return Math.max(0, fraction - (match[2] ? Number(match[2]) : 0));
 }
 
-/** The coarsest step an arrow key may take at `perDiv`: a tenth of a
- * division, rounded down to a power of ten.
+/** The step from a bare "0" at `perDiv`: a tenth of a division, rounded
+ * down to a power of ten.
  *
- * Without it "0" steps by a whole unit, which at 10 mV/div is a hundred
- * divisions -- off the screen in one press.
+ * The only digit "0" has is the units, and a whole unit at 10 mV/div is a
+ * hundred divisions -- off the screen in one press.
  */
 function scaleStep(perDiv) {
   if (!(perDiv > 0)) return Infinity;
@@ -133,17 +138,18 @@ function scaleStep(perDiv) {
 
 /** `text` moved one step up (`direction` 1) or down (-1), as text.
  *
- * The step is the last digit written, so "1.15" goes to "1.16" and "1.1" to
- * "1.2"; no coarser than `maxStep`, a power of ten in the same unit. The
- * places are kept through a carry -- "1.19" goes to "1.20", not "1.2" -- or
- * the next press would step ten times as far.
+ * The step is the last digit written, whatever the scale: "1.14" goes down
+ * to "1.13" and "1.1" up to "1.2". The places are kept through a carry --
+ * "1.19" goes to "1.20", not "1.2" -- or the next press would step ten times
+ * as far. A bare "0" steps by `zeroStep` instead, a power of ten in the same
+ * unit (see scaleStep).
  */
-function stepPosition(text, direction, maxStep = Infinity) {
+function stepPosition(text, direction, zeroStep = Infinity) {
   const value = Number(text);
   const start = Number.isFinite(value) && String(text).trim() !== '' ? value : 0;
   let places = decimalsIn(text);
-  if (Number.isFinite(maxStep) && maxStep > 0) {
-    places = Math.max(places, -Math.round(Math.log10(maxStep)));
+  if (start === 0 && places === 0 && Number.isFinite(zeroStep) && zeroStep > 0) {
+    places = Math.max(0, -Math.round(Math.log10(zeroStep)));
   }
   // toFixed takes 0 to 100 places and throws past that, so "1e-101" left the
   // arrow keys doing nothing at all.
@@ -455,9 +461,38 @@ function figures(value, digits) {
   return text.includes('e+') ? String(Math.round(value)) : text;
 }
 
+/** A position field's up and down buttons, inside its right edge where a
+ * number field has its spinner.
+ *
+ * Returns `{wrap, up, down}`: the element that holds the field and its
+ * buttons, to place where the field was, and the buttons to wire.
+ */
+function stepperFor(input, name) {
+  const wrap = document.createElement('span');
+  wrap.className = 'stepper';
+  const buttons = document.createElement('span');
+  buttons.className = 'stepper__buttons';
+  const [up, down] = [['Increase', '\u25b2'], ['Decrease', '\u25bc']].map(([verb, glyph]) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'stepper__button';
+    // Out of the tab order, as a spinner is: the arrow keys do the same from
+    // the field itself.
+    button.tabIndex = -1;
+    button.textContent = glyph;
+    button.title = `${verb} ${name}`;
+    button.setAttribute('aria-label', `${verb} ${name}`);
+    return button;
+  });
+  buttons.append(up, down);
+  wrap.append(input, buttons);
+  return { wrap, up, down };
+}
+
 /**
  * Wire a position field: a number in the unit beside it, held in the base
- * unit and stepped by the arrow keys at its last written digit.
+ * unit and stepped at its last written digit by the arrow keys and by its
+ * `up` and `down` buttons.
  *
  * `set(value, {announce})` applies a value in volts or seconds and returns
  * (or resolves to) what it applied after clamping. With `live` it is called
@@ -466,9 +501,9 @@ function figures(value, digits) {
  * either way.
  *
  * Returns `{show(value)}`, which writes a value applied elsewhere into the
- * field unless someone is editing it.
+ * field unless someone is editing it or it says that value already.
  */
-function wirePositionField(input, unitSelect, { live, perDiv, get, set }) {
+function wirePositionField(input, unitSelect, { live, perDiv, get, set, up, down }) {
   const factor = () => Number(unitSelect.value) || 1;
   const write = (value) => { input.value = formatPosition(value / factor()); };
   const typed = () => {
@@ -517,20 +552,29 @@ function wirePositionField(input, unitSelect, { live, perDiv, get, set }) {
     if (Number.isFinite(applied) && !sameSetting(applied, value)) write(applied);
   };
 
+  // One press of an arrow, a key or a button: the field's last digit moved
+  // one step, and applied at once.
+  const step = async (direction) => {
+    const text = typed() === null ? formatPosition(get() / factor()) : input.value;
+    const next = stepPosition(text, direction, scaleStep(perDiv()) / factor());
+    input.value = next;
+    edited = false;
+    const applied = await apply(Number(next) * factor(), { announce: true });
+    // Not if a later press has moved the field on since. A clamp is written
+    // with as many places as it needs, so a limit of 5.12 ms reached from
+    // "5" reads 5.12 and not 5.
+    if (Number.isFinite(applied) && input.value === next
+        && !sameSetting(applied, Number(next) * factor())) {
+      const shown = applied / factor();
+      const places = Math.max(decimalsIn(next), decimalsIn(formatPosition(shown)));
+      input.value = shown.toFixed(Math.min(places, 100));
+    }
+  };
+
   input.addEventListener('keydown', async (event) => {
     if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
       event.preventDefault();
-      const text = typed() === null ? formatPosition(get() / factor()) : input.value;
-      const next = stepPosition(text, event.key === 'ArrowUp' ? 1 : -1,
-        scaleStep(perDiv()) / factor());
-      input.value = next;
-      edited = false;
-      const applied = await apply(Number(next) * factor(), { announce: true });
-      // Not if a later press has moved the field on since.
-      if (Number.isFinite(applied) && input.value === next
-          && !sameSetting(applied, Number(next) * factor())) {
-        input.value = (applied / factor()).toFixed(decimalsIn(next));
-      }
+      await step(event.key === 'ArrowUp' ? 1 : -1);
     } else if (!live && event.key === 'Enter') {
       event.preventDefault();
       commit();
@@ -555,9 +599,66 @@ function wirePositionField(input, unitSelect, { live, perDiv, get, set }) {
   });
   unitSelect.addEventListener('change', () => write(get()));
 
+  // The buttons step as the arrow keys do, and repeat while held. A mouse
+  // press puts the focus in the field, as a number field's spinner does: a
+  // value typed there is then the one stepped from, not applied first as the
+  // field is left, and the box's readback leaves the field alone between
+  // steps.
+  const stops = [];
+  for (const [button, direction] of [[up, 1], [down, -1]]) {
+    if (!button) continue;
+    let timer = null;
+    // A press steps as it goes down, so the click that ends it is not another
+    // step. Set by the press and spent by its click: a click with no press
+    // before it, such as a screen reader's, is a step of its own. Not told
+    // apart by the click's `detail`, which a click sent by a script leaves
+    // at 0 however it was made.
+    let pressed = false;
+    const stop = () => {
+      clearTimeout(timer);
+      timer = null;
+    };
+    const again = () => {
+      step(direction);
+      timer = setTimeout(again, STEP_REPEAT_MS);
+    };
+    button.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0 || button.disabled) return undefined;
+      if (event.pointerType === 'mouse' && typeof input.focus === 'function') input.focus();
+      pressed = true;
+      stop();
+      timer = setTimeout(again, STEP_REPEAT_DELAY_MS);
+      return step(direction);
+    });
+    // Without this the press takes the focus from the field.
+    button.addEventListener('mousedown', (event) => event.preventDefault());
+    for (const type of ['pointerup', 'pointerleave', 'pointercancel']) {
+      button.addEventListener(type, stop);
+    }
+    button.addEventListener('click', () => {
+      if (button.disabled) return undefined;
+      if (pressed) {
+        pressed = false;
+        return undefined;
+      }
+      return step(direction);
+    });
+    stops.push(stop);
+  }
+  // A press whose end the page never sees, because the window lost focus
+  // with the button down, would otherwise step on to the limit.
+  if (stops.length && typeof window !== 'undefined' && window.addEventListener) {
+    window.addEventListener('blur', () => stops.forEach((stop) => stop()));
+  }
+
   return {
     show(value) {
       if (typeof document !== 'undefined' && document.activeElement === input) return;
+      // A field that already says this value keeps its places: a step that
+      // carried to 1.20 is echoed back as 1.2, and the next step would
+      // then be a tenth.
+      const shown = typed();
+      if (shown !== null && sameSetting(shown, value)) return;
       write(value);
     },
   };
@@ -1179,7 +1280,8 @@ class ScopeApp {
     positionReset.className = 'btn btn--small';
     positionReset.textContent = '0';
     positionReset.title = `Centre channel ${label}`;
-    positionRow.append(positionInput, positionUnit, positionReset);
+    const positionStepper = stepperFor(positionInput, `channel ${label} vertical position`);
+    positionRow.append(positionStepper.wrap, positionUnit, positionReset);
     position.append(positionCaption, positionRow);
     state.positionInput = positionInput;
     state.positionUnit = positionUnit;
@@ -1192,6 +1294,8 @@ class ScopeApp {
       perDiv: () => state.voltsPerDiv,
       get: () => state.positionV,
       set: (volts, options) => this.applyVerticalPosition(label, volts, options),
+      up: positionStepper.up,
+      down: positionStepper.down,
     });
     positionReset.addEventListener('click', () => this.applyVerticalPosition(label, 0));
 
@@ -1207,7 +1311,8 @@ class ScopeApp {
       // The position field goes with them: it needs no net, but a channel
       // that can never be switched on has no trace to move.
       for (const control of [toggle, select, customInput, couplingSelect,
-        probeSelect, positionInput, positionUnit, positionReset]) {
+        probeSelect, positionInput, positionStepper.up, positionStepper.down,
+        positionUnit, positionReset]) {
         control.disabled = true;
         control.title = why;
       }
@@ -2957,7 +3062,8 @@ class ScopeApp {
     // Horizontal position. Typed values wait for Enter or for the field to be
     // left: unlike the vertical position this re-arms the scope, and a
     // capture per keystroke on the way to "0.015" is three windows nobody
-    // asked for. The arrow keys still apply at once; they are the knob.
+    // asked for. The arrows, keys and buttons alike, still apply at once;
+    // they are the knob.
     const timeUnit = el('time-position-unit');
     for (const [text, factor] of HORIZONTAL_UNITS) timeUnit.append(new Option(text, String(factor)));
     timeUnit.value = String(1e-3);
@@ -2966,6 +3072,8 @@ class ScopeApp {
       perDiv: () => Number(el('timebase').value) || 0,
       get: () => this.timePositionS,
       set: (seconds, options) => this.applyTimePosition(seconds, options),
+      up: el('time-position-up'),
+      down: el('time-position-down'),
     });
     el('time-position-reset').addEventListener('click', () => this.applyTimePosition(0));
 
@@ -3336,7 +3444,7 @@ export function consoleLogStep(preferred, step, room) {
 export { ScopeApp, voltsPerDivChoices, timebaseChoices, sampleTraceAt,
          PER_CHANNEL_ACTIONS, isPerChannelAction, channelName,
          pinIndex, colorSlot, sameSetting, si,
-         stepPosition, scaleStep, decimalsIn, wirePositionField };
+         stepPosition, scaleStep, decimalsIn, wirePositionField, stepperFor };
 
 if (typeof document !== 'undefined') {
   const app = new ScopeApp();

@@ -83,14 +83,26 @@
              each way is the whole of it: at the negative limit the trigger
              sits on the right edge and the screen is all pre-trigger, at the
              positive one it sits on the left and the screen is all
-             post-trigger. Text rather than number, so the arrow keys step
-             the last digit written rather than a fixed step. Not a label,
-             because it holds three controls. -->
+             post-trigger. Text rather than number, so the arrows step the
+             last digit written rather than a fixed step; the buttons inside
+             its right edge stand in for a number field's spinner, and are
+             built the same way as a channel's by stepperFor in scope.js.
+             Not a label, because it holds several controls. -->
         <div class="field field--stack">
           <span>Position</span>
           <div class="field-row">
-            <input id="time-position" type="text" inputmode="decimal"
-                   value="0" aria-label="Horizontal position">
+            <span class="stepper">
+              <input id="time-position" type="text" inputmode="decimal"
+                     value="0" aria-label="Horizontal position">
+              <span class="stepper__buttons">
+                <button id="time-position-up" class="stepper__button" type="button"
+                        tabindex="-1" title="Increase horizontal position"
+                        aria-label="Increase horizontal position">&#x25B2;</button>
+                <button id="time-position-down" class="stepper__button" type="button"
+                        tabindex="-1" title="Decrease horizontal position"
+                        aria-label="Decrease horizontal position">&#x25BC;</button>
+              </span>
+            </span>
             <select id="time-position-unit" aria-label="Horizontal position unit"></select>
             <button id="time-position-reset" class="btn btn--small" type="button"
                     title="Centre the trigger">0</button>
