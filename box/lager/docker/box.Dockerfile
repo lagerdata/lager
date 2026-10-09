@@ -3,7 +3,7 @@
 # tag regularly, and a moved base gives every layer above it a new digest -- a
 # full ~1 GB download for every box, from a release that may have changed
 # nothing. Dependabot moves the pin as a reviewable PR (.github/dependabot.yml).
-FROM python:3.12-slim-bookworm@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254
+FROM python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
