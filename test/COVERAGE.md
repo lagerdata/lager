@@ -48,12 +48,12 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` | 3147 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 4160 |
+| `unit (box)` | `test/unit/box/` | 4182 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 405 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 166 (+1 skipped) |
-| | **Total gated** | **8072** |
+| | **Total gated** | **8094** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -639,7 +639,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_scope_cursors.py` | Typed scope cursors: interpolated voltage under each cursor, delta-t and 1/delta-t, a cursor outside the record or on a disabled channel reported as absent, one pair per instrument shared by every net, and the browser's interpolation agreeing with the box's |
 | `test_scope_daemon_client.py` | The box's client for the oscilloscope daemon: pushed captures and state never taken for a reply, an error reply that leaves the connection usable, a lost connection reported as unavailable and a silent one as a timeout, and captures subscribed on a connection of their own with one credit returned per capture, each yielded once and in order |
 | `test_scope_net_migration.py` | Converting saved scope nets to the `scope` and `scope-channel` roles: every old record becomes a channel with its name and pin, exactly one scope net appears per physical unit, and a second read changes nothing |
-| `test_scope_position_controls.py` | The web scope's position fields and their console verbs: arrow keys step the last digit shown and keep its places through a carry, no coarser than a tenth of a division; the horizontal field applies a typed value only on Enter or blur and Escape restores it; `vpos` sends nothing to the box; and `offset` is refused up front on a scope without analog offset |
+| `test_scope_position_controls.py` | The web scope's position fields and their console verbs: the arrow keys and each field's up and down buttons step the last digit shown and keep its places through a carry, and a bare 0 steps a tenth of a division; a held button repeats, and a press is one step; the buttons are on all three fields and off on an unwired channel; the horizontal field applies a typed value only on Enter or blur and Escape restores it; `vpos` sends nothing to the box; and `offset` is refused up front on a scope without analog offset |
 | `test_scope_render.py` | The web scope's drawing arithmetic (`static/scope/render.js`, run under node): the credit window sized from the round trip, the continuous scroll of a rolling screen, per-column extremes that keep envelope pairs whole, zoom windows, math expressions, persistence that fades by elapsed time in steps an 8-bit alpha channel keeps, and an FFT that reads a 1 V RMS tone at 0 dBV in every window |
 | `test_scope_role_gating.py` | Which actions a `scope` net and a `scope-channel` net accept: an instrument setting is carried out from a channel net, and a channel setting sent to the scope net is refused, naming the channel nets that would take it |
 | `test_scope_stream_routes.py` | The scope stream ticket and its relay: a ticket for a PicoScope net or any of its channels, a scope of another make refused with the reason, a net that is not a scope not found, a WebSocket path that works as a URL whatever the net is called, and TCP keepalive on an idle browser connection |

@@ -193,6 +193,41 @@ select:focus-visible, input:focus-visible {
   outline-offset: -1px;
 }
 
+/* A position field with its up and down buttons inside its right edge, where
+ * a number field has its spinner. After the input rule above, whose padding
+ * would otherwise run the text under the buttons. */
+.stepper { position: relative; display: flex; flex: 1; min-width: 0; }
+.stepper input[type="text"] { padding-right: 24px; }
+.stepper__buttons {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  bottom: 1px;
+  width: 18px;
+  display: flex;
+  flex-direction: column;
+}
+.stepper__button {
+  flex: 1;
+  min-height: 0;
+  padding: 0;
+  border: none;
+  border-left: 1px solid var(--border);
+  background: #21262d;
+  color: var(--text-dim);
+  font-size: 7px;
+  line-height: 1;
+  cursor: pointer;
+  user-select: none;
+  /* A held press is a held key, not the start of a scroll that cancels it. */
+  touch-action: none;
+}
+.stepper__button:first-child { border-bottom: 1px solid var(--border); border-top-right-radius: 4px; }
+.stepper__button:last-child { border-bottom-right-radius: 4px; }
+.stepper__button:hover:not(:disabled) { background: #30363d; color: var(--text); }
+.stepper__button:active:not(:disabled) { background: var(--accent); color: #fff; }
+.stepper__button:disabled { opacity: 0.45; cursor: not-allowed; }
+
 .btn {
   background: #21262d;
   color: var(--text);
