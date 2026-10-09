@@ -174,6 +174,17 @@ serves every client on the machine.
 - **Path:** `~/.lager_gateway_auth`, overridable with the
   `LAGER_GATEWAY_AUTH_FILE` environment variable.
 - **Permissions:** writers MUST set mode `0600` (best-effort on non-POSIX).
+- **Writes:** writers SHOULD overwrite an existing store in place, keeping
+  its inode: write the whole document, then truncate to its length. Never
+  truncate first, and never rename a new file over the store. A container
+  shares the store through a single-file bind mount, which is attached to the
+  inode; a rename leaves the container with a copy nothing updates, and a
+  rename inside the container fails on the mount point (`EBUSY`). A store
+  that does not exist yet MAY be created by writing a temporary file and
+  renaming it into place.
+- **Reads:** a reader can catch another process's in-place write half done.
+  Readers SHOULD retry briefly when the content does not parse, and MUST NOT
+  write back a store they could not parse.
 - **Format** (JSON):
 
 ```json

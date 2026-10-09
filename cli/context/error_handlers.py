@@ -70,8 +70,11 @@ def busy_file_error(path):
     actions = ['This usually means the file is bind-mounted into a container on its own. '
                'Mount a directory that contains it instead.']
     if _GATEWAY_AUTH_FILE_NAME in str(path):
-        actions.append('For the gateway login, set LAGER_GATEWAY_AUTH_FILE to a file '
-                       'inside that mounted directory.')
+        actions = ['The gateway login is bind-mounted into a container, and an older lager '
+                   'on one side replaced the file instead of writing it in place.',
+                   'Update lager both on the host and in the container. Then mounting the '
+                   'file works; set LAGER_GATEWAY_AUTH_FILE to the mounted path if it is '
+                   'not ~/.lager_gateway_auth in the container.']
     return f'Could not write {path}: the file is busy.', actions
 
 

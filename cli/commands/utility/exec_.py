@@ -21,6 +21,7 @@ from ...context.ci_detection import (
     exec_in_place_override, EXEC_IN_PLACE_ENV,
 )
 from ...core.param_types import EnvVarType
+from ...gateway_auth import container_store_mount
 
 
 def _run_command_local(section, path, cmd_to_run, mount, extra_args, debug, interactive, tty, user, group, env, passenv, volumes=()):
@@ -69,6 +70,14 @@ def _run_command_local(section, path, cmd_to_run, mount, extra_args, debug, inte
             '-v',
             f'{global_config_path}:/lager/{LAGER_CONFIG_FILE_NAME}'
         ])
+
+    # The gateway login, so nested `lager` calls reach gated boxes. Ahead of the
+    # config and command-line mounts and env, so a project can override it.
+    auth_mount = container_store_mount(
+        (*devenv_config_list(section.get('volumes')), *volumes))
+    if auth_mount:
+        volume, assignment = auth_mount
+        base_command.extend(['-v', volume, f'--env={assignment}'])
 
     # Handle volume mounting
     if mount:

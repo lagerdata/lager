@@ -53,6 +53,7 @@ def _run_terminal(tmp_path, monkeypatch, cli_args, devenv_config):
     # Deterministic environment: no SSH agent, empty HOME (so no ssh-key mounts).
     monkeypatch.delenv('SSH_AUTH_SOCK', raising=False)
     monkeypatch.setenv('HOME', str(tmp_path))
+    monkeypatch.delenv('LAGER_GATEWAY_AUTH_FILE', raising=False)
 
     config_path = str(tmp_path / '.lager')
     data = {'DEVENV': devenv_config}
@@ -81,8 +82,9 @@ def test_plain_run_mounts_project_dir(tmp_path, monkeypatch):
     assert argv[:4] == ['docker', 'run', '-it', '--init']
     assert f'{tmp_path}:/app' in _values_for(argv, '-v')
     assert argv[-1] == 'example/img'
-    # No custom env/volumes requested.
-    assert '--env' not in argv
+    # No custom env/volumes requested: the only env is the gateway login's.
+    assert _values_for(argv, '--env') == [
+        'LAGER_GATEWAY_AUTH_FILE=/lager/.lager_gateway_auth']
 
 
 def test_cli_volume_env_and_passenv(tmp_path, monkeypatch):
@@ -236,6 +238,8 @@ def test_volume_expands_project_root_and_home(tmp_path, monkeypatch):
 def test_exec_volumes_and_environment(tmp_path, monkeypatch):
     """``lager exec`` honors config volumes/environment and the --volume flag."""
     monkeypatch.delenv('SSH_AUTH_SOCK', raising=False)
+    monkeypatch.setenv('HOME', str(tmp_path))
+    monkeypatch.delenv('LAGER_GATEWAY_AUTH_FILE', raising=False)
     section = {'image': 'example/img', 'mount_dir': '/app', 'shell': '/bin/bash',
                'volumes': ['cfgvol:/v'], 'environment': ['CFG=1']}
     config_path = str(tmp_path / '.lager')
@@ -260,3 +264,39 @@ def test_exec_volumes_and_environment(tmp_path, monkeypatch):
     assert 'clivol:/w' in vols
     assert '--env=CFG=1' in argv
     assert '--env=CLI=2' in argv
+    # The gateway login, ahead of the project's own env so it can override it.
+    assert f'{tmp_path}/.lager_gateway_auth:/lager/.lager_gateway_auth' in vols
+    auth_env = argv.index('--env=LAGER_GATEWAY_AUTH_FILE=/lager/.lager_gateway_auth')
+    assert auth_env < argv.index('--env=CFG=1')
+
+
+def test_terminal_shares_the_gateway_login(tmp_path, monkeypatch):
+    """The file is created before Docker sees it, or Docker makes a directory."""
+    result, argv = _run_terminal(tmp_path, monkeypatch, [], BASE_CFG)
+
+    assert result.exit_code == 0, result.output
+    assert f'{tmp_path}/.lager_gateway_auth:/lager/.lager_gateway_auth' in _values_for(argv, '-v')
+    store = tmp_path / '.lager_gateway_auth'
+    assert store.read_text() == '{}'
+    assert oct(store.stat().st_mode & 0o777) == '0o600'
+
+
+def test_terminal_keeps_an_existing_login(tmp_path, monkeypatch):
+    (tmp_path / '.lager_gateway_auth').write_text('{"boxes": {"b": "u"}}')
+    result, _ = _run_terminal(tmp_path, monkeypatch, [], BASE_CFG)
+
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / '.lager_gateway_auth').read_text() == '{"boxes": {"b": "u"}}'
+
+
+def test_terminal_leaves_a_project_login_mount_alone(tmp_path, monkeypatch):
+    """A project that already mounts the login keeps exactly its own setup."""
+    cfg = {**BASE_CFG,
+           'volumes': ['~/.lager_gateway_auth:/lager/.lager_gateway_auth'],
+           'environment': ['LAGER_GATEWAY_AUTH_FILE=/lager/.lager_gateway_auth']}
+    result, argv = _run_terminal(tmp_path, monkeypatch, [], cfg)
+
+    assert result.exit_code == 0, result.output
+    assert [v for v in _values_for(argv, '-v') if v.endswith(':/lager/.lager_gateway_auth')] == [
+        f'{tmp_path}/.lager_gateway_auth:/lager/.lager_gateway_auth']
+    assert _values_for(argv, '--env') == ['LAGER_GATEWAY_AUTH_FILE=/lager/.lager_gateway_auth']

@@ -33,6 +33,9 @@
     deployments. Access tokens are short-lived; they are refreshed
     transparently, replaying the cookies the auth server set at login.
 
+    A container shares the login by bind-mounting that file. Saves overwrite
+    it in place, so the mount stays live in both directions.
+
     A CI runner has no person to be, so it uses the other credential
     source: a token its auth server minted, handed to the job in
     ``LAGER_GATEWAY_TOKEN``. Such a *pinned* token outranks anything in the
@@ -53,6 +56,11 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
+
+try:
+    import fcntl
+except ImportError:  # Windows
+    fcntl = None
 
 import requests
 
@@ -166,8 +174,21 @@ def pinned_token():
     return (os.environ.get(PINNED_TOKEN_ENV) or '').strip() or None
 
 
+STORE_FILE_ENV = 'LAGER_GATEWAY_AUTH_FILE'
+# Where `lager devenv terminal` and `lager exec` mount the store, next to the
+# global config they already mount at /lager/.lager.
+CONTAINER_STORE_PATH = '/lager/.lager_gateway_auth'
+
+# A reader can land inside another process's in-place write and see a partial
+# file. The write is one short syscall, so a brief retry reads the finished
+# file. A store that is still unparseable after that is genuinely bad, and is
+# remembered so that every later read in the process does not wait again.
+_READ_ATTEMPTS = 4
+_READ_RETRY_SECONDS = 0.05
+_unparseable = set()
+
 def _store_path():
-    override = os.environ.get('LAGER_GATEWAY_AUTH_FILE')
+    override = os.environ.get(STORE_FILE_ENV)
     if override:
         return Path(override)
     return Path.home() / '.lager_gateway_auth'
@@ -184,40 +205,67 @@ def _load_store():
     raises AttributeError from the caller's own `.get`. Both arrived as a
     traceback printed over the live `lager boxes` table.
 
+    Unparseable content is retried briefly first: saves are written in place
+    (see `_save_store`), so a read can catch one half done.
+
     A failed read writes nothing back, so reading it as empty costs a login
     at worst and never destroys a stored session.
     """
-    try:
-        with open(_store_path(), 'r') as f:
-            store = json.load(f)
-    except (OSError, ValueError):
-        return {}
-    return store if isinstance(store, dict) else {}
+    path = _store_path()
+    for attempt in range(_READ_ATTEMPTS):
+        try:
+            with open(path, 'r') as f:
+                signature = _signature(f)
+                text = f.read()
+        except OSError:
+            return {}
+        try:
+            store = json.loads(text)
+        except ValueError:
+            if signature in _unparseable:
+                return {}
+            if attempt + 1 < _READ_ATTEMPTS:
+                time.sleep(_READ_RETRY_SECONDS)
+                continue
+            _unparseable.add(signature)
+            return {}
+        return store if isinstance(store, dict) else {}
+    return {}
+
+
+def _signature(f):
+    st = os.fstat(f.fileno())
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
 
 
 def _save_store(store):
-    """Write the store atomically, so no reader ever sees a partial file.
+    """Write the store, overwriting an existing file in place.
 
-    Writing in place would truncate first, leaving a window where a
-    concurrent reader (another thread, or a second `lager` process) parses an
-    empty or half-written file as "no session" and re-prompts for a login the
-    user already has. The temp file is created mode 0600 before it holds a
-    token, never 0644-then-chmod.
+    In place keeps the file's inode, and the inode is what a single-file bind
+    mount is attached to. Mounting the store into a container is the obvious
+    way to share a login with it (`-v ~/.lager_gateway_auth:...`, a dev
+    container's `mounts`), and it only stays live while both sides keep that
+    inode. The old save wrote a temp file and renamed it over the store,
+    which left a container holding a file nothing updated any more, and made
+    the container's own saves fail on the mount point (EBUSY).
+
+    The cost is that a reader in another process can catch a write half done.
+    `_load_store` retries briefly for that, and the write never truncates
+    first, so there is no window in which the file is empty. Writers on one
+    machine take an exclusive lock, so two saves cannot interleave.
+
+    A store that does not exist yet is created atomically, mode 0600 before
+    it holds a token: nothing can be mounted on a path that does not exist.
 
     A store identical to the one on disk is not written at all: most commands
     change nothing, and a write that is not needed is one that cannot fail.
-
-    When the rename itself is refused, the store is written in place instead.
-    The case is a store bind-mounted into a container as a single file: the
-    path is a mount point, and Linux will not rename over one (EBUSY, or
-    EXDEV on some runtimes). In-place loses atomicity for a concurrent
-    reader, which is still better than every command failing. It also keeps
-    the inode, which is the only way a write inside the container reaches
-    the host's copy of the file.
     """
     if _load_store() == store:
         return
     path = _store_path()
+    if path.exists():
+        _write_store_in_place(path, store)
+        return
     tmp = path.with_name(f'{path.name}.{os.getpid()}.tmp')
     try:
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -251,14 +299,61 @@ _REPLACE_REFUSED_ERRNOS = frozenset({errno.EBUSY, errno.EXDEV, errno.EPERM})
 def _write_store_in_place(path, store):
     """Overwrite the store through its existing inode.
 
-    The 0600 mode only applies if this creates the file; an existing file
-    keeps the mode it has, so this never loosens one the user tightened.
+    One write of the whole file, then a truncate to its length: never
+    truncate first, which would leave a window where the file is empty.
+
+    The file is set to 0600 on every write, not only when this creates it.
+    Setups that share the store with a container create it ahead of time
+    with `touch`, which leaves it 0644, and the store holds the refresh
+    cookies. Saves that renamed a new file into place hid this, because
+    each one made a fresh 0600 file.
     """
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, 'w') as f:
-        json.dump(store, f, indent=2)
+    data = json.dumps(store, indent=2).encode()
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o600)
+    with os.fdopen(fd, 'wb') as f:
+        if fcntl is not None:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        try:
+            os.fchmod(f.fileno(), 0o600)
+        except (OSError, AttributeError):  # no fchmod on Windows
+            pass
+        f.write(data)
+        f.truncate()
         f.flush()
         os.fsync(f.fileno())
+
+
+def container_store_mount(volumes=()):
+    """(volume spec, env assignment) that share the store with a container.
+
+    The file itself is mounted. Saves keep its inode (see `_save_store`), so
+    the mount stays live in both directions as long as both sides run a CLI
+    that saves in place.
+
+    The file is created first if it is missing: Docker creates a missing
+    bind-mount source as a directory, which would leave the host with a
+    directory where its login belongs.
+
+    `volumes` are the mounts the project already asks for. One that already
+    targets the container path wins, and nothing is added.
+    """
+    for spec in volumes:
+        if any(part.rstrip('/') == CONTAINER_STORE_PATH for part in str(spec).split(':')[1:]):
+            return None
+    path = Path(os.path.realpath(_store_path()))
+    try:
+        if not path.exists():
+            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, 'w') as f:
+                f.write('{}')
+    except FileExistsError:
+        pass
+    except OSError:
+        return None
+    if not path.is_file():
+        return None
+    return (f'{path}:{CONTAINER_STORE_PATH}', f'{STORE_FILE_ENV}={CONTAINER_STORE_PATH}')
 
 
 # ---------------------------------------------------------------------------

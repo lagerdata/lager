@@ -72,6 +72,32 @@ CLI 会随每个发往 Box 的请求发送这个令牌。它优先于任何已�
 
 如果网关拒绝该令牌，命令会立即失败，并指出拒绝它的认证服务器。此时没有可退回的第二种凭据。
 
+### 在容器中使用您的会话
+
+要在 Docker 容器中使用您的会话，请把会话文件挂载到容器中。这样容器和您的计算机使用同一个会话。一边的登录或续期会立即在另一边生效。
+
+`lager devenv terminal` 和 `lager exec` 会自动完成这一步。对于用其他方式启动的容器，请自己添加挂载。
+
+开发容器（`devcontainer.json`，用于 VS Code 或 Cursor）：
+
+```json
+"initializeCommand": "touch ~/.lager_gateway_auth",
+"mounts": [
+  "source=${localEnv:HOME}/.lager_gateway_auth,target=/root/.lager_gateway_auth,type=bind"
+]
+```
+
+`docker run`：
+
+```bash
+touch ~/.lager_gateway_auth
+docker run -v ~/.lager_gateway_auth:/root/.lager_gateway_auth ...
+```
+
+- 请确保该文件在容器启动之前已经存在。如果文件不存在，Docker 会创建一个同名的目录。
+- 在您的计算机和容器中，都要使用包含此更改的 CLI 版本或更新的版本。较早的版本在保存时会替换该文件，于是容器会一直使用旧的副本，而且容器自己的保存也会失败。
+- 如果容器用户不是 `root`，请把挂载目标改为该用户的主目录。或者在容器中把 `LAGER_GATEWAY_AUTH_FILE` 设置为挂载目标路径。
+
 ## 检查您的状态
 
 当情况看起来不对时，`lager whoami` 是第一个要运行的命令：

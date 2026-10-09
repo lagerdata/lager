@@ -90,6 +90,8 @@ lager devenv terminal
 
 `terminal` 还会自动为您配置好 SSH。它转发您的 `SSH_AUTH_SOCK` agent 套接字，并在 `~/.ssh/id_ed25519` 和 `~/.ssh/known_hosts` 存在时以只读方式挂载它们。它也会把您的全局 `.lager` 配置挂载到容器中，这样嵌套调用的 `lager` 命令也是已认证的。
 
+`terminal` 和 `lager exec` 还会把您的 `lager login` 会话（`~/.lager_gateway_auth`）挂载到 `/lager/.lager_gateway_auth`，并把 `LAGER_GATEWAY_AUTH_FILE` 设置为该路径。这样嵌套调用的 `lager` 命令可以使用位于访问网关之后的 Box，而且一边的登录会立即在另一边生效。如果该文件不存在，它们会先创建一个空文件。
+
 用 `--info` 可以查看将要执行什么，而不真正启动任何东西：
 
 ```bash
