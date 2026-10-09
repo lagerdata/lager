@@ -47,13 +47,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 3147 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 4195 |
+| `unit (cli)` | `test/unit/cli/` | 3175 (+2 xfailed) |
+| `unit (box)` | `test/unit/box/` | 4199 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 405 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 166 (+1 skipped) |
-| | **Total gated** | **8107** |
+| | **Total gated** | **8139** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -480,7 +480,7 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 294 files)
+### Local Unit Tests (`test/unit/` -- 295 files)
 
 #### Box Unit Tests (`test/unit/box/` -- 159 files)
 
@@ -650,7 +650,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_scope_ui_stream.py` | The web scope's credit-paced stream and pushed state: one credit returned for each frame received, only the newest frame kept for drawing, extra credit for a slow round trip, and every control following the daemon's state except a field being edited |
 | `test_usb_scanner_picoscope.py` | PicoScope discovery in `usb_scanner.py`: every Pico Technology product ID is recognized, and the channel count comes from the device rather than from a static table |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 115 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 116 files)
 
 | File | What it tests |
 |------|---------------|
