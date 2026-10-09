@@ -3013,6 +3013,16 @@ class ScopeApp {
       if (this.streamOpen()) this.disconnect(); else this.connect();
     });
 
+    const sidebarButton = el('btn-sidebar');
+    if (sidebarButton) {
+      sidebarButton.addEventListener('click', () => {
+        this.setSidebar(this.sidebarIsHidden());
+      });
+      // The script in index.html may already have hidden it, before this
+      // module ran. The button should say the same thing.
+      if (this.sidebarIsHidden()) this.setSidebar(false);
+    }
+
     el('net-select').addEventListener('change', async (event) => {
       this.disconnect();
       this.net = event.target.value || null;
@@ -3289,7 +3299,10 @@ class ScopeApp {
       this.console.error(e.message);
       return undefined;
     }
-    if (parsed.local) return this.verticalPositionCommand(parsed);
+    if (parsed.local) {
+      if (verb === 'sidebar') return this.sidebarCommand(parsed);
+      return this.verticalPositionCommand(parsed);
+    }
     // Through the same clamp and note as the sidebar field. Sent as typed,
     // `hpos 100ms` at 1 ms/div was stored a hundred divisions off screen,
     // with nothing said. A bare `hpos` is a read and goes to the box below.
@@ -3345,6 +3358,51 @@ class ScopeApp {
       this.refreshMeasurements();
     }
     return body;
+  }
+
+  /** Whether the controls sidebar is hidden. */
+  sidebarIsHidden() {
+    return document.documentElement.classList.contains(SIDEBAR_HIDDEN_CLASS);
+  }
+
+  /**
+   * Hide or show the controls sidebar.
+   *
+   * `shown` false gives the plot the sidebar's column (and, on a narrow
+   * window, its row). The choice is kept for the next visit. A button click
+   * stays quiet; a console command announces.
+   */
+  setSidebar(shown, announce = false) {
+    const aside = document.getElementById('scope-controls');
+    const button = el('btn-sidebar');
+    // A control inside the sidebar has the keyboard. Move it before the
+    // sidebar leaves, or the next keystroke lands nowhere.
+    if (!shown && aside && button && typeof aside.contains === 'function'
+        && aside.contains(document.activeElement)) {
+      button.focus();
+    }
+    document.documentElement.classList.toggle(SIDEBAR_HIDDEN_CLASS, !shown);
+    if (button) {
+      button.setAttribute('aria-expanded', shown ? 'true' : 'false');
+      button.textContent = shown ? 'Hide sidebar' : 'Show sidebar';
+      button.title = shown
+        ? 'Hide the controls sidebar' : 'Show the controls sidebar';
+    }
+    try {
+      localStorage.setItem(SIDEBAR_STORAGE_KEY, shown ? 'shown' : 'hidden');
+    } catch { /* a private window keeps the choice for this visit */ }
+    if (announce) this.console.write(shown ? 'sidebar shown' : 'sidebar hidden');
+  }
+
+  /** `sidebar`: hide or show the controls, or say which it is. */
+  sidebarCommand(parsed) {
+    if (!Object.prototype.hasOwnProperty.call(parsed.params, 'shown')) {
+      const hidden = this.sidebarIsHidden();
+      this.console.write(hidden ? 'sidebar hidden' : 'sidebar shown');
+      return { shown: !hidden };
+    }
+    this.setSidebar(parsed.params.shown, true);
+    return { shown: parsed.params.shown };
   }
 
   /** `vpos`: read or move a trace on screen. Nothing is sent to the box. */
@@ -3412,6 +3470,11 @@ class ScopeApp {
 export const CONSOLE_LOG_DEFAULT = 150;
 export const CONSOLE_LOG_MIN = 48;
 const CONSOLE_LOG_KEY = 'lager-scope-console-log';
+
+// The controls sidebar. The same two strings are in the script in index.html,
+// which applies a remembered hidden sidebar before the controls are parsed.
+export const SIDEBAR_HIDDEN_CLASS = 'is-sidebar-hidden';
+export const SIDEBAR_STORAGE_KEY = 'lager-scope-sidebar';
 
 /**
  * Log height after a drag.

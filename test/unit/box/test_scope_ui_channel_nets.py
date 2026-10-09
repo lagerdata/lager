@@ -96,6 +96,161 @@ class TestTheOverlayCanActuallyBeHidden:
         assert "display:" in block.group(0)
 
 
+class TestTheSidebarCollapses:
+    """Hiding the controls gives the plot that column. On a narrow window the
+    panel stacks under the plot, so hiding it gives the plot that row too."""
+
+    def test_a_hidden_sidebar_drops_its_column(self):
+        css = SCOPE_CSS.read_text()
+        rule = re.search(r"html\.is-sidebar-hidden \.layout \{[^}]*\}", css)
+        assert rule, "hiding the sidebar leaves its 280px column beside the plot"
+        assert "grid-template-columns" in rule.group(0)
+        assert "280px" not in rule.group(0)
+        hidden = re.search(r"html\.is-sidebar-hidden \.controls \{[^}]*\}", css)
+        assert hidden and "display: none" in hidden.group(0)
+        # The narrow layout later sets display:grid on .controls. A plain
+        # display:none loses to that, and the panel comes back under the plot.
+        assert "!important" in hidden.group(0)
+
+    def test_a_narrow_window_drops_the_stacked_row(self):
+        css = SCOPE_CSS.read_text()
+        narrow = css.split("@media (max-width: 820px)", 1)[1]
+        assert "grid-template-rows: minmax(0, 1fr)" in narrow
+        assert "--plot-reserve: 160px" in narrow
+
+    def test_the_page_remembers_with_the_key_the_script_reads(self):
+        html = (SCOPE_DIR / "index.html").read_text()
+        js = SCOPE_JS.read_text()
+        for name in ("lager-scope-sidebar", "is-sidebar-hidden"):
+            assert name in html and name in js, name
+        assert 'id="btn-sidebar"' in html
+        assert 'id="scope-controls"' in html
+
+
+@needs_node
+class TestSidebarCommandHidesItAndSendsNothing:
+    """`sidebar` is page chrome. Sending it would ask the box to run a command
+    it does not have."""
+
+    HARNESS = """
+    function classList(initial) {
+      const names = new Set(initial || []);
+      return {
+        add(name) { names.add(name); },
+        contains(name) { return names.has(name); },
+        toggle(name, force) {
+          const on = force === undefined ? !names.has(name) : Boolean(force);
+          if (on) names.add(name); else names.delete(name);
+          return on;
+        },
+      };
+    }
+    function install(hidden) {
+      const button = {
+        attrs: {}, textContent: 'Hide sidebar', title: '', focused: false,
+        setAttribute(key, value) { this.attrs[key] = value; },
+        focus() { this.focused = true; },
+      };
+      const inside = { id: 'level' };
+      const aside = { contains(node) { return node === inside; } };
+      const root = { classList: classList(hidden ? ['is-sidebar-hidden'] : []) };
+      const store = {};
+      globalThis.document = {
+        documentElement: root,
+        activeElement: inside,
+        getElementById(id) {
+          if (id === 'btn-sidebar') return button;
+          if (id === 'scope-controls') return aside;
+          return null;
+        },
+      };
+      globalThis.localStorage = {
+        getItem(key) {
+          return Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null;
+        },
+        setItem(key, value) { store[key] = String(value); },
+      };
+      const lines = [];
+      const sent = [];
+      const self = Object.create(ScopeApp.prototype);
+      self.console = {
+        write(text) { lines.push(text); },
+        error(text) { lines.push('ERR ' + text); },
+      };
+      self.runCommand = async (...args) => { sent.push(args); return {}; };
+      return { self, button, root, store, lines, sent };
+    }
+    """
+
+    def run(self, *lines, hidden=False):
+        return _run_js(self.HARNESS + """
+        const world = install(%s);
+        for (const line of %s) {
+          await ScopeApp.prototype.execute.call(world.self, line);
+        }
+        process.stdout.write(JSON.stringify({
+          lines: world.lines, sent: world.sent,
+          hidden: world.root.classList.contains('is-sidebar-hidden'),
+          text: world.button.textContent,
+          expanded: world.button.attrs['aria-expanded'] || null,
+          focused: world.button.focused,
+          store: world.store,
+        }));
+        """ % ("true" if hidden else "false", json.dumps(list(lines))))
+
+    def test_sidebar_off_hides_it_and_sends_nothing(self):
+        out = self.run("sidebar off")
+        assert out["sent"] == []
+        assert out["hidden"] is True
+        assert out["lines"] == ["sidebar hidden"]
+        assert out["text"] == "Show sidebar"
+        assert out["expanded"] == "false"
+        assert out["focused"] is True
+        assert out["store"] == {"lager-scope-sidebar": "hidden"}
+
+    def test_sidebar_on_shows_it_again(self):
+        out = self.run("sidebar hide", "sidebar show", hidden=True)
+        assert out["sent"] == []
+        assert out["hidden"] is False
+        assert out["lines"] == ["sidebar hidden", "sidebar shown"]
+        assert out["text"] == "Hide sidebar"
+        assert out["expanded"] == "true"
+        assert out["store"] == {"lager-scope-sidebar": "shown"}
+
+    def test_sidebar_alone_reports_and_changes_nothing(self):
+        out = self.run("sidebar", hidden=True)
+        assert out["sent"] == []
+        assert out["hidden"] is True
+        assert out["lines"] == ["sidebar hidden"]
+        assert out["text"] == "Hide sidebar"
+        assert out["store"] == {}
+
+    def test_a_bad_sidebar_word_is_an_error_and_sends_nothing(self):
+        out = self.run("sidebar left", "sidebar off now")
+        assert out["sent"] == []
+        assert out["hidden"] is False
+        assert out["store"] == {}
+        assert len(out["lines"]) == 2
+        assert all(line.startswith("ERR ") and "sidebar takes" in line
+                   for line in out["lines"])
+
+    def test_the_button_hides_it_without_a_console_line(self):
+        out = _run_js(self.HARNESS + """
+        const world = install(false);
+        ScopeApp.prototype.setSidebar.call(world.self, false);
+        process.stdout.write(JSON.stringify({
+          lines: world.lines,
+          hidden: world.root.classList.contains('is-sidebar-hidden'),
+          text: world.button.textContent,
+          store: world.store,
+        }));
+        """)
+        assert out == {
+            "lines": [], "hidden": True, "text": "Show sidebar",
+            "store": {"lager-scope-sidebar": "hidden"},
+        }
+
+
 @needs_node
 class TestAChannelResolvesToItsOwnNet:
     """netForChannel maps by pin, because that is what binds net to channel."""
@@ -453,7 +608,7 @@ class TestConsoleChannelCommandsFollowThePanel:
         """The box, not the page, says whether a channel that is off can be
         measured, so the request goes out and its answer is shown."""
         out = self.run({"A": False, "B": True},
-                       "measure vpp A", "measure freq 2", "measure all B")
+                       "measure A vpp", "measure 2 freq", "measure B all")
         assert out["sent"] == [["measure_vpp", "scope1"],
                                ["measure_freq", "scope2"],
                                ["measure_all", "scope2"]]
@@ -464,7 +619,7 @@ class TestConsoleChannelCommandsFollowThePanel:
         assert out["error"] == "No channel is on. Switch one on to measure."
 
     def test_a_named_channel_is_still_sent_with_none_on(self):
-        out = self.run({"A": False, "B": False}, "measure vpp B")
+        out = self.run({"A": False, "B": False}, "measure B vpp")
         assert out["sent"] == [["measure_vpp", "scope2"]]
         assert out["error"] is None
 

@@ -49,6 +49,23 @@
          the first thing to look at when a trace will not hold still. -->
     <span id="trig-status" class="trig trig--stop" role="status">STOP</span>
     <span id="link" class="link link--down">disconnected</span>
+    <button id="btn-sidebar" class="btn btn--small" type="button"
+            aria-expanded="true" aria-controls="scope-controls"
+            title="Hide the controls sidebar">Hide sidebar</button>
+    <!-- Before the sidebar is parsed, so a remembered "hidden" does not flash
+         on screen. The key and the class are SIDEBAR_STORAGE_KEY and
+         SIDEBAR_HIDDEN_CLASS in scope.js. -->
+    <script>
+      try {
+        if (localStorage.getItem('lager-scope-sidebar') === 'hidden') {
+          document.documentElement.classList.add('is-sidebar-hidden');
+          var sidebarButton = document.getElementById('btn-sidebar');
+          sidebarButton.setAttribute('aria-expanded', 'false');
+          sidebarButton.textContent = 'Show sidebar';
+          sidebarButton.title = 'Show the controls sidebar';
+        }
+      } catch (e) { /* storage blocked: the sidebar stays shown */ }
+    </script>
     <button id="connect" class="btn btn--primary" type="button">Connect</button>
   </header>
 
@@ -62,7 +79,7 @@
       <div id="overflow-warning" class="overflow-warning" hidden></div>
     </section>
 
-    <aside class="controls" aria-label="Controls">
+    <aside id="scope-controls" class="controls" aria-label="Controls">
       <div class="group">
         <div class="group__title">Acquisition</div>
         <div class="row">

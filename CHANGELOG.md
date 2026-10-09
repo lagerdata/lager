@@ -37,6 +37,9 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   an FFT pane, vertical and horizontal position, and a trigger-level marker. A badge shows
   whether the scope triggered, auto-triggered, rolled or stopped, and the console resizes by
   drag or with the arrow keys.
+- **The scope page hides its controls sidebar.** **Hide sidebar** in the header does it, and
+  so does `sidebar off` in the page console. `sidebar on` brings the sidebar back. `sidebar`
+  with no argument says which it is. The page keeps the choice for the next visit.
 - **Roll mode on a PicoScope 2202, 2203, 2204(A) or 2205(A).** At 50 ms/div and slower in
   auto, the screen scrolls as the signal arrives. `lager scope <net> roll auto|on|off` sets it.
 - **More PicoScope settings in `lager scope`:** `trigger holdoff`, `acquire` for averaging,
@@ -129,7 +132,7 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   there is nothing to measure"), so no console reading came from the wrong channel. These
   commands now use the first channel that is on, as the measurements panel does, and each
   reply names the channel, as in `channel B: Vertical scale 0.5 V/div`. A command can name a
-  channel: `scale B 0.5`, `coupling B ac`, `probe B 10`, `offset B 0.1`, `measure vpp B`. With
+  channel: `scale B 0.5`, `coupling B ac`, `probe B 10`, `offset B 0.1`, `measure B vpp`. With
   every channel off, `measure` says so without sending a request.
 - **A PicoScope triggers at the level asked for.** The trigger thresholds sat ten percent
   below the requested level, with a hysteresis scaled to the level, so at the default 0 V any
