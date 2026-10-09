@@ -896,6 +896,101 @@ class TestAControlChangeRedrawsTheFrameOnScreen:
 
 
 @needs_node
+class TestADisabledChannelLeavesThePlot:
+    """Turning a channel off stops its samples. The frame already on screen
+    still holds them, and drawing that frame left a trace that had frozen."""
+
+    HARNESS = """
+    function stand() {
+      const self = Object.create(ScopeApp.prototype);
+      self.channelState = new Map([
+        ['A', { enabled: true, voltsPerDiv: 1, positionV: 0, net: 'scope1',
+                toggle: { checked: true } }],
+        ['B', { enabled: true, voltsPerDiv: 1, positionV: 0, net: 'scope2',
+                toggle: { checked: true } }],
+      ]);
+      self.display = {};
+      self.showTriggerMarkers = false;
+      self.cursors = null;
+      self.persist = { kept: true };
+      self.dirty = false;
+      self.drawn = [];
+      self.notes = [];
+      self.drawGraticule = () => {};
+      self.drawNote = (_c, _w, _h, text) => { self.notes.push(text); };
+      self.drawTrace = (_c, frame, index) => {
+        self.drawn.push(frame.channels[index].channel);
+      };
+      self.channelColor = () => '#fff';
+      self.console = { error() {}, write() {} };
+      self.refreshMeasurements = () => {};
+      self.runCommand = async () => ({ value: true });
+      globalThis.document = {
+        getElementById() { return { textContent: '', hidden: true }; },
+      };
+      return self;
+    }
+    function frame() {
+      return {
+        channels: [
+          { channel: 'A', scaleVPerCount: 1, offsetV: 0 },
+          { channel: 'B', scaleVPerCount: 1, offsetV: 0 },
+        ],
+        envelope: false, streaming: false, flags: 0,
+        samplesPerChannel: 4, preTriggerSamples: 0, sampleIntervalNs: 1e6,
+        overflowed: () => false,
+        channelIndex(name) {
+          return this.channels.findIndex((c) => c.channel === name);
+        },
+        counts() { return new Int16Array([0, 1, 2, 3]); },
+      };
+    }
+    """
+
+    def test_a_channel_not_yet_read_back_is_still_drawn(self):
+        """The strips guess B is off. That guess must not hide a trace the
+        capture actually carries."""
+        out = _run_js(self.HARNESS + """
+        const self = stand();
+        self.channelState.get('B').enabled = false;
+        self.drawTimeDomain({}, frame(), 100, 80);
+        process.stdout.write(JSON.stringify(self.drawn));
+        """)
+        assert out == ["A", "B"]
+
+    def test_disable_drops_the_trace_already_on_screen(self):
+        out = _run_js(self.HARNESS + """
+        const self = stand();
+        await self.execute('disable B');
+        self.drawTimeDomain({}, frame(), 100, 80);
+        const b = self.channelState.get('B');
+        process.stdout.write(JSON.stringify({
+          drawn: self.drawn, enabled: b.enabled, known: b.enabledKnown,
+          checked: b.toggle.checked, dirty: self.dirty, persist: self.persist,
+        }));
+        """)
+        assert out["drawn"] == ["A"]
+        assert out["enabled"] is False
+        assert out["known"] is True
+        assert out["checked"] is False
+        assert out["dirty"] is True
+        assert out["persist"] is None
+
+    def test_math_and_xy_treat_a_disabled_channel_as_off(self):
+        out = _run_js(self.HARNESS + """
+        const self = stand();
+        self.setChannelEnabled('A', false);
+        self.drawMath({}, frame(), { start: 0, end: 4 }, 100, 80, { expr: 'A-B' });
+        self.drawXY({}, frame(), 100, 80);
+        process.stdout.write(JSON.stringify(self.notes));
+        """)
+        assert out == [
+            "Math A-B needs channels A and B on",
+            "XY needs two channels on",
+        ]
+
+
+@needs_node
 class TestTheDropdownNeverLiesAboutTheScale:
     """A displayed value the trace is not drawn at is its own dead end.
 
