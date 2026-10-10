@@ -421,3 +421,58 @@ class TestPushedState:
         slower = json.loads(json.dumps(STATE))
         slower["timebase"]["time_per_div"] = 2e-3
         assert _apply([STATE, slower])["dropped"] == [False, True]
+
+
+class TestTheUnitGoingAndComing:
+    """An unplug must not leave the page looking as if it is still live."""
+
+    def _run(self, body, states):
+        return _run_js("""
+        const fields = {};
+        globalThis.document = {
+          getElementById: (id) => (fields[id] = fields[id] || { id, value: '',
+            checked: false, hidden: false, innerHTML: '', textContent: '' }),
+        };
+        const stream = { readyState: 1, sent: [], send(text) { this.sent.push(JSON.parse(text)); } };
+        const a = app({
+          channelState: new Map([['A', { enabled: true, toggle: { checked: true },
+            attenuation: 1, voltsPerDiv: 1 }]]),
+          timePositionDiv: 0, overlayHidden: true, owedCredits: 3,
+          pendingBuffer: 'held', persist: { layer: true }, socket: stream,
+          adoptCursors() {}, showTimebase() {}, applyTimePosition() {},
+          showProbe() {}, rebuildScaleChoices() {}, requestRedraw() {},
+          applyVoltsPerDiv() {},
+        });
+        const notes = [];
+        a.console.write = (text, kind) => notes.push([kind, text]);
+        for (const state of %s) a.applyState(state);
+        process.stdout.write(JSON.stringify({
+          overlay: !fields['plot-empty'].hidden,
+          hint: fields['plot-empty-hint'].innerHTML,
+          owed: a.owedCredits, pending: a.pendingBuffer, persist: a.persist,
+          notes, subscribed: stream.sent.map((m) => m.command),
+        }));
+        """ % json.dumps(states) + body)
+
+    def test_an_empty_channel_list_is_an_unplug(self):
+        gone = json.loads(json.dumps(STATE))
+        gone["channels"] = []
+        gone["acquiring"] = False
+        out = self._run("", [STATE, gone])
+        assert out["overlay"] is True
+        assert "unplugged" in out["hint"]
+        assert out["owed"] == 0
+        assert out["pending"] is None
+        assert out["persist"] is None
+        assert ["note", "The scope was unplugged."] in out["notes"]
+        assert out["subscribed"] == []
+
+    def test_the_scope_coming_back_asks_for_the_stream_again(self):
+        gone = json.loads(json.dumps(STATE))
+        gone["channels"] = []
+        gone["acquiring"] = False
+        out = self._run("", [STATE, gone, STATE])
+        assert "back" in out["hint"]
+        assert ["note", "The scope is back."] in out["notes"]
+        assert out["subscribed"] == ["Subscribe"]
+        assert out["overlay"] is True

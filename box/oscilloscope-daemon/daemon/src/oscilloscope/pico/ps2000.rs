@@ -1253,10 +1253,10 @@ impl PicoScope2000 {
 
         // Stop unconditionally: a previous client that disconnected without
         // stopping leaves is_capturing set with no capture actually armed,
+        // and a unit that was unplugged mid-run leaves the process-wide
+        // driver still streaming. Our flags miss that after the next open,
         // and ps2000_run_block on an already-running unit fails.
-        if self.is_capturing {
-            let _ = self.stop_triggering();
-        }
+        let _ = self.stop_triggering();
 
         self.do_update_channel()?;
         self.do_update_trigger()?;
@@ -1313,6 +1313,7 @@ impl PicoScope2000 {
             Err(anyhow::anyhow!("ps2000_stop failed"))
         } else {
             self.is_capturing = false;
+            self.is_streaming = false;
             if matches!(self.settings.trigger.capture_mode, CaptureMode::Single) {
                 // Single-shot disarms after one capture, so the mode returns
                 // to Normal rather than silently re-arming.
@@ -2002,9 +2003,7 @@ impl Oscilloscope for PicoScope2000 {
 
     fn start_roll(&mut self, plan: &RollPlan) -> anyhow::Result<RollInfo> {
         let api = ps2000()?;
-        if self.is_capturing {
-            let _ = self.stop_triggering();
-        }
+        let _ = self.stop_triggering();
         self.do_update_channel()?;
         // Roll mode free-runs, as it does on a bench scope. Passing no
         // conditions switches triggering off (Programmer's Guide 5.20).
@@ -2279,7 +2278,7 @@ impl Drop for PicoScope2000 {
         // Without this the USB handle leaks and the next open fails until
         // the device is physically replugged, which on a remote box means a
         // site visit.
-        if self.is_capturing {
+        if self.is_capturing || self.is_streaming {
             let _ = self.stop_triggering();
         }
         // Drop cannot propagate, and the driver must already be loaded for

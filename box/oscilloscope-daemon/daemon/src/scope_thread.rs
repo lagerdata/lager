@@ -502,7 +502,7 @@ fn hardware_thread<F>(
     let mut complained_at: Option<Instant> = None;
     let mut last_failure: Option<String> = None;
     loop {
-        let scope = loop {
+        let mut scope = loop {
             if shared.stopping.load(Ordering::Relaxed) {
                 return;
             }
@@ -548,6 +548,12 @@ fn hardware_thread<F>(
         };
         attempt = 0;
         complained_at = None;
+        // A unit that was capturing when it was unplugged leaves the Pico
+        // driver in this process still running. Start then fails until
+        // someone sends Stop. Stopping here clears that leftover so the
+        // next Start works on the new handle.
+        let _ = scope.stop_triggered_capture();
+        shared.acquiring.store(false, Ordering::Relaxed);
 
         let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             run(scope, &mut commands, &shared)
@@ -1913,6 +1919,13 @@ mod tests {
         panic_on_mode: bool,
         /// Answers readiness the way an unplugged unit does.
         gone: Arc<AtomicBool>,
+        /// Start fails until Stop has been called on this instance.
+        ///
+        /// Models a Pico that was capturing when it was unplugged: the
+        /// process-wide driver still has that run, and RunBlock fails until
+        /// Stop clears it.
+        needs_stop_before_arm: bool,
+        stopped: Arc<AtomicBool>,
     }
 
     impl FakeScope {
@@ -1925,6 +1938,8 @@ mod tests {
                 refuse_force: false,
                 panic_on_mode: false,
                 gone: Arc::new(AtomicBool::new(false)),
+                needs_stop_before_arm: false,
+                stopped: Arc::new(AtomicBool::new(false)),
             }
         }
     }
@@ -1953,11 +1968,15 @@ mod tests {
 
     impl Oscilloscope for FakeScope {
         fn start_triggered_capture(&mut self, _position: f64) -> anyhow::Result<()> {
+            if self.needs_stop_before_arm && !self.stopped.load(Ordering::SeqCst) {
+                anyhow::bail!("ps2000_run_block failed for an already-running unit");
+            }
             self.arms.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
 
         fn stop_triggered_capture(&mut self) -> anyhow::Result<()> {
+            self.stopped.store(true, Ordering::SeqCst);
             Ok(())
         }
 
@@ -2770,14 +2789,18 @@ mod tests {
     fn a_unit_that_stops_answering_is_closed_and_opened_again() {
         // Unplugged mid-acquisition, the loop polled the dead handle for
         // ever; plugging the unit back in did nothing until a restart.
+        // The new handle also has to be stopped: the Pico driver in this
+        // process still has the previous run, and Start fails until Stop.
         let opens = Arc::new(AtomicUsize::new(0));
         let first = FakeScope::new();
         let (ready, gone, first_dropped) = (first.ready.clone(), first.gone.clone(), first.dropped.clone());
         let mut first = Some(first);
         let handle = spawn(opening_fakes(opens.clone(), move |_| {
             first.take().unwrap_or_else(|| {
-                let fake = FakeScope::new();
+                let mut fake = FakeScope::new();
                 fake.ready.store(true, Ordering::Relaxed);
+                // The Pico driver still has the run from the unit that went.
+                fake.needs_stop_before_arm = true;
                 fake
             })
         }))
