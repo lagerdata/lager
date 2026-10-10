@@ -12,6 +12,15 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Fixed
+
+- **Unplugging a streaming PicoScope resets the live session.** The daemon
+  closed the unit and opened it again, but the Pico driver in that process
+  still had the previous run, so Start failed until `lager scope <net> stop`.
+  The page also kept the last trace up, as if nothing had happened. Start
+  after a replug now runs on a new session, and the page says the scope was
+  unplugged.
+
 ## [0.55.0] - 2026-10-09
 
 ### Added

@@ -48,12 +48,12 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` | 3175 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 4193 |
+| `unit (box)` | `test/unit/box/` | 4195 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 405 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 204 (+1 skipped) |
-| | **Total gated** | **8171** |
+| | **Total gated** | **8173** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -646,7 +646,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_scope_trigger_mode.py` | Who may change a PicoScope's trigger mode: `run()` keeps auto and normal, single-shot arms, and each trigger control sends only its own setting |
 | `test_scope_ui_channel_nets.py` | The scope web UI sends each channel's controls to that channel's net, hides the empty-plot overlay for real, never shows a channel state it did not apply, hides the controls sidebar from the header button and from `sidebar off`, and drops a disabled channel's trace from the plot |
 | `test_scope_ui_instrument_net.py` | The scope web UI routes each command to the net that owns it: device-wide settings and readbacks to the scope net, per-channel ones to the channel's net |
-| `test_scope_ui_stream.py` | The web scope's credit-paced stream and pushed state: one credit returned for each frame received, only the newest frame kept for drawing, extra credit for a slow round trip, and every control following the daemon's state except a field being edited |
+| `test_scope_ui_stream.py` | The web scope's credit-paced stream and pushed state: one credit returned for each frame received, only the newest frame kept for drawing, extra credit for a slow round trip, every control following the daemon's state except a field being edited, and an unplug dropping the live session so a replug can Start without a stop first |
 | `test_usb_scanner_picoscope.py` | PicoScope discovery in `usb_scanner.py`: every Pico Technology product ID is recognized, and the channel count comes from the device rather than from a static table |
 
 #### CLI Unit Tests (`test/unit/cli/` -- 116 files)

@@ -1108,6 +1108,16 @@ class ScopeApp {
     if (previous && previous.timebase && previous.timebase.time_per_div !== timebase.time_per_div) {
       this.persist = null;
     }
+
+    // The daemon publishes empty channels when the unit is gone, then a
+    // fresh set when it opens again. The socket to the daemon stays up, so
+    // without this the last trace keeps looking live and Start fails until
+    // someone sends stop (the Pico driver still has the previous run).
+    const hadChannels = Boolean(previous && previous.channels && previous.channels.length);
+    const hasChannels = Boolean(state.channels && state.channels.length);
+    if (hadChannels && !hasChannels) this.scopeLost();
+    else if (previous && !hadChannels && hasChannels) this.scopeReturned();
+
     this.status = '';
     this.requestRedraw();
   }
@@ -1913,6 +1923,7 @@ class ScopeApp {
     // credit is not owed to a socket that has gone.
     this.pendingBuffer = null;
     this.owedCredits = 0;
+    this.showEmptyHint();
     this.showNotStreaming(true);
     this.showIdleRate();
   }
@@ -1936,6 +1947,52 @@ class ScopeApp {
     const overlay = el('plot-empty');
     if (overlay) overlay.hidden = !visible;
     this.overlayHidden = !visible;
+  }
+
+  /** The hint under "Not streaming.", or the default Connect/Start line. */
+  showEmptyHint(html) {
+    const hint = el('plot-empty-hint');
+    if (hint) hint.innerHTML = html || 'Press <strong>Connect</strong>, then <strong>Start</strong>.';
+  }
+
+  /**
+   * The unit went: drop the live session so a frozen trace is not mistaken
+   * for a running one, and so credits in flight are not owed to a scope
+   * that is not there.
+   */
+  scopeLost() {
+    this.persist = null;
+    this.pendingBuffer = null;
+    this.owedCredits = 0;
+    if (typeof this.showIdleRate === 'function') this.showIdleRate();
+    if (typeof this.showNotStreaming === 'function') this.showNotStreaming(true);
+    if (typeof this.showEmptyHint === 'function') {
+      this.showEmptyHint('The scope was unplugged. Plug it in, then press <strong>Start</strong>.');
+    }
+    if (this.console && typeof this.console.write === 'function') {
+      this.console.write('The scope was unplugged.', 'note');
+    }
+  }
+
+  /**
+   * The unit is back. Ask for the stream again so leftover credit from the
+   * old session cannot block the first frames.
+   */
+  scopeReturned() {
+    if (typeof this.showEmptyHint === 'function') {
+      this.showEmptyHint('The scope is back. Press <strong>Start</strong>.');
+    }
+    if (this.console && typeof this.console.write === 'function') {
+      this.console.write('The scope is back.', 'note');
+    }
+    if (!this.streamOpen || !this.streamOpen()) return;
+    this.owedCredits = 0;
+    this.pendingBuffer = null;
+    this.subscribedAt = performance.now();
+    this.socket.send(JSON.stringify({
+      command: 'Subscribe', credits: render.CREDIT_WINDOW,
+      max_fps: this.streamFps || 60, state: true,
+    }));
   }
 
   onControlMessage(text) {

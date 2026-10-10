@@ -431,10 +431,11 @@ impl PicoScopeModern {
     /// Arm one block capture.
     fn arm(&mut self) -> Result<()> {
         // None of these APIs documents a RunBlock on top of a block still
-        // running, so one that has not been read out is stopped first.
-        if self.block_pending.load(Ordering::Relaxed) {
-            self.halt()?;
-        }
+        // running. A unit that was capturing when it was unplugged also
+        // leaves the process-wide driver running after the next open, and
+        // our flags do not know that. Stop first either way; an idle unit
+        // takes it as a no-op.
+        let _ = self.halt();
         self.ensure_applied()?;
 
         // Re-register buffers on every capture. The driver forgets them on
@@ -1596,6 +1597,24 @@ mod tests {
         s.disable_channel(ChannelId::Alphabetic('A')).unwrap();
         let err = s.get_triggered_data().unwrap_err().to_string();
         assert!(err.contains("no channel is enabled"), "got: {err}");
+    }
+
+    #[test]
+    fn the_first_arm_stops_a_leftover_run() {
+        // After an unplug the process-wide driver can still be running, and
+        // our flags do not know that. Stop has to come first even on a
+        // handle that we have just opened.
+        let mock = MockScope::new();
+        let log = mock.log_handle();
+        let mut s = PicoScopeModern::adopt(Box::new(mock), 1, capabilities(2)).unwrap();
+        s.start_triggered_capture(50.0).unwrap();
+        let calls = log.lock().unwrap().clone();
+        let stop = calls.iter().position(|c| c == "stop").expect("stop");
+        let run = calls
+            .iter()
+            .position(|c| c.starts_with("run_block"))
+            .expect("run_block");
+        assert!(stop < run, "{calls:?}");
     }
 
     #[test]
