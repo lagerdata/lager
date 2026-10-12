@@ -47,13 +47,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 3186 (+2 xfailed) |
+| `unit (cli)` | `test/unit/cli/` | 3188 (+2 xfailed) |
 | `unit (box)` | `test/unit/box/` | 4205 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 405 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 204 (+1 skipped) |
-| | **Total gated** | **8194** |
+| | **Total gated** | **8196** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -655,7 +655,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 |------|---------------|
 | `test_address_utils.py` | IPv4/IPv6/Tailscale/hostname validation rejecting schemes, ports, and paths |
 | `test_arm_command.py` | `lager arm` CLI: `read-and-save-position` sends nothing until the M889 recalibration is confirmed (or `--yes` is passed), `move`/`move-by` reject a `--timeout` past the box's 25 s cap before any request, and listing arm nets takes no box lock |
-| `test_battery_tui.py` | BatteryTUI render output, command parsing, worker thread offloading, exit teardown |
+| `test_battery_tui.py` | BatteryTUI render output, command parsing, worker thread offloading, exit teardown, Ctrl+C |
 | `test_binaries_9000.py` | `lager binaries add/list/remove` and `download_file` migrated to the box HTTP server on `:9000` |
 | `test_bluez_unavailable_hint.py` | A box host with no BlueZ: the raw `org.bluez` ServiceUnknown error an older box image sends is rewritten into the one remedy line, any other error is shown as sent, and the CLI and box copies of that line are pinned together |
 | `test_box_command_error.py` | `box_command_error`: a 404 that means "net or instrument not found" must not also tell the user their box image is out of date |
@@ -721,7 +721,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_socketio_sigint.py` | All four socket.io clients are built with `handle_sigint=False` and leave the process SIGINT handler alone; `disconnect_bounded` returns within its timeout from a peer that never closes; Ctrl+C in a UART session still sends `stop_uart` and disconnects |
 | `test_ssh.py` | SSH ensure_lager_box_keypair and key_auth_works helpers |
 | `test_ssh_user_by_ip.py` | `lager ssh` and `lager update` log in as the user saved for the box, whether `--box` names it, gives its IP, or is left to the default box |
-| `test_supply_tui.py` | SupplyTUI render output, command parsing, worker threads, connection failure, exit teardown |
+| `test_supply_tui.py` | SupplyTUI render output, command parsing, worker threads, connection failure, exit teardown, Ctrl+C |
 | `test_uart_session_release.py` | UART teardown releases the box-side session on every exit path (including Ctrl+C, and when the session never came up), never skips the disconnect that follows, and reports a held net with the take-over command; plus the connect banner keeping a by-id device path readable |
 | `test_uart_ws_status_events.py` | CLI handling of box-side `uart_status` events when a UART device re-enumerates |
 | `test_update_deps_preview.py` | `lager update --check`'s build-cache line never promises a cached build the rebuild gate would override — a pending layout flatten is a certain rebuild, and an unmeasurable build hash is reported as unknown rather than as a valid cache |

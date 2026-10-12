@@ -22,6 +22,7 @@ import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
+from textual.widgets.input import Selection
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
 
@@ -603,6 +604,38 @@ class TestSupplyExitTeardown:
         app = asyncio.run(main())
         # The TUIs pass 1 as exit()'s result, not its return_code.
         assert app.return_value == 1
+
+
+# --------------------------------------------------------------------------- #
+# Ctrl+C                                                                        #
+# --------------------------------------------------------------------------- #
+# REGRESSION: on Textual 3.2.0 the focused Input's copy binding took ctrl+c
+# even with nothing selected, so the TUI never quit. The quit path itself is
+# covered by TestSupplyExitTeardown above.
+
+class TestSupplyCtrlC:
+    def test_ctrl_c_with_selection_copies_and_stays_open(self):
+        async def main():
+            with patch.object(supply_tui, 'SupplyWebSocketClient', _DisconnectingSupplyWS):
+                app = _make_app()
+                copied: list = []
+                async with app.run_test(size=(100, 40)) as pilot:
+                    await pilot.pause()
+                    await app.workers.wait_for_complete()
+                    app.copy_to_clipboard = copied.append
+                    command_input = app.query_one("#command_input")
+                    command_input.value = "soc 80"
+                    command_input.selection = Selection(0, 3)
+                    await pilot.press("ctrl+c")
+                    await pilot.pause()
+                    still_running = app.is_running
+                    disconnects = app.ws_client.disconnects
+            return copied, still_running, disconnects
+
+        copied, still_running, disconnects = asyncio.run(main())
+        assert copied == ["soc"]
+        assert still_running
+        assert disconnects == 0
 
 
 if __name__ == "__main__":

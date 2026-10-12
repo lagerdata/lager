@@ -11,6 +11,7 @@ from textual.css.query import NoMatches
 from rich.text import Text
 from .websocket_client import BatteryWebSocketClient
 from ..core.tui_ws_bridge import WebSocketBridgeMixin
+from ..core.tui_keys import COPY_OR_QUIT_BINDING, CopyOrQuitMixin
 
 
 class BatteryState(Static):
@@ -114,7 +115,7 @@ class CommandLog(RichLog):
         self.auto_scroll = True  # Always scroll to bottom for newest content
 
 
-class BatteryTUI(WebSocketBridgeMixin, App):
+class BatteryTUI(CopyOrQuitMixin, WebSocketBridgeMixin, App):
     """Interactive TUI for battery simulator control"""
 
     CSS = """
@@ -161,7 +162,7 @@ class BatteryTUI(WebSocketBridgeMixin, App):
 
     BINDINGS = [
         ("q", "quit", "Quit"),
-        ("ctrl+c", "quit", "Quit"),
+        COPY_OR_QUIT_BINDING,
         ("r", "refresh", "Refresh"),
     ]
 

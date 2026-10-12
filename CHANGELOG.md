@@ -41,6 +41,10 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   or `lager supply <NET> tui` while state updates were arriving could print a `NoMatches`
   traceback after the TUI closed. Typing `q`, `quit` or `exit` at the prompt now also tells the
   box to stop monitoring, as Ctrl+C already did.
+- **Ctrl+C quits the battery/supply TUI on every supported Textual.** On older Textual releases, such as
+  3.2.0, the command input took Ctrl+C as copy even with nothing selected, so `lager battery <NET> tui`
+  and `lager supply <NET> tui` never quit. Ctrl+C now copies when text is selected and quits
+  otherwise. (#685)
 
 ## [0.55.0] - 2026-10-09
 
