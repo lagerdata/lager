@@ -439,5 +439,107 @@ class TestBatteryStartupNonBlocking:
         asyncio.run(main())
 
 
+# --------------------------------------------------------------------------- #
+# Exit teardown                                                                 #
+# --------------------------------------------------------------------------- #
+# REGRESSION: a state update delivered on a Socket.IO thread after the TUI
+# exited ran widget code against an unmounted screen and printed a NoMatches
+# traceback. Typing `quit` also exited without telling the box to stop.
+
+class _DisconnectingBatteryWS(_FakeBatteryWS):
+    """Fires on_disconnected from disconnect(), as python-socketio does."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.disconnects = 0
+
+    def disconnect(self):
+        self.disconnects += 1
+        if self.on_disconnected:
+            self.on_disconnected()
+
+
+def _run_and_quit(quit_keys):
+    """Run the TUI, quit with ``quit_keys``; return (app, ws, callbacks, log)."""
+    captured: dict = {}
+
+    async def main():
+        with patch.object(battery_tui, 'BatteryWebSocketClient', _DisconnectingBatteryWS):
+            app = _make_app()
+            async with app.run_test(size=(100, 40)) as pilot:
+                await pilot.pause()
+                await app.workers.wait_for_complete()
+                ws = app.ws_client
+                captured['callbacks'] = {
+                    'on_state_update': ws.on_state_update,
+                    'on_disconnected': ws.on_disconnected,
+                }
+                log: list = []
+                original = app._add_log_entry
+                app._add_log_entry = lambda c, o: (log.append((c, o)), original(c, o))
+                captured['log'] = log
+                for key in quit_keys:
+                    await pilot.press(key)
+                await pilot.pause()
+        captured['app'] = app
+        captured['ws'] = ws
+
+    asyncio.run(main())
+    return captured['app'], captured['ws'], captured['callbacks'], captured['log']
+
+
+def _call_on_thread(fn, *args) -> list:
+    """Call ``fn`` on a fresh thread; return the exceptions it raised."""
+    errors: list = []
+
+    def target():
+        try:
+            fn(*args)
+        except BaseException as exc:  # noqa: BLE001 - the test reports any escape
+            errors.append(exc)
+
+    t = threading.Thread(target=target)
+    t.start()
+    t.join(timeout=5)
+    assert not t.is_alive(), "callback blocked after the app exited"
+    return errors
+
+
+class TestBatteryExitTeardown:
+    _STATE = {"channel": "1", "enabled": True}
+
+    @pytest.mark.parametrize("quit_keys", [["ctrl+c"], ["q", "u", "i", "t", "enter"]])
+    def test_state_update_after_exit_raises_nothing(self, quit_keys):
+        app, _ws, callbacks, _log = _run_and_quit(quit_keys)
+        assert not app.is_running
+        on_state_update = callbacks['on_state_update']
+        assert _call_on_thread(on_state_update, self._STATE) == []
+        on_state_update(self._STATE)
+
+    @pytest.mark.parametrize("quit_keys", [["ctrl+c"], ["q", "u", "i", "t", "enter"]])
+    def test_deliberate_quit_stops_box_and_exits_clean(self, quit_keys):
+        app, ws, _callbacks, log = _run_and_quit(quit_keys)
+        assert ws.disconnects == 1
+        assert app.return_code == 0
+        assert app.return_value is None
+        assert not any("Disconnected" in output for _cmd, output in log)
+
+    def test_box_side_disconnect_still_exits_with_error(self):
+        async def main():
+            with patch.object(battery_tui, 'BatteryWebSocketClient', _DisconnectingBatteryWS):
+                app = _make_app()
+                async with app.run_test(size=(100, 40)) as pilot:
+                    await pilot.pause()
+                    await app.workers.wait_for_complete()
+                    on_disconnected = app.ws_client.on_disconnected
+                    await asyncio.to_thread(on_disconnected)
+                    await pilot.pause()
+            return app
+
+        app = asyncio.run(main())
+        # The TUIs pass 1 as exit()'s result, not its return_code.
+        assert app.return_value == 1
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

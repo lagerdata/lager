@@ -7,8 +7,10 @@ from textual.app import App, ComposeResult
 from textual.widgets import Header, Footer, Input, Static, RichLog
 from textual.containers import Container
 from textual.reactive import reactive
+from textual.css.query import NoMatches
 from rich.text import Text
 from .websocket_client import SupplyWebSocketClient
+from ..core.tui_ws_bridge import WebSocketBridgeMixin
 
 
 class SupplyState(Static):
@@ -123,7 +125,7 @@ class CommandLog(RichLog):
         self.auto_scroll = True  # Always scroll to bottom for newest content
 
 
-class SupplyTUI(App):
+class SupplyTUI(WebSocketBridgeMixin, App):
     """Interactive TUI for power supply control"""
 
     CSS = """
@@ -219,11 +221,12 @@ class SupplyTUI(App):
                     update_interval=1.0  # Update every 1 second
                 )
 
-                # Set up callbacks
-                self.ws_client.on_state_update = self._handle_state_update
-                self.ws_client.on_error = self._handle_ws_error
-                self.ws_client.on_connected = self._handle_ws_connected
-                self.ws_client.on_disconnected = self._handle_ws_disconnected
+                self._bind_ws_callbacks(
+                    on_state_update=self._handle_state_update,
+                    on_error=self._handle_ws_error,
+                    on_connected=self._handle_ws_connected,
+                    on_disconnected=self._handle_ws_disconnected,
+                )
 
                 # Connect in background worker
                 self.run_worker(self._connect_websocket(), exclusive=False)
@@ -231,11 +234,13 @@ class SupplyTUI(App):
                 import traceback
                 # If WebSocket initialization fails, log and exit
                 self._add_log_entry("Error", f"[red]Failed to initialize WebSocket: {e}[/red]")
+                self._close_ws()
                 self.exit(1)
         except Exception as e:
             import traceback
             print(f"CRITICAL ERROR in on_mount: {e}")
             print(traceback.format_exc())
+            self._close_ws()
             self.exit(1)
 
     async def _connect_websocket(self):
@@ -258,12 +263,16 @@ class SupplyTUI(App):
             actionable = make_ws_failure_message(self.box_ip, original_error=e)
             self._add_log_entry("Error", f"[red]{actionable}[/red]")
             self.exit_error = actionable
+            self._close_ws()
             self.exit(1)
 
     def _handle_state_update(self, state):
         """Handle WebSocket state update"""
         # Update the state widget
-        state_widget = self.query_one("#state_widget", SupplyState)
+        try:
+            state_widget = self.query_one("#state_widget", SupplyState)
+        except NoMatches:
+            return
 
         # Extract channel number (default to 1)
         channel = state.get("channel", "1")
@@ -311,6 +320,7 @@ class SupplyTUI(App):
     def _handle_ws_disconnected(self):
         """Handle WebSocket disconnected"""
         self._add_log_entry("WebSocket", "[red]Disconnected from WebSocket server[/red]")
+        self._close_ws()
         self.exit(1)
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -328,7 +338,7 @@ class SupplyTUI(App):
 
         # Handle special commands
         if command_text.lower() in ("q", "quit", "exit"):
-            self.exit()
+            self.action_quit()
             return
 
         if command_text.lower() == "help":
@@ -538,7 +548,10 @@ class SupplyTUI(App):
 
     def _add_log_entry(self, command_text: str, output: str) -> None:
         """Add a command and its output to the log history"""
-        log_widget = self.query_one("#command_log", CommandLog)
+        try:
+            log_widget = self.query_one("#command_log", CommandLog)
+        except NoMatches:
+            return
 
         # Create rich text with proper styling
         command_line = Text()
@@ -601,11 +614,5 @@ class SupplyTUI(App):
 
     def action_quit(self) -> None:
         """Clean up and exit"""
-        # Disconnect WebSocket if connected
-        if self.ws_client:
-            try:
-                self.ws_client.disconnect()
-            except Exception:
-                pass
-        # Call parent quit
+        self._close_ws()
         self.exit()

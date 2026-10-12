@@ -31,6 +31,10 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   that minute every command said to reconnect it, which started the wait
   over. Commands now say the open is in progress and how long it has run;
   only an open still running after two minutes says to unplug the scope.
+- **battery/supply TUI no longer prints a traceback on exit.** Quitting `lager battery <NET> tui`
+  or `lager supply <NET> tui` while state updates were arriving could print a `NoMatches`
+  traceback after the TUI closed. Typing `q`, `quit` or `exit` at the prompt now also tells the
+  box to stop monitoring, as Ctrl+C already did.
 
 ## [0.55.0] - 2026-10-09
 
