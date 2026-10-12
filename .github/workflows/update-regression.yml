@@ -383,7 +383,24 @@ jobs:
         # --passenv is required: `lager python` runs the script on the box
         # and forwards env only through --env/--passenv (see the note in
         # integration-tests.yml).
+        # `lager hello` answering is not readiness either: the container that
+        # just started has to reopen the instruments, and a smoke run inside
+        # that window fails with "No device found" on a Rigol that is powered
+        # and enumerated (observed: the smoke ran ~3s after the container came
+        # up). Same supply-read poll as the bench-power-on action.
         run: |
+          ready=""
+          for _ in $(seq 1 24); do
+            if lager supply "$SUPPLY_NET" state --box "$LAGER_BOX" >/dev/null 2>&1; then
+              ready=1
+              break
+            fi
+            sleep 5
+          done
+          if [ -z "$ready" ]; then
+            echo "Hardware service did not answer supply reads on '$SUPPLY_NET' within 120s"
+            exit 1
+          fi
           lager python test/api/power/test_supply_Rigol_DP821.py --box "$LAGER_BOX" \
             --passenv SUPPLY_NET --passenv CHANNEL_MAX_VOLTAGE --passenv CHANNEL_MAX_CURRENT
         shell: bash
@@ -560,7 +577,24 @@ jobs:
         # --passenv is required: `lager python` runs the script on the box
         # and forwards env only through --env/--passenv (see the note in
         # integration-tests.yml).
+        # `lager hello` answering is not readiness either: the container that
+        # just started has to reopen the instruments, and a smoke run inside
+        # that window fails with "No device found" on a Rigol that is powered
+        # and enumerated (observed: the smoke ran ~3s after the container came
+        # up). Same supply-read poll as the bench-power-on action.
         run: |
+          ready=""
+          for _ in $(seq 1 24); do
+            if lager supply "$SUPPLY_NET" state --box "$LAGER_BOX" >/dev/null 2>&1; then
+              ready=1
+              break
+            fi
+            sleep 5
+          done
+          if [ -z "$ready" ]; then
+            echo "Hardware service did not answer supply reads on '$SUPPLY_NET' within 120s"
+            exit 1
+          fi
           lager python test/api/power/test_supply_Rigol_DP821.py --box "$LAGER_BOX" \
             --passenv SUPPLY_NET --passenv CHANNEL_MAX_VOLTAGE --passenv CHANNEL_MAX_CURRENT
         shell: bash
