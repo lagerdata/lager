@@ -1953,6 +1953,7 @@ mod tests {
         /// Stop clears it.
         needs_stop_before_arm: bool,
         stopped: Arc<AtomicBool>,
+        mode: CaptureMode,
     }
 
     impl FakeScope {
@@ -1967,6 +1968,7 @@ mod tests {
                 gone: Arc::new(AtomicBool::new(false)),
                 needs_stop_before_arm: false,
                 stopped: Arc::new(AtomicBool::new(false)),
+                mode: CaptureMode::Normal,
             }
         }
     }
@@ -2004,6 +2006,10 @@ mod tests {
 
         fn stop_triggered_capture(&mut self) -> anyhow::Result<()> {
             self.stopped.store(true, Ordering::SeqCst);
+            // As both Pico drivers do: a stopped single-shot is over.
+            if self.mode == CaptureMode::Single {
+                self.mode = CaptureMode::Normal;
+            }
             Ok(())
         }
 
@@ -2060,7 +2066,12 @@ mod tests {
             if self.panic_on_mode {
                 panic!("a driver bug");
             }
-            Ok(CaptureMode::Normal)
+            Ok(self.mode)
+        }
+
+        fn set_capture_mode(&mut self, mode: CaptureMode) -> anyhow::Result<()> {
+            self.mode = mode;
+            Ok(())
         }
 
         fn get_trigger_position(&self) -> anyhow::Result<f64> {
@@ -2147,7 +2158,6 @@ mod tests {
             set_time_offset(f64);
             set_trigger_source(ChannelId);
             set_trigger_slope(TriggerSlope);
-            set_capture_mode(CaptureMode);
             set_cursor_position(crate::oscilloscope::Cursor);
         }
     }
@@ -2903,6 +2913,39 @@ mod tests {
                 .expect("the stream is open")
         });
         assert!(frame.frame.seq > before, "seq {} after {before}", frame.frame.seq);
+        assert!(handle.shutdown(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn a_single_shot_publishes_one_frame_and_stops() {
+        // The loop decides whether to stop from the mode it reads back after
+        // Start. A driver that ended the single-shot on the way to arming
+        // made that read Normal, and the scope kept capturing.
+        let fake = FakeScope::new();
+        let (ready, arms) = (fake.ready.clone(), fake.arms.clone());
+        let mut fake = Some(fake);
+        let handle = spawn(opening_fakes(Arc::new(AtomicUsize::new(0)), move |_| {
+            fake.take().expect("opened once")
+        }))
+        .expect("spawn");
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+
+        ready.store(true, Ordering::Relaxed);
+        runtime.block_on(handle.request(ScopeRequest::SetCaptureMode(CaptureMode::Single)));
+        runtime.block_on(handle.request(ScopeRequest::StartAcquisition(50.0)));
+        eventually("the single-shot to stop", || {
+            handle.capture_count.load(Ordering::Relaxed) >= 1
+                && !handle.acquiring.load(Ordering::Relaxed)
+        });
+
+        // The unit stays ready, so a loop that had not stopped would go on
+        // reading it.
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(handle.capture_count.load(Ordering::Relaxed), 1);
+        assert_eq!(arms.load(Ordering::SeqCst), 1);
+        let state = handle.state.borrow().clone();
+        assert!(!state.acquiring, "the state still says acquiring");
+        assert_eq!(state.capture_mode, CaptureMode::Normal);
         assert!(handle.shutdown(Duration::from_secs(5)));
     }
 

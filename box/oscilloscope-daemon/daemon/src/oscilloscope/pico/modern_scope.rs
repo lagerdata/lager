@@ -431,11 +431,10 @@ impl PicoScopeModern {
     /// Arm one block capture.
     fn arm(&mut self) -> Result<()> {
         // None of these APIs documents a RunBlock on top of a block still
-        // running. A unit that was capturing when it was unplugged also
-        // leaves the process-wide driver running after the next open, and
-        // our flags do not know that. Stop first either way; an idle unit
-        // takes it as a no-op.
-        let _ = self.halt();
+        // running, so one that has not been read out is stopped first.
+        if self.block_pending.load(Ordering::Relaxed) {
+            self.halt()?;
+        }
         self.ensure_applied()?;
 
         // Re-register buffers on every capture. The driver forgets them on
@@ -1600,24 +1599,6 @@ mod tests {
     }
 
     #[test]
-    fn the_first_arm_stops_a_leftover_run() {
-        // After an unplug the process-wide driver can still be running, and
-        // our flags do not know that. Stop has to come first even on a
-        // handle that we have just opened.
-        let mock = MockScope::new();
-        let log = mock.log_handle();
-        let mut s = PicoScopeModern::adopt(Box::new(mock), 1, capabilities(2)).unwrap();
-        s.start_triggered_capture(50.0).unwrap();
-        let calls = log.lock().unwrap().clone();
-        let stop = calls.iter().position(|c| c == "stop").expect("stop");
-        let run = calls
-            .iter()
-            .position(|c| c.starts_with("run_block"))
-            .expect("run_block");
-        assert!(stop < run, "{calls:?}");
-    }
-
-    #[test]
     fn is_ready_is_false_before_a_capture_is_armed() {
         // Otherwise the acquisition loop would read a buffer that holds
         // nothing but the previous capture.
@@ -1632,6 +1613,23 @@ mod tests {
         assert!(s.is_ready().unwrap());
         s.stop_triggered_capture().unwrap();
         assert!(!s.is_ready().unwrap());
+    }
+
+    #[test]
+    fn re_arming_after_a_read_out_block_sends_no_stop() {
+        // These units re-arm through arm() on every frame, so a stop there
+        // is one more USB round trip per frame on a block that has already
+        // completed.
+        let mock = MockScope::new();
+        let log = mock.log_handle();
+        let mut s = PicoScopeModern::adopt(Box::new(mock), 1, capabilities(2)).unwrap();
+        s.start_triggered_capture(50.0).unwrap();
+        for _ in 0..3 {
+            s.get_triggered_data().unwrap();
+            s.rearm().unwrap();
+        }
+        assert_eq!(count(&log, "stop"), 0, "{:?}", log.lock().unwrap());
+        assert_eq!(count(&log, "run_block"), 4);
     }
 
     #[test]

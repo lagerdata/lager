@@ -471,7 +471,7 @@ impl PicoScope2000 {
     /// Push the stored settings to the hardware, re-arming if it was capturing.
     fn reprogram(&mut self) -> anyhow::Result<()> {
         if self.is_capturing {
-            self.stop_triggering()?;
+            self.halt()?;
             self.do_update_channel()?;
             self.is_capturing = true;
         }
@@ -1251,18 +1251,18 @@ impl PicoScope2000 {
         // from the split.
         self.apply_trigger_position();
 
-        // Stop unconditionally: a previous client that disconnected without
-        // stopping leaves is_capturing set with no capture actually armed,
-        // and a unit that was unplugged mid-run leaves the process-wide
-        // driver still streaming. Our flags miss that after the next open,
-        // and ps2000_run_block on an already-running unit fails.
-        let _ = self.stop_triggering();
+        // ps2000_run_block on an already-running unit fails, and a previous
+        // client that disconnected without stopping leaves it running. Only
+        // a halt, since this is arming and a single-shot is still wanted.
+        if self.is_capturing || self.is_streaming {
+            let _ = self.halt();
+        }
 
         self.do_update_channel()?;
         self.do_update_trigger()?;
         self.do_memory_depth_update()?;
         if self.memory_depth_not_update {
-            self.stop_triggering()?;
+            self.halt()?;
             if self.update_memory_depth().is_ok() {
                 self.memory_depth_not_update = false;
             }
@@ -1305,7 +1305,9 @@ impl PicoScope2000 {
         }
     }
 
-    fn stop_triggering(&mut self) -> anyhow::Result<()> {
+    /// Stop the hardware and leave the capture mode alone, for a stop that
+    /// is about to re-arm.
+    fn halt(&mut self) -> anyhow::Result<()> {
         let api = ps2000()?;
         let result = unsafe { api.ps2000_stop(self.handle) };
         tracing::trace!(result, "ps2000_stop");
@@ -1314,13 +1316,19 @@ impl PicoScope2000 {
         } else {
             self.is_capturing = false;
             self.is_streaming = false;
-            if matches!(self.settings.trigger.capture_mode, CaptureMode::Single) {
-                // Single-shot disarms after one capture, so the mode returns
-                // to Normal rather than silently re-arming.
-                self.settings.trigger.capture_mode = CaptureMode::Normal;
-            }
             Ok(())
         }
+    }
+
+    /// A stop that ends the capture: the user's, or a finished single-shot.
+    fn stop_triggering(&mut self) -> anyhow::Result<()> {
+        self.halt()?;
+        if matches!(self.settings.trigger.capture_mode, CaptureMode::Single) {
+            // Single-shot disarms after one capture, so the mode returns
+            // to Normal rather than silently re-arming.
+            self.settings.trigger.capture_mode = CaptureMode::Normal;
+        }
+        Ok(())
     }
     /// Whether enough time has passed since arming for the block to be full.
     ///
@@ -1771,7 +1779,7 @@ impl Oscilloscope for PicoScope2000 {
     fn set_time_per_div(&mut self, time_per_div: f64) -> anyhow::Result<()> {
         self.set_scope_time_per_div(time_per_div, self.memory_depth)?;
         if self.is_capturing {
-            self.stop_triggering()?;
+            self.halt()?;
             self.do_update_channel()?;
             self.is_capturing = true;
             self.do_update_trigger()?;
@@ -2003,7 +2011,9 @@ impl Oscilloscope for PicoScope2000 {
 
     fn start_roll(&mut self, plan: &RollPlan) -> anyhow::Result<RollInfo> {
         let api = ps2000()?;
-        let _ = self.stop_triggering();
+        if self.is_capturing || self.is_streaming {
+            let _ = self.halt();
+        }
         self.do_update_channel()?;
         // Roll mode free-runs, as it does on a bench scope. Passing no
         // conditions switches triggering off (Programmer's Guide 5.20).
@@ -2279,7 +2289,7 @@ impl Drop for PicoScope2000 {
         // the device is physically replugged, which on a remote box means a
         // site visit.
         if self.is_capturing || self.is_streaming {
-            let _ = self.stop_triggering();
+            let _ = self.halt();
         }
         // Drop cannot propagate, and the driver must already be loaded for
         // this instance to exist, so a failure here is only worth logging.
@@ -2881,6 +2891,44 @@ mod tests {
             body.contains("start_triggered_capture"),
             "a new time/div takes effect only on a re-arm, so without one the \
              timebase does not change until something else arms the scope"
+        );
+    }
+
+    /// Arming keeps a single-shot single; only a real stop ends it.
+    ///
+    /// `stop_triggering` returns Single to Normal. Called on the way to
+    /// arming, it turned a single-shot into Normal before the unit was
+    /// armed, the acquisition loop read Normal back, and the scope never
+    /// stopped after its one frame.
+    ///
+    /// Checked by reading the source, there being no scope to drive here.
+    #[test]
+    fn arming_does_not_end_a_single_shot() {
+        let source = include_str!("ps2000.rs");
+        let body = |name: &str| -> &str {
+            source
+                .split(&format!("fn {name}("))
+                .nth(1)
+                .unwrap_or_else(|| panic!("{name} exists"))
+                .split("\n    fn ")
+                .next()
+                .expect("the function ends")
+        };
+
+        for arming in ["run_block", "start_roll", "reprogram", "set_time_per_div"] {
+            assert!(
+                !body(arming).contains("stop_triggering"),
+                "{arming} re-arms, so stopping there must not end a single-shot"
+            );
+        }
+        assert!(
+            !body("halt").contains("capture_mode"),
+            "halt is the stop used before re-arming, and must keep the mode"
+        );
+        let stop = body("stop_triggering");
+        assert!(
+            stop.contains("self.halt()") && stop.contains("CaptureMode::Single"),
+            "a real stop still ends a single-shot"
         );
     }
 }
