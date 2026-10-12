@@ -35,6 +35,11 @@ __all__ = ['record_value']
 _ENV = 'LAGER_RUN_ASSERTIONS'
 _KEY_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$')
 _MAX_VALUE_LEN = 4096
+# The largest integer every JSON reader holds exactly. A record is hashed in
+# canonical JSON (RFC 8785), whose numbers are IEEE doubles: a larger integer
+# reads back as a different number in JavaScript and many other languages, so
+# the record would hash differently there than on the box.
+_MAX_EXACT_INT = 2 ** 53 - 1
 
 
 def record_value(key, value):
@@ -55,6 +60,9 @@ def record_value(key, value):
             raise ValueError(f'run record values are limited to {_MAX_VALUE_LEN} characters')
     elif value is not None and not isinstance(value, (bool, int, float)):
         raise ValueError(f'run record values must be str, int, float, bool or None, not {type(value).__name__}')
+    elif isinstance(value, int) and not isinstance(value, bool) and abs(value) > _MAX_EXACT_INT:
+        raise ValueError(f'{value} is too large to record exactly as a number (limit is +/-(2**53 - 1)); '
+                         'record it as a string')
 
     path = os.environ.get(_ENV)
     if not path:

@@ -32,6 +32,11 @@ RUN_ID_HEADER = 'Lager-Process-Id'
 
 RECORD_SUFFIX = '.lager-run.json'
 
+# How many times to ask for a record the box is still finalizing. The box
+# itself waits up to 10 s per request before answering 202, so this is about a
+# minute: room for a busy box hashing large outputs, not an open-ended wait.
+FETCH_ATTEMPTS = 6
+
 _LABEL_KEY_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$')
 MAX_LABELS = 32
 MAX_LABEL_VALUE = 4096
@@ -206,10 +211,20 @@ def save_and_check(session, box, run_id, log_hasher, downloaded):
     Never raises: the run is over and its exit code is decided. A box too old
     to keep records is silent; anything else that goes wrong is a warning.
     """
-    try:
-        resp = session.get_run_record(box, run_id)
-    except Exception as exc:  # pylint: disable=broad-except
-        click.secho(f'Run record: the box did not send it: {exc}', fg='yellow', err=True)
+    for _ in range(FETCH_ATTEMPTS):
+        try:
+            resp = session.get_run_record(box, run_id)
+        except Exception as exc:  # pylint: disable=broad-except
+            click.secho(f'Run record: the box did not send it: {exc}', fg='yellow', err=True)
+            return None
+        # 202: the box is still finalizing the record (hashing large outputs
+        # on a busy box). Ask again; it only ever serves a final record.
+        if resp.status_code != 202:
+            break
+    if resp.status_code == 202:
+        click.secho('Run record: the box is still finishing the record; not saved. '
+                    'The box keeps it, and it can be fetched from the box later.',
+                    fg='yellow', err=True)
         return None
     if resp.status_code == 404:
         return None  # a box without run records, or one that pruned it

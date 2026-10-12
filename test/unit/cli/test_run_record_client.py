@@ -304,3 +304,38 @@ def test_an_unset_passenv_is_a_usage_error_not_a_traceback(tmp_path, monkeypatch
     with ctx, pytest.raises(click.UsageError, match='NOT_SET_ANYWHERE'):
         cli_python.run_python_internal(ctx, str(script), '10.0.0.5', [], ['NOT_SET_ANYWHERE'],
                                        False, (), False, 'SIGTERM', 0, False, (), None, ())
+
+
+# ------------------------------------------------- save_and_check fetch ---
+
+class FinalizingSession:
+    """A box that answers 202 a few times, then the final record."""
+
+    def __init__(self, pending, record):
+        self.pending = pending
+        self.record = record
+        self.calls = 0
+
+    def get_run_record(self, box, run_id):
+        self.calls += 1
+        if self.calls <= self.pending:
+            return FakeJSON(202, {'status': 'open', 'runId': run_id})
+        return FakeJSON(200, self.record)
+
+
+def test_the_local_copy_waits_for_a_box_still_finalizing(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    record = {'runId': 'r1', 'outputs': [], 'log': {'sha256': '0' * 64, 'size': 0}}
+    session = FinalizingSession(pending=2, record=record)
+    path = crr.save_and_check(session, 'box', 'r1', None, {})
+    assert session.calls == 3
+    assert json.loads((tmp_path / path).read_text()) == record
+
+
+def test_the_local_copy_gives_up_after_a_minute_and_says_so(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    session = FinalizingSession(pending=99, record={})
+    assert crr.save_and_check(session, 'box', 'r1', None, {}) is None
+    assert session.calls == crr.FETCH_ATTEMPTS
+    assert 'still finishing' in capsys.readouterr().err
+    assert not list(tmp_path.iterdir())

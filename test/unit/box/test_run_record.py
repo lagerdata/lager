@@ -241,6 +241,18 @@ def test_record_value_writes_where_the_box_reads(tmp_path, monkeypatch):
         record_value('k', {'nested': 1})
 
 
+def test_record_value_refuses_an_integer_other_readers_would_round(tmp_path, monkeypatch):
+    # Past 2**53 an integer reads back as a different number in JavaScript,
+    # so the record would hash differently off the box than on it.
+    from lager.run_assertions import record_value
+    monkeypatch.setenv('LAGER_RUN_ASSERTIONS', str(tmp_path / 'x.script'))
+    assert record_value('count', 2 ** 53 - 1) is True
+    assert record_value('count.neg', -(2 ** 53 - 1)) is True
+    with pytest.raises(ValueError, match='as a string'):
+        record_value('count', 2 ** 53)
+    assert record_value('count', str(2 ** 60)) is True
+
+
 def test_record_value_is_a_no_op_outside_a_recorded_run(monkeypatch):
     from lager.run_assertions import record_value
     monkeypatch.delenv('LAGER_RUN_ASSERTIONS', raising=False)
