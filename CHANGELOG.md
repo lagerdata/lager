@@ -26,6 +26,11 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   The page also kept the last trace up, as if nothing had happened. Start
   after a replug now runs on a new session, and the page says the scope was
   unplugged.
+- **A PicoScope that was just plugged in no longer reports as wedged.** Its
+  driver can take about a minute to open a cold-plugged unit, and for most of
+  that minute every command said to reconnect it, which started the wait
+  over. Commands now say the open is in progress and how long it has run;
+  only an open still running after two minutes says to unplug the scope.
 
 ## [0.55.0] - 2026-10-09
 

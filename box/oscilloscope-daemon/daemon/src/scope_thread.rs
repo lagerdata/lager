@@ -232,20 +232,30 @@ impl OpenState {
     fn refusal(&self) -> Option<String> {
         match self {
             OpenState::Open => None,
-            // A retry, which takes moments unless the scope is wedged. Until
-            // it is clearly stuck, why the last attempt failed is still the
-            // news: on a box with no scope attached, that is every request.
-            OpenState::Opening {
-                since,
-                last_failure: Some(reason),
-            } if since.elapsed() < OPEN_TIMEOUT => {
-                Some(format!("no oscilloscope available: {reason}"))
+            OpenState::Opening { since, last_failure } => {
+                let elapsed = since.elapsed();
+                let seconds = elapsed.as_secs();
+                Some(match last_failure {
+                    // A retry on a box with no scope fails within moments,
+                    // so while this one is young, why the last attempt failed
+                    // is still the news: on such a box that is every request.
+                    Some(reason) if elapsed < OPEN_FAILS_WITHIN => {
+                        format!("no oscilloscope available: {reason}")
+                    }
+                    // Past that, the driver has found something and is
+                    // opening it, which for a unit just plugged in is slow
+                    // but healthy. Telling people to reconnect here restarts
+                    // the wait they are in.
+                    _ if elapsed < OPEN_LOOKS_WEDGED_AFTER => format!(
+                        "opening the oscilloscope ({seconds} s so far); a PicoScope \
+                         that was just plugged in can take about a minute"
+                    ),
+                    _ => format!(
+                        "still opening the oscilloscope after {seconds} s; it is likely \
+                         wedged. Unplug it and plug it back in."
+                    ),
+                })
             }
-            OpenState::Opening { .. } => Some(
-                "still opening the oscilloscope; if this does not clear, \
-                 the scope is likely wedged and needs reconnecting"
-                    .to_string(),
-            ),
             OpenState::Failed(reason) => Some(format!("no oscilloscope available: {reason}")),
         }
     }
@@ -377,12 +387,29 @@ impl ScopeHandle {
     }
 }
 
-/// How long to wait for the scope before serving without it.
+/// How long startup waits for the scope before serving without it.
 ///
-/// A healthy open takes well under a second, so this is slack for a slow
-/// enumeration rather than a real budget. Waiting at all keeps the common case
-/// honest: the startup log still says whether a scope was found.
+/// Not a measure of health: a unit that was just plugged in has to load its
+/// firmware first and takes far longer than this, which is normal (see
+/// [`OPEN_LOOKS_WEDGED_AFTER`]). Waiting at all keeps the common case honest:
+/// the startup log still says whether a scope was found.
 const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long a failing open takes, with room to spare.
+///
+/// On a box with no scope attached, each attempt measured 0.2-0.3 s, so an
+/// attempt older than this is not one that is about to fail: the driver has
+/// found a unit and is opening it.
+const OPEN_FAILS_WITHIN: Duration = Duration::from_secs(3);
+
+/// How long an open runs before it is reported as wedged.
+///
+/// A PicoScope 2204A that has just been plugged in took the ps2000 driver
+/// about 60 s to open: the unit loads its firmware and re-enumerates about
+/// 2 s into the call, and the call returns about a minute later. This is
+/// twice that, so only an open that is really stuck tells people to
+/// reconnect -- reconnecting starts the minute over.
+const OPEN_LOOKS_WEDGED_AFTER: Duration = Duration::from_secs(120);
 
 /// How long to leave between attempts to open the scope.
 ///
@@ -444,12 +471,11 @@ where
             error = %format!("{e:#}"),
             "no oscilloscope yet; serving anyway and retrying"
         ),
-        // Still inside the driver's open call. Nothing to report but the wait
-        // itself, and that is worth reporting: it is the shape of a wedged
-        // scope, which no amount of waiting fixes.
+        // Still inside the driver's open call, which for a unit that was
+        // just plugged in can take a minute. The thread logs when it opens.
         Err(_) => tracing::warn!(
             waited = ?OPEN_TIMEOUT,
-            "the oscilloscope has not opened yet; serving anyway"
+            "the oscilloscope has not opened yet; serving while the open continues"
         ),
     }
 
@@ -508,6 +534,7 @@ fn hardware_thread<F>(
             }
             attempt += 1;
             *lock(&open_state) = OpenState::opening(last_failure.clone());
+            let started = Instant::now();
             let opened = std::panic::catch_unwind(std::panic::AssertUnwindSafe(&mut open))
                 .unwrap_or_else(|panic| {
                     Err(anyhow::anyhow!(
@@ -519,7 +546,7 @@ fn hardware_thread<F>(
                 Ok(scope) => {
                     *lock(&open_state) = OpenState::Open;
                     let _ = ready.send(Ok(()));
-                    tracing::info!(attempt, "oscilloscope opened");
+                    tracing::info!(attempt, took = ?started.elapsed(), "oscilloscope opened");
                     break scope;
                 }
                 Err(e) => {
@@ -2657,13 +2684,59 @@ mod tests {
 
         let message = error_from(handle.request(ScopeRequest::IsReady).await);
         assert!(
-            message.contains("still opening"),
+            message.contains("opening the oscilloscope"),
             "should say the open is in progress, got {message:?}"
         );
         assert!(
-            message.contains("reconnect"),
-            "and what to do if it stays that way, got {message:?}"
+            !message.contains("reconnect") && !message.contains("plug it back in"),
+            "an open that has only just started is not wedged, got {message:?}"
         );
+    }
+
+    /// An open that started `ago`, or `None` if the clock cannot go back that
+    /// far (a host up for less than `ago`).
+    fn opening_for(ago: Duration, last_failure: Option<&str>) -> Option<OpenState> {
+        Some(OpenState::Opening {
+            since: Instant::now().checked_sub(ago)?,
+            last_failure: last_failure.map(str::to_string),
+        })
+    }
+
+    #[tokio::test]
+    async fn a_slow_open_says_how_long_it_has_been_going_not_the_old_failure() {
+        // A unit just plugged in takes about a minute to open. The reason the
+        // unit before it went away is no longer the news, and reconnecting
+        // would only start the minute over.
+        let ago = OPEN_FAILS_WITHIN + Duration::from_secs(20);
+        let Some(state) = opening_for(ago, Some("the oscilloscope stopped answering: gone")) else {
+            eprintln!("skipped: host uptime is under {ago:?}");
+            return;
+        };
+        let handle = handle_in(state);
+
+        let message = error_from(handle.request(ScopeRequest::IsReady).await);
+        assert!(message.contains("opening the oscilloscope ("), "{message:?}");
+        assert!(message.contains(&format!("{} s so far", ago.as_secs())), "{message:?}");
+        assert!(!message.contains("stopped answering"), "{message:?}");
+        assert!(
+            !message.contains("reconnect") && !message.contains("plug it back in"),
+            "{message:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_open_stuck_past_the_wedged_threshold_says_to_replug() {
+        for last_failure in [None, Some("no PicoScope found")] {
+            let Some(state) = opening_for(OPEN_LOOKS_WEDGED_AFTER, last_failure) else {
+                eprintln!("skipped: host uptime is under {OPEN_LOOKS_WEDGED_AFTER:?}");
+                return;
+            };
+            let handle = handle_in(state);
+
+            let message = error_from(handle.request(ScopeRequest::IsReady).await);
+            assert!(message.contains("plug it back in"), "{message:?}");
+            assert!(!message.contains("no PicoScope found"), "{message:?}");
+        }
     }
 
     #[tokio::test]
