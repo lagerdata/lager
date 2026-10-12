@@ -13,10 +13,11 @@ and the step still failed with no further output.
 
 Three separate things were wrong, and they are tested separately below.
 
-  1. **One message for eight commands.** Fixed by `run_step`, which names the
-     command and its exit status on the box's stderr. `ssh -t` merges the
-     remote session onto one stream, so that line lands in the transcript
-     directly after the failing command's own output.
+  1. **One message for eight commands.** Fixed by a step wrapper (now
+     `lager_step`, since the chain moved into the one sudo session for #597),
+     which names the command and its exit status on the box's stderr. `ssh -t`
+     merges the remote session onto one stream, so that line lands in the
+     transcript directly after the failing command's own output.
 
   2. **`ssh_t`'s stderr filter was asynchronous.** `cmd 2> >(grep -v ... >&2)`
      does not make the shell wait for grep, so ssh's own diagnostics were
@@ -437,19 +438,18 @@ def test_the_controlmaster_trap_also_removes_the_capture_file():
 
 
 # ---------------------------------------------------------------------------
-# The install chain -- built the way the script builds it, then executed
+# The install chain -- rendered the way the script renders it, then executed
 # ---------------------------------------------------------------------------
 
-# The chain is built by bash from a double-quoted string full of `\$` and `\"`.
-# That escaping is the part a reader cannot check by eye, and every assertion
-# below the divider matches text in the SCRIPT SOURCE, so none of them can see
-# it: they would pass just as happily on a string the remote shell would
-# refuse. These run the real thing.
+# The Docker install runs inside the one sudo session (#597): a script the
+# deploy renders from an unquoted heredoc full of `\$` and `\\`. That escaping
+# is the part a reader cannot check by eye, so these render the session for
+# real and run its Docker block against stubs.
 
 REMOTE_SHELLS = ["bash", "sh"]
 
 CHAIN_LINKS = [
-    # (what to break, its exit status, the label run_step must print)
+    # (what to break, its exit status, the label lager_step must print)
     ("apt-get update", 100, "apt-get update"),
     ("apt-get install", 100, "apt-get install -y docker.io docker-compose-v2"),
     ("systemctl daemon-reload", 1, "systemctl daemon-reload"),
@@ -459,50 +459,55 @@ CHAIN_LINKS = [
 ]
 
 
-def _remote_install_command(tmp_path):
-    """The exact string bash hands the remote shell for the Docker step.
+def _constants():
+    """The script's BUILDX_* and PICOSCOPE_* assignments, which the session
+    render reads from the top of the script."""
+    return "\n".join(
+        line for line in DEPLOY_SCRIPT.read_text().splitlines()
+        if re.match(r"(BUILDX|PICOSCOPE)_[A-Z0-9_]+=", line))
 
-    Not a copy of it. The call site is lifted from the script and run with
-    `ssh_t` replaced by a capture function, so bash itself resolves the
-    escaping, exactly as it does on a real deploy.
-    """
-    lines = DEPLOY_SCRIPT.read_text().splitlines()
-    start = next(
-        i for i, l in enumerate(lines)
-        if l.strip().startswith('if ssh_t "${BOX_USER}@${BOX_IP}" "')
-    )
-    end = next(i for i, l in enumerate(lines[start:], start) if l.strip() == '"; then')
-    call_site = "\n".join(lines[start:end + 1])
 
-    out = tmp_path / "remote_cmd"
-    builder = tmp_path / "build_remote_cmd.sh"
-    builder.write_text(
+def _rendered_session(tmp_path):
+    """The session script exactly as the deploy renders it for box user
+    `lagerdata`."""
+    driver = tmp_path / "render.sh"
+    driver.write_text(
         "#!/bin/bash\n"
-        'BOX_USER="lagerdata"\n'
-        'BOX_IP="10.0.0.5"\n'
-        'ssh_t() { printf "%s" "$2" > "$OUT"; return 0; }\n'
-        + call_site
-        + "\n    :\nfi\n"
+        "set -e\n"
+        'print_warning() { echo "WARN: $*" >&2; }\n'
+        'print_error() { echo "ERR: $*" >&2; }\n'
+        + _constants() + "\n"
+        + _extract("sudo session render") + "\n"
+        'cat "$TEMP_SCRIPT"\n'
+        'rm -f "$TEMP_SCRIPT"\n'
     )
-    builder.chmod(0o755)
-
-    env = dict(os.environ)
-    env["OUT"] = str(out)
-    result = subprocess.run(
-        ["bash", str(builder)], env=env, capture_output=True, text=True,
-        timeout=60, stdin=subprocess.DEVNULL,
-    )
+    env = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "BOX_USER": "lagerdata",
+           "CORPORATE_VPN": "", "SCRIPT_DIR": str(DEPLOY_SCRIPT.parent)}
+    result = subprocess.run(["bash", str(driver)], env=env, capture_output=True,
+                            text=True, timeout=60, stdin=subprocess.DEVNULL)
     assert result.returncode == 0, result.stderr
-    command = out.read_text()
-    assert "run_step()" in command, command
+    return result.stdout
+
+
+def _remote_install_command(tmp_path):
+    """The session's Docker install, with the lager_step it relies on."""
+    session = _rendered_session(tmp_path)
+    start = session.index("lager_step() {")
+    end = session.index("\n# buildx:", start)
+    command = session[start:end]
+    assert "apt-get install -y docker.io docker-compose-v2" in command, command
     return command
 
 
 @pytest.fixture
 def box_stubs(tmp_path):
-    """A box's worth of stand-ins. Break one by name via FAIL_CMD/FAIL_RC."""
+    """A box's worth of stand-ins, and the only directory on PATH, so the
+    block cannot see a docker the test machine has (a GitHub runner has one in
+    /usr/bin). Break one by name via FAIL_CMD/FAIL_RC."""
     bin_dir = tmp_path / "box_bin"
     bin_dir.mkdir()
+    # `sudo env VAR=... apt-get`: the real env, which then finds the stubs.
+    (bin_dir / "env").symlink_to(shutil.which("env"))
     # Real sudo drops the leading VAR=VAL arguments before exec'ing; so must
     # this one, or `sudo DEBIAN_FRONTEND=... apt-get update` never reaches the
     # apt-get stub and the chain passes for the wrong reason.
@@ -525,15 +530,14 @@ def box_stubs(tmp_path):
 
 
 def _run_chain(command, bin_dir, shell, fail_cmd=None, fail_rc=None):
-    env = dict(os.environ)
-    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    # No docker anywhere on this PATH, so the block's own check sends it in.
+    env = {"PATH": str(bin_dir)}
     if fail_cmd is not None:
         env["FAIL_CMD"] = fail_cmd
         env["FAIL_RC"] = str(fail_rc)
-    else:
-        env.pop("FAIL_CMD", None)
+    # By full path: the PATH below holds only the stubs.
     result = subprocess.run(
-        [shell, "-c", command], env=env, stdout=subprocess.PIPE,
+        [shutil.which(shell), "-c", command], env=env, stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT, text=True, timeout=60,
         stdin=subprocess.DEVNULL,
     )
@@ -543,14 +547,15 @@ def _run_chain(command, bin_dir, shell, fail_cmd=None, fail_rc=None):
 class TestTheChainActuallyRuns:
     @pytest.mark.parametrize("shell", REMOTE_SHELLS)
     def test_it_succeeds_when_every_command_does(self, tmp_path, box_stubs, shell):
-        """`run_step` sits inside an `&&` chain. A wrapper that got the success
-        path wrong -- a stray non-zero, a swallowed status -- would fail every
-        install on a healthy box."""
+        """`lager_step` sits inside an `&&` chain. A wrapper that got the
+        success path wrong -- a stray non-zero, a swallowed status -- would
+        fail every install on a healthy box."""
         if shutil.which(shell) is None:
             pytest.skip(f"requires {shell}")
         command = _remote_install_command(tmp_path)
         rc, output = _run_chain(command, box_stubs, shell)
         assert rc == 0, output
+        assert "[OK] Docker installed" in output, output
         assert "STEP FAILED" not in output, output
 
     @pytest.mark.parametrize("shell", REMOTE_SHELLS)
@@ -558,23 +563,32 @@ class TestTheChainActuallyRuns:
     def test_each_link_names_itself_and_keeps_its_status(
         self, tmp_path, box_stubs, shell, broken, status, label
     ):
-        """Both halves matter. The label is what the operator reads; the exit
-        status is what stops the chain -- a wrapper that named the step and
-        returned 0 would turn a failed install into a reported success, which
-        is worse than the silence it replaced.
+        """The label is what the operator reads, with the exit status beside
+        it, and the chain must stop there: a wrapper that named the step and
+        returned 0 would report an install that never finished as done.
 
-        `sh` as well as `bash`: the remote command runs under the box login
-        user's shell, which this script does not choose. `run_step` is written
-        in POSIX shell for that reason, and nothing here may quietly depend on
-        bash.
-        """
+        `sh` as well as `bash`: `lager_step` is written in POSIX shell, and
+        nothing in it may quietly depend on bash."""
         if shutil.which(shell) is None:
             pytest.skip(f"requires {shell}")
         command = _remote_install_command(tmp_path)
-        rc, output = _run_chain(command, box_stubs, shell,
-                                fail_cmd=broken, fail_rc=status)
+        _, output = _run_chain(command, box_stubs, shell,
+                                 fail_cmd=broken, fail_rc=status)
         assert f"[lager] STEP FAILED: {label} (exit {status})" in output, output
-        assert rc == status, output
+        assert "[ERROR] The Docker install did not complete" in output, output
+        assert "[OK] Docker installed" not in output, output
+
+    @pytest.mark.parametrize("shell", REMOTE_SHELLS)
+    def test_lager_step_returns_the_wrapped_command_s_status(self, tmp_path, shell):
+        if shutil.which(shell) is None:
+            pytest.skip(f"requires {shell}")
+        command = _remote_install_command(tmp_path)
+        body = command[:command.index("\n}\n") + 3]
+        result = subprocess.run(
+            [shell, "-c", body + "lager_step 'a step' sh -c 'exit 7'; echo \"rc=$?\""],
+            capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL)
+        assert "rc=7" in result.stdout, result
+        assert "[lager] STEP FAILED: a step (exit 7)" in result.stderr, result
 
 
 # ---------------------------------------------------------------------------
@@ -583,12 +597,6 @@ class TestTheChainActuallyRuns:
 
 
 class TestEveryStepNamesItself:
-    def test_run_step_is_defined_and_reports_the_label_and_the_status(self):
-        code = _uncommented(DEPLOY_SCRIPT)
-        assert "run_step() {" in code
-        assert "STEP FAILED" in code, "the failure line the operator greps for"
-        assert "step_rc" in code, "the exit status has to travel with the label"
-
     @pytest.mark.parametrize(
         "label",
         [
@@ -600,26 +608,16 @@ class TestEveryStepNamesItself:
             "usermod -aG docker",
         ],
     )
-    def test_each_link_of_the_chain_is_wrapped(self, label):
+    def test_each_link_of_the_chain_is_wrapped(self, tmp_path, label):
         """Including -- especially -- the four that are silent on success.
         Those are the ones whose failure produced a transcript that just
         stopped."""
-        code = _uncommented(DEPLOY_SCRIPT)
-        assert f"run_step '{label}" in code, label
-
-    def test_run_step_returns_the_wrapped_command_s_status(self):
-        """It sits inside an `&&` chain. A wrapper that swallowed the status
-        would turn a failed install into a reported success, which is worse
-        than the bug it fixes."""
-        code = _uncommented(DEPLOY_SCRIPT)
-        body = code[code.index("run_step() {"):]
-        body = body[:body.index("\n            }")]
-        assert "return ${step_rc}" in body or "return \\${step_rc}" in body, body
+        assert f"lager_step '{label}" in _remote_install_command(tmp_path), label
 
     def test_the_start_limit_shape_is_unchanged(self):
         """This block was already carrying a fix (one service start, socket
-        restart demoted to a fallback). Naming the steps must not walk it
-        back -- see test_docker_start_limit.py, which owns that contract."""
+        restart demoted to a fallback). Moving it into the session must not walk
+        it back -- see test_docker_start_limit.py, which owns that contract."""
         code = _uncommented(DEPLOY_SCRIPT)
         assert "sudo systemctl restart docker || {" in code
         assert "systemctl restart docker.socket" in code
@@ -627,44 +625,38 @@ class TestEveryStepNamesItself:
 
 
 class TestTheFailureMessageIsActionable:
-    def test_it_points_at_the_named_step(self):
+    """After the session, the deploy only checks for Docker. A box still without
+    it stops there with the manual steps (#597)."""
+
+    def _missing_branch(self):
         code = _uncommented(DEPLOY_SCRIPT)
-        assert "STEP FAILED" in code[code.index("Failed to install Docker"):], (
-            "the generic line must tell the operator where the specific one is"
-        )
+        tail = code[code.index('print_error "Docker is not installed on box"'):]
+        return tail[:tail.index("exit 1")]
+
+    def test_it_points_at_the_named_step(self):
+        assert "STEP FAILED" in self._missing_branch(), (
+            "the generic line must tell the operator where the specific one is")
 
     def test_the_pointer_to_the_named_step_is_conditional(self):
-        """`ssh_t` reports a non-zero status for the SESSION as well as for the
-        chain -- a ConnectTimeout, a rejected host key, a broken pipe, a
-        ControlMaster that died mid-install -- and two links are deliberately
-        unwrapped because a failure there is not fatal. Stating flatly that the
-        command "is named above" sends the operator hunting for a line that was
-        never printed, which is the same wasted ten minutes this step exists to
-        stop causing."""
-        code = _uncommented(DEPLOY_SCRIPT)
-        tail = code[code.index('print_error "Failed to install Docker"'):]
-        tail = tail[:tail.index("exit 1")]
-        assert "If the transcript above has" in tail, tail
-        assert "If there is no such line" in tail, tail
+        """The session can fail before the chain names anything (a lost
+        connection, a refused password), so the pointer says IF the line is
+        there."""
+        assert "If its output has a" in self._missing_branch()
 
     def test_the_daemon_follow_ups_are_offered(self):
-        """The issue asks for these by name, and only when the failure is in
-        the daemon rather than the packages."""
+        """When the packages landed but the daemon did not come up, the deploy
+        goes on to its docker-access check, and that is where the unit's own
+        account of itself is offered."""
         code = _uncommented(DEPLOY_SCRIPT)
-        tail = code[code.index("Failed to install Docker"):]
+        tail = code[code.index('print_error "Docker is installed but not usable by'):]
+        tail = tail[:tail.index("exit 1")]
         assert "systemctl status docker" in tail
         assert "journalctl -xeu docker.service" in tail
-        assert "command -v docker" in tail, (
-            "the daemon hint must be conditional on the packages having landed"
-        )
 
     def test_the_recovery_instructions_match_the_chain_they_replace(self):
-        """`systemctl enable docker` was missing from them. A box recovered by
-        hand then skips the whole install block on the next run (it is gated on
-        `command -v docker`) and comes up without a daemon after a reboot."""
-        code = _uncommented(DEPLOY_SCRIPT)
-        tail = code[code.index("Failed to install Docker"):]
-        recovery = tail[:tail.index("exit 1")]
+        """`systemctl enable docker` was once missing from them. A box recovered
+        by hand then came up without a daemon after its next reboot."""
+        recovery = self._missing_branch()
         for command in (
             "apt-get update",
             "apt-get install -y docker.io docker-compose-v2",
@@ -674,6 +666,18 @@ class TestTheFailureMessageIsActionable:
             "usermod -aG docker",
         ):
             assert command in recovery, f"{command} missing from the recovery path"
+
+    def test_the_check_never_asks_for_the_sudo_password(self):
+        """The whole point of #597: the install no longer runs in a second
+        `ssh -t` session after the one that asked for the password."""
+        code = _uncommented(DEPLOY_SCRIPT)
+        head = code.index('print_info "Checking for Docker on box..."')
+        block = code[head:code.index("Ensuring ${BOX_USER} is in the docker group")]
+        # Lines that echo advice to the operator run nothing.
+        ran = "\n".join(ln for ln in block.splitlines()
+                        if not ln.lstrip().startswith("echo "))
+        assert "ssh_t" not in ran, ran
+        assert "sudo" not in ran, ran
 
 
 class TestTheEnableGrantAndItsVerification:

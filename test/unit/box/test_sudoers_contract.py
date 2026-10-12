@@ -954,11 +954,18 @@ class TheBoxConfigFileIsValidatedBeforeItIsInstalled(unittest.TestCase):
         self.assertEqual(len(re.findall(r"<< 'SUDOERS'\n", text)), 1)
 
 
+def _script_constants():
+    """The deploy script's BUILDX_* and PICOSCOPE_* assignment lines."""
+    return "\n".join(
+        line for line in DEPLOY_SCRIPT.read_text(encoding="utf-8").splitlines()
+        if re.match(r"(BUILDX|PICOSCOPE)_[A-Z0-9_]+=", line))
+
+
 class _RendersTheSession(unittest.TestCase):
     """Harness only: renders the sudo session script as the deploy script does."""
 
     def _render(self, user="benchtest", vpn="", content="", marker="", helper_dir=None,
-                packages=None, services=None):
+                packages=None, services=None, skip_picoscope="false", constants=None):
         import subprocess
         import tempfile
         block = _extract_block("sudo session render")
@@ -970,7 +977,9 @@ class _RendersTheSession(unittest.TestCase):
                 "set -e\n"
                 'print_warning() { echo "WARN: $*" >&2; }\n'
                 'print_error() { echo "ERR: $*" >&2; }\n'
-                f'. "{source}"\n'
+                # The BUILDX_* and PICOSCOPE_* constants at the top of the script.
+                + (_script_constants() if constants is None else constants) + "\n"
+                + f'. "{source}"\n'
                 'echo "HAVE_BOXCFG=$HAVE_BOXCFG" >&2\n'
                 'cat "$TEMP_SCRIPT"\n'
                 'rm -f "$TEMP_SCRIPT"\n'
@@ -978,6 +987,7 @@ class _RendersTheSession(unittest.TestCase):
             env = {
                 "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
                 "BOX_USER": user, "CORPORATE_VPN": vpn, "SCRIPT_DIR": script_dir,
+                "SKIP_PICOSCOPE": skip_picoscope,
                 "LAGER_BOXCFG_SUDOERS_CONTENT": content,
                 "LAGER_BOXCFG_SUDOERS_MARKER": marker,
                 "LAGER_HOST_APT_PACKAGES": (" ".join(ops.host_package_names())
@@ -1255,3 +1265,134 @@ class WithNoTerminalTheInstallSaysSo(unittest.TestCase):
         self.assertIn("needs an interactive terminal to ask for the box's sudo password once",
                       stop)
         self.assertIn("exit 1", stop)
+
+
+class TheSessionInstallsWhatTheDeployUsedToAskForAgain(_RendersTheSession):
+    """#597: Docker, buildx and the PicoTech SDK were each installed in an
+    `ssh -t` session of their own after the one that asked for the password,
+    and no grant covers apt-get, usermod or the buildx download, so each asked
+    again. They are in the one session now."""
+
+    def test_docker_buildx_and_the_picotech_sdk_are_installed_before_the_marker(self):
+        rendered, _ = self._render()
+        self._parses(rendered)
+        recorded = rendered.index(f'mv -f "{ops.DEPLOY_SUDOERS_MARKER}.tmp"')
+        for step in ("apt-get install -y docker.io docker-compose-v2",
+                     "sudo usermod -aG docker benchtest",
+                     "lager_install_buildx_binary || true",
+                     "picoscope7/debian/ picoscope main",
+                     "apt-get install -y --no-install-recommends libps2000 "):
+            self.assertIn(step, rendered, step)
+            self.assertLess(rendered.rindex(step), recorded, step)
+
+    def test_skip_picoscope_leaves_the_sdk_out(self):
+        rendered, _ = self._render(skip_picoscope="true")
+        self._parses(rendered)
+        self.assertIn('if [ "0" = "1" ] && ! sh -c', rendered)
+        self.assertIn('if [ "1" = "1" ] && ! sh -c', self._render()[0])
+
+    def test_the_sdk_is_checked_by_the_same_headers_as_step_4_5(self):
+        rendered, _ = self._render()
+        check = re.search(r"^PICOSCOPE_HEADERS_CHECK='(.*)'$", _script_constants(), re.M)
+        self.assertIsNotNone(check)
+        self.assertIn(f"! sh -c '{check.group(1)}'", rendered)
+
+    def test_the_skip_probe_wants_docker_and_the_sdk(self):
+        # Without these a box whose marker is current would skip the session
+        # and never get Docker or the SDK, and the deploy would then stop at
+        # its Docker check instead of installing it.
+        probe = _extract_block("deploy sudoers probe")
+        self.assertIn("&& command -v docker >/dev/null 2>&1 && docker buildx version", probe)
+        self.assertNotIn("! command -v docker", probe)
+        self.assertIn('if [ "$PICOSCOPE_WANTED" = "1" ]; then', probe)
+        self.assertIn("( ${PICOSCOPE_HEADERS_CHECK} )", probe)
+
+    def test_the_digest_changes_with_skip_picoscope(self):
+        digest = TheDigestChangesWithWhatWouldBeInstalled._digest
+        self.assertNotEqual(digest(self, self._render()[0]),
+                            digest(self, self._render(skip_picoscope="true")[0]))
+
+
+class TheBuildxBinaryIsCheckedBeforeItIsInstalled(_RendersTheSession):
+    """The static buildx fallback used to be fetched straight into place by a
+    root curl, with no checksum. Now it is downloaded as the login user, checked
+    against a pinned sha256, and only then installed root-owned."""
+
+    PAYLOAD = b"not really docker-buildx\n"
+
+    def test_every_architecture_has_a_sha256(self):
+        constants = _script_constants()
+        for arch in ("AMD64", "ARM64", "ARM_V7", "ARM_V6"):
+            self.assertRegex(constants, rf'(?m)^BUILDX_SHA256_{arch}="[0-9a-f]{{64}}"$', arch)
+        rendered, _ = self._render()
+        for value in re.findall(r'BUILDX_SHA256_[A-Z0-9_]+="([0-9a-f]{64})"', constants):
+            self.assertIn(value, rendered)
+
+    def test_nothing_is_fetched_as_root(self):
+        rendered, _ = self._render()
+        self.assertEqual(re.findall(r"\bsudo (?:curl|wget)\b", _code(rendered)), [])
+        self.assertEqual(re.findall(r"\bsudo (?:curl|wget)\b",
+                                    _code(DEPLOY_SCRIPT.read_text(encoding="utf-8"))), [])
+
+    def _run(self, *, arch="x86_64", digest=None, payload=None):
+        """Run the rendered lager_install_buildx_binary against stubs."""
+        import hashlib
+        import os
+        import subprocess
+        import tempfile
+        payload = self.PAYLOAD if payload is None else payload
+        digest = hashlib.sha256(self.PAYLOAD).hexdigest() if digest is None else digest
+        constants = re.sub(r'(?m)^(BUILDX_SHA256_AMD64=)"[0-9a-f]+"$', rf'\1"{digest}"',
+                           _script_constants())
+        rendered, _ = self._render(constants=constants)
+        start = rendered.index("lager_install_buildx_binary() {")
+        function = rendered[start:rendered.index("\n}\n", start) + 3]
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = pathlib.Path(tmp)
+            stubs = tmp / "bin"
+            stubs.mkdir()
+            (tmp / "payload").write_bytes(payload)
+            for name, body in (
+                ("uname", f'echo "{arch}"'),
+                # curl -fsSL URL -o FILE
+                ("curl", f'echo "$*" >> "{tmp}/fetched"; cp "{tmp}/payload" "$4"'),
+                ("wget", "exit 1"),
+                ("sudo", f'echo "$*" >> "{tmp}/sudo.log"'),
+                # Not every macOS has sha256sum; the box always does.
+                ("sha256sum", 'shasum -a 256 "$@"' if not shutil.which("sha256sum")
+                 else f'exec {shutil.which("sha256sum")} "$@"'),
+            ):
+                path = stubs / name
+                path.write_text("#!/bin/bash\n" + body + "\n")
+                path.chmod(0o755)
+            boot = tmp / "boot"
+            boot.mkdir()
+            env = {"PATH": f"{stubs}:/usr/bin:/bin", "BOOT_DIR": str(boot)}
+            proc = subprocess.run(
+                [_BASH, "-c", function + "lager_install_buildx_binary; echo \"rc=$?\""],
+                env=env, capture_output=True, text=True, timeout=30)
+            sudo_log = (tmp / "sudo.log").read_text() if (tmp / "sudo.log").exists() else ""
+            fetched = (tmp / "fetched").read_text() if (tmp / "fetched").exists() else ""
+            leftover = sorted(p.name for p in boot.iterdir())
+        return proc.stdout, sudo_log, fetched, leftover
+
+    def test_a_matching_download_is_installed_root_owned(self):
+        out, sudo_log, fetched, leftover = self._run()
+        self.assertIn("rc=0", out)
+        self.assertIn("buildx-v0.35.0.linux-amd64", fetched)
+        self.assertIn("install -D -m 0755 -o root -g root", sudo_log)
+        self.assertIn("/usr/local/lib/docker/cli-plugins/docker-buildx", sudo_log)
+        self.assertEqual(leftover, [])
+
+    def test_a_download_that_does_not_match_is_refused(self):
+        out, sudo_log, _fetched, leftover = self._run(payload=b"tampered\n")
+        self.assertIn("does not match its pinned sha256", out)
+        self.assertIn("rc=1", out)
+        self.assertEqual(sudo_log, "")
+        self.assertEqual(leftover, [])
+
+    def test_an_architecture_with_no_digest_is_refused_not_given_amd64(self):
+        out, sudo_log, fetched, _ = self._run(arch="riscv64")
+        self.assertIn("No pinned buildx binary for riscv64", out)
+        self.assertIn("rc=1", out)
+        self.assertEqual((sudo_log, fetched), ("", ""))

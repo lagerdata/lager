@@ -20,6 +20,12 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 ### Fixed
 
+- **`lager install` asks for the box's sudo password once on a fresh box, with or without
+  Docker.** Docker, the buildx plugin and the PicoTech SDK are now installed in the one sudo
+  session. Before, each was installed in a separate session that asked for the password again.
+  The official buildx binary, used when the distribution's package does not run, is checked
+  against a pinned SHA-256 before it is installed. A box that is already installed asks for the
+  password once more on its next `lager install`, because the session changed.
 - **Unplugging a streaming PicoScope resets the live session.** The daemon
   closed the unit and opened it again, but the Pico driver in that process
   still had the previous run, so Start failed until `lager scope <net> stop`.

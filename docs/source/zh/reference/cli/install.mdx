@@ -160,15 +160,16 @@ Lager 不会碰那个文件，`lager uninstall` 期间也不会。
 
 ### sudo 密码提示
 
-`lager install` 在部署步骤的早期，用一次 sudo 会话写入它的两个文件。它只在这次会话里要求输入 Box 的 sudo 密码，其他地方都不会：
+`lager install` 在部署步骤的早期，用一次 sudo 会话写入它的两个文件。同一次会话还会安装 Box 尚未具备的组件：Docker 及其 buildx 插件、`python3-venv`、主机软件包，以及 PicoTech SDK（设置了 `--skip-picoscope` 时除外）。它只在这次会话里要求输入 Box 的 sudo 密码，其他地方都不会：
 
 | Box | 密码提示次数 |
 |-----|------------------|
 | 已经安装过，且授权是最新的 | 0 |
-| 已有 Docker 的全新 Box | 1 |
-| 没有 Docker 的全新 Box | 2。安装 Docker 是第二次会话，没有任何授权覆盖其中的命令 |
+| 全新 Box，无论是否已有 Docker | 1 |
 
-在这次会话之前，install 会在不分配终端的情况下检查 Box。它把 `/etc/lager/.deploy-sudoers-v1` 与本次运行将要写入的授权的摘要进行比较，并用 `sudo -n` 运行一条已授权的命令。两项检查都通过时，install 会跳过这次会话。不同的 `--user` 或 `--corporate-vpn` 值会改变授权，更新的 CLI 也可能改变它们。此时 install 会运行一次会话，并要求输入一次密码。
+如果发行版的 buildx 软件包无法运行，会话会安装固定版本的官方 buildx 二进制文件。它会先用固定的 SHA-256 校验下载的文件，不匹配的二进制文件不会被安装。部署的后续步骤只检查 Docker 和 buildx。如果其中某一项仍然缺失，install 会停止，并打印手动安装它的命令。
+
+在这次会话之前，install 会在不分配终端的情况下检查 Box。它把 `/etc/lager/.deploy-sudoers-v1` 与本次运行将要写入的授权的摘要进行比较，并用 `sudo -n` 运行一条已授权的命令。它还会检查会话要安装的组件是否都已存在。这些检查全部通过时，install 会跳过这次会话。不同的 `--user`、`--corporate-vpn` 或 `--skip-picoscope` 值会改变会话所做的事，更新的 CLI 也可能改变它。此时 install 会运行一次会话，并要求输入一次密码。
 
 这次会话需要一个终端来要求输入密码。如果 install 在没有终端的情况下运行，而 Box 的 `sudo` 需要密码，install 会在会话之前停止，并显示这条消息：
 

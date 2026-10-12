@@ -65,6 +65,22 @@ JLINK_VERSION=""
 # packages don't provide a working `docker buildx` (the box image is built with
 # BuildKit, which requires the buildx plugin).
 BUILDX_VERSION="v0.35.0"
+# The sha256 of each architecture's binary, from the checksums.txt that the
+# buildx release publishes beside it. The sudo session refuses a download that
+# does not match, and an architecture with no digest here. Bump them together
+# with BUILDX_VERSION.
+BUILDX_SHA256_AMD64="d41ece72044243b4f58b343441ae37446d9c29a7d6b5e11c61847bbcf8f7dfda"
+BUILDX_SHA256_ARM64="c4248d6cbc4a619a7e0b4609c11e509ad4ac0b475e1c64817c0ac20c5d90c766"
+BUILDX_SHA256_ARM_V7="e1fe67cbe2d5a7b242e5f732a9708e6abaa6d19d717e65bfbd1d13baa8669d1f"
+BUILDX_SHA256_ARM_V6="5938b81dc6203361bb984e961fc0afbcdc2bf05c5a666ec093ea99e612de616c"
+
+# The PicoTech SDK: what STEP 4.5 checks for, and what the sudo session
+# installs (see STEP 4.5 for the packages and the repository).
+# PICOSCOPE_HEADERS_CHECK exits 0 when build.rs has at least one family to
+# build. Keep its rule identical to `picotech_headers_present` in
+# box/start_box.sh; a test runs both over the same trees and compares.
+PICOSCOPE_PACKAGES="libps2000 libps2000a libps3000a libps4000a libps5000a libps6000a libpsospa"
+PICOSCOPE_HEADERS_CHECK='i=/opt/picoscope/include; for h in libps2000/ps2000.h libps2000a/ps2000aApi.h libps4000a/ps4000aApi.h libps5000a/ps5000aApi.h; do [ -f "$i/$h" ] && exit 0; done; [ -f "$i/libps3000a/ps3000aApi.h" ] || exit 1; for d in libps3000a libps4000a libps5000a libps6000a libpsospa; do [ -f "$i/$d/PicoConnectProbes.h" ] && exit 0; done; exit 1'
 
 # Pre-built box image published on every release tag by
 # .github/workflows/box-image-publish.yml. Pulling it replaces an on-box
@@ -787,6 +803,12 @@ if [ -n "$CORPORATE_VPN" ]; then
     FIREWALL_SUDOERS_RULES="${BOX_USER} ALL=(ALL) NOPASSWD: /usr/local/lib/lager/secure_box_firewall.sh --corporate-vpn ${CORPORATE_VPN}"
 fi
 
+# The PicoTech SDK goes in through the session unless --skip-picoscope.
+PICOSCOPE_WANTED=1
+if [ "${SKIP_PICOSCOPE:-false}" = true ]; then
+    PICOSCOPE_WANTED=0
+fi
+
 # Create a temporary script on the box to set up sudoers
 TEMP_SCRIPT=$(mktemp)
 cat > "$TEMP_SCRIPT" << SCRIPT_EOF
@@ -1038,16 +1060,95 @@ BOXCFG_RULES_EOF
     rm -f "\$LAGER_BOXCFG_TMP"
 fi
 
-# Two packages a fresh box can be missing. Each is checked again later in the
-# deploy, in a session of its own, which is where they used to cost a password
-# apiece. Best effort: those later steps still run, and still report.
-# sudo env VAR=value, not sudo VAR=value: see the Docker install step.
+# What a fresh box can be missing: Docker, its buildx plugin, python3-venv.
+# Each is checked again later in the deploy, which stops with the manual steps
+# if one is still missing. They used to be installed there, each in an ssh
+# session of its own, and no Lager grant covers apt-get, usermod or the buildx
+# download, so each one asked for the sudo password again (#597). Best effort
+# here: a failure is reported, and the later check is what stops the install.
+#
+# sudo env VAR=value, not sudo VAR=value: sudo env_reset drops assignments made
+# on its own command line unless the rule carries SETENV, and in a first
+# install no Lager sudoers file exists yet, so these run under the operator's
+# own sudo rights. sudo env runs /usr/bin/env as root and lets IT set the
+# variables, so it does not depend on sudoers policy at all (#315). Never grant
+# /usr/bin/env to make the other form work: that would grant everything.
+lager_step() {
+    lager_step_label=\$1; shift
+    "\$@" && return 0
+    lager_step_rc=\$?
+    echo "[lager] STEP FAILED: \${lager_step_label} (exit \${lager_step_rc})" >&2
+    return \$lager_step_rc
+}
+
+# Docker. ONE service start: docker.service declares Requires=docker.socket, so
+# restarting the socket first bounced the service too, and with the package
+# postinst's own start and the later DNS restart that hit StartLimitBurst and
+# latched the unit into start-limit-hit. The socket restart stays only as the
+# fallback for a box where Docker was removed once and the old socket unit
+# lingers. Each link that can fail names itself, so a transcript that stops
+# says where.
+if ! command -v docker >/dev/null 2>&1; then
+    echo "Installing Docker (this may take a few minutes)..."
+    if lager_step 'apt-get update' sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get update \\
+        && lager_step 'apt-get install -y docker.io docker-compose-v2' sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y docker.io docker-compose-v2 \\
+        && lager_step 'systemctl daemon-reload' sudo systemctl daemon-reload \\
+        && lager_step 'systemctl enable docker' sudo systemctl enable docker \\
+        && { sudo systemctl reset-failed docker.service docker.socket 2>/dev/null || true; } \\
+        && { sudo systemctl restart docker || {
+                sudo systemctl reset-failed docker.service docker.socket 2>/dev/null || true
+                sudo systemctl restart docker.socket 2>/dev/null || true
+                lager_step 'systemctl restart docker' sudo systemctl restart docker
+            }; } \\
+        && lager_step 'usermod -aG docker ${BOX_USER}' sudo usermod -aG docker ${BOX_USER}; then
+        echo "[OK] Docker installed"
+    else
+        echo "[ERROR] The Docker install did not complete. The step that failed is named above."
+    fi
+fi
+
+# buildx: the box image is built with BuildKit, which needs it, and docker.io
+# does not bundle it. The distro packages first.
 if command -v docker >/dev/null 2>&1 && ! docker buildx version >/dev/null 2>&1; then
     echo "Installing the Docker buildx plugin..."
     sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get update -qq || true
     sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y docker-buildx \\
         || sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y docker-buildx-plugin \\
         || true
+fi
+# Then, if buildx still does not run, the official binary at the pinned
+# version: downloaded as this user into the private staging directory, checked
+# against its pinned sha256, and only then installed root-owned. It used to be
+# fetched straight into place by a root curl, with nothing checked. An
+# architecture with no pinned digest is refused, not given the amd64 binary.
+lager_install_buildx_binary() {
+    case "\$(uname -m)" in
+        x86_64) buildx_arch=amd64; buildx_sha256=${BUILDX_SHA256_AMD64} ;;
+        aarch64|arm64) buildx_arch=arm64; buildx_sha256=${BUILDX_SHA256_ARM64} ;;
+        armv7l) buildx_arch=arm-v7; buildx_sha256=${BUILDX_SHA256_ARM_V7} ;;
+        armv6l) buildx_arch=arm-v6; buildx_sha256=${BUILDX_SHA256_ARM_V6} ;;
+        *) echo "[ERROR] No pinned buildx binary for \$(uname -m)"; return 1 ;;
+    esac
+    buildx_tmp="\$BOOT_DIR/docker-buildx"
+    buildx_url="https://github.com/docker/buildx/releases/download/${BUILDX_VERSION}/buildx-${BUILDX_VERSION}.linux-\$buildx_arch"
+    echo "Installing the official buildx ${BUILDX_VERSION} binary..."
+    if ! { curl -fsSL "\$buildx_url" -o "\$buildx_tmp" || wget -qO "\$buildx_tmp" "\$buildx_url"; } 2>/dev/null; then
+        echo "[ERROR] Could not download \$buildx_url"
+        rm -f "\$buildx_tmp"
+        return 1
+    fi
+    if ! printf '%s  %s\n' "\$buildx_sha256" "\$buildx_tmp" | sha256sum -c --status; then
+        echo "[ERROR] The downloaded buildx binary does not match its pinned sha256. It was not installed."
+        rm -f "\$buildx_tmp"
+        return 1
+    fi
+    sudo install -D -m 0755 -o root -g root "\$buildx_tmp" /usr/local/lib/docker/cli-plugins/docker-buildx
+    buildx_rc=\$?
+    rm -f "\$buildx_tmp"
+    return \$buildx_rc
+}
+if command -v docker >/dev/null 2>&1 && ! docker buildx version >/dev/null 2>&1; then
+    lager_install_buildx_binary || true
 fi
 if command -v python3 >/dev/null 2>&1 && ! python3 -Im ensurepip --version >/dev/null 2>&1; then
     echo "Installing python3-venv..."
@@ -1075,6 +1176,32 @@ for unit in ${HOST_SERVICES}; do
     sudo systemctl enable --now "\$unit" >/dev/null 2>&1 || true
 done
 
+# The PicoTech SDK, unless --skip-picoscope. Moved here from STEP 4.5 for the
+# same reason as Docker: apt-get is not granted, so that step asked for the
+# password again on every box without the SDK. Checked by its headers, as
+# STEP 4.5 checks it afterwards. Best effort: a box without the SDK still
+# comes up, without the oscilloscope daemon.
+if [ "${PICOSCOPE_WANTED}" = "1" ] && ! sh -c '${PICOSCOPE_HEADERS_CHECK}'; then
+    echo "Installing the PicoTech SDK: ${PICOSCOPE_PACKAGES}"
+    echo "Libraries land in /opt/picoscope/lib and headers in /opt/picoscope/include."
+    echo "PicoTech license: https://www.picotech.com/about/legal"
+    if sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y --no-install-recommends gnupg wget ca-certificates \\
+        && wget -O- https://labs.picotech.com/Release.gpg.key | gpg --dearmor > /tmp/picotech-archive-keyring.gpg \\
+        && sudo /bin/cp /tmp/picotech-archive-keyring.gpg /usr/share/keyrings/picotech-archive-keyring.gpg \\
+        && sudo /bin/chmod 644 /usr/share/keyrings/picotech-archive-keyring.gpg \\
+        && sudo /bin/rm -f /tmp/picotech-archive-keyring.gpg \\
+        && printf '%s\n' 'deb [signed-by=/usr/share/keyrings/picotech-archive-keyring.gpg] https://labs.picotech.com/picoscope7/debian/ picoscope main' > /tmp/picoscope7.list \\
+        && sudo /bin/cp /tmp/picoscope7.list /etc/apt/sources.list.d/picoscope7.list \\
+        && sudo /bin/chmod 644 /etc/apt/sources.list.d/picoscope7.list \\
+        && sudo /bin/rm -f /tmp/picoscope7.list \\
+        && sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get update \\
+        && sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y --no-install-recommends ${PICOSCOPE_PACKAGES}; then
+        echo "[OK] PicoTech packages installed"
+    else
+        echo "[WARNING] The PicoTech SDK install did not complete. The box comes up without the oscilloscope daemon."
+    fi
+fi
+
 # LAST, and only after everything above: the marker says "this box has what
 # digest X installs". Written without sudo -- /etc/lager is group-writable by
 # this user as of the helper run above -- and moved into place so a reader
@@ -1098,8 +1225,9 @@ DEPLOY_DIGEST="$(deploy_sudoers_digest "$TEMP_SCRIPT" "$ETC_LAGER_PERMS_SRC" 2>/
 #   - the marker holds this run's digest: the rules on the box are these rules;
 #   - the helper runs under sudo -n: the grant is really live, not just written
 #     (this is also the /etc/lager repair every install performs);
-#   - buildx and ensurepip are there, or the box has no docker / python3 for
-#     them to belong to, and every host package is installed: nothing the
+#   - Docker and its buildx plugin are there, ensurepip is there or the box
+#     has no python3 for it to belong to, every host package is installed, and
+#     the PicoTech headers are there unless --skip-picoscope: nothing the
 #     session would install is missing;
 #   - the box-config marker is there and apt-get runs under sudo -n: lager
 #     install's own check, a few minutes from now, will pass too.
@@ -1109,11 +1237,14 @@ DEPLOY_DIGEST="$(deploy_sudoers_digest "$TEMP_SCRIPT" "$ETC_LAGER_PERMS_SRC" 2>/
 DEPLOY_PROBE="test -n '${DEPLOY_DIGEST}'"
 DEPLOY_PROBE="${DEPLOY_PROBE} && test \"\$(cat ${DEPLOY_SUDOERS_MARKER} 2>/dev/null)\" = '${DEPLOY_DIGEST}'"
 DEPLOY_PROBE="${DEPLOY_PROBE} && sudo -n ${ETC_LAGER_PERMS_HELPER}"
-DEPLOY_PROBE="${DEPLOY_PROBE} && { ! command -v docker >/dev/null 2>&1 || docker buildx version >/dev/null 2>&1; }"
+DEPLOY_PROBE="${DEPLOY_PROBE} && command -v docker >/dev/null 2>&1 && docker buildx version >/dev/null 2>&1"
 DEPLOY_PROBE="${DEPLOY_PROBE} && { ! command -v python3 >/dev/null 2>&1 || python3 -Im ensurepip --version >/dev/null 2>&1; }"
 for pkg in $HOST_APT_PACKAGES; do
     DEPLOY_PROBE="${DEPLOY_PROBE} && dpkg-query -W -f='\${Status}' ${pkg} 2>/dev/null | grep -q 'install ok installed'"
 done
+if [ "$PICOSCOPE_WANTED" = "1" ]; then
+    DEPLOY_PROBE="${DEPLOY_PROBE} && ( ${PICOSCOPE_HEADERS_CHECK} )"
+fi
 if [ "$HAVE_BOXCFG" = "1" ]; then
     DEPLOY_PROBE="${DEPLOY_PROBE} && test -f ${BOXCFG_SUDOERS_MARKER} && sudo -n /usr/bin/apt-get --version >/dev/null 2>&1"
 fi
@@ -1194,144 +1325,31 @@ else
     fi
 fi
 
-# Check for Docker on box (required for running containers)
+# Check for Docker on box (required for running containers). The sudo session
+# above installs it when it is missing; this only checks, so a box still
+# without it stops here with the manual steps instead of asking for the sudo
+# password a second time (#597).
 print_info "Checking for Docker on box..."
-if ssh $IDENTITY_OPT -o BatchMode=yes -o ConnectTimeout=10 "${BOX_USER}@${BOX_IP}" "command -v docker &> /dev/null" 2>/dev/null; then
+if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "command -v docker >/dev/null 2>&1"; then
     print_success "Docker is installed on box"
 else
-    # Try with password auth
-    if ssh $IDENTITY_OPT -o ConnectTimeout=10 "${BOX_USER}@${BOX_IP}" "command -v docker &> /dev/null" 2>/dev/null; then
-        print_success "Docker is installed on box"
-    else
-        print_warning "Docker is not installed on box - will install it now"
-        echo ""
-        print_info "Installing Docker on box (this may take a few minutes)..."
-
-        # Install Docker on the box.
-        #
-        # ONE service start here, not two. This used to restart docker.socket
-        # and then docker, but docker.service declares `Requires=docker.socket`
-        # so the socket restart bounces the service too -- two starts where one
-        # was needed. Against docker.service's StartLimitBurst=3 in a 60s
-        # window, that plus the package postinst's own start and the later
-        # daemon.json restart made four starts in eleven seconds: the fourth
-        # was refused and the unit latched into "failed (start-limit-hit)",
-        # which the installer then reported as a bad daemon.json.
-        #
-        # The socket restart survives as a FALLBACK because it fixes a real,
-        # different failure: on boxes where docker was ever removed, the old
-        # socket unit lingers loaded in systemd and the reinstalled service
-        # fails to start with "Unit docker.socket failed to load properly ...
-        # Device or resource busy". That path costs its extra start only when
-        # the plain restart has already failed. `restart` (not `start`) also
-        # recovers a half-started daemon left by the package postinst.
-        #
-        # `if ssh_t ...` (not `ssh_t; if [ $? ... ]`): under `set -e` a bare
-        # failing ssh_t aborts the whole script with an unexplained
-        # "Deployment failed!" before the manual-fix message below can print.
-        #
-        # EVERY LINK NAMES ITSELF. This was one `&&` chain of eight commands
-        # behind a single "Failed to install Docker", and four of them
-        # (daemon-reload, enable, restart, usermod) print nothing on success --
-        # so a failure in any of those left a transcript that simply stopped,
-        # with no indication of which link broke. `run_step` prints the step's
-        # label and exit status to the box's stderr, which `-t` merges onto the
-        # session, so it lands in the operator's transcript immediately after
-        # that command's own error output. The chain shape, the single service
-        # start and the socket fallback are all unchanged.
-        if ssh_t "${BOX_USER}@${BOX_IP}" "
-            run_step() {
-                step_label=\$1; shift
-                \"\$@\" && return 0
-                step_rc=\$?
-                echo \"[lager] STEP FAILED: \${step_label} (exit \${step_rc})\" >&2
-                return \${step_rc}
-            }
-            # NOTE: this comment lives INSIDE the double-quoted remote command
-            # string opened above. No backticks (a command substitution bash
-            # would run on the operator machine, not on the box) and no double
-            # quotes (they close the string early and the rest of the chain is
-            # then re-parsed as outer-shell tokens). Both mistakes were made
-            # here; the second one silently emptied the whole chain.
-            #
-            # sudo env VAR=value, not sudo VAR=value: sudo env_reset drops
-            # assignments made on its own command line unless the sudoers rule
-            # carries SETENV, and during install NO Lager sudoers file exists
-            # yet -- these run under the operator own sudo rights. The
-            # assignments were therefore silently discarded and needrestart ran
-            # anyway, which is what it is set here to prevent (#315). sudo env
-            # runs /usr/bin/env as root and lets IT set the variables, so it
-            # does not depend on sudoers policy at all.
-            #
-            # Do NOT apply this shape to the two call sites that rely on a
-            # NOPASSWD grant (_host_cli.HOST_VENV_APT_CMD and the apt install
-            # in _host_ops): their grant is NOPASSWD SETENV on /usr/bin/apt-get,
-            # which permits apt-get. Under sudo env the command run as root is
-            # /usr/bin/env, the rule stops matching, and sudo -n is refused.
-            # Those two keep the sudo VAR= form and the SETENV grant, which is
-            # the other correct answer -- and the narrower one, since granting
-            # /usr/bin/env would grant everything.
-            run_step 'apt-get update' sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get update && \
-            run_step 'apt-get install -y docker.io docker-compose-v2' sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y docker.io docker-compose-v2 && \
-            { sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y docker-buildx || sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y docker-buildx-plugin || true; } && \
-            run_step 'systemctl daemon-reload' sudo systemctl daemon-reload && \
-            run_step 'systemctl enable docker' sudo systemctl enable docker && \
-            { sudo systemctl reset-failed docker.service docker.socket 2>/dev/null || true; } && \
-            { sudo systemctl restart docker || {
-                sudo systemctl reset-failed docker.service docker.socket 2>/dev/null || true
-                sudo systemctl restart docker.socket 2>/dev/null || true
-                run_step 'systemctl restart docker' sudo systemctl restart docker
-            }; } && \
-            run_step 'usermod -aG docker ${BOX_USER}' sudo usermod -aG docker ${BOX_USER}
-        "; then
-            print_success "Docker installed successfully"
-            echo ""
-            print_info "Docker group membership needs a new SSH login - the script reconnects automatically before the container steps"
-            echo ""
-        else
-            print_error "Failed to install Docker"
-            echo ""
-            # Conditional wording, because the line is not always there.
-            # ssh_t reports a non-zero status for the SESSION as well as for
-            # the chain -- a ConnectTimeout, a rejected host key, a broken
-            # pipe, a ControlMaster that died mid-install -- and two links of
-            # the chain (the buildx install and the first restart attempt) are
-            # deliberately unwrapped because a failure there is not fatal.
-            # Stating flatly that the command "is named above" sends the
-            # operator hunting for a line that was never printed, which is the
-            # same wasted ten minutes this step was fixed to stop causing.
-            echo "If the transcript above has a '[lager] STEP FAILED: <command>' line,"
-            echo "that names the command that failed, with its own error output on the"
-            echo "lines just before it. If there is no such line, the ssh session itself"
-            echo "failed rather than any install command, and the error above is ssh's."
-            echo ""
-            # Which half failed decides which follow-up is useful. If the
-            # packages landed, apt is not the problem and the daemon's own
-            # account of itself is; guessing at apt there wastes the operator's
-            # next ten minutes. This is a fresh connection on purpose -- the
-            # session above has already exited.
-            if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "command -v docker >/dev/null 2>&1"; then
-                echo "Docker IS installed on the box, so the failure was after apt --"
-                echo "the daemon or the group change. Ask the unit why:"
-                echo "  ssh ${BOX_USER}@${BOX_IP}"
-                echo "  systemctl status docker"
-                echo "  journalctl -xeu docker.service"
-                echo ""
-            fi
-            # These commands must stay equivalent to the chain above. They were
-            # not: `systemctl enable docker` was missing, so a box recovered by
-            # hand kept working until its next reboot and then came up without
-            # a docker daemon.
-            echo "Please install Docker manually on the box:"
-            echo "  ssh ${BOX_USER}@${BOX_IP}"
-            echo "  sudo apt-get update && sudo apt-get install -y docker.io docker-compose-v2"
-            echo "  sudo systemctl daemon-reload"
-            echo "  sudo systemctl enable docker && sudo systemctl restart docker"
-            echo "  sudo usermod -aG docker ${BOX_USER}"
-            echo "  # Log out and back in, then re-run this script"
-            exit 1
-        fi
-    fi
+    print_error "Docker is not installed on box"
+    echo ""
+    echo "The sudo session above installs it. If its output has a"
+    echo "'[lager] STEP FAILED: <command>' line, that names the command that failed,"
+    echo "with its own error output on the lines just before it."
+    echo ""
+    # These commands must stay equivalent to the session's Docker install. They
+    # once were not: without `systemctl enable docker`, a box recovered by hand
+    # kept working until its next reboot and then came up with no daemon.
+    echo "Please install Docker manually on the box:"
+    echo "  ssh ${BOX_USER}@${BOX_IP}"
+    echo "  sudo apt-get update && sudo apt-get install -y docker.io docker-compose-v2"
+    echo "  sudo systemctl daemon-reload"
+    echo "  sudo systemctl enable docker && sudo systemctl restart docker"
+    echo "  sudo usermod -aG docker ${BOX_USER}"
+    echo "  # Log out and back in, then re-run this script"
+    exit 1
 fi
 
 # Always ensure current user is in docker group (handles multi-user scenario).
@@ -1383,69 +1401,34 @@ else
         echo ""
         echo "Check on the box:"
         echo "  systemctl status docker      # daemon should be active"
+        echo "  journalctl -xeu docker.service   # why it did not start, if it is not"
         echo "  id -nG                       # should include 'docker'"
         echo "Then re-run this script."
         exit 1
     fi
 fi
 
-# Ensure the Docker buildx plugin is present. `lager update` builds the box image
-# with BuildKit (box.Dockerfile uses a `# syntax=` directive and RUN --mount=type=cache
-# cache mounts), which a plain `docker.io` install does NOT bundle on Ubuntu/Debian.
-# Without buildx the build dies with "BuildKit is enabled but the buildx component is
-# missing or broken". This runs unconditionally so it also covers boxes that already
-# had Docker installed before buildx was added to the install above.
+# Check the Docker buildx plugin. `lager update` builds the box image with
+# BuildKit (box.Dockerfile uses a `# syntax=` directive and RUN --mount=type=cache
+# cache mounts), which a plain `docker.io` install does NOT bundle on
+# Ubuntu/Debian. Without buildx the build dies with "BuildKit is enabled but the
+# buildx component is missing or broken". The sudo session above installs it,
+# from the distro packages or as the pinned, checksummed official binary; this
+# only checks, and stops with the manual steps.
 print_info "Checking for the Docker buildx plugin on box..."
 if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "docker buildx version >/dev/null 2>&1"; then
     print_success "Docker buildx plugin is installed on box"
 else
-    print_warning "Docker buildx plugin missing - installing it now"
-    # Try distro packages first (docker-buildx on Ubuntu universe, then the
-    # docker-buildx-plugin from Docker's own apt repo if that's configured).
-    ssh_t "${BOX_USER}@${BOX_IP}" "
-        sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get update && \
-        { sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y docker-buildx || sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y docker-buildx-plugin || true; }
-    "
-    # The apt packages can be absent or install a plugin the docker CLI doesn't
-    # pick up (seen in the field). If buildx still doesn't actually run, drop the
-    # official static binary into the CLI plugins dir, which docker searches first.
-    if ! ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "docker buildx version >/dev/null 2>&1"; then
-        print_warning "Distro buildx not usable - installing the official buildx binary"
-        ssh_t "${BOX_USER}@${BOX_IP}" "
-            set -e
-            sudo mkdir -p /usr/local/lib/docker/cli-plugins
-            arch=\$(uname -m)
-            case \"\$arch\" in
-                x86_64) barch=amd64;;
-                aarch64|arm64) barch=arm64;;
-                armv7l|armhf) barch=arm-v7;;
-                armv6l) barch=arm-v6;;
-                *) barch=amd64;;
-            esac
-            url=\"https://github.com/docker/buildx/releases/download/${BUILDX_VERSION}/buildx-${BUILDX_VERSION}.linux-\${barch}\"
-            if command -v curl >/dev/null 2>&1; then
-                sudo curl -fSL \"\$url\" -o /usr/local/lib/docker/cli-plugins/docker-buildx
-            elif command -v wget >/dev/null 2>&1; then
-                sudo wget -qO /usr/local/lib/docker/cli-plugins/docker-buildx \"\$url\"
-            else
-                echo \"Error: neither curl nor wget found on the box\" && exit 1
-            fi
-            sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx
-        "
-    fi
-    if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "docker buildx version >/dev/null 2>&1"; then
-        print_success "Docker buildx plugin installed successfully"
-    else
-        print_error "Failed to install the Docker buildx plugin"
-        echo ""
-        echo "Please install it manually on the box, then re-run this script:"
-        echo "  ssh ${BOX_USER}@${BOX_IP}"
-        echo "  sudo mkdir -p /usr/local/lib/docker/cli-plugins"
-        echo "  sudo curl -fSL https://github.com/docker/buildx/releases/download/${BUILDX_VERSION}/buildx-${BUILDX_VERSION}.linux-amd64 -o /usr/local/lib/docker/cli-plugins/docker-buildx"
-        echo "  sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx"
-        echo "  docker buildx version"
-        exit 1
-    fi
+    print_error "The Docker buildx plugin is missing or does not run"
+    echo ""
+    echo "The sudo session above installs it. Install it by hand on the box (x86-64),"
+    echo "then re-run this script:"
+    echo "  ssh ${BOX_USER}@${BOX_IP}"
+    echo "  curl -fSL https://github.com/docker/buildx/releases/download/${BUILDX_VERSION}/buildx-${BUILDX_VERSION}.linux-amd64 -o /tmp/docker-buildx"
+    echo "  echo '${BUILDX_SHA256_AMD64}  /tmp/docker-buildx' | sha256sum -c"
+    echo "  sudo install -D -m 0755 /tmp/docker-buildx /usr/local/lib/docker/cli-plugins/docker-buildx"
+    echo "  docker buildx version"
+    exit 1
 fi
 
 # Configure Docker's container DNS. On boxes running systemd-resolved,
@@ -2056,18 +2039,13 @@ fi
 # start_box.sh bind-mounts into the container for the daemon to dlopen, and
 # its headers in /opt/picoscope/include/<family>/, which the daemon's build.rs
 # generates bindings from. The headers are what decide whether a box gets a
-# daemon at all, so they are what this step checks. Same packages and repo as
-# .github/workflows/rust-checks.yml: the picoscope7 repo is the one PicoTech
-# still publishes (the older /debian/ repo stopped in 2022 and has no arm64).
-# libps6000a and libpsospa are there for the PicoConnectProbes.h the libps3000a
-# headers include. Failure here is non-fatal: the box still comes up.
-#
-# PICOSCOPE_HEADERS_CHECK exits 0 when build.rs has at least one family to
-# build. Keep its rule identical to `picotech_headers_present` in
-# box/start_box.sh; a test runs both over the same trees and compares.
-PICOSCOPE_PACKAGES="libps2000 libps2000a libps3000a libps4000a libps5000a libps6000a libpsospa"
-PICOSCOPE_HEADERS_CHECK='i=/opt/picoscope/include; for h in libps2000/ps2000.h libps2000a/ps2000aApi.h libps4000a/ps4000aApi.h libps5000a/ps5000aApi.h; do [ -f "$i/$h" ] && exit 0; done; [ -f "$i/libps3000a/ps3000aApi.h" ] || exit 1; for d in libps3000a libps4000a libps5000a libps6000a libpsospa; do [ -f "$i/$d/PicoConnectProbes.h" ] && exit 0; done; exit 1'
-print_step "Installing PicoTech SDK (Optional)"
+# daemon at all, so they are what this step checks. The sudo session installs
+# the packages (PICOSCOPE_PACKAGES, at the top of this script). Same packages
+# and repo as .github/workflows/rust-checks.yml: the picoscope7 repo is the one
+# PicoTech still publishes (the older /debian/ repo stopped in 2022 and has no
+# arm64). libps6000a and libpsospa are there for the PicoConnectProbes.h the
+# libps3000a headers include. A missing SDK is non-fatal: the box still comes up.
+print_step "Checking the PicoTech SDK (Optional)"
 
 if [ "$SKIP_PICOSCOPE" = true ]; then
     print_info "Skipping PicoScope SDK installation (--skip-picoscope flag set)"
@@ -2076,47 +2054,17 @@ else
     # Headers rather than `dpkg-query picoscope`: a box with the libraries
     # but no headers still has no daemon, and has to be topped up.
     if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "$PICOSCOPE_HEADERS_CHECK"; then
-        print_success "PicoTech SDK headers already installed on box"
+        print_success "PicoTech SDK headers installed on box"
     else
-        print_info "Installing the PicoTech SDK from PicoTech's apt repository..."
+        # The sudo session above installs the packages; this only checks, so a
+        # failed install costs no second sudo password (#597).
+        print_warning "No PicoScope family's headers are in /opt/picoscope/include on box"
         echo ""
-        echo "Packages: $PICOSCOPE_PACKAGES"
-        echo "Libraries land in /opt/picoscope/lib and headers in /opt/picoscope/include."
-        echo "PicoTech license: https://www.picotech.com/about/legal"
+        print_info "The box will still start, without the oscilloscope daemon."
+        print_info "PicoScopes need the headers for their family, from:"
+        print_info "  https://labs.picotech.com/picoscope7/debian/ picoscope main"
+        print_info "  sudo apt-get install $PICOSCOPE_PACKAGES"
         echo ""
-        # ssh_t (tty) so operator sudo still works: lager-box-config is written
-        # after this script returns, and apt-get is not in lagerdata-udev.
-        # `sudo env VAR=... apt-get` (not `sudo VAR= apt-get`) matches the rest
-        # of this script; see #315.
-        if ssh_t "${BOX_USER}@${BOX_IP}" "
-            set -e
-            sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y --no-install-recommends gnupg wget ca-certificates
-            wget -O- https://labs.picotech.com/Release.gpg.key | gpg --dearmor > /tmp/picotech-archive-keyring.gpg
-            sudo /bin/cp /tmp/picotech-archive-keyring.gpg /usr/share/keyrings/picotech-archive-keyring.gpg
-            sudo /bin/chmod 644 /usr/share/keyrings/picotech-archive-keyring.gpg
-            sudo /bin/rm -f /tmp/picotech-archive-keyring.gpg
-            printf '%s\n' 'deb [signed-by=/usr/share/keyrings/picotech-archive-keyring.gpg] https://labs.picotech.com/picoscope7/debian/ picoscope main' > /tmp/picoscope7.list
-            sudo /bin/cp /tmp/picoscope7.list /etc/apt/sources.list.d/picoscope7.list
-            sudo /bin/chmod 644 /etc/apt/sources.list.d/picoscope7.list
-            sudo /bin/rm -f /tmp/picoscope7.list
-            sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get update
-            sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y --no-install-recommends $PICOSCOPE_PACKAGES
-        "; then
-            if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "$PICOSCOPE_HEADERS_CHECK"; then
-                print_success "PicoTech SDK installed: headers in /opt/picoscope/include"
-            else
-                print_warning "PicoTech packages installed but no PicoScope family's headers are in /opt/picoscope/include"
-                print_info "The oscilloscope daemon cannot be built until they are."
-            fi
-        else
-            print_warning "PicoTech SDK installation failed"
-            echo ""
-            print_info "The box will still start, without the oscilloscope daemon."
-            print_info "PicoScopes need the headers for their family, from:"
-            print_info "  https://labs.picotech.com/picoscope7/debian/ picoscope main"
-            print_info "  sudo apt-get install $PICOSCOPE_PACKAGES"
-            echo ""
-        fi
     fi
 fi
 
@@ -2147,9 +2095,10 @@ else
     # `python3 -m venv` needs a working ensurepip, which on Debian/Ubuntu
     # means the python3-venv package. Best-effort: the install below is what
     # decides, and reports honestly if this didn't take.
+    # The sudo session above installs python3-venv; this only warns, so it
+    # costs no second sudo password (#597).
     if ! ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "python3 -Im ensurepip --version >/dev/null 2>&1"; then
-        print_info "Installing python3-venv (needed to create the CLI venv)..."
-        ssh_t "${BOX_USER}@${BOX_IP}" "sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get update -qq && sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y --no-install-recommends python3-venv" || true
+        print_warning "python3-venv is missing on box (sudo apt-get install python3-venv)"
     fi
 
     print_info "Installing lager CLI into ~/.lager_venv on the box host..."
