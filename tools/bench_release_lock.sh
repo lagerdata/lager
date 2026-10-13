@@ -35,6 +35,14 @@
 #   interval  seconds between attempts while the box does not answer (default 5)
 #
 # LAGER_BIN overrides the lager command, for the unit tests only.
+#
+# The probe runs as a holder that is not this run (#661). `lager hello` names a
+# lock only when it belongs to someone else: a lock held under the caller's own
+# CI identity counts as the caller's, and `hello` says nothing about it. That
+# identity comes from GITHUB_RUN_ID and the job, so in the cleanup step of the
+# run that took the lock, a plain `hello` reported "no lock" and the lock stayed
+# until the next run. LAGER_LOCK_HOLDER replaces that identity for the probe
+# only; `hello` takes no lock, and the unlock below is unaffected.
 
 set -u
 
@@ -48,9 +56,14 @@ ours_prefix="is locked by github ${repo} run "
 released=""
 holder=""
 answered=0
+probe_holder="bench-release-lock-probe"
+
+probe() {
+    LAGER_LOCK_HOLDER="$probe_holder" "$lager_bin" hello --box "$box" 2>&1
+}
 
 for ((i = 1; i <= attempts; i++)); do
-    if out=$("$lager_bin" hello --box "$box" 2>&1); then
+    if out=$(probe); then
         answered=1
         holder=$(printf '%s\n' "$out" | grep -o "is locked by [^;]*" | head -1 | sed 's/^is locked by //')
         if [ -z "$holder" ]; then
@@ -77,7 +90,7 @@ for ((i = 1; i <= attempts; i++)); do
 done
 
 # An unlock on the last attempt has not been confirmed yet.
-if [ -n "$released" ] && out=$("$lager_bin" hello --box "$box" 2>&1) \
+if [ -n "$released" ] && out=$(probe) \
         && ! printf '%s\n' "$out" | grep -q "is locked by"; then
     echo "Released the box lock on ${box} held by ${released}."
     exit 0

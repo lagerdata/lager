@@ -19,6 +19,11 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   stopped, so the box is down for seconds instead of the whole on-box build
   (about 15 minutes cold). A failed build now leaves the previous container
   running instead of none.
+- **The bench workflows release their own box lock again.** `tools/bench_release_lock.sh`
+  asked `lager hello` who held the lock, and `hello` says nothing about a lock held under the
+  caller's own CI identity, so the cleanup step of the run that took the lock reported "No box
+  lock held" and left it. Every green Nightly left the bench box locked until the next run. The
+  probe now asks under a separate holder, so it sees the run's own lock and releases it.
 
 ## [0.56.0] - 2026-10-13
 

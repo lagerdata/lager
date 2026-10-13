@@ -13,6 +13,10 @@ script of box states, one per call:
 
     hello:<state>   `lager hello` answers: unlocked, ours, theirs, or down
     unlock:<ok|fail>
+
+`ours` is a lock held under the run's own CI identity. The real `lager hello`
+says nothing about a lock it counts as the caller's, so the fake names it only
+when LAGER_LOCK_HOLDER gives the caller a different identity (#661).
 """
 
 import pathlib
@@ -47,14 +51,18 @@ def fake_lager(tmp_path):
         fake = tmp_path / "lager"
         fake.write_text(textwrap.dedent(f"""\
             #!/bin/bash
-            echo "$*" >> {calls}
+            echo "$* holder=${{LAGER_LOCK_HOLDER:-}}" >> {calls}
             answer=$(head -1 {script})
             # The last answer repeats once the script runs out.
             if [ "$(wc -l < {script})" -gt 1 ]; then sed -i.bak 1d {script}; fi
             case "$1:$answer" in
               hello:hello:unlocked) echo "PRD-1 is online and responding!"; exit 0 ;;
-              hello:hello:ours) echo "Note: Box 'MASTER' is locked by {OURS}; running read-only." >&2
-                                echo "MASTER is online and responding!"; exit 0 ;;
+              hello:hello:ours)
+                # The caller's own lock gets no note, as in _check_box_lock().
+                if [ -n "${{LAGER_LOCK_HOLDER:-}}" ]; then
+                  echo "Note: Box 'MASTER' is locked by {OURS}; running read-only." >&2
+                fi
+                echo "MASTER is online and responding!"; exit 0 ;;
               hello:hello:theirs) echo "Note: Box 'MASTER' is locked by {THEIRS}; running read-only." >&2
                                   echo "MASTER is online and responding!"; exit 0 ;;
               hello:hello:down) echo "Error: Box 'MASTER' did not answer" >&2; exit 1 ;;
@@ -97,6 +105,20 @@ def test_our_lock_is_released_and_confirmed(fake_lager):
     assert proc.returncode == 0
     assert f"Released the box lock on MASTER held by {OURS}." in proc.stdout
     assert _calls(calls) == ["hello", "boxes-unlock", "hello"]
+
+
+def test_the_probe_does_not_ask_as_the_run_that_holds_the_lock(fake_lager):
+    """#661: the cleanup step runs under the holder's own run ID, and a plain
+    `lager hello` hides that lock. Every probe must ask under another holder,
+    and the unlock must not."""
+    fake, calls = fake_lager("hello:ours", "unlock:ok", "hello:unlocked")
+    proc = _run(fake)
+    assert "No box lock held" not in proc.stdout
+    lines = calls.read_text().splitlines()
+    hellos = [line for line in lines if line.startswith("hello")]
+    assert hellos and all(not line.endswith("holder=") for line in hellos)
+    unlocks = [line for line in lines if line.startswith("boxes unlock")]
+    assert unlocks and all(line.endswith("holder=") for line in unlocks)
 
 
 def test_a_box_that_does_not_answer_is_asked_again(fake_lager):
