@@ -48,12 +48,12 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` | 3220 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 4287 |
+| `unit (box)` | `test/unit/box/` | 4324 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 405 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 204 (+1 skipped) |
-| | **Total gated** | **8310** |
+| | **Total gated** | **8347** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -480,9 +480,9 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 299 files)
+### Local Unit Tests (`test/unit/` -- 300 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 161 files)
+#### Box Unit Tests (`test/unit/box/` -- 162 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -611,7 +611,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_stream_teardown.py` | `lager python` child reaped when the client disconnects mid-run, instead of orphaning at 100% CPU holding a device flock |
 | `test_sudoers_contract.py` | The `/etc/sudoers.d/` ownership contract: Lager writes exactly three files there, never globs and never touches the directory itself, and every writer — including the shell copy in `setup_and_deploy_box.sh` — emits the banner telling an operator those files are regenerated wholesale. Also pins the recorded escalation posture: the box login user is root-equivalent by design, and no source may claim a scoped entry confines it. Also the one-session install: no deployment script runs `find` or a recursive `chown` under sudo; the `/etc/lager` helper is granted by exact path and never install-granted; every `systemctl` the deploy runs has a rule; and, RUN under bash, the session script renders and parses, accepts the real box-config text and refuses a rule for anyone else or a marker outside `/etc/lager`, the digest changes with the user, the VPN interface, the rules and the helper but not with a comment, and the check that skips the session has no terminal and only `sudo -n`; with no terminal, a box whose sudo would ask for a password stops the install before the session, and one with passwordless sudo goes ahead. The session installs Docker, buildx and the PicoTech SDK (left out with `--skip-picoscope`) before it records its marker, and the skip check wants Docker, buildx and the SDK headers; the buildx binary, run against stubs, is installed root-owned only when it matches its pinned SHA-256, is refused when it does not, and an architecture with no pinned digest is refused rather than given amd64; nothing is fetched as root |
 | `test_supply_command_handler.py` | `POST /supply/command` handler, covering v0.32.0 hardware-found regressions |
-| `test_trigger_option_contract.py` | `lager scope` and `lager logic` trigger options against the shared handler and the real MSO5000 mappers: every offered value and every default reaches a method the mapper defines, the scope/logic spellings that differ (`read_write`, `ack_miss`, `rising`, `gt`) map to the same condition, hex `--data`/`--address` arrive as integers, and `lager dac` refuses a voltage above 5 V |
+| `test_trigger_option_contract.py` | `lager scope` and `lager logic` trigger options against the shared handler and the real MSO5000 mappers: every offered value and every default reaches a method the mapper defines, the scope/logic spellings that differ (`read_write`, `ack_miss`, `rising`, `gt`) map to the same condition, `gt`/`lt` widths reach the lower/upper limit, hex `--data`/`--address` arrive as integers, and `lager dac` refuses a voltage above 5 V |
 | `test_uart_bridge_params.py` | UARTBridge serial parameters: a `timeout` reaches the opened port (default 0.1 s), parity names and pyserial letters map to pyserial's constants, and any other parity raises before a port opens. The drivers the dispatcher builds for sessions keep the 0.1 s read timeout |
 | `test_uart_bridge_reconnect.py` | UARTBridge re-enumeration healing after an adapter changes its /dev/tty node |
 | `test_uart_session_cleanup.py` | Websocket UART read loop heals in place instead of stopping on a failed read, plus the three ways a held UART net is freed — a departed client (which the loop's own heartbeat cannot detect, because the loop writes it), a wedged reader, and an operator force-release. Also that a read failing after teardown closed the port is not a read error, and that the in-use error names the net holding the device |
@@ -635,6 +635,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_picoscope_net_mapper.py` | The PicoScope net mapper that `Net.get(name, NetType.Analog)` returns: calls reach the driver with the net's own channel as the default, and a feature a PicoScope lacks raises and names the gap instead of returning zero |
 | `test_picoscope_streaming_api.py` | `stream_start`, `stream_frames` and `stream_capture` on the PicoScope driver: the keyword arguments the Python reference documents, and a CSV layout identical to the one `lager scope stream capture` writes |
 | `test_picoscope_time_position.py` | The PicoScope horizontal position: a time offset becomes the trigger's pre/post split of the block, clamped at one window of travel each way, and reads back as the offset in force |
+| `test_rigol_mso5000_pulse.py` | The MSO5000 pulse trigger from handler to SCPI: the instrument-verified command each of the eight pulse methods sends, which width `gt`, `lt` and `gtlt` write (lower, upper, both), the older polarity names applying their width condition with a note that polarity was not set, and a clamped `--level` reported back |
 | `test_rigol_trigger_level.py` | The exact SCPI the Rigol MSO5000 driver sends for the edge trigger level: one real in the trigger source's units, not the two-argument form the instrument rejects without an error |
 | `test_scope_bench_actions.py` | The box handler's status, trigger readback, acquisition, holdoff, roll, display and spectrum actions: refused on a Rigol net before anything reaches the instrument, a missing value named, and each answered with the sentence the CLI prints |
 | `test_scope_command_grammar.py` | The web UI's command grammar (`static/scope/commands.js`, run under node) against the real box handler, so a renamed action cannot leave the page sending commands the box rejects |

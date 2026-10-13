@@ -607,6 +607,60 @@ class RigolMso5000:
         self.write(f":TRIGger:SPI:DATA {data}")
         return {"trigger_spi_data": data}
 
+    # ============ Pulse Trigger ============
+    #
+    # Every set and query below was run on an MSO5074 (firmware
+    # 00.01.03.00.03) and read back. What the instrument does that the names
+    # do not say:
+    #
+    #   * WHEN takes GREater / LESS / GLESs only. GREater compares against
+    #     LWIDth, LESS against UWIDth, GLESs against both.
+    #   * There is no pulse polarity node. `:TRIGger:PULSe:POLarity` and
+    #     `:SLOPe` answer -100 (command error), and polarity-encoded WHEN values
+    #     such as PGReater or NLESs answer -104. Polarity is a front-panel
+    #     setting only.
+    #   * UWIDth is kept above LWIDth: setting LWIDth at or above UWIDth moves
+    #     UWIDth to LWIDth + 10 ns, with no error.
+    #   * LEVel is clamped to +/-5 divisions of the source channel, with no
+    #     error. Read it back to learn what the scope applied.
+
+    def set_trigger_pulse_source(self, source):
+        """Set the pulse trigger source (analog CHAN<n> or digital D<n>)."""
+        self.write(f":TRIGger:PULSe:SOURce {_scpi_arg(source)}")
+        return {"trigger_pulse_source": _scpi_arg(source)}
+
+    def set_trigger_pulse_level(self, level):
+        """Set the pulse trigger level in volts. The scope clamps it silently."""
+        self.write(f":TRIGger:PULSe:LEVel {level}")
+        return {"trigger_pulse_level": level}
+
+    def get_trigger_pulse_level(self):
+        """Get the pulse trigger level in volts. Answers e.g. `5.000000E-1`."""
+        return self.query(":TRIGger:PULSe:LEVel?")
+
+    def set_trigger_pulse_when(self, condition):
+        """Set the width condition (GREater, LESS or GLESs)."""
+        self.write(f":TRIGger:PULSe:WHEN {_scpi_arg(condition)}")
+        return {"trigger_pulse_when": _scpi_arg(condition)}
+
+    def set_trigger_pulse_lower(self, width):
+        """Set the lower width limit in seconds, used by GREater and GLESs."""
+        self.write(f":TRIGger:PULSe:LWIDth {width}")
+        return {"trigger_pulse_lower": width}
+
+    def get_trigger_pulse_lower(self):
+        """Get the lower width limit in seconds. Answers e.g. `1.000000E-6`."""
+        return self.query(":TRIGger:PULSe:LWIDth?")
+
+    def set_trigger_pulse_upper(self, width):
+        """Set the upper width limit in seconds, used by LESS and GLESs."""
+        self.write(f":TRIGger:PULSe:UWIDth {width}")
+        return {"trigger_pulse_upper": width}
+
+    def get_trigger_pulse_upper(self):
+        """Get the upper width limit in seconds. Answers e.g. `2.000000E-6`."""
+        return self.query(":TRIGger:PULSe:UWIDth?")
+
     def get_trigger_status(self):
         """Get the acquisition trigger status.
 

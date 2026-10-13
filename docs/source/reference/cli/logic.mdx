@@ -6,7 +6,7 @@ description: Control logic analyzer channels and triggers
 Control logic analyzer Nets through the Lager CLI for digital signal capture, protocol decoding, and trigger configuration.
 
 <Warning>
-**Known limitations on the Rigol MSO5000.** Channel control, capture, measurements, cursors, and the edge and SPI triggers work. The pulse, UART and I2C triggers fail when an option configures them. Each failure prints `Error: Function not found: <method>` and exits 1. The CAN trigger and every bus decoder also fail. [Issue #418](https://github.com/lagerdata/lager/issues/418) tracks this work.
+**Known limitations on the Rigol MSO5000.** Channel control, capture, measurements, cursors, and the edge, pulse and SPI triggers work. The UART and I2C triggers fail when an option configures them. Each failure prints `Error: Function not found: <method>` and exits 1. The CAN trigger and every bus decoder also fail. [Issue #418](https://github.com/lagerdata/lager/issues/418) tracks this work.
 </Warning>
 
 ## Syntax
@@ -144,7 +144,7 @@ lager logic NET_NAME trigger edge [OPTIONS]
 
 ### `trigger pulse`
 
-Set pulse trigger configuration. On the Rigol MSO5000, this trigger does not work yet. See the limitations at the top of this page.
+Set pulse trigger configuration.
 
 ```bash
 lager logic NET_NAME trigger pulse [OPTIONS]
@@ -155,9 +155,9 @@ lager logic NET_NAME trigger pulse [OPTIONS]
 - `--coupling` - Coupling mode
 - `--source NET` - Trigger source
 - `--level FLOAT` - Trigger level
-- `--trigger-on` - Trigger on: `gt` (a pulse wider than `--upper`), `lt` (a pulse narrower than `--lower`), or `gtlt` (a pulse between `--lower` and `--upper`). The condition does not select a polarity. Without the width it needs, the command changes no width condition and prints a note.
-- `--upper FLOAT` - Upper pulse width
-- `--lower FLOAT` - Lower pulse width
+- `--trigger-on` - Trigger on: `gt` (a pulse wider than `--lower`), `lt` (a pulse narrower than `--upper`), or `gtlt` (a pulse between `--lower` and `--upper`). The condition does not select a polarity: on the Rigol MSO5000 polarity is set on the front panel only. Without the width it needs, the command changes no width condition and prints a note.
+- `--upper FLOAT` - Upper pulse width in seconds, used by `lt` and `gtlt`
+- `--lower FLOAT` - Lower pulse width in seconds, used by `gt` and `gtlt`
 
 ### `trigger i2c`
 

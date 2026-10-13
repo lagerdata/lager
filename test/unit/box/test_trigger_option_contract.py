@@ -31,7 +31,7 @@ supported DAC, so a value above 5 V failed deeper in the stack. The `lager dac`
 section below pins it.
 
 What this does not show is that the MSO5000 driver implements the protocol
-calls the mapper makes. Most of the pulse, UART and I2C ones are still missing
+calls the mapper makes. Most of the UART and I2C ones are still missing
 (#418); that is tracked by `mapper_undefined_baseline.txt`.
 """
 
@@ -317,10 +317,22 @@ def test_logic_pulse_conditions_reach_the_mapper(value, method, kwargs):
         assert matching[0][2] == kwargs
 
 
+@pytest.mark.parametrize("group", ["scope", "logic"])
+@pytest.mark.parametrize("value, forwarded", [
+    ("gt", ("set_trigger_pulse_lower", (0.001,), {})),
+    ("lt", ("set_trigger_pulse_upper", (0.002,), {})),
+])
+def test_pulse_width_reaches_the_limit_its_condition_compares_against(group, value, forwarded):
+    """gt compares against the lower width and lt against the upper (#499)."""
+    _, device = run_handler(*cli_params(
+        group, ["pulse", "--trigger-on", value, "--upper", "0.002", "--lower", "0.001"]))
+    assert forwarded in device.forwarded
+
+
 def test_a_pulse_condition_without_its_width_changes_nothing_and_says_so(capsys):
     calls, _ = run_handler(*cli_params("scope", ["pulse"]))
     assert not [n for n in call_names(calls) if "pulse_" in n]
-    assert "No --upper given" in capsys.readouterr().out
+    assert "gt needs --lower" in capsys.readouterr().out
 
 
 def test_logic_offers_only_address_widths_the_mapper_accepts():

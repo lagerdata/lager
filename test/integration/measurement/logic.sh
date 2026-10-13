@@ -204,6 +204,37 @@ echo "Test 5.11: SPI trigger framed on chip select"
 lager logic $NET trigger spi --trigger-on cs --cs-idle high --box $BOX && track_test "pass" || track_test "fail"
 echo ""
 
+# 5.12-5.15 reach the pulse trigger surface implemented for #418. 5.4 above
+# sets no width, and a pulse command that cannot apply a width or level still
+# exits 0 with a note, so each check below also fails on that note.
+pulse_applied() {
+  local out rc
+  out=$("$@" 2>&1)
+  rc=$?
+  echo "$out"
+  [ "$rc" -eq 0 ] || return 1
+  if echo "$out" | grep -q "was not changed\|set the trigger level to"; then
+    return 1
+  fi
+  return 0
+}
+
+echo "Test 5.12: Pulse trigger wider than a lower width"
+pulse_applied lager logic $NET trigger pulse --trigger-on gt --lower 0.000002 --box $BOX && track_test "pass" || track_test "fail"
+echo ""
+
+echo "Test 5.13: Pulse trigger narrower than an upper width"
+pulse_applied lager logic $NET trigger pulse --trigger-on lt --upper 0.000005 --box $BOX && track_test "pass" || track_test "fail"
+echo ""
+
+echo "Test 5.14: Pulse trigger between two widths"
+pulse_applied lager logic $NET trigger pulse --trigger-on gtlt --lower 0.000002 --upper 0.000005 --box $BOX && track_test "pass" || track_test "fail"
+echo ""
+
+echo "Test 5.15: Pulse trigger level on the net itself (reads the level back)"
+pulse_applied lager logic $NET trigger pulse --source $NET --level 1.5 --box $BOX && track_test "pass" || track_test "fail"
+echo ""
+
 # ============================================================
 # SECTION 6: CURSORS
 # ============================================================

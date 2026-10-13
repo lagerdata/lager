@@ -6,7 +6,7 @@ description: Control oscilloscope settings and capture waveforms
 Control oscilloscope nets through the Lager CLI for waveform capture, triggering, measurements, and streaming.
 
 <Warning>
-**Known limitations on the Rigol MSO5000.** The edge and SPI triggers work. The pulse, UART and I2C triggers fail on the Rigol MSO5000. The CAN trigger and every bus decoder in the Python API also fail. A failed command prints the error and exits 1. [Issue #418](https://github.com/lagerdata/lager/issues/418) tracks this work.
+**Known limitations on the Rigol MSO5000.** The edge, pulse and SPI triggers work. The UART and I2C triggers fail on the Rigol MSO5000. The CAN trigger and every bus decoder in the Python API also fail. A failed command prints the error and exits 1. [Issue #418](https://github.com/lagerdata/lager/issues/418) tracks this work.
 </Warning>
 
 ## Syntax
@@ -125,7 +125,7 @@ When you add nets, `lager nets tui` reads the channel count from the model numbe
 | Channels | 4 analog + 16 digital | 2 or 4 analog (A to D), detected at runtime |
 | Real-time streaming | No (single capture) | Yes (continuous) |
 | Measurements | Queried from the instrument over SCPI | 14 types, computed from the capture |
-| Trigger types | Edge and SPI (pulse, I2C and UART do not work yet) | Edge only, with holdoff |
+| Trigger types | Edge, pulse and SPI (I2C and UART do not work yet) | Edge only, with holdoff |
 | Cursor control | XY cursors on the instrument display | Time/voltage cursors over the captured samples |
 | Autoscale | Yes | No |
 | Averaging, peak detect, roll, FFT | On the front panel of the instrument | `acquire`, `roll`, `fft` |
@@ -482,8 +482,6 @@ lager scope picoscope1 trigger holdoff --box my-lager-box         # show it
 
 Set pulse width trigger (Rigol only). The scope triggers when a pulse width meets the conditions.
 
-On the Rigol MSO5000, this trigger does not work yet. See the limitations at the top of this page.
-
 ```bash
 lager scope NET_NAME trigger pulse [OPTIONS]
 ```
@@ -492,22 +490,21 @@ lager scope NET_NAME trigger pulse [OPTIONS]
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--trigger-on` | Condition (see table below) | `positive` |
-| `--upper SECONDS` | Upper pulse width limit | - |
-| `--lower SECONDS` | Lower pulse width limit | - |
+| `--trigger-on` | Condition (see table below) | `gt` |
+| `--upper SECONDS` | Upper pulse width limit, used by `lt` and `gtlt` | - |
+| `--lower SECONDS` | Lower pulse width limit, used by `gt` and `gtlt` | - |
 
 **Trigger-on Conditions:**
 
 | Condition | Description |
 |-----------|-------------|
-| `positive` | Positive pulse wider than `--upper` |
-| `negative` | Negative pulse wider than `--upper` |
-| `positive_greater` | Positive pulse wider than `--upper` |
-| `negative_greater` | Negative pulse wider than `--upper` |
-| `positive_less` | Positive pulse narrower than `--lower` |
-| `negative_less` | Negative pulse narrower than `--lower` |
+| `gt` | A pulse wider than `--lower` |
+| `lt` | A pulse narrower than `--upper` |
+| `gtlt` | A pulse wider than `--lower` and narrower than `--upper` |
 
-The condition does not select a polarity yet: each `positive` value and its `negative` counterpart set the same width condition. Without the width it needs, the command changes no width condition and prints a note.
+The older names still work for existing scripts: `positive`, `negative`, `positive_greater` and `negative_greater` apply `gt`, and `positive_less` and `negative_less` apply `lt`. None of them sets a polarity: the Rigol MSO5000 has no remote command for it. The scope keeps the polarity set on its front panel, and the command prints a note that says so. Without the width it needs, the command changes no width condition and prints a note.
+
+The scope limits `--level` to five divisions either side of center on the source channel. If it applies a different level from the one you asked for, the command prints the level it applied.
 
 ### `trigger i2c`
 
@@ -1087,7 +1084,7 @@ lager scope ANALOG1 measure vmax --box my-lager-box
 lager scope ANALOG1 trigger edge --slope rising --level 1.5 --box my-lager-box
 
 # Pulse width trigger (glitch detection)
-lager scope ANALOG1 trigger pulse --trigger-on positive_less --lower 0.0001 --box my-lager-box
+lager scope ANALOG1 trigger pulse --trigger-on lt --upper 0.0001 --box my-lager-box
 
 # UART trigger at 115200 baud
 lager scope ANALOG1 trigger uart \

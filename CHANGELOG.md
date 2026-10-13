@@ -19,6 +19,15 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   stopped, so the box is down for seconds instead of the whole on-box build
   (about 15 minutes cold). A failed build now leaves the previous container
   running instead of none.
+- **`lager scope` and `lager logic` pulse triggers work on the Rigol MSO5000.**
+  Every `trigger pulse` that set a width or level failed with `Function not
+  found`. When `--level` is out of the scope's range, the command now prints
+  the level the scope applied (#418).
+- **The pulse width options now match their conditions.** `gt` uses `--lower`
+  and `lt` uses `--upper`; they were reversed. On `lager scope`, the default
+  `--trigger-on` is now `gt`. The `positive_*` and `negative_*` names still
+  work, but set no polarity: the MSO5000 can set it only on its front panel,
+  and the command now says so (#499).
 
 ## [0.56.0] - 2026-10-13
 
