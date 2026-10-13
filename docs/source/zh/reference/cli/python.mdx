@@ -21,8 +21,7 @@ lager python [OPTIONS] [RUNNABLE] [ARGS]...
 | `--kill TEXT` | | 字符串 | | 按进程 ID 终止某个正在运行的进程 |
 | `--kill-all` | | 标志 | | 终止全部正在运行的脚本 |
 | `--signal SIGNAL` | | 枚举 | `SIGTERM` | 与 `--kill`/`--kill-all` 配合使用的信号 |
-| `--download FILE` | | 可多次 | | 脚本结束后从 Box 下载文件 |
-| `--allow-overwrite` | | 标志 | | 允许 `--download` 覆盖已有的本地文件 |
+| `--download` | | 标志 | | 脚本结束后，把它写入 `lager.output_dir()` 的所有文件以及运行记录，复制到一个以该次运行命名的新文件夹中（参见文件下载） |
 | `--timeout SECONDS` | | 整数 | 0（无限制） | 最长运行秒数。Box 把前台运行限制在 300 秒；使用 `--detach` 时不受限制 |
 | `--detach` | `-d` | 标志 | | 以分离模式（后台）运行 |
 | `--port PORT` | `-p` | 可多次 | | 把端口转发给该 Python 进程 |
@@ -31,7 +30,6 @@ lager python [OPTIONS] [RUNNABLE] [ARGS]...
 | `--continue TEXT` | | 字符串 | | 按进程 ID 恢复一个在断点处暂停的脚本 |
 | `--console TEXT` | | 字符串 | | 按进程 ID 连接到已暂停脚本的交互式控制台 |
 | `--label KEY=VALUE` | | 可多次 | | 为运行记录添加标签，例如执行 ID |
-| `--no-run-record` | | 标志 | | 不在下载的文件旁边写入运行记录文件 |
 | `--help` | | 标志 | | 显示帮助信息并退出 |
 
 **参数：**
@@ -77,23 +75,35 @@ lager python test.py --box my-lager-box --passenv SECRET_TOKEN
 | `LAGER_RUNNABLE` | 正在执行的脚本路径 |
 | `LAGER_BOX` | Box 名称（提供了 `--box` 时） |
 | `LAGER_RUN_ASSERTIONS` | `lager.record_value()` 写入的文件（参见下文的运行记录） |
+| `LAGER_OUTPUT_DIR` | 该次运行的输出文件夹，即 `lager.output_dir()` 返回的路径（参见下文的文件下载） |
 
 ## 文件下载
 
-在脚本结束后，下载它生成的文件：
+每次运行在 Box 上都有自己的输出文件夹。把脚本生成的文件写入 `lager.output_dir()`：
 
-```bash
-# Download a single file
-lager python data_processor.py --box my-lager-box --download results.csv
+```python
+import os
+from lager import output_dir
 
-# Download multiple files
-lager python test.py --box my-lager-box --download report.json --download log.txt
-
-# Allow overwriting existing local files
-lager python test.py --box my-lager-box --download results.csv --allow-overwrite
+with open(os.path.join(output_dir(), 'results.csv'), 'w') as f:
+    f.write('step,voltage\n1,4.2027\n')
 ```
 
-文件下载到当前工作目录，使用远端路径的基本名。如果同名的本地文件已经存在，除非设置了 `--allow-overwrite`，否则命令会失败。下载过程中会自动解压 gzip 压缩的文件。
+然后加上 `--download`，取回所有文件：
+
+```bash
+lager python test.py --box my-lager-box --download
+```
+
+脚本结束后，CLI 会在当前目录中新建一个以该次运行命名的文件夹，把脚本写入 `lager.output_dir()` 的每个文件（包括子文件夹）以及运行记录复制到其中。然后 CLI 会把每个文件与记录中的哈希进行比较：
+
+```
+3f6c2a9e-8d41-4b7a-9e2f-1c5d7b0a6e13/
+├── results.csv
+└── 3f6c2a9e-8d41-4b7a-9e2f-1c5d7b0a6e13.lager-run.json
+```
+
+无论是否使用 `--download`，运行记录都会列出输出文件夹中的每个文件。不使用 `--download` 时，CLI 不会在你的电脑上保存任何内容。在 `lager python` 之外，`lager.output_dir()` 返回当前目录中的 `lager-output` 文件夹，因此脚本在你的电脑上也能运行。
 
 ## 分离模式
 
@@ -269,9 +279,13 @@ Box 为每次运行写一份运行记录。该记录是一个 JSON 文件。它�
 - 运行开始时的 Box 状态：Lager 版本、操作系统、net 配置，以及每台仪器的序列号
 - 开始时间、结束时间和退出码
 - 运行结束的原因：正常退出、超时、被取消，或客户端断开连接
-- 输出以及 `--download` 中每个文件的 SHA-256 哈希
+- 输出以及该次运行输出文件夹中每个文件的 SHA-256 哈希
 
-运行结束后，CLI 会把记录写为 `<process-id>.lager-run.json`，放在下载的文件旁边。CLI 会把输出和下载的文件与记录中的哈希进行比较。如果不一致，CLI 会显示警告。
+记录保存的位置：
+
+- **Box 上，每次运行都会保存。** Box 保留最近 500 次运行的记录。
+- **Box 的发件箱（outbox）中，前提是有收集器管理该 Box。** 收集器是从 Box 取走每条记录并保存到其他地方的服务。记录会留在发件箱中，直到收集器取走。
+- **你的电脑上，仅在使用 `--download` 时。** CLI 会把记录写为 `<process-id>.lager-run.json`，放在该次运行的文件夹中、下载的文件旁边（参见文件下载）。CLI 会把输出和下载的文件与记录中的哈希进行比较。如果不一致，CLI 会显示警告。
 
 添加标签，以便以后查找该次运行：
 
@@ -311,7 +325,7 @@ lager python test.py --box my-lager-box --env API_KEY=abc123 --env DEBUG=true
 lager python long_running.py --box my-lager-box --detach
 
 # Download files after completion
-lager python data_processor.py --box my-lager-box --download results.csv
+lager python data_processor.py --box my-lager-box --download
 
 # Kill running script
 lager python --kill <PROCESS_ID> --box my-lager-box
@@ -365,7 +379,7 @@ psu.disable()
 
 - 脚本专用的配置值请用 `--env`
 - 来自当前 shell 的密钥或令牌请用 `--passenv`
-- `--download` 只在脚本结束后取回文件，而不是在运行过程中
+- `--download` 只在脚本结束后取回文件，而不是在运行过程中，并且只取回 `lager.output_dir()` 中的文件
 - 端口转发的语法是 `SRC_PORT[:DST_PORT][/PROTOCOL]`
 - 输出通过带保活（间隔 20 秒）的多路复用 HTTP 协议实时流式传输
 

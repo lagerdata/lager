@@ -23,6 +23,15 @@ booleans or None. A run records at most 256 keys.
 
 Outside a recorded run (``LAGER_RUN_ASSERTIONS`` unset), this does nothing and
 returns False, so a script that uses it still runs anywhere.
+
+``output_dir`` is the folder for the files a run produces. Everything in it is
+hashed into the run record, and ``lager python --download`` brings it all
+back::
+
+    from lager import output_dir
+
+    with open(os.path.join(output_dir(), 'results.csv'), 'w') as f:
+        ...
 """
 
 import json
@@ -30,9 +39,10 @@ import math
 import os
 import re
 
-__all__ = ['record_value']
+__all__ = ['record_value', 'output_dir']
 
 _ENV = 'LAGER_RUN_ASSERTIONS'
+_OUTPUT_ENV = 'LAGER_OUTPUT_DIR'
 _KEY_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$')
 _MAX_VALUE_LEN = 4096
 # The largest integer every JSON reader holds exactly. A record is hashed in
@@ -71,3 +81,15 @@ def record_value(key, value):
     with open(path, 'a', encoding='utf-8') as f:
         f.write(line)
     return True
+
+
+def output_dir():
+    """The folder this run's output files belong in, created if need be.
+
+    Under ``lager python`` it is the run's own folder on the box. Anywhere else
+    it is ``lager-output`` in the current directory, so a script that uses it
+    still runs.
+    """
+    path = os.environ.get(_OUTPUT_ENV) or os.path.abspath('lager-output')
+    os.makedirs(path, exist_ok=True)
+    return path

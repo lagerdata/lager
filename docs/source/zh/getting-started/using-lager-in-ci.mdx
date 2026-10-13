@@ -333,10 +333,10 @@ CLI 读取 `--` 之前的全部内容，您的脚本读取 `--` 之后的全部�
 ### 如何取回文件
 
 ```yaml
-- run: lager python tests/hil --download results.json --allow-overwrite
+- run: lager python tests/hil --download
 ```
 
-CLI 在脚本结束之后下载文件，不会在测试过程中下载。
+脚本把文件写入 `lager.output_dir()`。脚本结束之后，CLI 会把所有文件连同运行记录下载到一个以该次运行命名的新文件夹中，不会在测试过程中下载。
 
 ---
 

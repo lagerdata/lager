@@ -111,6 +111,19 @@ CLIENT_FIELD = 'run_record'
 # Environment variable that tells a script where to write its assertions.
 SCRIPT_ASSERT_ENV = 'LAGER_RUN_ASSERTIONS'
 
+# Each run gets a folder of its own for the files it produces. Everything in it
+# is hashed into the record's outputs, and `lager python --download` brings it
+# all back. It sits under /tmp/lager-output, which the download endpoint
+# serves, and under runs/ so that pruning never touches a file a script put
+# directly in /tmp/lager-output.
+OUTPUT_ROOT = '/tmp/lager-output/runs'
+OUTPUT_ROOT_ENV = 'LAGER_RUN_OUTPUT_ROOT'
+OUTPUT_DIR_ENV = 'LAGER_OUTPUT_DIR'
+
+# The most files one run's outputs list. Past this the record lists the first
+# MAX_OUTPUTS by name and the box logs how many it left out.
+MAX_OUTPUTS = 1000
+
 
 class RunRecordUnavailable(Exception):
     """A collected-mode box cannot record this run, so it must not start it."""
@@ -120,6 +133,66 @@ class RunRecordUnavailable(Exception):
 
 def records_root():
     return os.environ.get(ROOT_ENV) or DEFAULT_ROOT
+
+
+def output_root():
+    return os.environ.get(OUTPUT_ROOT_ENV) or OUTPUT_ROOT
+
+
+def output_dir_for(run_id):
+    """The folder a run writes its output files to."""
+    return os.path.join(output_root(), fs_slug(run_id))
+
+
+def prepare_output_dir(run_id):
+    """Create the run's output folder and return the environment that names it.
+
+    Never raises: a box that cannot create the folder still runs the script,
+    which then has no LAGER_OUTPUT_DIR and writes wherever it chooses.
+    """
+    path = output_dir_for(run_id)
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError as exc:
+        logger.warning('run record: cannot create output folder %s: %s', path, exc)
+        return {}
+    _prune_output_dirs(output_root(), keep=FINAL_KEEP)
+    return {OUTPUT_DIR_ENV: path}
+
+
+def run_outputs(run_id):
+    """Every regular file in the run's output folder, as sorted box paths.
+
+    Symbolic links are skipped, never followed: a link would put a file from
+    elsewhere on the box into the record, and into a download.
+    """
+    root = output_dir_for(run_id)
+    found = []
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        dirnames.sort()
+        for name in sorted(filenames):
+            path = os.path.join(dirpath, name)
+            if os.path.isfile(path) and not os.path.islink(path):
+                found.append(path)
+    found.sort()
+    if len(found) > MAX_OUTPUTS:
+        logger.warning('run record: run %s wrote %d files; recording the first %d',
+                       run_id, len(found), MAX_OUTPUTS)
+        found = found[:MAX_OUTPUTS]
+    return found
+
+
+def _prune_output_dirs(root, keep):
+    """Keep the newest ``keep`` run output folders, as final/ keeps records."""
+    try:
+        entries = [e for e in os.scandir(root) if e.is_dir(follow_symlinks=False)]
+    except OSError:
+        return
+    if len(entries) <= keep:
+        return
+    entries.sort(key=lambda e: e.stat(follow_symlinks=False).st_mtime)
+    for entry in entries[:len(entries) - keep]:
+        shutil.rmtree(entry.path, ignore_errors=True)
 
 
 def blob_max():
@@ -786,6 +859,13 @@ class RunRecorder:
 
     # -- finishing --
 
+    def _outputs(self):
+        """Every file in the run's output folder, then any file an older
+        client named with ``--download BOX_PATH`` that is not already listed."""
+        found = run_outputs(self.run_id)
+        listed = set(found)
+        return found + [name for name in self.declared_outputs if name not in listed]
+
     def finalize(self, returncode, ended='exited'):
         """Write the final record.
 
@@ -829,7 +909,7 @@ class RunRecorder:
                     'timeoutSeconds': self.effective_timeout,
                     'cancelRequestedAt': cancel_requested_at or None,
                 },
-                'outputs': hash_outputs(self.declared_outputs, self.dirs['blobs'], self.retain),
+                'outputs': hash_outputs(self._outputs(), self.dirs['blobs'], self.retain),
                 'log': {'sha256': log_sha, 'size': self._log_size, 'retained': log_retained},
                 'scriptAsserted': read_script_assertions(self.script_path),
             })

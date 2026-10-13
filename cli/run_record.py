@@ -7,8 +7,9 @@ The client's half of the run record (docs/reference/run-record.md).
 The box records what it observes. The client adds what only it knows -- the
 command line, where the code sits in its Git repository, any labels the
 launcher wants on the run -- as ``clientAsserted``, which the box records but
-cannot verify. After the run the client fetches the box's final record, writes
-it next to the downloaded files, and checks it against what it received.
+cannot verify. After a run with --download the client fetches the box's final
+record, downloads every output it lists into a folder named after the run,
+saves the record there, and checks the files against it.
 """
 
 import hashlib
@@ -154,8 +155,8 @@ def client_files(*, script_bytes=None, script_name=None, script_source=None,
     return sorted(files, key=lambda f: f['path'])
 
 
-def build_client_field(*, runnable, argv, passenv, downloads, labels, files, git, toplevel):
-    """The JSON the box records as clientAsserted (plus passenv/downloads)."""
+def build_client_field(*, runnable, argv, passenv, labels, files, git, toplevel):
+    """The JSON the box records as clientAsserted (plus passenv)."""
     root = os.path.abspath(runnable)
     if not os.path.isdir(root):
         root = os.path.dirname(root)
@@ -167,7 +168,6 @@ def build_client_field(*, runnable, argv, passenv, downloads, labels, files, git
         'files': files,
         'labels': labels or {},
         'passenv': list(passenv or ()),
-        'downloads': list(downloads or ()),
     })
 
 
@@ -198,18 +198,11 @@ def _sha256_file(path):
     return h.hexdigest()
 
 
-def save_and_check(session, box, run_id, log_hasher, downloaded):
-    """Fetch the box's record, write it beside the downloads, and check it.
-
-    Args:
-        session: the box session (must have get_run_record)
-        box: box address, for messages
-        run_id: the run's id
-        log_hasher: LogHasher fed every frame this client received, or None
-        downloaded: {box path: local path} for each file downloaded
+def fetch(session, box, run_id):
+    """The box's final record of this run, or None with a warning saying why.
 
     Never raises: the run is over and its exit code is decided. A box too old
-    to keep records is silent; anything else that goes wrong is a warning.
+    to keep records is silent.
     """
     for _ in range(FETCH_ATTEMPTS):
         try:
@@ -222,8 +215,8 @@ def save_and_check(session, box, run_id, log_hasher, downloaded):
         if resp.status_code != 202:
             break
     if resp.status_code == 202:
-        click.secho('Run record: the box is still finishing the record; not saved. '
-                    'The box keeps it, and it can be fetched from the box later.',
+        click.secho('Run record: the box is still finishing the record; nothing downloaded. '
+                    'The box keeps the record and the files.',
                     fg='yellow', err=True)
         return None
     if resp.status_code == 404:
@@ -233,14 +226,38 @@ def save_and_check(session, box, run_id, log_hasher, downloaded):
                     fg='yellow', err=True)
         return None
     try:
-        record = resp.json()
+        return resp.json()
     except ValueError:
         click.secho('Run record: the box sent something that is not JSON; not saved',
                     fg='yellow', err=True)
         return None
 
-    path = f"{record.get('runId') or run_id}{RECORD_SUFFIX}"
+
+def run_folder(record, run_id):
+    """The local folder a run's downloads and record go in: named after the run."""
+    return record.get('runId') or run_id
+
+
+def local_path(record, box_path):
+    """Where an output goes inside the run folder, or None if it must not be written.
+
+    A file from the run's output folder keeps its place below that folder; one
+    an older client named directly goes in by its basename. A name that would
+    climb out of the run folder is refused: the record comes off the network.
+    """
+    marker = f"/{record.get('runId')}/"
+    relative = box_path.split(marker, 1)[1] if marker in box_path else os.path.basename(box_path)
+    parts = [p for p in relative.replace('\\', '/').split('/') if p not in ('', '.')]
+    if not parts or '..' in parts:
+        return None
+    return os.path.join(*parts)
+
+
+def save(record, folder):
+    """Write the record into the run folder. Returns its path, or None."""
+    path = os.path.join(folder, f"{record.get('runId')}{RECORD_SUFFIX}")
     try:
+        os.makedirs(folder, exist_ok=True)
         with open(path, 'w') as f:
             json.dump(record, f, indent=2, sort_keys=True)
             f.write('\n')
@@ -248,9 +265,6 @@ def save_and_check(session, box, run_id, log_hasher, downloaded):
         click.secho(f'Run record: cannot write {path}: {exc}', fg='yellow', err=True)
         return None
     click.secho(f'Run record: {path}', dim=True, err=True)
-
-    for problem in check(record, log_hasher, downloaded):
-        click.secho(f'Run record: {problem}', fg='yellow', err=True)
     return path
 
 

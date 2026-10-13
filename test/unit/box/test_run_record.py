@@ -14,6 +14,7 @@ schema, so a field the code adds or drops without the schema following fails
 here rather than in a consumer.
 """
 
+import hashlib
 import io
 import json
 import os
@@ -63,13 +64,14 @@ def etc(tmp_path):
     return str(etc), str(host)
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def downloads(tmp_path, monkeypatch):
-    """Point the download allowlist at a tmp directory."""
+    """Point the download allowlist, and the runs' output folders, at a tmp directory."""
     from lager.binaries import store
     out = tmp_path / 'lager-output'
     out.mkdir()
     monkeypatch.setattr(store, 'ALLOWED_DOWNLOAD_ROOTS', (str(out),))
+    monkeypatch.setenv(rr.OUTPUT_ROOT_ENV, str(out / 'runs'))
     return out
 
 
@@ -373,6 +375,68 @@ class TestRecorder:
             f.write(json.dumps({'key': 'dut.firmware', 'value': '2.14.0'}) + '\n')
         recorder.finalize(0)
         assert final(root, recorder.run_id)['scriptAsserted'] == {'dut.firmware': '2.14.0'}
+
+
+class TestRunOutputFolder:
+    def test_every_file_the_run_wrote_is_in_the_record(self, root, etc, downloads):
+        recorder = begin(etc)
+        env = rr.prepare_output_dir(recorder.run_id)
+        folder = env[rr.OUTPUT_DIR_ENV]
+        assert folder == str(downloads / 'runs' / recorder.run_id)
+        os.makedirs(os.path.join(folder, 'plots'))
+        with open(os.path.join(folder, 'results.csv'), 'wb') as f:
+            f.write(b'a,b\n')
+        with open(os.path.join(folder, 'plots', 'v.png'), 'wb') as f:
+            f.write(b'png')
+        recorder.finalize(0)
+        outputs = final(root, recorder.run_id)['outputs']
+        assert [o['name'] for o in outputs] == [os.path.join(folder, 'plots', 'v.png'),
+                                                 os.path.join(folder, 'results.csv')]
+        assert outputs[1]['sha256'] == hashlib.sha256(b'a,b\n').hexdigest()
+
+    def test_a_symlink_is_not_followed_into_the_record(self, root, etc, tmp_path):
+        secret = tmp_path / 'secret'
+        secret.write_bytes(b'not yours')
+        recorder = begin(etc)
+        folder = rr.prepare_output_dir(recorder.run_id)[rr.OUTPUT_DIR_ENV]
+        os.symlink(secret, os.path.join(folder, 'link'))
+        recorder.finalize(0)
+        assert final(root, recorder.run_id)['outputs'] == []
+
+    def test_another_runs_files_are_not_this_runs(self, root, etc):
+        first = begin(etc, run_id='run-a')
+        other = rr.prepare_output_dir('run-b')[rr.OUTPUT_DIR_ENV]
+        with open(os.path.join(other, 'theirs.csv'), 'wb') as f:
+            f.write(b'x')
+        rr.prepare_output_dir(first.run_id)
+        first.finalize(0)
+        assert final(root, 'run-a')['outputs'] == []
+
+    def test_an_older_clients_download_path_is_still_hashed(self, root, etc, downloads):
+        (downloads / 'out.csv').write_bytes(b'old')
+        recorder = begin(etc, client_field=json.dumps({'downloads': [str(downloads / 'out.csv')]}))
+        recorder.finalize(0)
+        assert [o['name'] for o in final(root, recorder.run_id)['outputs']] == [str(downloads / 'out.csv')]
+
+    def test_only_the_newest_output_folders_are_kept(self, downloads, monkeypatch):
+        monkeypatch.setattr(rr, 'FINAL_KEEP', 3)
+        for i in range(5):
+            path = rr.prepare_output_dir(f'r{i}')[rr.OUTPUT_DIR_ENV]
+            os.utime(path, (1000 + i, 1000 + i))
+        rr.prepare_output_dir('r5')
+        assert sorted(os.listdir(downloads / 'runs')) == ['r3', 'r4', 'r5']
+        # A file a script put straight in /tmp/lager-output is never pruned.
+        (downloads / 'mine.csv').write_bytes(b'1')
+        rr.prepare_output_dir('r6')
+        assert (downloads / 'mine.csv').exists()
+
+    def test_output_dir_is_the_runs_folder_and_works_anywhere(self, tmp_path, monkeypatch):
+        from lager.run_assertions import output_dir
+        monkeypatch.setenv('LAGER_OUTPUT_DIR', str(tmp_path / 'run-folder'))
+        assert output_dir() == str(tmp_path / 'run-folder') and (tmp_path / 'run-folder').is_dir()
+        monkeypatch.delenv('LAGER_OUTPUT_DIR')
+        monkeypatch.chdir(tmp_path)
+        assert output_dir() == str(tmp_path / 'lager-output')
 
 
 class TestModes:

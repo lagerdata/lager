@@ -42,6 +42,9 @@ from ...core.param_types import EnvVarType, PortForwardType
 from ... import run_record as _run_record
 from ...exceptions import OutputFormatNotSupported
 
+# Where files lived on the box when --download took a path to one of them.
+_OLD_DOWNLOAD_ROOTS = ('/tmp/lager-output', '/tmp/lager-results', '/tmp/lager-job-output')
+
 MAX_ZIP_SIZE = 20_000_000  # Max size of zipped folder in bytes
 
 def _default_sigpipe():
@@ -283,11 +286,90 @@ def _restore_stop_handlers():
             signal.signal(sig, original)
 
 
-def _do_exit(exit_code, box, session, downloads, run=None):
-    """Report the exit, download files, save the run record, and exit.
+def _download_one(session, box, box_path, local):
+    """Download one file from the box to ``local``. Returns True on success."""
+    try:
+        with session.download_file(box, box_path) as resp:
+            if resp.status_code >= 400:
+                if resp.status_code == 404:
+                    # The :9000 handler's file-missing 404 is JSON with an
+                    # 'error' key; a bare Flask HTML 404 means the route
+                    # itself is absent — an old box image without the
+                    # :9000 download-file endpoint.
+                    try:
+                        error_msg = resp.json().get('error')
+                    except ValueError:
+                        error_msg = None
+                    if error_msg:
+                        click.secho(f'Failed to download {box_path}: {error_msg}', fg='red', err=True)
+                    else:
+                        click.secho(
+                            f'Failed to download {box_path}: this box image has no '
+                            f'download-file endpoint on :9000 — run: lager update',
+                            fg='red', err=True,
+                        )
+                else:
+                    try:
+                        error_msg = resp.json().get('error', resp.text)
+                    except ValueError:
+                        error_msg = resp.text
+                    click.secho(f'Failed to download {box_path}: HTTP {resp.status_code} - {error_msg}', fg='red', err=True)
+                return False
+
+            # DirectHTTPSession returns raw files, backend returns gzipped
+            # Detect format by checking magic bytes (gzip starts with 0x1f8b)
+            content = resp.content
+            is_gzipped = len(content) >= 2 and content[0] == 0x1f and content[1] == 0x8b
+            os.makedirs(os.path.dirname(local) or '.', exist_ok=True)
+            with open(local, 'wb') as f_out:
+                f_out.write(gzip.decompress(content) if is_gzipped else content)
+            return True
+    except requests.HTTPError as exc:
+        if hasattr(exc, 'response') and exc.response.status_code == 404:
+            click.secho(f'Failed to download {box_path}: File not found', fg='red', err=True)
+        else:
+            click.secho(f'Failed to download {box_path}: {exc}', fg='red', err=True)
+    except Exception as exc:  # pylint: disable=broad-except
+        click.secho(f'Failed to download {box_path}: {exc}', fg='red', err=True)
+    return False
+
+
+def _download_run(session, box, run, download):
+    """Fetch the run's record and, with ``download``, every output it lists.
+
+    Everything lands in one folder named after the run, in the current
+    directory: the outputs where the run wrote them below its output folder,
+    and the record beside them. The files are then checked against the record.
+    """
+    record = _run_record.fetch(session, box, run['run_id'])
+    if record is None:
+        return
+    folder = _run_record.run_folder(record, run['run_id'])
+    downloaded = {}
+    if download:
+        for entry in record.get('outputs') or []:
+            name = entry.get('name')
+            if not name or entry.get('sha256') is None:
+                continue  # an older client's --download BOX_PATH that did not exist
+            relative = _run_record.local_path(record, name)
+            if relative is None:
+                click.secho(f'Not downloading {name}: its name leaves the run folder', fg='red', err=True)
+                continue
+            local = os.path.join(folder, relative)
+            if _download_one(session, box, name, local):
+                downloaded[name] = local
+    if _run_record.save(record, folder) is None:
+        return
+    for problem in _run_record.check(record, run['log_hasher'], downloaded):
+        click.secho(f'Run record: {problem}', fg='yellow', err=True)
+
+
+def _do_exit(exit_code, box, session, download, run=None):
+    """Report the exit, download the run's files and record, and exit.
 
     ``run`` is ``{'run_id', 'log_hasher'}`` when this run's record should be
-    fetched and saved next to the downloads, else None.
+    fetched and saved, else None. ``download`` says whether its output files
+    come too; a run whose stream broke saves only the record.
     """
     if exit_code == FAILED_TO_RETRIEVE_EXIT_CODE:
         click.secho('Failed to retrieve script exit code.', fg='red', err=True)
@@ -308,62 +390,8 @@ def _do_exit(exit_code, box, session, downloads, run=None):
     # that often raced with libusb's async release-interface (surfaced as
     # [Errno 16] Resource busy). Removed.
 
-    downloaded = {}
-    for filename in downloads:
-        try:
-            with session.download_file(box, filename) as resp:
-                # Check for HTTP errors
-                if resp.status_code >= 400:
-                    if resp.status_code == 404:
-                        # The :9000 handler's file-missing 404 is JSON with an
-                        # 'error' key; a bare Flask HTML 404 means the route
-                        # itself is absent — an old box image without the
-                        # :9000 download-file endpoint.
-                        try:
-                            error_msg = resp.json().get('error')
-                        except ValueError:
-                            error_msg = None
-                        if error_msg:
-                            click.secho(f'Failed to download {filename}: {error_msg}', fg='red', err=True)
-                        else:
-                            click.secho(
-                                f'Failed to download {filename}: this box image has no '
-                                f'download-file endpoint on :9000 — run: lager update',
-                                fg='red', err=True,
-                            )
-                    else:
-                        try:
-                            error_msg = resp.json().get('error', resp.text)
-                        except ValueError:
-                            error_msg = resp.text
-                        click.secho(f'Failed to download {filename}: HTTP {resp.status_code} - {error_msg}', fg='red', err=True)
-                    continue
-
-                basename = os.path.basename(filename)
-                # DirectHTTPSession returns raw files, backend returns gzipped
-                # Detect format by checking magic bytes (gzip starts with 0x1f8b)
-                content = resp.content
-
-                # Check if content is gzipped by looking at first 2 bytes
-                is_gzipped = len(content) >= 2 and content[0] == 0x1f and content[1] == 0x8b
-
-                with open(basename, 'wb') as f_out:
-                    if is_gzipped:
-                        # Decompress gzipped content
-                        f_out.write(gzip.decompress(content))
-                    else:
-                        # Write raw content
-                        f_out.write(content)
-                downloaded[filename] = basename
-        except requests.HTTPError as exc:
-            if hasattr(exc, 'response') and exc.response.status_code == 404:
-                click.secho(f'Failed to download {filename}: File not found', fg='red', err=True)
-            else:
-                click.secho(f'Failed to download {filename}: {exc}', fg='red', err=True)
-        except Exception as exc:  # pylint: disable=broad-except
-            click.secho(f'Failed to download {filename}: {exc}', fg='red', err=True)
     if run is not None:
-        _run_record.save_and_check(session, box, run['run_id'], run['log_hasher'], downloaded)
+        _download_run(session, box, run, download)
     sys.exit(exit_code)
 
 
@@ -605,7 +633,7 @@ def run_python_internal(ctx, runnable, box, env, passenv, kill, download, allow_
         else:
             files = []
         post_data.append((_run_record.CLIENT_FIELD, _run_record.build_client_field(
-            runnable=runnable, argv=sys.argv, passenv=passenv, downloads=download,
+            runnable=runnable, argv=sys.argv, passenv=passenv,
             labels=labels, files=files, git=git, toplevel=toplevel,
         )))
     except Exception as exc:  # pylint: disable=broad-except
@@ -729,7 +757,7 @@ def run_python_internal(ctx, runnable, box, env, passenv, kill, download, allow_
             # to the script, and it used to exit 0. Nothing is downloaded --
             # the files may be partial -- but the record, if the box wrote
             # one, says how the run ended.
-            _do_exit(FAILED_TO_RETRIEVE_EXIT_CODE, box_ip, session, (), run)
+            _do_exit(FAILED_TO_RETRIEVE_EXIT_CODE, box_ip, session, False, run)
 
     except BrokenPipeError:
         # Pipeline downstream closed (e.g., lager python script.py | head).
@@ -958,8 +986,15 @@ def _handle_reattach(ctx, box_ip, process_id, session, dut_name):
     multiple=True, help='Environment variable to inherit')
 @click.option('--kill', default=None, help='Kill a specific process by process ID')
 @click.option('--kill-all', is_flag=True, default=False, help='Kill all running scripts')
-@click.option('--download', type=click.Path(exists=False, dir_okay=False), multiple=True, help='File to download after completion')
-@click.option('--allow-overwrite', is_flag=True, default=False, help='Overwrite existing files when downloading')
+@click.option('--download', is_flag=True, default=False,
+              help='When the script finishes, copy every file it wrote to lager.output_dir() from the '
+                   'box to this computer, with the run record beside them, into a new folder in the '
+                   'current directory named after the run. The files are checked against the record. '
+                   'Without --download nothing is saved on this computer: the box keeps the record of '
+                   'every run (its most recent 500) either way.')
+# Kept so existing command lines still parse. Downloads go into a new folder
+# named after the run, so there is never a file to overwrite.
+@click.option('--allow-overwrite', is_flag=True, default=False, hidden=True)
 @click.option('--signal', 'signum', default='SIGTERM', type=_SIGNAL_CHOICES, help='Signal to use with --kill/--kill-all', show_default=True)
 @click.option('--timeout', type=click.IntRange(min=0), default=0, required=False, help='Max runtime in seconds (0=no timeout). The box applies a ceiling and logs when it does; with --detach that ceiling does not apply.')
 @click.option('--detach', '-d', is_flag=True, required=False, default=False, help='Detach')
@@ -970,11 +1005,19 @@ def _handle_reattach(ctx, box_ip, process_id, session, dut_name):
 @click.option('--continue', 'continue_', default=None, help='Resume a script paused at a breakpoint, by process ID')
 @click.option('--console', default=None, help='Connect to the interactive console of a paused script, by process ID')
 @click.option('--label', 'labels', multiple=True, metavar='KEY=VALUE', help='Tag the run record, e.g. --label execution=1234 (unverified; repeatable)')
-@click.option('--no-run-record', 'no_run_record', is_flag=True, default=False, help='Do not save the run record next to the downloaded files')
 @click.argument('args', nargs=-1)
-def python(ctx, runnable, box, env, passenv, kill, kill_all, download, allow_overwrite, signum, timeout, detach, port, org, add_file, reattach, continue_, console, labels, no_run_record, args):
+def python(ctx, runnable, box, env, passenv, kill, kill_all, download, allow_overwrite, signum, timeout, detach, port, org, add_file, reattach, continue_, console, labels, args):
     """Run Python script on box"""
     _default_sigpipe()
+    # --download used to take the path of one file on the box. Now it is a
+    # flag, so an old command line would hand that path to the script as an
+    # argument, or try to run it. Say what changed instead.
+    old_path = next((a for a in (runnable, *args) if download and isinstance(a, str)
+                     and a.startswith(_OLD_DOWNLOAD_ROOTS)), None)
+    if old_path:
+        raise click.UsageError(
+            f'--download no longer takes a path ({old_path}). Write the files to lager.output_dir() '
+            f'in the script, and --download brings back all of them with the run record.')
     from ...box_storage import (
         resolve_and_validate_box,
         acquire_box_lock,
@@ -1045,12 +1088,6 @@ def python(ctx, runnable, box, env, passenv, kill, kill_all, download, allow_ove
 
     labels = _run_record.parse_labels(labels)
 
-    if not allow_overwrite:
-        for filename in download:
-            basename = os.path.basename(filename)
-            file = pathlib.Path(basename)
-            if file.exists():
-                raise click.UsageError(f'File {basename} exists; please rename it or use the --allow-overwrite flag')
 
     # Pass the box name as an environment variable
     env = list(env) if env else []
@@ -1128,7 +1165,9 @@ def python(ctx, runnable, box, env, passenv, kill, kill_all, download, allow_ove
         run_python_internal(
             ctx, runnable, box_ip, env, passenv, False, download, allow_overwrite,
             signum, timeout, detach, port, org, args, add_file, dut_name=box_name,
-            labels=labels, save_run_record=not no_run_record,
+            # Only --download brings anything to this computer; the box keeps
+            # the record either way.
+            labels=labels, save_run_record=download,
         )
     finally:
         if heartbeat is not None:

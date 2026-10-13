@@ -915,6 +915,9 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
             return
         if recorder is not None:
             env_vars = env_vars + [f'{k}={v}' for k, v in recorder.env.items()]
+        # The run's own output folder, named for the id its record is under.
+        output_env = run_record.prepare_output_dir(recorder.run_id if recorder else lager_process_id)
+        env_vars = env_vars + [f'{k}={v}' for k, v in output_env.items()]
 
         # Execute
         executor = PythonExecutor()

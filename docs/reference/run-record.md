@@ -1,6 +1,6 @@
 # Lager Run Record
 
-**Version: 1** · Status: draft · Last updated: 2026-10-07
+**Version: 1** · Status: draft · Last updated: 2026-10-13
 
 This document specifies the **Run Record**: one JSON document per
 `lager python` invocation that describes what ran, on which box, in what
@@ -213,16 +213,25 @@ What the box received, hashed by the box.
 
 ### 6.5 `outputs`
 
-One entry per file the client declared with `--download`, hashed by the box
-after the process exits. `name` is the path the client declared, and `size`,
-`sha256` and `retained` describe the file.
+One entry per regular file in the run's output folder, hashed by the box after
+the process exits. The box creates the folder when the run starts, as
+`/tmp/lager-output/runs/<runId>/`, and gives the script its path as
+`LAGER_OUTPUT_DIR` (`lager.output_dir()` in Python). `name` is the file's
+path on the box, and `size`, `sha256` and `retained` describe the file.
 
-- If a declared file does not exist, `size` and `sha256` are null.
+- Entries are sorted by `name`. Subfolders are included. Symbolic links are
+  not followed and not listed.
+- At most 1000 files are listed. A run that writes more lists the first 1000
+  by name, and the box logs how many it left out.
+- A client older than this folder names the files it will download instead.
+  Each one not already listed is added after the folder's files, and one that
+  does not exist has `size` and `sha256` null.
 - `retained` is true when the bytes are kept for collection (§8).
 - For a `lost` run, `outputs` is empty: the run never reached the point where
   its files were final.
 
-A client that downloads a file can check its bytes against this entry.
+A client that downloads a file can check its bytes against this entry. The box
+keeps the output folders of its most recent 500 runs.
 
 ### 6.6 `log`
 
@@ -297,6 +306,7 @@ The box records them verbatim and does not verify them.
 /etc/lager/run_records/final/<runId>.json   final records (both modes)
 /etc/lager/run_records/outbox/<runId>.json  collected mode: records to collect
 /etc/lager/run_records/blobs/<sha256>       collected mode: retained bytes
+/tmp/lager-output/runs/<runId>/             each run's output files (§6.5)
 ```
 
 - `GET :5000/run-records/<runId>` returns a final record from `final/`. It
@@ -304,14 +314,80 @@ The box records them verbatim and does not verify them.
   It answers 404 for a run the box has no record of.
 - In `collected` mode, a consumer deletes an outbox record only after it has
   durably stored it. Lager never deletes from the outbox.
-- A blob is safe to delete once no outbox record references it.
+- A blob is safe to delete once no outbox record references it and it is
+  older than an hour (§8.1).
 - `GET :5000/status` reports the mode and the outbox size under
   `runRecords`.
 
-After a run, the CLI fetches the final record and writes it as
-`<runId>.lager-run.json` beside the downloaded files, unless given
-`--no-run-record`. It checks each downloaded file and the output it received
-against the record, and warns on any mismatch.
+After a run with `--download`, the CLI fetches the final record, downloads
+every file in `outputs` into a new folder named after the run, and writes the
+record there as `<runId>.lager-run.json`. Each file keeps its place below the
+run's output folder. The CLI checks each downloaded file and the output it
+received against the record, and warns on any mismatch. Without `--download`
+the CLI saves nothing; the record stays on the box.
+
+### 8.1 Writing a collector
+
+A collector is any process on the box that takes records from the outbox and
+stores them somewhere else. Lager does not ship one and does not know where
+records go. This section is what a collector must do to lose nothing.
+
+**Access.** Lager writes every file under `/etc/lager/run_records/` with mode
+0600, owned by the user the Lager service runs as. The collector MUST run as
+that user or as root.
+
+**Turning collected mode on and off.** The collector owns `policy.json`; Lager
+only reads it.
+
+- Write it atomically: write a temporary file in the same directory, `fsync`
+  it, then rename it over `policy.json`. Lager must never read half a file.
+- Leave it readable by the Lager service's user (mode 0644).
+- Lager reads the mode when a run starts. A change applies to the next run,
+  never to one in progress.
+- Set `collected` only when something will collect the outbox. A collected
+  box refuses runs once its disk fills (§5), so a box nobody collects from
+  stops running tests.
+- Setting `local` again does not empty the outbox. Records already there are
+  still the collector's to take; keep collecting until it is empty.
+
+**Reading the outbox.**
+
+- Take only `<runId>.json` files. Ignore names that start with `.`: they are
+  Lager's temporary files, not yet complete.
+- Collect in `boxSequence` order, oldest first. If a record cannot be stored
+  yet, stop and try it again later. Do not skip ahead of it: the destination
+  then holds a later run without an earlier one.
+- Store the record exactly as it was parsed. A wrapper MUST NOT change it
+  (top of this document). The file's formatting is not part of the record;
+  `recordHash` is computed over JCS (§2), so it does not depend on whitespace
+  or key order.
+- Parse integers exactly. A language whose JSON parser reads every number as
+  a double (JavaScript, for one) changes integers above 2^53 - 1. Lager refuses
+  to record such an integer as a script value, but the collector must not
+  depend on that for the rest of the record.
+
+**Blobs.** A record names its retained bytes by hash: `log.sha256`, and the
+`sha256` of each entry in `outputs`, where `retained` is true. The file is
+`blobs/<sha256>`.
+
+- Store a record's blobs before the record, so that the destination never
+  holds a record whose bytes it cannot produce.
+- Check each blob against its name: its SHA-256 MUST equal the file name.
+- Two records can name the same blob. Blobs are stored once per hash.
+
+**Deleting.**
+
+- Delete an outbox record only after the destination has stored it durably.
+  After a timeout or an error, assume it has not.
+- If the destination refuses a record for good (for example, it already holds
+  a different record with the same `runId`), move it out of `outbox/` to a
+  directory of the collector's own and keep going. Never delete it: a refused
+  record is evidence that something is wrong.
+- Delete a blob only when no record in `outbox/` names it **and** the file is
+  more than an hour old. Lager writes a run's blobs before the record that
+  names them, so for a moment a new blob is named by nothing. A
+  collector that deletes it then loses that run's log and outputs.
+- Never delete from `final/` or `open/`. Lager manages them.
 
 ## 9. Versioning
 

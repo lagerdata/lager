@@ -132,8 +132,9 @@ class TestGitAndFiles:
         runnable = str(repo / 'xl' / 'tests' / 'rtd.py')
         git, toplevel = crr.git_context(runnable)
         field = json.loads(crr.build_client_field(
-            runnable=runnable, argv=['lager', 'python'], passenv=['HOME'], downloads=['/tmp/lager-output/a'],
+            runnable=runnable, argv=['lager', 'python'], passenv=['HOME'],
             labels={'execution': '1'}, files=[], git=git, toplevel=toplevel))
+        assert 'downloads' not in field
         assert field['repoRelativeRoot'] == 'xl/tests'
         assert field['git'] == git
         assert field['passenv'] == ['HOME'] and field['labels'] == {'execution': '1'}
@@ -205,12 +206,43 @@ class FakeJSON:
         return self._body
 
 
+class FakeDownload:
+    def __init__(self, content):
+        self.status_code = 200 if content is not None else 404
+        self.content = content or b''
+        self.text = ''
+
+    def json(self):
+        return {'error': 'File not found'}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
 class FakeSession:
-    def __init__(self, body, record_status=200):
+    """A box whose run wrote ``outputs``: {path below the run's output folder: bytes}."""
+
+    def __init__(self, body, record_status=200, outputs=None, served=None, names=None):
         self.body = body
         self.record_status = record_status
+        self.outputs = outputs or {}
+        self.served = served  # what the download endpoint returns, if not the outputs
+        self.names = names    # record output names, if not the outputs' box paths
         self.posted = None
         self.run_id = None
+        self.fetched = []
+
+    def box_path(self, relative):
+        return f'/tmp/lager-output/runs/{self.run_id}/{relative}'
+
+    def download_file(self, box, filename):
+        self.fetched.append(filename)
+        files = self.served if self.served is not None else {
+            self.box_path(k): v for k, v in self.outputs.items()}
+        return FakeDownload(files.get(filename))
 
     def run_python(self, box, files, run_id=None):
         self.posted = files
@@ -223,9 +255,13 @@ class FakeSession:
     def get_run_record(self, box, run_id):
         hasher = crr.LogHasher()
         hasher(1, b'hello\n')
+        names = self.names or [self.box_path(k) for k in self.outputs]
+        outputs = [{'name': n, 'size': len(self.outputs.get(n.rsplit('/', 1)[-1], b'')),
+                    'sha256': sha(self.outputs.get(n.split(f'/{run_id}/', 1)[-1], b'')), 'retained': False}
+                   for n in names]
         return FakeJSON(self.record_status, {
             'runId': run_id, 'log': {'sha256': hasher.sha256, 'size': hasher.size},
-            'outputs': [], 'exit': {'code': 0, 'reason': 'exited'}})
+            'outputs': outputs, 'exit': {'code': 0, 'reason': 'exited'}})
 
 
 class FakeObj:
@@ -244,7 +280,7 @@ def run(tmp_path, monkeypatch, session, **kwargs):
     script = tmp_path / 't.py'
     script.write_text('print("hello")\n')
     ctx = click.Context(click.Command('python'), obj=FakeObj(session))
-    defaults = dict(env=[], passenv=[], kill=False, download=(), allow_overwrite=False,
+    defaults = dict(env=[], passenv=[], kill=False, download=True, allow_overwrite=False,
                     signum='SIGTERM', timeout=0, detach=False, port=(), org=None, args=(),
                     extra_files=[], watch_stdin_resume=False, save_run_record=True)
     defaults.update(kwargs)
@@ -257,12 +293,17 @@ def run(tmp_path, monkeypatch, session, **kwargs):
     return exc.value.code
 
 
-def test_a_completed_run_saves_its_record_beside_the_downloads(tmp_path, monkeypatch, capsys):
-    session = FakeSession(frames((1, b'hello\n'), exit_code=0))
+def test_download_brings_back_every_output_and_the_record_in_a_run_folder(tmp_path, monkeypatch, capsys):
+    session = FakeSession(frames((1, b'hello\n'), exit_code=0),
+                          outputs={'results.csv': b'a,b\n', 'plots/v.png': b'png'})
     assert run(tmp_path, monkeypatch, session, labels={'execution': 'EX-1'}) == 0
-    saved = tmp_path / f'{session.run_id}{crr.RECORD_SUFFIX}'
+    folder = tmp_path / session.run_id
+    assert (folder / 'results.csv').read_bytes() == b'a,b\n'
+    assert (folder / 'plots' / 'v.png').read_bytes() == b'png'
+    saved = folder / f'{session.run_id}{crr.RECORD_SUFFIX}'
     assert json.loads(saved.read_text())['runId'] == session.run_id
-    assert 'Run record:' in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert 'Run record:' in err and 'does not match' not in err
 
     fields = dict((k, v) for k, v in session.posted if k == crr.CLIENT_FIELD)
     sent = json.loads(fields[crr.CLIENT_FIELD])
@@ -271,16 +312,50 @@ def test_a_completed_run_saves_its_record_beside_the_downloads(tmp_path, monkeyp
     assert ('env', f'LAGER_PROCESS_ID={session.run_id}') in session.posted
 
 
+def test_a_download_that_differs_from_the_record_is_warned_about(tmp_path, monkeypatch, capsys):
+    session = FakeSession(frames((1, b'hello\n'), exit_code=0), outputs={'results.csv': b'a,b\n'})
+    session.served = {}
+
+    def tampered(box, filename):
+        return FakeDownload(b'changed')
+    session.download_file = tampered
+    run(tmp_path, monkeypatch, session)
+    assert 'does not match the hash' in capsys.readouterr().err
+
+
+def test_an_output_name_that_leaves_the_run_folder_is_not_written(tmp_path, monkeypatch, capsys):
+    session = FakeSession(frames((1, b'hello\n'), exit_code=0), outputs={'../../../evil': b'1'})
+    run(tmp_path, monkeypatch, session)
+    assert session.fetched == []
+    assert 'leaves the run folder' in capsys.readouterr().err
+    assert not (tmp_path.parent / 'evil').exists()
+
+
 def test_a_mismatched_log_is_warned_about(tmp_path, monkeypatch, capsys):
     session = FakeSession(frames((1, b'hello\n'), (1, b'more\n'), exit_code=0))
     run(tmp_path, monkeypatch, session)
     assert 'does not match the log' in capsys.readouterr().err
 
 
-def test_no_run_record_skips_the_file(tmp_path, monkeypatch):
+def test_a_run_that_saves_no_record_writes_no_file(tmp_path, monkeypatch):
     session = FakeSession(frames((1, b'hello\n'), exit_code=0))
-    run(tmp_path, monkeypatch, session, save_run_record=False)
-    assert not list(tmp_path.glob(f'*{crr.RECORD_SUFFIX}'))
+    run(tmp_path, monkeypatch, session, download=False, save_run_record=False)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ['t.py']
+
+
+def test_download_help_says_where_the_record_goes():
+    # Only --download saves a record on this computer, so its help has to say
+    # so: the record comes with the files, and the box keeps one regardless.
+    from click.testing import CliRunner
+    result = CliRunner().invoke(cli_python.python, ['--help'], terminal_width=200)
+    assert result.exit_code == 0
+    text = ' '.join(result.output.split())
+    assert '--no-run-record' not in text
+    assert 'every file it wrote to lager.output_dir()' in text
+    assert 'folder in the current directory named after the run' in text
+    assert 'Without --download nothing is saved on this computer' in text
+    assert 'BOX_PATH' not in text and '--allow-overwrite' not in text
+    assert 'most recent 500' in text
 
 
 def test_a_box_without_records_is_silent(tmp_path, monkeypatch, capsys):
@@ -327,15 +402,38 @@ def test_the_local_copy_waits_for_a_box_still_finalizing(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     record = {'runId': 'r1', 'outputs': [], 'log': {'sha256': '0' * 64, 'size': 0}}
     session = FinalizingSession(pending=2, record=record)
-    path = crr.save_and_check(session, 'box', 'r1', None, {})
+    assert crr.fetch(session, 'box', 'r1') == record
     assert session.calls == 3
-    assert json.loads((tmp_path / path).read_text()) == record
 
 
 def test_the_local_copy_gives_up_after_a_minute_and_says_so(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     session = FinalizingSession(pending=99, record={})
-    assert crr.save_and_check(session, 'box', 'r1', None, {}) is None
+    assert crr.fetch(session, 'box', 'r1') is None
     assert session.calls == crr.FETCH_ATTEMPTS
     assert 'still finishing' in capsys.readouterr().err
     assert not list(tmp_path.iterdir())
+
+
+def test_the_old_download_path_is_a_usage_error_that_says_what_changed(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / 't.py').write_text('print(1)\n')
+    result = CliRunner().invoke(cli_python.python, ['t.py', '--download', '/tmp/lager-output/results.csv'])
+    assert result.exit_code == 2
+    assert '--download no longer takes a path' in result.output
+    assert 'lager.output_dir()' in result.output
+
+
+class TestLocalPath:
+    record = {'runId': 'r1'}
+
+    def test_keeps_the_layout_below_the_run_folder(self):
+        assert crr.local_path(self.record, '/tmp/lager-output/runs/r1/plots/v.png') == os.path.join('plots', 'v.png')
+
+    def test_an_old_declared_download_goes_in_by_its_basename(self):
+        assert crr.local_path(self.record, '/tmp/lager-output/results.csv') == 'results.csv'
+
+    def test_refuses_to_climb_out(self):
+        assert crr.local_path(self.record, '/tmp/lager-output/runs/r1/../../x') is None
+        assert crr.local_path(self.record, '/tmp/lager-output/runs/r1/') is None

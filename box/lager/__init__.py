@@ -64,7 +64,7 @@ from .breakpoint import pause
 # =============================================================================
 # Run record: facts only the script knows
 # =============================================================================
-from .run_assertions import record_value
+from .run_assertions import output_dir, record_value
 
 # =============================================================================
 # Net Abstraction (test points/signals)
@@ -104,6 +104,7 @@ __all__ = [
     "LAGER_HOST",
     # Run record
     "record_value",
+    "output_dir",
     # Interactive breakpoints
     "pause",
     # PCB Net abstraction

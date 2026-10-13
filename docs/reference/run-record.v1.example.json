@@ -80,7 +80,7 @@
   },
   "outputs": [
     {
-      "name": "/tmp/lager-output/rtd_results.csv",
+      "name": "/tmp/lager-output/runs/3f6c2a9e-8d41-4b7a-9e2f-1c5d7b0a6e13/rtd_results.csv",
       "size": 18234,
       "sha256": "7b9d1f3a5c7e9b1d3f5a7c9e1b3d5f7a9c1e3b5d7f9a1c3e5b7d9f1a3c5e7b9d",
       "retained": true
@@ -106,7 +106,6 @@
       "--add-file",
       "calibration.csv",
       "--download",
-      "/tmp/lager-output/rtd_results.csv",
       "--passenv",
       "DUT_SERIAL",
       "--env",
