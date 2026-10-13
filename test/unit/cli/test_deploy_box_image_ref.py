@@ -282,7 +282,7 @@ class TestHandoffToStartBox:
             if "./start_box.sh" in line and line.lstrip().startswith("ssh ")
         ]
         assert len(invocations) == 1, invocations
-        assert "${LAGER_BOX_IMAGE_ENV}./start_box.sh" in invocations[0]
+        assert "${LAGER_BOX_IMAGE_ENV}${LAGER_SKIP_BUILD_ENV}./start_box.sh" in invocations[0]
         assert "LAGER_BOX_IMAGE=" in text
         assert "LAGER_BOX_IMAGE_VERSION=" in text
 
@@ -431,6 +431,7 @@ ssh() {
         *"pull --platform"*)
             if [ "${PULL_RC:-0}" != 0 ]; then echo "manifest unknown" >&2; fi
             return "${PULL_RC:-0}" ;;
+        *"docker build"*) return "${BUILD_RC:-0}" ;;
     esac
     return 0
 }
@@ -454,6 +455,7 @@ def _step(remote):
         ("for c in lager pigpio controller", "teardown"),
         ("docker builder prune -af", "build-cache-prune"),
         ("df -h /", "disk-check"),
+        ("docker build -f docker/box.Dockerfile", "pre-build"),
         ("LAGER_WG_IFACE", "vpn"),
         ("./start_box.sh --preflight", "port-preflight"),
         ("./start_box.sh", "start"),
@@ -490,36 +492,58 @@ class TestImageHandoffRuns:
     def test_a_pulled_image_is_on_the_box_before_the_containers_stop(self, tmp_path):
         proc, steps, remotes = self._run(tmp_path, **_TAG, RESOLVE_RC="0", PULL_RC="0")
         assert proc.returncode == 0, proc.stderr
-        assert steps == ["daemon-check", "image-prune", "pre-pull", "port-preflight", "teardown",
-                         "build-cache-prune", "disk-check", "start", "image-prune"]
+        assert steps == ["daemon-check", "image-prune", "pre-pull", "port-preflight", "disk-check",
+                         "teardown", "build-cache-prune", "start", "image-prune"]
         assert f"LAGER_BOX_IMAGE={REGISTRY}@{_DIGEST}" in remotes[-2]
+        assert "LAGER_SKIP_BUILD" not in remotes[-2]
         assert "LAGER_BOX_IMAGE_VERSION=v0.46.2" in remotes[-2]
         assert "PREPULLED=1" in proc.stdout
 
     def test_a_failed_pull_builds_and_keeps_the_cache(self, tmp_path):
         proc, steps, remotes = self._run(tmp_path, **_TAG, RESOLVE_RC="0", PULL_RC="1")
         assert proc.returncode == 0, proc.stderr
-        assert steps == ["daemon-check", "image-prune", "pre-pull", "port-preflight", "teardown",
-                         "disk-check", "start", "image-prune"]
+        assert steps == ["daemon-check", "image-prune", "pre-pull", "port-preflight", "disk-check",
+                         "pre-build", "teardown", "start", "image-prune"]
         assert "LAGER_BOX_IMAGE" not in remotes[-2]
+        assert "LAGER_SKIP_BUILD=1 ./start_box.sh" in remotes[-2]
         assert "manifest unknown" in proc.stdout
         assert "PREPULLED=0" in proc.stdout
 
     @pytest.mark.parametrize("env, says", [
         ({**_TAG, "RESOLVE_RC": "1"}, "registry unreachable"),
         ({**_TAG, "RESOLVE_RC": "0", "DIGEST": "sha256:abc;touch INJECTED"}, "unexpected form"),
-        ({**_TAG, "BOX_IMAGE_PULL": "0"}, "Building and starting containers"),
+        ({**_TAG, "BOX_IMAGE_PULL": "0"}, "Building Lager Box container while the current one keeps serving"),
         ({"BOX_IMAGE_PULL": "1", "BOX_IMAGE_TAG_REF": "", "GIT_VERSION": "main"},
          "only release tags are published"),
     ], ids=["registry-unreachable", "malformed-digest", "no-pull", "branch-target"])
     def test_no_image_means_a_build_with_the_cache_kept(self, tmp_path, env, says):
         proc, steps, remotes = self._run(tmp_path, **env)
         assert proc.returncode == 0, proc.stderr
-        assert steps == ["daemon-check", "image-prune", "port-preflight", "teardown",
-                         "disk-check", "start", "image-prune"]
+        assert steps == ["daemon-check", "image-prune", "port-preflight", "disk-check",
+                         "pre-build", "teardown", "start", "image-prune"]
         assert "LAGER_BOX_IMAGE" not in remotes[-2]
+        assert "LAGER_SKIP_BUILD=1 ./start_box.sh" in remotes[-2]
         assert says in proc.stdout
         assert not (tmp_path / "INJECTED").exists()
+
+    def test_a_failed_build_leaves_the_old_containers_serving(self, tmp_path):
+        # The build runs while the current container still serves. When it
+        # fails, the deploy must stop there: tearing down after a failed build
+        # is what used to leave a box with no lager container at all.
+        proc, steps, _ = self._run(tmp_path, BOX_IMAGE_PULL="1", BOX_IMAGE_TAG_REF="",
+                                   GIT_VERSION="main", BUILD_RC="1")
+        assert proc.returncode == 1
+        assert steps == ["daemon-check", "image-prune", "port-preflight", "disk-check", "pre-build"]
+        assert "Nothing was stopped" in proc.stdout
+
+    def test_the_build_clears_a_stale_registry_record(self, tmp_path):
+        # start_box.sh's own build branch drops /etc/lager/image-source; with
+        # LAGER_SKIP_BUILD that branch never runs, so the pre-build must.
+        _, steps, remotes = self._run(tmp_path, BOX_IMAGE_PULL="1", BOX_IMAGE_TAG_REF="",
+                                      GIT_VERSION="main")
+        build = remotes[steps.index("pre-build")]
+        assert build.index("docker build") < build.index("rm -f /etc/lager/image-source")
+        assert "&& { rm -f /etc/lager/image-source" in build
 
     def test_a_stopped_daemon_ends_the_deploy_before_anything_is_touched(self, tmp_path):
         proc, steps, _ = self._run(tmp_path, **_TAG, DOCKER_INFO_RC="1")

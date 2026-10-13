@@ -84,9 +84,8 @@ PICOSCOPE_HEADERS_CHECK='i=/opt/picoscope/include; for h in libps2000/ps2000.h l
 
 # Pre-built box image published on every release tag by
 # .github/workflows/box-image-publish.yml. Pulling it replaces an on-box
-# `docker build`, which an install always pays in full: the step below prunes
-# the builder cache before starting containers, so an install is the cold-build
-# case by definition even on a box that has been deployed before.
+# `docker build`, which an install often pays in full: a pulled install and
+# `lager uninstall` both prune the builder cache, so the next build starts cold.
 BOX_IMAGE_REGISTRY="ghcr.io/lagerdata/lager-box"
 
 # ON by default here, unlike `lager update`. The reason update stays off -- a
@@ -2306,6 +2305,42 @@ print_info "Checking host ports..."
 ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" \
     "cd ~/box && if grep -q -- '--preflight' start_box.sh; then chmod +x start_box.sh && ./start_box.sh --preflight; fi"
 
+# Ahead of the build below: while it runs, the new image and the one the
+# current container uses both sit on disk.
+print_info "Checking available disk space..."
+ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "df -h / | tail -n 1 | awk '{print \"Available: \" \$4 \" (\" \$5 \" used)\"}'" 2>/dev/null || true
+echo ""
+
+# Build before the teardown, never after it. A build on the box takes about 15
+# minutes cold, and start_box.sh used to run it with the old containers already
+# removed, so the box answered nothing for the whole build. Building here keeps
+# the current container serving on its own image until the new one exists;
+# start_box.sh is then told to skip its build and only swap containers.
+#
+# A failed build exits before anything is stopped, leaving the box as it was.
+#
+# The build branch of start_box.sh also drops /etc/lager/image-source, a record
+# of an earlier registry pull that no longer describes the image. Skipping that
+# branch must not skip the cleanup, so it happens here.
+#
+# An older checkout's start_box.sh that does not know LAGER_SKIP_BUILD simply
+# builds again, from the cache this build just warmed.
+LAGER_SKIP_BUILD_ENV=""
+if [ "$BOX_IMAGE_PREPULLED" != "1" ]; then
+    print_info "Building Lager Box container while the current one keeps serving..."
+    echo ""
+    if ! ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" \
+        "cd ~/box/lager && DOCKER_BUILDKIT=1 docker build -f docker/box.Dockerfile -t lager . && { rm -f /etc/lager/image-source 2>/dev/null || true; }"; then
+        print_error "The box image failed to build"
+        echo "  Nothing was stopped: the box is still running its previous containers."
+        echo "  Fix the build error above, then re-run the install."
+        exit 1
+    fi
+    print_success "Lager Box container built"
+    LAGER_SKIP_BUILD_ENV="LAGER_SKIP_BUILD=1 "
+    echo ""
+fi
+
 print_info "Stopping and removing lager containers..."
 # Scoped to the containers this deployment owns (lager, pigpio, and the
 # legacy controller). A box may run third-party containers alongside lager
@@ -2331,12 +2366,8 @@ if [ "$BOX_IMAGE_PREPULLED" = "1" ]; then
     ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "docker builder prune -af >/dev/null 2>&1 || true" 2>/dev/null || true
     print_success "Docker build cache removed"
 else
-    print_info "Keeping the Docker build cache for the build on the box"
+    print_info "Keeping the Docker build cache for the next build on the box"
 fi
-echo ""
-
-print_info "Checking available disk space..."
-ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "df -h / | tail -n 1 | awk '{print \"Available: \" \$4 \" (\" \$5 \" used)\"}'" 2>/dev/null || true
 echo ""
 
 # Configure VPN interface if specified
@@ -2350,10 +2381,10 @@ fi
 if [ -n "$LAGER_BOX_IMAGE_ENV" ]; then
     print_info "Starting containers with the pre-built image..."
 else
-    print_info "Building and starting containers..."
+    print_info "Starting containers with the image just built..."
 fi
 echo ""
-ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "cd ~/box && chmod +x start_box.sh && ${LAGER_BOX_IMAGE_ENV}./start_box.sh"
+ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "cd ~/box && chmod +x start_box.sh && ${LAGER_BOX_IMAGE_ENV}${LAGER_SKIP_BUILD_ENV}./start_box.sh"
 
 # Reclaim the image this deploy replaced. start_box.sh has just moved the
 # `lager` tag onto the new image, which leaves the previous one dangling and

@@ -12,6 +12,14 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Fixed
+
+- **`lager install` of a branch or commit keeps the box serving while it
+  builds.** The new image is now built before the running container is
+  stopped, so the box is down for seconds instead of the whole on-box build
+  (about 15 minutes cold). A failed build now leaves the previous container
+  running instead of none.
+
 ## [0.56.0] - 2026-10-13
 
 ### Added
