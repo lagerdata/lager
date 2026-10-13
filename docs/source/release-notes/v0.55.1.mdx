@@ -1,0 +1,59 @@
+---
+title: "Version 0.55.1"
+description: "October 12, 2026"
+---
+
+## <u>Upgrade Notes</u>
+
+- **Update your boxes.** The PicoScope fixes and the nrfutil removal run on the box. Run
+  `lager update --box <box-name>` after you upgrade the CLI.
+- **The box image no longer installs nrfutil.** The image also drops the nrfutil
+  `nrf5sdk-tools` and `device` commands, and it no longer sets `NRFUTIL_HOME`. Lager did not
+  call nrfutil. A script that runs nrfutil on the box must now install it.
+
+## <u>Bug Fixes</u>
+
+- **`lager install` asked for the sudo password more than once on a fresh box.** Docker, the
+  buildx plugin and the PicoTech SDK each installed in a separate sudo session. They now
+  install in one session, with or without Docker. The CLI checks the official buildx binary
+  against a pinned SHA-256 before it installs it. A box that is already installed asks for the
+  password one more time on its next `lager install`.
+- **A streaming PicoScope did not start again after a replug.** The daemon opened the unit
+  again, but the Pico driver still held the previous run. Start failed until you ran
+  `lager scope <net> stop`, and the page kept the last trace. Start after a replug now runs on
+  a new session, and the page says that the scope was unplugged.
+- **A PicoScope that you just plugged in reported as wedged.** The driver can take about a
+  minute to open a cold-plugged unit. During that minute, each command said to reconnect the
+  scope, and a reconnect started the wait again. Commands now say that the open is in progress
+  and how long it has run. Only an open that runs past two minutes says to unplug the scope.
+- **The battery and supply TUIs printed a traceback on exit.** A quit from
+  `lager battery <NET> tui` or `lager supply <NET> tui` during state updates printed a
+  `NoMatches` traceback after the TUI closed. The traceback no longer occurs. `q`, `quit` and
+  `exit` at the prompt now also tell the box to stop monitoring, as Ctrl+C did.
+- **Ctrl+C did not quit the battery and supply TUIs on older Textual releases.** On releases
+  such as Textual 3.2.0, the command input took Ctrl+C as copy, even with no selection. Ctrl+C
+  now copies when you select text and quits when you do not.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.55.1
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli==0.55.1
+```
+
+Then update your boxes:
+
+```bash
+lager update --box <box-name>
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.55.1/)
