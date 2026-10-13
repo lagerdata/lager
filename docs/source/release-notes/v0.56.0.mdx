@@ -1,0 +1,69 @@
+---
+title: "Version 0.56.0"
+description: "October 13, 2026"
+---
+
+## <u>Upgrade Notes</u>
+
+- **Update your boxes.** Run records, the run output folder and the nRF5340 erase fix run on the
+  box. Run `lager update --box <box-name>` after you upgrade the CLI.
+- **`lager python --download` no longer takes a path.** Before, `--download BOX_PATH` copied one
+  named file from the box. Now `--download` is a flag. It copies every file that the script
+  wrote to `lager.output_dir()`. Change each script to write its files to `lager.output_dir()`,
+  and remove the path after `--download`. A command line that still gives a path stops with
+  `--download no longer takes a path`.
+- **Downloads go into a new folder for each run.** The CLI makes a folder in the current
+  directory, named after the run. It no longer writes files directly into the current
+  directory. `--allow-overwrite` is no longer necessary, because the CLI never overwrites a file.
+
+## <u>Features</u>
+
+- **Every `lager python` run has a run record.** The box writes one JSON record for each run.
+  The record tells what code ran, on which box and instruments, and how the run ended. It also
+  holds the hash of the output and of each file that the run wrote. The box keeps the records of
+  its most recent 500 runs. See the [Run Record](/source/reference/cli/python#run-record) section
+  of the `lager python` reference.
+- **Each run has its own output folder.** The box makes a folder for each run and gives the
+  script its path with `lager.output_dir()`. The run record lists every file in that folder,
+  with its hash. `lager python --download` copies all of the files and the run record to your
+  computer, and the CLI checks each file against the record.
+- **A script can put facts into its run record.** Call `lager.record_value(key, value)`, for
+  example with the firmware version of the device under test. Tag a run with
+  `--label KEY=VALUE` to find it later.
+
+## <u>Bug Fixes</u>
+
+- **`lager python` exited 0 when the output stream ended without an exit code.** A dropped
+  connection or a box restart during a run looked like a success. The CLI now exits 255 and
+  prints `Failed to retrieve script exit code.`
+- **`lager python --passenv NAME` printed a traceback when `NAME` was not set.** It is now a
+  usage error.
+- **`lager debug <net> erase` on an nRF5340 application core did not erase the flash.** With
+  J-Link V9.50, a full chip erase printed `Erasing done.` and erased nothing. The erase before
+  `lager debug <net> flash` had the same problem. J-Link now erases the 1 MiB of internal flash
+  from `0x0` as a range. The box then checks that the flash reads back as `0xFF`, and the erase
+  fails if it does not. The UICR is not erased.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.56.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli==0.56.0
+```
+
+Then update your boxes:
+
+```bash
+lager update --box <box-name>
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.56.0/)
