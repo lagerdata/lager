@@ -403,8 +403,8 @@ files. To send a firmware image, a debug script, or a table of limits, use
 ```
 
 The script writes its files to `lager.output_dir()`. After the script stops,
-the CLI downloads all of them, with the run record, into a new folder named
-after the run. It does not download them during the test.
+the CLI downloads all of them and the run record. They go into a new folder
+named after the run. The CLI does not download them during the test.
 
 ---
 

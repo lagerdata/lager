@@ -411,7 +411,7 @@ def test_the_local_copy_gives_up_after_a_minute_and_says_so(tmp_path, monkeypatc
     session = FinalizingSession(pending=99, record={})
     assert crr.fetch(session, 'box', 'r1') is None
     assert session.calls == crr.FETCH_ATTEMPTS
-    assert 'still finishing' in capsys.readouterr().err
+    assert 'did not finish the record in time' in capsys.readouterr().err
     assert not list(tmp_path.iterdir())
 
 

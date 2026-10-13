@@ -215,7 +215,7 @@ def fetch(session, box, run_id):
         if resp.status_code != 202:
             break
     if resp.status_code == 202:
-        click.secho('Run record: the box is still finishing the record; nothing downloaded. '
+        click.secho('Run record: the box did not finish the record in time; nothing downloaded. '
                     'The box keeps the record and the files.',
                     fg='yellow', err=True)
         return None
