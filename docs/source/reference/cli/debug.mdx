@@ -169,7 +169,7 @@ clean state (this is what RTT initialization wants). Pass `--no-erase` only when
 you intentionally want to preserve existing flash contents. The older `--erase`
 flag is now a no-op kept for backward compatibility.</Note>
 
-`--erase-start` and `--erase-size` set the range of that erase, on both backends. Without them, `flash` erases the whole chip, or 1 MiB from `0x16000000` on a DA1469x. The `erase` section below describes the range, and the box version it needs.
+`--erase-start` and `--erase-size` set the range of that erase, on both backends. Without them, `flash` erases the whole chip, or 1 MiB from `0x16000000` on a DA1469x. On J-Link, an nRF5340 application core erases its 1 MiB of internal flash from `0x0`. The `erase` section below describes the range, and the box version it needs.
 
 **Failure output:**
 
@@ -237,6 +237,8 @@ lager debug reset --force-reconnect --box my-lager-box
 Erase flash memory on the target: all of it, or the range you give with `--erase-start` and `--erase-size`. **This is a destructive operation.**
 
 On a DA1469x, `erase` erases only a range of the external QSPI flash. See [DA1469x Targets](#da1469x-targets).
+
+On J-Link, an nRF5340 application core erases its 1 MiB of internal flash from `0x0` as a range. On this part, J-Link can report a full chip erase as done and erase nothing. After the erase, the box reads one word at the start, the middle and the end of the range. If a word is not `0xFFFFFFFF`, the erase fails with `Erase check:` and that address. The UICR is not erased.
 
 ```bash
 lager debug [NET_NAME] erase [OPTIONS]

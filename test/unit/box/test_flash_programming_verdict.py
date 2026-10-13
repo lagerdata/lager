@@ -470,7 +470,9 @@ class ChipEraseReturnsItsVerdictTests(unittest.TestCase):
              patch.object(api, 'stop_jlink'), \
              patch.object(api, 'stop_jlink_gdbserver'), \
              patch.object(api.time, 'sleep'):
-            return _drain(api.chip_erase('NRF5340_XXAA_APP', **kwargs))
+            # A part whose default is the full-chip erase, so no `Erasing <range>`
+            # line comes first. An nRF5340 app core erases a range.
+            return _drain(api.chip_erase('NRF52840_XXAA', **kwargs))
 
     def test_an_unconfirmed_erase_is_the_verdict(self):
         lines, failure = self._erase('Erasing device...\n')

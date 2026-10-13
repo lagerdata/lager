@@ -12,6 +12,14 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Fixed
+
+- **`lager debug <net> erase` on an nRF5340 application core erases the flash.** With J-Link
+  V9.50, a full chip erase there could print `Erasing done.` and erase nothing, and so could the
+  erase before `lager debug <net> flash`. J-Link now erases the 1 MiB of internal flash from `0x0`
+  as a range, and the box checks that it reads back as `0xFF`. If it does not, the erase fails. The
+  UICR is not erased.
+
 ## [0.55.1] - 2026-10-12
 
 ### Removed

@@ -397,16 +397,25 @@ _ERASE_DONE_RE = re.compile(
 )
 NO_ERASE_DONE = 'J-Link printed no `Erasing done.` line'
 
+# `jlink.ERASE_READBACK_FAILED`, spelt out for the same reason as
+# `_UNCACHED_VERIFY_MISMATCH`. test_debug_erase_verdict pins the two.
+_ERASE_READBACK_FAILED = '(flash does not read back as 0xFF after the erase)'
+
 
 def _erase_failure(output_chunks, require_evidence=None):
     """The line showing a J-Link erase touched nothing, else None.
 
     A failed attach or an unusable probe names itself; short of that, an
-    erase with no J-Link confirmation erased nothing.
+    erase with no J-Link confirmation erased nothing. On an nRF5340, flash
+    that does not read back as 0xFF fails the erase even when J-Link
+    confirmed it, whatever *require_evidence* says.
     """
     joined = '\n'.join(output_chunks)
     for line in joined.splitlines():
         if _ATTACH_FAILED_RE.search(line):
+            return line.strip()
+    for line in joined.splitlines():
+        if line.strip().endswith(_ERASE_READBACK_FAILED):
             return line.strip()
     if not _require_evidence(require_evidence) or _ERASE_DONE_RE.search(joined):
         return None

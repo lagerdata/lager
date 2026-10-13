@@ -1778,7 +1778,11 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, no_erase, erase,
 @click.option('--halt/--no-halt', is_flag=True, default=False,
               help='Halt the device after erase (keeps debugger connected)', show_default=True)
 def erase(ctx, box, speed, yes, quiet, json_output, erase_start, erase_size, halt):
-    """Erase flash memory on target"""
+    """Erase flash memory on target
+
+    On J-Link, an nRF5340 application core erases its 1 MiB of internal
+    flash and checks that it reads back as 0xFF. The UICR is not erased.
+    """
 
     target_box = box
 

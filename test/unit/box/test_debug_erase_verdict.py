@@ -195,7 +195,9 @@ class EraseReportTests(unittest.TestCase):
                          (self.XIP, 0x100000, 'default'))
         self.assertEqual(api.jlink_erase_plan('DA14695', None, start=self.XIP, length=0x1000),
                          (self.XIP, 0x1000, 'request'))
-        self.assertIsNone(api.jlink_erase_plan('NRF5340_XXAA_APP', None))
+        self.assertIsNone(api.jlink_erase_plan('NRF52840_XXAA', None))
+        self.assertEqual(api.jlink_erase_plan('NRF5340_XXAA_APP', None),
+                         (0x0, 0x100000, 'default'))
         with self.assertRaises(ValueError):
             api.jlink_erase_plan('DA14695', '/etc/not-a-runtime-path.JLinkScript')
 
@@ -208,11 +210,21 @@ class EraseRangeTests(unittest.TestCase):
 
     def test_no_range_forwards_none_and_reports_a_full_chip(self):
         seen = {}
-        recorder = _erase(ERASE_OK, seen=seen)
+        recorder = _erase(ERASE_OK, device='NRF52840_XXAA', seen=seen)
         self.assertEqual(recorder.status, 200)
         self.assertEqual((seen['start'], seen['length']), (None, None))
         self.assertIn('erase_range', recorder.payload)
         self.assertIsNone(recorder.payload['erase_range'])
+
+    def test_an_nrf5340_with_no_range_reports_its_app_flash(self):
+        seen = {}
+        recorder = _erase(ERASE_OK, seen=seen)
+        self.assertEqual(recorder.status, 200)
+        self.assertEqual((seen['start'], seen['length']), (None, None))
+        self.assertEqual(recorder.payload['erase_range'], {
+            'start': 0x0, 'end': 0xFFFFF, 'length': 0x100000,
+            'source': 'default', 'text': '0x00000000-0x000FFFFF (1 MiB)',
+        })
 
     def test_a_da1469x_with_no_range_reports_the_default(self):
         recorder = _erase(ERASE_OK, device='DA14695')
@@ -303,6 +315,19 @@ class EraseVerdictTests(unittest.TestCase):
         recorder = _erase(['Erasing selected range...',
                            'Flash sectors within Range [0x16000000 - 0x160FFFFF] deleted.'])
         self.assertEqual(recorder.status, 200)
+
+    def test_flash_that_does_not_read_back_ff_is_a_500(self):
+        # J-Link confirmed the erase; the read-back says otherwise.
+        bad = f'Erase check: 0x00000000 reads 0x20001234 {api._ERASE_READBACK_FAILED}'
+        for evidence in (None, False):
+            with self.subTest(require_evidence=evidence):
+                recorder = _erase(ERASE_OK + [bad], {'require_evidence': evidence})
+                self.assertEqual(recorder.status, 500)
+                self.assertIn(bad, recorder.payload['error'])
+
+    def test_the_readback_marker_matches_jlink(self):
+        from lager.debug import jlink
+        self.assertEqual(api._ERASE_READBACK_FAILED, jlink.ERASE_READBACK_FAILED)
 
 
 class AttachFailedIsStricterThanConnectFailed(unittest.TestCase):

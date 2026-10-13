@@ -34,6 +34,25 @@ def _is_da1469x(device):
     return 'DA1469' in str(device or '').upper()
 
 
+# Any nRF5340 device name but the network core's (NRF5340_XXAA_APP, not
+# NRF5340_XXAA_NET). Only this module acts on it.
+def _is_nrf5340_app(device):
+    """True when *device* names an nRF5340 application core."""
+    name = str(device or '').upper()
+    return 'NRF5340' in name and '_NET' not in name
+
+
+# nRF5340 application core: 1 MiB of internal flash at 0x0. A bare ``erase``
+# there can report ``Erasing done.`` and erase nothing (J-Link V9.50), while
+# ``erase <start> <end>`` over the same flash does erase it. The UICR is not
+# in this range, and is left as it was.
+_NRF5340_APP_FLASH_START = 0x0
+_NRF5340_APP_FLASH_BYTES = 1048576
+
+# The tail of the line JLink.chip_erase adds when flash it just erased does
+# not read back as 0xFF. api.py spells it out as _ERASE_READBACK_FAILED.
+ERASE_READBACK_FAILED = '(flash does not read back as 0xFF after the erase)'
+
 # DA1469x external QSPI XIP default: 1 MiB at XIP base (matches common loader erase size).
 # Off-chip "offset 0" for the slot maps to CPU XIP 0x16000000 — Commander uses absolute XIP.
 # Loader-style "bank 0" targets this window; J-Link uses SetEnableFlashbank(<base>, 1) for that bank.
@@ -104,10 +123,14 @@ def resolve_erase_range(device, script_file, start=None, length=None):
     ``(start, length, source)``. A requested range wins (``'request'``); on
     a DA1469x the ``LAGER_ERASE_RANGE`` line of *script_file* comes next
     (``'script'``), then the family default of 1 MiB at the XIP base
-    (``'default'``). Any other part with no request erases the whole chip.
+    (``'default'``). An nRF5340 application core defaults to its 1 MiB of
+    internal flash at 0x0 (``'default'``). Any other part with no request
+    erases the whole chip.
     """
     if start is not None:
         return (start, length, 'request')
+    if _is_nrf5340_app(device):
+        return (_NRF5340_APP_FLASH_START, _NRF5340_APP_FLASH_BYTES, 'default')
     if not _is_da1469x(device):
         return None
     parsed = parse_lager_erase_range_from_script(script_file)
@@ -129,6 +152,34 @@ _ERASE_TIMEOUT_PER_MIB_S = 60
 def _erase_timeout_s(length):
     """Seconds to wait for ``erase`` over *length* bytes: 60 per MiB, at least 60."""
     return _ERASE_TIMEOUT_PER_MIB_S * max(1, math.ceil(length / (1 << 20)))
+
+
+def _readback_addresses(start, length):
+    """The first, middle and last word of ``[start, start + length)``, word-aligned."""
+    last = (start + max(length, 4) - 4) & ~3
+    middle = (start + length // 2) & ~3
+    return sorted({start & ~3, middle, last})
+
+
+def _readback_lines(jl, start, length):
+    """Read back an erased range; yield Commander's output, then a failure line if any.
+
+    One word each at the start, the middle and the end. A word that is not
+    0xFFFFFFFF, or one that could not be read, yields a line that ends in
+    ``ERASE_READBACK_FAILED``.
+    """
+    for address in _readback_addresses(start, length):
+        output = jl.run_command(f'mem32 {hex(address)} 1')
+        yield output
+        data = _parse_mem32_bytes(output, 4)
+        if len(data) < 4:
+            yield f'Erase check: {address:#010x} could not be read {ERASE_READBACK_FAILED}'
+            return
+        word = int.from_bytes(data, 'little')
+        if word != 0xFFFFFFFF:
+            yield (f'Erase check: {address:#010x} reads {word:#010x} '
+                   f'{ERASE_READBACK_FAILED}')
+            return
 
 
 def _loadfile_skipped_programming(output):
@@ -524,6 +575,12 @@ class JLink:
         Sequence: ``Exec SetEnableFlashbank``, ``Exec EnableEraseAllFlashBanks``,
         ``erase <start> <end>`` — then disconnect (no extra Commander reset hooks).
 
+        **nRF5340 application core:** ``erase 0x0 0xfffff``, the 1 MiB of internal
+        flash, not a bare ``erase``. A bare ``erase`` can report ``Erasing done.`` and
+        erase nothing. The UICR is not erased. After any erase on this part, a word
+        at the start, the middle and the end of the range is read back, and a word
+        that is not 0xFFFFFFFF adds a line ending in ``ERASE_READBACK_FAILED``.
+
         Other devices: plain ``erase`` (whole chip).
 
         A *start* / *length* pair (absolute addresses; on a DA1469x inside the QSPI
@@ -564,6 +621,8 @@ class JLink:
                 f'erase {hex(erase_start)} {hex(erase_end)}',
                 timeout=_erase_timeout_s(erase_len),
             )
+            if _is_nrf5340_app(self._device()):
+                yield from _readback_lines(jl, erase_start, erase_len)
 
     def read_memory(self, address, length, *, reset_halt=None, close=True):
         """

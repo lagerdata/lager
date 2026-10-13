@@ -166,7 +166,7 @@ lager debug [NET_NAME] flash [OPTIONS]
 
 <Note>`flash` **默认**会先擦除再编程，因此不需要任何标志就能得到干净状态（这正是 RTT 初始化所需要的）。只有当您有意保留现有闪存内容时才传 `--no-erase`。旧的 `--erase` 标志现在是空操作，仅为向后兼容而保留。</Note>
 
-`--erase-start` 和 `--erase-size` 设定这次擦除的范围，在两种后端上都有效。不带它们时，`flash` 擦除整片，在 DA1469x 上则从 `0x16000000` 擦除 1 MiB。下面的 `erase` 一节说明了范围的规则，以及它需要的 Box 版本。
+`--erase-start` 和 `--erase-size` 设定这次擦除的范围，在两种后端上都有效。不带它们时，`flash` 擦除整片，在 DA1469x 上则从 `0x16000000` 擦除 1 MiB。使用 J-Link 时，nRF5340 应用核擦除其从 `0x0` 开始的 1 MiB 内部闪存。下面的 `erase` 一节说明了范围的规则，以及它需要的 Box 版本。
 
 **失败输出：**
 
@@ -237,6 +237,8 @@ lager debug reset --force-reconnect --box my-lager-box
 
 在 DA1469x 上，`erase` 只擦除外部 QSPI 闪存的一段范围。请参阅
 [DA1469x 目标](#da1469x-目标)。
+
+使用 J-Link 时，nRF5340 应用核按范围擦除其从 `0x0` 开始的 1 MiB 内部闪存。在这种器件上，J-Link 可能报告全片擦除已完成，实际却什么也没有擦除。擦除之后，Box 读取该范围开头、中间和末尾各一个字。如果某个字不是 `0xFFFFFFFF`，擦除失败，并显示 `Erase check:` 和该地址。UICR 不会被擦除。
 
 ```bash
 lager debug [NET_NAME] erase [OPTIONS]

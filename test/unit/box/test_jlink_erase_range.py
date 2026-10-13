@@ -134,5 +134,85 @@ class ChipEraseCommandTests(unittest.TestCase):
         self.assertEqual(fake.commands, ['connect', 'erase'])
 
 
+
+class Nrf5340Repl(FakeRepl):
+    """Answers ``mem32 <addr> 1`` the way Commander does, from *words*."""
+
+    def __init__(self, words=None, unreadable=()):
+        super().__init__()
+        self.words = words or {}
+        self.unreadable = set(unreadable)
+
+    def run_command(self, cmd, timeout=-1):
+        self.commands.append(cmd)
+        self.timeouts.append(timeout)
+        if cmd.startswith('mem32 '):
+            address = int(cmd.split()[1], 16)
+            if address in self.unreadable:
+                return 'Could not read memory.'
+            return f'{address:08X} = {self.words.get(address, 0xFFFFFFFF):08X}'
+        return f'{cmd}-OUT'
+
+
+def run_nrf5340_erase(repl, device='NRF5340_XXAA_APP', **kwargs):
+    @contextlib.contextmanager
+    def fake_commander(args, script_file=None, serial=None):
+        yield repl
+
+    with mock.patch.object(jlink, 'commander', fake_commander):
+        return list(make_jlink(device).chip_erase(**kwargs))
+
+
+class Nrf5340EraseTests(unittest.TestCase):
+    """An nRF5340 app core erases its 1 MiB of flash by range, then reads it back.
+
+    A bare ``erase`` on this part can print ``Erasing done.`` and erase
+    nothing, so it never runs one. The UICR is outside the range.
+    """
+
+    READBACK = ['mem32 0x0 1', 'mem32 0x80000 1', 'mem32 0xffffc 1']
+
+    def test_no_request_erases_the_app_flash_by_range(self):
+        repl = Nrf5340Repl()
+        out = run_nrf5340_erase(repl)
+        self.assertEqual(repl.commands, ['connect', 'erase 0x0 0xfffff'] + self.READBACK)
+        self.assertEqual(repl.timeouts[1], 60)
+        self.assertNotIn('erase', repl.commands)
+        self.assertFalse([line for line in out if jlink.ERASE_READBACK_FAILED in line])
+
+    def test_a_word_that_is_not_ff_fails_the_erase(self):
+        repl = Nrf5340Repl(words={0x80000: 0x20001234})
+        out = run_nrf5340_erase(repl)
+        self.assertEqual(
+            out[-1],
+            f'Erase check: 0x00080000 reads 0x20001234 {jlink.ERASE_READBACK_FAILED}')
+        self.assertEqual(repl.commands[-1], 'mem32 0x80000 1', 'it stops at the first bad word')
+
+    def test_a_word_that_cannot_be_read_fails_the_erase(self):
+        repl = Nrf5340Repl(unreadable={0x0})
+        out = run_nrf5340_erase(repl)
+        self.assertEqual(
+            out[-1],
+            f'Erase check: 0x00000000 could not be read {jlink.ERASE_READBACK_FAILED}')
+
+    def test_a_request_reads_back_its_own_range(self):
+        repl = Nrf5340Repl()
+        run_nrf5340_erase(repl, start=0x0, length=0x1000)
+        self.assertEqual(repl.commands, [
+            'connect', 'erase 0x0 0xfff',
+            'mem32 0x0 1', 'mem32 0x800 1', 'mem32 0xffc 1',
+        ])
+
+    def test_the_network_core_keeps_the_bare_erase(self):
+        repl = Nrf5340Repl()
+        run_nrf5340_erase(repl, device='NRF5340_XXAA_NET')
+        self.assertEqual(repl.commands, ['connect', 'erase'])
+
+    def test_readback_addresses_stay_word_aligned_inside_the_range(self):
+        self.assertEqual(jlink._readback_addresses(0x0, 0x100000), [0x0, 0x80000, 0xFFFFC])
+        self.assertEqual(jlink._readback_addresses(0x1000, 4), [0x1000])
+        self.assertEqual(jlink._readback_addresses(0x1002, 6), [0x1000, 0x1004])
+
+
 if __name__ == '__main__':
     unittest.main()
