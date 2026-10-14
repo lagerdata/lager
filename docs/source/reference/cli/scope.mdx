@@ -67,7 +67,7 @@ Every command also accepts `--box`. The channel, capture-control, `autoscale`, `
 | `start` | Start waveform capture (continuous or single) | Both |
 | `stop` | Stop waveform capture | Both |
 | `force` | Force a trigger now (bypass the trigger condition) | Both |
-| `status` | Show every scope setting in one reply | PicoScope only |
+| `status` | Show every scope setting in one reply | Both |
 | `autoscale` | Automatically adjust vertical scale and timebase | Rigol only |
 | `coupling` | Set channel coupling mode (dc, ac; gnd is Rigol only) | Both |
 | `probe` | Set probe attenuation ratio | Both |
@@ -75,19 +75,19 @@ Every command also accepts `--box`. The channel, capture-control, `autoscale`, `
 | `timebase` | Set horizontal timebase (seconds per division) | Both |
 | `measure` | Measure waveform characteristics | Both (see note) |
 | `trigger` | Show the trigger, or set it with a subcommand | Both (see note) |
-| `acquire` | Set how captures combine (normal, average, peak) | PicoScope only |
+| `acquire` | Set how captures combine (normal, average, peak) | Both |
 | `roll` | Set roll mode for slow timebases | PicoScope only |
-| `fft` | Report the strongest frequency components of a channel | PicoScope only |
-| `display` | Set how the web UI draws the trace | PicoScope only |
-| `cursor` | Place cursors over the capture and read the deltas | `time`/`volts`/`off` are PicoScope only; `set-a`/`set-b`/`move-a`/`move-b`/`hide` are Rigol only |
-| `stream` | Stream oscilloscope data with web visualization | PicoScope only |
+| `fft` | Report the strongest frequency components of a channel | Both |
+| `display` | Set how the web UI draws the trace | Both |
+| `cursor` | Place cursors over the capture and read the deltas | `time`/`volts`/`off` on both; `set-a`/`set-b`/`move-a`/`move-b`/`hide` are Rigol only |
+| `stream` | Stream oscilloscope data with web visualization | Both (a Rigol needs an HDMI capture card) |
 
 <Note>
-The edge trigger works on PicoScope and Rigol. The pulse trigger and the protocol triggers (I2C, SPI, UART) are Rigol only. `trigger holdoff` is PicoScope only.
+The edge trigger and `trigger holdoff` work on PicoScope and Rigol. The pulse trigger and the protocol triggers (I2C, SPI, UART) are Rigol only.
 </Note>
 
 <Note>
-Measurements work on both instruments, but each one computes them in a different way. A Rigol answers a SCPI query about the trace that it shows. For a PicoScope, the daemon computes the value from a captured block, because no PicoTech API has an equivalent of `:MEAS:VPP?`. So `--display` and `--cursor` are Rigol only. They put the reading on the screen of the instrument, and a PicoScope has no screen.
+Measurements work on both instruments, but each one computes them in a different way. A Rigol measures its full record itself and the daemon reports the reading. For a PicoScope, the daemon computes the value from a captured block, because no PicoTech API has an equivalent of `:MEAS:VPP?`. `--display` and `--cursor` are Rigol only. They put the reading on the screen of the instrument, and a PicoScope has no screen.
 
 While a PicoScope acquires, measurements and cursor readings use the capture that the daemon streamed out last. So they describe the trace in the web UI, not a different capture a moment later. After a stop, they describe the last capture, as the readouts on a stopped bench scope do.
 </Note>
@@ -111,7 +111,7 @@ The CLI checks these values before it sends a command to the oscilloscope:
 
 | Manufacturer | Model | Features |
 |--------------|-------|----------|
-| Rigol | MSO5000 series | 4 analog + 16 digital channels, SCPI/VISA control, edge and SPI triggers, measurements, display cursors |
+| Rigol | MSO5000 series | 2 or 4 analog + 16 digital channels, live view through an HDMI capture card, edge and SPI triggers, measurements by the instrument, display cursors |
 | PicoScope | 2000, 2000a, 3000a, 4000a, 5000a series | Real-time streaming, web-based visualization, CSV export, edge trigger, daemon-computed measurements, cursors over the capture |
 
 The daemon reads the channel count, voltage ranges, bandwidth, memory depth and ADC resolution from the attached PicoScope. It does not assume them from the series. Type `capabilities` in the console of the web UI to see what the daemon found.
@@ -123,15 +123,16 @@ When you add nets, `lager nets tui` reads the channel count from the model numbe
 | Feature | Rigol MSO5000 | PicoScope |
 |---------|---------------|-----------|
 | Channels | 4 analog + 16 digital | 2 or 4 analog (A to D), detected at runtime |
-| Real-time streaming | No (single capture) | Yes (continuous) |
-| Measurements | Queried from the instrument over SCPI | 14 types, computed from the capture |
-| Trigger types | Edge and SPI (pulse, I2C and UART do not work yet) | Edge only, with holdoff |
-| Cursor control | XY cursors on the instrument display | Time/voltage cursors over the captured samples |
+| Real-time streaming | Yes, from its HDMI output through a capture card | Yes (continuous) |
+| Measurements | 14 types, measured by the instrument | 14 types, computed from the capture |
+| Trigger types | Edge, with holdoff, and SPI (pulse, I2C and UART do not work yet) | Edge only, with holdoff |
+| Cursor control | Time/voltage cursors over the captured samples, and XY cursors on the instrument display | Time/voltage cursors over the captured samples |
 | Autoscale | Yes | No |
-| Averaging, peak detect, roll, FFT | On the front panel of the instrument | `acquire`, `roll`, `fft` |
-| Web visualization | No | Yes (HTML5) |
+| Averaging, peak detect, FFT | `acquire` (done by the instrument), `fft` | `acquire`, `fft` |
+| Roll mode | No | `roll` |
+| Web visualization | Yes, with a capture card | Yes (HTML5) |
 | Data export | Via measurements | CSV streaming |
-| Control method | SCPI over USB/LAN | Vendor SDK, via the box daemon |
+| Control method | SCPI over USB, via the box daemon | Vendor SDK, via the box daemon |
 
 ---
 
@@ -184,7 +185,7 @@ lager scope NET_NAME force [--box BOX]
 
 ### `status`
 
-Show every scope setting in one reply: the channels, the timebase, the trigger and the acquisition. PicoScope only.
+Show every scope setting in one reply: the channels, the timebase, the trigger and the acquisition.
 
 ```bash
 lager scope NET_NAME status [--box BOX]
@@ -445,7 +446,7 @@ lager scope NET_NAME trigger edge [OPTIONS]
 
 Every option is optional, and an option that you do not give keeps its value. On a PicoScope, give at least one option. With none, the command prints an error and exits 1.
 
-On a PicoScope, `--source` takes a channel letter (`A` to `D`), a channel number (`1` to `4`), or the name of a `scope-channel` net. On a Rigol, `--source` takes the name of a `scope-channel` net.
+`--source` takes a channel letter (`A` to `D`), a channel number (`1` to `4`), or the name of a `scope-channel` net.
 
 **Examples:**
 
@@ -453,7 +454,7 @@ On a PicoScope, `--source` takes a channel letter (`A` to `D`), a channel number
 # Rising edge at 1.5V
 lager scope ANALOG1 trigger edge --slope rising --level 1.5 --box my-lager-box
 
-# Trigger on channel B (on a Rigol, give a scope-channel net name)
+# Trigger on channel B
 lager scope picoscope1 trigger edge --source B --box my-lager-box
 
 # Falling edge in single capture mode
@@ -465,7 +466,7 @@ lager scope ANALOG1 trigger edge --slope both --coupling ac --level 0 --box my-l
 
 ### `trigger holdoff`
 
-Ignore triggers for `SECONDS` after each trigger, from 0 to 10. With no value, the command shows the holdoff. PicoScope only.
+Ignore triggers for `SECONDS` after each trigger, from 0 to 10. With no value, the command shows the holdoff.
 
 ```bash
 lager scope NET_NAME trigger holdoff [SECONDS] [--box BOX]
@@ -605,7 +606,7 @@ lager scope NET_NAME trigger uart [OPTIONS]
 
 ## Acquisition and Display
 
-These commands are PicoScope only. A Rigol does the same work on its front panel, and the box refuses them for a Rigol net.
+These commands work on both instruments, except `roll`: a Rigol cannot stream continuously, so it has no roll mode. On a Rigol, averaging and peak detect are done by the instrument, and it averages a power of two from 2 to 65536 captures.
 
 ### `acquire`
 
@@ -694,7 +695,7 @@ Two different sets of commands share this name.
 
 ### `cursor`
 
-With no subcommand, `cursor` reads the cursors that are set. PicoScope only.
+With no subcommand, `cursor` reads the cursors that are set.
 
 ```bash
 lager scope NET_NAME cursor [--box BOX]
@@ -814,6 +815,8 @@ lager scope ANALOG1 cursor hide --box my-lager-box
 ## Stream Subcommands (PicoScope)
 
 Stream oscilloscope data in real time from a PicoScope. A daemon on the Lager Box owns the PicoScope, and a web page on the box shows the trace.
+
+A Rigol MSO5000 streams the same way once it is paired with a USB HDMI capture card with `lager nets set-capture`. Its daemon takes the trace from the scope's HDMI output, so the stream shows the minimum and maximum of each screen column.
 
 ### Daemon Architecture
 
@@ -1163,7 +1166,7 @@ scope [NET_NAME] [--box BOX]
   ├── start [--single]
   ├── stop
   ├── force
-  ├── status                                  (PicoScope)
+  ├── status
   └── autoscale                               (Rigol)
 
   Channel Configuration
@@ -1189,15 +1192,15 @@ scope [NET_NAME] [--box BOX]
   Triggers
   └── trigger                                 (no subcommand: show it)
       ├── edge [--mode] [--coupling] [--source] [--slope] [--level]
-      ├── holdoff [SECONDS]                   (PicoScope)
+      ├── holdoff [SECONDS]
       ├── pulse [--trigger-on] [--upper] [--lower] [--level] ...   (Rigol)
       ├── i2c [--source-scl] [--source-sda] [--trigger-on] [--address] ...   (Rigol)
       ├── spi [--source-mosi-miso] [--source-sck] [--source-cs] ...   (Rigol)
       └── uart [--baud] [--parity] [--trigger-on] [--data] ...   (Rigol)
 
-  Acquisition and Display (PicoScope)
+  Acquisition and Display
   ├── acquire [normal|average|peak] [--count N]
-  ├── roll [auto|on|off]
+  ├── roll [auto|on|off]                      (PicoScope)
   ├── fft [--channel] [--window] [--peaks]
   └── display
       ├── persistence VALUE
@@ -1207,17 +1210,17 @@ scope [NET_NAME] [--box BOX]
       └── fft CHANNEL|off [--window]
 
   Cursors
-  └── cursor                                  (no subcommand: read them; PicoScope)
-      ├── time T1 T2                          (PicoScope)
-      ├── volts V1 V2                         (PicoScope)
-      ├── off                                 (PicoScope)
+  └── cursor                                  (no subcommand: read them)
+      ├── time T1 T2
+      ├── volts V1 V2
+      ├── off
       ├── set-a [--x] [--y]                   (Rigol)
       ├── set-b [--x] [--y]                   (Rigol)
       ├── move-a [--x] [--y]                  (Rigol)
       ├── move-b [--x] [--y]                  (Rigol)
       └── hide                                (Rigol)
 
-  Streaming (PicoScope)
+  Streaming (PicoScope, or a Rigol with an HDMI capture card)
   └── stream
       ├── start [-c] [-v] [-t] [--trigger-level] [--trigger-slope] ...
       ├── stop
@@ -1233,10 +1236,10 @@ scope [NET_NAME] [--box BOX]
 
 - Net names are the names that you assign with `lager nets` when you set up your testbed
 - Instrument commands work on a `scope` net or on one of its `scope-channel` nets. Channel commands need a `scope-channel` net
-- Streaming commands work only on PicoScope devices
+- Streaming works on a PicoScope, and on a Rigol paired with an HDMI capture card (`lager nets set-capture`)
 - Measurements work on both instruments. `--display` and `--cursor` are Rigol only, because they draw on the screen of the instrument
-- `cursor time`, `cursor volts` and `cursor off` are PicoScope only. The display cursor commands are Rigol only
-- `status`, `acquire`, `roll`, `fft`, `display` and `trigger holdoff` are PicoScope only
+- `cursor time`, `cursor volts` and `cursor off` work on both instruments. The display cursor commands are Rigol only
+- `roll` is PicoScope only
 - The edge trigger is the only trigger type that works on both PicoScope and Rigol
 - On the Rigol MSO5000, only the edge and SPI triggers work (see [issue #418](https://github.com/lagerdata/lager/issues/418))
 - The web UI needs access to port 9000 on the Lager Box

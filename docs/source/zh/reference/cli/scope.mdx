@@ -67,7 +67,7 @@ lager scope picoscope1 timebase 0.001 --box my-lager-box  # the scope net
 | `start` | 开始波形采集（连续或单次） | 两者 |
 | `stop` | 停止波形采集 | 两者 |
 | `force` | 立即强制触发（绕过触发条件） | 两者 |
-| `status` | 在一次回复中显示所有示波器设置 | 仅 PicoScope |
+| `status` | 在一次回复中显示所有示波器设置 | 两者 |
 | `autoscale` | 自动调整垂直刻度和时基 | 仅 Rigol |
 | `coupling` | 设置通道耦合方式（dc、ac；gnd 仅限 Rigol） | 两者 |
 | `probe` | 设置探头衰减比 | 两者 |
@@ -75,19 +75,19 @@ lager scope picoscope1 timebase 0.001 --box my-lager-box  # the scope net
 | `timebase` | 设置水平时基（每格秒数） | 两者 |
 | `measure` | 测量波形特性 | 两者（见说明） |
 | `trigger` | 显示触发设置，或用子命令设置触发 | 两者（见说明） |
-| `acquire` | 设置多次采集的组合方式（normal、average、peak） | 仅 PicoScope |
+| `acquire` | 设置多次采集的组合方式（normal、average、peak） | 两者 |
 | `roll` | 为慢速时基设置滚动模式 | 仅 PicoScope |
-| `fft` | 报告某个通道最强的频率分量 | 仅 PicoScope |
-| `display` | 设置 Web UI 绘制波形的方式 | 仅 PicoScope |
-| `cursor` | 在采集数据上放置光标并读取差值 | `time`/`volts`/`off` 仅限 PicoScope；`set-a`/`set-b`/`move-a`/`move-b`/`hide` 仅限 Rigol |
-| `stream` | 串流示波器数据并提供 Web 可视化 | 仅 PicoScope |
+| `fft` | 报告某个通道最强的频率分量 | 两者 |
+| `display` | 设置 Web UI 绘制波形的方式 | 两者 |
+| `cursor` | 在采集数据上放置光标并读取差值 | `time`/`volts`/`off` 两者都可用；`set-a`/`set-b`/`move-a`/`move-b`/`hide` 仅限 Rigol |
+| `stream` | 串流示波器数据并提供 Web 可视化 | 两者（Rigol 需要 HDMI 采集卡） |
 
 <Note>
-边沿触发在 PicoScope 和 Rigol 上都可用。脉冲触发和协议触发（I2C、SPI、UART）仅限 Rigol。`trigger holdoff` 仅限 PicoScope。
+边沿触发和 `trigger holdoff` 在 PicoScope 和 Rigol 上都可用。脉冲触发和协议触发（I2C、SPI、UART）仅限 Rigol。
 </Note>
 
 <Note>
-测量在两种仪器上都可用，但两者的计算方式不同。Rigol 回答关于它所显示波形的 SCPI 查询。对于 PicoScope，守护进程根据采集到的数据块计算该值，因为 PicoTech 的任何 API 都没有与 `:MEAS:VPP?` 等价的命令。因此 `--display` 和 `--cursor` 仅限 Rigol。它们把读数显示在仪器的屏幕上，而 PicoScope 没有屏幕。
+测量在两种仪器上都可用，但两者的计算方式不同。Rigol 自己测量完整的记录，由守护进程报告读数。对于 PicoScope，守护进程根据采集到的数据块计算该值，因为 PicoTech 的任何 API 都没有与 `:MEAS:VPP?` 等价的命令。`--display` 和 `--cursor` 仅限 Rigol。它们把读数显示在仪器的屏幕上，而 PicoScope 没有屏幕。
 
 PicoScope 采集期间，测量和光标读数使用守护进程最近一次串流发出的采集。因此它们描述的是 Web UI 中的波形，而不是片刻之后的另一次采集。停止之后，它们描述最后一次采集，就像停止状态下台式示波器上的读数一样。
 </Note>
@@ -111,7 +111,7 @@ CLI 在把命令发送到示波器之前会先检查这些值：
 
 | 厂商 | 型号 | 特性 |
 |--------------|-------|----------|
-| Rigol | MSO5000 系列 | 4 个模拟 + 16 个数字通道，SCPI/VISA 控制，边沿和 SPI 触发，测量，显示光标 |
+| Rigol | MSO5000 系列 | 2 或 4 个模拟 + 16 个数字通道，通过 HDMI 采集卡实时查看，边沿和 SPI 触发，由仪器完成的测量，显示光标 |
 | PicoScope | 2000、2000a、3000a、4000a、5000a 系列 | 实时串流，基于 Web 的可视化，CSV 导出，边沿触发，由守护进程计算的测量，基于采集数据的光标 |
 
 守护进程从所连接的 PicoScope 读取通道数、电压量程、带宽、存储深度和 ADC 分辨率。它不根据系列假定这些值。要查看守护进程检测到的内容，请在 Web UI 的控制台中输入 `capabilities`。
@@ -123,15 +123,16 @@ CLI 在把命令发送到示波器之前会先检查这些值：
 | 功能 | Rigol MSO5000 | PicoScope |
 |---------|---------------|-----------|
 | 通道 | 4 个模拟 + 16 个数字 | 2 或 4 个模拟（A 到 D），运行时检测 |
-| 实时串流 | 不支持（单次采集） | 支持（连续） |
-| 测量 | 通过 SCPI 向仪器查询 | 14 种，根据采集数据计算 |
-| 触发类型 | 边沿和 SPI（脉冲、I2C 和 UART 尚不可用） | 仅边沿，支持释抑 |
-| 光标控制 | 仪器屏幕上的 XY 光标 | 基于采集采样点的时间/电压光标 |
+| 实时串流 | 支持，经 HDMI 采集卡取自其 HDMI 输出 | 支持（连续） |
+| 测量 | 14 种，由仪器测量 | 14 种，根据采集数据计算 |
+| 触发类型 | 边沿（支持释抑）和 SPI（脉冲、I2C 和 UART 尚不可用） | 仅边沿，支持释抑 |
+| 光标控制 | 基于采集采样点的时间/电压光标，以及仪器屏幕上的 XY 光标 | 基于采集采样点的时间/电压光标 |
 | 自动量程 | 支持 | 不支持 |
-| 平均、峰值检测、滚动、FFT | 在仪器前面板上操作 | `acquire`、`roll`、`fft` |
-| Web 可视化 | 不支持 | 支持（HTML5） |
+| 平均、峰值检测、FFT | `acquire`（由仪器完成）、`fft` | `acquire`、`fft` |
+| 滚动模式 | 不支持 | `roll` |
+| Web 可视化 | 支持（需要采集卡） | 支持（HTML5） |
 | 数据导出 | 通过测量 | CSV 串流 |
-| 控制方式 | 经 USB/LAN 的 SCPI | 厂商 SDK，经由 Box 守护进程 |
+| 控制方式 | 经 USB 的 SCPI，经由 Box 守护进程 | 厂商 SDK，经由 Box 守护进程 |
 
 ---
 
@@ -184,7 +185,7 @@ lager scope NET_NAME force [--box BOX]
 
 ### `status`
 
-在一次回复中显示所有示波器设置：通道、时基、触发和采集。仅限 PicoScope。
+在一次回复中显示所有示波器设置：通道、时基、触发和采集。
 
 ```bash
 lager scope NET_NAME status [--box BOX]
@@ -445,7 +446,7 @@ lager scope NET_NAME trigger edge [OPTIONS]
 
 每个选项都是可选的，未给出的选项保持原值。在 PicoScope 上，请至少给出一个选项。一个都不给时，命令会打印错误并以 1 退出。
 
-在 PicoScope 上，`--source` 接受通道字母（`A` 到 `D`）、通道编号（`1` 到 `4`）或 `scope-channel` Net 的名称。在 Rigol 上，`--source` 接受 `scope-channel` Net 的名称。
+`--source` 接受通道字母（`A` 到 `D`）、通道编号（`1` 到 `4`）或 `scope-channel` Net 的名称。
 
 **示例：**
 
@@ -453,7 +454,7 @@ lager scope NET_NAME trigger edge [OPTIONS]
 # Rising edge at 1.5V
 lager scope ANALOG1 trigger edge --slope rising --level 1.5 --box my-lager-box
 
-# Trigger on channel B (on a Rigol, give a scope-channel net name)
+# Trigger on channel B
 lager scope picoscope1 trigger edge --source B --box my-lager-box
 
 # Falling edge in single capture mode
@@ -465,7 +466,7 @@ lager scope ANALOG1 trigger edge --slope both --coupling ac --level 0 --box my-l
 
 ### `trigger holdoff`
 
-每次触发之后，在 `SECONDS` 秒内忽略触发，取值范围为 0 到 10。不给值时，该命令显示释抑时间。仅限 PicoScope。
+每次触发之后，在 `SECONDS` 秒内忽略触发，取值范围为 0 到 10。不给值时，该命令显示释抑时间。
 
 ```bash
 lager scope NET_NAME trigger holdoff [SECONDS] [--box BOX]
@@ -605,7 +606,7 @@ lager scope NET_NAME trigger uart [OPTIONS]
 
 ## 采集与显示
 
-这些命令仅限 PicoScope。Rigol 在前面板上完成同样的工作，Box 会对 Rigol Net 拒绝这些命令。
+这些命令在两种仪器上都可用，`roll` 除外：Rigol 不能连续串流，因此没有滚动模式。在 Rigol 上，平均和峰值检测由仪器完成，平均次数为 2 到 65536 之间的 2 的幂。
 
 ### `acquire`
 
@@ -694,7 +695,7 @@ lager scope picoscope1 display fft a --box my-lager-box
 
 ### `cursor`
 
-不带子命令时，`cursor` 读取已设置的光标。仅限 PicoScope。
+不带子命令时，`cursor` 读取已设置的光标。
 
 ```bash
 lager scope NET_NAME cursor [--box BOX]
@@ -814,6 +815,8 @@ lager scope ANALOG1 cursor hide --box my-lager-box
 ## stream 子命令（PicoScope）
 
 从 PicoScope 实时串流示波器数据。Lager Box 上的一个守护进程拥有该 PicoScope，Box 上的一个网页显示波形。
+
+用 `lager nets set-capture` 将 Rigol MSO5000 与 USB HDMI 采集卡配对后，它以同样的方式串流。它的守护进程从示波器的 HDMI 输出获取波形，因此串流显示每个屏幕列的最小值和最大值。
 
 ### 守护进程架构
 
@@ -1154,7 +1157,7 @@ scope [NET_NAME] [--box BOX]
   ├── start [--single]
   ├── stop
   ├── force
-  ├── status                                  (PicoScope)
+  ├── status
   └── autoscale                               (Rigol)
 
   Channel Configuration
@@ -1180,15 +1183,15 @@ scope [NET_NAME] [--box BOX]
   Triggers
   └── trigger                                 (no subcommand: show it)
       ├── edge [--mode] [--coupling] [--source] [--slope] [--level]
-      ├── holdoff [SECONDS]                   (PicoScope)
+      ├── holdoff [SECONDS]
       ├── pulse [--trigger-on] [--upper] [--lower] [--level] ...   (Rigol)
       ├── i2c [--source-scl] [--source-sda] [--trigger-on] [--address] ...   (Rigol)
       ├── spi [--source-mosi-miso] [--source-sck] [--source-cs] ...   (Rigol)
       └── uart [--baud] [--parity] [--trigger-on] [--data] ...   (Rigol)
 
-  Acquisition and Display (PicoScope)
+  Acquisition and Display
   ├── acquire [normal|average|peak] [--count N]
-  ├── roll [auto|on|off]
+  ├── roll [auto|on|off]                      (PicoScope)
   ├── fft [--channel] [--window] [--peaks]
   └── display
       ├── persistence VALUE
@@ -1198,17 +1201,17 @@ scope [NET_NAME] [--box BOX]
       └── fft CHANNEL|off [--window]
 
   Cursors
-  └── cursor                                  (no subcommand: read them; PicoScope)
-      ├── time T1 T2                          (PicoScope)
-      ├── volts V1 V2                         (PicoScope)
-      ├── off                                 (PicoScope)
+  └── cursor                                  (no subcommand: read them)
+      ├── time T1 T2
+      ├── volts V1 V2
+      ├── off
       ├── set-a [--x] [--y]                   (Rigol)
       ├── set-b [--x] [--y]                   (Rigol)
       ├── move-a [--x] [--y]                  (Rigol)
       ├── move-b [--x] [--y]                  (Rigol)
       └── hide                                (Rigol)
 
-  Streaming (PicoScope)
+  Streaming (PicoScope, or a Rigol with an HDMI capture card)
   └── stream
       ├── start [-c] [-v] [-t] [--trigger-level] [--trigger-slope] ...
       ├── stop
@@ -1224,10 +1227,10 @@ scope [NET_NAME] [--box BOX]
 
 - Net 名称就是您用 `lager nets` 搭建实验台时分配的名称
 - 仪器命令可以作用于 `scope` Net，也可以作用于它的某个 `scope-channel` Net。通道命令需要 `scope-channel` Net
-- 串流命令仅适用于 PicoScope 设备
+- 串流适用于 PicoScope，以及与 HDMI 采集卡配对的 Rigol（`lager nets set-capture`）
 - 测量在两种仪器上都可用。`--display` 和 `--cursor` 仅限 Rigol，因为它们在仪器的屏幕上绘制
-- `cursor time`、`cursor volts` 和 `cursor off` 仅限 PicoScope。显示光标命令仅限 Rigol
-- `status`、`acquire`、`roll`、`fft`、`display` 和 `trigger holdoff` 仅限 PicoScope
+- `cursor time`、`cursor volts` 和 `cursor off` 在两种仪器上都可用。显示光标命令仅限 Rigol
+- `roll` 仅限 PicoScope
 - 边沿触发是 PicoScope 和 Rigol 都支持的唯一触发类型
 - 在 Rigol MSO5000 上，只有边沿触发和 SPI 触发可以工作（见 [issue #418](https://github.com/lagerdata/lager/issues/418)）
 - Web UI 需要能访问 Lager Box 上的端口 9000

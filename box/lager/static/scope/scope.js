@@ -222,11 +222,12 @@ function voltsPerDivChoices(caps, attenuation) {
  * does.
  *
  * The powers of two are a PicoScope property. Nothing here bounds the slowest
- * interval either, so the ladder runs to the slowest we offer. A scope with no
- * daemon capabilities -- a Rigol, whose steps really are 1-2-5 -- has no rate
- * to work from and keeps the plain ladder.
+ * interval either, so the ladder runs to the slowest we offer. A scope whose
+ * capabilities say its steps are 1-2-5 -- a Rigol's -- keeps the plain ladder,
+ * as does one with no rate to work from.
  */
 function timebaseChoices(caps, memoryDepth) {
+  if (caps && caps.timebase_steps === 'one_two_five') return TIMEBASES.slice();
   const rate = Number(caps && caps.max_sample_rate_hz);
   const depth = Number(memoryDepth);
   if (!(rate > 0) || !(depth > 0)) return TIMEBASES.slice();
@@ -288,6 +289,15 @@ function isPerChannelAction(action) {
 function sampleTraceAt(frame, volts, seconds) {
   const exact = frame.preTriggerSamples
     + (seconds * 1e9) / frame.sampleIntervalNs;
+  if (frame.envelope) {
+    // A (min, max) pair per column: the middle of the column under the
+    // cursor, where reading sample by sample would land on the minimum or
+    // the maximum depending on which side of the pair the time fell.
+    const column = Math.floor(exact / 2);
+    if (column < 0 || 2 * column + 1 >= volts.length) return null;
+    const middle = (volts[2 * column] + volts[2 * column + 1]) / 2;
+    return Number.isFinite(middle) ? middle : null;
+  }
   const low = Math.floor(exact);
   if (low < 0 || low >= volts.length) return null;
   if (low + 1 >= volts.length) return low === exact ? volts[low] : null;
@@ -828,9 +838,15 @@ class ScopeApp {
       const listed = body.nets || body || [];
       const scopes = listed.filter(
         (n) => n.role === 'scope' || n.role === 'scope-channel');
-      // The stream comes from the PicoScope daemon, so the box refuses a
-      // ticket for any other make; offered, a Rigol could only be refused.
-      const nets = scopes.filter((n) => /pico/i.test(n.instrument || ''));
+      // A PicoScope always streams. A Rigol streams its HDMI output, so only
+      // once a capture card is paired with it, on any of its nets; offered
+      // without one, it could only be refused.
+      const addressOf = (n) => ((n.mappings || []).find((m) => m.device_override) || {})
+        .device_override || n.address;
+      const captured = new Set(scopes.filter((n) => n.capture).map(addressOf));
+      const streams = (n) => /pico/i.test(n.instrument || '')
+        || (/rigol|mso5/i.test(n.instrument || '') && captured.has(addressOf(n)));
+      const nets = scopes.filter(streams);
       // An analog net names a scope as well, but the box takes no commands
       // for that role, so offering one gave a page whose every control was
       // refused. Each kind left out is said once instead, naming them.
@@ -843,15 +859,16 @@ class ScopeApp {
           + ' for the "analog" role; add a scope net with "lager nets add".');
       }
       if (otherMakes.length) {
-        notices.push(`Not offered: ${otherMakes.join(', ')}. The live view streams`
-          + ' a PicoScope only; "lager scope" drives the others.');
+        notices.push(`Not offered: ${otherMakes.join(', ')}. A Rigol streams through`
+          + ' an HDMI capture card, and none is paired with these; pair one with'
+          + ' "lager nets set-capture". "lager scope" drives them meanwhile.');
       }
 
       select.replaceChildren();
       if (nets.length === 0) {
         select.append(new Option('no scope nets', ''));
         this.console.error(notices.length
-          ? `No PicoScope nets on this box. ${notices.join(' ')}`
+          ? `No scope nets that can stream on this box. ${notices.join(' ')}`
           : 'No scope nets on this box. Create one with "lager nets add".');
         return;
       }
@@ -2143,8 +2160,10 @@ class ScopeApp {
     // The capture says how deep a block is, which with the unit's fastest
     // interval is what bounds the reachable timebases. Only known once one
     // has arrived, so the list is trimmed here rather than at connect -- and
-    // only from a block: a rolling screen's length is its column count.
-    if (!frame.streaming) this.rebuildTimebaseChoices(frame.samplesPerChannel);
+    // only from a block: an envelope's length is its column count.
+    if (!frame.streaming && !frame.envelope) {
+      this.rebuildTimebaseChoices(frame.samplesPerChannel);
+    }
   }
 
   /** Return credit for every frame received since the last return. */
@@ -2614,7 +2633,7 @@ class ScopeApp {
     const bothOn = parsed && this.channelIsShown(parsed.left) && this.channelIsShown(parsed.right);
     if (a < 0 || b < 0 || !bothOn || frame.envelope) {
       this.drawNote(ctx, width, height, frame.envelope
-        ? 'Math is not drawn in roll mode'
+        ? 'Math is not drawn on a min/max trace'
         : `Math ${math.expr} needs channels ${parsed ? `${parsed.left} and ${parsed.right}` : ''} on`);
       return;
     }

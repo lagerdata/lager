@@ -199,6 +199,14 @@ pub enum Command {
         #[serde(default)]
         measurement: Option<String>,
     },
+
+    /// Send one SCPI command to an instrument that takes them, for the
+    /// features the commands above do not cover. A query (anything with a
+    /// `?`) is answered with the instrument's reply. The daemon holds the
+    /// instrument's only connection, so this is the one way to reach it.
+    Scpi {
+        scpi: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -325,6 +333,10 @@ pub enum Response {
         value: Option<f64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         unit: Option<String>,
+    },
+    /// Answers `Scpi`: the reply to a query, or null for a command.
+    Scpi {
+        reply: Option<String>,
     },
     Error {
         message: String,

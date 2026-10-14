@@ -17,6 +17,22 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 - **`lager uart -i --no-echo` for devices that do not echo commands.** Interactive mode
   then shows every received line, with no echo filtering. The default, `--echo`, keeps
   hiding the device's echo of each command.
+- **A Rigol MSO5000 now has the same live view and controls as a PicoScope.**
+  Its trace is taken from the scope's HDMI output through a USB HDMI capture
+  card, so the web scope page, `lager scope ... stream`, status, acquisition,
+  holdoff, display, FFT and cursors all work on a Rigol net. Pair the scope
+  with its card once with `lager nets set-capture <net>`; without a card,
+  everything but the live view still works.
+
+### Changed
+
+- **A Rigol MSO5000 is driven through the oscilloscope daemon.** The daemon
+  holds the scope's only connection, so `lager scope`, `lager logic`, Python
+  scripts and the web page no longer contend for its USB interface.
+  Measurements are still taken by the scope itself. Channels are named A to D
+  everywhere, so the trigger source reads back as `A`, not `CHAN1`.
+- **The oscilloscope daemon is built on every box**, with or without the
+  PicoTech SDK headers; without them it drives Rigol scopes only.
 
 ### Fixed
 
@@ -51,6 +67,7 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   caller's own CI identity, so the cleanup step of the run that took the lock reported "No box
   lock held" and left it. Every green Nightly left the bench box locked until the next run. The
   probe now asks under a separate holder, so it sees the run's own lock and releases it.
+
 
 ## [0.56.0] - 2026-10-13
 

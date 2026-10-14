@@ -39,8 +39,9 @@ use protocol::{
 };
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
-use crate::oscilloscope::pico;
-use crate::oscilloscope::{monotonic_ns, Oscilloscope, RollInfo, RollPlan, RollSink};
+use crate::oscilloscope::{
+    monotonic_ns, unit_is_gone, Oscilloscope, RollInfo, RollPlan, RollSink,
+};
 use protocol::{Measurement, MeasurementSet};
 
 /// Broadcast depth. Enough to absorb a brief consumer stall without the
@@ -154,6 +155,7 @@ pub enum ScopeRequest {
     GetHoldoff,
     SetRoll(RollMode),
     GetRoll,
+    Scpi(String),
 }
 
 #[derive(Debug)]
@@ -174,6 +176,7 @@ pub enum ScopeReply {
     Display(serde_json::Value),
     Acquisition(AcquisitionMode, u32),
     Roll(RollMode, bool),
+    Text(Option<String>),
     Error(String),
 }
 
@@ -689,6 +692,8 @@ fn run(
     // capture it publishes, and only those, so the count is the sequence.
     state.sequence = capture_count.load(Ordering::Relaxed);
     state.version = state_tx.borrow().version;
+    state.trigger_from_driver = scope.reports_trigger();
+    state.answers_from_instrument = scope.answers_from_instrument();
     state.refresh_trigger(&*scope);
     publish_state(&*scope, &mut state, acquiring, state_tx);
 
@@ -758,7 +763,7 @@ fn run(
 
         if state.roller.is_some() {
             if let Err(e) = roll_step(&mut scope, &mut state, captures, capture_count) {
-                if pico::status::unit_is_gone(&e) {
+                if unit_is_gone(&e) {
                     break Ended::UnitGone(format!("{e:#}"));
                 }
                 tracing::warn!(error = %e, "roll mode stopped");
@@ -785,7 +790,7 @@ fn run(
             }
             state.arm_at = None;
             if let Err(e) = scope.rearm() {
-                if pico::status::unit_is_gone(&e) {
+                if unit_is_gone(&e) {
                     break Ended::UnitGone(format!("{e:#}"));
                 }
                 tracing::warn!(error = %e, "failed to rearm capture");
@@ -825,14 +830,19 @@ fn run(
                         continue;
                     }
 
-                    let due = holdoff_deadline(ready_at, &frame, state.holdoff);
+                    let holdoff = if state.holdoff_in_hardware {
+                        Duration::ZERO
+                    } else {
+                        state.holdoff
+                    };
+                    let due = holdoff_deadline(ready_at, &frame, holdoff);
                     if due > Instant::now() {
                         state.arm_at = Some(due);
                         next_poll = Some(due);
                         continue;
                     }
                     if let Err(e) = scope.rearm() {
-                        if pico::status::unit_is_gone(&e) {
+                        if unit_is_gone(&e) {
                             break Ended::UnitGone(format!("{e:#}"));
                         }
                         tracing::warn!(error = %e, "failed to rearm capture");
@@ -855,7 +865,7 @@ fn run(
                     next_poll = Some(Instant::now() + scope.suggested_poll_interval());
                 }
                 Err(e) => {
-                    if pico::status::unit_is_gone(&e) {
+                    if unit_is_gone(&e) {
                         break Ended::UnitGone(format!("{e:#}"));
                     }
                     tracing::warn!(error = %e, "capture read failed");
@@ -866,7 +876,7 @@ fn run(
                 next_poll = Some(Instant::now() + scope.suggested_poll_interval());
             }
             Err(e) => {
-                if pico::status::unit_is_gone(&e) {
+                if unit_is_gone(&e) {
                     break Ended::UnitGone(format!("{e:#}"));
                 }
                 tracing::warn!(error = %e, "readiness check failed, stopping acquisition");
@@ -917,7 +927,8 @@ fn waits_for_a_capture(request: &ScopeRequest, state: &LoopState, acquiring: &At
         ScopeRequest::GetTriggeredData
             | ScopeRequest::Measure { .. }
             | ScopeRequest::MeasureAll { .. }
-    ) && state.last_frame.is_none()
+    ) && !state.answers_from_instrument
+        && state.last_frame.is_none()
         && (acquiring.load(Ordering::Relaxed) || state.roller.is_some())
 }
 
@@ -1007,7 +1018,9 @@ fn invalidates_the_published_capture(request: &ScopeRequest) -> bool {
         // A new way of combining captures, and a switch between blocks and
         // streaming, both make what was published unlike what comes next.
         | ScopeRequest::SetAcquisition(..)
-        | ScopeRequest::SetRoll(_) => true,
+        | ScopeRequest::SetRoll(_)
+        // Could be anything, so it is taken to change everything.
+        | ScopeRequest::Scpi(_) => true,
 
         // Stopping keeps it. The last capture is what a stopped scope is
         // showing, and a measurement of it is the reading on screen -- the
@@ -1170,6 +1183,14 @@ struct LoopState {
     /// A driver call said the unit has gone, with what it said. The loop
     /// closes the scope and opens it again.
     unit_gone: Option<String>,
+    /// The driver flags its own frames as triggered or not.
+    trigger_from_driver: bool,
+    /// Averaging or peak detect is done by the instrument, not `averager`.
+    acquisition_in_hardware: bool,
+    /// The holdoff is applied by the instrument, not by holding back arms.
+    holdoff_in_hardware: bool,
+    /// Measurements and records come from the instrument, not a capture.
+    answers_from_instrument: bool,
 }
 
 impl LoopState {
@@ -1195,12 +1216,16 @@ impl LoopState {
                 slope: TriggerSlope::Rising,
             },
             unit_gone: None,
+            trigger_from_driver: false,
+            acquisition_in_hardware: false,
+            holdoff_in_hardware: false,
+            answers_from_instrument: false,
         }
     }
 
     /// The reply for a driver error, noting whether it says the unit is gone.
     fn failed(&mut self, error: anyhow::Error) -> ScopeReply {
-        if pico::status::unit_is_gone(&error) {
+        if unit_is_gone(&error) {
             self.unit_gone = Some(format!("{error:#}"));
         }
         ScopeReply::error(error)
@@ -1227,6 +1252,7 @@ impl LoopState {
         // does a forced capture, so for those the samples have to say.
         let forced = std::mem::take(&mut self.forced);
         let triggered = match self.trigger.mode {
+            _ if self.trigger_from_driver => frame.flags & FLAG_TRIGGERED != 0,
             CaptureMode::Normal | CaptureMode::Single if !forced => true,
             _ => protocol::trigger::frame_is_triggered(
                 &frame,
@@ -1241,7 +1267,10 @@ impl LoopState {
             frame.flags &= !FLAG_TRIGGERED;
         }
 
-        if self.acquisition == AcquisitionMode::Average && self.average_count > 1 {
+        if self.acquisition == AcquisitionMode::Average
+            && self.average_count > 1
+            && !self.acquisition_in_hardware
+        {
             frame = self.averager.feed(frame, self.average_count);
         }
         frame
@@ -1773,12 +1802,25 @@ fn handle(
         // block from before the settings changed, which nothing will serve.
         // Ready means a capture request would be answered with one now.
         ScopeRequest::IsReady => ScopeReply::Bool(state.captured_since_arm),
-        ScopeRequest::GetTriggeredData => match samples_now(state, acquiring) {
-            Ok(frame) => ScopeReply::Capture(frame),
-            Err(e) => ScopeReply::error(e),
+        ScopeRequest::GetTriggeredData => match scope.read_record() {
+            Some(Ok(mut frame)) => {
+                // Numbered as the capture it was read alongside, not a new
+                // one: the loop's count is of captures it published.
+                frame.seq = state.sequence;
+                ScopeReply::Capture(Arc::new(frame))
+            }
+            Some(Err(e)) => state.failed(e),
+            None => match samples_now(state, acquiring) {
+                Ok(frame) => ScopeReply::Capture(frame),
+                Err(e) => ScopeReply::error(e),
+            },
         },
         ScopeRequest::Measure { channel, which } => {
-            match measure_now(state, acquiring, channel).and_then(|set| {
+            let measured = match scope.measure_all(channel) {
+                Some(result) => result,
+                None => measure_now(state, acquiring, channel),
+            };
+            match measured.and_then(|set| {
                 set.get(which)
                     .ok_or_else(|| anyhow::anyhow!(
                         "{:?} needs at least one full cycle in the capture",
@@ -1789,10 +1831,16 @@ fn handle(
                 Err(e) => ScopeReply::error(e),
             }
         }
-        ScopeRequest::MeasureAll { channel } => match measure_now(state, acquiring, channel) {
-            Ok(set) => ScopeReply::Measurements(Box::new(set)),
-            Err(e) => ScopeReply::error(e),
-        },
+        ScopeRequest::MeasureAll { channel } => {
+            let measured = match scope.measure_all(channel) {
+                Some(result) => result,
+                None => measure_now(state, acquiring, channel),
+            };
+            match measured {
+                Ok(set) => ScopeReply::Measurements(Box::new(set)),
+                Err(e) => ScopeReply::error(e),
+            }
+        }
         ScopeRequest::GetState => ScopeReply::State(Box::new(build_state(
             &**scope,
             state,
@@ -1841,10 +1889,14 @@ fn handle(
                     ));
                 }
             }
-            state.acquisition = mode;
-            if let Some(count) = count {
-                state.average_count = count;
+            let average_count = count.unwrap_or(state.average_count);
+            match scope.set_acquisition(mode, average_count) {
+                Some(Err(e)) => return state.failed(e),
+                Some(Ok(())) => state.acquisition_in_hardware = true,
+                None => state.acquisition_in_hardware = false,
             }
+            state.acquisition = mode;
+            state.average_count = average_count;
             state.averager.reset();
             ScopeReply::Ok
         }
@@ -1856,6 +1908,11 @@ fn handle(
                 return ScopeReply::error(format!(
                     "a holdoff of {seconds} s is outside 0 to {MAX_HOLDOFF_S} s"
                 ));
+            }
+            match scope.set_holdoff(seconds) {
+                Some(Err(e)) => return state.failed(e),
+                Some(Ok(())) => state.holdoff_in_hardware = true,
+                None => state.holdoff_in_hardware = false,
             }
             state.holdoff = Duration::from_secs_f64(seconds);
             ScopeReply::Ok
@@ -1871,6 +1928,11 @@ fn handle(
             ScopeReply::Ok
         }
         ScopeRequest::GetRoll => ScopeReply::Roll(state.roll, state.roller.is_some()),
+        ScopeRequest::Scpi(command) => match scope.scpi(&command) {
+            Some(Ok(reply)) => ScopeReply::Text(reply),
+            Some(Err(e)) => state.failed(e),
+            None => ScopeReply::error("this scope does not take SCPI commands"),
+        },
     }
 }
 
@@ -1954,6 +2016,11 @@ mod tests {
         needs_stop_before_arm: bool,
         stopped: Arc<AtomicBool>,
         mode: CaptureMode,
+        /// Measures, reads its record, averages and holds off itself, as an
+        /// instrument with its own acquisition system does.
+        instrument: bool,
+        /// What the instrument was last told to do, by the hooks above.
+        applied: Arc<Mutex<Vec<String>>>,
     }
 
     impl FakeScope {
@@ -1969,7 +2036,15 @@ mod tests {
                 needs_stop_before_arm: false,
                 stopped: Arc::new(AtomicBool::new(false)),
                 mode: CaptureMode::Normal,
+                instrument: false,
+                applied: Arc::new(Mutex::new(Vec::new())),
             }
+        }
+
+        fn instrument() -> Self {
+            let mut fake = FakeScope::new();
+            fake.instrument = true;
+            fake
         }
     }
 
@@ -1996,6 +2071,57 @@ mod tests {
     }
 
     impl Oscilloscope for FakeScope {
+        fn reports_trigger(&self) -> bool {
+            self.instrument
+        }
+
+        fn measure_all(&mut self, _channel: ChannelId) -> Option<anyhow::Result<MeasurementSet>> {
+            self.instrument.then(|| {
+                Ok(MeasurementSet {
+                    vmax: 1.5,
+                    vmin: -1.5,
+                    vpp: 3.0,
+                    vavg: 0.0,
+                    vrms: 1.0,
+                    period: Some(1e-3),
+                    frequency: Some(1e3),
+                    duty_cycle_positive: None,
+                    duty_cycle_negative: None,
+                    pulse_width_positive: None,
+                    pulse_width_negative: None,
+                    rise_time: None,
+                    fall_time: None,
+                    overshoot: None,
+                })
+            })
+        }
+
+        fn read_record(&mut self) -> Option<anyhow::Result<CaptureFrame>> {
+            self.instrument.then(|| {
+                let mut record = edge_frame(1000, 500, 500);
+                record.seq = 999;
+                Ok(record)
+            })
+        }
+
+        fn set_acquisition(
+            &mut self,
+            mode: AcquisitionMode,
+            average_count: u32,
+        ) -> Option<anyhow::Result<()>> {
+            self.instrument.then(|| {
+                lock(&self.applied).push(format!("{} {average_count}", mode.as_str()));
+                Ok(())
+            })
+        }
+
+        fn set_holdoff(&mut self, seconds: f64) -> Option<anyhow::Result<()>> {
+            self.instrument.then(|| {
+                lock(&self.applied).push(format!("holdoff {seconds}"));
+                Ok(())
+            })
+        }
+
         fn start_triggered_capture(&mut self, _position: f64) -> anyhow::Result<()> {
             if self.needs_stop_before_arm && !self.stopped.load(Ordering::SeqCst) {
                 anyhow::bail!("ps2000_run_block failed for an already-running unit");
@@ -3041,6 +3167,7 @@ mod tests {
             advanced_triggers: Vec::new(),
             roll_mode: false,
             peak_detect: false,
+            timebase_steps: protocol::capabilities::TimebaseSteps::PowersOfTwo,
         }
     }
 
@@ -3237,6 +3364,88 @@ mod tests {
             }
             other => panic!("expected the display back, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn an_instrument_that_measures_is_asked_rather_than_the_capture() {
+        let mut harness = Harness::with(FakeScope::instrument());
+        // No capture published, which would be refused were it measured here.
+        match harness.send(ScopeRequest::MeasureAll {
+            channel: ChannelId::Alphabetic('A'),
+        }) {
+            ScopeReply::Measurements(set) => assert_eq!(set.vpp, 3.0),
+            other => panic!("expected measurements, got {other:?}"),
+        }
+        match harness.send(ScopeRequest::Measure {
+            channel: ChannelId::Alphabetic('A'),
+            which: Measurement::Frequency,
+        }) {
+            ScopeReply::Measurement(value) => assert_eq!(value, 1e3),
+            other => panic!("expected a measurement, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn exact_samples_come_from_the_instrument_record_numbered_as_the_capture() {
+        let mut harness = Harness::with(FakeScope::instrument());
+        publish(&mut harness, 10);
+        let published = harness.state.sequence;
+        match harness.send(ScopeRequest::GetTriggeredData) {
+            ScopeReply::Capture(frame) => {
+                assert_eq!(frame.samples_per_channel, 1000, "the record, not the screen");
+                assert_eq!(frame.seq, published);
+            }
+            other => panic!("expected a capture, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_instrument_averages_and_holds_off_itself() {
+        let fake = FakeScope::instrument();
+        let applied = fake.applied.clone();
+        let mut harness = Harness::with(fake);
+        assert!(matches!(
+            harness.send(ScopeRequest::SetAcquisition(AcquisitionMode::Average, Some(64))),
+            ScopeReply::Ok
+        ));
+        assert!(matches!(harness.send(ScopeRequest::SetHoldoff(0.002)), ScopeReply::Ok));
+        assert_eq!(*lock(&applied), vec!["average 64", "holdoff 0.002"]);
+        assert!(harness.state.acquisition_in_hardware);
+        assert!(harness.state.holdoff_in_hardware);
+
+        // So the loop leaves its frames alone: averaging them again would
+        // be an average of averages.
+        harness.state.trigger_from_driver = true;
+        let frame = harness.state.process(constant_frame(100));
+        let next = harness.state.process(constant_frame(300));
+        assert_eq!(frame.samples[0], 100);
+        assert_eq!(next.samples[0], 300);
+    }
+
+    #[test]
+    fn an_instrument_that_measures_is_not_held_for_a_capture() {
+        let acquiring = AtomicBool::new(true);
+        let mut state = LoopState::new();
+        let measure = ScopeRequest::MeasureAll {
+            channel: ChannelId::Alphabetic('A'),
+        };
+        assert!(waits_for_a_capture(&measure, &state, &acquiring));
+        state.answers_from_instrument = true;
+        assert!(!waits_for_a_capture(&measure, &state, &acquiring));
+        assert!(!waits_for_a_capture(&ScopeRequest::GetTriggeredData, &state, &acquiring));
+    }
+
+    #[test]
+    fn a_driver_that_reports_its_trigger_is_believed() {
+        let mut state = loop_state(CaptureMode::Auto);
+        state.trigger_from_driver = true;
+        // The samples cross at the trigger point, but the driver said no.
+        let mut frame = edge_frame(100, 50, 50);
+        frame.flags = 0;
+        assert!(!state.process(frame).is_triggered());
+        let mut frame = edge_frame(100, 10, 50);
+        frame.flags = FLAG_TRIGGERED;
+        assert!(state.process(frame).is_triggered());
     }
 
     #[test]

@@ -26,6 +26,7 @@ lager nets [OPTIONS] [COMMAND]
 | `delete` | Delete a specific net by name and type |
 | `delete-all` | Delete all saved nets (dangerous) |
 | `rename` | Rename an existing net |
+| `set-capture` | Pair a Rigol scope with the HDMI capture card its live view comes from |
 | `add` | Add a new net |
 | `add-all` | Auto-create all available nets from connected instruments |
 | `add-batch` | Create multiple nets from a JSON file |
@@ -610,6 +611,29 @@ lager nets rename NAME NEW_NAME [OPTIONS]
 
 ```bash
 lager nets rename supply1 main_power --box my-lager-box
+```
+
+### `set-capture`
+
+Pair a Rigol MSO5000 with the USB HDMI capture card that is connected to its HDMI output. The live view of the scope comes from this card. Nothing on USB connects the card to the scope, so you set the pairing once, on any net of the scope. The box confirms the pairing when it next opens the scope: it changes the screen of the scope and examines the video.
+
+```bash
+lager nets set-capture NAME [OPTIONS]
+```
+
+**Arguments:**
+- `NAME` - A `scope` or `scope-channel` net of the Rigol
+
+**Options:**
+- `--port TEXT` - USB port of the capture card, as `lager instruments` shows it. Necessary when more than one card is connected
+- `--device TEXT` - A `/dev/videoN` node, for a card that the box does not recognize
+- `--clear` - Remove the pairing. All functions except the live view continue to work
+- `--box TEXT` - Lager Box name or IP
+
+**Example:**
+
+```bash
+lager nets set-capture rigol1 --port 1-1.3 --box my-lager-box
 ```
 
 ### `tui`

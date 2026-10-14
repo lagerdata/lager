@@ -4,6 +4,7 @@
 use protocol::{CaptureFrame, CaptureMode, ChannelId, Coupling, ScopeCapabilities, TriggerSlope};
 
 pub mod pico;
+pub mod rigol;
 
 #[cfg(pico_ps2000)]
 pub use pico::PicoScope2000;
@@ -193,6 +194,76 @@ pub trait Oscilloscope: Send + Sync {
     fn stop_roll(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
+
+    /// Whether the frames this driver returns already say whether they
+    /// triggered. The loop otherwise judges auto and forced captures from
+    /// their samples, which only works on samples taken at the trigger point.
+    fn reports_trigger(&self) -> bool {
+        false
+    }
+
+    /// Whether `measure_all` and `read_record` answer from the instrument,
+    /// so a request for them need not wait for the loop's next capture.
+    fn answers_from_instrument(&self) -> bool {
+        false
+    }
+
+    /// Every measurement of `channel`, taken by the instrument, or `None`
+    /// when the driver has no such thing and the loop should compute them
+    /// from the published capture.
+    fn measure_all(
+        &mut self,
+        _channel: ChannelId,
+    ) -> Option<anyhow::Result<protocol::MeasurementSet>> {
+        None
+    }
+
+    /// The instrument's full record, for a client asking for exact samples,
+    /// or `None` when the published capture already is that record.
+    fn read_record(&mut self) -> Option<anyhow::Result<CaptureFrame>> {
+        None
+    }
+
+    /// Apply averaging or peak detect in the instrument, or `None` to have
+    /// the loop combine captures itself.
+    fn set_acquisition(
+        &mut self,
+        _mode: protocol::AcquisitionMode,
+        _average_count: u32,
+    ) -> Option<anyhow::Result<()>> {
+        None
+    }
+
+    /// Apply a trigger holdoff in the instrument, or `None` to have the loop
+    /// hold back re-arming instead.
+    fn set_holdoff(&mut self, _seconds: f64) -> Option<anyhow::Result<()>> {
+        None
+    }
+
+    /// Send one SCPI command, answering a query with the reply, or `None`
+    /// for a scope that takes no SCPI.
+    fn scpi(&mut self, _command: &str) -> Option<anyhow::Result<Option<String>>> {
+        None
+    }
+}
+
+/// The unit has gone, unplugged or no longer answering, as opposed to one
+/// request having been refused. The loop closes the scope and opens it again.
+#[derive(Debug)]
+pub struct UnitGone(pub String);
+
+impl std::fmt::Display for UnitGone {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for UnitGone {}
+
+/// Whether `error`, or anything that caused it, says the unit is gone.
+pub fn unit_is_gone(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| cause.downcast_ref::<UnitGone>().is_some())
+        || pico::status::unit_is_gone(error)
 }
 
 /// What roll mode asks the driver for.

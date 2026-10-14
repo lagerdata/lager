@@ -1336,6 +1336,99 @@ def rename_cmd(
         f"Renamed '{name}' → '{new_name}' on box {resolved_box}.", fg="green"
     )
 
+def _net_address(record: dict) -> Optional[str]:
+    for mapping in record.get("mappings") or []:
+        if mapping.get("device_override"):
+            return mapping["device_override"]
+    return record.get("address")
+
+
+@nets.command("set-capture",
+              help="Pair a scope with the HDMI capture card its live view is taken from")
+@click.argument("name")
+@click.option("--port", "port_path", default=None,
+              help="USB port of the capture card (as `lager instruments` lists it)")
+@click.option("--device", default=None,
+              help="A /dev/videoN node, for a card the box does not recognize")
+@click.option("--clear", is_flag=True, help="Unpair the scope from its capture card")
+@click.option("--box", help="Lager Box name or IP")
+@click.pass_context
+def set_capture_cmd(ctx: click.Context, name: str, port_path: str | None,
+                    device: str | None, clear: bool, box: str | None) -> None:
+    """
+    A Rigol MSO5000's live view is its HDMI output, captured by a USB HDMI
+    capture card. Nothing on USB ties the card to the scope, so the pairing
+    is said here, once, on any of the scope's nets; the box confirms it when
+    the scope is next opened, by changing the scope's screen and watching the
+    video change.
+    """
+    resolved_box = _resolve_box(ctx, box)
+    if sum(bool(x) for x in (port_path, device, clear)) > 1:
+        click.secho("Give one of --port, --device or --clear.", fg="red", err=True)
+        ctx.exit(1)
+
+    recs = _fetch_saved_nets(ctx, resolved_box)
+    target = next((r for r in recs if r.get("name") == name), None)
+    if target is None or target.get("role") not in ("scope", "scope-channel"):
+        click.secho(f"No scope net named '{name}' on {resolved_box}.", fg="red", err=True)
+        ctx.exit(1)
+    instrument = str(target.get("instrument") or "").lower()
+    if "rigol" not in instrument and "mso5" not in instrument:
+        click.secho(f"'{name}' is a {target.get('instrument')}, which streams without a "
+                    "capture card.", fg="yellow", err=True)
+        ctx.exit(1)
+
+    capture = None
+    if device:
+        capture = {"device": device}
+    elif not clear:
+        cards = [d for d in _fetch_instruments(ctx, resolved_box)
+                 if "capture" in (d.get("net_type") or [])]
+        if port_path:
+            cards = [c for c in cards if c.get("port_path") == port_path]
+        if len(cards) != 1:
+            if not cards:
+                click.secho("No HDMI capture card " + (f"on USB port {port_path} "
+                            if port_path else "") + f"is attached to {resolved_box}.",
+                            fg="red", err=True)
+            else:
+                click.secho("Several capture cards are attached; name one with --port:",
+                            fg="yellow", err=True)
+                for card in cards:
+                    click.echo(f"  --port {card.get('port_path')}  {card.get('name')} "
+                               f"({', '.join((card.get('channels') or {}).get('capture', []))})",
+                               err=True)
+            ctx.exit(1)
+        card = cards[0]
+        capture = {key: card.get(key) for key in ("vid", "pid", "serial", "port_path")
+                   if card.get(key)}
+
+    # One pairing per scope: the scope's other nets give theirs up, so no two
+    # can disagree about which card is the scope's.
+    address = _net_address(target)
+    for rec in recs:
+        same_scope = rec is target or (address and _net_address(rec) == address)
+        if not same_scope or rec.get("role") not in ("scope", "scope-channel"):
+            continue
+        record = {k: v for k, v in rec.items() if k != "live_path"}
+        if rec is target and capture:
+            record["capture"] = capture
+        elif "capture" in record:
+            del record["capture"]
+        else:
+            continue
+        _save_net_http(ctx, resolved_box, record)
+
+    if capture:
+        where = capture.get("port_path") and f"USB port {capture['port_path']}" \
+            or capture.get("device")
+        click.secho(f"'{name}' takes its live view from the capture card on {where}.",
+                    fg="green")
+    else:
+        click.secho(f"'{name}' has no capture card; it works without a live view.",
+                    fg="green")
+
+
 @nets.command("add")
 @click.argument("name")
 @click.argument("role")

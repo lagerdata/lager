@@ -411,6 +411,28 @@ class TestTheBrowserReadsTheTraceTheSameWayTheBoxDoes:
             pytest.fail("node failed: %s" % result.stderr.strip())
         return json.loads(result.stdout)
 
+    def test_an_envelope_is_read_at_the_middle_of_the_column(self):
+        """A (min, max) pair per column, as a Rigol's screen is: alternating
+        between the two read the bottom of the trace at one time and the top
+        a microsecond later."""
+        script = """
+        import { sampleTraceAt } from %s;
+        const frame = { preTriggerSamples: 10, sampleIntervalNs: 500, envelope: true };
+        // Ten columns of 1 us; column c spans c - 0.5 V to c + 0.5 V.
+        const volts = [];
+        for (let c = 0; c < 10; c += 1) volts.push(c - 0.5, c + 0.5);
+        const out = [0, 1e-6, 1.4e-6, 4e-6, -5.1e-6, 5e-6]
+          .map((t) => sampleTraceAt(frame, volts, t));
+        process.stdout.write(JSON.stringify(out));
+        """ % json.dumps(str(SCOPE_JS))
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", script],
+            capture_output=True, text=True, timeout=60, check=False)
+        if result.returncode != 0:
+            pytest.fail("node failed: %s" % result.stderr.strip())
+        # The trigger is at column 5.
+        assert json.loads(result.stdout) == [5, 6, 6, 9, None, None]
+
     def test_the_two_agree_across_the_record(self):
         # A 2 ms ramp with the trigger 500 samples in, so times run from
         # -0.5 ms to +1.5 ms and the interesting cases are on both sides of

@@ -213,14 +213,24 @@ class TestTheEdgeTrigger:
         assert "at least one" in result.output
         assert calls == [] and executed == []
 
-    def test_a_rigol_keeps_the_script_path(self):
+    def test_a_rigol_goes_to_the_box_handler_too(self):
+        """The daemon drives the Rigol as well, so it takes the handler that
+        reports a refused setting, and trigger coupling goes with it."""
+        result, calls, executed = _run(
+            ["rigol1", "trigger", "edge", "--level", "0.5", "--coupling", "ac",
+             "--box", "X"],
+            instrument="Rigol_MSO5204")
+        assert result.exit_code == 0, result.output
+        assert _only_call(calls) == ("trigger_edge", {"level": 0.5, "coupling": "ac"})
+        assert executed == []
+
+    def test_a_scope_no_daemon_drives_keeps_the_script_path(self):
         result, calls, executed = _run(
             ["rigol1", "trigger", "edge", "--level", "0.5", "--box", "X"],
-            instrument="Rigol_MSO5204")
+            instrument="Keysight_DSOX1204G")
         assert result.exit_code == 0, result.output
         assert calls == []
         assert len(executed) == 1
-        assert '"trigger_edge"' in executed[0]["env"][0]
 
 
 class TestTheEdgeTriggerSource:

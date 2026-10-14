@@ -959,6 +959,64 @@ def _by_camera(v4l_root: Path = Path("/sys/class/video4linux")) -> List[dict]:
 
 
 # ---------------------------------------------------------------------------
+#  HDMI capture cards
+# ---------------------------------------------------------------------------
+
+# USB HDMI capture cards a scope's HDMI output can be paired with, for its
+# live view. Kept out of SUPPORTED_USB: a card is not an instrument a net is
+# made for, and two cards of one model usually share VID, PID and an empty
+# serial, so listing them by catalog would merge them into one entry. They
+# are told apart by the USB port they are plugged into instead.
+CAPTURE_CARDS: Dict[tuple, str] = {
+    ("534d", "2109"): "HDMI_Capture_MS2109",
+    ("345f", "2130"): "HDMI_Capture_MS2130",
+    ("0fd9", "0066"): "HDMI_Capture_Elgato_Cam_Link_4K",
+}
+
+
+def _by_capture_card(v4l_root: Path = Path("/sys/class/video4linux")) -> List[dict]:
+    """Detect HDMI capture cards, one entry per card, named by USB port.
+
+    The port is what a scope net records to find its card again: it does not
+    change when the box enumerates devices in a different order, which the
+    ``/dev/videoN`` number does.
+    """
+    results: List[dict] = []
+    seen_devices: set = set()
+    video_nodes = sorted(
+        v4l_root.glob("video*"),
+        key=lambda p: int(p.name.replace("video", "")),
+    )
+    for node in video_nodes:
+        try:
+            usb_dev = (node / "device").resolve().parent
+        except OSError:
+            continue
+        vid = _read_sysfs_attr(usb_dev / "idVendor")
+        pid = _read_sysfs_attr(usb_dev / "idProduct")
+        if not vid or not pid:
+            continue
+        vid, pid = vid.lower(), pid.lower()
+        name = CAPTURE_CARDS.get((vid, pid))
+        if name is None or str(usb_dev) in seen_devices:
+            continue
+        seen_devices.add(str(usb_dev))
+        port_path = usb_dev.name
+        results.append({
+            "name": name,
+            "vid": vid,
+            "pid": pid,
+            "serial": _read_sysfs_attr(usb_dev / "serial"),
+            "product": _read_sysfs_attr(usb_dev / "product"),
+            "port_path": port_path,
+            "address": f"usb-port:{port_path}",
+            "net_type": ["capture"],
+            "channels": {"capture": [f"/dev/{node.name}"]},
+        })
+    return results
+
+
+# ---------------------------------------------------------------------------
 #  Dexarm (robotic arm) handshake detection
 # ---------------------------------------------------------------------------
 
@@ -1410,6 +1468,8 @@ def list_instruments() -> List[dict]:
         merge_or_append(dex, instruments)
     for cam in _by_camera():
         merge_or_append(cam, instruments)
+    # Appended, not merged: identical cards differ only by their port.
+    instruments.extend(_by_capture_card())
     instruments = _apply_custom_devices(instruments, custom)
     instruments.sort(key=lambda d: (d["name"], d.get("address", "")))
     return instruments

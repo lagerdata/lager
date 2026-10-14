@@ -882,13 +882,8 @@ def _daemon_needs_build(facts, *, force):
     """
     if not facts.get('DAEMON_SOURCE_HASH'):
         return False, 'no daemon sources on the box'
-    # Ahead of `--force` because start_box.sh skips the build without the
-    # headers whatever was asked. Only an explicit '0' counts: a probe from
-    # before this fact existed says nothing, and must not stop builds.
-    if facts.get('DAEMON_SDK_HEADERS') == '0':
-        return False, (
-            'no PicoScope family can be built from the PicoTech SDK headers '
-            f'in {_DAEMON_SDK_INCLUDE}')
+    # Not conditional on the PicoTech headers either: without them the
+    # daemon is built to drive Rigol scopes only.
     if force:
         return True, '--force'
     if facts.get('DAEMON_BINARY') != '1':

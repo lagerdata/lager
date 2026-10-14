@@ -34,6 +34,13 @@ futures-util = "0.3"
 # Bytes is what tungstenite takes, so each send is a reference-count bump.
 bytes = "1"
 
+# USB-TMC to the Rigol through libusb, not /dev/usbtmc*: the box's udev rules
+# unbind the kernel driver from every SCPI instrument so userspace owns it.
+# Vendored so the build needs no libusb headers on the box or a laptop.
+rusb = { version = "0.9.4", features = ["vendored"] }
+# MJPEG frames from the HDMI capture card, in pure Rust.
+zune-jpeg = "0.5.15"
+
 [build-dependencies]
 bindgen = "0.73"
 cc = "1.0"
@@ -48,3 +55,8 @@ harness = false
 [features]
 default = ["ps2000"]
 ps2000 = []
+
+# V4L2 streaming from the capture card. Linux only; elsewhere the Rigol
+# backend builds without a video source so its tests still run.
+[target.'cfg(target_os = "linux")'.dependencies]
+v4l = "0.14.0"

@@ -376,6 +376,7 @@ impl PicoScope2000 {
             // `ps2000_get_values` has no downsampling mode, so a block holds
             // one sample per interval and nothing between them.
             peak_detect: false,
+            timebase_steps: protocol::capabilities::TimebaseSteps::PowersOfTwo,
         })
     }
 

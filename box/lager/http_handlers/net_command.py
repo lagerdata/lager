@@ -33,7 +33,7 @@ import math
 from flask import Flask, request, jsonify
 
 from lager.arm_hs import validate_move_timeout
-from lager.nets.net import Net, channel_name_to_number
+from lager.nets.net import Net
 from lager.nets.device import ConnectionFailed, DeviceError, Device
 from lager.nets.device_identity import (
     address_from_rec as _address_from_rec,
@@ -1007,60 +1007,60 @@ def _scope(netname, role, action, params):
         return _ok_read(float(dev.get_trigger_level()), "V")
 
     if action == "capabilities":
-        _require_picoscope(netname, role, action)
+        _require_daemon_scope(netname, role, action)
         capabilities = dev.capabilities()
         return _ok("%s, %s channel(s)" % (
             capabilities.get("model") or "scope",
             capabilities.get("analog_channels") or "?"), capabilities)
 
     if action == "measure_all":
-        _require_picoscope(netname, role, action)
+        _require_daemon_scope(netname, role, action)
         return _scope_measure_all(dev)
 
     # Everything at once, and the trigger on its own. The CLI could set every
     # one of these and read none of them back.
     if action == "get_state":
-        _require_picoscope(netname, role, action)
+        _require_daemon_scope(netname, role, action)
         state = dev.get_state()
         return _ok(_describe_state(state), state)
     if action == "get_trigger":
         return _scope_trigger_readback(dev, netname, role)
 
     # Acquisition, holdoff and roll: what happens between the hardware and a
-    # published frame, which the daemon does for a PicoScope.
+    # published frame, which the daemon does, in the instrument where it can.
     if action == "set_acquire":
-        _require_picoscope(netname, role, action)
+        _require_daemon_scope(netname, role, action)
         if params.get("mode") is None:
             raise KeyError("mode")
         result = dev.set_acquisition(params["mode"], _whole_number(params, "count"))
         return _ok(_describe_acquisition(result), result)
     if action == "get_acquire":
-        _require_picoscope(netname, role, action)
+        _require_daemon_scope(netname, role, action)
         result = dev.get_acquisition()
         return _ok(_describe_acquisition(result), result)
     if action == "set_trigger_holdoff":
-        _require_picoscope(netname, role, action)
+        _require_daemon_scope(netname, role, action)
         seconds = _number(params, "seconds")
         dev.set_trigger_holdoff(seconds)
         return _ok("Trigger holdoff %s" % _seconds(seconds))
     if action == "get_trigger_holdoff":
-        _require_picoscope(netname, role, action)
+        _require_daemon_scope(netname, role, action)
         return _ok_read(float(dev.get_trigger_holdoff()), "s")
     if action == "set_roll":
-        _require_picoscope(netname, role, action)
+        _require_daemon_scope(netname, role, action)
         if params.get("mode") is None:
             raise KeyError("mode")
         result = dev.set_roll(params["mode"])
         return _ok(_describe_roll(result), result)
     if action == "get_roll":
-        _require_picoscope(netname, role, action)
+        _require_daemon_scope(netname, role, action)
         result = dev.get_roll()
         return _ok(_describe_roll(result), result)
 
     # How the web UI draws: held by the daemon so the terminal can set it and
     # an open page follows.
     if action == "set_display":
-        _require_picoscope(netname, role, action)
+        _require_daemon_scope(netname, role, action)
         settings = {key: params[key] for key in _DISPLAY_SETTINGS if key in params}
         unknown = sorted(set(params) - set(_DISPLAY_SETTINGS))
         if unknown:
@@ -1068,12 +1068,12 @@ def _scope(netname, role, action, params):
         display = dev.set_display(**settings)
         return _ok(_describe_display(display), display)
     if action == "get_display":
-        _require_picoscope(netname, role, action)
+        _require_daemon_scope(netname, role, action)
         display = dev.get_display()
         return _ok(_describe_display(display), display)
 
     if action == "fft":
-        _require_picoscope(netname, role, action)
+        _require_daemon_scope(netname, role, action)
         result = dev.fft(channel=params.get("channel"),
                          window=params.get("window") or "hann",
                          peaks=_whole_number(params, "peaks", 5))
@@ -1082,7 +1082,7 @@ def _scope(netname, role, action, params):
     # Cursors. Placed by typing, in either CLI, and held on the box so both
     # they and the web UI's plot are looking at one set.
     if action in ("set_cursor", "get_cursor", "clear_cursor", "measure_cursor"):
-        _require_picoscope(netname, role, action)
+        _require_daemon_scope(netname, role, action)
     if action == "set_cursor":
         return _scope_set_cursor(dev, params)
     if action == "get_cursor":
@@ -1110,27 +1110,21 @@ def _scope_rec(netname):
         return None
 
 
-def _is_picoscope(rec):
-    """Whether the record is a PicoScope's. With no record to go on, it is
-    taken for one: the PicoScope path is the one these handlers grew up on."""
-    return rec is None or "pico" in str(rec.get("instrument") or "").lower()
+def _require_daemon_scope(netname, role, action):
+    """Refuse an action no oscilloscope daemon could carry out for this net.
 
-
-def _require_picoscope(netname, role, action):
-    """Refuse an action only the PicoScope path has, naming why.
-
-    A Rigol averages, holds off and rolls on its own front panel, and draws
-    its own screen; these are the box doing that work for a PicoScope, which
-    has neither. Without this a Rigol net answered with the driver's missing
-    attribute, which reads as a bug rather than as the answer.
+    Every scope the box supports is driven by a daemon, which does the same
+    work whatever the make: a net naming some other instrument is the only
+    thing refused here, with the reason rather than a missing attribute.
     """
+    from lager.measurement.scope.routing import is_daemon_backed
+
     rec = _scope_rec(netname)
-    if _is_picoscope(rec):
+    if rec is None or is_daemon_backed(rec.get("instrument")):
         return
     raise WrongNetForAction(
-        "%s is a %s, and %s is done by the box for a PicoScope; on a Rigol, "
-        "use the instrument's own front panel"
-        % (netname, rec.get("instrument") or "scope", action))
+        "%s is a %s, which no oscilloscope daemon drives, so it has no %s"
+        % (netname, rec.get("instrument") or "scope of unknown make", action))
 
 
 def _number(params, key):
@@ -1252,7 +1246,7 @@ def _scope_trigger_readback(dev, netname, role):
         "level": float(dev.get_trigger_level()),
     }
     try:
-        _require_picoscope(netname, role, "holdoff")
+        _require_daemon_scope(netname, role, "holdoff")
         trigger["holdoff"] = float(dev.get_trigger_holdoff())
     except WrongNetForAction:
         pass
@@ -1413,31 +1407,8 @@ def _scope_measure_cursor(dev):
     return _ok(listed, result)
 
 
-# The same quantities by the Rigol's own :MEASure item names, which its driver
-# puts on the wire as given. The names above are the daemon's.
-_RIGOL_MEASUREMENTS = {
-    "measure_vpp": "VPP",
-    "measure_vmax": "VMAX",
-    "measure_vmin": "VMIN",
-    "measure_vrms": "VRMS",
-    "measure_vavg": "VAVG",
-    "measure_period": "PERiod",
-    "measure_freq": "FREQuency",
-    "measure_dc_pos": "PDUTy",
-    "measure_dc_neg": "NDUTy",
-    "measure_pulse_width_pos": "PWIDth",
-    "measure_pulse_width_neg": "NWIDth",
-    "measure_rise_time": "RTIMe",
-    "measure_fall_time": "FTIMe",
-    "measure_overshoot": "OVERshoot",
-}
-
-
 def _scope_measure(dev, netname, action):
     name, unit = _SCOPE_MEASUREMENTS[action]
-    rec = _scope_rec(netname)
-    if not _is_picoscope(rec):
-        return _rigol_measure(dev, rec, action, name, unit)
     try:
         return _ok_read(float(dev.get_measure_item(name)), unit)
     except DeviceError as e:
@@ -1448,26 +1419,6 @@ def _scope_measure(dev, netname, action):
         if "not present in this capture" not in message:
             raise
         return _ok(message)
-
-
-def _rigol_measure(dev, rec, action, name, unit):
-    """One measurement on a Rigol, from the channel the net is wired to.
-
-    The source is named on every call: the Rigol holds one measurement
-    source for the whole instrument, so whatever the last caller left there
-    is not necessarily this net's channel.
-    """
-    from lager.nets.scope_migration import pin_of
-
-    pin = pin_of(rec)
-    value = dev.get_measure_item(
-        _RIGOL_MEASUREMENTS[action],
-        None if pin is None else channel_name_to_number(pin))
-    # The driver answers None where the Rigol reports no valid value, which
-    # is the same answer as a quantity missing from a PicoScope capture.
-    if value is None:
-        return _ok("%s is not present in this capture" % name)
-    return _ok_read(float(value), unit)
 
 
 # Actions that act on one channel. Everything else a scope accepts -- the

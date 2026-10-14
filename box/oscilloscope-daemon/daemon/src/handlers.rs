@@ -297,6 +297,11 @@ async fn control(command: Command, scope: &ScopeHandle) -> Response {
             .await
             .into_ack(Response::ConfigureRoll),
 
+        Command::Scpi { scpi } => match scope.request(ScopeRequest::Scpi(scpi)).await {
+            ScopeReply::Text(reply) => Response::Scpi { reply },
+            other => other.into_error(),
+        },
+
         Command::GetRoll => match scope.request(ScopeRequest::GetRoll).await {
             ScopeReply::Roll(roll, rolling) => Response::Roll { roll, rolling },
             other => other.into_error(),

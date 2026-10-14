@@ -1829,6 +1829,13 @@ class TestTheTimebaseComesFromTheHardware:
         process.stdout.write(JSON.stringify(timebaseChoices(%s, %s)));
         """ % (json.dumps(str(SCOPE_JS)), json.dumps(caps), json.dumps(depth)))
 
+    def test_a_scope_with_1_2_5_steps_is_offered_them(self):
+        """A Rigol takes any 1-2-5 time/div, so no list is derived for it --
+        the powers of two would offer settings it rounds away from."""
+        caps = {"max_sample_rate_hz": 8e9, "timebase_steps": "one_two_five"}
+        offered = self._choices(caps, 10_000_000)
+        assert 1e-3 in offered and 2e-3 in offered and 5e-3 in offered
+
     def test_the_unreachable_fast_steps_are_dropped(self):
         """8000 samples at 10 ns is 80 us of signal, which is 8 us across ten
         divisions. Anything faster cannot be captured."""

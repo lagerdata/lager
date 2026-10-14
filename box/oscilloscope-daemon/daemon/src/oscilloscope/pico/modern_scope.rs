@@ -1229,6 +1229,7 @@ mod tests {
             advanced_triggers: Vec::new(),
             roll_mode: false,
             peak_detect: false,
+            timebase_steps: protocol::capabilities::TimebaseSteps::PowersOfTwo,
         }
     }
 

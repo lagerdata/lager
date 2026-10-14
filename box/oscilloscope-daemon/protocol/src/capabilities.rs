@@ -3,8 +3,8 @@
 
 //! What the attached scope can actually do.
 //!
-//! PicoScope models differ enough that a fixed feature set would either lie
-//! about a 2204A or hide most of a 5444D. This struct is filled in at open
+//! Models differ enough that a fixed feature set would either lie about a
+//! 2204A or hide most of a 5444D. This struct is filled in at open
 //! time from the driver family plus the variant string, then handed to every
 //! surface -- web UI, terminal CLI, Python API, MCP -- so all four agree on
 //! which controls exist.
@@ -48,8 +48,8 @@ pub struct SignalGeneratorSupport {
     pub max_frequency_hz: f64,
 }
 
-/// Which PicoTech driver family is behind this device. Determines the FFI
-/// vtable, and by extension which of the flags below can ever be true.
+/// Which driver is behind this device: a PicoTech family, whose FFI vtable
+/// decides which of the flags below can ever be true, or a SCPI instrument.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DriverFamily {
     Ps2000,
@@ -57,10 +57,13 @@ pub enum DriverFamily {
     Ps3000a,
     Ps4000a,
     Ps5000a,
+    /// Rigol MSO5000 series: SCPI over USB-TMC, with the trace taken from
+    /// its HDMI output.
+    RigolMso5000,
 }
 
 impl DriverFamily {
-    /// Shared-object name to `dlopen`.
+    /// Shared-object name to `dlopen`. Empty for a family with no library.
     pub fn library_name(&self) -> &'static str {
         match self {
             DriverFamily::Ps2000 => "libps2000.so",
@@ -68,10 +71,12 @@ impl DriverFamily {
             DriverFamily::Ps3000a => "libps3000a.so",
             DriverFamily::Ps4000a => "libps4000a.so",
             DriverFamily::Ps5000a => "libps5000a.so",
+            DriverFamily::RigolMso5000 => "",
         }
     }
 
-    /// Symbol prefix for this family's functions.
+    /// Symbol prefix for this family's functions. Empty for a family with no
+    /// library.
     pub fn symbol_prefix(&self) -> &'static str {
         match self {
             DriverFamily::Ps2000 => "ps2000_",
@@ -79,6 +84,7 @@ impl DriverFamily {
             DriverFamily::Ps3000a => "ps3000a",
             DriverFamily::Ps4000a => "ps4000a",
             DriverFamily::Ps5000a => "ps5000a",
+            DriverFamily::RigolMso5000 => "",
         }
     }
 
@@ -96,7 +102,12 @@ impl DriverFamily {
             DriverFamily::Ps3000a => "ps3000a",
             DriverFamily::Ps4000a => "ps4000a",
             DriverFamily::Ps5000a => "ps5000a",
+            DriverFamily::RigolMso5000 => "rigol_mso5000",
         }
+    }
+
+    pub fn is_picoscope(&self) -> bool {
+        !matches!(self, DriverFamily::RigolMso5000)
     }
 }
 
@@ -138,6 +149,21 @@ pub struct ScopeCapabilities {
     /// mode always does this, whatever this says.
     #[serde(default)]
     pub peak_detect: bool,
+    /// Which time/div settings the scope has.
+    #[serde(default)]
+    pub timebase_steps: TimebaseSteps,
+}
+
+/// The time/div settings a scope can be set to.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TimebaseSteps {
+    /// Its fastest screen times a power of two, as a PicoScope's sample
+    /// interval doubles with each timebase.
+    #[default]
+    PowersOfTwo,
+    /// 1, 2 and 5 in each decade.
+    OneTwoFive,
 }
 
 impl ScopeCapabilities {

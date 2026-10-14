@@ -23,9 +23,9 @@
 //! one left out gets a cargo warning saying why, and the daemon gives the
 //! same reason when it meets that family's driver on a box.
 //!
-//! With no family at all the build still fails, with a message saying where
-//! to put the headers, rather than silently producing a daemon that cannot
-//! talk to any scope.
+//! With no family at all the build still succeeds, with a warning saying
+//! where to put the headers: the daemon drives SCPI scopes too, and those
+//! need nothing from PicoTech.
 //!
 //! The other change relative to linking against an installed SDK:
 //!
@@ -229,15 +229,15 @@ fn main() {
         }
     }
 
+    // No family at all still builds: the daemon also drives SCPI scopes,
+    // which need nothing from PicoTech. It says at open time, per scope, why
+    // a PicoScope it meets cannot be driven.
     if left_out.len() == FAMILIES.len() {
-        panic!(
-            "no PicoScope family can be built, so the daemon could not talk to any scope:\n\
-             {}\n\
-             The PicoTech headers are not redistributed in this repo. Either install the \
+        println!(
+            "cargo::warning=no PicoScope family was built, so this daemon drives only SCPI \
+             scopes. The PicoTech headers are not redistributed in this repo; install the \
              PicoTech packages (which put them in {SDK_INCLUDE}/<family>/), unpack the SDK \
-             into picoscope/include/<family>/ at the repo root, or set {INCLUDE_ENV} to a \
-             directory holding the <family>/ directories. Any one family is enough.",
-            left_out.join("\n")
+             into picoscope/include/<family>/ at the repo root, or set {INCLUDE_ENV}."
         );
     }
 }

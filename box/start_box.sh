@@ -1015,22 +1015,20 @@ if [ -d "$OSCILLOSCOPE_SRC" ] && docker image inspect lager >/dev/null 2>&1; the
         _osc_stale=1
     fi
 
-    if [ -n "$_osc_stale" ] && ! picotech_headers_present; then
-        # No hash is recorded, so the first start after the SDK is
-        # installed builds. Loud only with a scope attached: most boxes
-        # have none and never will.
-        if picotech_device_attached; then
-            _osc_pkgs="$(picotech_packages_needed)"
-            echo "WARNING: a PicoScope is attached but the oscilloscope daemon is unavailable:"
-            echo "         no PicoTech SDK headers in $OSCILLOSCOPE_SDK_INCLUDE."
-            echo "         Install $_osc_pkgs from $PICOTECH_APT_REPO"
-            echo "         ('sudo apt-get install $_osc_pkgs' once that repo is added, or rerun"
-            echo "         'lager install' with --version set to this box's version, which adds"
-            echo "         it). The next start builds the daemon."
-        else
-            echo "Oscilloscope daemon build skipped: no PicoScope family can be built from the PicoTech SDK headers in $OSCILLOSCOPE_SDK_INCLUDE"
-        fi
-    elif [ -n "$_osc_stale" ]; then
+    # Built with or without the PicoTech headers: without them it drives
+    # Rigol scopes only. Loud only with a PicoScope attached, since a box
+    # with none never needs the SDK. The headers are part of the source
+    # hash, so installing them later rebuilds with PicoScope support.
+    if [ -n "$_osc_stale" ] && ! picotech_headers_present && picotech_device_attached; then
+        _osc_pkgs="$(picotech_packages_needed)"
+        echo "WARNING: a PicoScope is attached but the oscilloscope daemon cannot drive it:"
+        echo "         no PicoTech SDK headers in $OSCILLOSCOPE_SDK_INCLUDE."
+        echo "         Install $_osc_pkgs from $PICOTECH_APT_REPO"
+        echo "         ('sudo apt-get install $_osc_pkgs' once that repo is added, or rerun"
+        echo "         'lager install' with --version set to this box's version, which adds"
+        echo "         it). The next start rebuilds the daemon with PicoScope support."
+    fi
+    if [ -n "$_osc_stale" ]; then
         if [ -f "$OSCILLOSCOPE_DAEMON" ]; then
             echo "Oscilloscope daemon is out of date; rebuilding..."
         else
@@ -1051,13 +1049,13 @@ if [ -d "$OSCILLOSCOPE_SRC" ] && docker image inspect lager >/dev/null 2>&1; the
                 echo "[OK] Oscilloscope daemon built"
             fi
         else
-            # Never fatal. The daemon drives PicoScopes and nothing else, so
+            # Never fatal. The daemon drives the scopes and nothing else, so
             # a box that cannot compile it must still come up with
             # everything else working. No hash is recorded, so the next run
             # retries instead of assuming this one succeeded.
             rm -f "$THIRD_PARTY_DIR/.oscilloscope-daemon.new"
             echo "WARNING: the oscilloscope daemon failed to build."
-            echo "         Everything else starts normally; PicoScope support"
+            echo "         Everything else starts normally; scope support"
             echo "         will use the previous daemon, if any."
         fi
     fi
@@ -1070,10 +1068,9 @@ if [ -f "$OSCILLOSCOPE_DAEMON" ]; then
     echo "  Container: /usr/local/bin/oscilloscope-daemon"
     echo ""
 else
-    echo "Oscilloscope daemon not found (PicoScope streaming disabled)"
+    echo "Oscilloscope daemon not found (scope support disabled)"
     echo "  Expected: $OSCILLOSCOPE_DAEMON"
-    echo "  Built on start from box/oscilloscope-daemon/ when the PicoTech SDK headers"
-    echo "  are in $OSCILLOSCOPE_SDK_INCLUDE; see above for why it was not."
+    echo "  Built on start from box/oscilloscope-daemon/; see above for why it was not."
     echo ""
 fi
 

@@ -282,8 +282,12 @@ class PicoScope:
     @property
     def client(self) -> daemon_client.ScopeDaemonClient:
         if self._client is None:
-            self._client = daemon_client.ScopeDaemonClient()
+            self._client = daemon_client.ScopeDaemonClient(self._daemon_url())
         return self._client
+
+    def _daemon_url(self) -> str | None:
+        """The daemon driving this scope: the box's own, for a PicoScope."""
+        return None
 
     def close(self) -> None:
         if self._client is not None:

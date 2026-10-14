@@ -139,3 +139,32 @@ class ByCameraTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ByCaptureCardTests(unittest.TestCase):
+    """HDMI capture cards, which a scope net is paired with for its live view."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.sysfs = FakeSysfs(Path(self._tmp.name))
+
+    def test_identical_cards_are_told_apart_by_their_port(self):
+        # Two MS2109 cards, neither with a serial: the same in every way but
+        # where they are plugged in.
+        self.sysfs.add_camera("1-1.3", "534d", "2109", nodes=2)
+        self.sysfs.add_camera("1-1.4", "534d", "2109", nodes=2)
+        cards = box_scanner._by_capture_card(v4l_root=self.sysfs.v4l)
+        self.assertEqual([c["port_path"] for c in cards], ["1-1.3", "1-1.4"])
+        self.assertEqual([c["channels"] for c in cards],
+                         [{"capture": ["/dev/video0"]}, {"capture": ["/dev/video2"]}])
+        self.assertTrue(all(c["net_type"] == ["capture"] for c in cards))
+        self.assertEqual(cards[0]["address"], "usb-port:1-1.3")
+
+    def test_a_webcam_is_not_a_capture_card_nor_a_card_a_webcam(self):
+        self.sysfs.add_camera("1-1", "046d", "082d", serial="C920SER", nodes=2)
+        self.sysfs.add_camera("1-2", "534d", "2109", nodes=2)
+        cards = box_scanner._by_capture_card(v4l_root=self.sysfs.v4l)
+        cams = box_scanner._by_camera(v4l_root=self.sysfs.v4l)
+        self.assertEqual([c["name"] for c in cards], ["HDMI_Capture_MS2109"])
+        self.assertEqual([c["name"] for c in cams], ["Logitech_C920"])

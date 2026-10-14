@@ -135,6 +135,7 @@ impl Range {
             DriverFamily::Ps5000a => (Range::R10mV, Range::R20V),
             // What pico/ps2000.rs advertises for the legacy parts.
             DriverFamily::Ps2000 => (Range::R50mV, Range::R20V),
+            DriverFamily::RigolMso5000 => unreachable!("not a PicoScope family"),
         }
     }
 

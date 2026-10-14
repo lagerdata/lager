@@ -429,6 +429,7 @@ pub fn capabilities_from_variant(
         // families but are not wired up, so neither is advertised.
         roll_mode: false,
         peak_detect: false,
+        timebase_steps: protocol::capabilities::TimebaseSteps::PowersOfTwo,
     }
 }
 
@@ -446,6 +447,7 @@ fn max_sample_rate(family: DriverFamily) -> f64 {
         DriverFamily::Ps3000a => 1e9,
         DriverFamily::Ps4000a => 80e6,
         DriverFamily::Ps5000a => 1e9,
+        DriverFamily::RigolMso5000 => unreachable!("not a PicoScope family"),
     }
 }
 
@@ -457,6 +459,7 @@ fn max_memory(family: DriverFamily) -> u64 {
         DriverFamily::Ps3000a => 512_000_000,
         DriverFamily::Ps4000a => 256_000_000,
         DriverFamily::Ps5000a => 512_000_000,
+        DriverFamily::RigolMso5000 => unreachable!("not a PicoScope family"),
     }
 }
 
@@ -481,6 +484,7 @@ fn signal_generator(family: DriverFamily) -> Option<SignalGeneratorSupport> {
             min_frequency_hz: 0.1,
             max_frequency_hz: 100e3,
         }),
+        DriverFamily::RigolMso5000 => unreachable!("not a PicoScope family"),
     }
 }
 

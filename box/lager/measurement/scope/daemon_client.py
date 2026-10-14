@@ -312,11 +312,12 @@ def _unwrap(reply, command_name: str) -> dict:
     return response
 
 
-def command(name: str, timeout: float | None = None, **params):
+def command(name: str, timeout: float | None = None, url: str | None = None, **params):
     """One-shot command on a short-lived connection.
 
     For the HTTP handlers, where a persistent connection would outlive the
-    request and hold a daemon slot open for nothing.
+    request and hold a daemon slot open for nothing. ``url`` picks the
+    daemon; the box's PicoScope daemon when it is not given.
     """
-    with ScopeDaemonClient(timeout=timeout or DEFAULT_TIMEOUT) as client:
+    with ScopeDaemonClient(url, timeout=timeout or DEFAULT_TIMEOUT) as client:
         return client.command(name, timeout=timeout, **params)

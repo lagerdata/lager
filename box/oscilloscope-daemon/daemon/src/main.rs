@@ -3,14 +3,17 @@
 
 //! Oscilloscope daemon.
 //!
-//! Opens the attached PicoScope on a dedicated hardware thread and serves one
-//! WebSocket endpoint carrying commands as JSON text and captures as binary
-//! LSCP frames.
+//! Opens the scope on a dedicated hardware thread and serves one WebSocket
+//! endpoint carrying commands as JSON text and captures as binary LSCP
+//! frames. The scope is whichever PicoScope is attached, unless
+//! `LAGER_SCOPE_SCPI` names an SCPI instrument, in which case it is that one
+//! with the capture card `LAGER_SCOPE_VIDEO` names. One daemon drives one
+//! scope; a box with several runs one daemon for each.
 
 use anyhow::{Context, Result};
 #[cfg(pico_ps2000)]
 use daemon::oscilloscope::PicoScope2000;
-use daemon::oscilloscope::{pico, Oscilloscope};
+use daemon::oscilloscope::{pico, rigol, Oscilloscope};
 use daemon::scope_thread;
 use daemon::server::{self, ServerConfig};
 use tracing_subscriber::EnvFilter;
@@ -26,6 +29,15 @@ fn init_tracing() {
         .with_env_filter(filter)
         .with_target(false)
         .init();
+}
+
+/// Open the scope this daemon was started for.
+fn open_configured() -> Result<Box<dyn Oscilloscope>> {
+    if std::env::var_os(rigol::Config::SCPI_ENV).is_some() {
+        let config = rigol::Config::from_env()?;
+        return Ok(Box::new(rigol::RigolMso5000::open(&config)?));
+    }
+    open_scope()
 }
 
 /// Open whichever PicoScope is attached.
@@ -104,7 +116,8 @@ async fn main() -> Result<()> {
     // the daemon never failed and never listened, and every client got a bare
     // "connection refused". Commands now answer with the reason, and the
     // hardware thread keeps trying to open in the background.
-    let scope = scope_thread::spawn(open_scope).context("starting the oscilloscope thread")?;
+    let scope =
+        scope_thread::spawn(open_configured).context("starting the oscilloscope thread")?;
 
     tokio::select! {
         result = server::serve(config, scope.clone()) => result,

@@ -26,6 +26,7 @@ lager nets [OPTIONS] [COMMAND]
 | `delete` | 按名称和类型删除某个 Net |
 | `delete-all` | 删除全部已保存的 Net（危险操作） |
 | `rename` | 重命名已有的 Net |
+| `set-capture` | 将 Rigol 示波器与提供其实时视图的 HDMI 采集卡配对 |
 | `add` | 添加一个新的 Net |
 | `add-all` | 根据已连接的仪器自动创建全部可用的 Net |
 | `add-batch` | 从 JSON 文件创建多个 Net |
@@ -596,6 +597,29 @@ lager nets rename NAME NEW_NAME [OPTIONS]
 
 ```bash
 lager nets rename supply1 main_power --box my-lager-box
+```
+
+### `set-capture`
+
+将 Rigol MSO5000 与连接到其 HDMI 输出的 USB HDMI 采集卡配对。示波器的实时视图来自这张采集卡。USB 上没有任何信息把采集卡和示波器联系起来，因此您只需在该示波器的任一 Net 上设置一次配对。Box 下次打开示波器时会确认配对：它改变示波器的屏幕并检查视频。
+
+```bash
+lager nets set-capture NAME [OPTIONS]
+```
+
+**参数：**
+- `NAME` - 该 Rigol 的 `scope` 或 `scope-channel` Net
+
+**选项：**
+- `--port TEXT` - 采集卡的 USB 端口，与 `lager instruments` 显示的一致。连接了多张采集卡时必须提供
+- `--device TEXT` - 一个 `/dev/videoN` 节点，用于 Box 无法识别的采集卡
+- `--clear` - 取消配对。除实时视图外，所有功能继续可用
+- `--box TEXT` - Lager Box 名称或 IP
+
+**示例：**
+
+```bash
+lager nets set-capture rigol1 --port 1-1.3 --box my-lager-box
 ```
 
 ### `tui`

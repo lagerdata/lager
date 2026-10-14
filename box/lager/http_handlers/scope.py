@@ -148,9 +148,8 @@ def register_scope_routes(app):
 
     @app.route("/scope/<netname>/stream", methods=["GET"])
     def scope_stream_ticket(netname):
-        from lager.measurement.scope import daemon_client
-
-        from lager.scope_hs import _is_picoscope
+        from lager.measurement.scope import daemon_client, routing
+        from lager.measurement.scope.rigol_daemons import RigolDaemonError
 
         rec = _resolve_scope_net(netname)
         if rec is None:
@@ -159,20 +158,30 @@ def register_scope_routes(app):
                 "error": "Net '%s' not found or is not a scope net" % netname,
             }), 404
         instrument = rec.get("instrument") or ""
-        if not _is_picoscope(instrument):
-            # The relay is to the PicoScope daemon, which would stream
-            # whichever PicoScope it holds under this net's name.
+        if not routing.is_daemon_backed(instrument):
             return jsonify({
                 "success": False,
-                "error": "Net '%s' is a %s; the live view streams a PicoScope only"
+                "error": "Net '%s' is a %s, which no oscilloscope daemon drives"
                          % (netname, instrument or "scope of unknown make"),
+            }), 400
+        if not routing.has_live_view(rec):
+            # A Rigol's trace comes from its HDMI output; without a capture
+            # card there is nothing to stream, though every command works.
+            return jsonify({
+                "success": False,
+                "error": "Net '%s' has no HDMI capture card paired with its scope, "
+                         "so it has no live view; add one with `lager nets set-capture`"
+                         % netname,
             }), 400
 
         capabilities = None
         capability_error = None
         try:
-            response = daemon_client.command("GetCapabilities", timeout=5.0)
+            url = routing.daemon_url_for(rec)
+            response = daemon_client.command("GetCapabilities", timeout=5.0, url=url)
             capabilities = response.get("capabilities")
+        except RigolDaemonError as e:
+            return jsonify({"success": False, "error": str(e)}), 503
         except daemon_client.ScopeDaemonUnavailable as e:
             # No daemon means no stream, so fail loudly rather than handing
             # out a ticket that cannot be redeemed.
@@ -203,7 +212,7 @@ def register_scope_routes(app):
     def scope_stream_relay(netname):
         import simple_websocket
 
-        from lager.measurement.scope import daemon_client
+        from lager.measurement.scope import routing
 
         token = request.args.get("token", "")
         if not _redeem_ticket(token, netname):
@@ -223,8 +232,9 @@ def register_scope_routes(app):
             # simple_websocket's default 4 KB slices, each of which is a
             # syscall and a parser pass on a thread that shares the GIL with
             # every other request this server is handling.
-            upstream = simple_websocket.Client(daemon_client.daemon_url(),
-                                               receive_bytes=65536)
+            upstream = simple_websocket.Client(
+                routing.daemon_url_for(_resolve_scope_net(netname) or {}),
+                receive_bytes=65536)
         except Exception as e:
             logger.warning("scope %s: daemon unreachable for relay: %s", netname, e)
             # Report through the socket the client already has open; a 503

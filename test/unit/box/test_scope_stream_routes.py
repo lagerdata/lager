@@ -4,7 +4,8 @@
 Unit tests for the scope stream routes (box/lager/http_handlers/scope.py).
 
 The ticket names the WebSocket to open, and the relay behind it reaches the
-PicoScope daemon. So the ticket is the place to refuse a net the relay cannot
+daemon driving the net's scope: the box's own for a PicoScope, one of its own
+for a Rigol. So the ticket is the place to refuse a net the relay cannot
 serve, and the path it hands back has to be a working URL whatever the net
 is called.
 """
@@ -16,23 +17,43 @@ import flask
 import pytest
 
 from lager.http_handlers import scope
-from lager.measurement.scope import daemon_client
+from lager.measurement.scope import daemon_client, rigol_daemons
 from lager.nets.net import Net
 
 NETS = [
     {"name": "pico1", "role": "scope", "instrument": "picoscope_2000"},
     {"name": "vbus", "role": "scope-channel", "instrument": "picoscope_2000", "pin": 1},
     {"name": "bench vbus", "role": "scope-channel", "instrument": "picoscope_2000", "pin": 2},
-    {"name": "rigol1", "role": "scope", "instrument": "Rigol_MSO5204"},
+    {"name": "rigol1", "role": "scope", "instrument": "Rigol_MSO5204",
+     "address": "USB0::0x1AB1::0x0515::MS5A1::INSTR"},
+    {"name": "rigol2", "role": "scope", "instrument": "Rigol_MSO5204",
+     "address": "USB0::0x1AB1::0x0515::MS5A2::INSTR",
+     "capture": {"vid": "534d", "pid": "2109", "port_path": "1-1.3"}},
+    {"name": "rigol2 ch1", "role": "scope-channel", "instrument": "Rigol_MSO5204",
+     "address": "USB0::0x1AB1::0x0515::MS5A2::INSTR", "pin": 1},
+    {"name": "keysight1", "role": "scope", "instrument": "Keysight_DSOX1204G"},
     {"name": "gpio1", "role": "gpio", "instrument": "labjack_t7"},
 ]
 
+RIGOL_DAEMON = "ws://127.0.0.1:9999/"
+
 
 @pytest.fixture
-def client(monkeypatch):
+def asked():
+    return []
+
+
+@pytest.fixture
+def client(monkeypatch, asked):
     monkeypatch.setattr(Net, "get_local_nets", staticmethod(lambda: NETS))
-    monkeypatch.setattr(daemon_client, "command",
-                        lambda name, timeout=None, **params: {"capabilities": {"model": "2204A"}})
+
+    def command(name, timeout=None, url=None, **params):
+        asked.append(url)
+        return {"capabilities": {"model": "2204A"}}
+
+    monkeypatch.setattr(daemon_client, "command", command)
+    monkeypatch.setattr(rigol_daemons, "ensure",
+                        lambda address, video=None: RIGOL_DAEMON + "?" + str(video))
     app = flask.Flask(__name__)
     scope.register_scope_routes(app)
     return app.test_client()
@@ -46,12 +67,28 @@ class TestTicket:
         assert response.status_code == 200
         assert response.get_json()["success"] is True
 
-    def test_a_scope_that_is_not_a_picoscope_is_refused_and_told_why(self, client):
-        # The relay would have streamed whichever PicoScope the daemon holds,
-        # under the Rigol's name.
+    @pytest.mark.parametrize("net", ["rigol2", "rigol2 ch1"])
+    def test_a_rigol_with_a_capture_card_streams_from_its_own_daemon(
+            self, client, asked, net):
+        response = client.get("/scope/%s/stream" % net)
+        assert response.status_code == 200, response.get_json()
+        # A channel net finds the card through the scope net it shares an
+        # address with.
+        assert asked == [RIGOL_DAEMON + "?usb:1-1.3"]
+
+    def test_a_picoscope_streams_from_the_box_daemon(self, client, asked):
+        client.get("/scope/pico1/stream")
+        assert asked == [daemon_client.daemon_url()]
+
+    def test_a_rigol_without_a_capture_card_is_refused_and_told_why(self, client):
         response = client.get("/scope/rigol1/stream")
         assert response.status_code == 400
-        assert "PicoScope" in response.get_json()["error"]
+        assert "capture card" in response.get_json()["error"]
+
+    def test_a_scope_no_daemon_drives_is_refused_and_told_why(self, client):
+        response = client.get("/scope/keysight1/stream")
+        assert response.status_code == 400
+        assert "no oscilloscope daemon" in response.get_json()["error"]
 
     def test_a_net_that_is_not_a_scope_is_not_found(self, client):
         assert client.get("/scope/gpio1/stream").status_code == 404

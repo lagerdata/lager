@@ -314,7 +314,7 @@ class StartBoxBuildsWhenStale(unittest.TestCase):
     The block decides whether to compile, and gets three things right or the
     box pays for it on every container start: it must build when there is no
     binary, must NOT build when the recorded hash still matches, and must
-    not be fatal when the build fails -- the daemon drives PicoScopes and
+    not be fatal when the build fails -- the daemon drives the scopes and
     nothing else, so a box that cannot compile it still has to come up.
     """
 
@@ -476,15 +476,15 @@ class StartBoxBuildsWhenStale(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(self.built)
 
-    def test_missing_sdk_headers_skip_the_build_with_a_note(self):
-        """A build without the headers can only fail, on every start."""
+    def test_missing_sdk_headers_still_build_a_daemon_for_rigol_scopes(self):
+        """Without the headers the daemon drives SCPI scopes only, which a
+        box with a Rigol and no PicoScope needs as much as one with both."""
         shutil.rmtree(self.sdk)
         result = self.run_block()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertFalse(self.built, 'ran a build that cannot succeed')
-        self.assertIn('PicoTech SDK headers', result.stdout)
+        self.assertTrue(self.built)
         self.assertNotIn('WARNING', result.stdout)
-        self.assertIsNone(self.hash_file())
+        self.assertIsNotNone(self.hash_file())
 
     def test_missing_sdk_with_a_picoscope_attached_warns(self):
         """The failure a scope user would otherwise first see as ECONNREFUSED."""
@@ -492,9 +492,9 @@ class StartBoxBuildsWhenStale(unittest.TestCase):
         self.attach('0ce9:1007')
         result = self.run_block()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertFalse(self.built, 'ran a build that cannot succeed')
+        self.assertTrue(self.built)
         self.assertIn('WARNING', result.stdout)
-        self.assertIn('daemon is unavailable', result.stdout)
+        self.assertIn('cannot drive it', result.stdout)
         self.assertIn(_update._PICOTECH_APT_REPO, result.stdout)
         self.assertIn('apt-get install libps2000', result.stdout)
         self.assertIn('lager install', result.stdout)
@@ -520,7 +520,7 @@ class StartBoxBuildsWhenStale(unittest.TestCase):
         self.attach('1366:0101')
         result = self.run_block()
         self.assertNotIn('WARNING', result.stdout)
-        self.assertIn('PicoTech SDK headers', result.stdout)
+        self.assertTrue(self.built)
 
     def test_a_built_daemon_with_a_picoscope_attached_says_nothing(self):
         self.attach('0ce9:1007')
@@ -546,12 +546,13 @@ class StartBoxBuildsWhenStale(unittest.TestCase):
         self.run_block()
         self.assertTrue(self.built, 'kept a daemon built without ps5000a')
 
-    def test_ps3000a_alone_cannot_build(self):
-        """Its headers include a PicoConnectProbes.h it does not ship."""
+    def test_ps3000a_alone_builds_without_it(self):
+        """Its headers include a PicoConnectProbes.h it does not ship, so the
+        daemon's build leaves it out, and builds for the Rigol regardless."""
         shutil.rmtree(self.sdk)
         self.add_header('libps3000a/ps3000aApi.h')
         self.run_block()
-        self.assertFalse(self.built, 'ran a build that cannot succeed')
+        self.assertTrue(self.built)
 
     def test_ps3000a_builds_beside_a_shared_probes_header(self):
         shutil.rmtree(self.sdk)
@@ -574,15 +575,15 @@ class StartBoxBuildsWhenStale(unittest.TestCase):
         result = self.run_block()
         self.assertNotIn('PicoTech', result.stdout)
 
-    def test_removing_the_sdk_keeps_the_daemon_it_built(self):
+    def test_removing_the_sdk_rebuilds_without_picoscope_support(self):
+        """The headers are part of what the daemon was built from."""
         self.run_block()
         os.remove(self.marker)
         shutil.rmtree(self.sdk)
         result = self.run_block()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertFalse(self.built, 'ran a build that cannot succeed')
+        self.assertTrue(self.built)
         self.assertEqual(self.binary(), 'FAKE')
-        self.assertIn('PicoTech SDK headers', result.stdout)
 
 
 class TheHeaderChecksAgree(unittest.TestCase):
@@ -902,21 +903,15 @@ class DaemonBuildDecision(unittest.TestCase):
         self.assertTrue(build)
         self.assertIn('force', reason)
 
-    def test_missing_sdk_headers_never_build(self):
-        """A failed build records no hash, so this used to rebuild forever."""
+    def test_missing_sdk_headers_still_build(self):
+        """start_box.sh builds a daemon for the Rigol without them, and a
+        build that succeeds records its hash, so it is not repeated."""
         for overrides in ({'DAEMON_BINARY': '0'},
                           {'DAEMON_HASH_STORED': ''},
                           {'DAEMON_SOURCE_HASH': 'bbb'}):
             with self.subTest(**overrides):
-                build, reason = self.decide(DAEMON_SDK_HEADERS='0',
-                                            **overrides)
-                self.assertFalse(build)
-                self.assertIn('PicoTech SDK headers', reason)
-
-    def test_missing_sdk_headers_win_over_force(self):
-        """start_box.sh skips the build without them whatever was asked."""
-        build, _reason = self.decide(force=True, DAEMON_SDK_HEADERS='0')
-        self.assertFalse(build)
+                build, _reason = self.decide(DAEMON_SDK_HEADERS='0', **overrides)
+                self.assertTrue(build)
 
     def test_installed_sdk_headers_change_nothing(self):
         self.assertEqual(self.decide(DAEMON_BINARY='0', DAEMON_SDK_HEADERS='1'),
@@ -956,14 +951,14 @@ class DaemonBuildTakesTheRebuildPath(unittest.TestCase):
         verdict = _rebuild_gate_verdict({'LAGER_RUNNING': '1'}, **self.IN_SYNC)
         self.assertEqual(verdict, 'skip')
 
-    def test_a_box_without_the_sdk_takes_the_up_to_date_exit(self):
-        """No daemon and no headers: nothing a rebuild could fix."""
+    def test_a_box_without_the_sdk_still_builds_its_daemon(self):
+        """No daemon and no headers: one is built, for the Rigol."""
         facts = {'LAGER_RUNNING': '1', 'DAEMON_SOURCE_HASH': 'aaa',
                  'DAEMON_BINARY': '0', 'DAEMON_SDK_HEADERS': '0'}
         wanted, _reason = _daemon_needs_build(facts, force=False)
         verdict = _rebuild_gate_verdict(
             facts, daemon_needs_build=wanted, **self.IN_SYNC)
-        self.assertEqual(verdict, 'skip')
+        self.assertEqual(verdict, 'rebuild')
 
 
 class ProbeReportsDaemonFacts(unittest.TestCase):

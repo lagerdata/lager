@@ -88,9 +88,11 @@ def _validate_samples(ctx, samples: int) -> None:
         ctx.exit(1)
 
 
-def _is_picoscope(instrument: str) -> bool:
-    """Check if instrument is a PicoScope (case-insensitive)."""
-    return "picoscope" in instrument.lower()
+def _is_daemon_scope(instrument: str) -> bool:
+    """Whether the box drives this scope through an oscilloscope daemon: a
+    PicoScope, or a Rigol MSO5000."""
+    lowered = (instrument or "").lower()
+    return any(make in lowered for make in ("pico", "rigol", "mso5"))
 
 
 # ---------- helpers ----------
@@ -629,7 +631,7 @@ def status(ctx, box):
     """Show every scope setting: channels, timebase, trigger, acquisition
 
     One request, answered from what the box last applied -- the same state
-    the web UI draws its controls from. PicoScope only.
+    the web UI draws its controls from.
     """
     box_ip = _resolve_box(ctx, box)
     netname = _require_netname(ctx)
@@ -683,11 +685,11 @@ def edge(ctx, mcu, box, mode, coupling, source, slope, level):
     if net is None:
         return  # Error already displayed with available nets
 
-    # A PicoScope's edge trigger is the box's in-process handler, which
-    # reports a refused setting as the failure it is. The script this used
-    # to run read every refusal as success -- a level beyond the range
+    # A daemon-driven scope's edge trigger is the box's in-process handler,
+    # which reports a refused setting as the failure it is. The script this
+    # used to run read every refusal as success -- a level beyond the range
     # printed "Trigger configured successfully" -- and ignored --source.
-    if _is_picoscope(str(net.get("instrument") or "")):
+    if _is_daemon_scope(str(net.get("instrument") or "")):
         params = {key: value for key, value in (
             ("mode", mode), ("coupling", coupling), ("source", source),
             ("slope", slope), ("level", level)) if value is not None}
@@ -857,7 +859,7 @@ def holdoff(ctx, seconds, box):
 
     Steadies the trace on a signal with several edges that cross the level,
     such as a burst or a serial byte, by waiting out the rest of one before
-    triggering on the next. PicoScope only.
+    triggering on the next.
     """
     box_ip = _resolve_box(ctx, box)
     netname = _require_netname(ctx)
@@ -884,7 +886,7 @@ def acquire(ctx, mode, count, box):
     average is a running mean of the last --count captures, which takes
     random noise down by the square root of the count. peak keeps the
     minimum and maximum of every sample interval, where the unit can.
-    PicoScope only.
+    A Rigol averages a power of two from 2 to 65536 captures.
     """
     box_ip = _resolve_box(ctx, box)
     netname = _require_netname(ctx)
@@ -912,7 +914,7 @@ def roll(ctx, mode, box):
 
     auto rolls at 50 ms/div and slower while the trigger is in auto, as a
     bench scope does. on rolls at any timebase and ignores the trigger.
-    PicoScope only.
+    A scope that cannot stream, such as a Rigol, refuses on.
     """
     box_ip = _resolve_box(ctx, box)
     netname = _require_netname(ctx)
@@ -936,7 +938,7 @@ def fft(ctx, box, channel, window, peaks):
     """Report the strongest frequency components of a channel
 
     Computed on the box from the capture on screen. Amplitudes are RMS volts
-    at the probe tip, in dBV. PicoScope only.
+    at the probe tip, in dBV.
     """
     box_ip = _resolve_box(ctx, box)
     netname = _require_netname(ctx)
@@ -955,7 +957,7 @@ def display_group(ctx, box):
     """Set how the web UI draws the trace, or show it with no subcommand
 
     Held on the box, so a page that is already open follows a change made
-    here. PicoScope only.
+    here.
 
     \b
     lager scope picoscope1 display persistence 2     # traces fade over 2 s
@@ -1430,16 +1432,16 @@ def stream_start(ctx, box, channel, volts_per_div, time_per_div, trigger_level, 
     _validate_scale(ctx, volts_per_div)
     _validate_timebase(ctx, time_per_div)
 
-    # Validate net and check if this is a PicoScope
+    # Validate net and check that a daemon drives it
     net_info = _validate_scope_net(ctx, box_ip, netname)
     if net_info is None:
         return  # Error already displayed with available nets
 
     instrument = net_info.get("instrument", "")
-    if not _is_picoscope(instrument):
-        click.secho(f"Error: '{netname}' is not a PicoScope (instrument: {instrument})", fg="red", err=True)
-        click.secho("Streaming is only supported for PicoScope devices.", err=True)
-        click.secho("For Rigol scopes, use: lager scope [NET_NAME] start --single", err=True)
+    if not _is_daemon_scope(instrument):
+        click.secho(f"Error: '{netname}' is a {instrument or 'scope of unknown make'}, "
+                    "which no oscilloscope daemon drives, so it cannot stream.",
+                    fg="red", err=True)
         ctx.exit(1)
 
     data = {

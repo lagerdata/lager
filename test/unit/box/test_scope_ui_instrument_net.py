@@ -160,20 +160,29 @@ class TestTheDropdownSelectsAScope:
         """The box refuses a stream ticket for any other make."""
         assert self._loaded()["options"] == ["pico1"]
 
-    def test_a_scope_of_another_make_is_named_instead(self):
+    def test_a_rigol_without_a_capture_card_is_named_instead(self):
         out = self._loaded()
         notes = [text for kind, text in out["lines"] if kind == "note"]
-        assert any("rigol1" in text and "PicoScope" in text for text in notes)
+        assert any("rigol1" in text and "capture card" in text for text in notes)
         assert not [text for kind, text in out["lines"] if kind == "error"]
 
-    def test_a_box_with_only_another_make_says_so(self):
+    def test_a_box_with_only_an_uncaptured_rigol_says_so(self):
         rigol = json.dumps([n for n in json.loads(NETS) if "Rigol" in n["instrument"]])
         out = self._loaded(rigol)
         assert out["options"] == [""]
         (kind, text), = out["lines"]
         assert kind == "error"
-        assert "rigol1" in text and "PicoScope" in text
+        assert "rigol1" in text and "capture card" in text
         assert "clk" not in text
+
+    def test_a_rigol_with_a_capture_card_is_offered_with_its_channels(self):
+        nets = json.loads(NETS)
+        for net in nets:
+            if net["name"] == "rigol1":
+                net["capture"] = {"vid": "534d", "pid": "2109", "port_path": "1-1.3"}
+        out = self._loaded(json.dumps(nets))
+        assert "rigol1" in out["options"]
+        assert not [text for kind, text in out["lines"] if "rigol1" in text]
 
     def test_its_channels_are_adopted(self):
         assert self._loaded()["channels"] == ["vbus", "reset"]

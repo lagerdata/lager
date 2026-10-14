@@ -15,6 +15,11 @@
 //! Only the families whose headers were installed where the daemon was built
 //! have bindings here (see build.rs). [`BUILT`] lists them, and [`LeftOut`]
 //! is the error for the others.
+// Built with no family at all, the per-family accessors expand to nothing.
+#![cfg_attr(
+    not(any(pico_ps2000, pico_ps2000a, pico_ps3000a, pico_ps4000a, pico_ps5000a)),
+    allow(unused_imports, unused_macros)
+)]
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -95,6 +100,7 @@ impl LeftOut {
             DriverFamily::Ps3000a => option_env!("PICO_PS3000A_LEFT_OUT"),
             DriverFamily::Ps4000a => option_env!("PICO_PS4000A_LEFT_OUT"),
             DriverFamily::Ps5000a => option_env!("PICO_PS5000A_LEFT_OUT"),
+            DriverFamily::RigolMso5000 => None,
         };
         match recorded {
             Some(reason) => reason.to_string(),
@@ -258,7 +264,6 @@ mod tests {
                 "{family:?}: built and left out disagree (reason: {reason:?})"
             );
         }
-        assert!(!BUILT.is_empty(), "build.rs fails rather than build no family");
     }
 
     #[test]

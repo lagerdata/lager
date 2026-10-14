@@ -4,9 +4,10 @@
 """
 hardware_service adapter for scope nets (create_device factory).
 
-Dispatches on the net's instrument: a PicoScope goes through the oscilloscope
-daemon, a Rigol MSO5000 over SCPI/VISA. Both expose the same method names (see
-``measurement/scope/picoscope.py``), so this only picks the driver -- the
+Every supported scope goes through an oscilloscope daemon, which hides the
+make: a PicoScope through the box's own, a Rigol MSO5000 through one started
+for its address. Both drivers expose the same method names (see
+``measurement/scope/picoscope.py``), so this only picks the daemon -- the
 per-role handler in ``net_command.py`` calls the same methods either way.
 
 Running under hardware_service matters for the PicoScope specifically: the
@@ -22,8 +23,8 @@ logger = logging.getLogger(__name__)
 
 
 def _is_picoscope(instrument: str) -> bool:
-    lowered = (instrument or "").lower()
-    return "picoscope" in lowered or "pico" in lowered
+    from lager.measurement.scope.routing import PICOSCOPE, scope_family
+    return scope_family(instrument) == PICOSCOPE
 
 
 def _resolve_net(netname: str) -> dict:
@@ -82,7 +83,14 @@ def create_device(net_info=None, **kwargs):
             netname=netname,
         )
 
-    # Default to the Rigol, which is the only other supported scope and the
-    # one that predates this dispatch.
-    from lager.measurement.scope.rigol_mso5000 import RigolMso5000
-    return RigolMso5000(address=_address_of(rec, info), pin=channel)
+    # The Rigol is the only other supported scope and the one that predates
+    # this dispatch, so a net of unknown make is taken for one.
+    from lager.measurement.scope.rigol_scope import RigolScope
+    record = dict(rec)
+    record.setdefault("instrument", instrument or "Rigol_MSO5000")
+    return RigolScope(
+        address=_address_of(rec, info),
+        pin=channel,
+        netname=netname,
+        record=record,
+    )

@@ -1,14 +1,14 @@
 # Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 """
-The box handler's actions for the settings a PicoScope has the box do:
+The box handler's actions for the settings the oscilloscope daemon holds:
 status, trigger readback, acquisition, holdoff, roll, display and spectrum.
 
 What is pinned here is the handler's part -- which nets take the action,
 which parameters it requires, and the sentence it answers with -- against a
-mock driver. A Rigol does all of this on its own front panel, and before the
-PicoScope-only gate a Rigol net answered with the driver's missing
-attribute, which read as a bug rather than as the answer.
+mock driver. Every scope the box supports is driven by a daemon, a Rigol as
+much as a PicoScope, so the only net refused is one naming a scope no daemon
+drives; before the daemon drove the Rigol, these were refused on it.
 """
 from __future__ import annotations
 
@@ -25,9 +25,11 @@ NETS = [
      "address": "usb::two"},
     {"name": "rigol_ch2", "role": "scope-channel", "instrument": "Rigol_MSO5204",
      "address": "usb::two", "pin": 2},
+    {"name": "other1", "role": "scope", "instrument": "Keysight_DSOX1204G",
+     "address": "usb::three"},
 ]
 
-PICOSCOPE_ONLY = [
+DAEMON_ACTIONS = [
     ("get_state", {}),
     ("set_acquire", {"mode": "average", "count": 16}),
     ("get_acquire", {}),
@@ -45,8 +47,8 @@ PICOSCOPE_ONLY = [
     ("measure_cursor", {}),
 ]
 
-# Everything a Rigol channel net is not refused, with parameters it accepts.
-RIGOL_ACTIONS = [
+# Everything a Rigol channel net takes, with parameters it accepts.
+RIGOL_ACTIONS = DAEMON_ACTIONS + [
     ("enable_net", {}), ("disable_net", {}), ("get_net_enabled", {}),
     ("start_capture", {}), ("start_single", {}), ("stop_capture", {}),
     ("force_trigger", {}), ("autoscale", {}),
@@ -76,6 +78,16 @@ STATE = {
 }
 
 
+def _driver(device):
+    """A mock driver whose readbacks have the shapes the handler formats."""
+    device.get_state.return_value = STATE
+    device.fft.return_value = {"channel": "A", "window": "hann", "peaks": []}
+    device.get_cursors.return_value = {"time": None, "volts": None}
+    device.set_cursors.return_value = {"time": [0.0, 1e-3]}
+    device.get_measure_item.return_value = 1.0
+    return device
+
+
 def _run(netname, action, params=None, device=None, role="scope"):
     device = device if device is not None else mock.MagicMock()
     with mock.patch.object(net_command, "Net") as NetMock, \
@@ -84,36 +96,43 @@ def _run(netname, action, params=None, device=None, role="scope"):
         return net_command._scope(netname, role, action, dict(params or {}))
 
 
-class TestOnlyAPicoScopeNetTakesThem:
+class TestEveryDaemonScopeTakesThem:
 
-    @pytest.mark.parametrize("action,params", PICOSCOPE_ONLY)
-    def test_a_rigol_net_is_told_to_use_its_front_panel(self, action, params):
+    @pytest.mark.parametrize("action,params", DAEMON_ACTIONS)
+    def test_a_rigol_net_reaches_its_driver(self, action, params):
+        device = _driver(mock.MagicMock())
+        _run("rigol1", action, params, device)
+        assert device.method_calls, "nothing reached the driver"
+
+    @pytest.mark.parametrize("action,params", DAEMON_ACTIONS)
+    def test_a_scope_no_daemon_drives_is_refused_and_told_why(self, action, params):
         device = mock.MagicMock()
-        with pytest.raises(net_command.WrongNetForAction, match="front panel"):
-            _run("rigol1", action, params, device)
+        with pytest.raises(net_command.WrongNetForAction, match="no oscilloscope daemon"):
+            _run("other1", action, params, device)
         # Refused before anything reached the instrument.
         assert device.method_calls == []
 
-    def test_the_trigger_readback_works_on_a_rigol_without_holdoff(self):
+    def test_the_trigger_readback_on_a_rigol_includes_its_holdoff(self):
         device = mock.MagicMock()
         device.get_capture_mode.return_value = "normal"
-        device.get_trigger_source.return_value = "CH1"
+        device.get_trigger_source.return_value = "A"
         device.get_trigger_slope.return_value = "rising"
         device.get_trigger_level.return_value = 1.5
+        device.get_trigger_holdoff.return_value = 1e-3
         result = _run("rigol1", "get_trigger", {}, device)
-        assert result["value"] == {"mode": "normal", "source": "CH1",
-                                   "slope": "rising", "level": 1.5}
-        device.get_trigger_holdoff.assert_not_called()
+        assert result["value"] == {"mode": "normal", "source": "A",
+                                   "slope": "rising", "level": 1.5,
+                                   "holdoff": 1e-3}
 
-    def test_measure_all_on_a_rigol_channel_is_told_to_use_its_front_panel(self):
+    def test_measure_all_on_a_rigol_channel_reaches_its_driver(self):
         device = mock.MagicMock()
-        with pytest.raises(net_command.WrongNetForAction, match="front panel"):
-            _run("rigol_ch2", "measure_all", {}, device, role="scope-channel")
-        assert device.method_calls == []
+        device.measure_all.return_value = {"vpp": 1.0}
+        _run("rigol_ch2", "measure_all", {}, device, role="scope-channel")
+        device.measure_all.assert_called_once()
 
 
 class TestARigolNetReachesOnlyWhatItsDriverHas:
-    """Whatever the gates let through reaches the Rigol driver by name.
+    """Whatever the handler sends reaches the Rigol driver by name.
 
     A name it lacks failed on the box as a 502 with "Function not found",
     which is how the trigger readback and the enabled readback failed.
@@ -121,41 +140,22 @@ class TestARigolNetReachesOnlyWhatItsDriverHas:
 
     @pytest.mark.parametrize("action,params", RIGOL_ACTIONS)
     def test_every_call_is_one_the_driver_has(self, action, params):
-        from lager.measurement.scope.rigol_mso5000 import RigolMso5000
+        from lager.measurement.scope.rigol_scope import RigolScope
 
-        device = mock.create_autospec(RigolMso5000, instance=True)
-        device.get_measure_item.return_value = 1.0
+        device = _driver(mock.create_autospec(RigolScope, instance=True))
         _run("rigol_ch2", action, params, device, role="scope-channel")
 
 
 class TestARigolMeasurement:
-    """The measurements went out under the daemon's names, which the Rigol
-    does not have, and with no source, so they read whichever channel the
-    last caller left selected."""
+    """The daemon measures a Rigol on the instrument, by the same names it
+    takes for a PicoScope, so the handler asks both the same way."""
 
-    def test_it_asks_by_the_rigol_name_on_the_net_channel(self):
+    def test_it_asks_by_the_daemon_name(self):
         device = mock.MagicMock()
         device.get_measure_item.return_value = 1000.0
         result = _run("rigol_ch2", "measure_freq", {}, device, role="scope-channel")
-        device.get_measure_item.assert_called_once_with("FREQuency", 2)
+        device.get_measure_item.assert_called_once_with("frequency")
         assert result == {"message": "1000.0 Hz", "value": 1000.0}
-
-    @pytest.mark.parametrize("action", sorted(net_command._SCOPE_MEASUREMENTS))
-    def test_every_name_is_a_rigol_measurement_item(self, action):
-        from lager.instrument_wrappers.rigol_mso5000_defines import MeasurementItem
-
-        device = mock.MagicMock()
-        device.get_measure_item.return_value = 1.0
-        _run("rigol_ch2", action, {}, device, role="scope-channel")
-        item = device.get_measure_item.call_args.args[0]
-        assert item in {member.value for member in MeasurementItem}
-
-    def test_no_valid_value_is_an_answer_rather_than_a_failure(self):
-        """The driver answers None for the Rigol's 'no value' reading."""
-        device = mock.MagicMock()
-        device.get_measure_item.return_value = None
-        result = _run("rigol_ch2", "measure_period", {}, device, role="scope-channel")
-        assert result == {"message": "period is not present in this capture"}
 
     def test_a_picoscope_net_keeps_the_daemon_names(self):
         device = mock.MagicMock()

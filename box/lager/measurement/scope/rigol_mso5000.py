@@ -6,15 +6,18 @@ Rigol MSO5000 Series Oscilloscope SCPI Control
 
 Provides low-level SCPI commands for Rigol MSO5000 series oscilloscopes.
 This module is used by the hardware_service to handle Device proxy calls.
+
+The SCPI goes through the scope's oscilloscope daemon, which holds the
+instrument's only connection: the live view, the logic analyzer and the bus
+decoders here all share one scope, and two processes claiming its USB-TMC
+interface was a failure for whichever came second.
 """
 
-import pyvisa
 import logging
 
 logger = logging.getLogger(__name__)
 
-# Cache for VISA resource manager and instruments
-_rm = None
+# One connection per scope, shared by every net on it.
 _instruments = {}
 
 
@@ -36,29 +39,56 @@ def _scpi_arg(value):
     return str(value)
 
 
-def get_resource_manager():
-    """Get or create the VISA resource manager."""
-    global _rm
-    if _rm is None:
-        _rm = pyvisa.ResourceManager('@py')
-    return _rm
+class DaemonInstrument:
+    """SCPI to a Rigol through its oscilloscope daemon.
+
+    The surface the methods below were written against -- ``write``,
+    ``query`` and ``timeout`` -- so they did not have to change when the
+    connection moved into the daemon.
+    """
+
+    def __init__(self, address):
+        self.address = address
+        self.timeout = 5000  # milliseconds, as the instrument session had it
+        self._client = None
+
+    @property
+    def client(self):
+        if self._client is None:
+            from lager.measurement.scope import daemon_client, rigol_daemons
+            url = rigol_daemons.ensure(
+                self.address, rigol_daemons.capture_for_address(self.address))
+            self._client = daemon_client.ScopeDaemonClient(url)
+        return self._client
+
+    def _send(self, cmd):
+        from lager.measurement.scope import daemon_client
+        try:
+            return self.client.command(
+                "Scpi", timeout=max(self.timeout / 1000.0, 1.0), scpi=cmd).get("reply")
+        except daemon_client.ScopeDaemonUnavailable:
+            # A daemon restarted since the last command: connect afresh once.
+            self.close()
+            return self.client.command(
+                "Scpi", timeout=max(self.timeout / 1000.0, 1.0), scpi=cmd).get("reply")
+
+    def write(self, cmd):
+        self._send(cmd)
+
+    def query(self, cmd):
+        return self._send(cmd) or ""
+
+    def close(self):
+        client, self._client = self._client, None
+        if client is not None:
+            client.close()
 
 
 def get_instrument(address):
-    """Get or create a connection to an instrument at the given address."""
-    global _instruments
+    """The shared connection to the scope at ``address``."""
     if address not in _instruments:
-        rm = get_resource_manager()
-        # Cross-process advisory lock around the open — defends against an
-        # ad-hoc box-side pyvisa client racing for the same USB-TMC interface
-        # on this Rigol oscilloscope. See power/battery/keithley.py for the
-        # longer rationale.
-        from lager.util.device_lock import device_lock
-        with device_lock(address, timeout=2.0):
-            instr = rm.open_resource(address)
-        instr.timeout = 5000  # 5 second timeout
-        _instruments[address] = instr
-        logger.info(f"Connected to Rigol oscilloscope at {address}")
+        _instruments[address] = DaemonInstrument(address)
+        logger.info(f"Connected to Rigol oscilloscope at {address} through its daemon")
     return _instruments[address]
 
 
