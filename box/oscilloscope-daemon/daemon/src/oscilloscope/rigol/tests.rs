@@ -9,7 +9,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use super::frame::{rgb_to_ycc, Layout, VideoFrame};
+use super::frame::{encode_bmp, rgb_to_ycc, Layout, VideoFrame};
 use super::video::{Encoding, FrameSource, RawFrame};
 use super::*;
 
@@ -256,6 +256,14 @@ impl Instrument {
             ":WAVEFORM:PREAMBLE?" => {
                 // Ten points at 1 us, trigger at the fifth; 25 mV a code.
                 "0,0,10,1,1.000000e-06,-5.000000e-06,0,2.500000e-02,0,127".into()
+            }
+            ":DISPLAY:DATA?" => {
+                let image = encode_bmp(&self.draw());
+                let length = image.len().to_string();
+                let mut reply = format!("#{}{length}", length.len()).into_bytes();
+                reply.extend_from_slice(&image);
+                reply.push(b'\n');
+                return reply;
             }
             ":WAVEFORM:DATA?" => {
                 let mut reply = b"#210".to_vec();
@@ -677,4 +685,26 @@ fn the_volts_per_div_ladder_is_1_2_5_from_500_uv_to_10_v() {
     assert_eq!(ladder.last(), Some(&10.0));
     assert_eq!(ladder.len(), 14);
     assert!(ladder.windows(2).all(|w| w[1] / w[0] <= 2.5 + 1e-9));
+}
+
+#[test]
+fn without_hdmi_the_live_view_is_read_from_the_screenshot() {
+    let instrument = Arc::new(Mutex::new(Instrument::mso5204()));
+    let scpi = FakeScpi {
+        instrument: instrument.clone(),
+        replies: VecDeque::new(),
+    };
+    let scope = RigolMso5000::with_screen_dump(Box::new(scpi), None).unwrap();
+    let map = scope.screen.as_ref().unwrap().map;
+    assert!((map.px_per_div_x - PX_PER_DIV as f64).abs() < 0.5, "{map:?}");
+    assert!(!instrument.lock().unwrap().grid);
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !scope.is_ready().unwrap() {
+        assert!(std::time::Instant::now() < deadline, "no capture became ready");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let frame = scope.get_triggered_data().unwrap();
+    let (min, max) = pair_volts(&frame, 0, 100);
+    assert!((min - 1.0).abs() < 0.03 && (max - 1.0).abs() < 0.03, "{min} {max}");
 }

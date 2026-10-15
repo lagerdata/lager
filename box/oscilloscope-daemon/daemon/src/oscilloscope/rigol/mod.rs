@@ -9,18 +9,21 @@
 //! acquisitions, at the card's frame rate, where reading the screen over
 //! USB-TMC manages a tenth of that. Each channel is picked out of the frame
 //! by colour, and each pixel column becomes one (minimum, maximum) pair of an
-//! envelope frame, scaled by the settings SCPI reports.
+//! envelope frame, scaled by the settings SCPI reports. A scope without a
+//! working HDMI picture can be read through its own screenshot instead
+//! (`dump`), the same picture at a few frames a second.
 //!
 //! Nobody looks at this scope's screen, so the daemon sets its display up
 //! for the camera, not for a person.
 
+pub mod dump;
 pub mod extract;
 pub mod frame;
 pub mod scpi;
 pub mod screen;
 pub mod video;
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
@@ -41,7 +44,8 @@ use super::{Cursor, Oscilloscope};
 pub struct Config {
     /// The VISA address the net stores, or `tcp:<host>[:<port>]`.
     pub scpi: String,
-    /// `/dev/videoN`, or `usb:<port>` for the card on that USB port. None
+    /// `/dev/videoN`, `usb:<port>` for the card on that USB port, or
+    /// `screen` to read the scope's own screenshot over SCPI. None
     /// for a scope with no card: everything but the live view still works.
     pub video: Option<String>,
 }
@@ -58,11 +62,6 @@ impl Config {
     }
 }
 
-/// Video frames to let pass after a change before trusting the picture: the
-/// scope redraws, and the card has a frame or two in flight.
-const SETTLE_FRAMES: u64 = 3;
-/// Longest to wait for the frames a calibration needs.
-const FRAME_WAIT: Duration = Duration::from_secs(3);
 /// Longest a command may take to complete.
 const COMPLETION_WAIT: Duration = Duration::from_secs(20);
 /// SCPI subsystems whose settings the daemon caches: a raw command to one
@@ -110,7 +109,9 @@ struct Work {
 }
 
 pub struct RigolMso5000 {
-    scpi: Mutex<Box<dyn Scpi>>,
+    /// Shared with the screenshot thread when the live view is read over
+    /// SCPI.
+    scpi: Arc<Mutex<Box<dyn Scpi>>>,
     /// The capture card and where the waveform is in its picture.
     screen: Option<Screen>,
     _lock: Option<DeviceLock>,
@@ -286,7 +287,9 @@ impl RigolMso5000 {
         let lock = DeviceLock::acquire(&config.scpi, LOCK_WAIT)?;
         let scpi = scpi::open(&address)
             .with_context(|| format!("opening the scope at {}", config.scpi))?;
-        let video = match &config.video {
+        let link = Arc::new(Mutex::new(scpi));
+        let video: Option<Box<dyn FrameSource>> = match &config.video {
+            Some(spec) if spec == dump::SPEC => Some(Box::new(dump::ScreenDump::start(link.clone())?)),
             Some(spec) => Some(
                 video::open(spec).with_context(|| format!("opening the capture card {spec}"))?,
             ),
@@ -298,23 +301,43 @@ impl RigolMso5000 {
                 None
             }
         };
-        Self::with(scpi, video, Some(lock))
+        Self::with_link(link, video, Some(lock))
     }
 
     /// Open over an established connection and frame source.
     pub fn with(
-        mut scpi: Box<dyn Scpi>,
+        scpi: Box<dyn Scpi>,
         video: Option<Box<dyn FrameSource>>,
         lock: Option<DeviceLock>,
     ) -> Result<RigolMso5000> {
-        // Anything a previous process left in the error queue would be
-        // reported against the first command here.
-        scpi.write("*CLS")?;
-        let identity = Identity::parse(&scpi.query("*IDN?")?)?;
+        Self::with_link(Arc::new(Mutex::new(scpi)), video, lock)
+    }
+
+    /// Open over a connection that reads its live view from the scope's own
+    /// screenshot.
+    pub fn with_screen_dump(scpi: Box<dyn Scpi>, lock: Option<DeviceLock>) -> Result<RigolMso5000> {
+        let link = Arc::new(Mutex::new(scpi));
+        let video = Box::new(dump::ScreenDump::start(link.clone())?);
+        Self::with_link(link, Some(video), lock)
+    }
+
+    /// Open over a connection that a frame source may share.
+    fn with_link(
+        link: Arc<Mutex<Box<dyn Scpi>>>,
+        video: Option<Box<dyn FrameSource>>,
+        lock: Option<DeviceLock>,
+    ) -> Result<RigolMso5000> {
+        let identity = {
+            let mut scpi = lock_link(&link);
+            // Anything a previous process left in the error queue would be
+            // reported against the first command here.
+            scpi.write("*CLS")?;
+            Identity::parse(&scpi.query("*IDN?")?)?
+        };
         let capabilities = capabilities_for(&identity)?;
         let screen = match video {
             Some(video) => {
-                let map = calibrate(scpi.as_mut(), video.as_ref()).with_context(|| {
+                let map = calibrate(&link, video.as_ref()).with_context(|| {
                     format!(
                         "pairing the {} with the capture card {}",
                         identity.model,
@@ -327,12 +350,15 @@ impl RigolMso5000 {
                     px_per_div = ?(map.px_per_div_x, map.px_per_div_y),
                     "measured the waveform area"
                 );
-                prepare_display(scpi.as_mut());
+                prepare_display(lock_link(&link).as_mut());
                 Some(Screen { video, map })
             }
             None => None,
         };
-        let settings = read_settings(scpi.as_mut(), usize::from(capabilities.analog_channels))?;
+        let settings = read_settings(
+            lock_link(&link).as_mut(),
+            usize::from(capabilities.analog_channels),
+        )?;
         tracing::info!(
             model = %identity.model,
             serial = %identity.serial,
@@ -340,12 +366,13 @@ impl RigolMso5000 {
             live_view = screen.is_some(),
             "opened Rigol scope"
         );
+        let settle = screen.as_ref().map_or(0, |s| s.video.settle_frames());
         let newest = screen
             .as_ref()
             .and_then(|s| s.video.newest().ok())
             .unwrap_or(0);
         Ok(RigolMso5000 {
-            scpi: Mutex::new(scpi),
+            scpi: link,
             screen,
             _lock: lock,
             capabilities,
@@ -353,7 +380,7 @@ impl RigolMso5000 {
             settings,
             palette: Palette::new(&MSO5000_COLOURS),
             work: Mutex::new(Work {
-                stale_through: newest + SETTLE_FRAMES,
+                stale_through: newest + settle,
                 ..Work::default()
             }),
         })
@@ -364,7 +391,12 @@ impl RigolMso5000 {
     }
 
     fn link(&self) -> std::sync::MutexGuard<'_, Box<dyn Scpi>> {
-        self.scpi.lock().unwrap_or_else(|p| p.into_inner())
+        lock_link(&self.scpi)
+    }
+
+    /// Frames to let pass after a change.
+    fn settle_frames(&self) -> u64 {
+        self.screen.as_ref().map_or(0, |s| s.video.settle_frames())
     }
 
     fn work(&self) -> std::sync::MutexGuard<'_, Work> {
@@ -406,8 +438,9 @@ impl RigolMso5000 {
             .as_ref()
             .and_then(|s| s.video.newest().ok())
             .unwrap_or(0);
+        let settle = self.settle_frames();
         let mut work = self.work();
-        work.stale_through = newest + SETTLE_FRAMES;
+        work.stale_through = newest + settle;
         work.single_done = false;
     }
 
@@ -529,11 +562,16 @@ fn check_errors(scpi: &mut dyn Scpi, after: &str) -> Result<()> {
     }
 }
 
-/// Wait until the card has delivered a frame at least `frames` after the
-/// newest one now, and decode it.
-fn settled_frame(video: &dyn FrameSource, frames: u64) -> Result<frame::VideoFrame> {
-    let target = video.newest()? + frames;
-    let deadline = Instant::now() + FRAME_WAIT;
+fn lock_link(link: &Mutex<Box<dyn Scpi>>) -> std::sync::MutexGuard<'_, Box<dyn Scpi>> {
+    link.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// Wait until the source has delivered a frame enough frames after the
+/// newest one now to show the screen as it is, and decode it.
+fn settled_frame(video: &dyn FrameSource) -> Result<frame::VideoFrame> {
+    let target = video.newest()? + video.settle_frames();
+    let wait = video.frame_wait() * u32::try_from(video.settle_frames().max(1)).unwrap_or(1);
+    let deadline = Instant::now() + wait;
     let mut newest = None;
     while Instant::now() < deadline {
         let after = newest.as_ref().map_or(0, |f: &video::RawFrame| f.sequence);
@@ -548,31 +586,39 @@ fn settled_frame(video: &dyn FrameSource, frames: u64) -> Result<frame::VideoFra
     match newest {
         Some(raw) if raw.sequence >= target => raw.decode(),
         _ => bail!(
-            "the capture card delivered no video in {} s; check that the scope is on and its \
-             HDMI output is connected to the card",
-            FRAME_WAIT.as_secs()
+            "{} delivered no picture in {} s; check that the scope is on and, for a capture \
+             card, that its HDMI output is connected to the card",
+            video.describe(),
+            wait.as_secs()
         ),
     }
 }
 
 /// Measure where the waveform is in the video, by showing the grid and then
 /// hiding it. A frame that does not change with the grid is not this scope's.
-fn calibrate(scpi: &mut dyn Scpi, video: &dyn FrameSource) -> Result<ScreenMap> {
-    let status = scpi.query(":TRIGger:STATus?")?;
+///
+/// The connection is held only for each command, not while waiting for a
+/// frame: the frames may themselves be read over it.
+fn calibrate(link: &Mutex<Box<dyn Scpi>>, video: &dyn FrameSource) -> Result<ScreenMap> {
+    let command = |command: &str| -> Result<()> {
+        let mut scpi = lock_link(link);
+        scpi.write(command)?;
+        scpi.query("*OPC?")?;
+        Ok(())
+    };
+    let status = lock_link(link).query(":TRIGger:STATus?")?;
     let was_running = !status.trim().eq_ignore_ascii_case("STOP");
     // Frozen, so that only the grid differs between the two frames.
-    scpi.write(":STOP")?;
+    lock_link(link).write(":STOP")?;
     let result = (|| {
-        scpi.write(":DISPlay:GRID FULL")?;
-        scpi.query("*OPC?")?;
-        let with_grid = settled_frame(video, SETTLE_FRAMES)?;
-        scpi.write(":DISPlay:GRID NONE")?;
-        scpi.query("*OPC?")?;
-        let without_grid = settled_frame(video, SETTLE_FRAMES)?;
+        command(":DISPlay:GRID FULL")?;
+        let with_grid = settled_frame(video)?;
+        command(":DISPlay:GRID NONE")?;
+        let without_grid = settled_frame(video)?;
         screen::measure(&with_grid, &without_grid)
     })();
     if was_running {
-        scpi.write(":RUN")?;
+        lock_link(link).write(":RUN")?;
     }
     result
 }
@@ -975,9 +1021,10 @@ impl Oscilloscope for RigolMso5000 {
                 if !status.trim().eq_ignore_ascii_case("STOP") {
                     return Ok(false);
                 }
+                let settle = self.settle_frames();
                 let mut work = self.work();
                 work.single_done = true;
-                work.stale_through = newest + SETTLE_FRAMES;
+                work.stale_through = newest + settle;
                 return Ok(false);
             }
         }

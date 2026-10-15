@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 
-use super::frame::{decode_mjpeg, Layout, VideoFrame};
+use super::frame::{decode_bmp, decode_mjpeg, Layout, VideoFrame};
 
 /// A frame as the card delivered it, before decoding.
 #[derive(Debug, Clone)]
@@ -31,6 +31,8 @@ pub struct RawFrame {
 pub enum Encoding {
     Mjpeg,
     Yuyv,
+    /// The scope's own screenshot, read over SCPI.
+    Bmp,
 }
 
 impl RawFrame {
@@ -50,6 +52,10 @@ impl RawFrame {
             }
             Encoding::Mjpeg => {
                 let (width, height, data) = decode_mjpeg(&self.bytes)?;
+                (width, height, Layout::Ycc, data)
+            }
+            Encoding::Bmp => {
+                let (width, height, data) = decode_bmp(&self.bytes)?;
                 (width, height, Layout::Ycc, data)
             }
         };
@@ -75,6 +81,18 @@ pub trait FrameSource: Send + Sync {
 
     /// What is being captured, for logs and errors.
     fn describe(&self) -> String;
+
+    /// Frames to let pass after a change before trusting the picture: a
+    /// card has a frame or two in flight and the scope takes a moment to
+    /// redraw.
+    fn settle_frames(&self) -> u64 {
+        3
+    }
+
+    /// Longest to wait for one frame.
+    fn frame_wait(&self) -> Duration {
+        Duration::from_secs(3)
+    }
 }
 
 /// The newest frame, shared between the capture thread and the scope.
@@ -347,6 +365,7 @@ mod v4l2 {
             format.fourcc = FourCC::new(match mode.encoding {
                 Encoding::Mjpeg => MJPG,
                 Encoding::Yuyv => YUYV,
+                Encoding::Bmp => unreachable!("a capture card offers no BMP mode"),
             });
             let format = device.set_format(&format).context("setting the capture format")?;
             let _ = device.set_params(&v4l::video::capture::Parameters::with_fps(

@@ -114,6 +114,7 @@ class TestCaptureCards:
         rec = {"capture": {"vid": "534d", "pid": "2109", "port_path": "1-1.3"}}
         assert rigol_daemons.capture_spec(rec) == "usb:1-1.3"
         assert rigol_daemons.capture_spec({"capture": {"device": "/dev/video4"}}) == "/dev/video4"
+        assert rigol_daemons.capture_spec({"capture": {"device": "screen"}}) == "screen"
         assert rigol_daemons.capture_spec({}) is None
 
     def test_the_channel_nets_share_the_scope_net_s_card(self):

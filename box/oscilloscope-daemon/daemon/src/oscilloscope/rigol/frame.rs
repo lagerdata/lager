@@ -116,6 +116,94 @@ pub fn decode_mjpeg(jpeg: &[u8]) -> anyhow::Result<(usize, usize, Vec<u8>)> {
     Ok((usize::from(info.width), usize::from(info.height), pixels))
 }
 
+/// Decode an uncompressed 24- or 32-bit BMP, as the scope's own screenshot
+/// comes, to Y, Cb, Cr.
+pub fn decode_bmp(bmp: &[u8]) -> anyhow::Result<(usize, usize, Vec<u8>)> {
+    use anyhow::{bail, Context};
+
+    let u16_at = |at: usize| bmp.get(at..at + 2).map(|b| u16::from_le_bytes([b[0], b[1]]));
+    let u32_at = |at: usize| {
+        bmp.get(at..at + 4)
+            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    };
+    if bmp.get(..2) != Some(b"BM".as_slice()) {
+        bail!(
+            "the screenshot is not a BMP; it starts {:02x?}",
+            &bmp[..bmp.len().min(8)]
+        );
+    }
+    let short = || "the BMP header is cut short";
+    let pixels_at = u32_at(10).context(short())? as usize;
+    let width = u32_at(18).context(short())? as i32;
+    let height = u32_at(22).context(short())? as i32;
+    let bits = u16_at(28).context(short())?;
+    let compression = u32_at(30).context(short())?;
+    // BI_BITFIELDS (3) at 32 bits is still plain BGRA.
+    if !(bits == 24 && compression == 0 || bits == 32 && matches!(compression, 0 | 3)) {
+        bail!("the screenshot is a {bits}-bit BMP with compression {compression}; only 24- and 32-bit are read");
+    }
+    if width <= 0 || height == 0 {
+        bail!("the screenshot is {width} x {height}");
+    }
+    let (width, rows) = (width as usize, height.unsigned_abs() as usize);
+    // Rows run bottom up unless the height is negative.
+    let bottom_up = height > 0;
+    let bytes_per_pixel = usize::from(bits / 8);
+    let stride = (width * bytes_per_pixel).div_ceil(4) * 4;
+    let needed = pixels_at + stride * rows;
+    if bmp.len() < needed {
+        bail!("the screenshot holds {} bytes where its header needs {needed}", bmp.len());
+    }
+    let mut out = Vec::with_capacity(width * rows * 3);
+    for y in 0..rows {
+        let row = if bottom_up { rows - 1 - y } else { y };
+        let start = pixels_at + row * stride;
+        for pixel in bmp[start..start + width * bytes_per_pixel].chunks_exact(bytes_per_pixel) {
+            let (luma, cb, cr) = rgb_to_ycc(pixel[2], pixel[1], pixel[0]);
+            out.extend_from_slice(&[luma, cb, cr]);
+        }
+    }
+    Ok((width, rows, out))
+}
+
+/// A 24-bit bottom-up BMP of `frame`, as the scope's screenshot is laid out.
+#[cfg(test)]
+pub fn encode_bmp(frame: &VideoFrame) -> Vec<u8> {
+    let stride = (frame.width * 3).div_ceil(4) * 4;
+    let size = 54 + stride * frame.height;
+    let mut out = Vec::with_capacity(size);
+    out.extend_from_slice(b"BM");
+    out.extend_from_slice(&(size as u32).to_le_bytes());
+    out.extend_from_slice(&[0; 4]);
+    out.extend_from_slice(&54u32.to_le_bytes());
+    out.extend_from_slice(&40u32.to_le_bytes());
+    out.extend_from_slice(&(frame.width as i32).to_le_bytes());
+    out.extend_from_slice(&(frame.height as i32).to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&24u16.to_le_bytes());
+    out.extend_from_slice(&[0; 24]);
+    for y in (0..frame.height).rev() {
+        let start = out.len();
+        for x in 0..frame.width {
+            let (r, g, b) = ycc_to_rgb(frame.ycc(x, y));
+            out.extend_from_slice(&[b, g, r]);
+        }
+        out.resize(start + stride, 0);
+    }
+    out
+}
+
+#[cfg(test)]
+fn ycc_to_rgb((y, cb, cr): (u8, u8, u8)) -> (u8, u8, u8) {
+    let (y, cb, cr) = (f32::from(y), f32::from(cb) - 128.0, f32::from(cr) - 128.0);
+    let clamp = |v: f32| v.round().clamp(0.0, 255.0) as u8;
+    (
+        clamp(y + 1.402 * cr),
+        clamp(y - 0.344_136 * cb - 0.714_136 * cr),
+        clamp(y + 1.772 * cb),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,6 +238,26 @@ mod tests {
         assert!(cb.abs_diff(want_cb) < 8, "cb {cb}");
         assert!(cr.abs_diff(want_cr) < 8, "cr {cr}");
         assert!(frame.luma(5, 5) < 8, "the background is black");
+    }
+
+    #[test]
+    fn a_bmp_screenshot_decodes_top_row_first() {
+        let mut frame = VideoFrame::blank(5, 3, Layout::Ycc);
+        let yellow = rgb_to_ycc(255, 255, 0);
+        frame.put(1, 0, yellow);
+        let (width, height, data) = decode_bmp(&encode_bmp(&frame)).unwrap();
+        assert_eq!((width, height), (5, 3));
+        let decoded = VideoFrame { width, height, layout: Layout::Ycc, data, captured_ns: 0, sequence: 1 };
+        let (luma, cb, cr) = decoded.ycc(1, 0);
+        assert!(luma.abs_diff(yellow.0) < 3 && cb.abs_diff(yellow.1) < 3 && cr.abs_diff(yellow.2) < 3);
+        assert!(decoded.luma(1, 2) < 20, "the bottom row stays black");
+    }
+
+    #[test]
+    fn a_short_or_foreign_screenshot_is_refused() {
+        let bmp = encode_bmp(&VideoFrame::blank(4, 4, Layout::Ycc));
+        assert!(decode_bmp(&bmp[..bmp.len() - 1]).is_err());
+        assert!(decode_bmp(b"\x89PNG\r\n").is_err());
     }
 
     #[test]

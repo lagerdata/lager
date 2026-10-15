@@ -89,3 +89,11 @@ def test_a_picoscope_needs_no_card(box):
     result = _invoke("pico")
     assert result.exit_code == 1
     assert "without a capture card" in result.output
+
+
+def test_the_screenshot_stands_in_for_a_card(box):
+    result = _invoke("rigol", "--screen")
+    assert result.exit_code == 0, result.output
+    assert _net(box, "rigol")["capture"] == {"device": "screen"}
+    assert "capture" not in _net(box, "rigol ch1")
+    assert _invoke("rigol", "--screen", "--clear").exit_code == 1

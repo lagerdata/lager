@@ -613,6 +613,7 @@ lager nets set-capture NAME [OPTIONS]
 **选项：**
 - `--port TEXT` - 采集卡的 USB 端口，与 `lager instruments` 显示的一致。连接了多张采集卡时必须提供
 - `--device TEXT` - 一个 `/dev/videoN` 节点，用于 Box 无法识别的采集卡
+- `--screen` - 不使用采集卡，而是通过 USB 读取示波器自身的截图作为实时视图。适用于没有采集卡或示波器的 HDMI 输出没有画面的情况。此时实时视图每秒更新几次
 - `--clear` - 取消配对。除实时视图外，所有功能继续可用
 - `--box TEXT` - Lager Box 名称或 IP
 

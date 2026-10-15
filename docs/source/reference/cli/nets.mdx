@@ -627,6 +627,7 @@ lager nets set-capture NAME [OPTIONS]
 **Options:**
 - `--port TEXT` - USB port of the capture card, as `lager instruments` shows it. Necessary when more than one card is connected
 - `--device TEXT` - A `/dev/videoN` node, for a card that the box does not recognize
+- `--screen` - Take the live view from screenshots that the scope sends over USB, instead of from a capture card. Use it when there is no card or the HDMI output of the scope shows no picture. The live view then updates a few times a second
 - `--clear` - Remove the pairing. All functions except the live view continue to work
 - `--box TEXT` - Lager Box name or IP
 

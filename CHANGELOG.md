@@ -22,7 +22,10 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   card, so the web scope page, `lager scope ... stream`, status, acquisition,
   holdoff, display, FFT and cursors all work on a Rigol net. Pair the scope
   with its card once with `lager nets set-capture <net>`; without a card,
-  everything but the live view still works.
+  everything but the live view still works. A scope with no card, or whose
+  HDMI output gives no picture, can take its live view from its own
+  screenshot over USB instead with `lager nets set-capture <net> --screen`,
+  at a few frames a second.
 
 ### Changed
 

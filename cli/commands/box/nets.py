@@ -1350,11 +1350,14 @@ def _net_address(record: dict) -> Optional[str]:
               help="USB port of the capture card (as `lager instruments` lists it)")
 @click.option("--device", default=None,
               help="A /dev/videoN node, for a card the box does not recognize")
+@click.option("--screen", is_flag=True,
+              help="Read the live view from the scope's own screenshot over USB instead "
+                   "of a capture card (a few frames a second)")
 @click.option("--clear", is_flag=True, help="Unpair the scope from its capture card")
 @click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def set_capture_cmd(ctx: click.Context, name: str, port_path: str | None,
-                    device: str | None, clear: bool, box: str | None) -> None:
+                    device: str | None, screen: bool, clear: bool, box: str | None) -> None:
     """
     A Rigol MSO5000's live view is its HDMI output, captured by a USB HDMI
     capture card. Nothing on USB ties the card to the scope, so the pairing
@@ -1363,8 +1366,8 @@ def set_capture_cmd(ctx: click.Context, name: str, port_path: str | None,
     video change.
     """
     resolved_box = _resolve_box(ctx, box)
-    if sum(bool(x) for x in (port_path, device, clear)) > 1:
-        click.secho("Give one of --port, --device or --clear.", fg="red", err=True)
+    if sum(bool(x) for x in (port_path, device, screen, clear)) > 1:
+        click.secho("Give one of --port, --device, --screen or --clear.", fg="red", err=True)
         ctx.exit(1)
 
     recs = _fetch_saved_nets(ctx, resolved_box)
@@ -1379,7 +1382,9 @@ def set_capture_cmd(ctx: click.Context, name: str, port_path: str | None,
         ctx.exit(1)
 
     capture = None
-    if device:
+    if screen:
+        capture = {"device": "screen"}
+    elif device:
         capture = {"device": device}
     elif not clear:
         cards = [d for d in _fetch_instruments(ctx, resolved_box)
@@ -1419,7 +1424,10 @@ def set_capture_cmd(ctx: click.Context, name: str, port_path: str | None,
             continue
         _save_net_http(ctx, resolved_box, record)
 
-    if capture:
+    if screen:
+        click.secho(f"'{name}' takes its live view from the scope's screenshot over USB.",
+                    fg="green")
+    elif capture:
         where = capture.get("port_path") and f"USB port {capture['port_path']}" \
             or capture.get("device")
         click.secho(f"'{name}' takes its live view from the capture card on {where}.",
