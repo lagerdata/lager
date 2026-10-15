@@ -257,6 +257,22 @@ def _dfu_timeout(params):
     return max(1.0, min(timeout, _DFU_MAX_TIMEOUT_S))
 
 
+def _dfu_error_tail(stdout, stderr, limit=3):
+    """Last ``limit`` informative lines of dfu-util output.
+
+    dfu-util reports device failures (``DFU state(10) = dfuERROR, ...``) on
+    stdout for raw downloads and on stderr for DfuSe, and always warns about
+    a missing DFU suffix on stderr. Read both streams, stderr last, and drop
+    the suffix noise so it cannot crowd out the cause.
+    """
+    lines = (stdout or '').splitlines() + (stderr or '').splitlines()
+    informative = [
+        line.strip() for line in lines
+        if line.strip() and 'dfu suffix' not in line.lower()
+    ]
+    return informative[-limit:]
+
+
 def _run_dfu_util(args, timeout):
     """Run dfu-util, returning (exit_code, stdout, stderr)."""
     proc = subprocess.run(
@@ -586,7 +602,7 @@ def register_usb_routes(app: Flask) -> None:
 
             value = {'exit_code': exit_code, 'stdout': stdout, 'stderr': stderr}
             if exit_code != 0:
-                tail = (stderr or stdout).strip().splitlines()[-3:]
+                tail = _dfu_error_tail(stdout, stderr)
                 return jsonify({
                     'success': False,
                     'action': action,

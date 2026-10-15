@@ -341,6 +341,27 @@ class DfuRouteTests(unittest.TestCase):
         self.assertIn('No DFU capable USB device', body['error'])
         self.assertEqual(body['value']['exit_code'], 74)
 
+    def test_nonzero_exit_error_keeps_stdout_cause_past_suffix_warnings(self):
+        stdout = (
+            'Downloading to address = 0x08000000, size = 1024\n'
+            'DFU state(10) = dfuERROR, status(3) = errWRITE\n'
+        )
+        stderr = (
+            'dfu-util: Warning: Invalid DFU suffix signature\n'
+            'dfu-util: A valid DFU suffix will be required in a future '
+            'dfu-util release\n'
+        )
+        with patch.object(
+            usb_handler, '_run_dfu_util', return_value=(74, stdout, stderr),
+        ):
+            resp = self.client.post('/usb/dfu', json={'action': 'detach'})
+        self.assertEqual(resp.status_code, 502)
+        body = resp.get_json()
+        self.assertIn('status(3) = errWRITE', body['error'])
+        self.assertNotIn('DFU suffix', body['error'])
+        self.assertEqual(body['value']['stdout'], stdout)
+        self.assertEqual(body['value']['stderr'], stderr)
+
 
 class SelfRestartGateTests(unittest.TestCase):
     """A service restart repairs exactly one thing: a USB handle THIS process
