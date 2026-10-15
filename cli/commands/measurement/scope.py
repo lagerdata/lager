@@ -832,13 +832,9 @@ def spi(ctx, mcu, box, mode, coupling, source_mosi_miso, source_sck, source_cs,
 @click.option("--coupling", default="dc", type=COUPLING_CHOICES, help="Coupling mode", show_default=True)
 @click.option("--source", required=False, help="Trigger source", metavar="NET")
 @click.option("--level", type=click.FLOAT, help="Trigger level")
-@click.option("--trigger-on", type=click.Choice(("gt", "lt", "gtlt", "positive", "negative", "positive_greater", "negative_greater", "positive_less", "negative_less")), default="gt",
-              help="Trigger on pulses wider than --lower (gt), narrower than --upper (lt), or "
-                   "between the two (gtlt). The positive_* and negative_* names are kept for "
-                   "older scripts; they set no polarity, which on the MSO5000 is front-panel only.",
-              show_default=True)
-@click.option("--upper", type=click.FLOAT, required=False, help="Upper pulse width limit (seconds), used by lt and gtlt")
-@click.option("--lower", type=click.FLOAT, required=False, help="Lower pulse width limit (seconds), used by gt and gtlt")
+@click.option("--trigger-on", type=click.Choice(("positive", "negative", "positive_greater", "negative_greater", "positive_less", "negative_less")), default="positive", help="Trigger condition", show_default=True)
+@click.option("--upper", type=click.FLOAT, required=False, help="Upper pulse width limit (seconds)")
+@click.option("--lower", type=click.FLOAT, required=False, help="Lower pulse width limit (seconds)")
 def pulse(ctx, mcu, box, mode, coupling, source, level, trigger_on, upper, lower):
     """Set pulse width trigger (Rigol only)"""
     box_ip = _resolve_box(ctx, box)

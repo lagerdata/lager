@@ -327,10 +327,9 @@ def edge(ctx, mcu, box, mode, coupling, source, slope, level):
 @click.option('--coupling', default='dc', type=COUPLING_CHOICES, help='Coupling mode', show_default=True)
 @click.option('--source', required=False, help='Trigger source', metavar='NET')
 @click.option('--level', type=click.FLOAT, help='Trigger level')
-@click.option('--trigger-on', type=click.Choice(('gt', 'lt', 'gtlt')),
-              help='Trigger on pulses wider than --lower (gt), narrower than --upper (lt), or between the two (gtlt)')
-@click.option('--upper', type=click.FLOAT, help='Upper pulse width limit (seconds), used by lt and gtlt')
-@click.option('--lower', type=click.FLOAT, help='Lower pulse width limit (seconds), used by gt and gtlt')
+@click.option('--trigger-on', type=click.Choice(('gt', 'lt', 'gtlt')), help='Trigger on')
+@click.option('--upper', type=click.FLOAT, help='upper width')
+@click.option('--lower', type=click.FLOAT, help='lower width')
 def pulse(ctx, mcu, box, mode, coupling, source, level, trigger_on, upper, lower):
     """
     Set pulse trigger

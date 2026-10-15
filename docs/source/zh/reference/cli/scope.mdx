@@ -6,7 +6,7 @@ description: 控制示波器设置并采集波形
 通过 Lager CLI 控制示波器 Net，用于波形采集、触发、测量和串流。
 
 <Warning>
-**Rigol MSO5000 上的已知限制。** 边沿、脉冲和 SPI 触发可以工作。UART 和 I2C 触发在 Rigol MSO5000 上会失败。CAN 触发以及 Python API 中的所有总线解码器同样会失败。失败的命令会打印错误并以 1 退出。[Issue #418](https://github.com/lagerdata/lager/issues/418) 跟踪这项工作。
+**Rigol MSO5000 上的已知限制。** 边沿触发和 SPI 触发可以工作。脉冲、UART 和 I2C 触发在 Rigol MSO5000 上会失败。CAN 触发以及 Python API 中的所有总线解码器同样会失败。失败的命令会打印错误并以 1 退出。[Issue #418](https://github.com/lagerdata/lager/issues/418) 跟踪这项工作。
 </Warning>
 
 ## 语法
@@ -125,7 +125,7 @@ CLI 在把命令发送到示波器之前会先检查这些值：
 | 通道 | 4 个模拟 + 16 个数字 | 2 或 4 个模拟（A 到 D），运行时检测 |
 | 实时串流 | 不支持（单次采集） | 支持（连续） |
 | 测量 | 通过 SCPI 向仪器查询 | 14 种，根据采集数据计算 |
-| 触发类型 | 边沿、脉冲和 SPI（I2C 和 UART 尚不可用） | 仅边沿，支持释抑 |
+| 触发类型 | 边沿和 SPI（脉冲、I2C 和 UART 尚不可用） | 仅边沿，支持释抑 |
 | 光标控制 | 仪器屏幕上的 XY 光标 | 基于采集采样点的时间/电压光标 |
 | 自动量程 | 支持 | 不支持 |
 | 平均、峰值检测、滚动、FFT | 在仪器前面板上操作 | `acquire`、`roll`、`fft` |
@@ -482,6 +482,8 @@ lager scope picoscope1 trigger holdoff --box my-lager-box         # show it
 
 设置脉宽触发（仅 Rigol）。当脉宽满足条件时，示波器触发。
 
+在 Rigol MSO5000 上，这个触发还不能工作。请参阅本页顶部的限制说明。
+
 ```bash
 lager scope NET_NAME trigger pulse [OPTIONS]
 ```
@@ -490,21 +492,22 @@ lager scope NET_NAME trigger pulse [OPTIONS]
 
 | 选项 | 说明 | 默认值 |
 |--------|-------------|---------|
-| `--trigger-on` | 条件（见下表） | `gt` |
-| `--upper SECONDS` | 脉宽上限，用于 `lt` 和 `gtlt` | - |
-| `--lower SECONDS` | 脉宽下限，用于 `gt` 和 `gtlt` | - |
+| `--trigger-on` | 条件（见下表） | `positive` |
+| `--upper SECONDS` | 脉宽上限 | - |
+| `--lower SECONDS` | 脉宽下限 | - |
 
 **trigger-on 条件：**
 
 | 条件 | 说明 |
 |-----------|-------------|
-| `gt` | 宽于 `--lower` 的脉冲 |
-| `lt` | 窄于 `--upper` 的脉冲 |
-| `gtlt` | 宽于 `--lower` 且窄于 `--upper` 的脉冲 |
+| `positive` | 正脉冲宽于 `--upper` |
+| `negative` | 负脉冲宽于 `--upper` |
+| `positive_greater` | 正脉冲宽于 `--upper` |
+| `negative_greater` | 负脉冲宽于 `--upper` |
+| `positive_less` | 正脉冲窄于 `--lower` |
+| `negative_less` | 负脉冲窄于 `--lower` |
 
-旧的名称仍可用于现有脚本：`positive`、`negative`、`positive_greater` 和 `negative_greater` 应用 `gt`，`positive_less` 和 `negative_less` 应用 `lt`。它们都不设置极性：Rigol MSO5000 没有远程设置极性的命令。示波器保持前面板上设置的极性，命令会打印一条提示说明这一点。缺少所需的宽度时，命令不会更改任何宽度条件，并打印一条提示。
-
-示波器把 `--level` 限制在源通道中心上下各五格之内。如果它应用的电平与请求的不同，命令会打印实际应用的电平。
+该条件目前还不选择极性：每个 `positive` 值与对应的 `negative` 值设置的是同一个宽度条件。缺少所需的宽度时，命令不会更改任何宽度条件，并打印一条提示。
 
 ### `trigger i2c`
 
@@ -1084,7 +1087,7 @@ lager scope ANALOG1 measure vmax --box my-lager-box
 lager scope ANALOG1 trigger edge --slope rising --level 1.5 --box my-lager-box
 
 # Pulse width trigger (glitch detection)
-lager scope ANALOG1 trigger pulse --trigger-on lt --upper 0.0001 --box my-lager-box
+lager scope ANALOG1 trigger pulse --trigger-on positive_less --lower 0.0001 --box my-lager-box
 
 # UART trigger at 115200 baud
 lager scope ANALOG1 trigger uart \

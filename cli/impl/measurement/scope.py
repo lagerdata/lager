@@ -837,18 +837,6 @@ def trigger_uart(netname, mode, coupling, source, level, trigger_on, parity, sto
     print(f"{GREEN}UART trigger configured{RESET}")
 
 
-#: The `lager scope` pulse condition names that imply a polarity, and the
-#: width condition each one applies.
-_PULSE_LEGACY_CONDITIONS = {
-    "positive": "gt",
-    "negative": "gt",
-    "positive_greater": "gt",
-    "negative_greater": "gt",
-    "positive_less": "lt",
-    "negative_less": "lt",
-}
-
-
 def trigger_pulse(netname, mode, coupling, source, level, trigger_on, upper, lower):
     """Configure pulse trigger for Rigol oscilloscope."""
     target_net = get_rigol_net(netname)
@@ -885,41 +873,23 @@ def trigger_pulse(netname, mode, coupling, source, level, trigger_on, upper, low
 
     if level is not None:
         target_net.trigger_settings.pulse.set_level(level)
-        # The MSO5000 clamps the level to +/-5 divisions without an error, so
-        # report what it applied rather than what was asked for.
-        applied = target_net.trigger_settings.pulse.get_level()
-        if applied is not None and abs(applied - level) > 1e-6 + 1e-3 * abs(level):
-            print(f"{YELLOW}The scope set the trigger level to {applied:g} V, not {level:g} V: "
-                  f"it limits the level to 5 divisions either side of center on the source "
-                  f"channel.{RESET}")
 
     if trigger_on:
-        # `lager logic` names the conditions gt / lt / gtlt. `lager scope` also
-        # accepts the older positive_* / negative_* names, but the MSO5000 has
-        # no remote pulse-polarity setting, so those apply only the width
-        # condition and say so.
+        # `lager scope` names the conditions positive_* / negative_*, and
+        # `lager logic` names them gt / lt / gtlt. Both reach the same three
+        # mapper conditions. Polarity is not applied yet: the mapper has no
+        # polarity setter, so positive and negative select the same condition.
         trigger_lower = trigger_on.lower()
-        condition = _PULSE_LEGACY_CONDITIONS.get(trigger_lower, trigger_lower)
-        if condition != trigger_lower:
-            print(f"{YELLOW}Pulse polarity cannot be set remotely on this scope; it keeps the "
-                  f"polarity chosen on its front panel. '{trigger_on}' was applied as "
-                  f"'{condition}'.{RESET}")
-        trigger_lower = condition
-        # A greater-than condition compares against the lower width limit and
-        # a less-than condition against the upper one, which is how the
-        # instrument reads them.
-        if trigger_lower == "gt":
-            if lower:
-                target_net.trigger_settings.pulse.set_trigger_on_pulse_greater_than_width(lower)
-            else:
-                print(f"{YELLOW}gt needs --lower, the shortest pulse width that triggers; "
-                      f"the pulse width condition was not changed.{RESET}")
-        elif trigger_lower == "lt":
+        if trigger_lower in ("positive", "negative", "positive_greater", "negative_greater", "gt"):
             if upper:
-                target_net.trigger_settings.pulse.set_trigger_on_pulse_less_than_width(upper)
+                target_net.trigger_settings.pulse.set_trigger_on_pulse_greater_than_width(upper)
             else:
-                print(f"{YELLOW}lt needs --upper, the longest pulse width that triggers; "
-                      f"the pulse width condition was not changed.{RESET}")
+                print(f"{YELLOW}No --upper given; the pulse width condition was not changed.{RESET}")
+        elif trigger_lower in ("positive_less", "negative_less", "lt"):
+            if lower:
+                target_net.trigger_settings.pulse.set_trigger_on_pulse_less_than_width(lower)
+            else:
+                print(f"{YELLOW}No --lower given; the pulse width condition was not changed.{RESET}")
         elif trigger_lower == "gtlt":
             if upper and lower:
                 target_net.trigger_settings.pulse.set_trigger_on_pulse_less_than_greater_than(
