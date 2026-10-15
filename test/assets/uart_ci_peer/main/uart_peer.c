@@ -16,15 +16,16 @@
 //
 // WHY EVERY COMMAND IS ECHOED FIRST
 //
-// `lager uart -i` suppresses exactly one inbound line after each line it
-// sends (cli/commands/communication/websocket_client.py:145). It does not
-// check that the discarded line matches what was sent - it just eats the
-// first line back. So this firmware echoes the command (that line is eaten)
-// and then sends the reply (that line survives and is what CI asserts on).
+// `lager uart -i` hides the device's echo of each line it sends
+// (UARTWebSocketClient._filter_echo in
+// cli/commands/communication/websocket_client.py): the first line back is
+// dropped only if it IS the command. So this firmware echoes the command (that
+// line is dropped, which exercises the filter) and then sends the reply (that
+// line survives and is what CI asserts on).
 //
-// For the same reason EVERY command produces exactly two lines, including
-// unrecognised ones. A command that replied with nothing would leave the
-// CLI's suppression armed, and it would swallow the NEXT command's reply.
+// EVERY command produces exactly two lines, including unrecognised ones, so
+// each transcript has the same echo-then-reply shape. A device that does not
+// echo is covered by the CLI's unit tests, not by this peer.
 //
 // There is deliberately no periodic output. Unsolicited traffic would make
 // CI assertions racy.

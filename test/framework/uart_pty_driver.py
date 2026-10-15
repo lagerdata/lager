@@ -144,10 +144,11 @@ def main() -> int:
             return 2
 
         # 2. Type the commands, waiting for each reply to finish arriving
-        #    before sending the next. The client's stdin reader suppresses one
-        #    inbound line per line SENT, and `suppress_next_line` is a boolean
-        #    rather than a counter, so commands delivered faster than the
-        #    replies come back arm it unevenly and interleave the transcript.
+        #    before sending the next. The client's stdin reader arms an echo
+        #    filter for the line just SENT, and only for that line: sending
+        #    the next command re-arms it, so commands delivered faster than
+        #    the replies come back would leave earlier echoes unfiltered and
+        #    interleave the transcript.
         for line in args.commands:
             os.write(master, line.encode() + b"\n")
             pump_until_quiet(time.monotonic() + 5.0)

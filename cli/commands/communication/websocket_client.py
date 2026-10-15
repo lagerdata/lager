@@ -23,6 +23,7 @@ except (ImportError, ModuleNotFoundError) as exc:  # pragma: no cover - platform
 
 import select
 import os
+import re
 from typing import Optional
 import socketio
 import click
@@ -42,6 +43,31 @@ START_TIMEOUT = 15.0
 # request. So every exit cost the full 3s. Nothing after the CLOSE packet tells
 # the box anything new, and process exit closes the TCP socket regardless.
 DISCONNECT_TIMEOUT = 0.5
+
+# ANSI CSI sequences (colour, cursor moves) a device may wrap its echo in.
+_ANSI_RE = re.compile(rb'\x1b\[[0-9;?]*[A-Za-z]')
+
+# Last character of a prompt the device may redraw in front of its echo
+# (`compat> cmd`, `root# cmd`, `[cli]: cmd`).
+_PROMPT_ENDS = (b'>', b'#', b'$', b':', b']')
+
+
+def _normalize_echo(data: bytes) -> bytes:
+    """`data` without ANSI escapes or CR/LF, for comparing against a command."""
+    return _ANSI_RE.sub(b'', bytes(data)).replace(b'\r', b'').replace(b'\n', b'')
+
+
+def _is_echo_of(line: bytes, cmd: bytes) -> bool:
+    """Whether `line` is the device echoing `cmd`, optionally after a prompt.
+
+    Anything other than a prompt in front of the command makes it a real
+    reply: `ERR $?` is output, not an echo of `$?`.
+    """
+    seen = _normalize_echo(line)
+    if not cmd or not seen.endswith(cmd):
+        return False
+    prompt = seen[:len(seen) - len(cmd)].rstrip(b' ')
+    return not prompt or prompt[-1:] in _PROMPT_ENDS
 
 
 def disconnect_bounded(sio, timeout: float = DISCONNECT_TIMEOUT) -> None:
@@ -66,7 +92,7 @@ class UARTWebSocketClient:
     """WebSocket client for interactive UART sessions."""
 
     def __init__(self, box_url: str, netname: str, overrides: dict, interactive: bool = True,
-                 box_label: Optional[str] = None):
+                 box_label: Optional[str] = None, expect_echo: bool = True):
         """
         Initialize UART WebSocket client.
 
@@ -76,6 +102,8 @@ class UARTWebSocketClient:
             overrides: Parameter overrides (baudrate, parity, etc.)
             interactive: Enable interactive mode (bidirectional, requires TTY)
             box_label: The --box the user typed, for actionable error hints
+            expect_echo: The device echoes each command back, so hide that
+                echo. False (--no-echo) shows every received line.
         """
         self.box_url = box_url
         self.netname = netname
@@ -96,8 +124,10 @@ class UARTWebSocketClient:
         self.old_tty_settings = None
         self.line_buffer = bytearray()  # Buffer for backspace support
         self.output_lock = threading.Lock()  # Lock for stdout access
+        self.expect_echo = expect_echo
         self.suppress_next_line = False  # Suppress device echo of command
-        self.echo_buffer = bytearray()  # Buffer for accumulating echo line
+        self.echo_buffer = bytearray()  # Bytes held while they may be the echo
+        self.pending_echo = b''  # The command whose echo we are waiting for
 
         # Convert line_ending string to bytes
         line_ending = overrides.get('line_ending', 'lf')
@@ -172,32 +202,66 @@ class UARTWebSocketClient:
                 # Convert hex string to bytes
                 bytes_data = bytes.fromhex(hex_data)
 
-                # If suppressing echo, accumulate until we see complete line
-                if self.suppress_next_line:
-                    for idx, byte in enumerate(bytes_data):
-                        self.echo_buffer.append(byte)
-                        # Check if we've completed the echo line
-                        if byte == ord('\n') or byte == ord('\r'):
-                            # Echo line complete - discard it and stop suppressing
-                            self.echo_buffer.clear()
-                            self.suppress_next_line = False
-                            # Skip all bytes up to and including this newline
-                            bytes_data = bytes_data[idx + 1:]
-                            break
-                    # If still suppressing (haven't seen newline yet), don't output anything
-                    if self.suppress_next_line:
-                        return
-                    # If no data left after suppressing echo, return
-                    if not bytes_data:
-                        return
-
-                # Write to stdout with lock
+                # Under the lock, so the stdin thread cannot re-arm the echo
+                # filter between filtering and writing.
                 with self.output_lock:
-                    # Write UART data
-                    sys.stdout.buffer.write(bytes_data)
-                    sys.stdout.buffer.flush()
+                    if self.suppress_next_line:
+                        bytes_data = self._filter_echo(bytes_data)
+                    if bytes_data:
+                        sys.stdout.buffer.write(bytes_data)
+                        sys.stdout.buffer.flush()
         except Exception as e:
             click.secho(f"\nError processing UART data: {e}", fg='red', err=True)
+
+    def _filter_echo(self, data: bytes) -> bytes:
+        """Strip the device's echo of the last command; return the bytes to print.
+
+        Called with output_lock held while suppress_next_line is set. Only a
+        line that actually is the command (ignoring CR/LF, ANSI escapes and a
+        leading prompt) is dropped, so a device that does not echo keeps its
+        reply. Bytes are held back only while they could still turn out to be
+        the echo; anything else ends suppression and is printed at once, so a
+        reply without a line ending is never hidden.
+        """
+        self.echo_buffer.extend(data)
+        buf = bytes(self.echo_buffer)
+        # Line endings left over from the previous reply are not the echo.
+        body = buf.lstrip(b'\r\n')
+        lead = buf[:len(buf) - len(body)]
+        end = next((i for i, b in enumerate(body) if b in b'\r\n'), None)
+        if end is None:
+            if (self.pending_echo.startswith(_normalize_echo(body))
+                    or _is_echo_of(body, self.pending_echo)):
+                # May still be the echo: hold it until its line ends.
+                self.echo_buffer = bytearray(body)
+                return lead
+            out = buf
+        elif _is_echo_of(body[:end], self.pending_echo):
+            # The echo: drop it and its first line ending.
+            out = lead + body[end + 1:]
+        else:
+            out = buf
+        self._clear_echo_filter()
+        return out
+
+    def _clear_echo_filter(self):
+        self.suppress_next_line = False
+        self.echo_buffer.clear()
+        self.pending_echo = b''
+
+    def _arm_echo_filter(self, cmd: bytes):
+        """Expect the device to echo `cmd` next (no-op under --no-echo)."""
+        if not self.expect_echo:
+            return
+        with self.output_lock:
+            # A fragment still held from the previous command was not its
+            # echo after all; show it rather than lose it.
+            if self.suppress_next_line and self.echo_buffer:
+                sys.stdout.buffer.write(bytes(self.echo_buffer))
+                sys.stdout.buffer.flush()
+            self._clear_echo_filter()
+            self.pending_echo = bytes(cmd)
+            self.suppress_next_line = True
 
     def _on_uart_status(self, data):
         """Handle box-side session status (device re-enumeration healing).
@@ -309,13 +373,13 @@ class UARTWebSocketClient:
                     elif byte == 0x0D or byte == 0x0A:
                         # Send buffered line + configured line ending to UART
                         if self.line_buffer:
+                            # Armed before sending, so a fast echo cannot
+                            # arrive ahead of the filter.
+                            self._arm_echo_filter(bytes(self.line_buffer))
                             line_to_send = self.line_buffer + self.line_ending_bytes
                             hex_data = line_to_send.hex()
                             self.sio.emit('uart_write', {'data': hex_data}, namespace='/uart')
                             self.line_buffer.clear()
-                            # Suppress device echo of this command
-                            self.suppress_next_line = True
-                            self.echo_buffer.clear()
                         else:
                             # Empty line, just send configured line ending
                             hex_data = self.line_ending_bytes.hex()
@@ -458,7 +522,8 @@ class UARTWebSocketClient:
 
 
 def connect_uart_interactive(box_url: str, netname: str, overrides: dict,
-                             box_label: Optional[str] = None) -> int:
+                             box_label: Optional[str] = None,
+                             expect_echo: bool = True) -> int:
     """
     Connect to interactive UART session via WebSocket.
 
@@ -467,12 +532,13 @@ def connect_uart_interactive(box_url: str, netname: str, overrides: dict,
         netname: Name of the UART net
         overrides: Parameter overrides
         box_label: The --box the user typed, for actionable error hints
+        expect_echo: The device echoes each command (False for --no-echo)
 
     Returns:
         Exit code (0 for success, non-zero for error)
     """
     client = UARTWebSocketClient(box_url, netname, overrides, interactive=True,
-                                 box_label=box_label)
+                                 box_label=box_label, expect_echo=expect_echo)
     return client.connect_and_run()
 
 

@@ -315,7 +315,8 @@ def display_nets(ctx, box, netname: str | None):
     click.echo(result)
 
 
-def _connect_uart_http(ctx, box_ip, netname, overrides, interactive, box_label=None):
+def _connect_uart_http(ctx, box_ip, netname, overrides, interactive, box_label=None,
+                       expect_echo=True):
     """
     Connect to UART via WebSocket (both read-only and interactive modes).
 
@@ -329,6 +330,8 @@ def _connect_uart_http(ctx, box_ip, netname, overrides, interactive, box_label=N
         interactive: Whether to use interactive mode (bidirectional with keyboard input)
         box_label: The --box the user typed, so an "in use" error can name the
             exact take-over command
+        expect_echo: Interactive only: the device echoes each command, so the
+            client hides that echo (False for --no-echo)
     """
     import time
 
@@ -337,17 +340,20 @@ def _connect_uart_http(ctx, box_ip, netname, overrides, interactive, box_label=N
         from .websocket_client import connect_uart_interactive
         box_url = f'http://{box_ip}:9000'
         connect_func = connect_uart_interactive
+        # Client-side only: never sent to the box in the session overrides.
+        extra = {'expect_echo': expect_echo}
     else:
         from .websocket_client import connect_uart_readonly
         box_url = f'http://{box_ip}:9000'
         connect_func = connect_uart_readonly
+        extra = {}
 
     # Retry logic for WebSocket connection
     max_retries = 2
     last_error = None
     for attempt in range(max_retries):
         try:
-            exit_code = connect_func(box_url, netname, overrides, box_label=box_label)
+            exit_code = connect_func(box_url, netname, overrides, box_label=box_label, **extra)
             ctx.exit(exit_code)
             return
         except (Exit, Abort):
@@ -424,8 +430,12 @@ def _connect_uart_http(ctx, box_ip, netname, overrides, interactive, box_label=N
 @click.option('-i', '--interactive', is_flag=True, help='Enable input mode for typing to serial port', show_default=True)
 @click.option('--opost/--no-opost', default=False, help=r'Convert \n to \r\n on output', show_default=True)
 @click.option('--line-ending', type=click.Choice(['lf', 'crlf', 'cr']), default='lf', help='Line ending format (lf=\\n, crlf=\\r\\n, cr=\\r)', show_default=True)
+@click.option('--echo/--no-echo', default=True, show_default=True,
+              help='Interactive mode: the device echoes each command back, and '
+                   'that echo is hidden. Use --no-echo for a device that does '
+                   'not echo, to show every received line')
 def uart(ctx, netname, action, box, baudrate, bytesize, parity, stopbits, xonxoff, rtscts, dsrdtr,
-         list_sessions, force, interactive, opost, line_ending):
+         list_sessions, force, interactive, opost, line_ending, echo):
     """Connect to UART serial port.
 
     With no NET_NAME, lists the UART nets saved on the box. Passing
@@ -563,7 +573,8 @@ def uart(ctx, netname, action, box, baudrate, bytesize, parity, stopbits, xonxof
     # _connect_uart_http); serial-port discovery/listing also goes through
     # the :9000 HTTP endpoints, so UART no longer touches the :5000 exec path.
     _connect_uart_http(
-        ctx, target_box, netname, overrides, interactive, box_label=box_name or box
+        ctx, target_box, netname, overrides, interactive, box_label=box_name or box,
+        expect_echo=echo,
     )
 
 
@@ -571,5 +582,6 @@ uart.net_examples = [
     "lager uart uart1 --box <BOX>",
     "lager uart uart1 --baudrate 115200 --box <BOX>",
     "lager uart uart1 --interactive --box <BOX>",
+    "lager uart uart1 --interactive --no-echo --box <BOX>",
     "lager uart --box <BOX>         (list UART nets)",
 ]

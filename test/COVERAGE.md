@@ -47,13 +47,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 3220 (+2 xfailed) |
+| `unit (cli)` | `test/unit/cli/` | 3237 (+2 xfailed) |
 | `unit (box)` | `test/unit/box/` | 4287 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 405 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 205 (+1 skipped) |
-| | **Total gated** | **8311** |
+| | **Total gated** | **8328** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -480,7 +480,7 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 299 files)
+### Local Unit Tests (`test/unit/` -- 300 files)
 
 #### Box Unit Tests (`test/unit/box/` -- 161 files)
 
@@ -652,7 +652,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_scope_ui_stream.py` | The web scope's credit-paced stream and pushed state: one credit returned for each frame received, only the newest frame kept for drawing, extra credit for a slow round trip, every control following the daemon's state except a field being edited, and an unplug dropping the live session so a replug can Start without a stop first |
 | `test_usb_scanner_picoscope.py` | PicoScope discovery in `usb_scanner.py`: every Pico Technology product ID is recognized, and the channel count comes from the device rather than from a static table |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 117 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 118 files)
 
 | File | What it tests |
 |------|---------------|
@@ -726,6 +726,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_ssh.py` | SSH ensure_lager_box_keypair and key_auth_works helpers |
 | `test_ssh_user_by_ip.py` | `lager ssh` and `lager update` log in as the user saved for the box, whether `--box` names it, gives its IP, or is left to the default box |
 | `test_supply_tui.py` | SupplyTUI render output, command parsing, worker threads, connection failure, exit teardown, Ctrl+C |
+| `test_uart_echo_match.py` | Interactive UART drops the line after a command only when it is the device's echo of that command (CR/LF, ANSI escapes and a leading prompt ignored), so a device that does not echo keeps its reply, a reply without a line ending is shown at once, and `--no-echo` turns the filter off |
 | `test_uart_session_release.py` | UART teardown releases the box-side session on every exit path (including Ctrl+C, and when the session never came up), never skips the disconnect that follows, and reports a held net with the take-over command; plus the connect banner keeping a by-id device path readable |
 | `test_uart_ws_status_events.py` | CLI handling of box-side `uart_status` events when a UART device re-enumerates |
 | `test_update_deps_preview.py` | `lager update --check`'s build-cache line never promises a cached build the rebuild gate would override — a pending layout flatten is a certain rebuild, and an unmeasurable build hash is reported as unknown rather than as a valid cache |

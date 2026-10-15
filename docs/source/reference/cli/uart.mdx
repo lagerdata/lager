@@ -32,6 +32,7 @@ lager uart [NETNAME] [OPTIONS]
 | `-i` / `--interactive` | Enable input mode for typing |
 | `--opost` / `--no-opost` | Convert \\n to \\r\\n on output |
 | `--line-ending MODE` | Line ending: lf, crlf, cr (default: lf) |
+| `--echo` / `--no-echo` | Interactive mode: whether the device echoes each command back (default: `--echo`) |
 | `--sessions` | List the UART sessions that hold a net, then exit |
 | `--force` | Take over the net if another session holds it |
 
@@ -196,6 +197,19 @@ Flow control types cannot be combined.
 | `cr` | \\r | Legacy systems |
 
 Use `--opost` to automatically convert line endings on output.
+
+### Command Echo
+
+In interactive mode, many device CLIs echo each command back before they reply. Lager already
+shows what you type, so it hides that echo. After each command, Lager drops the next line only
+if it is the command itself. It ignores line endings, color codes, and a prompt in front of the
+command. Any other line is shown, so a device that does not echo still shows its reply.
+
+For a device you know does not echo, `--no-echo` turns this off and shows every received line:
+
+```bash
+lager uart SERIAL1 -i --line-ending cr --no-echo
+```
 
 ---
 

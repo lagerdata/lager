@@ -12,8 +12,19 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Added
+
+- **`lager uart -i --no-echo` for devices that do not echo commands.** Interactive mode
+  then shows every received line, with no echo filtering. The default, `--echo`, keeps
+  hiding the device's echo of each command.
+
 ### Fixed
 
+- **`lager uart -i` no longer hides the reply of a device that does not echo commands.**
+  After each command it dropped the first received line as the device's echo, so a device
+  that answers without echoing showed a blank line instead of its reply, and a reply with
+  no line ending stayed hidden. That line is now dropped only when it is the command
+  itself; anything else is shown at once.
 - **`lager install` of a branch or commit keeps the box serving while it
   builds.** The new image is now built before the running container is
   stopped, so the box is down for seconds instead of the whole on-box build

@@ -32,6 +32,7 @@ lager uart [NETNAME] [OPTIONS]
 | `-i` / `--interactive` | 启用输入模式以便键入 |
 | `--opost` / `--no-opost` | 输出时把 \\n 转换为 \\r\\n |
 | `--line-ending MODE` | 行结束符：lf、crlf、cr（默认 lf） |
+| `--echo` / `--no-echo` | 交互模式：设备是否回显每条命令（默认 `--echo`） |
 | `--sessions` | 列出持有该 Net 的 UART 会话，然后退出 |
 | `--force` | 如果另一个会话持有该 Net，则接管它 |
 
@@ -181,6 +182,16 @@ lager uart SERIAL1 --force --box my-lager-box
 | `cr` | \\r | 老系统 |
 
 用 `--opost` 在输出时自动转换行结束符。
+
+### 命令回显
+
+在交互模式下，许多设备命令行会先回显每条命令，再给出回复。Lager 已经显示你输入的内容，所以会隐藏这次回显。每条命令发送后，只有当收到的下一行就是该命令本身时，Lager 才会丢弃它。比较时忽略行结束符、颜色代码和命令前的提示符。其他任何行都会显示，因此不回显的设备也能看到回复。
+
+对于确定不回显的设备，用 `--no-echo` 关闭此功能，显示收到的每一行：
+
+```bash
+lager uart SERIAL1 -i --line-ending cr --no-echo
+```
 
 ---
 
