@@ -131,7 +131,8 @@ def _gate(monkeypatch, token="tok"):
     monkeypatch.delenv("LAGER_GATEWAY_TOKEN", raising=False)
     monkeypatch.setattr("cli.gateway_auth.auth_server_for_box",
                         lambda ip: "http://plane.example")
-    monkeypatch.setattr("cli.gateway_auth.access_token_for", lambda url: token)
+    monkeypatch.setattr("cli.gateway_auth.access_token_for",
+                        lambda url, **kwargs: token)
     monkeypatch.setattr("cli.gateway_auth._token_expires_at",
                         lambda tok: time.time() + 900)
 
@@ -276,29 +277,49 @@ STARTED = (b"Streaming started\n", b"", 0)
 class TestStreamStart:
 
     def test_a_gated_box_gets_a_link_with_the_sign_in_token(self, monkeypatch):
+        # The link alone on its line, the note directly under it, the stop
+        # hint last.
         _gate(monkeypatch, token="tok")
         result, _, _ = _run(["pico1", "stream", "start", "--box", "bench"],
                             nets=NETS, script=STARTED)
         assert result.exit_code == 0, result.output
-        assert "Visualization: http://1.2.3.4:9000/scope?token=tok" in result.output
-        assert "about 15 minutes" in result.output
-        assert 'Run "lager scope pico1 stream web --box bench" for a fresh link.' \
-            in result.output
+        assert result.output == (
+            "Streaming started\n"
+            "Visualization:\n"
+            "http://1.2.3.4:9000/scope?token=tok\n"
+            "Open this link within 15 minutes; it carries your sign-in.\n"
+            "If it has expired, or the viewer later asks for sign-in, run: "
+            "lager scope pico1 stream web --box bench\n"
+            "\n"
+            "To stop streaming: lager scope pico1 stream stop --box bench\n")
 
     def test_a_gated_box_without_a_sign_in_points_at_login(self, monkeypatch):
         _gate(monkeypatch, token=None)
         result, _, _ = _run(["pico1", "stream", "start", "--box", "bench"],
                             nets=NETS, script=STARTED)
         assert result.exit_code == 0, result.output
-        assert "Visualization: http://1.2.3.4:9000/scope\n" in result.output
+        assert "Visualization:\nhttp://1.2.3.4:9000/scope\n" in result.output
         assert "lager login http://plane.example" in result.output
 
     def test_an_open_box_gets_the_plain_link_after_the_script_output(self, ungated):
         result, _, _ = _run(["pico1", "stream", "start", "--box", "bench"],
                             nets=NETS, script=STARTED)
         assert result.exit_code == 0, result.output
-        assert result.output == ("Streaming started\n"
-                                 "Visualization: http://1.2.3.4:9000/scope\n")
+        assert result.output == (
+            "Streaming started\n"
+            "Visualization:\n"
+            "http://1.2.3.4:9000/scope\n"
+            "\n"
+            "To stop streaming: lager scope pico1 stream stop --box bench\n")
+
+    def test_the_printed_stop_hint_is_a_command_that_parses(self, ungated):
+        result, _, _ = _run(["pico1", "stream", "start", "--box", "bench"],
+                            nets=NETS, script=STARTED)
+        hint = result.output.splitlines()[-1].split("lager scope ", 1)[1].split()
+        replay, _, executed = _run(hint, nets=NETS)
+        assert replay.exit_code == 0, replay.output
+        assert _sent(executed) == {"action": "stream_stop",
+                                   "params": {"netname": "pico1"}}
 
     def test_a_refused_start_fails_with_no_link(self, ungated):
         refusal = (b"", b"Error: cannot start acquisition: no scope connected\n", 1)
@@ -348,7 +369,12 @@ class TestStreamWeb:
         result, _, _ = _run(["pico1", "stream", "web", "--box", "bench"], nets=NETS)
         assert result.exit_code == 0, result.output
         assert opened == ["http://1.2.3.4:9000/scope?token=tok"]
-        assert "lager scope pico1 stream web --box bench" in result.output
+        assert result.output == (
+            "Opening the oscilloscope UI in your browser:\n"
+            "http://1.2.3.4:9000/scope?token=tok\n"
+            "Open this link within 15 minutes; it carries your sign-in.\n"
+            "If it has expired, or the viewer later asks for sign-in, run: "
+            "lager scope pico1 stream web --box bench\n")
 
     def test_an_open_box_gets_the_plain_link(self, ungated, monkeypatch):
         opened = []
@@ -356,7 +382,18 @@ class TestStreamWeb:
         result, _, _ = _run(["pico1", "stream", "web", "--box", "bench"], nets=NETS)
         assert result.exit_code == 0, result.output
         assert opened == ["http://1.2.3.4:9000/scope"]
-        assert "access-gated" not in result.output
+        assert result.output == ("Opening the oscilloscope UI in your browser:\n"
+                                 "http://1.2.3.4:9000/scope\n")
+
+    def test_a_browser_that_will_not_open_points_at_the_printed_link(
+            self, ungated, monkeypatch):
+        def broken(url):
+            raise RuntimeError("no display")
+        monkeypatch.setattr("webbrowser.open", broken)
+        result, _, _ = _run(["pico1", "stream", "web", "--box", "bench"], nets=NETS)
+        assert result.exit_code == 0, result.output
+        assert result.output.count("http://1.2.3.4:9000/scope") == 1
+        assert "open the link above yourself" in result.output
 
 
 class TestStreamCapture:

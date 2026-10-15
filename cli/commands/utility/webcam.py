@@ -10,7 +10,6 @@ Migrated from cli/webcam/commands.py to cli/commands/utility/webcam.py.
 """
 
 import base64
-import math
 import time
 from datetime import datetime
 from urllib.parse import quote
@@ -51,73 +50,98 @@ def _resolve_box(ctx, box, read_only=False):
     return resolve_and_validate_box(ctx, box, read_only=read_only)
 
 
+# A viewer link carries the token in its query string, and nothing can
+# refresh it there. Refresh before printing one unless at least this much of
+# the token's lifetime is left, so "open within N minutes" is close to the
+# full lifetime every time instead of whatever the cached token had left.
+LINK_TOKEN_MIN_REMAINING = 0.5
+
+
 def _gated_token(box_ip):
     """(auth_url, access_token) for an access-gated box, else (None, None).
 
     ``access_token`` is None when the box is gated but nothing is stored
-    for its auth server — the user has not run ``lager login`` yet.
+    for its auth server -- the user has not run ``lager login`` yet. Call
+    this once per command and pass the result to :func:`_viewer_url` and
+    :func:`_gated_link_note`, so every link and the note agree on one token.
     """
     from ... import gateway_auth
     url = gateway_auth.auth_server_for_box(box_ip)
     if not url:
         return None, None
-    return url, gateway_auth.access_token_for(url)
+    return url, gateway_auth.access_token_for(
+        url, min_remaining_fraction=LINK_TOKEN_MIN_REMAINING)
 
 
-def _viewer_url(box_ip, url):
+def _viewer_url(url, gate):
     """The stream URL as a browser can open it.
 
     A gated box only admits requests that carry a sign-in token, and a
     browser cannot attach one from a plain link, so the token rides in the
-    query string; the gateway swaps it for a cookie on first contact.
-    Ungated boxes get the URL untouched.
+    query string; the gateway swaps it for a session cookie on first
+    contact. ``gate`` is :func:`_gated_token`'s result. Ungated boxes get
+    the URL untouched.
     """
-    if not url:
-        return url
-    _auth_url, token = _gated_token(box_ip)
-    if not token:
+    _auth_url, token = gate
+    if not url or not token:
         return url
     sep = '&' if '?' in url else '?'
     return f"{url}{sep}token={quote(token, safe='')}"
 
 
-def _gated_link_note(box_ip, box_label=None, refresh=None):
-    """Print how long a tokenised link lasts, or how to get one.
+def _gated_link_note(gate, box_label, refresh=None, links=1):
+    """Print what a tokenised link needs, directly under the link(s).
+
+    Returns False, printing nothing, for an ungated box, so the caller can
+    print its own "open this in your browser" line instead.
+
+    The note promises only how long the link can still be *opened*. Opening
+    it trades the token for a gateway session, and how long that session
+    lasts depends on the gateway: an older one ends it with the token, a
+    newer one keeps it for up to a day. The CLI cannot tell which it is
+    talking to, so it says what to run if the viewer asks for sign-in again.
 
     ``refresh`` is the command that prints a fresh link; the webcam's when
-    not given.
+    not given. ``links`` is how many links were printed, for the grammar.
     """
-    auth_url, token = _gated_token(box_ip)
+    auth_url, token = gate
     if not auth_url:
-        return
-    box_label = box_label or box_ip
+        return False
     refresh = refresh or f"lager webcam url --box {box_label}"
+    one = links == 1
     if not token:
         click.secho(
-            f"Note: this box is access-gated and no sign-in is stored for it, "
-            f"so the link above will not open. Run: lager login {auth_url}",
+            f"This box is access-gated and no sign-in is stored for it, so "
+            f"{'the link' if one else 'these links'} will not open. "
+            f"Run: lager login {auth_url}",
             fg="yellow",
         )
-        return
+        return True
     from ... import gateway_auth
+    it = "it" if one else "they"
     if gateway_auth.pinned_token():
-        # A pinned token is opaque: there is no `exp` to read, so the minute
-        # count below would report a token minted for a week as one minute.
+        # A pinned token is opaque: there is no `exp` to read, so a minute
+        # count would report a token minted for a week as one minute.
         click.secho(
-            "This box is access-gated: the link carries the token from "
-            f"{gateway_auth.PINNED_TOKEN_ENV}, and lasts as long as that "
-            "token does.",
+            f"Open {'this link' if one else 'these links'} while the token in "
+            f"{gateway_auth.PINNED_TOKEN_ENV} is valid; "
+            f"{it} {'carries' if one else 'carry'} that token.\n"
+            f"If the viewer later asks for sign-in, run with a valid token: "
+            f"{refresh}",
             fg="yellow",
         )
-        return
+        return True
     remaining = gateway_auth._token_expires_at(token) - time.time()
-    minutes = max(1, math.ceil(remaining / 60))
+    minutes = max(1, round(remaining / 60))
     click.secho(
-        f"This box is access-gated: the link carries your sign-in token and "
-        f"stays valid for about {minutes} minutes. "
-        f'Run "{refresh}" for a fresh link.',
+        f"Open {'this link' if one else 'these links'} within {minutes} "
+        f"minute{'' if minutes == 1 else 's'}; "
+        f"{it} {'carries' if one else 'carry'} your sign-in.\n"
+        f"If {it} {'has' if one else 'have'} expired, or the viewer later asks "
+        f"for sign-in, run: {refresh}",
         fg="yellow",
     )
+    return True
 
 
 def _describe_origin(result):
@@ -363,14 +387,19 @@ def webcam_start(ctx, box):
     else:
         click.secho(f"Stream started successfully", fg="green")
 
+    # The label the user typed is what they can retype -- box_ip may be a
+    # name they never saw.
+    label = box if box is not None else box_ip
+    gate = _gated_token(box_ip)
     click.echo()
-    click.secho(f"Webcam URL: {_viewer_url(box_ip, result['url'])}", fg="cyan", bold=True)
+    click.secho("Webcam URL:", fg="cyan", bold=True)
+    # On a line of its own so a triple-click copies the link and nothing else.
+    click.secho(_viewer_url(result['url'], gate), fg="cyan", bold=True)
+    if not _gated_link_note(gate, label):
+        click.echo("Open this URL in your browser to view the live feed.")
     click.echo()
-    click.echo("Open this URL in your browser to view the live feed.")
-    _gated_link_note(box_ip, box)
-    # NETNAME comes before the subcommand, and the label the user typed
-    # is what they can retype -- box_ip may be a name they never saw.
-    click.echo(f"To stop the stream: lager webcam {net_name} stop --box {box or box_ip}")
+    # NETNAME comes before the subcommand.
+    click.echo(f"To stop the stream: lager webcam {net_name} stop --box {label}")
 
 
 @click.command(name="url")
@@ -389,19 +418,20 @@ def webcam_url(ctx, box):
         click.secho("No active webcam streams found", fg="yellow")
         return
 
+    gate = _gated_token(box_ip)
     click.echo(f"Active webcam streams on {box_ip}:")
-    click.echo()
 
     for r in result["results"]:
+        click.echo()
         click.secho(f"{r['net']}:", fg="green", bold=True)
-        click.secho(f"  URL: {_viewer_url(box_ip, r['url'])}", fg="cyan")
         click.echo(f"  Port: {r['port']}")
         click.echo(f"  Device: {r['video_device']}")
         origin = _describe_origin(r)
         if origin:
             click.echo(f"  Origin: {origin}")
-        click.echo()
-    _gated_link_note(box_ip, box)
+        # Last and on a line of its own, so the note can sit right under it.
+        click.secho(f"  {_viewer_url(r['url'], gate)}", fg="cyan")
+    _gated_link_note(gate, box if box is not None else box_ip, links=len(result["results"]))
 
 
 @click.command(name="snapshot")
@@ -490,6 +520,8 @@ def webcam_start_all(ctx, box):
         click.secho(result.get("message", "No webcam nets found"), fg="yellow")
         return
 
+    label = box if box is not None else box_ip
+    gate = _gated_token(box_ip)
     click.echo()
     success_count = len([r for r in result["results"] if r["success"]])
     click.secho(f"Started {success_count}/{len(result['results'])} webcam streams", fg="green")
@@ -501,14 +533,14 @@ def webcam_start_all(ctx, box):
         if r["success"]:
             status = "already running" if r.get("already_running") else "started"
             click.secho(f"  {net_name}: {status}", fg="green")
-            click.secho(f"  URL: {_viewer_url(box_ip, r['url'])}", fg="cyan")
+            click.secho(f"  {_viewer_url(r['url'], gate)}", fg="cyan")
         else:
             click.secho(f"  {net_name}: {r.get('error', 'failed')}", fg="red")
 
+    if success_count and not _gated_link_note(gate, label, links=success_count):
+        click.echo("Open the URLs in your browser to view the live feeds.")
     click.echo()
-    click.echo("Open the URLs in your browser to view the live feeds.")
-    _gated_link_note(box_ip, box)
-    click.echo(f"To stop all streams: lager webcam stop-all --box {box or box_ip}")
+    click.echo(f"To stop all streams: lager webcam stop-all --box {label}")
 
 
 @click.command(name="stop-all")

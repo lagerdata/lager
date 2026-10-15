@@ -20,6 +20,17 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 ### Fixed
 
+- **Viewer links on an access-gated box no longer claim a lifetime they do not
+  have.** `lager webcam start`, `start-all` and `url`, and `lager scope NET stream
+  start` and `stream web`, said the link "stays valid for about N minutes", where N was
+  whatever was left on the cached sign-in token. The token only has to be valid when the
+  link is opened. After that, the gateway decides how long the viewer lasts: up to 24
+  hours on a current gateway. The note now says how long the link can still be opened,
+  and what to run if it has expired or the viewer asks for sign-in again. The CLI also
+  renews the sign-in before it prints a link if less than half of the token's lifetime
+  is left, so the link can be opened for about 15 minutes. The link is on a line of its
+  own, the note is under it, and the stop command comes last. `stream start` now prints
+  the stop command too.
 - **A failed DFU run now reports why it failed.** The error from `POST /usb/dfu`
   quoted only the last 3 lines of stderr, and stdout only when stderr was empty, so
   `dfu-util`'s DFU suffix warnings hid the device status lines a raw download writes

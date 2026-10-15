@@ -84,21 +84,42 @@ Output:
 Active webcam streams on <BOX_IP>:
 
 CAM1:
-  URL: http://<BOX_IP>:8086/
   Port: 8086
   Device: /dev/video0
   Origin: started via cli by alice
+  http://<BOX_IP>:8086/
 ```
+
+Each link is on a line of its own, so you can copy it with a triple-click.
 
 ### Access-gated boxes
 
 When a box sits behind an access gateway, its stream ports only admit
 requests that carry your sign-in token. A browser cannot attach one from a
 plain link. So `start`, `start-all` and `url` append the token to the
-printed URL (`http://<BOX_IP>:8086/?token=...`), and say how many minutes
-it stays valid. Run `lager webcam url` for a fresh link when it expires. If
-no sign-in is stored for the box, the CLI tells you which `lager login`
-URL to use.
+printed URL (`http://<BOX_IP>:8086/?token=...`), and print a note under it:
+
+```
+Webcam URL:
+http://<BOX_IP>:8086/?token=...
+Open this link within 15 minutes; it carries your sign-in.
+If it has expired, or the viewer later asks for sign-in, run: lager webcam url --box my-lager-box
+
+To stop the stream: lager webcam CAM1 stop --box my-lager-box
+```
+
+The token only has to be valid when you open the link. The gateway then
+gives the browser a session of its own, and the gateway decides how long
+that session lasts. A current gateway keeps it for up to 24 hours, or until
+your access to the box is removed. An older gateway ends it when the token
+expires. Before it prints a link, the CLI renews your sign-in if less than
+half of the token's lifetime is left, so a new link can usually be opened
+for about 15 minutes. If the link has expired, or an open viewer asks you to
+sign in, run `lager webcam url` for a new link.
+
+With `LAGER_GATEWAY_TOKEN` set, the link carries that token instead, and
+can be opened while that token is valid. If no sign-in is stored for the
+box, the CLI tells you which `lager login` URL to use.
 
 ### `start-all`
 

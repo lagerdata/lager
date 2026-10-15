@@ -165,6 +165,10 @@ exposed in a browser history or a pasted terminal is useless on its own.
 - A token that does not parse as a JWT is treated as already expired: a
   refresh is attempted first, and if no refresh credential exists the token
   is sent as-is (the gateway decides).
+- A client MAY refresh earlier than the margin when it hands the token to
+  something that cannot refresh it, such as a browser link (§7). The Python
+  CLI refreshes before printing a link unless at least half the token's
+  lifetime is left. The usual single-flight and rotation rules (§3.3) apply.
 
 ## 5. Client token store
 
@@ -309,6 +313,16 @@ A conforming gateway:
   never emits `X-Gateway-Auth-Url`, so there is no collision.)
 - MUST cover every box port it exposes (9000, 8765, WebSocket upgrades)
   with the same policy — clients assume one credential works box-wide.
+- MAY admit a browser that opens a link carrying the access token in a
+  `token` query parameter, since a browser cannot attach `Authorization` to a
+  plain link. The gateway trades the token for a session cookie on that first
+  request, so the token only has to be valid when the link is opened. How long
+  the browser session then lasts is the gateway's choice. An older gateway
+  ends it when the token expires. The current one keeps it for up to 24 hours
+  and rechecks the user's access about every minute, so revoked access still
+  ends it. A client cannot tell which kind of gateway it is talking to, so it
+  MUST NOT promise how long an opened viewer lasts. It says only how long the
+  link can still be opened, and what to run for a new link.
 - MUST NOT forward `:8100` (MCP). It is an in-fabric service, and its only
   credential is an optional box-local token the gateway cannot verify (§6.4).
 - MAY offer the box's raw-TCP debug ports through `CONNECT` tunnels on
@@ -401,6 +415,18 @@ This contract is versioned by the integer at the top of this file.
   bump per §9. The Python CLI reports it (`gateway_response_hook` in
   `cli/gateway_auth.py`, tests in `test/unit/cli/test_gateway_upstream_error.py`);
   lager-rs treats it as any failed request, which §7 allows.
+
+- **v1** (2026-10-15): §7 describes browser links that carry the token in
+  a `token` query parameter, and what a client may say about them: how long
+  the link can still be opened, never how long the opened viewer lasts. §4
+  allows refreshing before handing a token to such a link. Both are optional
+  and describe behaviour that already shipped, so no version bump per §9. The
+  Python CLI prints these links for `lager webcam` and `lager scope … stream`
+  (`_gated_link_note` in `cli/commands/utility/webcam.py`, and
+  `access_token_for(…, min_remaining_fraction=…)` in `cli/gateway_auth.py`;
+  tests in `test/unit/cli/test_webcam_command.py` and
+  `test/unit/cli/test_gateway_auth_refresh.py`). lager-rs prints no viewer
+  links and needs no change.
 
 ## 10. Debug tunnels (optional)
 

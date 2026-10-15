@@ -393,6 +393,18 @@ def _token_expires_at(access_token):
         return 0.0
 
 
+def _token_lifetime(access_token):
+    """``exp - iat`` in seconds, or None if the token does not say."""
+    try:
+        payload_b64 = access_token.split('.')[1]
+        payload_b64 += '=' * (-len(payload_b64) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64))
+        lifetime = float(payload['exp']) - float(payload['iat'])
+    except (IndexError, KeyError, ValueError, TypeError):
+        return None
+    return lifetime if lifetime > 0 else None
+
+
 def _refresh_margin(access_token):
     """Refresh-ahead margin, capped at a quarter of the token's lifetime.
 
@@ -402,14 +414,8 @@ def _refresh_margin(access_token):
     short-lived tokens, with each refresh rotating the refresh-token
     family and multiplying the chances of losing the session.
     """
-    try:
-        payload_b64 = access_token.split('.')[1]
-        payload_b64 += '=' * (-len(payload_b64) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(payload_b64))
-        lifetime = float(payload['exp']) - float(payload['iat'])
-    except (IndexError, KeyError, ValueError, TypeError):
-        return EXPIRY_MARGIN_SECONDS
-    if lifetime <= 0:
+    lifetime = _token_lifetime(access_token)
+    if lifetime is None:
         return EXPIRY_MARGIN_SECONDS
     return min(EXPIRY_MARGIN_SECONDS, max(lifetime / 4.0, 1.0))
 
@@ -484,7 +490,7 @@ def _refresh_access_token(url, entry):
     return access_token
 
 
-def access_token_for(url, *, allow_refresh=True):
+def access_token_for(url, *, allow_refresh=True, min_remaining_fraction=None):
     """Stored access token for an auth server, refreshed if near expiry.
 
     A pinned token wins over any stored session and is returned as-is: it
@@ -508,17 +514,33 @@ def access_token_for(url, *, allow_refresh=True):
     that can be abandoned at a deadline passes it: the caller that owns the
     fan-out has already refreshed, and a rotation left half-finished by an
     abandoned worker is what loses the session.
+
+    `min_remaining_fraction` widens the refresh margin: a token with less
+    than that fraction of its lifetime left counts as stale and is refreshed
+    now. A caller that hands the token to something it cannot refresh later
+    -- a viewer link the user may open minutes from now -- passes it, so the
+    link gets most of a lifetime rather than whatever the cached token had
+    left. Everything else (single flight, failure memo, the unexpired
+    fallback) is unchanged, and a token that does not state its lifetime
+    keeps the default margin.
     """
     pinned = pinned_token()
     if pinned:
         return pinned
+
+    def _margin(token):
+        margin = _refresh_margin(token)
+        lifetime = _token_lifetime(token) if min_remaining_fraction else None
+        if lifetime is not None:
+            margin = max(margin, lifetime * min_remaining_fraction)
+        return margin
 
     def _usable(entry, *, margin):
         """The entry's token if it is good for `margin` more seconds."""
         token = entry.get('accessToken') if entry else None
         if not token:
             return None
-        horizon = time.time() + (_refresh_margin(token) if margin else 0)
+        horizon = time.time() + (_margin(token) if margin else 0)
         return token if _token_expires_at(token) > horizon else None
 
     entry = _load_store().get('authServers', {}).get(url)

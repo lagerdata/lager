@@ -859,7 +859,16 @@ lager scope NET_NAME stream start [OPTIONS]
 
 The command applies the settings in order, then starts the acquisition. If the daemon refuses a setting, the command prints the error and exits 1. The acquisition does not start. The trigger source is the streamed channel.
 
-After the start, the command prints the link to `http://<box>:9000/scope`. With `--json`, the link is the `visualization_url` field. On a box behind an access gateway, the link carries your sign-in token, as for [webcam streams](/source/reference/cli/webcam#access-gated-boxes).
+After the start, the command prints the link to `http://<box>:9000/scope` on a line of its own, then the `stream stop` command that ends the acquisition. With `--json`, the link is the `visualization_url` field. On a box behind an access gateway, the link carries your sign-in token, as for [webcam streams](/source/reference/cli/webcam#access-gated-boxes):
+
+```
+Visualization:
+http://<box>:9000/scope?token=...
+Open this link within 15 minutes; it carries your sign-in.
+If it has expired, or the viewer later asks for sign-in, run: lager scope PICO1 stream web --box my-lager-box
+
+To stop streaming: lager scope PICO1 stream stop --box my-lager-box
+```
 
 For a scope that is not a PicoScope, the command prints an error and suggests `lager scope NET_NAME start --single`.
 
@@ -911,7 +920,7 @@ lager scope NET_NAME stream web [--box BOX] [--port PORT]
 **Options:**
 - `--port` - Box HTTP server port (default: 9000)
 
-The command opens `http://<box>:<port>/scope`. On a box behind an access gateway, the link carries your sign-in token, as for [webcam streams](/source/reference/cli/webcam#access-gated-boxes). Run `stream web` again for a fresh link when the token expires.
+The command opens `http://<box>:<port>/scope` and prints the link on a line of its own. On a box behind an access gateway, the link carries your sign-in token, as for [webcam streams](/source/reference/cli/webcam#access-gated-boxes). The link has to be opened within the time the note under it gives, about 15 minutes. How long the opened page then lasts depends on the gateway. If the link has expired, or the page asks you to sign in, run `stream web` again for a new link.
 
 The web interface is a dependency-free HTML5 oscilloscope display that the box serves at `http://<box>:9000/scope`. Waveforms arrive over a WebSocket as LSCP binary frames, and the browser decodes them. The page builds its controls from the capabilities of the attached unit, so a 2-channel scope shows no channel C. The page also has a command console. It accepts most commands of this CLI, and also `offset`, `hpos`, `vpos`, `sidebar` and `capabilities`. In the console, a command for one channel can name the channel: `scale B 0.5`, `coupling B ac`, `probe B 10`, `offset B 0.1`, `vpos B -0.5` and `measure B vpp`. Put the channel first. Use a letter for it, because `scale 2` sets 2 V/div. With no channel, the command uses the first channel that is on, as the measurements panel does. The reply in the console names the channel.
 

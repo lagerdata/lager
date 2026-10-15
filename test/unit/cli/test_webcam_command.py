@@ -44,39 +44,115 @@ def _invoke(args):
 
 
 def _gate(monkeypatch, auth_url='http://plane.example', token='tok.en', ttl=900):
-    """Make box 10.0.0.5 look access-gated with (or without) a stored token."""
+    """Make box 10.0.0.5 look access-gated with (or without) a stored token.
+
+    Returns the list of keyword arguments each token lookup was made with.
+    """
+    lookups = []
+
+    def access_token_for(url, **kwargs):
+        lookups.append(kwargs)
+        return token
+
+    monkeypatch.delenv('LAGER_GATEWAY_TOKEN', raising=False)
     monkeypatch.setattr('cli.gateway_auth.auth_server_for_box',
                         lambda ip: auth_url)
-    monkeypatch.setattr('cli.gateway_auth.access_token_for',
-                        lambda url: token)
+    monkeypatch.setattr('cli.gateway_auth.access_token_for', access_token_for)
     monkeypatch.setattr('cli.gateway_auth._token_expires_at',
                         lambda tok: time.time() + ttl)
+    return lookups
+
+
+GATE = ('http://plane.example', 'tok')
+
+
+class TestGatedToken:
+    def test_ungated_box_has_no_token(self, monkeypatch):
+        monkeypatch.setattr('cli.gateway_auth.auth_server_for_box', lambda ip: None)
+        assert webcam_mod._gated_token('10.0.0.5') == (None, None)
+
+    def test_link_token_asks_for_most_of_a_lifetime(self, monkeypatch):
+        # A link cannot be refreshed once printed, so the lookup asks for a
+        # token with at least half its lifetime left.
+        lookups = _gate(monkeypatch, token='tok')
+        assert webcam_mod._gated_token('10.0.0.5') == ('http://plane.example', 'tok')
+        assert lookups == [{'min_remaining_fraction': 0.5}]
 
 
 class TestViewerUrl:
-    def test_ungated_box_leaves_url_alone(self, monkeypatch):
-        monkeypatch.setattr('cli.gateway_auth.auth_server_for_box', lambda ip: None)
-        assert webcam_mod._viewer_url('10.0.0.5', 'http://10.0.0.5:8086/') == \
+    def test_ungated_box_leaves_url_alone(self):
+        assert webcam_mod._viewer_url('http://10.0.0.5:8086/', (None, None)) == \
             'http://10.0.0.5:8086/'
 
-    def test_gated_box_appends_token(self, monkeypatch):
-        _gate(monkeypatch, token='a b/c')
-        assert webcam_mod._viewer_url('10.0.0.5', 'http://10.0.0.5:8086/') == \
+    def test_gated_box_appends_token(self):
+        assert webcam_mod._viewer_url('http://10.0.0.5:8086/',
+                                      ('http://plane.example', 'a b/c')) == \
             'http://10.0.0.5:8086/?token=a%20b%2Fc'
 
-    def test_existing_query_is_extended_not_replaced(self, monkeypatch):
-        _gate(monkeypatch, token='t')
-        assert webcam_mod._viewer_url('10.0.0.5', 'http://10.0.0.5:8086/?x=1') == \
+    def test_existing_query_is_extended_not_replaced(self):
+        assert webcam_mod._viewer_url('http://10.0.0.5:8086/?x=1',
+                                      ('http://plane.example', 't')) == \
             'http://10.0.0.5:8086/?x=1&token=t'
 
-    def test_gated_box_without_login_leaves_url_alone(self, monkeypatch):
-        _gate(monkeypatch, token=None)
-        assert webcam_mod._viewer_url('10.0.0.5', 'http://10.0.0.5:8086/') == \
+    def test_gated_box_without_login_leaves_url_alone(self):
+        assert webcam_mod._viewer_url('http://10.0.0.5:8086/',
+                                      ('http://plane.example', None)) == \
             'http://10.0.0.5:8086/'
 
-    def test_none_url_passes_through(self, monkeypatch):
+    def test_none_url_passes_through(self):
+        assert webcam_mod._viewer_url(None, GATE) is None
+
+
+def _note(capsys, gate, **kwargs):
+    printed = webcam_mod._gated_link_note(gate, 'bench', **kwargs)
+    return printed, capsys.readouterr().out
+
+
+class TestGatedLinkNote:
+    def test_ungated_prints_nothing(self, capsys):
+        assert _note(capsys, (None, None)) == (False, '')
+
+    def test_signed_in_note_promises_only_the_open_window(self, capsys, monkeypatch):
+        # Opening the link trades the token for a gateway session whose length
+        # depends on the gateway, so the note must not promise how long the
+        # viewer lasts -- only how long the link can still be opened.
+        _gate(monkeypatch, ttl=14 * 60 + 50)
+        printed, out = _note(capsys, GATE)
+        assert printed
+        assert out == (
+            'Open this link within 15 minutes; it carries your sign-in.\n'
+            'If it has expired, or the viewer later asks for sign-in, run: '
+            'lager webcam url --box bench\n')
+        assert 'valid for' not in out
+
+    def test_several_links_and_one_minute(self, capsys, monkeypatch):
+        _gate(monkeypatch, ttl=20)
+        _printed, out = _note(capsys, GATE, links=2, refresh='lager x')
+        assert out.startswith(
+            'Open these links within 1 minute; they carry your sign-in.\n'
+            'If they have expired')
+        assert out.rstrip().endswith('run: lager x')
+
+    def test_pinned_token_claims_no_minute_count(self, capsys, monkeypatch):
+        # A pinned CI token is opaque, so there is no `exp` to read: the
+        # minute count would report a token minted for a week as one minute.
         _gate(monkeypatch)
-        assert webcam_mod._viewer_url('10.0.0.5', None) is None
+        monkeypatch.setenv('LAGER_GATEWAY_TOKEN', 'ci-token')
+        printed, out = _note(capsys, ('http://plane.example', 'ci-token'))
+        assert printed
+        assert 'LAGER_GATEWAY_TOKEN' in out
+        assert 'minute' not in out
+        assert out.rstrip().endswith('lager webcam url --box bench')
+
+    def test_no_stored_login_points_at_login(self, capsys):
+        printed, out = _note(capsys, ('http://plane.example', None))
+        assert printed
+        assert 'lager login http://plane.example' in out
+        assert 'Open this link' not in out
+
+
+def _lines(output):
+    return output.splitlines()
 
 
 class TestStart:
@@ -101,36 +177,57 @@ class TestStart:
         assert kwargs['started_by'] == 'alice'
         assert kwargs['box_ip'] == '10.0.0.5'
         assert self.post.call_args.args[3] == 'start'
-        assert 'Webcam URL: http://10.0.0.5:8086/' in output
         assert 'token' not in output
 
-    def test_gated_box_prints_tokenised_link_and_lifetime(self, monkeypatch):
-        _gate(monkeypatch, token='tok', ttl=14 * 60 + 5)
+    def test_ungated_layout(self, monkeypatch):
+        monkeypatch.setattr('cli.gateway_auth.auth_server_for_box', lambda ip: None)
         result, output = _invoke(['cam1', 'start', '--box', 'bench'])
         assert result.exit_code == 0, output
-        assert 'Webcam URL: http://10.0.0.5:8086/?token=tok' in output
-        assert 'about 15 minutes' in output
-        assert 'lager webcam url --box bench' in output
-        # The old "not reachable" warning is gone: the gateway fronts the port.
-        assert 'not exposed' not in output
+        assert _lines(output)[-5:] == [
+            'Webcam URL:',
+            'http://10.0.0.5:8086/',
+            'Open this URL in your browser to view the live feed.',
+            '',
+            'To stop the stream: lager webcam cam1 stop --box bench',
+        ]
 
-    def test_pinned_token_link_does_not_claim_a_minute_lifetime(self, monkeypatch):
-        # A pinned CI token is opaque, so there is no `exp` to read: the
-        # minute count would report a token minted for a week as one minute.
+    def test_gated_layout(self, monkeypatch):
+        # The link alone on its line, the note directly under it, the stop
+        # hint last, and no second "open this in your browser" line.
+        lookups = _gate(monkeypatch, token='tok', ttl=14 * 60 + 5)
+        result, output = _invoke(['cam1', 'start', '--box', 'bench'])
+        assert result.exit_code == 0, output
+        assert _lines(output)[-6:] == [
+            'Webcam URL:',
+            'http://10.0.0.5:8086/?token=tok',
+            'Open this link within 14 minutes; it carries your sign-in.',
+            'If it has expired, or the viewer later asks for sign-in, run: '
+            'lager webcam url --box bench',
+            '',
+            'To stop the stream: lager webcam cam1 stop --box bench',
+        ]
+        assert 'in your browser' not in output
+        # One lookup serves the link and the note, so they agree on a token.
+        assert lookups == [{'min_remaining_fraction': 0.5}]
+
+    def test_pinned_token_link(self, monkeypatch):
         _gate(monkeypatch, token='ci-token')
         monkeypatch.setenv('LAGER_GATEWAY_TOKEN', 'ci-token')
         result, output = _invoke(['cam1', 'start', '--box', 'bench'])
         assert result.exit_code == 0, output
-        assert 'Webcam URL: http://10.0.0.5:8086/?token=ci-token' in output
+        assert 'http://10.0.0.5:8086/?token=ci-token' in _lines(output)
         assert 'LAGER_GATEWAY_TOKEN' in output
-        assert 'minutes' not in output
+        assert 'minute' not in output
+        assert _lines(output)[-1].startswith('To stop the stream: ')
 
     def test_gated_box_without_login_points_at_login(self, monkeypatch):
         _gate(monkeypatch, token=None)
         result, output = _invoke(['cam1', 'start', '--box', 'bench'])
         assert result.exit_code == 0, output
-        assert 'Webcam URL: http://10.0.0.5:8086/' in output
-        assert 'lager login http://plane.example' in output
+        lines = _lines(output)
+        link = lines.index('http://10.0.0.5:8086/')
+        assert 'lager login http://plane.example' in lines[link + 1]
+        assert 'in your browser' not in output
 
     def test_printed_stop_hint_is_a_command_that_parses(self, monkeypatch):
         # The hint is the line a first-time user copies. It used to print
@@ -164,10 +261,28 @@ class TestStart:
         assert replay.exit_code == 0, replay_output
         assert self.post.call_args.args[3] == 'stop'
 
+    def test_start_all_gated_layout(self, monkeypatch):
+        _gate(monkeypatch, token='tok', ttl=900)
+        with mock.patch.object(webcam_mod, '_list_webcam_nets',
+                               return_value=[{'name': 'cam1'}, {'name': 'cam2'}]):
+            result, output = _invoke(['start-all', '--box', 'bench'])
+        assert result.exit_code == 0, output
+        assert _lines(output)[-8:] == [
+            '  cam1: started',
+            '  http://10.0.0.5:8086/?token=tok',
+            '  cam2: started',
+            '  http://10.0.0.5:8086/?token=tok',
+            'Open these links within 15 minutes; they carry your sign-in.',
+            'If they have expired, or the viewer later asks for sign-in, run: '
+            'lager webcam url --box bench',
+            '',
+            'To stop all streams: lager webcam stop-all --box bench',
+        ]
+        assert 'in your browser' not in output
+
 
 class TestUrl:
-    def test_lists_origin_and_tokenises(self, monkeypatch):
-        _gate(monkeypatch, token='tok', ttl=120)
+    def _run(self):
         mock.patch.object(webcam_mod, '_get_box_ip_address',
                           return_value='10.0.0.5').start()
         mock.patch.object(webcam_mod, '_list_webcam_nets',
@@ -183,14 +298,33 @@ class TestUrl:
 
         mock.patch.object(webcam_mod, 'post_net_command', side_effect=fake_post).start()
         try:
-            result, output = _invoke(['url', '--box', 'bench'])
+            return _invoke(['url', '--box', 'bench'])
         finally:
             mock.patch.stopall()
+
+    def test_lists_origin_and_tokenises(self, monkeypatch):
+        _gate(monkeypatch, token='tok', ttl=120)
+        result, output = self._run()
         assert result.exit_code == 0, output
-        assert 'URL: http://10.0.0.5:8086/?token=tok' in output
-        assert 'Origin: started via api by bob' in output
         assert 'cam2' not in output
-        assert 'about 2 minutes' in output
+        assert _lines(output) == [
+            'Active webcam streams on 10.0.0.5:',
+            '',
+            'cam1:',
+            '  Port: 8086',
+            '  Device: /dev/video0',
+            '  Origin: started via api by bob',
+            '  http://10.0.0.5:8086/?token=tok',
+            'Open this link within 2 minutes; it carries your sign-in.',
+            'If it has expired, or the viewer later asks for sign-in, run: '
+            'lager webcam url --box bench',
+        ]
+
+    def test_ungated_ends_with_the_link(self, monkeypatch):
+        monkeypatch.setattr('cli.gateway_auth.auth_server_for_box', lambda ip: None)
+        result, output = self._run()
+        assert result.exit_code == 0, output
+        assert _lines(output)[-1] == '  http://10.0.0.5:8086/'
 
 
 class TestSnapshot:

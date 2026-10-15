@@ -11,7 +11,7 @@ import json
 import click
 from ...context import get_impl_path, get_default_net
 from ..development.python import run_python_internal
-from ..utility.webcam import _gated_link_note, _viewer_url
+from ..utility.webcam import _gated_link_note, _gated_token, _viewer_url
 from ...core.net_group import NetGroup
 from ...core.param_types import HexParamType
 from ...core.utils import StreamDatatypes, normalize_exit_code
@@ -1389,16 +1389,20 @@ def _run_stream_script(ctx, box_ip: str, data: dict):
     return result if isinstance(result, tuple) else (1, "")
 
 
-def _scope_url(box_ip: str, port: int = 9000) -> str:
+def _scope_url(box_ip: str, gate, port: int = 9000) -> str:
     """The web UI's address, with a sign-in token for an access-gated box."""
-    return _viewer_url(box_ip, f"http://{box_ip}:{port}/scope")
+    return _viewer_url(f"http://{box_ip}:{port}/scope", gate)
 
 
-def _scope_link_note(ctx, box, box_ip: str) -> None:
+def _scope_label(box, box_ip: str) -> str:
+    return box if box is not None else box_ip
+
+
+def _scope_link_note(ctx, gate, box, box_ip: str) -> bool:
     netname = getattr(ctx.obj, "netname", None) or "[NET_NAME]"
-    label = box if box is not None else box_ip
-    _gated_link_note(box_ip, label,
-                     refresh=f"lager scope {netname} stream web --box {label}")
+    label = _scope_label(box, box_ip)
+    return _gated_link_note(
+        gate, label, refresh=f"lager scope {netname} stream web --box {label}")
 
 
 @stream.command("start")
@@ -1460,7 +1464,8 @@ def stream_start(ctx, box, channel, volts_per_div, time_per_div, trigger_level, 
         click.echo(output, nl=False)
         ctx.exit(code)
 
-    url = _scope_url(box_ip)
+    gate = _gated_token(box_ip)
+    url = _scope_url(box_ip, gate)
     if json_output:
         try:
             result = json.loads(output)
@@ -1473,8 +1478,13 @@ def stream_start(ctx, box, channel, volts_per_div, time_per_div, trigger_level, 
         return
     click.echo(output, nl=False)
     if not quiet:
-        click.echo(f"Visualization: {url}")
-        _scope_link_note(ctx, box, box_ip)
+        click.echo("Visualization:")
+        # On a line of its own so a triple-click copies the link and nothing else.
+        click.echo(url)
+        _scope_link_note(ctx, gate, box, box_ip)
+        click.echo()
+        click.echo(f"To stop streaming: lager scope {netname} stream stop "
+                   f"--box {_scope_label(box, box_ip)}")
 
 
 @stream.command("stop")
@@ -1555,16 +1565,18 @@ def stream_web(ctx, box, port):
 
     # Port 9000 is the box HTTP server, the same port every other net uses.
     # The UI opens its own capture stream, so there is nothing to start first.
-    url = _scope_url(box_ip, port)
+    gate = _gated_token(box_ip)
+    url = _scope_url(box_ip, gate, port)
 
-    click.secho(f"Opening oscilloscope UI at {url}", fg="green")
-    _scope_link_note(ctx, box, box_ip)
+    click.secho("Opening the oscilloscope UI in your browser:", fg="green")
+    click.echo(url)
+    _scope_link_note(ctx, gate, box, box_ip)
 
     try:
         webbrowser.open(url)
     except Exception as e:
-        click.secho(f"The browser did not open: {e}", fg="red", err=True)
-        click.secho(f"Please open {url} manually in your browser", fg="yellow")
+        click.secho(f"The browser did not open ({e}); open the link above "
+                    "yourself.", fg="red", err=True)
 
 
 @stream.command("capture")

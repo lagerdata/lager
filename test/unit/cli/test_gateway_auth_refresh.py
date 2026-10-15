@@ -196,6 +196,118 @@ class GatewayAuthRefreshTests(StoreIsolatedTestCase):
         self.assertEqual(len(calls), 2)
 
 
+class MinRemainingFractionTests(StoreIsolatedTestCase):
+    """`min_remaining_fraction` refreshes early for a token that will outlive
+    the call -- a viewer link the user opens minutes later -- so the link
+    gets most of a lifetime rather than whatever the cached token had left.
+    """
+
+    def setUp(self):
+        super().setUp()
+        env = mock.patch.dict(os.environ)
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop(gateway_auth.PINNED_TOKEN_ENV, None)
+
+    def test_less_than_the_fraction_left_refreshes(self):
+        # 6 of 15 minutes left: fresh by the default margin, stale for a link.
+        stored = make_token(lifetime=900, expires_in=360)
+        self.store_session(stored)
+        fresh = make_token(lifetime=900, expires_in=900)
+        with mock.patch.object(gateway_auth.requests, 'post',
+                               return_value=FakeResponse(body={'accessToken': fresh})) as post:
+            self.assertEqual(gateway_auth.access_token_for(URL), stored)
+            self.assertEqual(post.call_count, 0)
+            self.assertEqual(gateway_auth.access_token_for(
+                URL, min_remaining_fraction=0.5), fresh)
+        self.assertEqual(post.call_count, 1)
+
+    def test_more_than_the_fraction_left_is_kept(self):
+        stored = make_token(lifetime=900, expires_in=600)
+        self.store_session(stored)
+        with mock.patch.object(gateway_auth.requests, 'post') as post:
+            post.side_effect = AssertionError('refresh must not be attempted')
+            self.assertEqual(gateway_auth.access_token_for(
+                URL, min_remaining_fraction=0.5), stored)
+
+    def test_a_refreshed_token_is_not_refreshed_again(self):
+        # The freshly issued token clears the widened margin, so a second
+        # link in the same command reuses it rather than rotating again.
+        self.store_session(make_token(lifetime=900, expires_in=300))
+        fresh = make_token(lifetime=900, expires_in=900)
+        with mock.patch.object(gateway_auth.requests, 'post',
+                               return_value=FakeResponse(body={'accessToken': fresh})) as post:
+            for _ in range(3):
+                self.assertEqual(gateway_auth.access_token_for(
+                    URL, min_remaining_fraction=0.5), fresh)
+        self.assertEqual(post.call_count, 1)
+
+    def test_concurrent_callers_refresh_once(self):
+        # Single flight holds for the widened margin too: the waiters re-read
+        # the store under the lock and find the winner's token fresh enough.
+        import threading
+        self.store_session(make_token(lifetime=900, expires_in=300))
+        fresh = make_token(lifetime=900, expires_in=900)
+        release = threading.Event()
+        calls = []
+
+        def slow_post(*args, **kwargs):
+            calls.append(1)
+            release.wait(5)
+            return FakeResponse(body={'accessToken': fresh},
+                                cookies={'refresh_token': f'r{len(calls) + 1}'})
+
+        results = []
+        with mock.patch.object(gateway_auth.requests, 'post', slow_post):
+            threads = [threading.Thread(target=lambda: results.append(
+                gateway_auth.access_token_for(URL, min_remaining_fraction=0.5)))
+                for _ in range(6)]
+            for thread in threads:
+                thread.start()
+            time.sleep(0.2)
+            release.set()
+            for thread in threads:
+                thread.join(5)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(results, [fresh] * 6)
+
+    def test_a_failed_refresh_keeps_the_unexpired_token(self):
+        stored = make_token(lifetime=900, expires_in=300)
+        self.store_session(stored)
+        with mock.patch.object(gateway_auth.requests, 'post',
+                               return_value=FakeResponse(status_code=503)) as post:
+            for _ in range(2):
+                self.assertEqual(gateway_auth.access_token_for(
+                    URL, min_remaining_fraction=0.5), stored)
+        # The failure memo still applies: one round trip per process.
+        self.assertEqual(post.call_count, 1)
+
+    def test_a_token_without_a_lifetime_keeps_the_default_margin(self):
+        now = time.time()
+        body = base64.urlsafe_b64encode(json.dumps(
+            {'exp': now + 120}).encode()).decode().rstrip('=')
+        stored = f'header.{body}.signature'
+        self.store_session(stored)
+        with mock.patch.object(gateway_auth.requests, 'post') as post:
+            post.side_effect = AssertionError('refresh must not be attempted')
+            self.assertEqual(gateway_auth.access_token_for(
+                URL, min_remaining_fraction=0.5), stored)
+
+    def test_a_pinned_token_is_never_refreshed(self):
+        self.store_session(make_token(lifetime=900, expires_in=60))
+        os.environ[gateway_auth.PINNED_TOKEN_ENV] = 'ci-token'
+        with mock.patch.object(gateway_auth.requests, 'post') as post:
+            post.side_effect = AssertionError('refresh must not be attempted')
+            self.assertEqual(gateway_auth.access_token_for(
+                URL, min_remaining_fraction=0.5), 'ci-token')
+
+    def test_no_stored_login_returns_none_without_a_request(self):
+        with mock.patch.object(gateway_auth.requests, 'post') as post:
+            post.side_effect = AssertionError('refresh must not be attempted')
+            self.assertIsNone(gateway_auth.access_token_for(
+                URL, min_remaining_fraction=0.5))
+
+
 class StoreRobustnessTests(StoreIsolatedTestCase):
     """A store that cannot be read, or is not an object, is not a crash.
 
