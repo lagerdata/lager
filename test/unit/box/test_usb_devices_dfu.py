@@ -183,6 +183,110 @@ alt=0, name="UNKNOWN", serial="066FFF383333"
 '''
 
 
+# A dfu-util 0.11 raw (non-DfuSe) download that fails: its device status
+# lines go to stdout, the suffix warnings to stderr.
+_DFU_FAILED_DOWNLOAD_STDOUT = '''\
+dfu-util 0.11
+
+Copyright 2005-2009 Weston Schmidt, Harald Welte and OpenMoko Inc.
+Copyright 2010-2021 Tormod Volden and Stefan Schmidt
+This program is Free Software and has ABSOLUTELY NO WARRANTY
+Please report bugs to http://sourceforge.net/p/dfu-util/tickets/
+
+Opening DFU capable USB device...
+Device ID 0483:df11
+Run-Time device DFU version 011a
+Claiming USB DFU Interface...
+Setting Alternate Interface #0 ...
+Determining device status...
+DFU state(10) = dfuERROR, status(4) = Memory erase function failed
+Clearing status
+Determining device status...
+DFU state(2) = dfuIDLE, status(0) = No error condition is present
+DFU mode device DFU version 011a
+Device returned transfer size 256
+Copying data from PC to DFU device
+
+Download\t[                         ]   0%            0 bytes failed!
+DFU state(10) = dfuERROR, status(3) = Device is unable to write memory
+'''
+
+_DFU_SUFFIX_WARNING_STDERR = '''\
+dfu-util: Warning: Invalid DFU suffix signature
+dfu-util: A valid DFU suffix will be required in a future dfu-util release
+'''
+
+
+class DfuFailureMessageTests(unittest.TestCase):
+    def test_quotes_both_streams_under_labels(self):
+        msg = usb_handler._dfu_failure_message(
+            74, _DFU_FAILED_DOWNLOAD_STDOUT, _DFU_SUFFIX_WARNING_STDERR)
+        self.assertEqual(
+            msg.split('\n')[:4],
+            ['dfu-util exited with code 74',
+             'stderr:',
+             'dfu-util: Warning: Invalid DFU suffix signature',
+             'dfu-util: A valid DFU suffix will be required in a future '
+             'dfu-util release'])
+        self.assertIn('\nstdout:\ndfu-util 0.11\n', msg)
+        self.assertIn('status(4) = Memory erase function failed', msg)
+        self.assertTrue(msg.endswith(
+            'status(3) = Device is unable to write memory'))
+
+    def test_stdout_only(self):
+        msg = usb_handler._dfu_failure_message(1, 'line a\nline b\n', '')
+        self.assertEqual(
+            msg, 'dfu-util exited with code 1\nstdout:\nline a\nline b')
+
+    def test_crlf_line_endings_keep_their_text(self):
+        msg = usb_handler._dfu_failure_message(1, 'line a\r\nline b\r\n', '')
+        self.assertEqual(
+            msg, 'dfu-util exited with code 1\nstdout:\nline a\nline b')
+
+    def test_stderr_only(self):
+        msg = usb_handler._dfu_failure_message(
+            74, '', 'dfu-util: No DFU capable USB device available\n')
+        self.assertEqual(
+            msg, 'dfu-util exited with code 74\nstderr:\n'
+                 'dfu-util: No DFU capable USB device available')
+
+    def test_no_output(self):
+        self.assertEqual(
+            usb_handler._dfu_failure_message(74, '', ''),
+            'dfu-util exited with code 74: no output')
+        self.assertEqual(
+            usb_handler._dfu_failure_message(74, None, '  \n'),
+            'dfu-util exited with code 74: no output')
+
+    def test_each_stream_has_its_own_cap(self):
+        stdout = ''.join(f'stdout line {i:04d}\n' for i in range(1000))
+        stderr = ''.join(f'stderr line {i:04d}\n' for i in range(1000))
+        msg = usb_handler._dfu_failure_message(74, stdout, stderr)
+        cap = usb_handler._DFU_ERROR_STREAM_CHARS
+        err_part, out_part = msg.split('\nstdout:\n')
+        self.assertLessEqual(len(out_part), cap + 64)
+        self.assertLessEqual(len(err_part), cap + 64)
+        # The end of each stream survives; the cut is marked.
+        self.assertTrue(out_part.endswith('stdout line 0999'))
+        self.assertIn('stderr line 0999', err_part)
+        self.assertRegex(out_part, r'^\[\.\.\. \d+ earlier lines\]\n')
+        self.assertRegex(err_part, r'\nstderr:\n\[\.\.\. \d+ earlier lines\]\n')
+
+    def test_a_line_longer_than_the_cap_keeps_its_end(self):
+        excerpt = usb_handler._dfu_stream_excerpt('x' * 50 + 'END', limit=10)
+        self.assertEqual(excerpt, 'xxxxxxxEND')
+
+    def test_progress_redraws_collapse_to_the_last(self):
+        stdout = ('Download\t[      ]   0%\r'
+                  'Download\t[===   ]  50%\r'
+                  'Download\t[======] 100%  4096 bytes\n'
+                  'Download done.\n')
+        msg = usb_handler._dfu_failure_message(1, stdout, '')
+        self.assertEqual(
+            msg, 'dfu-util exited with code 1\nstdout:\n'
+                 'Download\t[======] 100%  4096 bytes\nDownload done.')
+
+
 class DfuParsingAndArgsTests(unittest.TestCase):
     def test_parse_dfu_list(self):
         devices = usb_handler._parse_dfu_list(_DFU_LIST_STDOUT)
@@ -358,9 +462,37 @@ class DfuRouteTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 502)
         body = resp.get_json()
         self.assertIn('status(3) = errWRITE', body['error'])
-        self.assertNotIn('DFU suffix', body['error'])
+        # The suffix warnings are quoted too, under their own label: a
+        # future dfu-util that requires the suffix makes them the failure.
+        self.assertIn(
+            'stderr:\ndfu-util: Warning: Invalid DFU suffix signature',
+            body['error'])
         self.assertEqual(body['value']['stdout'], stdout)
         self.assertEqual(body['value']['stderr'], stderr)
+
+    def test_nonzero_exit_quotes_both_streams(self):
+        """A raw download's status lines, the ones that say why it failed,
+        are on stdout, so a stderr carrying only warnings must not hide
+        them."""
+        with patch.object(
+            usb_handler, '_run_dfu_util',
+            return_value=(74, _DFU_FAILED_DOWNLOAD_STDOUT,
+                          _DFU_SUFFIX_WARNING_STDERR),
+        ):
+            resp = self.client.post(
+                '/usb/dfu',
+                json={'action': 'download', 'params': {
+                    'firmware': base64.b64encode(b'\x00' * 16).decode()}})
+        self.assertEqual(resp.status_code, 502)
+        body = resp.get_json()
+        error = body['error']
+        self.assertTrue(error.startswith('dfu-util exited with code 74\n'))
+        self.assertIn('status(4) = Memory erase function failed', error)
+        self.assertIn('status(3) = Device is unable to write memory', error)
+        self.assertIn('Invalid DFU suffix signature', error)
+        self.assertLess(error.index('stderr:'), error.index('stdout:'))
+        self.assertEqual(body['value']['stdout'], _DFU_FAILED_DOWNLOAD_STDOUT)
+        self.assertEqual(body['value']['stderr'], _DFU_SUFFIX_WARNING_STDERR)
 
 
 class SelfRestartGateTests(unittest.TestCase):

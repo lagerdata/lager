@@ -91,13 +91,12 @@ for d in dfu.list()? {
 use lager::DfuOptions;
 
 let image = std::fs::read("target/app.bin").expect("firmware image");
-let out = dfu.download(&image, &DfuOptions {
+dfu.download(&image, &DfuOptions {
     vid_pid: Some("0483:df11".into()),
     dfuse_address: Some("0x08000000:leave".into()),
     reset: true,
     ..Default::default()
 })?;
-assert_eq!(out.exit_code, Some(0), "{}", out.stderr);
 ```
 
 <Note>
@@ -125,13 +124,12 @@ let target = devices.iter().find(|d| d.mode == "DFU")
 println!("flashing {}:{}", target.vid, target.pid);
 
 let image = std::fs::read("target/app.bin").expect("firmware image");
-let out = dfu.download(&image, &DfuOptions {
+dfu.download(&image, &DfuOptions {
     vid_pid: Some(format!("{}:{}", target.vid, target.pid)),
     dfuse_address: Some("0x08000000:leave".into()),
     reset: true,
     ..Default::default()
 })?;
-assert_eq!(out.exit_code, Some(0), "dfu-util failed:\n{}", out.stderr);
 ```
 
 ### 通过给集线器端口断电重启来进入 DFU
@@ -148,7 +146,8 @@ assert!(dfu.list()?.iter().any(|d| d.mode == "DFU"), "did not enter DFU");
 
 ## 说明
 
-- **`dfu-util` 把进度写到 stderr**，而不是 stdout。一次成功的下载同样会填满 `DfuOutput::stderr`；请检查 `exit_code`，而不是看 stderr 是否为空。
+- **运行失败一定是 `Err`，不会是 `exit_code` 非零的 `Ok`。** `dfu-util` 以非零码退出时，Box 返回 HTTP 502，也就是 `Error::Box`，所以一个 `?` 就是全部检查。从 Box 0.57.0 起，错误消息会引用两个输出流的末尾，各自带标签。更早的 Box 只引用 stderr 的最后 3 行。
+- **两个输出流都要看，不要只看 stderr。** `dfu-util` 报告设备故障（例如 `DFU state(10) = dfuERROR, status(3) = Device is unable to write memory`）时，原始下载写在 stdout 上，DfuSe 写在 stderr 上。进度写到 stdout，DFU 后缀警告写到 stderr。
 - 没装 `dfu-util` 的 Box 会用 `Error::Box` 和 HTTP 500 回应，并携带 `dfu-util is not installed on this box. Install it with 'lager box-config apt add dfu-util'`。这里有意**不是** `UnsupportedByBox` —— 路由是存在的，只是工具没装。
 - 早于 0.33.0 的 Box 根本不提供这条路由，那种情况**才是** `Error::UnsupportedByBox`。
 - 客户端给下载留了 180 秒，高于 Box 自己给 `dfu-util` 的 120 秒预算，以便为上传和排队留出余量。

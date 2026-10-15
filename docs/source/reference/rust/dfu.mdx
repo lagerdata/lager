@@ -95,13 +95,12 @@ request, so nothing needs to exist on the box's filesystem first.
 use lager::DfuOptions;
 
 let image = std::fs::read("target/app.bin").expect("firmware image");
-let out = dfu.download(&image, &DfuOptions {
+dfu.download(&image, &DfuOptions {
     vid_pid: Some("0483:df11".into()),
     dfuse_address: Some("0x08000000:leave".into()),
     reset: true,
     ..Default::default()
 })?;
-assert_eq!(out.exit_code, Some(0), "{}", out.stderr);
 ```
 
 <Note>
@@ -130,13 +129,12 @@ let target = devices.iter().find(|d| d.mode == "DFU")
 println!("flashing {}:{}", target.vid, target.pid);
 
 let image = std::fs::read("target/app.bin").expect("firmware image");
-let out = dfu.download(&image, &DfuOptions {
+dfu.download(&image, &DfuOptions {
     vid_pid: Some(format!("{}:{}", target.vid, target.pid)),
     dfuse_address: Some("0x08000000:leave".into()),
     reset: true,
     ..Default::default()
 })?;
-assert_eq!(out.exit_code, Some(0), "dfu-util failed:\n{}", out.stderr);
 ```
 
 ### Enter DFU by power-cycling a hub port
@@ -153,8 +151,14 @@ assert!(dfu.list()?.iter().any(|d| d.mode == "DFU"), "did not enter DFU");
 
 ## Notes
 
-- **`dfu-util` writes its progress to stderr**, not stdout. A successful download
-  still fills `DfuOutput::stderr`; check `exit_code`, not whether stderr is empty.
+- **A failed run is an `Err`, never an `Ok` with a non-zero `exit_code`.** When
+  `dfu-util` exits non-zero the box answers HTTP 502, which is `Error::Box`, so `?`
+  is the whole check. From box 0.57.0 the message quotes the end of both streams,
+  each under its own label. An older box quotes only the last 3 lines of stderr.
+- **Read both streams, not stderr alone.** `dfu-util` reports a device failure, such
+  as `DFU state(10) = dfuERROR, status(3) = Device is unable to write memory`, on
+  stdout for a raw download and on stderr for DfuSe. It writes progress to stdout,
+  and its DFU suffix warnings to stderr.
 - A box without `dfu-util` installed answers with `Error::Box` and HTTP 500 carrying
   `dfu-util is not installed on this box. Install it with 'lager box-config apt add dfu-util'`.
   This is deliberately **not** `UnsupportedByBox` — the route exists, the

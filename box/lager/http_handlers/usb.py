@@ -185,6 +185,10 @@ _DFU_MAX_TIMEOUT_S = 600
 # pin the DFU lock and /tmp for the whole download window.
 _DFU_MAX_FIRMWARE_BYTES = 32 * 1024 * 1024
 _DFU_SAFE_SUFFIX_RE = re.compile(r"^\.[A-Za-z0-9]{1,8}$")
+# Per-stream cap on the output quoted in a failure's `error` message. A full
+# dfu-util run is a few dozen lines, so this normally quotes all of it; the
+# uncapped streams are always in `value`.
+_DFU_ERROR_STREAM_CHARS = 4096
 
 # `dfu-util -l` device lines, e.g.:
 # Found DFU: [0483:df11] ver=2200, devnum=42, cfg=1, intf=0, path="1-1.4",
@@ -257,20 +261,55 @@ def _dfu_timeout(params):
     return max(1.0, min(timeout, _DFU_MAX_TIMEOUT_S))
 
 
-def _dfu_error_tail(stdout, stderr, limit=6):
-    """Last ``limit`` informative lines of dfu-util output.
+def _dfu_stream_excerpt(text, limit=_DFU_ERROR_STREAM_CHARS):
+    """The end of one captured stream, at most *limit* characters.
 
-    dfu-util reports device failures (``DFU state(10) = dfuERROR, ...``) on
-    stdout for raw downloads and on stderr for DfuSe, and always warns about
-    a missing DFU suffix on stderr. Read both streams, stderr last, and drop
-    the suffix noise so it cannot crowd out the cause.
+    A progress bar redraws itself with carriage returns, so each line keeps
+    only its last redraw. The cut falls on a line boundary and is marked with
+    the number of lines left out.
     """
-    lines = (stdout or '').splitlines() + (stderr or '').splitlines()
-    informative = [
-        line.strip() for line in lines
-        if line.strip() and 'dfu suffix' not in line.lower()
-    ]
-    return informative[-limit:]
+    # split('\n'), not splitlines(): splitlines() also splits on '\r' and
+    # would keep every redraw as a line of its own.
+    lines = [line.rstrip('\r').rsplit('\r', 1)[-1].rstrip()
+             for line in text.split('\n')]
+    while lines and not lines[0]:
+        lines.pop(0)
+    while lines and not lines[-1]:
+        lines.pop()
+    kept, size = [], 0
+    for line in reversed(lines):
+        size += len(line) + 1
+        if size > limit:
+            if not kept:
+                # One line longer than the whole cap: keep its end.
+                kept.append(line[-limit:])
+            break
+        kept.append(line)
+    kept.reverse()
+    dropped = len(lines) - len(kept)
+    if dropped:
+        kept.insert(0, f'[... {dropped} earlier lines]')
+    return '\n'.join(kept)
+
+
+def _dfu_failure_message(exit_code, stdout, stderr):
+    """The `error` message for a dfu-util run that exited non-zero.
+
+    Both streams are quoted, each under its own label and cap, and no line
+    is filtered out. dfu-util reports a device failure (``DFU state(10) =
+    dfuERROR, ...``) on stdout for a raw download and on stderr for DfuSe,
+    and always warns about a missing DFU suffix on stderr, so neither stream
+    can stand in for the other. The suffix warnings stay in: a dfu-util
+    release that requires the suffix makes them the failure itself.
+    """
+    sections = []
+    for label, text in (('stderr', stderr), ('stdout', stdout)):
+        excerpt = _dfu_stream_excerpt(text or '')
+        if excerpt:
+            sections.append(f'{label}:\n{excerpt}')
+    if not sections:
+        return f'dfu-util exited with code {exit_code}: no output'
+    return '\n'.join([f'dfu-util exited with code {exit_code}'] + sections)
 
 
 def _run_dfu_util(args, timeout):
@@ -532,6 +571,10 @@ def register_usb_routes(app: Flask) -> None:
 
         Returns the command envelope; `value` carries `devices` for list,
         and `exit_code` / `stdout` / `stderr` for every action.
+
+        A non-zero dfu-util exit is HTTP 502 with the full streams still in
+        `value`. Its `error` names the exit code and quotes the end of
+        stderr and of stdout, each labelled and capped separately.
         """
         firmware_path = None
         try:
@@ -602,13 +645,11 @@ def register_usb_routes(app: Flask) -> None:
 
             value = {'exit_code': exit_code, 'stdout': stdout, 'stderr': stderr}
             if exit_code != 0:
-                tail = _dfu_error_tail(stdout, stderr)
                 return jsonify({
                     'success': False,
                     'action': action,
                     'value': value,
-                    'error': 'dfu-util exited with code '
-                             f"{exit_code}: {' / '.join(tail) or 'no output'}",
+                    'error': _dfu_failure_message(exit_code, stdout, stderr),
                 }), 502
 
             if action == 'list':

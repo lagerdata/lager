@@ -20,6 +20,11 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 ### Fixed
 
+- **A failed DFU run now reports why it failed.** The error from `POST /usb/dfu`
+  quoted only the last 3 lines of stderr, and stdout only when stderr was empty, so
+  `dfu-util`'s DFU suffix warnings hid the device status lines a raw download writes
+  to stdout. It now quotes the end of both streams, each labelled and capped
+  separately.
 - **`lager uart -i` no longer hides the reply of a device that does not echo commands.**
   After each command it dropped the first received line as the device's echo, so a device
   that answers without echoing showed a blank line instead of its reply, and a reply with
