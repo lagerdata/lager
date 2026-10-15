@@ -123,7 +123,9 @@ pub fn measure(with_grid: &VideoFrame, without_grid: &VideoFrame) -> Result<Scre
 /// The bar is half the strength of the `min_lines`-th strongest peak, not of
 /// the strongest: the centre axes carry tick marks as well as the grid's
 /// dots, and on an MSO5000 are three times as strong as the other lines.
-fn line_centres(profile: &[u32], min_lines: usize) -> Vec<f64> {
+///
+/// Each line comes with its strength, the count at its strongest position.
+fn line_centres(profile: &[u32], min_lines: usize) -> Vec<(f64, u32)> {
     let mut peaks: Vec<u32> = (0..profile.len())
         .filter(|&i| {
             let here = profile[i];
@@ -141,28 +143,36 @@ fn line_centres(profile: &[u32], min_lines: usize) -> Vec<f64> {
         .unwrap_or(0);
     let threshold = reference / 2;
     let mut centres = Vec::new();
-    let mut run: Option<(usize, u64, u64)> = None; // (start, weight, weighted sum)
+    let mut run: Option<(u32, u64, u64)> = None; // (strongest, weight, weighted sum)
     for (i, &count) in profile.iter().enumerate() {
         if count > threshold && count > 0 {
-            let (start, w, sum) = run.unwrap_or((i, 0, 0));
-            run = Some((start, w + u64::from(count), sum + u64::from(count) * i as u64));
-        } else if let Some((_, w, sum)) = run.take() {
-            centres.push(sum as f64 / w as f64);
+            let (peak, w, sum) = run.unwrap_or((0, 0, 0));
+            run = Some((peak.max(count), w + u64::from(count), sum + u64::from(count) * i as u64));
+        } else if let Some((peak, w, sum)) = run.take() {
+            centres.push((sum as f64 / w as f64, peak));
         }
     }
-    if let Some((_, w, sum)) = run {
-        centres.push(sum as f64 / w as f64);
+    if let Some((peak, w, sum)) = run {
+        centres.push((sum as f64 / w as f64, peak));
     }
     centres
 }
 
-/// The centre and spacing of the evenly spaced lines among `centres`, or
+/// How much stronger than the other lines the centre axis must be to be
+/// taken for it.
+const AXIS_STRENGTH: f64 = 1.5;
+
+/// The centre and spacing of the evenly spaced lines among `lines`, or
 /// `None` when fewer than `min_lines` fit one spacing.
 ///
-/// The centre is the middle of the outermost lines that fit, which holds
+/// The centre is the centre axis where one line stands out as it, since the
+/// axis carries tick marks the rest of the grid lacks; a menu covering one
+/// side of the screen then hides lines without moving the centre. Failing
+/// that, it is the middle of the outermost lines that fit, which holds
 /// whether or not the border lines changed with the grid, because the grid
 /// is symmetric about its centre.
-fn lattice(centres: &[f64], min_lines: usize) -> Option<(f64, f64)> {
+fn lattice(lines: &[(f64, u32)], min_lines: usize) -> Option<(f64, f64)> {
+    let centres: Vec<f64> = lines.iter().map(|l| l.0).collect();
     if centres.len() < min_lines {
         return None;
     }
@@ -202,10 +212,23 @@ fn lattice(centres: &[f64], min_lines: usize) -> Option<(f64, f64)> {
     let num: f64 = points.iter().map(|p| (p.0 - mean_k) * (p.1 - mean_c)).sum();
     let den: f64 = points.iter().map(|p| (p.0 - mean_k).powi(2)).sum();
     let spacing = if den > 0.0 { num / den } else { spacing };
+    // The fitted position of step k.
+    let at = |k: f64| mean_c + spacing * (k - mean_k);
+    let strength = |c: f64| lines.iter().find(|l| l.0 == c).map_or(0, |l| l.1);
+    let mut strengths: Vec<u32> = best.iter().map(|&c| strength(c)).collect();
+    strengths.sort_unstable();
+    let typical = f64::from(strengths[strengths.len() / 2]);
+    let axes: Vec<f64> = points
+        .iter()
+        .filter(|p| f64::from(strength(p.1)) >= typical * AXIS_STRENGTH)
+        .map(|p| p.0)
+        .collect();
+    if let [axis] = axes[..] {
+        return Some((at(axis), spacing));
+    }
     let first = points.first()?.0;
     let last = points.last()?.0;
-    let centre = origin + spacing * (first + last) / 2.0;
-    Some((centre, spacing))
+    Some((at((first + last) / 2.0), spacing))
 }
 
 /// Which channel a pixel is drawn in, from its chroma.
@@ -358,6 +381,24 @@ pub(crate) mod tests {
         assert!((map.center_y - 296.0).abs() < 0.5, "{map:?}");
         assert!((map.px_per_div_x - 100.0).abs() < 0.5, "{map:?}");
         assert!((map.px_per_div_y - 60.0).abs() < 0.5, "{map:?}");
+    }
+
+    #[test]
+    fn a_menu_over_the_right_of_the_grid_does_not_move_the_centre() {
+        let without = VideoFrame::blank(1024, 600, Layout::Ycc);
+        let mut with = grid_frame(1024, 600, 522, 296, 100, 60, false);
+        for y in 56..=536 {
+            with.put(522, y, (90, 128, 128));
+        }
+        // The menu hides everything right of x 825 in both frames.
+        for y in 0..600 {
+            for x in 826..1024 {
+                with.put(x, y, (16, 128, 128));
+            }
+        }
+        let map = measure(&with, &without).unwrap();
+        assert!((map.center_x - 522.0).abs() < 0.5, "{map:?}");
+        assert!((map.px_per_div_x - 100.0).abs() < 0.5, "{map:?}");
     }
 
     #[test]

@@ -610,12 +610,6 @@ fn calibrate(link: &Mutex<Box<dyn Scpi>>, video: &dyn FrameSource) -> Result<Scr
     let was_running = !status.trim().eq_ignore_ascii_case("STOP");
     // Frozen, so that only the grid differs between the two frames.
     lock_link(link).write(":STOP")?;
-    // Close any menu the front panel left open: on the MSO5000 a menu
-    // covers the right of the grid, and the area is measured as symmetric
-    // about its centre. Best effort, so the error queue is drained after.
-    if command(":SYSTem:KEY:PRESs MOFF").is_ok() {
-        let _ = check_errors(lock_link(link).as_mut(), ":SYSTem:KEY:PRESs MOFF");
-    }
     let result = (|| {
         command(":DISPlay:GRID FULL")?;
         let with_grid = settled_frame(video)?;

@@ -125,10 +125,11 @@ impl FrameSource for ScreenDump {
         "the scope's screen over SCPI".into()
     }
 
-    /// A screenshot is taken while holding the connection, so one begun
-    /// after a command has completed already shows its effect.
+    /// The scope answers `*OPC?` before it has redrawn, so the screenshot
+    /// right after a change can still show the screen as it was; the one
+    /// after that, begun a few hundred milliseconds later, does not.
     fn settle_frames(&self) -> u64 {
-        1
+        2
     }
 
     fn frame_wait(&self) -> Duration {
