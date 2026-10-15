@@ -93,6 +93,14 @@ class TestTheScpiLayer:
         assert rigol.query(":LA:STATe?") == "1"
         assert [p["scpi"] for _, p in daemon[0].sent] == [":LA:STATe ON", ":LA:STATe?"]
 
+    def test_an_enum_from_the_proxy_is_sent_as_its_token(self, daemon, monkeypatch):
+        monkeypatch.setattr(rigol_mso5000, "_instruments", {})
+        rigol = rigol_mso5000.RigolMso5000(address=ADDRESS, pin=1)
+        rigol.set_measurement_source({"__enum__": {"type": "MeasurementSource", "value": "D1"}})
+        rigol.set_cursor_mode({"__enum__": {"type": "CursorMode", "value": "MANual"}})
+        assert [p["scpi"] for _, p in daemon[0].sent] == [
+            ":MEASure:SOURce D1", ":CURSor:MODE MANual"]
+
     def test_every_net_on_a_scope_shares_one_connection(self, daemon, monkeypatch):
         monkeypatch.setattr(rigol_mso5000, "_instruments", {})
         first = rigol_mso5000.RigolMso5000(address=ADDRESS, pin=1)

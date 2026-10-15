@@ -214,8 +214,8 @@ def test_channel_display_writes_the_indexed_command(scope):
     scope.enable_la_channel(3)
     scope.disable_la_channel(9)
     assert scope._fake.writes == [
-        ":LA:DIGital3:DISPlay ON",
-        ":LA:DIGital9:DISPlay OFF",
+        ":LA:DISPlay D3,ON",
+        ":LA:DISPlay D9,OFF",
     ]
 
 
@@ -226,12 +226,12 @@ def test_d0_is_not_swallowed_by_a_falsy_check(scope):
     request for D0 to the net's own channel instead. The LA methods must not.
     """
     scope.enable_la_channel(0)
-    assert scope._fake.writes == [":LA:DIGital0:DISPlay ON"]
+    assert scope._fake.writes == [":LA:DISPlay D0,ON"]
 
 
 def test_channel_defaults_to_the_nets_own(scope):
     scope.enable_la_channel()
-    assert scope._fake.writes == [":LA:DIGital1:DISPlay ON"]
+    assert scope._fake.writes == [":LA:DISPlay D1,ON"]
 
 
 @pytest.mark.parametrize("bad", [16, -1, 99])

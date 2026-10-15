@@ -94,6 +94,28 @@ async def send_command_async(command: dict) -> dict:
         return {"error": f"communication error: {e}"}
 
 
+def _daemon_uri_for(netname):
+    """The daemon driving ``netname``'s scope.
+
+    The box's own daemon drives a PicoScope; a Rigol has a daemon of its
+    own, started for it on first use. The box's is the answer when the net
+    is not given or the box's routing cannot be imported.
+    """
+    if not netname:
+        return DAEMON_URI
+    try:
+        from lager.measurement.scope.routing import daemon_url_for
+        from lager.nets.net import Net
+    except ImportError:
+        return DAEMON_URI
+    rec = next((n for n in Net.get_local_nets()
+                if n.get("name") == netname
+                and n.get("role") in ("scope", "scope-channel", "analog")), None)
+    if rec is None:
+        return DAEMON_URI
+    return daemon_url_for(rec)
+
+
 def send_command(command: dict) -> dict:
     """Send a command to the oscilloscope daemon and get response."""
     return asyncio.run(send_command_async(command))
@@ -505,6 +527,13 @@ def main():
 
     action = data.get("action", "")
     params = data.get("params", {})
+
+    global DAEMON_URI
+    try:
+        DAEMON_URI = _daemon_uri_for(params.get("netname"))
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
 
     actions = {
         "stream_start": stream_start,

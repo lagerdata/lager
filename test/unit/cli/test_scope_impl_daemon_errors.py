@@ -448,3 +448,36 @@ class PicoScopeRefusalTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StreamDaemonRoutingTests(unittest.TestCase):
+    """A Rigol net streams from its own daemon, not the box's PicoScope one."""
+
+    def _module(self, nets, url_for):
+        lager = types.ModuleType("lager")
+        net_mod = types.ModuleType("lager.nets.net")
+        net_mod.Net = types.SimpleNamespace(get_local_nets=lambda: nets)
+        routing = types.ModuleType("lager.measurement.scope.routing")
+        routing.daemon_url_for = url_for
+        modules = {
+            "lager": lager,
+            "lager.nets": types.ModuleType("lager.nets"),
+            "lager.nets.net": net_mod,
+            "lager.measurement": types.ModuleType("lager.measurement"),
+            "lager.measurement.scope": types.ModuleType("lager.measurement.scope"),
+            "lager.measurement.scope.routing": routing,
+        }
+        patcher = mock.patch.dict(sys.modules, modules)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return _load_impl(STREAM_IMPL, "_scope_stream_routing_under_test")
+
+    def test_a_rigol_net_goes_to_the_daemon_routing_names(self):
+        nets = [{"name": "sda", "role": "scope-channel", "instrument": "Rigol_MSO5204"}]
+        module = self._module(nets, lambda rec: "ws://127.0.0.1:41234/")
+        self.assertEqual(module._daemon_uri_for("sda"), "ws://127.0.0.1:41234/")
+
+    def test_no_net_or_an_unknown_one_keeps_the_box_daemon(self):
+        module = self._module([], lambda rec: self.fail("routing was asked"))
+        self.assertEqual(module._daemon_uri_for(None), module.DAEMON_URI)
+        self.assertEqual(module._daemon_uri_for("missing"), module.DAEMON_URI)

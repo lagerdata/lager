@@ -70,6 +70,12 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   caller's own CI identity, so the cleanup step of the run that took the lock reported "No box
   lock held" and left it. Every green Nightly left the bench box locked until the next run. The
   probe now asks under a separate holder, so it sees the run's own lock and releases it.
+- **A command a Rigol MSO5000 refuses is now an error.** Before, the scope
+  put the refusal in its error queue and the command reported success. That
+  hid three faults, now fixed: `lager logic <net> enable` and `disable` sent a
+  form of the command this firmware refuses; measurements on a logic net
+  never switched the scope to the digital channel; and `lager logic` cursors
+  never switched on.
 
 
 ## [0.56.0] - 2026-10-13

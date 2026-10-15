@@ -303,27 +303,30 @@ class RigolMso5000:
     def enable_la_channel(self, channel=None):
         """Show a digital channel."""
         ch = self._la_channel(channel)
-        self.write(f":LA:DIGital{ch}:DISPlay ON")
+        self.write(f":LA:DISPlay D{ch},ON")
         return {"channel": ch, "enabled": True}
 
     def disable_la_channel(self, channel=None):
         """Hide a digital channel."""
         ch = self._la_channel(channel)
-        self.write(f":LA:DIGital{ch}:DISPlay OFF")
+        self.write(f":LA:DISPlay D{ch},OFF")
         return {"channel": ch, "enabled": False}
 
     def is_la_channel_enabled(self, channel=None):
         """Whether a digital channel is shown.
 
         Asks `:LA:DISPlay? D<n>` rather than `:LA:DIGital<n>:DISPlay?`. The
-        second form is what the write path uses and it looks like the obvious
-        query, but on an MSO5204 it never answers: the read blocks for the full
+        second form looks like the obvious query, but on an MSO5204 it never answers: the read blocks for the full
         VISA timeout and `:SYSTem:ERRor?` afterwards reports `0,"No error"`, so
         the instrument accepted the header and simply produced no response. The
         whole `:LA:DIGital<n>:` subtree behaves that way -- `:POSition?` does
         the same -- while `:LA:STATe?`, `:LA:ACTive?`, `:LA:SIZE?` and
-        `:LA:POD<n>:THReshold?` all answer in about 20 ms. Treat that subtree as
-        write-only.
+        `:LA:POD<n>:THReshold?` all answer in about 20 ms. On an MSO5074 at
+        firmware 00.01.03 the subtree is not even write-only: the writes are
+        refused as `-100,"Command err"`, which is why the channel is shown and
+        hidden with `:LA:DISPlay D<n>,ON|OFF`. And an unanswered query there
+        leaves the scope answering nothing over USB until it is power-cycled,
+        so never send one.
 
         This matters more than one method: `Net.disable` polls all 16 channels
         through here, so the unanswerable form cost 16 VISA timeouts before
@@ -507,7 +510,7 @@ class RigolMso5000:
             source: Source channel (TriggerEdgeSource enum or string like "CHAN1")
         """
         # Convert enum to string if needed
-        source_str = str(source) if not isinstance(source, str) else source
+        source_str = _scpi_arg(source)
         return self.set_trigger_source(source_str)
 
     def get_trigger_edge_source(self):
@@ -521,7 +524,7 @@ class RigolMso5000:
             trigger_type: Trigger type string or enum (e.g., "EDGE", "PULSe")
         """
         # Convert enum to string if needed
-        type_str = str(trigger_type) if not isinstance(trigger_type, str) else trigger_type
+        type_str = _scpi_arg(trigger_type)
         self.write(f":TRIGger:MODE {type_str}")
         return {"trigger_type": type_str}
 
@@ -742,7 +745,7 @@ class RigolMso5000:
                    Can also be a MeasurementSource enum value
         """
         # Convert enum to string if needed
-        source_str = str(source) if not isinstance(source, str) else source
+        source_str = _scpi_arg(source)
         self.write(f":MEASure:SOURce {source_str}")
         return {"measurement_source": source_str}
 
@@ -758,7 +761,7 @@ class RigolMso5000:
                        Can also be a MeasurementClear enum value
         """
         # Convert enum to string if needed
-        clear_str = str(clear_type) if not isinstance(clear_type, str) else clear_type
+        clear_str = _scpi_arg(clear_type)
         self.write(f":MEASure:CLEar {clear_str}")
         return {"measurement_clear": clear_str}
 
@@ -783,7 +786,7 @@ class RigolMso5000:
             mode: Cursor mode string or enum (e.g., "MANual", "OFF")
         """
         # Convert enum to string if needed
-        mode_str = str(mode) if not isinstance(mode, str) else mode
+        mode_str = _scpi_arg(mode)
         self.write(f":CURSor:MODE {mode_str}")
         return {"cursor_mode": mode_str}
 
@@ -797,7 +800,7 @@ class RigolMso5000:
         Args:
             source: Channel source (e.g., "CHANnel1", "CHANnel2", etc.)
         """
-        source_str = str(source) if not isinstance(source, str) else source
+        source_str = _scpi_arg(source)
         self.write(f":CURSor:MANual:SOURce {source_str}")
         return {"cursor_source": source_str}
 
@@ -811,7 +814,7 @@ class RigolMso5000:
         Args:
             cursor_type: Cursor type string or enum (e.g., "XY", "X", "Y")
         """
-        type_str = str(cursor_type) if not isinstance(cursor_type, str) else cursor_type
+        type_str = _scpi_arg(cursor_type)
         self.write(f":CURSor:MANual:TYPE {type_str}")
         return {"cursor_type": type_str}
 

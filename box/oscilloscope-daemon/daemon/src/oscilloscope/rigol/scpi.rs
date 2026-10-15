@@ -260,6 +260,11 @@ pub trait Bulk: Send {
     fn bulk_out(&mut self, data: &[u8], timeout: Duration) -> Result<usize>;
     fn bulk_in(&mut self, buffer: &mut [u8], timeout: Duration) -> Result<usize>;
     fn max_packet(&self) -> usize;
+
+    /// Bring the device back after a transfer that failed part way: an
+    /// instrument left holding a request it will never answer answers
+    /// nothing after it either.
+    fn recover(&mut self) {}
 }
 
 /// USB-TMC over any pair of bulk endpoints.
@@ -334,10 +339,19 @@ impl<B: Bulk> Scpi for UsbTmc<B> {
         // Bounded so a device that never says end of message cannot hold
         // the hardware thread forever.
         for _ in 0..64 {
-            if self.read_transfer(&mut message)? {
-                return Ok(message);
+            match self.read_transfer(&mut message) {
+                Ok(true) => return Ok(message),
+                Ok(false) => {}
+                // A query the instrument does not answer (one it does not
+                // know, say) times out with the request still outstanding.
+                Err(e) if e.downcast_ref::<UnitGone>().is_none() => {
+                    self.bulk.recover();
+                    return Err(e);
+                }
+                Err(e) => return Err(e),
             }
         }
+        self.bulk.recover();
         bail!("the reply ran past 64 MB without an end of message")
     }
 }
@@ -471,6 +485,12 @@ impl Bulk for RusbBulk {
 
     fn max_packet(&self) -> usize {
         self.max_packet
+    }
+
+    fn recover(&mut self) {
+        tracing::warn!("a USB-TMC read failed part way; clearing the instrument");
+        self.initiate_clear();
+        let _ = self.handle.clear_halt(self.ep_in);
     }
 }
 
@@ -792,13 +812,20 @@ mod tests {
         /// Pending bulk-in data for the current transfer.
         pending: VecDeque<u8>,
         packet: usize,
+        /// A request is outstanding that the device will not answer.
+        stuck: bool,
+        recovered: usize,
     }
 
     impl Bulk for FakeBulk {
         fn bulk_out(&mut self, data: &[u8], _timeout: Duration) -> Result<usize> {
             if data[0] == REQUEST_DEV_DEP_MSG_IN {
                 let tag = data[1];
-                let (body, eom) = self.replies.pop_front().expect("no reply queued");
+                let Some((body, eom)) = self.replies.pop_front() else {
+                    // Asked for a reply that never comes.
+                    self.stuck = true;
+                    return Ok(data.len());
+                };
                 let mut transfer = vec![DEV_DEP_MSG_IN, tag, !tag, 0];
                 transfer.extend_from_slice(&(body.len() as u32).to_le_bytes());
                 transfer.extend_from_slice(&[u8::from(eom), 0, 0, 0]);
@@ -815,6 +842,9 @@ mod tests {
 
         /// One packet at a time, as a device with a small endpoint sends.
         fn bulk_in(&mut self, buffer: &mut [u8], _timeout: Duration) -> Result<usize> {
+            if self.stuck {
+                bail!("Operation timed out");
+            }
             let n = self.pending.len().min(self.packet).min(buffer.len());
             for slot in buffer.iter_mut().take(n) {
                 *slot = self.pending.pop_front().unwrap();
@@ -825,6 +855,11 @@ mod tests {
         fn max_packet(&self) -> usize {
             self.packet
         }
+
+        fn recover(&mut self) {
+            self.stuck = false;
+            self.recovered += 1;
+        }
     }
 
     fn tmc(replies: Vec<(Vec<u8>, bool)>) -> UsbTmc<FakeBulk> {
@@ -833,6 +868,8 @@ mod tests {
             replies: replies.into(),
             pending: VecDeque::new(),
             packet: 64,
+            stuck: false,
+            recovered: 0,
         })
     }
 
@@ -861,6 +898,15 @@ mod tests {
     fn a_reply_without_end_of_message_is_asked_for_again() {
         let mut scpi = tmc(vec![(b"#15he".to_vec(), false), (b"llo\n".to_vec(), true)]);
         assert_eq!(scpi.query_block(":DISP:DATA?").unwrap(), b"hello");
+    }
+
+    #[test]
+    fn an_unanswered_query_clears_the_instrument_so_the_next_one_works() {
+        let mut scpi = tmc(vec![]);
+        assert!(scpi.query(":LA:DIGital1:DISPlay?").is_err());
+        assert_eq!(scpi.bulk.recovered, 1);
+        scpi.bulk.replies.push_back((b"1\n".to_vec(), true));
+        assert_eq!(scpi.query(":LA:STATe?").unwrap(), "1");
     }
 
     #[test]

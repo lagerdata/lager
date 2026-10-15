@@ -1532,9 +1532,11 @@ def stream_status(ctx, box):
     """Check oscilloscope streaming daemon status"""
     box_ip = _resolve_box(ctx, box)
 
+    # The net, when one is given, picks the daemon: a Rigol has its own.
+    netname = getattr(ctx.obj, "netname", None)
     data = {
         "action": "stream_status",
-        "params": {}
+        "params": {"netname": netname} if netname else {}
     }
 
     run_python_internal(
