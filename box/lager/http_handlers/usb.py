@@ -257,7 +257,7 @@ def _dfu_timeout(params):
     return max(1.0, min(timeout, _DFU_MAX_TIMEOUT_S))
 
 
-def _dfu_error_tail(stdout, stderr, limit=3):
+def _dfu_error_tail(stdout, stderr, limit=6):
     """Last ``limit`` informative lines of dfu-util output.
 
     dfu-util reports device failures (``DFU state(10) = dfuERROR, ...``) on
