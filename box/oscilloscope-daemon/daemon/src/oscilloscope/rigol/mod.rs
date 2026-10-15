@@ -431,6 +431,22 @@ impl RigolMso5000 {
         parse_f64(&reply, query)
     }
 
+    /// Run `set` with channel `i` shown. An MSO5000 ignores a vertical scale
+    /// or offset sent to a hidden channel, with no error, where a PicoScope
+    /// takes it; showing the channel for the change keeps the two alike.
+    fn while_shown(&mut self, i: usize, set: impl FnOnce(&mut Self) -> Result<()>) -> Result<()> {
+        let n = i + 1;
+        let hidden = self.query_f64(&format!(":CHANnel{n}:DISPlay?"))? == 0.0;
+        if hidden {
+            self.apply(&format!(":CHANnel{n}:DISPlay ON"))?;
+        }
+        let result = set(self);
+        if hidden {
+            self.apply(&format!(":CHANnel{n}:DISPlay OFF"))?;
+        }
+        result
+    }
+
     /// Frames already captured, or on their way, show the screen as it was.
     fn mark_stale(&self) {
         let newest = self
@@ -793,11 +809,13 @@ impl Oscilloscope for RigolMso5000 {
 
     fn set_volts_per_div(&mut self, channel: ChannelId, volts_per_div: f64) -> Result<()> {
         let i = self.index(channel)?;
-        self.apply(&format!(":CHANnel{}:SCALe {volts_per_div}", i + 1))?;
-        // The scope rounds to what it has.
-        self.settings.channels[i].volts_per_div =
-            self.query_f64(&format!(":CHANnel{}:SCALe?", i + 1))?;
-        Ok(())
+        self.while_shown(i, |scope| {
+            scope.apply(&format!(":CHANnel{}:SCALe {volts_per_div}", i + 1))?;
+            // The scope rounds to what it has.
+            scope.settings.channels[i].volts_per_div =
+                scope.query_f64(&format!(":CHANnel{}:SCALe?", i + 1))?;
+            Ok(())
+        })
     }
 
     fn get_volts_per_div(&self, channel: ChannelId) -> Result<f64> {
@@ -806,9 +824,12 @@ impl Oscilloscope for RigolMso5000 {
 
     fn set_volts_offset(&mut self, channel: ChannelId, volts_offset: f64) -> Result<()> {
         let i = self.index(channel)?;
-        self.apply(&format!(":CHANnel{}:OFFSet {volts_offset}", i + 1))?;
-        self.settings.channels[i].offset = self.query_f64(&format!(":CHANnel{}:OFFSet?", i + 1))?;
-        Ok(())
+        self.while_shown(i, |scope| {
+            scope.apply(&format!(":CHANnel{}:OFFSet {volts_offset}", i + 1))?;
+            scope.settings.channels[i].offset =
+                scope.query_f64(&format!(":CHANnel{}:OFFSet?", i + 1))?;
+            Ok(())
+        })
     }
 
     fn get_volts_offset(&self, channel: ChannelId) -> Result<f64> {

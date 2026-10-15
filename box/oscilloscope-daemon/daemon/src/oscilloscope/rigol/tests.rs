@@ -185,6 +185,9 @@ impl Instrument {
                             c.display = arg == "ON" || arg == "1";
                             true
                         }
+                        // A hidden channel ignores its scale and offset,
+                        // with no error, as the MSO5074 on the bench did.
+                        "SCALE" | "OFFSET" if !c.display => true,
                         // Rounded to 1-2-5, as the scope does.
                         "SCALE" => number()
                             .map(|v| {
@@ -572,6 +575,20 @@ fn the_offset_moves_the_trigger_point_and_the_position_follows() {
     assert!((bench.scope.get_trigger_position().unwrap() - 30.0).abs() < 1e-9);
     let frame = bench.capture();
     assert_eq!(frame.pre_trigger_samples, 2 * (250 - 100));
+}
+
+#[test]
+fn a_hidden_channel_takes_its_scale_and_offset_and_stays_hidden() {
+    let mut bench = bench();
+    let c = ChannelId::Alphabetic('C');
+    bench.scope.disable_channel(c).unwrap();
+    bench.scope.set_volts_per_div(c, 2.0).unwrap();
+    bench.scope.set_volts_offset(c, 1.5).unwrap();
+    assert_eq!(bench.scope.get_volts_per_div(c).unwrap(), 2.0);
+    assert_eq!(bench.scope.get_volts_offset(c).unwrap(), 1.5);
+    let instrument = bench.instrument.lock().unwrap();
+    assert_eq!((instrument.channels[2].scale, instrument.channels[2].offset), (2.0, 1.5));
+    assert!(!instrument.channels[2].display);
 }
 
 #[test]

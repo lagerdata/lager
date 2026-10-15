@@ -279,6 +279,30 @@ pub use self::v4l2::V4l2Source;
 /// margin. `*OPC?` itself returns in under 30 ms, long before the redraw.
 const HDMI_SETTLE: Duration = Duration::from_millis(400);
 
+/// Frames a second, over windows of a second from the first frame counted.
+/// Starting at the first frame matters: a window opened when streaming began
+/// would average in the warm-up, when nothing is published, and report a
+/// tenth of the real rate.
+#[derive(Debug, Default)]
+pub struct RateMeter {
+    window: Option<(std::time::Instant, u64)>,
+}
+
+impl RateMeter {
+    /// Count a frame at `now`; the rate, once a window has closed.
+    pub fn tick(&mut self, now: std::time::Instant) -> Option<f64> {
+        let (start, frames) = self.window.get_or_insert((now, 0));
+        *frames += 1;
+        let elapsed = now.duration_since(*start);
+        if elapsed < Duration::from_secs(1) {
+            return None;
+        }
+        let rate = (*frames - 1) as f64 / elapsed.as_secs_f64();
+        self.window = Some((now, 1));
+        Some(rate)
+    }
+}
+
 /// Frames covering `HDMI_SETTLE` at `fps` frames a second.
 pub fn settle_frames_at(fps: f64) -> u64 {
     let frames = (fps * HDMI_SETTLE.as_secs_f64()).ceil();
@@ -443,7 +467,7 @@ mod v4l2 {
         let mut sequence = 0u64;
         let mut timeouts = 0u32;
         let started = std::time::Instant::now();
-        let mut window = (std::time::Instant::now(), 0u64);
+        let mut meter = RateMeter::default();
         while !stop.load(Ordering::Relaxed) {
             match stream.next() {
                 Ok((bytes, meta)) => {
@@ -453,12 +477,8 @@ mod v4l2 {
                         continue;
                     }
                     sequence += 1;
-                    window.1 += 1;
-                    let elapsed = window.0.elapsed();
-                    if elapsed >= Duration::from_secs(1) {
-                        let milli = window.1 as f64 * 1000.0 / elapsed.as_secs_f64();
-                        delivered.store(milli as u64, Ordering::Relaxed);
-                        window = (std::time::Instant::now(), 0);
+                    if let Some(fps) = meter.tick(std::time::Instant::now()) {
+                        delivered.store((fps * 1000.0) as u64, Ordering::Relaxed);
                     }
                     latest.store(RawFrame {
                         encoding: mode.encoding,
@@ -540,6 +560,19 @@ mod tests {
             height,
             fps,
         }
+    }
+
+    #[test]
+    fn the_rate_is_counted_from_the_first_frame_not_from_the_stream_start() {
+        let mut meter = RateMeter::default();
+        // The first frame arrives after a warm-up; the window starts there.
+        let first = std::time::Instant::now() + Duration::from_secs(2);
+        let mut rate = None;
+        for i in 0..=31u32 {
+            rate = meter.tick(first + Duration::from_micros(33_333) * i).or(rate);
+        }
+        let rate = rate.expect("a window closed after a second");
+        assert!((rate - 30.0).abs() < 0.5, "{rate}");
     }
 
     #[test]

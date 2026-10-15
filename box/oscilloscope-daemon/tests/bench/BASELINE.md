@@ -177,3 +177,59 @@ brought p99 to 3.06 ms.
 
 Both are one-line fixes, but neither is visible in a functional test: the
 relay worked correctly the whole time and only the tail latency was wrong.
+
+## Rigol MSO5000
+
+Measured on STG-1 on 2026-10-15, daemon at `b52de0ac`, run inside the box
+container against the scope's own daemon. That daemon listens on a port of its
+own, recorded in `/tmp/lager-scope-daemons/<address>.json`:
+
+    lager python stream_bench.py --box <box> -- --port <port> --duration 15 --channels N --settings-rtt 10
+
+- **Scope:** MSO5074 (`*IDN?`), firmware 00.01.03.00.03, on USB-TMC `1ab1:0515`.
+- **Settings:** 1 ms/div, 1 V/div, auto sweep, trigger level 0 V, no signal.
+- **"1 channel":** channel A only. **"4 channels":** A to D.
+- **HDMI path:** the scope's HDMI output at 1280x720, into a MacroSilicon
+  MS2109 card (`534d:2109`) on a USB 2 port. The card captures MJPEG at
+  1920x1080. It advertises 60 fps and delivers 30, filling every other buffer
+  with an image-less JPEG.
+- **Screenshot path:** `lager nets set-capture <net> --screen`. Each frame is
+  `:DISPlay:DATA?` over the same USB-TMC link.
+
+These numbers are not comparable with the PicoScope tables above. A PicoScope
+frame is a block of samples, sent as soon as the SDK returns it. A Rigol frame
+is a picture of the scope's screen, one (min, max) pair per pixel column, taken
+at the rate the video arrives.
+
+| | HDMI, 1 channel | HDMI, 4 channels | screenshot, 1 channel | screenshot, 4 channels |
+|---|---|---|---|---|
+| capture rate | 26.8 /s | 24.1 /s | 2.9 /s | 2.4 /s |
+| samples delivered | 80.5 kS/s | 289.0 kS/s | 5.9 kS/s | 19.2 kS/s |
+| bytes per capture | 5.9 KB | 23.6 KB | 4.0 KB | 15.8 KB |
+| inter-arrival p50 | 32.68 ms | 32.51 ms | 283.91 ms | 285.12 ms |
+| inter-arrival p99 | 54.08 ms | 50.14 ms | 329.33 ms | 332.56 ms |
+| capture->client p50 | 18.03 ms | 17.59 ms | 24.20 ms | 24.90 ms |
+| capture->client p99 | 34.41 ms | 36.68 ms | 39.06 ms | 41.23 ms |
+| command RTT p50 | 1.24 ms | 1.24 ms | 1.22 ms | 0.43 ms |
+| command RTT p99 | 176.50 ms | 127.06 ms | 291.18 ms | 300.27 ms |
+
+The latency column starts when the daemon receives the frame. It does not
+include the time from a change on the scope to its picture: 190 to 330 ms over
+HDMI, measured from `*OPC?` with six grid switches. On the screenshot path it
+does not include the 280 ms the screenshot itself takes to read. The command
+RTT p99 is far above the median on both paths. Its cause has not been
+investigated.
+
+Settings round trips: a set, then a get that reads the daemon's value back. Ten
+of each, with the stream stopped. Every value read back was the value set.
+
+| | HDMI, 1 ch, set p50 / p99 | HDMI, 4 ch, set p50 / p99 | screenshot, 1 ch, set p50 / p99 | screenshot, 4 ch, set p50 / p99 |
+|---|---|---|---|---|
+| `SetVoltsPerDiv` | 318 / 559 ms | 404 / 729 ms | 588 / 610 ms | 679 / 1093 ms |
+| `SetTimePerDiv` | 321 / 448 ms | 435 / 545 ms | 635 / 732 ms | 729 / 765 ms |
+| `SetTriggerLevel` | 59 / 170 ms | 59 / 171 ms | 325 / 347 ms | 334 / 401 ms |
+
+Every get takes about 1 ms, because the daemon answers it from its cache. A
+set costs four exchanges with the scope over USB-TMC: the command, `*OPC?`, the
+error queue, and a read-back of the value the scope applied. On the screenshot
+path those exchanges share the link with the screenshot reads.
