@@ -166,6 +166,27 @@ class TestNetCommandHandler(unittest.TestCase):
              "params": {"level": 1, "timeout": 1}}, dev)
         self.assertEqual(r.status_code, 502)
 
+    def test_a_not_ready_answer_has_no_hardware_error_prefix(self):
+        """#682: hardware_service marks a driver's "still opening" sentence
+        not-ready. It reaches the user as it is, at the same status."""
+        message = ('opening the oscilloscope (25 s so far); a PicoScope '
+                   'that was just plugged in can take about a minute')
+        dev = MagicMock()
+        dev.input.side_effect = net_command.DeviceError(
+            {'error': message, 'error_type': 'not-ready'})
+        r, _ = self._run({"netname": "gpi1", "action": "input"}, dev)
+        self.assertEqual(r.status_code, 502)
+        self.assertEqual(r.get_json()["error"], message)
+
+    def test_any_other_device_error_keeps_the_hardware_error_prefix(self):
+        dev = MagicMock()
+        dev.input.side_effect = net_command.DeviceError(
+            {'error': 'Function call failed: no edge'})
+        r, _ = self._run({"netname": "gpi1", "action": "input"}, dev)
+        self.assertEqual(r.status_code, 502)
+        self.assertEqual(r.get_json()["error"],
+                         "Hardware error: Function call failed: no edge")
+
     def test_gpio_output_toggle(self):
         # Toggle is resolved inside the gpio_hs adapter; the handler passes the
         # raw level through and reports the resulting level the adapter returns.

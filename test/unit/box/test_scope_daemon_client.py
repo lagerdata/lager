@@ -119,6 +119,42 @@ class TestCommands:
         assert not socket.closed
 
 
+class TestNotReady:
+    """#682: while the daemon has no open unit it refuses with a sentence for
+    the user. Those come back as ScopeNotReady, so the layers above show the
+    sentence without calling it a failure."""
+
+    @pytest.mark.parametrize("message", [
+        "opening the oscilloscope (25 s so far); a PicoScope that was just "
+        "plugged in can take about a minute",
+        "still opening the oscilloscope after 130 s; it is likely wedged. "
+        "Unplug it and plug it back in.",
+        "no oscilloscope available: no PicoScope found",
+        "the oscilloscope was lost before this was answered: unplugged",
+    ])
+    def test_a_refusal_with_no_unit_is_not_ready(self, sockets, message):
+        sockets.append(_Socket(_reply("Error", message=message)))
+        client = daemon_client.ScopeDaemonClient(timeout=1.0)
+        with pytest.raises(daemon_client.ScopeNotReady) as raised:
+            client.command("GetCapabilities")
+        assert str(raised.value) == message
+        assert raised.value.show_as_is
+
+    def test_not_ready_is_not_a_missing_daemon(self):
+        # The stream endpoint refuses a ticket on ScopeDaemonUnavailable; a
+        # unit that is still opening must not cost the page its ticket.
+        assert issubclass(daemon_client.ScopeNotReady, daemon_client.ScopeDaemonError)
+        assert not issubclass(daemon_client.ScopeNotReady, daemon_client.ScopeDaemonUnavailable)
+
+    def test_any_other_error_is_still_a_plain_error(self, sockets):
+        sockets.append(_Socket(_reply("Error", message="no capture yet")))
+        client = daemon_client.ScopeDaemonClient(timeout=1.0)
+        with pytest.raises(daemon_client.ScopeDaemonError) as raised:
+            client.command("GetTriggeredData")
+        assert type(raised.value) is daemon_client.ScopeDaemonError
+        assert not getattr(raised.value, "show_as_is", False)
+
+
 class TestCaptures:
 
     def _subscribed(self, *frames):

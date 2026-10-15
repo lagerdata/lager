@@ -655,6 +655,14 @@ def invoke():
             return jsonify({'error': f'invoke-timeout: {e}'}), 504
 
         except Exception as e:
+            # A driver error that is already a sentence for the user, and not
+            # a failure: the PicoScope daemon saying its unit is still opening
+            # (#682). Passed on as it is, marked so /net/command adds no
+            # prefix either, and kept out of the stale-session recovery below.
+            if getattr(e, 'show_as_is', False):
+                logger.warning(f"{what} refused: {e}")
+                return jsonify({'error': str(e), 'error_type': 'not-ready'}), 503
+
             # Check if this is a stale VISA session error on a cached device
             mod = module_cache.get(cache_key)
             if _is_visa_session_error(e) and mod and hasattr(mod, 'create_device'):

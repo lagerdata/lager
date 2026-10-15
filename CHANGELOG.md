@@ -91,6 +91,11 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   - Cursors used commands from older Rigol scopes. They now use the
     MSO5000's, and an x position counts from the centre of its 1000-pixel
     grid rather than from pixel 240.
+- **Scope commands refused while a PicoScope is opening show the reason on its own.** A refusal
+  such as "opening the oscilloscope (25 s so far); a PicoScope that was just plugged in can take
+  about a minute" was shown as `Error: Hardware error: Function call failed: ...`, although the
+  open was still in progress. The same applies to "no oscilloscope available" and to a request
+  dropped when the unit was unplugged. Other hardware errors keep their prefix.
 
 
 ## [0.56.0] - 2026-10-13

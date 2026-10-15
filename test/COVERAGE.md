@@ -48,12 +48,12 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` | 3270 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 4374 |
+| `unit (box)` | `test/unit/box/` | 4383 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 405 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 205 (+1 skipped) |
-| | **Total gated** | **8448** |
+| | **Total gated** | **8457** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -540,7 +540,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_gdb_controller_leak.py` | GdbController close on failed attempts to prevent fd leak |
 | `test_gdbserver_zombie_status.py` | Defunct/zombie gdbserver detection that a bare `os.kill(pid, 0)` check passes |
 | `test_hardware_service_fail_fast.py` | `/invoke` fail-fast locking and hang recovery: per-device and per-address locks answer `device-busy` rather than queueing behind a wedged `open_resource`, and a hung driver call expires into `invoke-timeout` plus a supervised restart |
-| `test_hardware_service_retry.py` | Close-then-recreate retry path for concurrent Keithley resource collisions |
+| `test_hardware_service_retry.py` | Close-then-recreate retry path for concurrent Keithley resource collisions; a driver's not-ready sentence (a PicoScope still opening) returned bare with 503 and `error_type: not-ready`, outside the retry |
 | `test_host_ops.py` | apt_install and sysctl_apply SSH execution branches. Also `udev_apply`, the box-config sudoers rules and bootstrap command, the v2 marker pin, username validation and the bootstrap texts |
 | `test_hub_lock_fail_fast.py` | The same treatment on the USB hub path: bounded waits on the module-level and per-hub locks (`hub-busy`), a per-operation deadline (`hub-op-timeout`), the restart that follows, and the state sweep's per-hub sub-budget (clamp + `hub-skipped`) |
 | `test_jlink_commander_use_poll.py` | JLinkExe spawned with use_poll=True to avoid fd >= 1024 select() failure |
@@ -565,7 +565,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_net_ready.py` | `wait_for_net`: polling a net through the re-enumerate / hardware-service-restart window, deadline honoured without overshoot, probe selection, and a progress callback that cannot break the wait |
 | `test_monitor_state.py` | SupplyNet/KeithleyBattery single-call monitor-state helpers reducing lock contention |
 | `test_mount_prep.py` | Mount preparation SSH operations via mocked runner |
-| `test_net_command_handler.py` | Generic POST /net/command Flask handler dispatch by role and error handling |
+| `test_net_command_handler.py` | Generic POST /net/command Flask handler dispatch by role and error handling, including a not-ready answer shown without the `Hardware error:` prefix while other device errors keep it |
 | `test_net_save_uart_identity.py` | `usb_identity_for_net_record`: durable USB identity snapshot at UART net save time |
 | `test_mapper_range_checks.py` | Tree-wide guard: no `LO > x > HI` range check in `box/` or `cli/`, a shape that is always false so the `raise` under it is unreachable; plus both ends of the seven inverted bounds fixed in the Rigol MSO5000 and Keithley mappers |
 | `test_network_mode.py` | Opt-in container network mode: `--network` rendered from box_config rather than hardcoded, the host-mode fallback for an unknown value, port publishing suppressed on host while every `-p` literal stays inside the firewall-allowlist sentinels, the shim set/unset verbs, and the cli/box allowlist agreeing. Also that a switch to host takes effect only through `apply`: every other start keeps the mode the last apply recorded and announces the pending one, a return to lagernet needs no apply, an unreadable snapshot withholds host, and the CLI and renderer agree on the confirmation variable |
@@ -639,7 +639,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_scope_bench_actions.py` | The box handler's status, trigger readback, acquisition, holdoff, roll, display and spectrum actions: refused on a Rigol net before anything reaches the instrument, a missing value named, and each answered with the sentence the CLI prints |
 | `test_scope_command_grammar.py` | The web UI's command grammar (`static/scope/commands.js`, run under node) against the real box handler, so a renamed action cannot leave the page sending commands the box rejects |
 | `test_scope_cursors.py` | Typed scope cursors: interpolated voltage under each cursor, delta-t and 1/delta-t, a cursor outside the record or on a disabled channel reported as absent, one pair per instrument shared by every net, and the browser's interpolation agreeing with the box's |
-| `test_scope_daemon_client.py` | The box's client for the oscilloscope daemon: pushed captures and state never taken for a reply, an error reply that leaves the connection usable, a lost connection reported as unavailable and a silent one as a timeout, and captures subscribed on a connection of their own with one credit returned per capture, each yielded once and in order |
+| `test_scope_daemon_client.py` | The box's client for the oscilloscope daemon: pushed captures and state never taken for a reply, an error reply that leaves the connection usable, a lost connection reported as unavailable and a silent one as a timeout, a refusal while no unit is open (still opening, none found, lost) raised as `ScopeNotReady` and never as unavailable, and captures subscribed on a connection of their own with one credit returned per capture, each yielded once and in order |
 | `test_scope_net_migration.py` | Converting saved scope nets to the `scope` and `scope-channel` roles: every old record becomes a channel with its name and pin, exactly one scope net appears per physical unit, and a second read changes nothing |
 | `test_scope_position_controls.py` | The web scope's position fields and their console verbs: the arrow keys and each field's up and down buttons step the last digit shown and keep its places through a carry, and a bare 0 steps a tenth of a division; a held button repeats, and a press is one step; the buttons are on all three fields and off on an unwired channel; the horizontal field applies a typed value only on Enter or blur and Escape restores it; `vpos` sends nothing to the box; and `offset` is refused up front on a scope without analog offset |
 | `test_scope_render.py` | The web scope's drawing arithmetic (`static/scope/render.js`, run under node): the credit window sized from the round trip, the continuous scroll of a rolling screen, per-column extremes that keep envelope pairs whole, zoom windows, math expressions, persistence that fades by elapsed time in steps an 8-bit alpha channel keeps, and an FFT that reads a 1 V RMS tone at 0 dBV in every window |

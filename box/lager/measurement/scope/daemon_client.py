@@ -53,6 +53,33 @@ class ScopeDaemonTimeout(ScopeDaemonError):
     """Nothing arrived in the time allowed: a reply, or a capture."""
 
 
+class ScopeNotReady(ScopeDaemonError):
+    """The daemon is up but has no open unit to answer with.
+
+    It is still opening one, cannot find one, or lost the one it had. The
+    message is the daemon's own sentence for the user, so ``show_as_is``
+    asks the layers above to pass it on without their "failed" prefixes:
+    a unit that is still opening has not failed (#682).
+
+    Not a ScopeDaemonUnavailable. That one means no daemon, and the stream
+    endpoint refuses a ticket on it; a page opened while the unit is still
+    opening should get its ticket and wait.
+    """
+
+    show_as_is = True
+
+
+# The daemon's refusals while it has no open unit: OpenState::refusal() and
+# the requests it drops when a unit goes, in
+# box/oscilloscope-daemon/daemon/src/scope_thread.rs. Keep in step with it.
+_NOT_READY_PREFIXES = (
+    "opening the oscilloscope",
+    "still opening the oscilloscope",
+    "no oscilloscope available",
+    "the oscilloscope was lost before this was answered",
+)
+
+
 def daemon_url() -> str:
     """WebSocket URL of the local daemon.
 
@@ -308,7 +335,10 @@ def _unwrap(reply, command_name: str) -> dict:
         raise ScopeDaemonError("malformed %s response: %r" % (command_name, reply))
 
     if response.get("response") == "Error":
-        raise ScopeDaemonError(response.get("message") or "unknown daemon error")
+        message = response.get("message") or "unknown daemon error"
+        if message.startswith(_NOT_READY_PREFIXES):
+            raise ScopeNotReady(message)
+        raise ScopeDaemonError(message)
     return response
 
 

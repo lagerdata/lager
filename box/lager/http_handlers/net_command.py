@@ -882,6 +882,16 @@ def _router(netname, role, action, params):
     return _ok("router %s ok" % action, result)
 
 
+def _is_not_ready(exc):
+    """Is this /invoke error a driver's "not ready yet" sentence?
+
+    hardware_service marks those with ``error_type: not-ready`` rather than
+    prefixing them as a failed call.
+    """
+    payload = getattr(exc, 'payload', None)
+    return isinstance(payload, dict) and payload.get('error_type') == 'not-ready'
+
+
 # role string -> handler. Keep aligned with mcp/data/api_reference.py and the
 # control-plane allowlist (NET_PYTHON_ACTIONS / NET_COMMAND_ROUTES).
 def _scope(netname, role, action, params):
@@ -1637,7 +1647,16 @@ def register_net_command_routes(app: Flask) -> None:
                 return jsonify({'success': False, 'error': 'Missing required value: %s' % e}), 400
             except ValueError as e:
                 return jsonify({'success': False, 'error': str(e)}), 400
-            except (ConnectionFailed, DeviceError, LagerBackendError) as e:
+            except DeviceError as e:
+                if _is_not_ready(e):
+                    # The instrument's own sentence, e.g. a PicoScope that is
+                    # still opening. Not a hardware error (#682). The status
+                    # stays 502, so a client that keys on it is unaffected.
+                    logger.warning("[HTTP] /net/command %s on %s: %s", action, netname, e)
+                    return jsonify({'success': False, 'error': str(e)}), 502
+                logger.exception("[HTTP] /net/command hardware error on %s", netname)
+                return jsonify({'success': False, 'error': 'Hardware error: %s' % e}), 502
+            except (ConnectionFailed, LagerBackendError) as e:
                 logger.exception("[HTTP] /net/command hardware error on %s", netname)
                 return jsonify({'success': False, 'error': 'Hardware error: %s' % e}), 502
 

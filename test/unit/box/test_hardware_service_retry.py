@@ -154,6 +154,45 @@ class HardwareServiceRetryTests(unittest.TestCase):
             self.assertNotIn('Traceback (most recent call last)', str(value))
             self.assertNotIn('hardware_service.py, line', str(value))
 
+    def test_a_not_ready_refusal_is_passed_on_without_a_prefix(self):
+        """#682: a driver error marked ``show_as_is`` (a PicoScope still
+        opening) is the user's sentence, not a failed call. It comes back
+        bare, marked not-ready, and never enters the stale-session retry."""
+        message = ('opening the oscilloscope (25 s so far); a PicoScope '
+                   'that was just plugged in can take about a minute')
+
+        class _NotReady(RuntimeError):
+            show_as_is = True
+
+        calls = []
+
+        class _Opening:
+            def some_method(self, *a, **kw):
+                calls.append('call')
+                raise _NotReady(message)
+
+        class _OpeningModule:
+            def create_device(self, net_info):
+                calls.append('create')
+                return _Opening()
+
+        cache_key = ('scope_device', 'USB0::0xOPEN::INSTR')
+        hw.device_cache[cache_key] = _Opening()
+        hw.module_cache[cache_key] = _OpeningModule()
+
+        resp = self.client.post('/invoke', json={
+            'device': 'scope_device',
+            'function': 'some_method',
+            'args': [],
+            'kwargs': {},
+            'net_info': {'address': 'USB0::0xOPEN::INSTR', 'channel': 1},
+        })
+
+        self.assertEqual(resp.status_code, 503)
+        self.assertEqual(resp.get_json(),
+                         {'error': message, 'error_type': 'not-ready'})
+        self.assertEqual(calls, ['call'])
+
     def test_retry_path_closes_old_device_before_recreating(self):
         """Regression: when /invoke retries on a stale-session error, the popped
         cache entry must be closed BEFORE module.create_device() runs. Otherwise
