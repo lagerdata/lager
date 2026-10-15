@@ -342,3 +342,27 @@ class TestARepairedScope:
         instrument.write(":STOP")
         assert [c.url for c in daemon] == ["ws://rigol/%s/screen" % ADDRESS,
                                            "ws://rigol/%s/usb:3-3" % ADDRESS]
+
+    def test_a_restarted_daemon_is_looked_up_again(self, monkeypatch):
+        # The daemon restarted on a new port (a power-cycled scope, a stopped
+        # daemon): the driver the hardware service kept must not keep dialing
+        # the old one.
+        ports = iter([52087, 38979])
+        urls = []
+
+        class Gone(FakeClient):
+            def command(self, name, timeout=None, **params):
+                if self.url.endswith(":52087/"):
+                    raise daemon_client.ScopeDaemonUnavailable("connection refused")
+                return super().command(name, timeout=timeout, **params)
+
+        def ensure(address, video=None):
+            urls.append("ws://127.0.0.1:%d/" % next(ports))
+            return urls[-1]
+
+        monkeypatch.setattr(daemon_client, "ScopeDaemonClient", Gone)
+        monkeypatch.setattr(rigol_daemons, "ensure", ensure)
+        monkeypatch.setattr(rigol_daemons, "capture_for_address", lambda address: None)
+        scope = RigolScope(address=ADDRESS, pin=1)
+        assert scope.scpi(":MEASure:VAVG?") == "1"
+        assert urls == ["ws://127.0.0.1:52087/", "ws://127.0.0.1:38979/"]

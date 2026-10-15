@@ -1228,7 +1228,9 @@ impl LoopState {
         if unit_is_gone(&error) {
             self.unit_gone = Some(format!("{error:#}"));
         }
-        ScopeReply::error(error)
+        // With its causes: "sending :MEASure:SOURce CHANnel1" alone did not
+        // say what the USB transfer returned.
+        ScopeReply::error(format!("{error:#}"))
     }
 
     fn refresh_trigger(&mut self, scope: &dyn Oscilloscope) {

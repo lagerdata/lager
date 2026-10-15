@@ -68,6 +68,16 @@ class RigolScope(PicoScope):
         from lager.measurement.scope import routing
         return routing.daemon_url_for(self._record)
 
+    def _command(self, name, **params):
+        from lager.measurement.scope import daemon_client
+        try:
+            return super()._command(name, **params)
+        except daemon_client.ScopeDaemonUnavailable:
+            # The daemon restarted on a new port since the last command (the
+            # hardware service keeps this driver): look it up again, once.
+            self.close()
+            return super()._command(name, **params)
+
     def _instrument_key(self) -> str:
         return "rigol:%s" % (self.address or self.netname)
 

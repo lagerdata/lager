@@ -34,9 +34,9 @@ logger = logging.getLogger(__name__)
 DAEMON_BINARY_ENV = "LAGER_SCOPE_DAEMON_BIN"
 DEFAULT_DAEMON_BINARY = "/usr/local/bin/oscilloscope-daemon"
 
-# The daemon listens before it has opened the scope, so this only has to
-# cover process start-up.
-START_TIMEOUT_SECONDS = 5.0
+# The daemon listens once the scope has opened, or after its own 10 s
+# OPEN_TIMEOUT. An open that pairs a capture card takes 4.5-6 s.
+START_TIMEOUT_SECONDS = 12.0
 # Inside the daemon's own five seconds to stop and close the scope.
 STOP_TIMEOUT_SECONDS = 7.0
 
