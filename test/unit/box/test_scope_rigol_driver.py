@@ -12,7 +12,7 @@ from unittest import mock
 import pytest
 
 from lager.measurement.scope import daemon_client, rigol_daemons, rigol_mso5000
-from lager.measurement.scope.picoscope import PicoScope
+from lager.measurement.scope.picoscope import PicoScope, UnsupportedScopeFeature
 from lager.measurement.scope.rigol_scope import RigolScope
 
 ADDRESS = "USB0::0x1AB1::0x0515::MS5A244000001::INSTR"
@@ -30,7 +30,14 @@ class FakeClient:
         if name == "Scpi":
             command = params["scpi"]
             return {"reply": "1" if command.endswith("?") else None}
+        if name == "Measure":
+            return {"measurements": {"vpp": 3.3, "frequency": 1000.0}}
         return {}
+
+    def captures(self, timeout=None):
+        self.sent.append(("Subscribe", {}))
+        while True:
+            yield "frame"
 
     def close(self):
         pass
@@ -198,3 +205,140 @@ class TestTheCursors:
         rigol.set_cursor_manual_type("Y")
         assert self._sent(daemon) == [":CURSor:MANual:TYPE TIME",
                                       ":CURSor:MANual:TYPE AMPLitude"]
+
+
+class TestTheFullMeasurementSet:
+
+    def test_it_is_the_daemons_set_for_the_nets_channel(self, daemon, monkeypatch):
+        monkeypatch.setattr(rigol_mso5000, "_instruments", {})
+        rigol = rigol_mso5000.RigolMso5000(address=ADDRESS, pin=2)
+        assert rigol.measure_all() == {"vpp": 3.3, "frequency": 1000.0}
+        assert daemon[0].sent == [("Measure", {"channel": {"Alphabetic": "B"}})]
+
+    def test_an_explicit_channel_wins(self, daemon, monkeypatch):
+        monkeypatch.setattr(rigol_mso5000, "_instruments", {})
+        rigol_mso5000.RigolMso5000(address=ADDRESS, pin=2).measure_all(4)
+        assert daemon[0].sent == [("Measure", {"channel": {"Alphabetic": "D"}})]
+
+
+class TestStreamingNeedsALiveView:
+
+    def _scope(self, record=None):
+        return RigolScope(address=ADDRESS, pin=1,
+                          record=record or {"instrument": "Rigol_MSO5204", "address": ADDRESS})
+
+    def test_without_one_it_is_refused_before_connecting(self, daemon, monkeypatch):
+        monkeypatch.setattr(rigol_daemons, "capture_for_address", lambda address: None)
+        scope = self._scope()
+        with pytest.raises(UnsupportedScopeFeature, match="set-capture"):
+            scope.stream_frames(count=1)
+        with pytest.raises(UnsupportedScopeFeature, match="set-capture"):
+            scope.stream_capture(duration=0.1)
+        assert daemon == []
+
+    def test_screenshots_count_as_a_live_view(self, daemon, monkeypatch):
+        monkeypatch.setattr(rigol_daemons, "capture_for_address", lambda address: None)
+        scope = self._scope({"instrument": "Rigol_MSO5204", "address": ADDRESS,
+                             "capture": {"device": "screen"}})
+        assert list(scope.stream_frames(count=2)) == ["frame", "frame"]
+
+    def test_a_single_capture_needs_no_live_view(self, daemon, monkeypatch):
+        monkeypatch.setattr(rigol_daemons, "capture_for_address", lambda address: None)
+        scope = self._scope()
+        scope.client.capture = lambda timeout=None: "record"
+        assert scope.capture() == "record"
+
+
+class TestTheNetApi:
+    """`Net.get(<rigol net>)`: the calls a PicoScope net already answered."""
+
+    def _mapper(self, net_type="analog"):
+        from types import SimpleNamespace
+
+        from lager.nets.constants import NetType
+        from lager.nets.mappers.rigol_mso5000 import RigolMSO5000AnalogMapper
+
+        kind = NetType.Analog if net_type == "analog" else NetType.Logic
+        net = SimpleNamespace(type=kind, channel=3, name="sda")
+        device = mock.MagicMock()
+        device.net_info = {"instrument": "Rigol_MSO5204", "address": ADDRESS,
+                           "capture": {"device": "screen"}}
+        return RigolMSO5000AnalogMapper(net, device), device
+
+    def test_all_reads_the_nets_channel_through_the_device(self):
+        mapper, device = self._mapper()
+        device.measure_all.return_value = {"vpp": 1.0}
+        assert mapper.measurement.all() == {"vpp": 1.0}
+        device.measure_all.assert_called_once_with(3)
+
+    def test_all_on_a_logic_net_is_refused(self):
+        mapper, device = self._mapper("logic")
+        with pytest.raises(UnsupportedScopeFeature, match="analog"):
+            mapper.measurement.all()
+        device.measure_all.assert_not_called()
+
+    def test_samples_come_from_a_driver_in_this_process(self, monkeypatch):
+        from lager.measurement.scope import rigol_scope
+        made = []
+        local = mock.MagicMock()
+
+        def make(**kwargs):
+            made.append(kwargs)
+            return local
+
+        monkeypatch.setattr(rigol_scope, "RigolScope", make)
+        mapper, device = self._mapper()
+        mapper.stream_start(channel="C", time_per_div=0.001)
+        mapper.capture(timeout=2.0)
+        mapper.stream_frames(count=3)
+        mapper.stream_capture(output="run.csv", duration=5.0)
+        mapper.stream_stop()
+        local.stream_start.assert_called_once_with(channel="C", time_per_div=0.001)
+        local.stream_stop.assert_called_once_with()
+        local.capture.assert_called_once_with(timeout=2.0)
+        local.stream_frames.assert_called_once_with(count=3, timeout=None)
+        local.stream_capture.assert_called_once_with(
+            output="run.csv", duration=5.0, samples=None, timeout=None)
+        assert made == [{"address": ADDRESS, "pin": 3, "netname": "sda",
+                         "record": device.net_info}]
+        mapper.close_capture_connection()
+        local.close.assert_called_once_with()
+        device.capture.assert_not_called()
+        device.close.assert_not_called()
+
+
+class TestARepairedScope:
+    """`lager nets set-capture` under a driver the hardware service kept."""
+
+    def test_the_scope_driver_follows_the_saved_pairing(self, daemon, monkeypatch):
+        from lager.nets.net import Net
+        saved = [{"name": "rigol1", "role": "scope", "instrument": "Rigol_MSO5204",
+                  "address": ADDRESS, "capture": {"device": "screen"}}]
+        monkeypatch.setattr(Net, "get_local_nets", staticmethod(lambda: saved))
+        monkeypatch.setattr(rigol_daemons, "capture_for_address", lambda address: None)
+        scope = RigolScope(address=ADDRESS, netname="rigol1", record=dict(saved[0]))
+        scope.capabilities()
+        saved[0] = dict(saved[0], capture={"port_path": "3-3"})
+        scope.capabilities(refresh=True)
+        assert [c.url for c in daemon] == ["ws://rigol/%s/screen" % ADDRESS,
+                                           "ws://rigol/%s/usb:3-3" % ADDRESS]
+
+    def test_an_unchanged_pairing_keeps_its_connection(self, daemon, monkeypatch):
+        from lager.nets.net import Net
+        saved = [{"name": "rigol1", "role": "scope", "instrument": "Rigol_MSO5204",
+                  "address": ADDRESS, "capture": {"device": "screen"}}]
+        monkeypatch.setattr(Net, "get_local_nets", staticmethod(lambda: saved))
+        scope = RigolScope(address=ADDRESS, netname="rigol1", record=dict(saved[0]))
+        scope.capabilities()
+        scope.capabilities(refresh=True)
+        assert len(daemon) == 1
+
+    def test_the_scpi_layer_follows_it_too(self, daemon, monkeypatch):
+        pairing = ["screen"]
+        monkeypatch.setattr(rigol_daemons, "capture_for_address", lambda address: pairing[0])
+        instrument = rigol_mso5000.DaemonInstrument(ADDRESS)
+        instrument.write(":RUN")
+        pairing[0] = "usb:3-3"
+        instrument.write(":STOP")
+        assert [c.url for c in daemon] == ["ws://rigol/%s/screen" % ADDRESS,
+                                           "ws://rigol/%s/usb:3-3" % ADDRESS]

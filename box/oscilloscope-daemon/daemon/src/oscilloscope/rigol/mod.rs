@@ -587,7 +587,8 @@ fn settled_frame(video: &dyn FrameSource) -> Result<frame::VideoFrame> {
         Some(raw) if raw.sequence >= target => raw.decode(),
         _ => bail!(
             "{} delivered no picture in {} s; check that the scope is on and, for a capture \
-             card, that its HDMI output is connected to the card",
+             card, that its HDMI output is connected to the card and switched on (Utility > IO > \
+             HDMI > Output)",
             video.describe(),
             wait.as_secs()
         ),

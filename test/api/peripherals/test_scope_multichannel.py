@@ -3,9 +3,11 @@
 
 # test_scope_multichannel.py
 # Run with: lager python test_scope_multichannel.py --box MY-BOX
-# Uses Rigol MSO5204 (scope3-6). Picoscope (scope1-2) not supported via Python API.
+# Runs on scope3-6 (Rigol MSO5204 CH1-4) unless --env SCOPE_NETS=<net>,<net>,...
+# names other channel nets of one scope, of either make.
 
 from lager import Net, NetType
+import os
 import sys
 import time
 
@@ -21,7 +23,7 @@ def _record(name, passed, detail=""):
 def main():
     print("=== Oscilloscope Multi-Channel Test ===\n")
 
-    channels = ['scope3', 'scope4', 'scope5', 'scope6']  # Rigol MSO5204 channels 1-4
+    channels = os.environ.get("SCOPE_NETS", "scope3,scope4,scope5,scope6").split(",")
     scopes = {}
 
     try:

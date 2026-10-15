@@ -292,6 +292,13 @@ mod v4l2 {
     const YUYV: &[u8; 4] = b"YUYV";
     /// Few buffers, so that a slow consumer is never handed a stale one.
     const BUFFERS: u32 = 3;
+    /// An MS2109 sends black for its first 18 to 35 frames after streaming
+    /// starts, whatever is on its input; published, those would calibrate
+    /// against a blank screen.
+    const WARMUP: Duration = Duration::from_secs(2);
+    /// The same card fills every other buffer with an image-less JPEG, just
+    /// a start and an end marker, which no decoder accepts.
+    const MIN_IMAGE_BYTES: usize = 64;
 
     pub struct V4l2Source {
         path: PathBuf,
@@ -417,12 +424,13 @@ mod v4l2 {
         stream.set_timeout(Duration::from_millis(500));
         let mut sequence = 0u64;
         let mut timeouts = 0u32;
+        let started = std::time::Instant::now();
         while !stop.load(Ordering::Relaxed) {
             match stream.next() {
                 Ok((bytes, meta)) => {
                     timeouts = 0;
                     let used = (meta.bytesused as usize).min(bytes.len());
-                    if used == 0 {
+                    if used < MIN_IMAGE_BYTES || started.elapsed() < WARMUP {
                         continue;
                     }
                     sequence += 1;

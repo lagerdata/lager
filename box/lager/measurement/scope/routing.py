@@ -52,10 +52,7 @@ def daemon_url_for(rec: dict, info: dict | None = None) -> str:
         return daemon_client.daemon_url()
     if family == RIGOL_MSO5000:
         from lager.measurement.scope import rigol_daemons
-        address = address_of(rec, info)
-        return rigol_daemons.ensure(
-            address, rigol_daemons.capture_spec(rec)
-            or rigol_daemons.capture_for_address(address))
+        return rigol_daemons.ensure(address_of(rec, info), capture_of(rec, info))
     raise daemon_client.ScopeDaemonUnavailable(
         "no oscilloscope daemon drives a %s" % (instrument or "scope of unknown make"))
 
@@ -67,7 +64,13 @@ def has_live_view(rec: dict) -> bool:
     if family == PICOSCOPE:
         return True
     if family == RIGOL_MSO5000:
-        from lager.measurement.scope import rigol_daemons
-        return bool(rigol_daemons.capture_spec(rec)
-                    or rigol_daemons.capture_for_address(address_of(rec)))
+        return bool(capture_of(rec))
     return False
+
+
+def capture_of(rec: dict, info: dict | None = None) -> str | None:
+    """The capture card a Rigol net's scope is paired with: the net's own,
+    else the one another net on the same scope names."""
+    from lager.measurement.scope import rigol_daemons
+    return (rigol_daemons.capture_spec(rec)
+            or rigol_daemons.capture_for_address(address_of(rec, info)))

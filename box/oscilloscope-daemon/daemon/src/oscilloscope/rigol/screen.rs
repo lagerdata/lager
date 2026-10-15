@@ -91,8 +91,9 @@ pub fn measure(with_grid: &VideoFrame, without_grid: &VideoFrame) -> Result<Scre
     if changed == 0 {
         bail!(
             "the video did not change when the scope's grid was switched on, so the capture \
-             card is not showing this scope; check the HDMI cable, and that the net names the \
-             capture card the scope is plugged into"
+             card is not showing this scope; check the HDMI cable, that the scope's HDMI output \
+             is switched on (Utility > IO > HDMI > Output), and that the net names the capture \
+             card the scope is plugged into"
         );
     }
     let vertical = lattice(&line_centres(&columns, MIN_VERTICAL_LINES), MIN_VERTICAL_LINES).ok_or_else(|| {

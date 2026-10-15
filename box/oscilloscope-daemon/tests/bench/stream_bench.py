@@ -141,6 +141,71 @@ async def command_rtt(ws, samples):
     return rtts
 
 
+async def reply(ws, name, timeout=5.0):
+    """The next text reply naming ``name``, skipping pushes and frames."""
+    deadline = time.perf_counter() + timeout
+    while time.perf_counter() < deadline:
+        try:
+            raw = await asyncio.wait_for(ws.recv(), timeout=deadline - time.perf_counter())
+        except asyncio.TimeoutError:
+            return None
+        if isinstance(raw, str) and f'"{name}' in raw:
+            return json.loads(raw)
+        if isinstance(raw, str) and '"Error"' in raw:
+            raise RuntimeError(f"{name}: {raw}")
+    return None
+
+
+def field(message, key):
+    """``key`` anywhere in a reply, whatever envelope the daemon wraps it in."""
+    if isinstance(message, dict):
+        if key in message:
+            return message[key]
+        for value in message.values():
+            found = field(value, key)
+            if found is not None:
+                return found
+    return None
+
+
+# Each setting the bench changes: (set command, get command, reply key).
+SETTINGS = (
+    ("SetVoltsPerDiv", "GetVoltsPerDiv", "volts_per_div"),
+    ("SetTimePerDiv", "GetTimePerDiv", "time_per_div"),
+    ("SetTriggerLevel", "GetTriggerLevel", "trigger_level"),
+)
+
+
+async def settings_rtt(ws, args):
+    """Set each setting, then read it back: the time a control round trip
+    costs on this backend, and whether the scope kept what it was given."""
+    channel = {"Alphabetic": "A"}
+    start = {"volts_per_div": args.volts_per_div, "time_per_div": args.time_per_div,
+             "trigger_level": 0.0}
+    other = {"volts_per_div": args.volts_per_div * 2, "time_per_div": args.time_per_div * 2,
+             "trigger_level": 0.1}
+    results = {}
+    for set_name, get_name, key in SETTINGS:
+        extra = {"channel": channel} if key == "volts_per_div" else {}
+        set_ms, get_ms, mismatches = [], [], 0
+        for i in range(args.settings_rtt):
+            value = other[key] if i % 2 == 0 else start[key]
+            began = time.perf_counter()
+            await ws.send(json.dumps({"command": set_name, key: value, **extra}))
+            await reply(ws, "Configure")
+            set_ms.append((time.perf_counter() - began) * 1000.0)
+            began = time.perf_counter()
+            await ws.send(json.dumps({"command": get_name, **extra}))
+            answer = field(await reply(ws, get_name), key)
+            get_ms.append((time.perf_counter() - began) * 1000.0)
+            if answer is None or abs(answer - value) > 1e-6 * max(1.0, abs(value)):
+                mismatches += 1
+        await ws.send(json.dumps({"command": set_name, key: start[key], **extra}))
+        await reply(ws, "Configure")
+        results[set_name] = (set_ms, get_ms, mismatches)
+    return results
+
+
 async def run(args):
     url = f"ws://{args.host}:{args.port}{args.path}"
     print(f"connecting to {url}")
@@ -154,9 +219,9 @@ async def run(args):
             {"command": "SetCaptureMode", "capture_mode": "auto"},
             {"command": "SetTriggerLevel", "trigger_level": 0.0},
         ]
-        if args.channels >= 2:
+        for letter in "BCD"[:max(0, args.channels - 1)]:
             setup.insert(1, {"command": "EnableChannel",
-                             "channel": {"Alphabetic": "B"}})
+                             "channel": {"Alphabetic": letter}})
         for command in setup:
             await ws.send(json.dumps(command))
             await asyncio.sleep(0.05)
@@ -209,8 +274,23 @@ async def run(args):
         await ws.send(json.dumps({"command": "StopAcquisition"}))
 
         rtts = await command_rtt(ws, args.rtt_samples) if args.rtt_samples else []
+        settings = await settings_rtt(ws, args) if args.settings_rtt else {}
 
     report(args, captures, arrivals, decode_ms, rtts, elapsed)
+    report_settings(settings)
+
+
+def report_settings(settings):
+    if not settings:
+        return
+    print()
+    print("  settings round trip (set, then read back), stream stopped")
+    for name, (set_ms, get_ms, mismatches) in settings.items():
+        print(f"  {name:<16} set p50 {percentile(set_ms, 50):7.2f} ms  "
+              f"p99 {percentile(set_ms, 99):7.2f} ms  "
+              f"get p50 {percentile(get_ms, 50):7.2f} ms  "
+              f"p99 {percentile(get_ms, 99):7.2f} ms  "
+              f"readback mismatches {mismatches}/{len(set_ms)}")
 
 
 def report(args, captures, arrivals, decode_ms, rtts, elapsed):
@@ -285,6 +365,10 @@ def main():
     parser.add_argument("--volts-per-div", type=float, default=1.0)
     parser.add_argument("--time-per-div", type=float, default=0.001)
     parser.add_argument("--rtt-samples", type=int, default=20)
+    # Off by default so the PicoScope tables in BASELINE.md reproduce as
+    # they were measured.
+    parser.add_argument("--settings-rtt", type=int, default=0, metavar="N",
+                        help="set and read back each setting N times after the stream")
     args = parser.parse_args()
     args.detected_binary = False
 

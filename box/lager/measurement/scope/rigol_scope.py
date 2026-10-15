@@ -34,6 +34,35 @@ class RigolScope(PicoScope):
         if address and not self._record.get("address"):
             self._record["address"] = address
         self._record.setdefault("instrument", "Rigol_MSO5000")
+        self._paired = None
+
+    @property
+    def client(self):
+        from lager.measurement.scope import routing
+        # The hardware service keeps one driver per scope for as long as it
+        # runs, and `lager nets set-capture` changes the pairing under it. A
+        # new pairing restarts the daemon on a new port, so the connection
+        # follows it instead of answering from the old daemon until a restart.
+        self._record = self._saved_record()
+        paired = routing.capture_of(self._record)
+        if self._client is not None and paired != self._paired:
+            self.close()
+        self._paired = paired
+        return super().client
+
+    def _saved_record(self) -> dict:
+        if not self.netname:
+            return self._record
+        try:
+            from lager.nets.net import Net
+            for saved in Net.get_local_nets():
+                if saved.get("name") == self.netname:
+                    record = {k: v for k, v in self._record.items() if k != "capture"}
+                    record.update(saved)
+                    return record
+        except Exception:
+            pass
+        return self._record
 
     def _daemon_url(self) -> str:
         from lager.measurement.scope import routing
@@ -42,9 +71,9 @@ class RigolScope(PicoScope):
     def _instrument_key(self) -> str:
         return "rigol:%s" % (self.address or self.netname)
 
-    def stream_start(self, *args, **kwargs):
+    def _require_live_view(self):
         from lager.measurement.scope import routing
-        if not routing.has_live_view(self._record):
+        if not routing.has_live_view(self._saved_record()):
             # The trace streams from the HDMI output; without a card the
             # daemon would never publish a frame, and the stream would wait
             # out its timeout to say nothing useful.
@@ -52,7 +81,18 @@ class RigolScope(PicoScope):
                 "no HDMI capture card is paired with this scope, so it cannot "
                 "stream; pair one with `lager nets set-capture`. Single "
                 "captures and measurements work without it")
+
+    def stream_start(self, *args, **kwargs):
+        self._require_live_view()
         return super().stream_start(*args, **kwargs)
+
+    def stream_frames(self, *args, **kwargs):
+        self._require_live_view()
+        return super().stream_frames(*args, **kwargs)
+
+    def stream_capture(self, *args, **kwargs):
+        self._require_live_view()
+        return super().stream_capture(*args, **kwargs)
 
     def scpi(self, command: str):
         """Send one SCPI command; a query returns the scope's reply."""

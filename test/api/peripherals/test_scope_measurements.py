@@ -3,10 +3,12 @@
 
 # test_scope_measurements.py
 # Run with: lager python test_scope_measurements.py --box MY-BOX
-# NOTE: Requires a signal connected to scope3 (Rigol MSO5204 CH1)
-# Uses Rigol MSO5204 (scope3-6). Picoscope (scope1-2) not supported via Python API.
+# NOTE: Requires a signal connected to the scope net's channel
+# Runs on scope3 (Rigol MSO5204 CH1) unless --env SCOPE_NET=<net> names another
+# scope net, of either make.
 
 from lager import Net, NetType
+import os
 import sys
 import time
 
@@ -21,9 +23,8 @@ def _record(name, passed, detail=""):
 
 def main():
     print("=== Oscilloscope Measurements Test ===\n")
-    print("NOTE: This test requires a signal connected to scope3\n")
-
-    net_name = 'scope3'  # Rigol MSO5204 channel 1
+    net_name = os.environ.get("SCOPE_NET", "scope3")
+    print(f"NOTE: This test requires a signal connected to {net_name}\n")
     scope = None
 
     try:
@@ -70,6 +71,18 @@ def main():
             _record("frequency", ok, f"{freq:.2f} Hz" if ok else f"unexpected type {type(freq).__name__}")
         except Exception as e:
             _record("frequency", False, f"SKIP -- {e}")
+
+        try:
+            values = scope.measurement.all()
+            missing = [k for k in ("vmax", "vmin", "vpp", "vavg", "vrms") if values.get(k) is None]
+            _record("all", not missing,
+                    f"{len(values)} values" if not missing else f"missing {missing}")
+            single = scope.measurement.voltage_peak_to_peak()
+            agree = abs(values["vpp"] - single) <= max(0.1, 0.1 * abs(single))
+            _record("all_agrees_with_single_read", agree,
+                    f"all vpp={values['vpp']:.3f} V, voltage_peak_to_peak={single:.3f} V")
+        except Exception as e:
+            _record("all", False, str(e))
 
     except Exception as e:
         _record("setup", False, str(e))

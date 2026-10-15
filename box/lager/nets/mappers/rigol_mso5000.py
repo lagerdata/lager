@@ -973,6 +973,15 @@ class Measurement_RigolMSO5000FunctionMapper:
         """Delegate attribute access to the device for methods like get_measure_item, set_measurement_source, etc."""
         return getattr(self.device, attr)
 
+    def all(self) -> dict:
+        """Every measurement the scope makes on this net's channel."""
+        if self.net.type != NetType.Analog:
+            from ...measurement.scope.picoscope import UnsupportedScopeFeature
+            raise UnsupportedScopeFeature(
+                "measurement.all() reads analog channels only; take a digital "
+                "channel's measurements one at a time")
+        return self.device.measure_all(self.net.channel)
+
     def _get_measurement_extra(self, display, measurement_cursor, item):
         # Note: measurement source is already set by the calling method (voltage_max, etc.)
         # so we don't need to pass a channel here
@@ -1809,6 +1818,50 @@ class RigolMSO5000AnalogMapper:
         self.trigger_settings = TriggerSettings_RigolMSO5000FunctionMapper(self, self.net, self.device)
         self.trace_settings = TraceSettings_RigolMSO5000FunctionMapper(self, self.net, self.device)
         self.cursor = Cursor_RigolMSO5000FunctionMapper(self, self.net, self.device)
+        self._frames = None
+
+    # Samples cannot cross the hardware service's JSON proxy (see the
+    # PicoScope mapper), so they come from a driver in the script's process.
+    @property
+    def _local(self):
+        if self._frames is None:
+            from ...measurement.scope.rigol_scope import RigolScope
+            record = dict(self.device.net_info or {})
+            self._frames = RigolScope(address=record.get("address"),
+                                      pin=getattr(self.net, "channel", None),
+                                      netname=getattr(self.net, "name", None),
+                                      record=record)
+        return self._frames
+
+    def capture(self, timeout=None):
+        """One triggered capture, decoded into an ``lscp.CaptureFrame``."""
+        return self._local.capture(timeout=timeout)
+
+    # The SCPI driver behind ``self.device`` has no streaming; the daemon
+    # holds the stream's settings, so arming it from here is the same as
+    # arming it from the hardware service.
+    def stream_start(self, *args, **kwargs):
+        """Configure and arm streaming; returns the capture parameters."""
+        return self._local.stream_start(*args, **kwargs)
+
+    def stream_stop(self):
+        """Stop streaming acquisition."""
+        return self._local.stream_stop()
+
+    def stream_frames(self, count: int = 1, timeout=None):
+        """Yield the next ``count`` captures as decoded frames, each once."""
+        return self._local.stream_frames(count=count, timeout=timeout)
+
+    def stream_capture(self, output=None, duration: float = 1.0, samples=None, timeout=None):
+        """Record ``duration`` seconds of captures, optionally to a CSV."""
+        return self._local.stream_capture(output=output, duration=duration,
+                                          samples=samples, timeout=timeout)
+
+    def close_capture_connection(self):
+        """Drop this process's sample connection, if one was opened."""
+        if self._frames is not None:
+            self._frames.close()
+            self._frames = None
 
     def autoscale(self):
         self.device.autoscale()

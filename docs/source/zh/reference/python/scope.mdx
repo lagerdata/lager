@@ -11,7 +11,7 @@ description: 用于示波器控制的 Python SDK
 
 ## 仪器支持
 
-同一个对象和同样的调用既适用于 Rigol MSO5000，也适用于 PicoScope（2000、2000a、3000a、4000a 或 5000a）。区别在底层。Rigol 通过 VISA 使用 SCPI 通信。PicoScope 是带有厂商 SDK 的 USB 设备，由 Box 上的示波器守护进程驱动。
+同一个对象和同样的调用既适用于 Rigol MSO5000，也适用于 PicoScope（2000、2000a、3000a、4000a 或 5000a）。Box 上的示波器守护进程驱动这两种示波器。区别在底层：Rigol 通过 USB 接收 SCPI 命令，PicoScope 是带有厂商 SDK 的 USB 设备。
 
 为 PicoScope 编写脚本之前，请先了解以下区别：
 
@@ -129,7 +129,7 @@ scope.force_trigger()
 
 #### `all()`
 
-Box 计算的每一项测量，全部来自同一次采集。在 PicoScope 上，这是读取多个值的低开销方式。
+一次调用返回该网络通道上的每一项测量，键为 `vpp`、`vmax`、`frequency` 等。Rigol 从它自己的测量集中读取这些值。在 PicoScope 上，Box 根据同一次采集计算这些值，因此这是读取多个值的低开销方式。它只读取模拟网络，在逻辑网络上会抛出 `UnsupportedScopeFeature`。
 
 ```python
 values = scope.measurement.all()
@@ -243,9 +243,9 @@ freq = scope.measurement.frequency(display=True)
 vpp = scope.measurement.voltage_peak_to_peak(measurement_cursor=True)
 ```
 
-## 串流（PicoScope）
+## 串流
 
-PicoScope 设备支持串流功能：
+两种示波器都支持串流。Rigol 从通过 `lager nets set-capture` 与它配对的实时视图串流。配对之前，`stream_start()`、`stream_frames()` 和 `stream_capture()` 会抛出 `UnsupportedScopeFeature`。`capture()` 读取示波器自己的记录，不需要实时视图。
 
 ### `stream_start(channel, volts_per_div, time_per_div, trigger_level, trigger_slope, capture_mode, coupling)`
 
@@ -303,6 +303,15 @@ result = scope.stream_capture(
     duration=5.0
 )
 print(result['samples_per_channel'], "samples per channel")
+```
+
+### `capture(timeout)`
+
+一次触发采集，解码为包含采样数据的帧。它的帧接口与 `stream_frames()` 相同。在 Rigol 上，采样数据是通过 SCPI 读取的示波器精确记录。
+
+```python
+frame = scope.capture()
+print(frame.sample_rate_hz, frame.volts('A').max())
 ```
 
 ### `stream_frames(count, timeout)`
@@ -491,13 +500,15 @@ scope.cursor.hide()
 | Rigol | MSO5000 | 多通道、混合信号、协议解码、光标、屏幕测量 |
 | PicoScope | 2000、2000a、3000a、4000a、5000a | 采集控制、刻度设置、边沿触发、14 种计算测量、连续串流 |
 
+两种示波器都支持串流。Rigol 需要先通过 `lager nets set-capture` 配对实时视图才能串流。
+
 Box 在运行时检测所连接 PicoScope 的通道数、电压量程、带宽、存储深度和 ADC 分辨率。因此，同一系列中的型号无需配置即可工作。用 `scope.capabilities()` 读取这些信息。
 
 ## 说明
 
 - 示波器通道（1-4）请用 `NetType.Analog`
 - MSO 示波器的数字通道（D0-D15）请用 `NetType.Logic`
-- 串流功能仅在 PicoScope 设备上可用
+- Rigol 需要先通过 `lager nets set-capture` 配对实时视图才能串流
 - 为获得可靠的测量结果，请在开始采集之前先配置触发
 - 测量方法成功时返回 `float`，测量无效时返回 `None`（例如无信号、无触发、通道不对）。在 Rigol 硬件上，仪器对无效测量返回 9.9E+37，它会被自动转换为 `None`
 - 关于协议触发（UART、I2C、SPI、CAN），请参阅[逻辑分析仪](/source/zh/reference/python/logic)文档

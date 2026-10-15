@@ -12,9 +12,9 @@ Use the scope module to control oscilloscopes for analog signal capture, trigger
 ## Instrument support
 
 The same object and the same calls work for a Rigol MSO5000 and for a PicoScope
-(2000, 2000a, 3000a, 4000a or 5000a). The difference is underneath. The Rigol
-speaks SCPI over VISA. A PicoScope is a USB device with a vendor SDK, and the
-oscilloscope daemon on the box drives it.
+(2000, 2000a, 3000a, 4000a or 5000a). The oscilloscope daemon on the box drives
+both. The difference is underneath: the Rigol takes SCPI over USB, and a
+PicoScope is a USB device with a vendor SDK.
 
 Know these differences before you write a script for a PicoScope:
 
@@ -158,8 +158,11 @@ an imprecise guess. Put at least two cycles on screen before you measure timing.
 
 #### `all()`
 
-Every measurement the box computes, from a single capture. On a PicoScope this
-is the cheap way to read more than one value.
+Every measurement on the net's channel, in one call, keyed `vpp`, `vmax`,
+`frequency` and so on. A Rigol reads them from its own measurement set. On a
+PicoScope the box computes them from a single capture, so this is the cheap way
+to read more than one value. It reads analog nets only, and raises
+`UnsupportedScopeFeature` on a logic net.
 
 ```python
 values = scope.measurement.all()
@@ -273,9 +276,12 @@ freq = scope.measurement.frequency(display=True)
 vpp = scope.measurement.voltage_peak_to_peak(measurement_cursor=True)
 ```
 
-## Streaming (PicoScope)
+## Streaming
 
-For PicoScope devices, streaming capabilities are available:
+Streaming works on both makes. A Rigol streams from the live view paired with it
+by `lager nets set-capture`. Until one is paired, `stream_start()`,
+`stream_frames()` and `stream_capture()` raise `UnsupportedScopeFeature`.
+`capture()` reads the scope's own record and needs no live view.
 
 ### `stream_start(channel, volts_per_div, time_per_div, trigger_level, trigger_slope, capture_mode, coupling)`
 
@@ -342,6 +348,17 @@ result = scope.stream_capture(
     duration=5.0
 )
 print(result['samples_per_channel'], "samples per channel")
+```
+
+### `capture(timeout)`
+
+One triggered capture, decoded into a frame with the samples included. It has
+the same frame interface as `stream_frames()`. On a Rigol the samples are the
+scope's exact record, read over SCPI.
+
+```python
+frame = scope.capture()
+print(frame.sample_rate_hz, frame.volts('A').max())
 ```
 
 ### `stream_frames(count, timeout)`
@@ -563,6 +580,9 @@ scope.cursor.hide()
 | Rigol | MSO5000 | Multi-channel, mixed-signal, protocol decode, cursors, on-screen measurements |
 | PicoScope | 2000, 2000a, 3000a, 4000a, 5000a | Capture control, scaling, edge trigger, 14 computed measurements, continuous streaming |
 
+Both makes stream. A Rigol streams once a live view is paired with
+`lager nets set-capture`.
+
 The box detects an attached PicoScope's channel count, voltage ranges,
 bandwidth, memory depth and ADC resolution at runtime. Models within a series
 therefore work without configuration. Read them with `scope.capabilities()`.
@@ -571,7 +591,7 @@ therefore work without configuration. Read them with `scope.capabilities()`.
 
 - Use `NetType.Analog` for oscilloscope channels (1-4)
 - Use `NetType.Logic` for digital channels (D0-D15) on MSO scopes
-- Streaming features are only available on PicoScope devices
+- A Rigol streams only once a live view is paired with `lager nets set-capture`
 - Configure trigger before starting capture for reliable measurements
 - Measurement methods return `float` on success, or `None` if the measurement is invalid (e.g., no signal, no trigger, wrong channel). On Rigol hardware, the instrument returns 9.9E+37 for invalid measurements, which is automatically converted to `None`.
 - For protocol triggering (UART, I2C, SPI, CAN), see the [Logic Analyzer](./logic) documentation

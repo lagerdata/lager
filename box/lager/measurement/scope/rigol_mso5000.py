@@ -56,26 +56,34 @@ class DaemonInstrument:
         self.address = address
         self.timeout = 5000  # milliseconds, as the instrument session had it
         self._client = None
+        self._paired = None
 
     @property
     def client(self):
+        from lager.measurement.scope import daemon_client, rigol_daemons
+        # A new pairing from `lager nets set-capture` restarts the daemon on
+        # a new port; see RigolScope.client.
+        paired = rigol_daemons.capture_for_address(self.address)
+        if self._client is not None and paired != self._paired:
+            self.close()
         if self._client is None:
-            from lager.measurement.scope import daemon_client, rigol_daemons
-            url = rigol_daemons.ensure(
-                self.address, rigol_daemons.capture_for_address(self.address))
+            url = rigol_daemons.ensure(self.address, paired)
             self._client = daemon_client.ScopeDaemonClient(url)
+            self._paired = paired
         return self._client
 
-    def _send(self, cmd):
+    def command(self, name, **params):
         from lager.measurement.scope import daemon_client
+        timeout = max(self.timeout / 1000.0, 1.0)
         try:
-            return self.client.command(
-                "Scpi", timeout=max(self.timeout / 1000.0, 1.0), scpi=cmd).get("reply")
+            return self.client.command(name, timeout=timeout, **params)
         except daemon_client.ScopeDaemonUnavailable:
             # A daemon restarted since the last command: connect afresh once.
             self.close()
-            return self.client.command(
-                "Scpi", timeout=max(self.timeout / 1000.0, 1.0), scpi=cmd).get("reply")
+            return self.client.command(name, timeout=timeout, **params)
+
+    def _send(self, cmd):
+        return self.command("Scpi", scpi=cmd).get("reply")
 
     def write(self, cmd):
         self._send(cmd)
@@ -653,6 +661,17 @@ class RigolMso5000:
         return self.query(":TRIGger:STATus?")
 
     # ============ Measurement Control ============
+
+    def measure_all(self, channel=None):
+        """Every measurement the scope makes on an analog channel.
+
+        The daemon reads these from the scope's own ``:MEASure`` results, the
+        same set a PicoScope net returns, keyed the same way.
+        """
+        from lager.measurement.scope.picoscope import normalize_channel
+        response = self.instr.command(
+            "Measure", channel=normalize_channel(channel or self.channel))
+        return response.get("measurements") or {}
 
     def measure_frequency(self, channel=None):
         """Measure frequency on a channel."""

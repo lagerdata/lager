@@ -3,9 +3,11 @@
 
 # test_scope_basic.py
 # Run with: lager python test_scope_basic.py --box MY-BOX
-# Uses Rigol MSO5204 (scope3-6). Picoscope (scope1-2) not supported via Python API.
+# Runs on scope3 (Rigol MSO5204 CH1) unless --env SCOPE_NET=<net> names another
+# scope net, of either make.
 
 from lager import Net, NetType
+import os
 import sys
 
 _results = []
@@ -20,7 +22,7 @@ def _record(name, passed, detail=""):
 def main():
     print("=== Oscilloscope Basic Setup Test ===\n")
 
-    net_name = 'scope3'  # Rigol MSO5204 channel 1
+    net_name = os.environ.get("SCOPE_NET", "scope3")
     scope = None
 
     try:

@@ -617,6 +617,8 @@ lager nets rename supply1 main_power --box my-lager-box
 
 Pair a Rigol MSO5000 with the USB HDMI capture card that is connected to its HDMI output. The live view of the scope comes from this card. Nothing on USB connects the card to the scope, so you set the pairing once, on any net of the scope. The box confirms the pairing when it next opens the scope: it changes the screen of the scope and examines the video.
 
+The scope sends a picture on HDMI only while its HDMI output is on, under **Utility > IO > HDMI > Output**. Turn it on once. The scope keeps the setting when it is powered off.
+
 ```bash
 lager nets set-capture NAME [OPTIONS]
 ```

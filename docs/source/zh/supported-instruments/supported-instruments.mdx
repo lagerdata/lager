@@ -85,7 +85,7 @@ Box 打开 PicoScope 时，会从设备读取它的通道数、电压量程、�
 - 自动化的波形采集
 - 基于触发的信号验证
 - 数字与模拟信号的关联分析
-- 连续串流，并在 `http://<box>:9000/scope` 提供实时 Web 视图（PicoScope）
+- 连续串流，并在 `http://<box>:9000/scope` 提供实时 Web 视图（Rigol 需要先通过 `lager nets set-capture` 配对实时视图）
 - 测量：由 Box 根据采集数据计算（PicoScope），或通过 SCPI 查询（Rigol）
 
 屏幕光标、协议触发（I2C、SPI、UART）和逻辑分析仪仅适用于 Rigol。PicoScope 会报告不支持，而不是返回误导性的值。采集光标（`lager scope cursor time` 和 `cursor volts`）仅适用于 PicoScope。

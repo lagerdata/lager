@@ -48,12 +48,12 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` | 3226 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 4346 |
+| `unit (box)` | `test/unit/box/` | 4357 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 405 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 204 (+1 skipped) |
-| | **Total gated** | **8375** |
+| | **Total gated** | **8386** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -850,7 +850,7 @@ These tests cover the scripts in `tools/`. The `unit (root)` job runs them.
 |------|---------------|
 | `test_agent_loop.py` | End-to-end agent workflow: discovery, suitability, `lager python` execution, verify |
 
-### Python API Tests (`test/api/` -- 85 files)
+### Python API Tests (`test/api/` -- 86 files)
 
 These are **standalone scripts, not pytest** (see `test/CONVENTIONS.md`): each defines `main()`
 and runs on a box via `lager python`. None of them run in the PR gate.

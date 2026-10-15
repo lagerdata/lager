@@ -21,11 +21,17 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   Its trace is taken from the scope's HDMI output through a USB HDMI capture
   card, so the web scope page, `lager scope ... stream`, status, acquisition,
   holdoff, display, FFT and cursors all work on a Rigol net. Pair the scope
-  with its card once with `lager nets set-capture <net>`; without a card,
+  with its card once with `lager nets set-capture <net>`, and turn on the
+  scope's HDMI output once under Utility > IO > HDMI; without a card,
   everything but the live view still works. A scope with no card, or whose
   HDMI output gives no picture, can take its live view from its own
   screenshot over USB instead with `lager nets set-capture <net> --screen`,
   at a few frames a second.
+- **A Rigol scope net in a Python script answers `measurement.all()`, `capture()`
+  and the streaming calls, as a PicoScope net does.** `measurement.all()` returns
+  the scope's own measurements in one call. `capture()` returns the scope's exact
+  record. `stream_start()`, `stream_frames()` and `stream_capture()` need a live view
+  paired with `lager nets set-capture`, and say so when there is none.
 
 ### Changed
 
