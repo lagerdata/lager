@@ -609,14 +609,35 @@ fn calibrate(link: &Mutex<Box<dyn Scpi>>, video: &dyn FrameSource) -> Result<Scr
     };
     let status = lock_link(link).query(":TRIGger:STATus?")?;
     let was_running = !status.trim().eq_ignore_ascii_case("STOP");
-    // Frozen, so that only the grid differs between the two frames.
+    // Frozen and cleared, so that only the grid differs between the two
+    // frames: a trace lying on a grid line hides that line's change.
     lock_link(link).write(":STOP")?;
     let result = (|| {
-        command(":DISPlay:GRID FULL")?;
-        let with_grid = settled_frame(video)?;
-        command(":DISPlay:GRID NONE")?;
-        let without_grid = settled_frame(video)?;
-        screen::measure(&with_grid, &without_grid)
+        command(":DISPlay:CLEar")?;
+        let grid_frames = || -> Result<_> {
+            command(":DISPlay:GRID FULL")?;
+            let with_grid = settled_frame(video)?;
+            command(":DISPlay:GRID NONE")?;
+            let without_grid = settled_frame(video)?;
+            let map = screen::measure(&with_grid, &without_grid)?;
+            Ok((screen::right_side_covered(&with_grid, &without_grid, &map), map))
+        };
+        let (covered, map) = grid_frames()?;
+        if !covered {
+            return Ok(map);
+        }
+        // The side menu hides a fifth of the trace. MOFF toggles it, so it
+        // is pressed only when the menu is seen, and pressed back if that
+        // did not uncover the right of the grid.
+        command(":SYSTem:KEY:PRESs MOFF")?;
+        let (still_covered, uncovered) = grid_frames()?;
+        if still_covered {
+            command(":SYSTem:KEY:PRESs MOFF")?;
+            tracing::warn!("the right of the scope's screen is covered and hiding its menu did not uncover it");
+            return Ok(map);
+        }
+        tracing::info!("hid the scope's menu, which covered the right of the trace");
+        Ok(uncovered)
     })();
     if was_running {
         lock_link(link).write(":RUN")?;

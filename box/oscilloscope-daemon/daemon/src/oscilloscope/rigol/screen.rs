@@ -118,6 +118,30 @@ pub fn measure(with_grid: &VideoFrame, without_grid: &VideoFrame) -> Result<Scre
     ))
 }
 
+/// Whether something covers the right of the waveform area: the scope's
+/// side menu, which hides a fifth of it. Taken from the same two frames as
+/// `measure`: the grid line four divisions right of centre changes far less
+/// than the one four divisions left of it.
+pub fn right_side_covered(with_grid: &VideoFrame, without_grid: &VideoFrame, map: &ScreenMap) -> bool {
+    let band = |divs: f64| -> u64 {
+        let x = map.center_x + divs * map.px_per_div_x;
+        let half = (map.px_per_div_x * 0.1).max(1.0);
+        let from = (x - half).max(0.0) as usize;
+        let to = ((x + half) as usize).min(with_grid.width.saturating_sub(1));
+        let mut changed = 0u64;
+        for y in map.top..(map.top + map.height).min(with_grid.height) {
+            for x in from..=to {
+                if with_grid.luma(x, y).saturating_sub(without_grid.luma(x, y)) >= GRID_STEP {
+                    changed += 1;
+                }
+            }
+        }
+        changed
+    };
+    let (left, right) = (band(-4.0), band(4.0));
+    left > 0 && right * 4 < left
+}
+
 /// The centres of the runs of positions that are much more lit than the
 /// rest, which are the lines crossing this axis.
 ///
@@ -239,12 +263,13 @@ pub struct Palette {
     min_luma: u8,
 }
 
-/// The MSO5000's channel colours: yellow, cyan, magenta, blue.
+/// The MSO5000's channel colours: yellow, cyan, magenta, blue, as its own
+/// screenshot draws them.
 pub const MSO5000_COLOURS: [(u8, u8, u8); 4] = [
     (255, 255, 0),
     (0, 255, 255),
-    (255, 0, 255),
-    (0, 112, 255),
+    (255, 0, 189),
+    (0, 0, 255),
 ];
 
 /// How far a pixel's hue may be from its channel's, in degrees of the
@@ -252,7 +277,10 @@ pub const MSO5000_COLOURS: [(u8, u8, u8); 4] = [
 const HUE_TOLERANCE_DEG: f64 = 25.0;
 /// Below this distance from grey, a pixel has no colour to judge.
 const MIN_CHROMA: f64 = 20.0;
-const MIN_LUMA: u8 = 32;
+/// Pure blue, channel 4, is luma 29, 22 once through an HDMI capture card
+/// and half that where intensity grading dims it; black has no chroma, so
+/// `MIN_CHROMA` is what keeps it out.
+const MIN_LUMA: u8 = 8;
 
 impl Palette {
     pub fn new(colours: &[(u8, u8, u8)]) -> Palette {
@@ -430,6 +458,65 @@ pub(crate) mod tests {
         }
         assert_eq!(palette.classify(rgb_to_ycc(200, 200, 200)), 0);
         assert_eq!(palette.classify(rgb_to_ycc(10, 10, 0)), 0, "too dark to judge");
+    }
+
+    /// Frames from an MSO5074 through an MS2109 card at 1920x1080: the
+    /// scope's 1280x720 output scaled up. Channels 1 to 4 at 1 V/div and
+    /// offsets +3, +1, -1 and -3 V with no signal, so each trace lies on a
+    /// grid line. The grid frames were taken after `:DISPlay:CLEar`, as
+    /// calibration takes them; the `menu` pair with the side menu shown.
+    fn hdmi_frame(jpeg: &[u8]) -> VideoFrame {
+        let (width, height, data) = crate::oscilloscope::rigol::frame::decode_mjpeg(jpeg).unwrap();
+        VideoFrame { width, height, layout: Layout::Ycc, data, captured_ns: 0, sequence: 1 }
+    }
+
+    fn hdmi_pair(menu: bool) -> (VideoFrame, VideoFrame) {
+        if menu {
+            (
+                hdmi_frame(include_bytes!("../../../tests/fixtures/mso5074_ms2109_1080p_menu_grid.jpg")),
+                hdmi_frame(include_bytes!("../../../tests/fixtures/mso5074_ms2109_1080p_menu_blank.jpg")),
+            )
+        } else {
+            (
+                hdmi_frame(include_bytes!("../../../tests/fixtures/mso5074_ms2109_1080p_grid.jpg")),
+                hdmi_frame(include_bytes!("../../../tests/fixtures/mso5074_ms2109_1080p_blank.jpg")),
+            )
+        }
+    }
+
+    #[test]
+    fn a_real_hdmi_frame_gives_the_grid_with_or_without_the_menu() {
+        for menu in [false, true] {
+            let (grid, blank) = hdmi_pair(menu);
+            let map = measure(&grid, &blank).unwrap();
+            // 100 x 60 px a division on the scope's own screen, scaled 1.5 times.
+            assert!((map.px_per_div_x - 150.0).abs() < 1.0, "menu {menu}: {map:?}");
+            assert!((map.px_per_div_y - 90.0).abs() < 1.0, "menu {menu}: {map:?}");
+            assert!((map.center_x - 977.0).abs() < 2.0, "menu {menu}: {map:?}");
+            assert!((map.center_y - 534.0).abs() < 2.0, "menu {menu}: {map:?}");
+            assert_eq!(right_side_covered(&grid, &blank, &map), menu);
+        }
+    }
+
+    #[test]
+    fn a_real_hdmi_frame_puts_each_channel_at_its_offset() {
+        let (grid, blank) = hdmi_pair(false);
+        let map = measure(&grid, &blank).unwrap();
+        let traces = hdmi_frame(include_bytes!("../../../tests/fixtures/mso5074_ms2109_1080p_traces.jpg"));
+        let mut env = crate::oscilloscope::rigol::extract::Envelopes::default();
+        env.extract(&traces, &map, &Palette::new(&MSO5000_COLOURS), 0b1111);
+        assert_eq!(env.seen, 0b1111);
+        for (channel, divs) in [3.0, 1.0, -1.0, -3.0].into_iter().enumerate() {
+            let mut mids: Vec<f64> = env.samples[channel]
+                .chunks_exact(2)
+                .filter(|p| p[0] != i16::MIN)
+                .map(|p| (f64::from(p[0]) + f64::from(p[1])) / 2.0)
+                .collect();
+            assert!(mids.len() * 100 >= map.width * 98, "channel {} drawn in {} of {} columns", channel + 1, mids.len(), map.width);
+            mids.sort_by(f64::total_cmp);
+            let median = mids[mids.len() / 2] / crate::oscilloscope::rigol::extract::COUNTS_PER_DIV;
+            assert!((median - divs).abs() < 0.1, "channel {} at {median} div, not {divs}", channel + 1);
+        }
     }
 }
 

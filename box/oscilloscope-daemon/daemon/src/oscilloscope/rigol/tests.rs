@@ -120,7 +120,7 @@ impl Instrument {
                 self.grid = arg != "NONE";
                 true
             }
-            ":DISPLAY:TYPE" | ":DISPLAY:GRADING:TIME" | ":DISPLAY:WBRIGHTNESS" => true,
+            ":DISPLAY:TYPE" | ":DISPLAY:GRADING:TIME" | ":DISPLAY:WBRIGHTNESS" | ":DISPLAY:CLEAR" => true,
             ":TIMEBASE:MAIN:SCALE" => number().map(|v| self.time_scale = v).is_some(),
             ":TIMEBASE:MAIN:OFFSET" => number().map(|v| self.time_offset = v).is_some(),
             ":TRIGGER:MODE" => arg == "EDGE",

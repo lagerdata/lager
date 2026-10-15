@@ -274,10 +274,21 @@ impl FrameSource for Replay {
 #[cfg(target_os = "linux")]
 pub use self::v4l2::V4l2Source;
 
+/// How long a change on the scope takes to reach a capture card's video:
+/// 190 to 330 ms measured from `*OPC?` on an MSO5074 into an MS2109, with
+/// margin. `*OPC?` itself returns in under 30 ms, long before the redraw.
+const HDMI_SETTLE: Duration = Duration::from_millis(400);
+
+/// Frames covering `HDMI_SETTLE` at `fps` frames a second.
+pub fn settle_frames_at(fps: f64) -> u64 {
+    let frames = (fps * HDMI_SETTLE.as_secs_f64()).ceil();
+    if frames.is_finite() { (frames as u64).max(3) } else { 3 }
+}
+
 #[cfg(target_os = "linux")]
 mod v4l2 {
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::Arc;
 
     use v4l::buffer::Type;
@@ -304,6 +315,10 @@ mod v4l2 {
         path: PathBuf,
         mode: Mode,
         latest: Arc<Latest>,
+        /// Frames published in the last second, in thousandths. A card's
+        /// advertised rate is not what it delivers: an MS2109 at 60 fps
+        /// fills every other buffer with nothing.
+        delivered_milli_fps: Arc<AtomicU64>,
         stop: Arc<AtomicBool>,
         thread: Option<std::thread::JoinHandle<()>>,
     }
@@ -393,26 +408,29 @@ mod v4l2 {
             );
 
             let latest = Arc::new(Latest::default());
+            let delivered_milli_fps = Arc::new(AtomicU64::new(0));
             let stop = Arc::new(AtomicBool::new(false));
             let thread = {
                 let latest = latest.clone();
+                let delivered = delivered_milli_fps.clone();
                 let stop = stop.clone();
                 std::thread::Builder::new()
                     .name("scope-video".into())
-                    .spawn(move || capture(device, mode, &latest, &stop))
+                    .spawn(move || capture(device, mode, &latest, &delivered, &stop))
                     .context("starting the video thread")?
             };
             Ok(V4l2Source {
                 path: path.to_path_buf(),
                 mode,
                 latest,
+                delivered_milli_fps,
                 stop,
                 thread: Some(thread),
             })
         }
     }
 
-    fn capture(device: Device, mode: Mode, latest: &Latest, stop: &AtomicBool) {
+    fn capture(device: Device, mode: Mode, latest: &Latest, delivered: &AtomicU64, stop: &AtomicBool) {
         let mut stream = match Stream::with_buffers(&device, Type::VideoCapture, BUFFERS) {
             Ok(stream) => stream,
             Err(e) => {
@@ -425,6 +443,7 @@ mod v4l2 {
         let mut sequence = 0u64;
         let mut timeouts = 0u32;
         let started = std::time::Instant::now();
+        let mut window = (std::time::Instant::now(), 0u64);
         while !stop.load(Ordering::Relaxed) {
             match stream.next() {
                 Ok((bytes, meta)) => {
@@ -434,6 +453,13 @@ mod v4l2 {
                         continue;
                     }
                     sequence += 1;
+                    window.1 += 1;
+                    let elapsed = window.0.elapsed();
+                    if elapsed >= Duration::from_secs(1) {
+                        let milli = window.1 as f64 * 1000.0 / elapsed.as_secs_f64();
+                        delivered.store(milli as u64, Ordering::Relaxed);
+                        window = (std::time::Instant::now(), 0);
+                    }
                     latest.store(RawFrame {
                         encoding: mode.encoding,
                         width: mode.width as usize,
@@ -466,6 +492,12 @@ mod v4l2 {
 
         fn next_after(&self, after: u64, timeout: Duration) -> Result<Option<RawFrame>> {
             self.latest.next_after(after, timeout)
+        }
+
+        fn settle_frames(&self) -> u64 {
+            let delivered = self.delivered_milli_fps.load(Ordering::Relaxed);
+            let fps = if delivered > 0 { delivered as f64 / 1000.0 } else { self.mode.fps };
+            settle_frames_at(fps)
         }
 
         fn describe(&self) -> String {
@@ -508,6 +540,15 @@ mod tests {
             height,
             fps,
         }
+    }
+
+    #[test]
+    fn settling_covers_the_hdmi_redraw_at_the_rate_actually_delivered() {
+        // 30 frames a second: the MS2109's real rate at a nominal 60.
+        assert_eq!(settle_frames_at(30.0), 12);
+        assert_eq!(settle_frames_at(60.0), 24);
+        assert_eq!(settle_frames_at(2.0), 3);
+        assert_eq!(settle_frames_at(f64::NAN), 3);
     }
 
     #[test]
