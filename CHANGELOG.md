@@ -72,10 +72,16 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   probe now asks under a separate holder, so it sees the run's own lock and releases it.
 - **A command a Rigol MSO5000 refuses is now an error.** Before, the scope
   put the refusal in its error queue and the command reported success. That
-  hid three faults, now fixed: `lager logic <net> enable` and `disable` sent a
-  form of the command this firmware refuses; measurements on a logic net
-  never switched the scope to the digital channel; and `lager logic` cursors
-  never switched on.
+  hid several faults, now fixed:
+  - `lager logic <net> enable` and `disable` sent a form of the command this
+    firmware refuses.
+  - Measurements on a logic net never switched the scope to the digital
+    channel, which the scope also measures only while the channel is shown.
+  - The trigger mode, coupling and edge slope set from Python were sent in a
+    form the scope refuses.
+  - Cursors used commands from older Rigol scopes. They now use the
+    MSO5000's, and an x position counts from the centre of its 1000-pixel
+    grid rather than from pixel 240.
 
 
 ## [0.56.0] - 2026-10-13

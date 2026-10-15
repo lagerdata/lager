@@ -1289,16 +1289,29 @@ class Measurement_RigolMSO5000FunctionMapper:
         return getattr(self.device, attr)
 
 class Cursor_RigolMSO5000FunctionMapper:
+    """The manual cursors, positioned in pixels from the centre of the grid.
+
+    The MSO5000 places them on its 1000 x 480 pixel waveform area (`CAX` 0-999
+    across, `CAY` 0-479 down), so x is an offset from column 500 and y from
+    row 240, positive right and up. It shows time or amplitude cursors, not
+    both, so each call selects the type it acts on.
+    """
+
+    X_CENTER = 500
+    X_MAX = 999
+    Y_CENTER = 240
+    Y_MAX = 479
+
     def __init__(self, parent, net, device):
         self.parent = parent
         self.net = net
         self.device = device
         self.source = None
-        # Cache cursor positions to avoid querying (which causes timeouts)
-        self._cursor_a_x = 240  # Default center position
-        self._cursor_a_y = 240
-        self._cursor_b_x = 240
-        self._cursor_b_y = 240
+        # Positions are kept here so a move needs no query.
+        self._cursor_a_x = self.X_CENTER
+        self._cursor_a_y = self.Y_CENTER
+        self._cursor_b_x = self.X_CENTER
+        self._cursor_b_y = self.Y_CENTER
 
     def _map_net_to_scope(self):
         chan = None
@@ -1319,112 +1332,101 @@ class Cursor_RigolMSO5000FunctionMapper:
             raise ValueError("Unsupported channel type")
         return chan
 
-    def _cursor_setup(self):
+    def _cursor_setup(self, cursor_type="X"):
         self.set_cursor_mode(CursorMode.Manual)
-        self.set_cursor_manual_type("XY")  # Set cursor type to XY for both X and Y cursors
         self.source = self._map_net_to_scope()
         self.set_cursor_manual_source(self.source)
+        self.set_cursor_manual_type(cursor_type)
+
+    @classmethod
+    def _column(cls, x):
+        column = cls.X_CENTER + x
+        if not (0 <= column <= cls.X_MAX):
+            raise ValueError(f"X position {x} is off the grid: it must be within "
+                             f"{-cls.X_CENTER} to {cls.X_MAX - cls.X_CENTER} pixels of the centre")
+        return column
+
+    @classmethod
+    def _row(cls, y):
+        row = cls.Y_CENTER - y
+        if not (0 <= row <= cls.Y_MAX):
+            raise ValueError(f"Y position {y} is off the grid: it must be within "
+                             f"{cls.Y_CENTER - cls.Y_MAX} to {cls.Y_CENTER} pixels of the centre")
+        return row
 
     def hide(self):
         self.set_cursor_mode(CursorMode.Off)
 
     def set_a(self, *, x=None, y=None):
-        self._cursor_setup()
-        if x != None:
-            x_pos = 240 + x
-            # Fixed validation: should be "not (0 <= x_pos <= 479)"
-            if not (0 <= x_pos <= 479):
-                raise ValueError(f"X position {x_pos} is out of range (0-479). Input x={x} resulted in screen position {x_pos}.")
-            self.set_cursor_manual_x_a(x_pos)
-            self._cursor_a_x = x_pos  # Cache the position
-        if y != None:
-            y_pos = 240 - y
-            # Fixed validation: should be "not (0 <= y_pos <= 479)"
-            if not (0 <= y_pos <= 479):
-                raise ValueError(f"Y position {y_pos} is out of range (0-479). Input y={y} resulted in screen position {y_pos}.")
-            self.set_cursor_manual_y_a(y_pos)
-            self._cursor_a_y = y_pos  # Cache the position
+        if x is not None:
+            column = self._column(x)
+            self._cursor_setup("X")
+            self.set_cursor_manual_x_a(column)
+            self._cursor_a_x = column
+        if y is not None:
+            row = self._row(y)
+            self._cursor_setup("Y")
+            self.set_cursor_manual_y_a(row)
+            self._cursor_a_y = row
 
     def set_b(self, *, x=None, y=None):
-        self._cursor_setup()
-        if x != None:
-            x_pos = 240 + x
-            # Fixed validation: should be "not (0 <= x_pos <= 479)"
-            if not (0 <= x_pos <= 479):
-                raise ValueError(f"X position {x_pos} is out of range (0-479). Input x={x} resulted in screen position {x_pos}.")
-            self.set_cursor_manual_x_b(x_pos)
-            self._cursor_b_x = x_pos  # Cache the position
-        if y != None:
-            y_pos = 240 - y
-            # Fixed validation: should be "not (0 <= y_pos <= 479)"
-            if not (0 <= y_pos <= 479):
-                raise ValueError(f"Y position {y_pos} is out of range (0-479). Input y={y} resulted in screen position {y_pos}.")
-            self.set_cursor_manual_y_b(y_pos)
-            self._cursor_b_y = y_pos  # Cache the position
+        if x is not None:
+            column = self._column(x)
+            self._cursor_setup("X")
+            self.set_cursor_manual_x_b(column)
+            self._cursor_b_x = column
+        if y is not None:
+            row = self._row(y)
+            self._cursor_setup("Y")
+            self.set_cursor_manual_y_b(row)
+            self._cursor_b_y = row
 
     def get_a(self):
-        return (int(self.get_cursor_manual_x_a())-240),(int(self.get_cursor_manual_y_a())-240)
+        return (int(self.get_cursor_manual_x_a()) - self.X_CENTER,
+                self.Y_CENTER - int(self.get_cursor_manual_y_a()))
 
     def get_b(self):
-        return (int(self.get_cursor_manual_x_b())-240),(int(self.get_cursor_manual_y_b())-240)
+        return (int(self.get_cursor_manual_x_b()) - self.X_CENTER,
+                self.Y_CENTER - int(self.get_cursor_manual_y_b()))
 
     def move_a(self, *, x_del=None, y_del=None):
-        self._cursor_setup()
-        if x_del != None:
-            # Use cached position instead of querying (which causes timeout)
-            new_x = self._cursor_a_x + x_del
-            # Fixed validation
-            if not (0 <= new_x <= 479):
-                raise ValueError(f"New X position {new_x} is out of range (0-479)")
-            self.set_cursor_manual_x_a(new_x)
-            self._cursor_a_x = new_x
-        if y_del != None:
-            # Use cached position instead of querying (which causes timeout)
-            new_y = self._cursor_a_y - y_del
-            # Fixed validation
-            if not (0 <= new_y <= 479):
-                raise ValueError(f"New Y position {new_y} is out of range (0-479)")
-            self.set_cursor_manual_y_a(new_y)
-            self._cursor_a_y = new_y
+        if x_del is not None:
+            self.set_a(x=self._cursor_a_x - self.X_CENTER + x_del)
+        if y_del is not None:
+            self.set_a(y=self.Y_CENTER - self._cursor_a_y + y_del)
 
     def move_b(self, *, x_del=None, y_del=None):
-        self._cursor_setup()
-        if x_del != None:
-            # Use cached position instead of querying (which causes timeout)
-            new_x = self._cursor_b_x + x_del
-            # Fixed validation
-            if not (0 <= new_x <= 479):
-                raise ValueError(f"New X position {new_x} is out of range (0-479)")
-            self.set_cursor_manual_x_b(new_x)
-            self._cursor_b_x = new_x
-        if y_del != None:
-            # Use cached position instead of querying (which causes timeout)
-            new_y = self._cursor_b_y - y_del
-            # Fixed validation
-            if not (0 <= new_y <= 479):
-                raise ValueError(f"New Y position {new_y} is out of range (0-479)")
-            self.set_cursor_manual_y_b(new_y)
-            self._cursor_b_y = new_y
+        if x_del is not None:
+            self.set_b(x=self._cursor_b_x - self.X_CENTER + x_del)
+        if y_del is not None:
+            self.set_b(y=self.Y_CENTER - self._cursor_b_y + y_del)
 
     def x_delta(self):
+        self._cursor_setup("X")
         return float(self.get_cursor_manual_x_delta())
 
     def y_delta(self):
+        self._cursor_setup("Y")
         return float(self.get_cursor_manual_y_delta())
 
     def frequency(self):
+        self._cursor_setup("X")
         return float(self.get_cursor_manual_x_inverse_delta())
 
     def a_x(self):
+        self._cursor_setup("X")
         return float(self.get_cursor_manual_x_value_a())
 
     def a_y(self):
+        self._cursor_setup("Y")
         return float(self.get_cursor_manual_y_value_a())
 
     def b_x(self):
+        self._cursor_setup("X")
         return float(self.get_cursor_manual_x_value_b())
 
     def b_y(self):
+        self._cursor_setup("Y")
         return float(self.get_cursor_manual_y_value_b())
 
     def __getattr__(self, attr):

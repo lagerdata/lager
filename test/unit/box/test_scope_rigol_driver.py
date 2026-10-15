@@ -98,8 +98,10 @@ class TestTheScpiLayer:
         rigol = rigol_mso5000.RigolMso5000(address=ADDRESS, pin=1)
         rigol.set_measurement_source({"__enum__": {"type": "MeasurementSource", "value": "D1"}})
         rigol.set_cursor_mode({"__enum__": {"type": "CursorMode", "value": "MANual"}})
+        # A digital channel is measured only while it is shown.
         assert [p["scpi"] for _, p in daemon[0].sent] == [
-            ":MEASure:SOURce D1", ":CURSor:MODE MANual"]
+            ":LA:STATe ON", ":LA:DISPlay D1,ON", ":MEASure:SOURce D1",
+            ":CURSor:MODE MANual"]
 
     def test_every_net_on_a_scope_shares_one_connection(self, daemon, monkeypatch):
         monkeypatch.setattr(rigol_mso5000, "_instruments", {})
@@ -143,3 +145,56 @@ class TestTheFactory:
     def test_a_picoscope_net_gets_the_picoscope_driver(self):
         device = self._device("picoscope_2000")
         assert type(device) is PicoScope
+
+
+class TestTheCursors:
+    """The MSO5000's manual cursors: pixels on its 1000 x 480 grid, and one
+    type, time or amplitude, at a time."""
+
+    def _cursors(self, daemon, monkeypatch, net_type="analog"):
+        from types import SimpleNamespace
+
+        from lager.nets.constants import NetType
+        from lager.nets.mappers.rigol_mso5000 import Cursor_RigolMSO5000FunctionMapper
+
+        monkeypatch.setattr(rigol_mso5000, "_instruments", {})
+        device = rigol_mso5000.RigolMso5000(address=ADDRESS, pin=1)
+        kind = NetType.Analog if net_type == "analog" else NetType.Logic
+        net = SimpleNamespace(type=kind, channel=1)
+        return Cursor_RigolMSO5000FunctionMapper(None, net, device)
+
+    def _sent(self, daemon):
+        return [p["scpi"] for _, p in daemon[0].sent]
+
+    def test_a_cursor_is_placed_from_the_centre_of_the_grid(self, daemon, monkeypatch):
+        self._cursors(daemon, monkeypatch).set_a(x=100, y=60)
+        assert self._sent(daemon) == [
+            ":CURSor:MODE MANual", ":CURSor:MANual:SOURce CHANnel1",
+            ":CURSor:MANual:TYPE TIME", ":CURSor:MANual:CAX 600",
+            ":CURSor:MODE MANual", ":CURSor:MANual:SOURce CHANnel1",
+            ":CURSor:MANual:TYPE AMPLitude", ":CURSor:MANual:CAY 180",
+        ]
+
+    def test_a_logic_net_puts_the_cursors_on_the_logic_analyzer(self, daemon, monkeypatch):
+        self._cursors(daemon, monkeypatch, "logic").set_b(x=-200)
+        assert ":CURSor:MANual:SOURce LA" in self._sent(daemon)
+        assert ":CURSor:MANual:CBX 300" in self._sent(daemon)
+
+    def test_a_move_starts_from_where_the_cursor_was_put(self, daemon, monkeypatch):
+        cursors = self._cursors(daemon, monkeypatch)
+        cursors.set_a(x=10)
+        cursors.move_a(x_del=-30)
+        assert self._sent(daemon)[-1] == ":CURSor:MANual:CAX 480"
+
+    def test_a_position_off_the_grid_is_refused_before_anything_is_sent(self, daemon, monkeypatch):
+        with pytest.raises(ValueError, match="off the grid"):
+            self._cursors(daemon, monkeypatch).set_a(x=600)
+        assert all(client.sent == [] for client in daemon)
+
+    def test_older_rigol_cursor_types_are_translated(self, daemon, monkeypatch):
+        monkeypatch.setattr(rigol_mso5000, "_instruments", {})
+        rigol = rigol_mso5000.RigolMso5000(address=ADDRESS, pin=1)
+        rigol.set_cursor_manual_type("XY")
+        rigol.set_cursor_manual_type("Y")
+        assert self._sent(daemon) == [":CURSor:MANual:TYPE TIME",
+                                      ":CURSor:MANual:TYPE AMPLitude"]

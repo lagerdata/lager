@@ -14,6 +14,7 @@ interface was a failure for whichever came second.
 """
 
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,10 @@ def _scpi_arg(value):
     if isinstance(value, dict) and "__enum__" in value:
         return value["__enum__"]["value"]
     return str(value)
+
+
+# Manual cursor types as older Rigol scopes name them, to the MSO5000's.
+_CURSOR_TYPES = {"X": "TIME", "XY": "TIME", "Y": "AMPLitude"}
 
 
 class DaemonInstrument:
@@ -406,7 +411,7 @@ class RigolMso5000:
 
     def set_trigger_mode(self, mode):
         """Set trigger mode (AUTO, NORMal, SINGle)."""
-        self.write(f":TRIGger:SWEep {mode}")
+        self.write(f":TRIGger:SWEep {_scpi_arg(mode)}")
         return {"trigger_mode": mode}
 
     def get_trigger_mode(self):
@@ -434,7 +439,7 @@ class RigolMso5000:
 
     def set_trigger_coupling(self, coupling):
         """Set trigger coupling (DC, AC, LFReject, HFReject)."""
-        self.write(f":TRIGger:COUPling {coupling}")
+        self.write(f":TRIGger:COUPling {_scpi_arg(coupling)}")
         return {"trigger_coupling": coupling}
 
     def get_trigger_coupling(self):
@@ -470,7 +475,7 @@ class RigolMso5000:
 
     def set_trigger_source(self, source):
         """Set trigger source (CHANnel1-4, EXT, etc.)."""
-        self.write(f":TRIGger:EDGe:SOURce {source}")
+        self.write(f":TRIGger:EDGe:SOURce {_scpi_arg(source)}")
         return {"trigger_source": source}
 
     def get_trigger_source(self):
@@ -479,7 +484,7 @@ class RigolMso5000:
 
     def set_trigger_slope(self, slope):
         """Set trigger slope (POSitive, NEGative, RFALl)."""
-        self.write(f":TRIGger:EDGe:SLOPe {slope}")
+        self.write(f":TRIGger:EDGe:SLOPe {_scpi_arg(slope)}")
         return {"trigger_slope": slope}
 
     def get_trigger_slope(self):
@@ -744,8 +749,13 @@ class RigolMso5000:
             source: Channel source (e.g., "CHANnel1", "CHANnel2", etc.)
                    Can also be a MeasurementSource enum value
         """
-        # Convert enum to string if needed
         source_str = _scpi_arg(source)
+        # The scope measures a digital channel only while it is shown, and
+        # refuses it as the source otherwise ("Command execute failed").
+        digital = re.fullmatch(r"D(\d{1,2})", source_str.strip(), re.IGNORECASE)
+        if digital:
+            self.write(":LA:STATe ON")
+            self.write(f":LA:DISPlay D{int(digital.group(1))},ON")
         self.write(f":MEASure:SOURce {source_str}")
         return {"measurement_source": source_str}
 
@@ -809,12 +819,17 @@ class RigolMso5000:
         return self.query(":CURSor:MANual:SOURce?")
 
     def set_cursor_manual_type(self, cursor_type):
-        """Set cursor manual mode type (X, Y, or XY).
+        """Set the manual cursors to time (X) or amplitude (Y).
+
+        The MSO5000 takes `TIME` or `AMPLitude` and refuses the `X`, `Y` and
+        `XY` of older Rigol scopes, so those are translated; `XY` becomes time,
+        as an MSO5000 shows one pair of cursors at a time.
 
         Args:
-            cursor_type: Cursor type string or enum (e.g., "XY", "X", "Y")
+            cursor_type: "TIME", "AMPLitude", or "X", "Y", "XY"
         """
         type_str = _scpi_arg(cursor_type)
+        type_str = _CURSOR_TYPES.get(type_str.strip().upper(), type_str)
         self.write(f":CURSor:MANual:TYPE {type_str}")
         return {"cursor_type": type_str}
 
@@ -824,39 +839,39 @@ class RigolMso5000:
 
     def set_cursor_manual_x_a(self, x):
         """Set cursor A X position in manual mode."""
-        self.write(f":CURSor:MANual:AX {x}")
+        self.write(f":CURSor:MANual:CAX {int(round(float(x)))}")
         return {"cursor_a_x": x}
 
     def get_cursor_manual_x_a(self):
         """Get cursor A X position."""
-        return self.query(":CURSor:MANual:AX?")
+        return self.query(":CURSor:MANual:CAX?")
 
     def set_cursor_manual_y_a(self, y):
         """Set cursor A Y position in manual mode."""
-        self.write(f":CURSor:MANual:AY {y}")
+        self.write(f":CURSor:MANual:CAY {int(round(float(y)))}")
         return {"cursor_a_y": y}
 
     def get_cursor_manual_y_a(self):
         """Get cursor A Y position."""
-        return self.query(":CURSor:MANual:AY?")
+        return self.query(":CURSor:MANual:CAY?")
 
     def set_cursor_manual_x_b(self, x):
         """Set cursor B X position in manual mode."""
-        self.write(f":CURSor:MANual:BX {x}")
+        self.write(f":CURSor:MANual:CBX {int(round(float(x)))}")
         return {"cursor_b_x": x}
 
     def get_cursor_manual_x_b(self):
         """Get cursor B X position."""
-        return self.query(":CURSor:MANual:BX?")
+        return self.query(":CURSor:MANual:CBX?")
 
     def set_cursor_manual_y_b(self, y):
         """Set cursor B Y position in manual mode."""
-        self.write(f":CURSor:MANual:BY {y}")
+        self.write(f":CURSor:MANual:CBY {int(round(float(y)))}")
         return {"cursor_b_y": y}
 
     def get_cursor_manual_y_b(self):
         """Get cursor B Y position."""
-        return self.query(":CURSor:MANual:BY?")
+        return self.query(":CURSor:MANual:CBY?")
 
     def get_cursor_manual_x_delta(self):
         """Get X delta between cursor A and B."""
