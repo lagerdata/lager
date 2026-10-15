@@ -95,13 +95,13 @@ pub fn measure(with_grid: &VideoFrame, without_grid: &VideoFrame) -> Result<Scre
              capture card the scope is plugged into"
         );
     }
-    let vertical = lattice(&line_centres(&columns), MIN_VERTICAL_LINES).ok_or_else(|| {
+    let vertical = lattice(&line_centres(&columns, MIN_VERTICAL_LINES), MIN_VERTICAL_LINES).ok_or_else(|| {
         anyhow::anyhow!(
             "the video changed with the grid, but not into evenly spaced vertical lines; \
              the capture card may be scaling or cropping the picture"
         )
     })?;
-    let horizontal = lattice(&line_centres(&rows), MIN_HORIZONTAL_LINES).ok_or_else(|| {
+    let horizontal = lattice(&line_centres(&rows, MIN_HORIZONTAL_LINES), MIN_HORIZONTAL_LINES).ok_or_else(|| {
         anyhow::anyhow!(
             "the video changed with the grid, but not into evenly spaced horizontal lines; \
              the capture card may be scaling or cropping the picture"
@@ -119,9 +119,27 @@ pub fn measure(with_grid: &VideoFrame, without_grid: &VideoFrame) -> Result<Scre
 
 /// The centres of the runs of positions that are much more lit than the
 /// rest, which are the lines crossing this axis.
-fn line_centres(profile: &[u32]) -> Vec<f64> {
-    let peak = profile.iter().copied().max().unwrap_or(0);
-    let threshold = peak / 2;
+///
+/// The bar is half the strength of the `min_lines`-th strongest peak, not of
+/// the strongest: the centre axes carry tick marks as well as the grid's
+/// dots, and on an MSO5000 are three times as strong as the other lines.
+fn line_centres(profile: &[u32], min_lines: usize) -> Vec<f64> {
+    let mut peaks: Vec<u32> = (0..profile.len())
+        .filter(|&i| {
+            let here = profile[i];
+            here > 0
+                && (i == 0 || profile[i - 1] <= here)
+                && (i + 1 == profile.len() || profile[i + 1] < here)
+        })
+        .map(|i| profile[i])
+        .collect();
+    peaks.sort_unstable_by(|a, b| b.cmp(a));
+    let reference = peaks
+        .get(min_lines.saturating_sub(1))
+        .or(peaks.last())
+        .copied()
+        .unwrap_or(0);
+    let threshold = reference / 2;
     let mut centres = Vec::new();
     let mut run: Option<(usize, u64, u64)> = None; // (start, weight, weighted sum)
     for (i, &count) in profile.iter().enumerate() {
@@ -325,6 +343,24 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn centre_axes_drawn_stronger_than_the_grid_do_not_hide_it() {
+        // The MSO5000 draws its centre axes solid, where the grid is dotted.
+        let without = VideoFrame::blank(1024, 600, Layout::Ycc);
+        let mut with = grid_frame(1024, 600, 522, 296, 100, 60, false);
+        for y in 56..=536 {
+            with.put(522, y, (90, 128, 128));
+        }
+        for x in 22..=1022 {
+            with.put(x, 296, (90, 128, 128));
+        }
+        let map = measure(&with, &without).unwrap();
+        assert!((map.center_x - 522.0).abs() < 0.5, "{map:?}");
+        assert!((map.center_y - 296.0).abs() < 0.5, "{map:?}");
+        assert!((map.px_per_div_x - 100.0).abs() < 0.5, "{map:?}");
+        assert!((map.px_per_div_y - 60.0).abs() < 0.5, "{map:?}");
+    }
+
+    #[test]
     fn video_that_ignores_the_grid_is_not_this_scope() {
         let frame = grid_frame(1280, 720, 640, 360, 100, 75, false);
         let message = measure(&frame, &frame).unwrap_err().to_string();
@@ -354,3 +390,4 @@ pub(crate) mod tests {
         assert_eq!(palette.classify(rgb_to_ycc(10, 10, 0)), 0, "too dark to judge");
     }
 }
+
