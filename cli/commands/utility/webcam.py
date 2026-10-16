@@ -73,6 +73,25 @@ def _gated_token(box_ip):
         url, min_remaining_fraction=LINK_TOKEN_MIN_REMAINING)
 
 
+def _open_in_browser(url):
+    """Open ``url`` in the user's browser; say so on stderr if none opened.
+
+    ``webbrowser.open`` returns False when it finds no browser (over SSH, or
+    on a headless machine) and can raise when one fails to start. Either way
+    the caller has already printed the link, so this points at it.
+    """
+    import webbrowser
+    try:
+        opened = webbrowser.open(url)
+        reason = "no browser was found"
+    except Exception as e:  # webbrowser.Error, or OSError from a launcher
+        opened, reason = False, str(e)
+    if not opened:
+        click.secho(f"The browser did not open ({reason}); open the link above "
+                    "yourself.", fg="red", err=True)
+    return bool(opened)
+
+
 def _viewer_url(url, gate):
     """The stream URL as a browser can open it.
 
@@ -405,12 +424,7 @@ def webcam_start(ctx, box, open_browser):
     if not _gated_link_note(gate, label) and not open_browser:
         click.echo("Open this URL in your browser to view the live feed.")
     if open_browser:
-        import webbrowser
-        try:
-            webbrowser.open(url)
-        except Exception as e:
-            click.secho(f"The browser did not open ({e}); open the link above "
-                        "yourself.", fg="red", err=True)
+        _open_in_browser(url)
     click.echo()
     # NETNAME comes before the subcommand.
     click.echo(f"To stop the stream: lager webcam {net_name} stop --box {label}")

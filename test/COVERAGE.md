@@ -47,13 +47,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 3274 (+2 xfailed) |
+| `unit (cli)` | `test/unit/cli/` | 3276 (+2 xfailed) |
 | `unit (box)` | `test/unit/box/` | 4458 (+16 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 405 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 205 (+1 skipped) |
-| | **Total gated** | **8536** |
+| | **Total gated** | **8538** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -761,7 +761,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_matchers.py` | Test-output matchers and the v1 stream framing parser; markers split across chunk boundaries must still set the exit code |
 | `test_param_types.py` | Every custom click ParamType, valid and invalid, incl. the five on live command paths and `ByteSizeType` (`--erase-size`: decimal, `0x` hex, `K`/`M` suffixes, never zero) |
 | `test_safe_unpickle.py` | Deserialization allowlist: refused globals must not be imported as a side effect of refusing them |
-| `test_webcam_command.py` | `lager webcam` CLI: the tokenised viewer link on access-gated boxes (`_viewer_url`, the token lookup asking for half a lifetime, the note that promises only how long the link can be opened, its pinned-token and `lager login` variants, and the layout: link on its own line, note under it, hint last), `start --open` opening the printed link (and never the browser without it), `start` sending `source`/`started_by`, and `snapshot` writing the decoded JPEG to `--out`. Also the stop hints `start` and `start-all` print, each replayed through the group so the line a user copies stays a command that parses and names the box the way they typed it |
+| `test_webcam_command.py` | `lager webcam` CLI: the tokenised viewer link on access-gated boxes (`_viewer_url`, the token lookup asking for half a lifetime, the note that promises only how long the link can be opened, its pinned-token and `lager login` variants, and the layout: link on its own line, note under it, hint last), `start --open` opening the printed link (and never the browser without it), and pointing at the link when no browser opens, `start` sending `source`/`started_by`, and `snapshot` writing the decoded JPEG to `--out`. Also the stop hints `start` and `start-all` print, each replayed through the group so the line a user copies stays a command that parses and names the box the way they typed it |
 | `test_box_storage.py` | `box_storage.py` project-level `.lager` merging behavior |
 | `test_gateway_auth.py` | `gateway_auth.py` bearer-token auth for boxes behind an authenticating gateway, including the pinned CI token (`LAGER_GATEWAY_TOKEN`), and that `check_gateway_status` holds its first-contact retry to the caller's own timeout rather than a fixed 30s -- otherwise a caller with a deadline reports a box that was still answering |
 | `test_update_gate.py` | Update rebuild gate: probe parsing, build-hash mismatch, early-exit verdict; the shared `/etc/lager` state-file writer, run against a scratch directory, including that the ref write skips identical content and that the version is recorded only after the container starts; and the `--check` exit-code contract, guarded structurally so no failure ahead of the dry run exits 1 and becomes indistinguishable from "this box needs an update" |
@@ -777,7 +777,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_nets_describe_fields.py` | `lager nets describe --dut-connection` / `--test-hint` / `--clear-test-hints`: the two control-plane fields are merged onto the saved record next to purpose, notes and tags, duplicate hints collapse, side-car fields survive, and the nothing-given message names the new options |
 | `test_nets_channel_less_roles.py` | Roles with no channel, spelled as an empty channel list: a `scope` net is saved without a pin, because a pin is what tells the box an old record is a channel |
 | `test_update_scope_daemon.py` | Every box carries a scope daemon built from the Rust it runs: `start_box.sh` builds it on install, update and config apply, and rebuilds it when the daemon sources or the installed PicoTech headers change. Any one family's headers are enough to build, so a box with only `libps2000` gets a daemon. `start_box.sh`, `lager update` and the deploy script agree on which headers count, and a box with none and a PicoScope attached is told which package to install |
-| `test_scope_bench_commands.py` | `lager scope` status, trigger readback, holdoff, acquire, roll, fft and display: each command line is one action on the box's warm handler with its parameters, a value out of range is refused before the box, and a PicoScope edge trigger sends only the settings named while a Rigol keeps the script path. Also `stream start` and `stream web` output: the link on its own line, the gated note under it, and a stop hint that replays as a command |
+| `test_scope_bench_commands.py` | `lager scope` status, trigger readback, holdoff, acquire, roll, fft and display: each command line is one action on the box's warm handler with its parameters, a value out of range is refused before the box, and a PicoScope edge trigger sends only the settings named while a Rigol keeps the script path. Also `stream start` and `stream web` output: the link on its own line, the gated note under it, a stop hint that replays as a command, and `stream web` pointing at the link when no browser opens |
 | `test_scope_impl_daemon_errors.py` | The scope impl script reads a daemon refusal as a failure: `{"Response": {"response": "Error"}}` comes back as an error, where a trigger level beyond the range used to print that it had been applied |
 
 #### Measurement Unit Tests (`test/unit/measurement/` -- 4 files)

@@ -40,6 +40,14 @@ lager webcam [NETNAME] COMMAND [OPTIONS]
 lager webcam CAM1 start --box my-lager-box
 ```
 
+加上 `--open`，同时在 Web 浏览器中打开该串流：
+
+```bash
+lager webcam CAM1 start --open --box my-lager-box
+```
+
+如果串流已在运行，`start` 不会改变 Box 上的任何东西。它会再次打印链接，因此 `start --open` 也可以用一个新链接重新打开查看器。如果浏览器没有打开，请自行打开打印出的链接。
+
 ### `snapshot`
 
 把正在运行的串流中的一帧保存为 JPEG。对脚本和智能体来说，这是查看实验台的正确方式。帧数据通过 Box 的命令端点回传，因此串流自身的端口完全不需要可达。
@@ -130,11 +138,11 @@ lager webcam stop-all --box my-lager-box
 # Start a webcam
 lager webcam CAM1 start --box my-lager-box
 
+# Or start it and open it in a browser in one step
+lager webcam CAM1 start --open --box my-lager-box
+
 # Get the stream URL
 lager webcam url --box my-lager-box
-
-# Open the printed URL in a browser
-# http://<BOX_IP>:8086/
 
 # Stop when done
 lager webcam CAM1 stop --box my-lager-box

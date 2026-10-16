@@ -213,7 +213,7 @@ class TestStart:
     def test_open_opens_the_printed_link(self, monkeypatch):
         _gate(monkeypatch, token='tok', ttl=900)
         opened = []
-        monkeypatch.setattr('webbrowser.open', opened.append)
+        monkeypatch.setattr('webbrowser.open', lambda url: opened.append(url) or True)
         result, output = _invoke(['cam1', 'start', '--open', '--box', 'bench'])
         assert result.exit_code == 0, output
         assert opened == ['http://10.0.0.5:8086/?token=tok']
@@ -224,7 +224,7 @@ class TestStart:
     def test_open_on_an_ungated_box_drops_the_open_it_yourself_line(self, monkeypatch):
         monkeypatch.setattr('cli.gateway_auth.auth_server_for_box', lambda ip: None)
         opened = []
-        monkeypatch.setattr('webbrowser.open', opened.append)
+        monkeypatch.setattr('webbrowser.open', lambda url: opened.append(url) or True)
         result, output = _invoke(['cam1', 'start', '--open', '--box', 'bench'])
         assert result.exit_code == 0, output
         assert opened == ['http://10.0.0.5:8086/']
@@ -239,6 +239,15 @@ class TestStart:
         result, output = _invoke(['cam1', 'start', '--open', '--box', 'bench'])
         assert result.exit_code == 0, output
         assert output.count('http://10.0.0.5:8086/') == 1
+        assert 'open the link above yourself' in output
+
+    def test_open_with_no_browser_found(self, monkeypatch):
+        monkeypatch.setattr('cli.gateway_auth.auth_server_for_box', lambda ip: None)
+        monkeypatch.setattr('webbrowser.open', lambda url: False)
+        result, output = _invoke(['cam1', 'start', '--open', '--box', 'bench'])
+        assert result.exit_code == 0, output
+        assert output.count('http://10.0.0.5:8086/') == 1
+        assert 'no browser was found' in output
         assert 'open the link above yourself' in output
 
     def test_no_open_never_touches_the_browser(self, monkeypatch):

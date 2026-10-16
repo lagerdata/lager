@@ -41,6 +41,9 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 - **`lager webcam NET start --open` also opens the stream in your browser.** On a
   stream that is already running, `start` changes nothing on the box, so
   `start --open` is also how to reopen the viewer with a fresh link.
+- **`lager scope NET stream web` now says when no browser opened.** On a machine with no
+  browser, such as over SSH, it used to print the link and nothing else. It now asks you
+  to open the link yourself, as `lager webcam NET start --open` does.
 
 ## [0.57.0] - 2026-10-16
 

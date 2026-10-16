@@ -11,7 +11,7 @@ import json
 import click
 from ...context import get_impl_path, get_default_net
 from ..development.python import run_python_internal
-from ..utility.webcam import _gated_link_note, _gated_token, _viewer_url
+from ..utility.webcam import _gated_link_note, _gated_token, _open_in_browser, _viewer_url
 from ...core.net_group import NetGroup
 from ...core.param_types import HexParamType
 from ...core.utils import StreamDatatypes, normalize_exit_code
@@ -1565,8 +1565,6 @@ def stream_status(ctx, box):
 @click.option("--port", type=int, default=9000, help="Box HTTP server port")
 def stream_web(ctx, box, port):
     """Open the oscilloscope UI in a web browser"""
-    import webbrowser
-
     box_ip = _resolve_box(ctx, box)
 
     # Port 9000 is the box HTTP server, the same port every other net uses.
@@ -1578,11 +1576,7 @@ def stream_web(ctx, box, port):
     click.echo(url)
     _scope_link_note(ctx, gate, box, box_ip)
 
-    try:
-        webbrowser.open(url)
-    except Exception as e:
-        click.secho(f"The browser did not open ({e}); open the link above "
-                    "yourself.", fg="red", err=True)
+    _open_in_browser(url)
 
 
 @stream.command("capture")

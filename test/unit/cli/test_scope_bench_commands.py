@@ -378,7 +378,7 @@ class TestStreamWeb:
     def test_the_browser_gets_the_link_with_the_sign_in_token(self, monkeypatch):
         _gate(monkeypatch, token="tok")
         opened = []
-        monkeypatch.setattr("webbrowser.open", opened.append)
+        monkeypatch.setattr("webbrowser.open", lambda url: opened.append(url) or True)
         result, _, _ = _run(["pico1", "stream", "web", "--box", "bench"], nets=NETS)
         assert result.exit_code == 0, result.output
         assert opened == ["http://1.2.3.4:9000/scope?token=tok"]
@@ -391,7 +391,7 @@ class TestStreamWeb:
 
     def test_an_open_box_gets_the_plain_link(self, ungated, monkeypatch):
         opened = []
-        monkeypatch.setattr("webbrowser.open", opened.append)
+        monkeypatch.setattr("webbrowser.open", lambda url: opened.append(url) or True)
         result, _, _ = _run(["pico1", "stream", "web", "--box", "bench"], nets=NETS)
         assert result.exit_code == 0, result.output
         assert opened == ["http://1.2.3.4:9000/scope"]
@@ -406,6 +406,13 @@ class TestStreamWeb:
         result, _, _ = _run(["pico1", "stream", "web", "--box", "bench"], nets=NETS)
         assert result.exit_code == 0, result.output
         assert result.output.count("http://1.2.3.4:9000/scope") == 1
+        assert "open the link above yourself" in result.output
+
+    def test_no_browser_found_points_at_the_printed_link(self, ungated, monkeypatch):
+        monkeypatch.setattr("webbrowser.open", lambda url: False)
+        result, _, _ = _run(["pico1", "stream", "web", "--box", "bench"], nets=NETS)
+        assert result.exit_code == 0, result.output
+        assert "no browser was found" in result.output
         assert "open the link above yourself" in result.output
 
 
