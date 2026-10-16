@@ -343,6 +343,22 @@ async fn measure(
         },
     };
 
+    if let Some(which) = requested {
+        match scope.request(ScopeRequest::MeasureOne { channel, which }).await {
+            ScopeReply::MeasuredOne(Some(value)) => {
+                return Response::Measurement {
+                    channel,
+                    measurements: None,
+                    value,
+                    unit: Some(which.unit().to_string()),
+                }
+            }
+            // The driver measures the set at once; pick from it below.
+            ScopeReply::MeasuredOne(None) => {}
+            other => return other.into_error(),
+        }
+    }
+
     let measurements = match scope.request(ScopeRequest::MeasureAll { channel }).await {
         ScopeReply::Measurements(set) => set,
         other => return other.into_error(),
@@ -355,7 +371,7 @@ async fn measure(
 
     Response::Measurement {
         channel,
-        measurements,
+        measurements: Some(measurements),
         value,
         unit,
     }

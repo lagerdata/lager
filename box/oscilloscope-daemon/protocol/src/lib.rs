@@ -326,9 +326,14 @@ pub enum Response {
     /// DC level, say -- comes back with `value: null` rather than a zero or
     /// an error, because "not present in this capture" is a real answer and
     /// zero would be a wrong one.
+    ///
+    /// `measurements` is left out when the instrument took the one named
+    /// measurement by itself (a Rigol measures an item at a time, ~330 ms
+    /// each), so that one number does not cost the whole set.
     Measurement {
         channel: ChannelId,
-        measurements: Box<MeasurementSet>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        measurements: Option<Box<MeasurementSet>>,
         #[serde(skip_serializing_if = "Option::is_none")]
         value: Option<f64>,
         #[serde(skip_serializing_if = "Option::is_none")]

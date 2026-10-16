@@ -143,6 +143,12 @@ pub enum ScopeRequest {
         channel: ChannelId,
         which: Measurement,
     },
+    /// One measurement taken by the instrument itself, for one that measures
+    /// an item at a time; see `Oscilloscope::measure_one`.
+    MeasureOne {
+        channel: ChannelId,
+        which: Measurement,
+    },
     MeasureAll {
         channel: ChannelId,
     },
@@ -172,6 +178,9 @@ pub enum ScopeReply {
     Capture(Arc<CaptureFrame>),
     Measurement(f64),
     Measurements(Box<MeasurementSet>),
+    /// `Some` with the instrument's value (`None` when it has none for the
+    /// signal shown), or `None` when the driver cannot take one item alone.
+    MeasuredOne(Option<Option<f64>>),
     State(Box<ScopeState>),
     Display(serde_json::Value),
     Acquisition(AcquisitionMode, u32),
@@ -1069,6 +1078,7 @@ fn invalidates_the_published_capture(request: &ScopeRequest) -> bool {
         | ScopeRequest::IsReady
         | ScopeRequest::GetTriggeredData
         | ScopeRequest::Measure { .. }
+        | ScopeRequest::MeasureOne { .. }
         | ScopeRequest::MeasureAll { .. }
         | ScopeRequest::GetState
         | ScopeRequest::GetDisplay
@@ -1834,19 +1844,12 @@ fn handle(
                 Err(e) => ScopeReply::error(e),
             },
         },
+        ScopeRequest::MeasureOne { channel, which } => match scope.measure_one(channel, which) {
+            Some(Ok(value)) => ScopeReply::MeasuredOne(Some(value)),
+            Some(Err(e)) => state.failed(e),
+            None => ScopeReply::MeasuredOne(None),
+        },
         ScopeRequest::Measure { channel, which } => {
-            // An instrument that measures one item at a time (a Rigol takes
-            // ~330 ms an item) is asked for that item alone, not the set.
-            match scope.measure_one(channel, which) {
-                Some(Ok(Some(value))) => return ScopeReply::Measurement(value),
-                Some(Ok(None)) => {
-                    return ScopeReply::error(format!(
-                        "{which:?} needs at least one full cycle in the capture"
-                    ))
-                }
-                Some(Err(e)) => return state.failed(e),
-                None => {}
-            }
             let measured = match scope.measure_all(channel) {
                 Some(result) => result,
                 None => measure_now(state, acquiring, channel),
@@ -2104,6 +2107,15 @@ mod tests {
     impl Oscilloscope for FakeScope {
         fn reports_trigger(&self) -> bool {
             self.instrument
+        }
+
+        fn measure_one(
+            &mut self,
+            _channel: ChannelId,
+            which: Measurement,
+        ) -> Option<anyhow::Result<Option<f64>>> {
+            self.instrument
+                .then(|| Ok((which == Measurement::Frequency).then_some(2e3)))
         }
 
         fn measure_all(&mut self, _channel: ChannelId) -> Option<anyhow::Result<MeasurementSet>> {
@@ -3434,6 +3446,32 @@ mod tests {
             ScopeReply::Measurement(value) => assert_eq!(value, 1e3),
             other => panic!("expected a measurement, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn one_item_is_asked_of_an_instrument_that_measures_one_at_a_time() {
+        let mut harness = Harness::with(FakeScope::instrument());
+        let one = |harness: &mut Harness, which| {
+            harness.send(ScopeRequest::MeasureOne {
+                channel: ChannelId::Alphabetic('A'),
+                which,
+            })
+        };
+        assert!(matches!(
+            one(&mut harness, Measurement::Frequency),
+            ScopeReply::MeasuredOne(Some(Some(f))) if f == 2e3
+        ));
+        assert!(
+            matches!(one(&mut harness, Measurement::Period), ScopeReply::MeasuredOne(Some(None))),
+            "no value is an answer, not an error"
+        );
+        // A driver that measures the set at once says so, and the caller
+        // takes the set instead.
+        let mut harness = Harness::new();
+        assert!(matches!(
+            one(&mut harness, Measurement::Frequency),
+            ScopeReply::MeasuredOne(None)
+        ));
     }
 
     #[test]
