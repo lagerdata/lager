@@ -40,6 +40,16 @@ Start a webcam stream.
 lager webcam CAM1 start --box my-lager-box
 ```
 
+Add `--open` to also open the stream in your web browser:
+
+```bash
+lager webcam CAM1 start --open --box my-lager-box
+```
+
+On a stream that is already running, `start` changes nothing on the box. It
+prints the link again, so `start --open` also reopens the viewer with a fresh
+link. If the browser does not open, open the printed link yourself.
+
 ### `snapshot`
 
 Save one frame from a running stream as a JPEG. This is the right way for
@@ -147,11 +157,11 @@ lager webcam stop-all --box my-lager-box
 # Start a webcam
 lager webcam CAM1 start --box my-lager-box
 
+# Or start it and open it in a browser in one step
+lager webcam CAM1 start --open --box my-lager-box
+
 # Get the stream URL
 lager webcam url --box my-lager-box
-
-# Open the printed URL in a browser
-# http://<BOX_IP>:8086/
 
 # Stop when done
 lager webcam CAM1 stop --box my-lager-box

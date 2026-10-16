@@ -210,6 +210,46 @@ class TestStart:
         # One lookup serves the link and the note, so they agree on a token.
         assert lookups == [{'min_remaining_fraction': 0.5}]
 
+    def test_open_opens_the_printed_link(self, monkeypatch):
+        _gate(monkeypatch, token='tok', ttl=900)
+        opened = []
+        monkeypatch.setattr('webbrowser.open', opened.append)
+        result, output = _invoke(['cam1', 'start', '--open', '--box', 'bench'])
+        assert result.exit_code == 0, output
+        assert opened == ['http://10.0.0.5:8086/?token=tok']
+        # The same layout as without --open: link, note, stop hint last.
+        assert _lines(output)[-6:-4] == ['Webcam URL:', 'http://10.0.0.5:8086/?token=tok']
+        assert _lines(output)[-1] == 'To stop the stream: lager webcam cam1 stop --box bench'
+
+    def test_open_on_an_ungated_box_drops_the_open_it_yourself_line(self, monkeypatch):
+        monkeypatch.setattr('cli.gateway_auth.auth_server_for_box', lambda ip: None)
+        opened = []
+        monkeypatch.setattr('webbrowser.open', opened.append)
+        result, output = _invoke(['cam1', 'start', '--open', '--box', 'bench'])
+        assert result.exit_code == 0, output
+        assert opened == ['http://10.0.0.5:8086/']
+        assert 'in your browser' not in output
+
+    def test_open_with_a_browser_that_will_not_open(self, monkeypatch):
+        monkeypatch.setattr('cli.gateway_auth.auth_server_for_box', lambda ip: None)
+
+        def broken(url):
+            raise RuntimeError('no display')
+        monkeypatch.setattr('webbrowser.open', broken)
+        result, output = _invoke(['cam1', 'start', '--open', '--box', 'bench'])
+        assert result.exit_code == 0, output
+        assert output.count('http://10.0.0.5:8086/') == 1
+        assert 'open the link above yourself' in output
+
+    def test_no_open_never_touches_the_browser(self, monkeypatch):
+        monkeypatch.setattr('cli.gateway_auth.auth_server_for_box', lambda ip: None)
+
+        def forbidden(url):
+            raise AssertionError('browser opened without --open')
+        monkeypatch.setattr('webbrowser.open', forbidden)
+        result, output = _invoke(['cam1', 'start', '--box', 'bench'])
+        assert result.exit_code == 0, output
+
     def test_pinned_token_link(self, monkeypatch):
         _gate(monkeypatch, token='ci-token')
         monkeypatch.setenv('LAGER_GATEWAY_TOKEN', 'ci-token')

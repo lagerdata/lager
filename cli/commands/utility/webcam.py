@@ -352,6 +352,7 @@ def webcam(ctx, box):
 
 webcam.net_examples = [
     "lager webcam cam1 start --box <BOX>",
+    "lager webcam cam1 start --open --box <BOX>  (also open it in a browser)",
     "lager webcam cam1 snapshot --box <BOX> --out frame.jpg",
     "lager webcam cam1 stop --box <BOX>",
     "lager webcam url --box <BOX>           (URLs of active streams)",
@@ -361,10 +362,15 @@ webcam.net_examples = [
 
 @click.command(name="start")
 @click.option("--box", help="Lager Box name or IP")
+@click.option("--open", "open_browser", is_flag=True,
+              help="Also open the stream in your web browser")
 @click.pass_context
-def webcam_start(ctx, box):
+def webcam_start(ctx, box, open_browser):
     """
     Start webcam stream
+
+    On a stream that is already running this changes nothing on the box, so
+    `start --open` is also how to reopen the viewer with a fresh link.
     """
     # Get netname from parent context
     net_name = getattr(ctx.obj, "netname", None)
@@ -394,9 +400,17 @@ def webcam_start(ctx, box):
     click.echo()
     click.secho("Webcam URL:", fg="cyan", bold=True)
     # On a line of its own so a triple-click copies the link and nothing else.
-    click.secho(_viewer_url(result['url'], gate), fg="cyan", bold=True)
-    if not _gated_link_note(gate, label):
+    url = _viewer_url(result['url'], gate)
+    click.secho(url, fg="cyan", bold=True)
+    if not _gated_link_note(gate, label) and not open_browser:
         click.echo("Open this URL in your browser to view the live feed.")
+    if open_browser:
+        import webbrowser
+        try:
+            webbrowser.open(url)
+        except Exception as e:
+            click.secho(f"The browser did not open ({e}); open the link above "
+                        "yourself.", fg="red", err=True)
     click.echo()
     # NETNAME comes before the subcommand.
     click.echo(f"To stop the stream: lager webcam {net_name} stop --box {label}")

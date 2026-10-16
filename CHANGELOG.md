@@ -38,6 +38,10 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   `box/lager/static/webcam/`, served by each stream's server with a new `GET /api/info`. It is
   no longer HTML embedded in the streamer's generated script.
 
+- **`lager webcam NET start --open` also opens the stream in your browser.** On a
+  stream that is already running, `start` changes nothing on the box, so
+  `start --open` is also how to reopen the viewer with a fresh link.
+
 ## [0.57.0] - 2026-10-16
 
 ### Added

@@ -47,13 +47,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 3270 (+2 xfailed) |
+| `unit (cli)` | `test/unit/cli/` | 3274 (+2 xfailed) |
 | `unit (box)` | `test/unit/box/` | 4458 (+16 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 405 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 205 (+1 skipped) |
-| | **Total gated** | **8532** |
+| | **Total gated** | **8536** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -761,7 +761,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_matchers.py` | Test-output matchers and the v1 stream framing parser; markers split across chunk boundaries must still set the exit code |
 | `test_param_types.py` | Every custom click ParamType, valid and invalid, incl. the five on live command paths and `ByteSizeType` (`--erase-size`: decimal, `0x` hex, `K`/`M` suffixes, never zero) |
 | `test_safe_unpickle.py` | Deserialization allowlist: refused globals must not be imported as a side effect of refusing them |
-| `test_webcam_command.py` | `lager webcam` CLI: the tokenised viewer link on access-gated boxes (`_viewer_url`, the token lookup asking for half a lifetime, the note that promises only how long the link can be opened, its pinned-token and `lager login` variants, and the layout: link on its own line, note under it, hint last), `start` sending `source`/`started_by`, and `snapshot` writing the decoded JPEG to `--out`. Also the stop hints `start` and `start-all` print, each replayed through the group so the line a user copies stays a command that parses and names the box the way they typed it |
+| `test_webcam_command.py` | `lager webcam` CLI: the tokenised viewer link on access-gated boxes (`_viewer_url`, the token lookup asking for half a lifetime, the note that promises only how long the link can be opened, its pinned-token and `lager login` variants, and the layout: link on its own line, note under it, hint last), `start --open` opening the printed link (and never the browser without it), `start` sending `source`/`started_by`, and `snapshot` writing the decoded JPEG to `--out`. Also the stop hints `start` and `start-all` print, each replayed through the group so the line a user copies stays a command that parses and names the box the way they typed it |
 | `test_box_storage.py` | `box_storage.py` project-level `.lager` merging behavior |
 | `test_gateway_auth.py` | `gateway_auth.py` bearer-token auth for boxes behind an authenticating gateway, including the pinned CI token (`LAGER_GATEWAY_TOKEN`), and that `check_gateway_status` holds its first-contact retry to the caller's own timeout rather than a fixed 30s -- otherwise a caller with a deadline reports a box that was still answering |
 | `test_update_gate.py` | Update rebuild gate: probe parsing, build-hash mismatch, early-exit verdict; the shared `/etc/lager` state-file writer, run against a scratch directory, including that the ref write skips identical content and that the version is recorded only after the container starts; and the `--check` exit-code contract, guarded structurally so no failure ahead of the dry run exits 1 and becomes indistinguishable from "this box needs an update" |
