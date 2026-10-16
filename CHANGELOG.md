@@ -58,6 +58,15 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   takes longer than its own 3-second budget (`instrument-timeout`), and does not
   read it again for 30 seconds (`probe-cooldown`). A supply whose device lock is
   held now reports `device-busy`, not a null with no reason.
+- **A Rigol MSO5000's live view keeps its frame rate while the `/scope` page shows
+  measurements.** The daemon now computes a Rigol's measurement set from the channel's
+  screen record, one read of about 0.2 s, instead of 14 `:MEASure` queries taking about
+  5 s. Those queries stalled the live view to one or two frames a second, delayed every
+  other page request, and left readouts on screen that were drawn as trace. The page
+  refreshes a Rigol's readouts every 5 s instead of every 500 ms. It refreshes no scope
+  from a hidden tab, and it stops when the box closes the stream. `measurement.all()`
+  in Python gets the same faster set. A single `lager scope NET measure` still asks the
+  scope, for its full-memory reading.
 
 ## [0.57.0] - 2026-10-16
 

@@ -587,6 +587,7 @@ class TestTheMeasurementPanelKeepsPolling:
           return scheduled.length;
         };
         globalThis.clearInterval = () => { cleared += 1; };
+        globalThis.document = { hidden: false };
         const tick = async () => {
           scheduled[scheduled.length - 1].fn();
           // Let the refresh's promise settle before anything is asserted.
@@ -594,12 +595,16 @@ class TestTheMeasurementPanelKeepsPolling:
         };
         let refreshes = 0;
         const self = {
+          net: 'scope1',
+          scopeNets: [],
+          ticket: { instrument: 'PicoScope 2000' },
           measureTimer: null,
           measureInFlight: false,
           refreshMeasurements: async () => { refreshes += 1; },
           startMeasurementPolling: ScopeApp.prototype.startMeasurementPolling,
           stopMeasurementPolling: ScopeApp.prototype.stopMeasurementPolling,
           pollMeasurementsOnce: ScopeApp.prototype.pollMeasurementsOnce,
+          isRigol: ScopeApp.prototype.isRigol,
         };
         // A rejection that escapes any of the unawaited refresh paths is the
         // failure under test, so it is recorded rather than allowed to kill
@@ -696,6 +701,59 @@ class TestTheMeasurementPanelKeepsPolling:
         process.stdout.write(JSON.stringify({
           cleared, timer: self.measureTimer,
         }));
+        """)
+        assert out["cleared"] >= 1
+        assert out["timer"] is None
+
+    def test_a_picoscope_refreshes_twice_a_second(self):
+        out = self._run("""
+        self.startMeasurementPolling();
+        process.stdout.write(JSON.stringify({ delay: scheduled[0].delay }));
+        """)
+        assert out["delay"] == 500
+
+    def test_a_rigol_refreshes_every_five_seconds(self):
+        """A Rigol answers on the thread that publishes its live view.
+
+        Polled every 500 ms, its measurements held the live view to a frame
+        or two a second.
+        """
+        out = self._run("""
+        self.ticket = { instrument: 'Rigol_MSO5204' };
+        self.startMeasurementPolling();
+        process.stdout.write(JSON.stringify({ delay: scheduled[0].delay }));
+        """)
+        assert out["delay"] == 5000
+
+    def test_a_rigol_is_known_from_its_net_before_a_ticket(self):
+        out = self._run("""
+        self.ticket = null;
+        self.scopeNets = [{ name: 'scope1', instrument: 'rigol_mso5000' }];
+        self.startMeasurementPolling();
+        process.stdout.write(JSON.stringify({ delay: scheduled[0].delay }));
+        """)
+        assert out["delay"] == 5000
+
+    def test_a_hidden_tab_does_not_poll(self):
+        out = self._run("""
+        document.hidden = true;
+        self.startMeasurementPolling();
+        await tick();
+        process.stdout.write(JSON.stringify({ total: refreshes }));
+        """)
+        assert out["total"] == 0, "a hidden tab kept the scope measuring"
+
+    def test_the_stream_ending_from_the_far_end_stops_polling(self):
+        """A socket the box closes ends in streamEnded, not disconnect."""
+        out = self._run("""
+        globalThis.document.getElementById = () => ({ textContent: '' });
+        Object.assign(self, {
+          setLink() {}, showEmptyHint() {}, showNotStreaming() {}, showIdleRate() {},
+          streamEnded: ScopeApp.prototype.streamEnded,
+        });
+        self.startMeasurementPolling();
+        self.streamEnded();
+        process.stdout.write(JSON.stringify({ cleared, timer: self.measureTimer }));
         """)
         assert out["cleared"] >= 1
         assert out["timer"] is None

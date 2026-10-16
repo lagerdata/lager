@@ -88,6 +88,10 @@ const MEASUREMENTS = [
 // trip, so this trades against the capture rate the trace gets.
 const MEASURE_INTERVAL_MS = 500;
 
+// A Rigol answers on the same thread that publishes its live view, and each
+// set reads the channel's record over USB, so it refreshes far less often.
+const RIGOL_MEASURE_INTERVAL_MS = 5000;
+
 // The probe ratios stamped on a switch. Anything else -- a current clamp at
 // 100 mV/A, say -- goes through the console's `probe`, and is added to the
 // dropdown on readback so the panel never disagrees with the hardware.
@@ -1956,6 +1960,8 @@ class ScopeApp {
     this.showEmptyHint();
     this.showNotStreaming(true);
     this.showIdleRate();
+    // A socket closed from the far end comes here without `disconnect()`.
+    this.stopMeasurementPolling();
   }
 
   /** Read zero once captures stop, rather than the last rate measured. */
@@ -2357,7 +2363,14 @@ class ScopeApp {
     this.stopMeasurementPolling();
     this.pollMeasurementsOnce();
     this.measureTimer = setInterval(() => this.pollMeasurementsOnce(),
-      MEASURE_INTERVAL_MS);
+      this.isRigol() ? RIGOL_MEASURE_INTERVAL_MS : MEASURE_INTERVAL_MS);
+  }
+
+  /** Whether the selected scope is a Rigol, from the ticket or its net. */
+  isRigol() {
+    const net = (this.scopeNets || []).find((n) => n.name === this.net);
+    const instrument = this.ticket?.instrument || net?.instrument || '';
+    return /rigol|mso5/i.test(instrument);
   }
 
   /** One reading, skipped if the last one has not come back yet.
@@ -2373,7 +2386,8 @@ class ScopeApp {
    * place, so there is nothing to do with one here.
    */
   pollMeasurementsOnce() {
-    if (this.measureInFlight) return;
+    // Nobody is reading a hidden tab; returning to it refreshes at once.
+    if (this.measureInFlight || document.hidden) return;
     this.measureInFlight = true;
     this.refreshMeasurements()
       .finally(() => { this.measureInFlight = false; })

@@ -637,13 +637,22 @@ fn single_waits_for_the_scope_to_stop_on_its_trigger() {
 }
 
 #[test]
-fn measurements_are_the_scope_s_own_with_ratios_in_percent() {
+fn measurements_are_computed_from_the_channel_s_record() {
     let mut bench = bench();
+    bench.scope.enable_channel(ChannelId::Alphabetic('B')).unwrap();
+    let before = bench.sent().len();
     let set = bench.scope.measure_all(ChannelId::Alphabetic('A')).unwrap().unwrap();
-    assert_eq!(set.vmax, 1.0);
-    assert_eq!(set.duty_cycle_positive, Some(25.0));
-    assert_eq!(set.period, None, "9.9E37 is no measurement");
-    assert!(bench.sent().contains(&":MEASure:SOURce CHANnel1".to_string()));
+    let sent = bench.sent()[before..].to_vec();
+    assert!(!sent.iter().any(|c| c.starts_with(":MEASure")), "{sent:?}");
+    assert_eq!(
+        sent.iter().filter(|c| c.starts_with(":WAVeform:SOURce")).collect::<Vec<_>>(),
+        [":WAVeform:SOURce CHANnel1"],
+        "only the measured channel is read, though B is on too"
+    );
+    let record = bench.scope.record(&[0]).unwrap();
+    assert_eq!(Some(&set), protocol::measure_channel(&record, 0).as_ref());
+    // The fake's record is a ramp from 0 to 0.9 V.
+    assert!((set.vmax - 0.9).abs() < 1e-6 && set.vmin.abs() < 1e-6, "{set:?}");
     let off = bench.scope.measure_all(ChannelId::Alphabetic('D')).unwrap();
     assert!(off.unwrap_err().to_string().contains("not enabled"));
 }
@@ -661,9 +670,9 @@ fn one_measurement_asks_the_scope_for_that_item_alone() {
 }
 
 #[test]
-fn measuring_leaves_no_measurement_bar_over_the_trace() {
+fn measuring_one_item_leaves_no_measurement_bar_over_the_trace() {
     let mut bench = bench();
-    bench.scope.measure_all(ChannelId::Alphabetic('A')).unwrap().unwrap();
+    bench.scope.measure_one(ChannelId::Alphabetic('A'), Measurement::Vmax).unwrap().unwrap();
     assert_eq!(bench.sent().last().map(String::as_str), Some(":MEASure:CLEar ALL"));
 }
 
