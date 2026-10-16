@@ -96,11 +96,12 @@ function fetchStub(path, options) {
                            json: () => Promise.resolve(body) });
 }
 
-const location = { protocol: 'http:', hostname: '10.0.0.5', href: 'http://10.0.0.5:8086/' };
+const location = { protocol: 'http:', hostname: '10.0.0.5', href: 'http://10.0.0.5:8086/?x=1#y',
+                   assign(url) { this.went = url; } };
 const context = vm.createContext({
   document, fetch: fetchStub, window: { location }, localStorage: { setItem() {}, getItem() { return null; } },
   setInterval() {}, setTimeout() {}, clearTimeout() {}, console, Date, Math, String, Number,
-  JSON, Promise, parseInt, parseFloat,
+  JSON, Promise, parseInt, parseFloat, URL,
 });
 vm.runInContext(fs.readFileSync(jsPath, 'utf8'), context);
 
@@ -232,11 +233,23 @@ def test_the_net_picker_lists_every_stream_and_moves_to_its_port():
     scenario = """
     $('net-select').value = '8087';
     $('net-select').fire('change');
-    out.went = location.href;
+    out.went = location.went;
     """
     out = _run(_routes(INFO), scenario)
     assert out["options"] == [["cam1", "8086", True], ["cam2", "8087", False]]
+    # Same host, the new port, and nothing carried over from the old address.
     assert out["went"] == "http://10.0.0.5:8087/"
+
+
+@pytest.mark.parametrize("port", ["80@evil.example", "8087/../x", "javascript:alert(1)", "0", "70000", ""])
+def test_the_net_picker_moves_only_to_a_port_on_this_host(port):
+    scenario = f"""
+    $('net-select').value = {json.dumps(port)};
+    $('net-select').fire('change');
+    out.went = location.went || null;
+    """
+    out = _run(_routes(INFO), scenario)
+    assert out["went"] is None
 
 
 def test_zoom_buttons_post_to_the_server():

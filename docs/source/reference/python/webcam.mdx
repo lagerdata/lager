@@ -344,8 +344,8 @@ webcam.stop()
 Each stream serves a viewer page at its URL. It uses the same layout and
 colors as the oscilloscope page (`lager scope NET stream web`):
 
-- A header with a **Net** picker that moves to another stream on the box, the
-  camera's model and device, the frame rate, size and zoom, and a status:
+- A header. Its **Net** picker moves to another stream on the box. It shows the
+  camera's model and device, and the frame rate, size and zoom. Its status is
   `LIVE`, `STALLED` (no frame for 3 seconds), `WAITING` (no frame yet) or
   `OFFLINE` (the stream does not answer)
 - The live picture, with a clock and the zoom level over it. When zoomed in,
@@ -353,8 +353,8 @@ colors as the oscilloscope page (`lager scope NET stream web`):
   in on it, or once zoomed, to centre on it
 - A sidebar with:
   - **Resolution**: the size and frame rate, from the modes the camera offers.
-    If the camera cannot stream the one you pick, for example because there is
-    not enough USB bandwidth, it stays on the old one and the page says so
+    If the camera cannot stream the size you pick, it keeps the old one, and the
+    page says why. Too little USB bandwidth is one cause
   - **View**: zoom (slider, **Out**, **Reset**, **In**), **Centre** for the pan,
     **Rotate** (0, 90, 180 or 270 degrees) and **Flip** (left-right, top-bottom)
   - **Focus**: **Auto** or **Manual** with a distance slider
@@ -366,8 +366,8 @@ colors as the oscilloscope page (`lager scope NET stream web`):
 - **Snapshot**, which saves one frame as `<net>-<timestamp>.jpg`
 - At the foot of the sidebar, who started the stream, its device and its port
 
-Every setting is kept with the stream on the box, so everyone viewing it sees
-the same picture, and the settings come back when the stream restarts. Larger
+Every setting is kept with the stream on the box. Everyone who views the stream
+sees the same picture, and the settings come back when the stream restarts. Larger
 sizes cost the box more CPU to encode: the frame rate in the header shows what
 the box keeps up with.
 

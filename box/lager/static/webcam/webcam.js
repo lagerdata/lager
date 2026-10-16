@@ -562,9 +562,24 @@
     });
   }
 
+  // Only a port number moves the page, and only to that port on this host:
+  // the value comes from the box, and pasted into a string, something like
+  // "80@other.host" would send the browser somewhere else entirely.
+  function portUrl(value) {
+    if (!/^[0-9]{1,5}$/.test(value)) return null;
+    var port = parseInt(value, 10);
+    if (port < 1 || port > 65535) return null;
+    var url = new URL(window.location.href);
+    url.port = String(port);
+    url.pathname = '/';
+    url.search = '';
+    url.hash = '';
+    return url.href;
+  }
+
   $('net-select').addEventListener('change', function () {
-    var port = $('net-select').value;
-    window.location.href = window.location.protocol + '//' + window.location.hostname + ':' + port + '/';
+    var target = portUrl($('net-select').value);
+    if (target) window.location.assign(target);
   });
 
   // ---------- snapshot ----------

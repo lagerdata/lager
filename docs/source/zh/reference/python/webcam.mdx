@@ -336,24 +336,50 @@ webcam.stop()
 
 ## Web 界面
 
-每一路串流在它的 URL 上提供一个 Web 界面，包含：
+每一路串流在它的 URL 上提供一个查看页面。它的布局和配色与示波器页面（`lager scope NET stream web`）相同：
 
-- 实时 MJPEG 视频流
-- 变焦、对焦和亮度滑块，以及一个自动对焦按钮
-- FPS 显示
-- 侧边栏，含指向其他活动串流的链接
+- 页头。其中的 **Net** 选择器可切换到 Box 上的另一路串流。页头显示摄像头的型号和设备，以及帧率、尺寸和变焦倍数。状态为 `LIVE`、`STALLED`（3 秒内没有帧）、`WAITING`（还没有帧）或 `OFFLINE`（串流没有响应）
+- 实时画面，上面叠加时钟和变焦倍数。放大后，拖动画面或使用方向键即可平移。双击某一点可放大到该点；已放大时，双击则以该点为中心
+- 侧边栏，包含：
+  - **Resolution**：尺寸和帧率，取自摄像头提供的模式。如果摄像头无法以所选尺寸串流，它会保持原来的模式，页面会说明原因。USB 带宽不足是原因之一
+  - **View**：变焦（滑块、**Out**、**Reset**、**In**）、用于平移的 **Centre**、**Rotate**（0、90、180 或 270 度）和 **Flip**（左右、上下）
+  - **Focus**：**Auto** 或 **Manual**，带距离滑块
+  - **Image**：曝光（**Auto exposure** 或带滑块的 **Manual**）、增益和亮度。只有摄像头支持时才显示曝光和增益
+
+  **Hide sidebar** 可隐藏侧边栏，页面会记住这个选择
+- **Full screen** 只显示画面
+- **Snapshot** 把一帧保存为 `<net>-<timestamp>.jpg`
+- 侧边栏底部显示串流的启动者、设备和端口
+
+每项设置都与串流一起保存在 Box 上。所有查看该串流的人看到的是同一画面，串流重启后设置也会恢复。尺寸越大，Box 编码所需的 CPU 越多：页头中的帧率显示 Box 能跟上的速度。
+
+在启用访问网关的 Box 上，浏览器会话结束后，页面显示 `SIGNED OUT`，并提示运行 `lager webcam url` 获取新链接。
 
 ### API 端点
 
 | 端点 | 方法 | 说明 |
 |----------|--------|-------------|
-| `/` | GET | 带视频查看器的 HTML 页面 |
+| `/` | GET | 查看页面 |
+| `/static/webcam.css`, `/static/webcam.js` | GET | 查看页面的样式和脚本 |
 | `/stream` | GET | 原始 MJPEG 视频流 |
+| `/api/info` | GET | 串流的 Net、设备、摄像头型号、端口、来源、FPS、变焦倍数、帧尺寸，以及距上一帧的秒数（`frame_age`，第一帧之前为 `null`） |
 | `/snapshot` | GET | 一帧 JPEG。5 秒内没有帧到达时返回 503 |
 | `/api/zoom` | GET | 获取当前变焦倍数 |
 | `/api/zoom/in` | POST | 放大 |
 | `/api/zoom/out` | POST | 缩小 |
 | `/api/zoom/reset` | POST | 把变焦重置为 1.0x |
+| `/api/zoom/set` | POST | 设置变焦：`{"zoom": 2.0}`（1.0 到 4.0） |
+| `/api/focus` | GET | 对焦模式和值 |
+| `/api/focus/auto` | POST | 开启自动对焦 |
+| `/api/focus/manual` | POST | 手动对焦：`{"value": 128}`（0 到 255） |
+| `/api/brightness` | GET | 亮度值 |
+| `/api/brightness/set` | POST | 设置亮度：`{"value": 128}`（0 到 255） |
+| `/api/pan/set` | POST | 平移放大的画面：`{"x": 0.3, "y": 0.7}`，即视野中心占画面的比例 |
+| `/api/orientation/set` | POST | `{"rotate": 90, "flip_h": true, "flip_v": false}` 中的任意字段。旋转为顺时针：0、90、180 或 270 |
+| `/api/modes` | GET | 摄像头提供的尺寸和帧率（MJPEG）、当前模式，以及上次切换失败的原因（如有） |
+| `/api/mode/set` | POST | 切换模式：`{"width": 1920, "height": 1080, "fps": 30}`。摄像头未列出的模式返回 400 |
+| `/api/controls` | GET | 曝光（`auto`、`value`、`min`、`max`）和增益，仅限支持它们的摄像头 |
+| `/api/controls/set` | POST | `{"control": "exposure_auto", "value": false}`，或 `exposure`、`gain` 加一个数值 |
 | `/api/fps` | GET | 获取当前 FPS |
 | `/api/streams` | GET | 列出全部活动串流 |
 | `/test` | GET | 健康检查端点 |
