@@ -44,6 +44,12 @@ def _scpi_arg(value):
 _CURSOR_TYPES = {"X": "TIME", "XY": "TIME", "Y": "AMPLitude"}
 
 
+# The scope answers each of the set's 14 :MEASure queries in about 330 ms,
+# so the set takes about 4.5 s: past the 5 s a single command is given
+# often enough to fail `measurement.all()` on the bench.
+MEASURE_ALL_TIMEOUT_S = 20.0
+
+
 class DaemonInstrument:
     """SCPI to a Rigol through its oscilloscope daemon.
 
@@ -72,9 +78,10 @@ class DaemonInstrument:
             self._paired = paired
         return self._client
 
-    def command(self, name, **params):
+    def command(self, name, timeout=None, **params):
         from lager.measurement.scope import daemon_client
-        timeout = max(self.timeout / 1000.0, 1.0)
+        if timeout is None:
+            timeout = max(self.timeout / 1000.0, 1.0)
         try:
             return self.client.command(name, timeout=timeout, **params)
         except daemon_client.ScopeDaemonUnavailable:
@@ -670,7 +677,8 @@ class RigolMso5000:
         """
         from lager.measurement.scope.picoscope import normalize_channel
         response = self.instr.command(
-            "Measure", channel=normalize_channel(channel or self.channel))
+            "Measure", timeout=MEASURE_ALL_TIMEOUT_S,
+            channel=normalize_channel(channel or self.channel))
         return response.get("measurements") or {}
 
     def measure_frequency(self, channel=None):

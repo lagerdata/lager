@@ -215,6 +215,24 @@ class TestTheFullMeasurementSet:
         assert rigol.measure_all() == {"vpp": 3.3, "frequency": 1000.0}
         assert daemon[0].sent == [("Measure", {"channel": {"Alphabetic": "B"}})]
 
+    def test_the_set_gets_longer_than_one_command(self, monkeypatch):
+        # 14 queries at ~330 ms each ran past the 5 s a command gets.
+        timeouts = []
+
+        class Timed(FakeClient):
+            def command(self, name, timeout=None, **params):
+                timeouts.append((name, timeout))
+                return super().command(name, timeout=timeout, **params)
+
+        monkeypatch.setattr(rigol_mso5000, "_instruments", {})
+        monkeypatch.setattr(daemon_client, "ScopeDaemonClient", Timed)
+        monkeypatch.setattr(rigol_daemons, "ensure", lambda address, video=None: "ws://r/")
+        monkeypatch.setattr(rigol_daemons, "capture_for_address", lambda address: None)
+        scope = rigol_mso5000.RigolMso5000(address=ADDRESS, pin=1)
+        scope.measure_all()
+        scope.write(":RUN")
+        assert timeouts == [("Measure", rigol_mso5000.MEASURE_ALL_TIMEOUT_S), ("Scpi", 5.0)]
+
     def test_an_explicit_channel_wins(self, daemon, monkeypatch):
         monkeypatch.setattr(rigol_mso5000, "_instruments", {})
         rigol_mso5000.RigolMso5000(address=ADDRESS, pin=2).measure_all(4)
