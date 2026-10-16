@@ -17,6 +17,17 @@ pub const COUNTS_PER_DIV: f64 = 1024.0;
 /// The most channels a screen can show.
 pub const MAX_CHANNELS: usize = 4;
 
+/// The trigger-position marker the scope draws inside the top of the area,
+/// in divisions: about 25 x 35 pixels at 150 x 90 a division. Its orange
+/// passes for CH1's yellow, so it is left out rather than told apart.
+const MARKER_HALF_WIDTH_DIVS: f64 = 0.1;
+const MARKER_HEIGHT_DIVS: f64 = 0.45;
+
+/// Columns a channel must touch the top or bottom edge in before it is
+/// called clipped: a trace past full scale runs along the edge, where a
+/// stray pixel or two does not.
+const CLIPPED_COLUMNS: usize = 3;
+
 /// Envelopes from one frame, reused frame after frame.
 #[derive(Debug, Default)]
 pub struct Envelopes {
@@ -35,8 +46,16 @@ pub struct Envelopes {
 const UNSET: u16 = u16::MAX;
 
 impl Envelopes {
-    /// Find the traces of the channels in `wanted` (bit n for channel n).
-    pub fn extract(&mut self, frame: &VideoFrame, map: &ScreenMap, palette: &Palette, wanted: u8) {
+    /// Find the traces of the channels in `wanted` (bit n for channel n),
+    /// leaving out the trigger marker drawn at `trigger_column` of the area.
+    pub fn extract(
+        &mut self,
+        frame: &VideoFrame,
+        map: &ScreenMap,
+        palette: &Palette,
+        wanted: u8,
+        trigger_column: Option<f64>,
+    ) {
         let columns = map.width.min(frame.width.saturating_sub(map.left));
         let rows = map.height.min(frame.height.saturating_sub(map.top));
         self.columns = columns;
@@ -47,10 +66,26 @@ impl Envelopes {
         self.bottom.clear();
         self.bottom.resize(columns * MAX_CHANNELS, UNSET);
 
+        // The marker sits at the trigger column, or against the side of the
+        // area it is off.
+        let marker = trigger_column.map(|column| {
+            let centre = column.clamp(0.0, columns.saturating_sub(1) as f64);
+            let half = MARKER_HALF_WIDTH_DIVS * map.px_per_div_x;
+            let from = (centre - half).floor().max(0.0) as usize;
+            let to = ((centre + half).ceil() as usize).min(columns.saturating_sub(1));
+            let below = (MARKER_HEIGHT_DIVS * map.px_per_div_y).ceil() as usize;
+            (from..=to, below)
+        });
+
         // Row by row, for the cache: the frame is stored that way.
         for row in 0..rows {
             let y = map.top + row;
             for column in 0..columns {
+                if let Some((span, below)) = &marker {
+                    if row < *below && span.contains(&column) {
+                        continue;
+                    }
+                }
                 let bits = palette.classify(frame.ycc(map.left + column, y)) & wanted;
                 if bits == 0 {
                     continue;
@@ -83,6 +118,7 @@ impl Envelopes {
                 continue;
             }
             samples.reserve(columns * 2);
+            let mut on_edge = 0;
             for column in 0..columns {
                 let at = column * MAX_CHANNELS + channel;
                 let (top, bottom) = (self.top[at], self.bottom[at]);
@@ -92,11 +128,14 @@ impl Envelopes {
                 }
                 self.seen |= 1 << channel;
                 if top == 0 || bottom == last_row {
-                    self.clipped |= 1 << channel;
+                    on_edge += 1;
                 }
                 // Screen rows grow downwards, so the lowest pixel is the
                 // minimum.
                 samples.extend_from_slice(&[to_counts(bottom), to_counts(top)]);
+            }
+            if on_edge >= CLIPPED_COLUMNS {
+                self.clipped |= 1 << channel;
             }
         }
     }
@@ -136,7 +175,7 @@ mod tests {
             // Channel B, one division above centre down to one below.
             draw(&mut frame, 1, 100, 170, 270);
             let mut env = Envelopes::default();
-            env.extract(&frame, &map(), &Palette::new(&MSO5000_COLOURS), 0b0011);
+            env.extract(&frame, &map(), &Palette::new(&MSO5000_COLOURS), 0b0011, None);
             let column = 100 - 50;
             let b = &env.samples[1];
             assert_eq!(&b[column * 2..column * 2 + 2], &[-1024, 1024], "{layout:?}");
@@ -152,7 +191,7 @@ mod tests {
         draw(&mut frame, 0, 200, 100, 110);
         draw(&mut frame, 3, 200, 300, 305);
         let mut env = Envelopes::default();
-        env.extract(&frame, &map(), &Palette::new(&MSO5000_COLOURS), 0b1111);
+        env.extract(&frame, &map(), &Palette::new(&MSO5000_COLOURS), 0b1111, None);
         let column = 150;
         let a = &env.samples[0][column * 2..column * 2 + 2];
         let d = &env.samples[3][column * 2..column * 2 + 2];
@@ -161,19 +200,69 @@ mod tests {
     }
 
     #[test]
-    fn a_trace_on_the_edge_of_the_area_is_clipped() {
+    fn a_trace_along_the_edge_of_the_area_is_clipped() {
+        let mut frame = VideoFrame::blank(640, 480, Layout::Ycc);
+        for x in 300..310 {
+            draw(&mut frame, 2, x, 20, 40);
+        }
+        let mut env = Envelopes::default();
+        env.extract(&frame, &map(), &Palette::new(&MSO5000_COLOURS), 0b0100, None);
+        assert_eq!(env.clipped, 0b0100);
+    }
+
+    #[test]
+    fn a_pixel_or_two_on_the_edge_is_not_clipping() {
         let mut frame = VideoFrame::blank(640, 480, Layout::Ycc);
         draw(&mut frame, 2, 300, 20, 40);
+        draw(&mut frame, 2, 301, 20, 40);
         let mut env = Envelopes::default();
-        env.extract(&frame, &map(), &Palette::new(&MSO5000_COLOURS), 0b0100);
-        assert_eq!(env.clipped, 0b0100);
+        env.extract(&frame, &map(), &Palette::new(&MSO5000_COLOURS), 0b0100, None);
+        assert_eq!(env.clipped, 0);
+        assert_eq!(env.seen, 0b0100, "still drawn");
+    }
+
+    #[test]
+    fn the_trigger_marker_is_not_read_as_a_trace() {
+        let mut frame = VideoFrame::blank(640, 480, Layout::Ycc);
+        // The marker: orange, 0.4 div down from the top, at the trigger
+        // column (area column 250, x = 300).
+        for x in 296..=304 {
+            for y in 20..40 {
+                frame.put(x, y, rgb_to_ycc(255, 165, 0));
+            }
+        }
+        // CH1 trace at +1 div across the same columns.
+        for x in 290..=310 {
+            draw(&mut frame, 0, x, 170, 172);
+        }
+        let mut env = Envelopes::default();
+        let palette = Palette::new(&MSO5000_COLOURS);
+        env.extract(&frame, &map(), &palette, 0b0001, None);
+        assert_eq!(env.clipped, 0b0001, "without the mask the marker reads as clipping CH1");
+        env.extract(&frame, &map(), &palette, 0b0001, Some(250.0));
+        assert_eq!(env.clipped, 0, "the marker is left out");
+        let a = &env.samples[0][250 * 2..250 * 2 + 2];
+        assert!(a.iter().all(|&c| (c - 1024).abs() < 60), "the trace under it is kept: {a:?}");
+    }
+
+    #[test]
+    fn a_trigger_off_the_side_puts_the_marker_at_that_edge() {
+        let mut frame = VideoFrame::blank(640, 480, Layout::Ycc);
+        for x in 50..=54 {
+            for y in 20..40 {
+                frame.put(x, y, rgb_to_ycc(255, 165, 0));
+            }
+        }
+        let mut env = Envelopes::default();
+        env.extract(&frame, &map(), &Palette::new(&MSO5000_COLOURS), 0b0001, Some(-400.0));
+        assert_eq!(env.seen, 0, "{:?}", &env.samples[0][..10]);
     }
 
     #[test]
     fn every_column_of_the_area_has_a_pair() {
         let frame = VideoFrame::blank(640, 480, Layout::Ycc);
         let mut env = Envelopes::default();
-        env.extract(&frame, &map(), &Palette::new(&MSO5000_COLOURS), 0b0001);
+        env.extract(&frame, &map(), &Palette::new(&MSO5000_COLOURS), 0b0001, None);
         assert_eq!(env.columns, 501);
         assert_eq!(env.samples[0].len(), 1002);
     }
