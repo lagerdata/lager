@@ -602,6 +602,70 @@ impl RigolMso5000 {
     fn not_offered(&self, what: &str) -> anyhow::Error {
         anyhow::anyhow!("the {} does not offer {what} through this driver", self.capabilities.model)
     }
+
+    /// The screen record of `channels` (zero-based), 8-bit and exact. It
+    /// reads what the scope has on screen and leaves acquisition running.
+    fn record(&mut self, channels: &[usize]) -> Result<CaptureFrame> {
+        let mut scpi = self.link();
+        scpi.write(":WAVeform:MODE NORMal")?;
+        scpi.write(":WAVeform:FORMat BYTE")?;
+        let mut frames = Vec::new();
+        let mut traces: Vec<Vec<i16>> = Vec::new();
+        let mut first: Option<Preamble> = None;
+        for &i in channels {
+            scpi.write(&format!(":WAVeform:SOURce CHANnel{}", i + 1))?;
+            let preamble = Preamble::parse(&scpi.query(":WAVeform:PREamble?")?)?;
+            let data = scpi.query_block(":WAVeform:DATA?")?;
+            let reference = preamble.y_reference;
+            traces.push(
+                data.iter()
+                    .map(|&b| (f64::from(b) - reference).round() as i16)
+                    .collect(),
+            );
+            frames.push(ChannelFrame {
+                channel: letter(i),
+                range_code: 0,
+                coupling: self.settings.channels[i].coupling,
+                scale_v_per_count: preamble.y_increment as f32,
+                offset_v: (-preamble.y_origin * preamble.y_increment) as f32,
+            });
+            first.get_or_insert(preamble);
+        }
+        let preamble = first.context("no channel answered")?;
+        let points = traces.iter().map(Vec::len).min().unwrap_or(0);
+        let pre = if preamble.x_increment > 0.0 {
+            (-preamble.x_origin / preamble.x_increment)
+                .round()
+                .clamp(0.0, points as f64) as u32
+        } else {
+            0
+        };
+        let mut samples = Vec::with_capacity(points * traces.len());
+        for trace in &traces {
+            samples.extend_from_slice(&trace[..points]);
+        }
+        if preamble.points != 0 && preamble.points != points {
+            tracing::debug!(
+                announced = preamble.points,
+                read = points,
+                "the waveform record was shorter than its preamble said"
+            );
+        }
+        Ok(CaptureFrame {
+            seq: 0,
+            capture_mono_ns: crate::oscilloscope::monotonic_ns(),
+            sample_interval_ns: preamble.x_increment * 1e9,
+            pre_trigger_samples: pre,
+            post_trigger_samples: points as u32 - pre,
+            samples_per_channel: points as u32,
+            resolution_bits: 8,
+            overflow_mask: 0,
+            flags: 0,
+            screen_samples: 0,
+            channels: frames,
+            samples,
+        })
+    }
 }
 
 /// Bits of vertical resolution the picture has: enough to number its rows.
@@ -770,7 +834,7 @@ fn read_settings(scpi: &mut dyn Scpi, channels: usize) -> Result<Settings> {
     })
 }
 
-/// The scope's tokens for `MeasurementSet`, in the order they are asked for.
+/// The scope's tokens for each `Measurement`, as `measure_one` asks for them.
 const MEASUREMENT_ITEMS: [&str; 14] = [
     "VMAX", "VMIN", "VPP", "VAVG", "VRMS", "PERiod", "FREQuency", "PDUTy", "NDUTy", "PWIDth",
     "NWIDth", "RTIMe", "FTIMe", "OVERshoot",
@@ -795,36 +859,6 @@ fn measurement_item(which: Measurement) -> (usize, bool) {
         Measurement::FallTime => (12, false),
         Measurement::Overshoot => (13, true),
     }
-}
-
-/// A measurement set from the scope's answers, in `MEASUREMENT_ITEMS` order.
-/// Duty cycle and overshoot come back as ratios and are reported in percent.
-fn measurement_set(values: &[Option<f64>; 14], channel: ChannelId) -> Result<MeasurementSet> {
-    let needed = |i: usize| {
-        values[i].ok_or_else(|| {
-            anyhow::anyhow!(
-                "the scope has no {} for channel {channel}; is there a signal on it?",
-                MEASUREMENT_ITEMS[i]
-            )
-        })
-    };
-    let percent = |i: usize| values[i].map(|v| v * 100.0);
-    Ok(MeasurementSet {
-        vmax: needed(0)?,
-        vmin: needed(1)?,
-        vpp: needed(2)?,
-        vavg: needed(3)?,
-        vrms: needed(4)?,
-        period: values[5],
-        frequency: values[6],
-        duty_cycle_positive: percent(7),
-        duty_cycle_negative: percent(8),
-        pulse_width_positive: values[9],
-        pulse_width_negative: values[10],
-        rise_time: values[11],
-        fall_time: values[12],
-        overshoot: percent(13),
-    })
 }
 
 /// `:WAVeform:PREamble?`: format, type, points, count, x increment, x
@@ -1239,28 +1273,22 @@ impl Oscilloscope for RigolMso5000 {
         })())
     }
 
+    /// Computed from the channel's screen record, as the PicoScope's are. Asking
+    /// the scope item by item (`:MEASure:<item>?`) took 14 queries, about 4.8 s
+    /// on the bench, during which the loop published no frames, and each item
+    /// it added to the measurement bar was read as trace by the live view.
+    /// `measure_one` still asks the scope, for its full-memory reading.
     fn measure_all(&mut self, channel: ChannelId) -> Option<Result<MeasurementSet>> {
         Some((|| {
             let i = self.index(channel)?;
             if !self.settings.channels[i].enabled {
                 bail!("channel {channel} is not enabled, so there is nothing to measure");
             }
-            let mut scpi = self.link();
-            scpi.write(&format!(":MEASure:SOURce CHANnel{}", i + 1))?;
-            let mut values = [None; 14];
-            for (slot, item) in values.iter_mut().zip(MEASUREMENT_ITEMS) {
-                let reply = scpi.query(&format!(":MEASure:{item}?"))?;
-                *slot = reply
-                    .trim()
-                    .parse::<f64>()
-                    .ok()
-                    .filter(|v| v.is_finite() && v.abs() < NO_MEASUREMENT);
-            }
-            // Each query puts its item in the scope's measurement bar, across
-            // the bottom of the grid, where the live view read its coloured
-            // text as trace (about 7% of the columns on the bench).
-            scpi.write(":MEASure:CLEar ALL")?;
-            measurement_set(&values, channel)
+            let record = self.record(&[i])?;
+            let set = protocol::measure_channel(&record, 0).with_context(|| {
+                format!("the scope has no samples for channel {channel}; is there a signal on it?")
+            })?;
+            Ok(set)
         })())
     }
 
@@ -1273,65 +1301,7 @@ impl Oscilloscope for RigolMso5000 {
             if enabled.is_empty() {
                 bail!("no channel is enabled, so there is no record to read");
             }
-            let mut scpi = self.link();
-            scpi.write(":WAVeform:MODE NORMal")?;
-            scpi.write(":WAVeform:FORMat BYTE")?;
-            let mut channels = Vec::new();
-            let mut traces: Vec<Vec<i16>> = Vec::new();
-            let mut first: Option<Preamble> = None;
-            for &i in &enabled {
-                scpi.write(&format!(":WAVeform:SOURce CHANnel{}", i + 1))?;
-                let preamble = Preamble::parse(&scpi.query(":WAVeform:PREamble?")?)?;
-                let data = scpi.query_block(":WAVeform:DATA?")?;
-                let reference = preamble.y_reference;
-                traces.push(
-                    data.iter()
-                        .map(|&b| (f64::from(b) - reference).round() as i16)
-                        .collect(),
-                );
-                channels.push(ChannelFrame {
-                    channel: letter(i),
-                    range_code: 0,
-                    coupling: self.settings.channels[i].coupling,
-                    scale_v_per_count: preamble.y_increment as f32,
-                    offset_v: (-preamble.y_origin * preamble.y_increment) as f32,
-                });
-                first.get_or_insert(preamble);
-            }
-            let preamble = first.context("no channel answered")?;
-            let points = traces.iter().map(Vec::len).min().unwrap_or(0);
-            let pre = if preamble.x_increment > 0.0 {
-                (-preamble.x_origin / preamble.x_increment)
-                    .round()
-                    .clamp(0.0, points as f64) as u32
-            } else {
-                0
-            };
-            let mut samples = Vec::with_capacity(points * traces.len());
-            for trace in &traces {
-                samples.extend_from_slice(&trace[..points]);
-            }
-            if preamble.points != 0 && preamble.points != points {
-                tracing::debug!(
-                    announced = preamble.points,
-                    read = points,
-                    "the waveform record was shorter than its preamble said"
-                );
-            }
-            Ok(CaptureFrame {
-                seq: 0,
-                capture_mono_ns: crate::oscilloscope::monotonic_ns(),
-                sample_interval_ns: preamble.x_increment * 1e9,
-                pre_trigger_samples: pre,
-                post_trigger_samples: points as u32 - pre,
-                samples_per_channel: points as u32,
-                resolution_bits: 8,
-                overflow_mask: 0,
-                flags: 0,
-                screen_samples: 0,
-                channels,
-                samples,
-            })
+            self.record(&enabled)
         })())
     }
 

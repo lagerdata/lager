@@ -44,9 +44,8 @@ def _scpi_arg(value):
 _CURSOR_TYPES = {"X": "TIME", "XY": "TIME", "Y": "AMPLitude"}
 
 
-# The scope answers each of the set's 14 :MEASure queries in about 330 ms,
-# so the set takes about 4.5 s: past the 5 s a single command is given
-# often enough to fail `measurement.all()` on the bench.
+# The daemon computes the set from one screen-record read, about 0.2 s. The
+# margin is for a request queued behind another on the daemon's one thread.
 MEASURE_ALL_TIMEOUT_S = 20.0
 
 
