@@ -64,13 +64,18 @@
         }
       } catch (e) { /* storage blocked: the sidebar stays shown */ }
     </script>
+    <button id="btn-fullscreen" class="btn btn--small" type="button"
+            title="Show the picture full screen">Full screen</button>
     <a id="btn-snapshot" class="btn btn--primary" href="/snapshot"
        download="snapshot.jpg">Snapshot</a>
   </header>
 
   <main class="layout">
-    <section class="feed" aria-label="Live feed">
-      <div id="frame" class="frame">
+    <section id="feed-section" class="feed" aria-label="Live feed">
+      <!-- Focusable so the arrow keys can pan it. Drag to pan when zoomed in;
+           double-click to zoom in on a point, or to centre on it. -->
+      <div id="frame" class="frame" tabindex="0"
+           aria-label="Live picture. When zoomed in, drag or use the arrow keys to pan.">
         <img id="feed" alt="Live webcam feed">
         <span id="clock" class="chip chip--clock" hidden></span>
         <span id="zoom-chip" class="chip chip--zoom" hidden></span>
@@ -83,6 +88,21 @@
 
     <aside id="webcam-controls" class="controls" aria-label="Controls">
       <div class="group">
+        <div class="group__title">Resolution</div>
+        <div class="pair">
+          <label class="field field--stack" for="mode-size">
+            <span>Size</span>
+            <select id="mode-size"></select>
+          </label>
+          <label class="field field--stack" for="mode-fps">
+            <span>Frame rate</span>
+            <select id="mode-fps"></select>
+          </label>
+        </div>
+        <p id="mode-note" class="note" hidden></p>
+      </div>
+
+      <div class="group">
         <div class="group__title">View</div>
         <label class="field field--stack" for="zoom">
           <span class="field__head"><span>Zoom</span><output id="zoom-value" for="zoom">1.0&times;</output></span>
@@ -92,6 +112,30 @@
           <button id="zoom-out" class="btn" type="button">Out</button>
           <button id="zoom-reset" class="btn" type="button">Reset</button>
           <button id="zoom-in" class="btn" type="button">In</button>
+        </div>
+        <div class="row row--note">
+          <span class="dim" id="pan-hint">Zoom in, then drag the picture to pan.</span>
+          <button id="pan-centre" class="btn btn--small" type="button" disabled>Centre</button>
+        </div>
+        <div class="pair">
+          <label class="field field--stack" for="rotate">
+            <span>Rotate</span>
+            <select id="rotate">
+              <option value="0">0&deg;</option>
+              <option value="90">90&deg;</option>
+              <option value="180">180&deg;</option>
+              <option value="270">270&deg;</option>
+            </select>
+          </label>
+          <div class="field field--stack">
+            <span>Flip</span>
+            <div class="segmented segmented--loose" role="group" aria-label="Flip">
+              <button id="flip-h" class="segmented__btn" type="button" aria-pressed="false"
+                      aria-label="Flip horizontally" title="Mirror left to right">&harr;</button>
+              <button id="flip-v" class="segmented__btn" type="button" aria-pressed="false"
+                      aria-label="Flip vertically" title="Mirror top to bottom">&varr;</button>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -109,6 +153,20 @@
 
       <div class="group">
         <div class="group__title">Image</div>
+        <div id="exposure-group" hidden>
+          <div id="exposure-mode" class="segmented" role="group" aria-label="Exposure mode">
+            <button id="exposure-auto" class="segmented__btn" type="button" aria-pressed="true">Auto exposure</button>
+            <button id="exposure-manual" class="segmented__btn" type="button" aria-pressed="false">Manual</button>
+          </div>
+          <label class="field field--stack" for="exposure">
+            <span class="field__head"><span>Exposure</span><output id="exposure-value" for="exposure">auto</output></span>
+            <input id="exposure" type="range" min="0" max="100" step="1" value="50">
+          </label>
+        </div>
+        <label id="gain-group" class="field field--stack" for="gain" hidden>
+          <span class="field__head"><span>Gain</span><output id="gain-value" for="gain">0</output></span>
+          <input id="gain" type="range" min="0" max="100" step="1" value="0">
+        </label>
         <label class="field field--stack" for="brightness">
           <span class="field__head"><span>Brightness</span><output id="brightness-value" for="brightness">128</output></span>
           <input id="brightness" type="range" min="0" max="255" step="1" value="128">

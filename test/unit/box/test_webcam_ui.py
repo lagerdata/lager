@@ -42,11 +42,21 @@ function element(id) {
     title: '', href: '', download: '', dataset: {}, attrs: {}, children: [], listeners: {},
     src: undefined,
     style: { setProperty(k, v) { this[k] = v; } },
+    classes: new Set(),
+    get classList() {
+      const set = this.classes;
+      return {
+        add: (c) => set.add(c), remove: (c) => set.delete(c), contains: (c) => set.has(c),
+        toggle: (c, on) => { const want = on === undefined ? !set.has(c) : !!on;
+                             if (want) set.add(c); else set.delete(c); return want; },
+      };
+    },
+    getBoundingClientRect() { return { left: 0, top: 0, width: 800, height: 600 }; },
+    fire(type, event) { (this.listeners[type] || []).forEach((fn) => fn(event || { preventDefault() {} })); },
     setAttribute(k, v) { this.attrs[k] = String(v); },
     getAttribute(k) { return this.attrs[k]; },
     removeAttribute(k) { if (k === 'src') this.src = undefined; delete this.attrs[k]; },
     addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); },
-    fire(type) { (this.listeners[type] || []).forEach((fn) => fn()); },
     append(part) { this.children.push(part); },
     appendChild(child) { this.children.push(child); return child; },
     get text() {
@@ -68,6 +78,8 @@ const document = {
   getElementById(id) { return elements[id] || (elements[id] = element(id)); },
   createElement(tag) { const el = element(''); el.tag = tag; return el; },
   documentElement: { classList: { toggle() { return true; } } },
+  fullscreenElement: null,
+  addEventListener() {},
 };
 document.getElementById('focus').value = '128';
 document.getElementById('brightness').value = '128';
@@ -104,7 +116,16 @@ INFO = {"net": "cam1", "video_device": "/dev/video0", "model": "Logitech BRIO HD
         "port": 8086, "source": "cli", "started_by": "alice", "fps": 29.8,
         "zoom": 2.0, "width": 640, "height": 480, "frame_age": 0.1}
 
+MODES = {"modes": [{"width": 1920, "height": 1080, "fps": [30, 15]},
+                   {"width": 640, "height": 480, "fps": [30]}],
+         "current": {"width": 640, "height": 480, "fps": 30}, "error": None}
+
+CONTROLS = {"exposure": {"auto": True, "value": 250, "min": 3, "max": 2047, "step": 1},
+            "gain": {"value": 0, "min": 0, "max": 255, "step": 1}}
+
 BASE_ROUTES = {
+    "/api/modes": [200, MODES],
+    "/api/controls": [200, CONTROLS],
     "/api/focus": [200, {"mode": "auto", "value": 0}],
     "/api/brightness": [200, {"value": 140}],
     "/api/streams": [200, {"streams": [{"name": "cam1", "port": 8086},
@@ -227,7 +248,8 @@ def test_zoom_buttons_post_to_the_server():
     out.posts = requests.filter((r) => r.method === 'POST').map((r) => [r.path, r.body]);
     """
     out = _run(_routes(INFO), scenario)
-    assert out["posts"] == [["/api/zoom/in", {}], ["/api/zoom/reset", {}],
+    # Zoom in and reset take no body, so none is sent.
+    assert out["posts"] == [["/api/zoom/in", None], ["/api/zoom/reset", None],
                             ["/api/focus/manual", {"value": 128}]]
 
 
@@ -240,3 +262,150 @@ def test_snapshot_names_the_file_after_the_net():
     out = _run(_routes(INFO), scenario)
     assert out["download"].startswith("cam1-") and out["download"].endswith(".jpg")
     assert out["href"].startswith("/snapshot?t=")
+
+
+# ---------- resolution ----------
+
+def test_resolution_lists_the_camera_sizes_and_the_current_rates():
+    scenario = """
+    out.sizes = $('mode-size').children.map((o) => [o.textContent, o.selected]);
+    out.rates = $('mode-fps').children.map((o) => o.textContent);
+    """
+    out = _run(_routes(INFO), scenario)
+    assert out["sizes"] == [["1920×1080", False], ["640×480", True]]
+    assert out["rates"] == ["30 fps"]
+
+
+def test_choosing_a_size_asks_for_its_fastest_rate():
+    scenario = """
+    $('mode-size').value = '1920x1080';
+    $('mode-size').fire('change');
+    out.posts = requests.filter((r) => r.method === 'POST').map((r) => [r.path, r.body]);
+    out.rates = $('mode-fps').children.map((o) => o.textContent);
+    out.note = $('mode-note').textContent;
+    """
+    out = _run(_routes(INFO), scenario)
+    assert out["posts"] == [["/api/mode/set", {"width": 1920, "height": 1080, "fps": 30}]]
+    assert out["rates"] == ["30 fps", "15 fps"]
+    assert out["note"].startswith("Switching to 1920×1080 at 30 fps")
+
+
+def test_a_refused_mode_is_shown_under_the_pickers():
+    error = "The camera would not stream 1920x1080 at 30 fps, so it stays at 640x480 at 30 fps."
+    info = dict(INFO, mode={"width": 640, "height": 480, "fps": 30}, mode_error=error)
+    routes = _routes(info, **{"/api/modes": [200, dict(MODES, error=error)]})
+    out = _run(routes, "out.note = $('mode-note').hidden ? null : $('mode-note').textContent;")
+    assert out["note"].startswith("The camera would not stream 1920x1080")
+
+
+# ---------- exposure and gain ----------
+
+def test_exposure_and_gain_show_what_the_camera_has():
+    scenario = """
+    out.exposureShown = !$('exposure-group').hidden;
+    out.autoPressed = $('exposure-auto').getAttribute('aria-pressed');
+    out.sliderDisabled = $('exposure').disabled;
+    out.range = [$('exposure').min, $('exposure').max];
+    out.gainShown = !$('gain-group').hidden;
+    """
+    out = _run(_routes(INFO), scenario)
+    assert out["exposureShown"] and out["gainShown"]
+    assert out["autoPressed"] == "true" and out["sliderDisabled"] is True
+    assert out["range"] == [3, 2047]
+
+
+def test_a_camera_without_exposure_or_gain_hides_them():
+    scenario = """
+    out.exposureShown = !$('exposure-group').hidden;
+    out.gainShown = !$('gain-group').hidden;
+    """
+    out = _run(_routes(INFO, **{"/api/controls": [200, {}]}), scenario)
+    assert out == {**out, "exposureShown": False, "gainShown": False}
+
+
+def test_an_exposure_with_no_auto_mode_has_no_switch():
+    controls = {"exposure": {"auto": None, "value": 100, "min": 1, "max": 500, "step": 1}}
+    scenario = """
+    out.switchShown = !$('exposure-mode').hidden;
+    out.sliderDisabled = $('exposure').disabled;
+    """
+    out = _run(_routes(INFO, **{"/api/controls": [200, controls]}), scenario)
+    assert out["switchShown"] is False and out["sliderDisabled"] is False
+
+
+def test_manual_exposure_is_one_post():
+    scenario = """
+    $('exposure-manual').fire('click');
+    out.posts = requests.filter((r) => r.method === 'POST').map((r) => [r.path, r.body]);
+    """
+    out = _run(_routes(INFO), scenario)
+    assert out["posts"] == [["/api/controls/set", {"control": "exposure_auto", "value": False}]]
+
+
+# ---------- pan and orientation ----------
+
+ZOOMED = dict(INFO, zoom=2.0, view={"pan_x": 0.5, "pan_y": 0.5, "rotate": 0,
+                                    "flip_h": False, "flip_v": False})
+
+
+def _posts(path):
+    return f"out.posts = requests.filter((r) => r.path === '{path}').map((r) => r.body);"
+
+
+def test_dragging_a_zoomed_picture_pans_against_the_hand():
+    # The stand-in picture is 800x600. At 2x a 200 px drag right moves a
+    # quarter of the screen, an eighth of the frame, to the left.
+    scenario = """
+    $('frame').fire('pointerdown', { button: 0, clientX: 400, clientY: 300, pointerId: 1, preventDefault() {} });
+    $('frame').fire('pointermove', { clientX: 600, clientY: 300 });
+    $('frame').fire('pointerup', {});
+    out.pannable = $('frame').classList.contains('is-pannable');
+    """ + _posts('/api/pan/set')
+    out = _run(_routes(ZOOMED, **{"/api/pan/set": [200, {"success": True}]}), scenario)
+    assert out["pannable"] is True
+    assert out["posts"] == [{"x": 0.375, "y": 0.5}]
+
+
+def test_an_unzoomed_picture_does_not_pan():
+    scenario = """
+    $('frame').fire('pointerdown', { button: 0, clientX: 400, clientY: 300, pointerId: 1, preventDefault() {} });
+    $('frame').fire('pointermove', { clientX: 600, clientY: 300 });
+    $('frame').fire('keydown', { key: 'ArrowLeft', preventDefault() {} });
+    out.centreDisabled = $('pan-centre').disabled;
+    """ + _posts('/api/pan/set')
+    out = _run(_routes(INFO, **{"/api/info": [200, dict(INFO, zoom=1.0)]}), scenario)
+    assert out["posts"] == []
+    assert out["centreDisabled"] is True
+
+
+def test_arrow_keys_pan_a_tenth_of_the_screen():
+    scenario = """
+    $('frame').fire('keydown', { key: 'ArrowDown', preventDefault() {} });
+    """ + _posts('/api/pan/set')
+    out = _run(_routes(ZOOMED, **{"/api/pan/set": [200, {"success": True}]}), scenario)
+    assert out["posts"] == [{"x": 0.5, "y": 0.55}]
+
+
+def test_double_click_zooms_in_on_the_point():
+    scenario = """
+    $('frame').fire('dblclick', { clientX: 200, clientY: 150 });
+    setTimeout(() => {}, 0);
+    """
+    routes = _routes(dict(INFO, zoom=1.0, view=ZOOMED["view"]),
+                     **{"/api/zoom/set": [200, {"success": True, "zoom": 2.0}],
+                        "/api/pan/set": [200, {"success": True}]})
+    out = _run(routes, scenario + """
+    out.paths = requests.filter((r) => r.method === 'POST').map((r) => [r.path, r.body]);
+    """)
+    # Posted in order once the zoom answers; the harness reads them after.
+    assert ["/api/zoom/set", {"zoom": 2.0}] in out["paths"]
+
+
+def test_rotate_and_flip_post_the_orientation():
+    scenario = """
+    $('rotate').value = '180';
+    $('rotate').fire('change');
+    $('flip-h').fire('click');
+    """ + _posts('/api/orientation/set')
+    out = _run(_routes(ZOOMED), scenario)
+    assert out["posts"] == [{"rotate": 180}, {"flip_h": True}]

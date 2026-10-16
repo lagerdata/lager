@@ -12,8 +12,6 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
-## [0.57.0] - 2026-10-16
-
 ### Added
 
 - **A new webcam viewer page, styled like the oscilloscope page.** Each webcam stream's
@@ -21,11 +19,28 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   adds a Net picker for the other streams on the box, the camera's model, frame size,
   frame rate, and a `LIVE` / `STALLED` / `WAITING` / `OFFLINE` status. It adds a
   **Snapshot** button that saves the current frame, and zoom **Out** / **Reset** / **In**
-  buttons. The feed reconnects by itself after a dropped connection. On an access-gated box
-  whose browser session has ended, the page says so and names `lager webcam url` instead of
-  freezing on the last frame. The page is now plain files under `box/lager/static/webcam/`,
-  served by each stream's server with a new `GET /api/info`. It is no longer HTML embedded
-  in the streamer's generated script.
+  buttons. New controls:
+  - **Resolution and frame rate**, from the modes the camera offers. Streams were fixed at
+    640×480. A mode the camera cannot stream falls back to the old one, and the page says
+    why.
+  - **Pan when zoomed.** Zoom used to crop only the centre. Drag the picture, use the arrow
+    keys, or double-click a point to zoom in on it.
+  - **Exposure** (auto or manual) **and gain**, shown only on cameras that have them.
+  - **Rotate** in quarter turns, and **flip** either way, for cameras mounted sideways or
+    upside down.
+  - **Full screen.**
+
+  Settings are kept with the stream, so every viewer sees the same picture and the settings
+  return after a restart. The feed reconnects by itself after a dropped connection. On an
+  access-gated box whose browser session has ended, the page says so and names
+  `lager webcam url` instead of freezing on the last frame. The page is now plain files under
+  `box/lager/static/webcam/`, served by each stream's server with a new `GET /api/info`. It is
+  no longer HTML embedded in the streamer's generated script.
+
+## [0.57.0] - 2026-10-16
+
+### Added
+
 - **`lager uart -i --no-echo` for devices that do not echo commands.** Interactive mode
   then shows every received line, with no echo filtering. The default, `--echo`, keeps
   hiding the device's echo of each command.

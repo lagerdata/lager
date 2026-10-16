@@ -10,7 +10,10 @@
  *   GET  /api/streams          every stream on the box, for the Net picker
  *   GET  /api/focus            {mode, value}
  *   GET  /api/brightness       {value}
- *   POST /api/zoom/set|in|out|reset, /api/focus/auto|manual, /api/brightness/set
+ *   GET  /api/modes            the sizes and frame rates the camera offers
+ *   GET  /api/controls         exposure and gain, when the camera has them
+ *   POST /api/zoom/set|in|out|reset, /api/focus/auto|manual, /api/brightness/set,
+ *        /api/pan/set, /api/orientation/set, /api/mode/set, /api/controls/set
  *   GET  /snapshot             one JPEG, for the Snapshot button
  *
  * On a box behind an access gateway the page runs on a gateway session
@@ -27,6 +30,9 @@
   var INFO_POLL_MS = 1000;
   var SETTINGS_POLL_MS = 2000;
   var STREAMS_POLL_MS = 5000;
+  var CONTROLS_POLL_MS = 5000;
+  // One arrow-key press pans this fraction of what is on screen.
+  var PAN_KEY_STEP = 0.1;
   // Light debounce for sliders: snappy, without a request per pixel.
   var SLIDER_DEBOUNCE_MS = 75;
 
@@ -35,6 +41,10 @@
   var state = {
     net: null,
     signedOut: false,
+    zoom: 1,
+    view: { pan_x: 0.5, pan_y: 0.5, rotate: 0, flip_h: false, flip_v: false },
+    modes: [],
+    mode: null,
     // Set while the user drags a slider, so a poll does not yank it back.
     dragging: {},
   };
@@ -52,10 +62,10 @@
 
   // Resolves to parsed JSON, or null on any failure. A 401 or 403 means the
   // gateway session ended, which no retry will fix.
-  function request(path, body) {
+  function request(path, body, isPost) {
     var options = { cache: 'no-store', credentials: 'same-origin' };
+    if (isPost) options.method = 'POST';
     if (body !== undefined) {
-      options.method = 'POST';
       options.headers = { 'Content-Type': 'application/json' };
       options.body = JSON.stringify(body);
     }
@@ -69,7 +79,9 @@
     }).catch(function () { return null; });
   }
 
-  function post(path, body) { return request(path, body === undefined ? {} : body); }
+  // A POST with no body when none is given: the server has endpoints
+  // (zoom in, out and reset, autofocus) that take none.
+  function post(path, body) { return request(path, body, true); }
 
   // ---------- status ----------
 
@@ -131,9 +143,9 @@
       $('zoom').value = info.zoom;
       $('zoom-value').textContent = formatZoom(info.zoom);
     }
-    var zoomChip = $('zoom-chip');
-    zoomChip.hidden = info.zoom <= 1.0;
-    zoomChip.textContent = formatZoom(info.zoom) + ' · centre';
+    state.zoom = info.zoom;
+    showView(info.view || state.view);
+    if (info.mode) showMode(info.mode, info.mode_error);
 
     if (info.frame_age === null || info.frame_age === undefined) {
       setLive('off', 'WAITING');
@@ -191,6 +203,8 @@
 
   function showZoom(result) {
     if (result && result.zoom !== undefined) {
+      state.zoom = result.zoom;
+      showView(state.view);
       $('zoom').value = result.zoom;
       $('zoom-value').textContent = formatZoom(result.zoom);
       $('stat-zoom').textContent = formatZoom(result.zoom);
@@ -257,6 +271,273 @@
     request('/api/brightness').then(showBrightness);
   }
 
+  // ---------- pan and orientation ----------
+
+  function showView(view) {
+    state.view = view;
+    var zoomed = state.zoom > 1.0;
+    var centred = Math.abs(view.pan_x - 0.5) < 0.005 && Math.abs(view.pan_y - 0.5) < 0.005;
+    $('frame').classList.toggle('is-pannable', zoomed);
+    $('pan-centre').disabled = !zoomed || centred;
+    $('pan-hint').textContent = zoomed
+      ? 'Drag the picture, or use the arrow keys, to pan.'
+      : 'Zoom in, then drag the picture to pan.';
+    var chip = $('zoom-chip');
+    chip.hidden = !zoomed;
+    chip.textContent = formatZoom(state.zoom) + ' \u00b7 ' + (centred ? 'centre' : 'panned');
+    $('rotate').value = String(view.rotate);
+    $('flip-h').setAttribute('aria-pressed', String(!!view.flip_h));
+    $('flip-v').setAttribute('aria-pressed', String(!!view.flip_v));
+  }
+
+  function setView(path, body) {
+    return post(path, body).then(function (result) {
+      if (result && result.view) showView(result.view);
+    });
+  }
+
+  // Pan requests are coalesced: at most one in flight, the newest wins.
+  var panPending = null;
+  var panBusy = false;
+  function panTo(x, y) {
+    panPending = { x: Math.max(0, Math.min(1, x)), y: Math.max(0, Math.min(1, y)) };
+    if (panBusy) return;
+    panBusy = true;
+    var send = function () {
+      var target = panPending;
+      panPending = null;
+      setView('/api/pan/set', target).then(function () {
+        if (panPending) send(); else panBusy = false;
+      });
+    };
+    send();
+  }
+
+  // A point on the picture, as a fraction of the whole (unzoomed) frame.
+  function framePoint(event) {
+    var rect = $('feed').getBoundingClientRect();
+    var fx = (event.clientX - rect.left) / rect.width;
+    var fy = (event.clientY - rect.top) / rect.height;
+    var span = 1 / state.zoom;
+    return {
+      x: state.view.pan_x - span / 2 + fx * span,
+      y: state.view.pan_y - span / 2 + fy * span,
+    };
+  }
+
+  var drag = null;
+  $('frame').addEventListener('pointerdown', function (event) {
+    if (state.zoom <= 1.0 || event.button !== 0) return;
+    var rect = $('feed').getBoundingClientRect();
+    drag = { x: event.clientX, y: event.clientY, w: rect.width, h: rect.height,
+             panX: state.view.pan_x, panY: state.view.pan_y };
+    $('frame').classList.add('is-panning');
+    if ($('frame').setPointerCapture) $('frame').setPointerCapture(event.pointerId);
+    event.preventDefault();
+  });
+  $('frame').addEventListener('pointermove', function (event) {
+    if (!drag) return;
+    // Dragging right shows what is to the left: the pan moves against the hand.
+    panTo(drag.panX - (event.clientX - drag.x) / (drag.w * state.zoom),
+          drag.panY - (event.clientY - drag.y) / (drag.h * state.zoom));
+  });
+  function endDrag() {
+    drag = null;
+    $('frame').classList.remove('is-panning');
+  }
+  $('frame').addEventListener('pointerup', endDrag);
+  $('frame').addEventListener('pointercancel', endDrag);
+
+  // Double-click: zoom in on that point, or once zoomed, centre on it.
+  $('frame').addEventListener('dblclick', function (event) {
+    var point = framePoint(event);
+    if (state.zoom <= 1.0) {
+      post('/api/zoom/set', { zoom: 2.0 }).then(function (result) {
+        showZoom(result);
+        if (result) state.zoom = result.zoom;
+        panTo(point.x, point.y);
+      });
+    } else {
+      panTo(point.x, point.y);
+    }
+  });
+
+  // Arrow keys pan while the picture has focus. On the element, not the
+  // window, so they never steal keys from a slider or the Net picker.
+  $('frame').addEventListener('keydown', function (event) {
+    if (state.zoom <= 1.0) return;
+    var step = PAN_KEY_STEP / state.zoom;
+    var moves = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] };
+    var move = moves[event.key];
+    if (!move) return;
+    event.preventDefault();
+    panTo(state.view.pan_x + move[0], state.view.pan_y + move[1]);
+  });
+
+  $('pan-centre').addEventListener('click', function () { panTo(0.5, 0.5); });
+
+  $('rotate').addEventListener('change', function () {
+    setView('/api/orientation/set', { rotate: parseInt($('rotate').value, 10) });
+  });
+  $('flip-h').addEventListener('click', function () {
+    setView('/api/orientation/set', { flip_h: !state.view.flip_h });
+  });
+  $('flip-v').addEventListener('click', function () {
+    setView('/api/orientation/set', { flip_v: !state.view.flip_v });
+  });
+
+  // ---------- resolution ----------
+
+  function sizeKey(mode) { return mode.width + 'x' + mode.height; }
+
+  function fillFps(size, wanted) {
+    var select = $('mode-fps');
+    select.textContent = '';
+    var match = state.modes.filter(function (m) { return sizeKey(m) === size; })[0];
+    var rates = match ? match.fps : (state.mode ? [state.mode.fps] : []);
+    rates.forEach(function (fps) {
+      var option = document.createElement('option');
+      option.value = String(fps);
+      option.textContent = fps + ' fps';
+      option.selected = String(fps) === String(wanted);
+      select.appendChild(option);
+    });
+  }
+
+  function fillModes() {
+    var select = $('mode-size');
+    select.textContent = '';
+    var sizes = state.modes.slice();
+    // A camera that lists nothing still shows the size it is streaming.
+    if (state.mode && !sizes.some(function (m) { return sizeKey(m) === sizeKey(state.mode); })) {
+      sizes.push({ width: state.mode.width, height: state.mode.height, fps: [state.mode.fps] });
+    }
+    sizes.forEach(function (m) {
+      var option = document.createElement('option');
+      option.value = sizeKey(m);
+      option.textContent = m.width + '\u00d7' + m.height;
+      option.selected = !!state.mode && sizeKey(m) === sizeKey(state.mode);
+      select.appendChild(option);
+    });
+    select.disabled = sizes.length < 2;
+    if (state.mode) fillFps(sizeKey(state.mode), state.mode.fps);
+    $('mode-fps').disabled = $('mode-fps').children.length < 2;
+  }
+
+  function showMode(mode, error) {
+    var changed = !state.mode || sizeKey(state.mode) !== sizeKey(mode) || state.mode.fps !== mode.fps;
+    state.mode = mode;
+    if (changed && !state.dragging.mode) fillModes();
+    var note = $('mode-note');
+    note.hidden = !error;
+    note.textContent = error || '';
+  }
+
+  function requestMode(width, height, fps) {
+    state.dragging.mode = true;
+    var note = $('mode-note');
+    note.hidden = false;
+    note.textContent = 'Switching to ' + width + '\u00d7' + height + ' at ' + fps + ' fps\u2026';
+    post('/api/mode/set', { width: width, height: height, fps: fps }).then(function (result) {
+      state.dragging.mode = false;
+      if (!result || !result.success) {
+        note.textContent = (result && result.error) || 'The camera did not accept that mode.';
+      }
+    });
+  }
+
+  $('mode-size').addEventListener('change', function () {
+    var parts = $('mode-size').value.split('x');
+    var match = state.modes.filter(function (m) { return sizeKey(m) === $('mode-size').value; })[0];
+    var fps = match ? match.fps[0] : (state.mode && state.mode.fps);
+    fillFps($('mode-size').value, fps);
+    requestMode(parseInt(parts[0], 10), parseInt(parts[1], 10), fps);
+  });
+  $('mode-fps').addEventListener('change', function () {
+    var parts = $('mode-size').value.split('x');
+    requestMode(parseInt(parts[0], 10), parseInt(parts[1], 10), Number($('mode-fps').value));
+  });
+
+  function loadModes() {
+    request('/api/modes').then(function (data) {
+      if (!data) return;
+      state.modes = data.modes || [];
+      state.mode = null;
+      showMode(data.current, data.error);
+    });
+  }
+
+  // ---------- exposure and gain ----------
+
+  function showControls(data) {
+    if (!data) return;
+    var exposure = data.exposure;
+    $('exposure-group').hidden = !exposure;
+    if (exposure) {
+      $('exposure-mode').hidden = exposure.auto === null || exposure.auto === undefined;
+      var auto = exposure.auto === true;
+      $('exposure-auto').setAttribute('aria-pressed', String(auto));
+      $('exposure-manual').setAttribute('aria-pressed', String(!auto));
+      var slider = $('exposure');
+      slider.min = exposure.min;
+      slider.max = exposure.max;
+      slider.step = exposure.step || 1;
+      slider.disabled = auto;
+      if (!state.dragging.exposure) slider.value = exposure.value;
+      $('exposure-value').textContent = auto ? 'auto' : String(slider.value);
+    }
+    var gain = data.gain;
+    $('gain-group').hidden = !gain;
+    if (gain) {
+      $('gain').min = gain.min;
+      $('gain').max = gain.max;
+      $('gain').step = gain.step || 1;
+      if (!state.dragging.gain) $('gain').value = gain.value;
+      $('gain-value').textContent = String($('gain').value);
+    }
+  }
+
+  function setControl(control, value) {
+    return post('/api/controls/set', { control: control, value: value }).then(function (result) {
+      if (result && result.controls) showControls(result.controls);
+    });
+  }
+
+  $('exposure-auto').addEventListener('click', function () { setControl('exposure_auto', true); });
+  $('exposure-manual').addEventListener('click', function () { setControl('exposure_auto', false); });
+  $('exposure').addEventListener('input', function () {
+    $('exposure-value').textContent = $('exposure').value;
+  });
+  $('exposure').addEventListener('input', debounced('exposure', function () {
+    return setControl('exposure', parseInt($('exposure').value, 10));
+  }));
+  $('gain').addEventListener('input', function () {
+    $('gain-value').textContent = $('gain').value;
+  });
+  $('gain').addEventListener('input', debounced('gain', function () {
+    return setControl('gain', parseInt($('gain').value, 10));
+  }));
+
+  function pollControls() {
+    if (state.signedOut) return;
+    request('/api/controls').then(showControls);
+  }
+
+  // ---------- full screen ----------
+
+  $('btn-fullscreen').addEventListener('click', function () {
+    if (document.fullscreenElement) {
+      document.exitFullscreen();
+    } else if ($('feed-section').requestFullscreen) {
+      $('feed-section').requestFullscreen();
+    }
+  });
+  document.addEventListener('fullscreenchange', function () {
+    var on = !!document.fullscreenElement;
+    $('btn-fullscreen').textContent = on ? 'Exit full screen' : 'Full screen';
+    $('btn-fullscreen').title = on ? 'Leave full screen' : 'Show the picture full screen';
+  });
+
   // ---------- other streams ----------
 
   // Each stream is served on its own port. Switching nets moves the page to
@@ -321,9 +602,12 @@
   pollInfo();
   pollSettings();
   pollStreams();
+  pollControls();
+  loadModes();
   tickClock();
   setInterval(pollInfo, INFO_POLL_MS);
   setInterval(pollSettings, SETTINGS_POLL_MS);
   setInterval(pollStreams, STREAMS_POLL_MS);
+  setInterval(pollControls, CONTROLS_POLL_MS);
   setInterval(tickClock, 1000);
 })();

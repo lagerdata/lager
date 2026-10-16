@@ -126,6 +126,15 @@ html.is-sidebar-hidden .controls { display: none !important; }
   background: #0b1016;
 }
 
+.frame:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Zoomed in, the picture can be dragged to pan. */
+.frame.is-pannable { cursor: grab; touch-action: none; }
+.frame.is-panning { cursor: grabbing; }
+.frame.is-pannable #feed { user-select: none; -webkit-user-drag: none; }
+
+/* Full screen: the picture alone, as large as the screen allows. */
+.feed:fullscreen { padding: 0; }
+
 .chip {
   position: absolute;
   padding: 2px 10px;
@@ -219,6 +228,12 @@ input[type="range"]:disabled { opacity: 0.4; }
 .btn--primary:hover:not(:disabled) { background: #4d94ff; }
 .btn--small { flex: 0 0 auto; padding: 3px 8px; font-size: 12px; }
 
+/* Two short controls sharing a line, as the scope's channel strip does. */
+.pair { display: flex; gap: 6px; }
+.pair > * { flex: 1; min-width: 0; }
+.row--note { align-items: center; justify-content: space-between; font-size: 12px; }
+.note { margin: 0 0 8px; font-size: 12px; color: var(--warn); }
+
 /* Two-way switch: Auto or Manual focus. */
 .segmented {
   display: grid;
@@ -239,6 +254,9 @@ input[type="range"]:disabled { opacity: 0.4; }
 }
 .segmented__btn + .segmented__btn { border-left: 1px solid var(--border); }
 .segmented__btn[aria-pressed="true"] { background: var(--accent); color: #fff; font-weight: 600; }
+/* Two independent toggles rather than a choice of one: flip either way. */
+.segmented--loose { margin-bottom: 0; }
+.segmented--loose .segmented__btn { padding: 4px 0; }
 
 /* Who started the stream and where it runs, at the foot of the sidebar. */
 .about {

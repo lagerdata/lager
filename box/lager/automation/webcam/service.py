@@ -384,6 +384,7 @@ class WebcamService:
         # The viewer page's files, under lager/static/webcam/ beside the
         # scope page's. The Dockerfile copies the whole static/ tree.
         static_dir = str(Path(__file__).resolve().parents[2] / "static" / "webcam")
+        controls_path = str(Path(__file__).resolve().with_name("controls.py"))
 
         # Create a simple Python script that streams the webcam
         script = f'''
@@ -408,6 +409,26 @@ STATIC_TYPES = {{
     "webcam.css": "text/css; charset=utf-8",
     "webcam.js": "text/javascript; charset=utf-8",
 }}
+
+# Modes, camera controls and the picture transforms, from a plain module
+# beside service.py. Loaded by path: this script runs outside the lager
+# package, and the module needs nothing from it.
+import importlib.util as _importlib_util
+_controls_spec = _importlib_util.spec_from_file_location("webcam_controls", "{controls_path}")
+controls = _importlib_util.module_from_spec(_controls_spec)
+_controls_spec.loader.exec_module(controls)
+
+# Pan, rotation and flips, as controls.merge_view keeps them.
+view_lock = threading.Lock()
+current_view = dict(controls.VIEW_DEFAULTS)
+
+# The capture size and rate. A change is handed to the capture thread in
+# requested_mode, because only that thread may reopen the device; it falls
+# back to the old mode, and says why in mode_error, if the camera refuses.
+mode_lock = threading.Lock()
+current_mode = dict(controls.DEFAULT_MODE)
+requested_mode = None
+mode_error = None
 
 # Thread-safe zoom level
 zoom_lock = threading.Lock()
@@ -711,48 +732,177 @@ def serve_static(handler, name):
     handler.end_headers()
     handler.wfile.write(body)
 
+def load_entry():
+    """This stream's record in the state file, or an empty dict."""
+    try:
+        with open(STATE_FILE, "r") as f:
+            return json.load(f).get(CURRENT_NET) or dict()
+    except (FileNotFoundError, json.JSONDecodeError, OSError, AttributeError):
+        return dict()
+
+def save_fields(**fields):
+    """Write fields into this stream's record. False if it could not."""
+    try:
+        with open(STATE_FILE, "r") as f:
+            state = json.load(f)
+        if CURRENT_NET not in state:
+            return False
+        state[CURRENT_NET].update(fields)
+        with open(STATE_FILE, "w") as f:
+            json.dump(state, f, indent=2)
+        return True
+    except Exception as e:
+        print("Error saving settings: %s" % e, file=sys.stderr)
+        return False
+
+def load_view_and_mode():
+    global current_view, current_mode
+    entry = load_entry()
+    saved_view = entry.get("view")
+    with view_lock:
+        current_view = controls.merge_view(None, saved_view if isinstance(saved_view, dict) else dict())
+    saved_mode = entry.get("mode")
+    if isinstance(saved_mode, dict):
+        try:
+            mode = dict(width=int(saved_mode["width"]), height=int(saved_mode["height"]),
+                        fps=saved_mode["fps"])
+        except (KeyError, TypeError, ValueError):
+            return
+        with mode_lock:
+            current_mode = mode
+
+def get_view():
+    """The view, its pan pulled inside the picture at the current zoom."""
+    with view_lock:
+        view = dict(current_view)
+    view["pan_x"], view["pan_y"] = controls.clamp_pan(get_zoom(), view["pan_x"], view["pan_y"])
+    return view
+
+def set_view(update):
+    global current_view
+    with view_lock:
+        current_view = controls.merge_view(current_view, update)
+        view = dict(current_view)
+    save_fields(view=view)
+    return get_view()
+
+def get_mode():
+    with mode_lock:
+        return dict(current_mode), mode_error
+
+def request_mode(mode):
+    """Ask for a new capture mode; the capture thread switches to it."""
+    global requested_mode, current_mode, mode_error
+    with capture_started_lock:
+        running = capture_started
+    with mode_lock:
+        mode_error = None
+        if running:
+            requested_mode = dict(mode)
+        else:
+            # Nothing is capturing yet: the first viewer opens it in this mode.
+            current_mode = dict(mode)
+    if not running:
+        save_fields(mode=mode)
+
+def apply_saved_controls():
+    """Put exposure and gain back as they were last set for this stream."""
+    saved = load_entry().get("controls")
+    if not isinstance(saved, dict):
+        return
+    if "exposure_auto" in saved:
+        controls.set_control(VIDEO_DEVICE, "exposure_auto", saved["exposure_auto"])
+    for key in ("exposure", "gain"):
+        if key in saved:
+            controls.set_control(VIDEO_DEVICE, key, saved[key])
+
+def save_control(key, value):
+    saved = load_entry().get("controls")
+    saved = dict(saved) if isinstance(saved, dict) else dict()
+    saved[key] = value
+    save_fields(controls=saved)
+
 # Load initial settings
 load_zoom()
 load_focus()
 load_brightness()
+load_view_and_mode()
 
 # Apply initial focus and brightness settings
 apply_focus(current_focus_mode, current_focus_value)
 apply_brightness(current_brightness)
 
-def apply_zoom(frame, zoom_level):
+def transform(frame):
+    """Rotate and mirror the frame, then crop it to the zoom and pan."""
+    with view_lock:
+        view = dict(current_view)
+    if view["rotate"] or view["flip_h"] or view["flip_v"]:
+        frame = controls.orient(frame, view["rotate"], view["flip_h"], view["flip_v"], cv2=cv2)
+    zoom = get_zoom()
+    if zoom > 1.0:
+        height, width = frame.shape[:2]
+        x1, y1, x2, y2 = controls.crop_box(width, height, zoom, view["pan_x"], view["pan_y"])
+        # Back to the full size, so zooming does not shrink the picture.
+        frame = cv2.resize(frame[y1:y2, x1:x2], (width, height), interpolation=cv2.INTER_LINEAR)
+    return frame
+
+def open_camera(mode):
+    """The device opened in ``mode``, or None."""
+    cap = cv2.VideoCapture(VIDEO_DEVICE)
+    if not cap.isOpened():
+        return None
+    # Force MJPEG so two cameras can share a USB 2.0 bus. Default cv2
+    # negotiation picks YUYV (uncompressed, ~150 Mbps at 640x480 30fps),
+    # which doesn't leave room for a second camera on the same bus —
+    # the kernel rejects VIDIOC_STREAMON with "Not enough bandwidth for
+    # altsetting". MJPEG is roughly 5x smaller and fits two cameras
+    # comfortably. Must be set before width/height/fps for negotiation
+    # to honor it.
+    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, mode["width"])
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, mode["height"])
+    cap.set(cv2.CAP_PROP_FPS, mode["fps"])
+    return cap
+
+def first_frame(cap, seconds=3.0):
+    """The first frame a newly opened camera delivers, or None in time."""
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        ret, frame = cap.read()
+        if ret:
+            return frame
+        time.sleep(0.05)
+    return None
+
+def describe_mode(mode):
+    return "%dx%d at %s fps" % (mode["width"], mode["height"], mode["fps"])
+
+def switch_mode(cap, old, new):
+    """Reopen the camera in ``new``; on failure, back in ``old``.
+
+    Returns (cap, mode in use). A camera that cannot stream the new mode --
+    too little USB bandwidth, or it quietly picks another size -- keeps the
+    old one, and mode_error says what happened.
     """
-    Apply zoom to frame by cropping center and resizing.
-
-    Args:
-        frame: Input frame from camera
-        zoom_level: Zoom level (1.0 = no zoom, 2.0 = 2x zoom, etc.)
-
-    Returns:
-        Zoomed frame at original resolution
-    """
-    if zoom_level <= 1.0:
-        return frame
-
-    height, width = frame.shape[:2]
-
-    # Calculate crop dimensions (smaller region for higher zoom)
-    crop_width = int(width / zoom_level)
-    crop_height = int(height / zoom_level)
-
-    # Calculate center crop coordinates
-    x1 = (width - crop_width) // 2
-    y1 = (height - crop_height) // 2
-    x2 = x1 + crop_width
-    y2 = y1 + crop_height
-
-    # Crop the center region
-    cropped = frame[y1:y2, x1:x2]
-
-    # Resize back to original resolution
-    zoomed = cv2.resize(cropped, (width, height), interpolation=cv2.INTER_LINEAR)
-
-    return zoomed
+    global current_mode, mode_error
+    cap.release()
+    trial = open_camera(new)
+    frame = first_frame(trial) if trial is not None else None
+    if frame is not None and tuple(frame.shape[:2]) == (new["height"], new["width"]):
+        with mode_lock:
+            current_mode = dict(new)
+            mode_error = None
+        save_fields(mode=new)
+        apply_saved_controls()
+        return trial, new
+    if trial is not None:
+        trial.release()
+    with mode_lock:
+        mode_error = "The camera would not stream %s, so it stays at %s." % (
+            describe_mode(new), describe_mode(old))
+    cap = open_camera(old)
+    apply_saved_controls()
+    return cap, old
 
 def start_capture():
     """Start the single capture thread that fills the shared frame buffer.
@@ -768,30 +918,28 @@ def start_capture():
 
     def loop():
         global latest_jpeg, frame_seq, frame_width, frame_height, last_frame_at
-        cap = cv2.VideoCapture("{video_device}")
-        if not cap.isOpened():
+        global requested_mode
+        mode, _error = get_mode()
+        cap = open_camera(mode)
+        if cap is None:
             print("ERROR: Could not open video device {video_device}", file=sys.stderr)
             return
-        # Force MJPEG so two cameras can share a USB 2.0 bus. Default cv2
-        # negotiation picks YUYV (uncompressed, ~150 Mbps at 640x480 30fps),
-        # which doesn't leave room for a second camera on the same bus —
-        # the kernel rejects VIDIOC_STREAMON with "Not enough bandwidth for
-        # altsetting". MJPEG is roughly 5x smaller and fits two cameras
-        # comfortably. Must be set before width/height/fps for negotiation
-        # to honor it.
-        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        cap.set(cv2.CAP_PROP_FPS, 30)
+        apply_saved_controls()
         try:
             while True:
+                with mode_lock:
+                    wanted, requested_mode = requested_mode, None
+                if wanted and wanted != mode:
+                    cap, mode = switch_mode(cap, mode, wanted)
+                    if cap is None:
+                        print("ERROR: Could not reopen video device {video_device}", file=sys.stderr)
+                        return
+                    continue
                 ret, frame = cap.read()
                 if not ret:
                     time.sleep(0.05)
                     continue
-                zoom = get_zoom()
-                if zoom > 1.0:
-                    frame = apply_zoom(frame, zoom)
+                frame = transform(frame)
                 update_fps()
                 ok, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
                 if not ok:
@@ -803,9 +951,28 @@ def start_capture():
                     last_frame_at = time.time()
                     frame_condition.notify_all()
         finally:
-            cap.release()
+            if cap is not None:
+                cap.release()
 
     threading.Thread(target=loop, daemon=True).start()
+
+def send_json(handler, data, status=200):
+    body = json.dumps(data).encode("utf-8")
+    handler.send_response(status)
+    handler.send_header("Content-type", "application/json")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+    handler.end_headers()
+    handler.wfile.write(body)
+
+def read_json(handler):
+    """The request's JSON object body, or an empty dict."""
+    length = int(handler.headers.get("Content-Length", 0) or 0)
+    try:
+        data = json.loads(handler.rfile.read(length).decode("utf-8")) if length else dict()
+    except (ValueError, UnicodeDecodeError):
+        data = dict()
+    return data if isinstance(data, dict) else dict()
 
 class StreamingHandler(BaseHTTPRequestHandler):
     def do_HEAD(self):
@@ -817,6 +984,11 @@ class StreamingHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         """Handle POST requests for zoom control"""
         path_only = self.path.split('?')[0]
+        if path_only in ("/api/zoom/in", "/api/zoom/out", "/api/zoom/reset", "/api/focus/auto"):
+            # These take no body, but read any that was sent: answering with
+            # it unread makes the socket close with a reset, and the browser
+            # reports the request failed.
+            read_json(self)
 
         if path_only == "/api/zoom/in":
             # Zoom in by 0.25x
@@ -849,8 +1021,9 @@ class StreamingHandler(BaseHTTPRequestHandler):
             self.wfile.write(json_response.encode("utf-8"))
 
         elif path_only == "/api/zoom/reset":
-            # Reset zoom to 1.0
+            # Reset zoom to 1.0, and the pan to the middle for the next zoom.
             success = save_zoom(1.0)
+            set_view(dict(pan_x=0.5, pan_y=0.5))
 
             response = {{"success": success, "zoom": get_zoom()}}
             json_response = json.dumps(response)
@@ -948,6 +1121,52 @@ class StreamingHandler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(json_response.encode("utf-8"))
+
+        elif path_only == "/api/pan/set":
+            # The centre of the zoomed region, as fractions of the picture.
+            data = read_json(self)
+            update = dict()
+            for key, field in (("x", "pan_x"), ("y", "pan_y")):
+                if key in data:
+                    update[field] = data[key]
+            send_json(self, dict(success=True, view=set_view(update)))
+
+        elif path_only == "/api/orientation/set":
+            # Any of rotate (0, 90, 180, 270), flip_h, flip_v.
+            data = read_json(self)
+            update = dict((k, data[k]) for k in ("rotate", "flip_h", "flip_v") if k in data)
+            send_json(self, dict(success=True, view=set_view(update)))
+
+        elif path_only == "/api/mode/set":
+            data = read_json(self)
+            try:
+                mode = dict(width=int(data["width"]), height=int(data["height"]),
+                            fps=data["fps"] if isinstance(data["fps"], (int, float)) else float(data["fps"]))
+            except (KeyError, TypeError, ValueError):
+                send_json(self, dict(success=False, error="width, height and fps are required"), 400)
+                return
+            if isinstance(mode["fps"], float) and mode["fps"].is_integer():
+                mode["fps"] = int(mode["fps"])
+            if not controls.valid_mode(controls.list_modes(VIDEO_DEVICE),
+                                       mode["width"], mode["height"], mode["fps"]):
+                send_json(self, dict(success=False,
+                                     error="The camera does not offer %s." % describe_mode(mode)), 400)
+                return
+            request_mode(mode)
+            send_json(self, dict(success=True, requested=mode))
+
+        elif path_only == "/api/controls/set":
+            # {{"control": "exposure_auto" | "exposure" | "gain", "value": ...}}
+            data = read_json(self)
+            key = data.get("control")
+            if key not in controls.CONTROL_NAMES or "value" not in data:
+                send_json(self, dict(success=False, error="unknown control"), 400)
+                return
+            value = bool(data["value"]) if key == "exposure_auto" else data["value"]
+            success = controls.set_control(VIDEO_DEVICE, key, value)
+            if success:
+                save_control(key, value)
+            send_json(self, dict(success=success, controls=controls.describe_controls(VIDEO_DEVICE)))
 
         else:
             self.send_response(404)
@@ -1119,6 +1338,13 @@ class StreamingHandler(BaseHTTPRequestHandler):
             name = "index.html" if path_only == "/" else path_only[len("/static/"):]
             serve_static(self, name)
 
+        elif path_only == "/api/modes":
+            mode, error = get_mode()
+            send_json(self, dict(modes=controls.list_modes(VIDEO_DEVICE), current=mode, error=error))
+
+        elif path_only == "/api/controls":
+            send_json(self, controls.describe_controls(VIDEO_DEVICE))
+
         elif path_only == "/api/info":
             # Everything the viewer page shows about this stream, in one poll.
             entry = {{}}
@@ -1144,6 +1370,9 @@ class StreamingHandler(BaseHTTPRequestHandler):
                 # The page calls a stream stalled when this grows, since the
                 # fps figure only updates every 30 frames and freezes with it.
                 "frame_age": None if last is None else round(time.time() - last, 2),
+                "view": get_view(),
+                "mode": get_mode()[0],
+                "mode_error": get_mode()[1],
             }}
             body = json.dumps(response_data).encode("utf-8")
             self.send_response(200)

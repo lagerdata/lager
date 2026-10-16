@@ -348,12 +348,28 @@ colors as the oscilloscope page (`lager scope NET stream web`):
   camera's model and device, the frame rate, size and zoom, and a status:
   `LIVE`, `STALLED` (no frame for 3 seconds), `WAITING` (no frame yet) or
   `OFFLINE` (the stream does not answer)
-- The live picture, with a clock and the zoom level over it
-- A sidebar with zoom (slider, **Out**, **Reset**, **In**), focus (**Auto** or
-  **Manual** with a distance slider) and brightness. **Hide sidebar** hides it,
-  and the page remembers the choice
+- The live picture, with a clock and the zoom level over it. When zoomed in,
+  drag the picture or use the arrow keys to pan. Double-click a point to zoom
+  in on it, or once zoomed, to centre on it
+- A sidebar with:
+  - **Resolution**: the size and frame rate, from the modes the camera offers.
+    If the camera cannot stream the one you pick, for example because there is
+    not enough USB bandwidth, it stays on the old one and the page says so
+  - **View**: zoom (slider, **Out**, **Reset**, **In**), **Centre** for the pan,
+    **Rotate** (0, 90, 180 or 270 degrees) and **Flip** (left-right, top-bottom)
+  - **Focus**: **Auto** or **Manual** with a distance slider
+  - **Image**: exposure (**Auto exposure** or **Manual** with a slider), gain
+    and brightness. Exposure and gain show only on a camera that has them
+
+  **Hide sidebar** hides it, and the page remembers the choice
+- **Full screen** shows the picture alone
 - **Snapshot**, which saves one frame as `<net>-<timestamp>.jpg`
 - At the foot of the sidebar, who started the stream, its device and its port
+
+Every setting is kept with the stream on the box, so everyone viewing it sees
+the same picture, and the settings come back when the stream restarts. Larger
+sizes cost the box more CPU to encode: the frame rate in the header shows what
+the box keeps up with.
 
 On an access-gated box, when the browser's session ends the page says
 `SIGNED OUT` and tells you to run `lager webcam url` for a new link.
@@ -377,6 +393,12 @@ On an access-gated box, when the browser's session ends the page says
 | `/api/focus/manual` | POST | Manual focus: `{"value": 128}` (0 to 255) |
 | `/api/brightness` | GET | Brightness value |
 | `/api/brightness/set` | POST | Set brightness: `{"value": 128}` (0 to 255) |
+| `/api/pan/set` | POST | Pan a zoomed picture: `{"x": 0.3, "y": 0.7}`, the centre of the view as fractions of the picture |
+| `/api/orientation/set` | POST | Any of `{"rotate": 90, "flip_h": true, "flip_v": false}`. Rotation is clockwise: 0, 90, 180 or 270 |
+| `/api/modes` | GET | The sizes and frame rates the camera offers (MJPEG), the current mode, and why the last change failed, if it did |
+| `/api/mode/set` | POST | Change the mode: `{"width": 1920, "height": 1080, "fps": 30}`. Answers 400 for a mode the camera does not list |
+| `/api/controls` | GET | Exposure (`auto`, `value`, `min`, `max`) and gain, for a camera that has them |
+| `/api/controls/set` | POST | `{"control": "exposure_auto", "value": false}`, or `exposure` or `gain` with a number |
 | `/api/fps` | GET | Get current FPS |
 | `/api/streams` | GET | List all active streams |
 | `/test` | GET | Health check endpoint |
