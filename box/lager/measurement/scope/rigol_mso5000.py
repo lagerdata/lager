@@ -146,24 +146,37 @@ class RigolMso5000:
 
     # ============ Acquisition Control ============
 
+    # Run, stop, single and force go through the daemon, as a PicoScope
+    # net's do: its driver sends the same :RUN, :STOP, :SINGle and :TFORce,
+    # and the daemon also knows it is acquiring. Sent as raw SCPI, the scope
+    # ran but the daemon published no frames, so `stream_frames()` after
+    # `start_capture()` waited out its timeout.
+
     def run(self):
-        """Start continuous acquisition."""
-        self.write(":RUN")
+        """Start continuous acquisition, in whichever trigger mode is set.
+
+        Single is promoted to auto, as on a PicoScope: Run in single would
+        take one capture and appear to do nothing.
+        """
+        if self.instr.command("GetCaptureMode").get("capture_mode") == "single":
+            self.instr.command("SetCaptureMode", capture_mode="auto")
+        self.instr.command("StartAcquisition", trigger_position_percent=50.0)
         return {"status": "running"}
 
     def stop(self):
         """Stop acquisition."""
-        self.write(":STOP")
+        self.instr.command("StopAcquisition")
         return {"status": "stopped"}
 
     def single(self):
         """Start single acquisition."""
-        self.write(":SINGle")
+        self.instr.command("SetCaptureMode", capture_mode="single")
+        self.instr.command("StartAcquisition", trigger_position_percent=50.0)
         return {"status": "single"}
 
     def trigger_force(self):
         """Force a trigger."""
-        self.write(":TFORce")
+        self.instr.command("ForceTrigger")
         return {"status": "triggered"}
 
     def autoscale(self):

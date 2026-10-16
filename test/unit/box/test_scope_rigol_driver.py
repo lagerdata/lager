@@ -136,6 +136,39 @@ class TestTheScpiLayer:
         assert calls[0] is not calls[1], "the second try was on a new connection"
 
 
+class TestAcquisitionGoesThroughTheDaemon:
+    """Raw :RUN ran the scope but left the daemon publishing nothing."""
+
+    def _scope(self, daemon, monkeypatch, mode="auto"):
+        monkeypatch.setattr(rigol_mso5000, "_instruments", {})
+        scope = rigol_mso5000.RigolMso5000(address=ADDRESS, pin=1)
+        original = FakeClient.command
+
+        def command(client, name, timeout=None, **params):
+            if name == "GetCaptureMode":
+                client.sent.append((name, params))
+                return {"capture_mode": mode}
+            return original(client, name, timeout=timeout, **params)
+        monkeypatch.setattr(FakeClient, "command", command)
+        return scope
+
+    def test_run_starts_the_daemon_acquiring(self, daemon, monkeypatch):
+        self._scope(daemon, monkeypatch).run()
+        assert [n for n, _ in daemon[0].sent] == ["GetCaptureMode", "StartAcquisition"]
+
+    def test_run_from_single_runs_in_auto(self, daemon, monkeypatch):
+        self._scope(daemon, monkeypatch, mode="single").run()
+        assert daemon[0].sent[1] == ("SetCaptureMode", {"capture_mode": "auto"})
+
+    def test_stop_single_and_force_are_daemon_commands(self, daemon, monkeypatch):
+        scope = self._scope(daemon, monkeypatch)
+        scope.stop()
+        scope.single()
+        scope.trigger_force()
+        assert [n for n, _ in daemon[0].sent] == [
+            "StopAcquisition", "SetCaptureMode", "StartAcquisition", "ForceTrigger"]
+
+
 class TestTheFactory:
 
     def _device(self, instrument):
