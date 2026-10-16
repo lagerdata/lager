@@ -341,24 +341,42 @@ webcam.stop()
 
 ## Web Interface
 
-Each stream provides a web interface at its URL with:
+Each stream serves a viewer page at its URL. It uses the same layout and
+colors as the oscilloscope page (`lager scope NET stream web`):
 
-- Live MJPEG video stream
-- Zoom, focus, and brightness sliders, with an autofocus button
-- FPS display
-- Sidebar with links to other active streams
+- A header with a **Net** picker that moves to another stream on the box, the
+  camera's model and device, the frame rate, size and zoom, and a status:
+  `LIVE`, `STALLED` (no frame for 3 seconds), `WAITING` (no frame yet) or
+  `OFFLINE` (the stream does not answer)
+- The live picture, with a clock and the zoom level over it
+- A sidebar with zoom (slider, **Out**, **Reset**, **In**), focus (**Auto** or
+  **Manual** with a distance slider) and brightness. **Hide sidebar** hides it,
+  and the page remembers the choice
+- **Snapshot**, which saves one frame as `<net>-<timestamp>.jpg`
+- At the foot of the sidebar, who started the stream, its device and its port
+
+On an access-gated box, when the browser's session ends the page says
+`SIGNED OUT` and tells you to run `lager webcam url` for a new link.
 
 ### API Endpoints
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/` | GET | HTML page with video viewer |
+| `/` | GET | The viewer page |
+| `/static/webcam.css`, `/static/webcam.js` | GET | The viewer page's style and script |
 | `/stream` | GET | Raw MJPEG video stream |
+| `/api/info` | GET | The stream's net, device, camera model, port, origin, fps, zoom, frame size, and seconds since the last frame (`frame_age`, `null` before the first) |
 | `/snapshot` | GET | One JPEG frame. Returns 503 if no frame arrives within 5 seconds |
 | `/api/zoom` | GET | Get current zoom level |
 | `/api/zoom/in` | POST | Increase zoom |
 | `/api/zoom/out` | POST | Decrease zoom |
 | `/api/zoom/reset` | POST | Reset zoom to 1.0x |
+| `/api/zoom/set` | POST | Set zoom: `{"zoom": 2.0}` (1.0 to 4.0) |
+| `/api/focus` | GET | Focus mode and value |
+| `/api/focus/auto` | POST | Turn on autofocus |
+| `/api/focus/manual` | POST | Manual focus: `{"value": 128}` (0 to 255) |
+| `/api/brightness` | GET | Brightness value |
+| `/api/brightness/set` | POST | Set brightness: `{"value": 128}` (0 to 255) |
 | `/api/fps` | GET | Get current FPS |
 | `/api/streams` | GET | List all active streams |
 | `/test` | GET | Health check endpoint |

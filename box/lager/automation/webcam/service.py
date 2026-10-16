@@ -381,6 +381,10 @@ class WebcamService:
         Returns:
             PID of the started process
         """
+        # The viewer page's files, under lager/static/webcam/ beside the
+        # scope page's. The Dockerfile copies the whole static/ tree.
+        static_dir = str(Path(__file__).resolve().parents[2] / "static" / "webcam")
+
         # Create a simple Python script that streams the webcam
         script = f'''
 import cv2
@@ -394,7 +398,16 @@ import time
 # Current stream info
 CURRENT_NET = "{net_name}"
 BOX_IP = "{box_ip}"
+VIDEO_DEVICE = "{video_device}"
+PORT = {port}
 STATE_FILE = "/etc/lager/webcam_streams.json"
+# The viewer page: index.html, webcam.css and webcam.js, served as they are.
+STATIC_DIR = "{static_dir}"
+STATIC_TYPES = {{
+    "index.html": "text/html; charset=utf-8",
+    "webcam.css": "text/css; charset=utf-8",
+    "webcam.js": "text/javascript; charset=utf-8",
+}}
 
 # Thread-safe zoom level
 zoom_lock = threading.Lock()
@@ -424,6 +437,10 @@ frame_lock = threading.Lock()
 frame_condition = threading.Condition(frame_lock)
 latest_jpeg = None
 frame_seq = 0
+# Size of the newest frame and when it arrived, for /api/info. Under frame_lock.
+frame_width = None
+frame_height = None
+last_frame_at = None
 capture_started = False
 capture_started_lock = threading.Lock()
 
@@ -658,6 +675,42 @@ def get_fps():
     with fps_lock:
         return current_fps
 
+def camera_model():
+    """The camera's name as the kernel reports it, or None."""
+    try:
+        node = VIDEO_DEVICE.rsplit("/", 1)[-1]
+        with open("/sys/class/video4linux/" + node + "/name", "r") as f:
+            return f.read().strip() or None
+    except OSError:
+        return None
+
+def serve_static(handler, name):
+    """Send one of the viewer page's files, or 404.
+
+    Only the names in STATIC_TYPES are served, so nothing in a request path
+    reaches the filesystem.
+    """
+    content_type = STATIC_TYPES.get(name)
+    body = None
+    if content_type:
+        try:
+            with open(STATIC_DIR + "/" + name, "rb") as f:
+                body = f.read()
+        except OSError:
+            body = None
+    if body is None:
+        handler.send_response(404)
+        handler.send_header("Content-Length", "0")
+        handler.end_headers()
+        return
+    handler.send_response(200)
+    handler.send_header("Content-type", content_type)
+    handler.send_header("Content-Length", str(len(body)))
+    # A box update replaces these files; never let a browser keep the old page.
+    handler.send_header("Cache-Control", "no-cache")
+    handler.end_headers()
+    handler.wfile.write(body)
+
 # Load initial settings
 load_zoom()
 load_focus()
@@ -714,7 +767,7 @@ def start_capture():
         capture_started = True
 
     def loop():
-        global latest_jpeg, frame_seq
+        global latest_jpeg, frame_seq, frame_width, frame_height, last_frame_at
         cap = cv2.VideoCapture("{video_device}")
         if not cap.isOpened():
             print("ERROR: Could not open video device {video_device}", file=sys.stderr)
@@ -746,6 +799,8 @@ def start_capture():
                 with frame_condition:
                     latest_jpeg = jpeg.tobytes()
                     frame_seq += 1
+                    frame_height, frame_width = frame.shape[:2]
+                    last_frame_at = time.time()
                     frame_condition.notify_all()
         finally:
             cap.release()
@@ -986,7 +1041,7 @@ class StreamingHandler(BaseHTTPRequestHandler):
 
                 # Try to read state file
                 try:
-                    with open("/etc/lager/webcam_streams.json", "r") as f:
+                    with open(STATE_FILE, "r") as f:
                         state = json.load(f)
                         for name, info in state.items():
                             streams_list.append({{
@@ -1059,697 +1114,44 @@ class StreamingHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b"OK")
 
-        elif path_only == "/":
-            # Serve a simple HTML page with the video stream
+        elif path_only == "/" or path_only.startswith("/static/"):
+            # The viewer page and its assets, from lager/static/webcam/.
+            name = "index.html" if path_only == "/" else path_only[len("/static/"):]
+            serve_static(self, name)
+
+        elif path_only == "/api/info":
+            # Everything the viewer page shows about this stream, in one poll.
+            entry = {{}}
+            try:
+                with open(STATE_FILE, "r") as f:
+                    entry = json.load(f).get(CURRENT_NET) or {{}}
+            except (FileNotFoundError, json.JSONDecodeError, OSError):
+                pass
+            with frame_lock:
+                width, height, last = frame_width, frame_height, last_frame_at
+            response_data = {{
+                "net": CURRENT_NET,
+                "video_device": VIDEO_DEVICE,
+                "model": camera_model(),
+                "port": PORT,
+                "source": entry.get("source"),
+                "started_by": entry.get("started_by"),
+                "fps": round(get_fps(), 1),
+                "zoom": get_zoom(),
+                "width": width,
+                "height": height,
+                # Seconds since the newest frame, or None before the first.
+                # The page calls a stream stalled when this grows, since the
+                # fps figure only updates every 30 frames and freezes with it.
+                "frame_age": None if last is None else round(time.time() - last, 2),
+            }}
+            body = json.dumps(response_data).encode("utf-8")
             self.send_response(200)
-            self.send_header("Content-type", "text/html")
+            self.send_header("Content-type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
-            self.send_header("Pragma", "no-cache")
-            self.send_header("Expires", "0")
             self.end_headers()
-            html = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Lager Webcam Stream</title>
-    <style>
-        * {{
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }}
-
-        body {{
-            margin: 0;
-            padding: 0;
-            padding-bottom: 3rem;
-            background-color: #1a1a1a;
-            color: #ffffff;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-            display: flex;
-            min-height: 100vh;
-            overflow-y: auto;
-        }}
-
-        .sidebar {{
-            width: 220px;
-            background-color: #0a0a0a;
-            border-right: 2px solid #ff69b4;
-            padding: 1rem;
-            overflow-y: auto;
-            display: flex;
-            flex-direction: column;
-            gap: 0.5rem;
-        }}
-
-        .sidebar h2 {{
-            font-size: 1.1rem;
-            color: #ff69b4;
-            margin-bottom: 0.75rem;
-            font-weight: 600;
-        }}
-
-        .webcam-button {{
-            background-color: #2a2a2a;
-            color: #ffffff;
-            border: 2px solid #3a3a3a;
-            border-radius: 6px;
-            padding: 0.75rem;
-            cursor: pointer;
-            font-size: 0.9rem;
-            font-weight: 500;
-            transition: all 0.2s ease;
-            text-align: left;
-            word-wrap: break-word;
-            display: block;
-            width: 100%;
-            margin-bottom: 0.5rem;
-        }}
-
-        .webcam-button:hover {{
-            background-color: #3a3a3a;
-            border-color: #ff69b4;
-            transform: translateX(4px);
-        }}
-
-        .webcam-button.active {{
-            background-color: #ff69b4;
-            color: #000000;
-            border-color: #ff69b4;
-        }}
-
-        .main-content {{
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            padding: 1rem;
-            padding-bottom: 2rem;
-            overflow-y: auto;
-        }}
-
-        h1 {{
-            font-size: 2rem;
-            font-weight: 600;
-            color: #ffffff;
-            margin-bottom: 0.5rem;
-            text-align: center;
-            letter-spacing: 0.5px;
-        }}
-
-        .stream-info {{
-            font-size: 1rem;
-            color: #aaaaaa;
-            text-align: center;
-            margin-bottom: 1.5rem;
-            font-weight: 400;
-        }}
-
-        .stream-info strong {{
-            color: #ff69b4;
-            font-weight: 600;
-        }}
-
-        .video-container {{
-            width: 70vw;
-            max-width: 1200px;
-            display: flex;
-            gap: 1rem;
-            justify-content: center;
-            align-items: flex-start;
-            margin-bottom: 1rem;
-            position: relative;
-        }}
-
-        .video-wrapper {{
-            flex: 1;
-            min-width: 0;
-            position: relative;
-        }}
-
-        .fps-badge {{
-            position: absolute;
-            top: -2.5rem;
-            right: 0;
-            background-color: #1a1a1a;
-            border: 2px solid #4169e1;
-            border-radius: 6px;
-            padding: 0.4rem 0.75rem;
-            display: flex;
-            gap: 0.5rem;
-            align-items: center;
-            z-index: 10;
-        }}
-
-        .fps-badge .fps-label {{
-            font-size: 0.7rem;
-            color: #888;
-            font-weight: 500;
-        }}
-
-        .fps-badge #fps-value {{
-            font-size: 0.9rem;
-            color: #4169e1;
-            font-weight: 600;
-        }}
-
-        img {{
-            width: 100%;
-            height: auto;
-            border: 3px solid #ff69b4;
-            border-radius: 4px;
-            box-shadow: 0 0 20px rgba(255, 105, 180, 0.3);
-        }}
-
-        .zoom-controls {{
-            display: flex;
-            flex-direction: column;
-            gap: 0.5rem;
-            padding-top: 0.5rem;
-        }}
-
-        .zoom-level {{
-            background-color: #1a1a1a;
-            border: 2px solid #ff69b4;
-            border-radius: 6px;
-            padding: 0.5rem;
-            text-align: center;
-            font-size: 0.85rem;
-            color: #ff69b4;
-            font-weight: 600;
-        }}
-
-        .focus-controls {{
-            border-top: 2px solid #3a3a3a;
-            padding-top: 1rem;
-            margin-top: 1rem;
-        }}
-
-        .brightness-controls {{
-            border-top: 2px solid #3a3a3a;
-            padding-top: 1rem;
-            margin-top: 1rem;
-        }}
-
-        .focus-mode-button {{
-            background-color: #2a2a2a;
-            color: #ffffff;
-            border: 2px solid #ff69b4;
-            border-radius: 6px;
-            width: 100%;
-            height: 40px;
-            cursor: pointer;
-            font-size: 0.9rem;
-            font-weight: 600;
-            transition: all 0.2s ease;
-            margin-bottom: 0.75rem;
-        }}
-
-        .focus-mode-button:hover {{
-            background-color: #3a3a3a;
-            transform: scale(1.02);
-        }}
-
-        .focus-mode-button.active {{
-            background-color: #ff69b4;
-            color: #000000;
-        }}
-
-        .focus-slider {{
-            width: 100%;
-            height: 6px;
-            border-radius: 3px;
-            background: #3a3a3a;
-            outline: none;
-            -webkit-appearance: none;
-            margin-bottom: 0.5rem;
-        }}
-
-        .focus-slider::-webkit-slider-thumb {{
-            -webkit-appearance: none;
-            appearance: none;
-            width: 18px;
-            height: 18px;
-            border-radius: 50%;
-            background: #ff69b4;
-            cursor: pointer;
-            border: 2px solid #000;
-        }}
-
-        .focus-slider::-moz-range-thumb {{
-            width: 18px;
-            height: 18px;
-            border-radius: 50%;
-            background: #ff69b4;
-            cursor: pointer;
-            border: 2px solid #000;
-        }}
-
-        .focus-slider:disabled {{
-            opacity: 0.3;
-            cursor: not-allowed;
-        }}
-
-        .focus-slider:disabled::-webkit-slider-thumb {{
-            background: #666;
-            cursor: not-allowed;
-        }}
-
-        .focus-slider:disabled::-moz-range-thumb {{
-            background: #666;
-            cursor: not-allowed;
-        }}
-
-        .focus-value {{
-            background-color: #1a1a1a;
-            border: 2px solid #ff69b4;
-            border-radius: 6px;
-            padding: 0.4rem;
-            text-align: center;
-            font-size: 0.8rem;
-            color: #ff69b4;
-            font-weight: 600;
-        }}
-
-        .focus-label {{
-            font-size: 0.75rem;
-            color: #888;
-            margin-bottom: 0.4rem;
-            display: block;
-            font-weight: 500;
-        }}
-
-        .info {{
-            font-size: 0.85rem;
-            color: #cccccc;
-            text-align: center;
-            font-weight: 400;
-            letter-spacing: 0.3px;
-            margin-bottom: 3rem;
-        }}
-
-        .info strong {{
-            color: #ffffff;
-        }}
-    </style>
-</head>
-<body>
-    <div class="sidebar">
-        <h2>Webcams</h2>
-        <div id="webcam-list"></div>
-    </div>
-    <div class="main-content">
-        <h1>Lager Webcam Stream</h1>
-        <p class="stream-info"><strong>{net_name}</strong> on <strong>{box_ip}</strong></p>
-        <div class="video-container">
-            <div class="video-wrapper">
-                <div class="fps-badge">
-                    <span class="fps-label">FPS</span>
-                    <span id="fps-value">--</span>
-                </div>
-                <img src="/stream" alt="Webcam Stream">
-            </div>
-            <div class="zoom-controls">
-                <span class="focus-label">ZOOM</span>
-                <div class="zoom-level" id="zoom-display">1.0x</div>
-                <input type="range" id="zoom-slider" class="focus-slider" min="1.0" max="4.0" step="0.10" value="1.0">
-                <div class="focus-controls">
-                    <span class="focus-label">FOCUS</span>
-                    <div class="focus-value" id="focus-display">Auto</div>
-                    <input type="range" id="focus-slider" class="focus-slider" min="0" max="255" value="128">
-                    <button id="focus-auto" class="focus-mode-button">Autofocus</button>
-                </div>
-                <div class="brightness-controls">
-                    <span class="focus-label">BRIGHTNESS</span>
-                    <div class="focus-value" id="brightness-display">128</div>
-                    <input type="range" id="brightness-slider" class="focus-slider" min="0" max="255" value="128">
-                </div>
-            </div>
-        </div>
-        <p class="info"><strong>Device:</strong> {video_device} | <strong>Port:</strong> {port}</p>
-    </div>
-
-    <script>
-        var retryCount = 0;
-        var maxRetries = 5;
-        var retryDelay = 500; // Start with 500ms
-
-        // Zoom control functionality
-        var currentZoom = 1.0;
-
-        function updateZoomDisplay(zoom) {{
-            currentZoom = zoom;
-            document.getElementById('zoom-display').textContent = zoom.toFixed(2) + 'x';
-            document.getElementById('zoom-slider').value = zoom;
-        }}
-
-        function fetchZoomLevel() {{
-            fetch('/api/zoom')
-                .then(function(response) {{ return response.json(); }})
-                .then(function(data) {{
-                    if (data.zoom !== undefined) {{
-                        updateZoomDisplay(data.zoom);
-                    }}
-                }})
-                .catch(function(error) {{
-                    console.error('Error fetching zoom level:', error);
-                }});
-        }}
-
-        var zoomTimeout = null;
-        var zoomRequestController = null;
-
-        function handleZoomSliderChange() {{
-            var slider = document.getElementById('zoom-slider');
-            var value = parseFloat(slider.value);
-
-            // Update display immediately for responsiveness
-            document.getElementById('zoom-display').textContent = value.toFixed(2) + 'x';
-
-            // Clear any pending zoom update
-            if (zoomTimeout) {{
-                clearTimeout(zoomTimeout);
-            }}
-
-            // Debounce the API call to avoid too many requests and keep the latest value
-            zoomTimeout = setTimeout(function() {{
-                // Abort any in-flight request so the latest value wins
-                if (zoomRequestController) {{
-                    zoomRequestController.abort();
-                }}
-
-                zoomRequestController = new AbortController();
-                var controller = zoomRequestController;
-
-                fetch('/api/zoom/set', {{
-                    method: 'POST',
-                    headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{ zoom: value }}),
-                    signal: controller.signal
-                }})
-                    .then(function(response) {{ return response.json(); }})
-                    .then(function(data) {{
-                        if (data.success && data.zoom !== undefined) {{
-                            currentZoom = data.zoom;
-                            updateZoomDisplay(data.zoom);
-                        }}
-                    }})
-                    .catch(function(error) {{
-                        if (error.name !== 'AbortError') {{
-                            console.error('Error adjusting zoom:', error);
-                        }}
-                    }})
-                    .finally(function() {{
-                        if (zoomRequestController === controller) {{
-                            zoomRequestController = null;
-                        }}
-                    }});
-            }}, 75); // light debounce to keep updates snappy
-        }}
-
-        // Set up zoom slider event listener
-        document.getElementById('zoom-slider').addEventListener('input', handleZoomSliderChange);
-
-        // Fetch initial zoom level
-        fetchZoomLevel();
-
-        // Periodically update zoom level (in case it changes externally)
-        setInterval(fetchZoomLevel, 2000);
-
-        // Focus control functionality
-        var currentFocusMode = "auto";
-        var currentFocusValue = 0;
-
-        function updateFocusDisplay(mode, value) {{
-            currentFocusMode = mode;
-            currentFocusValue = value;
-
-            var autoButton = document.getElementById('focus-auto');
-            var slider = document.getElementById('focus-slider');
-            var display = document.getElementById('focus-display');
-
-            if (mode === "auto") {{
-                autoButton.style.display = 'none';  // Hide button in auto mode
-                display.textContent = 'Auto';
-            }} else {{
-                autoButton.style.display = 'block';  // Show button in manual mode
-                slider.value = value;
-                display.textContent = value;
-            }}
-        }}
-
-        function fetchFocusSettings() {{
-            fetch('/api/focus')
-                .then(function(response) {{ return response.json(); }})
-                .then(function(data) {{
-                    if (data.mode !== undefined) {{
-                        updateFocusDisplay(data.mode, data.value || 0);
-                    }}
-                }})
-                .catch(function(error) {{
-                    console.error('Error fetching focus settings:', error);
-                }});
-        }}
-
-        function returnToAutofocus() {{
-            // Always switch to auto mode (button only appears in manual mode)
-            fetch('/api/focus/auto', {{ method: 'POST' }})
-                .then(function(response) {{ return response.json(); }})
-                .then(function(data) {{
-                    if (data.success) {{
-                        updateFocusDisplay(data.mode, data.value);
-                    }}
-                }})
-                .catch(function(error) {{
-                    console.error('Error switching to autofocus:', error);
-                }});
-        }}
-
-        function handleFocusSliderChange() {{
-            var slider = document.getElementById('focus-slider');
-            var value = parseInt(slider.value);
-
-            // Update display immediately for responsiveness
-            document.getElementById('focus-display').textContent = value;
-
-            // Automatically switch to manual mode and send to server
-            fetch('/api/focus/manual', {{
-                method: 'POST',
-                headers: {{ 'Content-Type': 'application/json' }},
-                body: JSON.stringify({{ value: value }})
-            }})
-                .then(function(response) {{ return response.json(); }})
-                .then(function(data) {{
-                    if (data.success) {{
-                        currentFocusMode = data.mode;
-                        currentFocusValue = data.value;
-                        // Show the "Return to Autofocus" button
-                        document.getElementById('focus-auto').style.display = 'block';
-                    }}
-                }})
-                .catch(function(error) {{
-                    console.error('Error adjusting focus:', error);
-                }});
-        }}
-
-        // Set up focus control event listeners
-        document.getElementById('focus-auto').addEventListener('click', returnToAutofocus);
-        document.getElementById('focus-slider').addEventListener('input', handleFocusSliderChange);
-
-        // Fetch initial focus settings
-        fetchFocusSettings();
-
-        // Periodically update focus settings (in case they change externally)
-        setInterval(fetchFocusSettings, 2000);
-
-        // Brightness control functionality
-        var currentBrightness = 128;
-
-        function updateBrightnessDisplay(value) {{
-            currentBrightness = value;
-            document.getElementById('brightness-display').textContent = value;
-            document.getElementById('brightness-slider').value = value;
-        }}
-
-        function fetchBrightnessSettings() {{
-            fetch('/api/brightness')
-                .then(function(response) {{ return response.json(); }})
-                .then(function(data) {{
-                    if (data.value !== undefined) {{
-                        updateBrightnessDisplay(data.value);
-                    }}
-                }})
-                .catch(function(error) {{
-                    console.error('Error fetching brightness:', error);
-                }});
-        }}
-
-        var brightnessTimeout = null;
-        var brightnessRequestController = null;
-
-        function handleBrightnessSliderChange() {{
-            var slider = document.getElementById('brightness-slider');
-            var value = parseInt(slider.value);
-
-            // Update display immediately for responsiveness
-            document.getElementById('brightness-display').textContent = value;
-
-            // Clear any pending brightness update
-            if (brightnessTimeout) {{
-                clearTimeout(brightnessTimeout);
-            }}
-
-            brightnessTimeout = setTimeout(function() {{
-                if (brightnessRequestController) {{
-                    brightnessRequestController.abort();
-                }}
-
-                brightnessRequestController = new AbortController();
-                var controller = brightnessRequestController;
-
-                fetch('/api/brightness/set', {{
-                    method: 'POST',
-                    headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{ value: value }}),
-                    signal: controller.signal
-                }})
-                    .then(function(response) {{ return response.json(); }})
-                    .then(function(data) {{
-                        if (data.success && data.value !== undefined) {{
-                            currentBrightness = data.value;
-                        }}
-                    }})
-                    .catch(function(error) {{
-                        if (error.name !== 'AbortError') {{
-                            console.error('Error adjusting brightness:', error);
-                        }}
-                    }})
-                    .finally(function() {{
-                        if (brightnessRequestController === controller) {{
-                            brightnessRequestController = null;
-                        }}
-                    }});
-            }}, 75);
-        }}
-
-        // Set up brightness slider event listener
-        document.getElementById('brightness-slider').addEventListener('input', handleBrightnessSliderChange);
-
-        // Fetch initial brightness setting
-        fetchBrightnessSettings();
-
-        // Periodically update brightness (in case it changes externally)
-        setInterval(fetchBrightnessSettings, 2000);
-
-        // FPS display functionality
-        function updateFPSDisplay() {{
-            fetch('/api/fps')
-                .then(function(response) {{ return response.json(); }})
-                .then(function(data) {{
-                    if (data.fps !== undefined) {{
-                        var fpsValue = document.getElementById('fps-value');
-                        if (fpsValue) {{
-                            fpsValue.textContent = data.fps.toFixed(1);
-                        }}
-                    }}
-                }})
-                .catch(function(error) {{
-                    console.error('Error fetching FPS:', error);
-                }});
-        }}
-
-        // Initial FPS fetch
-        updateFPSDisplay();
-
-        // Update FPS display every second
-        setInterval(updateFPSDisplay, 1000);
-
-        function populateWebcamList(isRetry) {{
-            // Add timestamp to prevent caching
-            var timestamp = new Date().getTime();
-            var url = '/api/streams?_=' + timestamp;
-
-            fetch(url, {{
-                cache: 'no-store',
-                headers: {{
-                    'Cache-Control': 'no-cache, no-store, must-revalidate',
-                    'Pragma': 'no-cache'
-                }}
-            }})
-                .then(function(response) {{
-                    if (!response.ok) {{
-                        throw new Error('HTTP ' + response.status);
-                    }}
-                    return response.json();
-                }})
-                .then(function(data) {{
-                    retryCount = 0; // Reset on success
-                    var webcamList = document.getElementById('webcam-list');
-                    if (!webcamList) return;
-
-                    webcamList.innerHTML = '';
-
-                    var boxIp = data.box_ip || window.location.hostname;
-                    var currentNet = data.current || '';
-
-                    if (data.streams && data.streams.length > 0) {{
-                        data.streams.forEach(function(stream) {{
-                            var button = document.createElement('button');
-                            button.className = 'webcam-button';
-                            button.textContent = stream.name;
-
-                            if (stream.name === currentNet) {{
-                                button.classList.add('active');
-                            }}
-
-                            button.onclick = function() {{
-                                window.location.href = 'http://' + boxIp + ':' + stream.port + '/';
-                            }};
-
-                            webcamList.appendChild(button);
-                        }});
-                    }} else {{
-                        webcamList.innerHTML = '<p style="color: #888; font-size: 0.85rem; padding: 0.5rem;">No active streams</p>';
-                    }}
-                }})
-                .catch(function(error) {{
-                    console.error('Error loading webcams (attempt ' + (retryCount + 1) + '):', error);
-
-                    // Retry logic for initial load
-                    if (isRetry && retryCount < maxRetries) {{
-                        retryCount++;
-                        var delay = retryDelay * retryCount;
-                        console.log('Retrying in ' + delay + 'ms...');
-                        setTimeout(function() {{
-                            populateWebcamList(true);
-                        }}, delay);
-                    }} else {{
-                        var webcamList = document.getElementById('webcam-list');
-                        if (webcamList) {{
-                            webcamList.innerHTML = '<p style="color: #ff6b6b; font-size: 0.85rem; padding: 0.5rem;">Loading...</p>';
-                        }}
-                    }}
-                }});
-        }}
-
-        // Initial load with retry
-        if (document.readyState === 'loading') {{
-            document.addEventListener('DOMContentLoaded', function() {{
-                populateWebcamList(true);
-                // Refresh every 3 seconds
-                setInterval(function() {{ populateWebcamList(false); }}, 3000);
-            }});
-        }} else {{
-            populateWebcamList(true);
-            // Refresh every 3 seconds
-            setInterval(function() {{ populateWebcamList(false); }}, 3000);
-        }}
-    </script>
-</body>
-</html>
-            """
-            self.wfile.write(html.encode())
+            self.wfile.write(body)
 
         elif path_only == "/stream" or path_only.startswith("/stream/"):
             # Read from the shared frame buffer instead of opening cv2 here,

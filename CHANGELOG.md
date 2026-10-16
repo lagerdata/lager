@@ -16,6 +16,16 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 ### Added
 
+- **A new webcam viewer page, styled like the oscilloscope page.** Each webcam stream's
+  page now has the oscilloscope page's header, colors and hideable controls sidebar. It
+  adds a Net picker for the other streams on the box, the camera's model, frame size,
+  frame rate, and a `LIVE` / `STALLED` / `WAITING` / `OFFLINE` status. It adds a
+  **Snapshot** button that saves the current frame, and zoom **Out** / **Reset** / **In**
+  buttons. The feed reconnects by itself after a dropped connection. On an access-gated box
+  whose browser session has ended, the page says so and names `lager webcam url` instead of
+  freezing on the last frame. The page is now plain files under `box/lager/static/webcam/`,
+  served by each stream's server with a new `GET /api/info`. It is no longer HTML embedded
+  in the streamer's generated script.
 - **`lager uart -i --no-echo` for devices that do not echo commands.** Interactive mode
   then shows every received line, with no echo filtering. The default, `--echo`, keeps
   hiding the device's echo of each command.

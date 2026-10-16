@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<!--
+  Copyright 2024-2026 Lager Data
+  SPDX-License-Identifier: Apache-2.0
+
+  Lager webcam viewer. Served by each webcam stream's own HTTP server
+  (lager/automation/webcam/service.py) at GET / on the stream's port, with
+  its assets under /static/. Laid out and styled like the scope UI
+  (lager/static/scope/) so the two read as one product: a header bar, the
+  picture, and a controls sidebar that can be hidden.
+
+  No build step and no dependencies, so it works on a box with no internet
+  access. Everything it shows comes from the stream's /api/* endpoints.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lager Webcam</title>
+  <link rel="stylesheet" href="/static/webcam.css">
+</head>
+<body>
+  <header class="bar">
+    <div class="brand">
+      <span class="logo">Lager</span>
+      <span class="sub">Webcam</span>
+    </div>
+
+    <label class="field">
+      <span>Net</span>
+      <select id="net-select" aria-label="Webcam net"></select>
+    </label>
+
+    <div class="ident">
+      <span id="model" class="model">&mdash;</span>
+      <span id="device" class="serial"></span>
+    </div>
+
+    <div class="spacer"></div>
+
+    <div class="stats" role="status" aria-live="off">
+      <span id="stat-fps">&mdash; fps</span>
+      <span id="stat-size">&mdash;</span>
+      <span id="stat-zoom">1.0&times;</span>
+    </div>
+
+    <!-- Whether frames are arriving: LIVE, STALLED (the camera stopped
+         delivering) or OFFLINE (the stream's server does not answer). -->
+    <span id="live" class="live live--off" role="status">OFFLINE</span>
+    <button id="btn-sidebar" class="btn btn--small" type="button"
+            aria-expanded="true" aria-controls="webcam-controls"
+            title="Hide the controls sidebar">Hide sidebar</button>
+    <!-- Before the sidebar is parsed, so a remembered "hidden" does not flash
+         on screen. The key and the class are SIDEBAR_STORAGE_KEY and
+         SIDEBAR_HIDDEN_CLASS in webcam.js. -->
+    <script>
+      try {
+        if (localStorage.getItem('lager-webcam-sidebar') === 'hidden') {
+          document.documentElement.classList.add('is-sidebar-hidden');
+          var sidebarButton = document.getElementById('btn-sidebar');
+          sidebarButton.setAttribute('aria-expanded', 'false');
+          sidebarButton.textContent = 'Show sidebar';
+          sidebarButton.title = 'Show the controls sidebar';
+        }
+      } catch (e) { /* storage blocked: the sidebar stays shown */ }
+    </script>
+    <a id="btn-snapshot" class="btn btn--primary" href="/snapshot"
+       download="snapshot.jpg">Snapshot</a>
+  </header>
+
+  <main class="layout">
+    <section class="feed" aria-label="Live feed">
+      <div id="frame" class="frame">
+        <img id="feed" alt="Live webcam feed">
+        <span id="clock" class="chip chip--clock" hidden></span>
+        <span id="zoom-chip" class="chip chip--zoom" hidden></span>
+      </div>
+      <div id="feed-empty" class="feed-empty">
+        <p id="feed-empty-title">Connecting&hellip;</p>
+        <p class="dim" id="feed-empty-hint"></p>
+      </div>
+    </section>
+
+    <aside id="webcam-controls" class="controls" aria-label="Controls">
+      <div class="group">
+        <div class="group__title">View</div>
+        <label class="field field--stack" for="zoom">
+          <span class="field__head"><span>Zoom</span><output id="zoom-value" for="zoom">1.0&times;</output></span>
+          <input id="zoom" type="range" min="1" max="4" step="0.1" value="1">
+        </label>
+        <div class="row">
+          <button id="zoom-out" class="btn" type="button">Out</button>
+          <button id="zoom-reset" class="btn" type="button">Reset</button>
+          <button id="zoom-in" class="btn" type="button">In</button>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="group__title">Focus</div>
+        <div class="segmented" role="group" aria-label="Focus mode">
+          <button id="focus-auto" class="segmented__btn" type="button" aria-pressed="true">Auto</button>
+          <button id="focus-manual" class="segmented__btn" type="button" aria-pressed="false">Manual</button>
+        </div>
+        <label class="field field--stack" for="focus">
+          <span class="field__head"><span>Distance</span><output id="focus-value" for="focus">auto</output></span>
+          <input id="focus" type="range" min="0" max="255" step="1" value="128" disabled>
+        </label>
+      </div>
+
+      <div class="group">
+        <div class="group__title">Image</div>
+        <label class="field field--stack" for="brightness">
+          <span class="field__head"><span>Brightness</span><output id="brightness-value" for="brightness">128</output></span>
+          <input id="brightness" type="range" min="0" max="255" step="1" value="128">
+        </label>
+      </div>
+
+      <dl class="about">
+        <dt>Started</dt><dd id="about-started">&mdash;</dd>
+        <dt>Device</dt><dd id="about-device">&mdash;</dd>
+        <dt>Port</dt><dd id="about-port">&mdash;</dd>
+      </dl>
+    </aside>
+  </main>
+
+  <script src="/static/webcam.js"></script>
+</body>
+</html>
