@@ -629,6 +629,18 @@ fn measurements_are_the_scope_s_own_with_ratios_in_percent() {
 }
 
 #[test]
+fn one_measurement_asks_the_scope_for_that_item_alone() {
+    let mut bench = bench();
+    let before = bench.sent().len();
+    let duty = bench.scope.measure_one(ChannelId::Alphabetic('A'), Measurement::DutyCyclePositive);
+    assert_eq!(duty.unwrap().unwrap(), Some(25.0), "a ratio, reported in percent");
+    // The fake records writes; the duty cycle above is the one query's answer.
+    assert_eq!(bench.sent()[before..], [":MEASure:SOURce CHANnel1", ":MEASure:CLEar ALL"]);
+    let period = bench.scope.measure_one(ChannelId::Alphabetic('A'), Measurement::Period);
+    assert_eq!(period.unwrap().unwrap(), None, "9.9E37 is no measurement");
+}
+
+#[test]
 fn measuring_leaves_no_measurement_bar_over_the_trace() {
     let mut bench = bench();
     bench.scope.measure_all(ChannelId::Alphabetic('A')).unwrap().unwrap();

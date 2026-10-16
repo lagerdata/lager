@@ -30,7 +30,7 @@ use anyhow::{bail, Context, Result};
 use protocol::lscp::{FLAG_ENVELOPE, FLAG_TRIGGERED};
 use protocol::{
     AcquisitionMode, CaptureFrame, CaptureMode, ChannelFrame, ChannelId, Coupling, DriverFamily,
-    MeasurementSet, ScopeCapabilities, TriggerSlope,
+    Measurement, MeasurementSet, ScopeCapabilities, TriggerSlope,
 };
 
 use self::extract::{Envelopes, COUNTS_PER_DIV};
@@ -723,6 +723,27 @@ const MEASUREMENT_ITEMS: [&str; 14] = [
     "NWIDth", "RTIMe", "FTIMe", "OVERshoot",
 ];
 
+/// Where `which` is in `MEASUREMENT_ITEMS`, and whether the scope gives it as
+/// a ratio that is reported in percent.
+fn measurement_item(which: Measurement) -> (usize, bool) {
+    match which {
+        Measurement::Vmax => (0, false),
+        Measurement::Vmin => (1, false),
+        Measurement::Vpp => (2, false),
+        Measurement::Vavg => (3, false),
+        Measurement::Vrms => (4, false),
+        Measurement::Period => (5, false),
+        Measurement::Frequency => (6, false),
+        Measurement::DutyCyclePositive => (7, true),
+        Measurement::DutyCycleNegative => (8, true),
+        Measurement::PulseWidthPositive => (9, false),
+        Measurement::PulseWidthNegative => (10, false),
+        Measurement::RiseTime => (11, false),
+        Measurement::FallTime => (12, false),
+        Measurement::Overshoot => (13, true),
+    }
+}
+
 /// A measurement set from the scope's answers, in `MEASUREMENT_ITEMS` order.
 /// Duty cycle and overshoot come back as ratios and are reported in percent.
 fn measurement_set(values: &[Option<f64>; 14], channel: ChannelId) -> Result<MeasurementSet> {
@@ -1131,6 +1152,27 @@ impl Oscilloscope for RigolMso5000 {
 
     fn answers_from_instrument(&self) -> bool {
         true
+    }
+
+    fn measure_one(&mut self, channel: ChannelId, which: Measurement) -> Option<Result<Option<f64>>> {
+        Some((|| {
+            let i = self.index(channel)?;
+            if !self.settings.channels[i].enabled {
+                bail!("channel {channel} is not enabled, so there is nothing to measure");
+            }
+            let (item, percent) = measurement_item(which);
+            let mut scpi = self.link();
+            scpi.write(&format!(":MEASure:SOURce CHANnel{}", i + 1))?;
+            let reply = scpi.query(&format!(":MEASure:{}?", MEASUREMENT_ITEMS[item]))?;
+            // As in `measure_all`: the item it adds to the bar is read as trace.
+            scpi.write(":MEASure:CLEar ALL")?;
+            Ok(reply
+                .trim()
+                .parse::<f64>()
+                .ok()
+                .filter(|v| v.is_finite() && v.abs() < NO_MEASUREMENT)
+                .map(|v| if percent { v * 100.0 } else { v }))
+        })())
     }
 
     fn measure_all(&mut self, channel: ChannelId) -> Option<Result<MeasurementSet>> {

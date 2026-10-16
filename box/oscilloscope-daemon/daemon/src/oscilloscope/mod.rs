@@ -226,6 +226,18 @@ pub trait Oscilloscope: Send + Sync {
         None
     }
 
+    /// One measurement of `channel`, taken by the instrument: `Some(Ok(None))`
+    /// when the instrument has no such value for the signal shown. `None`
+    /// when the driver has no such thing, so the loop takes the set from
+    /// `measure_all` and picks the one asked for.
+    fn measure_one(
+        &mut self,
+        _channel: ChannelId,
+        _which: protocol::Measurement,
+    ) -> Option<anyhow::Result<Option<f64>>> {
+        None
+    }
+
     /// The instrument's full record, for a client asking for exact samples,
     /// or `None` when the published capture already is that record.
     fn read_record(&mut self) -> Option<anyhow::Result<CaptureFrame>> {

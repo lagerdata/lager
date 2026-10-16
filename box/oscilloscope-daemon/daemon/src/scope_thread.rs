@@ -1835,6 +1835,18 @@ fn handle(
             },
         },
         ScopeRequest::Measure { channel, which } => {
+            // An instrument that measures one item at a time (a Rigol takes
+            // ~330 ms an item) is asked for that item alone, not the set.
+            match scope.measure_one(channel, which) {
+                Some(Ok(Some(value))) => return ScopeReply::Measurement(value),
+                Some(Ok(None)) => {
+                    return ScopeReply::error(format!(
+                        "{which:?} needs at least one full cycle in the capture"
+                    ))
+                }
+                Some(Err(e)) => return state.failed(e),
+                None => {}
+            }
             let measured = match scope.measure_all(channel) {
                 Some(result) => result,
                 None => measure_now(state, acquiring, channel),
