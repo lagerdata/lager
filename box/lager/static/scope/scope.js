@@ -987,6 +987,7 @@ class ScopeApp {
    */
   applyCapabilities() {
     const caps = this.capabilities || {};
+    this.applyPalette();
     el('model').textContent = caps.model || 'unknown';
     el('serial').textContent = caps.serial ? `#${caps.serial}` : '';
 
@@ -2371,6 +2372,17 @@ class ScopeApp {
     const net = (this.scopeNets || []).find((n) => n.name === this.net);
     const instrument = this.ticket?.instrument || net?.instrument || '';
     return /rigol|mso5/i.test(instrument);
+  }
+
+  /**
+   * A Rigol's live view is its own screen, so its channels keep the scope's
+   * colours and the page looks like the scope beside it. Any other scope
+   * keeps the page's palette.
+   */
+  applyPalette() {
+    document.documentElement.dataset.palette = this.isRigol() ? 'rigol' : '';
+    // Read from the stylesheet again on the next frame.
+    this.colors = null;
   }
 
   /** One reading, skipped if the last one has not come back yet.

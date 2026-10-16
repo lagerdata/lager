@@ -566,7 +566,8 @@ impl RigolMso5000 {
             .enumerate()
             .filter(|(_, c)| c.enabled)
             .fold(0u8, |mask, (i, _)| mask | (1 << i));
-        work.envelopes.extract(&frame, map, &self.palette, wanted);
+        let trigger_column = self.trigger_column(map);
+        work.envelopes.extract(&frame, map, &self.palette, wanted, Some(trigger_column));
         let env = &work.envelopes;
         let columns = env.columns;
         let per_channel = columns * 2;
