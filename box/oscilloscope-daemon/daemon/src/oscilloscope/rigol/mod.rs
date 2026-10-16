@@ -37,7 +37,7 @@ use self::extract::{Envelopes, COUNTS_PER_DIV};
 use self::scpi::{DeviceLock, Scpi};
 use self::screen::{Palette, ScreenMap, HORIZONTAL_DIVISIONS, MSO5000_COLOURS};
 use self::video::FrameSource;
-use super::{Cursor, OpenDisturbs, Oscilloscope};
+use super::{Cursor, Oscilloscope};
 
 /// Where the scope and its capture card are, from the daemon's environment.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,6 +114,10 @@ pub struct RigolMso5000 {
     scpi: Arc<Mutex<Box<dyn Scpi>>>,
     /// The capture card and where the waveform is in its picture.
     screen: Option<Screen>,
+    /// A capture card that could not be paired, kept to pair again when
+    /// acquisition next starts: a power cycle turns the scope's HDMI output
+    /// off, and every command still works without the picture.
+    unpaired: Option<Unpaired>,
     _lock: Option<DeviceLock>,
     capabilities: ScopeCapabilities,
     firmware: String,
@@ -125,6 +129,43 @@ pub struct RigolMso5000 {
 struct Screen {
     video: Box<dyn FrameSource>,
     map: ScreenMap,
+}
+
+struct Unpaired {
+    video: Box<dyn FrameSource>,
+    /// Why the last pairing failed, with its causes.
+    reason: String,
+}
+
+/// Pair `video` with the scope, or say why not. A scope that stopped
+/// answering is an error; a picture that does not follow the scope is the
+/// `Err` inside, so the scope can be used without it.
+fn pair(
+    link: &Arc<Mutex<Box<dyn Scpi>>>,
+    model: &str,
+    video: Box<dyn FrameSource>,
+) -> Result<std::result::Result<Screen, Unpaired>> {
+    match calibrate(link, video.as_ref()) {
+        Ok(map) => {
+            tracing::info!(
+                video = %video.describe(),
+                area = ?(map.left, map.top, map.width, map.height),
+                px_per_div = ?(map.px_per_div_x, map.px_per_div_y),
+                "measured the waveform area"
+            );
+            prepare_display(lock_link(link).as_mut());
+            Ok(Ok(Screen { video, map }))
+        }
+        Err(e) if super::unit_is_gone(&e) => Err(e),
+        Err(e) => {
+            let reason = format!(
+                "pairing the {model} with the capture card {}: {e:#}",
+                video.describe()
+            );
+            tracing::warn!(error = %reason, "no live view; the scope is usable without it");
+            Ok(Err(Unpaired { video, reason }))
+        }
+    }
 }
 
 /// What `*IDN?` says.
@@ -335,25 +376,12 @@ impl RigolMso5000 {
             Identity::parse(&scpi.query("*IDN?")?)?
         };
         let capabilities = capabilities_for(&identity)?;
-        let screen = match video {
-            Some(video) => {
-                let map = calibrate(&link, video.as_ref()).map_err(|e| {
-                    e.context(OpenDisturbs(format!(
-                        "pairing the {} with the capture card {}",
-                        identity.model,
-                        video.describe()
-                    )))
-                })?;
-                tracing::info!(
-                    video = %video.describe(),
-                    area = ?(map.left, map.top, map.width, map.height),
-                    px_per_div = ?(map.px_per_div_x, map.px_per_div_y),
-                    "measured the waveform area"
-                );
-                prepare_display(lock_link(&link).as_mut());
-                Some(Screen { video, map })
-            }
-            None => None,
+        let (screen, unpaired) = match video {
+            Some(video) => match pair(&link, &identity.model, video)? {
+                Ok(screen) => (Some(screen), None),
+                Err(unpaired) => (None, Some(unpaired)),
+            },
+            None => (None, None),
         };
         let settings = read_settings(
             lock_link(&link).as_mut(),
@@ -374,6 +402,7 @@ impl RigolMso5000 {
         Ok(RigolMso5000 {
             scpi: link,
             screen,
+            unpaired,
             _lock: lock,
             capabilities,
             firmware: identity.firmware,
@@ -466,7 +495,31 @@ impl RigolMso5000 {
         }
     }
 
+    /// Pair the capture card that could not be paired before. Called when
+    /// acquisition starts, so turning the scope's HDMI output back on and
+    /// starting again brings the live view back.
+    fn pair_again(&mut self) -> Result<()> {
+        let Some(Unpaired { video, .. }) = self.unpaired.take() else {
+            return Ok(());
+        };
+        match pair(&self.scpi, &self.capabilities.model, video)? {
+            Ok(screen) => {
+                let newest = screen.video.newest().unwrap_or(0);
+                let settle = screen.video.settle_frames();
+                self.screen = Some(screen);
+                let mut work = self.work();
+                work.consumed = newest;
+                work.stale_through = newest + settle;
+            }
+            Err(unpaired) => self.unpaired = Some(unpaired),
+        }
+        Ok(())
+    }
+
     fn screen(&self) -> Result<&Screen> {
+        if let Some(unpaired) = &self.unpaired {
+            bail!("no live view: {}", unpaired.reason);
+        }
         self.screen.as_ref().with_context(|| {
             format!(
                 "no capture card is paired with this {}, so it has no live view; add the \
@@ -1054,6 +1107,7 @@ impl Oscilloscope for RigolMso5000 {
     /// offset, set with `set_time_offset`; the percentage a PicoScope takes
     /// here is not needed.
     fn start_triggered_capture(&mut self, _trigger_position_percent: f64) -> Result<()> {
+        self.pair_again()?;
         let command = if self.settings.capture_mode == CaptureMode::Single {
             ":SINGle"
         } else {
@@ -1148,6 +1202,16 @@ impl Oscilloscope for RigolMso5000 {
 
     fn reports_trigger(&self) -> bool {
         true
+    }
+
+    fn live_view_problem(&self) -> Option<String> {
+        self.unpaired.as_ref().map(|u| {
+            format!(
+                "{}. Turn on the scope's HDMI output (Utility > IO > HDMI > Output), then start \
+                 acquisition again",
+                u.reason
+            )
+        })
     }
 
     fn answers_from_instrument(&self) -> bool {

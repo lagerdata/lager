@@ -1065,6 +1065,19 @@ class ScopeApp {
     this.display = state.display || {};
     this.adoptCursors(this.display.cursors || null);
 
+    // A Rigol whose capture card shows nothing (a power cycle turns its HDMI
+    // output off) still answers every command; say why the trace is missing
+    // rather than leave an empty plot. The next drawn frame clears it.
+    const problem = state.live_view_problem || '';
+    if (problem && problem !== (previous && previous.live_view_problem)) {
+      this.console.write(`No live view: ${problem}`, 'note');
+    }
+    const warning = el('overflow-warning');
+    if (warning && problem) {
+      warning.textContent = 'No live view — see the console';
+      warning.hidden = false;
+    }
+
     for (const channel of state.channels || []) {
       const label = channelName(channel.channel);
       const cs = this.channelState.get(label);

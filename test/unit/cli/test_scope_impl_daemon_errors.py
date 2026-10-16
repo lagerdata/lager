@@ -208,7 +208,8 @@ class StreamCommandRepliesTests(unittest.TestCase):
         code, out, _err = _run_stream(daemon, "stream_start", channel="B")
         self.assertEqual(code, 0)
         self.assertIn("Streaming started", out)
-        self.assertEqual(daemon.names()[-1], "StartAcquisition")
+        # Every setting, then the start, then a look for a missing live view.
+        self.assertEqual(daemon.names()[-2:], ["StartAcquisition", "GetState"])
         self.assertEqual(daemon.sent[0], {"command": "EnableChannel",
                                           "channel": {"Alphabetic": "B"}})
 
@@ -275,6 +276,26 @@ class StreamCommandRepliesTests(unittest.TestCase):
                                       daemon_uri="ws://127.0.0.1:38979/")
         self.assertEqual(code, 0)
         self.assertIn("Command port: 38979", out)
+
+    def test_status_says_why_there_is_no_live_view(self):
+        daemon = _Daemon({
+            "GetChannelCount": {"response": "GetChannelCount", "channel_count": 4},
+            "IsReady": {"response": "IsReady", "is_ready": False},
+            "GetState": {"response": "State",
+                         "state": {"live_view_problem": "turn on the HDMI output"}},
+        })
+        code, out, _err = _run_stream(daemon, "stream_status")
+        self.assertEqual(code, 1, "no live view is not ready to stream")
+        self.assertIn("Live view: none -- turn on the HDMI output", out)
+
+    def test_a_start_without_a_live_view_warns_and_still_succeeds(self):
+        # The scope runs and answers commands; only the picture is missing.
+        daemon = _Daemon({"GetState": {"response": "State",
+                                       "state": {"live_view_problem": "turn on the HDMI output"}}})
+        code, out, err = _run_stream(daemon, "stream_start", channel="A")
+        self.assertEqual(code, 0)
+        self.assertIn("Streaming started", out)
+        self.assertIn("Warning: no live view: turn on the HDMI output", err)
 
     def test_status_fails_when_the_daemon_does_not_answer(self):
         code, out, _err = _run_stream(_Daemon(refuse_connection=True), "stream_status")

@@ -132,6 +132,11 @@ pub struct ScopeState {
     /// daemon keeps for its clients and does not interpret. Kept here so the
     /// terminal CLI can set one and an open web UI follows it.
     pub display: serde_json::Value,
+    /// Why a scope that takes its live view from a capture card has none:
+    /// the scope answers commands, but the picture is missing until this is
+    /// put right and acquisition is started again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_view_problem: Option<String>,
 }
 
 /// Merge `patch` into `display`, one level deep.

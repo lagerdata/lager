@@ -22,8 +22,10 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   card, so the web scope page, `lager scope ... stream`, status, acquisition,
   holdoff, display, FFT and cursors all work on a Rigol net. Pair the scope
   with its card once with `lager nets set-capture <net>`, and turn on the
-  scope's HDMI output under Utility > IO > HDMI (a power cycle can turn it
-  off again); without a card, everything but the live view still works.
+  scope's HDMI output under Utility > IO > HDMI. A power cycle can turn it
+  off again; every command still works, and the live view returns when the
+  output is back on and acquisition is started again. Without a card,
+  everything but the live view works.
   `stream start` and `stream config` take channels C and D as well. A scope with no card, or whose
   HDMI output gives no picture, can take its live view from its own
   screenshot over USB instead with `lager nets set-capture <net> --screen`,

@@ -423,6 +423,35 @@ class TestPushedState:
         assert _apply([STATE, slower])["dropped"] == [False, True]
 
 
+class TestAScopeWithNoLiveView:
+    """A Rigol whose card shows nothing still answers; the page says why."""
+
+    def test_the_reason_is_noted_once_and_shown_over_the_plot(self):
+        problem = json.loads(json.dumps(STATE))
+        problem["live_view_problem"] = "pairing the MSO5074 with the capture card: no picture"
+        out = _run_js("""
+        const fields = {};
+        globalThis.document = {
+          getElementById: (id) => (fields[id] = fields[id] || { id, value: '',
+            checked: false, hidden: true, textContent: '' }),
+        };
+        const a = app({
+          channelState: new Map(), timePositionDiv: 0,
+          adoptCursors() {}, showTimebase() {}, applyTimePosition() {},
+          showProbe() {}, rebuildScaleChoices() {}, requestRedraw() {},
+          applyVoltsPerDiv() {},
+        });
+        for (const state of %s) a.applyState(state);
+        process.stdout.write(JSON.stringify({
+          notes: a.console.lines, banner: fields['overflow-warning'],
+        }));
+        """ % json.dumps([STATE, problem, problem]))
+        notes = [text for kind, text in out["notes"] if kind == "note"]
+        assert notes == ["No live view: pairing the MSO5074 with the capture card: no picture"]
+        assert out["banner"]["hidden"] is False
+        assert "No live view" in out["banner"]["textContent"]
+
+
 class TestTheUnitGoingAndComing:
     """An unplug must not leave the page looking as if it is still live."""
 

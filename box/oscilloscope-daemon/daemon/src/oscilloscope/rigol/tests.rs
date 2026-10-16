@@ -489,11 +489,31 @@ fn opening_measures_the_screen_and_leaves_the_grid_off() {
 }
 
 #[test]
-fn a_capture_card_showing_something_else_is_refused() {
+fn a_scope_with_no_picture_opens_without_a_live_view_and_pairs_when_it_returns() {
+    // A power cycle turns the scope's HDMI output off. That used to fail the
+    // open, so every command failed with it.
     let mut instrument = Instrument::mso5204();
     instrument.on_hdmi = false;
-    let message = format!("{:#}", bench_with(instrument).err().unwrap());
-    assert!(message.contains("not showing this scope"), "{message}");
+    let mut bench = bench_with(instrument).expect("opens without the picture");
+    let problem = bench.scope.live_view_problem().expect("says why there is no live view");
+    assert!(problem.contains("not showing this scope"), "{problem}");
+    assert!(problem.contains("Utility > IO > HDMI > Output"), "{problem}");
+    assert_eq!(bench.scope.measure_one(ChannelId::Alphabetic('A'), Measurement::Vmax).unwrap().unwrap(), Some(1.0));
+
+    // Starting still runs the scope, and tries the card again.
+    bench.scope.start_triggered_capture(50.0).unwrap();
+    assert_eq!(bench.instrument.lock().unwrap().status, "AUTO");
+    assert!(bench.scope.live_view_problem().is_some());
+    let message = format!("{:#}", bench.scope.get_triggered_data().unwrap_err());
+    assert!(message.contains("no live view"), "{message}");
+
+    // Output on again: the next start pairs, and captures follow.
+    bench.instrument.lock().unwrap().on_hdmi = true;
+    bench.scope.start_triggered_capture(50.0).unwrap();
+    assert!(bench.scope.live_view_problem().is_none());
+    assert!(bench.scope.screen.is_some());
+    let frame = bench.capture();
+    assert!(!frame.channels.is_empty());
 }
 
 #[test]

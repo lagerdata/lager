@@ -98,7 +98,27 @@ class RigolScope(PicoScope):
 
     def stream_frames(self, *args, **kwargs):
         self._require_live_view()
-        return super().stream_frames(*args, **kwargs)
+        return self._saying_why(super().stream_frames(*args, **kwargs))
+
+    def _saying_why(self, frames):
+        """Frames as they come, or a timeout that says why none came.
+
+        A scope whose capture card shows nothing (a power cycle turns the
+        HDMI output off) runs and answers, but sends no picture; the daemon
+        knows why, and a bare "no capture arrived" would not say.
+        """
+        from lager.measurement.scope import daemon_client
+        try:
+            yield from frames
+        except daemon_client.ScopeDaemonTimeout as e:
+            try:
+                state = self._command("GetState").get("state") or {}
+            except daemon_client.ScopeDaemonError:
+                raise e from None
+            problem = state.get("live_view_problem")
+            if not problem:
+                raise
+            raise daemon_client.ScopeDaemonTimeout("%s: no live view: %s" % (e, problem)) from e
 
     def stream_capture(self, *args, **kwargs):
         self._require_live_view()

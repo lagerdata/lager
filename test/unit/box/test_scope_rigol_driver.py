@@ -293,6 +293,26 @@ class TestStreamingNeedsALiveView:
                              "capture": {"device": "screen"}})
         assert list(scope.stream_frames(count=2)) == ["frame", "frame"]
 
+    def test_a_timeout_says_why_there_is_no_picture(self, daemon, monkeypatch):
+        problem = "pairing the MSO5074 with the capture card: no picture"
+
+        def captures(client, timeout=None):
+            raise daemon_client.ScopeDaemonTimeout("no capture arrived in 1 s")
+            yield  # a generator, as the real one is
+
+        original = FakeClient.command
+
+        def command(client, name, timeout=None, **params):
+            if name == "GetState":
+                return {"state": {"live_view_problem": problem}}
+            return original(client, name, timeout=timeout, **params)
+
+        monkeypatch.setattr(FakeClient, "captures", captures)
+        monkeypatch.setattr(FakeClient, "command", command)
+        frames = self._scope().stream_frames(count=1, timeout=1)
+        with pytest.raises(daemon_client.ScopeDaemonTimeout, match="no live view: pairing"):
+            list(frames)
+
     def test_a_single_capture_needs_no_live_view(self, daemon, monkeypatch):
         monkeypatch.setattr(rigol_daemons, "capture_for_address", lambda address: None)
         scope = self._scope()

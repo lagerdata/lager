@@ -225,16 +225,31 @@ def stream_start(params: dict):
          {"command": "StartAcquisition", "trigger_position_percent": 50.0}),
     ], report=verbose)
 
+    # A Rigol whose capture card shows nothing runs, but streams no picture;
+    # the start is still a success, since every other command works.
+    problem = _live_view_problem()
+    if problem:
+        print(f"Warning: no live view: {problem}", file=sys.stderr)
+
     # The viewer link is the CLI's to print: on an access-gated box it needs
     # the user's sign-in token, which never comes to the box.
     if json_output:
-        print(json.dumps({
+        result = {
             "status": "success",
             "message": "Streaming started",
             "command_port": DAEMON_COMMAND_PORT,
-        }))
+        }
+        if problem:
+            result["live_view_problem"] = problem
+        print(json.dumps(result))
     elif not quiet:
         print("Streaming started")
+
+
+def _live_view_problem():
+    """Why the scope streams no picture, from the daemon's state, or None."""
+    state = send_command({"command": "GetState"}).get("state") or {}
+    return state.get("live_view_problem")
 
 
 def stream_stop(params: dict):
@@ -270,6 +285,11 @@ def stream_status(params: dict):
         print(f"  Ready: unknown ({ready['error']})")
         sys.exit(1)
     print(f"  Ready: {bool(ready.get('is_ready'))}")
+
+    problem = _live_view_problem()
+    if problem:
+        print(f"  Live view: none -- {problem}")
+        sys.exit(1)
 
 
 def stream_config(params: dict):
