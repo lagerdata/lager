@@ -40,7 +40,7 @@ use protocol::{
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 use crate::oscilloscope::{
-    monotonic_ns, unit_is_gone, Oscilloscope, RollInfo, RollPlan, RollSink,
+    monotonic_ns, open_disturbs, unit_is_gone, Oscilloscope, RollInfo, RollPlan, RollSink,
 };
 use protocol::{Measurement, MeasurementSet};
 
@@ -422,6 +422,19 @@ const OPEN_LOOKS_WEDGED_AFTER: Duration = Duration::from_secs(120);
 /// open no longer takes the process down.
 const OPEN_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 
+/// Longest wait between opens that keep failing after changing the
+/// instrument ([`OpenDisturbs`](crate::oscilloscope::OpenDisturbs)). A Rigol
+/// whose capture card shows nothing was stopped and had its grid switched
+/// about 1500 times an hour at the plain interval.
+const DISTURBING_RETRY_MAX: Duration = Duration::from_secs(60);
+
+/// The wait before the next open, after `disturbing` consecutive failures
+/// that changed the instrument: the plain interval, doubling from the second.
+fn open_retry_interval(disturbing: u32) -> Duration {
+    let doublings = disturbing.saturating_sub(1).min(16);
+    (OPEN_RETRY_INTERVAL * 2u32.pow(doublings)).min(DISTURBING_RETRY_MAX)
+}
+
 /// How often to repeat the reason a scope could not be opened.
 ///
 /// Every attempt would be a line every two seconds for as long as a box has no
@@ -530,6 +543,7 @@ fn hardware_thread<F>(
     let mut attempt: u64 = 0;
     let mut complained_at: Option<Instant> = None;
     let mut last_failure: Option<String> = None;
+    let mut disturbing: u32 = 0;
     loop {
         let mut scope = loop {
             if shared.stopping.load(Ordering::Relaxed) {
@@ -553,6 +567,8 @@ fn hardware_thread<F>(
                     break scope;
                 }
                 Err(e) => {
+                    disturbing = if open_disturbs(&e) { disturbing + 1 } else { 0 };
+                    let retry_in = open_retry_interval(disturbing);
                     // `{:#}` so the causes come with it: the useful part is
                     // usually the innermost one, naming the library and the
                     // search path.
@@ -563,7 +579,7 @@ fn hardware_thread<F>(
                         tracing::error!(
                             attempt,
                             error = %reason,
-                            retry_in = ?OPEN_RETRY_INTERVAL,
+                            retry_in = ?retry_in,
                             "cannot open the oscilloscope; commands will \
                              answer with this until it can be opened"
                         );
@@ -572,17 +588,18 @@ fn hardware_thread<F>(
                     *lock(&open_state) = OpenState::Failed(reason.clone());
                     last_failure = Some(reason);
                     let _ = ready.send(Err(e));
-                    sleep_unless_stopping(OPEN_RETRY_INTERVAL, &shared.stopping);
+                    sleep_unless_stopping(retry_in, &shared.stopping);
                 }
             }
         };
         attempt = 0;
         complained_at = None;
+        disturbing = 0;
         // A unit that was capturing when it was unplugged leaves the Pico
         // driver in this process still running. Start then fails until
         // someone sends Stop. Stopping here clears that leftover so the
         // next Start works on the new handle.
-        let _ = scope.stop_triggered_capture();
+        let _ = scope.release_capture();
         shared.acquiring.store(false, Ordering::Relaxed);
 
         let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -897,7 +914,7 @@ fn run(
         let _ = held.reply_to.send(ScopeReply::Error(farewell.clone()));
     }
     stop_rolling(&mut scope, &mut state);
-    let _ = scope.stop_triggered_capture();
+    let _ = scope.release_capture();
     ended
 }
 
@@ -2958,6 +2975,26 @@ mod tests {
             runtime.block_on(handle.request(ScopeRequest::IsReady)),
             ScopeReply::Error(_)
         ));
+    }
+
+    #[test]
+    fn an_open_that_changes_the_instrument_backs_off() {
+        assert_eq!(open_retry_interval(0), OPEN_RETRY_INTERVAL, "a plain failure");
+        assert_eq!(open_retry_interval(1), OPEN_RETRY_INTERVAL);
+        assert_eq!(open_retry_interval(2), OPEN_RETRY_INTERVAL * 2);
+        assert_eq!(open_retry_interval(3), OPEN_RETRY_INTERVAL * 4);
+        assert_eq!(open_retry_interval(40), DISTURBING_RETRY_MAX);
+    }
+
+    #[test]
+    fn a_pairing_failure_is_known_under_its_context() {
+        use crate::oscilloscope::OpenDisturbs;
+        let paired = anyhow::anyhow!("the video did not change")
+            .context(OpenDisturbs("pairing the MSO5074 with the capture card".into()))
+            .context("opening the scope");
+        assert!(open_disturbs(&paired));
+        assert!(format!("{paired:#}").contains("pairing the MSO5074 with the capture card: the video"));
+        assert!(!open_disturbs(&anyhow::anyhow!("no USB instrument 1ab1:0515")));
     }
 
     #[test]

@@ -360,6 +360,9 @@ class TestStreamStart:
         ("pico1", [], "A"),
         ("probe_b", [], "B"),
         ("probe_b", ["--channel", "A"], "A"),
+        # A four-channel scope streams C and D; the CLI refused them.
+        ("pico1", ["--channel", "D"], "D"),
+        ("pico1", ["-c", "3"], "3"),
     ])
     def test_the_channel_defaults_to_the_net_own(self, ungated, net, args, channel):
         result, _, executed = _run([net, "stream", "start", *args, "--box", "bench"],

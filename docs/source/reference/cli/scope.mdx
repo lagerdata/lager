@@ -849,7 +849,7 @@ lager scope NET_NAME stream start [OPTIONS]
 
 | Option | Short | Description | Default |
 |--------|-------|-------------|---------|
-| `--channel` | `-c` | Channel: `A`, `B`, `1`, `2` | The channel of the net, else `A` |
+| `--channel` | `-c` | Channel: `A` to `D`, or `1` to `4` | The channel of the net, else `A` |
 | `--volts-per-div` | `-v` | Vertical scale (V/div) | `1.0` |
 | `--time-per-div` | `-t` | Horizontal scale (s/div) | `0.001` |
 | `--trigger-level` | | Trigger threshold voltage | `0.0` |
@@ -1004,11 +1004,11 @@ lager scope NET_NAME stream config [OPTIONS]
 
 | Option | Short | Description |
 |--------|-------|-------------|
-| `--channel` | `-c` | Channel: `A`, `B`, `1`, `2` |
+| `--channel` | `-c` | Channel: `A` to `D`, or `1` to `4` |
 | `--volts-per-div` | `-v` | Volts per division |
 | `--time-per-div` | `-t` | Time per division (seconds) |
 | `--trigger-level` | | Trigger level (volts) |
-| `--trigger-source` | | Trigger source channel: `A`, `B`, `1`, `2` |
+| `--trigger-source` | | Trigger source channel: `A` to `D`, or `1` to `4` |
 | `--trigger-slope` | | Slope: `rising`, `falling`, `either` |
 | `--capture-mode` | | Mode: `auto`, `normal`, `single` |
 | `--coupling` | | Coupling: `dc`, `ac` |

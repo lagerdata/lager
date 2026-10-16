@@ -164,15 +164,18 @@ ACQUIRING = {"GetState": {"response": "State", "state": {"acquiring": True, "rol
 STOPPED = {"GetState": {"response": "State", "state": {"acquiring": False, "rolling": False}}}
 
 
-def _run_stream(daemon, action, **params):
+def _run_stream(daemon, action, daemon_uri=None, **params):
     """Run one scope_stream.py action against ``daemon``.
 
-    Returns (exit code, stdout, stderr).
+    ``daemon_uri`` stands in for the daemon a net resolves to (a Rigol's has
+    a port of its own). Returns (exit code, stdout, stderr).
     """
     websockets = types.ModuleType("websockets")
     websockets.connect = daemon.connect
     with mock.patch.dict(sys.modules, {"websockets": websockets}):
         module = _load_impl(STREAM_IMPL, "_scope_stream_under_test")
+    if daemon_uri is not None:
+        module.DAEMON_URI = daemon_uri
     out, err = io.StringIO(), io.StringIO()
     code = 0
     with redirect_stdout(out), redirect_stderr(err):
@@ -261,6 +264,17 @@ class StreamCommandRepliesTests(unittest.TestCase):
         self.assertIn("RUNNING", out)
         self.assertIn("Channels: 4", out)
         self.assertIn("Ready: True", out)
+
+    def test_status_names_the_port_of_the_daemon_it_asked(self):
+        # A Rigol's daemon is on a port of its own; status printed 8085 for it.
+        daemon = _Daemon({
+            "GetChannelCount": {"response": "GetChannelCount", "channel_count": 4},
+            "IsReady": {"response": "IsReady", "is_ready": True},
+        })
+        code, out, _err = _run_stream(daemon, "stream_status",
+                                      daemon_uri="ws://127.0.0.1:38979/")
+        self.assertEqual(code, 0)
+        self.assertIn("Command port: 38979", out)
 
     def test_status_fails_when_the_daemon_does_not_answer(self):
         code, out, _err = _run_stream(_Daemon(refuse_connection=True), "stream_status")

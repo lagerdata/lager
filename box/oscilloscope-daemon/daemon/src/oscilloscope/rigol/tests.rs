@@ -175,6 +175,7 @@ impl Instrument {
                 }
                 None => false,
             },
+            ":MEASURE:CLEAR" => arg == "ALL",
             ":WAVEFORM:MODE" | ":WAVEFORM:FORMAT" | ":WAVEFORM:SOURCE" => true,
             _ => match channel(head) {
                 Some(n) if n < 4 => {
@@ -625,6 +626,22 @@ fn measurements_are_the_scope_s_own_with_ratios_in_percent() {
     assert!(bench.sent().contains(&":MEASure:SOURce CHANnel1".to_string()));
     let off = bench.scope.measure_all(ChannelId::Alphabetic('D')).unwrap();
     assert!(off.unwrap_err().to_string().contains("not enabled"));
+}
+
+#[test]
+fn measuring_leaves_no_measurement_bar_over_the_trace() {
+    let mut bench = bench();
+    bench.scope.measure_all(ChannelId::Alphabetic('A')).unwrap().unwrap();
+    assert_eq!(bench.sent().last().map(String::as_str), Some(":MEASure:CLEar ALL"));
+}
+
+#[test]
+fn the_daemon_starting_or_stopping_leaves_the_scope_running() {
+    let mut bench = bench();
+    bench.scope.start_triggered_capture(50.0).unwrap();
+    let before = bench.sent().len();
+    bench.scope.release_capture().unwrap();
+    assert_eq!(bench.sent().len(), before, "nothing sent, so no :STOP");
 }
 
 #[test]

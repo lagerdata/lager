@@ -135,6 +135,14 @@ pub trait Oscilloscope: Send + Sync {
     //streaming
     fn start_triggered_capture(&mut self, trigger_position_percent: f64) -> anyhow::Result<()>;
     fn stop_triggered_capture(&mut self) -> anyhow::Result<()>;
+
+    /// Clear capture state the daemon's own open or shutdown may have left,
+    /// as opposed to a client asking to stop. A driver whose instrument runs
+    /// by itself, with its own screen, leaves it as the operator had it.
+    fn release_capture(&mut self) -> anyhow::Result<()> {
+        self.stop_triggered_capture()
+    }
+
     fn is_ready(&self) -> anyhow::Result<bool>;
     fn get_triggered_data(&self) -> anyhow::Result<CaptureFrame>;
 
@@ -259,6 +267,23 @@ impl std::fmt::Display for UnitGone {
 }
 
 impl std::error::Error for UnitGone {}
+
+/// An open that failed after changing the instrument: a Rigol's pairing stops
+/// it and switches its grid. Retrying that every two seconds keeps changing
+/// it, so the open loop backs off. Shown as the message it carries.
+#[derive(Debug)]
+pub struct OpenDisturbs(pub String);
+
+impl std::fmt::Display for OpenDisturbs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Whether a failed open changed the instrument (see [`OpenDisturbs`]).
+pub fn open_disturbs(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<OpenDisturbs>().is_some()
+}
 
 /// Whether `error`, or anything that caused it, says the unit is gone.
 pub fn unit_is_gone(error: &anyhow::Error) -> bool {

@@ -603,7 +603,7 @@ lager nets rename supply1 main_power --box my-lager-box
 
 将 Rigol MSO5000 与连接到其 HDMI 输出的 USB HDMI 采集卡配对。示波器的实时视图来自这张采集卡。USB 上没有任何信息把采集卡和示波器联系起来，因此您只需在该示波器的任一 Net 上设置一次配对。Box 下次打开示波器时会确认配对：它改变示波器的屏幕并检查视频。
 
-只有在示波器的 HDMI 输出打开时（**Utility > IO > HDMI > Output**），示波器才会通过 HDMI 发送画面。只需打开一次。示波器断电后会保留此设置。
+只有在示波器的 HDMI 输出打开时（**Utility > IO > HDMI > Output**），示波器才会通过 HDMI 发送画面。断电重启可能会再次关闭此输出。示波器随后以默认设置启动，配对检查会报告视频没有变化。此时请从菜单重新打开输出。没有可设置此项的 SCPI 命令。
 
 ```bash
 lager nets set-capture NAME [OPTIONS]

@@ -37,7 +37,7 @@ use self::extract::{Envelopes, COUNTS_PER_DIV};
 use self::scpi::{DeviceLock, Scpi};
 use self::screen::{Palette, ScreenMap, HORIZONTAL_DIVISIONS, MSO5000_COLOURS};
 use self::video::FrameSource;
-use super::{Cursor, Oscilloscope};
+use super::{Cursor, OpenDisturbs, Oscilloscope};
 
 /// Where the scope and its capture card are, from the daemon's environment.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -337,12 +337,12 @@ impl RigolMso5000 {
         let capabilities = capabilities_for(&identity)?;
         let screen = match video {
             Some(video) => {
-                let map = calibrate(&link, video.as_ref()).with_context(|| {
-                    format!(
+                let map = calibrate(&link, video.as_ref()).map_err(|e| {
+                    e.context(OpenDisturbs(format!(
                         "pairing the {} with the capture card {}",
                         identity.model,
                         video.describe()
-                    )
+                    )))
                 })?;
                 tracing::info!(
                     video = %video.describe(),
@@ -1050,6 +1050,13 @@ impl Oscilloscope for RigolMso5000 {
         Ok(())
     }
 
+    /// The scope acquires on its own and shows it on its own screen, so the
+    /// daemon starting or stopping leaves it running or stopped as it was.
+    /// Stopping it here froze every measurement after a daemon restart.
+    fn release_capture(&mut self) -> Result<()> {
+        Ok(())
+    }
+
     /// A newer frame than the last one used, taken since the last change.
     /// In single, only once the scope has stopped on its trigger.
     fn is_ready(&self) -> Result<bool> {
@@ -1143,6 +1150,10 @@ impl Oscilloscope for RigolMso5000 {
                     .ok()
                     .filter(|v| v.is_finite() && v.abs() < NO_MEASUREMENT);
             }
+            // Each query puts its item in the scope's measurement bar, across
+            // the bottom of the grid, where the live view read its coloured
+            // text as trace (about 7% of the columns on the bench).
+            scpi.write(":MEASure:CLEar ALL")?;
             measurement_set(&values, channel)
         })())
     }

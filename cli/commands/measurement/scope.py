@@ -1336,18 +1336,20 @@ def hide(ctx, box, mcu):
     )
 
 
-# ---------- STREAMING COMMANDS (PicoScope) ----------
+# ---------- STREAMING COMMANDS ----------
 
 @scope.group()
 def stream():
-    """Stream oscilloscope data (PicoScope)"""
+    """Stream oscilloscope data"""
     pass
 
 
 CAPTURE_MODE_CHOICES = click.Choice(("auto", "normal", "single"))
 COUPLING_STREAM_CHOICES = click.Choice(("dc", "ac"))
 TRIGGER_SLOPE_CHOICES = click.Choice(("rising", "falling", "either"))
-CHANNEL_CHOICES = click.Choice(("A", "B", "1", "2"))
+# A to D: a four-channel scope streams all of them; a two-channel PicoScope
+# refuses C and D with its own message.
+CHANNEL_CHOICES = click.Choice(("A", "B", "C", "D", "1", "2", "3", "4"))
 
 
 def _run_stream_script(ctx, box_ip: str, data: dict):
@@ -1411,7 +1413,7 @@ def _scope_link_note(ctx, gate, box, box_ip: str) -> bool:
 @click.pass_context
 @click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--channel", "-c", type=CHANNEL_CHOICES, default=None,
-              help="Channel to enable: A, B, 1 or 2 (default: the net's own channel, else A)")
+              help="Channel to enable: A to D or 1 to 4 (default: the net's own channel, else A)")
 @click.option("--volts-per-div", "-v", type=float, default=1.0, help="Vertical scale in volts per division (default: 1.0V/div)")
 @click.option("--time-per-div", "-t", type=float, default=0.001, help="Horizontal scale in seconds per division (default: 1ms/div)")
 @click.option("--trigger-level", type=float, default=0.0, help="Trigger threshold voltage (default: 0V)")
@@ -1656,7 +1658,7 @@ def stream_capture(ctx, box, output, duration, samples, quiet, json_output, verb
 @click.option("--coupling", type=COUPLING_STREAM_CHOICES, help="Input coupling")
 @click.option("--enable/--disable", default=None, help="Enable or disable channel")
 def stream_config(ctx, box, channel, volts_per_div, time_per_div, trigger_level, trigger_source, trigger_slope, capture_mode, coupling, enable):
-    """Configure oscilloscope streaming settings (PicoScope)"""
+    """Configure oscilloscope streaming settings"""
     box_ip = _resolve_box(ctx, box)
     netname = _require_netname(ctx)
 

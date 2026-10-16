@@ -3,12 +3,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Oscilloscope streaming implementation for PicoScope devices.
+Oscilloscope streaming, for a PicoScope or a Rigol MSO5000.
 
 This script runs on the box and talks to the oscilloscope-daemon over
-WebSocket. The daemon listens on loopback only: TCP 127.0.0.1:8085, which
-this script uses, and the Unix socket /tmp/lager-scope.sock. A browser never
-reaches it. The box HTTP server on port 9000 serves the /scope page and
+WebSocket. Daemons listen on loopback only: the box's own, for a PicoScope,
+on TCP 127.0.0.1:8085 and the Unix socket /tmp/lager-scope.sock, and each
+Rigol's on a port of its own, which this script looks up from the net. A
+browser never reaches them. The box HTTP server on port 9000 serves the /scope page and
 relays captures to it.
 
 Every reply arrives wrapped as {"Response": {"response": NAME, ...}}, and a
@@ -256,7 +257,9 @@ def stream_status(params: dict):
         sys.exit(1)
 
     print("Oscilloscope daemon: RUNNING")
-    print(f"  Command port: {DAEMON_COMMAND_PORT}")
+    # The daemon this net answers to: a Rigol has one of its own, on a port
+    # of its own, so not always the box's 8085.
+    print(f"  Command port: {DAEMON_URI.rstrip('/').rsplit(':', 1)[-1]}")
     if "error" in count:
         print(f"  Scope: {count['error']}")
         sys.exit(1)

@@ -849,7 +849,7 @@ lager scope NET_NAME stream start [OPTIONS]
 
 | 选项 | 简写 | 说明 | 默认值 |
 |--------|-------|-------------|---------|
-| `--channel` | `-c` | 通道：`A`、`B`、`1`、`2` | 该 Net 的通道，否则为 `A` |
+| `--channel` | `-c` | 通道：`A` 到 `D`，或 `1` 到 `4` | 该 Net 的通道，否则为 `A` |
 | `--volts-per-div` | `-v` | 垂直刻度（V/格） | `1.0` |
 | `--time-per-div` | `-t` | 水平刻度（s/格） | `0.001` |
 | `--trigger-level` | | 触发阈值电压 | `0.0` |
@@ -995,11 +995,11 @@ lager scope NET_NAME stream config [OPTIONS]
 
 | 选项 | 简写 | 说明 |
 |--------|-------|-------------|
-| `--channel` | `-c` | 通道：`A`、`B`、`1`、`2` |
+| `--channel` | `-c` | 通道：`A` 到 `D`，或 `1` 到 `4` |
 | `--volts-per-div` | `-v` | 每格伏特数 |
 | `--time-per-div` | `-t` | 每格时间（秒） |
 | `--trigger-level` | | 触发电平（伏特） |
-| `--trigger-source` | | 触发源通道：`A`、`B`、`1`、`2` |
+| `--trigger-source` | | 触发源通道：`A` 到 `D`，或 `1` 到 `4` |
 | `--trigger-slope` | | 边沿：`rising`、`falling`、`either` |
 | `--capture-mode` | | 模式：`auto`、`normal`、`single` |
 | `--coupling` | | 耦合：`dc`、`ac` |
