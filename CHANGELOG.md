@@ -67,6 +67,13 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   from a hidden tab, and it stops when the box closes the stream. `measurement.all()`
   in Python gets the same faster set. A single `lager scope NET measure` still asks the
   scope, for its full-memory reading.
+- **A Rigol MSO5000's live view reads the right volts after a volts/div change.** The
+  scope keeps a channel's offset in divisions, so a new scale moves the offset in volts:
+  2.56 V at 2 V/div becomes 1.28 V at 1 V/div. The daemon kept the old offset, so after
+  `lager scope NET scale` the live view and `stream_frames()` were off by the
+  difference. It now reads the offset back with the scale. A raw SCPI command sent
+  through the daemon now refreshes its settings whichever command in a `;` list
+  changes one, with or without the leading colon, and also when a query follows it.
 
 ## [0.57.0] - 2026-10-16
 

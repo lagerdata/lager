@@ -189,14 +189,18 @@ impl Instrument {
                         // A hidden channel ignores its scale and offset,
                         // with no error, as the MSO5074 on the bench did.
                         "SCALE" | "OFFSET" if !c.display => true,
-                        // Rounded to 1-2-5, as the scope does.
+                        // Rounded to 1-2-5, as the scope does. The offset
+                        // is kept in divisions, so it scales with the change:
+                        // 2.56 V at 2 V/div is 1.28 V at 1 V/div.
                         "SCALE" => number()
                             .map(|v| {
-                                c.scale = volts_per_div_ladder()
+                                let scale = volts_per_div_ladder()
                                     .into_iter()
                                     .min_by(|a, b| (a - v).abs().total_cmp(&(b - v).abs()))
                                     .unwrap()
-                                    * c.probe
+                                    * c.probe;
+                                c.offset = c.offset / c.scale * scale;
+                                c.scale = scale;
                             })
                             .is_some(),
                         "OFFSET" => number().map(|v| c.offset = v).is_some(),
@@ -348,13 +352,26 @@ struct FakeScpi {
 }
 
 impl Scpi for FakeScpi {
+    /// Each `;`-separated command in turn, as the scope takes them; a header
+    /// without its leading colon is the same command.
     fn write(&mut self, command: &str) -> Result<()> {
         let mut instrument = self.instrument.lock().unwrap();
-        if command.contains('?') {
-            let reply = instrument.query(command);
-            self.replies.push_back(reply);
-        } else {
-            instrument.write(command);
+        let mut answers = Vec::new();
+        for part in command.split(';') {
+            let part = part.trim();
+            let part = if part.starts_with([':', '*']) {
+                part.to_string()
+            } else {
+                format!(":{part}")
+            };
+            if part.contains('?') {
+                answers.push(instrument.query(&part));
+            } else {
+                instrument.write(&part);
+            }
+        }
+        if !answers.is_empty() {
+            self.replies.push_back(answers.concat());
         }
         Ok(())
     }
@@ -723,6 +740,43 @@ fn raw_scpi_answers_queries_and_keeps_the_cache_true() {
         .unwrap()
         .unwrap();
     assert_eq!(bench.scope.get_time_per_div().unwrap(), 0.002);
+}
+
+#[test]
+fn a_new_scale_moves_the_offset_the_live_view_converts_with() {
+    let mut bench = bench();
+    let a = ChannelId::Alphabetic('A');
+    bench.scope.set_volts_per_div(a, 2.0).unwrap();
+    bench.scope.set_volts_offset(a, 2.56).unwrap();
+    // The scope keeps the offset in divisions: 2.56 V at 2 V/div is
+    // 1.28 V at 1 V/div.
+    bench.scope.set_volts_per_div(a, 1.0).unwrap();
+    assert!((bench.scope.get_volts_offset(a).unwrap() - 1.28).abs() < 1e-9);
+    let frame = bench.capture();
+    assert!((frame.channels[0].offset_v + 1.28).abs() < 1e-6, "{}", frame.channels[0].offset_v);
+}
+
+#[test]
+fn every_form_of_a_raw_setting_refreshes_the_cache() {
+    let a = ChannelId::Alphabetic('A');
+    for (command, offset) in [
+        (":CHANnel1:OFFSet 0.5", 0.5),
+        ("CHANnel1:OFFSet 0.6", 0.6),
+        (":TIMebase:MAIN:SCALe 0.001;:CHANnel1:OFFSet 0.7", 0.7),
+        (":CHANnel1:OFFSet 0.8;*OPC?", 0.8),
+    ] {
+        let mut bench = bench();
+        Oscilloscope::scpi(&mut bench.scope, command).unwrap().unwrap();
+        assert_eq!(bench.scope.get_volts_offset(a).unwrap(), offset, "{command}");
+    }
+}
+
+#[test]
+fn a_raw_query_alone_reads_nothing_back() {
+    let mut bench = bench();
+    let before = bench.sent().len();
+    Oscilloscope::scpi(&mut bench.scope, ":CHANnel1:OFFSet?").unwrap().unwrap();
+    assert_eq!(bench.sent().len(), before, "nothing written, so nothing re-read");
 }
 
 #[test]

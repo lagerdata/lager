@@ -69,6 +69,21 @@ const COMPLETION_WAIT: Duration = Duration::from_secs(20);
 const CACHED_SUBSYSTEMS: [&str; 8] = [
     ":CHAN", ":TIM", ":TRIG", ":ACQ", ":AUT", ":RUN", "*RST", "*RCL",
 ];
+/// Whether a raw command can change a setting the daemon caches. Every
+/// `;`-separated command is checked, with or without its leading colon.
+fn changes_cached_settings(command: &str) -> bool {
+    command.split(';').any(|part| {
+        let part = part.trim().to_ascii_uppercase();
+        if part.contains('?') {
+            return false;
+        }
+        CACHED_SUBSYSTEMS.iter().any(|prefix| {
+            part.starts_with(prefix)
+                || prefix.strip_prefix(':').is_some_and(|bare| part.starts_with(bare))
+        })
+    })
+}
+
 /// How long the cross-process lock is waited for at open.
 const LOCK_WAIT: Duration = Duration::from_secs(2);
 /// What the scope answers for a measurement it cannot make.
@@ -918,10 +933,13 @@ impl Oscilloscope for RigolMso5000 {
     fn set_volts_per_div(&mut self, channel: ChannelId, volts_per_div: f64) -> Result<()> {
         let i = self.index(channel)?;
         self.while_shown(i, |scope| {
-            scope.apply(&format!(":CHANnel{}:SCALe {volts_per_div}", i + 1))?;
-            // The scope rounds to what it has.
+            let n = i + 1;
+            scope.apply(&format!(":CHANnel{n}:SCALe {volts_per_div}"))?;
+            // The scope rounds to what it has, and keeps the offset in
+            // divisions, so the offset in volts moves with the scale.
             scope.settings.channels[i].volts_per_div =
-                scope.query_f64(&format!(":CHANnel{}:SCALe?", i + 1))?;
+                scope.query_f64(&format!(":CHANnel{n}:SCALe?"))?;
+            scope.settings.channels[i].offset = scope.query_f64(&format!(":CHANnel{n}:OFFSet?"))?;
             Ok(())
         })
     }
@@ -1334,18 +1352,21 @@ impl Oscilloscope for RigolMso5000 {
 
     fn scpi(&mut self, command: &str) -> Option<Result<Option<String>>> {
         Some((|| {
-            if command.contains('?') {
-                return Ok(Some(self.link().query(command)?));
-            }
-            self.apply(command)?;
-            let upper = command.trim().to_ascii_uppercase();
-            if CACHED_SUBSYSTEMS.iter().any(|prefix| upper.starts_with(prefix)) {
+            // A query may carry a setting before it, as in
+            // `:CHANnel1:OFFSet 1;*OPC?`, so both paths check.
+            let reply = if command.contains('?') {
+                Some(self.link().query(command)?)
+            } else {
+                self.apply(command)?;
+                None
+            };
+            if changes_cached_settings(command) {
                 let channels = self.settings.channels.len();
                 let settings = read_settings(self.link().as_mut(), channels)?;
                 self.settings = settings;
                 self.refresh_sample_rate();
             }
-            Ok(None)
+            Ok(reply)
         })())
     }
 }
