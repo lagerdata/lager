@@ -112,10 +112,10 @@ The token only has to be valid when you open the link. The gateway then
 gives the browser a session of its own, and the gateway decides how long
 that session lasts. A current gateway keeps it for up to 24 hours, or until
 your access to the box is removed. An older gateway ends it when the token
-expires. Before it prints a link, the CLI renews your sign-in if less than
-half of the token's lifetime is left, so a new link can usually be opened
-for about 15 minutes. If the link has expired, or an open viewer asks you to
-sign in, run `lager webcam url` for a new link.
+expires. Before it prints a link, the CLI checks your sign-in. If less than
+half of the token's lifetime is left, the CLI renews it. A new link can then
+usually be opened for about 15 minutes. If the link no longer opens, or an
+open viewer asks you to sign in, run `lager webcam url` for a new link.
 
 With `LAGER_GATEWAY_TOKEN` set, the link carries that token instead, and
 can be opened while that token is valid. If no sign-in is stored for the

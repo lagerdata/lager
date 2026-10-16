@@ -862,7 +862,16 @@ lager scope NET_NAME stream start [OPTIONS]
 
 该命令按顺序应用各项设置，然后启动采集。如果守护进程拒绝某项设置，命令会打印错误并以 1 退出，采集也不会启动。触发源就是被串流的通道。
 
-启动之后，命令打印指向 `http://<box>:9000/scope` 的链接。使用 `--json` 时，该链接位于 `visualization_url` 字段中。在位于访问网关之后的 Box 上，该链接带有您的登录令牌，与[摄像头串流](/source/zh/reference/cli/webcam#访问受控的-box)相同。
+启动之后，命令在单独的一行上打印指向 `http://<box>:9000/scope` 的链接，然后打印结束采集的 `stream stop` 命令。使用 `--json` 时，该链接位于 `visualization_url` 字段中。在位于访问网关之后的 Box 上，该链接带有您的登录令牌，与[摄像头串流](/source/zh/reference/cli/webcam#访问受控的-box)相同：
+
+```
+Visualization:
+http://<box>:9000/scope?token=...
+Open this link within 15 minutes; it carries your sign-in.
+If it has expired, or the viewer later asks for sign-in, run: lager scope PICO1 stream web --box my-lager-box
+
+To stop streaming: lager scope PICO1 stream stop --box my-lager-box
+```
 
 对于不是 PicoScope 的示波器，命令会打印错误，并建议使用 `lager scope NET_NAME start --single`。
 
@@ -914,7 +923,7 @@ lager scope NET_NAME stream web [--box BOX] [--port PORT]
 **选项：**
 - `--port` - Box HTTP 服务器端口（默认 9000）
 
-该命令打开 `http://<box>:<port>/scope`。在位于访问网关之后的 Box 上，该链接带有您的登录令牌，与[摄像头串流](/source/zh/reference/cli/webcam#访问受控的-box)相同。令牌过期后，再次运行 `stream web` 即可获得新的链接。
+该命令打开 `http://<box>:<port>/scope`，并在单独的一行上打印该链接。在位于访问网关之后的 Box 上，该链接带有您的登录令牌，与[摄像头串流](/source/zh/reference/cli/webcam#访问受控的-box)相同。必须在链接下方说明给出的时间内打开该链接，约为 15 分钟。打开的页面之后能持续多久，取决于网关。如果链接无法再打开，或页面要求您登录，请再次运行 `stream web` 获取新链接。
 
 Web 界面是一个无依赖的 HTML5 示波器显示，由 Box 在 `http://<box>:9000/scope` 提供。波形以 LSCP 二进制帧的形式经 WebSocket 到达，由浏览器解码。页面根据所连接设备的能力信息构建控件，因此双通道示波器不会显示通道 C。页面还有一个命令控制台。它接受此 CLI 的大多数命令，另外还接受 `offset`、`hpos`、`vpos`、`sidebar` 和 `capabilities`。在控制台中，作用于单个通道的命令可以指定通道：`scale B 0.5`、`coupling B ac`、`probe B 10`、`offset B 0.1`、`vpos B -0.5` 和 `measure B vpp`。请把通道写在最前面。请用字母表示通道，因为 `scale 2` 设置的是 2 V/div。不指定通道时，命令使用第一个已打开的通道，与测量面板相同。控制台中的回复会写明通道。
 
