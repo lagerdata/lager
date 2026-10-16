@@ -94,6 +94,16 @@ def describe_error(exc: Exception) -> str:
 _limits = threading.local()
 
 
+def lock_wait_within(remaining):
+    """The lock wait to ask for when the HTTP call itself has ``remaining`` s.
+
+    Shorter than the HTTP timeout, so hardware_service's "device-busy" 503
+    gets back before the caller gives up. With the two equal the client
+    always timed out first, and a held lock read as a dead instrument.
+    """
+    return max(remaining * 0.8, 0.05)
+
+
 @contextlib.contextmanager
 def call_limits(deadline):
     """Bound every ``Device`` call this thread makes to an absolute deadline.
@@ -161,7 +171,7 @@ class Device:
             # and an already-spent budget should fail fast, not block forever.
             remaining = max(deadline - time.monotonic(), 0.05)
             timeout = min(timeout, remaining)
-            data['lock_timeout_s'] = remaining
+            data['lock_timeout_s'] = lock_wait_within(remaining)
         try:
             try:
                 # Note: Using localhost since all services run in same container

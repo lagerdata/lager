@@ -394,7 +394,8 @@ def _brief_labjack_batch(recs, causes=None, codes=None, deadline=None):
     if deadline is not None:
         remaining = max(deadline - time.monotonic(), 0.05)
         timeout = min(timeout, remaining)
-        body["lock_timeout_s"] = remaining
+        from ..nets.device import lock_wait_within
+        body["lock_timeout_s"] = lock_wait_within(remaining)
     names = [r.get("name", "") for r in recs]
     try:
         resp = _req.post("http://localhost:8080/labjack/batch_read",
@@ -1269,7 +1270,9 @@ def _sweep(nets):
                 logger.warning("nets_state: %s did not answer within %.1fs; "
                                "%d net(s) report timed out", g.key, g.budget,
                                len(rest))
-                _settle_cooldown(g.key, g.recs, rest)
+                # With the nets it did answer: an instrument that answered
+                # one channel and hung on the next is alive, not cooling down.
+                _settle_cooldown(g.key, g.recs, answered + rest)
                 yield ("states", answered + rest)
 
         if pending:
@@ -1278,6 +1281,7 @@ def _sweep(nets):
                 g = futures[fut]
                 part, rest = _cut_short(
                     g, lambda r: _unknown(r, REASON_DEADLINE))
+                _settle_cooldown(g.key, g.recs, part + rest)
                 answered.extend(part)
                 cut_off.extend(rest)
             # Counts NETS, not groups -- see the comment this replaced in

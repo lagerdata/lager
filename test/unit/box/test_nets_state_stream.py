@@ -423,6 +423,8 @@ class GroupBudgetTests(_SweepTestCase):
 
         self.assertEqual(body[0]["state"], "LOW (0)")
         self.assertEqual(body[1]["reason_code"], nets_handler.CODE_TIMEOUT)
+        # ch1 answered, so the instrument is alive: no cooldown for either.
+        self.assertEqual(nets_handler._cooldown, {})
 
     def test_budget_grows_per_net_on_the_one_at_a_time_path(self):
         three = [_rec(f"c{i}", role="power-supply") for i in range(3)]
@@ -561,9 +563,11 @@ class DeviceFailureReasonTests(_SweepTestCase):
         self.assertNotIn("enabled", entry)
         self.assertEqual(entry["reason_code"], nets_handler.CODE_BUSY)
         sent = json.loads(post.call_args[1]["data"])
-        self.assertLessEqual(sent["lock_timeout_s"], nets_handler._GROUP_BUDGET_S)
         self.assertLessEqual(post.call_args[1]["timeout"],
                              nets_handler._GROUP_BUDGET_S)
+        # The lock wait ends before the HTTP timeout, so the busy answer
+        # arrives instead of a client-side timeout.
+        self.assertLess(sent["lock_timeout_s"], post.call_args[1]["timeout"])
 
     def test_without_a_budget_device_calls_are_unchanged(self):
         from lager.nets import device as device_mod

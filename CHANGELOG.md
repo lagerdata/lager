@@ -44,6 +44,20 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 - **`lager scope NET stream web` now says when no browser opened.** On a machine with no
   browser, such as over SSH, it used to print the link and nothing else. It now asks you
   to open the link yourself, as `lager webcam NET start --open` does.
+- **`GET /nets/state?stream=1` streams each instrument's net states as they are
+  read.** The box answers `application/x-ndjson`: one `states` line per instrument,
+  and a final `done` line that lists the nets the 8-second deadline cut off. A box
+  that supports it sets `netsStateStream` in `/status` capabilities. Without
+  `stream=1` the answer is unchanged.
+
+### Fixed
+
+- **`lager nets state` no longer waits 8 seconds on every run because one
+  instrument is unplugged or does not answer.** The box now skips an instrument
+  whose USB address is not on the bus (`instrument-absent`), cuts off one that
+  takes longer than its own 3-second budget (`instrument-timeout`), and does not
+  read it again for 30 seconds (`probe-cooldown`). A supply whose device lock is
+  held now reports `device-busy`, not a null with no reason.
 
 ## [0.57.0] - 2026-10-16
 
@@ -412,20 +426,9 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   `interface` tells apart the ports of one multi-port chip. When `serial` is
   `null`, prefer `by_path`, because identical serial-less adapters share one
   by-id name. `lager nets assign --list` shows the product and durable path.
-- **`GET /nets/state?stream=1` streams each instrument's net states as they are
-  read.** The box answers `application/x-ndjson`: one `states` line per instrument,
-  and a final `done` line that lists the nets the 8-second deadline cut off. A box
-  that supports it sets `netsStateStream` in `/status` capabilities. Without
-  `stream=1` the answer is unchanged.
 
 ### Fixed
 
-- **`lager nets state` no longer waits 8 seconds on every run because one
-  instrument is unplugged or does not answer.** The box now skips an instrument
-  whose USB address is not on the bus (`instrument-absent`), cuts off one that
-  takes longer than its own 3-second budget (`instrument-timeout`), and does not
-  read it again for 30 seconds (`probe-cooldown`). A supply whose device lock is
-  held now reports `device-busy`, not a null with no reason.
 - **`lager uninstall` and `lager install` now stop every SSH key-sync poller a
   previous run left on the box.** A poller the PID file no longer named kept
   rebuilding `~/.ssh/authorized_keys` until reboot, and could revoke registered keys

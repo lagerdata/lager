@@ -48,12 +48,12 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` | 3276 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 4458 (+16 skipped) |
+| `unit (box)` | `test/unit/box/` | 4499 (+16 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 405 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 205 (+1 skipped) |
-| | **Total gated** | **8538** |
+| | **Total gated** | **8579** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -480,9 +480,9 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 305 files)
+### Local Unit Tests (`test/unit/` -- 306 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 165 files)
+#### Box Unit Tests (`test/unit/box/` -- 166 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
