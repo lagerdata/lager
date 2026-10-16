@@ -1,0 +1,116 @@
+---
+title: "Version 0.57.0"
+description: "October 16, 2026"
+---
+
+## <u>Upgrade Notes</u>
+
+- **Update your boxes.** The Rigol MSO5000 support, the DFU error message and the `lager install`
+  change run on the box. Run `lager update --box <box-name>` after you upgrade the CLI. The first
+  update builds the oscilloscope daemon on every box, so it takes longer than usual.
+- **A Rigol MSO5000 names its channels A to D.** Before, the trigger source read back as `CHAN1`.
+  Now it reads back as `A`, as on a PicoScope. Change any script that compares the trigger source
+  with a `CHAN` name.
+- **A command that a Rigol MSO5000 refuses is now an error.** Before, the scope put the refusal
+  in its error queue, and the command reported success. A script that sent a refused command
+  and passed before now stops with the scope's error.
+
+## <u>Features</u>
+
+- **A Rigol MSO5000 has the same live view and controls as a PicoScope.** The web scope page,
+  `lager scope NET stream`, status, acquisition, holdoff, display, FFT and cursors all work on a
+  Rigol net. The live view comes from the scope's HDMI output through a USB HDMI capture card.
+  - Pair the scope with its card once with
+    [`lager nets set-capture`](/source/reference/cli/nets#set-capture).
+  - Turn on the scope's HDMI output under **Utility > IO > HDMI**. A power cycle can turn it off
+    again. Every command still works without it, and the live view returns when the output is
+    back on and acquisition starts again.
+  - A scope with no card, or with no picture on its HDMI output, can use its own screenshot over
+    USB instead. Pair it with `lager nets set-capture <net> --screen`. This live view runs at a
+    few frames a second.
+  - `stream start` and `stream config` take channels C and D as well as A and B.
+- **A Rigol scope net in a Python script answers the same calls as a PicoScope net.**
+  `measurement.all()` returns all of the scope's own measurements in one call. `capture()` returns
+  the scope's exact record. `stream_start()`, `stream_frames()` and `stream_capture()` need a live
+  view from `lager nets set-capture`, and they say so when there is none.
+- **`lager uart -i --no-echo` supports devices that do not echo commands.** Interactive mode then
+  shows every line that it receives. The default, `--echo`, still hides the device's echo of each
+  command. See the [`lager uart`](/source/reference/cli/uart) reference.
+
+## <u>Bug Fixes</u>
+
+- **A failed DFU run did not report why it failed.** The error from `POST /usb/dfu` quoted only
+  the last 3 lines of stderr. It quoted stdout only when stderr was empty. The DFU suffix warnings
+  from `dfu-util` hid the device status lines that a raw download writes to stdout. The error now
+  quotes the end of both streams, each with a label and its own size limit.
+- **`lager uart -i` hid the reply of a device that does not echo commands.** After each command,
+  it dropped the first line that it received as the device's echo. A device that answered without
+  an echo showed a blank line instead of its reply. The CLI now drops that line only when it is
+  the command itself.
+- **Rigol MSO5000 commands that the scope refused reported success.** This hid several faults,
+  which are now fixed:
+  - `lager logic <net> enable` and `disable` sent a form of the command that the firmware refuses.
+  - A measurement on a logic net did not show the digital channel first. The scope measures a
+    digital channel only while it is on the screen.
+  - The trigger mode, coupling and edge slope from Python went to the scope in a form that it
+    refuses.
+  - Cursors used the commands of older Rigol scopes. They now use the MSO5000 commands. An x
+    position counts from the center of the 1000-pixel grid, not from pixel 240.
+- **Viewer links on an access-gated Lager Box claimed a lifetime that they do not have.**
+  `lager webcam start`, `start-all` and `url`, and `lager scope NET stream start` and `stream web`,
+  said that the link "stays valid for about N minutes". N was the time left on the cached sign-in
+  token. The token must be valid only when you open the link.
+  - After you open it, the gateway sets how long the viewer lasts. A current gateway allows up to
+    24 hours.
+  - The note now tells how long you can still open the link. It also tells what to run if the
+    link expires or the viewer asks you to sign in again.
+  - The CLI renews the sign-in before it prints a link when less than half of the token's lifetime
+    is left. You can then open the link for about 15 minutes.
+  - The link is on a line of its own, with the note under it and the stop command last.
+    `stream start` now prints the stop command too.
+- **`lager install` of a branch or commit took the box down for the whole build.** The box stopped
+  the running container before it built the new image. A cold build takes about 15 minutes. The
+  box now builds the image first, so it is down for seconds. A failed build leaves the previous
+  container running.
+- **A scope command that a PicoScope refused while it opened showed failure prefixes.** A message
+  such as "opening the oscilloscope (25 s so far)" appeared as
+  `Error: Hardware error: Function call failed: ...`, although the open was still in progress. The
+  CLI now shows the reason on its own. The same applies to "no oscilloscope available" and to a
+  request that the box dropped when the unit was unplugged. Other hardware errors keep their
+  prefix.
+
+## <u>Improvements</u>
+
+- **A Rigol MSO5000 runs through the oscilloscope daemon.** The daemon holds the scope's only
+  connection. `lager scope`, `lager logic`, Python scripts and the web page no longer compete for
+  its USB interface. The scope itself still takes the measurements.
+- **Every Lager Box builds the oscilloscope daemon**, with or without the PicoTech SDK headers.
+  Without the headers, the daemon drives Rigol scopes only.
+- **The bench workflows release their own box lock again.** The cleanup step asked `lager hello`
+  who held the lock. `hello` does not report a lock under the caller's own CI identity, so the
+  step left the lock in place. It now asks as a separate holder, so it finds the lock and releases
+  it.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.57.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli==0.57.0
+```
+
+Then update your boxes:
+
+```bash
+lager update --box <box-name>
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.57.0/)

@@ -292,6 +292,7 @@
               {
                 "group": "0.40 and later",
                 "pages": [
+                  "source/release-notes/v0.57.0",
                   "source/release-notes/v0.56.0",
                   "source/release-notes/v0.55.1",
                   "source/release-notes/v0.55.0",
