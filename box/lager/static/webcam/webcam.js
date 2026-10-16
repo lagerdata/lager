@@ -489,11 +489,15 @@
     var gain = data.gain;
     $('gain-group').hidden = !gain;
     if (gain) {
+      // Under auto exposure the camera sets gain itself and ignores what is
+      // written, so the slider is held, as Distance is under auto focus.
+      var gainAuto = !!(exposure && exposure.auto === true);
       $('gain').min = gain.min;
       $('gain').max = gain.max;
       $('gain').step = gain.step || 1;
+      $('gain').disabled = gainAuto;
       if (!state.dragging.gain) $('gain').value = gain.value;
-      $('gain-value').textContent = String($('gain').value);
+      $('gain-value').textContent = gainAuto ? 'auto' : String($('gain').value);
     }
   }
 

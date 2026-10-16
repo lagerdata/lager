@@ -346,6 +346,24 @@ def test_an_exposure_with_no_auto_mode_has_no_switch():
     assert out["switchShown"] is False and out["sliderDisabled"] is False
 
 
+@pytest.mark.parametrize("exposure,held", [
+    ({"auto": True, "value": 250, "min": 3, "max": 2047, "step": 1}, True),
+    ({"auto": False, "value": 250, "min": 3, "max": 2047, "step": 1}, False),
+    ({"auto": None, "value": 250, "min": 3, "max": 2047, "step": 1}, False),
+    (None, False),
+])
+def test_gain_is_held_only_while_auto_exposure_is_on(exposure, held):
+    controls = {"gain": {"value": 12, "min": 0, "max": 255, "step": 1}}
+    if exposure:
+        controls["exposure"] = exposure
+    scenario = """
+    out.disabled = $('gain').disabled;
+    out.shown = $('gain-value').textContent;
+    """
+    out = _run(_routes(INFO, **{"/api/controls": [200, controls]}), scenario)
+    assert (out["disabled"], out["shown"]) == (held, "auto" if held else "12")
+
+
 def test_manual_exposure_is_one_post():
     scenario = """
     $('exposure-manual').fire('click');

@@ -25,7 +25,8 @@ Write one bullet per change, in one to three sentences: what changed for a user,
     why.
   - **Pan when zoomed.** Zoom used to crop only the centre. Drag the picture, use the arrow
     keys, or double-click a point to zoom in on it.
-  - **Exposure** (auto or manual) **and gain**, shown only on cameras that have them.
+  - **Exposure** (auto or manual) **and gain**, shown only on cameras that have them. Gain is
+    greyed out under auto exposure, since the camera sets it then.
   - **Rotate** in quarter turns, and **flip** either way, for cameras mounted sideways or
     upside down.
   - **Full screen.**
