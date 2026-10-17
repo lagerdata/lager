@@ -504,7 +504,7 @@ pub(crate) mod tests {
         let map = measure(&grid, &blank).unwrap();
         let traces = hdmi_frame(include_bytes!("../../../tests/fixtures/mso5074_ms2109_1080p_traces.jpg"));
         let mut env = crate::oscilloscope::rigol::extract::Envelopes::default();
-        env.extract(&traces, &map, &Palette::new(&MSO5000_COLOURS), 0b1111);
+        env.extract(&traces, &map, &Palette::new(&MSO5000_COLOURS), 0b1111, None);
         assert_eq!(env.seen, 0b1111);
         for (channel, divs) in [3.0, 1.0, -1.0, -3.0].into_iter().enumerate() {
             let mut mids: Vec<f64> = env.samples[channel]
@@ -517,6 +517,54 @@ pub(crate) mod tests {
             let median = mids[mids.len() / 2] / crate::oscilloscope::rigol::extract::COUNTS_PER_DIV;
             assert!((median - divs).abs() < 0.1, "channel {} at {median} div, not {divs}", channel + 1);
         }
+    }
+
+    /// The trigger-position marker inside the top of the area, at the
+    /// trigger column: orange on a black screen (`traces`), and yellower
+    /// on a 335 Hz 0-3.3 V square at 1 V/div whose picture the card washed
+    /// with grey (`square`). Neither may read as CH1 clipping.
+    #[test]
+    fn the_trigger_marker_in_a_real_frame_is_not_clipping() {
+        let (grid, blank) = hdmi_pair(false);
+        let map = measure(&grid, &blank).unwrap();
+        let trigger_column = map.center_x - map.left as f64;
+        for (name, jpeg) in [
+            ("traces", &include_bytes!("../../../tests/fixtures/mso5074_ms2109_1080p_traces.jpg")[..]),
+            ("square", &include_bytes!("../../../tests/fixtures/mso5074_ms2109_1080p_square.jpg")[..]),
+        ] {
+            let frame = hdmi_frame(jpeg);
+            let mut env = crate::oscilloscope::rigol::extract::Envelopes::default();
+            let palette = Palette::new(&MSO5000_COLOURS);
+            env.extract(&frame, &map, &palette, 0b0001, None);
+            assert_eq!(env.clipped, 0b0001, "{name}: the marker should read as clipping unmasked");
+            env.extract(&frame, &map, &palette, 0b0001, Some(trigger_column));
+            assert_eq!(env.clipped, 0, "{name}: the marker read as clipping");
+            let tops = env.samples[0]
+                .chunks_exact(2)
+                .filter(|p| p[1] != i16::MIN)
+                .map(|p| f64::from(p[1]) / crate::oscilloscope::rigol::extract::COUNTS_PER_DIV)
+                .fold(f64::MIN, f64::max);
+            assert!(tops < 3.6, "{name}: CH1 reaches {tops} div, the marker's height");
+        }
+    }
+
+    #[test]
+    fn a_real_square_wave_reads_its_levels() {
+        let (grid, blank) = hdmi_pair(false);
+        let map = measure(&grid, &blank).unwrap();
+        let frame = hdmi_frame(include_bytes!("../../../tests/fixtures/mso5074_ms2109_1080p_square.jpg"));
+        let mut env = crate::oscilloscope::rigol::extract::Envelopes::default();
+        env.extract(&frame, &map, &Palette::new(&MSO5000_COLOURS), 0b0001, Some(map.center_x - map.left as f64));
+        let mut mids: Vec<f64> = env.samples[0]
+            .chunks_exact(2)
+            .filter(|p| p[0] != i16::MIN && p[1] - p[0] < 1024)
+            .map(|p| (f64::from(p[0]) + f64::from(p[1])) / 2.0 / crate::oscilloscope::rigol::extract::COUNTS_PER_DIV)
+            .collect();
+        mids.sort_by(f64::total_cmp);
+        // Half the flat columns low, half high, at 1 V/div with offset 0.
+        let (low, high) = (mids[mids.len() / 4], mids[mids.len() * 3 / 4]);
+        assert!(low.abs() < 0.15, "low level at {low} div");
+        assert!((high - 3.1).abs() < 0.2, "high level at {high} div");
     }
 }
 

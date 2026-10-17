@@ -58,6 +58,13 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   takes longer than its own 3-second budget (`instrument-timeout`), and does not
   read it again for 30 seconds (`probe-cooldown`). A supply whose device lock is
   held now reports `device-busy`, not a null with no reason.
+- **A Rigol MSO5000's live view no longer shows a spike and a false "Channel A clipped"
+  warning at the trigger position.** The scope draws its trigger-position marker inside
+  the top of the waveform area, in an orange the live view took for CH1's yellow, so
+  every frame had a spike to full scale there. The daemon now leaves the marker out,
+  and calls a channel clipped only when it runs along the top or bottom edge for at
+  least 3 columns. On the `/scope` page a Rigol's channels are drawn in the scope's own
+  colours (yellow, cyan, magenta, blue), so the page matches the scope's screen.
 
 ## [0.57.0] - 2026-10-16
 

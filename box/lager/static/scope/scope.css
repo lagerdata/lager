@@ -32,6 +32,15 @@
   --plot-reserve: 160px;
 }
 
+/* A Rigol MSO5000's channels in the colours the scope draws them, so the
+ * live view matches its screen. */
+:root[data-palette="rigol"] {
+  --ch-a: #ffff00;
+  --ch-b: #00ffff;
+  --ch-c: #ff00bd;
+  --ch-d: #0000ff;
+}
+
 * { box-sizing: border-box; }
 
 /* The browser hides `[hidden]` elements with a `display: none` rule in its

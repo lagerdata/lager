@@ -301,3 +301,39 @@ class TestTheMeasurementPanelPicksAChannel:
 
     def test_none_on_reports_nothing_rather_than_guessing(self):
         assert self._panel("[['A', { enabled: false, net: 'vbus' }]]") is None
+
+
+class TestARigolIsDrawnInItsOwnColours:
+    """The live view is the scope's screen, so the page uses its colours."""
+
+    def _palette(self, net, ticket="null"):
+        return _run_js("""
+        globalThis.document = { documentElement: { dataset: {} } };
+        const self = {
+          net: '%s', scopeNets: %s, ticket: %s, colors: ['stale'],
+          isRigol: ScopeApp.prototype.isRigol,
+        };
+        ScopeApp.prototype.applyPalette.call(self);
+        process.stdout.write(JSON.stringify({
+          palette: document.documentElement.dataset.palette, colors: self.colors,
+        }));
+        """ % (net, NETS, ticket))
+
+    def test_a_rigol_net_takes_the_rigol_palette(self):
+        assert self._palette("rigol1") == {"palette": "rigol", "colors": None}
+
+    def test_the_ticket_names_the_instrument_too(self):
+        out = self._palette("other", "{ instrument: 'Rigol_MSO5000' }")
+        assert out["palette"] == "rigol"
+
+    def test_a_picoscope_keeps_the_page_palette(self):
+        assert self._palette("pico1") == {"palette": "", "colors": None}
+
+    def test_the_rigol_palette_is_the_colours_the_scope_draws(self):
+        """The same four as the daemon's MSO5000_COLOURS, which find the traces."""
+        css = (SCOPE_JS.parent / "scope.css").read_text()
+        block = css.split(':root[data-palette="rigol"]', 1)[1].split("}", 1)[0]
+        assert "--ch-a: #ffff00;" in block
+        assert "--ch-b: #00ffff;" in block
+        assert "--ch-c: #ff00bd;" in block
+        assert "--ch-d: #0000ff;" in block
