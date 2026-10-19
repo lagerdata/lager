@@ -113,6 +113,10 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   `solar`, `logic`, `energy`, `scope`, `usb` and `watt`.
 - **`lager instruments` finds a Dexarm on firmware V2.4.x that has no saved net.** The arm
   prints `wait` every second when idle, and the scan read that line as the arm's reply.
+- **`lager arm <net> move --timeout` and `Dexarm.move_to(timeout=)` time out on firmware
+  V2.4.x.** That firmware acknowledges a move only when it is nearly done, and the timeout
+  started at the acknowledgement, so a short timeout never expired. It now starts when the
+  move is sent.
 
 ## [0.58.0] - 2026-10-20
 

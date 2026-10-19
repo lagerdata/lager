@@ -470,11 +470,32 @@ class Dexarm(ArmBase):
                 not been homed since it powered on.
             MovementTimeoutError: The arm did not reach the target in time.
         """
-        # The firmware acknowledges a move as soon as it queues it; the ok does
-        # not wait for the move to finish. Before the arm is homed after
-        # power-on, the firmware answers with a refusal line instead of moving,
-        # so read the reply rather than discarding it.
-        lines = self.move_to_gcode(x, y, z, e, feedrate, mode, wait=True)
+        def timed_out() -> MovementTimeoutError:
+            # move_to and move_relative check the bounds before a move is
+            # sent, so a timeout means the arm did not arrive: an obstruction,
+            # an unreachable target inside the bounds, or a long move.
+            return MovementTimeoutError(
+                "The arm did not reach the target within %g s. It may be "
+                "obstructed or the target unreachable, or a long move may need "
+                "a longer timeout." % timeout,
+                target_x=x,
+                target_y=y,
+                target_z=z,
+                bounds_hint=self.get_bounds_string(),
+            )
+
+        # The timeout covers the whole move, starting before it is sent:
+        # firmware V2.4.x sends the move's ok only when the move is nearly
+        # done, so a clock started at the ok would never expire. An ok that
+        # arrives after the timeout is drained by the next command. Before the
+        # arm is homed after power-on, the firmware answers with a refusal line
+        # instead of moving, so read the reply rather than discarding it.
+        deadline = time.monotonic() + timeout
+        try:
+            lines = self._send_cmd(self._move_gcode(x, y, z, e, feedrate, mode),
+                                   timeout=timeout)
+        except RuntimeError:
+            raise timed_out() from None
         if any("initialize" in line.lower() for line in lines):
             raise NotHomedError(
                 "The arm has not been homed since it powered on, so the firmware "
@@ -483,21 +504,9 @@ class Dexarm(ArmBase):
         # Give the ARM a moment to start moving
         time.sleep(0.2)
 
-        deadline = time.monotonic() + timeout
         while True:
             if time.monotonic() > deadline:
-                # move_to and move_relative check the bounds before a move is
-                # sent, so a timeout means the arm did not arrive: an obstruction,
-                # an unreachable target inside the bounds, or a long move.
-                raise MovementTimeoutError(
-                    "The arm did not reach the target within %g s. It may be "
-                    "obstructed or the target unreachable, or a long move may need "
-                    "a longer timeout." % timeout,
-                    target_x=x,
-                    target_y=y,
-                    target_z=z,
-                    bounds_hint=self.get_bounds_string(),
-                )
+                raise timed_out()
 
             time.sleep(0.3)  # Poll every 0.3s to reduce serial traffic
             my_x, my_y, my_z, *_ = self.get_full_position()
@@ -520,6 +529,10 @@ class Dexarm(ArmBase):
     ) -> List[str]:
         """Raw G-code move (non-ArmBase API). Does not check workspace bounds
         or the firmware version. Returns the reply lines when ``wait`` is True."""
+        return self._send_cmd(self._move_gcode(x, y, z, e, feedrate, mode), wait=wait)
+
+    @staticmethod
+    def _move_gcode(x, y, z, e, feedrate, mode) -> str:
         cmd = mode + "F" + str(feedrate)
         if x is not None:
             cmd += "X" + str(x)
@@ -529,8 +542,7 @@ class Dexarm(ArmBase):
             cmd += "Z" + str(z)
         if e is not None:
             cmd += "E" + str(round(e))
-        cmd += "\r\n"
-        return self._send_cmd(cmd, wait=wait)
+        return cmd + "\r\n"
 
     def fast_move_to(self, x: Optional[float] = None, y: Optional[float] = None, z: Optional[float] = None, feedrate: int = 2000, wait: bool = True) -> None:
         """Convenience for G0 moves. Does not check workspace bounds or the firmware version."""

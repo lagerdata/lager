@@ -364,6 +364,47 @@ class TestMoveTimeout(_DriverTest):
         self.assertIn("longer timeout", message)
         self.assertNotIn("coordinates are out of bounds", message)
 
+    def test_a_move_whose_ok_has_not_arrived_times_out(self):
+        # Firmware V2.4.x sends a move's ok only when the move is nearly done.
+        # Waiting for that ok must count against the timeout, not before it.
+        from lager.automation.arm.arm_net import MovementTimeoutError
+
+        def replies(data):
+            if data.startswith(b"G1"):
+                return []        # still moving: no ok yet
+            return replies_with_position()(data)
+
+        arm, _ = self.make_arm(replies)
+        self.fake_clock()
+        with self.assertRaises(MovementTimeoutError):
+            arm.move_to(50, 250, 30, timeout=1)
+
+    def test_the_timeout_starts_before_the_move_is_sent(self):
+        # The ok arrives after the timeout has passed, with the arm already
+        # on target: that is still a timeout, because the clock started
+        # when the move was sent, not when it was acknowledged.
+        from lager.automation.arm.arm_net import MovementTimeoutError
+
+        target = [b"X:50.00 Y:250.00 Z:30.00 E:0.00 Count X:0 Y:0 Z:0\n", b"ok\n"]
+        now = [0.0]
+
+        def replies(data):
+            if data.startswith(b"G1"):
+                now[0] += 10.0   # the ok comes 10 s after the move is sent
+                return [b"ok\n"]
+            return list(target)
+
+        arm, _ = self.make_arm(replies)
+        with mock.patch.object(rotrics.time, "monotonic", side_effect=lambda: now[0]):
+            with self.assertRaises(MovementTimeoutError):
+                arm.move_to(50, 250, 30, timeout=5)
+
+    def test_a_move_that_arrives_in_time_returns(self):
+        target = [b"X:50.00 Y:250.00 Z:30.00 E:0.00 Count X:0 Y:0 Z:0\n", b"ok\n"]
+        arm, fake = self.make_arm(replies_with_position(target))
+        arm.move_to(50, 250, 30, timeout=5)
+        self.assertIn(b"G1F2000X50Y250Z30\r\n", fake.writes)
+
 
 class TestSerialFromNetRecord(unittest.TestCase):
     serial_from = staticmethod(rotrics.Dexarm.serial_from_net_record)
