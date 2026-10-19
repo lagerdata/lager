@@ -65,6 +65,11 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 ### Fixed
 
+- **A Rigol MSO5000 works while its capture card is missing.** If the card paired with
+  `lager nets set-capture` is not on its port, or something else holds it, every command
+  except the live view now works, instead of every command failing. The live view, `stream
+  start` and `stream status` say why and list the USB ports that have a video device, and
+  the next start tries the card again (#722).
 - **A Rigol MSO5000's rise and fall time are the scope's own again.** Since the set came
   from the screen record, they read anywhere from 0.3 to 3 ms on an edge the scope times
   at 70 ns: the record is too coarse for an edge, and noise on the level started the

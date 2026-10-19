@@ -191,9 +191,12 @@ pub struct RigolMso5000 {
     /// The capture card and where the waveform is in its picture.
     screen: Option<Screen>,
     /// A capture card that could not be paired, kept to pair again when
-    /// acquisition next starts: the picture can be missing, from the cable
-    /// or the HDMI output, and every command still works without it.
+    /// acquisition next starts: the card can be missing, or its picture,
+    /// from the cable or the HDMI output, and every command still works
+    /// without it.
     unpaired: Option<Unpaired>,
+    /// Opens a capture card by the spec the net names it with.
+    open_card: CardOpener,
     /// Whether pairing may still switch the scope's HDMI output on.
     may_switch_hdmi: bool,
     _lock: Option<DeviceLock>,
@@ -210,9 +213,42 @@ struct Screen {
 }
 
 struct Unpaired {
-    video: Box<dyn FrameSource>,
+    /// What to try again.
+    retry: Retry,
     /// Why the last pairing failed, with its causes.
     reason: String,
+}
+
+enum Retry {
+    /// A card that opened but showed no picture of this scope.
+    Pair(Box<dyn FrameSource>),
+    /// A card that could not be opened at all, by its spec: not on its
+    /// port, or held by something else.
+    Open(String),
+}
+
+/// Opens the capture card a spec names: `video::open`, or a stand-in in tests.
+type CardOpener = Box<dyn Fn(&str) -> Result<Box<dyn FrameSource>> + Send + Sync>;
+
+/// The capture card a scope is opened with.
+enum Card {
+    None,
+    Opened(Box<dyn FrameSource>),
+    /// Named, but it could not be opened: the spec, and why.
+    Unopened { spec: String, reason: String },
+}
+
+/// Open the card `spec` names. One that cannot be opened leaves the scope
+/// usable, as one with no picture does: every command but the live view
+/// works, and the card is tried again when acquisition starts.
+fn open_named_card(spec: &str, open_card: &CardOpener) -> Card {
+    match open_card(spec) {
+        Ok(video) => Card::Opened(video),
+        Err(e) => Card::Unopened {
+            spec: spec.to_string(),
+            reason: format!("opening the capture card {spec}: {e:#}"),
+        },
+    }
 }
 
 /// Pair `video` with the scope, or say why not. A scope that stopped
@@ -274,7 +310,7 @@ fn pair(
                 video.describe()
             );
             tracing::warn!(error = %reason, "no live view; the scope is usable without it");
-            Ok(Err(Unpaired { video, reason }))
+            Ok(Err(Unpaired { retry: Retry::Pair(video), reason }))
         }
     }
 }
@@ -440,20 +476,19 @@ impl RigolMso5000 {
         let scpi = scpi::open(&address)
             .with_context(|| format!("opening the scope at {}", config.scpi))?;
         let link = Arc::new(Mutex::new(scpi));
-        let video: Option<Box<dyn FrameSource>> = match &config.video {
-            Some(spec) if spec == dump::SPEC => Some(Box::new(dump::ScreenDump::start(link.clone())?)),
-            Some(spec) => Some(
-                video::open(spec).with_context(|| format!("opening the capture card {spec}"))?,
-            ),
+        let open_card: CardOpener = Box::new(video::open);
+        let card = match &config.video {
+            Some(spec) if spec == dump::SPEC => Card::Opened(Box::new(dump::ScreenDump::start(link.clone())?)),
+            Some(spec) => open_named_card(spec, &open_card),
             None => {
                 tracing::warn!(
                     "no capture card is paired with this scope, so it has no live view; \
                      settings, measurements and exact samples still work"
                 );
-                None
+                Card::None
             }
         };
-        Self::with_link(link, video, Some(lock))
+        Self::with_link(link, card, open_card, Some(lock))
     }
 
     /// Open over an established connection and frame source.
@@ -462,7 +497,16 @@ impl RigolMso5000 {
         video: Option<Box<dyn FrameSource>>,
         lock: Option<DeviceLock>,
     ) -> Result<RigolMso5000> {
-        Self::with_link(Arc::new(Mutex::new(scpi)), video, lock)
+        let card = video.map_or(Card::None, Card::Opened);
+        Self::with_link(Arc::new(Mutex::new(scpi)), card, Box::new(video::open), lock)
+    }
+
+    /// Open over an established connection, with the card `spec` names
+    /// opened by `open_card`, as `open` does with the real one.
+    #[cfg(test)]
+    fn with_card_named(scpi: Box<dyn Scpi>, spec: &str, open_card: CardOpener) -> Result<RigolMso5000> {
+        let card = open_named_card(spec, &open_card);
+        Self::with_link(Arc::new(Mutex::new(scpi)), card, open_card, None)
     }
 
     /// Open over a connection that reads its live view from the scope's own
@@ -470,13 +514,14 @@ impl RigolMso5000 {
     pub fn with_screen_dump(scpi: Box<dyn Scpi>, lock: Option<DeviceLock>) -> Result<RigolMso5000> {
         let link = Arc::new(Mutex::new(scpi));
         let video = Box::new(dump::ScreenDump::start(link.clone())?);
-        Self::with_link(link, Some(video), lock)
+        Self::with_link(link, Card::Opened(video), Box::new(video::open), lock)
     }
 
     /// Open over a connection that a frame source may share.
     fn with_link(
         link: Arc<Mutex<Box<dyn Scpi>>>,
-        video: Option<Box<dyn FrameSource>>,
+        card: Card,
+        open_card: CardOpener,
         lock: Option<DeviceLock>,
     ) -> Result<RigolMso5000> {
         let identity = {
@@ -488,12 +533,16 @@ impl RigolMso5000 {
         };
         let capabilities = capabilities_for(&identity)?;
         let mut may_switch_hdmi = true;
-        let (screen, unpaired) = match video {
-            Some(video) => match pair(&link, &identity.model, video, &mut may_switch_hdmi)? {
+        let (screen, unpaired) = match card {
+            Card::Opened(video) => match pair(&link, &identity.model, video, &mut may_switch_hdmi)? {
                 Ok(screen) => (Some(screen), None),
                 Err(unpaired) => (None, Some(unpaired)),
             },
-            None => (None, None),
+            Card::Unopened { spec, reason } => {
+                tracing::warn!(error = %reason, "no live view; the scope is usable without it");
+                (None, Some(Unpaired { retry: Retry::Open(spec), reason }))
+            }
+            Card::None => (None, None),
         };
         let settings = read_settings(
             lock_link(&link).as_mut(),
@@ -515,6 +564,7 @@ impl RigolMso5000 {
             scpi: link,
             screen,
             unpaired,
+            open_card,
             may_switch_hdmi,
             _lock: lock,
             capabilities,
@@ -609,11 +659,24 @@ impl RigolMso5000 {
     }
 
     /// Pair the capture card that could not be paired before. Called when
-    /// acquisition starts, so turning the scope's HDMI output back on and
-    /// starting again brings the live view back.
+    /// acquisition starts, so plugging the card back in, or turning the
+    /// scope's HDMI output back on, and starting again brings the live view
+    /// back.
     fn pair_again(&mut self) -> Result<()> {
-        let Some(Unpaired { video, .. }) = self.unpaired.take() else {
+        let Some(Unpaired { retry, .. }) = self.unpaired.take() else {
             return Ok(());
+        };
+        let video = match retry {
+            Retry::Pair(video) => video,
+            Retry::Open(spec) => match open_named_card(&spec, &self.open_card) {
+                Card::Opened(video) => video,
+                Card::Unopened { spec, reason } => {
+                    tracing::warn!(error = %reason, "the capture card still cannot be opened");
+                    self.unpaired = Some(Unpaired { retry: Retry::Open(spec), reason });
+                    return Ok(());
+                }
+                Card::None => return Ok(()),
+            },
         };
         match pair(&self.scpi, &self.capabilities.model, video, &mut self.may_switch_hdmi)? {
             Ok(screen) => {
@@ -1441,12 +1504,18 @@ impl Oscilloscope for RigolMso5000 {
     }
 
     fn live_view_problem(&self) -> Option<String> {
-        self.unpaired.as_ref().map(|u| {
-            format!(
+        self.unpaired.as_ref().map(|u| match u.retry {
+            Retry::Pair(_) => format!(
                 "{}. Turn on the scope's HDMI output (Utility > IO > HDMI > Output), then start \
                  acquisition again",
                 u.reason
-            )
+            ),
+            Retry::Open(_) => format!(
+                "{}. Check that the capture card is on the port it was paired on and that \
+                 nothing else is using it, or pair it again with `lager nets set-capture`, \
+                 then start acquisition again",
+                u.reason
+            ),
         })
     }
 

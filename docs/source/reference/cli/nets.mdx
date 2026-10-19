@@ -619,6 +619,8 @@ Pair a Rigol MSO5000 with the USB HDMI capture card that is connected to its HDM
 
 The scope sends a picture on HDMI only while its HDMI output is on, under **Utility > IO > HDMI > Output**. A power cycle turns it off, and the scope then starts with its default settings. No SCPI command sets the output. So if the card shows no picture when the box opens the scope, the box turns the output on with the keys of that menu. It does this once each time it opens the scope. If there is still no picture, for example because the HDMI cable is out, the box sets the output back as it was. Every command still works without the picture, but there is no live view. The web page, `stream start` and `stream status` say why. Fix the cause, then start acquisition again: the live view comes back.
 
+The same applies when the card is not on the port it was paired on, or something else holds it. The error names the USB ports that have a video device. Plug the card back into its port or stop what holds it, or pair it again with `--port`. Then start acquisition again.
+
 ```bash
 lager nets set-capture NAME [OPTIONS]
 ```

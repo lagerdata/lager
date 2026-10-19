@@ -181,6 +181,8 @@ pub fn choose_mode(modes: &[Mode]) -> Option<Mode> {
 pub fn node_for_port(sysfs: &Path, port: &str) -> Result<PathBuf> {
     let class = sysfs.join("class/video4linux");
     let mut found: Vec<(u32, String)> = Vec::new();
+    // Every port with a video device on it, to say where the card went.
+    let mut ports: Vec<String> = Vec::new();
     for entry in std::fs::read_dir(&class).with_context(|| format!("reading {}", class.display()))? {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().to_string();
@@ -188,6 +190,11 @@ pub fn node_for_port(sysfs: &Path, port: &str) -> Result<PathBuf> {
             continue;
         };
         let device = std::fs::canonicalize(entry.path().join("device")).unwrap_or_default();
+        if let Some(usb_port) = usb_port_of(&device) {
+            if !ports.contains(&usb_port) {
+                ports.push(usb_port);
+            }
+        }
         // The interface directory is `<port>:<config>.<interface>`, under the
         // port's own directory.
         let on_port = device.components().any(|c| {
@@ -208,11 +215,36 @@ pub fn node_for_port(sysfs: &Path, port: &str) -> Result<PathBuf> {
     found.sort();
     match found.first() {
         Some((_, name)) => Ok(PathBuf::from("/dev").join(name)),
-        None => bail!(
-            "no capture card is on USB port {port}; check that it is plugged into the port the \
-             net was created with"
-        ),
+        None => {
+            ports.sort();
+            let elsewhere = if ports.is_empty() {
+                "no video device is on any USB port".to_string()
+            } else {
+                format!("video devices are on USB ports {}", ports.join(", "))
+            };
+            bail!(
+                "no capture card is on USB port {port}; check that it is plugged into the port \
+                 the net was created with ({elsewhere})"
+            )
+        }
     }
+}
+
+/// The USB port a device's sysfs path is under: the port of its interface
+/// directory, `<port>:<config>.<interface>`, such as `3-2.4.2` from
+/// `3-2.4.2:1.0`.
+fn usb_port_of(device: &Path) -> Option<String> {
+    device.components().find_map(|c| {
+        let c = c.as_os_str().to_string_lossy();
+        let (port, interface) = c.split_once(':')?;
+        let is_port = port.split_once('-').is_some_and(|(bus, path)| {
+            !bus.is_empty()
+                && bus.bytes().all(|b| b.is_ascii_digit())
+                && !path.is_empty()
+                && path.bytes().all(|b| b.is_ascii_digit() || b == b'.')
+        });
+        (is_port && interface.contains('.')).then(|| port.to_string())
+    })
 }
 
 /// Where the capture card is: a device node, or `usb:<port>`.
@@ -639,7 +671,9 @@ mod tests {
             node_for_port(&root, "1-1.4").unwrap(),
             PathBuf::from("/dev/video0")
         );
-        assert!(node_for_port(&root, "1-1.5").is_err());
+        let missing = format!("{:#}", node_for_port(&root, "1-1.5").unwrap_err());
+        assert!(missing.contains("no capture card is on USB port 1-1.5"), "{missing}");
+        assert!(missing.contains("video devices are on USB ports 1-1.3, 1-1.4"), "{missing}");
         let _ = std::fs::remove_dir_all(&root);
     }
 

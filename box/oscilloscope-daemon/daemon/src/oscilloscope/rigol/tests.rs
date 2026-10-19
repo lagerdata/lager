@@ -688,6 +688,82 @@ fn a_scope_with_no_picture_opens_without_a_live_view_and_pairs_when_it_returns()
     assert!(!frame.channels.is_empty());
 }
 
+/// A scope whose capture card, `usb:3-3`, opens only while `plugged` is
+/// set; the number of tries is counted.
+fn bench_with_card(plugged: bool) -> (Bench, Arc<std::sync::atomic::AtomicBool>, Arc<std::sync::atomic::AtomicUsize>) {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    let instrument = Arc::new(Mutex::new(Instrument::mso5204()));
+    let scpi = FakeScpi {
+        instrument: instrument.clone(),
+        replies: VecDeque::new(),
+    };
+    let present = Arc::new(AtomicBool::new(plugged));
+    let tries = Arc::new(AtomicUsize::new(0));
+    let open_card: CardOpener = {
+        let (instrument, present, tries) = (instrument.clone(), present.clone(), tries.clone());
+        Box::new(move |spec: &str| {
+            tries.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(spec, "usb:3-3");
+            if !present.load(Ordering::SeqCst) {
+                bail!("no capture card is on USB port 3-3; check that it is plugged into the port the net was created with (video devices are on USB ports 3-2.4.2)");
+            }
+            Ok(Box::new(FakeScreen {
+                instrument: instrument.clone(),
+                sequence: Mutex::new(0),
+            }) as Box<dyn FrameSource>)
+        })
+    };
+    let scope = RigolMso5000::with_card_named(Box::new(scpi), "usb:3-3", open_card).expect("opens");
+    (Bench { instrument, scope }, present, tries)
+}
+
+#[test]
+fn a_capture_card_that_cannot_be_opened_leaves_the_scope_usable() {
+    // It used to fail the whole open, so the daemon refused status,
+    // settings and measurements as well as the live view.
+    let (mut bench, _, tries) = bench_with_card(false);
+    let problem = bench.scope.live_view_problem().expect("says why there is no live view");
+    assert!(problem.contains("opening the capture card usb:3-3"), "{problem}");
+    assert!(problem.contains("video devices are on USB ports 3-2.4.2"), "{problem}");
+    assert!(problem.contains("lager nets set-capture"), "{problem}");
+    assert!(!problem.contains("HDMI output"), "the output is not the problem: {problem}");
+    assert_eq!(bench.scope.measure_one(ChannelId::Alphabetic('A'), Measurement::Vmax).unwrap().unwrap(), Some(1.0));
+    bench.scope.set_volts_per_div(ChannelId::Alphabetic('A'), 2.0).unwrap();
+    assert_eq!(bench.scope.get_volts_per_div(ChannelId::Alphabetic('A')).unwrap(), 2.0);
+    let message = format!("{:#}", bench.scope.get_triggered_data().unwrap_err());
+    assert!(message.contains("no live view"), "{message}");
+    assert_eq!(tries.load(std::sync::atomic::Ordering::SeqCst), 1, "tried once, at open");
+}
+
+#[test]
+fn a_capture_card_plugged_back_in_pairs_at_the_next_start() {
+    use std::sync::atomic::Ordering;
+    let (mut bench, present, tries) = bench_with_card(false);
+    // Still missing: starting runs the scope, and says the same.
+    bench.scope.start_triggered_capture(50.0).unwrap();
+    assert_eq!(bench.instrument.lock().unwrap().status, "AUTO");
+    assert!(bench.scope.live_view_problem().unwrap().contains("set-capture"));
+    assert_eq!(tries.load(Ordering::SeqCst), 2);
+
+    present.store(true, Ordering::SeqCst);
+    bench.scope.start_triggered_capture(50.0).unwrap();
+    assert!(bench.scope.live_view_problem().is_none());
+    assert_eq!(tries.load(Ordering::SeqCst), 3);
+    let frame = bench.capture();
+    assert!(!frame.channels.is_empty());
+    // Paired now: a later start opens nothing more.
+    bench.scope.start_triggered_capture(50.0).unwrap();
+    assert_eq!(tries.load(Ordering::SeqCst), 3);
+}
+
+#[test]
+fn a_capture_card_that_opens_pairs_at_once() {
+    let (mut bench, _, tries) = bench_with_card(true);
+    assert!(bench.scope.live_view_problem().is_none());
+    assert!(!bench.capture().channels.is_empty());
+    assert_eq!(tries.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
 #[test]
 fn another_instrument_is_refused_by_name() {
     let mut instrument = Instrument::mso5204();
