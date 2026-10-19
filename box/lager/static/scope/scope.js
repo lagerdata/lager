@@ -91,6 +91,8 @@ const MEASURE_INTERVAL_MS = 500;
 // A Rigol answers on the same thread that publishes its live view, and each
 // set reads the channel's record over USB, so it refreshes far less often.
 const RIGOL_MEASURE_INTERVAL_MS = 5000;
+/** Height of the settings line under a screenshot, in CSS pixels. */
+const SCREENSHOT_CAPTION_PX = 24;
 
 // The probe ratios stamped on a switch. Anything else -- a current clamp at
 // 100 mV/A, say -- goes through the console's `probe`, and is added to the
@@ -465,6 +467,31 @@ function si(value, unit, digits = 3) {
     }
   }
   return `${value.toPrecision(digits)} ${unit}`;
+}
+
+/** A screenshot's file name: the net and the local time it was taken. */
+function screenshotName(net, when) {
+  const pad = (n) => String(n).padStart(2, '0');
+  const stamp = `${when.getFullYear()}${pad(when.getMonth() + 1)}${pad(when.getDate())}`
+    + `-${pad(when.getHours())}${pad(when.getMinutes())}${pad(when.getSeconds())}`;
+  const name = String(net || 'scope').replace(/[^A-Za-z0-9_.-]+/g, '_');
+  return `scope-${name}-${stamp}.png`;
+}
+
+/**
+ * The line under a screenshot: what a reader needs to read the trace, as
+ * the scope's own screen shows it around the grid.
+ */
+function screenshotCaption({ model, net, timebase, channels, trigger, when }) {
+  const parts = [[model, net].filter(Boolean).join(' ')];
+  if (timebase) parts.push(timebase);
+  for (const channel of channels) parts.push(`${channel.label} ${channel.scale}`);
+  if (trigger) {
+    parts.push(`Trig ${trigger.source} ${trigger.slope} ${trigger.level} ${trigger.mode}`
+      .replace(/\s+/g, ' ').trim());
+  }
+  parts.push(when.toLocaleString());
+  return parts.filter(Boolean).join('   ');
 }
 
 /** `value` to `digits` significant figures, never as 1.0e+2. */
@@ -2765,6 +2792,82 @@ class ScopeApp {
       `X ${da.channel} ${si(stateA.voltsPerDiv || 1, 'V', 2)}/div   Y ${db.channel} ${si(stateB.voltsPerDiv || 1, 'V', 2)}/div`);
   }
 
+  /**
+   * Save the waveform as drawn, with its settings under it, as a PNG. The
+   * canvas is cleared to transparent each frame and the plot's colour comes
+   * from the page, so the copy is painted onto that colour first.
+   */
+  saveScreenshot() {
+    if (!this.latest) {
+      this.console.error('Nothing to save yet: connect, then start.');
+      return;
+    }
+    const when = new Date();
+    const source = this.canvas;
+    const ratio = window.devicePixelRatio || 1;
+    const captionHeight = Math.round(SCREENSHOT_CAPTION_PX * ratio);
+    const shot = document.createElement('canvas');
+    shot.width = source.width;
+    shot.height = source.height + captionHeight;
+    const ctx = shot.getContext('2d');
+    const style = getComputedStyle(document.documentElement);
+    const token = (name, fallback) => style.getPropertyValue(name).trim() || fallback;
+    ctx.fillStyle = getComputedStyle(source.parentElement).backgroundColor || '#05080d';
+    ctx.fillRect(0, 0, shot.width, source.height);
+    ctx.drawImage(source, 0, 0);
+    ctx.fillStyle = token('--bg-panel', '#161b22');
+    ctx.fillRect(0, source.height, shot.width, captionHeight);
+    ctx.fillStyle = token('--text', '#e6edf3');
+    ctx.font = `${Math.round(12 * ratio)}px ui-monospace, Menlo, Consolas, monospace`;
+    ctx.textBaseline = 'middle';
+    ctx.fillText(screenshotCaption(this.screenshotSettings(when)),
+      Math.round(8 * ratio), source.height + captionHeight / 2);
+
+    const name = screenshotName(this.net, when);
+    shot.toBlob((blob) => {
+      if (!blob) {
+        this.console.error('The browser could not make the screenshot.');
+        return;
+      }
+      const url = URL.createObjectURL(blob);
+      const link = Object.assign(document.createElement('a'), { href: url, download: name });
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      // After the download has taken the data.
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      this.console.write(`Saved ${name}`, 'note');
+    }, 'image/png');
+  }
+
+  /** The settings a screenshot is captioned with, as the sidebar shows them. */
+  screenshotSettings(when) {
+    const text = (id) => {
+      const control = el(id);
+      if (!control) return '';
+      if (control.selectedOptions) return control.selectedOptions[0]?.text || '';
+      return control.value || '';
+    };
+    const channels = [];
+    for (const [label, state] of this.channelState) {
+      if (state.enabled) channels.push({ label, scale: `${si(state.voltsPerDiv, 'V', 3)}/div` });
+    }
+    const level = Number.parseFloat(text('trigger-level'));
+    return {
+      model: el('model')?.textContent.trim() || '',
+      net: this.net,
+      timebase: text('timebase'),
+      channels,
+      trigger: {
+        source: text('trigger-source'),
+        slope: text('trigger-slope'),
+        level: Number.isFinite(level) ? si(level, 'V', 3) : '',
+        mode: text('trigger-mode'),
+      },
+      when,
+    };
+  }
+
   /** The offscreen layer traces accumulate on, sized to the plot. */
   persistLayer(width, height) {
     const ratio = window.devicePixelRatio || 1;
@@ -3178,6 +3281,9 @@ class ScopeApp {
       // connecting and then cancelling.
       if (this.streamOpen()) this.disconnect(); else this.connect();
     });
+
+    const screenshotButton = el('btn-screenshot');
+    if (screenshotButton) screenshotButton.addEventListener('click', () => this.saveScreenshot());
 
     const sidebarButton = el('btn-sidebar');
     if (sidebarButton) {
@@ -3667,6 +3773,7 @@ export function consoleLogStep(preferred, step, room) {
 }
 
 export { ScopeApp, voltsPerDivChoices, timebaseChoices, sampleTraceAt,
+         screenshotName, screenshotCaption,
          PER_CHANNEL_ACTIONS, isPerChannelAction, channelName,
          pinIndex, colorSlot, sameSetting, si,
          stepPosition, scaleStep, decimalsIn, wirePositionField, stepperFor };

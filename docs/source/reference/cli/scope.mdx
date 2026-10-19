@@ -929,6 +929,8 @@ The web interface is a dependency-free HTML5 oscilloscope display that the box s
 
 Hide the controls sidebar to give the trace and the console the full width. Use the **Hide sidebar** button in the header, or type `sidebar off`. `sidebar on` and **Show sidebar** bring it back. `sidebar` with no argument says which it is. The page keeps the choice for the next visit.
 
+The **Screenshot** button in the header saves the waveform view as a PNG, named `scope-<net>-<date>-<time>.png`. A line under the trace gives the model, the net and the time per division. It also gives the scale of each channel that is on, the trigger, and the time of the screenshot.
+
 Turning a channel off removes its trace, including the one already on screen. `disable B` does it, and so does the channel's switch.
 
 Unplugging a scope during a stream stops the live session. The page then shows no live trace. Plugging the scope back in opens the unit again. Start then runs on the new session.

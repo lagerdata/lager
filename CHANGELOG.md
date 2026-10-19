@@ -14,6 +14,10 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 ### Added
 
+- **A Screenshot button on the oscilloscope page.** It saves the waveform view as a PNG
+  named `scope-<net>-<date>-<time>.png`, with a line under the trace giving the model,
+  the net, the time per division, each shown channel's scale, the trigger, and the time.
+  It works for every scope the page shows (`lager scope NET stream web`).
 - **A new webcam viewer page, styled like the oscilloscope page.** Each webcam stream's
   page now has the oscilloscope page's header, colors and hideable controls sidebar. It
   adds a Net picker for the other streams on the box, the camera's model, frame size,
