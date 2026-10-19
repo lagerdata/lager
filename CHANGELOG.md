@@ -56,6 +56,10 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 ### Fixed
 
+- **A Rigol scope's daemon is fully stopped before a new one starts.** After a new
+  capture card is paired, the box restarts the scope's daemon. It used to start the new
+  one while the old one was still closing, so the new daemon could find the scope's USB
+  interface still in use and take a retry to open it.
 - **`lager nets state` no longer waits 8 seconds on every run because one
   instrument is unplugged or does not answer.** The box now skips an instrument
   whose USB address is not on the bus (`instrument-absent`), cuts off one that

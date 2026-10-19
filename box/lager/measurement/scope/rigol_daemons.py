@@ -178,6 +178,44 @@ def _locked(path: str):
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 
+def _exited(pid: int) -> bool:
+    """Whether ``pid`` has finished exiting: gone, or a zombie.
+
+    Not `_is_daemon`: the kernel frees an exiting process's memory, which
+    empties its command line, before it closes its files. A stop that
+    returned then left the port answering and the scope's USB interface
+    held for a moment, and a daemon started at once could not open it.
+    A zombie has closed everything.
+    """
+    try:
+        with open("/proc/%d/stat" % pid, "rb") as f:
+            stat = f.read()
+    except FileNotFoundError:
+        if os.path.isdir("/proc/self"):
+            return True
+        # No procfs, as on a laptop running the tests.
+        try:
+            state = subprocess.run(
+                ["ps", "-p", str(pid), "-o", "stat="],
+                capture_output=True, timeout=2.0).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return not state or state.startswith(b"Z")
+    except OSError:
+        return False
+    return _stat_says_exited(stat)
+
+
+def _stat_says_exited(stat: bytes) -> bool:
+    """Whether a ``/proc/<pid>/stat`` line is a zombie's or a dead process's.
+
+    The state follows the command name, which is in parentheses and can
+    itself hold spaces and parentheses.
+    """
+    fields = stat.rpartition(b")")[2].split()
+    return not fields or fields[0] in (b"Z", b"X")
+
+
 def _stop(pid: int) -> None:
     """Stop a daemon, giving it time to stop and close the scope first."""
     try:
@@ -186,7 +224,7 @@ def _stop(pid: int) -> None:
         return
     deadline = time.monotonic() + STOP_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
-        if not _is_daemon(pid):
+        if _exited(pid):
             return
         time.sleep(0.1)
     with contextlib.suppress(ProcessLookupError):

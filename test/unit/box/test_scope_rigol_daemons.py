@@ -34,17 +34,38 @@ time.sleep(60)
 """
 
 
-@pytest.fixture
-def daemon(tmp_path, monkeypatch):
+# A daemon on its way out after SIGTERM: its command line no longer names
+# the daemon, but its socket is still open for a moment, as a real one's is
+# between the kernel freeing its memory and closing its files.
+LINGERING = """#!%s
+import os, signal, socket, sys, time
+listener = socket.socket()
+listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+listener.bind(("127.0.0.1", int(os.environ["LAGER_SCOPE_DATA_PORT"])))
+listener.listen()
+def on_term(*_):
+    listener.set_inheritable(True)
+    os.execv(sys.executable, [sys.executable, "-c", "import time; time.sleep(1.5)"])
+signal.signal(signal.SIGTERM, on_term)
+with open(os.environ["STAND_IN_RECORD"], "a") as f:
+    f.write("{}\\n")
+time.sleep(60)
+"""
+
+
+def _install(tmp_path, monkeypatch, script):
     binary = tmp_path / "bin" / "oscilloscope-daemon"
     binary.parent.mkdir()
-    binary.write_text(STAND_IN % sys.executable)
+    binary.write_text(script % sys.executable)
     binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
     record = tmp_path / "started.jsonl"
     monkeypatch.setenv(rigol_daemons.DAEMON_BINARY_ENV, str(binary))
     monkeypatch.setenv("STAND_IN_RECORD", str(record))
     monkeypatch.setattr(rigol_daemons, "state_dir", lambda: str(tmp_path))
-    yield record
+    return record
+
+
+def _kill_left_over(tmp_path):
     for state in tmp_path.glob("*.json"):
         pid = json.loads(state.read_text()).get("pid")
         if pid:
@@ -52,6 +73,18 @@ def daemon(tmp_path, monkeypatch):
                 os.kill(pid, 9)
             except ProcessLookupError:
                 pass
+
+
+@pytest.fixture
+def daemon(tmp_path, monkeypatch):
+    yield _install(tmp_path, monkeypatch, STAND_IN)
+    _kill_left_over(tmp_path)
+
+
+@pytest.fixture
+def lingering_daemon(tmp_path, monkeypatch):
+    yield _install(tmp_path, monkeypatch, LINGERING)
+    _kill_left_over(tmp_path)
 
 
 def _started(record):
@@ -97,6 +130,29 @@ class TestEnsure:
         with pytest.raises(OSError):
             socket.create_connection(("127.0.0.1", port), timeout=0.5).close()
         assert not rigol_daemons.stop(ADDRESS)
+
+    @pytest.mark.parametrize("stat, exited", [
+        (b"4242 (oscilloscope-da) S 1 4242 4242 0 -1", False),
+        (b"4242 (oscilloscope-da) R 1 4242 4242 0 -1", False),
+        (b"4242 (oscilloscope-da) Z 1 4242 4242 0 -1", True),
+        (b"4242 (a) Z (b) S 1 4242 4242 0 -1", False),
+        (b"4242 (a) S (b) Z 1 4242 4242 0 -1", True),
+    ])
+    def test_a_zombie_has_exited_and_a_sleeper_has_not(self, stat, exited):
+        # Read past the last parenthesis: a command name can hold ") Z".
+        assert rigol_daemons._stat_says_exited(stat) is exited
+
+    def test_stopping_waits_for_its_socket_to_close(self, lingering_daemon):
+        # Stop used to return once the command line stopped naming the
+        # daemon, which happens before an exiting process closes its sockets
+        # and devices: the port still answered, and a daemon started at once
+        # could find the scope still held.
+        url = rigol_daemons.ensure(ADDRESS)
+        _wait_for(lingering_daemon, 1)
+        assert rigol_daemons.stop(ADDRESS)
+        port = int(url.rsplit(":", 1)[1].strip("/"))
+        with pytest.raises(OSError):
+            socket.create_connection(("127.0.0.1", port), timeout=0.5).close()
 
     def test_a_missing_daemon_binary_says_how_to_get_one(self, daemon, monkeypatch):
         monkeypatch.setenv(rigol_daemons.DAEMON_BINARY_ENV, "/nonexistent/oscilloscope-daemon")
