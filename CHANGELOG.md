@@ -56,6 +56,14 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 ### Fixed
 
+- **The oscilloscope page connects by itself and says when its readings are old.** It
+  used to wait for **Connect** even with the scope running. It now connects as soon as it
+  knows the scope, and when another net is picked; **Start** still runs the scope. Once
+  connected, the hint asks only for **Start**. When the stream closes, the measurements
+  stay on screen, dimmed under "Not live: read before the stream closed."
+- **`lager scope NET roll on` on a Rigol says "this scope has no roll mode".** It said the
+  scope cannot stream, which has not been true since a Rigol got a live view. The
+  `stream` docs no longer call streaming PicoScope-only.
 - **A Rigol scope's daemon is fully stopped before a new one starts.** After a new
   capture card is paired, the box restarts the scope's daemon. It used to start the new
   one while the old one was still closing, so the new daemon could find the scope's USB

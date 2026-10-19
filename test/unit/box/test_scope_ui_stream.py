@@ -505,3 +505,116 @@ class TestTheUnitGoingAndComing:
         assert ["note", "The scope is back."] in out["notes"]
         assert out["subscribed"] == ["Subscribe"]
         assert out["overlay"] is True
+
+
+class TestConnectedOnOpening:
+    """The page connects by itself and says what to do next."""
+
+    def _run(self, body):
+        return _run_js(TRANSPORT + body)
+
+    def test_the_page_connects_once_the_scope_is_known(self):
+        # It used to wait for Connect even with the scope already running,
+        # showing "Not streaming." over a scope that was.
+        out = _run_js("""
+        const select = { replaceChildren() {}, append() {}, value: '' };
+        globalThis.document = { getElementById: (id) => id === 'net-select' ? select : null };
+        globalThis.fetch = async () => ({ json: async () => ({ nets: [
+          { name: 'rigol1', role: 'scope', instrument: 'Rigol_MSO5204', address: 'USB0::1',
+            capture: { port_path: '3-2' } },
+        ] }) });
+        const connects = [];
+        const page = app({
+          adoptChannelNets() {},
+          loadCapabilities: async () => ({ ws_path: '/scope/rigol1/ws?token=t' }),
+          connect() { connects.push(this.net); },
+        });
+        await page.loadNets();
+        process.stdout.write(JSON.stringify(connects));
+        """)
+        assert out == ["rigol1"]
+
+    def test_a_scope_it_cannot_reach_is_not_connected_to(self):
+        out = _run_js("""
+        const select = { replaceChildren() {}, append() {}, value: '' };
+        globalThis.document = { getElementById: (id) => id === 'net-select' ? select : null };
+        globalThis.fetch = async () => ({ json: async () => ({ nets: [
+          { name: 'pico1', role: 'scope', instrument: 'PicoScope_2000' },
+        ] }) });
+        const connects = [];
+        const page = app({
+          adoptChannelNets() {},
+          loadCapabilities: async () => null,
+          connect() { connects.push(this.net); },
+        });
+        await page.loadNets();
+        process.stdout.write(JSON.stringify(connects));
+        """)
+        assert out == []
+
+    def test_once_connected_the_hint_asks_only_for_start(self):
+        out = self._run("""
+        const pending = page.connect();
+        ticket();
+        await pending;
+        sockets[0].readyState = 1;
+        sockets[0].emit('open');
+        const connected = elements['plot-empty-hint'].innerHTML;
+        page.disconnect();
+        process.stdout.write(JSON.stringify({ connected, after: elements['plot-empty-hint'].innerHTML }));
+        """)
+        assert out == {
+            "connected": "Connected. Press <strong>Start</strong>.",
+            "after": "Press <strong>Connect</strong>, then <strong>Start</strong>.",
+        }
+
+
+class TestReadingsAfterTheStreamCloses:
+    """The measurements stay on screen, marked as no longer live."""
+
+    PANEL = """
+    function panel(readings) {
+      const classes = new Set();
+      return {
+        textContent: '', hidden: false, title: '',
+        classList: { toggle(name, on) { if (on) classes.add(name); else classes.delete(name); } },
+        querySelector: (selector) => (readings && selector === 'dd' ? {} : null),
+        removeAttribute(name) { this[name] = ''; },
+        classes,
+      };
+    }
+    """
+
+    def _run(self, body):
+        return _run_js(TRANSPORT + self.PANEL + body)
+
+    def test_readings_are_marked_when_the_stream_closes_and_unmarked_on_reconnecting(self):
+        out = self._run("""
+        elements.measurements = panel(true);
+        page.streamEnded();
+        const closed = { stale: elements.measurements.classes.has('measurements--stale'),
+                         title: elements.measurements.title };
+        const pending = page.connect();
+        ticket();
+        await pending;
+        sockets[0].readyState = 1;
+        sockets[0].emit('open');
+        process.stdout.write(JSON.stringify({
+          closed, reopened: elements.measurements.classes.has('measurements--stale') }));
+        """)
+        assert out["closed"]["stale"] is True
+        assert "before the stream closed" in out["closed"]["title"]
+        assert out["reopened"] is False
+
+    def test_the_placeholder_before_any_reading_is_not_marked(self):
+        out = self._run("""
+        elements.measurements = panel(false);
+        page.streamEnded();
+        process.stdout.write(JSON.stringify(elements.measurements.classes.has('measurements--stale')));
+        """)
+        assert out is False
+
+    def test_the_stylesheet_greys_them_and_says_why(self):
+        css = (SCOPE_DIR / "scope.css").read_text()
+        assert ".measurements--stale dd" in css
+        assert "Not live: read before the stream closed." in css

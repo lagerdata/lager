@@ -1940,7 +1940,7 @@ fn handle(
         ScopeRequest::SetRoll(mode) => {
             if mode == RollMode::On && !scope.supports_roll() {
                 return ScopeReply::error(
-                    "this scope cannot stream, so it has no roll mode",
+                    "this scope has no roll mode",
                 );
             }
             state.roll = mode;

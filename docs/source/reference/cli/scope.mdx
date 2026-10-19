@@ -606,7 +606,7 @@ lager scope NET_NAME trigger uart [OPTIONS]
 
 ## Acquisition and Display
 
-These commands work on both instruments, except `roll`: a Rigol cannot stream continuously, so it has no roll mode. On a Rigol, averaging and peak detect are done by the instrument, and it averages a power of two from 2 to 65536 captures.
+These commands work on both instruments, except `roll`: a Rigol has no roll mode. On a Rigol, averaging and peak detect are done by the instrument, and it averages a power of two from 2 to 65536 captures.
 
 ### `acquire`
 
@@ -812,9 +812,9 @@ lager scope ANALOG1 cursor hide --box my-lager-box
 
 ---
 
-## Stream Subcommands (PicoScope)
+## Stream Subcommands
 
-Stream oscilloscope data in real time from a PicoScope. A daemon on the Lager Box owns the PicoScope, and a web page on the box shows the trace.
+Stream oscilloscope data in real time from a PicoScope or a Rigol MSO5000. A daemon on the Lager Box owns the scope, and a web page on the box shows the trace.
 
 A Rigol MSO5000 streams the same way once it is paired with a USB HDMI capture card with `lager nets set-capture`. Its daemon takes the trace from the scope's HDMI output, so the stream shows the minimum and maximum of each screen column.
 
@@ -839,7 +839,7 @@ Earlier versions published the daemon directly on ports 8081-8085. They streamed
 
 ### `stream start`
 
-Start a streaming acquisition on a PicoScope, and print the link to the web UI.
+Start a streaming acquisition on a PicoScope, or on a Rigol MSO5000 with a paired capture card. Then print the link to the web UI.
 
 ```bash
 lager scope NET_NAME stream start [OPTIONS]
@@ -873,7 +873,7 @@ If it has expired, or the viewer later asks for sign-in, run: lager scope PICO1 
 To stop streaming: lager scope PICO1 stream stop --box my-lager-box
 ```
 
-For a scope that is not a PicoScope, the command prints an error and suggests `lager scope NET_NAME start --single`.
+For a scope that no daemon drives, the command prints an error and exits 1. For a Rigol with no capture card paired, the error says to pair one with `lager nets set-capture`. Single captures and measurements work without a card.
 
 **Examples:**
 

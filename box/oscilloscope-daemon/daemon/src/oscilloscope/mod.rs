@@ -196,13 +196,13 @@ pub trait Oscilloscope: Send + Sync {
 
     /// Start streaming minimum/maximum pairs, one per `plan.bucket_ns`.
     fn start_roll(&mut self, _plan: &RollPlan) -> anyhow::Result<RollInfo> {
-        anyhow::bail!("this scope cannot stream, so it has no roll mode")
+        anyhow::bail!("this scope has no roll mode")
     }
 
     /// Append whatever pairs have arrived since the last call to `sink`,
     /// returning how many per channel.
     fn poll_roll(&mut self, _sink: &mut RollSink) -> anyhow::Result<usize> {
-        anyhow::bail!("this scope cannot stream, so it has no roll mode")
+        anyhow::bail!("this scope has no roll mode")
     }
 
     fn stop_roll(&mut self) -> anyhow::Result<()> {

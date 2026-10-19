@@ -606,7 +606,7 @@ lager scope NET_NAME trigger uart [OPTIONS]
 
 ## 采集与显示
 
-这些命令在两种仪器上都可用，`roll` 除外：Rigol 不能连续串流，因此没有滚动模式。在 Rigol 上，平均和峰值检测由仪器完成，平均次数为 2 到 65536 之间的 2 的幂。
+这些命令在两种仪器上都可用，`roll` 除外：Rigol 没有滚动模式。在 Rigol 上，平均和峰值检测由仪器完成，平均次数为 2 到 65536 之间的 2 的幂。
 
 ### `acquire`
 
@@ -812,9 +812,9 @@ lager scope ANALOG1 cursor hide --box my-lager-box
 
 ---
 
-## stream 子命令（PicoScope）
+## stream 子命令
 
-从 PicoScope 实时串流示波器数据。Lager Box 上的一个守护进程拥有该 PicoScope，Box 上的一个网页显示波形。
+从 PicoScope 或 Rigol MSO5000 实时串流示波器数据。Lager Box 上的一个守护进程拥有该示波器，Box 上的一个网页显示波形。
 
 用 `lager nets set-capture` 将 Rigol MSO5000 与 USB HDMI 采集卡配对后，它以同样的方式串流。它的守护进程从示波器的 HDMI 输出获取波形，因此串流显示每个屏幕列的最小值和最大值。
 
@@ -839,7 +839,7 @@ lager scope ANALOG1 cursor hide --box my-lager-box
 
 ### `stream start`
 
-在 PicoScope 上启动串流采集，并打印 Web UI 的链接。
+在 PicoScope 上，或在已配对采集卡的 Rigol MSO5000 上启动串流采集。然后打印 Web UI 的链接。
 
 ```bash
 lager scope NET_NAME stream start [OPTIONS]
@@ -873,7 +873,7 @@ If it has expired, or the viewer later asks for sign-in, run: lager scope PICO1 
 To stop streaming: lager scope PICO1 stream stop --box my-lager-box
 ```
 
-对于不是 PicoScope 的示波器，命令会打印错误，并建议使用 `lager scope NET_NAME start --single`。
+对于没有守护进程驱动的示波器，命令会打印错误并以状态 1 退出。对于没有配对采集卡的 Rigol，错误会提示用 `lager nets set-capture` 配对一张采集卡。没有采集卡时，单次采集和测量仍可使用。
 
 **示例：**
 

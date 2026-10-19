@@ -914,7 +914,7 @@ def roll(ctx, mode, box):
 
     auto rolls at 50 ms/div and slower while the trigger is in auto, as a
     bench scope does. on rolls at any timebase and ignores the trigger.
-    A scope that cannot stream, such as a Rigol, refuses on.
+    A scope with no roll mode, such as a Rigol, refuses on.
     """
     box_ip = _resolve_box(ctx, box)
     netname = _require_netname(ctx)

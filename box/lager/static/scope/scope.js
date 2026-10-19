@@ -919,7 +919,10 @@ class ScopeApp {
       this.net = offered[0].name;
       select.value = this.net;
       this.adoptChannelNets();
-      await this.loadCapabilities();
+      // Connected at once, so a scope that is already running shows its
+      // trace without a press of Connect. Connecting only subscribes;
+      // Start is still what runs the scope.
+      if (await this.loadCapabilities()) this.connect();
     } catch (e) {
       select.replaceChildren(new Option('unavailable', ''));
       this.console.error(`Could not list nets: ${e.message}`);
@@ -1914,6 +1917,10 @@ class ScopeApp {
       this.setLink('connected', 'link--up');
       el('connect').textContent = 'Disconnect';
       this.console.write('Capture stream connected.', 'note');
+      // Shown until the first capture arrives, which for a running scope is
+      // at once.
+      this.showEmptyHint('Connected. Press <strong>Start</strong>.');
+      this.markReadingsStale(false);
       // Captures are off until asked for, so that a control-only client is
       // not sent the stream. This is the client that wants it -- paced by
       // credit, and with the state pushed after every change.
@@ -1990,6 +1997,22 @@ class ScopeApp {
     this.showIdleRate();
     // A socket closed from the far end comes here without `disconnect()`.
     this.stopMeasurementPolling();
+    this.markReadingsStale(true);
+  }
+
+  /**
+   * Mark the measurements as read before the stream closed. They stay on
+   * screen, as a stopped bench scope's do, but the page no longer follows
+   * the scope, so nothing says they are still true.
+   */
+  markReadingsStale(stale) {
+    const host = el('measurements');
+    if (!host || !host.classList) return;
+    // Only readings: the placeholder before the first one is not stale.
+    stale = stale && Boolean(host.querySelector && host.querySelector('dd'));
+    host.classList.toggle('measurements--stale', stale);
+    if (stale) host.title = 'Read before the stream closed; connect to read the scope again.';
+    else host.removeAttribute('title');
   }
 
   /** Read zero once captures stop, rather than the last rate measured. */
@@ -3299,7 +3322,7 @@ class ScopeApp {
       this.disconnect();
       this.net = event.target.value || null;
       this.adoptChannelNets();
-      await this.loadCapabilities();
+      if (await this.loadCapabilities()) this.connect();
     });
 
     // Run and Single both move the trigger mode -- Single sets it, Run

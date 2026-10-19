@@ -417,3 +417,12 @@ code {
 .trig--auto { color: var(--warn); border-color: var(--warn); }
 .trig--roll { color: var(--accent); border-color: var(--accent); }
 .trig--stop { color: var(--error); border-color: var(--error); }
+
+/* Read before the stream closed: kept, but not shown as live. */
+.measurements--stale dd,
+.measurements--stale .measurements__channel { opacity: 0.45; }
+.measurements--stale::before {
+  content: "Not live: read before the stream closed.";
+  grid-column: 1 / -1;
+  color: var(--warn);
+}
