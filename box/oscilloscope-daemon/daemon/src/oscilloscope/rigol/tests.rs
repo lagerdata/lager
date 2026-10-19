@@ -297,6 +297,8 @@ impl Instrument {
             ":MEASURE:VAVG?" | ":MEASURE:VRMS?" => format!("{:e}", channel(self.measure_source).signal),
             ":MEASURE:PDUTY?" => "2.500000e-01".into(),
             ":MEASURE:NDUTY?" => "7.500000e-01".into(),
+            ":MEASURE:RTIME?" => "7.000000e-08".into(),
+            ":MEASURE:FTIME?" => "6.000000e-08".into(),
             q if q.starts_with(":MEASURE:") => "9.9E37".into(),
             ":WAVEFORM:PREAMBLE?" => {
                 // Ten points at 1 us, trigger at the fifth; 25 mV a code.
@@ -813,14 +815,26 @@ fn measurements_are_computed_from_the_channel_s_record() {
     let before = bench.sent().len();
     let set = bench.scope.measure_all(ChannelId::Alphabetic('A')).unwrap().unwrap();
     let sent = bench.sent()[before..].to_vec();
-    assert!(!sent.iter().any(|c| c.starts_with(":MEASure")), "{sent:?}");
+    // Only rise and fall are asked of the scope, in one go, and the bar
+    // cleared after.
+    assert_eq!(
+        sent.iter().filter(|c| c.starts_with(":MEASure")).collect::<Vec<_>>(),
+        [":MEASure:SOURce CHANnel1", ":MEASure:CLEar ALL"],
+        "{sent:?}"
+    );
     assert_eq!(
         sent.iter().filter(|c| c.starts_with(":WAVeform:SOURce")).collect::<Vec<_>>(),
         [":WAVeform:SOURce CHANnel1"],
         "only the measured channel is read, though B is on too"
     );
     let record = bench.scope.record(&[0]).unwrap();
-    assert_eq!(Some(&set), protocol::measure_channel(&record, 0).as_ref());
+    let computed = protocol::measure_channel(&record, 0).unwrap();
+    assert_eq!((set.rise_time, set.fall_time), (Some(7e-8), Some(6e-8)), "the scope's own");
+    assert_eq!(
+        MeasurementSet { rise_time: computed.rise_time, fall_time: computed.fall_time, ..set },
+        computed,
+        "the rest from the record"
+    );
     // The fake's record is a ramp from 0 to 0.9 V.
     assert!((set.vmax - 0.9).abs() < 1e-6 && set.vmin.abs() < 1e-6, "{set:?}");
     let off = bench.scope.measure_all(ChannelId::Alphabetic('D')).unwrap();

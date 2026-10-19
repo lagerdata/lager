@@ -56,6 +56,11 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 ### Fixed
 
+- **A Rigol MSO5000's rise and fall time are the scope's own again.** Since the set came
+  from the screen record, they read anywhere from 0.3 to 3 ms on an edge the scope times
+  at 70 ns: the record is too coarse for an edge, and noise on the level started the
+  timing early. The set now asks the scope for those two. On every scope, rise and fall
+  are timed from the last crossing of the 10% level before the edge, not the first.
 - **The oscilloscope page connects by itself and says when its readings are old.** It
   used to wait for **Connect** even with the scope running. It now connects as soon as it
   knows the scope, and when another net is picked; **Start** still runs the scope. Once

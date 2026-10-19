@@ -188,8 +188,12 @@ fn find_crossings(samples: &[f64], low: f64, high: f64, mid: f64) -> Vec<Crossin
     crossings
 }
 
-/// Time from the first sample crossing `from_level` to the first crossing of
+/// Time from the last crossing of `from_level` to the first crossing of
 /// `to_level` after it, used for rise and fall times.
+///
+/// The last, not the first: noise on a level crosses `from_level` back and
+/// forth before the edge, and timing from the first of those measured from
+/// somewhere along the level, up to a whole half period early.
 fn transition_time(
     samples: &[f64],
     interval_s: f64,
@@ -207,6 +211,11 @@ fn transition_time(
         };
         if start.is_none() && crossed_from {
             start = Some(interpolate(previous, current, from_level, i - 1));
+            continue;
+        }
+        let fell_back = if rising { current < from_level } else { current > from_level };
+        if fell_back {
+            start = None;
             continue;
         }
         if let Some(start_position) = start {
@@ -543,6 +552,34 @@ mod tests {
 
         let rise = m.rise_time.expect("rise time");
         assert!((rise - 80e-6).abs() < 5e-6, "rise {rise}");
+    }
+
+    #[test]
+    fn noise_crossing_the_low_threshold_before_the_edge_is_not_timed() {
+        // A low level whose noise pokes past 10% of the swing (-0.8 V) twice,
+        // half the record before the ramp: timed from the first poke, the
+        // rise came out as 500 us instead of 80.
+        let mut volts: Vec<f64> = vec![-1.0; 600];
+        volts[50] = -0.7;
+        volts[300] = -0.7;
+        volts.extend((0..100).map(|i| -1.0 + 2.0 * i as f64 / 99.0));
+        volts.extend(vec![1.0; 50]);
+        let frame = frame_from_volts(&volts, 1e6);
+        let m = measure_channel(&frame, 0).unwrap();
+        let rise = m.rise_time.expect("rise time");
+        assert!((rise - 80e-6).abs() < 5e-6, "rise {rise}");
+    }
+
+    #[test]
+    fn noise_crossing_the_high_threshold_before_the_fall_is_not_timed() {
+        let mut volts: Vec<f64> = vec![1.0; 600];
+        volts[100] = 0.7;
+        volts.extend((0..100).map(|i| 1.0 - 2.0 * i as f64 / 99.0));
+        volts.extend(vec![-1.0; 50]);
+        let frame = frame_from_volts(&volts, 1e6);
+        let m = measure_channel(&frame, 0).unwrap();
+        let fall = m.fall_time.expect("fall time");
+        assert!((fall - 80e-6).abs() < 5e-6, "fall {fall}");
     }
 
     #[test]

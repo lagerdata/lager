@@ -742,6 +742,17 @@ impl RigolMso5000 {
         Ok(())
     }
 
+    /// Rise and fall time of channel `i`, as the scope measures them, then
+    /// the measurement bar cleared as `measure_one` leaves it.
+    fn edge_times(&self, i: usize) -> Result<(Option<f64>, Option<f64>)> {
+        let mut scpi = self.link();
+        scpi.write(&format!(":MEASure:SOURce CHANnel{}", i + 1))?;
+        let rise = scope_measurement(&scpi.query(":MEASure:RTIMe?")?);
+        let fall = scope_measurement(&scpi.query(":MEASure:FTIMe?")?);
+        scpi.write(":MEASure:CLEar ALL")?;
+        Ok((rise, fall))
+    }
+
     fn not_offered(&self, what: &str) -> anyhow::Error {
         anyhow::anyhow!("the {} does not offer {what} through this driver", self.capabilities.model)
     }
@@ -1032,6 +1043,16 @@ fn measurement_item(which: Measurement) -> (usize, bool) {
         Measurement::FallTime => (12, false),
         Measurement::Overshoot => (13, true),
     }
+}
+
+/// A `:MEASure:<item>?` answer, or `None` for one the scope could not make
+/// (9.9E37).
+fn scope_measurement(reply: &str) -> Option<f64> {
+    reply
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|v| v.is_finite() && v.abs() < NO_MEASUREMENT)
 }
 
 /// `:WAVeform:PREamble?`: format, type, points, count, x increment, x
@@ -1443,14 +1464,10 @@ impl Oscilloscope for RigolMso5000 {
             let mut scpi = self.link();
             scpi.write(&format!(":MEASure:SOURce CHANnel{}", i + 1))?;
             let reply = scpi.query(&format!(":MEASure:{}?", MEASUREMENT_ITEMS[item]))?;
-            // As in `measure_all`: the item it adds to the bar is read as trace.
+            // The item it adds to the scope's measurement bar is read as
+            // trace by the live view.
             scpi.write(":MEASure:CLEar ALL")?;
-            Ok(reply
-                .trim()
-                .parse::<f64>()
-                .ok()
-                .filter(|v| v.is_finite() && v.abs() < NO_MEASUREMENT)
-                .map(|v| if percent { v * 100.0 } else { v }))
+            Ok(scope_measurement(&reply).map(|v| if percent { v * 100.0 } else { v }))
         })())
     }
 
@@ -1458,7 +1475,9 @@ impl Oscilloscope for RigolMso5000 {
     /// the scope item by item (`:MEASure:<item>?`) took 14 queries, about 4.8 s
     /// on the bench, during which the loop published no frames, and each item
     /// it added to the measurement bar was read as trace by the live view.
-    /// `measure_one` still asks the scope, for its full-memory reading.
+    /// Rise and fall time are the exception, asked of the scope in two
+    /// queries, and `measure_one` still asks the scope for its full-memory
+    /// reading.
     fn measure_all(&mut self, channel: ChannelId) -> Option<Result<MeasurementSet>> {
         Some((|| {
             let i = self.index(channel)?;
@@ -1466,9 +1485,16 @@ impl Oscilloscope for RigolMso5000 {
                 bail!("channel {channel} is not enabled, so there is nothing to measure");
             }
             let record = self.record(&[i])?;
-            let set = protocol::measure_channel(&record, 0).with_context(|| {
+            let mut set = protocol::measure_channel(&record, 0).with_context(|| {
                 format!("the scope has no samples for channel {channel}; is there a signal on it?")
             })?;
+            // The record has a sample per screen column, 10 us apart at
+            // 1 ms/div, far coarser than an edge: from it, a 70 ns rise read
+            // as one sample at best. The scope times the edges on its full
+            // memory, in two queries.
+            let (rise_time, fall_time) = self.edge_times(i)?;
+            set.rise_time = rise_time;
+            set.fall_time = fall_time;
             Ok(set)
         })())
     }
