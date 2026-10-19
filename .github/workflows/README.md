@@ -15,10 +15,10 @@ deleted.)
 
 | File | Sidebar name | Triggers | Runner | Purpose |
 |---|---|---|---|---|
-| `integration-tests.yml` | Bench: Integration Tests | `workflow_call`, dispatch | self-hosted `lager-bench` | Drives every bench instrument through `lager python`, plus the J-Link CLI suite |
+| `integration-tests.yml` | Bench: Integration Tests | `workflow_call`, dispatch | self-hosted `lager-bench` | Drives every bench instrument through `lager python`, plus the J-Link CLI, UART, deployment and devenv bash suites |
 | `update-regression.yml` | Bench: Box Lifecycle | `workflow_call`, dispatch | self-hosted `lager-bench` | Downgrade -> update -> no-op -> forced rebuild -> uninstall -> install, with a hardware smoke per phase |
 | `nightly-bench.yml` | Bench: Nightly | cron 10:17 UTC, push of `v*` tags, dispatch | (calls the two above) | The bench chain: lifecycle first, instruments only if it succeeded, one chain at a time; files/closes the `bench-alert` issue |
-| `bench-extended.yml` | Bench: Extended | cron Sat 14:17 UTC, dispatch | self-hosted `lager-bench` | Weekly run of five of the seven infrastructure integration suites (no instruments; bench stays dark); alerts on failure under its own `bench-alert-extended` label, and never closes it |
+| `bench-extended.yml` | Bench: Extended | cron Sat 14:17 UTC, dispatch | self-hosted `lager-bench` | Weekly run of the suites that change shared state (nets, box_config, generic) plus the Keithley supply and battery suites; alerts on failure under its own `bench-alert-extended` label, and never closes it |
 | `bench-watchdog.yml` | Bench: Watchdog | cron every 6h at :41, dispatch | `ubuntu-latest` | Alerts when nightly runs stop FLOWING (queued too long, stuck, cron dead), when any `Bench:` workflow is disabled, and when Extended has not run in 8 days — the failures the notify jobs cannot see |
 | `unit-tests.yml` | PR Gate: Unit Tests | `pull_request`, push to `main`, dispatch | `ubuntu-latest` | Unit suites (one pytest process per suite) + Python-version compat matrix |
 | `static-checks.yml` | PR Gate: Static Checks | `pull_request`, push to `main`, dispatch | `ubuntu-latest` | Syntax/lint floors over the tree the unit gate cannot reach, plus a coverage report |
@@ -302,7 +302,7 @@ Notes and footguns:
 - The relay nets are persistent box state under `/etc/lager`. The lifecycle's
   uninstall preserves them — `--keep-config` is load-bearing. A
   `lager nets delete-all` does NOT preserve them; `add-all` then re-fills
-  FIO0/FIO1 as numbered gpio nets. Both bench workflows self-heal this at
+  FIO0/FIO1 as numbered gpio nets. All three bench workflows self-heal this at
   the start of each run ("Ensure relay nets exist"): they rename the
   squatter net back, or re-create the net when the pin is empty. Manual
   recovery, if ever needed (the address is the LabJack's VISA address from
@@ -338,6 +338,7 @@ belongs here.
 |---|---|---|
 | Rigol DP821 CH2 (`supply3`) output | MCC USB-202 CH0 (`adc15`) | `test/api/io/test_usb202.py::test_adc_supply_accuracy`, gated on `USB202_SUPPLY_NET` + `USB202_SUPPLY_ADC_NET` |
 | ESP32 UART peer's on-board USB chip (`ESP_UART`) | ESP32 U0RXD (GPIO3) -- the ONLY driver allowed on that pin | `test/integration/communication/uart.sh` section 15 |
+| LabJack T7 DAC0 (`dac1`) | LabJack T7 AIN0 (`adc1`) | `test/api/io/test_LabJack_T7.py::test_loopback` (`LOOPBACK_ADC_NET=adc1`; a skip fails the step) |
 
 This wire cost real triage time. It was built for a check whose two repository
 variables were never set, so the sub-test had never run once and nothing in the

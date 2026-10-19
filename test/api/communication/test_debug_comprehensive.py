@@ -40,8 +40,23 @@ import sys, os, time, traceback
 DEBUG_NET = os.environ.get("DEBUG_NET", "debug1")
 FIRMWARE_PATH = os.environ.get("FIRMWARE_PATH", "firmware.hex")
 ALLOW_ERASE = os.environ.get("ALLOW_ERASE", "0")
+# The most skipped checks tolerated before the run fails; unset means no
+# limit. The bench workflows set it, so a check that silently stops running
+# (its firmware went missing) turns the step red instead of reading green.
+MAX_SKIPS = os.environ.get("LAGER_BENCH_MAX_SKIPS", "")
 
 _results = []
+_skips = []
+
+def _skip(name, reason):
+    """Record a check that did not run. Never counted as a pass."""
+    _skips.append((name, reason))
+    print(f"  SKIP: {name} -- {reason}")
+
+def _missing_firmware(name):
+    """A check that needs FIRMWARE_PATH and cannot find it."""
+    _skip(name, f"'{FIRMWARE_PATH}' not found, use --add-file")
+    return True
 
 def _record(name, passed, detail=""):
     """Record a sub-test result."""
@@ -296,8 +311,7 @@ def test_memory_read_various_lengths():
 def test_flash_firmware():
     print("\n" + "=" * 60 + "\nTEST: Flash Firmware\n" + "=" * 60)
     if not os.path.exists(FIRMWARE_PATH):
-        _record("debug.flash()", True, f"SKIPPED -- '{FIRMWARE_PATH}' not found, use --add-file")
-        return True
+        return _missing_firmware("debug.flash(firmware)")
     from lager import Net, NetType
     debug = Net.get(DEBUG_NET, type=NetType.Debug)
     try:
@@ -316,34 +330,69 @@ def test_flash_firmware():
 # 15. Flash Format Detection
 # ---------------------------------------------------------------------------
 def test_flash_format_detection():
+    """flash() picks the programming path from the file extension and refuses
+    what it cannot program. Both refusals happen before the probe is touched,
+    so they are safe to drive against the bench target. (This used to flash
+    the firmware a second time and pass if nothing raised, which is not a test
+    of format detection.)"""
     print("\n" + "=" * 60 + "\nTEST: Flash Format Detection\n" + "=" * 60)
-    if not os.path.exists(FIRMWARE_PATH):
-        _record("flash format detection", True, f"SKIPPED -- '{FIRMWARE_PATH}' not found")
-        return True
+    import tempfile
     from lager import Net, NetType
     debug = Net.get(DEBUG_NET, type=NetType.Debug)
-    try:
-        debug.connect(ignore_if_connected=True)
-        ext = os.path.splitext(FIRMWARE_PATH)[1].lower()
-        debug.flash(FIRMWARE_PATH)
-        _record(f"flash accepts {ext}", True, f"extension '{ext}' handled")
-        return True
-    except Exception as e:
-        _record("flash format detection", False, str(e)); return False
-    finally:
-        try: debug.disconnect()
-        except Exception: pass
+    ok = True
+    with tempfile.TemporaryDirectory() as tmp:
+        txt = os.path.join(tmp, "firmware.txt")
+        binf = os.path.join(tmp, "firmware.bin")
+        for path in (txt, binf):
+            with open(path, "wb") as f:
+                f.write(b"\xff" * 16)
+        try:
+            debug.flash(txt)
+            _record("flash refuses .txt", False, "no error raised")
+            ok = False
+        except ValueError as e:
+            if "Unsupported firmware file type" in str(e):
+                _record("flash refuses .txt", True, str(e))
+            else:
+                _record("flash refuses .txt", False, f"wrong error: {e}"); ok = False
+        except Exception as e:
+            _record("flash refuses .txt", False, f"{type(e).__name__}: {e}"); ok = False
+        try:
+            debug.flash(binf)
+            _record("flash refuses .bin without an address", False, "no error raised")
+            ok = False
+        except ValueError as e:
+            if "flash_address" in str(e):
+                _record("flash refuses .bin without an address", True, str(e))
+            else:
+                _record("flash refuses .bin without an address", False, f"wrong error: {e}"); ok = False
+        except Exception as e:
+            _record("flash refuses .bin without an address", False, f"{type(e).__name__}: {e}"); ok = False
+    return ok
 
 # ---------------------------------------------------------------------------
 # 16. Erase (conditional)
 # ---------------------------------------------------------------------------
 def test_erase():
     print("\n" + "=" * 60 + "\nTEST: Erase\n" + "=" * 60)
-    if ALLOW_ERASE != "1":
-        _record("debug.erase()", True, "SKIPPED -- set ALLOW_ERASE=1 to enable")
-        return True
     from lager import Net, NetType
     debug = Net.get(DEBUG_NET, type=NetType.Debug)
+    # The argument check runs before the probe is touched, so it is safe on
+    # every run, ALLOW_ERASE or not.
+    try:
+        debug.erase(start=0x0)
+        _record("erase refuses start without length", False, "no error raised")
+        return False
+    except ValueError as e:
+        _record("erase refuses start without length", True, str(e))
+    except Exception as e:
+        _record("erase refuses start without length", False, f"{type(e).__name__}: {e}")
+        return False
+    if ALLOW_ERASE != "1":
+        # A configuration choice, not a fault: reported as a skip, never as
+        # a pass.
+        _skip("debug.erase()", "ALLOW_ERASE is not 1")
+        return True
     try:
         debug.connect(ignore_if_connected=True)
         result = debug.erase()
@@ -541,6 +590,15 @@ def main():
                 print(f"  FAIL: {name} -- {detail}")
     else:
         print()
+
+    # Skips are listed, never counted as passes.
+    print(f"Skipped: {len(_skips)}")
+    for name, reason in _skips:
+        print(f"  SKIP: {name} -- {reason}")
+    if MAX_SKIPS.isdigit() and len(_skips) > int(MAX_SKIPS):
+        print(f"\nFAIL: {len(_skips)} checks skipped, more than the "
+              f"{MAX_SKIPS} allowed (LAGER_BENCH_MAX_SKIPS)")
+        return 1
 
     return 0 if passed_count == total_count else 1
 

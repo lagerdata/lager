@@ -65,13 +65,19 @@ class BinaryNamesStayInTheBinariesDir(unittest.TestCase):
     """``_validate_name`` is what rejects; containment states where it lands."""
 
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix='lager_store_test_')
+        # The binaries dir sits inside a private parent, so the "nothing
+        # written outside" check lists a directory only this test writes to.
+        # Listing the shared temp dir failed whenever another process created
+        # a temp file there at the same moment.
+        self._parent = tempfile.mkdtemp(prefix='lager_store_parent_')
+        self.tmp = os.path.join(self._parent, 'binaries')
+        os.mkdir(self.tmp)
         self._real = store.HOST_BINARIES_DIR
         store.HOST_BINARIES_DIR = self.tmp
 
     def tearDown(self):
         store.HOST_BINARIES_DIR = self._real
-        shutil.rmtree(self.tmp, ignore_errors=True)
+        shutil.rmtree(self._parent, ignore_errors=True)
 
     def test_escaping_names_are_refused_on_add(self):
         for name in ESCAPING_NAMES:

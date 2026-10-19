@@ -557,6 +557,14 @@ def main():
     print(f"\nTotal: {passed}/{ran} test groups passed{suffix}")
     if skipped:
         print("Skipped groups did not run and are not counted as passing.")
+    # The bench workflow sets the number of groups expected to skip (the
+    # fixtures that are not wired). One more means a wired fixture stopped
+    # running -- e.g. the supply never became ready -- and must not read green.
+    max_skips = os.environ.get("LAGER_BENCH_MAX_SKIPS", "")
+    if max_skips.isdigit() and skipped > int(max_skips):
+        print(f"FAIL: {skipped} groups skipped, more than the {max_skips} "
+              f"allowed (LAGER_BENCH_MAX_SKIPS)")
+        return 1
     return 0 if failed == 0 else 1
 
 

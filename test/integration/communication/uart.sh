@@ -118,6 +118,13 @@ try_create_uart_net() {
   return 1
 }
 
+# Exit 0 when the box has a saved net named $1. Reads the registry rather
+# than grepping the `lager uart` table, which wraps any name longer than
+# about eleven characters across two lines.
+uart_net_saved() {
+  lager nets show "$1" --box "$BOX" >/dev/null 2>&1
+}
+
 echo "========================================================================"
 echo "LAGER UART COMMANDS COMPREHENSIVE TEST SUITE"
 echo "========================================================================"
@@ -175,12 +182,14 @@ echo ""
 echo "Test 2.1: Query available UART devices from instruments"
 INSTRUMENTS_OUTPUT=$(lager instruments --box $BOX 2>&1)
 echo "$INSTRUMENTS_OUTPUT"
+# Every later section needs a serial device; with none visible here the rest
+# of the suite cannot mean anything, so this is a failure, not a note.
 if echo "$INSTRUMENTS_OUTPUT" | grep -qi "uart\|tty\|serial"; then
   echo -e "${GREEN}Found UART/serial devices${NC}"
   track_test "pass"
 else
-  echo -e "${YELLOW}No UART devices found - tests may be limited${NC}"
-  track_test "pass"
+  echo -e "${RED}No UART/serial device in the instrument list${NC}"
+  track_test "fail"
 fi
 echo ""
 
@@ -197,8 +206,15 @@ fi
 echo ""
 
 echo "Test 2.4: List UART nets to verify creation"
-lager uart --box $BOX 2>&1
-track_test "pass"
+UART_LIST=$(lager uart --box $BOX 2>&1)
+UART_LIST_RC=$?
+echo "$UART_LIST"
+if [ "$UART_LIST_RC" -eq 0 ] && uart_net_saved "$TEST_UART_NET"; then
+  track_test "pass"
+else
+  echo -e "${RED}  listing exited $UART_LIST_RC, or '$TEST_UART_NET' is not saved${NC}"
+  track_test "fail"
+fi
 echo ""
 
 echo "Test 2.5: Create second test UART net"
@@ -243,10 +259,10 @@ fi
 echo ""
 
 echo "Test 3.3: List UART nets to verify parameters"
-if lager uart --box $BOX 2>&1 | grep -q "$TEST_NET_MULTI"; then
+if uart_net_saved "$TEST_NET_MULTI"; then
   track_test "pass"
 else
-  track_test "pass"
+  track_test "fail"
 fi
 echo ""
 
@@ -359,16 +375,20 @@ lager uart --box $BOX 2>&1 && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 6.2: Count UART nets created"
-UART_NET_COUNT=$(lager uart --box $BOX 2>&1 | grep -c "test_uart" || echo "0")
-echo "Found $UART_NET_COUNT test UART nets"
-track_test "pass"
+# Both nets created in section 2 are still saved at this point.
+if uart_net_saved "$TEST_UART_NET" && uart_net_saved "$TEST_UART_NET2"; then
+  track_test "pass"
+else
+  echo -e "${RED}  expected both '$TEST_UART_NET' and '$TEST_UART_NET2' to be saved${NC}"
+  track_test "fail"
+fi
 echo ""
 
 echo "Test 6.3: Verify table format in listing"
 if lager uart --box $BOX 2>&1 | grep -qi "Name\|Baudrate\|Port"; then
   track_test "pass"
 else
-  track_test "pass"
+  track_test "fail"
 fi
 echo ""
 
@@ -398,15 +418,16 @@ if lager nets rename "$TEST_UART_NET" "${TEST_UART_NET}_renamed" --box $BOX 2>&1
   track_test "pass"
   TEST_UART_NET="${TEST_UART_NET}_renamed"
 else
-  track_test "pass"
+  track_test "fail"
 fi
 echo ""
 
 echo "Test 7.2: Verify renamed net appears in listing"
-if lager uart --box $BOX 2>&1 | grep -q "${TEST_UART_NET}_renamed"; then
+# TEST_UART_NET already holds the new name when 7.1 passed.
+if [[ "$TEST_UART_NET" == *_renamed ]] && uart_net_saved "$TEST_UART_NET"; then
   track_test "pass"
 else
-  track_test "pass"
+  track_test "fail"
 fi
 echo ""
 
@@ -414,12 +435,12 @@ echo "Test 7.3: Delete UART net"
 if lager nets delete "$TEST_UART_NET" uart --box $BOX --yes 2>&1 | grep -qi "deleted\|removed\|success"; then
   track_test "pass"
 else
-  track_test "pass"
+  track_test "fail"
 fi
 echo ""
 
 echo "Test 7.4: Verify deleted net is removed from listing"
-if lager uart --box $BOX 2>&1 | grep -q "$TEST_UART_NET"; then
+if uart_net_saved "$TEST_UART_NET"; then
   track_test "fail"
 else
   track_test "pass"
@@ -603,7 +624,7 @@ TEST_PERSIST_NET="t_persist"
 if try_create_uart_net "$TEST_PERSIST_NET"; then
   track_test "pass"
 else
-  track_test "pass"
+  track_test "fail"
 fi
 echo ""
 
@@ -635,21 +656,37 @@ echo "========================================================================"
 echo ""
 
 echo "Test 12.1: Create net with very long name"
+# A 250-character name may be accepted or refused; either is a valid policy.
+# What must hold is consistency: an accepted name reads back, a refused one
+# was not saved.
 LONG_NAME=$(printf 'uart_%.0s' {1..50})
 if try_create_uart_net "$LONG_NAME"; then
+  if lager nets show "$LONG_NAME" --box $BOX >/dev/null 2>&1; then
+    track_test "pass"
+  else
+    echo -e "${RED}  accepted, but does not read back${NC}"
+    track_test "fail"
+  fi
   lager nets delete "$LONG_NAME" uart --box $BOX --yes >/dev/null 2>&1 || true
-  track_test "pass"
 else
-  track_test "pass"
+  if lager nets show "$LONG_NAME" --box $BOX >/dev/null 2>&1; then
+    echo -e "${RED}  refused, but saved anyway${NC}"
+    lager nets delete "$LONG_NAME" uart --box $BOX --yes >/dev/null 2>&1 || true
+    track_test "fail"
+  else
+    track_test "pass"
+  fi
 fi
 echo ""
 
 echo "Test 12.2: Create net with special characters in device path"
-if lager nets add "test_special_path" uart "/dev/serial/by-id/usb-FTDI_FT232R_USB_UART-if00-port0" "" --box $BOX 2>&1 | grep -q "Saved new net"; then
+# A /dev/serial/by-id path is the normal way to name a device that keeps
+# its identity across replugs, so it must be accepted.
+if lager nets add "test_special_path" uart "/dev/serial/by-id/usb-FTDI_FT232R_USB_UART-if00-port0" "test_special_path" --box $BOX 2>&1 | grep -q "Saved new net"; then
   lager nets delete "test_special_path" uart --box $BOX --yes >/dev/null 2>&1 || true
   track_test "pass"
 else
-  track_test "pass"
+  track_test "fail"
 fi
 echo ""
 
@@ -660,7 +697,7 @@ if try_create_uart_net "test_empty_param"; then
   lager nets delete "test_empty_param" uart --box $BOX --yes >/dev/null 2>&1 || true
   track_test "pass"
 else
-  track_test "pass"
+  track_test "fail"
 fi
 echo ""
 

@@ -4,6 +4,7 @@
 # test_list_nets.py
 # Run with: lager python test/api/utility/test_list_nets.py --box <BOX_NAME>
 
+import os
 import sys
 
 _results = []
@@ -43,6 +44,21 @@ def main():
             print(f"    {name} ({role})")
     else:
         _record("nets_have_name_and_role", False, "no nets to check")
+
+    # Test 4: the nets this box is known to carry are listed, with the right
+    # role. "Non-empty" alone passes for a registry that lost every net but
+    # one; EXPECT_NETS names the ones that matter, as name:role pairs.
+    expected = [e.strip() for e in os.environ.get("EXPECT_NETS", "").split(",") if e.strip()]
+    by_name = {n.get("name"): n.get("role") for n in nets if isinstance(n, dict)}
+    for entry in expected:
+        name, _, role = entry.partition(":")
+        got = by_name.get(name)
+        if got is None:
+            _record(f"expected net {name}", False, "not in list_saved()")
+        elif role and got != role:
+            _record(f"expected net {name}", False, f"role {got!r}, expected {role!r}")
+        else:
+            _record(f"expected net {name}", True, f"role {got!r}")
 
     # Summary
     total = len(_results)

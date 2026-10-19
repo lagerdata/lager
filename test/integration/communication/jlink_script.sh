@@ -225,6 +225,25 @@ check_script_on_box() {
     fi
 }
 
+# For checks whose input has no single correct outcome (a malformed or
+# unreadable script may be rejected or tolerated): the command must still
+# answer, and not with a Python traceback.
+handled_without_crash() {
+    local output="$1"
+    [ -n "$output" ] && ! printf '%s' "$output" | grep -q "Traceback (most recent call last)"
+}
+
+# The probe still answers a status query, in either connection state. The
+# status output reports "GDB server running:" and "Target attached:"; it no
+# longer prints "Connected"/"Not connected", which several checks here still
+# grepped for -- they could only pass because both of their branches passed.
+probe_still_answers() {
+    local out
+    out=$(lager debug "$NET" status --box "$BOX" 2>&1) || return 1
+    printf '%s' "$out" | grep -q "GDB server running:" \
+        && printf '%s' "$out" | grep -q "Target attached:"
+}
+
 check_process_args() {
     local pattern="$1"
     local ps_output=$(ssh ${SSH_USER}@$BOX_IP "ps aux | grep JLinkGDBServer | grep -v grep" 2>/dev/null || true)
@@ -337,10 +356,12 @@ GDB_PID=$!
 sleep 5
 
 # The connection should succeed even without a script for this net
-if lager debug $NET status --box $BOX 2>&1 | grep -qi "Connected\|Not connected"; then
+# Either connection state is acceptable; the status command answering is not
+# optional.
+if probe_still_answers; then
     track_test "pass"
 else
-    track_test "pass"  # Either state is acceptable
+    track_test "fail"
 fi
 
 kill $GDB_PID 2>/dev/null || true
@@ -357,10 +378,10 @@ GDB_PID=$!
 sleep 5
 
 # Should succeed without errors
-if [ -n "$OUTPUT" ] || lager debug $NET status --box $BOX 2>&1 | grep -qi "Connected\|Not"; then
+if [ -n "$OUTPUT" ] || probe_still_answers; then
     track_test "pass"
 else
-    track_test "pass"
+    track_test "fail"
 fi
 
 kill $GDB_PID 2>/dev/null || true
@@ -374,11 +395,12 @@ echo '{"DEBUG": invalid}' > .lager
 echo -n "  Checking JSON parse error... "
 OUTPUT=$(lager debug $NET gdbserver --no-tunnel --box $BOX 2>&1) || true
 
-if echo "$OUTPUT" | grep -qi "json\|parse\|error\|invalid"; then
+# Rejecting the file and parsing it leniently are both acceptable. Crashing
+# is not: the command must say something, and not a Python traceback.
+if handled_without_crash "$OUTPUT"; then
     track_test "pass"
 else
-    # If it proceeds anyway, that's also acceptable (lenient parsing)
-    track_test "pass"
+    track_test "fail"
 fi
 cleanup_jlink
 echo ""
@@ -393,10 +415,11 @@ EOF
 echo -n "  Checking INI format error handling... "
 OUTPUT=$(lager debug $NET gdbserver --no-tunnel --box $BOX 2>&1) || true
 
-if echo "$OUTPUT" | grep -qi "json\|invalid\|error"; then
+# Rejecting and ignoring the INI file are both acceptable; crashing is not.
+if handled_without_crash "$OUTPUT"; then
     track_test "pass"
 else
-    track_test "pass"  # May silently ignore invalid format
+    track_test "fail"
 fi
 cleanup_jlink
 echo ""
@@ -411,12 +434,13 @@ GDB_PID=$!
 sleep 5
 
 echo -n "  Checking lowercase 'debug' section... "
-if check_script_on_box "LOWERCASE DEBUG"; then
+# Whether a lowercase section name is honoured is not specified, so it is
+# reported, not asserted. The probe must still answer afterwards.
+check_script_on_box "LOWERCASE DEBUG" || echo "  Note: lowercase 'debug' section was not applied"
+if probe_still_answers; then
     track_test "pass"
 else
-    # Uppercase might be required
-    track_test "pass"
-    echo "  Note: lowercase 'debug' may not be supported"
+    track_test "fail"
 fi
 
 kill $GDB_PID 2>/dev/null || true
@@ -559,10 +583,11 @@ sleep 5
 
 echo -n "  Checking empty script handling... "
 # Connection should succeed (J-Link may warn)
-if lager debug $NET status --box $BOX 2>&1 | grep -qi "Connected"; then
+# Connected or not, an empty script must not take the probe down.
+if probe_still_answers; then
     track_test "pass"
 else
-    track_test "pass"  # Even if not connected, empty script shouldn't crash
+    track_test "fail"
 fi
 
 kill $GDB_PID 2>/dev/null || true
@@ -705,10 +730,13 @@ GDB_PID=$!
 sleep 5
 
 echo -n "  Checking binary content handling... "
-if check_script_on_box "BINARY TEST"; then
+# Binary content may be rejected or passed through; reported, not asserted.
+# The probe must still answer afterwards.
+check_script_on_box "BINARY TEST" || echo "  Note: binary script content was not applied"
+if probe_still_answers; then
     track_test "pass"
 else
-    track_test "pass"  # May reject binary content
+    track_test "fail"
 fi
 
 kill $GDB_PID 2>/dev/null || true
@@ -804,13 +832,15 @@ GDB_PID=$!
 sleep 5
 
 echo -n "  Memory read with script... "
-OUTPUT=$(lager debug $NET memrd --box $BOX 0x00000000 16 2>&1)
+OUTPUT=$(lager debug $NET memrd --box $BOX 0x00000000 16 2>&1); RC=$?
 echo "$OUTPUT" | head -3
-if echo "$OUTPUT" | grep -qiE "0x|[0-9a-f]{2}[[:space:]]+[0-9a-f]{2}|data|bytes"; then
+# Exit status plus memory-shaped output. A bare "0x" also appears in an
+# error that names the address, so it is not evidence of a read.
+if cmd_succeeded "$RC" "$OUTPUT" "0x[0-9a-f]|[0-9a-f]{2}[[:space:]]+[0-9a-f]{2}"; then
     track_test "pass"
 else
     track_test "fail"
-    echo "  Note: memrd output format may differ - check manually"
+    show_failure "$OUTPUT"
 fi
 
 kill $GDB_PID 2>/dev/null || true
@@ -826,9 +856,8 @@ sleep 5
 echo -n "  Multiple operations... "
 FAILED=0
 lager debug $NET reset --box $BOX >/dev/null 2>&1 || FAILED=1
-# memrd may return non-zero but still produce output - check output instead
-MEMRD_OUT=$(lager debug $NET memrd --box $BOX 0x00000000 16 2>&1) || true
-if [ -z "$MEMRD_OUT" ]; then FAILED=1; fi
+MEMRD_OUT=$(lager debug $NET memrd --box $BOX 0x00000000 16 2>&1); MEMRD_RC=$?
+cmd_succeeded "$MEMRD_RC" "$MEMRD_OUT" "0x[0-9a-f]|[0-9a-f]{2}[[:space:]]+[0-9a-f]{2}" || FAILED=1
 lager debug $NET reset --halt --box $BOX >/dev/null 2>&1 || FAILED=1
 
 if [ $FAILED -eq 0 ]; then
@@ -939,10 +968,11 @@ echo -n "  Permission denied handling... "
 OUTPUT=$(timeout 10 lager debug $NET gdbserver --no-tunnel --box $BOX 2>&1) || true
 
 # Should warn but potentially continue
-if echo "$OUTPUT" | grep -qi "permission\|denied\|cannot read\|warning\|Connected"; then
+# Warning and skipping the unreadable file are both acceptable; crashing is not.
+if handled_without_crash "$OUTPUT"; then
     track_test "pass"
 else
-    track_test "pass"  # May silently skip
+    track_test "fail"
 fi
 
 chmod 644 no_read_script.JLinkScript
@@ -957,10 +987,10 @@ echo '{"DEBUG": {"'$NET'": "./script_dir.JLinkScript"}}' > .lager
 echo -n "  Directory path handling... "
 OUTPUT=$(timeout 10 lager debug $NET gdbserver --no-tunnel --box $BOX 2>&1) || true
 
-if echo "$OUTPUT" | grep -qi "directory\|not a file\|error\|warning\|Connected"; then
+if handled_without_crash "$OUTPUT"; then
     track_test "pass"
 else
-    track_test "pass"
+    track_test "fail"
 fi
 
 rmdir script_dir.JLinkScript 2>/dev/null || true
@@ -996,10 +1026,10 @@ echo '{"DEBUG": {"'$NET'": "./broken_link.JLinkScript"}}' > .lager
 echo -n "  Broken symlink handling... "
 OUTPUT=$(timeout 10 lager debug $NET gdbserver --no-tunnel --box $BOX 2>&1) || true
 
-if echo "$OUTPUT" | grep -qi "not found\|broken\|warning\|Connected"; then
+if handled_without_crash "$OUTPUT"; then
     track_test "pass"
 else
-    track_test "pass"
+    track_test "fail"
 fi
 
 rm -f broken_link.JLinkScript
@@ -1032,10 +1062,10 @@ for i in 1 2 3; do
 done
 
 # Verify final state is clean
-if lager debug $NET status --box $BOX 2>&1 | grep -qi "Not connected\|Connected"; then
+if probe_still_answers; then
     track_test "pass"
 else
-    track_test "pass"  # Clean state after cycles
+    track_test "fail"
 fi
 echo ""
 
@@ -1063,10 +1093,13 @@ lager debug $NET reset --box $BOX >/dev/null 2>&1
 sleep 2
 
 echo -n "  Original script persists (no reload)... "
-if check_script_on_box "SCRIPT A"; then
+# Keeping script A and hot-reloading script B are both acceptable; reported,
+# not asserted. The probe must still answer.
+check_script_on_box "SCRIPT A" || echo "  Note: the running session picked up script B"
+if probe_still_answers; then
     track_test "pass"
 else
-    track_test "pass"  # May use B if hot-reload is supported
+    track_test "fail"
 fi
 
 kill $GDB_PID 2>/dev/null || true
@@ -1129,10 +1162,10 @@ GDB_PID=$!
 sleep 5
 
 # Net not in DEBUG section should still connect
-if lager debug $NET status --box $BOX 2>&1 | grep -qi "Connected\|Not connected"; then
+if probe_still_answers; then
     track_test "pass"
 else
-    track_test "pass"
+    track_test "fail"
 fi
 
 kill $GDB_PID 2>/dev/null || true
@@ -1223,9 +1256,9 @@ GDB_PID=$!
 sleep 8  # Allow more time for script transfer
 if check_script_on_box "SMOKE TEST"; then
     track_test "pass"
-elif lager debug $NET status --box $BOX 2>&1 | grep -qi "Connected"; then
+elif lager debug $NET status --box $BOX 2>&1 | grep -q "GDB server running: True"; then
     track_test "pass"
-    echo "  (Connected but script check timing issue)"
+    echo "  (GDB server running but script check timing issue)"
 else
     track_test "fail"
 fi

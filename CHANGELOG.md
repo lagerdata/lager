@@ -137,6 +137,21 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   request they send to the box, and the MCP integration tests now run instead of only
   being collected. A failed import in the `lager python` tests now fails the gate instead of
   skipping them.
+- **Bench checks that could not fail now can.** `nets.sh` called `nets create`, `create-all`
+  and `create-batch`, which no longer exist, and passed on any output; it now drives
+  `nets add`, `add-batch`, `show`, `describe`, `rename` and `delete` and reads every result
+  back. Checks in `uart.sh`, `jlink_script.sh`, `deployment.sh`, `supply.sh`, `battery.sh`
+  and `generic.sh` that passed on both branches, or never checked that bad input was
+  refused, now have real failure branches.
+- **A skipped bench check now fails the step.** The J-Link CLI suite and `deployment.sh`
+  are gated with a skip limit, and the debug, USB-202, LabJack and custom-binaries API
+  tests take one through `LAGER_BENCH_MAX_SKIPS`. A test step turned off by a repository
+  variable is named in the run annotation.
+- **A bench job that leaves the box locked now fails.** The lock release is the last box
+  command of every bench job, and a lock the run still holds there fails the job instead
+  of a warning on a green run. Bench: Extended releases its lock too.
+- **`deployment.sh` and `devenv.sh` run nightly instead of weekly.** Both are read-only.
+  The nightly also uploads, runs and removes a custom binary with `lager binaries`.
 
 ## [0.57.0] - 2026-10-16
 

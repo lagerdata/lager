@@ -1,16 +1,15 @@
 # Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 #
-# Weekly execution for bench tests that exist but run nowhere. Of the 38 bash
-# integration suites, nightly CI executes exactly one (jlink_script.sh); the
-# other 37 were syntax-checked and shellchecked but never run, so a real
-# regression in the CLI surface they cover -- argument parsing, exit codes,
-# box-level commands -- surfaced only when a human happened to run one against
-# a bench. This workflow starts working that debt down.
+# Weekly execution for the bench suites that cannot run every night. Most
+# hardware suites run nightly in integration-tests.yml; the ones here change
+# shared state on the box or on the runner, so they run once a week, last,
+# where a mistake costs one run instead of every run after it.
 #
-# WAVE 1: five of the seven test/integration/infrastructure/ suites --
-# deployment, devenv, nets, box_config and generic. They need a box but NO
-# instruments.
+# WAVE 1: three of the seven test/integration/infrastructure/ suites --
+# nets, box_config and generic. They need a box but NO instruments.
+# deployment.sh and devenv.sh used to run here too; both are read-only, so
+# they moved to the nightly.
 #
 # The other two are deliberately excluded, each for its own reason recorded
 # beside the suite steps below: boxes_config.sh would print a network
@@ -152,8 +151,8 @@ jobs:
         shell: bash
 
       - name: Set up lager SSH key
-        # Same identity mapping integration-tests.yml uses: box_config.sh and
-        # deployment.sh ssh into the box directly with the default identity.
+        # Same identity mapping integration-tests.yml uses: box_config.sh ssh-es
+        # into the box directly with the default identity.
         run: |
           if [ ! -f ~/.ssh/lager_box ]; then
             ssh-keygen -t ed25519 -f ~/.ssh/lager_box -N "" -C "lager-box-access"
@@ -215,8 +214,8 @@ jobs:
       # whole run" describes wave 1 only; from here to the power-off below,
       # the bench is energized.
       #
-      # These run FIRST, and the bench goes back to dark before deployment.sh,
-      # so every wave-1 suite still runs under exactly the conditions its
+      # These run FIRST, and the bench goes back to dark before nets.sh, so
+      # every wave-1 suite still runs under exactly the conditions its
       # baseline was measured in. That ordering is not negotiable in the other
       # direction either: box_config.sh bounces the container and generic.sh
       # mangles the runner's own box registry, so instrument work after them
@@ -225,7 +224,7 @@ jobs:
       # Unlike integration-tests.yml, the relay steps here are
       # continue-on-error with an id rather than a hard gate. There it is
       # right to fail fast -- every suite in that workflow needs an
-      # instrument. Here five suites need no instruments at all and have been
+      # instrument. Here three suites need no instruments at all and have been
       # running green weekly; a dead relay must not take them with it. The
       # aggregation gate at the end still turns a relay failure into a red
       # job, and the two suites below are skipped rather than run against a
@@ -424,25 +423,6 @@ jobs:
       # fails loudly if a suite produces no summary at all, which is what a
       # crash or a step timeout looks like.
 
-      - name: Suite deployment.sh (box verification, no instruments)
-        id: suite-deployment
-        continue-on-error: true
-        timeout-minutes: 10
-        env:
-          # The suite defaults to ssh user `lager`; this bench logs in as
-          # `lagerdata`.
-          SSH_USER: lagerdata
-          # Expected clean. Its two failures were a stale expectation: the
-          # suite inspected containers named `controller` and `python`, which
-          # no longer exist -- there is one container, named `lager`. Fixed
-          # rather than baselined.
-          DEPLOYMENT_BASELINE: "0"
-        run: |
-          LOG="$RUNNER_TEMP/deployment.log"
-          bash test/integration/infrastructure/deployment.sh "$LAGER_BOX" 2>&1 | tee "$LOG" || true
-          bash tools/bench_suite_gate.sh deployment deployment.sh "$DEPLOYMENT_BASELINE" "$LOG"
-        shell: bash
-
       # python.sh is deliberately NOT wired, for the same reason as
       # boxes_config.sh: it does not test the CLI we ship. 53 of its checks
       # invoke `lager python -c "<code>"` for inline execution, and there is
@@ -475,22 +455,7 @@ jobs:
             fi
             sleep 5
           done
-          echo "::warning title=Bench Extended::box unresponsive after the python suite"
-        shell: bash
-
-      - name: Suite devenv.sh (local dev environment, runner-side docker)
-        id: suite-devenv
-        continue-on-error: true
-        timeout-minutes: 10
-        env:
-          # Clean, and expected to stay that way.
-          DEVENV_BASELINE: "0"
-          # No skips measured on the bench; any skip is a check that did not run.
-          DEVENV_MAX_SKIPS: "0"
-        run: |
-          LOG="$RUNNER_TEMP/devenv.log"
-          bash test/integration/infrastructure/devenv.sh 2>&1 | tee "$LOG" || true
-          bash tools/bench_suite_gate.sh harness devenv.sh "$DEVENV_BASELINE" "$LOG" "$DEVENV_MAX_SKIPS"
+          echo "::warning title=Bench Extended::box unresponsive before the nets/box_config/generic suites"
         shell: bash
 
       # boxes_config.sh is deliberately NOT wired: its discovery section
@@ -667,6 +632,15 @@ jobs:
           steps = json.loads(os.environ["STEPS_JSON"])
           bad = sorted(k for k, v in steps.items()
                        if isinstance(v, dict) and v.get("outcome") == "failure")
+          # A step whose `if:` was false reports outcome "skipped", which is
+          # not a failure -- so a test step gated off by a repo variable (the
+          # Keithley steps, KEITHLEY_PRESENT) used to vanish from the run with
+          # nothing saying so. Name every skipped test step in an annotation.
+          skipped = sorted(k for k, v in steps.items()
+                           if isinstance(v, dict) and v.get("outcome") == "skipped")
+          if skipped:
+              print("::warning title=Test steps skipped::" + ", ".join(skipped)
+                    + " did not run; their hardware was not exercised this run")
           if bad:
               print("One or more suites failed:")
               for name in bad:
@@ -674,6 +648,27 @@ jobs:
               sys.exit(1)
           print("All suites passed.")
           PY
+        shell: bash
+
+      - name: Release the bench lock (last box command)
+        # Last on purpose: every step that talks to the box -- the relay
+        # power-off included -- runs before this, so no box command can take a
+        # lock after the release has checked. It used to run before the
+        # power-off.
+        #
+        # The helper releases only a lock held by a run of this repository,
+        # retries a box that does not answer, and leaves a person's lock alone
+        # (#639). BENCH_LOCK_STRICT=1 turns a lock this run still holds into a
+        # job failure, since it blocks the next run; it used to be a warning
+        # on a green run, and green runs did leave the bench locked (#661).
+        # Not continue-on-error: a green tick here has to mean the bench was
+        # left free. The timeout
+        # covers six attempts against a box that does not answer.
+        if: always()
+        timeout-minutes: 3
+        env:
+          BENCH_LOCK_STRICT: "1"
+        run: bash tools/bench_release_lock.sh "$LAGER_BOX"
         shell: bash
 
   notify-failure:
@@ -721,8 +716,9 @@ jobs:
           cat > "$RUNNER_TEMP/alert-body.md" <<EOF
           Weekly extended bench run did not succeed (${RESULT}): ${RUN_URL}
 
-          These are the infrastructure suites (no instruments involved), so
-          triage starts at box reachability and the auth service, not at
+          Most of these are infrastructure suites, so triage usually starts at
+          box reachability and the auth service. The supply and battery
+          suites do use instruments: if only those failed, start at
           instrument power.
 
           **This issue does not close itself.** Extended has no recovery job

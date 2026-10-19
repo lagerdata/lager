@@ -25,8 +25,14 @@
 # alone. Every bench workflow shares one non-cancelling concurrency group, so a
 # run-held lock found here belongs to this run or to a dead one.
 #
-# The exit status is always 0. A failed release must be reported, never fail a
-# cleanup step or end the recovery script it runs inside.
+# The exit status is 0 by default. A failed release must be reported, never
+# fail a cleanup step or end the recovery script it runs inside.
+#
+# BENCH_LOCK_STRICT=1 is for the LAST step of a bench job, after every other
+# step that talks to the box: there, a lock this run still holds will block the
+# next run, so it is an error and the exit status is 1. As a warning it rode
+# along on green runs that left the bench locked (#661). Someone else's lock is
+# still only a notice in strict mode.
 #
 # Usage: bench_release_lock.sh <box> [<attempts>] [<interval-seconds>]
 #
@@ -51,6 +57,7 @@ attempts="${2:-6}"
 interval="${3:-5}"
 lager_bin="${LAGER_BIN:-lager}"
 repo="${GITHUB_REPOSITORY:-}"
+strict="${BENCH_LOCK_STRICT:-0}"
 
 ours_prefix="is locked by github ${repo} run "
 released=""
@@ -96,9 +103,14 @@ if [ -n "$released" ] && out=$(probe) \
     exit 0
 fi
 
-if [ "$answered" -eq 0 ]; then
-    echo "::warning title=Box lock state unknown::Box ${box} did not answer after ${attempts} attempts, so a lock this run took can still be held. Once the box is back: lager boxes unlock --box ${box} --force"
-else
-    echo "::warning title=Box lock still held::Box ${box} is still locked by ${holder} after ${attempts} attempts. It blocks the next run, including a re-run of this one. To clear it: lager boxes unlock --box ${box} --force"
+level="warning"
+if [ "$strict" = "1" ]; then
+    level="error"
 fi
+if [ "$answered" -eq 0 ]; then
+    echo "::${level} title=Box lock state unknown::Box ${box} did not answer after ${attempts} attempts, so a lock this run took can still be held. Once the box is back: lager boxes unlock --box ${box} --force"
+else
+    echo "::${level} title=Box lock still held::Box ${box} is still locked by ${holder} after ${attempts} attempts. It blocks the next run, including a re-run of this one. To clear it: lager boxes unlock --box ${box} --force"
+fi
+[ "$strict" = "1" ] && exit 1
 exit 0

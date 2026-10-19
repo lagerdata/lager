@@ -186,8 +186,8 @@ jobs:
         # create the net fresh when the pin is empty, and delete any SPI
         # net overlapping the relay pins. Hard gate — if this cannot be
         # healed, the power-on step below could not work either. Kept in
-        # both bench workflows: either can be the first to run after a
-        # wipe (push-to-main runs integration alone).
+        # every bench workflow: any of them can be the first to run after a
+        # wipe.
         env:
           RIGOL_POWER_NET: ${{ vars.RIGOL_POWER_NET || 'RIGOL_POWER' }}
           KEITHLEY_POWER_NET: ${{ vars.KEITHLEY_POWER_NET || 'KEITHLEY_POWER' }}
@@ -296,9 +296,22 @@ jobs:
         # github.sha like the steps below: bare `lager update` now targets the
         # CLI's release tag, and a box on the commit under test is usually
         # ahead of that, which a defaulted target reports as nothing to do.
+        #
+        # Exit status alone cannot fail for a mutating --check, so the box's
+        # reported version is compared before and after: a dry run that moved
+        # the box is a failure whatever it exited with.
         run: |
-          rc=0; lager update --check --box "$LAGER_BOX" --version "${{ github.sha }}" || rc=$?
+          before=$(lager hello --box "$LAGER_BOX" | grep '^Version:')
+          rc=0; out=$(lager update --check --box "$LAGER_BOX" --version "${{ github.sha }}" 2>&1) || rc=$?
+          echo "$out"
+          after=$(lager hello --box "$LAGER_BOX" | grep '^Version:')
+          echo "before: $before"
+          echo "after:  $after"
           [ "$rc" -le 1 ] || exit "$rc"
+          if [ -z "$before" ] || [ "$before" != "$after" ]; then
+            echo "::error title=update --check changed the box::reported version went from '$before' to '$after'"
+            exit 1
+          fi
         shell: bash
 
       - name: Downgrade to previous release (version pin + rollback path)
@@ -712,23 +725,6 @@ jobs:
           fi
         shell: bash
 
-      - name: Best-effort lock cleanup
-        # install/`lager python` auto-lock the box; if a step died in a way
-        # that bypassed the CLI's release hook, free the lock rather than
-        # waiting out the server TTL. The helper forces the release, because
-        # the lock identity embeds the acquiring PID and a plain unlock from
-        # this (different) process is refused as a different holder. It
-        # releases only a lock held by a run of this repository, retries a box
-        # that does not answer, and turns a lock it could not clear into a
-        # warning: a silent failure here is how a lock outlived the job and
-        # blocked its own re-run (#639). The timeout covers six attempts
-        # against a box that does not answer.
-        if: always()
-        timeout-minutes: 3
-        continue-on-error: true
-        run: bash tools/bench_release_lock.sh "$LAGER_BOX"
-        shell: bash
-
       - name: Power off bench instruments (AC relays, post-recovery)
         # Second chance for the dark-bench policy: recovery has reinstalled
         # the box software and re-registered the box, so a power-off that
@@ -758,4 +754,25 @@ jobs:
             fi
           done
           exit 0
+        shell: bash
+
+      - name: Release the bench lock (last box command)
+        # Last on purpose: every step that talks to the box -- the relay
+        # power-off included -- runs before this, so no box command can take a
+        # lock after the release has checked. It used to run before the
+        # power-off.
+        #
+        # The helper releases only a lock held by a run of this repository,
+        # retries a box that does not answer, and leaves a person's lock alone
+        # (#639). BENCH_LOCK_STRICT=1 turns a lock this run still holds into a
+        # job failure, since it blocks the next run; it used to be a warning
+        # on a green run, and green runs did leave the bench locked (#661).
+        # Not continue-on-error: a green tick here has to mean the bench was
+        # left free. The timeout
+        # covers six attempts against a box that does not answer.
+        if: always()
+        timeout-minutes: 3
+        env:
+          BENCH_LOCK_STRICT: "1"
+        run: bash tools/bench_release_lock.sh "$LAGER_BOX"
         shell: bash

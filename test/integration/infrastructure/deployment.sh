@@ -388,12 +388,14 @@ print_test_header "6. USB Hub Control Tests"
 
 run_test "lager usb --help" "lager usb --help"
 
-# These will likely fail if no hub is connected, but we test the command works
-echo -e "${YELLOW}Note: USB commands may fail if no hub is connected (expected)${NC}"
+# `lager usb --box` with no net lists the box's USB nets. It reads saved nets
+# only, so it must succeed whether or not a hub is attached. (This used to
+# run `lager usb --box X list`, which takes "list" as a net name, behind an
+# `|| true` that hid the error.)
 if [ "$DETECTED_USER" != "${SSH_USER}" ]; then
-    skip_test "lager usb list (no hub ok)" "requires ${SSH_USER} user"
+    skip_test "lager usb (list USB nets)" "requires ${SSH_USER} user"
 else
-    run_test "lager usb list (no hub ok)" "timeout 30 lager usb --box ${DUT} list || true"
+    run_test "lager usb (list USB nets)" "timeout 60 lager usb --box ${DUT}"
 fi
 
 # =============================================================================
@@ -403,12 +405,15 @@ print_test_header "7. BLE Scanning Tests"
 
 run_test "lager ble --help" "lager ble --help"
 
-# BLE scan may timeout or fail if no BLE devices, but command should work
-echo -e "${YELLOW}Note: BLE scan may fail if no BLE adapter (expected)${NC}"
+# A short scan on a box with a Bluetooth adapter must succeed; finding no
+# advertisers is still success. A box with no adapter fails here, and that is
+# a real finding about the box. (The old check put --box before the
+# subcommand, which `lager ble` rejects as an unknown option, inside an
+# `|| true`: it had failed on every run without anyone seeing it.)
 if [ "$DETECTED_USER" != "${SSH_USER}" ]; then
-    skip_test "lager ble scan (no adapter ok)" "requires ${SSH_USER} user"
+    skip_test "lager ble scan" "requires ${SSH_USER} user"
 else
-    run_test "lager ble scan (no adapter ok)" "timeout 5 lager ble --box ${DUT} scan --timeout 1 || true"
+    run_test "lager ble scan" "timeout 60 lager ble scan --box ${DUT} --timeout 2"
 fi
 
 # =============================================================================
@@ -418,12 +423,13 @@ print_test_header "8. Webcam Management Tests"
 
 run_test "lager webcam --help" "lager webcam --help"
 
-# These will fail if no webcam, but we test the command structure
-echo -e "${YELLOW}Note: Webcam commands may fail if no camera connected (expected)${NC}"
+# `webcam url` lists active streams and is read-only, so it must succeed with
+# or without a camera. (This used to run `lager webcam --box X list`, which
+# takes "list" as a net name, behind an `|| true` that hid the error.)
 if [ "$DETECTED_USER" != "${SSH_USER}" ]; then
-    skip_test "lager webcam list (no camera ok)" "requires ${SSH_USER} user"
+    skip_test "lager webcam url" "requires ${SSH_USER} user"
 else
-    run_test "lager webcam list (no camera ok)" "timeout 30 lager webcam --box ${DUT} list || true"
+    run_test "lager webcam url" "timeout 60 lager webcam url --box ${DUT}"
 fi
 
 # =============================================================================
@@ -436,7 +442,7 @@ run_test "lager box config pip --help" "lager box config pip --help"
 if [ "$DETECTED_USER" != "${SSH_USER}" ]; then
     skip_test "lager box config pip list" "requires ${SSH_USER} user"
 else
-    run_test_with_output "lager box config pip list" "timeout 30 lager box config pip list --box ${DUT} | head -5"
+    run_test_with_output "lager box config pip list" "timeout 60 lager box config pip list --box ${DUT}"
 fi
 
 # =============================================================================
@@ -444,14 +450,15 @@ fi
 # =============================================================================
 print_test_header "10. Container Health Tests"
 
-# Check if all expected containers are running (use direct SSH)
-run_test_with_output "Docker containers running" "timeout 30 ssh ${DUT_USER}@${DUT_IP} 'docker ps --filter name=controller --filter name=python --format \"{{.Names}}\"'"
+# One container, named `lager` (box/start_box.sh). These used to filter for
+# `controller` and `python`, which no longer exist: `docker ps` printed
+# nothing and exited 0, so the check passed on every box whatever ran. Both
+# checks now compare the container's state, not just the command's status.
+LAGER_STATE=$(timeout 30 ssh "${DUT_USER}@${DUT_IP}" 'docker inspect lager --format "{{.State.Status}}"' 2>&1)
+run_test "Lager container is running (state: ${LAGER_STATE})" "[ \"${LAGER_STATE}\" = running ]"
 
-# Check container health (use direct SSH). One container, named `lager`
-# (box/start_box.sh). This used to inspect `controller` and `python`, which
-# no longer exist -- so both checks failed on every box, reporting a stale
-# expectation as if it were a box fault.
-run_test_with_output "Lager container health" "timeout 30 ssh ${DUT_USER}@${DUT_IP} 'docker inspect lager --format \"{{.State.Status}}\"'"
+LAGER_RESTARTING=$(timeout 30 ssh "${DUT_USER}@${DUT_IP}" 'docker inspect lager --format "{{.State.Restarting}}"' 2>&1)
+run_test "Lager container is not in a restart loop" "[ \"${LAGER_RESTARTING}\" = false ]"
 
 # =============================================================================
 # Test Section 11: Box Services

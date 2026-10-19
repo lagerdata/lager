@@ -77,8 +77,10 @@ def fake_lager(tmp_path):
     return make
 
 
-def _run(fake, *, repo: "str | None" = REPO, attempts="4"):
+def _run(fake, *, repo: "str | None" = REPO, attempts="4", strict=False):
     env = {"PATH": "/usr/bin:/bin", "LAGER_BIN": str(fake)}
+    if strict:
+        env["BENCH_LOCK_STRICT"] = "1"
     if repo is not None:
         env["GITHUB_REPOSITORY"] = repo
     return subprocess.run(["bash", str(HELPER), "MASTER", attempts, "0"],
@@ -173,6 +175,64 @@ def test_without_a_repository_no_lock_is_forced(fake_lager):
     proc = _run(fake, repo=None)
     assert proc.returncode == 0
     assert "boxes-unlock" not in _calls(calls)
+
+
+class TestStrictMode:
+    """BENCH_LOCK_STRICT=1, for the last step of a bench job."""
+
+    def test_a_lock_that_survives_is_an_error_and_fails(self, fake_lager):
+        fake, _calls_file = fake_lager("hello:ours", "unlock:fail")
+        proc = _run(fake, strict=True)
+        assert proc.returncode == 1
+        assert "::error title=Box lock still held::" in proc.stdout
+
+    def test_a_box_that_never_answers_fails(self, fake_lager):
+        fake, _calls_file = fake_lager("hello:down")
+        proc = _run(fake, strict=True)
+        assert proc.returncode == 1
+        assert "::error title=Box lock state unknown::" in proc.stdout
+
+    def test_a_released_lock_passes(self, fake_lager):
+        fake, _calls_file = fake_lager("hello:ours", "unlock:ok", "hello:unlocked")
+        assert _run(fake, strict=True).returncode == 0
+
+    def test_someone_elses_lock_still_passes(self, fake_lager):
+        """Strict is about this run's locks; a person's lock is not a failure."""
+        fake, calls = fake_lager("hello:theirs")
+        proc = _run(fake, strict=True)
+        assert proc.returncode == 0
+        assert "boxes-unlock" not in _calls(calls)
+
+
+def _bench_job_steps(wf):
+    import yaml
+    doc = yaml.safe_load(wf.read_text(encoding="utf-8"))
+    for job in (doc.get("jobs") or {}).values():
+        steps = job.get("steps") if isinstance(job, dict) else None
+        if steps and any("bench_release_lock.sh" in (s.get("run") or "") for s in steps):
+            yield steps
+
+
+@pytest.mark.parametrize("name", ["integration-tests.yml", "update-regression.yml",
+                                  "bench-extended.yml"])
+def test_the_strict_release_is_the_last_box_command(name):
+    """In every bench job the strict release must exist, and no step after it
+    may run a `lager` command: a command after the release could take a lock
+    that nothing then checks, and the next run would inherit it."""
+    jobs = list(_bench_job_steps(WORKFLOWS / name))
+    assert jobs, f"{name}: no bench job releases its lock"
+    for steps in jobs:
+        strict = [i for i, s in enumerate(steps)
+                  if "bench_release_lock.sh" in (s.get("run") or "")
+                  and str((s.get("env") or {}).get("BENCH_LOCK_STRICT")) == "1"]
+        assert strict, f"{name}: no strict lock release in the bench job"
+        last = strict[-1]
+        assert steps[last].get("if") == "always()", f"{name}: the strict release must run always()"
+        assert not steps[last].get("continue-on-error"), (
+            f"{name}: a continue-on-error release cannot fail the job")
+        later = [s.get("name") for s in steps[last + 1:]
+                 if re.search(r"(^|[\s;&|(])lager\s", s.get("run") or "")]
+        assert not later, f"{name}: these steps talk to the box after the release: {later}"
 
 
 def test_no_workflow_releases_a_lock_silently():

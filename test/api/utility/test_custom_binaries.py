@@ -4,6 +4,7 @@
 # test_custom_binaries.py
 # Run with: lager python test/api/utility/test_custom_binaries.py --box <BOX_NAME>
 
+import os
 import sys
 
 _results = []
@@ -46,33 +47,47 @@ def main():
     except Exception as e:
         _record("missing_binary_raises", False, f"wrong exception: {type(e).__name__}: {e}")
 
-    # Test 3: Run existing binary (if available)
-    if 'test_tool' in binaries:
+    # Tests 3-4 need a binary on the box. The bench workflow uploads one that
+    # echoes its arguments (`lager binaries add`) and names it here; by hand,
+    # upload any binary that exits 0 and set TEST_BINARY_NAME.
+    name = os.environ.get("TEST_BINARY_NAME", "test_tool")
+    skipped = 0
+    if name in binaries:
+        # Test 3: Run existing binary
         try:
-            result = run_custom_binary('test_tool')
+            result = run_custom_binary(name)
             _record("run_existing_binary", result is not None and result.returncode == 0,
                     f"returncode={result.returncode if result else 'None'}")
         except Exception as e:
             _record("run_existing_binary", False, str(e))
 
-        # Test 4: Pass arguments to binary
+        # Test 4: Pass arguments to binary. An echoing binary must print them
+        # back in order; any other binary only has to exit 0.
         try:
-            result = run_custom_binary('test_tool', 'arg1', 'arg2', 'arg3')
+            result = run_custom_binary(name, 'arg1', 'arg2', 'arg3')
             ok = result is not None and result.returncode == 0
-            _record("binary_with_args", ok,
-                    f"returncode={result.returncode if result else 'None'}")
+            detail = f"returncode={result.returncode if result else 'None'}"
+            if ok and os.environ.get("TEST_BINARY_ECHOES") == "1":
+                ok = "arg1 arg2 arg3" in (result.stdout or "")
+                detail += f", stdout={(result.stdout or '').strip()!r}"
+            _record("binary_with_args", ok, detail)
         except Exception as e:
             _record("binary_with_args", False, str(e))
     else:
-        # Not a pass: nothing ran. Printed as a skip so the summary counts
-        # only checks that exercised something.
-        print("  SKIP: run_existing_binary / binary_with_args -- no test_tool installed")
+        # Not a pass: nothing ran.
+        skipped = 2
+        print(f"  SKIP: run_existing_binary / binary_with_args -- no '{name}' binary on the box")
 
     # Summary
     total = len(_results)
     passed = sum(1 for _, p, _ in _results if p)
     failed = total - passed
-    print(f"\nRESULTS: {passed}/{total} passed, {failed} failed")
+    print(f"\nRESULTS: {passed}/{total} passed, {failed} failed, {skipped} skipped")
+    max_skips = os.environ.get("LAGER_BENCH_MAX_SKIPS", "")
+    if max_skips.isdigit() and skipped > int(max_skips):
+        print(f"FAIL: {skipped} checks skipped, more than the {max_skips} allowed "
+              f"(LAGER_BENCH_MAX_SKIPS)")
+        return 1
     return 1 if failed else 0
 
 if __name__ == "__main__":

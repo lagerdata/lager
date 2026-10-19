@@ -509,7 +509,10 @@ def test_loopback():
     if not LOOPBACK_ADC_NET:
         print("  SKIP: LOOPBACK_ADC_NET not set — set it to enable this group")
         print(f"  Example: LOOPBACK_ADC_NET=adc1 DAC_NET={DAC_NET} lager python ...")
-        return True   # not a failure — hardware may not be wired
+        # Not a failure by hand, where the wire may not exist. On a bench that
+        # declares no skips (LAGER_BENCH_MAX_SKIPS=0) the wire is a fixture,
+        # and a group that stopped running must not count as passing.
+        return os.environ.get("LAGER_BENCH_MAX_SKIPS", "") != "0"
 
     print(f"  DAC net:      {DAC_NET}")
     print(f"  Loopback ADC: {LOOPBACK_ADC_NET}")

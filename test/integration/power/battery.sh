@@ -41,6 +41,26 @@ print_script_header "LAGER BATTERY COMPREHENSIVE TEST SUITE" "$BOX" "$BATTERY_NE
 # ============================================================
 # SECTION 1: BASIC COMMANDS (No connection required)
 # ============================================================
+# For inputs whose policy is clamp-or-refuse: either is fine, a crash is not.
+# Passes when the command does not hang or print a Python traceback, and the
+# battery still answers a state query afterwards.
+handled_then_reads() {
+  local out rc
+  out=$(timeout 30 "$@" 2>&1); rc=$?
+  if [ "$rc" -eq 124 ] || echo "$out" | grep -q "Traceback"; then
+    echo "  exit $rc: $(echo "$out" | head -2 | tr '\n' ' ')"
+    return 1
+  fi
+  lager battery "$BATTERY_NET" state --box "$BOX" >/dev/null 2>&1
+}
+
+# Exit 0 when the command is refused (non-zero exit) without a traceback.
+refused() {
+  local out rc
+  out=$("$@" 2>&1); rc=$?
+  [ "$rc" -ne 0 ] && ! echo "$out" | grep -q "Traceback"
+}
+
 start_section "Basic Commands"
 echo "========================================================================"
 echo "SECTION 1: BASIC COMMANDS (No Connection Required)"
@@ -264,8 +284,7 @@ lager battery $BATTERY_NET capacity 100.0 --box $BOX >/dev/null 2>&1 && track_te
 echo ""
 
 echo "Test 7.7: Large current limit (50 A)"
-lager battery $BATTERY_NET current-limit 50.0 --box $BOX >/dev/null 2>&1
-track_test "pass"  # Pass if doesn't crash
+handled_then_reads lager battery $BATTERY_NET current-limit 50.0 --box $BOX && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 7.8: Boundary test - current-limit just below 1mA (should fail)"
@@ -347,8 +366,7 @@ lager battery $BATTERY_NET model "discharge" --box $BOX >/dev/null 2>&1 && track
 echo ""
 
 echo "Test 9.5: Set battery mode (Keithley specific)"
-lager battery $BATTERY_NET set --box $BOX >/dev/null 2>&1
-track_test "pass"  # Pass if doesn't crash
+lager battery $BATTERY_NET set --box $BOX >/dev/null 2>&1 && track_test "pass" || track_test "fail"
 echo ""
 
 # ============================================================
@@ -417,18 +435,16 @@ echo "========================================================================"
 echo ""
 
 echo "Test 12.1: Zero capacity"
-lager battery $BATTERY_NET capacity 0.0 --box $BOX 2>&1 | grep -qi "error\|invalid\|positive"
-track_test "pass"  # Pass whether it rejects or accepts cleanly
+handled_then_reads lager battery $BATTERY_NET capacity 0.0 --box $BOX && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 12.2: Zero current limit"
-lager battery $BATTERY_NET current-limit 0.0 --box $BOX >/dev/null 2>&1
-track_test "pass"  # Pass if doesn't crash
+handled_then_reads lager battery $BATTERY_NET current-limit 0.0 --box $BOX && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 12.3: Very large voltage (test clamping)"
-lager battery $BATTERY_NET voc 1000.0 --box $BOX >/dev/null 2>&1
-track_test "pass"  # Pass if doesn't crash
+# Far above any battery simulator's range: refused, not clamped.
+refused lager battery $BATTERY_NET voc 1000.0 --box $BOX && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 12.4: SOC at exact boundaries"
@@ -589,15 +605,18 @@ echo "========================================================================"
 echo ""
 
 echo "Test 15.1: Operations after invalid SOC"
-lager battery $BATTERY_NET soc 999 --box $BOX >/dev/null 2>&1 || true
-lager battery $BATTERY_NET soc 50 --box $BOX >/dev/null 2>&1 && track_test "pass" || track_test "fail"
+# The invalid value must be REFUSED; recovering after an input that was
+# silently accepted proves nothing.
+refused lager battery $BATTERY_NET soc 999 --box $BOX && REJECTED=1 || REJECTED=0
+lager battery $BATTERY_NET soc 50 --box $BOX >/dev/null 2>&1 && RECOVERED=1 || RECOVERED=0
+[ "$REJECTED" -eq 1 ] && [ "$RECOVERED" -eq 1 ] && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 15.2: Multiple errors followed by valid commands"
-lager battery $BATTERY_NET voc -1.0 --box $BOX >/dev/null 2>&1 || true
-lager battery $BATTERY_NET soc -50 --box $BOX >/dev/null 2>&1 || true
-lager battery $BATTERY_NET capacity -10.0 --box $BOX >/dev/null 2>&1 || true
 FAILED=0
+refused lager battery $BATTERY_NET voc -1.0 --box $BOX || { echo "  voc -1.0 was accepted"; FAILED=1; }
+refused lager battery $BATTERY_NET soc -50 --box $BOX || { echo "  soc -50 was accepted"; FAILED=1; }
+refused lager battery $BATTERY_NET capacity -10.0 --box $BOX || { echo "  capacity -10.0 was accepted"; FAILED=1; }
 lager battery $BATTERY_NET voc 3.7 --box $BOX >/dev/null 2>&1 || FAILED=1
 lager battery $BATTERY_NET soc 50 --box $BOX >/dev/null 2>&1 || FAILED=1
 lager battery $BATTERY_NET capacity 2.5 --box $BOX >/dev/null 2>&1 || FAILED=1
@@ -605,8 +624,9 @@ lager battery $BATTERY_NET capacity 2.5 --box $BOX >/dev/null 2>&1 || FAILED=1
 echo ""
 
 echo "Test 15.3: State consistency after errors"
-lager battery $BATTERY_NET voc -999.0 --box $BOX >/dev/null 2>&1 || true
-lager battery $BATTERY_NET state --box $BOX >/dev/null 2>&1 && track_test "pass" || track_test "fail"
+refused lager battery $BATTERY_NET voc -999.0 --box $BOX && REJECTED=1 || REJECTED=0
+lager battery $BATTERY_NET state --box $BOX >/dev/null 2>&1 && READS=1 || READS=0
+[ "$REJECTED" -eq 1 ] && [ "$READS" -eq 1 ] && track_test "pass" || track_test "fail"
 echo ""
 
 # ============================================================
@@ -687,6 +707,8 @@ timeout 10s lager battery $BATTERY_NET voc 3.7 --box $BOX >/dev/null 2>&1
 EXIT_CODE=$?
 if [ $EXIT_CODE -eq 124 ]; then
   track_test_msg "fail" "Command timed out after 10s"
+elif [ $EXIT_CODE -ne 0 ]; then
+  track_test_msg "fail" "Command failed (exit $EXIT_CODE)"
 else
   track_test "pass"
 fi

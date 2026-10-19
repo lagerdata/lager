@@ -24,8 +24,8 @@
 # be able to execute code on the bench.
 #
 # No cron or push trigger of its own. nightly-bench.yml invokes this workflow
-# behind the "Bench: Box Lifecycle" run -- nightly and after every merge to
-# main -- so the instruments are exercised against a box that was just updated
+# behind the "Bench: Box Lifecycle" run -- nightly and on every release
+# tag -- so the instruments are exercised against a box that was just updated
 # and reinstalled rather than against whatever it happened to be running. It
 # also runs on manual dispatch. See the `on:` block below for why the push
 # trigger lives on the chain and not here.
@@ -85,9 +85,10 @@ jobs:
   hardware-tests:
     name: Run hardware tests on the bench
     runs-on: [self-hosted, lager-bench]
-    # 40 covered the suites alone (green runs span 13-27 min); +5 keeps the
-    # relay power-on settle (up to ~3 min) out of the margin.
-    timeout-minutes: 45
+    # Green runs spanned 13-27 min before deployment.sh, devenv.sh and the
+    # binaries upload moved here; each step carries its own bound, so this
+    # is only the backstop for a hung step. The nightly has no runtime cap.
+    timeout-minutes: 90
 
     env:
       LAGER_BOX: ${{ inputs.box_name || vars.LAGER_BOX || 'MASTER' }}
@@ -433,16 +434,45 @@ jobs:
         id: list-nets-test
         continue-on-error: true
         timeout-minutes: 5
+        env:
+          # name:role pairs the bench carries. The relay nets and the UART
+          # peer net are healed by earlier steps, so a missing one here means
+          # the registry lost it mid-run.
+          EXPECT_NETS: "supply1:power-supply,supply2:power-supply,supply3:power-supply,battery1:battery,debug1:debug,RIGOL_POWER:gpio,KEITHLEY_POWER:gpio,usb1:usb,scope1:scope-channel,logic1:logic,ESP_UART:uart"
         run: |
-          lager python test/api/utility/test_list_nets.py --box "$LAGER_BOX"
+          lager python test/api/utility/test_list_nets.py --box "$LAGER_BOX" --passenv EXPECT_NETS
         shell: bash
 
-      - name: Test custom binaries (Python API)
+      - name: Test custom binaries (CLI upload + Python API)
+        # Uploads a binary that echoes its arguments with `lager binaries
+        # add`, runs the API test against it, and removes it again. Without an
+        # uploaded binary the test skipped half its checks every night.
         id: custom-binaries-test
         continue-on-error: true
         timeout-minutes: 5
+        env:
+          TEST_BINARY_NAME: ci_echo_args
+          TEST_BINARY_ECHOES: "1"
+          LAGER_BENCH_MAX_SKIPS: "0"
         run: |
-          lager python test/api/utility/test_custom_binaries.py --box "$LAGER_BOX"
+          BIN="$RUNNER_TEMP/$TEST_BINARY_NAME"
+          printf '#!/bin/sh\necho "$*"\n' > "$BIN"
+          chmod +x "$BIN"
+          lager binaries add "$BIN" --name "$TEST_BINARY_NAME" --box "$LAGER_BOX" --yes
+          rc=0
+          lager binaries list --box "$LAGER_BOX" | grep -q "$TEST_BINARY_NAME" || {
+            echo "::error title=Custom binaries::'$TEST_BINARY_NAME' is not listed after binaries add"
+            rc=1
+          }
+          lager python test/api/utility/test_custom_binaries.py --box "$LAGER_BOX" \
+            --passenv TEST_BINARY_NAME --passenv TEST_BINARY_ECHOES \
+            --passenv LAGER_BENCH_MAX_SKIPS || rc=1
+          lager binaries remove "$TEST_BINARY_NAME" --box "$LAGER_BOX" --yes || rc=1
+          if lager binaries list --box "$LAGER_BOX" | grep -q "$TEST_BINARY_NAME"; then
+            echo "::error title=Custom binaries::'$TEST_BINARY_NAME' is still listed after binaries remove"
+            rc=1
+          fi
+          exit "$rc"
         shell: bash
 
       # `lager python` runs the script ON THE BOX and forwards environment
@@ -503,10 +533,12 @@ jobs:
           GPIO_NET: ${{ vars.GPIO_NET || 'gpio18' }}
           ADC_NETS: ${{ vars.ADC_NETS || 'adc1,adc2,adc3' }}
           LOOPBACK_ADC_NET: ${{ vars.LOOPBACK_ADC_NET || 'adc1' }}
+          # The DAC -> ADC loopback is a bench fixture; it must run.
+          LAGER_BENCH_MAX_SKIPS: "0"
         run: |
           lager python test/api/io/test_LabJack_T7.py --box "$LAGER_BOX" \
             --passenv ADC_NET --passenv DAC_NET --passenv GPIO_NET \
-            --passenv ADC_NETS --passenv LOOPBACK_ADC_NET
+            --passenv ADC_NETS --passenv LOOPBACK_ADC_NET --passenv LAGER_BENCH_MAX_SKIPS
         shell: bash
 
       - name: Test Acroname USB Hub
@@ -576,11 +608,18 @@ jobs:
           LABJACK_ADC_NET: ${{ vars.USB202_LABJACK_ADC_NET || '' }}
           GPIO_LOOPBACK_OUT: ${{ vars.USB202_GPIO_LOOPBACK_OUT || '' }}
           GPIO_LOOPBACK_IN: ${{ vars.USB202_GPIO_LOOPBACK_IN || '' }}
+          # Two groups skip by design: the USB-202 DAC -> LabJack ADC check and
+          # the GPIO loopback, whose wires are not on this bench (see the
+          # wiring fixtures table in .github/workflows/README.md). A third
+          # skip means the supply accuracy fixture stopped running -- the
+          # supply never became ready -- which used to exit 0.
+          LAGER_BENCH_MAX_SKIPS: "2"
         run: |
           lager python test/api/io/test_usb202.py --box "$LAGER_BOX" \
             --passenv ADC_NETS --passenv DAC_NETS --passenv GPIO_NETS \
             --passenv SUPPLY_NET --passenv SUPPLY_VOLTAGE --passenv SUPPLY_ADC_NET \
-            --passenv LABJACK_ADC_NET --passenv GPIO_LOOPBACK_OUT --passenv GPIO_LOOPBACK_IN
+            --passenv LABJACK_ADC_NET --passenv GPIO_LOOPBACK_OUT --passenv GPIO_LOOPBACK_IN \
+            --passenv LAGER_BENCH_MAX_SKIPS
         shell: bash
 
       # J-Link goes last: it spawns JLinkGDBServer and holds the probe's USB
@@ -597,10 +636,15 @@ jobs:
           DEBUG_NET: ${{ vars.DEBUG_NET || 'debug1' }}
           FIRMWARE_PATH: firmware.hex
           ALLOW_ERASE: "0"  # never chip-erase the bench target
+          # One skip expected: the erase itself, off by ALLOW_ERASE above. A
+          # second means the staged firmware did not reach the box and the
+          # flash checks did not run.
+          LAGER_BENCH_MAX_SKIPS: "1"
         run: |
           lager python test/api/communication/test_debug_comprehensive.py \
             --box "$LAGER_BOX" --add-file "$RUNNER_TEMP/firmware.hex" \
-            --passenv DEBUG_NET --passenv FIRMWARE_PATH --passenv ALLOW_ERASE
+            --passenv DEBUG_NET --passenv FIRMWARE_PATH --passenv ALLOW_ERASE \
+            --passenv LAGER_BENCH_MAX_SKIPS
         shell: bash
 
       - name: Test J-Link flash to RTT round trip (Python API)
@@ -617,16 +661,11 @@ jobs:
         shell: bash
 
       - name: Test J-Link script file (CLI)
-        # Gated on a BASELINE, not on raw pass/fail.
-        #
-        # Gating on raw pass/fail would keep the nightly permanently red;
-        # dropping the `id:` reported a bare green tick that could not be told
-        # apart from new breakage or from the suite dying on its first line. So
-        # instead: tolerate the documented failure count, fail if it GROWS, and
-        # fail if no summary was produced at all. The count is surfaced as a
-        # run annotation either way. Keep this wrapper even at baseline 0 — the
-        # "no parseable summary" arm is what catches a suite that dies before
-        # reporting.
+        # Gated through tools/bench_suite_gate.sh like every other bench
+        # suite: failures above the baseline, skips above the budget, or no
+        # parseable summary at all (the suite died before reporting) each fail
+        # the step. This used to be an inline ratchet that never read the skip
+        # column, so a run whose flash checks all skipped still read green.
         #
         # Baseline history:
         #   24 -> 4  the debug CLI began sending an Authorization header, so
@@ -665,49 +704,20 @@ jobs:
           # `lagerdata`.
           SSH_USER: lagerdata
           JLINK_CLI_BASELINE: "0"
+          # The suite skips its two flash checks when the firmware file is
+          # missing. "Stage debug firmware" hard-fails before this step when
+          # the secret is absent, so on this bench a skip means the file went
+          # missing between the two steps: zero skips tolerated.
+          JLINK_CLI_MAX_SKIPS: "0"
         # Pass the box NAME, not the IP: given an IP the suite registers a
         # `temp_box_<ip>` entry, polluting the box list the lifecycle workflow
         # also manages.
         run: |
           LOG="$RUNNER_TEMP/jlink-cli.log"
-          rc=0
           bash test/integration/communication/jlink_script.sh \
             "$LAGER_BOX" "${{ vars.DEBUG_NET || 'debug1' }}" firmware.hex \
-            2>&1 | tee "$LOG" || rc=$?
-
-          # Strip ANSI so the summary parses regardless of colour output, then
-          # address the columns by position rather than by $NF. harness.sh
-          # print_summary emits
-          #   TOTAL  <total> <passed> <failed>
-          # with an EMPTY description cell, and appends a fifth <excluded>
-          # column whenever GLOBAL_EXCLUDED > 0 -- which any track_test "skip"
-          # triggers (jlink_script.sh skips both flash sections when the hex
-          # file is missing). `$NF` therefore read the SKIP count on exactly
-          # those runs, letting the ratchet pass with an arbitrary number of
-          # real failures.
-          read -r total failed <<<"$(sed 's/\x1b\[[0-9;]*m//g' "$LOG" \
-            | awk '$1 == "TOTAL" && NF >= 4 {print $2, $4}' | tail -1)"
-
-          if ! printf '%s' "$failed" | grep -qE '^[0-9]+$' \
-            || ! printf '%s' "$total" | grep -qE '^[0-9]+$'; then
-            echo "::error title=J-Link CLI::suite produced no parseable summary (exit $rc) - it likely died before reporting"
-            exit 1
-          fi
-
-          if [ "$failed" -eq 0 ]; then
-            echo "::notice title=J-Link CLI::all $total checks pass"
-          else
-            echo "::warning title=J-Link CLI suite::$failed of $total checks fail (baseline $JLINK_CLI_BASELINE)"
-          fi
-
-          if [ "$failed" -gt "$JLINK_CLI_BASELINE" ]; then
-            echo "::error title=J-Link CLI::failures grew from $JLINK_CLI_BASELINE to $failed - new breakage beyond the known gap"
-            exit 1
-          fi
-
-          if [ "$failed" -lt "$JLINK_CLI_BASELINE" ]; then
-            echo "::notice title=J-Link CLI::only $failed failures (baseline $JLINK_CLI_BASELINE) - lower JLINK_CLI_BASELINE to lock in the improvement"
-          fi
+            2>&1 | tee "$LOG" || true
+          bash tools/bench_suite_gate.sh harness jlink_script.sh "$JLINK_CLI_BASELINE" "$LOG" "$JLINK_CLI_MAX_SKIPS"
         shell: bash
 
       - name: Ensure the UART peer net exists (self-heal)
@@ -820,6 +830,45 @@ jobs:
           bash tools/bench_suite_gate.sh harness uart.sh "$UART_BASELINE" "$LOG" "$UART_MAX_SKIPS"
         shell: bash
 
+      - name: Suite deployment.sh (box verification)
+        # Read-only: help surfaces, raw ssh, instrument and net listings, the
+        # container's state, and one `lager python` round trip. Moved here
+        # from the weekly bench-extended.yml so a regression in any of those
+        # is caught the night it lands, not up to a week later.
+        id: suite-deployment
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          # The suite defaults to ssh user `lager`; this bench logs in as
+          # `lagerdata`.
+          SSH_USER: lagerdata
+          DEPLOYMENT_BASELINE: "0"
+          # The suite skips every box-contacting check when the box's login
+          # user is not SSH_USER. On this bench it always is, so any skip
+          # means most of the suite did not run.
+          DEPLOYMENT_MAX_SKIPS: "0"
+        run: |
+          LOG="$RUNNER_TEMP/deployment.log"
+          bash test/integration/infrastructure/deployment.sh "$LAGER_BOX" 2>&1 | tee "$LOG" || true
+          bash tools/bench_suite_gate.sh deployment deployment.sh "$DEPLOYMENT_BASELINE" "$LOG" "$DEPLOYMENT_MAX_SKIPS"
+        shell: bash
+
+      - name: Suite devenv.sh (local dev environment, runner-side docker)
+        # Runner-side only: it never touches the box or the instruments, so
+        # it costs the bench nothing. Moved here from the weekly run.
+        id: suite-devenv
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          DEVENV_BASELINE: "0"
+          # No skips measured on the bench; any skip is a check that did not run.
+          DEVENV_MAX_SKIPS: "0"
+        run: |
+          LOG="$RUNNER_TEMP/devenv.log"
+          bash test/integration/infrastructure/devenv.sh 2>&1 | tee "$LOG" || true
+          bash tools/bench_suite_gate.sh harness devenv.sh "$DEVENV_BASELINE" "$LOG" "$DEVENV_MAX_SKIPS"
+        shell: bash
+
       - name: Fail job if any test failed
         # Every instrument step is continue-on-error so all instruments get
         # exercised in one run; this gate turns any failure into a job failure.
@@ -846,6 +895,15 @@ jobs:
           steps = json.loads(os.environ["STEPS_JSON"])
           bad = sorted(k for k, v in steps.items()
                        if isinstance(v, dict) and v.get("outcome") == "failure")
+          # A step whose `if:` was false reports outcome "skipped", which is
+          # not a failure -- so a test step gated off by a repo variable (the
+          # Keithley steps, KEITHLEY_PRESENT) used to vanish from the run with
+          # nothing saying so. Name every skipped test step in an annotation.
+          skipped = sorted(k for k, v in steps.items()
+                           if isinstance(v, dict) and v.get("outcome") == "skipped")
+          if skipped:
+              print("::warning title=Test steps skipped::" + ", ".join(skipped)
+                    + " did not run; their hardware was not exercised this run")
           if bad:
               print("One or more hardware tests failed:")
               for name in bad:
@@ -871,22 +929,6 @@ jobs:
         env:
           DEBUG_NET: ${{ vars.DEBUG_NET || 'debug1' }}
         run: lager debug "$DEBUG_NET" disconnect --box "$LAGER_BOX" 2>/dev/null || true
-        shell: bash
-
-      - name: Best-effort lock cleanup
-        # Defense in depth: if a step was killed in a way that bypassed the
-        # CLI's release hook, release the lock so it doesn't sit until the
-        # server TTL. This used to be a plain unlock, which the box refuses
-        # whenever the holder string differs, and it always does: the holder
-        # embeds the acquiring PID. So it released nothing, and said nothing.
-        # The helper forces the release, but only of a lock held by a run of
-        # this repository, so another holder's live lock is still left alone.
-        # A lock it could not clear is a warning (#639). The timeout covers
-        # six attempts against a box that does not answer.
-        if: always()
-        timeout-minutes: 3
-        continue-on-error: true
-        run: bash tools/bench_release_lock.sh "$LAGER_BOX"
         shell: bash
 
       - name: Power off bench instruments (AC relays)
@@ -920,4 +962,25 @@ jobs:
             fi
           done
           exit 0
+        shell: bash
+
+      - name: Release the bench lock (last box command)
+        # Last on purpose: every step that talks to the box -- the relay
+        # power-off included -- runs before this, so no box command can take a
+        # lock after the release has checked. It used to run before the
+        # power-off.
+        #
+        # The helper releases only a lock held by a run of this repository,
+        # retries a box that does not answer, and leaves a person's lock alone
+        # (#639). BENCH_LOCK_STRICT=1 turns a lock this run still holds into a
+        # job failure, since it blocks the next run; it used to be a warning
+        # on a green run, and green runs did leave the bench locked (#661).
+        # Not continue-on-error: a green tick here has to mean the bench was
+        # left free. The timeout
+        # covers six attempts against a box that does not answer.
+        if: always()
+        timeout-minutes: 3
+        env:
+          BENCH_LOCK_STRICT: "1"
+        run: bash tools/bench_release_lock.sh "$LAGER_BOX"
         shell: bash

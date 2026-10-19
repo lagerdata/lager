@@ -25,7 +25,7 @@
 #   label     name shown in the annotation, e.g. "nets.sh"
 #   baseline  expected failure count (integer)
 #   logfile   the suite's combined output, already captured
-#   max-skips optional: the most skipped checks tolerated (harness only)
+#   max-skips optional: the most skipped checks tolerated
 #
 # Why a skip budget. A skip is not a failure, so a check that SKIPS where it
 # used to PASS is invisible to the failure ratchet above: the run reads "all
@@ -71,10 +71,6 @@ if [ -n "$MAX_SKIPS" ]; then
             exit 1
             ;;
     esac
-    if [ "$FORMAT" != "harness" ]; then
-        echo "::error title=$LABEL::max-skips applies to the harness format only"
-        exit 1
-    fi
 fi
 
 # Strip ANSI first: every suite colours its summary, and a colour reset sits
@@ -103,10 +99,12 @@ case "$FORMAT" in
         # deployment.sh keeps its own counters and prints
         #     Total Tests:   <n>
         #     Failed:        <n>
-        read -r total failed <<<"$(printf '%s\n' "$STRIPPED" \
+        #     Skipped:       <n>
+        read -r total failed skipped <<<"$(printf '%s\n' "$STRIPPED" \
             | awk '$1 == "Total" && $2 == "Tests:" {t = $3}
                    $1 == "Failed:" {f = $2}
-                   END {if (t != "" && f != "") print t, f}')"
+                   $1 == "Skipped:" {k = $2}
+                   END {if (t != "" && f != "") print t, f, (k != "" ? k : 0)}')"
         ;;
     *)
         echo "::error title=$LABEL::unknown summary format '$FORMAT'"

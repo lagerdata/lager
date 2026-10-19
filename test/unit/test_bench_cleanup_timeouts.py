@@ -13,7 +13,7 @@ A cleanup step guarded by `if: always()` is the step that runs *after* something
 has already gone wrong, so it runs precisely when the box is in the state most
 likely to hang it. `|| true` and `continue-on-error` guard the exit code; they
 do not guard the wall clock. Without `timeout-minutes` the only bound left is
-the job budget -- 45, 75 and 90 minutes across the three bench workflows -- and
+the job budget -- tens of minutes in every bench workflow -- and
 the group is held for every minute of it.
 
 That is not hypothetical: in `Bench: Nightly` run 32408637976, `Best-effort
@@ -61,10 +61,21 @@ BENCH_LABEL = "self-hosted"
 POWER_OFF_STEP = "Power off bench instruments"
 
 #: Steps exempt from the rule, as `(workflow file, job id, step name)`.
-#: Empty on purpose: adding an entry should be an argument in a diff, not a
-#: silent omission. If a bench cleanup step genuinely cannot be bounded, say
-#: why here.
-EXEMPT = frozenset()
+#: Adding an entry should be an argument in a diff, not a silent omission.
+#:
+#: The strict lock release is bounded (it carries `timeout-minutes`) but is
+#: deliberately NOT best-effort. It is the last box command of each bench job,
+#: and a lock this run still holds there blocks the next run. As a best-effort
+#: warning it rode along on green runs that left the bench locked (#661).
+#: Turning that into a red job is the point, so `continue-on-error` would
+#: defeat it.
+#: tools/bench_release_lock.sh still exits 0 for someone else's lock.
+_STRICT_RELEASE = "Release the bench lock (last box command)"
+EXEMPT = frozenset({
+    ("integration-tests.yml", "hardware-tests", _STRICT_RELEASE),
+    ("update-regression.yml", "box-lifecycle", _STRICT_RELEASE),
+    ("bench-extended.yml", "extended", _STRICT_RELEASE),
+})
 
 
 def _runs_on_bench(job):

@@ -80,12 +80,12 @@ class TestWithASkipBudget:
         res = _gate(tmp_path, PASSING, "0", "six")
         assert res.returncode == 1 and "max-skips" in res.stdout
 
-    def test_the_budget_is_refused_for_the_deployment_format(self, tmp_path):
+    def test_a_missing_summary_still_fails_first_for_deployment_too(self, tmp_path):
         log = tmp_path / "suite.log"
-        log.write_text("Total Tests:   43\nFailed:        0\n")
+        log.write_text("deployment.sh died early\n")
         res = subprocess.run(["bash", str(GATE), "deployment", "deployment.sh", "0",
                               str(log), "0"], capture_output=True, text=True)
-        assert res.returncode == 1 and "harness format only" in res.stdout
+        assert res.returncode == 1 and "no test summary" in res.stdout
 
     def test_a_missing_summary_still_fails_first(self, tmp_path):
         log = tmp_path / "suite.log"
@@ -95,15 +95,51 @@ class TestWithASkipBudget:
         assert res.returncode == 1 and "no test summary" in res.stdout
 
 
-class TestEveryHarnessSuiteHasASkipBudget:
-    """A harness suite gated without a skip budget can skip silently.
+def _deployment(tmp_path, total, failed, skipped, *budget):
+    log = tmp_path / "suite.log"
+    # deployment.sh's own summary block, colour codes included.
+    lines = [f"Total Tests:   \x1b[1m{total}\x1b[0m", f"Failed:        \x1b[31m{failed}\x1b[0m"]
+    if skipped is not None:
+        lines.append(f"Skipped:       \x1b[33m{skipped}\x1b[0m")
+    log.write_text("\n".join(lines) + "\n")
+    return subprocess.run(["bash", str(GATE), "deployment", "deployment.sh", "0",
+                           str(log), *budget], capture_output=True, text=True)
 
-    That is the hole the budget exists to close, so every harness-format gate
-    call in a workflow must pass one, set in the same step's env to a
-    non-negative integer. A newly wired suite that forgets it fails here.
+
+class TestDeploymentFormatSkips:
+    """deployment.sh counts for itself; its skips must be visible to the gate.
+
+    It skips every box-contacting check when the box's login user is not the
+    expected one, so a mis-registered box used to pass with most checks
+    unexercised.
     """
 
-    CALL = re.compile(r'bench_suite_gate\.sh\s+harness\s+(\S+)\s+(\S+)\s+(\S+)(?:\s+(\S+))?')
+    def test_skips_over_the_budget_fail(self, tmp_path):
+        res = _deployment(tmp_path, 43, 0, 7, "0")
+        assert res.returncode == 1, res.stdout
+        assert "7 checks skipped" in res.stdout
+
+    def test_zero_skips_pass_a_zero_budget(self, tmp_path):
+        assert _deployment(tmp_path, 43, 0, 0, "0").returncode == 0
+
+    def test_a_summary_without_a_skip_line_counts_as_zero(self, tmp_path):
+        assert _deployment(tmp_path, 43, 0, None, "0").returncode == 0
+
+    def test_skips_are_named_in_the_notice(self, tmp_path):
+        res = _deployment(tmp_path, 43, 0, 2)
+        assert res.returncode == 0 and "(2 skipped)" in res.stdout
+
+
+class TestEveryHarnessSuiteHasASkipBudget:
+    """A suite gated without a skip budget can skip silently.
+
+    That is the hole the budget exists to close, so every gate call in a
+    workflow must pass one, set in the same step's env to a non-negative
+    integer. A newly wired suite that forgets it fails here. Calls must sit on
+    one line: a backslash continuation would hide the call from this scan.
+    """
+
+    CALL = re.compile(r'bench_suite_gate\.sh\s+(?:harness|deployment)\s+(\S+)\s+(\S+)\s+(\S+)(?:\s+(\S+))?')
 
     def _calls(self):
         import yaml
@@ -116,7 +152,15 @@ class TestEveryHarnessSuiteHasASkipBudget:
 
     def test_the_scan_finds_the_known_suites(self):
         suites = {m.group(1) for _, _, m in self._calls()}
-        assert {"uart.sh", "nets.sh", "generic.sh", "box_config.sh"} <= suites, suites
+        assert {"uart.sh", "nets.sh", "generic.sh", "box_config.sh",
+                "jlink_script.sh", "deployment.sh"} <= suites, suites
+
+    def test_no_gate_call_is_split_across_lines(self):
+        """The scan above reads one line; a continued call would escape it."""
+        for path in sorted((REPO_ROOT / ".github" / "workflows").glob("*.yml")):
+            for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                if "bench_suite_gate.sh" in line and line.rstrip().endswith("\\"):
+                    raise AssertionError(f"{path.name}:{n}: gate call continued onto the next line")
 
     def test_every_call_passes_a_budget_set_in_its_step(self):
         offenders = []

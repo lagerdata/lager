@@ -145,9 +145,13 @@ done
 echo ""
 
 echo "Test 2.5: Count instruments on box"
-INSTRUMENT_COUNT=$(lager instruments --box $BOX 2>/dev/null | grep -c "TCPIP\|GPIB\|USB\|ASRL" || echo "0")
-echo "Found $INSTRUMENT_COUNT instruments on box $BOX"
-track_test "pass"
+# The box under test is a bench: it has instruments. Two listings must also
+# agree, so a count that flaps between calls fails here rather than in
+# whichever suite next depends on an instrument.
+INSTRUMENT_COUNT=$(lager instruments --box $BOX 2>/dev/null | grep -c "TCPIP\|GPIB\|USB\|ASRL")
+INSTRUMENT_COUNT2=$(lager instruments --box $BOX 2>/dev/null | grep -c "TCPIP\|GPIB\|USB\|ASRL")
+echo "Found $INSTRUMENT_COUNT instruments on box $BOX (second listing: $INSTRUMENT_COUNT2)"
+[ "$INSTRUMENT_COUNT" -ge 1 ] && [ "$INSTRUMENT_COUNT" -eq "$INSTRUMENT_COUNT2" ] && track_test "pass" || track_test "fail"
 echo ""
 
 # ============================================================
@@ -172,9 +176,11 @@ lager boxes list && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 3.4: Count saved boxes"
-BOX_COUNT=$(lager boxes list 2>/dev/null | wc -l || echo "0")
-echo "Found $BOX_COUNT saved boxes"
-track_test "pass"
+BOX_LIST=$(lager boxes list 2>/dev/null)
+BOX_COUNT=$(printf '%s\n' "$BOX_LIST" | wc -l)
+echo "Found $BOX_COUNT lines in the saved box list"
+# The box this suite is running against must be in it.
+printf '%s\n' "$BOX_LIST" | grep -q "$BOX" && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 3.5: Multiple box listings (stability test)"

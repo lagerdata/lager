@@ -559,8 +559,8 @@ echo "Test 5.2: validate exits non-zero"
 # spellings, and an older CLI still emits the first pair.
 #
 # Whoever rewords those messages again must add the new spelling here. This
-# suite does not run in CI, so a mismatch ships green and shows up as a wrong
-# verdict on the next hardware run rather than as a failure.
+# suite runs weekly (bench-extended.yml), not in the PR gate, so a mismatch
+# ships green and shows up as a wrong verdict on the next weekly run.
 _validate_unreachable() {
   echo "$1" | grep -qiE "connection to the box.*failed|the box is offline|could not connect to the box|may be offline"
 }

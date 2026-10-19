@@ -347,9 +347,16 @@ echo "Test 8.3: High precision voltage (3.141592V)"
 lager supply $SUPPLY_NET voltage 3.141592 --box $BOX --yes >/dev/null && track_test "pass" || track_test "fail"
 echo ""
 
-echo "Test 8.4: Very large voltage (100V - clamping test)"
-lager supply $SUPPLY_NET voltage 100.0 --box $BOX --yes >/dev/null 2>&1
-track_test "pass"  # Pass if doesn't crash
+echo "Test 8.4: Very large voltage (100V) is refused"
+# Above every supported supply's range. It must be refused with an error, not
+# silently clamped and not a crash; this used to pass on any outcome.
+OUT=$(lager supply $SUPPLY_NET voltage 100.0 --box $BOX --yes 2>&1); RC=$?
+if [ "$RC" -ne 0 ] && ! echo "$OUT" | grep -q "Traceback"; then
+  track_test "pass"
+else
+  echo "  exit $RC: $(echo "$OUT" | head -2 | tr '\n' ' ')"
+  track_test "fail"
+fi
 echo ""
 
 # ============================================================
@@ -464,19 +471,24 @@ echo "SECTION 11: ERROR RECOVERY"
 echo "========================================================================"
 echo ""
 
-echo "Test 11.1: Recovery after invalid voltage"
-lager supply $SUPPLY_NET voltage -100.0 --box $BOX --yes >/dev/null 2>&1 || true
-lager supply $SUPPLY_NET voltage 3.3 --box $BOX --yes >/dev/null && track_test "pass" || track_test "fail"
+echo "Test 11.1: Invalid voltage is refused, then a valid one is accepted"
+# The invalid command must be REJECTED; a recovery check after an input that
+# was silently accepted proves nothing.
+lager supply $SUPPLY_NET voltage -100.0 --box $BOX --yes >/dev/null 2>&1 && REJECTED=0 || REJECTED=1
+lager supply $SUPPLY_NET voltage 3.3 --box $BOX --yes >/dev/null && RECOVERED=1 || RECOVERED=0
+[ "$REJECTED" -eq 1 ] && [ "$RECOVERED" -eq 1 ] && track_test "pass" || track_test "fail"
 echo ""
 
-echo "Test 11.2: Recovery after invalid current"
-lager supply $SUPPLY_NET current -50.0 --box $BOX --yes >/dev/null 2>&1 || true
-lager supply $SUPPLY_NET current 1.0 --box $BOX --yes >/dev/null 2>&1 && track_test "pass" || track_test "fail"
+echo "Test 11.2: Invalid current is refused, then a valid one is accepted"
+lager supply $SUPPLY_NET current -50.0 --box $BOX --yes >/dev/null 2>&1 && REJECTED=0 || REJECTED=1
+lager supply $SUPPLY_NET current 1.0 --box $BOX --yes >/dev/null 2>&1 && RECOVERED=1 || RECOVERED=0
+[ "$REJECTED" -eq 1 ] && [ "$RECOVERED" -eq 1 ] && track_test "pass" || track_test "fail"
 echo ""
 
-echo "Test 11.3: State consistency after errors"
-lager supply $SUPPLY_NET voltage -999.0 --box $BOX >/dev/null 2>&1 || true
-lager supply $SUPPLY_NET state --box $BOX >/dev/null 2>&1 && track_test "pass" || track_test "fail"
+echo "Test 11.3: State still reads after a refused command"
+lager supply $SUPPLY_NET voltage -999.0 --box $BOX --yes >/dev/null 2>&1 && REJECTED=0 || REJECTED=1
+lager supply $SUPPLY_NET state --box $BOX >/dev/null 2>&1 && READS=1 || READS=0
+[ "$REJECTED" -eq 1 ] && [ "$READS" -eq 1 ] && track_test "pass" || track_test "fail"
 echo ""
 
 # ============================================================
