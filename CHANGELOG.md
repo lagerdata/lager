@@ -81,6 +81,11 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   and calls a channel clipped only when it runs along the top or bottom edge for at
   least 3 columns. On the `/scope` page a Rigol's channels are drawn in the scope's own
   colours (yellow, cyan, magenta, blue), so the page matches the scope's screen.
+- **A Rigol MSO5000's live view hides the scope's side menu when it comes back.** Pairing
+  hid the menu once, but it could open again later and cut off the right fifth of the
+  live view for good. The daemon now watches the frames, and when the right of the trace
+  has been empty for a second, it checks the screen as pairing does and hides the menu it
+  finds.
 
 ## [0.57.0] - 2026-10-16
 

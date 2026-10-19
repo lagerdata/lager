@@ -121,6 +121,67 @@ struct Work {
     stale_through: u64,
     /// In single, the scope has stopped on its trigger.
     single_done: bool,
+    /// Watching for the scope's side menu over the right of the trace.
+    menu: MenuWatch,
+}
+
+/// Frame times, in the card's nanoseconds, of the watch for the side menu.
+/// The menu can come back after pairing hid it, and nothing the daemon
+/// sends was found to open it, so the frames are watched for its shape: the
+/// right of the area empty while a trace crosses the rest.
+#[derive(Default)]
+struct MenuWatch {
+    /// Since when the right has been empty.
+    bare_since: Option<u64>,
+    /// When the screen was last checked for the menu.
+    checked_at: Option<u64>,
+    /// The last check found nothing to hide, so the empty right is the
+    /// signal's own; it is not checked again until a trace reaches it.
+    ruled_out: bool,
+    /// Due to be checked when the scope is next re-armed.
+    due: bool,
+}
+
+/// How long the right of the area stays empty before the menu is looked for.
+const MENU_WATCH_NS: u64 = 1_000_000_000;
+/// Least time between two looks: each one stops the scope and redraws its
+/// grid twice.
+const MENU_CHECK_GAP_NS: u64 = 10_000_000_000;
+
+impl MenuWatch {
+    /// Note one frame, taken at `at`, and whether its right was empty.
+    fn saw(&mut self, at: u64, right_bare: bool) {
+        if !right_bare {
+            self.bare_since = None;
+            self.ruled_out = false;
+            return;
+        }
+        let since = *self.bare_since.get_or_insert(at);
+        let rested = self
+            .checked_at
+            .is_none_or(|checked| at.saturating_sub(checked) >= MENU_CHECK_GAP_NS);
+        if !self.ruled_out && rested && at.saturating_sub(since) >= MENU_WATCH_NS {
+            self.due = true;
+            self.checked_at = Some(at);
+        }
+    }
+
+    /// What a check found.
+    fn checked(&mut self, side: Side) {
+        self.bare_since = None;
+        self.ruled_out = side != Side::Uncovered;
+    }
+}
+
+/// What calibration found on the right of the waveform area.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Side {
+    /// Nothing covered it.
+    Clear,
+    /// The side menu covered it, and is hidden now.
+    Uncovered,
+    /// Something covered it that hiding the menu did not move.
+    StillCovered,
 }
 
 pub struct RigolMso5000 {
@@ -161,7 +222,7 @@ fn pair(
     video: Box<dyn FrameSource>,
 ) -> Result<std::result::Result<Screen, Unpaired>> {
     match calibrate(link, video.as_ref()) {
-        Ok(map) => {
+        Ok((map, _)) => {
             tracing::info!(
                 video = %video.describe(),
                 area = ?(map.left, map.top, map.width, map.height),
@@ -568,6 +629,8 @@ impl RigolMso5000 {
             .fold(0u8, |mask, (i, _)| mask | (1 << i));
         let trigger_column = self.trigger_column(map);
         work.envelopes.extract(&frame, map, &self.palette, wanted, Some(trigger_column));
+        let right_bare = work.envelopes.right_side_bare(wanted);
+        work.menu.saw(raw.captured_ns, right_bare);
         let env = &work.envelopes;
         let columns = env.columns;
         let per_channel = columns * 2;
@@ -613,6 +676,33 @@ impl RigolMso5000 {
             channels,
             samples,
         })
+    }
+
+    /// Check the screen for the side menu with the grid, as pairing does,
+    /// and hide it if it is there. MOFF toggles the menu, so it is pressed
+    /// only when the check sees it. A failed check leaves the live view as
+    /// it was: it is still the scope's picture, only narrower. A scope that
+    /// stopped answering is the error.
+    fn hide_side_menu(&mut self) -> Result<()> {
+        let Some(screen) = &self.screen else {
+            return Ok(());
+        };
+        let side = match calibrate(&self.scpi, screen.video.as_ref()) {
+            Ok((map, side)) => {
+                if let Some(screen) = self.screen.as_mut() {
+                    screen.map = map;
+                }
+                side
+            }
+            Err(e) if super::unit_is_gone(&e) => return Err(e),
+            Err(e) => {
+                tracing::warn!(error = %format!("{e:#}"), "could not check the scope's screen for its side menu");
+                Side::StillCovered
+            }
+        };
+        self.mark_stale();
+        self.work().menu.checked(side);
+        Ok(())
     }
 
     fn not_offered(&self, what: &str) -> anyhow::Error {
@@ -749,7 +839,7 @@ fn settled_frame(video: &dyn FrameSource) -> Result<frame::VideoFrame> {
 ///
 /// The connection is held only for each command, not while waiting for a
 /// frame: the frames may themselves be read over it.
-fn calibrate(link: &Mutex<Box<dyn Scpi>>, video: &dyn FrameSource) -> Result<ScreenMap> {
+fn calibrate(link: &Mutex<Box<dyn Scpi>>, video: &dyn FrameSource) -> Result<(ScreenMap, Side)> {
     let command = |command: &str| -> Result<()> {
         let mut scpi = lock_link(link);
         scpi.write(command)?;
@@ -773,7 +863,7 @@ fn calibrate(link: &Mutex<Box<dyn Scpi>>, video: &dyn FrameSource) -> Result<Scr
         };
         let (covered, map) = grid_frames()?;
         if !covered {
-            return Ok(map);
+            return Ok((map, Side::Clear));
         }
         // The side menu hides a fifth of the trace. MOFF toggles it, so it
         // is pressed only when the menu is seen, and pressed back if that
@@ -783,10 +873,10 @@ fn calibrate(link: &Mutex<Box<dyn Scpi>>, video: &dyn FrameSource) -> Result<Scr
         if still_covered {
             command(":SYSTem:KEY:PRESs MOFF")?;
             tracing::warn!("the right of the scope's screen is covered and hiding its menu did not uncover it");
-            return Ok(map);
+            return Ok((map, Side::StillCovered));
         }
         tracing::info!("hid the scope's menu, which covered the right of the trace");
-        Ok(uncovered)
+        Ok((uncovered, Side::Uncovered))
     })();
     if was_running {
         lock_link(link).write(":RUN")?;
@@ -1248,8 +1338,13 @@ impl Oscilloscope for RigolMso5000 {
         Duration::from_millis(4)
     }
 
-    /// The scope keeps acquiring on its own; there is nothing to arm.
+    /// The scope keeps acquiring on its own; there is nothing to arm. The
+    /// loop calls this between frames, so the side menu the frames suggest
+    /// is open is looked for here.
     fn rearm(&mut self) -> Result<()> {
+        if std::mem::take(&mut self.work().menu.due) {
+            self.hide_side_menu()?;
+        }
         Ok(())
     }
 

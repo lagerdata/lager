@@ -139,7 +139,35 @@ impl Envelopes {
             }
         }
     }
+
+    /// Whether every channel in `wanted` that shows anywhere is missing from
+    /// the right of the area while one of them runs across the rest: what
+    /// the scope's side menu, open over a fifth of the grid, looks like.
+    pub fn right_side_bare(&self, wanted: u8) -> bool {
+        let shown = self.seen & wanted;
+        if shown == 0 || self.columns == 0 {
+            return false;
+        }
+        let edge = self.columns * (100 - BARE_RIGHT_PERCENT) / 100;
+        let drawn = |channel: usize, column: usize| self.top[column * MAX_CHANNELS + channel] != UNSET;
+        let channels = (0..MAX_CHANNELS).filter(|&c| shown & (1 << c) != 0);
+        let right_bare = channels
+            .clone()
+            .all(|c| (edge..self.columns).all(|column| !drawn(c, column)));
+        right_bare
+            && channels.into_iter().any(|c| {
+                let drawn_left = (0..edge).filter(|&column| drawn(c, column)).count();
+                drawn_left * 100 >= edge * TRACED_LEFT_PERCENT
+            })
+    }
 }
+
+/// The share of the area, from the right, that the side menu always covers:
+/// it hides about a fifth.
+const BARE_RIGHT_PERCENT: usize = 15;
+/// How much of the rest a trace has to cross for the empty right to look
+/// like something covering it rather than a trace that ends there.
+const TRACED_LEFT_PERCENT: usize = 75;
 
 #[cfg(test)]
 mod tests {
@@ -256,6 +284,43 @@ mod tests {
         let mut env = Envelopes::default();
         env.extract(&frame, &map(), &Palette::new(&MSO5000_COLOURS), 0b0001, Some(-400.0));
         assert_eq!(env.seen, 0, "{:?}", &env.samples[0][..10]);
+    }
+
+    #[test]
+    fn a_trace_cut_off_at_the_right_looks_covered() {
+        let palette = Palette::new(&MSO5000_COLOURS);
+        let mut env = Envelopes::default();
+        let traced = |to: usize| {
+            let mut frame = VideoFrame::blank(640, 480, Layout::Ycc);
+            for x in 50..to {
+                draw(&mut frame, 0, x, 200, 202);
+            }
+            frame
+        };
+        // The menu's edge: four fifths of the 501 columns.
+        env.extract(&traced(50 + 400), &map(), &palette, 0b0001, None);
+        assert!(env.right_side_bare(0b0001));
+        env.extract(&traced(50 + 501), &map(), &palette, 0b0001, None);
+        assert!(!env.right_side_bare(0b0001), "the whole width is traced");
+        // A trace that is only a short burst on the left is not cut off.
+        env.extract(&traced(50 + 200), &map(), &palette, 0b0001, None);
+        assert!(!env.right_side_bare(0b0001));
+        env.extract(&VideoFrame::blank(640, 480, Layout::Ycc), &map(), &palette, 0b0001, None);
+        assert!(!env.right_side_bare(0b0001), "no trace at all says nothing");
+    }
+
+    #[test]
+    fn one_channel_on_the_right_means_nothing_covers_it() {
+        let palette = Palette::new(&MSO5000_COLOURS);
+        let mut frame = VideoFrame::blank(640, 480, Layout::Ycc);
+        for x in 50..450 {
+            draw(&mut frame, 0, x, 200, 202);
+        }
+        draw(&mut frame, 1, 540, 300, 310);
+        let mut env = Envelopes::default();
+        env.extract(&frame, &map(), &palette, 0b0011, None);
+        assert!(!env.right_side_bare(0b0011));
+        assert!(env.right_side_bare(0b0001), "B is not asked about");
     }
 
     #[test]

@@ -20,6 +20,11 @@ const HEIGHT: usize = 480;
 const CX: usize = 320;
 const CY: usize = 240;
 const PX_PER_DIV: usize = 50;
+/// Where the side menu starts, just right of the grid line three divisions
+/// right of centre, as on the MSO5074.
+const MENU_LEFT: usize = CX + 3 * PX_PER_DIV + 10;
+/// The card's frame interval, at 30 frames a second.
+const FRAME_NS: u64 = 33_333_333;
 
 #[derive(Debug, Clone)]
 struct Channel {
@@ -53,6 +58,10 @@ struct Instrument {
     sent: Vec<String>,
     /// Whether the screen the card sees follows this instrument at all.
     on_hdmi: bool,
+    /// The side menu, open over the right fifth of the grid.
+    menu: bool,
+    /// Where the traces stop, for a signal that does not cross the screen.
+    traces_end_at: Option<usize>,
 }
 
 impl Instrument {
@@ -83,6 +92,8 @@ impl Instrument {
             errors: VecDeque::new(),
             sent: Vec::new(),
             on_hdmi: true,
+            menu: false,
+            traces_end_at: None,
         }
     }
 
@@ -116,6 +127,10 @@ impl Instrument {
                 true
             }
             ":TFORCE" => true,
+            ":SYSTEM:KEY:PRESS" if arg == "MOFF" => {
+                self.menu = !self.menu;
+                true
+            }
             ":DISPLAY:GRID" => {
                 self.grid = arg != "NONE";
                 true
@@ -338,8 +353,16 @@ impl Instrument {
                 continue;
             }
             let (r, g, b) = MSO5000_COLOURS[i];
-            for x in CX - half_w..=CX + half_w {
+            let end = self.traces_end_at.unwrap_or(CX + half_w);
+            for x in CX - half_w..=end {
                 frame.put(x, y as usize, rgb_to_ycc(r, g, b));
+            }
+        }
+        if self.menu {
+            for y in CY - half_h..=CY + half_h {
+                for x in MENU_LEFT..=CX + half_w {
+                    frame.put(x, y, (40, 128, 128));
+                }
             }
         }
         frame
@@ -406,7 +429,7 @@ impl FrameSource for FakeScreen {
             height: frame.height,
             bytes: to_yuyv(&frame),
             sequence: *sequence,
-            captured_ns: 0,
+            captured_ns: *sequence * FRAME_NS,
         }))
     }
 
@@ -472,6 +495,80 @@ impl Bench {
         }
         panic!("no capture became ready");
     }
+}
+
+impl Bench {
+    /// Run the acquisition loop for `seconds` of frames: capture, then
+    /// re-arm, as the loop does after each one.
+    fn run_for(&mut self, seconds: f64) -> CaptureFrame {
+        let mut frame = self.capture();
+        let until = frame.capture_mono_ns + (seconds * 1e9) as u64;
+        while frame.capture_mono_ns < until {
+            self.scope.rearm().unwrap();
+            frame = self.capture();
+        }
+        frame
+    }
+
+    fn moff_presses(&self) -> usize {
+        self.sent().iter().filter(|c| c.contains("MOFF")).count()
+    }
+}
+
+/// Columns of channel A with a trace, out of those in the frame.
+fn traced_columns(frame: &CaptureFrame) -> (usize, usize) {
+    let samples = frame.channel_samples(0).unwrap();
+    let traced = samples.chunks(2).filter(|pair| pair[0] != protocol::lscp::NO_SAMPLE).count();
+    (traced, samples.len() / 2)
+}
+
+#[test]
+fn a_side_menu_opened_after_pairing_is_hidden() {
+    let mut bench = bench();
+    let (traced, columns) = traced_columns(&bench.capture());
+    assert_eq!(traced, columns, "paired with the full width in view");
+    bench.instrument.lock().unwrap().menu = true;
+    let covered = bench.capture();
+    assert!(traced_columns(&covered).0 < columns * 85 / 100);
+
+    // Not on the first frames, which could be a trace that ends there.
+    bench.run_for(0.5);
+    assert_eq!(bench.moff_presses(), 0);
+    let frame = bench.run_for(1.5);
+    assert_eq!(bench.moff_presses(), 1, "pressed once, after the check saw the menu");
+    assert!(!bench.instrument.lock().unwrap().menu);
+    assert_eq!(traced_columns(&frame).0, columns, "the full width is back");
+    let instrument = bench.instrument.lock().unwrap();
+    assert!(!instrument.grid, "the check leaves the grid off");
+    assert_eq!(instrument.status, "AUTO", "and the scope running");
+}
+
+#[test]
+fn a_menu_that_keeps_coming_back_is_looked_for_every_ten_seconds() {
+    let mut bench = bench();
+    bench.instrument.lock().unwrap().menu = true;
+    bench.run_for(1.5);
+    assert_eq!(bench.moff_presses(), 1);
+    bench.instrument.lock().unwrap().menu = true;
+    bench.run_for(5.0);
+    assert_eq!(bench.moff_presses(), 1, "too soon after the last look");
+    bench.run_for(6.0);
+    assert_eq!(bench.moff_presses(), 2);
+}
+
+#[test]
+fn a_trace_that_ends_by_itself_presses_nothing() {
+    let mut bench = bench();
+    bench.instrument.lock().unwrap().traces_end_at = Some(MENU_LEFT);
+    let checks = |bench: &Bench| bench.sent().iter().filter(|c| c.as_str() == ":DISPlay:GRID FULL").count();
+    let before = checks(&bench);
+    bench.run_for(1.5);
+    assert_eq!(checks(&bench), before + 1, "the screen was checked once");
+    assert_eq!(bench.moff_presses(), 0, "and the check saw no menu");
+    // The empty right is the signal's, so it is not checked again while it
+    // stays that way.
+    bench.run_for(12.0);
+    assert_eq!(checks(&bench), before + 1);
 }
 
 fn pair_volts(frame: &CaptureFrame, channel: usize, column: usize) -> (f64, f64) {
