@@ -15,6 +15,8 @@ Covered:
   - move and move_by refuse a wait past MAX_MOVE_TIMEOUT_S before opening the
     port. A longer call outlives hardware_service's 30 s deadline, and that
     restarts the service.
+  - acceleration: the read retries like position, the write does not, and an
+    omitted retract reaches the driver as None (keep the arm's value).
 """
 
 import unittest
@@ -53,6 +55,15 @@ class FakeArm:
 
     def enable_motor(self):
         self._record("enable_motor")
+
+    def get_acceleration(self):
+        self._record("get_acceleration")
+        return (60.0, 60.0, 40.0)
+
+    def set_acceleration(self, acceleration, travel, *, retract_acceleration):
+        self._record("set_acceleration", acceleration, travel, retract_acceleration)
+        return (float(acceleration), float(travel),
+                40.0 if retract_acceleration is None else float(retract_acceleration))
 
     def close(self):
         self.closed = True
@@ -131,3 +142,29 @@ class TestArmAdapter(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAcceleration(unittest.TestCase):
+    open_with = TestArmAdapter.open_with
+    def test_get_acceleration_returns_floats(self):
+        adapter, _ = self.open_with(FakeArm())
+        self.assertEqual(adapter.get_acceleration(), [60.0, 60.0, 40.0])
+
+    def test_get_acceleration_reopens_and_retries_after_a_serial_error(self):
+        stale, fresh = FakeArm(fail={"get_acceleration": DISCONNECT}), FakeArm()
+        adapter, opener = self.open_with(stale, fresh)
+        self.assertEqual(adapter.get_acceleration(), [60.0, 60.0, 40.0])
+        self.assertEqual(opener.call_count, 2)
+
+    def test_set_acceleration_without_retract_passes_none(self):
+        arm = FakeArm()
+        adapter, _ = self.open_with(arm)
+        self.assertEqual(adapter.set_acceleration(61, 62), [61.0, 62.0, 40.0])
+        self.assertEqual(arm.calls, [("set_acceleration", 61, 62, None)])
+
+    def test_set_acceleration_is_not_retried(self):
+        stale = FakeArm(fail={"set_acceleration": DISCONNECT})
+        adapter, opener = self.open_with(stale, FakeArm())
+        with self.assertRaises(RuntimeError):
+            adapter.set_acceleration(61, 62, 43)
+        self.assertEqual(opener.call_count, 1)

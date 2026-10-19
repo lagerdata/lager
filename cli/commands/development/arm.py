@@ -153,6 +153,7 @@ arm.net_examples = [
     "lager arm arm1 position --box <BOX>",
     "lager arm arm1 move --x 100 --y 200 --z 50 --box <BOX>",
     "lager arm arm1 go-home --box <BOX>",
+    "lager arm arm1 get-acceleration --box <BOX>",
     "lager arm --box <BOX>                  (list arm nets)",
 ]
 
@@ -257,13 +258,23 @@ def enable_motor(ctx, box):
     _run(ctx, {"netname": net, "command": "enable_motor"}, resolved)
 
 
-@arm.command(name="disable-motor", help="Disable arm motors")
+@arm.command(name="disable-motor", help="Disable arm motors (the arm goes limp)")
+@click.option("--yes", is_flag=True, help="Confirm the action without prompting")
 @click.pass_context
 @click.option("--box", required=False, help="Lager Box name or IP")
-def disable_motor(ctx, box):
+def disable_motor(ctx, yes, box):
     net = _require_netname(ctx)
     resolved = _resolve_box_for_command(ctx, box)
     if not _validate_arm_net(ctx, resolved, net):
+        return
+    # M18 cuts the motor current at once: the arm drops onto whatever is below
+    # it, and the next move needs a go-home first.
+    if not yes and not click.confirm(
+        "Disable the arm motors? The arm goes limp and drops onto whatever is "
+        "below it. Run go-home after enable-motor before the next move.",
+        default=False,
+    ):
+        click.echo("Aborting")
         return
     _run(ctx, {"netname": net, "command": "disable_motor"}, resolved)
 
@@ -293,10 +304,26 @@ def read_and_save_position(ctx, yes, box):
     _run(ctx, {"netname": net, "command": "read_and_save_position"}, resolved)
 
 
-@arm.command(name="set-acceleration", help="Set arm acceleration: acceleration, travel, retract")
-@click.option("--acceleration", "acceleration", type=click.IntRange(min=1), required=True, help="Acceleration value")
+@arm.command(name="get-acceleration", help="Print the arm's acceleration: print, travel, retract (mm/s^2)")
+@click.pass_context
+@click.option("--box", required=False, help="Lager Box name or IP")
+def get_acceleration(ctx, box):
+    net = _require_netname(ctx)
+    resolved = _resolve_box_for_command(ctx, box)
+    if not _validate_arm_net(ctx, resolved, net):
+        return
+    _run(ctx, {"netname": net, "command": "get_acceleration"}, resolved)
+
+
+@arm.command(
+    name="set-acceleration",
+    help="Set arm acceleration: print, travel, retract (mm/s^2). The values are "
+         "read back from the arm, and a mismatch is an error.",
+)
+@click.option("--acceleration", "acceleration", type=click.IntRange(min=1), required=True, help="Print acceleration")
 @click.option("--travel", "travel", type=click.IntRange(min=1), required=True, help="Travel acceleration")
-@click.option("--retract", "retract", type=click.IntRange(min=1), default=60, show_default=True, help="Retract acceleration")
+@click.option("--retract", "retract", type=click.IntRange(min=1), default=None,
+              help="Retract acceleration. Omitted: the arm keeps its current value")
 @click.pass_context
 @click.option("--box", required=False, help="Lager Box name or IP")
 def set_acceleration(ctx, acceleration, travel, retract, box):
@@ -304,14 +331,12 @@ def set_acceleration(ctx, acceleration, travel, retract, box):
     resolved = _resolve_box_for_command(ctx, box)
     if not _validate_arm_net(ctx, resolved, net):
         return
-    _run(
-        ctx,
-        {
-            "netname": net,
-            "command": "set_acceleration",
-            "acceleration": int(acceleration),
-            "travel_acceleration": int(travel),
-            "retract_acceleration": int(retract),
-        },
-        resolved,
-    )
+    payload = {
+        "netname": net,
+        "command": "set_acceleration",
+        "acceleration": int(acceleration),
+        "travel_acceleration": int(travel),
+    }
+    if retract is not None:
+        payload["retract_acceleration"] = int(retract)
+    _run(ctx, payload, resolved)

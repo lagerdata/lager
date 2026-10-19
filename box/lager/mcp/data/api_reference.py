@@ -500,6 +500,8 @@ API_REFERENCE: dict[str, dict] = {
             "All coordinates are MILLIMETRES, and the arm enforces its own workspace bounds -- an out-of-range target is refused, not clamped.",
             "Moves BLOCK on the box until the arm arrives, so a move is not a place to poll from. The box-side default timeout is 15s.",
             "disable_motor() releases the steppers: the arm becomes back-driveable and will sag under its own weight. Do not leave it disabled over a workpiece.",
+            "Never call save_position() or read_and_save_position() in a test. Both send M889, which overwrites the arm's stored joint calibration; every later move is computed from it, and only the manual Rotrics recalibration procedure restores it.",
+            "set_acceleration() reads the values back and raises SettingNotAppliedError if the arm reports different ones. Omit retract_acceleration to keep the arm's current value. get_acceleration() returns (print, travel, retract).",
             "The arm is physical. Clear its workspace before a test runs unattended -- there is no collision detection.",
             "dealy_ms / dealy_s are the original misspelled names, kept for compatibility. Prefer delay_ms / delay_s.",
         ],

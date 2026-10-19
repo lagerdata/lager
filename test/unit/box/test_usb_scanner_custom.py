@@ -406,6 +406,9 @@ def _fake_serial_ns(open_behavior=None, reply=b"ok T:25.0\n"):
             ns.writes.append((self.port, data))
 
         def read_until(self, expected=b"\n"):
+            # A list is a sequence of lines, one per read, then silence.
+            if isinstance(reply, list):
+                return reply.pop(0) if reply else b""
             return reply
 
         def read_all(self):
@@ -494,6 +497,31 @@ class TestArmProbeGating(unittest.TestCase):
 
         self.assertEqual(out, [])
         self.assertEqual(ns.constructed, 0)
+
+    def test_an_idle_wait_line_before_the_reply_is_skipped(self):
+        # Firmware V2.4.x prints "wait" every second while idle. One arriving
+        # just before the M105 reply used to be read as the whole reply, and
+        # the arm was skipped as "no arm reply".
+        ns = _fake_serial_ns(reply=[b"wait\n", b"ok T:25.0\n"])
+        out = self._run(ns)
+
+        self.assertEqual([d["name"] for d in out], ["Rotrix_Dexarm"])
+        self.assertEqual(ns.writes, [(DEXARM_TTY, b"M105\n")])
+
+    def test_only_wait_lines_is_still_no_arm_reply(self):
+        ns = _fake_serial_ns(reply=[b"wait\n", b"wait\n"])
+        out = self._run(ns)
+
+        self.assertEqual(out, [])
+
+    def test_the_wait_skipping_read_is_bounded(self):
+        # An endless stream of "wait" must not hold the scan past its budget.
+        class _Chatty:
+            def read_until(self, expected=b"\n"):
+                return b"wait\n"
+        clock = iter(range(100))
+        with mock.patch.object(us.time, "monotonic", lambda: next(clock)):
+            self.assertEqual(us._read_handshake_reply(_Chatty(), budget_s=3), "")
 
     def test_dexarm_is_still_found(self):
         # The gate must not filter out the hardware it exists to detect.

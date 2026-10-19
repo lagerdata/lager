@@ -38,8 +38,9 @@ lager arm [OPTIONS] [NETNAME] COMMAND [ARGS]...
 | `move-by` | 按相对的 dX dY dZ 偏移移动 |
 | `go-home` | 把机械臂移到归位位置（X0 Y300 Z0） |
 | `enable-motor` | 使能机械臂电机 |
-| `disable-motor` | 禁用机械臂电机 |
+| `disable-motor` | 禁用机械臂电机（机械臂会变得松弛） |
 | `read-and-save-position` | 按当前姿态重新标定机械臂（`M889`） |
+| `get-acceleration` | 打印机械臂的加速度设置 |
 | `set-acceleration` | 设置机械臂的加速度参数 |
 
 ---
@@ -174,12 +175,19 @@ lager arm ARM1 enable-motor --box my-lager-box
 
 禁用机械臂的电机驱动器。手动搬动机械臂之前请先执行它。
 
+<Warning>
+机械臂会立即变得松弛，并掉落到下方的任何物体上。执行此命令之前，请先扶住机械臂，或把它移到掉落也安全的姿态。执行 `enable-motor` 之后，下一次移动之前请先执行 `go-home`。
+</Warning>
+
 ```bash
 lager arm [NETNAME] disable-motor [OPTIONS]
 ```
 
 **选项：**
 - `--box TEXT` - Lager Box 名称或 IP
+- `--yes` - 不提示，直接确认
+
+不带 `--yes` 时，命令会请求确认。如果不确认，它不会向机械臂发送任何内容。
 
 **示例：**
 ```bash
@@ -214,6 +222,25 @@ lager arm ARM1 read-and-save-position --box my-lager-box
 
 ---
 
+### `get-acceleration`
+
+打印机械臂的打印、空行程和回抽加速度，单位 mm/s^2。Box 从机械臂的设置报告（`M503`）中读取这些值，`M503` 不会改变机械臂上的任何设置。
+
+```bash
+lager arm [NETNAME] get-acceleration [OPTIONS]
+```
+
+**选项：**
+- `--box TEXT` - Lager Box 名称或 IP
+
+**示例：**
+```bash
+lager arm ARM1 get-acceleration --box my-lager-box
+# Acceleration (M204): print=60 travel=60 retract=40
+```
+
+---
+
 ### `set-acceleration`
 
 设置机械臂用于运动控制的加速度参数。
@@ -225,10 +252,10 @@ lager arm [NETNAME] set-acceleration [OPTIONS]
 **选项：**
 - `--acceleration INTEGER` - 打印加速度，单位 mm/s^2（最小 1）
 - `--travel INTEGER` - 空行程加速度，单位 mm/s^2（最小 1）
-- `--retract INTEGER` - 回抽加速度，单位 mm/s^2（默认 60，最小 1）
+- `--retract INTEGER` - 回抽加速度，单位 mm/s^2（最小 1）。不提供时，机械臂保留当前的回抽值。
 - `--box TEXT` - Lager Box 名称或 IP
 
-Box 会向机械臂发送 `M204 P<acceleration> T<travel> R<retract>`。
+Box 会向机械臂发送 `M204 P<acceleration> T<travel> R<retract>`，然后读回这些值。命令打印机械臂报告的值。如果它们与你设置的值不同，命令会失败。
 
 **示例：**
 ```bash

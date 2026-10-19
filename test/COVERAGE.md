@@ -47,13 +47,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 3626 (+3 xfailed) |
-| `unit (box)` | `test/unit/box/` | 4785 (+17 skipped) |
+| `unit (cli)` | `test/unit/cli/` | 3717 (+3 xfailed) |
+| `unit (box)` | `test/unit/box/` | 4813 (+17 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
-| `unit (mcp)` | `test/mcp/unit/` | 409 |
+| `unit (mcp)` | `test/mcp/unit/` | 414 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 221 (+1 skipped) |
-| | **Total gated** | **9235** |
+| | **Total gated** | **9359** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -184,8 +184,8 @@ OS.
 
 | Area | Size | Why not |
 |---|---|---|
-| `test/api/` | 86 scripts | Needs real hardware. The bench workflows run 23: 10 by name (4 of them, the Keithley supply and battery steps, only while the `KEITHLEY_PRESENT` repo variable is `true`), plus 6 LabJack ADC/DAC, 4 GPIO and 3 USB-port scripts run in loops. The other 63 execute nowhere -- though all are syntax-checked. |
-| `test/integration/` | 39 bash scripts | Needs a real box and instruments. **15 execute.** 11 run nightly via `integration-tests.yml`: `communication/debug.sh`, `communication/jlink_script.sh`, `communication/uart.sh`, `infrastructure/deployment.sh`, `infrastructure/devenv.sh`, `power/supply.sh`, `power/multichannel_supply.sh`, `io/labjack.sh`, `io/usb202.sh`, `usb/acroname.sh` and `usb/usb.sh`. 4 run weekly via `bench-extended.yml`: `nets`, `box_config`, `generic`, and `power/battery.sh` (only while `KEITHLEY_PRESENT` is `true`). The other 24 are syntax-checked and shellchecked but never executed. |
+| `test/api/` | 87 scripts | Needs real hardware. The bench workflows run 24: 11 by name (4 of them, the Keithley supply and battery steps, only while the `KEITHLEY_PRESENT` repo variable is `true`), plus 6 LabJack ADC/DAC, 4 GPIO and 3 USB-port scripts run in loops. The other 63 execute nowhere -- though all are syntax-checked. |
+| `test/integration/` | 40 bash scripts | Needs a real box and instruments. **16 execute.** 12 run nightly via `integration-tests.yml`: `communication/debug.sh`, `communication/jlink_script.sh`, `communication/uart.sh`, `peripherals/arm.sh`, `infrastructure/deployment.sh`, `infrastructure/devenv.sh`, `power/supply.sh`, `power/multichannel_supply.sh`, `io/labjack.sh`, `io/usb202.sh`, `usb/acroname.sh` and `usb/usb.sh`. 4 run weekly via `bench-extended.yml`: `nets`, `box_config`, `generic`, and `power/battery.sh` (only while `KEITHLEY_PRESENT` is `true`). The other 24 are syntax-checked and shellchecked but never executed. |
 | `test/mcp/integration/` | 1 file | Now RUN, not just collected, by the required `mcp-extra` job: `test_agent_loop.py` builds its bench in-process from dicts and needs no box. Not counted in the `unit (...)` totals above. |
 | `test/manual/` | 2 bash scripts, 1 Python report, 1 browser client | Operator-driven. The bash scripts are syntax-checked only. `box_lager_import_report.py` prints an import report and has no `assert` statements, so its name keeps pytest from collecting it. Run it directly. |
 
@@ -350,7 +350,7 @@ See "What CI does NOT run" for which assets execute.
 | **Watt Meter** | Yoctopuce Watt | 2 files | — | Yes |
 | **Thermocouple** | Phidget temperature hub | 3 files | `thermocouple.sh` | Yes |
 | **Webcam** | Logitech BRIO / C930e, ELP global-shutter (AR0234) | 1 file | — | Yes |
-| **Robotic Arm** | Rotrics Dexarm | 1 file | `arm.sh` | Yes |
+| **Robotic Arm** | Rotrics Dexarm | 1 file, nightly on MASTER | `arm.sh`, nightly on MASTER | Reference only (no arm tools) |
 | **HSM** | Yubico YubiHSM 2 | 1 file | `hsm.sh` | Yes |
 
 The Acroname, YKUSH, and Plugable USB-hub drivers also have hardware-free unit coverage
@@ -432,7 +432,8 @@ Five other param types (`EnvVarType`, `PortForwardType`, `MemoryAddressType`, `H
 | **Scope** | No bash integration test. 39 CLI subcommands. |
 | **BLE** | No bash integration test. |
 | **Box Management** | No Python API tests for boxes, status, or hello. |
-| **Rotation / Actuate** | Python API only. |
+| **Rotation / Actuate** | Python API only. The actuate role drives a Dexarm through `move_to_blocking`, with no bounds check and no firmware gate, and has never run on hardware. |
+| **Robotic Arm** | Both suites run nightly on MASTER's arm (`arm1`, firmware V2.4.4, PEN module). Not on hardware: `disable-motor` (not run unattended: the arm drops; one budgeted skip), `NotHomedError` (V2.4.x syncs its position at boot), `UnsupportedFirmwareError` (the arm is V2.4.4), and every accessory method -- soft gripper, air picker, laser, conveyor belt, sliding rail, `set_module_type` -- which needs that module attached. Their exact G-code is unit-tested. |
 | **Webcam** | No bash integration test. |
 
 ## Coverage Strengths
@@ -498,7 +499,7 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 325 files)
+### Local Unit Tests (`test/unit/` -- 326 files)
 
 #### Box Unit Tests (`test/unit/box/` -- 175 files)
 
@@ -509,8 +510,8 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | File | What it tests |
 |------|---------------|
 | `test_acroname_driver.py` | Acroname USB hub driver: contention (bounded session hold, cross-process lock), latency (discovery cache, scan-free warm opens, cycle timing log), and exit cleanup (a parked handle is closed at interpreter shutdown, including through a real subprocess exit) |
-| `test_arm_driver.py` | Rotrics Dexarm driver against a scripted serial port: `set_acceleration` sends Marlin's P/T/R letters (the old P/T/T string set travel acceleration to the retract value), `move_to`/`move_relative` refuse an out-of-bounds target before any write, and also refuse firmware older than V2.1.4 (where Rotrics swapped X and Y) or firmware that reports no version, `go_home` returns on M1112's ok and times out without it, a move before homing raises `NotHomedError`, the firmware's M114 reply parses (including an `ok` that arrives before the position line), a silent arm fails a position read within three bounded attempts, and an `add-all` arm net opens the arm by the serial in its address |
-| `test_arm_hs_adapter.py` | Robot-arm hardware_service adapter: a serial error drops the cached port so the next command reopens it (hardware_service's own retry does not recognize pyserial errors), `position` retries once but motion never does, and a move wait past 25 s is refused before the port opens because it would outlive the service's 30 s call deadline |
+| `test_arm_driver.py` | Rotrics Dexarm driver against a scripted serial port: `set_acceleration` sends Marlin's P/T/R letters (the old P/T/T string set travel acceleration to the retract value), keeps the arm's retract when none is given, reads the values back and raises `SettingNotAppliedError` on a mismatch; `get_acceleration`/`read_settings` parse M503 past idle `wait` lines and a settings line containing "ok"; V2.4.4 replies with `wait` lines parse; `get_module_type` drains a stale ok first; every accessory and raw-motion helper writes its exact G-code; the driver never sends M892/M895 and only `save_position` sends M889; `move_to`/`move_relative` refuse an out-of-bounds target before any write, and also refuse firmware older than V2.1.4 (where Rotrics swapped X and Y) or firmware that reports no version, `go_home` returns on M1112's ok and times out without it, a move before homing raises `NotHomedError`, the firmware's M114 reply parses (including an `ok` that arrives before the position line), a silent arm fails a position read within three bounded attempts, and an `add-all` arm net opens the arm by the serial in its address |
+| `test_arm_hs_adapter.py` | Robot-arm hardware_service adapter: a serial error drops the cached port so the next command reopens it (hardware_service's own retry does not recognize pyserial errors), `position` retries once but motion never does, and a move wait past 25 s is refused before the port opens because it would outlive the service's 30 s call deadline; the acceleration read retries like `position` while the write does not, and an omitted retract reaches the driver as None |
 | `test_authorized_keys_sync.py` | `start_box.sh` authorized_keys marker-block rebuild (revocation, no duplicates, foreign keys preserved) and its single-instance lock |
 | `test_battery_model_authoring.py` | Battery model authoring (create/export of 2281S memory slots), against hardware-verified ground truth |
 | `test_bench_quiesce.py` | The quiesce registry that makes a starting job wait for the previous one's teardown, and the arithmetic tying its bounds to the reap they must cover |
@@ -643,7 +644,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_usb_cycle_reenumeration.py` | `USBNet.cycle`'s re-enumeration verdict, read from the kernel's USB topology rather than from the hub: the bus sampled before the port is cut and again while it is dark, so what left in between is what the port carries. All four outcomes -- a device that returns, one that does not, a genuinely empty port, and a bus that could not be read (which must never be reported as empty) -- plus power restored on every path, a bounded wait, and a guard that the Acroname and YKUSH drivers still inherit this rather than overriding it |
 | `test_usb_devices_dfu.py` | `GET /usb/devices` sysfs enumeration and `POST /usb/dfu` list/download/detach argument building, and what `POST /usb/command` reports for each `cycle` result: the message and the `outcome` field |
 | `test_usb_port_parsing.py` | Which hub port a saved USB net names: `pin` wins over `channel` only when set, so an integer pin of 0 addresses port 0 instead of falling through or dropping the net; the dispatcher and `USBNetWrapper` agree |
-| `test_usb_scanner_custom.py` | Custom-device surfacing in box HTTP scanner GET /instruments/list. Also the SuperSpeed companion dedupe: one physical dock lists as one instrument, and a missing bus root pairs nothing rather than pairing everything. Also what the Dexarm handshake -- the one scan step that WRITES to hardware -- is allowed to touch: every channel of a multi-interface chip and every saved uart net's tty reach the exclusion set, a foreign or unresolvable VID:PID is never opened at all, a port held by another process is skipped, an arm that a saved arm net points at is listed with no write at all (a handshake there used to take that arm's reply in the middle of a command), and `LAGER_ARM_PROBE` off/force widen or close the gate without ever dropping the exclusive open or the modem-line settings. |
+| `test_usb_scanner_custom.py` | Custom-device surfacing in box HTTP scanner GET /instruments/list. Also the SuperSpeed companion dedupe: one physical dock lists as one instrument, and a missing bus root pairs nothing rather than pairing everything. Also what the Dexarm handshake -- the one scan step that WRITES to hardware -- is allowed to touch: every channel of a multi-interface chip and every saved uart net's tty reach the exclusion set, a foreign or unresolvable VID:PID is never opened at all, a port held by another process is skipped, an arm that a saved arm net points at is listed with no write at all (a handshake there used to take that arm's reply in the middle of a command), and `LAGER_ARM_PROBE` off/force widen or close the gate without ever dropping the exclusive open or the modem-line settings. The handshake reads past V2.4.x's idle `wait` lines, within the same one-second budget. |
 | `test_usb_scanner_jlink.py` | Any SEGGER (VID 0x1366) device is detected as a J-Link debug instrument with the DEVICE_TYPE channel: on-board J-Link OB PIDs 1015 and 1051 get their own names, the J-Link OB variant 1025 and any other unlisted PID fall back to `J-Link` with the real PID in the address, listed models keep their names, and an unknown PID from any other vendor is still skipped |
 | `test_usb_scanner_u3.py` | #515: a LabJack U3 reports no USB serial, so `scan_usb` addresses it by topology (`USB0::0x0CD5::0x0003::port-<sysfs>::INSTR`); two serial-less U3s get two addresses, a unique real serial is kept, and a U3 is topology-addressed without joining the multi-tier hub dedupe |
 | `test_usb_scanner_uart_fallback.py` | UART enumeration without USB serial by matching sysfs path; two identical adapters keep distinct ttys and the channel catalog stays unmutated |
@@ -684,12 +685,12 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_scope_ui_stream.py` | The web scope's credit-paced stream and pushed state: one credit returned for each frame received, only the newest frame kept for drawing, extra credit for a slow round trip, every control following the daemon's state except a field being edited, and an unplug dropping the live session so a replug can Start without a stop first |
 | `test_usb_scanner_picoscope.py` | PicoScope discovery in `usb_scanner.py`: every Pico Technology product ID is recognized, and the channel count comes from the device rather than from a static table |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 129 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 130 files)
 
 | File | What it tests |
 |------|---------------|
 | `test_address_utils.py` | IPv4/IPv6/Tailscale/hostname validation rejecting schemes, ports, and paths |
-| `test_arm_command.py` | `lager arm` CLI: `read-and-save-position` sends nothing until the M889 recalibration is confirmed (or `--yes` is passed), `move`/`move-by` reject a `--timeout` past the box's 25 s cap before any request, and listing arm nets takes no box lock |
+| `test_arm_command.py` | `lager arm` CLI: `read-and-save-position` and `disable-motor` send nothing until confirmed (or `--yes` is passed), `move`/`move-by` reject a `--timeout` past the box's 25 s cap before any request, listing arm nets takes no box lock, `get-acceleration` and `set-acceleration` (an omitted `--retract` is left to the arm; a readback mismatch exits non-zero), and the net name may be omitted before the subcommand |
 | `test_battery_tui.py` | BatteryTUI render output, command parsing, worker thread offloading, exit teardown, Ctrl+C |
 | `test_binaries_9000.py` | `lager binaries add/list/remove` and `download_file` migrated to the box HTTP server on `:9000` |
 | `test_bluez_unavailable_hint.py` | A box host with no BlueZ: the raw `org.bluez` ServiceUnknown error an older box image sends is rewritten into the one remedy line, any other error is shown as sent, and the CLI and box copies of that line are pinned together |
@@ -808,6 +809,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_errors.py` | `cli/errors.py` taxonomy, plus main/box_storage/config error paths |
 | `test_format_lock_user.py` | `box_storage.format_lock_user` rendering of lock holder identities |
 | `test_group_usage.py` | Usage-line formatting for CLI command groups (CommandFirstUsageMixin / LagerGroup) |
+| `test_net_group_parse.py` | Net-group argument parsing for all ten `NetGroup` groups: a subcommand first (`lager arm position --box X`, or `lager arm --box X position`) leaves the net name unset for the default-net fallback instead of failing with "No such command '--box'" or listing nets, a net name before the subcommand is kept, and a net named like a subcommand still works |
 | `test_install_wheel.py` | install-wheel command: wheel filename to package name parsing |
 | `test_uninstall_spec.py` | Pins `lager uninstall`'s removal spec to what `install` / `box-config apply` actually create; lock dissolves when the teardown removes the lock server. `/etc/lager` is kept by default; a `--purge-config` keeps the key registrations, the `no_publish` marker and (on a box with `control_plane.json`) the control plane's files, and runs only after a backup holding the saved nets; `--all` revokes this machine's key only inside lager's managed block, never a loose copy or one another registration still holds |
 | `test_update_version_ref.py` | Version reference resolution for git checkouts (semver tags vs. named branches) |
@@ -863,12 +865,13 @@ These tests cover the scripts in `tools/`. The `unit (root)` job runs them.
 
 ### MCP Tests (`test/mcp/`)
 
-#### Unit Tests (`test/mcp/unit/` -- 16 files)
+#### Unit Tests (`test/mcp/unit/` -- 17 files)
 
 | File | What it tests |
 |------|---------------|
 | `test_tool_registration.py` | MCP server registers exactly the expected discovery/planning tools |
 | `test_api_reference.py` | `api_reference` driver introspection: the class named in `_DRIVER_CLASSES` must be the user-facing one an agent's `lager python` script actually calls |
+| `test_arm_reference.py` | The robot-arm reference an agent drives a Dexarm from (there are no arm MCP tools): the `arm` role resolves to it, it is introspected from `Dexarm`, it advertises `get_acceleration` and the optional retract, and its gotchas warn off M889 and `disable_motor()` |
 | `test_bench_loader.py` | Bench loader: raw net descriptors to typed network objects |
 | `test_box_tools.py` | box_manage MCP tool: health checks and reload operations |
 | `test_capability_graph.py` | Capability graph builder from bench resources |

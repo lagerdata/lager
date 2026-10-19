@@ -819,14 +819,54 @@ class TestNetCommandHandler(unittest.TestCase):
         self.assertEqual(data["value"], [1.0, 2.0, 3.0])
         self.assertIn("Saved position", data["message"])
 
-    def test_arm_set_acceleration(self):
+    def test_arm_set_acceleration_without_retract_keeps_the_arms_value(self):
+        # An omitted retract used to be sent as 60, which silently replaced
+        # V2.4.x's default of 40.
         dev = MagicMock()
+        dev.set_acceleration.return_value = [30.0, 25.0, 40.0]
         r, dev = self._run({"netname": "arm1", "action": "set_acceleration",
                             "params": {"acceleration": 30,
                                        "travel_acceleration": 25}}, dev)
         self.assertEqual(r.status_code, 200)
         dev.set_acceleration.assert_called_once_with(
-            30, 25, retract_acceleration=60)
+            30, 25, retract_acceleration=None)
+
+    def test_arm_set_acceleration_reports_the_readback(self):
+        dev = MagicMock()
+        dev.set_acceleration.return_value = [30.0, 25.0, 41.0]
+        r, dev = self._run({"netname": "arm1", "action": "set_acceleration",
+                            "params": {"acceleration": 30,
+                                       "travel_acceleration": 25,
+                                       "retract_acceleration": 41}}, dev)
+        self.assertEqual(r.status_code, 200)
+        dev.set_acceleration.assert_called_once_with(
+            30, 25, retract_acceleration=41)
+        body = r.get_json()
+        self.assertIn("print=30 travel=25 retract=41", body["message"])
+        self.assertEqual(body["value"], {"acceleration": 30.0,
+                                         "travel_acceleration": 25.0,
+                                         "retract_acceleration": 41.0})
+
+    def test_arm_set_acceleration_not_applied_is_502(self):
+        dev = MagicMock()
+        dev.set_acceleration.side_effect = net_command.DeviceError(
+            "The arm reports acceleration print=60 travel=60 retract=40 after "
+            "print=30 travel=25 retract=41 was written.")
+        r, _ = self._run({"netname": "arm1", "action": "set_acceleration",
+                          "params": {"acceleration": 30,
+                                     "travel_acceleration": 25,
+                                     "retract_acceleration": 41}}, dev)
+        self.assertEqual(r.status_code, 502)
+
+    def test_arm_get_acceleration(self):
+        dev = MagicMock()
+        dev.get_acceleration.return_value = [60.0, 60.0, 40.0]
+        r, dev = self._run({"netname": "arm1", "action": "get_acceleration"}, dev)
+        self.assertEqual(r.status_code, 200)
+        dev.get_acceleration.assert_called_once_with()
+        body = r.get_json()
+        self.assertIn("print=60 travel=60 retract=40", body["message"])
+        self.assertEqual(body["value"]["retract_acceleration"], 40.0)
 
     def test_arm_set_acceleration_missing_param_is_400(self):
         r, _ = self._run({"netname": "arm1", "action": "set_acceleration",

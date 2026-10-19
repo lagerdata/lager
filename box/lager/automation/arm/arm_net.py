@@ -71,6 +71,10 @@ class NotHomedError(ArmBackendError):
     """Raised when the firmware refuses motion because the arm is not homed since power-on."""
     pass
 
+class SettingNotAppliedError(ArmBackendError):
+    """Raised when a setting read back from the arm differs from the value written."""
+    pass
+
 class ArmBase(ABC):
     """Abstract Arm net; do NOT instantiate directly."""
 

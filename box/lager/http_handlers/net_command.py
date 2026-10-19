@@ -706,6 +706,11 @@ def _arm(netname, role, action, params):
         pos = dev.read_and_save_position()
         return _ok("Saved position X: %s Y: %s Z: %s" % tuple(pos),
                    [float(v) for v in pos])
+    if action == "get_acceleration":
+        p, t, r = dev.get_acceleration()
+        return _ok("Acceleration (M204): print=%g travel=%g retract=%g" % (p, t, r),
+                   {"acceleration": p, "travel_acceleration": t,
+                    "retract_acceleration": r})
     if action == "set_acceleration":
         acceleration = params.get("acceleration")
         travel = params.get("travel_acceleration")
@@ -713,12 +718,15 @@ def _arm(netname, role, action, params):
             raise KeyError("acceleration")
         if travel is None:
             raise KeyError("travel_acceleration")
-        retract = int(params.get("retract_acceleration") or 60)
-        dev.set_acceleration(int(acceleration), int(travel),
-                             retract_acceleration=retract)
-        return _ok(
-            "Acceleration set (M204): print=%d travel=%d retract=%d"
-            % (int(acceleration), int(travel), retract))
+        # Omitted: the arm keeps its current retract value.
+        retract = params.get("retract_acceleration")
+        p, t, r = dev.set_acceleration(
+            int(acceleration), int(travel),
+            retract_acceleration=None if retract is None else int(retract))
+        # The values are the arm's own readback, not an echo of the request.
+        return _ok("Acceleration set (M204): print=%g travel=%g retract=%g" % (p, t, r),
+                   {"acceleration": p, "travel_acceleration": t,
+                    "retract_acceleration": r})
     raise UnknownAction(action)
 
 

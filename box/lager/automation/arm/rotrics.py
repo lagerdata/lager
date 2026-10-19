@@ -11,6 +11,7 @@ from .arm_net import ArmBase
 from .arm_net import MovementTimeoutError
 from .arm_net import NotHomedError
 from .arm_net import OutOfBoundsError
+from .arm_net import SettingNotAppliedError
 from .arm_net import UnsupportedFirmwareError
 TOLERANCE = 0.5
 
@@ -30,6 +31,11 @@ POSITION_REPLY_TIMEOUT_S = 3.0
 # M1112 sends its ok only once the arm is home: about 3 s from the calibration
 # pose.
 HOME_TIMEOUT_S = 20.0
+# M503 prints about 30 lines of settings; the arm sends them in well under 1 s.
+SETTINGS_REPLY_TIMEOUT_S = 5.0
+# The M204 line of an M503 report: "echo:  M204 P60.00 R40.00 T60.00".
+_M204_RE = re.compile(r"\bM204\b(.*)")
+_M204_FIELD_RE = re.compile(r"([PRT])\s*(-?\d+(?:\.\d+)?)")
 
 def get_arm_device(serial_number: Optional[str] = None) -> str:
     all_ports = []
@@ -305,12 +311,79 @@ class Dexarm(ArmBase):
                 if "ok" in serial_str:
                     return lines
 
+    def _query(self, data: str, timeout: float) -> List[str]:
+        """Send a command and return its reply lines, up to a line that is "ok".
+
+        Unlike ``_send_cmd``, the ok must be the whole line (or "ok" followed by
+        a space), so a long report such as M503 cannot end early on a settings
+        line that happens to contain the letters "ok". Firmware V2.4.x prints
+        "wait" every second while idle; those lines are dropped.
+        """
+        time.sleep(0.05)
+        while self.ser.in_waiting > 0:
+            self.ser.read(self.ser.in_waiting)
+        self.ser.write(data.encode())
+        deadline = time.monotonic() + timeout
+        lines: List[str] = []
+        while time.monotonic() < deadline:
+            text = self.ser.readline().decode("utf-8", errors="replace").strip()
+            if not text or text == "wait":
+                continue
+            if text == "ok" or text.startswith("ok "):
+                return lines
+            lines.append(text)
+        raise RuntimeError(
+            "Timeout waiting for 'ok' response from ARM to %s (waited %gs)"
+            % (data.strip(), timeout))
+
     def set_workorigin(self) -> None:
         """Define the current position as the work origin, X0 Y0 Z0 (G92)."""
         self._send_cmd("G92 X0 Y0 Z0 E0\r")
 
-    def set_acceleration(self, acceleration: int, travel_acceleration: int, retract_acceleration: int = 60) -> None:
-        """Set print (P), travel (T) and retract (R) acceleration in mm/s^2 (M204)."""
+    def read_settings(self) -> List[str]:
+        """Return the arm's settings report (M503), one string per line.
+
+        M503 only prints settings; it changes nothing on the arm. The report
+        includes the stored joint calibration as an ``M889 X.. Y.. Z..`` line,
+        which is how a test can show that the calibration did not change.
+        """
+        return self._query("M503\r\n", timeout=SETTINGS_REPLY_TIMEOUT_S)
+
+    def get_acceleration(self) -> Tuple[float, float, float]:
+        """Return the arm's (print, travel, retract) acceleration in mm/s^2.
+
+        Read from the M204 line of the M503 settings report.
+        """
+        for line in self.read_settings():
+            match = _M204_RE.search(line)
+            if not match:
+                continue
+            fields = dict(
+                (letter, float(value))
+                for letter, value in _M204_FIELD_RE.findall(match.group(1)))
+            if {"P", "T", "R"} <= set(fields):
+                return fields["P"], fields["T"], fields["R"]
+            raise RuntimeError("Unreadable acceleration line from Dexarm: %r" % line)
+        raise RuntimeError("The Dexarm settings report (M503) had no M204 line")
+
+    def set_acceleration(
+        self,
+        acceleration: int,
+        travel_acceleration: int,
+        retract_acceleration: Optional[int] = None,
+    ) -> Tuple[float, float, float]:
+        """Set print (P), travel (T) and retract (R) acceleration in mm/s^2 (M204).
+
+        With no ``retract_acceleration``, the arm keeps its current retract
+        value. The values are read back afterwards and returned as
+        (print, travel, retract).
+
+        Raises:
+            SettingNotAppliedError: The arm reports different values from the
+                ones written.
+        """
+        if retract_acceleration is None:
+            retract_acceleration = int(self.get_acceleration()[2])
         # Marlin reads retract acceleration from R. The P/T/T string sent here
         # before (inherited from the Rotrics pydexarm example) set travel
         # acceleration to the retract value and never set retract.
@@ -321,6 +394,14 @@ class Dexarm(ArmBase):
             + "\r\n"
         )
         self._send_cmd(cmd)
+        wanted = (float(acceleration), float(travel_acceleration),
+                  float(retract_acceleration))
+        actual = self.get_acceleration()
+        if any(abs(w - a) > 0.01 for w, a in zip(wanted, actual)):
+            raise SettingNotAppliedError(
+                "The arm reports acceleration print=%g travel=%g retract=%g "
+                "after print=%g travel=%g retract=%g was written." % (actual + wanted))
+        return actual
 
     def set_module_type(self, module_type: int) -> None:
         """0=PEN, 1=LASER, 2=PNEUMATIC, 3=3D."""
@@ -328,7 +409,13 @@ class Dexarm(ArmBase):
 
     def get_module_type(self) -> Optional[str]:
         """Return 'PEN'|'LASER'|'PUMP'|'3D' (if detectable)."""
-        # Don't call reset_input_buffer() - it can hang on some serial devices
+        # Drain what is pending, the same way _send_cmd does: an idle `wait`
+        # line or a late reply to an earlier command. A stale "ok" ended this
+        # read before the arm had answered. Don't call reset_input_buffer(); it
+        # can hang on some serial devices.
+        time.sleep(0.05)
+        while self.ser.in_waiting > 0:
+            self.ser.read(self.ser.in_waiting)
         self.ser.write('M888\r'.encode())
         module_type: Optional[str] = None
 

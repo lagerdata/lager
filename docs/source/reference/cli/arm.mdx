@@ -38,8 +38,9 @@ lager arm [OPTIONS] [NETNAME] COMMAND [ARGS]...
 | `move-by` | Move by relative dX dY dZ offsets |
 | `go-home` | Move the arm to its home position (X0 Y300 Z0) |
 | `enable-motor` | Enable arm motors |
-| `disable-motor` | Disable arm motors |
+| `disable-motor` | Disable arm motors (the arm goes limp) |
 | `read-and-save-position` | Recalibrate the arm on its current pose (`M889`) |
+| `get-acceleration` | Print the arm's acceleration settings |
 | `set-acceleration` | Set arm acceleration parameters |
 
 ---
@@ -175,12 +176,19 @@ lager arm ARM1 enable-motor --box my-lager-box
 
 Disable the arm's motor drivers. Use this before manual manipulation of the arm.
 
+<Warning>
+The arm goes limp at once and drops onto whatever is below it. Support the arm, or move it to a pose where a drop is safe, before you run this command. After `enable-motor`, run `go-home` before the next move.
+</Warning>
+
 ```bash
 lager arm [NETNAME] disable-motor [OPTIONS]
 ```
 
 **Options:**
 - `--box TEXT` - Lager Box name or IP
+- `--yes` - Confirm without prompting
+
+Without `--yes`, the command asks for confirmation. If you do not confirm, it sends nothing to the arm.
 
 **Example:**
 ```bash
@@ -214,6 +222,25 @@ lager arm ARM1 read-and-save-position --box my-lager-box
 
 ---
 
+### `get-acceleration`
+
+Print the arm's print, travel and retract acceleration in mm/s^2. The box reads them from the arm's settings report (`M503`), which changes nothing on the arm.
+
+```bash
+lager arm [NETNAME] get-acceleration [OPTIONS]
+```
+
+**Options:**
+- `--box TEXT` - Lager Box name or IP
+
+**Example:**
+```bash
+lager arm ARM1 get-acceleration --box my-lager-box
+# Acceleration (M204): print=60 travel=60 retract=40
+```
+
+---
+
 ### `set-acceleration`
 
 Set arm acceleration parameters for movement control.
@@ -225,10 +252,10 @@ lager arm [NETNAME] set-acceleration [OPTIONS]
 **Options:**
 - `--acceleration INTEGER` - Print acceleration in mm/s^2 (minimum: 1)
 - `--travel INTEGER` - Travel acceleration in mm/s^2 (minimum: 1)
-- `--retract INTEGER` - Retract acceleration in mm/s^2 (default: 60, minimum: 1)
+- `--retract INTEGER` - Retract acceleration in mm/s^2 (minimum: 1). If you do not give it, the arm keeps its current retract value.
 - `--box TEXT` - Lager Box name or IP
 
-The box sends `M204 P<acceleration> T<travel> R<retract>` to the arm.
+The box sends `M204 P<acceleration> T<travel> R<retract>` to the arm, then reads the values back. It prints the values that the arm reports. If they are different from the values you set, the command fails.
 
 **Example:**
 ```bash

@@ -123,12 +123,22 @@ class ArmHardwareAdapter:
         x, y, z = self._call(lambda arm: arm.read_and_save_position())
         return [float(x), float(y), float(z)]
 
+    def get_acceleration(self):
+        """Return [print, travel, retract] acceleration as read from the arm (M503)."""
+        p, t, r = self._call(lambda arm: arm.get_acceleration(), retry=True)
+        return [float(p), float(t), float(r)]
+
     def set_acceleration(self, acceleration, travel_acceleration,
-                         retract_acceleration=60):
-        self._call(lambda arm: arm.set_acceleration(
+                         retract_acceleration=None):
+        """Set acceleration and return [print, travel, retract] as read back.
+
+        With no ``retract_acceleration`` the arm keeps its current value.
+        """
+        retract = None if retract_acceleration is None else int(retract_acceleration)
+        p, t, r = self._call(lambda arm: arm.set_acceleration(
             int(acceleration), int(travel_acceleration),
-            retract_acceleration=int(retract_acceleration)))
-        return True
+            retract_acceleration=retract))
+        return [float(p), float(t), float(r)]
 
     def close(self):
         """Release the serial port (called by hardware_service cache eviction)."""

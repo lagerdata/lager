@@ -5,10 +5,11 @@
 # self-hosted "MASTER" bench.
 #
 # Surfaces: most suites here drive the PYTHON API via `lager python`. The
-# J-Link steps additionally run the bash CLI suite, so the debug path is
-# covered on both the API and the CLI. The rest of test/integration/*.sh is
-# still unwired — a CLI-only regression in those areas (argument parsing,
-# output formatting, exit codes) is not yet caught by this workflow.
+# J-Link, UART and Dexarm steps additionally run bash CLI suites, so those
+# paths are covered on both the API and the CLI. The rest of
+# test/integration/*.sh is still unwired — a CLI-only regression in those areas
+# (argument parsing, output formatting, exit codes) is not yet caught by this
+# workflow.
 #
 # Lock semantics: `lager python` auto-locks the box at the start of each
 # invocation and releases it at the end (see
@@ -87,8 +88,9 @@ jobs:
     runs-on: [self-hosted, lager-bench]
     # Green runs spanned 13-27 min before deployment.sh, devenv.sh and the
     # binaries upload moved here; each step carries its own bound, so this
-    # is only the backstop for a hung step. The nightly has no runtime cap.
-    timeout-minutes: 90
+    # is only the backstop for a hung step. +15 for the two Dexarm suites
+    # (about 8 min by hand, bounded at 5 + 12). The nightly has no runtime cap.
+    timeout-minutes: 105
 
     env:
       LAGER_BOX: ${{ inputs.box_name || vars.LAGER_BOX || 'MASTER' }}
@@ -753,6 +755,71 @@ jobs:
             echo "::endgroup::"
           done
           exit "$rc"
+
+      # ----- Rotrics Dexarm (net arm1, Acroname usb5) -----
+      #
+      # The arm is self-powered and on no AC relay, so the power-on/off steps
+      # never touch it. Its USB cable is on Acroname port 4 (usb5), which the
+      # Acroname suite above must never toggle: a port cut mid-move leaves the
+      # arm finishing a move nobody is watching. This guard fails the run
+      # before either arm suite if the Acroname vars ever grow to include it.
+      - name: Check the Acroname test leaves the arm's hub port alone
+        id: arm-port-guard
+        continue-on-error: true
+        timeout-minutes: 1
+        env:
+          ARM_USB_NET: ${{ vars.ARM_USB_NET || 'usb5' }}
+          USB_NET: ${{ vars.USB_NET || 'usb1' }}
+          USB_NETS: ${{ vars.USB_NETS || 'usb1' }}
+        run: |
+          for net in "$USB_NET" ${USB_NETS//,/ }; do
+            if [ "$net" = "$ARM_USB_NET" ]; then
+              echo "::error title=Acroname test toggles the arm's port::$ARM_USB_NET is in USB_NET/USB_NETS ($USB_NET / $USB_NETS). Remove it: the Acroname suite would cut the arm's USB mid-run."
+              exit 1
+            fi
+          done
+          echo "Acroname suite toggles $USB_NET / $USB_NETS; the arm is on $ARM_USB_NET."
+        shell: bash
+
+      # Moves stay inside X -100..100, Y 200..320, Z 0..40 mm around home
+      # (X0 Y300 Z0). The suite never sends M889 (recalibration), reads the
+      # arm's stored calibration before and after and fails if it changed,
+      # and puts the arm's own acceleration back when it ends.
+      - name: Test Rotrics Dexarm (Python API)
+        id: arm-api-test
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          ARM_NET: ${{ vars.ARM_NET || 'arm1' }}
+          # The net must open this arm, not any STM32 virtual COM port.
+          ARM_SERIAL: ${{ vars.ARM_SERIAL || '308F336A3438' }}
+          ARM_MODULE: ${{ vars.ARM_MODULE || 'PEN' }}
+        run: |
+          lager python test/api/peripherals/test_arm_comprehensive.py --box "$LAGER_BOX" \
+            --passenv ARM_NET --passenv ARM_SERIAL --passenv ARM_MODULE
+        shell: bash
+
+      - name: Test Rotrics Dexarm (CLI)
+        id: arm-cli-test
+        continue-on-error: true
+        timeout-minutes: 12
+        env:
+          ARM_NET: ${{ vars.ARM_NET || 'arm1' }}
+          ARM_USB_NET: ${{ vars.ARM_USB_NET || 'usb5' }}
+          # Zero: the suite was 0 failures by hand on this bench before it was
+          # wired here, so any failure is new.
+          ARM_BASELINE: "0"
+          # Skips allowed: one. disable-motor (section 8) is not run unattended:
+          # the arm goes limp and drops, and its unattended recovery has not
+          # been proven on this bench. Every other check runs; the reconnect
+          # section has ARM_USB_NET, so it does not skip.
+          ARM_MAX_SKIPS: "1"
+        # Pass the box NAME, not the IP: given an IP the suite registers a
+        # `temp_box_<ip>` entry, polluting the box list.
+        run: |
+          LOG="$RUNNER_TEMP/arm-cli.log"
+          bash test/integration/peripherals/arm.sh "$LAGER_BOX" "$ARM_NET" "$ARM_USB_NET" 2>&1 | tee "$LOG" || true
+          bash tools/bench_suite_gate.sh harness arm.sh "$ARM_BASELINE" "$LOG" "$ARM_MAX_SKIPS"
         shell: bash
 
       - name: Test Keithley 2281S power supply
@@ -1148,6 +1215,33 @@ jobs:
         env:
           DEBUG_NET: ${{ vars.DEBUG_NET || 'debug1' }}
         run: lager debug "$DEBUG_NET" disconnect --box "$LAGER_BOX" 2>/dev/null || true
+        shell: bash
+
+      - name: Park the arm (best effort)
+        # A suite killed by its step timeout can leave the arm's hub port off,
+        # its motors released, or the arm away from home. Put all three back
+        # before the lock is released. Each command is bounded in the shell so
+        # the step can say what it could not do; no `id:`, so the fail gate
+        # never sees it.
+        if: always()
+        timeout-minutes: 3
+        continue-on-error: true
+        env:
+          ARM_NET: ${{ vars.ARM_NET || 'arm1' }}
+          ARM_USB_NET: ${{ vars.ARM_USB_NET || 'usb5' }}
+        run: |
+          park() {
+            local what="$1" rc=0
+            shift
+            timeout 50 "$@" >/dev/null 2>&1 || rc=$?
+            if [ "$rc" -ne 0 ]; then
+              echo "::warning title=Arm not parked::$what failed (exit $rc) on '$LAGER_BOX'. Check the arm before the next run."
+            fi
+          }
+          park "usb $ARM_USB_NET enable" lager usb "$ARM_USB_NET" enable --box "$LAGER_BOX"
+          park "arm enable-motor" lager arm "$ARM_NET" enable-motor --box "$LAGER_BOX"
+          park "arm go-home" lager arm "$ARM_NET" go-home --yes --box "$LAGER_BOX"
+          exit 0
         shell: bash
 
       - name: Power off bench instruments (AC relays)

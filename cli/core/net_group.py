@@ -175,8 +175,64 @@ class NetSubCommand(NetExamplesMixin, click.Command):
 NetGroupHelpMixin.command_class = NetSubCommand
 
 
+#: Fills the optional net-name argument when the command line starts with a
+#: subcommand, and is swapped back to None before the group callback runs.
+_NO_NET_NAME = "\0no-net-name"
+
+
 class NetGroup(NetGroupHelpMixin, click.Group):
-    """A ``click.Group`` for net-style commands. See the module docstring."""
+    """A ``click.Group`` for net-style commands. See the module docstring.
+
+    The net name is optional, but a stock Click group fills an optional
+    positional with the first token it sees. ``lager arm position --box X``
+    therefore took ``position`` as the net name and then failed with
+    "No such command '--box'", and ``lager arm --box X position`` took it as
+    the net name and listed nets instead of reading the position. When the
+    first positional token is a subcommand and the token after it is not, the
+    net name is left unset and the group falls back to the default net. A net
+    that shares a subcommand's name still works when a subcommand follows it
+    (``lager arm position position``).
+    """
+
+    def _netname_param(self):
+        args = [p for p in self.params if isinstance(p, click.Argument)]
+        if len(args) == 1 and not args[0].required and args[0].nargs == 1:
+            return args[0]
+        return None
+
+    def _first_positional(self, args: list[str]):
+        """Index of the first token that is not one of this group's options."""
+        takes_value = {
+            opt
+            for p in self.params
+            if isinstance(p, click.Option) and not p.is_flag and not p.count
+            for opt in p.opts
+        }
+        i = 0
+        while i < len(args):
+            token = args[i]
+            if token == "--" or not token.startswith("-") or token == "-":
+                return i if token != "--" else None
+            if token in takes_value:
+                i += 1  # the option's value
+            i += 1
+        return None
+
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        param = self._netname_param()
+        name = param.name if param is not None else None
+        i = self._first_positional(args) if name is not None else None
+        starts_with_subcommand = (
+            i is not None
+            and args[i] in self.commands
+            and (i + 1 >= len(args) or args[i + 1] not in self.commands)
+        )
+        if name is None or i is None or not starts_with_subcommand:
+            return super().parse_args(ctx, args)
+        rest = super().parse_args(ctx, [*args[:i], _NO_NET_NAME, *args[i:]])
+        if ctx.params.get(name) == _NO_NET_NAME:
+            ctx.params[name] = None
+        return rest
 
 
 class NetCommand(NetExamplesMixin, click.Command):

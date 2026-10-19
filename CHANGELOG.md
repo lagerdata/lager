@@ -48,6 +48,22 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   with `lager custom NET ACTION` or `lager TYPE NET ACTION`, built from the manifest the
   box serves. The driver is stored in `/etc/lager/drivers/` on the box only, survives
   `lager update`, and runs in its own process for each call.
+- **`lager arm <net> get-acceleration` and `Dexarm.get_acceleration()`** print the arm's
+  print, travel and retract acceleration, read from its settings report (`M503`).
+  `Dexarm.read_settings()` returns that report, which includes the stored calibration.
+- **The Rotrics Dexarm runs in the nightly bench.** Both arm suites run against a real arm
+  every night. Each check compares a readback to its target, and the suites fail if the
+  arm's stored calibration changes.
+
+### Changed
+
+- **`lager arm <net> set-acceleration` reads the values back from the arm** and prints what
+  the arm reports. If they are different from the values set, the command exits non-zero.
+  `Dexarm.set_acceleration()` returns them, and raises `SettingNotAppliedError` instead.
+  Without `--retract`, the arm keeps its current retract value. It used to be set to 60,
+  and the default on firmware V2.4.x is 40.
+- **`lager arm <net> disable-motor` asks for confirmation**, because the arm goes limp and
+  drops. Pass `--yes` to skip the prompt.
 
 ### Security
 
@@ -91,6 +107,12 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 - **The hardware service no longer writes secret arguments to its log.** The
   `/invoke` log line now masks keyword arguments such as `password`, `pin`
   and `private_key_pem`.
+- **A net command with the net name omitted runs on the default net.** `lager arm position
+  --box X` failed with "No such command '--box'", and `lager arm --box X position` listed
+  nets instead of reading the position. This affects `arm`, `supply`, `battery`, `eload`,
+  `solar`, `logic`, `energy`, `scope`, `usb` and `watt`.
+- **`lager instruments` finds a Dexarm on firmware V2.4.x that has no saved net.** The arm
+  prints `wait` every second when idle, and the scan read that line as the arm's reply.
 
 ## [0.58.0] - 2026-10-20
 

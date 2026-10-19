@@ -36,6 +36,7 @@ from .arm_net import (
     OutOfBoundsError,
     UnsupportedFirmwareError,
     NotHomedError,
+    SettingNotAppliedError,
 )
 from .rotrics import Dexarm
 
@@ -54,6 +55,7 @@ __all__ = [
     'OutOfBoundsError',
     'UnsupportedFirmwareError',
     'NotHomedError',
+    'SettingNotAppliedError',
     # Implementations
     'Dexarm',
     'RotricsArm',  # Alias for backward compatibility

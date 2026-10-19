@@ -16,6 +16,7 @@ from lager.automation.arm import (
     MovementTimeoutError,
     NotHomedError,
     OutOfBoundsError,
+    SettingNotAppliedError,
     UnsupportedFirmwareError,
 )
 ```
@@ -30,6 +31,9 @@ from lager.automation.arm import (
 | `go_home()` | 把机械臂移回归位位置 |
 | `enable_motor()` | 使能机械臂电机 |
 | `disable_motor()` | 禁用机械臂电机 |
+| `get_acceleration()` | 获取打印、空程和回抽加速度 |
+| `set_acceleration()` | 设置加速度并读回 |
+| `read_settings()` | 获取机械臂的设置报告（`M503`） |
 | `save_position()` | 以机械臂当前姿态重新标定（`M889`） |
 | `get_full_position()` | 获取包含关节角度的完整位置 |
 | `sliding_rail_init()` | 初始化滑轨 |
@@ -144,7 +148,7 @@ arm.enable_motor()
 
 ### `disable_motor()`
 
-禁用机械臂电机（机械臂会变成松弛状态）。
+禁用机械臂电机。机械臂会立即变得松弛，并掉落到下方的任何物体上。调用 `enable_motor()` 之后，下一次移动之前请先调用 `go_home()`。
 
 ```python
 arm.disable_motor()
@@ -228,12 +232,30 @@ arm.delay_ms(500)  # 500ms delay
 arm.delay_s(2)     # 2 second delay
 ```
 
-### `set_acceleration(acceleration, travel_acceleration, retract_acceleration=60)`
+### `set_acceleration(acceleration, travel_acceleration, retract_acceleration=None)`
 
-设置打印、空程和回抽加速度，单位 mm/s^2。该方法发送 `M204 P<acceleration> T<travel_acceleration> R<retract_acceleration>`。
+设置打印、空程和回抽加速度，单位 mm/s^2。该方法发送 `M204 P<acceleration> T<travel_acceleration> R<retract_acceleration>`，然后读回这些值，并以 `(print, travel, retract)` 返回。不提供 `retract_acceleration` 时，机械臂保留当前的回抽值。
+
+如果机械臂报告的值与你设置的值不同，该方法会抛出 `SettingNotAppliedError`。
 
 ```python
-arm.set_acceleration(100, 100, 60)
+arm.set_acceleration(100, 100, 40)  # returns (100.0, 100.0, 40.0)
+```
+
+### `get_acceleration()`
+
+返回机械臂的 `(print, travel, retract)` 加速度，单位 mm/s^2。这些值来自机械臂的设置报告（`M503`）。
+
+```python
+print_accel, travel_accel, retract_accel = arm.get_acceleration()
+```
+
+### `read_settings()`
+
+以行列表的形式返回机械臂的设置报告（`M503`）。`M503` 不会改变机械臂上的任何设置。报告中以 `M889 X.. Y.. Z..` 行包含已存储的标定。
+
+```python
+calibration = [line for line in arm.read_settings() if "M889" in line]
 ```
 
 ### `set_module_type(module_type)`
@@ -396,6 +418,7 @@ except RuntimeError as e:
 | `UnsupportedFirmwareError` | `lager.automation.arm.arm_net` | 机械臂固件低于 V2.1.4，或机械臂未报告版本。 |
 | `NotHomedError` | `lager.automation.arm.arm_net` | 机械臂上电后尚未归位。 |
 | `MovementTimeoutError` | `lager.automation.arm.arm_net` | 机械臂未能及时到达目标位置 |
+| `SettingNotAppliedError` | `lager.automation.arm.arm_net` | 机械臂报告的设置与写入的值不同（`set_acceleration`）。 |
 | `RuntimeError` | 内置 | 找不到机械臂设备，或无法打开它 |
 
 ## 说明

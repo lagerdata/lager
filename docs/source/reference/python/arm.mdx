@@ -16,6 +16,7 @@ from lager.automation.arm import (
     MovementTimeoutError,
     NotHomedError,
     OutOfBoundsError,
+    SettingNotAppliedError,
     UnsupportedFirmwareError,
 )
 ```
@@ -30,6 +31,9 @@ from lager.automation.arm import (
 | `go_home()` | Return arm to home position |
 | `enable_motor()` | Enable arm motors |
 | `disable_motor()` | Disable arm motors |
+| `get_acceleration()` | Get print, travel and retract acceleration |
+| `set_acceleration()` | Set acceleration and read it back |
+| `read_settings()` | Get the arm's settings report (`M503`) |
 | `save_position()` | Recalibrate the arm on its current pose (`M889`) |
 | `get_full_position()` | Get full position including joint angles |
 | `sliding_rail_init()` | Initialize the sliding rail |
@@ -144,7 +148,7 @@ arm.enable_motor()
 
 ### `disable_motor()`
 
-Disable the arm motors (arm will be loose).
+Disable the arm motors. The arm goes limp at once and drops onto whatever is below it. After `enable_motor()`, call `go_home()` before the next move.
 
 ```python
 arm.disable_motor()
@@ -228,12 +232,30 @@ arm.delay_ms(500)  # 500ms delay
 arm.delay_s(2)     # 2 second delay
 ```
 
-### `set_acceleration(acceleration, travel_acceleration, retract_acceleration=60)`
+### `set_acceleration(acceleration, travel_acceleration, retract_acceleration=None)`
 
-Set the print, travel and retract acceleration in mm/s^2. The method sends `M204 P<acceleration> T<travel_acceleration> R<retract_acceleration>`.
+Set the print, travel and retract acceleration in mm/s^2. The method sends `M204 P<acceleration> T<travel_acceleration> R<retract_acceleration>`, then reads the values back and returns them as `(print, travel, retract)`. If you do not give `retract_acceleration`, the arm keeps its current retract value.
+
+If the arm reports different values from the values you set, the method raises `SettingNotAppliedError`.
 
 ```python
-arm.set_acceleration(100, 100, 60)
+arm.set_acceleration(100, 100, 40)  # returns (100.0, 100.0, 40.0)
+```
+
+### `get_acceleration()`
+
+Return the arm's `(print, travel, retract)` acceleration in mm/s^2. The values come from the arm's settings report (`M503`).
+
+```python
+print_accel, travel_accel, retract_accel = arm.get_acceleration()
+```
+
+### `read_settings()`
+
+Return the arm's settings report (`M503`) as a list of lines. `M503` changes nothing on the arm. The report includes the stored calibration as an `M889 X.. Y.. Z..` line.
+
+```python
+calibration = [line for line in arm.read_settings() if "M889" in line]
 ```
 
 ### `set_module_type(module_type)`
@@ -396,6 +418,7 @@ except RuntimeError as e:
 | `UnsupportedFirmwareError` | `lager.automation.arm.arm_net` | The arm firmware is older than V2.1.4, or the arm did not report its version. |
 | `NotHomedError` | `lager.automation.arm.arm_net` | The arm is not homed after power-on. |
 | `MovementTimeoutError` | `lager.automation.arm.arm_net` | Arm didn't reach target position in time |
+| `SettingNotAppliedError` | `lager.automation.arm.arm_net` | The arm reports a different setting from the value written (`set_acceleration`). |
 | `RuntimeError` | builtin | Arm device not found or cannot be opened |
 
 ## Notes

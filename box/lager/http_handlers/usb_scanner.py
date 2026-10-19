@@ -1224,6 +1224,28 @@ def _dexarm_serials_by_tty() -> Dict[str, Any]:
     }
 
 
+_HANDSHAKE_REPLY_S = 1.0
+
+
+def _read_handshake_reply(ser, budget_s: float = _HANDSHAKE_REPLY_S) -> str:
+    """Return the first reply line that is not an idle ``wait``, or "".
+
+    Firmware V2.4.x prints ``wait`` once a second while idle. One landing
+    between the buffer reset and the M105 reply was read as the whole reply,
+    and the arm was skipped as "no arm reply". The read continues past such
+    lines, inside the same one-second budget the single read had.
+    """
+    deadline = time.monotonic() + budget_s
+    while time.monotonic() < deadline:
+        line = ser.read_until(b"\n").decode(errors="ignore")
+        if not line:
+            return ""
+        if line.strip() in ("", "wait"):
+            continue
+        return line
+    return ""
+
+
 @with_timeout(seconds=_HANDSHAKE_BUDGET_S, default=[])
 def _by_handshake(*, exclude: Optional[set] = None,
                   known_arm_serials: Optional[set] = None) -> List[dict]:
@@ -1313,8 +1335,7 @@ def _by_handshake(*, exclude: Optional[set] = None,
             # reading whatever happened to arrive: the arm answers in more
             # than 10 ms, so the old sleep-then-read_all() raced it and
             # concluded "no reply" against hardware that was about to answer.
-            # Bounded by the port's own timeout=1.
-            resp = ser.read_until(b"\n").decode(errors="ignore")
+            resp = _read_handshake_reply(ser)
         except Exception as exc:
             skipped[port] = "handshake failed: %s" % (exc,)
             continue

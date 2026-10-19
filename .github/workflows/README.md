@@ -15,7 +15,7 @@ deleted.)
 
 | File | Sidebar name | Triggers | Runner | Purpose |
 |---|---|---|---|---|
-| `integration-tests.yml` | Bench: Integration Tests | `workflow_call`, dispatch | self-hosted `lager-bench` | Drives every bench instrument through `lager python`, plus the CLI suites for the supply, LabJack, USB-202, Acroname hub, USB port, debug net, J-Link and UART, and the deployment and devenv suites |
+| `integration-tests.yml` | Bench: Integration Tests | `workflow_call`, dispatch | self-hosted `lager-bench` | Drives every bench instrument through `lager python`, plus the CLI suites for the supply, LabJack, USB-202, Acroname hub, USB port, debug net, J-Link, UART and Dexarm arm, and the deployment and devenv suites |
 | `update-regression.yml` | Bench: Box Lifecycle | `workflow_call`, dispatch | self-hosted `lager-bench` | Downgrade -> update -> no-op -> forced rebuild -> uninstall -> install, with a hardware smoke per phase |
 | `nightly-bench.yml` | Bench: Nightly | cron 10:17 UTC, push of `v*` tags, dispatch | (calls the two above) | The bench chain: lifecycle first, instruments only if it succeeded, one chain at a time; files/closes the `bench-alert` issue |
 | `bench-extended.yml` | Bench: Extended | cron Sat 14:17 UTC, dispatch | self-hosted `lager-bench` | Weekly run of the suites that change shared state (nets, box_config, generic) plus the Keithley battery suite; alerts on failure under its own `bench-alert-extended` label, and never closes it |
@@ -346,6 +346,7 @@ belongs here.
 | Rigol DP821 CH2 (`supply3`) output | MCC USB-202 CH0 (`adc15`) | `test/api/io/test_usb202.py::test_adc_supply_accuracy`, gated on `USB202_SUPPLY_NET` + `USB202_SUPPLY_ADC_NET`; `test/integration/io/usb202.sh` section 4 (same variables, defaulted to this wire) |
 | ESP32 UART peer's on-board USB chip (`ESP_UART`) | ESP32 U0RXD (GPIO3) -- the ONLY driver allowed on that pin | `test/integration/communication/uart.sh` section 15 |
 | LabJack T7 DAC0 (`dac1`) | LabJack T7 AIN0 (`adc1`) | `test/api/io/test_LabJack_T7.py::test_loopback` (`LOOPBACK_ADC_NET=adc1`; a skip fails the step); `test/integration/io/labjack.sh` section 4 (`LABJACK_LOOPBACK=1`) |
+| Rotrics Dexarm (`arm1`, USB serial `308F336A3438`, firmware V2.4.4, PEN module) USB cable | Acroname port 4 (`usb5`) | `test/api/peripherals/test_arm_comprehensive.py`, `test/integration/peripherals/arm.sh` (section 10 toggles `usb5`) |
 
 This wire cost real triage time. It was built for a check whose two repository
 variables were never set, so the sub-test had never run once and nothing in the
@@ -367,6 +368,21 @@ unexercised is what produced the confusion:
 USB202_SUPPLY_NET=supply3
 USB202_SUPPLY_ADC_NET=adc15
 ```
+
+### The Dexarm and its clear zone
+
+The arm is self-powered and on no AC relay; its USB cable is the only thing on
+`usb5`, so switching that port off drops the arm's USB link and leaves it
+holding its pose. **`usb5` must never be in `USB_NET` / `USB_NETS`**, the ports
+`test/api/usb/test_Acroname.py` power-cycles: the workflow's "Check the Acroname
+test leaves the arm's hub port alone" step fails the run if it is.
+
+Both arm suites keep every move inside X -100..100, Y 200..320, Z 0..40 mm
+around home (X0 Y300 Z0). Keep that space clear. They never send M889, which
+overwrites the arm's stored joint calibration (`M889 X2766 Y1590 Z3346` on this
+arm), and they fail if that calibration reads differently at the end. They put
+the arm's own acceleration (P60 R40 T60, the V2.4.4 defaults) back when they
+finish. `disable-motor` is not run unattended: the arm goes limp and drops.
 
 ### Groups left unexercised on purpose
 
