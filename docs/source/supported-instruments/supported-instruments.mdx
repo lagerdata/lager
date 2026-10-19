@@ -96,6 +96,10 @@ To see what the box detected, type `capabilities` in the console of the web UI,
 or call `capabilities()` from Python. The 8-channel 4824 works as a four-channel
 scope, on channels A to D.
 
+Net creation takes its channel list from the same detection. Plug the scope in,
+with the box running, before you add its nets. If the box's scope service does not
+have the unit open, a PicoScope shows only two channels.
+
 **Enables:**
 - Automated waveform capture
 - Trigger-based signal validation

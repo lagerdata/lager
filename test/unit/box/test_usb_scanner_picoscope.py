@@ -11,6 +11,11 @@ dropped, with no message anywhere to say why.
 These tests cover the vendor-wide match that replaced it, and the channel
 count read from the device rather than from a static table (2- and 4-channel
 models share every series, so the entry name cannot imply it).
+
+The count comes from the scope daemon, which reads the model off the unit when
+it opens it. The USB product string is only a fallback: Pico's product ids are
+per series, and a real unit reports the series ("PicoScope 2000A series PC
+Oscilloscope"), not a model number.
 """
 
 import importlib.util
@@ -27,6 +32,9 @@ SCANNER_PATH = os.path.normpath(
 )
 
 PICO_VID = '0ce9'
+
+# What a real 2000A unit reports as its USB product string.
+SERIES_PRODUCT = 'PicoScope 2000A series PC Oscilloscope'
 
 
 def _load_scanner():
@@ -63,8 +71,19 @@ class PicoScopeDiscovery(unittest.TestCase):
             tmpdir, ignore_errors=True))
         self.tmpdir = tmpdir
 
-    def _scan(self, devices):
-        """Build a fake sysfs holding `devices` and return scanner entries."""
+    def _scan(self, devices, daemon=None):
+        """Build a fake sysfs holding `devices` and return scanner entries.
+
+        `daemon` is what the scope daemon's GetCapabilities answers with; the
+        default None is a box with no daemon running.
+        """
+        self.daemon_queries = 0
+
+        def _capabilities():
+            self.daemon_queries += 1
+            return daemon
+
+        self.scanner._pico_daemon_capabilities = _capabilities
         fake = None
         for i, (pid, serial, product) in enumerate(devices):
             fake = _FakePicoSysfs(self.tmpdir, vid=PICO_VID, pid=pid,
@@ -109,8 +128,9 @@ class PicoScopeDiscovery(unittest.TestCase):
         self.assertEqual(entries[0]['name'], 'Picoscope')
         self.assertEqual(entries[0]['net_type'], ['scope', 'scope-channel'])
 
-    def test_channel_count_comes_from_the_device_not_the_table(self):
-        """A 4-channel scope must offer 4 channels, a 2-channel one 2."""
+    def test_without_the_daemon_a_model_number_is_read_from_the_product(self):
+        """A 4-channel scope must offer 4 channels, a 2-channel one 2, when
+        the product string carries a model number."""
         four = self._scan([('1018', 'S4', 'PicoScope 3403D')])[0]
         self.assertEqual(four['channels']['scope-channel'], ['1', '2', '3', '4'])
 
@@ -118,11 +138,12 @@ class PicoScopeDiscovery(unittest.TestCase):
         self.assertEqual(two['channels']['scope-channel'], ['1', '2'])
 
     def test_channel_count_falls_back_to_two_when_unreadable(self):
-        """An unparseable product string must not invent channels.
+        """With no daemon to ask, an unparseable product string must not
+        invent channels.
 
-        Offering a channel that is not there fails later, at the point
-        someone drives it; offering too few is corrected by the daemon's
-        capability probe when the scope is opened.
+        This under-reports a 4-channel unit, and nothing corrects it later;
+        offering a channel that is not there would be offered as a net and
+        fail only when someone drives it.
         """
         entries = self._scan([('1018', 'S5', 'Some New PicoScope')])
 
@@ -156,6 +177,93 @@ class PicoScopeDiscovery(unittest.TestCase):
 
         self.assertEqual(entries[0]['channels']['scope-channel'],
                          ['1', '2', '3', '4'])
+
+    def test_a_series_level_product_string_takes_the_daemons_count(self):
+        """The reported bug: a 4-channel 2000A reports its series, not its
+        model, so the product string alone offered channels 1 and 2."""
+        entries = self._scan(
+            [('1016', 'JO123/0045', SERIES_PRODUCT)],
+            daemon={'serial': 'JO123/0045', 'model': '2405A',
+                    'analog_channels': 4})
+
+        self.assertEqual(entries[0]['channels']['scope-channel'],
+                         ['1', '2', '3', '4'])
+        self.assertEqual(entries[0]['channels']['scope'], [])
+        self.assertEqual(entries[0]['model'], 'PicoScope 2405A')
+
+    def test_the_daemon_count_wins_over_the_product_string(self):
+        """The daemon read the unit itself, so it also corrects downward."""
+        entries = self._scan(
+            [('1018', 'S4', 'PicoScope 3403D')],
+            daemon={'serial': 'S4', 'model': '3203D', 'analog_channels': 2})
+
+        self.assertEqual(entries[0]['channels']['scope-channel'], ['1', '2'])
+
+    def test_a_series_level_product_string_without_the_daemon_offers_two(self):
+        entries = self._scan([('1016', 'JO123/0045', SERIES_PRODUCT)])
+
+        self.assertEqual(entries[0]['channels']['scope-channel'], ['1', '2'])
+        self.assertEqual(entries[0]['model'], SERIES_PRODUCT)
+
+    def test_a_lone_scope_takes_the_daemons_count_without_a_serial(self):
+        """One PicoScope and one open unit can only be the same device."""
+        entries = self._scan(
+            [('1016', None, SERIES_PRODUCT)],
+            daemon={'serial': 'JO123/0045', 'model': '2405A',
+                    'analog_channels': 4})
+
+        self.assertEqual(entries[0]['channels']['scope-channel'],
+                         ['1', '2', '3', '4'])
+
+    def test_the_daemons_count_is_not_applied_to_another_unit(self):
+        """The daemon has one unit open; on a two-scope box, the other unit
+        must not inherit its channel count."""
+        entries = self._scan(
+            [('1016', 'OPEN/1', SERIES_PRODUCT),
+             ('1016', 'OTHER/2', SERIES_PRODUCT)],
+            daemon={'serial': 'OPEN/1', 'model': '2405A',
+                    'analog_channels': 4})
+
+        by_serial = {e['serial']: e['channels']['scope-channel'] for e in entries}
+        self.assertEqual(by_serial['OPEN/1'], ['1', '2', '3', '4'])
+        self.assertEqual(by_serial['OTHER/2'], ['1', '2'])
+
+    def test_without_serials_two_scopes_do_not_take_the_daemons_count(self):
+        entries = self._scan(
+            [('1016', None, SERIES_PRODUCT), ('1016', None, SERIES_PRODUCT)],
+            daemon={'serial': 'OPEN/1', 'model': '2405A',
+                    'analog_channels': 4})
+
+        for entry in entries:
+            self.assertEqual(entry['channels']['scope-channel'], ['1', '2'])
+
+    def test_an_eight_channel_daemon_answer_offers_four(self):
+        entries = self._scan(
+            [('1018', 'S8', SERIES_PRODUCT)],
+            daemon={'serial': 'S8', 'model': '4824', 'analog_channels': 8})
+
+        self.assertEqual(entries[0]['channels']['scope-channel'],
+                         ['1', '2', '3', '4'])
+
+    def test_the_daemon_is_asked_once_per_scan(self):
+        self._scan([('1016', 'A/1', SERIES_PRODUCT),
+                    ('1016', 'B/2', SERIES_PRODUCT)])
+
+        self.assertEqual(self.daemon_queries, 1)
+
+    def test_an_unreachable_daemon_answers_none(self):
+        """The real lookup, against a port nothing listens on, must fall back
+        rather than raise out of the scan."""
+        scanner = _load_scanner()
+        old = os.environ.get('LAGER_SCOPE_DATA_URL')
+        os.environ['LAGER_SCOPE_DATA_URL'] = 'ws://127.0.0.1:9/'
+        try:
+            self.assertIsNone(scanner._pico_daemon_capabilities())
+        finally:
+            if old is None:
+                os.environ.pop('LAGER_SCOPE_DATA_URL', None)
+            else:
+                os.environ['LAGER_SCOPE_DATA_URL'] = old
 
     def test_the_vendor_wide_entry_is_not_in_the_vidpid_table(self):
         """It has no product id, so it must not shadow a real one."""

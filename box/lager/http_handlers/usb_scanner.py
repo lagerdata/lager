@@ -220,8 +220,9 @@ CHANNEL_MAPS: Dict[str, Dict[str, List[str]]] = {
     "KEYSIGHT_E36312A":       {"power-supply": ["1", "2", "3"]},
     "Keithley_2281S":         {"power-supply": ["1"], "battery": ["1"]},
     # Channel lists are the conservative two-channel default; the real count
-    # comes from the device's own USB product string at scan time
-    # (_pico_channel_count), because it varies from 2 to 4 within every series.
+    # is filled in at scan time from the scope daemon's detected model
+    # (_pico_daemon_capabilities), because it varies from 2 to 4 within every
+    # series and the USB descriptors do not say which.
     "Picoscope_2000":         {"scope": [], "scope-channel": ["1", "2"]},
     "Picoscope":              {"scope": [], "scope-channel": ["1", "2"]},
     "Rigol_MSO5204":          {"scope": [], "scope-channel": ["1", "2", "3", "4"],
@@ -397,6 +398,10 @@ _VID_ONLY_VENDORS: Dict[str, str] = {
 
 _PICO_VID = "0ce9"
 
+# scan_usb's marker for "the daemon has not been asked yet", since None is a
+# real answer (no daemon).
+_UNASKED = object()
+
 
 def _read_sysfs(path: Path) -> Optional[str]:
     """Read a small sysfs attribute, returning None if it is unreadable."""
@@ -406,30 +411,96 @@ def _read_sysfs(path: Path) -> Optional[str]:
         return None
 
 
-def _pico_channel_count(model: str) -> int:
-    """Number of analog channels for a PicoScope, from its model string.
+# An 8-channel 4824 offers its first four. Every channel name above the
+# daemon -- the CLI's --source, the web console, a math trace -- stops at D,
+# so a net on E could be saved and then never addressed.
+_PICO_MAX_CHANNELS = 4
 
+# How long a scan waits on the scope daemon. The scan backs net creation, so a
+# daemon that is up but busy must cost a short pause, not a hang.
+_PICO_DAEMON_TIMEOUT = 1.5
+
+
+def _pico_channel_count(model: str) -> int:
+    """Number of analog channels for a PicoScope, from a model string.
+
+    The fallback for when the scope daemon cannot say (_pico_daemon_capabilities).
     Pico's model numbers encode the channel count in the second digit:
     2204A and 3204D and 5242D are 2-channel, 2405A and 3403D and 5442D and
-    6404 are 4-channel. That holds across the 2000/3000/4000/5000/6000
-    series, which is why it is worth reading rather than keeping a table of
-    every model Pico has ever sold.
+    6404 are 4-channel. But real units report a series name as their USB
+    product string ("PicoScope 2000A series PC Oscilloscope"), because Pico's
+    product ids are per series, not per model, so on most hardware this has
+    no model number to read.
 
-    Falls back to 2 for anything that does not parse. Under-reporting hides a
-    channel until the daemon's own capability probe corrects it at connect
-    time; over-reporting would offer a channel that does not exist and fail
-    when someone drives it.
+    Falls back to 2 for anything that does not parse. That under-reports a
+    4-channel unit, and nothing corrects it later: the daemon's channel check
+    only rejects channels, it never adds ones the scan missed. It is still the
+    lesser error, since a channel that does not exist would be offered as a
+    net and fail when someone drives it.
     """
     match = re.search(r'(\d)(\d)\d\d', model)
     if not match:
         return 2
     channels = int(match.group(2))
-    # An 8-channel 4824 offers its first four. Every channel name above the
-    # daemon -- the CLI's --source, the web console, a math trace -- stops at
-    # D, so a net on E could be saved and then never addressed.
     if channels == 8:
-        return 4
+        return _PICO_MAX_CHANNELS
     return channels if channels in (2, 4) else 2
+
+
+def _pico_daemon_capabilities() -> Optional[dict]:
+    """What the scope daemon detected on the PicoScope it has open, or None.
+
+    The daemon opens the unit and reads its model from PICO_VARIANT_INFO, the
+    only place a PicoScope says which model it is. Asking it is not a device
+    open: the daemon accepts several clients and keeps the USB handle, so the
+    scan does not disturb a capture in progress. None when the daemon is not
+    running, has no unit open, or does not answer in time.
+    """
+    try:
+        from lager.measurement.scope import daemon_client
+    except Exception:
+        return None
+    try:
+        response = daemon_client.command("GetCapabilities",
+                                         timeout=_PICO_DAEMON_TIMEOUT)
+    except Exception:
+        # Unreachable, timed out, or an Error reply for no unit open: all of
+        # them leave the scan on the product-string fallback.
+        return None
+    capabilities = response.get("capabilities") if isinstance(response, dict) else None
+    return capabilities if isinstance(capabilities, dict) else None
+
+
+def _pico_daemon_channels(serial: Optional[str], capabilities: Optional[dict],
+                          only_pico: bool) -> Optional[int]:
+    """The daemon's channel count, if its unit is this USB device.
+
+    The daemon has one unit open, so on a box with two PicoScopes its count
+    must not be applied to the other one. Serials decide when both sides have
+    one; without them the answer is only trusted when there is a single
+    PicoScope to be talking about.
+    """
+    if not capabilities:
+        return None
+    try:
+        channels = int(capabilities.get("analog_channels") or 0)
+    except (TypeError, ValueError):
+        return None
+    if channels < 1:
+        return None
+    theirs = str(capabilities.get("serial") or "").strip()
+    if serial and theirs:
+        if serial != theirs:
+            return None
+    elif not only_pico:
+        return None
+    return min(channels, _PICO_MAX_CHANNELS)
+
+
+def _pico_device_count(sys_usb: Path) -> int:
+    """How many PicoScopes are attached, by vendor id."""
+    return sum(1 for dev in sys_usb.iterdir()
+               if _read_sysfs(dev / "idVendor") == _PICO_VID)
 
 
 # Vendors whose every device is one instrument family, matched when the exact
@@ -715,6 +786,9 @@ def scan_usb() -> List[dict]:
     # Topology-addressed hubs already emitted, for the SuperSpeed companion
     # dedupe below. Only meaningful if iteration order is stable, hence the sort.
     topology_seen: List[str] = []
+    # Filled on the first PicoScope seen; most scans have none and never ask.
+    pico_daemon: Any = _UNASKED
+    pico_count = 0
     sys_usb = Path("/sys/bus/usb/devices")
     if not sys_usb.exists():
         return results
@@ -816,19 +890,32 @@ def scan_usb() -> List[dict]:
 
         if vid == _PICO_VID:
             # Every PicoScope series spans 2- and 4-channel models, so the
-            # catalog cannot know the count from the entry name. Read it off
-            # the device instead. This is a sysfs string read, not a device
-            # open: the scan must not disturb a capture already in progress,
-            # and the scope daemon holds the handle exclusively anyway.
+            # catalog cannot know the count from the entry name. Ask the
+            # scope daemon, which read the model off the unit when it opened
+            # it, and fall back to the USB product string. Neither is a
+            # device open: the scan must not disturb a capture in progress.
+            # Both lookups happen once per scan, however many units there are.
+            if pico_daemon is _UNASKED:
+                pico_daemon = _pico_daemon_capabilities()
+                pico_count = _pico_device_count(sys_usb)
             model = _read_sysfs(dev / "product")
+            channels = _pico_daemon_channels(serial, pico_daemon,
+                                             only_pico=pico_count == 1)
+            if channels:
+                variant = pico_daemon.get("model")
+                if variant:
+                    model = (variant if variant.lower().startswith("picoscope")
+                             else "PicoScope %s" % variant)
+            elif model:
+                channels = _pico_channel_count(model)
             if model:
                 entry["model"] = model
+            if channels:
                 # The scope itself is one net with no channel, which an
                 # empty list says; the channels are numbered from 1.
                 entry["channels"] = {
                     "scope": [],
-                    "scope-channel": [str(n) for n in
-                                      range(1, _pico_channel_count(model) + 1)]}
+                    "scope-channel": [str(n) for n in range(1, channels + 1)]}
 
         if "uart" in meta.get("net_type", []):
             # Resolve actual /dev/tty* paths so consumers (TUI, dispatcher)

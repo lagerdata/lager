@@ -40,7 +40,7 @@
     "reference/cli/logic.mdx": "4f3ad8a7185bd1fa6f650a3361a4300df782680edcd2f2772b0230a7c6778be8",
     "reference/cli/login.mdx": "6672f3d909010ad6ee0714e0915e517c56ce14116c1684a17e084b0acf556221",
     "reference/cli/logs.mdx": "58c78cde4104ee64c8151ffb52b80d40074af49cb3d77524eef59a0601139dac",
-    "reference/cli/nets.mdx": "e3c55b73ed78be45b158f248dcf690a5cf43e5dd34eadc52bd01e1fc46f68e9c",
+    "reference/cli/nets.mdx": "e244d523347869541715cbc0ee8d59e38773e1fde36c6d8d9c9c0c1aff72e699",
     "reference/cli/overview.mdx": "de08fe2fb34fc1da85e3239b098acfcfea7f4ac3960808c035d0f518da0c623b",
     "reference/cli/python.mdx": "abd57a2f6024ad8193a1903aa143d6d24de0cb995d6c35c43699c1e37cf0fd65",
     "reference/cli/router.mdx": "a755022b1164c8ed5406aa156be80ba132384a82d6a29b581673a21d95aebb98",
@@ -118,6 +118,6 @@
     "reference/rust/watt.mdx": "e16f8048a2fcfa6d65d6b58eb45d31b86c2aa5e0c2692f15ac28e4083b6b2afe",
     "reference/rust/webcam.mdx": "8ef2484aca45078416171dbbf1955ab0c840d0fb3837b52e59248ffcd100d1c8",
     "reference/rust/wifi.mdx": "6f514c7840ad84150c90e0674c7a785cdc161b32e851701856da2f1cdc67701b",
-    "supported-instruments/supported-instruments.mdx": "a27106602498a536bbb557cdf187b9408e737ccc5ce524f0326bc8cbdd14621c"
+    "supported-instruments/supported-instruments.mdx": "4f1b4839a95c0ca3d5e34ede81c06c177b283ad38dc77fac157b9245ec5ff16c"
   }
 }

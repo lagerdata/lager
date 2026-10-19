@@ -200,7 +200,7 @@ Instruments with physically independent outputs / inputs. Each channel is its ow
 | `LabJack_T7` | `AIN0`–`AIN13`, `FIO0`–`FIO7`, `DAC0`–`DAC1`, etc. | One net per pin |
 | `LabJack_U3` | `AIN0`–`AIN15`, `DAC0`–`DAC1`; `gpio` on `FIO4`–`FIO7`, `EIO0`–`EIO7`, `CIO0`–`CIO3`; `spi` on `FIO4-FIO7`; `i2c` on `FIO6-FIO7` | `FIO0`–`FIO3` are fixed high-voltage analog inputs — read them with an `adc` net on `AIN0`–`AIN3`, never as `gpio`, `spi` or `i2c`. Lager treats every U3 as a U3-HV, so a U3-LV also loses these four digital lines. The `spi` and `i2c` spans overlap; one net of each is fine |
 | `Rigol_MSO5204` | `scope` with no channel; `scope-channel` on `1`–`4`; `logic` on `1` | One `scope` net for the instrument, one `scope-channel` net per analog channel, and one `logic` net |
-| `Picoscope_2000` / `Picoscope` | `scope` with no channel; `scope-channel` on `1`–`2`, or `1`–`4` on a four-channel model | One `scope` net for the instrument and one `scope-channel` net per input. Channel `1` is A, `2` is B. The box reads the channel count from the device |
+| `Picoscope_2000` / `Picoscope` | `scope` with no channel; `scope-channel` on `1`–`2`, or `1`–`4` on a four-channel model | One `scope` net for the instrument and one `scope-channel` net per input. Channel `1` is A, `2` is B. The box reads the channel count from the device, and offers `1`–`2` if the box does not have the scope open |
 | `Aardvark` | `SPI0`, `I2C0`, GPIO pins | Mixed-mode multi-channel |
 | `MCC_USB-202` | `CH0`–`CH7`, `DIO0`–`DIO7`, `DAC0`–`DAC1` | One net per channel |
 | `Phidget` | `0`–`3` | One `thermocouple` net per channel |

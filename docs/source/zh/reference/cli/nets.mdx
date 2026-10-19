@@ -202,7 +202,7 @@ FIO0-FIO3 on a LabJack U3 are fixed high-voltage analog inputs and are never dig
 | `LabJack_T7` | `AIN0`–`AIN13`、`FIO0`–`FIO7`、`DAC0`–`DAC1` 等 | 每个引脚一个 Net |
 | `LabJack_U3` | `AIN0`–`AIN15`、`DAC0`–`DAC1`；`gpio` 在 `FIO4`–`FIO7`、`EIO0`–`EIO7`、`CIO0`–`CIO3`；`spi` 在 `FIO4-FIO7`；`i2c` 在 `FIO6-FIO7` | `FIO0`–`FIO3` 是固定的高压模拟输入 —— 请用 `AIN0`–`AIN3` 上的 `adc` Net 读取它们，绝不要用作 `gpio`、`spi` 或 `i2c`。Lager 把每一台 U3 都当作 U3-HV，因此 U3-LV 同样失去这四条数字线。`spi` 和 `i2c` 的引脚区间有重叠；各建一个 Net 是可以的 |
 | `Rigol_MSO5204` | `scope` 不带通道；`scope-channel` 在 `1`–`4`；`logic` 在 `1` | 仪器本身一个 `scope` Net，每个模拟通道一个 `scope-channel` Net，另有一个 `logic` Net |
-| `Picoscope_2000` / `Picoscope` | `scope` 不带通道；`scope-channel` 在 `1`–`2`，四通道型号为 `1`–`4` | 仪器本身一个 `scope` Net，每路输入一个 `scope-channel` Net。通道 `1` 是 A，`2` 是 B。Box 从设备读取通道数 |
+| `Picoscope_2000` / `Picoscope` | `scope` 不带通道；`scope-channel` 在 `1`–`2`，四通道型号为 `1`–`4` | 仪器本身一个 `scope` Net，每路输入一个 `scope-channel` Net。通道 `1` 是 A，`2` 是 B。Box 从设备读取通道数；若 Box 没有打开该示波器，则提供 `1`–`2` |
 | `Aardvark` | `SPI0`、`I2C0`、GPIO 引脚 | 混合模式的多通道 |
 | `MCC_USB-202` | `CH0`–`CH7`、`DIO0`–`DIO7`、`DAC0`–`DAC1` | 每个通道一个 Net |
 | `Phidget` | `0`–`3` | 每个通道一个 `thermocouple` Net |

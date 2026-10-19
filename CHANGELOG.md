@@ -83,6 +83,11 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 - **`lager scope NET roll on` on a Rigol says "this scope has no roll mode".** It said the
   scope cannot stream, which has not been true since a Rigol got a live view. The
   `stream` docs no longer call streaming PicoScope-only.
+- **A four-channel PicoScope offers all four channels as nets.** `lager nets add` and
+  `lager nets tui` offered only channels 1 and 2 for a PicoScope whose USB product string
+  names its series rather than its model, such as the 2000A. They rejected `--channel 3`
+  and `--channel 4`. The box now takes the channel count from the model the scope daemon
+  detected on the unit.
 - **A Rigol scope's daemon is fully stopped before a new one starts.** After a new
   capture card is paired, the box restarts the scope's daemon. It used to start the new
   one while the old one was still closing, so the new daemon could find the scope's USB
