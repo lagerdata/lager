@@ -86,6 +86,11 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   live view for good. The daemon now watches the frames, and when the right of the trace
   has been empty for a second, it checks the screen as pairing does and hides the menu it
   finds.
+- **A Rigol MSO5000's live view comes back after a power cycle without a visit to the
+  scope.** A power cycle turns the scope's HDMI output off, and no SCPI command turns it on.
+  When the capture card shows no picture, the box now presses the scope's keys through
+  Utility > IO > HDMI > Output, once each time it opens the scope. If that brings no
+  picture, it sets the output back.
 
 ## [0.57.0] - 2026-10-16
 

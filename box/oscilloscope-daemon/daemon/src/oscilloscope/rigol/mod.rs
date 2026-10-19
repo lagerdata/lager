@@ -191,9 +191,11 @@ pub struct RigolMso5000 {
     /// The capture card and where the waveform is in its picture.
     screen: Option<Screen>,
     /// A capture card that could not be paired, kept to pair again when
-    /// acquisition next starts: a power cycle turns the scope's HDMI output
-    /// off, and every command still works without the picture.
+    /// acquisition next starts: the picture can be missing, from the cable
+    /// or the HDMI output, and every command still works without it.
     unpaired: Option<Unpaired>,
+    /// Whether pairing may still switch the scope's HDMI output on.
+    may_switch_hdmi: bool,
     _lock: Option<DeviceLock>,
     capabilities: ScopeCapabilities,
     firmware: String,
@@ -216,13 +218,40 @@ struct Unpaired {
 /// Pair `video` with the scope, or say why not. A scope that stopped
 /// answering is an error; a picture that does not follow the scope is the
 /// `Err` inside, so the scope can be used without it.
+///
+/// With `may_switch_hdmi`, a card that sees no picture at all has the
+/// scope's HDMI output switched on, which a power cycle turns off, and the
+/// flag is cleared: it is done once per open, so a scope with no card on its
+/// HDMI is not sent through its menus at every start.
 fn pair(
     link: &Arc<Mutex<Box<dyn Scpi>>>,
     model: &str,
     video: Box<dyn FrameSource>,
+    may_switch_hdmi: &mut bool,
 ) -> Result<std::result::Result<Screen, Unpaired>> {
-    match calibrate(link, video.as_ref()) {
+    let mut calibrated = calibrate(link, video.as_ref());
+    let mut switched = false;
+    if let Err(e) = &calibrated {
+        if *may_switch_hdmi && e.chain().any(|c| c.is::<screen::NoPicture>()) {
+            *may_switch_hdmi = false;
+            tracing::info!("no picture from the scope; switching its HDMI output on (Utility > IO > HDMI > Output)");
+            toggle_hdmi_output(link.as_ref())?;
+            std::thread::sleep(HDMI_LOCK_WAIT);
+            calibrated = calibrate(link, video.as_ref());
+            switched = true;
+            if calibrated.as_ref().is_err_and(|e| !super::unit_is_gone(e)) {
+                // The output was on already, and the picture is missing for
+                // another reason, the cable or the card: put it back.
+                toggle_hdmi_output(link.as_ref())?;
+                press_key(link.as_ref(), "MOFF")?;
+            }
+        }
+    }
+    match calibrated {
         Ok((map, _)) => {
+            if switched {
+                tracing::info!("switched the scope's HDMI output on");
+            }
             tracing::info!(
                 video = %video.describe(),
                 area = ?(map.left, map.top, map.width, map.height),
@@ -234,8 +263,14 @@ fn pair(
         }
         Err(e) if super::unit_is_gone(&e) => Err(e),
         Err(e) => {
+            let tried = if switched {
+                "; switching the scope's HDMI output on did not bring a picture, so it was left \
+                 as it was"
+            } else {
+                ""
+            };
             let reason = format!(
-                "pairing the {model} with the capture card {}: {e:#}",
+                "pairing the {model} with the capture card {}: {e:#}{tried}",
                 video.describe()
             );
             tracing::warn!(error = %reason, "no live view; the scope is usable without it");
@@ -452,8 +487,9 @@ impl RigolMso5000 {
             Identity::parse(&scpi.query("*IDN?")?)?
         };
         let capabilities = capabilities_for(&identity)?;
+        let mut may_switch_hdmi = true;
         let (screen, unpaired) = match video {
-            Some(video) => match pair(&link, &identity.model, video)? {
+            Some(video) => match pair(&link, &identity.model, video, &mut may_switch_hdmi)? {
                 Ok(screen) => (Some(screen), None),
                 Err(unpaired) => (None, Some(unpaired)),
             },
@@ -479,6 +515,7 @@ impl RigolMso5000 {
             scpi: link,
             screen,
             unpaired,
+            may_switch_hdmi,
             _lock: lock,
             capabilities,
             firmware: identity.firmware,
@@ -578,7 +615,7 @@ impl RigolMso5000 {
         let Some(Unpaired { video, .. }) = self.unpaired.take() else {
             return Ok(());
         };
-        match pair(&self.scpi, &self.capabilities.model, video)? {
+        match pair(&self.scpi, &self.capabilities.model, video, &mut self.may_switch_hdmi)? {
             Ok(screen) => {
                 let newest = screen.video.newest().unwrap_or(0);
                 let settle = screen.video.settle_frames();
@@ -824,14 +861,44 @@ fn settled_frame(video: &dyn FrameSource) -> Result<frame::VideoFrame> {
     }
     match newest {
         Some(raw) if raw.sequence >= target => raw.decode(),
-        _ => bail!(
+        _ => Err(screen::NoPicture(format!(
             "{} delivered no picture in {} s; check that the scope is on and, for a capture \
              card, that its HDMI output is connected to the card and switched on (Utility > IO > \
              HDMI > Output)",
             video.describe(),
             wait.as_secs()
-        ),
+        ))
+        .into()),
     }
+}
+
+/// Front-panel keys that toggle the HDMI output: Utility opens at its top
+/// page whatever was shown last, IO is F1 there, HDMI is F6 in IO, and F1
+/// on the HDMI page toggles Output. The scope has no SCPI command for it.
+/// Checked against the screen of an MSO5074 on firmware 00.01.03.00.03.
+const HDMI_OUTPUT_KEYS: [&str; 4] = ["UTILity", "F1", "F6", "F1"];
+/// Between key presses, for the scope to draw the page the next key acts on.
+const KEY_PAUSE: Duration = Duration::from_millis(300);
+/// For the capture card to lock onto the picture once the output is on.
+const HDMI_LOCK_WAIT: Duration = Duration::from_secs(3);
+
+fn press_key(link: &Mutex<Box<dyn Scpi>>, key: &str) -> Result<()> {
+    {
+        let mut scpi = lock_link(link);
+        scpi.write(&format!(":SYSTem:KEY:PRESs {key}"))?;
+        scpi.query("*OPC?")?;
+    }
+    std::thread::sleep(KEY_PAUSE);
+    Ok(())
+}
+
+/// Leaves the HDMI page shown; pairing finds it over the right of the grid
+/// and hides it.
+fn toggle_hdmi_output(link: &Mutex<Box<dyn Scpi>>) -> Result<()> {
+    for key in HDMI_OUTPUT_KEYS {
+        press_key(link, key)?;
+    }
+    Ok(())
 }
 
 /// Measure where the waveform is in the video, by showing the grid and then

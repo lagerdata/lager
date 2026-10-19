@@ -56,10 +56,15 @@ struct Instrument {
     errors: VecDeque<String>,
     /// Every command written, for the tests to inspect.
     sent: Vec<String>,
-    /// Whether the screen the card sees follows this instrument at all.
+    /// The HDMI output (Utility > IO > HDMI > Output), off after a power
+    /// cycle.
     on_hdmi: bool,
+    /// Whether the card is on the scope's HDMI at all.
+    cable: bool,
     /// The side menu, open over the right fifth of the grid.
     menu: bool,
+    /// The menu page shown, as the keys that reached it.
+    page: &'static str,
     /// Where the traces stop, for a signal that does not cross the screen.
     traces_end_at: Option<usize>,
 }
@@ -92,7 +97,9 @@ impl Instrument {
             errors: VecDeque::new(),
             sent: Vec::new(),
             on_hdmi: true,
+            cable: true,
             menu: false,
+            page: "",
             traces_end_at: None,
         }
     }
@@ -127,8 +134,23 @@ impl Instrument {
                 true
             }
             ":TFORCE" => true,
-            ":SYSTEM:KEY:PRESS" if arg == "MOFF" => {
-                self.menu = !self.menu;
+            ":SYSTEM:KEY:PRESS" => {
+                // The pages the HDMI output is under, as on the MSO5074;
+                // other keys on them do other things, and are not modelled.
+                match (arg, self.page) {
+                    ("MOFF", _) => {
+                        self.menu = !self.menu;
+                        self.page = "";
+                    }
+                    ("UTILITY", _) => {
+                        self.menu = true;
+                        self.page = "utility";
+                    }
+                    ("F1", "utility") if self.menu => self.page = "io",
+                    ("F6", "io") if self.menu => self.page = "hdmi",
+                    ("F1", "hdmi") if self.menu => self.on_hdmi = !self.on_hdmi,
+                    _ => panic!("pressed {arg} on the {:?} page", self.page),
+                }
                 true
             }
             ":DISPLAY:GRID" => {
@@ -323,7 +345,7 @@ impl Instrument {
     /// The screen as the capture card sees it.
     fn draw(&self) -> VideoFrame {
         let mut frame = VideoFrame::blank(WIDTH, HEIGHT, Layout::Ycc);
-        if !self.on_hdmi {
+        if !self.on_hdmi || !self.cable {
             return frame;
         }
         let half_w = 5 * PX_PER_DIV;
@@ -602,27 +624,61 @@ fn opening_measures_the_screen_and_leaves_the_grid_off() {
     assert_eq!(instrument.status, "AUTO", "left running as it was found");
 }
 
+fn keys_pressed(bench: &Bench) -> Vec<String> {
+    bench
+        .sent()
+        .iter()
+        .filter_map(|c| c.strip_prefix(":SYSTem:KEY:PRESs ").map(str::to_string))
+        .collect()
+}
+
 #[test]
-fn a_scope_with_no_picture_opens_without_a_live_view_and_pairs_when_it_returns() {
-    // A power cycle turns the scope's HDMI output off. That used to fail the
-    // open, so every command failed with it.
+fn a_power_cycled_scope_has_its_hdmi_output_switched_on() {
     let mut instrument = Instrument::mso5204();
     instrument.on_hdmi = false;
+    let mut bench = bench_with(instrument).expect("opens");
+    assert!(bench.scope.live_view_problem().is_none());
+    // Pairing found the HDMI page it was left on over the grid, and hid it.
+    assert_eq!(keys_pressed(&bench), ["UTILity", "F1", "F6", "F1", "MOFF"]);
+    {
+        let instrument = bench.instrument.lock().unwrap();
+        assert!(instrument.on_hdmi && !instrument.menu);
+        assert_eq!(instrument.status, "AUTO", "left running as it was found");
+    }
+    let (traced, columns) = traced_columns(&bench.capture());
+    assert_eq!(traced, columns);
+}
+
+#[test]
+fn a_scope_with_no_picture_opens_without_a_live_view_and_pairs_when_it_returns() {
+    // A scope whose picture does not reach the card. That used to fail the
+    // open, so every command failed with it.
+    let mut instrument = Instrument::mso5204();
+    instrument.cable = false;
     let mut bench = bench_with(instrument).expect("opens without the picture");
     let problem = bench.scope.live_view_problem().expect("says why there is no live view");
     assert!(problem.contains("not showing this scope"), "{problem}");
     assert!(problem.contains("Utility > IO > HDMI > Output"), "{problem}");
+    // Switching the output did not help, so it was put back as it was.
+    assert!(problem.contains("did not bring a picture"), "{problem}");
+    assert_eq!(keys_pressed(&bench), ["UTILity", "F1", "F6", "F1", "UTILity", "F1", "F6", "F1", "MOFF"]);
+    {
+        let instrument = bench.instrument.lock().unwrap();
+        assert!(instrument.on_hdmi && !instrument.menu);
+    }
     assert_eq!(bench.scope.measure_one(ChannelId::Alphabetic('A'), Measurement::Vmax).unwrap().unwrap(), Some(1.0));
 
-    // Starting still runs the scope, and tries the card again.
+    // Starting still runs the scope, and tries the card again, but not the
+    // scope's menus.
     bench.scope.start_triggered_capture(50.0).unwrap();
+    assert_eq!(keys_pressed(&bench).len(), 9);
     assert_eq!(bench.instrument.lock().unwrap().status, "AUTO");
     assert!(bench.scope.live_view_problem().is_some());
     let message = format!("{:#}", bench.scope.get_triggered_data().unwrap_err());
     assert!(message.contains("no live view"), "{message}");
 
-    // Output on again: the next start pairs, and captures follow.
-    bench.instrument.lock().unwrap().on_hdmi = true;
+    // The cable back: the next start pairs, and captures follow.
+    bench.instrument.lock().unwrap().cable = true;
     bench.scope.start_triggered_capture(50.0).unwrap();
     assert!(bench.scope.live_view_problem().is_none());
     assert!(bench.scope.screen.is_some());

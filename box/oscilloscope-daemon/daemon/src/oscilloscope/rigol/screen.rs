@@ -63,6 +63,19 @@ impl ScreenMap {
     }
 }
 
+/// The capture card is not showing the scope: its HDMI output is off, the
+/// cable is out, or the card is another scope's.
+#[derive(Debug)]
+pub struct NoPicture(pub String);
+
+impl std::fmt::Display for NoPicture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for NoPicture {}
+
 /// Luma a grid pixel gains when the grid is switched on.
 const GRID_STEP: u8 = 12;
 /// Fewest grid lines that pin down a lattice in each direction.
@@ -89,12 +102,14 @@ pub fn measure(with_grid: &VideoFrame, without_grid: &VideoFrame) -> Result<Scre
         }
     }
     if changed == 0 {
-        bail!(
+        return Err(NoPicture(
             "the video did not change when the scope's grid was switched on, so the capture \
              card is not showing this scope; check the HDMI cable, that the scope's HDMI output \
              is switched on (Utility > IO > HDMI > Output), and that the net names the capture \
              card the scope is plugged into"
-        );
+                .into(),
+        )
+        .into());
     }
     let vertical = lattice(&line_centres(&columns, MIN_VERTICAL_LINES), MIN_VERTICAL_LINES).ok_or_else(|| {
         anyhow::anyhow!(
