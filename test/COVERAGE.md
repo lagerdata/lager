@@ -47,13 +47,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 3276 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 4536 (+16 skipped) |
+| `unit (cli)` | `test/unit/cli/` | 3529 (+3 xfailed) |
+| `unit (box)` | `test/unit/box/` | 4565 (+16 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 405 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 209 (+1 skipped) |
-| | **Total gated** | **8620** |
+| | **Total gated** | **8902** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -85,7 +85,7 @@ anywhere in the tree.
 | `bash -n` | every shell script under `test/ tools/ box/ cli/deployment/` | clean |
 | `shellcheck -S warning`, excluding `SC2034,SC2320,SC2155,SC2164,SC2046` | the same scripts as `bash -n` (`box/` and `cli/deployment/` were added after `test/ tools/`) | clean. Pinned to `shellcheck-py==0.11.0.1`, not the runner image's binary. See below for what the exclusions cost. |
 | `compileall` | every `.py` in `cli/ box/ test/ tools/` | clean |
-| `pytest --collect-only` | `test/mcp/integration/` | 8 tests collect |
+| `pytest --collect-only` | `test/mcp/integration/` | 8 tests collect (the same 8 are run in `unit-tests.yml`'s `mcp-extra` job) |
 | `ruff --select E9,F63,F7,F82` | `cli/ box/ test/ tools/` | clean (default ruleset would be ~6300) |
 | `coverage` | all six unit suites | ~38%, reporting only, no threshold |
 
@@ -184,24 +184,25 @@ OS.
 
 | Area | Size | Why not |
 |---|---|---|
-| `test/api/` | 84 scripts | Needs real hardware. The bench workflows invoke 10 by name; the other 73 execute nowhere -- though all are now syntax-checked. |
-| `test/integration/` | 38 bash scripts | Needs a real box and instruments. **8 execute:** `communication/jlink_script.sh` nightly via `integration-tests.yml`, plus 7 weekly via `bench-extended.yml` -- 5 infrastructure suites (`deployment`, `devenv`, `nets`, `box_config`, `generic`) and 2 power suites (`power/supply.sh`, `power/battery.sh`). The other 30 are syntax-checked and shellchecked but never executed. |
-| `test/mcp/integration/` | 1 file | Needs two live boxes. Import-checked only. |
+| `test/api/` | 85 scripts | Needs real hardware. The bench workflows invoke 10 by name (4 of them, the Keithley supply and battery steps, only while the `KEITHLEY_PRESENT` repo variable is `true`); the other 75 execute nowhere -- though all are syntax-checked. |
+| `test/integration/` | 38 bash scripts | Needs a real box and instruments. **9 execute:** `communication/jlink_script.sh` and `communication/uart.sh` nightly via `integration-tests.yml`, plus 7 weekly via `bench-extended.yml` -- 5 infrastructure suites (`deployment`, `devenv`, `nets`, `box_config`, `generic`) and 2 power suites (`power/supply.sh`, `power/battery.sh`, both only while `KEITHLEY_PRESENT` is `true`). The other 29 are syntax-checked and shellchecked but never executed. |
+| `test/mcp/integration/` | 1 file | Now RUN, not just collected, by the required `mcp-extra` job: `test_agent_loop.py` builds its bench in-process from dicts and needs no box. Not counted in the `unit (...)` totals above. |
 | `test/manual/` | 2 bash scripts, 1 Python report, 1 browser client | Operator-driven. The bash scripts are syntax-checked only. `box_lager_import_report.py` prints an import report and has no `assert` statements, so its name keeps pytest from collecting it. Run it directly. |
 
 Known gaps in the gate itself, in rough priority order:
 
-- **Operating systems.** CI is `ubuntu-latest` only, and six `cli/` modules branch on platform.
-  The `termios`/`tty` case is now fixed and guarded. `websocket_client.py` matches the pattern
-  that `cli/status.py` already used, and `test/unit/cli/test_import_surface.py` simulates the
-  missing module with a `meta_path` finder, so the guard is exercised on Linux. The remaining
-  platform branches are still unexercised -- a real fix needs a `windows-latest` job.
-- **No type checking, and no dependency scanning for Python.** There is no
-  mypy/pyright/bandit/pip-audit config, so nothing in a PR run inspects Python dependencies.
-  Dependabot covers the *alerting* half (`.github/dependabot.yml`), but it runs on GitHub's
-  schedule rather than in the gate. A PR that introduces a vulnerable Python dependency still
-  goes green, and someone catches it afterwards, if at all. **Rust is now covered in-gate** by
-  `rust-checks.yml`; the Python equivalent is the remaining half.
+- **Operating systems.** The unit suites run on `ubuntu-latest` only, and six `cli/` modules
+  branch on platform. `xplat-smoke.yml` installs the wheel on `macos-latest` and
+  `windows-latest` and runs `--version`, `--help` and an import walk, but no unit test runs
+  there. The `termios`/`tty` case is fixed and guarded. `websocket_client.py` matches the
+  pattern `cli/status.py` already used. `test/unit/cli/test_import_surface.py` simulates the
+  missing module with a `meta_path` finder, so the guard runs on Linux. The other platform
+  branches are still unexercised.
+- **No type checking; dependency scanning is advisory.** There is no mypy/pyright config.
+  The `pip-audit` job in `static-checks.yml` scans what CI resolves: cli, the box's MCP
+  requirement and the unit-test requirements. It is not a required context. The rest of the
+  box runtime resolves unpinned at image-build time and is not audited. **Rust is covered
+  in-gate** by `rust-checks.yml`.
 - **A merged cargo bump does not patch a deployed box.** No workflow builds
   `box/oscilloscope-daemon`, and `box.Dockerfile` does not copy the binary: it is built by hand
   (`./build_daemon.sh`) and mounted from the host at runtime. Fixing a Rust advisory in the
@@ -209,7 +210,8 @@ Known gaps in the gate itself, in rough priority order:
 - **Ruff is errors-only.** It gates real bugs, not style. That floor was chosen because it was
   already clean, and is meant to ratchet up.
 - **Five shellcheck codes are excluded from the gate** -- 90 findings, all in `test/integration/`
-  and `test/manual/`, which no workflow executes. Detailed below; the ~13 captured-then-ignored
+  and `test/manual/`. Most of those scripts never execute, but `deployment.sh` (weekly) and
+  `jlink_script.sh` (nightly) do, and they carry 8 of the 17 `SC2155` findings. Detailed below; the ~13 captured-then-ignored
   values in that set are the part that matters.
 
 ### The excluded shellcheck codes
@@ -306,32 +308,43 @@ Hardware suites only. Several domains marked "No" below do have hardware-free un
 | **Update** | No | Partial | No |
 | **Hello/Status** | No | No | Partial |
 
+The columns name test assets, not what CI runs. `lager install`, `uninstall` and `update` have
+no suite of their own. `update-regression.yml` runs all three against the bench box each
+night, with a hardware smoke after each phase. It runs a dry run, a downgrade and an update to
+the commit under test. Then it runs the no-op fast path, `--force`, a scoped uninstall, and
+installs by tag and by commit.
+See "What CI does NOT run" for which assets execute.
+
 ## Device Coverage
 
 | Category | Device | Python API | Bash Integration | MCP |
 |----------|--------|:----------:|:----------------:|:---:|
 | **Power Supply** | Rigol DP821 | 2 files | `supply.sh` | Yes |
-| **Power Supply** | Keithley 2281S | 2 files | — | Yes |
+| **Power Supply** | Keithley 2281S | 2 files | `supply.sh` | Yes |
 | **Power Supply** | Keysight E36xxx | — | `keysight_supply.sh` | — |
 | **Power Supply** | Multi-channel (generic) | — | `multichannel_supply.sh` | — |
 | **Battery Simulator** | Keithley 2281S | 2 files | `battery.sh` | Yes |
 | **Solar Simulator** | EA PSB series | 1 file | `solar.sh` | Yes |
 | **Electronic Load** | Rigol DL3021 | 1 file | `eload.sh` | Yes |
 | **I2C** | Aardvark I2C/SPI adapter | 2 files | `i2c_aardvark.sh` | Yes |
-| **I2C** | LabJack T7 | 2 files | `i2c_labjack.sh` | Yes |
+| **I2C** | LabJack T7 | 3 files | `i2c_labjack.sh` | Yes |
 | **I2C** | FTDI FT232H | 1 file | `i2c_ft232h.sh` | Yes |
 | **SPI** | Aardvark I2C/SPI adapter | 4 files | 2 files | Yes |
 | **SPI** | LabJack T7 | 3 files | 2 files | Yes |
 | **SPI** | FTDI FT232H | 3 files | `spi_ft232h.sh` | Yes |
 | **GPIO / ADC / DAC** | LabJack T7 | 8 files | `labjack.sh` | Yes |
+| **GPIO / ADC / DAC** | MCC USB-202 | 1 file | — | — |
+| **GPIO / ADC / DAC / I2C / SPI** | LabJack U3 | 2 files | — | — |
+| **UART** | USB-serial bridge (an ESP32 peer on the bench) | 1 file | `uart.sh` | Yes |
 | **GPIO** | FTDI FT232H | 2 files | `gpio_ft232h.sh` | Yes |
 | **GPIO** | Aardvark I2C/SPI adapter | 1 file | 2 files | Yes |
 | **Oscilloscope** | Rigol MSO5000 series | 5 files | — | Yes |
+| **Oscilloscope** | PicoScope | 1 file | — | Yes |
 | **Logic Analyzer** | Rigol MSO5000 (embedded) | — | `logic.sh` | Yes |
 | **USB Hub** | Acroname USBHub3+ | 7 files | `acroname.sh` | Yes |
 | **USB Hub** | Yepkit YKUSH | — | `ykush.sh` | — |
 | **USB Hub** | Plugable UD-CAM (RTS5411) | 1 file | — | — |
-| **Debug Probe** | Segger J-Link | 1 file | `debug.sh`, `jlink_script.sh` | Yes |
+| **Debug Probe** | Segger J-Link | 2 files | `debug.sh`, `jlink_script.sh` | Yes |
 | **Energy Analyzer** | Joulescope JS220 | 3 files | — | Yes |
 | **Power Profiler** | Nordic PPK2 | 1 file | — | Yes |
 | **Watt Meter** | Yoctopuce Watt | 2 files | — | Yes |
@@ -347,28 +360,31 @@ The Acroname, YKUSH, and Plugable USB-hub drivers also have hardware-free unit c
 
 ### CLI modules with no gated unit test
 
-Ranked by risk. These are `cli/` modules that no test in the PR gate exercises at all.
+Ranked by risk. These are `cli/` modules that no test in the PR gate imports or drives.
 
 | Module | Lines | Why it matters |
 |---|---:|---|
-| `cli/commands/development/debug/commands.py` | 1475 | The whole `lager debug` group -- flash, erase, reset, RTT state. No tests anywhere. |
-| `cli/commands/box/boxes.py` | 773 | `lager boxes` registration, listing, lock/unlock persistence. |
-| `cli/commands/measurement/scope.py` + `cli/impl/measurement/scope*.py` | 3221 | Trigger/timebase argument parsing plus a streaming state machine. |
-| `cli/commands/measurement/logic.py` | 530 | Logic analyzer; 21 subcommands. |
-| `cli/status.py` | 405 | Status/state rendering. Now import-tested (`test_import_surface.py`); the rendering itself is still uncovered. |
-| `cli/commands/utility/defaults.py` | 398 | Reads and writes user config defaults -- persistence with no guard. |
 | `cli/core/net_storage.py` | 239 | Net definition persistence. |
-| `cli/commands/utility/logs.py` | 232 | No tests. |
-| `cli/core/ssh_utils.py` | 203 | SSH invocation and argument building. |
-| `cli/core/net_group.py` | 200 | Net-scoped click group base class. |
-| `cli/context/core.py` | 160 | `LagerContext` construction. |
+| `cli/status.py` | 413 | Status/state rendering. Import-tested (`test_import_surface.py`); the rendering itself is uncovered. |
 | `cli/update_check.py` | 138 | Background update-check thread. |
-| `cli/terminal/**` | ~800 | The whole interactive REPL. |
+| `cli/terminal/**` | ~830 | The interactive REPL. `test_cmd_box_misc.py` covers `lager terminal` launching it and failing cleanly without its dependencies; the REPL itself is untested. |
 
-Sixteen of roughly forty-nine top-level command groups registered in `cli/main.py` have no gated
-test. They are `debug`, `defaults`, `webcam`, `scope`, `logic`, `hello`, `boxes`, `box`,
-`box-config`, `dut`, `instruments`, `ssh`, `ssh-setup`, `authorize`, `logs`, and `terminal`.
-`login`, `logout` and `whoami` are now covered by `test/unit/cli/test_login_commands.py`.
+`cli/core/net_group.py` and `cli/core/ssh_utils.py` have no test of their own. Every
+net-command test in `test_cmd_*_surface.py` routes through `NetGroup`. The `lager ssh` and
+debug-tunnel tests reach `ssh_utils`.
+
+Every top-level command group registered in `cli/main.py` is now driven by at least one gated
+test. The `test_cmd_*_surface.py` files run the real root group against an in-process box,
+the `fake_box` fixture in `test/unit/cli/conftest.py`. They assert the exact request each
+subcommand sends. `test_defaults_command.py` covers `lager defaults` against a real `.lager`.
+`test/unit/box/test_box_config_pip_udev_volume.py` covers the `box-config` groups that had none.
+
+#### Defects pinned by the command-surface tests
+
+| Where | Defect | How it is pinned |
+|---|---|---|
+| `cli/commands/utility/defaults.py` | `lager defaults add --watt-meter-net` writes `net_watt_meter`, but `lager watt` reads `get_default_net(ctx, 'watt')`, i.e. `net_watt`. The default is saved, listed, and never used. | `xfail(strict=True)` in `test_defaults_command.py` |
+| `cli/commands/utility/defaults.py` | `lager i2c`, `lager spi`, `lager energy` and `lager watt` read a default net that no `defaults add` option can set; only hand-editing `.lager` does. | a two-sided set in `test_defaults_command.py` that can only shrink |
 
 ### Defects found by writing the Phase-F tests
 
@@ -403,15 +419,14 @@ Five other param types (`EnvVarType`, `PortForwardType`, `MemoryAddressType`, `H
 | `cli/config.py` | 435 | 63 tests | Cache, the configparser round-trip and legacy-key migration, `read_lager_json`/`write_lager_json`, `expand_devenv_path` and `get_debug_script_for_net` are covered. `get_includes_from_config` and `_find_config_files` are not. |
 | `cli/commands/utility/install.py` | 575 | indirect | Only `install_wheel` is exercised. |
 | `cli/commands/utility/uninstall.py` | 1237 | 55 tests | Flag combinations and the privileged-step list for each (default keeps `/etc/lager`, `--purge-config`, `--include-control-plane`, the `--keep-config` alias, `--all` not implying a purge); the purge, backup and key-revocation shell commands run on a temp tree; the `--dry-run` plan text; the lock lifecycle. The real `ssh -t` sudo session and the `--all` extras other than the key are untested. |
-| `cli/commands/communication/*.py` | — | 1 each | Smoke-only: asserts each posts to `:9000`. `spi.py` (700) and `i2c.py` (551) have no protocol or argument-parsing coverage. |
-| `cli/commands/measurement/*.py` | — | 1 each | Same `:9000` smoke pattern. |
+| `cli/commands/measurement/{adc,dac,gpi,gpo,thermocouple,watt,energy}.py` | — | 1 each | Same `:9000` smoke pattern. `scope.py` and `logic.py` now have per-subcommand payload tests (`test_cmd_scope_logic_surface.py`), and `communication/*.py` does too (`test_cmd_comm_surface.py`, `test_cmd_bus_surface.py`). |
 
 ### Hardware suite gaps
 
 | Gap | Details |
 |-----|---------|
 | **Logic Analyzer** | No Python API test. 21 CLI subcommands, bash and MCP coverage only. |
-| **SSH / Exec / Install** | No coverage in any hardware suite. |
+| **SSH / Exec** | No hardware suite drives them. `deployment.sh` (weekly) makes one raw `ssh` call and checks `lager ssh --help` / `lager exec --help` only. Install and uninstall DO run on hardware every night, in `update-regression.yml`. |
 | **Watt / Energy** | No bash integration tests. |
 | **Scope** | No bash integration test. 39 CLI subcommands. |
 | **BLE** | No bash integration test. |
@@ -442,9 +457,9 @@ Five other param types (`EnvVarType`, `PortForwardType`, `MemoryAddressType`, `H
 
 ```
 test/
-├── api/                  # Python API tests (84 files, run on box via `lager python`)
-│   ├── communication/    # 30 files: I2C, SPI, UART, BLE, BluFi, WiFi, debug
-│   ├── io/               # 17 files: ADC, DAC, GPIO, PWM, pin conflict, USB-202
+├── api/                  # Python API tests (85 files, run on box via `lager python`)
+│   ├── communication/    # 31 files: I2C, SPI, UART, BLE, BluFi, WiFi, debug
+│   ├── io/               # 18 files: ADC, DAC, GPIO, PWM, pin conflict, USB-202, U3
 │   ├── peripherals/      #  9 files: scope, arm, webcam, rotation, actuate
 │   ├── power/            #  7 files: supply (3), battery (2), solar, eload
 │   ├── sensors/          #  9 files: thermocouple, watt, energy, joulescope, PPK2
@@ -452,7 +467,7 @@ test/
 │   └── utility/          #  2 files: binaries, net listing
 ├── integration/          # Bash integration tests (38 files, run from host via harness.sh)
 │   ├── communication/    # 15 files: I2C, SPI, UART, WiFi, debug, J-Link
-│   ├── infrastructure/   #  7 files: boxes, nets, deployment, devenv, python, generic
+│   ├── infrastructure/   #  7 files: boxes, nets, deployment, devenv, python, generic, box config
 │   ├── power/            #  6 files: supply, battery, solar, eload, keysight, multichannel
 │   ├── io/               #  4 files: LabJack, GPIO (Aardvark, FT232H)
 │   ├── usb/              #  3 files: USB, Ykush, Acroname
@@ -461,7 +476,7 @@ test/
 │   └── peripherals/      #  1 file: robotic arm
 ├── mcp/                  # MCP server tests (pytest)
 │   ├── unit/             # 11 files: mocked, no hardware -- GATED
-│   └── integration/      #  1 file: live hardware required
+│   └── integration/      #  1 file: no hardware needed -- RUN by `mcp-extra`
 ├── unit/                 # Local unit tests -- ALL GATED (file counts: the headings below)
 │   ├── box/              # box-side Python unit tests
 │   ├── cli/              # CLI Python unit tests
@@ -480,9 +495,9 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 307 files)
+### Local Unit Tests (`test/unit/` -- 314 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 167 files)
+#### Box Unit Tests (`test/unit/box/` -- 168 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -502,6 +517,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_box_config.py` | box_config v1 schema validation rules and idempotency hash |
 | `test_box_config_addverb_idempotency.py` | mount-add/apt-add/udev-add upsert behavior for provisioning re-runs |
 | `test_box_config_cli.py` | `lager box-config` CLI: mount prep, readiness polling, rollback on bounce failure. Also the `network-mode` verbs and `apply`'s host-networking path: the pre-flight refusing before anything mutates, exit codes 0/3/1, the SSH fallback that keeps a stranded box recoverable, `--skip-restart` refusing a pending switch to host, and only `apply`'s bounce confirming that switch to the box |
+| `test_box_config_pip_udev_volume.py` | `lager box-config` pip/udev/volume/restart: the JSON each sends to the box-side shim, a PyPI miss stopping `pip add` before the box, a network error not stopping it, direct references skipping the lookup, VID:PID normalization and refusal of a malformed id before the box, `volume remove` and `restart` not acting without confirmation, and restart's three failure verdicts |
 | `test_box_dut_cli.py` | `lager dut` CLI detached-list regression fix |
 | `test_box_http_server_capabilities.py` | /status capabilities block advertises netCommand based on route registration |
 | `test_box_image_publish.py` | What keeps a published box image cheap to pull. `box-image-publish.yml` keeps its layer cache in the registry, not in GitHub Actions, whose cache is scoped to the tag that wrote it so no release could read the last one's; its tag-resolution script is run for a tag push, a cache-only dispatch and a bad tag. `box.Dockerfile` pins its base image by digest and puts nothing but box source below the first source COPY, with a synthetic Dockerfile proving the scan catches a static step placed there. Dependabot moves the base pin, and only the pin: its config ignores minor and major updates of the `python` image, because no pull-request check built the image, so a new interpreter passed CI and then failed to install the image's pins. `box-image-pr.yml` builds the image on a pull request that changes it, pushes nothing, reads `:buildcache` without writing it, has only `contents: read`, and uses the publisher's context, file, platform and action pins |
@@ -658,7 +674,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_scope_ui_stream.py` | The web scope's credit-paced stream and pushed state: one credit returned for each frame received, only the newest frame kept for drawing, extra credit for a slow round trip, every control following the daemon's state except a field being edited, and an unplug dropping the live session so a replug can Start without a stop first |
 | `test_usb_scanner_picoscope.py` | PicoScope discovery in `usb_scanner.py`: every Pico Technology product ID is recognized, and the channel count comes from the device rather than from a static table |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 119 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 125 files)
 
 | File | What it tests |
 |------|---------------|
@@ -671,8 +687,14 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_box_lock_helpers.py` | Lock holder resolution, acquire/release/heartbeat, `LockSession.dissolve`, format_lock_user CI support, `lock_scope`/`_lock_held_by_self` identity matching across all four lock-path comparisons (check, pre-acquire probe, `previous_user`, and the conflict branch that decides whether to wait), the `_check_box_lock` refusal path, the holder that a resumed lock's heartbeat sends, and a `LAGER_LOCK_WAIT` that is not a number keeping the CI wait with one warning. Also the no-expiry sentinel: `--timeout 0` asks for a lock that never expires, and the auto-lock boundary tells that apart from a caller that states no TTL at all, which used to collapse into the 1800 s default |
 | `test_box_request_failure_messages.py` | `echo_box_request_failure`: distinguishing a slow box-side op from a dead box |
 | `test_box_ssh_identity.py` | Admin commands offer the `lager_box` key with keyless fallback (probe, pool, install/uninstall); key registration under `/etc/lager/authorized_keys.d`, de-registration on `uninstall --all`, and install's password-fallback removal. Also that `-i` does not cost the operator ssh's own defaults: `lager ssh` names `lager_box` first and then each default identity file present, in ssh's order, and passes no `-i` at all when no `lager_box` key exists |
+| `test_cmd_box_misc.py` | `lager instruments` (render, empty, unparseable, unreachable, two devices on one address listed once as a note), the hidden `authorize` alias delegating to `ssh-setup` with the same box, `lager terminal` with and without its dependencies, the PyPI check behind `box-config pip add`, and the uncalled `debug/service_helper.py` tunnel cache and `debug/tunnel.py` port handling |
+| `test_cmd_bus_surface.py` | `lager i2c` / `lager spi` payloads: frequency suffixes, the default 7-bit scan range, address and hex parsing (split, separated, out-of-range, garbled), SPI word-size splitting and range refusal, per-call overrides, and a box error as a non-zero exit |
+| `test_cmd_comm_surface.py` | `lager usb`, `ble`, `blufi`, `wifi` and `router`: the endpoint and payload of every subcommand, malformed BLE addresses and short WPA passwords refused before the box, and `wifi delete-connection`, `router reboot` and `router reset` sending nothing unconfirmed |
+| `test_cmd_power_surface.py` | `lager supply` / `lager battery`: the payload of every subcommand, output changes not sent unconfirmed, OCP/OVP reaching the instrument, a setpoint above its own OVP and an SOC above 100% refused locally, and a value-less setter being a read |
+| `test_cmd_scope_logic_surface.py` | `lager scope` / `lager logic`: every measurement on the warm `:9000` path, `--display`/`--cursor` kept on the exec path, settings and cursor routing, stream status/stop, every logic action carrying `role=logic`, and out-of-range settings refused locally |
 | `test_configure_docker_dns.py` | `configure_docker_dns`: daemon.json `dns` entries must be bare IPs or Docker refuses to start |
 | `test_configure_docker_dns_rollback.py` | Rollback behavior of `configure_docker_dns.sh` when the DNS optimization fails, and that a run whose staged daemon.json already matches the current one installs nothing and restarts nothing. Two runs, so the second one recognizes what the first settled on |
+| `test_defaults_command.py` | `lager defaults`: add/list/delete/delete-all against a real `.lager`, saved boxes surviving every write, a default box that must be a saved box, each `--*-net` default read back through `get_default_net` (pins the watt-meter key mismatch as a strict xfail), and the net types a command reads that no option can set |
 | `test_deploy_box_image_ref.py` | `setup_and_deploy_box.sh` and `_box_image_ref_for_version` agree on which versions have a published image, computed in one conditional so the two cannot drift; plus the anonymous GHCR digest resolution and the `LAGER_BOX_IMAGE` handoff to `start_box.sh`. The deploy's image and container handoff runs for real with ssh stubbed: the image is pulled before the containers stop, the build cache is cleared and the image handed to `start_box.sh` only after a successful pull, a miss builds with the cache kept, and a stopped daemon ends the deploy first. The generated pull command runs against a fake docker. Also the second prune that reclaims the replaced image once `start_box.sh` tags the new one, pinned by count and order, and `LAGER_BOX_IMAGE_PULL` resolving to the same on and off words `lager update` reads |
 | `test_default_deploy_version.py` | `lager install` and `lager update` with no `--version` deploy the release tag of the CLI (`v{__version__}`), not `main`: the tag resolves as a tag and has a published image, install hands it to the deploy script and says so while an explicit `--version main` is passed through unchanged, install's closing hint matches what was installed, `/etc/lager/ref`'s ref name is read past banner noise, and a defaulted update stops before the rollback prompt so `--yes` cannot downgrade a box |
 | `test_deployed_ref.py` | `/etc/lager/ref` records which ref produced the box's code (`<ref>@<sha>`), so a branch deploy is distinguishable from the release tag it shares a version number with; the release-tag predicate is pinned against `resolve_version_ref` so the two cannot drift, and a box reporting no ref renders exactly as before; `lager install` records version, ref and build-hash through update's writer, reads the version back, and exits non-zero when a write fails |
@@ -852,7 +874,7 @@ These tests cover the scripts in `tools/`. The `unit (root)` job runs them.
 
 | File | What it tests |
 |------|---------------|
-| `test_agent_loop.py` | End-to-end agent workflow: discovery, suitability, `lager python` execution, verify |
+| `test_agent_loop.py` | End-to-end agent workflow on an in-process bench (no box): discovery, suitability, `lager python` execution, verify. Run by `mcp-extra`. |
 
 ### Python API Tests (`test/api/` -- 86 files)
 
@@ -871,7 +893,7 @@ and runs on a box via `lager python`. None of them run in the PR gate.
 | `test_eload_comprehensive.py` | CC, CV, CR, CP modes, enable/disable, state verification |
 | `test_solar_comprehensive.py` | Set, stop, irradiance, resistance, temperature, VOC, MPP |
 
-#### Communication (30 files)
+#### Communication (31 files)
 
 - I2C, across three backends: `test_i2c_aardvark.py`, `test_i2c_aardvark_api.py`,
   `test_i2c_labjack.py`, `test_i2c_labjack_api.py`, `test_i2c_ft232h.py`.
@@ -884,7 +906,7 @@ and runs on a box via `lager python`. None of them run in the PR gate.
 - J-Link: `test_debug_comprehensive.py`.
 - GPI level wait: `test_wait_for_level.py`, 15 sub-tests.
 
-#### I/O (17 files)
+#### I/O (18 files)
 
 - ADC: `test_adc_multiple.py`, `test_adc_continuous.py`.
 - DAC: `test_dac_output.py`, `test_dac_ramp.py`, `test_dac_adc_loopback.py`.
@@ -925,12 +947,13 @@ toggle tests.
 
 ### Bash Integration Tests (`test/integration/` -- 38 files)
 
-Run from the host against a real box; nothing in CI validates them, not even syntax.
+Run from the host against a real box. `static-checks` runs `bash -n` and `shellcheck` over all of
+them; only the nine listed under "What CI does NOT run" execute.
 
 | Directory | Files | Contents |
 |---|---:|---|
 | `communication/` | 15 | `i2c*.sh` (4 backends), `spi*.sh` (6), `uart.sh`, `wifi.sh`, `debug.sh`, `jlink_script.sh` |
-| `infrastructure/` | 7 | `generic.sh`, `boxes_config.sh`, `nets.sh`, `deployment.sh`, `devenv.sh`, `python.sh` |
+| `infrastructure/` | 7 | `generic.sh`, `boxes_config.sh`, `box_config.sh`, `nets.sh`, `deployment.sh`, `devenv.sh`, `python.sh` |
 | `power/` | 6 | `supply.sh`, `battery.sh`, `solar.sh`, `eload.sh`, `keysight_supply.sh`, `multichannel_supply.sh` |
 | `io/` | 4 | `labjack.sh`, `gpio_aardvark.sh`, `gpio_aardvark_loopback.sh`, `gpio_ft232h.sh` |
 | `usb/` | 3 | `usb.sh`, `ykush.sh`, `acroname.sh` |
@@ -994,9 +1017,8 @@ lager python test/api/power/test_supply_comprehensive.py --box <YOUR-BOX>
 # Bash integration tests (from host)
 ./test/integration/power/supply.sh <BOX> <NET>
 
-# MCP integration tests (requires two boxes)
-pytest test/mcp/integration/ -v --import-mode=importlib -c /dev/null \
-    --box1 <YOUR-BOX> --box3 <YOUR-BOX>
+# MCP integration tests (no box needed; CI runs them in `mcp-extra`)
+PYTHONPATH=.:box pytest test/mcp/integration/ -v --import-mode=importlib -c /dev/null
 ```
 
 <!-- Copyright 2024-2026 Lager Data -->

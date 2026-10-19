@@ -253,8 +253,10 @@ jobs:
           pytest test/mcp/unit/ -q --import-mode=importlib -c /dev/null --timeout=60
         shell: bash
 
-      - name: MCP integration tests still collect
+      # These used to be collected and never run. They need no box: the
+      # bench is built in-process from dicts (test_agent_loop.py docstring),
+      # so a collect-only step proved only that they import.
+      - name: Run the MCP integration tests
         run: |
-          pytest test/mcp/integration/ --collect-only -q \
-            --import-mode=importlib -c /dev/null
+          pytest test/mcp/integration/ -q --import-mode=importlib -c /dev/null --timeout=60
         shell: bash

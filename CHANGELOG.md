@@ -131,6 +131,12 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   When the capture card shows no picture, the box now presses the scope's keys through
   Utility > IO > HDMI > Output, once each time it opens the scope. If that brings no
   picture, it sets the output back.
+- **The pull-request gate now runs every CLI command group.** The `lager usb`, `ble`,
+  `blufi`, `wifi`, `router`, `i2c`, `spi`, `scope`, `logic`, `supply`, `battery`, `defaults`,
+  `instruments` and `box-config pip|udev|volume|restart` commands are checked for the exact
+  request they send to the box, and the MCP integration tests now run instead of only
+  being collected. A failed import in the `lager python` tests now fails the gate instead of
+  skipping them.
 
 ## [0.57.0] - 2026-10-16
 

@@ -33,18 +33,12 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 
-try:
-    # `from cli.commands.development import python` yields the Click command,
-    # not the module (the package exports the function under the same name).
-    import cli.commands.development.python  # noqa: F401  # type: ignore[import]
-    import sys as _sys
-    cli_python = _sys.modules['cli.commands.development.python']
-except Exception as _exc:  # pylint: disable=broad-except
-    pytest.skip(
-        f"Cannot import cli.commands.development.python "
-        f"in this environment ({_exc}); requires the full CLI deps.",
-        allow_module_level=True,
-    )
+# `from cli.commands.development import python` yields the Click command,
+# not the module (the package exports the function under the same name).
+# No skip guard: the CLI is installed in every job that runs this suite,
+# so an import failure here is a real breakage and must fail, not skip.
+import cli.commands.development.python  # noqa: F401,E402  # type: ignore[import]
+cli_python = sys.modules['cli.commands.development.python']
 
 
 HOLDER = 'benchuser@bench-1234'
