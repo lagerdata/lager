@@ -1,8 +1,8 @@
 # Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 #
-# The bench chain: nightly, and after every merge to main. Proves, in causal
-# order and against ONE commit of main, that the box can be updated and
+# The bench chain: nightly, and on every release tag. Proves, in causal
+# order and against ONE commit, that the box can be updated and
 # reinstalled and that its instruments still work afterwards:
 #
 #   Bench: Box Lifecycle (update paths -> uninstall -> install)
@@ -51,9 +51,10 @@
 # under which they must still be able to run. Direct dispatches of the child
 # workflows bypass notification — a dispatch has a human watching by
 # definition — and so does a dispatch of THIS workflow on any ref but main,
-# since the issue describes main's bench. A push-triggered run is a run of
-# main, so it files and closes exactly as the scheduled one does, and its
-# alert names the commits added since the last green run.
+# since the issue describes main's bench. A release-tag run files an alert
+# but never closes one: a tag can be cut from a release branch, and a green
+# run there says nothing about main. The alert names the commits added since
+# the last green run of main.
 # bench-watchdog.yml covers the
 # remaining blind spot, the night that never starts (runner offline, cron
 # dead).
@@ -73,33 +74,26 @@ on:
     # against this cron and alarms when the mean gets large enough that a late
     # night and a missed night stop being distinguishable.
     - cron: "17 10 * * *"  # ~3 AM PDT / 2 AM PST (cron is UTC; drifts 1h across DST)
-  # Every merge to main gets the whole chain, so a regression is attributed to
-  # a handful of commits within about an hour instead of a day's worth of
-  # merges the next night. The chain is what makes this possible where a push
-  # trigger on integration-tests.yml was not: lifecycle deploys github.sha
-  # first, so integration tests the commit that was pushed rather than
-  # whatever the last run left on the box.
+  # Release tags, not merges. The chain holds the bench for about an hour, and
+  # running it on every merge to main kept MASTER busy for most of the working
+  # day, so branch validation queued behind it. Merges are now covered by the
+  # nightly, whose alert links the commits since the last green run, and each
+  # release is tested on its own tagged commit.
   #
-  # Bursts cost one run, not one per merge. GitHub keeps one PENDING run per
-  # concurrency group and a newer arrival replaces it, so merges landing while
-  # a chain runs collapse into a single run of the newest commit. A ~41-minute
-  # chain therefore bounds bench time by merge bursts, not by merge count.
+  # A tag run deploys github.sha, the tagged commit, exactly as a scheduled
+  # run deploys main's head. Lifecycle also installs the newest release tag
+  # from its pre-built GHCR image, and on a tag run that is the tag just
+  # pushed, whose image box-image-publish.yml is still building. The
+  # box-image job below holds the chain until that image is published.
   #
-  # The same rule means a queued run can be displaced by a merge. That is
-  # harmless for a run of main -- the replacement tests a newer main -- but a
-  # dispatch of a feature branch waiting here is lost the same way. Check the
-  # run list before dispatching, and freeze merges while a branch run waits.
+  # No path filter: GitHub does not evaluate paths for a tag push, and a
+  # release must run whatever it changed.
   #
-  # A push that changes only documentation cannot change what the bench
-  # measures, so it does not run. paths-ignore skips a run only when EVERY
-  # changed file matches, so a code change that also edits the CHANGELOG
-  # still runs. Workflow files are deliberately not ignored.
+  # GitHub keeps one PENDING run per concurrency group and a newer arrival
+  # replaces it. A dispatch of a feature branch waiting here can therefore be
+  # lost to a tag push or the cron. Check the run list before dispatching.
   push:
-    branches: [main]
-    paths-ignore:
-      - 'docs/**'
-      - '**/*.md'
-      - '**/*.mdx'
+    tags: ['v*']
   workflow_dispatch:
 
 # See "Concurrency is two-level" above. `cancel-in-progress: false` protects a
@@ -113,7 +107,60 @@ permissions:
   contents: read
 
 jobs:
+  box-image:
+    # On a tag run, wait for box-image-publish.yml to publish this tag's
+    # image. Lifecycle's release-tag install leg fails without it, and the
+    # publish usually takes 1-2 minutes but has taken 37 on a cold layer
+    # cache. On every other trigger the step is skipped and the job passes
+    # at once. Hosted, and holds no bench: the chain group is already taken,
+    # so a tag run waits here instead of on the bench.
+    #
+    # A publish that never finishes fails this job after an hour. Lifecycle
+    # is then skipped, and notify (failure) files the alert: a release with
+    # no box image needs a person.
+    name: wait for the release box image
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    permissions: {}
+    steps:
+      - name: Wait for this tag's image on GHCR
+        if: ${{ github.ref_type == 'tag' }}
+        env:
+          TAG: ${{ github.ref_name }}
+        # The registry probe is the one in
+        # cli/deployment/scripts/setup_and_deploy_box.sh: an anonymous pull
+        # token, then a HEAD of the manifest, published once it carries a
+        # content digest.
+        run: |
+          repo_path="lagerdata/lager-box"
+          accept="application/vnd.oci.image.manifest.v1+json, application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.list.v2+json"
+          deadline=$(( $(date +%s) + 3600 ))
+          while :; do
+            token=$(curl -sS --connect-timeout 5 --max-time 15 \
+              "https://ghcr.io/token?service=ghcr.io&scope=repository:${repo_path}:pull" 2>/dev/null \
+              | sed -n 's/.*"token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p') || true
+            digest=""
+            if [ -n "$token" ]; then
+              digest=$(curl -sS -I --connect-timeout 5 --max-time 15 \
+                -H "Authorization: Bearer ${token}" -H "Accept: ${accept}" \
+                "https://ghcr.io/v2/${repo_path}/manifests/${TAG}" 2>/dev/null \
+                | tr -d '\r' | awk -F': ' 'tolower($1)=="docker-content-digest"{print $2}') || true
+            fi
+            case "$digest" in
+              sha256:*) echo "ghcr.io/${repo_path}:${TAG} is published (${digest})"; exit 0 ;;
+            esac
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error title=No box image for ${TAG}::ghcr.io/${repo_path}:${TAG} was not published within an hour. Check the Release: Publish Box Image run for this tag."
+              exit 1
+            fi
+            echo "Waiting for ghcr.io/${repo_path}:${TAG}..."
+            sleep 30
+          done
+        shell: bash
+
   lifecycle:
+    # After box-image, which passes at once on every trigger but a tag push.
+    needs: box-image
     uses: ./.github/workflows/update-regression.yml
     secrets: inherit
 
@@ -131,11 +178,12 @@ jobs:
     # keeps a manually cancelled run from alerting — cancellation has a human
     # attached. The ref test keeps a dispatch on a feature branch from filing
     # an alert about main: the issue describes main's bench, and a branch run
-    # has a human watching it. Permissions are per-job so the called bench
+    # has a human watching it. A release tag files too: a red release must
+    # page someone. Permissions are per-job so the called bench
     # workflows keep their default token.
     name: notify (failure)
     needs: [lifecycle, integration]
-    if: ${{ !cancelled() && (needs.lifecycle.result != 'success' || needs.integration.result != 'success') && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
+    if: ${{ !cancelled() && (needs.lifecycle.result != 'success' || needs.integration.result != 'success') && (github.event_name == 'schedule' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -158,6 +206,7 @@ jobs:
           LIFECYCLE: ${{ needs.lifecycle.result }}
           INTEGRATION: ${{ needs.integration.result }}
           EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref_name }}
           SHA: ${{ github.sha }}
           SERVER_URL: ${{ github.server_url }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -180,7 +229,7 @@ jobs:
           fi
 
           cat > "$RUNNER_TEMP/alert-body.md" <<EOF
-          Bench chain run failed (trigger: \`${EVENT}\`, commit \`${SHA:0:12}\`): ${RUN_URL}
+          Bench chain run failed (trigger: \`${EVENT}\`, ref \`${REF}\`, commit \`${SHA:0:12}\`): ${RUN_URL}
 
           ${range}
 
@@ -206,7 +255,9 @@ jobs:
     #
     # Only a run of main may close it. A green dispatch on a feature branch
     # says nothing about main, and one closed the open alert on 2026-09-15
-    # while scheduled nightlies had not run for five days (#552).
+    # while scheduled nightlies had not run for five days (#552). A release
+    # tag may not be on main either, so a green tag run leaves the alert for
+    # the next nightly to close.
     name: notify (recovery)
     needs: [lifecycle, integration]
     if: ${{ success() && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}

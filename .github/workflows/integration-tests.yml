@@ -54,12 +54,11 @@ on:
   # with merges queueing behind each other. A nightly that actually tests a
   # known commit is worth more than nine runs a day that cannot.
   #
-  # Merges to main ARE covered, one level up: nightly-bench.yml triggers on
-  # push to main and chains lifecycle (which deploys github.sha) before this
-  # workflow, and its concurrency group collapses a burst of merges into one
-  # run of the newest commit. So the rule here is narrower than "no bench run
-  # per merge": this LEAF must never run on its own undeployed. Do not add a
-  # push trigger here; add it to the chain.
+  # Pushes reach the bench one level up: nightly-bench.yml triggers on release
+  # tags and chains lifecycle (which deploys github.sha) before this workflow.
+  # Merges to main are covered by its nightly run. The rule here is that this
+  # LEAF must never run on its own undeployed. Do not add a push trigger here;
+  # add it to the chain.
   workflow_call:
     inputs:
       box_name:

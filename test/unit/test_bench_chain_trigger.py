@@ -14,18 +14,19 @@ Two rules, each learned from a run that produced no hardware result:
    The chain group must also DIFFER from the children's, or the caller waits on
    a child that wants the slot it holds -- a deadlock.
 
-2. **Only the chain triggers on push.** A push-triggered leaf tests whatever the
-   last run left on the box; that is why integration-tests.yml lost its push
-   trigger. The chain deploys the pushed commit before testing it, so the push
-   trigger belongs there and nowhere else. Its docs-only filter must never
-   swallow a change the bench can observe.
+2. **Only the chain triggers on push, and only for a release tag.** A
+   push-triggered leaf tests whatever the last run left on the box; that is why
+   integration-tests.yml lost its push trigger. The chain deploys the pushed
+   commit before testing it, so the push trigger belongs there and nowhere
+   else. It fires on `v*` tags, not on merges to main: a chain on every merge
+   kept the one bench busy for most of the working day. A tag run must wait
+   for its own box image, which lifecycle's release-tag install needs.
 
 `actionlint` and `zizmor` check that these keys are well formed, not what they
 mean, so nothing else catches a regression here short of a lost night.
 """
 
 import pathlib
-import re
 
 import yaml
 
@@ -56,29 +57,6 @@ def _group(doc):
     return concurrency
 
 
-def _glob_to_regex(pattern):
-    """GitHub path-filter glob -> regex: `**` crosses `/`, `*` does not."""
-    out, i = "", 0
-    while i < len(pattern):
-        if pattern.startswith("**/", i):
-            out += "(?:.*/)?"
-            i += 3
-        elif pattern.startswith("**", i):
-            out += ".*"
-            i += 2
-        elif pattern[i] == "*":
-            out += "[^/]*"
-            i += 1
-        else:
-            out += re.escape(pattern[i])
-            i += 1
-    return re.compile(out + r"\Z")
-
-
-def _ignored(path, patterns):
-    return any(_glob_to_regex(p).match(path) for p in patterns)
-
-
 class TestOneChainAtATime:
     def test_the_chain_holds_a_group_for_its_whole_run(self):
         group = _group(_load(CHAIN))
@@ -104,10 +82,17 @@ class TestOneChainAtATime:
 
 
 class TestOnlyTheChainRunsOnPush:
-    def test_the_chain_runs_on_push_to_main_only(self):
+    def test_the_chain_runs_on_push_of_release_tags_only(self):
         push = _triggers(_load(CHAIN)).get("push")
-        assert isinstance(push, dict), "the chain lost its push trigger"
-        assert push.get("branches") == ["main"], push
+        assert push == {"tags": ["v*"]}, (
+            f"the chain's push trigger is {push!r}. It must be release tags only: "
+            f"a branch filter brings back a bench run per merge, and a path "
+            f"filter is not evaluated for a tag push, so it only misleads")
+
+    def test_the_chain_still_runs_nightly_and_on_dispatch(self):
+        triggers = _triggers(_load(CHAIN))
+        assert triggers.get("schedule"), "the chain lost its nightly cron"
+        assert "workflow_dispatch" in triggers, "a branch can no longer be bench-tested"
 
     def test_no_leaf_runs_on_push_or_pull_request(self):
         for leaf in LEAVES:
@@ -124,36 +109,36 @@ class TestOnlyTheChainRunsOnPush:
         assert "pull_request" not in triggers and "pull_request_target" not in triggers
 
 
-class TestDocsFilter:
-    def _patterns(self):
-        push = _triggers(_load(CHAIN))["push"]
-        assert isinstance(push, dict), "the chain lost its push trigger"
-        assert "paths" not in push, "an allow-list would silently skip new code paths"
-        return push.get("paths-ignore") or []
+class TestATagRunWaitsForItsBoxImage:
+    """Lifecycle installs the newest tag from its GHCR image. On a tag run that
+    is the tag just pushed, and box-image-publish.yml is still building it."""
 
-    def test_changes_the_bench_can_observe_always_run(self):
-        patterns = self._patterns()
-        for path in ("cli/commands/development/python.py",
-                     "box/lager/python/service.py",
-                     "box/start_box.sh",
-                     "box.Dockerfile",
-                     ".github/workflows/nightly-bench.yml",
-                     ".github/workflows/integration-tests.yml",
-                     "tools/bench_suite_gate.sh",
-                     "test/api/power/test_supply_Rigol_DP821.py",
-                     "test/integration/communication/uart.sh",
-                     "setup.py"):
-            assert not _ignored(path, patterns), (
-                f"a push touching only {path} would skip the bench")
+    def _job(self):
+        return _load(CHAIN)["jobs"]["box-image"]
 
-    def test_docs_only_changes_are_skipped(self):
-        """Guard the guard: a filter that matches nothing is not a filter."""
-        patterns = self._patterns()
-        for path in ("docs/source/reference/cli/locking.mdx",
-                     "CHANGELOG.md",
-                     "test/COVERAGE.md",
-                     ".github/workflows/README.md"):
-            assert _ignored(path, patterns), f"{path} should not cost a bench run"
+    def test_lifecycle_waits_for_the_box_image_job(self):
+        assert _load(CHAIN)["jobs"]["lifecycle"].get("needs") == "box-image"
+
+    def test_the_wait_runs_hosted_and_holds_no_bench(self):
+        job = self._job()
+        assert job["runs-on"] == "ubuntu-latest", job["runs-on"]
+        assert job.get("permissions") == {}, job.get("permissions")
+        assert job.get("timeout-minutes"), "an unbounded wait would hold the chain group"
+
+    def test_the_wait_acts_on_tag_runs_only(self):
+        """A nightly or a dispatch must pass straight through: its newest tag
+        was published long ago, and a missing image there is lifecycle's to
+        report."""
+        steps = self._job()["steps"]
+        assert steps and all(
+            " ".join(str(step.get("if", "")).split()) == "${{ github.ref_type == 'tag' }}"
+            for step in steps), steps
+
+    def test_the_wait_probes_the_tag_under_test(self):
+        step = self._job()["steps"][0]
+        assert step["env"]["TAG"] == "${{ github.ref_name }}"
+        assert "${{" not in step["run"], "pass expressions through env, not into the script"
+        assert "manifests/${TAG}" in step["run"]
 
 
 class TestFailureAlertNamesTheSuspects:

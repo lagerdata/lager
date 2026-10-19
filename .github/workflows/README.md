@@ -17,7 +17,7 @@ deleted.)
 |---|---|---|---|---|
 | `integration-tests.yml` | Bench: Integration Tests | `workflow_call`, dispatch | self-hosted `lager-bench` | Drives every bench instrument through `lager python`, plus the J-Link CLI suite |
 | `update-regression.yml` | Bench: Box Lifecycle | `workflow_call`, dispatch | self-hosted `lager-bench` | Downgrade -> update -> no-op -> forced rebuild -> uninstall -> install, with a hardware smoke per phase |
-| `nightly-bench.yml` | Bench: Nightly | cron 10:17 UTC, push to `main` (docs-only pushes skipped), dispatch | (calls the two above) | The bench chain: lifecycle first, instruments only if it succeeded, one chain at a time; files/closes the `bench-alert` issue |
+| `nightly-bench.yml` | Bench: Nightly | cron 10:17 UTC, push of `v*` tags, dispatch | (calls the two above) | The bench chain: lifecycle first, instruments only if it succeeded, one chain at a time; files/closes the `bench-alert` issue |
 | `bench-extended.yml` | Bench: Extended | cron Sat 14:17 UTC, dispatch | self-hosted `lager-bench` | Weekly run of five of the seven infrastructure integration suites (no instruments; bench stays dark); alerts on failure under its own `bench-alert-extended` label, and never closes it |
 | `bench-watchdog.yml` | Bench: Watchdog | cron every 6h at :41, dispatch | `ubuntu-latest` | Alerts when nightly runs stop FLOWING (queued too long, stuck, cron dead), when any `Bench:` workflow is disabled, and when Extended has not run in 8 days — the failures the notify jobs cannot see |
 | `unit-tests.yml` | PR Gate: Unit Tests | `pull_request`, push to `main`, dispatch | `ubuntu-latest` | Unit suites (one pytest process per suite) + Python-version compat matrix |
@@ -43,21 +43,21 @@ The bench workflows have no `pull_request` trigger on purpose: this repo is
 public and the runner drives real hardware, so a fork PR must never execute
 code on the bench.
 
-Merges to `main` are covered by the **chain**, not by the leaves.
-`nightly-bench.yml` triggers on push to `main` and runs lifecycle, which
-deploys the pushed commit, before integration. The leaf workflows have no push
-trigger and must not get one: nothing in `integration-tests.yml` deploys — it
-only probes with `lager update --check` — so a push-triggered leaf could only
-test whatever the last run left on the box. The guard caught exactly that when
-it had a push trigger: 1, 2, 3, 4 and 8 commits behind across one afternoon.
+The **chain** runs on the bench, never the leaves on their own.
+`nightly-bench.yml` runs lifecycle, which deploys the commit under test, before
+integration. It runs on its nightly cron and on every push of a `v*` release
+tag, which tests the tagged commit. The leaf workflows have no push trigger and
+must not get one: nothing in `integration-tests.yml` deploys — it only probes
+with `lager update --check` — so a push-triggered leaf could only test whatever
+the last run left on the box. The guard caught exactly that when it had a push
+trigger: 1, 2, 3, 4 and 8 commits behind across one afternoon.
 
-The chain costs about 41 minutes, and a burst of merges costs one chain, not
-one per merge: the chain's concurrency group holds at most one pending run, and
-each newer push replaces it, so the queued run is always the newest `main`.
-Pushes that change only `docs/**`, `*.md` or `*.mdx` files skip the chain.
-Latency from merge to a hardware result is therefore about one chain, or two
-when a merge lands while one is already running. The scheduled night stays as
-the fixed-time backstop.
+A merge to `main` does not start a bench run. The chain holds the bench for
+about an hour, and running it on every merge kept the bench busy for most of
+the working day, so branch runs queued behind it. A merge gets its first
+hardware result from the next nightly, and a red nightly's alert links the
+commits since the last green run. To test a merge sooner, dispatch the chain
+on `main`.
 
 To bench-test a branch: push it to this repo and dispatch the **chain** on it.
 Lifecycle deploys the branch's commit, then integration tests it, in one run:
@@ -105,10 +105,12 @@ label rather than just passing a different title.
 - `nightly-bench.yml`'s `notify (failure)` job fires when either child is not
   `success` — including integration SKIPPED behind a failed lifecycle — and
   its `notify (recovery)` job closes the issue on a fully green run. Both
-  run only for a run of `main` (scheduled, pushed, or dispatched on `main`):
-  a dispatch on a feature branch says nothing about main, so it neither files
-  nor closes the alert. The failure body names the trigger and links the
-  commits added since the last green chain run of `main`.
+  run only for a run of `main` (scheduled, or dispatched on `main`): a
+  dispatch on a feature branch says nothing about main, so it neither files
+  nor closes the alert. A release-tag run files an alert when it fails but
+  never closes one, because a tag can be cut from a release branch. The
+  failure body names the trigger and ref, and links the commits added since
+  the last green chain run of `main`.
 - `bench-watchdog.yml` covers the night that never runs: a run queued > 3h
   (runner offline), running > 5h (stuck), no scheduled run created in 26h
   (cron dead), or a missed night (the newest interval between scheduled runs
@@ -181,7 +183,8 @@ One gap remains: a hand dispatch of `Bench: Box Lifecycle` on its own holds
 only `hardware-ci-*`, so it can still land between a chain's two jobs. The
 integration ref-guard reports that by name. `Bench: Extended` stays on
 `hardware-ci-*` only. It deploys nothing, so it cannot invalidate a chain, and
-joining the chain group would let a merge displace a queued Saturday run.
+joining the chain group would let a tag push or the nightly displace a queued
+Saturday run.
 
 **Dispatching displaces a run that is already queued.** GitHub holds at most
 one *pending* run per concurrency group, so with one run executing and one
@@ -193,12 +196,12 @@ no annotation and no notification.
 There is no GitHub setting for "queue depth > 1", so this is a habit rather
 than a config: **check the run list before dispatching.** Every bench workflow
 is dispatchable and dispatching is routine, so the collision is easy to hit; the cost is one silently discarded run, which is most damaging
-when the displaced run was the only post-merge verification of something.
+when the displaced run was the only verification of something.
 
-A merge to `main` is an arrival too. It queues a chain run, so a branch
-dispatch of `nightly-bench.yml` still *waiting* in the chain group is displaced
-by the next merge. Freeze merges until a branch chain run shows
-`in_progress`, not just until it is dispatched.
+A release-tag push and the nightly cron are arrivals too. Each queues a chain
+run, so a branch dispatch of `nightly-bench.yml` still *waiting* in the chain
+group is displaced by either. Do not push a release tag until a branch chain
+run shows `in_progress`. Merges to `main` no longer queue a chain run.
 
 ### A lock left by a dead run
 
@@ -224,8 +227,8 @@ later answer meaningless, so it is cheapest to rule out first.
    from the box's checkout, so a run against a stale box is not evidence about
    the commit either way. This is not hypothetical: three days of triage once
    concluded a merged fix had failed, from a run whose own probe reported the
-   box 3 commits behind. The push trigger that made stale runs routine has
-   since been removed — see "Bench-testing a branch".
+   box 3 commits behind. The leaf push trigger that made stale runs routine
+   has since been removed — see "Bench-testing a branch".
 2. **Instrument power relays and USB enumeration.** See "Bench instrument
    power" below, including the self-heal and pin-conflict footguns. Cutting AC
    power to an instrument produces a sequence, not an event — enumeration is

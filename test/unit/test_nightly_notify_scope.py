@@ -22,6 +22,11 @@ bench on a feature branch still filed against main. It carries the same clause
 now, and this file covers every workflow job that can write an issue, so the
 next one cannot be left out the same way.
 
+The nightly also runs on every `v*` release tag. A red release must page
+someone, so its failure job takes the tag too; its recovery job does not,
+because a tag can be cut from a release branch and a green run there says
+nothing about main.
+
 These tests pin the clause, and pin the conditions each job already had,
 because the new term is ANDed onto them and an edit that ORs it instead would
 re-open both paths while still containing every expected substring.
@@ -41,10 +46,17 @@ WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 #: The term every such job must AND onto its existing condition.
 MAIN_ONLY = "(github.event_name == 'schedule' || github.ref == 'refs/heads/main')"
 
-#: Every job that can write an issue and must be limited to main.
+#: The failure alert's term: main, or a release tag.
+MAIN_OR_RELEASE = (
+    "(github.event_name == 'schedule' || github.ref == 'refs/heads/main' "
+    "|| startsWith(github.ref, 'refs/tags/v'))"
+)
+
+#: Every job that can write an issue and must be limited to main, with the
+#: term it must AND onto its condition.
 MAIN_ONLY_JOBS = {
-    "nightly-bench.yml": ("notify-failure", "notify-recovery"),
-    "bench-extended.yml": ("notify-failure",),
+    "nightly-bench.yml": {"notify-failure": MAIN_OR_RELEASE, "notify-recovery": MAIN_ONLY},
+    "bench-extended.yml": {"notify-failure": MAIN_ONLY},
 }
 
 #: Jobs that can write an issue and are NOT limited to main, each with its reason.
@@ -118,12 +130,20 @@ def test_the_parser_found_the_notify_jobs(workflow):
     (workflow, name) for workflow, jobs in sorted(MAIN_ONLY_JOBS.items()) for name in jobs
 ])
 def test_every_job_that_writes_issues_is_limited_to_main(workflow, name):
+    term = MAIN_ONLY_JOBS[workflow][name]
     condition = _condition(_jobs(workflow)[name])
-    assert condition.endswith(" && " + MAIN_ONLY), (
+    assert condition.endswith(" && " + term), (
         f"{workflow}: {name} runs on `if: {condition}`. It must end with "
-        f"`&& {MAIN_ONLY}`, or a dispatch on a feature branch can file or "
+        f"`&& {term}`, or a dispatch on a feature branch can file or "
         f"close the alert that describes main (#552)."
     )
+
+
+def test_only_a_run_of_main_closes_the_alert():
+    """A release tag can sit on a release branch, so its green run must not
+    close an alert about main."""
+    condition = _condition(_jobs("nightly-bench.yml")["notify-recovery"])
+    assert "refs/tags" not in condition, condition
 
 
 def test_recovery_still_requires_both_children_to_succeed():

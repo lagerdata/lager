@@ -54,6 +54,15 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   that supports it sets `netsStateStream` in `/status` capabilities. Without
   `stream=1` the answer is unchanged.
 
+### Changed
+
+- **The bench runs nightly and on each release tag, not on every merge to `main`.** A
+  chain run holds the one bench for about an hour, so a run per merge kept it busy for
+  most of the day and branch runs queued behind it. A merge now gets its first hardware
+  result from the next nightly, whose failure alert links the commits since the last
+  green run. A release-tag run tests the tagged commit, after waiting for that tag's box
+  image, and files the alert if it fails.
+
 ### Fixed
 
 - **The oscilloscope page connects by itself and says when its readings are old.** It
