@@ -845,7 +845,11 @@ impl RigolMso5000 {
         let deadline = Instant::now() + READOUT_WAIT;
         let mut last = None;
         while Instant::now() < deadline {
-            let raw = screen.video.next_after(seen, Duration::from_millis(200)).ok()??;
+            // No frame yet is no answer yet: the frames asked for can be
+            // the lag's length ahead. A card that failed is the answer.
+            let Some(raw) = screen.video.next_after(seen, Duration::from_millis(200)).ok()? else {
+                continue;
+            };
             seen = raw.sequence;
             let Ok(frame) = raw.decode() else {
                 continue;

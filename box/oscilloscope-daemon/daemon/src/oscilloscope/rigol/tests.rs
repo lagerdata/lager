@@ -547,7 +547,9 @@ impl FrameSource for FakeScreen {
 
     fn next_after(&self, after: u64, _timeout: Duration) -> Result<Option<RawFrame>> {
         // Every frame up to the one asked for is drawn, as a card delivers
-        // them, so a lag in frames is a lag in sequence numbers.
+        // them, so a lag in frames is a lag in sequence numbers. A lagging
+        // card also keeps time: one frame a call, and a frame still ahead
+        // is a wait that ends with none.
         let mut sequence = self.sequence.lock().unwrap();
         let mut drawn = self.drawn.lock().unwrap();
         loop {
@@ -558,6 +560,9 @@ impl FrameSource for FakeScreen {
             }
             if *sequence > after {
                 break;
+            }
+            if self.lag > 0 {
+                return Ok(None);
             }
         }
         let frame = drawn.front().unwrap().clone();
