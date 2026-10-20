@@ -185,7 +185,7 @@ OS.
 | Area | Size | Why not |
 |---|---|---|
 | `test/api/` | 85 scripts | Needs real hardware. The bench workflows invoke 10 by name (4 of them, the Keithley supply and battery steps, only while the `KEITHLEY_PRESENT` repo variable is `true`); the other 75 execute nowhere -- though all are syntax-checked. |
-| `test/integration/` | 38 bash scripts | Needs a real box and instruments. **9 execute:** `communication/jlink_script.sh` and `communication/uart.sh` nightly via `integration-tests.yml`, plus 7 weekly via `bench-extended.yml` -- 5 infrastructure suites (`deployment`, `devenv`, `nets`, `box_config`, `generic`) and 2 power suites (`power/supply.sh`, `power/battery.sh`, both only while `KEITHLEY_PRESENT` is `true`). The other 29 are syntax-checked and shellchecked but never executed. |
+| `test/integration/` | 39 bash scripts | Needs a real box and instruments. **14 execute.** 10 run nightly via `integration-tests.yml`: `communication/jlink_script.sh`, `communication/uart.sh`, `infrastructure/deployment.sh`, `infrastructure/devenv.sh`, `power/supply.sh`, `power/multichannel_supply.sh`, `io/labjack.sh`, `io/usb202.sh`, `usb/acroname.sh` and `usb/usb.sh`. 4 run weekly via `bench-extended.yml`: `nets`, `box_config`, `generic`, and `power/battery.sh` (only while `KEITHLEY_PRESENT` is `true`). The other 25 are syntax-checked and shellchecked but never executed. |
 | `test/mcp/integration/` | 1 file | Now RUN, not just collected, by the required `mcp-extra` job: `test_agent_loop.py` builds its bench in-process from dicts and needs no box. Not counted in the `unit (...)` totals above. |
 | `test/manual/` | 2 bash scripts, 1 Python report, 1 browser client | Operator-driven. The bash scripts are syntax-checked only. `box_lager_import_report.py` prints an import report and has no `assert` statements, so its name keeps pytest from collecting it. Run it directly. |
 
@@ -319,8 +319,8 @@ See "What CI does NOT run" for which assets execute.
 
 | Category | Device | Python API | Bash Integration | MCP |
 |----------|--------|:----------:|:----------------:|:---:|
-| **Power Supply** | Rigol DP821 | 2 files | `supply.sh` | Yes |
-| **Power Supply** | Keithley 2281S | 2 files | `supply.sh` | Yes |
+| **Power Supply** | Rigol DP821 | 2 files | `supply.sh`, `multichannel_supply.sh` | Yes |
+| **Power Supply** | Keithley 2281S | 2 files | — (`supply.sh` refuses it: the driver clamps an out-of-range voltage instead of refusing it) | Yes |
 | **Power Supply** | Keysight E36xxx | — | `keysight_supply.sh` | — |
 | **Power Supply** | Multi-channel (generic) | — | `multichannel_supply.sh` | — |
 | **Battery Simulator** | Keithley 2281S | 2 files | `battery.sh` | Yes |
@@ -333,7 +333,7 @@ See "What CI does NOT run" for which assets execute.
 | **SPI** | LabJack T7 | 3 files | 2 files | Yes |
 | **SPI** | FTDI FT232H | 3 files | `spi_ft232h.sh` | Yes |
 | **GPIO / ADC / DAC** | LabJack T7 | 8 files | `labjack.sh` | Yes |
-| **GPIO / ADC / DAC** | MCC USB-202 | 1 file | — | — |
+| **GPIO / ADC / DAC** | MCC USB-202 | 1 file | `usb202.sh` | — |
 | **GPIO / ADC / DAC / I2C / SPI** | LabJack U3 | 2 files | — | — |
 | **UART** | USB-serial bridge (an ESP32 peer on the bench) | 1 file | `uart.sh` | Yes |
 | **GPIO** | FTDI FT232H | 2 files | `gpio_ft232h.sh` | Yes |
@@ -426,7 +426,7 @@ Five other param types (`EnvVarType`, `PortForwardType`, `MemoryAddressType`, `H
 | Gap | Details |
 |-----|---------|
 | **Logic Analyzer** | No Python API test. 21 CLI subcommands, bash and MCP coverage only. |
-| **SSH / Exec** | No hardware suite drives them. `deployment.sh` (weekly) makes one raw `ssh` call and checks `lager ssh --help` / `lager exec --help` only. Install and uninstall DO run on hardware every night, in `update-regression.yml`. |
+| **SSH / Exec** | No hardware suite drives them. `deployment.sh` (nightly) makes one raw `ssh` call and checks `lager ssh --help` / `lager exec --help` only. Install and uninstall DO run on hardware every night, in `update-regression.yml`. |
 | **Watt / Energy** | No bash integration tests. |
 | **Scope** | No bash integration test. 39 CLI subcommands. |
 | **BLE** | No bash integration test. |
@@ -465,11 +465,11 @@ test/
 │   ├── sensors/          #  9 files: thermocouple, watt, energy, joulescope, PPK2
 │   ├── usb/              #  8 files: USB hub enable/disable/toggle/stress, Acroname
 │   └── utility/          #  2 files: binaries, net listing
-├── integration/          # Bash integration tests (38 files, run from host via harness.sh)
+├── integration/          # Bash integration tests (39 files, run from host via harness.sh)
 │   ├── communication/    # 15 files: I2C, SPI, UART, WiFi, debug, J-Link
 │   ├── infrastructure/   #  7 files: boxes, nets, deployment, devenv, python, generic, box config
 │   ├── power/            #  6 files: supply, battery, solar, eload, keysight, multichannel
-│   ├── io/               #  4 files: LabJack, GPIO (Aardvark, FT232H)
+│   ├── io/               #  5 files: LabJack, USB-202, GPIO (Aardvark, FT232H)
 │   ├── usb/              #  3 files: USB, Ykush, Acroname
 │   ├── measurement/      #  1 file: logic analyzer
 │   ├── sensors/          #  1 file: thermocouple
@@ -489,7 +489,7 @@ test/
 │                         # daemon by hand)
 ├── assets/               # Fixture data (note: assets/firmware/ holds only a README)
 └── framework/            # Test utilities
-    ├── harness.sh        # Bash test framework (sourced by all 38 integration scripts)
+    ├── harness.sh        # Bash test framework (sourced by all 39 integration scripts)
     ├── colors.sh         # Bash color utilities
     ├── fixtures.py       # Pytest fixtures with auto-cleanup
     └── test_utils.py     # Python test helpers
@@ -945,17 +945,17 @@ toggle tests.
 
 `test_custom_binaries.py` (binary listing, not-found handling) and `test_list_nets.py`.
 
-### Bash Integration Tests (`test/integration/` -- 38 files)
+### Bash Integration Tests (`test/integration/` -- 39 files)
 
 Run from the host against a real box. `static-checks` runs `bash -n` and `shellcheck` over all of
-them; only the nine listed under "What CI does NOT run" execute.
+them; only the fourteen listed under "What CI does NOT run" execute.
 
 | Directory | Files | Contents |
 |---|---:|---|
 | `communication/` | 15 | `i2c*.sh` (4 backends), `spi*.sh` (6), `uart.sh`, `wifi.sh`, `debug.sh`, `jlink_script.sh` |
 | `infrastructure/` | 7 | `generic.sh`, `boxes_config.sh`, `box_config.sh`, `nets.sh`, `deployment.sh`, `devenv.sh`, `python.sh` |
 | `power/` | 6 | `supply.sh`, `battery.sh`, `solar.sh`, `eload.sh`, `keysight_supply.sh`, `multichannel_supply.sh` |
-| `io/` | 4 | `labjack.sh`, `gpio_aardvark.sh`, `gpio_aardvark_loopback.sh`, `gpio_ft232h.sh` |
+| `io/` | 5 | `labjack.sh`, `usb202.sh`, `gpio_aardvark.sh`, `gpio_aardvark_loopback.sh`, `gpio_ft232h.sh` |
 | `usb/` | 3 | `usb.sh`, `ykush.sh`, `acroname.sh` |
 | `measurement/` | 1 | `logic.sh` |
 | `sensors/` | 1 | `thermocouple.sh` |

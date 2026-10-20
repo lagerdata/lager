@@ -15,10 +15,10 @@ deleted.)
 
 | File | Sidebar name | Triggers | Runner | Purpose |
 |---|---|---|---|---|
-| `integration-tests.yml` | Bench: Integration Tests | `workflow_call`, dispatch | self-hosted `lager-bench` | Drives every bench instrument through `lager python`, plus the J-Link CLI, UART, deployment and devenv bash suites |
+| `integration-tests.yml` | Bench: Integration Tests | `workflow_call`, dispatch | self-hosted `lager-bench` | Drives every bench instrument through `lager python`, plus the CLI suites for the supply, LabJack, USB-202, Acroname hub, USB port, J-Link and UART, and the deployment and devenv suites |
 | `update-regression.yml` | Bench: Box Lifecycle | `workflow_call`, dispatch | self-hosted `lager-bench` | Downgrade -> update -> no-op -> forced rebuild -> uninstall -> install, with a hardware smoke per phase |
 | `nightly-bench.yml` | Bench: Nightly | cron 10:17 UTC, push of `v*` tags, dispatch | (calls the two above) | The bench chain: lifecycle first, instruments only if it succeeded, one chain at a time; files/closes the `bench-alert` issue |
-| `bench-extended.yml` | Bench: Extended | cron Sat 14:17 UTC, dispatch | self-hosted `lager-bench` | Weekly run of the suites that change shared state (nets, box_config, generic) plus the Keithley supply and battery suites; alerts on failure under its own `bench-alert-extended` label, and never closes it |
+| `bench-extended.yml` | Bench: Extended | cron Sat 14:17 UTC, dispatch | self-hosted `lager-bench` | Weekly run of the suites that change shared state (nets, box_config, generic) plus the Keithley battery suite; alerts on failure under its own `bench-alert-extended` label, and never closes it |
 | `bench-watchdog.yml` | Bench: Watchdog | cron every 6h at :41, dispatch | `ubuntu-latest` | Alerts when nightly runs stop FLOWING (queued too long, stuck, cron dead), when any `Bench:` workflow is disabled, and when Extended has not run in 8 days — the failures the notify jobs cannot see |
 | `unit-tests.yml` | PR Gate: Unit Tests | `pull_request`, push to `main`, dispatch | `ubuntu-latest` | Unit suites (one pytest process per suite) + Python-version compat matrix |
 | `static-checks.yml` | PR Gate: Static Checks | `pull_request`, push to `main`, dispatch | `ubuntu-latest` | Syntax/lint floors over the tree the unit gate cannot reach, plus a coverage report |
@@ -322,6 +322,13 @@ Notes and footguns:
 - The CI GPIO test pin is `gpio18` (FIO2), set in `integration-tests.yml`.
   Never point `GPIO_NET` — or any test that toggles a GPIO — at the relay
   nets, nor at `gpio16`/`gpio17` (the auto-generated names for FIO0/FIO1).
+- `usb.sh` switches only `usb1`, the port the USB-202 is on, and refuses any
+  net missing from `USB_TOGGLE_NETS`. The other Acroname ports power the
+  J-Link probes, the arm, the capture device and the UART peer; nothing in
+  CI may switch them.
+- `usb202.sh` runs before any step that power-cycles `usb1`: after a cycle,
+  the CLI's USB-202 path cannot find the device until the hardware service
+  restarts (#729).
 - Power-off is best-effort. Two residual ways the instruments can be left
   powered: the lifecycle run dies mid-uninstall AND its recovery reinstall
   also fails (no box service to receive the command), or the job-level
@@ -336,9 +343,9 @@ belongs here.
 
 | From | To | Exercised by |
 |---|---|---|
-| Rigol DP821 CH2 (`supply3`) output | MCC USB-202 CH0 (`adc15`) | `test/api/io/test_usb202.py::test_adc_supply_accuracy`, gated on `USB202_SUPPLY_NET` + `USB202_SUPPLY_ADC_NET` |
+| Rigol DP821 CH2 (`supply3`) output | MCC USB-202 CH0 (`adc15`) | `test/api/io/test_usb202.py::test_adc_supply_accuracy`, gated on `USB202_SUPPLY_NET` + `USB202_SUPPLY_ADC_NET`; `test/integration/io/usb202.sh` section 4 (same variables, defaulted to this wire) |
 | ESP32 UART peer's on-board USB chip (`ESP_UART`) | ESP32 U0RXD (GPIO3) -- the ONLY driver allowed on that pin | `test/integration/communication/uart.sh` section 15 |
-| LabJack T7 DAC0 (`dac1`) | LabJack T7 AIN0 (`adc1`) | `test/api/io/test_LabJack_T7.py::test_loopback` (`LOOPBACK_ADC_NET=adc1`; a skip fails the step) |
+| LabJack T7 DAC0 (`dac1`) | LabJack T7 AIN0 (`adc1`) | `test/api/io/test_LabJack_T7.py::test_loopback` (`LOOPBACK_ADC_NET=adc1`; a skip fails the step); `test/integration/io/labjack.sh` section 4 (`LABJACK_LOOPBACK=1`) |
 
 This wire cost real triage time. It was built for a check whose two repository
 variables were never set, so the sub-test had never run once and nothing in the

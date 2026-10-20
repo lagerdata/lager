@@ -62,6 +62,15 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   result from the next nightly, whose failure alert links the commits since the last
   green run. A release-tag run tests the tagged commit, after waiting for that tag's box
   image, and files the alert if it fails.
+- **The nightly bench run now tests the supply, LabJack, MCC USB-202, Acroname hub and
+  USB port commands through the CLI.** Six bash suites run there for the first time:
+  `supply.sh`, `multichannel_supply.sh`, `labjack.sh`, the new `usb202.sh`,
+  `acroname.sh` and `usb.sh`. Each was rewritten to read every value back and compare it
+  with what was set, or with what a fixture wire should measure, instead of passing on a
+  zero exit code. The supply suites restore each channel's setpoints and protection
+  limits when they finish. `supply.sh` now runs against a DP821 channel, not the
+  Keithley 2281S, and moved from the weekly run to the nightly. `usb.sh` switches only
+  the ports listed in `USB_TOGGLE_NETS`.
 
 ### Fixed
 

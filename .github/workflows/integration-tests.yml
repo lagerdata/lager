@@ -520,6 +520,47 @@ jobs:
             --passenv USB202_SUPPLY_NET --passenv USB202_SUPPLY_ADC_NET
         shell: bash
 
+      # The two DP821 channels through the CLI. The API steps above drive the
+      # same channels through `lager python`; these cover the CLI layer and
+      # read every value back from `lager supply <net> state`. Both suites
+      # record the channels' setpoints, OVP and OCP first and restore them at
+      # the end. Both refuse a Keithley net, whose driver clamps an
+      # out-of-range voltage instead of refusing it.
+      - name: Suite supply.sh (DP821 CH1, CLI)
+        id: suite-supply
+        continue-on-error: true
+        timeout-minutes: 15
+        env:
+          SUPPLY_NET: ${{ vars.RIGOL_CH1_NET || 'supply2' }}
+          CHANNEL_MAX_VOLTAGE: ${{ vars.RIGOL_CH1_MAX_VOLTAGE || '60.0' }}
+          CHANNEL_MAX_CURRENT: ${{ vars.RIGOL_CH1_MAX_CURRENT || '1.0' }}
+          SUPPLY_BASELINE: "0"
+          # The suite has no skip path; a skip would be a new one.
+          SUPPLY_MAX_SKIPS: "0"
+        run: |
+          LOG="$RUNNER_TEMP/supply.log"
+          bash test/integration/power/supply.sh "$LAGER_BOX" "$SUPPLY_NET" 2>&1 | tee "$LOG" || true
+          bash tools/bench_suite_gate.sh harness supply.sh "$SUPPLY_BASELINE" "$LOG" "$SUPPLY_MAX_SKIPS"
+        shell: bash
+
+      - name: Suite multichannel_supply.sh (DP821 CH1 + CH2, CLI)
+        # The two channels must stay independent: setpoints, outputs, OVP and
+        # OCP. CH2 is wired to a USB-202 ADC input (see the wiring fixtures
+        # table); the suite stays at or below 4 V on it.
+        id: suite-multichannel-supply
+        continue-on-error: true
+        timeout-minutes: 15
+        env:
+          NET1: ${{ vars.RIGOL_CH1_NET || 'supply2' }}
+          NET2: ${{ vars.RIGOL_CH2_NET || 'supply3' }}
+          MULTICHANNEL_BASELINE: "0"
+          MULTICHANNEL_MAX_SKIPS: "0"
+        run: |
+          LOG="$RUNNER_TEMP/multichannel-supply.log"
+          bash test/integration/power/multichannel_supply.sh "$LAGER_BOX" "$NET1" "$NET2" 2>&1 | tee "$LOG" || true
+          bash tools/bench_suite_gate.sh harness multichannel_supply.sh "$MULTICHANNEL_BASELINE" "$LOG" "$MULTICHANNEL_MAX_SKIPS"
+        shell: bash
+
       - name: Test LabJack T7 (ADC / DAC / GPIO)
         id: labjack-test
         continue-on-error: true
@@ -541,6 +582,52 @@ jobs:
             --passenv ADC_NETS --passenv LOOPBACK_ADC_NET --passenv LAGER_BENCH_MAX_SKIPS
         shell: bash
 
+      - name: Suite labjack.sh (LabJack T7, CLI)
+        # gpo / gpi / dac / adc through the CLI, read from each command's
+        # --json output. The dac1 -> adc1 wire is a bench fixture, so every
+        # DAC setpoint is also measured on the ADC.
+        id: suite-labjack
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          # NOT gpio16/gpio17: they drive the bench's AC power relays. The
+          # suite refuses them itself as well.
+          GPIO_NET: ${{ vars.GPIO_NET || 'gpio18' }}
+          ADC_NET: ${{ vars.LOOPBACK_ADC_NET || 'adc1' }}
+          DAC_NET: ${{ vars.DAC_NET || 'dac1' }}
+          LABJACK_LOOPBACK: "1"
+          LABJACK_BASELINE: "0"
+          LABJACK_MAX_SKIPS: "0"
+        run: |
+          LOG="$RUNNER_TEMP/labjack.log"
+          bash test/integration/io/labjack.sh "$LAGER_BOX" "$GPIO_NET" "$ADC_NET" "$DAC_NET" 2>&1 | tee "$LOG" || true
+          bash tools/bench_suite_gate.sh harness labjack.sh "$LABJACK_BASELINE" "$LOG" "$LABJACK_MAX_SKIPS"
+        shell: bash
+
+      - name: Suite usb202.sh (MCC USB-202, CLI)
+        # Must run before anything power-cycles the USB-202's hub port (the
+        # Acroname steps below): after a port cycle the CLI's adc/dac/gpio
+        # path no longer finds the device until the hardware service restarts
+        # (#729). The lifecycle reinstall before this workflow gives it a
+        # fresh service.
+        id: suite-usb202
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          ADC_NETS: ${{ vars.USB202_ADC_NETS || 'adc15,adc16,adc17,adc18,adc19,adc20,adc21,adc22' }}
+          DAC_NETS: ${{ vars.USB202_DAC_NETS || 'dac3,dac4' }}
+          GPIO_NETS: ${{ vars.USB202_GPIO_NETS || 'gpio24,gpio25,gpio26,gpio27,gpio28,gpio29,gpio30,gpio31' }}
+          # The DP821 CH2 -> USB-202 CH0 wire (see the wiring fixtures table).
+          USB202_SUPPLY_NET: ${{ vars.USB202_SUPPLY_NET || 'supply3' }}
+          USB202_SUPPLY_ADC_NET: ${{ vars.USB202_SUPPLY_ADC_NET || 'adc15' }}
+          USB202_BASELINE: "0"
+          USB202_MAX_SKIPS: "0"
+        run: |
+          LOG="$RUNNER_TEMP/usb202.log"
+          bash test/integration/io/usb202.sh "$LAGER_BOX" "$ADC_NETS" "$DAC_NETS" "$GPIO_NETS" 2>&1 | tee "$LOG" || true
+          bash tools/bench_suite_gate.sh harness usb202.sh "$USB202_BASELINE" "$LOG" "$USB202_MAX_SKIPS"
+        shell: bash
+
       - name: Test Acroname USB Hub
         id: acroname-test
         continue-on-error: true
@@ -557,6 +644,43 @@ jobs:
           lager python test/api/usb/test_Acroname.py --box "$LAGER_BOX" \
             --passenv USB_NET --passenv USB_NETS \
             --passenv LAGER_HUB_EXIT_DEBUG
+        shell: bash
+
+      - name: Suite acroname.sh (Acroname hub inventory, CLI)
+        # Read-only: the hub is detected, and every usb net is listed and
+        # its state readable. It switches no port.
+        id: suite-acroname
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          ACRONAME_BASELINE: "0"
+          ACRONAME_MAX_SKIPS: "0"
+        run: |
+          LOG="$RUNNER_TEMP/acroname.log"
+          bash test/integration/usb/acroname.sh "$LAGER_BOX" 2>&1 | tee "$LOG" || true
+          bash tools/bench_suite_gate.sh harness acroname.sh "$ACRONAME_BASELINE" "$LOG" "$ACRONAME_MAX_SKIPS"
+        shell: bash
+
+      - name: Suite usb.sh (one hub port, CLI)
+        # enable / disable / toggle / cycle on ONE port, each read back with
+        # `lager usb <net> state`. Only usb1 (the USB-202) may be switched on
+        # this bench: the other ports power the debug probes, the arm, the
+        # capture device and the UART peer. The suite refuses any net not in
+        # USB_TOGGLE_NETS.
+        id: suite-usb
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          USB_NET: ${{ vars.USB_NET || 'usb1' }}
+          USB_TOGGLE_NETS: usb1
+          # The USB-202 is on this port, so every cycle must re-enumerate it.
+          USB_EXPECT_DEVICE: "1"
+          USB_BASELINE: "0"
+          USB_MAX_SKIPS: "0"
+        run: |
+          LOG="$RUNNER_TEMP/usb.log"
+          bash test/integration/usb/usb.sh "$LAGER_BOX" "$USB_NET" 2>&1 | tee "$LOG" || true
+          bash tools/bench_suite_gate.sh harness usb.sh "$USB_BASELINE" "$LOG" "$USB_MAX_SKIPS"
         shell: bash
 
       - name: Test Keithley 2281S power supply

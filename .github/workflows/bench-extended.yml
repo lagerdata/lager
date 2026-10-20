@@ -16,8 +16,9 @@
 # inventory into a public log, and python.sh tests a CLI surface that no
 # longer exists.
 #
-# WAVE 2: the power suites -- supply.sh and battery.sh -- which DO need
-# instruments. This workflow therefore now carries integration-tests.yml's
+# WAVE 2: the power suite battery.sh, which DOES need an instrument.
+# supply.sh used to run here against the Keithley; it now runs nightly in
+# integration-tests.yml against a DP821 channel, and refuses a Keithley net. This workflow therefore now carries integration-tests.yml's
 # relay-net self-heal and relay power steps, and the bench is energized for
 # the wave-2 block only. It powers back down before the wave-1 suites, so
 # their baselines still hold under the conditions they were measured in. See
@@ -227,7 +228,7 @@ jobs:
       # instrument. Here three suites need no instruments at all and have been
       # running green weekly; a dead relay must not take them with it. The
       # aggregation gate at the end still turns a relay failure into a red
-      # job, and the two suites below are skipped rather than run against a
+      # job, and the suite below is skipped rather than run against a
       # dark bench, where they would fail every check for the wrong reason.
       # ---------------------------------------------------------------------
 
@@ -313,48 +314,14 @@ jobs:
           probe-supply-net: ${{ vars.RIGOL_CH1_NET || 'supply2' }}
           keithley-present: ${{ vars.KEITHLEY_PRESENT }}
 
-      - name: Suite supply.sh (Keithley 2281S in supply mode)
-        # 59 checks against the `lager supply` CLI surface, measured at ~3m15s
-        # on this bench. The suite had never executed anywhere before this.
-        # Gated on KEITHLEY_PRESENT, like the instrument's entry in the
-        # expected inventory above and its two suites in
-        # integration-tests.yml. The instrument is off the bench (#417);
-        # a suite that fails for a known-absent instrument teaches nothing
-        # while costing a serialised bench slot.
-        id: suite-supply
-        if: steps.power-on.outcome == 'success' && vars.KEITHLEY_PRESENT == 'true'
-        continue-on-error: true
-        timeout-minutes: 15
-        env:
-          # The Keithley, NOT a DP821 channel. The suite sweeps voltage to 10V
-          # (test 4.5) and sets current to 2.0A (tests 5.3, 5.5, 6.2, 7.2), and
-          # neither DP821 channel does both: CH1 is 60V/1A and CH2 is 8V/10A.
-          # Measured on the bench -- against CH1 (supply2) the four 2.0A checks
-          # fail because the channel tops out at 1A, which is the instrument
-          # being correct, not the CLI being wrong. supply1 is 20V/6A and
-          # covers the whole range the suite asks for.
-          #
-          # Positional arg to the suite, not an env var it reads.
-          SUPPLY_NET: ${{ vars.KEITHLEY_SUPPLY_NET || 'supply1' }}
-          # Measured, not assumed. See the PR body for the run this came from.
-          SUPPLY_BASELINE: "0"
-          # No skips measured on the bench; any skip is a check that did not run.
-          SUPPLY_MAX_SKIPS: "0"
-        run: |
-          LOG="$RUNNER_TEMP/supply.log"
-          bash test/integration/power/supply.sh "$LAGER_BOX" "$SUPPLY_NET" 2>&1 | tee "$LOG" || true
-          bash tools/bench_suite_gate.sh harness supply.sh "$SUPPLY_BASELINE" "$LOG" "$SUPPLY_MAX_SKIPS"
-        shell: bash
-
       - name: Suite battery.sh (Keithley 2281S battery simulator)
         # 86 checks against the `lager battery` CLI surface, measured at ~2m on
         # this bench. Also never executed before this. Its
         # `register_box_from_ip` helper only mutates the runner's registry when
         # handed an IP; LAGER_BOX is a name, so it takes the no-op branch.
         #
-        # Shares the Keithley with supply.sh above and runs second: supply.sh
-        # leaves the instrument in supply mode, and battery.sh selects battery
-        # mode itself.
+        # battery.sh selects battery mode itself, so it does not depend on
+        # the mode a previous run left the instrument in.
         # Gated on KEITHLEY_PRESENT, like the instrument's entry in the
         # expected inventory above and its two suites in
         # integration-tests.yml. The instrument is off the bench (#417);
@@ -717,9 +684,8 @@ jobs:
           Weekly extended bench run did not succeed (${RESULT}): ${RUN_URL}
 
           Most of these are infrastructure suites, so triage usually starts at
-          box reachability and the auth service. The supply and battery
-          suites do use instruments: if only those failed, start at
-          instrument power.
+          box reachability and the auth service. The battery suite does use an
+          instrument: if only it failed, start at instrument power.
 
           **This issue does not close itself.** Extended has no recovery job
           by design -- a green weekly must never close an alert the nightly is

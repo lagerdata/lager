@@ -2,612 +2,339 @@
 
 # Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
-# Streamlined test suite for lager supply commands (5-10 minute target)
-# Focuses on critical functionality with reduced iterations
+#
+# The `lager supply` CLI surface against one power-supply channel.
+#
+# Every setting is read back from `lager supply <net> state`, and with the
+# output enabled the measured voltage is compared with the setpoint, so a
+# command that exits 0 without reaching the instrument fails here. Every
+# refusal is checked twice: the command must exit non-zero with a reason, and
+# the channel's setpoint must be unchanged afterwards.
+#
+# The suite drives at most 5 V and 0.5 A into an unloaded output. The channel
+# rating (CHANNEL_MAX_VOLTAGE / CHANNEL_MAX_CURRENT) is used only to check
+# that a value just above it is refused.
+#
+# The channel's setpoints, OVP and OCP are recorded first and put back at the
+# end through `lager python`, because the CLI refuses an OVP above the
+# channel's rated voltage and so cannot restore a factory limit set above it.
+#
+# Refuses a Keithley net: the Keithley driver clamps an out-of-range voltage
+# to its maximum instead of refusing it.
+#
+# Usage: supply.sh <BOX> <SUPPLY_NET>
+#   CHANNEL_MAX_VOLTAGE  rated voltage of the channel (required)
+#   CHANNEL_MAX_CURRENT  rated current of the channel (required)
+#   SUPPLY_MEASURE_TOL   volts, unloaded output vs setpoint (default 0.1)
 
-# Determine script directory for relative paths
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-# Source test framework
 source "${SCRIPT_DIR}/../../framework/colors.sh"
 source "${SCRIPT_DIR}/../../framework/harness.sh"
 
-set +e  # DON'T exit on error - we want to track failures
+set +e
 
-# Initialize the test harness
-init_harness
-
-# Safety delay between tests (reduced)
-TEST_DELAY=0.2
-
-# Check if required arguments are provided
-if [ $# -lt 2 ]; then
-  echo "Usage: $0 <BOX> <SUPPLY_NET>"
-  echo ""
-  echo "Examples:"
-  echo "  $0 my-box supply1"
-  echo "  $0 <BOX_IP> supply1"
-  echo ""
-  echo "Arguments:"
-  echo "  BOX         - Box ID or Tailscale IP address"
-  echo "  SUPPLY_NET  - Name of the supply net to test"
-  echo ""
+if [ $# -lt 2 ] || [ -z "$CHANNEL_MAX_VOLTAGE" ] || [ -z "$CHANNEL_MAX_CURRENT" ]; then
+  echo "Usage: CHANNEL_MAX_VOLTAGE=<V> CHANNEL_MAX_CURRENT=<A> $0 <BOX> <SUPPLY_NET>"
   exit 1
 fi
 
 BOX="$1"
-SUPPLY_NET="$2"
+NET="$2"
+TOL="${SUPPLY_MEASURE_TOL:-0.1}"
+VMAX="$CHANNEL_MAX_VOLTAGE"
+IMAX="$CHANNEL_MAX_CURRENT"
+WORK="$(mktemp -d)"
+
+# Print field $2 of saved net $1 (from `nets show --json`).
+net_field() {
+  lager nets show "$1" --box "$BOX" --json 2>/dev/null | python3 -c '
+import json, sys
+try:
+    print(json.load(sys.stdin).get(sys.argv[1], ""))
+except ValueError:
+    pass
+' "$2"
+}
+
+case "$(net_field "$NET" instrument)" in
+  *[Kk]eithley*)
+    echo "Refusing Keithley net '$NET': its driver clamps out-of-range voltages instead of refusing them." >&2
+    exit 2 ;;
+esac
+
+init_harness
+
+# ------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------
+
+check() {
+  local desc="$1" detail="$2"
+  shift 2
+  echo -n "Test: $desc... "
+  if "$@"; then
+    track_test "pass"
+  else
+    track_test "fail"
+    [ -n "$detail" ] && echo "    detail: $(printf '%s' "$detail" | head -3 | tr '\n' ' ')"
+  fi
+}
+
+refused() { [ "$1" -ne 0 ] && printf '%s' "$2" | grep -qiE "$3"; }
+succeeded() { [ "$1" -eq 0 ] && printf '%s' "$2" | grep -q '\[OK\]'; }
+
+sup() { lager supply "$NET" "$@" --box "$BOX" 2>&1; }
+
+state_line() { lager supply "$NET" state --box "$BOX" 2>&1; }
+
+# Field of a state line: output (ON/OFF), set_v, set_i, meas_v, meas_i, ocp, ovp.
+field() {
+  printf '%s' "$1" | python3 -c '
+import re, sys
+m = re.search(r"Channel \d+: (\w+), Set: ([-\d.]+)V/([-\d.]+)A, "
+              r"Measured: ([-\d.]+)V/([-\d.]+)A, OCP: ([-\d.]+)A, OVP: ([-\d.]+)V",
+              sys.stdin.read())
+keys = ["output", "set_v", "set_i", "meas_v", "meas_i", "ocp", "ovp"]
+if m:
+    print(m.group(keys.index(sys.argv[1]) + 1))
+' "$2"
+}
+
+f() { field "$(state_line)" "$1"; }
+
+# The first number in $1.
+num() { printf '%s' "$1" | grep -oE -- '-?[0-9]+(\.[0-9]+)?' | head -1; }
+
+near() {
+  python3 -c '
+import sys
+try:
+    a, b, tol = (float(x) for x in sys.argv[1:4])
+except ValueError:
+    sys.exit(1)
+sys.exit(0 if abs(a - b) <= tol else 1)
+' "$1" "$2" "$3"
+}
+
+# A setpoint reads back as $1 (to the instrument's 1 mV / 1 mA resolution).
+set_v_is() { near "$(f set_v)" "$1" 0.002; }
+set_i_is() { near "$(f set_i)" "$1" 0.002; }
+
+# Wait up to 5 s for the measured voltage to reach $1 (outputs slew).
+settles_at() {
+  local _
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    near "$(f meas_v)" "$1" "$TOL" && return 0
+    sleep 0.5
+  done
+  return 1
+}
+
+above() { python3 -c 'import sys; print(round(float(sys.argv[1]) + float(sys.argv[2]), 3))' "$1" "$2"; }
+
+# ------------------------------------------------------------
+# Record and restore
+# ------------------------------------------------------------
+
+S0=$(state_line)
+echo "Before: $S0"
+
+cat > "$WORK/restore.py" <<EOF
+from lager import Net, NetType
+s = Net.get("$NET", type=NetType.PowerSupply)
+# The set_* methods address the net's own channel. Plain ovp()/ocp() fall
+# through to the driver and act on ITS channel, not the net's.
+s.disable()
+s.set_ovp($(field "$S0" ovp))   # raise first: OVP may not be set below the setpoint
+s.set_ocp($(field "$S0" ocp))
+s.set_voltage($(field "$S0" set_v))
+s.set_current($(field "$S0" set_i))
+if "$(field "$S0" output)" == "ON":
+    s.enable()
+print("restored $NET")
+EOF
+
+restore_supply() {
+  lager supply "$NET" disable --yes --box "$BOX" >/dev/null 2>&1
+  (cd "$WORK" && lager python restore.py --box "$BOX" 2>&1 | tail -2)
+  rm -rf "$WORK"
+}
 
 echo "========================================================================"
-echo "LAGER SUPPLY FAST TEST SUITE"
+echo "SUPPLY SUITE"
 echo "========================================================================"
-echo ""
-echo "Box: $BOX"
-echo "Supply Net: $SUPPLY_NET"
+echo "Box: $BOX   Net: $NET   Rating: ${VMAX} V / ${IMAX} A   Measure tolerance: ${TOL} V"
 echo ""
 
 # ============================================================
-# SECTION 1: BASIC COMMANDS
+# SECTION 1: THE NET
 # ============================================================
-start_section "Basic Commands"
-echo "========================================================================"
-echo "SECTION 1: BASIC COMMANDS"
-echo "========================================================================"
-echo ""
+start_section "Net"
 
-echo "Test 1.1: List available boxes"
-lager boxes >/dev/null 2>&1 && track_test "pass" || track_test "fail"
-echo ""
+OUT=$(lager supply --box "$BOX" 2>&1); RC=$?
+check "1.1 the net is listed" "$OUT" \
+  bash -c '[ "$1" -eq 0 ] && printf "%s" "$2" | grep -qw -- "$3"' _ "$RC" "$OUT" "$NET"
+check "1.2 its state parses" "$S0" bash -c '[ -n "$1" ] && [ -n "$2" ]' _ "$(field "$S0" ovp)" "$(field "$S0" set_v)"
 
-echo "Test 1.2: List available nets"
-lager nets --box $BOX >/dev/null 2>&1 && track_test "pass" || track_test "fail"
-echo ""
-
-echo "Test 1.3: Verify supply net exists"
-if lager nets --box $BOX | grep -q "$SUPPLY_NET"; then
-  echo -e "${GREEN}[OK] Supply net found${NC}"
-  track_test "pass"
+# Only change anything once the starting state is recorded.
+if [ -n "$(field "$S0" ovp)" ] && [ -n "$(field "$S0" ocp)" ]; then
+  harness_add_cleanup restore_supply
 else
-  echo -e "${RED}[FAIL] Supply net not found${NC}"
-  track_test "fail"
+  echo "Cannot record the starting state; stopping before changing anything."
+  print_summary
+  exit 1
 fi
-echo ""
 
-echo "Test 1.4: Supply help output"
-lager supply --help >/dev/null 2>&1 && track_test "pass" || track_test "fail"
-echo ""
+OUT=$(sup disable --yes); RC=$?
+check "1.3 disable" "$OUT" succeeded "$RC" "$OUT"
+check "1.4 state reads OFF" "$(state_line)" [ "$(f output)" = OFF ]
 
-# ============================================================
-# SECTION 2: ERROR VALIDATION
-# ============================================================
-start_section "Error Validation"
-echo "========================================================================"
-echo "SECTION 2: ERROR VALIDATION"
-echo "========================================================================"
-echo ""
-
-echo "Test 2.1: Invalid net name"
-lager supply nonexistent_net state --box $BOX 2>&1 | grep -qi "not found\|error" && track_test "pass" || track_test "fail"
-echo ""
-
-echo "Test 2.2: Invalid box"
-lager supply $SUPPLY_NET state --box INVALID-BOX 2>&1 | grep -qi "error\|don't have" && track_test "pass" || track_test "fail"
-echo ""
-
-echo "Test 2.3: Negative voltage"
-lager supply $SUPPLY_NET voltage -1.0 --box $BOX --yes 2>&1 | grep -qi "error\|No such option" && track_test "pass" || track_test "fail"
-echo ""
-
-echo "Test 2.4: Invalid voltage format"
-lager supply $SUPPLY_NET voltage abc --box $BOX --yes 2>&1 | grep -qi "error\|not a valid" && track_test "pass" || track_test "fail"
-echo ""
-
-echo "Test 2.5: Extremely high voltage (1000V - should clamp or reject)"
-lager supply $SUPPLY_NET voltage 1000.0 --box $BOX --yes 2>&1 | grep -qi "WARNING\|clamp\|ERROR" && track_test "pass" || track_test "fail"
-echo ""
+# The set-by-net readings agree with the state line.
+sup voltage 1.0 --yes >/dev/null; sup current 0.1 --yes >/dev/null
+OUT=$(sup voltage); RC=$?
+check "1.5 voltage with no value reads the setpoint" "$OUT" \
+  bash -c '[ "$1" -eq 0 ] && python3 -c "import sys; sys.exit(abs(float(sys.argv[1]) - 1.0) > 0.002)" "$2" 2>/dev/null' _ "$RC" "$(num "$OUT")"
+OUT=$(sup current); RC=$?
+check "1.6 current with no value reads the setpoint" "$OUT" \
+  bash -c '[ "$1" -eq 0 ] && python3 -c "import sys; sys.exit(abs(float(sys.argv[1]) - 0.1) > 0.002)" "$2" 2>/dev/null' _ "$RC" "$(num "$OUT")"
 
 # ============================================================
-# SECTION 3: STATE AND CONTROL
+# SECTION 2: REFUSALS
 # ============================================================
-start_section "State and Control"
-echo "========================================================================"
-echo "SECTION 3: STATE AND CONTROL"
-echo "========================================================================"
-echo ""
+# Each must exit non-zero with a reason; 2.12 then checks that none of them
+# reached the channel.
+start_section "Refusals"
 
-echo "Test 3.1: Get power supply state"
-lager supply $SUPPLY_NET state --box $BOX >/dev/null && track_test "pass" || track_test "fail"
-echo ""
+OUT=$(lager supply no_such_net_xyz state --box "$BOX" 2>&1); RC=$?
+check "2.1 unknown net" "$OUT" refused "$RC" "$OUT" "not found|no .*net|unknown"
+OUT=$(lager supply "$NET" state --box NO-SUCH-BOX-XYZ 2>&1); RC=$?
+check "2.2 unknown box" "$OUT" refused "$RC" "$OUT" "box|not found|don't have"
+OUT=$(sup voltage -1 --yes); RC=$?
+check "2.3 -1 V" "$OUT" refused "$RC" "$OUT" "positive|negative|no such option"
+OUT=$(sup voltage abc --yes); RC=$?
+check "2.4 non-numeric voltage" "$OUT" refused "$RC" "$OUT" "invalid|not a valid|float"
+OUT=$(sup current -0.1 --yes); RC=$?
+check "2.5 -0.1 A" "$OUT" refused "$RC" "$OUT" "positive|negative|no such option"
+OUT=$(sup voltage 100.5 --yes); RC=$?
+check "2.6 100.5 V (above any supported supply)" "$OUT" refused "$RC" "$OUT" "exceeds"
+OVER_V=$(above "$VMAX" 0.5)
+OUT=$(sup voltage "$OVER_V" --yes); RC=$?
+check "2.7 $OVER_V V (above the ${VMAX} V rating)" "$OUT" refused "$RC" "$OUT" "exceeds hardware limit"
+OVER_I=$(above "$IMAX" 0.1)
+OUT=$(sup current "$OVER_I" --yes); RC=$?
+check "2.8 $OVER_I A (above the ${IMAX} A rating)" "$OUT" refused "$RC" "$OUT" "exceeds hardware limit"
+OUT=$(sup voltage 1.0 --ocp "$OVER_I" --yes); RC=$?
+check "2.9 OCP $OVER_I A (above the rating)" "$OUT" refused "$RC" "$OUT" "exceeds"
+OUT=$(sup voltage 5.0 --ovp 4.0 --yes); RC=$?
+check "2.10 OVP 4.0 V below a 5.0 V setpoint" "$OUT" refused "$RC" "$OUT" "cannot be less than"
+OUT=$(sup current 0.5 --ocp 0.2 --yes); RC=$?
+check "2.11 OCP 0.2 A below a 0.5 A setpoint" "$OUT" refused "$RC" "$OUT" "cannot be less than"
+check "2.12 the channel is unchanged: OFF, 1.0 V / 0.1 A, same OVP and OCP" "$(state_line)" \
+  bash -c '[ "$1" = OFF ] && [ "$4" = "$5" ] && [ "$6" = "$7" ] && python3 -c "import sys; sys.exit(abs(float(sys.argv[1]) - 1.0) > 0.002 or abs(float(sys.argv[2]) - 0.1) > 0.002)" "$2" "$3"' \
+  _ "$(f output)" "$(f set_v)" "$(f set_i)" "$(f ovp)" "$(field "$S0" ovp)" "$(f ocp)" "$(field "$S0" ocp)"
 
-echo "Test 3.2: Disable supply output"
-lager supply $SUPPLY_NET disable --box $BOX --yes >/dev/null && track_test "pass" || track_test "fail"
-echo ""
+# ============================================================
+# SECTION 3: SETPOINTS
+# ============================================================
+start_section "Setpoints"
 
-echo "Test 3.3: Verify disabled state"
-# The CLI reports output state as `Channel <n>: OFF` (e.g. "[OK] Channel 1:
-# OFF, Set: 0.0V/1.0A, ..."). The previous pattern looked for "disabled",
-# "output ... off" or "enabled: ... off", none of which the shipped output
-# has ever contained, so this check could not pass on a working supply.
-lager supply $SUPPLY_NET state --box $BOX | grep -E "Channel [0-9]+: OFF" >/dev/null && track_test "pass" || track_test "fail"
-echo ""
+# ok <command...>: prints "ok" when the command succeeds, for checks that
+# combine several readings.
+ok() { "$@" && echo ok; }
 
-echo "Test 3.4: Enable supply output"
-lager supply $SUPPLY_NET enable --box $BOX --yes >/dev/null && track_test "pass" || track_test "fail"
-echo ""
-
-echo "Test 3.5: Verify enabled state"
-STATE_OUTPUT=$(lager supply $SUPPLY_NET state --box $BOX 2>&1)
-echo "$STATE_OUTPUT" | grep -E "Channel [0-9]+: ON" >/dev/null && track_test "pass" || track_test "fail"
-echo ""
-
-echo "Test 3.6: Rapid enable/disable cycling (5 cycles)"
-FAILED=0
-for i in {1..5}; do
-  lager supply $SUPPLY_NET disable --box $BOX --yes >/dev/null || FAILED=1
-  lager supply $SUPPLY_NET enable --box $BOX --yes >/dev/null || FAILED=1
+n=1
+for v in 0.0 3.3 5.0 3.141; do
+  OUT=$(sup voltage "$v" --yes); RC=$?
+  check "3.$n voltage $v V reads back" "$OUT | $(state_line)" \
+    [ "$([ "$RC" -eq 0 ] && ok set_v_is "$v")" = ok ]
+  n=$((n + 1))
 done
-[ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"
-echo ""
-
-# ============================================================
-# SECTION 4: VOLTAGE OPERATIONS
-# ============================================================
-start_section "Voltage Operations"
-echo "========================================================================"
-echo "SECTION 4: VOLTAGE OPERATIONS"
-echo "========================================================================"
-echo ""
-
-echo "Test 4.1: Set voltage to 0V"
-lager supply $SUPPLY_NET voltage 0.0 --box $BOX --yes >/dev/null && track_test "pass" || track_test "fail"
-echo ""
-
-echo "Test 4.2: Set voltage to 3.3V"
-lager supply $SUPPLY_NET voltage 3.3 --box $BOX --yes >/dev/null && track_test "pass" || track_test "fail"
-echo ""
-
-echo "Test 4.3: Set voltage to 5.0V"
-lager supply $SUPPLY_NET voltage 5.0 --box $BOX --yes >/dev/null && track_test "pass" || track_test "fail"
-echo ""
-
-echo "Test 4.4: Read voltage back"
-VOLTAGE_OUTPUT=$(lager supply $SUPPLY_NET voltage --box $BOX 2>/dev/null)
-[ -n "$VOLTAGE_OUTPUT" ] && track_test "pass" || track_test "fail"
-echo ""
-
-echo "Test 4.5: Voltage sweep (0V to 10V in 2V steps)"
-FAILED=0
-for voltage in 0.0 2.0 4.0 6.0 8.0 10.0; do
-  lager supply $SUPPLY_NET voltage $voltage --box $BOX --yes >/dev/null || FAILED=1
+for i in 0.05 0.2 0.5; do
+  OUT=$(sup current "$i" --yes); RC=$?
+  check "3.$n current $i A reads back" "$OUT | $(state_line)" \
+    [ "$([ "$RC" -eq 0 ] && ok set_i_is "$i")" = ok ]
+  n=$((n + 1))
 done
-[ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"
-echo ""
 
-echo "Test 4.6: Common supply voltages"
-FAILED=0
-for voltage in 1.8 3.3 5.0 12.0; do
-  lager supply $SUPPLY_NET voltage $voltage --box $BOX --yes >/dev/null || FAILED=1
+BAD=0
+for v in 0.5 1.0 1.5 2.0 2.5 3.0 3.5 4.0 4.5 5.0; do
+  sup voltage "$v" --yes >/dev/null || BAD=$((BAD + 1))
+  set_v_is "$v" || BAD=$((BAD + 1))
 done
-[ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"
-echo ""
+check "3.$n ten consecutive setpoints each read back" "$BAD wrong" [ "$BAD" -eq 0 ]
 
-echo "Test 4.7: Rapid voltage changes (10 iterations)"
-FAILED=0
-for i in {1..10}; do
-  VOLTAGE=$(echo "scale=1; ($i % 5) * 1.0" | bc)
-  lager supply $SUPPLY_NET voltage $VOLTAGE --box $BOX --yes >/dev/null 2>&1 || FAILED=1
+# ============================================================
+# SECTION 4: OUTPUT
+# ============================================================
+start_section "Output"
+
+sup voltage 2.0 --yes >/dev/null; sup current 0.2 --yes >/dev/null
+check "4.1 measures ~0 V while OFF" "$(state_line)" near "$(f meas_v)" 0 "$TOL"
+OUT=$(sup enable --yes); RC=$?
+check "4.2 enable" "$OUT" succeeded "$RC" "$OUT"
+check "4.3 state reads ON" "$(state_line)" [ "$(f output)" = ON ]
+check "4.4 measures 2.0 V" "$(state_line)" settles_at 2.0
+check "4.5 unloaded output draws ~0 A" "$(state_line)" near "$(f meas_i)" 0 0.01
+
+BAD=""
+for v in 0.0 1.0 3.3 5.0 1.0; do
+  sup voltage "$v" --yes >/dev/null
+  settles_at "$v" || BAD="$BAD $v"
 done
-[ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"
-echo ""
+check "4.6 a live output follows 0 -> 1 -> 3.3 -> 5 -> 1 V" "missed:$BAD" [ -z "$BAD" ]
+check "4.7 still ON after the voltage changes" "$(state_line)" [ "$(f output)" = ON ]
 
-# ============================================================
-# SECTION 5: CURRENT OPERATIONS
-# ============================================================
-start_section "Current Operations"
-echo "========================================================================"
-echo "SECTION 5: CURRENT OPERATIONS"
-echo "========================================================================"
-echo ""
+OUT=$(sup disable --yes); RC=$?
+check "4.8 disable" "$OUT" succeeded "$RC" "$OUT"
+check "4.9 state reads OFF" "$(state_line)" [ "$(f output)" = OFF ]
+check "4.10 measured voltage falls to ~0 V" "$(state_line)" settles_at 0
 
-echo "Test 5.1: Set current limit to 0.5A"
-lager supply $SUPPLY_NET current 0.5 --box $BOX --yes >/dev/null 2>&1 && track_test "pass" || track_test "fail"
-echo ""
-
-echo "Test 5.2: Set current limit to 1.0A"
-lager supply $SUPPLY_NET current 1.0 --box $BOX --yes >/dev/null 2>&1 && track_test "pass" || track_test "fail"
-echo ""
-
-echo "Test 5.3: Set current limit to 2.0A"
-lager supply $SUPPLY_NET current 2.0 --box $BOX --yes >/dev/null 2>&1 && track_test "pass" || track_test "fail"
-echo ""
-
-echo "Test 5.4: Read current back"
-CURRENT_OUTPUT=$(lager supply $SUPPLY_NET current --box $BOX 2>/dev/null)
-[ -n "$CURRENT_OUTPUT" ] && track_test "pass" || track_test "fail"
-echo ""
-
-echo "Test 5.5: Current sweep (0.5A to 2.0A)"
-FAILED=0
-for current in 0.5 1.0 1.5 2.0; do
-  lager supply $SUPPLY_NET current $current --box $BOX --yes >/dev/null 2>&1 || FAILED=1
+BAD=0
+for _ in 1 2 3 4 5; do
+  sup enable --yes >/dev/null || BAD=$((BAD + 1))
+  [ "$(f output)" = ON ] || BAD=$((BAD + 1))
+  sup disable --yes >/dev/null || BAD=$((BAD + 1))
+  [ "$(f output)" = OFF ] || BAD=$((BAD + 1))
 done
-[ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"
-echo ""
-
-echo "Test 5.6: Rapid current changes (10 iterations)"
-FAILED=0
-for i in {1..10}; do
-  CURRENT=$(echo "scale=1; 0.5 + ($i % 3) * 0.5" | bc)
-  lager supply $SUPPLY_NET current $CURRENT --box $BOX --yes >/dev/null 2>&1 || FAILED=1
-done
-[ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"
-echo ""
+check "4.11 five enable/disable cycles, each read back" "$BAD wrong" [ "$BAD" -eq 0 ]
 
 # ============================================================
-# SECTION 6: PROTECTION FEATURES
+# SECTION 5: PROTECTION
 # ============================================================
-start_section "Protection Features"
-echo "========================================================================"
-echo "SECTION 6: PROTECTION FEATURES"
-echo "========================================================================"
-echo ""
+start_section "Protection"
 
-echo "Test 6.1: Set voltage with OVP"
-lager supply $SUPPLY_NET voltage 5.0 --ovp 6.0 --box $BOX --yes >/dev/null 2>&1 && track_test "pass" || track_test "fail"
-echo ""
-
-echo "Test 6.2: Set voltage with both OVP and OCP"
-lager supply $SUPPLY_NET voltage 3.3 --ovp 5.0 --ocp 2.0 --box $BOX --yes >/dev/null 2>&1 && track_test "pass" || track_test "fail"
-echo ""
-
-echo "Test 6.3: OVP below voltage (should fail)"
-lager supply $SUPPLY_NET voltage 5.0 --ovp 4.0 --box $BOX --yes 2>&1 | grep -qi "error\|cannot\|less than\|invalid" && track_test "pass" || track_test "fail"
-echo ""
-
-echo "Test 6.4: Clear OVP"
-lager supply $SUPPLY_NET clear-ovp --box $BOX >/dev/null && track_test "pass" || track_test "fail"
-echo ""
-
-echo "Test 6.5: Clear OCP"
-lager supply $SUPPLY_NET clear-ocp --box $BOX >/dev/null && track_test "pass" || track_test "fail"
-echo ""
-
-echo "Test 6.6: Rapid protection clears (10 iterations)"
-FAILED=0
-for i in {1..10}; do
-  lager supply $SUPPLY_NET clear-ovp --box $BOX >/dev/null || FAILED=1
-  lager supply $SUPPLY_NET clear-ocp --box $BOX >/dev/null || FAILED=1
-done
-[ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"
-echo ""
+OUT=$(sup voltage 3.0 --ovp 4.0 --yes); RC=$?
+check "5.1 voltage 3.0 V with OVP 4.0 V" "$OUT" succeeded "$RC" "$OUT"
+check "5.2 OVP reads 4.0 V, setpoint 3.0 V" "$(state_line)" \
+  [ "$(near "$(f ovp)" 4.0 0.002 && ok set_v_is 3.0)" = ok ]
+OUT=$(sup voltage 4.5 --yes); RC=$?
+check "5.3 4.5 V is refused above the 4.0 V OVP" "$OUT" refused "$RC" "$OUT" "exceed|OVP"
+check "5.4 setpoint still 3.0 V" "$(state_line)" set_v_is 3.0
+OUT=$(sup current 0.1 --ocp 0.3 --yes); RC=$?
+check "5.5 current 0.1 A with OCP 0.3 A" "$OUT" succeeded "$RC" "$OUT"
+check "5.6 OCP reads 0.3 A" "$(state_line)" near "$(f ocp)" 0.3 0.002
+OUT=$(sup clear-ovp); RC=$?
+check "5.7 clear-ovp" "$OUT" succeeded "$RC" "$OUT"
+OUT=$(sup clear-ocp); RC=$?
+check "5.8 clear-ocp" "$OUT" succeeded "$RC" "$OUT"
+check "5.9 clearing leaves 3.0 V / 0.1 A, OVP 4.0 V, OCP 0.3 A" "$(state_line)" \
+  [ "$(set_v_is 3.0 && set_i_is 0.1 && near "$(f ovp)" 4.0 0.002 && ok near "$(f ocp)" 0.3 0.002)" = ok ]
+OUT=$(sup set); RC=$?
+check "5.10 set (supply mode)" "$OUT" succeeded "$RC" "$OUT"
+check "5.11 setpoints survive set" "$(state_line)" \
+  [ "$(set_v_is 3.0 && ok set_i_is 0.1)" = ok ]
 
 # ============================================================
-# SECTION 7: COMBINED OPERATIONS
+# SECTION 6: RESTORE
 # ============================================================
-start_section "Combined Operations"
-echo "========================================================================"
-echo "SECTION 7: COMBINED OPERATIONS"
-echo "========================================================================"
-echo ""
+start_section "Restore"
 
-echo "Test 7.1: Set voltage and current together"
-FAILED=0
-lager supply $SUPPLY_NET voltage 3.3 --box $BOX --yes >/dev/null || FAILED=1
-lager supply $SUPPLY_NET current 1.0 --box $BOX --yes >/dev/null 2>&1 || FAILED=1
-[ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"
-echo ""
+restore_supply
+_HARNESS_CLEANUP=()
+A0=$(state_line)
+echo "After:  $A0"
+check "6.1 back to its starting state" "$A0" \
+  [ "$(field "$A0" output)/$(field "$A0" set_v)/$(field "$A0" set_i)/$(field "$A0" ocp)/$(field "$A0" ovp)" = "$(field "$S0" output)/$(field "$S0" set_v)/$(field "$S0" set_i)/$(field "$S0" ocp)/$(field "$S0" ovp)" ]
 
-echo "Test 7.2: Various V/I combinations"
-FAILED=0
-for combo in "1.8,0.5" "3.3,1.0" "5.0,2.0"; do
-  IFS=',' read -r voltage current <<< "$combo"
-  lager supply $SUPPLY_NET voltage $voltage --box $BOX --yes >/dev/null || FAILED=1
-  lager supply $SUPPLY_NET current $current --box $BOX --yes >/dev/null 2>&1 || FAILED=1
-done
-[ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"
-echo ""
-
-echo "Test 7.3: Full supply configuration (3.3V @ 1A)"
-FAILED=0
-lager supply $SUPPLY_NET disable --box $BOX --yes >/dev/null || FAILED=1
-lager supply $SUPPLY_NET voltage 3.3 --box $BOX --yes >/dev/null || FAILED=1
-lager supply $SUPPLY_NET current 1.0 --box $BOX --yes >/dev/null 2>&1 || FAILED=1
-lager supply $SUPPLY_NET clear-ovp --box $BOX >/dev/null || FAILED=1
-lager supply $SUPPLY_NET clear-ocp --box $BOX >/dev/null || FAILED=1
-lager supply $SUPPLY_NET enable --box $BOX --yes >/dev/null || FAILED=1
-[ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"
-echo ""
-
-echo "Test 7.4: State persistence during parameter changes"
-lager supply $SUPPLY_NET enable --box $BOX --yes >/dev/null
-STATE1=$(lager supply $SUPPLY_NET state --box $BOX 2>&1 | grep -iE "enabled:.*on" && echo "enabled" || echo "disabled")
-lager supply $SUPPLY_NET voltage 5.0 --box $BOX --yes >/dev/null
-STATE2=$(lager supply $SUPPLY_NET state --box $BOX 2>&1 | grep -iE "enabled:.*on" && echo "enabled" || echo "disabled")
-[ "$STATE1" = "$STATE2" ] && track_test "pass" || track_test "fail"
-echo ""
-
-# ============================================================
-# SECTION 8: BOUNDARY CASES
-# ============================================================
-start_section "Boundary Cases"
-echo "========================================================================"
-echo "SECTION 8: BOUNDARY CASES"
-echo "========================================================================"
-echo ""
-
-echo "Test 8.1: Zero voltage"
-lager supply $SUPPLY_NET voltage 0.0 --box $BOX --yes >/dev/null && track_test "pass" || track_test "fail"
-echo ""
-
-echo "Test 8.2: Very small voltage (0.001V)"
-lager supply $SUPPLY_NET voltage 0.001 --box $BOX --yes >/dev/null && track_test "pass" || track_test "fail"
-echo ""
-
-echo "Test 8.3: High precision voltage (3.141592V)"
-lager supply $SUPPLY_NET voltage 3.141592 --box $BOX --yes >/dev/null && track_test "pass" || track_test "fail"
-echo ""
-
-echo "Test 8.4: Very large voltage (100V) is refused"
-# Above every supported supply's range. It must be refused with an error, not
-# silently clamped and not a crash; this used to pass on any outcome.
-OUT=$(lager supply $SUPPLY_NET voltage 100.0 --box $BOX --yes 2>&1); RC=$?
-if [ "$RC" -ne 0 ] && ! echo "$OUT" | grep -q "Traceback"; then
-  track_test "pass"
-else
-  echo "  exit $RC: $(echo "$OUT" | head -2 | tr '\n' ' ')"
-  track_test "fail"
-fi
-echo ""
-
-# ============================================================
-# SECTION 9: STRESS TESTS
-# ============================================================
-start_section "Stress Tests"
-echo "========================================================================"
-echo "SECTION 9: STRESS TESTS"
-echo "========================================================================"
-echo ""
-
-echo "Test 9.1: Rapid voltage changes (20 iterations)"
-FAILED=0
-START_TIME=$(get_timestamp_ms)
-for i in {1..20}; do
-  VOLTAGE=$(echo "scale=1; 1.0 + ($i % 5) * 1.0" | bc)
-  lager supply $SUPPLY_NET voltage $VOLTAGE --box $BOX --yes >/dev/null 2>&1 || FAILED=1
-done
-END_TIME=$(get_timestamp_ms)
-ELAPSED_MS=$(( END_TIME - START_TIME ))
-echo "  Completed 20 changes in ${ELAPSED_MS}ms (avg: $((ELAPSED_MS / 20))ms)"
-[ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"
-echo ""
-
-echo "Test 9.2: Rapid current changes (20 iterations)"
-FAILED=0
-for i in {1..20}; do
-  CURRENT=$(echo "scale=1; 0.5 + ($i % 3) * 0.5" | bc)
-  lager supply $SUPPLY_NET current $CURRENT --box $BOX --yes >/dev/null 2>&1 || FAILED=1
-done
-[ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"
-echo ""
-
-echo "Test 9.3: Enable/disable stress (20 cycles)"
-FAILED=0
-for i in {1..20}; do
-  lager supply $SUPPLY_NET disable --box $BOX --yes >/dev/null 2>&1 || FAILED=1
-  lager supply $SUPPLY_NET enable --box $BOX --yes >/dev/null 2>&1 || FAILED=1
-done
-[ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"
-echo ""
-
-echo "Test 9.4: Mixed parameter stress (15 iterations)"
-FAILED=0
-for i in {1..15}; do
-  VOLTAGE=$(echo "scale=1; 2.0 + ($i % 3) * 1.0" | bc)
-  CURRENT=$(echo "scale=1; 0.5 + ($i % 2) * 0.5" | bc)
-  lager supply $SUPPLY_NET voltage $VOLTAGE --box $BOX --yes >/dev/null 2>&1 || FAILED=1
-  lager supply $SUPPLY_NET current $CURRENT --box $BOX --yes >/dev/null 2>&1 || FAILED=1
-done
-[ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"
-echo ""
-
-# ============================================================
-# SECTION 10: PERFORMANCE BENCHMARKS
-# ============================================================
-start_section "Performance Benchmarks"
-echo "========================================================================"
-echo "SECTION 10: PERFORMANCE BENCHMARKS"
-echo "========================================================================"
-echo ""
-
-echo "Test 10.1: Voltage write latency (5 iterations average)"
-TOTAL_TIME=0
-FAILED=0
-for i in {1..5}; do
-  START_TIME=$(get_timestamp_ms)
-  lager supply $SUPPLY_NET voltage 3.3 --box $BOX --yes >/dev/null || FAILED=1
-  END_TIME=$(get_timestamp_ms)
-  TOTAL_TIME=$((TOTAL_TIME + (END_TIME - START_TIME)))
-done
-AVG_MS=$((TOTAL_TIME / 5))
-echo "  Average voltage write time: ${AVG_MS}ms"
-[ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"
-echo ""
-
-echo "Test 10.2: State query latency (5 iterations average)"
-TOTAL_TIME=0
-FAILED=0
-for i in {1..5}; do
-  START_TIME=$(get_timestamp_ms)
-  lager supply $SUPPLY_NET state --box $BOX >/dev/null || FAILED=1
-  END_TIME=$(get_timestamp_ms)
-  TOTAL_TIME=$((TOTAL_TIME + (END_TIME - START_TIME)))
-done
-AVG_MS=$((TOTAL_TIME / 5))
-echo "  Average state query time: ${AVG_MS}ms"
-[ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"
-echo ""
-
-echo "Test 10.3: Enable/disable latency (5 cycles average)"
-TOTAL_TIME=0
-FAILED=0
-for i in {1..5}; do
-  START_TIME=$(get_timestamp_ms)
-  lager supply $SUPPLY_NET disable --box $BOX --yes >/dev/null || FAILED=1
-  lager supply $SUPPLY_NET enable --box $BOX --yes >/dev/null || FAILED=1
-  END_TIME=$(get_timestamp_ms)
-  TOTAL_TIME=$((TOTAL_TIME + (END_TIME - START_TIME)))
-done
-AVG_MS=$((TOTAL_TIME / 5))
-echo "  Average enable/disable cycle time: ${AVG_MS}ms"
-[ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"
-echo ""
-
-# ============================================================
-# SECTION 11: ERROR RECOVERY
-# ============================================================
-start_section "Error Recovery"
-echo "========================================================================"
-echo "SECTION 11: ERROR RECOVERY"
-echo "========================================================================"
-echo ""
-
-echo "Test 11.1: Invalid voltage is refused, then a valid one is accepted"
-# The invalid command must be REJECTED; a recovery check after an input that
-# was silently accepted proves nothing.
-lager supply $SUPPLY_NET voltage -100.0 --box $BOX --yes >/dev/null 2>&1 && REJECTED=0 || REJECTED=1
-lager supply $SUPPLY_NET voltage 3.3 --box $BOX --yes >/dev/null && RECOVERED=1 || RECOVERED=0
-[ "$REJECTED" -eq 1 ] && [ "$RECOVERED" -eq 1 ] && track_test "pass" || track_test "fail"
-echo ""
-
-echo "Test 11.2: Invalid current is refused, then a valid one is accepted"
-lager supply $SUPPLY_NET current -50.0 --box $BOX --yes >/dev/null 2>&1 && REJECTED=0 || REJECTED=1
-lager supply $SUPPLY_NET current 1.0 --box $BOX --yes >/dev/null 2>&1 && RECOVERED=1 || RECOVERED=0
-[ "$REJECTED" -eq 1 ] && [ "$RECOVERED" -eq 1 ] && track_test "pass" || track_test "fail"
-echo ""
-
-echo "Test 11.3: State still reads after a refused command"
-lager supply $SUPPLY_NET voltage -999.0 --box $BOX --yes >/dev/null 2>&1 && REJECTED=0 || REJECTED=1
-lager supply $SUPPLY_NET state --box $BOX >/dev/null 2>&1 && READS=1 || READS=0
-[ "$REJECTED" -eq 1 ] && [ "$READS" -eq 1 ] && track_test "pass" || track_test "fail"
-echo ""
-
-# ============================================================
-# SECTION 12: POWER RAMPING
-# ============================================================
-start_section "Power Ramping"
-echo "========================================================================"
-echo "SECTION 12: POWER RAMPING"
-echo "========================================================================"
-echo ""
-
-echo "Test 12.1: Voltage ramp-up (0V to 5V)"
-FAILED=0
-lager supply $SUPPLY_NET enable --box $BOX --yes >/dev/null || FAILED=1
-for voltage in 0.0 1.0 2.0 3.0 4.0 5.0; do
-  lager supply $SUPPLY_NET voltage $voltage --box $BOX --yes >/dev/null || FAILED=1
-done
-[ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"
-echo ""
-
-echo "Test 12.2: Voltage ramp-down (5V to 0V)"
-FAILED=0
-for voltage in 5.0 4.0 3.0 2.0 1.0 0.0; do
-  lager supply $SUPPLY_NET voltage $voltage --box $BOX --yes >/dev/null || FAILED=1
-done
-[ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"
-echo ""
-
-echo "Test 12.3: Power cycling (5 cycles)"
-FAILED=0
-lager supply $SUPPLY_NET voltage 3.3 --box $BOX --yes >/dev/null || FAILED=1
-lager supply $SUPPLY_NET current 1.0 --box $BOX --yes >/dev/null 2>&1 || FAILED=1
-for i in {1..5}; do
-  lager supply $SUPPLY_NET enable --box $BOX --yes >/dev/null || FAILED=1
-  sleep 0.1
-  lager supply $SUPPLY_NET disable --box $BOX --yes >/dev/null || FAILED=1
-  sleep 0.1
-done
-[ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"
-echo ""
-
-# ============================================================
-# SECTION 13: REGRESSION TESTS
-# ============================================================
-start_section "Regression Tests"
-echo "========================================================================"
-echo "SECTION 13: REGRESSION TESTS"
-echo "========================================================================"
-echo ""
-
-echo "Test 13.1: Negative voltage rejection"
-lager supply $SUPPLY_NET voltage -1.0 --box $BOX 2>&1 | grep -qi "error\|invalid\|negative\|No such option" && track_test "pass" || track_test "fail"
-echo ""
-
-echo "Test 13.2: Enable state persistence across voltage changes"
-lager supply $SUPPLY_NET enable --box $BOX --yes >/dev/null
-STATE1=$(lager supply $SUPPLY_NET state --box $BOX 2>&1 | grep -iE "enabled:.*on" && echo "enabled" || echo "disabled")
-lager supply $SUPPLY_NET voltage 3.3 --box $BOX --yes >/dev/null
-STATE2=$(lager supply $SUPPLY_NET state --box $BOX 2>&1 | grep -iE "enabled:.*on" && echo "enabled" || echo "disabled")
-[ "$STATE1" = "$STATE2" ] && track_test "pass" || track_test "fail"
-echo ""
-
-echo "Test 13.3: Protection clear doesn't affect V/I settings"
-lager supply $SUPPLY_NET voltage 3.3 --box $BOX --yes >/dev/null
-lager supply $SUPPLY_NET current 1.5 --box $BOX --yes >/dev/null 2>&1
-V_BEFORE=$(lager supply $SUPPLY_NET voltage --box $BOX 2>&1 | grep -oE '[0-9]+\.[0-9]+' | head -1)
-lager supply $SUPPLY_NET clear-ovp --box $BOX >/dev/null
-lager supply $SUPPLY_NET clear-ocp --box $BOX >/dev/null
-V_AFTER=$(lager supply $SUPPLY_NET voltage --box $BOX 2>&1 | grep -oE '[0-9]+\.[0-9]+' | head -1)
-# Allow for small tolerance (0.5% or 0.01V, whichever is larger) due to instrument precision
-if [ -n "$V_BEFORE" ] && [ -n "$V_AFTER" ]; then
-  DIFF=$(echo "scale=4; if ($V_BEFORE > $V_AFTER) $V_BEFORE - $V_AFTER else $V_AFTER - $V_BEFORE" | bc)
-  TOLERANCE=$(echo "scale=4; pct = 3.3 * 0.005; if (pct > 0.01) pct else 0.01" | bc)
-  IS_CLOSE=$(echo "$DIFF <= $TOLERANCE" | bc)
-  [ "$IS_CLOSE" = "1" ] && track_test "pass" || track_test "fail"
-else
-  track_test "fail"
-fi
-echo ""
-
-echo "Test 13.4: Parameter consistency across multiple reads"
-lager supply $SUPPLY_NET voltage 5.0 --box $BOX --yes >/dev/null
-READBACK1=$(lager supply $SUPPLY_NET voltage --box $BOX 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)
-READBACK2=$(lager supply $SUPPLY_NET voltage --box $BOX 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)
-READBACK3=$(lager supply $SUPPLY_NET voltage --box $BOX 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)
-[ "$READBACK1" = "$READBACK2" ] && [ "$READBACK2" = "$READBACK3" ] && track_test "pass" || track_test "fail"
-echo ""
-
-# ============================================================
-# CLEANUP
-# ============================================================
-echo "========================================================================"
-echo "CLEANUP"
-echo "========================================================================"
-echo ""
-
-echo "Setting supply to safe state..."
-lager supply $SUPPLY_NET disable --box $BOX --yes >/dev/null
-lager supply $SUPPLY_NET voltage 0.0 --box $BOX --yes >/dev/null 2>&1 || true
-lager supply $SUPPLY_NET current 0.1 --box $BOX --yes >/dev/null 2>&1 || true
-lager supply $SUPPLY_NET clear-ovp --box $BOX >/dev/null 2>&1 || true
-lager supply $SUPPLY_NET clear-ocp --box $BOX >/dev/null 2>&1 || true
-echo -e "${GREEN}[OK] Cleanup complete${NC}"
-echo ""
-
-echo "Final supply state:"
-lager supply $SUPPLY_NET state --box $BOX
-echo ""
-
-# ============================================================
-# TEST SUMMARY
-# ============================================================
-echo "========================================================================"
-echo "TEST SUITE COMPLETED"
-echo "========================================================================"
-echo ""
-
-# Print the summary table
 print_summary
-
-# Exit with appropriate status code
 exit_with_status
