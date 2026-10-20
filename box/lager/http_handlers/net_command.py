@@ -1319,7 +1319,10 @@ def _scope_measure_all(dev):
     and the CLI both print the message, and a bare count is not an answer to
     somebody who typed `measure all`.
     """
-    values = dev.measure_all() or {}
+    # The daemon sends an absent quantity as null; it is left out here, as
+    # the docstring promises, rather than formatted as a number.
+    values = {name: value for name, value in (dev.measure_all() or {}).items()
+              if value is not None}
     listed = ", ".join(
         "%s %g %s" % (name, value, _BULK_MEASURE_UNITS.get(name, ""))
         for name, value in values.items())

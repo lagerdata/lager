@@ -130,6 +130,15 @@ class TestEveryDaemonScopeTakesThem:
         _run("rigol_ch2", "measure_all", {}, device, role="scope-channel")
         device.measure_all.assert_called_once()
 
+    def test_a_quantity_the_set_lacks_is_left_out_not_formatted(self):
+        # The daemon sends one as null: a Rigol's rise and fall always, any
+        # scope's period on a DC level.
+        device = mock.MagicMock()
+        device.measure_all.return_value = {"vpp": 1.0, "rise_time": None, "period": None}
+        result = _run("rigol_ch2", "measure_all", {}, device, role="scope-channel")
+        assert result["value"] == {"vpp": 1.0}
+        assert "rise_time" not in result["message"]
+
 
 class TestARigolNetReachesOnlyWhatItsDriverHas:
     """Whatever the handler sends reaches the Rigol driver by name.

@@ -148,6 +148,10 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   - A raw query the scope rejects, through `net.query`, now names that query and the
     scope's error.
   - `measure_vavg` now asks for `:MEASure:VAVG?`, the header the scope answers (#741).
+- **The `/scope` page's measurement panel no longer fails when a quantity is absent.**
+  The box formatted every value in the set as a number. One the daemon left out, such as
+  the period of a DC level, replaced the whole panel with "must be real number, not
+  NoneType". Absent quantities are now left out of the reply, and the panel shows a dash.
 - **`measurement.all()` on a Rigol's instrument net is refused.** It silently returned
   channel 1's values. It now says to use a channel net, as the CLI does.
 - **The oscilloscope page connects by itself and says when its readings are old.** It
