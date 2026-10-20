@@ -84,6 +84,16 @@ fn changes_cached_settings(command: &str) -> bool {
     })
 }
 
+/// Whether a raw command sets the trigger type, which opens the Trigger menu.
+fn sets_trigger_type(command: &str) -> bool {
+    command.split(';').any(|part| {
+        let part = part.trim().to_ascii_uppercase();
+        let part = part.strip_prefix(':').unwrap_or(&part);
+        let head = part.split_whitespace().next().unwrap_or("");
+        !part.contains('?') && matches!(head, "TRIG:MODE" | "TRIGGER:MODE")
+    })
+}
+
 /// How long the cross-process lock is waited for at open.
 const LOCK_WAIT: Duration = Duration::from_secs(2);
 /// What the scope answers for a measurement it cannot make.
@@ -261,8 +271,15 @@ fn open_named_card(spec: &str, open_card: &CardOpener) -> Card {
 ///
 /// With `may_switch_hdmi`, a card that sees no picture at all has the
 /// scope's HDMI output switched on, which a power cycle turns off, and the
-/// flag is cleared: it is done once per open, so a scope with no card on its
-/// HDMI is not sent through its menus at every start.
+/// flag is cleared: it is done once per open, and again on a start asked for
+/// while the picture is missing, so a scope with no card on its HDMI is not
+/// sent through its menus at every retry.
+///
+/// When switching brings no picture either, the output is left as switched
+/// and nothing more is pressed. The keys leave the HDMI page shown, and with
+/// no picture there is no seeing whether they landed: a MOFF pressed blind
+/// toggles, and on the bench one opened the Measure menu. Once the picture
+/// is back, pairing finds the page over the grid and hides it.
 fn pair(
     link: &Arc<Mutex<Box<dyn Scpi>>>,
     model: &str,
@@ -279,12 +296,6 @@ fn pair(
             std::thread::sleep(HDMI_LOCK_WAIT);
             calibrated = calibrate(link, video.as_ref());
             switched = true;
-            if calibrated.as_ref().is_err_and(|e| !super::unit_is_gone(e)) {
-                // The output was on already, and the picture is missing for
-                // another reason, the cable or the card: put it back.
-                toggle_hdmi_output(link.as_ref())?;
-                press_key(link.as_ref(), "MOFF")?;
-            }
         }
     }
     match calibrated {
@@ -304,8 +315,7 @@ fn pair(
         Err(e) if super::unit_is_gone(&e) => Err(e),
         Err(e) => {
             let tried = if switched {
-                "; switching the scope's HDMI output on did not bring a picture, so it was left \
-                 as it was"
+                "; pressing the scope's keys for its HDMI output did not bring a picture either"
             } else {
                 ""
             };
@@ -1028,7 +1038,10 @@ fn settled_frame(video: &dyn FrameSource) -> Result<frame::VideoFrame> {
 /// Checked against the screen of an MSO5074 on firmware 00.01.03.00.03.
 const HDMI_OUTPUT_KEYS: [&str; 4] = ["UTILity", "F1", "F6", "F1"];
 /// Between key presses, for the scope to draw the page the next key acts on.
-const KEY_PAUSE: Duration = Duration::from_millis(300);
+/// Pressed about 0.1 s apart on the bench, the keys landed on the wrong
+/// pages and left the System information dialog open; 2 s apart they did
+/// not.
+const KEY_PAUSE: Duration = Duration::from_secs(1);
 /// For the capture card to lock onto the picture once the output is on.
 const HDMI_LOCK_WAIT: Duration = Duration::from_secs(3);
 
@@ -1371,7 +1384,15 @@ impl Oscilloscope for RigolMso5000 {
 
     fn set_trigger_source(&mut self, trigger_source: ChannelId) -> Result<()> {
         let i = self.index(trigger_source)?;
-        self.apply(":TRIGger:MODE EDGE")?;
+        // Setting the trigger type opens the scope's Trigger menu over the
+        // right fifth of its screen, even to the type it already has, and
+        // the menu's yellow CH1 label kept the watch for it from firing.
+        // Sent only to change the type, and then the screen is checked.
+        let mode = self.link().query(":TRIGger:MODE?")?;
+        if !mode.trim().eq_ignore_ascii_case("EDGE") {
+            self.apply(":TRIGger:MODE EDGE")?;
+            self.hide_side_menu()?;
+        }
         self.apply(&format!(":TRIGger:EDGE:SOURce CHANnel{}", i + 1))?;
         self.settings.trigger_source = i;
         self.settings.trigger_level = self.query_f64(":TRIGger:EDGE:LEVel?")?;
@@ -1499,6 +1520,13 @@ impl Oscilloscope for RigolMso5000 {
     /// offset, set with `set_time_offset`; the percentage a PicoScope takes
     /// here is not needed.
     fn start_triggered_capture(&mut self, _trigger_position_percent: f64) -> Result<()> {
+        // A start is someone asking for the live view: with its picture
+        // missing, the HDMI output is worth switching on again, as the cable
+        // may be back. That is the remote way back after a power cycle with
+        // the cable out.
+        if matches!(self.unpaired, Some(Unpaired { retry: Retry::Pair(_), .. })) {
+            self.may_switch_hdmi = true;
+        }
         self.pair_again()?;
         let command = if self.settings.capture_mode == CaptureMode::Single {
             ":SINGle"
@@ -1604,8 +1632,9 @@ impl Oscilloscope for RigolMso5000 {
     fn live_view_problem(&self) -> Option<String> {
         self.unpaired.as_ref().map(|u| match u.retry {
             Retry::Pair(_) => format!(
-                "{}. Turn on the scope's HDMI output (Utility > IO > HDMI > Output), then start \
-                 acquisition again",
+                "{}. Check the HDMI cable from the scope to the capture card, then start \
+                 acquisition again (`lager scope <net> start`, or Start on the page): a start \
+                 switches the scope's HDMI output on when there is no picture",
                 u.reason
             ),
             Retry::Open(_) => format!(
@@ -1723,6 +1752,9 @@ impl Oscilloscope for RigolMso5000 {
                 Some(self.query_checked(command)?)
             } else {
                 self.apply(command)?;
+                if sets_trigger_type(command) {
+                    self.hide_side_menu()?;
+                }
                 None
             };
             if changes_cached_settings(command) {

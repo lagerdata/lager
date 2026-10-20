@@ -12,6 +12,22 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Fixed
+
+- **A Rigol MSO5000 with no HDMI picture is no longer left with its Measure menu open.**
+  When pressing the HDMI output keys brought no picture, for example with the HDMI cable
+  out, the box set the output back and pressed MOFF without seeing the screen, which
+  opened the Measure menu. It now presses nothing more, and paces the keys 1 s apart. Each
+  start that finds no picture tries the keys again, so after plugging the cable back,
+  `lager scope NET start` or **Start** on the page brings the live view back with no visit
+  to the scope (#742).
+- **A Rigol MSO5000's trigger source no longer opens the Trigger menu over the live view.**
+  `trigger edge --source`, `stream start` and the page's **Start** each set the trigger type
+  to edge. Setting the type opens the scope's Trigger menu, even when the type is already
+  edge, and the menu covered the right fifth of the live view until the daemon restarted.
+  The type is now set only when it changes. The screen is then checked for the menu, which
+  is hidden, as is one opened by a raw `:TRIGger:MODE` (#736).
+
 ## [0.59.0] - 2026-10-21
 
 ### Added

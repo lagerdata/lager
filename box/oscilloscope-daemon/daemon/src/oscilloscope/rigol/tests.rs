@@ -77,6 +77,9 @@ struct Instrument {
     /// caught mid-redraw does; then the bar as it is.
     torn_bar: Option<usize>,
     torn_next: Option<usize>,
+    /// The trigger type; setting it opens the Trigger menu, as on the
+    /// MSO5074, even to the type it already is.
+    trigger_mode: &'static str,
 }
 
 impl Instrument {
@@ -117,6 +120,7 @@ impl Instrument {
             record: (0..10).map(|i| 127 + i * 4).collect(),
             torn_bar: None,
             torn_next: None,
+            trigger_mode: "EDGE",
         }
     }
 
@@ -185,7 +189,15 @@ impl Instrument {
             ":DISPLAY:TYPE" | ":DISPLAY:GRADING:TIME" | ":DISPLAY:WBRIGHTNESS" | ":DISPLAY:CLEAR" => true,
             ":TIMEBASE:MAIN:SCALE" => number().map(|v| self.time_scale = v).is_some(),
             ":TIMEBASE:MAIN:OFFSET" => number().map(|v| self.time_offset = v).is_some(),
-            ":TRIGGER:MODE" => arg == "EDGE",
+            ":TRIGGER:MODE" => match arg {
+                "EDGE" | "SPI" => {
+                    self.trigger_mode = if arg == "EDGE" { "EDGE" } else { "SPI" };
+                    self.menu = true;
+                    self.page = "trigger";
+                    true
+                }
+                _ => false,
+            },
             ":TRIGGER:EDGE:LEVEL" => number()
                 .map(|v| {
                     // Clamped to the screen of the source.
@@ -355,6 +367,7 @@ impl Instrument {
             ":TRIGGER:EDGE:SOURCE?" => format!("CHAN{}", self.source + 1),
             ":TRIGGER:EDGE:SLOPE?" => self.slope.into(),
             ":TRIGGER:SWEEP?" => self.sweep.into(),
+            ":TRIGGER:MODE?" => self.trigger_mode.into(),
             ":ACQUIRE:SRATE?" => "1.000000e+09".into(),
             ":MEASURE:SOURCE?" => format!("CHAN{}", self.measure_source + 1),
             ":MEASURE:VMAX?" => format!("{:e}", channel(self.measure_source).signal),
@@ -795,32 +808,87 @@ fn a_scope_with_no_picture_opens_without_a_live_view_and_pairs_when_it_returns()
     let mut bench = bench_with(instrument).expect("opens without the picture");
     let problem = bench.scope.live_view_problem().expect("says why there is no live view");
     assert!(problem.contains("not showing this scope"), "{problem}");
-    assert!(problem.contains("Utility > IO > HDMI > Output"), "{problem}");
-    // Switching the output did not help, so it was put back as it was.
-    assert!(problem.contains("did not bring a picture"), "{problem}");
-    assert_eq!(keys_pressed(&bench), ["UTILity", "F1", "F6", "F1", "UTILity", "F1", "F6", "F1", "MOFF"]);
-    {
-        let instrument = bench.instrument.lock().unwrap();
-        assert!(instrument.on_hdmi && !instrument.menu);
-    }
+    assert!(problem.contains("did not bring a picture either"), "{problem}");
+    assert!(problem.contains("start"), "names the way back: {problem}");
+    // The output was switched once, and nothing pressed blind after: with
+    // no picture, a MOFF could open a menu as well as close one.
+    assert_eq!(keys_pressed(&bench), ["UTILity", "F1", "F6", "F1"]);
+    assert_eq!(bench.moff_presses(), 0);
     assert_eq!(bench.scope.measure_one(ChannelId::Alphabetic('A'), Measurement::Vmax).unwrap().unwrap(), Some(1.0));
 
-    // Starting still runs the scope, and tries the card again, but not the
-    // scope's menus.
+    // A start with the cable still out tries the output once more, and
+    // presses nothing blind.
     bench.scope.start_triggered_capture(50.0).unwrap();
-    assert_eq!(keys_pressed(&bench).len(), 9);
+    assert_eq!(keys_pressed(&bench).len(), 8);
+    assert_eq!(bench.moff_presses(), 0);
     assert_eq!(bench.instrument.lock().unwrap().status, "AUTO");
-    assert!(bench.scope.live_view_problem().is_some());
     let message = format!("{:#}", bench.scope.get_triggered_data().unwrap_err());
     assert!(message.contains("no live view"), "{message}");
 
-    // The cable back: the next start pairs, and captures follow.
+    // The cable back: the next start pairs, switching the output on if it
+    // is off, and hides the HDMI page the keys left over the grid.
     bench.instrument.lock().unwrap().cable = true;
     bench.scope.start_triggered_capture(50.0).unwrap();
     assert!(bench.scope.live_view_problem().is_none());
-    assert!(bench.scope.screen.is_some());
-    let frame = bench.capture();
-    assert!(!frame.channels.is_empty());
+    {
+        let instrument = bench.instrument.lock().unwrap();
+        assert!(instrument.on_hdmi && !instrument.menu, "output on, no menu");
+    }
+    let (traced, columns) = traced_columns(&bench.capture());
+    assert_eq!(traced, columns);
+}
+
+#[test]
+fn a_power_cycle_with_the_cable_out_comes_back_with_a_start_alone() {
+    // After a power cycle the output is off; the cable is out as well.
+    let mut instrument = Instrument::mso5204();
+    instrument.on_hdmi = false;
+    instrument.cable = false;
+    let mut bench = bench_with(instrument).expect("opens");
+    assert!(bench.scope.live_view_problem().is_some());
+    assert_eq!(bench.moff_presses(), 0);
+    // The cable goes back in; one start is all it takes.
+    bench.instrument.lock().unwrap().cable = true;
+    bench.scope.start_triggered_capture(50.0).unwrap();
+    assert!(bench.scope.live_view_problem().is_none());
+    let instrument = bench.instrument.lock().unwrap();
+    assert!(instrument.on_hdmi && !instrument.menu);
+}
+
+#[test]
+fn setting_the_source_of_an_edge_trigger_opens_no_menu() {
+    let mut bench = bench();
+    bench.scope.enable_channel(ChannelId::Alphabetic('B')).unwrap();
+    let before = bench.sent().len();
+    bench.scope.set_trigger_source(ChannelId::Alphabetic('B')).unwrap();
+    let sent = bench.sent()[before..].to_vec();
+    assert!(!sent.iter().any(|c| c.starts_with(":TRIGger:MODE")), "{sent:?}");
+    assert!(!bench.instrument.lock().unwrap().menu);
+    assert_eq!(bench.instrument.lock().unwrap().source, 1);
+}
+
+#[test]
+fn changing_the_trigger_type_hides_the_menu_it_opens() {
+    let mut bench = bench();
+    bench.instrument.lock().unwrap().trigger_mode = "SPI";
+    bench.scope.set_trigger_source(ChannelId::Alphabetic('A')).unwrap();
+    let instrument = bench.instrument.lock().unwrap();
+    assert_eq!(instrument.trigger_mode, "EDGE");
+    assert!(!instrument.menu, "the Trigger menu was hidden");
+    assert_eq!(instrument.status, "AUTO", "left running");
+    drop(instrument);
+    assert_eq!(bench.moff_presses(), 1, "one MOFF, pressed once the menu was seen");
+}
+
+#[test]
+fn a_raw_trigger_type_change_hides_the_menu_it_opens() {
+    let mut bench = bench();
+    Oscilloscope::scpi(&mut bench.scope, ":TRIGger:MODE SPI").unwrap().unwrap();
+    assert!(!bench.instrument.lock().unwrap().menu);
+    assert!(sets_trigger_type("trig:mode edge"));
+    assert!(sets_trigger_type(":CHANnel1:SCALe 1;:TRIGger:MODE SPI"));
+    assert!(!sets_trigger_type(":TRIGger:MODE?"));
+    assert!(!sets_trigger_type(":TRIGger:EDGE:SOURce CHANnel1"));
 }
 
 /// A scope whose capture card, `usb:3-3`, opens only while `plugged` is
