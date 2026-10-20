@@ -27,6 +27,14 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   edge, and the menu covered the right fifth of the live view until the daemon restarted.
   The type is now set only when it changes. The screen is then checked for the menu, which
   is hidden, as is one opened by a raw `:TRIGger:MODE` (#736).
+- **A Rigol MSO5000 follows settings changed at its front panel.** The daemon read the
+  scope's settings only when it opened it and after its own commands. A V/div knob turned
+  at the scope left `status` on the old scale, and the live view converted with it: the
+  trace was drawn twice as tall, with a wrong clip level. The daemon now reads the
+  settings back one query at a time, every 150 ms, idle or acquiring: each shown channel's
+  scale, offset and probe, every channel's display, the timebase and the trigger. A change
+  shows within about two seconds. A scope that stops answering while stopped is noticed
+  the same way, where it used to go unnoticed until the next command (#738).
 
 ## [0.59.0] - 2026-10-21
 

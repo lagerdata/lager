@@ -219,6 +219,34 @@ pub struct RigolMso5000 {
     settings: Settings,
     palette: Palette,
     work: Mutex<Work>,
+    /// The next setting `refresh_settings` reads, in `refresh_round`.
+    refresh_next: usize,
+}
+
+/// A setting read back from the scope, one per refresh step.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Refresh {
+    Display(usize),
+    Scale(usize),
+    Offset(usize),
+    Probe(usize),
+    TimeScale,
+    TimeOffset,
+    TriggerLevel,
+    TriggerSource,
+    Sweep,
+}
+
+/// Between two refresh steps. Each is one query of about 20 ms, so a knob
+/// turned at the scope shows in `status` and the live view within a round,
+/// about 2 s with one channel shown, without the live view waiting long on
+/// the link.
+const REFRESH_EVERY: Duration = Duration::from_millis(150);
+
+/// Whether `new` differs from what is cached, as the scope's own rounding
+/// would show it.
+fn differs(old: f64, new: f64) -> bool {
+    (old - new).abs() > 1e-9 * old.abs().max(new.abs()).max(1e-12)
 }
 
 struct Screen {
@@ -589,6 +617,7 @@ impl RigolMso5000 {
                 stale_through: newest + settle,
                 ..Work::default()
             }),
+            refresh_next: 0,
         })
     }
 
@@ -896,6 +925,27 @@ impl RigolMso5000 {
             }
         }
         Ok(reply)
+    }
+
+    /// The settings a refresh round reads: every channel's display, the
+    /// scale, offset and probe of each one shown, the timebase and the
+    /// trigger. A hidden channel is not drawn, so its scale can wait.
+    fn refresh_round(&self) -> Vec<Refresh> {
+        let mut round = Vec::new();
+        for (i, channel) in self.settings.channels.iter().enumerate() {
+            round.push(Refresh::Display(i));
+            if channel.enabled {
+                round.extend([Refresh::Scale(i), Refresh::Offset(i), Refresh::Probe(i)]);
+            }
+        }
+        round.extend([
+            Refresh::TimeScale,
+            Refresh::TimeOffset,
+            Refresh::TriggerLevel,
+            Refresh::TriggerSource,
+            Refresh::Sweep,
+        ]);
+        round
     }
 
     fn not_offered(&self, what: &str) -> anyhow::Error {
@@ -1750,6 +1800,91 @@ impl Oscilloscope for RigolMso5000 {
                 self.apply(":ACQuire:TYPE AVERages")?;
                 self.apply(&format!(":ACQuire:AVERages {average_count}"))
             }
+        })())
+    }
+
+    fn refresh_interval(&self) -> Option<Duration> {
+        Some(REFRESH_EVERY)
+    }
+
+    /// The scope's front panel changes its settings with no word to the
+    /// daemon, which converted the live view with the old ones: a V/div
+    /// turned at the scope drew the trace twice as tall, and `status` kept
+    /// the old scale until a command reached the scope.
+    fn refresh_settings(&mut self) -> Option<Result<bool>> {
+        Some((|| {
+            let round = self.refresh_round();
+            let item = round[self.refresh_next % round.len()];
+            self.refresh_next = (self.refresh_next + 1) % round.len();
+            let s = &self.settings;
+            let (what, changed) = match item {
+                Refresh::Display(i) => {
+                    let on = self.query_f64(&format!(":CHANnel{}:DISPlay?", i + 1))? != 0.0;
+                    let changed = on != s.channels[i].enabled;
+                    self.settings.channels[i].enabled = on;
+                    ("a channel's display", changed)
+                }
+                Refresh::Scale(i) => {
+                    let new = self.query_f64(&format!(":CHANnel{}:SCALe?", i + 1))?;
+                    let changed = differs(s.channels[i].volts_per_div, new);
+                    self.settings.channels[i].volts_per_div = new;
+                    ("a channel's volts/div", changed)
+                }
+                Refresh::Offset(i) => {
+                    let new = self.query_f64(&format!(":CHANnel{}:OFFSet?", i + 1))?;
+                    let changed = differs(s.channels[i].offset, new);
+                    self.settings.channels[i].offset = new;
+                    ("a channel's offset", changed)
+                }
+                Refresh::Probe(i) => {
+                    let new = self.query_f64(&format!(":CHANnel{}:PROBe?", i + 1))?;
+                    let changed = differs(s.channels[i].probe, new);
+                    self.settings.channels[i].probe = new;
+                    ("a channel's probe", changed)
+                }
+                Refresh::TimeScale => {
+                    let new = self.query_f64(":TIMebase:MAIN:SCALe?")?;
+                    let changed = differs(s.time_per_div, new);
+                    self.settings.time_per_div = new;
+                    ("the timebase", changed)
+                }
+                Refresh::TimeOffset => {
+                    let new = self.query_f64(":TIMebase:MAIN:OFFSet?")?;
+                    let changed = differs(s.time_offset, new);
+                    self.settings.time_offset = new;
+                    ("the time offset", changed)
+                }
+                Refresh::TriggerLevel => {
+                    let new = self.query_f64(":TRIGger:EDGE:LEVel?")?;
+                    let changed = differs(s.trigger_level, new);
+                    self.settings.trigger_level = new;
+                    ("the trigger level", changed)
+                }
+                Refresh::TriggerSource => {
+                    let reply = self.link().query(":TRIGger:EDGE:SOURce?")?;
+                    let new = parse_source(&reply).filter(|&i| i < s.channels.len());
+                    let changed = new.is_some_and(|i| i != s.trigger_source);
+                    if let Some(i) = new {
+                        self.settings.trigger_source = i;
+                    }
+                    ("the trigger source", changed)
+                }
+                Refresh::Sweep => {
+                    let new = parse_sweep(&self.link().query(":TRIGger:SWEep?")?);
+                    let changed = new != s.capture_mode;
+                    self.settings.capture_mode = new;
+                    ("the trigger sweep", changed)
+                }
+            };
+            if changed {
+                tracing::info!("{what} was changed at the scope; following it");
+                if matches!(item, Refresh::Display(_) | Refresh::TimeScale) {
+                    self.refresh_sample_rate();
+                }
+                // Frames on their way were drawn at the old setting.
+                self.mark_stale();
+            }
+            Ok(changed)
         })())
     }
 

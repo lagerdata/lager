@@ -816,7 +816,7 @@ lager scope ANALOG1 cursor hide --box my-lager-box
 
 Stream oscilloscope data in real time from a PicoScope or a Rigol MSO5000. A daemon on the Lager Box owns the scope, and a web page on the box shows the trace.
 
-A Rigol MSO5000 streams the same way once it is paired with a USB HDMI capture card with `lager nets set-capture`. Its daemon takes the trace from the scope's HDMI output, so the stream shows the minimum and maximum of each screen column.
+A Rigol MSO5000 streams the same way once it is paired with a USB HDMI capture card with `lager nets set-capture`. Its daemon takes the trace from the scope's HDMI output, so the stream shows the minimum and maximum of each screen column. The daemon reads the scope's settings back every few seconds, so `status` and the live view follow a knob turned at the scope.
 
 ### Daemon Architecture
 

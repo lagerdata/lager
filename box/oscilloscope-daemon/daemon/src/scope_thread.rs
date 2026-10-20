@@ -712,6 +712,10 @@ fn run(
     // acquiring, which is what produced ~1 GB/day of readiness logging.
     let mut next_poll: Option<Instant> = None;
     let mut waiting: Vec<Waiting> = Vec::new();
+    // A unit whose front panel can change its settings is read back a step
+    // at a time, idle or not; the wait for commands then wakes for it.
+    let refresh_every = scope.refresh_interval();
+    let mut next_refresh = Instant::now() + refresh_every.unwrap_or_default();
 
     let ended = loop {
         if stopping.load(Ordering::Relaxed) {
@@ -725,10 +729,14 @@ fn run(
             settle_waiting(&mut scope, acquiring, &mut state, &mut waiting, busy);
         }
 
-        let message = if busy {
-            let wait = next_poll
-                .map(|at| at.saturating_duration_since(Instant::now()))
-                .unwrap_or(Duration::ZERO);
+        let message = if busy || refresh_every.is_some() {
+            let wait = if busy {
+                next_poll
+                    .map(|at| at.saturating_duration_since(Instant::now()))
+                    .unwrap_or(Duration::ZERO)
+            } else {
+                next_refresh.saturating_duration_since(Instant::now())
+            };
             match commands.try_recv() {
                 Ok(message) => Some(message),
                 Err(mpsc::error::TryRecvError::Disconnected) => break Ended::Shutdown,
@@ -769,6 +777,21 @@ fn run(
                 continue;
             }
             None => {}
+        }
+
+        if refresh_every.is_some() && Instant::now() >= next_refresh {
+            next_refresh = Instant::now() + refresh_every.unwrap_or_default();
+            match scope.refresh_settings() {
+                Some(Ok(true)) => {
+                    state.refresh_trigger(&*scope);
+                    publish_state(&*scope, &mut state, acquiring, state_tx);
+                }
+                Some(Err(e)) if unit_is_gone(&e) => break Ended::UnitGone(format!("{e:#}")),
+                Some(Err(e)) => {
+                    tracing::debug!(error = %format!("{e:#}"), "reading a setting back from the scope failed");
+                }
+                Some(Ok(false)) | None => {}
+            }
         }
 
         if state.roller.is_some() {
@@ -2040,6 +2063,10 @@ mod tests {
         instrument: bool,
         /// What the instrument was last told to do, by the hooks above.
         applied: Arc<Mutex<Vec<String>>>,
+        /// Reads its settings back this often, as a unit with a front
+        /// panel does; each third read finds one changed.
+        refresh: Option<Duration>,
+        refreshes: Arc<AtomicUsize>,
     }
 
     impl FakeScope {
@@ -2057,6 +2084,8 @@ mod tests {
                 mode: CaptureMode::Normal,
                 instrument: false,
                 applied: Arc::new(Mutex::new(Vec::new())),
+                refresh: None,
+                refreshes: Arc::new(AtomicUsize::new(0)),
             }
         }
 
@@ -2092,6 +2121,16 @@ mod tests {
     impl Oscilloscope for FakeScope {
         fn reports_trigger(&self) -> bool {
             self.instrument
+        }
+
+        fn refresh_interval(&self) -> Option<Duration> {
+            self.refresh
+        }
+
+        fn refresh_settings(&mut self) -> Option<anyhow::Result<bool>> {
+            self.refresh?;
+            let n = self.refreshes.fetch_add(1, Ordering::SeqCst) + 1;
+            Some(Ok(n % 3 == 0))
         }
 
         fn measure_one(
@@ -2963,6 +3002,37 @@ mod tests {
                 other => panic!("expected a capture, got {other:?}"),
             }
         });
+        assert!(handle.shutdown(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn a_unit_with_a_front_panel_is_read_back_while_idle_and_its_changes_published() {
+        // A knob turned at the scope while nothing acquires: the settings
+        // were never read again, so `status` served the old ones.
+        let mut fake = FakeScope::new();
+        fake.refresh = Some(Duration::from_millis(20));
+        let refreshes = fake.refreshes.clone();
+        let mut fake = Some(fake);
+        let handle = spawn(move || Ok(Box::new(fake.take().expect("opened once")) as Box<dyn Oscilloscope>))
+            .expect("spawn");
+        let version = handle.watch_state().borrow().version;
+        std::thread::sleep(Duration::from_millis(400));
+        assert!(!handle.is_acquiring());
+        let read = refreshes.load(Ordering::SeqCst);
+        assert!(read >= 6, "read back {read} times in 400 ms at 20 ms");
+        assert!(handle.watch_state().borrow().version > version, "a change was not published");
+        assert!(handle.shutdown(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn a_unit_only_the_daemon_sets_is_not_read_back() {
+        let fake = FakeScope::new();
+        let refreshes = fake.refreshes.clone();
+        let mut fake = Some(fake);
+        let handle = spawn(move || Ok(Box::new(fake.take().expect("opened once")) as Box<dyn Oscilloscope>))
+            .expect("spawn");
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(refreshes.load(Ordering::SeqCst), 0);
         assert!(handle.shutdown(Duration::from_secs(5)));
     }
 

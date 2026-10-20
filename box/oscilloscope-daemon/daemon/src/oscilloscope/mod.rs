@@ -177,6 +177,19 @@ pub trait Oscilloscope: Send + Sync {
         self.start_triggered_capture(position)
     }
 
+    /// How often `refresh_settings` wants calling, acquiring or not, for a
+    /// unit whose settings can change without the daemon: an instrument
+    /// with a front panel. None, the default, for one only the daemon sets.
+    fn refresh_interval(&self) -> Option<std::time::Duration> {
+        None
+    }
+
+    /// Read one setting back from the unit, and say whether it changed. A
+    /// step at a time, so a command or a capture never waits on a round.
+    fn refresh_settings(&mut self) -> Option<anyhow::Result<bool>> {
+        None
+    }
+
     /// Samples in a block at the current settings, answered from what the
     /// driver already knows. `get_memory_depth` may ask the hardware.
     fn current_memory_depth(&self) -> anyhow::Result<usize> {

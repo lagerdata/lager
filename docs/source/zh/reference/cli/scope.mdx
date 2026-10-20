@@ -816,7 +816,7 @@ lager scope ANALOG1 cursor hide --box my-lager-box
 
 从 PicoScope 或 Rigol MSO5000 实时串流示波器数据。Lager Box 上的一个守护进程拥有该示波器，Box 上的一个网页显示波形。
 
-用 `lager nets set-capture` 将 Rigol MSO5000 与 USB HDMI 采集卡配对后，它以同样的方式串流。它的守护进程从示波器的 HDMI 输出获取波形，因此串流显示每个屏幕列的最小值和最大值。
+用 `lager nets set-capture` 将 Rigol MSO5000 与 USB HDMI 采集卡配对后，它以同样的方式串流。它的守护进程从示波器的 HDMI 输出获取波形，因此串流显示每个屏幕列的最小值和最大值。守护进程每隔几秒读回示波器的设置，因此 `status` 和实时视图会跟随在示波器上转动的旋钮。
 
 ### 守护进程架构
 

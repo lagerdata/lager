@@ -1425,3 +1425,82 @@ fn without_hdmi_the_live_view_is_read_from_the_screenshot() {
     let (min, max) = pair_volts(&frame, 0, 100);
     assert!((min - 1.0).abs() < 0.03 && (max - 1.0).abs() < 0.03, "{min} {max}");
 }
+
+impl Bench {
+    /// Run `steps` refresh steps, as the loop does every 150 ms.
+    fn refresh(&mut self, steps: usize) -> usize {
+        (0..steps)
+            .filter(|_| self.scope.refresh_settings().unwrap().unwrap())
+            .count()
+    }
+}
+
+#[test]
+fn a_volts_per_div_turned_at_the_scope_is_followed() {
+    let mut bench = bench();
+    let before = bench.capture();
+    // The CH1 knob one click, to 0.5 V/div, and the position moved 60 mV,
+    // as on the bench.
+    {
+        let mut instrument = bench.instrument.lock().unwrap();
+        instrument.channels[0].scale = 0.5;
+        instrument.channels[0].offset = 0.06;
+    }
+    let round = bench.scope.refresh_round().len();
+    assert_eq!(bench.refresh(round), 2, "scale and offset changed");
+    assert_eq!(bench.scope.get_volts_per_div(ChannelId::Alphabetic('A')).unwrap(), 0.5);
+    assert_eq!(bench.scope.get_volts_offset(ChannelId::Alphabetic('A')).unwrap(), 0.06);
+    // The live view converts with them: a 1 V level still reads 1 V.
+    let after = bench.capture();
+    assert!(after.seq != before.seq || after.capture_mono_ns > before.capture_mono_ns);
+    let volts = after.channel_volts(0).unwrap();
+    let level = volts.iter().copied().filter(|v| v.is_finite()).fold(f64::MIN, f64::max);
+    assert!((level - 1.0).abs() < 0.05, "channel A at {level} V");
+}
+
+#[test]
+fn a_timebase_and_trigger_changed_at_the_scope_are_followed() {
+    let mut bench = bench();
+    {
+        let mut instrument = bench.instrument.lock().unwrap();
+        instrument.time_scale = 2e-4;
+        instrument.level = 1.5;
+        instrument.sweep = "NORM";
+    }
+    let round = bench.scope.refresh_round().len();
+    bench.refresh(round);
+    assert_eq!(bench.scope.get_time_per_div().unwrap(), 2e-4);
+    assert_eq!(bench.scope.get_trigger_level().unwrap(), 1.5);
+    assert_eq!(bench.scope.get_capture_mode().unwrap(), CaptureMode::Normal);
+}
+
+#[test]
+fn each_refresh_step_asks_the_scope_one_thing() {
+    let mut bench = bench();
+    for _ in 0..20 {
+        let asked = bench.instrument.lock().unwrap().queries.len();
+        bench.scope.refresh_settings().unwrap().unwrap();
+        let now = bench.instrument.lock().unwrap().queries.len();
+        assert_eq!(now - asked, 1, "a step sent {} queries", now - asked);
+    }
+}
+
+#[test]
+fn a_hidden_channel_s_scale_is_not_read_back() {
+    let bench = bench();
+    let round = bench.scope.refresh_round();
+    // Only A is shown on the simulated scope.
+    assert!(round.contains(&Refresh::Scale(0)));
+    assert!(!round.contains(&Refresh::Scale(1)));
+    assert!(round.contains(&Refresh::Display(1)), "a channel switched on is still noticed");
+}
+
+#[test]
+fn a_channel_switched_on_at_the_scope_joins_the_live_view() {
+    let mut bench = bench();
+    bench.instrument.lock().unwrap().channels[1].display = true;
+    let round = bench.scope.refresh_round().len();
+    bench.refresh(round);
+    assert!(bench.scope.is_channel_enabled(ChannelId::Alphabetic('B')).unwrap());
+    assert_eq!(bench.capture().channels.len(), 2);
+}
