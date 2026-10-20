@@ -12,6 +12,37 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Fixed
+
+- **A Rigol MSO5000's rise and fall time are no longer the screen record's spacing.**
+  Since the set came from the screen record, they read anywhere from 0.3 to 3 ms on an
+  edge the scope times at 70 ns: the record is too coarse for an edge, and noise on the
+  level started the timing early. The set now leaves rise and fall out, and the
+  `/scope` page shows **Read** for them, which asks the scope for its reading once. Asking the scope at every refresh stalled the live view for about a second and
+  drew the scope's readouts over the trace (#735). On every scope, rise and fall are
+  timed from the last crossing of the 10% level before the edge, not the first.
+- **A Rigol MSO5000 measurement keeps the readouts you put on the scope.**
+  - The problem: a single `lager scope NET measure`, and each `measurement.<item>()` in
+    Python, ended with `:MEASure:CLEar ALL`. That wiped every readout added at the front
+    panel.
+  - Lager now clears only the readout its own query added, which it counts in the live
+    view. Without a live view it leaves its readout on the screen.
+  - It puts the scope's measurement source back afterwards.
+  - Readouts on the scope are no longer drawn as trace in the live view (#737).
+- **Measurements a Rigol MSO5000 rejects now fail at once, and name the right command.**
+  - `measurement.waveform_period_area()` and the eight delay and phase calls used to wait
+    5 s and then blame `:MEASure:CLEar ALL`. Firmware 00.01.03.00.03 rejects their
+    queries, so they now raise `UnsupportedScopeFeature` before anything is sent.
+  - A raw query the scope rejects, through `net.query`, now names that query and the
+    scope's error.
+  - `measure_vavg` now asks for `:MEASure:VAVG?`, the header the scope answers (#741).
+- **The `/scope` page's measurement panel no longer fails when a quantity is absent.**
+  The box formatted every value in the set as a number. One the daemon left out, such as
+  the period of a DC level, replaced the whole panel with "must be real number, not
+  NoneType". Absent quantities are now left out of the reply, and the panel shows a dash.
+- **`measurement.all()` on a Rigol's instrument net is refused.** It silently returned
+  channel 1's values. It now says to use a channel net, as the CLI does.
+
 ## [0.58.0] - 2026-10-20
 
 ### Added
@@ -126,34 +157,6 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   except the live view now works, instead of every command failing. The live view, `stream
   start` and `stream status` say why and list the USB ports that have a video device, and
   the next start tries the card again (#722).
-- **A Rigol MSO5000's rise and fall time are no longer the screen record's spacing.**
-  Since the set came from the screen record, they read anywhere from 0.3 to 3 ms on an
-  edge the scope times at 70 ns: the record is too coarse for an edge, and noise on the
-  level started the timing early. The set now leaves rise and fall out, and the
-  `/scope` page shows **Read** for them, which asks the scope for its reading once. Asking the scope at every refresh stalled the live view for about a second and
-  drew the scope's readouts over the trace (#735). On every scope, rise and fall are
-  timed from the last crossing of the 10% level before the edge, not the first.
-- **A Rigol MSO5000 measurement keeps the readouts you put on the scope.**
-  - The problem: a single `lager scope NET measure`, and each `measurement.<item>()` in
-    Python, ended with `:MEASure:CLEar ALL`. That wiped every readout added at the front
-    panel.
-  - Lager now clears only the readout its own query added, which it counts in the live
-    view. Without a live view it leaves its readout on the screen.
-  - It puts the scope's measurement source back afterwards.
-  - Readouts on the scope are no longer drawn as trace in the live view (#737).
-- **Measurements a Rigol MSO5000 rejects now fail at once, and name the right command.**
-  - `measurement.waveform_period_area()` and the eight delay and phase calls used to wait
-    5 s and then blame `:MEASure:CLEar ALL`. Firmware 00.01.03.00.03 rejects their
-    queries, so they now raise `UnsupportedScopeFeature` before anything is sent.
-  - A raw query the scope rejects, through `net.query`, now names that query and the
-    scope's error.
-  - `measure_vavg` now asks for `:MEASure:VAVG?`, the header the scope answers (#741).
-- **The `/scope` page's measurement panel no longer fails when a quantity is absent.**
-  The box formatted every value in the set as a number. One the daemon left out, such as
-  the period of a DC level, replaced the whole panel with "must be real number, not
-  NoneType". Absent quantities are now left out of the reply, and the panel shows a dash.
-- **`measurement.all()` on a Rigol's instrument net is refused.** It silently returned
-  channel 1's values. It now says to use a channel net, as the CLI does.
 - **The oscilloscope page connects by itself and says when its readings are old.** It
   used to wait for **Connect** even with the scope running. It now connects as soon as it
   knows the scope, and when another net is picked; **Start** still runs the scope. Once
