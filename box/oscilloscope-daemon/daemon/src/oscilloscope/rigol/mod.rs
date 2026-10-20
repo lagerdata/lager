@@ -888,14 +888,18 @@ impl RigolMso5000 {
     /// reads what the scope has on screen and leaves acquisition running.
     fn record(&mut self, channels: &[usize]) -> Result<CaptureFrame> {
         let mut scpi = self.link();
-        scpi.write(":WAVeform:MODE NORMal")?;
-        scpi.write(":WAVeform:FORMat BYTE")?;
         let mut frames = Vec::new();
         let mut traces: Vec<Vec<i16>> = Vec::new();
         let mut first: Option<Preamble> = None;
-        for &i in channels {
-            scpi.write(&format!(":WAVeform:SOURce CHANnel{}", i + 1))?;
-            let preamble = Preamble::parse(&scpi.query(":WAVeform:PREamble?")?)?;
+        for (n, &i) in channels.iter().enumerate() {
+            // One message for the set-up and the preamble: the live view
+            // publishes nothing while the link is held, and every USB
+            // transaction saved is a shorter pause in it.
+            let setup = if n == 0 { ":WAVeform:MODE NORMal;:WAVeform:FORMat BYTE;" } else { "" };
+            let preamble = Preamble::parse(&scpi.query(&format!(
+                "{setup}:WAVeform:SOURce CHANnel{};:WAVeform:PREamble?",
+                i + 1
+            ))?)?;
             let data = scpi.query_block(":WAVeform:DATA?")?;
             let reference = preamble.y_reference;
             traces.push(
