@@ -20,6 +20,11 @@ from lager import Net, NetType
 | `get_info(box_ip)` | Get info about the stream |
 | `get_url(box_ip)` | Get just the URL for the stream |
 | `is_active()` | Check if stream is currently active |
+| `snapshot(raw=False)` | One JPEG frame from the running stream |
+| `frame(raw=True)` | One frame from the running stream, as a numpy array |
+| `controls()` | The camera's image controls, with their values and ranges |
+| `set_control(name, value)` | Set one camera control, and keep it for this net |
+| `lock_controls(**overrides)` | Turn every auto mode off and keep every control as it is |
 
 ## Method Reference
 
@@ -159,10 +164,168 @@ else:
 
 **Returns:** `bool` - True if the stream is active, False otherwise
 
+### `snapshot(raw=False)`
+
+One JPEG frame from the running stream.
+
+```python
+from lager import Net, NetType
+
+webcam = Net.get('camera1', type=NetType.Webcam)
+webcam.start(box_ip='<BOX_IP>')
+with open('bench.jpg', 'wb') as f:
+    f.write(webcam.snapshot())
+```
+
+The frame comes from the stream's own capture, so it never competes with the
+stream, or a browser watching it, for the camera.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `raw` | `bool` | `True` for the frame as the camera delivered it. `False` (the default) for the picture the viewer page shows, after its rotation, flips and zoom |
+
+**Returns:** `bytes` - the JPEG
+
+**Raises:** `RuntimeError` if the stream is stopped, or has no frame within
+5 seconds
+
+### `frame(raw=True)`
+
+One frame from the running stream, decoded for analysis.
+
+```python
+from lager import Net, NetType
+
+webcam = Net.get('camera1', type=NetType.Webcam)
+webcam.start(box_ip='<BOX_IP>')
+image = webcam.frame()          # height x width x 3, BGR
+print(image.shape, image.mean())
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `raw` | `bool` | `True` (the default) for the frame as the camera delivered it, before the viewer's rotation, flips and zoom |
+
+**Returns:** `numpy.ndarray` - height x width x 3, in BGR order as OpenCV uses
+
+**Raises:** `RuntimeError` as `snapshot()` does
+
 <Note>
-The Python API has no snapshot method. To save one frame from a running stream,
-use [`lager webcam NET snapshot`](/source/reference/cli/webcam) from your
-computer.
+Use `frame()` in a `lager python` script rather than opening the camera with
+`cv2.VideoCapture`. While a stream runs it holds the camera, and a second
+capture of the same device gets no frames.
+</Note>
+
+### `controls()`
+
+The camera's image controls, each with its current value and range. Works
+with the stream started or stopped.
+
+```python
+from lager import Net, NetType
+
+webcam = Net.get('camera1', type=NetType.Webcam)
+for name, control in webcam.controls().items():
+    print(name, control['value'], control['min'], control['max'])
+```
+
+**Returns:** `dict` of control name to `{"value", "min", "max", "step",
+"default"}`, with a key only for a control the camera has. See
+[Camera controls](#camera-controls) for the names. Three values have an auto
+mode: `exposure`, `white_balance_temperature` and `focus`. Each also has `auto`:
+`True`, `False`, or `None` when the camera has no auto mode for it.
+`power_line_frequency` also has `options`, a list of `{"value", "label"}`.
+
+### `set_control(name, value)`
+
+Set one camera control, and keep it for this net. Works with the stream
+started or stopped.
+
+```python
+from lager import Net, NetType
+
+webcam = Net.get('camera1', type=NetType.Webcam)
+webcam.set_control('focus_auto', False)
+webcam.set_control('focus', 383)
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `name` | `str` | One of the names in [Camera controls](#camera-controls) |
+| `value` | `bool` or `int` | A `bool` for `exposure_auto`, `white_balance_auto` and `focus_auto`. Otherwise a number, clamped to the camera's range. `power_line_frequency` takes one of its `options` |
+
+**Returns:** `bool` - True if the camera took the value
+
+**Raises:** `ValueError` for a name that is not a camera control
+
+### `lock_controls(**overrides)`
+
+Fix every image control, for pictures that compare from frame to frame and from
+run to run. Turns auto exposure, auto white balance and autofocus off. Keeps every
+other control at its current value unless you override it. Saves them all for
+this net, then reads the camera back.
+
+```python
+from lager import Net, NetType
+
+webcam = Net.get('led_cam', type=NetType.Webcam)
+report = webcam.lock_controls(exposure=312, white_balance_temperature=4600,
+                              power_line_frequency=2)
+if not report['ok']:
+    for name, r in report['controls'].items():
+        if r['wanted'] != r['actual']:
+            print(f"{name}: wanted {r['wanted']}, camera has {r['actual']}")
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `**overrides` | | Control name to value, as `set_control` takes them |
+
+**Returns:** `dict` with:
+- `ok` - True if every control reads back as wanted
+- `controls` - `{name: {"wanted", "actual"}}` for every control the camera has.
+  A value outside the camera's range is clamped, so it reads back different and
+  `ok` is False
+
+**Raises:** `RuntimeError` if the camera's controls cannot be read;
+`ValueError` for an unknown name
+
+## Camera controls
+
+| Name | What it is |
+|------|------------|
+| `exposure_auto` | Auto exposure on or off (`bool`) |
+| `exposure` | Exposure time, in the camera's units. On Linux UVC cameras that is 100 microseconds: 312 is 31.2 ms |
+| `gain` | Sensor gain |
+| `white_balance_auto` | Auto white balance on or off (`bool`) |
+| `white_balance_temperature` | Color temperature, in kelvin |
+| `focus_auto` | Continuous autofocus on or off (`bool`) |
+| `focus` | Focus distance, in the camera's units |
+| `brightness`, `contrast`, `saturation`, `hue`, `gamma`, `sharpness`, `backlight_compensation` | Picture adjustments |
+| `power_line_frequency` | Anti-flicker: 0 disabled, 1 for 50 Hz, 2 for 60 Hz |
+
+Every range is the camera's own. Brightness, for example, is 0 to 255 on some
+cameras and -64 to 64 on others, and a value outside it is clamped.
+
+Lager changes only the controls you set. A stream start leaves the rest as the
+camera has them, so settings made with another tool survive it. The controls you
+set through `set_control`, `lock_controls` or the viewer page are kept for the
+net. They are put back each time its stream starts, and after the stream reopens
+the camera for a new mode. That also covers a camera that forgets its settings
+when it loses power: start the stream, or call `lock_controls` again.
+
+<Note>
+Windows tools such as DirectShow give exposure as a power of two in seconds: -5
+is 2<sup>-5</sup> s, 31.25 ms. The Linux value is `10000 * 2**n`, so -5 is
+`exposure=312`.
 </Note>
 
 ## Examples
@@ -357,17 +520,20 @@ colors as the oscilloscope page (`lager scope NET stream web`):
     page says why. Too little USB bandwidth is one cause
   - **View**: zoom (slider, **Out**, **Reset**, **In**), **Centre** for the pan,
     **Rotate** (0, 90, 180 or 270 degrees) and **Flip** (left-right, top-bottom)
-  - **Focus**: **Auto** or **Manual** with a distance slider
+  - **Focus**: **Auto** or **Manual** with a distance slider, in the camera's
+    own range. The switch shows only on a camera with autofocus
   - **Image**: exposure (**Auto exposure** or **Manual** with a slider), gain
-    and brightness. Exposure and gain show only on a camera that has them.
-    While auto exposure is on, the camera sets the gain itself
+    and brightness. Also white balance (**Auto white balance** or **Manual**
+    with a color temperature), and sliders for the other image controls.
+    Each shows only on a camera that has it, with the camera's range. While
+    auto exposure is on, the camera sets the gain itself
 
   **Hide sidebar** hides it, and the page remembers the choice
 - **Full screen** shows the picture alone
 - **Snapshot**, which saves one frame as `<net>-<timestamp>.jpg`
 - At the foot of the sidebar, who started the stream, its device and its port
 
-Every setting is kept with the stream on the box. Everyone who views the stream
+Every setting is kept for the net on the box. Everyone who views the stream
 sees the same picture, and the settings come back when the stream restarts. Larger
 sizes cost the box more CPU to encode: the frame rate in the header shows what
 the box keeps up with.
@@ -383,23 +549,23 @@ On an access-gated box, when the browser's session ends the page says
 | `/static/webcam.css`, `/static/webcam.js` | GET | The viewer page's style and script |
 | `/stream` | GET | Raw MJPEG video stream |
 | `/api/info` | GET | The stream's net, device, camera model, port, origin, fps, zoom, frame size, and seconds since the last frame (`frame_age`, `null` before the first) |
-| `/snapshot` | GET | One JPEG frame. Returns 503 if no frame arrives within 5 seconds |
+| `/snapshot` | GET | One JPEG frame, as the viewer shows it. `?raw=1` for the frame as the camera delivered it, before rotation, flips and zoom. Returns 503 if no frame arrives within 5 seconds |
 | `/api/zoom` | GET | Get current zoom level |
 | `/api/zoom/in` | POST | Increase zoom |
 | `/api/zoom/out` | POST | Decrease zoom |
 | `/api/zoom/reset` | POST | Reset zoom to 1.0x |
 | `/api/zoom/set` | POST | Set zoom: `{"zoom": 2.0}` (1.0 to 4.0) |
-| `/api/focus` | GET | Focus mode and value |
+| `/api/focus` | GET | Focus `mode` (`"auto"`, `"manual"`, or `null` for a camera without autofocus), `value`, `min`, `max` and `step`. `value` is `null` for a camera without focus |
 | `/api/focus/auto` | POST | Turn on autofocus |
-| `/api/focus/manual` | POST | Manual focus: `{"value": 128}` (0 to 255) |
-| `/api/brightness` | GET | Brightness value |
-| `/api/brightness/set` | POST | Set brightness: `{"value": 128}` (0 to 255) |
+| `/api/focus/manual` | POST | Manual focus: `{"value": 383}`, in the camera's range. Without a value, the current distance is kept |
+| `/api/brightness` | GET | Brightness `value`, `min`, `max` and `step` |
+| `/api/brightness/set` | POST | Set brightness: `{"value": 0}`, clamped to the camera's range |
 | `/api/pan/set` | POST | Pan a zoomed picture: `{"x": 0.3, "y": 0.7}`, the centre of the view as fractions of the picture |
 | `/api/orientation/set` | POST | Any of `{"rotate": 90, "flip_h": true, "flip_v": false}`. Rotation is clockwise: 0, 90, 180 or 270 |
 | `/api/modes` | GET | The sizes and frame rates the camera offers (MJPEG), the current mode, and why the last change failed, if it did |
 | `/api/mode/set` | POST | Change the mode: `{"width": 1920, "height": 1080, "fps": 30}`. Answers 400 for a mode the camera does not list |
-| `/api/controls` | GET | Exposure (`auto`, `value`, `min`, `max`) and gain, for a camera that has them |
-| `/api/controls/set` | POST | `{"control": "exposure_auto", "value": false}`, or `exposure` or `gain` with a number |
+| `/api/controls` | GET | The [camera controls](#camera-controls) the camera has, as `controls()` returns them |
+| `/api/controls/set` | POST | `{"control": "exposure_auto", "value": false}`, or any other camera control name with its value |
 | `/api/fps` | GET | Get current FPS |
 | `/api/streams` | GET | List all active streams |
 | `/test` | GET | Health check endpoint |
@@ -412,6 +578,18 @@ On an access-gated box, when the browser's session ends the page says
 | Video Devices | `/dev/video*` device files |
 | OpenCV | Required for video capture |
 
+`lager nets add-all` offers a net for these cameras:
+
+- Logitech BRIO, BRIO HD, BRIO 4K Stream, 4K Pro, C930e, C925e, C922 Pro,
+  C920, C615, C270 and StreamCam
+- The ELP global-shutter camera (AR0234 sensor, USB ID `32e4:0234`)
+
+<Note>
+The ELP global-shutter camera reports the same serial number, `01.00.00`, on
+every unit. Lager lists two of them on one box as one camera with both video
+devices. Add the second camera's net by hand, with its own `/dev/video*` device.
+</Note>
+
 ## Notes
 
 - Webcam nets must be configured on the Lager Box with video device path
@@ -420,7 +598,10 @@ On an access-gated box, when the browser's session ends the page says
 - Streams persist until explicitly stopped or the process dies
 - Dead stream processes are automatically cleaned up
 - Only one stream can use a video device at a time
-- Default resolution is 640x480 at 30 FPS
+- Default resolution is 640x480 at 30 FPS. Some cameras offer more: the ELP
+  global-shutter camera offers 90 FPS at every size. The box re-encodes every
+  frame, and at large sizes it can fall behind. The frame rate on the viewer
+  page shows what it delivers
 - JPEG quality is set to 80 for bandwidth/quality balance
 - Streams are reachable over HTTP at the Lager Box IP address. On an access-gated
   box, a request needs a sign-in token, and the `url` from `start()` carries none.

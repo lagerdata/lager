@@ -136,6 +136,38 @@ class ByCameraTests(unittest.TestCase):
             box_scanner._WEBCAM_VIDPIDS,
         )
 
+    def test_global_shutter_camera_beside_a_logitech(self):
+        # A laptop's built-in camera (not in the catalog, four nodes), a Logi
+        # 4K Pro (four) and an ELP global-shutter camera (two: capture and
+        # metadata), in the order a box enumerates them.
+        self.sysfs.add_camera("1-5", "0bda", "5520", serial="200901010001", nodes=4)
+        self.sysfs.add_camera("1-1.2", "046d", "087f", serial="ABC123", nodes=4)
+        first = self.sysfs.add_camera("1-1.4", "32e4", "0234", serial="01.00.00", nodes=2)
+        self.assertEqual(first, 8)
+        by_name = {c["name"]: c for c in self._run(box_scanner)}
+        self.assertEqual(set(by_name), {"Logitech_4K_Pro", "ELP_Global_Shutter_AR0234"})
+        self.assertEqual(by_name["Logitech_4K_Pro"]["channels"], {"webcam": ["/dev/video4"]})
+        elp = by_name["ELP_Global_Shutter_AR0234"]
+        self.assertEqual(elp["channels"], {"webcam": ["/dev/video8"]})
+        self.assertEqual((elp["vid"], elp["pid"], elp["serial"]), ("32e4", "0234", "01.00.00"))
+        self.assertEqual(elp["address"], "USB0::0x32E4::0x0234::01.00.00::INSTR")
+
+    def test_two_global_shutter_cameras_share_one_entry(self):
+        # A known limit: the camera's serial is a fixed firmware string, so
+        # two of them cannot be told apart by VID, PID and serial. Each is
+        # found, but the scan merges them into one entry with both nodes.
+        self.sysfs.add_camera("1-1.3", "32e4", "0234", serial="01.00.00", nodes=2)
+        self.sysfs.add_camera("1-1.4", "32e4", "0234", serial="01.00.00", nodes=2)
+        cams = self._run(box_scanner)
+        self.assertEqual([c["channels"]["webcam"] for c in cams],
+                         [["/dev/video0"], ["/dev/video2"]])
+        self.assertEqual(len({c["address"] for c in cams}), 1)
+        instruments = []
+        for cam in cams:
+            box_scanner.merge_or_append(cam, instruments)
+        self.assertEqual(len(instruments), 1)
+        self.assertEqual(instruments[0]["channels"]["webcam"], ["/dev/video0", "/dev/video2"])
+
 
 if __name__ == "__main__":
     unittest.main()

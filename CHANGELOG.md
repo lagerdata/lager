@@ -42,6 +42,20 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   `box/lager/static/webcam/`, served by each stream's server with a new `GET /api/info`. It is
   no longer HTML embedded in the streamer's generated script.
 
+- **The ELP global-shutter camera (AR0234, USB ID `32e4:0234`) is detected as a webcam.**
+  `lager nets add-all` and `lager nets add` offer it, on its capture node. Its serial is the
+  same on every unit, so two on one box are listed as one camera; add the second net by hand.
+- **Every image control a webcam has, on the viewer page and from the Python API.** White
+  balance (auto or a color temperature), contrast, saturation, hue, gamma, sharpness,
+  backlight compensation and power line frequency join exposure, gain, focus and brightness,
+  each in the camera's own range. Controls you set are kept for the net, not the stream, and
+  are put back each time it starts. The webcam net gains `controls()`, `set_control()` and
+  `lock_controls()`, which turns every auto mode off and reads the camera back, for pictures
+  that compare from run to run.
+- **`snapshot()` and `frame()` on a webcam net read frames from the running stream.** A
+  `lager python` script gets a JPEG or a numpy array without opening the camera, which the
+  stream holds. `frame()` and the stream's new `/snapshot?raw=1` give the frame before the
+  viewer's rotation and zoom.
 - **`lager webcam NET start --open` also opens the stream in your browser.** On a
   stream that is already running, `start` changes nothing on the box, so
   `start --open` is also how to reopen the viewer with a fresh link.
@@ -99,6 +113,12 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   connect to the debugger first, its "Auto-connecting" progress lines came before the JSON,
   so the output did not parse. Those lines now go to stderr, as the command's other
   progress messages already did.
+- **Starting a webcam stream no longer changes the camera's settings.** Each start turned
+  autofocus back on and wrote brightness 128, undoing a fixed focus or a locked picture set
+  with another tool. On a camera whose brightness runs -64 to 64, that set it to the maximum.
+  A start now applies only the controls set through lager. Focus and brightness also take the
+  camera's range: the viewer and `/api/focus/manual` clamped both to 0-255, so a focus distance
+  above 255 could not be reached.
 - **A Rigol MSO5000 works while its capture card is missing.** If the card paired with
   `lager nets set-capture` is not on its port, or something else holds it, every command
   except the live view now works, instead of every command failing. The live view, `stream

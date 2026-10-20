@@ -28,6 +28,26 @@ CONTROL_NAMES = {
     "exposure_auto": ("auto_exposure", "exposure_auto"),
     "exposure": ("exposure_time_absolute", "exposure_absolute"),
     "gain": ("gain",),
+    "white_balance_auto": ("white_balance_automatic", "white_balance_temperature_auto"),
+    "white_balance_temperature": ("white_balance_temperature",),
+    "focus_auto": ("focus_automatic_continuous", "focus_auto"),
+    "focus": ("focus_absolute",),
+    "brightness": ("brightness",),
+    "contrast": ("contrast",),
+    "saturation": ("saturation",),
+    "hue": ("hue",),
+    "gamma": ("gamma",),
+    "sharpness": ("sharpness",),
+    "backlight_compensation": ("backlight_compensation",),
+    "power_line_frequency": ("power_line_frequency",),
+}
+# The auto switches, each with the value it takes over. A switch takes a
+# bool, and is written before any value: a camera ignores an exposure time,
+# color temperature or focus distance written while its auto is on.
+SWITCHES = {
+    "exposure_auto": "exposure",
+    "white_balance_auto": "white_balance_temperature",
+    "focus_auto": "focus",
 }
 # UVC's values for auto_exposure / exposure_auto.
 EXPOSURE_MANUAL = 1
@@ -36,6 +56,10 @@ EXPOSURE_AUTO = 3
 ROTATIONS = (0, 90, 180, 270)
 VIEW_DEFAULTS = {"pan_x": 0.5, "pan_y": 0.5, "rotate": 0, "flip_h": False, "flip_v": False}
 DEFAULT_MODE = {"width": 640, "height": 480, "fps": 30}
+
+
+# --list-ctrls-menus is --list-ctrls plus the items under each menu control.
+LIST_CONTROLS = "--list-ctrls-menus"
 
 
 def _v4l2(device, *args, run=subprocess.run):
@@ -107,14 +131,24 @@ def valid_mode(modes, width, height, fps):
 # ---------- controls ----------
 
 _CONTROL = re.compile(r"^\s*(\w+)\s+0x[0-9a-fA-F]+\s+\((\w+)\)\s*:\s*(.*)$")
+_MENU_ITEM = re.compile(r"^\s*(\d+):\s*(.*?)\s*$")
 
 
 def parse_controls(text):
-    """``v4l2-ctl --list-ctrls`` output as {name: {"type", "min", ...}}."""
+    """``v4l2-ctl --list-ctrls[-menus]`` output as {name: {"type", "min", ...}}.
+
+    A menu control's items, which ``--list-ctrls-menus`` prints under it,
+    are kept as ``"menu": {value: label}``. Flags other than ``inactive``
+    (newer kernels print bits older v4l2-ctl cannot name, as hex) are ignored.
+    """
     controls = {}
+    menu = None
     for line in text.splitlines():
         match = _CONTROL.match(line)
         if not match:
+            item = _MENU_ITEM.match(line)
+            if item and menu is not None:
+                menu[int(item.group(1))] = item.group(2)
             continue
         name, kind, rest = match.groups()
         entry = {"type": kind, "inactive": False}
@@ -126,6 +160,9 @@ def parse_controls(text):
                 entry[key] = int(value)
             except ValueError:
                 entry[key] = value
+        menu = entry["menu"] = {} if kind in ("menu", "intmenu") else None
+        if menu is None:
+            del entry["menu"]
         controls[name] = entry
     return controls
 
@@ -137,58 +174,154 @@ def _find(controls, logical):
     return None, None
 
 
-def describe_controls(device, run=subprocess.run):
-    """The exposure and gain this camera has, as the viewer page shows them.
+def _is_on(logical, entry):
+    """Whether a switch is on, from its control's current value."""
+    if logical == "exposure_auto":
+        return entry.get("value") != EXPOSURE_MANUAL
+    return bool(entry.get("value"))
 
-    Returns {"exposure": {"auto", "value", "min", "max", "step"}, "gain": {...}}
-    with a key only for what the camera has. ``auto`` is None when the camera
-    has an exposure time but no auto mode to switch.
+
+def read_controls(device, run=subprocess.run):
+    """The camera's controls, parsed, from one v4l2-ctl call."""
+    return parse_controls(_v4l2(device, LIST_CONTROLS, run=run))
+
+
+def describe_controls(device, run=subprocess.run, controls=None):
+    """The controls this camera has, as the viewer page shows them.
+
+    Returns {logical: {"value", "min", "max", "step", "default"}}, with a key
+    only for what the camera has. A value that one of SWITCHES takes over
+    carries ``auto``: True or False, or None when the camera has the value
+    but no auto mode to switch. A menu control carries ``options``, a list
+    of {"value", "label"}. The switches themselves are reported through the
+    value they govern, never on their own.
     """
-    controls = parse_controls(_v4l2(device, "--list-ctrls", run=run))
+    if controls is None:
+        controls = read_controls(device, run=run)
     out = {}
-    _auto_name, auto = _find(controls, "exposure_auto")
-    _exp_name, exposure = _find(controls, "exposure")
-    if exposure:
-        out["exposure"] = {
-            "auto": None if auto is None else auto.get("value") != EXPOSURE_MANUAL,
-            "value": exposure.get("value"),
-            "min": exposure.get("min"),
-            "max": exposure.get("max"),
-            "step": exposure.get("step", 1),
-        }
-    _gain_name, gain = _find(controls, "gain")
-    if gain:
-        out["gain"] = {key: gain.get(key) for key in ("value", "min", "max")}
-        out["gain"]["step"] = gain.get("step", 1)
+    for logical in CONTROL_NAMES:
+        if logical in SWITCHES:
+            continue
+        _name, entry = _find(controls, logical)
+        if not entry:
+            continue
+        desc = {key: entry.get(key) for key in ("value", "min", "max", "default")}
+        desc["step"] = entry.get("step", 1)
+        if "menu" in entry:
+            desc["options"] = [{"value": v, "label": label}
+                               for v, label in sorted(entry["menu"].items())]
+        out[logical] = desc
+    for switch, governed in SWITCHES.items():
+        if governed in out:
+            _name, entry = _find(controls, switch)
+            out[governed]["auto"] = None if entry is None else _is_on(switch, entry)
     return out
 
 
-def set_control(device, logical, value, run=subprocess.run):
-    """Set one of CONTROL_NAMES on the camera. True if the camera took it.
+def read_values(device, run=subprocess.run, controls=None):
+    """{logical: value} for every control the camera has; switches as bools."""
+    if controls is None:
+        controls = read_controls(device, run=run)
+    values = {}
+    for logical in CONTROL_NAMES:
+        _name, entry = _find(controls, logical)
+        if entry is None or "value" not in entry:
+            continue
+        values[logical] = _is_on(logical, entry) if logical in SWITCHES else entry["value"]
+    return values
 
-    ``exposure_auto`` takes a bool. Turning it off happens before a manual
-    exposure is written, since the camera ignores the time while auto is on.
-    """
+
+def _coerce(logical, entry, value):
+    """The value to write for ``logical``, or None if it is not one."""
+    if logical == "exposure_auto":
+        return EXPOSURE_AUTO if value else EXPOSURE_MANUAL
+    if logical in SWITCHES:
+        return 1 if value else 0
+    if isinstance(value, bool):
+        return None
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        return None
+    if entry.get("menu"):
+        return value if value in entry["menu"] else None
+    return max(entry.get("min", value), min(entry.get("max", value), value))
+
+
+def _write(device, logical, value, controls, run):
     if logical not in CONTROL_NAMES:
         return False
-    controls = parse_controls(_v4l2(device, "--list-ctrls", run=run))
     name, entry = _find(controls, logical)
     if not name:
         return False
-    if logical == "exposure_auto":
-        value = EXPOSURE_AUTO if value else EXPOSURE_MANUAL
-    else:
-        try:
-            value = int(value)
-        except (TypeError, ValueError):
-            return False
-        value = max(entry.get("min", value), min(entry.get("max", value), value))
+    value = _coerce(logical, entry, value)
+    if value is None:
+        return False
     try:
         result = run(["v4l2-ctl", "-d", device, "-c", f"{name}={value}"],
                      capture_output=True, text=True, timeout=V4L2_TIMEOUT)
     except (OSError, subprocess.SubprocessError):
         return False
     return result.returncode == 0
+
+
+def set_control(device, logical, value, run=subprocess.run):
+    """Set one of CONTROL_NAMES on the camera. True if the camera took it.
+
+    A switch takes a bool. A number is clamped to the camera's range; a menu
+    value must be one of the camera's items.
+    """
+    if logical not in CONTROL_NAMES:
+        return False
+    return _write(device, logical, value, read_controls(device, run=run), run)
+
+
+def apply_controls(device, saved, run=subprocess.run):
+    """Write the saved controls, switches first. {logical: True if taken}.
+
+    A value whose switch is being turned on is not written: the camera
+    would ignore it, and some refuse it. Unknown names are skipped.
+    """
+    controls = read_controls(device, run=run)
+    taken = {}
+    for logical in SWITCHES:
+        if logical in saved:
+            taken[logical] = _write(device, logical, saved[logical], controls, run)
+    for logical in CONTROL_NAMES:
+        if logical in SWITCHES or logical not in saved:
+            continue
+        switch = next((s for s, v in SWITCHES.items() if v == logical), None)
+        if switch and saved.get(switch) is True:
+            continue
+        taken[logical] = _write(device, logical, saved[logical], controls, run)
+    return taken
+
+
+def lock_values(controls, overrides=None):
+    """Every control's current value, with each auto switch turned off.
+
+    The settings that make a camera's picture repeatable: no auto exposure,
+    white balance or focus to drift between frames. ``overrides`` replaces
+    any value; an unknown name raises ValueError.
+    """
+    overrides = dict(overrides or {})
+    unknown = sorted(set(overrides) - set(CONTROL_NAMES))
+    if unknown:
+        raise ValueError("unknown control(s): " + ", ".join(unknown))
+    values = {}
+    for logical in CONTROL_NAMES:
+        _name, entry = _find(controls, logical)
+        if entry is None or "value" not in entry:
+            continue
+        values[logical] = False if logical in SWITCHES else entry["value"]
+    values.update({k: v for k, v in overrides.items() if k in values})
+    return values
+
+
+def compare(wanted, actual):
+    """{logical: {"wanted", "actual"}} and whether every one matches."""
+    report = {k: {"wanted": v, "actual": actual.get(k)} for k, v in wanted.items()}
+    return report, all(r["wanted"] == r["actual"] for r in report.values())
 
 
 # ---------- the picture ----------

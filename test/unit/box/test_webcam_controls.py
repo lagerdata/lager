@@ -76,7 +76,7 @@ class FakeV4l2:
     def __call__(self, args, **_kwargs):
         if '--list-formats-ext' in args:
             out = self.formats
-        elif '--list-ctrls' in args:
+        elif '--list-ctrls' in args or '--list-ctrls-menus' in args:
             out = self.controls
         else:
             self.sets.append(args[args.index('-c') + 1])
@@ -129,7 +129,8 @@ def test_exposure_is_found_under_either_kernel_name(ctl, text, auto, value):
 
 def test_a_camera_without_exposure_or_gain_describes_neither(ctl):
     only_brightness = CONTROLS_NEW.split('gain')[0]
-    assert ctl.describe_controls('/dev/video0', run=FakeV4l2(controls=only_brightness)) == {}
+    described = ctl.describe_controls('/dev/video0', run=FakeV4l2(controls=only_brightness))
+    assert list(described) == ['brightness']
 
 
 def test_exposure_without_an_auto_control_reports_none(ctl):
@@ -147,7 +148,7 @@ def test_setting_uses_the_cameras_own_name_and_clamps(ctl):
 
 
 @pytest.mark.parametrize('logical,value', [
-    ('brightness', 10),       # not one of the settable controls
+    ('tilt', 10),             # not one of the settable controls
     ('gain', 'loud'),         # not a number
     ('gain', None),
 ])
@@ -222,3 +223,194 @@ def test_cv2_and_numpy_orient_alike(ctl, rotate, flip_h, flip_v):
     fast = ctl.orient(frame, rotate, flip_h, flip_v, cv2=cv2)
     plain = ctl.orient(frame, rotate, flip_h, flip_v)
     assert np.array_equal(fast, plain)
+
+
+# ---------- a global-shutter camera, as v4l2-ctl prints it ----------
+#
+# Captured from an ELP Global Shutter camera (AR0234, 32e4:0234) on kernel
+# 7.0, with its controls locked for LED work. Every numeric line carries
+# flags=0x00001000, a bit newer than the installed v4l2-ctl can name.
+
+GLOBAL_SHUTTER_CTRLS = """
+User Controls
+
+                     brightness 0x00980900 (int)    : min=-64 max=64 step=1 default=0 value=0 flags=0x00001000
+                       contrast 0x00980901 (int)    : min=0 max=95 step=1 default=0 value=32 flags=0x00001000
+                     saturation 0x00980902 (int)    : min=0 max=255 step=1 default=56 value=56 flags=0x00001000
+                            hue 0x00980903 (int)    : min=-2000 max=2000 step=1 default=0 value=0 flags=0x00001000
+        white_balance_automatic 0x0098090c (bool)   : default=1 value=0
+                          gamma 0x00980910 (int)    : min=64 max=300 step=1 default=110 value=100 flags=0x00001000
+                           gain 0x00980913 (int)    : min=0 max=1023 step=1 default=0 value=0 flags=0x00001000
+           power_line_frequency 0x00980918 (menu)   : min=0 max=2 default=1 value=2 (60 Hz)
+                0: Disabled
+                1: 50 Hz
+                2: 60 Hz
+      white_balance_temperature 0x0098091a (int)    : min=2800 max=6500 step=1 default=4600 value=4600 flags=0x00001000
+                      sharpness 0x0098091b (int)    : min=0 max=7 step=1 default=0 value=0 flags=0x00001000
+         backlight_compensation 0x0098091c (int)    : min=36 max=160 step=1 default=54 value=36 flags=0x00001000
+
+Camera Controls
+
+                  auto_exposure 0x009a0901 (menu)   : min=0 max=3 default=3 value=1 (Manual Mode)
+                1: Manual Mode
+                3: Aperture Priority Mode
+         exposure_time_absolute 0x009a0902 (int)    : min=1 max=10000 step=1 default=156 value=312 flags=0x00001000
+                   pan_absolute 0x009a0908 (int)    : min=-648000 max=648000 step=3600 default=0 value=0 flags=0x00001000
+                  tilt_absolute 0x009a0909 (int)    : min=-648000 max=648000 step=3600 default=0 value=0 flags=0x00001000
+                 focus_absolute 0x009a090a (int)    : min=0 max=1023 step=1 default=0 value=383 flags=0x00001000
+     focus_automatic_continuous 0x009a090c (bool)   : default=1 value=0
+                  zoom_absolute 0x009a090d (int)    : min=0 max=60 step=1 default=0 value=0 flags=0x00001000
+"""
+
+# Every MJPEG size at 90 down to 5 fps; YUYV only as fast as USB 2.0 allows.
+# 1920x1200 is listed after 1920x1080, as the camera lists it.
+_SIZES = ['1920x1080', '1920x1200', '1600x1200', '1280x960', '1280x720',
+          '1024x768', '960x720', '800x600', '640x480', '320x240']
+_MJPG_RATES = [90, 60, 30, 25, 20, 15, 10, 5]
+_YUYV_RATES = {'1920x1080': [5], '1920x1200': [5], '1600x1200': [5], '1280x960': [5],
+               '1280x720': [10, 5], '1024x768': [10, 5], '960x720': [15, 10, 5],
+               '800x600': [20, 15, 10, 5], '640x480': [30, 25, 20, 15, 10, 5],
+               '320x240': _MJPG_RATES}
+
+
+def _format_block(index, fourcc, label, rates_for):
+    lines = [f"\t[{index}]: '{fourcc}' ({label})"]
+    for size in _SIZES:
+        lines.append(f'\t\tSize: Discrete {size}')
+        for fps in rates_for(size):
+            lines.append(f'\t\t\tInterval: Discrete {1 / fps:.3f}s ({fps:.3f} fps)')
+    return '\n'.join(lines)
+
+
+GLOBAL_SHUTTER_FORMATS = '\n'.join([
+    'ioctl: VIDIOC_ENUM_FMT', '\tType: Video Capture', '',
+    _format_block(0, 'MJPG', 'Motion-JPEG, compressed', lambda size: _MJPG_RATES),
+    '',
+    _format_block(1, 'YUYV', 'YUYV 4:2:2', lambda size: _YUYV_RATES[size]),
+    '',
+])
+
+
+def test_global_shutter_modes_are_mjpeg_only_and_sorted_by_area(ctl):
+    modes = ctl.parse_modes(GLOBAL_SHUTTER_FORMATS)
+    sizes = [(m['width'], m['height']) for m in modes]
+    # By area, not by the order the camera lists them in.
+    assert sizes[:3] == [(1920, 1200), (1920, 1080), (1600, 1200)]
+    assert sizes[-1] == (320, 240) and len(sizes) == 10
+    # Every size at every MJPEG rate, fastest first: no YUYV-only limit leaks in.
+    assert all(m['fps'] == _MJPG_RATES for m in modes)
+    assert ctl.valid_mode(modes, 1920, 1080, 90)
+    assert not ctl.valid_mode(modes, 1920, 1080, 120)
+
+
+def test_a_flag_v4l2_ctl_cannot_name_is_not_inactive(ctl):
+    parsed = ctl.parse_controls(GLOBAL_SHUTTER_CTRLS)
+    assert parsed['brightness']['inactive'] is False
+    assert (parsed['brightness']['min'], parsed['brightness']['max']) == (-64, 64)
+    assert parsed['focus_absolute']['value'] == 383
+
+
+def test_menu_items_are_kept_with_their_control(ctl):
+    parsed = ctl.parse_controls(GLOBAL_SHUTTER_CTRLS)
+    assert parsed['power_line_frequency']['menu'] == {0: 'Disabled', 1: '50 Hz', 2: '60 Hz'}
+    assert parsed['power_line_frequency']['value'] == 2
+    assert parsed['auto_exposure']['menu'] == {1: 'Manual Mode', 3: 'Aperture Priority Mode'}
+    # An item line belongs to the menu above it, never to the next control.
+    assert 'menu' not in parsed['white_balance_temperature']
+    assert 'menu' not in parsed['exposure_time_absolute']
+
+
+def test_global_shutter_controls_are_described_in_their_own_ranges(ctl):
+    described = ctl.describe_controls('/dev/video0', run=FakeV4l2(controls=GLOBAL_SHUTTER_CTRLS))
+    assert set(described) == {
+        'exposure', 'gain', 'white_balance_temperature', 'focus', 'brightness', 'contrast',
+        'saturation', 'hue', 'gamma', 'sharpness', 'backlight_compensation',
+        'power_line_frequency'}
+    assert described['brightness'] == {'value': 0, 'min': -64, 'max': 64, 'default': 0, 'step': 1}
+    assert described['focus'] == {'value': 383, 'min': 0, 'max': 1023, 'default': 0,
+                                  'step': 1, 'auto': False}
+    assert described['exposure']['auto'] is False and described['exposure']['value'] == 312
+    assert described['white_balance_temperature']['auto'] is False
+    assert described['power_line_frequency']['options'] == [
+        {'value': 0, 'label': 'Disabled'}, {'value': 1, 'label': '50 Hz'},
+        {'value': 2, 'label': '60 Hz'}]
+    # Pan, tilt and zoom are the camera's, not lager's to set.
+    assert 'pan_absolute' not in described and 'zoom' not in described
+
+
+def test_values_are_read_with_switches_as_bools(ctl):
+    values = ctl.read_values('/dev/video0', run=FakeV4l2(controls=GLOBAL_SHUTTER_CTRLS))
+    assert values['exposure_auto'] is False
+    assert values['white_balance_auto'] is False
+    assert values['focus_auto'] is False
+    assert (values['focus'], values['exposure'], values['backlight_compensation']) == (383, 312, 36)
+
+
+@pytest.mark.parametrize('logical,value,written', [
+    ('brightness', 128, 'brightness=64'),           # clamped to -64..64, not 0..255
+    ('brightness', -100, 'brightness=-64'),
+    ('focus', 383, 'focus_absolute=383'),           # beyond the old 0..255 limit
+    ('focus', 5000, 'focus_absolute=1023'),
+    ('gamma', 10, 'gamma=64'),
+    ('white_balance_auto', False, 'white_balance_automatic=0'),
+    ('white_balance_auto', True, 'white_balance_automatic=1'),
+    ('focus_auto', True, 'focus_automatic_continuous=1'),
+    ('power_line_frequency', 1, 'power_line_frequency=1'),
+])
+def test_each_control_is_written_in_the_cameras_range(ctl, logical, value, written):
+    v4l2 = FakeV4l2(controls=GLOBAL_SHUTTER_CTRLS)
+    assert ctl.set_control('/dev/video0', logical, value, run=v4l2)
+    assert v4l2.sets == [written]
+
+
+@pytest.mark.parametrize('value', [3, -1, 'off', True])
+def test_a_menu_value_the_camera_does_not_list_is_refused(ctl, value):
+    v4l2 = FakeV4l2(controls=GLOBAL_SHUTTER_CTRLS)
+    assert not ctl.set_control('/dev/video0', 'power_line_frequency', value, run=v4l2)
+    assert v4l2.sets == []
+
+
+def test_saved_controls_are_written_switches_first(ctl):
+    v4l2 = FakeV4l2(controls=GLOBAL_SHUTTER_CTRLS)
+    taken = ctl.apply_controls('/dev/video0', {
+        'focus': 383, 'gain': 0, 'white_balance_temperature': 4600,
+        'focus_auto': False, 'exposure': 312, 'exposure_auto': False,
+        'white_balance_auto': False, 'not_a_control': 1}, run=v4l2)
+    assert v4l2.sets[:3] == ['auto_exposure=1', 'white_balance_automatic=0',
+                             'focus_automatic_continuous=0']
+    assert set(v4l2.sets[3:]) == {'exposure_time_absolute=312', 'gain=0',
+                                  'white_balance_temperature=4600', 'focus_absolute=383'}
+    assert 'not_a_control' not in taken and all(taken.values())
+
+
+def test_a_value_its_switch_hands_to_the_camera_is_not_written(ctl):
+    v4l2 = FakeV4l2(controls=GLOBAL_SHUTTER_CTRLS)
+    ctl.apply_controls('/dev/video0', {'focus_auto': True, 'focus': 383,
+                                       'brightness': 0}, run=v4l2)
+    assert v4l2.sets == ['focus_automatic_continuous=1', 'brightness=0']
+
+
+def test_nothing_saved_writes_nothing(ctl):
+    v4l2 = FakeV4l2(controls=GLOBAL_SHUTTER_CTRLS)
+    assert ctl.apply_controls('/dev/video0', {}, run=v4l2) == {}
+    assert v4l2.sets == []
+
+
+def test_a_lock_keeps_every_value_and_turns_every_auto_off(ctl):
+    parsed = ctl.parse_controls(CONTROLS_NEW)   # auto exposure on
+    assert ctl.lock_values(parsed) == {'exposure_auto': False, 'exposure': 250,
+                                       'gain': 12, 'brightness': 128}
+    locked = ctl.lock_values(ctl.parse_controls(GLOBAL_SHUTTER_CTRLS), {'focus': 332})
+    assert locked['focus'] == 332 and locked['focus_auto'] is False
+    assert locked['white_balance_temperature'] == 4600 and locked['power_line_frequency'] == 2
+    # A control the camera lacks is not added by an override.
+    assert 'gain' not in ctl.lock_values(ctl.parse_controls(CONTROLS_OLD), {'gain': 3})
+    with pytest.raises(ValueError, match='zoom'):
+        ctl.lock_values(parsed, {'zoom': 2})
+
+
+def test_compare_reports_what_did_not_stick(ctl):
+    report, ok = ctl.compare({'focus': 383, 'gain': 0}, {'focus': 383, 'gain': 0})
+    assert ok and report['focus'] == {'wanted': 383, 'actual': 383}
+    report, ok = ctl.compare({'brightness': 128}, {'brightness': 64})
+    assert not ok and report['brightness'] == {'wanted': 128, 'actual': 64}

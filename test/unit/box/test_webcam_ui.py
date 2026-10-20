@@ -261,9 +261,10 @@ def test_zoom_buttons_post_to_the_server():
     out.posts = requests.filter((r) => r.method === 'POST').map((r) => [r.path, r.body]);
     """
     out = _run(_routes(INFO), scenario)
-    # Zoom in and reset take no body, so none is sent.
+    # Zoom in and reset take no body, so none is sent. Manual focus holds the
+    # distance the camera reports (0 here), not a value the page made up.
     assert out["posts"] == [["/api/zoom/in", None], ["/api/zoom/reset", None],
-                            ["/api/focus/manual", {"value": 128}]]
+                            ["/api/focus/manual", {"value": 0}]]
 
 
 def test_snapshot_names_the_file_after_the_net():
@@ -440,3 +441,129 @@ def test_rotate_and_flip_post_the_orientation():
     """ + _posts('/api/orientation/set')
     out = _run(_routes(ZOOMED), scenario)
     assert out["posts"] == [{"rotate": 180}, {"flip_h": True}]
+
+
+# ---------- the camera's own ranges ----------
+
+# A global-shutter camera's controls, as /api/controls describes them.
+GS_CONTROLS = {
+    "exposure": {"auto": False, "value": 312, "min": 1, "max": 10000, "step": 1},
+    "gain": {"value": 0, "min": 0, "max": 1023, "step": 1},
+    "white_balance_temperature": {"auto": False, "value": 4600, "min": 2800, "max": 6500, "step": 1},
+    "contrast": {"value": 32, "min": 0, "max": 95, "step": 1},
+    "gamma": {"value": 100, "min": 64, "max": 300, "step": 1},
+    "backlight_compensation": {"value": 36, "min": 36, "max": 160, "step": 1},
+    "power_line_frequency": {"value": 2, "min": 0, "max": 2, "step": 1,
+                             "options": [{"value": 0, "label": "Disabled"},
+                                         {"value": 1, "label": "50 Hz"},
+                                         {"value": 2, "label": "60 Hz"}]},
+}
+GS_ROUTES = {
+    "/api/controls": [200, GS_CONTROLS],
+    "/api/focus": [200, {"mode": "manual", "value": 383, "min": 0, "max": 1023, "step": 1}],
+    "/api/brightness": [200, {"value": 0, "min": -64, "max": 64, "step": 1}],
+}
+
+ADJUST_REPORT = """
+out.adjust = $('image-adjust').children.map((row) => [
+  row.children[0].children[0].textContent, row.children[1].min, row.children[1].max,
+  row.children[1].value, row.hidden]);
+"""
+
+
+def test_focus_and_brightness_take_the_cameras_range():
+    scenario = """
+    out.focus = [$('focus').min, $('focus').max, $('focus').value, $('focus').disabled];
+    out.focusShown = !$('focus-group').hidden;
+    out.brightnessRange = [$('brightness').min, $('brightness').max, $('brightness').value];
+    """
+    out = _run(_routes(INFO, **GS_ROUTES), scenario)
+    assert out["focus"] == [0, 1023, 383, False]
+    assert out["focusShown"] is True
+    assert out["brightnessRange"] == [-64, 64, 0]
+
+
+def test_a_camera_without_focus_hides_it():
+    scenario = "out.shown = !$('focus-group').hidden;"
+    out = _run(_routes(INFO, **{"/api/focus": [200, {"mode": None, "value": None}]}), scenario)
+    assert out["shown"] is False
+
+
+def test_focus_without_autofocus_has_no_switch():
+    scenario = "out.switchShown = !$('focus-mode').hidden; out.disabled = $('focus').disabled;"
+    focus = {"mode": None, "value": 40, "min": 0, "max": 255, "step": 1}
+    out = _run(_routes(INFO, **{"/api/focus": [200, focus]}), scenario)
+    assert out == {**out, "switchShown": False, "disabled": False}
+
+
+def test_image_sliders_are_built_for_what_the_camera_has():
+    out = _run(_routes(INFO, **GS_ROUTES), ADJUST_REPORT)
+    assert out["adjust"] == [["Contrast", 0, 95, 32, False],
+                             ["Gamma", 64, 300, 100, False],
+                             ["Backlight compensation", 36, 160, 36, False]]
+
+
+def test_an_image_slider_shows_its_value_as_it_moves():
+    # The POST waits on the slider debounce, a setTimeout the harness never
+    # runs; what shows at once is the readout, and the debounced listener.
+    scenario = """
+    const row = $('image-adjust').children[1];
+    const gamma = row.children[1];
+    gamma.value = '120';
+    gamma.fire('input');
+    out.readout = row.children[0].children[1].textContent;
+    out.listeners = gamma.listeners.input.length;
+    out.label = gamma.getAttribute('aria-label');
+    """
+    out = _run(_routes(INFO, **GS_ROUTES), scenario)
+    assert out["readout"] == "120"
+    assert out["listeners"] == 2
+    assert out["label"] == "Gamma"
+
+
+def test_white_balance_is_shown_and_held_under_auto():
+    scenario = """
+    out.shown = !$('wb-group').hidden;
+    out.range = [$('wb').min, $('wb').max, $('wb').value, $('wb').disabled];
+    out.label = $('wb-value').textContent;
+    """
+    out = _run(_routes(INFO, **GS_ROUTES), scenario)
+    assert out["shown"] is True
+    assert out["range"] == [2800, 6500, 4600, False]
+    assert out["label"] == "4600 K"
+    auto = dict(GS_CONTROLS, white_balance_temperature=dict(
+        GS_CONTROLS["white_balance_temperature"], auto=True))
+    out = _run(_routes(INFO, **dict(GS_ROUTES, **{"/api/controls": [200, auto]})), scenario)
+    assert out["range"][3] is True and out["label"] == "auto"
+
+
+def test_auto_white_balance_buttons_post_the_switch():
+    scenario = """
+    $('wb-auto').fire('click');
+    $('wb-manual').fire('click');
+    """ + _posts('/api/controls/set')
+    out = _run(_routes(INFO, **GS_ROUTES), scenario)
+    assert out["posts"] == [{"control": "white_balance_auto", "value": True},
+                            {"control": "white_balance_auto", "value": False}]
+
+
+def test_power_line_frequency_lists_the_cameras_options_and_posts():
+    scenario = """
+    out.options = $('power-line').children.map((o) => [o.value, o.textContent]);
+    out.value = $('power-line').value;
+    $('power-line').value = '1';
+    $('power-line').fire('change');
+    """ + _posts('/api/controls/set')
+    out = _run(_routes(INFO, **GS_ROUTES), scenario)
+    assert out["options"] == [["0", "Disabled"], ["1", "50 Hz"], ["2", "60 Hz"]]
+    assert out["value"] == "2"
+    assert out["posts"] == [{"control": "power_line_frequency", "value": 1}]
+
+
+def test_a_camera_with_only_exposure_shows_no_extra_controls():
+    scenario = ADJUST_REPORT + """
+    out.wb = !$('wb-group').hidden;
+    out.powerLine = !$('power-line-group').hidden;
+    """
+    out = _run(_routes(INFO), scenario)
+    assert out["adjust"] == [] and out["wb"] is False and out["powerLine"] is False

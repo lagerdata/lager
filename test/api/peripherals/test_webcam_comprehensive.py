@@ -59,6 +59,29 @@ def main():
             _record("get_url_returns_string", False, str(e))
         time.sleep(1)
 
+        # Frames, from the running stream
+        try:
+            jpeg = webcam.snapshot()
+            _record("snapshot_is_jpeg", jpeg[:2] == b'\xff\xd8', f"{len(jpeg)} bytes")
+            raw = webcam.snapshot(raw=True)
+            _record("raw_snapshot_is_jpeg", raw[:2] == b'\xff\xd8', f"{len(raw)} bytes")
+        except Exception as e:
+            _record("snapshot", False, str(e))
+        try:
+            image = webcam.frame()
+            _record("frame_is_an_image", getattr(image, 'ndim', 0) == 3,
+                    f"shape={getattr(image, 'shape', None)}")
+        except Exception as e:
+            _record("frame_is_an_image", False, str(e))
+
+        # Controls are only read: setting one would change the bench camera.
+        try:
+            described = webcam.controls()
+            _record("controls_returns_dict", isinstance(described, dict),
+                    f"controls={sorted(described) if isinstance(described, dict) else described}")
+        except Exception as e:
+            _record("controls_returns_dict", False, str(e))
+
         # Stop stream
         stopped = webcam.stop()
         _record("stop", True, f"result={stopped}")

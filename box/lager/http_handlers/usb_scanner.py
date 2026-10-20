@@ -183,6 +183,10 @@ SUPPORTED_USB: Dict[str, Dict] = {
     "Logitech_C615":     {"vid": "046d", "pid": "082c", "net_type": ["webcam"]},
     "Logitech_C270":     {"vid": "046d", "pid": "0825", "net_type": ["webcam"]},
     "Logitech_StreamCam": {"vid": "046d", "pid": "0893", "net_type": ["webcam"]},
+    # ELP global-shutter camera (AR0234 sensor), USB 2.0 UVC. Its serial is a
+    # fixed firmware string, 01.00.00, so two on one box share an address and
+    # are listed as one camera with both capture nodes.
+    "ELP_Global_Shutter_AR0234": {"vid": "32e4", "pid": "0234", "net_type": ["webcam"]},
     # watt-meter
     "Yocto_Watt":        {"vid": "24e0", "pid": "002a", "net_type": ["watt-meter"]},
     "Joulescope_JS220":  {"vid": "16d0", "pid": "10ba", "net_type": ["watt-meter", "energy-analyzer"]},

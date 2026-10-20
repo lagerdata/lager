@@ -47,13 +47,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 3533 (+3 xfailed) |
-| `unit (box)` | `test/unit/box/` | 4565 (+16 skipped) |
+| `unit (cli)` | `test/unit/cli/` | 3534 (+3 xfailed) |
+| `unit (box)` | `test/unit/box/` | 4623 (+16 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 405 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 221 (+1 skipped) |
-| | **Total gated** | **8918** |
+| | **Total gated** | **8977** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -349,7 +349,7 @@ See "What CI does NOT run" for which assets execute.
 | **Power Profiler** | Nordic PPK2 | 1 file | — | Yes |
 | **Watt Meter** | Yoctopuce Watt | 2 files | — | Yes |
 | **Thermocouple** | Phidget temperature hub | 3 files | `thermocouple.sh` | Yes |
-| **Webcam** | Logitech BRIO / C930e | 1 file | — | Yes |
+| **Webcam** | Logitech BRIO / C930e, ELP global-shutter (AR0234) | 1 file | — | Yes |
 | **Robotic Arm** | Rotrics Dexarm | 1 file | `arm.sh` | Yes |
 
 The Acroname, YKUSH, and Plugable USB-hub drivers also have hardware-free unit coverage
@@ -495,9 +495,9 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 315 files)
+### Local Unit Tests (`test/unit/` -- 316 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 168 files)
+#### Box Unit Tests (`test/unit/box/` -- 169 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -639,10 +639,11 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_usb_scanner_jlink.py` | Any SEGGER (VID 0x1366) device is detected as a J-Link debug instrument with the DEVICE_TYPE channel: on-board J-Link OB PIDs 1015 and 1051 get their own names, the J-Link OB variant 1025 and any other unlisted PID fall back to `J-Link` with the real PID in the address, listed models keep their names, and an unknown PID from any other vendor is still skipped |
 | `test_usb_scanner_u3.py` | #515: a LabJack U3 reports no USB serial, so `scan_usb` addresses it by topology (`USB0::0x0CD5::0x0003::port-<sysfs>::INSTR`); two serial-less U3s get two addresses, a unique real serial is kept, and a U3 is topology-addressed without joining the multi-tier hub dedupe |
 | `test_usb_scanner_uart_fallback.py` | UART enumeration without USB serial by matching sysfs path; two identical adapters keep distinct ttys and the channel catalog stays unmutated |
-| `test_webcam_controls.py` | The webcam streamer's `controls.py`: MJPEG modes parsed from `v4l2-ctl --list-formats-ext` (fractional rates kept), controls parsed with their flags, exposure found under either kernel name, settable controls limited to exposure and gain and clamped to the camera's range, pan clamped inside the picture, the crop box following it, and rotation and flips, with OpenCV and numpy giving the same pixels |
-| `test_webcam_detection.py` | sysfs-based webcam detection (`_by_camera`) against a fake sysfs tree |
-| `test_webcam_stream_state.py` | `WebcamStreamState.add_stream` persisting the `source`/`started_by` origin fields, `get_stream_info` returning them, and the generated streamer script still compiling with the `/snapshot` handler in it. Also the generated server run in-process with a stand-in cv2: the viewer page and its two assets served from `static/webcam/`, every other `/static/` path (traversal included) a 404, `/api/info` with and without a state file, and `/api/streams` read from the state file. Pan and orientation kept in the state file, zoom reset re-centring the pan, the body-less POSTs accepting a body, mode changes (before capture, refused, and the capture thread's switch with both fallbacks), unknown controls refused, and the per-frame rotate-then-crop |
-| `test_webcam_ui.py` | The webcam viewer page (`static/webcam/webcam.js`) under node with a stand-in DOM: `LIVE` / `STALLED` / `WAITING` / `OFFLINE` from `/api/info`, a gateway 401 signing the page out and stopping the feed, no HTML sink in the script, the Net picker moving to another stream's port and refusing any value that is not a port on this host, the zoom and focus POSTs, the snapshot file name, the resolution pickers and a refused mode's note, exposure and gain shown only when the camera has them, gain held while auto exposure is on, drag, arrow-key and double-click panning, and the rotate and flip POSTs |
+| `test_webcam_controls.py` | The webcam streamer's `controls.py`: MJPEG modes parsed from `v4l2-ctl --list-formats-ext` (fractional rates kept; a global-shutter camera's 90 fps MJPEG modes sorted by area whatever order it lists them in, its YUYV-only limits never offered), controls parsed with their flags (a hex flag v4l2-ctl cannot name is not `inactive`) and menu items, exposure found under either kernel name, every image control described and set in the camera's own range (brightness -64..64, focus 0..1023), bools written 1/0, a menu value the camera does not list refused, saved controls written switches first and a value its auto switch takes over skipped, a lock turning every auto off and keeping every value, the read-back comparison, pan clamped inside the picture, the crop box following it, and rotation and flips, with OpenCV and numpy giving the same pixels |
+| `test_webcam_detection.py` | sysfs-based webcam detection (`_by_camera`) against a fake sysfs tree, including a global-shutter camera beside a Logi 4K Pro and a built-in camera, each mapped to its own capture node, and two global-shutter cameras with the same fixed serial merging into one entry (a known limit) |
+| `test_webcam_net_wrapper.py` | The webcam net's `snapshot()` / `frame()` reading the running stream's `/snapshot` (and `?raw=1`) over 127.0.0.1, with errors for a stopped stream and for no frame; `controls()`, `set_control()` saving what the camera took and refusing what it did not, and `lock_controls()` turning every auto off, saving every control for the net, and reporting a value the camera clamped |
+| `test_webcam_stream_state.py` | `WebcamStreamState.add_stream` persisting the `source`/`started_by` origin fields, `get_stream_info` returning them, and the generated streamer script still compiling with the `/snapshot` handler in it. Also the generated server run in-process with a stand-in cv2: the viewer page and its two assets served from `static/webcam/`, every other `/static/` path (traversal included) a 404, `/api/info` with and without a state file, and `/api/streams` read from the state file. Pan and orientation kept in the state file, zoom reset re-centring the pan, the body-less POSTs accepting a body, mode changes (before capture, refused, and the capture thread's switch with both fallbacks), unknown controls refused, and the per-frame rotate-then-crop. A stream start writing no control nobody set (an older record's focus and brightness defaults included), saved controls put back at start switches first, focus and brightness in the camera's range through their endpoints, every named control settable and saved, `/snapshot?raw=1` serving the frame before the view, `camera_model` following a by-id link, and settings kept in their own file across a stop and a rename |
+| `test_webcam_ui.py` | The webcam viewer page (`static/webcam/webcam.js`) under node with a stand-in DOM: `LIVE` / `STALLED` / `WAITING` / `OFFLINE` from `/api/info`, a gateway 401 signing the page out and stopping the feed, no HTML sink in the script, the Net picker moving to another stream's port and refusing any value that is not a port on this host, the zoom and focus POSTs, the snapshot file name, the resolution pickers and a refused mode's note, exposure and gain shown only when the camera has them, gain held while auto exposure is on, focus and brightness sliders in the camera's range and hidden without them, white balance held under auto, a slider for each image control the camera has, the power line frequency options, drag, arrow-key and double-click panning, and the rotate and flip POSTs |
 | `test_plugable_driver.py` | Plugable RTS5411 dock driver: USB hub-class per-port power switching over pyusb -- ganged/no-switching hubs refused without touching a port, a disable NOT judged by device presence (the kernel cannot see a disconnect while a port is unpowered, so the sysfs node persists), cycle restoring power on every failure path and reporting re-enumeration, off-time range enforced before any transfer, SuperSpeed companion pairing refused when ambiguous, network-device and inter-hub-link guards, one-session batch reads, handle disposal on every path |
 | `test_ykush_driver.py` | YKUSH USB hub driver: device-contention regression from an indefinitely cached handle |
 | `test_automation_exports.py` | Static parse of `automation/__init__.py`'s lazy export table: no name guarded twice, every returned driver reachable under its own name, everything in `__all__` resolvable -- the copy-paste class of defect that made one driver answer to another's name |

@@ -8,10 +8,11 @@
  *   GET  /stream               the MJPEG picture
  *   GET  /api/info             net, camera, size, fps, frame age, origin
  *   GET  /api/streams          every stream on the box, for the Net picker
- *   GET  /api/focus            {mode, value}
- *   GET  /api/brightness       {value}
+ *   GET  /api/focus            {mode, value, min, max, step}, in the camera's range
+ *   GET  /api/brightness       {value, min, max, step}, in the camera's range
  *   GET  /api/modes            the sizes and frame rates the camera offers
- *   GET  /api/controls         exposure and gain, when the camera has them
+ *   GET  /api/controls         exposure, gain, white balance and the other
+ *                              image controls, each only if the camera has it
  *   POST /api/zoom/set|in|out|reset, /api/focus/auto|manual, /api/brightness/set,
  *        /api/pan/set, /api/orientation/set, /api/mode/set, /api/controls/set
  *   GET  /snapshot             one JPEG, for the Snapshot button
@@ -223,13 +224,20 @@
 
   // ---------- focus ----------
 
+  // Hidden on a camera with no focus control; the Auto / Manual switch
+  // too on one with a focus distance but no autofocus (mode null).
   function showFocus(result) {
     if (!result || result.mode === undefined) return;
+    var has = result.value !== null && result.value !== undefined;
+    $('focus-group').hidden = !has;
+    if (!has) return;
+    $('focus-mode').hidden = result.mode === null;
     var auto = result.mode === 'auto';
     $('focus-auto').setAttribute('aria-pressed', String(auto));
     $('focus-manual').setAttribute('aria-pressed', String(!auto));
+    setRange($('focus'), result);
     $('focus').disabled = auto;
-    if (!state.dragging.focus && !auto) $('focus').value = result.value;
+    if (!state.dragging.focus) $('focus').value = result.value;
     $('focus-value').textContent = auto ? 'auto' : String($('focus').value);
   }
 
@@ -249,7 +257,10 @@
   // ---------- brightness ----------
 
   function showBrightness(result) {
-    if (!result || result.value === undefined || state.dragging.brightness) return;
+    if (!result || result.value === undefined) return;
+    $('brightness-group').hidden = result.value === null;
+    if (result.value === null || state.dragging.brightness) return;
+    setRange($('brightness'), result);
     $('brightness').value = result.value;
     $('brightness-value').textContent = String(result.value);
   }
@@ -467,7 +478,99 @@
     });
   }
 
-  // ---------- exposure and gain ----------
+  // ---------- exposure, gain and the other image controls ----------
+
+  // A slider takes the camera's own range: brightness on one camera is
+  // 0..255, on another -64..64.
+  function setRange(slider, range) {
+    if (range.min !== null && range.min !== undefined) slider.min = range.min;
+    if (range.max !== null && range.max !== undefined) slider.max = range.max;
+    slider.step = range.step || 1;
+  }
+
+  // The plain sliders, built for whichever of these the camera has.
+  var ADJUSTMENTS = [
+    ['contrast', 'Contrast'],
+    ['saturation', 'Saturation'],
+    ['hue', 'Hue'],
+    ['gamma', 'Gamma'],
+    ['sharpness', 'Sharpness'],
+    ['backlight_compensation', 'Backlight compensation'],
+  ];
+  var adjusters = {};
+
+  function adjuster(name, label) {
+    if (adjusters[name]) return adjusters[name];
+    var row = document.createElement('label');
+    row.className = 'field field--stack';
+    var head = document.createElement('span');
+    head.className = 'field__head';
+    var title = document.createElement('span');
+    title.textContent = label;
+    var output = document.createElement('output');
+    var input = document.createElement('input');
+    input.type = 'range';
+    input.setAttribute('aria-label', label);
+    head.appendChild(title);
+    head.appendChild(output);
+    row.appendChild(head);
+    row.appendChild(input);
+    input.addEventListener('input', function () { output.textContent = input.value; });
+    input.addEventListener('input', debounced(name, function () {
+      return setControl(name, parseInt(input.value, 10));
+    }));
+    $('image-adjust').appendChild(row);
+    adjusters[name] = { row: row, input: input, output: output };
+    return adjusters[name];
+  }
+
+  function showAdjustments(data) {
+    ADJUSTMENTS.forEach(function (pair) {
+      var control = data[pair[0]];
+      if (!control) {
+        if (adjusters[pair[0]]) adjusters[pair[0]].row.hidden = true;
+        return;
+      }
+      var parts = adjuster(pair[0], pair[1]);
+      parts.row.hidden = false;
+      setRange(parts.input, control);
+      if (!state.dragging[pair[0]]) parts.input.value = control.value;
+      parts.output.textContent = String(parts.input.value);
+    });
+  }
+
+  function showWhiteBalance(wb) {
+    $('wb-group').hidden = !wb;
+    if (!wb) return;
+    $('wb-mode').hidden = wb.auto === null || wb.auto === undefined;
+    var auto = wb.auto === true;
+    $('wb-auto').setAttribute('aria-pressed', String(auto));
+    $('wb-manual').setAttribute('aria-pressed', String(!auto));
+    setRange($('wb'), wb);
+    // As with exposure, the camera ignores a temperature while auto is on.
+    $('wb').disabled = auto;
+    if (!state.dragging.wb) $('wb').value = wb.value;
+    $('wb-value').textContent = auto ? 'auto' : String($('wb').value) + ' K';
+  }
+
+  function showPowerLine(control) {
+    $('power-line-group').hidden = !control;
+    if (!control) return;
+    var select = $('power-line');
+    var options = control.options || [];
+    var key = JSON.stringify(options);
+    if (select.dataset.options !== key) {
+      select.textContent = '';
+      options.forEach(function (item) {
+        var option = document.createElement('option');
+        option.value = String(item.value);
+        option.textContent = item.label;
+        select.appendChild(option);
+      });
+      select.dataset.options = key;
+    }
+    select.value = String(control.value);
+  }
 
   function showControls(data) {
     if (!data) return;
@@ -499,6 +602,9 @@
       if (!state.dragging.gain) $('gain').value = gain.value;
       $('gain-value').textContent = gainAuto ? 'auto' : String($('gain').value);
     }
+    showWhiteBalance(data.white_balance_temperature);
+    showAdjustments(data);
+    showPowerLine(data.power_line_frequency);
   }
 
   function setControl(control, value) {
@@ -521,6 +627,18 @@
   $('gain').addEventListener('input', debounced('gain', function () {
     return setControl('gain', parseInt($('gain').value, 10));
   }));
+
+  $('wb-auto').addEventListener('click', function () { setControl('white_balance_auto', true); });
+  $('wb-manual').addEventListener('click', function () { setControl('white_balance_auto', false); });
+  $('wb').addEventListener('input', function () {
+    $('wb-value').textContent = $('wb').value + ' K';
+  });
+  $('wb').addEventListener('input', debounced('wb', function () {
+    return setControl('white_balance_temperature', parseInt($('wb').value, 10));
+  }));
+  $('power-line').addEventListener('change', function () {
+    setControl('power_line_frequency', parseInt($('power-line').value, 10));
+  });
 
   function pollControls() {
     if (state.signedOut) return;

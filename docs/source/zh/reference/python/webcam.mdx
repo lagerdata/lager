@@ -20,6 +20,11 @@ from lager import Net, NetType
 | `get_info(box_ip)` | 获取该串流的信息 |
 | `get_url(box_ip)` | 只获取该串流的 URL |
 | `is_active()` | 检查串流当前是否正在运行 |
+| `snapshot(raw=False)` | 从运行中的串流取一帧 JPEG |
+| `frame(raw=True)` | 从运行中的串流取一帧，返回 numpy 数组 |
+| `controls()` | 摄像头的图像控制项，含当前值和范围 |
+| `set_control(name, value)` | 设置一个摄像头控制项，并为该 Net 保存 |
+| `lock_controls(**overrides)` | 关闭所有自动模式，并保持每个控制项的当前值 |
 
 ## 方法参考
 
@@ -156,8 +161,143 @@ else:
 
 **返回：** `bool` - 串流正在运行为 True，否则为 False
 
+### `snapshot(raw=False)`
+
+从运行中的串流取一帧 JPEG。
+
+```python
+from lager import Net, NetType
+
+webcam = Net.get('camera1', type=NetType.Webcam)
+webcam.start(box_ip='<BOX_IP>')
+with open('bench.jpg', 'wb') as f:
+    f.write(webcam.snapshot())
+```
+
+这一帧取自串流自己的采集，因此不会与串流或正在查看它的浏览器争用摄像头。
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `raw` | `bool` | `True` 返回摄像头送出的原始帧。`False`（默认）返回查看页面显示的画面，即经过旋转、翻转和变焦之后的画面 |
+
+**返回：** `bytes` - 该 JPEG
+
+**异常：** 串流已停止，或 5 秒内没有帧时抛出 `RuntimeError`
+
+### `frame(raw=True)`
+
+从运行中的串流取一帧，并解码以供分析。
+
+```python
+from lager import Net, NetType
+
+webcam = Net.get('camera1', type=NetType.Webcam)
+webcam.start(box_ip='<BOX_IP>')
+image = webcam.frame()          # height x width x 3, BGR
+print(image.shape, image.mean())
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `raw` | `bool` | `True`（默认）返回摄像头送出的原始帧，即查看页面旋转、翻转和变焦之前的帧 |
+
+**返回：** `numpy.ndarray` - 高 x 宽 x 3，按 OpenCV 使用的 BGR 顺序
+
+**异常：** 与 `snapshot()` 相同的 `RuntimeError`
+
 <Note>
-该 Python API 没有截图方法。若要从正在运行的串流保存一帧，请在您的计算机上使用 [`lager webcam NET snapshot`](/source/zh/reference/cli/webcam)。
+在 `lager python` 脚本中请使用 `frame()`，不要用 `cv2.VideoCapture` 打开摄像头。串流运行时会占用摄像头，对同一设备的第二个采集得不到任何帧。
+</Note>
+
+### `controls()`
+
+摄像头的图像控制项，每项含当前值和范围。串流启动或停止时都可使用。
+
+```python
+from lager import Net, NetType
+
+webcam = Net.get('camera1', type=NetType.Webcam)
+for name, control in webcam.controls().items():
+    print(name, control['value'], control['min'], control['max'])
+```
+
+**返回：** 控制项名称到 `{"value", "min", "max", "step", "default"}` 的 `dict`，只包含摄像头具备的控制项。名称见[摄像头控制](#摄像头控制)。有三个值带自动模式：`exposure`、`white_balance_temperature` 和 `focus`。它们还各有 `auto`：`True`、`False`，摄像头没有对应自动模式时为 `None`。`power_line_frequency` 还有 `options`，为 `{"value", "label"}` 列表。
+
+### `set_control(name, value)`
+
+设置一个摄像头控制项，并为该 Net 保存。串流启动或停止时都可使用。
+
+```python
+from lager import Net, NetType
+
+webcam = Net.get('camera1', type=NetType.Webcam)
+webcam.set_control('focus_auto', False)
+webcam.set_control('focus', 383)
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `name` | `str` | [摄像头控制](#摄像头控制)中的名称之一 |
+| `value` | `bool` 或 `int` | `exposure_auto`、`white_balance_auto` 和 `focus_auto` 取 `bool`。其余取数值，并限制在摄像头的范围内。`power_line_frequency` 取其 `options` 之一 |
+
+**返回：** `bool` - 摄像头接受该值时为 True
+
+**异常：** 名称不是摄像头控制项时抛出 `ValueError`
+
+### `lock_controls(**overrides)`
+
+固定所有图像控制项，使画面在帧与帧之间、运行与运行之间可比较。关闭自动曝光、自动白平衡和自动对焦。除非您覆盖，其余控制项都保持当前值。全部为该 Net 保存，然后从摄像头读回。
+
+```python
+from lager import Net, NetType
+
+webcam = Net.get('led_cam', type=NetType.Webcam)
+report = webcam.lock_controls(exposure=312, white_balance_temperature=4600,
+                              power_line_frequency=2)
+if not report['ok']:
+    for name, r in report['controls'].items():
+        if r['wanted'] != r['actual']:
+            print(f"{name}: wanted {r['wanted']}, camera has {r['actual']}")
+```
+
+**参数：**
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `**overrides` | | 控制项名称到值，与 `set_control` 的取值相同 |
+
+**返回：** `dict`，包含：
+- `ok` - 每个控制项读回的值都符合要求时为 True
+- `controls` - 摄像头每个控制项的 `{name: {"wanted", "actual"}}`。超出摄像头范围的值会被限制，因此读回不同，`ok` 为 False
+
+**异常：** 无法读取摄像头控制项时抛出 `RuntimeError`；名称未知时抛出 `ValueError`
+
+## 摄像头控制
+
+| 名称 | 含义 |
+|------|------------|
+| `exposure_auto` | 自动曝光开或关（`bool`） |
+| `exposure` | 曝光时间，单位由摄像头决定。Linux UVC 摄像头的单位是 100 微秒：312 即 31.2 ms |
+| `gain` | 传感器增益 |
+| `white_balance_auto` | 自动白平衡开或关（`bool`） |
+| `white_balance_temperature` | 色温，单位为开尔文 |
+| `focus_auto` | 连续自动对焦开或关（`bool`） |
+| `focus` | 对焦距离，单位由摄像头决定 |
+| `brightness`, `contrast`, `saturation`, `hue`, `gamma`, `sharpness`, `backlight_compensation` | 画面调节 |
+| `power_line_frequency` | 防闪烁：0 为关闭，1 为 50 Hz，2 为 60 Hz |
+
+每个范围都是摄像头自己的。例如亮度在某些摄像头上是 0 到 255，在另一些上是 -64 到 64，超出范围的值会被限制。
+
+Lager 只更改您设置的控制项。启动串流时，其余控制项保持摄像头当前的值，因此用其他工具做的设置不受影响。通过 `set_control`、`lock_controls` 或查看页面设置的控制项会为该 Net 保存。每次启动其串流时，以及串流为新模式重新打开摄像头之后，都会重新应用它们。这也适用于断电后会忘记设置的摄像头：启动串流，或再次调用 `lock_controls`。
+
+<Note>
+DirectShow 等 Windows 工具把曝光表示为以秒为单位的 2 的幂：-5 即 2<sup>-5</sup> s，31.25 ms。Linux 的值为 `10000 * 2**n`，因此 -5 对应 `exposure=312`。
 </Note>
 
 ## 示例
@@ -343,15 +483,15 @@ webcam.stop()
 - 侧边栏，包含：
   - **Resolution**：尺寸和帧率，取自摄像头提供的模式。如果摄像头无法以所选尺寸串流，它会保持原来的模式，页面会说明原因。USB 带宽不足是原因之一
   - **View**：变焦（滑块、**Out**、**Reset**、**In**）、用于平移的 **Centre**、**Rotate**（0、90、180 或 270 度）和 **Flip**（左右、上下）
-  - **Focus**：**Auto** 或 **Manual**，带距离滑块
-  - **Image**：曝光（**Auto exposure** 或带滑块的 **Manual**）、增益和亮度。只有摄像头支持时才显示曝光和增益。开启自动曝光时，增益由摄像头自行设置
+  - **Focus**：**Auto** 或 **Manual**，带距离滑块，使用摄像头自己的范围。只有带自动对焦的摄像头才显示该开关
+  - **Image**：曝光（**Auto exposure** 或带滑块的 **Manual**）、增益和亮度。还有白平衡（**Auto white balance** 或带色温的 **Manual**），以及其他图像控制项的滑块。每项只在摄像头具备时显示，并使用摄像头的范围。开启自动曝光时，增益由摄像头自行设置
 
   **Hide sidebar** 可隐藏侧边栏，页面会记住这个选择
 - **Full screen** 只显示画面
 - **Snapshot** 把一帧保存为 `<net>-<timestamp>.jpg`
 - 侧边栏底部显示串流的启动者、设备和端口
 
-每项设置都与串流一起保存在 Box 上。所有查看该串流的人看到的是同一画面，串流重启后设置也会恢复。尺寸越大，Box 编码所需的 CPU 越多：页头中的帧率显示 Box 能跟上的速度。
+每项设置都为该 Net 保存在 Box 上。所有查看该串流的人看到的是同一画面，串流重启后设置也会恢复。尺寸越大，Box 编码所需的 CPU 越多：页头中的帧率显示 Box 能跟上的速度。
 
 在启用访问网关的 Box 上，浏览器会话结束后，页面显示 `SIGNED OUT`，并提示运行 `lager webcam url` 获取新链接。
 
@@ -363,23 +503,23 @@ webcam.stop()
 | `/static/webcam.css`, `/static/webcam.js` | GET | 查看页面的样式和脚本 |
 | `/stream` | GET | 原始 MJPEG 视频流 |
 | `/api/info` | GET | 串流的 Net、设备、摄像头型号、端口、来源、FPS、变焦倍数、帧尺寸，以及距上一帧的秒数（`frame_age`，第一帧之前为 `null`） |
-| `/snapshot` | GET | 一帧 JPEG。5 秒内没有帧到达时返回 503 |
+| `/snapshot` | GET | 一帧 JPEG，即查看页面显示的画面。`?raw=1` 返回摄像头送出的原始帧，即旋转、翻转和变焦之前的帧。5 秒内没有帧到达时返回 503 |
 | `/api/zoom` | GET | 获取当前变焦倍数 |
 | `/api/zoom/in` | POST | 放大 |
 | `/api/zoom/out` | POST | 缩小 |
 | `/api/zoom/reset` | POST | 把变焦重置为 1.0x |
 | `/api/zoom/set` | POST | 设置变焦：`{"zoom": 2.0}`（1.0 到 4.0） |
-| `/api/focus` | GET | 对焦模式和值 |
+| `/api/focus` | GET | 对焦 `mode`（`"auto"`、`"manual"`，摄像头没有自动对焦时为 `null`）、`value`、`min`、`max` 和 `step`。摄像头没有对焦时 `value` 为 `null` |
 | `/api/focus/auto` | POST | 开启自动对焦 |
-| `/api/focus/manual` | POST | 手动对焦：`{"value": 128}`（0 到 255） |
-| `/api/brightness` | GET | 亮度值 |
-| `/api/brightness/set` | POST | 设置亮度：`{"value": 128}`（0 到 255） |
+| `/api/focus/manual` | POST | 手动对焦：`{"value": 383}`，使用摄像头的范围。不带值时保持当前距离 |
+| `/api/brightness` | GET | 亮度 `value`、`min`、`max` 和 `step` |
+| `/api/brightness/set` | POST | 设置亮度：`{"value": 0}`，限制在摄像头的范围内 |
 | `/api/pan/set` | POST | 平移放大的画面：`{"x": 0.3, "y": 0.7}`，即视野中心占画面的比例 |
 | `/api/orientation/set` | POST | `{"rotate": 90, "flip_h": true, "flip_v": false}` 中的任意字段。旋转为顺时针：0、90、180 或 270 |
 | `/api/modes` | GET | 摄像头提供的尺寸和帧率（MJPEG）、当前模式，以及上次切换失败的原因（如有） |
 | `/api/mode/set` | POST | 切换模式：`{"width": 1920, "height": 1080, "fps": 30}`。摄像头未列出的模式返回 400 |
-| `/api/controls` | GET | 曝光（`auto`、`value`、`min`、`max`）和增益，仅限支持它们的摄像头 |
-| `/api/controls/set` | POST | `{"control": "exposure_auto", "value": false}`，或 `exposure`、`gain` 加一个数值 |
+| `/api/controls` | GET | 摄像头具备的[摄像头控制](#摄像头控制)项，与 `controls()` 的返回相同 |
+| `/api/controls/set` | POST | `{"control": "exposure_auto", "value": false}`，或任一其他摄像头控制项名称加其值 |
 | `/api/fps` | GET | 获取当前 FPS |
 | `/api/streams` | GET | 列出全部活动串流 |
 | `/test` | GET | 健康检查端点 |
@@ -392,6 +532,15 @@ webcam.stop()
 | 视频设备 | `/dev/video*` 设备文件 |
 | OpenCV | 视频采集所需 |
 
+`lager nets add-all` 会为以下摄像头提供 Net：
+
+- Logitech BRIO、BRIO HD、BRIO 4K Stream、4K Pro、C930e、C925e、C922 Pro、C920、C615、C270 和 StreamCam
+- ELP 全局快门摄像头（AR0234 传感器，USB ID `32e4:0234`）
+
+<Note>
+ELP 全局快门摄像头每一台都报告相同的序列号 `01.00.00`。Lager 会把同一 Box 上的两台列为一台摄像头，带两个视频设备。请手动添加第二台摄像头的 Net，并指定它自己的 `/dev/video*` 设备。
+</Note>
+
 ## 说明
 
 - 摄像头 Net 必须在 Lager Box 上配置，并指定视频设备路径
@@ -400,7 +549,7 @@ webcam.stop()
 - 串流会一直保持，直到被显式停止或其进程结束
 - 已死亡的串流进程会被自动清理
 - 同一时刻只能有一路串流使用某个视频设备
-- 默认分辨率为 640x480，30 FPS
+- 默认分辨率为 640x480，30 FPS。有些摄像头支持更高：ELP 全局快门摄像头在每种尺寸下都支持 90 FPS。Box 会重新编码每一帧，尺寸较大时可能跟不上。查看页面上的帧率显示实际送出的速度
 - JPEG 质量设为 80，以平衡带宽和画质
 - 串流通过 HTTP 在 Lager Box 的 IP 地址上提供。在访问受控的 Box 上，请求需要携带登录令牌，而 `start()` 返回的 `url` 不带令牌。请用 `lager webcam url` 获取带有您令牌的链接
 - 变焦是数字变焦（裁剪并缩放），不是光学变焦

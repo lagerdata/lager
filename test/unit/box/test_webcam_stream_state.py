@@ -111,20 +111,44 @@ def test_generated_streamer_compiles_and_serves_snapshot(svc_mod, tmp_path):
             os.remove(script_path)
 
 
-@pytest.fixture
-def streamer(svc_mod, tmp_path):
-    """The generated streamer's HTTP server, running in this process.
+# A camera's controls as v4l2-ctl --list-ctrls-menus prints them: the
+# global-shutter camera's ranges (brightness -64..64, focus 0..1023), with
+# autofocus off at 383.
+CAMERA_CTRLS = """
+                     brightness 0x00980900 (int)    : min=-64 max=64 step=1 default=0 value=0 flags=0x00001000
+        white_balance_automatic 0x0098090c (bool)   : default=1 value=0
+      white_balance_temperature 0x0098091a (int)    : min=2800 max=6500 step=1 default=4600 value=4600 flags=0x00001000
+                 focus_absolute 0x009a090a (int)    : min=0 max=1023 step=1 default=0 value=383 flags=0x00001000
+     focus_automatic_continuous 0x009a090c (bool)   : default=1 value=0
+"""
 
-    The script is rendered as the box renders it, then run up to the line
-    that starts its server, with a stand-in cv2 and v4l2-ctl calls patched
-    out. Its own handler is then served on a free local port, so requests
-    exercise the real routing rather than a reading of its source.
+
+class FakeV4l2:
+    """v4l2-ctl for the streamer: lists CAMERA_CTRLS, records every -c."""
+
+    def __init__(self):
+        self.sets = []
+
+    def __call__(self, args, **_kwargs):
+        import subprocess
+        if isinstance(args, list) and '-c' in args:
+            self.sets.append(args[args.index('-c') + 1])
+            return subprocess.CompletedProcess(args, 0, '', '')
+        if isinstance(args, list) and '--list-ctrls-menus' in args:
+            return subprocess.CompletedProcess(args, 0, CAMERA_CTRLS, '')
+        return subprocess.CompletedProcess(args, 0, '', '')
+
+
+def _load_streamer(svc_mod, tmp_path, port, records=None, settings=None, v4l2=None):
+    """Render the streamer as the box does and run it up to its server.
+
+    ``records`` and ``settings`` are written to the state and settings files
+    first, so what the script does as it starts can be checked. v4l2-ctl is
+    ``v4l2`` (default: a call that answers nothing), and cv2 a bare stand-in.
     """
     import sys
-    import threading
     import types
 
-    port = 58087
     script_path = f'/tmp/webcam_stream_{port}.py'
     svc = _service(svc_mod, tmp_path)
     completed = svc_mod.subprocess.CompletedProcess(args='', returncode=0, stdout='999\n', stderr='')
@@ -137,17 +161,43 @@ def streamer(svc_mod, tmp_path):
         os.remove(script_path)
     body = source.split('\nserver = ThreadedHTTPServer')[0]
 
-    state_file = tmp_path / 'streams.json'
-    state_file.write_text(json.dumps({
+    if records is not None:
+        svc.state.save(records)
+    if settings is not None:
+        svc.state.save_settings(settings)
+    ns = {'__name__': 'webcam_streamer_under_test'}
+    run = patch('subprocess.run', side_effect=v4l2) if v4l2 else patch('subprocess.run', return_value=completed)
+    with patch.dict(sys.modules, {'cv2': types.ModuleType('cv2')}), run:
+        exec(compile(body, script_path, 'exec'), ns)
+    assert ns['STATE_FILE'] == str(svc.state.state_file)
+    assert ns['SETTINGS_FILE'] == str(svc.state.settings_file)
+    return ns
+
+
+def _serve(ns):
+    import threading
+    server = ns['ThreadedHTTPServer'](('127.0.0.1', 0), ns['StreamingHandler'])
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+@pytest.fixture
+def streamer(svc_mod, tmp_path):
+    """The generated streamer's HTTP server, running in this process.
+
+    The script is rendered as the box renders it, then run up to the line
+    that starts its server, with a stand-in cv2 and v4l2-ctl calls patched
+    out. Its own handler is then served on a free local port, so requests
+    exercise the real routing rather than a reading of its source.
+    """
+    import threading
+
+    port = 58087
+    ns = _load_streamer(svc_mod, tmp_path, port, records={
         'cam1': {'video_device': '/dev/video0', 'port': port, 'pid': 1,
                  'source': 'cli', 'started_by': 'alice'},
         'cam2': {'video_device': '/dev/video2', 'port': port + 1, 'pid': 2},
-    }))
-    ns = {'__name__': 'webcam_streamer_under_test'}
-    with patch.dict(sys.modules, {'cv2': types.ModuleType('cv2')}), \
-            patch('subprocess.run', return_value=completed):
-        exec(compile(body, script_path, 'exec'), ns)
-    ns['STATE_FILE'] = str(state_file)
+    })
 
     server = ns['ThreadedHTTPServer'](('127.0.0.1', 0), ns['StreamingHandler'])
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -245,10 +295,11 @@ def _post(url, body):
 
 
 def _record(ns):
-    return json.loads(Path(ns['STATE_FILE']).read_text())['cam1']
+    """cam1's saved settings, as the streamer wrote them."""
+    return json.loads(Path(ns['SETTINGS_FILE']).read_text())['cam1']
 
 
-def test_pan_and_orientation_are_kept_in_the_state_file(streamer):
+def test_pan_and_orientation_are_kept_in_the_settings_file(streamer):
     ns, base = streamer
     status, body = _post(base + '/api/pan/set', {'x': 0.2, 'y': 0.9})
     assert status == 200
@@ -301,7 +352,7 @@ def test_a_mode_the_camera_does_not_list_is_refused(streamer):
 
 def test_unknown_controls_are_refused(streamer):
     _ns, base = streamer
-    status, _body = _post(base + '/api/controls/set', {'control': 'brightness', 'value': 9})
+    status, _body = _post(base + '/api/controls/set', {'control': 'tilt', 'value': 9})
     assert status == 400
     status, _body = _post(base + '/api/controls/set', {'control': 'gain'})
     assert status == 400
@@ -380,3 +431,170 @@ def test_transform_rotates_then_crops_to_the_pan(streamer):
     # The turned 480x640 frame, cropped to half each way, scaled back up.
     assert seen == [((320, 240), (480, 640))]
     assert out.shape == (640, 480, 3)
+
+
+# ---------- what a stream start does to the camera ----------
+
+def test_a_stream_start_writes_no_control_nobody_set(svc_mod, tmp_path):
+    # Settings made outside lager (a fixed focus, a locked brightness) must
+    # survive a stream start: nothing saved means nothing written.
+    v4l2 = FakeV4l2()
+    _load_streamer(svc_mod, tmp_path, 58090, v4l2=v4l2)
+    assert v4l2.sets == []
+
+
+def test_an_older_records_focus_and_brightness_defaults_are_not_applied(svc_mod, tmp_path):
+    # An older box wrote focus_mode "auto" and brightness 128 into every new
+    # record, wanted or not. They were defaults, never a user's choice.
+    v4l2 = FakeV4l2()
+    _load_streamer(svc_mod, tmp_path, 58091, v4l2=v4l2, records={
+        'cam1': {'video_device': '/dev/video0', 'port': 58091, 'pid': 1, 'zoom': 1.0,
+                 'focus_mode': 'auto', 'focus_value': 0, 'brightness': 128}})
+    assert v4l2.sets == []
+
+
+def test_saved_controls_are_put_back_at_start_switches_first(svc_mod, tmp_path):
+    v4l2 = FakeV4l2()
+    _load_streamer(svc_mod, tmp_path, 58092, v4l2=v4l2, settings={
+        'cam1': {'controls': {'focus': 383, 'focus_auto': False, 'brightness': 0}}})
+    assert v4l2.sets == ['focus_automatic_continuous=0', 'focus_absolute=383', 'brightness=0']
+
+
+def test_settings_an_older_box_kept_in_the_record_are_still_read(svc_mod, tmp_path):
+    ns = _load_streamer(svc_mod, tmp_path, 58093, records={
+        'cam1': {'video_device': '/dev/video0', 'port': 58093, 'pid': 1, 'zoom': 2.5,
+                 'view': {'rotate': 180}}})
+    assert ns['get_zoom']() == 2.5
+    assert ns['get_view']()['rotate'] == 180
+
+
+@pytest.fixture
+def camera_streamer(svc_mod, tmp_path):
+    """The streamer serving a camera with CAMERA_CTRLS' ranges."""
+    v4l2 = FakeV4l2()
+    ns = _load_streamer(svc_mod, tmp_path, 58094, v4l2=v4l2)
+    server = _serve(ns)
+    try:
+        yield ns, f'http://127.0.0.1:{server.server_address[1]}', v4l2
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_focus_reports_and_takes_the_cameras_own_range(camera_streamer):
+    ns, base, v4l2 = camera_streamer
+    focus = json.loads(_get(base + '/api/focus')[2])
+    assert focus == {'mode': 'manual', 'value': 383, 'min': 0, 'max': 1023, 'step': 1}
+    status, body = _post(base + '/api/focus/manual', {'value': 383})
+    assert status == 200 and body['success'] is True
+    # Beyond the 0..255 an older box clamped every camera to.
+    assert v4l2.sets == ['focus_automatic_continuous=0', 'focus_absolute=383']
+    assert _record(ns)['controls'] == {'focus_auto': False, 'focus': 383}
+
+
+def test_manual_focus_without_a_value_keeps_the_distance(camera_streamer):
+    _ns, base, v4l2 = camera_streamer
+    status, body = _post(base + '/api/focus/manual', {})
+    assert status == 200 and body['success'] is True
+    assert v4l2.sets == ['focus_automatic_continuous=0']
+    status, _body = _post(base + '/api/focus/manual', {'value': 'far'})
+    assert status == 400
+
+
+def test_autofocus_is_saved_as_a_switch(camera_streamer):
+    ns, base, v4l2 = camera_streamer
+    _post(base + '/api/focus/auto', {})
+    assert v4l2.sets == ['focus_automatic_continuous=1']
+    assert _record(ns)['controls'] == {'focus_auto': True}
+
+
+def test_brightness_is_clamped_to_the_cameras_range(camera_streamer):
+    ns, base, v4l2 = camera_streamer
+    brightness = json.loads(_get(base + '/api/brightness')[2])
+    assert brightness == {'value': 0, 'min': -64, 'max': 64, 'step': 1}
+    status, body = _post(base + '/api/brightness/set', {'value': 128})
+    assert status == 200 and body['success'] is True
+    assert v4l2.sets == ['brightness=64']
+    assert _post(base + '/api/brightness/set', {})[1]['success'] is False
+
+
+def test_every_named_control_can_be_set_and_is_saved(camera_streamer):
+    ns, base, v4l2 = camera_streamer
+    status, body = _post(base + '/api/controls/set',
+                         {'control': 'white_balance_temperature', 'value': 5000})
+    assert status == 200 and body['success'] is True
+    assert body['controls']['white_balance_temperature']['auto'] is False
+    _post(base + '/api/controls/set', {'control': 'white_balance_auto', 'value': 1})
+    assert v4l2.sets == ['white_balance_temperature=5000', 'white_balance_automatic=1']
+    assert _record(ns)['controls'] == {'white_balance_temperature': 5000,
+                                       'white_balance_auto': True}
+
+
+def test_raw_snapshot_is_the_frame_before_the_view(camera_streamer):
+    ns, base, _v4l2 = camera_streamer
+    raw = np.full((4, 6, 3), 7, dtype=np.uint8)
+    encoded = []
+
+    def imencode(ext, frame, params):
+        encoded.append((ext, frame, params))
+        return True, np.frombuffer(b'RAWJPEG', dtype=np.uint8)
+    ns['cv2'].imencode = imencode
+    ns['cv2'].IMWRITE_JPEG_QUALITY = 1
+    ns['capture_started'] = True       # no capture thread: the frames are set here
+    ns['latest_jpeg'], ns['latest_raw'] = b'VIEWJPEG', raw
+
+    assert _get(base + '/snapshot')[2] == b'VIEWJPEG'
+    assert encoded == []               # the view's JPEG is already made
+    status, ctype, body = _get(base + '/snapshot?raw=1')
+    assert (status, ctype, body) == (200, 'image/jpeg', b'RAWJPEG')
+    assert encoded[0][1] is raw
+
+
+def test_camera_model_follows_a_by_id_link(svc_mod, tmp_path):
+    ns = _load_streamer(svc_mod, tmp_path, 58095)
+    node = tmp_path / 'video8'
+    node.touch()
+    link = tmp_path / 'usb-Global_Shutter_Camera-video-index0'
+    link.symlink_to(node)
+    ns['VIDEO_DEVICE'] = str(link)
+    opened = []
+    real_open = open
+
+    def fake_open(path, *args, **kwargs):
+        opened.append(path)
+        return real_open(os.devnull, *args, **kwargs)
+    ns['open'] = fake_open
+    ns['camera_model']()
+    assert opened == ['/sys/class/video4linux/video8/name']
+
+
+# ---------- settings outlive the stream ----------
+
+def test_settings_survive_a_stop_and_follow_a_rename(svc_mod, tmp_path):
+    state = svc_mod.WebcamStreamState(state_file=tmp_path / 'streams.json')
+    assert state.settings_file == tmp_path / 'webcam_settings.json'
+    state.add_stream('cam1', '/dev/video8', 8086, 4242)
+    state.save_controls('cam1', {'focus_auto': False, 'focus': 383})
+    state.save_controls('cam1', {'gain': 0})
+    state.remove_stream('cam1')
+    assert state.get_stream('cam1') is None
+    assert state.get_settings('cam1')['controls'] == {'focus_auto': False, 'focus': 383, 'gain': 0}
+    # A stopped net's settings move with it too, though there is no stream.
+    assert state.rename_stream('cam1', 'led_cam') is False
+    assert state.get_settings('cam1') == {}
+    assert state.get_settings('led_cam')['controls']['focus'] == 383
+
+
+def test_a_new_stream_record_carries_no_camera_settings(svc_mod, tmp_path):
+    state = svc_mod.WebcamStreamState(state_file=tmp_path / 'streams.json')
+    state.add_stream('cam1', '/dev/video8', 8086, 4242)
+    record = state.get_stream('cam1')
+    assert not {'focus_mode', 'focus_value', 'brightness', 'zoom'} & set(record)
+
+
+def test_a_corrupt_settings_file_reads_as_empty(svc_mod, tmp_path):
+    state = svc_mod.WebcamStreamState(state_file=tmp_path / 'streams.json')
+    state.settings_file.write_text('{not json')
+    assert state.get_settings('cam1') == {}
+    state.settings_file.write_text('[1, 2]')
+    assert state.load_settings() == {}

@@ -139,15 +139,15 @@
         </div>
       </div>
 
-      <div class="group">
+      <div id="focus-group" class="group">
         <div class="group__title">Focus</div>
-        <div class="segmented" role="group" aria-label="Focus mode">
+        <div id="focus-mode" class="segmented" role="group" aria-label="Focus mode">
           <button id="focus-auto" class="segmented__btn" type="button" aria-pressed="true">Auto</button>
           <button id="focus-manual" class="segmented__btn" type="button" aria-pressed="false">Manual</button>
         </div>
         <label class="field field--stack" for="focus">
           <span class="field__head"><span>Distance</span><output id="focus-value" for="focus">auto</output></span>
-          <input id="focus" type="range" min="0" max="255" step="1" value="128" disabled>
+          <input id="focus" type="range" min="0" max="1023" step="1" value="0" disabled>
         </label>
       </div>
 
@@ -167,9 +167,26 @@
           <span class="field__head"><span>Gain</span><output id="gain-value" for="gain">0</output></span>
           <input id="gain" type="range" min="0" max="100" step="1" value="0">
         </label>
-        <label class="field field--stack" for="brightness">
-          <span class="field__head"><span>Brightness</span><output id="brightness-value" for="brightness">128</output></span>
-          <input id="brightness" type="range" min="0" max="255" step="1" value="128">
+        <label id="brightness-group" class="field field--stack" for="brightness">
+          <span class="field__head"><span>Brightness</span><output id="brightness-value" for="brightness">0</output></span>
+          <input id="brightness" type="range" min="0" max="255" step="1" value="0">
+        </label>
+        <div id="wb-group" hidden>
+          <div id="wb-mode" class="segmented" role="group" aria-label="White balance mode">
+            <button id="wb-auto" class="segmented__btn" type="button" aria-pressed="true">Auto white balance</button>
+            <button id="wb-manual" class="segmented__btn" type="button" aria-pressed="false">Manual</button>
+          </div>
+          <label class="field field--stack" for="wb">
+            <span class="field__head"><span>Color temperature</span><output id="wb-value" for="wb">auto</output></span>
+            <input id="wb" type="range" min="2800" max="6500" step="1" value="4600">
+          </label>
+        </div>
+        <!-- Contrast, saturation, hue, gamma, sharpness and backlight
+             compensation: one slider each, for whichever the camera has. -->
+        <div id="image-adjust"></div>
+        <label id="power-line-group" class="field field--stack" for="power-line" hidden>
+          <span>Power line frequency</span>
+          <select id="power-line"></select>
         </label>
       </div>
 

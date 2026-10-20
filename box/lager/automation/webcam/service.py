@@ -16,8 +16,11 @@ import time
 from pathlib import Path
 from typing import Dict, Optional, List
 
-# State file path
+# State file path: one record per running stream, removed when it stops.
 STATE_FILE = Path("/etc/lager/webcam_streams.json")
+# What the user set for each net -- camera controls, mode, view, zoom --
+# kept apart from the stream records so it outlives a stopped stream.
+SETTINGS_FILE = Path("/etc/lager/webcam_settings.json")
 # Cameras get one port each from here up. Chosen when the oscilloscope UI held
 # 8081 and its daemon 8082-8085; the scope has since moved behind port 9000 and
 # freed that range, but the base stays put so a deployed box's camera URLs keep
@@ -26,10 +29,14 @@ BASE_PORT = 8086
 
 
 class WebcamStreamState:
-    """Manages the state of active webcam streams."""
+    """Manages the state of active webcam streams, and each net's settings."""
 
-    def __init__(self, state_file: Path = STATE_FILE):
+    def __init__(self, state_file: Path = STATE_FILE, settings_file: Optional[Path] = None):
         self.state_file = state_file
+        # Beside the state file unless given, so a test's temp state file
+        # never reaches the box's real settings.
+        self.settings_file = (settings_file if settings_file is not None
+                              else state_file.with_name(SETTINGS_FILE.name))
         self._ensure_state_file()
 
     def _ensure_state_file(self):
@@ -58,6 +65,9 @@ class WebcamStreamState:
         surface attributed it to. Both are informational — every surface can
         stop every stream — but they let each one label streams it did not
         start. Older state files predate the keys, so readers must ``.get``.
+
+        No camera settings go in the record: those live in the settings
+        file, and a stream applies only what the user set there.
         """
         state = self.load()
         state[net_name] = {
@@ -67,15 +77,11 @@ class WebcamStreamState:
             "started_at": time.time(),
             "source": source,
             "started_by": started_by,
-            "zoom": 1.0,  # Default zoom level (1.0 = no zoom)
-            "focus_mode": "auto",  # Default to autofocus
-            "focus_value": 0,  # Manual focus value (when in manual mode)
-            "brightness": 128  # Brightness value (0-255)
         }
         self.save(state)
 
     def remove_stream(self, net_name: str):
-        """Remove a stream from state."""
+        """Remove a stream from state. Its net's settings are kept."""
         state = self.load()
         if net_name in state:
             del state[net_name]
@@ -83,7 +89,7 @@ class WebcamStreamState:
 
     def rename_stream(self, old_name: str, new_name: str) -> bool:
         """
-        Rename a stream in the state.
+        Rename a stream in the state, and move its net's settings with it.
 
         Args:
             old_name: Current stream name
@@ -92,6 +98,11 @@ class WebcamStreamState:
         Returns:
             True if renamed successfully, False if stream not found
         """
+        settings = self.load_settings()
+        if old_name in settings:
+            settings[new_name] = settings.pop(old_name)
+            self.save_settings(settings)
+
         state = self.load()
         if old_name not in state:
             return False
@@ -122,89 +133,40 @@ class WebcamStreamState:
 
         return port
 
-    def get_zoom(self, net_name: str) -> float:
-        """Get the zoom level for a stream."""
-        stream = self.get_stream(net_name)
-        if stream:
-            return stream.get("zoom", 1.0)
-        return 1.0
+    # ---------- settings ----------
 
-    def set_zoom(self, net_name: str, zoom: float) -> bool:
-        """
-        Set the zoom level for a stream.
+    def load_settings(self) -> Dict:
+        """Every net's settings, or {} if there are none yet."""
+        try:
+            settings = json.loads(self.settings_file.read_text())
+        except (json.JSONDecodeError, OSError):
+            return {}
+        return settings if isinstance(settings, dict) else {}
 
-        Args:
-            net_name: Name of the stream
-            zoom: Zoom level (1.0 = no zoom, 2.0 = 2x zoom, etc.)
+    def save_settings(self, settings: Dict):
+        """Write the settings file whole, through a rename, so a reader
+        never sees half of it."""
+        self.settings_file.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.settings_file.with_name(self.settings_file.name + ".tmp")
+        tmp.write_text(json.dumps(settings, indent=2))
+        os.replace(tmp, self.settings_file)
 
-        Returns:
-            True if set successfully, False if stream not found
-        """
-        state = self.load()
-        if net_name in state:
-            # Clamp zoom between 1.0 and 4.0
-            zoom = max(1.0, min(4.0, zoom))
-            state[net_name]["zoom"] = zoom
-            self.save(state)
-            return True
-        return False
+    def get_settings(self, net_name: str) -> Dict:
+        """One net's settings: any of ``controls``, ``mode``, ``view``, ``zoom``."""
+        entry = self.load_settings().get(net_name)
+        return entry if isinstance(entry, dict) else {}
 
-    def get_focus(self, net_name: str) -> Dict:
-        """Get the focus settings for a stream."""
-        stream = self.get_stream(net_name)
-        if stream:
-            return {
-                "mode": stream.get("focus_mode", "auto"),
-                "value": stream.get("focus_value", 0)
-            }
-        return {"mode": "auto", "value": 0}
-
-    def set_focus(self, net_name: str, mode: str, value: int = None) -> bool:
-        """
-        Set the focus settings for a stream.
-
-        Args:
-            net_name: Name of the stream
-            mode: Focus mode ("auto" or "manual")
-            value: Manual focus value (0-255, only used in manual mode)
-
-        Returns:
-            True if set successfully, False if stream not found
-        """
-        state = self.load()
-        if net_name in state:
-            state[net_name]["focus_mode"] = mode
-            if mode == "manual" and value is not None:
-                # Clamp value between 0 and 255
-                state[net_name]["focus_value"] = max(0, min(255, value))
-            self.save(state)
-            return True
-        return False
-
-    def get_brightness(self, net_name: str) -> int:
-        """Get the brightness value for a stream."""
-        stream = self.get_stream(net_name)
-        if stream:
-            return stream.get("brightness", 128)
-        return 128
-
-    def set_brightness(self, net_name: str, value: int) -> bool:
-        """
-        Set the brightness value for a stream.
-
-        Args:
-            net_name: Name of the stream
-            value: Brightness value (0-255)
-
-        Returns:
-            True if set successfully, False if stream not found
-        """
-        state = self.load()
-        if net_name in state:
-            state[net_name]["brightness"] = max(0, min(255, value))
-            self.save(state)
-            return True
-        return False
+    def save_controls(self, net_name: str, values: Dict):
+        """Merge camera control values into a net's saved ``controls``."""
+        settings = self.load_settings()
+        entry = settings.get(net_name)
+        entry = entry if isinstance(entry, dict) else {}
+        saved = entry.get("controls")
+        saved = dict(saved) if isinstance(saved, dict) else {}
+        saved.update(values)
+        entry["controls"] = saved
+        settings[net_name] = entry
+        self.save_settings(settings)
 
 
 class WebcamService:
@@ -385,6 +347,8 @@ class WebcamService:
         # scope page's. The Dockerfile copies the whole static/ tree.
         static_dir = str(Path(__file__).resolve().parents[2] / "static" / "webcam")
         controls_path = str(Path(__file__).resolve().with_name("controls.py"))
+        state_path = str(self.state.state_file)
+        settings_path = str(self.state.settings_file)
 
         # Create a simple Python script that streams the webcam
         script = f'''
@@ -393,15 +357,19 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 import sys
 import json
+import os
 import threading
 import time
+from urllib.parse import parse_qs, urlsplit
 
 # Current stream info
 CURRENT_NET = "{net_name}"
 BOX_IP = "{box_ip}"
 VIDEO_DEVICE = "{video_device}"
 PORT = {port}
-STATE_FILE = "/etc/lager/webcam_streams.json"
+STATE_FILE = "{state_path}"
+# Each net's controls, mode, view and zoom; kept when the stream stops.
+SETTINGS_FILE = "{settings_path}"
 # The viewer page: index.html, webcam.css and webcam.js, served as they are.
 STATIC_DIR = "{static_dir}"
 STATIC_TYPES = {{
@@ -434,15 +402,6 @@ mode_error = None
 zoom_lock = threading.Lock()
 current_zoom = 1.0
 
-# Thread-safe focus settings
-focus_lock = threading.Lock()
-current_focus_mode = "auto"
-current_focus_value = 0
-
-# Thread-safe brightness settings
-brightness_lock = threading.Lock()
-current_brightness = 128
-
 # Thread-safe FPS tracking
 fps_lock = threading.Lock()
 current_fps = 0.0
@@ -457,6 +416,9 @@ fps_start_time = None
 frame_lock = threading.Lock()
 frame_condition = threading.Condition(frame_lock)
 latest_jpeg = None
+# The newest frame as the camera delivered it, before rotation and zoom,
+# for /snapshot?raw=1. Encoded only when asked for.
+latest_raw = None
 frame_seq = 0
 # Size of the newest frame and when it arrived, for /api/info. Under frame_lock.
 frame_width = None
@@ -466,211 +428,61 @@ capture_started = False
 capture_started_lock = threading.Lock()
 
 def load_zoom():
-    """Load zoom level from state file."""
+    """Load zoom level from the net's settings."""
     global current_zoom
-    try:
-        with open(STATE_FILE, "r") as f:
-            state = json.load(f)
-            if CURRENT_NET in state:
-                with zoom_lock:
-                    current_zoom = state[CURRENT_NET].get("zoom", 1.0)
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        pass
+    zoom = load_entry().get("zoom")
+    if isinstance(zoom, (int, float)):
+        with zoom_lock:
+            current_zoom = max(1.0, min(4.0, float(zoom)))
 
 def save_zoom(zoom_level):
-    """Save zoom level to state file."""
+    """Save zoom level to the net's settings."""
     global current_zoom
-    try:
-        with open(STATE_FILE, "r") as f:
-            state = json.load(f)
-
-        if CURRENT_NET in state:
-            # Clamp zoom between 1.0 and 4.0
-            zoom_level = max(1.0, min(4.0, zoom_level))
-            state[CURRENT_NET]["zoom"] = zoom_level
-
-            with open(STATE_FILE, "w") as f:
-                json.dump(state, f, indent=2)
-
-            with zoom_lock:
-                current_zoom = zoom_level
-            return True
-    except Exception as e:
-        print(f"Error saving zoom: {{e}}", file=sys.stderr)
-    return False
+    # Clamp zoom between 1.0 and 4.0
+    zoom_level = max(1.0, min(4.0, zoom_level))
+    if not save_fields(zoom=zoom_level):
+        return False
+    with zoom_lock:
+        current_zoom = zoom_level
+    return True
 
 def get_zoom():
     """Get current zoom level (thread-safe)."""
     with zoom_lock:
         return current_zoom
 
-def load_focus():
-    """Load focus settings from state file."""
-    global current_focus_mode, current_focus_value
-    try:
-        with open(STATE_FILE, "r") as f:
-            state = json.load(f)
-            if CURRENT_NET in state:
-                with focus_lock:
-                    current_focus_mode = state[CURRENT_NET].get("focus_mode", "auto")
-                    current_focus_value = state[CURRENT_NET].get("focus_value", 0)
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        pass
-
-def save_focus(mode, value=None):
-    """Save focus settings to state file."""
-    global current_focus_mode, current_focus_value
-    try:
-        with open(STATE_FILE, "r") as f:
-            state = json.load(f)
-
-        if CURRENT_NET in state:
-            state[CURRENT_NET]["focus_mode"] = mode
-            if mode == "manual" and value is not None:
-                # Clamp value between 0 and 255
-                value = max(0, min(255, value))
-                state[CURRENT_NET]["focus_value"] = value
-
-            with open(STATE_FILE, "w") as f:
-                json.dump(state, f, indent=2)
-
-            with focus_lock:
-                current_focus_mode = mode
-                if mode == "manual" and value is not None:
-                    current_focus_value = value
-            return True
-    except Exception as e:
-        print(f"Error saving focus: {{e}}", file=sys.stderr)
-    return False
+def describe_one(logical):
+    """The camera's own value and range for one control, or None."""
+    return controls.describe_controls(VIDEO_DEVICE).get(logical)
 
 def get_focus():
-    """Get current focus settings (thread-safe)."""
-    with focus_lock:
-        return {{"mode": current_focus_mode, "value": current_focus_value}}
+    """Focus as the camera has it: mode "auto" / "manual" (None when the
+    camera has no autofocus), the distance and its range."""
+    focus = describe_one("focus")
+    if focus is None:
+        return dict(mode=None, value=None)
+    auto = focus.get("auto")
+    return dict(mode=None if auto is None else ("auto" if auto else "manual"),
+                value=focus.get("value"), min=focus.get("min"),
+                max=focus.get("max"), step=focus.get("step"))
 
-def load_brightness():
-    """Load brightness setting from state file."""
-    global current_brightness
-    try:
-        with open(STATE_FILE, "r") as f:
-            state = json.load(f)
-            if CURRENT_NET in state:
-                with brightness_lock:
-                    current_brightness = state[CURRENT_NET].get("brightness", 128)
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        pass
-
-def save_brightness(value):
-    """Save brightness setting to state file."""
-    global current_brightness
-    try:
-        with open(STATE_FILE, "r") as f:
-            state = json.load(f)
-
-        if CURRENT_NET in state:
-            value = max(0, min(255, value))
-            state[CURRENT_NET]["brightness"] = value
-
-            with open(STATE_FILE, "w") as f:
-                json.dump(state, f, indent=2)
-
-            with brightness_lock:
-                current_brightness = value
-            return True
-    except Exception as e:
-        print(f"Error saving brightness: {{e}}", file=sys.stderr)
-    return False
+def set_focus(mode, value=None):
+    """Switch focus to auto, or to manual at ``value`` (kept if None)."""
+    wanted = dict(focus_auto=mode == "auto")
+    if mode != "auto" and value is not None:
+        wanted["focus"] = value
+    taken = controls.apply_controls(VIDEO_DEVICE, wanted)
+    ok = bool(taken) and all(taken.values())
+    if ok:
+        save_controls(wanted)
+    return ok
 
 def get_brightness():
-    """Get current brightness (thread-safe)."""
-    with brightness_lock:
-        return current_brightness
-
-def apply_brightness(value):
-    """
-    Apply brightness setting to the camera using v4l2-ctl.
-
-    Args:
-        value: Brightness value (0-255)
-
-    Returns:
-        True if successful, False otherwise
-    """
-    import subprocess
-
-    try:
-        value = max(0, min(255, value))
-        result = subprocess.run(
-            ["v4l2-ctl", "-d", "{video_device}", "-c", f"brightness={{value}}"],
-            capture_output=True,
-            text=True,
-            timeout=2
-        )
-        return result.returncode == 0
-    except Exception as e:
-        print(f"Error applying brightness: {{e}}", file=sys.stderr)
-    return False
-
-def apply_focus(mode, value=None):
-    """
-    Apply focus settings to the camera using v4l2-ctl.
-
-    Args:
-        mode: "auto" or "manual"
-        value: Manual focus value (0-255, only used in manual mode)
-
-    Returns:
-        True if successful, False otherwise
-    """
-    import subprocess
-
-    try:
-        if mode == "auto":
-            # Enable autofocus
-            result = subprocess.run(
-                ["v4l2-ctl", "-d", "{video_device}", "-c", "focus_automatic_continuous=1"],
-                capture_output=True,
-                text=True,
-                timeout=2
-            )
-            if result.returncode != 0:
-                # Try alternative autofocus control
-                result = subprocess.run(
-                    ["v4l2-ctl", "-d", "{video_device}", "-c", "focus_auto=1"],
-                    capture_output=True,
-                    text=True,
-                    timeout=2
-                )
-            return result.returncode == 0
-        else:
-            # Disable autofocus first
-            subprocess.run(
-                ["v4l2-ctl", "-d", "{video_device}", "-c", "focus_automatic_continuous=0"],
-                capture_output=True,
-                text=True,
-                timeout=2
-            )
-            # Try alternative autofocus control
-            subprocess.run(
-                ["v4l2-ctl", "-d", "{video_device}", "-c", "focus_auto=0"],
-                capture_output=True,
-                text=True,
-                timeout=2
-            )
-
-            # Set manual focus value
-            if value is not None:
-                result = subprocess.run(
-                    ["v4l2-ctl", "-d", "{video_device}", "-c", f"focus_absolute={{value}}"],
-                    capture_output=True,
-                    text=True,
-                    timeout=2
-                )
-                return result.returncode == 0
-        return False
-    except Exception as e:
-        print(f"Error applying focus: {{e}}", file=sys.stderr)
-        return False
+    """Brightness as the camera has it, with its range, or value None."""
+    brightness = describe_one("brightness")
+    if brightness is None:
+        return dict(value=None)
+    return dict((k, brightness.get(k)) for k in ("value", "min", "max", "step"))
 
 def update_fps():
     """Update FPS calculation (call this for each frame)."""
@@ -699,7 +511,8 @@ def get_fps():
 def camera_model():
     """The camera's name as the kernel reports it, or None."""
     try:
-        node = VIDEO_DEVICE.rsplit("/", 1)[-1]
+        # Resolved first, so a /dev/v4l/by-id/... link names its videoN.
+        node = os.path.realpath(VIDEO_DEVICE).rsplit("/", 1)[-1]
         with open("/sys/class/video4linux/" + node + "/name", "r") as f:
             return f.read().strip() or None
     except OSError:
@@ -732,24 +545,44 @@ def serve_static(handler, name):
     handler.end_headers()
     handler.wfile.write(body)
 
-def load_entry():
-    """This stream's record in the state file, or an empty dict."""
+def _read_json(path):
     try:
-        with open(STATE_FILE, "r") as f:
-            return json.load(f).get(CURRENT_NET) or dict()
-    except (FileNotFoundError, json.JSONDecodeError, OSError, AttributeError):
+        with open(path, "r") as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
         return dict()
+    return data if isinstance(data, dict) else dict()
+
+# Settings a stream started by an older box kept in its stream record.
+SETTINGS_KEYS = ("controls", "mode", "view", "zoom")
+
+def load_entry():
+    """This net's settings, or an empty dict.
+
+    Read from the settings file, falling back key by key to this stream's
+    record, where an older box kept them.
+    """
+    entry = _read_json(SETTINGS_FILE).get(CURRENT_NET)
+    entry = dict(entry) if isinstance(entry, dict) else dict()
+    legacy = _read_json(STATE_FILE).get(CURRENT_NET)
+    if isinstance(legacy, dict):
+        for key in SETTINGS_KEYS:
+            if key not in entry and key in legacy:
+                entry[key] = legacy[key]
+    return entry
 
 def save_fields(**fields):
-    """Write fields into this stream's record. False if it could not."""
+    """Write fields into this net's settings. False if it could not."""
     try:
-        with open(STATE_FILE, "r") as f:
-            state = json.load(f)
-        if CURRENT_NET not in state:
-            return False
-        state[CURRENT_NET].update(fields)
-        with open(STATE_FILE, "w") as f:
-            json.dump(state, f, indent=2)
+        settings = _read_json(SETTINGS_FILE)
+        entry = settings.get(CURRENT_NET)
+        entry = dict(entry) if isinstance(entry, dict) else dict()
+        entry.update(fields)
+        settings[CURRENT_NET] = entry
+        tmp = SETTINGS_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(settings, f, indent=2)
+        os.replace(tmp, SETTINGS_FILE)
         return True
     except Exception as e:
         print("Error saving settings: %s" % e, file=sys.stderr)
@@ -806,31 +639,28 @@ def request_mode(mode):
         save_fields(mode=mode)
 
 def apply_saved_controls():
-    """Put exposure and gain back as they were last set for this stream."""
-    saved = load_entry().get("controls")
-    if not isinstance(saved, dict):
-        return
-    if "exposure_auto" in saved:
-        controls.set_control(VIDEO_DEVICE, "exposure_auto", saved["exposure_auto"])
-    for key in ("exposure", "gain"):
-        if key in saved:
-            controls.set_control(VIDEO_DEVICE, key, saved[key])
+    """Put back the camera controls the user set for this net.
 
-def save_control(key, value):
+    Only those: a control nobody set through lager is left as the camera
+    has it, so settings made some other way survive a stream start.
+    """
+    saved = load_entry().get("controls")
+    if isinstance(saved, dict) and saved:
+        controls.apply_controls(VIDEO_DEVICE, saved)
+
+def save_controls(values):
     saved = load_entry().get("controls")
     saved = dict(saved) if isinstance(saved, dict) else dict()
-    saved[key] = value
+    saved.update(values)
     save_fields(controls=saved)
 
-# Load initial settings
-load_zoom()
-load_focus()
-load_brightness()
-load_view_and_mode()
+def startup():
+    """Load this net's settings and put its saved controls on the camera."""
+    load_zoom()
+    load_view_and_mode()
+    apply_saved_controls()
 
-# Apply initial focus and brightness settings
-apply_focus(current_focus_mode, current_focus_value)
-apply_brightness(current_brightness)
+startup()
 
 def transform(frame):
     """Rotate and mirror the frame, then crop it to the zoom and pan."""
@@ -917,7 +747,7 @@ def start_capture():
         capture_started = True
 
     def loop():
-        global latest_jpeg, frame_seq, frame_width, frame_height, last_frame_at
+        global latest_jpeg, latest_raw, frame_seq, frame_width, frame_height, last_frame_at
         global requested_mode
         mode, _error = get_mode()
         cap = open_camera(mode)
@@ -935,17 +765,18 @@ def start_capture():
                         print("ERROR: Could not reopen video device {video_device}", file=sys.stderr)
                         return
                     continue
-                ret, frame = cap.read()
+                ret, raw = cap.read()
                 if not ret:
                     time.sleep(0.05)
                     continue
-                frame = transform(frame)
+                frame = transform(raw)
                 update_fps()
                 ok, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
                 if not ok:
                     continue
                 with frame_condition:
                     latest_jpeg = jpeg.tobytes()
+                    latest_raw = raw
                     frame_seq += 1
                     frame_height, frame_width = frame.shape[:2]
                     last_frame_at = time.time()
@@ -1057,70 +888,27 @@ class StreamingHandler(BaseHTTPRequestHandler):
             self.wfile.write(json_response.encode("utf-8"))
 
         elif path_only == "/api/focus/auto":
-            # Enable autofocus
-            success = save_focus("auto")
-            if success:
-                apply_focus("auto")
-
-            focus_settings = get_focus()
-            response = {{"success": success, "mode": focus_settings["mode"], "value": focus_settings["value"]}}
-            json_response = json.dumps(response)
-
-            self.send_response(200)
-            self.send_header("Content-type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            self.wfile.write(json_response.encode("utf-8"))
+            success = set_focus("auto")
+            send_json(self, dict(get_focus(), success=success))
 
         elif path_only == "/api/focus/manual":
-            # Set manual focus
-            # Read the request body to get the focus value
-            content_length = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(content_length).decode("utf-8") if content_length > 0 else "{{}}"
-
+            # {{"value": N}} in the camera's own range; without a value the
+            # current distance is kept.
+            data = read_json(self)
             try:
-                data = json.loads(body)
-                value = int(data.get("value", 128))  # Default to middle value
-            except (json.JSONDecodeError, ValueError, TypeError):
-                value = 128
-
-            success = save_focus("manual", value)
-            if success:
-                apply_focus("manual", value)
-
-            focus_settings = get_focus()
-            response = {{"success": success, "mode": focus_settings["mode"], "value": focus_settings["value"]}}
-            json_response = json.dumps(response)
-
-            self.send_response(200)
-            self.send_header("Content-type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            self.wfile.write(json_response.encode("utf-8"))
+                value = int(data["value"]) if "value" in data else None
+            except (TypeError, ValueError):
+                send_json(self, dict(get_focus(), success=False, error="value must be a number"), 400)
+                return
+            success = set_focus("manual", value)
+            send_json(self, dict(get_focus(), success=success))
 
         elif path_only == "/api/brightness/set":
-            # Set brightness value
-            content_length = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(content_length).decode("utf-8") if content_length > 0 else "{{}}"
-
-            try:
-                data = json.loads(body)
-                value = int(data.get("value", 128))
-            except (json.JSONDecodeError, ValueError, TypeError):
-                value = 128
-
-            success = save_brightness(value)
+            data = read_json(self)
+            success = "value" in data and controls.set_control(VIDEO_DEVICE, "brightness", data["value"])
             if success:
-                apply_brightness(value)
-
-            response = {{"success": success, "value": get_brightness()}}
-            json_response = json.dumps(response)
-
-            self.send_response(200)
-            self.send_header("Content-type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            self.wfile.write(json_response.encode("utf-8"))
+                save_controls(dict(brightness=data["value"]))
+            send_json(self, dict(get_brightness(), success=bool(success)))
 
         elif path_only == "/api/pan/set":
             # The centre of the zoomed region, as fractions of the picture.
@@ -1156,16 +944,17 @@ class StreamingHandler(BaseHTTPRequestHandler):
             send_json(self, dict(success=True, requested=mode))
 
         elif path_only == "/api/controls/set":
-            # {{"control": "exposure_auto" | "exposure" | "gain", "value": ...}}
+            # {{"control": <a name in controls.CONTROL_NAMES>, "value": ...}};
+            # the auto switches take a bool.
             data = read_json(self)
             key = data.get("control")
             if key not in controls.CONTROL_NAMES or "value" not in data:
                 send_json(self, dict(success=False, error="unknown control"), 400)
                 return
-            value = bool(data["value"]) if key == "exposure_auto" else data["value"]
+            value = bool(data["value"]) if key in controls.SWITCHES else data["value"]
             success = controls.set_control(VIDEO_DEVICE, key, value)
             if success:
-                save_control(key, value)
+                save_controls({{key: value}})
             send_json(self, dict(success=success, controls=controls.describe_controls(VIDEO_DEVICE)))
 
         else:
@@ -1215,43 +1004,10 @@ class StreamingHandler(BaseHTTPRequestHandler):
                 self.wfile.write(error_response.encode("utf-8"))
 
         elif path_only == "/api/focus":
-            # Return current focus settings
-            try:
-                focus_settings = get_focus()
-                response_data = {{"mode": focus_settings["mode"], "value": focus_settings["value"]}}
-                json_response = json.dumps(response_data)
-
-                self.send_response(200)
-                self.send_header("Content-type", "application/json")
-                self.send_header("Access-Control-Allow-Origin", "*")
-                self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
-                self.end_headers()
-                self.wfile.write(json_response.encode("utf-8"))
-            except Exception as e:
-                error_response = '{{"error":"' + str(e) + '"}}'
-                self.send_response(500)
-                self.send_header("Content-type", "application/json")
-                self.end_headers()
-                self.wfile.write(error_response.encode("utf-8"))
+            send_json(self, get_focus())
 
         elif path_only == "/api/brightness":
-            # Return current brightness value
-            try:
-                response_data = {{"value": get_brightness()}}
-                json_response = json.dumps(response_data)
-
-                self.send_response(200)
-                self.send_header("Content-type", "application/json")
-                self.send_header("Access-Control-Allow-Origin", "*")
-                self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
-                self.end_headers()
-                self.wfile.write(json_response.encode("utf-8"))
-            except Exception as e:
-                error_response = '{{"error":"' + str(e) + '"}}'
-                self.send_response(500)
-                self.send_header("Content-type", "application/json")
-                self.end_headers()
-                self.wfile.write(error_response.encode("utf-8"))
+            send_json(self, get_brightness())
 
         elif path_only == "/api/streams":
             # Return list of active streams as JSON
@@ -1302,12 +1058,19 @@ class StreamingHandler(BaseHTTPRequestHandler):
             # that only need to *look* at the bench grab this instead of
             # parsing the multipart /stream; it shares the capture thread
             # with the live viewers, so it never contends for the device.
+            # ?raw=1 is the frame as the camera delivered it, before the
+            # view's rotation, flips and zoom: for a script analysing it.
+            raw = parse_qs(urlsplit(self.path).query).get("raw", ["0"])[0] in ("1", "true")
             start_capture()
             deadline = time.time() + 5.0
             with frame_condition:
                 while latest_jpeg is None and time.time() < deadline:
                     frame_condition.wait(timeout=deadline - time.time())
                 jpeg_bytes = latest_jpeg
+                raw_frame = latest_raw
+            if raw and raw_frame is not None:
+                ok, encoded = cv2.imencode(".jpg", raw_frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                jpeg_bytes = encoded.tobytes() if ok else None
             if jpeg_bytes is None:
                 body = b"No frame available"
                 self.send_response(503)

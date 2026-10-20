@@ -196,6 +196,12 @@ it, and any of them can stop it. One stream serves every viewer at once, but
 a video device can only belong to one stream. Stop a stream before starting
 another on the same camera.
 
+Starting a stream changes no camera setting. Focus, exposure, white balance and
+the other image controls keep the camera's values until you change one. Change
+them on the viewer page or from the [Python API](/source/reference/python/webcam#camera-controls).
+What you change is kept for the net and put back each time its stream starts.
+The Python API page lists the cameras `lager nets add-all` detects.
+
 ---
 
 ## Use Cases
