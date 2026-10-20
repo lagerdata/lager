@@ -286,7 +286,7 @@ fn pair(
     video: Box<dyn FrameSource>,
     may_switch_hdmi: &mut bool,
 ) -> Result<std::result::Result<Screen, Unpaired>> {
-    let mut calibrated = calibrate(link, video.as_ref());
+    let mut calibrated = calibrate(link, video.as_ref(), None);
     let mut switched = false;
     if let Err(e) = &calibrated {
         if *may_switch_hdmi && e.chain().any(|c| c.is::<screen::NoPicture>()) {
@@ -294,7 +294,7 @@ fn pair(
             tracing::info!("no picture from the scope; switching its HDMI output on (Utility > IO > HDMI > Output)");
             toggle_hdmi_output(link.as_ref())?;
             std::thread::sleep(HDMI_LOCK_WAIT);
-            calibrated = calibrate(link, video.as_ref());
+            calibrated = calibrate(link, video.as_ref(), None);
             switched = true;
         }
     }
@@ -804,7 +804,7 @@ impl RigolMso5000 {
         let Some(screen) = &self.screen else {
             return Ok(());
         };
-        let side = match calibrate(&self.scpi, screen.video.as_ref()) {
+        let side = match calibrate(&self.scpi, screen.video.as_ref(), Some(screen.map)) {
             Ok((map, side)) => {
                 if let Some(screen) = self.screen.as_mut() {
                     screen.map = map;
@@ -1069,7 +1069,16 @@ fn toggle_hdmi_output(link: &Mutex<Box<dyn Scpi>>) -> Result<()> {
 ///
 /// The connection is held only for each command, not while waiting for a
 /// frame: the frames may themselves be read over it.
-fn calibrate(link: &Mutex<Box<dyn Scpi>>, video: &dyn FrameSource) -> Result<(ScreenMap, Side)> {
+///
+/// `known` is the area pairing measured, for a check for the side menu: the
+/// grid is measured afresh, but where something on the screen spoils that,
+/// as the bus bar an SPI trigger draws across the bottom of it does, the
+/// known area is checked instead.
+fn calibrate(
+    link: &Mutex<Box<dyn Scpi>>,
+    video: &dyn FrameSource,
+    known: Option<ScreenMap>,
+) -> Result<(ScreenMap, Side)> {
     let command = |command: &str| -> Result<()> {
         let mut scpi = lock_link(link);
         scpi.write(command)?;
@@ -1088,7 +1097,15 @@ fn calibrate(link: &Mutex<Box<dyn Scpi>>, video: &dyn FrameSource) -> Result<(Sc
             let with_grid = settled_frame(video)?;
             command(":DISPlay:GRID NONE")?;
             let without_grid = settled_frame(video)?;
-            let map = screen::measure(&with_grid, &without_grid)?;
+            let map = match (screen::measure(&with_grid, &without_grid), known) {
+                (Ok(map), _) => map,
+                // A picture that is not this scope's is never checked as one.
+                (Err(e), Some(known)) if !e.chain().any(|c| c.is::<screen::NoPicture>()) => {
+                    tracing::debug!(error = %format!("{e:#}"), "checking the screen against the area measured at pairing");
+                    known
+                }
+                (Err(e), _) => return Err(e),
+            };
             Ok((screen::right_side_covered(&with_grid, &without_grid, &map), map))
         };
         let (covered, map) = grid_frames()?;

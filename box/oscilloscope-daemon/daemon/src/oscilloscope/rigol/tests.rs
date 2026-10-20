@@ -458,6 +458,15 @@ impl Instrument {
                     frame.put(x, y, grey);
                 }
             }
+            // An SPI trigger draws its bus bar across the bottom of the
+            // screen, and the bar changes with the grid off the lattice.
+            if self.trigger_mode == "SPI" {
+                for y in (CY + 3 * PX_PER_DIV + 6..CY + 4 * PX_PER_DIV).step_by(2) {
+                    for x in (CX - half_w..=CX + half_w).step_by(2) {
+                        frame.put(x, y, grey);
+                    }
+                }
+            }
         }
         for (i, c) in self.channels.iter().enumerate() {
             if !c.display {
@@ -883,8 +892,11 @@ fn changing_the_trigger_type_hides_the_menu_it_opens() {
 #[test]
 fn a_raw_trigger_type_change_hides_the_menu_it_opens() {
     let mut bench = bench();
+    // The SPI bus bar spoils measuring the grid afresh; the area measured
+    // at pairing is checked instead.
     Oscilloscope::scpi(&mut bench.scope, ":TRIGger:MODE SPI").unwrap().unwrap();
     assert!(!bench.instrument.lock().unwrap().menu);
+    assert_eq!(bench.moff_presses(), 1);
     assert!(sets_trigger_type("trig:mode edge"));
     assert!(sets_trigger_type(":CHANnel1:SCALe 1;:TRIGger:MODE SPI"));
     assert!(!sets_trigger_type(":TRIGger:MODE?"));
