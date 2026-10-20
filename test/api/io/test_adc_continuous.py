@@ -64,9 +64,9 @@ def test_continuous_read():
         if not all_float:
             ok = False
 
-        # Check all samples in LabJack T7 range: -0.5 to 11V
-        all_in_range = all(-0.5 <= s <= 11.0 for s in samples)
-        _record("all samples in range [-0.5, 11.0] V", all_in_range,
+        # Check all samples in the LabJack T7's +/-10 V input range
+        all_in_range = all(-10.4 <= s <= 10.4 for s in samples)
+        _record("all samples in range [-10.4, 10.4] V", all_in_range,
                 f"min={min(samples):.4f} V, max={max(samples):.4f} V")
         if not all_in_range:
             ok = False

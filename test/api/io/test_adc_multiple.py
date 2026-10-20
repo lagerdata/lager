@@ -53,9 +53,9 @@ def test_read_all_channels():
                 ok = False
                 continue
 
-            # Check voltage in LabJack T7 range: -0.5 to 11V
-            in_range = -0.5 <= voltage <= 11.0
-            _record(f"{net_name} in range [-0.5, 11.0] V", in_range,
+            # Check voltage in the LabJack T7's +/-10 V input range
+            in_range = -10.4 <= voltage <= 10.4
+            _record(f"{net_name} in range [-10.4, 10.4] V", in_range,
                     f"{voltage:.4f} V")
             if not in_range:
                 ok = False

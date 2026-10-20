@@ -4,6 +4,7 @@
 # test_usb_multiple.py
 # Run with: lager python test_usb_multiple.py --box <YOUR-BOX>
 
+import os
 import sys
 import time
 
@@ -22,7 +23,9 @@ def main():
 
     print("=== USB Multiple Port Control Test ===\n")
 
-    usb_ports = ['usb1', 'usb2', 'usb3', 'usb4']
+    # Only the ports named in USB_TOGGLE_NETS (default usb1): the other ports
+    # on a bench hub power probes and peers that must not lose power.
+    usb_ports = [n.strip() for n in os.environ.get("USB_TOGGLE_NETS", "usb1").split(",") if n.strip()]
 
     try:
         # Test 1: Disable all ports
@@ -31,7 +34,7 @@ def main():
             try:
                 usb = Net.get(port, type=NetType.Usb)
                 usb.disable()
-                _record(f"{port}_disable", True)
+                _record(f"{port}_disable", usb.state() is False, f"state()={usb.state()!r}")
             except Exception as e:
                 _record(f"{port}_disable", False, str(e))
 
@@ -43,7 +46,7 @@ def main():
             try:
                 usb = Net.get(port, type=NetType.Usb)
                 usb.enable()
-                _record(f"{port}_enable", True)
+                _record(f"{port}_enable", usb.state() is True, f"state()={usb.state()!r}")
             except Exception as e:
                 _record(f"{port}_enable", False, str(e))
 

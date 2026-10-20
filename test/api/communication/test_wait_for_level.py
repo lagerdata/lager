@@ -16,13 +16,18 @@ Tests that wait_for_level matches ehaas's spec:
   - Blocks until pin reaches target level, returns elapsed seconds
   - handle comes from LabJack global store
 
-Hardware: LabJack T7, gpio16 = FIO0 (no external driver needed).
+Hardware: LabJack T7, GPIO_NET (default gpio18 = FIO2), with nothing wired to it.
 The internal pull-up idles the pin HIGH when streaming reconfigures it as input.
+
+Never FIO0/FIO1 (gpio16/gpio17): on the bench they drive the AC power relays,
+and every wait_for_level call makes the pin an input, which opens the relay.
 """
+import os
 import sys
 import time
 
-GPIO_NET = "gpio16"  # FIO0 on LabJack T7
+GPIO_NET = os.environ.get("GPIO_NET", "gpio18").strip()
+_RELAY_NETS = {"gpio16", "gpio17", "RIGOL_POWER", "KEITHLEY_POWER"}
 
 passed = 0
 failed = 0
@@ -47,6 +52,10 @@ AssertionError = AssertionError  # noqa - just a reminder it's built-in
 
 
 def main():
+    if GPIO_NET in _RELAY_NETS:
+        print(f"Refusing to drive relay net {GPIO_NET}: it switches instrument mains power.")
+        sys.exit(2)
+
     from lager.io.gpio.dispatcher import gpo, wait_for_level
 
     # Set known output state before tests
@@ -95,7 +104,7 @@ def main():
             wait_for_level(GPIO_NET, 0, timeout=0.3)
             assert False, "should have raised"
         except TimeoutError as e:
-            assert "gpio16" in str(e).lower() or "level" in str(e).lower(), \
+            assert GPIO_NET.lower() in str(e).lower() or "level" in str(e).lower(), \
                 f"message should mention net or level, got: {e}"
 
     run("TimeoutError message includes context", test_timeout_type)

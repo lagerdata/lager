@@ -604,6 +604,54 @@ jobs:
           bash tools/bench_suite_gate.sh harness labjack.sh "$LABJACK_BASELINE" "$LOG" "$LABJACK_MAX_SKIPS"
         shell: bash
 
+      # Single-purpose LabJack T7 API scripts. Each exits non-zero on a failed
+      # check; the loop names every script that failed. They use only the
+      # dac1 -> adc1 fixture wire and unconnected pins.
+      - name: Test LabJack T7 ADC / DAC scripts (Python API)
+        id: labjack-adc-dac-scripts
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          # The dac1 -> adc1 fixture wire: test_dac_ramp measures every step on it.
+          LOOPBACK_ADC_NET: ${{ vars.LOOPBACK_ADC_NET || 'adc1' }}
+        run: |
+          rc=0
+          for s in test_adc_continuous test_adc_multiple test_dac_adc_loopback \
+                   test_dac_output test_dac_ramp test_io_comprehensive; do
+            echo "::group::$s"
+            if ! lager python "test/api/io/$s.py" --box "$LAGER_BOX" --passenv LOOPBACK_ADC_NET; then
+              echo "::error title=$s::failed"
+              rc=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "$rc"
+        shell: bash
+
+      - name: Test LabJack T7 GPIO scripts (Python API)
+        # Never gpio16/gpio17: they drive the bench's AC power relays. Each
+        # script refuses them itself as well.
+        id: labjack-gpio-scripts
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          GPIO_NET: ${{ vars.GPIO_NET || 'gpio18' }}
+          # FIO2/FIO3/FIO6/FIO7. Not gpio20/gpio21, which carry i2c1.
+          GPIO_NETS: gpio18,gpio19,gpio22,gpio23
+        run: |
+          rc=0
+          for s in io/test_gpio_output io/test_gpio_pulse io/test_gpio_multiple \
+                   communication/test_wait_for_level; do
+            echo "::group::$s"
+            if ! lager python "test/api/$s.py" --box "$LAGER_BOX" --passenv GPIO_NET --passenv GPIO_NETS; then
+              echo "::error title=$(basename "$s")::failed"
+              rc=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "$rc"
+        shell: bash
+
       - name: Suite usb202.sh (MCC USB-202, CLI)
         # Must run before anything power-cycles the USB-202's hub port (the
         # Acroname steps below): after a port cycle the CLI's adc/dac/gpio
@@ -681,6 +729,30 @@ jobs:
           LOG="$RUNNER_TEMP/usb.log"
           bash test/integration/usb/usb.sh "$LAGER_BOX" "$USB_NET" 2>&1 | tee "$LOG" || true
           bash tools/bench_suite_gate.sh harness usb.sh "$USB_BASELINE" "$LOG" "$USB_MAX_SKIPS"
+        shell: bash
+
+      - name: Test USB port scripts (Python API)
+        # Switch only usb1, the USB-202's port: the other Acroname ports power
+        # the J-Link probes, the arm, the capture device and the UART peer.
+        # Each script refuses a port missing from USB_TOGGLE_NETS. After the
+        # USB-202 CLI suite, since a port cycle breaks its CLI path (#729).
+        id: usb-port-scripts
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          USB_NET: ${{ vars.USB_NET || 'usb1' }}
+          USB_TOGGLE_NETS: usb1
+        run: |
+          rc=0
+          for s in test_usb_comprehensive test_usb_contention test_usb_multiple; do
+            echo "::group::$s"
+            if ! lager python "test/api/usb/$s.py" --box "$LAGER_BOX" --passenv USB_NET --passenv USB_TOGGLE_NETS; then
+              echo "::error title=$s::failed"
+              rc=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "$rc"
         shell: bash
 
       - name: Test Keithley 2281S power supply

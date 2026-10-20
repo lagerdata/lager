@@ -77,6 +77,19 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   `erase`, `flash`) and runs as the last debug step. It reads flash back after each step,
   and erases the target once, only after confirming it holds the image it then reflashes.
 
+- **The nightly bench run now runs 13 more Python API test scripts.** Six LabJack ADC/DAC
+  scripts, four GPIO scripts and three USB-port scripts run in three new steps. Before they
+  could run there:
+  - The GPIO scripts drove `gpio16`/`gpio17` by default: on a bench, those pins switch the
+    instruments' AC power. They now take the pin from `GPIO_NET` / `GPIO_NETS` (default
+    `gpio18`) and refuse the relay nets.
+  - The USB scripts switched every USB net, or `usb1`-`usb4`, which also cut power to the
+    probes. They now switch only the ports in `USB_TOGGLE_NETS` (default `usb1`) and read
+    each port's state back.
+  - `test_dac_ramp.py` measures every step on `LOOPBACK_ADC_NET`, if one is set. Before, a
+    step passed whenever the DAC accepted the value.
+  - The ADC range checks match the LabJack T7's +/-10 V input range.
+
 ### Fixed
 
 - **`lager debug NET flash` no longer erases the target when no image is given.** With no

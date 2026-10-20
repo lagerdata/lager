@@ -33,9 +33,9 @@ def test_adc():
             adc = Net.get(net_name, type=NetType.ADC)
             voltage = adc.input()
             is_float = isinstance(voltage, (int, float))
-            in_range = -0.5 <= voltage <= 11.0 if is_float else False
+            in_range = -10.4 <= voltage <= 10.4 if is_float else False
             passed = is_float and in_range
-            _record(f"{net_name} read is float in [-0.5, 11V]", passed,
+            _record(f"{net_name} read is float in [-10.4, 10.4 V]", passed,
                     f"got {voltage!r} (type={type(voltage).__name__})")
         except Exception as e:
             _record(f"{net_name} read", False, str(e))

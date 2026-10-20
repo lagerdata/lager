@@ -2,11 +2,27 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # test_gpio_pulse.py
-# Run with: lager python test_gpio_pulse.py --box MY-BOX
+# Run with: lager python test_gpio_pulse.py --box MY-BOX [--env GPIO_NET=gpio18]
+#
+# GPIO_NET is the pin to drive (default gpio18). Nothing may be wired to it.
 
+import os
 import sys
 import time
 from lager import Net, NetType
+
+# FIO0/FIO1 drive the bench's AC power relays (RIGOL_POWER, KEITHLEY_POWER);
+# gpio16/gpio17 are their auto-generated names. Driving them cuts mains power
+# to the instruments, so this script refuses them.
+_RELAY_NETS = {"gpio16", "gpio17", "RIGOL_POWER", "KEITHLEY_POWER"}
+
+
+def _refuse_relay_nets(names):
+    bad = [n for n in names if n in _RELAY_NETS]
+    if bad:
+        print(f"Refusing to drive relay net(s) {', '.join(bad)}: they switch instrument mains power.")
+        sys.exit(2)
+
 
 _results = []
 
@@ -24,7 +40,9 @@ def _record(name, passed, detail=""):
 def main():
     print("=== GPIO Pulse Generation Test ===\n")
 
-    net_name = 'gpio16'
+    net_name = os.environ.get("GPIO_NET", "gpio18").strip()
+    _refuse_relay_nets([net_name])
+
     num_pulses = 5
     pulse_width = 0.1
 

@@ -3,8 +3,13 @@
 # Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 # test_dac_ramp.py
-# Run with: lager python test/api/io/test_dac_ramp.py --box MY-BOX
+# Run with: lager python test/api/io/test_dac_ramp.py --box MY-BOX [--env LOOPBACK_ADC_NET=adc1]
+#
+# With LOOPBACK_ADC_NET set to an ADC net wired to DAC_NET, every step is
+# measured on that ADC and must read within LOOPBACK_TOL volts (default 0.05).
+# Without it, a step passes when the DAC accepts the value.
 
+import os
 import sys
 import time
 import traceback
@@ -14,7 +19,9 @@ from lager import Net, NetType
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-DAC_NET = 'dac1'
+DAC_NET = os.environ.get('DAC_NET', 'dac1').strip()
+LOOPBACK_ADC_NET = os.environ.get('LOOPBACK_ADC_NET', '').strip()
+LOOPBACK_TOL = float(os.environ.get('LOOPBACK_TOL', '0.05'))
 START_V = 0.0
 END_V = 3.3
 STEPS = 10
@@ -48,6 +55,7 @@ def test_dac_ramp():
 
     try:
         dac = Net.get(DAC_NET, type=NetType.DAC)
+        adc = Net.get(LOOPBACK_ADC_NET, type=NetType.ADC) if LOOPBACK_ADC_NET else None
         readbacks = []
 
         print(f"\n  Ramp: {START_V}V -> {END_V}V in {STEPS} steps")
@@ -57,7 +65,14 @@ def test_dac_ramp():
             try:
                 dac.output(target_v)
                 time.sleep(0.1)
-                _record(f"step {i:2d}: output {target_v:.3f}V", True)
+                if adc is None:
+                    _record(f"step {i:2d}: output {target_v:.3f}V", True)
+                else:
+                    measured = adc.input()
+                    near = abs(measured - target_v) <= LOOPBACK_TOL
+                    _record(f"step {i:2d}: output {target_v:.3f}V reads on {LOOPBACK_ADC_NET}",
+                            near, f"measured {measured:.4f}V (tol {LOOPBACK_TOL}V)")
+                    ok = ok and near
 
                 # Attempt readback for monotonic check
                 try:

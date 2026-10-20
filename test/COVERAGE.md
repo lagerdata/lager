@@ -184,7 +184,7 @@ OS.
 
 | Area | Size | Why not |
 |---|---|---|
-| `test/api/` | 85 scripts | Needs real hardware. The bench workflows invoke 10 by name (4 of them, the Keithley supply and battery steps, only while the `KEITHLEY_PRESENT` repo variable is `true`); the other 75 execute nowhere -- though all are syntax-checked. |
+| `test/api/` | 86 scripts | Needs real hardware. The bench workflows run 23: 10 by name (4 of them, the Keithley supply and battery steps, only while the `KEITHLEY_PRESENT` repo variable is `true`), plus 6 LabJack ADC/DAC, 4 GPIO and 3 USB-port scripts run in loops. The other 63 execute nowhere -- though all are syntax-checked. |
 | `test/integration/` | 39 bash scripts | Needs a real box and instruments. **15 execute.** 11 run nightly via `integration-tests.yml`: `communication/debug.sh`, `communication/jlink_script.sh`, `communication/uart.sh`, `infrastructure/deployment.sh`, `infrastructure/devenv.sh`, `power/supply.sh`, `power/multichannel_supply.sh`, `io/labjack.sh`, `io/usb202.sh`, `usb/acroname.sh` and `usb/usb.sh`. 4 run weekly via `bench-extended.yml`: `nets`, `box_config`, `generic`, and `power/battery.sh` (only while `KEITHLEY_PRESENT` is `true`). The other 24 are syntax-checked and shellchecked but never executed. |
 | `test/mcp/integration/` | 1 file | Now RUN, not just collected, by the required `mcp-extra` job: `test_agent_loop.py` builds its bench in-process from dicts and needs no box. Not counted in the `unit (...)` totals above. |
 | `test/manual/` | 2 bash scripts, 1 Python report, 1 browser client | Operator-driven. The bash scripts are syntax-checked only. `box_lager_import_report.py` prints an import report and has no `assert` statements, so its name keeps pytest from collecting it. Run it directly. |
