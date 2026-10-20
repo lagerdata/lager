@@ -73,6 +73,10 @@ struct Instrument {
     queries: Vec<String>,
     /// The screen record `:WAVeform:DATA?` returns, as 8-bit codes.
     record: Vec<u8>,
+    /// Readouts the next frame's bar shows after one is added, as a frame
+    /// caught mid-redraw does; then the bar as it is.
+    torn_bar: Option<usize>,
+    torn_next: Option<usize>,
 }
 
 impl Instrument {
@@ -111,6 +115,8 @@ impl Instrument {
             queries: Vec::new(),
             // A ramp from 0 to 0.9 V at 25 mV a code.
             record: (0..10).map(|i| 127 + i * 4).collect(),
+            torn_bar: None,
+            torn_next: None,
         }
     }
 
@@ -120,6 +126,7 @@ impl Instrument {
         self.readouts.retain(|shown| shown != item);
         self.readouts.insert(0, item.to_string());
         self.readouts.truncate(10);
+        self.torn_next = self.torn_bar;
     }
 
     /// Apply a command, as the scope would, or queue an error.
@@ -403,6 +410,19 @@ impl Instrument {
         reply
     }
 
+    /// The next frame the card delivers: torn once after a readout is added.
+    fn next_frame(&mut self) -> VideoFrame {
+        match self.torn_next.take() {
+            Some(tiles) => {
+                let shown = std::mem::replace(&mut self.readouts, vec![String::new(); tiles]);
+                let frame = self.draw();
+                self.readouts = shown;
+                frame
+            }
+            None => self.draw(),
+        }
+    }
+
     /// The screen as the capture card sees it.
     fn draw(&self) -> VideoFrame {
         let mut frame = VideoFrame::blank(WIDTH, HEIGHT, Layout::Ycc);
@@ -527,7 +547,7 @@ impl FrameSource for FakeScreen {
         if *sequence <= after {
             *sequence = after + 1;
         }
-        let frame = self.instrument.lock().unwrap().draw();
+        let frame = self.instrument.lock().unwrap().next_frame();
         Ok(Some(RawFrame {
             encoding: Encoding::Yuyv,
             width: frame.width,
@@ -1039,6 +1059,19 @@ fn measuring_keeps_the_readouts_the_user_put_on_the_scope() {
     // VPP went to the front, as the third readout, and only it was cleared.
     assert_eq!(bench.instrument.lock().unwrap().readouts, ["FREQUENCY", "VMIN"]);
     assert!(bench.sent().contains(&":MEASure:CLEar ITEM3".to_string()), "{:?}", bench.sent());
+}
+
+#[test]
+fn a_frame_caught_while_the_bar_redraws_does_not_decide_what_is_cleared() {
+    let mut bench = bench();
+    {
+        let mut instrument = bench.instrument.lock().unwrap();
+        instrument.readouts = vec!["FREQUENCY".into()];
+        // Half the new bar's border drawn: it reads as no readout at all.
+        instrument.torn_bar = Some(0);
+    }
+    bench.scope.measure_one(ChannelId::Alphabetic('A'), Measurement::Vpp).unwrap().unwrap();
+    assert_eq!(bench.instrument.lock().unwrap().readouts, ["FREQUENCY"]);
 }
 
 #[test]

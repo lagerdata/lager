@@ -858,20 +858,32 @@ impl RigolMso5000 {
             .and_then(|newest| self.readouts_after(newest.saturating_sub(1), READOUT_WAIT));
         let reply = self.query_checked(query)?;
         if let Some((before, mut seen)) = before {
+            // A frame caught while the scope redraws its bar shows part of
+            // the border, so a new count is trusted once two frames agree.
             let deadline = Instant::now() + READOUT_WAIT;
-            let mut added = None;
+            let (mut last, mut settled) = (None, None);
             while Instant::now() < deadline {
                 let Some((tiles, sequence)) = self.readouts_after(seen, Duration::from_millis(200)) else {
                     break;
                 };
                 seen = sequence;
-                if tiles != before {
-                    added = (tiles == before + 1).then_some(tiles);
+                if tiles != before && last == Some(tiles) {
+                    settled = Some(tiles);
                     break;
                 }
+                last = Some(tiles);
             }
-            if let Some(item) = added {
-                self.apply(&format!(":MEASure:CLEar ITEM{item}"))?;
+            match settled {
+                Some(tiles) if tiles == before + 1 => {
+                    self.apply(&format!(":MEASure:CLEar ITEM{tiles}"))?;
+                    tracing::debug!(query, readouts = tiles, "cleared the readout the query added");
+                }
+                _ => tracing::info!(
+                    query,
+                    before,
+                    after = ?settled,
+                    "left the scope's measurement bar as it is: the query added no readout seen in the live view"
+                ),
             }
         }
         // The frames since show the readout; the bar is left out of the
