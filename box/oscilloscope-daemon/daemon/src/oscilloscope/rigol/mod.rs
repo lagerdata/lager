@@ -88,10 +88,10 @@ fn changes_cached_settings(command: &str) -> bool {
 const LOCK_WAIT: Duration = Duration::from_secs(2);
 /// What the scope answers for a measurement it cannot make.
 const NO_MEASUREMENT: f64 = 9e36;
-/// Longest the scope takes to draw the readout a `:MEASure:<item>?` adds,
-/// through the capture card: the reply comes before the screen redraws, and
-/// HDMI lags another 190-330 ms.
-const READOUT_WAIT: Duration = Duration::from_millis(1500);
+/// Longest to wait for the measurement bar to settle, on either side of a
+/// `:MEASure:<item>?`: the reply comes before the screen redraws, HDMI lags
+/// another 190-330 ms, and a period's readout took 1.9 s to appear.
+const READOUT_WAIT: Duration = Duration::from_millis(2500);
 /// Samples of the screen record a rise or fall has to span for the record to
 /// time it. Under that it is the record's spacing being measured, 10 us at
 /// 1 ms/div, not the edge, which the scope times on its full memory.
@@ -832,15 +832,31 @@ impl RigolMso5000 {
         }
     }
 
-    /// Readouts in the scope's measurement bar, from a frame newer than
-    /// `after`, and that frame's sequence. None with no live view to see
-    /// the bar in.
-    fn readouts_after(&self, after: u64, wait: Duration) -> Option<(usize, u64)> {
+    /// Readouts in the scope's measurement bar once the picture has caught
+    /// up with the last change: two frames in a row from past `stale_through`
+    /// that agree, and, given `unlike`, differ from it. Frames from before
+    /// then still show the bar as it was, over HDMI for up to 400 ms after a
+    /// change, and one caught mid-redraw shows part of its border. None with
+    /// no live view, or with no such pair in `READOUT_WAIT`.
+    fn settled_readouts(&self, unlike: Option<usize>) -> Option<usize> {
         let screen = self.screen().ok()?;
-        let raw = screen.video.next_after(after, wait).ok()??;
-        let frame = raw.decode().ok()?;
-        let tiles = measurement_bar(&frame, &screen.map).map_or(0, |bar| bar.tiles);
-        Some((tiles, raw.sequence))
+        let newest = screen.video.newest().ok()?;
+        let mut seen = self.work().stale_through.max(newest.saturating_sub(1));
+        let deadline = Instant::now() + READOUT_WAIT;
+        let mut last = None;
+        while Instant::now() < deadline {
+            let raw = screen.video.next_after(seen, Duration::from_millis(200)).ok()??;
+            seen = raw.sequence;
+            let Ok(frame) = raw.decode() else {
+                continue;
+            };
+            let tiles = measurement_bar(&frame, &screen.map).map_or(0, |bar| bar.tiles);
+            if last == Some(tiles) && unlike != Some(tiles) {
+                return Some(tiles);
+            }
+            last = Some(tiles);
+        }
+        None
     }
 
     /// Ask the scope one `:MEASure:<item>?`, and leave its measurement bar
@@ -851,44 +867,24 @@ impl RigolMso5000 {
     /// the bar gain exactly one: a readout the user put there is never
     /// cleared, and with no live view to look at, nothing is.
     fn measure_query(&mut self, query: &str) -> Result<String> {
-        let before = self
-            .screen()
-            .ok()
-            .and_then(|s| s.video.newest().ok())
-            .and_then(|newest| self.readouts_after(newest.saturating_sub(1), READOUT_WAIT));
+        let before = self.settled_readouts(None);
         let reply = self.query_checked(query)?;
-        if let Some((before, mut seen)) = before {
-            // A frame caught while the scope redraws its bar shows part of
-            // the border, so a new count is trusted once two frames agree.
-            let deadline = Instant::now() + READOUT_WAIT;
-            let (mut last, mut settled) = (None, None);
-            while Instant::now() < deadline {
-                let Some((tiles, sequence)) = self.readouts_after(seen, Duration::from_millis(200)) else {
-                    break;
-                };
-                seen = sequence;
-                if tiles != before && last == Some(tiles) {
-                    settled = Some(tiles);
-                    break;
+        // The frames since show the readout being drawn.
+        self.mark_stale();
+        if let Some(before) = before {
+            match self.settled_readouts(Some(before)) {
+                Some(after) if after == before + 1 => {
+                    self.apply(&format!(":MEASure:CLEar ITEM{after}"))?;
+                    tracing::debug!(query, readouts = after, "cleared the readout the query added");
                 }
-                last = Some(tiles);
-            }
-            match settled {
-                Some(tiles) if tiles == before + 1 => {
-                    self.apply(&format!(":MEASure:CLEar ITEM{tiles}"))?;
-                    tracing::debug!(query, readouts = tiles, "cleared the readout the query added");
-                }
-                _ => tracing::info!(
+                after => tracing::info!(
                     query,
                     before,
-                    after = ?settled,
+                    after = ?after,
                     "left the scope's measurement bar as it is: the query added no readout seen in the live view"
                 ),
             }
         }
-        // The frames since show the readout; the bar is left out of the
-        // live view anyway, but its redraw is not the signal.
-        self.mark_stale();
         Ok(reply)
     }
 

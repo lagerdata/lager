@@ -534,6 +534,10 @@ impl Scpi for FakeScpi {
 struct FakeScreen {
     instrument: Arc<Mutex<Instrument>>,
     sequence: Mutex<u64>,
+    /// Frames the picture trails the scope by, as HDMI does; fewer than the
+    /// settle frames, as on the card.
+    lag: usize,
+    drawn: Mutex<VecDeque<VideoFrame>>,
 }
 
 impl FrameSource for FakeScreen {
@@ -542,12 +546,21 @@ impl FrameSource for FakeScreen {
     }
 
     fn next_after(&self, after: u64, _timeout: Duration) -> Result<Option<RawFrame>> {
+        // Every frame up to the one asked for is drawn, as a card delivers
+        // them, so a lag in frames is a lag in sequence numbers.
         let mut sequence = self.sequence.lock().unwrap();
-        *sequence += 1;
-        if *sequence <= after {
-            *sequence = after + 1;
+        let mut drawn = self.drawn.lock().unwrap();
+        loop {
+            *sequence += 1;
+            drawn.push_back(self.instrument.lock().unwrap().next_frame());
+            while drawn.len() > self.lag + 1 {
+                drawn.pop_front();
+            }
+            if *sequence > after {
+                break;
+            }
         }
-        let frame = self.instrument.lock().unwrap().next_frame();
+        let frame = drawn.front().unwrap().clone();
         Ok(Some(RawFrame {
             encoding: Encoding::Yuyv,
             width: frame.width,
@@ -595,9 +608,25 @@ fn bench_with(instrument: Instrument) -> Result<Bench> {
     let screen = FakeScreen {
         instrument: instrument.clone(),
         sequence: Mutex::new(0),
+        lag: 0,
+        drawn: Mutex::new(VecDeque::new()),
     };
     let scope = RigolMso5000::with(Box::new(scpi), Some(Box::new(screen)), None)?;
     Ok(Bench { instrument, scope })
+}
+
+/// A bench whose picture trails the scope by `lag` frames.
+fn bench_lagging(lag: usize) -> Bench {
+    let instrument = Arc::new(Mutex::new(Instrument::mso5204()));
+    let scpi = FakeScpi { instrument: instrument.clone(), replies: VecDeque::new() };
+    let screen = FakeScreen {
+        instrument: instrument.clone(),
+        sequence: Mutex::new(0),
+        lag,
+        drawn: Mutex::new(VecDeque::new()),
+    };
+    let scope = RigolMso5000::with(Box::new(scpi), Some(Box::new(screen)), None).unwrap();
+    Bench { instrument, scope }
 }
 
 fn bench() -> Bench {
@@ -811,6 +840,8 @@ fn bench_with_card(plugged: bool) -> (Bench, Arc<std::sync::atomic::AtomicBool>,
             Ok(Box::new(FakeScreen {
                 instrument: instrument.clone(),
                 sequence: Mutex::new(0),
+                lag: 0,
+                drawn: Mutex::new(VecDeque::new()),
             }) as Box<dyn FrameSource>)
         })
     };
@@ -1072,6 +1103,18 @@ fn a_frame_caught_while_the_bar_redraws_does_not_decide_what_is_cleared() {
     }
     bench.scope.measure_one(ChannelId::Alphabetic('A'), Measurement::Vpp).unwrap().unwrap();
     assert_eq!(bench.instrument.lock().unwrap().readouts, ["FREQUENCY"]);
+}
+
+/// On the bench, back-to-back queries counted the bar from frames that
+/// still showed the last query's readout, and left a readout each time.
+#[test]
+fn measurements_in_a_row_each_clear_their_own_readout_through_a_lagging_picture() {
+    let mut bench = bench_lagging(2);
+    bench.instrument.lock().unwrap().readouts = vec!["FREQUENCY".into(), "VAVG".into()];
+    for which in [Measurement::Vmax, Measurement::Vmin, Measurement::Vpp, Measurement::Period, Measurement::Vrms] {
+        bench.scope.measure_one(ChannelId::Alphabetic('A'), which).unwrap().unwrap();
+        assert_eq!(bench.instrument.lock().unwrap().readouts, ["FREQUENCY", "VAVG"], "after {which:?}");
+    }
 }
 
 #[test]
