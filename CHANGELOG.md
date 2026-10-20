@@ -72,8 +72,20 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   Keithley 2281S, and moved from the weekly run to the nightly. `usb.sh` switches only
   the ports listed in `USB_TOGGLE_NETS`.
 
+- **The nightly bench run now tests `lager debug` through the CLI.** `debug.sh` was
+  rewritten for the current commands (`gdbserver`, `status`, `health`, `memrd`, `reset`,
+  `erase`, `flash`) and runs as the last debug step. It reads flash back after each step,
+  and erases the target once, only after confirming it holds the image it then reflashes.
+
 ### Fixed
 
+- **`lager debug NET flash` no longer erases the target when no image is given.** With no
+  `--hex`, `--elf` or `--bin`, or with two of them, it erased the whole chip and only then
+  refused, leaving the part blank. It now refuses before contacting the box.
+- **`lager debug NET memrd --json` prints only JSON on stdout.** When the command had to
+  connect to the debugger first, its "Auto-connecting" progress lines came before the JSON,
+  so the output did not parse. Those lines now go to stderr, as the command's other
+  progress messages already did.
 - **A Rigol MSO5000 works while its capture card is missing.** If the card paired with
   `lager nets set-capture` is not on its port, or something else holds it, every command
   except the live view now works, instead of every command failing. The live view, `stream

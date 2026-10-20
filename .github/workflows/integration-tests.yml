@@ -844,6 +844,29 @@ jobs:
           bash tools/bench_suite_gate.sh harness jlink_script.sh "$JLINK_CLI_BASELINE" "$LOG" "$JLINK_CLI_MAX_SKIPS"
         shell: bash
 
+      - name: Suite debug.sh (debug net, CLI)
+        # The last debug step: it erases the target once and reflashes the
+        # staged image, so nothing after it may depend on what an earlier
+        # step left in flash. The suite reads 0x0 back after each step, and
+        # erases only after confirming the target holds the staged image, so
+        # it never erases a target it cannot restore. A run that stops
+        # between the erase and the reflash reflashes from its cleanup.
+        id: suite-debug
+        continue-on-error: true
+        timeout-minutes: 15
+        env:
+          DEBUG_ALLOW_ERASE: "1"
+          DEBUG_BASELINE: "0"
+          # The suite has no skip path; a skip would be a new one.
+          DEBUG_MAX_SKIPS: "0"
+        run: |
+          LOG="$RUNNER_TEMP/debug.log"
+          bash test/integration/communication/debug.sh \
+            "$LAGER_BOX" "${{ vars.DEBUG_NET || 'debug1' }}" firmware.hex \
+            2>&1 | tee "$LOG" || true
+          bash tools/bench_suite_gate.sh harness debug.sh "$DEBUG_BASELINE" "$LOG" "$DEBUG_MAX_SKIPS"
+        shell: bash
+
       - name: Ensure the UART peer net exists (self-heal)
         # Same hazard the relay-net heal above exists for: `lager nets
         # delete-all` + `add-all` on the bench wipes named nets, and add-all

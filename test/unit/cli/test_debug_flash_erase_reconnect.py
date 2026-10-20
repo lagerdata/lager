@@ -1121,6 +1121,22 @@ class TestEraseRangeFlags:
         assert "must be given together" in result.output
         assert client.calls == []
 
+    def test_no_image_is_refused_before_the_erase(self):
+        # `flash` erases by default. It used to find the missing file option
+        # only after erasing, which left the chip blank.
+        client = FakeClient()
+        result = run_flash(client, ["--box", "mybox"])
+        assert result.exit_code == 1, result.output
+        assert "Provide --hex, --elf, or --bin" in result.output
+        assert client.calls == []
+
+    def test_two_images_are_refused_before_the_erase(self, hexfile):
+        client = FakeClient()
+        result = run_flash(client, ["--hex", hexfile, "--elf", hexfile, "--box", "mybox"])
+        assert result.exit_code == 1, result.output
+        assert "Cannot specify multiple file types" in result.output
+        assert client.calls == []
+
     def test_no_erase_with_a_range_is_refused(self, hexfile):
         client = FakeClient()
         result = run_flash(client, ["--hex", hexfile, "--box", "mybox", "--no-erase", *RANGE_2M],

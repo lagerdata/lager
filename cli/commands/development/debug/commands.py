@@ -411,7 +411,7 @@ def _auto_connect_if_needed(client, debug_net, ctx, quiet=False,
                 jlink_script=jlink_script, openocd_config=openocd_config,
             )
             if not quiet:
-                click.secho("Reconnected!", fg='cyan', dim=True)
+                click.secho("Reconnected!", fg='cyan', dim=True, err=True)
             return True
         except Exception as exc:
             click.secho(f"Error: the CLI did not reconnect to the target: {exc}", fg='red', err=True)
@@ -419,7 +419,7 @@ def _auto_connect_if_needed(client, debug_net, ctx, quiet=False,
 
     # Not connected, auto-connect
     if not quiet:
-        click.secho("Auto-connecting to debugger...", fg='cyan', dim=True)
+        click.secho("Auto-connecting to debugger...", fg='cyan', dim=True, err=True)
 
     try:
         client.connect(
@@ -427,7 +427,7 @@ def _auto_connect_if_needed(client, debug_net, ctx, quiet=False,
             jlink_script=jlink_script, openocd_config=openocd_config,
         )
         if not quiet:
-            click.secho("Auto-connected!", fg='cyan', dim=True)
+            click.secho("Auto-connected!", fg='cyan', dim=True, err=True)
         return True
     except requests.exceptions.Timeout:
         click.secho("Error: Connection timed out while auto-connecting to debugger", fg='red', err=True)
@@ -485,7 +485,7 @@ def _auto_disconnect(client, debug_net, no_disconnect=False, quiet=False):
     try:
         client.disconnect(debug_net)
         if not quiet:
-            click.secho("Auto-disconnected debugger", fg='cyan', dim=True)
+            click.secho("Auto-disconnected debugger", fg='cyan', dim=True, err=True)
     except Exception:
         pass  # Ignore disconnect errors
 
@@ -1577,6 +1577,18 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, no_erase, erase,
         ctx.exit(1)
     erase_range_requested = erase_start is not None
 
+    # So is the image. `flash` erases by default, so a missing or doubled
+    # file option found after the erase left the chip blank with nothing
+    # programmed.
+    file_types_specified = sum([bool(hex), bool(elf), bool(bin)])
+    if file_types_specified > 1:
+        click.secho('Error: Cannot specify multiple file types (--hex, --elf, --bin)', fg='red', err=True)
+        click.secho('Please specify only one file type option.', fg='red', err=True)
+        ctx.exit(1)
+    if file_types_specified == 0:
+        click.secho('Error: Provide --hex, --elf, or --bin.', fg='red', err=True)
+        ctx.exit(1)
+
     client = _get_service_client(target_box)
     if not client:
         click.secho("Error: Failed to create debug service client", fg='red', err=True)
@@ -1672,16 +1684,6 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, no_erase, erase,
     from pathlib import Path
 
     try:
-        # Validate that only one file type is specified
-        file_types_specified = sum([bool(hex), bool(elf), bool(bin)])
-        if file_types_specified > 1:
-            click.secho('Error: Cannot specify multiple file types (--hex, --elf, --bin)', fg='red', err=True)
-            click.secho('Please specify only one file type option.', fg='red', err=True)
-            ctx.exit(1)
-        elif file_types_specified == 0:
-            click.secho('Provide --hex, --elf, or --bin.', fg='red')
-            ctx.exit(1)
-
         # Flash the appropriate file type
         if hex:
             result = client.flash(Path(hex), file_type='hex', verbose=verbose, net=debug_net,
@@ -1910,7 +1912,7 @@ def erase(ctx, box, speed, yes, quiet, json_output, erase_start, erase_size, hal
                 click.secho("Reconnected and halted!", fg='cyan', dim=True)
         else:
             if not quiet:
-                click.secho("Reconnected!", fg='cyan', dim=True)
+                click.secho("Reconnected!", fg='cyan', dim=True, err=True)
     except Exception as e:
         click.secho(f"Warning: Failed to reconnect after erase: {e}", fg='yellow', err=True)
 
@@ -2074,9 +2076,9 @@ def memrd(ctx, start_addr, length, box, json_output, halt, no_halt, no_reset):
     )
     if _memrd_needs_connect:
         if effective_halt:
-            click.secho("Auto-connecting to debugger (with halt for memory read)...", fg='cyan', dim=True)
+            click.secho("Auto-connecting to debugger (with halt for memory read)...", fg='cyan', dim=True, err=True)
         else:
-            click.secho("Auto-connecting to debugger...", fg='cyan', dim=True)
+            click.secho("Auto-connecting to debugger...", fg='cyan', dim=True, err=True)
         try:
             client.connect(
                 debug_net, speed=None, force=(_memrd_attached is False),
@@ -2084,9 +2086,9 @@ def memrd(ctx, start_addr, length, box, json_output, halt, no_halt, no_reset):
                 jlink_script=jlink_script, openocd_config=openocd_config,
             )
             if effective_halt:
-                click.secho("Auto-connected and halted!", fg='cyan', dim=True)
+                click.secho("Auto-connected and halted!", fg='cyan', dim=True, err=True)
             else:
-                click.secho("Auto-connected!", fg='cyan', dim=True)
+                click.secho("Auto-connected!", fg='cyan', dim=True, err=True)
         except Exception as e:
             click.secho(f"Error: Failed to auto-connect to debugger", fg='red', err=True)
             click.secho(f"Details: {e}", fg='red', err=True)

@@ -15,7 +15,7 @@ deleted.)
 
 | File | Sidebar name | Triggers | Runner | Purpose |
 |---|---|---|---|---|
-| `integration-tests.yml` | Bench: Integration Tests | `workflow_call`, dispatch | self-hosted `lager-bench` | Drives every bench instrument through `lager python`, plus the CLI suites for the supply, LabJack, USB-202, Acroname hub, USB port, J-Link and UART, and the deployment and devenv suites |
+| `integration-tests.yml` | Bench: Integration Tests | `workflow_call`, dispatch | self-hosted `lager-bench` | Drives every bench instrument through `lager python`, plus the CLI suites for the supply, LabJack, USB-202, Acroname hub, USB port, debug net, J-Link and UART, and the deployment and devenv suites |
 | `update-regression.yml` | Bench: Box Lifecycle | `workflow_call`, dispatch | self-hosted `lager-bench` | Downgrade -> update -> no-op -> forced rebuild -> uninstall -> install, with a hardware smoke per phase |
 | `nightly-bench.yml` | Bench: Nightly | cron 10:17 UTC, push of `v*` tags, dispatch | (calls the two above) | The bench chain: lifecycle first, instruments only if it succeeded, one chain at a time; files/closes the `bench-alert` issue |
 | `bench-extended.yml` | Bench: Extended | cron Sat 14:17 UTC, dispatch | self-hosted `lager-bench` | Weekly run of the suites that change shared state (nets, box_config, generic) plus the Keithley battery suite; alerts on failure under its own `bench-alert-extended` label, and never closes it |

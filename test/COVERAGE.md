@@ -47,13 +47,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 3529 (+3 xfailed) |
+| `unit (cli)` | `test/unit/cli/` | 3533 (+3 xfailed) |
 | `unit (box)` | `test/unit/box/` | 4565 (+16 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 405 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 221 (+1 skipped) |
-| | **Total gated** | **8914** |
+| | **Total gated** | **8918** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -185,7 +185,7 @@ OS.
 | Area | Size | Why not |
 |---|---|---|
 | `test/api/` | 85 scripts | Needs real hardware. The bench workflows invoke 10 by name (4 of them, the Keithley supply and battery steps, only while the `KEITHLEY_PRESENT` repo variable is `true`); the other 75 execute nowhere -- though all are syntax-checked. |
-| `test/integration/` | 39 bash scripts | Needs a real box and instruments. **14 execute.** 10 run nightly via `integration-tests.yml`: `communication/jlink_script.sh`, `communication/uart.sh`, `infrastructure/deployment.sh`, `infrastructure/devenv.sh`, `power/supply.sh`, `power/multichannel_supply.sh`, `io/labjack.sh`, `io/usb202.sh`, `usb/acroname.sh` and `usb/usb.sh`. 4 run weekly via `bench-extended.yml`: `nets`, `box_config`, `generic`, and `power/battery.sh` (only while `KEITHLEY_PRESENT` is `true`). The other 25 are syntax-checked and shellchecked but never executed. |
+| `test/integration/` | 39 bash scripts | Needs a real box and instruments. **15 execute.** 11 run nightly via `integration-tests.yml`: `communication/debug.sh`, `communication/jlink_script.sh`, `communication/uart.sh`, `infrastructure/deployment.sh`, `infrastructure/devenv.sh`, `power/supply.sh`, `power/multichannel_supply.sh`, `io/labjack.sh`, `io/usb202.sh`, `usb/acroname.sh` and `usb/usb.sh`. 4 run weekly via `bench-extended.yml`: `nets`, `box_config`, `generic`, and `power/battery.sh` (only while `KEITHLEY_PRESENT` is `true`). The other 24 are syntax-checked and shellchecked but never executed. |
 | `test/mcp/integration/` | 1 file | Now RUN, not just collected, by the required `mcp-extra` job: `test_agent_loop.py` builds its bench in-process from dicts and needs no box. Not counted in the `unit (...)` totals above. |
 | `test/manual/` | 2 bash scripts, 1 Python report, 1 browser client | Operator-driven. The bash scripts are syntax-checked only. `box_lager_import_report.py` prints an import report and has no `assert` statements, so its name keeps pytest from collecting it. Run it directly. |
 
@@ -248,9 +248,9 @@ written, the change deletes it instead:
 
 - `jlink_script.sh` Test 1.3 asserts `SCRIPT_EXISTS`. Previously **both branches of its `if`
   called `track_test "pass"`**, so the test had no way to report a failure.
-- `debug.sh` gates Tests 14.3/14.4's lenient no-RTT arms on `RTT_SUPPORTED`. A refused RTT
-  connection is a real failure when the firmware probe showed RTT working, and a warning
-  otherwise.
+- `debug.sh` was rewritten for the current `lager debug` commands. It reads the first 16
+  bytes of flash back after each flash, erase and reset. It erases only a target that holds
+  the image it will reflash.
 - `sensors/thermocouple.sh` 11.1 asserts the `OUTPUT_ORIG` baseline read before drawing any
   case-sensitivity conclusion; `infrastructure/generic.sh` 12.5 uses `DEFAULTS_START` as a
   stale-state guard.
@@ -495,7 +495,7 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 314 files)
+### Local Unit Tests (`test/unit/` -- 315 files)
 
 #### Box Unit Tests (`test/unit/box/` -- 168 files)
 
@@ -674,7 +674,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_scope_ui_stream.py` | The web scope's credit-paced stream and pushed state: one credit returned for each frame received, only the newest frame kept for drawing, extra credit for a slow round trip, every control following the daemon's state except a field being edited, and an unplug dropping the live session so a replug can Start without a stop first |
 | `test_usb_scanner_picoscope.py` | PicoScope discovery in `usb_scanner.py`: every Pico Technology product ID is recognized, and the channel count comes from the device rather than from a static table |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 125 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 126 files)
 
 | File | What it tests |
 |------|---------------|
@@ -699,7 +699,8 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_default_deploy_version.py` | `lager install` and `lager update` with no `--version` deploy the release tag of the CLI (`v{__version__}`), not `main`: the tag resolves as a tag and has a published image, install hands it to the deploy script and says so while an explicit `--version main` is passed through unchanged, install's closing hint matches what was installed, `/etc/lager/ref`'s ref name is read past banner noise, and a defaulted update stops before the rollback prompt so `--yes` cannot downgrade a box |
 | `test_deployed_ref.py` | `/etc/lager/ref` records which ref produced the box's code (`<ref>@<sha>`), so a branch deploy is distinguishable from the release tag it shares a version number with; the release-tag predicate is pinned against `resolve_version_ref` so the two cannot drift, and a box reporting no ref renders exactly as before; `lager install` records version, ref and build-hash through update's writer, reads the version back, and exits non-zero when a write fails |
 | `test_debug_auto_connect_gate.py` | `_auto_connect_if_needed` gates on the target answering, not on a live gdbserver: a confirmed attachment skips the connect, an absent target forces a reconnect rather than proceeding, and an inconclusive answer falls back to server liveness so a working session is never torn down. Covers `_is_connected` and `_target_attached`, which had no direct tests |
-| `test_debug_flash_erase_reconnect.py` | `lager debug flash`'s default erase step: no reconnect between `/debug/erase` and `/debug/flash`, a failing `/debug/connect` cannot abort the flash, and the verdict of both `flash` and `erase` follows the programmer's own output rather than reporting "Flashed!" / "Erase complete!" unconditionally. Also that a failed erase prints the box's own error, with its `Erase failed:` prefix shown once. And `--erase-start` / `--erase-size` on both commands: parsed to integers (`2M`), refused before any box traffic when half a pair, combined with `--no-erase`, negative, past 4 GiB, or outside the DA1469x window; refused on a box whose `/health` lists no `erase_range` feature; the range the box reports printed after `Erase complete:`, with the old line kept for a box that reports none. Also `health` printing the service's `features` line, `none reported` for a box that has none. Also that a J-Link programming failure (a failed RAMCode download, as a DA1469x bench printed it, with `Downloading file` before it) fails the flash even beside programmed-evidence lines, and that the box's `programmed` / `error` verdict is used when present, with the text read for an older box. Also that a probe Commander cannot use at all, as a second J-Link client left it, fails the flash and its pre-erase and the erase command, winning over `Downloading file`, and that a `Downloading file` with no `Flash download` line after it fails the flash while a skipped already-matching bank does not. Also that a J-Link flash that never loaded a file (the banner and nothing else) fails, a box's `JLinkExe exited` line is named, and an erase J-Link started and never confirmed fails. Also that `LAGER_JLINK_REQUIRE_EVIDENCE=0` on the CLI side is sent with flash and erase (and nothing extra by default) and relaxes an older box's text verdict, but not its failure lines |
+| `test_debug_flash_erase_reconnect.py` | `lager debug flash`'s default erase step: no reconnect between `/debug/erase` and `/debug/flash`, a failing `/debug/connect` cannot abort the flash, and the verdict of both `flash` and `erase` follows the programmer's own output rather than reporting "Flashed!" / "Erase complete!" unconditionally. Also that a failed erase prints the box's own error, with its `Erase failed:` prefix shown once. And `--erase-start` / `--erase-size` on both commands: parsed to integers (`2M`), refused before any box traffic when half a pair, combined with `--no-erase`, negative, past 4 GiB, or outside the DA1469x window; refused on a box whose `/health` lists no `erase_range` feature; the range the box reports printed after `Erase complete:`, with the old line kept for a box that reports none. Also `health` printing the service's `features` line, `none reported` for a box that has none. Also that a J-Link programming failure (a failed RAMCode download, as a DA1469x bench printed it, with `Downloading file` before it) fails the flash even beside programmed-evidence lines, and that the box's `programmed` / `error` verdict is used when present, with the text read for an older box. Also that a probe Commander cannot use at all, as a second J-Link client left it, fails the flash and its pre-erase and the erase command, winning over `Downloading file`, and that a `Downloading file` with no `Flash download` line after it fails the flash while a skipped already-matching bank does not. Also that a J-Link flash that never loaded a file (the banner and nothing else) fails, a box's `JLinkExe exited` line is named, and an erase J-Link started and never confirmed fails. Also that `LAGER_JLINK_REQUIRE_EVIDENCE=0` on the CLI side is sent with flash and erase (and nothing extra by default) and relaxes an older box's text verdict, but not its failure lines. Also that `flash` with no image option, or with two, is refused before any box traffic, so it never erases a part it will not program |
+| `test_debug_json_stdout.py` | `lager debug memrd --json` writes only JSON to stdout: the auto-connect progress lines go to stderr, so the output parses when the command had to connect first |
 | `test_debug_service_client_auth.py` | Gateway auth on the debug service client |
 | `test_devenv_config_commands.py` | `lager devenv mount` / `env`: editing project-local `.lager` volumes and environment keys |
 | `test_devenv_terminal_docker_args.py` | `docker run` args for `devenv terminal` and `exec`; regression for the `--group` bare-flag bug |
@@ -948,7 +949,7 @@ toggle tests.
 ### Bash Integration Tests (`test/integration/` -- 39 files)
 
 Run from the host against a real box. `static-checks` runs `bash -n` and `shellcheck` over all of
-them; only the fourteen listed under "What CI does NOT run" execute.
+them; only the fifteen listed under "What CI does NOT run" execute.
 
 | Directory | Files | Contents |
 |---|---:|---|
