@@ -129,9 +129,8 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 - **A Rigol MSO5000's rise and fall time are no longer the screen record's spacing.**
   Since the set came from the screen record, they read anywhere from 0.3 to 3 ms on an
   edge the scope times at 70 ns: the record is too coarse for an edge, and noise on the
-  level started the timing early. The set now leaves out an edge the record does not
-  resolve. The `/scope` page then shows **Read**, which asks the scope for its reading
-  once. Asking the scope at every refresh stalled the live view for about a second and
+  level started the timing early. The set now leaves rise and fall out, and the
+  `/scope` page shows **Read** for them, which asks the scope for its reading once. Asking the scope at every refresh stalled the live view for about a second and
   drew the scope's readouts over the trace (#735). On every scope, rise and fall are
   timed from the last crossing of the 10% level before the edge, not the first.
 - **A Rigol MSO5000 measurement keeps the readouts you put on the scope.**

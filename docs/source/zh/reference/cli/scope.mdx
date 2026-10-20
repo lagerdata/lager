@@ -87,7 +87,7 @@ lager scope picoscope1 timebase 0.001 --box my-lager-box  # the scope net
 </Note>
 
 <Note>
-测量在两种仪器上都可用。Rigol 上的单次 `measure` 是示波器自己对完整存储深度的读数。查询会在示波器的测量栏中添加一个读数，Lager 会清除这个读数，并保留你在前面板添加的读数。Web UI 显示的测量集，以及 Python 中的 `measurement.all()`，与 PicoScope 一样根据通道的 1000 点屏幕记录计算。比该记录分辨率更快的上升或下降沿不会出现在测量集中，此时 Web UI 提供 **Read**，向示波器询问一次。对于 PicoScope，守护进程根据采集到的数据块计算每个值，因为 PicoTech 的任何 API 都没有与 `:MEAS:VPP?` 等价的命令。`--display` 和 `--cursor` 仅限 Rigol。它们把读数显示在仪器的屏幕上，而 PicoScope 没有屏幕。
+测量在两种仪器上都可用。Rigol 上的单次 `measure` 是示波器自己对完整存储深度的读数。查询会在示波器的测量栏中添加一个读数，Lager 会清除这个读数，并保留你在前面板添加的读数。Web UI 显示的测量集，以及 Python 中的 `measurement.all()`，与 PicoScope 一样根据通道的 1000 点屏幕记录计算。该记录太粗，无法测量边沿时间，因此测量集中不包含上升和下降时间。Web UI 为它们提供 **Read**，向示波器询问一次。对于 PicoScope，守护进程根据采集到的数据块计算每个值，因为 PicoTech 的任何 API 都没有与 `:MEAS:VPP?` 等价的命令。`--display` 和 `--cursor` 仅限 Rigol。它们把读数显示在仪器的屏幕上，而 PicoScope 没有屏幕。
 
 PicoScope 采集期间，测量和光标读数使用守护进程最近一次串流发出的采集。因此它们描述的是 Web UI 中的波形，而不是片刻之后的另一次采集。停止之后，它们描述最后一次采集，就像停止状态下台式示波器上的读数一样。
 </Note>

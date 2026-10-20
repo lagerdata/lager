@@ -178,9 +178,9 @@ the cheap way to read more than one value. On a Rigol the capture is the
 channel's 1000-point screen record, read in about 0.2 s. On a PicoScope it is a
 captured block.
 
-The screen record limits what it can time on a Rigol. A rise or fall faster
-than about three record samples is left out, so call `rise_time()` for the
-scope's own reading. Period, frequency and the duty cycles need two full cycles
+The screen record limits what it can time on a Rigol. It is too coarse to time
+an edge, so rise and fall are left out: call `rise_time()` and `fall_time()`
+for the scope's own reading. Period, frequency and the duty cycles need two full cycles
 on screen. Overshoot and the duty cycles can differ from the scope's own
 readings by a point or more, the record's resolution.
 

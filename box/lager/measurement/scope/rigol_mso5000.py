@@ -706,9 +706,9 @@ class RigolMso5000:
         """Every measurement on an analog channel, in one call.
 
         The daemon computes them from the channel's screen record, as it does
-        for a PicoScope, and keys them the same way. A rise or fall faster
-        than the record resolves is left out: ``get_measure_item`` asks the
-        scope for it.
+        for a PicoScope, and keys them the same way. Rise and fall are left
+        out, as the record is too coarse to time an edge: ``get_measure_item``
+        asks the scope for them.
         """
         from lager.measurement.scope.picoscope import normalize_channel
         response = self.instr.command(

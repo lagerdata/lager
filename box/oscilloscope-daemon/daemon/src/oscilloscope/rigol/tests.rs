@@ -1048,23 +1048,23 @@ fn measurements_are_computed_from_the_channel_s_record() {
     drop(instrument);
     let record = bench.scope.record(&[0]).unwrap();
     let computed = protocol::measure_channel(&record, 0).unwrap();
-    // The fake's record is a ramp from 0 to 0.9 V over nine samples, so its
-    // rise spans seven of them: resolved, and kept.
-    assert_eq!(set, computed);
-    assert!(set.rise_time.is_some());
+    // Rise and fall are the scope's to time: the record is too coarse.
+    assert_eq!(set, MeasurementSet { rise_time: None, fall_time: None, ..computed });
     assert!((set.vmax - 0.9).abs() < 1e-6 && set.vmin.abs() < 1e-6, "{set:?}");
     let off = bench.scope.measure_all(ChannelId::Alphabetic('D')).unwrap();
     assert!(off.unwrap_err().to_string().contains("not enabled"));
 }
 
 #[test]
-fn an_edge_the_record_does_not_resolve_is_left_out_of_the_set() {
+fn the_set_leaves_rise_and_fall_to_the_scope() {
     let mut bench = bench();
     // A square wave whose edges each fall between two samples.
     bench.instrument.lock().unwrap().record = [127, 127, 167, 167, 127, 127, 167, 167, 127, 127].to_vec();
     let set = bench.scope.measure_all(ChannelId::Alphabetic('A')).unwrap().unwrap();
     assert_eq!((set.rise_time, set.fall_time), (None, None), "{set:?}");
     assert!((set.vpp - 1.0).abs() < 1e-6, "the levels are still the record's: {set:?}");
+    let rise = bench.scope.measure_one(ChannelId::Alphabetic('A'), Measurement::RiseTime).unwrap().unwrap();
+    assert_eq!(rise, Some(7e-8), "asked of the scope");
 }
 
 #[test]

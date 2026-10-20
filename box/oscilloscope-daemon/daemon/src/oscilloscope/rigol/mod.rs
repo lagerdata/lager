@@ -92,10 +92,6 @@ const NO_MEASUREMENT: f64 = 9e36;
 /// `:MEASure:<item>?`: the reply comes before the screen redraws, HDMI lags
 /// another 190-330 ms, and a period's readout took 1.9 s to appear.
 const READOUT_WAIT: Duration = Duration::from_millis(2500);
-/// Samples of the screen record a rise or fall has to span for the record to
-/// time it. Under that it is the record's spacing being measured, 10 us at
-/// 1 ms/div, not the edge, which the scope times on its full memory.
-const RESOLVED_EDGE_SAMPLES: f64 = 3.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct ChannelCache {
@@ -1667,12 +1663,12 @@ impl Oscilloscope for RigolMso5000 {
                 format!("the scope has no samples for channel {channel}; is there a signal on it?")
             })?;
             // The record has a sample per screen column, 10 us apart at
-            // 1 ms/div, far coarser than most edges: a 70 ns rise reads as
-            // one sample. An edge the record does not resolve is left out
-            // rather than reported as its spacing.
-            let shortest = RESOLVED_EDGE_SAMPLES * record.sample_interval_ns / 1e9;
-            set.rise_time = set.rise_time.filter(|&t| t >= shortest);
-            set.fall_time = set.fall_time.filter(|&t| t >= shortest);
+            // 1 ms/div, far coarser than an edge: a 70 ns rise is one step
+            // between two samples, and noise on the levels crossing the 10%
+            // and 90% thresholds timed it on the bench at 40 us to 0.4 ms.
+            // Rise and fall are left out; `measure_one` asks the scope.
+            set.rise_time = None;
+            set.fall_time = None;
             Ok(set)
         })())
     }

@@ -2415,8 +2415,8 @@ class ScopeApp {
   }
 
   /**
-   * A Rigol's rise or fall that its screen record cannot time: a button that
-   * asks the scope, which times the edge on its full memory. Asked once, on
+   * A Rigol's rise or fall, which its screen record is too coarse to time: a
+   * button that asks the scope, which times the edge on its full memory. Asked once, on
    * request, rather than at every refresh, where the two queries stalled the
    * live view about a second and drew their readouts over the trace.
    */
@@ -2425,8 +2425,8 @@ class ScopeApp {
     button.type = 'button';
     button.className = 'measurements__ask';
     button.textContent = 'Read';
-    button.title = "Faster than the screen record resolves. Asks the scope "
-      + "to time it on its full memory, once.";
+    button.title = "The screen record is too coarse to time an edge. Asks "
+      + "the scope to time it on its full memory, once.";
     button.addEventListener('click', async () => {
       button.disabled = true;
       try {
