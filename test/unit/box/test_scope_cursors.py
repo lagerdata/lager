@@ -969,3 +969,82 @@ class TestCursorsBelongToTheScopeNotTheChannel:
         PicoScope(netname="scope1", pin=1).set_cursors(volts=(-2.0, 2.0))
 
         assert PicoScope(netname="scope1", pin=1).get_cursors()["volts"] == [-2.0, 2.0]
+
+
+@needs_node
+class TestARigolEdgeTheRecordCannotTime:
+    """A Rigol's rise and fall come from its screen record, which is too
+    coarse for most edges; the panel offers to ask the scope instead, once,
+    rather than asking at every refresh."""
+
+    def _run(self, instrument, body):
+        script = """
+        import { ScopeApp } from %s;
+        class Node {
+          constructor(tag) { this.tag = tag; this.children = []; this.textContent = '';
+            this.className = ''; this.style = {}; this.listeners = {}; this.parentElement = null; }
+          append(...nodes) { for (const n of nodes) { if (typeof n === 'object') n.parentElement = this;
+            this.children.push(n); } }
+          appendChild(n) { this.append(n); }
+          replaceChildren() { this.children = []; }
+          addEventListener(type, fn) { this.listeners[type] = fn; }
+        }
+        const panel = new Node('div');
+        globalThis.document = {
+          createElement: (tag) => new Node(tag),
+          createTextNode: (text) => ({ text }),
+          getElementById: (id) => (id === 'measurements' ? panel : null),
+        };
+        const sent = [];
+        const app = Object.assign(Object.create(ScopeApp.prototype), {
+          net: 'rigol1', ticket: { instrument: %s }, scopeNets: [], scopeEdges: { net: null },
+          measuredChannel: () => ({ net: 'sda', label: 'A' }),
+          send: async (action, params, net) => {
+            sent.push([action, net]);
+            if (action === 'measure_all') return { value: { vpp: 3.3, rise_time: null } };
+            return { value: 7e-8 };
+          },
+        });
+        const dd = (label) => {
+          const i = panel.children.findIndex((n) => n.tag === 'dt' && n.textContent === label);
+          return panel.children[i + 1];
+        };
+        %s
+        """ % (json.dumps(str(SCOPE_JS)), json.dumps(instrument), body)
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", script],
+            capture_output=True, text=True, timeout=60, check=False, env=dict(os.environ))
+        if result.returncode != 0:
+            pytest.fail("node failed: %s" % result.stderr.strip())
+        return json.loads(result.stdout)
+
+    def test_the_panel_offers_to_ask_the_scope(self):
+        out = self._run("Rigol_MSO5204", """
+        await app.refreshMeasurements();
+        const rise = dd('Rise');
+        const button = rise.children[0];
+        process.stdout.write(JSON.stringify({
+          sent, button: button && button.tag, label: button && button.textContent }));
+        """)
+        assert out["sent"] == [["measure_all", "sda"]], "nothing asked of the scope"
+        assert out["button"] == "button" and out["label"] == "Read"
+
+    def test_reading_asks_once_and_the_answer_stays_through_refreshes(self):
+        out = self._run("Rigol_MSO5204", """
+        await app.refreshMeasurements();
+        await dd('Rise').children[0].listeners.click();
+        const shown = dd('Rise').textContent;
+        await app.refreshMeasurements();
+        process.stdout.write(JSON.stringify({ sent, shown, after: dd('Rise').textContent }));
+        """)
+        assert out["sent"] == [["measure_all", "sda"], ["measure_rise_time", "sda"],
+                               ["measure_all", "sda"]]
+        assert out["shown"].startswith("70") and out["after"] == out["shown"]
+
+    def test_a_picoscope_shows_a_dash(self):
+        out = self._run("PicoScope_2204A", """
+        await app.refreshMeasurements();
+        const rise = dd('Rise');
+        process.stdout.write(JSON.stringify({ text: rise.textContent, kids: rise.children.length }));
+        """)
+        assert out == {"text": "—", "kids": 0}

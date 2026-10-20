@@ -40,6 +40,27 @@ def _scpi_arg(value):
     return str(value)
 
 
+# Measurement items an MSO5000 on firmware 00.01.03.00.03 rejects: each gets
+# -100 "Command err" and no reply, so asking costs the 5 s read timeout and
+# leaves an error for the next command to be blamed for. VAVerage is the
+# long form older Rigol scopes take; this one answers VAVG.
+REJECTED_MEASUREMENTS = frozenset({
+    "MPAREA", "VAVERAGE",
+    "RRDELAY", "RFDELAY", "FRDELAY", "FFDELAY",
+    "RRPHASE", "RFPHASE", "FRPHASE", "FFPHASE",
+})
+
+
+def refuse_rejected_measurement(item):
+    """Raise for an item the scope rejects, before anything is sent."""
+    from lager.measurement.scope.picoscope import UnsupportedScopeFeature
+    token = _scpi_arg(item)
+    if token.upper() in REJECTED_MEASUREMENTS:
+        raise UnsupportedScopeFeature(
+            f"the Rigol MSO5000 rejects :MEASure:{token}? (tested on firmware "
+            "00.01.03.00.03), so lager does not ask for it")
+
+
 # Manual cursor types as older Rigol scopes name them, to the MSO5000's.
 _CURSOR_TYPES = {"X": "TIME", "XY": "TIME", "Y": "AMPLitude"}
 
@@ -682,10 +703,12 @@ class RigolMso5000:
     # ============ Measurement Control ============
 
     def measure_all(self, channel=None):
-        """Every measurement the scope makes on an analog channel.
+        """Every measurement on an analog channel, in one call.
 
-        The daemon reads these from the scope's own ``:MEASure`` results, the
-        same set a PicoScope net returns, keyed the same way.
+        The daemon computes them from the channel's screen record, as it does
+        for a PicoScope, and keys them the same way. A rise or fall faster
+        than the record resolves is left out: ``get_measure_item`` asks the
+        scope for it.
         """
         from lager.measurement.scope.picoscope import normalize_channel
         response = self.instr.command(
@@ -733,7 +756,7 @@ class RigolMso5000:
         """Measure average voltage."""
         if channel is not None:
             self.write(f":MEASure:SOURce CHANnel{channel}")
-        return float(self.query(":MEASure:VAVerage?"))
+        return float(self.query(":MEASure:VAVG?"))
 
     def get_measure_item(self, item, channel=None):
         """Generic measurement method for any measurement item.
@@ -765,7 +788,10 @@ class RigolMso5000:
         else:
             # Plain string
             item_str = str(item)
+        refuse_rejected_measurement(item_str)
 
+        # The daemon clears the readout the query adds to the scope's
+        # measurement bar, and leaves any the user put there.
         try:
             result = self.query(f":MEASure:{item_str}?")
 
@@ -796,7 +822,16 @@ class RigolMso5000:
             self.write(":LA:STATe ON")
             self.write(f":LA:DISPlay D{int(digital.group(1))},ON")
         self.write(f":MEASure:SOURce {source_str}")
+        self._measurement_source = source_str
         return {"measurement_source": source_str}
+
+    def show_measurement(self, item):
+        """Keep `item`'s readout on the scope's screen, for the source last
+        set with `set_measurement_source`."""
+        item_str = _scpi_arg(item)
+        source = getattr(self, "_measurement_source", None)
+        self.write(f":MEASure:ITEM {item_str},{source}" if source else f":MEASure:ITEM {item_str}")
+        return {"measurement_shown": item_str}
 
     def get_measurement_source(self):
         """Get the current measurement source."""

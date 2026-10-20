@@ -24,6 +24,7 @@ from ..defines import (
     BusFlexRaySigType
 )
 from ..constants import NetType
+from ...measurement.scope.rigol_mso5000 import refuse_rejected_measurement
 
 TriggerEdgeSource = rigol_mso5000_defines.TriggerEdgeSource
 TriggerPulseSource = rigol_mso5000_defines.TriggerPulseSource
@@ -974,12 +975,19 @@ class Measurement_RigolMSO5000FunctionMapper:
         return getattr(self.device, attr)
 
     def all(self) -> dict:
-        """Every measurement the scope makes on this net's channel."""
+        """Every measurement on this net's channel, computed from its screen
+        record."""
+        from ...measurement.scope.picoscope import UnsupportedScopeFeature
         if self.net.type != NetType.Analog:
-            from ...measurement.scope.picoscope import UnsupportedScopeFeature
             raise UnsupportedScopeFeature(
                 "measurement.all() reads analog channels only; take a digital "
                 "channel's measurements one at a time")
+        # The instrument net names no channel; the driver would fall back to
+        # channel 1 and answer for it.
+        if (getattr(self.device, "net_info", None) or {}).get("role") == "scope":
+            raise UnsupportedScopeFeature(
+                f"{self.net.name} is the scope itself, and measurement.all() "
+                "measures one channel -- use one of its channel nets")
         return self.device.measure_all(self.net.channel)
 
     def _get_measurement_extra(self, display, measurement_cursor, item):
@@ -990,9 +998,12 @@ class Measurement_RigolMSO5000FunctionMapper:
         except (ValueError, TypeError, AttributeError):
             return None
         finally:
+            # The daemon has cleared the readout the query added, and only
+            # that one: the user's own stay on the screen.
             if(display==False):
-                self.clear_measurement(MeasurementClear.All)
                 self.disable_cursor_measure_mode()
+            else:
+                self.show_measurement(item)
             if(measurement_cursor==True):
                 self.enable_cursor_measure_mode()
 
@@ -1084,6 +1095,7 @@ class Measurement_RigolMSO5000FunctionMapper:
         return self._get_measurement_extra(display, measurement_cursor, MeasurementItem.MArea)
 
     def waveform_period_area(self, *, display=False, measurement_cursor=False):
+        refuse_rejected_measurement(MeasurementItem.MPArea)
         if self.net.type == NetType.Analog:
             self.set_measurement_source(_map_analog_source_to_measurement_source(self.net))
         elif self.net.type == NetType.Logic:
@@ -1239,6 +1251,7 @@ class Measurement_RigolMSO5000FunctionMapper:
         return self._get_measurement_extra(display, measurement_cursor, MeasurementItem.NEdges)
 
     def delay_rising_rising_edge(self, *, display=False, measurement_cursor=False):
+        refuse_rejected_measurement(MeasurementItem.RRDelay)
         if self.net.type == NetType.Analog:
             self.set_measurement_source(_map_analog_source_to_measurement_source(self.net))
         elif self.net.type == NetType.Logic:
@@ -1246,6 +1259,7 @@ class Measurement_RigolMSO5000FunctionMapper:
         return self._get_measurement_extra(display, measurement_cursor, MeasurementItem.RRDelay)
 
     def delay_rising_falling_edge(self, *, display=False, measurement_cursor=False):
+        refuse_rejected_measurement(MeasurementItem.RFDelay)
         if self.net.type == NetType.Analog:
             self.set_measurement_source(_map_analog_source_to_measurement_source(self.net))
         elif self.net.type == NetType.Logic:
@@ -1253,6 +1267,7 @@ class Measurement_RigolMSO5000FunctionMapper:
         return self._get_measurement_extra(display, measurement_cursor, MeasurementItem.RFDelay)
 
     def delay_falling_rising_edge(self, *, display=False, measurement_cursor=False):
+        refuse_rejected_measurement(MeasurementItem.FRDelay)
         if self.net.type == NetType.Analog:
             self.set_measurement_source(_map_analog_source_to_measurement_source(self.net))
         elif self.net.type == NetType.Logic:
@@ -1260,6 +1275,7 @@ class Measurement_RigolMSO5000FunctionMapper:
         return self._get_measurement_extra(display, measurement_cursor, MeasurementItem.FRDelay)
 
     def delay_falling_falling_edge(self, *, display=False, measurement_cursor=False):
+        refuse_rejected_measurement(MeasurementItem.FFDelay)
         if self.net.type == NetType.Analog:
             self.set_measurement_source(_map_analog_source_to_measurement_source(self.net))
         elif self.net.type == NetType.Logic:
@@ -1267,6 +1283,7 @@ class Measurement_RigolMSO5000FunctionMapper:
         return self._get_measurement_extra(display, measurement_cursor, MeasurementItem.FFDelay)
 
     def phase_rising_rising_edge(self, *, display=False, measurement_cursor=False):
+        refuse_rejected_measurement(MeasurementItem.RRPhase)
         if self.net.type == NetType.Analog:
             self.set_measurement_source(_map_analog_source_to_measurement_source(self.net))
         elif self.net.type == NetType.Logic:
@@ -1274,6 +1291,7 @@ class Measurement_RigolMSO5000FunctionMapper:
         return self._get_measurement_extra(display, measurement_cursor, MeasurementItem.RRPhase)
 
     def phase_rising_falling_edge(self, *, display=False, measurement_cursor=False):
+        refuse_rejected_measurement(MeasurementItem.RFPhase)
         if self.net.type == NetType.Analog:
             self.set_measurement_source(_map_analog_source_to_measurement_source(self.net))
         elif self.net.type == NetType.Logic:
@@ -1281,6 +1299,7 @@ class Measurement_RigolMSO5000FunctionMapper:
         return self._get_measurement_extra(display, measurement_cursor, MeasurementItem.RFPhase)
 
     def phase_falling_rising_edge(self, *, display=False, measurement_cursor=False):
+        refuse_rejected_measurement(MeasurementItem.FRPhase)
         if self.net.type == NetType.Analog:
             self.set_measurement_source(_map_analog_source_to_measurement_source(self.net))
         elif self.net.type == NetType.Logic:
@@ -1288,6 +1307,7 @@ class Measurement_RigolMSO5000FunctionMapper:
         return self._get_measurement_extra(display, measurement_cursor, MeasurementItem.FRPhase)
 
     def phase_falling_falling_edge(self, *, display=False, measurement_cursor=False):
+        refuse_rejected_measurement(MeasurementItem.FFPhase)
         if self.net.type == NetType.Analog:
             self.set_measurement_source(_map_analog_source_to_measurement_source(self.net))
         elif self.net.type == NetType.Logic:

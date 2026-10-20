@@ -282,6 +282,7 @@ select:focus-visible, input:focus-visible {
 .measurements dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
 .measurements p { grid-column: 1 / -1; margin: 0; }
 .measurements__channel { display: flex; align-items: center; gap: 6px; color: var(--text); }
+.measurements__ask { font: inherit; font-size: 11px; padding: 0 6px; }
 
 .group--notes ul { margin: 0; padding-left: 18px; color: var(--text-dim); font-size: 12px; }
 .group--notes li { margin-bottom: 3px; }

@@ -87,7 +87,7 @@ The edge trigger and `trigger holdoff` work on PicoScope and Rigol. The pulse tr
 </Note>
 
 <Note>
-Measurements work on both instruments, but each one computes them in a different way. A Rigol measures its full record itself and the daemon reports the reading. For a PicoScope, the daemon computes the value from a captured block, because no PicoTech API has an equivalent of `:MEAS:VPP?`. `--display` and `--cursor` are Rigol only. They put the reading on the screen of the instrument, and a PicoScope has no screen.
+Measurements work on both instruments. A single `measure` on a Rigol is the scope's own reading of its full memory. Lager clears the readout the query adds to the scope's measurement bar, and leaves any readout you added at the front panel. The set the web UI shows, and `measurement.all()` in Python, are computed from the channel's 1000-point screen record, as for a PicoScope. A rise or fall faster than that record resolves is left out of the set. The web UI then offers **Read**, which asks the scope once. For a PicoScope, the daemon computes every value from a captured block, because no PicoTech API has an equivalent of `:MEAS:VPP?`. `--display` and `--cursor` are Rigol only. They put the reading on the screen of the instrument, and a PicoScope has no screen.
 
 While a PicoScope acquires, measurements and cursor readings use the capture that the daemon streamed out last. So they describe the trace in the web UI, not a different capture a moment later. After a stop, they describe the last capture, as the readouts on a stopped bench scope do.
 </Note>
@@ -111,7 +111,7 @@ The CLI checks these values before it sends a command to the oscilloscope:
 
 | Manufacturer | Model | Features |
 |--------------|-------|----------|
-| Rigol | MSO5000 series | 2 or 4 analog + 16 digital channels, live view through an HDMI capture card, edge and SPI triggers, measurements by the instrument, display cursors |
+| Rigol | MSO5000 series | 2 or 4 analog + 16 digital channels, live view through an HDMI capture card, edge and SPI triggers, single measurements by the instrument, display cursors |
 | PicoScope | 2000, 2000a, 3000a, 4000a, 5000a series | Real-time streaming, web-based visualization, CSV export, edge trigger, daemon-computed measurements, cursors over the capture |
 
 The daemon reads the channel count, voltage ranges, bandwidth, memory depth and ADC resolution from the attached PicoScope. It does not assume them from the series. Type `capabilities` in the console of the web UI to see what the daemon found.
@@ -122,9 +122,9 @@ When you add nets, `lager nets tui` reads the channel count from the model numbe
 
 | Feature | Rigol MSO5000 | PicoScope |
 |---------|---------------|-----------|
-| Channels | 4 analog + 16 digital | 2 or 4 analog (A to D), detected at runtime |
+| Channels | 2 or 4 analog (by model) + 16 digital | 2 or 4 analog (A to D), detected at runtime |
 | Real-time streaming | Yes, from its HDMI output through a capture card | Yes (continuous) |
-| Measurements | 14 types, measured by the instrument | 14 types, computed from the capture |
+| Measurements | 14 types: one at a time by the instrument, the whole set from the screen record | 14 types, computed from the capture |
 | Trigger types | Edge, with holdoff, and SPI (pulse, I2C and UART do not work yet) | Edge only, with holdoff |
 | Cursor control | Time/voltage cursors over the captured samples, and XY cursors on the instrument display | Time/voltage cursors over the captured samples |
 | Autoscale | Yes | No |

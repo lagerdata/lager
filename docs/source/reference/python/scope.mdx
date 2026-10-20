@@ -132,8 +132,11 @@ Access comprehensive measurements through the `measurement` attribute.
 
 #### Availability
 
-Everything below works on a Rigol. On a PicoScope the box computes measurements
-from the captured samples, and these fourteen are the ones it computes:
+Everything below works on a Rigol, except the period area and the delay and
+phase measurements. A Rigol MSO5000 on firmware 00.01.03.00.03 rejects those
+queries, so they raise `UnsupportedScopeFeature` at once, before anything is
+sent. On a PicoScope the box computes measurements from the captured samples,
+and these fourteen are the ones it computes:
 
 | Available on both | |
 |---|---|
@@ -151,6 +154,17 @@ RMS, time-at-extreme, slew rates, edge and pulse counts, area and variance. The
 delay and phase measurements are Rigol only too, because they compare two
 channels. The box has no command for that on a PicoScope.
 
+On a Rigol, each call is the scope's own reading of its full memory. The query
+adds a readout to the scope's measurement bar, and lager clears that readout
+again. Readouts you added at the front panel stay. `display=True` keeps the
+reading on the scope's screen.
+
+Units differ between the two ways of reading the duty cycles and overshoot on
+a Rigol. `duty_cycle_positive()`, `duty_cycle_negative()` and
+`voltage_overshoot()` return the scope's ratio, such as `0.5` for 50 %.
+`all()`, the CLI and the web UI give the same quantities in percent. On a
+PicoScope every surface gives percent.
+
 `period`, `frequency`, the pulse widths, the duty cycles, the rise and fall
 times and overshoot need a resolvable waveform. On a PicoScope, a period needs
 two full cycles in the capture. With fewer, the call raises rather than return
@@ -159,10 +173,19 @@ an imprecise guess. Put at least two cycles on screen before you measure timing.
 #### `all()`
 
 Every measurement on the net's channel, in one call, keyed `vpp`, `vmax`,
-`frequency` and so on. A Rigol reads them from its own measurement set. On a
-PicoScope the box computes them from a single capture, so this is the cheap way
-to read more than one value. It reads analog nets only, and raises
-`UnsupportedScopeFeature` on a logic net.
+`frequency` and so on. The box computes them from a single capture, so this is
+the cheap way to read more than one value. On a Rigol the capture is the
+channel's 1000-point screen record, read in about 0.2 s. On a PicoScope it is a
+captured block.
+
+The screen record limits what it can time on a Rigol. A rise or fall faster
+than about three record samples is left out, so call `rise_time()` for the
+scope's own reading. Period, frequency and the duty cycles need two full cycles
+on screen. Overshoot and the duty cycles can differ from the scope's own
+readings by a point or more, the record's resolution.
+
+It reads analog channel nets only. It raises `UnsupportedScopeFeature` on a
+logic net, and on the scope's instrument net, which names no channel.
 
 ```python
 values = scope.measurement.all()
@@ -577,7 +600,7 @@ scope.cursor.hide()
 
 | Manufacturer | Model Series | Features |
 |--------------|--------------|----------|
-| Rigol | MSO5000 | Multi-channel, mixed-signal, protocol decode, cursors, on-screen measurements |
+| Rigol | MSO5000 | 2 or 4 analog channels (by model) + 16 digital, edge and SPI triggers, cursors, measurements on the scope's full memory |
 | PicoScope | 2000, 2000a, 3000a, 4000a, 5000a | Capture control, scaling, edge trigger, 14 computed measurements, continuous streaming |
 
 Both makes stream. A Rigol streams once a live view is paired with

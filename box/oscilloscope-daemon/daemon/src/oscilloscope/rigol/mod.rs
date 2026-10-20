@@ -35,7 +35,7 @@ use protocol::{
 
 use self::extract::{Envelopes, COUNTS_PER_DIV};
 use self::scpi::{DeviceLock, Scpi};
-use self::screen::{Palette, ScreenMap, HORIZONTAL_DIVISIONS, MSO5000_COLOURS};
+use self::screen::{measurement_bar, Palette, ScreenMap, HORIZONTAL_DIVISIONS, MSO5000_COLOURS};
 use self::video::FrameSource;
 use super::{Cursor, Oscilloscope};
 
@@ -88,6 +88,14 @@ fn changes_cached_settings(command: &str) -> bool {
 const LOCK_WAIT: Duration = Duration::from_secs(2);
 /// What the scope answers for a measurement it cannot make.
 const NO_MEASUREMENT: f64 = 9e36;
+/// Longest the scope takes to draw the readout a `:MEASure:<item>?` adds,
+/// through the capture card: the reply comes before the screen redraws, and
+/// HDMI lags another 190-330 ms.
+const READOUT_WAIT: Duration = Duration::from_millis(1500);
+/// Samples of the screen record a rise or fall has to span for the record to
+/// time it. Under that it is the record's spacing being measured, 10 us at
+/// 1 ms/div, not the edge, which the scope times on its full memory.
+const RESOLVED_EDGE_SAMPLES: f64 = 3.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct ChannelCache {
@@ -728,7 +736,10 @@ impl RigolMso5000 {
             .filter(|(_, c)| c.enabled)
             .fold(0u8, |mask, (i, _)| mask | (1 << i));
         let trigger_column = self.trigger_column(map);
-        work.envelopes.extract(&frame, map, &self.palette, wanted, Some(trigger_column));
+        // The readouts the user keeps on the scope are drawn over the trace.
+        let bar = measurement_bar(&frame, map);
+        work.envelopes
+            .extract_masked(&frame, map, &self.palette, wanted, Some(trigger_column), bar);
         let right_bare = work.envelopes.right_side_bare(wanted);
         work.menu.saw(raw.captured_ns, right_bare);
         let env = &work.envelopes;
@@ -805,15 +816,68 @@ impl RigolMso5000 {
         Ok(())
     }
 
-    /// Rise and fall time of channel `i`, as the scope measures them, then
-    /// the measurement bar cleared as `measure_one` leaves it.
-    fn edge_times(&self, i: usize) -> Result<(Option<f64>, Option<f64>)> {
+    /// A query, and when it goes unanswered, what the scope said about it.
+    /// An MSO5000 meets a header it does not know with -100 in its error
+    /// queue and no reply, so the timeout alone does not say why, and the
+    /// error would otherwise be blamed on the next command checked.
+    fn query_checked(&self, query: &str) -> Result<String> {
         let mut scpi = self.link();
-        scpi.write(&format!(":MEASure:SOURce CHANnel{}", i + 1))?;
-        let rise = scope_measurement(&scpi.query(":MEASure:RTIMe?")?);
-        let fall = scope_measurement(&scpi.query(":MEASure:FTIMe?")?);
-        scpi.write(":MEASure:CLEar ALL")?;
-        Ok((rise, fall))
+        match scpi.query(query) {
+            Ok(reply) => Ok(reply),
+            Err(e) if super::unit_is_gone(&e) => Err(e),
+            Err(e) => {
+                check_errors(scpi.as_mut(), query)?;
+                Err(e.context(format!("the scope did not answer {query}")))
+            }
+        }
+    }
+
+    /// Readouts in the scope's measurement bar, from a frame newer than
+    /// `after`, and that frame's sequence. None with no live view to see
+    /// the bar in.
+    fn readouts_after(&self, after: u64, wait: Duration) -> Option<(usize, u64)> {
+        let screen = self.screen().ok()?;
+        let raw = screen.video.next_after(after, wait).ok()??;
+        let frame = raw.decode().ok()?;
+        let tiles = measurement_bar(&frame, &screen.map).map_or(0, |bar| bar.tiles);
+        Some((tiles, raw.sequence))
+    }
+
+    /// Ask the scope one `:MEASure:<item>?`, and leave its measurement bar
+    /// as it was. The query puts the item's readout at the front of the
+    /// bar, or moves the user's own there when it is already shown, and
+    /// `:MEASure:CLEar ITEM<n>` counts readouts oldest first, so the one a
+    /// query added is the last. It is cleared only when the live view sees
+    /// the bar gain exactly one: a readout the user put there is never
+    /// cleared, and with no live view to look at, nothing is.
+    fn measure_query(&mut self, query: &str) -> Result<String> {
+        let before = self
+            .screen()
+            .ok()
+            .and_then(|s| s.video.newest().ok())
+            .and_then(|newest| self.readouts_after(newest.saturating_sub(1), READOUT_WAIT));
+        let reply = self.query_checked(query)?;
+        if let Some((before, mut seen)) = before {
+            let deadline = Instant::now() + READOUT_WAIT;
+            let mut added = None;
+            while Instant::now() < deadline {
+                let Some((tiles, sequence)) = self.readouts_after(seen, Duration::from_millis(200)) else {
+                    break;
+                };
+                seen = sequence;
+                if tiles != before {
+                    added = (tiles == before + 1).then_some(tiles);
+                    break;
+                }
+            }
+            if let Some(item) = added {
+                self.apply(&format!(":MEASure:CLEar ITEM{item}"))?;
+            }
+        }
+        // The frames since show the readout; the bar is left out of the
+        // live view anyway, but its redraw is not the signal.
+        self.mark_stale();
+        Ok(reply)
     }
 
     fn not_offered(&self, what: &str) -> anyhow::Error {
@@ -1106,6 +1170,28 @@ fn measurement_item(which: Measurement) -> (usize, bool) {
         Measurement::FallTime => (12, false),
         Measurement::Overshoot => (13, true),
     }
+}
+
+/// Second-level `:MEASure` queries that read a setting, not a measurement:
+/// they add no readout.
+const MEASURE_SETTINGS: [&str; 4] = ["SOUR", "SOURCE", "MODE", "AMS"];
+
+/// Whether `command` is one `:MEASure:<item>?`, which adds a readout to the
+/// scope's measurement bar.
+fn is_measurement_query(command: &str) -> bool {
+    let upper = command.trim().to_ascii_uppercase();
+    if upper.contains(';') {
+        return false;
+    }
+    let Some(header) = upper.strip_suffix('?') else {
+        return false;
+    };
+    let header = header.strip_prefix(':').unwrap_or(header);
+    let mut levels = header.split(':');
+    let (Some(root), Some(item), None) = (levels.next(), levels.next(), levels.next()) else {
+        return false;
+    };
+    matches!(root, "MEAS" | "MEASURE") && !item.is_empty() && !MEASURE_SETTINGS.contains(&item)
 }
 
 /// A `:MEASure:<item>?` answer, or `None` for one the scope could not make
@@ -1530,23 +1616,30 @@ impl Oscilloscope for RigolMso5000 {
                 bail!("channel {channel} is not enabled, so there is nothing to measure");
             }
             let (item, percent) = measurement_item(which);
-            let mut scpi = self.link();
-            scpi.write(&format!(":MEASure:SOURce CHANnel{}", i + 1))?;
-            let reply = scpi.query(&format!(":MEASure:{}?", MEASUREMENT_ITEMS[item]))?;
-            // The item it adds to the scope's measurement bar is read as
-            // trace by the live view.
-            scpi.write(":MEASure:CLEar ALL")?;
-            Ok(scope_measurement(&reply).map(|v| if percent { v * 100.0 } else { v }))
+            // The source is the user's front-panel setting too: put back.
+            let source = self.query_checked(":MEASure:SOURce?")?;
+            let wanted = format!("CHAN{}", i + 1);
+            let moved = !source.trim().eq_ignore_ascii_case(&wanted);
+            if moved {
+                self.apply(&format!(":MEASure:SOURce CHANnel{}", i + 1))?;
+            }
+            let reply = self.measure_query(&format!(":MEASure:{}?", MEASUREMENT_ITEMS[item]));
+            if moved && !source.trim().is_empty() {
+                // Refused for a channel hidden since; the reading stands.
+                if let Err(e) = self.apply(&format!(":MEASure:SOURce {}", source.trim())) {
+                    tracing::warn!(error = %format!("{e:#}"), "could not put the scope's measurement source back");
+                }
+            }
+            Ok(scope_measurement(&reply?).map(|v| if percent { v * 100.0 } else { v }))
         })())
     }
 
-    /// Computed from the channel's screen record, as the PicoScope's are. Asking
-    /// the scope item by item (`:MEASure:<item>?`) took 14 queries, about 4.8 s
-    /// on the bench, during which the loop published no frames, and each item
-    /// it added to the measurement bar was read as trace by the live view.
-    /// Rise and fall time are the exception, asked of the scope in two
-    /// queries, and `measure_one` still asks the scope for its full-memory
-    /// reading.
+    /// Computed from the channel's screen record, as the PicoScope's are, and
+    /// with no `:MEASure` query at all. Asking the scope item by item took 14
+    /// queries, about 4.8 s on the bench, and even the two kept for rise and
+    /// fall stalled the live view about a second at every refresh while
+    /// their readouts were drawn over the trace. `measure_one` still asks
+    /// the scope for its full-memory reading.
     fn measure_all(&mut self, channel: ChannelId) -> Option<Result<MeasurementSet>> {
         Some((|| {
             let i = self.index(channel)?;
@@ -1558,12 +1651,12 @@ impl Oscilloscope for RigolMso5000 {
                 format!("the scope has no samples for channel {channel}; is there a signal on it?")
             })?;
             // The record has a sample per screen column, 10 us apart at
-            // 1 ms/div, far coarser than an edge: from it, a 70 ns rise read
-            // as one sample at best. The scope times the edges on its full
-            // memory, in two queries.
-            let (rise_time, fall_time) = self.edge_times(i)?;
-            set.rise_time = rise_time;
-            set.fall_time = fall_time;
+            // 1 ms/div, far coarser than most edges: a 70 ns rise reads as
+            // one sample. An edge the record does not resolve is left out
+            // rather than reported as its spacing.
+            let shortest = RESOLVED_EDGE_SAMPLES * record.sample_interval_ns / 1e9;
+            set.rise_time = set.rise_time.filter(|&t| t >= shortest);
+            set.fall_time = set.fall_time.filter(|&t| t >= shortest);
             Ok(set)
         })())
     }
@@ -1612,8 +1705,10 @@ impl Oscilloscope for RigolMso5000 {
         Some((|| {
             // A query may carry a setting before it, as in
             // `:CHANnel1:OFFSet 1;*OPC?`, so both paths check.
-            let reply = if command.contains('?') {
-                Some(self.link().query(command)?)
+            let reply = if is_measurement_query(command) {
+                Some(self.measure_query(command)?)
+            } else if command.contains('?') {
+                Some(self.query_checked(command)?)
             } else {
                 self.apply(command)?;
                 None

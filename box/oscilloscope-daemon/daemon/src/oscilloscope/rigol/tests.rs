@@ -67,6 +67,12 @@ struct Instrument {
     page: &'static str,
     /// Where the traces stop, for a signal that does not cross the screen.
     traces_end_at: Option<usize>,
+    /// The readouts in the measurement bar, newest first, as their items.
+    readouts: Vec<String>,
+    /// Every query asked, for the tests to inspect.
+    queries: Vec<String>,
+    /// The screen record `:WAVeform:DATA?` returns, as 8-bit codes.
+    record: Vec<u8>,
 }
 
 impl Instrument {
@@ -101,7 +107,19 @@ impl Instrument {
             menu: false,
             page: "",
             traces_end_at: None,
+            readouts: Vec::new(),
+            queries: Vec::new(),
+            // A ramp from 0 to 0.9 V at 25 mV a code.
+            record: (0..10).map(|i| 127 + i * 4).collect(),
         }
+    }
+
+    /// Show `item`'s readout at the front of the bar, as a measurement
+    /// query does: an item already shown moves there, and the bar holds ten.
+    fn read_out(&mut self, item: &str) {
+        self.readouts.retain(|shown| shown != item);
+        self.readouts.insert(0, item.to_string());
+        self.readouts.truncate(10);
     }
 
     /// Apply a command, as the scope would, or queue an error.
@@ -205,14 +223,40 @@ impl Instrument {
                 true
             }
             ":ACQUIRE:AVERAGES" => number().map(|v| self.averages = v as u32).is_some(),
-            ":MEASURE:SOURCE" => match arg.strip_prefix("CHANNEL").and_then(|n| n.parse::<usize>().ok()) {
+            ":MEASURE:SOURCE" => match arg
+                .strip_prefix("CHANNEL")
+                .or_else(|| arg.strip_prefix("CHAN"))
+                .and_then(|n| n.parse::<usize>().ok())
+            {
                 Some(n) => {
                     self.measure_source = n - 1;
                     true
                 }
                 None => false,
             },
-            ":MEASURE:CLEAR" => arg == "ALL",
+            // Readouts are numbered oldest first.
+            ":MEASURE:CLEAR" => match arg {
+                "ALL" => {
+                    self.readouts.clear();
+                    true
+                }
+                item => match item.strip_prefix("ITEM").and_then(|n| n.parse::<usize>().ok()) {
+                    Some(n) if (1..=self.readouts.len()).contains(&n) => {
+                        let index = self.readouts.len() - n;
+                        self.readouts.remove(index);
+                        true
+                    }
+                    _ => false,
+                },
+            },
+            ":MEASURE:ITEM" => match arg.split_once(',') {
+                Some((item, _source)) => {
+                    let item = item.to_string();
+                    self.read_out(&item);
+                    true
+                }
+                None => false,
+            },
             ":WAVEFORM:MODE" | ":WAVEFORM:FORMAT" | ":WAVEFORM:SOURCE" => true,
             _ => match channel(head) {
                 Some(n) if n < 4 => {
@@ -273,8 +317,22 @@ impl Instrument {
             .push_back(format!("-113,\"Undefined header; {command}\""));
     }
 
+    /// The reply to `query`, or nothing for a header the scope rejects
+    /// without answering.
     fn query(&mut self, query: &str) -> Vec<u8> {
+        self.queries.push(query.to_string());
         let upper = query.trim().to_ascii_uppercase();
+        // Headers this firmware rejects with -100 and no reply.
+        if matches!(upper.as_str(), ":MEASURE:MPAREA?" | ":MEASURE:VAVERAGE?" | ":MEASURE:RRDELAY?") {
+            self.errors.push_back("-100,\"Command err\"".into());
+            return Vec::new();
+        }
+        if let Some(item) = upper.strip_prefix(":MEASURE:").and_then(|q| q.strip_suffix('?')) {
+            if item != "SOURCE" {
+                let item = item.to_string();
+                self.read_out(&item);
+            }
+        }
         let channel = |n: usize| &self.channels[n];
         let text = match upper.as_str() {
             "*IDN?" => self.idn.clone(),
@@ -291,6 +349,7 @@ impl Instrument {
             ":TRIGGER:EDGE:SLOPE?" => self.slope.into(),
             ":TRIGGER:SWEEP?" => self.sweep.into(),
             ":ACQUIRE:SRATE?" => "1.000000e+09".into(),
+            ":MEASURE:SOURCE?" => format!("CHAN{}", self.measure_source + 1),
             ":MEASURE:VMAX?" => format!("{:e}", channel(self.measure_source).signal),
             ":MEASURE:VMIN?" => format!("{:e}", channel(self.measure_source).signal),
             ":MEASURE:VPP?" => "0.000000e+00".into(),
@@ -313,8 +372,8 @@ impl Instrument {
                 return reply;
             }
             ":WAVEFORM:DATA?" => {
-                let mut reply = b"#210".to_vec();
-                reply.extend((0..10).map(|i| 127 + i * 4));
+                let mut reply = format!("#2{:02}", self.record.len()).into_bytes();
+                reply.extend_from_slice(&self.record);
                 reply.push(b'\n');
                 return reply;
             }
@@ -382,6 +441,25 @@ impl Instrument {
                 frame.put(x, y as usize, rgb_to_ycc(r, g, b));
             }
         }
+        if !self.readouts.is_empty() {
+            // The bar as an MSO5074 draws it, in divisions from the top left
+            // of the area: a grey top border 7.2 down, 0.476 long plus 0.949
+            // a readout, and each readout's label in its channel's colour
+            // below it.
+            let (left, top) = (CX - half_w, CY - half_h);
+            let div = PX_PER_DIV as f64;
+            let border_y = top + (7.2 * div) as usize;
+            let right = left + ((0.476 + 0.949 * self.readouts.len() as f64) * div) as usize;
+            let grey = rgb_to_ycc(52, 80, 84);
+            for x in left + 4..=right {
+                frame.put(x, border_y, grey);
+                frame.put(x, border_y + 1, grey);
+            }
+            let (r, g, b) = MSO5000_COLOURS[0];
+            for x in (left + 30..right.saturating_sub(10)).step_by(3) {
+                frame.put(x, border_y + 15, rgb_to_ycc(r, g, b));
+            }
+        }
         if self.menu {
             for y in CY - half_h..=CY + half_h {
                 for x in MENU_LEFT..=CX + half_w {
@@ -412,7 +490,10 @@ impl Scpi for FakeScpi {
                 format!(":{part}")
             };
             if part.contains('?') {
-                answers.push(instrument.query(&part));
+                let answer = instrument.query(&part);
+                if !answer.is_empty() {
+                    answers.push(answer);
+                }
             } else {
                 instrument.write(&part);
             }
@@ -888,33 +969,46 @@ fn single_waits_for_the_scope_to_stop_on_its_trigger() {
 fn measurements_are_computed_from_the_channel_s_record() {
     let mut bench = bench();
     bench.scope.enable_channel(ChannelId::Alphabetic('B')).unwrap();
-    let before = bench.sent().len();
+    let (sent, asked) = {
+        let instrument = bench.instrument.lock().unwrap();
+        (instrument.sent.len(), instrument.queries.len())
+    };
     let set = bench.scope.measure_all(ChannelId::Alphabetic('A')).unwrap().unwrap();
-    let sent = bench.sent()[before..].to_vec();
-    // Only rise and fall are asked of the scope, in one go, and the bar
-    // cleared after.
-    assert_eq!(
-        sent.iter().filter(|c| c.starts_with(":MEASure")).collect::<Vec<_>>(),
-        [":MEASure:SOURce CHANnel1", ":MEASure:CLEar ALL"],
-        "{sent:?}"
+    let instrument = bench.instrument.lock().unwrap();
+    let sent = instrument.sent[sent..].to_vec();
+    let asked = instrument.queries[asked..].to_vec();
+    // Nothing asked of the scope's measurements: each query stalls the live
+    // view and draws a readout over the trace.
+    assert!(
+        !sent.iter().chain(&asked).any(|c| c.to_ascii_uppercase().starts_with(":MEAS")),
+        "{sent:?} {asked:?}"
     );
     assert_eq!(
         sent.iter().filter(|c| c.starts_with(":WAVeform:SOURce")).collect::<Vec<_>>(),
         [":WAVeform:SOURce CHANnel1"],
         "only the measured channel is read, though B is on too"
     );
+    assert!(instrument.readouts.is_empty());
+    drop(instrument);
     let record = bench.scope.record(&[0]).unwrap();
     let computed = protocol::measure_channel(&record, 0).unwrap();
-    assert_eq!((set.rise_time, set.fall_time), (Some(7e-8), Some(6e-8)), "the scope's own");
-    assert_eq!(
-        MeasurementSet { rise_time: computed.rise_time, fall_time: computed.fall_time, ..set },
-        computed,
-        "the rest from the record"
-    );
-    // The fake's record is a ramp from 0 to 0.9 V.
+    // The fake's record is a ramp from 0 to 0.9 V over nine samples, so its
+    // rise spans seven of them: resolved, and kept.
+    assert_eq!(set, computed);
+    assert!(set.rise_time.is_some());
     assert!((set.vmax - 0.9).abs() < 1e-6 && set.vmin.abs() < 1e-6, "{set:?}");
     let off = bench.scope.measure_all(ChannelId::Alphabetic('D')).unwrap();
     assert!(off.unwrap_err().to_string().contains("not enabled"));
+}
+
+#[test]
+fn an_edge_the_record_does_not_resolve_is_left_out_of_the_set() {
+    let mut bench = bench();
+    // A square wave whose edges each fall between two samples.
+    bench.instrument.lock().unwrap().record = [127, 127, 167, 167, 127, 127, 167, 167, 127, 127].to_vec();
+    let set = bench.scope.measure_all(ChannelId::Alphabetic('A')).unwrap().unwrap();
+    assert_eq!((set.rise_time, set.fall_time), (None, None), "{set:?}");
+    assert!((set.vpp - 1.0).abs() < 1e-6, "the levels are still the record's: {set:?}");
 }
 
 #[test]
@@ -923,8 +1017,8 @@ fn one_measurement_asks_the_scope_for_that_item_alone() {
     let before = bench.sent().len();
     let duty = bench.scope.measure_one(ChannelId::Alphabetic('A'), Measurement::DutyCyclePositive);
     assert_eq!(duty.unwrap().unwrap(), Some(25.0), "a ratio, reported in percent");
-    // The fake records writes; the duty cycle above is the one query's answer.
-    assert_eq!(bench.sent()[before..], [":MEASure:SOURce CHANnel1", ":MEASure:CLEar ALL"]);
+    // The source was CH1 already; the readout the query added is cleared.
+    assert_eq!(bench.sent()[before..], [":MEASure:CLEar ITEM1"]);
     let period = bench.scope.measure_one(ChannelId::Alphabetic('A'), Measurement::Period);
     assert_eq!(period.unwrap().unwrap(), None, "9.9E37 is no measurement");
 }
@@ -933,7 +1027,97 @@ fn one_measurement_asks_the_scope_for_that_item_alone() {
 fn measuring_one_item_leaves_no_measurement_bar_over_the_trace() {
     let mut bench = bench();
     bench.scope.measure_one(ChannelId::Alphabetic('A'), Measurement::Vmax).unwrap().unwrap();
-    assert_eq!(bench.sent().last().map(String::as_str), Some(":MEASure:CLEar ALL"));
+    assert!(bench.instrument.lock().unwrap().readouts.is_empty());
+    assert!(!bench.sent().iter().any(|c| c.contains("CLEar ALL")));
+}
+
+#[test]
+fn measuring_keeps_the_readouts_the_user_put_on_the_scope() {
+    let mut bench = bench();
+    bench.instrument.lock().unwrap().readouts = vec!["FREQUENCY".into(), "VMIN".into()];
+    bench.scope.measure_one(ChannelId::Alphabetic('A'), Measurement::Vpp).unwrap().unwrap();
+    // VPP went to the front, as the third readout, and only it was cleared.
+    assert_eq!(bench.instrument.lock().unwrap().readouts, ["FREQUENCY", "VMIN"]);
+    assert!(bench.sent().contains(&":MEASure:CLEar ITEM3".to_string()), "{:?}", bench.sent());
+}
+
+#[test]
+fn measuring_an_item_the_user_already_shows_clears_nothing() {
+    let mut bench = bench();
+    bench.instrument.lock().unwrap().readouts = vec!["FREQUENCY".into(), "VPP".into()];
+    bench.scope.measure_one(ChannelId::Alphabetic('A'), Measurement::Vpp).unwrap().unwrap();
+    // The scope moved the user's own readout to the front; it stays.
+    assert_eq!(bench.instrument.lock().unwrap().readouts, ["VPP", "FREQUENCY"]);
+    assert!(!bench.sent().iter().any(|c| c.starts_with(":MEASure:CLEar")), "{:?}", bench.sent());
+}
+
+#[test]
+fn measuring_puts_the_user_s_measurement_source_back() {
+    let mut bench = bench();
+    bench.scope.enable_channel(ChannelId::Alphabetic('B')).unwrap();
+    bench.instrument.lock().unwrap().measure_source = 1;
+    bench.scope.measure_one(ChannelId::Alphabetic('A'), Measurement::Vmax).unwrap().unwrap();
+    let sent = bench.sent();
+    assert!(sent.contains(&":MEASure:SOURce CHANnel1".to_string()), "{sent:?}");
+    assert_eq!(bench.instrument.lock().unwrap().measure_source, 1, "back on CH2");
+}
+
+#[test]
+fn without_a_live_view_a_measurement_clears_nothing() {
+    let instrument = Arc::new(Mutex::new(Instrument::mso5204()));
+    instrument.lock().unwrap().readouts = vec!["FREQUENCY".into()];
+    let scpi = FakeScpi { instrument: instrument.clone(), replies: VecDeque::new() };
+    let mut scope = RigolMso5000::with(Box::new(scpi), None, None).unwrap();
+    scope.measure_one(ChannelId::Alphabetic('A'), Measurement::Vmax).unwrap().unwrap();
+    // With nothing to see the bar in, the user's readout cannot be told
+    // from the one added, so both are left.
+    let instrument = instrument.lock().unwrap();
+    assert_eq!(instrument.readouts, ["VMAX", "FREQUENCY"]);
+    assert!(!instrument.sent.iter().any(|c| c.starts_with(":MEASure:CLEar")));
+}
+
+#[test]
+fn a_readout_on_the_scope_is_not_read_as_trace() {
+    let mut bench = bench();
+    bench.instrument.lock().unwrap().readouts = vec!["FREQUENCY".into(), "VPP".into(), "VMAX".into()];
+    let frame = bench.capture();
+    let volts = frame.channel_volts(0).unwrap();
+    let lowest = volts.iter().copied().filter(|v| v.is_finite()).fold(f64::MAX, f64::min);
+    // Channel A is a 1 V level; the readouts' labels are 3.5 div down.
+    assert!((lowest - 1.0).abs() < 0.1, "channel A reaches {lowest} V");
+}
+
+#[test]
+fn a_query_the_scope_rejects_names_itself_at_once() {
+    let mut bench = bench();
+    let refused = Oscilloscope::scpi(&mut bench.scope, ":MEASure:MPARea?").unwrap().unwrap_err();
+    let message = format!("{refused:#}");
+    assert!(message.contains(":MEASure:MPARea?") && message.contains("-100"), "{message}");
+    // Nothing left in the queue for the next command to be blamed for.
+    Oscilloscope::scpi(&mut bench.scope, ":MEASure:CLEar ALL").unwrap().unwrap();
+}
+
+#[test]
+fn a_raw_measurement_query_leaves_the_bar_as_it_was() {
+    let mut bench = bench();
+    let reply = Oscilloscope::scpi(&mut bench.scope, ":MEASure:VMAX?").unwrap().unwrap();
+    assert!(reply.is_some());
+    assert!(bench.instrument.lock().unwrap().readouts.is_empty());
+    // A setting read is not a measurement, and adds nothing to clear.
+    let before = bench.sent().len();
+    Oscilloscope::scpi(&mut bench.scope, ":MEASure:SOURce?").unwrap().unwrap();
+    assert_eq!(bench.sent().len(), before);
+}
+
+#[test]
+fn only_a_single_item_query_counts_as_a_measurement() {
+    assert!(is_measurement_query(":MEASure:VPP?"));
+    assert!(is_measurement_query("meas:rtim?"));
+    assert!(!is_measurement_query(":MEASure:SOURce?"));
+    assert!(!is_measurement_query(":MEASure:STATistic:ITEM? MAX,VPP"));
+    assert!(!is_measurement_query(":MEASure:VPP?;*OPC?"));
+    assert!(!is_measurement_query(":MEASure:CLEar ALL"));
+    assert!(!is_measurement_query(":TRIGger:STATus?"));
 }
 
 #[test]

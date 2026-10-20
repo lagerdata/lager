@@ -271,6 +271,80 @@ fn lattice(lines: &[(f64, u32)], min_lines: usize) -> Option<(f64, f64)> {
     Some((at((first + last) / 2.0), spacing))
 }
 
+/// The scope's measurement bar: the readouts `:MEASure:<item>?` and the
+/// front panel's Measure > Add put in a row of tiles inside the bottom of
+/// the waveform area, newest on the left. Drawn over the trace, so what is
+/// under it is not the signal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MeasurementBar {
+    /// Readouts in the bar.
+    pub tiles: usize,
+    /// The bar's top border, as a row of the frame.
+    pub top: usize,
+    /// The bar's last column in the frame.
+    pub right: usize,
+}
+
+/// Where the bar's top border is looked for, in divisions down from the top
+/// of the area: it sits about 7.2 down, the bar filling the rest.
+const BAR_ROWS_DIVS: (f64, f64) = (6.9, 7.5);
+/// Rows above the border that must be clear of its grey: the screen behind
+/// the bar is black, where a picture the card washed grey is grey all over.
+const BAR_CLEAR_ABOVE_PX: usize = 4;
+/// How far right of the area's left edge the border may start.
+const BAR_START_DIVS: f64 = 0.25;
+/// The border runs this far from the area's left edge, plus a tile's width
+/// for every readout. Measured on an MSO5074 through an MS2109 at 1080p,
+/// with 1, 2, 3, 6 and 10 readouts: 142.5 px a tile at 150 px a division.
+const BAR_LEAD_DIVS: f64 = 0.476;
+const BAR_TILE_DIVS: f64 = 0.949;
+/// Pixels the border may break for, where a readout's text touches it.
+const BAR_GAP_PX: usize = 3;
+
+/// The grey of the bar's border, about RGB (52, 80, 84): too grey for the
+/// palette to take for a channel.
+fn bar_border((luma, cb, cr): (u8, u8, u8)) -> bool {
+    (40..=140).contains(&luma) && cb.abs_diff(128) <= 14 && (104..=130).contains(&cr)
+}
+
+/// Find the measurement bar in `frame`, and count its readouts from the
+/// length of its top border. None when the scope shows no readout.
+pub fn measurement_bar(frame: &VideoFrame, map: &ScreenMap) -> Option<MeasurementBar> {
+    let right_edge = (map.left + map.width).min(frame.width);
+    let from = map.top + (BAR_ROWS_DIVS.0 * map.px_per_div_y) as usize;
+    let to = (map.top + (BAR_ROWS_DIVS.1 * map.px_per_div_y) as usize).min(frame.height);
+    // The area's own left edge is drawn in a grey like the border's.
+    let starts = map.left + 4..(map.left + (BAR_START_DIVS * map.px_per_div_x) as usize).min(right_edge);
+    let shortest = BAR_TILE_DIVS * 0.8 * map.px_per_div_x;
+    let mut found: Option<(usize, usize)> = None;
+    for y in from..to {
+        let Some(start) = starts.clone().find(|&x| bar_border(frame.ycc(x, y))) else {
+            continue;
+        };
+        let (mut end, mut gap) = (start, 0);
+        for x in start..right_edge {
+            if bar_border(frame.ycc(x, y)) {
+                (end, gap) = (x, 0);
+            } else {
+                gap += 1;
+                if gap > BAR_GAP_PX {
+                    break;
+                }
+            }
+        }
+        let above = y.saturating_sub(BAR_CLEAR_ABOVE_PX);
+        let grey_above = (start..=end).step_by(4).filter(|&x| bar_border(frame.ycc(x, above))).count();
+        let clear_above = grey_above * 5 < (end - start) / 4 + 1;
+        if (end - start) as f64 >= shortest && clear_above && found.is_none_or(|(_, right)| end > right) {
+            found = Some((y, end));
+        }
+    }
+    let (top, right) = found?;
+    let divs = (right - map.left) as f64 / map.px_per_div_x;
+    let tiles = ((divs - BAR_LEAD_DIVS) / BAR_TILE_DIVS).round().max(1.0) as usize;
+    Some(MeasurementBar { tiles, top, right })
+}
+
 /// Which channel a pixel is drawn in, from its chroma.
 pub struct Palette {
     /// Channel bit per (Cb / 4, Cr / 4).
@@ -560,6 +634,58 @@ pub(crate) mod tests {
                 .map(|p| f64::from(p[1]) / crate::oscilloscope::rigol::extract::COUNTS_PER_DIV)
                 .fold(f64::MIN, f64::max);
             assert!(tops < 3.6, "{name}: CH1 reaches {tops} div, the marker's height");
+        }
+    }
+
+    /// Three readouts (VPP, VMAX and FREQuency on CH1) in the measurement
+    /// bar over a 335 Hz square, as `:MEASure:ITEM` leaves them.
+    #[test]
+    fn a_real_measurement_bar_is_found_and_its_readouts_counted() {
+        let (grid, blank) = hdmi_pair(false);
+        let map = measure(&grid, &blank).unwrap();
+        let frame = hdmi_frame(include_bytes!("../../../tests/fixtures/mso5074_ms2109_1080p_three_measurements.jpg"));
+        let bar = measurement_bar(&frame, &map).expect("the bar is found");
+        assert_eq!(bar.tiles, 3, "{bar:?}");
+        // Its top border is 7.2 divisions down, and it ends 3.3 across.
+        let down = (bar.top - map.top) as f64 / map.px_per_div_y;
+        assert!((down - 7.2).abs() < 0.1, "top border {down} div down");
+        let across = (bar.right - map.left) as f64 / map.px_per_div_x;
+        assert!((across - 3.32).abs() < 0.1, "right end {across} div across");
+    }
+
+    /// The readouts' CH1 labels are yellow: read as trace, they put CH1
+    /// three divisions below a square that never goes under 0 V.
+    #[test]
+    fn the_measurement_bar_in_a_real_frame_is_not_read_as_trace() {
+        let (grid, blank) = hdmi_pair(false);
+        let map = measure(&grid, &blank).unwrap();
+        let frame = hdmi_frame(include_bytes!("../../../tests/fixtures/mso5074_ms2109_1080p_three_measurements.jpg"));
+        let bar = measurement_bar(&frame, &map);
+        let palette = Palette::new(&MSO5000_COLOURS);
+        let lowest = |bar| {
+            let mut env = crate::oscilloscope::rigol::extract::Envelopes::default();
+            env.extract_masked(&frame, &map, &palette, 0b0001, Some(map.center_x - map.left as f64), bar);
+            env.samples[0]
+                .chunks_exact(2)
+                .filter(|p| p[0] != i16::MIN)
+                .map(|p| f64::from(p[0]) / crate::oscilloscope::rigol::extract::COUNTS_PER_DIV)
+                .fold(f64::MAX, f64::min)
+        };
+        assert!(lowest(None) < -2.0, "the labels should read as trace unmasked");
+        let masked = lowest(bar);
+        assert!(masked > -0.3, "CH1 reaches {masked} div with the bar left out");
+    }
+
+    #[test]
+    fn a_real_frame_with_no_readout_has_no_measurement_bar() {
+        let (grid, blank) = hdmi_pair(false);
+        let map = measure(&grid, &blank).unwrap();
+        for jpeg in [
+            &include_bytes!("../../../tests/fixtures/mso5074_ms2109_1080p_square.jpg")[..],
+            &include_bytes!("../../../tests/fixtures/mso5074_ms2109_1080p_traces.jpg")[..],
+            &include_bytes!("../../../tests/fixtures/mso5074_ms2109_1080p_menu_blank.jpg")[..],
+        ] {
+            assert_eq!(measurement_bar(&hdmi_frame(jpeg), &map), None);
         }
     }
 

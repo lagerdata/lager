@@ -8,7 +8,7 @@
 use protocol::lscp::NO_SAMPLE;
 
 use super::frame::VideoFrame;
-use super::screen::{Palette, ScreenMap};
+use super::screen::{MeasurementBar, Palette, ScreenMap};
 
 /// Counts per vertical division. A division is tens of pixels, so this
 /// keeps a pixel worth many counts and a full screen far inside an i16.
@@ -56,6 +56,20 @@ impl Envelopes {
         wanted: u8,
         trigger_column: Option<f64>,
     ) {
+        self.extract_masked(frame, map, palette, wanted, trigger_column, None);
+    }
+
+    /// As `extract`, also leaving out the scope's measurement bar: its
+    /// readouts are drawn over the trace in the channels' colours.
+    pub fn extract_masked(
+        &mut self,
+        frame: &VideoFrame,
+        map: &ScreenMap,
+        palette: &Palette,
+        wanted: u8,
+        trigger_column: Option<f64>,
+        bar: Option<MeasurementBar>,
+    ) {
         let columns = map.width.min(frame.width.saturating_sub(map.left));
         let rows = map.height.min(frame.height.saturating_sub(map.top));
         self.columns = columns;
@@ -77,12 +91,23 @@ impl Envelopes {
             (from..=to, below)
         });
 
+        // The bar, from its top border down and from the left of the area to
+        // its end.
+        let under_bar = bar.map(|bar| {
+            (bar.top.saturating_sub(map.top), bar.right.saturating_sub(map.left))
+        });
+
         // Row by row, for the cache: the frame is stored that way.
         for row in 0..rows {
             let y = map.top + row;
             for column in 0..columns {
                 if let Some((span, below)) = &marker {
                     if row < *below && span.contains(&column) {
+                        continue;
+                    }
+                }
+                if let Some((from_row, to_column)) = under_bar {
+                    if row >= from_row && column <= to_column {
                         continue;
                     }
                 }

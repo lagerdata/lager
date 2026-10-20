@@ -84,6 +84,9 @@ const MEASUREMENTS = [
   ['Duty -', 'duty_cycle_negative', '%'],
 ];
 
+// The single-measurement actions that ask a Rigol for an edge time.
+const EDGE_ACTIONS = { rise_time: 'measure_rise_time', fall_time: 'measure_fall_time' };
+
 // How often the readouts refresh, in ms. Each one is a capture and a round
 // trip, so this trades against the capture rate the trace gets.
 const MEASURE_INTERVAL_MS = 500;
@@ -811,6 +814,10 @@ class ScopeApp {
     // describing whatever was on screen when Start was pressed.
     this.measureTimer = null;
     this.measureInFlight = false;
+    // Rise and fall a Rigol was asked for on request, by net and key: its
+    // record is too coarse to time most edges, and asking at every refresh
+    // stalled the live view.
+    this.scopeEdges = { net: null };
 
     this.captureCount = 0;
     this.lastRateAt = performance.now();
@@ -2377,15 +2384,20 @@ class ScopeApp {
       swatch.style.background = channelColorVar(measured.label);
       heading.append(swatch, document.createTextNode(`Channel ${measured.label}`));
       host.append(heading);
+      if (this.scopeEdges?.net !== measured.net) this.scopeEdges = { net: measured.net };
       for (const [label, key, unit] of MEASUREMENTS) {
         const dt = document.createElement('dt');
         dt.textContent = label;
         const dd = document.createElement('dd');
-        const value = values[key];
+        let value = values[key];
+        const asked = this.scopeEdges[key];
+        if ((value === undefined || value === null) && asked !== undefined) value = asked;
         // Absent rather than zero: a DC level has no period and a clean
         // square wave has no overshoot. Kept in the list, with a dash, so
         // the panel does not reshuffle as quantities come and go.
-        if (value === undefined || value === null) {
+        if ((value === undefined || value === null) && this.isRigol() && EDGE_ACTIONS[key]) {
+          dd.append(this.askScopeButton(measured.net, key));
+        } else if (value === undefined || value === null) {
           dd.textContent = '\u2014';
           dd.className = 'dim';
         } else {
@@ -2400,6 +2412,39 @@ class ScopeApp {
       p.textContent = e.message;
       host.appendChild(p);
     }
+  }
+
+  /**
+   * A Rigol's rise or fall that its screen record cannot time: a button that
+   * asks the scope, which times the edge on its full memory. Asked once, on
+   * request, rather than at every refresh, where the two queries stalled the
+   * live view about a second and drew their readouts over the trace.
+   */
+  askScopeButton(net, key) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'measurements__ask';
+    button.textContent = 'Read';
+    button.title = "Faster than the screen record resolves. Asks the scope "
+      + "to time it on its full memory, once.";
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      try {
+        const body = await this.send(EDGE_ACTIONS[key], {}, net);
+        const value = typeof body.value === 'number' ? body.value : null;
+        if (this.scopeEdges.net === net) this.scopeEdges[key] = value;
+        const dd = button.parentElement;
+        if (dd) {
+          dd.textContent = value === null ? '\u2014' : si(value, 's', 4);
+          dd.className = value === null ? 'dim' : '';
+          dd.title = 'Read from the scope on request';
+        }
+      } catch (e) {
+        button.disabled = false;
+        button.title = e.message;
+      }
+    });
+    return button;
   }
 
   /** Keep the measurement panel following the signal while it runs.

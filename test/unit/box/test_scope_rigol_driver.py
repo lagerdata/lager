@@ -272,6 +272,44 @@ class TestTheFullMeasurementSet:
         assert daemon[0].sent == [("Measure", {"channel": {"Alphabetic": "D"}})]
 
 
+class TestOneMeasurementItem:
+    """Items read one at a time over SCPI, as `measurement.<item>()` does."""
+
+    @pytest.mark.parametrize("item", [
+        "MPARea", "VAVerage", "RRDelay", "RFDelay", "FRDelay", "FFDelay",
+        "RRPHase", "RFPHase", "FRPHase", "FFPHase",
+        {"__enum__": {"type": "MeasurementItem", "value": "MPARea"}},
+    ])
+    def test_an_item_the_scope_rejects_is_refused_before_anything_is_sent(self, daemon, monkeypatch, item):
+        monkeypatch.setattr(rigol_mso5000, "_instruments", {})
+        rigol = rigol_mso5000.RigolMso5000(address=ADDRESS, pin=1)
+        with pytest.raises(UnsupportedScopeFeature, match="rejects :MEASure:"):
+            rigol.get_measure_item(item)
+        assert not any(name == "Scpi" for client in daemon for name, _ in client.sent)
+
+    def test_the_average_is_asked_by_the_header_the_scope_answers(self, daemon, monkeypatch):
+        monkeypatch.setattr(rigol_mso5000, "_instruments", {})
+        rigol = rigol_mso5000.RigolMso5000(address=ADDRESS, pin=1)
+        rigol.measure_vavg(1)
+        assert [p["scpi"] for _, p in daemon[0].sent] == [":MEASure:SOURce CHANnel1", ":MEASure:VAVG?"]
+
+    def test_an_item_is_asked_alone_and_nothing_is_cleared(self, daemon, monkeypatch):
+        # The daemon removes the readout the query adds; clearing ALL here
+        # would take the user's own readouts with it.
+        monkeypatch.setattr(rigol_mso5000, "_instruments", {})
+        rigol = rigol_mso5000.RigolMso5000(address=ADDRESS, pin=1)
+        assert rigol.get_measure_item("VPP") == 1.0
+        assert [p["scpi"] for _, p in daemon[0].sent] == [":MEASure:VPP?"]
+
+    def test_a_readout_kept_on_screen_is_for_the_source_set(self, daemon, monkeypatch):
+        monkeypatch.setattr(rigol_mso5000, "_instruments", {})
+        rigol = rigol_mso5000.RigolMso5000(address=ADDRESS, pin=1)
+        rigol.set_measurement_source("CHANnel2")
+        rigol.show_measurement({"__enum__": {"type": "MeasurementItem", "value": "FREQuency"}})
+        assert [p["scpi"] for _, p in daemon[0].sent] == [
+            ":MEASure:SOURce CHANnel2", ":MEASure:ITEM FREQuency,CHANnel2"]
+
+
 class TestStreamingNeedsALiveView:
 
     def _scope(self, record=None):
@@ -347,6 +385,40 @@ class TestTheNetApi:
         with pytest.raises(UnsupportedScopeFeature, match="analog"):
             mapper.measurement.all()
         device.measure_all.assert_not_called()
+
+    def test_all_on_the_instrument_net_is_refused(self):
+        mapper, device = self._mapper()
+        device.net_info["role"] = "scope"
+        with pytest.raises(UnsupportedScopeFeature, match="is the scope itself"):
+            mapper.measurement.all()
+        device.measure_all.assert_not_called()
+
+    @pytest.mark.parametrize("method", [
+        "waveform_period_area",
+        "delay_rising_rising_edge", "delay_rising_falling_edge",
+        "delay_falling_rising_edge", "delay_falling_falling_edge",
+        "phase_rising_rising_edge", "phase_rising_falling_edge",
+        "phase_falling_rising_edge", "phase_falling_falling_edge",
+    ])
+    def test_a_measurement_the_scope_rejects_sends_nothing(self, method):
+        mapper, device = self._mapper()
+        with pytest.raises(UnsupportedScopeFeature, match="rejects"):
+            getattr(mapper.measurement, method)()
+        assert device.method_calls == []
+
+    def test_a_measurement_leaves_the_users_readouts(self):
+        mapper, device = self._mapper()
+        device.get_measure_item.return_value = 3.3
+        assert mapper.measurement.voltage_peak_to_peak() == 3.3
+        called = [c[0] for c in device.method_calls]
+        assert "clear_measurement" not in called, called
+        assert "show_measurement" not in called, called
+
+    def test_a_displayed_measurement_stays_on_the_screen(self):
+        mapper, device = self._mapper()
+        device.get_measure_item.return_value = 334.6
+        mapper.measurement.frequency(display=True)
+        device.show_measurement.assert_called_once()
 
     def test_samples_come_from_a_driver_in_this_process(self, monkeypatch):
         from lager.measurement.scope import rigol_scope
