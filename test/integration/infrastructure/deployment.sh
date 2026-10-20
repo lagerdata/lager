@@ -410,10 +410,22 @@ run_test "lager ble --help" "lager ble --help"
 # a real finding about the box. (The old check put --box before the
 # subcommand, which `lager ble` rejects as an unknown option, inside an
 # `|| true`: it had failed on every run without anyone seeing it.)
+#
+# The scan's own output is never printed, not even on failure: it lists the
+# names and addresses of every advertiser near the box, and CI logs are
+# public. Only the device count, any error line and the exit status are.
+ble_scan_summary() {
+    local out rc
+    out=$(timeout 60 lager ble scan --box "$DUT" --timeout 2 2>&1)
+    rc=$?
+    printf '%s\n' "$out" | grep -E '^(Found [0-9]+ device|Error)' | head -3
+    echo "exit status $rc"
+    return "$rc"
+}
 if [ "$DETECTED_USER" != "${SSH_USER}" ]; then
     skip_test "lager ble scan" "requires ${SSH_USER} user"
 else
-    run_test "lager ble scan" "timeout 60 lager ble scan --box ${DUT} --timeout 2"
+    run_test "lager ble scan" "ble_scan_summary"
 fi
 
 # =============================================================================
