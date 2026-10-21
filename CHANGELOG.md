@@ -27,9 +27,12 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 ### Security
 
-- **The box container no longer trusts the compromised eMudhra intermediate CAs.**
-  Node.js moves from 20.18.1 (end of life) to 22.23.4, `certifi` is pinned to 2026.10.19
-  or later, and the base image is refreshed. Run `lager update` on each box to pick it up.
+- **A box no longer trusts the compromised eMudhra intermediate CAs after `lager update`.**
+  `lager update` now upgrades the host's `ca-certificates` package on every run, before it
+  fetches anything. In the container, Node.js moves from 20.18.1 (end of life) to 22.23.4,
+  `certifi` is pinned to 2026.10.19 or later, and the base image is refreshed.
+- **The CLI requires `certifi` 2026.10.19 or later**, which drops the root that signed the
+  compromised eMudhra intermediates. Upgrade with `pip install --upgrade lager-cli`.
 
 ### Fixed
 

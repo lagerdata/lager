@@ -36,6 +36,7 @@ from ..box._host_ops import (
     ensure_host_packages,
     host_packages_probe_snippet,
     is_valid_unix_username,
+    upgrade_ca_certificates,
 )
 from ..box._gateway import (
     GATEWAY_QUERY,
@@ -1296,6 +1297,22 @@ def _host_packages_step(facts, ssh_host, username, ssh_runner):
         f'On the box ({ssh_host}) run: {res.manual_fix}')
 
 
+def _host_ca_step(ssh_host, username, ssh_runner):
+    """Upgrade the host's ca-certificates (see _host_ops.upgrade_ca_certificates).
+
+    Returns (status, color, warning-or-None). Never raises and never fails
+    the update: a failure yields one warning naming the command to run on
+    the box.
+    """
+    res = upgrade_ca_certificates(ssh_host, ssh_runner=ssh_runner, user=username)
+    if res.ok:
+        return f'OK ({res.message})', 'green', None
+    reason = (res.message or '').strip().splitlines()[0] if res.message else 'unknown error'
+    return 'FAILED', 'yellow', (
+        f'Warning: could not upgrade the host CA certificates ({reason}). '
+        f'On the box ({ssh_host}) run: {res.manual_fix}')
+
+
 def _modprobe_recheck_shell_cmd():
     """Re-derive the modprobe.d facts after the checkout, in one round trip.
 
@@ -2537,6 +2554,29 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
             _host_cli_state = 'not installed'
         click.echo(f'  Host CLI:      {_host_cli_state}')
 
+    def _host_runner(_ip, cmd):
+        res = run_ssh_command_with_output(cmd, timeout_secs=600)
+        return res.returncode, res.stdout or '', res.stderr or ''
+
+    # Step 2d: host CA certificates. Before Step 3, so the git fetch and the
+    # GHCR pull verify TLS against the upgraded store. Needs the box-config
+    # apt-get grant: a box without it yet gets the grant in Step 7 and the
+    # upgrade in Step 7c. `--check` changes nothing on the box.
+    ca_upgraded = False
+
+    def _run_host_ca_step():
+        if progress:
+            progress.update("Upgrading host CA certificates...")
+        log('Upgrading host CA certificates...', nl=False)
+        status, color, warning = _host_ca_step(ssh_host, username, _host_runner)
+        log_status(status, color)
+        if warning:
+            click.secho(warning, fg='yellow', err=True)
+
+    if not check and facts.get('BOXCFG_SUDOERS_OK') == '1':
+        _run_host_ca_step()
+        ca_upgraded = True
+
     # Step 3: Fetch from origin and measure box-vs-target divergence — one call.
     if progress:
         progress.update("Fetching updates...")
@@ -3387,15 +3427,15 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         progress.update("Checking host packages...")
     log('Checking host packages...', nl=False)
 
-    def _host_pkg_runner(_ip, cmd):
-        res = run_ssh_command_with_output(cmd, timeout_secs=600)
-        return res.returncode, res.stdout or '', res.stderr or ''
-
     host_pkg_status, host_pkg_color, host_pkg_warning = _host_packages_step(
-        facts, ssh_host, username, _host_pkg_runner)
+        facts, ssh_host, username, _host_runner)
     log_status(host_pkg_status, host_pkg_color)
     if host_pkg_warning:
         click.secho(host_pkg_warning, fg='yellow', err=True)
+
+    # The Step 2d upgrade, for a box that had no box-config grant until Step 7.
+    if not ca_upgraded:
+        _run_host_ca_step()
 
     # No git updates, no box/→root flatten work, and the docker-build inputs
     # match what's already cached: a second consecutive `lager update` would

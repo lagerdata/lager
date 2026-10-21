@@ -506,6 +506,60 @@ def ensure_host_packages(
     return HostOpResult(ok=True, action="installed", message="; ".join(done))
 
 
+# --- CA certificates ----------------------------------------------------------
+#
+# The host's trust store is what `lager update` itself downloads through: the
+# git fetch and the GHCR pull. Upgrading it on every update means a CA the
+# distribution has distrusted (the eMudhra key compromise, October 2026) stops
+# being trusted on each box's next update, with no hand-run step. apt verifies
+# the archive's GPG signatures, not TLS, so the upgrade is sound even while
+# the store it replaces still trusts the compromised CA.
+
+CA_CERTIFICATES_MANUAL_FIX = (
+    "sudo apt-get update && sudo apt-get install -y --only-upgrade ca-certificates"
+)
+
+
+def upgrade_ca_certificates(
+    box_ip: str,
+    *,
+    ssh_runner: Optional[SshRunner] = None,
+    user: str = "lagerdata",
+) -> HostOpResult:
+    """Upgrade the host's ca-certificates package, never prompting. Rides the
+    box-config `SETENV: /usr/bin/apt-get` grant, like ensure_host_packages.
+    `--only-upgrade` never installs the package on a host that lacks it."""
+    runner = ssh_runner or default_ssh_runner
+    version = "dpkg-query -W -f='${Version}' ca-certificates 2>/dev/null"
+    cmd = (
+        f"_before=$({version}); "
+        "sudo -n apt-get update -qq && "
+        "sudo -n DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 "
+        "apt-get install -y -qq --only-upgrade ca-certificates >/dev/null && "
+        f'echo "LAGER_CA_BEFORE=$_before" && echo "LAGER_CA_AFTER=$({version})"'
+    )
+    rc, stdout, stderr = runner(box_ip, cmd)
+    if rc != 0:
+        return HostOpResult(
+            ok=False,
+            action="failed",
+            message=_sudo_or_apt_error(stderr, user),
+            manual_fix=CA_CERTIFICATES_MANUAL_FIX,
+        )
+    seen = {}
+    for line in (stdout or "").splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            seen[key.strip()] = value.strip()
+    before = seen.get("LAGER_CA_BEFORE", "")
+    after = seen.get("LAGER_CA_AFTER", "")
+    if before and after and before != after:
+        return HostOpResult(ok=True, action="upgraded",
+                            message=f"ca-certificates {before} -> {after}")
+    return HostOpResult(ok=True, action="noop",
+                        message=f"ca-certificates {after or before or 'not installed'}")
+
+
 def sysctl_apply(
     box_ip: str,
     sysctl: Dict[str, str],

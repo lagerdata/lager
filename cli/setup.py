@@ -49,7 +49,7 @@ if __name__ == "__main__":
         },
         include_package_data=True,
         install_requires='''
-            certifi >= 2020.6.20
+            certifi >= 2026.10.19
             click >= 8.1.2
             colorama >= 0.4.3
             PyYAML >= 6.0.1

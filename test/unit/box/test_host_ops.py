@@ -417,6 +417,70 @@ class HostPackages(unittest.TestCase):
         self.assertEqual(calls, [])
 
 
+class CaCertificates(unittest.TestCase):
+    """`lager update` upgrades the host's ca-certificates on every run, over
+    the box-config apt-get grant, and never prompts."""
+
+    def test_the_upgrade_never_installs_and_never_prompts(self):
+        runner, calls = _scripted_runner([(0, "", "")])
+        ops.upgrade_ca_certificates("1.2.3.4", ssh_runner=runner)
+        self.assertEqual(len(calls), 1)
+        self.assertIn("sudo -n apt-get update -qq", calls[0])
+        self.assertIn("sudo -n DEBIAN_FRONTEND=noninteractive", calls[0])
+        self.assertIn("apt-get install -y -qq --only-upgrade ca-certificates", calls[0])
+        self.assertNotIn("sudo env", calls[0])
+
+    def test_a_new_version_is_reported_as_an_upgrade(self):
+        runner, _ = _scripted_runner(
+            [(0, "LAGER_CA_BEFORE=20240203\nLAGER_CA_AFTER=20260816ubuntu0.24.04.1\n", "")])
+        result = ops.upgrade_ca_certificates("1.2.3.4", ssh_runner=runner)
+        self.assertTrue(result.ok)
+        self.assertEqual(result.action, "upgraded")
+        self.assertEqual(result.message, "ca-certificates 20240203 -> 20260816ubuntu0.24.04.1")
+
+    def test_an_unchanged_version_is_a_noop(self):
+        runner, _ = _scripted_runner(
+            [(0, "LAGER_CA_BEFORE=20260816ubuntu0.24.04.1\nLAGER_CA_AFTER=20260816ubuntu0.24.04.1\n", "")])
+        result = ops.upgrade_ca_certificates("1.2.3.4", ssh_runner=runner)
+        self.assertTrue(result.ok)
+        self.assertEqual(result.action, "noop")
+        self.assertEqual(result.message, "ca-certificates 20260816ubuntu0.24.04.1")
+
+    def test_no_grant_gives_the_manual_fix(self):
+        runner, _ = _scripted_runner([(1, "", "sudo: a password is required")])
+        result = ops.upgrade_ca_certificates("1.2.3.4", ssh_runner=runner)
+        self.assertFalse(result.ok)
+        self.assertEqual(result.manual_fix, ops.CA_CERTIFICATES_MANUAL_FIX)
+
+    def test_the_version_lines_survive_a_real_shell(self):
+        """The command, run by sh against stub sudo and dpkg-query."""
+        import os
+        import subprocess
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            state = os.path.join(tmp, "version")
+            with open(state, "w") as f:
+                f.write("20240203")
+            for name, body in (
+                ("dpkg-query", f'cat "{state}"'),
+                ("sudo", f'case "$*" in *install*) echo 20260816ubuntu0.24.04.1 > "{state}";; esac'),
+            ):
+                path = os.path.join(tmp, name)
+                with open(path, "w") as f:
+                    f.write("#!/bin/sh\n" + body + "\n")
+                os.chmod(path, 0o755)
+
+            def runner(_ip, cmd, *, stdin=None):
+                proc = subprocess.run(
+                    ["sh", "-c", cmd], capture_output=True, text=True,
+                    env={**os.environ, "PATH": tmp + os.pathsep + os.environ["PATH"]})
+                return proc.returncode, proc.stdout, proc.stderr
+
+            result = ops.upgrade_ca_certificates("1.2.3.4", ssh_runner=runner)
+        self.assertEqual(result.action, "upgraded", result.message)
+        self.assertEqual(result.message, "ca-certificates 20240203 -> 20260816ubuntu0.24.04.1")
+
+
 class HostPackagesProbe(unittest.TestCase):
     """The probe snippet, run for real against stub dpkg-query / systemctl."""
 

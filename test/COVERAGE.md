@@ -47,8 +47,8 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 3570 (+3 xfailed) |
-| `unit (box)` | `test/unit/box/` | 4718 (+17 skipped) |
+| `unit (cli)` | `test/unit/cli/` | 3572 (+3 xfailed) |
+| `unit (box)` | `test/unit/box/` | 4723 (+17 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 409 |
@@ -562,7 +562,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_hardware_service_retry.py` | Close-then-recreate retry path for concurrent Keithley resource collisions; a driver's not-ready sentence (a PicoScope still opening) returned bare with 503 and `error_type: not-ready`, outside the retry |
 | `test_hardware_service_redaction.py` | The `/invoke` log line masks secret keyword arguments (`password`, `pin`, `private_key_pem`, ...) while the driver still receives them |
 | `test_hsm_net_command.py` | `/net/command` for `hsm` nets: each action reaches its `hsm_hs` method with the login kwargs, a missing password and unknown algorithm, mechanism or object type answer 400 before the device is reached, the password never appears in a reply, and hardware_service's wrapper text is dropped from errors |
-| `test_host_ops.py` | apt_install and sysctl_apply SSH execution branches. Also `udev_apply`, the box-config sudoers rules and bootstrap command, the v2 marker pin, username validation and the bootstrap texts |
+| `test_host_ops.py` | apt_install and sysctl_apply SSH execution branches. The host `ca-certificates` upgrade `lager update` runs, including its command run by `sh` against stub `sudo` and `dpkg-query`. Also `udev_apply`, the box-config sudoers rules and bootstrap command, the v2 marker pin, username validation and the bootstrap texts |
 | `test_hub_lock_fail_fast.py` | The same treatment on the USB hub path: bounded waits on the module-level and per-hub locks (`hub-busy`), a per-operation deadline (`hub-op-timeout`), the restart that follows, and the state sweep's per-hub sub-budget (clamp + `hub-skipped`) |
 | `test_jlink_commander_use_poll.py` | JLinkExe spawned with use_poll=True to avoid fd >= 1024 select() failure |
 | `test_jlink_commander_exit.py` | `commander()` when JLinkExe goes away: exiting before its prompt raises `JLinkCommanderExited` naming what it printed last, instead of contextlib's `generator didn't yield`; an EOF from a command mid-session raises instead of being swallowed at the `yield`, which had made a flash whose probe dropped off USB return no output and no error; the EOF `q` causes is still absorbed, and other errors in the body propagate; the message names JLinkExe's last meaningful line, not its USB resync banner |
@@ -797,7 +797,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_webcam_command.py` | `lager webcam` CLI: the tokenised viewer link on access-gated boxes (`_viewer_url`, the token lookup asking for half a lifetime, the note that promises only how long the link can be opened, its pinned-token and `lager login` variants, and the layout: link on its own line, note under it, hint last), `start --open` opening the printed link (and never the browser without it), and pointing at the link when no browser opens, `start` sending `source`/`started_by`, and `snapshot` writing the decoded JPEG to `--out`. Also the stop hints `start` and `start-all` print, each replayed through the group so the line a user copies stays a command that parses and names the box the way they typed it |
 | `test_box_storage.py` | `box_storage.py` project-level `.lager` merging behavior |
 | `test_gateway_auth.py` | `gateway_auth.py` bearer-token auth for boxes behind an authenticating gateway, including the pinned CI token (`LAGER_GATEWAY_TOKEN`), and that `check_gateway_status` holds its first-contact retry to the caller's own timeout rather than a fixed 30s -- otherwise a caller with a deadline reports a box that was still answering |
-| `test_update_gate.py` | Update rebuild gate: probe parsing, build-hash mismatch, early-exit verdict; the shared `/etc/lager` state-file writer, run against a scratch directory, including that the ref write skips identical content and that the version is recorded only after the container starts; and the `--check` exit-code contract, guarded structurally so no failure ahead of the dry run exits 1 and becomes indistinguishable from "this box needs an update" |
+| `test_update_gate.py` | Update rebuild gate: probe parsing, build-hash mismatch, early-exit verdict; the shared `/etc/lager` state-file writer, run against a scratch directory, including that the ref write skips identical content and that the version is recorded only after the container starts; the host CA-certificate step's status and warning; and the `--check` exit-code contract, guarded structurally so no failure ahead of the dry run exits 1 and becomes indistinguishable from "this box needs an update" |
 | `test_gateway_callsites.py` | Gateway-auth discovery across every box-talking call site: record the mapping on a discovery 401, retry once with a held token, surface genuine denials, and keep rendering the other boxes' rows |
 | `test_host_cli.py` | Host-OS CLI install helpers shared by `lager install` and `lager update`: the reconcile decision table, `--check` labels, exit codes, the probe snippet under a real shell, and the drift guard pinning the deploy scripts' mirror |
 | `test_errors.py` | `cli/errors.py` taxonomy, plus main/box_storage/config error paths |

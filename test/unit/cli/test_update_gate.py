@@ -1143,3 +1143,35 @@ class TestHostPackagesStep:
         assert 'benchtest@192.0.2.4' in warning
         assert warning.endswith(
             'sudo apt-get install -y bluez && sudo systemctl enable --now bluetooth')
+
+
+class TestHostCaStep:
+    """Step 2d. Upgrades the host's ca-certificates on every update and never
+    fails the update."""
+
+    def _step(self, answers=()):
+        from cli.commands.utility.update import _host_ca_step
+        calls = []
+        answers = list(answers)
+
+        def runner(_ip, cmd):
+            calls.append(cmd)
+            return answers.pop(0) if answers else (0, '', '')
+
+        return _host_ca_step('benchtest@192.0.2.4', 'benchtest', runner), calls
+
+    def test_an_upgrade_names_both_versions(self):
+        (status, color, warning), calls = self._step(answers=[(
+            0, 'LAGER_CA_BEFORE=20240203\nLAGER_CA_AFTER=20260816ubuntu0.24.04.1\n', '')])
+        assert status == 'OK (ca-certificates 20240203 -> 20260816ubuntu0.24.04.1)'
+        assert color == 'green'
+        assert warning is None
+        assert len(calls) == 1
+
+    def test_no_grant_warns_with_the_manual_command(self):
+        (status, _color, warning), _calls = self._step(
+            answers=[(1, '', 'sudo: a password is required')])
+        assert status == 'FAILED'
+        assert 'benchtest@192.0.2.4' in warning
+        assert warning.endswith(
+            'sudo apt-get update && sudo apt-get install -y --only-upgrade ca-certificates')
