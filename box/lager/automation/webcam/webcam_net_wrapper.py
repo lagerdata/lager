@@ -228,9 +228,10 @@ class WebcamNetWrapper:
                              f"one of: {', '.join(_controls.CONTROL_NAMES)}")
         if name in _controls.SWITCHES:
             value = bool(value)
-        ok = _controls.set_control(self.video_device, name, value)
+        parsed = _controls.read_controls(self.video_device)
+        ok = _controls.set_control(self.video_device, name, value, controls=parsed)
         if ok:
-            self._service.state.save_controls(self.name, {name: value})
+            self._service.state.save_controls(self.name, _controls.as_saved(parsed, {name: value}))
         return ok
 
     def lock_controls(self, **overrides) -> Dict[str, Any]:
@@ -252,7 +253,7 @@ class WebcamNetWrapper:
             dict: ``ok`` (True if every control reads back as wanted) and
             ``controls``: {name: {"wanted", "actual"}}. A value outside the
             camera's range is clamped, so it reads back different and ``ok``
-            is False.
+            is False; the clamped value is the one saved.
         """
         parsed = _controls.read_controls(self.video_device)
         if not parsed:
@@ -261,7 +262,7 @@ class WebcamNetWrapper:
                 f"(is the camera plugged in, and v4l2-ctl installed?)")
         wanted = _controls.lock_values(parsed, overrides)
         _controls.apply_controls(self.video_device, wanted)
-        self._service.state.save_controls(self.name, wanted)
+        self._service.state.save_controls(self.name, _controls.as_saved(parsed, wanted))
         report, ok = _controls.compare(wanted, _controls.read_values(self.video_device))
         return {"ok": ok, "controls": report}
 

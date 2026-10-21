@@ -292,7 +292,9 @@ if not report['ok']:
 | `brightness`, `contrast`, `saturation`, `hue`, `gamma`, `sharpness`, `backlight_compensation` | 画面调节 |
 | `power_line_frequency` | 防闪烁：0 为关闭，1 为 50 Hz，2 为 60 Hz |
 
-每个范围都是摄像头自己的。例如亮度在某些摄像头上是 0 到 255，在另一些上是 -64 到 64，超出范围的值会被限制。
+每个范围都是摄像头自己的。例如亮度在某些摄像头上是 0 到 255，在另一些上是 -64 到 64。超出范围的值会被限制，Net 保存的是限制后的值。
+
+手动曝光可能让帧率低于模式的帧率。摄像头仍接受该模式，因此 `mode_error` 为空：实际帧率请读取 `/api/fps`。例如，一台全局快门摄像头在 90 fps 模式下，`exposure=312` 时约为 60 fps，`exposure=100` 时约为 89 fps。
 
 Lager 只更改您设置的控制项。启动串流时，其余控制项保持摄像头当前的值，因此用其他工具做的设置不受影响。通过 `set_control`、`lock_controls` 或查看页面设置的控制项会为该 Net 保存。每次启动其串流时，以及串流为新模式重新打开摄像头之后，都会重新应用它们。这也适用于断电后会忘记设置的摄像头：启动串流，或再次调用 `lock_controls`。
 

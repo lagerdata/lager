@@ -139,6 +139,14 @@ def test_a_lock_value_the_camera_clamps_is_reported(webcam):
     report = webcam.lock_controls(brightness=128)
     assert report['ok'] is False
     assert report['controls']['brightness'] == {'wanted': 128, 'actual': 64}
+    # The report shows what was asked for; the net keeps what the camera holds.
+    assert _saved(webcam)['brightness'] == 64
+
+
+def test_a_clamped_value_is_kept_as_the_camera_holds_it(webcam, camera):
+    assert webcam.set_control('brightness', 128) is True
+    assert camera.sets == ['brightness=64']
+    assert _saved(webcam) == {'brightness': 64}
 
 
 def test_lock_with_no_camera_raises(tmp_path):

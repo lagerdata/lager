@@ -313,7 +313,13 @@ if not report['ok']:
 | `power_line_frequency` | Anti-flicker: 0 disabled, 1 for 50 Hz, 2 for 60 Hz |
 
 Every range is the camera's own. Brightness, for example, is 0 to 255 on some
-cameras and -64 to 64 on others, and a value outside it is clamped.
+cameras and -64 to 64 on others. A value outside the range is clamped, and the
+net keeps the clamped value.
+
+A manual exposure can hold the frame rate below the mode's. The camera still
+accepts the mode, so `mode_error` stays empty: read `/api/fps` for the real rate.
+One global-shutter camera, for example, runs about 60 fps at `exposure=312` in a
+90 fps mode, and about 89 fps at `exposure=100`.
 
 Lager changes only the controls you set. A stream start leaves the rest as the
 camera has them, so settings made with another tool survive it. The controls you

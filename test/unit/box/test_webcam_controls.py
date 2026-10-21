@@ -370,6 +370,25 @@ def test_a_menu_value_the_camera_does_not_list_is_refused(ctl, value):
     assert v4l2.sets == []
 
 
+def test_values_are_saved_as_the_camera_keeps_them(ctl):
+    parsed = ctl.parse_controls(GLOBAL_SHUTTER_CTRLS)
+    assert ctl.as_saved(parsed, {
+        'brightness': 128, 'contrast': -100, 'focus': 2000, 'gamma': '120',
+        'focus_auto': 0, 'white_balance_auto': 1, 'exposure_auto': False,
+    }) == {'brightness': 64, 'contrast': 0, 'focus': 1023, 'gamma': 120,
+           'focus_auto': False, 'white_balance_auto': True, 'exposure_auto': False}
+    # Zero is a value, not a missing one.
+    assert ctl.as_saved(parsed, {'brightness': 0}) == {'brightness': 0}
+
+
+def test_a_value_the_camera_would_refuse_is_not_saved(ctl):
+    parsed = ctl.parse_controls(GLOBAL_SHUTTER_CTRLS)
+    assert ctl.as_saved(parsed, {'power_line_frequency': 3, 'tilt': 1,
+                                 'brightness': 'bright'}) == {}
+    # Nor a control this camera does not have.
+    assert ctl.as_saved(ctl.parse_controls(CONTROLS_OLD), {'gain': 3}) == {}
+
+
 def test_saved_controls_are_written_switches_first(ctl):
     v4l2 = FakeV4l2(controls=GLOBAL_SHUTTER_CTRLS)
     taken = ctl.apply_controls('/dev/video0', {

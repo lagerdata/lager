@@ -649,6 +649,8 @@ def apply_saved_controls():
         controls.apply_controls(VIDEO_DEVICE, saved)
 
 def save_controls(values):
+    # Keep what the camera holds (a clamped number), not what was asked for.
+    values = controls.as_saved(controls.read_controls(VIDEO_DEVICE), values)
     saved = load_entry().get("controls")
     saved = dict(saved) if isinstance(saved, dict) else dict()
     saved.update(values)

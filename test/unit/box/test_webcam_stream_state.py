@@ -515,7 +515,17 @@ def test_brightness_is_clamped_to_the_cameras_range(camera_streamer):
     status, body = _post(base + '/api/brightness/set', {'value': 128})
     assert status == 200 and body['success'] is True
     assert v4l2.sets == ['brightness=64']
+    # Saved as the camera holds it, not as asked for.
+    assert _record(ns)['controls'] == {'brightness': 64}
     assert _post(base + '/api/brightness/set', {})[1]['success'] is False
+
+
+def test_a_clamped_control_is_saved_as_the_camera_holds_it(camera_streamer):
+    ns, base, v4l2 = camera_streamer
+    status, body = _post(base + '/api/controls/set', {'control': 'brightness', 'value': -100})
+    assert status == 200 and body['success'] is True
+    assert v4l2.sets == ['brightness=-64']
+    assert _record(ns)['controls'] == {'brightness': -64}
 
 
 def test_every_named_control_can_be_set_and_is_saved(camera_streamer):

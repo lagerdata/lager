@@ -265,7 +265,7 @@ def _write(device, logical, value, controls, run):
     return result.returncode == 0
 
 
-def set_control(device, logical, value, run=subprocess.run):
+def set_control(device, logical, value, run=subprocess.run, controls=None):
     """Set one of CONTROL_NAMES on the camera. True if the camera took it.
 
     A switch takes a bool. A number is clamped to the camera's range; a menu
@@ -273,7 +273,29 @@ def set_control(device, logical, value, run=subprocess.run):
     """
     if logical not in CONTROL_NAMES:
         return False
-    return _write(device, logical, value, read_controls(device, run=run), run)
+    if controls is None:
+        controls = read_controls(device, run=run)
+    return _write(device, logical, value, controls, run)
+
+
+def as_saved(controls, values):
+    """``values`` as the camera keeps them: switches as bools, numbers
+    clamped to the camera's range. A value the camera would refuse, or a
+    control it lacks, is dropped."""
+    saved = {}
+    for logical, value in values.items():
+        if logical not in CONTROL_NAMES:
+            continue
+        _name, entry = _find(controls, logical)
+        if entry is None:
+            continue
+        if logical in SWITCHES:
+            saved[logical] = bool(value)
+            continue
+        value = _coerce(logical, entry, value)
+        if value is not None:
+            saved[logical] = value
+    return saved
 
 
 def apply_controls(device, saved, run=subprocess.run):
