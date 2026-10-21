@@ -1,0 +1,73 @@
+---
+title: Custom
+description: Run actions on nets that use a custom driver
+---
+
+Run an action on a net whose instrument uses a [custom driver](/source/reference/cli/drivers).
+The CLI gets the driver's actions from the box, so you do not install anything on
+your computer.
+
+## Syntax
+
+```bash
+lager custom [NET_NAME] [ACTION] [--ARG VALUE]... [OPTIONS]
+```
+
+- With no `NET_NAME`, the command lists the custom nets on the box.
+- With a `NET_NAME` and no `ACTION`, it lists the actions of that net's driver.
+- With both, it runs the action.
+
+**Options:**
+- `--box BOX` - Lager Box name or IP address
+- `--json` - Print the action's result as JSON
+
+Give action arguments as `--NAME VALUE` or `--NAME=VALUE`. An argument with no
+value is `true`, and `--no-NAME` is `false`. The box checks each value against the
+driver's manifest before the driver runs.
+
+## Examples
+
+```bash
+# List the custom nets on a box
+lager custom --box my-lager-box
+
+# List the actions of RIG_1's driver
+lager custom RIG_1 --box my-lager-box
+
+# Run an action
+lager custom RIG_1 jog --seconds 3 --box my-lager-box
+
+# Get the result as JSON, for scripts and CI
+lager custom RIG_1 position --json --box my-lager-box
+```
+
+## The short form
+
+Each installed driver type is also a `lager` command. These two commands do the
+same thing:
+
+```bash
+lager custom RIG_1 jog --seconds 3 --box my-lager-box
+lager stepper RIG_1 jog --seconds 3 --box my-lager-box
+```
+
+The short form gets typed options and help from the manifest:
+
+```bash
+lager stepper --box my-lager-box                 # list stepper nets
+lager stepper RIG_1 jog --help --box my-lager-box
+```
+
+To find the command, the CLI asks the box named by `--box`, or your default box,
+which drivers it has. It keeps the answer for five minutes. Built-in commands
+always have priority. If the CLI cannot reach the box, the short form shows the
+usual `No such command` error; `lager custom` then tells you why.
+
+## Errors
+
+| Error | Meaning |
+|-------|---------|
+| `Unknown action` | The driver has no action of that name |
+| `in use by a lager uart session` | Another session holds the UART net the driver uses. Close it first |
+| `did not finish within N s` | The action ran past its timeout and was stopped |
+| `failed to load` | The driver's bundle on the box is not valid. Run `lager drivers list` |

@@ -124,7 +124,9 @@
                   "source/reference/cli/python",
                   "source/reference/cli/exec",
                   "source/reference/cli/devenv",
-                  "source/reference/cli/binaries"
+                  "source/reference/cli/binaries",
+                  "source/reference/cli/drivers",
+                  "source/reference/cli/custom"
                 ]
               },
               {
@@ -144,7 +146,8 @@
                 "pages": [
                   "source/reference/python/overview",
                   "source/reference/python/binaries",
-                  "source/reference/python/net"
+                  "source/reference/python/net",
+                  "source/reference/python/custom-drivers"
                 ]
               },
               {
@@ -617,7 +620,9 @@
                   "source/zh/reference/cli/python",
                   "source/zh/reference/cli/exec",
                   "source/zh/reference/cli/devenv",
-                  "source/zh/reference/cli/binaries"
+                  "source/zh/reference/cli/binaries",
+                  "source/zh/reference/cli/drivers",
+                  "source/zh/reference/cli/custom"
                 ]
               },
               {
@@ -637,7 +642,8 @@
                 "pages": [
                   "source/zh/reference/python/overview",
                   "source/zh/reference/python/binaries",
-                  "source/zh/reference/python/net"
+                  "source/zh/reference/python/net",
+                  "source/zh/reference/python/custom-drivers"
                 ]
               },
               {

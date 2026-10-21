@@ -1,0 +1,46 @@
+{
+  "type": "sample_stepper",
+  "version": "1.0.0",
+  "lager_api": 1,
+  "description": "Example custom driver: a stepper rig controlled over a UART net",
+  "timeout_s": 30,
+  "params": {
+    "uart_net": {
+      "type": "net",
+      "role": "uart",
+      "required": true,
+      "help": "UART net wired to the stepper controller"
+    },
+    "baudrate": {
+      "type": "int",
+      "default": 115200,
+      "min": 1200,
+      "max": 3000000,
+      "help": "Serial baud rate"
+    }
+  },
+  "actions": {
+    "diag": {
+      "help": "Show the serial device behind the UART net (no I/O)"
+    },
+    "echo": {
+      "help": "Write a line to the controller and return the reply",
+      "args": {
+        "text": {"type": "str", "required": true, "help": "Line to send"},
+        "line_ending": {
+          "type": "choice",
+          "choices": ["cr", "lf", "crlf"],
+          "default": "cr",
+          "help": "Line ending to append"
+        },
+        "read_timeout": {
+          "type": "float",
+          "default": 2.0,
+          "min": 0.1,
+          "max": 10.0,
+          "help": "Seconds to wait for the reply"
+        }
+      }
+    }
+  }
+}

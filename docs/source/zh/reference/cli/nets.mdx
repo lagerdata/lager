@@ -30,6 +30,7 @@ lager nets [OPTIONS] [COMMAND]
 | `add` | 添加一个新的 Net |
 | `add-all` | 根据已连接的仪器自动创建全部可用的 Net |
 | `add-batch` | 从 JSON 文件创建多个 Net |
+| `add-custom` | 添加一个使用 Box 上已安装的[自定义驱动](/source/zh/reference/cli/drivers)的 Net |
 | `assign` | 把 USB 串口线缆分配给 Box 无法自动识别的 RS-232 仪器 |
 | `show` | 显示某个已保存 Net 的完整信息，包括元数据 |
 | `state` | 显示每个已保存 Net 的实时硬件状态 |
@@ -456,6 +457,29 @@ No nets were saved.
 
 ```bash
 lager nets add-batch nets.json --box my-lager-box
+```
+
+### `add-custom`
+
+添加一个使用 Box 上已安装的[自定义驱动](/source/zh/reference/cli/drivers)的 Net。该 Net 的类型就是驱动类型，因此 `lager TYPE NAME ACTION` 和 `lager custom NAME ACTION` 都可以操作它。
+
+```bash
+lager nets add-custom NAME TYPE [--param NAME=VALUE]... --box BOX
+```
+
+**参数：**
+- `NAME` - 新 Net 的名称
+- `TYPE` - 驱动类型，与 `lager drivers list` 显示的一致
+
+**选项：**
+- `--param NAME=VALUE` - 驱动定义的一项设置。每项设置重复一次。`lager drivers show TYPE` 会列出这些设置
+- `--box BOX` - Lager Box 名称或 IP 地址
+
+类型为 `net` 的设置指向另一个已保存的 Net，例如仪器所连接的 UART Net。该 Net 必须存在，并且其角色必须与驱动要求的一致。
+
+**示例：**
+```bash
+lager nets add-custom RIG_1 stepper --param uart_net=UART_1 --box my-lager-box
 ```
 
 ### `assign`

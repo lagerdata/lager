@@ -158,6 +158,31 @@ class StatusCapabilitiesTest(unittest.TestCase):
         finally:
             box_http_server._has_nets = orig
 
+    def test_custom_drivers_capability_and_roles(self):
+        # The CLI builds `lager <type>` from GET /drivers and the control plane
+        # gates driver pushes on this flag, so it must track registration. The
+        # role list is computed per request: a driver installed after the
+        # server started must appear without a restart.
+        orig = (box_http_server._has_drivers, box_http_server._has_net_command)
+        fake = [{'type': 'stepper', 'status': 'ok'}, {'type': 'broken', 'status': 'error'}]
+        try:
+            box_http_server._has_drivers = True
+            box_http_server._has_net_command = True
+            with unittest.mock.patch.object(box_http_server._driver_registry,
+                                            'list_drivers', return_value=fake):
+                caps = self._capabilities()
+            self.assertIs(caps['customDrivers'], True)
+            self.assertIn('stepper', caps['netCommandRoles'])
+            self.assertNotIn('broken', caps['netCommandRoles'])
+            self.assertIn('gpio', caps['netCommandRoles'])
+
+            box_http_server._has_drivers = False
+            caps = self._capabilities()
+            self.assertIs(caps['customDrivers'], False)
+            self.assertNotIn('stepper', caps['netCommandRoles'])
+        finally:
+            box_http_server._has_drivers, box_http_server._has_net_command = orig
+
 
 if __name__ == '__main__':
     unittest.main()

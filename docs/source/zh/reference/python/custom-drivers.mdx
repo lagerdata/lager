@@ -1,0 +1,125 @@
+---
+title: Custom drivers
+description: 为 Lager 未内置的仪器编写驱动
+---
+
+自定义驱动用于控制 Lager 未内置的仪器，例如自研的测试夹具。只需将其编写为一个小型驱动包，使用 [`lager drivers install`](/source/zh/reference/cli/drivers) 安装到 Box 上，之后每位用户都可以用标准 CLI 操作它的 Net。驱动代码只保存在 Box 上。
+
+## 驱动包结构
+
+```
+stepper/
+  lager_driver.json   # 清单文件
+  driver.py           # class Driver(CustomDriver)
+  helpers.py          # 可选；driver.py 可以按名称导入
+```
+
+驱动可以导入 Python 标准库、`pyserial` 以及 Box 上的 `lager` 包。
+
+## 清单文件
+
+清单文件给出驱动的类型、Net 设置和操作。CLI 根据它生成 `lager <type>` 命令，Box 按它校验每次调用。
+
+```json
+{
+  "type": "stepper",
+  "version": "1.0.0",
+  "lager_api": 1,
+  "description": "Stepper rig controlled over a UART net",
+  "timeout_s": 30,
+  "params": {
+    "uart_net": {"type": "net", "role": "uart", "required": true,
+                 "help": "UART net wired to the controller"},
+    "baudrate": {"type": "int", "default": 115200, "help": "Serial baud rate"}
+  },
+  "actions": {
+    "position": {"help": "Query the current position"},
+    "home": {"help": "Return to the home position"},
+    "jog": {
+      "help": "Move forward for N seconds, then return home",
+      "args": {
+        "seconds": {"type": "float", "min": 0.1, "max": 30, "required": true}
+      }
+    }
+  }
+}
+```
+
+| 键 | 说明 |
+|-----|-------------|
+| `type` | 2 到 32 个小写字母、数字、`-` 或 `_`。它将成为 Net 角色和 `lager <type>` 命令，不能使用内置角色或命令的名称 |
+| `version` | 自定义的版本字符串，由 `lager drivers list` 显示 |
+| `lager_api` | 驱动接口版本，使用 `1` |
+| `description` | 一行说明，显示在帮助中 |
+| `timeout_s` | 每个操作的默认超时，1 到 600 秒（默认 60）。单个操作可以设置自己的超时 |
+| `params` | 与每个 Net 一起保存的设置，通过 `lager nets add-custom --param` 提供 |
+| `actions` | 驱动提供的操作及其 `args` |
+
+每个 param 和 arg 都有一个 `type`：`str`、`int`、`float`、`bool` 或 `choice`。param 还可以是 `net`，表示另一个指定 `role` 的已保存 Net；驱动通过该 Net 访问硬件。字段还可以带有 `required`、`default`、`min` 和 `max`（仅限数字）、`choices`（用于 `choice`）以及 `help`。名称由小写字母、数字和 `_` 组成；CLI 将 `hold_time` 显示为 `--hold-time`。
+
+## 驱动代码
+
+```python
+from lager.drivers import CustomDriver, action
+
+
+class Driver(CustomDriver):
+    def setup(self):
+        # base_net() returns the built-in net that a "net" param names
+        self.port = self.base_net("uart_net").connect(
+            baudrate=self.params["baudrate"], timeout=2)
+
+    @action
+    def position(self):
+        self.port.write(b"?\r")
+        return {"message": "position read", "position": int(self.port.readline())}
+
+    @action
+    def jog(self, seconds):
+        self.port.write(b"1\r")
+        ...
+        return {"message": "jogged %s s and returned home" % seconds}
+
+    def teardown(self):
+        self.port.close()
+```
+
+- 只有标记了 `@action` 的方法可以被调用，并且每个方法都必须在清单文件中列出。方法以关键字参数接收操作的参数，类型与清单文件一致。
+- `setup()` 在操作之前运行，`teardown()` 在操作之后运行，即使操作抛出异常也会运行。
+- 返回字典、单个值或 `None`。字典中的 `message` 由 CLI 输出，其他键显示在其下方，`--json` 输出完整结果。
+- 异常会作为错误返回给用户，包含其类型和消息。
+- `print()` 的输出和 `self.log` 写入 Box 日志，不会显示给用户。
+
+| 属性 | 说明 |
+|-----------|-------------|
+| `self.name` | Net 的名称 |
+| `self.params` | Net 的设置，已按清单文件校验 |
+| `self.net` | 已保存的 Net 记录 |
+| `self.log` | 日志记录器 |
+| `self.base_net(param)` | `net` 类型 param 所指向的内置 Net，作为 `Net` 对象返回 |
+
+## 调用的运行方式
+
+每次调用都会在 Box 上的新进程中运行驱动。驱动崩溃或挂起都不会使 Box 停止工作。Box 会在调用之前加载 Lager，因此进程启动很快。每次调用都会重新加载 `driver.py`，因此安装的更新在下一次调用时生效。同一 Net 上的两次调用按顺序依次运行。如果某个 `lager uart` 会话占用了驱动所用的 UART Net，调用会被拒绝，直到该会话关闭。
+
+## 在脚本中使用驱动
+
+`lager python` 脚本可以直接使用自定义 Net：
+
+```python
+from lager.drivers import open_driver
+
+with open_driver("RIG_1") as rig:
+    rig.home()
+    rig.jog(seconds=3)
+```
+
+## 安装和使用
+
+```bash
+lager drivers install ./stepper --box my-lager-box
+lager nets add-custom RIG_1 stepper --param uart_net=UART_1 --box my-lager-box
+lager stepper RIG_1 jog --seconds 3 --box my-lager-box
+```
+
+驱动在 Box 上运行，权限与 `lager python` 脚本相同。它不会出现在公开的 Lager 代码中，但能够连接到 Box 的人可以读取它。

@@ -1,0 +1,65 @@
+---
+title: Custom
+description: 在使用自定义驱动的 Net 上运行操作
+---
+
+在仪器使用[自定义驱动](/source/zh/reference/cli/drivers)的 Net 上运行操作。CLI 从 Box 获取驱动的操作列表，因此无需在电脑上安装任何内容。
+
+## 语法
+
+```bash
+lager custom [NET_NAME] [ACTION] [--ARG VALUE]... [OPTIONS]
+```
+
+- 不带 `NET_NAME` 时，列出 Box 上的自定义 Net。
+- 带 `NET_NAME` 但不带 `ACTION` 时，列出该 Net 所用驱动的操作。
+- 两者都带时，运行该操作。
+
+**选项：**
+- `--box BOX` - Lager Box 名称或 IP 地址
+- `--json` - 以 JSON 格式输出操作结果
+
+操作参数的写法为 `--NAME VALUE` 或 `--NAME=VALUE`。不带值的参数为 `true`，`--no-NAME` 为 `false`。Box 会在驱动运行前按驱动的清单文件校验每个值。
+
+## 示例
+
+```bash
+# 列出 Box 上的自定义 Net
+lager custom --box my-lager-box
+
+# 列出 RIG_1 所用驱动的操作
+lager custom RIG_1 --box my-lager-box
+
+# 运行一个操作
+lager custom RIG_1 jog --seconds 3 --box my-lager-box
+
+# 以 JSON 获取结果，供脚本和 CI 使用
+lager custom RIG_1 position --json --box my-lager-box
+```
+
+## 简写形式
+
+每个已安装的驱动类型同时也是一个 `lager` 命令。以下两条命令效果相同：
+
+```bash
+lager custom RIG_1 jog --seconds 3 --box my-lager-box
+lager stepper RIG_1 jog --seconds 3 --box my-lager-box
+```
+
+简写形式具有类型化的选项，以及根据清单文件生成的帮助：
+
+```bash
+lager stepper --box my-lager-box                 # 列出 stepper Net
+lager stepper RIG_1 jog --help --box my-lager-box
+```
+
+为了找到该命令，CLI 会询问 `--box` 指定的 Box（或默认 Box）有哪些驱动，并将结果保留五分钟。内置命令始终优先。如果 CLI 无法连接 Box，简写形式会显示通常的 `No such command` 错误；此时 `lager custom` 会说明原因。
+
+## 错误
+
+| 错误 | 含义 |
+|-------|---------|
+| `Unknown action` | 驱动没有该名称的操作 |
+| `in use by a lager uart session` | 另一个会话占用了驱动所用的 UART Net，请先关闭它 |
+| `did not finish within N s` | 操作超过超时时间，已被停止 |
+| `failed to load` | Box 上的驱动包无效，请运行 `lager drivers list` |

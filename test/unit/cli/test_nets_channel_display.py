@@ -43,3 +43,25 @@ def test_non_uart_roles_unchanged():
 def test_missing_pin_handled():
     assert nets._channel_display({"role": "uart", "live_path": None}) == "(disconnected)"
     assert nets._channel_display({"role": "uart"}) == ""
+
+
+def test_custom_net_shows_its_params():
+    rec = {"role": "stepper", "instrument": "custom:stepper",
+           "params": {"uart_net": "UART_1", "baudrate": 9600}}
+    assert nets._channel_display(rec) == "uart_net=UART_1, baudrate=9600"
+
+
+def test_custom_net_heading_keeps_the_driver_type():
+    import io
+    from contextlib import redirect_stdout
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        nets._display_table([
+            {"name": "PROBE", "role": "probe_test", "instrument": "custom:probe_test",
+             "address": "NA", "params": {"label": "hello"}},
+            {"name": "SUPPLY_1", "role": "power-supply", "pin": "1",
+             "instrument": "Rigol_DP821", "address": "NA"},
+        ])
+    out = buf.getvalue()
+    assert "custom:probe_test" in out
+    assert "Rigol DP821" in out

@@ -245,6 +245,30 @@ except Exception as e:
     logger.warning("Custom-devices handlers not available: %s", e)
     _has_custom_devices = False
 
+# Import custom-drivers handler (`lager drivers`, custom nets)
+try:
+    from lager.http_handlers.drivers_handler import register_drivers_routes
+    from lager.drivers import registry as _driver_registry
+    _has_drivers = True
+except Exception as e:
+    logger.warning("Custom-drivers handlers not available: %s", e)
+    _has_drivers = False
+
+
+def _net_command_roles_now():
+    """Built-in /net/command roles plus the custom drivers installed right now.
+
+    _net_command_roles is fixed at import; drivers come and go at runtime.
+    """
+    if not (_has_net_command and _has_drivers):
+        return _net_command_roles
+    try:
+        custom = [d['type'] for d in _driver_registry.list_drivers() if d.get('status') == 'ok']
+    except Exception:
+        custom = []
+    return sorted(set(_net_command_roles) | set(custom))
+
+
 # Import binaries + download-file handler
 try:
     from lager.http_handlers.binaries_handler import register_binaries_routes
@@ -395,7 +419,7 @@ def status():
             # Roles served by POST /net/command on this box. Lets clients
             # detect that arm/webcam/router landed (netCommand alone predates
             # them) without version sniffing.
-            'netCommandRoles': _net_command_roles,
+            'netCommandRoles': _net_command_roles_now(),
             # Box-level (non-net) command endpoints.
             'bleCommand': _has_ble,
             'wifiCommand': _has_wifi,
@@ -403,6 +427,12 @@ def status():
             # /custom-devices/* (the `lager nets assign` backend) is served
             # on :9000; lets the CLI/TUI detect boxes that predate it.
             'customDevices': _has_custom_devices,
+            # GET|PUT|DELETE /drivers[/<type>] is served on :9000, and
+            # /net/command dispatches nets whose role is an installed custom
+            # driver. The CLI builds `lager <type>` from GET /drivers and the
+            # control plane gates driver pushes on this. A box predating it
+            # omits the key, which reads as false.
+            'customDrivers': _has_drivers,
             # /binaries/* + /download-file are served on :9000 (same wire
             # contracts as the :5000 python-exec service); lets the CLI
             # detect boxes that predate them.
@@ -534,6 +564,19 @@ if _has_bench_manifest:
     print("[INIT] Bench manifest REST endpoint registered", flush=True)
 else:
     print("[INIT] Bench manifest REST endpoint NOT available", flush=True)
+
+# Register custom-drivers REST handlers (if available)
+if _has_drivers:
+    register_drivers_routes(app)
+    logger.info("Custom-drivers REST endpoints registered (/drivers/*)")
+    # Start the drivers' forkserver off the request path, so the first
+    # custom-net command does not wait for lager to import.
+    if _driver_registry.list_drivers():
+        from lager.drivers import runner as _driver_runner
+        threading.Thread(target=_driver_runner.warm, name='drivers-warm', daemon=True).start()
+    print("[INIT] Custom-drivers REST endpoints registered", flush=True)
+else:
+    print("[INIT] Custom-drivers REST endpoints NOT available", flush=True)
 
 # Register custom-devices REST handlers (if available)
 if _has_custom_devices:

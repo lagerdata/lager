@@ -47,13 +47,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 3572 (+3 xfailed) |
-| `unit (box)` | `test/unit/box/` | 4723 (+17 skipped) |
+| `unit (cli)` | `test/unit/cli/` | 3626 (+3 xfailed) |
+| `unit (box)` | `test/unit/box/` | 4785 (+17 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 409 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 221 (+1 skipped) |
-| | **Total gated** | **9119** |
+| | **Total gated** | **9235** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -498,9 +498,9 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 320 files)
+### Local Unit Tests (`test/unit/` -- 325 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 172 files)
+#### Box Unit Tests (`test/unit/box/` -- 175 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -549,6 +549,9 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_device_lock.py` | Cross-process advisory fcntl lock preventing USB-TMC pyvisa race |
 | `test_diagnose_jlink_parse.py` | Box-side J-Link diagnose parsers, pinned with captured JLinkExe text |
 | `test_dispatcher_channel_resolution.py` | `resolve_channel`: v0.32.0 regression where int()-only parsing broke named adc/dac channels |
+| `test_drivers_handler.py` | Custom-driver routes (`/drivers`) and `/net/command` dispatch to a custom driver, through a real runner subprocess: typed params and args, bad args refused before spawning, an unmarked method not callable, a stray print not corrupting the result, a driver exception as 502, a timeout as 504, a wrong-role or missing base net as 400, a live `lager uart` session on the base net as 409, a broken bundle as 503 |
+| `test_drivers_manifest.py` | `lager.drivers.manifest`: type names and the reserved built-in names, `lager_api`, param and arg specs (types, ranges, choices, defaults, names the CLI already uses), timeouts, and coercing CLI strings and JSON values to the manifest's types |
+| `test_drivers_registry.py` | `lager.drivers.registry` against a real temp directory: install, replace (old files gone), a failed replace keeping the old version, a bundle zipped with its folder, the type matching the URL, zip-slip, absolute paths and symlinks refused, size limits, a broken bundle listed as an error without hiding the others, and remove refused while nets use the driver |
 | `test_download_file_headers.py` | `GET /download-file` names the attachment after the path it resolved, with the three characters a header value cannot carry reduced -- a filename may legally contain all of them. Spaces and parentheses survive, so the download keeps a name the user recognises |
 | `test_erase_bounds.py` | The shared erase-range rules behind `--erase-start` / `--erase-size` and `DebugNet.erase(start, length)`: `validate_bounds` (ints only, no negative start, no zero size, inside the 32-bit address space, inside the DA1469x QSPI XIP window), `format_bounds` / `bounds_dict` as the service reports them, the loader's `xip_range_to_flash_offset` translation and refusals, and every erase timeout scaling per MiB (loader poll, OpenOCD `flash erase_address`, J-Link Commander); plus `jlink.resolve_erase_range`'s request > script line > default order, loaded standalone |
 | `test_ftdi_dispatch_routing.py` | FTDI nets reach the FTDI drivers through the dispatchers, not only when the drivers are built directly: every FT232H, FT2232H and FT4232H net routes through the I2C, SPI and GPIO dispatchers, `params.interface` and the PID reach the driver, a non-MPSSE channel is refused with the reason, a raw `ftdi://` address is used verbatim, and the shared FTDI name set is pinned to the scanner's `SUPPORTED_USB` table so the dispatchers cannot drift from it again |
@@ -681,7 +684,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_scope_ui_stream.py` | The web scope's credit-paced stream and pushed state: one credit returned for each frame received, only the newest frame kept for drawing, extra credit for a slow round trip, every control following the daemon's state except a field being edited, and an unplug dropping the live session so a replug can Start without a stop first |
 | `test_usb_scanner_picoscope.py` | PicoScope discovery in `usb_scanner.py`: every Pico Technology product ID is recognized, and the channel count comes from the device rather than from a static table |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 127 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 129 files)
 
 | File | What it tests |
 |------|---------------|
@@ -701,6 +704,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_cmd_scope_logic_surface.py` | `lager scope` / `lager logic`: every measurement on the warm `:9000` path, `--display`/`--cursor` kept on the exec path, settings and cursor routing, stream status/stop, every logic action carrying `role=logic`, and out-of-range settings refused locally |
 | `test_configure_docker_dns.py` | `configure_docker_dns`: daemon.json `dns` entries must be bare IPs or Docker refuses to start |
 | `test_configure_docker_dns_rollback.py` | Rollback behavior of `configure_docker_dns.sh` when the DNS optimization fails, and that a run whose staged daemon.json already matches the current one installs nothing and restarts nothing. Two runs, so the second one recognizes what the first settled on |
+| `test_custom_cli.py` | `lager custom` (list nets, list actions, run with string args, `--json`) and the `lager TYPE` short form built from the box's manifest through the real root group: typed options and ranges, `--box` / `--box=` / default box, cache hit and a stale cache refreshed, an unknown type, unreachable box or no box as "No such command", a built-in name never shadowed, `lager --help` never touching the network; plus a sync guard that every top-level command and net role is a reserved driver type on the box |
 | `test_defaults_command.py` | `lager defaults`: add/list/delete/delete-all against a real `.lager`, saved boxes surviving every write, a default box that must be a saved box, each `--*-net` default read back through `get_default_net` (pins the watt-meter key mismatch as a strict xfail), and the net types a command reads that no option can set |
 | `test_deploy_box_image_ref.py` | `setup_and_deploy_box.sh` and `_box_image_ref_for_version` agree on which versions have a published image, computed in one conditional so the two cannot drift; plus the anonymous GHCR digest resolution and the `LAGER_BOX_IMAGE` handoff to `start_box.sh`. The deploy's image and container handoff runs for real with ssh stubbed: the image is pulled before the containers stop, the build cache is cleared and the image handed to `start_box.sh` only after a successful pull, a miss builds with the cache kept, and a stopped daemon ends the deploy first. The generated pull command runs against a fake docker. Also the second prune that reclaims the replaced image once `start_box.sh` tags the new one, pinned by count and order, and `LAGER_BOX_IMAGE_PULL` resolving to the same on and off words `lager update` reads |
 | `test_default_deploy_version.py` | `lager install` and `lager update` with no `--version` deploy the release tag of the CLI (`v{__version__}`), not `main`: the tag resolves as a tag and has a published image, install hands it to the deploy script and says so while an explicit `--version main` is passed through unchanged, install's closing hint matches what was installed, `/etc/lager/ref`'s ref name is read past banner noise, and a defaulted update stops before the rollback prompt so `--yes` cannot downgrade a box |
@@ -712,6 +716,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_devenv_config_commands.py` | `lager devenv mount` / `env`: editing project-local `.lager` volumes and environment keys |
 | `test_devenv_terminal_docker_args.py` | `docker run` args for `devenv terminal` and `exec`; regression for the `--group` bare-flag bug |
 | `test_docker_install_diagnosis.py` | The Docker install step names the command that failed and its exit status, instead of one generic error for an eight-command `&&` chain -- the chain is rendered from the sudo session the way the deploy renders it and EXECUTED under `bash` and `sh`, so the escaping is covered rather than just matched as text, and the later Docker check runs no sudo; `ssh_t`'s stderr filter is synchronous, so the real error cannot land after the caller's generic line (the async form lost the ordering in 26 of 200 runs); its one run-scoped capture file survives a Ctrl-C and reports a TMPDIR it cannot write; and the printed recovery instructions match the chain they replace, including `systemctl enable` |
+| `test_drivers_cli.py` | `lager drivers list/show/install/remove` and `lager nets add-custom` against a fake box: the bundle zipped and PUT with its helper files, replace asking first, local checks for a missing manifest or `driver.py`, the manifest cache cleared on change, remove refused while nets use the driver and forced, an old box told to update; add-custom saving typed params, refusing unknown or missing settings, a base net that is missing or of the wrong role, and an existing name |
 | `test_energy_box_option.py` | `lager energy --box <BOX>` lists nets on the named box, and a group-level `--box` serves `read` and `stats` unless they name their own |
 | `test_hsm_cli.py` | `lager hsm`: the password comes from `--password-stdin`, then `LAGER_HSM_PASSWORD`, then a hidden prompt, and no subcommand has a `--password` option; `delete` and `reset` confirm (and refuse `--password-stdin` without `--yes`); the request each subcommand sends; `sign` data and output forms; the CLI choice lists match the box driver |
 | `test_etc_lager_perms_helper.py` | `cli/deployment/security/etc_lager_perms.sh`, the root-owned helper that replaces install's `sudo find` and recursive `sudo chown`: the REAL script runs under `sh` with the real `find` and a recording `chown`. Everything under `/etc/lager` goes to uid 33 and the caller's group except `authorized_keys.d`, which is pruned; every `chown` carries `-h`, so a symbolic link's target is never re-owned; and any argument, a caller that is not root, and a group that is not a plain number are each refused before anything is touched |

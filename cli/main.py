@@ -79,6 +79,8 @@ from .commands.box.dut import box_dut
 from .commands.box.bench import box_bench
 from .commands.box.ssh_setup import ssh_setup, authorize
 from .commands.box.diagnose import diagnose
+from .commands.box.drivers import drivers
+from .commands.custom import custom
 
 # Utility commands (from commands.utility package)
 from .commands.utility import defaults, binaries, update, exec_, logs, webcam, install, uninstall, install_wheel, login, logout, whoami
@@ -140,12 +142,29 @@ class SectionedGroup(CommandFirstUsageMixin, click.Group):
                             "router"]),
         ("Security", ["hsm"]),
         ("Box setup & management", ["hello", "boxes", "box-config", "dut",
-                                    "nets", "instruments", "ssh", "ssh-setup",
-                                    "defaults", "webcam"]),
+                                    "nets", "instruments", "drivers", "custom",
+                                    "ssh", "ssh-setup", "defaults", "webcam"]),
         ("Install & maintenance", ["update", "install", "uninstall",
                                    "install-wheel", "binaries", "logs",
                                    "terminal"]),
     ]
+
+    def resolve_command(self, ctx, args):
+        """Resolve built-in commands as usual; fall back to custom drivers.
+
+        A name no built-in command answers to may be a custom driver installed
+        on the target box (`lager <type> <NET> <action>`). Only then does the
+        CLI ask the box (cached for five minutes); help and completion never
+        reach this path, and built-in names can never be shadowed.
+        """
+        name = args[0] if args else None
+        if (name and not ctx.resilient_parsing and not name.startswith('-')
+                and self.get_command(ctx, name) is None):
+            from .core.custom_drivers import custom_driver_command
+            cmd = custom_driver_command(name, list(args[1:]))
+            if cmd is not None:
+                return name, cmd, args[1:]
+        return super().resolve_command(ctx, args)
 
     def format_commands(self, ctx, formatter):
         # Collect visible commands keyed by name.
@@ -231,6 +250,8 @@ cli.add_command(supply)
 cli.add_command(battery)
 cli.add_command(eload)
 cli.add_command(nets)
+cli.add_command(drivers)
+cli.add_command(custom)
 cli.add_command(solar)
 cli.add_command(usb)
 cli.add_command(spi)

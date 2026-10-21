@@ -355,6 +355,9 @@ COPY binaries /app/lager/lager/binaries
 COPY box_config /app/lager/lager/box_config
 COPY debug /app/lager/lager/debug
 COPY dispatchers /app/lager/lager/dispatchers
+# drivers/ — custom-driver framework (`lager drivers`); the bundles themselves
+# live in /etc/lager/drivers, not in the image.
+COPY drivers /app/lager/lager/drivers
 # devices/ — declarative catalog of manually-assignable custom instruments
 # (e.g. the RS-232 Rigol DP711). Consumed by the supply dispatcher + drivers.
 COPY devices /app/lager/lager/devices
@@ -402,7 +405,8 @@ import importlib, logging, sys; \
 logging.basicConfig(level=logging.WARNING); \
 [importlib.import_module(f'lager.{m}') for m in \
  ('adc_hs','arm_hs','dac_hs','gpio_hs','thermocouple_hs','watt_hs', \
-  'energy_hs','spi_hs','i2c_hs','solar_hs','hsm_hs','ble')]; \
+  'energy_hs','spi_hs','i2c_hs','solar_hs','hsm_hs','ble','drivers.runner', \
+  'http_handlers.drivers_handler')]; \
 from lager.mcp.data import api_reference; \
 missing = [nt for nt, dotted in api_reference._DRIVER_CLASSES.items() \
            if 'source_module' not in api_reference.API_REFERENCE.get(nt, {})]; \

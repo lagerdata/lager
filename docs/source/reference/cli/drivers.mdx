@@ -1,0 +1,129 @@
+---
+title: Drivers
+description: Install and manage custom instrument drivers on a Lager Box
+---
+
+Install, list and remove custom drivers. A custom driver controls an instrument
+that Lager does not include, such as an in-house test fixture. The driver code is
+stored on the box only, so it never has to be published in Lager or installed on
+each user's computer.
+
+After you install a driver, add a net that uses it with
+[`lager nets add-custom`](/source/reference/cli/nets). Then every user can drive
+that net with the standard CLI, in one of two forms:
+
+```bash
+lager custom RIG_1 home --box my-lager-box   # works for every driver
+lager stepper RIG_1 home --box my-lager-box  # the driver type as a command
+```
+
+See [`lager custom`](/source/reference/cli/custom) for running actions, and
+[Custom drivers](/source/reference/python/custom-drivers) for how to write a driver.
+
+## Syntax
+
+```bash
+lager drivers COMMAND [OPTIONS]
+```
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `list` | List the custom drivers installed on a box |
+| `show` | Show a driver's settings and actions |
+| `install` | Install or replace a driver from a bundle directory |
+| `remove` | Remove a driver from a box |
+
+---
+
+## Command Reference
+
+### `list`
+
+List the custom drivers installed on a box, with their version, status and the
+nets that use them.
+
+```bash
+lager drivers list --box BOX
+```
+
+**Options:**
+- `--box BOX` - Lager Box name or IP address
+- `--json` - Print the box response as JSON
+
+Output:
+```
+Type      Version   Status   SHA-256        Nets
+=======================================================
+stepper   1.2.0     ok       3f1c0e9a2b7d   RIG_1
+```
+
+A driver whose bundle cannot be loaded is listed with `error:` and the reason.
+Other drivers are not affected.
+
+### `show`
+
+Show a driver's net settings, actions and action arguments, as the box reads them
+from the driver's manifest.
+
+```bash
+lager drivers show TYPE --box BOX
+```
+
+**Arguments:**
+- `TYPE` - The driver type, for example `stepper`
+
+**Options:**
+- `--box BOX` - Lager Box name or IP address
+
+### `install`
+
+Install a driver from a bundle directory, or replace an installed driver of the
+same type. The directory must contain `lager_driver.json` and `driver.py`. The box
+checks the manifest, and installs nothing if it is not valid.
+
+```bash
+lager drivers install BUNDLE_DIR --box BOX
+```
+
+**Arguments:**
+- `BUNDLE_DIR` - Local path to the bundle directory
+
+**Options:**
+- `--box BOX` - Lager Box name or IP address
+- `--yes` - Replace an installed driver without asking
+
+The bundle must be smaller than 5 MB. The box keeps it in `/etc/lager/drivers/`,
+so it stays installed after `lager update`.
+
+**Examples:**
+```bash
+lager drivers install ./stepper --box my-lager-box
+lager drivers install ./stepper --box my-lager-box --yes   # replace without asking
+```
+
+### `remove`
+
+Remove a driver from a box. The box refuses while nets use the driver, because
+those nets then stop working.
+
+```bash
+lager drivers remove TYPE --box BOX
+```
+
+**Arguments:**
+- `TYPE` - The driver type
+
+**Options:**
+- `--box BOX` - Lager Box name or IP address
+- `--force` - Remove the driver even if nets still use it
+- `--yes` - Skip the confirmation prompt
+
+## Notes
+
+- A driver type cannot use the name of a built-in net role or `lager` command,
+  for example `supply` or `uart`.
+- The driver runs on the box with the same access as a `lager python` script. It is
+  kept out of the public Lager code, but a person who can connect to the box can
+  read it.

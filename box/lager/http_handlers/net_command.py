@@ -40,6 +40,7 @@ from lager.nets.device_identity import (
     physical_device_id as _physical_device_id,
 )
 from lager.dispatchers import helpers
+from lager.drivers.errors import DriverBusy, DriverFailed, DriverTimeout, DriverUnavailable
 from lager.exceptions import LagerBackendError
 
 logger = logging.getLogger(__name__)
@@ -1697,6 +1698,20 @@ def _resolve_role(netname, requested_role):
     raise NetNotFound(netname if requested_role is None else "%s (role %s)" % (netname, requested_role))
 
 
+def _custom_driver_handler(role):
+    """The custom-driver handler when ``role`` is an installed driver, else None.
+
+    Built-in roles always win: a driver type may not take a built-in role's
+    name (lager.drivers.manifest.RESERVED_TYPES), and ROLE_ACTIONS is checked
+    first.
+    """
+    from lager.drivers import registry
+    if not registry.has(role):
+        return None
+    from lager.http_handlers.drivers_handler import custom_net_action
+    return custom_net_action
+
+
 def register_net_command_routes(app: Flask) -> None:
     """Register the generic /net/command route on the Flask app."""
 
@@ -1724,7 +1739,7 @@ def register_net_command_routes(app: Flask) -> None:
             except NetNotFound as e:
                 return jsonify({'success': False, 'error': "Net '%s' not found" % e}), 404
 
-            handler = ROLE_ACTIONS.get(role)
+            handler = ROLE_ACTIONS.get(role) or _custom_driver_handler(role)
             if handler is None:
                 return jsonify({
                     'success': False,
@@ -1733,6 +1748,10 @@ def register_net_command_routes(app: Flask) -> None:
 
             try:
                 result = handler(netname, role, action, params)
+            except (DriverBusy, DriverTimeout, DriverUnavailable, DriverFailed) as e:
+                # A custom driver's own sentence; each class carries its status.
+                logger.warning("[HTTP] /net/command %s on %s: %s", action, netname, e.message)
+                return jsonify({'success': False, 'error': e.message}), e.status
             except WrongNetForAction as e:
                 # Already a sentence, and naming the nets that would work.
                 return jsonify({'success': False, 'error': str(e)}), 400

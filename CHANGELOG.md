@@ -24,6 +24,12 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   generate` offers EC and Ed25519 only for now: the HSM can take more than a
   minute to generate an RSA key, longer than the box lets one device call
   run. Python scripts can generate RSA keys.
+- **Custom drivers: control an instrument Lager does not include, with no change to
+  lager-cli.** Install a driver bundle (`lager_driver.json` + `driver.py`) on a box with
+  `lager drivers install`, add a net with `lager nets add-custom`, and every user drives it
+  with `lager custom NET ACTION` or `lager TYPE NET ACTION`, built from the manifest the
+  box serves. The driver is stored in `/etc/lager/drivers/` on the box only, survives
+  `lager update`, and runs in its own process for each call.
 
 ### Security
 

@@ -1,0 +1,113 @@
+---
+title: Drivers
+description: 在 Lager Box 上安装和管理自定义仪器驱动
+---
+
+安装、列出和移除自定义驱动。自定义驱动用于控制 Lager 未内置的仪器，例如自研的测试夹具。驱动代码只保存在 Box 上，因此无需发布到 Lager 中，也无需安装到每位用户的电脑上。
+
+安装驱动后，使用 [`lager nets add-custom`](/source/zh/reference/cli/nets) 添加一个使用该驱动的 Net。之后每位用户都可以用标准 CLI 操作该 Net，有两种形式：
+
+```bash
+lager custom RIG_1 home --box my-lager-box   # 适用于所有驱动
+lager stepper RIG_1 home --box my-lager-box  # 以驱动类型作为命令
+```
+
+运行操作请参见 [`lager custom`](/source/zh/reference/cli/custom)，编写驱动请参见[自定义驱动](/source/zh/reference/python/custom-drivers)。
+
+## 语法
+
+```bash
+lager drivers COMMAND [OPTIONS]
+```
+
+## 命令
+
+| 命令 | 说明 |
+|---------|-------------|
+| `list` | 列出 Box 上已安装的自定义驱动 |
+| `show` | 显示驱动的设置和操作 |
+| `install` | 从驱动包目录安装或替换驱动 |
+| `remove` | 从 Box 上移除驱动 |
+
+---
+
+## 命令参考
+
+### `list`
+
+列出 Box 上已安装的自定义驱动，包括版本、状态以及使用它们的 Net。
+
+```bash
+lager drivers list --box BOX
+```
+
+**选项：**
+- `--box BOX` - Lager Box 名称或 IP 地址
+- `--json` - 以 JSON 格式输出 Box 的响应
+
+输出：
+```
+Type      Version   Status   SHA-256        Nets
+=======================================================
+stepper   1.2.0     ok       3f1c0e9a2b7d   RIG_1
+```
+
+驱动包无法加载的驱动会显示 `error:` 及原因，其他驱动不受影响。
+
+### `show`
+
+显示驱动的 Net 设置、操作及操作参数，内容由 Box 从驱动的清单文件中读取。
+
+```bash
+lager drivers show TYPE --box BOX
+```
+
+**参数：**
+- `TYPE` - 驱动类型，例如 `stepper`
+
+**选项：**
+- `--box BOX` - Lager Box 名称或 IP 地址
+
+### `install`
+
+从驱动包目录安装驱动，或替换已安装的同类型驱动。该目录必须包含 `lager_driver.json` 和 `driver.py`。Box 会校验清单文件，如果无效则不会安装任何内容。
+
+```bash
+lager drivers install BUNDLE_DIR --box BOX
+```
+
+**参数：**
+- `BUNDLE_DIR` - 驱动包目录的本地路径
+
+**选项：**
+- `--box BOX` - Lager Box 名称或 IP 地址
+- `--yes` - 替换已安装的驱动时不再询问
+
+驱动包必须小于 5 MB。Box 将其保存在 `/etc/lager/drivers/` 中，因此 `lager update` 之后仍然保留。
+
+**示例：**
+```bash
+lager drivers install ./stepper --box my-lager-box
+lager drivers install ./stepper --box my-lager-box --yes   # 替换时不询问
+```
+
+### `remove`
+
+从 Box 上移除驱动。如果仍有 Net 使用该驱动，Box 会拒绝移除，因为这些 Net 将无法工作。
+
+```bash
+lager drivers remove TYPE --box BOX
+```
+
+**参数：**
+- `TYPE` - 驱动类型
+
+**选项：**
+- `--box BOX` - Lager Box 名称或 IP 地址
+- `--force` - 即使仍有 Net 使用也移除该驱动
+- `--yes` - 跳过确认提示
+
+## 说明
+
+- 驱动类型不能使用内置 Net 角色或 `lager` 命令的名称，例如 `supply` 或 `uart`。
+- 驱动在 Box 上运行，权限与 `lager python` 脚本相同。它不会出现在公开的 Lager 代码中，但能够连接到 Box 的人可以读取它。

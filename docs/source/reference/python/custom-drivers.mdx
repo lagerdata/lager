@@ -1,0 +1,148 @@
+---
+title: Custom drivers
+description: Write a driver for an instrument that Lager does not include
+---
+
+A custom driver controls an instrument that Lager does not include, such as an
+in-house test fixture. You write it once as a small bundle and install it on a
+box with [`lager drivers install`](/source/reference/cli/drivers). Then every user
+can drive its nets with the standard CLI. The driver code is stored on the box
+only.
+
+## Bundle layout
+
+```
+stepper/
+  lager_driver.json   # the manifest
+  driver.py           # class Driver(CustomDriver)
+  helpers.py          # optional; driver.py can import it by name
+```
+
+A driver can import the Python standard library, `pyserial` and the `lager`
+package that is on the box.
+
+## The manifest
+
+The manifest gives the driver's type, its net settings and its actions. The CLI
+builds the `lager <type>` command from it, and the box checks every call against
+it.
+
+```json
+{
+  "type": "stepper",
+  "version": "1.0.0",
+  "lager_api": 1,
+  "description": "Stepper rig controlled over a UART net",
+  "timeout_s": 30,
+  "params": {
+    "uart_net": {"type": "net", "role": "uart", "required": true,
+                 "help": "UART net wired to the controller"},
+    "baudrate": {"type": "int", "default": 115200, "help": "Serial baud rate"}
+  },
+  "actions": {
+    "position": {"help": "Query the current position"},
+    "home": {"help": "Return to the home position"},
+    "jog": {
+      "help": "Move forward for N seconds, then return home",
+      "args": {
+        "seconds": {"type": "float", "min": 0.1, "max": 30, "required": true}
+      }
+    }
+  }
+}
+```
+
+| Key | Description |
+|-----|-------------|
+| `type` | 2 to 32 lower case letters, digits, `-` or `_`. It becomes the net role and the `lager <type>` command. It cannot be a built-in role or command name |
+| `version` | Your version string, shown by `lager drivers list` |
+| `lager_api` | The driver interface version. Use `1` |
+| `description` | One line, shown in help |
+| `timeout_s` | Default timeout for each action, 1 to 600 seconds (default 60). An action can set its own |
+| `params` | Settings stored with each net, given to `lager nets add-custom --param` |
+| `actions` | The actions the driver provides, with their `args` |
+
+Each param and arg has a `type`: `str`, `int`, `float`, `bool` or `choice`. A param
+can also be `net`, which names another saved net of the given `role`; the driver
+then uses that net to reach the hardware. Fields can also have `required`,
+`default`, `min` and `max` (numbers only), `choices` (for `choice`) and `help`.
+Names are lower case letters, digits and `_`; the CLI shows `hold_time` as
+`--hold-time`.
+
+## The driver
+
+```python
+from lager.drivers import CustomDriver, action
+
+
+class Driver(CustomDriver):
+    def setup(self):
+        # base_net() returns the built-in net that a "net" param names
+        self.port = self.base_net("uart_net").connect(
+            baudrate=self.params["baudrate"], timeout=2)
+
+    @action
+    def position(self):
+        self.port.write(b"?\r")
+        return {"message": "position read", "position": int(self.port.readline())}
+
+    @action
+    def jog(self, seconds):
+        self.port.write(b"1\r")
+        ...
+        return {"message": "jogged %s s and returned home" % seconds}
+
+    def teardown(self):
+        self.port.close()
+```
+
+- Only methods marked with `@action` can be called, and each must be named in
+  the manifest. The method gets the action's args as keyword arguments, with the
+  types the manifest gives.
+- `setup()` runs before the action and `teardown()` runs after it, also when the
+  action raises an exception.
+- Return a dict, a value or `None`. A dict's `message` is printed by the CLI; the
+  other keys are shown below it, and `--json` prints the whole result.
+- An exception becomes an error for the user, with its type and message.
+- `print()` output and `self.log` go to the box log, not to the user.
+
+| Attribute | Description |
+|-----------|-------------|
+| `self.name` | The net's name |
+| `self.params` | The net's settings, checked against the manifest |
+| `self.net` | The saved net record |
+| `self.log` | A logger |
+| `self.base_net(param)` | The built-in net that a `net` param names, as a `Net` object |
+
+## How a call runs
+
+Each call runs the driver in a new process on the box. A driver that crashes or
+hangs cannot stop the box. The box loads Lager before the call, so the
+process starts quickly. It loads `driver.py` again for each call, so an
+installed update takes effect on the next call. Two calls on the same net run one after the other. If a
+`lager uart` session holds the UART net that the driver uses, the call is refused
+until that session closes.
+
+## Using a driver from a script
+
+A `lager python` script can use a custom net directly:
+
+```python
+from lager.drivers import open_driver
+
+with open_driver("RIG_1") as rig:
+    rig.home()
+    rig.jog(seconds=3)
+```
+
+## Install and use it
+
+```bash
+lager drivers install ./stepper --box my-lager-box
+lager nets add-custom RIG_1 stepper --param uart_net=UART_1 --box my-lager-box
+lager stepper RIG_1 jog --seconds 3 --box my-lager-box
+```
+
+A driver runs on the box with the same access as a `lager python` script. It is
+kept out of the public Lager code, but a person who can connect to the box can
+read it.

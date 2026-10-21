@@ -30,6 +30,7 @@ lager nets [OPTIONS] [COMMAND]
 | `add` | Add a new net |
 | `add-all` | Auto-create all available nets from connected instruments |
 | `add-batch` | Create multiple nets from a JSON file |
+| `add-custom` | Add a net that uses a [custom driver](/source/reference/cli/drivers) installed on the box |
 | `assign` | Assign a USB-serial cable to an RS-232 instrument the box can't auto-detect |
 | `show` | Show full details of a saved net, including metadata |
 | `state` | Show the live hardware state of every saved net |
@@ -452,6 +453,33 @@ A record with no `instrument` whose address is not in the scan also skips the ro
 
 ```bash
 lager nets add-batch nets.json --box my-lager-box
+```
+
+### `add-custom`
+
+Add a net that uses a [custom driver](/source/reference/cli/drivers) installed on
+the box. The net's type is the driver type, so `lager TYPE NAME ACTION` and
+`lager custom NAME ACTION` both reach it.
+
+```bash
+lager nets add-custom NAME TYPE [--param NAME=VALUE]... --box BOX
+```
+
+**Arguments:**
+- `NAME` - Name for the new net
+- `TYPE` - The driver type, as `lager drivers list` shows it
+
+**Options:**
+- `--param NAME=VALUE` - A setting the driver defines. Repeat it for each setting. `lager drivers show TYPE` lists them
+- `--box BOX` - Lager Box name or IP address
+
+A setting of type `net` names another saved net, for example the UART net that
+the instrument is wired to. That net must exist and have the role the driver asks
+for.
+
+**Example:**
+```bash
+lager nets add-custom RIG_1 stepper --param uart_net=UART_1 --box my-lager-box
 ```
 
 ### `assign`

@@ -935,8 +935,12 @@ def _channel_display(rec):
     after a USB re-enumeration. Show reality when the box provides it
     (live_path=None means the device is currently unplugged); records without
     the field (older boxes, non-uart roles) show the stored pin as before.
+    A custom net has no pin, so it shows its params (``uart_net=UART_1``).
     """
     pin = rec.get("pin", "") or ""
+    if not pin and str(rec.get("instrument", "")).startswith("custom:"):
+        params = rec.get("params") or {}
+        return ", ".join(f"{k}={v}" for k, v in params.items())
     if rec.get("role") == "uart" and "live_path" in rec:
         live = rec.get("live_path")
         if live:
@@ -1014,7 +1018,10 @@ def _display_table(
 
     for key in sorted(by_instrument.keys(), key=_natural_sort_key):
         instrument, addr = key.split("|", 1)
-        display_name = instrument.replace("_", " ")
+        # "Rigol_DP821" reads better as "Rigol DP821", but "custom:probe_test"
+        # names a driver type the user types, so show it as is.
+        display_name = instrument if instrument.startswith("custom:") \
+            else instrument.replace("_", " ")
         if addr and addr != "NA":
             group_label = (display_name, f" [{addr}]")
         else:
@@ -2370,6 +2377,103 @@ def _batch_record_params(record: dict, role: str, instrument: str):
         letter = _normalize_ftdi_interface(params["interface"])
         out.update(_ftdi_interface_params(role, instrument, letter) or {})
     return label, (out or None)
+
+
+def _custom_param_value(name: str, raw: str, spec: dict):
+    """Type one --param value per the driver's manifest; the box checks ranges."""
+    kind = spec.get("type", "str")
+    try:
+        if kind == "int":
+            return int(raw)
+        if kind == "float":
+            return float(raw)
+        if kind == "bool":
+            low = raw.strip().lower()
+            if low in ("1", "true", "yes", "on"):
+                return True
+            if low in ("0", "false", "no", "off"):
+                return False
+            raise ValueError
+    except ValueError:
+        raise click.UsageError(f"--param {name} must be {kind}, got '{raw}'")
+    if kind == "choice" and raw not in spec.get("choices", []):
+        raise click.UsageError(
+            f"--param {name} must be one of {', '.join(spec.get('choices', []))}")
+    return raw
+
+
+@nets.command("add-custom", help="Add a net driven by a custom driver installed on the box")
+@click.argument("name")
+@click.argument("driver_type", metavar="TYPE")
+@click.option("--param", "param_items", multiple=True, metavar="NAME=VALUE",
+              help="A setting the driver defines; repeat for each "
+                   "(see `lager drivers show TYPE`)")
+@click.option("--box", help="Lager Box name or IP")
+@click.pass_context
+def add_custom_cmd(ctx: click.Context, name: str, driver_type: str,
+                   param_items: tuple, box: str | None) -> None:
+    """
+    The net's role is the driver type, so `lager TYPE NAME ACTION` and
+    `lager custom NAME ACTION` both reach it. A setting that names another
+    net (for example the UART net the instrument is wired to) must name an
+    existing net of the role the driver asks for.
+    """
+    from ...core.custom_drivers import driver_request, forget_box_drivers
+
+    resolved_box = _resolve_box(ctx, box)
+    entry = driver_request(ctx, resolved_box, "GET", f"/drivers/{driver_type}")
+    if entry.get("status") != "ok":
+        click.secho(f"Error: driver '{driver_type}' failed to load on the box: "
+                    f"{entry.get('error')}", fg="red", err=True)
+        ctx.exit(1)
+    specs = entry["manifest"].get("params", {})
+
+    raw = {}
+    for item in param_items:
+        key, eq, value = item.partition("=")
+        if not eq or not key:
+            raise click.UsageError(f"--param takes NAME=VALUE, got '{item}'")
+        raw[key.strip().replace("-", "_")] = value.strip()
+    unknown = sorted(set(raw) - set(specs))
+    if unknown:
+        raise click.UsageError(
+            f"Driver '{driver_type}' has no setting {', '.join(unknown)}. "
+            f"Its settings: {', '.join(sorted(specs)) or 'none'}")
+    missing = sorted(p for p, s in specs.items()
+                     if s.get("required") and "default" not in s and p not in raw)
+    if missing:
+        raise click.UsageError(
+            f"Driver '{driver_type}' needs --param for: {', '.join(missing)}")
+
+    recs = _fetch_saved_nets(ctx, resolved_box)
+    if any(r.get("name") == name for r in recs):
+        click.secho(f"Error: a net named '{name}' already exists on this box.",
+                    fg="red", err=True)
+        ctx.exit(1)
+
+    values = {}
+    for pname, value in raw.items():
+        spec = specs[pname]
+        if spec.get("type") == "net":
+            target = next((r for r in recs if r.get("name") == value), None)
+            if target is None:
+                click.secho(f"Error: --param {pname} names net '{value}', which does "
+                            f"not exist on this box.", fg="red", err=True)
+                ctx.exit(1)
+            if target.get("role") != spec.get("role"):
+                click.secho(f"Error: --param {pname} needs a {spec.get('role')} net, but "
+                            f"'{value}' is a {target.get('role')} net.", fg="red", err=True)
+                ctx.exit(1)
+            values[pname] = value
+        else:
+            values[pname] = _custom_param_value(pname, value, spec)
+
+    record = {"name": name, "role": driver_type,
+              "instrument": f"custom:{driver_type}", "params": values}
+    _save_net_http(ctx, resolved_box, record)
+    forget_box_drivers(resolved_box)
+    click.secho(f"Added custom net '{name}' ({driver_type}).", fg="green")
+    click.echo(f"See its actions with: lager custom {name} --box <BOX>")
 
 
 @nets.command("add-batch", help="Add multiple nets from a JSON file")
