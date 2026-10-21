@@ -3,7 +3,7 @@
 # tag regularly, and a moved base gives every layer above it a new digest -- a
 # full ~1 GB download for every box, from a release that may have changed
 # nothing. Dependabot moves the pin as a reviewable PR (.github/dependabot.yml).
-FROM python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258
+FROM python:3.12-slim-bookworm@sha256:6a0e06f5ba0b373d051aabd3fffb9b873f27f9a2a3a14bcbe37dee6f0e3bbc70
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
@@ -50,7 +50,10 @@ RUN apt-get update && apt-get install -y ca-certificates libusb-1.0-0-dev libude
 # dpkg arch → node dist arch.
 # Pin + verify: Debian-signed apt packages are replaced by an upstream tarball,
 # so HTTPS alone is not enough — check SHASUMS256.txt before extracting.
-ENV NODE_VERSION=20.18.1
+# Node compiles its CA roots into the binary, so a trust-store fix reaches the
+# box only through this pin. 22.23.4 rejects the compromised eMudhra
+# intermediates; 24.x has no armv7l tarball, so armhf boxes stay on 22 LTS.
+ENV NODE_VERSION=22.23.4
 RUN arch="$(dpkg --print-architecture)" \
 	&& case "$arch" in \
 		amd64) node_arch=x64 ;; \
@@ -170,6 +173,10 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
 && pip3 install \
 	'bleak==0.22.2' \
 	'requests==2.31.0' \
+	# requests leaves certifi unpinned, so a cached layer kept whatever CA
+	# bundle was current at its build. 2026.10.19 is the first release after
+	# the eMudhra CA key compromise.
+	'certifi>=2026.10.19' \
 	'pyserial==3.5' \
 	'beautifulsoup4==4.12.0' \
 	'esptool==4.6.2' \

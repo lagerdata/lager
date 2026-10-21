@@ -25,6 +25,12 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   minute to generate an RSA key, longer than the box lets one device call
   run. Python scripts can generate RSA keys.
 
+### Security
+
+- **The box container no longer trusts the compromised eMudhra intermediate CAs.**
+  Node.js moves from 20.18.1 (end of life) to 22.23.4, `certifi` is pinned to 2026.10.19
+  or later, and the base image is refreshed. Run `lager update` on each box to pick it up.
+
 ### Fixed
 
 - **A Rigol MSO5000's rise and fall time are no longer the screen record's spacing.**
