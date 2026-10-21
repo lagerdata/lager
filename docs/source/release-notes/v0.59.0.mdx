@@ -1,0 +1,89 @@
+---
+title: "Version 0.59.0"
+description: "October 21, 2026"
+---
+
+## <u>Upgrade Notes</u>
+
+- **Update your boxes.** The security fix, the YubiHSM 2 support and the Rigol fixes run on the
+  box. Run `lager update --box <box-name>` after you upgrade the CLI.
+- **The first update rebuilds the box image.** The base image and Node.js change, so the first
+  `lager update` to this version builds the whole image. Expect it to take about 15 minutes.
+  It also reinstalls the pip, cargo and npm packages set in `lager box-config`.
+- **Node.js on the box moves from 20 to 22.** This affects only npm packages that you install
+  with `lager box-config`. Lager itself does not use Node.js.
+
+## <u>Security</u>
+
+- **A box no longer trusts the compromised eMudhra intermediate CAs after `lager update`.** The
+  private keys of eight eMudhra intermediate certificate authorities were exposed. A box that
+  still trusted them would accept a forged certificate for any website. The update fixes each
+  place on the box that keeps a list of trusted certificates:
+  - `lager update` now upgrades the host's `ca-certificates` package on every run, before it
+    downloads anything. The git fetch and the image pull then use the fixed list. If the box
+    cannot upgrade the package, the update prints the command to run and continues.
+  - In the box container, Python's `certifi` moves to 2026.10.19 or later and Node.js moves
+    from 20.18.1 to 22.23.4. Both stop trusting the compromised certificates.
+- **The CLI requires `certifi` 2026.10.19 or later.** `pip install --upgrade lager-cli` also
+  fixes the computer that runs the CLI.
+
+## <u>Features</u>
+
+- **`hsm` nets for the Yubico YubiHSM 2.** `lager hsm` shows the device information, lists
+  objects, generates asymmetric keys, prints public keys, signs data, deletes objects and resets
+  the HSM. Python scripts get the same operations from `Net.get(name, type=NetType.Hsm)`. The
+  password comes from stdin, `LAGER_HSM_PASSWORD` or a hidden prompt, never from an option, and
+  Lager does not store it. See [`lager hsm`](/source/reference/cli/hsm).
+- **Custom drivers: control an instrument that Lager does not include, with no change to
+  lager-cli.** Install a driver bundle (`lager_driver.json` and `driver.py`) on a box with
+  `lager drivers install`, then add a net with `lager nets add-custom`. Every user drives it with
+  `lager custom NET ACTION` or `lager TYPE NET ACTION`, built from the manifest the box serves.
+  The driver is stored on the box only, survives `lager update`, and runs in its own process for
+  each call. See [`lager drivers`](/source/reference/cli/drivers) and
+  [`lager custom`](/source/reference/cli/custom).
+
+## <u>Bug Fixes</u>
+
+- **A Rigol MSO5000's rise and fall times are no longer the screen record's spacing.** They read
+  anywhere from 0.3 to 3 ms on a 70 ns edge. The measurement set now leaves rise and fall out,
+  and the `/scope` page shows **Read** for them, which asks the scope once. On every scope, rise
+  and fall are timed from the last crossing of the 10% level before the edge.
+- **A Rigol MSO5000 measurement keeps the readouts you put on the scope.** A single
+  `lager scope NET measure`, or a `measurement.<item>()` call in Python, used to clear every
+  readout added at the front panel. Lager now clears only the readout that its own query added,
+  and puts the scope's measurement source back afterwards.
+- **Measurements that a Rigol MSO5000 rejects now fail at once, and name the right command.**
+  `measurement.waveform_period_area()` and the eight delay and phase calls used to wait 5 seconds
+  and then blame the wrong command. They now raise `UnsupportedScopeFeature` before anything is
+  sent. `measure_vavg` now asks for the value the scope answers.
+- **The `/scope` page's measurement panel no longer fails when a quantity is absent.** A missing
+  value, such as the period of a DC level, used to replace the whole panel with an error. The
+  panel now shows a dash.
+- **`measurement.all()` on a Rigol's instrument net is refused.** It silently returned channel
+  1's values. It now says to use a channel net, as the CLI does.
+- **The hardware service no longer writes secret arguments to its log.** The `/invoke` log line
+  now masks keyword arguments such as `password`, `pin` and `private_key_pem`.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.59.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli==0.59.0
+```
+
+Then update your boxes:
+
+```bash
+lager update --box <box-name>
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.59.0/)

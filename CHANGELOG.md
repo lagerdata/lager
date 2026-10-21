@@ -12,6 +12,8 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+## [0.59.0] - 2026-10-21
+
 ### Added
 
 - **`hsm` nets for the Yubico YubiHSM 2.** `lager hsm` shows the device
