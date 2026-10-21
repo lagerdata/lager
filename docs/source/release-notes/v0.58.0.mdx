@@ -1,0 +1,126 @@
+---
+title: "Version 0.58.0"
+description: "October 20, 2026"
+---
+
+## <u>Upgrade Notes</u>
+
+- **Update your boxes.** The webcam, oscilloscope, PicoScope and `lager nets state` changes run
+  on the box. Run `lager update --box <box-name>` after you upgrade the CLI.
+- **Starting a webcam stream no longer resets the camera's settings.** Before, each start turned
+  autofocus on and set brightness to 128. Now a start applies only the controls that you set
+  through lager. A script that relied on the reset must now set autofocus and brightness itself.
+- **`lager nets state` reports new reasons for a missing reading.** A net now reads
+  `instrument-absent`, `instrument-timeout`, `probe-cooldown` or `device-busy` where it read a null
+  with no reason before. Update any script that matches on these values.
+
+## <u>Features</u>
+
+- **A new webcam viewer page, in the style of the oscilloscope page.** It has a Net picker, the
+  camera's model, frame size, frame rate and a stream status. It adds a **Snapshot** button and
+  zoom buttons. New controls:
+  - Resolution and frame rate, from the modes that the camera offers. Before, streams ran at
+    640x480 only.
+  - Pan while zoomed: drag the picture, use the arrow keys, or double-click a point.
+  - Exposure and gain, on cameras that have them.
+  - Rotation in quarter turns, a flip in either direction, and full screen.
+
+  The stream keeps these settings, so every viewer sees the same picture. The settings return
+  after a restart, and the feed reconnects by itself after a dropped connection.
+- **Every image control of a webcam, on the viewer page and in Python.** White balance,
+  contrast, saturation, hue, gamma, sharpness, backlight compensation and power line frequency
+  join exposure, gain, focus and brightness. Each control uses the camera's own range. The
+  webcam net gains `controls()`, `set_control()` and `lock_controls()`. `lock_controls()` turns
+  every auto mode off, so pictures compare from run to run.
+- **`snapshot()` and `frame()` on a webcam net read frames from the running stream.** A
+  `lager python` script gets a JPEG or a numpy array without opening the camera.
+- **Support for the ELP global-shutter camera (AR0234, USB ID `32e4:0234`).** `lager nets add-all`
+  and `lager nets add` offer it as a webcam.
+- **`lager webcam NET start --open` opens the stream in your browser.** On a stream that already
+  runs, it reopens the viewer with a fresh link.
+- **A Screenshot button on the oscilloscope page.** It saves the waveform view as a PNG. A line
+  under the trace gives the model, the net, the time base, each channel's scale, the trigger
+  and the time. It works for every scope on the page.
+- **`GET /nets/state?stream=1` streams each instrument's net states as the box reads them.** The
+  answer is newline-delimited JSON, with a final line that lists any nets that ran out of time.
+  A box that supports it sets `netsStateStream` in its `/status` capabilities.
+
+## <u>Bug Fixes</u>
+
+- **`lager debug NET flash` erased the target when you gave no image.** With no `--hex`, `--elf`
+  or `--bin`, or with two of them, it erased the chip and then refused. It now refuses before it
+  contacts the box.
+- **`lager debug NET memrd --json` printed progress lines before the JSON.** When the command
+  connected to the debugger first, the output did not parse. Those lines now go to stderr.
+- **A webcam's focus and brightness were limited to 0-255.** Some cameras use other ranges, so a
+  start set brightness to the maximum on some of them. Focus and brightness now use the camera's
+  own range.
+- **`lager nets state` waited 8 seconds when one instrument was unplugged or silent.** The box now
+  skips an instrument that is not on the USB bus. It stops waiting for one after 3 seconds, and
+  it does not ask that instrument again for 30 seconds.
+- **A four-channel PicoScope offered only channels 1 and 2.** This happened when the USB product
+  string named the series, such as 2000A, rather than the model. The box now takes the channel
+  count from the model that the scope daemon detects.
+- **The oscilloscope page waited for Connect while the scope ran.** It now connects as soon as it
+  knows the scope. When the stream closes, the page dims the last measurements and marks them as
+  old.
+- **A Rigol MSO5000 failed every command when its capture card was missing.** Now every command
+  except the live view works. The live view names the USB ports that have a video device.
+- **A Rigol MSO5000 showed rise and fall times of up to 3 ms on a 70 ns edge.** The set now asks
+  the scope for those two values. On every scope, the timing starts at the last crossing of the
+  10% level before the edge.
+- **A Rigol MSO5000's live view slowed to one or two frames a second while the page showed
+  measurements.** The daemon now computes the measurements from one screen record, in about
+  0.2 seconds. A single `lager scope NET measure` still asks the scope.
+- **A Rigol MSO5000's live view read the wrong volts after a volts/div change.** The daemon now
+  reads the channel's offset back with the new scale.
+- **A Rigol MSO5000's live view showed a spike and a false "Channel A clipped" warning.** The
+  scope's trigger marker caused both. The daemon now leaves the marker out. The page draws each
+  channel in the scope's own color.
+- **The scope's side menu covered part of a Rigol MSO5000's live view when it returned.** The daemon now finds
+  the menu and hides it.
+- **A Rigol MSO5000's live view did not return after a power cycle.** A power cycle turns the
+  scope's HDMI output off. The box now turns it back on through the scope's menus when the
+  capture card shows no picture.
+- **A new Rigol scope daemon started before the old one stopped.** The new daemon then found
+  the USB interface in use. The box now waits for the old daemon to exit.
+- **`lager scope NET roll on` on a Rigol gave the wrong reason.** It now says that the scope has
+  no roll mode.
+
+## <u>Improvements</u>
+
+- **`lager scope NET stream web` tells you when no browser opens.** Over SSH, it now asks you to
+  open the link yourself.
+- **The automated tests cover more of the CLI and the hardware.** The pull-request gate now runs
+  every CLI command group. The hardware bench now runs nightly and on each release tag, not on
+  every merge. The nightly run adds the supply, LabJack, MCC USB-202, USB hub, `lager debug` and
+  Python API suites. Bench checks that never failed now fail on a real fault.
+
+## <u>Known Limitations</u>
+
+- **Two ELP global-shutter cameras on one box appear as one camera.** Every unit reports the same
+  serial number. Add the second net by hand.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.58.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli==0.58.0
+```
+
+Then update your boxes:
+
+```bash
+lager update --box <box-name>
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.58.0/)
