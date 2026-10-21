@@ -481,6 +481,18 @@ def _brief_thermocouple(netname):
         return None
 
 
+def _brief_hsm(netname):
+    """HSM: fw <version>/sn <serial>/log <used>/<size>. Needs no login."""
+    from .net_command import _proxy
+    try:
+        r = _proxy(netname, "hsm").info()
+        return "fw %s/sn %s/log %s/%s" % (
+            r["firmware"], r["serial"], r["log_used"], r["log_size"])
+    except Exception as e:
+        logger.debug("brief_hsm %s: %s", netname, e)
+        return None
+
+
 def _brief_eload(netname):
     """E-load: <mode>/<on|off>/<V>/<I>."""
     from ..dispatchers import helpers
@@ -656,6 +668,7 @@ _BRIEF_PROBES = {
     "adc": _brief_adc,
     "dac": _brief_dac,
     "thermocouple": _brief_thermocouple,
+    "hsm": _brief_hsm,
     "eload": _brief_eload,
     "webcam": _brief_webcam,
     "watt-meter": _brief_watt,

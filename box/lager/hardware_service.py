@@ -481,6 +481,22 @@ def _sync_device_channel(device, net_info):
         logger.warning(f"Could not sync device channel to {channel!r}: {e}")
 
 
+# Keyword arguments whose values must never reach the log. The log is a
+# world-readable file under /tmp, which the box host shares with the container.
+_SECRET_KWARGS = frozenset({
+    'password', 'passphrase', 'secret', 'pin',
+    'private_key', 'private_key_pem', 'key_password',
+})
+
+
+def _redact_kwargs(kwargs):
+    """A copy of ``kwargs`` for logging, with every secret value replaced."""
+    if not isinstance(kwargs, dict):
+        return kwargs
+    return {key: ('***' if key in _SECRET_KWARGS else value)
+            for key, value in kwargs.items()}
+
+
 @app.route('/invoke', methods=['POST'])
 def invoke():
     """
@@ -526,7 +542,8 @@ def invoke():
             logger.warning(f"Safety interlock refused {device_name}.{function_name}: {violation}")
             return jsonify(violation.as_dict()), 403
 
-        logger.info(f"Invoking {device_name}.{function_name}({args}, {kwargs}) with net_info={net_info}")
+        logger.info(f"Invoking {device_name}.{function_name}({args}, {_redact_kwargs(kwargs)}) "
+                    f"with net_info={net_info}")
 
         # Try to get cached device or create new one
         # For multi-channel devices (e.g., Rigol DP821), cache by address to avoid "Resource busy" errors

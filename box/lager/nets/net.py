@@ -651,6 +651,10 @@ class Net:
                 if role == NetType.Thermocouple:
                     return PhidgetThermocouple(name, _norm_pin(item), _get_location(item))
 
+                if role == NetType.Hsm:
+                    from ..security.hsm.yubihsm2 import YubiHsm2
+                    return YubiHsm2(name, item.get('address'))
+
                 if role == NetType.WattMeter:
                     instrument = (item.get('instrument') or '').lower()
                     if 'joulescope' in instrument or 'js220' in instrument:

@@ -78,6 +78,8 @@ def physical_device_id(role, instrument, rec):
         return "ppk2:" + (addr or "ANY")
     if role == "thermocouple" or "phidget" in inst:
         return "phidget:" + (addr or "ANY")
+    if role == "hsm" or "yubihsm" in inst:
+        return "yubihsm:" + (serial or addr or "ANY")
     if role == "arm" or "dexarm" in inst or "rotrics" in inst:
         # One serial port per arm; the lock key is the arm's serial number
         # (saved under rec["serial"] or location.serial_number) or address.

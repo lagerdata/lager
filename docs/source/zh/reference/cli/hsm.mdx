@@ -1,0 +1,251 @@
+---
+title: HSM
+description: 通过 hsm Net 检查和配置硬件安全模块
+---
+
+通过 Lager Box 上的 `hsm` Net 检查硬件安全模块（HSM），并在其上配置密钥。私钥由 HSM 生成并保存在 HSM 中。Lager 只读取公钥和签名。
+
+## 语法
+
+```bash
+lager hsm NET_NAME COMMAND [OPTIONS]
+```
+
+如果不给出命令，Lager 会列出 Box 上的 `hsm` Net：
+
+```bash
+lager hsm --box my-lager-box
+```
+
+## 命令
+
+| 命令 | 登录 | 说明 |
+|---------|-------|-------------|
+| `lager hsm NET_NAME info` | 否 | 显示固件、序列号和审计日志用量 |
+| `lager hsm NET_NAME blink` | 是 | 让 HSM 的 LED 闪烁，以便找到设备 |
+| `lager hsm NET_NAME objects` | 是 | 列出 HSM 中保存的对象 |
+| `lager hsm NET_NAME generate` | 是 | 在 HSM 上生成非对称密钥 |
+| `lager hsm NET_NAME pubkey` | 是 | 以 PEM 格式打印非对称密钥的公钥 |
+| `lager hsm NET_NAME sign` | 是 | 用非对称密钥对数据签名 |
+| `lager hsm NET_NAME delete` | 是 | 从 HSM 删除一个对象 |
+| `lager hsm NET_NAME reset` | 是 | 擦除 HSM 并恢复出厂登录 |
+
+---
+
+## 登录
+
+需要登录的命令使用 HSM 上的一个认证密钥。用 `--auth-key-id` 给出密钥 ID。默认值是 `1`，即出厂认证密钥。
+
+Lager 按以下顺序读取密码：
+
+1. 如果给出 `--password-stdin`，读取 stdin 的第一行。
+2. `LAGER_HSM_PASSWORD` 环境变量。
+3. 不显示输入内容的提示符。
+
+没有 `--password` 选项。命令行上的值会留在 shell 历史中，其他用户也可以在进程列表中看到它。
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--auth-key-id INTEGER` | 用于登录的认证密钥，`1`–`65535`（默认：`1`） |
+| `--password-stdin` | 从 stdin 的第一行读取密码 |
+
+<Warning>
+如果您的计算机与 Box 之间的网络不可信，只能通过 Tailscale 或 SSH 隧道使用 Box。CLI 通过明文 HTTP 将密码发送到 Box API，这与其他所有 Box API 流量相同。Lager 不保存密码，Box 会从日志中去掉密码。
+</Warning>
+
+出厂登录是认证密钥 `1`，密码为 `password`。在 HSM 上存放重要密钥之前，请先替换这个密钥。
+
+---
+
+## `lager hsm NET_NAME info`
+
+显示固件版本、序列号、部件号和审计日志用量。此命令不登录。
+
+### 选项
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--box BOX` | Lager Box 名称或 IP 地址 |
+| `--json` | 输出机器可读的 JSON 对象，而不是格式化文本 |
+| `--help` | 显示帮助信息并退出 |
+
+### 输出
+
+```
+HSM 'hsm1':
+  Firmware:    2.4.0
+  Serial:      12345678
+  Part number: 78CLUFX5000P
+  Log:         3/62 entries
+  Algorithms:  55 supported
+```
+
+---
+
+## `lager hsm NET_NAME blink`
+
+让 HSM 上的 LED 闪烁。用此命令在多台 HSM 中找到其中一台。
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--box BOX` | Lager Box 名称或 IP 地址 |
+| `--seconds INTEGER` | 闪烁时长，`0`–`255`（默认：`5`） |
+| `--auth-key-id`、`--password-stdin` | 参见[登录](#登录) |
+
+---
+
+## `lager hsm NET_NAME objects`
+
+列出认证密钥可以看到的 HSM 对象。
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--box BOX` | Lager Box 名称或 IP 地址 |
+| `--type TYPE` | 只显示此类型的对象：`asymmetric-key`、`authentication-key`、`opaque`、`wrap-key`、`hmac-key`、`template`、`otp-aead-key` |
+| `--label TEXT` | 只显示带有此标签的对象 |
+| `--json` | 输出机器可读的 JSON 数组，而不是表格 |
+| `--auth-key-id`、`--password-stdin` | 参见[登录](#登录) |
+
+### 输出
+
+```
+ID      Type                Algorithm                     Domains  Label
+0x0001  authentication-key  aes128-yubico-authentication  1-16     DEFAULT AUTHKEY CHANGE THIS ASAP
+0x0005  asymmetric-key      ec-p256                       1        signer
+```
+
+---
+
+## `lager hsm NET_NAME generate`
+
+在 HSM 上生成非对称密钥。私钥不会离开 HSM。命令以 PEM 格式打印公钥。
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--box BOX` | Lager Box 名称或 IP 地址 |
+| `--algorithm ALGORITHM` | 必填。取值为 `ec-p256`、`ec-p384`、`ec-p521`、`ec-k256`、`ed25519` 之一 |
+| `--id ID` | 密钥的对象 ID，十进制或十六进制（默认：`0`，由 HSM 选择） |
+| `--label TEXT` | 与密钥一起保存的标签 |
+| `--domains TEXT` | 密钥所属的域，用逗号分隔（默认：`1`） |
+| `--capability TEXT` | 赋予密钥的能力。可以多次给出。默认值是该算法的签名能力 |
+| `--json` | 输出带有 `id` 和 `public_key_pem` 的 JSON 对象，而不是 PEM |
+| `--auth-key-id`、`--password-stdin` | 参见[登录](#登录) |
+
+默认能力是：EC 密钥为 `sign-ecdsa`，Ed25519 密钥为 `sign-eddsa`。认证密钥必须具有您赋予新密钥的每一项能力。
+
+<Note>
+CLI 目前不能生成 RSA 密钥。HSM 生成一个 RSA 密钥需要几秒到一分多钟。这超过了 Box 允许单次设备调用运行的时长，超过后 Box 会认为设备已卡住。要生成 RSA 密钥，请在 `lager python` 脚本中使用 [Python API](#python-api)。CLI 可以用 HSM 上已有的 RSA 密钥签名。
+</Note>
+
+```bash
+lager hsm hsm1 generate --algorithm ec-p256 --id 0x0005 --label signer --box my-lager-box > signer.pem
+```
+
+---
+
+## `lager hsm NET_NAME pubkey`
+
+以 PEM 格式打印非对称密钥的公钥。
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--box BOX` | Lager Box 名称或 IP 地址 |
+| `--id ID` | 必填。密钥的对象 ID，十进制或十六进制 |
+| `--auth-key-id`、`--password-stdin` | 参见[登录](#登录) |
+
+---
+
+## `lager hsm NET_NAME sign`
+
+用非对称密钥对数据签名。命令以十六进制打印签名，或将原始签名写入文件。
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--box BOX` | Lager Box 名称或 IP 地址 |
+| `--id ID` | 必填。密钥的对象 ID，十进制或十六进制 |
+| `--mechanism MECHANISM` | 必填。取值为 `ecdsa-sha256`、`ecdsa-sha384`、`ecdsa-sha512`、`eddsa`、`rsa-pkcs1-sha256`、`rsa-pkcs1-sha384`、`rsa-pkcs1-sha512`、`rsa-pss-sha256`、`rsa-pss-sha384`、`rsa-pss-sha512` 之一 |
+| `--data-file PATH` | 存放待签名数据的文件 |
+| `--data-hex TEXT` | 待签名数据，十六进制 |
+| `--out PATH` | 将原始签名写入此文件，而不是打印十六进制 |
+| `--auth-key-id`、`--password-stdin` | 参见[登录](#登录) |
+
+`--data-file` 和 `--data-hex` 必须且只能给出一个。HSM 自己计算数据的哈希，因此请给出消息本身，而不是摘要。ECDSA 签名采用 DER 编码。
+
+```bash
+lager hsm hsm1 sign --id 0x0005 --mechanism ecdsa-sha256 \
+  --data-file msg.bin --out msg.sig --box my-lager-box
+openssl dgst -sha256 -verify signer.pem -signature msg.sig msg.bin
+```
+
+---
+
+## `lager hsm NET_NAME delete`
+
+从 HSM 删除一个对象。此操作无法撤销。
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--box BOX` | Lager Box 名称或 IP 地址 |
+| `--id ID` | 必填。要删除的对象 ID，十进制或十六进制 |
+| `--type TYPE` | 对象类型（默认：`asymmetric-key`） |
+| `--yes` | 不要求确认 |
+| `--auth-key-id`、`--password-stdin` | 参见[登录](#登录) |
+
+---
+
+## `lager hsm NET_NAME reset`
+
+擦除 HSM 上的所有对象并恢复出厂登录。此操作无法撤销。HSM 会重启，命令会等到它再次应答。
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--box BOX` | Lager Box 名称或 IP 地址 |
+| `--yes` | 不要求确认 |
+| `--auth-key-id`、`--password-stdin` | 参见[登录](#登录) |
+
+确认提示也读取 stdin。因此，带 `--password-stdin` 的 `delete` 和 `reset` 还需要 `--yes`。
+
+---
+
+## 创建 HSM Net
+
+```bash
+lager instruments --box my-lager-box
+lager nets add hsm1 hsm 0 USB0::0x1050::0x0030::12345678::INSTR --box my-lager-box
+```
+
+`hsm` Net 只有一个通道 `0`。地址中带有 HSM 的序列号，因此连接多台 HSM 时，Net 始终对应同一台设备。
+
+## Python API
+
+`lager python` 脚本从 Net 获取驱动。每个需要登录的方法都以关键字参数接收 `auth_key_id` 和 `password`。
+
+```python
+import os
+from lager import Net, NetType
+
+hsm = Net.get("hsm1", type=NetType.Hsm)
+auth = {"auth_key_id": 1, "password": os.environ["LAGER_HSM_PASSWORD"]}
+
+print(hsm.info()["firmware"])
+key = hsm.generate_key(0x0005, "ec-p256", label="signer", **auth)
+signature = hsm.sign(0x0005, b"message", "ecdsa-sha256", **auth)
+```
+
+用 `lager python script.py --box my-lager-box --passenv LAGER_HSM_PASSWORD` 运行脚本。`--passenv` 选项使密码不出现在命令行上。
+
+## 支持的硬件
+
+| 厂商 | 型号 | Net 类型 | USB VID:PID |
+|--------------|-------|----------|-------------|
+| Yubico | YubiHSM 2（固件 2.4） | `hsm` | `1050:0030` |
+
+## 故障排除
+
+| 错误 | 原因 | 解决方法 |
+|-------|-------|-----|
+| `Authentication failed for auth key N` | 密码或密钥 ID 错误 | 给出正确的密钥 ID 和密码 |
+| `No permission to open the YubiHSM USB device` | Box 上缺少 `1050:0030` 的 udev 规则 | 更新 Box 软件，它会安装该规则 |
+| `The YubiHSM is in use by another process` | 其他程序（例如 `yubihsm-connector`）占用了设备 | 在 Box 上停止该程序 |
+| `The HSM has no free sessions` | 之前的会话没有关闭 | 等待 30 秒，让 HSM 关闭空闲会话 |
+| `Auth key N lacks the capability X` | 认证密钥没有能力 X | 用具有该能力的密钥登录 |

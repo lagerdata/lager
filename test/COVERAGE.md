@@ -47,13 +47,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 3534 (+3 xfailed) |
-| `unit (box)` | `test/unit/box/` | 4657 (+16 skipped) |
+| `unit (cli)` | `test/unit/cli/` | 3570 (+3 xfailed) |
+| `unit (box)` | `test/unit/box/` | 4718 (+17 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
-| `unit (mcp)` | `test/mcp/unit/` | 405 |
+| `unit (mcp)` | `test/mcp/unit/` | 409 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 221 (+1 skipped) |
-| | **Total gated** | **9011** |
+| | **Total gated** | **9112** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -351,6 +351,7 @@ See "What CI does NOT run" for which assets execute.
 | **Thermocouple** | Phidget temperature hub | 3 files | `thermocouple.sh` | Yes |
 | **Webcam** | Logitech BRIO / C930e, ELP global-shutter (AR0234) | 1 file | — | Yes |
 | **Robotic Arm** | Rotrics Dexarm | 1 file | `arm.sh` | Yes |
+| **HSM** | Yubico YubiHSM 2 | 1 file | `hsm.sh` | Yes |
 
 The Acroname, YKUSH, and Plugable USB-hub drivers also have hardware-free unit coverage
 (`test/unit/box/test_acroname_driver.py`, `test_ykush_driver.py`,
@@ -457,15 +458,16 @@ Five other param types (`EnvVarType`, `PortForwardType`, `MemoryAddressType`, `H
 
 ```
 test/
-├── api/                  # Python API tests (85 files, run on box via `lager python`)
+├── api/                  # Python API tests (87 files, run on box via `lager python`)
 │   ├── communication/    # 31 files: I2C, SPI, UART, BLE, BluFi, WiFi, debug
 │   ├── io/               # 18 files: ADC, DAC, GPIO, PWM, pin conflict, USB-202, U3
 │   ├── peripherals/      #  9 files: scope, arm, webcam, rotation, actuate
 │   ├── power/            #  7 files: supply (3), battery (2), solar, eload
 │   ├── sensors/          #  9 files: thermocouple, watt, energy, joulescope, PPK2
+│   ├── security/         #  1 file: HSM
 │   ├── usb/              #  8 files: USB hub enable/disable/toggle/stress, Acroname
 │   └── utility/          #  2 files: binaries, net listing
-├── integration/          # Bash integration tests (39 files, run from host via harness.sh)
+├── integration/          # Bash integration tests (40 files, run from host via harness.sh)
 │   ├── communication/    # 15 files: I2C, SPI, UART, WiFi, debug, J-Link
 │   ├── infrastructure/   #  7 files: boxes, nets, deployment, devenv, python, generic, box config
 │   ├── power/            #  6 files: supply, battery, solar, eload, keysight, multichannel
@@ -473,6 +475,7 @@ test/
 │   ├── usb/              #  3 files: USB, Ykush, Acroname
 │   ├── measurement/      #  1 file: logic analyzer
 │   ├── sensors/          #  1 file: thermocouple
+│   ├── security/         #  1 file: HSM
 │   └── peripherals/      #  1 file: robotic arm
 ├── mcp/                  # MCP server tests (pytest)
 │   ├── unit/             # 11 files: mocked, no hardware -- GATED
@@ -495,9 +498,9 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 316 files)
+### Local Unit Tests (`test/unit/` -- 320 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 169 files)
+#### Box Unit Tests (`test/unit/box/` -- 172 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -557,6 +560,8 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_gdbserver_zombie_status.py` | Defunct/zombie gdbserver detection that a bare `os.kill(pid, 0)` check passes |
 | `test_hardware_service_fail_fast.py` | `/invoke` fail-fast locking and hang recovery: per-device and per-address locks answer `device-busy` rather than queueing behind a wedged `open_resource`, and a hung driver call expires into `invoke-timeout` plus a supervised restart |
 | `test_hardware_service_retry.py` | Close-then-recreate retry path for concurrent Keithley resource collisions; a driver's not-ready sentence (a PicoScope still opening) returned bare with 503 and `error_type: not-ready`, outside the retry |
+| `test_hardware_service_redaction.py` | The `/invoke` log line masks secret keyword arguments (`password`, `pin`, `private_key_pem`, ...) while the driver still receives them |
+| `test_hsm_net_command.py` | `/net/command` for `hsm` nets: each action reaches its `hsm_hs` method with the login kwargs, a missing password and unknown algorithm, mechanism or object type answer 400 before the device is reached, the password never appears in a reply, and hardware_service's wrapper text is dropped from errors |
 | `test_host_ops.py` | apt_install and sysctl_apply SSH execution branches. Also `udev_apply`, the box-config sudoers rules and bootstrap command, the v2 marker pin, username validation and the bootstrap texts |
 | `test_hub_lock_fail_fast.py` | The same treatment on the USB hub path: bounded waits on the module-level and per-hub locks (`hub-busy`), a per-operation deadline (`hub-op-timeout`), the restart that follows, and the state sweep's per-hub sub-budget (clamp + `hub-skipped`) |
 | `test_jlink_commander_use_poll.py` | JLinkExe spawned with use_poll=True to avoid fd >= 1024 select() failure |
@@ -646,6 +651,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_webcam_ui.py` | The webcam viewer page (`static/webcam/webcam.js`) under node with a stand-in DOM: `LIVE` / `STALLED` / `WAITING` / `OFFLINE` from `/api/info`, a gateway 401 signing the page out and stopping the feed, no HTML sink in the script, the Net picker moving to another stream's port and refusing any value that is not a port on this host, the zoom and focus POSTs, the snapshot file name, the resolution pickers and a refused mode's note, exposure and gain shown only when the camera has them, gain held while auto exposure is on, focus and brightness sliders in the camera's range and hidden without them, white balance held under auto, a slider for each image control the camera has, the power line frequency options, drag, arrow-key and double-click panning, and the rotate and flip POSTs |
 | `test_plugable_driver.py` | Plugable RTS5411 dock driver: USB hub-class per-port power switching over pyusb -- ganged/no-switching hubs refused without touching a port, a disable NOT judged by device presence (the kernel cannot see a disconnect while a port is unpowered, so the sysfs node persists), cycle restoring power on every failure path and reporting re-enumeration, off-time range enforced before any transfer, SuperSpeed companion pairing refused when ambiguous, network-device and inter-hub-link guards, one-session batch reads, handle disposal on every path |
 | `test_ykush_driver.py` | YKUSH USB hub driver: device-contention regression from an indefinitely cached handle |
+| `test_yubihsm2_driver.py` | YubiHSM 2 driver against a fake `yubihsm` namespace: one open, login and close per call (also on error), signing mechanisms, key generation defaults, `yubihsm` errors mapped to messages that never carry the password, reset waiting for the device to return, and the `hsm_hs` base64 adapter. When `yubihsm` is installed, its enum names are checked against the driver's tables |
 | `test_automation_exports.py` | Static parse of `automation/__init__.py`'s lazy export table: no name guarded twice, every returned driver reachable under its own name, everything in `__all__` resolvable -- the copy-paste class of defect that made one driver answer to another's name |
 | `test_io_imports.py` | The `lager.io.*` import surface and re-export identity; asserts the removed root-level aliases stay removed |
 | `test_bench_endpoint.py` | `GET /bench` on the box HTTP server: the body is the bench manifest built from the loaded MCP state (`box_id`, nets with `dut_connection`, `reference_keys`, `metadata_sources`, `capability_bindings`); `ETag` is the quoted content hash and a matching `If-None-Match` in any spelling (quoted, weak, bare, listed, `*`) gets 304 with no body; a build failure is a 500 that says why; the first request on a process that never called `init_state` loads from disk once |
@@ -675,7 +681,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_scope_ui_stream.py` | The web scope's credit-paced stream and pushed state: one credit returned for each frame received, only the newest frame kept for drawing, extra credit for a slow round trip, every control following the daemon's state except a field being edited, and an unplug dropping the live session so a replug can Start without a stop first |
 | `test_usb_scanner_picoscope.py` | PicoScope discovery in `usb_scanner.py`: every Pico Technology product ID is recognized, and the channel count comes from the device rather than from a static table |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 126 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 127 files)
 
 | File | What it tests |
 |------|---------------|
@@ -707,6 +713,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_devenv_terminal_docker_args.py` | `docker run` args for `devenv terminal` and `exec`; regression for the `--group` bare-flag bug |
 | `test_docker_install_diagnosis.py` | The Docker install step names the command that failed and its exit status, instead of one generic error for an eight-command `&&` chain -- the chain is rendered from the sudo session the way the deploy renders it and EXECUTED under `bash` and `sh`, so the escaping is covered rather than just matched as text, and the later Docker check runs no sudo; `ssh_t`'s stderr filter is synchronous, so the real error cannot land after the caller's generic line (the async form lost the ordering in 26 of 200 runs); its one run-scoped capture file survives a Ctrl-C and reports a TMPDIR it cannot write; and the printed recovery instructions match the chain they replace, including `systemctl enable` |
 | `test_energy_box_option.py` | `lager energy --box <BOX>` lists nets on the named box, and a group-level `--box` serves `read` and `stats` unless they name their own |
+| `test_hsm_cli.py` | `lager hsm`: the password comes from `--password-stdin`, then `LAGER_HSM_PASSWORD`, then a hidden prompt, and no subcommand has a `--password` option; `delete` and `reset` confirm (and refuse `--password-stdin` without `--yes`); the request each subcommand sends; `sign` data and output forms; the CLI choice lists match the box driver |
 | `test_etc_lager_perms_helper.py` | `cli/deployment/security/etc_lager_perms.sh`, the root-owned helper that replaces install's `sudo find` and recursive `sudo chown`: the REAL script runs under `sh` with the real `find` and a recording `chown`. Everything under `/etc/lager` goes to uid 33 and the caller's group except `authorized_keys.d`, which is pruned; every `chown` carries `-h`, so a symbolic link's target is never re-owned; and any argument, a caller that is not root, and a group that is not a plain number are each refused before anything is touched |
 | `test_install_sudo_handoff.py` | `lager install` hands the deploy script the box-config sudoers text in its environment, so one sudo session writes both files: the text is exactly what the other writer installs, a name that is not a plain unix username gets nothing, and a stale variable in the operator's shell is never inherited. Over a faked transport, install opens no terminal when the grant is already live, and warns of a prompt only on the branch that prompts |
 | `test_docker_start_limit.py` | The installer must not trip docker.service's `StartLimitBurst=3`: one service start per step, `reset-failed` before every restart, and `start-limit-hit` diagnosed as itself rather than a bad daemon.json |
@@ -878,7 +885,7 @@ These tests cover the scripts in `tools/`. The `unit (root)` job runs them.
 |------|---------------|
 | `test_agent_loop.py` | End-to-end agent workflow on an in-process bench (no box): discovery, suitability, `lager python` execution, verify. Run by `mcp-extra`. |
 
-### Python API Tests (`test/api/` -- 86 files)
+### Python API Tests (`test/api/` -- 87 files)
 
 These are **standalone scripts, not pytest** (see `test/CONVENTIONS.md`): each defines `main()`
 and runs on a box via `lager python`. None of them run in the PR gate.
@@ -943,11 +950,16 @@ linear actuator.
 `test_Acroname.py` plus enable/disable, multi-port, net API, power-cycle timing, stress, and
 toggle tests.
 
+#### Security (1 file)
+
+`test_hsm.py` runs one key through generate, public key, sign (verified with `cryptography`) and
+delete on a scratch object ID, and refuses a wrong password. `LAGER_HSM_ALLOW_RESET=1` adds a reset.
+
 #### Utility (2 files)
 
 `test_custom_binaries.py` (binary listing, not-found handling) and `test_list_nets.py`.
 
-### Bash Integration Tests (`test/integration/` -- 39 files)
+### Bash Integration Tests (`test/integration/` -- 40 files)
 
 Run from the host against a real box. `static-checks` runs `bash -n` and `shellcheck` over all of
 them; only the fifteen listed under "What CI does NOT run" execute.
@@ -961,6 +973,7 @@ them; only the fifteen listed under "What CI does NOT run" execute.
 | `usb/` | 3 | `usb.sh`, `ykush.sh`, `acroname.sh` |
 | `measurement/` | 1 | `logic.sh` |
 | `sensors/` | 1 | `thermocouple.sh` |
+| `security/` | 1 | `hsm.sh` |
 | `peripherals/` | 1 | `arm.sh` |
 
 ### Test Framework (`test/framework/`)

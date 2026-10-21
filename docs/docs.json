@@ -112,6 +112,12 @@
                 ]
               },
               {
+                "group": "Security",
+                "pages": [
+                  "source/reference/cli/hsm"
+                ]
+              },
+              {
                 "group": "Development",
                 "pages": [
                   "source/reference/cli/debug",
@@ -596,6 +602,12 @@
                   "source/zh/reference/cli/ble",
                   "source/zh/reference/cli/blufi",
                   "source/zh/reference/cli/router"
+                ]
+              },
+              {
+                "group": "安全",
+                "pages": [
+                  "source/zh/reference/cli/hsm"
                 ]
               },
               {

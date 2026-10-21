@@ -29,6 +29,7 @@ __all__ = [
     'SPIBackendError',
     'I2CBackendError',
     'EnergyAnalyzerBackendError',
+    'HsmBackendError',
 ]
 
 
@@ -203,3 +204,12 @@ class EnergyAnalyzerBackendError(LagerBackendError):
     """Exception for energy analyzer backend errors."""
     def __init__(self, message: str, device: str = None, backend: str = None):
         super().__init__(message, device=device, backend=backend or "EnergyAnalyzer")
+
+
+class HsmBackendError(LagerBackendError):
+    """Exception for hardware security module backend errors.
+
+    The message must never contain a password or other credential.
+    """
+    def __init__(self, message: str, device: str = None, backend: str = None):
+        super().__init__(message, device=device, backend=backend or "HSM")

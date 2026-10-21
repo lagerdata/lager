@@ -455,6 +455,39 @@ API_REFERENCE: dict[str, dict] = {
             '    router.remove_firewall_rules()\n'
         ),
     },
+    "Hsm": {
+        "net_type_enum": "NetType.Hsm",
+        "get_pattern": 'hsm = Net.get("hsm1", type=NetType.Hsm)',
+        "methods": [
+            {"name": "info", "sig": "info() -> dict", "desc": "Firmware, serial, log usage and algorithms (no login)"},
+            {"name": "echo", "sig": "echo(data: bytes) -> bytes", "desc": "Send data and return what the device sends back (no login)"},
+            {"name": "list_objects", "sig": "list_objects(type=None, label=None, *, auth_key_id=1, password) -> list[dict]", "desc": "List stored objects"},
+            {"name": "generate_key", "sig": "generate_key(object_id, algorithm, label='', domains=(1,), capabilities=None, *, auth_key_id=1, password) -> dict", "desc": "Generate an asymmetric key; returns id and public_key_pem"},
+            {"name": "get_public_key", "sig": "get_public_key(object_id, *, auth_key_id=1, password) -> str", "desc": "Public key as PEM"},
+            {"name": "sign", "sig": "sign(object_id, data: bytes, mechanism, *, auth_key_id=1, password) -> bytes", "desc": "Sign data, e.g. mechanism 'ecdsa-sha256'"},
+            {"name": "delete_object", "sig": "delete_object(object_id, object_type='asymmetric-key', *, auth_key_id=1, password)", "desc": "Delete one object"},
+            {"name": "reset", "sig": "reset(*, auth_key_id=1, password)", "desc": "Erase every object and restore the factory login"},
+        ],
+        "gotchas": [
+            "Every method except info() and echo() logs in, and needs the auth key password. Ask the user for it; never guess it and never write it into a script or a log.",
+            "reset() and delete_object() cannot be undone. Do not call them unless the user asked for that operation.",
+            "Each call opens and closes the device, so a script can use the HSM while nothing else holds it. For many operations in a row, use `with hsm.session(password=...) as s:` to log in once.",
+        ],
+        "example_snippet": (
+            'import os\n'
+            'from lager import Net, NetType\n'
+            '\n'
+            'hsm = Net.get("hsm1", type=NetType.Hsm)\n'
+            'print(hsm.info())\n'
+            'pw = os.environ["LAGER_HSM_PASSWORD"]\n'
+            'key = hsm.generate_key(0, "ec-p256", label="test", password=pw)\n'
+            'try:\n'
+            '    sig = hsm.sign(key["id"], b"hello", "ecdsa-sha256", password=pw)\n'
+            '    assert sig\n'
+            'finally:\n'
+            '    hsm.delete_object(key["id"], password=pw)\n'
+        ),
+    },
     "Arm": {
         "net_type_enum": "NetType.Arm",
         "get_pattern": 'arm = Net.get("arm1", type=NetType.Arm)',
@@ -650,6 +683,7 @@ _DRIVER_CLASSES: dict[str, str] = {
     # agents a calling convention the wrapper rejects.
     "Usb":            "lager.automation.usb_hub.usb_net_wrapper.USBNetWrapper",
     "Router":         "lager.protocols.mikrotik.router.MikroTikRouter",
+    "Hsm":            "lager.security.hsm.hsm_net.HsmBase",
     "Arm":            "lager.automation.arm.rotrics.Dexarm",
     "Webcam":         "lager.automation.webcam.webcam_net_wrapper.WebcamNetWrapper",
     # The Wifi NET TYPE, which gates one DUT's internet access through an Asus

@@ -419,6 +419,17 @@ echo 1-1.4.4:1.0 | sudo tee /sys/bus/usb/drivers/hub/bind
 - Network-resilience testing
 - Inspection of wireless clients and DHCP leases
 
+## Hardware Security Modules
+
+| Manufacturer | Model | Control Command |
+|---|---|---|
+| Yubico | YubiHSM 2 (firmware 2.4) | `lager hsm` |
+
+**Enables:**
+- Key generation and signing on the bench
+- Device provisioning with keys that do not leave the HSM
+- Factory reset of a test HSM between runs
+
 ---
 
 # 6. Vision & Automation

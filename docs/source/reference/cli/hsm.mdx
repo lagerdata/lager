@@ -1,0 +1,251 @@
+---
+title: HSM
+description: Check and provision a hardware security module through an hsm net
+---
+
+Check a hardware security module (HSM) and provision keys on it through an `hsm` net on a Lager Box. The HSM generates and keeps the private keys. Lager reads only public keys and signatures.
+
+## Syntax
+
+```bash
+lager hsm NET_NAME COMMAND [OPTIONS]
+```
+
+If you give no command, Lager lists the `hsm` nets on the box:
+
+```bash
+lager hsm --box my-lager-box
+```
+
+## Commands
+
+| Command | Login | Description |
+|---------|-------|-------------|
+| `lager hsm NET_NAME info` | No | Show the firmware, the serial number and the audit log use |
+| `lager hsm NET_NAME blink` | Yes | Blink the HSM LED to find the device |
+| `lager hsm NET_NAME objects` | Yes | List the objects that the HSM stores |
+| `lager hsm NET_NAME generate` | Yes | Generate an asymmetric key on the HSM |
+| `lager hsm NET_NAME pubkey` | Yes | Print the public key of an asymmetric key as PEM |
+| `lager hsm NET_NAME sign` | Yes | Sign data with an asymmetric key |
+| `lager hsm NET_NAME delete` | Yes | Delete an object from the HSM |
+| `lager hsm NET_NAME reset` | Yes | Erase the HSM and restore the factory login |
+
+---
+
+## Login
+
+A command that logs in uses an authentication key on the HSM. Give the key ID with `--auth-key-id`. The default is `1`, which is the factory authentication key.
+
+Lager reads the password from these sources, in this order:
+
+1. The first line of stdin, if you give `--password-stdin`.
+2. The `LAGER_HSM_PASSWORD` environment variable.
+3. A prompt that does not show what you type.
+
+There is no `--password` option. A value on the command line stays in the shell history, and other users can see it in the process list.
+
+| Option | Description |
+|--------|-------------|
+| `--auth-key-id INTEGER` | Authentication key to log in with, `1`–`65535` (default: `1`) |
+| `--password-stdin` | Read the password from the first line of stdin |
+
+<Warning>
+If the network between your computer and the box is not trusted, use the box only through Tailscale or an SSH tunnel. The CLI sends the password to the box API over plain HTTP, the same as all other box API traffic. Lager does not store the password, and the box removes it from its logs.
+</Warning>
+
+The factory login is authentication key `1` with the password `password`. Replace that key before you put keys on the HSM that matter.
+
+---
+
+## `lager hsm NET_NAME info`
+
+Show the firmware version, the serial number, the part number and the use of the audit log. This command does not log in.
+
+### Options
+
+| Option | Description |
+|--------|-------------|
+| `--box BOX` | Lager Box name or IP address |
+| `--json` | Emit a machine-readable JSON object instead of formatted text |
+| `--help` | Show help message and exit |
+
+### Output
+
+```
+HSM 'hsm1':
+  Firmware:    2.4.0
+  Serial:      12345678
+  Part number: 78CLUFX5000P
+  Log:         3/62 entries
+  Algorithms:  55 supported
+```
+
+---
+
+## `lager hsm NET_NAME blink`
+
+Blink the LED on the HSM. Use this command to find one HSM among several.
+
+| Option | Description |
+|--------|-------------|
+| `--box BOX` | Lager Box name or IP address |
+| `--seconds INTEGER` | How long to blink, `0`–`255` (default: `5`) |
+| `--auth-key-id`, `--password-stdin` | See [Login](#login) |
+
+---
+
+## `lager hsm NET_NAME objects`
+
+List the objects on the HSM that the authentication key can see.
+
+| Option | Description |
+|--------|-------------|
+| `--box BOX` | Lager Box name or IP address |
+| `--type TYPE` | Show only objects of this type: `asymmetric-key`, `authentication-key`, `opaque`, `wrap-key`, `hmac-key`, `template`, `otp-aead-key` |
+| `--label TEXT` | Show only objects with this label |
+| `--json` | Emit a machine-readable JSON array instead of a table |
+| `--auth-key-id`, `--password-stdin` | See [Login](#login) |
+
+### Output
+
+```
+ID      Type                Algorithm                     Domains  Label
+0x0001  authentication-key  aes128-yubico-authentication  1-16     DEFAULT AUTHKEY CHANGE THIS ASAP
+0x0005  asymmetric-key      ec-p256                       1        signer
+```
+
+---
+
+## `lager hsm NET_NAME generate`
+
+Generate an asymmetric key on the HSM. The private key does not leave the HSM. The command prints the public key as PEM.
+
+| Option | Description |
+|--------|-------------|
+| `--box BOX` | Lager Box name or IP address |
+| `--algorithm ALGORITHM` | Required. One of `ec-p256`, `ec-p384`, `ec-p521`, `ec-k256`, `ed25519` |
+| `--id ID` | Object ID for the key, in decimal or hex (default: `0`, which lets the HSM choose) |
+| `--label TEXT` | Label to store with the key |
+| `--domains TEXT` | Domains that the key belongs to, separated by commas (default: `1`) |
+| `--capability TEXT` | Capability to give the key. You can give it more than once. The default is the signing capability for the algorithm |
+| `--json` | Emit a JSON object with `id` and `public_key_pem` instead of the PEM |
+| `--auth-key-id`, `--password-stdin` | See [Login](#login) |
+
+The default capability is `sign-ecdsa` for an EC key and `sign-eddsa` for an Ed25519 key. The authentication key must have each capability that you give the new key.
+
+<Note>
+The CLI cannot generate RSA keys at this time. The HSM takes between a few seconds and more than a minute to generate one RSA key. That is longer than the box lets one device call run before it treats the device as stuck. To generate an RSA key, use the [Python API](#python-api) in a `lager python` script. The CLI can sign with an RSA key that is already on the HSM.
+</Note>
+
+```bash
+lager hsm hsm1 generate --algorithm ec-p256 --id 0x0005 --label signer --box my-lager-box > signer.pem
+```
+
+---
+
+## `lager hsm NET_NAME pubkey`
+
+Print the public key of an asymmetric key as PEM.
+
+| Option | Description |
+|--------|-------------|
+| `--box BOX` | Lager Box name or IP address |
+| `--id ID` | Required. Object ID of the key, in decimal or hex |
+| `--auth-key-id`, `--password-stdin` | See [Login](#login) |
+
+---
+
+## `lager hsm NET_NAME sign`
+
+Sign data with an asymmetric key. The command prints the signature as hex, or writes the raw signature to a file.
+
+| Option | Description |
+|--------|-------------|
+| `--box BOX` | Lager Box name or IP address |
+| `--id ID` | Required. Object ID of the key, in decimal or hex |
+| `--mechanism MECHANISM` | Required. One of `ecdsa-sha256`, `ecdsa-sha384`, `ecdsa-sha512`, `eddsa`, `rsa-pkcs1-sha256`, `rsa-pkcs1-sha384`, `rsa-pkcs1-sha512`, `rsa-pss-sha256`, `rsa-pss-sha384`, `rsa-pss-sha512` |
+| `--data-file PATH` | File that holds the data to sign |
+| `--data-hex TEXT` | Data to sign, as hex |
+| `--out PATH` | Write the raw signature to this file instead of printing hex |
+| `--auth-key-id`, `--password-stdin` | See [Login](#login) |
+
+Give exactly one of `--data-file` and `--data-hex`. The HSM hashes the data itself, so give the message, not a digest. An ECDSA signature is DER-encoded.
+
+```bash
+lager hsm hsm1 sign --id 0x0005 --mechanism ecdsa-sha256 \
+  --data-file msg.bin --out msg.sig --box my-lager-box
+openssl dgst -sha256 -verify signer.pem -signature msg.sig msg.bin
+```
+
+---
+
+## `lager hsm NET_NAME delete`
+
+Delete an object from the HSM. You cannot undo this.
+
+| Option | Description |
+|--------|-------------|
+| `--box BOX` | Lager Box name or IP address |
+| `--id ID` | Required. Object ID to delete, in decimal or hex |
+| `--type TYPE` | Type of the object (default: `asymmetric-key`) |
+| `--yes` | Do not ask for confirmation |
+| `--auth-key-id`, `--password-stdin` | See [Login](#login) |
+
+---
+
+## `lager hsm NET_NAME reset`
+
+Erase every object on the HSM and restore the factory login. You cannot undo this. The HSM restarts, and the command waits until it answers again.
+
+| Option | Description |
+|--------|-------------|
+| `--box BOX` | Lager Box name or IP address |
+| `--yes` | Do not ask for confirmation |
+| `--auth-key-id`, `--password-stdin` | See [Login](#login) |
+
+The confirmation prompt also reads stdin. Thus `delete` and `reset` with `--password-stdin` also need `--yes`.
+
+---
+
+## Creating HSM Nets
+
+```bash
+lager instruments --box my-lager-box
+lager nets add hsm1 hsm 0 USB0::0x1050::0x0030::12345678::INSTR --box my-lager-box
+```
+
+An `hsm` net has one channel, `0`. The address carries the serial number of the HSM, so the net stays on the same device when you connect more than one.
+
+## Python API
+
+A `lager python` script gets the driver from the net. Each method that logs in takes `auth_key_id` and `password` as keyword arguments.
+
+```python
+import os
+from lager import Net, NetType
+
+hsm = Net.get("hsm1", type=NetType.Hsm)
+auth = {"auth_key_id": 1, "password": os.environ["LAGER_HSM_PASSWORD"]}
+
+print(hsm.info()["firmware"])
+key = hsm.generate_key(0x0005, "ec-p256", label="signer", **auth)
+signature = hsm.sign(0x0005, b"message", "ecdsa-sha256", **auth)
+```
+
+Run the script with `lager python script.py --box my-lager-box --passenv LAGER_HSM_PASSWORD`. The `--passenv` option keeps the password off the command line.
+
+## Supported Hardware
+
+| Manufacturer | Model | Net Type | USB VID:PID |
+|--------------|-------|----------|-------------|
+| Yubico | YubiHSM 2 (firmware 2.4) | `hsm` | `1050:0030` |
+
+## Troubleshooting
+
+| Error | Cause | Fix |
+|-------|-------|-----|
+| `Authentication failed for auth key N` | The password or the key ID is wrong | Give the correct key ID and password |
+| `No permission to open the YubiHSM USB device` | The udev rule for `1050:0030` is missing on the box | Update the box software, which installs the rule |
+| `The YubiHSM is in use by another process` | Another program, such as `yubihsm-connector`, holds the device | Stop that program on the box |
+| `The HSM has no free sessions` | Earlier sessions did not close | Wait 30 seconds for the HSM to close idle sessions |
+| `Auth key N lacks the capability X` | The authentication key does not have capability X | Log in with a key that has it |

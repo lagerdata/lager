@@ -218,6 +218,11 @@ NET_TYPES: dict[str, NetTypeInfo] = {
         capabilities=((_R.OBSERVE, 0.7),),
         phase=PHASE_PERIPHERALS, reference="Router",
     ),
+    "hsm": NetTypeInfo(
+        net_type="Hsm", electrical_type="other",
+        capabilities=((_R.OBSERVE, 0.5),),
+        phase=PHASE_PERIPHERALS, reference="Hsm",
+    ),
     "mikrotik": NetTypeInfo(
         net_type="Router", electrical_type="protocol",
         capabilities=((_R.OBSERVE, 0.7),),

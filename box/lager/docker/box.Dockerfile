@@ -192,6 +192,7 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
 	'pyvisa-py==0.5.2' \
 	'PyVISA==1.11.3' \
 	'Phidget22==1.19.20240311' \
+	'yubihsm[usb]==3.1.2' \
 	'opencv-python-headless==4.10.0.84' \
 	'git+https://github.com/Yepkit/pykush@d83ee856b4d0ea961b63b531fe4f4c533f6962f6' \
 	'yoctopuce' \
@@ -376,6 +377,8 @@ COPY protocols /app/lager/lager/protocols
 COPY blufi /app/lager/lager/blufi
 # Automation group: arm, usb_hub, webcam
 COPY automation /app/lager/lager/automation
+# Security group: hsm
+COPY security /app/lager/lager/security
 # Scope UI assets, served by box_http_server at GET /scope on :9000
 COPY static /app/lager/lager/static
 
@@ -392,7 +395,7 @@ import importlib, logging, sys; \
 logging.basicConfig(level=logging.WARNING); \
 [importlib.import_module(f'lager.{m}') for m in \
  ('adc_hs','arm_hs','dac_hs','gpio_hs','thermocouple_hs','watt_hs', \
-  'energy_hs','spi_hs','i2c_hs','solar_hs','ble')]; \
+  'energy_hs','spi_hs','i2c_hs','solar_hs','hsm_hs','ble')]; \
 from lager.mcp.data import api_reference; \
 missing = [nt for nt, dotted in api_reference._DRIVER_CLASSES.items() \
            if 'source_module' not in api_reference.API_REFERENCE.get(nt, {})]; \

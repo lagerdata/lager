@@ -40,7 +40,7 @@ NET_ROLE_CHOICES = [
     'auto', 'battery', 'power-supply', 'eload', 'scope', 'debug', 'usb',
     'uart', 'webcam', 'adc', 'dac', 'gpio', 'thermocouple', 'i2c', 'spi',
     'watt-meter', 'energy-analyzer', 'router', 'rotation', 'arm', 'actuate',
-    'power-supply-2q', 'wifi', 'analog', 'logic', 'waveform',
+    'power-supply-2q', 'wifi', 'analog', 'logic', 'waveform', 'hsm',
 ]
 
 

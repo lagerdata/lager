@@ -397,5 +397,47 @@ class TestAddBatchChannelValidation:
         assert fake_box.saved_nets[0]["pin"] == "FIO5"
 
 
+# --------------------------------------------------------------------------- #
+# add: hsm (YubiHSM 2)                                                         #
+# --------------------------------------------------------------------------- #
+
+YUBIHSM_ADDR = "USB0::0x1050::0x0030::12345678::INSTR"
+YUBIHSM = {
+    "name": "YubiHSM_2",
+    "vid": "1050", "pid": "0030", "serial": "12345678",
+    "address": YUBIHSM_ADDR,
+    "net_type": ["hsm"],
+    "channels": {"hsm": ["0"]},
+}
+
+
+@pytest.fixture
+def hsm_box():
+    box = FakeBoxHTTP([YUBIHSM])
+    with patch("requests.request", box.request), \
+         patch("cli.box_storage.resolve_and_validate_box",
+               lambda ctx, name: name or "testbox"), \
+         patch.object(nets_mod, "_resolve_box", lambda ctx, name: name or "testbox"):
+        yield box
+
+
+class TestHsmRole:
+    def test_yubihsm_in_map(self):
+        assert nets_mod.INSTRUMENT_NET_MAP["YubiHSM_2"] == ["hsm"]
+
+    def test_add_hsm_net(self, hsm_box):
+        result = _invoke(["add", "hsm1", "hsm", "0", YUBIHSM_ADDR, "--box", "b"])
+        assert result.exit_code == 0, result.output
+        saved = hsm_box.saved_nets[0]
+        assert saved["role"] == "hsm"
+        assert saved["instrument"] == "YubiHSM_2"
+        assert saved["address"] == YUBIHSM_ADDR
+
+    def test_hsm_rejects_other_channels(self, hsm_box):
+        result = _invoke(["add", "hsm1", "hsm", "1", YUBIHSM_ADDR, "--box", "b"])
+        assert result.exit_code != 0
+        assert hsm_box.saved_nets == []
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

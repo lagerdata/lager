@@ -12,6 +12,19 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Added
+
+- **`hsm` nets for the Yubico YubiHSM 2.** `lager hsm` shows the device
+  information, lists objects, generates asymmetric keys, prints public keys,
+  signs data, deletes objects and resets the HSM. Python scripts get the same
+  operations from `Net.get(name, type=NetType.Hsm)`. The password comes from
+  stdin, `LAGER_HSM_PASSWORD` or a hidden prompt, never from an option. Lager
+  does not store it. The box image adds the `yubihsm` package and a udev rule
+  for `1050:0030`. See `docs/source/reference/cli/hsm.mdx`. `lager hsm
+  generate` offers EC and Ed25519 only for now: the HSM can take more than a
+  minute to generate an RSA key, longer than the box lets one device call
+  run. Python scripts can generate RSA keys.
+
 ### Fixed
 
 - **A Rigol MSO5000's rise and fall time are no longer the screen record's spacing.**
@@ -42,6 +55,9 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   NoneType". Absent quantities are now left out of the reply, and the panel shows a dash.
 - **`measurement.all()` on a Rigol's instrument net is refused.** It silently returned
   channel 1's values. It now says to use a channel net, as the CLI does.
+- **The hardware service no longer writes secret arguments to its log.** The
+  `/invoke` log line now masks keyword arguments such as `password`, `pin`
+  and `private_key_pem`.
 
 ## [0.58.0] - 2026-10-20
 

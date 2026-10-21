@@ -90,7 +90,7 @@ lager nets add NAME ROLE CHANNEL ADDRESS [OPTIONS]
 
 **参数：**
 - `NAME` - 该 Net 的唯一名称（例如 `supply1`、`debug_main`）
-- `ROLE` - Net 类型：`power-supply`、`battery`、`solar`、`debug`、`adc`、`dac`、`gpio`、`scope`、`scope-channel`、`logic`、`eload`、`uart`、`usb`、`webcam`、`arm`、`watt-meter`、`energy-analyzer`、`thermocouple`、`i2c`、`spi`。旧的写法 `supply` 和 `batt` 作为输入别名被接受，并归一化为 `power-supply` / `battery` —— 保存的 Net 总是带有规范角色。
+- `ROLE` - Net 的类型。有效角色：`power-supply`、`battery`、`solar`、`debug`、`adc`、`dac`、`gpio`、`scope`、`scope-channel`、`logic`、`eload`、`uart`、`usb`、`webcam`、`arm`、`watt-meter`、`energy-analyzer`、`thermocouple`、`i2c`、`spi`、`hsm`。旧的写法 `supply` 和 `batt` 作为输入别名被接受，并归一化为 `power-supply` / `battery` —— 保存的 Net 总是带有规范角色。
 - `CHANNEL` - 通道标识，与 `lager instruments` 列出的一致（例如 `1`、`AIN0`、`FIO0`、`I2C0`、`STM32F4`）
 - `ADDRESS` - VISA 地址或设备路径，与 `lager instruments` 列出的一致（例如 `USB0::0x0CD5::0x0007::::INSTR`）
 
@@ -206,6 +206,7 @@ FIO0-FIO3 on a LabJack U3 are fixed high-voltage analog inputs and are never dig
 | `Aardvark` | `SPI0`、`I2C0`、GPIO 引脚 | 混合模式的多通道 |
 | `MCC_USB-202` | `CH0`–`CH7`、`DIO0`–`DIO7`、`DAC0`–`DAC1` | 每个通道一个 Net |
 | `Phidget` | `0`–`3` | 每个通道一个 `thermocouple` Net |
+| `YubiHSM_2` | `0` | 每台设备一个 `hsm` Net |
 | `Acroname_8Port` / `4Port`、`YKUSH_Hub` | 端口序号 | 每个端口一个 `usb` Net |
 
 `scope` Net 没有通道：它代表整台仪器，它的各路输入是单独的 `scope-channel` Net。为 `scope` Net 指定的通道会被 `lager nets add` 丢弃。哪些设置属于哪一种 Net，请参阅[示波器参考](/source/zh/reference/cli/scope)。
@@ -828,6 +829,7 @@ Nets reporting no state:
 | `gpio` | 电平 | `HIGH (1)`、`LOW (0)` |
 | `adc`、`dac` | 电压 | `1.2345V` |
 | `thermocouple` | 温度 | `25.0°C` |
+| `hsm` | 固件、序列号、审计日志用量 | `fw 2.4.0/sn 12345678/log 3/62` |
 | `eload` | 模式、输入、电压、电流 | `<mode>/on/5.00V/1.000A` |
 | `webcam` | 串流 | `stopped`、`streaming <url>` |
 | `watt-meter` | 0.1 秒内的电流、电压、功率 | `0.1200A/3.300V/0.3960W` |
@@ -976,6 +978,7 @@ lager nets show battery1 --box my-lager-box
 | `arm` | 机械臂 | Rotrics Dexarm |
 | `watt-meter` | 功率测量 | Yocto Watt |
 | `thermocouple` | 温度传感器 | Phidget 热电偶 |
+| `hsm` | 硬件安全模块 | YubiHSM 2 |
 
 ## 调试脚本工作流程
 

@@ -90,7 +90,7 @@ lager nets add NAME ROLE CHANNEL ADDRESS [OPTIONS]
 
 **Arguments:**
 - `NAME` - Unique name for the net (e.g., `supply1`, `debug_main`)
-- `ROLE` - Type of net: `power-supply`, `battery`, `solar`, `debug`, `adc`, `dac`, `gpio`, `scope`, `scope-channel`, `logic`, `eload`, `uart`, `usb`, `webcam`, `arm`, `watt-meter`, `energy-analyzer`, `thermocouple`, `i2c`, `spi`. The legacy tokens `supply` and `batt` are accepted as input aliases and normalized to `power-supply` / `battery` — saved nets always carry the canonical role.
+- `ROLE` - The type of net. Valid roles: `power-supply`, `battery`, `solar`, `debug`, `adc`, `dac`, `gpio`, `scope`, `scope-channel`, `logic`, `eload`, `uart`, `usb`, `webcam`, `arm`, `watt-meter`, `energy-analyzer`, `thermocouple`, `i2c`, `spi`, `hsm`. The legacy tokens `supply` and `batt` are accepted as input aliases and normalized to `power-supply` / `battery` — saved nets always carry the canonical role.
 - `CHANNEL` - Channel identifier, as `lager instruments` lists it (e.g., `1`, `AIN0`, `FIO0`, `I2C0`, `STM32F4`)
 - `ADDRESS` - VISA address or device path, as `lager instruments` lists it (e.g., `USB0::0x0CD5::0x0007::::INSTR`)
 
@@ -204,6 +204,7 @@ Instruments with physically independent outputs / inputs. Each channel is its ow
 | `Aardvark` | `SPI0`, `I2C0`, GPIO pins | Mixed-mode multi-channel |
 | `MCC_USB-202` | `CH0`–`CH7`, `DIO0`–`DIO7`, `DAC0`–`DAC1` | One net per channel |
 | `Phidget` | `0`–`3` | One `thermocouple` net per channel |
+| `YubiHSM_2` | `0` | One `hsm` net per device |
 | `Acroname_8Port` / `4Port`, `YKUSH_Hub` | Port indices | One `usb` net per port |
 
 A `scope` net has no channel: it stands for the whole instrument, and its
@@ -843,6 +844,7 @@ Nets reporting no state:
 | `gpio` | Level | `HIGH (1)`, `LOW (0)` |
 | `adc`, `dac` | Voltage | `1.2345V` |
 | `thermocouple` | Temperature | `25.0°C` |
+| `hsm` | Firmware, serial, audit log use | `fw 2.4.0/sn 12345678/log 3/62` |
 | `eload` | Mode, input, voltage, current | `<mode>/on/5.00V/1.000A` |
 | `webcam` | Stream | `stopped`, `streaming <url>` |
 | `watt-meter` | Current, voltage, power over 0.1 s | `0.1200A/3.300V/0.3960W` |
@@ -993,6 +995,7 @@ lager nets show battery1 --box my-lager-box
 | `arm` | Robot arm | Rotrics Dexarm |
 | `watt-meter` | Power measurement | Yocto Watt |
 | `thermocouple` | Temperature sensor | Phidget thermocouples |
+| `hsm` | Hardware security module | YubiHSM 2 |
 
 ## Debug Script Workflow
 

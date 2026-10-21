@@ -136,6 +136,7 @@ _HS_FACTORY = {
     "arm": "arm_hs",
     "scope": "scope_hs",
     "scope-channel": "scope_hs",
+    "hsm": "hsm_hs",
 }
 
 
@@ -276,6 +277,97 @@ def _thermocouple(netname, role, action, params):
     if action != "read":
         raise UnknownAction(action)
     return _ok_read(float(_proxy(netname, role).read()), "°C")
+
+
+_HSM_ACTIONS = ("info", "blink", "objects", "delete", "generate", "pubkey", "sign", "reset")
+
+
+def _hsm_auth(params):
+    """Login kwargs for a logged-in HSM action. The password is never logged or echoed."""
+    password = params["password"]
+    auth_key_id = int(params.get("auth_key_id", 1))
+    if not isinstance(password, str) or not password:
+        raise ValueError("A password is required for auth key %d" % auth_key_id)
+    return {"auth_key_id": auth_key_id, "password": password}
+
+
+def _hsm_call(fn, *args, **kwargs):
+    """Call an hsm_hs method and drop hardware_service's wrapper text from its error."""
+    try:
+        return fn(*args, **kwargs)
+    except DeviceError as e:
+        text = str(e)
+        for prefix in ("Function call failed (after retry): ", "Function call failed: "):
+            if text.startswith(prefix):
+                text = text[len(prefix):]
+                break
+        raise LagerBackendError(text) from None
+
+
+def _hsm(netname, role, action, params):
+    # YubiHSM 2 via the hsm_hs adapter. Each call opens the device, logs in,
+    # runs one operation and closes everything, under the device_id lock.
+    from lager.security.hsm.yubihsm2 import ALGORITHMS, MECHANISMS, OBJECT_TYPES
+
+    if action not in _HSM_ACTIONS:
+        raise UnknownAction(action)
+
+    def check(value, table, what):
+        if value is not None and str(value).strip().lower() not in table:
+            raise ValueError("Unknown %s '%s'. Valid: %s" % (what, value, ", ".join(table)))
+        return value
+
+    if action == "info":
+        r = _hsm_call(_proxy(netname, role).info)
+        return _ok("YubiHSM fw %s, serial %s, log %s/%s" % (
+            r.get("firmware"), r.get("serial"), r.get("log_used"), r.get("log_size")), r)
+
+    auth = _hsm_auth(params)
+
+    if action == "blink":
+        seconds = int(params.get("seconds", 5))
+        _hsm_call(_proxy(netname, role, timeout=seconds + 15.0).blink, seconds, **auth)
+        return _ok("Blinking for %d s" % seconds)
+
+    if action == "objects":
+        object_type = check(params.get("type"), OBJECT_TYPES, "object type")
+        objects = _hsm_call(_proxy(netname, role).list_objects,
+                            type=object_type, label=params.get("label"), **auth)
+        return _ok("%d object(s)" % len(objects), objects)
+
+    if action == "delete":
+        object_id = int(params["object_id"])
+        object_type = check(params.get("object_type") or "asymmetric-key",
+                            OBJECT_TYPES, "object type")
+        _hsm_call(_proxy(netname, role).delete_object, object_id, object_type, **auth)
+        return _ok("Deleted %s 0x%04X" % (object_type, object_id))
+
+    if action == "generate":
+        algorithm = check(params["algorithm"], ALGORITHMS, "algorithm")
+        # RSA generation can run for minutes, past hardware_service's
+        # per-call deadline, which then restarts the service.
+        if str(algorithm).strip().lower().startswith("rsa"):
+            raise ValueError("RSA keys cannot be generated through the box API, because "
+                             "generation can take minutes. Use a lager python script.")
+        r = _hsm_call(_proxy(netname, role).generate_key,
+                      int(params.get("object_id", 0)), algorithm,
+                      params.get("label") or "", params.get("domains") or [1],
+                      params.get("capabilities") or None, **auth)
+        return _ok("Generated %s key 0x%04X" % (algorithm, int(r["id"])), r)
+
+    if action == "pubkey":
+        pem = _hsm_call(_proxy(netname, role).get_public_key, int(params["object_id"]), **auth)
+        return _ok(pem, pem)
+
+    if action == "sign":
+        mechanism = check(params["mechanism"], MECHANISMS, "mechanism")
+        signature = _hsm_call(_proxy(netname, role).sign,
+                              int(params["object_id"]), params["data"], mechanism, **auth)
+        return _ok("Signed with %s" % mechanism, {"signature": signature})
+
+    # reset: the device reboots, and the driver waits up to 10 s for it.
+    _hsm_call(_proxy(netname, role, timeout=60.0).reset, **auth)
+    return _ok("Reset complete; the HSM has the factory login again")
 
 
 def _watt_meter(netname, role, action, params):
@@ -1573,6 +1665,7 @@ ROLE_ACTIONS = {
     "webcam": _webcam,
     "router": _router,
     "mikrotik": _router,  # saved-net role alias (NetType.from_role)
+    "hsm": _hsm,
 }
 
 

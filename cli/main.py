@@ -69,6 +69,9 @@ from .commands.measurement.thermocouple import thermocouple
 from .commands.measurement.watt import watt
 from .commands.measurement.energy import energy
 
+# Security commands (from commands/security/)
+from .commands.security.hsm import hsm
+
 # Box commands (from commands.box package)
 from .commands.box import hello, boxes, instruments, nets, ssh, box
 from .commands.box.config import box_config
@@ -135,6 +138,7 @@ class SectionedGroup(CommandFirstUsageMixin, click.Group):
                                 "gpi", "gpo", "thermocouple", "watt"]),
         ("Communication", ["uart", "usb", "spi", "i2c", "ble", "blufi",
                             "router"]),
+        ("Security", ["hsm"]),
         ("Box setup & management", ["hello", "boxes", "box-config", "dut",
                                     "nets", "instruments", "ssh", "ssh-setup",
                                     "defaults", "webcam"]),
@@ -238,6 +242,7 @@ cli.add_command(arm)
 cli.add_command(thermocouple)
 cli.add_command(watt)
 cli.add_command(energy)
+cli.add_command(hsm)
 cli.add_command(dac)
 cli.add_command(gpi)
 cli.add_command(gpo)

@@ -95,6 +95,10 @@ class TestReferenceColumn:
         API reference, so plan_firmware_test handed back no methods for them."""
         assert get_reference_for_type("solar") is API_REFERENCE["PowerSupply"]
 
+    def test_hsm_has_a_reference(self):
+        assert get_reference_for_type("hsm") is API_REFERENCE["Hsm"]
+        assert NET_TYPES["hsm"].net_type == "Hsm"
+
 
 class TestConsumersReadTheTable:
     @pytest.mark.parametrize("role", sorted(NET_TYPES))

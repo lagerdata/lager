@@ -193,6 +193,8 @@ SUPPORTED_USB: Dict[str, Dict] = {
     "Nordic_PPK2":       {"vid": "1915", "pid": "c00a", "net_type": ["watt-meter", "energy-analyzer"]},
     # thermocouple
     "Phidget":           {"vid": "06c2", "pid": "0046", "net_type": ["thermocouple"]},
+    # hsm
+    "YubiHSM_2":         {"vid": "1050", "pid": "0030", "net_type": ["hsm"]},
     # uart
     "Prolific_USB_Serial": {"vid": "067b", "pid": "23a3", "net_type": ["uart"]},
     "SiLabs_CP210x":     {"vid": "10c4", "pid": "ea60", "net_type": ["uart"]},
@@ -375,6 +377,7 @@ CHANNEL_MAPS: Dict[str, Dict[str, List[str]]] = {
     "Joulescope_JS220":       {"watt-meter": ["0"], "energy-analyzer": ["0"]},
     "Nordic_PPK2":            {"watt-meter": ["0"], "energy-analyzer": ["0"]},
     "Phidget":                {"thermocouple": ["0", "1", "2", "3"]},
+    "YubiHSM_2":              {"hsm": ["0"]},
     "Prolific_USB_Serial":    {"uart": ["0"]},
     "SiLabs_CP210x":          {"uart": ["0"]},
     "FTDI_FT232R":            {"uart": ["0"]},

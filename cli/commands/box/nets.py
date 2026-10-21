@@ -601,6 +601,9 @@ INSTRUMENT_NET_MAP: dict[str, list[str]] = {
     # thermocouple
     "Phidget": ["thermocouple"],
 
+    # hsm
+    "YubiHSM_2": ["hsm"],
+
     # uart
     "Prolific_USB_Serial": ["uart"],
     "SiLabs_CP210x": ["uart"],
