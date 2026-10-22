@@ -128,6 +128,23 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   because the device had not reached the USB bus yet. The cycle now gives a just-powered
   device up to 5 s to appear first. When nothing was seen, the message now says that
   nothing was on the bus when the cycle started (#730).
+- **Moving a stopped Rigol MSO5000's time position no longer starts it.** The page's
+  Position control and its `hpos` command re-armed the scope as a PicoScope needs, which
+  restarted a stopped Rigol and lost the capture it held. The scope now moves its own
+  window and stays stopped (#739).
+- **`trigger uart`, `i2c` and `pulse` on a Rigol MSO5000 change nothing.** They set the
+  sweep, the coupling and the trigger type before failing with "Function not found",
+  which left the scope on that trigger with its Trigger menu open. They are now refused
+  before anything is sent, and the Python `trigger_settings` refuse the same types and
+  CAN (#740).
+- **`stream start` on a Rigol MSO5000 with no capture card paired exits 1.** It printed
+  "Streaming started" and exited 0, and `stream status` had no live-view line. Both now
+  say to pair a card with `lager nets set-capture`. `stream start --json` reports the
+  port of the scope's own daemon, not 8085 (#745).
+- **Smaller Rigol MSO5000 fixes.** `trigger edge --level` reports the level the scope
+  took, which it clamps to its screen. While a Rigol opens, `status` no longer says a
+  PicoScope is opening. A missing scope's error no longer ends with an empty list of
+  serials (#747).
 
 ## [0.59.0] - 2026-10-21
 

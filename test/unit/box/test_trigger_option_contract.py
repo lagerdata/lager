@@ -117,8 +117,15 @@ def run_handler(action, params):
     for name in SUB_MAPPERS:
         top.__dict__[name] = MapperOnly(getattr(settings, name), name, calls)
     net = types.SimpleNamespace(enable=lambda: None, trigger_settings=top)
+    # The contract is the handler's options against the mapper's methods, for
+    # when the driver has these triggers (#418). Until then the mapper refuses
+    # them before sending anything (#740), which test_scope_rigol_driver.py
+    # pins; here they forward to the fake device as they will then.
     with mock.patch.object(impl, "get_rigol_net", return_value=net), \
-            mock.patch.object(impl, "get_source_net", return_value=None):
+            mock.patch.object(impl, "get_source_net", return_value=None), \
+            mock.patch.object(mapper, "refuse_unoffered_trigger", lambda trigger_type: None), \
+            mock.patch.object(mapper.TriggerNotOfferedMixin, "__getattr__",
+                              lambda self, attr: getattr(self.device, attr)):
         HANDLERS[action](**params)
     return calls, device
 

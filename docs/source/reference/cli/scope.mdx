@@ -6,7 +6,7 @@ description: Control oscilloscope settings and capture waveforms
 Control oscilloscope nets through the Lager CLI for waveform capture, triggering, measurements, and streaming.
 
 <Warning>
-**Known limitations on the Rigol MSO5000.** The edge and SPI triggers work. The pulse, UART and I2C triggers fail on the Rigol MSO5000. The CAN trigger and every bus decoder in the Python API also fail. A failed command prints the error and exits 1. [Issue #418](https://github.com/lagerdata/lager/issues/418) tracks this work.
+**Known limitations on the Rigol MSO5000.** The edge and SPI triggers work. The pulse, UART, I2C and CAN triggers are refused before anything reaches the scope, so it keeps its trigger, and the command exits 1. Every bus decoder in the Python API fails. [Issue #418](https://github.com/lagerdata/lager/issues/418) tracks this work.
 </Warning>
 
 ## Syntax
@@ -83,7 +83,7 @@ Every command also accepts `--box`. The channel, capture-control, `autoscale`, `
 | `stream` | Stream oscilloscope data with web visualization | Both (a Rigol needs an HDMI capture card) |
 
 <Note>
-The edge trigger and `trigger holdoff` work on PicoScope and Rigol. The pulse trigger and the protocol triggers (I2C, SPI, UART) are Rigol only.
+The edge trigger and `trigger holdoff` work on PicoScope and Rigol. The SPI trigger is Rigol only. The pulse, I2C and UART triggers are refused on both, with the scope unchanged.
 </Note>
 
 <Note>
@@ -125,7 +125,7 @@ When you add nets, `lager nets tui` reads the channel count from the model numbe
 | Channels | 2 or 4 analog (by model) + 16 digital | 2 or 4 analog (A to D), detected at runtime |
 | Real-time streaming | Yes, from its HDMI output through a capture card | Yes (continuous) |
 | Measurements | 14 types: one at a time by the instrument, the whole set from the screen record | 14 types, computed from the capture |
-| Trigger types | Edge, with holdoff, and SPI (pulse, I2C and UART do not work yet) | Edge only, with holdoff |
+| Trigger types | Edge, with holdoff, and SPI. Pulse, I2C and UART are refused, with the scope unchanged | Edge only, with holdoff |
 | Cursor control | Time/voltage cursors over the captured samples, and XY cursors on the instrument display | Time/voltage cursors over the captured samples |
 | Autoscale | Yes | No |
 | Averaging, peak detect, FFT | `acquire` (done by the instrument), `fft` | `acquire`, `fft` |
@@ -395,7 +395,7 @@ lager scope NET_NAME measure vrms [--box BOX] [--display] [--cursor]
 
 ## Trigger Subcommands
 
-Show or set the trigger. The edge trigger works on PicoScope and Rigol. The protocol triggers (I2C, SPI, UART) and the pulse trigger are Rigol only.
+Show or set the trigger. The edge trigger works on PicoScope and Rigol, and the SPI trigger on a Rigol. The pulse, I2C and UART triggers are refused on both: the command exits 1 before anything reaches the scope.
 
 ### `trigger`
 
@@ -481,7 +481,7 @@ lager scope picoscope1 trigger holdoff --box my-lager-box         # show it
 
 ### `trigger pulse`
 
-Set pulse width trigger (Rigol only). The scope triggers when a pulse width meets the conditions.
+Set pulse width trigger. Not available yet: a Rigol MSO5000 refuses it before anything reaches the scope, and the command exits 1.
 
 On the Rigol MSO5000, this trigger does not work yet. See the limitations at the top of this page.
 
@@ -512,7 +512,7 @@ The condition does not select a polarity yet: each `positive` value and its `neg
 
 ### `trigger i2c`
 
-Set I2C protocol trigger (Rigol only). The scope triggers on I2C bus events.
+Set I2C protocol trigger. Not available yet: a Rigol MSO5000 refuses it before anything reaches the scope, and the command exits 1.
 
 On the Rigol MSO5000, this command does not work yet. See the limitations at the top of this page.
 
@@ -583,7 +583,7 @@ lager scope ANALOG1 trigger spi \
 
 ### `trigger uart`
 
-Set UART protocol trigger (Rigol only). The scope triggers on UART serial events.
+Set UART protocol trigger. Not available yet: a Rigol MSO5000 refuses it before anything reaches the scope, and the command exits 1.
 
 On the Rigol MSO5000, this command does not work yet. See the limitations at the top of this page.
 
@@ -606,7 +606,7 @@ lager scope NET_NAME trigger uart [OPTIONS]
 
 ## Acquisition and Display
 
-These commands work on both instruments, except `roll`: a Rigol has no roll mode. On a Rigol, averaging and peak detect are done by the instrument, and it averages a power of two from 2 to 65536 captures.
+These commands work on both instruments, except `roll`: a Rigol has no roll mode. On a Rigol, averaging and peak detect are done by the instrument. It averages a power of two from 2 to 1024 captures, and refuses any other count.
 
 ### `acquire`
 
@@ -873,7 +873,7 @@ If it has expired, or the viewer later asks for sign-in, run: lager scope PICO1 
 To stop streaming: lager scope PICO1 stream stop --box my-lager-box
 ```
 
-For a scope that no daemon drives, the command prints an error and exits 1. For a Rigol with no capture card paired, the error says to pair one with `lager nets set-capture`. Single captures and measurements work without a card.
+For a scope that no daemon drives, the command prints an error and exits 1. For a Rigol with no capture card paired, the command exits 1 before anything reaches the scope. The error says to pair one with `lager nets set-capture`. `stream status` gives the same reason. Single captures and measurements work without a card.
 
 **Examples:**
 
@@ -955,7 +955,7 @@ The page has two position controls, and they work differently:
 
 ### `stream capture`
 
-Record the captures that a streaming PicoScope takes during `--duration` to a CSV file. Run `stream start` first.
+Record the captures that a streaming scope takes during `--duration` to a CSV file. Run `stream start` first. A Rigol records its live view, the minimum and maximum of each screen column, not the scope's own record.
 
 ```bash
 lager scope NET_NAME stream capture [OPTIONS]

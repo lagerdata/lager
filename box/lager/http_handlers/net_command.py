@@ -1639,7 +1639,13 @@ def _scope_trigger_edge(dev, params):
         applied.append("coupling %s" % params["coupling"])
     if level is not None:
         dev.set_trigger_level(level)
-        applied.append("level %g V" % level)
+        # Said as the scope took it: a Rigol clamps the level to its screen,
+        # so 50 V on a 1 V/div screen is 5 V, and the reply used to say 50 V.
+        accepted = float(dev.get_trigger_level())
+        if "%g" % accepted == "%g" % level:
+            applied.append("level %g V" % accepted)
+        else:
+            applied.append("level %g V (asked for %g V)" % (accepted, level))
     if mode is not None:
         if str(mode).strip().lower() == "single":
             # Selecting single-shot arms it, as it does on a bench scope.

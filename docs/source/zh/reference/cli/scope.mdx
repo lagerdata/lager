@@ -6,7 +6,7 @@ description: 控制示波器设置并采集波形
 通过 Lager CLI 控制示波器 Net，用于波形采集、触发、测量和串流。
 
 <Warning>
-**Rigol MSO5000 上的已知限制。** 边沿触发和 SPI 触发可以工作。脉冲、UART 和 I2C 触发在 Rigol MSO5000 上会失败。CAN 触发以及 Python API 中的所有总线解码器同样会失败。失败的命令会打印错误并以 1 退出。[Issue #418](https://github.com/lagerdata/lager/issues/418) 跟踪这项工作。
+**Rigol MSO5000 上的已知限制。** 边沿触发和 SPI 触发可以工作。脉冲、UART、I2C 和 CAN 触发会在任何内容到达示波器之前被拒绝，因此示波器保留原有触发，命令以 1 退出。Python API 中的所有总线解码器都会失败。[Issue #418](https://github.com/lagerdata/lager/issues/418) 跟踪这项工作。
 </Warning>
 
 ## 语法
@@ -83,7 +83,7 @@ lager scope picoscope1 timebase 0.001 --box my-lager-box  # the scope net
 | `stream` | 串流示波器数据并提供 Web 可视化 | 两者（Rigol 需要 HDMI 采集卡） |
 
 <Note>
-边沿触发和 `trigger holdoff` 在 PicoScope 和 Rigol 上都可用。脉冲触发和协议触发（I2C、SPI、UART）仅限 Rigol。
+边沿触发和 `trigger holdoff` 在 PicoScope 和 Rigol 上都可用。SPI 触发仅限 Rigol。脉冲、I2C 和 UART 触发在两种仪器上都会被拒绝，示波器保持不变。
 </Note>
 
 <Note>
@@ -125,7 +125,7 @@ CLI 在把命令发送到示波器之前会先检查这些值：
 | 通道 | 2 或 4 个模拟（取决于型号）+ 16 个数字 | 2 或 4 个模拟（A 到 D），运行时检测 |
 | 实时串流 | 支持，经 HDMI 采集卡取自其 HDMI 输出 | 支持（连续） |
 | 测量 | 14 种：单次测量由仪器完成，整个测量集根据屏幕记录计算 | 14 种，根据采集数据计算 |
-| 触发类型 | 边沿（支持释抑）和 SPI（脉冲、I2C 和 UART 尚不可用） | 仅边沿，支持释抑 |
+| 触发类型 | 边沿（支持释抑）和 SPI。脉冲、I2C 和 UART 会被拒绝，示波器保持不变 | 仅边沿，支持释抑 |
 | 光标控制 | 基于采集采样点的时间/电压光标，以及仪器屏幕上的 XY 光标 | 基于采集采样点的时间/电压光标 |
 | 自动量程 | 支持 | 不支持 |
 | 平均、峰值检测、FFT | `acquire`（由仪器完成）、`fft` | `acquire`、`fft` |
@@ -395,7 +395,7 @@ lager scope NET_NAME measure vrms [--box BOX] [--display] [--cursor]
 
 ## trigger 子命令
 
-显示或设置触发。边沿触发在 PicoScope 和 Rigol 上都可用。协议触发（I2C、SPI、UART）和脉冲触发仅限 Rigol。
+显示或设置触发。边沿触发在 PicoScope 和 Rigol 上都可用，SPI 触发在 Rigol 上可用。脉冲、I2C 和 UART 触发在两种仪器上都会被拒绝：命令在任何内容到达示波器之前以 1 退出。
 
 ### `trigger`
 
@@ -481,7 +481,7 @@ lager scope picoscope1 trigger holdoff --box my-lager-box         # show it
 
 ### `trigger pulse`
 
-设置脉宽触发（仅 Rigol）。当脉宽满足条件时，示波器触发。
+设置脉宽触发。尚不可用：Rigol MSO5000 会在任何内容到达示波器之前拒绝它，命令以 1 退出。
 
 在 Rigol MSO5000 上，这个触发还不能工作。请参阅本页顶部的限制说明。
 
@@ -512,7 +512,7 @@ lager scope NET_NAME trigger pulse [OPTIONS]
 
 ### `trigger i2c`
 
-设置 I2C 协议触发（仅 Rigol）。示波器在 I2C 总线事件上触发。
+设置 I2C 协议触发。尚不可用：Rigol MSO5000 会在任何内容到达示波器之前拒绝它，命令以 1 退出。
 
 在 Rigol MSO5000 上，这条命令还不能工作。请参阅本页顶部的限制说明。
 
@@ -583,7 +583,7 @@ lager scope ANALOG1 trigger spi \
 
 ### `trigger uart`
 
-设置 UART 协议触发（仅 Rigol）。示波器在 UART 串行事件上触发。
+设置 UART 协议触发。尚不可用：Rigol MSO5000 会在任何内容到达示波器之前拒绝它，命令以 1 退出。
 
 在 Rigol MSO5000 上，这条命令还不能工作。请参阅本页顶部的限制说明。
 
@@ -606,7 +606,7 @@ lager scope NET_NAME trigger uart [OPTIONS]
 
 ## 采集与显示
 
-这些命令在两种仪器上都可用，`roll` 除外：Rigol 没有滚动模式。在 Rigol 上，平均和峰值检测由仪器完成，平均次数为 2 到 65536 之间的 2 的幂。
+这些命令在两种仪器上都可用，`roll` 除外：Rigol 没有滚动模式。在 Rigol 上，平均和峰值检测由仪器完成。平均次数为 2 到 1024 之间的 2 的幂，其他次数会被拒绝。
 
 ### `acquire`
 
@@ -873,7 +873,7 @@ If it has expired, or the viewer later asks for sign-in, run: lager scope PICO1 
 To stop streaming: lager scope PICO1 stream stop --box my-lager-box
 ```
 
-对于没有守护进程驱动的示波器，命令会打印错误并以状态 1 退出。对于没有配对采集卡的 Rigol，错误会提示用 `lager nets set-capture` 配对一张采集卡。没有采集卡时，单次采集和测量仍可使用。
+对于没有守护进程驱动的示波器，命令会打印错误并以状态 1 退出。对于没有配对采集卡的 Rigol，命令会在任何内容到达示波器之前以 1 退出。错误会提示用 `lager nets set-capture` 配对一张采集卡。`stream status` 会给出相同的原因。没有采集卡时，单次采集和测量仍可使用。
 
 **示例：**
 
@@ -955,7 +955,7 @@ Web 界面是一个无依赖的 HTML5 示波器显示，由 Box 在 `http://<box
 
 ### `stream capture`
 
-把串流中的 PicoScope 在 `--duration` 期间完成的采集记录到 CSV 文件。请先运行 `stream start`。
+把串流中的示波器在 `--duration` 期间完成的采集记录到 CSV 文件。请先运行 `stream start`。Rigol 记录的是它的实时视图，即每个屏幕列的最小值和最大值，而不是示波器自己的记录。
 
 ```bash
 lager scope NET_NAME stream capture [OPTIONS]

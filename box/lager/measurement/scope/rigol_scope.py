@@ -84,13 +84,9 @@ class RigolScope(PicoScope):
     def _require_live_view(self):
         from lager.measurement.scope import routing
         if not routing.has_live_view(self._saved_record()):
-            # The trace streams from the HDMI output; without a card the
-            # daemon would never publish a frame, and the stream would wait
-            # out its timeout to say nothing useful.
-            raise UnsupportedScopeFeature(
-                "no HDMI capture card is paired with this scope, so it cannot "
-                "stream; pair one with `lager nets set-capture`. Single "
-                "captures and measurements work without it")
+            # Refused rather than left to the stream, which would wait out its
+            # timeout to say nothing useful.
+            raise UnsupportedScopeFeature(routing.NO_LIVE_VIEW)
 
     def stream_start(self, *args, **kwargs):
         self._require_live_view()
@@ -123,6 +119,16 @@ class RigolScope(PicoScope):
     def stream_capture(self, *args, **kwargs):
         self._require_live_view()
         return super().stream_capture(*args, **kwargs)
+
+    def set_timebase_offset(self, offset):
+        """Move the scope's horizontal position, leaving it running or stopped.
+
+        A Rigol moves its own window: the daemon writes the offset and reads
+        back what the scope took. The PicoScope's re-arm after it would only
+        restart a scope the user had stopped, and lose the capture it held.
+        """
+        self._command("SetTimeOffset", time_offset=float(offset))
+        return {"offset": self.get_timebase_offset()}
 
     def scpi(self, command: str):
         """Send one SCPI command; a query returns the scope's reply."""

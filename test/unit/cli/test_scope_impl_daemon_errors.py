@@ -297,6 +297,14 @@ class StreamCommandRepliesTests(unittest.TestCase):
         self.assertIn("Streaming started", out)
         self.assertIn("Warning: no live view: turn on the HDMI output", err)
 
+    def test_a_json_start_reports_the_port_of_the_daemon_it_used(self):
+        # A Rigol's daemon is on a port of its own; --json said 8085 for it.
+        code, out, _err = _run_stream(_Daemon(), "stream_start",
+                                      daemon_uri="ws://127.0.0.1:41234/",
+                                      channel="A", json_output=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["command_port"], 41234)
+
     def test_status_fails_when_the_daemon_does_not_answer(self):
         code, out, _err = _run_stream(_Daemon(refuse_connection=True), "stream_status")
         self.assertEqual(code, 1)
@@ -479,6 +487,99 @@ class PicoScopeRefusalTests(unittest.TestCase):
         with mock.patch.object(module, "load_saved_nets", return_value=[PICO_CHANNEL]), \
              mock.patch.object(module, "_NET_ROLE", "logic"):
             self.assertIsNone(module.get_net_info("scope2"))
+
+
+RIGOL_CHANNEL = {"name": "sda", "role": "scope-channel", "instrument": "Rigol_MSO5074",
+                 "pin": "1"}
+RIGOL_INSTRUMENT = {"name": "rigol1", "role": "scope", "instrument": "Rigol_MSO5074"}
+
+
+class RigolProtocolTriggerTests(unittest.TestCase):
+    """These set the sweep, the coupling and the trigger type before failing
+    at the first setter the driver lacks, leaving the scope on that trigger."""
+
+    def _refused(self, action, net, **params):
+        module = _load_impl()
+        data = {"action": action, "params": dict({"netname": net["name"]}, **params)}
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(module, "load_saved_nets", return_value=[net]), \
+             mock.patch.object(module, "get_rigol_net") as get_net, \
+             mock.patch.object(module, "get_source_net") as get_source, \
+             mock.patch.dict(os.environ, {"LAGER_COMMAND_DATA": json.dumps(data)}), \
+             redirect_stdout(out), redirect_stderr(err), \
+             self.assertRaises(SystemExit) as exited:
+            module.main()
+        get_net.assert_not_called()
+        get_source.assert_not_called()
+        return exited.exception.code, err.getvalue()
+
+    def test_uart_i2c_and_pulse_are_refused_before_anything_is_sent(self):
+        for action, kind in (("trigger_uart", "UART"), ("trigger_i2c", "I2C"),
+                             ("trigger_pulse", "pulse")):
+            for net in (RIGOL_CHANNEL, RIGOL_INSTRUMENT):
+                with self.subTest(action=action, net=net["role"]):
+                    code, err = self._refused(action, net, mode="normal", coupling="dc")
+                    self.assertEqual(code, 1)
+                    self.assertIn("supports edge and SPI triggers", err)
+                    self.assertIn("not %s" % kind, err)
+                    self.assertIn("Nothing was changed", err)
+
+
+class StreamWithNoCardTests(unittest.TestCase):
+    """A Rigol with no capture card paired cannot stream; the start said
+    "Streaming started" and exited 0."""
+
+    def setUp(self):
+        routing = types.ModuleType("lager.measurement.scope.routing")
+        routing.RIGOL_MSO5000 = "rigol_mso5000"
+        routing.NO_LIVE_VIEW = "no HDMI capture card is paired with this scope"
+        routing.scope_family = lambda instrument: (
+            "rigol_mso5000" if "Rigol" in (instrument or "") else "picoscope")
+        routing.has_live_view = lambda rec: bool(rec.get("capture"))
+        self.nets = []
+        net_mod = types.ModuleType("lager.nets.net")
+        net_mod.Net = types.SimpleNamespace(get_local_nets=lambda: self.nets)
+        scope_pkg = types.ModuleType("lager.measurement.scope")
+        scope_pkg.routing = routing
+        patcher = mock.patch.dict(sys.modules, {
+            "lager": types.ModuleType("lager"),
+            "lager.nets": types.ModuleType("lager.nets"),
+            "lager.nets.net": net_mod,
+            "lager.measurement": types.ModuleType("lager.measurement"),
+            "lager.measurement.scope": scope_pkg,
+            "lager.measurement.scope.routing": routing,
+        })
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_the_start_is_refused_before_anything_is_sent(self):
+        self.nets = [dict(RIGOL_CHANNEL)]
+        daemon = _Daemon()
+        code, out, err = _run_stream(daemon, "stream_start", netname="sda", channel="A")
+        self.assertEqual(code, 1)
+        self.assertIn("no HDMI capture card is paired", err)
+        self.assertNotIn("Streaming started", out)
+        self.assertEqual(daemon.sent, [])
+
+    def test_status_says_there_is_no_live_view_and_why(self):
+        self.nets = [dict(RIGOL_INSTRUMENT)]
+        daemon = _Daemon({
+            "GetChannelCount": {"response": "GetChannelCount", "channel_count": 4},
+            "IsReady": {"response": "IsReady", "is_ready": True},
+        })
+        code, out, _err = _run_stream(daemon, "stream_status", netname="rigol1")
+        self.assertEqual(code, 1)
+        self.assertIn("Live view: none -- no HDMI capture card is paired", out)
+
+    def test_a_paired_rigol_and_a_picoscope_still_start(self):
+        paired = dict(RIGOL_CHANNEL, capture={"device": "usb:3-2.4.2"})
+        for net in (paired, dict(PICO_CHANNEL)):
+            with self.subTest(net=net["instrument"]):
+                self.nets = [net]
+                code, out, _err = _run_stream(_Daemon(), "stream_start",
+                                              netname=net["name"], channel="A")
+                self.assertEqual(code, 0)
+                self.assertIn("Streaming started", out)
 
 
 if __name__ == "__main__":

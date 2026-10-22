@@ -24,7 +24,10 @@ from ..defines import (
     BusFlexRaySigType
 )
 from ..constants import NetType
-from ...measurement.scope.rigol_mso5000 import refuse_rejected_measurement
+from ...measurement.scope.rigol_mso5000 import (
+    refuse_rejected_measurement,
+    refuse_unoffered_trigger,
+)
 
 TriggerEdgeSource = rigol_mso5000_defines.TriggerEdgeSource
 TriggerPulseSource = rigol_mso5000_defines.TriggerPulseSource
@@ -499,6 +502,7 @@ class TriggerSettings_RigolMSO5000FunctionMapper:
         return self.get_trigger_coupling()
 
     def set_type(self, trigger_type):
+        refuse_unoffered_trigger(trigger_type)
         self.set_trigger_type(trigger_type)
 
     def get_type(self):
@@ -543,7 +547,23 @@ class TriggerSettingsEdge_RigolMSO5000FunctionMapper(LevelCheckMixin):
     def __getattr__(self, attr):
         return getattr(self.device, attr)
 
-class TriggerSettingsPulse_RigolMSO5000FunctionMapper(LevelCheckMixin):
+class TriggerNotOfferedMixin:
+    """A trigger the driver has no setters for.
+
+    Each lookup used to pass through to the device, so the setters before the
+    first missing one reached the scope. Each is refused here instead, before
+    anything is sent.
+    """
+    trigger_type = None
+
+    def __getattr__(self, attr):
+        if not attr.startswith("__"):
+            refuse_unoffered_trigger(self.trigger_type)
+        raise AttributeError(attr)
+
+class TriggerSettingsPulse_RigolMSO5000FunctionMapper(TriggerNotOfferedMixin, LevelCheckMixin):
+    trigger_type = TriggerType.Pulse
+
     def __init__(self, parent, net, device):
         self.parent = parent
         self.net = net
@@ -586,8 +606,6 @@ class TriggerSettingsPulse_RigolMSO5000FunctionMapper(LevelCheckMixin):
             self.set_trigger_pulse_upper(max_pulse_width)
 
 
-    def __getattr__(self, attr):
-        return getattr(self.device, attr)
 
 class TriggerSettingsSlope_RigolMSO5000FunctionMapper:
     def __init__(self, net, device):
@@ -621,7 +639,9 @@ class TriggerSettingsTimeout_RigolMSO5000FunctionMapper:
     def __getattr__(self, attr):
         return getattr(self.device, attr)
 
-class TriggerSettingsUART_RigolMSO5000FunctionMapper(LevelCheckMixin):
+class TriggerSettingsUART_RigolMSO5000FunctionMapper(TriggerNotOfferedMixin, LevelCheckMixin):
+    trigger_type = TriggerType.UART
+
     def __init__(self, parent, net, device):
         self.parent = parent
         self.net = net
@@ -673,10 +693,10 @@ class TriggerSettingsUART_RigolMSO5000FunctionMapper(LevelCheckMixin):
             self.set_trigger_uart_data(data)
 
 
-    def __getattr__(self, attr):
-        return getattr(self.device, attr)
 
-class TriggerSettingsI2C_RigolMSO5000FunctionMapper(LevelCheckMixin):
+class TriggerSettingsI2C_RigolMSO5000FunctionMapper(TriggerNotOfferedMixin, LevelCheckMixin):
+    trigger_type = TriggerType.I2C
+
     def __init__(self, parent, net, device):
         self.parent = parent
         self.net = net
@@ -766,8 +786,6 @@ class TriggerSettingsI2C_RigolMSO5000FunctionMapper(LevelCheckMixin):
         self.set_trigger_on_data( width=width, data=data)
         self.set_trigger_i2c_condition(TriggerI2CCondition.AddrData)        
 
-    def __getattr__(self, attr):
-        return getattr(self.device, attr)
 
 class TriggerSettingsSPI_RigolMSO5000FunctionMapper(LevelCheckMixin):
     def __init__(self, parent, net, device):
@@ -864,7 +882,9 @@ class TriggerSettingsSPI_RigolMSO5000FunctionMapper(LevelCheckMixin):
     def __getattr__(self, attr):
         return getattr(self.device, attr)
 
-class TriggerSettingsCAN_RigolMSO5000FunctionMapper(LevelCheckMixin):
+class TriggerSettingsCAN_RigolMSO5000FunctionMapper(TriggerNotOfferedMixin, LevelCheckMixin):
+    trigger_type = TriggerType.CAN
+
     def __init__(self, parent, net, device):
         self.parent = parent
         self.net = net
@@ -960,8 +980,6 @@ class TriggerSettingsCAN_RigolMSO5000FunctionMapper(LevelCheckMixin):
     def get_trigger_condition(self):
         return self.get_trigger_can_condition()
 
-    def __getattr__(self, attr):
-        return getattr(self.device, attr)
 
 
 class Measurement_RigolMSO5000FunctionMapper:

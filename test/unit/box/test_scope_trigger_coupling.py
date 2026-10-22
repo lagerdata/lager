@@ -50,6 +50,11 @@ class _RecordingScope:
             return {"status": "ok"}
         return call
 
+    def get_trigger_level(self, source=None):
+        """A readback, answered as the driver does: the level last set."""
+        return next((args[0] for name, args in reversed(self.calls)
+                     if name == "set_trigger_level"), 0.0)
+
 
 class TestATriggerFilterDoesNotTouchTheInput:
 

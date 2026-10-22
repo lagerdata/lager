@@ -85,6 +85,12 @@ class TestTheScopeDriver:
             RigolScope(address=ADDRESS).set_trigger_coupling("gnd")
         assert daemon == []
 
+    def test_moving_the_time_position_does_not_start_a_stopped_scope(self, daemon):
+        # The PicoScope's re-arm restarted a stopped Rigol and lost its capture.
+        RigolScope(address=ADDRESS).set_timebase_offset(0.001)
+        assert [n for n, _ in daemon[0].sent] == ["SetTimeOffset", "GetTimeOffset"]
+        assert daemon[0].sent[0] == ("SetTimeOffset", {"time_offset": 0.001})
+
     def test_two_nets_on_one_scope_share_its_cursors(self):
         a = RigolScope(address=ADDRESS, pin=1)
         b = RigolScope(address=ADDRESS, pin=2)
@@ -405,6 +411,37 @@ class TestTheNetApi:
         with pytest.raises(UnsupportedScopeFeature, match="rejects"):
             getattr(mapper.measurement, method)()
         assert device.method_calls == []
+
+    @pytest.mark.parametrize("kind,name", [
+        ("UART", "UART"), ("I2C", "I2C"), ("Pulse", "pulse"), ("CAN", "can")])
+    def test_a_trigger_type_with_no_setters_is_refused_before_anything_is_sent(self, kind, name):
+        from lager.nets.defines import TriggerType
+        mapper, device = self._mapper()
+        with pytest.raises(UnsupportedScopeFeature, match="edge and SPI triggers.*not %s" % name):
+            mapper.trigger_settings.set_type(getattr(TriggerType, kind))
+        assert device.method_calls == []
+
+    @pytest.mark.parametrize("call", [
+        lambda t, net: t.uart.set_source(net),
+        lambda t, net: t.uart.set_uart_params(baud=9600),
+        lambda t, net: t.uart.set_trigger_on_start(),
+        lambda t, net: t.pulse.set_level(1.0),
+        lambda t, net: t.pulse.set_trigger_on_pulse_greater_than_width(1e-6),
+        lambda t, net: t.i2c.set_trigger_on_start(),
+        lambda t, net: t.can.set_source(net),
+    ])
+    def test_a_protocol_trigger_s_setters_send_nothing(self, call):
+        mapper, device = self._mapper()
+        with pytest.raises(UnsupportedScopeFeature, match="edge and SPI triggers"):
+            call(mapper.trigger_settings, mapper.net)
+        assert device.method_calls == []
+
+    def test_edge_and_spi_triggers_still_reach_the_scope(self):
+        from lager.nets.defines import TriggerType
+        mapper, device = self._mapper()
+        mapper.trigger_settings.set_type(TriggerType.Edge)
+        mapper.trigger_settings.set_type(TriggerType.SPI)
+        assert [c[0] for c in device.method_calls] == ["set_trigger_type", "set_trigger_type"]
 
     def test_a_measurement_leaves_the_users_readouts(self):
         mapper, device = self._mapper()

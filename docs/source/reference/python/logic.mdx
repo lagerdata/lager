@@ -6,7 +6,7 @@ description: Digital signal capture and protocol decoding
 Capture and analyze digital signals using the logic analyzer functionality of mixed-signal oscilloscopes.
 
 <Warning>
-**Known limitations on the Rigol MSO5000.** Channel control, capture, measurements, and the edge and SPI triggers work. The pulse, UART, I2C and CAN triggers fail. Every bus decoder fails when you create it. A method that fails raises an error that contains `Function not found`. [Issue #418](https://github.com/lagerdata/lager/issues/418) tracks this work.
+**Known limitations on the Rigol MSO5000.** Channel control, capture, measurements, and the edge and SPI triggers work. The pulse, UART, I2C and CAN triggers raise an error that says the scope supports edge and SPI triggers, before anything reaches it. Every bus decoder fails when you create it, with an error that contains `Function not found`. [Issue #418](https://github.com/lagerdata/lager/issues/418) tracks this work.
 </Warning>
 
 ## Import

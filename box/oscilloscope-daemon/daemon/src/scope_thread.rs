@@ -241,7 +241,8 @@ impl OpenState {
     }
 
     /// What a request is told when there is no scope to answer it.
-    fn refusal(&self) -> Option<String> {
+    /// `opening` says what makes this kind of scope slow to open.
+    fn refusal(&self, opening: &str) -> Option<String> {
         match self {
             OpenState::Open => None,
             OpenState::Opening { since, last_failure } => {
@@ -258,10 +259,9 @@ impl OpenState {
                     // opening it, which for a unit just plugged in is slow
                     // but healthy. Telling people to reconnect here restarts
                     // the wait they are in.
-                    _ if elapsed < OPEN_LOOKS_WEDGED_AFTER => format!(
-                        "opening the oscilloscope ({seconds} s so far); a PicoScope \
-                         that was just plugged in can take about a minute"
-                    ),
+                    _ if elapsed < OPEN_LOOKS_WEDGED_AFTER => {
+                        format!("opening the oscilloscope ({seconds} s so far); {opening}")
+                    }
                     _ => format!(
                         "still opening the oscilloscope after {seconds} s; it is likely \
                          wedged. Unplug it and plug it back in."
@@ -288,6 +288,9 @@ pub struct ScopeHandle {
     acquiring: Arc<AtomicBool>,
     capture_count: Arc<AtomicU64>,
     open_state: Arc<Mutex<OpenState>>,
+    /// What makes this kind of scope slow to open, for a request that comes
+    /// while it opens.
+    opening: &'static str,
     state: watch::Receiver<Arc<ScopeState>>,
     /// Set by `shutdown`, for a hardware thread that is not reading its
     /// queue: one between attempts to open the scope.
@@ -318,6 +321,7 @@ impl ScopeHandle {
             acquiring: Arc::new(AtomicBool::new(false)),
             capture_count: Arc::new(AtomicU64::new(0)),
             open_state: Arc::new(Mutex::new(OpenState::Open)),
+            opening: PICOSCOPE_OPENING,
             state,
             stopping: Arc::new(AtomicBool::new(false)),
             thread: Arc::new(Mutex::new(None)),
@@ -339,7 +343,7 @@ impl ScopeHandle {
         // "connection refused" with nothing to say why.
         //
         // The guard goes before the reply is built: building one logs.
-        let refusal = lock(&self.open_state).refusal();
+        let refusal = lock(&self.open_state).refusal(self.opening);
         if let Some(message) = refusal {
             return ScopeReply::error(message);
         }
@@ -452,6 +456,22 @@ pub fn spawn<F>(open: F) -> Result<ScopeHandle>
 where
     F: FnMut() -> Result<Box<dyn Oscilloscope>> + Send + 'static,
 {
+    spawn_opening(open, PICOSCOPE_OPENING)
+}
+
+/// What makes a PicoScope slow to open.
+pub const PICOSCOPE_OPENING: &str = "a PicoScope that was just plugged in can take about a minute";
+/// What makes a Rigol slow to open: pairing with its card, which may switch
+/// the HDMI output on with keys paced a second apart, then reading settings.
+pub const RIGOL_OPENING: &str =
+    "a Rigol opens by pairing with its capture card and reading its settings, \
+     which can take several seconds";
+
+/// [`spawn`], for a scope whose slow open `opening` explains.
+pub fn spawn_opening<F>(open: F, opening: &'static str) -> Result<ScopeHandle>
+where
+    F: FnMut() -> Result<Box<dyn Oscilloscope>> + Send + 'static,
+{
     let (command_tx, command_rx) = mpsc::channel::<Message>(COMMAND_QUEUE_DEPTH);
     let (capture_tx, _) = broadcast::channel(CAPTURE_BROADCAST_DEPTH);
     let (state_tx, state_rx) = watch::channel(Arc::new(unopened_state()));
@@ -497,6 +517,7 @@ where
         acquiring,
         capture_count,
         open_state,
+        opening,
         state: state_rx,
         stopping,
         thread: Arc::new(Mutex::new(Some(thread))),
@@ -2863,6 +2884,7 @@ mod tests {
             acquiring: Arc::new(AtomicBool::new(false)),
             capture_count: Arc::new(AtomicU64::new(0)),
             open_state: Arc::new(Mutex::new(state)),
+            opening: PICOSCOPE_OPENING,
             state: state_rx,
             stopping: Arc::new(AtomicBool::new(false)),
             thread: Arc::new(Mutex::new(None)),
@@ -2925,6 +2947,22 @@ mod tests {
             !message.contains("reconnect") && !message.contains("plug it back in"),
             "{message:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_slow_open_names_the_kind_of_scope_opening() {
+        // A Rigol's daemon said a PicoScope was opening.
+        let ago = OPEN_FAILS_WITHIN + Duration::from_secs(5);
+        let Some(state) = opening_for(ago, None) else {
+            eprintln!("skipped: host uptime is under {ago:?}");
+            return;
+        };
+        let mut handle = handle_in(state);
+        handle.opening = RIGOL_OPENING;
+
+        let message = error_from(handle.request(ScopeRequest::IsReady).await);
+        assert!(message.contains("a Rigol opens by pairing"), "{message:?}");
+        assert!(!message.contains("PicoScope"), "{message:?}");
     }
 
     #[tokio::test]

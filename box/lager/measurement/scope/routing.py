@@ -57,6 +57,14 @@ def daemon_url_for(rec: dict, info: dict | None = None) -> str:
         "no oscilloscope daemon drives a %s" % (instrument or "scope of unknown make"))
 
 
+# Why a Rigol with no card cannot stream. The trace streams from the HDMI
+# output; without a card the daemon would never publish a frame.
+NO_LIVE_VIEW = (
+    "no HDMI capture card is paired with this scope, so it cannot stream; "
+    "pair one with `lager nets set-capture`. Single captures and "
+    "measurements work without it")
+
+
 def has_live_view(rec: dict) -> bool:
     """Whether the net's scope can stream: a PicoScope always can, a Rigol
     only through the HDMI capture card paired with it."""

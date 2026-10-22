@@ -116,8 +116,13 @@ async fn main() -> Result<()> {
     // the daemon never failed and never listened, and every client got a bare
     // "connection refused". Commands now answer with the reason, and the
     // hardware thread keeps trying to open in the background.
-    let scope =
-        scope_thread::spawn(open_configured).context("starting the oscilloscope thread")?;
+    let opening = if std::env::var_os(rigol::Config::SCPI_ENV).is_some() {
+        scope_thread::RIGOL_OPENING
+    } else {
+        scope_thread::PICOSCOPE_OPENING
+    };
+    let scope = scope_thread::spawn_opening(open_configured, opening)
+        .context("starting the oscilloscope thread")?;
 
     tokio::select! {
         result = server::serve(config, scope.clone()) => result,

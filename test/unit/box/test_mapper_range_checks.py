@@ -136,6 +136,11 @@ def _mapper(cls):
     needs. Assigning `device` first matters: `__getattr__` forwards to it, so
     an instance without one recurses on the first attribute miss.
     """
+    if issubclass(cls, rigol_mso5000.TriggerNotOfferedMixin):
+        # A Rigol refuses these triggers until its driver has them (#740).
+        # The range checks come first, so forward as the other mappers do.
+        cls = type(cls.__name__, (cls,),
+                   {"__getattr__": lambda self, attr: getattr(self.device, attr)})
     obj = cls.__new__(cls)
     obj.device = FakeDevice()
     obj.net = None

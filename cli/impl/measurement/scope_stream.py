@@ -102,19 +102,52 @@ def _daemon_uri_for(netname):
     own, started for it on first use. The box's is the answer when the net
     is not given or the box's routing cannot be imported.
     """
-    if not netname:
+    rec = _net_record(netname)
+    if rec is None:
         return DAEMON_URI
     try:
         from lager.measurement.scope.routing import daemon_url_for
-        from lager.nets.net import Net
     except ImportError:
         return DAEMON_URI
-    rec = next((n for n in Net.get_local_nets()
-                if n.get("name") == netname
-                and n.get("role") in ("scope", "scope-channel", "analog")), None)
-    if rec is None:
-        return DAEMON_URI
     return daemon_url_for(rec)
+
+
+def _net_record(netname):
+    """``netname``'s saved scope net, or None when it is not one."""
+    if not netname:
+        return None
+    try:
+        from lager.nets.net import Net
+    except ImportError:
+        return None
+    return next((n for n in Net.get_local_nets()
+                 if n.get("name") == netname
+                 and n.get("role") in ("scope", "scope-channel", "analog")), None)
+
+
+def _cannot_stream(netname):
+    """Why ``netname``'s scope cannot stream at all, or None.
+
+    A Rigol streams from its HDMI output, so only with a capture card paired.
+    The daemon has no live-view problem to report then, since it was never
+    given a card, so the start and the status read it from the net.
+    """
+    rec = _net_record(netname)
+    if rec is None:
+        return None
+    try:
+        from lager.measurement.scope import routing
+        is_rigol = routing.scope_family(rec.get("instrument")) == routing.RIGOL_MSO5000
+        if is_rigol and not routing.has_live_view(rec):
+            return routing.NO_LIVE_VIEW
+    except (ImportError, AttributeError):
+        pass
+    return None
+
+
+def _daemon_port():
+    """The port of the daemon this net answers to, from DAEMON_URI."""
+    return int(DAEMON_URI.rstrip("/").rsplit(":", 1)[-1])
 
 
 def send_command(command: dict) -> dict:
@@ -202,6 +235,13 @@ def stream_start(params: dict):
         sys.stderr.write(f"Error: Invalid channel '{channel}'. Must be A, B, C, or D\n")
         sys.exit(2)
 
+    # Refused before anything is sent: the start used to print "Streaming
+    # started" and exit 0 for a stream that could never show a frame.
+    reason = _cannot_stream(params.get("netname"))
+    if reason:
+        sys.stderr.write(f"Error: {reason}\n")
+        sys.exit(1)
+
     source = map_channel(channel)
     letter = source["Alphabetic"]
     _apply([
@@ -237,7 +277,8 @@ def stream_start(params: dict):
         result = {
             "status": "success",
             "message": "Streaming started",
-            "command_port": DAEMON_COMMAND_PORT,
+            # This net's daemon: a Rigol's listens on a port of its own.
+            "command_port": _daemon_port(),
         }
         if problem:
             result["live_view_problem"] = problem
@@ -274,7 +315,7 @@ def stream_status(params: dict):
     print("Oscilloscope daemon: RUNNING")
     # The daemon this net answers to: a Rigol has one of its own, on a port
     # of its own, so not always the box's 8085.
-    print(f"  Command port: {DAEMON_URI.rstrip('/').rsplit(':', 1)[-1]}")
+    print(f"  Command port: {_daemon_port()}")
     if "error" in count:
         print(f"  Scope: {count['error']}")
         sys.exit(1)
@@ -286,7 +327,7 @@ def stream_status(params: dict):
         sys.exit(1)
     print(f"  Ready: {bool(ready.get('is_ready'))}")
 
-    problem = _live_view_problem()
+    problem = _cannot_stream(params.get("netname")) or _live_view_problem()
     if problem:
         print(f"  Live view: none -- {problem}")
         sys.exit(1)

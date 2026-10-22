@@ -526,17 +526,30 @@ pub fn open_usb(vid: u16, pid: u16, serial: Option<&str>) -> Result<UsbTmc<RusbB
         }
         return claim(device, handle, &descriptor);
     }
+    bail!(not_attached(vid, pid, serial, &seen))
+}
+
+/// Why no instrument matched, naming what was found instead. A serial that
+/// could not be read is counted rather than listed: as an empty string it
+/// ended the message on "found serials " and nothing after.
+fn not_attached(vid: u16, pid: u16, serial: Option<&str>, seen: &[String]) -> String {
     let which = match serial {
         Some(serial) => format!("{vid:04x}:{pid:04x} with serial {serial}"),
         None => format!("{vid:04x}:{pid:04x}"),
     };
     if seen.is_empty() {
-        bail!("no USB instrument {which} is attached; check its USB cable to the box")
+        return format!("no USB instrument {which} is attached; check its USB cable to the box");
     }
-    bail!(
-        "no USB instrument {which} is attached; found serials {}",
-        seen.join(", ")
-    )
+    let readable: Vec<&str> = seen.iter().map(String::as_str).filter(|s| !s.is_empty()).collect();
+    let unreadable = seen.len() - readable.len();
+    let mut found = Vec::new();
+    if !readable.is_empty() {
+        found.push(format!("serials {}", readable.join(", ")));
+    }
+    if unreadable > 0 {
+        found.push(format!("{unreadable} whose serial could not be read"));
+    }
+    format!("no USB instrument {which} is attached; found {}", found.join(" and "))
 }
 
 fn claim(
@@ -718,6 +731,22 @@ impl DeviceLock {
 mod tests {
     use super::*;
     use std::collections::VecDeque;
+
+    #[test]
+    fn a_missing_instrument_names_what_was_found_and_counts_unreadable_serials() {
+        let wanted = Some("MS5A1");
+        let found = |seen: &[&str]| {
+            let seen: Vec<String> = seen.iter().map(|s| s.to_string()).collect();
+            not_attached(0x1ab1, 0x0515, wanted, &seen)
+        };
+        assert!(found(&[]).ends_with("check its USB cable to the box"));
+        assert!(found(&["MS5A2"]).ends_with("found serials MS5A2"));
+        let unread = found(&[""]);
+        assert!(unread.ends_with("found 1 whose serial could not be read"), "{unread}");
+        assert!(
+            found(&["MS5A2", ""]).ends_with("found serials MS5A2 and 1 whose serial could not be read")
+        );
+    }
 
     #[test]
     fn visa_usb_addresses_parse_with_and_without_a_serial() {

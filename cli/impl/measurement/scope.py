@@ -1272,6 +1272,16 @@ def main():
             print(f"{YELLOW}Use: lager scope {netname} trigger edge --slope rising --level 0{RESET}")
             sys.exit(1)
 
+    # A Rigol's driver sets up edge and SPI triggers only. These three set the
+    # sweep, the coupling and the trigger type before reaching the first
+    # setter it lacks, which left the scope on that trigger and failed with
+    # "Function not found". Refused before anything is sent.
+    if action in ('trigger_uart', 'trigger_i2c', 'trigger_pulse') and is_rigol(net_info):
+        kind = {'trigger_uart': 'UART', 'trigger_i2c': 'I2C', 'trigger_pulse': 'pulse'}[action]
+        print(f"{RED}Error: a Rigol MSO5000 supports edge and SPI triggers through lager, "
+              f"not {kind}. Nothing was changed on the scope.{RESET}", file=sys.stderr)
+        sys.exit(1)
+
     # Rigol trigger configuration
     if action == 'trigger_edge':
         try:

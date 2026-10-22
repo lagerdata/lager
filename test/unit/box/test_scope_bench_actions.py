@@ -351,3 +351,21 @@ class TestTheCouplingReadback:
         device.get_channel_coupling.return_value = "AC"
         result = _run("pico1", "get_coupling", {}, device, role="scope-channel")
         assert result == {"message": "Coupling AC", "value": "AC"}
+
+
+class TestTheEdgeReplySaysWhatTheScopeTook:
+    """A Rigol clamps the trigger level to its screen; the reply said the
+    level asked for, 50 V, when the scope had taken 5 V."""
+
+    def test_a_clamped_level_is_reported_as_taken(self):
+        device = mock.MagicMock()
+        device.get_trigger_level.return_value = 5.0
+        result = _run("rigol1", "trigger_edge", {"level": 50}, device)
+        device.set_trigger_level.assert_called_once_with(50.0)
+        assert result["message"] == "Edge trigger: level 5 V (asked for 50 V)"
+
+    def test_a_level_taken_as_asked_is_reported_plainly(self):
+        device = mock.MagicMock()
+        device.get_trigger_level.return_value = 1.5
+        result = _run("rigol1", "trigger_edge", {"level": 1.5}, device)
+        assert result["message"] == "Edge trigger: level 1.5 V"

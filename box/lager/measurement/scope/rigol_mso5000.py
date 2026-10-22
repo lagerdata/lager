@@ -61,6 +61,25 @@ def refuse_rejected_measurement(item):
             "00.01.03.00.03), so lager does not ask for it")
 
 
+# The trigger types this driver can set up. The scope has more, but setting
+# the type opens its Trigger menu and switches the trigger over, so a type
+# with no setters behind it left the scope on that trigger, half set up.
+OFFERED_TRIGGER_TYPES = frozenset({"EDGE", "SPI"})
+
+# The scope's names for the protocol triggers, to the ones lager uses.
+_TRIGGER_NAMES = {"RS232": "UART", "IIC": "I2C", "IIS": "I2S"}
+
+
+def refuse_unoffered_trigger(trigger_type):
+    """Raise for a trigger type lager cannot set up, before anything is sent."""
+    from lager.measurement.scope.picoscope import UnsupportedScopeFeature
+    token = _scpi_arg(trigger_type).upper()
+    if token not in OFFERED_TRIGGER_TYPES:
+        raise UnsupportedScopeFeature(
+            f"a Rigol MSO5000 supports edge and SPI triggers through lager, "
+            f"not {_TRIGGER_NAMES.get(token, token.lower())}")
+
+
 # Manual cursor types as older Rigol scopes name them, to the MSO5000's.
 _CURSOR_TYPES = {"X": "TIME", "XY": "TIME", "Y": "AMPLitude"}
 
