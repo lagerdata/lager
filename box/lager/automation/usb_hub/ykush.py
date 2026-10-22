@@ -341,6 +341,18 @@ class YKUSHUSBNet(USBNet):
         self._with_device(lambda dev: self._set_state(dev, port, _PORT_DOWN),
                           what="disable")
 
+    def _cycle_power(self, net_name, port, off_time):
+        """Off, wait, on on ONE open handle under one lock, so no other
+        caller can switch the port while it is dark (#502)."""
+        self._validate_port(port)
+
+        def _do(dev):
+            return self._dark_cycle(
+                lambda on: self._set_state(dev, port, _PORT_UP if on else _PORT_DOWN),
+                port, off_time)
+
+        return self._with_device(_do, what="cycle")
+
     @staticmethod
     def _read_enabled(dev, port: int) -> bool:
         """Read the live enabled/disabled state of a port from the device.

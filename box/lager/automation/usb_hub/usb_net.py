@@ -65,6 +65,21 @@ USB_CYCLE_MAX_OFF_TIME_S = 10.0
 USB_REENUM_WAIT_S = 5.0
 _REENUM_POLL_S = 0.1
 
+# When this process last powered each port on, by (hub lock key, port), so a
+# cycle straight after an enable can wait for the device first (#730). Per
+# process: every `lager usb` action runs in box_http_server, which is where
+# the enable-then-cycle sequence that misreported arrives.
+_powered_on_at: dict = {}
+
+
+def note_powered_on(controller, port):
+    """Record that ``controller`` just powered ``port`` on."""
+    try:
+        key = (controller._lock_key(), str(port))
+    except NotImplementedError:
+        return
+    _powered_on_at[key] = time.monotonic()
+
 
 def _bus_snapshot():
     """``{sysfs_name: devnum}`` for every device on the USB bus.
@@ -729,11 +744,10 @@ class USBNet(ABC):
     def cycle(self, net_name, port, off_time=None):
         """Power-cycle one port: off, wait, on.
 
-        Concrete but overridable. The default drives the driver's own
-        ``disable``/``enable``, which costs two hub sessions and two lock
-        acquisitions, so a port is briefly switchable by another caller while
-        it is dark. A driver that can do the whole sequence in one session
-        should override this and do so.
+        Concrete but overridable. The power sequence itself is
+        ``_cycle_power``, which a driver that can hold one hub session for the
+        whole off period overrides (Acroname, YKUSH). Only the default there
+        lets another caller switch the port while it is dark.
 
         The re-power runs in a ``finally``: leaving a port unpowered because
         something failed halfway is how a bench nobody can reach physically
@@ -747,6 +761,12 @@ class USBNet(ABC):
         an unambiguous answer, and it is why this is done here rather than
         either side of the call.
 
+        A port powered on moments ago may carry a device that has not reached
+        the bus yet, and would then be in neither sample (#730). So a cycle
+        that starts inside ``USB_REENUM_WAIT_S`` of this process powering the
+        port on first waits out the rest of that window -- the same time a
+        cycled device is given to come back.
+
         Returns:
             bool | None: True if the device came back, False if it did not
             within ``USB_REENUM_WAIT_S``, None if there was nothing on the port
@@ -756,13 +776,8 @@ class USBNet(ABC):
             ``_bus_snapshot()`` for itself; on a box it is always readable.
         """
         off_time = validate_off_time(off_time)
-        before = _bus_snapshot()
-        self.disable(net_name, port)
-        try:
-            time.sleep(off_time)
-            dark = _bus_snapshot()
-        finally:
-            self.enable(net_name, port)
+        self._wait_out_recent_power_on(port)
+        before, dark = self._cycle_power(net_name, port, off_time)
 
         if not before or not dark:
             return None                      # sysfs unreadable: cannot answer
@@ -780,6 +795,67 @@ class USBNet(ABC):
                     net_name, port, sorted(on_this_port), USB_REENUM_WAIT_S)
                 return False
             time.sleep(_REENUM_POLL_S)
+
+    def _cycle_power(self, net_name, port, off_time):
+        """Cut the port, sample the bus while it is dark, and re-power it.
+
+        Returns the ``(before, dark)`` bus snapshots ``cycle`` compares. The
+        default drives the driver's own ``disable``/``enable``: two hub
+        sessions and two lock acquisitions, so the port is switchable by
+        another caller while it is dark. A driver that can hold one session
+        overrides this and runs ``_dark_cycle`` inside it.
+        """
+        before = _bus_snapshot()
+        self.disable(net_name, port)
+        try:
+            time.sleep(off_time)
+            dark = _bus_snapshot()
+        finally:
+            self.enable(net_name, port)
+        return before, dark
+
+    @staticmethod
+    def _dark_cycle(set_power, port, off_time):
+        """``_cycle_power``'s sequence on a handle the caller already holds.
+
+        ``set_power(on)`` switches the port through that handle. Power is
+        restored on every exit path, and a failed restore says how to recover
+        rather than leaving the port dark without a word.
+        """
+        before = _bus_snapshot()
+        restored = False
+        try:
+            set_power(False)
+            time.sleep(off_time)
+            dark = _bus_snapshot()
+        finally:
+            try:
+                set_power(True)
+                restored = True
+            except Exception:  # noqa: BLE001 - must not mask the original
+                logger.error("could not re-power port %s after a cycle; it may "
+                             "be left unpowered", port, exc_info=True)
+        if not restored:
+            raise PortStateError(
+                f"port {port} was powered down but could not be powered back "
+                "up. Run `lager usb <net> recover` to re-power it.")
+        return before, dark
+
+    def _wait_out_recent_power_on(self, port):
+        """Give a just-powered device the time a cycled one gets (#730)."""
+        try:
+            key = (self._lock_key(), str(port))
+        except NotImplementedError:
+            return
+        powered_at = _powered_on_at.get(key)
+        if powered_at is None:
+            return
+        remaining = powered_at + USB_REENUM_WAIT_S - time.monotonic()
+        if remaining > 0:
+            logger.info("cycle port %s: powered on %.1fs ago; waiting %.1fs for "
+                        "its device to reach the bus first", port,
+                        USB_REENUM_WAIT_S - remaining, remaining)
+            time.sleep(remaining)
 
     def recover(self, net_name, port):
         """Restore power after a failed or interrupted operation.

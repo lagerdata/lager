@@ -210,3 +210,180 @@ def test_the_drivers_that_had_no_answer_now_inherit_one(module_name, class_name)
         f"{class_name} now overrides cycle() -- it no longer inherits the "
         "topology-based confirmation, and needs its own"
     )
+
+
+# ── One session for the whole cycle (#502) ────────────────────────────────
+
+
+@pytest.mark.parametrize("module_name, class_name", [
+    ("lager.automation.usb_hub.acroname", "AcronameUSBNet"),
+    ("lager.automation.usb_hub.ykush", "YKUSHUSBNet"),
+])
+def test_acroname_and_ykush_hold_one_session_for_the_power_sequence(
+        module_name, class_name):
+    """The base `_cycle_power` takes two sessions, releasing the port while
+    it is dark; another caller read it as `disabled` mid-cycle on PRD-1."""
+    import importlib
+
+    driver = getattr(importlib.import_module(module_name), class_name)
+
+    assert driver._cycle_power is not usb_net.USBNet._cycle_power
+
+
+class _Port:
+    """One port behind a held handle: records every switch."""
+
+    def __init__(self, fail_restore=False):
+        self.calls = []
+        self.powered = True
+        self._fail_restore = fail_restore
+
+    def set_power(self, on):
+        self.calls.append("on" if on else "off")
+        if on and self._fail_restore:
+            raise OSError("hub went away")
+        self.powered = on
+
+
+def test_acroname_runs_off_wait_on_inside_one_with_hub(clock, monkeypatch):
+    from lager.automation.usb_hub.acroname import AcronameUSBNet
+
+    _scripted(monkeypatch, [POWERED, DARK, RETURNED])
+    port = _Port()
+
+    class _Usb:
+        def setPortEnable(self, p):
+            port.set_power(True)
+
+        def setPortDisable(self, p):
+            port.set_power(False)
+
+    hub = type("Hub", (), {"usb": _Usb()})()
+    sessions = []
+
+    def with_hub(self, fn, **kwargs):
+        sessions.append(kwargs)
+        return fn(hub)
+
+    monkeypatch.setattr(AcronameUSBNet, "_with_hub", with_hub)
+    monkeypatch.setattr(AcronameUSBNet, "_lock_key", lambda self: "acro:1")
+
+    assert AcronameUSBNet.__new__(AcronameUSBNet).cycle("usb1", 2) is True
+    assert len(sessions) == 1 and sessions[0]["hold"] is True
+    assert port.calls == ["off", "on"]
+
+
+def test_ykush_runs_off_wait_on_inside_one_with_device(clock, monkeypatch):
+    from lager.automation.usb_hub import ykush
+
+    _scripted(monkeypatch, [POWERED, DARK, RETURNED])
+    port = _Port()
+    sessions = []
+
+    def with_device(self, fn, **kwargs):
+        sessions.append(kwargs)
+        return fn(object())
+
+    monkeypatch.setattr(ykush.YKUSHUSBNet, "_with_device", with_device)
+    monkeypatch.setattr(ykush.YKUSHUSBNet, "_lock_key", lambda self: "yk:1")
+    # Filled in from pykush when the library loads; None off a box.
+    monkeypatch.setattr(ykush, "_PORT_UP", 1)
+    monkeypatch.setattr(ykush, "_PORT_DOWN", 2)
+    monkeypatch.setattr(ykush.YKUSHUSBNet, "_set_state",
+                        lambda self, dev, p, state: port.set_power(state == ykush._PORT_UP))
+
+    assert ykush.YKUSHUSBNet.__new__(ykush.YKUSHUSBNet).cycle("usb1", 2) is True
+    assert len(sessions) == 1
+    assert port.calls == ["off", "on"]
+
+
+def test_the_held_sequence_restores_power_when_the_dark_sample_raises(clock, monkeypatch):
+    calls = []
+
+    def exploding(*_a, **_kw):
+        calls.append(None)
+        if len(calls) == 2:
+            raise OSError("sysfs went away")
+        return POWERED
+
+    monkeypatch.setattr(usb_net, "enumerate_usb_devices", exploding)
+    port = _Port()
+
+    with pytest.raises(OSError):
+        usb_net.USBNet._dark_cycle(port.set_power, 2, 1.0)
+
+    assert port.calls == ["off", "on"]
+    assert port.powered is True
+
+
+def test_a_failed_restore_says_how_to_recover(clock, monkeypatch):
+    _scripted(monkeypatch, [POWERED, DARK])
+    port = _Port(fail_restore=True)
+
+    with pytest.raises(usb_net.PortStateError, match="recover"):
+        usb_net.USBNet._dark_cycle(port.set_power, 2, 1.0)
+
+
+# ── A cycle straight after a power-on (#730) ──────────────────────────────
+
+
+class _KeyedHub(FakeHub):
+    def _lock_key(self):
+        return "hub:1"
+
+
+def _device_up_from(clock, monkeypatch, t_up):
+    """The device reaches the bus `t_up` s after power-on, and is off the bus
+    whenever the port is dark."""
+    hub = _KeyedHub()
+
+    def bus(*_a, **_kw):
+        if hub.powered and clock.now >= t_up:
+            return POWERED
+        return DARK
+
+    monkeypatch.setattr(usb_net, "enumerate_usb_devices", bus)
+    return hub
+
+
+def test_a_cycle_right_after_enable_waits_for_the_device(clock, monkeypatch):
+    """The #730 repro: enable, then cycle within a second. The device had not
+    reached the bus yet, so it was in neither sample and the cycle said the
+    port carried nothing."""
+    monkeypatch.setattr(usb_net, "_powered_on_at", {})
+    hub = _device_up_from(clock, monkeypatch, t_up=1.5)
+    usb_net.note_powered_on(hub, 2)          # at t=0
+    clock.now = 0.3
+
+    # Re-powering at the end must count as the device coming back, so the
+    # device's arrival time is moved past the cycle's own power-on.
+    assert hub.cycle("usb1", 2, off_time=1.0) is True
+
+
+def test_an_old_power_on_does_not_delay_the_cycle(clock, monkeypatch):
+    monkeypatch.setattr(usb_net, "_powered_on_at", {})
+    hub = _device_up_from(clock, monkeypatch, t_up=0.0)
+    usb_net.note_powered_on(hub, 2)
+    clock.now = usb_net.USB_REENUM_WAIT_S + 10.0
+    start = clock.now
+
+    assert hub.cycle("usb1", 2, off_time=1.0) is True
+    assert clock.now - start < 2.0
+
+
+def test_the_dispatcher_records_power_on(monkeypatch):
+    from lager.automation.usb_hub import dispatcher
+
+    monkeypatch.setattr(usb_net, "_powered_on_at", {})
+    hub = _KeyedHub()
+    hub.toggle = lambda net_name, port: True
+    monkeypatch.setattr(dispatcher, "_load_net_definitions",
+                        lambda: {"usb1": {"port": 2, "instrument": "fake"}})
+    monkeypatch.setattr(dispatcher, "_controller_for", lambda info: hub)
+
+    dispatcher.enable("usb1")
+    assert ("hub:1", "2") in usb_net._powered_on_at
+
+    usb_net._powered_on_at.clear()
+    dispatcher.toggle("usb1")
+    assert ("hub:1", "2") in usb_net._powered_on_at

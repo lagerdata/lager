@@ -95,6 +95,15 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   The page said the scope was unplugged and showed "Not streaming.", but the last trace
   stayed drawn until the unit opened again. The plot now drops it and shows an empty
   graticule (#681).
+- **`lager usb NET cycle` on an Acroname or YKUSH hub holds the hub for the whole cycle.**
+  The port was switched off and back on in two separate hub sessions, so another command
+  could read or switch the port while it was dark. Both now run off, wait and on in one
+  session, as Plugable docks already did (#502).
+- **`lager usb NET cycle` no longer reports an empty port right after the port is powered on.**
+  A cycle started within a second of `enable` or `toggle` said "no device on this port"
+  because the device had not reached the USB bus yet. The cycle now gives a just-powered
+  device up to 5 s to appear first. When nothing was seen, the message now says that
+  nothing was on the bus when the cycle started (#730).
 
 ## [0.59.0] - 2026-10-21
 

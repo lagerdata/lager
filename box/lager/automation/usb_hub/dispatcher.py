@@ -9,6 +9,7 @@ import os
 import time
 from typing import Dict
 
+from . import usb_net
 from .usb_net import HUB_SKIPPED, USBNet, net_port
 from .acroname import AcronameUSBNet
 from .ykush import YKUSHUSBNet
@@ -83,7 +84,9 @@ def enable(net_name: str) -> None:
     if net_name not in nets:
         raise KeyError(f"USB net '{net_name}' not found")
     info = nets[net_name]
-    _controller_for(info).enable(net_name, info["port"])
+    controller = _controller_for(info)
+    controller.enable(net_name, info["port"])
+    usb_net.note_powered_on(controller, info["port"])
     print(f"{GREEN}USB port '{net_name}' enabled{RESET}")
 
 
@@ -102,7 +105,10 @@ def toggle(net_name: str) -> bool:
     if net_name not in nets:
         raise KeyError(f"USB net '{net_name}' not found")
     info = nets[net_name]
-    new_state = _controller_for(info).toggle(net_name, info["port"])
+    controller = _controller_for(info)
+    new_state = controller.toggle(net_name, info["port"])
+    if new_state:
+        usb_net.note_powered_on(controller, info["port"])
     label = "enabled" if new_state else "disabled"
     print(f"{GREEN}USB port '{net_name}' toggled → {label}{RESET}")
     return new_state
@@ -141,7 +147,9 @@ def recover(net_name: str):
     if net_name not in nets:
         raise KeyError(f"USB net '{net_name}' not found")
     info = nets[net_name]
-    restored = _controller_for(info).recover(net_name, info["port"])
+    controller = _controller_for(info)
+    restored = controller.recover(net_name, info["port"])
+    usb_net.note_powered_on(controller, info["port"])
     print(f"{GREEN}USB port '{net_name}': power restored{RESET}")
     return restored
 

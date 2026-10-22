@@ -813,6 +813,20 @@ class AcronameUSBNet(USBNet):
         return self._with_hub(lambda hub: self._read_enabled(hub, port),
                               hold=True, what="state")
 
+    def _cycle_power(self, net_name, port, off_time):
+        """Off, wait, on inside ONE hub session, so no other caller can switch
+        the port while it is dark (#502). The longest off time still fits the
+        session's deadline (see ``USB_CYCLE_MAX_OFF_TIME_S``)."""
+        def _do(hub):
+            def set_power(on):
+                if on:
+                    hub.usb.setPortEnable(port)
+                else:
+                    hub.usb.setPortDisable(port)
+            return self._dark_cycle(set_power, port, off_time)
+
+        return self._with_hub(_do, hold=True, what="cycle")
+
     def states(self, ports, *, timeout=None) -> dict:  # type: ignore[override]
         """Read every requested port inside ONE hub session.
 

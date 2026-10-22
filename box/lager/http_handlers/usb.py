@@ -467,9 +467,12 @@ def register_usb_routes(app: Flask) -> None:
                                "device did not come back before the timeout")
                 elif enumerate_usb_devices():
                     outcome = "no_device"
-                    message = (f"USB port '{netname}' power-cycled; no device "
-                               "on this port to watch for, so re-enumeration "
-                               "was not confirmed")
+                    # Said as what was seen at the start, not as a fact
+                    # about the port: a device still coming up after a recent
+                    # power-on is in neither sample (#730).
+                    message = (f"USB port '{netname}' power-cycled; nothing on "
+                               "this port was on the USB bus when the cycle "
+                               "started, so re-enumeration was not confirmed")
                 else:
                     outcome = "topology_unreadable"
                     message = (f"USB port '{netname}' power-cycled "

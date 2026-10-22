@@ -606,14 +606,14 @@ class CycleMessageTests(unittest.TestCase):
 
     def test_an_empty_port_is_only_claimed_when_the_bus_was_readable(self):
         body = self._cycle(None, bus=('a-device',))
-        self.assertIn('no device on this port', body['message'])
+        self.assertIn('nothing on this port was on the USB bus', body['message'])
         # None is not carried on the wire; an older client sees no new field.
         self.assertNotIn('reconnected', body)
 
     def test_an_unreadable_bus_does_not_claim_the_port_is_empty(self):
         """The regression, in the words a person actually reads."""
         body = self._cycle(None, bus=())
-        self.assertNotIn('no device on this port', body['message'])
+        self.assertNotIn('nothing on this port', body['message'])
         self.assertIn('re-enumeration not verified', body['message'])
         self.assertIn('could not be read', body['message'])
 
