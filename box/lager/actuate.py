@@ -40,4 +40,7 @@ class Actuate:
         """
         with Dexarm(serial_number=self._location.get('serial_number')) as arm:
             x, y, z = self._location['position']
-            arm.move_to_blocking(x, y, z, timeout=5.0)
+            # move_to, not move_to_blocking: it refuses a position outside the
+            # workspace and firmware older than V2.1.4 (which swaps X and Y)
+            # before anything is sent, and its timeout covers a full traverse.
+            arm.move_to(x, y, z)

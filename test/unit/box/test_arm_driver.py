@@ -453,6 +453,51 @@ class TestSavedNetOpensItsOwnArm(unittest.TestCase):
             port=None, serial_number="ARM0001234", name="arm1", pin="/dev/ttyACM0")
 
 
+class TestActuate(_DriverTest):
+    """An actuate net moves through ``move_to``, so it gets the same checks."""
+
+    def actuate(self, position, firmware=SUPPORTED_FIRMWARE, raises=None):
+        """Run ``Actuate.actuate()`` on a scripted arm; return what was written."""
+        from lager import actuate
+
+        arm, fake = self.make_arm(replies_with_position(), firmware=firmware)
+        net = actuate.Actuate("press", 0, {"serial_number": "ARM1",
+                                           "position": position})
+        with mock.patch.object(actuate, "Dexarm", return_value=arm) as dexarm:
+            if raises:
+                with self.assertRaises(raises):
+                    net.actuate()
+            else:
+                net.actuate()
+        dexarm.assert_called_once_with(serial_number="ARM1")
+        return fake.writes
+
+    def test_out_of_bounds_position_writes_nothing(self):
+        self.assertEqual(self.actuate([500, 300, 0], raises=OutOfBoundsError), [])
+
+    def test_old_firmware_writes_nothing(self):
+        writes = self.actuate([0, 300, 0], firmware=OLD_FIRMWARE,
+                              raises=UnsupportedFirmwareError)
+        self.assertEqual(writes, [])
+
+    def test_a_valid_position_moves(self):
+        writes = self.actuate([0, 300, 0])
+        self.assertTrue(any(w.startswith(b"G1") for w in writes))
+
+    def test_timeout_covers_a_full_traverse(self):
+        # 200 mm at the default feedrate takes about 9 s; the old 5 s timed out.
+        from lager import actuate
+
+        arm = mock.MagicMock()
+        arm.__enter__.return_value = arm
+        net = actuate.Actuate("press", 0, {"serial_number": "ARM1",
+                                           "position": [0, 300, 0]})
+        with mock.patch.object(actuate, "Dexarm", return_value=arm):
+            net.actuate()
+        arm.move_to.assert_called_once_with(0, 300, 0)
+        arm.move_to_blocking.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -64,6 +64,11 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   scale, offset and probe, every channel's display, the timebase and the trigger. A change
   shows within about two seconds. A scope that stops answering while stopped is noticed
   the same way, where it used to go unnoticed until the next command (#738).
+- **An actuate net now refuses an unsafe Dexarm move, as `lager arm` does.**
+  `Net.get(name, type=NetType.Actuate).actuate()` sent its saved position to the arm
+  unchecked. It now raises `OutOfBoundsError` for a position outside the workspace, and
+  `UnsupportedFirmwareError` on firmware older than V2.1.4, which swaps X and Y. In both
+  cases nothing is sent to the arm. A long move no longer times out after 5 s (#715).
 
 ## [0.59.0] - 2026-10-21
 
