@@ -74,6 +74,11 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   the box's hardware service restarted, while `lager python` read the same net. The box now
   restarts that service itself when the unit is back on the bus. The first command after
   the cycle may still fail; the next one works (#729).
+- **`lager install` with no terminal stops with the right message when the box's sudo needs a password.**
+  The check asked the box `sudo -n true`, which a sudoers line granting NOPASSWD for
+  `/usr/bin/true` alone satisfies. The install then went on and failed naming a file it
+  could not install. It now asks `sudo -n -v`, which passes only when no command needs a
+  password, and stops with the interactive-terminal message (#690).
 
 ## [0.59.0] - 2026-10-21
 

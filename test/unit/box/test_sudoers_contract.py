@@ -1219,11 +1219,19 @@ class WithNoTerminalTheInstallSaysSo(unittest.TestCase):
     def setUp(self):
         self.block = _extract_block("deploy sudo terminal check")
 
-    def _needs_terminal(self, *, tty, sudo_n_works):
-        """Run sudo_session_needs_a_terminal with ssh stubbed; True if it stops."""
+    def _needs_terminal(self, *, tty, sudo_n_works, true_is_passwordless=None):
+        """Run sudo_session_needs_a_terminal with ssh stubbed; True if it stops.
+
+        ``sudo_n_works`` answers the probe the check makes. ``true_is_passwordless``
+        answers `sudo -n true` separately (default: the same), which is how a
+        narrow NOPASSWD grant for /usr/bin/true alone looks from outside."""
         import os
         import subprocess
-        stub = (f'ssh() {{ case "$*" in *"sudo -n true"*) return {0 if sudo_n_works else 1};; '
+        if true_is_passwordless is None:
+            true_is_passwordless = sudo_n_works
+        stub = (f'ssh() {{ case "$*" in '
+                f'*"sudo -n -v"*) return {0 if sudo_n_works else 1};; '
+                f'*"sudo -n true"*) return {0 if true_is_passwordless else 1};; '
                 f'*) return 99;; esac; }}\n')
         driver = f"{stub}{self.block}\nsudo_session_needs_a_terminal"
         if not tty:
@@ -1244,6 +1252,12 @@ class WithNoTerminalTheInstallSaysSo(unittest.TestCase):
 
     def test_no_terminal_but_passwordless_sudo_goes_ahead(self):
         self.assertFalse(self._needs_terminal(tty=False, sudo_n_works=True))
+
+    def test_a_grant_for_true_alone_does_not_count_as_passwordless(self):
+        """#690: `<user> ALL=(ALL) NOPASSWD: /usr/bin/true` passed the old
+        `sudo -n true` probe while every command the session runs still asked."""
+        self.assertTrue(self._needs_terminal(tty=False, sudo_n_works=False,
+                                             true_is_passwordless=True))
 
     @unittest.skipUnless(hasattr(__import__("os"), "openpty"), "needs a pty")
     def test_a_terminal_goes_ahead(self):

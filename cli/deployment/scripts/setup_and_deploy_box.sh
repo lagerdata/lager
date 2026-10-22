@@ -1260,8 +1260,13 @@ deploy_sudoers_current() {
 # not install rather than the missing terminal. A login user whose sudo needs
 # no password runs the session fine with no terminal, so only a sudo that
 # would prompt stops the install here.
+#
+# `sudo -n -v`, not `sudo -n true`: a sudoers line granting NOPASSWD for
+# /usr/bin/true alone passes the second while every command the session runs
+# still asks. Under the default `verifypw=all`, -v passes only when every
+# entry for the user is NOPASSWD (#690).
 box_sudo_needs_password() {
-    ! ssh $SSH_OPTS -o BatchMode=yes "${BOX_USER}@${BOX_IP}" "sudo -n true" >/dev/null 2>&1
+    ! ssh $SSH_OPTS -o BatchMode=yes "${BOX_USER}@${BOX_IP}" "sudo -n -v" >/dev/null 2>&1
 }
 
 sudo_session_needs_a_terminal() {
