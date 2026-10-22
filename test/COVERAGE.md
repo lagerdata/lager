@@ -48,7 +48,7 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` | 3717 (+3 xfailed) |
-| `unit (box)` | `test/unit/box/` | 4829 (+17 skipped) |
+| `unit (box)` | `test/unit/box/` | 4827 (+17 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 414 |
