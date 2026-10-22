@@ -9,6 +9,8 @@ reference says is the arm's only MCP surface, and these tests pin the parts
 that keep an agent from damaging the arm or misreading its API.
 """
 
+import re
+
 from lager.mcp.data.api_reference import API_REFERENCE, get_reference_for_type
 from lager.mcp.engine.net_types import reference_key
 
@@ -30,7 +32,11 @@ def test_acceleration_read_and_write_are_advertised():
     methods = _methods()
     assert "get_acceleration" in methods
     # An omitted retract keeps the arm's value; it used to default to 60.
-    assert "retract_acceleration: Optional[int] = None" in methods["set_acceleration"]["sig"]
+    # Python 3.14 renders Optional[int] as `int | None`.
+    assert re.search(
+        r"retract_acceleration: (Optional\[int\]|int \| None) = None",
+        methods["set_acceleration"]["sig"],
+    )
 
 
 def test_agents_are_warned_off_m889():
