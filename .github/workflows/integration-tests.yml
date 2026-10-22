@@ -89,7 +89,7 @@ jobs:
     # Green runs spanned 13-27 min before deployment.sh, devenv.sh and the
     # binaries upload moved here; each step carries its own bound, so this
     # is only the backstop for a hung step. +15 for the two Dexarm suites
-    # (about 8 min by hand, bounded at 5 + 12). The nightly has no runtime cap.
+    # (about 3 min by hand, bounded at 5 + 12). The nightly has no runtime cap.
     timeout-minutes: 105
 
     env:

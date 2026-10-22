@@ -82,12 +82,24 @@ lager_arm() {
 # bounded SECONDS COMMAND...: run COMMAND, killing it after SECONDS. Returns
 # the command's exit status (143 when it was killed). Portable: macOS has no
 # timeout(1).
+#
+# The watcher kills its own sleep when it is stopped, and writes nowhere. A
+# plain `( sleep N; kill ) &` leaves the sleep running when the watcher is
+# killed, and inside `$(...)` that sleep holds the output open, so every
+# bounded command took the full N seconds.
 bounded() {
   local secs="$1" pid watcher rc
   shift
   "$@" &
   pid=$!
-  ( sleep "$secs"; kill -TERM "$pid" 2>/dev/null ) &
+  (
+    s=
+    trap 'kill "$s" 2>/dev/null; exit 0' TERM
+    sleep "$secs" &
+    s=$!
+    wait "$s"
+    kill -TERM "$pid" 2>/dev/null
+  ) >/dev/null 2>&1 &
   watcher=$!
   wait "$pid"
   rc=$?
