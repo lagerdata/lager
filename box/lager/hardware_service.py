@@ -315,6 +315,29 @@ def _maybe_self_restart_for_wedged_session(address, context):
         stamp_path=_HW_SELF_RESTART_STAMP)
 
 
+def _restart_address(address, device_id):
+    """The USB address a self-restart is gated on, or None.
+
+    A VISA net sends ``address``. A USB-202 net sends only a ``device_id``,
+    ``usb202:<VISA address or serial>`` (see ``nets/device_identity.py``), so
+    without this its open failures never reached the restart, and the
+    inventory uldaq keeps for this process stayed blind to a re-enumerated
+    unit until something else restarted the service (#729). A bare serial
+    gets the USB-202's VID/PID, which is all the sysfs check needs.
+
+    Other device_id families are left out on purpose: whether a restart
+    helps them is a separate question.
+    """
+    if address:
+        return address
+    family, _, ident = (device_id or '').partition(':')
+    if family != 'usb202' or not ident or ident == 'ANY':
+        return None
+    if '::' in ident:
+        return ident
+    return f'USB0::0x09DB::0x012B::{ident}::INSTR'
+
+
 def _schedule_self_restart_for_hang(address, context):
     """Hang counterpart to ``_maybe_self_restart_for_wedged_session``.
 
@@ -846,9 +869,10 @@ def invoke():
             # session (e.g. the per-driver fallback open after the shared
             # reopen failed). Treat an enumerated-but-unreopenable device as a
             # wedge and let the supervisor respawn us with a clean libusb state.
-            if address and _looks_like_open_failure(e):
+            restart_address = _restart_address(address, device_id)
+            if restart_address and _looks_like_open_failure(e):
                 _maybe_self_restart_for_wedged_session(
-                    address, f"{device_name}.{function_name} (open failed)")
+                    restart_address, f"{device_name}.{function_name} (open failed)")
             return jsonify({
                 'error': f'Function call failed: {str(e)}',
             }), 500
@@ -860,7 +884,10 @@ def invoke():
         # tick where create_device's per-driver open fails after the device
         # re-enumerated. Same wedge: if the device is on the bus but unreopenable
         # in-process, let the supervisor respawn us with a clean libusb context.
-        _addr = locals().get('address')
+        _net_info = locals().get('net_info')
+        _addr = _restart_address(
+            locals().get('address'),
+            _net_info.get('device_id') if isinstance(_net_info, dict) else None)
         if _addr and _looks_like_open_failure(e):
             _maybe_self_restart_for_wedged_session(
                 _addr,

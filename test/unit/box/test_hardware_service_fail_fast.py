@@ -393,5 +393,70 @@ class CallerLockTimeoutTests(unittest.TestCase):
         self.assertLess(elapsed, 2.0)
 
 
+class _StaleInventoryUsb202:
+    """A USB-202 driver in a process whose uldaq inventory went stale."""
+
+    def __init__(self, message):
+        self._message = message
+
+    def input(self):
+        raise RuntimeError(self._message)
+
+
+class Usb202SelfRestartTests(unittest.TestCase):
+    """An ADC/DAC/GPIO net on a USB-202 reaches /invoke with a ``device_id``
+    and no ``address``. Its open failures must still reach the self-restart,
+    gated on the unit's USB address, or the service never sees the unit
+    again after a USB cycle (#729)."""
+
+    _VISA = 'USB0::0x09DB::0x012B::0252829E::INSTR'
+
+    def setUp(self):
+        hw.device_cache.clear()
+        hw.module_cache.clear()
+        with hw.device_locks_meta_lock:
+            hw.device_locks.clear()
+        self.client = hw.app.test_client()
+
+        from lager.util import self_restart
+        # Real classification, mocked restart (which ends in os._exit).
+        self.restart = MagicMock()
+        self.restart.looks_like_open_failure = self_restart.looks_like_open_failure
+        patcher = patch.object(hw, '_self_restart', self.restart)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _invoke(self, device_id, message):
+        net_info = {'name': 'adc15', 'instrument': 'MCC_USB-202',
+                    'device_id': device_id}
+        hw.device_cache[('adc_hs', hw.get_net_info_hash(net_info))] = \
+            _StaleInventoryUsb202(message)
+        return self.client.post('/invoke', json={
+            'device': 'adc_hs', 'function': 'input', 'args': [], 'kwargs': {},
+            'net_info': net_info})
+
+    def test_an_empty_inventory_restarts_on_the_units_visa_address(self):
+        resp = self._invoke('usb202:' + self._VISA, 'No MCC DAQ devices found on USB bus')
+        self.assertEqual(resp.status_code, 500)
+        self.restart.maybe_self_restart.assert_called_once()
+        self.assertEqual(self.restart.maybe_self_restart.call_args.args[0], self._VISA)
+
+    def test_a_missing_unique_id_restarts_on_the_usb202_vid_pid(self):
+        resp = self._invoke('usb202:0252829E',
+                            'USB-202 device with unique_id 0252829E not found')
+        self.assertEqual(resp.status_code, 500)
+        self.assertEqual(self.restart.maybe_self_restart.call_args.args[0], self._VISA)
+
+    def test_an_ordinary_driver_error_does_not_restart(self):
+        self._invoke('usb202:' + self._VISA, 'Invalid ADC channel 9')
+        self.restart.maybe_self_restart.assert_not_called()
+
+    def test_other_device_id_families_are_left_alone(self):
+        self.assertIsNone(hw._restart_address(None, 'labjack:USB0::0x0CD5::0x0007::1::INSTR'))
+        self.assertIsNone(hw._restart_address(None, 'usb202:ANY'))
+        self.assertIsNone(hw._restart_address(None, None))
+        self.assertEqual(hw._restart_address(_ADDRESS, 'usb202:X'), _ADDRESS)
+
+
 if __name__ == '__main__':
     unittest.main()

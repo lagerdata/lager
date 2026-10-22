@@ -69,6 +69,11 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   unchecked. It now raises `OutOfBoundsError` for a position outside the workspace, and
   `UnsupportedFirmwareError` on firmware older than V2.1.4, which swaps X and Y. In both
   cases nothing is sent to the arm. A long move no longer times out after 5 s (#715).
+- **`lager adc`, `lager dac` and `lager gpi`/`gpo` on an MCC USB-202 recover after its USB port is cycled.**
+  After `lager usb NET cycle`, these commands failed with "No MCC DAQ devices found" until
+  the box's hardware service restarted, while `lager python` read the same net. The box now
+  restarts that service itself when the unit is back on the bus. The first command after
+  the cycle may still fail; the next one works (#729).
 
 ## [0.59.0] - 2026-10-21
 

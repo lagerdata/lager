@@ -57,6 +57,9 @@ OPEN_FAILURE_MARKERS = (
     'could not open instrument',
     'jsdrv_open failed', 'failed to open joulescope',
     'joulescope with serial',
+    # The USB-202 (ADC/DAC/GPIO). uldaq keeps one device inventory per
+    # process, which stops seeing the unit once it re-enumerates (#729).
+    'no mcc daq devices found', 'usb-202 device with unique_id',
 )
 
 # Substrings that mark a USB-hub error as "can't reach the device" (a wedge
