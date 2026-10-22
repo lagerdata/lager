@@ -54,6 +54,10 @@ class FakeDriversBox(FakeBoxHTTP):
         super().__init__(**kwargs)
         self.drivers = {d['type']: d for d in (drivers or [])}
         self.uploads = []
+        self.timeouts = []
+        # /status customDriverDeps, and the packages a PUT reports installing.
+        self.deps_support = True
+        self.packages = []
 
     def _entry(self, dtype):
         entry = dict(self.drivers[dtype])
@@ -62,11 +66,21 @@ class FakeDriversBox(FakeBoxHTTP):
 
     def request(self, method, url, json=None, params=None, timeout=None, files=None, **kwargs):
         path = unquote(urlparse(url).path)
+        if path == '/status':
+            # Same shape as box_http_server's /status: flags under "capabilities".
+            return FakeResponse(200, {'healthy': True, 'capabilities': {
+                'customDrivers': True, 'customDriverDeps': self.deps_support}})
         if not path.startswith('/drivers'):
             return super().request(method, url, json=json, params=params, timeout=timeout)
         method = method.upper()
         self.calls.append((method, path, files, params or {}))
+        self.timeouts.append(timeout)
         dtype = path[len('/drivers/'):] if path.startswith('/drivers/') else None
+        if method == 'POST' and dtype and dtype.endswith('/deps'):
+            dtype = dtype[:-len('/deps')]
+            if dtype not in self.drivers:
+                return FakeResponse(404, {'error': "No custom driver '%s' is installed" % dtype})
+            return FakeResponse(200, {'type': dtype, 'packages': list(self.packages)})
         if method == 'GET' and dtype is None:
             return FakeResponse(200, {'drivers': [self._entry(t) for t in sorted(self.drivers)]})
         if method == 'GET':
@@ -78,7 +92,8 @@ class FakeDriversBox(FakeBoxHTTP):
             replaced = dtype in self.drivers
             self.drivers[dtype] = stepper_entry(type=dtype)
             return FakeResponse(200, {'type': dtype, 'version': '1.2.0',
-                                      'sha256': 'cd' * 32, 'replaced': replaced})
+                                      'sha256': 'cd' * 32, 'replaced': replaced,
+                                      'packages': list(self.packages)})
         if method == 'DELETE':
             if dtype not in self.drivers:
                 return FakeResponse(404, {'error': 'not installed'})

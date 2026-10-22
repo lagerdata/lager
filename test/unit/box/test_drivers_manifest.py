@@ -68,7 +68,16 @@ class TestParseManifest(unittest.TestCase):
 
     def test_rejects_unknown_top_level_keys(self):
         with self.assertRaisesRegex(m.ManifestError, 'unknown keys'):
-            m.parse_manifest(_with(requirements=['numpy']))
+            m.parse_manifest(_with(dependencies=['numpy']))
+
+    def test_requirements_names_a_top_level_txt_file(self):
+        self.assertIsNone(m.parse_manifest(_with())['requirements'])
+        self.assertEqual(m.parse_manifest(_with(requirements='requirements.txt'))['requirements'],
+                         'requirements.txt')
+        for bad in (['numpy'], 'sub/requirements.txt', '../requirements.txt',
+                    'requirements', '.hidden.txt', ''):
+            with self.subTest(bad=bad), self.assertRaisesRegex(m.ManifestError, 'requirements'):
+                m.parse_manifest(_with(requirements=bad))
 
     def test_requires_actions(self):
         with self.assertRaises(m.ManifestError):

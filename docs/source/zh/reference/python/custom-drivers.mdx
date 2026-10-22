@@ -12,9 +12,11 @@ stepper/
   lager_driver.json   # 清单文件
   driver.py           # class Driver(CustomDriver)
   helpers.py          # 可选；driver.py 可以按名称导入
+  requirements.txt    # 可选；Python 包，见下文
+  wheels/             # 可选；供无法联网的 Box 使用的 wheel 文件
 ```
 
-驱动可以导入 Python 标准库、`pyserial` 以及 Box 上的 `lager` 包。
+驱动可以导入 Python 标准库、Box 自带的包（例如 `pyserial`、`pyusb` 和 `hidapi`）以及 `lager` 包。如需其他包，请参见下文的“Python 包”一节。
 
 ## 清单文件
 
@@ -52,6 +54,7 @@ stepper/
 | `lager_api` | 驱动接口版本，使用 `1` |
 | `description` | 一行说明，显示在帮助中 |
 | `timeout_s` | 每个操作的默认超时，1 到 600 秒（默认 60）。单个操作可以设置自己的超时 |
+| `requirements` | 可选。驱动包顶层的 requirements 文件名，例如 `requirements.txt`。参见下文的“Python 包”一节 |
 | `params` | 与每个 Net 一起保存的设置，通过 `lager nets add-custom --param` 提供 |
 | `actions` | 驱动提供的操作及其 `args` |
 
@@ -97,6 +100,55 @@ class Driver(CustomDriver):
 | `self.net` | 已保存的 Net 记录 |
 | `self.log` | 日志记录器 |
 | `self.base_net(param)` | `net` 类型 param 所指向的内置 Net，作为 `Net` 对象返回 |
+
+## Python 包
+
+驱动可以使用 Box 上没有的包。将它们列在 requirements 文件中，并在清单文件中指定该文件：
+
+```json
+"requirements": "requirements.txt"
+```
+
+Box 在运行 `lager drivers install` 时安装这些包，因此调用时无需等待安装。它们与驱动一起保存在 `/etc/lager/drivers/` 中，因此 `lager update` 之后仍然保留。如果某个包无法安装，驱动不会被安装，之前安装的版本继续工作。
+
+该文件必须将每个包（包括这些包所依赖的包）固定到一个版本并附带哈希值。`pip-compile` 可以生成这样的文件：
+
+```bash
+pip install pip-tools
+echo "crcmod" > requirements.in
+pip-compile --generate-hashes --output-file requirements.txt requirements.in
+```
+
+规则：
+
+- **只允许精确版本加哈希值。** 每一行为 `name==version`，并至少带一个 `--hash`。不允许使用 `-r`、`-e`、`--index-url` 等选项。
+- **只安装 wheel。** Box 不会从源码构建包。每个包必须有适用于 Box 的 Python（3.12）和 CPU 的 wheel。Box 可能是 `x86_64` 或 `aarch64`（ARM），因此请选择两种平台都有 wheel 的包，或纯 Python 的 wheel。`pip-compile --generate-hashes` 会列出所有平台的哈希值。
+- **Box 自带的包优先。** 驱动不能替换 Box 已有的包。如果固定了 Box 已有的包，版本必须与 Box 上的相同，否则安装会被拒绝。请不要列出这类包。
+- **每个驱动有自己的包。** 两个驱动可以使用同一个包的不同版本。
+- **限制。** 安装最长 5 分钟，安装后的包最多占用 200 MB。
+
+### 无法联网的 Box
+
+将 wheel 文件放在驱动包的 `wheels/` 文件夹中。Box 会先使用这些文件，再到网络上查找。它们计入 5 MB 的驱动包上限。下载适用于 Box CPU 的 wheel：
+
+```bash
+pip download --only-binary=:all: --python-version 3.12 \
+  --platform manylinux_2_36_aarch64 --dest wheels -r requirements.txt
+```
+
+`x86_64` 的 Box 请使用 `manylinux_2_36_x86_64`。在 Box 上运行 `uname -m` 可以查看是哪一种。纯 Python 的 wheel 两种都适用。
+
+### 更新之后
+
+如果 `lager update` 改变了 Box 的 Python 版本，`lager drivers list` 会将该驱动显示为 `error`，Deps 显示为 `stale`。使用以下命令重新安装这些包：
+
+```bash
+lager drivers reinstall-deps stepper --box my-lager-box
+```
+
+<Warning>
+驱动导入某个包时，该包的代码会在 Box 上运行，并拥有对 Box 硬件和网络的完全访问权限。Box 只安装 wheel，因此安装过程中不会运行包的代码。但请将文件中的每个包都视为在 Box 上运行的代码，只安装您信任的包。
+</Warning>
 
 ## 调用的运行方式
 

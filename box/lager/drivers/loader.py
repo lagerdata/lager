@@ -13,7 +13,7 @@ import importlib.util
 import os
 import sys
 
-from lager.drivers import registry
+from lager.drivers import deps, registry
 from lager.drivers.errors import DriverFailed
 from lager.drivers.manifest import DRIVER_FILE, ManifestError, coerce_params
 
@@ -71,6 +71,12 @@ def load_driver_class(dtype):
     # The bundle's own helper modules import by plain name.
     if bundle not in sys.path:
         sys.path.insert(0, bundle)
+    # Its declared packages go last, so the box's own packages always win
+    # (deps.install refuses a pin that would be hidden by one). A plain
+    # entry, not site.addsitedir: a package's .pth files are not run.
+    deps_dir = os.path.join(bundle, deps.DEPS_DIR)
+    if os.path.isdir(deps_dir) and deps_dir not in sys.path:
+        sys.path.append(deps_dir)
     module_name = 'lager_custom_driver_%s' % dtype.replace('-', '_')
     spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:

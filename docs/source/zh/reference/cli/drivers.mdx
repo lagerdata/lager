@@ -27,6 +27,7 @@ lager drivers COMMAND [OPTIONS]
 | `list` | 列出 Box 上已安装的自定义驱动 |
 | `show` | 显示驱动的设置和操作 |
 | `install` | 从驱动包目录安装或替换驱动 |
+| `reinstall-deps` | 重新安装驱动的 Python 包 |
 | `remove` | 从 Box 上移除驱动 |
 
 ---
@@ -35,7 +36,7 @@ lager drivers COMMAND [OPTIONS]
 
 ### `list`
 
-列出 Box 上已安装的自定义驱动，包括版本、状态以及使用它们的 Net。
+列出 Box 上已安装的自定义驱动，包括版本、状态、Python 包以及使用它们的 Net。
 
 ```bash
 lager drivers list --box BOX
@@ -47,12 +48,14 @@ lager drivers list --box BOX
 
 输出：
 ```
-Type      Version   Status   SHA-256        Nets
-=======================================================
-stepper   1.2.0     ok       3f1c0e9a2b7d   RIG_1
+Type      Version   Status   Deps         SHA-256        Nets
+====================================================================
+stepper   1.2.0     ok       2 packages   3f1c0e9a2b7d   RIG_1
 ```
 
 驱动包无法加载的驱动会显示 `error:` 及原因，其他驱动不受影响。
+
+Deps 列显示驱动的 Python 包数量；没有包时显示 `-`。如果这些包是为不同的 Python 版本或 CPU 安装的，则显示 `stale`，请运行 `reinstall-deps` 修复。
 
 ### `show`
 
@@ -85,11 +88,29 @@ lager drivers install BUNDLE_DIR --box BOX
 
 驱动包必须小于 5 MB。Box 将其保存在 `/etc/lager/drivers/` 中，因此 `lager update` 之后仍然保留。
 
+如果清单文件指定了 requirements 文件，Box 还会安装其中的 Python 包，这可能需要几分钟。如果这些包无法安装，驱动不会被安装。参见[自定义驱动](/source/zh/reference/python/custom-drivers)中的“Python 包”一节。
+
 **示例：**
 ```bash
 lager drivers install ./stepper --box my-lager-box
 lager drivers install ./stepper --box my-lager-box --yes   # 替换时不询问
 ```
+
+### `reinstall-deps`
+
+根据已安装驱动包中的 requirements 文件，重新安装驱动的 Python 包。当 `lager drivers list` 将这些包显示为 `stale` 时使用。
+
+```bash
+lager drivers reinstall-deps TYPE --box BOX
+```
+
+**参数：**
+- `TYPE` - 驱动类型
+
+**选项：**
+- `--box BOX` - Lager Box 名称或 IP 地址
+
+如果安装失败，之前安装的包会保留。
 
 ### `remove`
 
@@ -111,3 +132,4 @@ lager drivers remove TYPE --box BOX
 
 - 驱动类型不能使用内置 Net 角色或 `lager` 命令的名称，例如 `supply` 或 `uart`。
 - 驱动在 Box 上运行，权限与 `lager python` 脚本相同。它不会出现在公开的 Lager 代码中，但能够连接到 Box 的人可以读取它。
+- 驱动列出的 Python 包也以同样的权限在 Box 上运行。只安装您信任的包。

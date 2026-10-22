@@ -11,9 +11,16 @@ Routes:
                                  {"type", "version", "sha256", "replaced"}
     DELETE /drivers/<type>?force=1
                               -> {"type", "removed", "orphaned_nets"}
+    POST   /drivers/<type>/deps
+                              -> reinstall the driver's Python packages from
+                                 its own requirements file; {"type", "packages"}
 
     entry = {"type", "version", "sha256", "status": "ok"|"error", "error"?,
-             "description", "manifest", "nets": [names of nets using it]}
+             "description", "manifest", "nets": [names of nets using it],
+             "deps": null | {"status": "ok"|"stale"|"missing", "packages"?, ...}}
+
+Installing a bundle with requirements runs pip, for up to
+deps.DEPS_TIMEOUT_S, inside the PUT.
 
 Net commands on a custom net go through the existing POST /net/command:
 net_command.py falls back to custom_net_action() for a role that is an
@@ -193,12 +200,27 @@ def register_drivers_routes(app: Flask) -> None:
                 result = registry.install(dtype, data)
             except registry.DriverStoreError as e:
                 return jsonify({'error': e.message}), e.status
-            logger.info("[drivers] installed %s %s (sha256 %s)",
-                        dtype, result['version'], result['sha256'][:12])
+            logger.info("[drivers] installed %s %s (sha256 %s)%s",
+                        dtype, result['version'], result['sha256'][:12],
+                        ' with ' + ', '.join(result['packages']) if result['packages'] else '')
             return jsonify(result)
         except Exception:
             logger.exception("Failed to install custom driver %s", dtype)
             return jsonify({'error': 'Failed to install the driver; see the box log'}), 500
+
+    @app.route('/drivers/<dtype>/deps', methods=['POST'])
+    def drivers_reinstall_deps(dtype):
+        try:
+            try:
+                result = registry.reinstall_deps(dtype)
+            except registry.DriverStoreError as e:
+                return jsonify({'error': e.message}), e.status
+            logger.info("[drivers] reinstalled packages of %s: %s",
+                        dtype, ', '.join(result['packages']) or 'none')
+            return jsonify(result)
+        except Exception:
+            logger.exception("Failed to reinstall packages of custom driver %s", dtype)
+            return jsonify({'error': 'Failed to reinstall the packages; see the box log'}), 500
 
     @app.route('/drivers/<dtype>', methods=['DELETE'])
     def drivers_remove(dtype):

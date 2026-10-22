@@ -47,13 +47,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 3717 (+3 xfailed) |
-| `unit (box)` | `test/unit/box/` | 4836 (+17 skipped) |
+| `unit (cli)` | `test/unit/cli/` | 3723 (+3 xfailed) |
+| `unit (box)` | `test/unit/box/` | 4863 (+17 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 414 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 230 (+1 skipped) |
-| | **Total gated** | **9391** |
+| | **Total gated** | **9424** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -499,9 +499,9 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 327 files)
+### Local Unit Tests (`test/unit/` -- 328 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 175 files)
+#### Box Unit Tests (`test/unit/box/` -- 176 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -550,6 +550,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_device_lock.py` | Cross-process advisory fcntl lock preventing USB-TMC pyvisa race |
 | `test_diagnose_jlink_parse.py` | Box-side J-Link diagnose parsers, pinned with captured JLinkExe text |
 | `test_dispatcher_channel_resolution.py` | `resolve_channel`: v0.32.0 regression where int()-only parsing broke named adc/dac channels |
+| `test_drivers_deps.py` | `lager.drivers.deps`, a driver's Python packages: hashed lock parsing (pip options, unpinned lines, URLs and duplicates refused), a pin equal to a box package dropped and a different one refused, an incomplete lock named, pip run into the staged `.deps` with `--only-binary`, `--require-hashes`, `--no-deps` and the bundle's `wheels/`, a pip failure, timeout or size cap keeping the previous version live, stale or missing packages listed as an error, `reinstall-deps`, the loader putting `.deps` after the box's packages, and real offline pip installing a vendored wheel that a runner child then imports |
 | `test_drivers_handler.py` | Custom-driver routes (`/drivers`) and `/net/command` dispatch to a custom driver, through a real runner subprocess: typed params and args, bad args refused before spawning, an unmarked method not callable, a stray print not corrupting the result, a driver exception as 502, a timeout as 504, a wrong-role or missing base net as 400, a live `lager uart` session on the base net as 409, a broken bundle as 503 |
 | `test_drivers_manifest.py` | `lager.drivers.manifest`: type names and the reserved built-in names, `lager_api`, param and arg specs (types, ranges, choices, defaults, names the CLI already uses), timeouts, and coercing CLI strings and JSON values to the manifest's types |
 | `test_drivers_registry.py` | `lager.drivers.registry` against a real temp directory: install, replace (old files gone), a failed replace keeping the old version, a bundle zipped with its folder, the type matching the URL, zip-slip, absolute paths and symlinks refused, size limits, a broken bundle listed as an error without hiding the others, and remove refused while nets use the driver |

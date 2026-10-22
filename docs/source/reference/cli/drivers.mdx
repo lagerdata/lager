@@ -33,6 +33,7 @@ lager drivers COMMAND [OPTIONS]
 | `list` | List the custom drivers installed on a box |
 | `show` | Show a driver's settings and actions |
 | `install` | Install or replace a driver from a bundle directory |
+| `reinstall-deps` | Install a driver's Python packages again |
 | `remove` | Remove a driver from a box |
 
 ---
@@ -41,8 +42,8 @@ lager drivers COMMAND [OPTIONS]
 
 ### `list`
 
-List the custom drivers installed on a box, with their version, status and the
-nets that use them.
+List the custom drivers installed on a box, with their version, status, Python
+packages and the nets that use them.
 
 ```bash
 lager drivers list --box BOX
@@ -54,13 +55,17 @@ lager drivers list --box BOX
 
 Output:
 ```
-Type      Version   Status   SHA-256        Nets
-=======================================================
-stepper   1.2.0     ok       3f1c0e9a2b7d   RIG_1
+Type      Version   Status   Deps         SHA-256        Nets
+====================================================================
+stepper   1.2.0     ok       2 packages   3f1c0e9a2b7d   RIG_1
 ```
 
 A driver whose bundle cannot be loaded is listed with `error:` and the reason.
 Other drivers are not affected.
+
+The Deps column shows how many Python packages a driver has, or `-` if it has
+none. It shows `stale` when the packages were installed for a different Python
+version or CPU; run `reinstall-deps` to fix that.
 
 ### `show`
 
@@ -97,11 +102,33 @@ lager drivers install BUNDLE_DIR --box BOX
 The bundle must be smaller than 5 MB. The box keeps it in `/etc/lager/drivers/`,
 so it stays installed after `lager update`.
 
+If the manifest names a requirements file, the box also installs those Python
+packages, which can take a few minutes. If they cannot be installed, the driver is
+not installed. See
+[Python packages](/source/reference/python/custom-drivers#python-packages).
+
 **Examples:**
 ```bash
 lager drivers install ./stepper --box my-lager-box
 lager drivers install ./stepper --box my-lager-box --yes   # replace without asking
 ```
+
+### `reinstall-deps`
+
+Install a driver's Python packages again, from the requirements file in the
+installed bundle. Use it when `lager drivers list` shows the packages as `stale`.
+
+```bash
+lager drivers reinstall-deps TYPE --box BOX
+```
+
+**Arguments:**
+- `TYPE` - The driver type
+
+**Options:**
+- `--box BOX` - Lager Box name or IP address
+
+If the install fails, the packages that were installed before are kept.
 
 ### `remove`
 
@@ -127,3 +154,5 @@ lager drivers remove TYPE --box BOX
 - The driver runs on the box with the same access as a `lager python` script. It is
   kept out of the public Lager code, but a person who can connect to the box can
   read it.
+- The Python packages a driver lists also run on the box with that access. Install
+  only packages you trust.

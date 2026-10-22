@@ -16,10 +16,13 @@ stepper/
   lager_driver.json   # the manifest
   driver.py           # class Driver(CustomDriver)
   helpers.py          # optional; driver.py can import it by name
+  requirements.txt    # optional; Python packages, see below
+  wheels/             # optional; wheel files for a box without internet
 ```
 
-A driver can import the Python standard library, `pyserial` and the `lager`
-package that is on the box.
+A driver can import the Python standard library, the packages that come with the
+box (such as `pyserial`, `pyusb` and `hidapi`) and the `lager` package. For other
+packages, see [Python packages](#python-packages).
 
 ## The manifest
 
@@ -59,6 +62,7 @@ it.
 | `lager_api` | The driver interface version. Use `1` |
 | `description` | One line, shown in help |
 | `timeout_s` | Default timeout for each action, 1 to 600 seconds (default 60). An action can set its own |
+| `requirements` | Optional. The name of a requirements file at the top of the bundle, such as `requirements.txt`. See [Python packages](#python-packages) |
 | `params` | Settings stored with each net, given to `lager nets add-custom --param` |
 | `actions` | The actions the driver provides, with their `args` |
 
@@ -113,6 +117,75 @@ class Driver(CustomDriver):
 | `self.net` | The saved net record |
 | `self.log` | A logger |
 | `self.base_net(param)` | The built-in net that a `net` param names, as a `Net` object |
+
+## Python packages
+
+A driver can use packages that are not on the box. List them in a requirements
+file and name it in the manifest:
+
+```json
+"requirements": "requirements.txt"
+```
+
+The box installs the packages when you run `lager drivers install`, so a call never
+waits for them. They are stored with the driver in `/etc/lager/drivers/`, so they
+stay installed after `lager update`. If a package cannot be installed, the driver
+is not installed, and the version that was installed before keeps working.
+
+The file must pin every package to one version with a hash, including the
+packages that your packages need. `pip-compile` writes such a file:
+
+```bash
+pip install pip-tools
+echo "crcmod" > requirements.in
+pip-compile --generate-hashes --output-file requirements.txt requirements.in
+```
+
+Rules:
+
+- **Exact versions with hashes only.** Each line is `name==version` with at least
+  one `--hash`. Options such as `-r`, `-e` and `--index-url` are not allowed.
+- **Wheels only.** The box does not build packages from source. A package must
+  have a wheel for the box's Python (3.12) and CPU. Boxes can be `x86_64` or
+  `aarch64` (ARM), so pick packages that have wheels for both, or pure-Python
+  wheels. `pip-compile --generate-hashes` lists the hashes for every platform.
+- **The box's own packages come first.** A driver cannot replace a package that
+  the box already has. If you pin a package the box has, the version must be the
+  same as the box's, or the install is refused. Leave such packages out.
+- **Each driver has its own packages.** Two drivers can use different versions of
+  the same package.
+- **Limits.** The box gives the install 5 minutes, and the installed packages can
+  use at most 200 MB.
+
+### A box without internet
+
+Put the wheel files in a `wheels/` folder in the bundle. The box uses them before
+it looks on the internet. They count toward the 5 MB bundle limit. To download
+them for the box's CPU:
+
+```bash
+pip download --only-binary=:all: --python-version 3.12 \
+  --platform manylinux_2_36_aarch64 --dest wheels -r requirements.txt
+```
+
+Use `manylinux_2_36_x86_64` for an `x86_64` box. Running `uname -m` on the box
+shows which one it is. Pure-Python wheels work on both.
+
+### After an update
+
+If a `lager update` changes the box's Python version, `lager drivers list` shows the
+driver as `error` and its Deps as `stale`. Install the packages again with:
+
+```bash
+lager drivers reinstall-deps stepper --box my-lager-box
+```
+
+<Warning>
+A package's code runs on the box, with full access to the box's hardware and
+network, when the driver imports it. The box only installs wheels, so no package
+code runs during the install. But treat every package in the file as code that
+runs on the box, and install only packages you trust.
+</Warning>
 
 ## How a call runs
 

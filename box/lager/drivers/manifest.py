@@ -15,6 +15,7 @@ driver runs.
       "version": "1.0.0",
       "lager_api": 1,
       "description": "Stepper rig controlled over a serial link",
+      "requirements": "requirements.txt",
       "params": {
         "uart_net": {"type": "net", "role": "uart", "required": true,
                      "help": "UART net wired to the controller"}
@@ -28,7 +29,10 @@ driver runs.
     }
 
 ``params`` are per-net settings stored in the net record. ``args`` are
-per-call values. Pure module: no Flask, no filesystem beyond load_manifest,
+per-call values. ``requirements`` is optional: a hashed lock file at the top
+of the bundle whose packages are installed with the driver (see deps.py).
+A box that predates it rejects the key, so an old box refuses such a bundle
+instead of installing a driver that cannot import its packages. Pure module: no Flask, no filesystem beyond load_manifest,
 so the same rules can be mirrored by the control plane.
 """
 
@@ -50,6 +54,8 @@ TYPE_RE = re.compile(r'^[a-z][a-z0-9_-]{1,31}$')
 # Action, param and arg names become Python keyword arguments, so they must
 # be identifiers. The CLI shows an underscore as a dash (--hold-time).
 NAME_RE = re.compile(r'^[a-z][a-z0-9_]{0,31}$')
+# A file at the top of the bundle, not in a folder.
+REQUIREMENTS_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.txt$')
 
 # Arg names the CLI already uses on every action command (--box, --json,
 # --help) or passes alongside the args (post_net_command's own parameters).
@@ -166,7 +172,7 @@ def parse_manifest(data):
     """
     _require(isinstance(data, dict), 'manifest must be a JSON object')
     unknown = set(data) - {'type', 'version', 'lager_api', 'description',
-                           'timeout_s', 'params', 'actions'}
+                           'timeout_s', 'params', 'actions', 'requirements'}
     _require(not unknown, 'manifest: unknown keys %s' % sorted(unknown))
 
     dtype = data.get('type')
@@ -185,6 +191,12 @@ def parse_manifest(data):
              % (api, ', '.join(str(v) for v in SUPPORTED_LAGER_API)))
 
     timeout = _check_timeout(data.get('timeout_s', DEFAULT_TIMEOUT_S), 'manifest')
+
+    requirements = data.get('requirements')
+    _require(requirements is None
+             or (isinstance(requirements, str) and REQUIREMENTS_RE.match(requirements)),
+             'requirements must name a .txt file at the top of the bundle, '
+             'such as "requirements.txt"')
 
     params_in = data.get('params', {})
     _require(isinstance(params_in, dict), 'params must be an object')
@@ -218,6 +230,7 @@ def parse_manifest(data):
         'lager_api': api,
         'description': str(data.get('description', '')),
         'timeout_s': timeout,
+        'requirements': requirements,
         'params': params,
         'actions': actions,
     }

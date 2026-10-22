@@ -38,6 +38,12 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 - **The Rotrics Dexarm runs in the nightly bench.** Both arm suites run against a real arm
   every night. Each check compares a readback to its target, and the suites fail if the
   arm's stored calibration changes.
+- **Custom drivers can use Python packages.** Name a hashed requirements file in
+  `lager_driver.json` (`"requirements": "requirements.txt"`), and `lager drivers install`
+  installs those wheels with the driver, in `/etc/lager/drivers/`, so they survive
+  `lager update`. Each driver gets its own packages and cannot replace the box's. A
+  `wheels/` folder serves boxes without internet. `lager drivers list` gains a Deps
+  column, and `lager drivers reinstall-deps` rebuilds them after a Python upgrade.
 
 ### Changed
 

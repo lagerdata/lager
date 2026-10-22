@@ -433,6 +433,11 @@ def status():
             # control plane gates driver pushes on this. A box predating it
             # omits the key, which reads as false.
             'customDrivers': _has_drivers,
+            # Driver bundles may declare Python packages ("requirements" in
+            # lager_driver.json) and POST /drivers/<type>/deps exists. An
+            # older box rejects such a bundle, so the CLI and the control
+            # plane check this first to say why.
+            'customDriverDeps': _has_drivers,
             # /binaries/* + /download-file are served on :9000 (same wire
             # contracts as the :5000 python-exec service); lets the CLI
             # detect boxes that predate them.

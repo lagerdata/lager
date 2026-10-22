@@ -13,6 +13,7 @@ recreation the same way saved_nets.json does::
         lager_driver.json
         driver.py
         .sha256          # hash of the zip it was installed from
+        .deps/           # its Python packages, if it declares requirements
 
 An install unpacks into ``.staging/`` and is swapped in with two renames, so
 a call never sees a half-written driver. A bundle that fails to load is still
@@ -37,6 +38,7 @@ import stat
 import uuid
 import zipfile
 
+from lager.drivers import deps
 from lager.drivers.errors import DriverUnavailable
 from lager.drivers.manifest import (
     DRIVER_FILE,
@@ -114,7 +116,7 @@ def _describe(dtype):
     path = os.path.normpath(os.path.join(root, dtype))
     if not path.startswith(root + os.sep):
         raise DriverStoreError(400, "Invalid driver type '%s'" % dtype)
-    entry = {'type': dtype, 'sha256': _read_sha(path)}
+    entry = {'type': dtype, 'sha256': _read_sha(path), 'deps': None}
     try:
         manifest = load_manifest(path)
         if manifest['type'] != dtype:
@@ -122,6 +124,10 @@ def _describe(dtype):
                                 % (manifest['type'], dtype))
         if not os.path.isfile(os.path.join(path, DRIVER_FILE)):
             raise ManifestError('%s is missing' % DRIVER_FILE)
+        if manifest['requirements']:
+            entry['deps'], deps_error = deps.status(path)
+            if deps_error:
+                raise ManifestError(deps_error)
     except ManifestError as e:
         entry.update({'status': 'error', 'error': str(e), 'version': None,
                       'description': '', 'manifest': None})
@@ -206,6 +212,9 @@ def _extract(data, dest):
             rel = info.filename[len(prefix):]
             if not rel:
                 continue
+            if rel.split('/', 1)[0] == deps.DEPS_DIR:
+                raise DriverStoreError(400, "Bundle may not contain %s/; the box builds it "
+                                            "from the requirements file" % deps.DEPS_DIR)
             target = os.path.normpath(os.path.join(dest, *rel.split('/')))
             if not target.startswith(dest + os.sep):
                 raise DriverStoreError(400, "Bundle path '%s' is not allowed" % info.filename)
@@ -247,6 +256,16 @@ def install(dtype, data):
                 400, "Bundle declares type '%s', not '%s'" % (manifest['type'], dtype))
         if not os.path.isfile(os.path.join(staging, DRIVER_FILE)):
             raise DriverStoreError(400, 'Bundle has no %s' % DRIVER_FILE)
+        # Before the swap, so a bundle whose packages fail to install never
+        # goes live and the previous version keeps running.
+        packages = []
+        if manifest['requirements']:
+            try:
+                stamp = deps.install(staging, manifest['requirements'],
+                                     os.path.join(staging, deps.DEPS_DIR))
+            except deps.DepsError as e:
+                raise DriverStoreError(e.status, e.message)
+            packages = stamp['packages']
 
         sha = hashlib.sha256(data).hexdigest()
         with open(os.path.join(staging, _SHA_FILE), 'w', encoding='ascii') as f:
@@ -269,7 +288,56 @@ def install(dtype, data):
             shutil.rmtree(staging, ignore_errors=True)
 
     return {'type': dtype, 'version': manifest['version'], 'sha256': sha,
-            'replaced': replaced}
+            'replaced': replaced, 'packages': packages}
+
+
+def reinstall_deps(dtype):
+    """Rebuild an installed driver's .deps from its own requirements file.
+
+    For a box whose image upgrade changed the Python version or CPU the
+    packages were built for. Builds beside the driver and swaps .deps in, so
+    a failure leaves the old packages in place.
+    """
+    _validate_type(dtype)
+    root = _root()
+    live = os.path.normpath(os.path.join(root, dtype))
+    if not live.startswith(root + os.sep):
+        raise DriverStoreError(400, "Invalid driver type '%s'" % dtype)
+    if not os.path.isdir(live):
+        raise DriverStoreError(404, "No custom driver '%s' is installed" % dtype)
+    try:
+        manifest = load_manifest(live)
+    except ManifestError as e:
+        raise DriverStoreError(400, str(e))
+    if not manifest['requirements']:
+        raise DriverStoreError(400, "Driver '%s' declares no requirements" % dtype)
+
+    staging_root = os.path.join(root, '.staging')
+    os.makedirs(staging_root, exist_ok=True)
+    target = os.path.normpath(
+        os.path.join(staging_root, '%s-deps-%s' % (dtype, uuid.uuid4().hex)))
+    if not target.startswith(staging_root + os.sep):
+        raise DriverStoreError(400, "Invalid driver type '%s'" % dtype)
+    current = os.path.normpath(os.path.join(live, deps.DEPS_DIR))
+    if not current.startswith(live + os.sep):
+        raise DriverStoreError(400, "Invalid driver type '%s'" % dtype)
+    retired = None
+    try:
+        try:
+            stamp = deps.install(live, manifest['requirements'], target)
+        except deps.DepsError as e:
+            raise DriverStoreError(e.status, e.message)
+        if os.path.isdir(current):
+            retired = target + '-old'
+            os.rename(current, retired)
+        os.rename(target, current)
+        target = None
+    finally:
+        if target:
+            shutil.rmtree(target, ignore_errors=True)
+        if retired:
+            shutil.rmtree(retired, ignore_errors=True)
+    return {'type': dtype, 'packages': stamp['packages']}
 
 
 def remove(dtype, nets_using=(), force=False):

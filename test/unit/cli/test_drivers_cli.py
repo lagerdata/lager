@@ -142,6 +142,66 @@ class TestDriversInstall:
         assert custom_drivers.cached_drivers(BOX_IP) is None
 
 
+class TestDriversDeps:
+    def _deps_bundle(self, tmp_path, requirements=True):
+        manifest = dict(STEPPER_MANIFEST, requirements="requirements.txt")
+        d = _bundle(tmp_path, manifest=manifest)
+        if requirements:
+            (d / "requirements.txt").write_text("crcmod==1.7 --hash=sha256:" + "a" * 64 + "\n")
+        return d
+
+    def test_install_with_requirements_waits_for_pip_and_lists_packages(self, box, tmp_path):
+        box.drivers = {}
+        box.packages = ["crcmod==1.7"]
+        result, out = _run(drivers_mod.drivers,
+                           ["install", str(self._deps_bundle(tmp_path)), "--box", "B"])
+        assert result.exit_code == 0, out
+        assert "Installing the Python packages in requirements.txt" in out
+        assert "Python packages: crcmod==1.7" in out
+        assert box.timeouts[-1] == drivers_mod.DEPS_HTTP_TIMEOUT
+        names = set(zipfile.ZipFile(io.BytesIO(box.uploads[0][1]["bundle"][1])).namelist())
+        assert "requirements.txt" in names
+
+    def test_plain_bundle_keeps_the_short_timeout(self, box, tmp_path):
+        box.drivers = {}
+        _run(drivers_mod.drivers, ["install", str(_bundle(tmp_path)), "--box", "B"])
+        assert box.timeouts[-1] == 120
+
+    def test_old_box_is_refused_before_upload(self, box, tmp_path):
+        box.drivers = {}
+        box.deps_support = False
+        result = CliRunner().invoke(drivers_mod.drivers,
+                                    ["install", str(self._deps_bundle(tmp_path)), "--box", "B"])
+        assert result.exit_code == 1
+        assert "too old" in result.output and box.uploads == []
+
+    def test_missing_requirements_file_is_a_usage_error(self, box, tmp_path):
+        result = CliRunner().invoke(drivers_mod.drivers, [
+            "install", str(self._deps_bundle(tmp_path, requirements=False)), "--box", "B"])
+        assert result.exit_code == 2 and "no requirements.txt" in result.output
+
+    def test_list_and_show_deps(self, box):
+        box.drivers["stepper"]["deps"] = {"status": "ok", "packages": ["a==1", "b==2"]}
+        box.drivers["old"] = stepper_entry(
+            type="old", status="error", error="packages are stale",
+            deps={"status": "stale", "packages": ["a==1"]})
+        _, out = _run(drivers_mod.drivers, ["list", "--box", "B"])
+        assert "Deps" in out and "2 packages" in out and "stale" in out
+        _, out = _run(drivers_mod.drivers, ["show", "stepper", "--box", "B"])
+        assert "Python packages: a==1, b==2" in out
+
+    def test_reinstall_deps(self, box):
+        box.packages = ["crcmod==1.7"]
+        result, out = _run(drivers_mod.drivers, ["reinstall-deps", "stepper", "--box", "B"])
+        assert result.exit_code == 0, out
+        assert "Reinstalled 1 package for 'stepper'" in out
+        assert box.calls[-1][:2] == ("POST", "/drivers/stepper/deps")
+        assert box.timeouts[-1] == drivers_mod.DEPS_HTTP_TIMEOUT
+        result = CliRunner().invoke(drivers_mod.drivers,
+                                    ["reinstall-deps", "nope", "--box", "B"])
+        assert result.exit_code == 1 and "No custom driver 'nope'" in result.output
+
+
 class TestDriversRemove:
     def test_refused_while_nets_use_it_then_forced(self, box):
         box.saved_nets.append({"name": "RIG_1", "role": "stepper", "instrument": "custom:stepper"})
