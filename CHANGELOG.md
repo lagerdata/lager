@@ -30,6 +30,18 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   and the default on firmware V2.4.x is 40.
 - **`lager arm <net> disable-motor` asks for confirmation**, because the arm goes limp and
   drops. Pass `--yes` to skip the prompt.
+- **The nightly bench run now tests the box-level commands.** A new suite,
+  `test/integration/infrastructure/box_ops.sh`, checks `lager ssh` exit codes
+  and output, a command in the box's `lager` container, the box lock (a second
+  holder refused, read-only commands allowed, stale-lock release),
+  `logs size`, `binaries add/list/remove` and `install-wheel`. Two new
+  Python API scripts check what the box reports about itself and take a
+  scratch net through add, rename, describe and delete.
+- **The box lifecycle run now checks the version after every phase.** Each
+  "Verify box healthy" step must see `lager hello` report the version that
+  phase deployed, not just an answer (`tools/assert_hello_version.sh`).
+  `lager update --check` must print a preview that agrees with its exit
+  status, and report `in sync` straight after an update.
 
 ### Fixed
 

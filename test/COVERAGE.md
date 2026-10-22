@@ -52,8 +52,8 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 414 |
-| `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 221 (+1 skipped) |
-| | **Total gated** | **9371** |
+| `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 230 (+1 skipped) |
+| | **Total gated** | **9380** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -184,8 +184,8 @@ OS.
 
 | Area | Size | Why not |
 |---|---|---|
-| `test/api/` | 87 scripts | Needs real hardware. The bench workflows run 24: 11 by name (4 of them, the Keithley supply and battery steps, only while the `KEITHLEY_PRESENT` repo variable is `true`), plus 6 LabJack ADC/DAC, 4 GPIO and 3 USB-port scripts run in loops. The other 63 execute nowhere -- though all are syntax-checked. |
-| `test/integration/` | 40 bash scripts | Needs a real box and instruments. **16 execute.** 12 run nightly via `integration-tests.yml`: `communication/debug.sh`, `communication/jlink_script.sh`, `communication/uart.sh`, `peripherals/arm.sh`, `infrastructure/deployment.sh`, `infrastructure/devenv.sh`, `power/supply.sh`, `power/multichannel_supply.sh`, `io/labjack.sh`, `io/usb202.sh`, `usb/acroname.sh` and `usb/usb.sh`. 4 run weekly via `bench-extended.yml`: `nets`, `box_config`, `generic`, and `power/battery.sh` (only while `KEITHLEY_PRESENT` is `true`). The other 24 are syntax-checked and shellchecked but never executed. |
+| `test/api/` | 89 scripts | Needs real hardware. The bench workflows run 26: 13 by name (4 of them, the Keithley supply and battery steps, only while the `KEITHLEY_PRESENT` repo variable is `true`), plus 6 LabJack ADC/DAC, 4 GPIO and 3 USB-port scripts run in loops. The other 63 execute nowhere -- though all are syntax-checked. |
+| `test/integration/` | 41 bash scripts | Needs a real box and instruments. **17 execute.** 13 run nightly via `integration-tests.yml`: `communication/debug.sh`, `communication/jlink_script.sh`, `communication/uart.sh`, `peripherals/arm.sh`, `infrastructure/box_ops.sh`, `infrastructure/deployment.sh`, `infrastructure/devenv.sh`, `power/supply.sh`, `power/multichannel_supply.sh`, `io/labjack.sh`, `io/usb202.sh`, `usb/acroname.sh` and `usb/usb.sh`. 4 run weekly via `bench-extended.yml`: `nets`, `box_config`, `generic`, and `power/battery.sh` (only while `KEITHLEY_PRESENT` is `true`). The other 24 are syntax-checked and shellchecked but never executed. |
 | `test/mcp/integration/` | 1 file | Now RUN, not just collected, by the required `mcp-extra` job: `test_agent_loop.py` builds its bench in-process from dicts and needs no box. Not counted in the `unit (...)` totals above. |
 | `test/manual/` | 2 bash scripts, 1 Python report, 1 browser client | Operator-driven. The bash scripts are syntax-checked only. `box_lager_import_report.py` prints an import report and has no `assert` statements, so its name keeps pytest from collecting it. Run it directly. |
 
@@ -427,11 +427,10 @@ Five other param types (`EnvVarType`, `PortForwardType`, `MemoryAddressType`, `H
 | Gap | Details |
 |-----|---------|
 | **Logic Analyzer** | No Python API test. 21 CLI subcommands, bash and MCP coverage only. |
-| **SSH / Exec** | No hardware suite drives them. `deployment.sh` (nightly) makes one raw `ssh` call and checks `lager ssh --help` / `lager exec --help` only. Install and uninstall DO run on hardware every night, in `update-regression.yml`. |
+| **Exec** | `lager exec` runs the local devenv image, so only `devenv.sh` drives it; no box is involved. `lager ssh` and a command in the box's container are covered nightly by `box_ops.sh`. |
 | **Watt / Energy** | No bash integration tests. |
 | **Scope** | No bash integration test. 39 CLI subcommands. |
 | **BLE** | No bash integration test. |
-| **Box Management** | No Python API tests for boxes, status, or hello. |
 | **Rotation / Actuate** | Python API only. The actuate role drives a Dexarm through `move_to_blocking`, with no bounds check and no firmware gate, and has never run on hardware. |
 | **Robotic Arm** | Both suites run nightly on MASTER's arm (`arm1`, firmware V2.4.4, PEN module). Not on hardware: `disable-motor` (not run unattended: the arm drops; one budgeted skip), `NotHomedError` (V2.4.x syncs its position at boot), `UnsupportedFirmwareError` (the arm is V2.4.4), and every accessory method -- soft gripper, air picker, laser, conveyor belt, sliding rail, `set_module_type` -- which needs that module attached. Their exact G-code is unit-tested. |
 | **Webcam** | No bash integration test. |
@@ -459,7 +458,7 @@ Five other param types (`EnvVarType`, `PortForwardType`, `MemoryAddressType`, `H
 
 ```
 test/
-├── api/                  # Python API tests (87 files, run on box via `lager python`)
+├── api/                  # Python API tests (89 files, run on box via `lager python`)
 │   ├── communication/    # 31 files: I2C, SPI, UART, BLE, BluFi, WiFi, debug
 │   ├── io/               # 18 files: ADC, DAC, GPIO, PWM, pin conflict, USB-202, U3
 │   ├── peripherals/      #  9 files: scope, arm, webcam, rotation, actuate
@@ -467,10 +466,10 @@ test/
 │   ├── sensors/          #  9 files: thermocouple, watt, energy, joulescope, PPK2
 │   ├── security/         #  1 file: HSM
 │   ├── usb/              #  8 files: USB hub enable/disable/toggle/stress, Acroname
-│   └── utility/          #  2 files: binaries, net listing
-├── integration/          # Bash integration tests (40 files, run from host via harness.sh)
+│   └── utility/          #  4 files: binaries, net listing, box info, nets lifecycle
+├── integration/          # Bash integration tests (41 files, run from host via harness.sh)
 │   ├── communication/    # 15 files: I2C, SPI, UART, WiFi, debug, J-Link
-│   ├── infrastructure/   #  7 files: boxes, nets, deployment, devenv, python, generic, box config
+│   ├── infrastructure/   #  8 files: boxes, nets, deployment, devenv, python, generic, box config, box ops
 │   ├── power/            #  6 files: supply, battery, solar, eload, keysight, multichannel
 │   ├── io/               #  5 files: LabJack, USB-202, GPIO (Aardvark, FT232H)
 │   ├── usb/              #  3 files: USB, Ykush, Acroname
@@ -493,13 +492,13 @@ test/
 │                         # daemon by hand)
 ├── assets/               # Fixture data (note: assets/firmware/ holds only a README)
 └── framework/            # Test utilities
-    ├── harness.sh        # Bash test framework (sourced by all 39 integration scripts)
+    ├── harness.sh        # Bash test framework (sourced by all 41 integration scripts)
     ├── colors.sh         # Bash color utilities
     ├── fixtures.py       # Pytest fixtures with auto-cleanup
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 326 files)
+### Local Unit Tests (`test/unit/` -- 327 files)
 
 #### Box Unit Tests (`test/unit/box/` -- 175 files)
 
@@ -836,12 +835,13 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_blufi_unit.py` | BluFi protocol parsing (696-line pytest suite) |
 | `test_blufi_scan.py` | `BlufiClient.scan()` BLE advertisement presence checks |
 
-#### Tools Unit Tests (`test/unit/tools/` -- 7 files)
+#### Tools Unit Tests (`test/unit/tools/` -- 8 files)
 
 These tests cover the scripts in `tools/`. The `unit (root)` job runs them.
 
 | File | What it tests |
 |------|---------------|
+| `test_assert_hello_version.py` | `tools/assert_hello_version.sh` against a fake `lager`: the expected release passes, another version, a version that only starts the same, `Unknown`, and a box that does not answer fail, and a ref check passes only on the named commit or `(release)`, with a coloured ref read through its escape codes. Also that every "Verify box healthy" step in `update-regression.yml` runs it rather than a bare `lager hello` |
 | `test_bench_release_lock.py` | `tools/bench_release_lock.sh` against a fake `lager`: no lock means no unlock; a lock held by a run of this repository is released and the release confirmed, including an unlock on the last attempt; a box that does not answer is asked again; a box that never answers, or a lock that survives the unlock, is a `::warning` naming the holder and the unlock command, never a failed step; another holder's lock, or any lock outside GitHub Actions, is never forced; and the probe asks under a holder other than the run's own, because the fake `hello`, like the real one, says nothing about the caller's own lock (#661). Also that no workflow releases a lock with the silent `2>/dev/null || true` form that hid one in #639 |
 | `test_bench_schedule_check.py` | `tools/bench_schedule_check.py`: the nightly cadence signals kept distinct -- a missed night (gap), a dead cron (stale), and a schedule drifting later (lateness vs the cron parsed from `nightly-bench.yml`), which spacing alone cannot see. Also that only the newest interval raises a gap, so a missed night stops alarming once the next scheduled night runs, and that a stale scheduled-only answer is replaced by the fresh scheduled runs the all-events query shows -- never merged into a fake gap -- while a genuinely dead cron still alarms |
 | `test_bench_workflow_health.py` | `tools/bench_schedule_check.py`'s checks across every `Bench:` workflow: one that is disabled or unknown to GitHub is a problem, Bench: Extended with no scheduled run in 8 days is a problem, and Extended's problems are written to their own file for the `bench-alert-extended` issue, never to the nightly's `bench-alert` |
@@ -893,7 +893,7 @@ These tests cover the scripts in `tools/`. The `unit (root)` job runs them.
 |------|---------------|
 | `test_agent_loop.py` | End-to-end agent workflow on an in-process bench (no box): discovery, suitability, `lager python` execution, verify. Run by `mcp-extra`. |
 
-### Python API Tests (`test/api/` -- 87 files)
+### Python API Tests (`test/api/` -- 89 files)
 
 These are **standalone scripts, not pytest** (see `test/CONVENTIONS.md`): each defines `main()`
 and runs on a box via `lager python`. None of them run in the PR gate.
@@ -963,19 +963,23 @@ toggle tests.
 `test_hsm.py` runs one key through generate, public key, sign (verified with `cryptography`) and
 delete on a scratch object ID, and refuses a wrong password. `LAGER_HSM_ALLOW_RESET=1` adds a reset.
 
-#### Utility (2 files)
+#### Utility (4 files)
 
 `test_custom_binaries.py` (binary listing, not-found handling) and `test_list_nets.py`.
+`test_box_info.py` reads what the box reports about itself, from inside the box. It checks
+`/hello`, the `/status` version and commit, the saved nets three ways, and the lock it
+runs under. `test_nets_lifecycle.py` takes a `ci_scratch_*` uart net on
+`/dev/null` through add, rename, describe and delete, and checks every other net is unchanged.
 
-### Bash Integration Tests (`test/integration/` -- 40 files)
+### Bash Integration Tests (`test/integration/` -- 41 files)
 
 Run from the host against a real box. `static-checks` runs `bash -n` and `shellcheck` over all of
-them; only the fifteen listed under "What CI does NOT run" execute.
+them; only the seventeen listed under "What CI does NOT run" execute.
 
 | Directory | Files | Contents |
 |---|---:|---|
 | `communication/` | 15 | `i2c*.sh` (4 backends), `spi*.sh` (6), `uart.sh`, `wifi.sh`, `debug.sh`, `jlink_script.sh` |
-| `infrastructure/` | 7 | `generic.sh`, `boxes_config.sh`, `box_config.sh`, `nets.sh`, `deployment.sh`, `devenv.sh`, `python.sh` |
+| `infrastructure/` | 8 | `generic.sh`, `boxes_config.sh`, `box_config.sh`, `nets.sh`, `deployment.sh`, `devenv.sh`, `python.sh`, `box_ops.sh` |
 | `power/` | 6 | `supply.sh`, `battery.sh`, `solar.sh`, `eload.sh`, `keysight_supply.sh`, `multichannel_supply.sh` |
 | `io/` | 5 | `labjack.sh`, `usb202.sh`, `gpio_aardvark.sh`, `gpio_aardvark_loopback.sh`, `gpio_ft232h.sh` |
 | `usb/` | 3 | `usb.sh`, `ykush.sh`, `acroname.sh` |

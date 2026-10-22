@@ -1155,6 +1155,68 @@ jobs:
           bash tools/bench_suite_gate.sh harness devenv.sh "$DEVENV_BASELINE" "$LOG" "$DEVENV_MAX_SKIPS"
         shell: bash
 
+      - name: Test box info (Python API, /hello, /status, auto-lock)
+        # Read-only: what the box reports about itself, from inside the box.
+        # The gate near the top proved the box is on github.sha, so it must
+        # report this checkout's version and that commit.
+        id: box-info-test
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          EXPECT_BOX: ${{ inputs.box_name || vars.LAGER_BOX || 'MASTER' }}
+          EXPECT_SHA: ${{ github.sha }}
+          LAGER_BENCH_MAX_SKIPS: "0"
+        run: |
+          EXPECT_VERSION=$(sed -n "s/^__version__ = ['\"]\([^'\"]*\)['\"].*/\1/p" cli/__init__.py)
+          export EXPECT_VERSION
+          lager python test/api/utility/test_box_info.py --box "$LAGER_BOX" \
+            --passenv EXPECT_BOX --passenv EXPECT_VERSION --passenv EXPECT_SHA \
+            --passenv LAGER_BENCH_MAX_SKIPS
+        shell: bash
+
+      - name: Test nets lifecycle (Python API, scratch net)
+        # One uart net on /dev/null, named for this run, through add, rename,
+        # describe and delete. It names no instrument, and the script checks
+        # that every other net is unchanged at the end. Late in the run, so a
+        # failure here cannot leave the registry odd for an instrument step.
+        id: nets-lifecycle-test
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          SCRATCH_NET: ci_scratch_${{ github.run_id }}
+        run: |
+          lager python test/api/utility/test_nets_lifecycle.py --box "$LAGER_BOX" --passenv SCRATCH_NET
+        shell: bash
+
+      - name: Suite box_ops.sh (ssh, container exec, lock, logs, binaries)
+        # Takes and releases real box locks under two test holders and one
+        # test user, each released by its own holder, never forced. It refuses
+        # to start on a box someone else has locked; a lock this job left behind
+        # is released by the job itself, with a warning. The next step releases
+        # the test locks again in case this one was killed.
+        id: suite-box-ops
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          SSH_USER: lagerdata
+          BOX_OPS_BASELINE: "0"
+          BOX_OPS_MAX_SKIPS: "0"
+        run: |
+          LOG="$RUNNER_TEMP/box_ops.log"
+          bash test/integration/infrastructure/box_ops.sh "$LAGER_BOX" 2>&1 | tee "$LOG" || true
+          bash tools/bench_suite_gate.sh harness box_ops.sh "$BOX_OPS_BASELINE" "$LOG" "$BOX_OPS_MAX_SKIPS"
+        shell: bash
+
+      - name: Release box_ops.sh test locks
+        # No id: a cleanup, outside the fail gate. The suite's own cleanup
+        # releases its locks; this covers a suite that was killed first. It
+        # releases only the suite's test holders, each as itself.
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 2
+        run: bash test/integration/infrastructure/box_ops.sh "$LAGER_BOX" --release-locks
+        shell: bash
+
       - name: Fail job if any test failed
         # Every instrument step is continue-on-error so all instruments get
         # exercised in one run; this gate turns any failure into a job failure.

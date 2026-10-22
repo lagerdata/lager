@@ -288,6 +288,11 @@ jobs:
             | awk -F/ '{print $NF}' | sort -V | tail -1)
           echo "Latest release tag: $LATEST_TAG"
           echo "LATEST_TAG=$LATEST_TAG" >> "$GITHUB_ENV"
+          # The version every phase that deploys this checkout must report.
+          EXPECTED_VERSION=$(sed -n "s/^__version__ = ['\"]\([^'\"]*\)['\"].*/\1/p" cli/__init__.py)
+          echo "This checkout's version: $EXPECTED_VERSION"
+          [ -n "$EXPECTED_VERSION" ] || { echo "::error title=No version::cli/__init__.py declares no __version__"; exit 1; }
+          echo "EXPECTED_VERSION=$EXPECTED_VERSION" >> "$GITHUB_ENV"
         shell: bash
 
       - name: Update dry run (--check)
@@ -300,6 +305,10 @@ jobs:
         # Exit status alone cannot fail for a mutating --check, so the box's
         # reported version is compared before and after: a dry run that moved
         # the box is a failure whatever it exited with.
+        #
+        # The preview must also be there and agree with the exit status: rc 0
+        # with "Nothing to do.", rc 1 with "Run without --check to apply.".
+        # rc 2 means --check could not tell, which is a failure.
         run: |
           before=$(lager hello --box "$LAGER_BOX" | grep '^Version:')
           rc=0; out=$(lager update --check --box "$LAGER_BOX" --version "${{ github.sha }}" 2>&1) || rc=$?
@@ -307,9 +316,22 @@ jobs:
           after=$(lager hello --box "$LAGER_BOX" | grep '^Version:')
           echo "before: $before"
           echo "after:  $after"
-          [ "$rc" -le 1 ] || exit "$rc"
           if [ -z "$before" ] || [ "$before" != "$after" ]; then
             echo "::error title=update --check changed the box::reported version went from '$before' to '$after'"
+            exit 1
+          fi
+          if ! printf '%s\n' "$out" | grep -q '^Update preview' \
+              || ! printf '%s\n' "$out" | grep -qE '^ *Code: +(in sync|will update|will roll back|will switch)'; then
+            echo "::error title=update --check printed no preview::No 'Update preview' block with a Code: line (rc $rc)."
+            exit 1
+          fi
+          case "$rc" in
+            0) want='Nothing to do.' ;;
+            1) want='Run without --check to apply.' ;;
+            *) echo "::error title=update --check could not tell::rc $rc"; exit 1 ;;
+          esac
+          if ! printf '%s\n' "$out" | grep -qF "$want"; then
+            echo "::error title=update --check exit status disagrees with its output::rc $rc without '$want'"
             exit 1
           fi
         shell: bash
@@ -322,7 +344,10 @@ jobs:
         shell: bash
 
       - name: Verify box healthy on previous release
-        run: lager hello --box "$LAGER_BOX"
+        # The version, not just an answer: a downgrade that left the box where
+        # it was still answers hello. Version only: a box image this old may
+        # not report its ref.
+        run: bash tools/assert_hello_version.sh "$LAGER_BOX" "${PREV_TAG#v}"
         shell: bash
 
       - name: Common-path update (previous release -> the commit under test)
@@ -338,8 +363,22 @@ jobs:
         run: lager update --box "$LAGER_BOX" --version "${{ github.sha }}" --yes --verbose
         shell: bash
 
+      - name: update --check reports the box in sync
+        # Straight after the update to this commit, --check must find nothing
+        # to do. The dry run above can only check that its output is
+        # consistent; here the answer is known.
+        run: |
+          rc=0; out=$(lager update --check --box "$LAGER_BOX" --version "${{ github.sha }}" 2>&1) || rc=$?
+          echo "$out"
+          if [ "$rc" -ne 0 ] || ! printf '%s\n' "$out" | grep -qE '^ *Code: +in sync' \
+              || ! printf '%s\n' "$out" | grep -qF 'Nothing to do.'; then
+            echo "::error title=update --check is not in sync after the update::rc $rc; expected rc 0, 'Code: in sync' and 'Nothing to do.'"
+            exit 1
+          fi
+        shell: bash
+
       - name: Verify box healthy on main
-        run: lager hello --box "$LAGER_BOX"
+        run: bash tools/assert_hello_version.sh "$LAGER_BOX" "$EXPECTED_VERSION" "${{ github.sha }}"
         shell: bash
 
       - name: No-op update hits the fast path
@@ -383,7 +422,7 @@ jobs:
         shell: bash
 
       - name: Verify box healthy after rebuild
-        run: lager hello --box "$LAGER_BOX"
+        run: bash tools/assert_hello_version.sh "$LAGER_BOX" "$EXPECTED_VERSION" "${{ github.sha }}"
         shell: bash
 
       - name: Hardware smoke after update phases
@@ -500,6 +539,13 @@ jobs:
               exit 1
               ;;
           esac
+          # And what the box serves: hello must call it the release. By IP,
+          # for the same reason as above; the box may still be settling.
+          for _ in $(seq 1 12); do
+            lager hello --box "$BOX_IP" >/dev/null 2>&1 && break
+            sleep 10
+          done
+          bash tools/assert_hello_version.sh "$BOX_IP" "${LATEST_TAG#v}" "(release)"
         shell: bash
 
       - name: Install box software from scratch
@@ -575,7 +621,9 @@ jobs:
         # deploy's docker-daemon restart; poll for up to two minutes.
         run: |
           for _ in $(seq 1 12); do
-            lager hello --box "$LAGER_BOX" && exit 0
+            if lager hello --box "$LAGER_BOX"; then
+              exec bash tools/assert_hello_version.sh "$LAGER_BOX" "$EXPECTED_VERSION" "${{ github.sha }}"
+            fi
             sleep 10
           done
           echo "Box did not become healthy within 120s of reinstall"
