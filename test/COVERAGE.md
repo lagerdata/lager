@@ -185,7 +185,7 @@ OS.
 | Area | Size | Why not |
 |---|---|---|
 | `test/api/` | 89 scripts | Needs real hardware. The bench workflows run 26: 13 by name (4 of them, the Keithley supply and battery steps, only while the `KEITHLEY_PRESENT` repo variable is `true`), plus 6 LabJack ADC/DAC, 4 GPIO and 3 USB-port scripts run in loops. The other 63 execute nowhere -- though all are syntax-checked. |
-| `test/integration/` | 41 bash scripts | Needs a real box and instruments. **17 execute.** 13 run nightly via `integration-tests.yml`: `communication/debug.sh`, `communication/jlink_script.sh`, `communication/uart.sh`, `peripherals/arm.sh`, `infrastructure/box_ops.sh`, `infrastructure/deployment.sh`, `infrastructure/devenv.sh`, `power/supply.sh`, `power/multichannel_supply.sh`, `io/labjack.sh`, `io/usb202.sh`, `usb/acroname.sh` and `usb/usb.sh`. 4 run weekly via `bench-extended.yml`: `nets`, `box_config`, `generic`, and `power/battery.sh` (only while `KEITHLEY_PRESENT` is `true`). The other 24 are syntax-checked and shellchecked but never executed. |
+| `test/integration/` | 42 bash scripts | Needs a real box and instruments. **18 execute.** 14 run nightly via `integration-tests.yml`: `communication/debug.sh`, `communication/jlink_script.sh`, `communication/radios.sh`, `communication/uart.sh`, `peripherals/arm.sh`, `infrastructure/box_ops.sh`, `infrastructure/deployment.sh`, `infrastructure/devenv.sh`, `power/supply.sh`, `power/multichannel_supply.sh`, `io/labjack.sh`, `io/usb202.sh`, `usb/acroname.sh` and `usb/usb.sh`. 4 run weekly via `bench-extended.yml`: `nets`, `box_config`, `generic`, and `power/battery.sh` (only while `KEITHLEY_PRESENT` is `true`). The other 24 are syntax-checked and shellchecked but never executed. |
 | `test/mcp/integration/` | 1 file | Now RUN, not just collected, by the required `mcp-extra` job: `test_agent_loop.py` builds its bench in-process from dicts and needs no box. Not counted in the `unit (...)` totals above. |
 | `test/manual/` | 2 bash scripts, 1 Python report, 1 browser client | Operator-driven. The bash scripts are syntax-checked only. `box_lager_import_report.py` prints an import report and has no `assert` statements, so its name keeps pytest from collecting it. Run it directly. |
 
@@ -277,7 +277,7 @@ Hardware suites only. Several domains marked "No" below do have hardware-free un
 | **I2C** | Yes (5 files, 3 backends) | Yes (4 files) | Yes |
 | **SPI** | Yes (13 files, 3 backends) | Yes (6 files) | Yes |
 | **UART** | Yes | Yes | Yes |
-| **BLE** | Yes (4 files) | No | Yes |
+| **BLE** | Yes (4 files) | Yes (scan only) | Yes |
 | **BluFi** | Yes | No | Yes |
 | **WiFi** | Yes | Yes | Yes |
 | **USB Hub** | Yes (8 files) | Yes (3 files) | Yes |
@@ -430,7 +430,8 @@ Five other param types (`EnvVarType`, `PortForwardType`, `MemoryAddressType`, `H
 | **Exec** | `lager exec` runs the local devenv image, so only `devenv.sh` drives it; no box is involved. `lager ssh` and a command in the box's container are covered nightly by `box_ops.sh`. |
 | **Watt / Energy** | No bash integration tests. |
 | **Scope** | No bash integration test. 39 CLI subcommands. |
-| **BLE** | No bash integration test. |
+| **BLE** | `radios.sh` (nightly) covers scan, its filters and its limits. `connect`, `info` and `disconnect` never run on hardware: no advertiser on the bench is ours to connect to. |
+| **Wi-Fi** | `lager wifi status` and `access-points` cannot see the box's Wi-Fi from a container on the default network: status exits 0 with `Interface detection failed`, and the scan needs `nmcli`, which the image lacks. Only the CLI-side refusals run (`radios.sh`). `connect` and `delete-connection` never run on a bench whose uplink is Wi-Fi. |
 | **Rotation / Actuate** | Python API only. The actuate role drives a Dexarm through `move_to_blocking`, with no bounds check and no firmware gate, and has never run on hardware. |
 | **Robotic Arm** | Both suites run nightly on MASTER's arm (`arm1`, firmware V2.4.4, PEN module). Not on hardware: `disable-motor` (not run unattended: the arm drops; one budgeted skip), `NotHomedError` (V2.4.x syncs its position at boot), `UnsupportedFirmwareError` (the arm is V2.4.4), and every accessory method -- soft gripper, air picker, laser, conveyor belt, sliding rail, `set_module_type` -- which needs that module attached. Their exact G-code is unit-tested. |
 | **Webcam** | No bash integration test. |
@@ -467,8 +468,8 @@ test/
 │   ├── security/         #  1 file: HSM
 │   ├── usb/              #  8 files: USB hub enable/disable/toggle/stress, Acroname
 │   └── utility/          #  4 files: binaries, net listing, box info, nets lifecycle
-├── integration/          # Bash integration tests (41 files, run from host via harness.sh)
-│   ├── communication/    # 15 files: I2C, SPI, UART, WiFi, debug, J-Link
+├── integration/          # Bash integration tests (42 files, run from host via harness.sh)
+│   ├── communication/    # 16 files: I2C, SPI, UART, WiFi, debug, J-Link, radios
 │   ├── infrastructure/   #  8 files: boxes, nets, deployment, devenv, python, generic, box config, box ops
 │   ├── power/            #  6 files: supply, battery, solar, eload, keysight, multichannel
 │   ├── io/               #  5 files: LabJack, USB-202, GPIO (Aardvark, FT232H)
@@ -492,7 +493,7 @@ test/
 │                         # daemon by hand)
 ├── assets/               # Fixture data (note: assets/firmware/ holds only a README)
 └── framework/            # Test utilities
-    ├── harness.sh        # Bash test framework (sourced by all 41 integration scripts)
+    ├── harness.sh        # Bash test framework (sourced by all 42 integration scripts)
     ├── colors.sh         # Bash color utilities
     ├── fixtures.py       # Pytest fixtures with auto-cleanup
     └── test_utils.py     # Python test helpers
@@ -971,14 +972,14 @@ delete on a scratch object ID, and refuses a wrong password. `LAGER_HSM_ALLOW_RE
 runs under. `test_nets_lifecycle.py` takes a `ci_scratch_*` uart net on
 `/dev/null` through add, rename, describe and delete, and checks every other net is unchanged.
 
-### Bash Integration Tests (`test/integration/` -- 41 files)
+### Bash Integration Tests (`test/integration/` -- 42 files)
 
 Run from the host against a real box. `static-checks` runs `bash -n` and `shellcheck` over all of
-them; only the seventeen listed under "What CI does NOT run" execute.
+them; only the eighteen listed under "What CI does NOT run" execute.
 
 | Directory | Files | Contents |
 |---|---:|---|
-| `communication/` | 15 | `i2c*.sh` (4 backends), `spi*.sh` (6), `uart.sh`, `wifi.sh`, `debug.sh`, `jlink_script.sh` |
+| `communication/` | 16 | `i2c*.sh` (4 backends), `spi*.sh` (6), `uart.sh`, `wifi.sh`, `debug.sh`, `jlink_script.sh`, `radios.sh` |
 | `infrastructure/` | 8 | `generic.sh`, `boxes_config.sh`, `box_config.sh`, `nets.sh`, `deployment.sh`, `devenv.sh`, `python.sh`, `box_ops.sh` |
 | `power/` | 6 | `supply.sh`, `battery.sh`, `solar.sh`, `eload.sh`, `keysight_supply.sh`, `multichannel_supply.sh` |
 | `io/` | 5 | `labjack.sh`, `usb202.sh`, `gpio_aardvark.sh`, `gpio_aardvark_loopback.sh`, `gpio_ft232h.sh` |

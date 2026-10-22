@@ -8,8 +8,12 @@
 # Usage: ./test/integration/communication/wifi.sh <BOX>
 # Example: ./test/integration/communication/wifi.sh <YOUR-BOX>
 #
-# Note: Connect/delete tests are non-destructive -- they verify help
-#       and error handling without modifying actual WiFi state.
+# Tests 4.2 and 5.1 reach the box's network configuration: 5.1 runs
+# `nmcli connection delete` there, and 4.2 is refused locally only because its
+# password is short. On a box whose only uplink is Wi-Fi either can take it
+# off the network, so both are skipped unless WIFI_ALLOW_STATE_CHANGES=1.
+# The status and scan tests print nearby SSIDs: do not run this suite where
+# its log is public.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -114,9 +118,13 @@ echo "Test 4.1: Connect without required SSID"
 lager wifi connect --box $BOX 2>&1 | grep -qi "error\|missing\|required" && track_test "pass" || track_test "fail"
 echo ""
 
-echo "Test 4.2: Connect to non-existent network (expect error/timeout)"
-# Use a clearly fake SSID that cannot exist
-lager wifi connect --ssid "NONEXISTENT_NETWORK_TEST_12345" --password "fake" --box $BOX 2>&1 | grep -qi "error\|fail\|not found\|timeout" && track_test "pass" || track_test "fail"
+if [ "${WIFI_ALLOW_STATE_CHANGES:-0}" = "1" ]; then
+  echo "Test 4.2: Connect to non-existent network (expect error/timeout)"
+  # Use a clearly fake SSID that cannot exist
+  lager wifi connect --ssid "NONEXISTENT_NETWORK_TEST_12345" --password "fake" --box $BOX 2>&1 | grep -qi "error\|fail\|not found\|timeout" && track_test "pass" || track_test "fail"
+else
+  skip_test "Test 4.2: Connect to non-existent network" "set WIFI_ALLOW_STATE_CHANGES=1"
+fi
 echo ""
 
 # ============================================================
@@ -124,8 +132,12 @@ echo ""
 # ============================================================
 start_section "Delete Error Cases"
 
-echo "Test 5.1: Delete non-existent connection"
-lager wifi delete-connection "NONEXISTENT_NETWORK_TEST_12345" --yes --box $BOX 2>&1 | grep -qi "error\|not found\|does not exist" && track_test "pass" || track_test "fail"
+if [ "${WIFI_ALLOW_STATE_CHANGES:-0}" = "1" ]; then
+  echo "Test 5.1: Delete non-existent connection"
+  lager wifi delete-connection "NONEXISTENT_NETWORK_TEST_12345" --yes --box $BOX 2>&1 | grep -qi "error\|not found\|does not exist" && track_test "pass" || track_test "fail"
+else
+  skip_test "Test 5.1: Delete non-existent connection" "set WIFI_ALLOW_STATE_CHANGES=1"
+fi
 echo ""
 
 # ============================================================

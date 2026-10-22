@@ -1217,6 +1217,24 @@ jobs:
         run: bash test/integration/infrastructure/box_ops.sh "$LAGER_BOX" --release-locks
         shell: bash
 
+      - name: Suite radios.sh (BLE scan, read-only)
+        # Read-only: BLE scans and their filters, and the BLE and Wi-Fi limits
+        # the CLI enforces before it contacts the box. It never connects,
+        # pairs, or touches Wi-Fi, which is this bench's only uplink. It prints
+        # device counts only: scan output names nearby devices, and this log
+        # is public.
+        id: suite-radios
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          RADIOS_BASELINE: "0"
+          RADIOS_MAX_SKIPS: "0"
+        run: |
+          LOG="$RUNNER_TEMP/radios.log"
+          bash test/integration/communication/radios.sh "$LAGER_BOX" 2>&1 | tee "$LOG" || true
+          bash tools/bench_suite_gate.sh harness radios.sh "$RADIOS_BASELINE" "$LOG" "$RADIOS_MAX_SKIPS"
+        shell: bash
+
       - name: Fail job if any test failed
         # Every instrument step is continue-on-error so all instruments get
         # exercised in one run; this gate turns any failure into a job failure.

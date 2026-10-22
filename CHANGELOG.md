@@ -12,6 +12,15 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Changed
+
+- **The nightly bench run now scans BLE, read-only.** A new suite,
+  `test/integration/communication/radios.sh`, checks `lager ble scan`, its
+  name filters and its timeout limits, and the Wi-Fi interface check the CLI
+  makes before contacting the box. It prints device counts only, never device
+  names or addresses. `wifi.sh` now skips its connect and delete-connection
+  tests unless `WIFI_ALLOW_STATE_CHANGES=1`.
+
 ### Added
 
 - **`lager arm <net> get-acceleration` and `Dexarm.get_acceleration()`** print the arm's
