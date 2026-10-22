@@ -468,6 +468,10 @@ class TestTheUnitGoingAndComing:
             attenuation: 1, voltsPerDiv: 1 }]]),
           timePositionDiv: 0, overlayHidden: true, owedCredits: 3,
           pendingBuffer: 'held', persist: { layer: true }, socket: stream,
+          latest: { streaming: true, channels: [{ channel: 'A' }] },
+          canvas: { width: 800, height: 400 },
+          ctx: { cleared: 0, clearRect() { this.cleared += 1; } },
+          graticules: 0, drawGraticule() { this.graticules += 1; },
           adoptCursors() {}, showTimebase() {}, applyTimePosition() {},
           showProbe() {}, rebuildScaleChoices() {}, requestRedraw() {},
           applyVoltsPerDiv() {},
@@ -476,9 +480,10 @@ class TestTheUnitGoingAndComing:
         a.console.write = (text, kind) => notes.push([kind, text]);
         for (const state of %s) a.applyState(state);
         process.stdout.write(JSON.stringify({
-          overlay: !fields['plot-empty'].hidden,
-          hint: fields['plot-empty-hint'].innerHTML,
+          overlay: Boolean(fields['plot-empty'] && !fields['plot-empty'].hidden),
+          hint: (fields['plot-empty-hint'] || {}).innerHTML,
           owed: a.owedCredits, pending: a.pendingBuffer, persist: a.persist,
+          latest: a.latest, cleared: a.ctx.cleared, graticules: a.graticules,
           notes, subscribed: stream.sent.map((m) => m.command),
         }));
         """ % json.dumps(states) + body)
@@ -495,6 +500,22 @@ class TestTheUnitGoingAndComing:
         assert out["persist"] is None
         assert ["note", "The scope was unplugged."] in out["notes"]
         assert out["subscribed"] == []
+
+    def test_an_unplug_takes_the_last_trace_off_the_plot(self):
+        """#681: the overlay went up, but the render loop redrew the last
+        capture under it until the unit opened again."""
+        gone = json.loads(json.dumps(STATE))
+        gone["channels"] = []
+        gone["acquiring"] = False
+        out = self._run("", [STATE, gone])
+        assert out["latest"] is None
+        assert out["cleared"] == 1
+        assert out["graticules"] == 1
+
+    def test_a_state_change_while_connected_keeps_the_trace(self):
+        out = self._run("", [STATE, STATE])
+        assert out["latest"] is not None
+        assert out["cleared"] == 0
 
     def test_the_scope_coming_back_asks_for_the_stream_again(self):
         gone = json.loads(json.dumps(STATE))

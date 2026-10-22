@@ -2035,6 +2035,16 @@ class ScopeApp {
     if (stat) stat.textContent = '0 cap/s';
   }
 
+  /** Wipe the plot back to an empty graticule. */
+  clearPlot() {
+    if (!this.ctx || !this.canvas) return;
+    const ratio = (globalThis.window && window.devicePixelRatio) || 1;
+    const width = this.canvas.width / ratio;
+    const height = this.canvas.height / ratio;
+    this.ctx.clearRect(0, 0, width, height);
+    this.drawGraticule(this.ctx, width, height);
+  }
+
   /** Show or take down the overlay saying nothing is streaming. */
   showNotStreaming(visible) {
     if (this.overlayHidden === !visible) return;
@@ -2058,6 +2068,11 @@ class ScopeApp {
     this.persist = null;
     this.pendingBuffer = null;
     this.owedCredits = 0;
+    // The render loop redraws `latest` whenever anything asks for a redraw,
+    // which applyState does straight after this, so the last trace came
+    // back over the overlay until the unit opened again (#681).
+    this.latest = null;
+    this.clearPlot();
     if (typeof this.showIdleRate === 'function') this.showIdleRate();
     if (typeof this.showNotStreaming === 'function') this.showNotStreaming(true);
     if (typeof this.showEmptyHint === 'function') {

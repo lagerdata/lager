@@ -91,6 +91,10 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   `/usr/bin/true` alone satisfies. The install then went on and failed naming a file it
   could not install. It now asks `sudo -n -v`, which passes only when no command needs a
   password, and stops with the interactive-terminal message (#690).
+- **The scope page clears the plot when a PicoScope is unplugged.**
+  The page said the scope was unplugged and showed "Not streaming.", but the last trace
+  stayed drawn until the unit opened again. The plot now drops it and shows an empty
+  graticule (#681).
 
 ## [0.59.0] - 2026-10-21
 
