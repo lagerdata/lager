@@ -48,12 +48,12 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` | 3728 (+3 xfailed) |
-| `unit (box)` | `test/unit/box/` | 4878 (+17 skipped) |
+| `unit (box)` | `test/unit/box/` | 4886 (+17 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 414 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 230 (+1 skipped) |
-| | **Total gated** | **9444** |
+| | **Total gated** | **9452** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -499,9 +499,9 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 328 files)
+### Local Unit Tests (`test/unit/` -- 329 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 176 files)
+#### Box Unit Tests (`test/unit/box/` -- 177 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -541,6 +541,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_debug_status_target_attached.py` | `/debug/status` must report `gdbserver_running` and `target_attached` separately, keep `connected` pinned to its old server-liveness meaning for older clients, and preserve the tri-state -- None (older box, refused probe, timeout) is not False. Also pins the log-scrape/probe split: the cheap path always runs, the wire read is opt-in |
 | `test_debug_erase_verdict.py` | `/debug/erase` must not answer 200 for a J-Link session that never attached, and the verdict predicate `_attach_failed` must stay stricter than the flash-retry predicate `_connect_failed`. Also the request's `erase_start` / `erase_size`: a checked pair reaches `chip_erase` and is reported back as `erase_range`, half a pair or a range outside the DA1469x window is a 400 before anything runs, and `/health` lists the feature. The reported `erase_range` is resolved before Commander runs, so a script cleared mid-erase (a concurrent disconnect) still reports `source: script`; `api.jlink_erase_plan` follows `chip_erase`'s script rules. An nRF5340 app core with no range reports its 1 MiB app flash, and an erase whose read-back is not 0xFF is a 500 even when J-Link confirmed it and evidence is off |
 | `test_debug_flash_dispatch_parity.py` | The HTTP debug service (`/debug/flash`, `/debug/erase`) and the Net API (`DebugNet.flash()`, `.erase()`) must select the same flash backend for the same OpenOCD target: both driven through the real `openocd_flash` dispatch for a DA1469x (flash_loader, identical offsets and output) and an nRF52 (`program` / bank erase), building the RPC the same way and reporting a loader failure in the same words; a requested erase range reaches the loader as the same flash offset and `flash erase_address` on both paths, and an out-of-window range is refused by both. Plus an AST scan of `box/lager`: the generic OpenOCD flash commands and the loader generators are called from `openocd_flash.py` and nowhere else, so a private copy of the dispatch cannot come back |
+| `test_debug_halt_route.py` | `POST /debug/halt` stops an OpenOCD core in place: it sends a bare `halt` over the slot's TCL port and never `reset halt`, which would pulse nRESET. A J-Link net is a 400 that names the backend and points at a halt-first `.JLinkScript`; no running OpenOCD is a 400 and an RPC error a 500. The route runs under the probe lock, and `/health` lists `halt` in `features` |
 | `test_debug_net_da1469x.py` | `DebugNet.flash()` / `.erase()` hand every OpenOCD flash and erase to the shared `openocd_flash` dispatch -- with the device, the shared timeouts, and an RPC that knows its device -- for DA1469x and other targets alike; `.bin` without an address is refused first; the J-Link backend and a down daemon behave as before; a deterministic loader failure is not retried by `_self_heal`; `erase(start, length)` forwards the pair to either backend and refuses half a pair before any dispatch |
 | `test_debug_net_self_heal.py` | DebugNet self-heal retry and session endpoints |
 | `test_debug_net_user_scripts.py` | User-script/slot helpers: OpenOCD/J-Link base64 fields and serial in debug_net.py |

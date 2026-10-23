@@ -32,6 +32,11 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 ### Added
 
+- **The box debug service has a `POST /debug/halt` route.** It stops an OpenOCD
+  net's core where it is, without pulsing nRESET, the same as `DebugNet.halt()` in
+  the Python API, so HTTP clients such as the Rust crate can halt a part that executes
+  in place. A J-Link net gets a 400 that points at a halt-first `.JLinkScript`.
+  `GET /health` on the debug service lists `halt` in `features`.
 - **`lager arm <net> get-acceleration` and `Dexarm.get_acceleration()`** print the arm's
   print, travel and retract acceleration, read from its settings report (`M503`).
   `Dexarm.read_settings()` returns that report, which includes the stored calibration.

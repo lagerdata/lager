@@ -137,6 +137,7 @@ _PROBE_LOCKED_ENDPOINTS = {
     '/debug/connect': 'connect',
     '/debug/disconnect': 'disconnect',
     '/debug/reset': 'reset',
+    '/debug/halt': 'halt',
     '/debug/flash': 'flash',
     '/debug/erase': 'erase',
     '/debug/memrd': 'memrd',
@@ -481,7 +482,7 @@ SERVICE_VERSION = '1.0.0'
 # /health so a CLI can refuse a flag the box would silently ignore. A box
 # that predates the list answers with no ``features`` key at all, which reads
 # as "none". Append; never remove or rename an entry.
-SERVICE_FEATURES = ('erase_range',)
+SERVICE_FEATURES = ('erase_range', 'halt')
 
 # Track active connections (with thread safety for concurrent access)
 active_connections = {}
@@ -1104,6 +1105,51 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             self.send_error_response(400, 'No debugger connection found')
         except Exception as e:
             logger.error(f"Reset failed: {e}", exc_info=True)
+            self.send_error_response(500, str(e))
+
+    def handle_halt(self, data: Dict[str, Any]):
+        """Handle debug halt: stop the core where it is. OpenOCD only.
+
+        The HTTP twin of ``DebugNet.halt()``. Not ``/debug/reset`` with
+        ``halt``: that runs ``reset halt``, which pulses nRESET, while this
+        sends OpenOCD's bare ``halt``, so nRESET is never touched. That
+        matters on parts that execute in place out of QSPI.
+
+        J-Link has no halt-in-place primitive (its resets reset first), so a
+        J-Link net gets a 400 that points at a halt-first .JLinkScript.
+        """
+        try:
+            net = data.get('net') or {}
+            backend = resolve_backend(net)
+            if backend != BACKEND_OPENOCD:
+                self.send_error_response(
+                    400,
+                    f"halt is OpenOCD-only, and debug net '{net.get('name', '?')}' "
+                    f"uses the J-Link backend, which has no halt-in-place "
+                    f"primitive (its resets reset first). Connect with a "
+                    f"halt-first .JLinkScript instead.",
+                )
+                return
+
+            serial, slot, _gdb_port, _swo_port, _telnet_port, _rtt_port = _resolve_probe(net)
+            _openocd_telnet, openocd_tcl_port = _openocd_ports_for_slot(slot)
+            if not get_openocd_status(serial=serial)['running']:
+                self.send_error_response(400, 'No debugger connection found')
+                return
+            try:
+                out = OpenOcdRpc(port=openocd_tcl_port).halt()
+            except OpenOcdRpcError as exc:
+                self.send_error_response(500, str(exc))
+                return
+            logger.info('[HALT] OpenOCD halt complete')
+            self.send_json_response(200, {
+                'status': 'halt_complete',
+                'output': [out] if out else [],
+                'backend': BACKEND_OPENOCD,
+            })
+
+        except Exception as e:
+            logger.error(f"Halt failed: {e}", exc_info=True)
             self.send_error_response(500, str(e))
 
     def handle_flash(self, data: Dict[str, Any]):
