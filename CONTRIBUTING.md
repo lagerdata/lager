@@ -96,7 +96,7 @@ shellcheck -S warning -e SC2034,SC2320,SC2155,SC2164,SC2046 \
 test/integration/power/supply.sh <box-name> <net-name>
 
 # Python API tests, executed on the box
-lager python test/api/power/test_supply_comprehensive.py --box <box-name>
+lager python test/api/power/test_supply_Rigol_DP821.py --box <box-name>
 ```
 
 ## Pull Requests

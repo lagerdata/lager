@@ -55,7 +55,7 @@ test/
 ### Python API tests (run on box)
 
 ```bash
-lager python test/api/power/test_supply_comprehensive.py --box <YOUR-BOX>
+lager python test/api/power/test_supply_Rigol_DP821.py --box <YOUR-BOX>
 lager python test/api/communication/test_i2c_aardvark.py --box <YOUR-BOX>
 lager python test/api/sensors/test_joulescope.py --box <YOUR-BOX> -- watt1
 ```

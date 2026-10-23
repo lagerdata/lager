@@ -654,6 +654,24 @@ jobs:
           exit "$rc"
         shell: bash
 
+      - name: Test LabJack pin-conflict warnings (Python API)
+        # Registers pins only: an i2c1 scan (read-only) claims FIO4/FIO5, then
+        # getting gpio20 (FIO4) must warn and gpio18 (FIO2) must not. Nothing
+        # is driven, and the script refuses the relay nets.
+        id: pin-conflict-test
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          I2C_NET: i2c1
+          CONFLICT_GPIO_NET: gpio20
+          CONFLICT_PIN: FIO4
+          FREE_GPIO_NET: ${{ vars.GPIO_NET || 'gpio18' }}
+        run: |
+          lager python test/api/io/test_pin_conflict.py --box "$LAGER_BOX" \
+            --passenv I2C_NET --passenv CONFLICT_GPIO_NET --passenv CONFLICT_PIN \
+            --passenv FREE_GPIO_NET
+        shell: bash
+
       - name: Suite usb202.sh (MCC USB-202, CLI)
         # Must run before anything power-cycles the USB-202's hub port (the
         # Acroname steps below): after a port cycle the CLI's adc/dac/gpio
@@ -1114,6 +1132,21 @@ jobs:
           LOG="$RUNNER_TEMP/uart-cli.log"
           bash test/integration/communication/uart.sh "$LAGER_BOX" 2>&1 | tee "$LOG" || true
           bash tools/bench_suite_gate.sh harness uart.sh "$UART_BASELINE" "$LOG" "$UART_MAX_SKIPS"
+        shell: bash
+
+      - name: Test UART API against the CI peer (Python API)
+        # After uart.sh, so its CLI session has closed: the port opens
+        # exclusively. Hardware flow control stays off, because RTS/DTR drive
+        # the peer's reset and boot pins.
+        id: uart-api-test
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          UART_NET: ${{ vars.UART_PEER_NET || 'ESP_UART' }}
+          LAGER_BENCH_MAX_SKIPS: "0"
+        run: |
+          lager python test/api/communication/test_uart_comprehensive.py --box "$LAGER_BOX" \
+            --passenv UART_NET --passenv LAGER_BENCH_MAX_SKIPS
         shell: bash
 
       - name: Suite deployment.sh (box verification)

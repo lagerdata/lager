@@ -5,7 +5,7 @@
 """
 Comprehensive power supply tests targeting the Keithley 2281S-20-6 via the lager Python API.
 Covers live measurements, setpoint accuracy, protection limits, output state, monitor state,
-and rapid cycling. Complements test_supply_comprehensive.py — run both for full coverage.
+and rapid cycling.
 
 Run with: lager python test/api/power/test_supply_Keithley_2281S.py --box <YOUR-BOX>
 

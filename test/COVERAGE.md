@@ -184,7 +184,7 @@ OS.
 
 | Area | Size | Why not |
 |---|---|---|
-| `test/api/` | 89 scripts | Needs real hardware. The bench workflows run 26: 13 by name (4 of them, the Keithley supply and battery steps, only while the `KEITHLEY_PRESENT` repo variable is `true`), plus 6 LabJack ADC/DAC, 4 GPIO and 3 USB-port scripts run in loops. The other 63 execute nowhere -- though all are syntax-checked. |
+| `test/api/` | 87 scripts | Needs real hardware. The bench workflows run 28: 15 by name (4 of them, the Keithley supply and battery steps, only while the `KEITHLEY_PRESENT` repo variable is `true`), plus 6 LabJack ADC/DAC, 4 GPIO and 3 USB-port scripts run in loops. The other 59 execute nowhere -- though all are syntax-checked. |
 | `test/integration/` | 42 bash scripts | Needs a real box and instruments. **18 execute.** 14 run nightly via `integration-tests.yml`: `communication/debug.sh`, `communication/jlink_script.sh`, `communication/radios.sh`, `communication/uart.sh`, `peripherals/arm.sh`, `infrastructure/box_ops.sh`, `infrastructure/deployment.sh`, `infrastructure/devenv.sh`, `power/supply.sh`, `power/multichannel_supply.sh`, `io/labjack.sh`, `io/usb202.sh`, `usb/acroname.sh` and `usb/usb.sh`. 4 run weekly via `bench-extended.yml`: `nets`, `box_config`, `generic`, and `power/battery.sh` (only while `KEITHLEY_PRESENT` is `true`). The other 24 are syntax-checked and shellchecked but never executed. |
 | `test/mcp/integration/` | 1 file | Now RUN, not just collected, by the required `mcp-extra` job: `test_agent_loop.py` builds its bench in-process from dicts and needs no box. Not counted in the `unit (...)` totals above. |
 | `test/manual/` | 2 bash scripts, 1 Python report, 1 browser client | Operator-driven. The bash scripts are syntax-checked only. `box_lager_import_report.py` prints an import report and has no `assert` statements, so its name keeps pytest from collecting it. Run it directly. |
@@ -459,11 +459,11 @@ Five other param types (`EnvVarType`, `PortForwardType`, `MemoryAddressType`, `H
 
 ```
 test/
-├── api/                  # Python API tests (89 files, run on box via `lager python`)
+├── api/                  # Python API tests (87 files, run on box via `lager python`)
 │   ├── communication/    # 31 files: I2C, SPI, UART, BLE, BluFi, WiFi, debug
 │   ├── io/               # 18 files: ADC, DAC, GPIO, PWM, pin conflict, USB-202, U3
 │   ├── peripherals/      #  9 files: scope, arm, webcam, rotation, actuate
-│   ├── power/            #  7 files: supply (3), battery (2), solar, eload
+│   ├── power/            #  5 files: supply (2), battery, solar, eload
 │   ├── sensors/          #  9 files: thermocouple, watt, energy, joulescope, PPK2
 │   ├── security/         #  1 file: HSM
 │   ├── usb/              #  8 files: USB hub enable/disable/toggle/stress, Acroname
@@ -894,20 +894,18 @@ These tests cover the scripts in `tools/`. The `unit (root)` job runs them.
 |------|---------------|
 | `test_agent_loop.py` | End-to-end agent workflow on an in-process bench (no box): discovery, suitability, `lager python` execution, verify. Run by `mcp-extra`. |
 
-### Python API Tests (`test/api/` -- 89 files)
+### Python API Tests (`test/api/` -- 87 files)
 
 These are **standalone scripts, not pytest** (see `test/CONVENTIONS.md`): each defines `main()`
 and runs on a box via `lager python`. None of them run in the PR gate.
 
-#### Power (7 files)
+#### Power (5 files)
 
 | File | What it tests |
 |------|---------------|
-| `test_supply_comprehensive.py` | Voltage/current set, readback, enable/disable, OVP/OCP, limits |
-| `test_supply_Rigol_DP821.py` | Live measurements, output mode, voltage sweep, stability, OVP/OCP state, rapid cycling |
+| `test_supply_Rigol_DP821.py` | Live measurements, output mode, voltage sweep, stability, OVP/OCP state, rapid cycling, a negative voltage refused, a repeated disable |
 | `test_supply_Keithley_2281S.py` | Setpoint vs. measured accuracy, power consistency, protection limits, monitor state |
-| `test_battery_Keithley_2281S.py` | Battery simulator: mode entry, SOC/VOC/capacity/ESR, terminal voltage, protection lifecycle |
-| `test_battery_comprehensive.py` | SOC, VOC, capacity, mode, enable/disable, OVP/OCP, clear |
+| `test_battery_Keithley_2281S.py` | Battery simulator: mode entry, SOC/VOC/capacity/ESR, terminal voltage, protection lifecycle, a negative SOC and an unknown mode refused |
 | `test_eload_comprehensive.py` | CC, CV, CR, CP modes, enable/disable, state verification |
 | `test_solar_comprehensive.py` | Set, stop, irradiance, resistance, temperature, VOC, MPP |
 
@@ -917,7 +915,7 @@ and runs on a box via `lager python`. None of them run in the PR gate.
   `test_i2c_labjack.py`, `test_i2c_labjack_api.py`, `test_i2c_ft232h.py`.
 - SPI, across three backends and both CS modes: 13 files, including
   `test_spi_dead_zone_clamp.py` and `test_spi_write_readback.py`.
-- UART: `test_uart_comprehensive.py`.
+- UART: `test_uart_comprehensive.py`, nightly against the CI peer: opening, settings, the exclusive open, and `PING`/`ID?`/`ECHO`/`COUNT?` round trips. Hardware flow control is never turned on (RTS/DTR drive the peer's reset).
 - BLE: 4 files.
 - BluFi: `test_blufi_comprehensive.py`.
 - WiFi: `test_wifi_comprehensive.py`, `test_wifi_new_methods.py`.
@@ -931,7 +929,8 @@ and runs on a box via `lager python`. None of them run in the PR gate.
 - GPIO: `test_gpio_output.py`, `test_gpio_input.py`, `test_gpio_multiple.py`,
   `test_gpio_pulse.py`, `test_gpio_ft232h.py`, `test_gpio_ft232h_api.py`,
   `test_gpio_aardvark_api.py`.
-- Also `test_io_comprehensive.py`, `test_pin_conflict.py`, `test_pwm_measurement.py`,
+- `test_pin_conflict.py` runs nightly: an `i2c1` scan claims FIO4/FIO5, `gpio20` (FIO4) must warn and `gpio18` must not.
+- Also `test_io_comprehensive.py`, `test_pwm_measurement.py`,
   `test_LabJack_T7.py` (11-group suite), and `test_usb202.py` (MCC USB-202 DAQ).
 - `test_LabJack_U3.py` (LabJack UD-series over the Exodriver). It needs no box and
   no saved nets. It drives the U3 directly, so it also runs standalone on any
@@ -1040,7 +1039,7 @@ pip install --dry-run --ignore-installed --only-binary=:all: \
 
 ```bash
 # Python API tests (on real hardware, via the box)
-lager python test/api/power/test_supply_comprehensive.py --box <YOUR-BOX>
+lager python test/api/power/test_supply_Rigol_DP821.py --box <YOUR-BOX>
 
 # Bash integration tests (from host)
 ./test/integration/power/supply.sh <BOX> <NET>

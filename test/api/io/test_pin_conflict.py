@@ -2,33 +2,41 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Test: Runtime pin conflict warnings for LabJack drivers.
+Test: runtime pin-conflict warnings for LabJack drivers.
 
-Verifies that the PinRegistry singleton emits warnings to stderr when
-multiple LabJack subsystems (SPI, I2C, GPIO) claim the same physical pin
-within a single process.
+The PinRegistry warns on stderr when two LabJack subsystems (I2C, SPI, GPIO)
+claim the same physical pin within one `lager python` process. This drives
+it with real nets: an I2C net, a GPIO net on that I2C net's SDA pin, and a
+GPIO net on a pin nothing else uses.
 
 Run on your box:
     lager python test/api/io/test_pin_conflict.py --box <YOUR-BOX>
 
-Expected output (stderr warnings interleaved with stdout):
-    Test 1: SPI spi2 (FIO0-FIO3) + GPIO gpio16 (FIO0) -- expect WARNING
-    WARNING: Pin FIO0 is already claimed by SPI (CS). Now being used by GPIO (GPIO).
-      Using the same physical pin for different functions in one script may cause unexpected behavior.
-    PASS: Warning appeared for FIO0 conflict
+Nothing is driven. Getting a GPIO net only registers its pin, and the I2C
+driver registers its pins when it is created, by a scan, a read-only probe
+of the bus. `i2c.config()` is not used: it writes the net's settings back to
+saved_nets.json. No SPI net is used, because a bench has none that is safe:
+the old version of this test put one on FIO0-FIO3, where FIO0 and FIO1 switch
+instrument AC power.
 
-    Test 2: I2C i2c2 (FIO4-FIO5) + GPIO gpio20 (FIO4) -- expect WARNING
-    WARNING: Pin FIO4 is already claimed by I2C (SDA). Now being used by GPIO (GPIO).
-      Using the same physical pin for different functions in one script may cause unexpected behavior.
-    PASS: Warning appeared for FIO4 conflict
-
-    Test 3: SPI spi2 cs_mode=manual + GPIO gpio5 (EIO0) -- expect NO warning
-    PASS: No spurious warning for non-overlapping pins
+Environment:
+  I2C_NET             the I2C net (default i2c1)
+  CONFLICT_GPIO_NET   a GPIO net on I2C_NET's SDA pin (default gpio20)
+  CONFLICT_PIN        that pin's name (default FIO4)
+  FREE_GPIO_NET       a GPIO net on a pin nothing else here claims (default gpio18)
 """
-import sys
 import io
+import os
+import sys
 
 from lager import Net, NetType
+
+I2C_NET = os.environ.get("I2C_NET", "i2c1")
+CONFLICT_GPIO_NET = os.environ.get("CONFLICT_GPIO_NET", "gpio20")
+CONFLICT_PIN = os.environ.get("CONFLICT_PIN", "FIO4")
+FREE_GPIO_NET = os.environ.get("FREE_GPIO_NET", "gpio18")
+# FIO0/FIO1 switch instrument AC power on a bench.
+RELAY_NETS = {"gpio16", "gpio17", "RIGOL_POWER", "KEITHLEY_POWER"}
 
 _results = []
 
@@ -42,117 +50,66 @@ def _record(name, passed, detail=""):
     print(msg)
 
 
+def _captured(fn):
+    """Run fn() and return what it wrote to stderr, replayed for the reader."""
+    original = sys.stderr
+    buf = io.StringIO()
+    sys.stderr = buf
+    try:
+        fn()
+    finally:
+        sys.stderr = original
+    text = buf.getvalue()
+    if text:
+        sys.stderr.write(text)
+        sys.stderr.flush()
+    return text
+
+
+def _i2c_scan():
+    i2c = Net.get(I2C_NET, NetType.I2C)
+    try:
+        i2c.scan()
+    except Exception as e:
+        # Nothing may answer on the bus; the driver, and its pin claim,
+        # exist by the time the scan runs.
+        print(f"  INFO: scan on {I2C_NET} raised {type(e).__name__}: {e}")
+
+
 def main():
-    # Capture stderr so we can inspect warnings programmatically
-    original_stderr = sys.stderr
+    bad = sorted({CONFLICT_GPIO_NET, FREE_GPIO_NET} & RELAY_NETS)
+    if bad:
+        print(f"Refusing: {', '.join(bad)} switch instrument power on a bench.")
+        return 2
 
-    # ------------------------------------------------------------------
-    # Test 1: SPI on FIO0-FIO3, then GPIO on FIO0  -->  expect warning
-    #
-    # Net.get for SPI returns an SPINet wrapper; the underlying LabJackSPI
-    # driver (where pin registration happens) is created lazily when we
-    # call config().  Net.get for GPIO returns LabJackGPIO directly, so
-    # pin registration is immediate.
-    # ------------------------------------------------------------------
-    print("\n" + "=" * 60)
-    print("TEST: SPI + GPIO pin conflict (FIO0)")
-    print("=" * 60)
+    print("=== LabJack pin conflict test ===\n")
 
-    original_stderr.write(
-        "Test 1: SPI spi2 (FIO0-FIO3) + GPIO gpio16 (FIO0) -- expect WARNING\n"
-    )
-    original_stderr.flush()
+    # The I2C driver claims SDA and SCL. Nothing else has claimed them yet.
+    warn = _captured(_i2c_scan)
+    _record(f"{I2C_NET} claims its pins without a warning", "WARNING" not in warn,
+            warn.strip() or "clean")
 
-    captured = io.StringIO()
-    sys.stderr = captured  # start capturing
+    # A GPIO net on the I2C net's SDA pin: the registry must say so.
+    warn = _captured(lambda: Net.get(CONFLICT_GPIO_NET, NetType.GPIO))
+    named = CONFLICT_PIN in warn and "I2C" in warn and "GPIO" in warn
+    _record(f"{CONFLICT_GPIO_NET} on {CONFLICT_PIN} warns of the I2C claim", named,
+            warn.strip() or "no warning")
 
-    spi2 = Net.get("spi2", NetType.SPI)
-    spi2.config()   # forces driver creation -> registers FIO0-FIO3 as SPI
+    # A GPIO net on a pin nothing else uses: no warning.
+    warn = _captured(lambda: Net.get(FREE_GPIO_NET, NetType.GPIO))
+    _record(f"{FREE_GPIO_NET} on a free pin does not warn", "WARNING" not in warn,
+            warn.strip() or "clean")
 
-    gpio16 = Net.get("gpio16", NetType.GPIO)  # registers FIO0 as GPIO -> WARNING
+    # The same subsystem claiming its own pin again is not a conflict.
+    warn = _captured(lambda: Net.get(FREE_GPIO_NET, NetType.GPIO))
+    _record(f"getting {FREE_GPIO_NET} again does not warn", "WARNING" not in warn,
+            warn.strip() or "clean")
 
-    sys.stderr = original_stderr  # stop capturing
-    warnings_1 = captured.getvalue()
-    sys.stderr.write(warnings_1)  # replay so user sees them
-    sys.stderr.flush()
-
-    has_conflict = "FIO0" in warnings_1 and "SPI" in warnings_1 and "GPIO" in warnings_1
-    _record("SPI+GPIO FIO0 conflict warning", has_conflict,
-            f"warnings: {warnings_1.strip()!r}" if not has_conflict else "warning detected")
-
-    # ------------------------------------------------------------------
-    # Test 2: I2C on FIO4-FIO5, then GPIO on FIO4  -->  expect warning
-    # ------------------------------------------------------------------
-    print("\n" + "=" * 60)
-    print("TEST: I2C + GPIO pin conflict (FIO4)")
-    print("=" * 60)
-
-    original_stderr.write(
-        "Test 2: I2C i2c2 (FIO4-FIO5) + GPIO gpio20 (FIO4) -- expect WARNING\n"
-    )
-    original_stderr.flush()
-
-    captured = io.StringIO()
-    sys.stderr = captured
-
-    i2c2 = Net.get("i2c2", NetType.I2C)
-    i2c2.config(frequency_hz=100_000)  # forces driver creation -> registers FIO4-FIO5 as I2C
-
-    gpio20 = Net.get("gpio20", NetType.GPIO)  # registers FIO4 as GPIO -> WARNING
-
-    sys.stderr = original_stderr
-    warnings_2 = captured.getvalue()
-    sys.stderr.write(warnings_2)
-    sys.stderr.flush()
-
-    has_conflict = "FIO4" in warnings_2 and "I2C" in warnings_2 and "GPIO" in warnings_2
-    _record("I2C+GPIO FIO4 conflict warning", has_conflict,
-            f"warnings: {warnings_2.strip()!r}" if not has_conflict else "warning detected")
-
-    # ------------------------------------------------------------------
-    # Test 3: SPI on FIO0-FIO3 (manual CS) + GPIO on EIO0  -->  no warning
-    #
-    # spi2 with cs_mode=manual does NOT claim FIO0 as CS, so FIO0-FIO3
-    # only uses FIO1-FIO3 (already claimed by SPI from test 1 -- same
-    # subsystem, no conflict).  gpio5 uses EIO0 which is a fresh pin.
-    # ------------------------------------------------------------------
-    print("\n" + "=" * 60)
-    print("TEST: Non-overlapping pins (no conflict)")
-    print("=" * 60)
-
-    original_stderr.write(
-        "Test 3: SPI spi2 cs_mode=manual + GPIO gpio5 (EIO0) -- expect NO warning\n"
-    )
-    original_stderr.flush()
-
-    captured = io.StringIO()
-    sys.stderr = captured
-
-    spi2_manual = Net.get("spi2", NetType.SPI)
-    spi2_manual.config(cs_mode="manual")  # forces driver creation -> registers FIO1-FIO3 only (no CS pin)
-
-    gpio5 = Net.get("gpio5", NetType.GPIO)  # registers EIO0 as GPIO (no overlap)
-
-    sys.stderr = original_stderr
-    warnings_3 = captured.getvalue()
-    sys.stderr.write(warnings_3)
-    sys.stderr.flush()
-
-    no_spurious = "WARNING" not in warnings_3
-    _record("no spurious warning for non-overlapping pins", no_spurious,
-            f"unexpected: {warnings_3.strip()!r}" if not no_spurious else "clean")
-
-    # ------------------------------------------------------------------
-    # Summary
-    # ------------------------------------------------------------------
-    failed = [r for r in _results if not r[1]]
-    print(f"\n{'='*60}")
-    print(f"Results: {len(_results)-len(failed)}/{len(_results)} passed")
-    if failed:
-        for name, _, detail in failed:
-            print(f"  FAILED: {name} -- {detail}")
-        return 1
-    return 0
+    total = len(_results)
+    passed = sum(1 for _, p, _ in _results if p)
+    failed = total - passed
+    print(f"\nRESULTS: {passed}/{total} passed, {failed} failed")
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

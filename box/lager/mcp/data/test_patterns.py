@@ -23,15 +23,15 @@ REPO_TEST_ROOT = "https://github.com/lagerdata/lager/tree/main/test/api"
 TEST_PATTERNS: dict[str, dict[str, Any]] = {
     # ── Power ──────────────────────────────────────────────────────────
     "power_supply": {
-        "description": "Comprehensive power supply control and verification",
+        "description": "Power supply control, with every setting checked against a measured readback",
         "net_types": ["PowerSupply"],
-        "script": "power/test_supply_comprehensive.py",
+        "script": "power/test_supply_Rigol_DP821.py",
         "tags": ["power", "supply", "voltage", "current"],
     },
     "battery_simulator": {
-        "description": "Battery simulator SOC, VOC, and discharge testing",
+        "description": "Battery simulator SOC, VOC, capacity, model and protection settings, read back",
         "net_types": ["Battery"],
-        "script": "power/test_battery_comprehensive.py",
+        "script": "power/test_battery_Keithley_2281S.py",
         "tags": ["power", "battery", "soc"],
     },
     "electronic_load": {

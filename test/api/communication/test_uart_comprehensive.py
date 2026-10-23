@@ -3,40 +3,42 @@
 # Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 """
-Comprehensive UART API tests targeting a UART net.
+UART Python API tests against the CI UART peer.
 
-Run with: lager python test/api/communication/test_uart_comprehensive.py --box MY-BOX
+Run with: lager python test/api/communication/test_uart_comprehensive.py --box <BOX>
 
 Prerequisites:
-- A UART net configured in /etc/lager/saved_nets.json
-- Example net configuration:
-  {
-    "name": "uart1",
-    "role": "uart",
-    "instrument": "UARTBridge",
-    "pin": "<usb_serial>",
-    "channel": "0"
-  }
+- A UART net wired to a peer running test/assets/uart_ci_peer (115200 8N1,
+  line based: PING -> PONG, ID? -> LAGER-UART-PEER v1, ECHO <text> -> <text>,
+  COUNT? -> a counter). The peer echoes every line before it replies.
 
-Optional: Loopback adapter (TX wired to RX) for read-back tests.
-  - Without loopback, write-only tests still run; read-back tests skip gracefully.
+Every data check moves real bytes through the peer, so a port that opens but
+carries nothing fails here. A peer that does not answer is a failure, not a
+skip.
 
-Wiring:
-  +-------------------+
-  |   UART Adapter    |
-  |   TX ----> RX     |  (loopback jumper)
-  +-------------------+
+The port is always opened with hardware flow control off. rtscts and dsrdtr
+hand RTS and DTR to the driver, and on a board with an auto-reset circuit
+(the ESP32 DevKit peer) those lines drive the chip's EN and boot pins: the
+peer is held in reset, and every later test on the bench loses it.
+
+Environment:
+  UART_NET               the peer's net (default ESP_UART)
+  LAGER_BENCH_MAX_SKIPS  more skips than this is a failure
 """
-import sys
 import os
+import sys
 import time
-import traceback
 
-# Configuration - change these or set env vars
-UART_NET = os.environ.get("UART_NET", "uart1")
+UART_NET = os.environ.get("UART_NET", "ESP_UART")
+PEER_BAUD = 115200
+PEER_ID = "LAGER-UART-PEER v1"
+# 60 characters round-trip cleanly. Longer lines come back corrupted on the
+# CI peer (bit errors from about 100 characters, framing garbage at 200), so
+# this stays well inside what the peer's link has carried.
+LONG_TEXT = ("lager-uart-api-" * 4)[:60]
 
-# Track results
 _results = []
+_skipped = []
 
 
 def _record(name, passed, detail=""):
@@ -49,819 +51,229 @@ def _record(name, passed, detail=""):
     print(msg)
 
 
-# ---------------------------------------------------------------------------
-# 1. Imports
-# ---------------------------------------------------------------------------
-def test_imports():
-    """Verify all UART-related imports work."""
+def _section(title):
     print("\n" + "=" * 60)
-    print("TEST: Imports")
+    print(f"TEST: {title}")
     print("=" * 60)
 
-    ok = True
 
-    try:
-        from lager import Net, NetType
-        assert hasattr(NetType, "UART"), "NetType.UART not found"
-        _record("import Net, NetType", True)
-    except Exception as e:
-        _record("import Net, NetType", False, str(e))
-        ok = False
-
-    try:
-        import serial
-        _record("import serial (pyserial)", True)
-    except Exception as e:
-        _record("import serial (pyserial)", False, str(e))
-        ok = False
-
-    try:
-        from lager.protocols.uart.uart_net import UARTNet
-        _record("import UARTNet", True)
-    except Exception as e:
-        _record("import UARTNet", False, str(e))
-        ok = False
-
-    return ok
-
-
-# ---------------------------------------------------------------------------
-# 2. Net.get
-# ---------------------------------------------------------------------------
-def test_net_get():
-    """Verify Net.get returns a UARTNet object."""
-    print("\n" + "=" * 60)
-    print("TEST: Net.get")
-    print("=" * 60)
-
-    ok = True
-
-    try:
-        from lager import Net, NetType
-        from lager.protocols.uart.uart_net import UARTNet
-
-        uart = Net.get(UART_NET, type=NetType.UART)
-        is_uart = isinstance(uart, UARTNet)
-        _record("Net.get returns UARTNet", is_uart,
-                f"type={type(uart).__name__}")
-        if not is_uart:
-            ok = False
-    except Exception as e:
-        _record("Net.get returns UARTNet", False, str(e))
-        ok = False
-
-    return ok
-
-
-# ---------------------------------------------------------------------------
-# 3. Properties
-# ---------------------------------------------------------------------------
-def test_properties():
-    """Verify UARTNet exposes expected properties."""
-    print("\n" + "=" * 60)
-    print("TEST: Properties")
-    print("=" * 60)
-
-    ok = True
+def _uart():
     from lager import Net, NetType
-    uart = Net.get(UART_NET, type=NetType.UART)
-
-    # name
-    try:
-        name = uart.name
-        valid = isinstance(name, str) and len(name) > 0
-        _record("uart.name", valid, f"name={name!r}")
-        if not valid:
-            ok = False
-    except Exception as e:
-        _record("uart.name", False, str(e))
-        ok = False
-
-    # usb_serial
-    try:
-        usb_serial = uart.usb_serial
-        valid = isinstance(usb_serial, str)
-        _record("uart.usb_serial", valid, f"usb_serial={usb_serial!r}")
-        if not valid:
-            ok = False
-    except Exception as e:
-        _record("uart.usb_serial", False, str(e))
-        ok = False
-
-    # channel
-    try:
-        channel = uart.channel
-        valid = channel is not None
-        _record("uart.channel", valid, f"channel={channel!r}")
-        if not valid:
-            ok = False
-    except Exception as e:
-        _record("uart.channel", False, str(e))
-        ok = False
-
-    # params
-    try:
-        params = uart.params
-        valid = isinstance(params, dict)
-        _record("uart.params", valid, f"params={params!r}")
-        if not valid:
-            ok = False
-    except Exception as e:
-        _record("uart.params", False, str(e))
-        ok = False
-
-    return ok
-
-
-# ---------------------------------------------------------------------------
-# 4. String Representation
-# ---------------------------------------------------------------------------
-def test_string_repr():
-    """Verify str(uart) contains 'UARTNet'."""
-    print("\n" + "=" * 60)
-    print("TEST: String Representation")
-    print("=" * 60)
-
-    ok = True
-    from lager import Net, NetType
-    uart = Net.get(UART_NET, type=NetType.UART)
-
-    try:
-        s = str(uart)
-        has_marker = "UARTNet" in s
-        _record("str(uart) contains 'UARTNet'", has_marker, f"str={s!r}")
-        if not has_marker:
-            ok = False
-    except Exception as e:
-        _record("str(uart) contains 'UARTNet'", False, str(e))
-        ok = False
-
-    try:
-        r = repr(uart)
-        has_marker = "UARTNet" in r
-        _record("repr(uart) contains 'UARTNet'", has_marker, f"repr={r!r}")
-        if not has_marker:
-            ok = False
-    except Exception as e:
-        _record("repr(uart) contains 'UARTNet'", False, str(e))
-        ok = False
-
-    return ok
-
-
-# ---------------------------------------------------------------------------
-# 5. Get Path
-# ---------------------------------------------------------------------------
-def test_get_path():
-    """Verify get_path() returns a valid device path."""
-    print("\n" + "=" * 60)
-    print("TEST: Get Path")
-    print("=" * 60)
-
-    ok = True
-    from lager import Net, NetType
-    uart = Net.get(UART_NET, type=NetType.UART)
-
-    try:
-        path = uart.get_path()
-        is_str = isinstance(path, str)
-        is_dev = path.startswith("/dev/")
-        non_empty = len(path) > 5
-        _record("get_path() returns string", is_str, f"type={type(path).__name__}")
-        _record("get_path() starts with /dev/", is_dev, f"path={path!r}")
-        _record("get_path() non-empty", non_empty, f"len={len(path)}")
-        if not (is_str and is_dev and non_empty):
-            ok = False
-    except Exception as e:
-        _record("get_path()", False, str(e))
-        ok = False
-
-    return ok
-
-
-# ---------------------------------------------------------------------------
-# 6. Get Baudrate
-# ---------------------------------------------------------------------------
-def test_get_baudrate():
-    """Verify get_baudrate() returns a positive integer."""
-    print("\n" + "=" * 60)
-    print("TEST: Get Baudrate")
-    print("=" * 60)
-
-    ok = True
-    from lager import Net, NetType
-    uart = Net.get(UART_NET, type=NetType.UART)
-
-    try:
-        baud = uart.get_baudrate()
-        is_int = isinstance(baud, int)
-        is_positive = baud > 0
-        _record("get_baudrate() returns int", is_int, f"type={type(baud).__name__}")
-        _record("get_baudrate() > 0", is_positive, f"baudrate={baud}")
-        if not (is_int and is_positive):
-            ok = False
-    except Exception as e:
-        _record("get_baudrate()", False, str(e))
-        ok = False
-
-    return ok
-
-
-# ---------------------------------------------------------------------------
-# 7. Get Config
-# ---------------------------------------------------------------------------
-def test_get_config():
-    """Verify get_config() returns a dict with expected keys."""
-    print("\n" + "=" * 60)
-    print("TEST: Get Config")
-    print("=" * 60)
-
-    ok = True
-    from lager import Net, NetType
-    uart = Net.get(UART_NET, type=NetType.UART)
-
-    try:
-        config = uart.get_config()
-        is_dict = isinstance(config, dict)
-        _record("get_config() returns dict", is_dict,
-                f"type={type(config).__name__}")
-        if not is_dict:
-            ok = False
-        else:
-            keys = list(config.keys())
-            _record("get_config() has keys", len(keys) > 0,
-                    f"keys={keys}")
-            if len(keys) == 0:
-                ok = False
-    except Exception as e:
-        _record("get_config()", False, str(e))
-        ok = False
-
-    return ok
-
-
-# ---------------------------------------------------------------------------
-# 8. Connect Default
-# ---------------------------------------------------------------------------
-def test_connect_default():
-    """Verify connect() returns a serial.Serial with default settings."""
-    print("\n" + "=" * 60)
-    print("TEST: Connect Default")
-    print("=" * 60)
-
-    ok = True
-    import serial
-    from lager import Net, NetType
-    uart = Net.get(UART_NET, type=NetType.UART)
-
-    ser = None
-    try:
-        ser = uart.connect()
-        is_serial = isinstance(ser, serial.Serial)
-        _record("connect() returns serial.Serial", is_serial,
-                f"type={type(ser).__name__}")
-        if not is_serial:
-            ok = False
-
-        has_port = ser.port is not None and len(ser.port) > 0
-        _record("serial.port is set", has_port, f"port={ser.port!r}")
-        if not has_port:
-            ok = False
-
-        baud_valid = isinstance(ser.baudrate, int) and ser.baudrate > 0
-        _record("serial.baudrate valid", baud_valid,
-                f"baudrate={ser.baudrate}")
-        if not baud_valid:
-            ok = False
-    except Exception as e:
-        _record("connect() default", False, str(e))
-        ok = False
-    finally:
-        if ser and hasattr(ser, 'close'):
-            ser.close()
-
-    return ok
-
-
-# ---------------------------------------------------------------------------
-# 9. Connect Custom Baudrate
-# ---------------------------------------------------------------------------
-def test_connect_custom_baudrate():
-    """Verify connect() respects baudrate overrides."""
-    print("\n" + "=" * 60)
-    print("TEST: Connect Custom Baudrate")
-    print("=" * 60)
-
-    ok = True
-    from lager import Net, NetType
-    uart = Net.get(UART_NET, type=NetType.UART)
-
-    # Test 9600
-    ser = None
-    try:
-        ser = uart.connect(baudrate=9600)
-        match = ser.baudrate == 9600
-        _record("connect(baudrate=9600)", match, f"baudrate={ser.baudrate}")
-        if not match:
-            ok = False
-    except Exception as e:
-        _record("connect(baudrate=9600)", False, str(e))
-        ok = False
-    finally:
-        if ser and hasattr(ser, 'close'):
-            ser.close()
-
-    # Test 115200
-    ser = None
-    try:
-        ser = uart.connect(baudrate=115200)
-        match = ser.baudrate == 115200
-        _record("connect(baudrate=115200)", match, f"baudrate={ser.baudrate}")
-        if not match:
-            ok = False
-    except Exception as e:
-        _record("connect(baudrate=115200)", False, str(e))
-        ok = False
-    finally:
-        if ser and hasattr(ser, 'close'):
-            ser.close()
-
-    return ok
-
-
-# ---------------------------------------------------------------------------
-# 10. Connect Parameters
-# ---------------------------------------------------------------------------
-def test_connect_parameters():
-    """Verify connect() accepts bytesize, parity, stopbits overrides."""
-    print("\n" + "=" * 60)
-    print("TEST: Connect Parameters")
-    print("=" * 60)
-
-    ok = True
-    import serial as serial_mod
-    from lager import Net, NetType
-    uart = Net.get(UART_NET, type=NetType.UART)
-
-    # bytesize=7
-    ser = None
-    try:
-        ser = uart.connect(bytesize=7)
-        match = ser.bytesize == 7
-        _record("connect(bytesize=7)", match, f"bytesize={ser.bytesize}")
-        if not match:
-            ok = False
-    except Exception as e:
-        _record("connect(bytesize=7)", False, str(e))
-        ok = False
-    finally:
-        if ser and hasattr(ser, 'close'):
-            ser.close()
-
-    # parity='E' (even)
-    ser = None
-    try:
-        ser = uart.connect(parity='E')
-        match = ser.parity == 'E'
-        _record("connect(parity='E')", match, f"parity={ser.parity!r}")
-        if not match:
-            ok = False
-    except Exception as e:
-        _record("connect(parity='E')", False, str(e))
-        ok = False
-    finally:
-        if ser and hasattr(ser, 'close'):
-            ser.close()
-
-    # stopbits=2
-    ser = None
-    try:
-        ser = uart.connect(stopbits=2)
-        match = ser.stopbits == 2
-        _record("connect(stopbits=2)", match, f"stopbits={ser.stopbits}")
-        if not match:
-            ok = False
-    except Exception as e:
-        _record("connect(stopbits=2)", False, str(e))
-        ok = False
-    finally:
-        if ser and hasattr(ser, 'close'):
-            ser.close()
-
-    return ok
-
-
-# ---------------------------------------------------------------------------
-# 11. Flow Control
-# ---------------------------------------------------------------------------
-def test_flow_control():
-    """Verify connect() accepts flow control overrides."""
-    print("\n" + "=" * 60)
-    print("TEST: Flow Control")
-    print("=" * 60)
-
-    ok = True
-    from lager import Net, NetType
-    uart = Net.get(UART_NET, type=NetType.UART)
-
-    # xonxoff
-    ser = None
-    try:
-        ser = uart.connect(xonxoff=True)
-        match = ser.xonxoff is True
-        _record("connect(xonxoff=True)", match, f"xonxoff={ser.xonxoff}")
-        if not match:
-            ok = False
-    except Exception as e:
-        _record("connect(xonxoff=True)", False, str(e))
-        ok = False
-    finally:
-        if ser and hasattr(ser, 'close'):
-            ser.close()
-
-    # rtscts
-    ser = None
-    try:
-        ser = uart.connect(rtscts=True)
-        match = ser.rtscts is True
-        _record("connect(rtscts=True)", match, f"rtscts={ser.rtscts}")
-        if not match:
-            ok = False
-    except Exception as e:
-        _record("connect(rtscts=True)", False, str(e))
-        ok = False
-    finally:
-        if ser and hasattr(ser, 'close'):
-            ser.close()
-
-    # dsrdtr
-    ser = None
-    try:
-        ser = uart.connect(dsrdtr=True)
-        match = ser.dsrdtr is True
-        _record("connect(dsrdtr=True)", match, f"dsrdtr={ser.dsrdtr}")
-        if not match:
-            ok = False
-    except Exception as e:
-        _record("connect(dsrdtr=True)", False, str(e))
-        ok = False
-    finally:
-        if ser and hasattr(ser, 'close'):
-            ser.close()
-
-    return ok
-
-
-# ---------------------------------------------------------------------------
-# 12. Timeout Behavior
-# ---------------------------------------------------------------------------
-def test_timeout_behavior():
-    """Verify read with timeout returns empty when no data available."""
-    print("\n" + "=" * 60)
-    print("TEST: Timeout Behavior")
-    print("=" * 60)
-
-    ok = True
-    from lager import Net, NetType
-    uart = Net.get(UART_NET, type=NetType.UART)
-
-    ser = None
-    try:
-        ser = uart.connect(timeout=0.5)
-        ser.reset_input_buffer()
-
-        t0 = time.time()
-        data = ser.read(10)
-        elapsed = time.time() - t0
-
-        is_empty = len(data) == 0
-        _record("read with no data returns empty", is_empty,
-                f"len={len(data)}, data={data!r}")
-        if not is_empty:
-            ok = False
-
-        # Elapsed should be roughly the timeout value (0.5s +/- margin)
-        in_range = 0.3 <= elapsed <= 1.5
-        _record("read blocked ~0.5s then returned", in_range,
-                f"elapsed={elapsed:.3f}s")
-        if not in_range:
-            ok = False
-    except Exception as e:
-        _record("timeout behavior", False, str(e))
-        ok = False
-    finally:
-        if ser and hasattr(ser, 'close'):
-            ser.close()
-
-    return ok
-
-
-# ---------------------------------------------------------------------------
-# 13. Loopback Test
-# ---------------------------------------------------------------------------
-def test_loopback():
-    """Write data and read it back via loopback (TX->RX jumper)."""
-    print("\n" + "=" * 60)
-    print("TEST: Loopback")
-    print("=" * 60)
-
-    ok = True
-    from lager import Net, NetType
-    uart = Net.get(UART_NET, type=NetType.UART)
-
-    ser = None
-    try:
-        ser = uart.connect(baudrate=115200, timeout=1.0)
-        ser.reset_input_buffer()
-        ser.reset_output_buffer()
-
-        test_msg = b"LAGER_LOOPBACK_TEST\r\n"
-        ser.write(test_msg)
-        ser.flush()
-        time.sleep(0.1)
-
-        if ser.in_waiting == 0:
-            _record("loopback write+read", True,
-                    "SKIPPED -- no loopback adapter detected (in_waiting=0)")
-            return ok
-
-        response = ser.read(len(test_msg))
-        match = response == test_msg
-        _record("loopback write+read", match,
-                f"sent={test_msg!r}, recv={response!r}")
-        if not match:
-            ok = False
-    except Exception as e:
-        _record("loopback write+read", False, str(e))
-        ok = False
-    finally:
-        if ser and hasattr(ser, 'close'):
-            ser.close()
-
-    return ok
-
-
-# ---------------------------------------------------------------------------
-# 14. Large Data Transfer
-# ---------------------------------------------------------------------------
-def test_large_data_transfer():
-    """Write and read back 1024 bytes via loopback."""
-    print("\n" + "=" * 60)
-    print("TEST: Large Data Transfer")
-    print("=" * 60)
-
-    ok = True
-    from lager import Net, NetType
-    uart = Net.get(UART_NET, type=NetType.UART)
-
-    ser = None
-    try:
-        ser = uart.connect(baudrate=115200, timeout=2.0)
-        ser.reset_input_buffer()
-        ser.reset_output_buffer()
-
-        # Check for loopback with a small probe
-        probe = b"\x55"
-        ser.write(probe)
-        ser.flush()
-        time.sleep(0.05)
-        if ser.in_waiting == 0:
-            _record("large data transfer (1024 bytes)", True,
-                    "SKIPPED -- no loopback adapter detected")
-            return ok
-        ser.read(ser.in_waiting)  # drain probe
-
-        # Send 1024 bytes in chunks
-        payload = bytes(range(256)) * 4  # 1024 bytes
-        chunk_size = 256
-        for i in range(0, len(payload), chunk_size):
-            ser.write(payload[i:i + chunk_size])
-            ser.flush()
-            time.sleep(0.05)
-
-        # Read back all data
-        time.sleep(0.3)
-        received = b""
-        deadline = time.time() + 3.0
-        while len(received) < len(payload) and time.time() < deadline:
-            avail = ser.in_waiting
-            if avail > 0:
-                received += ser.read(avail)
-            else:
-                time.sleep(0.05)
-
-        len_match = len(received) == len(payload)
-        _record("large data length match", len_match,
-                f"sent={len(payload)}, recv={len(received)}")
-        if not len_match:
-            ok = False
-
-        if len_match:
-            data_match = received == payload
-            _record("large data content match", data_match,
-                    f"first_diff={_first_diff(payload, received)}")
-            if not data_match:
-                ok = False
-    except Exception as e:
-        _record("large data transfer", False, str(e))
-        ok = False
-    finally:
-        if ser and hasattr(ser, 'close'):
-            ser.close()
-
-    return ok
-
-
-def _first_diff(a, b):
-    """Return index of first differing byte, or -1 if equal."""
-    for i in range(min(len(a), len(b))):
-        if a[i] != b[i]:
-            return f"index {i}: sent=0x{a[i]:02X} recv=0x{b[i]:02X}"
-    if len(a) != len(b):
-        return f"length mismatch at index {min(len(a), len(b))}"
-    return "none"
-
-
-# ---------------------------------------------------------------------------
-# 15. Multiple Open/Close
-# ---------------------------------------------------------------------------
-def test_multiple_open_close():
-    """Connect and close the serial port 5 times in sequence."""
-    print("\n" + "=" * 60)
-    print("TEST: Multiple Open/Close")
-    print("=" * 60)
-
-    ok = True
-    from lager import Net, NetType
-    uart = Net.get(UART_NET, type=NetType.UART)
-
-    for i in range(5):
-        ser = None
+    return Net.get(UART_NET, type=NetType.UART)
+
+
+def _lines(ser, want, deadline_s=2.0):
+    """Read up to `want` non-empty lines, stripped, before the deadline."""
+    out = []
+    end = time.time() + deadline_s
+    while len(out) < want and time.time() < end:
+        raw = ser.readline()
+        if raw:
+            text = raw.decode("utf-8", "replace").strip()
+            if text:
+                out.append(text)
+    return out
+
+
+def _ask(ser, command):
+    """Send one command line; return the peer's (echo, reply)."""
+    ser.reset_input_buffer()
+    ser.write(command.encode() + b"\n")
+    ser.flush()
+    got = _lines(ser, 2)
+    echo = got[0] if got else None
+    reply = got[1] if len(got) > 1 else None
+    return echo, reply
+
+
+def _close(ser):
+    if ser is not None:
         try:
-            ser = uart.connect(timeout=0.5)
-            is_open = ser.is_open
             ser.close()
-            is_closed = not ser.is_open
-            passed = is_open and is_closed
-            _record(f"open/close cycle {i + 1}/5", passed,
-                    f"is_open={is_open}, is_closed={is_closed}")
-            if not passed:
-                ok = False
-        except Exception as e:
-            _record(f"open/close cycle {i + 1}/5", False, str(e))
-            ok = False
-            if ser and hasattr(ser, 'close'):
-                try:
-                    ser.close()
-                except Exception:
-                    pass
-
-    return ok
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
-# 16. Buffer Reset
+# The net
 # ---------------------------------------------------------------------------
-def test_buffer_reset():
-    """Verify reset_input_buffer and reset_output_buffer do not error."""
-    print("\n" + "=" * 60)
-    print("TEST: Buffer Reset")
-    print("=" * 60)
+def test_net():
+    _section("Net")
+    from lager.protocols.uart.uart_net import UARTNet
+    uart = _uart()
+    _record("Net.get returns a UARTNet", isinstance(uart, UARTNet), type(uart).__name__)
+    _record("its name is the net asked for", uart.name == UART_NET, f"name={uart.name!r}")
+    _record("str() names the class", "UARTNet" in str(uart), str(uart))
+    path = uart.get_path()
+    _record("get_path() is a /dev path", isinstance(path, str) and path.startswith("/dev/"),
+            f"path={path!r}")
+    _record("get_baudrate() is the peer's rate", uart.get_baudrate() == PEER_BAUD,
+            f"baudrate={uart.get_baudrate()!r}")
+    config = uart.get_config()
+    _record("get_config() is a dict", isinstance(config, dict), type(config).__name__)
 
-    ok = True
-    from lager import Net, NetType
-    uart = Net.get(UART_NET, type=NetType.UART)
+
+# ---------------------------------------------------------------------------
+# Opening the port
+# ---------------------------------------------------------------------------
+def test_connect():
+    _section("Connect")
+    import serial
+    uart = _uart()
 
     ser = None
     try:
-        ser = uart.connect(timeout=0.5)
+        ser = uart.connect(timeout=1.0)
+        _record("connect() returns an open serial.Serial",
+                isinstance(ser, serial.Serial) and ser.is_open, type(ser).__name__)
+        _record("it opens at the net's baudrate", ser.baudrate == PEER_BAUD,
+                f"baudrate={ser.baudrate}")
+        _record("hardware flow control is off",
+                ser.rtscts is False and ser.dsrdtr is False,
+                f"rtscts={ser.rtscts}, dsrdtr={ser.dsrdtr}")
 
-        ser.reset_input_buffer()
-        _record("reset_input_buffer()", True)
+        # The port is opened exclusively: a second opener fails fast instead
+        # of interleaving reads with the first.
+        second = None
+        try:
+            second = uart.connect(timeout=0.5)
+            _record("a second open of the same port is refused", False,
+                    "the second open succeeded")
+        except (serial.SerialException, OSError) as e:
+            _record("a second open of the same port is refused", True, type(e).__name__)
+        finally:
+            _close(second)
     except Exception as e:
-        _record("reset_input_buffer()", False, str(e))
-        ok = False
+        _record("connect()", False, f"{type(e).__name__}: {e}")
+    finally:
+        _close(ser)
 
+    # Each override reaches the port. Nothing is sent at these settings.
+    overrides = [
+        ({"baudrate": 9600}, "baudrate", 9600),
+        ({"bytesize": 7}, "bytesize", 7),
+        ({"parity": "E"}, "parity", "E"),
+        ({"stopbits": 2}, "stopbits", 2),
+        ({"xonxoff": True}, "xonxoff", True),
+    ]
+    for kwargs, attr, want in overrides:
+        ser = None
+        label = ", ".join(f"{k}={v!r}" for k, v in kwargs.items())
+        try:
+            ser = uart.connect(timeout=0.5, **kwargs)
+            got = getattr(ser, attr)
+            _record(f"connect({label})", got == want, f"{attr}={got!r}")
+        except Exception as e:
+            _record(f"connect({label})", False, f"{type(e).__name__}: {e}")
+        finally:
+            _close(ser)
+
+    ser = None
     try:
-        if ser and ser.is_open:
-            ser.reset_output_buffer()
-            _record("reset_output_buffer()", True)
+        for i in range(5):
+            ser = uart.connect(timeout=0.5)
+            opened = ser.is_open
+            ser.close()
+            if not opened or ser.is_open:
+                _record("open and close 5 times", False, f"cycle {i + 1}")
+                break
+        else:
+            _record("open and close 5 times", True)
     except Exception as e:
-        _record("reset_output_buffer()", False, str(e))
-        ok = False
-
-    if ser and hasattr(ser, 'close'):
-        ser.close()
-
-    return ok
-
-
-# ---------------------------------------------------------------------------
-# 17. Error: Invalid Baudrate
-# ---------------------------------------------------------------------------
-def test_invalid_baudrate():
-    """Verify connect(baudrate=-1) raises an exception."""
-    print("\n" + "=" * 60)
-    print("TEST: Error -- Invalid Baudrate")
-    print("=" * 60)
-
-    ok = True
-    from lager import Net, NetType
-    uart = Net.get(UART_NET, type=NetType.UART)
+        _record("open and close 5 times", False, f"{type(e).__name__}: {e}")
+    finally:
+        _close(ser)
 
     ser = None
     try:
         ser = uart.connect(baudrate=-1)
-        # If we get here without error, that is a failure
-        _record("connect(baudrate=-1) raises", False,
-                "no exception raised")
-        ok = False
-    except (ValueError, OSError, serial.SerialException) as e:
-        _record("connect(baudrate=-1) raises", True,
-                f"{type(e).__name__}: {e}")
+        _record("connect(baudrate=-1) is refused", False, "the port opened")
+    except (ValueError, serial.SerialException) as e:
+        _record("connect(baudrate=-1) is refused", True, type(e).__name__)
     except Exception as e:
-        # Any other exception is still acceptable -- the point is it does not succeed
-        _record("connect(baudrate=-1) raises", True,
-                f"unexpected type {type(e).__name__}: {e}")
+        _record("connect(baudrate=-1) is refused", False,
+                f"wrong exception {type(e).__name__}: {e}")
     finally:
-        if ser and hasattr(ser, 'close'):
-            try:
-                ser.close()
-            except Exception:
-                pass
-
-    return ok
+        _close(ser)
 
 
 # ---------------------------------------------------------------------------
-# Main
+# Data through the peer
 # ---------------------------------------------------------------------------
+def test_peer_round_trip():
+    _section("Data through the peer")
+    uart = _uart()
+    ser = None
+    try:
+        ser = uart.connect(baudrate=PEER_BAUD, timeout=0.5)
+        time.sleep(0.2)
+
+        echo, reply = _ask(ser, "ID?")
+        _record("ID? names the CI peer", reply == PEER_ID, f"echo={echo!r}, reply={reply!r}")
+        if reply != PEER_ID:
+            print(f"  INFO: no peer on {UART_NET}; the data checks below fail with it")
+
+        echo, reply = _ask(ser, "PING")
+        _record("the peer echoes the line it got", echo == "PING", f"echo={echo!r}")
+        _record("PING gets PONG", reply == "PONG", f"reply={reply!r}")
+
+        echo, reply = _ask(ser, "ECHO " + LONG_TEXT)
+        _record("a 60-character ECHO comes back whole", reply == LONG_TEXT,
+                f"len={len(reply or '')}")
+
+        _ask(ser, "RESET")
+        _, first = _ask(ser, "COUNT?")
+        _, second = _ask(ser, "COUNT?")
+        ok = first is not None and second is not None and first.isdigit() and second.isdigit() \
+            and int(second) == int(first) + 1
+        _record("COUNT? counts up by one", ok, f"{first!r} then {second!r}")
+
+        # The reset drops what has arrived but not been read.
+        ser.write(b"PING\n")
+        ser.flush()
+        time.sleep(0.3)
+        waiting = ser.in_waiting
+        ser.reset_input_buffer()
+        _record("reset_input_buffer() drops unread input",
+                waiting > 0 and ser.in_waiting == 0,
+                f"in_waiting {waiting} then {ser.in_waiting}")
+
+        # The peer sends nothing unprompted: a read waits out its timeout.
+        t0 = time.time()
+        data = ser.read(10)
+        elapsed = time.time() - t0
+        _record("a read with nothing sent returns empty", data == b"", f"data={data!r}")
+        _record("and waits about the 0.5 s timeout", 0.3 <= elapsed <= 1.5,
+                f"elapsed={elapsed:.2f}s")
+    except Exception as e:
+        _record("peer round trip", False, f"{type(e).__name__}: {e}")
+    finally:
+        _close(ser)
+
+
 def main():
     print("=" * 60)
-    print(f"UART Comprehensive Test -- net: {UART_NET}")
+    print(f"UART API Test -- net: {UART_NET}")
     print("=" * 60)
 
-    tests = [
-        ("Imports",                 test_imports),
-        ("Net.get",                 test_net_get),
-        ("Properties",              test_properties),
-        ("String Repr",             test_string_repr),
-        ("Get Path",                test_get_path),
-        ("Get Baudrate",            test_get_baudrate),
-        ("Get Config",              test_get_config),
-        ("Connect Default",         test_connect_default),
-        ("Connect Custom Baudrate", test_connect_custom_baudrate),
-        ("Connect Parameters",      test_connect_parameters),
-        ("Flow Control",            test_flow_control),
-        ("Timeout Behavior",        test_timeout_behavior),
-        ("Loopback",                test_loopback),
-        ("Large Data Transfer",     test_large_data_transfer),
-        ("Multiple Open/Close",     test_multiple_open_close),
-        ("Buffer Reset",            test_buffer_reset),
-        ("Invalid Baudrate",        test_invalid_baudrate),
-    ]
-
-    test_results = []
-    for name, test_fn in tests:
+    for test in (test_net, test_connect, test_peer_round_trip):
         try:
-            passed = test_fn()
-            test_results.append((name, passed))
+            test()
         except Exception as e:
-            print(f"\nUNEXPECTED ERROR in {name}: {e}")
-            traceback.print_exc()
-            test_results.append((name, False))
+            _record(test.__name__, False, f"{type(e).__name__}: {e}")
 
-    # Summary
-    print("\n" + "=" * 60)
-    print("TEST SUMMARY")
-    print("=" * 60)
-
-    passed_count = sum(1 for _, p in test_results if p)
-    total_count = len(test_results)
-
-    for name, p in test_results:
-        status = "PASS" if p else "FAIL"
-        print(f"  [{status}] {name}")
-
-    print(f"\nTotal: {passed_count}/{total_count} test groups passed")
-
-    # Detailed sub-test summary
-    sub_passed = sum(1 for _, p, _ in _results if p)
-    sub_total = len(_results)
-    sub_failed = sub_total - sub_passed
-    print(f"Sub-tests: {sub_passed}/{sub_total} passed", end="")
-    if sub_failed > 0:
-        print(f" ({sub_failed} failed)")
-        print("\nFailed sub-tests:")
-        for name, p, detail in _results:
-            if not p:
-                print(f"  FAIL: {name} -- {detail}")
-    else:
-        print()
-
-    return 0 if passed_count == total_count else 1
+    total = len(_results)
+    passed = sum(1 for _, p, _ in _results if p)
+    failed = total - passed
+    skipped = len(_skipped)
+    print(f"\nRESULTS: {passed}/{total} passed, {failed} failed, {skipped} skipped")
+    max_skips = os.environ.get("LAGER_BENCH_MAX_SKIPS", "")
+    if max_skips.isdigit() and skipped > int(max_skips):
+        print(f"FAIL: {skipped} checks skipped, more than the {max_skips} allowed "
+              f"(LAGER_BENCH_MAX_SKIPS)")
+        return 1
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
-    import serial  # noqa: F811 -- needed for exception type in test_invalid_baudrate
     sys.exit(main())

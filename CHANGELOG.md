@@ -20,6 +20,15 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   makes before contacting the box. It prints device counts only, never device
   names or addresses. `wifi.sh` now skips its connect and delete-connection
   tests unless `WIFI_ALLOW_STATE_CHANGES=1`.
+- **The nightly bench run now runs the UART and pin-conflict API scripts.**
+  `test_uart_comprehensive.py` was rewritten to move real bytes through the
+  CI UART peer, with hardware flow control left off because RTS and DTR drive
+  the peer's reset. `test_pin_conflict.py` now uses `i2c1` and two GPIO nets
+  in place of an SPI net on FIO0-FIO3, the bench's power-relay pins.
+- **`test_supply_comprehensive.py` and `test_battery_comprehensive.py` are
+  removed.** The nightly bench's `test_supply_Rigol_DP821.py` and
+  `test_battery_Keithley_2281S.py` cover the same API with measured readbacks,
+  and now also check the refusals the removed scripts had.
 
 ### Added
 

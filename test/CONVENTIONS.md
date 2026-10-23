@@ -132,7 +132,7 @@ if __name__ == "__main__":
 ### Running
 
 ```bash
-lager python test/api/power/test_supply_comprehensive.py --box <YOUR-BOX>
+lager python test/api/power/test_supply_Rigol_DP821.py --box <YOUR-BOX>
 lager python test/api/communication/test_i2c_aardvark.py --box <YOUR-BOX>
 ```
 
@@ -251,7 +251,7 @@ Always use `--import-mode=importlib -c /dev/null` to prevent `test/mcp` from sha
 
 | Type | Pattern | Example |
 |------|---------|---------|
-| Python API test | `test_<feature>.py` | `test_supply_comprehensive.py` |
+| Python API test | `test_<feature>.py` | `test_box_info.py` |
 | Bash integration test | `<feature>.sh` | `supply.sh` |
 | MCP unit test | `test_<module>.py` | `test_power_tools.py` |
 | CLI unit test | `test_<module>.py` | `test_commands.py` |

@@ -842,6 +842,50 @@ def test_rapid_output_cycling():
     return ok
 
 
+
+# ---------------------------------------------------------------------------
+# Out-of-range inputs
+# ---------------------------------------------------------------------------
+def test_invalid_inputs():
+    """A negative SOC and an unknown simulation mode are refused."""
+    print("\n" + "=" * 60)
+    print("TEST: Out-of-Range Inputs")
+    print("=" * 60)
+
+    ok = True
+
+    try:
+        from lager import Net, NetType
+        batt = Net.get(KEITHLEY_BATTERY_NET, type=NetType.Battery)
+        batt.set_to_battery_mode()
+
+        try:
+            batt.set_soc(-1)
+            _record("set_soc(-1) should raise but did not", False)
+            ok = False
+        except Exception:
+            _record("set_soc(-1) raises as expected", True)
+
+        try:
+            batt.set_mode("not_a_mode")
+            _record("set_mode('not_a_mode') should raise but did not", False)
+            ok = False
+        except Exception:
+            _record("set_mode('not_a_mode') raises as expected", True)
+
+        # Back to the values the other tests leave.
+        try:
+            batt.set_soc(100)
+            batt.set_mode("static")
+        except Exception:
+            pass
+    except Exception as e:
+        _record("out-of-range inputs setup", False, str(e))
+        ok = False
+
+    return ok
+
+
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
@@ -886,6 +930,7 @@ def main():
         ("Current Limit Setting",        test_current_limit_setting),
         ("Setter Readback",              test_setter_readback),
         ("Battery Model Loading",        test_battery_model_loading),
+        ("Out-of-Range Inputs",          test_invalid_inputs),
         ("Enable / Disable Output",      test_enable_disable_output),
         ("Terminal Voltage Measurement", test_terminal_voltage),
         ("Current Measurement",          test_current_measurement),

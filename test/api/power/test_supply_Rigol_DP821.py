@@ -5,7 +5,7 @@
 """
 Advanced power supply tests targeting live measurement methods, output state
 querying, power calculation consistency, measurement stability, and stress
-cycling. Complements test_supply_comprehensive.py — run both for full coverage.
+cycling.
 
 Run with: lager python test/api/power/test_supply_Rigol_DP821.py --box <YOUR-BOX>
 
@@ -855,6 +855,50 @@ def test_full_state():
     return ok
 
 
+
+# ---------------------------------------------------------------------------
+# Refusals and a repeated disable
+# ---------------------------------------------------------------------------
+def test_refusals_and_disable():
+    """A negative voltage is refused; disabling twice is harmless."""
+    print("\n" + "=" * 60)
+    print("TEST: Refusals and Repeated Disable")
+    print("=" * 60)
+
+    ok = True
+
+    try:
+        from lager import Net, NetType
+        psu = Net.get(SUPPLY_NET, type=NetType.PowerSupply)
+        psu.disable()
+
+        try:
+            psu.set_voltage(-1.0)
+            _record("set_voltage(-1.0) should raise but did not", False)
+            ok = False
+        except Exception as e:
+            _record("set_voltage(-1.0) raises", True, type(e).__name__)
+
+        psu.disable()
+        psu.disable()
+        state = psu.output_is_enabled()
+        passed = not bool(state)
+        _record("disable() twice leaves the output off", passed, f"returned={state!r}")
+        if not passed:
+            ok = False
+    except Exception as e:
+        _record("refusals and repeated disable", False, str(e))
+        ok = False
+    finally:
+        try:
+            from lager import Net, NetType
+            Net.get(SUPPLY_NET, type=NetType.PowerSupply).disable()
+        except Exception:
+            pass
+
+    return ok
+
+
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
@@ -905,6 +949,7 @@ def main():
         ("OVP/OCP Pre-Enable Config",      test_protection_pre_enable),
         ("Rapid Enable/Disable Cycling",   test_rapid_cycling),
         ("get_full_state() Structure",     test_full_state),
+        ("Refusals and Repeated Disable",  test_refusals_and_disable),
     ]
 
     test_results = []
