@@ -390,6 +390,17 @@ class NetsStateStructuredTests(unittest.TestCase):
             self.assertEqual(nets_handler._brief_supply("vdd"),
                              ("CH2/off/0.00V/0.000A", False))
 
+    def test_supply_brief_in_battery_mode_names_the_mode(self):
+        device = MagicMock()
+        device.get_monitor_state.return_value = {
+            "enabled": None, "voltage": None, "current": None,
+            "entry_function": "BATT"}
+        with patch("lager.dispatchers.helpers.resolve_net_proxy",
+                   return_value=("supply1", {}, 1)), \
+             patch("lager.nets.device.Device", return_value=device):
+            self.assertEqual(nets_handler._brief_supply("vdd"),
+                             ("CH1/?/battery mode", None))
+
     def test_watt_brief_missing_fields_are_not_zero(self):
         dev = MagicMock()
         dev.measure.return_value = {"voltage": 5.0}

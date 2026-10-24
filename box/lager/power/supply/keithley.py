@@ -44,6 +44,12 @@ KEITHLEY_2281S_MIN_VOLTAGE = 0.0   # Volts
 KEITHLEY_2281S_MIN_CURRENT = 0.0   # Amps
 
 
+def _is_ps_entry_function(reply: str) -> bool:
+    """True when an ``:ENTR:FUNC?`` reply names the power-supply function."""
+    up = reply.strip().upper()
+    return "POW" in up or "SUPPLY" in up or up == "PSS"
+
+
 class Keithley2281S(SupplyNet):
     """
     SupplyNet implementation for Keithley 2281S-20-6 (single channel).
@@ -537,6 +543,16 @@ class Keithley2281S(SupplyNet):
         if _probe is not None:
             _probe.query("*IDN?", check_errors=False)
 
+        # In another entry function (battery simulator) the supply queries
+        # below get no reply, so each one waits out the VISA timeout while
+        # this call holds the device lock: ~15s in which the other role's
+        # commands are refused as busy. :ENTR:FUNC? answers in every entry
+        # function. An empty reply (the query failed) is not known to be
+        # another mode, so it falls through to the normal reads.
+        entry_function = self._safe_query_no_mode(":ENTR:FUNC?", default="")
+        if entry_function and not _is_ps_entry_function(entry_function):
+            return self._other_entry_function_state(entry_function)
+
         # None when the query failed or answered something else: a state report
         # must not turn "could not read" into "off".
         enabled = parse_on_off(self._safe_query_no_mode(":OUTP?", default=""))
@@ -577,6 +593,31 @@ class Keithley2281S(SupplyNet):
             'ocp_tripped': trip == "OCP",
             'ovp_limit': ovp_limit,
             'ovp_tripped': trip == "OVP",
+        }
+
+    @staticmethod
+    def _other_entry_function_state(entry_function: str) -> dict:
+        """Monitor state while the 2281S is in a non-supply entry function.
+
+        Nothing is read: the output belongs to the other mode, and its
+        supply setpoints and protection limits are not readable from here.
+        Unknown values are None, never a guessed "off" or 0.0 V.
+        """
+        return {
+            'voltage': None,
+            'current': None,
+            'power': None,
+            'enabled': None,
+            'mode': None,
+            'voltage_set': None,
+            'current_set': None,
+            'voltage_max': KEITHLEY_2281S_MAX_VOLTAGE,
+            'current_max': KEITHLEY_2281S_MAX_CURRENT,
+            'ocp_limit': None,
+            'ocp_tripped': None,
+            'ovp_limit': None,
+            'ovp_tripped': None,
+            'entry_function': entry_function.strip().upper(),
         }
 
     def __str__(self) -> str:
@@ -1179,9 +1220,7 @@ class Keithley2281S(SupplyNet):
         Ensure instrument is in Power-Supply entry function.
         Abort running activities; try multiple tokens; set INIT:CONT ON.
         """
-        mode = self._safe_query(":ENTR:FUNC?", default="")
-        up = mode.upper()
-        if "POW" in up or "SUPPLY" in up or up == "PSS":
+        if _is_ps_entry_function(self._safe_query(":ENTR:FUNC?", default="")):
             return
 
         # Check if output is enabled to avoid disrupting it

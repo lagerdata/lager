@@ -144,7 +144,15 @@ def _enabled_or_none(value):
 
 
 def _supply_brief(channel, state):
-    """One supply channel's monitor state as ``(CH<n>/<on|off>/<V>/<I>, enabled)``."""
+    """One supply channel's monitor state as ``(CH<n>/<on|off>/<V>/<I>, enabled)``.
+
+    An instrument in another entry function (a 2281S simulating a battery)
+    reads ``CH<n>/?/<function> mode``: the output is the other role's, so its
+    on/off is not this net's to report.
+    """
+    other = state.get("entry_function")
+    if other:
+        return "CH%s/?/%s mode" % (channel, _entry_function_name(other)), None
     enabled = _enabled_or_none(state.get("enabled"))
     v = state.get("voltage")
     i = state.get("current")
@@ -152,6 +160,14 @@ def _supply_brief(channel, state):
     i_s = "%.3fA" % i if i is not None else "?A"
     parts = ["CH%s" % channel, _on_off(enabled), v_s, i_s]
     return "/".join(parts), enabled
+
+
+def _entry_function_name(reply):
+    """A readable name for an ``:ENTR:FUNC?`` reply (``BATT`` -> ``battery``)."""
+    up = str(reply).strip().upper()
+    if "BATT" in up or "SIM" in up:
+        return "battery"
+    return up.lower() or "other"
 
 
 def _brief_supply(netname):

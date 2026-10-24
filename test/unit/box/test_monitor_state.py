@@ -289,6 +289,53 @@ class TestKeithleyMonitorStateIsNonIntrusive:
         assert state["ocp_tripped"] is False
 
 
+class TestKeithleyMonitorStateInBatteryMode:
+    """A 2281S simulating a battery does not answer supply queries; each one
+    waits out the VISA timeout while the monitor call holds the device lock,
+    so the battery net's own commands are refused as busy for ~15s."""
+
+    @staticmethod
+    def _driver(keithley_cls, entry_function):
+        drv = object.__new__(keithley_cls)
+        drv.instr = None
+        drv.queries = []
+
+        def no_mode(cmd, default="n/a"):
+            drv.queries.append(cmd)
+            if cmd == ":ENTR:FUNC?":
+                return entry_function if entry_function is not None else default
+            return {":OUTP?": "0", ":SOUR1:VOLT?": "5.0", ":SOUR1:CURR?": "1.0",
+                    ":SOUR1:CURR:PROT?": "2.0", ":SOUR1:VOLT:PROT?": "21.0",
+                    ":OUTP:PROT:TRIP?": ""}.get(cmd, default)
+        drv._safe_query_no_mode = no_mode
+        return drv
+
+    def test_battery_mode_reads_nothing_else(self, keithley_cls):
+        drv = self._driver(keithley_cls, "BATT")
+        state = drv.get_monitor_state()
+        assert drv.queries == [":ENTR:FUNC?"]
+        assert state["entry_function"] == "BATT"
+        assert state["enabled"] is None
+        assert state["voltage"] is None
+        assert state["voltage_set"] is None
+        assert state["ocp_tripped"] is None
+
+    def test_supply_mode_reads_as_before(self, keithley_cls):
+        drv = self._driver(keithley_cls, "POW")
+        state = drv.get_monitor_state()
+        assert ":SOUR1:VOLT?" in drv.queries
+        assert "entry_function" not in state
+        assert state["voltage_set"] == pytest.approx(5.0)
+
+    def test_failed_mode_query_falls_through_to_the_reads(self, keithley_cls):
+        """An empty reply is not known to be another mode."""
+        drv = self._driver(keithley_cls, None)
+        state = drv.get_monitor_state()
+        assert "entry_function" not in state
+        assert state["enabled"] is False
+        assert state["voltage_set"] == pytest.approx(5.0)
+
+
 # ---------------------------------------------------------------------------
 # Keithley 2281S enable(): the failure message must match the instrument
 # ---------------------------------------------------------------------------
