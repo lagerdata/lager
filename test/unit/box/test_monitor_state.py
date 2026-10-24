@@ -327,6 +327,13 @@ class TestKeithleyMonitorStateInBatteryMode:
         assert "entry_function" not in state
         assert state["voltage_set"] == pytest.approx(5.0)
 
+    def test_entr_reply_is_supply_mode(self, keithley_cls):
+        """Firmware 01.08b answers ``ENTR`` in the power-supply function."""
+        drv = self._driver(keithley_cls, "ENTR")
+        state = drv.get_monitor_state()
+        assert "entry_function" not in state
+        assert state["voltage_set"] == pytest.approx(5.0)
+
     def test_failed_mode_query_falls_through_to_the_reads(self, keithley_cls):
         """An empty reply is not known to be another mode."""
         drv = self._driver(keithley_cls, None)

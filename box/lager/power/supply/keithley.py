@@ -50,6 +50,16 @@ def _is_ps_entry_function(reply: str) -> bool:
     return "POW" in up or "SUPPLY" in up or up == "PSS"
 
 
+def _is_battery_entry_function(reply: str) -> bool:
+    """True when an ``:ENTR:FUNC?`` reply names the battery simulator.
+
+    Only a positive match counts. Firmware 01.08b answers ``ENTR`` in the
+    power-supply function, so "does not name the supply" is not "battery".
+    """
+    up = reply.strip().upper()
+    return "BATT" in up or "SIM" in up
+
+
 class Keithley2281S(SupplyNet):
     """
     SupplyNet implementation for Keithley 2281S-20-6 (single channel).
@@ -543,14 +553,14 @@ class Keithley2281S(SupplyNet):
         if _probe is not None:
             _probe.query("*IDN?", check_errors=False)
 
-        # In another entry function (battery simulator) the supply queries
-        # below get no reply, so each one waits out the VISA timeout while
-        # this call holds the device lock: ~15s in which the other role's
-        # commands are refused as busy. :ENTR:FUNC? answers in every entry
-        # function. An empty reply (the query failed) is not known to be
-        # another mode, so it falls through to the normal reads.
+        # In the battery simulator the supply queries below get no reply, so
+        # each one waits out the VISA timeout while this call holds the device
+        # lock: ~15s in which the battery net's commands are refused as busy.
+        # :ENTR:FUNC? answers in every entry function. Any reply that does not
+        # name the battery simulator -- including a failed query -- falls
+        # through to the normal reads.
         entry_function = self._safe_query_no_mode(":ENTR:FUNC?", default="")
-        if entry_function and not _is_ps_entry_function(entry_function):
+        if _is_battery_entry_function(entry_function):
             return self._other_entry_function_state(entry_function)
 
         # None when the query failed or answered something else: a state report

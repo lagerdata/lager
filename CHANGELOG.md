@@ -77,7 +77,7 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 - **A Keithley 2281S saved as both a battery net and a power-supply net no
   longer blocks the battery net.** While the instrument simulates a battery,
   reading the supply net's state now returns at once, as `CH1/?/battery mode`
-  in `lager nets state`, instead of holding the instrument for about 15
+  in `lager nets state`, instead of holding the instrument for about 20
   seconds. During that time the battery net's commands failed with "device
   still busy".
 
