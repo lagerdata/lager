@@ -11,7 +11,7 @@ between them.
 
 ```toml
 [dev-dependencies]
-lager = { package = "lager-net", version = "0.4", default-features = false, features = ["async"] }
+lager = { package = "lager-net", version = "0.8", default-features = false, features = ["async"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -54,8 +54,7 @@ and so on.
 | `debug.rtt_interactive()` | Yes | **No** |
 
 The `uart` and `rtt` features both imply `blocking`, so enabling them pulls in the
-blocking client whether or not you asked for it. `Scope` is shared: it is a stub on
-both, with sync methods.
+blocking client whether or not you asked for it.
 
 <Note>
   There is no RAII lock guard on the async client. Take and release the lock

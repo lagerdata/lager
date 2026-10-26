@@ -1,9 +1,9 @@
 ---
 title: 调试探针
-description: 通过 J-Link 或 OpenOCD 探针烧录、擦除、复位和读取内存
+description: 通过 J-Link 或 OpenOCD 探针烧录、擦除、复位、暂停和读取内存
 ---
 
-从一个 cargo test 里驱动调试探针：连接、烧录固件、复位目标并读取它的内存。
+从一个 cargo test 里驱动调试探针：连接、烧录固件、复位或暂停目标，并读取它的内存。
 
 调试 Net 是唯一不与 Box 的 9000 端口 API 通信的 Net 类型。它们联系的是 Box 上**运行在 8765 端口的调试服务**。
 
@@ -26,14 +26,17 @@ let dbg = lager.debug("debug1");
 | `connect()` | 用默认设置连接，并启动一个 GDB 服务器 |
 | `connect_with()` | 用显式选项连接 |
 | `disconnect()` | 断开连接，可以选择让 gdbserver 继续运行 |
-| `reset()` | 复位目标，可以选择同时暂停它 |
-| `erase()` | 整片擦除目标的 Flash |
+| `reset()` | 复位目标，可以选择让它停在复位向量处 |
+| `halt()` | 让内核停在当前位置，不做复位（OpenOCD） |
+| `erase()` | 擦除目标的 Flash |
+| `erase_range()` | 只擦除 Flash 的一部分 |
 | `flash()` | 烧录一个文件，按扩展名推断其类型 |
 | `flash_bin()` | 在显式的基地址上烧录原始二进制文件 |
 | `flash_bytes()` | 烧录已经在内存中的字节 |
 | `read_memory()` | 读取目标内存 |
-| `info()` | 设备、架构、探针、序列号、后端 |
-| `status()` | 该探针上是否有 gdbserver 在运行 |
+| `read_memory_no_reset()` | 读取目标内存，不做 J-Link DA1469x 读取前的复位和暂停 |
+| `info()`, `info_probed()` | 设备、架构、探针、序列号、后端 |
+| `status()`, `status_probed()` | 是否有 gdbserver 在运行，以及目标是否已挂接 |
 
 RTT 流式传输在同一个句柄上，相关内容见 [RTT](/source/zh/reference/rust/rtt)。
 
@@ -43,20 +46,48 @@ RTT 流式传输在同一个句柄上，相关内容见 [RTT](/source/zh/referen
 
 ```rust
 pub struct ConnectOptions {
-    pub speed: Option<String>,  // "4000" (kHz) or "adaptive"
-    pub force: bool,            // start a fresh backend even if one is running
-    pub halt: bool,             // halt the target immediately after connecting
-    pub gdb: bool,              // start a GDB server
+    pub speed: Option<String>,          // "4000" (kHz) or "adaptive"
+    pub force: bool,                    // start a fresh backend even if one is running
+    pub halt: bool,                     // reset, then halt the target on connect
+    pub gdb: bool,                      // start a GDB server
+    pub jlink_script: Option<Vec<u8>>,  // .JLinkScript contents for this connection
+    pub openocd_config: Option<Vec<u8>>, // a complete OpenOCD .cfg for this connection
+    pub gdb_port: Option<u16>,          // the four port overrides replace the
+    pub swo_port: Option<u16>,          // probe slot's default ports; SWO and
+    pub telnet_port: Option<u16>,       // telnet are J-Link only
+    pub rtt_telnet_port: Option<u16>,
 }
 ```
 
-`Default` 把 `gdb` 设为 `true`，其余全部关闭，因此 `connect()` 会启动一个 GDB 服务器。这是唯一一个默认值不是 `false` 的字段。
+`Default` 把 `gdb` 设为 `true`，其余全部关闭，因此 `connect()` 会启动一个 GDB 服务器。请用 `..Default::default()` 构造该结构体，这样以后新增字段时不会破坏您的代码。
+
+`jlink_script` 和 `openocd_config` 会替换保存在 Net 上的脚本，只对本次连接生效。OpenOCD 配置必须是完整的，并且必须选定适配器驱动。
 
 ### `FirmwareKind`
 
 ```rust
 pub enum FirmwareKind { Hex, Elf, Bin }
 ```
+
+### `FlashReport` 和 `EraseReport`
+
+`flash()` 及其变体返回一个 `FlashReport`：
+
+| 字段 | 含义 |
+|---|---|
+| `output` | 后端的输出，每行一项 |
+| `backend` | `"jlink"` 或 `"openocd"` |
+| `programmed` | Box 0.51.0 及更高版本返回 `Some(true)`；较旧的 Box 返回 `None` |
+
+`erase()` 和 `erase_range()` 返回一个 `EraseReport`：
+
+| 字段 | 含义 |
+|---|---|
+| `output` | 后端的输出 |
+| `backend` | `"jlink"` 或 `"openocd"`；0.50.0 之前的 Box 返回 `None` |
+| `erase_range` | Box 擦除的范围；整片擦除时为 `None` |
+
+`EraseRange` 携带 `start`、`end`（含）、`length`、`text` 和 `source`。`source` 为 `"request"`、`"script"` 或 `"default"`。
 
 ## 方法参考
 
@@ -87,6 +118,8 @@ dbg.connect_with(&ConnectOptions {
 })?;
 ```
 
+`halt: true` 会先复位目标，再暂停它。在从 QSPI 原地执行（XIP）的器件上，这次复位会再次运行引导程序。要在不复位的情况下让内核停下，请使用 `halt()`。
+
 ### `disconnect(keep_running: bool) -> Result<()>`
 
 断开连接。传 `true` 会让 gdbserver 继续运行，供外部 GDB 客户端挂接；传 `false` 则把它拆掉。
@@ -95,23 +128,46 @@ dbg.connect_with(&ConnectOptions {
 
 复位目标。`halt: true` 会让它停在复位向量处。
 
-### `erase() -> Result<()>`
+### `halt() -> Result<()>`
 
-整片擦除目标的 Flash。
+让内核停在当前位置。`halt()` 发送 OpenOCD 的裸 `halt` 命令，因此不会触碰 nRESET。在从 QSPI 原地执行（XIP）的器件上使用它，因为在这类器件上复位会再次运行引导程序。
+
+`halt()` 需要 Box 软件 0.60.0 或更高版本，以及一个 OpenOCD Net：
+
+- crate 会先读取调试服务的功能列表。不支持 `halt` 的 Box 会以 `Error::UnsupportedByBox` 失败，并且不会有任何操作到达探针。
+- J-Link Net 会以 `Error::Box` 和 HTTP 400 失败。J-Link 没有原地暂停的原语，因此请改用一个先暂停的 `.JLinkScript` 来连接。
+- 没有运行中调试器的 Net 会以 `Error::Box` 和 `No debugger connection found` 失败。
+
+### `erase() -> Result<EraseReport>`
+
+擦除目标的 Flash：整片擦除，或者在 Box 为该器件系列定义了默认范围的器件上（DA1469x、nRF5340）擦除该默认范围。报告会说明 Box 擦除了哪个范围。
 
 <Warning>
   **在 J-Link 探针上，或者在 DA1469x 目标上，`erase()` 会断开调试器连接。** 随后的 `read_memory()` 会以 `Error::Box` 和 `No debugger connection found` 失败。`flash` 会自行重新建立连接，因此"先擦除再烧录"的序列可以正常工作，但"先擦除再读取"不行 —— 请先再调用一次 `connect()`。在 OpenOCD 探针上配合其他任何目标时，OpenOCD 守护进程在擦除之后仍然在运行。
 </Warning>
 
-### `flash(firmware_path) -> Result<()>`
+### `erase_range(start: u64, size: u64) -> Result<EraseReport>`
+
+从 `start` 开始，只擦除 `size` 个字节的 Flash。
+
+```rust
+let report = dbg.erase_range(0x1600_0000, 0x2000)?;
+println!("{:?}", report.erase_range.map(|r| r.text));
+```
+
+`erase_range()` 需要 Box 软件 0.50.0 或更高版本。较旧的 Box 会忽略该范围并整片擦除。因此 crate 会先读取调试服务的功能列表，并在擦除任何内容之前以 `Error::UnsupportedByBox` 失败。对于超出该器件可擦除范围的请求，Box 会以 HTTP 400 拒绝。
+
+### `flash(firmware_path) -> Result<FlashReport>`
 
 烧录一个文件，按扩展名推断类型：`.hex`、`.elf` 或 `.bin`。无法识别的扩展名会得到 `Error::Config`。
 
+什么也没有写入的烧录会以 `Error::FlashFailed` 失败，该错误携带 Box 的判定行和后端的输出。Box 软件 0.51.0 及更高版本会报告这一点。较旧的 Box 不报告判定，`programmed` 为 `None`。
+
 <Warning>
-  **`.bin` 会被烧录到 `0x08000000`**，也就是 STM32 的应用基地址。在其他任何系列上这个地址都是错的，而该调用仍然返回 `Ok(())`。这一点在 nRF5340 上验证过：`flash()` 烧录 `.bin` 报告成功，而 `0x0` 处的 Flash 仍然是擦除状态。这是一个静默的错误结果，而不是一个错误。在非 STM32 目标上，请用 `flash_bin()` 并给出正确的基地址。
+  **`.bin` 会被烧录到 `0x08000000`**，也就是 STM32 的应用基地址。在其他任何系列上这个地址都是错的，而该调用仍然返回 `Ok`。这一点在 nRF5340 上验证过：`flash()` 烧录 `.bin` 报告成功，而 `0x0` 处的 Flash 仍然是擦除状态。这是一个静默的错误结果，而不是一个错误。在非 STM32 目标上，请用 `flash_bin()` 并给出正确的基地址。
 </Warning>
 
-### `flash_bin(firmware_path, address: u32) -> Result<()>`
+### `flash_bin(firmware_path, address: u32) -> Result<FlashReport>`
 
 在显式的基地址上烧录原始二进制文件。对于应用不是从 `0x08000000` 开始的任何目标，这都是正确的调用。
 
@@ -119,7 +175,7 @@ dbg.connect_with(&ConnectOptions {
 dbg.flash_bin("target/app.bin", 0x0000_0000)?;   // nRF5340 application core
 ```
 
-### `flash_bytes(contents: &[u8], kind: FirmwareKind, address: Option<u32>) -> Result<()>`
+### `flash_bytes(contents: &[u8], kind: FirmwareKind, address: Option<u32>) -> Result<FlashReport>`
 
 烧录您手上已有的字节，不必先把它们写成文件。`address` 只对 `FirmwareKind::Bin` 有用，默认是 `0x08000000`。
 
@@ -132,17 +188,30 @@ let vectors = dbg.read_memory(0x0000_0000, 8)?;
 let initial_sp = u32::from_le_bytes(vectors[0..4].try_into().unwrap());
 ```
 
-需要有存活的连接：没有连接时它会以 `Error::Box` 和 `No debugger connection found` 失败。
+需要有存活的连接：没有连接时它会以 `Error::Box` 和 `No debugger connection found` 失败。在使用 DA1469x 目标的 J-Link Net 上，Box 会在读取之前先复位并暂停目标。其他目标以及 OpenOCD Net 读取时不会复位。
 
-### `info() -> Result<DebugInfo>` 和 `status() -> Result<DebugStatus>`
+### `read_memory_no_reset(address: u64, length: usize) -> Result<Vec<u8>>`
 
-`info()` 报告设备、架构、探针、序列号和后端，以及连接是否存活。`status()` 只报告 gdbserver：是否有一个在运行、它的 pid，以及探针序列号。两者都不需要先连接。
+读取目标内存，但不做 `read_memory()` 在 J-Link DA1469x 目标上事先进行的复位和暂停。正在运行的目标会继续运行。早于这个选项的 Box 会忽略它，并按 `read_memory()` 的方式读取。
+
+### `info()`、`status()`、`info_probed()` 和 `status_probed()`
+
+`info()` 报告设备、架构、探针、序列号和后端，以及连接是否存活。`status()` 报告 gdbserver：是否有一个处于活动状态、它的 pid，以及探针序列号。两者都不需要先连接。
 
 ```rust
 let i = dbg.info()?;
 println!("{:?} ({:?}) via {:?}", i.device, i.arch, i.backend);
 // nRF5340_xxAA_APP (armv8-m.main) via jlink
 ```
+
+从 Box 软件 0.44.0 起，两者都携带两个字段。较旧的 Box 会把它们留为 `None`。
+
+| 字段 | 含义 |
+|---|---|
+| `gdbserver_running` | 该探针上是否有 gdbserver 或守护进程在运行 |
+| `target_attached` | 目标是否通过探针应答 |
+
+在 `info()` 和 `status()` 的结果中，除非 Box 已经知道挂接失败，否则 `target_attached` 为 `None`。`info_probed()` 和 `status_probed()` 会读取目标来确定它，大约要多花一秒。
 
 ## 示例
 
@@ -158,7 +227,7 @@ dbg.connect()?;
 dbg.erase()?;
 dbg.flash_bin("target/app.bin", 0x0)?;
 
-// erase() dropped the connection; flash() brought it back, but be explicit.
+// erase() dropped the connection; flash_bin() brought it back, but be explicit.
 dbg.connect()?;
 let image = std::fs::read("target/app.bin").expect("firmware image");
 let readback = dbg.read_memory(0x0, image.len().min(1024))?;
@@ -166,6 +235,14 @@ assert_eq!(&readback[..], &image[..readback.len()], "flash verify failed");
 
 dbg.reset(false)?;
 dbg.disconnect(false)?;
+```
+
+### 让运行中的目标停下并检查它
+
+```rust
+dbg.connect()?;
+dbg.halt()?;   // no reset: the core stops where it is
+let state = dbg.read_memory(0x2000_0000, 64)?;   // OpenOCD does not reset for a read
 ```
 
 ### 为交互式会话保留一个 gdbserver
@@ -193,8 +270,9 @@ dbg.disconnect(true)?;   // keep_running: the server survives
   - flash 180 秒
   - erase 120 秒
   - 内存读取 30 秒
-  - `info`、`status` 和 `disconnect` 为 10 秒
+  - `reset`、`halt`、`info`、`status` 和 `disconnect` 为 10 秒
 - Net 解析要求 `debug` 角色。存在但角色不同的 Net 会给出 `net 'adc1' exists but is not a debug net`。不存在的名称会给出 `debug net 'nosuch' not found on this box`。
-- 调试服务不使用 9000 端口 API 的那套成功信封格式。200 表示成功；其他任何状态码都是 `Error::Box`，并携带该服务给出的信息。
+- 调试服务不使用 9000 端口 API 的那套成功信封格式。200 表示成功；其他任何状态码都是错误，并携带该服务给出的信息。
+- 另一个操作占用探针的时间可能超过 Box 的等待时长。这时 Box 会应答 HTTP 503，crate 返回 `Error::ProbeBusy`。请等另一个操作完成后重试。
+- 配置了 `allow_destructive: false` 的 Net 会以 HTTP 403 拒绝 `erase()` 和 `flash()`，crate 将其返回为 `Error::SafetyRefused`。请参阅 [客户端与 Box](/source/zh/reference/rust/client)。
 - 异步方面的说明：`AsyncDebugNet` 提供这里的全部功能，但没有 RTT。
-- 配置了 `allow_destructive: false` 的 Net 会以 `Error::Box` 和 HTTP 403 拒绝 `erase()` 和 `flash()`。请参阅 [客户端与 Box](/source/zh/reference/rust/client)。

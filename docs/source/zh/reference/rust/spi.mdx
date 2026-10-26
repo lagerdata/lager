@@ -84,6 +84,11 @@ let cfg = spi.configure(&SpiConfig {
 })?;
 ```
 
+`SpiEffectiveConfig` 还带有两个来自较新 Box 的字段：
+
+- `achieved_frequency_hz` 是适配器实际运行的时钟（Box 0.47.0 或更高版本）。LabJack U3 会把时钟向下取整，因此这个值可能低于所设置的值。
+- `warnings` 列出适配器无法遵从的设置（Box 0.49.0 或更高版本）。
+
 ### `read(n_words: u32, opts: &SpiOptions) -> Result<SpiTransfer>`
 
 移入 `n_words` 个字，每个字对应移出一个 `opts.fill`。

@@ -34,8 +34,12 @@ let bus = lager.i2c("i2c1");
 pub struct I2cEffectiveConfig {
     pub frequency_hz: Option<i64>,
     pub pull_ups: Option<bool>,
+    pub achieved_frequency_hz: Option<i64>, // box 0.47.0 and later
+    pub warnings: Vec<String>,              // box 0.49.0 and later
 }
 ```
+
+`achieved_frequency_hz` 是适配器实际运行的时钟。LabJack U3 会把时钟向下取整，因此这个值可能低于 `frequency_hz`。`warnings` 列出适配器无法遵从的设置。
 
 ## 方法参考
 

@@ -24,6 +24,9 @@ let port = lager.usb("usb1");
 | `disable()` | Power the port off |
 | `toggle()` | Invert the port and report the new state |
 | `state()` | Read whether the port is currently powered |
+| `cycle()`, `cycle_with_off_time()` | Power off, wait, power on, and report whether the device came back |
+| `cycle_report()` | Like `cycle()`, and also say why a device did not come back |
+| `recover()` | Power a port back on after an interrupted command |
 
 ## Method Reference
 
@@ -61,6 +64,42 @@ assert!(port.state()?, "port should be up");
   `the 'state' action on /usb/command requires box software >= 0.29.0; update the box or use toggle/enable/disable`.
 </Note>
 
+### `cycle() -> Result<Option<bool>>`
+
+Power the port off, wait, and power it on again. The box watches for the device to
+re-enumerate. It requires box software 0.39.0 or later.
+
+```rust
+match port.cycle()? {
+    Some(true) => println!("the DUT came back"),
+    Some(false) => panic!("the DUT did not re-enumerate"),
+    None => println!("the port was empty, or the hub cannot watch for the device"),
+}
+```
+
+The port is powered at the end on every path, including failures. The default off
+time is 1 s. `cycle_with_off_time(secs)` takes another value from 0.5 to 10 s. When in
+doubt, choose a longer time: a short one lets the DUT warm-start without a real reset.
+
+### `cycle_report(off_time_secs: Option<f64>) -> Result<UsbCycleReport>`
+
+Like `cycle()`, and the report also carries the box's `outcome` (box 0.49.0 or later).
+A `UsbCycleReport` has three fields: `reconnected`, the same value that `cycle()` returns;
+`outcome`; and the box's `message`.
+The outcome tells an empty port apart from a port the box did not watch:
+
+| `UsbCycleOutcome` | Meaning |
+|---|---|
+| `Reconnected` | The device re-enumerated after power returned |
+| `NotReconnected` | The device did not come back before the box's timeout |
+| `NoDevice` | Nothing on the port was on the bus when the cycle started |
+| `TopologyUnreadable` | The box did not read its USB topology |
+
+### `recover() -> Result<()>`
+
+Power the port on again after a command stopped partway through. On a Plugable dock,
+this powers every port of that dock.
+
 ## Examples
 
 ### Force a DUT to re-enumerate and wait for it to come back
@@ -92,8 +131,8 @@ loop {
 <Warning>
   On a Plugable dock, a device on a powered-off port stays listed on the bus until
   power returns. The loop above can then match the old entry at once, before the DUT
-  re-enumerates. On a Plugable dock, use `lager usb NET cycle` from the CLI, which
-  waits for the hub to report the reconnect.
+  re-enumerates. Use `cycle()` instead, which waits for the hub to report the
+  reconnect.
 </Warning>
 
 ## Supported Hardware

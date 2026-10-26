@@ -23,6 +23,9 @@ let port = lager.usb("usb1");
 | `disable()` | 给该端口断电 |
 | `toggle()` | 翻转该端口并报告新状态 |
 | `state()` | 读取该端口当前是否已通电 |
+| `cycle()`, `cycle_with_off_time()` | 断电、等待、上电，并报告设备是否回来了 |
+| `cycle_report()` | 与 `cycle()` 相同，并且还会说明设备为什么没有回来 |
+| `recover()` | 在一条命令被中断之后，给端口重新上电 |
 
 ## 方法参考
 
@@ -56,6 +59,35 @@ assert!(port.state()?, "port should be up");
   `state()` 需要 Box 软件 0.29.0 或更高版本。更旧的 Box 会拒绝这个动作，而该 crate 会把这个特定的拒绝转换成 `Error::UnsupportedByBox`，信息是 `the 'state' action on /usb/command requires box software >= 0.29.0; update the box or use toggle/enable/disable`。
 </Note>
 
+### `cycle() -> Result<Option<bool>>`
+
+给端口断电，等待，然后重新上电。Box 会观察设备是否重新枚举。需要 Box 软件 0.39.0 或更高版本。
+
+```rust
+match port.cycle()? {
+    Some(true) => println!("the DUT came back"),
+    Some(false) => panic!("the DUT did not re-enumerate"),
+    None => println!("the port was empty, or the hub cannot watch for the device"),
+}
+```
+
+无论走哪条路径，包括失败的情况，结束时端口都是通电的。默认断电时间是 1 秒。`cycle_with_off_time(secs)` 接受 0.5 到 10 秒之间的其他数值。拿不准时，请选择更长的时间：太短的时间会让被测设备热启动，而没有真正复位。
+
+### `cycle_report(off_time_secs: Option<f64>) -> Result<UsbCycleReport>`
+
+与 `cycle()` 相同，并且报告还会带上 Box 给出的 `outcome`（Box 0.49.0 或更高版本）。`UsbCycleReport` 有三个字段：`reconnected`，与 `cycle()` 的返回值相同；`outcome`；以及 Box 的 `message`。这个结果能把空端口和 Box 没有观察的端口区分开：
+
+| `UsbCycleOutcome` | 含义 |
+|---|---|
+| `Reconnected` | 供电恢复之后，设备重新枚举了 |
+| `NotReconnected` | 在 Box 的超时之前，设备没有回来 |
+| `NoDevice` | 断电重启开始时，该端口上没有任何设备在总线上 |
+| `TopologyUnreadable` | Box 没有读取到它的 USB 拓扑 |
+
+### `recover() -> Result<()>`
+
+在一条命令中途停止之后，给端口重新上电。在 Plugable 扩展坞上，这会给该扩展坞的每一个端口上电。
+
 ## 示例
 
 ### 迫使被测设备重新枚举，并等它回来
@@ -85,7 +117,7 @@ loop {
 ```
 
 <Warning>
-  在 Plugable 扩展坞上，已断电端口上的设备在供电恢复之前仍然列在总线上。于是上面那个循环可能立刻匹配到旧条目，而被测设备其实还没有重新枚举。在 Plugable 扩展坞上，请用 CLI 的 `lager usb NET cycle`，它会等待集线器报告重新连接。
+  在 Plugable 扩展坞上，已断电端口上的设备在供电恢复之前仍然列在总线上。于是上面那个循环可能立刻匹配到旧条目，而被测设备其实还没有重新枚举。请改用 `cycle()`，它会等待集线器报告重新连接。
 </Warning>
 
 ## 受支持的硬件

@@ -22,7 +22,7 @@ description: 流式接收固件日志输出，并从测试中驱动 RTT 控制�
 
 ```toml
 [dev-dependencies]
-lager = { package = "lager-net", version = "0.4", features = ["rtt"] }
+lager = { package = "lager-net", version = "0.8", features = ["rtt"] }
 ```
 
 `rtt` feature 隐含启用 `blocking`。它没有异步版本。

@@ -29,7 +29,9 @@ let arm = lager.arm("arm1");
 | `enable_motor()` | Energize the motors |
 | `disable_motor()` | Release the motors |
 | `read_and_save_position()` | Read the position and persist it on the arm |
-| `set_acceleration()` | Set acceleration in mm/s2 |
+| `set_acceleration()` | Set acceleration in mm/s2, and read it back |
+| `set_acceleration_keep_retract()` | Set print and travel acceleration, and leave retract as it is |
+| `get_acceleration()` | Read the arm's acceleration settings |
 
 ## Types
 
@@ -40,6 +42,16 @@ pub struct ArmPosition {
     pub x: f64,   // mm
     pub y: f64,   // mm
     pub z: f64,   // mm
+}
+```
+
+### `ArmAcceleration`
+
+```rust
+pub struct ArmAcceleration {
+    pub acceleration: f64,         // print, mm/s2 (M204 P)
+    pub travel_acceleration: f64,  // travel, mm/s2 (M204 T)
+    pub retract_acceleration: f64, // retract, mm/s2 (M204 R)
 }
 ```
 
@@ -86,9 +98,27 @@ Energize or release the steppers.
 
 Read the current position and persist it on the arm.
 
-### `set_acceleration(acceleration: u32, travel_acceleration: u32, retract_acceleration: u32) -> Result<()>`
+### `set_acceleration(acceleration: u32, travel_acceleration: u32, retract_acceleration: u32) -> Result<Option<ArmAcceleration>>`
 
-Set acceleration values in mm/s2.
+Set the print, travel and retract acceleration in mm/s2 (G-code M204).
+
+**Returns:** what the arm reports after the change, so a value that the arm did not
+take shows up. A box at 0.59.0 or older sends no readback, and the call returns `None`.
+
+### `set_acceleration_keep_retract(acceleration: u32, travel_acceleration: u32) -> Result<Option<ArmAcceleration>>`
+
+Set the print and travel acceleration, and leave the retract value as it is. It
+requires box software 0.60.0 or later.
+
+### `get_acceleration() -> Result<ArmAcceleration>`
+
+Read the arm's print, travel and retract acceleration from its settings report. It
+requires box software 0.60.0 or later.
+
+```rust
+let a = arm.get_acceleration()?;
+println!("{} / {} / {}", a.acceleration, a.travel_acceleration, a.retract_acceleration);
+```
 
 ## Examples
 

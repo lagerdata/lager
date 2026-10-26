@@ -81,6 +81,14 @@ for net in lager.nets()? {
 | `custom_devices` | `customDevices` | 本 crate 未使用 |
 | `binaries` | `binaries` | 本 crate 未使用 |
 | `safety_limits` | `safetyLimits` | `PUT /nets/<name>/safety-limits`，Box 0.35.0 及以上 |
+| `custom_drivers` | `customDrivers` | 自定义驱动 Net；请参阅 [Net 类型](/source/zh/reference/rust/net-types#自定义驱动-net) |
+| `custom_driver_deps` | `customDriverDeps` | 本 crate 未使用 |
+| `net_metadata_sync`, `box_metadata_sync` | `netMetadataSync`, `boxMetadataSync` | 本 crate 未使用 |
+| `bench_manifest` | `benchManifest` | 本 crate 未使用 |
+| `nets_state_enabled` | `netsStateEnabled` | `NetState::enabled` 是可靠的 |
+| `nets_state_stream` | `netsStateStream` | 本 crate 未使用 |
+
+Box 没有发送的字段读作 `false`。`BoxCapabilities` 带有 `#[non_exhaustive]`，因此以后新增的字段不会破坏您的代码。
 
 <Warning>
   **能力标志反映的是路由是否注册，而不是 Box 能否真正完成这项工作。** 在容器里没有 BlueZ 的 Box 上，`ble_command: true` 仍然会让每一次 BLE 调用以 `Error::Box` 和 HTTP 502 失败。没装 `nmcli` 时，`wifi_command: true` 的失败方式也一样。请用这些标志判断端点是否存在，而不是判断它会不会成功。

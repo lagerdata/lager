@@ -29,7 +29,9 @@ description: Rust crate 开放的全部 Net 句柄与 Box 级能力
 | `Arm` | `lager.arm(name)` | [机械臂](/source/zh/reference/rust/arm) |
 | `Webcam` | `lager.webcam(name)` | [摄像头](/source/zh/reference/rust/webcam) |
 | `Router` | `lager.router(name)` | [路由器](/source/zh/reference/rust/router) |
-| `Scope` | `lager.scope(name)` | [示波器](/source/zh/reference/rust/scope) —— 占位实现 |
+| `Scope` | `lager.scope(name)` | [示波器](/source/zh/reference/rust/scope) |
+| `Hsm` | `lager.hsm(name)` | [HSM](/source/zh/reference/rust/hsm) |
+| `CustomNet` | `lager.custom(name)` | [自定义驱动 Net](#自定义驱动-net) |
 
 ## Box 级能力
 
@@ -42,12 +44,21 @@ description: Rust crate 开放的全部 Net 句柄与 Box 级能力
 | `Blufi` | `lager.blufi()` | [BluFi](/source/zh/reference/rust/blufi) |
 | `Dfu` | `lager.dfu()` | [USB DFU](/source/zh/reference/rust/dfu) |
 
-## 两个行为不同的句柄
+## 一个行为不同的句柄
 
-上面几乎每个构造方法都会立即返回一个句柄，并且不会失败。有两个例外：
+上面的每个构造方法都会立即返回一个句柄，并且不会失败，只有一个例外。**`lager.uart(name)?` 返回 `Result`。** 它会打开一个 Socket.IO 会话并立即开始流式传输，因此构造阶段就可能失败。
 
-- **`lager.uart(name)?` 返回 `Result`** —— 它会打开一个 Socket.IO 会话并立即开始流式传输，因此构造阶段就可能失败。
-- **`lager.scope(name)` 返回的是值，不是借用。** `Scope` 没有生命周期参数，也没有异步版本，因为 Box 上还没有它可以通信的端点。
+## 自定义驱动 Net
+
+安装在 Box 上的自定义驱动（Box 软件 0.59.0 或更高版本）会声明自己的角色和动作。`CustomNet` 用一个方法来调用它们：
+
+```rust
+use serde_json::json;
+
+let reading = lager.custom("chamber1").command("read_temperature", json!({}))?;
+```
+
+`command(action, params)` 返回该动作的 `value`，如果没有则返回 `null`。当设置了 `custom_drivers` 时，`lager.status()?.capabilities` 会在 `net_command_roles` 中列出已安装的角色。驱动失败会以 `Error::Box` 的形式返回，并带上 Box 的状态码：409（忙）、503（不可用）、504（超时）或 502（驱动失败）。
 
 ## 发现
 
@@ -75,4 +86,4 @@ for net in lager.nets()? {
 
 ## 尚不可用
 
-`Scope` 是有文档记录的占位实现，而逻辑分析仪则完全没有句柄：Box 目前还没有用于示波器或逻辑采集的 HTTP 端点。`Rotation` 和 `Actuate` Net 服务于配置流程，而不是测试期的 Net 访问，该 crate 有意不收录它们。待办清单在 [MISSING_ENDPOINTS.md](https://github.com/lagerdata/lager-rs/blob/main/MISSING_ENDPOINTS.md) 中。
+目前没有逻辑分析仪句柄，`Scope` 也不能采集波形：Box 还没有用于逻辑采集或波形采集的 HTTP 端点。`Rotation` 和 `Actuate` Net 服务于配置流程，而不是测试期的 Net 访问，该 crate 有意不收录它们。待办清单在 [MISSING_ENDPOINTS.md](https://github.com/lagerdata/lager-rs/blob/main/MISSING_ENDPOINTS.md) 中。

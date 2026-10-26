@@ -1,10 +1,10 @@
 ---
 title: Debug Probes
-description: Flash, erase, reset and read memory through a J-Link or OpenOCD probe
+description: Flash, erase, reset, halt and read memory through a J-Link or OpenOCD probe
 ---
 
-Drive a debug probe from a cargo test: connect, flash firmware, reset the target and
-read its memory.
+Drive a debug probe from a cargo test: connect, flash firmware, reset or halt the
+target, and read its memory.
 
 Debug nets are the one net type that does not talk to the box's API on port 9000.
 They reach the box's **debug service on port 8765** instead.
@@ -30,14 +30,17 @@ next attempt rather than needing a new handle.
 | `connect()` | Connect with defaults, starting a GDB server |
 | `connect_with()` | Connect with explicit options |
 | `disconnect()` | Disconnect, optionally leaving the gdbserver running |
-| `reset()` | Reset the target, optionally halting it |
-| `erase()` | Mass-erase the target's flash |
+| `reset()` | Reset the target, optionally halting it at the reset vector |
+| `halt()` | Stop the core where it is, without a reset (OpenOCD) |
+| `erase()` | Erase the target's flash |
+| `erase_range()` | Erase only part of the flash |
 | `flash()` | Flash a file, inferring its type from the extension |
 | `flash_bin()` | Flash a raw binary at an explicit base address |
 | `flash_bytes()` | Flash bytes already in memory |
 | `read_memory()` | Read target memory |
-| `info()` | Device, architecture, probe, serial, backend |
-| `status()` | Whether a gdbserver is running for this probe |
+| `read_memory_no_reset()` | Read target memory without the reset and halt a J-Link DA1469x read does first |
+| `info()`, `info_probed()` | Device, architecture, probe, serial, backend |
+| `status()`, `status_probed()` | Whether a gdbserver is running, and whether the target is attached |
 
 RTT streaming lives on the same handle and is covered in
 [RTT](/source/reference/rust/rtt).
@@ -48,21 +51,53 @@ RTT streaming lives on the same handle and is covered in
 
 ```rust
 pub struct ConnectOptions {
-    pub speed: Option<String>,  // "4000" (kHz) or "adaptive"
-    pub force: bool,            // start a fresh backend even if one is running
-    pub halt: bool,             // halt the target immediately after connecting
-    pub gdb: bool,              // start a GDB server
+    pub speed: Option<String>,          // "4000" (kHz) or "adaptive"
+    pub force: bool,                    // start a fresh backend even if one is running
+    pub halt: bool,                     // reset, then halt the target on connect
+    pub gdb: bool,                      // start a GDB server
+    pub jlink_script: Option<Vec<u8>>,  // .JLinkScript contents for this connection
+    pub openocd_config: Option<Vec<u8>>, // a complete OpenOCD .cfg for this connection
+    pub gdb_port: Option<u16>,          // the four port overrides replace the
+    pub swo_port: Option<u16>,          // probe slot's default ports; SWO and
+    pub telnet_port: Option<u16>,       // telnet are J-Link only
+    pub rtt_telnet_port: Option<u16>,
 }
 ```
 
 `Default` sets `gdb: true` and everything else off, so `connect()` starts a GDB
-server. This is the one field where the default is not `false`.
+server. Build the struct with `..Default::default()`, so a field added later does
+not break your code.
+
+`jlink_script` and `openocd_config` replace a script saved on the net, for this
+connection only. An OpenOCD config must be complete and must select the adapter
+driver.
 
 ### `FirmwareKind`
 
 ```rust
 pub enum FirmwareKind { Hex, Elf, Bin }
 ```
+
+### `FlashReport` and `EraseReport`
+
+`flash()` and its variants return a `FlashReport`:
+
+| Field | Meaning |
+|---|---|
+| `output` | The backend's output, one entry per line |
+| `backend` | `"jlink"` or `"openocd"` |
+| `programmed` | `Some(true)` from box 0.51.0 or later; `None` from an older box |
+
+`erase()` and `erase_range()` return an `EraseReport`:
+
+| Field | Meaning |
+|---|---|
+| `output` | The backend's output |
+| `backend` | `"jlink"` or `"openocd"`; `None` from a box before 0.50.0 |
+| `erase_range` | The range the box erased, or `None` for a full-chip erase |
+
+An `EraseRange` carries `start`, `end` (inclusive), `length`, `text`, and `source`.
+`source` is `"request"`, `"script"` or `"default"`.
 
 ## Method Reference
 
@@ -96,6 +131,10 @@ dbg.connect_with(&ConnectOptions {
 })?;
 ```
 
+`halt: true` resets the target and then halts it. On a part that executes in place
+out of QSPI, that reset runs the bootloader again. To stop the core without a reset,
+use `halt()`.
+
 ### `disconnect(keep_running: bool) -> Result<()>`
 
 Disconnect. Pass `true` to leave the gdbserver up for an external GDB client to
@@ -105,9 +144,26 @@ attach to; pass `false` to tear it down.
 
 Reset the target. `halt: true` leaves it stopped at the reset vector.
 
-### `erase() -> Result<()>`
+### `halt() -> Result<()>`
 
-Mass-erase the target's flash.
+Stop the core where it is. `halt()` sends OpenOCD's bare `halt`, so nRESET stays
+untouched. Use it on a part that executes in place out of QSPI, where a reset runs
+the bootloader again.
+
+`halt()` requires box software 0.60.0 or later and an OpenOCD net:
+
+- The crate reads the debug service's features first. A box without `halt` fails
+  with `Error::UnsupportedByBox`, and nothing reaches the probe.
+- A J-Link net fails with `Error::Box` and HTTP 400. J-Link has no halt-in-place
+  primitive, so connect with a halt-first `.JLinkScript` instead.
+- A net with no running debugger fails with `Error::Box` and
+  `No debugger connection found`.
+
+### `erase() -> Result<EraseReport>`
+
+Erase the target's flash: the whole chip, or the part family's default range on
+parts where the box defines one (DA1469x, nRF5340). The report says which range the
+box erased.
 
 <Warning>
   **On a J-Link probe, or on a DA1469x target, `erase()` drops the debugger
@@ -118,21 +174,38 @@ Mass-erase the target's flash.
   daemon stays up after the erase.
 </Warning>
 
-### `flash(firmware_path) -> Result<()>`
+### `erase_range(start: u64, size: u64) -> Result<EraseReport>`
+
+Erase only `size` bytes of flash, starting at `start`.
+
+```rust
+let report = dbg.erase_range(0x1600_0000, 0x2000)?;
+println!("{:?}", report.erase_range.map(|r| r.text));
+```
+
+`erase_range()` requires box software 0.50.0 or later. An older box ignores the range
+and erases the whole chip. So the crate reads the debug service's features first, and
+fails with `Error::UnsupportedByBox` before anything is erased. The box refuses a range
+outside what it can erase on the part with HTTP 400.
+
+### `flash(firmware_path) -> Result<FlashReport>`
 
 Flash a file, inferring the type from its extension: `.hex`, `.elf` or `.bin`. An
 unrecognized extension is `Error::Config`.
 
+A flash that programmed nothing fails with `Error::FlashFailed`, which carries the
+box's verdict line and the backend's output. Box software 0.51.0 and later reports
+this. An older box reports no verdict, and `programmed` is `None`.
+
 <Warning>
   **A `.bin` is flashed at `0x08000000`**, the STM32 application base. On any other
-  family that address is wrong, and the call still returns `Ok(())`. This was
-  verified on an nRF5340: `flash()` of a `.bin` succeeded while flash at `0x0` stayed
-  erased.
+  family that address is wrong, and the call still returns `Ok`. This was verified
+  on an nRF5340: `flash()` of a `.bin` succeeded while flash at `0x0` stayed erased.
   This is a silent wrong result, not an error. Off STM32, use `flash_bin()` with the
   correct base address.
 </Warning>
 
-### `flash_bin(firmware_path, address: u32) -> Result<()>`
+### `flash_bin(firmware_path, address: u32) -> Result<FlashReport>`
 
 Flash a raw binary at an explicit base address. This is the correct call for any
 target whose application does not start at `0x08000000`.
@@ -141,7 +214,7 @@ target whose application does not start at `0x08000000`.
 dbg.flash_bin("target/app.bin", 0x0000_0000)?;   // nRF5340 application core
 ```
 
-### `flash_bytes(contents: &[u8], kind: FirmwareKind, address: Option<u32>) -> Result<()>`
+### `flash_bytes(contents: &[u8], kind: FirmwareKind, address: Option<u32>) -> Result<FlashReport>`
 
 Flash bytes you already hold, without writing them to a file first. `address` is used
 only for `FirmwareKind::Bin` and defaults to `0x08000000`.
@@ -156,19 +229,39 @@ let initial_sp = u32::from_le_bytes(vectors[0..4].try_into().unwrap());
 ```
 
 Requires a live connection: without one it fails with `Error::Box` and
-`No debugger connection found`.
+`No debugger connection found`. On a J-Link net with a DA1469x target, the box resets
+and halts the target before it reads. Other targets, and OpenOCD nets, do not reset for
+a read.
 
-### `info() -> Result<DebugInfo>` and `status() -> Result<DebugStatus>`
+### `read_memory_no_reset(address: u64, length: usize) -> Result<Vec<u8>>`
+
+Read target memory without the reset and halt that `read_memory()` does first on a
+J-Link DA1469x target. A running target keeps running. A box that predates this option
+ignores it, and reads as `read_memory()` does.
+
+### `info()`, `status()`, `info_probed()` and `status_probed()`
 
 `info()` reports the device, architecture, probe, serial and backend, plus whether a
-connection is live. `status()` reports just the gdbserver: whether one is active, its
-pid, and the probe serial. Both work without connecting first.
+connection is live. `status()` reports the gdbserver: whether one is active, its pid,
+and the probe serial. Both work without connecting first.
 
 ```rust
 let i = dbg.info()?;
 println!("{:?} ({:?}) via {:?}", i.device, i.arch, i.backend);
 // nRF5340_xxAA_APP (armv8-m.main) via jlink
 ```
+
+Both carry two fields from box software 0.44.0 and later. An older box leaves them
+`None`.
+
+| Field | Meaning |
+|---|---|
+| `gdbserver_running` | Whether a gdbserver or daemon runs for this probe |
+| `target_attached` | Whether the target answers through the probe |
+
+From `info()` and `status()`, `target_attached` is `None` unless the box already knows
+that the attach failed. `info_probed()` and `status_probed()` read the target to
+settle it, which takes about a second longer.
 
 ## Examples
 
@@ -184,7 +277,7 @@ dbg.connect()?;
 dbg.erase()?;
 dbg.flash_bin("target/app.bin", 0x0)?;
 
-// erase() dropped the connection; flash() brought it back, but be explicit.
+// erase() dropped the connection; flash_bin() brought it back, but be explicit.
 dbg.connect()?;
 let image = std::fs::read("target/app.bin").expect("firmware image");
 let readback = dbg.read_memory(0x0, image.len().min(1024))?;
@@ -192,6 +285,14 @@ assert_eq!(&readback[..], &image[..readback.len()], "flash verify failed");
 
 dbg.reset(false)?;
 dbg.disconnect(false)?;
+```
+
+### Stop a running target and inspect it
+
+```rust
+dbg.connect()?;
+dbg.halt()?;   // no reset: the core stops where it is
+let state = dbg.read_memory(0x2000_0000, 64)?;   // OpenOCD does not reset for a read
 ```
 
 ### Leave a gdbserver up for an interactive session
@@ -219,12 +320,16 @@ dbg.disconnect(true)?;   // keep_running: the server survives
   - flash 180 s
   - erase 120 s
   - memory read 30 s
-  - 10 s for `info`, `status` and `disconnect`
+  - 10 s for `reset`, `halt`, `info`, `status` and `disconnect`
 - Net resolution requires the `debug` role. A net that exists with another role
   gives `net 'adc1' exists but is not a debug net`. A name that does not exist gives
   `debug net 'nosuch' not found on this box`.
 - The debug service does not use the same success envelope as the port-9000 API. A
-  200 is success; anything else is `Error::Box` carrying the service's message.
-- Async note: `AsyncDebugNet` provides everything here, but no RTT.
+  200 is success; anything else is an error carrying the service's message.
+- Another operation can hold the probe longer than the box waits. The box then answers
+  HTTP 503, and the crate returns `Error::ProbeBusy`. Retry when the other operation
+  is done.
 - A net configured with `allow_destructive: false` refuses `erase()` and `flash()`
-  with `Error::Box` and HTTP 403. See [Client and Box](/source/reference/rust/client).
+  with HTTP 403, which the crate returns as `Error::SafetyRefused`. See
+  [Client and Box](/source/reference/rust/client).
+- Async note: `AsyncDebugNet` provides everything here, but no RTT.

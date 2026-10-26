@@ -31,7 +31,9 @@ Addressed by the net name you gave them with `lager nets add`.
 | `Arm` | `lager.arm(name)` | [Robot Arm](/source/reference/rust/arm) |
 | `Webcam` | `lager.webcam(name)` | [Webcam](/source/reference/rust/webcam) |
 | `Router` | `lager.router(name)` | [Router](/source/reference/rust/router) |
-| `Scope` | `lager.scope(name)` | [Oscilloscope](/source/reference/rust/scope) — a stub |
+| `Scope` | `lager.scope(name)` | [Oscilloscope](/source/reference/rust/scope) |
+| `Hsm` | `lager.hsm(name)` | [HSM](/source/reference/rust/hsm) |
+| `CustomNet` | `lager.custom(name)` | [Custom-driver nets](#custom-driver-nets) |
 
 ## Box-level capabilities
 
@@ -44,14 +46,27 @@ These drive the box's own hardware, so they take no net name and have no `name()
 | `Blufi` | `lager.blufi()` | [BluFi](/source/reference/rust/blufi) |
 | `Dfu` | `lager.dfu()` | [USB DFU](/source/reference/rust/dfu) |
 
-## Two handles that behave differently
+## A handle that behaves differently
 
-Almost every constructor above returns a handle immediately and infallibly. Two do not:
+Every constructor above returns a handle immediately and infallibly, except one.
+**`lager.uart(name)?` returns a `Result`.** It opens a Socket.IO session and starts
+streaming right away, so it can fail at construction.
 
-- **`lager.uart(name)?` returns a `Result`** — it opens a Socket.IO session and starts
-  streaming right away, so it can fail at construction.
-- **`lager.scope(name)` returns a value, not a borrow.** `Scope` has no lifetime and
-  no async twin, because the box has no endpoint for it to talk to yet.
+## Custom-driver nets
+
+A custom driver installed on the box (box software 0.59.0 or later) declares its own
+role and actions. `CustomNet` has one method for them:
+
+```rust
+use serde_json::json;
+
+let reading = lager.custom("chamber1").command("read_temperature", json!({}))?;
+```
+
+`command(action, params)` returns the action's `value`, or `null` when it has none.
+`lager.status()?.capabilities` lists the installed roles in `net_command_roles` when
+`custom_drivers` is set. A driver failure arrives as `Error::Box` with the box's
+status: 409 (busy), 503 (unavailable), 504 (timed out) or 502 (the driver failed).
 
 ## Discovery
 
@@ -80,8 +95,8 @@ surface.
 
 ## Not yet available
 
-`Scope` is a documented stub, and there is no logic-analyzer handle at all: the box
-has no HTTP endpoint for scope or logic capture yet. `Rotation` and `Actuate` nets serve
+There is no logic-analyzer handle, and `Scope` does not capture traces: the box has no
+HTTP endpoint for logic or trace capture yet. `Rotation` and `Actuate` nets serve
 provisioning flows rather than test-time net access, and the crate deliberately
 leaves them out. The work list is in
 [MISSING_ENDPOINTS.md](https://github.com/lagerdata/lager-rs/blob/main/MISSING_ENDPOINTS.md).

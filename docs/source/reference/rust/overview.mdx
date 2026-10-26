@@ -12,6 +12,8 @@ The crate is a pure HTTP/JSON client of the Lager Box API. It covers:
 - power supplies, battery simulators, e-loads and solar simulators
 - GPIO, ADC, DAC, thermocouples, watt meters and energy analyzers
 - SPI, I2C, USB hub ports, robot arms, webcams and routers
+- oscilloscopes and YubiHSM 2 HSMs
+- nets that a custom driver on the box runs
 - streaming UART
 - the box-level capabilities: its own BLE adapter, WiFi interface, and BluFi
   ESP32 provisioning
@@ -34,7 +36,7 @@ Add the crate to your firmware project's dev-dependencies:
 ```toml
 # Cargo.toml
 [dev-dependencies]
-lager = { package = "lager-net", version = "0.4" }
+lager = { package = "lager-net", version = "0.8" }
 ```
 
 The crate requires Rust **1.75** or newer and builds on edition 2021.
@@ -84,7 +86,7 @@ Both clients execute the exact same request builders and response parsers,
 so the two transports cannot drift apart.
 
 ```toml
-lager = { package = "lager-net", version = "0.4", features = ["async"] }
+lager = { package = "lager-net", version = "0.8", features = ["async"] }
 ```
 
 ## Errors
@@ -96,23 +98,24 @@ Everything returns `lager::Result<T>` with a single `Error` enum:
 | `Connection` | Box unreachable (network/Tailscale/box offline) |
 | `Timeout` | The box stalled past the (already widened) budget |
 | `Box { status, message }` | The box refused or the hardware failed |
+| `FlashFailed`, `ProbeBusy`, `SafetyRefused` | A debug-probe operation failed in a way the crate names |
+| `DfuFailed` | Box-side `dfu-util` exited non-zero |
 | `UnsupportedByBox` | HTTP 501: the box image predates this endpoint; update the box |
 | `AuthRequired` | The box's gateway wants a bearer token and none is available |
-| `NotSupportedByBox` | The net type is a documented stub (see the note below) |
+| `NotSupportedByBox` | Kept for compatibility; no net type returns it |
 
 ## Requirements
 
 - A Lager Box with software new enough to serve `POST /net/command` —
   check `lager.status()?.capabilities.net_command`, or run
-  `lager update`.
+  `lager update`. Newer calls need newer box software, and each page names the
+  version. An older box returns `Error::UnsupportedByBox`.
 - Rust 1.75+.
 
 <Note>
-`Scope` ships as a documented stub whose methods return
-`Error::NotSupportedByBox`. The box no longer blocks it, because
-`POST /net/command` now has a `scope` role. The crate does not use that role
-yet. The box API also has no logic-analyzer workflows. The endpoint sketch is
-tracked in the crate's
+Scope trace capture and logic-analyzer nets are not on the box HTTP API yet.
+`Scope` covers everything else a scope does: channels, timebase, trigger,
+acquisition control and measurements. The work list is in the crate's
 [`MISSING_ENDPOINTS.md`](https://github.com/lagerdata/lager-rs/blob/main/MISSING_ENDPOINTS.md).
 </Note>
 
@@ -141,7 +144,7 @@ tracked in the crate's
 
 ### Measurement
 
-- [Oscilloscope](/source/reference/rust/scope) — a documented stub today
+- [Oscilloscope](/source/reference/rust/scope)
 - [ADC](/source/reference/rust/adc)
 - [Thermocouple](/source/reference/rust/thermocouple)
 
@@ -162,6 +165,10 @@ tracked in the crate's
 
 - [Robot Arm](/source/reference/rust/arm)
 - [Webcam](/source/reference/rust/webcam)
+
+### Security
+
+- [HSM](/source/reference/rust/hsm) — YubiHSM 2 keys and signing
 
 ### Guides
 

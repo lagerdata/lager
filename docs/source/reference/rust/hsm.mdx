@@ -1,0 +1,156 @@
+---
+title: HSM
+description: Generate keys, sign data and manage objects on a YubiHSM 2 net
+---
+
+Drive a YubiHSM 2 from a cargo test: generate a key, sign data with it, and manage the
+objects on the device. It requires box software 0.59.0 or later.
+
+## Handle
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let hsm = lager.hsm("hsm1");
+```
+
+## Methods
+
+| Method | Description |
+|--------|-------------|
+| `name()` | The net name this handle addresses |
+| `info()` | Firmware, serial number, audit-log use and supported algorithms |
+| `blink()` | Blink the LED, to find the device on the bench |
+| `objects()` | List the objects that the authentication key can see |
+| `generate()` | Generate an asymmetric key on the device |
+| `public_key()` | Read a stored key's public key, as PEM |
+| `sign()` | Sign data with a stored key |
+| `delete()` | Delete an object |
+| `reset()` | Factory-reset the device |
+
+## Login
+
+Every method except `info()` logs in with an authentication key. Give the key and its
+password in an `HsmAuth`:
+
+```rust
+use lager::HsmAuth;
+
+let auth = HsmAuth::new(std::env::var("HSM_PASSWORD").expect("HSM_PASSWORD"));
+let other = HsmAuth::with_key(2, "another-password");
+```
+
+`HsmAuth::new` uses authentication key `1`, the factory key. The `Debug` output of an
+`HsmAuth` leaves out the password, so it cannot reach a test log through `{:?}`.
+
+<Warning>
+  If the network between your computer and the box is not trusted, reach the box only
+  through Tailscale or an SSH tunnel. The crate sends the password to the box API over
+  plain HTTP, the same as all other box API traffic. The box removes the password from
+  its logs.
+</Warning>
+
+The factory login is authentication key `1` with the password `password`. Replace that
+key before you put keys on the HSM that matter.
+
+## Types
+
+### `GenerateKey`
+
+```rust
+pub struct GenerateKey {
+    pub algorithm: String,        // "ec-p256", "ec-p384", "ec-p521", "ec-k256", "ed25519"
+    pub object_id: u16,           // 0 lets the HSM pick one
+    pub label: String,
+    pub domains: Vec<u8>,         // 1-16; empty means domain 1
+    pub capabilities: Vec<String>, // empty means the defaults for the algorithm
+}
+```
+
+`GenerateKey::new(algorithm)` sets every other field to its default.
+
+### `HsmObject`
+
+Each object from `objects()` carries `id`, `object_type`, `label`, `algorithm`,
+`domains`, `capabilities`, `size` and `sequence`.
+
+## Method Reference
+
+### `generate(auth: &HsmAuth, key: &GenerateKey) -> Result<GeneratedKey>`
+
+Generate an asymmetric key on the device.
+
+```rust
+use lager::{GenerateKey, HsmAuth};
+
+let mut spec = GenerateKey::new("ec-p256");
+spec.label = "fw-signing".into();
+let key = hsm.generate(&auth, &spec)?;
+println!("key 0x{:04X}\n{}", key.id, key.public_key_pem);
+```
+
+**Returns:** `GeneratedKey`, with the key's `id` and its `public_key_pem`.
+
+The box refuses RSA generation, because it can take minutes. To make an RSA key, use
+the Python API.
+
+### `sign(auth: &HsmAuth, object_id: u16, data: &[u8], mechanism: &str) -> Result<Vec<u8>>`
+
+Sign `data` with a stored key, and return the signature bytes. The HSM hashes the data
+for the ECDSA and RSA mechanisms, so pass the message itself, not a digest of it.
+
+```rust
+let signature = hsm.sign(&auth, key.id, b"message to sign", "ecdsa-sha256")?;
+```
+
+`mechanism` is one of these:
+
+- `ecdsa-sha256`, `ecdsa-sha384`, `ecdsa-sha512`
+- `eddsa`
+- `rsa-pkcs1-sha256`, `rsa-pkcs1-sha384`, `rsa-pkcs1-sha512`
+- `rsa-pss-sha256`, `rsa-pss-sha384`, `rsa-pss-sha512`
+
+### `objects(auth: &HsmAuth, object_type: Option<&str>, label: Option<&str>) -> Result<Vec<HsmObject>>`
+
+List the objects that the authentication key can see. Pass a type or a label to
+filter the list. The types are `asymmetric-key`, `authentication-key`, `opaque`,
+`wrap-key`, `hmac-key`, `template` and `otp-aead-key`.
+
+### `delete(auth: &HsmAuth, object_id: u16, object_type: Option<&str>) -> Result<()>`
+
+Delete an object. `object_type` defaults to `asymmetric-key`.
+
+### `reset(auth: &HsmAuth) -> Result<()>`
+
+<Warning>
+  **`reset()` deletes every key and object on the device, and you cannot undo it.** The
+  device reboots and keeps only the factory login. Call it only on an HSM that holds no
+  key you need.
+</Warning>
+
+## Examples
+
+### Generate a key, sign, and clean up
+
+```rust
+use lager::{GenerateKey, HsmAuth, LagerBox};
+
+let lager = LagerBox::from_env()?;
+let hsm = lager.hsm("hsm1");
+let auth = HsmAuth::new(std::env::var("HSM_PASSWORD").expect("HSM_PASSWORD"));
+
+let key = hsm.generate(&auth, &GenerateKey::new("ed25519"))?;
+let signature = hsm.sign(&auth, key.id, b"hello", "eddsa")?;
+assert_eq!(signature.len(), 64);
+hsm.delete(&auth, key.id, None)?;
+```
+
+## Notes
+
+- An unknown algorithm, mechanism or object type fails with `Error::Box` and HTTP 400.
+  The message lists the valid names.
+- A failed login or an error on the device fails with `Error::Box` and HTTP 502.
+- The data for `sign()` and the signature travel as base64. The crate encodes and
+  decodes them.
+- `AsyncHsm` from `AsyncLagerBox::hsm` provides the same methods, `.await`ed.

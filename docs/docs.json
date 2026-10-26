@@ -263,6 +263,12 @@
                 ]
               },
               {
+                "group": "Security",
+                "pages": [
+                  "source/reference/rust/hsm"
+                ]
+              },
+              {
                 "group": "Guides",
                 "pages": [
                   "source/reference/rust/testing",
@@ -758,6 +764,12 @@
                 "pages": [
                   "source/zh/reference/rust/arm",
                   "source/zh/reference/rust/webcam"
+                ]
+              },
+              {
+                "group": "安全",
+                "pages": [
+                  "source/zh/reference/rust/hsm"
                 ]
               },
               {

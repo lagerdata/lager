@@ -85,6 +85,15 @@ for net in lager.nets()? {
 | `custom_devices` | `customDevices` | Not used by this crate |
 | `binaries` | `binaries` | Not used by this crate |
 | `safety_limits` | `safetyLimits` | `PUT /nets/<name>/safety-limits`, box 0.35.0+ |
+| `custom_drivers` | `customDrivers` | Custom-driver nets; see [Net Types](/source/reference/rust/net-types#custom-driver-nets) |
+| `custom_driver_deps` | `customDriverDeps` | Not used by this crate |
+| `net_metadata_sync`, `box_metadata_sync` | `netMetadataSync`, `boxMetadataSync` | Not used by this crate |
+| `bench_manifest` | `benchManifest` | Not used by this crate |
+| `nets_state_enabled` | `netsStateEnabled` | `NetState::enabled` is reliable |
+| `nets_state_stream` | `netsStateStream` | Not used by this crate |
+
+A field the box does not send reads as `false`. `BoxCapabilities` is
+`#[non_exhaustive]`, so a field added later does not break your code.
 
 <Warning>
   **A capability flag mirrors route registration, not the box's ability to do the

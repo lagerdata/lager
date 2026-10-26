@@ -1,9 +1,9 @@
 ---
 title: 示波器
-description: 为什么示波器和逻辑采集目前还不能从 Rust 使用
+description: 设置示波器 Net 的通道、时基和触发，并读取测量值
 ---
 
-`Scope` 是一个**有文档记录的占位实现**。除 `name()` 之外的每个方法都返回 `Error::NotSupportedByBox`。这个类型之所以存在，是为了让今天照着它写的代码能够编译通过，并且在 Box 长出背后的端点之后继续编译通过。
+从一个 cargo test 里驱动示波器：设置它的通道、时基和触发，控制采集，并读取测量值。它适用于 Rigol MSO5000 和 PicoScope Net，需要 Box 软件 0.55.0 或更高版本。
 
 ## 句柄
 
@@ -11,59 +11,159 @@ description: 为什么示波器和逻辑采集目前还不能从 Rust 使用
 use lager::LagerBox;
 
 let lager = LagerBox::from_env()?;
-let scope = lager.scope("scope1");   // returns Scope by value, not a borrow
+let ch1 = lager.scope("scope1-ch1");
 ```
 
-`Scope` 是少数几个既没有生命周期参数、也没有异步版本的句柄之一：目前还没有需要它去做的客户端工作。
+示波器在 Box 上保存为两种 Net：
+
+- 一个代表仪器本身的 `scope` Net
+- 每个输入各一个 `scope-channel` Net
+
+`lager.scope(name)` 接受这两种中的任意一种。通道设置和测量需要通道 Net。其余一切都属于仪器本身，通过任意一种 Net 都可以使用。
 
 ## 方法
 
-| 方法 | 行为 |
-|--------|-------------|
-| `name()` | 可用。返回 Net 名称。 |
-| `enable()` | `Error::NotSupportedByBox` |
-| `disable()` | `Error::NotSupportedByBox` |
-| `capture()` | `Error::NotSupportedByBox` |
-| `measure()` | `Error::NotSupportedByBox` |
+| 方法 | Net | 说明 |
+|--------|-----|-------------|
+| `name()` | 任意 | 该句柄所指向的 Net 名称 |
+| `enable()`, `disable()`, `is_enabled()` | 通道 | 打开或关闭该通道，或者读回其状态 |
+| `set_scale()`, `scale()` | 通道 | 垂直刻度（V/div） |
+| `set_coupling()`, `coupling()` | 通道 | 输入耦合（`"dc"`、`"ac"`；Rigol 还接受 `"gnd"`） |
+| `set_probe()`, `probe()` | 通道 | 探头衰减（1 表示 1x，10 表示 10x） |
+| `set_offset()`, `offset()` | 通道 | 垂直偏移（V） |
+| `measure()` | 通道 | 一项测量 |
+| `measure_all()` | 通道 | 来自同一次采集的全部测量 |
+| `set_timebase()`, `timebase()` | 任意 | 时基（s/div） |
+| `set_time_offset()`, `time_offset()` | 任意 | 采集窗口相对于触发点的位置（s） |
+| `trigger_edge()` | 任意 | 配置边沿触发 |
+| `trigger()` | 任意 | 读回触发设置 |
+| `run()`, `single()`, `stop()` | 任意 | 连续采集、单次采集或停止 |
+| `force_trigger()` | 任意 | 立即触发 |
+| `autoscale()` | 任意 | 由仪器自行选择刻度、时基和触发 |
+| `command()` | 任意 | 任何其他示波器操作，参数为原始 JSON |
 
-错误会原样带上原因：
+## 类型
 
-```text
-'scope' is not yet available over the box HTTP API: the box needs
-`POST :9000/net/command` scope/logic roles (or a dedicated capture endpoint)
-for trigger config, single capture, and measurement queries; see
-MISSING_ENDPOINTS.md
-```
-
-## 原因
-
-这个 crate 是 Box 在 9000 端口上那套 API 的纯 HTTP/JSON 客户端。它驱动的每种 Net 类型，都需要在那里有一条路由。
-
-对示波器来说，Box 现在已经有了这条路由。`POST :9000/net/command` 为 PicoScope 和 Rigol 提供 `scope` 角色。它覆盖通道启用、垂直和水平刻度、探头衰减、耦合、边沿触发配置、采集控制和测量。剩下的工作在 crate 这一侧。`Scope` 句柄还没有使用这些操作，因此上面的方法仍然返回 `Error::NotSupportedByBox`。
-
-两侧都还不支持逻辑分析仪的工作：`/net/command` 没有 `logic` 角色。
-
-流式采集保持现状。它是经由 WebSocket 中继传输的二进制帧流，而不是请求/响应式的 JSON，因此不适合放在这些方法后面。待办清单在 [MISSING_ENDPOINTS.md](https://github.com/lagerdata/lager-rs/blob/main/MISSING_ENDPOINTS.md) 中。
-
-## 替代做法
-
-示波器和逻辑相关的工作请用 Python API 或 CLI，其余一切用 Rust。它们驱动的是同一台 Box 和同一批 Net。
+### `Measurement`
 
 ```rust
-// Detect the stub explicitly rather than letting it surprise you.
-match scope.measure("vpp") {
-    Err(lager::Error::NotSupportedByBox { .. }) => {
-        eprintln!("scope capture is not on the HTTP API yet; skipping");
-    }
-    Ok(v) => println!("vpp = {v}"),
-    Err(e) => return Err(e),
+pub enum Measurement {
+    Vpp, Vmax, Vmin, Vrms, Vavg,
+    Period, Frequency,
+    DutyCyclePositive, DutyCycleNegative,
+    PulseWidthPositive, PulseWidthNegative,
+    RiseTime, FallTime, Overshoot,
 }
 ```
 
-如果断言真正需要的只是一个标量，一个 ADC Net 往往就够了，而且它今天就可用。确实需要真实波形时，请在测试的 shell 步骤里驱动 `lager scope`，或者把那一部分用 Python 写。
+电压以伏特为单位，时间以秒为单位，频率以赫兹为单位，占空比和过冲以百分比表示。
+
+### `EdgeTrigger`
+
+```rust
+pub struct EdgeTrigger {
+    pub source: Option<String>,   // as the instrument names it: "CHAN1", "A"
+    pub slope: Option<String>,    // "rising", "falling", ...
+    pub coupling: Option<String>, // the trigger path's filter, not the input coupling
+    pub level: Option<f64>,       // volts
+    pub mode: Option<TriggerMode>,
+}
+
+pub enum TriggerMode { Auto, Normal, Single }
+```
+
+### `TriggerSettings` 和 `Measurements`
+
+`trigger()` 返回一个 `TriggerSettings`，其中包含 `mode`、`source`、`slope`、`level`，以及示波器报告时的 `holdoff`。每个字段都是 `Option`，采用仪器自己的写法。
+
+`measure_all()` 返回一个 `Measurements`，每个量各有一个 `Option<f64>` 字段。`Measurements::get(Measurement)` 读取其中一个。
+
+## 方法参考
+
+### `measure(m: Measurement) -> Result<Option<f64>>`
+
+从该通道读取一个量。
+
+```rust
+use lager::Measurement;
+
+match ch1.measure(Measurement::Frequency)? {
+    Some(hz) => println!("{hz} Hz"),
+    None => println!("no frequency in this capture"),
+}
+```
+
+**返回：** 当采集中不包含该量时返回 `None`。例如，直流电平没有周期。这是一个答案，而不是错误。
+
+### `measure_all() -> Result<Measurements>`
+
+读取该次采集支持的每一个量。每次 `measure()` 调用都会进行自己的采集，因此对于实时信号，分开调用得到的值可能来自不同的时刻。`measure_all()` 从同一次采集中读取全部值，因此它们彼此一致。
+
+### `trigger_edge(trigger: &EdgeTrigger) -> Result<()>`
+
+配置边沿触发。Box 只应用已设置的字段。因此只设置 `level` 时只会移动触发电平，触发源和斜率保持不变。
+
+```rust
+use lager::{EdgeTrigger, TriggerMode};
+
+ch1.trigger_edge(&EdgeTrigger {
+    source: Some("CHAN1".into()),
+    level: Some(1.2),
+    mode: Some(TriggerMode::Normal),
+    ..Default::default()
+})?;
+```
+
+`TriggerMode::Single` 让示波器为一次采集做好准备，与台式示波器上的行为相同。没有设置任何字段的调用会被 Box 拒绝。
+
+### `command(action: &str, params: Value) -> Result<Value>`
+
+运行一个没有类型化方法的示波器操作，并返回它的 `value`。例如 `capabilities`、`get_state`、`set_acquire`、`set_trigger_holdoff`、`set_roll`、`fft` 以及各种光标操作。
+
+```rust
+use serde_json::json;
+
+ch1.command("set_trigger_holdoff", json!({ "seconds": 0.001 }))?;
+```
+
+## 示例
+
+### 测量一个时钟
+
+```rust
+use lager::{EdgeTrigger, LagerBox, Measurement, TriggerMode};
+
+let lager = LagerBox::from_env()?;
+let ch1 = lager.scope("scope1-ch1");
+
+ch1.enable()?;
+ch1.set_coupling("dc")?;
+ch1.set_scale(0.5)?;
+ch1.set_timebase(1e-6)?;
+ch1.trigger_edge(&EdgeTrigger {
+    level: Some(1.65),
+    mode: Some(TriggerMode::Normal),
+    ..Default::default()
+})?;
+ch1.run()?;
+
+let all = ch1.measure_all()?;
+let hz = all.get(Measurement::Frequency).expect("a clock has a frequency");
+assert!((hz - 32_768.0).abs() < 50.0, "clock at {hz} Hz");
+```
+
+## 受支持的硬件
+
+| 仪器 | 备注 |
+|---|---|
+| Rigol MSO5000 系列 | `set_coupling` 还接受 `"gnd"` |
+| PicoScope 2000、2000A、3000A、4000A 和 5000A 系列 | 没有接地耦合 |
 
 ## 说明
 
-- 该占位实现返回的是 `Error::NotSupportedByBox`，这与 `Error::UnsupportedByBox` 是**不同的变体**。`NotSupportedByBox` 表示该 crate 对此根本没有路由；`UnsupportedByBox` 表示确实存在这条路由，只是这台 Box 太旧。请参阅 [错误](/source/zh/reference/rust/errors)。
-- 逻辑分析仪 Net 在 Rust 中完全没有句柄 —— 没有 `lager.logic(...)`。
-- 这里的一切都与 Box 版本无关。即便 Box 运行的是最新软件，返回的仍然是这个占位错误。
+- **在仪器 Net 上执行通道操作会失败。** 把 `set_scale()` 或 `measure()` 发给 `scope` Net 时，Box 会以 `Error::Box` 和 HTTP 400 应答。错误信息会列出应改用的通道 Net。
+- 早于 0.55.0 的 Box 对示波器 Net 应答 HTTP 501，crate 将其返回为 `Error::UnsupportedByBox`。
+- 每次调用允许 45 秒。Box 把单条示波器命令限制在 30 秒，因此 Box 自己的超时错误会在 crate 停止等待之前到达。
+- **波形采集不在 HTTP API 上。** 波形从 Box 的示波器守护进程流式传输到浏览器中的 `/scope` 页面。如果要对波形而不是测量值做断言，请在那一部分使用 Python API 或 CLI。
+- 逻辑分析仪 Net 没有 Rust 句柄，因为 Box 在 `/net/command` 上没有 `logic` 角色。待办清单在 [MISSING_ENDPOINTS.md](https://github.com/lagerdata/lager-rs/blob/main/MISSING_ENDPOINTS.md) 中。
+- 来自 `AsyncLagerBox::scope` 的 `AsyncScope` 提供同样的方法，以 `.await` 调用。

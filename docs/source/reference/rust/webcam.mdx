@@ -24,6 +24,8 @@ let cam = lager.webcam("cam1");
 | `stop()` | Stop the stream |
 | `status()` | Whether a stream is running, and where |
 | `url()` | The stream URL, or `None` when nothing is running |
+| `snapshot()` | One JPEG frame from the running stream |
+| `start_as()` | Start the stream, and record who started it |
 
 ## Types
 
@@ -39,6 +41,8 @@ pub struct WebcamStatus {
     pub url: Option<String>,
     pub port: Option<i64>,
     pub video_device: Option<String>,   // e.g. "/dev/video0"
+    pub source: Option<String>,         // which surface started the stream (box 0.47.0+)
+    pub started_by: Option<String>,     // who started it
 }
 ```
 
@@ -66,6 +70,22 @@ Stop the stream.
 ### `status() -> Result<WebcamStatus>` and `url() -> Result<Option<String>>`
 
 Whether a stream is active and where, or just the URL.
+
+### `snapshot() -> Result<Vec<u8>>`
+
+Capture one JPEG frame from the running stream, and return its bytes. Start the
+stream first: the box refuses a snapshot when no stream runs. It requires box software
+0.47.0 or later.
+
+```rust
+cam.start()?;
+std::fs::write("target/bench.jpg", cam.snapshot()?).expect("write the frame");
+```
+
+### `start_as(source: &str, started_by: Option<&str>) -> Result<WebcamStream>`
+
+Like `start()`, and the box records which surface started the stream, and who.
+`status()` reports them in `source` and `started_by`.
 
 ## Examples
 
@@ -97,9 +117,8 @@ result?;
 - **The stream URL points at the box as the client reached it.** A URL captured on
   one network does not always resolve from another, so do not persist it across
   environments.
-- This handle gives a video stream, not a frame grab. There is no assert-on-image here —
-  point an MJPEG consumer (a browser, VLC, OpenCV) at the URL. To save one frame from
-  a running stream, use `lager webcam NET snapshot` from the CLI.
+- To watch the stream, point an MJPEG consumer (a browser, VLC, OpenCV) at the URL.
+  To keep one frame from a test, call `snapshot()`.
 - Always `stop()` in teardown. A running stream holds the camera open. A start on the
   same net reports the running stream. A stream on a different net that uses the same
   camera is refused until this one stops.

@@ -9,7 +9,7 @@ description: AsyncLagerBox，以及它与阻塞客户端究竟有哪些差异
 
 ```toml
 [dev-dependencies]
-lager = { package = "lager-net", version = "0.4", default-features = false, features = ["async"] }
+lager = { package = "lager-net", version = "0.8", default-features = false, features = ["async"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -47,7 +47,7 @@ async fn rail_comes_up() -> lager::Result<()> {
 | `debug.rtt()` 和 `RttStream` | 有 | **无** |
 | `debug.rtt_interactive()` | 有 | **无** |
 
-`uart` 和 `rtt` 这两个 feature 都隐含启用 `blocking`，因此启用它们就会把阻塞客户端拉进来，无论您是否想要。`Scope` 是两者共用的：它在两边都是占位实现，方法是同步的。
+`uart` 和 `rtt` 这两个 feature 都隐含启用 `blocking`，因此启用它们就会把阻塞客户端拉进来，无论您是否想要。
 
 <Note>
   异步客户端上没有 RAII 式的锁守卫。请显式地取锁和释放锁，并确保错误路径上也会执行释放。

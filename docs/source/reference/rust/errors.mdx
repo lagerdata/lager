@@ -20,6 +20,10 @@ variants will not break your build.
 | `Connection(String)` | The box is unreachable — DNS, TCP connect, transport failure |
 | `Timeout(String)` | A client-side deadline expired |
 | `Box { status, message }` | The box accepted the request and reported a failure |
+| `DfuFailed { status, exit_code, stdout, stderr }` | Box-side `dfu-util` exited non-zero |
+| `FlashFailed { error, output }` | A debug flash ran but programmed nothing |
+| `ProbeBusy { message }` | Another operation held the debug probe too long |
+| `SafetyRefused { message }` | The net's safety settings refused a flash or erase |
 | `UnsupportedByBox { message }` | This box's software is too old for an endpoint that exists |
 | `NotSupportedByBox { feature, details }` | The crate has no route for this at all |
 | `Decode(String)` | The response could not be parsed |
@@ -74,7 +78,6 @@ Common shapes:
 | Debug net missing | 404 | `debug net 'nosuch' not found on this box` |
 | Setpoint over a hardware limit | 400 | `Voltage 999.0V exceeds hardware limit 60.0V` |
 | Setpoint over a safety ceiling | 502 | `Refused voltage(5.0) on net 'supply2': exceeds max_voltage of 3.6` |
-| Erase on a protected net | 403 | `Refused erase on net 'debug1': ... allow_destructive: false.` |
 | Box lock held by someone else | 409 | `Box is locked by <holder>` |
 | Instrument absent from the bus | 502 | `Could not open instrument at <address>: No device found.` |
 
@@ -93,12 +96,26 @@ names the version needed.
 {message}. This box image does not support this endpoint; update the box
 ```
 
-Examples: `usb_devices()` and `dfu()` need box 0.33.0; safety limits and interactive
-RTT need 0.35.0; `UsbPort::state()` needs 0.29.0.
+Examples:
+
+| Call | Needs box |
+|---|---|
+| `UsbPort::state()` | 0.29.0 |
+| `usb_devices()`, `dfu()` | 0.33.0 |
+| safety limits, interactive RTT | 0.35.0 |
+| `DebugNet::erase_range()` | 0.50.0 |
+| `scope()` | 0.55.0 |
+| `hsm()`, `custom()` | 0.59.0 |
+| `DebugNet::halt()`, `Arm::get_acceleration()` | 0.60.0 |
+
+`erase_range()` and `halt()` check the debug service's features before they send
+anything. So an old box fails with this variant before it touches the target.
 
 ### `NotSupportedByBox { feature, details }`
 
-The crate has no route for this feature on any box. Today this is only `Scope`.
+The crate has no route for this feature on any box. Since crate 0.8, no net type
+returns it: `Scope` was the last stub. The variant stays, so a `match` on it still
+compiles.
 
 ```text
 '{feature}' is not yet available over the box HTTP API: {details}
@@ -109,6 +126,51 @@ The crate has no route for this feature on any box. Today this is only `Scope`.
   similar names. **Unsupported** means *update the box*. **Not supported** means *no
   box can do this yet*.
 </Warning>
+
+### `DfuFailed { status, exit_code, stdout, stderr }`
+
+Box-side `dfu-util` ran and exited non-zero (HTTP 502 from `POST /usb/dfu`). Both
+output streams are complete, and the message quotes both. `dfu-util` reports some
+device failures on stdout, and its suffix warnings on stderr.
+
+```text
+box error (HTTP 502): dfu-util exited with code {exit_code}
+stderr:
+...
+stdout:
+...
+```
+
+### `FlashFailed { error, output }`
+
+A debug flash ran but programmed nothing. The box answers HTTP 200 with
+`programmed: false` for this (box 0.51.0 and later). `error` is the box's verdict line,
+and `output` is the backend's output.
+
+```text
+flash failed: {error}
+output:
+...
+```
+
+### `ProbeBusy { message }`
+
+Another operation, such as a flash or an erase, held the debug probe for longer than
+the box waits (HTTP 503 from the debug service). Retry when the other operation is
+done.
+
+```text
+debug probe busy: {message}
+```
+
+### `SafetyRefused { message }`
+
+The net is configured with `allow_destructive: false`, and the debug service refused
+a flash or an erase (HTTP 403).
+
+```text
+refused by the net's safety settings: {message}
+```
 
 ### `Decode(String)`
 
@@ -159,7 +221,7 @@ match supply.set_voltage(5.0) {
         eprintln!("box too old, skipping: {message}");
         return Ok(());
     }
-    Err(Error::Box { status: 403, message }) => {
+    Err(Error::Box { status: 502, message }) => {
         panic!("refused by a safety limit: {message}");
     }
     Err(Error::AuthRequired { auth_url, .. }) => {

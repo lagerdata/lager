@@ -86,6 +86,12 @@ let cfg = spi.configure(&SpiConfig {
 })?;
 ```
 
+`SpiEffectiveConfig` also carries two fields from newer boxes:
+
+- `achieved_frequency_hz` is the clock that the adapter actually runs (box 0.47.0 and
+  later). A LabJack U3 rounds the clock down, so this can be lower than the value set.
+- `warnings` lists settings that the adapter cannot honor (box 0.49.0 and later).
+
 ### `read(n_words: u32, opts: &SpiOptions) -> Result<SpiTransfer>`
 
 Clock in `n_words`, clocking out `opts.fill` for each.

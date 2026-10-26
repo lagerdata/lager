@@ -18,6 +18,10 @@ pub type Result<T> = std::result::Result<T, Error>;
 | `Connection(String)` | 联系不上 Box —— DNS、TCP 连接或传输层失败 |
 | `Timeout(String)` | 客户端侧的截止时间到了 |
 | `Box { status, message }` | Box 接受了请求，并报告了一次失败 |
+| `DfuFailed { status, exit_code, stdout, stderr }` | Box 端的 `dfu-util` 以非零状态退出 |
+| `FlashFailed { error, output }` | 调试烧录运行了，但没有烧写任何内容 |
+| `ProbeBusy { message }` | 另一个操作占用调试探针的时间过长 |
+| `SafetyRefused { message }` | 该 Net 的安全设置拒绝了一次烧录或擦除 |
 | `UnsupportedByBox { message }` | 端点存在，但这台 Box 的软件太旧 |
 | `NotSupportedByBox { feature, details }` | 该 crate 根本没有对应的路由 |
 | `Decode(String)` | 响应无法解析 |
@@ -66,7 +70,6 @@ box error (HTTP {status}): {message}
 | 调试 Net 不存在 | 404 | `debug net 'nosuch' not found on this box` |
 | 设定值超过硬件限制 | 400 | `Voltage 999.0V exceeds hardware limit 60.0V` |
 | 设定值超过安全上限 | 502 | `Refused voltage(5.0) on net 'supply2': exceeds max_voltage of 3.6` |
-| 在受保护的 Net 上擦除 | 403 | `Refused erase on net 'debug1': ... allow_destructive: false.` |
 | Box 锁被别人持有 | 409 | `Box is locked by <holder>` |
 | 仪器不在总线上 | 502 | `Could not open instrument at <address>: No device found.` |
 
@@ -82,11 +85,23 @@ Box 也可能用 **HTTP 200** 加 `success: false` 来报告失败 —— 跨角
 {message}. This box image does not support this endpoint; update the box
 ```
 
-例如：`usb_devices()` 和 `dfu()` 需要 Box 0.33.0；安全限值和交互式 RTT 需要 0.35.0；`UsbPort::state()` 需要 0.29.0。
+示例：
+
+| 调用 | 所需 Box 版本 |
+|---|---|
+| `UsbPort::state()` | 0.29.0 |
+| `usb_devices()`, `dfu()` | 0.33.0 |
+| 安全限值、交互式 RTT | 0.35.0 |
+| `DebugNet::erase_range()` | 0.50.0 |
+| `scope()` | 0.55.0 |
+| `hsm()`, `custom()` | 0.59.0 |
+| `DebugNet::halt()`, `Arm::get_acceleration()` | 0.60.0 |
+
+`erase_range()` 和 `halt()` 在发送任何内容之前，会先检查调试服务的功能。因此旧 Box 会在碰到目标之前就以这个变体失败。
 
 ### `NotSupportedByBox { feature, details }`
 
-该 crate 在任何 Box 上都没有这个功能的路由。目前只有 `Scope` 属于这种情况。
+该 crate 在任何 Box 上都没有这个功能的路由。从 crate 0.8 起，已经没有任何 Net 类型会返回它：`Scope` 是最后一个桩实现。这个变体仍然保留，因此对它做 `match` 的代码依然可以编译。
 
 ```text
 '{feature}' is not yet available over the box HTTP API: {details}
@@ -95,6 +110,44 @@ Box 也可能用 **HTTP 200** 加 `success: false` 来报告失败 —— 跨角
 <Warning>
   `UnsupportedByBox` 和 `NotSupportedByBox` 是两个不同的变体，名字却容易混淆。**Unsupported** 的意思是*请更新 Box*。**Not supported** 的意思是*目前没有任何 Box 能做这件事*。
 </Warning>
+
+### `DfuFailed { status, exit_code, stdout, stderr }`
+
+Box 端的 `dfu-util` 运行了，并以非零状态退出（`POST /usb/dfu` 返回 HTTP 502）。两路输出流都是完整的，错误信息会同时引用两者。`dfu-util` 会把某些设备故障报告在 stdout 上，而把它的后缀警告报告在 stderr 上。
+
+```text
+box error (HTTP 502): dfu-util exited with code {exit_code}
+stderr:
+...
+stdout:
+...
+```
+
+### `FlashFailed { error, output }`
+
+调试烧录运行了，但没有烧写任何内容。对于这种情况，Box 会返回 HTTP 200 并带上 `programmed: false`（Box 0.51.0 及更高版本）。`error` 是 Box 的结论行，`output` 是后端的输出。
+
+```text
+flash failed: {error}
+output:
+...
+```
+
+### `ProbeBusy { message }`
+
+另一个操作（例如一次烧录或擦除）占用调试探针的时间超过了 Box 的等待时长（调试服务返回 HTTP 503）。请在另一个操作完成后重试。
+
+```text
+debug probe busy: {message}
+```
+
+### `SafetyRefused { message }`
+
+该 Net 配置了 `allow_destructive: false`，调试服务拒绝了一次烧录或擦除（HTTP 403）。
+
+```text
+refused by the net's safety settings: {message}
+```
 
 ### `Decode(String)`
 
@@ -142,7 +195,7 @@ match supply.set_voltage(5.0) {
         eprintln!("box too old, skipping: {message}");
         return Ok(());
     }
-    Err(Error::Box { status: 403, message }) => {
+    Err(Error::Box { status: 502, message }) => {
         panic!("refused by a safety limit: {message}");
     }
     Err(Error::AuthRequired { auth_url, .. }) => {

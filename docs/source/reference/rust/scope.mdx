@@ -1,11 +1,11 @@
 ---
 title: Oscilloscope
-description: Why scope and logic capture are not yet available from Rust
+description: Set up channels, timebase and trigger, and read measurements from a scope net
 ---
 
-`Scope` is a **documented stub**. Every method except `name()` returns
-`Error::NotSupportedByBox`. The type exists so that code written against it compiles
-today and keeps compiling when the box grows the endpoints behind it.
+Drive an oscilloscope from a cargo test: set up its channels, timebase and trigger,
+control acquisition, and read measurements. It works with Rigol MSO5000 and PicoScope
+nets, and requires box software 0.55.0 or later.
 
 ## Handle
 
@@ -13,76 +13,180 @@ today and keeps compiling when the box grows the endpoints behind it.
 use lager::LagerBox;
 
 let lager = LagerBox::from_env()?;
-let scope = lager.scope("scope1");   // returns Scope by value, not a borrow
+let ch1 = lager.scope("scope1-ch1");
 ```
 
-`Scope` is one of the few handles with no lifetime and no async twin: there is no
-client work for it to do yet.
+A scope is saved on the box as two kinds of net:
+
+- one `scope` net for the instrument
+- one `scope-channel` net for each input
+
+`lager.scope(name)` takes either kind. Channel settings and measurements need a
+channel net. Everything else belongs to the instrument, and works through either kind.
 
 ## Methods
 
-| Method | Behavior |
-|--------|-------------|
-| `name()` | Works. Returns the net name. |
-| `enable()` | `Error::NotSupportedByBox` |
-| `disable()` | `Error::NotSupportedByBox` |
-| `capture()` | `Error::NotSupportedByBox` |
-| `measure()` | `Error::NotSupportedByBox` |
+| Method | Net | Description |
+|--------|-----|-------------|
+| `name()` | either | The net name this handle addresses |
+| `enable()`, `disable()`, `is_enabled()` | channel | Turn the channel on or off, or read it back |
+| `set_scale()`, `scale()` | channel | Vertical scale (V/div) |
+| `set_coupling()`, `coupling()` | channel | Input coupling (`"dc"`, `"ac"`; a Rigol also takes `"gnd"`) |
+| `set_probe()`, `probe()` | channel | Probe attenuation (1 for 1x, 10 for 10x) |
+| `set_offset()`, `offset()` | channel | Vertical offset (V) |
+| `measure()` | channel | One measurement |
+| `measure_all()` | channel | Every measurement, from one capture |
+| `set_timebase()`, `timebase()` | either | Timebase (s/div) |
+| `set_time_offset()`, `time_offset()` | either | Capture window position relative to the trigger (s) |
+| `trigger_edge()` | either | Configure the edge trigger |
+| `trigger()` | either | Read the trigger back |
+| `run()`, `single()`, `stop()` | either | Continuous acquisition, one acquisition, or stop |
+| `force_trigger()` | either | Trigger now |
+| `autoscale()` | either | Let the instrument pick scale, timebase and trigger |
+| `command()` | either | Any other scope action, with raw JSON params |
 
-The error carries the reason verbatim:
+## Types
 
-```text
-'scope' is not yet available over the box HTTP API: the box needs
-`POST :9000/net/command` scope/logic roles (or a dedicated capture endpoint)
-for trigger config, single capture, and measurement queries; see
-MISSING_ENDPOINTS.md
-```
-
-## Why
-
-The crate is a pure HTTP/JSON client of the box's API on port 9000. It needs a
-route there for every net type it drives.
-
-For scopes, the box now has that route. `POST :9000/net/command` carries a `scope`
-role for both PicoScope and Rigol. It covers channel enable, vertical and
-horizontal scaling, probe attenuation, coupling, edge trigger configuration,
-capture control and measurements. What remains is the crate. The `Scope` handle
-does not use those actions yet, so the methods above still return
-`Error::NotSupportedByBox`.
-
-Neither side supports logic-analyzer work yet: `/net/command` has no `logic` role.
-
-Streaming capture stays where it is. It is a binary frame stream over a WebSocket
-relay rather than request/response JSON, so it does not belong behind these
-methods. The work list lives in
-[MISSING_ENDPOINTS.md](https://github.com/lagerdata/lager-rs/blob/main/MISSING_ENDPOINTS.md).
-
-## What to do instead
-
-Use the Python API or the CLI for scope and logic work, and Rust for everything else.
-They drive the same box and the same nets.
+### `Measurement`
 
 ```rust
-// Detect the stub explicitly rather than letting it surprise you.
-match scope.measure("vpp") {
-    Err(lager::Error::NotSupportedByBox { .. }) => {
-        eprintln!("scope capture is not on the HTTP API yet; skipping");
-    }
-    Ok(v) => println!("vpp = {v}"),
-    Err(e) => return Err(e),
+pub enum Measurement {
+    Vpp, Vmax, Vmin, Vrms, Vavg,
+    Period, Frequency,
+    DutyCyclePositive, DutyCycleNegative,
+    PulseWidthPositive, PulseWidthNegative,
+    RiseTime, FallTime, Overshoot,
 }
 ```
 
-For a scalar an assertion actually needs, an ADC net often suffices and is available
-today. Where a real waveform is required, drive `lager scope` from the test's shell
-step, or write that portion in Python.
+Voltages are in volts, times in seconds, frequency in hertz, and duty cycle and
+overshoot in percent.
+
+### `EdgeTrigger`
+
+```rust
+pub struct EdgeTrigger {
+    pub source: Option<String>,   // as the instrument names it: "CHAN1", "A"
+    pub slope: Option<String>,    // "rising", "falling", ...
+    pub coupling: Option<String>, // the trigger path's filter, not the input coupling
+    pub level: Option<f64>,       // volts
+    pub mode: Option<TriggerMode>,
+}
+
+pub enum TriggerMode { Auto, Normal, Single }
+```
+
+### `TriggerSettings` and `Measurements`
+
+`trigger()` returns a `TriggerSettings` with `mode`, `source`, `slope`, `level`, and
+`holdoff` when the scope reports one. Each field is an `Option`, in the instrument's
+own spelling.
+
+`measure_all()` returns a `Measurements` with one `Option<f64>` field for each
+quantity. `Measurements::get(Measurement)` reads one of them.
+
+## Method Reference
+
+### `measure(m: Measurement) -> Result<Option<f64>>`
+
+Read one quantity from the channel.
+
+```rust
+use lager::Measurement;
+
+match ch1.measure(Measurement::Frequency)? {
+    Some(hz) => println!("{hz} Hz"),
+    None => println!("no frequency in this capture"),
+}
+```
+
+**Returns:** `None` when the capture does not contain the quantity. For example, a DC
+level has no period. This is an answer, not an error.
+
+### `measure_all() -> Result<Measurements>`
+
+Read every quantity the capture supports. Each `measure()` call takes its own
+capture, so values from separate calls can come from different moments of a live
+signal. `measure_all()` reads them all from one capture, so they agree with each
+other.
+
+### `trigger_edge(trigger: &EdgeTrigger) -> Result<()>`
+
+Configure the edge trigger. The box applies only the fields that are set. So `level`
+alone moves the level, and leaves the source and slope as they are.
+
+```rust
+use lager::{EdgeTrigger, TriggerMode};
+
+ch1.trigger_edge(&EdgeTrigger {
+    source: Some("CHAN1".into()),
+    level: Some(1.2),
+    mode: Some(TriggerMode::Normal),
+    ..Default::default()
+})?;
+```
+
+`TriggerMode::Single` arms the scope for one acquisition, as on a bench scope. The box
+refuses a call with no field set.
+
+### `command(action: &str, params: Value) -> Result<Value>`
+
+Run a scope action that has no typed method, and return its `value`. Examples are
+`capabilities`, `get_state`, `set_acquire`, `set_trigger_holdoff`, `set_roll`, `fft`
+and the cursor actions.
+
+```rust
+use serde_json::json;
+
+ch1.command("set_trigger_holdoff", json!({ "seconds": 0.001 }))?;
+```
+
+## Examples
+
+### Measure a clock
+
+```rust
+use lager::{EdgeTrigger, LagerBox, Measurement, TriggerMode};
+
+let lager = LagerBox::from_env()?;
+let ch1 = lager.scope("scope1-ch1");
+
+ch1.enable()?;
+ch1.set_coupling("dc")?;
+ch1.set_scale(0.5)?;
+ch1.set_timebase(1e-6)?;
+ch1.trigger_edge(&EdgeTrigger {
+    level: Some(1.65),
+    mode: Some(TriggerMode::Normal),
+    ..Default::default()
+})?;
+ch1.run()?;
+
+let all = ch1.measure_all()?;
+let hz = all.get(Measurement::Frequency).expect("a clock has a frequency");
+assert!((hz - 32_768.0).abs() < 50.0, "clock at {hz} Hz");
+```
+
+## Supported Hardware
+
+| Instrument | Notes |
+|---|---|
+| Rigol MSO5000 series | `set_coupling` also takes `"gnd"` |
+| PicoScope 2000, 2000A, 3000A, 4000A and 5000A series | No ground coupling |
 
 ## Notes
 
-- The stub returns `Error::NotSupportedByBox`, which is a **different variant** from
-  `Error::UnsupportedByBox`. `NotSupportedByBox` means the crate has no route for this
-  at all. `UnsupportedByBox` means this particular box is too old for a route that
-  does exist. See [Errors](/source/reference/rust/errors).
-- A logic net has no Rust handle whatsoever — there is no `lager.logic(...)`.
-- Nothing here depends on box version. A box running the newest software still
-  returns the stub error.
+- **A channel action on the instrument net fails.** Send `set_scale()` or `measure()`
+  to the `scope` net, and the box answers `Error::Box` with HTTP 400. The message
+  names the channel nets to use instead.
+- A box older than 0.55.0 answers HTTP 501 for scope nets, which the crate returns as
+  `Error::UnsupportedByBox`.
+- Each call allows 45 s. The box limits one scope command to 30 s, so the box's own
+  timeout error arrives before the crate stops waiting.
+- **Trace capture is not on the HTTP API.** The waveform streams from the box's
+  oscilloscope daemon to the `/scope` page in a browser. To assert on a waveform
+  rather than a measurement, use the Python API or the CLI for that part.
+- Logic-analyzer nets have no Rust handle, because the box has no `logic` role on
+  `/net/command`. The work list is in
+  [MISSING_ENDPOINTS.md](https://github.com/lagerdata/lager-rs/blob/main/MISSING_ENDPOINTS.md).
+- `AsyncScope` from `AsyncLagerBox::scope` provides the same methods, `.await`ed.

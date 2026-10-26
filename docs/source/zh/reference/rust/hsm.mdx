@@ -1,0 +1,140 @@
+---
+title: HSM
+description: 在 YubiHSM 2 Net 上生成密钥、签名数据并管理对象
+---
+
+从一个 cargo test 里驱动 YubiHSM 2：生成密钥、用它对数据签名，并管理设备上的对象。它需要 Box 软件 0.59.0 或更高版本。
+
+## 句柄
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let hsm = lager.hsm("hsm1");
+```
+
+## 方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `name()` | 该句柄所指向的 Net 名称 |
+| `info()` | 固件、序列号、审计日志用量和支持的算法 |
+| `blink()` | 让 LED 闪烁，以便在工作台上找到设备 |
+| `objects()` | 列出认证密钥可以看到的对象 |
+| `generate()` | 在设备上生成非对称密钥 |
+| `public_key()` | 以 PEM 格式读取已保存密钥的公钥 |
+| `sign()` | 用已保存的密钥对数据签名 |
+| `delete()` | 删除一个对象 |
+| `reset()` | 将设备恢复出厂设置 |
+
+## 登录
+
+除 `info()` 之外的每个方法都用一个认证密钥登录。在 `HsmAuth` 中给出该密钥及其密码：
+
+```rust
+use lager::HsmAuth;
+
+let auth = HsmAuth::new(std::env::var("HSM_PASSWORD").expect("HSM_PASSWORD"));
+let other = HsmAuth::with_key(2, "another-password");
+```
+
+`HsmAuth::new` 使用认证密钥 `1`，即出厂认证密钥。`HsmAuth` 的 `Debug` 输出不包含密码，因此密码不会经由 `{:?}` 进入测试日志。
+
+<Warning>
+  如果您的计算机与 Box 之间的网络不可信，只能通过 Tailscale 或 SSH 隧道使用 Box。crate 通过明文 HTTP 将密码发送到 Box API，这与其他所有 Box API 流量相同。Box 会从日志中去掉密码。
+</Warning>
+
+出厂登录是认证密钥 `1`，密码为 `password`。在 HSM 上存放重要密钥之前，请先替换这个密钥。
+
+## 类型
+
+### `GenerateKey`
+
+```rust
+pub struct GenerateKey {
+    pub algorithm: String,        // "ec-p256", "ec-p384", "ec-p521", "ec-k256", "ed25519"
+    pub object_id: u16,           // 0 lets the HSM pick one
+    pub label: String,
+    pub domains: Vec<u8>,         // 1-16; empty means domain 1
+    pub capabilities: Vec<String>, // empty means the defaults for the algorithm
+}
+```
+
+`GenerateKey::new(algorithm)` 把其余每个字段都设为默认值。
+
+### `HsmObject`
+
+`objects()` 返回的每个对象都携带 `id`、`object_type`、`label`、`algorithm`、`domains`、`capabilities`、`size` 和 `sequence`。
+
+## 方法参考
+
+### `generate(auth: &HsmAuth, key: &GenerateKey) -> Result<GeneratedKey>`
+
+在设备上生成非对称密钥。
+
+```rust
+use lager::{GenerateKey, HsmAuth};
+
+let mut spec = GenerateKey::new("ec-p256");
+spec.label = "fw-signing".into();
+let key = hsm.generate(&auth, &spec)?;
+println!("key 0x{:04X}\n{}", key.id, key.public_key_pem);
+```
+
+**返回：** `GeneratedKey`，带有密钥的 `id` 及其 `public_key_pem`。
+
+Box 拒绝生成 RSA 密钥，因为这可能需要几分钟。要生成 RSA 密钥，请使用 Python API。
+
+### `sign(auth: &HsmAuth, object_id: u16, data: &[u8], mechanism: &str) -> Result<Vec<u8>>`
+
+用已保存的密钥对 `data` 签名，并返回签名字节。对于 ECDSA 和 RSA 机制，HSM 会自己对数据做哈希，因此请传入消息本身，而不是它的摘要。
+
+```rust
+let signature = hsm.sign(&auth, key.id, b"message to sign", "ecdsa-sha256")?;
+```
+
+`mechanism` 取以下值之一：
+
+- `ecdsa-sha256`、`ecdsa-sha384`、`ecdsa-sha512`
+- `eddsa`
+- `rsa-pkcs1-sha256`、`rsa-pkcs1-sha384`、`rsa-pkcs1-sha512`
+- `rsa-pss-sha256`、`rsa-pss-sha384`、`rsa-pss-sha512`
+
+### `objects(auth: &HsmAuth, object_type: Option<&str>, label: Option<&str>) -> Result<Vec<HsmObject>>`
+
+列出认证密钥可以看到的对象。传入类型或标签可以过滤列表。类型有 `asymmetric-key`、`authentication-key`、`opaque`、`wrap-key`、`hmac-key`、`template` 和 `otp-aead-key`。
+
+### `delete(auth: &HsmAuth, object_id: u16, object_type: Option<&str>) -> Result<()>`
+
+删除一个对象。`object_type` 默认为 `asymmetric-key`。
+
+### `reset(auth: &HsmAuth) -> Result<()>`
+
+<Warning>
+  **`reset()` 会删除设备上的所有密钥和对象，并且无法撤销。** 设备会重启，只保留出厂登录。只在不保存任何您需要的密钥的 HSM 上调用它。
+</Warning>
+
+## 示例
+
+### 生成密钥、签名并清理
+
+```rust
+use lager::{GenerateKey, HsmAuth, LagerBox};
+
+let lager = LagerBox::from_env()?;
+let hsm = lager.hsm("hsm1");
+let auth = HsmAuth::new(std::env::var("HSM_PASSWORD").expect("HSM_PASSWORD"));
+
+let key = hsm.generate(&auth, &GenerateKey::new("ed25519"))?;
+let signature = hsm.sign(&auth, key.id, b"hello", "eddsa")?;
+assert_eq!(signature.len(), 64);
+hsm.delete(&auth, key.id, None)?;
+```
+
+## 说明
+
+- 未知的算法、机制或对象类型会以 `Error::Box` 和 HTTP 400 失败。错误信息会列出有效的名称。
+- 登录失败或设备上的错误会以 `Error::Box` 和 HTTP 502 失败。
+- `sign()` 的数据和签名以 base64 传输。crate 负责编码和解码。
+- 来自 `AsyncLagerBox::hsm` 的 `AsyncHsm` 提供同样的方法，以 `.await` 调用。

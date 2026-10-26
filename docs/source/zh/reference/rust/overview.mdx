@@ -10,6 +10,8 @@ Lager Rust crate 让嵌入式开发者以一等公民的方式访问 Lager Net�
 - 电源、电池仿真器、电子负载和太阳能仿真器
 - GPIO、ADC、DAC、热电偶、功率计和能量分析仪
 - SPI、I2C、USB 集线器端口、机械臂、摄像头和路由器
+- 示波器和 YubiHSM 2 HSM
+- 由 Box 上的自定义驱动运行的 Net
 - 流式 UART
 - Box 级别的能力：Box 自带的 BLE 适配器、WiFi 接口，以及 BluFi ESP32 配网
 
@@ -26,7 +28,7 @@ Lager Rust crate 让嵌入式开发者以一等公民的方式访问 Lager Net�
 ```toml
 # Cargo.toml
 [dev-dependencies]
-lager = { package = "lager-net", version = "0.4" }
+lager = { package = "lager-net", version = "0.8" }
 ```
 
 该 crate 需要 Rust **1.75** 或更高版本，基于 2021 edition 构建。
@@ -74,7 +76,7 @@ LAGER_BOX_HOST=192.168.1.42 cargo test
 两种客户端执行的是完全相同的请求构造器和响应解析器，因此这两条传输路径不会各自跑偏。
 
 ```toml
-lager = { package = "lager-net", version = "0.4", features = ["async"] }
+lager = { package = "lager-net", version = "0.8", features = ["async"] }
 ```
 
 ## 错误
@@ -86,17 +88,19 @@ lager = { package = "lager-net", version = "0.4", features = ["async"] }
 | `Connection` | 联系不上 Box（网络/Tailscale 问题，或 Box 离线） |
 | `Timeout` | Box 卡住，超过了（已经放宽的）时间预算 |
 | `Box { status, message }` | Box 拒绝了请求，或者硬件出错 |
+| `FlashFailed`, `ProbeBusy`, `SafetyRefused` | 某个调试探针操作以该 crate 有专门命名的方式失败 |
+| `DfuFailed` | Box 端的 `dfu-util` 以非零状态退出 |
 | `UnsupportedByBox` | HTTP 501：Box 镜像早于该端点；请更新 Box |
 | `AuthRequired` | Box 的网关需要 bearer 令牌，而当前没有可用的令牌 |
-| `NotSupportedByBox` | 该 Net 类型是有文档记录的占位实现（见下面的说明） |
+| `NotSupportedByBox` | 为兼容性而保留；没有任何 Net 类型会返回它 |
 
 ## 要求
 
-- 一台软件足够新、能提供 `POST /net/command` 的 Lager Box —— 请检查 `lager.status()?.capabilities.net_command`，或者运行 `lager update`。
+- 一台软件足够新、能提供 `POST /net/command` 的 Lager Box —— 请检查 `lager.status()?.capabilities.net_command`，或者运行 `lager update`。较新的调用需要较新的 Box 软件，每个页面都会写明所需版本。较旧的 Box 会返回 `Error::UnsupportedByBox`。
 - Rust 1.75 或更高版本。
 
 <Note>
-`Scope` 以有文档记录的占位实现发布，它的方法返回 `Error::NotSupportedByBox`。Box 已不再是障碍，因为 `POST /net/command` 现在有 `scope` 角色。该 crate 还没有使用这个角色。Box API 也还没有逻辑分析仪的工作流。端点草案记录在该 crate 的 [`MISSING_ENDPOINTS.md`](https://github.com/lagerdata/lager-rs/blob/main/MISSING_ENDPOINTS.md) 中。
+示波器波形采集和逻辑分析仪 Net 还没有进入 Box HTTP API。`Scope` 覆盖了示波器的其他所有功能：通道、时基、触发、采集控制和测量。待办清单记录在该 crate 的 [`MISSING_ENDPOINTS.md`](https://github.com/lagerdata/lager-rs/blob/main/MISSING_ENDPOINTS.md) 中。
 </Note>
 
 ## 参考
@@ -124,7 +128,7 @@ lager = { package = "lager-net", version = "0.4", features = ["async"] }
 
 ### 测量
 
-- [示波器](/source/zh/reference/rust/scope) —— 目前是有文档记录的占位实现
+- [示波器](/source/zh/reference/rust/scope)
 - [ADC](/source/zh/reference/rust/adc)
 - [热电偶](/source/zh/reference/rust/thermocouple)
 
@@ -145,6 +149,10 @@ lager = { package = "lager-net", version = "0.4", features = ["async"] }
 
 - [机械臂](/source/zh/reference/rust/arm)
 - [摄像头](/source/zh/reference/rust/webcam)
+
+### 安全
+
+- [HSM](/source/zh/reference/rust/hsm) —— YubiHSM 2 密钥与签名
 
 ### 指南
 

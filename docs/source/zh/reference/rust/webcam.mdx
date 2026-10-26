@@ -23,6 +23,8 @@ let cam = lager.webcam("cam1");
 | `stop()` | 停止串流 |
 | `status()` | 是否有串流在运行，以及在哪里 |
 | `url()` | 串流的 URL；没有串流在运行时为 `None` |
+| `snapshot()` | 从运行中的串流取一帧 JPEG |
+| `start_as()` | 启动串流，并记录是谁启动的 |
 
 ## 类型
 
@@ -38,6 +40,8 @@ pub struct WebcamStatus {
     pub url: Option<String>,
     pub port: Option<i64>,
     pub video_device: Option<String>,   // e.g. "/dev/video0"
+    pub source: Option<String>,         // which surface started the stream (box 0.47.0+)
+    pub started_by: Option<String>,     // who started it
 }
 ```
 
@@ -63,6 +67,19 @@ println!("watch at {} (reused: {})", s.url, s.already_running);
 ### `status() -> Result<WebcamStatus>` 和 `url() -> Result<Option<String>>`
 
 是否有活动串流以及它在哪里，或者只要那个 URL。
+
+### `snapshot() -> Result<Vec<u8>>`
+
+从运行中的串流抓取一帧 JPEG，并返回它的字节。请先启动串流：没有串流在运行时，Box 会拒绝抓帧。需要 Box 软件 0.47.0 或更高版本。
+
+```rust
+cam.start()?;
+std::fs::write("target/bench.jpg", cam.snapshot()?).expect("write the frame");
+```
+
+### `start_as(source: &str, started_by: Option<&str>) -> Result<WebcamStream>`
+
+与 `start()` 相同，并且 Box 会记录是哪个入口启动了串流，以及是谁启动的。`status()` 会在 `source` 和 `started_by` 中报告它们。
 
 ## 示例
 
@@ -92,5 +109,5 @@ result?;
 ## 说明
 
 - **串流 URL 指向的是客户端访问到的那个 Box 地址。** 在一个网络上取得的 URL 未必能在另一个网络上解析，因此不要把它跨环境保存下来。
-- 这个句柄给出的是视频串流，而不是抓取单帧。这里没有"对图像做断言"的功能 —— 请让一个 MJPEG 消费端（浏览器、VLC、OpenCV）去访问那个 URL。要从运行中的串流保存一帧，请用 CLI 的 `lager webcam NET snapshot`。
+- 要观看串流，请让一个 MJPEG 消费端（浏览器、VLC、OpenCV）去访问那个 URL。要在测试中保存一帧，请调用 `snapshot()`。
 - 请务必在清理阶段调用 `stop()`。运行中的串流会一直占用摄像头。在同一个 Net 上再次启动会报告那个正在运行的串流；而使用同一台摄像头的另一个 Net 上的串流，在这一个停止之前会被拒绝。

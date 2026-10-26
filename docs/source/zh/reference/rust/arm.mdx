@@ -28,7 +28,9 @@ let arm = lager.arm("arm1");
 | `enable_motor()` | 给电机通电 |
 | `disable_motor()` | 释放电机 |
 | `read_and_save_position()` | 读取位置并把它保存到机械臂上 |
-| `set_acceleration()` | 设置加速度，单位 mm/s2 |
+| `set_acceleration()` | 设置加速度，单位 mm/s2，并把它读回来 |
+| `set_acceleration_keep_retract()` | 设置打印加速度和空移加速度，回抽加速度保持不变 |
+| `get_acceleration()` | 读取机械臂的加速度设置 |
 
 ## 类型
 
@@ -39,6 +41,16 @@ pub struct ArmPosition {
     pub x: f64,   // mm
     pub y: f64,   // mm
     pub z: f64,   // mm
+}
+```
+
+### `ArmAcceleration`
+
+```rust
+pub struct ArmAcceleration {
+    pub acceleration: f64,         // print, mm/s2 (M204 P)
+    pub travel_acceleration: f64,  // travel, mm/s2 (M204 T)
+    pub retract_acceleration: f64, // retract, mm/s2 (M204 R)
 }
 ```
 
@@ -83,9 +95,24 @@ println!("arrived at ({:.1}, {:.1}, {:.1})", at.x, at.y, at.z);
 
 读取当前位置并把它保存到机械臂上。
 
-### `set_acceleration(acceleration: u32, travel_acceleration: u32, retract_acceleration: u32) -> Result<()>`
+### `set_acceleration(acceleration: u32, travel_acceleration: u32, retract_acceleration: u32) -> Result<Option<ArmAcceleration>>`
 
-设置加速度数值，单位 mm/s2。
+设置打印、空移和回抽加速度，单位 mm/s2（G-code M204）。
+
+**返回：** 修改之后机械臂报告的数值，这样机械臂没有接受的数值就会显现出来。0.59.0 或更旧版本的 Box 不发送读回值，此时该调用返回 `None`。
+
+### `set_acceleration_keep_retract(acceleration: u32, travel_acceleration: u32) -> Result<Option<ArmAcceleration>>`
+
+设置打印加速度和空移加速度，回抽加速度保持不变。需要 Box 软件 0.60.0 或更高版本。
+
+### `get_acceleration() -> Result<ArmAcceleration>`
+
+从机械臂的设置报告中读取它的打印、空移和回抽加速度。需要 Box 软件 0.60.0 或更高版本。
+
+```rust
+let a = arm.get_acceleration()?;
+println!("{} / {} / {}", a.acceleration, a.travel_acceleration, a.retract_acceleration);
+```
 
 ## 示例
 

@@ -11,7 +11,7 @@ UART 会话基于 Socket.IO，因此它位于一个 cargo feature 之后：
 
 ```toml
 [dev-dependencies]
-lager = { package = "lager-net", version = "0.4", features = ["uart"] }
+lager = { package = "lager-net", version = "0.8", features = ["uart"] }
 ```
 
 `uart` feature 隐含启用 `blocking`。它没有异步版本。
