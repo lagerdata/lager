@@ -17,6 +17,7 @@ pub mod modern_scope;
 pub mod ps2000;
 pub mod status;
 pub mod types;
+pub mod usb;
 
 pub use detect::{detect, DetectedScope, NoUnitFound};
 pub use loader::{installed_families, LeftOut};

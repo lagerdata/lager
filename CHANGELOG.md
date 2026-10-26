@@ -74,6 +74,15 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 ### Fixed
 
+- **A box with the PicoTech SDK but no PicoScope attached no longer runs out of
+  memory and drops off the network.** The scope daemon retried the PicoTech
+  drivers every few seconds, and each failed open kept memory until the host ran
+  out, typically overnight. It now asks the drivers only when a PicoScope (USB
+  vendor `0ce9`) is plugged in.
+- **The lager container's memory is capped below the host's.** The cap is three
+  quarters of RAM, leaving the host at least 1 GiB, so a leak inside the
+  container can no longer starve the box. Set `LAGER_CONTAINER_MEMORY_MB` to
+  change it, or `0` to remove it.
 - **The scope page header resets when the PicoScope is unplugged.** It went on
   showing the last capture's trigger status, sample rate and point count until
   the unit opened again; it now reads `STOP` with the rate and points blank.

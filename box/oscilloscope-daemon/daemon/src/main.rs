@@ -50,7 +50,15 @@ fn open_configured() -> Result<Box<dyn Oscilloscope>> {
 /// when the real answer was that their model needs a different driver.
 ///
 /// A daemon built without the ps2000 headers has no legacy driver to try.
+///
+/// Nothing is asked of a driver while the USB bus has no PicoScope on it:
+/// the drivers keep memory on every failed open, and this runs every couple
+/// of seconds for as long as no scope is attached (see `pico::usb`).
 fn open_scope() -> Result<Box<dyn Oscilloscope>> {
+    if pico::usb::attached() == Some(false) {
+        return Err(pico::NoUnitFound(pico::usb::NONE_ON_THE_BUS.into()).into());
+    }
+
     #[cfg(pico_ps2000)]
     let legacy_error = match PicoScope2000::new() {
         Ok(scope) => return Ok(Box::new(scope)),

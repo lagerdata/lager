@@ -1415,6 +1415,38 @@ if [ -n "$EXPLICIT_PUBLISH" ]; then
 fi
 # --- END port preflight ---
 
+# Cap the container's memory below the host's. Uncapped, one leaking process
+# in the container starves the whole host: on 2026-10-24 the scope daemon
+# reached 15 GB, snapd and journald hit their watchdogs, systemd-networkd timed
+# out and gave up on the Wi-Fi, and the box stayed off the network until it
+# was power-cycled. With a cap the kernel kills inside the container and the
+# host stays reachable. The cap is three quarters of RAM, leaving the host at
+# least 1 GiB; LAGER_CONTAINER_MEMORY_MB overrides it, and 0 removes it.
+# --- BEGIN container memory limit (extracted verbatim by test/unit/box/test_container_memory_limit.py) ---
+_container_memory_mb() {
+    if [ -n "${LAGER_CONTAINER_MEMORY_MB:-}" ]; then
+        echo "$LAGER_CONTAINER_MEMORY_MB"
+        return
+    fi
+    _cmm_total=$(awk '/^MemTotal:/ { print int($2 / 1024) }' "${1:-/proc/meminfo}" 2>/dev/null)
+    case "$_cmm_total" in ''|*[!0-9]*) echo 0; return ;; esac
+    _cmm_cap=$(( _cmm_total * 3 / 4 ))
+    if [ $(( _cmm_total - _cmm_cap )) -lt 1024 ]; then
+        _cmm_cap=$(( _cmm_total - 1024 ))
+    fi
+    # Too small a host to leave 1 GiB and still run the container: no cap.
+    [ "$_cmm_cap" -ge 1024 ] || _cmm_cap=0
+    echo "$_cmm_cap"
+}
+LAGER_MEMORY_ARGS=()
+_LAGER_MEMORY_MB=$(_container_memory_mb)
+if [ "$_LAGER_MEMORY_MB" -gt 0 ] 2>/dev/null; then
+    # --memory-swap equal to --memory: no swap on top, so a leak is killed
+    # instead of dragging the host through swap first.
+    LAGER_MEMORY_ARGS=(--memory "${_LAGER_MEMORY_MB}m" --memory-swap "${_LAGER_MEMORY_MB}m")
+fi
+# --- END container memory limit ---
+
 # Stop existing container if running
 if docker ps -a --format '{{.Names}}' | grep -q '^lager$'; then
     echo "Stopping existing lager container..."
@@ -1454,6 +1486,7 @@ docker run -d \
     --network "$BOX_CONFIG_NETWORK" \
     --privileged \
     "${LAGER_GROUP_ADD[@]}" \
+    "${LAGER_MEMORY_ARGS[@]}" \
     -v /tmp:/tmp \
     -v /dev:/dev \
     -v /sys/bus/usb:/sys/bus/usb:ro \
