@@ -141,9 +141,14 @@ run_test() {
     # Log the command being run
     echo "[$(date '+%H:%M:%S')] Running: $test_command" >> /tmp/deployment_test_debug.log
 
-    # Run command and capture output
+    # Run command once and capture output. A failure prints this output, not
+    # a second run's: re-running a flaky command (a BLE scan on a controller
+    # that resets itself) printed a clean retry under [FAIL] and lost the error.
+    local output
     local start_time=$(date +%s)
-    if eval "$test_command" &>/dev/null; then
+    output=$(eval "$test_command" 2>&1)
+    local exit_code=$?
+    if [ $exit_code -eq 0 ]; then
         local end_time=$(date +%s)
         local duration=$((end_time - start_time))
         echo "[$(date '+%H:%M:%S')] Completed in ${duration}s (success)" >> /tmp/deployment_test_debug.log
@@ -171,7 +176,8 @@ run_test() {
             FAILED_TESTS=$((FAILED_TESTS + 1))
             # Show error output for debugging
             echo -e "${YELLOW}  Command output:${NC}"
-            eval "$test_command" 2>&1 | sed 's/^/    /'
+            echo "$output" | sed 's/^/    /'
+            echo "[$(date '+%H:%M:%S')] ERROR: $output" >> /tmp/deployment_test_debug.log
             return 1
         fi
     fi
@@ -414,6 +420,9 @@ run_test "lager ble --help" "lager ble --help"
 # The scan's own output is never printed, not even on failure: it lists the
 # names and addresses of every advertiser near the box, and CI logs are
 # public. Only the device count, any error line and the exit status are.
+# run_test prints this summary from the attempt that failed and never re-runs
+# the scan, so a controller fault shows its own error rather than the clean
+# scan that followed the adapter's reset.
 ble_scan_summary() {
     local out rc
     out=$(timeout 60 lager ble scan --box "$DUT" --timeout 2 2>&1)

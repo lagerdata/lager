@@ -12,6 +12,15 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Fixed
+
+- **A failed check in the deployment bench suite shows the error from the run
+  that failed.** The suite re-ran a failed command to print its output, so a
+  check that fails once and then succeeds, such as a BLE scan on a Bluetooth
+  controller that resets itself after a fault, printed a clean second run under
+  `[FAIL]`. It now runs each command once and prints that run's output. The BLE
+  scan still prints only the device count, any error line and the exit status.
+
 ## [0.60.0] - 2026-10-26
 
 ### Added
