@@ -1,0 +1,108 @@
+---
+title: "Version 0.60.0"
+description: "October 26, 2026"
+---
+
+## <u>Upgrade Notes</u>
+
+- **Update your boxes.** Most of the fixes in this release run on the box. Run
+  `lager update --box <box-name>` after you upgrade the CLI.
+- **`lager update` installs the PicoTech SDK on a box that has none.** A box with no
+  PicoScope headers in `/opt/picoscope/include` gets PicoTech's apt repo and the seven
+  `libps*` packages, as `lager install` installs them. The update then rebuilds the scope
+  daemon with PicoScope support, so a PicoScope works when you plug it in. Pass
+  `--skip-picoscope` to leave the SDK out. On a box installed before v0.55.0, the update
+  asks for the sudo password once to add the repo.
+- **The box's `lager` container has a memory limit.** The limit is three quarters of the
+  host's RAM, and the host keeps at least 1 GiB. Set `LAGER_CONTAINER_MEMORY_MB` on the
+  box to change the limit, or set it to `0` to remove it.
+- **`lager arm <net> set-acceleration` checks the values that the arm reports.** The
+  command exits non-zero when the arm reports values other than the ones you set.
+  `Dexarm.set_acceleration()` returns the values, and raises `SettingNotAppliedError` when
+  they differ. Without `--retract`, the arm now keeps its current retract value. The
+  command used to set it to 60.
+- **`lager arm <net> disable-motor` asks for confirmation**, because the arm goes limp and
+  drops. A script that runs the command must pass `--yes`.
+- **`stream start` on a Rigol MSO5000 with no capture card paired exits 1.** It used to
+  print "Streaming started" and exit 0. Pair a card with `lager nets set-capture`.
+
+## <u>Features</u>
+
+- **Custom drivers can use Python packages.** Name a hashed requirements file in
+  `lager_driver.json`, and `lager drivers install` installs those wheels with the driver.
+  The packages survive `lager update`, and each driver gets its own. A `wheels/` folder
+  serves a box with no internet access. `lager drivers list` shows a Deps column, and
+  `lager drivers reinstall-deps` rebuilds the packages after a Python upgrade. See
+  [`lager drivers`](/source/reference/cli/drivers).
+- **`lager arm <net> get-acceleration` and `Dexarm.get_acceleration()`** print the arm's
+  print, travel and retract acceleration. `Dexarm.read_settings()` returns the arm's whole
+  settings report, which includes its stored calibration.
+- **The box debug service has a `POST /debug/halt` route.** It stops an OpenOCD net's core
+  where it is, without a pulse on nRESET, as `DebugNet.halt()` does in Python. HTTP
+  clients such as the Rust crate can now halt a part that executes in place. A J-Link net
+  gets a 400 response.
+
+## <u>Bug Fixes</u>
+
+- **A box with the PicoTech SDK but no PicoScope no longer runs out of memory.** The scope
+  daemon retried the PicoTech drivers every few seconds, and each failed open kept memory.
+  The host typically ran out overnight, and some hosts dropped off the network. The daemon now asks
+  the drivers only when a PicoScope is plugged in.
+- **A Rigol DP800 supply refuses a negative voltage or current set through the Python
+  API.** `set_voltage()` and `set_current()` sent the negative setpoint to the instrument.
+  They now raise `ValueError` before anything is sent, as `lager supply` already did.
+- **A net command with the net name left out runs on the default net.** `lager arm position
+  --box X` failed with "No such command '--box'". The fix covers `arm`, `supply`,
+  `battery`, `eload`, `solar`, `logic`, `energy`, `scope`, `usb` and `watt`.
+- **A Keithley 2281S saved as a battery net and a supply net no longer blocks the battery
+  net.** A read of the supply net's state held the instrument for about 20 seconds in
+  battery mode. It now returns at once, as `CH1/?/battery mode`.
+- **An actuate net refuses an unsafe Dexarm move, as `lager arm` does.** It raises
+  `OutOfBoundsError` for a position outside the workspace, and `UnsupportedFirmwareError`
+  on firmware older than V2.1.4. A long move no longer times out after 5 seconds.
+- **The Dexarm works on firmware V2.4.x.** `lager instruments` finds an arm with no saved
+  net, and `move --timeout` now times out. The timeout now starts when the move is sent.
+- **An MCC USB-202 recovers after its USB port is cycled.** `lager adc`, `dac`, `gpi` and
+  `gpo` failed with "No MCC DAQ devices found" until the hardware service restarted. The
+  box now restarts the service itself. The first command after the cycle can still fail,
+  and it now says to retry in a few seconds.
+- **`lager usb NET cycle` holds an Acroname or YKUSH hub for the whole cycle.** Another
+  command can no longer switch the port while it is off. A cycle right after `enable` now
+  gives the device up to 5 seconds to appear.
+- **`lager install` with no terminal stops with the right message when sudo needs a
+  password.** The check now asks the box `sudo -n -v`, which passes only when no command
+  needs a password.
+- **The Rigol MSO5000 live view stays clear and current.**
+  - A scope with no HDMI picture is no longer left with its Measure menu open. The next
+    `lager scope NET start` brings the live view back after you plug the cable in.
+  - The trigger source no longer opens the Trigger menu over the live view.
+  - The scope follows settings changed at its front panel within about two seconds.
+  - A move of a stopped scope's time position no longer starts it.
+  - `trigger uart`, `i2c` and `pulse` are refused before anything is sent.
+  - `trigger edge --level` reports the level that the scope took.
+- **The scope page clears when a PicoScope is unplugged.** The plot drops the last trace,
+  and the header reads `STOP` with the sample rate and point count blank.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.60.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli==0.60.0
+```
+
+Then update your boxes:
+
+```bash
+lager update --box <box-name>
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.60.0/)

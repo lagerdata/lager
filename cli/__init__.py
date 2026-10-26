@@ -7,4 +7,4 @@ Lager CLI
 A Command Line Interface for Lager Data
 """
 
-__version__ = '0.59.0'
+__version__ = '0.60.0'

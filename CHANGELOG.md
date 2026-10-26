@@ -12,29 +12,7 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
-### Changed
-
-- **`lager update` installs the PicoTech SDK on a box that has none.** A box
-  with no PicoScope headers in `/opt/picoscope/include` gets PicoTech's apt
-  repo and the seven `libps*` packages, as `lager install` installs them, and
-  its scope daemon is rebuilt with PicoScope support, so `lager install` is
-  needed once per box. `lager update --skip-picoscope` leaves the SDK out. A
-  box installed before v0.55.0 asks for its sudo password once to add the repo.
-- **The nightly bench run now scans BLE, read-only.** A new suite,
-  `test/integration/communication/radios.sh`, checks `lager ble scan`, its
-  name filters and its timeout limits, and the Wi-Fi interface check the CLI
-  makes before contacting the box. It prints device counts only, never device
-  names or addresses. `wifi.sh` now skips its connect and delete-connection
-  tests unless `WIFI_ALLOW_STATE_CHANGES=1`.
-- **The nightly bench run now runs the UART and pin-conflict API scripts.**
-  `test_uart_comprehensive.py` was rewritten to move real bytes through the
-  CI UART peer, with hardware flow control left off because RTS and DTR drive
-  the peer's reset. `test_pin_conflict.py` now uses `i2c1` and two GPIO nets
-  in place of an SPI net on FIO0-FIO3, the bench's power-relay pins.
-- **`test_supply_comprehensive.py` and `test_battery_comprehensive.py` are
-  removed.** The nightly bench's `test_supply_Rigol_DP821.py` and
-  `test_battery_Keithley_2281S.py` cover the same API with measured readbacks,
-  and now also check the refusals the removed scripts had.
+## [0.60.0] - 2026-10-26
 
 ### Added
 
@@ -58,6 +36,27 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 ### Changed
 
+- **`lager update` installs the PicoTech SDK on a box that has none.** A box
+  with no PicoScope headers in `/opt/picoscope/include` gets PicoTech's apt
+  repo and the seven `libps*` packages, as `lager install` installs them, and
+  its scope daemon is rebuilt with PicoScope support, so `lager install` is
+  needed once per box. `lager update --skip-picoscope` leaves the SDK out. A
+  box installed before v0.55.0 asks for its sudo password once to add the repo.
+- **The nightly bench run now scans BLE, read-only.** A new suite,
+  `test/integration/communication/radios.sh`, checks `lager ble scan`, its
+  name filters and its timeout limits, and the Wi-Fi interface check the CLI
+  makes before contacting the box. It prints device counts only, never device
+  names or addresses. `wifi.sh` now skips its connect and delete-connection
+  tests unless `WIFI_ALLOW_STATE_CHANGES=1`.
+- **The nightly bench run now runs the UART and pin-conflict API scripts.**
+  `test_uart_comprehensive.py` was rewritten to move real bytes through the
+  CI UART peer, with hardware flow control left off because RTS and DTR drive
+  the peer's reset. `test_pin_conflict.py` now uses `i2c1` and two GPIO nets
+  in place of an SPI net on FIO0-FIO3, the bench's power-relay pins.
+- **`test_supply_comprehensive.py` and `test_battery_comprehensive.py` are
+  removed.** The nightly bench's `test_supply_Rigol_DP821.py` and
+  `test_battery_Keithley_2281S.py` cover the same API with measured readbacks,
+  and now also check the refusals the removed scripts had.
 - **`lager arm <net> set-acceleration` reads the values back from the arm** and prints what
   the arm reports. If they are different from the values set, the command exits non-zero.
   `Dexarm.set_acceleration()` returns them, and raises `SettingNotAppliedError` instead.
@@ -102,13 +101,11 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   in `lager nets state`, instead of holding the instrument for about 20
   seconds. During that time the battery net's commands failed with "device
   still busy".
-
 - **A Rigol DP800 supply refuses a negative voltage or current set through the
   Python API, as `lager supply` already did.** `set_voltage()` and
   `set_current()` on a `Net.get(..., type=NetType.PowerSupply)` net sent the
   negative setpoint to the instrument. They now raise `ValueError` before
   anything is sent.
-
 - **A net command with the net name omitted runs on the default net.** `lager arm position
   --box X` failed with "No such command '--box'", and `lager arm --box X position` listed
   nets instead of reading the position. This affects `arm`, `supply`, `battery`, `eload`,
