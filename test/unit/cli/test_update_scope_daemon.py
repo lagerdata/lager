@@ -816,8 +816,12 @@ class ScopeSdkWarning(unittest.TestCase):
         self.assertIn('unavailable', text)
         self.assertIn(_update._PICOTECH_APT_REPO, text)
         self.assertIn('apt-get install libps2000`', text)
-        self.assertIn('lager install', text)
-        self.assertIn('--version', text)
+        self.assertIn('`lager update` without --skip-picoscope', text)
+
+    def test_does_not_send_the_operator_back_to_lager_install(self):
+        """`lager update` installs the SDK itself now; install is once per box."""
+        text = self.warning(DAEMON_SDK_HEADERS='0', DAEMON_PICO_PRODUCTS='1007')
+        self.assertNotIn('lager install', text)
 
     def test_names_only_the_package_a_2000_series_needs(self):
         text = self.warning(DAEMON_SDK_HEADERS='0', DAEMON_PICO_PRODUCTS='1007')
@@ -841,6 +845,97 @@ class ScopeSdkWarning(unittest.TestCase):
         """An older probe says nothing about this box."""
         self.assertIsNone(self.warning(DAEMON_PICO_PRODUCTS='1007'))
         self.assertIsNone(self.warning(DAEMON_SDK_HEADERS='0'))
+
+
+class UpdateInstallsTheSdk(unittest.TestCase):
+    """Step 7d: `lager update` installs the PicoTech SDK on a box with none,
+    as `lager install` does, so install is needed once per box."""
+
+    def test_wanted_on_every_box_without_headers(self):
+        """Not only with a PicoScope attached: a scope has to work the moment
+        it is plugged in."""
+        for products in ('', '1007'):
+            with self.subTest(products=products):
+                self.assertTrue(_update._picotech_sdk_wanted(
+                    {'DAEMON_SDK_HEADERS': '0', 'DAEMON_PICO_PRODUCTS': products},
+                    skip_picoscope=False))
+
+    def test_not_wanted_with_headers_skip_or_an_old_probe(self):
+        for facts, skip in (({'DAEMON_SDK_HEADERS': '1'}, False),
+                            ({'DAEMON_SDK_HEADERS': '0'}, True),
+                            ({}, False),
+                            ({'DAEMON_SDK_HEADERS': ''}, False)):
+            with self.subTest(facts=facts, skip=skip):
+                self.assertFalse(_update._picotech_sdk_wanted(
+                    facts, skip_picoscope=skip))
+
+    def test_every_sudo_in_the_repo_setup_is_a_grant_install_writes(self):
+        """A box installed with v0.55.0 or later then adds the repo without a
+        password. A command that drifts from its grant prompts on every box."""
+        path = _repo_file('cli', 'deployment', 'scripts', 'setup_and_deploy_box.sh')
+        with open(path) as handle:
+            grants = {line.split('NOPASSWD: ', 1)[1].rstrip('\n')
+                      for line in handle if 'ALL=(ALL) NOPASSWD: ' in line}
+        steps = _update._picotech_repo_setup_cmd().split(' && ')
+        file_ops = [s[len('sudo '):] for s in steps if s.startswith('sudo /bin/')]
+        self.assertEqual(len(file_ops), 6)
+        for op in file_ops:
+            with self.subTest(op=op):
+                self.assertIn(op, grants)
+
+    def test_the_apt_get_matches_the_setenv_grant(self):
+        """`sudo env ... apt-get` runs /usr/bin/env, which nothing grants."""
+        apt = _update._picotech_repo_setup_cmd().split(' && ')[0]
+        self.assertTrue(apt.startswith('sudo DEBIAN_FRONTEND=noninteractive '))
+        self.assertNotIn('sudo env', _update._picotech_repo_setup_cmd())
+
+    def test_the_repo_is_the_one_install_adds(self):
+        path = _repo_file('cli', 'deployment', 'scripts', 'setup_and_deploy_box.sh')
+        with open(path) as handle:
+            text = handle.read()
+        self.assertIn(f'wget -O- {_update._PICOTECH_KEY_URL} | gpg --dearmor', text)
+        self.assertIn(f"'{_update._PICOTECH_SOURCES_LINE}'", text)
+        self.assertIn(_update._PICOTECH_SOURCES_LINE, _update._picotech_repo_setup_cmd())
+
+    def _step(self, *, repo_ready, answers=()):
+        calls = []
+        answers = list(answers)
+
+        def runner(_ip, cmd):
+            calls.append(cmd)
+            return answers.pop(0) if answers else (0, '', '')
+
+        result = _update._picotech_sdk_step(
+            'benchtest@192.0.2.4', 'benchtest', runner, repo_ready=repo_ready)
+        return result, calls
+
+    def test_installs_every_package_without_prompting(self):
+        (status, color, warning), calls = self._step(repo_ready=True)
+        self.assertTrue(status.startswith('OK') and color == 'green')
+        self.assertIsNone(warning)
+        self.assertEqual(len(calls), 1)
+        self.assertIn('apt-get install -y --no-install-recommends '
+                      + ' '.join(_update._PICOTECH_APT_PACKAGES), calls[0])
+        self.assertNotIn('sudo ', calls[0].replace('sudo -n ', ''))
+
+    def test_no_repo_installs_nothing_and_says_why(self):
+        (status, _color, warning), calls = self._step(repo_ready=False)
+        self.assertEqual(status, 'FAILED')
+        self.assertEqual(calls, [])
+        self.assertIn('labs.picotech.com', warning)
+        self.assertIn('--skip-picoscope', warning)
+
+    def test_a_failed_install_names_the_command_to_run(self):
+        (status, _color, warning), _calls = self._step(
+            repo_ready=True, answers=[(1, '', 'sudo: a password is required')])
+        self.assertEqual(status, 'FAILED')
+        self.assertIn('benchtest@192.0.2.4', warning)
+        self.assertTrue(warning.endswith(
+            'sudo apt-get install -y ' + ' '.join(_update._PICOTECH_APT_PACKAGES)))
+
+    def test_update_has_a_skip_picoscope_flag(self):
+        names = {p.name for p in _update.update.params}
+        self.assertIn('skip_picoscope', names)
 
 
 class DaemonBuildDecision(unittest.TestCase):

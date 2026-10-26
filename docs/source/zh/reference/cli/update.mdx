@@ -22,6 +22,7 @@ lager update [OPTIONS]
 | `--force` | 即使 Box 报告已是最新也照样更新，并强制干净重建（清除缓存镜像以及 cargo/npm 卷） |
 | `--pull` | 对发布标签从 GHCR 拉取预构建的 Box 镜像，而不是在 Box 上构建（任何不匹配都会退回到本地构建） |
 | `--no-pull` | 从不拉取预构建镜像；始终在 Box 上构建 |
+| `--skip-picoscope` | 不在没有 PicoTech SDK 的 Box 上安装它 |
 | `--verbose` / `-v` | 显示详细输出（默认显示进度条） |
 
 <Note>
@@ -164,7 +165,7 @@ update 命令执行以下步骤（在进度条中显示）：
 1. **SSH 检查** - 确认对 Lager Box 的基于密钥的 SSH 访问
 2. **检查并拉取** - 读取 Box 状态，升级主机的 `ca-certificates` 软件包，然后拉取目标版本。没有 `box-config` sudo 授权的 Box 会在主机配置步骤写入授权后再升级
 3. **应用更新** - 在 Box 上检出目标版本
-4. **主机配置** - 检查 udev 规则、modprobe 黑名单、sudoers 文件、主机软件包（BlueZ）和主机 CLI。缺少的主机软件包会在不提示输入密码的情况下安装。如果无法安装，更新会打印需要在 Box 上运行的命令，然后继续
+4. **主机配置** - 检查 udev 规则、modprobe 黑名单、sudoers 文件、主机软件包（BlueZ）、PicoTech SDK 和主机 CLI。缺少的主机软件包会在不提示输入密码的情况下安装。如果 `/opt/picoscope/include` 中没有 PicoTech SDK 头文件，更新会像 `lager install` 一样添加 PicoTech 的 apt 软件源并安装 PicoScope 驱动包，然后重新构建支持 PicoScope 的示波器守护进程（使用 `--skip-picoscope` 可跳过）。在 v0.55.0 之前安装的 Box 上，添加软件源时会提示输入一次 sudo 密码。如果无法安装，更新会打印需要在 Box 上运行的命令，然后继续
 5. **拉取镜像** - 使用 `--pull` 并且目标是发布标签时，拉取预构建镜像
 6. **停止容器并构建** - 停止正在运行的容器；如果本次更新没有拉取镜像，则在 Box 上构建镜像
 7. **目录** - 建立容器要挂载的目录，例如自定义二进制程序目录

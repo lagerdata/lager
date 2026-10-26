@@ -14,6 +14,12 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 ### Changed
 
+- **`lager update` installs the PicoTech SDK on a box that has none.** A box
+  with no PicoScope headers in `/opt/picoscope/include` gets PicoTech's apt
+  repo and the seven `libps*` packages, as `lager install` installs them, and
+  its scope daemon is rebuilt with PicoScope support, so `lager install` is
+  needed once per box. `lager update --skip-picoscope` leaves the SDK out. A
+  box installed before v0.55.0 asks for its sudo password once to add the repo.
 - **The nightly bench run now scans BLE, read-only.** A new suite,
   `test/integration/communication/radios.sh`, checks `lager ble scan`, its
   name filters and its timeout limits, and the Wi-Fi interface check the CLI

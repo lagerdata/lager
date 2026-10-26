@@ -32,6 +32,7 @@ from ...core.utils import looks_like_release_tag
 from ...core.ssh_utils import get_ssh_connection_pool
 from ..box._host_ops import (
     BOXCFG_SUDOERS_MARKER,
+    apt_install,
     boxcfg_sudoers_bootstrap_cmd,
     ensure_host_packages,
     host_packages_probe_snippet,
@@ -857,11 +858,95 @@ def _scope_sdk_warning(facts):
     return (
         'A PicoScope is attached but the scope daemon is unavailable: no '
         f'PicoTech SDK headers in {_DAEMON_SDK_INCLUDE}. '
-        f'Install {packages} from {_PICOTECH_APT_REPO} on the box with '
-        f'`sudo apt-get install {packages}` once that repo is added, or rerun '
-        '`lager install` with `--version` set to the version the box is on '
-        '(it adds the repo); then `lager update` builds the daemon.'
+        f'Run `lager update` without --skip-picoscope to install the SDK, or '
+        f'install {packages} from {_PICOTECH_APT_REPO} on the box with '
+        f'`sudo apt-get install {packages}` once that repo is added; then '
+        '`lager update` builds the daemon.'
     )
+
+
+# PicoTech's apt repo as `lager install` adds it. The key and the list are
+# staged in /tmp and copied into place with the cp/chmod/rm commands that
+# install's /etc/sudoers.d/lagerdata-udev grants by name (since v0.55.0), so
+# keep these identical to the PicoTech SDK step of setup_and_deploy_box.sh;
+# `test_update_scope_daemon.py` compares them.
+_PICOTECH_KEY_URL = 'https://labs.picotech.com/Release.gpg.key'
+_PICOTECH_KEYRING = '/usr/share/keyrings/picotech-archive-keyring.gpg'
+_PICOTECH_SOURCES_LIST = '/etc/apt/sources.list.d/picoscope7.list'
+_PICOTECH_SOURCES_LINE = (
+    f'deb [signed-by={_PICOTECH_KEYRING}] {_PICOTECH_APT_REPO} picoscope main')
+
+
+def _picotech_sdk_wanted(facts, *, skip_picoscope):
+    """Whether this update installs the PicoTech SDK: on every box with no
+    family's headers, as `lager install` does, unless --skip-picoscope.
+
+    Deliberately not conditional on a PicoScope being attached, for the reason
+    `_daemon_needs_build` gives: a scope has to work the moment it is plugged
+    in. An older probe that did not answer is unknown, not missing.
+    """
+    return not skip_picoscope and facts.get('DAEMON_SDK_HEADERS') == '0'
+
+
+def _picotech_repo_setup_cmd():
+    """Shell snippet that adds PicoTech's apt repo the way `lager install`
+    does. It runs in update's one sudo session: on a box installed with
+    v0.55.0 or later every sudo below matches a NOPASSWD grant, and an older
+    box asks for its password there, once, with the other privileged steps.
+
+    gnupg and wget are installed first, as install does; on the stock Ubuntu
+    a box runs that is a no-op. `sudo VAR=value apt-get` rather than
+    `sudo env ...` so it matches the box-config `SETENV: /usr/bin/apt-get`
+    grant.
+    """
+    key_tmp = '/tmp/picotech-archive-keyring.gpg'
+    list_tmp = '/tmp/picoscope7.list'
+    return ' && '.join((
+        'sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get '
+        'install -y -qq --no-install-recommends gnupg wget >/dev/null',
+        f'wget -qO- {_PICOTECH_KEY_URL} | gpg --dearmor > {key_tmp}',
+        f'sudo /bin/cp {key_tmp} {_PICOTECH_KEYRING}',
+        f'sudo /bin/chmod 644 {_PICOTECH_KEYRING}',
+        f'sudo /bin/rm -f {key_tmp}',
+        f"printf '%s\\n' {shlex.quote(_PICOTECH_SOURCES_LINE)} > {list_tmp}",
+        f'sudo /bin/cp {list_tmp} {_PICOTECH_SOURCES_LIST}',
+        f'sudo /bin/chmod 644 {_PICOTECH_SOURCES_LIST}',
+        f'sudo /bin/rm -f {list_tmp}',
+    ))
+
+
+def _picotech_sdk_step(ssh_host, username, ssh_runner, *, repo_ready):
+    """Step 7d: install the PicoTech SDK once its apt repo is in place.
+
+    Returns (status, color, warning-or-None). Never raises and never fails
+    the update, like Step 7c: the box comes up either way, with a daemon that
+    drives Rigol scopes only, and a failure prints what to run on the box.
+    The install rides the box-config `SETENV: /usr/bin/apt-get` grant over
+    BatchMode, so it never prompts.
+    """
+    packages = list(_PICOTECH_APT_PACKAGES)
+    if not repo_ready:
+        return 'FAILED', 'yellow', (
+            f'Warning: could not add the PicoTech apt repo ({_PICOTECH_APT_REPO}), '
+            'so the PicoTech SDK is not installed and the scope daemon cannot '
+            f'drive a PicoScope. Check that {ssh_host} can reach '
+            'labs.picotech.com and run `lager update` again, or pass '
+            '--skip-picoscope to stop trying.')
+    res = apt_install(ssh_host, packages, ssh_runner=ssh_runner, user=username)
+    if res.ok:
+        return f'OK (installed {" ".join(packages)})', 'green', None
+    reason = (res.message or '').strip().splitlines()[0] if res.message else 'unknown error'
+    return 'FAILED', 'yellow', (
+        f'Warning: could not install the PicoTech SDK ({reason}). The scope '
+        f'daemon cannot drive a PicoScope without it. On the box ({ssh_host}) '
+        f'run: {res.manual_fix}')
+
+
+def _read_sdk_headers(ssh_runner):
+    """Re-run the probe's headers check: '1', '0', or '' when it did not
+    answer. Step 7d installs headers after the probe ran."""
+    r = ssh_runner(_daemon_headers_shell_cmd())
+    return r.stdout.strip() if r.returncode == 0 else ''
 
 
 def _daemon_needs_build(facts, *, force):
@@ -1819,7 +1904,7 @@ def _undetermined_exit_code(check):
 
 
 def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
-                  pull=False, no_pull=False):
+                  pull=False, no_pull=False, skip_picoscope=False):
     """Core update logic behind `lager update`.
 
     Not a Click command itself — the thin Click wrapper at the bottom of this
@@ -2946,9 +3031,15 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         click.echo(f'  Host CLI:   {host_cli_status}')
         # Only mentioned when it has something to say: most boxes have no
         # PicoScope, and a permanent "Scope daemon: n/a" line would be noise.
-        _scope_warning = _scope_sdk_warning(facts)
-        if _daemon_check:
-            click.echo(f'  Scope daemon: will rebuild ({_daemon_check_reason})')
+        _sdk_install = _picotech_sdk_wanted(facts, skip_picoscope=skip_picoscope)
+        _scope_warning = None if _sdk_install else _scope_sdk_warning(facts)
+        if _sdk_install:
+            click.echo('  PicoTech SDK: will install '
+                       f'(no headers in {_DAEMON_SDK_INCLUDE})')
+        if _daemon_check or _sdk_install:
+            _reason = ('PicoTech SDK installed' if _sdk_install and not _daemon_check
+                       else _daemon_check_reason)
+            click.echo(f'  Scope daemon: will rebuild ({_reason})')
         elif _scope_warning:
             click.secho(f'  Scope daemon: {_scope_warning}', fg='yellow')
         click.echo(f'  Estimated:  {est}')
@@ -2957,7 +3048,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         will_change = (
             force or commits_behind != 0 or commits_ahead != 0
             or deps_rebuild_certain or container_down or deploy_stale
-            or host_cli_will_change or _daemon_check
+            or host_cli_will_change or _daemon_check or _sdk_install
         )
         if will_change:
             click.echo('Run without --check to apply.')
@@ -3365,6 +3456,25 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
 
         enqueue_priv('python3-venv', HOST_VENV_APT_CMD, _render_venv_pkg)
 
+    # Step 7d (first half): PicoTech's apt repo, on a box with no PicoTech
+    # headers, as `lager install` does. In the sudo session because writing
+    # the keyring and the list needs root beyond the apt-get grant; Step 7d
+    # proper installs the packages below, after the session.
+    picotech_sdk_wanted = _picotech_sdk_wanted(facts, skip_picoscope=skip_picoscope)
+    picotech_repo_ready = False
+    if picotech_sdk_wanted:
+        log('Checking PicoTech SDK...', nl=False)
+        log_status(f'install needed (no headers in {_DAEMON_SDK_INCLUDE})', 'yellow')
+
+        def _render_picotech_repo(ok):
+            nonlocal picotech_repo_ready
+            picotech_repo_ready = ok
+            log('Adding the PicoTech apt repo...', nl=False)
+            log_status('OK' if ok else 'FAILED', 'green' if ok else 'yellow')
+
+        enqueue_priv('picotech_repo', _picotech_repo_setup_cmd(),
+                     _render_picotech_repo)
+
     # Apply all queued privileged operations in ONE interactive `ssh -t`
     # session, so the sudo password (on a box without the passwordless grant)
     # is requested at most once for the whole run. We can't read the interactive
@@ -3432,6 +3542,29 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
     log_status(host_pkg_status, host_pkg_color)
     if host_pkg_warning:
         click.secho(host_pkg_warning, fg='yellow', err=True)
+
+    # Step 7d: the PicoTech SDK packages, once Step 7d's repo is in. Before
+    # the rebuild gate, because the headers are part of the daemon's source
+    # hash: re-reading it here is what makes this run rebuild the daemon
+    # with PicoScope support instead of taking the "already up to date" exit.
+    if picotech_sdk_wanted:
+        if progress:
+            progress.update("Installing PicoTech SDK...")
+        log('Installing PicoTech SDK...', nl=False)
+        sdk_status, sdk_color, sdk_warning = _picotech_sdk_step(
+            ssh_host, username, _host_runner, repo_ready=picotech_repo_ready)
+        log_status(sdk_status, sdk_color)
+        if sdk_warning:
+            click.secho(sdk_warning, fg='yellow', err=True)
+        # Re-read even after a failure: a partial install can leave a family.
+        facts['DAEMON_SDK_HEADERS'] = _read_sdk_headers(run_ssh_command_with_output)
+        facts['DAEMON_SOURCE_HASH'] = _read_daemon_hash(run_ssh_command_with_output)
+        daemon_build_wanted, daemon_reason = _daemon_needs_build(
+            facts, force=force)
+        if verbose:
+            click.secho(
+                f'  Scope daemon: {"will rebuild" if daemon_build_wanted else "skip"}'
+                f' ({daemon_reason})', fg='cyan')
 
     # The Step 2d upgrade, for a box that had no box-config grant until Step 7.
     if not ca_upgraded:
@@ -4584,6 +4717,7 @@ def _update_options(fn):
         click.option('--force', is_flag=True, help='Update even if the box reports it is already up to date, and force a clean rebuild (wipes the cached image and cargo/npm volumes)'),
         click.option('--pull', is_flag=True, help='Pull the pre-built box image from GHCR for a release tag instead of building it on the box (falls back to a local build on any miss)'),
         click.option('--no-pull', is_flag=True, help='Never pull a pre-built image; always build on the box'),
+        click.option('--skip-picoscope', is_flag=True, help='Do not install the PicoTech SDK on a box that has none'),
     ]):
         fn = opt(fn)
     return fn
@@ -4592,12 +4726,13 @@ def _update_options(fn):
 @click.command(name='update')
 @click.pass_context
 @_update_options
-def update(ctx, box, yes, version, verbose, check, force, pull, no_pull):
+def update(ctx, box, yes, version, verbose, check, force, pull, no_pull,
+           skip_picoscope):
     """Update box code from GitHub repository"""
     if pull and no_pull:
         raise click.UsageError('--pull and --no-pull are mutually exclusive')
     _update_logic(
         ctx,
         box=box, yes=yes, version=version, verbose=verbose, check=check, force=force,
-        pull=pull, no_pull=no_pull,
+        pull=pull, no_pull=no_pull, skip_picoscope=skip_picoscope,
     )

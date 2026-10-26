@@ -22,6 +22,7 @@ lager update [OPTIONS]
 | `--force` | Update even if the box reports it is already up to date, and force a clean rebuild (wipes the cached image and the cargo/npm volumes) |
 | `--pull` | Pull the pre-built box image from GHCR for a release tag instead of building on the box (falls back to a local build on any miss) |
 | `--no-pull` | Never pull a pre-built image; always build on the box |
+| `--skip-picoscope` | Do not install the PicoTech SDK on a box that has none |
 | `--verbose` / `-v` | Show detailed output (default shows progress bar) |
 
 <Note>
@@ -202,7 +203,7 @@ The update command performs the following steps (shown in progress bar):
 1. **SSH Check** - Confirm key-based SSH access to the Lager Box
 2. **Inspect and Fetch** - Read the box state, upgrade the host's `ca-certificates` package, then fetch the target version. A box without the `box-config` sudo grant gets the upgrade in Host Setup, after the grant is written
 3. **Pull Updates** - Check out the target version on the box
-4. **Host Setup** - Check the udev rules, the modprobe blacklists, the sudoers files, the host packages (BlueZ) and the host CLI. A missing host package is installed without a password prompt. If that is not possible, the update prints the command to run on the box and continues
+4. **Host Setup** - Check the udev rules, the modprobe blacklists, the sudoers files, the host packages (BlueZ), the PicoTech SDK and the host CLI. A missing host package is installed without a password prompt. A box with no PicoTech SDK headers in `/opt/picoscope/include` gets PicoTech's apt repo and the PicoScope driver packages, as `lager install` installs them, and the scope daemon is rebuilt with PicoScope support (skip this with `--skip-picoscope`). Adding the repo asks for the sudo password once on a box installed before v0.55.0. If an install is not possible, the update prints the command to run on the box and continues
 5. **Image Pull** - With `--pull` and a release tag, pull the pre-built image
 6. **Container Stop and Build** - Stop the running container, then build the image on the box if the update did not pull one
 7. **Directories** - Set up the directories that the container mounts, such as the custom binaries directory
