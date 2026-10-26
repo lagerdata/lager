@@ -1,0 +1,113 @@
+# Copyright 2024-2026 Lager Data
+# SPDX-License-Identifier: Apache-2.0
+#
+# On every release tag, diff the box HTTP API against the previous release and,
+# when it changed, open an issue in lagerdata/lager-rs listing what changed.
+#
+# The Rust crate is a client of this API, and nothing told it when a release
+# added to it: it fell sixteen releases behind (box 0.44.0 to 0.59.0) before
+# anyone noticed. This reports; it decides nothing and blocks nothing. Whether
+# the crate picks a change up is a person's call, and MISSING_ENDPOINTS.md in
+# lager-rs records what is in its scope.
+#
+# tools/box_api_surface.py does the reading and the diffing, and documents what
+# it can and cannot see. The job summary always carries the report. Opening the
+# issue needs the LAGER_RS_ISSUES_TOKEN secret, a fine-grained token with
+# Issues: read and write on lagerdata/lager-rs only, since this workflow's own
+# token cannot write to another repository. Without the secret the job warns
+# and still passes.
+
+name: "Release: lager-rs API check"
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to check against the release before it (vX.Y.Z)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  api-check:
+    name: api-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          # Every tag, to find the release before this one.
+          fetch-depth: 0
+          # No job here pushes anything (zizmor: artipacked).
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.11'
+
+      - name: Find the previous release
+        id: prev
+        run: |
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::not a release tag: $TAG"
+            exit 1
+          fi
+          # Release tags, newest first; the one after TAG is the release before it.
+          prev=$(git tag --list 'v*' --sort=-v:refname \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            | { grep -A1 -x -F "$TAG" || true; } | sed -n '2p')
+          if [ -z "$prev" ]; then
+            echo "::notice::no release before $TAG; nothing to compare"
+          fi
+          echo "tag=$prev" >> "$GITHUB_OUTPUT"
+        shell: bash
+
+      - name: Diff the box API
+        id: diff
+        if: steps.prev.outputs.tag != ''
+        env:
+          PREV: ${{ steps.prev.outputs.tag }}
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/prev" "$PREV"
+          python tools/box_api_surface.py extract "$RUNNER_TEMP/prev" -o "$RUNNER_TEMP/old.json"
+          python tools/box_api_surface.py extract . -o "$RUNNER_TEMP/new.json"
+          result=$(python tools/box_api_surface.py diff "$RUNNER_TEMP/old.json" \
+            "$RUNNER_TEMP/new.json" --old-label "$PREV" --new-label "$TAG" \
+            -o "$RUNNER_TEMP/report.md")
+          echo "result=$result" >> "$GITHUB_OUTPUT"
+          if [ "$result" = changed ]; then
+            cat "$RUNNER_TEMP/report.md" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "The box HTTP API did not change between $PREV and $TAG." >> "$GITHUB_STEP_SUMMARY"
+          fi
+        shell: bash
+
+      - name: Open a lager-rs issue
+        if: steps.diff.outputs.result == 'changed'
+        env:
+          GH_TOKEN: ${{ secrets.LAGER_RS_ISSUES_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::LAGER_RS_ISSUES_TOKEN is not set, so no lager-rs issue was opened; the report is in this job's summary"
+            exit 0
+          fi
+          title="Box API changes in lager $TAG"
+          existing=$(gh issue list -R lagerdata/lager-rs --state all \
+            --search "\"$title\" in:title" --json title --jq '.[].title' \
+            | grep -x -F "$title" || true)
+          if [ -n "$existing" ]; then
+            echo "::notice::lager-rs already has an issue titled '$title'"
+            exit 0
+          fi
+          gh issue create -R lagerdata/lager-rs --title "$title" \
+            --body-file "$RUNNER_TEMP/report.md"
+        shell: bash

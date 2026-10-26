@@ -24,6 +24,12 @@ Before you start a release, confirm each item:
 - [ ] No open security issue blocks the release.
 - [ ] `box/lager/docker/licenses/THIRD_PARTY.md` has a row for each vendor download in
       `box.Dockerfile`, and each pin matches. `unit (box)` fails when one does not.
+- [ ] You know what the release changes in the box HTTP API. That API is the routes, the
+      `/net/command` roles and actions, the debug service features, and the `/status`
+      capabilities. The Rust crate ([lagerdata/lager-rs](https://github.com/lagerdata/lager-rs))
+      is a client of that API. The tag push opens a lager-rs issue that lists the changes (see
+      [Post-release](#post-release)). To see the list before you tag, run
+      `tools/box_api_surface.py`; its `--help` shows how.
 
 This command counts the `###` headings under `## [Unreleased]`:
 
@@ -222,6 +228,11 @@ Confirm that the release is live:
 pip install lager-cli==X.Y.Z
 lager --version
 ```
+
+The tag push also runs **Release: lager-rs API check**. When the box HTTP API changed since the
+previous release, it opens an issue in lagerdata/lager-rs that lists the changes. Read that
+issue, and decide what the crate picks up. If the `LAGER_RS_ISSUES_TOKEN` secret is not set,
+the workflow puts the list in its job summary instead.
 
 ## Releasing a Commit That Is Not the Head of `main`
 
