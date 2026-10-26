@@ -74,6 +74,10 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 ### Fixed
 
+- **The first `lager adc`, `dac` or `gpio` call after a USB-202 is power-cycled
+  says to retry.** It failed with "hardware service did not respond (Connection
+  aborted)" while the service restarted to find the unit again. It now says the
+  service is restarting and to retry in a few seconds.
 - **A Keithley 2281S saved as both a battery net and a power-supply net no
   longer blocks the battery net.** While the instrument simulates a battery,
   reading the supply net's state now returns at once, as `CH1/?/battery mode`

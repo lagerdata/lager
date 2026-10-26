@@ -310,9 +310,24 @@ def _looks_like_open_failure(exc):
 
 
 def _maybe_self_restart_for_wedged_session(address, context):
-    _self_restart.maybe_self_restart(
+    """True when a restart is scheduled. The exit comes a beat later, so the
+    caller can answer with ``_restarting_response`` first (#778)."""
+    return _self_restart.self_restart_after_reply(
         address, context, service="hardware_service",
         stamp_path=_HW_SELF_RESTART_STAMP)
+
+
+def _restarting_response(exc):
+    """The answer to a request whose failure is restarting the service.
+
+    Without it the exit dropped the connection before any response was
+    written, and the caller read "hardware service did not respond
+    (Connection aborted)" over a recovery that was already under way."""
+    return jsonify({
+        'error': ('restarting: the device is on the USB bus but this service '
+                  'could not open it, so the service is restarting to find '
+                  f'it again. Retry in a few seconds. Cause: {exc}'),
+    }), 503
 
 
 def _restart_address(address, device_id):
@@ -856,9 +871,9 @@ def invoke():
                     # session/ENODEV error. If the device is still on the bus,
                     # this is the orphaned-libusb-claim wedge — only a fresh
                     # process clears it.
-                    if address:
-                        _maybe_self_restart_for_wedged_session(
-                            address, f"{device_name}.{function_name} (recovery retry failed)")
+                    if address and _maybe_self_restart_for_wedged_session(
+                            address, f"{device_name}.{function_name} (recovery retry failed)"):
+                        return _restarting_response(retry_e)
                     return jsonify({
                         'error': f'Function call failed (after retry): {str(retry_e)}',
                     }), 500
@@ -870,9 +885,10 @@ def invoke():
             # reopen failed). Treat an enumerated-but-unreopenable device as a
             # wedge and let the supervisor respawn us with a clean libusb state.
             restart_address = _restart_address(address, device_id)
-            if restart_address and _looks_like_open_failure(e):
-                _maybe_self_restart_for_wedged_session(
-                    restart_address, f"{device_name}.{function_name} (open failed)")
+            if (restart_address and _looks_like_open_failure(e)
+                    and _maybe_self_restart_for_wedged_session(
+                        restart_address, f"{device_name}.{function_name} (open failed)")):
+                return _restarting_response(e)
             return jsonify({
                 'error': f'Function call failed: {str(e)}',
             }), 500
@@ -888,11 +904,11 @@ def invoke():
         _addr = _restart_address(
             locals().get('address'),
             _net_info.get('device_id') if isinstance(_net_info, dict) else None)
-        if _addr and _looks_like_open_failure(e):
-            _maybe_self_restart_for_wedged_session(
+        if _addr and _looks_like_open_failure(e) and _maybe_self_restart_for_wedged_session(
                 _addr,
                 f"{locals().get('device_name', '?')}.{locals().get('function_name', '?')} "
-                f"(open failed, top-level)")
+                f"(open failed, top-level)"):
+            return _restarting_response(e)
         return jsonify({
             'error': f'Internal server error: {str(e)}',
         }), 500

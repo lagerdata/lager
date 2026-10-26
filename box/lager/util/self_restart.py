@@ -192,6 +192,41 @@ def maybe_self_restart(address, context, *, service, stamp_path,
     the shape of the wedge for the logs — "unreachable" (the call failed) or
     "hung" (the call never returned); the gating is identical either way.
     """
+    if _restart_due(address, context, service=service, stamp_path=stamp_path,
+                    cooldown_s=cooldown_s, wedge=wedge):
+        _exit_for_respawn()
+
+
+def self_restart_after_reply(address, context, *, service, stamp_path,
+                             cooldown_s=DEFAULT_COOLDOWN_S,
+                             delay_s=_HANG_RESTART_DELAY_S):
+    """``maybe_self_restart`` for a caller that still has a request to answer.
+
+    The gate runs now and the exit runs ``delay_s`` later, so the request can
+    say the service is restarting instead of the client seeing a dropped
+    connection (#778). Returns True when a restart is scheduled, so the caller
+    knows which of the two to say.
+    """
+    if not _restart_due(address, context, service=service,
+                        stamp_path=stamp_path, cooldown_s=cooldown_s,
+                        wedge="unreachable"):
+        return False
+    timer = threading.Timer(delay_s, _exit_for_respawn)
+    timer.daemon = True
+    timer.name = f"self-restart:{service}"
+    timer.start()
+    return True
+
+
+def _exit_for_respawn():
+    logging.shutdown()  # flush handlers before the hard exit
+    os._exit(70)  # EX_SOFTWARE; start-services.sh's `while true` respawns us
+
+
+def _restart_due(address, context, *, service, stamp_path, cooldown_s, wedge):
+    """The gate both entry points share. True when the device is on the bus
+    and the cooldown has passed; the cooldown stamp is written before
+    returning, so a True must be followed by the exit."""
     # Retry the sysfs check (~4s): the wedge is detected at the tail of a
     # re-enumeration, so the device may not be back in sysfs for a beat. A false
     # "not on the bus" would suppress the restart and leave the service dead.
@@ -205,12 +240,12 @@ def maybe_self_restart(address, context, *, service, stamp_path,
     if enumerated is None:
         logger.warning("[self-restart] %s: cannot confirm USB enumeration for "
                        "%s; not restarting.", context, address)
-        return
+        return False
     if enumerated is False:
         logger.warning("[self-restart] %s: %s is not on the USB bus "
                        "(unplugged/off) — a restart can't help; surfacing the "
                        "error.", context, address)
-        return
+        return False
     now = time.time()
     try:
         last = os.path.getmtime(stamp_path)
@@ -221,7 +256,7 @@ def maybe_self_restart(address, context, *, service, stamp_path,
                      "ago (< %ds cooldown); surfacing the error instead of "
                      "restarting again.", context, address, service,
                      int(now - last), int(cooldown_s))
-        return
+        return False
     try:
         with open(stamp_path, 'w') as fh:
             fh.write(str(now))
@@ -231,8 +266,7 @@ def maybe_self_restart(address, context, *, service, stamp_path,
                     "(orphaned USB claim). Exiting so the supervisor respawns "
                     "%s with a clean USB context.",
                     context, address, wedge, service)
-    logging.shutdown()  # flush handlers before the hard exit
-    os._exit(70)  # EX_SOFTWARE; start-services.sh's `while true` respawns us
+    return True
 
 
 def schedule_self_restart_for_hang(address, context, *, service, stamp_path,

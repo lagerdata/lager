@@ -106,7 +106,7 @@ class HardwareServiceFailFastTests(unittest.TestCase):
             hw._visa_resources.clear()
         self.client = hw.app.test_client()
 
-        # maybe_self_restart ends in os._exit(70); never let a test reach it.
+        # Both restart entry points end in os._exit(70); never let a test reach it.
         self.restart = MagicMock()
         patcher = patch.object(hw, '_self_restart', self.restart)
         patcher.start()
@@ -176,7 +176,7 @@ class HardwareServiceFailFastTests(unittest.TestCase):
         self.assertEqual(kwargs['service'], 'hardware_service')
         self.assertEqual(kwargs['stamp_path'], hw._HW_SELF_RESTART_STAMP)
         # The hang path, not the unreachable-error path.
-        self.restart.maybe_self_restart.assert_not_called()
+        self.restart.self_restart_after_reply.assert_not_called()
 
     def test_hang_keeps_the_device_lock_so_later_calls_answer_busy(self):
         """The abandoned thread still owns the session, the libusb claim, the
@@ -437,19 +437,35 @@ class Usb202SelfRestartTests(unittest.TestCase):
 
     def test_an_empty_inventory_restarts_on_the_units_visa_address(self):
         resp = self._invoke('usb202:' + self._VISA, 'No MCC DAQ devices found on USB bus')
-        self.assertEqual(resp.status_code, 500)
-        self.restart.maybe_self_restart.assert_called_once()
-        self.assertEqual(self.restart.maybe_self_restart.call_args.args[0], self._VISA)
+        self.assertEqual(resp.status_code, 503)
+        self.restart.self_restart_after_reply.assert_called_once()
+        self.assertEqual(self.restart.self_restart_after_reply.call_args.args[0], self._VISA)
 
     def test_a_missing_unique_id_restarts_on_the_usb202_vid_pid(self):
         resp = self._invoke('usb202:0252829E',
                             'USB-202 device with unique_id 0252829E not found')
+        self.assertEqual(resp.status_code, 503)
+        self.assertEqual(self.restart.self_restart_after_reply.call_args.args[0], self._VISA)
+
+    def test_a_restart_is_answered_with_retry_not_a_dropped_connection(self):
+        """#778: the exit used to land before the response was written, so
+        the caller read "Connection aborted" over a recovery under way."""
+        resp = self._invoke('usb202:' + self._VISA, 'No MCC DAQ devices found on USB bus')
+        error = resp.get_json()['error']
+        self.assertTrue(error.startswith('restarting:'), error)
+        self.assertIn('Retry in a few seconds', error)
+        self.assertIn('No MCC DAQ devices found', error)
+
+    def test_a_restart_the_gate_refuses_keeps_the_original_error(self):
+        # Unplugged, or inside the cooldown: no restart, so nothing to retry.
+        self.restart.self_restart_after_reply.return_value = False
+        resp = self._invoke('usb202:' + self._VISA, 'No MCC DAQ devices found on USB bus')
         self.assertEqual(resp.status_code, 500)
-        self.assertEqual(self.restart.maybe_self_restart.call_args.args[0], self._VISA)
+        self.assertTrue(resp.get_json()['error'].startswith('Function call failed:'))
 
     def test_an_ordinary_driver_error_does_not_restart(self):
         self._invoke('usb202:' + self._VISA, 'Invalid ADC channel 9')
-        self.restart.maybe_self_restart.assert_not_called()
+        self.restart.self_restart_after_reply.assert_not_called()
 
     def test_other_device_id_families_are_left_alone(self):
         self.assertIsNone(hw._restart_address(None, 'labjack:USB0::0x0CD5::0x0007::1::INSTR'))

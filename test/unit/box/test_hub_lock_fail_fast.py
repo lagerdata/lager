@@ -473,5 +473,40 @@ class ScheduleSelfRestartForHangTests(_HangHookIsolated):
             timer.cancel()
 
 
+
+class SelfRestartAfterReplyTests(unittest.TestCase):
+    """The open-failure path gates now and exits later, so the request that
+    noticed the wedge can still answer (#778)."""
+
+    def test_a_due_restart_exits_on_a_daemon_timer_not_inline(self):
+        from lager.util import self_restart
+
+        exits = []
+        with patch.object(self_restart, "_restart_due", return_value=True), \
+                patch.object(self_restart, "_exit_for_respawn",
+                             lambda: exits.append(True)):
+            scheduled = self_restart.self_restart_after_reply(
+                "USB0::0x09DB::0x012B::X::INSTR", "adc_hs.input (open failed)",
+                service="hardware_service", stamp_path="/tmp/stamp-under-test",
+                delay_s=0.2)
+            self.assertTrue(scheduled)
+            self.assertEqual(exits, [], "exited before the caller could answer")
+            timer = next(t for t in threading.enumerate()
+                         if t.name == "self-restart:hardware_service")
+            self.assertTrue(timer.daemon)
+            timer.join(5)
+        self.assertEqual(exits, [True])
+
+    def test_a_refused_restart_schedules_nothing(self):
+        from lager.util import self_restart
+
+        with patch.object(self_restart, "_restart_due", return_value=False), \
+                patch.object(threading, "Timer") as timer:
+            scheduled = self_restart.self_restart_after_reply(
+                "USB0::0x09DB::0x012B::X::INSTR", "ctx",
+                service="hardware_service", stamp_path="/tmp/stamp-under-test")
+        self.assertFalse(scheduled)
+        timer.assert_not_called()
+
 if __name__ == "__main__":
     unittest.main()
