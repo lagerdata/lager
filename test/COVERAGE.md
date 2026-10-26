@@ -48,12 +48,12 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` | 3728 (+3 xfailed) |
-| `unit (box)` | `test/unit/box/` | 4895 (+17 skipped) |
+| `unit (box)` | `test/unit/box/` | 4896 (+17 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 414 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 230 (+1 skipped) |
-| | **Total gated** | **9461** |
+| | **Total gated** | **9462** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -684,7 +684,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_scope_ui_channel_nets.py` | The scope web UI sends each channel's controls to that channel's net, hides the empty-plot overlay for real, never shows a channel state it did not apply, hides the controls sidebar from the header button and from `sidebar off`, and drops a disabled channel's trace from the plot |
 | `test_scope_ui_instrument_net.py` | The scope web UI routes each command to the net that owns it: device-wide settings and readbacks to the scope net, per-channel ones to the channel's net |
 | `test_scope_ui_screenshot.py` | The scope web UI's Screenshot button saves the plot on its own colour with a line of settings under it, named for the net and the local time, and says so when there is nothing drawn to save |
-| `test_scope_ui_stream.py` | The web scope's credit-paced stream and pushed state: one credit returned for each frame received, only the newest frame kept for drawing, extra credit for a slow round trip, every control following the daemon's state except a field being edited, and an unplug dropping the live session so a replug can Start without a stop first, and taking the last trace off the plot |
+| `test_scope_ui_stream.py` | The web scope's credit-paced stream and pushed state: one credit returned for each frame received, only the newest frame kept for drawing, extra credit for a slow round trip, every control following the daemon's state except a field being edited, and an unplug dropping the live session so a replug can Start without a stop first, taking the last trace off the plot, and resetting the header's trigger status, sample rate and points |
 | `test_usb_scanner_picoscope.py` | PicoScope discovery in `usb_scanner.py`: every Pico Technology product ID is recognized, and the channel count comes from the device rather than from a static table |
 
 #### CLI Unit Tests (`test/unit/cli/` -- 130 files)

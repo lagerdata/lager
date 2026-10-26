@@ -2045,6 +2045,24 @@ class ScopeApp {
     this.drawGraticule(this.ctx, width, height);
   }
 
+  /**
+   * Put the header back to how it reads before a first capture. The sample
+   * rate, the points and the trigger badge are only set as frames arrive, so
+   * after an unplug they went on showing the last capture (#779).
+   */
+  clearCaptureHeader() {
+    for (const id of ['stat-rate-samples', 'stat-latency']) {
+      const stat = el(id);
+      if (stat) stat.textContent = '\u2014';
+    }
+    // Forgotten, so the first frame after the unit opens again sets the badge.
+    this.status = '';
+    const badge = el('trig-status');
+    if (!badge) return;
+    badge.textContent = 'STOP';
+    badge.className = 'trig trig--stop';
+  }
+
   /** Show or take down the overlay saying nothing is streaming. */
   showNotStreaming(visible) {
     if (this.overlayHidden === !visible) return;
@@ -2074,6 +2092,7 @@ class ScopeApp {
     this.latest = null;
     this.clearPlot();
     if (typeof this.showIdleRate === 'function') this.showIdleRate();
+    this.clearCaptureHeader();
     if (typeof this.showNotStreaming === 'function') this.showNotStreaming(true);
     if (typeof this.showEmptyHint === 'function') {
       this.showEmptyHint('The scope was unplugged. Plug it in, then press <strong>Start</strong>.');

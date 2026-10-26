@@ -455,7 +455,7 @@ class TestAScopeWithNoLiveView:
 class TestTheUnitGoingAndComing:
     """An unplug must not leave the page looking as if it is still live."""
 
-    def _run(self, body, states):
+    def _run(self, body, states, setup=""):
         return _run_js("""
         const fields = {};
         globalThis.document = {
@@ -478,6 +478,7 @@ class TestTheUnitGoingAndComing:
         });
         const notes = [];
         a.console.write = (text, kind) => notes.push([kind, text]);
+        %s
         for (const state of %s) a.applyState(state);
         process.stdout.write(JSON.stringify({
           overlay: Boolean(fields['plot-empty'] && !fields['plot-empty'].hidden),
@@ -485,8 +486,12 @@ class TestTheUnitGoingAndComing:
           owed: a.owedCredits, pending: a.pendingBuffer, persist: a.persist,
           latest: a.latest, cleared: a.ctx.cleared, graticules: a.graticules,
           notes, subscribed: stream.sent.map((m) => m.command),
+          samples: (fields['stat-rate-samples'] || {}).textContent,
+          points: (fields['stat-latency'] || {}).textContent,
+          badge: (fields['trig-status'] || {}).textContent,
+          badgeClass: (fields['trig-status'] || {}).className,
         }));
-        """ % json.dumps(states) + body)
+        """ % (setup, json.dumps(states)) + body)
 
     def test_an_empty_channel_list_is_an_unplug(self):
         gone = json.loads(json.dumps(STATE))
@@ -511,6 +516,23 @@ class TestTheUnitGoingAndComing:
         assert out["latest"] is None
         assert out["cleared"] == 1
         assert out["graticules"] == 1
+
+    def test_an_unplug_takes_the_last_capture_off_the_header(self):
+        """#779: the plot cleared, but the header went on reading TRIG'D,
+        781 kS/s and 8,000 pts until the unit opened again."""
+        gone = json.loads(json.dumps(STATE))
+        gone["channels"] = []
+        gone["acquiring"] = False
+        out = self._run("", [STATE, gone], setup="""
+        a.status = 'trigd';
+        fields['stat-rate-samples'] = { textContent: '781 kS/s' };
+        fields['stat-latency'] = { textContent: '8,000 pts' };
+        fields['trig-status'] = { textContent: 'TRIG\u2019D', className: 'trig trig--trigd' };
+        """)
+        assert out["samples"] == "\u2014"
+        assert out["points"] == "\u2014"
+        assert out["badge"] == "STOP"
+        assert out["badgeClass"] == "trig trig--stop"
 
     def test_a_state_change_while_connected_keeps_the_trace(self):
         out = self._run("", [STATE, STATE])

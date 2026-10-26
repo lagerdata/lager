@@ -74,6 +74,9 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 ### Fixed
 
+- **The scope page header resets when the PicoScope is unplugged.** It went on
+  showing the last capture's trigger status, sample rate and point count until
+  the unit opened again; it now reads `STOP` with the rate and points blank.
 - **The first `lager adc`, `dac` or `gpio` call after a USB-202 is power-cycled
   says to retry.** It failed with "hardware service did not respond (Connection
   aborted)" while the service restarted to find the unit again. It now says the
