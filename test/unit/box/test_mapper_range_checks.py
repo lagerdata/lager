@@ -31,11 +31,13 @@ the same form.
 
 import ast
 import pathlib
+import types
 
 import pytest
 
 from lager.nets.mappers import rigol_mso5000
 from lager.nets.mappers.keithley import KeithleyBatteryFunctionMapper
+from lager.nets.mappers.rigol_dp800 import RigolDP800FunctionMapper
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 
@@ -221,3 +223,43 @@ def test_a_state_of_charge_of_zero_reaches_the_instrument():
         f"setup_battery(soc=0) did not call set_soc(0); forwarded {forwarded}"
     )
 
+
+
+def _supply(channel):
+    """A DP800 mapper on `channel`. Channel 2 also drives the sense relay."""
+    return RigolDP800FunctionMapper(types.SimpleNamespace(channel=channel),
+                                    FakeDevice())
+
+
+@pytest.mark.parametrize("channel", [1, 2])
+@pytest.mark.parametrize("method", ["set_voltage", "set_current"])
+def test_a_negative_supply_setpoint_sends_nothing(method, channel):
+    """The Python API refuses a negative setpoint, as the CLI does.
+
+    `Net.get(..., NetType.PowerSupply)` on a DP800 returns this mapper, and
+    its setters wrote `:VOLT`/`:CURR` straight to the instrument. The negative
+    check lived only in the driver's `voltage()`/`current()`, which the CLI
+    calls, so `psu.set_voltage(-1.0)` reached the supply unrefused. Nothing at
+    all may be sent first -- not even the channel-2 sense enable.
+    """
+    mapper = _supply(channel)
+
+    with pytest.raises(ValueError):
+        getattr(mapper, method)(-1.0)
+
+    assert mapper.device.calls == []
+
+
+@pytest.mark.parametrize("value", [0, 0.0, 5.0])
+@pytest.mark.parametrize("method, forwarded", [
+    ("set_voltage", "set_channel_voltage"),
+    ("set_current", "set_channel_current"),
+])
+def test_a_supply_setpoint_of_zero_or_more_reaches_the_instrument(
+        method, forwarded, value):
+    """0 is a valid setpoint, so the check must be `< 0`, not falsiness."""
+    mapper = _supply(1)
+
+    getattr(mapper, method)(value)
+
+    assert (forwarded, (value, 1), {}) in mapper.device.forwarded

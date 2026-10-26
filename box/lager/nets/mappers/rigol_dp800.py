@@ -6,12 +6,18 @@ class RigolDP800FunctionMapper:
         self.net = net
         self.device = device
 
+    # The driver's voltage()/current() refuse a negative setpoint, but this
+    # path writes :VOLT/:CURR directly, so check before anything is sent.
     def set_voltage(self, voltage):
+        if voltage < 0:
+            raise ValueError(f"Voltage must be positive, got {voltage}V")
         if self.net.channel == 2:
-            self.enable_sense(self.net.channel)      
+            self.enable_sense(self.net.channel)
         self.set_channel_voltage(voltage, self.net.channel)
 
     def set_current(self, current):
+        if current < 0:
+            raise ValueError(f"Current must be positive, got {current}A")
         if self.net.channel == 2:
             self.enable_sense(self.net.channel)
         self.set_channel_current(current, self.net.channel)

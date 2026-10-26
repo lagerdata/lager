@@ -48,12 +48,12 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` | 3728 (+3 xfailed) |
-| `unit (box)` | `test/unit/box/` | 4896 (+17 skipped) |
+| `unit (box)` | `test/unit/box/` | 4906 (+17 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 414 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 230 (+1 skipped) |
-| | **Total gated** | **9462** |
+| | **Total gated** | **9472** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -594,7 +594,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_mount_prep.py` | Mount preparation SSH operations via mocked runner |
 | `test_net_command_handler.py` | Generic POST /net/command Flask handler dispatch by role and error handling, including a not-ready answer shown without the `Hardware error:` prefix while other device errors keep it |
 | `test_net_save_uart_identity.py` | `usb_identity_for_net_record`: durable USB identity snapshot at UART net save time |
-| `test_mapper_range_checks.py` | Tree-wide guard: no `LO > x > HI` range check in `box/` or `cli/`, a shape that is always false so the `raise` under it is unreachable; plus both ends of the seven inverted bounds fixed in the Rigol MSO5000 and Keithley mappers |
+| `test_mapper_range_checks.py` | Tree-wide guard: no `LO > x > HI` range check in `box/` or `cli/`, a shape that is always false so the `raise` under it is unreachable; plus both ends of the seven inverted bounds fixed in the Rigol MSO5000 and Keithley mappers; a Rigol DP800 supply net refuses a negative voltage or current before sending anything |
 | `test_network_mode.py` | Opt-in container network mode: `--network` rendered from box_config rather than hardcoded, the host-mode fallback for an unknown value, port publishing suppressed on host while every `-p` literal stays inside the firewall-allowlist sentinels, the shim set/unset verbs, and the cli/box allowlist agreeing. Also that a switch to host takes effect only through `apply`: every other start keeps the mode the last apply recorded and announces the pending one, a return to lagernet needs no apply, an unreadable snapshot withholds host, and the CLI and renderer agree on the confirmation variable |
 | `test_gateway_coresidence.py` | `start_box.sh` beside a gateway that owns lager's host ports, run verbatim against a fake `docker`: a container on lagernet publishing 5000/8080/8765/9000 switches the start to `--no-publish` and writes the marker, an explicit `--publish` is not overridden, and the old `lager` container and exposed-but-unpublished ports are not holders. Any other holder of a published port, ranges expanded on both sides, fails with exit 5 naming the port and the container before the running container is stopped, and `--preflight` stops there. `--publish` clears the `no_publish` marker only after that check passes, so a refused start or a `--preflight` run leaves it in place. A refused `docker run` names the port and its holder (or a process outside Docker), removes the Created leftover and keeps a non-port exit status. Also the order of those steps in `start_box.sh`, and that the deploy script runs the preflight before its teardown, only against a `start_box.sh` that knows the flag |
 | `test_mcp_publish_opt_out.py` | `LAGER_MCP_NO_PUBLISH`: runs the opt-out scan and the port-publishing block of `start_box.sh` under bash with a rendered `BOX_CONFIG_ENV`. A truthy value drops exactly the 8100 mapping, any other value drops nothing, and both opt-outs together drop 8100 and 9000. `--no-publish` still publishes nothing, and host mode warns that the variable has no effect |

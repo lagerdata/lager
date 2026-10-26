@@ -88,6 +88,12 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   seconds. During that time the battery net's commands failed with "device
   still busy".
 
+- **A Rigol DP800 supply refuses a negative voltage or current set through the
+  Python API, as `lager supply` already did.** `set_voltage()` and
+  `set_current()` on a `Net.get(..., type=NetType.PowerSupply)` net sent the
+  negative setpoint to the instrument. They now raise `ValueError` before
+  anything is sent.
+
 - **A net command with the net name omitted runs on the default net.** `lager arm position
   --box X` failed with "No such command '--box'", and `lager arm --box X position` listed
   nets instead of reading the position. This affects `arm`, `supply`, `battery`, `eload`,
