@@ -32,11 +32,16 @@ Lager 提供对台式电源设备的自动控制，用于确定性的硬件测�
 | Keysight | E36313A | 3 | `lager supply` |
 | EA Elektro-Automatik | PSB 10060/60 | 1 路电源 + 1 路太阳能 | `lager supply`、`lager solar` |
 | EA Elektro-Automatik | PSB 10080/60 | 1 路电源 + 1 路太阳能 | `lager supply`、`lager solar` |
+| Yepkit | YKUSH3 5V 输出 † | 1 | `lager supply` |
 
 \* 仅支持 RS-232 —— 它通过 USB 转串口适配器连接，并且需要用
 [`lager nets assign`](/source/zh/reference/cli/nets#assign) 做一次性的手动分配。
 DP711 还需要在电源和 RS232 转 USB 适配器之间加一根**零调制解调器（交叉）线缆**。两端都按 DTE 接线，因此直通连接无法通信。请参阅
 [RS-232 仪器](/source/zh/getting-started/setting-up-instruments#rs-232-仪器（手动分配）)。
+
+† YKUSH3 集线器上用于非 USB 负载的可切换 5V 输出。它固定为 5V，且不做任何测量，因此只有
+`enable`、`disable` 和 `state` 有效；设置 5V 会被接受，其他任何设定值或保护命令都会被拒绝。
+该集线器的三个 USB 端口是 `usb` Net（见下文的 USB 电源切换）。
 
 **可以实现：**
 - 自动的电压/电流控制
@@ -244,6 +249,7 @@ Lager 支持业界标准的 ARM 调试探针，全部通过同一条 `lager debu
 | Acroname | 8 端口 USB 集线器 | 8 | `lager usb` |
 | Acroname | 4 端口 USB 集线器 | 4 | `lager usb` |
 | Yepkit | YKUSH | 3 | `lager usb` |
+| Yepkit | YKUSH3 | 3 + 5V 输出 | `lager usb`、`lager supply` |
 | Plugable | UD-CAM 及其他 RTS5411 扩展坞[^plugable] | 4 | `lager usb` |
 
 [^plugable]: 与 Acroname 和 Yepkit 集线器不同，Plugable 不提供 SDK。控制方式采用标准 USB hub class 的按端口电源切换（PPPS），因此支持程度取决于具体的集线器是否真正实现了它。通过 VID:PID `2230:5411` 匹配 —— Plugable 在它整条 RTS5411 扩展坞产品线上复用这个 ID；已在 UD-CAM 上验证。**只有四个外部 Type-A 插座会切换 VBUS** ——

@@ -12,6 +12,14 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Added
+
+- **Yepkit YKUSH3 hubs are supported.** `lager instruments` and `lager nets
+  add-all` now detect the YKUSH3 (`04d8:f11b`). Its three USB ports are `usb`
+  nets for `lager usb`, and its switchable 5V output is a `power-supply` net for
+  `lager supply`. The 5V output only switches on and off: setting 5V is accepted,
+  and current, other voltages and OCP/OVP are refused.
+
 ### Fixed
 
 - **`wait_for_level()` on a LabJack T7 GPIO net counts the stream setup against its

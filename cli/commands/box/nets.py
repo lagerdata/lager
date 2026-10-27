@@ -573,6 +573,7 @@ INSTRUMENT_NET_MAP: dict[str, list[str]] = {
     "Acroname_8Port": ["usb"],
     "Acroname_4Port": ["usb"],
     "YKUSH_Hub": ["usb"],
+    "YKUSH3_Hub": ["usb", "power-supply"],
     "Plugable_USB_Hub": ["usb"],
 
     # eload

@@ -38,6 +38,7 @@ validation.
 | Keysight | E36313A | 3 | `lager supply` |
 | EA Elektro-Automatik | PSB 10060/60 | 1 supply + 1 solar | `lager supply`, `lager solar` |
 | EA Elektro-Automatik | PSB 10080/60 | 1 supply + 1 solar | `lager supply`, `lager solar` |
+| Yepkit | YKUSH3 5V output † | 1 | `lager supply` |
 
 \* RS-232 only — connects through a USB-serial adapter and requires a one-time
 manual assignment with
@@ -46,6 +47,11 @@ requires a **null-modem (crossover) cable** between the supply and the
 RS232-to-USB adapter. Both ends are wired as DTE, so a straight-through
 connection will not communicate. See
 [RS-232 Instruments](/source/getting-started/setting-up-instruments#rs-232-instruments-manual-assignment).
+
+† The YKUSH3 hub's switchable 5V output for non-USB loads. It is fixed at 5V and
+measures nothing, so only `enable`, `disable` and `state` apply; setting 5V is
+accepted and every other setpoint or protection command is refused. The hub's
+three USB ports are `usb` nets (see [USB Power Switching](#usb-power-switching)).
 
 **Enables:**
 - Automated voltage/current control
@@ -280,6 +286,7 @@ scripts and CI pipelines.
 | Acroname | 8-Port USB Hub | 8 | `lager usb` |
 | Acroname | 4-Port USB Hub | 4 | `lager usb` |
 | Yepkit | YKUSH | 3 | `lager usb` |
+| Yepkit | YKUSH3 | 3 + 5V output | `lager usb`, `lager supply` |
 | Plugable | UD-CAM and other RTS5411 docks[^plugable] | 4 | `lager usb` |
 
 [^plugable]: Unlike the Acroname and Yepkit hubs, Plugable ships no SDK. Control

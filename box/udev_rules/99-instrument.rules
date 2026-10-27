@@ -126,9 +126,12 @@ SUBSYSTEM=="usb", ATTRS{idVendor}=="0d28", ATTRS{idProduct}=="0204", MODE="0660"
 # Covers USBHub2x4 (0x0011), USBHub3+ (0x0013), and other variants
 SUBSYSTEM=="usb", ATTRS{idVendor}=="24ff", MODE="0660", GROUP="lager"
 
-# Yepkit YKUSH USB Hub: VID=0x04d8, PID=0xf2f7 (YKUSH), 0x0042 (YKUSH3)
+# Yepkit YKUSH USB Hubs: VID=0x04d8, PID=0xf2f7 (YKUSH), 0xf11b (YKUSH3),
+# 0x0042 (legacy YKUSH/YKUSH2 firmware). Per-PID rather than VID-only because
+# 0x04d8 is Microchip's generic vendor ID, shared by unrelated devices.
 # Allows control of YKUSH programmable USB hubs via pykush library
 SUBSYSTEM=="usb", ATTRS{idVendor}=="04d8", ATTRS{idProduct}=="f2f7", MODE="0660", GROUP="lager"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="04d8", ATTRS{idProduct}=="f11b", MODE="0660", GROUP="lager"
 SUBSYSTEM=="usb", ATTRS{idVendor}=="04d8", ATTRS{idProduct}=="0042", MODE="0660", GROUP="lager"
 # Plugable USB-C docking stations / hubs: VID=0x2230 (all models)
 # Control is the STANDARD USB hub class per-port power switching over libusb --
