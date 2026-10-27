@@ -1232,5 +1232,18 @@ class TestNetCommandHandler(unittest.TestCase):
         self.assertEqual(readings['frequency'], 1e3)
 
 
+class TestReadFormatting(unittest.TestCase):
+    """A read's message drops float noise; its value stays exact (#784)."""
+
+    def test_a_scaled_reading_prints_without_float_noise(self):
+        out = net_command._ok_read(0.49987 * 100, "%")
+        self.assertEqual(out['message'], "49.987 %")
+        self.assertEqual(out['value'], 0.49987 * 100)
+
+    def test_a_precise_reading_keeps_its_digits(self):
+        self.assertEqual(net_command._ok_read(1.2345678, "V")['message'], "1.2345678 V")
+        self.assertEqual(net_command._ok_read(3.3, "V")['message'], "3.3 V")
+
+
 if __name__ == '__main__':
     unittest.main()

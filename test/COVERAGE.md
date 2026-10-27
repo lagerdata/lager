@@ -48,12 +48,12 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` | 3752 (+3 xfailed) |
-| `unit (box)` | `test/unit/box/` | 4920 (+17 skipped) |
+| `unit (box)` | `test/unit/box/` | 4932 (+17 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 414 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 243 (+1 skipped) |
-| | **Total gated** | **9523** |
+| | **Total gated** | **9535** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -499,9 +499,9 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 332 files)
+### Local Unit Tests (`test/unit/` -- 333 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 178 files)
+#### Box Unit Tests (`test/unit/box/` -- 179 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -555,6 +555,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_drivers_handler.py` | Custom-driver routes (`/drivers`) and `/net/command` dispatch to a custom driver, through a real runner subprocess: typed params and args, bad args refused before spawning, an unmarked method not callable, a stray print not corrupting the result, a driver exception as 502, a timeout as 504, a wrong-role or missing base net as 400, a live `lager uart` session on the base net as 409, a broken bundle as 503 |
 | `test_drivers_manifest.py` | `lager.drivers.manifest`: type names and the reserved built-in names, `lager_api`, param and arg specs (types, ranges, choices, defaults, names the CLI already uses), timeouts, and coercing CLI strings and JSON values to the manifest's types |
 | `test_drivers_registry.py` | `lager.drivers.registry` against a real temp directory: install, replace (old files gone), a failed replace keeping the old version, a bundle zipped with its folder, the type matching the URL, zip-slip, absolute paths and symlinks refused, size limits, a broken bundle listed as an error without hiding the others, and remove refused while nets use the driver |
+| `test_dp800_protection_limits.py` | A Rigol DP800 reports OVP/OCP maxima at 110% of each channel's rated output, so `lager supply` can restore a factory protection limit above the rating |
 | `test_download_file_headers.py` | `GET /download-file` names the attachment after the path it resolved, with the three characters a header value cannot carry reduced -- a filename may legally contain all of them. Spaces and parentheses survive, so the download keeps a name the user recognises |
 | `test_erase_bounds.py` | The shared erase-range rules behind `--erase-start` / `--erase-size` and `DebugNet.erase(start, length)`: `validate_bounds` (ints only, no negative start, no zero size, inside the 32-bit address space, inside the DA1469x QSPI XIP window), `format_bounds` / `bounds_dict` as the service reports them, the loader's `xip_range_to_flash_offset` translation and refusals, and every erase timeout scaling per MiB (loader poll, OpenOCD `flash erase_address`, J-Link Commander); plus `jlink.resolve_erase_range`'s request > script line > default order, loaded standalone |
 | `test_ftdi_dispatch_routing.py` | FTDI nets reach the FTDI drivers through the dispatchers, not only when the drivers are built directly: every FT232H, FT2232H and FT4232H net routes through the I2C, SPI and GPIO dispatchers, `params.interface` and the PID reach the driver, a non-MPSSE channel is refused with the reason, a raw `ftdi://` address is used verbatim, and the shared FTDI name set is pinned to the scanner's `SUPPORTED_USB` table so the dispatchers cannot drift from it again |

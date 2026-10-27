@@ -506,10 +506,17 @@ def _sync_device_channel(device, net_info):
     limit). Drivers that can be re-pointed expose set_active_channel(); we call
     it under the per-address lock so the set-then-call is atomic against other
     channels' requests. Drivers without set_active_channel are unaffected.
+
+    A saved net record names its channel 'pin', and the Python API sends the
+    record as net_info, so 'pin' is read when 'channel' is absent -- the same
+    fallback the drivers' create_device() uses. Reading 'channel' alone left
+    every Net.get() call on the channel that created the instance (#731).
     """
     if not net_info:
         return
     channel = net_info.get('channel')
+    if channel is None:
+        channel = net_info.get('pin')
     setter = getattr(device, 'set_active_channel', None)
     if channel is None or not callable(setter):
         return

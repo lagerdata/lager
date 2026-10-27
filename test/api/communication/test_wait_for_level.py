@@ -121,6 +121,9 @@ def main():
             pass
         actual = time.monotonic() - start
         diff = abs(actual - target)
+        # Printed on a pass too, so the nightly logs show the usual overrun
+        # before anyone moves the bound (#770).
+        print(f"    timeout {target}s took {actual:.3f}s")
         assert diff < 0.3, f"expected ~{target}s, got {actual:.3f}s (off by {diff:.3f}s)"
 
     run("timeout precision within 0.3s of target", test_timeout_precision)

@@ -1800,7 +1800,7 @@ impl Oscilloscope for RigolMso5000 {
             AcquisitionMode::Average => {
                 if !(2..=65536).contains(&average_count) || !average_count.is_power_of_two() {
                     bail!(
-                        "the {} averages a power of two from 2 to 65536 captures, not {average_count}",
+                        "the {} averages a power of two of captures (2, 4, 8, ...), not {average_count}",
                         self.capabilities.model
                     );
                 }

@@ -56,6 +56,24 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   partway through setting up the scope. It now raises an error that says the
   scope does not decode buses through lager. The logic analyzer pages describe
   the pulse, UART and I2C trigger refusal the CLI gives today.
+- **Python API calls on a multi-channel supply net act on that net's channel.**
+  On a Rigol DP800 or Keysight E36000 with nets on more than one channel,
+  `ovp()`, `ocp()`, `state()`, `clear_ovp()` and the other driver methods
+  reached through `Net.get()` could act on whichever channel the box opened the
+  instrument for first. `lager supply` was not affected (#731).
+- **`lager supply` can set OVP and OCP back to a Rigol DP800's factory limits.**
+  `--ovp`/`--ocp` and `lager supply <net> ovp|ocp` refused any limit above the
+  channel's rated output, but a DP800 accepts and ships with protection limits up
+  to 110% of the rating, so a lowered limit could not be restored. They are now
+  bounded at 110%; voltage and current setpoints are still bounded by the rating
+  (#732).
+- **`lager scope <net> measure` prints a reading without float noise.** A Rigol's
+  duty cycle printed as `49.986999999999995 %`; it now prints `49.987 %`. A
+  Rigol's refusal of an averaging count no longer names 65536 captures, which the
+  CLI does not accept (#784).
+- **The scope page's stream request no longer returns paths on the box.** When a
+  scope's daemon does not start or does not answer, the reply names the net and
+  says the reason is in the box's log (#707).
 
 ## [0.60.0] - 2026-10-26
 

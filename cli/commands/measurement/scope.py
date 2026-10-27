@@ -886,7 +886,7 @@ def acquire(ctx, mode, count, box):
     average is a running mean of the last --count captures, which takes
     random noise down by the square root of the count. peak keeps the
     minimum and maximum of every sample interval, where the unit can.
-    A Rigol averages a power of two from 2 to 65536 captures.
+    A Rigol averages a power of two from 2 to 1024 captures.
     """
     box_ip = _resolve_box(ctx, box)
     netname = _require_netname(ctx)

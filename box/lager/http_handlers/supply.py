@@ -42,13 +42,41 @@ def _resolve_supply_proxy(netname: str):
     )
     supply = Device(device_name, net_info)
     try:
-        limits = supply.get_channel_limits(channel)
-        voltage_max = limits.get('voltage_max', 0)
-        current_max = limits.get('current_max', 0)
+        limits = _read_limits(supply, channel)
     except (AttributeError, NotImplementedError):
-        voltage_max = 0
-        current_max = 0
-    return supply, channel, voltage_max, current_max
+        limits = dict(NO_LIMITS)
+    return supply, channel, limits
+
+
+# A limit of 0 means the driver reports none, and nothing is checked against it.
+NO_LIMITS = {'voltage_max': 0, 'current_max': 0, 'ovp_max': 0, 'ocp_max': 0}
+
+
+def _read_limits(supply, channel):
+    """The channel's rated output maxima, and the maxima for its OVP and OCP.
+
+    A protection limit can sit above the rated output: a Rigol DP800 ships with
+    OVP and OCP at 110% of the channel's rating. A driver that knows this reports
+    ovp_max/ocp_max; for one that does not, the rated maxima bound OVP and OCP.
+    """
+    limits = supply.get_channel_limits(channel)
+    voltage_max = limits.get('voltage_max', 0)
+    current_max = limits.get('current_max', 0)
+    return {
+        'voltage_max': voltage_max,
+        'current_max': current_max,
+        'ovp_max': limits.get('ovp_max', voltage_max),
+        'ocp_max': limits.get('ocp_max', current_max),
+    }
+
+
+def _protection_error(ovp, ocp, limits):
+    """The refusal for an OVP or OCP above what the channel accepts, or None."""
+    if ovp is not None and limits['ovp_max'] > 0 and ovp > limits['ovp_max']:
+        return f"OVP {ovp}V exceeds the channel's OVP maximum {limits['ovp_max']}V"
+    if ocp is not None and limits['ocp_max'] > 0 and ocp > limits['ocp_max']:
+        return f"OCP {ocp}A exceeds the channel's OCP maximum {limits['ocp_max']}A"
+    return None
 
 
 # Wire shape of the supply state dict (minus the netname/channel envelope).
@@ -174,8 +202,7 @@ def register_supply_routes(app: Flask) -> None:
             session_id = None
             supply = None
             channel = None
-            voltage_max = 0
-            current_max = 0
+            limits = dict(NO_LIMITS)
 
             with active_supply_sessions_lock:
                 for sid, session_info in active_supply_sessions.items():
@@ -183,8 +210,7 @@ def register_supply_routes(app: Flask) -> None:
                         session_id = sid
                         supply = session_info.get('supply')
                         channel = session_info.get('channel')
-                        voltage_max = session_info.get('voltage_max', 0)
-                        current_max = session_info.get('current_max', 0)
+                        limits = session_info.get('limits', limits)
                         break
 
             if not supply:
@@ -194,7 +220,7 @@ def register_supply_routes(app: Flask) -> None:
                 # device (e.g. left over from a recently-exited TUI) and produce
                 # "[Errno 16] Resource busy".
                 try:
-                    supply, channel, voltage_max, current_max = _resolve_supply_proxy(netname)
+                    supply, channel, limits = _resolve_supply_proxy(netname)
                 except SupplyBackendError as e:
                     return jsonify({'success': False, 'error': str(e)}), 404
                 except (ConnectionFailed, DeviceError) as e:
@@ -214,12 +240,12 @@ def register_supply_routes(app: Flask) -> None:
 
             try:
                 if action == 'voltage':
+                    voltage_max = limits['voltage_max']
                     if value is not None and voltage_max > 0 and value > voltage_max:
                         return jsonify({'success': False, 'error': f'Voltage {value}V exceeds hardware limit {voltage_max}V'}), 400
-                    if ovp is not None and voltage_max > 0 and ovp > voltage_max:
-                        return jsonify({'success': False, 'error': f'OVP {ovp}V exceeds hardware voltage limit {voltage_max}V'}), 400
-                    if ocp is not None and current_max > 0 and ocp > current_max:
-                        return jsonify({'success': False, 'error': f'OCP {ocp}A exceeds hardware current limit {current_max}A'}), 400
+                    protection_error = _protection_error(ovp, ocp, limits)
+                    if protection_error:
+                        return jsonify({'success': False, 'error': protection_error}), 400
                     if value is not None or ocp is not None or ovp is not None:
                         supply.voltage(value=value, ocp=ocp, ovp=ovp)
                         applied = []
@@ -235,12 +261,12 @@ def register_supply_routes(app: Flask) -> None:
                         result['message'] = f'Voltage setpoint: {v_set}V'
 
                 elif action == 'current':
+                    current_max = limits['current_max']
                     if value is not None and current_max > 0 and value > current_max:
                         return jsonify({'success': False, 'error': f'Current {value}A exceeds hardware limit {current_max}A'}), 400
-                    if ovp is not None and voltage_max > 0 and ovp > voltage_max:
-                        return jsonify({'success': False, 'error': f'OVP {ovp}V exceeds hardware voltage limit {voltage_max}V'}), 400
-                    if ocp is not None and current_max > 0 and ocp > current_max:
-                        return jsonify({'success': False, 'error': f'OCP {ocp}A exceeds hardware current limit {current_max}A'}), 400
+                    protection_error = _protection_error(ovp, ocp, limits)
+                    if protection_error:
+                        return jsonify({'success': False, 'error': protection_error}), 400
                     if value is not None or ocp is not None or ovp is not None:
                         supply.current(value=value, ocp=ocp, ovp=ovp)
                         applied = []
@@ -264,8 +290,9 @@ def register_supply_routes(app: Flask) -> None:
                     result['message'] = 'Supply output disabled'
 
                 elif action == 'ocp':
-                    if value is not None and current_max > 0 and value > current_max:
-                        return jsonify({'success': False, 'error': f'OCP {value}A exceeds hardware current limit {current_max}A'}), 400
+                    protection_error = _protection_error(None, value, limits)
+                    if protection_error:
+                        return jsonify({'success': False, 'error': protection_error}), 400
                     if value is not None:
                         supply.set_overcurrent_protection_value(value, channel=channel)
                         supply.enable_overcurrent_protection(channel=channel)
@@ -275,8 +302,9 @@ def register_supply_routes(app: Flask) -> None:
                         result['message'] = f'OCP limit: {ocp}A'
 
                 elif action == 'ovp':
-                    if value is not None and voltage_max > 0 and value > voltage_max:
-                        return jsonify({'success': False, 'error': f'OVP {value}V exceeds hardware voltage limit {voltage_max}V'}), 400
+                    protection_error = _protection_error(value, None, limits)
+                    if protection_error:
+                        return jsonify({'success': False, 'error': protection_error}), 400
                     if value is not None:
                         supply.set_overvoltage_protection_value(value, channel=channel)
                         supply.enable_overvoltage_protection(channel=channel)
@@ -508,12 +536,9 @@ def register_supply_socketio(socketio: SocketIO) -> None:
                 # surfaced an error) means the first SCPI query failed — surface
                 # to client rather than silently timing out.
                 try:
-                    limits = supply.get_channel_limits(channel)
-                    voltage_max = limits.get('voltage_max', 0)
-                    current_max = limits.get('current_max', 0)
+                    limits = _read_limits(supply, channel)
                 except (AttributeError, NotImplementedError):
-                    voltage_max = 0
-                    current_max = 0
+                    limits = dict(NO_LIMITS)
                 except (ConnectionFailed, DeviceError) as limits_err:
                     import traceback
                     logger.error(
@@ -537,11 +562,10 @@ def register_supply_socketio(socketio: SocketIO) -> None:
                         if session_id in active_supply_sessions:
                             active_supply_sessions[session_id]['supply'] = supply
                             active_supply_sessions[session_id]['channel'] = channel
-                            active_supply_sessions[session_id]['voltage_max'] = voltage_max
-                            active_supply_sessions[session_id]['current_max'] = current_max
+                            active_supply_sessions[session_id]['limits'] = limits
                             logger.info(
                                 f"[MONITOR-{thread_name}] Stored supply proxy in session "
-                                f"(limits: {voltage_max}V, {current_max}A)"
+                                f"(limits: {limits['voltage_max']}V, {limits['current_max']}A)"
                             )
                 except Exception as store_err:
                     import traceback
@@ -561,8 +585,8 @@ def register_supply_socketio(socketio: SocketIO) -> None:
                 socketio.emit('supply_driver_ready', {
                     'netname': netname,
                     'channel': channel,
-                    'voltage_max': voltage_max,
-                    'current_max': current_max,
+                    'voltage_max': limits['voltage_max'],
+                    'current_max': limits['current_max'],
                     'message': f'Supply driver ready for {netname}'
                 }, namespace='/supply', room=session_id)
                 logger.info(f"[MONITOR-{thread_name}] Emitted supply_driver_ready event")
@@ -663,15 +687,15 @@ def register_supply_socketio(socketio: SocketIO) -> None:
             session_id = request.sid
             supply = None
             channel = None
-            voltage_max = 0
-            current_max = 0
+            limits = dict(NO_LIMITS)
 
             with active_supply_sessions_lock:
                 if session_id in active_supply_sessions:
                     supply = active_supply_sessions[session_id].get('supply')
                     channel = active_supply_sessions[session_id].get('channel')
-                    voltage_max = active_supply_sessions[session_id].get('voltage_max', 0)
-                    current_max = active_supply_sessions[session_id].get('current_max', 0)
+                    limits = active_supply_sessions[session_id].get('limits', limits)
+            voltage_max = limits['voltage_max']
+            current_max = limits['current_max']
 
             if not supply:
                 emit('supply_command_response', {
@@ -738,9 +762,10 @@ def register_supply_socketio(socketio: SocketIO) -> None:
                 elif action == 'ocp':
                     value = params.get('value')
                     # Validate OCP against hardware current limit (only when setting)
-                    if value is not None and current_max > 0 and value > current_max:
+                    protection_error = _protection_error(None, value, limits)
+                    if protection_error:
                         result['success'] = False
-                        result['error'] = f'OCP {value}A exceeds hardware current limit {current_max}A'
+                        result['error'] = protection_error
                         emit('supply_command_response', result)
                         return
                     if value is not None:
@@ -758,9 +783,10 @@ def register_supply_socketio(socketio: SocketIO) -> None:
                 elif action == 'ovp':
                     value = params.get('value')
                     # Validate OVP against hardware voltage limit (only when setting)
-                    if value is not None and voltage_max > 0 and value > voltage_max:
+                    protection_error = _protection_error(value, None, limits)
+                    if protection_error:
                         result['success'] = False
-                        result['error'] = f'OVP {value}V exceeds hardware voltage limit {voltage_max}V'
+                        result['error'] = protection_error
                         emit('supply_command_response', result)
                         return
                     if value is not None:

@@ -180,12 +180,25 @@ def register_scope_routes(app):
             url = routing.daemon_url_for(rec)
             response = daemon_client.command("GetCapabilities", timeout=5.0, url=url)
             capabilities = response.get("capabilities")
+        # Both errors name paths and URLs on the box, which stay in the box's
+        # log; the browser gets a sentence without them (code scanning #179).
         except RigolDaemonError as e:
-            return jsonify({"success": False, "error": str(e)}), 503
+            logger.warning("scope %s: the oscilloscope daemon did not start: %s", netname, e)
+            return jsonify({
+                "success": False,
+                "error": "The oscilloscope daemon for net '%s' did not start. The reason "
+                         "is in the box's log; `lager update` rebuilds a missing daemon."
+                         % netname,
+            }), 503
         except daemon_client.ScopeDaemonUnavailable as e:
             # No daemon means no stream, so fail loudly rather than handing
             # out a ticket that cannot be redeemed.
-            return jsonify({"success": False, "error": str(e)}), 503
+            logger.warning("scope %s: the oscilloscope daemon is unreachable: %s", netname, e)
+            return jsonify({
+                "success": False,
+                "error": "The oscilloscope daemon for net '%s' is not answering, so there "
+                         "is no stream to open. The reason is in the box's log." % netname,
+            }), 503
         except daemon_client.ScopeDaemonError as e:
             # The daemon is up but could not describe the unit -- an older
             # daemon, or no scope attached. A ticket is still useful (commands

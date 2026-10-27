@@ -76,6 +76,30 @@ class TestTicket:
         # address with.
         assert asked == [RIGOL_DAEMON + "?usb:1-1.3"]
 
+    def test_a_daemon_that_did_not_start_names_no_box_path(self, client, monkeypatch):
+        # Code scanning #179: the box path in the error stays in the box's log.
+        def ensure(address, video=None):
+            raise rigol_daemons.RigolDaemonError(
+                "the oscilloscope daemon for %s did not start; see "
+                "/tmp/lager-scope-daemons/x.log" % address)
+        monkeypatch.setattr(rigol_daemons, "ensure", ensure)
+        response = client.get("/scope/rigol2/stream")
+        assert response.status_code == 503
+        error = response.get_json()["error"]
+        assert "rigol2" in error and "did not start" in error
+        assert "/tmp" not in error and "USB0::" not in error
+
+    def test_an_unreachable_daemon_names_no_url(self, client, monkeypatch):
+        def command(name, timeout=None, url=None, **params):
+            raise daemon_client.ScopeDaemonUnavailable(
+                "oscilloscope daemon unreachable at ws://127.0.0.1:8085/: refused")
+        monkeypatch.setattr(daemon_client, "command", command)
+        response = client.get("/scope/pico1/stream")
+        assert response.status_code == 503
+        error = response.get_json()["error"]
+        assert "pico1" in error and "not answering" in error
+        assert "ws://" not in error
+
     def test_a_picoscope_streams_from_the_box_daemon(self, client, asked):
         client.get("/scope/pico1/stream")
         assert asked == [daemon_client.daemon_url()]

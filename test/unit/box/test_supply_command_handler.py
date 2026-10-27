@@ -83,6 +83,18 @@ class FakeSupply:
     def clear_ovp(self, *args, **kwargs):
         self._record('clear_ovp', *args, **kwargs)
 
+    def set_overvoltage_protection_value(self, value, channel=None):
+        self._record('set_overvoltage_protection_value', value, channel=channel)
+
+    def enable_overvoltage_protection(self, channel=None):
+        self._record('enable_overvoltage_protection', channel=channel)
+
+    def set_overcurrent_protection_value(self, value, channel=None):
+        self._record('set_overcurrent_protection_value', value, channel=channel)
+
+    def enable_overcurrent_protection(self, channel=None):
+        self._record('enable_overcurrent_protection', channel=channel)
+
     def get_channel_voltage(self, source=None):
         self._record('get_channel_voltage', source=source)
         return 5.0
@@ -112,6 +124,9 @@ class FakeSupply:
 class SupplyCommandHandlerTest(unittest.TestCase):
     VOLTAGE_MAX = 32.0
     CURRENT_MAX = 5.0
+    # Protection maxima above the rating, as a DP800 reports them.
+    OVP_MAX = 35.2
+    OCP_MAX = 5.5
 
     def setUp(self):
         app = Flask(__name__)
@@ -122,7 +137,10 @@ class SupplyCommandHandlerTest(unittest.TestCase):
         self._orig_resolve_proxy = supply_handler._resolve_supply_proxy
         self._orig_resolve_net = supply_handler.resolve_net_proxy
         supply_handler._resolve_supply_proxy = lambda netname: (
-            self.supply, 1, self.VOLTAGE_MAX, self.CURRENT_MAX
+            self.supply, 1, {
+                'voltage_max': self.VOLTAGE_MAX, 'current_max': self.CURRENT_MAX,
+                'ovp_max': self.OVP_MAX, 'ocp_max': self.OCP_MAX,
+            }
         )
 
         # Skip the cross-role conflict lookup (no saved nets in tests).
@@ -182,15 +200,42 @@ class SupplyCommandHandlerTest(unittest.TestCase):
         (_, _, kwargs), = self.supply.named('current')
         self.assertEqual(kwargs, {'value': 1.5, 'ocp': 2.0, 'ovp': None})
 
-    def test_ovp_beyond_hardware_limit_rejected(self):
-        resp = self._post('voltage', {'value': 5.0, 'ovp': self.VOLTAGE_MAX + 1})
+    def test_ovp_beyond_protection_maximum_rejected(self):
+        resp = self._post('voltage', {'value': 5.0, 'ovp': self.OVP_MAX + 1})
         self.assertEqual(resp.status_code, 400)
+        self.assertIn('OVP maximum', resp.get_json()['error'])
         self.assertFalse(self.supply.named('voltage'))
 
-    def test_ocp_beyond_hardware_limit_rejected(self):
-        resp = self._post('current', {'value': 1.0, 'ocp': self.CURRENT_MAX + 1})
+    def test_ocp_beyond_protection_maximum_rejected(self):
+        resp = self._post('current', {'value': 1.0, 'ocp': self.OCP_MAX + 1})
         self.assertEqual(resp.status_code, 400)
+        self.assertIn('OCP maximum', resp.get_json()['error'])
         self.assertFalse(self.supply.named('current'))
+
+    def test_protection_above_rating_restores_factory_limits(self):
+        # A DP800 ships with OVP/OCP at 110% of the rating; once lowered,
+        # `lager supply` must be able to put them back (#732).
+        resp = self._post('voltage', {'value': None, 'ovp': self.OVP_MAX})
+        self.assertEqual(resp.status_code, 200, resp.get_json())
+        resp = self._post('current', {'value': None, 'ocp': self.OCP_MAX})
+        self.assertEqual(resp.status_code, 200, resp.get_json())
+        resp = self._post('ovp', {'value': self.OVP_MAX})
+        self.assertEqual(resp.status_code, 200, resp.get_json())
+        resp = self._post('ocp', {'value': self.OCP_MAX})
+        self.assertEqual(resp.status_code, 200, resp.get_json())
+
+    def test_setpoint_still_bounded_by_rating(self):
+        resp = self._post('voltage', {'value': self.VOLTAGE_MAX + 1})
+        self.assertEqual(resp.status_code, 400)
+        resp = self._post('current', {'value': self.CURRENT_MAX + 0.1})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_driver_without_protection_maxima_falls_back_to_rating(self):
+        class Rated:
+            def get_channel_limits(self, channel):
+                return {'voltage_max': 30.0, 'current_max': 3.0}
+        limits = supply_handler._read_limits(Rated(), 1)
+        self.assertEqual((limits['ovp_max'], limits['ocp_max']), (30.0, 3.0))
 
     # ---- clear_ocp / clear_ovp ----------------------------------------
 

@@ -19,6 +19,9 @@ RESET = '\033[0m'
 
 LAGER_CURRENT_LIMIT = 1
 
+# OVP and OCP accept up to this multiple of a channel's rated output.
+PROTECTION_HEADROOM = 1.1
+
 class RigolDP800(SupplyNet):
     """
     SupplyNet implementation for Rigol DP800 series.
@@ -41,8 +44,8 @@ class RigolDP800(SupplyNet):
     Important Notes:
     - Always respect hardware limits when setting voltages/currents
     - The instrument will clamp values to its maximum capabilities
-    - OVP (Over Voltage Protection) must not exceed channel voltage limits
-    - OCP (Over Current Protection) must not exceed channel current limits
+    - OVP (Over Voltage Protection) may be set up to 110% of the channel voltage rating
+    - OCP (Over Current Protection) may be set up to 110% of the channel current rating
     - Test scripts should account for different channel capabilities
     """
 
@@ -551,6 +554,23 @@ class RigolDP800(SupplyNet):
         self.instr.write(":APPL {0},{1},{2}".format(channel, voltage, current))
 
     def get_channel_limits(self, channel=1):
+        """
+        Get the channel's rated output maxima, and the maxima for its OVP and OCP.
+
+        voltage_max/current_max are the rated output, which bounds a setpoint.
+        ovp_max/ocp_max bound the protection limits: a DP800 accepts OVP and OCP
+        up to 110% of the rating, and ships with them there (a DP821's channel 2,
+        rated 8 V / 10 A, ships with OVP 8.8 V and OCP 11 A). Bounding them by the
+        rating left no way back to the factory limits once one was lowered.
+        """
+        rated = self._rated_limits(channel)
+        return {
+            **rated,
+            "ovp_max": round(rated["voltage_max"] * PROTECTION_HEADROOM, 3),
+            "ocp_max": round(rated["current_max"] * PROTECTION_HEADROOM, 3),
+        }
+
+    def _rated_limits(self, channel=1):
         """
         Get hardware maximum voltage and current ratings for the specified channel.
 

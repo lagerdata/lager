@@ -84,7 +84,12 @@ def _ok(message, value=None, warnings=None):
 
 
 def _ok_read(value, unit):
-    return _ok("%s %s" % (value, unit), value)
+    # Rounded to 12 significant digits, then printed as Python prints a float:
+    # that drops the noise of a scaled value (a Rigol's duty ratio times 100
+    # printed 49.986999999999995) and leaves every other reading as it was
+    # ("1000.0 Hz", "3.3 V"). The value in the reply is unrounded.
+    shown = float("%.12g" % value) if isinstance(value, float) else value
+    return _ok("%s %s" % (shown, unit), value)
 
 
 def _json_safe(value):

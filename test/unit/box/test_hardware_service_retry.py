@@ -565,6 +565,20 @@ class ChannelSyncTests(unittest.TestCase):
         hw._sync_device_channel(dev, {'address': 'x', 'channel': 3})
         self.assertEqual(dev.bound, 3)
 
+    def test_sync_helper_reads_pin_from_a_saved_net_record(self):
+        """Net.get() sends the saved net record, which names its channel 'pin'.
+        Without the fallback, ovp()/ocp() on a DP800 net reached through the
+        mapper's __getattr__ acted on whichever channel built the instance."""
+        class Dev:
+            bound = None
+            def set_active_channel(self, channel):
+                self.bound = int(channel)
+        dev = Dev()
+        hw._sync_device_channel(dev, {'name': 'supply2', 'address': 'x', 'pin': 1})
+        self.assertEqual(dev.bound, 1)
+        hw._sync_device_channel(dev, {'address': 'x', 'channel': 2, 'pin': 1})
+        self.assertEqual(dev.bound, 2, "an explicit 'channel' wins over 'pin'")
+
     def test_sync_helper_noop_without_hook_or_channel(self):
         """Drivers without set_active_channel, or calls without a channel, are
         left untouched (preserves behavior for single-channel devices)."""
@@ -625,6 +639,34 @@ class ChannelSyncTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200, resp.get_json())
 
         self.assertEqual(applied, [(3, 20.0), (1, 5.0)])
+
+    def test_python_api_net_record_routes_to_its_own_channel(self):
+        """The Python API sends the saved net record ('pin', no 'channel').
+        An ocp() reached through the DP800 mapper's __getattr__ on the CH1
+        net must act on CH1 even when CH2's net created the instance (#731)."""
+        applied = []
+
+        class FakeDP800:
+            def __init__(self):
+                self.channel = 2
+            def set_active_channel(self, channel):
+                self.channel = int(channel)
+            def ocp(self, value=None):
+                applied.append((self.channel, value))
+
+        address = 'USB0::0x1AB1::0x0E11::FAKE::INSTR'
+        hw.device_cache[('rigol_dp800', address)] = FakeDP800()
+
+        resp = self.client.post('/invoke', json={
+            'device': 'rigol_dp800',
+            'function': 'ocp',
+            'args': [1.1],
+            'kwargs': {},
+            'net_info': {'name': 'supply2', 'role': 'power-supply',
+                         'address': address, 'pin': 1},
+        })
+        self.assertEqual(resp.status_code, 200, resp.get_json())
+        self.assertEqual(applied, [(1, 1.1)])
 
 
 class DeviceIdLockTests(unittest.TestCase):
