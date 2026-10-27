@@ -6,8 +6,7 @@ description: 数字信号采集与协议解码
 用混合信号示波器的逻辑分析仪功能采集并分析数字信号。
 
 <Warning>
-**Rigol MSO5000 上的已知限制。** 通道控制、采集、测量，以及边沿触发和 SPI 触发均可工作。脉冲、UART、I2C 和 CAN 触发会在任何内容到达示波器之前抛出错误，说明示波器支持边沿和 SPI 触发。所有总线解码器在创建时都会失败，抛出包含 `Function not found` 的错误。
-[Issue #418](https://github.com/lagerdata/lager/issues/418) 跟踪这项工作。
+**Rigol MSO5000 上的已知限制。** 通道控制、采集、测量，以及边沿触发和 SPI 触发均可工作。脉冲、UART、I2C 和 CAN 触发会在任何内容到达示波器之前抛出错误，说明示波器支持边沿和 SPI 触发。总线解码器同样会被拒绝：创建时会抛出错误，说明示波器不通过 lager 解码总线。
 </Warning>
 
 ## 导入
@@ -289,6 +288,10 @@ neg_edges = logic.measurement.negative_edge_count()
 ```
 
 ## 总线解码
+
+<Note>
+Rigol MSO5000 不通过 lager 解码总线。下面的每个构造函数都会在任何内容到达示波器之前抛出错误。
+</Note>
 
 进行协议分析时，可以用多个逻辑通道创建总线解码器：
 

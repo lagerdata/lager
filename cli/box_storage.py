@@ -1202,6 +1202,39 @@ import contextlib as _contextlib_for_lock
 import threading as _threading_for_heartbeat
 
 
+def _exit_cleanly_on_terminate():
+    """Make SIGTERM and SIGHUP run this process's lock release.
+
+    Python's default action for both kills the process without running
+    ``finally`` blocks or ``atexit`` handlers, so a lock taken by a command
+    that is stopped with a plain ``kill`` stayed held until its TTL ran out.
+    A test that backgrounds `lager debug ... gdbserver` and later kills it
+    left its CI job's lock held that way. Raising ``SystemExit`` instead
+    unwinds normally, so the release runs. The exit status is the shell's
+    ``128 + signal``, the same one the default action reports.
+
+    A handler someone else installed is left alone, and so is a call off the
+    main thread, where Python cannot install one.
+    """
+    import signal
+
+    if _threading_for_heartbeat.current_thread() is not _threading_for_heartbeat.main_thread():
+        return
+
+    def _raise_exit(signum, _frame):
+        raise SystemExit(128 + signum)
+
+    for name in ('SIGTERM', 'SIGHUP'):
+        signum = getattr(signal, name, None)
+        if signum is None:
+            continue
+        try:
+            if signal.getsignal(signum) is signal.SIG_DFL:
+                signal.signal(signum, _raise_exit)
+        except (OSError, ValueError):
+            pass
+
+
 class HeartbeatThread(_threading_for_heartbeat.Thread):
     """Refreshes the box lock periodically while a command is running.
 
@@ -1653,6 +1686,7 @@ def auto_lock_around_command(
             # actually hold the lock — no surprise release of someone
             # else's lock at interpreter shutdown.
             _atexit.register(_safe_release)
+            _exit_cleanly_on_terminate()
 
         heartbeat = None
         # Heartbeat whenever the lock we're running under has a TTL: locks
@@ -1864,6 +1898,7 @@ def auto_lock_acquire_for_command(
 
     if should_release:
         _atexit.register(_release)
+        _exit_cleanly_on_terminate()
         if resolved_ttl is not None:
             heartbeat = HeartbeatThread(
                 ip,

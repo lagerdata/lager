@@ -15,10 +15,9 @@
 # advertiser near the box, and bench logs are public. Only the scan line, the
 # device count, a "No ..." line and any error line are, through summary().
 #
-# `lager wifi status` and `access-points` are not run against the box: on a
-# box whose container uses the default network they cannot see its Wi-Fi
-# (status reports "Interface detection failed", the scan needs nmcli), so a
-# check could only fail.
+# `lager wifi status` and `access-points` are not run against the box. They
+# read the box host over SSH, and their output names the box's network and
+# every network near it, which a public bench log must not carry.
 #
 # Usage: radios.sh <BOX>
 #

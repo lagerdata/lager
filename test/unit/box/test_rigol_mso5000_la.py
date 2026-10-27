@@ -193,6 +193,32 @@ def test_no_new_undefined_mapper_methods():
 
 
 # --------------------------------------------------------------------------
+# Bus decoders: the driver has no bus setters, so each is refused up front
+# --------------------------------------------------------------------------
+
+def _bus_decoders():
+    from lager.nets.mappers import rigol_mso5000 as mapper
+    return [
+        (mapper.BusUART_RigolMSO5000FunctionMapper, ("tx", "rx")),
+        (mapper.BusI2C_RigolMSO5000FunctionMapper, ("scl", "sda")),
+        (mapper.BusSPI_RigolMSO5000FunctionMapper, ("clk", "mosi", "miso")),
+        (mapper.BusCAN_RigolMSO5000FunctionMapper, ("can",)),
+        (mapper.BusFlex_RigolMSO5000FunctionMapper, ("flex",)),
+    ]
+
+
+@pytest.mark.parametrize("decoder,lines", _bus_decoders(),
+                         ids=lambda v: getattr(v, "__name__", ""))
+def test_a_bus_decoder_is_refused_before_anything_is_sent(decoder, lines):
+    from lager.measurement.scope.picoscope import UnsupportedScopeFeature
+    device = mock.MagicMock()
+    nets = {name: mock.MagicMock(device=device) for name in lines}
+    with pytest.raises(UnsupportedScopeFeature, match="does not decode buses"):
+        decoder(**nets)
+    assert device.mock_calls == []
+
+
+# --------------------------------------------------------------------------
 # SCPI
 # --------------------------------------------------------------------------
 

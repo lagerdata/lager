@@ -14,6 +14,8 @@ Each test runs the real root group (`cli.main.cli`) against the in-process
 that a refused or unconfirmed command sends nothing at all.
 """
 
+import json
+
 import pytest
 
 ADDR = "AA:BB:CC:DD:EE:FF"
@@ -159,18 +161,92 @@ def test_blufi_failure_is_a_non_zero_exit(lager, fake_box):
 # lager wifi (hidden group)
 # ---------------------------------------------------------------------------
 
-def test_wifi_status_payload(lager, fake_box):
+# `status` and `access-points` read the box host over SSH, not the container,
+# which cannot see the host's wireless interface. Each test fakes the SSH
+# runner with what the host would print.
+
+@pytest.fixture
+def host(monkeypatch):
+    """The box host as seen over SSH: canned output, and the commands sent."""
+    class Host:
+        rc, out, err = 0, "", ""
+        cmds = []
+
+        def __call__(self, box_ip, cmd, **kw):
+            self.cmds.append(cmd)
+            return self.rc, self.out, self.err
+
+    fake = Host()
+    fake.cmds = []
+    monkeypatch.setattr("cli.commands.communication.wifi.default_ssh_runner", fake)
+    return fake
+
+
+IW_CONNECTED = """phy#0
+\tInterface wlan0
+\t\tifindex 3
+\t\ttype managed
+\t\tssid bench net
+"""
+
+
+def test_wifi_status_reads_the_host_and_sends_nothing_to_the_box(lager, fake_box, host):
+    host.out = ("--nmcli--\nwlan0:wifi:connected:preconfigured\neth0:ethernet:connected:Wired\n"
+                "--iw--\n" + IW_CONNECTED)
     result = lager("wifi", "status")
     assert result.exit_code == 0, result.output
-    url, body = fake_box.posts[-1]
-    assert url.endswith(":9000/wifi/command")
-    assert body == {"action": "status", "params": {}}
+    assert "SSID:  bench net" in result.output
+    assert "State: Connected" in result.output
+    assert "eth0" not in result.output
+    assert fake_box.posts == []
 
 
-def test_wifi_access_points_scans_the_named_interface(lager, fake_box):
+def test_wifi_status_with_only_iw_on_the_host(lager, fake_box, host):
+    host.out = "--nmcli--\n!missing\n--iw--\n" + IW_CONNECTED.replace("\t\tssid bench net\n", "")
+    result = lager("wifi", "status")
+    assert result.exit_code == 0, result.output
+    assert "State: Disconnected" in result.output
+
+
+def test_wifi_status_fails_when_no_tool_can_read_it(lager, fake_box, host):
+    host.out = "--nmcli--\n!missing\n--iw--\n!missing\n"
+    result = lager("wifi", "status")
+    assert result.exit_code == 1
+    assert "Cannot read the box's Wi-Fi state" in result.output
+
+
+def test_wifi_status_fails_with_no_wireless_interface(lager, fake_box, host):
+    host.out = "--nmcli--\neth0:ethernet:connected:Wired\n--iw--\n"
+    result = lager("wifi", "status")
+    assert result.exit_code == 1
+    assert "no wireless interface" in result.output
+
+
+def test_wifi_status_names_an_ssh_failure(lager, fake_box, host):
+    host.rc, host.err = 255, "Permission denied (publickey)."
+    result = lager("wifi", "status")
+    assert result.exit_code == 1
+    assert "SSH key authentication failed" in result.output
+
+
+def test_wifi_access_points_scans_the_named_interface(lager, fake_box, host):
+    host.out = ("bench net:WPA2:40\nbench net:WPA2:71\nlab\\:guest::12\n:WPA2:90\n")
     result = lager("wifi", "access-points", "--interface", "wlan1")
     assert result.exit_code == 0, result.output
-    assert fake_box.last == {"action": "scan", "params": {"interface": "wlan1"}}
+    assert "ifname wlan1" in host.cmds[-1]
+    assert fake_box.posts == []
+    payload = json.loads(result.output.split("JSON Output:", 1)[1])
+    assert payload == {"access_points": [
+        {"ssid": "bench net", "security": "WPA2", "strength": 71},
+        {"ssid": "lab:guest", "security": "Open", "strength": 12},
+    ]}
+
+
+def test_wifi_access_points_names_a_missing_nmcli(lager, fake_box, host):
+    host.out = "!missing\n"
+    result = lager("wifi", "access-points")
+    assert result.exit_code == 1
+    assert "nmcli is not installed on the box host" in result.output
 
 
 def test_wifi_connect_sends_ssid_password_and_interface(lager, fake_box):

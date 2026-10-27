@@ -9,12 +9,16 @@
 from __future__ import annotations
 
 import json
+import re
+import shlex
 
 import click
 
 # Import consolidated helpers from cli.core.net_helpers
 from ...core.group_usage import LagerGroup
 from ...core.net_helpers import resolve_box, resolve_box_locked, post_box_command
+from ...errors import LagerError, ssh_error
+from ..box._ssh import default_ssh_runner, resolve_box_user, strip_ssh_banner
 
 # WiFi constraints
 MAX_SSID_LENGTH = 32  # IEEE 802.11 maximum SSID length
@@ -104,6 +108,91 @@ def _format_networks_table(networks: list[dict]) -> str:
     return '\n'.join(lines)
 
 
+# `status` and `access-points` read the box host's Wi-Fi over SSH. The lager
+# container cannot: on its default network it has no view of the host's
+# wireless interface, and the image has no nmcli, so both lookups failed there
+# and `status` still exited 0. They only read, so they take no box lock.
+_HOST_SSH_TIMEOUT = 45
+
+_MISSING = '!missing'
+
+# Both tools, each optional on the host. A tool that is absent, or whose
+# daemon is not running, prints the marker instead of its output.
+_STATUS_SCRIPT = (
+    "echo '--nmcli--'; "
+    f"nmcli -t -f DEVICE,TYPE,STATE,CONNECTION device status 2>/dev/null || echo '{_MISSING}'; "
+    "echo '--iw--'; "
+    f"iw dev 2>/dev/null || echo '{_MISSING}'"
+)
+
+_NMCLI_STATES = {
+    'connected': 'Connected',
+    'disconnected': 'Disconnected',
+    'unavailable': 'Unavailable (radio off or no driver)',
+    'unmanaged': 'Not managed by NetworkManager',
+}
+
+
+def _nmcli_fields(line: str) -> list[str]:
+    """Split one `nmcli -t` line on its unescaped colons."""
+    return [f.replace('\\:', ':').replace('\\\\', '\\')
+            for f in re.split(r'(?<!\\):', line)]
+
+
+def _parse_host_status(out: str) -> tuple[dict, bool]:
+    """Turn the status script's output into interfaces, and whether any tool ran.
+
+    nmcli gives the state; `iw dev` gives the SSID, which nmcli only knows as
+    a connection name that need not match it.
+    """
+    sections, current = {}, None
+    for line in out.splitlines():
+        if line in ('--nmcli--', '--iw--'):
+            current = line.strip('-')
+            sections[current] = []
+        elif current is not None:
+            sections[current].append(line)
+
+    nmcli = sections.get('nmcli', [_MISSING])
+    iw = sections.get('iw', [_MISSING])
+    have_nmcli = _MISSING not in nmcli
+    have_iw = _MISSING not in iw
+
+    interfaces = {}
+    if have_iw:
+        name = None
+        for line in iw:
+            words = line.split()
+            if len(words) >= 2 and words[0] == 'Interface':
+                name = words[1]
+                interfaces[name] = {'interface': name, 'ssid': 'Not Connected',
+                                    'state': 'Disconnected'}
+            elif name and len(words) >= 2 and words[0] == 'ssid':
+                interfaces[name]['ssid'] = line.strip()[len('ssid '):]
+                interfaces[name]['state'] = 'Connected'
+    if have_nmcli:
+        for line in nmcli:
+            fields = _nmcli_fields(line)
+            if len(fields) < 4 or fields[1] != 'wifi':
+                continue
+            device, _type, state, connection = fields[:4]
+            info = interfaces.setdefault(device, {
+                'interface': device, 'ssid': 'Not Connected', 'state': ''})
+            base = state.split(' ')[0]
+            info['state'] = _NMCLI_STATES.get(base, state)
+            if base == 'connected' and info['ssid'] == 'Not Connected' and connection:
+                info['ssid'] = connection
+    return interfaces, have_nmcli or have_iw
+
+
+def _run_on_host(box_ip: str, cmd: str) -> tuple[int, str, str]:
+    """Run a read-only command on the box host; SSH's own failures exit here."""
+    rc, out, err = default_ssh_runner(box_ip, cmd, timeout=_HOST_SSH_TIMEOUT)
+    if rc == 255:
+        raise ssh_error(strip_ssh_banner(err), box_ip, resolve_box_user(box_ip))
+    return rc, out, err
+
+
 @click.group(name='wifi', cls=LagerGroup, hidden=True)
 def _wifi():
     """Manage WiFi network settings"""
@@ -117,14 +206,22 @@ def status(ctx, box):
     """
         Get the current WiFi Status of the box
     """
-    box_ip = resolve_box_locked(ctx, box, 'wifi')
+    box_ip = resolve_box(ctx, box, read_only=True)
 
-    result = _post_wifi(ctx, box_ip, 'status')
-    interfaces = (result.get('value') or {}).get('interfaces', [])
+    _rc, out, _err = _run_on_host(box_ip, _STATUS_SCRIPT)
+    found, readable = _parse_host_status(out)
+    if not readable:
+        raise LagerError(
+            "Cannot read the box's Wi-Fi state.",
+            cause="Neither nmcli (with NetworkManager running) nor iw is available on the box host.",
+            fixes=["Install one of them on the box host, e.g. sudo apt install iw"],
+        )
+    if not found:
+        raise LagerError("The box has no wireless interface.")
 
     click.secho("WiFi Status:", fg='green')
     click.echo("=" * 40)
-    for info in interfaces:
+    for info in found.values():
         connected = info.get('state', '').startswith('Connected')
         click.secho(f"Interface: {info.get('interface')}", fg='green')
         click.secho(f"    SSID:  {info.get('ssid')}",
@@ -132,6 +229,43 @@ def status(ctx, box):
         click.secho(f"    State: {info.get('state')}",
                     fg='green' if connected else 'red')
         click.echo()
+
+
+def _scan_on_host(box_ip: str, interface: str) -> list[dict]:
+    """List the access points the box host sees on ``interface``, strongest first.
+
+    nmcli lists one row per access point, so a network with several shows up
+    several times; each SSID is kept once, at its strongest.
+    """
+    cmd = (f"command -v nmcli >/dev/null 2>&1 || {{ echo '{_MISSING}'; exit 0; }}; "
+           f"nmcli -t -f SSID,SECURITY,SIGNAL device wifi list ifname {shlex.quote(interface)}")
+    rc, out, err = _run_on_host(box_ip, cmd)
+    if out.strip() == _MISSING:
+        raise LagerError(
+            "Cannot scan for Wi-Fi networks.",
+            cause="nmcli is not installed on the box host.",
+            fixes=["Install NetworkManager on the box host, e.g. sudo apt install network-manager"],
+        )
+    if rc != 0:
+        raise LagerError(
+            f"The Wi-Fi scan on {interface} failed.",
+            cause=strip_ssh_banner(err) or f"nmcli exited {rc} on the box host.",
+        )
+
+    best = {}
+    for line in out.splitlines():
+        fields = _nmcli_fields(line)
+        if len(fields) < 3 or not fields[0]:
+            continue
+        ssid, security, signal = fields[0], fields[1], fields[2]
+        try:
+            strength = int(signal)
+        except ValueError:
+            strength = 0
+        if ssid not in best or strength > best[ssid]['strength']:
+            best[ssid] = {'ssid': ssid, 'security': security or 'Open',
+                          'strength': strength}
+    return sorted(best.values(), key=lambda n: n['strength'], reverse=True)
 
 
 @_wifi.command()
@@ -145,11 +279,10 @@ def access_points(ctx, box, interface='wlan0'):
     # Validate interface name
     _validate_interface(ctx, interface)
 
-    box_ip = resolve_box_locked(ctx, box, 'wifi')
+    box_ip = resolve_box(ctx, box, read_only=True)
 
     click.secho(f"Scanning for WiFi networks on {interface}...", fg='green')
-    result = _post_wifi(ctx, box_ip, 'scan', interface=interface)
-    networks = (result.get('value') or {}).get('access_points', [])
+    networks = _scan_on_host(box_ip, interface)
 
     click.secho(f"\nFound {len(networks)} network(s):", fg='green')
     click.secho(_format_networks_table(networks), fg='green')

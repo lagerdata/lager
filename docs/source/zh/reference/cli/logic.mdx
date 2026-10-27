@@ -6,10 +6,7 @@ description: 控制逻辑分析仪的通道和触发
 通过 Lager CLI 控制逻辑分析仪 Net，用于数字信号采集、协议解码和触发配置。
 
 <Warning>
-**Rigol MSO5000 上的已知限制。** 通道控制、采集、测量、光标，以及边沿触发和
-SPI 触发均可工作。脉冲、UART 和 I2C 触发在用选项配置它们时会失败。每次失败都会打印 `Error: Function not found: <method>` 并以 1 退出。
-CAN 触发和所有总线解码器同样会失败。
-[Issue #418](https://github.com/lagerdata/lager/issues/418) 跟踪这项工作。
+**Rigol MSO5000 的触发。** 通道控制、采集、测量、光标，以及边沿触发和 SPI 触发均可工作。脉冲、I2C 和 UART 触发会在任何内容到达示波器之前被拒绝：命令打印 `Error: a Rigol MSO5000 supports edge and SPI triggers through lager, not <type>. Nothing was changed on the scope.` 并以 1 退出。
 </Warning>
 
 ## 语法
@@ -148,7 +145,7 @@ lager logic NET_NAME trigger edge [OPTIONS]
 
 ### `trigger pulse`
 
-设置脉冲触发配置。在 Rigol MSO5000 上，这个触发还不能工作。请参阅本页顶部的限制说明。
+设置脉冲触发配置。Rigol MSO5000 会拒绝这个触发。请参阅本页顶部的说明。
 
 ```bash
 lager logic NET_NAME trigger pulse [OPTIONS]
@@ -165,7 +162,7 @@ lager logic NET_NAME trigger pulse [OPTIONS]
 
 ### `trigger i2c`
 
-设置 I2C 协议触发。在 Rigol MSO5000 上，配置这个触发的选项还不能工作。请参阅本页顶部的限制说明。
+设置 I2C 协议触发。Rigol MSO5000 会拒绝这个触发。请参阅本页顶部的说明。
 
 ```bash
 lager logic NET_NAME trigger i2c [OPTIONS]
@@ -187,7 +184,7 @@ lager logic NET_NAME trigger i2c [OPTIONS]
 
 ### `trigger uart`
 
-设置 UART 协议触发。在 Rigol MSO5000 上，配置这个触发的选项还不能工作。请参阅本页顶部的限制说明。
+设置 UART 协议触发。Rigol MSO5000 会拒绝这个触发。请参阅本页顶部的说明。
 
 ```bash
 lager logic NET_NAME trigger uart [OPTIONS]

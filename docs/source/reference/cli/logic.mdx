@@ -6,7 +6,7 @@ description: Control logic analyzer channels and triggers
 Control logic analyzer Nets through the Lager CLI for digital signal capture, protocol decoding, and trigger configuration.
 
 <Warning>
-**Known limitations on the Rigol MSO5000.** Channel control, capture, measurements, cursors, and the edge and SPI triggers work. The pulse, UART and I2C triggers fail when an option configures them. Each failure prints `Error: Function not found: <method>` and exits 1. The CAN trigger and every bus decoder also fail. [Issue #418](https://github.com/lagerdata/lager/issues/418) tracks this work.
+**Rigol MSO5000 triggers.** Channel control, capture, measurements, cursors, and the edge and SPI triggers work. The pulse, I2C and UART triggers are refused before anything reaches the scope: the command prints `Error: a Rigol MSO5000 supports edge and SPI triggers through lager, not <type>. Nothing was changed on the scope.` and exits 1.
 </Warning>
 
 ## Syntax
@@ -144,7 +144,7 @@ lager logic NET_NAME trigger edge [OPTIONS]
 
 ### `trigger pulse`
 
-Set pulse trigger configuration. On the Rigol MSO5000, this trigger does not work yet. See the limitations at the top of this page.
+Set pulse trigger configuration. A Rigol MSO5000 refuses this trigger. See the note at the top of this page.
 
 ```bash
 lager logic NET_NAME trigger pulse [OPTIONS]
@@ -161,7 +161,7 @@ lager logic NET_NAME trigger pulse [OPTIONS]
 
 ### `trigger i2c`
 
-Set I2C protocol trigger. On the Rigol MSO5000, the options that configure this trigger do not work yet. See the limitations at the top of this page.
+Set I2C protocol trigger. A Rigol MSO5000 refuses this trigger. See the note at the top of this page.
 
 ```bash
 lager logic NET_NAME trigger i2c [OPTIONS]
@@ -183,7 +183,7 @@ lager logic NET_NAME trigger i2c [OPTIONS]
 
 ### `trigger uart`
 
-Set UART protocol trigger. On the Rigol MSO5000, the options that configure this trigger do not work yet. See the limitations at the top of this page.
+Set UART protocol trigger. A Rigol MSO5000 refuses this trigger. See the note at the top of this page.
 
 ```bash
 lager logic NET_NAME trigger uart [OPTIONS]

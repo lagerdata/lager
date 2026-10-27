@@ -1524,10 +1524,19 @@ def map_channel_to_bus_logic_source(net):
             return BusLogicSource.Channel4
 
 class Bus_RigolMSO5000FunctionMapper:
+    """A bus decoder on the scope. The driver has no bus setters.
+
+    Each decoder used to reach the box and fail on the first setter it called
+    (or on an undefined ``format`` in this constructor), with
+    "Function not found". It is refused here instead, before anything is sent.
+    The methods below are kept as the shape a driver would have to grow; the
+    guard in test_rigol_mso5000_la.py lists the setters they call.
+    """
     def __init__(self, net, device):
-        self.net = net
-        self.device = device
-        self.format(BusFormat.Hex)
+        from lager.measurement.scope.picoscope import UnsupportedScopeFeature
+        raise UnsupportedScopeFeature(
+            "a Rigol MSO5000 does not decode buses through lager; "
+            "edge and SPI triggers are supported")
 
     def enable(self):
         self.device.enable_bus_display(1)

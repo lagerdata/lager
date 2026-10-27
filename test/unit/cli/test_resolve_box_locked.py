@@ -14,6 +14,11 @@ Verifies that hardware-interacting CLI commands:
 from __future__ import annotations
 
 import os
+import signal
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
 from unittest import mock
 
 import click
@@ -170,3 +175,64 @@ class TestResolveBoxLocked:
         # catch.
         assert len(releases) == 1
         assert releases[0].state == 'already_ours'
+
+
+# A child process that takes a lock, says so, and then waits to be killed. The
+# lock calls are replaced with ones that print, so the parent can see whether
+# the release ran.
+_KILLED_CHILD = textwrap.dedent("""
+    import signal, sys, time
+    import cli.box_storage as bs
+
+    bs.acquire_box_lock = lambda *a, **k: ('acquired', {})
+    bs.release_box_lock = lambda *a, **k: print('released', flush=True) or True
+    bs.HeartbeatThread = None
+    if sys.argv[1] == 'own-handler':
+        signal.signal(signal.SIGTERM, lambda *a: (print('own handler', flush=True), sys.exit(7)))
+    bs.auto_lock_acquire_for_command('10.0.0.9', 'box', 'debug', ttl_seconds=bs.NO_LOCK_EXPIRY)
+    print('ready', flush=True)
+    time.sleep(30)
+""")
+
+
+@pytest.mark.skipif(sys.platform == 'win32', reason='POSIX signals')
+class TestLockReleasedWhenKilled:
+    """A plain `kill` of a command holding the lock must release it.
+
+    Python's default SIGTERM action skips ``atexit``, which is where the
+    release lives, so a killed `lager debug ... gdbserver` left its lock held
+    until the TTL ran out.
+    """
+
+    def _kill(self, mode, sig=signal.SIGTERM):
+        repo = Path(__file__).resolve().parents[3]
+        env = dict(os.environ, PYTHONPATH=str(repo), LAGER_LOCK_HOLDER='tester')
+        env.pop('LAGER_AUTO_LOCK_DISABLE', None)
+        child = subprocess.Popen(
+            [sys.executable, '-c', _KILLED_CHILD, mode],
+            cwd=repo, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            assert child.stdout.readline().strip() == 'ready', child.stderr.read()
+            child.send_signal(sig)
+            out, err = child.communicate(timeout=10)
+        finally:
+            if child.poll() is None:
+                child.kill()
+        return child.returncode, out, err
+
+    def test_sigterm_releases_the_lock(self):
+        code, out, err = self._kill('default')
+        assert 'released' in out, err
+        assert code == 128 + signal.SIGTERM
+
+    def test_sighup_releases_the_lock(self):
+        code, out, err = self._kill('default', signal.SIGHUP)
+        assert 'released' in out, err
+        assert code == 128 + signal.SIGHUP
+
+    def test_a_handler_already_installed_is_kept(self):
+        code, out, _err = self._kill('own-handler')
+        assert 'own handler' in out
+        assert code == 7
