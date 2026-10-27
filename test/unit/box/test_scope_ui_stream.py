@@ -700,3 +700,42 @@ class TestReadingsAfterTheStreamCloses:
         css = (SCOPE_DIR / "scope.css").read_text()
         assert ".measurements--stale dd" in css
         assert "Not live: read before the stream closed." in css
+
+
+class TestRunBadgeAndPollingFollowTheRun:
+    """The run badge and the measurement polling, whichever way a run ends."""
+
+    def test_the_badge_stops_claiming_a_state_once_the_stream_ends(self):
+        out = _run_js(TRANSPORT + """
+        elements['trig-status'] = { textContent: 'TRIG\\u2019D', className: 'trig trig--trigd' };
+        page.status = 'trigd';
+        page.streamEnded();
+        process.stdout.write(JSON.stringify({
+          text: elements['trig-status'].textContent,
+          cls: elements['trig-status'].className, status: page.status }));
+        """)
+        assert out == {"text": "—", "cls": "trig", "status": None}
+
+    def _console(self, line, *, timer=True):
+        return _run_js("""
+        globalThis.document = { getElementById: () => null, hidden: false };
+        const page = app({
+          measureTimer: %s, refreshed: 0,
+          runCommand: async () => ({ ok: true }),
+          refreshMeasurements() { this.refreshed += 1; return Promise.resolve(); },
+          pollMeasurementsOnce() {},
+        });
+        await page.execute(%s);
+        const polling = page.measureTimer !== null;
+        if (page.measureTimer) clearInterval(page.measureTimer);
+        process.stdout.write(JSON.stringify({ polling, refreshed: page.refreshed }));
+        """ % ("setInterval(() => {}, 1000)" if timer else "null", json.dumps(line)))
+
+    def test_a_console_stop_stops_the_polling(self):
+        assert self._console("stop") == {"polling": False, "refreshed": 0}
+
+    def test_a_console_start_starts_it(self):
+        assert self._console("start", timer=False)["polling"] is True
+
+    def test_a_console_single_stops_it_and_reads_once(self):
+        assert self._console("start single") == {"polling": False, "refreshed": 1}

@@ -74,6 +74,21 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 - **The scope page's stream request no longer returns paths on the box.** When a
   scope's daemon does not start or does not answer, the reply names the net and
   says the reason is in the box's log (#707).
+- **`lager scope <net> cursor move-a` and `move-b` move from where the cursor
+  is.** On a Rigol each CLI call started from the centre of the grid, so
+  `set-a --x -200` then `move-a --x 50` put A at +50 instead of -150. A move now
+  reads the cursor's position from the scope first (#747).
+- **The scope page's run badge no longer reads TRIG'D after a disconnect.** It
+  changed only when a frame arrived, so it kept its last state for a scope the
+  page had stopped following. It now shows a dash until the next frame (#747).
+- **A `stop` typed in the scope page's console stops the measurement polling.**
+  Only the Stop button did, so the panel kept re-arming a scope the console had
+  just stopped. `start` and `start single` in the console now follow the same
+  rule as their buttons (#747).
+- **The scope daemon's log says the capture card stopped when it did.** Losing
+  a Rigol's capture card was logged as "the oscilloscope stopped answering",
+  and requests waiting at that moment were refused with the same words, though
+  the scope was still answering (#784).
 
 ## [0.60.0] - 2026-10-26
 

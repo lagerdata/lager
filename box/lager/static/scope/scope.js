@@ -2026,6 +2026,21 @@ class ScopeApp {
     // A socket closed from the far end comes here without `disconnect()`.
     this.stopMeasurementPolling();
     this.markReadingsStale(true);
+    this.clearTriggerStatus();
+  }
+
+  /** Take the run badge off once no frames are coming.
+   *
+   * It changes only when a frame arrives, so after a disconnect it went on
+   * reading TRIG'D for a scope the page no longer follows. The next frame
+   * sets it again.
+   */
+  clearTriggerStatus() {
+    this.status = null;
+    const badge = el('trig-status');
+    if (!badge) return;
+    badge.textContent = '—';
+    badge.className = 'trig';
   }
 
   /**
@@ -2559,6 +2574,27 @@ class ScopeApp {
   stopMeasurementPolling() {
     if (this.measureTimer) clearInterval(this.measureTimer);
     this.measureTimer = null;
+  }
+
+  /** Keep the measurement panel in step with a run, single or stop.
+   *
+   * The one rule for the buttons and for the same verbs typed in the
+   * console: a console `stop` used to leave the panel polling, re-arming a
+   * scope the user had just stopped.
+   */
+  followAcquisition(action) {
+    if (action === 'start_capture') {
+      this.startMeasurementPolling();
+    } else if (action === 'start_single') {
+      // One capture and stop: one reading is all there is to show, and
+      // polling would keep re-arming the scope.
+      this.stopMeasurementPolling();
+      this.refreshMeasurements();
+    } else if (action === 'stop_capture') {
+      // The last values stay on screen, as they do on a stopped bench
+      // scope: they describe the frame still being displayed.
+      this.stopMeasurementPolling();
+    }
   }
 
   // ---------- drawing ----------
@@ -3430,21 +3466,16 @@ class ScopeApp {
     // left showing what it said before the click.
     el('btn-start').addEventListener('click', async () => {
       await this.runCommand('start_capture', {}, 'start');
-      this.startMeasurementPolling();
+      this.followAcquisition('start_capture');
       await this.syncTriggerState();
     });
-    // Single takes one capture and stops, so one reading is the whole of what
-    // there is to show; polling would keep re-arming a scope the user stopped.
     el('btn-single').addEventListener('click', async () => {
       await this.runCommand('start_single', {}, 'single');
-      this.stopMeasurementPolling();
-      this.refreshMeasurements();
+      this.followAcquisition('start_single');
       await this.syncTriggerState();
     });
     el('btn-stop').addEventListener('click', () => {
-      // The last values stay on screen, as they do on a stopped bench scope:
-      // they describe the frame still being displayed.
-      this.stopMeasurementPolling();
+      this.followAcquisition('stop_capture');
       this.runCommand('stop_capture', {}, 'stop');
     });
     el('btn-force').addEventListener('click', () => this.runCommand('force_trigger', {}, 'force'));
@@ -3740,6 +3771,9 @@ class ScopeApp {
     }
     const body = await this.runCommand(
       parsed.action, parsed.params, parsed.summary, net, label);
+    if (body && typeof this.followAcquisition === 'function') {
+      this.followAcquisition(parsed.action);
+    }
     // The box does not know where the page draws its traces, so the page
     // adds that to the box's account of its settings.
     if (body && parsed.action === 'get_state') this.reportVerticalPositions();

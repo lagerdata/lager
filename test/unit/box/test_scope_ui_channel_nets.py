@@ -1783,9 +1783,12 @@ class TestTheMeasurementPanelIsLiveAndComplete:
     def test_running_polls_and_stopping_does_not(self):
         js = SCOPE_JS.read_text()
         start = js.split("el('btn-start').addEventListener")[1].split("});")[0]
-        assert "startMeasurementPolling" in start
+        assert "followAcquisition('start_capture')" in start
         stop = js.split("el('btn-stop').addEventListener")[1].split("});")[0]
-        assert "stopMeasurementPolling" in stop
+        assert "followAcquisition('stop_capture')" in stop
+        rule = js.split("  followAcquisition(action) {")[1].split("\n  }\n")[0]
+        assert "start_capture" in rule and "this.startMeasurementPolling()" in rule
+        assert "stop_capture" in rule and "this.stopMeasurementPolling()" in rule
 
     @needs_node
     @pytest.mark.parametrize("connection", [

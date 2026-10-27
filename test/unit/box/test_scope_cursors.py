@@ -749,7 +749,7 @@ class TestTheMeasurementPanelKeepsPolling:
         globalThis.document.getElementById = () => ({ textContent: '' });
         Object.assign(self, {
           setLink() {}, showEmptyHint() {}, showNotStreaming() {}, showIdleRate() {},
-          markReadingsStale() {},
+          markReadingsStale() {}, clearTriggerStatus() {},
           streamEnded: ScopeApp.prototype.streamEnded,
         });
         self.startMeasurementPolling();

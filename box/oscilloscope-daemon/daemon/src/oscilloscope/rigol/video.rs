@@ -95,6 +95,17 @@ pub trait FrameSource: Send + Sync {
     }
 }
 
+/// How the reason starts when the capture thread stops because the card went.
+/// The scope is closed and opened again to pair the card afresh, and the
+/// daemon's messages say it was the card, not the scope, that stopped.
+pub const CAPTURE_CARD_STOPPED: &str = "the capture card stopped";
+
+/// Whether a lost unit's `reason` is the capture card going, with the scope
+/// itself still answering.
+pub fn only_the_capture_card_went(reason: &str) -> bool {
+    reason.starts_with(CAPTURE_CARD_STOPPED)
+}
+
 /// The newest frame, shared between the capture thread and the scope.
 #[derive(Default)]
 pub struct Latest {
@@ -530,7 +541,7 @@ mod v4l2 {
                     }
                 }
                 Err(e) => {
-                    latest.fail(format!("the capture card stopped: {e}"));
+                    latest.fail(format!("{CAPTURE_CARD_STOPPED}: {e}"));
                     return;
                 }
             }
@@ -584,6 +595,16 @@ pub fn open(spec: &str) -> Result<Box<dyn FrameSource>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_card_that_stopped_is_told_apart_from_a_scope_that_did() {
+        let latest = Latest::default();
+        latest.fail(format!("{CAPTURE_CARD_STOPPED}: No such device"));
+        let reason = format!("{:#}", latest.newest().unwrap_err());
+        assert!(crate::oscilloscope::unit_is_gone(&latest.newest().unwrap_err()));
+        assert!(only_the_capture_card_went(&reason), "{reason}");
+        assert!(!only_the_capture_card_went("the instrument stopped answering on USB: timed out"));
+    }
 
     fn mode(encoding: Encoding, width: u32, height: u32, fps: f64) -> Mode {
         Mode {

@@ -226,9 +226,27 @@ class TestTheCursors:
         assert ":CURSor:MANual:SOURce LA" in self._sent(daemon)
         assert ":CURSor:MANual:CBX 300" in self._sent(daemon)
 
-    def test_a_move_starts_from_where_the_cursor_was_put(self, daemon, monkeypatch):
+    def test_a_move_starts_from_where_the_scope_has_the_cursor(self, daemon, monkeypatch):
+        # Each CLI call builds a new mapper, so `set-a --x -200` then
+        # `move-a --x 50` must read A back from the scope (column 300), not
+        # start from the new mapper's centre.
+        cursors = self._cursors(daemon, monkeypatch)
+        monkeypatch.setattr(cursors.device, "get_cursor_manual_x_a", lambda: "300")
+        monkeypatch.setattr(cursors.device, "get_cursor_manual_y_a", lambda: "240")
+        cursors.move_a(x_del=50)
+        assert self._sent(daemon)[-1] == ":CURSor:MANual:CAX 350"
+
+    def test_cursor_b_moves_from_its_own_position(self, daemon, monkeypatch):
+        cursors = self._cursors(daemon, monkeypatch)
+        monkeypatch.setattr(cursors.device, "get_cursor_manual_x_b", lambda: "500")
+        monkeypatch.setattr(cursors.device, "get_cursor_manual_y_b", lambda: "100")
+        cursors.move_b(y_del=-40)
+        assert self._sent(daemon)[-1] == ":CURSor:MANual:CBY 140"  # down 40 from row 100
+
+    def test_an_unreadable_position_falls_back_to_the_last_one_set(self, daemon, monkeypatch):
         cursors = self._cursors(daemon, monkeypatch)
         cursors.set_a(x=10)
+        monkeypatch.setattr(cursors.device, "get_cursor_manual_x_a", lambda: None)
         cursors.move_a(x_del=-30)
         assert self._sent(daemon)[-1] == ":CURSor:MANual:CAX 480"
 

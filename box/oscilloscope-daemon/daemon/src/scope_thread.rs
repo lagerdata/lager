@@ -39,6 +39,8 @@ use protocol::{
 };
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
+use crate::oscilloscope::rigol::video::only_the_capture_card_went;
+
 use crate::oscilloscope::{
     monotonic_ns, unit_is_gone, Oscilloscope, RollInfo, RollPlan, RollSink,
 };
@@ -644,7 +646,11 @@ fn hardware_thread<F>(
         let reason = match ended {
             Ok(Ended::Shutdown) => return,
             Ok(Ended::UnitGone(reason)) => {
-                tracing::warn!(error = %reason, "the oscilloscope stopped answering; closed it, and opening it again");
+                if only_the_capture_card_went(&reason) {
+                    tracing::warn!(error = %reason, "the capture card stopped; closed the scope to pair the card again, and opening it again");
+                } else {
+                    tracing::warn!(error = %reason, "the oscilloscope stopped answering; closed it, and opening it again");
+                }
                 reason
             }
             Err(panic) => {
@@ -976,6 +982,8 @@ fn run(
             tracing::info!("oscilloscope thread shutting down");
             "the oscilloscope daemon is stopping".to_string()
         }
+        // The reason already says the card stopped; the scope did not.
+        Ended::UnitGone(reason) if only_the_capture_card_went(reason) => reason.clone(),
         Ended::UnitGone(reason) => format!("the oscilloscope stopped answering: {reason}"),
     };
     for held in waiting.drain(..) {

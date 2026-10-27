@@ -1354,7 +1354,7 @@ class Cursor_RigolMSO5000FunctionMapper:
         self.net = net
         self.device = device
         self.source = None
-        # Positions are kept here so a move needs no query.
+        # The last position this mapper set; a move reads the scope first.
         self._cursor_a_x = self.X_CENTER
         self._cursor_a_y = self.Y_CENTER
         self._cursor_b_x = self.X_CENTER
@@ -1436,17 +1436,35 @@ class Cursor_RigolMSO5000FunctionMapper:
         return (int(self.get_cursor_manual_x_b()) - self.X_CENTER,
                 self.Y_CENTER - int(self.get_cursor_manual_y_b()))
 
+    def _read_position(self, query_x, query_y, cached_x, cached_y):
+        """Where a cursor is on the scope, as (column, row).
+
+        Each CLI call is a new process with a new mapper, so the cached
+        position is always the centre there: a move has to start from the
+        scope's own. The cache is the fallback for a reply that is not a number.
+        """
+        try:
+            return int(float(query_x())), int(float(query_y()))
+        except (TypeError, ValueError):
+            return cached_x, cached_y
+
     def move_a(self, *, x_del=None, y_del=None):
+        column, row = self._read_position(
+            self.get_cursor_manual_x_a, self.get_cursor_manual_y_a,
+            self._cursor_a_x, self._cursor_a_y)
         if x_del is not None:
-            self.set_a(x=self._cursor_a_x - self.X_CENTER + x_del)
+            self.set_a(x=column - self.X_CENTER + x_del)
         if y_del is not None:
-            self.set_a(y=self.Y_CENTER - self._cursor_a_y + y_del)
+            self.set_a(y=self.Y_CENTER - row + y_del)
 
     def move_b(self, *, x_del=None, y_del=None):
+        column, row = self._read_position(
+            self.get_cursor_manual_x_b, self.get_cursor_manual_y_b,
+            self._cursor_b_x, self._cursor_b_y)
         if x_del is not None:
-            self.set_b(x=self._cursor_b_x - self.X_CENTER + x_del)
+            self.set_b(x=column - self.X_CENTER + x_del)
         if y_del is not None:
-            self.set_b(y=self.Y_CENTER - self._cursor_b_y + y_del)
+            self.set_b(y=self.Y_CENTER - row + y_del)
 
     def x_delta(self):
         self._cursor_setup("X")
