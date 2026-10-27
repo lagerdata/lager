@@ -38,6 +38,24 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   stayed off, and the reason appeared only when a channel was ticked. It now says
   so on opening, with the `lager nets add ... scope-channel` command for each
   channel (#797).
+- **A command stopped with `kill` releases its box lock.** SIGTERM and SIGHUP
+  ended the process without running the release, so a backgrounded
+  `lager debug <net> gdbserver` that was killed left its lock held until the
+  lock's TTL ran out. Commands that take the lock now release it and exit with
+  the usual `128 + signal` status (#773).
+- **`lager wifi status` and `lager wifi access-points` read the box host's
+  Wi-Fi.** They ran inside the container, which cannot see the host's wireless
+  interface, so `status` printed "Interface detection failed" and exited 0, and
+  the scan failed on a missing `nmcli`. Both now run on the host over SSH.
+  `status` reads the state and network from `networkctl`, `iw` or `nmcli`, and
+  exits 1 when the box has no wireless interface. `access-points` scans the
+  box's own wireless interface by default, not `wlan0`, and says why it cannot
+  scan on a host without NetworkManager (#772).
+- **A Rigol MSO5000 bus decoder is refused before anything is sent.** Creating
+  a UART, I2C, SPI, CAN or FlexRay decoder failed with "Function not found",
+  partway through setting up the scope. It now raises an error that says the
+  scope does not decode buses through lager. The logic analyzer pages describe
+  the pulse, UART and I2C trigger refusal the CLI gives today.
 
 ## [0.60.0] - 2026-10-26
 

@@ -75,7 +75,7 @@ def _validate_interface(ctx: click.Context, interface: str) -> None:
         ctx.exit(1)
 
     # Warn if using non-standard interface name
-    if interface not in COMMON_INTERFACES:
+    if interface not in COMMON_INTERFACES and not interface.startswith('wl'):
         click.secho(f"Note: '{interface}' is not a common wireless interface name.", fg='yellow', err=True)
         click.secho(f"Common names: {', '.join(COMMON_INTERFACES)}", err=True)
 
@@ -112,18 +112,35 @@ def _format_networks_table(networks: list[dict]) -> str:
 # container cannot: on its default network it has no view of the host's
 # wireless interface, and the image has no nmcli, so both lookups failed there
 # and `status` still exited 0. They only read, so they take no box lock.
+#
+# Every source is read as the box's SSH user, without root, and each is
+# optional. sysfs names the wireless interfaces on any Linux host;
+# networkctl (systemd-networkd, the box install's default), nmcli
+# (NetworkManager) and iw add the state and the SSID where present.
 _HOST_SSH_TIMEOUT = 45
 
 _MISSING = '!missing'
 
-# Both tools, each optional on the host. A tool that is absent, or whose
-# daemon is not running, prints the marker instead of its output.
+_WIRELESS_IFACES = (
+    'for d in /sys/class/net/*/wireless; do [ -e "$d" ] || continue; '
+    'basename "$(dirname "$d")"; done'
+)
+
 _STATUS_SCRIPT = (
+    "echo '--wireless--'; "
+    f"for i in $({_WIRELESS_IFACES}); do echo \"$i $(cat /sys/class/net/$i/operstate)\"; done; "
+    "echo '--networkctl--'; "
+    "if command -v networkctl >/dev/null 2>&1; then "
+    f"for i in $({_WIRELESS_IFACES}); do echo \"@$i\"; "
+    "networkctl status \"$i\" --no-pager 2>/dev/null | grep -E '^ *(State|Wi-?Fi access point):'; done; "
+    f"else echo '{_MISSING}'; fi; "
     "echo '--nmcli--'; "
     f"nmcli -t -f DEVICE,TYPE,STATE,CONNECTION device status 2>/dev/null || echo '{_MISSING}'; "
     "echo '--iw--'; "
     f"iw dev 2>/dev/null || echo '{_MISSING}'"
 )
+
+_SECTIONS = ('wireless', 'networkctl', 'nmcli', 'iw')
 
 _NMCLI_STATES = {
     'connected': 'Connected',
@@ -140,49 +157,81 @@ def _nmcli_fields(line: str) -> list[str]:
 
 
 def _parse_host_status(out: str) -> tuple[dict, bool]:
-    """Turn the status script's output into interfaces, and whether any tool ran.
+    """Turn the status script's output into interfaces, and whether it ran.
 
-    nmcli gives the state; `iw dev` gives the SSID, which nmcli only knows as
-    a connection name that need not match it.
+    sysfs lists the interfaces and whether each is up. The SSID comes from
+    `iw dev` or networkctl; nmcli knows only a connection name, which need
+    not match it, so that is the last resort.
     """
     sections, current = {}, None
     for line in out.splitlines():
-        if line in ('--nmcli--', '--iw--'):
-            current = line.strip('-')
+        marker = line.strip('-')
+        if line.startswith('--') and marker in _SECTIONS:
+            current = marker
             sections[current] = []
         elif current is not None:
             sections[current].append(line)
 
-    nmcli = sections.get('nmcli', [_MISSING])
-    iw = sections.get('iw', [_MISSING])
-    have_nmcli = _MISSING not in nmcli
-    have_iw = _MISSING not in iw
-
     interfaces = {}
-    if have_iw:
+
+    def _iface(name):
+        return interfaces.setdefault(name, {
+            'interface': name, 'ssid': 'Not Connected', 'state': 'Disconnected'})
+
+    for line in sections.get('wireless', []):
+        words = line.split()
+        if not words:
+            continue
+        info = _iface(words[0])
+        if len(words) > 1 and words[1] == 'up':
+            info['state'] = 'Up'
+            info['ssid'] = 'Unknown'
+
+    networkctl = sections.get('networkctl', [_MISSING])
+    if _MISSING not in networkctl:
+        name = None
+        for line in networkctl:
+            if line.startswith('@'):
+                name = line[1:].strip()
+                continue
+            key, _, value = line.strip().partition(':')
+            if not name or not value:
+                continue
+            value = value.strip()
+            if key in ('WiFi access point', 'Wi-Fi access point'):
+                info = _iface(name)
+                info['ssid'] = re.sub(r'\s*\([0-9a-fA-F:]{17}\)$', '', value)
+                info['state'] = 'Connected'
+            elif key == 'State' and value.split(' ')[0] in ('no-carrier', 'off', 'dormant'):
+                info = _iface(name)
+                if info['state'] != 'Connected':
+                    info['state'], info['ssid'] = 'Disconnected', 'Not Connected'
+
+    iw = sections.get('iw', [_MISSING])
+    if _MISSING not in iw:
         name = None
         for line in iw:
             words = line.split()
             if len(words) >= 2 and words[0] == 'Interface':
                 name = words[1]
-                interfaces[name] = {'interface': name, 'ssid': 'Not Connected',
-                                    'state': 'Disconnected'}
+                _iface(name)
             elif name and len(words) >= 2 and words[0] == 'ssid':
                 interfaces[name]['ssid'] = line.strip()[len('ssid '):]
                 interfaces[name]['state'] = 'Connected'
-    if have_nmcli:
+
+    nmcli = sections.get('nmcli', [_MISSING])
+    if _MISSING not in nmcli:
         for line in nmcli:
             fields = _nmcli_fields(line)
             if len(fields) < 4 or fields[1] != 'wifi':
                 continue
             device, _type, state, connection = fields[:4]
-            info = interfaces.setdefault(device, {
-                'interface': device, 'ssid': 'Not Connected', 'state': ''})
+            info = _iface(device)
             base = state.split(' ')[0]
             info['state'] = _NMCLI_STATES.get(base, state)
-            if base == 'connected' and info['ssid'] == 'Not Connected' and connection:
+            if base == 'connected' and info['ssid'] in ('Not Connected', 'Unknown') and connection:
                 info['ssid'] = connection
-    return interfaces, have_nmcli or have_iw
+    return interfaces, 'wireless' in sections
 
 
 def _run_on_host(box_ip: str, cmd: str) -> tuple[int, str, str]:
@@ -213,8 +262,7 @@ def status(ctx, box):
     if not readable:
         raise LagerError(
             "Cannot read the box's Wi-Fi state.",
-            cause="Neither nmcli (with NetworkManager running) nor iw is available on the box host.",
-            fixes=["Install one of them on the box host, e.g. sudo apt install iw"],
+            cause="The command on the box host did not run.",
         )
     if not found:
         raise LagerError("The box has no wireless interface.")
@@ -231,29 +279,42 @@ def status(ctx, box):
         click.echo()
 
 
-def _scan_on_host(box_ip: str, interface: str) -> list[dict]:
-    """List the access points the box host sees on ``interface``, strongest first.
+def _scan_on_host(box_ip: str, interface: str | None,
+                  box_label: str) -> tuple[str, list[dict]]:
+    """List the access points the box host sees, strongest first.
 
-    nmcli lists one row per access point, so a network with several shows up
-    several times; each SSID is kept once, at its strongest.
+    Returns the interface scanned (the first wireless one when none is named)
+    and the networks. nmcli lists one row per access point, so a network with
+    several shows up several times; each SSID is kept once, at its strongest.
     """
-    cmd = (f"command -v nmcli >/dev/null 2>&1 || {{ echo '{_MISSING}'; exit 0; }}; "
-           f"nmcli -t -f SSID,SECURITY,SIGNAL device wifi list ifname {shlex.quote(interface)}")
+    given = shlex.quote(interface) if interface else "''"
+    cmd = (f"IF={given}; "
+           f"[ -n \"$IF\" ] || IF=$({_WIRELESS_IFACES} | head -n 1); "
+           "echo \"@$IF\"; "
+           "[ -n \"$IF\" ] || exit 0; "
+           f"command -v nmcli >/dev/null 2>&1 || {{ echo '{_MISSING}'; exit 0; }}; "
+           "nmcli -t -f SSID,SECURITY,SIGNAL device wifi list ifname \"$IF\"")
     rc, out, err = _run_on_host(box_ip, cmd)
-    if out.strip() == _MISSING:
+    lines = out.splitlines()
+    scanned = lines[0][1:].strip() if lines and lines[0].startswith('@') else (interface or '')
+    rows = lines[1:] if lines and lines[0].startswith('@') else lines
+    if not scanned:
+        raise LagerError("The box has no wireless interface.")
+    if [r.strip() for r in rows] == [_MISSING]:
         raise LagerError(
-            "Cannot scan for Wi-Fi networks.",
-            cause="nmcli is not installed on the box host.",
-            fixes=["Install NetworkManager on the box host, e.g. sudo apt install network-manager"],
+            f"Cannot list the access points on {scanned}.",
+            cause=("The box host does not run NetworkManager, and a scan without it "
+                   "needs root on the box host."),
+            fixes=[f"See the network the box is on: lager wifi status --box {box_label}"],
         )
     if rc != 0:
         raise LagerError(
-            f"The Wi-Fi scan on {interface} failed.",
+            f"The Wi-Fi scan on {scanned} failed.",
             cause=strip_ssh_banner(err) or f"nmcli exited {rc} on the box host.",
         )
 
     best = {}
-    for line in out.splitlines():
+    for line in rows:
         fields = _nmcli_fields(line)
         if len(fields) < 3 or not fields[0]:
             continue
@@ -265,24 +326,25 @@ def _scan_on_host(box_ip: str, interface: str) -> list[dict]:
         if ssid not in best or strength > best[ssid]['strength']:
             best[ssid] = {'ssid': ssid, 'security': security or 'Open',
                           'strength': strength}
-    return sorted(best.values(), key=lambda n: n['strength'], reverse=True)
+    return scanned, sorted(best.values(), key=lambda n: n['strength'], reverse=True)
 
 
 @_wifi.command()
 @click.pass_context
 @click.option("--box", required=False, help="Lager Box name or IP")
-@click.option('--interface', required=False, help='Wireless interface to use', default='wlan0')
-def access_points(ctx, box, interface='wlan0'):
+@click.option('--interface', required=False, default=None,
+              help="Wireless interface to use (default: the box's first wireless interface)")
+def access_points(ctx, box, interface=None):
     """
         Get WiFi access points visible to the box
     """
-    # Validate interface name
-    _validate_interface(ctx, interface)
+    if interface is not None:
+        _validate_interface(ctx, interface)
 
     box_ip = resolve_box(ctx, box, read_only=True)
 
-    click.secho(f"Scanning for WiFi networks on {interface}...", fg='green')
-    networks = _scan_on_host(box_ip, interface)
+    scanned, networks = _scan_on_host(box_ip, interface, box or box_ip)
+    click.secho(f"Scanned for WiFi networks on {scanned}.", fg='green')
 
     click.secho(f"\nFound {len(networks)} network(s):", fg='green')
     click.secho(_format_networks_table(networks), fg='green')

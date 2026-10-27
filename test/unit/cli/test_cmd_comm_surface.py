@@ -190,9 +190,15 @@ IW_CONNECTED = """phy#0
 """
 
 
+def _status(wireless="wlan0 up", networkctl="!missing", nmcli="!missing", iw="!missing"):
+    """The status script's output: one section per source, as the host prints it."""
+    return (f"--wireless--\n{wireless}\n--networkctl--\n{networkctl}\n"
+            f"--nmcli--\n{nmcli}\n--iw--\n{iw}\n")
+
+
 def test_wifi_status_reads_the_host_and_sends_nothing_to_the_box(lager, fake_box, host):
-    host.out = ("--nmcli--\nwlan0:wifi:connected:preconfigured\neth0:ethernet:connected:Wired\n"
-                "--iw--\n" + IW_CONNECTED)
+    host.out = _status(nmcli="wlan0:wifi:connected:preconfigured\neth0:ethernet:connected:Wired",
+                       iw=IW_CONNECTED)
     result = lager("wifi", "status")
     assert result.exit_code == 0, result.output
     assert "SSID:  bench net" in result.output
@@ -201,22 +207,53 @@ def test_wifi_status_reads_the_host_and_sends_nothing_to_the_box(lager, fake_box
     assert fake_box.posts == []
 
 
-def test_wifi_status_with_only_iw_on_the_host(lager, fake_box, host):
-    host.out = "--nmcli--\n!missing\n--iw--\n" + IW_CONNECTED.replace("\t\tssid bench net\n", "")
+@pytest.mark.parametrize("label", ["WiFi access point", "Wi-Fi access point"])
+def test_wifi_status_from_networkctl_alone(lager, fake_box, host, label):
+    # A box on systemd-networkd with no NetworkManager and no iw. systemd 249
+    # and 255 spell the access-point label differently.
+    host.out = _status(wireless="wlp2s0 up", networkctl=(
+        f"@wlp2s0\n                       State: routable (configured)\n"
+        f"          {label}: bench net (aa:bb:cc:dd:ee:ff)"))
+    result = lager("wifi", "status")
+    assert result.exit_code == 0, result.output
+    assert "Interface: wlp2s0" in result.output
+    assert "SSID:  bench net\n" in result.output
+    assert "State: Connected" in result.output
+
+
+def test_wifi_status_networkctl_with_no_carrier_is_disconnected(lager, fake_box, host):
+    host.out = _status(wireless="wlp2s0 dormant",
+                       networkctl="@wlp2s0\n   State: no-carrier (configured)")
     result = lager("wifi", "status")
     assert result.exit_code == 0, result.output
     assert "State: Disconnected" in result.output
 
 
-def test_wifi_status_fails_when_no_tool_can_read_it(lager, fake_box, host):
-    host.out = "--nmcli--\n!missing\n--iw--\n!missing\n"
+def test_wifi_status_with_only_iw_on_the_host(lager, fake_box, host):
+    host.out = _status(wireless="wlan0 down",
+                       iw=IW_CONNECTED.replace("\t\tssid bench net\n", ""))
+    result = lager("wifi", "status")
+    assert result.exit_code == 0, result.output
+    assert "State: Disconnected" in result.output
+
+
+def test_wifi_status_up_with_no_source_for_the_ssid(lager, fake_box, host):
+    host.out = _status(wireless="wlan0 up")
+    result = lager("wifi", "status")
+    assert result.exit_code == 0, result.output
+    assert "SSID:  Unknown" in result.output
+    assert "State: Up" in result.output
+
+
+def test_wifi_status_fails_when_the_host_script_did_not_run(lager, fake_box, host):
+    host.rc, host.out, host.err = 127, "", "sh: 1: syntax error"
     result = lager("wifi", "status")
     assert result.exit_code == 1
     assert "Cannot read the box's Wi-Fi state" in result.output
 
 
 def test_wifi_status_fails_with_no_wireless_interface(lager, fake_box, host):
-    host.out = "--nmcli--\neth0:ethernet:connected:Wired\n--iw--\n"
+    host.out = _status(wireless="", nmcli="eth0:ethernet:connected:Wired")
     result = lager("wifi", "status")
     assert result.exit_code == 1
     assert "no wireless interface" in result.output
@@ -230,10 +267,11 @@ def test_wifi_status_names_an_ssh_failure(lager, fake_box, host):
 
 
 def test_wifi_access_points_scans_the_named_interface(lager, fake_box, host):
-    host.out = ("bench net:WPA2:40\nbench net:WPA2:71\nlab\\:guest::12\n:WPA2:90\n")
+    host.out = "@wlan1\nbench net:WPA2:40\nbench net:WPA2:71\nlab\\:guest::12\n:WPA2:90\n"
     result = lager("wifi", "access-points", "--interface", "wlan1")
     assert result.exit_code == 0, result.output
-    assert "ifname wlan1" in host.cmds[-1]
+    assert "IF=wlan1;" in host.cmds[-1]
+    assert "on wlan1" in result.output
     assert fake_box.posts == []
     payload = json.loads(result.output.split("JSON Output:", 1)[1])
     assert payload == {"access_points": [
@@ -242,11 +280,27 @@ def test_wifi_access_points_scans_the_named_interface(lager, fake_box, host):
     ]}
 
 
-def test_wifi_access_points_names_a_missing_nmcli(lager, fake_box, host):
-    host.out = "!missing\n"
+def test_wifi_access_points_defaults_to_the_box_wireless_interface(lager, fake_box, host):
+    host.out = "@wlp2s0\nbench net:WPA2:40\n"
+    result = lager("wifi", "access-points")
+    assert result.exit_code == 0, result.output
+    assert "IF='';" in host.cmds[-1]
+    assert "on wlp2s0" in result.output
+
+
+def test_wifi_access_points_without_networkmanager_says_why(lager, fake_box, host):
+    host.out = "@wlp2s0\n!missing\n"
     result = lager("wifi", "access-points")
     assert result.exit_code == 1
-    assert "nmcli is not installed on the box host" in result.output
+    assert "Cannot list the access points on wlp2s0" in result.output
+    assert "does not run NetworkManager" in result.output
+
+
+def test_wifi_access_points_with_no_wireless_interface(lager, fake_box, host):
+    host.out = "@\n"
+    result = lager("wifi", "access-points")
+    assert result.exit_code == 1
+    assert "no wireless interface" in result.output
 
 
 def test_wifi_connect_sends_ssid_password_and_interface(lager, fake_box):
