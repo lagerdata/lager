@@ -954,6 +954,26 @@ class ScopeApp {
     this.channelNets = channels.length
       ? channels
       : all.filter((n) => n.name !== this.net || all.length === 1);
+    // A scope net is the whole instrument, and the box refuses a channel
+    // setting on it, so with no channel nets the page acquires but can never
+    // turn a channel on. Said once the unit's channel count is known (#797).
+    this.unwiredScope = me && me.role === 'scope' && channels.length === 0 ? me : null;
+  }
+
+  /** Name the channel nets a scope net needs, with the commands to add them. */
+  noteMissingChannelNets() {
+    const scope = this.unwiredScope;
+    if (!scope || scope.name !== this.net) return;
+    const count = Number((this.capabilities || {}).analog_channels) || 0;
+    const pins = count > 0 ? Array.from({ length: count }, (_, i) => i + 1) : [1];
+    const address = scope.address || '<address>';
+    const commands = pins.map((pin) => {
+      const label = String.fromCharCode(64 + pin).toLowerCase();
+      return `lager nets add ${scope.name}-${label} scope-channel ${pin} ${address}`;
+    });
+    this.console.error(`${scope.name} is the whole scope and has no channel nets, so no`
+      + ' channel can be turned on and no trace drawn. Add one for each channel'
+      + ` with --box, then reload this page: ${commands.join('; ')}`);
   }
 
   /** The net a command should be sent to.
@@ -1010,6 +1030,7 @@ class ScopeApp {
         this.console.note(`Capabilities unavailable: ${body.capability_error}`);
       }
       this.applyCapabilities();
+      this.noteMissingChannelNets();
       return body;
     } catch (e) {
       if (net === this.net) this.console.error(`Could not reach the scope: ${e.message}`);

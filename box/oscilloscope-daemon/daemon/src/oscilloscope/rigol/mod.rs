@@ -1619,6 +1619,13 @@ impl Oscilloscope for RigolMso5000 {
         Ok(())
     }
 
+    /// Left running, it is running: `status` and the page said "stopped"
+    /// after every open until someone pressed Start (#743).
+    fn acquiring_after_open(&mut self) -> Result<bool> {
+        let status = self.link().query(":TRIGger:STATus?")?;
+        Ok(!status.trim().eq_ignore_ascii_case("STOP"))
+    }
+
     /// A newer frame than the last one used, taken since the last change.
     /// In single, only once the scope has stopped on its trigger.
     fn is_ready(&self) -> Result<bool> {

@@ -612,6 +612,45 @@ class TestConnectedOnOpening:
         }
 
 
+class TestAScopeNetWithNoChannelNets:
+    """A scope net alone acquires but can turn no channel on (#797)."""
+
+    def _notes(self, nets, capabilities):
+        return _run_js("""
+        const page = app({ net: 'scope1', scopeNets: %s, capabilities: %s });
+        page.adoptChannelNets();
+        page.noteMissingChannelNets();
+        process.stdout.write(JSON.stringify(page.console.lines));
+        """ % (json.dumps(nets), json.dumps(capabilities)))
+
+    def test_the_page_names_the_channel_nets_to_add(self):
+        lines = self._notes(
+            [{"name": "scope1", "role": "scope", "instrument": "PicoScope_2000",
+              "address": "USB0::0x0CE9::0x1007::::INSTR"}],
+            {"analog_channels": 2})
+        assert len(lines) == 1 and lines[0][0] == "error"
+        text = lines[0][1]
+        assert "scope1 is the whole scope and has no channel nets" in text
+        assert "lager nets add scope1-a scope-channel 1 USB0::0x0CE9::0x1007::::INSTR" in text
+        assert "lager nets add scope1-b scope-channel 2 USB0::0x0CE9::0x1007::::INSTR" in text
+
+    def test_a_scope_with_channel_nets_says_nothing(self):
+        address = "USB0::0x0CE9::0x1007::::INSTR"
+        lines = self._notes(
+            [{"name": "scope1", "role": "scope", "instrument": "PicoScope_2000", "address": address},
+             {"name": "chA", "role": "scope-channel", "instrument": "PicoScope_2000",
+              "address": address, "pin": 1}],
+            {"analog_channels": 2})
+        assert lines == []
+
+    def test_a_box_from_before_the_role_split_says_nothing(self):
+        # Only scope-channel nets: they stand in for the instrument, as before.
+        lines = self._notes(
+            [{"name": "scope1", "role": "scope-channel", "instrument": "PicoScope_2000", "pin": 1}],
+            {"analog_channels": 2})
+        assert lines == []
+
+
 class TestReadingsAfterTheStreamCloses:
     """The measurements stay on screen, marked as no longer live."""
 

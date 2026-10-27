@@ -1088,6 +1088,22 @@ fn the_trigger_comes_from_the_scope_status() {
 }
 
 #[test]
+fn a_scope_left_running_is_published_as_running_after_open() {
+    // `status` and the page said "stopped" after every open (#743).
+    let mut bench = bench();
+    let opened = bench.sent().len();
+    bench.scope.release_capture().unwrap();
+    for (status, running) in [("AUTO", true), ("TD", true), ("WAIT", true), ("STOP", false)] {
+        bench.instrument.lock().unwrap().status = status;
+        assert_eq!(bench.scope.acquiring_after_open().unwrap(), running, "{status}");
+    }
+    assert!(
+        !bench.sent()[opened..].iter().any(|c| c == ":STOP" || c == ":RUN"),
+        "asking leaves the scope as it was"
+    );
+}
+
+#[test]
 fn single_waits_for_the_scope_to_stop_on_its_trigger() {
     let mut bench = bench();
     bench.scope.set_capture_mode(CaptureMode::Single).unwrap();

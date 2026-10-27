@@ -143,6 +143,13 @@ pub trait Oscilloscope: Send + Sync {
         self.stop_triggered_capture()
     }
 
+    /// Whether the unit is acquiring once `release_capture` has run, for the
+    /// first state the daemon publishes. A driver that stops the unit there
+    /// knows the answer; one that leaves it as the operator had it asks.
+    fn acquiring_after_open(&mut self) -> anyhow::Result<bool> {
+        Ok(false)
+    }
+
     /// Why the live view is missing on a scope that should have one, for
     /// the published state. `None` when it has one, or never has one.
     fn live_view_problem(&self) -> Option<String> {

@@ -20,6 +20,24 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   controller that resets itself after a fault, printed a clean second run under
   `[FAIL]`. It now runs each command once and prints that run's output. The BLE
   scan still prints only the device count, any error line and the exit status.
+- **The scope daemon notices a PicoScope unplugged while it was idle.** The
+  next command failed with a bare driver error, and the daemon kept treating the
+  unit as open. When a 2000-series call fails and no PicoScope is left on the
+  bus, the daemon now closes the unit and opens it again when it is back, as it
+  does for one unplugged mid-capture (#798).
+- **A PicoScope plugged back in gets its settings back.** Channel enables,
+  volts/div, coupling, probe, timebase and trigger were reset to the driver's
+  defaults, so a page that pressed Start drew nothing until a channel was turned
+  on again. The same unit, by serial, now gets them back; a different unit starts
+  from its defaults. A Rigol keeps the settings its own panel holds (#680).
+- **`lager scope <net> status` and the scope page say "running" for a Rigol the
+  daemon opens while it runs.** They said "stopped" after every daemon restart,
+  power cycle or replug until Start was pressed (#743).
+- **The scope page says when a scope net has no channel nets.** On a box whose
+  only scope net is the whole instrument, the page acquired but every channel
+  stayed off, and the reason appeared only when a channel was ticked. It now says
+  so on opening, with the `lager nets add ... scope-channel` command for each
+  channel (#797).
 
 ## [0.60.0] - 2026-10-26
 

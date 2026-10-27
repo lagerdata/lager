@@ -26,6 +26,26 @@ use protocol::{measure_channel, Measurement};
 use super::loader::ps2000_sys::*;
 use super::loader::ps2000;
 
+/// The error for a legacy ps2000 call that returned 0.
+///
+/// That API gives no status with a failure, so a unit that was unplugged
+/// while idle looked like one setting refused, and the daemon kept it open
+/// (#798). When no PicoScope is left on the bus, the unit is gone, and the
+/// loop closes it and opens it again, as it does for one lost mid-capture.
+/// With another PicoScope still plugged in, the bus cannot tell which one
+/// went, so the failure stays an ordinary one.
+fn call_failed(message: String) -> anyhow::Error {
+    call_failed_on(message, super::usb::attached())
+}
+
+fn call_failed_on(message: String, attached: Option<bool>) -> anyhow::Error {
+    if attached == Some(false) {
+        return crate::oscilloscope::UnitGone(format!("{message}: {}", super::usb::NONE_ON_THE_BUS))
+            .into();
+    }
+    anyhow::anyhow!(message)
+}
+
 const NANOSECONDS_PER_SECOND: f64 = 1_000_000_000.0;
 const MIN_MEMORY_DEPTH: usize = 8000;
 /// Horizontal divisions a capture is spread across.
@@ -544,9 +564,9 @@ impl PicoScope2000 {
             )
         };
         if result == 0 {
-            return Err(anyhow::anyhow!(
+            return Err(call_failed(format!(
                 "ps2000_set_channel failed while defaulting channel {channel}"
-            ));
+            )));
         }
         Ok(())
     }
@@ -946,10 +966,10 @@ impl PicoScope2000 {
             if result == 0 {
                 tracing::debug!("FAILED - ps2000_set_channel returned 0 for channel {}",
                     channel.channel_id.as_str());
-                return Err(anyhow::anyhow!(
+                return Err(call_failed(format!(
                     "Failed to set volts per div for channel {}",
                     channel.channel_id.as_str()
-                ));
+                )));
             } else {
                 tracing::debug!("Channel {} configured successfully",
                     channel.channel_id.as_str());
@@ -1028,7 +1048,7 @@ impl PicoScope2000 {
                 api.ps2000SetAdvTriggerChannelConditions(self.handle, std::ptr::null_mut(), 0)
             };
             if result == 0 {
-                return Err(anyhow::anyhow!("Failed to switch the trigger off"));
+                return Err(call_failed("Failed to switch the trigger off".into()));
             }
             return Ok(());
         };
@@ -1037,7 +1057,7 @@ impl PicoScope2000 {
             api.ps2000SetAdvTriggerChannelConditions(self.handle, &mut trigger_conditions, 1i16)
         };
         if result == 0 {
-            return Err(anyhow::anyhow!("Failed to set trigger conditions"));
+            return Err(call_failed("Failed to set trigger conditions".into()));
         } else {
             tracing::debug!("Trigger conditions set successfully",);
         }
@@ -1058,7 +1078,7 @@ impl PicoScope2000 {
             )
         };
         if result == 0 {
-            return Err(anyhow::anyhow!("Failed to set trigger directions"));
+            return Err(call_failed("Failed to set trigger directions".into()));
         } else {
             tracing::debug!("Trigger directions set successfully");
         }
@@ -1074,7 +1094,7 @@ impl PicoScope2000 {
             )
         };
         if result == 0 {
-            return Err(anyhow::anyhow!("Failed to set trigger channel properties"));
+            return Err(call_failed("Failed to set trigger channel properties".into()));
         } else {
             tracing::debug!("Trigger channel properties set successfully");
         }
@@ -1090,7 +1110,7 @@ impl PicoScope2000 {
             )
         };
         if result == 0 {
-            return Err(anyhow::anyhow!("Failed to set trigger delay"));
+            return Err(call_failed("Failed to set trigger delay".into()));
         } else {
             tracing::debug!("Trigger delay set successfully {}", pre_trigger_delay);
         }
@@ -1289,11 +1309,11 @@ impl PicoScope2000 {
         );
 
         if result == 0 {
-            Err(anyhow::anyhow!(
+            Err(call_failed(format!(
                 "ps2000_run_block failed for {} samples at timebase {}",
                 self.memory_depth,
                 self.current_timebase
-            ))
+            )))
         } else {
             self.is_capturing = true;
             self.needs_full_arm = false;
@@ -1313,7 +1333,7 @@ impl PicoScope2000 {
         let result = unsafe { api.ps2000_stop(self.handle) };
         tracing::trace!(result, "ps2000_stop");
         if result == 0 {
-            Err(anyhow::anyhow!("ps2000_stop failed"))
+            Err(call_failed("ps2000_stop failed".into()))
         } else {
             self.is_capturing = false;
             self.is_streaming = false;
@@ -1461,9 +1481,9 @@ impl PicoScope2000 {
                 )
             };
             if result == 0 {
-                return Err(anyhow::anyhow!(
+                return Err(call_failed(format!(
                     "ps2000_get_values failed while reading {total_samples} samples"
-                ));
+                )));
             }
             // The plain read worked where the timed one did not, so it is the
             // times the driver will not give, not the block. Said once.
@@ -2039,11 +2059,11 @@ impl Oscilloscope for PicoScope2000 {
             // Put the trigger back before failing, or a block capture after
             // this would free-run too.
             self.needs_full_arm = true;
-            anyhow::bail!(
+            return Err(call_failed(format!(
                 "ps2000_run_streaming_ns refused {} us per sample, {} samples per pair",
                 streaming.interval_us,
                 streaming.aggregate
-            );
+            )));
         }
         self.is_streaming = true;
         self.needs_full_arm = true;
@@ -2119,7 +2139,7 @@ impl Oscilloscope for PicoScope2000 {
         self.is_capturing = false;
         self.needs_full_arm = true;
         if result == 0 {
-            anyhow::bail!("ps2000_stop failed while leaving roll mode");
+            return Err(call_failed("ps2000_stop failed while leaving roll mode".into()));
         }
         Ok(())
     }
@@ -2931,5 +2951,35 @@ mod tests {
             stop.contains("self.halt()") && stop.contains("CaptureMode::Single"),
             "a real stop still ends a single-shot"
         );
+    }
+
+    #[test]
+    fn a_failed_call_with_no_picoscope_on_the_bus_means_the_unit_is_gone() {
+        let error = call_failed_on("ps2000_run_block failed".into(), Some(false));
+        assert!(crate::oscilloscope::unit_is_gone(&error), "{error:#}");
+        assert!(format!("{error:#}").contains("ps2000_run_block failed"));
+    }
+
+    #[test]
+    fn a_failed_call_with_a_picoscope_on_the_bus_or_no_answer_stays_ordinary() {
+        for attached in [Some(true), None] {
+            let error = call_failed_on("Failed to set trigger delay".into(), attached);
+            assert!(!crate::oscilloscope::unit_is_gone(&error), "{attached:?}");
+        }
+    }
+
+    #[test]
+    fn every_bare_failure_goes_through_call_failed() {
+        // A new `result == 0` branch that builds its own error would bring
+        // back the idle unplug the daemon could not see (#798).
+        let source = include_str!("ps2000.rs");
+        let driver = source.split("#[cfg(test)]").next().expect("the driver precedes its tests");
+        for (i, branch) in driver.split("if result == 0 {").enumerate().skip(1) {
+            let body = branch.split("\n        }").next().unwrap_or(branch);
+            assert!(
+                !body.contains("anyhow::anyhow!") && !body.contains("anyhow::bail!"),
+                "zero-result branch {i} builds its own error: {body}"
+            );
+        }
     }
 }

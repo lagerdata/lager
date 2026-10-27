@@ -560,6 +560,9 @@ fn hardware_thread<F>(
     let mut attempt: u64 = 0;
     let mut complained_at: Option<Instant> = None;
     let mut last_failure: Option<String> = None;
+    // The serial of a unit that went, and the settings it had: put back if
+    // that same unit opens next (#680).
+    let mut lost: Option<(String, Arc<ScopeState>)> = None;
     loop {
         let mut scope = loop {
             if shared.stopping.load(Ordering::Relaxed) {
@@ -613,10 +616,29 @@ fn hardware_thread<F>(
         // someone sends Stop. Stopping here clears that leftover so the
         // next Start works on the new handle.
         let _ = scope.release_capture();
-        shared.acquiring.store(false, Ordering::Relaxed);
+        let acquiring = match scope.acquiring_after_open() {
+            Ok(acquiring) => acquiring,
+            Err(e) => {
+                tracing::debug!(error = %format!("{e:#}"), "could not read whether the scope is running; publishing it as stopped");
+                false
+            }
+        };
+        shared.acquiring.store(acquiring, Ordering::Relaxed);
 
+        // Only a unit whose settings the daemon alone sets loses them to a
+        // replug. One with a front panel keeps its own, which may have been
+        // changed there since; the daemon reads those back instead.
+        let serial = scope
+            .capabilities()
+            .ok()
+            .map(|caps| caps.serial)
+            .filter(|serial| !serial.is_empty() && scope.refresh_interval().is_none());
+        let restore = lost
+            .take()
+            .filter(|(was, _)| serial.as_ref() == Some(was))
+            .map(|(_, settings)| settings);
         let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            run(scope, &mut commands, &shared)
+            run(scope, &mut commands, &shared, restore.as_deref())
         }));
         shared.acquiring.store(false, Ordering::Relaxed);
         let reason = match ended {
@@ -634,7 +656,12 @@ fn hardware_thread<F>(
         *lock(&open_state) = OpenState::Failed(reason.clone());
         // Requests sent to the scope that went. They are refused rather than
         // carried over: a setting meant for that unit is not necessarily
-        // wanted on whatever opens next.
+        // wanted on whatever opens next. The settings it already had are
+        // kept, and put back only if the same unit opens again.
+        let settings = shared.state.borrow().clone();
+        lost = serial
+            .filter(|_| !settings.channels.is_empty())
+            .map(|serial| (serial, settings));
         while let Ok(message) = commands.try_recv() {
             match message {
                 Message::Request((_, reply_to)) => {
@@ -709,6 +736,7 @@ fn run(
     mut scope: Box<dyn Oscilloscope>,
     commands: &mut mpsc::Receiver<Message>,
     shared: &Shared,
+    restore_from: Option<&ScopeState>,
 ) -> Ended {
     let Shared {
         captures,
@@ -726,6 +754,9 @@ fn run(
     state.trigger_from_driver = scope.reports_trigger();
     state.answers_from_instrument = scope.answers_from_instrument();
     state.refresh_trigger(&*scope);
+    if let Some(settings) = restore_from {
+        restore(&mut scope, acquiring, &mut state, settings);
+    }
     publish_state(&*scope, &mut state, acquiring, state_tx);
 
     // When idle this blocks on the command channel and consumes nothing.
@@ -1154,6 +1185,71 @@ fn serve(
         }
     }
     (reply, changes || refused)
+}
+
+/// Put a unit that went and came back to the settings it had.
+///
+/// Unplugging and replugging otherwise left every channel, the timebase and
+/// the trigger at the driver's defaults (#680). Each setting goes through
+/// `serve`, as a client's would, and one the unit refuses is logged and
+/// skipped rather than failing the rest. Attenuation goes before the volts,
+/// which are at the probe tip. Acquisition is not restarted: the user
+/// presses Start.
+fn restore(
+    scope: &mut Box<dyn Oscilloscope>,
+    acquiring: &AtomicBool,
+    state: &mut LoopState,
+    settings: &ScopeState,
+) {
+    let mut requests = Vec::new();
+    for channel in &settings.channels {
+        let id = channel.channel;
+        requests.push(ScopeRequest::SetAttenuation(id, channel.attenuation));
+        requests.push(ScopeRequest::SetCoupling(id, channel.coupling));
+        requests.push(if channel.enabled {
+            ScopeRequest::EnableChannel(id)
+        } else {
+            ScopeRequest::DisableChannel(id)
+        });
+        requests.push(ScopeRequest::SetVoltsPerDiv(id, channel.volts_per_div));
+        // Zero is the default, and a unit with no analogue offset refuses
+        // even that.
+        if channel.volts_offset != 0.0 {
+            requests.push(ScopeRequest::SetVoltsOffset(id, channel.volts_offset));
+        }
+    }
+    let timebase = &settings.timebase;
+    if timebase.time_per_div > 0.0 {
+        requests.push(ScopeRequest::SetTimePerDiv(timebase.time_per_div));
+    }
+    if timebase.time_offset != 0.0 {
+        requests.push(ScopeRequest::SetTimeOffset(timebase.time_offset));
+    }
+    let trigger = &settings.trigger;
+    requests.push(ScopeRequest::SetTriggerSource(trigger.source));
+    requests.push(ScopeRequest::SetTriggerSlope(trigger.slope));
+    requests.push(ScopeRequest::SetTriggerLevel(trigger.level));
+    requests.push(ScopeRequest::SetCaptureMode(settings.capture_mode));
+    requests.push(ScopeRequest::SetHoldoff(trigger.holdoff_s));
+    requests.push(ScopeRequest::SetAcquisition(
+        settings.acquisition.mode,
+        Some(settings.acquisition.average_count),
+    ));
+    requests.push(ScopeRequest::SetRoll(timebase.roll));
+    requests.push(ScopeRequest::SetDisplay(settings.display.clone()));
+
+    let mut refused = 0;
+    for request in requests {
+        if state.unit_gone.is_some() {
+            return;
+        }
+        let what = format!("{request:?}");
+        if let (ScopeReply::Error(e), _) = serve(scope, acquiring, state, request) {
+            tracing::warn!(setting = %what, error = %e, "could not put a setting back on the reopened oscilloscope");
+            refused += 1;
+        }
+    }
+    tracing::info!(refused, "put back the settings the oscilloscope had before it went");
 }
 
 /// Whether this request programs the device, which roll mode has to stop
@@ -2088,6 +2184,19 @@ mod tests {
         /// panel does; each third read finds one changed.
         refresh: Option<Duration>,
         refreshes: Arc<AtomicUsize>,
+        /// Found acquiring when opened, as a Rigol left running is.
+        running_at_open: bool,
+        serial: String,
+        /// Every channel, trigger and timebase setting made on this unit, in
+        /// order, so a test can see what a reopened unit was given.
+        sets: Arc<Mutex<Vec<String>>>,
+        /// Channel A and the trigger, as last set, so the state the loop
+        /// publishes follows a setting the way it does on a real unit.
+        volts_per_div: f64,
+        coupling: Coupling,
+        attenuation: f64,
+        trigger_level: f64,
+        trigger_slope: TriggerSlope,
     }
 
     impl FakeScope {
@@ -2107,7 +2216,20 @@ mod tests {
                 applied: Arc::new(Mutex::new(Vec::new())),
                 refresh: None,
                 refreshes: Arc::new(AtomicUsize::new(0)),
+                running_at_open: false,
+                serial: fake_capabilities().serial,
+                sets: Arc::new(Mutex::new(Vec::new())),
+                volts_per_div: 1.0,
+                coupling: Coupling::DC,
+                attenuation: 1.0,
+                trigger_level: 0.0,
+                trigger_slope: TriggerSlope::Rising,
             }
+        }
+
+        fn set(&self, what: String) -> anyhow::Result<()> {
+            lock(&self.sets).push(what);
+            Ok(())
         }
 
         fn instrument() -> Self {
@@ -2218,6 +2340,10 @@ mod tests {
             Ok(())
         }
 
+        fn acquiring_after_open(&mut self) -> anyhow::Result<bool> {
+            Ok(self.running_at_open)
+        }
+
         fn stop_triggered_capture(&mut self) -> anyhow::Result<()> {
             self.stopped.store(true, Ordering::SeqCst);
             // As both Pico drivers do: a stopped single-shot is over.
@@ -2285,7 +2411,7 @@ mod tests {
 
         fn set_capture_mode(&mut self, mode: CaptureMode) -> anyhow::Result<()> {
             self.mode = mode;
-            Ok(())
+            self.set(format!("capture_mode {mode:?}"))
         }
 
         fn get_trigger_position(&self) -> anyhow::Result<f64> {
@@ -2294,9 +2420,48 @@ mod tests {
 
         /// Implemented rather than left unimplemented with the other setters:
         /// a timebase change re-arms the scope, which puts it on the capture
-        /// path. The driver does the arming; there is nothing to record here.
-        fn set_time_per_div(&mut self, _seconds: f64) -> anyhow::Result<()> {
-            Ok(())
+        /// path. The driver does the arming; it is only recorded here.
+        fn set_time_per_div(&mut self, seconds: f64) -> anyhow::Result<()> {
+            self.set(format!("time_per_div {seconds}"))
+        }
+
+        // Recorded, so a test can read what a unit was given and in what
+        // order. Channel A's scale and the trigger are also kept, for the
+        // getters below.
+        fn enable_channel(&mut self, channel: ChannelId) -> anyhow::Result<()> {
+            self.set(format!("enable {channel:?}"))
+        }
+        fn disable_channel(&mut self, channel: ChannelId) -> anyhow::Result<()> {
+            self.set(format!("disable {channel:?}"))
+        }
+        fn set_volts_per_div(&mut self, channel: ChannelId, volts: f64) -> anyhow::Result<()> {
+            self.volts_per_div = volts;
+            self.set(format!("volts_per_div {channel:?} {volts}"))
+        }
+        fn set_volts_offset(&mut self, channel: ChannelId, volts: f64) -> anyhow::Result<()> {
+            self.set(format!("volts_offset {channel:?} {volts}"))
+        }
+        fn set_coupling(&mut self, channel: ChannelId, coupling: Coupling) -> anyhow::Result<()> {
+            self.coupling = coupling;
+            self.set(format!("coupling {channel:?} {coupling:?}"))
+        }
+        fn set_attenuation(&mut self, channel: ChannelId, attenuation: f64) -> anyhow::Result<()> {
+            self.attenuation = attenuation;
+            self.set(format!("attenuation {channel:?} {attenuation}"))
+        }
+        fn set_trigger_level(&mut self, volts: f64) -> anyhow::Result<()> {
+            self.trigger_level = volts;
+            self.set(format!("trigger_level {volts}"))
+        }
+        fn set_time_offset(&mut self, seconds: f64) -> anyhow::Result<()> {
+            self.set(format!("time_offset {seconds}"))
+        }
+        fn set_trigger_source(&mut self, channel: ChannelId) -> anyhow::Result<()> {
+            self.set(format!("trigger_source {channel:?}"))
+        }
+        fn set_trigger_slope(&mut self, slope: TriggerSlope) -> anyhow::Result<()> {
+            self.trigger_slope = slope;
+            self.set(format!("trigger_slope {slope:?}"))
         }
 
         // Read by the state the loop publishes after every change, so a
@@ -2305,19 +2470,19 @@ mod tests {
             Ok(true)
         }
         fn get_volts_per_div(&self, _channel: ChannelId) -> anyhow::Result<f64> {
-            Ok(1.0)
+            Ok(self.volts_per_div)
         }
         fn get_volts_offset(&self, _channel: ChannelId) -> anyhow::Result<f64> {
             Ok(0.0)
         }
         fn get_coupling(&self, _channel: ChannelId) -> anyhow::Result<Coupling> {
-            Ok(Coupling::DC)
+            Ok(self.coupling)
         }
         fn get_attenuation(&self, _channel: ChannelId) -> anyhow::Result<f64> {
-            Ok(1.0)
+            Ok(self.attenuation)
         }
         fn get_trigger_level(&self) -> anyhow::Result<f64> {
-            Ok(0.0)
+            Ok(self.trigger_level)
         }
         fn get_time_per_div(&self) -> anyhow::Result<f64> {
             Ok(1e-3)
@@ -2329,7 +2494,7 @@ mod tests {
             Ok(ChannelId::Alphabetic('A'))
         }
         fn get_trigger_slope(&self) -> anyhow::Result<TriggerSlope> {
-            Ok(TriggerSlope::Rising)
+            Ok(self.trigger_slope)
         }
         fn get_sample_rate(&self) -> anyhow::Result<f64> {
             Ok(1e6)
@@ -2342,7 +2507,7 @@ mod tests {
             Ok(2)
         }
         fn capabilities(&self) -> anyhow::Result<ScopeCapabilities> {
-            Ok(fake_capabilities())
+            Ok(ScopeCapabilities { serial: self.serial.clone(), ..fake_capabilities() })
         }
 
         unused! {
@@ -2362,16 +2527,6 @@ mod tests {
         }
 
         unused_mut! {
-            enable_channel(ChannelId);
-            disable_channel(ChannelId);
-            set_volts_per_div(ChannelId, f64);
-            set_volts_offset(ChannelId, f64);
-            set_coupling(ChannelId, Coupling);
-            set_attenuation(ChannelId, f64);
-            set_trigger_level(f64);
-            set_time_offset(f64);
-            set_trigger_source(ChannelId);
-            set_trigger_slope(TriggerSlope);
             set_cursor_position(crate::oscilloscope::Cursor);
         }
     }
@@ -3060,6 +3215,119 @@ mod tests {
         assert!(read >= 6, "read back {read} times in 400 ms at 20 ms");
         assert!(handle.watch_state().borrow().version > version, "a change was not published");
         assert!(handle.shutdown(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn a_unit_found_running_is_published_as_acquiring() {
+        // A Rigol left running read "stopped" after every open (#743).
+        for running in [true, false] {
+            let mut fake = FakeScope::instrument();
+            fake.running_at_open = running;
+            let mut fake = Some(fake);
+            let handle = spawn(move || Ok(Box::new(fake.take().expect("opened once")) as Box<dyn Oscilloscope>))
+                .expect("spawn");
+            // The open answers before the loop publishes its first state.
+            eventually("the opened scope's state", || handle.watch_state().borrow().version > 0);
+            assert_eq!(handle.is_acquiring(), running);
+            assert_eq!(handle.watch_state().borrow().acquiring, running);
+            assert!(handle.shutdown(Duration::from_secs(5)));
+        }
+    }
+
+    /// Set channel A and the trigger on a first unit, unplug it, and open
+    /// `second`. Returns what the second unit was given, how many captures
+    /// it armed, and the state published once it is open.
+    fn replug_into(first: FakeScope, second: FakeScope) -> (Vec<String>, usize, Arc<ScopeState>) {
+        let opens = Arc::new(AtomicUsize::new(0));
+        let (ready, gone) = (first.ready.clone(), first.gone.clone());
+        let (sets, arms) = (second.sets.clone(), second.arms.clone());
+        let mut fakes = vec![second, first];
+        let handle = spawn(opening_fakes(opens.clone(), move |_| {
+            fakes.pop().expect("opened at most twice")
+        }))
+        .expect("spawn");
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+
+        let a = ChannelId::Alphabetic('A');
+        for request in [
+            ScopeRequest::SetAttenuation(a, 10.0),
+            ScopeRequest::SetVoltsPerDiv(a, 0.5),
+            ScopeRequest::SetCoupling(a, Coupling::AC),
+            ScopeRequest::SetTriggerLevel(1.5),
+            ScopeRequest::SetTriggerSlope(TriggerSlope::Falling),
+        ] {
+            assert!(matches!(runtime.block_on(handle.request(request)), ScopeReply::Ok));
+        }
+        ready.store(true, Ordering::Relaxed);
+        runtime.block_on(handle.request(ScopeRequest::StartAcquisition(50.0)));
+        eventually("a capture", || handle.capture_count.load(Ordering::Relaxed) >= 1);
+
+        gone.store(true, Ordering::SeqCst);
+        eventually("a second open", || opens.load(Ordering::SeqCst) >= 2);
+        eventually("the scope to be open", || matches!(*lock(&handle.open_state), OpenState::Open));
+        eventually("its state", || !handle.state.borrow().channels.is_empty());
+        let state = handle.state.borrow().clone();
+        let given = lock(&sets).clone();
+        assert!(handle.shutdown(Duration::from_secs(5)));
+        (given, arms.load(Ordering::SeqCst), state)
+    }
+
+    #[test]
+    fn the_same_unit_plugged_back_in_gets_its_settings_back() {
+        // Replugging used to leave every channel, the timebase and the
+        // trigger at the driver's defaults (#680).
+        let (given, arms, state) = replug_into(FakeScope::new(), FakeScope::new());
+
+        let at = |what: &str| {
+            given.iter().position(|set| set == what).unwrap_or_else(|| panic!("{what:?} not in {given:?}"))
+        };
+        // Attenuation first: the volts after it are at the probe tip.
+        assert!(at("attenuation Alphabetic('A') 10") < at("volts_per_div Alphabetic('A') 0.5"));
+        at("coupling Alphabetic('A') AC");
+        at("enable Alphabetic('A')");
+        at("time_per_div 0.001");
+        at("trigger_level 1.5");
+        at("trigger_slope Falling");
+        at("capture_mode Normal");
+        let channel = &state.channels[0];
+        assert_eq!((channel.volts_per_div, channel.attenuation), (0.5, 10.0));
+        assert_eq!(channel.coupling, Coupling::AC);
+        assert_eq!((state.trigger.level, state.trigger.slope), (1.5, TriggerSlope::Falling));
+        // Put back, not started: the user presses Start.
+        assert_eq!(arms, 0);
+        assert!(!state.acquiring);
+    }
+
+    #[test]
+    fn a_different_unit_plugged_in_keeps_its_defaults() {
+        // Another scope's settings are not necessarily wanted on this one.
+        let mut other = FakeScope::new();
+        other.serial = "TEST/2".into();
+        let (given, _, state) = replug_into(FakeScope::new(), other);
+
+        assert_eq!(given, Vec::<String>::new());
+        assert_eq!(state.channels[0].volts_per_div, 1.0);
+        assert_eq!(state.trigger.slope, TriggerSlope::Rising);
+    }
+
+    #[test]
+    fn a_unit_with_a_front_panel_keeps_what_its_panel_holds() {
+        // A Rigol keeps its own settings through a replug, and they may have
+        // been changed at the scope since; the daemon reads them back.
+        let (mut first, mut second) = (FakeScope::new(), FakeScope::new());
+        first.refresh = Some(Duration::from_secs(3600));
+        second.refresh = Some(Duration::from_secs(3600));
+        let (given, _, _) = replug_into(first, second);
+        assert_eq!(given, Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_unit_with_no_serial_is_never_taken_for_the_one_that_went() {
+        let (mut first, mut second) = (FakeScope::new(), FakeScope::new());
+        first.serial = String::new();
+        second.serial = String::new();
+        let (given, _, _) = replug_into(first, second);
+        assert_eq!(given, Vec::<String>::new());
     }
 
     #[test]
