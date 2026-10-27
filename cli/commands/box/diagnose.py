@@ -456,10 +456,14 @@ def _fmt_usbhub_lines(d: dict):
 
 def _classify_usb_hub(d: dict):
     """(colour, headline) for a USB hub net. Most specific first."""
-    if d.get('unavailable') or d.get('transport_error'):
+    if d.get('unavailable'):
         return ('yellow',
                 'UNCLEAR — this box does not serve /diagnose/usbhub. '
                 'Update the box to diagnose hub nets.')
+    # A timeout or 5xx says nothing about the box's version: only a 404
+    # (`unavailable`) means the endpoint is missing.
+    if d.get('transport_error'):
+        return ('red', f'Could not reach the USB hub diagnose endpoint: {d["transport_error"]}')
 
     if d.get('enumerated') is False:
         return ('red',

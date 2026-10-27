@@ -14,6 +14,15 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 ### Fixed
 
+- **`lager debug flash` and `lager debug erase` with `--erase-start`/`--erase-size` no longer
+  call an unreachable box too old.** When the box's `/health` timed out or failed, the command
+  said the box needed 0.50.0 and told you to run `lager update`. It now retries `/health` twice,
+  then says the box or its Stout gateway did not answer, and still sends nothing. The "requires
+  box version 0.50.0" error appears only when the box answers without range support.
+- **`lager diagnose` on a USB hub net reports an unreachable endpoint as unreachable.** A
+  timeout or server error from `/diagnose/usbhub` was shown as "this box does not serve
+  /diagnose/usbhub. Update the box". It now says the endpoint could not be reached, with the
+  error.
 - **A failed check in the deployment bench suite shows the error from the run
   that failed.** The suite re-ran a failed command to print its output, so a
   check that fails once and then succeeds, such as a BLE scan on a Bluetooth

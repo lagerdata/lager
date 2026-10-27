@@ -156,6 +156,15 @@ class ClassifyUsbHubTests(unittest.TestCase):
         self.assertEqual('yellow', color)
         self.assertIn('Update the box', headline)
 
+    def test_an_unreachable_endpoint_is_not_called_missing(self):
+        color, headline = _classify_usb_hub(
+            {'transport_error': 'Read timed out. (read timeout=8.0)'})
+        self.assertEqual('red', color)
+        self.assertIn('Could not reach the USB hub diagnose endpoint', headline)
+        self.assertIn('Read timed out', headline)
+        self.assertNotIn('Update the box', headline)
+        self.assertNotIn('does not serve', headline)
+
     def test_ordering_puts_not_enumerated_ahead_of_the_wedge(self):
         """A hub that is not on the bus at all cannot also be 'wedged'; the
         more specific fact has to win or the remedy is wrong."""

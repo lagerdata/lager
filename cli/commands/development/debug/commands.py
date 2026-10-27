@@ -1459,6 +1459,19 @@ _ERASE_RANGE_UNSUPPORTED = (
     "(requires box version 0.50.0 or later). Update it with: lager update --box {box}"
 )
 
+# A /health that does not answer says nothing about the box's version. A
+# stalled gateway in front of :9000 times out every request for a while, so
+# the probe is retried before the box is reported unreachable.
+_ERASE_RANGE_HEALTH_BACKOFF_S = (0.5, 1.0)
+_ERASE_RANGE_UNREACHABLE = (
+    "Error: box '{box}' did not answer /health: {exc}. "
+    "The box or its Stout gateway may be unreachable; retry."
+)
+
+
+class _HealthProbeFailed(Exception):
+    """/health raised on every attempt; carries the last exception."""
+
 
 def _format_erase_range(start, size):
     """`0x16000000-0x161FFFFF (2 MiB)`, the form the box reports a range in."""
@@ -1502,16 +1515,44 @@ def _erase_range_error(device_type, erase_start, erase_size, *, no_erase=False):
 def _box_supports_erase_range(client):
     """True when the box's debug service lists `erase_range` under /health `features`.
 
-    An older box answers with no `features` at all, and a box that cannot be
-    reached reads the same: either way the flags are refused rather than sent
-    to a box that would ignore them.
+    An older box answers with no `features` at all, and that answer is the
+    only thing read as "unsupported". A request that fails -- a timeout, a
+    refused connection, a gateway 5xx -- is retried, and if it never succeeds
+    raises `_HealthProbeFailed`: telling the user to update a box that simply
+    did not answer sends them to fix the wrong thing.
+
+    A gateway denial exits via SystemExit (see `_request`), which is not an
+    `Exception`, so its `lager login` guidance still reaches the user.
     """
+    import time
+
+    last_exc = None
+    for backoff in (*_ERASE_RANGE_HEALTH_BACKOFF_S, None):
+        try:
+            health = client.get_service_health()
+        except Exception as exc:
+            last_exc = exc
+            if backoff is not None:
+                time.sleep(backoff)
+            continue
+        features = health.get('features') if isinstance(health, dict) else None
+        return 'erase_range' in (features or [])
+    raise _HealthProbeFailed(last_exc)
+
+
+def _require_erase_range(ctx, client, box):
+    """Exit 1, before any erase or flash traffic, unless the box reads the range."""
     try:
-        health = client.get_service_health()
-    except Exception:
-        return False
-    features = health.get('features') if isinstance(health, dict) else None
-    return 'erase_range' in (features or [])
+        supported = _box_supports_erase_range(client)
+    except _HealthProbeFailed as failed:
+        message = _ERASE_RANGE_UNREACHABLE.format(box=box, exc=failed.args[0])
+    else:
+        if supported:
+            return
+        message = _ERASE_RANGE_UNSUPPORTED.format(box=box)
+    click.secho(message, fg='red', err=True)
+    client.close()
+    ctx.exit(1)
 
 
 def _erase_complete_line(result):
@@ -1594,10 +1635,8 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, no_erase, erase,
         click.secho("Error: Failed to create debug service client", fg='red', err=True)
         ctx.exit(1)
 
-    if erase_range_requested and not _box_supports_erase_range(client):
-        click.secho(_ERASE_RANGE_UNSUPPORTED.format(box=box or target_box), fg='red', err=True)
-        client.close()
-        ctx.exit(1)
+    if erase_range_requested:
+        _require_erase_range(ctx, client, box or target_box)
 
     # Auto-connect if not already connected
     if not _auto_connect_if_needed(
@@ -1829,10 +1868,8 @@ def erase(ctx, box, speed, yes, quiet, json_output, erase_start, erase_size, hal
         click.secho("Error: Failed to create debug service client", fg='red', err=True)
         ctx.exit(1)
 
-    if erase_range_requested and not _box_supports_erase_range(client):
-        click.secho(_ERASE_RANGE_UNSUPPORTED.format(box=box or target_box), fg='red', err=True)
-        client.close()
-        ctx.exit(1)
+    if erase_range_requested:
+        _require_erase_range(ctx, client, box or target_box)
 
     # Auto-connect if not already connected
     if not _auto_connect_if_needed(

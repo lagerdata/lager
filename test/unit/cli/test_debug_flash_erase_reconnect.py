@@ -87,7 +87,8 @@ class FakeClient:
     `/debug/erase`. `erase_range` is echoed in the erase response; left unset,
     the response has no such key, like an older box. `health` is what
     `/health` answers (a box that reads the erase range, by default) and
-    `health_error` makes that call raise. Signatures mirror
+    `health_error` makes that call raise -- every time, or, given a list, one
+    entry per call with `None` answering normally. Signatures mirror
     `service_client.DebugServiceClient` so a change there surfaces here as a
     TypeError rather than a false pass.
     """
@@ -121,8 +122,11 @@ class FakeClient:
 
     def get_service_health(self, detailed=False):
         self.calls.append("health")
-        if self.health_error:
-            raise self.health_error
+        error = self.health_error
+        if isinstance(error, list):
+            error = error.pop(0) if error else None
+        if error:
+            raise error
         return self.health
 
     def connect(self, net, speed=None, force=False, halt=False, gdb=False,
@@ -1167,12 +1171,49 @@ class TestEraseRangeFlags:
         assert client.calls == ["health"]
         assert client.closed
 
-    def test_an_unreachable_health_endpoint_reads_as_unsupported(self):
-        client = FakeClient(health_error=http_500("connection refused"))
+    # A /health that never answers says nothing about the box's version: a
+    # stalled gateway times out every request. It is retried, then reported
+    # as unreachable -- never as an old box to update.
+    @pytest.mark.parametrize("error", [
+        http_500("gateway unavailable"),
+        requests.exceptions.ReadTimeout("Read timed out. (read timeout=5)"),
+        requests.exceptions.ConnectionError("Connection refused"),
+    ], ids=["http-500", "read-timeout", "connection-error"])
+    def test_an_unreachable_health_endpoint_is_not_called_old(self, error):
+        client = FakeClient(health_error=error)
         result = run_erase(client, ["--box", "mybox", "--yes", *RANGE_2M], net=DA1469X_NET)
         assert result.exit_code == 1, result.output
-        assert "does not support --erase-start/--erase-size" in result.output
-        assert "erase" not in client.calls
+        assert "box 'mybox' did not answer /health" in result.output
+        assert "may be unreachable; retry" in result.output
+        assert "requires box version 0.50.0" not in result.output
+        assert "lager update" not in result.output
+        assert client.calls == ["health"] * 3
+        assert client.closed
+
+    @pytest.mark.parametrize("error", [
+        requests.exceptions.ReadTimeout("Read timed out. (read timeout=5)"),
+        requests.exceptions.ConnectionError("Connection refused"),
+    ], ids=["read-timeout", "connection-error"])
+    def test_the_flash_reports_an_unreachable_health_endpoint_too(self, hexfile, error):
+        client = FakeClient(health_error=error)
+        result = run_flash(client, ["--hex", hexfile, "--box", "mybox", *RANGE_2M],
+                           net=DA1469X_NET)
+        assert result.exit_code == 1, result.output
+        assert "did not answer /health" in result.output
+        assert "requires box version 0.50.0" not in result.output
+        assert client.calls == ["health"] * 3
+        assert client.closed
+
+    def test_a_transient_health_failure_is_retried(self):
+        client = FakeClient(
+            health_error=[requests.exceptions.ReadTimeout("Read timed out."), None],
+            erase_range=ERASED_2M)
+        result = run_erase(client, ["--box", "mybox", "--yes", *RANGE_2M], net=DA1469X_NET)
+        assert result.exit_code == 0, result.output
+        assert client.calls[:2] == ["health", "health"]
+        assert "erase" in client.calls
+        assert client.erase_kwargs == [{"erase_start": 0x16000000, "erase_size": 0x200000}]
+        assert "did not answer /health" not in result.output
 
     def test_the_flash_pre_erase_is_gated_the_same_way(self, hexfile):
         client = FakeClient(health={"status": "healthy"})
