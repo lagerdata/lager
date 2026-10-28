@@ -60,6 +60,12 @@ OPEN_FAILURE_MARKERS = (
     # The USB-202 (ADC/DAC/GPIO). uldaq keeps one device inventory per
     # process, which stops seeing the unit once it re-enumerates (#729).
     'no mcc daq devices found', 'usb-202 device with unique_id',
+    # A YKUSH hub (pykush's YKUSHNotFound). hidapi's libusb context keeps the
+    # device list it had, so after the hub re-enumerates (reset, replug, power
+    # blip) a process that already used it never finds it again; a fresh
+    # process does. Reached through hardware_service by the YKUSH3 5V
+    # power-supply net.
+    'ykush device not found',
 )
 
 # Substrings that mark a USB-hub error as "can't reach the device" (a wedge

@@ -303,6 +303,26 @@ class YKUSHUSBNet(USBNet):
 
     # ----------------------------------------------------------------
     def _set_state(self, dev, port: int, state: int) -> None:
+        """Switch a port, then read it back. The hub acknowledges a switch
+        it does not carry out: a YKUSH3 whose GPIO port control is enabled
+        (``ykushcmd ykush3 --gpio enable``) hands the ports to its GPIO pins
+        and ignores the host, so an unverified enable reported success for a
+        port that stayed off. An unreadable read-back is not a failure; only
+        a definite wrong state is."""
+        self._write_state(dev, port, state)
+        try:
+            enabled = self._read_enabled(dev, port)
+        except PortStateError:
+            return
+        if enabled != (state == _PORT_UP):
+            raise PortStateError(
+                f"YKUSH port {port} did not switch {'on' if state == _PORT_UP else 'off'}: "
+                f"the hub acknowledged the command but the port is still "
+                f"{'on' if enabled else 'off'}. On a YKUSH3 this happens when its "
+                f"GPIO port control is enabled; turn it off with "
+                f"`ykushcmd ykush3 --gpio disable` and reset the hub.")
+
+    def _write_state(self, dev, port: int, state: int) -> None:
         # New API
         if hasattr(dev, "set_port_state"):
             if not dev.set_port_state(port, state):

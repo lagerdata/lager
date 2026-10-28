@@ -35,6 +35,11 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   timeout or server error from `/diagnose/usbhub` was shown as "this box does not serve
   /diagnose/usbhub. Update the box". It now says the endpoint could not be reached, with the
   error.
+- **`lager usb` on a YKUSH hub fails when a port does not switch.** The hub
+  acknowledges a switch it ignores, such as on a YKUSH3 whose GPIO port control
+  is enabled, and `enable`/`disable`/`toggle`/`cycle` reported success for a port
+  that stayed as it was. The driver now reads the port back and says what
+  happened.
 - **A failed check in the deployment bench suite shows the error from the run
   that failed.** The suite re-ran a failed command to print its output, so a
   check that fails once and then succeeds, such as a BLE scan on a Bluetooth

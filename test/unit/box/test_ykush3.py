@@ -145,6 +145,44 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(mapper.device.device_name, "ykush3")
 
 
+class HubReenumerationTests(unittest.TestCase):
+    """After the hub re-enumerates (reset, replug, power blip), a process
+    that already used it gets pykush's "YKUSH device not found" forever.
+    box_http_server restarted itself on that; hardware_service, which serves
+    the 5V net, did not, so the net stayed broken until a manual restart."""
+
+    def test_ykush_not_found_is_an_open_failure(self):
+        from lager.util import self_restart
+        self.assertTrue(self_restart.looks_like_open_failure(
+            Exception("YKUSH device not found")))
+
+    def test_hardware_service_restarts_on_the_hubs_address(self):
+        from unittest.mock import patch
+        from lager import hardware_service as hw
+        from lager.util import self_restart
+
+        class _Stale:
+            def output_state(self, channel=None):
+                raise Exception("YKUSH device not found")
+
+        restart = MagicMock()
+        restart.looks_like_open_failure = self_restart.looks_like_open_failure
+        net_info = {"name": "ykush3_5v", "address": ADDRESS, "channel": 1,
+                    "instrument": "YKUSH3_Hub"}
+        hw.device_cache.clear()
+        hw.device_cache[("ykush3", ADDRESS)] = _Stale()
+        try:
+            with patch.object(hw, "_self_restart", restart):
+                resp = hw.app.test_client().post("/invoke", json={
+                    "device": "ykush3", "function": "output_state",
+                    "args": [], "kwargs": {"channel": 1}, "net_info": net_info})
+        finally:
+            hw.device_cache.clear()
+        self.assertEqual(resp.status_code, 503)
+        restart.self_restart_after_reply.assert_called_once()
+        self.assertEqual(restart.self_restart_after_reply.call_args.args[0], ADDRESS)
+
+
 class PowerOutputTests(_HubTestCase):
     def setUp(self):
         super().setUp()

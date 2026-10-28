@@ -91,13 +91,21 @@ class _FakePyKush:
         self._devhandle = _FakePyKush._Handle(self.id)
         _FakePyKush.opened.append(self.id)
 
+    # Port states, kept like a real hub's so the driver's read-back after a
+    # switch sees what was set. ``ignore_sets`` acks a switch without doing
+    # it, as a YKUSH3 does with its GPIO port control enabled.
+    port_states: dict = {}
+    ignore_sets = False
+
     def set_port_state(self, port, state):
         if _FakePyKush.set_hook:
             _FakePyKush.set_hook(port, state)
+        if not _FakePyKush.ignore_sets:
+            _FakePyKush.port_states[port] = state
         return True
 
     def get_port_state(self, port):
-        return 1
+        return _FakePyKush.port_states.get(port, 1)
 
 
 class YkushDriverTests(unittest.TestCase):
@@ -107,6 +115,8 @@ class YkushDriverTests(unittest.TestCase):
         _FakePyKush.closed = []
         _FakePyKush._counter = 0
         _FakePyKush.set_hook = None
+        _FakePyKush.port_states = {}
+        _FakePyKush.ignore_sets = False
         ykush._YKUSH_CLS = _FakePyKush
         ykush._PORT_UP = 1
         ykush._PORT_DOWN = 0
@@ -117,6 +127,20 @@ class YkushDriverTests(unittest.TestCase):
         self.net = ykush.YKUSHUSBNet(
             {"address": "USB0::0x04D8::0xF2F7::YK28339::INSTR"}
         )
+
+    def test_a_switch_the_hub_ignores_raises(self):
+        # A YKUSH3 with GPIO port control enabled acks a switch and keeps the
+        # port as it was; reporting success there hid a port that stayed off.
+        _FakePyKush.port_states = {2: 0}
+        _FakePyKush.ignore_sets = True
+        with self.assertRaises(ykush.PortStateError) as ctx:
+            self.net.enable("CLI_USB", 2)
+        self.assertIn("GPIO port control", str(ctx.exception))
+
+    def test_an_unreadable_read_back_is_not_a_failure(self):
+        _FakePyKush.port_states = {2: 255}
+        _FakePyKush.ignore_sets = True
+        self.net.enable("CLI_USB", 2)
 
     def test_serial_and_lock_key_from_address(self):
         self.assertEqual(self.net.serial, "YK28339")
@@ -205,6 +229,8 @@ class YkushPathCacheTests(unittest.TestCase):
         _FakePyKush.closed = []
         _FakePyKush._counter = 0
         _FakePyKush.set_hook = None
+        _FakePyKush.port_states = {}
+        _FakePyKush.ignore_sets = False
         _FakePathPyKush.enumerations = 0
         _FakePathPyKush.current_path = b"/dev/hidraw3"
         ykush._YKUSH_CLS = _FakePathPyKush
