@@ -510,7 +510,7 @@ class SelfRestartGateTests(unittest.TestCase):
         """Call the gate with a fake controller; returns whether it restarted."""
         info = {netname: {'address': 'USB0::0x24FF::0x0011::E6BACCD5::INSTR'}}
         with patch.dict(sys.modules), \
-                patch.object(usb_handler._self_restart, 'maybe_self_restart') as m:
+                patch.object(usb_handler._self_restart, 'self_restart_after_reply') as m:
             disp = types.ModuleType('lager.automation.usb_hub.dispatcher')
             disp._load_net_definitions = lambda: info
             disp._controller_for = lambda _info: controller
@@ -547,7 +547,7 @@ class SelfRestartGateTests(unittest.TestCase):
         info = {'usb1': {'address': 'USB0::0x24FF::0x0011::E6BACCD5::INSTR'}}
         with patch.dict(sys.modules), \
                 patch.object(usb_handler._self_restart,
-                             'maybe_self_restart') as m:
+                             'self_restart_after_reply') as m:
             disp = types.ModuleType('lager.automation.usb_hub.dispatcher')
             disp._load_net_definitions = lambda: info
             disp._controller_for = _boom

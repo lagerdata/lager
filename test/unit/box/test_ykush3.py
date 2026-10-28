@@ -207,6 +207,20 @@ class PowerOutputTests(_HubTestCase):
         with self.assertRaises(SupplyBackendError):
             self.drv.enable_output(1)
 
+    def test_a_hub_that_will_not_open_raises_from_the_state_read(self):
+        """Bench, JUL-33: after a hub reset `supply state` read UNKNOWN
+        forever, because the failure never reached hardware_service's
+        self-restart. Only "answered but unreadable" is unknown."""
+        class _Gone(_FakeHub):
+            def __init__(self, serial=None, path=None):
+                raise Exception("YKUSH device not found")
+        ykush_mod._YKUSH_CLS = _Gone
+        with self.assertRaises(Exception) as ctx:
+            self.drv.get_monitor_state(1)
+        self.assertIn("YKUSH device not found", str(ctx.exception))
+        with self.assertRaises(Exception):
+            self.drv.output_state(1)
+
     def test_unreadable_state_is_unknown_not_off(self):
         _FakeHub.output_state = 255
         with self.assertRaises(Exception):

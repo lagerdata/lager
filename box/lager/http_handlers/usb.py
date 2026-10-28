@@ -42,6 +42,7 @@ from lager import (
 from lager.automation import usb_hub
 from lager.automation.usb_hub import usb_net
 from lager.util import self_restart as _self_restart
+from lager.util.self_restart import restarting_message
 from lager.util.device_lock import DeviceLockError
 from lager.util.usb_sysfs import enumerate_usb_devices
 
@@ -92,6 +93,11 @@ def _self_restart_if_wedged(netname, action, exc):
     re-enumeration — exit so the supervisor respawns box_http_server with a
     clean context. No-op when the device is genuinely absent or in cooldown.
 
+    Returns True when a restart is scheduled. The exit comes a beat later, so
+    the caller answers with ``restarting_message`` first: exiting at once
+    dropped the connection, and the client read "cannot reach box" over a
+    recovery that was already under way.
+
     Skipped entirely for a driver that opens and closes inside every call.
     Restarting repairs exactly one thing: a USB handle this process orphaned
     across a re-enumeration. A driver that keeps no handle has none to orphan,
@@ -104,12 +110,13 @@ def _self_restart_if_wedged(netname, action, exc):
             "context between operations, so a respawn cannot reach it. Cause: %s",
             action, netname, exc,
         )
-        return
+        return False
     address = _usb_net_address(netname)
-    if address:
-        _self_restart.maybe_self_restart(
-            address, f"usb {action} {netname}", service="box_http_server",
-            stamp_path=_BHS_SELF_RESTART_STAMP)
+    if not address:
+        return False
+    return bool(_self_restart.self_restart_after_reply(
+        address, f"usb {action} {netname}", service="box_http_server",
+        stamp_path=_BHS_SELF_RESTART_STAMP))
 
 
 def _self_restart_on_hung_hub(lock_key):
@@ -405,7 +412,11 @@ def register_usb_routes(app: Flask) -> None:
             except DeviceNotFoundError as e:
                 logger.warning("[HTTP] /usb/command device not found: %s", e)
                 # "device not found" + still in sysfs = wedged USB context.
-                _self_restart_if_wedged(netname, action, e)
+                if _self_restart_if_wedged(netname, action, e):
+                    return jsonify({
+                        'success': False,
+                        'error': restarting_message(e),
+                    }), 503
                 body = {'success': False, 'error': f'device-not-found: {e}'}
                 # Same optional fields as /nets/state, same rule: the error
                 # string above is complete on its own and these only let a
@@ -513,9 +524,13 @@ def register_usb_routes(app: Flask) -> None:
             # DeviceNotFoundError), so an unreachable wedge lands here. Only
             # self-restart when the error means the device is unreachable (not
             # a device that responded with an error).
-            if _self_restart.looks_like_device_unreachable(e):
-                _self_restart_if_wedged(
-                    locals().get('netname'), locals().get('action'), e)
+            if (_self_restart.looks_like_device_unreachable(e)
+                    and _self_restart_if_wedged(
+                        locals().get('netname'), locals().get('action'), e)):
+                return jsonify({
+                    'success': False,
+                    'error': restarting_message(e),
+                }), 503
             return jsonify({'success': False, 'error': str(e)}), 500
 
     @app.route('/usb/devices', methods=['GET'])

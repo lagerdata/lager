@@ -224,6 +224,13 @@ def self_restart_after_reply(address, context, *, service, stamp_path,
     return True
 
 
+def restarting_message(exc):
+    """What a request whose failure scheduled a restart answers with."""
+    return ('restarting: the device is on the USB bus but this service could '
+            'not open it, so the service is restarting to find it again. '
+            f'Retry in a few seconds. Cause: {exc}')
+
+
 def _exit_for_respawn():
     logging.shutdown()  # flush handlers before the hard exit
     os._exit(70)  # EX_SOFTWARE; start-services.sh's `while true` respawns us

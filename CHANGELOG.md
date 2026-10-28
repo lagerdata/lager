@@ -40,6 +40,10 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   is enabled, and `enable`/`disable`/`toggle`/`cycle` reported success for a port
   that stayed as it was. The driver now reads the port back and says what
   happened.
+- **`lager usb` says the box is restarting instead of "cannot reach box".**
+  When a hub would not open after it re-enumerated, the box service exited
+  mid-request to recover, and the command failed as if the box were offline.
+  It now answers "restarting ... Retry in a few seconds" first.
 - **A failed check in the deployment bench suite shows the error from the run
   that failed.** The suite re-ran a failed command to print its output, so a
   check that fails once and then succeeds, such as a BLE scan on a Bluetooth

@@ -22,7 +22,7 @@ from lager.automation.usb_hub import ykush as _ykush
 from lager.automation.usb_hub.usb_net import PortStateError
 from lager.exceptions import SupplyBackendError
 
-from .supply_net import SupplyNet, _safe
+from .supply_net import SupplyNet
 
 GREEN = '\033[92m'
 RED = '\033[91m'
@@ -75,7 +75,15 @@ class YKUSH3PowerOutput(SupplyNet):
         return self._hub._with_device(_read, what="5v-state")
 
     def output_state(self, channel=None):
-        return _safe(lambda: self.output_is_enabled(channel))
+        """On/off, or None when the hub answered but could not say. A hub
+        that cannot be opened at all raises instead: after it re-enumerates,
+        a long-lived process never finds it again, and only the raise reaches
+        hardware_service's self-restart. Reading it as "unknown" left the 5V
+        net on UNKNOWN for as long as it was only polled."""
+        try:
+            return self.output_is_enabled(channel)
+        except PortStateError:
+            return None
 
     # ----------------------------------------------------------------
     #  granular methods (HTTP, WebSocket and Python API paths)

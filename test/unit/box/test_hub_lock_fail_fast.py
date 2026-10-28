@@ -432,6 +432,40 @@ class UsbCommandFailFastTests(_HangHookIsolated):
             "message": "USB port 'usb1' toggled → disabled",
         })
 
+    def _wedged_hub(self, scheduled):
+        """A hub that will not open (pykush's plain exception, as after a
+        re-enumeration) with the restart gate answering ``scheduled``."""
+        self._install_hub(lambda netname: (_ for _ in ()).throw(
+            Exception("YKUSH device not found")))
+        self.restart.looks_like_device_unreachable.return_value = True
+        self.restart.self_restart_after_reply.return_value = scheduled
+        holds = patch.object(usb_handler, "_driver_holds_usb_context",
+                             lambda netname: True)
+        holds.start()
+        self.addCleanup(holds.stop)
+
+    def test_a_scheduled_restart_is_answered_before_the_exit(self):
+        """Exiting inside the request dropped the connection, so the client
+        said "cannot reach box" over a recovery already under way."""
+        self._wedged_hub(scheduled=True)
+        resp = self.client.post("/usb/command",
+                                json={"netname": "usb1", "action": "state"})
+        self.assertEqual(resp.status_code, 503)
+        error = resp.get_json()["error"]
+        self.assertTrue(error.startswith("restarting:"), error)
+        self.assertIn("YKUSH device not found", error)
+        self.restart.maybe_self_restart.assert_not_called()
+        self.assertEqual(
+            self.restart.self_restart_after_reply.call_args.kwargs["service"],
+            "box_http_server")
+
+    def test_no_restart_keeps_the_original_error(self):
+        self._wedged_hub(scheduled=False)
+        resp = self.client.post("/usb/command",
+                                json={"netname": "usb1", "action": "state"})
+        self.assertEqual(resp.status_code, 500)
+        self.assertEqual(resp.get_json()["error"], "YKUSH device not found")
+
 
 class ScheduleSelfRestartForHangTests(_HangHookIsolated):
     """``self_restart``'s new no-exception entry point."""

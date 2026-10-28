@@ -30,6 +30,7 @@ from flask import Flask, request, jsonify
 
 from lager import safety
 from lager.util import self_restart as _self_restart
+from lager.util.self_restart import restarting_message
 from lager.util.watchdog import run_with_deadline
 
 # Configure logging
@@ -323,11 +324,7 @@ def _restarting_response(exc):
     Without it the exit dropped the connection before any response was
     written, and the caller read "hardware service did not respond
     (Connection aborted)" over a recovery that was already under way."""
-    return jsonify({
-        'error': ('restarting: the device is on the USB bus but this service '
-                  'could not open it, so the service is restarting to find '
-                  f'it again. Retry in a few seconds. Cause: {exc}'),
-    }), 503
+    return jsonify({'error': restarting_message(exc)}), 503
 
 
 def _restart_address(address, device_id):
