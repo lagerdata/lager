@@ -12,7 +12,7 @@ ykushcmd, src/ykush3/ykush3.cpp) over the HID channel pykush opens:
 
 Every operation goes through ``YKUSHUSBNet._with_device``: a fresh handle,
 under the hub's cross-process lock, so GPIO serialises with the hub's usb
-and 5V power-supply nets.
+nets.
 
 Never sends 0x32 01 (``ykushcmd ykush3 --gpio enable``). Despite the name,
 that hands the USB ports to the GPIO pins as inputs: the hub then ignores the

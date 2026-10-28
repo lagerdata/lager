@@ -21,7 +21,6 @@ from lager.power.supply.rigol_dp700 import RigolDP700
 from lager.power.supply.keithley import Keithley2281S
 from lager.power.supply.ea import EA
 from lager.power.supply.keysight_e36000 import KeysightE36000
-from lager.power.supply.ykush3 import YKUSH3PowerOutput
 
 
 class SupplyDispatcher(BaseDispatcher):
@@ -66,10 +65,6 @@ class SupplyDispatcher(BaseDispatcher):
         # EA PSB (10080-60 / 10060-60)
         if inst in ("EA_PSB_10080_60", "EA_PSB_10060_60"):
             return EA
-
-        # Yepkit YKUSH3 — its fixed 5V output (the USB ports are usb nets)
-        if re.search(r"ykush3", inst, re.IGNORECASE):
-            return YKUSH3PowerOutput
 
         raise self._make_error(f"Unsupported instrument for supply nets: '{instrument_name}'.")
 

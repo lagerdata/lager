@@ -163,10 +163,10 @@ SUPPORTED_USB: Dict[str, Dict] = {
     "Acroname_8Port":    {"vid": "24ff", "pid": "0013", "net_type": ["usb"]},
     "Acroname_4Port":    {"vid": "24ff", "pid": "0011", "net_type": ["usb"]},
     "YKUSH_Hub":         {"vid": "04d8", "pid": "f2f7", "net_type": ["usb"]},
-    # Three switchable USB ports plus a switchable 5V output that is not a USB
-    # port, so the output is a power-supply net (fixed 5V, on/off only), and
-    # three GPIO pins.
-    "YKUSH3_Hub":        {"vid": "04d8", "pid": "f11b", "net_type": ["usb", "power-supply", "gpio"]},
+    # Three switchable USB ports and three GPIO pins. Its switchable 5V output
+    # is deliberately not a net: it can only switch on and off, so most of a
+    # power-supply net's controls would not apply.
+    "YKUSH3_Hub":        {"vid": "04d8", "pid": "f11b", "net_type": ["usb", "gpio"]},
     # 0x2230 is Plugable's OWN vendor ID; 0x5411 tracks the Realtek RTS5411
     # hub silicon Plugable reuses across its dock line, so this entry matches
     # any Plugable RTS5411 hub. Validated on a UD-CAM.
@@ -372,7 +372,7 @@ CHANNEL_MAPS: Dict[str, Dict[str, List[str]]] = {
     "Acroname_8Port":         {"usb": ["0", "1", "2", "3", "4", "5", "6", "7"]},
     "Acroname_4Port":         {"usb": ["0", "1", "2", "3"]},
     "YKUSH_Hub":              {"usb": ["1", "2", "3"]},
-    "YKUSH3_Hub":             {"usb": ["1", "2", "3"], "power-supply": ["1"], "gpio": ["1", "2", "3"]},
+    "YKUSH3_Hub":             {"usb": ["1", "2", "3"], "gpio": ["1", "2", "3"]},
     # The dock cascades two 4-port hubs; the upstream tier is entirely
     # internal (billboard, audio codec, NIC, inter-hub link), so only the
     # downstream tier's four external sockets are exposed.

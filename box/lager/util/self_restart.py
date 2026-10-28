@@ -63,8 +63,8 @@ OPEN_FAILURE_MARKERS = (
     # A YKUSH hub (pykush's YKUSHNotFound). hidapi's libusb context keeps the
     # device list it had, so after the hub re-enumerates (reset, replug, power
     # blip) a process that already used it never finds it again; a fresh
-    # process does. Reached through hardware_service by the YKUSH3 5V
-    # power-supply net.
+    # process does. Reached through hardware_service by the YKUSH3 GPIO
+    # nets.
     'ykush device not found',
 )
 

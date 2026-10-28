@@ -163,9 +163,7 @@ def mapper_factory(net, device_type, net_info):
         instrument = (net_info.get('instrument') or '') if isinstance(net_info, dict) else ''
         instr = instrument.lower()
         addr  = device_type.lower()
-        if 'ykush3' in instr or '0x04d8::0xf11b' in addr:
-            device_type = 'ykush3'
-        elif 'keithley' in instr or '0x05e6' in addr:
+        if 'keithley' in instr or '0x05e6' in addr:
             device_type = 'keithley'
         elif 'rigol_dp7' in instr or instr.startswith('dp7'):
             device_type = 'rigol_dp700'
@@ -191,12 +189,10 @@ def mapper_factory(net, device_type, net_info):
         # driver from the net's instrument string.
         from .mappers.picoscope import PicoScopeAnalogMapper
         return PicoScopeAnalogMapper(net, Device("scope_hs", _scope_device_info(net_info)))
-    elif device_type in ("rigol_dp800", "rigol_dp800_2", "rigol_dp700", "ykush3"):
+    elif device_type in ("rigol_dp800", "rigol_dp800_2", "rigol_dp700"):
         # DP700 (DP711/DP712) exposes the same method surface as the DP800
-        # backend, so it reuses the DP800 function mapper. So does the YKUSH3
-        # 5V output, whose driver refuses what a fixed output cannot do. The
-        # device_type is forwarded to hardware_service as the module name
-        # (lager.power.supply.*).
+        # backend, so it reuses the DP800 function mapper. The device_type is
+        # forwarded to hardware_service as the module name (lager.power.supply.*).
         return RigolDP800FunctionMapper(net, Device(device_type, net_info))
     elif device_type in ("rigol_dl3000", "rigol_dl3021"):
         # Use explicit mapper for consistent API behavior
@@ -506,11 +502,7 @@ class Net:
 
                     net.type = NetType.PowerSupply
                     instrument_lower = item['instrument'].lower()
-                    if 'ykush3' in instrument_lower:
-                        # The YKUSH3's fixed 5V output; checked first so the
-                        # loose 'ea' substring match below can never claim it.
-                        net.device_type = 'ykush3'
-                    elif 'keithley' in instrument_lower:
+                    if 'keithley' in instrument_lower:
                         net.device_type = 'keithley'
                     elif 'rigol_dp7' in instrument_lower or instrument_lower.startswith('dp7'):
                         # DP700 series (DP711/DP712) — single-channel RS-232 supply.

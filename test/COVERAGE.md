@@ -48,12 +48,12 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` | 3758 (+3 xfailed) |
-| `unit (box)` | `test/unit/box/` | 4979 (+17 skipped) |
+| `unit (box)` | `test/unit/box/` | 4959 (+17 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 414 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 243 (+1 skipped) |
-| | **Total gated** | **9588** |
+| | **Total gated** | **9568** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -343,7 +343,7 @@ See "What CI does NOT run" for which assets execute.
 | **Logic Analyzer** | Rigol MSO5000 (embedded) | — | `logic.sh` | Yes |
 | **USB Hub** | Acroname USBHub3+ | 7 files | `acroname.sh` | Yes |
 | **USB Hub** | Yepkit YKUSH | — | `ykush.sh` | — |
-| **USB Hub** | Yepkit YKUSH3 (USB ports + 5V output + GPIO) | 1 file | — | — |
+| **USB Hub** | Yepkit YKUSH3 (USB ports + GPIO) | 1 file | — | — |
 | **USB Hub** | Plugable UD-CAM (RTS5411) | 1 file | — | — |
 | **Debug Probe** | Segger J-Link | 2 files | `debug.sh`, `jlink_script.sh` | Yes |
 | **Energy Analyzer** | Joulescope JS220 | 3 files | — | Yes |
@@ -661,7 +661,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_webcam_ui.py` | The webcam viewer page (`static/webcam/webcam.js`) under node with a stand-in DOM: `LIVE` / `STALLED` / `WAITING` / `OFFLINE` from `/api/info`, a gateway 401 signing the page out and stopping the feed, no HTML sink in the script, the Net picker moving to another stream's port and refusing any value that is not a port on this host, the zoom and focus POSTs, the snapshot file name, the resolution pickers and a refused mode's note, exposure and gain shown only when the camera has them, gain held while auto exposure is on, focus and brightness sliders in the camera's range and hidden without them, white balance held under auto, a slider for each image control the camera has, the power line frequency options, drag, arrow-key and double-click panning, and the rotate and flip POSTs |
 | `test_plugable_driver.py` | Plugable RTS5411 dock driver: USB hub-class per-port power switching over pyusb -- ganged/no-switching hubs refused without touching a port, a disable NOT judged by device presence (the kernel cannot see a disconnect while a port is unpowered, so the sysfs node persists), cycle restoring power on every failure path and reporting re-enumeration, off-time range enforced before any transfer, SuperSpeed companion pairing refused when ambiguous, network-device and inter-hub-link guards, one-session batch reads, handle disposal on every path |
 | `test_ykush_driver.py` | YKUSH USB hub driver: device-contention regression from an indefinitely cached handle; a switch the hub acknowledges but does not carry out (a YKUSH3 in GPIO port-control mode) raising, while an unreadable read-back does not |
-| `test_ykush3.py` | YKUSH3 (`04d8:f11b`) support: scanner catalog and channels (three `usb` ports plus one `power-supply` output, the original YKUSH none), routing on every supply path (dispatcher, hardware_service module, Python API mapper, also from a VISA address), and the 5V output driver against a stub pykush -- on/off through the usb nets' hub lock, a refused command raising, an unreadable state reported unknown, 5V accepted and every other setpoint or protection refused, no made-up measurements. `POST /supply/command` against the real driver and limit read: OVP/OCP and any voltage but 5V refused with the driver's own message, never a generic "exceeds" range error. After the hub re-enumerates, pykush's "YKUSH device not found" counts as an open failure, so hardware_service restarts on the hub's address, and a hub that will not open raises from the 5V state read instead of reading as unknown. GPIO pins 1-3: the hub's read/write commands sent and their acknowledgement checked (no answer, or an answer for another pin, raises), the port-control enable never sent, pins and levels validated before anything is sent, the hub's lock shared, and routing through the GPIO dispatcher, the Python API, a `ykush:` device id and hardware_service's restart address |
+| `test_ykush3.py` | YKUSH3 (`04d8:f11b`) support: scanner catalog and channels (three `usb` ports and three `gpio` pins; the 5V output deliberately not a net, and the original YKUSH has no GPIO), usb nets on the YKUSH driver. After the hub re-enumerates, pykush's "YKUSH device not found" counts as an open failure, so hardware_service restarts on the hub's address for a GPIO net. GPIO pins 1-3: the hub's read/write commands sent and their acknowledgement checked (no answer, or an answer for another pin, raises), the port-control enable never sent, pins and levels validated before anything is sent, the hub's lock shared, and routing through the GPIO dispatcher, the Python API, a `ykush:` device id and hardware_service's restart address |
 | `test_yubihsm2_driver.py` | YubiHSM 2 driver against a fake `yubihsm` namespace: one open, login and close per call (also on error), signing mechanisms, key generation defaults, `yubihsm` errors mapped to messages that never carry the password, reset waiting for the device to return, and the `hsm_hs` base64 adapter. When `yubihsm` is installed, its enum names are checked against the driver's tables |
 | `test_automation_exports.py` | Static parse of `automation/__init__.py`'s lazy export table: no name guarded twice, every returned driver reachable under its own name, everything in `__all__` resolvable -- the copy-paste class of defect that made one driver answer to another's name |
 | `test_io_imports.py` | The `lager.io.*` import surface and re-export identity; asserts the removed root-level aliases stay removed |

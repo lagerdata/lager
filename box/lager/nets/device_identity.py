@@ -89,7 +89,7 @@ def physical_device_id(role, instrument, rec):
     if role == "watt-meter" or "yocto" in inst:
         return "yocto:" + (addr or "ANY")
     if "ykush" in inst:
-        # A YKUSH hub's GPIO pins (its usb and power-supply nets do not reach
+        # A YKUSH hub's GPIO pins (its usb nets do not reach
         # hardware_service by device_id). Keyed on the hub's address, which
         # hardware_service also reads back to gate its self-restart.
         return "ykush:" + (addr or "ANY")

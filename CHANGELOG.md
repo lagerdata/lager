@@ -16,11 +16,9 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 - **Yepkit YKUSH3 hubs are supported.** `lager instruments` and `lager nets
   add-all` now detect the YKUSH3 (`04d8:f11b`). Its three USB ports are `usb`
-  nets for `lager usb`, and its switchable 5V output is a `power-supply` net for
-  `lager supply`. The 5V output only switches on and off: setting 5V is accepted,
-  and current, other voltages and OCP/OVP are refused. Its three GPIO pins are
-  `gpio` nets for `lager gpi` and `lager gpo`; their voltage level and whether a
-  written level is held are not yet verified on hardware.
+  nets for `lager usb`, and its three GPIO pins are `gpio` nets for `lager gpi`
+  and `lager gpo`; the pins' voltage level and whether a written level is held
+  are not yet verified on hardware. The hub's switchable 5V output is not a net.
 
 ### Fixed
 

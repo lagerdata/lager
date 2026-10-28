@@ -164,8 +164,6 @@ def _supply_module_for_instrument(inst: str) -> Optional[str]:
         return "keysight_e36000"
     if inst in ("EA_PSB_10080_60", "EA_PSB_10060_60"):
         return "ea"
-    if re.search(r"ykush3", inst, re.IGNORECASE):
-        return "ykush3"
     return None
 
 
