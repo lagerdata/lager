@@ -111,9 +111,14 @@ class YKUSH3PowerOutput(SupplyNet):
         raise _unsupported("Measuring power")
 
     def get_channel_limits(self, channel=None) -> dict:
-        # current_max 0 means "no client-side bound"; the driver refuses
-        # every current setpoint itself.
-        return {'voltage_max': NOMINAL_VOLTAGE, 'current_max': 0}
+        # Every limit is 0, "none reported", so the supply handler's range
+        # checks never fire and each request reaches this driver, which
+        # refuses what a fixed output cannot do with a message that says so.
+        # A 5V voltage_max made the handler refuse 6V as "exceeds hardware
+        # limit 5.0V" and, as the default ovp_max, OVP 6 as "exceeds the OVP
+        # maximum", both implying a range that does not exist. The TUI's
+        # displayed maximum comes from get_monitor_state, not from here.
+        return {'voltage_max': 0, 'current_max': 0, 'ovp_max': 0, 'ocp_max': 0}
 
     def set_overcurrent_protection_value(self, value: float, channel=None) -> None:
         raise _unsupported("Over-current protection")

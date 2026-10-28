@@ -199,8 +199,87 @@ class PowerOutputTests(_HubTestCase):
         state = self.drv.get_monitor_state(1)
         self.assertIs(state["enabled"], True)
         self.assertEqual(state["voltage_set"], 5.0)
+        self.assertEqual(state["voltage_max"], 5.0)
         for key in ("voltage", "current", "power", "current_set"):
             self.assertIsNone(state[key], key)
+
+    def test_reports_no_limits_for_the_handler_to_check(self):
+        self.assertEqual(self.drv.get_channel_limits(1),
+                         {"voltage_max": 0, "current_max": 0,
+                          "ovp_max": 0, "ocp_max": 0})
+
+
+class SupplyCommandTests(_HubTestCase):
+    """POST /supply/command against the real driver and the real limit read.
+
+    Bench run on a YKUSH3: a 5V voltage_max made the handler refuse
+    `voltage 6` and `voltage 5 --ovp 6` with generic range errors before the
+    driver ran, implying a range the output does not have. Every refusal must
+    be the driver's own."""
+
+    def setUp(self):
+        super().setUp()
+        from flask import Flask
+        from lager.http_handlers import supply as supply_handler
+        self.handler = supply_handler
+        self.drv = ykush3.create_device({"address": ADDRESS, "pin": "1"})
+        self._orig = (supply_handler._resolve_supply_proxy,
+                      supply_handler.resolve_net_proxy)
+        supply_handler._resolve_supply_proxy = lambda netname: (
+            self.drv, 1, supply_handler._read_limits(self.drv, 1))
+
+        def _no_net(netname, role, error_class):
+            raise SupplyBackendError("no saved nets in test")
+        supply_handler.resolve_net_proxy = _no_net
+        app = Flask(__name__)
+        supply_handler.register_supply_routes(app)
+        self.client = app.test_client()
+
+    def tearDown(self):
+        (self.handler._resolve_supply_proxy,
+         self.handler.resolve_net_proxy) = self._orig
+        super().tearDown()
+
+    def _post(self, action, **params):
+        resp = self.client.post("/supply/command", json={
+            "netname": "ykush3_5v", "action": action, "params": params})
+        return resp.status_code, resp.get_json()
+
+    def _refused(self, action, expected, **params):
+        status, body = self._post(action, **params)
+        self.assertFalse(body["success"], body)
+        self.assertIn(expected, body["error"])
+        self.assertNotIn("exceeds", body["error"])
+        self.assertEqual(_FakeHub.output_state, 0)
+
+    def test_ovp_above_5v_is_not_supported(self):
+        self._refused("voltage", "Over-voltage protection is not supported",
+                      value=5, ovp=6)
+
+    def test_ocp_is_not_supported(self):
+        self._refused("voltage", "Over-current protection is not supported",
+                      value=5, ocp=9)
+
+    def test_standalone_ovp_and_ocp_are_not_supported(self):
+        self._refused("ovp", "Over-voltage protection is not supported", value=6)
+        self._refused("ocp", "Over-current protection is not supported", value=9)
+
+    def test_voltage_above_5v_is_fixed_at_5v(self):
+        self._refused("voltage", "fixed at 5V", value=6)
+
+    def test_voltage_below_5v_is_fixed_at_5v(self):
+        self._refused("voltage", "fixed at 5V", value=3.3)
+
+    def test_five_volts_is_accepted(self):
+        status, body = self._post("voltage", value=5)
+        self.assertEqual(status, 200)
+        self.assertTrue(body["success"], body)
+
+    def test_state_message(self):
+        status, body = self._post("state")
+        self.assertEqual(status, 200)
+        self.assertIn("Channel 1: OFF, Set: 5.0V/n/a, Measured: n/a/n/a",
+                      body["message"])
 
 
 if __name__ == "__main__":
