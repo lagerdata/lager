@@ -88,6 +88,11 @@ def physical_device_id(role, instrument, rec):
         return "dexarm:" + (rec.get("serial") or loc_serial or addr or "ANY")
     if role == "watt-meter" or "yocto" in inst:
         return "yocto:" + (addr or "ANY")
+    if "ykush" in inst:
+        # A YKUSH hub's GPIO pins (its usb and power-supply nets do not reach
+        # hardware_service by device_id). Keyed on the hub's address, which
+        # hardware_service also reads back to gate its self-restart.
+        return "ykush:" + (addr or "ANY")
     if "labjack" in inst and not _LABJACK_T7_RE.search(inst):
         # A LabJack that is not a T7 -- a U3/U6. It reaches the hardware over
         # Exodriver, holds its own USB claim, and shares nothing with the T7's

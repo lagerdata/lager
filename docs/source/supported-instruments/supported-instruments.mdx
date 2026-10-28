@@ -286,7 +286,7 @@ scripts and CI pipelines.
 | Acroname | 8-Port USB Hub | 8 | `lager usb` |
 | Acroname | 4-Port USB Hub | 4 | `lager usb` |
 | Yepkit | YKUSH | 3 | `lager usb` |
-| Yepkit | YKUSH3 | 3 + 5V output | `lager usb`, `lager supply` |
+| Yepkit | YKUSH3[^ykush3] | 3 + 5V output + 3 GPIO | `lager usb`, `lager supply`, `lager gpi`/`gpo` |
 | Plugable | UD-CAM and other RTS5411 docks[^plugable] | 4 | `lager usb` |
 
 [^plugable]: Unlike the Acroname and Yepkit hubs, Plugable ships no SDK. Control
@@ -297,6 +297,13 @@ scripts and CI pipelines.
     Requires the udev rule for vendor `2230` (shipped in `99-instrument.rules`);
     without it libusb cannot open the hub and every operation fails with a
     permission error.
+
+[^ykush3]: The YKUSH3's GPIO pins 1-3 are `gpio` nets. **Not yet verified on
+    hardware:** the pins' voltage level, and whether a written level is held.
+    Check both with a meter before wiring a pin to a device. Lager never
+    enables the hub's "GPIO control" mode (`ykushcmd ykush3 --gpio enable`),
+    which hands the USB ports to the GPIO pins; if that mode is on, `lager usb`
+    reports that a port did not switch.
 
 ### Which Plugable dock ports actually switch power
 

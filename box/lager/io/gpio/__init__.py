@@ -19,6 +19,7 @@ from .labjack_ud import LabJackUDGPIO
 from .usb202 import USB202GPIO
 from .ft232h_gpio import FT232HGPIO
 from .aardvark_gpio import AardvarkGPIO
+from .ykush3_gpio import YKUSH3GPIO
 
 __all__ = [
     "GPIOBase",
@@ -28,6 +29,7 @@ __all__ = [
     "USB202GPIO",
     "FT232HGPIO",
     "AardvarkGPIO",
+    "YKUSH3GPIO",
     "read",
     "write",
     "gpi",

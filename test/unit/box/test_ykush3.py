@@ -108,11 +108,12 @@ class DetectionTests(unittest.TestCase):
     def test_scanner_catalogs_the_ykush3(self):
         meta = usb_scanner.SUPPORTED_USB["YKUSH3_Hub"]
         self.assertEqual((meta["vid"], meta["pid"]), ("04d8", "f11b"))
-        self.assertEqual(meta["net_type"], ["usb", "power-supply"])
+        self.assertEqual(meta["net_type"], ["usb", "power-supply", "gpio"])
 
-    def test_channels_are_three_ports_and_one_output(self):
+    def test_channels_are_three_ports_one_output_and_three_pins(self):
         self.assertEqual(usb_scanner.CHANNEL_MAPS["YKUSH3_Hub"],
-                         {"usb": ["1", "2", "3"], "power-supply": ["1"]})
+                         {"usb": ["1", "2", "3"], "power-supply": ["1"],
+                          "gpio": ["1", "2", "3"]})
 
     def test_original_ykush_offers_no_power_output(self):
         self.assertEqual(usb_scanner.SUPPORTED_USB["YKUSH_Hub"]["net_type"], ["usb"])
@@ -332,6 +333,108 @@ class SupplyCommandTests(_HubTestCase):
         self.assertEqual(status, 200)
         self.assertIn("Channel 1: OFF, Set: 5.0V/n/a, Measured: n/a/n/a",
                       body["message"])
+
+
+class _GpioHub(_FakeHub):
+    """Answers the hub's GPIO commands the way a YKUSH3 did on the bench:
+    01 <cmd> <pin> <level>, then 4 bytes of leftovers."""
+    sent = []
+    levels = {1: 0, 2: 0, 3: 0}
+    reply_override = None
+
+    def _raw_sendreceive(self, packet):
+        _GpioHub.sent.append(list(packet))
+        if _GpioHub.reply_override is not None:
+            return list(_GpioHub.reply_override)
+        cmd, pin = packet[0], packet[1]
+        if cmd == 0x31:
+            _GpioHub.levels[pin] = packet[2]
+        return [0x01, cmd, pin, _GpioHub.levels.get(pin, 0), 0x79, 0xc0, 0x00, 0x09]
+
+
+class GpioTests(_HubTestCase):
+    def setUp(self):
+        super().setUp()
+        from lager.io.gpio import ykush3_gpio
+        self.mod = ykush3_gpio
+        ykush_mod._YKUSH_CLS = _GpioHub
+        _GpioHub.sent = []
+        _GpioHub.levels = {1: 0, 2: 0, 3: 0}
+        _GpioHub.reply_override = None
+        self.pin = ykush3_gpio.YKUSH3GPIO("ykush3_gpio2", "2", address=ADDRESS)
+
+    def test_write_and_read_send_the_hubs_commands(self):
+        self.pin.output("high")
+        self.assertEqual(self.pin.input(), 1)
+        self.pin.output(0)
+        self.assertEqual(self.pin.input(), 0)
+        self.assertEqual(_GpioHub.sent, [[0x31, 2, 1], [0x30, 2],
+                                         [0x31, 2, 0], [0x30, 2]])
+
+    def test_never_sends_the_port_control_enable(self):
+        """0x32 hands the USB ports to the GPIO pins (bench, JUL-33)."""
+        self.pin.output(1)
+        self.pin.input()
+        self.pin.wait_for_level(1, timeout=1)
+        self.assertNotIn(0x32, [p[0] for p in _GpioHub.sent])
+
+    def test_shares_the_hubs_lock(self):
+        usb_net = ykush_mod.YKUSHUSBNet({"address": ADDRESS})
+        self.assertEqual(self.pin._hub._lock_key(), usb_net._lock_key())
+
+    def test_an_unacknowledged_command_raises(self):
+        _GpioHub.reply_override = [0xff] * 8   # pykush's "no answer"
+        with self.assertRaises(self.mod.GPIOBackendError):
+            self.pin.output(1)
+        with self.assertRaises(self.mod.GPIOBackendError):
+            self.pin.input()
+
+    def test_a_reply_for_another_pin_raises(self):
+        _GpioHub.reply_override = [0x01, 0x30, 0x03, 0x01, 0, 0, 0, 0]
+        with self.assertRaises(self.mod.GPIOBackendError):
+            self.pin.input()
+
+    def test_bad_pins_and_levels_are_refused_before_sending(self):
+        for bad in (0, 4, "FIO0", None):
+            with self.assertRaises(self.mod.GPIOBackendError):
+                self.mod.YKUSH3GPIO("x", bad, address=ADDRESS)
+        with self.assertRaises(self.mod.GPIOBackendError):
+            self.pin.output("maybe")
+        self.assertEqual(_GpioHub.sent, [])
+
+
+class GpioRoutingTests(unittest.TestCase):
+    def test_gpio_dispatcher_picks_the_ykush3_driver(self):
+        from lager.io.gpio import dispatcher
+        from lager.io.gpio.ykush3_gpio import YKUSH3GPIO
+        disp = dispatcher.GPIODispatcher()
+        self.assertIs(disp._choose_driver("YKUSH3_Hub"), YKUSH3GPIO)
+        drv = disp._make_driver({"instrument": "YKUSH3_Hub", "address": ADDRESS},
+                                "ykush3_gpio1_routing", 1)
+        self.assertIsInstance(drv, YKUSH3GPIO)
+        self.assertEqual(drv.address, ADDRESS)
+
+    def test_python_api_returns_the_ykush3_driver(self):
+        from unittest.mock import patch
+        from lager.io.gpio.ykush3_gpio import YKUSH3GPIO
+        from lager.nets.constants import NetType
+        rec = {"name": "ykush3_gpio3", "role": "gpio", "instrument": "YKUSH3_Hub",
+               "address": ADDRESS, "pin": "3"}
+        with patch.object(net_mod.Net, "get_local_nets", classmethod(lambda cls: [rec])):
+            drv = net_mod.Net.get_from_saved_json("ykush3_gpio3", NetType.GPIO)
+        self.assertIsInstance(drv, YKUSH3GPIO)
+        self.assertEqual((drv.pin, drv.address), (3, ADDRESS))
+
+    def test_device_id_is_the_hub(self):
+        from lager.nets.device_identity import physical_device_id
+        self.assertEqual(
+            physical_device_id("gpio", "YKUSH3_Hub", {"address": ADDRESS}),
+            "ykush:" + ADDRESS)
+
+    def test_hardware_service_restarts_on_the_hub_for_a_gpio_net(self):
+        from lager import hardware_service as hw
+        self.assertEqual(hw._restart_address(None, "ykush:" + ADDRESS), ADDRESS)
+        self.assertIsNone(hw._restart_address(None, "ykush:ANY"))
 
 
 if __name__ == "__main__":

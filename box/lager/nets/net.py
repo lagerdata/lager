@@ -91,6 +91,7 @@ def _ftdi_address_parts(address):
 
 
 from ..io.gpio.aardvark_gpio import AardvarkGPIO
+from ..io.gpio.ykush3_gpio import YKUSH3GPIO
 from ..io.adc.labjack_t7 import LabJackADC
 from ..io.adc.labjack_ud import LabJackUDADC
 from ..io.adc.usb202 import USB202ADC
@@ -619,6 +620,8 @@ class Net:
                         serial = item.get('address') or None
                         return AardvarkGPIO(name, _norm_pin(item), port=port,
                                             serial=serial, target_power=target_power)
+                    elif 'ykush3' in instrument:
+                        return YKUSH3GPIO(name, _norm_pin(item), address=item.get('address'))
                     elif _UD_RE.search(instrument):
                         unique_id = item.get('unique_id') or item.get('address')
                         return LabJackUDGPIO(name, _norm_pin(item), unique_id=unique_id)
@@ -817,6 +820,9 @@ class Net:
                                 serial = mapping.get('device_override') or None
                                 return AardvarkGPIO(name, norm_pin, port=port,
                                                     serial=serial, target_power=target_power)
+                            elif 'ykush3' in instrument:
+                                return YKUSH3GPIO(name, norm_pin,
+                                                  address=mapping.get('device_override'))
                             elif _UD_RE.search(instrument):
                                 unique_id = mapping.get('unique_id') or mapping.get('device_override')
                                 return LabJackUDGPIO(name, norm_pin, unique_id=unique_id)

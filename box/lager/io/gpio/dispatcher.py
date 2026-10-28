@@ -23,6 +23,7 @@ from .labjack_ud import LabJackUDGPIO
 from .usb202 import USB202GPIO
 from .ft232h_gpio import FT232HGPIO
 from .aardvark_gpio import AardvarkGPIO
+from .ykush3_gpio import YKUSH3GPIO
 
 DEBUG = bool(os.environ.get("LAGER_GPIO_DEBUG"))
 
@@ -70,6 +71,9 @@ class GPIODispatcher(BaseDispatcher):
 
         if re.search(r"(aardvark|totalphase)", inst, re.IGNORECASE):
             return AardvarkGPIO
+
+        if re.search(r"ykush3", inst, re.IGNORECASE):
+            return YKUSH3GPIO
 
         # Default to LabJack T7 if no instrument specified
         if not inst:
@@ -141,6 +145,10 @@ class GPIODispatcher(BaseDispatcher):
                 serial = rec.get("address") or None
                 driver = Driver(netname, pin, port=port, serial=serial,
                                 target_power=target_power)
+
+            elif Driver is YKUSH3GPIO:
+                # YKUSH3 GPIO: (name, pin, address); the address picks the hub
+                driver = Driver(netname, pin, address=rec.get("address"))
 
             else:
                 # Future-proof fallback

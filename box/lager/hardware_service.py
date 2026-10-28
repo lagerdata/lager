@@ -337,12 +337,17 @@ def _restart_address(address, device_id):
     unit until something else restarted the service (#729). A bare serial
     gets the USB-202's VID/PID, which is all the sysfs check needs.
 
+    A YKUSH3 GPIO net sends ``ykush:<VISA address>``. hidapi's libusb context
+    loses a hub that re-enumerated, the same wedge, so it gets the restart too.
+
     Other device_id families are left out on purpose: whether a restart
     helps them is a separate question.
     """
     if address:
         return address
     family, _, ident = (device_id or '').partition(':')
+    if family == 'ykush':
+        return ident if '::' in ident else None
     if family != 'usb202' or not ident or ident == 'ANY':
         return None
     if '::' in ident:

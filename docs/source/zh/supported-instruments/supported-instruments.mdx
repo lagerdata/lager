@@ -249,11 +249,15 @@ Lager 支持业界标准的 ARM 调试探针，全部通过同一条 `lager debu
 | Acroname | 8 端口 USB 集线器 | 8 | `lager usb` |
 | Acroname | 4 端口 USB 集线器 | 4 | `lager usb` |
 | Yepkit | YKUSH | 3 | `lager usb` |
-| Yepkit | YKUSH3 | 3 + 5V 输出 | `lager usb`、`lager supply` |
+| Yepkit | YKUSH3[^ykush3] | 3 + 5V 输出 + 3 GPIO | `lager usb`、`lager supply`、`lager gpi`/`gpo` |
 | Plugable | UD-CAM 及其他 RTS5411 扩展坞[^plugable] | 4 | `lager usb` |
 
 [^plugable]: 与 Acroname 和 Yepkit 集线器不同，Plugable 不提供 SDK。控制方式采用标准 USB hub class 的按端口电源切换（PPPS），因此支持程度取决于具体的集线器是否真正实现了它。通过 VID:PID `2230:5411` 匹配 —— Plugable 在它整条 RTS5411 扩展坞产品线上复用这个 ID；已在 UD-CAM 上验证。**只有四个外部 Type-A 插座会切换 VBUS** ——
     见下文。需要针对厂商 `2230` 的 udev 规则（随 `99-instrument.rules` 提供）；没有它，libusb 打不开该集线器，所有操作都会因权限错误而失败。
+
+[^ykush3]: YKUSH3 的 GPIO 引脚 1-3 是 `gpio` Net。**尚未在硬件上验证：**引脚的电压电平，以及写入的电平是否能保持。
+    在把引脚接到设备之前，请先用万用表确认这两点。Lager 从不启用集线器的"GPIO 控制"模式（`ykushcmd ykush3 --gpio enable`），
+    该模式会把 USB 端口交给 GPIO 引脚控制；如果该模式已开启，`lager usb` 会报告端口没有切换。
 
 ### Plugable 扩展坞上哪些端口真正会切换供电
 
