@@ -121,9 +121,10 @@ infrastructure on a trusted network:
   no credential. Because the host firewall cannot filter a published port,
   set `LAGER_MCP_NO_PUBLISH=1` with `lager box-config env set` to stop
   publishing port 8100 while the box keeps its other ports.
-- **Require a token on the MCP server when you enable its control or exec
-  tools.** `lager box-config mcp-token enable` makes the server answer only a
-  request that carries the token. The token does not encrypt the connection. Port
+- **The MCP server's control and exec tools need a token.** With
+  `LAGER_MCP_ALLOW_CONTROL` or `LAGER_MCP_ALLOW_EXEC` set and no token, those
+  tools refuse every call. `lager box-config mcp-token enable` makes the server
+  answer only a request that carries the token, and lets the tools run. The token does not encrypt the connection. Port
   8100 is plain HTTP, so the token does not replace a trusted network. The token
   belongs to the box alone and is not a gateway credential. An authenticating
   gateway must not forward port 8100.

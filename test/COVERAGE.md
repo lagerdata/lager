@@ -51,9 +51,9 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | `unit (box)` | `test/unit/box/` | 4982 (+17 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
-| `unit (mcp)` | `test/mcp/unit/` | 414 |
+| `unit (mcp)` | `test/mcp/unit/` | 422 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 243 (+1 skipped) |
-| | **Total gated** | **9601** |
+| | **Total gated** | **9609** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -876,7 +876,7 @@ These tests cover the scripts in `tools/`. The `unit (root)` job runs them.
 
 ### MCP Tests (`test/mcp/`)
 
-#### Unit Tests (`test/mcp/unit/` -- 17 files)
+#### Unit Tests (`test/mcp/unit/` -- 18 files)
 
 | File | What it tests |
 |------|---------------|
@@ -889,6 +889,7 @@ These tests cover the scripts in `tools/`. The `unit (root)` job runs them.
 | `test_control_tools.py` | `lager.mcp.tools.control`: scoped box-control tools gated by `LAGER_MCP_ALLOW_CONTROL` |
 | `test_dut_context.py` | DUT context: schema types, net metadata, DUT slot parsing, context-aware tools |
 | `test_exec_tools.py` | `lager.mcp.tools.exec`: box_exec/read_file/write_file/list_dir, gated by `LAGER_MCP_ALLOW_EXEC` |
+| `test_tier_guard.py` | `lager.mcp.tools._tier_guard`: the control and exec tools refuse every call while the box has no usable MCP bearer token (no file, or an empty one), run once one exists, follow `enable`/`disable` with no restart, keep each tool's argument schema, and a refused `box_exec` never runs its command |
 | `test_heuristic_engine.py` | Heuristic engine: requirement inference and suitability assessment |
 | `test_schemas.py` | MCP schema model validation (BenchDefinition, NetDescriptor, CapabilityGraph) |
 | `test_server_state_reload.py` | MCP server state: auto-reload when bench.json or saved_nets.json change (including a watched file that appears after startup), injected state never reloads, the bench and graph are published as one object so racing readers of `get_bench_and_graph` never see a torn pair while two separate reads can, `reload_bench` takes the reload lock, a file-backed bench carries the live instruments on a copy while an injected one never scans, and `ensure_loaded` loads from disk once |

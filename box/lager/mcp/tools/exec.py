@@ -28,6 +28,7 @@ import subprocess
 import time
 
 from ._payload import reply as _reply
+from ._tier_guard import guarded
 
 logger = logging.getLogger(__name__)
 
@@ -208,13 +209,12 @@ def list_dir(path: str) -> str:
     return _reply({"path": path, "entries": entries})
 
 
-def register(mcp) -> None:
+def register(mcp, token_path: str | None = None) -> None:
     """Register the general box-control primitives on *mcp*.
 
     Called from ``server.py`` only when ``LAGER_MCP_ALLOW_EXEC`` is set, so the
-    default tool surface stays read-only.
+    default tool surface stays read-only. Each one refuses while the box has
+    no MCP bearer token (see ``_tier_guard``).
     """
-    mcp.add_tool(box_exec)
-    mcp.add_tool(read_file)
-    mcp.add_tool(write_file)
-    mcp.add_tool(list_dir)
+    for tool in (box_exec, read_file, write_file, list_dir):
+        mcp.add_tool(guarded(tool, "exec", token_path))

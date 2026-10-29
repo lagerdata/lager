@@ -12,6 +12,15 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Changed
+
+- **The box MCP server's control and exec tools need a bearer token.** On a box
+  with `LAGER_MCP_ALLOW_CONTROL` or `LAGER_MCP_ALLOW_EXEC` set and no token, those
+  tools now refuse every call with an error that says to run
+  `lager box-config mcp-token enable`; before, they answered anything that could
+  reach port 8100. The read-only tools are unchanged. If you use either tier,
+  enable the token and give it to your MCP client before updating (#455).
+
 ## [0.61.0] - 2026-10-30
 
 ### Added
