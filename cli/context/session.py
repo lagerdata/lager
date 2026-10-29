@@ -12,7 +12,6 @@
 """
 import os
 import signal
-from uuid import uuid4
 
 import click
 import requests
@@ -503,10 +502,13 @@ class DirectHTTPSession:
 
         self.session = DirectHTTPSession._session_pool[box_ip]
 
-        # Add version header (updated per invocation)
+        # Version and invocation headers. The id is the process's own, shared
+        # with every other request this command makes (gateway_auth.INVOCATION_ID),
+        # so one command reads as one invocation however many sessions it opens.
+        from ..gateway_auth import INVOCATION_ID
         self.session.headers.update({
             'Lager-Version': __version__,
-            'Lager-Invocation-Id': str(uuid4()),
+            'Lager-Invocation-Id': INVOCATION_ID,
         })
 
         # Gateway auth (no-op for plain Lager boxes): attach a bearer token

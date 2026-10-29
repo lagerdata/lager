@@ -14,6 +14,12 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 ### Added
 
+- **A gated box's gateway can see which command each request belongs to.**
+  Requests that carry a `lager login` token now also send the command's name,
+  such as `supply voltage`, never its arguments, with the CLI version and an
+  id shared by every request one command makes. An access-control gateway can
+  use them to report which commands its users run. A box that is not behind a
+  gateway receives none of them. See §6.5 of the gateway auth contract.
 - **Yepkit YKUSH3 hubs are supported.** `lager instruments` and `lager nets
   add-all` now detect the YKUSH3 (`04d8:f11b`). Its three USB ports are `usb`
   nets for `lager usb`, and its three GPIO pins are `gpio` nets for `lager gpi`
