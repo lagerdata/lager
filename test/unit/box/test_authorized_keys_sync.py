@@ -571,3 +571,84 @@ def test_the_sweep_never_kills_the_shell_that_started_this_run(tmp_path):
     )
     assert "REACHED-THE-END" in proc.stdout, proc.stderr
     assert "WRAPPER-SURVIVED" in proc.stdout, "the sweep killed its own parent shell"
+
+
+# A caller that runs start_box.sh in its own process group, and later signals
+# that group to stop the tree it started, also stopped the poller: `disown`
+# leaves a job in its parent's process group and session. The poller now
+# starts in a session of its own.
+
+def _ps_field(pid, field):
+    out = subprocess.run(["ps", "-o", f"{field}=", "-p", str(pid)],
+                         capture_output=True, text=True).stdout.strip()
+    return int(out) if out else None
+
+
+def _alive(pid):
+    state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)],
+                           capture_output=True, text=True).stdout.strip()
+    return bool(state) and not state.startswith("Z")
+
+
+@pytest.mark.parametrize("job_control", [False, True], ids=["plain", "set-m"])
+def test_signalling_the_callers_process_group_leaves_the_poller_running(tmp_path, job_control):
+    """The caller leads its own process group and session, as under
+    `setsid bash some-script.sh`. Under `set -m` the background subshell leads a group
+    too, which is when setsid would fork and $! would name the wrong process."""
+    _needs_pkill()
+    if subprocess.run(["bash", "-c", "command -v setsid"],
+                      capture_output=True).returncode != 0:
+        pytest.skip("setsid not available on this platform")
+    marker = f"lager-ssh-sync-test-{uuid.uuid4().hex[:12]}"
+    pid_file = tmp_path / "pid"
+    info = tmp_path / "info"
+    script = "\n".join([
+        "set -e",
+        "set -m" if job_control else ":",
+        "_sync_authorized_keys() { :; }",
+        f"export LAGER_SSH_SYNC_PID_FILE={shlex.quote(str(pid_file))}",
+        f"export LAGER_SSH_SYNC_MARKER={shlex.quote(marker)}",
+        f"export LAGER_SSH_SYNC_LEGACY_NAME=no-such-start-box-{marker}[.]sh",
+        PID_SH,
+        'case $- in *m*) m=on ;; *) m=off ;; esac',
+        f'echo "$_SSH_SYNC_PID $m" > {shlex.quote(str(info))}.tmp',
+        f'mv {shlex.quote(str(info))}.tmp {shlex.quote(str(info))}',
+        "sleep 300",
+    ])
+    caller = subprocess.Popen(["bash", "-c", script], start_new_session=True,
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    poller = None
+    try:
+        deadline = time.time() + 10
+        while not info.exists() and time.time() < deadline:
+            time.sleep(0.05)
+        assert info.exists(), "the PID-file block never finished"
+        poller_pid, monitor = info.read_text().split()
+        poller = int(poller_pid)
+        assert monitor == ("on" if job_control else "off"), "job control was not restored"
+        time.sleep(0.3)  # let setsid and both execs settle before anyone looks
+
+        assert os.getpgid(caller.pid) == caller.pid, "the caller should lead its group"
+        assert int(pid_file.read_text().strip()) == poller
+        assert _alive(poller), "the recorded pid is not a running process"
+        args = subprocess.run(["ps", "-o", "args=", "-p", str(poller)],
+                              capture_output=True, text=True).stdout
+        assert args.startswith(f"{marker} "), args
+        assert _ps_field(poller, "pgid") != caller.pid
+        assert _ps_field(poller, "sid") != _ps_field(caller.pid, "sid")
+
+        os.killpg(caller.pid, 15)
+        assert _gone(caller), "the caller survived its own group being signalled"
+        time.sleep(0.3)
+        assert _alive(poller), "signalling the caller's process group stopped the poller"
+    finally:
+        if caller.poll() is None:
+            os.killpg(caller.pid, 9)
+            caller.wait()
+        if poller is not None:
+            # The poller leads its own group: its `sleep 5` goes with it.
+            for kill in (os.killpg, os.kill):
+                try:
+                    kill(poller, 9)
+                except ProcessLookupError:
+                    pass

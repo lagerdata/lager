@@ -22,6 +22,11 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 ### Fixed
 
+- **The box's authorized_keys sync keeps running when the process that ran an
+  install or update is stopped.** `start_box.sh` now starts its key-sync poller
+  (`lager-ssh-sync`) in a session of its own, so signalling the caller's process
+  group no longer stops it and leaves keys unsynced until the next install or
+  update. Boxes without `setsid` start the poller as before.
 - **`wait_for_level()` on a LabJack T7 GPIO net counts the stream setup against its
   timeout.** The timeout started only after the LabJack stream had started, so a call
   ran about 30 ms past it before stopping the stream. The call still stops the stream

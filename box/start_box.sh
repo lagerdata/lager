@@ -778,13 +778,37 @@ else
 fi
 # The poller re-executes bash under the marker name, so the sync function and
 # the variables it reads must be exported to it.
+#
+# It also runs in a session of its own. `disown` only drops the job from this
+# shell's job table; without setsid the poller keeps this script's process
+# group and session. A caller that runs start_box.sh in its own process group
+# and later signals that group (to stop the whole tree it started) would stop
+# the poller too, and authorized_keys would go unsynced until the next run.
+#
+# setsid cannot set argv[0], so it execs a bash that does the `exec -a`. Every
+# step is an exec, so $! stays the long-lived poller's pid -- provided setsid
+# does not fork. It forks only when its caller already leads a process group,
+# which this background subshell does only under job control (`set -m` gives
+# each job its own group). So job control is off while the poller starts.
+#
+# Without setsid (macOS, minimal images) the poller starts as before, in this
+# script's process group: a missed key sync on a signalled group is better
+# than no poller at all.
+_SSH_SYNC_LOOP='while true; do sleep 5; _sync_authorized_keys 2>/dev/null; done'
+_SSH_SYNC_SETSID=""
+command -v setsid >/dev/null 2>&1 && _SSH_SYNC_SETSID=setsid
+case $- in *m*) _ssh_sync_monitor=1; set +m ;; *) _ssh_sync_monitor=0 ;; esac
 (
     export -f _sync_authorized_keys
     export _AK_BEGIN _AK_END LAGER_AUTHORIZED_KEYS_D
-    exec -a "$_SSH_SYNC_MARKER" "$BASH" -c \
-        'while true; do sleep 5; _sync_authorized_keys 2>/dev/null; done'
+    if [ -n "$_SSH_SYNC_SETSID" ]; then
+        exec setsid "$BASH" -c 'exec -a "$0" "$BASH" -c "$1"' \
+            "$_SSH_SYNC_MARKER" "$_SSH_SYNC_LOOP"
+    fi
+    exec -a "$_SSH_SYNC_MARKER" "$BASH" -c "$_SSH_SYNC_LOOP"
 ) 9>&- > /dev/null 2>&1 &
 _SSH_SYNC_PID=$!
+if [ "$_ssh_sync_monitor" = 1 ]; then set -m; fi
 echo "$_SSH_SYNC_PID" > "$_SSH_SYNC_PID_FILE" 2>/dev/null \
     || echo "[WARNING] Could not write $_SSH_SYNC_PID_FILE. A poller from an earlier run may outlive this one."
 # `disown` fails when the job has already exited and been reaped, which is not
