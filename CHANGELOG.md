@@ -14,6 +14,10 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 ### Fixed
 
+- **`wait_for_level()` on a LabJack T7 GPIO net counts the stream setup against its
+  timeout.** The timeout started only after the LabJack stream had started, so a call
+  ran about 30 ms past it before stopping the stream. The call still stops the stream
+  before it raises `TimeoutError`, which takes up to about 0.6 s on a T7 (#770).
 - **`lager debug flash` and `lager debug erase` with `--erase-start`/`--erase-size` no longer
   call an unreachable box too old.** When the box's `/health` timed out or failed, the command
   said the box needed 0.50.0 and told you to run `lager update`. It now retries `/health` twice,

@@ -120,13 +120,16 @@ def main():
         except TimeoutError:
             pass
         actual = time.monotonic() - start
-        diff = abs(actual - target)
-        # Printed on a pass too, so the nightly logs show the usual overrun
-        # before anyone moves the bound (#770).
+        over = actual - target
+        # The wait itself ends on time. The call then stops the LabJack
+        # stream, and eStreamStop alone took 49-583 ms on the bench T7
+        # whatever the read batch size (#770), so the bound is that plus
+        # margin. Returning early is the failure this check is for.
         print(f"    timeout {target}s took {actual:.3f}s")
-        assert diff < 0.3, f"expected ~{target}s, got {actual:.3f}s (off by {diff:.3f}s)"
+        assert over >= 0, f"returned {-over:.3f}s before the {target}s timeout"
+        assert over < 0.8, f"expected {target}s plus the stream stop, got {actual:.3f}s"
 
-    run("timeout precision within 0.3s of target", test_timeout_precision)
+    run("timeout fires on time (plus the stream stop)", test_timeout_precision)
 
     # -----------------------------------------------------------------
     # 6. Level as integer 1

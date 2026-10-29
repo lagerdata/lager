@@ -210,11 +210,17 @@ class LabJackGPIO(GPIOBase):
                             reaction time but more USB overhead.
 
         Returns:
-            Elapsed time in seconds until the level was detected.
+            Elapsed time in seconds from the start of the stream until the
+            level was detected.
 
         Raises:
             TimeoutError: If *timeout* is exceeded before the level is seen.
+                The timeout runs from the call, so the stream setup counts
+                against it (#770). The call then stops the stream before
+                raising, and a T7's eStreamStop can take up to about 0.6 s,
+                so the call returns that much after the timeout.
         """
+        called = time.monotonic()
         ljm = self._get_ljm()
         handle = self._get_handle()
         channel_name = self._get_channel_name()
@@ -240,8 +246,7 @@ class LabJackGPIO(GPIOBase):
                 for sample in _data:
                     if (sample >= 0.5) == (level == 1):
                         return time.monotonic() - start
-                elapsed = time.monotonic() - start
-                if timeout is not None and elapsed >= timeout:
+                if timeout is not None and time.monotonic() - called >= timeout:
                     raise TimeoutError(
                         f"GPIO '{self._name}' did not reach level {level} "
                         f"within {timeout}s"

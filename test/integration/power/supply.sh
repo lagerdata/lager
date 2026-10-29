@@ -223,8 +223,12 @@ check "2.7 $OVER_V V (above the ${VMAX} V rating)" "$OUT" refused "$RC" "$OUT" "
 OVER_I=$(above "$IMAX" 0.1)
 OUT=$(sup current "$OVER_I" --yes); RC=$?
 check "2.8 $OVER_I A (above the ${IMAX} A rating)" "$OUT" refused "$RC" "$OUT" "exceeds hardware limit"
-OUT=$(sup voltage 1.0 --ocp "$OVER_I" --yes); RC=$?
-check "2.9 OCP $OVER_I A (above the rating)" "$OUT" refused "$RC" "$OUT" "exceeds"
+# OCP may go past the rating: a driver that reports ocp_max allows up to it,
+# and a DP800 reports 110% of its rating (PROTECTION_HEADROOM). So test above
+# that headroom, which every driver refuses.
+OVER_OCP=$(above "$(python3 -c 'import sys; print(float(sys.argv[1]) * 1.1)' "$IMAX")" 0.1)
+OUT=$(sup voltage 1.0 --ocp "$OVER_OCP" --yes); RC=$?
+check "2.9 OCP $OVER_OCP A (above the channel's OCP maximum)" "$OUT" refused "$RC" "$OUT" "exceeds"
 OUT=$(sup voltage 5.0 --ovp 4.0 --yes); RC=$?
 check "2.10 OVP 4.0 V below a 5.0 V setpoint" "$OUT" refused "$RC" "$OUT" "cannot be less than"
 OUT=$(sup current 0.5 --ocp 0.2 --yes); RC=$?

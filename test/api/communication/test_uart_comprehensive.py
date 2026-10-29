@@ -32,10 +32,11 @@ import time
 UART_NET = os.environ.get("UART_NET", "ESP_UART")
 PEER_BAUD = 115200
 PEER_ID = "LAGER-UART-PEER v1"
-# 60 characters round-trip cleanly. Longer lines come back corrupted on the
-# CI peer (bit errors from about 100 characters, framing garbage at 200), so
-# this stays well inside what the peer's link has carried.
-LONG_TEXT = ("lager-uart-api-" * 4)[:60]
+# The longest ECHO the peer answers whole: "ECHO " plus this is its 240-
+# character line buffer (MAX_LINE in test/assets/uart_ci_peer), and a longer
+# line is truncated by design. The echo and reply are about 480 bytes back to
+# back, so this also covers a long burst through the UART path (#777).
+LONG_TEXT = ("lager-uart-api-" * 16)[:235]
 
 _results = []
 _skipped = []
@@ -218,7 +219,7 @@ def test_peer_round_trip():
         _record("PING gets PONG", reply == "PONG", f"reply={reply!r}")
 
         echo, reply = _ask(ser, "ECHO " + LONG_TEXT)
-        _record("a 60-character ECHO comes back whole", reply == LONG_TEXT,
+        _record(f"a {len(LONG_TEXT)}-character ECHO comes back whole", reply == LONG_TEXT,
                 f"len={len(reply or '')}")
 
         _ask(ser, "RESET")
