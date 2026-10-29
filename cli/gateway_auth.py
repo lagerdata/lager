@@ -51,7 +51,9 @@ import json
 import os
 import secrets
 import threading
+import re
 import time
+import uuid
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -62,8 +64,10 @@ try:
 except ImportError:  # Windows
     fcntl = None
 
+import click
 import requests
 
+from . import __version__
 from .errors import LagerError
 
 DISCOVERY_HEADER = 'X-Gateway-Auth-Url'
@@ -572,6 +576,40 @@ def access_token_for(url, *, allow_refresh=True, min_remaining_fraction=None):
         return _usable(entry, margin=False)
 
 
+# One id for every request this process makes, so a gateway can tell one
+# command that opens several connections from several commands (contract §6.5).
+INVOCATION_ID = str(uuid.uuid4())
+
+# What may appear in the Lager-Command header: Click command names, which are
+# words joined by spaces. Anything else is dropped rather than sent, so no
+# value can carry a CR/LF into the request.
+_COMMAND_UNSAFE = re.compile(r'[^A-Za-z0-9 _.-]')
+
+
+def invocation_headers():
+    """The optional request-identification headers (contract §6.5), or {}.
+
+    ``Lager-Command`` is the running command's path without the program
+    name or any argument -- ``supply voltage`` for ``lager supply voltage
+    VCC 3.3`` -- so a gateway can count which commands its users run without
+    seeing what they ran them with. Outside a Click command (a library
+    caller, a test) there is no command to name and nothing is sent.
+    """
+    ctx = click.get_current_context(silent=True)
+    if ctx is None:
+        return {}
+    headers = {
+        'Lager-Version': __version__,
+        'Lager-Invocation-Id': INVOCATION_ID,
+    }
+    # command_path starts with the program name (`lager`); drop it.
+    _, _, command = ctx.command_path.partition(' ')
+    command = _COMMAND_UNSAFE.sub('', command).strip()[:200]
+    if command:
+        headers['Lager-Command'] = command
+    return headers
+
+
 def auth_headers_for_box(box_ip, *, allow_refresh=True):
     """Authorization header for a box known to be gated, else {}.
 
@@ -579,19 +617,24 @@ def auth_headers_for_box(box_ip, *, allow_refresh=True):
     it applies to every box, which is what makes the first request to a box
     nobody has ever contacted carry it (contract §6.2).
 
+    With a token, the request-identification headers ride along
+    (`invocation_headers`, contract §6.5). They go only where a token does:
+    a gateway that knows who is asking can attribute the command, and a
+    plain box gets exactly what it got before -- nothing.
+
     `allow_refresh` is handed straight to `access_token_for`; see there for
     when a caller passes False.
     """
     pinned = pinned_token()
     if pinned:
-        return {'Authorization': f'Bearer {pinned}'}
+        return {'Authorization': f'Bearer {pinned}', **invocation_headers()}
     url = auth_server_for_box(box_ip)
     if not url:
         return {}
     token = access_token_for(url, allow_refresh=allow_refresh)
     if not token:
         return {}
-    return {'Authorization': f'Bearer {token}'}
+    return {'Authorization': f'Bearer {token}', **invocation_headers()}
 
 
 def _token_claim(access_token, claim):

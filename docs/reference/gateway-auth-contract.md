@@ -300,6 +300,29 @@ Should MCP ever need to be reachable through the gateway, that is a change to
 this contract: `:8100` joins the coverage list below, the gateway enforces the
 same bearer policy it applies to `:9000`, and the version bumps.
 
+### 6.5 Request identification (optional)
+
+Alongside the bearer token, a client MAY send three headers that say which
+command a request belongs to:
+
+| Header | Value |
+|---|---|
+| `Lager-Command` | The command's path without the program name or any argument: `supply voltage` for `lager supply voltage VCC 3.3`. Words of `A-Z a-z 0-9 _ . -` joined by single spaces. Omitted when there is no command to name. |
+| `Lager-Version` | The client's version, e.g. `0.61.0`. |
+| `Lager-Invocation-Id` | An opaque id, the same for every request one command makes, whatever the box, port or connection. |
+
+- They are informational. A gateway MAY record them, for example to count
+  which commands its users run; it MUST NOT make an authorization decision on
+  them, since the client sets them freely.
+- A client sends them only on requests that carry a token. A plain box
+  receives none of them, so it sees exactly the traffic it saw without them.
+- A client MUST NOT put a command's arguments in `Lager-Command`. Arguments
+  are where net names, file paths and values live; the command name is what a
+  usage count needs.
+- A gateway that reads the head of each connection's first request sees one
+  of these per connection; `Lager-Invocation-Id` lets it count a command that
+  opens several connections once.
+
 ## 7. Gateway requirements
 
 A conforming gateway:
@@ -427,6 +450,15 @@ This contract is versioned by the integer at the top of this file.
   tests in `test/unit/cli/test_webcam_command.py` and
   `test/unit/cli/test_gateway_auth_refresh.py`). lager-rs prints no viewer
   links and needs no change.
+
+- **v1** (2026-10-29): §6.5 describes optional request-identification headers
+  (`Lager-Command`, `Lager-Version`, `Lager-Invocation-Id`) that a client
+  sends with its token so a gateway can count which commands run. Optional
+  for clients and informational for gateways, so no version bump per §9. The
+  Python CLI sends them (`invocation_headers` in `cli/gateway_auth.py`, tests
+  in `test/unit/cli/test_gateway_invocation_headers.py`). lager-rs is a
+  library rather than a command line, has no command to name, and needs no
+  change.
 
 ## 10. Debug tunnels (optional)
 

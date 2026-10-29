@@ -47,13 +47,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 3761 (+3 xfailed) |
+| `unit (cli)` | `test/unit/cli/` | 3768 (+3 xfailed) |
 | `unit (box)` | `test/unit/box/` | 4982 (+17 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 414 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 243 (+1 skipped) |
-| | **Total gated** | **9594** |
+| | **Total gated** | **9601** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -500,7 +500,7 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 335 files)
+### Local Unit Tests (`test/unit/` -- 336 files)
 
 #### Box Unit Tests (`test/unit/box/` -- 181 files)
 
@@ -692,7 +692,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_scope_ui_stream.py` | The web scope's credit-paced stream and pushed state: one credit returned for each frame received, only the newest frame kept for drawing, extra credit for a slow round trip, every control following the daemon's state except a field being edited, and an unplug dropping the live session so a replug can Start without a stop first, taking the last trace off the plot, and resetting the header's trigger status, sample rate and points |
 | `test_usb_scanner_picoscope.py` | PicoScope discovery in `usb_scanner.py`: every Pico Technology product ID is recognized, and the channel count comes from the device rather than from a static table |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 130 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 131 files)
 
 | File | What it tests |
 |------|---------------|
@@ -738,6 +738,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_gateway_auth_web.py` | Browser sign-in (`lager login --web`, contract §3.4) against a fake auth server and a fake browser: the loopback callback ignores a wrong `state`, paste mode opens no listener, and the exchange sends the PKCE verifier only to the auth server |
 | `test_gateway_auth_refresh.py` | Gateway-auth refresh margin scaling with token lifetime -- pins the refresh-storm fix. Also `min_remaining_fraction`, the early refresh before a viewer link: refreshed once below the fraction, kept above it, single-flight under concurrent callers, the failure memo, and never for a pinned token or with no stored login |
 | `test_gateway_auth_shared_file.py` | The gateway login shared with a container through a single-file mount: saves keep the inode and never truncate first, a read caught inside another process's write is retried, and `lager devenv terminal` / `lager exec` create the file before mounting it |
+| `test_gateway_invocation_headers.py` | The request-identification headers (contract §6.5) inside a stand-in `lager` command: `Lager-Command` names the command path and never its arguments, rides with a pinned or stored token and never to a plain box, is left out for the bare program, and drops characters that could break a header; one `Lager-Invocation-Id` per process, shared with `DirectHTTPSession`; nothing is added outside a command |
 | `test_gateway_tunnel.py` | `cli/gateway_tunnel.py` against a fake gateway on real sockets: the CONNECT handshake, a splice in both directions including a 4 MiB payload and bytes that arrive with the response head, several clients at once, a freshly resolved token on each connection (pinned tokens too), a listener on 127.0.0.1 only, and a taken local port naming `--local-port`. Each refusal maps to its own message: 401/403/503 with the discovery header go through `handle_gateway_denial` (with the first-contact retry), a 403 without it is a port the gateway will not tunnel, a 502 drops only that connection, and a plain box's 501 is unsupported. A debug-service port that refuses TCP drops one connection, keeps a plain box on the direct route, and is reported on a gated one. A gateway-side close is reported once and the listener stays up. `choose_route` tunnels on a 200, never probes the debug port of a box not known to be gated, and reports a known-gated box's old gateway as needing an update; the old-gateway refusal is its own `GatewayCannotTunnel` class |
 | `test_gateway_upstream_error.py` | A gateway's `502` + `X-Gateway-Error: upstream_unavailable` (contract §7) raises an error naming the service behind the gateway, from the session response hook and from direct box requests, that is also a requests ConnectionError so the lock check and acquire still treat the box as unreachable (an install onto a box with no lager container proceeds), while a plain 502, another gateway error code, a success and a header-less stand-in are left alone. The lagernet query behind the install/update warning: a container left on lagernet with no `control_plane.json` is named, lager's own containers and an unrelated reply are not. `lager install` names a port conflict (exit 5) instead of a bare failure and warns about a gateway without config before deploying. No product name in either module |
 | `test_gdbserver_tunnel.py` | `lager debug <net> gdbserver` on a plain box still prints `<box>:<port>` and returns; on a gated box it prints `localhost:<port>` (never the box address, in the `already_running` branch too) and serves the tunnel in the foreground until Ctrl-C without stopping the server. Also `--local-port`, a taken port failing before any address prints, `--json` carrying a `tunnel` object, `--quiet`, `--no-tunnel`, a fatal refusal exiting 1, `--rtt` / `--interactive` / `--reset` alongside the tunnel, an old gateway failing the plain command but not an RTT stream, and `disconnect --keep-server` deciding from the recorded mapping without a probe. A gateway that cannot tunnel is a warning, not a failure: the server started, exit 0 with or without `--no-tunnel`, no address that would not connect, no tunnel opened, `gdb_port_reachable: false` in JSON; a gateway that cannot reach the server still fails |
