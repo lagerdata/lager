@@ -168,6 +168,20 @@ class ByCameraTests(unittest.TestCase):
         self.assertEqual(len(instruments), 1)
         self.assertEqual(instruments[0]["channels"]["webcam"], ["/dev/video0", "/dev/video2"])
 
+    def test_document_camera_without_a_serial(self):
+        # An IPEVO V4K PRO (two nodes, capture and metadata, and no serial)
+        # beside a C920, as a bench with a document camera enumerates them.
+        self.sysfs.add_camera("1-1", "046d", "082d", serial="C920SER", nodes=2)
+        first = self.sysfs.add_camera("1-7", "1778", "d00e", nodes=2)
+        self.assertEqual(first, 2)
+        by_name = {c["name"]: c for c in self._run(box_scanner)}
+        self.assertEqual(set(by_name), {"Logitech_C920", "IPEVO_V4K_PRO"})
+        ipevo = by_name["IPEVO_V4K_PRO"]
+        self.assertEqual(ipevo["channels"], {"webcam": ["/dev/video2"]})
+        self.assertEqual(ipevo["net_type"], ["webcam"])
+        self.assertIsNone(ipevo["serial"])
+        self.assertEqual(ipevo["address"], "USB0::0x1778::0xD00E::::INSTR")
+
 
 if __name__ == "__main__":
     unittest.main()

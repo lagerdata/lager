@@ -19,6 +19,9 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   nets for `lager usb`, and its three GPIO pins are `gpio` nets for `lager gpi`
   and `lager gpo`; the pins' voltage level and whether a written level is held
   are not yet verified on hardware. The hub's switchable 5V output is not a net.
+- **The IPEVO V4K PRO document camera (`1778:d00e`) is detected as a webcam.** `lager
+  instruments` lists it and `lager nets add <name> webcam ...` accepts it. It reports no
+  serial, so two on one box share an address.
 
 ### Fixed
 
