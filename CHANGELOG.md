@@ -31,6 +31,18 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   timeout.** The timeout started only after the LabJack stream had started, so a call
   ran about 30 ms past it before stopping the stream. The call still stops the stream
   before it raises `TimeoutError`, which takes up to about 0.6 s on a T7 (#770).
+- **The `/scope` page no longer calls a Rigol unplugged when only its capture card went.** It
+  says the live view stopped because the capture card did, and once the scope opens again,
+  either that the card is back or that it is still missing. The page also says when the box
+  closes its connection, which it did silently after a long idle (#744).
+- **`display zoom` magnifies a Rigol's trace on the `/scope` page.** Zoom was ignored on the
+  min/max frames a Rigol sends; it now zooms inside them and shows the zoom bar (#747).
+- **The `/scope` page draws a trace where the scope's own screen does.** A channel's hardware
+  offset now moves its trace, so B at -4 V offset and 2 V/div sits two divisions low, as on the
+  scope. The volts read off the trace are unchanged (#747).
+- **A Rigol's side menu is looked for again a minute after a check found none.** A check could
+  miss the menu while a measurement readout was on screen, and the menu then stayed over the
+  right of the live view until a trace reached that edge (#782).
 - **`lager debug flash` and `lager debug erase` with `--erase-start`/`--erase-size` no longer
   call an unreachable box too old.** When the box's `/health` timed out or failed, the command
   said the box needed 0.50.0 and told you to run `lager update`. It now retries `/health` twice,

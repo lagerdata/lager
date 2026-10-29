@@ -156,7 +156,8 @@ channels. The box has no command for that on a PicoScope.
 
 On a Rigol, each call is the scope's own reading of its full memory. The query
 adds a readout to the scope's measurement bar, and lager clears that readout
-again. Readouts you added at the front panel stay. `display=True` keeps the
+again. Readouts you added at the front panel stay. Lager finds the readout in
+the live view, so a Rigol with no capture card paired keeps it on screen. `display=True` keeps the
 reading on the scope's screen.
 
 Units differ between the two ways of reading the duty cycles and overshoot on

@@ -144,6 +144,23 @@ export function zoomWindow(total, preTrigger, intervalS, zoom) {
   return { start, end: start + span };
 }
 
+/**
+ * The span of an envelope frame to draw: its screen, or a zoomed part of it.
+ *
+ * An envelope frame holds a (minimum, maximum) pair per column, and its
+ * screen is the last `screen` entries; anything before that is history. The
+ * window follows `zoomWindow` inside the screen, then widens to whole pairs
+ * so a column's minimum is never drawn without its maximum.
+ */
+export function envelopeZoomWindow(total, screen, preTrigger, intervalS, zoom) {
+  const first = total - screen;
+  const inner = zoomWindow(screen, preTrigger - first, intervalS, zoom);
+  if (inner.start === 0 && inner.end === screen) return { start: first, end: total };
+  const start = first + 2 * Math.floor(inner.start / 2);
+  const end = Math.min(total, first + 2 * Math.ceil(inner.end / 2));
+  return { start, end };
+}
+
 /** `a+b`, `a-b`, `b-a`, `a*b`, as `{left, op, right}`, or null. */
 export function parseMath(expr) {
   const match = /^\s*([a-dA-D])\s*([-+*])\s*([a-dA-D])\s*$/.exec(String(expr || ''));

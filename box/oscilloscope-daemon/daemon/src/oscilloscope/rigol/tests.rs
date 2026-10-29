@@ -752,6 +752,23 @@ fn a_trace_that_ends_by_itself_presses_nothing() {
     assert_eq!(checks(&bench), before + 1);
 }
 
+#[test]
+fn a_check_that_found_nothing_is_tried_again_after_a_minute() {
+    // A check can miss the menu, and the menu must not then stay open for
+    // as long as the trace stays short of the right.
+    let mut bench = bench();
+    bench.instrument.lock().unwrap().traces_end_at = Some(MENU_LEFT);
+    let checks = |bench: &Bench| bench.sent().iter().filter(|c| c.as_str() == ":DISPlay:GRID FULL").count();
+    let before = checks(&bench);
+    bench.run_for(1.5);
+    assert_eq!(checks(&bench), before + 1);
+    bench.run_for(55.0);
+    assert_eq!(checks(&bench), before + 1, "held for a minute");
+    bench.run_for(6.0);
+    assert_eq!(checks(&bench), before + 2, "then looked at again");
+    assert_eq!(bench.moff_presses(), 0, "and still nothing to hide");
+}
+
 fn pair_volts(frame: &CaptureFrame, channel: usize, column: usize) -> (f64, f64) {
     let samples = frame.channel_samples(channel).unwrap();
     let c = &frame.channels[channel];

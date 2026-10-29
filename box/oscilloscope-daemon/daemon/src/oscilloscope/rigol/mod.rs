@@ -150,7 +150,8 @@ struct MenuWatch {
     /// When the screen was last checked for the menu.
     checked_at: Option<u64>,
     /// The last check found nothing to hide, so the empty right is the
-    /// signal's own; it is not checked again until a trace reaches it.
+    /// signal's own; it is not checked again until a trace reaches it, or
+    /// `MENU_RULED_OUT_NS` passes.
     ruled_out: bool,
     /// Due to be checked when the scope is next re-armed.
     due: bool,
@@ -161,6 +162,11 @@ const MENU_WATCH_NS: u64 = 1_000_000_000;
 /// Least time between two looks: each one stops the scope and redraws its
 /// grid twice.
 const MENU_CHECK_GAP_NS: u64 = 10_000_000_000;
+/// How long a check that found nothing holds. A check can miss the menu --
+/// a readout tile on the screen was enough to -- and the menu then stayed
+/// until a trace happened to reach the right, which a signal that ends early
+/// never does. A minute costs a signal like that one stop a minute.
+const MENU_RULED_OUT_NS: u64 = 60_000_000_000;
 
 impl MenuWatch {
     /// Note one frame, taken at `at`, and whether its right was empty.
@@ -171,10 +177,10 @@ impl MenuWatch {
             return;
         }
         let since = *self.bare_since.get_or_insert(at);
-        let rested = self
-            .checked_at
-            .is_none_or(|checked| at.saturating_sub(checked) >= MENU_CHECK_GAP_NS);
-        if !self.ruled_out && rested && at.saturating_sub(since) >= MENU_WATCH_NS {
+        let since_check = |gap: u64| self.checked_at.is_none_or(|checked| at.saturating_sub(checked) >= gap);
+        let rested = since_check(MENU_CHECK_GAP_NS);
+        let open = !self.ruled_out || since_check(MENU_RULED_OUT_NS);
+        if open && rested && at.saturating_sub(since) >= MENU_WATCH_NS {
             self.due = true;
             self.checked_at = Some(at);
         }

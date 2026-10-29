@@ -682,6 +682,11 @@ fn hardware_thread<F>(
         // the settings of one that has gone.
         let mut unopened = unopened_state();
         unopened.version = shared.state.borrow().version + 1;
+        // A scope whose capture card went is still there, and is opened
+        // again at once; this is how a client tells that from an unplug.
+        if only_the_capture_card_went(&reason) {
+            unopened.live_view_problem = Some(reason.clone());
+        }
         shared.state.send_replace(Arc::new(unopened));
         last_failure = Some(reason);
     }
@@ -2175,6 +2180,8 @@ mod tests {
         panic_on_mode: bool,
         /// Answers readiness the way an unplugged unit does.
         gone: Arc<AtomicBool>,
+        /// Answers readiness the way a Rigol whose capture card went does.
+        card_gone: Arc<AtomicBool>,
         /// Start fails until Stop has been called on this instance.
         ///
         /// Models a Pico that was capturing when it was unplugged: the
@@ -2217,6 +2224,7 @@ mod tests {
                 refuse_force: false,
                 panic_on_mode: false,
                 gone: Arc::new(AtomicBool::new(false)),
+                card_gone: Arc::new(AtomicBool::new(false)),
                 needs_stop_before_arm: false,
                 stopped: Arc::new(AtomicBool::new(false)),
                 mode: CaptureMode::Normal,
@@ -2362,6 +2370,13 @@ mod tests {
         }
 
         fn is_ready(&self) -> anyhow::Result<bool> {
+            if self.card_gone.load(Ordering::SeqCst) {
+                return Err(crate::oscilloscope::UnitGone(format!(
+                    "{}: No such device",
+                    crate::oscilloscope::rigol::video::CAPTURE_CARD_STOPPED
+                ))
+                .into());
+            }
             if self.gone.load(Ordering::SeqCst) {
                 return Err(crate::oscilloscope::pico::status::PicoStatusError::new(
                     "ps5000aIsReady",
@@ -3451,6 +3466,60 @@ mod tests {
                 .expect("the stream is open")
         });
         assert!(frame.frame.seq > before, "seq {} after {before}", frame.frame.seq);
+        assert!(handle.shutdown(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn a_capture_card_that_goes_is_not_published_as_an_unplug() {
+        // The scope is closed and opened again to pair the card afresh. The
+        // state between says why, so a client does not report the scope
+        // unplugged when only its card went.
+        let opens = Arc::new(AtomicUsize::new(0));
+        let first = FakeScope::new();
+        let (ready, card_gone) = (first.ready.clone(), first.card_gone.clone());
+        let mut first = Some(first);
+        let handle = spawn(opening_fakes(opens.clone(), move |_| {
+            first.take().unwrap_or_else(|| {
+                // Slow enough to see the state between the two opens.
+                std::thread::sleep(Duration::from_millis(500));
+                FakeScope::new()
+            })
+        }))
+        .expect("spawn");
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+
+        ready.store(true, Ordering::Relaxed);
+        runtime.block_on(handle.request(ScopeRequest::StartAcquisition(50.0)));
+        eventually("a capture", || handle.capture_count.load(Ordering::Relaxed) >= 1);
+        card_gone.store(true, Ordering::SeqCst);
+        eventually("the scope to be closed", || handle.state.borrow().channels.is_empty());
+        let problem = handle.state.borrow().live_view_problem.clone().unwrap_or_default();
+        assert!(problem.starts_with("the capture card stopped"), "{problem}");
+        eventually("the scope to be open", || matches!(*lock(&handle.open_state), OpenState::Open));
+        assert!(handle.shutdown(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn a_unit_that_is_unplugged_publishes_no_live_view_problem() {
+        let opens = Arc::new(AtomicUsize::new(0));
+        let first = FakeScope::new();
+        let (ready, gone) = (first.ready.clone(), first.gone.clone());
+        let mut first = Some(first);
+        let handle = spawn(opening_fakes(opens.clone(), move |_| {
+            first.take().unwrap_or_else(|| {
+                std::thread::sleep(Duration::from_millis(500));
+                FakeScope::new()
+            })
+        }))
+        .expect("spawn");
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+
+        ready.store(true, Ordering::Relaxed);
+        runtime.block_on(handle.request(ScopeRequest::StartAcquisition(50.0)));
+        eventually("a capture", || handle.capture_count.load(Ordering::Relaxed) >= 1);
+        gone.store(true, Ordering::SeqCst);
+        eventually("the scope to be closed", || handle.state.borrow().channels.is_empty());
+        assert_eq!(handle.state.borrow().live_view_problem, None);
         assert!(handle.shutdown(Duration::from_secs(5)));
     }
 

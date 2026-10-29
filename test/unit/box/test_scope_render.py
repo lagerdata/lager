@@ -165,6 +165,31 @@ class TestZoom:
         assert window == {"start": 750, "end": 1000}
 
 
+class TestEnvelopeZoom:
+    # 700 columns of (minimum, maximum) pairs, the trigger mid-screen, 1 us a
+    # sample: the shape of a Rigol frame.
+
+    def test_no_zoom_is_the_whole_screen(self):
+        assert _js("r.envelopeZoomWindow(1400, 1400, 700, 1e-6, null)") == {
+            "start": 0, "end": 1400}
+
+    def test_a_zoom_magnifies_the_screen(self):
+        # 4x around the trigger: a quarter of the screen, widened to whole pairs.
+        window = _js("r.envelopeZoomWindow(1400, 1400, 700, 1e-6, {factor: 4, center: 0})")
+        assert window == {"start": 524, "end": 876}
+
+    def test_the_window_never_splits_a_pair(self):
+        window = _js("r.envelopeZoomWindow(1400, 1400, 701, 1e-6, {factor: 3, center: 0})")
+        assert window["start"] % 2 == 0 and window["end"] % 2 == 0
+
+    def test_history_before_the_screen_is_left_out(self):
+        # 300 pairs of history ahead of the screen: the zoom is inside the screen.
+        assert _js("r.envelopeZoomWindow(2000, 1400, 1300, 1e-6, null)") == {
+            "start": 600, "end": 2000}
+        window = _js("r.envelopeZoomWindow(2000, 1400, 1300, 1e-6, {factor: 4, center: 0})")
+        assert window == {"start": 1124, "end": 1476}
+
+
 class TestMath:
 
     def test_an_expression_names_two_channels_and_an_operator(self):

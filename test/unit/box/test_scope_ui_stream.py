@@ -172,6 +172,34 @@ class TestConnecting:
         """)
         assert out == {"connected": True, "button": "Disconnect", "subscribed": ["Subscribe"]}
 
+    def test_the_box_closing_the_stream_says_so(self):
+        """#744: after a long idle the page fell back to Connect silently."""
+        out = self._run("""
+        const pending = page.connect();
+        ticket();
+        await pending;
+        sockets[0].readyState = 1;
+        sockets[0].emit('open');
+        sockets[0].emit('close');
+        process.stdout.write(JSON.stringify({
+          notes: page.console.lines, button: elements.connect.textContent }));
+        """)
+        assert ["note", "The connection to the box closed. Press Connect to open it again."] in out["notes"]
+        assert out["button"] == "Connect"
+
+    def test_disconnecting_says_nothing_about_the_box(self):
+        out = self._run("""
+        const pending = page.connect();
+        ticket();
+        await pending;
+        sockets[0].readyState = 1;
+        sockets[0].emit('open');
+        page.disconnect();
+        sockets[0].emit('close');
+        process.stdout.write(JSON.stringify(page.console.lines));
+        """)
+        assert not any("connection to the box closed" in text for _, text in out)
+
     def test_the_stream_ending_puts_the_overlay_back_and_drops_owed_credit(self):
         out = self._run("""
         page.overlayHidden = true;
@@ -423,6 +451,38 @@ class TestPushedState:
         assert _apply([STATE, slower])["dropped"] == [False, True]
 
 
+class TestTheScopesOffset:
+    """A trace sits where the scope's screen puts it: its volts plus the offset."""
+
+    def _y_of_zero(self, volts_offset, volts_per_div=2, position_v=0):
+        state = json.loads(json.dumps(STATE))
+        state["channels"][0].update(volts_offset=volts_offset, volts_per_div=volts_per_div)
+        return _run_js("""
+        globalThis.document = { getElementById: () => ({ value: '' }), activeElement: null };
+        const a = app({
+          channelState: new Map([['A', { enabled: true, toggle: {}, attenuation: 1,
+                                         voltsPerDiv: 1, positionV: %s }]]),
+          timePositionDiv: 0,
+          adoptCursors() {}, showTimebase() {}, applyTimePosition() {},
+          showProbe() {}, rebuildScaleChoices() {}, requestRedraw() {},
+          applyVoltsPerDiv(label, v) { this.channelState.get(label).voltsPerDiv = v; },
+        });
+        a.applyState(%s);
+        process.stdout.write(JSON.stringify(a.channelMapping('A', 800)(0)));
+        """ % (json.dumps(position_v), json.dumps(state)))
+
+    def test_no_offset_is_the_centre(self):
+        assert self._y_of_zero(0) == 400
+
+    def test_a_negative_offset_draws_the_trace_low(self):
+        # -4 V at 2 V/div: two divisions below centre, 100 px a division.
+        assert self._y_of_zero(-4) == 600
+
+    def test_the_page_position_adds_to_it(self):
+        # One division up on the page from two down on the scope.
+        assert self._y_of_zero(-4, position_v=2) == 500
+
+
 class TestAScopeWithNoLiveView:
     """A Rigol whose card shows nothing still answers; the page says why."""
 
@@ -548,6 +608,48 @@ class TestTheUnitGoingAndComing:
         assert ["note", "The scope is back."] in out["notes"]
         assert out["subscribed"] == ["Subscribe"]
         assert out["overlay"] is True
+
+
+CARD_GONE = "the capture card stopped: No such device"
+
+
+class TestTheCaptureCardGoing:
+    """#744: a Rigol whose capture card went was reported as unplugged."""
+
+    _run = TestTheUnitGoingAndComing._run
+
+    def _gone(self):
+        gone = json.loads(json.dumps(STATE))
+        gone.update(channels=[], acquiring=False, live_view_problem=CARD_GONE)
+        return gone
+
+    def test_it_is_not_called_an_unplug(self):
+        out = self._run("", [STATE, self._gone()])
+        assert "unplugged" not in out["hint"]
+        assert "capture card stopped" in out["hint"]
+        assert ["note", "The scope was unplugged."] not in out["notes"]
+        assert ["note", "No live view: " + CARD_GONE] in out["notes"]
+        assert out["latest"] is None, "the last trace is not left looking live"
+
+    def test_reopened_with_no_card_points_at_the_reason(self):
+        missing = json.loads(json.dumps(STATE))
+        missing["live_view_problem"] = "opening the capture card usb6: not found"
+        out = self._run("", [STATE, self._gone(), missing])
+        assert "still missing" in out["hint"]
+        assert ["note", "The scope is back."] not in out["notes"]
+        assert ["note", "No live view: opening the capture card usb6: not found"] in out["notes"]
+
+    def test_reopened_with_the_card_says_the_card_is_back(self):
+        out = self._run("", [STATE, self._gone(), STATE])
+        assert "capture card is back" in out["hint"]
+        assert ["note", "The capture card is back."] in out["notes"]
+        assert out["subscribed"] == ["Subscribe"]
+
+    def test_a_later_unplug_is_still_an_unplug(self):
+        gone = json.loads(json.dumps(STATE))
+        gone.update(channels=[], acquiring=False)
+        out = self._run("", [STATE, self._gone(), STATE, gone])
+        assert "unplugged" in out["hint"]
 
 
 class TestConnectedOnOpening:

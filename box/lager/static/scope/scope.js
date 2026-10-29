@@ -173,10 +173,16 @@ function formatPosition(value) {
   return String(Number(value.toPrecision(6)));
 }
 
-/** A channel's vertical position in divisions, which is what is drawn. */
+/** A channel's vertical position in divisions, which is what is drawn.
+ *
+ * The page's own position plus the scope's offset, which moves the trace on
+ * the scope's screen by its volts: -4 V at 2 V/div sits two divisions low
+ * there, so it does here. The volts read off the trace stay true.
+ */
 function positionDivisions(state) {
-  if (!state || !state.positionV) return 0;
-  return state.positionV / (state.voltsPerDiv || 1);
+  if (!state) return 0;
+  const volts = (state.positionV || 0) + (state.offsetV || 0);
+  return volts ? volts / (state.voltsPerDiv || 1) : 0;
 }
 
 /** The 1-2-5 volts/div settings this unit can reach through `attenuation`.
@@ -1069,6 +1075,8 @@ class ScopeApp {
         // so a trace stays on its level through a scale change, which is
         // what a control labelled in volts promises.
         positionV: 0,
+        // The scope's own offset, read from its state.
+        offsetV: 0,
         net: this.netForChannel(index),
       });
       host.appendChild(this.buildChannelStrip(label, index, caps));
@@ -1156,6 +1164,10 @@ class ScopeApp {
       if (channel.volts_per_div && channel.volts_per_div !== cs.voltsPerDiv) {
         this.applyVoltsPerDiv(label, channel.volts_per_div, { push: false });
       }
+      if (Number.isFinite(channel.volts_offset) && channel.volts_offset !== cs.offsetV) {
+        cs.offsetV = channel.volts_offset;
+        this.requestRedraw();
+      }
       if (cs.couplingSelect && channel.coupling) {
         setIdle(cs.couplingSelect, String(channel.coupling).toLowerCase());
       }
@@ -1208,8 +1220,8 @@ class ScopeApp {
     // someone sends stop (the Pico driver still has the previous run).
     const hadChannels = Boolean(previous && previous.channels && previous.channels.length);
     const hasChannels = Boolean(state.channels && state.channels.length);
-    if (hadChannels && !hasChannels) this.scopeLost();
-    else if (previous && !hadChannels && hasChannels) this.scopeReturned();
+    if (hadChannels && !hasChannels) this.scopeLost(state);
+    else if (previous && !hadChannels && hasChannels) this.scopeReturned(state);
 
     this.status = '';
     this.requestRedraw();
@@ -1983,6 +1995,11 @@ class ScopeApp {
       if (socket !== this.socket) return;
       this.socket = null;
       this.connecting = false;
+      // Closed from the box's end, or by the network: Disconnect clears
+      // this.socket first, so it never gets here.
+      if (this.console && typeof this.console.write === 'function') {
+        this.console.write('The connection to the box closed. Press Connect to open it again.', 'note');
+      }
       this.streamEnded();
     });
   }
@@ -2118,7 +2135,10 @@ class ScopeApp {
    * for a running one, and so credits in flight are not owed to a scope
    * that is not there.
    */
-  scopeLost() {
+  scopeLost(state = {}) {
+    // A Rigol is closed and opened again when its capture card goes, and
+    // the state between says so: the scope itself was not unplugged.
+    this.cardLost = Boolean(state.live_view_problem);
     this.persist = null;
     this.pendingBuffer = null;
     this.owedCredits = 0;
@@ -2131,9 +2151,12 @@ class ScopeApp {
     this.clearCaptureHeader();
     if (typeof this.showNotStreaming === 'function') this.showNotStreaming(true);
     if (typeof this.showEmptyHint === 'function') {
-      this.showEmptyHint('The scope was unplugged. Plug it in, then press <strong>Start</strong>.');
+      this.showEmptyHint(this.cardLost
+        ? 'The capture card stopped, so the live view did. The scope is still connected.'
+        : 'The scope was unplugged. Plug it in, then press <strong>Start</strong>.');
     }
-    if (this.console && typeof this.console.write === 'function') {
+    // A card's reason is already in the console, from applyState.
+    if (!this.cardLost && this.console && typeof this.console.write === 'function') {
       this.console.write('The scope was unplugged.', 'note');
     }
   }
@@ -2142,12 +2165,23 @@ class ScopeApp {
    * The unit is back. Ask for the stream again so leftover credit from the
    * old session cannot block the first frames.
    */
-  scopeReturned() {
-    if (typeof this.showEmptyHint === 'function') {
-      this.showEmptyHint('The scope is back. Press <strong>Start</strong>.');
+  scopeReturned(state = {}) {
+    const cardLost = Boolean(this.cardLost);
+    this.cardLost = false;
+    // After a card went, the scope opens again with or without it; with
+    // none, the reason is already in the console, so the hint points there.
+    let hint = 'The scope is back. Press <strong>Start</strong>.';
+    let note = 'The scope is back.';
+    if (cardLost && state.live_view_problem) {
+      hint = 'No live view: the capture card is still missing. See the console.';
+      note = '';
+    } else if (cardLost) {
+      hint = 'The capture card is back. Press <strong>Start</strong>.';
+      note = 'The capture card is back.';
     }
-    if (this.console && typeof this.console.write === 'function') {
-      this.console.write('The scope is back.', 'note');
+    if (typeof this.showEmptyHint === 'function') this.showEmptyHint(hint);
+    if (note && this.console && typeof this.console.write === 'function') {
+      this.console.write(note, 'note');
     }
     if (!this.streamOpen || !this.streamOpen()) return;
     this.owedCredits = 0;
@@ -2697,13 +2731,12 @@ class ScopeApp {
 
     // The part of the record across the screen: all of it, or the zoomed
     // window. Held so the cursors and markers use the same mapping.
-    const intervalS = (frame.envelope ? frame.sampleIntervalNs * 2 : frame.sampleIntervalNs) / 1e9;
     let view;
     if (frame.streaming && this.clockOffset !== null) {
       view = this.rollView(frame);
     } else if (frame.envelope) {
-      const screen = frame.screen;
-      view = { start: frame.samplesPerChannel - screen, end: frame.samplesPerChannel };
+      view = render.envelopeZoomWindow(frame.samplesPerChannel, frame.screen,
+        frame.preTriggerSamples, frame.sampleIntervalNs / 1e9, display.zoom);
     } else {
       view = render.zoomWindow(frame.samplesPerChannel, frame.preTriggerSamples,
         frame.sampleIntervalNs / 1e9, display.zoom);
@@ -2749,7 +2782,9 @@ class ScopeApp {
 
     // Last, so the readout box sits over the trace rather than under it.
     if (this.cursors) this.drawCursors(ctx, frame, width, height);
-    if (display.zoom && !frame.envelope) this.drawZoomOverview(ctx, frame, view, width, intervalS);
+    if (display.zoom && !(frame.envelope && frame.streaming)) {
+      this.drawZoomOverview(ctx, frame, view, width);
+    }
   }
 
   /** The channel colours and then math's, read from the stylesheet once rather than per frame. */
@@ -3074,10 +3109,14 @@ class ScopeApp {
   }
 
   /** Where the zoomed window sits in the whole record, along the top. */
-  drawZoomOverview(ctx, frame, view, width, intervalS) {
-    const total = frame.samplesPerChannel || 1;
-    const x0 = (view.start / total) * width;
-    const x1 = (view.end / total) * width;
+  drawZoomOverview(ctx, frame, view, width) {
+    // An envelope's record is the screen at the end of the frame, a
+    // (minimum, maximum) pair per column; a block's is all of it.
+    const total = (frame.envelope ? frame.screen : frame.samplesPerChannel) || 1;
+    const first = frame.envelope ? frame.samplesPerChannel - total : 0;
+    const x0 = ((view.start - first) / total) * width;
+    const x1 = ((view.end - first) / total) * width;
+    const intervalS = frame.sampleIntervalNs / 1e9;
     ctx.save();
     ctx.fillStyle = '#1c2430';
     ctx.fillRect(0, 0, width, 5);
