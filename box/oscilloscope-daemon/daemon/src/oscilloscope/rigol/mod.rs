@@ -16,6 +16,7 @@
 //! Nobody looks at this scope's screen, so the daemon sets its display up
 //! for the camera, not for a person.
 
+pub mod ds1000z;
 pub mod dump;
 pub mod extract;
 pub mod frame;
@@ -516,6 +517,32 @@ fn format_volts(volts: f64) -> String {
     }
 }
 
+/// Open the Rigol `config` names with the backend its `*IDN?` calls for: a
+/// DS1000Z-series model over SCPI alone, anything else as an MSO5000 with the
+/// capture card `config` names.
+///
+/// # Errors
+///
+/// When the address does not parse, the scope cannot be opened or locked, or
+/// it identifies as neither series.
+pub fn open(config: &Config) -> Result<Box<dyn Oscilloscope>> {
+    let address = scpi::Address::parse(&config.scpi)?;
+    let lock = DeviceLock::acquire(&config.scpi, LOCK_WAIT)?;
+    let mut scpi =
+        scpi::open(&address).with_context(|| format!("opening the scope at {}", config.scpi))?;
+    let idn = scpi.query("*IDN?")?;
+    if ds1000z::Identity::parse(&idn).is_ok() {
+        if let Some(video) = &config.video {
+            tracing::warn!(
+                video = %video,
+                "a DS1000Z-series scope has no video output; ignoring the capture card"
+            );
+        }
+        return Ok(Box::new(ds1000z::RigolDs1000z::with(scpi, Some(lock))?));
+    }
+    Ok(Box::new(RigolMso5000::open_with(config, scpi, lock)?))
+}
+
 impl RigolMso5000 {
     /// Open the scope and the capture card `config` names.
     pub fn open(config: &Config) -> Result<RigolMso5000> {
@@ -523,6 +550,12 @@ impl RigolMso5000 {
         let lock = DeviceLock::acquire(&config.scpi, LOCK_WAIT)?;
         let scpi = scpi::open(&address)
             .with_context(|| format!("opening the scope at {}", config.scpi))?;
+        Self::open_with(config, scpi, lock)
+    }
+
+    /// Open over a connection `open` or `rigol::open` already made, with the
+    /// capture card `config` names.
+    fn open_with(config: &Config, scpi: Box<dyn Scpi>, lock: DeviceLock) -> Result<RigolMso5000> {
         let link = Arc::new(Mutex::new(scpi));
         let open_card: CardOpener = Box::new(video::open);
         let card = match &config.video {
@@ -961,70 +994,85 @@ impl RigolMso5000 {
     /// The screen record of `channels` (zero-based), 8-bit and exact. It
     /// reads what the scope has on screen and leaves acquisition running.
     fn record(&mut self, channels: &[usize]) -> Result<CaptureFrame> {
-        let mut scpi = self.link();
-        let mut frames = Vec::new();
-        let mut traces: Vec<Vec<i16>> = Vec::new();
-        let mut first: Option<Preamble> = None;
-        for (n, &i) in channels.iter().enumerate() {
-            // One message for the set-up and the preamble: the live view
-            // publishes nothing while the link is held, and every USB
-            // transaction saved is a shorter pause in it.
-            let setup = if n == 0 { ":WAVeform:MODE NORMal;:WAVeform:FORMat BYTE;" } else { "" };
-            let preamble = Preamble::parse(&scpi.query(&format!(
-                "{setup}:WAVeform:SOURce CHANnel{};:WAVeform:PREamble?",
-                i + 1
-            ))?)?;
-            let data = scpi.query_block(":WAVeform:DATA?")?;
-            let reference = preamble.y_reference;
-            traces.push(
-                data.iter()
-                    .map(|&b| (f64::from(b) - reference).round() as i16)
-                    .collect(),
-            );
-            frames.push(ChannelFrame {
-                channel: letter(i),
-                range_code: 0,
-                coupling: self.settings.channels[i].coupling,
-                scale_v_per_count: preamble.y_increment as f32,
-                offset_v: (-preamble.y_origin * preamble.y_increment) as f32,
-            });
-            first.get_or_insert(preamble);
-        }
-        let preamble = first.context("no channel answered")?;
-        let points = traces.iter().map(Vec::len).min().unwrap_or(0);
-        let pre = if preamble.x_increment > 0.0 {
-            (-preamble.x_origin / preamble.x_increment)
-                .round()
-                .clamp(0.0, points as f64) as u32
-        } else {
-            0
-        };
-        let mut samples = Vec::with_capacity(points * traces.len());
-        for trace in &traces {
-            samples.extend_from_slice(&trace[..points]);
-        }
-        if preamble.points != 0 && preamble.points != points {
-            tracing::debug!(
-                announced = preamble.points,
-                read = points,
-                "the waveform record was shorter than its preamble said"
-            );
-        }
-        Ok(CaptureFrame {
-            seq: 0,
-            capture_mono_ns: crate::oscilloscope::monotonic_ns(),
-            sample_interval_ns: preamble.x_increment * 1e9,
-            pre_trigger_samples: pre,
-            post_trigger_samples: points as u32 - pre,
-            samples_per_channel: points as u32,
-            resolution_bits: 8,
-            overflow_mask: 0,
-            flags: 0,
-            screen_samples: 0,
-            channels: frames,
-            samples,
-        })
+        let wanted: Vec<(usize, Coupling)> = channels
+            .iter()
+            .map(|&i| (i, self.settings.channels[i].coupling))
+            .collect();
+        screen_record(self.link().as_mut(), &wanted)
     }
+}
+
+/// The screen record of `channels` (zero-based, each with the coupling to
+/// report), 8-bit and exact: `:WAVeform:MODE NORMal`, which reads what the
+/// scope has on screen and leaves acquisition running. The MSO5000 and the
+/// DS1000Z answer the same commands with the same ten-field preamble.
+fn screen_record(scpi: &mut dyn Scpi, channels: &[(usize, Coupling)]) -> Result<CaptureFrame> {
+    let mut frames = Vec::new();
+    let mut traces: Vec<Vec<i16>> = Vec::new();
+    let mut first: Option<Preamble> = None;
+    for (n, &(i, coupling)) in channels.iter().enumerate() {
+        // One message for the set-up and the preamble: the live view
+        // publishes nothing while the link is held, and every USB
+        // transaction saved is a shorter pause in it.
+        let setup = if n == 0 {
+            ":WAVeform:MODE NORMal;:WAVeform:FORMat BYTE;"
+        } else {
+            ""
+        };
+        let preamble = Preamble::parse(&scpi.query(&format!(
+            "{setup}:WAVeform:SOURce CHANnel{};:WAVeform:PREamble?",
+            i + 1
+        ))?)?;
+        let data = scpi.query_block(":WAVeform:DATA?")?;
+        let reference = preamble.y_reference;
+        traces.push(
+            data.iter()
+                .map(|&b| (f64::from(b) - reference).round() as i16)
+                .collect(),
+        );
+        frames.push(ChannelFrame {
+            channel: letter(i),
+            range_code: 0,
+            coupling,
+            scale_v_per_count: preamble.y_increment as f32,
+            offset_v: (-preamble.y_origin * preamble.y_increment) as f32,
+        });
+        first.get_or_insert(preamble);
+    }
+    let preamble = first.context("no channel answered")?;
+    let points = traces.iter().map(Vec::len).min().unwrap_or(0);
+    let pre = if preamble.x_increment > 0.0 {
+        (-preamble.x_origin / preamble.x_increment)
+            .round()
+            .clamp(0.0, points as f64) as u32
+    } else {
+        0
+    };
+    let mut samples = Vec::with_capacity(points * traces.len());
+    for trace in &traces {
+        samples.extend_from_slice(&trace[..points]);
+    }
+    if preamble.points != 0 && preamble.points != points {
+        tracing::debug!(
+            announced = preamble.points,
+            read = points,
+            "the waveform record was shorter than its preamble said"
+        );
+    }
+    Ok(CaptureFrame {
+        seq: 0,
+        capture_mono_ns: crate::oscilloscope::monotonic_ns(),
+        sample_interval_ns: preamble.x_increment * 1e9,
+        pre_trigger_samples: pre,
+        post_trigger_samples: points as u32 - pre,
+        samples_per_channel: points as u32,
+        resolution_bits: 8,
+        overflow_mask: 0,
+        flags: 0,
+        screen_samples: 0,
+        channels: frames,
+        samples,
+    })
 }
 
 /// Bits of vertical resolution the picture has: enough to number its rows.

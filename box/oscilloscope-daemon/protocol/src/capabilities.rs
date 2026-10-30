@@ -60,6 +60,9 @@ pub enum DriverFamily {
     /// Rigol MSO5000 series: SCPI over USB-TMC, with the trace taken from
     /// its HDMI output.
     RigolMso5000,
+    /// Rigol DS1000Z series (DS1054Z, DS1104Z, MSO1000Z and kin): SCPI over
+    /// USB-TMC or TCP, with the live view read from the on-screen record.
+    RigolDs1000z,
 }
 
 impl DriverFamily {
@@ -71,7 +74,7 @@ impl DriverFamily {
             DriverFamily::Ps3000a => "libps3000a.so",
             DriverFamily::Ps4000a => "libps4000a.so",
             DriverFamily::Ps5000a => "libps5000a.so",
-            DriverFamily::RigolMso5000 => "",
+            DriverFamily::RigolMso5000 | DriverFamily::RigolDs1000z => "",
         }
     }
 
@@ -84,7 +87,7 @@ impl DriverFamily {
             DriverFamily::Ps3000a => "ps3000a",
             DriverFamily::Ps4000a => "ps4000a",
             DriverFamily::Ps5000a => "ps5000a",
-            DriverFamily::RigolMso5000 => "",
+            DriverFamily::RigolMso5000 | DriverFamily::RigolDs1000z => "",
         }
     }
 
@@ -103,11 +106,15 @@ impl DriverFamily {
             DriverFamily::Ps4000a => "ps4000a",
             DriverFamily::Ps5000a => "ps5000a",
             DriverFamily::RigolMso5000 => "rigol_mso5000",
+            DriverFamily::RigolDs1000z => "rigol_ds1000z",
         }
     }
 
     pub fn is_picoscope(&self) -> bool {
-        !matches!(self, DriverFamily::RigolMso5000)
+        !matches!(
+            self,
+            DriverFamily::RigolMso5000 | DriverFamily::RigolDs1000z
+        )
     }
 }
 
