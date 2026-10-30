@@ -21,6 +21,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, TypeVar
 
@@ -34,8 +35,9 @@ try:
     from lager.devices import catalog as _catalog
     from lager.devices import custom_store as _custom_store
     from lager.devices import serial_id as _serial_id
+    from lager.devices import video_id as _video_id
 except Exception:
-    _catalog = _custom_store = _serial_id = None
+    _catalog = _custom_store = _serial_id = _video_id = None
 
 T = TypeVar('T')
 
@@ -173,9 +175,9 @@ SUPPORTED_USB: Dict[str, Dict] = {
     "Plugable_USB_Hub":  {"vid": "2230", "pid": "5411", "net_type": ["usb"]},
     # eload
     "Rigol_DL3021":      {"vid": "1ab1", "pid": "0e11", "net_type": ["eload"]},
-    # camera — detection is catalog-driven: any entry with a ``webcam``
-    # net_type is picked up by ``_by_camera`` below, so adding a camera
-    # is a one-line addition here.
+    # camera — ``_by_camera`` below detects any USB video class camera, so an
+    # entry here is only needed to give a model its own name; the rest are
+    # listed as ``GENERIC_WEBCAM_NAME``.
     "Logitech_BRIO_HD":  {"vid": "046d", "pid": "085e", "net_type": ["webcam"]},
     "Logitech_BRIO":     {"vid": "046d", "pid": "0856", "net_type": ["webcam"]},
     "Logitech_BRIO_4K_Stream": {"vid": "046d", "pid": "086b", "net_type": ["webcam"]},
@@ -188,11 +190,10 @@ SUPPORTED_USB: Dict[str, Dict] = {
     "Logitech_C270":     {"vid": "046d", "pid": "0825", "net_type": ["webcam"]},
     "Logitech_StreamCam": {"vid": "046d", "pid": "0893", "net_type": ["webcam"]},
     # ELP global-shutter camera (AR0234 sensor), USB 2.0 UVC. Its serial is a
-    # fixed firmware string, 01.00.00, so two on one box share an address and
-    # are listed as one camera with both capture nodes.
+    # fixed firmware string, 01.00.00, so two on one box are addressed by port.
     "ELP_Global_Shutter_AR0234": {"vid": "32e4", "pid": "0234", "net_type": ["webcam"]},
     # IPEVO V4K PRO document camera, USB 2.0 UVC with a microphone. It reports no
-    # serial, so its address has an empty serial field and two on one box share it.
+    # serial, so it is addressed by port.
     "IPEVO_V4K_PRO":     {"vid": "1778", "pid": "d00e", "net_type": ["webcam"]},
     # watt-meter
     "Yocto_Watt":        {"vid": "24e0", "pid": "002a", "net_type": ["watt-meter"]},
@@ -833,6 +834,10 @@ def scan_usb() -> List[dict]:
             pid = os.read(pid_fd, 64).decode("utf-8").strip().lower()
             os.close(pid_fd)
 
+            # Listed by _by_camera, which knows each camera's video node.
+            if (vid, pid) in _WEBCAM_VIDPIDS:
+                continue
+
             if ((vid, pid) not in _VIDPID_TO_NAME
                     and vid not in _VID_ONLY_VENDORS
                     and vid not in _VID_FALLBACK_NAME
@@ -1006,6 +1011,10 @@ _WEBCAM_VIDPIDS = {
     if "webcam" in _meta["net_type"]
 }
 
+# What a camera SUPPORTED_USB does not name is listed as. The CLI's
+# INSTRUMENT_NET_MAP has to carry this name too.
+GENERIC_WEBCAM_NAME = "UVC_Camera"
+
 
 def _read_sysfs_attr(path: Path) -> Optional[str]:
     try:
@@ -1015,47 +1024,40 @@ def _read_sysfs_attr(path: Path) -> Optional[str]:
 
 
 def _by_camera(v4l_root: Path = Path("/sys/class/video4linux")) -> List[dict]:
-    """Detect supported webcams and their /dev/video capture nodes.
+    """Detect USB cameras and their /dev/video capture nodes.
 
-    Each ``/sys/class/video4linux/videoN`` links to the USB interface that
-    owns it; the interface's parent directory is the USB device carrying
-    idVendor/idProduct/serial. Walking that link keeps the node→camera
-    mapping correct when models expose different numbers of video nodes
-    (a C920 exposes two, a BRIO four), which an index-based heuristic
-    cannot get right on mixed setups.
+    Any USB video class device is a camera, whether or not SUPPORTED_USB names
+    it, except the HDMI capture cards below: they are UVC too, and belong to a
+    scope's live view. A card missing from CAPTURE_CARDS is listed as a camera.
+
+    A camera with a serial of its own keeps a VISA address. One with no serial,
+    or a serial it shares with another camera here, is addressed by its USB
+    port, since nothing else tells it apart.
     """
+    cameras = [
+        device for device in _video_id.usb_video_devices(v4l_root)
+        if (device["vid"], device["pid"]) not in CAPTURE_CARDS
+        and ((device["vid"], device["pid"]) in _WEBCAM_VIDPIDS or device["uvc"])
+    ]
+    identities = Counter(
+        (camera["vid"], camera["pid"], camera["serial"]) for camera in cameras)
     results: List[dict] = []
-    seen_devices: set = set()
-    video_nodes = sorted(
-        v4l_root.glob("video*"),
-        key=lambda p: int(p.name.replace("video", "")),
-    )
-    for node in video_nodes:
-        try:
-            usb_dev = (node / "device").resolve().parent
-        except OSError:
-            continue
-        vid = _read_sysfs_attr(usb_dev / "idVendor")
-        pid = _read_sysfs_attr(usb_dev / "idProduct")
-        if not vid or not pid:
-            continue
-        vid, pid = vid.lower(), pid.lower()
-        if (vid, pid) not in _WEBCAM_VIDPIDS:
-            continue
-        if str(usb_dev) in seen_devices:
-            # Higher-numbered nodes on the same camera are metadata/IR
-            # streams; the first node is the capture stream.
-            continue
-        seen_devices.add(str(usb_dev))
-        serial = _read_sysfs_attr(usb_dev / "serial")
+    for camera in cameras:
+        vid, pid, serial = camera["vid"], camera["pid"], camera["serial"]
+        if serial and identities[(vid, pid, serial)] == 1:
+            address = f"USB0::0x{vid.upper()}::0x{pid.upper()}::{serial}::INSTR"
+        else:
+            address = f"{_video_id.PORT_ADDRESS_PREFIX}{camera['port_path']}"
         results.append({
-            "name": _VIDPID_TO_NAME[(vid, pid)],
+            "name": _VIDPID_TO_NAME.get((vid, pid), GENERIC_WEBCAM_NAME),
             "vid": vid,
             "pid": pid,
             "serial": serial,
-            "address": f"USB0::0x{vid.upper()}::0x{pid.upper()}::{serial or ''}::INSTR",
+            "product": camera["product"],
+            "port_path": camera["port_path"],
+            "address": address,
             "net_type": ["webcam"],
-            "channels": {"webcam": [f"/dev/{node.name}"]},
+            "channels": {"webcam": [camera["node"]]},
         })
     return results
 
@@ -1589,9 +1591,9 @@ def list_instruments() -> List[dict]:
     for dex in _by_handshake(exclude=uart_ports,
                              known_arm_serials=_saved_arm_serials()):
         merge_or_append(dex, instruments)
-    for cam in _by_camera():
-        merge_or_append(cam, instruments)
-    # Appended, not merged: identical cards differ only by their port.
+    # Appended, not merged: identical cameras and cards differ only by their
+    # port.
+    instruments.extend(_by_camera())
     instruments.extend(_by_capture_card())
     instruments = _apply_custom_devices(instruments, custom)
     instruments.sort(key=lambda d: (d["name"], d.get("address", "")))

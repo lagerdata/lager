@@ -92,6 +92,26 @@ def webcam(tmp_path, camera):
         yield wrapper_mod.WebcamNetWrapper('led_cam', {'pin': '/dev/video8'})
 
 
+def test_video_device_follows_the_address_each_time_it_is_read(webcam):
+    webcam._config['address'] = 'usb-port:1-1.4'
+    with patch.object(wrapper_mod, 'resolve_video_device',
+                      side_effect=['/dev/video2', '/dev/video6']) as resolve:
+        assert webcam.video_device == '/dev/video2'
+        assert webcam.video_device == '/dev/video6'
+    resolve.assert_called_with('usb-port:1-1.4', '/dev/video8')
+
+
+def test_a_net_with_no_address_keeps_its_saved_device(webcam):
+    assert webcam.video_device == '/dev/video8'
+
+
+def test_getting_a_net_with_its_camera_unplugged_does_not_raise():
+    with patch.object(wrapper_mod, 'WebcamService'):
+        cam = wrapper_mod.WebcamNetWrapper(
+            'led_cam', {'pin': '/dev/video8', 'address': 'usb-port:9-9'})
+    assert 'video8' in repr(cam)
+
+
 def _saved(webcam):
     return webcam._service.state.get_settings('led_cam').get('controls')
 

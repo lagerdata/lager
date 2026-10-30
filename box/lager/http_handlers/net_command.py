@@ -749,6 +749,7 @@ def _webcam(netname, role, action, params):
     # In-process: WebcamService already manages its own stream subprocesses
     # and state file, so there is no device handle to cache or lock.
     from lager.automation import webcam as webcam_svc
+    from lager.devices.video_id import resolve_video_device
 
     box_ip = _webcam_box_ip(params)
     if action == "start":
@@ -762,7 +763,8 @@ def _webcam(netname, role, action, params):
             video_device = "/dev/" + video_device
         try:
             result = webcam_svc.start_stream(
-                netname, video_device, box_ip,
+                netname, resolve_video_device(rec.get("address"), video_device),
+                box_ip,
                 # Which surface asked, and who it says asked. The CLI is the
                 # historical caller, so it stays the default when a client
                 # predates the field.

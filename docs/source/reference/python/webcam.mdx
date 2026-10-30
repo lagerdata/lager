@@ -584,16 +584,19 @@ On an access-gated box, when the browser's session ends the page says
 | Video Devices | `/dev/video*` device files |
 | OpenCV | Required for video capture |
 
-`lager nets add-all` offers a net for these cameras:
+`lager nets add-all` offers a net for any USB video class (UVC) camera. A model
+Lager has no name for is listed as `UVC_Camera`. HDMI capture cards are not
+offered as cameras.
 
-- Logitech BRIO, BRIO HD, BRIO 4K Stream, 4K Pro, C930e, C925e, C922 Pro,
-  C920, C615, C270 and StreamCam
-- The ELP global-shutter camera (AR0234 sensor, USB ID `32e4:0234`)
+A net finds its camera again each time it starts, so it keeps working when
+`/dev/video*` numbers change.
 
 <Note>
-The ELP global-shutter camera reports the same serial number, `01.00.00`, on
-every unit. Lager lists two of them on one box as one camera with both video
-devices. Add the second camera's net by hand, with its own `/dev/video*` device.
+Some cameras have no serial number, or share one with another camera on the
+box. Lager addresses these by USB port, as `usb-port:1-1.4`. Their nets follow
+the port: if you plug the camera into a different port, the net reports an
+error. The ELP global-shutter camera reports the same serial, `01.00.00`, on
+every unit, so two on one box use port addresses.
 </Note>
 
 ## Notes

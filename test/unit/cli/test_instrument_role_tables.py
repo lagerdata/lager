@@ -104,6 +104,14 @@ def test_cli_role_map_matches_the_box(instrument):
     )
 
 
+def test_a_camera_the_box_has_no_name_for_can_be_added():
+    """The scanner lists unnamed cameras under one name that is not in
+    SUPPORTED_USB, so the check below cannot see it."""
+    source = SCANNER.read_text()
+    assert 'GENERIC_WEBCAM_NAME = "UVC_Camera"' in source
+    assert INSTRUMENT_NET_MAP['UVC_Camera'] == ['webcam']
+
+
 def test_every_detected_instrument_can_be_added():
     """`lager instruments` lists a detected instrument's channels and the docs
     tell users to copy them into `lager nets add`, so a scanner entry with no
