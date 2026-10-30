@@ -25,6 +25,10 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 ### Fixed
 
+- **The box image carries the license notices of uldaq and the LabJack Exodriver.** Both are
+  MIT libraries built from source, and the image shipped neither notice. They are now at
+  `/usr/share/licenses/lager/vendor/`, and the build fails if a new tag stops providing the
+  text.
 - **The bench suite's custom-binaries check reports what `lager binaries list` shows.** It
   piped the list into `grep -q`, so a listed binary could read as missing and one left behind
   by `lager binaries remove` as gone. It now reads the whole list before searching it, and a
