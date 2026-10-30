@@ -134,6 +134,22 @@ PicoScope only.
 - Power statistics (mean/min/max/std)
 - Power regression testing
 
+## Multimeters
+
+| Manufacturer | Model | Interface | Control Command |
+|---|---|---|---|
+| Siglent | SDM3065X | USB-TMC, LAN | `lager dmm` |
+
+A LAN meter is not found by the USB scan; add its net with
+[`lager nets add-batch`](/source/reference/cli/nets#add-batch), naming the instrument
+`Siglent_SDM3065X` and a `TCPIP::<ip>::INSTR` address.
+
+**Enables:**
+- DC/AC voltage and current, 2- and 4-wire resistance, continuity, diode,
+  frequency, period, capacitance and temperature readings
+- Fixed range and integration time (NPLC) per reading
+- Precision rail and leakage checks in CI
+
 ## Temperature Monitoring
 
 | Manufacturer | Model | Channels | Control Command |

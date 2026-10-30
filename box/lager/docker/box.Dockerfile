@@ -415,7 +415,7 @@ import importlib, logging, sys; \
 logging.basicConfig(level=logging.WARNING); \
 [importlib.import_module(f'lager.{m}') for m in \
  ('adc_hs','arm_hs','dac_hs','gpio_hs','thermocouple_hs','watt_hs', \
-  'energy_hs','spi_hs','i2c_hs','solar_hs','hsm_hs','ble','drivers.runner', \
+  'energy_hs','spi_hs','i2c_hs','solar_hs','hsm_hs','dmm_hs','ble','drivers.runner', \
   'http_handlers.drivers_handler')]; \
 from lager.mcp.data import api_reference; \
 missing = [nt for nt, dotted in api_reference._DRIVER_CLASSES.items() \

@@ -366,6 +366,33 @@ API_REFERENCE: dict[str, dict] = {
             'assert 15 < temp < 45, f"Temperature out of range: {temp}"\n'
         ),
     },
+    "DMM": {
+        "net_type_enum": "NetType.DMM",
+        "get_pattern": 'dmm = Net.get("dmm1", type=NetType.DMM)',
+        "methods": [
+            {"name": "measure",
+             "sig": "measure(function, range=None, nplc=None, sensor=None) -> float | None",
+             "desc": "Configure and take one reading. function is one of dcv, acv, dci, aci, "
+                     "res, fres, cont, diode, freq, period, cap, temp. Returns None on "
+                     "overload or an open input"},
+            {"name": "errors", "sig": "errors() -> list[str]",
+             "desc": "Drain the meter's SCPI error queue"},
+            {"name": "identify", "sig": "identify() -> str", "desc": "Return the *IDN? reply"},
+        ],
+        "gotchas": [
+            "range is the full-scale value in base units (20 for the 20 V range, 2e-6 for "
+            "2 uF); an unsupported range or NPLC raises instead of being rounded.",
+            "nplc applies to dcv, dci, res and fres only.",
+            "Temperature is returned in degrees Celsius.",
+        ],
+        "example_snippet": (
+            'from lager import Net, NetType\n'
+            '\n'
+            'dmm = Net.get("dmm1", type=NetType.DMM)\n'
+            'v = dmm.measure("dcv", range=20, nplc=10)\n'
+            'assert v is not None and 3.2 < v < 3.4, f"3V3 rail out of range: {v}"\n'
+        ),
+    },
     "WattMeter": {
         "net_type_enum": "NetType.WattMeter",
         "get_pattern": 'watt = Net.get("watt1", type=NetType.WattMeter)',
@@ -676,6 +703,7 @@ _DRIVER_CLASSES: dict[str, str] = {
     "SPI":            "lager.protocols.spi.spi_net.SPINet",
     "I2C":            "lager.protocols.i2c.i2c_net.I2CNet",
     "Thermocouple":   "lager.measurement.thermocouple.thermocouple_net.ThermocoupleBase",
+    "DMM":            "lager.measurement.dmm.dmm_net.DMMNet",
     "WattMeter":      "lager.measurement.watt.watt_net.WattMeterBase",
     "EnergyAnalyzer": "lager.measurement.energy_analyzer.energy_analyzer_net.EnergyAnalyzerBase",
     # USBNetWrapper is what ``Net.get(name, NetType.Usb)`` returns and what a

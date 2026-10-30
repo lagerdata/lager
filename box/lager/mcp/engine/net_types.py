@@ -173,6 +173,12 @@ NET_TYPES: dict[str, NetTypeInfo] = {
         directionality="input", controllable=False, phase=PHASE_MEASUREMENT,
         reference="Thermocouple",
     ),
+    "dmm": NetTypeInfo(
+        net_type="DMM", electrical_type="analog",
+        capabilities=((_R.OBSERVE, 1.0), (_R.MEASURE, 1.0)),
+        directionality="input", controllable=False, phase=PHASE_MEASUREMENT,
+        reference="DMM",
+    ),
     "watt-meter": NetTypeInfo(
         net_type="WattMeter", electrical_type="analog",
         capabilities=((_R.OBSERVE, 1.0), (_R.MEASURE, 1.0)),

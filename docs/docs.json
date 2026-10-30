@@ -93,6 +93,7 @@
                   "source/reference/cli/scope",
                   "source/reference/cli/logic",
                   "source/reference/cli/adc",
+                  "source/reference/cli/dmm",
                   "source/reference/cli/thermocouple"
                 ]
               },
@@ -174,6 +175,7 @@
                   "source/reference/python/scope",
                   "source/reference/python/logic",
                   "source/reference/python/adc",
+                  "source/reference/python/dmm",
                   "source/reference/python/tc"
                 ]
               },

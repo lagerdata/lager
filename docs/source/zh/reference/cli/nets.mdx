@@ -91,7 +91,7 @@ lager nets add NAME ROLE CHANNEL ADDRESS [OPTIONS]
 
 **参数：**
 - `NAME` - 该 Net 的唯一名称（例如 `supply1`、`debug_main`）
-- `ROLE` - Net 的类型。有效角色：`power-supply`、`battery`、`solar`、`debug`、`adc`、`dac`、`gpio`、`scope`、`scope-channel`、`logic`、`eload`、`uart`、`usb`、`webcam`、`arm`、`watt-meter`、`energy-analyzer`、`thermocouple`、`i2c`、`spi`、`hsm`。旧的写法 `supply` 和 `batt` 作为输入别名被接受，并归一化为 `power-supply` / `battery` —— 保存的 Net 总是带有规范角色。
+- `ROLE` - Net 的类型。有效角色：`power-supply`、`battery`、`solar`、`debug`、`adc`、`dac`、`gpio`、`scope`、`scope-channel`、`logic`、`eload`、`uart`、`usb`、`webcam`、`arm`、`watt-meter`、`energy-analyzer`、`thermocouple`、`dmm`、`i2c`、`spi`、`hsm`。旧的写法 `supply` 和 `batt` 作为输入别名被接受，并归一化为 `power-supply` / `battery` —— 保存的 Net 总是带有规范角色。
 - `CHANNEL` - 通道标识，与 `lager instruments` 列出的一致（例如 `1`、`AIN0`、`FIO0`、`I2C0`、`STM32F4`）
 - `ADDRESS` - VISA 地址或设备路径，与 `lager instruments` 列出的一致（例如 `USB0::0x0CD5::0x0007::::INSTR`）
 
@@ -1006,6 +1006,7 @@ lager nets show battery1 --box my-lager-box
 | `arm` | 机械臂 | Rotrics Dexarm |
 | `watt-meter` | 功率测量 | Yocto Watt |
 | `thermocouple` | 温度传感器 | Phidget 热电偶 |
+| `dmm` | 台式万用表 | Siglent SDM3065X |
 | `hsm` | 硬件安全模块 | YubiHSM 2 |
 
 ## 调试脚本工作流程

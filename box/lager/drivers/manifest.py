@@ -72,7 +72,7 @@ PARAM_TYPES = SCALAR_TYPES + ('net',)
 # _names_sync.py fails if a CLI command or NetType role is missing here.
 RESERVED_TYPES = frozenset({
     # Built-in net roles (NetType.from_role, ROLE_ACTIONS, CLI NET_ROLES)
-    'actuate', 'adc', 'analog', 'arm', 'battery', 'dac', 'debug', 'eload',
+    'actuate', 'adc', 'analog', 'arm', 'battery', 'dac', 'debug', 'dmm', 'eload',
     'energy-analyzer', 'gpi', 'gpio', 'gpo', 'hsm', 'i2c', 'logic', 'mikrotik',
     'power-supply', 'power-supply-2q', 'rotation', 'router', 'scope',
     'scope-channel', 'solar', 'spi', 'thermocouple', 'uart', 'usb',

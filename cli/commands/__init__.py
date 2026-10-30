@@ -5,7 +5,7 @@
 CLI commands package.
 
 This package contains grouped command modules organized by domain:
-- measurement/: ADC, DAC, GPI, GPO, scope, logic, thermocouple, watt commands
+- measurement/: ADC, DAC, GPI, GPO, scope, logic, dmm, thermocouple, watt commands
 - power/: Power supply, battery, solar, eload commands
 - communication/: UART, BLE, WiFi, USB commands
 - development/: Debug, ARM, Python commands
@@ -20,6 +20,7 @@ from .measurement import (
     gpo,
     scope,
     logic,
+    dmm,
     thermocouple,
     watt,
 )
@@ -53,6 +54,7 @@ __all__ = [
     "gpo",
     "scope",
     "logic",
+    "dmm",
     "thermocouple",
     "watt",
     # Communication commands

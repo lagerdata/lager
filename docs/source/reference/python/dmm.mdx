@@ -1,0 +1,62 @@
+---
+title: DMM
+description: Take bench digital multimeter readings from Python
+---
+
+Read a bench digital multimeter (DMM) net. Calls go through the box's hardware service, which owns the meter's VISA session. A script and the CLI can use the same meter at once.
+
+## Import
+
+```python
+from lager import Net, NetType
+```
+
+## Methods
+
+| Method | Description |
+|--------|-------------|
+| `measure(function, range=None, nplc=None, sensor=None)` | Configure and take one reading |
+| `errors()` | Read and clear the meter's error queue |
+| `identify()` | Return the `*IDN?` reply |
+
+### `Net.get(name, type=NetType.DMM)`
+
+```python
+dmm = Net.get('VBAT', type=NetType.DMM)
+```
+
+### `measure(function, range=None, nplc=None, sensor=None)`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `function` | `str` | `dcv`, `acv`, `dci`, `aci`, `res`, `fres`, `cont`, `diode`, `freq`, `period`, `cap` or `temp` |
+| `range` | `float` or `str` | Full-scale value in base units (`20` for 20 V, `2e-6` for 2 uF), or `None`/`"auto"` for auto-range |
+| `nplc` | `float` | Integration time in power-line cycles; `dcv`, `dci`, `res`, `fres` only |
+| `sensor` | `str` | Temperature probe for `temp`: `rtd:pt100`, `rtd:pt1000`, `ther:k`, ... |
+
+**Returns:** `float` in V, A, ohm, Hz, s, F or degC, or `None` when the meter reports overload or an open input.
+
+**Raises:**
+
+- `DMMUnsupportedError` (a `ValueError`): the meter cannot do the function, range, NPLC value or sensor.
+- `DeviceError` (from `lager.nets.device`): the meter rejects a command or does not answer. The message carries the meter's error.
+
+The valid ranges and NPLC values per instrument are listed in the [CLI reference](/source/reference/cli/dmm#supported-hardware).
+
+## Example
+
+```python
+from lager import Net, NetType
+
+dmm = Net.get('VBAT', type=NetType.DMM)
+
+v = dmm.measure('dcv', range=20, nplc=10)
+assert v is not None, 'VBAT over range'
+assert 3.2 < v < 3.4, f'VBAT out of tolerance: {v:.6f} V'
+
+r = dmm.measure('fres', range=200)
+print(f'Shunt: {r:.4f} ohm')
+
+if dmm.measure('cont') is None:
+    print('Open circuit')
+```

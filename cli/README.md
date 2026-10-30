@@ -110,6 +110,15 @@ lager scope <net> measure freq
 lager logic <net> trigger edge --slope rising --level 1.8
 ```
 
+### Multimeter
+```bash
+# DC volts on the 20 V range, 10 PLC
+lager dmm <net> dcv --range 20 --nplc 10
+
+# 4-wire resistance, JSON output
+lager dmm <net> fres --json
+```
+
 ### Battery & Solar Simulation
 ```bash
 # Set battery state of charge
@@ -260,6 +269,9 @@ lager box-config apply
 
 ### Robotics
 - Rotrics Dexarm
+
+### Multimeters
+- Siglent SDM3065X
 
 ### Temperature
 - Phidget Thermocouples

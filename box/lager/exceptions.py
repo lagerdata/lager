@@ -21,6 +21,7 @@ __all__ = [
     'ELoadBackendError',
     'USBBackendError',
     'ThermocoupleBackendError',
+    'DMMBackendError',
     'WattBackendError',
     'ADCBackendError',
     'DACBackendError',
@@ -156,6 +157,12 @@ class ThermocoupleBackendError(LagerBackendError):
     """Exception for thermocouple/temperature sensor backend errors."""
     def __init__(self, message: str, device: str = None, backend: str = None):
         super().__init__(message, device=device, backend=backend or "Thermocouple")
+
+
+class DMMBackendError(LagerBackendError):
+    """Exception for bench digital multimeter backend errors."""
+    def __init__(self, message: str, device: str = None, backend: str = None):
+        super().__init__(message, device=device, backend=backend or "DMM")
 
 
 class WattBackendError(LagerBackendError):

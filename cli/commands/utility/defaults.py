@@ -70,6 +70,7 @@ def defaults(ctx):
 @click.option('--webcam-net', required=False, help='Set default webcam net name')
 @click.option('--watt-meter-net', required=False, help='Set default watt meter net name')
 @click.option('--thermocouple-net', required=False, help='Set default thermocouple net name')
+@click.option('--dmm-net', required=False, help='Set default multimeter net name')
 @click.option('--uart-net', required=False, help='Set default UART net name')
 @click.option('--arm-net', required=False, help='Set default robotic arm net name')
 @click.option('--user', required=False,
@@ -78,7 +79,7 @@ def defaults(ctx):
                    'set this to that email.')
 def add(box, serial_port, supply_net, battery_net, solar_net, scope_net, logic_net,
         adc_net, dac_net, gpio_net, debug_net, eload_net, usb_net, webcam_net,
-        watt_meter_net, thermocouple_net, uart_net, arm_net, user):
+        watt_meter_net, thermocouple_net, dmm_net, uart_net, arm_net, user):
     """
         Set default values
     """
@@ -86,6 +87,7 @@ def add(box, serial_port, supply_net, battery_net, solar_net, scope_net, logic_n
     if all(v is None for v in [box, serial_port, supply_net, battery_net, solar_net,
                                 scope_net, logic_net, adc_net, dac_net, gpio_net, debug_net,
                                 eload_net, usb_net, webcam_net, watt_meter_net, thermocouple_net,
+                                dmm_net,
                                 uart_net, arm_net, user]):
         click.secho("Error: You must specify at least one setting", fg='red', err=True)
         click.echo("\nAvailable options:", err=True)
@@ -105,6 +107,7 @@ def add(box, serial_port, supply_net, battery_net, solar_net, scope_net, logic_n
         click.echo("  --webcam-net [NET_NAME]       Set default webcam net", err=True)
         click.echo("  --watt-meter-net [NET_NAME]   Set default watt meter net", err=True)
         click.echo("  --thermocouple-net [NET_NAME] Set default thermocouple net", err=True)
+        click.echo("  --dmm-net [NET_NAME]          Set default multimeter net", err=True)
         click.echo("  --uart-net [NET_NAME]         Set default UART net", err=True)
         click.echo("  --arm-net [NET_NAME]          Set default robotic arm net", err=True)
         click.echo("  --user [USERNAME]             Set default username for box locking", err=True)
@@ -161,6 +164,7 @@ def add(box, serial_port, supply_net, battery_net, solar_net, scope_net, logic_n
         'webcam_net': ('net_webcam', webcam_net),
         'watt_meter_net': ('net_watt_meter', watt_meter_net),
         'thermocouple_net': ('net_thermocouple', thermocouple_net),
+        'dmm_net': ('net_dmm', dmm_net),
         'uart_net': ('net_uart', uart_net),
         'arm_net': ('net_arm', arm_net),
     }
@@ -339,6 +343,7 @@ _net_types = [
     ('webcam-net', 'net_webcam', 'webcam net'),
     ('watt-meter-net', 'net_watt_meter', 'watt meter net'),
     ('thermocouple-net', 'net_thermocouple', 'thermocouple net'),
+    ('dmm-net', 'net_dmm', 'multimeter net'),
     ('uart-net', 'net_uart', 'UART net'),
     ('arm-net', 'net_arm', 'robotic arm net'),
 ]

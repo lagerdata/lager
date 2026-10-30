@@ -12,7 +12,7 @@ import + device-open, so these commands get the same warm path as the
 supply/battery/usb /command endpoints.
 
 This is the consolidation point that lets the rest of the instruments (GPIO,
-ADC, DAC, e-load, thermocouple, watt-meter, spi, i2c, energy-analyzer, and
+ADC, DAC, e-load, thermocouple, dmm, watt-meter, spi, i2c, energy-analyzer, and
 later scope/...) stop round-tripping through /python. Tier 1 + the
 bus/measurement roles are implemented here; new instruments are added as
 entries in ROLE_ACTIONS.
@@ -283,6 +283,47 @@ def _thermocouple(netname, role, action, params):
     if action != "read":
         raise UnknownAction(action)
     return _ok_read(float(_proxy(netname, role).read()), "°C")
+
+
+def _dmm(netname, role, action, params):
+    # A bench DMM is a VISA instrument, so it goes through hardware_service
+    # under the per-address lock like the e-load. measure() configures and
+    # reads in one /invoke, so two callers cannot interleave a configure and
+    # a read. The request is validated first so an unsupported function,
+    # range or NPLC answers 400 without touching the meter.
+    from lager.exceptions import DMMBackendError
+    from lager.measurement.dmm import dispatcher as dmm
+    from lager.measurement.dmm.dmm_net import PROXY_TIMEOUT_S, UNITS
+
+    if action not in ("measure", "errors", "identify"):
+        raise UnknownAction(action)
+    rec = _find_rec(netname, "dmm", DMMBackendError)
+    instrument = rec.get("instrument") or ""
+    if action == "measure":
+        function = params.get("function") or "dcv"
+        kwargs = {key: params.get(key) for key in ("range", "nplc", "sensor")}
+        dmm.validate(instrument, function, **kwargs)
+    dev = _hw_proxy(netname, "dmm", dmm.module_for_instrument, DMMBackendError,
+                    timeout=PROXY_TIMEOUT_S)
+
+    if action == "identify":
+        idn = str(dev.identify())
+        return _ok(idn, idn)
+    if action == "errors":
+        errors = list(dev.errors())
+        return _ok("; ".join(errors) if errors else "No errors", errors)
+
+    value = dev.measure(function, **kwargs)
+    unit = UNITS[function]
+    if value is None:
+        # Over range, or an open continuity/diode input. "value" is left out
+        # rather than sent as the meter's 9.9E37 sentinel.
+        result = _ok("OPEN" if function in ("cont", "diode") else "OVERLOAD")
+        result.update(overload=True, unit=unit)
+        return result
+    result = _ok_read(float(value), unit)
+    result.update(overload=False, unit=unit)
+    return result
 
 
 _HSM_ACTIONS = ("info", "blink", "objects", "delete", "generate", "pubkey", "sign", "reset")
@@ -1682,6 +1723,7 @@ ROLE_ACTIONS = {
     "adc": _adc,
     "dac": _dac,
     "thermocouple": _thermocouple,
+    "dmm": _dmm,
     "watt-meter": _watt_meter,
     "eload": _eload,
     "solar": _solar,

@@ -580,6 +580,9 @@ INSTRUMENT_NET_MAP: dict[str, list[str]] = {
     # eload
     "Rigol_DL3021": ["eload"],
 
+    # dmm
+    "Siglent_SDM3065X": ["dmm"],
+
     # webcam
     "Logitech_BRIO_HD": ["webcam"],
     "Logitech_BRIO": ["webcam"],

@@ -51,7 +51,7 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | `unit (box)` | `test/unit/box/` | 5101 (+17 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
-| `unit (mcp)` | `test/mcp/unit/` | 414 |
+| `unit (mcp)` | `test/mcp/unit/` | 417 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 243 (+1 skipped) |
 | | **Total gated** | **9727** |
 
@@ -553,6 +553,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_detect_and_configure_rtt.py` | RTT control-block RAM scan doesn't leave core halted in all-stop mode |
 | `test_device_lock.py` | Cross-process advisory fcntl lock preventing USB-TMC pyvisa race |
 | `test_diagnose_jlink_parse.py` | Box-side J-Link diagnose parsers, pinned with captured JLinkExe text |
+| `test_dmm_siglent_sdm3065x.py` | Siglent SDM3065X DMM driver against a fake SCPI transport: CONFigure/NPLC/temperature command forms per function, ranges and NPLC values outside the programming guide refused before the meter is touched, `9.9E37` overload and open as no value, both `SYST:ERR?` reply forms, a rejected setting reported before `READ?`, the `SYST:ERR?` probe at open with a short timeout turning checking off when unanswered, a device clear after every timeout; plus the `dmm` role routing, catalog entry, and `/net/command` measure/errors/identify replies |
 | `test_dispatcher_channel_resolution.py` | `resolve_channel`: v0.32.0 regression where int()-only parsing broke named adc/dac channels |
 | `test_drivers_deps.py` | `lager.drivers.deps`, a driver's Python packages: hashed lock parsing (pip options, unpinned lines, URLs and duplicates refused), a pin equal to a box package dropped and a different one refused, an incomplete lock named, pip run into the staged `.deps` with `--only-binary`, `--require-hashes`, `--no-deps` and the bundle's `wheels/`, a pip failure, timeout or size cap keeping the previous version live, stale or missing packages listed as an error, `reinstall-deps`, the loader putting `.deps` after the box's packages, and real offline pip installing a vendored wheel that a runner child then imports |
 | `test_drivers_handler.py` | Custom-driver routes (`/drivers`) and `/net/command` dispatch to a custom driver, through a real runner subprocess: typed params and args, bad args refused before spawning, an unmarked method not callable, a stray print not corrupting the result, a driver exception as 502, a timeout as 504, a wrong-role or missing base net as 400, a live `lager uart` session on the base net as 409, a broken bundle as 503 |
@@ -695,7 +696,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_scope_ui_stream.py` | The web scope's credit-paced stream and pushed state: one credit returned for each frame received, only the newest frame kept for drawing, extra credit for a slow round trip, every control following the daemon's state except a field being edited, and an unplug dropping the live session so a replug can Start without a stop first, taking the last trace off the plot, and resetting the header's trigger status, sample rate and points |
 | `test_usb_scanner_picoscope.py` | PicoScope discovery in `usb_scanner.py`: every Pico Technology product ID is recognized, and the channel count comes from the device rather than from a static table |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 131 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 132 files)
 
 | File | What it tests |
 |------|---------------|
@@ -727,6 +728,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_devenv_config_commands.py` | `lager devenv mount` / `env`: editing project-local `.lager` volumes and environment keys |
 | `test_devenv_terminal_docker_args.py` | `docker run` args for `devenv terminal` and `exec`; regression for the `--group` bare-flag bug |
 | `test_docker_install_diagnosis.py` | The Docker install step names the command that failed and its exit status, instead of one generic error for an eight-command `&&` chain -- the chain is rendered from the sudo session the way the deploy renders it and EXECUTED under `bash` and `sh`, so the escaping is covered rather than just matched as text, and the later Docker check runs no sudo; `ssh_t`'s stderr filter is synchronous, so the real error cannot land after the caller's generic line (the async form lost the ordering in 26 of 200 runs); its one run-scoped capture file survives a Ctrl-C and reports a TMPDIR it cannot write; and the printed recovery instructions match the chain they replace, including `systemctl enable` |
+| `test_dmm_command.py` | `lager dmm`: function, `--range`, `--nplc` and `--sensor` forwarded to the box's `measure` action with a timeout past the box's, bad input refused locally, overload and `--json` output, `--errors` and `--idn`, a lone function token read against the default net unless a DMM net has that name, and the function list kept in step with the box's |
 | `test_drivers_cli.py` | `lager drivers list/show/install/remove` and `lager nets add-custom` against a fake box: the bundle zipped and PUT with its helper files, replace asking first, local checks for a missing manifest or `driver.py`, the manifest cache cleared on change, remove refused while nets use the driver and forced, an old box told to update; add-custom saving typed params, refusing unknown or missing settings, a base net that is missing or of the wrong role, and an existing name |
 | `test_energy_box_option.py` | `lager energy --box <BOX>` lists nets on the named box, and a group-level `--box` serves `read` and `stats` unless they name their own |
 | `test_hsm_cli.py` | `lager hsm`: the password comes from `--password-stdin`, then `LAGER_HSM_PASSWORD`, then a hidden prompt, and no subcommand has a `--password` option; `delete` and `reset` confirm (and refuse `--password-stdin` without `--yes`); the request each subcommand sends; `sign` data and output forms; the CLI choice lists match the box driver |
