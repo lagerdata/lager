@@ -292,7 +292,8 @@ overlooked, for two reasons:
 - Its tool surface is not read-only. `LAGER_MCP_ALLOW_CONTROL` adds hardware
   control, and `LAGER_MCP_ALLOW_EXEC` adds `box_exec`, `read_file`,
   `write_file` and `list_dir` — arbitrary command execution and file writes,
-  available to anything that can reach the port. Publishing `:8100` on a box
+  available to anything that holds the box-local token (both tiers refuse
+  every call while the box has none). Publishing `:8100` on a box
   with either gate on would put remote code execution on whatever network the
   gateway fronts.
 

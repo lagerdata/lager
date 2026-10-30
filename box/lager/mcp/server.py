@@ -252,9 +252,9 @@ def _log_security_posture(token_path=None):
             name for name, on in (("control", control_on), ("exec", exec_on)) if on
         )
         logger.warning(
-            "Lager MCP %s tools are enabled with NO bearer token: anything that "
-            "can reach this port can use them. Run `lager box-config mcp-token "
-            "enable` and give the token to your MCP clients.", tiers,
+            "Lager MCP %s tools are enabled with NO bearer token, so they refuse "
+            "every call. Run `lager box-config mcp-token enable` and give the "
+            "token to your MCP clients.", tiers,
         )
     else:
         logger.info("No MCP bearer token set: the MCP port is unauthenticated")

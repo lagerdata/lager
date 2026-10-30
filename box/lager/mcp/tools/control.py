@@ -23,6 +23,7 @@ from __future__ import annotations
 import time
 
 from ._payload import reply as _reply
+from ._tier_guard import guarded
 
 
 # How long to leave the hub port off before re-enabling, so the downstream
@@ -253,15 +254,15 @@ def power_cycle_hub(hub: str) -> str:
     })
 
 
-def register(mcp) -> None:
+def register(mcp, token_path: str | None = None) -> None:
     """Register the control tools on *mcp*.
 
     Called from ``server.py`` only when ``LAGER_MCP_ALLOW_CONTROL`` is set, so
     the default tool surface stays read-only. Using an explicit register hook
     (rather than bare ``@mcp.tool()`` at import) keeps these tools off the
     global server unless opted in, and lets tests register onto a throwaway
-    server without mutating the shared singleton.
+    server without mutating the shared singleton. Each tool refuses while the
+    box has no MCP bearer token (see ``_tier_guard``).
     """
-    mcp.add_tool(debug_probe_status)
-    mcp.add_tool(net_status)
-    mcp.add_tool(power_cycle_hub)
+    for tool in (debug_probe_status, net_status, power_cycle_hub):
+        mcp.add_tool(guarded(tool, "control", token_path))

@@ -164,9 +164,11 @@ Two environment variables, both **off** unless explicitly set, register addition
 tools when the box's MCP server starts. Each widens what a connected agent can do
 to the box, so treat them as deployment decisions rather than conveniences.
 
-Enable the [token](#requiring-a-token) before you set either variable. With a gate
-on and no token, the server logs a warning at startup. In that state, anything
-that can reach port 8100 can use the added tools.
+The added tools need the [token](#requiring-a-token). With a gate on and no token,
+the tools are still listed, but every call returns an error. The error says to run
+`lager box-config mcp-token enable`. The server also logs a warning at startup. The
+seven read-only tools above keep answering without a token. Enabling or disabling
+the token takes effect at once, with no restart.
 
 #### `LAGER_MCP_ALLOW_CONTROL`
 
@@ -182,11 +184,11 @@ do not execute arbitrary code.
 #### `LAGER_MCP_ALLOW_EXEC`
 
 <Warning>
-This gate exposes **arbitrary command execution and file writes** on the box. Without
-a [token](#requiring-a-token), that means any agent that can reach the MCP port.
-With one, it means any agent that holds the token. An agent can run any command the box's service
-user can run, and overwrite any file it can write. The server itself logs a warning
-at startup when this is set. Enable it only on a bench you control, on a trusted
+This gate exposes **arbitrary command execution and file writes** on the box to any
+agent that holds the [token](#requiring-a-token). Without a token, the tools refuse
+every call. An agent with the token can run any command the box's service user can
+run, and overwrite any file it can write. The server itself logs a warning at
+startup when this is set. Enable it only on a bench you control, on a trusted
 network, and never on a shared or production box.
 </Warning>
 
