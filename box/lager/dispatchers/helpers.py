@@ -162,6 +162,8 @@ def _supply_module_for_instrument(inst: str) -> Optional[str]:
     if re.search(r"keysight.*e36(2|3)\d\da", inst, re.IGNORECASE) or \
        inst.lower() in ("keysight_e36233a", "keysight_e36311a", "keysight_e36312a", "keysight_e36313a"):
         return "keysight_e36000"
+    if re.search(r"siglent[_\-\s]*spd1", inst, re.IGNORECASE):
+        return "siglent_spd1000"
     if inst in ("EA_PSB_10080_60", "EA_PSB_10060_60"):
         return "ea"
     return None

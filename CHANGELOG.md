@@ -52,6 +52,14 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   name, including a box's built-in camera. HDMI capture cards stay out. `lager nets add` needs
   this CLI version or later to accept `UVC_Camera`; `lager nets add-all` and the nets TUI accept
   it from older CLIs.
+- **Siglent SPD1168X supplies are supported.** It is a single-channel
+  `power-supply` net for `lager supply`. `lager instruments` and `lager nets
+  add-all` detect it over USB (`f4ec:1410`); over LAN, create the net with
+  `lager nets add-batch`, `"instrument": "Siglent_SPD1168X"` and a
+  `TCPIP::<ip>::INSTR` address. It has no OVP/OCP, so `--ovp`/`--ocp` and
+  `clear-ovp`/`clear-ocp` return an error. Its measured values update about
+  every 0.35 s, so a reading taken sooner after a setpoint change shows the
+  old value.
 
 ### Fixed
 

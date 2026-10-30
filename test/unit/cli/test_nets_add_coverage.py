@@ -38,6 +38,8 @@ DP832 = _device("Rigol_DP832", "USB0::0x1AB1::0x0E11::DP8C1::INSTR",
                 {"power-supply": ["1", "2", "3"]})
 E36312A = _device("KEYSIGHT_E36312A", "USB0::0x2A8D::0x1102::MY1::INSTR",
                   {"power-supply": ["1", "2", "3"]})
+SPD1168X = _device("Siglent_SPD1168X", "USB0::0xF4EC::0x1410::SPD13DC1::INSTR",
+                   {"power-supply": ["1"]})
 USB202 = _device("MCC_USB-202", "USB0::0x09DB::0x012B::01::INSTR",
                  {"adc": [f"CH{n}" for n in range(8)], "dac": ["DAC0", "DAC1"],
                   "gpio": [f"DIO{n}" for n in range(8)]})
@@ -55,7 +57,7 @@ FT4232H_ADDR = "USB0::0x0403::0x6011::FT1::INSTR"
 FT4232H = _device("FTDI_FT4232H", FT4232H_ADDR,
                   {"gpio": ["0", "1"], "spi": ["SPI"], "i2c": ["I2C"]})
 
-DEVICES = [DP832, E36312A, USB202, PHIDGET, JLINK_BASE, T7, U3, FT4232H]
+DEVICES = [DP832, E36312A, SPD1168X, USB202, PHIDGET, JLINK_BASE, T7, U3, FT4232H]
 
 
 @pytest.fixture
@@ -83,6 +85,7 @@ def _invoke(args):
 @pytest.mark.parametrize("device, role, channel", [
     (DP832, "power-supply", "3"),
     (E36312A, "power-supply", "2"),
+    (SPD1168X, "power-supply", "1"),
     (USB202, "dac", "DAC1"),
     (USB202, "adc", "CH0"),
     (USB202, "gpio", "DIO3"),

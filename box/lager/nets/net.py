@@ -173,6 +173,8 @@ def mapper_factory(net, device_type, net_info):
             device_type = 'rigol_dl3000'
         elif 'keysight' in instr and 'e36' in instr:
             device_type = 'keysight_e36000'
+        elif 'siglent_spd1' in instr:
+            device_type = 'siglent_spd1000'
         else:
             raise TypeError(f"Invalid mapper type {device_type}")
 
@@ -189,10 +191,11 @@ def mapper_factory(net, device_type, net_info):
         # driver from the net's instrument string.
         from .mappers.picoscope import PicoScopeAnalogMapper
         return PicoScopeAnalogMapper(net, Device("scope_hs", _scope_device_info(net_info)))
-    elif device_type in ("rigol_dp800", "rigol_dp800_2", "rigol_dp700"):
-        # DP700 (DP711/DP712) exposes the same method surface as the DP800
-        # backend, so it reuses the DP800 function mapper. The device_type is
-        # forwarded to hardware_service as the module name (lager.power.supply.*).
+    elif device_type in ("rigol_dp800", "rigol_dp800_2", "rigol_dp700", "siglent_spd1000"):
+        # DP700 (DP711/DP712) and Siglent SPD1000X expose the same method
+        # surface as the DP800 backend, so they reuse the DP800 function
+        # mapper. The device_type is forwarded to hardware_service as the
+        # module name (lager.power.supply.*).
         return RigolDP800FunctionMapper(net, Device(device_type, net_info))
     elif device_type in ("rigol_dl3000", "rigol_dl3021"):
         # Use explicit mapper for consistent API behavior
@@ -515,6 +518,9 @@ class Net:
                     elif 'keysight' in instrument_lower and 'e36' in instrument_lower:
                         # Covers all E36xxx series: E36233A (E36200), E36311A/E36312A/E36313A (E36300)
                         net.device_type = 'keysight_e36000'
+                    elif 'siglent_spd1' in instrument_lower:
+                        # SPD1000X (SPD1168X / SPD1305X) - single-channel.
+                        net.device_type = 'siglent_spd1000'
                     elif 'ea' in instrument_lower:
                         net.device_type = 'ea'
                     else:

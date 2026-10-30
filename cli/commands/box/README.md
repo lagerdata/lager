@@ -155,6 +155,12 @@ serial and emits one channel per interface.
 3. Add the instrument to `INSTRUMENT_NET_MAP` in `nets.py` so the role
    validation knows about it.
 
+   An instrument whose VID:PID is unconfirmed gets only this step. Leave it
+   out of `SUPPORTED_USB`/`CHANNEL_MAPS`, so a guessed PID cannot claim
+   another device. Its nets come from `nets add-batch` with an explicit
+   `"instrument"`. Add the scanner entries once `lsusb` on a real unit
+   gives the PID.
+
 4. Decide which bucket the instrument lives in:
    - Multi-channel → nothing else to do; default rule applies.
    - Single-channel, software-switched modes → add to `_SINGLE_CHANNEL_INST`.

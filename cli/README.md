@@ -239,6 +239,7 @@ lager box-config apply
 - Rigol DP800 series
 - Keysight E36200/E36300 series
 - Keithley 2200/2280 series
+- Siglent SPD1168X (over LAN, create its net with `lager nets add-batch`)
 
 ### Battery Simulators
 - Keithley 2281S

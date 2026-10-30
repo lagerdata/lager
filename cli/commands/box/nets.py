@@ -511,6 +511,7 @@ INSTRUMENT_NET_MAP: dict[str, list[str]] = {
     "KEYSIGHT_E36233A": ["power-supply"],
     "KEYSIGHT_E36312A": ["power-supply"],
     "KEYSIGHT_E36313A": ["power-supply"],
+    "Siglent_SPD1168X": ["power-supply"],
 
     # battery
     "Keithley_2281S": ["battery", "power-supply"],

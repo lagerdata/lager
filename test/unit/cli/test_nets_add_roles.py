@@ -397,6 +397,35 @@ class TestAddBatchChannelValidation:
         assert fake_box.saved_nets[0]["pin"] == "FIO5"
 
 
+class TestAddBatchSiglentSPD1168X:
+    """add-batch with an explicit instrument creates SPD1168X nets the scanner
+    does not list, such as one reached over LAN."""
+
+    def test_lan_and_usb_addresses_accepted(self, fake_box, tmp_path):
+        batch = tmp_path / "nets.json"
+        batch.write_text(json.dumps([
+            {"name": "spd_lan", "role": "power-supply", "channel": "1",
+             "address": "TCPIP::192.168.1.50::INSTR", "instrument": "Siglent_SPD1168X"},
+            {"name": "spd_usb", "role": "power-supply", "channel": "1",
+             "address": "USB0::0xF4EC::0x1410::SPD13X0001::INSTR",
+             "instrument": "Siglent_SPD1168X"},
+        ]))
+        result = _invoke(["add-batch", str(batch), "--box", "b"])
+        assert result.exit_code == 0, result.output
+        assert [(n["instrument"], n["role"]) for n in fake_box.saved_nets] == [
+            ("Siglent_SPD1168X", "power-supply")] * 2
+
+    def test_other_roles_refused(self, fake_box, tmp_path):
+        batch = tmp_path / "nets.json"
+        batch.write_text(json.dumps([
+            {"name": "spd_batt", "role": "battery", "channel": "1",
+             "address": "TCPIP::192.168.1.50::INSTR", "instrument": "Siglent_SPD1168X"},
+        ]))
+        result = _invoke(["add-batch", str(batch), "--box", "b"])
+        assert result.exit_code == 1
+        assert not fake_box.saved_nets
+
+
 # --------------------------------------------------------------------------- #
 # add: hsm (YubiHSM 2)                                                         #
 # --------------------------------------------------------------------------- #
