@@ -24,8 +24,9 @@ is no net name and no `name()`.
 |--------|-------------|
 | `scan()` | Scan for advertising devices |
 | `scan_named()` | Scan, filtered by a name substring |
-| `info()` | Connect briefly and enumerate GATT services |
-| `connect()` | Connect, enumerating services to verify |
+| `scan_exact()` | Scan, filtered by an exact name |
+| `info()`, `info_with_timeout()` | Connect briefly and enumerate GATT services |
+| `connect()`, `connect_with_timeout()` | Connect, enumerating services to verify |
 | `disconnect()` | Ensure a device is disconnected from the box |
 
 ## Types
@@ -74,6 +75,10 @@ for d in ble.scan(5.0)? {
 
 The same scan, filtered by a case-insensitive name substring.
 
+### `scan_exact(timeout: f64, name: &str) -> Result<Vec<BleDevice>>`
+
+Scan for devices with exactly this name.
+
 ### `info(address: &str) -> Result<BleDeviceInfo>`
 
 Connect briefly and enumerate the device's GATT services.
@@ -81,6 +86,10 @@ Connect briefly and enumerate the device's GATT services.
 ### `connect(address: &str) -> Result<BleDeviceInfo>` and `disconnect(address: &str) -> Result<()>`
 
 Connect to, or ensure disconnection from, a device by address.
+
+### `info_with_timeout(address: &str, timeout: f64)` and `connect_with_timeout(address: &str, timeout: f64)`
+
+The same calls, for a device that needs longer than the default 10 s connect timeout.
 
 ## Examples
 

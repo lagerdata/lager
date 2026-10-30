@@ -30,6 +30,7 @@ variants will not break your build.
 | `AuthRequired { box_host, auth_url, message }` | A gated box, and no usable credential |
 | `Config(String)` | A client-side configuration problem |
 | `Stream(String)` | A streaming session (UART or RTT) failed |
+| `UartInUse { message, held_by }` | Another session holds the UART net or its serial device |
 
 ## Variant Reference
 
@@ -203,12 +204,19 @@ configuration error: {msg}
 
 ### `Stream(String)`
 
-A UART or RTT session failed: the net is already in use by another session, the device
-disappeared, or the session closed unexpectedly.
+A UART or RTT session failed: the device disappeared, or the session closed
+unexpectedly. An RTT session also reports here that another session holds its port.
 
 ```text
 streaming session error: {msg}
 ```
+
+### `UartInUse { message, held_by }`
+
+A UART session could not start because another session holds the net or its serial
+device. If that session should be gone, pass `held_by` to
+`lager.release_uart_session()` and open again. `held_by` names the net to release (box
+0.49.0 or later). When two nets share one device, that is the other net.
 
 ## Matching
 

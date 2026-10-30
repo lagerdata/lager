@@ -40,6 +40,18 @@ let ch1 = lager.scope("scope1-ch1");
 | `run()`, `single()`, `stop()` | 任意 | 连续采集、单次采集或停止 |
 | `force_trigger()` | 任意 | 立即触发 |
 | `autoscale()` | 任意 | 由仪器自行选择刻度、时基和触发 |
+| `capabilities()` | 任意 | 仪器的通道、限值和可选功能 |
+| `state()` | 任意 | 在一个请求中读取全部控制设置 |
+| `capture_mode()`、`trigger_source()`、`trigger_slope()`、`trigger_level()` | 任意 | 读取某一项触发设置 |
+| `set_trigger_holdoff()`、`trigger_holdoff()` | 任意 | 触发释抑时间（秒） |
+| `set_acquisition()`、`acquisition()` | 任意 | 普通、平均或峰值采集 |
+| `set_roll()`、`roll()` | 任意 | 滚动模式 |
+| `set_display()`、`display()` | 任意 | 余辉、XY、缩放、数学波形和 FFT 窗格 |
+| `fft()` | 任意 | 某个通道最强的频谱峰值 |
+| `set_cursors()`、`cursors()`、`clear_cursors()` | 任意 | 设置、读取或清除光标 |
+| `measure_cursors()` | 任意 | 读取光标的位置及它们之间的差值 |
+| `capture()`、`capture_timeout()` | 任意 | 最新一次采集的样本（feature `scope-trace`） |
+| `stream()` | 任意 | 从现在起的每一次采集（feature `scope-trace`） |
 | `command()` | 任意 | 任何其他示波器操作，参数为原始 JSON |
 
 ## 类型
@@ -77,6 +89,26 @@ pub enum TriggerMode { Auto, Normal, Single }
 `trigger()` 返回一个 `TriggerSettings`，其中包含 `mode`、`source`、`slope`、`level`，以及示波器报告时的 `holdoff`。每个字段都是 `Option`，采用仪器自己的写法。
 
 `measure_all()` 返回一个 `Measurements`，每个量各有一个 `Option<f64>` 字段。`Measurements::get(Measurement)` 读取其中一个。
+
+### `ScopeCapture`
+
+`capture()` 和 `ScopeStream::next_capture()` 返回一次采集：
+
+| 项 | 说明 |
+|---|---|
+| `seq` | 采集的序列号 |
+| `sample_interval_ns` | 样本之间的时间间隔（纳秒） |
+| `pre_trigger_samples`、`post_trigger_samples` | 触发之前和之后的样本数 |
+| `samples_per_channel` | 每个通道的样本数 |
+| `channels` | 每个通道一个 `TraceChannel`：`label`、`coupling`、`scale_v_per_count`、`offset_v` |
+| `volts('A')` | 某个通道以伏特为单位的样本 |
+| `counts('A')` | 某个通道的原始样本 |
+| `time_axis()` | 每个样本的时间，以距触发点的秒数表示 |
+| `triggered()` | 这次采集是否来自触发 |
+| `overflowed('A')` | 该通道是否超量程 |
+| `sample_rate_hz()`、`duration_s()` | 这次采集的采样率和时长 |
+
+对于不在这次采集中的通道，`volts()` 和 `counts()` 返回 `None`。
 
 ## 方法参考
 
@@ -116,14 +148,50 @@ ch1.trigger_edge(&EdgeTrigger {
 
 `TriggerMode::Single` 让示波器为一次采集做好准备，与台式示波器上的行为相同。没有设置任何字段的调用会被 Box 拒绝。
 
+### `capture() -> Result<ScopeCapture>`
+
+获取示波器最新一次采集。如果还没有，它会立即采集一次，因此请先用 `run()` 或 `single()` 启动示波器。需要 `scope-trace` feature：
+
+```toml
+[dev-dependencies]
+lager = { package = "lager-net", version = "0.9", features = ["scope-trace"] }
+```
+
+```rust
+ch1.single()?;
+let capture = ch1.capture()?;
+
+let volts = capture.volts('A').expect("channel A is on");
+let times = capture.time_axis();
+println!("{} samples at {} Hz", volts.len(), capture.sample_rate_hz());
+assert!(volts.iter().all(|v| v.abs() < 3.6), "over range at {:?}", times.first());
+```
+
+`capture_timeout(timeout)` 按您给定的时间等待。到时仍没有采集时，以 `Error::Timeout` 失败。
+
+### `stream() -> Result<ScopeStream>`
+
+订阅从现在起的每一次采集。读取较慢的一方得到的是最新的采集而不是积压的数据，因此看到的只是较低的帧率。用 `next_capture(timeout: Duration)` 读取，用 `close()` 结束。把流 drop 掉同样会关闭它。
+
+```rust
+use std::time::Duration;
+
+let mut stream = ch1.stream()?;
+for _ in 0..10 {
+    let capture = stream.next_capture(Duration::from_secs(5))?;
+    assert!(capture.triggered());
+}
+stream.close();
+```
+
 ### `command(action: &str, params: Value) -> Result<Value>`
 
-运行一个没有类型化方法的示波器操作，并返回它的 `value`。例如 `capabilities`、`get_state`、`set_acquire`、`set_trigger_holdoff`、`set_roll`、`fft` 以及各种光标操作。
+运行一个没有类型化方法的示波器操作，并返回它的 `value`。
 
 ```rust
 use serde_json::json;
 
-ch1.command("set_trigger_holdoff", json!({ "seconds": 0.001 }))?;
+ch1.command("get_state", json!({}))?;
 ```
 
 ## 示例
@@ -164,6 +232,7 @@ assert!((hz - 32_768.0).abs() < 50.0, "clock at {hz} Hz");
 - **在仪器 Net 上执行通道操作会失败。** 把 `set_scale()` 或 `measure()` 发给 `scope` Net 时，Box 会以 `Error::Box` 和 HTTP 400 应答。错误信息会列出应改用的通道 Net。
 - 早于 0.55.0 的 Box 对示波器 Net 应答 HTTP 501，crate 将其返回为 `Error::UnsupportedByBox`。
 - 每次调用允许 45 秒。Box 把单条示波器命令限制在 30 秒，因此 Box 自己的超时错误会在 crate 停止等待之前到达。
-- **波形采集不在 HTTP API 上。** 波形从 Box 的示波器守护进程流式传输到浏览器中的 `/scope` 页面。如果要对波形而不是测量值做断言，请在那一部分使用 Python API 或 CLI。
+- **波形采集需要能够流式传输的示波器。** `capture()` 和 `stream()` 使用 Box 的 `/scope` 页面背后的 WebSocket。它们适用于 PicoScope Net，以及已配对 HDMI 采集卡的 Rigol MSO5000 Net（Box 软件 0.57.0 或更高版本）。在没有采集卡的 Rigol 上，Box 会拒绝该请求，返回 `Error::Box`。
+- `capture()` 和 `stream()` 只在阻塞客户端上提供，并且需要普通的 `http://` Box URL。
 - 逻辑分析仪 Net 没有 Rust 句柄，因为 Box 在 `/net/command` 上没有 `logic` 角色。待办清单在 [MISSING_ENDPOINTS.md](https://github.com/lagerdata/lager-rs/blob/main/MISSING_ENDPOINTS.md) 中。
 - 来自 `AsyncLagerBox::scope` 的 `AsyncScope` 提供同样的方法，以 `.await` 调用。

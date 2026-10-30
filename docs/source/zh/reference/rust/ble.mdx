@@ -22,8 +22,9 @@ BLE 是 **Box 级**能力，不是一个 Net：它驱动的是 Box 自己的适�
 |--------|-------------|
 | `scan()` | 扫描正在广播的设备 |
 | `scan_named()` | 扫描，并按名称子串过滤 |
-| `info()` | 短暂连接并枚举 GATT 服务 |
-| `connect()` | 连接，并通过枚举服务来确认 |
+| `scan_exact()` | 扫描，并按完整名称过滤 |
+| `info()`、`info_with_timeout()` | 短暂连接并枚举 GATT 服务 |
+| `connect()`、`connect_with_timeout()` | 连接，并通过枚举服务来确认 |
 | `disconnect()` | 确保某个设备已与 Box 断开连接 |
 
 ## 类型
@@ -71,6 +72,10 @@ for d in ble.scan(5.0)? {
 
 同样的扫描，但按不区分大小写的名称子串过滤。
 
+### `scan_exact(timeout: f64, name: &str) -> Result<Vec<BleDevice>>`
+
+扫描名称完全相同的设备。
+
 ### `info(address: &str) -> Result<BleDeviceInfo>`
 
 短暂连接并枚举该设备的 GATT 服务。
@@ -78,6 +83,10 @@ for d in ble.scan(5.0)? {
 ### `connect(address: &str) -> Result<BleDeviceInfo>` 和 `disconnect(address: &str) -> Result<()>`
 
 按地址连接某个设备，或者确保与它断开连接。
+
+### `info_with_timeout(address: &str, timeout: f64)` 和 `connect_with_timeout(address: &str, timeout: f64)`
+
+相同的调用，用于需要超过默认 10 秒连接超时的设备。
 
 ## 示例
 

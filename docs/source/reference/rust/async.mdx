@@ -11,7 +11,7 @@ between them.
 
 ```toml
 [dev-dependencies]
-lager = { package = "lager-net", version = "0.8", default-features = false, features = ["async"] }
+lager = { package = "lager-net", version = "0.9", default-features = false, features = ["async"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -49,12 +49,15 @@ and so on.
 | Every net type, every box query, safety limits | Yes | Yes |
 | Lock, heartbeat, unlock | Yes | Yes |
 | `lock_guard()` and `BoxLockGuard` | Yes | **No** |
-| `uart()` sessions | Yes | **No** |
-| `debug.rtt()` and `RttStream` | Yes | **No** |
-| `debug.rtt_interactive()` | Yes | **No** |
+| `uart()` sessions | Yes | Yes, as `AsyncUart` |
+| `debug.rtt()` | `RttStream` (`std::io::Read`) | `AsyncRttStream` (`tokio::io::AsyncRead`) |
+| `debug.rtt_interactive()` | Yes | Yes, as `AsyncRttSession` |
+| `Scope::capture()` and `Scope::stream()` | Yes | **No** |
 
-The `uart` and `rtt` features both imply `blocking`, so enabling them pulls in the
-blocking client whether or not you asked for it.
+The `uart`, `rtt` and `scope-trace` features all imply `blocking`, so enabling them
+pulls in the blocking client whether or not you asked for it. `AsyncUart` needs the
+`uart` and `async` features, and `AsyncRttSession` needs `rtt` and `async`.
+`AsyncRttStream` needs only `async`.
 
 <Note>
   There is no RAII lock guard on the async client. Take and release the lock
@@ -64,12 +67,12 @@ blocking client whether or not you asked for it.
 ## Running both
 
 Nothing stops you using the async client for the parallel parts of a suite and the
-blocking client for a UART or RTT session:
+blocking client for a scope trace:
 
 ```rust
 let lager = AsyncLagerBox::from_env()?;         // fan out reads
-let blocking = lager::LagerBox::from_env()?;    // for the UART session
-let mut uart = blocking.uart("uart1")?;
+let blocking = lager::LagerBox::from_env()?;    // for the scope trace
+let capture = blocking.scope("scope1-ch1").capture()?;
 ```
 
 ## Concurrency

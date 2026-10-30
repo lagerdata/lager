@@ -32,11 +32,12 @@ next attempt rather than needing a new handle.
 | `disconnect()` | Disconnect, optionally leaving the gdbserver running |
 | `reset()` | Reset the target, optionally halting it at the reset vector |
 | `halt()` | Stop the core where it is, without a reset (OpenOCD) |
-| `erase()` | Erase the target's flash |
-| `erase_range()` | Erase only part of the flash |
+| `erase()`, `erase_with()` | Erase the target's flash |
+| `erase_range()`, `erase_range_with()` | Erase only part of the flash |
 | `flash()` | Flash a file, inferring its type from the extension |
+| `flash_with()` | Flash a file with `FlashOptions` |
 | `flash_bin()` | Flash a raw binary at an explicit base address |
-| `flash_bytes()` | Flash bytes already in memory |
+| `flash_bytes()`, `flash_bytes_with()` | Flash bytes already in memory |
 | `read_memory()` | Read target memory |
 | `read_memory_no_reset()` | Read target memory without the reset and halt a J-Link DA1469x read does first |
 | `info()`, `info_probed()` | Device, architecture, probe, serial, backend |
@@ -76,6 +77,30 @@ driver.
 
 ```rust
 pub enum FirmwareKind { Hex, Elf, Bin }
+```
+
+### `FlashOptions`
+
+```rust
+pub struct FlashOptions {
+    pub verbose: bool,                  // J-Link Commander alone, with full output
+    pub jlink_script: Option<Vec<u8>>,  // contents of a .JLinkScript
+    pub require_evidence: Option<bool>, // Some(false) accepts unusual J-Link wording
+}
+```
+
+Pass the script you connected with. Without one, the box uses the net's saved script,
+and failing that a temp file holding the script of whichever J-Link net connected most
+recently.
+
+### `EraseOptions`
+
+```rust
+pub struct EraseOptions {
+    pub speed: Option<String>,          // J-Link interface speed
+    pub transport: Option<Transport>,   // Transport::Swd or Transport::Jtag
+    pub require_evidence: Option<bool>,
+}
 ```
 
 ### `FlashReport` and `EraseReport`
@@ -140,11 +165,13 @@ use `halt()`.
 Disconnect. Pass `true` to leave the gdbserver up for an external GDB client to
 attach to; pass `false` to tear it down.
 
-### `reset(halt: bool) -> Result<()>`
+### `reset(halt: bool) -> Result<DebugOutput>`
 
 Reset the target. `halt: true` leaves it stopped at the reset vector.
 
-### `halt() -> Result<()>`
+**Returns:** a `DebugOutput` with the probe's `output` lines and the `backend`.
+
+### `halt() -> Result<DebugOutput>`
 
 Stop the core where it is. `halt()` sends OpenOCD's bare `halt`, so nRESET stays
 untouched. Use it on a part that executes in place out of QSPI, where a reset runs
@@ -332,4 +359,9 @@ dbg.disconnect(true)?;   // keep_running: the server survives
 - A net configured with `allow_destructive: false` refuses `erase()` and `flash()`
   with HTTP 403, which the crate returns as `Error::SafetyRefused`. See
   [Client and Box](/source/reference/rust/client).
-- Async note: `AsyncDebugNet` provides everything here, but no RTT.
+- The box-level calls `debug_service_health()`, `debug_service_health_detailed()` and
+  `debug_service_status()` read the debug service's version and features, its
+  operating state and warnings, and every connection it is tracking.
+- For register access, memory writes and other GDB packets the typed API does not
+  cover, use `debug_tunnel()`. The crate's `debug_tunnel` example shows how.
+- Async note: `AsyncDebugNet` provides everything here, including RTT.

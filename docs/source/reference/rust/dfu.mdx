@@ -38,11 +38,14 @@ pub struct DfuOptions {
     pub alt: Option<u32>,               // alternate setting
     pub dfuse_address: Option<String>,  // "0x08000000:leave"
     pub reset: bool,                    // reset after download
+    pub timeout_seconds: Option<u32>,   // box default 120, maximum 600
 }
 ```
 
 `Default` selects whatever single DFU device is on the bus. With more than one
 attached, `dfu-util` errors on the ambiguity rather than guessing, so name one.
+`timeout_seconds` sets how long the box lets `dfu-util` run, and the crate widens its
+HTTP timeout to match.
 
 ### `DfuDevice`
 

@@ -31,6 +31,7 @@ WiFi is a **box-level** capability, not a net. There is no net name and no `name
 | `status()` | Status of every wireless interface on the box |
 | `scan()` | Scan for access points on an interface |
 | `connect()` | Join a network |
+| `connect_on()` | Join a network on a named interface |
 | `delete()` | Delete a saved connection profile |
 
 ## Types
@@ -76,6 +77,10 @@ for ap in wifi.scan("wlan0")? {
 ### `connect(ssid: &str, password: &str) -> Result<WifiConnection>`
 
 Join a network. Pass an empty password for an open network.
+
+### `connect_on(ssid: &str, password: &str, interface: &str) -> Result<WifiConnection>`
+
+Join a network on an interface other than `wlan0`.
 
 ### `delete(ssid: &str) -> Result<()>`
 

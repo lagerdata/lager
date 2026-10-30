@@ -12,20 +12,16 @@ description: 流式接收固件日志输出，并从测试中驱动 RTT 控制�
 | `debug.rtt()` | 无 | 只读 | HTTP 流 |
 | `debug.rtt_interactive()` | `rtt` | 可读可写 | Socket.IO，Box 0.35.0 及以上 |
 
-<Note>
-  请优先使用交互式会话。单向流产出的是原始的 HTTP 分块传输帧，而不是干净的负载 —— 见下面的警告。
-</Note>
-
 ## 交互式会话
 
 ### 启用该 feature
 
 ```toml
 [dev-dependencies]
-lager = { package = "lager-net", version = "0.8", features = ["rtt"] }
+lager = { package = "lager-net", version = "0.9", features = ["rtt"] }
 ```
 
-`rtt` feature 隐含启用 `blocking`。它没有异步版本。
+`rtt` feature 隐含启用 `blocking`。要使用 `AsyncRttSession`，请同时启用 `rtt` 和 `async`。`AsyncDebugNet::rtt_interactive()` 和 `rtt_interactive_with()` 会打开它，它的方法与 `RttSession` 相同，其中 `read`、`wait_for`、`write` 和 `stop` 需要 `.await`。
 
 ### 打开一个会话
 
@@ -52,10 +48,11 @@ pub struct RttOptions {
     pub search_addr: Option<u64>,   // RAM start for the control-block search
     pub search_size: Option<u64>,   // size of the RAM region to search
     pub chunk_size: Option<u64>,    // box-side read chunk, J-Link only
+    pub timeout: Option<f64>,       // close the one-way stream after this many seconds
 }
 ```
 
-`channel` 同时决定**两个**方向上的通道。`chunk_size` 只对交互式会话有效；单向的 HTTP 流会忽略它。
+`channel` 同时决定**两个**方向上的通道。`chunk_size` 只对交互式会话有效；单向的 HTTP 流会忽略它。`timeout` 只对单向流有效。
 
 ## 方法
 
@@ -114,13 +111,9 @@ let banner = rtt.wait_for(b"boot complete", Duration::from_secs(10))?;
 
 ## 单向流
 
-`debug.rtt()` 和 `debug.rtt_with(&RttOptions)` 返回一个 `RttStream`，它实现了 `std::io::Read`。它不需要任何 cargo feature，也不需要 Socket.IO。
+`debug.rtt()` 和 `debug.rtt_with(&RttOptions)` 返回一个 `RttStream`，它实现了 `std::io::Read`。它不需要任何 cargo feature，也不需要 Socket.IO，并且只产出目标的 RTT 输出。
 
-<Warning>
-  **`RttStream` 产出的是原始的 HTTP 分块传输帧，而不是干净的负载。** 一次读取返回的字节形如 `384\r\nblink 46823 period=500ms\n...`，其中 `384` 是十六进制的分块长度。把它包进 `BufReader` 再按行迭代，得到的会是 `"64"`、`"384"` 和空字符串，与真正的固件输出交替出现。一个十六进制的分块长度和一行由您的固件打印出来的内容，在形式上无法区分。
-
-  这个问题记录在 [lager-rs#5](https://github.com/lagerdata/lager-rs/issues/5)。在它修复之前，需要可解析输出的场合请用 `rtt_interactive()`。交互式路径是干净的。
-</Warning>
+在 `AsyncDebugNet` 上，这两个方法返回一个 `AsyncRttStream`，它实现了 `tokio::io::AsyncRead`。
 
 ## 示例
 

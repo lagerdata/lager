@@ -27,6 +27,7 @@ WiFi 是 **Box 级**能力，不是一个 Net。它没有 Net 名称，也没有
 | `status()` | Box 上每一个无线接口的状态 |
 | `scan()` | 在某个接口上扫描接入点 |
 | `connect()` | 加入一个网络 |
+| `connect_on()` | 在指定接口上加入一个网络 |
 | `delete()` | 删除一份已保存的连接配置 |
 
 ## 类型
@@ -72,6 +73,10 @@ for ap in wifi.scan("wlan0")? {
 ### `connect(ssid: &str, password: &str) -> Result<WifiConnection>`
 
 加入一个网络。开放网络请传空密码。
+
+### `connect_on(ssid: &str, password: &str, interface: &str) -> Result<WifiConnection>`
+
+在 `wlan0` 以外的接口上加入一个网络。
 
 ### `delete(ssid: &str) -> Result<()>`
 

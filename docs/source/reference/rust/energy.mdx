@@ -31,6 +31,8 @@ let energy = lager.energy_analyzer("energy1");
 pub struct EnergyReading {
     pub energy_j: Option<f64>,    // joules
     pub charge_c: Option<f64>,    // coulombs
+    pub energy_wh: Option<f64>,   // watt-hours
+    pub charge_ah: Option<f64>,   // amp-hours
     pub duration_s: Option<f64>,  // the window actually used
 }
 ```
@@ -111,10 +113,10 @@ assert!(peak < mean * 20.0, "peak {peak:.4} A is {:.0}x the mean", peak / mean);
 ## Notes
 
 - **The box clamps the window to 0.1-120 seconds.** A request outside that range is
-  refused rather than silently adjusted.
+  silently adjusted, and `duration_s` reports the window actually used.
 - The client widens its HTTP budget to `max(30, duration + 30)` seconds.
 - `duration_s` on the reply is the window the instrument actually used, which can
   differ slightly from what you asked for. Divide by it, not by your request, when
   converting an integral to an average.
-- Energy is joules and charge is coulombs. Convert to mWh or mAh in your test if
-  that is the unit your budget is written in.
+- `energy_j` is joules and `charge_c` is coulombs. `energy_wh` and `charge_ah` give
+  the same readings in watt-hours and amp-hours.

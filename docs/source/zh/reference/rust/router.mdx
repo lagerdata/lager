@@ -31,6 +31,15 @@ let router = lager.router("router1");
 | `block_internet()` | 丢弃所有转发流量 |
 | `remove_firewall_rules()` | 移除 Lager 添加的每一条防火墙规则 |
 | `reboot()` | 重启路由器 |
+| `security_profiles()`、`create_security_profile()`、`create_open_security_profile()`、`update_security_profile_password()`、`delete_security_profile()` | 无线安全配置 |
+| `configure_wireless()`、`set_interface_disabled()` | 无线和接口设置 |
+| `wait_for_ready()`、`wait_for_wireless_ready()` | 等待路由器或某个无线接口就绪 |
+| `enable_dhcp()`、`disable_dhcp()`、`set_dhcp_lease_time()` | DHCP 服务器 |
+| `add_bandwidth_limit()`、`remove_bandwidth_limits()` | 带宽限制 |
+| `add_firewall_rule()`、`block_dns()`、`block_port()` | 防火墙规则 |
+| `access_list()`、`add_access_list_entry()`、`remove_access_list_entry()`、`clear_access_list()` | 无线访问列表 |
+| `reset_to_defaults()` | 把路由器恢复到某个 `RouterBaseline` |
+| `rest_get()` | 读取一个 RouterOS REST 路径 |
 | `command()` | 通用出口，可执行其他任意路由器动作 |
 
 ## 类型
@@ -83,17 +92,16 @@ pub struct RouterSystemInfo {
 
 ### `command(action: &str, params: serde_json::Value) -> Result<serde_json::Value>`
 
-通用出口：按名称调用其他任意路由器动作，并传入原始 JSON 参数。DNS 阻断、端口阻断、带宽限制、DHCP 控制、安全配置和访问列表都是这样使用的。这些目前在本 crate 中都还没有带类型的封装。
+通用出口：按名称调用其他任意路由器动作，并传入原始 JSON 参数。本页列出的每个动作都有带类型的方法，因此只有较新的 Box 新增的动作才需要用它。
+
+### `add_bandwidth_limit(target: &str, max_limit: &str, queue_name: Option<&str>) -> Result<serde_json::Value>`
+
+限制某个目标的带宽。
 
 ```rust
-use serde_json::json;
-
-router.command("block_dns", json!({}))?;
-router.command("block_port", json!({ "port": 8883, "protocol": "tcp" }))?;
-router.command("add_bandwidth_limit", json!({
-    "target": "192.168.88.0/24",
-    "max_limit": "1M/1M",
-}))?;
+router.block_dns()?;
+router.block_port(8883, "tcp")?;
+router.add_bandwidth_limit("192.168.88.0/24", "1M/1M", None)?;
 ```
 
 ## 示例
@@ -126,16 +134,11 @@ outcome?;
 ### 把带宽压下去，检查 OTA 是否仍能完成
 
 ```rust
-use serde_json::json;
-
-router.command("add_bandwidth_limit", json!({
-    "target": "192.168.88.50",
-    "max_limit": "256k/256k",
-}))?;
+router.add_bandwidth_limit("192.168.88.50", "256k/256k", None)?;
 
 // ... trigger the OTA and wait for it ...
 
-router.command("remove_bandwidth_limits", json!({}))?;
+router.remove_bandwidth_limits()?;
 ```
 
 ## 受支持的硬件

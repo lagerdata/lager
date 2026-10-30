@@ -12,10 +12,12 @@ UART sessions ride on Socket.IO, so they are behind a cargo feature:
 
 ```toml
 [dev-dependencies]
-lager = { package = "lager-net", version = "0.8", features = ["uart"] }
+lager = { package = "lager-net", version = "0.9", features = ["uart"] }
 ```
 
-The `uart` feature implies `blocking`. There is no async equivalent.
+The `uart` feature implies `blocking`. For `AsyncUart`, enable `uart` and `async`
+together. `AsyncLagerBox::uart()` and `uart_with()` open it, and its methods match
+`Uart`, with `read`, `wait_for`, `write` and `stop` awaited.
 
 ## Handle
 
@@ -27,10 +29,24 @@ let mut uart = lager.uart("uart1")?;
 ```
 
 <Note>
-  `uart()` is the only handle constructor that returns a `Result`. Every other net
-  handle is inert until you call a method. `uart()` connects the session and starts
-  streaming immediately, so it can fail right here.
+  `uart()` and `uart_with()` are the only handle constructors that return a `Result`.
+  Every other net handle is inert until you call a method. They connect the session
+  and start streaming immediately, so they can fail right here.
 </Note>
+
+To open with different serial settings for this session, pass a `UartConfig`:
+
+```rust
+use lager::{Parity, UartConfig};
+
+let mut uart = lager.uart_with("uart1", &UartConfig {
+    baudrate: Some(921_600),
+    parity: Some(Parity::None),
+    ..Default::default()
+})?;
+```
+
+Fields left `None` keep the net's saved settings, and the saved net is never changed.
 
 ## Methods
 
@@ -46,6 +62,29 @@ let mut uart = lager.uart("uart1")?;
 | `write()` | Write raw bytes to the device |
 | `write_str()` | Write a string to the device |
 | `stop()` | Stop cleanly, closing the port on the box |
+
+## Types
+
+### `UartConfig`
+
+```rust
+pub struct UartConfig {
+    pub baudrate: Option<u32>,
+    pub bytesize: Option<u8>,
+    pub parity: Option<Parity>,      // None, Even, Odd, Mark, Space
+    pub stopbits: Option<StopBits>,  // One, OnePointFive, Two
+    pub xonxoff: Option<bool>,
+    pub rtscts: Option<bool>,
+    pub dsrdtr: Option<bool>,
+    pub opost: Option<bool>,
+}
+```
+
+### `UartSession`
+
+`lager.uart_sessions()` returns one `UartSession` for each session holding a net. It
+has `netname`, `device_path`, `sid`, `heartbeat_age_seconds`, `client_connected` and
+`reader_alive`.
 
 ## Method Reference
 
@@ -85,6 +124,15 @@ quiet" from "the adapter went away".
 Stop cleanly and close the port on the box. Consumes the session. Dropping it also
 stops the session, but `stop()` surfaces errors.
 
+### `LagerBox::uart_sessions() -> Result<Vec<UartSession>>`
+
+List the sessions holding a net, with liveness detail. Requires box software 0.46.0
+or later. An older box gives `Error::UnsupportedByBox`.
+
+### `LagerBox::release_uart_session(name: &str) -> Result<Vec<String>>`
+
+Force-release the session holding a net. Requires box software 0.46.0 or later.
+
 ## Examples
 
 ### Wait for a boot banner, then drive the console
@@ -122,6 +170,19 @@ println!("status during reflash: {:?}", uart.last_status());
 assert!(String::from_utf8_lossy(&banner).contains("ready"));
 ```
 
+### Free a net held by a leaked session
+
+```rust
+use lager::Error;
+
+match lager.uart("uart1") {
+    Err(Error::UartInUse { held_by: Some(net), .. }) => {
+        lager.release_uart_session(&net)?;
+    }
+    other => { other?; }
+}
+```
+
 ## Supported Hardware
 
 | Adapter | Notes |
@@ -134,8 +195,9 @@ assert!(String::from_utf8_lossy(&banner).contains("ready"));
 ## Notes
 
 - **The box owns the port exclusively, and only one session per net or device is
-  allowed.** A second opener gets `Error::Stream` saying the port is already in use.
-  That includes a session your own previous test leaked — call `stop()`.
+  allowed.** A second opener gets `Error::UartInUse`. That includes a session your own
+  previous test leaked — call `stop()`. `held_by` names the net to release (box 0.49.0
+  or later). When two nets share one device, that is the other net.
 - The connect confirmation timeout is 15 seconds; failing it is `Error::Timeout`.
 - Bytes are raw. There is no line discipline, no echo handling and no encoding
   conversion; `wait_for` works on bytes.

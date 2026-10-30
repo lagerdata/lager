@@ -30,6 +30,8 @@ let energy = lager.energy_analyzer("energy1");
 pub struct EnergyReading {
     pub energy_j: Option<f64>,    // joules
     pub charge_c: Option<f64>,    // coulombs
+    pub energy_wh: Option<f64>,   // watt-hours
+    pub charge_ah: Option<f64>,   // amp-hours
     pub duration_s: Option<f64>,  // the window actually used
 }
 ```
@@ -109,7 +111,7 @@ assert!(peak < mean * 20.0, "peak {peak:.4} A is {:.0}x the mean", peak / mean);
 
 ## 说明
 
-- **Box 会把窗口钳位在 0.1 至 120 秒之间。** 超出该范围的请求会被拒绝，而不是被悄悄调整。
+- **Box 会把窗口钳位在 0.1 至 120 秒之间。** 超出该范围的请求会被悄悄调整，`duration_s` 会报告实际使用的窗口。
 - 客户端会把它的 HTTP 预算放宽到 `max(30, duration + 30)` 秒。
 - 响应中的 `duration_s` 是仪器实际使用的窗口，它可能与您请求的值略有出入。把积分值换算成平均值时，请除以它，而不是除以您的请求值。
-- 能量的单位是焦耳，电荷的单位是库仑。如果您的预算是用别的单位写的，请在测试里换算成 mWh 或 mAh。
+- `energy_j` 的单位是焦耳，`charge_c` 的单位是库仑。`energy_wh` 和 `charge_ah` 以瓦时和安时给出相同的读数。

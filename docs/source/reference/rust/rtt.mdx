@@ -13,21 +13,18 @@ There are two paths, and they behave differently.
 | `debug.rtt()` | none | Read only | HTTP stream |
 | `debug.rtt_interactive()` | `rtt` | Read and write | Socket.IO, box 0.35.0+ |
 
-<Note>
-  Prefer the interactive session. The one-way stream yields raw HTTP chunked-transfer
-  framing rather than clean payload — see the warning below.
-</Note>
-
 ## Interactive sessions
 
 ### Enabling the feature
 
 ```toml
 [dev-dependencies]
-lager = { package = "lager-net", version = "0.8", features = ["rtt"] }
+lager = { package = "lager-net", version = "0.9", features = ["rtt"] }
 ```
 
-The `rtt` feature implies `blocking`. There is no async equivalent.
+The `rtt` feature implies `blocking`. For `AsyncRttSession`, enable `rtt` and `async`
+together. `AsyncDebugNet::rtt_interactive()` and `rtt_interactive_with()` open it, and
+its methods match `RttSession`, with `read`, `wait_for`, `write` and `stop` awaited.
 
 ### Opening a session
 
@@ -56,11 +53,13 @@ pub struct RttOptions {
     pub search_addr: Option<u64>,   // RAM start for the control-block search
     pub search_size: Option<u64>,   // size of the RAM region to search
     pub chunk_size: Option<u64>,    // box-side read chunk, J-Link only
+    pub timeout: Option<f64>,       // close the one-way stream after this many seconds
 }
 ```
 
 `channel` selects the channel in **both** directions. `chunk_size` applies only to
-interactive sessions; the one-way HTTP stream ignores it.
+interactive sessions; the one-way HTTP stream ignores it. `timeout` applies only to
+the one-way stream.
 
 ## Methods
 
@@ -128,20 +127,11 @@ surfaces errors rather than swallowing them.
 ## The one-way stream
 
 `debug.rtt()` and `debug.rtt_with(&RttOptions)` return an `RttStream`, which
-implements `std::io::Read`. It needs no cargo feature and no Socket.IO.
+implements `std::io::Read`. It needs no cargo feature and no Socket.IO, and it yields
+only the target's RTT output.
 
-<Warning>
-  **`RttStream` yields raw HTTP chunked-transfer framing, not clean payload.** A read
-  returns bytes like `384\r\nblink 46823 period=500ms\n...`, where `384` is a hex
-  chunk length. Wrapping it in a `BufReader` and iterating lines produces `"64"`,
-  `"384"` and empty strings interleaved with real firmware output. A hex chunk
-  length is indistinguishable from a line that your firmware printed.
-
-  This is tracked as
-  [lager-rs#5](https://github.com/lagerdata/lager-rs/issues/5). Until it is fixed,
-  use `rtt_interactive()` where you need parseable output. The interactive path is
-  clean.
-</Warning>
+On `AsyncDebugNet`, the same two methods return an `AsyncRttStream`, which implements
+`tokio::io::AsyncRead`.
 
 ## Examples
 

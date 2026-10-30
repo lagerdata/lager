@@ -21,9 +21,10 @@ BluFi 是 **Box 级**能力，不是一个 Net，而且它与 BLE 共用 Box 上
 | 方法 | 说明 |
 |--------|-------------|
 | `scan()` | 扫描支持 BluFi 的 BLE 设备 |
+| `scan_including()` | 同时返回名称匹配但没有 BluFi 服务 UUID 的设备 |
 | `connect()` | 按广播的 BLE 名称连接 |
 | `provision()` | 把目标配置到某个 WiFi 网络上 |
-| `wifi_scan()` | 让目标扫描它自己能看到的网络 |
+| `wifi_scan()`、`wifi_scan_for()` | 让目标扫描它自己能看到的网络 |
 | `status()` | 目标当前的 WiFi 状态 |
 | `version()` | 目标的 BluFi 固件版本 |
 
@@ -58,6 +59,10 @@ pub struct BlufiNetwork {
 
 扫描附近正在广播、支持 BluFi 的设备。
 
+### `scan_including(timeout: f64, name_contains: &str) -> Result<Vec<BleDevice>>`
+
+同时返回只广播名称、不广播 BluFi 服务 UUID 的设备。
+
 ### `connect(device_name: &str) -> Result<BlufiDeviceInfo>`
 
 按广播的 BLE **名称**连接，而不是按地址。返回固件版本和 WiFi 状态。
@@ -74,6 +79,10 @@ assert_eq!(r.sta_conn, Some(0), "not connected: {:?}", r.sta_conn_name);
 ### `wifi_scan(device_name: &str) -> Result<Vec<BlufiNetwork>>`
 
 让目标扫描**它自己**能看到的网络。这是目标的射频在报告，而不是 Box 的 —— 在测试天线布置时，这正是关键所在。
+
+### `wifi_scan_for(device_name: &str, scan_timeout: f64) -> Result<Vec<BlufiNetwork>>`
+
+给目标超过默认 15 秒的时间来完成 WiFi 扫描。
 
 ### `status(device_name: &str) -> Result<BlufiStatus>` 和 `version(device_name: &str) -> Result<Option<String>>`
 
