@@ -462,16 +462,31 @@ jobs:
           chmod +x "$BIN"
           lager binaries add "$BIN" --name "$TEST_BINARY_NAME" --box "$LAGER_BOX" --yes
           rc=0
-          lager binaries list --box "$LAGER_BOX" | grep -q "$TEST_BINARY_NAME" || {
-            echo "::error title=Custom binaries::'$TEST_BINARY_NAME' is not listed after binaries add"
-            rc=1
+          # Whether the binary is listed. The list is read whole before it is
+          # searched: piped into `grep -q`, which stops at the first match,
+          # `lager` hit a broken pipe and exited 1, and with pipefail a binary
+          # that was listed read as missing -- and one still listed after
+          # remove read as gone. A list that fails is its own error.
+          listed() {
+            local out
+            if ! out=$(lager binaries list --box "$LAGER_BOX"); then
+              echo "::error title=Custom binaries::lager binaries list failed"
+              return 2
+            fi
+            grep -qF -- "$TEST_BINARY_NAME" <<<"$out"
           }
+          listed && found=0 || found=$?
+          if [ "$found" -ne 0 ]; then
+            [ "$found" -eq 1 ] && echo "::error title=Custom binaries::'$TEST_BINARY_NAME' is not listed after binaries add"
+            rc=1
+          fi
           lager python test/api/utility/test_custom_binaries.py --box "$LAGER_BOX" \
             --passenv TEST_BINARY_NAME --passenv TEST_BINARY_ECHOES \
             --passenv LAGER_BENCH_MAX_SKIPS || rc=1
           lager binaries remove "$TEST_BINARY_NAME" --box "$LAGER_BOX" --yes || rc=1
-          if lager binaries list --box "$LAGER_BOX" | grep -q "$TEST_BINARY_NAME"; then
-            echo "::error title=Custom binaries::'$TEST_BINARY_NAME' is still listed after binaries remove"
+          listed && found=0 || found=$?
+          if [ "$found" -ne 1 ]; then
+            [ "$found" -eq 0 ] && echo "::error title=Custom binaries::'$TEST_BINARY_NAME' is still listed after binaries remove"
             rc=1
           fi
           exit "$rc"

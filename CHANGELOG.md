@@ -22,6 +22,10 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 ### Fixed
 
+- **The bench suite's custom-binaries check reports what `lager binaries list` shows.** It
+  piped the list into `grep -q`, so a listed binary could read as missing and one left behind
+  by `lager binaries remove` as gone. It now reads the whole list before searching it, and a
+  list that fails is reported as its own error.
 - **The box's authorized_keys sync keeps running when the process that ran an
   install or update is stopped.** `start_box.sh` now starts its key-sync poller
   (`lager-ssh-sync`) in a session of its own, so signalling the caller's process
