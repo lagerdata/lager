@@ -1,0 +1,129 @@
+---
+title: "Version 0.61.0"
+description: "October 30, 2026"
+---
+
+## <u>Upgrade Notes</u>
+
+- **Update your boxes.** Most of the fixes in this release run on the box. Run
+  `lager update --box <box-name>` after you upgrade the CLI.
+- **`lager wifi status` exits 1 when the box has no wireless interface.** It used to print
+  "Interface detection failed" and exit 0. A script that treats that exit as success must
+  now handle the failure.
+- **`lager wifi status` and `lager wifi access-points` run on the box host over SSH.** They
+  used to run inside the container, which cannot see the host's wireless interface.
+  `access-points` now scans the box's own wireless interface by default, not `wlan0`.
+- **`lager usb` on a YKUSH hub fails when a port does not switch.** The hub acknowledges a
+  switch that it ignores, and `enable`, `disable`, `toggle` and `cycle` reported success. The
+  driver now reads the port back. A script that relied on the false success now gets an error.
+
+## <u>Features</u>
+
+- **Yepkit YKUSH3 hubs are supported.** `lager instruments` and `lager nets add-all` detect
+  the YKUSH3 (`04d8:f11b`). Its three USB ports are `usb` nets for `lager usb`. Its three GPIO
+  pins are `gpio` nets for `lager gpi` and `lager gpo`. The hub's switchable 5V output is not
+  a net.
+- **The IPEVO V4K PRO document camera (`1778:d00e`) is detected as a webcam.** `lager
+  instruments` lists it, and `lager nets add <name> webcam ...` accepts it.
+- **A gated box's gateway can see which command each request belongs to.** Requests that carry
+  a `lager login` token also send the command's name, such as `supply voltage`, with the CLI
+  version and an id for the command. The name never includes arguments. A box that is not
+  behind a gateway receives none of these headers.
+
+## <u>Bug Fixes</u>
+
+- **The `/scope` page shows the scope's real state.**
+  - A Rigol that loses only its capture card is no longer called unplugged. The page says that
+    the live view stopped, and it says when the card is back.
+  - The page says when the box closes its connection after a long idle.
+  - The run badge shows a dash after a disconnect. It used to keep its last state, such as
+    TRIG'D, until the next frame.
+  - The page says when a scope net has no channel nets, and it gives the `lager nets add`
+    command for each channel.
+  - The stream request no longer returns paths on the box when a scope's daemon fails.
+- **The `/scope` page draws a Rigol's trace where the scope's own screen does.**
+  - `display zoom` now magnifies the trace and shows the zoom bar.
+  - A channel's hardware offset now moves its trace. The volts read off the trace do not change.
+  - The box checks for a Rigol's side menu again a minute after a check finds none. The menu
+    no longer stays over the live view.
+- **A `stop` typed in the `/scope` page's console stops the measurement polling.** `start` and
+  `start single` in the console now follow the same rule as their buttons.
+- **`lager scope <net> cursor move-a` and `move-b` move from where the cursor is.** On a Rigol,
+  each call started from the center of the grid. After `set-a --x -200`, `move-a --x 50` now
+  puts A at -150, not +50.
+- **`lager scope <net> status` says "running" for a Rigol that the daemon opens while it runs.**
+  The command and the scope page said "stopped" after every daemon restart, power cycle or
+  replug until you pressed Start.
+- **`lager scope <net> measure` prints a reading without float noise.** A Rigol's duty cycle
+  now prints as `49.987 %`, not `49.986999999999995 %`. A Rigol's refusal of an averaging count
+  no longer names 65536 captures, which the CLI does not accept.
+- **A Rigol MSO5000 bus decoder is refused before anything is sent.** Creating a UART, I2C, SPI,
+  CAN or FlexRay decoder failed partway through the setup with "Function not found". It now
+  raises an error that says the scope does not decode buses through lager.
+- **The scope daemon's log says when the capture card stopped.** Requests that wait at that
+  moment are no longer told that the oscilloscope stopped answering.
+- **The scope daemon notices a PicoScope unplugged while it was idle.** The next command failed
+  with a bare driver error. The daemon now closes the unit when a 2000-series call fails and no
+  PicoScope is on the bus. It opens the unit again when it returns.
+- **A PicoScope plugged back in gets its settings back.** Channel enables, volts/div, coupling,
+  probe, timebase and trigger returned to the driver's defaults, so a page that pressed Start
+  drew nothing. The same unit, by serial, now keeps its settings. A different unit starts from
+  its defaults.
+- **`lager debug flash` and `lager debug erase` no longer call an unreachable box too old.** With
+  `--erase-start` or `--erase-size`, a `/health` timeout told you to update the box. The command
+  now retries twice, then says that the box or its Stout gateway did not answer.
+- **`lager diagnose` on a USB hub net reports an unreachable endpoint as unreachable.** It used to
+  say that the box does not serve `/diagnose/usbhub`, and it told you to update the box.
+- **`lager usb` says that the box service restarts, not "cannot reach box".** When a hub does not
+  open after it re-enumerates, the box service exits to recover. It now answers first, and it
+  tells you to retry in a few seconds.
+- **Python API calls on a multi-channel supply net act on that net's channel.** On a Rigol DP800
+  or Keysight E36000, `ovp()`, `ocp()`, `state()`, `clear_ovp()` and similar calls through
+  `Net.get()` sometimes acted on another channel. `lager supply` was not affected.
+- **`lager supply` can set OVP and OCP back to a Rigol DP800's factory limits.** A DP800 ships
+  with protection limits up to 110% of the channel's rating, and the CLI refused any limit above
+  the rating. The limit is now 110%. Voltage and current setpoints stay within the rating.
+- **`wait_for_level()` on a LabJack T7 GPIO net counts the stream setup against its timeout.** A
+  call ran about 30 ms past its timeout. The call still stops the stream before it raises
+  `TimeoutError`, which can take about 0.6 s.
+- **A command stopped with `kill` releases its box lock.** A killed background command, such as
+  `lager debug <net> gdbserver`, used to hold its lock until the lock's TTL ran out.
+- **The box's authorized_keys sync survives the end of an install or update.** The key-sync
+  poller now runs in its own session. A signal to the caller's process group no longer stops it.
+- **The box image carries the license notices of uldaq and the LabJack Exodriver.** They are at
+  `/usr/share/licenses/lager/vendor/`.
+
+## <u>Known Limitations</u>
+
+- **The YKUSH3 GPIO pins are not fully verified on hardware.** Their voltage level, and whether a
+  written level is held, are not yet measured.
+- **Two IPEVO V4K PRO cameras on one box share an address.** The camera reports no serial.
+- **I2C and SPI per-call overrides stay on the driver.** An `overrides` value such as
+  `frequency_hz` also applies to later calls on the same net. Set the value that you want on
+  each call.
+- **A failed resistance set on an EA solar net does not raise an error.** The call returns the
+  resistance that the instrument still has. Compare the returned value with the value you set.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.61.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli==0.61.0
+```
+
+Then update your boxes:
+
+```bash
+lager update --box <box-name>
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.61.0/)
