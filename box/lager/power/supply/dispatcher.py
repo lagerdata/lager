@@ -21,6 +21,7 @@ from lager.power.supply.rigol_dp700 import RigolDP700
 from lager.power.supply.keithley import Keithley2281S
 from lager.power.supply.ea import EA
 from lager.power.supply.keysight_e36000 import KeysightE36000
+from lager.power.supply.siglent_spd1000 import SiglentSPD1000X
 
 
 class SupplyDispatcher(BaseDispatcher):
@@ -61,6 +62,10 @@ class SupplyDispatcher(BaseDispatcher):
         if re.search(r"keysight.*e36(2|3)\d\da", inst, re.IGNORECASE) or \
            inst.lower() in ("keysight_e36233a", "keysight_e36311a", "keysight_e36312a", "keysight_e36313a"):
             return KeysightE36000
+
+        # Siglent SPD1000X (SPD1168X / SPD1305X) - single-channel
+        if re.search(r"siglent[_\-\s]*spd1", inst, re.IGNORECASE):
+            return SiglentSPD1000X
 
         # EA PSB (10080-60 / 10060-60)
         if inst in ("EA_PSB_10080_60", "EA_PSB_10060_60"):
@@ -110,6 +115,10 @@ class SupplyDispatcher(BaseDispatcher):
 
             elif Driver is KeysightE36000:
                 # Multi-channel Keysight E36xxx; pass (address, channel)
+                driver = Driver(address=address, channel=channel)
+
+            elif Driver is SiglentSPD1000X:
+                # Single-channel; the driver rejects any channel but 1
                 driver = Driver(address=address, channel=channel)
 
             else:

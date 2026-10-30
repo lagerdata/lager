@@ -14,7 +14,7 @@ This component provides the core Python functionality for box devices, including
 - **`io/gpio/`** - General-purpose I/O control (LabJack T7)
 
 ### Power (power/)
-- **`power/supply/`** - Power supply control (Keithley, Keysight E36200/E36300, Rigol DP800)
+- **`power/supply/`** - Power supply control (Keithley, Keysight E36200/E36300, Rigol DP800, Siglent SPD1000X)
 - **`power/battery/`** - Battery emulation (Keithley)
 - **`power/solar/`** - Solar panel simulation (EA power supplies)
 - **`power/eload/`** - Electronic load control

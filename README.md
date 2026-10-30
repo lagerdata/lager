@@ -25,7 +25,8 @@ lager debug debug1 flash --hex firmware.hex --box my-box
 - **The same commands work in CI.** Anything you can type, a pipeline can run.
   In a pipeline, pass `--yes` to commands that ask for confirmation.
 - **One vocabulary across vendors.** `lager supply <net> voltage 3.3` is the same
-  command whether the rail is behind a Rigol, a Keysight, a Keithley, or an EA.
+  command whether the rail is behind a Rigol, a Keysight, a Keithley, a Siglent,
+  or an EA.
 - **Tests can run on the box.** Ship a Python script to the hardware with
   `lager python` and use the on-box `Net` API directly, with no network round
   trip per operation.
@@ -129,7 +130,7 @@ For the detailed component and directory layout, see
 
 | Category | Vendors |
 |----------|---------|
-| Power supplies | Rigol, Keysight, EA Elektro-Automatik, Keithley |
+| Power supplies | Rigol, Keysight, EA Elektro-Automatik, Keithley, Siglent |
 | Battery simulators | Keithley |
 | Solar simulators | EA Elektro-Automatik |
 | Electronic loads | Rigol |

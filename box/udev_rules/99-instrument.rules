@@ -35,6 +35,10 @@ SUBSYSTEM=="usb", ATTRS{idVendor}=="2a8d", ATTRS{idProduct}=="1102", MODE="0660"
 # This allows PyVISA to access the device directly via libusb
 ACTION=="bind", SUBSYSTEM=="usb", DRIVER=="usbtmc", ATTRS{idVendor}=="2a8d", ATTRS{idProduct}=="1102", RUN+="/bin/sh -c 'echo %k > /sys/bus/usb/drivers/usbtmc/unbind 2>/dev/null || true'"
 
+# Siglent SPD1000X (SPD1168X/SPD1305X) Power Supply: VID=0xf4ec, PID=0x1410
+SUBSYSTEM=="usb", ATTRS{idVendor}=="f4ec", ATTRS{idProduct}=="1410", MODE="0660", GROUP="lager"
+ACTION=="bind", SUBSYSTEM=="usb", DRIVER=="usbtmc", ATTRS{idVendor}=="f4ec", ATTRS{idProduct}=="1410", RUN+="/bin/sh -c 'echo %k > /sys/bus/usb/drivers/usbtmc/unbind 2>/dev/null || true'"
+
 # Keysight E36313A Power Supply: VID=0x2a8d, PID=0x1202
 # Set permissions for direct USB access via PyVISA
 SUBSYSTEM=="usb", ATTRS{idVendor}=="2a8d", ATTRS{idProduct}=="1202", MODE="0660", GROUP="lager"

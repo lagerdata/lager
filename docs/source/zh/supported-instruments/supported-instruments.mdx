@@ -30,6 +30,7 @@ Lager 提供对台式电源设备的自动控制，用于确定性的硬件测�
 | Keysight | E36233A | 2 | `lager supply` |
 | Keysight | E36312A | 3 | `lager supply` |
 | Keysight | E36313A | 3 | `lager supply` |
+| Siglent | SPD1168X \*\* | 1 | `lager supply` |
 | EA Elektro-Automatik | PSB 10060/60 | 1 路电源 + 1 路太阳能 | `lager supply`、`lager solar` |
 | EA Elektro-Automatik | PSB 10080/60 | 1 路电源 + 1 路太阳能 | `lager supply`、`lager solar` |
 
@@ -37,6 +38,11 @@ Lager 提供对台式电源设备的自动控制，用于确定性的硬件测�
 [`lager nets assign`](/source/zh/reference/cli/nets#assign) 做一次性的手动分配。
 DP711 还需要在电源和 RS232 转 USB 适配器之间加一根**零调制解调器（交叉）线缆**。两端都按 DTE 接线，因此直通连接无法通信。请参阅
 [RS-232 仪器](/source/zh/getting-started/setting-up-instruments#rs-232-仪器（手动分配）)。
+
+\*\* 通过 USB 连接时会被检测到（`f4ec:1410`）。通过 LAN 连接时不会被检测到：请用
+[`lager nets add-batch`](/source/zh/reference/cli/nets#add-batch)、
+`"instrument": "Siglent_SPD1168X"` 和 `TCPIP::<ip>::INSTR` 地址来创建它的网络。它不支持
+OVP/OCP，因此 `lager supply` 的 `--ovp`/`--ocp` 选项以及 `clear-ovp`/`clear-ocp` 命令会返回错误。它的测量值大约每 0.35 秒更新一次，因此修改设定值后请至少等待这么长时间再读取。
 
 **可以实现：**
 - 自动的电压/电流控制

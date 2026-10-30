@@ -93,6 +93,9 @@ SUPPORTED_USB: Dict[str, Dict] = {
     "KEYSIGHT_E36233A":  {"vid": "2a8d", "pid": "3302", "net_type": ["power-supply"]},
     "KEYSIGHT_E36313A":  {"vid": "2a8d", "pid": "1202", "net_type": ["power-supply"]},
     "KEYSIGHT_E36312A":  {"vid": "2a8d", "pid": "1102", "net_type": ["power-supply"]},
+    # f4ec:1410 is the whole SPD1000X series (iProduct "SPD1000X"), so an
+    # SPD1305X lands here too; the driver reads the model from *IDN?.
+    "Siglent_SPD1168X":  {"vid": "f4ec", "pid": "1410", "net_type": ["power-supply"]},
     # battery
     "Keithley_2281S":    {"vid": "05e6", "pid": "2281", "net_type": ["battery", "power-supply"]},
     # scope
@@ -232,6 +235,7 @@ CHANNEL_MAPS: Dict[str, Dict[str, List[str]]] = {
     "KEYSIGHT_E36233A":       {"power-supply": ["1", "2"]},
     "KEYSIGHT_E36313A":       {"power-supply": ["1", "2", "3"]},
     "KEYSIGHT_E36312A":       {"power-supply": ["1", "2", "3"]},
+    "Siglent_SPD1168X":       {"power-supply": ["1"]},
     "Keithley_2281S":         {"power-supply": ["1"], "battery": ["1"]},
     # Channel lists are the conservative two-channel default; the real count
     # is filled in at scan time from the scope daemon's detected model
