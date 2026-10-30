@@ -35,7 +35,8 @@ fn init_tracing() {
 fn open_configured() -> Result<Box<dyn Oscilloscope>> {
     if std::env::var_os(rigol::Config::SCPI_ENV).is_some() {
         let config = rigol::Config::from_env()?;
-        return Ok(Box::new(rigol::RigolMso5000::open(&config)?));
+        // An MSO5000 or a DS1000Z-series scope, by what it says it is.
+        return rigol::open(&config);
     }
     open_scope()
 }

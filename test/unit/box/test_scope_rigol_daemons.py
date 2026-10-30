@@ -192,6 +192,10 @@ class TestRouting:
         ("PicoScope_5444D", routing.PICOSCOPE),
         ("Rigol_MSO5204", routing.RIGOL_MSO5000),
         ("rigol_mso5000", routing.RIGOL_MSO5000),
+        ("Rigol_DS1000Z", routing.RIGOL_DS1000Z),
+        ("RIGOL DS1054Z", routing.RIGOL_DS1000Z),
+        ("MSO1104Z", routing.RIGOL_DS1000Z),
+        ("DS1202Z-E", routing.RIGOL_DS1000Z),
         ("Keysight_DSOX1204G", None),
         ("", None),
     ])
@@ -218,3 +222,17 @@ class TestRouting:
         assert not routing.has_live_view({"instrument": "Rigol_MSO5204", "address": ADDRESS})
         assert routing.has_live_view({"instrument": "Rigol_MSO5204", "address": ADDRESS,
                                       "capture": {"port_path": "1-1"}})
+
+    def test_a_ds1000z_gets_a_daemon_with_no_card(self, monkeypatch):
+        asked = []
+        monkeypatch.setattr(rigol_daemons, "ensure",
+                            lambda address, video=None: asked.append((address, video)) or "ws://x/")
+        # A card named on the net is ignored: the DS1000Z has no video output.
+        rec = {"instrument": "Rigol_DS1000Z", "address": ADDRESS,
+               "capture": {"port_path": "2-1"}}
+        assert routing.daemon_url_for(rec) == "ws://x/"
+        assert asked == [(ADDRESS, None)]
+
+    def test_a_ds1000z_has_a_live_view_without_a_card(self, monkeypatch):
+        monkeypatch.setattr(rigol_daemons, "capture_for_address", lambda address: None)
+        assert routing.has_live_view({"instrument": "Rigol_DS1000Z", "address": ADDRESS})

@@ -8,12 +8,19 @@ Every supported scope is driven by a daemon, and every surface -- the CLI,
 the web UI, Python scripts, the MCP server -- reaches it the same way, so the
 make of scope matters in exactly one place: here, where a net is turned into
 the URL of its daemon. A PicoScope is found by the box's own daemon on
-:8085; a Rigol MSO5000 has a daemon of its own, started for its address.
+:8085; a Rigol has a daemon of its own, started for its address, which picks
+the MSO5000 or DS1000Z backend by what the scope says it is.
 """
 from __future__ import annotations
 
+import re
+
 PICOSCOPE = "picoscope"
 RIGOL_MSO5000 = "rigol_mso5000"
+RIGOL_DS1000Z = "rigol_ds1000z"
+
+# DS1054Z, DS1104Z, MSO1104Z, DS1202Z-E, or the catalog's Rigol_DS1000Z.
+_DS1000Z_MODEL = re.compile(r"(ds|mso)1(\d{3}|000)z")
 
 
 def scope_family(instrument) -> str | None:
@@ -21,6 +28,8 @@ def scope_family(instrument) -> str | None:
     lowered = (instrument or "").lower()
     if "pico" in lowered:
         return PICOSCOPE
+    if _DS1000Z_MODEL.search(lowered):
+        return RIGOL_DS1000Z
     if "rigol" in lowered or "mso5" in lowered:
         return RIGOL_MSO5000
     return None
@@ -53,6 +62,10 @@ def daemon_url_for(rec: dict, info: dict | None = None) -> str:
     if family == RIGOL_MSO5000:
         from lager.measurement.scope import rigol_daemons
         return rigol_daemons.ensure(address_of(rec, info), capture_of(rec, info))
+    if family == RIGOL_DS1000Z:
+        # The same daemon binary; with no video output there is no card.
+        from lager.measurement.scope import rigol_daemons
+        return rigol_daemons.ensure(address_of(rec, info), None)
     raise daemon_client.ScopeDaemonUnavailable(
         "no oscilloscope daemon drives a %s" % (instrument or "scope of unknown make"))
 
@@ -66,10 +79,11 @@ NO_LIVE_VIEW = (
 
 
 def has_live_view(rec: dict) -> bool:
-    """Whether the net's scope can stream: a PicoScope always can, a Rigol
-    only through the HDMI capture card paired with it."""
+    """Whether the net's scope can stream: a PicoScope or a DS1000Z always
+    can (the DS1000Z from its screen record), an MSO5000 only through the
+    HDMI capture card paired with it."""
     family = scope_family((rec or {}).get("instrument"))
-    if family == PICOSCOPE:
+    if family in (PICOSCOPE, RIGOL_DS1000Z):
         return True
     if family == RIGOL_MSO5000:
         return bool(capture_of(rec))

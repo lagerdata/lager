@@ -100,6 +100,9 @@ SUPPORTED_USB: Dict[str, Dict] = {
     "Keithley_2281S":    {"vid": "05e6", "pid": "2281", "net_type": ["battery", "power-supply"]},
     # scope
     "Rigol_MSO5204":     {"vid": "1ab1", "pid": "0515", "net_type": ["scope", "scope-channel", "logic"]},
+    # DS1000Z series: DS1054Z, DS1074Z, DS1104Z and their Plus versions. The
+    # scope daemon reads the model from *IDN? and drives it over SCPI alone.
+    "Rigol_DS1000Z":     {"vid": "1ab1", "pid": "04ce", "net_type": ["scope", "scope-channel"]},
     # Pico Technology ships a different product id for nearly every PicoScope
     # model across the 2000/3000/4000/5000 series, and reuses none of them, so
     # a per-PID allow-list here means a scope Lager supports goes undetected
@@ -249,6 +252,7 @@ CHANNEL_MAPS: Dict[str, Dict[str, List[str]]] = {
     "Picoscope":              {"scope": [], "scope-channel": ["1", "2"]},
     "Rigol_MSO5204":          {"scope": [], "scope-channel": ["1", "2", "3", "4"],
                            "logic": ["1"]},
+    "Rigol_DS1000Z":          {"scope": [], "scope-channel": ["1", "2", "3", "4"]},
     "LabJack_T7": {
         "gpio": [
             "CIO0", "CIO1", "CIO2", "CIO3",

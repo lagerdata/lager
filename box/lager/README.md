@@ -20,7 +20,7 @@ This component provides the core Python functionality for box devices, including
 - **`power/eload/`** - Electronic load control
 
 ### Measurement (measurement/)
-- **`measurement/scope/`** - Oscilloscope control (Rigol MSO5000)
+- **`measurement/scope/`** - Oscilloscope control (Rigol MSO5000, DS1000Z)
 - **`measurement/dmm/`** - Bench multimeter readings (Siglent SDM3065X)
 - **`measurement/thermocouple/`** - Temperature measurement (Phidget sensors)
 - **`measurement/watt/`** - Power measurement (Yoctopuce watt meters)

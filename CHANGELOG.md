@@ -65,6 +65,11 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   current, 2- or 4-wire resistance, continuity, diode, frequency, period,
   capacitance or temperature, with optional `--range`, `--nplc` and `--sensor`;
   Python scripts use `Net.get(name, NetType.DMM).measure(...)`.
+- **Rigol DS1000Z-series scopes (DS1054Z, DS1074Z, DS1104Z) work as scope nets.**
+  The scope daemon reads the model from `*IDN?` and drives a DS1000Z over SCPI
+  alone, with its live view read from the on-screen record; `lager instruments`
+  lists it (`1ab1:04ce`) and `lager scope` controls it. Not yet verified on
+  hardware.
 
 ### Fixed
 

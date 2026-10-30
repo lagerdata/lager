@@ -258,6 +258,7 @@ lager box-config apply
 
 ### Oscilloscopes
 - Rigol MSO5000 series
+- Rigol DS1000Z series (DS1054Z, DS1074Z, DS1104Z)
 
 ### I/O Hardware
 - LabJack T7 (ADC/DAC/GPIO)

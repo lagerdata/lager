@@ -25,7 +25,7 @@ box/
     python/               # User script executor (lager python)
     scripts/              # Utility scripts
     testing/              # On-box test helpers
-  oscilloscope-daemon/    # Rust daemon for PicoScope streaming
+  oscilloscope-daemon/    # Rust scope daemon (PicoScope, Rigol MSO5000/DS1000Z)
   third_party/            # Third-party tool integration
   udev_rules/             # udev rules for USB device permissions
   start_box.sh            # Host-side script that launches the Docker container

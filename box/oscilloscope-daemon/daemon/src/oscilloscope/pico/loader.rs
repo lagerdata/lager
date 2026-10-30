@@ -100,7 +100,7 @@ impl LeftOut {
             DriverFamily::Ps3000a => option_env!("PICO_PS3000A_LEFT_OUT"),
             DriverFamily::Ps4000a => option_env!("PICO_PS4000A_LEFT_OUT"),
             DriverFamily::Ps5000a => option_env!("PICO_PS5000A_LEFT_OUT"),
-            DriverFamily::RigolMso5000 => None,
+            DriverFamily::RigolMso5000 | DriverFamily::RigolDs1000z => None,
         };
         match recorded {
             Some(reason) => reason.to_string(),
