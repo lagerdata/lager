@@ -361,7 +361,7 @@ dbg.disconnect(true)?;   // keep_running: the server survives
   [Client and Box](/source/reference/rust/client).
 - The box-level calls `debug_service_health()`, `debug_service_health_detailed()` and
   `debug_service_status()` read the debug service's version and features, its
-  operating state and warnings, and every connection it is tracking.
+  operating state and warnings, and every connection it tracks.
 - For register access, memory writes and other GDB packets the typed API does not
   cover, use `debug_tunnel()`. The crate's `debug_tunnel` example shows how.
 - Async note: `AsyncDebugNet` provides everything here, including RTT.
