@@ -361,6 +361,8 @@ echo 1-1.4.4:1.0 | sudo tee /sys/bus/usb/drivers/hub/bind
 
 ## 摄像头
 
+任何 USB 视频类（UVC）摄像头都可以使用 `lager webcam`，包括 Box 的内置摄像头。不在下表中的型号会列为 `UVC_Camera`，并在 `lager instruments` 中显示其产品名称。HDMI 采集卡也属于 UVC 设备，但它们用于示波器的实时画面，不会列为摄像头。
+
 | 厂商 | 型号 | 控制命令 |
 |---|---|---|
 | Logitech | BRIO HD | `lager webcam` |

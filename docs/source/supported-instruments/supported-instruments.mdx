@@ -445,6 +445,11 @@ echo 1-1.4.4:1.0 | sudo tee /sys/bus/usb/drivers/hub/bind
 
 ## Cameras
 
+Any USB video class (UVC) camera works with `lager webcam`, including a box's built-in camera.
+A model not in this table is listed as `UVC_Camera`, with its product name under it in
+`lager instruments`. HDMI capture cards are UVC too, but are listed for a scope's live view
+rather than as cameras.
+
 | Manufacturer | Model | Control Command |
 |---|---|---|
 | Logitech | BRIO HD | `lager webcam` |

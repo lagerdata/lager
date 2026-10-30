@@ -593,6 +593,7 @@ INSTRUMENT_NET_MAP: dict[str, list[str]] = {
     "Logitech_StreamCam": ["webcam"],
     "ELP_Global_Shutter_AR0234": ["webcam"],
     "IPEVO_V4K_PRO": ["webcam"],
+    "UVC_Camera": ["webcam"],
 
     # (robot) arm
     "Rotrix_Dexarm": ["arm"],

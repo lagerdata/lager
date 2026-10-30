@@ -12,6 +12,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Dict, Optional
 
+from ...devices.video_id import resolve_video_device
 from . import controls as _controls
 # Import the webcam service
 from .service import WebcamService
@@ -62,12 +63,20 @@ class WebcamNetWrapper:
         # Extract video device path from channel or pin
         device = net_config.get('channel') or net_config.get('pin')
         if isinstance(device, int):
-            self.video_device = f'/dev/video{device}'
+            self._saved_device = f'/dev/video{device}'
         else:
-            self.video_device = device or '/dev/video0'
+            self._saved_device = device or '/dev/video0'
 
         # Create service instance
         self._service = WebcamService()
+
+    @property
+    def video_device(self) -> str:
+        """The camera's /dev/video node now, which can differ from the saved one.
+
+        Resolved on use, so getting the net works while the camera is unplugged.
+        """
+        return resolve_video_device(self._config.get('address'), self._saved_device)
 
     def start(self, box_ip: str) -> Dict[str, any]:
         """
@@ -271,7 +280,7 @@ class WebcamNetWrapper:
         return self._config.copy()
 
     def __str__(self):
-        return f'<WebcamNetWrapper name="{self.name}" device="{self.video_device}">'
+        return f'<WebcamNetWrapper name="{self.name}" device="{self._saved_device}">'
 
     def __repr__(self):
         return str(self)

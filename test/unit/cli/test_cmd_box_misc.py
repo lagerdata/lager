@@ -68,6 +68,20 @@ def test_instruments_renders_each_device(lager, fake_box, monkeypatch):
     assert fake_box.gets[-1] == f"http://{fake_box.IP}:9000/instruments/list"
 
 
+def test_instruments_tells_unnamed_cameras_apart_by_product(lager, fake_box, monkeypatch):
+    monkeypatch.setattr("requests.get", _instruments(fake_box, [
+        {"name": "UVC_Camera", "product": "Bench Cam",
+         "address": "usb-port:1-1.4", "channels": {"webcam": ["/dev/video0"]}},
+        {"name": "Logitech_C920", "product": "HD Pro Webcam C920",
+         "address": "USB0::0x046D::0x082D::S1::INSTR",
+         "channels": {"webcam": ["/dev/video2"]}},
+    ]))
+    result = lager("instruments")
+    assert result.exit_code == 0, result.output
+    assert "Bench Cam" in result.output
+    assert "HD Pro Webcam" not in result.output
+
+
 def test_instruments_empty_list(lager, fake_box, monkeypatch):
     monkeypatch.setattr("requests.get", _instruments(fake_box, []))
     result = lager("instruments")

@@ -999,6 +999,29 @@ class TestNetCommandHandler(unittest.TestCase):
         self.assertTrue(data["value"]["already_running"])
         self.assertIn("already running", data["message"])
 
+    def test_webcam_start_opens_the_camera_its_address_names(self):
+        start_stream = MagicMock(return_value={
+            "url": "http://localhost:8090/", "port": 8090})
+        with patch('lager.devices.video_id.resolve_video_device',
+                   return_value="/dev/video6") as resolve:
+            r, fake = self._run_webcam(
+                {"netname": "cam1", "action": "start"}, start_stream=start_stream)
+        self.assertEqual(r.status_code, 200)
+        resolve.assert_called_once_with(None, "/dev/video0")
+        fake.start_stream.assert_called_once_with(
+            "cam1", "/dev/video6", "localhost", source="cli", started_by=None)
+
+    def test_webcam_start_with_the_camera_missing_says_so(self):
+        from lager.devices.video_id import VideoDeviceNotFound
+        start_stream = MagicMock()
+        with patch('lager.devices.video_id.resolve_video_device',
+                   side_effect=VideoDeviceNotFound("No camera is on USB port 1-1")):
+            r, fake = self._run_webcam(
+                {"netname": "cam1", "action": "start"}, start_stream=start_stream)
+        self.assertFalse(r.get_json()["success"])
+        self.assertIn("USB port 1-1", r.get_json()["error"])
+        fake.start_stream.assert_not_called()
+
     def test_webcam_start_without_video_device_is_400(self):
         r, _ = self._run_webcam(
             {"netname": "camnodev", "action": "start"},

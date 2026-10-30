@@ -43,7 +43,7 @@
     "reference/cli/logic.mdx": "c790363f0f231bf13855e9225c5d356a9c13396e7407cbdfdf99acbcff5589a8",
     "reference/cli/login.mdx": "6672f3d909010ad6ee0714e0915e517c56ce14116c1684a17e084b0acf556221",
     "reference/cli/logs.mdx": "58c78cde4104ee64c8151ffb52b80d40074af49cb3d77524eef59a0601139dac",
-    "reference/cli/nets.mdx": "61071d80f4ead65d95fbe1b6cfb8aa63b2a1bb3db28138b380bbcf8a6140d57c",
+    "reference/cli/nets.mdx": "1eab5af90a6e5171d758fd95470e08b430ddbb93f6deb6b228fe0d8180934018",
     "reference/cli/overview.mdx": "de08fe2fb34fc1da85e3239b098acfcfea7f4ac3960808c035d0f518da0c623b",
     "reference/cli/python.mdx": "abd57a2f6024ad8193a1903aa143d6d24de0cb995d6c35c43699c1e37cf0fd65",
     "reference/cli/router.mdx": "a755022b1164c8ed5406aa156be80ba132384a82d6a29b581673a21d95aebb98",
@@ -89,7 +89,7 @@
     "reference/python/uart.mdx": "4844df73f7272eb489b92e01360fe6b6bbcd017a7693cc87ce5bbbdd06ddb373",
     "reference/python/usb.mdx": "141d49617f087f4bcb19eb63ed23f16555f807409474eb1896e57fbf3cee3f28",
     "reference/python/watt.mdx": "53751ad1c8058e03f6a6ff321cab48840ed8889025970366fa7c1ee2d0506d0e",
-    "reference/python/webcam.mdx": "9e1e8307bf133a6a80e1624a71a3a4bfb8315b1c11b04c3326a0f2acb73476b2",
+    "reference/python/webcam.mdx": "5e314b8e52cb2a118cb74fd449e7ea59280a227cf235261058375c9e5039863d",
     "reference/python/wifi.mdx": "5993c870bc0acdd863f59d1cead90a9735cd01518280ca68fa792d4fbe525211",
     "reference/rust/adc.mdx": "f6207c0411219a84455d181b80d11866bc837ef13515f1571ed814d05b71ae07",
     "reference/rust/arm.mdx": "45d45073dec3297e54f877897cf67d67f32494c0dadab080e685607db2191381",
@@ -123,6 +123,6 @@
     "reference/rust/watt.mdx": "e16f8048a2fcfa6d65d6b58eb45d31b86c2aa5e0c2692f15ac28e4083b6b2afe",
     "reference/rust/webcam.mdx": "0ba114adbb0a26ad4489860fe03073b320bf24fbe853bcb3c49cd8aa9a10315f",
     "reference/rust/wifi.mdx": "fa98f6490833b51083616a5f164d6303b133f7ab246cb495912dc6414886930a",
-    "supported-instruments/supported-instruments.mdx": "21418b8abcd103e42c0fd5e5f6fec4595f5ff76068060504af8e72a942010cb8"
+    "supported-instruments/supported-instruments.mdx": "dc598b60d4e54ef644982e5945854b33c66b685a3ab165ad0e09b5315456fc8b"
   }
 }
